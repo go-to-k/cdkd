@@ -2,12 +2,17 @@ import { Command } from 'commander';
 import {
   CreateBucketCommand,
   HeadBucketCommand,
+  PutBucketPolicyCommand,
+  PutBucketVersioningCommand,
+  PutBucketEncryptionCommand,
   type BucketLocationConstraint,
 } from '@aws-sdk/client-s3';
+import { GetCallerIdentityCommand } from '@aws-sdk/client-sts';
 import { commonOptions } from '../options.js';
 import { getLogger } from '../../utils/logger.js';
 import { withErrorHandling } from '../../utils/error-handler.js';
 import { setAwsClients, AwsClients } from '../../utils/aws-clients.js';
+import { getDefaultStateBucketName } from '../config-loader.js';
 
 /**
  * Bootstrap command implementation
@@ -15,7 +20,7 @@ import { setAwsClients, AwsClients } from '../../utils/aws-clients.js';
  * Creates S3 bucket for state management
  */
 async function bootstrapCommand(options: {
-  stateBucket: string;
+  stateBucket?: string;
   region?: string;
   profile?: string;
   force: boolean;
@@ -38,8 +43,24 @@ async function bootstrapCommand(options: {
   setAwsClients(awsClients);
 
   const s3Client = awsClients.s3;
-  const bucketName = options.stateBucket;
   const region = options.region || process.env['AWS_REGION'] || 'us-east-1';
+
+  // Resolve bucket name: use provided value or generate default from account info
+  let bucketName: string;
+  let accountId: string;
+
+  if (options.stateBucket) {
+    bucketName = options.stateBucket;
+    // Still need accountId for bucket policy
+    const identity = await awsClients.sts.send(new GetCallerIdentityCommand({}));
+    accountId = identity.Account!;
+  } else {
+    logger.info('No --state-bucket specified, resolving default bucket name...');
+    const identity = await awsClients.sts.send(new GetCallerIdentityCommand({}));
+    accountId = identity.Account!;
+    bucketName = getDefaultStateBucketName(accountId, region);
+    logger.info(`Using default state bucket: ${bucketName}`);
+  }
 
   try {
     // Check if bucket already exists
@@ -89,11 +110,64 @@ async function bootstrapCommand(options: {
       logger.info(`✓ Created S3 bucket: ${bucketName}`);
     }
 
-    // TODO: Configure bucket settings
-    // - Enable versioning
-    // - Enable encryption
-    // - Set bucket policy
-    // - Set lifecycle rules
+    // Enable versioning
+    logger.debug('Enabling bucket versioning...');
+    await s3Client.send(
+      new PutBucketVersioningCommand({
+        Bucket: bucketName,
+        VersioningConfiguration: {
+          Status: 'Enabled',
+        },
+      })
+    );
+    logger.info('✓ Enabled bucket versioning');
+
+    // Enable server-side encryption (AES-256)
+    logger.debug('Enabling bucket encryption...');
+    await s3Client.send(
+      new PutBucketEncryptionCommand({
+        Bucket: bucketName,
+        ServerSideEncryptionConfiguration: {
+          Rules: [
+            {
+              ApplyServerSideEncryptionByDefault: {
+                SSEAlgorithm: 'AES256',
+              },
+              BucketKeyEnabled: true,
+            },
+          ],
+        },
+      })
+    );
+    logger.info('✓ Enabled bucket encryption (AES-256)');
+
+    // Set bucket policy to deny external access
+    logger.debug('Setting bucket policy...');
+    const bucketPolicy = {
+      Version: '2012-10-17',
+      Statement: [
+        {
+          Sid: 'DenyExternalAccess',
+          Effect: 'Deny',
+          Principal: '*',
+          Action: 's3:*',
+          Resource: [`arn:aws:s3:::${bucketName}`, `arn:aws:s3:::${bucketName}/*`],
+          Condition: {
+            StringNotEquals: {
+              'aws:PrincipalAccount': accountId,
+            },
+          },
+        },
+      ],
+    };
+
+    await s3Client.send(
+      new PutBucketPolicyCommand({
+        Bucket: bucketName,
+        Policy: JSON.stringify(bucketPolicy),
+      })
+    );
+    logger.info('✓ Set bucket policy (deny external access)');
 
     logger.info('\n✓ Bootstrap completed successfully');
     logger.info(`\nState bucket: ${bucketName}`);
@@ -112,7 +186,10 @@ async function bootstrapCommand(options: {
 export function createBootstrapCommand(): Command {
   const cmd = new Command('bootstrap')
     .description('Bootstrap cdkq by creating required S3 bucket for state management')
-    .requiredOption('--state-bucket <bucket>', 'Name of S3 bucket to create for state storage')
+    .option(
+      '--state-bucket <bucket>',
+      'Name of S3 bucket to create for state storage (default: cdkq-state-{accountId}-{region})'
+    )
     .option('--force', 'Force reconfiguration of existing bucket', false)
     .action(withErrorHandling(bootstrapCommand));
 
