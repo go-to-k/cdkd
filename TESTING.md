@@ -46,17 +46,20 @@ export class CdkqTestStack extends cdk.Stack {
     super(scope, id, props);
 
     // シンプルな S3 バケットを作成
-    // 注意: 現在の実装では CloudFormation 組み込み関数 (Fn::Join, Ref など) はサポートされていないため、
-    // バケット名を指定せず AWS に自動生成させます
     const bucket = new s3.Bucket(this, 'TestBucket', {
       removalPolicy: cdk.RemovalPolicy.DESTROY,
       autoDeleteObjects: false, // Custom::S3AutoDeleteObjects は未サポート
     });
 
-    // Output でバケット名を確認できます
+    // Output でバケット名を確認（CloudFormation 組み込み関数をサポート）
     new cdk.CfnOutput(this, 'BucketName', {
       value: bucket.bucketName,
       description: 'Name of the test bucket',
+    });
+
+    new cdk.CfnOutput(this, 'BucketArn', {
+      value: bucket.bucketArn,
+      description: 'ARN of the test bucket',
     });
   }
 }
@@ -101,30 +104,57 @@ aws s3 ls | grep cdkq-test-bucket
 aws s3 ls s3://${STATE_BUCKET}/stacks/ --recursive
 ```
 
-## 5. 更新のテスト
+## 5. CloudFormation 組み込み関数のテスト
 
-スタックを変更してアップデートをテストします:
+cdkq は CloudFormation 組み込み関数 (Ref, Fn::GetAtt, Fn::Join, Fn::Sub) をサポートしています。
+これらの関数を使ったリソースをデプロイできることを確認します:
 
 ```bash
-# バケットにタグを追加
+# 組み込み関数を使用するスタックに変更
 cat > lib/cdkq-test-stack.ts <<'EOF'
 import * as cdk from 'aws-cdk-lib';
 import { Construct } from 'constructs';
 import * as s3 from 'aws-cdk-lib/aws-s3';
+import * as iam from 'aws-cdk-lib/aws-iam';
 
 export class CdkqTestStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
     super(scope, id, props);
 
-    new s3.Bucket(this, 'TestBucket', {
-      bucketName: `cdkq-test-bucket-${this.account}-${this.region}`,
+    // S3 バケットを作成
+    const bucket = new s3.Bucket(this, 'TestBucket', {
       removalPolicy: cdk.RemovalPolicy.DESTROY,
-      autoDeleteObjects: true,
-      // タグを追加
-      tags: {
-        Environment: 'test',
-        ManagedBy: 'cdkq',
-      },
+      autoDeleteObjects: false,
+    });
+
+    // IAM ロールを作成 (Ref を使って bucket を参照)
+    const role = new iam.Role(this, 'TestRole', {
+      assumedBy: new iam.ServicePrincipal('lambda.amazonaws.com'),
+      description: 'Test role for cdkq',
+    });
+
+    // バケットへの読み取り権限を付与 (Fn::GetAtt を使用)
+    role.addToPolicy(
+      new iam.PolicyStatement({
+        actions: ['s3:GetObject', 's3:ListBucket'],
+        resources: [bucket.bucketArn, `${bucket.bucketArn}/*`],
+      })
+    );
+
+    // Outputs で組み込み関数をテスト
+    new cdk.CfnOutput(this, 'BucketName', {
+      value: bucket.bucketName,
+      description: 'Bucket name (Ref)',
+    });
+
+    new cdk.CfnOutput(this, 'BucketArn', {
+      value: bucket.bucketArn,
+      description: 'Bucket ARN (Fn::GetAtt)',
+    });
+
+    new cdk.CfnOutput(this, 'RoleArn', {
+      value: role.roleArn,
+      description: 'Role ARN (Fn::GetAtt)',
     });
   }
 }
@@ -136,13 +166,15 @@ npm run build
 node ${CDKQ_PATH}/dist/cli.js diff \
   --app "npx ts-node --prefer-ts-exts bin/cdkq-test.ts" \
   --state-bucket ${STATE_BUCKET} \
-  --region ${AWS_REGION}
+  --region ${AWS_REGION} \
+  --verbose
 
 # 更新をデプロイ
 node ${CDKQ_PATH}/dist/cli.js deploy \
   --app "npx ts-node --prefer-ts-exts bin/cdkq-test.ts" \
   --state-bucket ${STATE_BUCKET} \
-  --region ${AWS_REGION}
+  --region ${AWS_REGION} \
+  --verbose
 ```
 
 ## 6. Dry Run のテスト
@@ -226,6 +258,9 @@ node ${CDKQ_PATH}/dist/cli.js deploy ... --verbose
 
 2. **カスタムリソース**: CDK のカスタムリソース (`Custom::*`) はサポートされていません。
 
-3. **Parameters**: CloudFormation Parameters は現在サポートされていません。
+3. **一部の CloudFormation 組み込み関数**: 以下の関数はまだサポートされていません:
+   - Fn::Select, Fn::Split, Fn::ImportValue
+   - Fn::If, Fn::Equals (Conditions)
+   - Fn::FindInMap, Fn::GetAZs, Fn::Base64
 
-4. **Outputs の Ref**: Outputs で Parameters への `Ref` は解決できません。
+4. **疑似パラメータ**: `AWS::Region` と `AWS::AccountId` 以外の疑似パラメータは環境変数またはハードコードされた値を返します。

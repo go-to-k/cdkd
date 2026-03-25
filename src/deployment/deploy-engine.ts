@@ -1,6 +1,7 @@
 import pLimit from 'p-limit';
 import { getLogger } from '../utils/logger.js';
 import { ProvisioningError } from '../utils/error-handler.js';
+import { IntrinsicFunctionResolver } from './intrinsic-function-resolver.js';
 import type { CloudFormationTemplate } from '../types/resource.js';
 import type { StackState, ResourceState, ResourceChange } from '../types/state.js';
 import type { S3StateBackend } from '../state/s3-state-backend.js';
@@ -59,6 +60,7 @@ export interface DeployResult {
  */
 export class DeployEngine {
   private logger = getLogger().child('DeployEngine');
+  private resolver = new IntrinsicFunctionResolver();
 
   constructor(
     private stateBackend: S3StateBackend,
@@ -303,7 +305,25 @@ export class DeployEngine {
         case 'CREATE': {
           this.logger.info(`Creating ${logicalId} (${resourceType})`);
           const desiredProps = change.desiredProperties || {};
-          const result = await provider.create(logicalId, resourceType, desiredProps);
+
+          // Resolve intrinsic functions in properties
+          const context = template?.Parameters
+            ? {
+                template: template,
+                resources: stateResources,
+                parameters: template.Parameters,
+              }
+            : {
+                template: template!,
+                resources: stateResources,
+              };
+
+          const resolvedProps = this.resolver.resolve(desiredProps, context) as Record<
+            string,
+            unknown
+          >;
+
+          const result = await provider.create(logicalId, resourceType, resolvedProps);
 
           // Extract dependencies from template
           const dependencies = template?.Resources?.[logicalId]?.DependsOn
@@ -315,7 +335,7 @@ export class DeployEngine {
           stateResources[logicalId] = {
             physicalId: result.physicalId,
             resourceType,
-            properties: desiredProps,
+            properties: resolvedProps,
             ...(result.attributes && { attributes: result.attributes }),
             ...(dependencies && { dependencies }),
           };
@@ -333,11 +353,29 @@ export class DeployEngine {
 
           const desiredProps = change.desiredProperties || {};
           const currentProps = change.currentProperties || {};
+
+          // Resolve intrinsic functions in properties
+          const context = template?.Parameters
+            ? {
+                template: template,
+                resources: stateResources,
+                parameters: template.Parameters,
+              }
+            : {
+                template: template!,
+                resources: stateResources,
+              };
+
+          const resolvedProps = this.resolver.resolve(desiredProps, context) as Record<
+            string,
+            unknown
+          >;
+
           const result = await provider.update(
             logicalId,
             currentResource.physicalId,
             resourceType,
-            desiredProps,
+            resolvedProps,
             currentProps
           );
 
@@ -357,7 +395,7 @@ export class DeployEngine {
           stateResources[logicalId] = {
             physicalId: result.physicalId,
             resourceType,
-            properties: desiredProps,
+            properties: resolvedProps,
             ...(result.attributes && { attributes: result.attributes }),
             ...(dependencies && { dependencies }),
           };
