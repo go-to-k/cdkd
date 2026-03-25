@@ -150,6 +150,8 @@ npx cdkq --help
 
 ## Usage
 
+Options like `--app` and `--state-bucket` can be omitted if configured via `cdk.json` or environment variables (`CDKQ_APP`, `CDKQ_STATE_BUCKET`).
+
 ```bash
 # Bootstrap (create S3 bucket for state)
 npx cdkq bootstrap \
@@ -159,37 +161,35 @@ npx cdkq bootstrap \
 # Synthesize only
 npx cdkq synth --app "npx ts-node app.ts"
 
-# Show diff (what would change)
-npx cdkq diff \
-  --app "npx ts-node app.ts" \
-  --state-bucket my-cdkq-state \
-  --region us-east-1
+# Deploy (single stack auto-detected, reads --app from cdk.json)
+npx cdkq deploy
 
-# Deploy
-npx cdkq deploy \
+# Deploy specific stack(s)
+npx cdkq deploy MyStack
+npx cdkq deploy Stack1 Stack2
+
+# Deploy all stacks
+npx cdkq deploy --all
+
+# Deploy with wildcard
+npx cdkq deploy 'My*'
+
+# Deploy with explicit options
+npx cdkq deploy MyStack \
   --app "npx ts-node app.ts" \
   --state-bucket my-cdkq-state \
   --region us-east-1 \
   --verbose
 
+# Show diff (what would change)
+npx cdkq diff MyStack
+
 # Dry run (plan only, no changes)
-npx cdkq deploy \
-  --app "npx ts-node app.ts" \
-  --state-bucket my-cdkq-state \
-  --region us-east-1 \
-  --dry-run
+npx cdkq deploy --dry-run
 
 # Destroy resources
-npx cdkq destroy \
-  --state-bucket my-cdkq-state \
-  --stack MyStack \
-  --region us-east-1
-
-# Force destroy (skip confirmation)
-npx cdkq destroy \
-  --state-bucket my-cdkq-state \
-  --region us-east-1 \
-  --force
+npx cdkq destroy MyStack
+npx cdkq destroy --all --force
 ```
 
 ## Examples

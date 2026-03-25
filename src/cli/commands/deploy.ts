@@ -27,19 +27,23 @@ import { resolveApp, resolveStateBucket } from '../config-loader.js';
 /**
  * Deploy command implementation
  */
-async function deployCommand(options: {
-  app?: string;
-  output: string;
-  stateBucket?: string;
-  statePrefix: string;
-  stack?: string;
-  region?: string;
-  profile?: string;
-  concurrency: number;
-  dryRun: boolean;
-  skipAssets: boolean;
-  verbose: boolean;
-}): Promise<void> {
+async function deployCommand(
+  stacks: string[],
+  options: {
+    app?: string;
+    output: string;
+    stateBucket?: string;
+    statePrefix: string;
+    stack?: string;
+    all?: boolean;
+    region?: string;
+    profile?: string;
+    concurrency: number;
+    dryRun: boolean;
+    skipAssets: boolean;
+    verbose: boolean;
+  }
+): Promise<void> {
   const logger = getLogger();
 
   if (options.verbose) {
@@ -87,18 +91,37 @@ async function deployCommand(options: {
 
     // 2. Load CloudAssembly and get stacks
     const assemblyLoader = new AssemblyLoader();
-    const stacks = assemblyLoader.getAllStacks(assembly);
-    logger.info(`Found ${stacks.length} stack(s) in assembly`);
+    const allStacks = assemblyLoader.getAllStacks(assembly);
+    logger.info(`Found ${allStacks.length} stack(s) in assembly`);
 
-    // Filter stack if specified
-    const targetStacks = options.stack
-      ? stacks.filter((s) => s.stackName === options.stack)
-      : stacks;
+    // Determine target stacks: positional args > --stack > --all > auto (single stack)
+    const stackPatterns = stacks.length > 0 ? stacks : options.stack ? [options.stack] : [];
+    let targetStacks;
+
+    if (options.all) {
+      targetStacks = allStacks;
+    } else if (stackPatterns.length > 0) {
+      targetStacks = allStacks.filter((s) =>
+        stackPatterns.some((pattern) =>
+          pattern.includes('*')
+            ? new RegExp('^' + pattern.replace(/\*/g, '.*') + '$').test(s.stackName)
+            : s.stackName === pattern
+        )
+      );
+    } else if (allStacks.length === 1) {
+      // Single stack: auto-select
+      targetStacks = allStacks;
+    } else {
+      throw new Error(
+        `Multiple stacks found: ${allStacks.map((s) => s.stackName).join(', ')}. ` +
+          `Specify stack name(s) or use --all`
+      );
+    }
 
     if (targetStacks.length === 0) {
       throw new Error(
-        options.stack
-          ? `Stack ${options.stack} not found in assembly`
+        stackPatterns.length > 0
+          ? `No stacks matching ${stackPatterns.join(', ')} found in assembly. Available: ${allStacks.map((s) => s.stackName).join(', ')}`
           : 'No stacks found in assembly'
       );
     }
@@ -110,7 +133,7 @@ async function deployCommand(options: {
 
       // Try to find asset manifests for each stack
       let assetsPublished = false;
-      for (const stack of stacks) {
+      for (const stack of allStacks) {
         const manifestPath = `${assembly.directory}/${stack.stackName}.assets.json`;
 
         try {
@@ -150,7 +173,7 @@ async function deployCommand(options: {
 
     // 4. Initialize deployment components
     const stateConfig = {
-      bucket: options.stateBucket,
+      bucket: stateBucket,
       prefix: options.statePrefix,
     };
     const stateBackend = new S3StateBackend(awsClients.s3, stateConfig);
@@ -166,7 +189,7 @@ async function deployCommand(options: {
     providerRegistry.register('AWS::SQS::QueuePolicy', new SQSQueuePolicyProvider());
 
     // Configure custom resource response handling via S3 (for cfn-response based handlers)
-    providerRegistry.setCustomResourceResponseBucket(options.stateBucket);
+    providerRegistry.setCustomResourceResponseBucket(stateBucket);
 
     const deployEngine = new DeployEngine(
       stateBackend,
@@ -214,6 +237,8 @@ async function deployCommand(options: {
 export function createDeployCommand(): Command {
   const cmd = new Command('deploy')
     .description('Deploy CDK app using SDK/Cloud Control API')
+    .argument('[stacks...]', 'Stack name(s) to deploy (supports wildcards)')
+    .option('--all', 'Deploy all stacks', false)
     .action(withErrorHandling(deployCommand));
 
   // Add options

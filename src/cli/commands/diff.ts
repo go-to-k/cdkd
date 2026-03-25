@@ -12,16 +12,20 @@ import { resolveApp, resolveStateBucket } from '../config-loader.js';
 /**
  * Diff command implementation
  */
-async function diffCommand(options: {
-  app?: string;
-  output: string;
-  stateBucket?: string;
-  statePrefix: string;
-  stack?: string;
-  region?: string;
-  profile?: string;
-  verbose: boolean;
-}): Promise<void> {
+async function diffCommand(
+  stacks: string[],
+  options: {
+    app?: string;
+    output: string;
+    stateBucket?: string;
+    statePrefix: string;
+    stack?: string;
+    all?: boolean;
+    region?: string;
+    profile?: string;
+    verbose: boolean;
+  }
+): Promise<void> {
   const logger = getLogger();
 
   if (options.verbose) {
@@ -69,25 +73,43 @@ async function diffCommand(options: {
 
     // 2. Load CloudAssembly and get stacks
     const assemblyLoader = new AssemblyLoader();
-    const stacks = assemblyLoader.getAllStacks(assembly);
-    logger.info(`Found ${stacks.length} stack(s) in assembly`);
+    const allStacks = assemblyLoader.getAllStacks(assembly);
+    logger.info(`Found ${allStacks.length} stack(s) in assembly`);
 
-    // Filter stack if specified
-    const targetStacks = options.stack
-      ? stacks.filter((s) => s.stackName === options.stack)
-      : stacks;
+    // Determine target stacks: positional args > --stack > --all > auto (single stack)
+    const stackPatterns = stacks.length > 0 ? stacks : options.stack ? [options.stack] : [];
+    let targetStacks;
+
+    if (options.all) {
+      targetStacks = allStacks;
+    } else if (stackPatterns.length > 0) {
+      targetStacks = allStacks.filter((s) =>
+        stackPatterns.some((pattern) =>
+          pattern.includes('*')
+            ? new RegExp('^' + pattern.replace(/\*/g, '.*') + '$').test(s.stackName)
+            : s.stackName === pattern
+        )
+      );
+    } else if (allStacks.length === 1) {
+      targetStacks = allStacks;
+    } else {
+      throw new Error(
+        `Multiple stacks found: ${allStacks.map((s) => s.stackName).join(', ')}. ` +
+          `Specify stack name(s) or use --all`
+      );
+    }
 
     if (targetStacks.length === 0) {
       throw new Error(
-        options.stack
-          ? `Stack ${options.stack} not found in assembly`
+        stackPatterns.length > 0
+          ? `No stacks matching ${stackPatterns.join(', ')} found in assembly`
           : 'No stacks found in assembly'
       );
     }
 
     // 3. Initialize components
     const stateConfig = {
-      bucket: options.stateBucket,
+      bucket: stateBucket,
       prefix: options.statePrefix,
     };
     const stateBackend = new S3StateBackend(awsClients.s3, stateConfig);
@@ -175,6 +197,8 @@ async function diffCommand(options: {
 export function createDiffCommand(): Command {
   const cmd = new Command('diff')
     .description('Show difference between current state and desired state')
+    .argument('[stacks...]', 'Stack name(s) to diff (supports wildcards)')
+    .option('--all', 'Diff all stacks', false)
     .action(withErrorHandling(diffCommand));
 
   // Add options

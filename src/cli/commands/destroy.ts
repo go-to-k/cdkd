@@ -23,15 +23,19 @@ import { resolveStateBucket } from '../config-loader.js';
 /**
  * Destroy command implementation
  */
-async function destroyCommand(options: {
-  stateBucket?: string;
-  statePrefix: string;
-  stack?: string;
-  region?: string;
-  profile?: string;
-  force: boolean;
-  verbose: boolean;
-}): Promise<void> {
+async function destroyCommand(
+  stackArgs: string[],
+  options: {
+    stateBucket?: string;
+    statePrefix: string;
+    stack?: string;
+    all?: boolean;
+    region?: string;
+    profile?: string;
+    force: boolean;
+    verbose: boolean;
+  }
+): Promise<void> {
   const logger = getLogger();
 
   if (options.verbose) {
@@ -60,7 +64,7 @@ async function destroyCommand(options: {
   try {
     // 1. Initialize components
     const stateConfig = {
-      bucket: options.stateBucket,
+      bucket: stateBucket,
       prefix: options.statePrefix,
     };
     const stateBackend = new S3StateBackend(awsClients.s3, stateConfig);
@@ -75,20 +79,38 @@ async function destroyCommand(options: {
     providerRegistry.register('AWS::SQS::QueuePolicy', new SQSQueuePolicyProvider());
 
     // Configure custom resource response handling via S3
-    providerRegistry.setCustomResourceResponseBucket(options.stateBucket);
+    providerRegistry.setCustomResourceResponseBucket(stateBucket);
 
     // 2. Get list of stacks to destroy
+    const stackPatterns = stackArgs.length > 0 ? stackArgs : options.stack ? [options.stack] : [];
+    const allStateStacks = await stateBackend.listStacks();
+
     let stackNames: string[];
-    if (options.stack) {
-      stackNames = [options.stack];
+    if (options.all) {
+      stackNames = allStateStacks;
+    } else if (stackPatterns.length > 0) {
+      stackNames = allStateStacks.filter((name) =>
+        stackPatterns.some((pattern) =>
+          pattern.includes('*')
+            ? new RegExp('^' + pattern.replace(/\*/g, '.*') + '$').test(name)
+            : name === pattern
+        )
+      );
+    } else if (allStateStacks.length === 1) {
+      stackNames = allStateStacks;
+    } else if (allStateStacks.length === 0) {
+      logger.info('No stacks found in state');
+      return;
     } else {
-      // List all stacks from state backend
-      const allStacks = await stateBackend.listStacks();
-      if (allStacks.length === 0) {
-        logger.info('No stacks found in state');
-        return;
-      }
-      stackNames = allStacks;
+      throw new Error(
+        `Multiple stacks found: ${allStateStacks.join(', ')}. ` +
+          `Specify stack name(s) or use --all`
+      );
+    }
+
+    if (stackNames.length === 0) {
+      logger.info('No matching stacks found in state');
+      return;
     }
 
     logger.info(`Found ${stackNames.length} stack(s) to destroy: ${stackNames.join(', ')}`);
@@ -247,6 +269,8 @@ async function destroyCommand(options: {
 export function createDestroyCommand(): Command {
   const cmd = new Command('destroy')
     .description('Destroy all resources in the stack')
+    .argument('[stacks...]', 'Stack name(s) to destroy (supports wildcards)')
+    .option('--all', 'Destroy all stacks', false)
     .action(withErrorHandling(destroyCommand));
 
   // Add options (appOptions accepted for CDK CLI compatibility, but not used)
