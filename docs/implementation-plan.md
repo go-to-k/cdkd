@@ -193,6 +193,18 @@ cdkq は CDK CLI (`aws-cdk`) を**置き換える**のではなく、**デプロ
 
 **実装**: `src/cli/commands/bootstrap.ts`
 
+#### JSON Patch 実装 ✅ **完了**
+
+- [x] JsonPatchGenerator の実装
+- [x] プロパティレベルの差分計算実装
+- [x] RFC 6902 準拠の JSON Patch 生成
+- [x] 個別プロパティの add/replace/remove 操作
+- [x] Cloud Control Provider への統合
+
+**実装**: `src/provisioning/json-patch-generator.ts`, `src/provisioning/cloud-control-provider.ts`
+
+**テスト結果**: basic exampleでS3バケットのタグ更新で検証済み
+
 ### 優先度: 高 (High Priority)
 
 #### 1. CloudFormation 組み込み関数の追加対応
@@ -206,19 +218,7 @@ cdkq は CDK CLI (`aws-cdk`) を**置き換える**のではなく、**デプロ
 
 **影響範囲**: `src/analyzer/intrinsic-function-resolver.ts`
 
-#### 2. Cloud Control API の JSON Patch 対応
-
-**課題**: 現在、リソース更新時にルート (`/`) を丸ごと置換しているため、一部のリソースタイプで更新が失敗する可能性がある。
-
-**実装内容**:
-
-- [ ] プロパティレベルの差分計算実装
-- [ ] RFC 6902 準拠の JSON Patch 生成
-- [ ] 個別プロパティの add/replace/remove 操作
-
-**影響範囲**: `src/provisioning/cloud-control-provider.ts:122-128`
-
-#### 3. アセット公開のエラーハンドリング改善 ✅ **部分完了**
+#### 2. アセット公開のエラーハンドリング改善 ✅ **部分完了**
 
 **実装済み**:
 
@@ -253,7 +253,9 @@ cdkq は CDK CLI (`aws-cdk`) を**置き換える**のではなく、**デプロ
 
 **ユニットテスト** (カバレッジ目標: 80%+):
 
-- [ ] DagBuilder のテスト
+- [x] DagBuilder のテスト (23 tests, all passing)
+- [x] エラークラスのプロトタイプ修正 (Object.setPrototypeOf)
+- [ ] JsonPatchGenerator のテスト
 - [ ] DiffCalculator のテスト
 - [ ] DeployEngine のテスト
 - [ ] LockManager のテスト
