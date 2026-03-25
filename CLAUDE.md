@@ -258,15 +258,16 @@ See [docs/provider-development.md](docs/provider-development.md) for details.
 
 ## Known Limitations
 
-- Some intrinsic functions not supported (Fn::ImportValue, Fn::And, Fn::Or, Fn::Not, Fn::FindInMap, Fn::GetAZs, Fn::Base64)
+- Some intrinsic functions not supported (Fn::And, Fn::Or, Fn::Not, Fn::FindInMap, Fn::GetAZs, Fn::Base64)
 - Cloud Control API updates use replacement instead of JSON Patch
 - NOT recommended for production use
 
 **Recently Implemented** (2026-03-25):
 
 - ✅ CloudFormation Parameters support (with default values and type coercion)
-- ✅ Fn::Select, Fn::Split, Fn::If, Fn::Equals
+- ✅ Fn::Select, Fn::Split, Fn::If, Fn::Equals, Fn::ImportValue
 - ✅ Conditions evaluation
+- ✅ Cross-stack references (Fn::ImportValue via S3 state backend)
 
 ## Dependencies
 

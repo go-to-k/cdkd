@@ -306,10 +306,13 @@ cdkq は CDK CLI (`aws-cdk`) を**置き換える**のではなく、**デプロ
   - テンプレートのDefault値とユーザー指定値のマージ
   - 型変換 (String/Number/CommaDelimitedList/ListOfNumber)
   - DeployEngineに統合
+- [x] Fn::ImportValue (クロススタック参照)
+  - S3 state backend 経由で他スタックの outputs を検索
+  - ResolverContext に stateBackend と stackName を追加
+  - 自己参照の回避（現在のスタックをスキップ）
 
 **未実装の関数**:
 
-- [ ] Fn::ImportValue (クロススタック参照)
 - [ ] Fn::And, Fn::Or, Fn::Not (高度な条件関数)
 - [ ] Fn::FindInMap, Fn::GetAZs, Fn::Base64
 

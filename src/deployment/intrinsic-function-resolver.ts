@@ -3,6 +3,7 @@ import { getLogger } from '../utils/logger.js';
 import { getAwsClients } from '../utils/aws-clients.js';
 import type { CloudFormationTemplate } from '../types/resource.js';
 import type { ResourceState } from '../types/state.js';
+import type { S3StateBackend } from '../state/s3-state-backend.js';
 
 /**
  * Resolver context for intrinsic functions
@@ -16,6 +17,10 @@ export interface ResolverContext {
   parameters?: Record<string, unknown>;
   /** Evaluated condition values (for Fn::If) */
   conditions?: Record<string, boolean>;
+  /** State backend for cross-stack references (Fn::ImportValue) */
+  stateBackend?: S3StateBackend;
+  /** Current stack name (for Fn::ImportValue to avoid self-reference) */
+  stackName?: string;
 }
 
 /**
@@ -33,9 +38,9 @@ export interface ResolverContext {
  * - Fn::Split
  * - Fn::If (Conditions)
  * - Fn::Equals
+ * - Fn::ImportValue (cross-stack references)
  *
  * Not yet supported:
- * - Fn::ImportValue
  * - Fn::FindInMap, Fn::GetAZs, Fn::Base64
  * - Fn::And, Fn::Or, Fn::Not (advanced condition functions)
  */
@@ -138,14 +143,12 @@ export class IntrinsicFunctionResolver {
 
       // User-provided value takes precedence
       if (userParameters && name in userParameters) {
-        parameters[name] = this.coerceParameterValue(
-          userParameters[name],
-          paramDef.Type
-        );
-        this.logger.debug(
-          `Parameter ${name}: using user-provided value ${userParameters[name]}`
-        );
-        continue;
+        const userValue = userParameters[name];
+        if (userValue !== undefined) {
+          parameters[name] = this.coerceParameterValue(userValue, paramDef.Type);
+          this.logger.debug(`Parameter ${name}: using user-provided value ${userValue}`);
+          continue;
+        }
       }
 
       // Use default value if available
@@ -276,6 +279,10 @@ export class IntrinsicFunctionResolver {
 
     if ('Fn::Equals' in obj) {
       return await this.resolveEquals(obj['Fn::Equals'] as [unknown, unknown], context);
+    }
+
+    if ('Fn::ImportValue' in obj) {
+      return await this.resolveImportValue(obj['Fn::ImportValue'] as unknown, context);
     }
 
     // Not an intrinsic function: recursively resolve object properties
@@ -543,6 +550,10 @@ export class IntrinsicFunctionResolver {
 
     for (const match of matches) {
       const varNameStr = match[1];
+      if (!varNameStr) {
+        continue; // Skip if no capture group
+      }
+
       let replacement: string;
 
       // Check explicit variables first
@@ -697,6 +708,78 @@ export class IntrinsicFunctionResolver {
     );
 
     return result;
+  }
+
+  /**
+   * Resolve Fn::ImportValue (cross-stack references)
+   *
+   * Searches all other stacks for an exported output with the given name.
+   */
+  private async resolveImportValue(
+    importValueArg: unknown,
+    context: ResolverContext
+  ): Promise<unknown> {
+    // First, resolve the export name (it might contain intrinsic functions)
+    const exportName = await this.resolveValue(importValueArg, context);
+
+    if (typeof exportName !== 'string') {
+      throw new Error(
+        `Fn::ImportValue: export name must resolve to a string, got ${typeof exportName}`
+      );
+    }
+
+    // Check if we have a state backend
+    if (!context.stateBackend) {
+      throw new Error(
+        'Fn::ImportValue: state backend is required for cross-stack references'
+      );
+    }
+
+    this.logger.debug(`Resolving Fn::ImportValue: ${exportName}`);
+
+    // List all stacks
+    const allStacks = await context.stateBackend.listStacks();
+    this.logger.debug(`Found ${allStacks.length} stacks to search for export: ${exportName}`);
+
+    // Search through all stacks for the export
+    for (const stackName of allStacks) {
+      // Skip the current stack (avoid self-reference)
+      if (context.stackName && stackName === context.stackName) {
+        this.logger.debug(`Skipping current stack: ${stackName}`);
+        continue;
+      }
+
+      try {
+        const stateData = await context.stateBackend.getState(stackName);
+        if (!stateData) {
+          this.logger.debug(`No state found for stack: ${stackName}`);
+          continue;
+        }
+
+        const { state } = stateData;
+
+        // Check if this stack has the export in its outputs
+        if (state.outputs && exportName in state.outputs) {
+          const value = state.outputs[exportName];
+          this.logger.info(
+            `Resolved Fn::ImportValue: ${exportName} = ${JSON.stringify(value)} (from stack: ${stackName})`
+          );
+          return value;
+        }
+      } catch (error) {
+        this.logger.warn(
+          `Failed to read state for stack ${stackName}: ${error instanceof Error ? error.message : String(error)}`
+        );
+        continue;
+      }
+    }
+
+    // Export not found in any stack
+    throw new Error(
+      `Fn::ImportValue: export '${exportName}' not found in any stack. ` +
+        `Searched ${allStacks.length} stacks. ` +
+        `Make sure the exporting stack has been deployed and the Output has an Export.Name property.`
+    );
   }
 
   /**

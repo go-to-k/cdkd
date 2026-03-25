@@ -460,35 +460,50 @@ CloudFormation intrinsic function not supported by cdkq is being used.
 | `Fn::GetAtt` | ✅ |
 | `Fn::Join` | ✅ |
 | `Fn::Sub` | ✅ |
-| `Fn::Select` | ❌ |
-| `Fn::Split` | ❌ |
-| `Fn::If` | ❌ |
-| `Fn::ImportValue` | ❌ |
+| `Fn::Select` | ✅ |
+| `Fn::Split` | ✅ |
+| `Fn::If` | ✅ |
+| `Fn::Equals` | ✅ |
+| `Fn::ImportValue` | ✅ |
+| `Fn::And` | ❌ |
+| `Fn::Or` | ❌ |
+| `Fn::Not` | ❌ |
+| `Fn::FindInMap` | ❌ |
+| `Fn::GetAZs` | ❌ |
+| `Fn::Base64` | ❌ |
 
 #### Solutions
 
 **1. Replace with supported function**
 
 ```typescript
-// Previously (Fn::Select)
+// Example: Fn::GetAZs is not supported
 new cdk.CfnOutput(this, 'FirstAZ', {
-  value: cdk.Fn.select(0, cdk.Fn.getAzs()),
+  value: cdk.Fn.select(0, cdk.Fn.getAzs()),  // ❌ Fn::GetAZs not supported
 });
 
-// Alternative (specify directly)
+// Alternative: Specify directly
 new cdk.CfnOutput(this, 'FirstAZ', {
-  value: 'us-east-1a',
+  value: 'us-east-1a',  // ✅ Works
+});
+
+// Or use a list of known AZs
+const azs = ['us-east-1a', 'us-east-1b', 'us-east-1c'];
+new cdk.CfnOutput(this, 'FirstAZ', {
+  value: cdk.Fn.select(0, azs),  // ✅ Fn::Select is supported
 });
 ```
 
 **2. Extend intrinsic function implementation**
 
-Add implementation to `src/deployment/intrinsic-function-resolver.ts`:
+Add implementation to `src/deployment/intrinsic-function-resolver.ts`.
+
+Example for Fn::Base64:
 
 ```typescript
-case 'Fn::Select': {
-  const [index, array] = args as [number, any[]];
-  return array[index];
+if ('Fn::Base64' in obj) {
+  const value = await this.resolveValue(obj['Fn::Base64'], context);
+  return Buffer.from(String(value)).toString('base64');
 }
 ```
 

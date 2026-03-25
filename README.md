@@ -217,16 +217,17 @@ See [docs/implementation-plan.md](docs/implementation-plan.md) for detailed impl
 - ✅ Custom Resource support (Lambda-backed, Create/Update/Delete)
 - ✅ Real AWS Account ID resolution via STS GetCallerIdentity
 - ✅ SDK Providers: IAM Role/Policy, S3 Bucket Policy, SQS Queue Policy
-- ✅ Intrinsic function resolution (Ref, Fn::GetAtt, Fn::Join, Fn::Sub, Fn::Select, Fn::Split, Fn::If, Fn::Equals)
+- ✅ Intrinsic function resolution (Ref, Fn::GetAtt, Fn::Join, Fn::Sub, Fn::Select, Fn::Split, Fn::If, Fn::Equals, Fn::ImportValue)
 - ✅ CloudFormation Parameters support (with default values and type coercion)
 - ✅ Conditions evaluation
+- ✅ Cross-stack references (Fn::ImportValue via S3 state backend)
 - ✅ Lambda Asset publishing (code packages to S3/ECR via `@aws-cdk/cdk-assets-lib`)
 - ✅ Code quality improvements (eliminated ~80 lines of duplicate code in DeployEngine)
 
 **Not Yet Implemented**:
 
 - Progress bar / advanced UI
-- Advanced intrinsic functions (Fn::ImportValue, Fn::And, Fn::Or, Fn::Not, Fn::FindInMap, Fn::GetAZs, Fn::Base64)
+- Advanced intrinsic functions (Fn::And, Fn::Or, Fn::Not, Fn::FindInMap, Fn::GetAZs, Fn::Base64)
 - Cloud Control API JSON Patch for updates (currently uses replace)
 
 See [docs/implementation-plan.md](docs/implementation-plan.md) for complete roadmap.

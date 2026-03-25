@@ -117,7 +117,7 @@ export class DeployEngine {
       this.logger.debug(`Template has ${Object.keys(template.Resources || {}).length} resources`);
 
       // 2.5. Resolve parameters from template and user input
-      const parameterValues = this.resolver.resolveParameters(template, options.parameters);
+      const parameterValues = this.resolver.resolveParameters(template, this.options.parameters);
       this.logger.debug(
         `Resolved ${Object.keys(parameterValues).length} parameters: ${Object.keys(parameterValues).join(', ')}`
       );
@@ -127,6 +127,8 @@ export class DeployEngine {
         template,
         resources: currentState.resources,
         ...(Object.keys(parameterValues).length > 0 && { parameters: parameterValues }),
+        stateBackend: this.stateBackend,
+        stackName,
       };
       const conditions = await this.resolver.evaluateConditions(context);
       this.logger.debug(
@@ -190,7 +192,10 @@ export class DeployEngine {
         template,
         currentState,
         changes,
-        executionLevels
+        executionLevels,
+        stackName,
+        parameterValues,
+        conditions
       );
 
       // 7. Save new state with optimistic locking
@@ -226,7 +231,10 @@ export class DeployEngine {
     template: CloudFormationTemplate,
     currentState: StackState,
     changes: Map<string, ResourceChange>,
-    executionLevels: string[][]
+    executionLevels: string[][],
+    stackName: string,
+    parameterValues?: Record<string, unknown>,
+    conditions?: Record<string, boolean>
   ): Promise<StackState> {
     const limit = pLimit(this.options.concurrency!);
     const newResources: Record<string, ResourceState> = { ...currentState.resources };
@@ -259,7 +267,7 @@ export class DeployEngine {
               return;
             }
 
-            await this.provisionResource(logicalId, change, newResources, template, parameterValues, conditions);
+            await this.provisionResource(logicalId, change, newResources, stackName, template, parameterValues, conditions);
           })
         )
       );
@@ -286,7 +294,7 @@ export class DeployEngine {
           level.map((logicalId) =>
             limit(async () => {
               const change = changes.get(logicalId)!;
-              await this.provisionResource(logicalId, change, newResources, template, parameterValues, conditions);
+              await this.provisionResource(logicalId, change, newResources, stackName, template, parameterValues, conditions);
             })
           )
         );
@@ -296,7 +304,7 @@ export class DeployEngine {
     }
 
     // Resolve outputs
-    const outputs = await this.resolveOutputs(template, newResources, parameterValues, conditions);
+    const outputs = await this.resolveOutputs(template, newResources, stackName, parameterValues, conditions);
 
     return {
       version: 1,
@@ -314,6 +322,7 @@ export class DeployEngine {
     logicalId: string,
     change: ResourceChange,
     stateResources: Record<string, ResourceState>,
+    stackName: string,
     template?: CloudFormationTemplate,
     parameterValues?: Record<string, unknown>,
     conditions?: Record<string, boolean>
@@ -333,6 +342,8 @@ export class DeployEngine {
             resources: stateResources,
             ...(parameterValues && Object.keys(parameterValues).length > 0 && { parameters: parameterValues }),
             ...(conditions && Object.keys(conditions).length > 0 && { conditions }),
+            stateBackend: this.stateBackend,
+            stackName,
           };
 
           const resolvedProps = (await this.resolver.resolve(desiredProps, context)) as Record<
@@ -377,6 +388,8 @@ export class DeployEngine {
             resources: stateResources,
             ...(parameterValues && Object.keys(parameterValues).length > 0 && { parameters: parameterValues }),
             ...(conditions && Object.keys(conditions).length > 0 && { conditions }),
+            stateBackend: this.stateBackend,
+            stackName,
           };
 
           const resolvedProps = (await this.resolver.resolve(desiredProps, context)) as Record<
@@ -458,6 +471,7 @@ export class DeployEngine {
   private async resolveOutputs(
     template: CloudFormationTemplate,
     resources: Record<string, ResourceState>,
+    stackName: string,
     parameterValues?: Record<string, unknown>,
     conditions?: Record<string, boolean>
   ): Promise<Record<string, unknown>> {
@@ -471,6 +485,8 @@ export class DeployEngine {
       resources: resources,
       ...(parameterValues && Object.keys(parameterValues).length > 0 && { parameters: parameterValues }),
       ...(conditions && Object.keys(conditions).length > 0 && { conditions }),
+      stateBackend: this.stateBackend,
+      stackName,
     };
 
     for (const [outputKey, output] of Object.entries(template.Outputs)) {
