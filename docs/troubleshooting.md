@@ -354,15 +354,20 @@ AssetPublisherError: Failed to publish asset: Access Denied
 #### Causes
 
 - Asset bucket (`cdk-hnb659fds-assets-*`) doesn't exist
+- CDK Bootstrap has not been run
 - Insufficient IAM permissions
 
 #### Solutions
 
-**1. Run CDK Bootstrap**
+**1. Run CDK Bootstrap (required prerequisite)**
+
+cdkq uses CDK's bootstrap bucket for asset uploads. The `cdkq bootstrap` command only creates the state management bucket — it does NOT create the asset bucket. You must run CDK bootstrap separately:
 
 ```bash
 npx cdk bootstrap aws://123456789012/us-east-1
 ```
+
+> **Custom bootstrap**: If you use a custom qualifier (e.g., `--qualifier myqualifier`), CDK synthesis will embed the custom bucket name in the asset manifest. cdkq reads destinations from the manifest, so custom bootstrap is fully supported.
 
 **2. Skip asset publishing**
 

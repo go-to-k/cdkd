@@ -62,6 +62,80 @@ AWS CDK is great for defining infrastructure as code, but CloudFormation deploym
 - **DAG-based parallelization**: Analyze `Ref`/`Fn::GetAtt` dependencies and execute in parallel
 - **Asset handling**: Leverages `@aws-cdk/cdk-assets-lib` for Lambda packages, Docker images, etc.
 
+## Supported Features
+
+### Intrinsic Functions
+
+| Function | Status | Notes |
+|----------|--------|-------|
+| `Ref` | ✅ Supported | Resource physical IDs, Parameters, Pseudo parameters |
+| `Fn::GetAtt` | ✅ Supported | Resource attributes (ARN, DomainName, etc.) |
+| `Fn::Join` | ✅ Supported | String concatenation |
+| `Fn::Sub` | ✅ Supported | Template string substitution |
+| `Fn::Select` | ✅ Supported | Array index selection |
+| `Fn::Split` | ✅ Supported | String splitting |
+| `Fn::If` | ✅ Supported | Conditional values |
+| `Fn::Equals` | ✅ Supported | Equality comparison |
+| `Fn::And` | ✅ Supported | Logical AND (2-10 conditions) |
+| `Fn::Or` | ✅ Supported | Logical OR (2-10 conditions) |
+| `Fn::Not` | ✅ Supported | Logical NOT |
+| `Fn::ImportValue` | ✅ Supported | Cross-stack references via S3 state |
+| `Fn::FindInMap` | ❌ Not yet | Mapping lookup |
+| `Fn::GetAZs` | ❌ Not yet | Availability Zone list |
+| `Fn::Base64` | ❌ Not yet | Base64 encoding |
+
+### Pseudo Parameters
+
+| Parameter | Status |
+|-----------|--------|
+| `AWS::Region` | ✅ |
+| `AWS::AccountId` | ✅ (via STS) |
+| `AWS::Partition` | ✅ |
+| `AWS::URLSuffix` | ✅ |
+| `AWS::NoValue` | ✅ |
+| `AWS::StackName` | ✅ |
+| `AWS::StackId` | ❌ Not yet |
+
+### Resource Provisioning
+
+| Category | Resource Type | Provider | Status |
+|----------|--------------|----------|--------|
+| **Compute** | AWS::Lambda::Function | Cloud Control | ✅ |
+| **Storage** | AWS::S3::Bucket | Cloud Control | ✅ |
+| **Database** | AWS::DynamoDB::Table | Cloud Control | ✅ |
+| **Messaging** | AWS::SQS::Queue | Cloud Control | ✅ |
+| **Messaging** | AWS::SNS::Topic | Cloud Control | ✅ |
+| **IAM** | AWS::IAM::Role | SDK Provider | ✅ |
+| **IAM** | AWS::IAM::Policy | SDK Provider | ✅ |
+| **IAM** | AWS::S3::BucketPolicy | SDK Provider | ✅ |
+| **IAM** | AWS::SQS::QueuePolicy | SDK Provider | ✅ |
+| **Custom** | Custom::* (Lambda-backed) | SDK Provider | ✅ (sync only) |
+| **Other** | 200+ resource types | Cloud Control | ✅ |
+
+> **Note**: Cloud Control API supports 200+ resource types. Resources not listed above may work via Cloud Control API. SDK Providers are used for resources not supported by Cloud Control API.
+
+### Other Features
+
+| Feature | Status | Notes |
+|---------|--------|-------|
+| CloudFormation Parameters | ✅ | Default values, type coercion |
+| Conditions | ✅ | With logical operators |
+| Cross-stack references | ✅ | Via `Fn::ImportValue` + S3 state |
+| JSON Patch updates | ✅ | RFC 6902, minimal patches |
+| Resource replacement detection | ✅ | 10+ resource types |
+| Asset publishing (S3) | ✅ | Lambda code packages |
+| Asset publishing (ECR) | ✅ | Via `@aws-cdk/cdk-assets-lib` |
+| Custom Resources (SNS-backed) | ❌ | Lambda-backed only |
+| Custom Resources (async/SFN) | ❌ | Sync invocation only |
+| Rollback | ❌ | Not yet implemented |
+| `Fn::FindInMap` / `Fn::GetAZs` | ❌ | Not yet implemented |
+
+## Prerequisites
+
+- **Node.js** >= 20.0.0
+- **AWS CDK Bootstrap**: You must run `cdk bootstrap` before using cdkq. cdkq uses CDK's bootstrap bucket (`cdk-hnb659fds-assets-*`) for asset uploads (Lambda code, Docker images). Custom bootstrap qualifiers are supported — CDK embeds the correct bucket/repo names in the asset manifest during synthesis.
+- **AWS Credentials**: Configured via environment variables, `~/.aws/credentials`, or `--profile` option
+
 ## Installation
 
 ```bash
@@ -237,9 +311,12 @@ See [docs/implementation-plan.md](docs/implementation-plan.md) for detailed impl
 
 **Not Yet Implemented**:
 
-- Progress bar / advanced UI
-- Advanced intrinsic functions (Fn::FindInMap, Fn::GetAZs, Fn::Base64)
+- Custom Resources: SNS-backed and async/Step Functions patterns (Lambda sync only)
+- Custom Resources: CDK internal custom resources (`Custom::S3AutoDeleteObjects` etc.) — ResponseURL issue
+- Advanced intrinsic functions (`Fn::FindInMap`, `Fn::GetAZs`, `Fn::Base64`)
 - Rollback mechanism
+- Progress bar / advanced UI
+- Default bootstrap bucket name (currently `--state-bucket` is required)
 
 See [docs/implementation-plan.md](docs/implementation-plan.md) for complete roadmap.
 
