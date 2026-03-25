@@ -1,0 +1,39 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+*.tsbuildinfo
+
+# Testing
+coverage/
+.vitest/
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# CDK
+cdk.out/
+.cdk.staging/
+
+# Temporary files
+*.tmp
+.cache/

@@ -1,0 +1,222 @@
+import { Command } from 'commander';
+import { commonOptions, stateOptions, stackOptions, destroyOptions } from '../options.js';
+import { getLogger } from '../../utils/logger.js';
+import { withErrorHandling } from '../../utils/error-handler.js';
+import { S3StateBackend } from '../../state/s3-state-backend.js';
+import { LockManager } from '../../state/lock-manager.js';
+import { DagBuilder } from '../../analyzer/dag-builder.js';
+import { ProviderRegistry } from '../../provisioning/provider-registry.js';
+import { IAMRoleProvider } from '../../provisioning/providers/iam-role-provider.js';
+import { setAwsClients, AwsClients } from '../../utils/aws-clients.js';
+import * as readline from 'node:readline/promises';
+
+/**
+ * Destroy command implementation
+ */
+async function destroyCommand(options: {
+  stateBucket: string;
+  statePrefix: string;
+  stack?: string;
+  region?: string;
+  profile?: string;
+  force: boolean;
+  verbose: boolean;
+}): Promise<void> {
+  const logger = getLogger();
+
+  if (options.verbose) {
+    logger.setLevel('debug');
+  }
+
+  logger.info('Starting stack destruction...');
+  logger.debug('Options:', options);
+
+  // Initialize AWS clients with region/profile
+  const awsClients = new AwsClients({
+    ...(options.region && { region: options.region }),
+    ...(options.profile && { profile: options.profile }),
+  });
+  setAwsClients(awsClients);
+
+  try {
+    // 1. Initialize components
+    const stateConfig = {
+      bucket: options.stateBucket,
+      prefix: options.statePrefix,
+    };
+    const stateBackend = new S3StateBackend(awsClients.s3, stateConfig);
+    const lockManager = new LockManager(awsClients.s3, stateConfig);
+    const dagBuilder = new DagBuilder();
+    const providerRegistry = new ProviderRegistry();
+
+    // Register SDK providers for unsupported resource types
+    providerRegistry.register('AWS::IAM::Role', new IAMRoleProvider());
+
+    // 2. Get list of stacks to destroy
+    let stackNames: string[];
+    if (options.stack) {
+      stackNames = [options.stack];
+    } else {
+      // List all stacks from state backend
+      const allStacks = await stateBackend.listStacks();
+      if (allStacks.length === 0) {
+        logger.info('No stacks found in state');
+        return;
+      }
+      stackNames = allStacks;
+    }
+
+    logger.info(`Found ${stackNames.length} stack(s) to destroy: ${stackNames.join(', ')}`);
+
+    // 3. Process each stack
+    for (const stackName of stackNames) {
+      logger.info(`\nPreparing to destroy stack: ${stackName}`);
+
+      // Load current state
+      const stateResult = await stateBackend.getState(stackName);
+      if (!stateResult) {
+        logger.warn(`No state found for stack ${stackName}, skipping`);
+        continue;
+      }
+      const currentState = stateResult.state;
+
+      const resourceCount = Object.keys(currentState.resources).length;
+      if (resourceCount === 0) {
+        logger.info(`Stack ${stackName} has no resources, cleaning up state...`);
+        await stateBackend.deleteState(stackName);
+        logger.info('✓ State deleted');
+        continue;
+      }
+
+      // Show resources to be deleted
+      logger.info(`\nResources to be deleted (${resourceCount}):`);
+      for (const [logicalId, resource] of Object.entries(currentState.resources)) {
+        logger.info(`  - ${logicalId} (${resource.resourceType})`);
+      }
+
+      // 4. Confirm (unless --force)
+      if (!options.force) {
+        const rl = readline.createInterface({
+          input: process.stdin,
+          output: process.stdout,
+        });
+
+        const answer = await rl.question(
+          `\nAre you sure you want to destroy stack "${stackName}" and delete all ${resourceCount} resources? (yes/no): `
+        );
+        rl.close();
+
+        if (answer.toLowerCase() !== 'yes') {
+          logger.info('Destroy cancelled');
+          continue;
+        }
+      }
+
+      // 5. Acquire lock
+      logger.info(`\nAcquiring lock for stack ${stackName}...`);
+      await lockManager.acquireLock(stackName, 'destroy');
+
+      try {
+        // 6. Build dependency graph from current state
+        logger.info('Building dependency graph...');
+
+        // Create a minimal template from current state for DAG building
+        const template = {
+          AWSTemplateFormatVersion: '2010-09-09',
+          Resources: {} as Record<string, { Type: string; Properties: Record<string, unknown>; DependsOn?: string[] }>,
+        };
+
+        for (const [logicalId, resource] of Object.entries(currentState.resources)) {
+          template.Resources[logicalId] = {
+            Type: resource.resourceType,
+            Properties: resource.properties || {},
+            ...(resource.dependencies && resource.dependencies.length > 0 && {
+              DependsOn: resource.dependencies
+            }),
+          };
+        }
+
+        const graph = dagBuilder.buildGraph(template);
+        const executionLevels = dagBuilder.getExecutionLevels(graph);
+
+        logger.info(`Dependency graph built: ${executionLevels.length} level(s)`);
+
+        // 7. Delete resources in reverse dependency order
+        logger.info('Deleting resources in reverse dependency order...');
+
+        let deletedCount = 0;
+        let errorCount = 0;
+
+        // Process levels in reverse order for deletion
+        for (let levelIndex = executionLevels.length - 1; levelIndex >= 0; levelIndex--) {
+          const level = executionLevels[levelIndex];
+          if (!level) {
+            continue;
+          }
+
+          logger.info(`Processing deletion level ${executionLevels.length - levelIndex}/${executionLevels.length} (${level.length} resources)`);
+
+          // Delete resources in parallel within each level
+          const deletePromises = level.map(async (logicalId) => {
+            const resource = currentState.resources[logicalId];
+            if (!resource) {
+              logger.warn(`Resource ${logicalId} not found in state, skipping`);
+              return;
+            }
+
+            try {
+              logger.info(`  Deleting ${logicalId} (${resource.resourceType})...`);
+
+              const provider = providerRegistry.getProvider(resource.resourceType);
+              await provider.delete(logicalId, resource.physicalId, resource.resourceType);
+
+              logger.info(`  ✓ Deleted ${logicalId}`);
+              deletedCount++;
+            } catch (error) {
+              logger.error(`  ✗ Failed to delete ${logicalId}:`, String(error));
+              errorCount++;
+            }
+          });
+
+          await Promise.all(deletePromises);
+        }
+
+        logger.info(`\nDeletion complete: ${deletedCount} deleted, ${errorCount} errors`);
+
+        // 8. Delete state
+        if (errorCount === 0) {
+          logger.info('Deleting state...');
+          await stateBackend.deleteState(stackName);
+          logger.info('✓ State deleted');
+        } else {
+          logger.warn('State not deleted due to errors during resource deletion');
+        }
+
+        logger.info(`\n✓ Stack ${stackName} destroyed successfully`);
+      } finally {
+        // 9. Release lock
+        logger.debug('Releasing lock...');
+        await lockManager.releaseLock(stackName);
+      }
+    }
+  } finally {
+    // Cleanup AWS clients
+    awsClients.destroy();
+  }
+}
+
+/**
+ * Create destroy command
+ */
+export function createDestroyCommand(): Command {
+  const cmd = new Command('destroy')
+    .description('Destroy all resources in the stack')
+    .action(withErrorHandling(destroyCommand));
+
+  // Add options
+  [...commonOptions, ...stateOptions, ...stackOptions, ...destroyOptions].forEach((opt) =>
+    cmd.addOption(opt)
+  );
+
+  return cmd;
+}

@@ -1,0 +1,73 @@
+{
+  "name": "cdkq",
+  "version": "0.1.0",
+  "description": "CDK Quick Deploy - Deploy AWS CDK apps directly via SDK/Cloud Control API",
+  "main": "dist/index.js",
+  "bin": {
+    "cdkq": "dist/cli.js"
+  },
+  "type": "module",
+  "scripts": {
+    "build": "node build.mjs",
+    "dev": "node build.mjs --watch",
+    "test": "vitest",
+    "test:ui": "vitest --ui",
+    "test:coverage": "vitest --coverage",
+    "lint": "eslint src --ext .ts",
+    "lint:fix": "eslint src --ext .ts --fix",
+    "format": "prettier --write \"src/**/*.ts\"",
+    "format:check": "prettier --check \"src/**/*.ts\"",
+    "typecheck": "tsc --noEmit",
+    "prepublishOnly": "npm run build"
+  },
+  "keywords": [
+    "aws",
+    "cdk",
+    "cloudformation",
+    "deployment",
+    "infrastructure",
+    "cloud-control-api"
+  ],
+  "author": "",
+  "license": "Apache-2.0",
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "dependencies": {
+    "@aws-cdk/cdk-assets-lib": "^2.2.0",
+    "@aws-cdk/cloud-assembly-api": "^2.2.0",
+    "@aws-cdk/toolkit-lib": "^1.19.1",
+    "@aws-sdk/client-cloudcontrol": "^3.0.0",
+    "@aws-sdk/client-iam": "^3.0.0",
+    "@aws-sdk/client-s3": "^3.0.0",
+    "commander": "^12.0.0",
+    "graphlib": "^2.1.8",
+    "p-limit": "^5.0.0"
+  },
+  "devDependencies": {
+    "@types/graphlib": "^2.1.12",
+    "@types/node": "^20.0.0",
+    "@typescript-eslint/eslint-plugin": "^7.0.0",
+    "@typescript-eslint/parser": "^7.0.0",
+    "@vitest/ui": "^1.0.0",
+    "esbuild": "^0.20.0",
+    "eslint": "^8.57.0",
+    "eslint-config-prettier": "^9.0.0",
+    "eslint-plugin-prettier": "^5.0.0",
+    "prettier": "^3.0.0",
+    "typescript": "^5.4.0",
+    "vitest": "^1.0.0"
+  },
+  "peerDependencies": {
+    "aws-cdk-lib": "^2.0.0",
+    "constructs": "^10.0.0"
+  },
+  "peerDependenciesMeta": {
+    "aws-cdk-lib": {
+      "optional": false
+    },
+    "constructs": {
+      "optional": false
+    }
+  }
+}

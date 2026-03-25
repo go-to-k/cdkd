@@ -1,0 +1,17 @@
+{
+  "name": "cdkq-example",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "synth": "cdk synth"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "ts-node": "^10.9.0",
+    "typescript": "^5.4.0"
+  },
+  "dependencies": {
+    "aws-cdk-lib": "^2.0.0",
+    "constructs": "^10.0.0"
+  }
+}
