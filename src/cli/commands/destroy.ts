@@ -7,6 +7,7 @@ import { LockManager } from '../../state/lock-manager.js';
 import { DagBuilder } from '../../analyzer/dag-builder.js';
 import { ProviderRegistry } from '../../provisioning/provider-registry.js';
 import { IAMRoleProvider } from '../../provisioning/providers/iam-role-provider.js';
+import { IAMPolicyProvider } from '../../provisioning/providers/iam-policy-provider.js';
 import { setAwsClients, AwsClients } from '../../utils/aws-clients.js';
 import * as readline from 'node:readline/promises';
 
@@ -51,6 +52,7 @@ async function destroyCommand(options: {
 
     // Register SDK providers for unsupported resource types
     providerRegistry.register('AWS::IAM::Role', new IAMRoleProvider());
+    providerRegistry.register('AWS::IAM::Policy', new IAMPolicyProvider());
 
     // 2. Get list of stacks to destroy
     let stackNames: string[];
