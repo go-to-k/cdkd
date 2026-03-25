@@ -9,6 +9,59 @@ import type {
 } from '../../types/resource.js';
 
 /**
+ * Custom Resource Lambda Response Payload
+ * Based on CloudFormation custom resource response format
+ */
+interface CustomResourceResponsePayload {
+  PhysicalResourceId?: string;
+  Data?: Record<string, unknown>;
+  [key: string]: unknown;
+}
+
+/**
+ * Type guard to validate Lambda response payload structure
+ */
+function isCustomResourceResponsePayload(value: unknown): value is CustomResourceResponsePayload {
+  if (typeof value !== 'object' || value === null) {
+    return false;
+  }
+
+  const payload = value as Record<string, unknown>;
+
+  // PhysicalResourceId is optional but must be string if present
+  if ('PhysicalResourceId' in payload && typeof payload['PhysicalResourceId'] !== 'string') {
+    return false;
+  }
+
+  // Data is optional but must be an object if present
+  if ('Data' in payload) {
+    if (typeof payload['Data'] !== 'object' || payload['Data'] === null) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+/**
+ * Parse Lambda response payload with type safety
+ */
+function parseLambdaPayload(payloadBytes: Uint8Array | undefined): CustomResourceResponsePayload {
+  if (!payloadBytes) {
+    return {};
+  }
+
+  const payloadString = Buffer.from(payloadBytes).toString();
+  const parsed: unknown = JSON.parse(payloadString);
+
+  if (!isCustomResourceResponsePayload(parsed)) {
+    throw new Error(`Invalid Lambda response payload format: ${JSON.stringify(parsed)}`);
+  }
+
+  return parsed;
+}
+
+/**
  * Custom Resource Provider
  *
  * Implements Lambda-backed custom resources by invoking the Lambda function
@@ -70,8 +123,8 @@ export class CustomResourceProvider implements ResourceProvider {
         })
       );
 
-      // Parse response
-      const payload = response.Payload ? JSON.parse(Buffer.from(response.Payload).toString()) : {};
+      // Parse response with type safety
+      const payload: CustomResourceResponsePayload = parseLambdaPayload(response.Payload);
 
       this.logger.debug(`Lambda response: ${JSON.stringify(payload, null, 2)}`);
 
@@ -82,13 +135,14 @@ export class CustomResourceProvider implements ResourceProvider {
       }
 
       // Custom resources typically return PhysicalResourceId
-      const physicalId = payload.PhysicalResourceId || logicalId;
+      const physicalId: string = payload.PhysicalResourceId || logicalId;
+      const attributes: Record<string, unknown> = payload.Data || {};
 
       this.logger.info(`Successfully created custom resource ${logicalId}: ${physicalId}`);
 
       return {
         physicalId,
-        attributes: payload.Data || {},
+        attributes,
       };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
@@ -150,8 +204,8 @@ export class CustomResourceProvider implements ResourceProvider {
         })
       );
 
-      // Parse response
-      const payload = response.Payload ? JSON.parse(Buffer.from(response.Payload).toString()) : {};
+      // Parse response with type safety
+      const payload: CustomResourceResponsePayload = parseLambdaPayload(response.Payload);
 
       if (response.FunctionError) {
         throw new Error(
@@ -159,8 +213,9 @@ export class CustomResourceProvider implements ResourceProvider {
         );
       }
 
-      const newPhysicalId = payload.PhysicalResourceId || physicalId;
-      const wasReplaced = newPhysicalId !== physicalId;
+      const newPhysicalId: string = payload.PhysicalResourceId || physicalId;
+      const wasReplaced: boolean = newPhysicalId !== physicalId;
+      const attributes: Record<string, unknown> = payload.Data || {};
 
       this.logger.info(
         `Successfully updated custom resource ${logicalId}: ${newPhysicalId}${wasReplaced ? ' (replaced)' : ''}`
@@ -169,7 +224,7 @@ export class CustomResourceProvider implements ResourceProvider {
       return {
         physicalId: newPhysicalId,
         wasReplaced,
-        attributes: payload.Data || {},
+        attributes,
       };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
@@ -232,8 +287,8 @@ export class CustomResourceProvider implements ResourceProvider {
         })
       );
 
-      // Parse response
-      const payload = response.Payload ? JSON.parse(Buffer.from(response.Payload).toString()) : {};
+      // Parse response with type safety
+      const payload: CustomResourceResponsePayload = parseLambdaPayload(response.Payload);
 
       if (response.FunctionError) {
         throw new Error(

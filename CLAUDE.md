@@ -269,6 +269,8 @@ See [docs/provider-development.md](docs/provider-development.md) for details.
 - ✅ Cross-stack references (Fn::ImportValue via S3 state backend)
 - ✅ Cloud Control API JSON Patch for updates (RFC 6902 compliant)
 - ✅ Resource replacement detection (immutable property detection for 10+ AWS resource types)
+- ✅ AWS::NoValue pseudo parameter (for conditional property omission)
+- ✅ Type safety improvements (error handling, any type elimination in custom resources)
 
 ## Dependencies
 

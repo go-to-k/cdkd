@@ -218,11 +218,13 @@ See [docs/implementation-plan.md](docs/implementation-plan.md) for detailed impl
 - ✅ Real AWS Account ID resolution via STS GetCallerIdentity
 - ✅ SDK Providers: IAM Role/Policy, S3 Bucket Policy, SQS Queue Policy
 - ✅ Intrinsic function resolution (Ref, Fn::GetAtt, Fn::Join, Fn::Sub, Fn::Select, Fn::Split, Fn::If, Fn::Equals, Fn::And, Fn::Or, Fn::Not, Fn::ImportValue)
+- ✅ Pseudo parameters: AWS::Region, AWS::AccountId, AWS::Partition, AWS::NoValue, AWS::URLSuffix
 - ✅ CloudFormation Parameters support (with default values and type coercion)
 - ✅ Conditions evaluation (with logical operators: And, Or, Not)
 - ✅ Cross-stack references (Fn::ImportValue via S3 state backend)
 - ✅ Lambda Asset publishing (code packages to S3/ECR via `@aws-cdk/cdk-assets-lib`)
 - ✅ Cloud Control API JSON Patch for updates (RFC 6902 compliant, minimal patches)
+- ✅ Type safety improvements (error handling, any type elimination)
 - ✅ Resource replacement detection (immutable property detection for 10+ AWS resource types)
 - ✅ Code quality improvements (eliminated ~80 lines of duplicate code in DeployEngine)
 
