@@ -277,7 +277,7 @@ export class DeployEngine {
     }
 
     // Resolve outputs
-    const outputs = this.resolveOutputs(template, newResources);
+    const outputs = await this.resolveOutputs(template, newResources);
 
     return {
       version: 1,
@@ -440,26 +440,31 @@ export class DeployEngine {
   /**
    * Resolve stack outputs from template and resource attributes
    *
-   * Limitations:
-   * - Only supports Ref and Fn::GetAtt intrinsic functions
-   * - Does NOT support: Fn::Sub, Fn::Join, Fn::Select, Fn::ImportValue, etc.
-   * - Complex outputs with unsupported functions will fail silently and return undefined
-   *
-   * TODO: Implement full CloudFormation intrinsic function support
+   * Uses IntrinsicFunctionResolver for full CloudFormation intrinsic function support.
    */
-  private resolveOutputs(
+  private async resolveOutputs(
     template: CloudFormationTemplate,
     resources: Record<string, ResourceState>
-  ): Record<string, unknown> {
+  ): Promise<Record<string, unknown>> {
     if (!template.Outputs) {
       return {};
     }
 
     const outputs: Record<string, unknown> = {};
+    const context = template.Parameters
+      ? {
+          template: template,
+          resources: resources,
+          parameters: template.Parameters,
+        }
+      : {
+          template: template,
+          resources: resources,
+        };
 
     for (const [outputKey, output] of Object.entries(template.Outputs)) {
       try {
-        const value = this.resolveValue(output.Value, template, resources);
+        const value = await this.resolver.resolve(output.Value, context);
         outputs[outputKey] = value;
       } catch (error) {
         this.logger.warn(`Failed to resolve output ${outputKey}: ${String(error)}`);
@@ -468,64 +473,5 @@ export class DeployEngine {
     }
 
     return outputs;
-  }
-
-  /**
-   * Resolve a template value (Ref, Fn::GetAtt, etc.)
-   *
-   * TODO: Support Ref for Parameters
-   * Currently, Ref only resolves to resource physical IDs.
-   * Need to also check template.Parameters and resolve parameter values.
-   */
-  private resolveValue(
-    value: unknown,
-    template: CloudFormationTemplate,
-    resources: Record<string, ResourceState>
-  ): unknown {
-    if (typeof value !== 'object' || value === null) {
-      return value;
-    }
-
-    const obj = value as Record<string, unknown>;
-
-    // Ref
-    if ('Ref' in obj) {
-      const logicalId = obj['Ref'] as string;
-
-      // Check if it's a resource
-      const resource = resources[logicalId];
-      if (resource) {
-        return resource.physicalId;
-      }
-
-      // TODO: Check if it's a parameter
-      // if (template.Parameters?.[logicalId]) {
-      //   return resolvedParameterValue;
-      // }
-
-      throw new Error(`Resource or parameter ${logicalId} not found`);
-    }
-
-    // Fn::GetAtt
-    if ('Fn::GetAtt' in obj) {
-      const getAtt = obj['Fn::GetAtt'] as [string, string];
-      const [logicalId, attributeName] = getAtt;
-      const resource = resources[logicalId];
-      if (!resource) {
-        throw new Error(`Resource ${logicalId} not found`);
-      }
-      return resource.attributes?.[attributeName] ?? resource.physicalId;
-    }
-
-    // Recursively resolve nested objects/arrays
-    if (Array.isArray(value)) {
-      return value.map((v) => this.resolveValue(v, template, resources));
-    }
-
-    const resolved: Record<string, unknown> = {};
-    for (const [key, val] of Object.entries(obj)) {
-      resolved[key] = this.resolveValue(val, template, resources);
-    }
-    return resolved;
   }
 }

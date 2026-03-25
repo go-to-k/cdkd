@@ -202,13 +202,20 @@ See [docs/implementation-plan.md](docs/implementation-plan.md) for detailed impl
 
 **Current Phase**: Phase 9 - Testing & Documentation
 
+**Recently Implemented**:
+
+- ✅ Custom Resource support (Lambda-backed, Create/Update/Delete)
+- ✅ Real AWS Account ID resolution via STS GetCallerIdentity
+- ✅ SDK Providers: IAM Role/Policy, S3 Bucket Policy, SQS Queue Policy
+- ✅ Intrinsic function resolution (Ref, Fn::GetAtt, Fn::Join, Fn::Sub)
+
 **Not Yet Implemented**:
 
 - Progress bar / advanced UI
-- Custom resource support
+- Lambda Asset publishing (code packages to S3/ECR)
 - Advanced intrinsic function support (Fn::Select, Fn::Split, Fn::If, etc.)
 - CloudFormation Parameters support
-- Cloud Control API JSON Patch for updates
+- Cloud Control API JSON Patch for updates (currently uses replace)
 
 See [docs/implementation-plan.md](docs/implementation-plan.md) for complete roadmap.
 

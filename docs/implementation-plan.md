@@ -240,6 +240,39 @@ cdkq は CDK CLI (`aws-cdk`) を**置き換える**のではなく、**デプロ
 
 **テスト結果**: lambda-exampleでLambdaコードのS3アップロードが成功
 
+#### SDK Provider 拡張 ✅ **完了**
+
+- [x] AWS::SQS::QueuePolicy Provider 実装
+- [x] AWS::S3::BucketPolicy Provider 実装
+- [x] Custom Resource Provider 実装 (Lambda-backed)
+- [x] Custom Resource Delete 操作実装 (ServiceToken from state)
+- [x] ResourceProvider interface 拡張 (delete に properties 追加)
+
+**実装**:
+
+- `src/provisioning/providers/sqs-queue-policy-provider.ts`
+- `src/provisioning/providers/s3-bucket-policy-provider.ts`
+- `src/provisioning/providers/custom-resource-provider.ts`
+- `src/types/resource.ts` - delete() signature update
+
+**テスト結果**: multi-resource-example で SQS Queue Policy の作成・削除成功
+
+#### アカウントID解決の改善 ✅ **完了**
+
+- [x] STS GetCallerIdentity 統合
+- [x] IntrinsicFunctionResolver の async 化
+- [x] 実際の AWS Account ID/Region/Partition の使用
+- [x] アカウント情報のキャッシング
+- [x] AWS::AccountId, AWS::Region, AWS::Partition の実装
+
+**実装**:
+
+- `src/utils/aws-clients.ts` - STSClient 追加
+- `src/deployment/intrinsic-function-resolver.ts` - getAccountInfo() 実装
+- `src/deployment/deploy-engine.ts` - await resolver.resolve()
+
+**効果**: Lambda ARN などで正しいアカウント ID が使用される
+
 ### 優先度: 高 (High Priority)
 
 #### 1. CloudFormation 組み込み関数の追加対応
