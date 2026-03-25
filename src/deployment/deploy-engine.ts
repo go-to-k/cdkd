@@ -176,7 +176,7 @@ export class DeployEngine {
       const deleteChanges = this.diffCalculator.filterByType(changes, 'DELETE');
 
       this.logger.info(
-        `Changes: +${createChanges.length} ~${updateChanges.length} -${deleteChanges.length}`
+        `Changes: ${createChanges.length} to create, ${updateChanges.length} to update, ${deleteChanges.length} to delete`
       );
 
       if (this.options.dryRun) {
