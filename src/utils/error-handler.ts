@@ -22,6 +22,7 @@ export class StateError extends CdkqError {
   constructor(message: string, cause?: Error) {
     super(message, 'STATE_ERROR', cause);
     this.name = 'StateError';
+    Object.setPrototypeOf(this, StateError.prototype);
   }
 }
 
@@ -32,6 +33,7 @@ export class LockError extends CdkqError {
   constructor(message: string, cause?: Error) {
     super(message, 'LOCK_ERROR', cause);
     this.name = 'LockError';
+    Object.setPrototypeOf(this, LockError.prototype);
   }
 }
 
@@ -42,6 +44,7 @@ export class SynthesisError extends CdkqError {
   constructor(message: string, cause?: Error) {
     super(message, 'SYNTHESIS_ERROR', cause);
     this.name = 'SynthesisError';
+    Object.setPrototypeOf(this, SynthesisError.prototype);
   }
 }
 
@@ -52,6 +55,7 @@ export class AssetError extends CdkqError {
   constructor(message: string, cause?: Error) {
     super(message, 'ASSET_ERROR', cause);
     this.name = 'AssetError';
+    Object.setPrototypeOf(this, AssetError.prototype);
   }
 }
 
@@ -68,6 +72,7 @@ export class ProvisioningError extends CdkqError {
   ) {
     super(message, 'PROVISIONING_ERROR', cause);
     this.name = 'ProvisioningError';
+    Object.setPrototypeOf(this, ProvisioningError.prototype);
   }
 }
 
@@ -78,6 +83,7 @@ export class DependencyError extends CdkqError {
   constructor(message: string, cause?: Error) {
     super(message, 'DEPENDENCY_ERROR', cause);
     this.name = 'DependencyError';
+    Object.setPrototypeOf(this, DependencyError.prototype);
   }
 }
 
@@ -88,6 +94,7 @@ export class ConfigError extends CdkqError {
   constructor(message: string, cause?: Error) {
     super(message, 'CONFIG_ERROR', cause);
     this.name = 'ConfigError';
+    Object.setPrototypeOf(this, ConfigError.prototype);
   }
 }
 
