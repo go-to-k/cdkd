@@ -1,0 +1,19 @@
+{
+  "name": "cdkq-example-multi-resource",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Multi-resource example with complex dependencies for cdkq",
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc -w"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "typescript": "^5.0.0",
+    "ts-node": "^10.0.0"
+  },
+  "dependencies": {
+    "aws-cdk-lib": "^2.172.0",
+    "constructs": "^10.0.0"
+  }
+}
