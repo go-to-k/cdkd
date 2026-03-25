@@ -94,15 +94,19 @@ async function deployCommand(options: {
         });
         logger.info('✓ Assets published successfully');
       } catch (error) {
-        // TODO: Improve error handling - distinguish between "file not found" and actual failures
-        // Currently we continue deployment even if asset publishing fails, which can cause
-        // resource creation failures later (e.g., Lambda function with missing code).
-        // Should:
-        // 1. Check if assets.json exists first
-        // 2. Only ignore ENOENT errors
-        // 3. Fail deployment if assets are required but publishing fails
-        logger.warn('Asset publishing failed (assets.json may not exist):', String(error));
-        logger.info('Continuing with deployment...');
+        // Check if this is a "file not found" error (assets.json doesn't exist)
+        // This is expected when the CDK app has no assets (e.g., infrastructure-only stacks)
+        const err = error as { code?: string; message?: string };
+        if (err.code === 'ENOENT' || err.message?.includes('ENOENT')) {
+          logger.debug('No assets.json found - skipping asset publishing');
+          logger.info('No assets to publish');
+        } else {
+          // For all other errors, fail the deployment
+          // Asset publishing failures can cause resource creation failures later
+          // (e.g., Lambda function with missing code, Docker images, etc.)
+          logger.error('Asset publishing failed:', err.message || String(error));
+          throw error;
+        }
       }
     } else {
       logger.info('Skipping asset publishing (--skip-assets)');
