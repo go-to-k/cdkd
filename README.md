@@ -222,13 +222,13 @@ See [docs/implementation-plan.md](docs/implementation-plan.md) for detailed impl
 - ✅ Conditions evaluation (with logical operators: And, Or, Not)
 - ✅ Cross-stack references (Fn::ImportValue via S3 state backend)
 - ✅ Lambda Asset publishing (code packages to S3/ECR via `@aws-cdk/cdk-assets-lib`)
+- ✅ Cloud Control API JSON Patch for updates (RFC 6902 compliant, minimal patches)
 - ✅ Code quality improvements (eliminated ~80 lines of duplicate code in DeployEngine)
 
 **Not Yet Implemented**:
 
 - Progress bar / advanced UI
 - Advanced intrinsic functions (Fn::FindInMap, Fn::GetAZs, Fn::Base64)
-- Cloud Control API JSON Patch for updates (currently uses replace)
 
 See [docs/implementation-plan.md](docs/implementation-plan.md) for complete roadmap.
 
