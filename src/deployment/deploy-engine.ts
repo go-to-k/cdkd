@@ -2,7 +2,11 @@ import pLimit from 'p-limit';
 import { getLogger } from '../utils/logger.js';
 import { ProvisioningError } from '../utils/error-handler.js';
 import { IntrinsicFunctionResolver } from './intrinsic-function-resolver.js';
-import type { CloudFormationTemplate } from '../types/resource.js';
+import type {
+  CloudFormationTemplate,
+  ResourceProvider,
+  ResourceCreateResult,
+} from '../types/resource.js';
 import type { StackState, ResourceState, ResourceChange } from '../types/state.js';
 import type { S3StateBackend } from '../state/s3-state-backend.js';
 import type { LockManager } from '../state/lock-manager.js';
@@ -374,7 +378,12 @@ export class DeployEngine {
             unknown
           >;
 
-          const result = await provider.create(logicalId, resourceType, resolvedProps);
+          const result = await this.createWithRetry(
+            provider,
+            logicalId,
+            resourceType,
+            resolvedProps
+          );
 
           // Extract dependencies from template
           const dependencies = template?.Resources?.[logicalId]?.DependsOn
@@ -549,6 +558,52 @@ export class DeployEngine {
         error instanceof Error ? error : undefined
       );
     }
+  }
+
+  /**
+   * Create a resource with retry for transient errors
+   *
+   * Some resources fail immediately after their dependencies are created due to
+   * AWS eventual consistency (e.g., Lambda fails if IAM Role hasn't propagated yet).
+   * CloudFormation handles this internally; cdkq retries with exponential backoff.
+   */
+  private async createWithRetry(
+    provider: ResourceProvider,
+    logicalId: string,
+    resourceType: string,
+    properties: Record<string, unknown>,
+    maxRetries: number = 3,
+    initialDelayMs: number = 5_000
+  ): Promise<ResourceCreateResult> {
+    let lastError: unknown;
+
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+      try {
+        return await provider.create(logicalId, resourceType, properties);
+      } catch (error) {
+        lastError = error;
+        const message = error instanceof Error ? error.message : String(error);
+
+        // Only retry on specific transient errors
+        const isRetryable =
+          message.includes('cannot be assumed by Lambda') ||
+          message.includes('role defined for the function') ||
+          message.includes('not authorized to perform') ||
+          message.includes('The provided execution role');
+
+        if (!isRetryable || attempt >= maxRetries) {
+          throw error;
+        }
+
+        const delay = initialDelayMs * Math.pow(2, attempt);
+        this.logger.info(
+          `  ⏳ Retrying ${logicalId} in ${delay / 1000}s (attempt ${attempt + 1}/${maxRetries}) - ${message}`
+        );
+        await new Promise((resolve) => setTimeout(resolve, delay));
+      }
+    }
+
+    throw lastError;
   }
 
   /**
