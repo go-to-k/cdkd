@@ -315,9 +315,13 @@ node ${CDKQ_PATH}/dist/cli.js deploy \
 
 ### Cloud Control API がサポートしていないリソース
 
-一部のリソースタイプ (例: `AWS::IAM::Role`) は Cloud Control API がサポートしていません。cdkq は自動的に SDK プロバイダーにフォールバックしますが、現在実装されているのは:
+一部のリソースタイプは Cloud Control API がサポートしていません。cdkq は自動的に SDK プロバイダーにフォールバックします。現在実装されているSDKプロバイダー:
 
-- `AWS::IAM::Role`
+- `AWS::IAM::Role` - IAM ロール
+- `AWS::IAM::Policy` - IAM ポリシー（インラインポリシー対応）
+- `AWS::S3::BucketPolicy` - S3 バケットポリシー
+- `AWS::SQS::QueuePolicy` - SQS キューポリシー
+- `Custom::*` - Lambda-backed カスタムリソース（Create/Update/Delete）
 
 その他のサポートされていないリソースタイプを使用する場合、エラーメッセージが表示されます。
 
@@ -329,15 +333,18 @@ node ${CDKQ_PATH}/dist/cli.js deploy \
 node ${CDKQ_PATH}/dist/cli.js deploy ... --verbose
 ```
 
-## 既知の問題
+## 既知の問題と制限事項
 
-1. **Cloud Control API の Update 処理**: 現在の実装では常にルート(`/`)を全置換しているため、一部のリソースで更新が失敗する可能性があります。
+1. **Cloud Control API の Update 処理**: 現在の実装では JSON Patch による差分更新を行っていますが、一部のリソースで完全な更新が失敗する可能性があります。
 
-2. **カスタムリソース**: CDK のカスタムリソース (`Custom::*`) はサポートされていません。
-
-3. **一部の CloudFormation 組み込み関数**: 以下の関数はまだサポートされていません:
+2. **一部の CloudFormation 組み込み関数**: 以下の関数はまだサポートされていません:
    - Fn::Select, Fn::Split, Fn::ImportValue
    - Fn::If, Fn::Equals (Conditions)
    - Fn::FindInMap, Fn::GetAZs, Fn::Base64
+   - CloudFormation Parameters
 
-4. **疑似パラメータ**: `AWS::Region` と `AWS::AccountId` 以外の疑似パラメータは環境変数またはハードコードされた値を返します。
+3. **疑似パラメータ**: 以下のパラメータはサポート済みです:
+   - ✅ `AWS::AccountId` - STS GetCallerIdentity から実際の値を取得
+   - ✅ `AWS::Region` - 設定されたリージョンを使用
+   - ✅ `AWS::Partition` - デフォルト "aws"
+   - ⚠️ その他の疑似パラメータ（AWS::StackId など）は環境変数またはハードコードされた値を返します

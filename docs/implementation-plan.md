@@ -273,6 +273,23 @@ cdkq は CDK CLI (`aws-cdk`) を**置き換える**のではなく、**デプロ
 
 **効果**: Lambda ARN などで正しいアカウント ID が使用される
 
+#### コード品質改善 ✅ **完了**
+
+- [x] DeployEngine の重複コード削除
+- [x] resolveOutputs() / resolveValue() の IntrinsicFunctionResolver への統合
+- [x] ESM/CommonJS 互換性の修正 (error.name ベース判定)
+
+**実装**:
+
+- `src/deployment/deploy-engine.ts` - 重複解決ロジック削除（~80行削減）
+- `src/state/lock-manager.ts` - PreconditionFailed エラー判定修正
+
+**効果**:
+
+- Outputs で全組み込み関数がサポートされる (Fn::Sub, Fn::Join など)
+- コードメンテナンス性の向上
+- ESM/CommonJS 混在時の実行時エラー解消
+
 ### 優先度: 高 (High Priority)
 
 #### 1. CloudFormation 組み込み関数の追加対応

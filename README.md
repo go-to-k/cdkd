@@ -208,11 +208,12 @@ See [docs/implementation-plan.md](docs/implementation-plan.md) for detailed impl
 - ✅ Real AWS Account ID resolution via STS GetCallerIdentity
 - ✅ SDK Providers: IAM Role/Policy, S3 Bucket Policy, SQS Queue Policy
 - ✅ Intrinsic function resolution (Ref, Fn::GetAtt, Fn::Join, Fn::Sub)
+- ✅ Lambda Asset publishing (code packages to S3/ECR via `@aws-cdk/cdk-assets-lib`)
+- ✅ Code quality improvements (eliminated ~80 lines of duplicate code in DeployEngine)
 
 **Not Yet Implemented**:
 
 - Progress bar / advanced UI
-- Lambda Asset publishing (code packages to S3/ECR)
 - Advanced intrinsic function support (Fn::Select, Fn::Split, Fn::If, etc.)
 - CloudFormation Parameters support
 - Cloud Control API JSON Patch for updates (currently uses replace)
