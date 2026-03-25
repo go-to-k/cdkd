@@ -313,9 +313,11 @@ node ${CDKQ_PATH}/dist/cli.js deploy \
   --skip-assets
 ```
 
-### Cloud Control API がサポートしていないリソース
+### リソースタイプのサポート
 
-一部のリソースタイプは Cloud Control API がサポートしていません。cdkq は自動的に SDK プロバイダーにフォールバックします。現在実装されているSDKプロバイダー:
+**cdkq は Cloud Control API がサポートする全リソースタイプ（200種類以上）を自動的にサポートします。**
+
+Cloud Control API 未サポートのリソースについては、SDK プロバイダーを実装することで対応できます。現在実装済みの SDK プロバイダー:
 
 - `AWS::IAM::Role` - IAM ロール
 - `AWS::IAM::Policy` - IAM ポリシー（インラインポリシー対応）
@@ -323,7 +325,7 @@ node ${CDKQ_PATH}/dist/cli.js deploy \
 - `AWS::SQS::QueuePolicy` - SQS キューポリシー
 - `Custom::*` - Lambda-backed カスタムリソース（Create/Update/Delete）
 
-その他のサポートされていないリソースタイプを使用する場合、エラーメッセージが表示されます。
+その他の Cloud Control API 未サポートリソースを使用する場合、エラーメッセージが表示されます。
 
 ### ログの詳細表示
 

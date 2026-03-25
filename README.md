@@ -56,6 +56,7 @@ AWS CDK is great for defining infrastructure as code, but CloudFormation deploym
 
 ## Features
 
+- **Broad resource support**: Supports 200+ AWS resource types via Cloud Control API
 - **Hybrid deployment strategy**: Cloud Control API first, fallback to SDK for unsupported resources
 - **S3-based state management**: No DynamoDB required, uses S3 conditional writes for locking
 - **DAG-based parallelization**: Analyze `Ref`/`Fn::GetAtt` dependencies and execute in parallel
