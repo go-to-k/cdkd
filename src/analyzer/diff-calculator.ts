@@ -1,12 +1,14 @@
 import type { CloudFormationTemplate } from '../types/resource.js';
 import type { StackState, ChangeType, ResourceChange, PropertyChange } from '../types/state.js';
 import { getLogger } from '../utils/logger.js';
+import { ReplacementRulesRegistry } from './replacement-rules.js';
 
 /**
  * Diff calculator for comparing desired state (template) with current state
  */
 export class DiffCalculator {
   private logger = getLogger().child('DiffCalculator');
+  private replacementRules = new ReplacementRulesRegistry();
 
   /**
    * Calculate changes needed to reach desired state
@@ -79,6 +81,7 @@ export class DiffCalculator {
       } else {
         // Resource exists with same type -> check properties
         const propertyChanges = this.compareProperties(
+          desiredResource.Type,
           currentResource.properties,
           desiredResource.Properties || {}
         );
@@ -132,13 +135,11 @@ export class DiffCalculator {
   /**
    * Compare properties and return list of changes
    *
-   * TODO: Implement requiresReplacement logic
-   * Currently, all property changes are marked as requiresReplacement: false.
-   * Need to implement per-resource-type logic to determine which property changes require replacement.
-   * This requires CloudFormation schema knowledge for each resource type.
+   * Uses ReplacementRulesRegistry to determine which property changes require replacement.
    * Reference: https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/using-cfn-updating-stacks-update-behaviors.html
    */
   private compareProperties(
+    resourceType: string,
     currentProperties: Record<string, unknown>,
     desiredProperties: Record<string, unknown>
   ): PropertyChange[] {
@@ -152,12 +153,26 @@ export class DiffCalculator {
       const newValue = desiredProperties[key];
 
       if (!this.valuesEqual(oldValue, newValue)) {
+        // Check if this property change requires replacement
+        const requiresReplacement = this.replacementRules.requiresReplacement(
+          resourceType,
+          key,
+          oldValue,
+          newValue
+        );
+
         changes.push({
           path: key,
           oldValue,
           newValue,
-          requiresReplacement: false, // TODO: Implement replacement logic based on resource type
+          requiresReplacement,
         });
+
+        if (requiresReplacement) {
+          this.logger.debug(
+            `Property ${key} of ${resourceType} requires replacement (${JSON.stringify(oldValue)} -> ${JSON.stringify(newValue)})`
+          );
+        }
       }
     }
 
