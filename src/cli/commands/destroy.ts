@@ -123,16 +123,20 @@ async function destroyCommand(options: {
         // Create a minimal template from current state for DAG building
         const template = {
           AWSTemplateFormatVersion: '2010-09-09',
-          Resources: {} as Record<string, { Type: string; Properties: Record<string, unknown>; DependsOn?: string[] }>,
+          Resources: {} as Record<
+            string,
+            { Type: string; Properties: Record<string, unknown>; DependsOn?: string[] }
+          >,
         };
 
         for (const [logicalId, resource] of Object.entries(currentState.resources)) {
           template.Resources[logicalId] = {
             Type: resource.resourceType,
             Properties: resource.properties || {},
-            ...(resource.dependencies && resource.dependencies.length > 0 && {
-              DependsOn: resource.dependencies
-            }),
+            ...(resource.dependencies &&
+              resource.dependencies.length > 0 && {
+                DependsOn: resource.dependencies,
+              }),
           };
         }
 
@@ -154,7 +158,9 @@ async function destroyCommand(options: {
             continue;
           }
 
-          logger.info(`Processing deletion level ${executionLevels.length - levelIndex}/${executionLevels.length} (${level.length} resources)`);
+          logger.info(
+            `Processing deletion level ${executionLevels.length - levelIndex}/${executionLevels.length} (${level.length} resources)`
+          );
 
           // Delete resources in parallel within each level
           const deletePromises = level.map(async (logicalId) => {

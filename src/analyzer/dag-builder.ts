@@ -1,5 +1,4 @@
-import graphlib from 'graphlib';
-const { Graph, alg } = graphlib;
+import { Graph, alg } from 'graphlib';
 import type { CloudFormationTemplate } from '../types/resource.js';
 import { TemplateParser } from './template-parser.js';
 import { getLogger } from '../utils/logger.js';

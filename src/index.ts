@@ -68,6 +68,10 @@ export { ProviderRegistry } from './provisioning/provider-registry.js';
 export { IAMRoleProvider } from './provisioning/providers/iam-role-provider.js';
 
 // Deployment
-export { DeployEngine, type DeployEngineOptions, type DeployResult } from './deployment/deploy-engine.js';
+export {
+  DeployEngine,
+  type DeployEngineOptions,
+  type DeployResult,
+} from './deployment/deploy-engine.js';
 
 // TODO: Add more SDK providers for CC API unsupported resources as needed

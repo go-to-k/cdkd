@@ -87,7 +87,9 @@ export class DeployEngine {
     // Acquire lock
     const lockAcquired = await this.lockManager.acquireLock(stackName, undefined, 'deploy');
     if (!lockAcquired) {
-      throw new Error(`Failed to acquire lock for stack ${stackName}. Stack may be locked by another process.`);
+      throw new Error(
+        `Failed to acquire lock for stack ${stackName}. Stack may be locked by another process.`
+      );
     }
 
     try {
@@ -102,7 +104,9 @@ export class DeployEngine {
       };
       const currentEtag = currentStateData?.etag;
 
-      this.logger.debug(`Loaded current state: ${Object.keys(currentState.resources).length} resources`);
+      this.logger.debug(
+        `Loaded current state: ${Object.keys(currentState.resources).length} resources`
+      );
 
       // 2. Parse template (note: we use the original template directly for now)
       // TODO: Implement full template parsing/validation if needed
@@ -112,8 +116,8 @@ export class DeployEngine {
       // Skip metadata resources as they don't actually deploy
       const resourceTypes = new Set(
         Object.values(template.Resources || {})
-          .map(r => r.Type)
-          .filter(type => type !== 'AWS::CDK::Metadata')
+          .map((r) => r.Type)
+          .filter((type) => type !== 'AWS::CDK::Metadata')
       );
       this.providerRegistry.validateResourceTypes(resourceTypes);
       this.logger.info(`✓ All resource types are supported`);
@@ -144,7 +148,9 @@ export class DeployEngine {
       const updateChanges = this.diffCalculator.filterByType(changes, 'UPDATE');
       const deleteChanges = this.diffCalculator.filterByType(changes, 'DELETE');
 
-      this.logger.info(`Changes: +${createChanges.length} ~${updateChanges.length} -${deleteChanges.length}`);
+      this.logger.info(
+        `Changes: +${createChanges.length} ~${updateChanges.length} -${deleteChanges.length}`
+      );
 
       if (this.options.dryRun) {
         this.logger.info('Dry run mode - skipping actual deployment');
@@ -182,7 +188,6 @@ export class DeployEngine {
         unchanged: this.diffCalculator.filterByType(changes, 'NO_CHANGE').length,
         durationMs,
       };
-
     } finally {
       // Always release lock
       await this.lockManager.releaseLock(stackName);
@@ -216,14 +221,16 @@ export class DeployEngine {
     for (let levelIndex = 0; levelIndex < executionLevels.length; levelIndex++) {
       const levelNodes = executionLevels[levelIndex];
       if (!levelNodes) continue;
-      const level = levelNodes.filter(id => !deleteChanges.has(id));
+      const level = levelNodes.filter((id) => !deleteChanges.has(id));
 
       if (level.length === 0) continue;
 
-      this.logger.info(`Executing level ${levelIndex + 1}/${executionLevels.length}: ${level.length} resources (CREATE/UPDATE)`);
+      this.logger.info(
+        `Executing level ${levelIndex + 1}/${executionLevels.length}: ${level.length} resources (CREATE/UPDATE)`
+      );
 
       await Promise.all(
-        level.map(logicalId =>
+        level.map((logicalId) =>
           limit(async () => {
             const change = changes.get(logicalId);
             if (!change || change.changeType === 'NO_CHANGE') {
@@ -231,12 +238,7 @@ export class DeployEngine {
               return;
             }
 
-            await this.provisionResource(
-              logicalId,
-              change,
-              newResources,
-              template
-            );
+            await this.provisionResource(logicalId, change, newResources, template);
           })
         )
       );
@@ -251,22 +253,19 @@ export class DeployEngine {
       for (let levelIndex = executionLevels.length - 1; levelIndex >= 0; levelIndex--) {
         const levelNodes = executionLevels[levelIndex];
         if (!levelNodes) continue;
-        const level = levelNodes.filter(id => deleteChanges.has(id));
+        const level = levelNodes.filter((id) => deleteChanges.has(id));
 
         if (level.length === 0) continue;
 
-        this.logger.info(`Executing reverse level ${executionLevels.length - levelIndex}/${executionLevels.length}: ${level.length} resources (DELETE)`);
+        this.logger.info(
+          `Executing reverse level ${executionLevels.length - levelIndex}/${executionLevels.length}: ${level.length} resources (DELETE)`
+        );
 
         await Promise.all(
-          level.map(logicalId =>
+          level.map((logicalId) =>
             limit(async () => {
               const change = changes.get(logicalId)!;
-              await this.provisionResource(
-                logicalId,
-                change,
-                newResources,
-                template
-              );
+              await this.provisionResource(logicalId, change, newResources, template);
             })
           )
         );
@@ -304,17 +303,13 @@ export class DeployEngine {
         case 'CREATE': {
           this.logger.info(`Creating ${logicalId} (${resourceType})`);
           const desiredProps = change.desiredProperties || {};
-          const result = await provider.create(
-            logicalId,
-            resourceType,
-            desiredProps
-          );
+          const result = await provider.create(logicalId, resourceType, desiredProps);
 
           // Extract dependencies from template
           const dependencies = template?.Resources?.[logicalId]?.DependsOn
-            ? (Array.isArray(template.Resources[logicalId].DependsOn)
-                ? template.Resources[logicalId].DependsOn as string[]
-                : [template.Resources[logicalId].DependsOn as string])
+            ? Array.isArray(template.Resources[logicalId].DependsOn)
+              ? (template.Resources[logicalId].DependsOn as string[])
+              : [template.Resources[logicalId].DependsOn as string]
             : undefined;
 
           stateResources[logicalId] = {
@@ -347,14 +342,16 @@ export class DeployEngine {
           );
 
           if (result.wasReplaced) {
-            this.logger.info(`Resource ${logicalId} was replaced: ${currentResource.physicalId} -> ${result.physicalId}`);
+            this.logger.info(
+              `Resource ${logicalId} was replaced: ${currentResource.physicalId} -> ${result.physicalId}`
+            );
           }
 
           // Extract dependencies from template
           const dependencies = template?.Resources?.[logicalId]?.DependsOn
-            ? (Array.isArray(template.Resources[logicalId].DependsOn)
-                ? template.Resources[logicalId].DependsOn as string[]
-                : [template.Resources[logicalId].DependsOn as string])
+            ? Array.isArray(template.Resources[logicalId].DependsOn)
+              ? (template.Resources[logicalId].DependsOn as string[])
+              : [template.Resources[logicalId].DependsOn as string]
             : undefined;
 
           stateResources[logicalId] = {
@@ -376,11 +373,7 @@ export class DeployEngine {
             throw new Error(`Cannot delete ${logicalId}: resource not found in state`);
           }
 
-          await provider.delete(
-            logicalId,
-            currentResource.physicalId,
-            resourceType
-          );
+          await provider.delete(logicalId, currentResource.physicalId, resourceType);
 
           delete stateResources[logicalId];
           this.logger.info(`✓ Deleted ${logicalId}`);
@@ -483,7 +476,7 @@ export class DeployEngine {
 
     // Recursively resolve nested objects/arrays
     if (Array.isArray(value)) {
-      return value.map(v => this.resolveValue(v, template, resources));
+      return value.map((v) => this.resolveValue(v, template, resources));
     }
 
     const resolved: Record<string, unknown> = {};

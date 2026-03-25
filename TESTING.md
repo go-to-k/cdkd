@@ -4,7 +4,7 @@
 
 1. AWS アカウント
 2. AWS CLI 設定済み (`aws configure`)
-3. Node.js 18 以上
+3. Node.js 20 以上
 4. cdkq のビルド完了 (`npm run build`)
 
 ## 1. テスト用 S3 バケットの作成
@@ -46,10 +46,17 @@ export class CdkqTestStack extends cdk.Stack {
     super(scope, id, props);
 
     // シンプルな S3 バケットを作成
-    new s3.Bucket(this, 'TestBucket', {
-      bucketName: `cdkq-test-bucket-${this.account}-${this.region}`,
+    // 注意: 現在の実装では CloudFormation 組み込み関数 (Fn::Join, Ref など) はサポートされていないため、
+    // バケット名を指定せず AWS に自動生成させます
+    const bucket = new s3.Bucket(this, 'TestBucket', {
       removalPolicy: cdk.RemovalPolicy.DESTROY,
-      autoDeleteObjects: true,
+      autoDeleteObjects: false, // Custom::S3AutoDeleteObjects は未サポート
+    });
+
+    // Output でバケット名を確認できます
+    new cdk.CfnOutput(this, 'BucketName', {
+      value: bucket.bucketName,
+      description: 'Name of the test bucket',
     });
   }
 }

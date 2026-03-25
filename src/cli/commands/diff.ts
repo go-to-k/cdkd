@@ -123,8 +123,12 @@ async function diffCommand(options: {
             logger.info(`  [~] ${logicalId} (${change.resourceType})`);
             if (change.propertyChanges && change.propertyChanges.length > 0) {
               for (const propChange of change.propertyChanges) {
-                const requiresReplace = propChange.requiresReplacement ? ' [requires replacement]' : '';
-                logger.info(`      - ${propChange.path}: ${JSON.stringify(propChange.oldValue)} → ${JSON.stringify(propChange.newValue)}${requiresReplace}`);
+                const requiresReplace = propChange.requiresReplacement
+                  ? ' [requires replacement]'
+                  : '';
+                logger.info(
+                  `      - ${propChange.path}: ${JSON.stringify(propChange.oldValue)} → ${JSON.stringify(propChange.newValue)}${requiresReplace}`
+                );
               }
             }
             break;
