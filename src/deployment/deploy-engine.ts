@@ -396,7 +396,6 @@ export class DeployEngine {
         }
 
         case 'UPDATE': {
-          this.logger.info(`Updating ${logicalId} (${resourceType})`);
           const currentResource = stateResources[logicalId];
           if (!currentResource) {
             throw new Error(`Cannot update ${logicalId}: resource not found in state`);
@@ -421,19 +420,8 @@ export class DeployEngine {
             unknown
           >;
 
-          const result = await provider.update(
-            logicalId,
-            currentResource.physicalId,
-            resourceType,
-            resolvedProps,
-            currentProps
-          );
-
-          if (result.wasReplaced) {
-            this.logger.info(
-              `Resource ${logicalId} was replaced: ${currentResource.physicalId} -> ${result.physicalId}`
-            );
-          }
+          // Check if this update requires resource replacement (immutable property changed)
+          const needsReplacement = change.propertyChanges?.some((pc) => pc.requiresReplacement);
 
           // Extract dependencies from template
           const dependencies = template?.Resources?.[logicalId]?.DependsOn
@@ -442,15 +430,77 @@ export class DeployEngine {
               : [template.Resources[logicalId].DependsOn as string]
             : undefined;
 
-          stateResources[logicalId] = {
-            physicalId: result.physicalId,
-            resourceType,
-            properties: resolvedProps,
-            ...(result.attributes && { attributes: result.attributes }),
-            ...(dependencies && { dependencies }),
-          };
+          if (needsReplacement) {
+            // Resource replacement: DELETE old → CREATE new
+            const replacedProps = change.propertyChanges
+              ?.filter((pc) => pc.requiresReplacement)
+              .map((pc) => pc.path)
+              .join(', ');
+            this.logger.info(
+              `Replacing ${logicalId} (${resourceType}) - immutable properties changed: ${replacedProps}`
+            );
 
-          this.logger.info(`✓ Updated ${logicalId}`);
+            // 1. Create new resource first
+            this.logger.info(`  Creating new ${logicalId}...`);
+            const createResult = await provider.create(logicalId, resourceType, resolvedProps);
+
+            // 2. Delete old resource
+            this.logger.info(
+              `  Deleting old ${logicalId} (${currentResource.physicalId})...`
+            );
+            try {
+              await provider.delete(
+                logicalId,
+                currentResource.physicalId,
+                resourceType,
+                currentResource.properties
+              );
+              this.logger.info(`  ✓ Old resource deleted`);
+            } catch (deleteError) {
+              this.logger.warn(
+                `  ⚠ Failed to delete old resource ${logicalId} (${currentResource.physicalId}): ${deleteError instanceof Error ? deleteError.message : String(deleteError)}`
+              );
+            }
+
+            stateResources[logicalId] = {
+              physicalId: createResult.physicalId,
+              resourceType,
+              properties: resolvedProps,
+              ...(createResult.attributes && { attributes: createResult.attributes }),
+              ...(dependencies && { dependencies }),
+            };
+
+            this.logger.info(
+              `✓ Replaced ${logicalId}: ${currentResource.physicalId} → ${createResult.physicalId}`
+            );
+          } else {
+            // Normal update (in-place)
+            this.logger.info(`Updating ${logicalId} (${resourceType})`);
+
+            const result = await provider.update(
+              logicalId,
+              currentResource.physicalId,
+              resourceType,
+              resolvedProps,
+              currentProps
+            );
+
+            if (result.wasReplaced) {
+              this.logger.info(
+                `Resource ${logicalId} was replaced: ${currentResource.physicalId} -> ${result.physicalId}`
+              );
+            }
+
+            stateResources[logicalId] = {
+              physicalId: result.physicalId,
+              resourceType,
+              properties: resolvedProps,
+              ...(result.attributes && { attributes: result.attributes }),
+              ...(dependencies && { dependencies }),
+            };
+
+            this.logger.info(`✓ Updated ${logicalId}`);
+          }
           break;
         }
 

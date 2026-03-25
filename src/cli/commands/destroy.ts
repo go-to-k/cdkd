@@ -1,5 +1,5 @@
 import { Command } from 'commander';
-import { commonOptions, stateOptions, stackOptions, destroyOptions } from '../options.js';
+import { appOptions, commonOptions, stateOptions, stackOptions, destroyOptions } from '../options.js';
 import { getLogger } from '../../utils/logger.js';
 import { withErrorHandling } from '../../utils/error-handler.js';
 import { S3StateBackend } from '../../state/s3-state-backend.js';
@@ -121,11 +121,11 @@ async function destroyCommand(options: {
         });
 
         const answer = await rl.question(
-          `\nAre you sure you want to destroy stack "${stackName}" and delete all ${resourceCount} resources? (yes/no): `
+          `\nAre you sure you want to destroy stack "${stackName}" and delete all ${resourceCount} resources? (y/n): `
         );
         rl.close();
 
-        if (answer.toLowerCase() !== 'yes') {
+        if (answer.toLowerCase() !== 'y' && answer.toLowerCase() !== 'yes') {
           logger.info('Destroy cancelled');
           continue;
         }
@@ -238,9 +238,9 @@ export function createDestroyCommand(): Command {
     .description('Destroy all resources in the stack')
     .action(withErrorHandling(destroyCommand));
 
-  // Add options
-  [...commonOptions, ...stateOptions, ...stackOptions, ...destroyOptions].forEach((opt) =>
-    cmd.addOption(opt)
+  // Add options (appOptions accepted for CDK CLI compatibility, but not used)
+  [...commonOptions, ...appOptions, ...stateOptions, ...stackOptions, ...destroyOptions].forEach(
+    (opt) => cmd.addOption(opt)
   );
 
   return cmd;
