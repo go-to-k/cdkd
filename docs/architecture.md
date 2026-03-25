@@ -196,11 +196,13 @@ Resolves CloudFormation intrinsic functions
 - `Fn::GetAtt`: Attribute reference (e.g., `BucketName`, `Arn`)
 - `Fn::Join`: String concatenation
 - `Fn::Sub`: Template string substitution
+- `Fn::Select`, `Fn::Split`: List and string operations
+- `Fn::If`, `Fn::Equals`: Conditional evaluation
+- `Fn::And`, `Fn::Or`, `Fn::Not`: Logical operators for Conditions
+- `Fn::ImportValue`: Cross-stack references
 
 **Unsupported Functions**:
 
-- `Fn::Select`, `Fn::Split`, `Fn::ImportValue`
-- `Fn::If`, `Fn::Equals` (Conditions)
 - `Fn::FindInMap`, `Fn::GetAZs`, `Fn::Base64`
 
 ### 5. State Layer (`src/state/`)
@@ -644,12 +646,10 @@ Each layer has clear responsibilities
 
 ### Current Limitations
 
-1. **CloudFormation Parameters**: Not supported
-2. **Conditions**: `Fn::If`, `Fn::Equals` not supported
-3. **Cross-Stack References**: `Fn::ImportValue` not supported
-4. **CloudFormation Macros**: Not supported
-5. **Nested Stacks**: Not supported
-6. **Change Sets**: No concept (always executes immediately)
+1. **CloudFormation Macros**: Not supported
+2. **Nested Stacks**: Not supported
+3. **Change Sets**: No concept (always executes immediately)
+4. **Some intrinsic functions**: `Fn::FindInMap`, `Fn::GetAZs`, `Fn::Base64` not yet implemented
 
 ### Phase 9 and Beyond Plans
 
