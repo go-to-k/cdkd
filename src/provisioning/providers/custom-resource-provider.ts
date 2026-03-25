@@ -91,12 +91,13 @@ export class CustomResourceProvider implements ResourceProvider {
         attributes: payload.Data || {},
       };
     } catch (error) {
+      const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
         `Failed to create custom resource ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
         resourceType,
         logicalId,
         undefined,
-        error instanceof Error ? error : undefined
+        cause
       );
     }
   }
@@ -171,12 +172,13 @@ export class CustomResourceProvider implements ResourceProvider {
         attributes: payload.Data || {},
       };
     } catch (error) {
+      const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
         `Failed to update custom resource ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
         resourceType,
         logicalId,
         physicalId,
-        error instanceof Error ? error : undefined
+        cause
       );
     }
   }

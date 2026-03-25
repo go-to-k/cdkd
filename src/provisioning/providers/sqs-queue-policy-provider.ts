@@ -78,12 +78,13 @@ export class SQSQueuePolicyProvider implements ResourceProvider {
         attributes: {},
       };
     } catch (error) {
+      const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
         `Failed to create SQS queue policy ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
         resourceType,
         logicalId,
         queues[0],
-        error instanceof Error ? error : undefined
+        cause
       );
     }
   }
@@ -147,12 +148,13 @@ export class SQSQueuePolicyProvider implements ResourceProvider {
         attributes: {},
       };
     } catch (error) {
+      const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
         `Failed to update SQS queue policy ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
         resourceType,
         logicalId,
         physicalId,
-        error instanceof Error ? error : undefined
+        cause
       );
     }
   }
@@ -190,12 +192,13 @@ export class SQSQueuePolicyProvider implements ResourceProvider {
         return;
       }
 
+      const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
         `Failed to delete SQS queue policy ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
         resourceType,
         logicalId,
         physicalId,
-        error instanceof Error ? error : undefined
+        cause
       );
     }
   }

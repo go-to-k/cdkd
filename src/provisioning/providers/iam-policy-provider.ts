@@ -92,12 +92,13 @@ export class IAMPolicyProvider implements ResourceProvider {
         },
       };
     } catch (error) {
+      const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
         `Failed to create IAM policy ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
         resourceType,
         logicalId,
         policyName,
-        error instanceof Error ? error : undefined
+        cause
       );
     }
   }
@@ -189,12 +190,13 @@ export class IAMPolicyProvider implements ResourceProvider {
         },
       };
     } catch (error) {
+      const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
         `Failed to update IAM policy ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
         resourceType,
         logicalId,
         physicalId,
-        error instanceof Error ? error : undefined
+        cause
       );
     }
   }
@@ -241,12 +243,13 @@ export class IAMPolicyProvider implements ResourceProvider {
 
       this.logger.info(`Successfully deleted IAM policy ${logicalId}`);
     } catch (error) {
+      const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
         `Failed to delete IAM policy ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
         resourceType,
         logicalId,
         physicalId,
-        error instanceof Error ? error : undefined
+        cause
       );
     }
   }

@@ -77,12 +77,13 @@ export class S3BucketPolicyProvider implements ResourceProvider {
         attributes: {},
       };
     } catch (error) {
+      const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
         `Failed to create S3 bucket policy ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
         resourceType,
         logicalId,
         bucketName,
-        error instanceof Error ? error : undefined
+        cause
       );
     }
   }
@@ -140,12 +141,13 @@ export class S3BucketPolicyProvider implements ResourceProvider {
         attributes: {},
       };
     } catch (error) {
+      const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
         `Failed to update S3 bucket policy ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
         resourceType,
         logicalId,
         physicalId,
-        error instanceof Error ? error : undefined
+        cause
       );
     }
   }
@@ -185,12 +187,13 @@ export class S3BucketPolicyProvider implements ResourceProvider {
         throw error;
       }
     } catch (error) {
+      const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
         `Failed to delete S3 bucket policy ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
         resourceType,
         logicalId,
         physicalId,
-        error instanceof Error ? error : undefined
+        cause
       );
     }
   }

@@ -6,6 +6,14 @@ import type { ResourceState } from '../types/state.js';
 import type { S3StateBackend } from '../state/s3-state-backend.js';
 
 /**
+ * Special symbol to represent AWS::NoValue
+ *
+ * When a property resolves to this symbol, it should be removed from the object.
+ * This is used for conditional property omission in CloudFormation templates.
+ */
+export const AWS_NO_VALUE = Symbol('AWS::NoValue');
+
+/**
  * Resolver context for intrinsic functions
  */
 export interface ResolverContext {
@@ -235,9 +243,10 @@ export class IntrinsicFunctionResolver {
       return value;
     }
 
-    // Arrays: resolve each element
+    // Arrays: resolve each element, filtering out AWS::NoValue
     if (Array.isArray(value)) {
-      return await Promise.all(value.map((v) => this.resolveValue(v, context)));
+      const resolved = await Promise.all(value.map((v) => this.resolveValue(v, context)));
+      return resolved.filter((v) => v !== AWS_NO_VALUE);
     }
 
     const obj = value as Record<string, unknown>;
@@ -297,7 +306,13 @@ export class IntrinsicFunctionResolver {
     // Not an intrinsic function: recursively resolve object properties
     const resolved: Record<string, unknown> = {};
     for (const [key, val] of Object.entries(obj)) {
-      resolved[key] = await this.resolveValue(val, context);
+      const resolvedVal = await this.resolveValue(val, context);
+      // Skip properties that resolve to AWS::NoValue
+      if (resolvedVal !== AWS_NO_VALUE) {
+        resolved[key] = resolvedVal;
+      } else {
+        this.logger.debug(`Property ${key} resolved to AWS::NoValue, omitting from object`);
+      }
     }
     return resolved;
   }
@@ -330,7 +345,9 @@ export class IntrinsicFunctionResolver {
     // Check if it's a pseudo parameter
     const pseudoValue = await this.resolvePseudoParameter(logicalId);
     if (pseudoValue !== undefined) {
-      this.logger.debug(`Resolved Ref to pseudo parameter: ${logicalId} -> ${pseudoValue}`);
+      const valueStr =
+        typeof pseudoValue === 'symbol' ? pseudoValue.toString() : String(pseudoValue);
+      this.logger.debug(`Resolved Ref to pseudo parameter: ${logicalId} -> ${valueStr}`);
       return pseudoValue;
     }
 
@@ -868,7 +885,9 @@ export class IntrinsicFunctionResolver {
    *
    * Pseudo parameters are built-in CloudFormation references like AWS::Region
    */
-  private async resolvePseudoParameter(name: string): Promise<string | undefined> {
+  private async resolvePseudoParameter(
+    name: string
+  ): Promise<string | symbol | undefined> {
     switch (name) {
       case 'AWS::Region': {
         const accountInfo = await getAccountInfo();
@@ -900,7 +919,8 @@ export class IntrinsicFunctionResolver {
         return undefined;
 
       case 'AWS::NoValue':
-        return undefined;
+        // Return special symbol to indicate property should be omitted
+        return AWS_NO_VALUE;
 
       default:
         return undefined;

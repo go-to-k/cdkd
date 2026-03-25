@@ -185,12 +185,13 @@ export class IAMRoleProvider implements ResourceProvider {
         attributes,
       };
     } catch (error) {
+      const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
         `Failed to create IAM role ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
         resourceType,
         logicalId,
         roleName,
-        error instanceof Error ? error : undefined
+        cause
       );
     }
   }
@@ -297,12 +298,13 @@ export class IAMRoleProvider implements ResourceProvider {
         attributes,
       };
     } catch (error) {
+      const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
         `Failed to update IAM role ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
         resourceType,
         logicalId,
         physicalId,
-        error instanceof Error ? error : undefined
+        cause
       );
     }
   }
@@ -365,12 +367,13 @@ export class IAMRoleProvider implements ResourceProvider {
 
       this.logger.info(`Successfully deleted IAM role ${logicalId}`);
     } catch (error) {
+      const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
         `Failed to delete IAM role ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
         resourceType,
         logicalId,
         physicalId,
-        error instanceof Error ? error : undefined
+        cause
       );
     }
   }
