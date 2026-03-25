@@ -110,42 +110,58 @@ export class ConsoleLogger implements Logger {
     this.level = level;
   }
 
+  getLevel(): LogLevel {
+    return this.level;
+  }
+
   /**
    * Create a child logger with a prefix
    *
    * In verbose mode, prefix is shown as [Prefix]. In compact mode, prefix is hidden.
    */
-  child(prefix: string): ConsoleLogger {
-    const childLogger = new ConsoleLogger(this.level, this.useColors);
-    const originalDebug = childLogger.debug.bind(childLogger);
-    const originalInfo = childLogger.info.bind(childLogger);
-    const originalWarn = childLogger.warn.bind(childLogger);
-    const originalError = childLogger.error.bind(childLogger);
+  child(prefix: string): ChildLogger {
+    return new ChildLogger(prefix, this.useColors);
+  }
+}
 
-    // Sync level from global logger on each call; add prefix only in verbose mode
-    const syncLevel = () => {
-      const global = globalLogger;
-      if (global) childLogger.level = global.level;
-    };
+/**
+ * Child logger that always syncs level from global logger
+ */
+class ChildLogger extends ConsoleLogger {
+  constructor(
+    private readonly prefix: string,
+    useColors: boolean
+  ) {
+    super('info', useColors);
+  }
 
-    childLogger.debug = (msg, ...args) => {
-      syncLevel();
-      originalDebug(`[${prefix}] ${msg}`, ...args);
-    };
-    childLogger.info = (msg, ...args) => {
-      syncLevel();
-      originalInfo(childLogger.level === 'debug' ? `[${prefix}] ${msg}` : msg, ...args);
-    };
-    childLogger.warn = (msg, ...args) => {
-      syncLevel();
-      originalWarn(childLogger.level === 'debug' ? `[${prefix}] ${msg}` : msg, ...args);
-    };
-    childLogger.error = (msg, ...args) => {
-      syncLevel();
-      originalError(childLogger.level === 'debug' ? `[${prefix}] ${msg}` : msg, ...args);
-    };
+  private syncLevel(): void {
+    if (globalLogger) {
+      this.setLevel(globalLogger.getLevel());
+    }
+  }
 
-    return childLogger;
+  override debug(message: string, ...args: unknown[]): void {
+    this.syncLevel();
+    super.debug(`[${this.prefix}] ${message}`, ...args);
+  }
+
+  override info(message: string, ...args: unknown[]): void {
+    this.syncLevel();
+    const msg = this.getLevel() === 'debug' ? `[${this.prefix}] ${message}` : message;
+    super.info(msg, ...args);
+  }
+
+  override warn(message: string, ...args: unknown[]): void {
+    this.syncLevel();
+    const msg = this.getLevel() === 'debug' ? `[${this.prefix}] ${message}` : message;
+    super.warn(msg, ...args);
+  }
+
+  override error(message: string, ...args: unknown[]): void {
+    this.syncLevel();
+    const msg = this.getLevel() === 'debug' ? `[${this.prefix}] ${message}` : message;
+    super.error(msg, ...args);
   }
 }
 
