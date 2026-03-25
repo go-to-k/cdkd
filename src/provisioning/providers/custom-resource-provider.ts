@@ -461,10 +461,10 @@ export class CustomResourceProvider implements ResourceProvider {
     );
 
     // Generate pre-signed PUT URL (valid for 5 minutes)
+    // Don't specify ContentType so any Content-Type is accepted (cfn-response may send different types)
     const command = new PutObjectCommand({
       Bucket: this.responseBucket,
       Key: responseKey,
-      ContentType: '',
     });
 
     const presignedUrl = await getSignedUrl(this.s3Client, command, {
