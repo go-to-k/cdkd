@@ -885,9 +885,7 @@ export class IntrinsicFunctionResolver {
    *
    * Pseudo parameters are built-in CloudFormation references like AWS::Region
    */
-  private async resolvePseudoParameter(
-    name: string
-  ): Promise<string | symbol | undefined> {
+  private async resolvePseudoParameter(name: string): Promise<string | symbol | undefined> {
     switch (name) {
       case 'AWS::Region': {
         const accountInfo = await getAccountInfo();
