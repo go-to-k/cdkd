@@ -283,9 +283,20 @@ cdkq は CDK CLI (`aws-cdk`) を**置き換える**のではなく、**デプロ
 - [x] tests/integration/examples ディレクトリ構造の作成
 - [x] basic example (シンプルな S3 バケット)
 - [x] intrinsic-functions example (組み込み関数のテスト)
-- [x] 各例のドキュメント作成
+- [x] lambda example (Lambda + DynamoDB + IAM)
+- [x] parameters example (CloudFormation Parameters - 未実装機能のデモ)
+- [x] conditions example (CloudFormation Conditions - 未実装機能のデモ)
+- [x] multi-resource example (S3 + Lambda + DynamoDB + SQS + IAM)
+- [x] 各例のドキュメント作成 (英語)
 
 **実装**: `tests/integration/examples/`
+
+**追加された例**:
+
+- `lambda/`: 実践的なLambda関数、DynamoDBテーブル、IAM権限の組み合わせ
+- `parameters/`: CloudFormation Parametersの仕様デモ（将来の実装用）
+- `conditions/`: CloudFormation Conditionsの仕様デモ（将来の実装用）
+- `multi-resource/`: イベント駆動アーキテクチャの複合的な例（現在の実装で動作）
 
 #### 8. ドキュメント作成
 
