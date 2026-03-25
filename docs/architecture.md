@@ -75,6 +75,7 @@
 - `commands/synth.ts`: Synthesis only execution
 - `commands/bootstrap.ts`: State bucket initialization
 - `options.ts`: Common CLI option definitions
+- `config-loader.ts`: Config resolution (cdk.json, env vars for `--app` and `--state-bucket`)
 
 **Design Pattern**: Command pattern
 
@@ -97,7 +98,7 @@
 **Synthesis Flow**:
 
 ```
-1. User CDK App (--app option)
+1. User CDK App (--app option, CDKQ_APP env var, or cdk.json "app" field)
    ↓
 2. @aws-cdk/toolkit-lib.synth()
    ↓
@@ -458,7 +459,7 @@ getClient<T>(ClientClass: new (...) => T, region: string): T
        ▼
 ┌─────────────────┐
 │ CLI Layer       │
-│ options.ts      │  --app, --state-bucket, --region
+│ config-loader   │  --app (or CDKQ_APP / cdk.json), --state-bucket (or env/cdk.json)
 └────────┬────────┘
          │
          ▼
@@ -549,7 +550,7 @@ getClient<T>(ClientClass: new (...) => T, region: string): T
        ▼
 ┌─────────────────┐
 │ CLI Layer       │
-│ destroy.ts      │  --stack, --force
+│ destroy.ts      │  <stackName>, --app, --force, --all
 └────────┬────────┘
          │
          ▼
@@ -639,7 +640,7 @@ Each layer has clear responsibilities
 
 ### 4. Sensitive Information
 
-- CloudFormation Parameters not supported → Use environment variables
+- CloudFormation Parameters supported (with default values and type coercion)
 - Secrets Manager / Parameter Store `Ref` not supported
 
 ## Limitations and Future Extensions
@@ -653,9 +654,6 @@ Each layer has clear responsibilities
 
 ### Phase 9 and Beyond Plans
 
-- Parameters support (via environment variables)
-- Advanced intrinsic functions (`Fn::Select`, `Fn::Split`)
-- Conditions support
 - CloudWatch metrics integration
 - Progress bar/Rich UI
 

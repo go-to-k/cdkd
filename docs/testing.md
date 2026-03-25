@@ -185,6 +185,7 @@ npm run build
 CDKQ_PATH="/Users/goto/github/cdkq"
 
 # First, check changes with diff
+# --app and --state-bucket can be omitted if set via env vars or cdk.json
 node ${CDKQ_PATH}/dist/cli.js diff \
   --app "npx ts-node --prefer-ts-exts bin/cdkq-test.ts" \
   --output cdk.out \
@@ -194,6 +195,7 @@ node ${CDKQ_PATH}/dist/cli.js diff \
   --verbose
 
 # Execute deployment (first time will create all resources)
+# Stack name is a positional argument (auto-detected if single stack)
 node ${CDKQ_PATH}/dist/cli.js deploy \
   --app "npx ts-node --prefer-ts-exts bin/cdkq-test.ts" \
   --output cdk.out \
@@ -223,16 +225,15 @@ cdkq supports resource updates via Cloud Control API JSON Patch (RFC 6902). Test
 cd /Users/goto/github/cdkq/tests/integration/examples/basic
 
 # First deployment (CREATE)
-node ../../../../dist/cli.js deploy \
+# Stack name is positional; auto-detected if single stack
+node ../../../../dist/cli.js deploy CdkqBasicExample \
   --app "npx ts-node --prefer-ts-exts bin/app.ts" \
-  --stack CdkqBasicExample \
   --state-bucket ${STATE_BUCKET} \
   --region ${AWS_REGION}
 
 # Second deployment with UPDATE test tag (UPDATE)
-CDKQ_TEST_UPDATE=true node ../../../../dist/cli.js deploy \
+CDKQ_TEST_UPDATE=true node ../../../../dist/cli.js deploy CdkqBasicExample \
   --app "npx ts-node --prefer-ts-exts bin/app.ts" \
-  --stack CdkqBasicExample \
   --state-bucket ${STATE_BUCKET} \
   --region ${AWS_REGION}
 
@@ -335,19 +336,19 @@ node ${CDKQ_PATH}/dist/cli.js deploy \
 ## 7. Delete Stack
 
 ```bash
-# Delete resources with destroy command
-node ${CDKQ_PATH}/dist/cli.js destroy \
+# Delete resources with destroy command (stack name is positional)
+node ${CDKQ_PATH}/dist/cli.js destroy CdkqTestStack \
+  --app "npx ts-node --prefer-ts-exts bin/cdkq-test.ts" \
   --state-bucket ${STATE_BUCKET} \
   --state-prefix "stacks" \
-  --stack CdkqTestStack \
   --region ${AWS_REGION} \
   --verbose
 
 # To skip confirmation prompt
-node ${CDKQ_PATH}/dist/cli.js destroy \
+node ${CDKQ_PATH}/dist/cli.js destroy CdkqTestStack \
+  --app "npx ts-node --prefer-ts-exts bin/cdkq-test.ts" \
   --state-bucket ${STATE_BUCKET} \
   --state-prefix "stacks" \
-  --stack CdkqTestStack \
   --region ${AWS_REGION} \
   --force
 ```
@@ -405,10 +406,7 @@ node ${CDKQ_PATH}/dist/cli.js deploy ... --verbose
 1. **Cloud Control API Update Processing**: The current implementation performs differential updates using JSON Patch, but complete updates may fail for some resources.
 
 2. **Some CloudFormation Intrinsic Functions**: The following functions are not yet supported:
-   - Fn::Select, Fn::Split, Fn::ImportValue
-   - Fn::If, Fn::Equals (Conditions)
    - Fn::FindInMap, Fn::GetAZs, Fn::Base64
-   - CloudFormation Parameters
 
 3. **Pseudo Parameters**: The following parameters are supported:
    - ✅ `AWS::AccountId` - Retrieves actual value from STS GetCallerIdentity

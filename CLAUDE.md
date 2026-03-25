@@ -98,7 +98,7 @@ npm run typecheck
 
 ### Core Directories
 
-- **src/cli/** - CLI command implementations (deploy, destroy, diff, synth, bootstrap)
+- **src/cli/** - CLI command implementations (deploy, destroy, diff, synth, bootstrap), config resolution
 - **src/synthesis/** - CDK app synthesis (using @aws-cdk/toolkit-lib)
 - **src/analyzer/** - DAG builder, template parser, intrinsic function resolution
 - **src/state/** - S3 state backend, lock manager
@@ -108,6 +108,7 @@ npm run typecheck
 
 ### Important Files
 
+- **src/cli/config-loader.ts** - Config resolution (cdk.json, env vars for `--app` and `--state-bucket`)
 - **src/types/** - Type definitions (config, state, resources, etc.)
 - **src/utils/** - Logger, error handler, AWS client factory
 - **build.mjs** - esbuild build script (ESM modules)
@@ -180,19 +181,30 @@ registry.register('AWS::IAM::Role', new IAMRoleProvider());
 - CDK libraries are externalized (placed in dependencies)
 - graphlib has special handling for ESM compatibility
 
-### 3. Custom Resources
+### 3. CLI Configuration Resolution
+
+- `--app` is optional: falls back to `CDKQ_APP` env var, then `cdk.json` `"app"` field
+- `--state-bucket` is optional: falls back to `CDKQ_STATE_BUCKET` env var, then `cdk.json` `context.cdkq.stateBucket`
+- Stack names are positional arguments: `cdkq deploy MyStack` (not `--stack-name`)
+- `--all` flag targets all stacks for deploy/diff/destroy
+- Wildcard support: `cdkq deploy 'My*'`
+- Single stack auto-detected (no stack name needed)
+- Implemented in `src/cli/config-loader.ts`
+
+### 4. Custom Resources
 
 - Supports Lambda-backed Custom Resources
 - Create/Update/Delete lifecycle
+- ResponseURL uses S3 pre-signed URL for cfn-response handlers
 - Implemented in `CustomResourceProvider`
 
-### 4. Asset Publishing
+### 5. Asset Publishing
 
 - Uses `@aws-cdk/cdk-assets-lib`
 - Publishes Lambda code packages to S3/ECR
 - Implemented in `AssetsPublisher` class
 
-### 5. Intrinsic Function Resolution
+### 6. Intrinsic Function Resolution
 
 - Implemented in `IntrinsicResolver` class (`src/analyzer/intrinsic-resolver.ts`)
 - Ref: References other resource's PhysicalId
@@ -200,7 +212,7 @@ registry.register('AWS::IAM::Role', new IAMRoleProvider());
 - Fn::Join: String concatenation
 - Fn::Sub: Template string substitution
 
-### 6. Dependency Analysis
+### 7. Dependency Analysis
 
 - Implemented in `DagBuilder` class (`src/analyzer/dag-builder.ts`)
 - Scans template to detect `Ref` / `Fn::GetAtt` / `DependsOn`
@@ -276,8 +288,13 @@ See [docs/provider-development.md](docs/provider-development.md) for details.
 - Some intrinsic functions not supported (Fn::FindInMap, Fn::GetAZs, Fn::Base64)
 - NOT recommended for production use
 
-**Recently Implemented** (2026-03-25):
+**Recently Implemented** (2026-03-26):
 
+- ✅ CLI: `--app` and `--state-bucket` optional (fallback to env vars / cdk.json)
+- ✅ CLI: Positional stack names, `--all` flag, wildcard support, single stack auto-detection
+- ✅ CLI: `cdkq destroy` accepts `--app` option; confirmation accepts y/yes
+- ✅ Resource replacement: immutable property changes trigger DELETE then CREATE
+- ✅ Custom Resource ResponseURL: S3 pre-signed URL for cfn-response handlers
 - ✅ CloudFormation Parameters support (with default values and type coercion)
 - ✅ Intrinsic functions: Fn::Select, Fn::Split, Fn::If, Fn::Equals, Fn::And, Fn::Or, Fn::Not, Fn::ImportValue
 - ✅ Conditions evaluation (with logical operators)

@@ -207,7 +207,7 @@ aws s3 cp /tmp/state.json s3://${STATE_BUCKET}/stacks/MyStack/state.json
 
 ```bash
 # Delete all resources
-node dist/cli.js destroy --stack MyStack --force
+node dist/cli.js destroy MyStack --force
 
 # Redeploy
 node dist/cli.js deploy --app "..." --state-bucket ${STATE_BUCKET}
