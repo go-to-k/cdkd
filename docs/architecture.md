@@ -204,7 +204,7 @@ Resolves CloudFormation intrinsic functions
 
 **Unsupported Functions**:
 
-- `Fn::FindInMap`, `Fn::GetAZs`, `Fn::Base64`
+- `Fn::GetAZs`
 
 ### 5. State Layer (`src/state/`)
 
@@ -650,7 +650,7 @@ Each layer has clear responsibilities
 1. **CloudFormation Macros**: Not supported
 2. **Nested Stacks**: Not supported
 3. **Change Sets**: No concept (always executes immediately)
-4. **Some intrinsic functions**: `Fn::FindInMap`, `Fn::GetAZs`, `Fn::Base64` not yet implemented
+4. **Some intrinsic functions**: `Fn::GetAZs` not yet implemented
 
 ### Phase 9 and Beyond Plans
 

@@ -33,8 +33,10 @@ export class CloudControlProvider implements ResourceProvider {
 
   // Maximum time to wait for operation completion (15 minutes)
   private readonly MAX_WAIT_TIME_MS = 15 * 60 * 1000;
-  // Poll interval for checking operation status (5 seconds)
-  private readonly POLL_INTERVAL_MS = 5 * 1000;
+  // Initial poll interval (1 second) - increases with exponential backoff
+  private readonly INITIAL_POLL_INTERVAL_MS = 1_000;
+  // Maximum poll interval (10 seconds)
+  private readonly MAX_POLL_INTERVAL_MS = 10_000;
 
   constructor() {
     const awsClients = getAwsClients();
@@ -282,6 +284,7 @@ export class CloudControlProvider implements ResourceProvider {
   ): Promise<ProgressEvent> {
     const startTime = Date.now();
     let attempts = 0;
+    let pollInterval = this.INITIAL_POLL_INTERVAL_MS;
 
     while (Date.now() - startTime < this.MAX_WAIT_TIME_MS) {
       attempts++;
@@ -303,7 +306,7 @@ export class CloudControlProvider implements ResourceProvider {
       }
 
       this.logger.debug(
-        `${operation} ${logicalId}: ${progressEvent.OperationStatus} (attempt ${attempts})`
+        `${operation} ${logicalId}: ${progressEvent.OperationStatus} (attempt ${attempts}, next poll ${pollInterval}ms)`
       );
 
       switch (progressEvent.OperationStatus) {
@@ -328,15 +331,17 @@ export class CloudControlProvider implements ResourceProvider {
 
         case 'IN_PROGRESS':
         case 'PENDING':
-          // Continue waiting
-          await this.sleep(this.POLL_INTERVAL_MS);
+          // Exponential backoff: 1s → 2s → 4s → 8s → 10s (capped)
+          await this.sleep(pollInterval);
+          pollInterval = Math.min(pollInterval * 2, this.MAX_POLL_INTERVAL_MS);
           break;
 
         default:
           this.logger.warn(
             `Unknown operation status for ${logicalId}: ${progressEvent.OperationStatus}`
           );
-          await this.sleep(this.POLL_INTERVAL_MS);
+          await this.sleep(pollInterval);
+          pollInterval = Math.min(pollInterval * 2, this.MAX_POLL_INTERVAL_MS);
       }
     }
 

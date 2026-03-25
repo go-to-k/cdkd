@@ -68,7 +68,7 @@ cdkq has a 7-layer system architecture:
 
 4. **Intrinsic Function Resolution**
    - Fully supported: `Ref`, `Fn::GetAtt`, `Fn::Join`, `Fn::Sub`, `Fn::Select`, `Fn::Split`, `Fn::If`, `Fn::Equals`, `Fn::And`, `Fn::Or`, `Fn::Not`, `Fn::ImportValue`
-   - Not yet supported: `Fn::FindInMap`, `Fn::GetAZs`, `Fn::Base64`
+   - Not yet supported: `Fn::GetAZs`
 
 ## Build and Test Commands
 
@@ -285,7 +285,7 @@ See [docs/provider-development.md](docs/provider-development.md) for details.
 
 ## Known Limitations
 
-- Some intrinsic functions not supported (Fn::FindInMap, Fn::GetAZs, Fn::Base64)
+- Some intrinsic functions not supported (Fn::GetAZs)
 - NOT recommended for production use
 
 **Recently Implemented** (2026-03-26):
@@ -302,6 +302,9 @@ See [docs/provider-development.md](docs/provider-development.md) for details.
 - ✅ Cloud Control API JSON Patch for updates (RFC 6902 compliant)
 - ✅ Resource replacement detection (immutable property detection for 10+ AWS resource types)
 - ✅ AWS::NoValue pseudo parameter (for conditional property omission)
+- ✅ Fn::FindInMap (Mappings lookup) and Fn::Base64 (base64 encoding)
+- ✅ DeletionPolicy: Retain support (skip deletion for retained resources)
+- ✅ Resource replacement for immutable property changes (CREATE→DELETE)
 - ✅ Type safety improvements (error handling, any type elimination in custom resources)
 
 ## Dependencies

@@ -80,9 +80,9 @@ AWS CDK is great for defining infrastructure as code, but CloudFormation deploym
 | `Fn::Or` | ✅ Supported | Logical OR (2-10 conditions) |
 | `Fn::Not` | ✅ Supported | Logical NOT |
 | `Fn::ImportValue` | ✅ Supported | Cross-stack references via S3 state |
-| `Fn::FindInMap` | ❌ Not yet | Mapping lookup |
+| `Fn::FindInMap` | ✅ Supported | Mapping lookup |
 | `Fn::GetAZs` | ❌ Not yet | Availability Zone list |
-| `Fn::Base64` | ❌ Not yet | Base64 encoding |
+| `Fn::Base64` | ✅ Supported | Base64 encoding |
 
 ### Pseudo Parameters
 
@@ -128,7 +128,11 @@ AWS CDK is great for defining infrastructure as code, but CloudFormation deploym
 | Custom Resources (SNS-backed) | ❌ | Lambda-backed only |
 | Custom Resources (async/SFN) | ❌ | Sync invocation only |
 | Rollback | ❌ | Not yet implemented |
-| `Fn::FindInMap` / `Fn::GetAZs` | ❌ | Not yet implemented |
+| `Fn::FindInMap` | ✅ | Mapping lookup |
+| `Fn::Base64` | ✅ | Base64 encoding |
+| `Fn::GetAZs` | ❌ | Not yet implemented |
+| DeletionPolicy: Retain | ✅ | Skip deletion for retained resources |
+| UpdateReplacePolicy: Retain | ✅ | Keep old resource on replacement |
 
 ## Prerequisites
 
@@ -202,6 +206,8 @@ See the [tests/integration/examples](tests/integration/examples) directory for w
 - [intrinsic-functions](tests/integration/examples/intrinsic-functions) - Intrinsic function resolution
 - [lambda](tests/integration/examples/lambda) - Lambda + DynamoDB + IAM integration
 - [cross-stack-references](tests/integration/examples/cross-stack-references) - Cross-stack references with Fn::ImportValue
+- [ecr](tests/integration/examples/ecr) - ECR repository deployment
+- [apigateway](tests/integration/examples/apigateway) - API Gateway integration
 
 See [docs/TESTING.md](docs/TESTING.md) for detailed testing instructions including UPDATE operations.
 
@@ -305,7 +311,7 @@ See [docs/implementation-plan.md](docs/implementation-plan.md) for detailed impl
 - ✅ Type safety improvements (error handling, any type elimination)
 - ✅ Resource replacement detection (immutable property detection for 10+ AWS resource types)
 - ✅ Code quality improvements (eliminated ~80 lines of duplicate code in DeployEngine)
-- ✅ Integration testing (7 examples verified with real AWS deployments)
+- ✅ Integration testing (9 examples verified with real AWS deployments)
 - ✅ UPDATE operations verified (JSON Patch working for S3, Lambda, IAM resources)
 - ✅ Environment variable support for UPDATE testing (`CDKQ_TEST_UPDATE=true`)
 
@@ -313,7 +319,7 @@ See [docs/implementation-plan.md](docs/implementation-plan.md) for detailed impl
 
 - Custom Resources: SNS-backed and async/Step Functions patterns (Lambda sync only)
 - Custom Resources: CDK internal custom resources (`Custom::S3AutoDeleteObjects` etc.) — ResponseURL issue
-- Advanced intrinsic functions (`Fn::FindInMap`, `Fn::GetAZs`, `Fn::Base64`)
+- Advanced intrinsic functions (`Fn::GetAZs`)
 - Rollback mechanism
 - Progress bar / advanced UI
 - Default bootstrap bucket name (currently `--state-bucket` is required)

@@ -129,6 +129,30 @@ npm install
 - Fn::ImportValue for cross-stack references
 - S3 state backend for sharing exports between stacks
 
+#### ECR Example (Docker Image Lambda with ECR)
+
+```bash
+cd /Users/goto/github/cdkq/tests/integration/examples/ecr
+npm install
+```
+
+**Tested features**:
+
+- Docker image Lambda functions
+- ECR asset publishing
+
+#### API Gateway Example (REST API + Lambda)
+
+```bash
+cd /Users/goto/github/cdkq/tests/integration/examples/apigateway
+npm install
+```
+
+**Tested features**:
+
+- REST API with API Gateway
+- Lambda integration
+
 For details on each example, refer to the README.md in each directory.
 
 ### Option B: Create a New CDK Application
@@ -406,7 +430,7 @@ node ${CDKQ_PATH}/dist/cli.js deploy ... --verbose
 1. **Cloud Control API Update Processing**: The current implementation performs differential updates using JSON Patch, but complete updates may fail for some resources.
 
 2. **Some CloudFormation Intrinsic Functions**: The following functions are not yet supported:
-   - Fn::FindInMap, Fn::GetAZs, Fn::Base64
+   - Fn::GetAZs
 
 3. **Pseudo Parameters**: The following parameters are supported:
    - ✅ `AWS::AccountId` - Retrieves actual value from STS GetCallerIdentity

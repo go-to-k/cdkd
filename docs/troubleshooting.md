@@ -473,9 +473,9 @@ CloudFormation intrinsic function not supported by cdkq is being used.
 | `Fn::Or` | ✅ |
 | `Fn::Not` | ✅ |
 | `Fn::ImportValue` | ✅ |
-| `Fn::FindInMap` | ❌ |
+| `Fn::FindInMap` | ✅ |
 | `Fn::GetAZs` | ❌ |
-| `Fn::Base64` | ❌ |
+| `Fn::Base64` | ✅ |
 
 #### Solutions
 
