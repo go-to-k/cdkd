@@ -205,6 +205,41 @@ cdkq は CDK CLI (`aws-cdk`) を**置き換える**のではなく、**デプロ
 
 **テスト結果**: basic exampleでS3バケットのタグ更新で検証済み
 
+#### Fn::GetAtt ARN構築実装 ✅ **完了**
+
+- [x] constructAttribute() メソッドの実装
+- [x] Cloud Control API から取得できない属性の手動構築
+- [x] リソースタイプ別ARN生成ロジック
+- [x] 疑似パラメータによるregion/accountId/partition解決
+
+**サポートリソース**:
+
+- DynamoDB Table (Arn, StreamArn)
+- S3 Bucket (Arn, DomainName, RegionalDomainName, WebsiteURL)
+- IAM Role/Policy (Arn, RoleId/PolicyId)
+- Lambda Function (Arn)
+- SQS Queue (Arn, QueueUrl)
+- SNS Topic (TopicArn)
+
+**実装**: `src/deployment/intrinsic-function-resolver.ts:162-270`
+
+**テスト結果**: lambda-exampleでDynamoDB ARNがIAM Policyに正しく解決されることを検証済み
+
+#### アセット公開の修正 ✅ **完了**
+
+- [x] アセットマニフェストパス解決の修正
+- [x] スタック名ベースのマニフェスト検索実装
+- [x] 複数スタックのアセット公開対応
+
+**変更点**:
+
+- `assets.json` → `${stackName}.assets.json`
+- スタックごとにアセットマニフェストを検索するループを追加
+
+**実装**: `src/cli/commands/deploy.ts:85-125`
+
+**テスト結果**: lambda-exampleでLambdaコードのS3アップロードが成功
+
 ### 優先度: 高 (High Priority)
 
 #### 1. CloudFormation 組み込み関数の追加対応
@@ -265,8 +300,8 @@ cdkq は CDK CLI (`aws-cdk`) を**置き換える**のではなく、**デプロ
 
 **統合テスト** (実際の AWS デプロイ):
 
-- [ ] S3, Lambda, DynamoDB などの実デプロイ
-- [ ] アセット公開テスト (S3 / ECR)
+- [x] S3, Lambda, DynamoDB などの実デプロイ (lambda-example で検証済み)
+- [x] アセット公開テスト (S3 / ECR) (Lambda コードアセットで検証済み)
 - [ ] マルチスタックのテスト
 - [ ] エラーケースのテスト
 - [ ] 更新デプロイのテスト

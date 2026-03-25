@@ -49,7 +49,7 @@ cdkq には複数のテスト用例が用意されています:
 
 ### オプション A: 既存の例を使用 (推奨)
 
-cdkq リポジトリには2つの例が含まれています:
+cdkq リポジトリには複数の例が含まれています:
 
 #### Basic Example (シンプルな S3 バケット)
 
@@ -64,6 +64,38 @@ npm install
 cd /Users/goto/github/cdkq/tests/integration/examples/intrinsic-functions
 npm install
 ```
+
+#### Lambda Example (Lambda + DynamoDB + IAM) ✅ 推奨
+
+実践的なLambda関数とDynamoDBテーブルの統合例:
+
+```bash
+cd /Users/goto/github/cdkq/tests/integration/examples/lambda
+npm install
+```
+
+**テスト済み機能**:
+
+- Lambda アセット公開 (S3へのコードアップロード)
+- Fn::GetAtt による ARN 解決
+- 環境変数での Ref 解決
+- IAM Role/Policy の自動作成
+
+#### Multi-Resource Example (複合的な例)
+
+S3 + Lambda + DynamoDB + SQS + IAM のイベント駆動アーキテクチャ:
+
+```bash
+cd /Users/goto/github/cdkq/tests/integration/examples/multi-resource
+npm install
+```
+
+#### Parameters/Conditions Examples (未実装機能のデモ)
+
+将来の実装のための仕様例:
+
+- `tests/integration/examples/parameters/` - CloudFormation Parameters
+- `tests/integration/examples/conditions/` - CloudFormation Conditions
 
 各例の詳細については、それぞれのディレクトリ内の README.md を参照してください。
 
