@@ -63,7 +63,7 @@ export class DagBuilder {
       }
     }
 
-    this.logger.info(`Dependency graph built: ${resourceIds.length} nodes, ${edgeCount} edges`);
+    this.logger.debug(`Dependency graph built: ${resourceIds.length} nodes, ${edgeCount} edges`);
 
     // Validate graph is acyclic
     if (!alg.isAcyclic(graph)) {
@@ -129,7 +129,7 @@ export class DagBuilder {
       levelNum++;
     }
 
-    this.logger.info(`Execution levels computed: ${levels.length} levels`);
+    this.logger.debug(`Execution levels computed: ${levels.length} levels`);
 
     return levels;
   }

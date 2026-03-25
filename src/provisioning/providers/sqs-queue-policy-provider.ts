@@ -31,7 +31,7 @@ export class SQSQueuePolicyProvider implements ResourceProvider {
     resourceType: string,
     properties: Record<string, unknown>
   ): Promise<ResourceCreateResult> {
-    this.logger.info(`Creating SQS queue policy ${logicalId}`);
+    this.logger.debug(`Creating SQS queue policy ${logicalId}`);
 
     const queues = properties['Queues'] as string[] | undefined;
     const policyDocument = properties['PolicyDocument'];
@@ -70,7 +70,7 @@ export class SQSQueuePolicyProvider implements ResourceProvider {
         );
       }
 
-      this.logger.info(`Successfully created SQS queue policy ${logicalId}`);
+      this.logger.debug(`Successfully created SQS queue policy ${logicalId}`);
 
       // Physical ID is the first queue URL
       return {
@@ -99,7 +99,7 @@ export class SQSQueuePolicyProvider implements ResourceProvider {
     properties: Record<string, unknown>,
     _previousProperties: Record<string, unknown>
   ): Promise<ResourceUpdateResult> {
-    this.logger.info(`Updating SQS queue policy ${logicalId}: ${physicalId}`);
+    this.logger.debug(`Updating SQS queue policy ${logicalId}: ${physicalId}`);
 
     const queues = properties['Queues'] as string[] | undefined;
     const policyDocument = properties['PolicyDocument'];
@@ -140,7 +140,7 @@ export class SQSQueuePolicyProvider implements ResourceProvider {
         );
       }
 
-      this.logger.info(`Successfully updated SQS queue policy ${logicalId}`);
+      this.logger.debug(`Successfully updated SQS queue policy ${logicalId}`);
 
       return {
         physicalId: queues[0]!,
@@ -168,7 +168,7 @@ export class SQSQueuePolicyProvider implements ResourceProvider {
     resourceType: string,
     _properties?: Record<string, unknown>
   ): Promise<void> {
-    this.logger.info(`Deleting SQS queue policy ${logicalId}: ${physicalId}`);
+    this.logger.debug(`Deleting SQS queue policy ${logicalId}: ${physicalId}`);
 
     try {
       // Remove the policy by setting it to empty
@@ -181,14 +181,14 @@ export class SQSQueuePolicyProvider implements ResourceProvider {
         })
       );
 
-      this.logger.info(`Successfully deleted SQS queue policy ${logicalId}`);
+      this.logger.debug(`Successfully deleted SQS queue policy ${logicalId}`);
     } catch (error) {
       // Check if queue doesn't exist
       if (
         error instanceof Error &&
         (error.name === 'QueueDoesNotExist' || error.message.includes('does not exist'))
       ) {
-        this.logger.info(`Queue ${physicalId} does not exist, skipping policy deletion`);
+        this.logger.debug(`Queue ${physicalId} does not exist, skipping policy deletion`);
         return;
       }
 

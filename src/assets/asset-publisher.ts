@@ -42,7 +42,7 @@ export class AssetPublisher {
     options: AssetPublisherOptions = {}
   ): Promise<void> {
     try {
-      this.logger.info('Loading asset manifest:', manifestPath);
+      this.logger.debug('Loading asset manifest:', manifestPath);
 
       // Load asset manifest
       const manifest = AssetManifest.fromPath(manifestPath);
@@ -62,9 +62,9 @@ export class AssetPublisher {
       const progressListener: IPublishProgressListener = {
         onPublishEvent: (type, event) => {
           if (type === EventType.START) {
-            this.logger.info(`Publishing asset: ${event.message || 'unknown'}`);
+            this.logger.debug(`Publishing asset: ${event.message || 'unknown'}`);
           } else if (type === EventType.SUCCESS) {
-            this.logger.info(`✅ Published: ${event.message || 'unknown'}`);
+            this.logger.debug(`✅ Published: ${event.message || 'unknown'}`);
           } else if (type === EventType.FAIL) {
             this.logger.error(`❌ Failed: ${event.message || 'unknown'}`);
           }
@@ -80,10 +80,10 @@ export class AssetPublisher {
       });
 
       // Publish all assets
-      this.logger.info('Publishing assets...');
+      this.logger.debug('Publishing assets...');
       await publisher.publish();
 
-      this.logger.info('✅ All assets published successfully');
+      this.logger.debug('✅ All assets published successfully');
     } catch (error) {
       if (error instanceof AssetError) {
         throw error;

@@ -140,7 +140,7 @@ export class S3StateBackend {
         throw new StateError(`No ETag returned after saving state for stack '${stackName}'`);
       }
 
-      this.logger.info(`State saved for stack: ${stackName}, new ETag: ${response.ETag}`);
+      this.logger.debug(`State saved for stack: ${stackName}, new ETag: ${response.ETag}`);
 
       return response.ETag;
     } catch (error) {
@@ -173,7 +173,7 @@ export class S3StateBackend {
         })
       );
 
-      this.logger.info(`State deleted for stack: ${stackName}`);
+      this.logger.debug(`State deleted for stack: ${stackName}`);
     } catch (error) {
       throw new StateError(
         `Failed to delete state for stack '${stackName}': ${error instanceof Error ? error.message : String(error)}`,

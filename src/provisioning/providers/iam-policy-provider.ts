@@ -40,7 +40,7 @@ export class IAMPolicyProvider implements ResourceProvider {
     resourceType: string,
     properties: Record<string, unknown>
   ): Promise<ResourceCreateResult> {
-    this.logger.info(`Creating IAM policy ${logicalId}`);
+    this.logger.debug(`Creating IAM policy ${logicalId}`);
 
     const policyName = (properties['PolicyName'] as string | undefined) || logicalId;
     const policyDocument = properties['PolicyDocument'];
@@ -80,7 +80,7 @@ export class IAMPolicyProvider implements ResourceProvider {
         this.logger.debug(`Attached inline policy ${policyName} to role ${roleName}`);
       }
 
-      this.logger.info(`Successfully created IAM policy ${logicalId}: ${policyName}`);
+      this.logger.debug(`Successfully created IAM policy ${logicalId}: ${policyName}`);
 
       // For inline policies, physical ID is a combination of policy name and first role
       const physicalId = `${policyName}:${roles[0]}`;
@@ -113,7 +113,7 @@ export class IAMPolicyProvider implements ResourceProvider {
     properties: Record<string, unknown>,
     previousProperties: Record<string, unknown>
   ): Promise<ResourceUpdateResult> {
-    this.logger.info(`Updating IAM policy ${logicalId}: ${physicalId}`);
+    this.logger.debug(`Updating IAM policy ${logicalId}: ${physicalId}`);
 
     const newPolicyName = (properties['PolicyName'] as string | undefined) || logicalId;
     const newRoles = properties['Roles'] as string[] | undefined;
@@ -178,7 +178,7 @@ export class IAMPolicyProvider implements ResourceProvider {
         }
       }
 
-      this.logger.info(`Successfully updated IAM policy ${logicalId}`);
+      this.logger.debug(`Successfully updated IAM policy ${logicalId}`);
 
       const newPhysicalId = `${newPolicyName}:${newRoles[0]}`;
 
@@ -210,7 +210,7 @@ export class IAMPolicyProvider implements ResourceProvider {
     resourceType: string,
     _properties?: Record<string, unknown>
   ): Promise<void> {
-    this.logger.info(`Deleting IAM policy ${logicalId}: ${physicalId}`);
+    this.logger.debug(`Deleting IAM policy ${logicalId}: ${physicalId}`);
 
     // Parse physical ID to get policy name and role
     const [policyName, firstRole] = physicalId.split(':');
@@ -235,13 +235,13 @@ export class IAMPolicyProvider implements ResourceProvider {
         this.logger.debug(`Deleted inline policy ${policyName} from role ${firstRole}`);
       } catch (error) {
         if (error instanceof NoSuchEntityException) {
-          this.logger.info(`Policy ${policyName} on role ${firstRole} does not exist, skipping`);
+          this.logger.debug(`Policy ${policyName} on role ${firstRole} does not exist, skipping`);
         } else {
           throw error;
         }
       }
 
-      this.logger.info(`Successfully deleted IAM policy ${logicalId}`);
+      this.logger.debug(`Successfully deleted IAM policy ${logicalId}`);
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(

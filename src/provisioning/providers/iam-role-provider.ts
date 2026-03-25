@@ -74,7 +74,7 @@ export class IAMRoleProvider implements ResourceProvider {
     resourceType: string,
     properties: Record<string, unknown>
   ): Promise<ResourceCreateResult> {
-    this.logger.info(`Creating IAM role ${logicalId}`);
+    this.logger.debug(`Creating IAM role ${logicalId}`);
 
     const rawRoleName = (properties['RoleName'] as string | undefined) || logicalId;
     const roleName = this.shortenRoleName(rawRoleName);
@@ -173,7 +173,7 @@ export class IAMRoleProvider implements ResourceProvider {
         this.logger.debug(`Tagged role ${roleName}`);
       }
 
-      this.logger.info(`Successfully created IAM role ${logicalId}: ${roleName}`);
+      this.logger.debug(`Successfully created IAM role ${logicalId}: ${roleName}`);
 
       const attributes = {
         Arn: response.Role?.Arn,
@@ -206,13 +206,13 @@ export class IAMRoleProvider implements ResourceProvider {
     properties: Record<string, unknown>,
     previousProperties: Record<string, unknown>
   ): Promise<ResourceUpdateResult> {
-    this.logger.info(`Updating IAM role ${logicalId}: ${physicalId}`);
+    this.logger.debug(`Updating IAM role ${logicalId}: ${physicalId}`);
 
     const newRoleName = (properties['RoleName'] as string | undefined) || logicalId;
 
     // Check if role name changed (requires replacement)
     if (newRoleName !== physicalId) {
-      this.logger.info(`Role name changed, replacing role: ${physicalId} -> ${newRoleName}`);
+      this.logger.debug(`Role name changed, replacing role: ${physicalId} -> ${newRoleName}`);
 
       // Create new role
       const createResult = await this.create(logicalId, resourceType, properties);
@@ -280,7 +280,7 @@ export class IAMRoleProvider implements ResourceProvider {
           | undefined
       );
 
-      this.logger.info(`Successfully updated IAM role ${logicalId}`);
+      this.logger.debug(`Successfully updated IAM role ${logicalId}`);
 
       // Get updated role info
       const getRoleResponse = await this.iamClient.send(
@@ -318,7 +318,7 @@ export class IAMRoleProvider implements ResourceProvider {
     resourceType: string,
     _properties?: Record<string, unknown>
   ): Promise<void> {
-    this.logger.info(`Deleting IAM role ${logicalId}: ${physicalId}`);
+    this.logger.debug(`Deleting IAM role ${logicalId}: ${physicalId}`);
 
     try {
       // Check if role exists
@@ -326,7 +326,7 @@ export class IAMRoleProvider implements ResourceProvider {
         await this.iamClient.send(new GetRoleCommand({ RoleName: physicalId }));
       } catch (error) {
         if (error instanceof NoSuchEntityException) {
-          this.logger.info(`Role ${physicalId} does not exist, skipping deletion`);
+          this.logger.debug(`Role ${physicalId} does not exist, skipping deletion`);
           return;
         }
         throw error;
@@ -365,7 +365,7 @@ export class IAMRoleProvider implements ResourceProvider {
       // Delete role
       await this.iamClient.send(new DeleteRoleCommand({ RoleName: physicalId }));
 
-      this.logger.info(`Successfully deleted IAM role ${logicalId}`);
+      this.logger.debug(`Successfully deleted IAM role ${logicalId}`);
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(

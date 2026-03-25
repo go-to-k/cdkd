@@ -80,7 +80,7 @@ export class LockManager {
         })
       );
 
-      this.logger.info(`Lock acquired for stack: ${stackName}, owner: ${lockOwner}`);
+      this.logger.debug(`Lock acquired for stack: ${stackName}, owner: ${lockOwner}`);
       return true;
     } catch (error) {
       // Check for PreconditionFailed error (S3 condition not met)
@@ -156,7 +156,7 @@ export class LockManager {
         })
       );
 
-      this.logger.info(`Lock released for stack: ${stackName}`);
+      this.logger.debug(`Lock released for stack: ${stackName}`);
     } catch (error) {
       throw new LockError(
         `Failed to release lock for stack '${stackName}': ${error instanceof Error ? error.message : String(error)}`,
@@ -233,7 +233,7 @@ export class LockManager {
 
         // Lock is fresh, wait and retry
         if (attempt < maxRetries - 1) {
-          this.logger.info(
+          this.logger.debug(
             `Stack ${stackName} is locked by ${lockInfo.owner}, waiting ${retryDelay}ms... (attempt ${attempt + 1}/${maxRetries})`
           );
           await new Promise((resolve) => setTimeout(resolve, retryDelay));

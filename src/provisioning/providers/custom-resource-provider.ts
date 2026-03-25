@@ -148,7 +148,7 @@ export class CustomResourceProvider implements ResourceProvider {
     resourceType: string,
     properties: Record<string, unknown>
   ): Promise<ResourceCreateResult> {
-    this.logger.info(`Creating custom resource ${logicalId} (${resourceType})`);
+    this.logger.debug(`Creating custom resource ${logicalId} (${resourceType})`);
 
     const serviceToken = properties['ServiceToken'] as string | undefined;
 
@@ -194,7 +194,7 @@ export class CustomResourceProvider implements ResourceProvider {
       const physicalId: string = cfnResponse.PhysicalResourceId || logicalId;
       const attributes: Record<string, unknown> = cfnResponse.Data || {};
 
-      this.logger.info(`Successfully created custom resource ${logicalId}: ${physicalId}`);
+      this.logger.debug(`Successfully created custom resource ${logicalId}: ${physicalId}`);
 
       return { physicalId, attributes };
     } catch (error) {
@@ -219,7 +219,7 @@ export class CustomResourceProvider implements ResourceProvider {
     properties: Record<string, unknown>,
     previousProperties: Record<string, unknown>
   ): Promise<ResourceUpdateResult> {
-    this.logger.info(`Updating custom resource ${logicalId}: ${physicalId} (${resourceType})`);
+    this.logger.debug(`Updating custom resource ${logicalId}: ${physicalId} (${resourceType})`);
 
     const serviceToken = properties['ServiceToken'] as string | undefined;
 
@@ -269,7 +269,7 @@ export class CustomResourceProvider implements ResourceProvider {
       const wasReplaced: boolean = newPhysicalId !== physicalId;
       const attributes: Record<string, unknown> = cfnResponse.Data || {};
 
-      this.logger.info(
+      this.logger.debug(
         `Successfully updated custom resource ${logicalId}: ${newPhysicalId}${wasReplaced ? ' (replaced)' : ''}`
       );
 
@@ -295,7 +295,7 @@ export class CustomResourceProvider implements ResourceProvider {
     resourceType: string,
     properties?: Record<string, unknown>
   ): Promise<void> {
-    this.logger.info(`Deleting custom resource ${logicalId}: ${physicalId} (${resourceType})`);
+    this.logger.debug(`Deleting custom resource ${logicalId}: ${physicalId} (${resourceType})`);
 
     if (!properties) {
       this.logger.warn(
@@ -342,7 +342,7 @@ export class CustomResourceProvider implements ResourceProvider {
           `Custom resource delete handler returned FAILED for ${logicalId}: ${cfnResponse.Reason || 'Unknown reason'}`
         );
       } else {
-        this.logger.info(`Successfully deleted custom resource ${logicalId}`);
+        this.logger.debug(`Successfully deleted custom resource ${logicalId}`);
       }
     } catch (error) {
       // For deletion, we should be more lenient with errors

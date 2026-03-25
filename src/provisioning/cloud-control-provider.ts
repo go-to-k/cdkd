@@ -52,7 +52,7 @@ export class CloudControlProvider implements ResourceProvider {
     resourceType: string,
     properties: Record<string, unknown>
   ): Promise<ResourceCreateResult> {
-    this.logger.info(`Creating resource ${logicalId} (${resourceType})`);
+    this.logger.debug(`Creating resource ${logicalId} (${resourceType})`);
 
     try {
       // Start resource creation
@@ -90,7 +90,7 @@ export class CloudControlProvider implements ResourceProvider {
         );
       }
 
-      this.logger.info(`Created resource ${logicalId}, physical ID: ${progressEvent.Identifier}`);
+      this.logger.debug(`Created resource ${logicalId}, physical ID: ${progressEvent.Identifier}`);
 
       // Parse resource properties to extract attributes
       const result: ResourceCreateResult = {
@@ -124,7 +124,7 @@ export class CloudControlProvider implements ResourceProvider {
     properties: Record<string, unknown>,
     previousProperties: Record<string, unknown>
   ): Promise<ResourceUpdateResult> {
-    this.logger.info(
+    this.logger.debug(
       `Updating resource ${logicalId} (${resourceType}), physical ID: ${physicalId}`
     );
 
@@ -174,7 +174,7 @@ export class CloudControlProvider implements ResourceProvider {
         'UPDATE'
       );
 
-      this.logger.info(`Updated resource ${logicalId}`);
+      this.logger.debug(`Updated resource ${logicalId}`);
 
       // Parse resource properties to extract attributes
       // TODO: Detect resource replacement from Cloud Control API response
@@ -211,7 +211,7 @@ export class CloudControlProvider implements ResourceProvider {
     resourceType: string,
     _properties?: Record<string, unknown>
   ): Promise<void> {
-    this.logger.info(
+    this.logger.debug(
       `Deleting resource ${logicalId} (${resourceType}), physical ID: ${physicalId}`
     );
 
@@ -240,7 +240,7 @@ export class CloudControlProvider implements ResourceProvider {
       // Wait for deletion to complete
       await this.waitForOperation(deleteResponse.ProgressEvent.RequestToken, logicalId, 'DELETE');
 
-      this.logger.info(`Deleted resource ${logicalId}`);
+      this.logger.debug(`Deleted resource ${logicalId}`);
     } catch (error) {
       this.handleError(error, 'DELETE', resourceType, logicalId, physicalId);
     }

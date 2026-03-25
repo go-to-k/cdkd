@@ -36,7 +36,7 @@ export class S3BucketPolicyProvider implements ResourceProvider {
     resourceType: string,
     properties: Record<string, unknown>
   ): Promise<ResourceCreateResult> {
-    this.logger.info(`Creating S3 bucket policy ${logicalId}`);
+    this.logger.debug(`Creating S3 bucket policy ${logicalId}`);
 
     const bucketName = properties['Bucket'] as string | undefined;
     const policyDocument = properties['PolicyDocument'];
@@ -69,7 +69,7 @@ export class S3BucketPolicyProvider implements ResourceProvider {
         })
       );
 
-      this.logger.info(`Successfully created S3 bucket policy ${logicalId}`);
+      this.logger.debug(`Successfully created S3 bucket policy ${logicalId}`);
 
       // Physical ID is the bucket name
       return {
@@ -98,7 +98,7 @@ export class S3BucketPolicyProvider implements ResourceProvider {
     properties: Record<string, unknown>,
     _previousProperties: Record<string, unknown>
   ): Promise<ResourceUpdateResult> {
-    this.logger.info(`Updating S3 bucket policy ${logicalId}: ${physicalId}`);
+    this.logger.debug(`Updating S3 bucket policy ${logicalId}: ${physicalId}`);
 
     const bucketName = properties['Bucket'] as string | undefined;
     const policyDocument = properties['PolicyDocument'];
@@ -133,7 +133,7 @@ export class S3BucketPolicyProvider implements ResourceProvider {
         })
       );
 
-      this.logger.info(`Successfully updated S3 bucket policy ${logicalId}`);
+      this.logger.debug(`Successfully updated S3 bucket policy ${logicalId}`);
 
       return {
         physicalId: bucketName,
@@ -161,7 +161,7 @@ export class S3BucketPolicyProvider implements ResourceProvider {
     resourceType: string,
     _properties?: Record<string, unknown>
   ): Promise<void> {
-    this.logger.info(`Deleting S3 bucket policy ${logicalId}: ${physicalId}`);
+    this.logger.debug(`Deleting S3 bucket policy ${logicalId}: ${physicalId}`);
 
     try {
       try {
@@ -170,10 +170,10 @@ export class S3BucketPolicyProvider implements ResourceProvider {
             Bucket: physicalId,
           })
         );
-        this.logger.info(`Successfully deleted S3 bucket policy ${logicalId}`);
+        this.logger.debug(`Successfully deleted S3 bucket policy ${logicalId}`);
       } catch (error) {
         if (error instanceof NoSuchBucket) {
-          this.logger.info(`Bucket ${physicalId} does not exist, skipping policy deletion`);
+          this.logger.debug(`Bucket ${physicalId} does not exist, skipping policy deletion`);
           return;
         }
         // If the policy doesn't exist, that's OK too
@@ -181,7 +181,7 @@ export class S3BucketPolicyProvider implements ResourceProvider {
           error instanceof Error &&
           (error.name === 'NoSuchBucketPolicy' || error.message.includes('does not have'))
         ) {
-          this.logger.info(`Bucket policy for ${physicalId} does not exist, skipping`);
+          this.logger.debug(`Bucket policy for ${physicalId} does not exist, skipping`);
           return;
         }
         throw error;

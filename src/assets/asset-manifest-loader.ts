@@ -26,7 +26,7 @@ export class AssetManifestLoader {
       const content = await readFile(manifestPath, 'utf-8');
       const manifest = JSON.parse(content) as AssetManifest;
 
-      this.logger.info(
+      this.logger.debug(
         `Loaded asset manifest: ${Object.keys(manifest.files).length} file assets, ` +
           `${Object.keys(manifest.dockerImages).length} docker image assets`
       );
