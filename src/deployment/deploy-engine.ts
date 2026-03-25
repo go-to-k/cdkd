@@ -464,6 +464,15 @@ export class DeployEngine {
             unknown
           >;
 
+          // Re-check diff after resolving intrinsic functions
+          // DiffCalculator compares unresolved template vs resolved state, which may produce false positives
+          if (JSON.stringify(resolvedProps) === JSON.stringify(currentProps)) {
+            this.logger.debug(
+              `Skipping ${logicalId}: no actual changes after intrinsic function resolution`
+            );
+            break;
+          }
+
           // Check if this update requires resource replacement (immutable property changed)
           const needsReplacement = change.propertyChanges?.some((pc) => pc.requiresReplacement);
 
