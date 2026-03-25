@@ -451,11 +451,12 @@ cdkq は CDK CLI (`aws-cdk`) を**置き換える**のではなく、**デプロ
 
 **実装内容**:
 
-- [ ] Fn::ImportValue, Fn::Split 対応
-- [ ] Fn::Select, Fn::If などの複雑な関数
-- [ ] Conditions の完全サポート
+- [x] Fn::ImportValue, Fn::Split 対応 ✅
+- [x] Fn::Select, Fn::If などの複雑な関数 ✅
+- [x] Conditions の完全サポート ✅
+- [x] Fn::And, Fn::Or, Fn::Not (論理演算子) ✅
 
-**注**: 基本的な関数は優先度「高」で対応予定。
+**注**: すべて実装済み。intrinsic-function-resolver.ts で対応。
 
 #### 13. IAM ロール置換時の古いリソース削除改善
 
@@ -468,15 +469,18 @@ cdkq は CDK CLI (`aws-cdk`) を**置き換える**のではなく、**デプロ
 
 **影響範囲**: `src/provisioning/providers/iam-role-provider.ts:190-202`
 
-#### 14. requiresReplacement の正確な判定
-
-**課題**: 現在、すべてのプロパティ変更を `requiresReplacement: false` として扱う。
+#### 14. requiresReplacement の正確な判定 ✅ **完了**
 
 **実装内容**:
 
-- [ ] リソースタイプごとのスキーマに基づいて判定
+- [x] リソースタイプごとのスキーマに基づいて判定
+- [x] ReplacementRulesRegistry クラスの実装
+- [x] 10以上のAWSリソースタイプのルール定義（S3, Lambda, DynamoDB, SQS, IAM, SNS, ECR, CloudWatch, API Gateway, ECS）
 
-**影響範囲**: `src/analyzer/diff-calculator.ts`
+**実装場所**:
+
+- `src/analyzer/replacement-rules.ts` - ルール定義
+- `src/analyzer/diff-calculator.ts` - DiffCalculator に統合
 
 ---
 
@@ -560,3 +564,122 @@ cdkq は CDK CLI (`aws-cdk`) を**置き換える**のではなく、**デプロ
 - DAG ベース並列実行で高速デプロイを実現
 
 Phase 1-8 が完了し、基本的なデプロイ機能が動作することを確認しました。Phase 9 以降で、CloudFormation 組み込み関数の解決やテスト実装などを進め、プロダクションレディなツールを目指します。
+
+---
+
+## 9. 現在の実装状況サマリー（2026-03-25時点）
+
+### ✅ 完了済み
+
+#### Phase 0-8: コア機能
+
+- Bootstrap, 合成, 状態管理, DAG解析, プロビジョニング, オーケストレーション, CLI統合
+
+#### 組み込み関数（完全実装）
+
+- `Ref`, `Fn::GetAtt`, `Fn::Join`, `Fn::Sub`
+- `Fn::Select`, `Fn::Split`, `Fn::If`, `Fn::Equals`
+- `Fn::And`, `Fn::Or`, `Fn::Not` (論理演算子)
+- `Fn::ImportValue` (クロススタック参照)
+
+#### 高度な機能
+
+- **CloudFormation Parameters**: デフォルト値、型強制
+- **Conditions 評価**: 論理演算子サポート
+- **クロススタック参照**: S3状態バックエンド経由の Fn::ImportValue
+- **Custom Resources**: Lambda-backed Custom Resources (Create/Update/Delete)
+- **Asset管理**: Lambda コードパッケージの S3/ECR への公開 (`@aws-cdk/cdk-assets-lib`)
+- **JSON Patch更新**: Cloud Control API の RFC 6902準拠の最小パッチ
+- **リソース置き換え検出**: 10以上のAWSリソースタイプの不変プロパティ検出
+
+#### SDK Providers
+
+- IAM Role/Policy, S3 Bucket Policy, SQS Queue Policy
+
+#### テスト
+
+- 統合テスト: basic, conditions, parameters, intrinsic-functions, multi-resource, lambda, cross-stack-references
+
+### 🚧 未実装・優先度高
+
+1. **統合テストの実行確認** (現在進行中)
+   - 全7つの統合テストを並列実行して動作確認
+
+2. **ロールバック機構** (優先度: 中)
+   - トランザクションログ
+   - 失敗時の逆順ロールバック
+   - `--no-rollback` フラグ
+
+3. **未対応組み込み関数** (優先度: 低)
+   - `Fn::FindInMap`, `Fn::GetAZs`, `Fn::Base64`
+
+4. **IAMロール置換時の古いリソース削除改善** (優先度: 中)
+   - 削除失敗時のエラーハンドリング強化
+   - 孤立リソースの追跡
+
+5. **Progress bar / UI** (優先度: 低)
+   - デプロイ進捗の可視化
+
+### 📋 次のエージェントへの引き継ぎ事項
+
+#### すぐに着手すべきタスク
+
+1. **統合テストの実行** (最優先)
+
+   ```bash
+   # 全統合テストを並列実行して動作確認
+   cd tests/integration/examples/
+   # basic, conditions, parameters, intrinsic-functions, multi-resource, lambda, cross-stack-references
+   ```
+
+2. **ロールバック機構の実装** (次優先)
+   - 実装場所: `src/deployment/deploy-engine.ts`
+   - 参考: Terraform はロールバックをサポートしていないため、優先度は中程度
+
+3. **残り組み込み関数の実装** (低優先)
+   - 実装場所: `src/deployment/intrinsic-function-resolver.ts`
+   - `Fn::FindInMap`: マッピング参照
+   - `Fn::GetAZs`: AZ取得
+   - `Fn::Base64`: Base64エンコード
+
+#### 重要な実装ファイル
+
+- **CLI**: `src/cli/commands/*.ts`
+- **合成**: `src/synthesis/synth.ts`
+- **状態管理**: `src/state/s3-state-backend.ts`
+- **DAG解析**: `src/analyzer/dag-builder.ts`
+- **組み込み関数**: `src/deployment/intrinsic-function-resolver.ts`
+- **リソース置き換え**: `src/analyzer/replacement-rules.ts`
+- **デプロイオーケストレーション**: `src/deployment/deploy-engine.ts`
+- **プロビジョニング**: `src/provisioning/cloud-control-provider.ts`
+
+#### テスト実行方法
+
+```bash
+# ビルド
+npm run build
+
+# 型チェック
+npm run typecheck
+
+# ユニットテスト
+npm test
+
+# 統合テスト（例: basic）
+export STATE_BUCKET="your-bucket-name"
+export AWS_REGION="us-east-1"
+cd tests/integration/examples/basic
+node ../../../../dist/cli.js deploy \
+  --app "npx ts-node --prefer-ts-exts bin/app.ts" \
+  --stack CdkqBasicExample \
+  --state-bucket $STATE_BUCKET \
+  --region $AWS_REGION \
+  --verbose
+```
+
+#### 既知の問題・制限事項
+
+- Cloud Control API が一部リソースタイプ未対応 → SDK Provider で回避
+- 一部組み込み関数未実装 (`Fn::FindInMap`, `Fn::GetAZs`, `Fn::Base64`)
+- ロールバック機構未実装
+- プロダクション使用は非推奨（開発/テスト環境のみ）

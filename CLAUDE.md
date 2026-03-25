@@ -67,8 +67,8 @@ cdkq has a 7-layer system architecture:
    - Executes resources in parallel by level (resources without dependencies run concurrently)
 
 4. **Intrinsic Function Resolution**
-   - Supported: `Ref`, `Fn::GetAtt`, `Fn::Join`, `Fn::Sub`
-   - Not supported: `Fn::Select`, `Fn::Split`, `Fn::If`, `Fn::ImportValue`
+   - Fully supported: `Ref`, `Fn::GetAtt`, `Fn::Join`, `Fn::Sub`, `Fn::Select`, `Fn::Split`, `Fn::If`, `Fn::Equals`, `Fn::And`, `Fn::Or`, `Fn::Not`, `Fn::ImportValue`
+   - Not yet supported: `Fn::FindInMap`, `Fn::GetAZs`, `Fn::Base64`
 
 ## Build and Test Commands
 
@@ -258,16 +258,17 @@ See [docs/provider-development.md](docs/provider-development.md) for details.
 
 ## Known Limitations
 
-- Some intrinsic functions not supported (Fn::And, Fn::Or, Fn::Not, Fn::FindInMap, Fn::GetAZs, Fn::Base64)
-- Cloud Control API updates use replacement instead of JSON Patch
+- Some intrinsic functions not supported (Fn::FindInMap, Fn::GetAZs, Fn::Base64)
 - NOT recommended for production use
 
 **Recently Implemented** (2026-03-25):
 
 - ✅ CloudFormation Parameters support (with default values and type coercion)
-- ✅ Fn::Select, Fn::Split, Fn::If, Fn::Equals, Fn::ImportValue
-- ✅ Conditions evaluation
+- ✅ Intrinsic functions: Fn::Select, Fn::Split, Fn::If, Fn::Equals, Fn::And, Fn::Or, Fn::Not, Fn::ImportValue
+- ✅ Conditions evaluation (with logical operators)
 - ✅ Cross-stack references (Fn::ImportValue via S3 state backend)
+- ✅ Cloud Control API JSON Patch for updates (RFC 6902 compliant)
+- ✅ Resource replacement detection (immutable property detection for 10+ AWS resource types)
 
 ## Dependencies
 
