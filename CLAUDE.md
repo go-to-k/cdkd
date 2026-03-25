@@ -254,13 +254,19 @@ See [docs/provider-development.md](docs/provider-development.md) for details.
 - **[docs/provider-development.md](docs/provider-development.md)** - Provider implementation guide, best practices
 - **[docs/troubleshooting.md](docs/troubleshooting.md)** - Common issues and solutions
 - **[docs/implementation-plan.md](docs/implementation-plan.md)** - Implementation plan (Japanese)
+- **[docs/testing.md](docs/testing.md)** - Testing guide, integration test examples
 
 ## Known Limitations
 
-- No CloudFormation Parameters support
-- Some intrinsic functions not supported (Fn::Select, Fn::Split, Fn::If, Fn::ImportValue)
+- Some intrinsic functions not supported (Fn::ImportValue, Fn::And, Fn::Or, Fn::Not, Fn::FindInMap, Fn::GetAZs, Fn::Base64)
 - Cloud Control API updates use replacement instead of JSON Patch
 - NOT recommended for production use
+
+**Recently Implemented** (2026-03-25):
+
+- ✅ CloudFormation Parameters support (with default values and type coercion)
+- ✅ Fn::Select, Fn::Split, Fn::If, Fn::Equals
+- ✅ Conditions evaluation
 
 ## Dependencies
 

@@ -294,14 +294,29 @@ cdkq は CDK CLI (`aws-cdk`) を**置き換える**のではなく、**デプロ
 
 #### 1. CloudFormation 組み込み関数の追加対応
 
+**実装済みの関数** (2026-03-25):
+
+- [x] Fn::Select - 配列のインデックス指定
+- [x] Fn::Split - 文字列の分割
+- [x] Fn::If - 条件分岐
+- [x] Fn::Equals - 等価比較（Conditionsで使用）
+- [x] Conditions の基本サポート (evaluateConditions メソッド)
+- [x] Parameters のサポートと Ref (Parameters への参照) の解決
+  - resolveParameters メソッド追加
+  - テンプレートのDefault値とユーザー指定値のマージ
+  - 型変換 (String/Number/CommaDelimitedList/ListOfNumber)
+  - DeployEngineに統合
+
 **未実装の関数**:
 
-- [ ] Parameters のサポートと Ref (Parameters への参照) の解決
-- [ ] Conditions の基本サポート
-- [ ] Fn::ImportValue, Fn::Split
-- [ ] Fn::Select, Fn::If などの複雑な関数
+- [ ] Fn::ImportValue (クロススタック参照)
+- [ ] Fn::And, Fn::Or, Fn::Not (高度な条件関数)
+- [ ] Fn::FindInMap, Fn::GetAZs, Fn::Base64
 
-**影響範囲**: `src/analyzer/intrinsic-function-resolver.ts`
+**影響範囲**:
+
+- `src/deployment/intrinsic-function-resolver.ts`
+- `src/deployment/deploy-engine.ts`
 
 #### 2. アセット公開のエラーハンドリング改善 ✅ **部分完了**
 

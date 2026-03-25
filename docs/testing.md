@@ -1,0 +1,352 @@
+# How to Test cdkq
+
+## Prerequisites
+
+1. AWS Account
+2. AWS CLI configured (`aws configure`)
+3. Node.js 20 or higher
+4. cdkq built (`npm run build`)
+
+## 1. Create Test S3 Bucket
+
+cdkq uses an S3 bucket for state management. You can easily create one using the `bootstrap` command:
+
+### Method A: Using bootstrap command (Recommended)
+
+```bash
+# Set cdkq path (from cdkq root directory)
+CDKQ_PATH="/Users/goto/github/cdkq"
+
+# Bucket name must be globally unique
+export STATE_BUCKET="cdkq-state-$(whoami)-$(date +%s)"
+export AWS_REGION="us-east-1"  # Change to your preferred region
+
+# Create bucket with bootstrap command
+node ${CDKQ_PATH}/dist/cli.js bootstrap \
+  --state-bucket ${STATE_BUCKET} \
+  --region ${AWS_REGION} \
+  --verbose
+
+echo "State bucket created: ${STATE_BUCKET}"
+```
+
+### Method B: Using AWS CLI (Traditional method)
+
+```bash
+# Bucket name must be globally unique
+export STATE_BUCKET="cdkq-state-$(whoami)-$(date +%s)"
+export AWS_REGION="us-east-1"  # Change to your preferred region
+
+# Create S3 bucket
+aws s3 mb s3://${STATE_BUCKET} --region ${AWS_REGION}
+
+echo "State bucket created: ${STATE_BUCKET}"
+```
+
+## 2. Prepare Test CDK Application
+
+cdkq provides multiple test examples:
+
+### Option A: Use Existing Examples (Recommended)
+
+The cdkq repository includes several examples:
+
+#### Basic Example (Simple S3 Bucket)
+
+```bash
+cd /Users/goto/github/cdkq/tests/integration/examples/basic
+npm install
+```
+
+#### Intrinsic Functions Example (Testing Built-in Functions)
+
+```bash
+cd /Users/goto/github/cdkq/tests/integration/examples/intrinsic-functions
+npm install
+```
+
+#### Lambda Example (Lambda + DynamoDB + IAM) ✅ Recommended
+
+A practical integration example with Lambda functions and DynamoDB tables:
+
+```bash
+cd /Users/goto/github/cdkq/tests/integration/examples/lambda
+npm install
+```
+
+**Tested features**:
+
+- Lambda asset publishing (code upload to S3)
+- ARN resolution via Fn::GetAtt
+- Ref resolution in environment variables
+- Automatic IAM Role/Policy creation
+
+#### Multi-Resource Example (Complex example)
+
+Event-driven architecture with S3 + Lambda + DynamoDB + SQS + IAM:
+
+```bash
+cd /Users/goto/github/cdkq/tests/integration/examples/multi-resource
+npm install
+```
+
+#### Parameters/Conditions Examples (Unimplemented feature demos)
+
+Specification examples for future implementation:
+
+- `tests/integration/examples/parameters/` - CloudFormation Parameters
+- `tests/integration/examples/conditions/` - CloudFormation Conditions
+
+For details on each example, refer to the README.md in each directory.
+
+### Option B: Create a New CDK Application
+
+You can also create and test a simple CDK application:
+
+```bash
+# Create test directory
+directory="/tmp/cdkq-test"
+mkdir -p ${directory}
+cd ${directory}
+
+# Initialize CDK project
+npx aws-cdk@latest init app --language typescript
+
+# Change to a simple stack
+cat > lib/cdkq-test-stack.ts <<'EOF'
+import * as cdk from 'aws-cdk-lib';
+import { Construct } from 'constructs';
+import * as s3 from 'aws-cdk-lib/aws-s3';
+
+export class CdkqTestStack extends cdk.Stack {
+  constructor(scope: Construct, id: string, props?: cdk.StackProps) {
+    super(scope, id, props);
+
+    // Create a simple S3 bucket
+    const bucket = new s3.Bucket(this, 'TestBucket', {
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+      autoDeleteObjects: false, // Custom::S3AutoDeleteObjects is not supported
+    });
+
+    // Output bucket name to verify (supports CloudFormation intrinsic functions)
+    new cdk.CfnOutput(this, 'BucketName', {
+      value: bucket.bucketName,
+      description: 'Name of the test bucket',
+    });
+
+    new cdk.CfnOutput(this, 'BucketArn', {
+      value: bucket.bucketArn,
+      description: 'ARN of the test bucket',
+    });
+  }
+}
+EOF
+
+# Build
+npm run build
+```
+
+## 3. Deploy Using cdkq
+
+```bash
+# Set cdkq path (from cdkq root directory)
+CDKQ_PATH="/Users/goto/github/cdkq"
+
+# First, check changes with diff
+node ${CDKQ_PATH}/dist/cli.js diff \
+  --app "npx ts-node --prefer-ts-exts bin/cdkq-test.ts" \
+  --output cdk.out \
+  --state-bucket ${STATE_BUCKET} \
+  --state-prefix "stacks" \
+  --region ${AWS_REGION} \
+  --verbose
+
+# Execute deployment (first time will create all resources)
+node ${CDKQ_PATH}/dist/cli.js deploy \
+  --app "npx ts-node --prefer-ts-exts bin/cdkq-test.ts" \
+  --output cdk.out \
+  --state-bucket ${STATE_BUCKET} \
+  --state-prefix "stacks" \
+  --region ${AWS_REGION} \
+  --verbose
+```
+
+## 4. Verify Deployment Results
+
+```bash
+# Check if bucket was created via AWS Console or CLI
+aws s3 ls | grep cdkq-test-bucket
+
+# Check state files
+aws s3 ls s3://${STATE_BUCKET}/stacks/ --recursive
+```
+
+## 5. Test CloudFormation Intrinsic Functions
+
+cdkq supports CloudFormation intrinsic functions (Ref, Fn::GetAtt, Fn::Join, Fn::Sub).
+Verify that resources using these functions can be deployed:
+
+```bash
+# Change to a stack using intrinsic functions
+cat > lib/cdkq-test-stack.ts <<'EOF'
+import * as cdk from 'aws-cdk-lib';
+import { Construct } from 'constructs';
+import * as s3 from 'aws-cdk-lib/aws-s3';
+import * as iam from 'aws-cdk-lib/aws-iam';
+
+export class CdkqTestStack extends cdk.Stack {
+  constructor(scope: Construct, id: string, props?: cdk.StackProps) {
+    super(scope, id, props);
+
+    // Create S3 bucket
+    const bucket = new s3.Bucket(this, 'TestBucket', {
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+      autoDeleteObjects: false,
+    });
+
+    // Create IAM role (using Ref to reference bucket)
+    const role = new iam.Role(this, 'TestRole', {
+      assumedBy: new iam.ServicePrincipal('lambda.amazonaws.com'),
+      description: 'Test role for cdkq',
+    });
+
+    // Grant read permissions to bucket (using Fn::GetAtt)
+    role.addToPolicy(
+      new iam.PolicyStatement({
+        actions: ['s3:GetObject', 's3:ListBucket'],
+        resources: [bucket.bucketArn, `${bucket.bucketArn}/*`],
+      })
+    );
+
+    // Test intrinsic functions with Outputs
+    new cdk.CfnOutput(this, 'BucketName', {
+      value: bucket.bucketName,
+      description: 'Bucket name (Ref)',
+    });
+
+    new cdk.CfnOutput(this, 'BucketArn', {
+      value: bucket.bucketArn,
+      description: 'Bucket ARN (Fn::GetAtt)',
+    });
+
+    new cdk.CfnOutput(this, 'RoleArn', {
+      value: role.roleArn,
+      description: 'Role ARN (Fn::GetAtt)',
+    });
+  }
+}
+EOF
+
+npm run build
+
+# Check changes with diff
+node ${CDKQ_PATH}/dist/cli.js diff \
+  --app "npx ts-node --prefer-ts-exts bin/cdkq-test.ts" \
+  --state-bucket ${STATE_BUCKET} \
+  --region ${AWS_REGION} \
+  --verbose
+
+# Deploy updates
+node ${CDKQ_PATH}/dist/cli.js deploy \
+  --app "npx ts-node --prefer-ts-exts bin/cdkq-test.ts" \
+  --state-bucket ${STATE_BUCKET} \
+  --region ${AWS_REGION} \
+  --verbose
+```
+
+## 6. Test Dry Run
+
+Display execution plan only without making actual changes:
+
+```bash
+node ${CDKQ_PATH}/dist/cli.js deploy \
+  --app "npx ts-node --prefer-ts-exts bin/cdkq-test.ts" \
+  --state-bucket ${STATE_BUCKET} \
+  --region ${AWS_REGION} \
+  --dry-run \
+  --verbose
+```
+
+## 7. Delete Stack
+
+```bash
+# Delete resources with destroy command
+node ${CDKQ_PATH}/dist/cli.js destroy \
+  --state-bucket ${STATE_BUCKET} \
+  --state-prefix "stacks" \
+  --stack CdkqTestStack \
+  --region ${AWS_REGION} \
+  --verbose
+
+# To skip confirmation prompt
+node ${CDKQ_PATH}/dist/cli.js destroy \
+  --state-bucket ${STATE_BUCKET} \
+  --state-prefix "stacks" \
+  --stack CdkqTestStack \
+  --region ${AWS_REGION} \
+  --force
+```
+
+## 8. Cleanup
+
+After testing, delete the state bucket as well:
+
+```bash
+# Delete objects in bucket
+aws s3 rm s3://${STATE_BUCKET} --recursive
+
+# Delete bucket itself
+aws s3 rb s3://${STATE_BUCKET}
+```
+
+## Troubleshooting
+
+### Asset Publishing Errors
+
+If your CDK application uses assets (such as Lambda function code), asset publishing may fail:
+
+```bash
+# Skip asset publishing
+node ${CDKQ_PATH}/dist/cli.js deploy \
+  --app "..." \
+  --state-bucket ${STATE_BUCKET} \
+  --skip-assets
+```
+
+### Resource Type Support
+
+**cdkq automatically supports all resource types supported by Cloud Control API (over 200 types).**
+
+For resources not supported by Cloud Control API, you can implement SDK providers. Currently implemented SDK providers:
+
+- `AWS::IAM::Role` - IAM roles
+- `AWS::IAM::Policy` - IAM policies (inline policy support)
+- `AWS::S3::BucketPolicy` - S3 bucket policies
+- `AWS::SQS::QueuePolicy` - SQS queue policies
+- `Custom::*` - Lambda-backed custom resources (Create/Update/Delete)
+
+If you use other resources not supported by Cloud Control API, an error message will be displayed.
+
+### Verbose Logging
+
+Add the `--verbose` flag to display detailed logs:
+
+```bash
+node ${CDKQ_PATH}/dist/cli.js deploy ... --verbose
+```
+
+## Known Issues and Limitations
+
+1. **Cloud Control API Update Processing**: The current implementation performs differential updates using JSON Patch, but complete updates may fail for some resources.
+
+2. **Some CloudFormation Intrinsic Functions**: The following functions are not yet supported:
+   - Fn::Select, Fn::Split, Fn::ImportValue
+   - Fn::If, Fn::Equals (Conditions)
+   - Fn::FindInMap, Fn::GetAZs, Fn::Base64
+   - CloudFormation Parameters
+
+3. **Pseudo Parameters**: The following parameters are supported:
+   - ✅ `AWS::AccountId` - Retrieves actual value from STS GetCallerIdentity
+   - ✅ `AWS::Region` - Uses configured region
+   - ✅ `AWS::Partition` - Default "aws"
+   - ⚠️ Other pseudo parameters (such as AWS::StackId) return environment variable or hardcoded values
