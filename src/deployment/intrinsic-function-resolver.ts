@@ -14,6 +14,8 @@ export interface ResolverContext {
   resources: Record<string, ResourceState>;
   /** Parameter values (for Ref to parameters) */
   parameters?: Record<string, unknown>;
+  /** Evaluated condition values (for Fn::If) */
+  conditions?: Record<string, boolean>;
 }
 
 /**
@@ -29,11 +31,13 @@ export interface ResolverContext {
  * - Fn::Sub
  * - Fn::Select
  * - Fn::Split
+ * - Fn::If (Conditions)
+ * - Fn::Equals
  *
  * Not yet supported:
- * - Fn::If, Fn::Equals (Conditions)
  * - Fn::ImportValue
  * - Fn::FindInMap, Fn::GetAZs, Fn::Base64
+ * - Fn::And, Fn::Or, Fn::Not (advanced condition functions)
  */
 /**
  * AWS Account information cache
@@ -99,6 +103,39 @@ export class IntrinsicFunctionResolver {
   }
 
   /**
+   * Evaluate all conditions in the template
+   *
+   * Conditions are defined in the Conditions section of the CloudFormation template
+   * and can reference parameters and pseudo parameters
+   */
+  async evaluateConditions(
+    context: ResolverContext
+  ): Promise<Record<string, boolean>> {
+    const conditions: Record<string, boolean> = {};
+    const templateConditions = context.template.Conditions;
+
+    if (!templateConditions || typeof templateConditions !== 'object') {
+      return conditions;
+    }
+
+    // Evaluate each condition
+    for (const [name, definition] of Object.entries(templateConditions)) {
+      try {
+        const result = await this.resolveValue(definition, context);
+        conditions[name] = Boolean(result);
+        this.logger.debug(`Evaluated condition ${name} = ${conditions[name]}`);
+      } catch (error) {
+        this.logger.warn(
+          `Failed to evaluate condition ${name}: ${error instanceof Error ? error.message : String(error)}, assuming false`
+        );
+        conditions[name] = false;
+      }
+    }
+
+    return conditions;
+  }
+
+  /**
    * Recursively resolve a value
    */
   private async resolveValue(value: unknown, context: ResolverContext): Promise<unknown> {
@@ -140,6 +177,17 @@ export class IntrinsicFunctionResolver {
 
     if ('Fn::Split' in obj) {
       return await this.resolveSplit(obj['Fn::Split'] as [string, unknown], context);
+    }
+
+    if ('Fn::If' in obj) {
+      return await this.resolveIf(
+        obj['Fn::If'] as [string, unknown, unknown],
+        context
+      );
+    }
+
+    if ('Fn::Equals' in obj) {
+      return await this.resolveEquals(obj['Fn::Equals'] as [unknown, unknown], context);
     }
 
     // Not an intrinsic function: recursively resolve object properties
@@ -504,6 +552,62 @@ export class IntrinsicFunctionResolver {
 
     const result = resolvedValue.split(delimiter);
     this.logger.debug(`Resolved Fn::Split: split by "${delimiter}" -> ${JSON.stringify(result)}`);
+    return result;
+  }
+
+  /**
+   * Resolve Fn::If intrinsic function
+   *
+   * Fn::If: [conditionName, valueIfTrue, valueIfFalse]
+   * Returns valueIfTrue if condition evaluates to true, otherwise valueIfFalse
+   */
+  private async resolveIf(
+    ifArgs: [string, unknown, unknown],
+    context: ResolverContext
+  ): Promise<unknown> {
+    const [conditionName, valueIfTrue, valueIfFalse] = ifArgs;
+
+    // Check if condition is evaluated in context
+    if (!context.conditions || !(conditionName in context.conditions)) {
+      this.logger.warn(
+        `Condition ${conditionName} not found in context, assuming false`
+      );
+      return await this.resolveValue(valueIfFalse, context);
+    }
+
+    const conditionValue = context.conditions[conditionName];
+    const selectedValue = conditionValue ? valueIfTrue : valueIfFalse;
+
+    this.logger.debug(
+      `Resolved Fn::If: condition ${conditionName} = ${conditionValue}, selected ${conditionValue ? 'true' : 'false'} branch`
+    );
+
+    return await this.resolveValue(selectedValue, context);
+  }
+
+  /**
+   * Resolve Fn::Equals intrinsic function
+   *
+   * Fn::Equals: [value1, value2]
+   * Returns true if both values are equal after resolution
+   */
+  private async resolveEquals(
+    equalsArgs: [unknown, unknown],
+    context: ResolverContext
+  ): Promise<boolean> {
+    const [value1, value2] = equalsArgs;
+
+    // Resolve both values
+    const resolved1 = await this.resolveValue(value1, context);
+    const resolved2 = await this.resolveValue(value2, context);
+
+    // Deep equality check
+    const result = JSON.stringify(resolved1) === JSON.stringify(resolved2);
+
+    this.logger.debug(
+      `Resolved Fn::Equals: ${JSON.stringify(resolved1)} === ${JSON.stringify(resolved2)} -> ${result}`
+    );
+
     return result;
   }
 
