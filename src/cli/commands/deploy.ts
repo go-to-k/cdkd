@@ -86,28 +86,39 @@ async function deployCommand(options: {
     if (!options.skipAssets) {
       logger.info('Publishing assets...');
       const assetPublisher = new AssetPublisher();
-      const manifestPath = `${assembly.directory}/assets.json`;
 
-      try {
-        await assetPublisher.publishFromManifest(manifestPath, {
-          ...(options.region && { region: options.region }),
-          ...(options.profile && { profile: options.profile }),
-        });
-        logger.info('✓ Assets published successfully');
-      } catch (error) {
-        // Check if this is a "file not found" error (assets.json doesn't exist)
-        // This is expected when the CDK app has no assets (e.g., infrastructure-only stacks)
-        const err = error as { code?: string; message?: string };
-        if (err.code === 'ENOENT' || err.message?.includes('ENOENT')) {
-          logger.debug('No assets.json found - skipping asset publishing');
-          logger.info('No assets to publish');
-        } else {
-          // For all other errors, fail the deployment
-          // Asset publishing failures can cause resource creation failures later
-          // (e.g., Lambda function with missing code, Docker images, etc.)
-          logger.error('Asset publishing failed:', err.message || String(error));
-          throw error;
+      // Try to find asset manifests for each stack
+      let assetsPublished = false;
+      for (const stack of stacks) {
+        const manifestPath = `${assembly.directory}/${stack.stackName}.assets.json`;
+
+        try {
+          await assetPublisher.publishFromManifest(manifestPath, {
+            ...(options.region && { region: options.region }),
+            ...(options.profile && { profile: options.profile }),
+          });
+          logger.info(`✓ Assets published for stack ${stack.stackName}`);
+          assetsPublished = true;
+        } catch (error) {
+          // Check if this is a "file not found" error (assets.json doesn't exist)
+          // This is expected when the CDK app has no assets (e.g., infrastructure-only stacks)
+          const err = error as { code?: string; message?: string };
+          if (err.code === 'ENOENT' || err.message?.includes('ENOENT')) {
+            logger.debug(`No assets manifest found for stack ${stack.stackName} - skipping`);
+          } else {
+            // For all other errors, fail the deployment
+            // Asset publishing failures can cause resource creation failures later
+            // (e.g., Lambda function with missing code, Docker images, etc.)
+            logger.error(`Asset publishing failed for stack ${stack.stackName}:`, err.message || String(error));
+            throw error;
+          }
         }
+      }
+
+      if (assetsPublished) {
+        logger.info('✓ All assets published successfully');
+      } else {
+        logger.info('No assets to publish');
       }
     } else {
       logger.info('Skipping asset publishing (--skip-assets)');

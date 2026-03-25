@@ -142,12 +142,131 @@ export class IntrinsicFunctionResolver {
       throw new Error(`Resource ${logicalId} not found for Fn::GetAtt`);
     }
 
-    // Try to get attribute from resource attributes
-    const value = resource.attributes?.[attributeName] ?? resource.physicalId;
+    // Check if attribute exists in resource.attributes
+    if (resource.attributes?.[attributeName] !== undefined) {
+      const value = resource.attributes[attributeName];
+      this.logger.debug(
+        `Resolved Fn::GetAtt from attributes: ${logicalId}.${attributeName} -> ${typeof value === 'object' ? JSON.stringify(value) : String(value)}`
+      );
+      return value;
+    }
+
+    // Construct attribute value based on resource type
+    const value = this.constructAttribute(resource, attributeName, context);
     this.logger.debug(
       `Resolved Fn::GetAtt: ${logicalId}.${attributeName} -> ${typeof value === 'object' ? JSON.stringify(value) : String(value)}`
     );
     return value;
+  }
+
+  /**
+   * Construct resource attribute value based on resource type
+   *
+   * Many CloudFormation attributes are not returned by Cloud Control API,
+   * so we need to construct them manually.
+   */
+  private constructAttribute(
+    resource: ResourceState,
+    attributeName: string,
+    context: ResolverContext
+  ): unknown {
+    const { resourceType, physicalId } = resource;
+    const region = this.resolvePseudoParameter('AWS::Region') || 'us-east-1';
+    const accountId = this.resolvePseudoParameter('AWS::AccountId') || '123456789012';
+    const partition = this.resolvePseudoParameter('AWS::Partition') || 'aws';
+
+    // DynamoDB Table
+    if (resourceType === 'AWS::DynamoDB::Table') {
+      switch (attributeName) {
+        case 'Arn':
+          return `arn:${partition}:dynamodb:${region}:${accountId}:table/${physicalId}`;
+        case 'StreamArn':
+          // Stream ARN would need to be fetched from API
+          return undefined;
+        default:
+          return physicalId;
+      }
+    }
+
+    // S3 Bucket
+    if (resourceType === 'AWS::S3::Bucket') {
+      switch (attributeName) {
+        case 'Arn':
+          return `arn:${partition}:s3:::${physicalId}`;
+        case 'DomainName':
+          return `${physicalId}.s3.amazonaws.com`;
+        case 'RegionalDomainName':
+          return `${physicalId}.s3.${region}.amazonaws.com`;
+        case 'WebsiteURL':
+          return `http://${physicalId}.s3-website-${region}.amazonaws.com`;
+        default:
+          return physicalId;
+      }
+    }
+
+    // IAM Role
+    if (resourceType === 'AWS::IAM::Role') {
+      switch (attributeName) {
+        case 'Arn':
+          return `arn:${partition}:iam::${accountId}:role/${physicalId}`;
+        case 'RoleId':
+          // Role ID would need to be fetched from API
+          return undefined;
+        default:
+          return physicalId;
+      }
+    }
+
+    // IAM Policy
+    if (resourceType === 'AWS::IAM::Policy') {
+      switch (attributeName) {
+        case 'Arn':
+          return `arn:${partition}:iam::${accountId}:policy/${physicalId}`;
+        case 'PolicyId':
+          // Policy ID would need to be fetched from API
+          return undefined;
+        default:
+          return physicalId;
+      }
+    }
+
+    // Lambda Function
+    if (resourceType === 'AWS::Lambda::Function') {
+      switch (attributeName) {
+        case 'Arn':
+          return `arn:${partition}:lambda:${region}:${accountId}:function:${physicalId}`;
+        default:
+          return physicalId;
+      }
+    }
+
+    // SQS Queue
+    if (resourceType === 'AWS::SQS::Queue') {
+      switch (attributeName) {
+        case 'Arn':
+          return `arn:${partition}:sqs:${region}:${accountId}:${physicalId}`;
+        case 'QueueUrl':
+          return `https://sqs.${region}.amazonaws.com/${accountId}/${physicalId}`;
+        default:
+          return physicalId;
+      }
+    }
+
+    // SNS Topic
+    if (resourceType === 'AWS::SNS::Topic') {
+      switch (attributeName) {
+        case 'TopicArn':
+          return `arn:${partition}:sns:${region}:${accountId}:${physicalId}`;
+        default:
+          return physicalId;
+      }
+    }
+
+    // Default: return physical ID
+    this.logger.warn(
+      `Unknown attribute ${attributeName} for resource type ${resourceType}, returning physical ID`
+    );
+    return physicalId;
   }
 
   /**
