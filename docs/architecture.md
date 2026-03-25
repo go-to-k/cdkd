@@ -201,6 +201,9 @@ Resolves CloudFormation intrinsic functions
 - `Fn::If`, `Fn::Equals`: Conditional evaluation
 - `Fn::And`, `Fn::Or`, `Fn::Not`: Logical operators for Conditions
 - `Fn::ImportValue`: Cross-stack references
+- `Fn::FindInMap`: Mapping lookup
+- `Fn::GetAZs`: Availability Zone list
+- `Fn::Base64`: Base64 encoding
 
 All CloudFormation intrinsic functions are now supported.
 
@@ -648,7 +651,7 @@ Each layer has clear responsibilities
 1. **CloudFormation Macros**: Not supported
 2. **Nested Stacks**: Not supported
 3. **Change Sets**: No concept (always executes immediately)
-4. ~~Some intrinsic functions~~: All intrinsic functions now supported
+4. All intrinsic functions are now supported
 
 ### Phase 9 and Beyond Plans
 

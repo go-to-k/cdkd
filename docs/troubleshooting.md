@@ -694,23 +694,9 @@ Cloud Control API has the following rate limits:
 
 #### Solutions
 
-**1. Implement retry logic (planned for future implementation)**
+**1. Retry logic with exponential backoff (built-in)**
 
-```typescript
-async createWithRetry(params, maxRetries = 3) {
-  for (let i = 0; i < maxRetries; i++) {
-    try {
-      return await this.cloudControl.send(new CreateResourceCommand(params));
-    } catch (error) {
-      if (error.name === 'TooManyRequestsException' && i < maxRetries - 1) {
-        await sleep(2000 * (i + 1));  // Exponential backoff
-        continue;
-      }
-      throw error;
-    }
-  }
-}
-```
+cdkq includes built-in retry logic with exponential backoff for CREATE operations (handling IAM propagation delays) and CC API polling (1s->2s->4s->8s->10s cap). If rate limit errors persist, consider reducing parallelism or staggering deployments.
 
 **2. Use SDK Provider**
 

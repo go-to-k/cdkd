@@ -12,19 +12,34 @@ import { LockError } from '../utils/error-handler.js';
 import { hostname } from 'os';
 
 /**
+ * Options for LockManager constructor
+ */
+export interface LockManagerOptions {
+  /** Lock TTL in minutes (default: 30) */
+  ttlMinutes?: number;
+}
+
+/**
  * S3-based lock manager using conditional writes (If-None-Match)
  *
  * Implements distributed locking using S3's If-None-Match: "*" condition
- * which ensures atomic lock acquisition
+ * which ensures atomic lock acquisition.
+ *
+ * Locks have a TTL (time-to-live). Expired locks are automatically cleaned up
+ * during acquisition attempts.
  */
 export class LockManager {
   private logger = getLogger().child('LockManager');
-  private readonly lockTTL = 15 * 60 * 1000; // 15 minutes
+  private readonly ttlMs: number;
 
   constructor(
     private s3Client: S3Client,
-    private config: StateBackendConfig
-  ) {}
+    private config: StateBackendConfig,
+    options?: LockManagerOptions
+  ) {
+    const ttlMinutes = options?.ttlMinutes ?? 30;
+    this.ttlMs = ttlMinutes * 60 * 1000;
+  }
 
   /**
    * Get the S3 key for a stack's lock file
@@ -48,10 +63,28 @@ export class LockManager {
   }
 
   /**
+   * Check if a lock is expired based on its expiresAt field
+   */
+  private isLockExpired(lockInfo: LockInfo): boolean {
+    return Date.now() >= lockInfo.expiresAt;
+  }
+
+  /**
+   * Format a human-readable duration from milliseconds
+   */
+  private formatDuration(ms: number): string {
+    const seconds = Math.floor(ms / 1000);
+    if (seconds < 60) return `${seconds}s`;
+    const minutes = Math.floor(seconds / 60);
+    const remainingSeconds = seconds % 60;
+    return `${minutes}m${remainingSeconds}s`;
+  }
+
+  /**
    * Try to acquire a lock for a stack
    *
    * Uses If-None-Match: "*" to ensure atomic lock acquisition.
-   * Returns true if lock was acquired, false if already locked.
+   * If an expired lock exists, it will be cleaned up and re-acquired.
    *
    * @param stackName Stack name
    * @param owner Lock owner identifier (defaults to user@hostname:pid)
@@ -60,10 +93,12 @@ export class LockManager {
   async acquireLock(stackName: string, owner?: string, operation?: string): Promise<boolean> {
     const key = this.getLockKey(stackName);
     const lockOwner = owner || this.getDefaultOwner();
+    const now = Date.now();
 
     const lockInfo: LockInfo = {
       owner: lockOwner,
-      timestamp: Date.now(),
+      timestamp: now,
+      expiresAt: now + this.ttlMs,
       ...(operation && { operation }),
     };
 
@@ -83,10 +118,51 @@ export class LockManager {
       this.logger.debug(`Lock acquired for stack: ${stackName}, owner: ${lockOwner}`);
       return true;
     } catch (error) {
-      // Check for PreconditionFailed error (S3 condition not met)
+      // Check for PreconditionFailed error (S3 condition not met - lock already exists)
       const err = error as { name?: string };
       if (err.name === 'PreconditionFailed') {
         this.logger.debug(`Lock already exists for stack: ${stackName}`);
+
+        // Check if the existing lock is expired
+        const existingLock = await this.getLockInfo(stackName);
+        if (existingLock && this.isLockExpired(existingLock)) {
+          this.logger.info(
+            `Expired lock detected for stack: ${stackName} (owner: ${existingLock.owner}, ` +
+              `expired ${this.formatDuration(now - existingLock.expiresAt)} ago). Cleaning up...`
+          );
+
+          // Delete the expired lock and retry acquisition
+          await this.deleteLock(stackName);
+
+          // Retry once after cleaning up expired lock
+          try {
+            await this.s3Client.send(
+              new PutObjectCommand({
+                Bucket: this.config.bucket,
+                Key: key,
+                Body: JSON.stringify(lockInfo, null, 2),
+                ContentType: 'application/json',
+                IfNoneMatch: '*',
+              })
+            );
+
+            this.logger.debug(
+              `Lock acquired for stack: ${stackName} after expired lock cleanup, owner: ${lockOwner}`
+            );
+            return true;
+          } catch (retryError) {
+            const retryErr = retryError as { name?: string };
+            if (retryErr.name === 'PreconditionFailed') {
+              // Another process acquired the lock between our delete and retry
+              this.logger.debug(
+                `Lock was acquired by another process during expired lock cleanup for stack: ${stackName}`
+              );
+              return false;
+            }
+            throw retryError;
+          }
+        }
+
         return false;
       }
 
@@ -166,9 +242,10 @@ export class LockManager {
   }
 
   /**
-   * Force release a lock (use with caution)
+   * Force release a lock regardless of owner or expiry status
    *
-   * This should only be used when a lock is stale (e.g., process crashed)
+   * This is intended for CLI usage (e.g., --force-unlock flag) when a lock
+   * is stuck and needs manual intervention.
    */
   async forceReleaseLock(stackName: string): Promise<void> {
     const lockInfo = await this.getLockInfo(stackName);
@@ -178,63 +255,68 @@ export class LockManager {
       return;
     }
 
-    // Check if lock is stale (older than TTL)
-    const age = Date.now() - lockInfo.timestamp;
-    if (age < this.lockTTL) {
-      throw new LockError(
-        `Cannot force release a fresh lock. Lock age: ${Math.floor(age / 1000)}s, TTL: ${Math.floor(this.lockTTL / 1000)}s`
-      );
-    }
-
     this.logger.warn(
-      `Force releasing stale lock for stack: ${stackName}, owner: ${lockInfo.owner}, age: ${Math.floor(age / 1000)}s`
+      `Force releasing lock for stack: ${stackName}, owner: ${lockInfo.owner}` +
+        `${lockInfo.operation ? `, operation: ${lockInfo.operation}` : ''}` +
+        `, expired: ${this.isLockExpired(lockInfo)}`
     );
 
-    await this.releaseLock(stackName);
+    await this.deleteLock(stackName);
+  }
+
+  /**
+   * Internal method to delete the lock file from S3
+   */
+  private async deleteLock(stackName: string): Promise<void> {
+    const key = this.getLockKey(stackName);
+
+    await this.s3Client.send(
+      new DeleteObjectCommand({
+        Bucket: this.config.bucket,
+        Key: key,
+      })
+    );
   }
 
   /**
    * Acquire lock with retry logic
    *
+   * Retries up to maxRetries times with retryDelay between attempts.
+   * If lock is expired, cleans it up automatically.
+   * On failure, provides helpful message with lock owner and expiry information.
+   *
    * @param stackName Stack name
    * @param owner Lock owner identifier
    * @param operation Operation being performed
-   * @param maxRetries Maximum number of retries
-   * @param retryDelay Delay between retries in milliseconds
+   * @param maxRetries Maximum number of retries (default: 3)
+   * @param retryDelay Delay between retries in milliseconds (default: 2000)
    */
   async acquireLockWithRetry(
     stackName: string,
     owner?: string,
     operation?: string,
     maxRetries = 3,
-    retryDelay = 5000
+    retryDelay = 2000
   ): Promise<void> {
-    for (let attempt = 0; attempt < maxRetries; attempt++) {
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
       const acquired = await this.acquireLock(stackName, owner, operation);
 
       if (acquired) {
         return;
       }
 
-      // Lock already exists, check if it's stale
+      // Lock exists and is not expired - show info and possibly retry
       const lockInfo = await this.getLockInfo(stackName);
 
       if (lockInfo) {
-        const age = Date.now() - lockInfo.timestamp;
+        const remainingMs = lockInfo.expiresAt - Date.now();
 
-        if (age >= this.lockTTL) {
-          // Lock is stale, force release and retry
-          this.logger.warn(
-            `Stale lock detected for stack: ${stackName}, forcing release (age: ${Math.floor(age / 1000)}s)`
-          );
-          await this.forceReleaseLock(stackName);
-          continue;
-        }
-
-        // Lock is fresh, wait and retry
-        if (attempt < maxRetries - 1) {
-          this.logger.debug(
-            `Stack ${stackName} is locked by ${lockInfo.owner}, waiting ${retryDelay}ms... (attempt ${attempt + 1}/${maxRetries})`
+        if (attempt < maxRetries) {
+          this.logger.info(
+            `Stack '${stackName}' is locked by ${lockInfo.owner}` +
+              `${lockInfo.operation ? ` (operation: ${lockInfo.operation})` : ''}` +
+              `. Lock expires in ${this.formatDuration(remainingMs)}.` +
+              ` Retrying in ${this.formatDuration(retryDelay)}... (attempt ${attempt + 1}/${maxRetries})`
           );
           await new Promise((resolve) => setTimeout(resolve, retryDelay));
           continue;
@@ -244,10 +326,15 @@ export class LockManager {
 
     // Failed to acquire lock after all retries
     const lockInfo = await this.getLockInfo(stackName);
+    const expiresIn = lockInfo ? this.formatDuration(lockInfo.expiresAt - Date.now()) : 'unknown';
+
     throw new LockError(
-      `Failed to acquire lock for stack '${stackName}' after ${maxRetries} attempts. ` +
+      `Failed to acquire lock for stack '${stackName}' after ${maxRetries + 1} attempts. ` +
         (lockInfo
-          ? `Locked by: ${lockInfo.owner}${lockInfo.operation ? `, operation: ${lockInfo.operation}` : ''}`
+          ? `Locked by: ${lockInfo.owner}` +
+            `${lockInfo.operation ? `, operation: ${lockInfo.operation}` : ''}` +
+            `, expires in: ${expiresIn}. ` +
+            `Use --force-unlock to manually release the lock.`
           : 'Lock exists but could not read lock info.')
     );
   }

@@ -333,25 +333,22 @@ cdkq は CDK CLI (`aws-cdk`) を**置き換える**のではなく、**デプロ
 
 ### 優先度: 中 (Medium Priority)
 
-#### 4. カスタムリソース対応
+#### 4. カスタムリソース対応 ✅ **完了**
 
-**実装内容**:
+- [x] Custom::XXX リソースのサポート
+- [x] Lambda バックエンドハンドラー呼び出し実装
+- [x] CREATE/UPDATE/DELETE イベント処理
+- [x] ResponseURL: S3 pre-signed URL による cfn-response 対応
 
-- [ ] Custom::XXX リソースのサポート
-- [ ] Lambda バックエンドハンドラー呼び出し実装
-- [ ] CREATE/UPDATE/DELETE イベント処理
-- [ ] 非同期実行とポーリングメカニズム
+**実装**: `src/provisioning/providers/custom-resource-provider.ts`
 
-#### 5. リソース置換の検出
+#### 5. リソース置換の検出 ✅ **完了**
 
-**課題**: 現在、`wasReplaced` を常に `false` として返している。
+- [x] 不変プロパティの変更検出（10+ リソースタイプ）
+- [x] 置換時の CREATE→DELETE フロー実装
+- [x] DeletionPolicy: Retain / UpdateReplacePolicy: Retain 対応
 
-**実装内容**:
-
-- [ ] Cloud Control API のレスポンスから置換を検出
-- [ ] 置換時の物理 ID 変更を追跡
-
-**影響範囲**: `src/provisioning/cloud-control-provider.ts:169-175`
+**実装**: `src/analyzer/replacement-rules.ts`, `src/analyzer/diff-calculator.ts`
 
 #### 6. テスト実装
 
@@ -398,8 +395,8 @@ cdkq は CDK CLI (`aws-cdk`) を**置き換える**のではなく、**デプロ
 **追加された例**:
 
 - `lambda/`: 実践的なLambda関数、DynamoDBテーブル、IAM権限の組み合わせ
-- `parameters/`: CloudFormation Parametersの仕様デモ（将来の実装用）
-- `conditions/`: CloudFormation Conditionsの仕様デモ（将来の実装用）
+- `parameters/`: CloudFormation Parameters のテスト（実装済み）
+- `conditions/`: CloudFormation Conditions のテスト（実装済み）
 - `multi-resource/`: イベント駆動アーキテクチャの複合的な例（現在の実装で動作）
 
 #### 8. ドキュメント作成 ✅ **完了**
@@ -483,20 +480,14 @@ cdkq は CDK CLI (`aws-cdk`) を**置き換える**のではなく、**デプロ
 - `src/analyzer/replacement-rules.ts` - ルール定義
 - `src/analyzer/diff-calculator.ts` - DiffCalculator に統合
 
-#### 15. Bootstrap デフォルトバケット名サポート
+#### 15. Bootstrap デフォルトバケット名サポート ✅ **完了**
 
-**課題**: `--state-bucket` が必須オプション。CDK bootstrap と同様にデフォルト名で作成できるべき。
+- [x] デフォルトバケット名の自動生成: `cdkq-state-{accountId}-{region}`
+- [x] バケットポリシー設定: 当該アカウントからのアクセスのみ許可
+- [x] バージョニング・暗号化の有効化
+- [x] `--state-bucket` 省略時にデフォルト名を使用（STS から自動解決）
 
-**実装内容**:
-
-- [ ] デフォルトバケット名の自動生成: `cdkq-state-{accountId}-{region}`
-- [ ] バケットポリシー設定: 当該アカウントからのアクセスのみ許可
-- [ ] バージョニング・暗号化の有効化（既存 TODO 消化）
-- [ ] `--state-bucket` 省略時にデフォルト名を使用
-
-**参考**: CDK bootstrap バケット `cdk-hnb659fds-assets-{accountId}-{region}` と同じパターン
-
-**影響範囲**: `src/cli/commands/bootstrap.ts`, 全 CLI コマンド
+**実装**: `src/cli/commands/bootstrap.ts`, `src/cli/config-loader.ts`
 
 #### 16. リソース属性解決の強化（3段階ハイブリッド戦略）
 
@@ -506,11 +497,11 @@ cdkq は CDK CLI (`aws-cdk`) を**置き換える**のではなく、**デプロ
 
 **3段階の解決戦略**:
 
-1. **Phase A: CC API ResourceModel のフル活用**（優先度: 高・即効）
-   - [ ] CC API の `ResourceModel` が返す全プロパティを attributes に保存（**既に実装済み**。検証・テスト追加のみ）
-   - [ ] CC API のプロパティキー名と GetAtt 属性名のエイリアスマッピング追加
+1. **Phase A: CC API ResourceModel のフル活用** ✅ **完了**
+   - [x] CC API の `ResourceModel` が返す全プロパティを attributes に保存
+   - [x] CC API のプロパティキー名と GetAtt 属性名のエイリアスマッピング追加（`attribute-mapper.ts`）
      - 例: CC API `TableArn` → GetAtt `Arn` のズレ吸収
-   - [ ] `enrichResourceAttributes()` を拡張し、より多くのリソースタイプでCC APIレスポンスを活用
+   - [x] `enrichResourceAttributes()` を拡張し、より多くのリソースタイプでCC APIレスポンスを活用
 
 2. **Phase B: CloudFormation Registry Schema の活用**（優先度: 中）
    - [ ] `aws cloudformation describe-type` で readOnly 属性一覧を自動取得
@@ -537,10 +528,10 @@ cdkq は CDK CLI (`aws-cdk`) を**置き換える**のではなく、**デプロ
 
 **段階的実装計画**:
 
-1. **Phase A: ResponseURL の実装**（優先度: 高）
-   - [ ] Pre-signed S3 URL の生成（レスポンス受信用）
-   - [ ] Lambda からの非同期レスポンスのポーリング
-   - [ ] CloudFormation Custom Resource Response Objects 仕様準拠
+1. **Phase A: ResponseURL の実装** ✅ **完了**
+   - [x] Pre-signed S3 URL の生成（レスポンス受信用）
+   - [x] Lambda からの非同期レスポンスのポーリング
+   - [x] CloudFormation Custom Resource Response Objects 仕様準拠
 
 2. **Phase B: SNS バックエンド対応**（優先度: 低）
    - [ ] SNS Topic への Publish + S3 レスポンス待ち
@@ -553,24 +544,22 @@ cdkq は CDK CLI (`aws-cdk`) を**置き換える**のではなく、**デプロ
 
 **現状の制限事項**:
 
-- Lambda 同期呼び出しのみ対応（タイムアウト上限あり）
-- `Custom::S3AutoDeleteObjects` 等の CDK 内部カスタムリソースは ResponseURL 問題で動作不可
 - SNS バックエンド、Step Functions バックエンドは未対応
 
 **影響範囲**: `src/provisioning/providers/custom-resource-provider.ts`
 
 #### 18. 統合テストの大幅拡充
 
-**課題**: 7 例のみ。多様なリソースタイプのカバレッジ不足。
+**課題**: より多様なリソースタイプのカバレッジが必要。
 
 **実装内容**:
 
-- [ ] **ECR 統合テスト**: Docker イメージアセットのビルド + ECR プッシュ
-- [ ] **API Gateway テスト**: REST API + Lambda 統合
+- [x] **ECR 統合テスト**: Docker イメージアセットのビルド + ECR プッシュ ✅
+- [x] **API Gateway テスト**: REST API + Lambda 統合 ✅
 - [ ] **CloudWatch テスト**: Alarms, Log Groups
 - [ ] **SNS/SQS イベント連携テスト**: Topic → Queue → Lambda
 - [ ] **複合スタックテスト**: 既存の single-stack 例に多数リソース追加
-- [ ] **E2E フルサイクルテスト**: deploy → diff → update → destroy の自動化
+- [x] **E2E フルサイクルテスト**: deploy → diff → update → destroy の自動化 ✅ (`tests/e2e/run-e2e.sh`)
 - [ ] **マルチスタック依存テスト**: 複数スタック間の依存関係
 
 **影響範囲**: `tests/integration/examples/`
@@ -595,23 +584,23 @@ cdkq は CDK CLI (`aws-cdk`) を**置き換える**のではなく、**デプロ
 
 **最低限の公開条件**:
 
-- [ ] Custom Resource の ResponseURL 問題解決（multi-resource テスト通過）
-- [ ] ECR 統合テスト通過
-- [ ] E2E テスト自動化（deploy → destroy フルサイクル）
-- [ ] 対応機能/リソース一覧表の README 掲載
+- [x] Custom Resource の ResponseURL 問題解決（S3 pre-signed URL で実装済み）
+- [x] ECR 統合テスト通過
+- [x] E2E テスト自動化（deploy → destroy フルサイクル）
+- [x] 対応機能/リソース一覧表の README 掲載
 - [ ] CI/CD パイプライン（GitHub Actions）
 - [ ] `npm install -g cdkq` でインストール可能
 
-- [ ] CLI スタック指定の CDK 互換化（タスク21）
-- [ ] `--app` の `cdk.json` 自動読み込み（タスク21）
+- [x] CLI スタック指定の CDK 互換化（タスク21）
+- [x] `--app` の `cdk.json` 自動読み込み（タスク21）
 
 **インパクト最大化のための追加項目**:
 
 - [ ] ベンチマーク結果（CloudFormation vs cdkq の速度比較データ）
 - [ ] 10+ リソースの実践的デモ（API Gateway + Lambda + DynamoDB + S3 + IAM）
 - [ ] GIF/動画デモ（README 掲載用）
-- [ ] bootstrap デフォルトバケット名対応（UX 改善）
-- [ ] `CDKQ_STATE_BUCKET` 環境変数対応
+- [x] bootstrap デフォルトバケット名対応（UX 改善）
+- [x] `CDKQ_STATE_BUCKET` 環境変数対応
 
 #### 21. CLI スタック指定の CDK 互換化 + cdk.json 自動読み込み
 
@@ -641,8 +630,8 @@ cdkq deploy MyStack                           # 位置引数（cdk.json から -
 - [x] ワイルドカード対応（glob パターン）
 - [x] `--app` を省略可能に: `cdk.json` の `app` フィールドから自動読み込み
 - [x] `--state-bucket` を省略可能に: `cdk.json` の `context.cdkq.stateBucket` から読み込み
-- [ ] 環境変数対応: `CDKQ_STATE_BUCKET`, `CDKQ_APP`
-- [ ] diff/destroy コマンドにも同様の変更を適用
+- [x] 環境変数対応: `CDKQ_STATE_BUCKET`, `CDKQ_APP`
+- [x] diff/destroy コマンドにも同様の変更を適用
 
 **優先度**: 高（公開前の UX 改善として必須）
 
@@ -723,7 +712,7 @@ cdkq deploy MyStack                           # 位置引数（cdk.json から -
 
 - DAG ビルダーでの静的解析
 - 実行時に `Fn::GetAtt` の値を解決してステートに保存
-- カスタムリソースは初期バージョンで非対応(将来実装)
+- Lambda バックエンドのカスタムリソースは対応済み（SNS/Step Functions は未対応）
 
 ### 3. ロールバック
 
@@ -910,6 +899,6 @@ node ../../../../dist/cli.js deploy \
 #### 既知の問題・制限事項
 
 - Cloud Control API が一部リソースタイプ未対応 → SDK Provider で回避
-- 一部組み込み関数未実装 (`Fn::GetAZs`)
+- すべての CloudFormation 組み込み関数に対応済み
 - ロールバック機構未実装
 - プロダクション使用は非推奨（開発/テスト環境のみ）

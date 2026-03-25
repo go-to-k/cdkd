@@ -51,6 +51,9 @@ export interface LockInfo {
   /** Lock acquisition timestamp (Unix milliseconds) */
   timestamp: number;
 
+  /** Lock expiration timestamp (Unix milliseconds) */
+  expiresAt: number;
+
   /** Optional operation being performed */
   operation?: string;
 }

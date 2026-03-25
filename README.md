@@ -206,10 +206,11 @@ See the [tests/integration/examples](tests/integration/examples) directory for w
 - [intrinsic-functions](tests/integration/examples/intrinsic-functions) - Intrinsic function resolution
 - [lambda](tests/integration/examples/lambda) - Lambda + DynamoDB + IAM integration
 - [cross-stack-references](tests/integration/examples/cross-stack-references) - Cross-stack references with Fn::ImportValue
+- [multi-resource](tests/integration/examples/multi-resource) - S3 + Lambda + DynamoDB + SQS + IAM
 - [ecr](tests/integration/examples/ecr) - ECR repository deployment
 - [apigateway](tests/integration/examples/apigateway) - API Gateway integration
 
-See [docs/TESTING.md](docs/TESTING.md) for detailed testing instructions including UPDATE operations.
+See [docs/testing.md](docs/testing.md) for detailed testing instructions including UPDATE operations.
 
 ## Architecture
 
@@ -327,9 +328,9 @@ See [docs/implementation-plan.md](docs/implementation-plan.md) for detailed impl
 **Not Yet Implemented**:
 
 - Custom Resources: SNS-backed and async/Step Functions patterns (Lambda sync only)
-- Custom Resources: CDK internal custom resources (`Custom::S3AutoDeleteObjects` etc.) — ResponseURL issue
 - Rollback mechanism
 - Progress bar / advanced UI
+- Lock TTL / force-unlock CLI command
 
 See [docs/implementation-plan.md](docs/implementation-plan.md) for complete roadmap.
 
