@@ -22,6 +22,12 @@ export class BasicStack extends cdk.Stack {
     cdk.Tags.of(bucket).add('Environment', 'Test');
     cdk.Tags.of(bucket).add('Project', 'cdkq');
 
+    // Add UPDATE test tag only when CDKQ_TEST_UPDATE is set
+    // This allows testing UPDATE operations without code changes
+    if (process.env.CDKQ_TEST_UPDATE === 'true') {
+      cdk.Tags.of(bucket).add('UpdateTest', 'true');
+    }
+
     // Output the bucket name
     new cdk.CfnOutput(this, 'BucketName', {
       value: bucket.bucketName,

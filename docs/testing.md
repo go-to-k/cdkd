@@ -90,12 +90,44 @@ cd /Users/goto/github/cdkq/tests/integration/examples/multi-resource
 npm install
 ```
 
-#### Parameters/Conditions Examples (Unimplemented feature demos)
+#### Parameters Example (CloudFormation Parameters) ✅ Implemented
 
-Specification examples for future implementation:
+```bash
+cd /Users/goto/github/cdkq/tests/integration/examples/parameters
+npm install
+```
 
-- `tests/integration/examples/parameters/` - CloudFormation Parameters
-- `tests/integration/examples/conditions/` - CloudFormation Conditions
+**Tested features**:
+
+- Parameter default values
+- Type coercion (String, Number, List)
+- Parameter usage in resource properties
+
+#### Conditions Example (CloudFormation Conditions) ✅ Implemented
+
+```bash
+cd /Users/goto/github/cdkq/tests/integration/examples/conditions
+npm install
+```
+
+**Tested features**:
+
+- Condition evaluation (Fn::And, Fn::Or, Fn::Not, Fn::Equals)
+- Conditional resource creation
+- AWS::NoValue pseudo parameter
+
+#### Cross-Stack References Example (Fn::ImportValue) ✅ Implemented
+
+```bash
+cd /Users/goto/github/cdkq/tests/integration/examples/cross-stack-references
+npm install
+```
+
+**Tested features**:
+
+- Stack outputs with Export
+- Fn::ImportValue for cross-stack references
+- S3 state backend for sharing exports between stacks
 
 For details on each example, refer to the README.md in each directory.
 
@@ -181,7 +213,40 @@ aws s3 ls | grep cdkq-test-bucket
 aws s3 ls s3://${STATE_BUCKET}/stacks/ --recursive
 ```
 
-## 5. Test CloudFormation Intrinsic Functions
+## 5. Test UPDATE Operations (JSON Patch)
+
+cdkq supports resource updates via Cloud Control API JSON Patch (RFC 6902). Test UPDATE operations to verify changes are applied without recreating resources:
+
+### Method A: Using the basic example with environment variable
+
+```bash
+cd /Users/goto/github/cdkq/tests/integration/examples/basic
+
+# First deployment (CREATE)
+node ../../../../dist/cli.js deploy \
+  --app "npx ts-node --prefer-ts-exts bin/app.ts" \
+  --stack CdkqBasicExample \
+  --state-bucket ${STATE_BUCKET} \
+  --region ${AWS_REGION}
+
+# Second deployment with UPDATE test tag (UPDATE)
+CDKQ_TEST_UPDATE=true node ../../../../dist/cli.js deploy \
+  --app "npx ts-node --prefer-ts-exts bin/app.ts" \
+  --stack CdkqBasicExample \
+  --state-bucket ${STATE_BUCKET} \
+  --region ${AWS_REGION}
+
+# Verify the output shows UPDATE operations:
+# Expected: "Changes: +0 ~1 -0" (1 resource updated)
+```
+
+The `CDKQ_TEST_UPDATE=true` environment variable adds an additional tag to the S3 bucket without modifying the code. This allows testing UPDATE operations repeatedly.
+
+### Method B: Manual code changes
+
+Alternatively, modify the stack code directly and re-deploy to test updates.
+
+## 6. Test CloudFormation Intrinsic Functions
 
 cdkq supports CloudFormation intrinsic functions (Ref, Fn::GetAtt, Fn::Join, Fn::Sub).
 Verify that resources using these functions can be deployed:

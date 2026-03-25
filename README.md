@@ -123,9 +123,13 @@ npx cdkq destroy \
 See the [tests/integration/examples](tests/integration/examples) directory for working examples:
 
 - [basic](tests/integration/examples/basic) - Simple S3 bucket deployment
-- [intrinsic-functions](tests/integration/examples/intrinsic-functions) - CloudFormation intrinsic function resolution
+- [conditions](tests/integration/examples/conditions) - CloudFormation Conditions and AWS::NoValue
+- [parameters](tests/integration/examples/parameters) - CloudFormation Parameters with default values
+- [intrinsic-functions](tests/integration/examples/intrinsic-functions) - Intrinsic function resolution
+- [lambda](tests/integration/examples/lambda) - Lambda + DynamoDB + IAM integration
+- [cross-stack-references](tests/integration/examples/cross-stack-references) - Cross-stack references with Fn::ImportValue
 
-See [docs/testing.md](docs/testing.md) for detailed testing instructions.
+See [docs/TESTING.md](docs/TESTING.md) for detailed testing instructions including UPDATE operations.
 
 ## Architecture
 
@@ -212,7 +216,7 @@ See [docs/implementation-plan.md](docs/implementation-plan.md) for detailed impl
 
 **Current Phase**: Phase 9 - Testing & Documentation
 
-**Recently Implemented**:
+**Recently Implemented** (2026-03-25):
 
 - ✅ Custom Resource support (Lambda-backed, Create/Update/Delete)
 - ✅ Real AWS Account ID resolution via STS GetCallerIdentity
@@ -227,6 +231,9 @@ See [docs/implementation-plan.md](docs/implementation-plan.md) for detailed impl
 - ✅ Type safety improvements (error handling, any type elimination)
 - ✅ Resource replacement detection (immutable property detection for 10+ AWS resource types)
 - ✅ Code quality improvements (eliminated ~80 lines of duplicate code in DeployEngine)
+- ✅ Integration testing (7 examples verified with real AWS deployments)
+- ✅ UPDATE operations verified (JSON Patch working for S3, Lambda, IAM resources)
+- ✅ Environment variable support for UPDATE testing (`CDKQ_TEST_UPDATE=true`)
 
 **Not Yet Implemented**:
 

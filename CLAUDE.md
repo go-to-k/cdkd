@@ -220,6 +220,21 @@ registry.register('AWS::IAM::Role', new IAMRoleProvider());
 - `tests/integration/examples/**`
 - Uses actual AWS account
 - Environment variables: `STATE_BUCKET`, `AWS_REGION`
+- 7 examples verified with real AWS deployments (as of 2026-03-25):
+  - basic: S3 bucket (CREATE + UPDATE verified)
+  - conditions: Conditional resources with AWS::NoValue
+  - parameters: CloudFormation Parameters with default values
+  - intrinsic-functions: Ref, GetAtt, Join, Sub
+  - lambda: Lambda + DynamoDB + IAM (CREATE + UPDATE verified)
+  - cross-stack-references: Fn::ImportValue (Exporter + Consumer)
+  - multi-resource: Known issue with Custom Resource CloudFormation integration
+
+### UPDATE Testing
+
+- Environment variable `CDKQ_TEST_UPDATE=true` enables UPDATE test mode
+- Example: `tests/integration/examples/basic/lib/basic-stack.ts`
+- Allows testing UPDATE operations without modifying code
+- JSON Patch (RFC 6902) verified working for S3, Lambda, IAM resources
 
 ## Common Development Tasks
 
