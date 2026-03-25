@@ -7,14 +7,15 @@ import { AssemblyLoader } from '../../synthesis/assembly-loader.js';
 import { S3StateBackend } from '../../state/s3-state-backend.js';
 import { DiffCalculator } from '../../analyzer/diff-calculator.js';
 import { setAwsClients, AwsClients } from '../../utils/aws-clients.js';
+import { resolveApp, resolveStateBucket } from '../config-loader.js';
 
 /**
  * Diff command implementation
  */
 async function diffCommand(options: {
-  app: string;
+  app?: string;
   output: string;
-  stateBucket: string;
+  stateBucket?: string;
   statePrefix: string;
   stack?: string;
   region?: string;
@@ -26,6 +27,24 @@ async function diffCommand(options: {
   if (options.verbose) {
     logger.setLevel('debug');
   }
+
+  // Resolve --app from CLI, env, or cdk.json
+  const app = resolveApp(options.app);
+  if (!app) {
+    throw new Error(
+      'No app command specified. Use --app, set CDKQ_APP env var, or add "app" to cdk.json'
+    );
+  }
+  options.app = app;
+
+  // Resolve --state-bucket from CLI, env, or cdk.json
+  const stateBucket = resolveStateBucket(options.stateBucket);
+  if (!stateBucket) {
+    throw new Error(
+      'No state bucket specified. Use --state-bucket, set CDKQ_STATE_BUCKET env var, or add context.cdkq.stateBucket to cdk.json'
+    );
+  }
+  options.stateBucket = stateBucket;
 
   logger.info('Calculating diff...');
   logger.debug('Options:', options);

@@ -6,12 +6,13 @@ import { getLogger } from '../../utils/logger.js';
 import { withErrorHandling } from '../../utils/error-handler.js';
 import { Synthesizer, type SynthesisOptions } from '../../synthesis/synthesizer.js';
 import { AssemblyLoader } from '../../synthesis/assembly-loader.js';
+import { resolveApp } from '../config-loader.js';
 
 /**
  * Synth command implementation
  */
 async function synthCommand(options: {
-  app: string;
+  app?: string;
   output: string;
   verbose: boolean;
   region?: string;
@@ -22,6 +23,15 @@ async function synthCommand(options: {
   if (options.verbose) {
     logger.setLevel('debug');
   }
+
+  // Resolve --app from CLI, env, or cdk.json
+  const app = resolveApp(options.app);
+  if (!app) {
+    throw new Error(
+      'No app command specified. Use --app, set CDKQ_APP env var, or add "app" to cdk.json'
+    );
+  }
+  options.app = app;
 
   logger.info('Synthesizing CDK app...');
   logger.debug('App command:', options.app);

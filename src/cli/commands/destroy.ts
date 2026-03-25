@@ -12,12 +12,13 @@ import { S3BucketPolicyProvider } from '../../provisioning/providers/s3-bucket-p
 import { SQSQueuePolicyProvider } from '../../provisioning/providers/sqs-queue-policy-provider.js';
 import { setAwsClients, AwsClients } from '../../utils/aws-clients.js';
 import * as readline from 'node:readline/promises';
+import { resolveStateBucket } from '../config-loader.js';
 
 /**
  * Destroy command implementation
  */
 async function destroyCommand(options: {
-  stateBucket: string;
+  stateBucket?: string;
   statePrefix: string;
   stack?: string;
   region?: string;
@@ -30,6 +31,15 @@ async function destroyCommand(options: {
   if (options.verbose) {
     logger.setLevel('debug');
   }
+
+  // Resolve --state-bucket from CLI, env, or cdk.json
+  const stateBucket = resolveStateBucket(options.stateBucket);
+  if (!stateBucket) {
+    throw new Error(
+      'No state bucket specified. Use --state-bucket, set CDKQ_STATE_BUCKET env var, or add context.cdkq.stateBucket to cdk.json'
+    );
+  }
+  options.stateBucket = stateBucket;
 
   logger.info('Starting stack destruction...');
   logger.debug('Options:', options);
@@ -58,7 +68,8 @@ async function destroyCommand(options: {
     providerRegistry.register('AWS::S3::BucketPolicy', new S3BucketPolicyProvider());
     providerRegistry.register('AWS::SQS::QueuePolicy', new SQSQueuePolicyProvider());
 
-    // Custom resources (Custom::*) are automatically handled by CustomResourceProvider
+    // Configure custom resource response handling via S3
+    providerRegistry.setCustomResourceResponseBucket(options.stateBucket);
 
     // 2. Get list of stacks to destroy
     let stackNames: string[];
@@ -182,7 +193,7 @@ async function destroyCommand(options: {
               logger.info(`  Deleting ${logicalId} (${resource.resourceType})...`);
 
               const provider = providerRegistry.getProvider(resource.resourceType);
-              await provider.delete(logicalId, resource.physicalId, resource.resourceType);
+              await provider.delete(logicalId, resource.physicalId, resource.resourceType, resource.properties);
 
               logger.info(`  ✓ Deleted ${logicalId}`);
               deletedCount++;
