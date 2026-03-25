@@ -584,7 +584,21 @@ export class DeployEngine {
         lastError = error;
         const message = error instanceof Error ? error.message : String(error);
 
-        // Only retry on specific transient errors
+        // "Already exists" = orphaned resource from a previous failed deployment
+        // Adopt it instead of failing
+        if (
+          message.includes('already exists') ||
+          message.includes('AlreadyExists') ||
+          message.includes('EntityAlreadyExists') ||
+          message.includes('BucketAlreadyOwnedByYou')
+        ) {
+          this.logger.info(
+            `  ♻ Adopting existing ${logicalId} (${resourceType}) - resource already exists from previous deployment`
+          );
+          return this.adoptExistingResource(logicalId, resourceType, properties);
+        }
+
+        // Retry on transient IAM propagation errors
         const isRetryable =
           message.includes('cannot be assumed by Lambda') ||
           message.includes('role defined for the function') ||
@@ -604,6 +618,48 @@ export class DeployEngine {
     }
 
     throw lastError;
+  }
+
+  /**
+   * Adopt an existing resource that was orphaned from a previous failed deployment
+   *
+   * Extracts the physical ID from the resource properties and returns a result
+   * as if the resource was just created.
+   */
+  private adoptExistingResource(
+    logicalId: string,
+    _resourceType: string,
+    properties: Record<string, unknown>
+  ): ResourceCreateResult {
+    // Try to determine physical ID from properties
+    let physicalId = logicalId;
+
+    // Common property names that contain the physical ID
+    const nameProps = [
+      'BucketName',
+      'TableName',
+      'FunctionName',
+      'RoleName',
+      'PolicyName',
+      'QueueName',
+      'TopicName',
+      'RepositoryName',
+      'ClusterName',
+      'LogGroupName',
+    ];
+
+    for (const prop of nameProps) {
+      if (typeof properties[prop] === 'string') {
+        physicalId = properties[prop];
+        break;
+      }
+    }
+
+    this.logger.info(`  ✓ Adopted ${logicalId}: ${physicalId}`);
+
+    return {
+      physicalId,
+    };
   }
 
   /**
