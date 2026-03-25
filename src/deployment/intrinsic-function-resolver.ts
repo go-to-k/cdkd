@@ -92,8 +92,96 @@ export function resetAccountInfoCache(): void {
   cachedAccountInfo = null;
 }
 
+/**
+ * CloudFormation Parameter definition
+ */
+export interface ParameterDefinition {
+  Type: 'String' | 'Number' | 'List<Number>' | 'CommaDelimitedList' | string;
+  Default?: unknown;
+  AllowedValues?: unknown[];
+  AllowedPattern?: string;
+  MinLength?: number;
+  MaxLength?: number;
+  MinValue?: number;
+  MaxValue?: number;
+  Description?: string;
+  ConstraintDescription?: string;
+  NoEcho?: boolean;
+}
+
 export class IntrinsicFunctionResolver {
   private logger = getLogger().child('IntrinsicFunctionResolver');
+
+  /**
+   * Resolve parameter values from template Parameters section
+   *
+   * Merges default values from template with user-provided parameter values.
+   * User-provided values take precedence over defaults.
+   *
+   * @param template CloudFormation template containing Parameters section
+   * @param userParameters User-provided parameter values (e.g., from CLI)
+   * @returns Record of parameter names to resolved values
+   */
+  resolveParameters(
+    template: CloudFormationTemplate,
+    userParameters?: Record<string, string>
+  ): Record<string, unknown> {
+    const parameters: Record<string, unknown> = {};
+    const templateParameters = template.Parameters;
+
+    if (!templateParameters || typeof templateParameters !== 'object') {
+      return parameters;
+    }
+
+    for (const [name, definition] of Object.entries(templateParameters)) {
+      const paramDef = definition as ParameterDefinition;
+
+      // User-provided value takes precedence
+      if (userParameters && name in userParameters) {
+        parameters[name] = this.coerceParameterValue(
+          userParameters[name],
+          paramDef.Type
+        );
+        this.logger.debug(
+          `Parameter ${name}: using user-provided value ${userParameters[name]}`
+        );
+        continue;
+      }
+
+      // Use default value if available
+      if ('Default' in paramDef) {
+        parameters[name] = paramDef.Default;
+        this.logger.debug(
+          `Parameter ${name}: using default value ${typeof paramDef.Default === 'object' ? JSON.stringify(paramDef.Default) : String(paramDef.Default)}`
+        );
+        continue;
+      }
+
+      // No value provided and no default - this is an error
+      throw new Error(
+        `Parameter ${name} is required but no value was provided and no default exists`
+      );
+    }
+
+    return parameters;
+  }
+
+  /**
+   * Coerce parameter value to the correct type based on parameter definition
+   */
+  private coerceParameterValue(value: string, type: string): unknown {
+    switch (type) {
+      case 'Number':
+        return Number(value);
+      case 'List<Number>':
+        return value.split(',').map((v) => Number(v.trim()));
+      case 'CommaDelimitedList':
+        return value.split(',').map((v) => v.trim());
+      case 'String':
+      default:
+        return value;
+    }
+  }
 
   /**
    * Resolve all intrinsic functions in a value

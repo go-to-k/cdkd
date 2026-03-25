@@ -20,6 +20,8 @@ export interface DeployEngineOptions {
   dryRun?: boolean;
   /** Lock timeout in milliseconds */
   lockTimeout?: number;
+  /** User-provided parameter values */
+  parameters?: Record<string, string>;
 }
 
 /**
@@ -113,6 +115,23 @@ export class DeployEngine {
       // 2. Parse template (note: we use the original template directly for now)
       // TODO: Implement full template parsing/validation if needed
       this.logger.debug(`Template has ${Object.keys(template.Resources || {}).length} resources`);
+
+      // 2.5. Resolve parameters from template and user input
+      const parameterValues = this.resolver.resolveParameters(template, options.parameters);
+      this.logger.debug(
+        `Resolved ${Object.keys(parameterValues).length} parameters: ${Object.keys(parameterValues).join(', ')}`
+      );
+
+      // 2.6. Evaluate conditions from template
+      const context = {
+        template,
+        resources: currentState.resources,
+        ...(Object.keys(parameterValues).length > 0 && { parameters: parameterValues }),
+      };
+      const conditions = await this.resolver.evaluateConditions(context);
+      this.logger.debug(
+        `Evaluated ${Object.keys(conditions).length} conditions: ${Object.keys(conditions).join(', ')}`
+      );
 
       // 3. Validate resource types (before deployment starts)
       // Skip metadata resources as they don't actually deploy
@@ -240,7 +259,7 @@ export class DeployEngine {
               return;
             }
 
-            await this.provisionResource(logicalId, change, newResources, template);
+            await this.provisionResource(logicalId, change, newResources, template, parameterValues, conditions);
           })
         )
       );
@@ -267,7 +286,7 @@ export class DeployEngine {
           level.map((logicalId) =>
             limit(async () => {
               const change = changes.get(logicalId)!;
-              await this.provisionResource(logicalId, change, newResources, template);
+              await this.provisionResource(logicalId, change, newResources, template, parameterValues, conditions);
             })
           )
         );
@@ -277,7 +296,7 @@ export class DeployEngine {
     }
 
     // Resolve outputs
-    const outputs = await this.resolveOutputs(template, newResources);
+    const outputs = await this.resolveOutputs(template, newResources, parameterValues, conditions);
 
     return {
       version: 1,
@@ -295,7 +314,9 @@ export class DeployEngine {
     logicalId: string,
     change: ResourceChange,
     stateResources: Record<string, ResourceState>,
-    template?: CloudFormationTemplate
+    template?: CloudFormationTemplate,
+    parameterValues?: Record<string, unknown>,
+    conditions?: Record<string, boolean>
   ): Promise<void> {
     const resourceType = change.resourceType;
     const provider = this.providerRegistry.getProvider(resourceType);
@@ -307,16 +328,12 @@ export class DeployEngine {
           const desiredProps = change.desiredProperties || {};
 
           // Resolve intrinsic functions in properties
-          const context = template?.Parameters
-            ? {
-                template: template,
-                resources: stateResources,
-                parameters: template.Parameters,
-              }
-            : {
-                template: template!,
-                resources: stateResources,
-              };
+          const context = {
+            template: template!,
+            resources: stateResources,
+            ...(parameterValues && Object.keys(parameterValues).length > 0 && { parameters: parameterValues }),
+            ...(conditions && Object.keys(conditions).length > 0 && { conditions }),
+          };
 
           const resolvedProps = (await this.resolver.resolve(desiredProps, context)) as Record<
             string,
@@ -355,16 +372,12 @@ export class DeployEngine {
           const currentProps = change.currentProperties || {};
 
           // Resolve intrinsic functions in properties
-          const context = template?.Parameters
-            ? {
-                template: template,
-                resources: stateResources,
-                parameters: template.Parameters,
-              }
-            : {
-                template: template!,
-                resources: stateResources,
-              };
+          const context = {
+            template: template!,
+            resources: stateResources,
+            ...(parameterValues && Object.keys(parameterValues).length > 0 && { parameters: parameterValues }),
+            ...(conditions && Object.keys(conditions).length > 0 && { conditions }),
+          };
 
           const resolvedProps = (await this.resolver.resolve(desiredProps, context)) as Record<
             string,
@@ -444,23 +457,21 @@ export class DeployEngine {
    */
   private async resolveOutputs(
     template: CloudFormationTemplate,
-    resources: Record<string, ResourceState>
+    resources: Record<string, ResourceState>,
+    parameterValues?: Record<string, unknown>,
+    conditions?: Record<string, boolean>
   ): Promise<Record<string, unknown>> {
     if (!template.Outputs) {
       return {};
     }
 
     const outputs: Record<string, unknown> = {};
-    const context = template.Parameters
-      ? {
-          template: template,
-          resources: resources,
-          parameters: template.Parameters,
-        }
-      : {
-          template: template,
-          resources: resources,
-        };
+    const context = {
+      template: template,
+      resources: resources,
+      ...(parameterValues && Object.keys(parameterValues).length > 0 && { parameters: parameterValues }),
+      ...(conditions && Object.keys(conditions).length > 0 && { conditions }),
+    };
 
     for (const [outputKey, output] of Object.entries(template.Outputs)) {
       try {
