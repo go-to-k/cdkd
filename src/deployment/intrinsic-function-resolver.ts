@@ -27,10 +27,12 @@ export interface ResolverContext {
  * - Fn::GetAtt
  * - Fn::Join
  * - Fn::Sub
+ * - Fn::Select
+ * - Fn::Split
  *
  * Not yet supported:
- * - Fn::Select, Fn::Split, Fn::ImportValue
  * - Fn::If, Fn::Equals (Conditions)
+ * - Fn::ImportValue
  * - Fn::FindInMap, Fn::GetAZs, Fn::Base64
  */
 /**
@@ -130,6 +132,14 @@ export class IntrinsicFunctionResolver {
         obj['Fn::Sub'] as string | [string, Record<string, unknown>],
         context
       );
+    }
+
+    if ('Fn::Select' in obj) {
+      return await this.resolveSelect(obj['Fn::Select'] as [number, unknown[]], context);
+    }
+
+    if ('Fn::Split' in obj) {
+      return await this.resolveSplit(obj['Fn::Split'] as [string, unknown], context);
     }
 
     // Not an intrinsic function: recursively resolve object properties
@@ -440,6 +450,60 @@ export class IntrinsicFunctionResolver {
     }
 
     this.logger.debug(`Resolved Fn::Sub: ${result}`);
+    return result;
+  }
+
+  /**
+   * Resolve Fn::Select intrinsic function
+   *
+   * Fn::Select: [index, [value1, value2, ...]]
+   * Returns the value at the specified index in the list
+   */
+  private async resolveSelect(
+    selectArgs: [number, unknown[]],
+    context: ResolverContext
+  ): Promise<unknown> {
+    const [index, list] = selectArgs;
+
+    // Resolve the list first
+    const resolvedList = await this.resolveValue(list, context);
+
+    if (!Array.isArray(resolvedList)) {
+      throw new Error(`Fn::Select: list must be an array, got ${typeof resolvedList}`);
+    }
+
+    if (index < 0 || index >= resolvedList.length) {
+      throw new Error(
+        `Fn::Select: index ${index} out of bounds (array length: ${resolvedList.length})`
+      );
+    }
+
+    const result = resolvedList[index];
+    this.logger.debug(`Resolved Fn::Select: index ${index} -> ${JSON.stringify(result)}`);
+    return result;
+  }
+
+  /**
+   * Resolve Fn::Split intrinsic function
+   *
+   * Fn::Split: [delimiter, string]
+   * Splits a string into a list of strings using the specified delimiter
+   */
+  private async resolveSplit(
+    splitArgs: [string, unknown],
+    context: ResolverContext
+  ): Promise<string[]> {
+    const [delimiter, value] = splitArgs;
+
+    // Resolve the value first
+    const resolvedValue = await this.resolveValue(value, context);
+
+    if (typeof resolvedValue !== 'string') {
+      throw new Error(`Fn::Split: value must be a string, got ${typeof resolvedValue}`);
+    }
+
+    const result = resolvedValue.split(delimiter);
+    this.logger.debug(`Resolved Fn::Split: split by "${delimiter}" -> ${JSON.stringify(result)}`);
     return result;
   }
 
