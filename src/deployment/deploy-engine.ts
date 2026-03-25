@@ -592,8 +592,14 @@ export class DeployEngine {
           message.includes('EntityAlreadyExists') ||
           message.includes('BucketAlreadyOwnedByYou')
         ) {
-          this.logger.info(
-            `  ♻ Adopting existing ${logicalId} (${resourceType}) - resource already exists from previous deployment`
+          this.logger.warn(
+            `  ⚠ Resource ${logicalId} (${resourceType}) already exists in AWS but not in cdkq state.`
+          );
+          this.logger.warn(
+            `    This may be from a previous failed deployment. Adopting existing resource.`
+          );
+          this.logger.warn(
+            `    If this resource belongs to another stack/service, delete it manually first.`
           );
           return this.adoptExistingResource(logicalId, resourceType, properties);
         }
