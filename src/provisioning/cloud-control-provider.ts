@@ -10,6 +10,7 @@ import {
 import { getAwsClients } from '../utils/aws-clients.js';
 import { getLogger } from '../utils/logger.js';
 import { ProvisioningError } from '../utils/error-handler.js';
+import { JsonPatchGenerator } from './json-patch-generator.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -28,6 +29,7 @@ import type {
 export class CloudControlProvider implements ResourceProvider {
   private cloudControlClient: CloudControlClient;
   private logger = getLogger().child('CloudControlProvider');
+  private patchGenerator = new JsonPatchGenerator();
 
   // Maximum time to wait for operation completion (15 minutes)
   private readonly MAX_WAIT_TIME_MS = 15 * 60 * 1000;
@@ -117,36 +119,35 @@ export class CloudControlProvider implements ResourceProvider {
     physicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
-    _previousProperties: Record<string, unknown>
+    previousProperties: Record<string, unknown>
   ): Promise<ResourceUpdateResult> {
     this.logger.info(
       `Updating resource ${logicalId} (${resourceType}), physical ID: ${physicalId}`
     );
 
-    // Cloud Control API doesn't use previousProperties for updates
-    // It uses a full replacement approach with PatchDocument
-
-    // TODO: Implement proper JSON Patch (RFC 6902) instead of always replacing root
-    // Currently we replace the entire resource at '/', but this is not optimal and may fail
-    // for some resource types. Should calculate individual property-level patches:
-    // - Use 'add' for new properties
-    // - Use 'replace' for changed properties
-    // - Use 'remove' for deleted properties
-    // This requires diffing currentProperties and properties to generate the patch.
-
     try {
+      // Generate JSON Patch document
+      const patch = this.patchGenerator.generatePatch(previousProperties, properties);
+
+      if (patch.length === 0) {
+        // No changes detected
+        this.logger.debug(`No property changes detected for ${logicalId}, skipping update`);
+        return {
+          physicalId,
+          wasReplaced: false,
+        };
+      }
+
+      this.logger.debug(
+        `Generated ${patch.length} patch operations for ${logicalId}: ${JSON.stringify(patch)}`
+      );
+
       // Start resource update
       const updateResponse = await this.cloudControlClient.send(
         new UpdateResourceCommand({
           TypeName: resourceType,
           Identifier: physicalId,
-          PatchDocument: JSON.stringify([
-            {
-              op: 'replace',
-              path: '/',
-              value: properties,
-            },
-          ]),
+          PatchDocument: JSON.stringify(patch),
         })
       );
 

@@ -18,6 +18,10 @@ export class BasicStack extends cdk.Stack {
       autoDeleteObjects: false,
     });
 
+    // Add tags to test JSON Patch updates
+    cdk.Tags.of(bucket).add('Environment', 'Test');
+    cdk.Tags.of(bucket).add('Project', 'cdkq');
+
     // Output the bucket name
     new cdk.CfnOutput(this, 'BucketName', {
       value: bucket.bucketName,
