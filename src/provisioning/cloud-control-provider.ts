@@ -96,6 +96,13 @@ export class CloudControlProvider implements ResourceProvider {
         result.attributes = this.parseResourceModel(progressEvent.ResourceModel);
       }
 
+      // Enrich attributes with computed values for specific resource types
+      result.attributes = this.enrichResourceAttributes(
+        resourceType,
+        progressEvent.Identifier,
+        result.attributes || {}
+      );
+
       return result;
     } catch (error) {
       this.handleError(error, 'CREATE', resourceType, logicalId);
@@ -177,6 +184,13 @@ export class CloudControlProvider implements ResourceProvider {
       if (progressEvent.ResourceModel) {
         result.attributes = this.parseResourceModel(progressEvent.ResourceModel);
       }
+
+      // Enrich attributes with computed values for specific resource types
+      result.attributes = this.enrichResourceAttributes(
+        resourceType,
+        physicalId,
+        result.attributes || {}
+      );
 
       return result;
     } catch (error) {
@@ -341,6 +355,35 @@ export class CloudControlProvider implements ResourceProvider {
       );
       return {};
     }
+  }
+
+  /**
+   * Enrich resource attributes with computed values
+   *
+   * Some resource types don't return all attributes via Cloud Control API.
+   * This method adds computed attributes based on resource type and physical ID.
+   */
+  private enrichResourceAttributes(
+    resourceType: string,
+    physicalId: string,
+    attributes: Record<string, unknown>
+  ): Record<string, unknown> {
+    const enriched = { ...attributes };
+
+    switch (resourceType) {
+      case 'AWS::S3::Bucket':
+        // S3 bucket ARN: arn:aws:s3:::bucket-name
+        if (!enriched['Arn']) {
+          enriched['Arn'] = `arn:aws:s3:::${physicalId}`;
+        }
+        break;
+
+      // Add more resource types as needed
+      default:
+        break;
+    }
+
+    return enriched;
   }
 
   /**

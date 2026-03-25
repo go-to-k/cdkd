@@ -1,8 +1,10 @@
-import { Graph, alg } from 'graphlib';
+import graphlib from 'graphlib';
 import type { CloudFormationTemplate } from '../types/resource.js';
 import { TemplateParser } from './template-parser.js';
 import { getLogger } from '../utils/logger.js';
 import { DependencyError } from '../utils/error-handler.js';
+
+const { Graph, alg } = graphlib;
 
 /**
  * Dependency graph builder for CloudFormation resources
