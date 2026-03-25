@@ -62,48 +62,57 @@ AWS CDK is great for defining infrastructure as code, but CloudFormation deploym
 - **DAG-based parallelization**: Analyze `Ref`/`Fn::GetAtt` dependencies and execute in parallel
 - **Asset handling**: Leverages `@aws-cdk/cdk-assets-lib` for Lambda packages, Docker images, etc.
 
+## Installation
+
+```bash
+npm install -g cdkq
+```
+
+Or use with npx (no installation required):
+
+```bash
+npx cdkq --help
+```
+
 ## Usage
 
 ```bash
-# Build the project
-npm run build
-
 # Bootstrap (create S3 bucket for state)
-node dist/cli.js bootstrap \
+npx cdkq bootstrap \
   --state-bucket my-cdkq-state \
   --region us-east-1
 
 # Synthesize only
-node dist/cli.js synth --app "npx ts-node app.ts"
+npx cdkq synth --app "npx ts-node app.ts"
 
 # Show diff (what would change)
-node dist/cli.js diff \
+npx cdkq diff \
   --app "npx ts-node app.ts" \
   --state-bucket my-cdkq-state \
   --region us-east-1
 
 # Deploy
-node dist/cli.js deploy \
+npx cdkq deploy \
   --app "npx ts-node app.ts" \
   --state-bucket my-cdkq-state \
   --region us-east-1 \
   --verbose
 
 # Dry run (plan only, no changes)
-node dist/cli.js deploy \
+npx cdkq deploy \
   --app "npx ts-node app.ts" \
   --state-bucket my-cdkq-state \
   --region us-east-1 \
   --dry-run
 
 # Destroy resources
-node dist/cli.js destroy \
+npx cdkq destroy \
   --state-bucket my-cdkq-state \
   --stack MyStack \
   --region us-east-1
 
 # Force destroy (skip confirmation)
-node dist/cli.js destroy \
+npx cdkq destroy \
   --state-bucket my-cdkq-state \
   --region us-east-1 \
   --force
@@ -220,10 +229,6 @@ See [docs/implementation-plan.md](docs/implementation-plan.md) for detailed impl
 - Cloud Control API JSON Patch for updates (currently uses replace)
 
 See [docs/implementation-plan.md](docs/implementation-plan.md) for complete roadmap.
-
-## Contributing
-
-This project is in early development. Contributions welcome!
 
 ## License
 
