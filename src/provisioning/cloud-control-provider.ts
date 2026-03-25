@@ -202,7 +202,12 @@ export class CloudControlProvider implements ResourceProvider {
   /**
    * Delete a resource using Cloud Control API
    */
-  async delete(logicalId: string, physicalId: string, resourceType: string): Promise<void> {
+  async delete(
+    logicalId: string,
+    physicalId: string,
+    resourceType: string,
+    _properties?: Record<string, unknown>
+  ): Promise<void> {
     this.logger.info(
       `Deleting resource ${logicalId} (${resourceType}), physical ID: ${physicalId}`
     );

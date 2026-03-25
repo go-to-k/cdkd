@@ -312,7 +312,7 @@ export class IAMRoleProvider implements ResourceProvider {
   /**
    * Delete an IAM role
    */
-  async delete(logicalId: string, physicalId: string, resourceType: string): Promise<void> {
+  async delete(logicalId: string, physicalId: string, resourceType: string, _properties?: Record<string, unknown>): Promise<void> {
     this.logger.info(`Deleting IAM role ${logicalId}: ${physicalId}`);
 
     try {

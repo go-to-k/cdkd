@@ -210,7 +210,7 @@ export class IAMPolicyProvider implements ResourceProvider {
   /**
    * Delete an IAM inline policy
    */
-  async delete(logicalId: string, physicalId: string, resourceType: string): Promise<void> {
+  async delete(logicalId: string, physicalId: string, resourceType: string, _properties?: Record<string, unknown>): Promise<void> {
     this.logger.info(`Deleting IAM policy ${logicalId}: ${physicalId}`);
 
     // Parse physical ID to get policy name and role

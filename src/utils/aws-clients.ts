@@ -3,6 +3,7 @@ import { CloudControlClient } from '@aws-sdk/client-cloudcontrol';
 import { IAMClient } from '@aws-sdk/client-iam';
 import { SQSClient } from '@aws-sdk/client-sqs';
 import { LambdaClient } from '@aws-sdk/client-lambda';
+import { STSClient } from '@aws-sdk/client-sts';
 
 /**
  * AWS client configuration
@@ -26,6 +27,7 @@ export class AwsClients {
   private iamClient?: IAMClient;
   private sqsClient?: SQSClient;
   private lambdaClient?: LambdaClient;
+  private stsClient?: STSClient;
 
   constructor(private config: AwsClientConfig = {}) {}
 
@@ -143,6 +145,26 @@ export class AwsClients {
   }
 
   /**
+   * Get STS client
+   */
+  getSTSClient(): STSClient {
+    if (!this.stsClient) {
+      this.stsClient = new STSClient({
+        ...(this.config.region && { region: this.config.region }),
+        ...(this.config.credentials && { credentials: this.config.credentials }),
+      });
+    }
+    return this.stsClient;
+  }
+
+  /**
+   * Convenience getter for STS client
+   */
+  get sts(): STSClient {
+    return this.getSTSClient();
+  }
+
+  /**
    * Destroy all clients
    */
   destroy(): void {
@@ -151,6 +173,7 @@ export class AwsClients {
     this.iamClient?.destroy();
     this.sqsClient?.destroy();
     this.lambdaClient?.destroy();
+    this.stsClient?.destroy();
   }
 }
 

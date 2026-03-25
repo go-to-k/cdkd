@@ -110,8 +110,14 @@ export interface ResourceProvider {
    * @param logicalId Logical ID from template
    * @param physicalId Physical resource ID
    * @param resourceType CloudFormation resource type
+   * @param properties Resource properties (optional, for providers that need them)
    */
-  delete(logicalId: string, physicalId: string, resourceType: string): Promise<void>;
+  delete(
+    logicalId: string,
+    physicalId: string,
+    resourceType: string,
+    properties?: Record<string, unknown>
+  ): Promise<void>;
 
   /**
    * Get resource attributes (for Fn::GetAtt resolution)

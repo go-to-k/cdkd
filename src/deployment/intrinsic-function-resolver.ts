@@ -1,4 +1,6 @@
+import { GetCallerIdentityCommand } from '@aws-sdk/client-sts';
 import { getLogger } from '../utils/logger.js';
+import { getAwsClients } from '../utils/aws-clients.js';
 import type { CloudFormationTemplate } from '../types/resource.js';
 import type { ResourceState } from '../types/state.js';
 
@@ -31,20 +33,73 @@ export interface ResolverContext {
  * - Fn::If, Fn::Equals (Conditions)
  * - Fn::FindInMap, Fn::GetAZs, Fn::Base64
  */
+/**
+ * AWS Account information cache
+ */
+interface AwsAccountInfo {
+  accountId: string;
+  region: string;
+  partition: string;
+}
+
+let cachedAccountInfo: AwsAccountInfo | null = null;
+
+/**
+ * Get AWS account information from STS
+ */
+async function getAccountInfo(): Promise<AwsAccountInfo> {
+  if (cachedAccountInfo) {
+    return cachedAccountInfo;
+  }
+
+  const logger = getLogger().child('IntrinsicFunctionResolver');
+  const awsClients = getAwsClients();
+  const stsClient = awsClients.sts;
+
+  try {
+    const response = await stsClient.send(new GetCallerIdentityCommand({}));
+    const accountId = response.Account || '123456789012';
+    const region = process.env['AWS_REGION'] || 'us-east-1';
+    const partition = 'aws'; // Could be aws-cn, aws-us-gov, etc.
+
+    cachedAccountInfo = { accountId, region, partition };
+    logger.debug(`Retrieved AWS account info: ${accountId}, ${region}, ${partition}`);
+    return cachedAccountInfo;
+  } catch (error) {
+    logger.warn(
+      `Failed to get AWS account info from STS: ${error instanceof Error ? error.message : String(error)}, using defaults`
+    );
+    // Fallback to environment variables or defaults
+    cachedAccountInfo = {
+      accountId: process.env['AWS_ACCOUNT_ID'] || '123456789012',
+      region: process.env['AWS_REGION'] || 'us-east-1',
+      partition: 'aws',
+    };
+    return cachedAccountInfo;
+  }
+}
+
+/**
+ * Reset cached account info (useful for testing)
+ */
+export function resetAccountInfoCache(): void {
+  cachedAccountInfo = null;
+}
+
 export class IntrinsicFunctionResolver {
   private logger = getLogger().child('IntrinsicFunctionResolver');
 
   /**
    * Resolve all intrinsic functions in a value
    */
-  resolve(value: unknown, context: ResolverContext): unknown {
-    return this.resolveValue(value, context);
+  async resolve(value: unknown, context: ResolverContext): Promise<unknown> {
+    return await this.resolveValue(value, context);
   }
 
   /**
    * Recursively resolve a value
    */
-  private resolveValue(value: unknown, context: ResolverContext): unknown {
+  private async resolveValue(value: unknown, context: ResolverContext): Promise<unknown> {
     // Primitives: return as-is
     if (typeof value !== 'object' || value === null) {
       return value;
@@ -52,32 +107,35 @@ export class IntrinsicFunctionResolver {
 
     // Arrays: resolve each element
     if (Array.isArray(value)) {
-      return value.map((v) => this.resolveValue(v, context));
+      return await Promise.all(value.map((v) => this.resolveValue(v, context)));
     }
 
     const obj = value as Record<string, unknown>;
 
     // Check for intrinsic functions
     if ('Ref' in obj) {
-      return this.resolveRef(obj['Ref'] as string, context);
+      return await this.resolveRef(obj['Ref'] as string, context);
     }
 
     if ('Fn::GetAtt' in obj) {
-      return this.resolveGetAtt(obj['Fn::GetAtt'] as [string, string] | string, context);
+      return await this.resolveGetAtt(obj['Fn::GetAtt'] as [string, string] | string, context);
     }
 
     if ('Fn::Join' in obj) {
-      return this.resolveJoin(obj['Fn::Join'] as [string, unknown[]], context);
+      return await this.resolveJoin(obj['Fn::Join'] as [string, unknown[]], context);
     }
 
     if ('Fn::Sub' in obj) {
-      return this.resolveSub(obj['Fn::Sub'] as string | [string, Record<string, unknown>], context);
+      return await this.resolveSub(
+        obj['Fn::Sub'] as string | [string, Record<string, unknown>],
+        context
+      );
     }
 
     // Not an intrinsic function: recursively resolve object properties
     const resolved: Record<string, unknown> = {};
     for (const [key, val] of Object.entries(obj)) {
-      resolved[key] = this.resolveValue(val, context);
+      resolved[key] = await this.resolveValue(val, context);
     }
     return resolved;
   }
@@ -90,7 +148,7 @@ export class IntrinsicFunctionResolver {
    * 2. Parameters (returns parameter value)
    * 3. Pseudo parameters (AWS::Region, AWS::AccountId, etc.)
    */
-  private resolveRef(logicalId: string, context: ResolverContext): unknown {
+  private async resolveRef(logicalId: string, context: ResolverContext): Promise<unknown> {
     // Check if it's a resource
     const resource = context.resources[logicalId];
     if (resource) {
@@ -108,7 +166,7 @@ export class IntrinsicFunctionResolver {
     }
 
     // Check if it's a pseudo parameter
-    const pseudoValue = this.resolvePseudoParameter(logicalId);
+    const pseudoValue = await this.resolvePseudoParameter(logicalId);
     if (pseudoValue !== undefined) {
       this.logger.debug(`Resolved Ref to pseudo parameter: ${logicalId} -> ${pseudoValue}`);
       return pseudoValue;
@@ -122,7 +180,10 @@ export class IntrinsicFunctionResolver {
   /**
    * Resolve Fn::GetAtt intrinsic function
    */
-  private resolveGetAtt(getAtt: [string, string] | string, context: ResolverContext): unknown {
+  private async resolveGetAtt(
+    getAtt: [string, string] | string,
+    context: ResolverContext
+  ): Promise<unknown> {
     // Fn::GetAtt can be either [LogicalId, AttributeName] or "LogicalId.AttributeName"
     let logicalId: string;
     let attributeName: string;
@@ -152,7 +213,7 @@ export class IntrinsicFunctionResolver {
     }
 
     // Construct attribute value based on resource type
-    const value = this.constructAttribute(resource, attributeName, context);
+    const value = await this.constructAttribute(resource, attributeName, context);
     this.logger.debug(
       `Resolved Fn::GetAtt: ${logicalId}.${attributeName} -> ${typeof value === 'object' ? JSON.stringify(value) : String(value)}`
     );
@@ -165,15 +226,14 @@ export class IntrinsicFunctionResolver {
    * Many CloudFormation attributes are not returned by Cloud Control API,
    * so we need to construct them manually.
    */
-  private constructAttribute(
+  private async constructAttribute(
     resource: ResourceState,
     attributeName: string,
     context: ResolverContext
-  ): unknown {
+  ): Promise<unknown> {
     const { resourceType, physicalId } = resource;
-    const region = this.resolvePseudoParameter('AWS::Region') || 'us-east-1';
-    const accountId = this.resolvePseudoParameter('AWS::AccountId') || '123456789012';
-    const partition = this.resolvePseudoParameter('AWS::Partition') || 'aws';
+    const accountInfo = await getAccountInfo();
+    const { region, accountId, partition } = accountInfo;
 
     // DynamoDB Table
     if (resourceType === 'AWS::DynamoDB::Table') {
@@ -284,14 +344,19 @@ export class IntrinsicFunctionResolver {
    *
    * Fn::Join: [delimiter, [value1, value2, ...]]
    */
-  private resolveJoin(joinArgs: [string, unknown[]], context: ResolverContext): string {
+  private async resolveJoin(
+    joinArgs: [string, unknown[]],
+    context: ResolverContext
+  ): Promise<string> {
     const [delimiter, values] = joinArgs;
 
     // Resolve each value first
-    const resolvedValues = values.map((v) => {
-      const resolved = this.resolveValue(v, context);
-      return String(resolved);
-    });
+    const resolvedValues = await Promise.all(
+      values.map(async (v) => {
+        const resolved = await this.resolveValue(v, context);
+        return String(resolved);
+      })
+    );
 
     const result = resolvedValues.join(delimiter);
     this.logger.debug(`Resolved Fn::Join: ${result}`);
@@ -304,11 +369,15 @@ export class IntrinsicFunctionResolver {
    * Fn::Sub supports two forms:
    * 1. String with ${VarName} placeholders
    * 2. [String, {VarName: value, ...}] with explicit variable mapping
+   *
+   * Note: This is a simplified implementation that doesn't handle async properly
+   * inside replace(). For full async support, we'd need to collect all replacements
+   * first, then do them synchronously.
    */
-  private resolveSub(
+  private async resolveSub(
     subArgs: string | [string, Record<string, unknown>],
     context: ResolverContext
-  ): string {
+  ): Promise<string> {
     let template: string;
     let variables: Record<string, unknown> = {};
 
@@ -316,47 +385,59 @@ export class IntrinsicFunctionResolver {
       [template, variables] = subArgs;
       // Resolve variable values
       for (const [key, val] of Object.entries(variables)) {
-        variables[key] = this.resolveValue(val, context);
+        variables[key] = await this.resolveValue(val, context);
       }
     } else {
       template = subArgs;
     }
 
-    // Replace ${VarName} placeholders
-    const result = template.replace(/\$\{([^}]+)\}/g, (match, varName: string) => {
-      // Type guard: varName is always a string due to regex capture group
-      const varNameStr = String(varName);
+    // Collect all replacements
+    const replacements: Array<{ match: string; replacement: string }> = [];
+    const matches = template.matchAll(/\$\{([^}]+)\}/g);
+
+    for (const match of matches) {
+      const varNameStr = match[1];
+      let replacement: string;
 
       // Check explicit variables first
       if (varNameStr in variables) {
-        return String(variables[varNameStr]);
-      }
-
-      // Check if it's a pseudo parameter
-      const pseudoValue = this.resolvePseudoParameter(varNameStr);
-      if (pseudoValue !== undefined) {
-        return String(pseudoValue);
-      }
-
-      // Try to resolve as Ref
-      try {
-        const value = this.resolveRef(varNameStr, context);
-        return String(value);
-      } catch {
-        // If not found, try to resolve as GetAtt (e.g., "Resource.Attribute")
-        if (varNameStr.includes('.')) {
+        replacement = String(variables[varNameStr]);
+      } else {
+        // Check if it's a pseudo parameter
+        const pseudoValue = await this.resolvePseudoParameter(varNameStr);
+        if (pseudoValue !== undefined) {
+          replacement = String(pseudoValue);
+        } else {
+          // Try to resolve as Ref
           try {
-            const value = this.resolveGetAtt(varNameStr, context);
-            return String(value);
+            const value = await this.resolveRef(varNameStr, context);
+            replacement = String(value);
           } catch {
-            // Fall through
+            // If not found, try to resolve as GetAtt (e.g., "Resource.Attribute")
+            if (varNameStr.includes('.')) {
+              try {
+                const value = await this.resolveGetAtt(varNameStr, context);
+                replacement = String(value);
+              } catch {
+                this.logger.warn(`Fn::Sub variable ${varNameStr} not found, keeping placeholder`);
+                replacement = match[0]; // Keep original placeholder
+              }
+            } else {
+              this.logger.warn(`Fn::Sub variable ${varNameStr} not found, keeping placeholder`);
+              replacement = match[0]; // Keep original placeholder
+            }
           }
         }
       }
 
-      this.logger.warn(`Fn::Sub variable ${varNameStr} not found, keeping placeholder`);
-      return match; // Keep original placeholder if not found
-    });
+      replacements.push({ match: match[0], replacement });
+    }
+
+    // Apply all replacements
+    let result = template;
+    for (const { match, replacement } of replacements) {
+      result = result.replace(match, replacement);
+    }
 
     this.logger.debug(`Resolved Fn::Sub: ${result}`);
     return result;
@@ -367,18 +448,22 @@ export class IntrinsicFunctionResolver {
    *
    * Pseudo parameters are built-in CloudFormation references like AWS::Region
    */
-  private resolvePseudoParameter(name: string): string | undefined {
-    // TODO: Get actual values from AWS SDK/config
-    // For now, return placeholders or environment variables
-
+  private async resolvePseudoParameter(name: string): Promise<string | undefined> {
     switch (name) {
-      case 'AWS::Region':
-        // TODO: Get from AWS SDK config
-        return process.env['AWS_REGION'] || 'us-east-1';
+      case 'AWS::Region': {
+        const accountInfo = await getAccountInfo();
+        return accountInfo.region;
+      }
 
-      case 'AWS::AccountId':
-        // TODO: Get from STS GetCallerIdentity
-        return process.env['AWS_ACCOUNT_ID'] || '123456789012';
+      case 'AWS::AccountId': {
+        const accountInfo = await getAccountInfo();
+        return accountInfo.accountId;
+      }
+
+      case 'AWS::Partition': {
+        const accountInfo = await getAccountInfo();
+        return accountInfo.partition;
+      }
 
       case 'AWS::StackName':
         // Stack name should be passed in context if needed
@@ -387,9 +472,6 @@ export class IntrinsicFunctionResolver {
       case 'AWS::StackId':
         // We don't use CloudFormation, so no stack ID
         return undefined;
-
-      case 'AWS::Partition':
-        return 'aws';
 
       case 'AWS::URLSuffix':
         return 'amazonaws.com';

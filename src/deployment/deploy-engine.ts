@@ -318,7 +318,7 @@ export class DeployEngine {
                 resources: stateResources,
               };
 
-          const resolvedProps = this.resolver.resolve(desiredProps, context) as Record<
+          const resolvedProps = (await this.resolver.resolve(desiredProps, context)) as Record<
             string,
             unknown
           >;
@@ -366,7 +366,7 @@ export class DeployEngine {
                 resources: stateResources,
               };
 
-          const resolvedProps = this.resolver.resolve(desiredProps, context) as Record<
+          const resolvedProps = (await this.resolver.resolve(desiredProps, context)) as Record<
             string,
             unknown
           >;
@@ -411,7 +411,12 @@ export class DeployEngine {
             throw new Error(`Cannot delete ${logicalId}: resource not found in state`);
           }
 
-          await provider.delete(logicalId, currentResource.physicalId, resourceType);
+          await provider.delete(
+            logicalId,
+            currentResource.physicalId,
+            resourceType,
+            currentResource.properties
+          );
 
           delete stateResources[logicalId];
           this.logger.info(`✓ Deleted ${logicalId}`);

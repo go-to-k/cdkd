@@ -188,14 +188,72 @@ export class CustomResourceProvider implements ResourceProvider {
   /**
    * Delete a custom resource by invoking its Lambda handler
    */
-  async delete(logicalId: string, physicalId: string, resourceType: string): Promise<void> {
+  async delete(
+    logicalId: string,
+    physicalId: string,
+    resourceType: string,
+    properties?: Record<string, unknown>
+  ): Promise<void> {
     this.logger.info(`Deleting custom resource ${logicalId}: ${physicalId} (${resourceType})`);
 
-    // We need to get ServiceToken from the stored properties
-    // For now, we'll skip custom resource deletion
-    // TODO: Store ServiceToken in resource state
-    this.logger.warn(
-      `Custom resource deletion not yet implemented for ${logicalId}, skipping`
-    );
+    if (!properties) {
+      this.logger.warn(
+        `No properties available for custom resource ${logicalId}, skipping deletion`
+      );
+      return;
+    }
+
+    const serviceToken = properties['ServiceToken'] as string | undefined;
+
+    if (!serviceToken) {
+      this.logger.warn(
+        `No ServiceToken found for custom resource ${logicalId}, skipping deletion`
+      );
+      return;
+    }
+
+    try {
+      // Prepare CloudFormation custom resource request
+      const request = {
+        RequestType: 'Delete',
+        RequestId: `cdkq-${Date.now()}-${Math.random().toString(36).substring(7)}`,
+        ResponseURL: 'http://pre-signed-s3-url-for-response',
+        ResourceType: resourceType,
+        LogicalResourceId: logicalId,
+        PhysicalResourceId: physicalId,
+        StackId: `cdkq-stack-${logicalId}`,
+        ResourceProperties: properties,
+      };
+
+      this.logger.debug(`Invoking Lambda for custom resource delete: ${serviceToken}`);
+
+      // Invoke Lambda function
+      const response = await this.lambdaClient.send(
+        new InvokeCommand({
+          FunctionName: serviceToken,
+          InvocationType: 'RequestResponse',
+          Payload: Buffer.from(JSON.stringify(request)),
+        })
+      );
+
+      // Parse response
+      const payload = response.Payload
+        ? JSON.parse(Buffer.from(response.Payload).toString())
+        : {};
+
+      if (response.FunctionError) {
+        throw new Error(
+          `Lambda function error: ${response.FunctionError}, payload: ${JSON.stringify(payload)}`
+        );
+      }
+
+      this.logger.info(`Successfully deleted custom resource ${logicalId}`);
+    } catch (error) {
+      // For deletion, we should be more lenient with errors
+      // If the Lambda doesn't exist or fails, we still want to proceed
+      this.logger.warn(
+        `Failed to delete custom resource ${logicalId}, but continuing: ${error instanceof Error ? error.message : String(error)}`
+      );
+    }
   }
 }

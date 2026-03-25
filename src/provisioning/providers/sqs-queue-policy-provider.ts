@@ -164,7 +164,7 @@ export class SQSQueuePolicyProvider implements ResourceProvider {
   /**
    * Delete an SQS queue policy
    */
-  async delete(logicalId: string, physicalId: string, resourceType: string): Promise<void> {
+  async delete(logicalId: string, physicalId: string, resourceType: string, _properties?: Record<string, unknown>): Promise<void> {
     this.logger.info(`Deleting SQS queue policy ${logicalId}: ${physicalId}`);
 
     try {

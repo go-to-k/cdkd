@@ -158,7 +158,7 @@ export class S3BucketPolicyProvider implements ResourceProvider {
   /**
    * Delete an S3 bucket policy
    */
-  async delete(logicalId: string, physicalId: string, resourceType: string): Promise<void> {
+  async delete(logicalId: string, physicalId: string, resourceType: string, _properties?: Record<string, unknown>): Promise<void> {
     this.logger.info(`Deleting S3 bucket policy ${logicalId}: ${physicalId}`);
 
     try {
