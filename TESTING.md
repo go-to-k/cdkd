@@ -9,7 +9,28 @@
 
 ## 1. テスト用 S3 バケットの作成
 
-cdkq は状態管理に S3 バケットを使用します。まず、専用のバケットを作成します:
+cdkq は状態管理に S3 バケットを使用します。`bootstrap` コマンドで簡単に作成できます:
+
+### 方法 A: bootstrap コマンドを使用 (推奨)
+
+```bash
+# cdkq のパスを設定 (cdkq のルートディレクトリから)
+CDKQ_PATH="/Users/goto/github/cdkq"
+
+# バケット名は globally unique である必要があります
+export STATE_BUCKET="cdkq-state-$(whoami)-$(date +%s)"
+export AWS_REGION="us-east-1"  # お好みのリージョンに変更
+
+# bootstrap コマンドでバケット作成
+node ${CDKQ_PATH}/dist/cli.js bootstrap \
+  --state-bucket ${STATE_BUCKET} \
+  --region ${AWS_REGION} \
+  --verbose
+
+echo "State bucket created: ${STATE_BUCKET}"
+```
+
+### 方法 B: AWS CLI を使用 (従来の方法)
 
 ```bash
 # バケット名は globally unique である必要があります
@@ -22,9 +43,33 @@ aws s3 mb s3://${STATE_BUCKET} --region ${AWS_REGION}
 echo "State bucket created: ${STATE_BUCKET}"
 ```
 
-## 2. テスト用 CDK アプリの作成
+## 2. テスト用 CDK アプリの準備
 
-シンプルな CDK アプリを作成してテストします:
+cdkq には複数のテスト用例が用意されています:
+
+### オプション A: 既存の例を使用 (推奨)
+
+cdkq リポジトリには2つの例が含まれています:
+
+#### Basic Example (シンプルな S3 バケット)
+
+```bash
+cd /Users/goto/github/cdkq/tests/integration/examples/basic
+npm install
+```
+
+#### Intrinsic Functions Example (組み込み関数のテスト)
+
+```bash
+cd /Users/goto/github/cdkq/tests/integration/examples/intrinsic-functions
+npm install
+```
+
+各例の詳細については、それぞれのディレクトリ内の README.md を参照してください。
+
+### オプション B: 新しい CDK アプリを作成
+
+シンプルな CDK アプリを作成してテストすることもできます:
 
 ```bash
 # テスト用ディレクトリ作成

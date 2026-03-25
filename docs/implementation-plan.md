@@ -83,13 +83,13 @@ cdkq は CDK CLI (`aws-cdk`) を**置き換える**のではなく、**デプロ
 
 ## 3. 実装ロードマップ
 
-### Phase 0: Bootstrap 機能 (未実装)
+### Phase 0: Bootstrap 機能 ✅ **完了**
 
-- [ ] `bootstrap` コマンド実装
-- [ ] S3 バケット作成・設定
-- [ ] バケット存在確認とエラーハンドリング
-
-**注**: 初期バージョンでは、ユーザーが手動で S3 バケットを作成することを前提とし、bootstrap コマンドは後で実装。
+- [x] `bootstrap` コマンド実装
+- [x] S3 バケット作成・設定
+- [x] バケット存在確認とエラーハンドリング
+- [x] リージョン別設定（LocationConstraint）
+- [x] --force オプションで既存バケット上書き
 
 ### Phase 1: 基盤構築 ✅ **完了**
 
@@ -137,6 +137,7 @@ cdkq は CDK CLI (`aws-cdk`) を**置き換える**のではなく、**デプロ
 - [x] リソースタイプ検証機能 (デプロイ前チェック)
 - [x] Cloud Control API 未対応リソース実装
   - [x] IAM Role (AWS::IAM::Role)
+  - [x] IAM Policy (AWS::IAM::Policy) - インラインポリシー対応
 
 ### Phase 7: オーケストレーション ✅ **完了**
 
@@ -168,25 +169,42 @@ cdkq は CDK CLI (`aws-cdk`) を**置き換える**のではなく、**デプロ
 
 ## 4. Phase 9: 次の実装項目 (優先度順)
 
+### ✅ **完了済みの機能**
+
+#### CloudFormation 組み込み関数の解決実装
+
+- [x] Fn::Join の解決
+- [x] Fn::Sub の解決
+- [x] Ref (リソース参照) の解決
+- [x] Fn::GetAtt の解決
+- [x] リソース属性の補完（S3 Bucket ARN など）
+- [x] 疑似パラメータのサポート（AWS::Region, AWS::AccountId など）
+
+**実装**: `src/analyzer/intrinsic-function-resolver.ts`
+
+**テスト結果**: intrinsic-functions exampleで検証済み
+
+#### Bootstrap コマンド実装
+
+- [x] `cdkq bootstrap` コマンドの実装
+- [x] S3 状態バケットの自動作成と設定
+- [x] リージョン別設定（LocationConstraint）
+- [x] 既存バケットの検証と上書き確認 (`--force` オプション)
+
+**実装**: `src/cli/commands/bootstrap.ts`
+
 ### 優先度: 高 (High Priority)
 
-#### 1. CloudFormation 組み込み関数の解決実装
+#### 1. CloudFormation 組み込み関数の追加対応
 
-**課題**: 現在、Fn::Join、Fn::Sub、Ref、Fn::GetAtt などの組み込み関数が未解決のまま Cloud Control API に渡されるため、一部のリソースでデプロイが失敗する。
+**未実装の関数**:
 
-**実装内容**:
-
-- [ ] Fn::Join の解決
-- [ ] Fn::Sub の解決
-- [ ] Ref (リソース参照) の解決
-- [ ] Fn::GetAtt の解決
 - [ ] Parameters のサポートと Ref (Parameters への参照) の解決
-- [ ] Outputs での Parameters/リソースへの Ref 解決
 - [ ] Conditions の基本サポート
+- [ ] Fn::ImportValue, Fn::Split
+- [ ] Fn::Select, Fn::If などの複雑な関数
 
-**影響範囲**: `src/deployment/deploy-engine.ts`
-
-**参照**: 既存の TODO コメント参照
+**影響範囲**: `src/analyzer/intrinsic-function-resolver.ts`
 
 #### 2. Cloud Control API の JSON Patch 対応
 
@@ -200,32 +218,18 @@ cdkq は CDK CLI (`aws-cdk`) を**置き換える**のではなく、**デプロ
 
 **影響範囲**: `src/provisioning/cloud-control-provider.ts:122-128`
 
-#### 3. アセット公開のエラーハンドリング改善
+#### 3. アセット公開のエラーハンドリング改善 ✅ **部分完了**
 
-**課題**: 現在、アセットマニフェストファイルが存在しない場合に警告のみで続行しているが、他のエラーも同様に処理されている。
+**実装済み**:
 
-**実装内容**:
+- [x] ファイル不存在エラー（ENOENT）のみ許可
+- [x] その他のエラーは失敗として扱う
 
-- [ ] ファイル不存在エラーのみ許可
-- [ ] その他のエラーは失敗として扱う
-- [ ] エラーメッセージの改善
-
-**影響範囲**: `src/cli/commands/deploy.ts`
+**実装**: `src/cli/commands/deploy.ts:98-111`
 
 ### 優先度: 中 (Medium Priority)
 
-#### 4. Bootstrap コマンド実装 (Phase 0)
-
-**実装内容**:
-
-- [ ] `cdkq bootstrap` コマンドの実装
-- [ ] S3 状態バケットの自動作成と設定
-- [ ] バケットポリシー、暗号化、バージョニングの設定
-- [ ] 既存バケットの検証と上書き確認 (`--force` オプション)
-
-**現状**: ユーザーが手動で S3 バケットを作成する必要がある ([TESTING.md](../TESTING.md) 参照)
-
-#### 5. カスタムリソース対応
+#### 4. カスタムリソース対応
 
 **実装内容**:
 
@@ -234,7 +238,7 @@ cdkq は CDK CLI (`aws-cdk`) を**置き換える**のではなく、**デプロ
 - [ ] CREATE/UPDATE/DELETE イベント処理
 - [ ] 非同期実行とポーリングメカニズム
 
-#### 6. リソース置換の検出
+#### 5. リソース置換の検出
 
 **課題**: 現在、`wasReplaced` を常に `false` として返している。
 
@@ -245,7 +249,7 @@ cdkq は CDK CLI (`aws-cdk`) を**置き換える**のではなく、**デプロ
 
 **影響範囲**: `src/provisioning/cloud-control-provider.ts:169-175`
 
-#### 7. テスト実装
+#### 6. テスト実装
 
 **ユニットテスト** (カバレッジ目標: 80%+):
 
@@ -271,6 +275,15 @@ cdkq は CDK CLI (`aws-cdk`) を**置き換える**のではなく、**デプロ
 - [ ] 更新デプロイのテスト
 - [ ] dry-run モードのテスト
 - [ ] 並列実行のテスト
+
+#### 7. 統合テスト用の例の整備 ✅ **完了**
+
+- [x] tests/integration/examples ディレクトリ構造の作成
+- [x] basic example (シンプルな S3 バケット)
+- [x] intrinsic-functions example (組み込み関数のテスト)
+- [x] 各例のドキュメント作成
+
+**実装**: `tests/integration/examples/`
 
 #### 8. ドキュメント作成
 

@@ -1,4 +1,5 @@
 import { Command } from 'commander';
+import { createBootstrapCommand } from './commands/bootstrap.js';
 import { createSynthCommand } from './commands/synth.js';
 import { createDeployCommand } from './commands/deploy.js';
 import { createDiffCommand } from './commands/diff.js';
@@ -17,6 +18,7 @@ async function main(): Promise<void> {
     .version('0.1.0');
 
   // Add commands
+  program.addCommand(createBootstrapCommand());
   program.addCommand(createSynthCommand());
   program.addCommand(createDeployCommand());
   program.addCommand(createDiffCommand());

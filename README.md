@@ -67,6 +67,11 @@ AWS CDK is great for defining infrastructure as code, but CloudFormation deploym
 # Build the project
 npm run build
 
+# Bootstrap (create S3 bucket for state)
+node dist/cli.js bootstrap \
+  --state-bucket my-cdkq-state \
+  --region us-east-1
+
 # Synthesize only
 node dist/cli.js synth --app "npx ts-node app.ts"
 
@@ -102,6 +107,13 @@ node dist/cli.js destroy \
   --region us-east-1 \
   --force
 ```
+
+## Examples
+
+See the [tests/integration/examples](tests/integration/examples) directory for working examples:
+
+- [basic](tests/integration/examples/basic) - Simple S3 bucket deployment
+- [intrinsic-functions](tests/integration/examples/intrinsic-functions) - CloudFormation intrinsic function resolution
 
 See [TESTING.md](TESTING.md) for detailed testing instructions.
 
@@ -147,6 +159,34 @@ State schema:
 }
 ```
 
+## Stack Outputs
+
+CDK's `CfnOutput` constructs are resolved and stored in the state file:
+
+```typescript
+// In your CDK code
+new cdk.CfnOutput(this, 'BucketArn', {
+  value: bucket.bucketArn,  // Uses Fn::GetAtt internally
+  description: 'ARN of the bucket',
+});
+```
+
+After deployment, outputs are resolved and saved to state:
+
+```json
+{
+  "outputs": {
+    "BucketArn": "arn:aws:s3:::actual-bucket-name-xyz"
+  }
+}
+```
+
+**Key differences from CloudFormation**:
+
+- CloudFormation: Outputs accessible via `aws cloudformation describe-stacks`
+- cdkq: Outputs saved in S3 state file (e.g., `s3://bucket/cdkq/MyStack/state.json`)
+- Both resolve intrinsic functions (Ref, Fn::GetAtt, etc.) to actual values
+
 ## Development Roadmap
 
 See [docs/implementation-plan.md](docs/implementation-plan.md) for detailed implementation plan.
@@ -164,11 +204,11 @@ See [docs/implementation-plan.md](docs/implementation-plan.md) for detailed impl
 
 **Not Yet Implemented**:
 
-- Bootstrap command (S3 bucket creation for state)
 - Progress bar / advanced UI
 - Custom resource support
-- Full intrinsic function support (Fn::Sub, Fn::Join, etc.)
+- Advanced intrinsic function support (Fn::Select, Fn::Split, Fn::If, etc.)
 - CloudFormation Parameters support
+- Cloud Control API JSON Patch for updates
 
 See [docs/implementation-plan.md](docs/implementation-plan.md) for complete roadmap.
 
