@@ -57,7 +57,7 @@ export class Synthesizer {
    */
   async createSource(options: SynthesisOptions): Promise<ICloudAssemblySource> {
     try {
-      this.logger.info('Creating cloud assembly source from app:', options.app);
+      this.logger.debug('Creating cloud assembly source from app:', options.app);
 
       // fromCdkApp automatically handles:
       // 1. Reading cdk.json for configuration
@@ -81,7 +81,7 @@ export class Synthesizer {
    */
   async synthesize(options: SynthesisOptions): Promise<CloudAssembly> {
     try {
-      this.logger.info('Synthesizing CDK app...');
+      this.logger.debug('Synthesizing CDK app...');
 
       // Create cloud assembly source
       const source = await this.createSource(options);
@@ -94,7 +94,7 @@ export class Synthesizer {
 
       const cloudAssembly = assemblySource.cloudAssembly;
 
-      this.logger.info('Synthesis complete');
+      this.logger.debug('Synthesis complete');
       this.logger.debug('Assembly directory:', cloudAssembly.directory);
       this.logger.debug('Assembly type:', typeof cloudAssembly);
       this.logger.debug('Assembly has stacks?', !!cloudAssembly.stacks);

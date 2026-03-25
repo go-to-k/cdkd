@@ -192,7 +192,7 @@ export class DeployEngine {
       }
 
       // 6. Execute deployment (with partial state saves after each level)
-      const newState = await this.executeDeployment(
+      const { state: newState, actualCounts } = await this.executeDeployment(
         template,
         currentState,
         changes,
@@ -208,13 +208,15 @@ export class DeployEngine {
       this.logger.debug(`State saved (ETag: ${newEtag})`);
 
       const durationMs = Date.now() - startTime;
+      const unchangedCount =
+        this.diffCalculator.filterByType(changes, 'NO_CHANGE').length + actualCounts.skipped;
 
       return {
         stackName,
-        created: createChanges.length,
-        updated: updateChanges.length,
-        deleted: deleteChanges.length,
-        unchanged: this.diffCalculator.filterByType(changes, 'NO_CHANGE').length,
+        created: actualCounts.created,
+        updated: actualCounts.updated,
+        deleted: actualCounts.deleted,
+        unchanged: unchangedCount,
         durationMs,
       };
     } finally {
@@ -239,9 +241,13 @@ export class DeployEngine {
     parameterValues?: Record<string, unknown>,
     conditions?: Record<string, boolean>,
     currentEtag?: string
-  ): Promise<StackState> {
+  ): Promise<{
+    state: StackState;
+    actualCounts: { created: number; updated: number; deleted: number; skipped: number };
+  }> {
     const limit = pLimit(this.options.concurrency!);
     const newResources: Record<string, ResourceState> = { ...currentState.resources };
+    const actualCounts = { created: 0, updated: 0, deleted: 0, skipped: 0 };
 
     // Separate DELETE operations from CREATE/UPDATE
     const deleteChanges = new Set(
@@ -278,7 +284,8 @@ export class DeployEngine {
               stackName,
               template,
               parameterValues,
-              conditions
+              conditions,
+              actualCounts
             );
           })
         )
@@ -330,7 +337,8 @@ export class DeployEngine {
                 stackName,
                 template,
                 parameterValues,
-                conditions
+                conditions,
+                actualCounts
               );
             })
           )
@@ -369,11 +377,14 @@ export class DeployEngine {
     );
 
     return {
-      version: 1,
-      stackName: currentState.stackName,
-      resources: newResources,
-      outputs,
-      lastModified: Date.now(),
+      state: {
+        version: 1,
+        stackName: currentState.stackName,
+        resources: newResources,
+        outputs,
+        lastModified: Date.now(),
+      },
+      actualCounts,
     };
   }
 
@@ -387,7 +398,8 @@ export class DeployEngine {
     stackName: string,
     template?: CloudFormationTemplate,
     parameterValues?: Record<string, unknown>,
-    conditions?: Record<string, boolean>
+    conditions?: Record<string, boolean>,
+    counts?: { created: number; updated: number; deleted: number; skipped: number }
   ): Promise<void> {
     const resourceType = change.resourceType;
     const provider = this.providerRegistry.getProvider(resourceType);
@@ -436,6 +448,7 @@ export class DeployEngine {
           };
 
           this.logger.info(`  ✅ ${logicalId} (${resourceType})`);
+          if (counts) counts.created++;
           break;
         }
 
@@ -470,6 +483,7 @@ export class DeployEngine {
             this.logger.debug(
               `Skipping ${logicalId}: no actual changes after intrinsic function resolution`
             );
+            if (counts) counts.skipped++;
             break;
           }
 
@@ -532,6 +546,7 @@ export class DeployEngine {
             this.logger.info(
               `✓ Replaced ${logicalId}: ${currentResource.physicalId} → ${createResult.physicalId}`
             );
+            if (counts) counts.updated++;
           } else {
             // Normal update (in-place)
             this.logger.debug(`Updating ${logicalId} (${resourceType})`);
@@ -559,6 +574,7 @@ export class DeployEngine {
             };
 
             this.logger.info(`  ✅ ${logicalId} (${resourceType})`);
+            if (counts) counts.updated++;
           }
           break;
         }
@@ -587,6 +603,7 @@ export class DeployEngine {
 
           delete stateResources[logicalId];
           this.logger.info(`  ✅ ${logicalId} (${resourceType}) deleted`);
+          if (counts) counts.deleted++;
           break;
         }
       }
