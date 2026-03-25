@@ -4,7 +4,6 @@ import {
   GetObjectCommand,
   DeleteObjectCommand,
   NoSuchKey,
-  PreconditionFailed,
 } from '@aws-sdk/client-s3';
 import type { LockInfo } from '../types/state.js';
 import type { StateBackendConfig } from '../types/config.js';
@@ -84,7 +83,9 @@ export class LockManager {
       this.logger.info(`Lock acquired for stack: ${stackName}, owner: ${lockOwner}`);
       return true;
     } catch (error) {
-      if (error instanceof PreconditionFailed) {
+      // Check for PreconditionFailed error (S3 condition not met)
+      const err = error as { name?: string };
+      if (err.name === 'PreconditionFailed') {
         this.logger.debug(`Lock already exists for stack: ${stackName}`);
         return false;
       }
