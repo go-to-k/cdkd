@@ -440,25 +440,34 @@ export class DeployEngine {
               `Replacing ${logicalId} (${resourceType}) - immutable properties changed: ${replacedProps}`
             );
 
-            // 1. Create new resource first
+            // Check UpdateReplacePolicy - if Retain, keep old resource
+            const updateReplacePolicy = template?.Resources?.[logicalId]?.UpdateReplacePolicy;
+
+            // 1. Delete old resource first (avoids name conflicts like S3 bucket names)
+            if (updateReplacePolicy === 'Retain') {
+              this.logger.info(
+                `  Retaining old ${logicalId} (${currentResource.physicalId}) - UpdateReplacePolicy: Retain`
+              );
+            } else {
+              this.logger.info(`  Deleting old ${logicalId} (${currentResource.physicalId})...`);
+              try {
+                await provider.delete(
+                  logicalId,
+                  currentResource.physicalId,
+                  resourceType,
+                  currentResource.properties
+                );
+                this.logger.info(`  ✓ Old resource deleted`);
+              } catch (deleteError) {
+                this.logger.warn(
+                  `  ⚠ Failed to delete old resource ${logicalId} (${currentResource.physicalId}): ${deleteError instanceof Error ? deleteError.message : String(deleteError)}`
+                );
+              }
+            }
+
+            // 2. Create new resource
             this.logger.info(`  Creating new ${logicalId}...`);
             const createResult = await provider.create(logicalId, resourceType, resolvedProps);
-
-            // 2. Delete old resource
-            this.logger.info(`  Deleting old ${logicalId} (${currentResource.physicalId})...`);
-            try {
-              await provider.delete(
-                logicalId,
-                currentResource.physicalId,
-                resourceType,
-                currentResource.properties
-              );
-              this.logger.info(`  ✓ Old resource deleted`);
-            } catch (deleteError) {
-              this.logger.warn(
-                `  ⚠ Failed to delete old resource ${logicalId} (${currentResource.physicalId}): ${deleteError instanceof Error ? deleteError.message : String(deleteError)}`
-              );
-            }
 
             stateResources[logicalId] = {
               physicalId: createResult.physicalId,
@@ -503,12 +512,20 @@ export class DeployEngine {
         }
 
         case 'DELETE': {
-          this.logger.info(`Deleting ${logicalId} (${resourceType})`);
           const currentResource = stateResources[logicalId];
           if (!currentResource) {
             throw new Error(`Cannot delete ${logicalId}: resource not found in state`);
           }
 
+          // Check DeletionPolicy from template
+          const deletionPolicy = template?.Resources?.[logicalId]?.DeletionPolicy;
+          if (deletionPolicy === 'Retain') {
+            this.logger.info(`Retaining ${logicalId} (${resourceType}) - DeletionPolicy: Retain`);
+            delete stateResources[logicalId];
+            break;
+          }
+
+          this.logger.info(`Deleting ${logicalId} (${resourceType})`);
           await provider.delete(
             logicalId,
             currentResource.physicalId,
