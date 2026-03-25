@@ -8,6 +8,8 @@ import { DagBuilder } from '../../analyzer/dag-builder.js';
 import { ProviderRegistry } from '../../provisioning/provider-registry.js';
 import { IAMRoleProvider } from '../../provisioning/providers/iam-role-provider.js';
 import { IAMPolicyProvider } from '../../provisioning/providers/iam-policy-provider.js';
+import { S3BucketPolicyProvider } from '../../provisioning/providers/s3-bucket-policy-provider.js';
+import { SQSQueuePolicyProvider } from '../../provisioning/providers/sqs-queue-policy-provider.js';
 import { setAwsClients, AwsClients } from '../../utils/aws-clients.js';
 import * as readline from 'node:readline/promises';
 
@@ -53,6 +55,10 @@ async function destroyCommand(options: {
     // Register SDK providers for unsupported resource types
     providerRegistry.register('AWS::IAM::Role', new IAMRoleProvider());
     providerRegistry.register('AWS::IAM::Policy', new IAMPolicyProvider());
+    providerRegistry.register('AWS::S3::BucketPolicy', new S3BucketPolicyProvider());
+    providerRegistry.register('AWS::SQS::QueuePolicy', new SQSQueuePolicyProvider());
+
+    // Custom resources (Custom::*) are automatically handled by CustomResourceProvider
 
     // 2. Get list of stacks to destroy
     let stackNames: string[];

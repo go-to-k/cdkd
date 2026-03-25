@@ -39,6 +39,36 @@ export class IAMRoleProvider implements ResourceProvider {
   }
 
   /**
+   * Shorten role name if it exceeds IAM's 64-character limit
+   *
+   * Strategy: Keep prefix + hash suffix to maintain uniqueness
+   */
+  private shortenRoleName(roleName: string): string {
+    const MAX_LENGTH = 64;
+
+    if (roleName.length <= MAX_LENGTH) {
+      return roleName;
+    }
+
+    // Create a short hash from the full name
+    const hash = Buffer.from(roleName)
+      .toString('base64')
+      .replace(/[^a-zA-Z0-9]/g, '')
+      .substring(0, 8);
+
+    // Keep prefix + hash to maintain readability and uniqueness
+    const maxPrefixLength = MAX_LENGTH - hash.length - 1; // -1 for separator
+    const prefix = roleName.substring(0, maxPrefixLength);
+
+    const shortened = `${prefix}-${hash}`;
+    this.logger.warn(
+      `Role name "${roleName}" exceeds 64 chars, shortened to "${shortened}"`
+    );
+
+    return shortened;
+  }
+
+  /**
    * Create an IAM role
    */
   async create(
@@ -48,7 +78,8 @@ export class IAMRoleProvider implements ResourceProvider {
   ): Promise<ResourceCreateResult> {
     this.logger.info(`Creating IAM role ${logicalId}`);
 
-    const roleName = (properties['RoleName'] as string | undefined) || logicalId;
+    const rawRoleName = (properties['RoleName'] as string | undefined) || logicalId;
+    const roleName = this.shortenRoleName(rawRoleName);
     const assumeRolePolicyDocument = properties['AssumeRolePolicyDocument'];
 
     if (!assumeRolePolicyDocument) {

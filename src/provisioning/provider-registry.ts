@@ -1,5 +1,6 @@
 import type { ResourceProvider } from '../types/resource.js';
 import { CloudControlProvider } from './cloud-control-provider.js';
+import { CustomResourceProvider } from './providers/custom-resource-provider.js';
 import { getLogger } from '../utils/logger.js';
 
 /**
@@ -14,9 +15,22 @@ export class ProviderRegistry {
   private logger = getLogger().child('ProviderRegistry');
   private providers = new Map<string, ResourceProvider>();
   private cloudControlProvider: CloudControlProvider;
+  private customResourceProvider: CustomResourceProvider;
+  private skipResourceTypes = new Set<string>();
 
   constructor() {
     this.cloudControlProvider = new CloudControlProvider();
+    this.customResourceProvider = new CustomResourceProvider();
+  }
+
+  /**
+   * Register a resource type to be skipped during deployment
+   *
+   * @param resourceType CloudFormation resource type to skip
+   */
+  skipResourceType(resourceType: string): void {
+    this.logger.debug(`Registering ${resourceType} to be skipped`);
+    this.skipResourceTypes.add(resourceType);
   }
 
   /**
@@ -64,7 +78,13 @@ export class ProviderRegistry {
       return this.cloudControlProvider;
     }
 
-    // 3. No provider available
+    // 3. Check if it's a custom resource (starts with "Custom::")
+    if (resourceType.startsWith('Custom::')) {
+      this.logger.debug(`Using Custom Resource provider for ${resourceType}`);
+      return this.customResourceProvider;
+    }
+
+    // 4. No provider available
     throw new Error(
       `No provider available for resource type: ${resourceType}. ` +
         `This resource type is not supported by Cloud Control API and no SDK provider is registered.`
@@ -72,11 +92,24 @@ export class ProviderRegistry {
   }
 
   /**
+   * Check if a resource type should be skipped
+   */
+  shouldSkipResource(resourceType: string): boolean {
+    return this.skipResourceTypes.has(resourceType);
+  }
+
+  /**
    * Check if a provider is available for a resource type
    */
   hasProvider(resourceType: string): boolean {
+    // Skipped resources are considered as "having a provider" to avoid validation errors
+    if (this.shouldSkipResource(resourceType)) {
+      return true;
+    }
     return (
-      this.providers.has(resourceType) || CloudControlProvider.isSupportedResourceType(resourceType)
+      this.providers.has(resourceType) ||
+      CloudControlProvider.isSupportedResourceType(resourceType) ||
+      resourceType.startsWith('Custom::')
     );
   }
 

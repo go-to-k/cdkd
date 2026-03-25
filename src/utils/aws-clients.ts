@@ -1,6 +1,8 @@
 import { S3Client } from '@aws-sdk/client-s3';
 import { CloudControlClient } from '@aws-sdk/client-cloudcontrol';
 import { IAMClient } from '@aws-sdk/client-iam';
+import { SQSClient } from '@aws-sdk/client-sqs';
+import { LambdaClient } from '@aws-sdk/client-lambda';
 
 /**
  * AWS client configuration
@@ -22,6 +24,8 @@ export class AwsClients {
   private s3Client?: S3Client;
   private cloudControlClient?: CloudControlClient;
   private iamClient?: IAMClient;
+  private sqsClient?: SQSClient;
+  private lambdaClient?: LambdaClient;
 
   constructor(private config: AwsClientConfig = {}) {}
 
@@ -99,12 +103,54 @@ export class AwsClients {
   }
 
   /**
+   * Get SQS client
+   */
+  getSQSClient(): SQSClient {
+    if (!this.sqsClient) {
+      this.sqsClient = new SQSClient({
+        ...(this.config.region && { region: this.config.region }),
+        ...(this.config.credentials && { credentials: this.config.credentials }),
+      });
+    }
+    return this.sqsClient;
+  }
+
+  /**
+   * Convenience getter for SQS client
+   */
+  get sqs(): SQSClient {
+    return this.getSQSClient();
+  }
+
+  /**
+   * Get Lambda client
+   */
+  getLambdaClient(): LambdaClient {
+    if (!this.lambdaClient) {
+      this.lambdaClient = new LambdaClient({
+        ...(this.config.region && { region: this.config.region }),
+        ...(this.config.credentials && { credentials: this.config.credentials }),
+      });
+    }
+    return this.lambdaClient;
+  }
+
+  /**
+   * Convenience getter for Lambda client
+   */
+  get lambda(): LambdaClient {
+    return this.getLambdaClient();
+  }
+
+  /**
    * Destroy all clients
    */
   destroy(): void {
     this.s3Client?.destroy();
     this.cloudControlClient?.destroy();
     this.iamClient?.destroy();
+    this.sqsClient?.destroy();
+    this.lambdaClient?.destroy();
   }
 }
 

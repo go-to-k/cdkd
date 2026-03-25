@@ -242,11 +242,21 @@ export class IntrinsicFunctionResolver {
 
     // SQS Queue
     if (resourceType === 'AWS::SQS::Queue') {
+      // Physical ID for SQS Queue is the queue URL
+      // Extract queue name from URL: https://sqs.region.amazonaws.com/accountId/queueName
+      let queueName = physicalId;
+      if (physicalId.startsWith('https://')) {
+        const parts = physicalId.split('/');
+        queueName = parts[parts.length - 1] || physicalId;
+      }
+
       switch (attributeName) {
         case 'Arn':
-          return `arn:${partition}:sqs:${region}:${accountId}:${physicalId}`;
+          return `arn:${partition}:sqs:${region}:${accountId}:${queueName}`;
         case 'QueueUrl':
-          return `https://sqs.${region}.amazonaws.com/${accountId}/${physicalId}`;
+          return physicalId; // Physical ID is already the queue URL
+        case 'QueueName':
+          return queueName;
         default:
           return physicalId;
       }

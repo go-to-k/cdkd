@@ -18,6 +18,8 @@ import { DiffCalculator } from '../../analyzer/diff-calculator.js';
 import { ProviderRegistry } from '../../provisioning/provider-registry.js';
 import { IAMRoleProvider } from '../../provisioning/providers/iam-role-provider.js';
 import { IAMPolicyProvider } from '../../provisioning/providers/iam-policy-provider.js';
+import { S3BucketPolicyProvider } from '../../provisioning/providers/s3-bucket-policy-provider.js';
+import { SQSQueuePolicyProvider } from '../../provisioning/providers/sqs-queue-policy-provider.js';
 import { DeployEngine } from '../../deployment/deploy-engine.js';
 import { setAwsClients, AwsClients } from '../../utils/aws-clients.js';
 
@@ -138,6 +140,10 @@ async function deployCommand(options: {
     // Register SDK providers for unsupported resource types
     providerRegistry.register('AWS::IAM::Role', new IAMRoleProvider());
     providerRegistry.register('AWS::IAM::Policy', new IAMPolicyProvider());
+    providerRegistry.register('AWS::S3::BucketPolicy', new S3BucketPolicyProvider());
+    providerRegistry.register('AWS::SQS::QueuePolicy', new SQSQueuePolicyProvider());
+
+    // Custom resources (Custom::*) are automatically handled by CustomResourceProvider
 
     const deployEngine = new DeployEngine(
       stateBackend,
