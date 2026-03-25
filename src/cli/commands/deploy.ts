@@ -41,6 +41,7 @@ async function deployCommand(
     concurrency: number;
     dryRun: boolean;
     skipAssets: boolean;
+    noRollback: boolean;
     verbose: boolean;
   }
 ): Promise<void> {
@@ -189,6 +190,7 @@ async function deployCommand(
       {
         concurrency: options.concurrency,
         dryRun: options.dryRun,
+        noRollback: options.noRollback,
       }
     );
 

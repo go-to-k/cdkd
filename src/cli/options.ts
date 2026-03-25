@@ -50,6 +50,7 @@ export const deployOptions = [
     .argParser((value) => parseInt(value, 10)),
   new Option('--dry-run', 'Show changes without applying').default(false),
   new Option('--skip-assets', 'Skip asset publishing').default(false),
+  new Option('--no-rollback', 'Skip rollback on deployment failure').default(false),
 ];
 
 /**

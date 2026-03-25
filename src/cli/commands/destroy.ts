@@ -186,10 +186,7 @@ async function destroyCommand(
         const graph = dagBuilder.buildGraph(template);
         const executionLevels = dagBuilder.getExecutionLevels(graph);
 
-        logger.info(`Dependency graph built: ${executionLevels.length} level(s)`);
-
-        // 7. Delete resources in reverse dependency order
-        logger.info('Deleting resources in reverse dependency order...');
+        logger.debug(`Dependency graph: ${executionLevels.length} level(s)`);
 
         let deletedCount = 0;
         let errorCount = 0;
@@ -201,8 +198,8 @@ async function destroyCommand(
             continue;
           }
 
-          logger.info(
-            `Processing deletion level ${executionLevels.length - levelIndex}/${executionLevels.length} (${level.length} resources)`
+          logger.debug(
+            `Deletion level ${executionLevels.length - levelIndex}/${executionLevels.length} (${level.length} resources)`
           );
 
           // Delete resources in parallel within each level
@@ -214,8 +211,6 @@ async function destroyCommand(
             }
 
             try {
-              logger.info(`  Deleting ${logicalId} (${resource.resourceType})...`);
-
               const provider = providerRegistry.getProvider(resource.resourceType);
               await provider.delete(
                 logicalId,
@@ -224,7 +219,7 @@ async function destroyCommand(
                 resource.properties
               );
 
-              logger.info(`  ✓ Deleted ${logicalId}`);
+              logger.info(`  ✅ ${logicalId} (${resource.resourceType}) deleted`);
               deletedCount++;
             } catch (error) {
               logger.error(`  ✗ Failed to delete ${logicalId}:`, String(error));
@@ -235,18 +230,17 @@ async function destroyCommand(
           await Promise.all(deletePromises);
         }
 
-        logger.info(`\nDeletion complete: ${deletedCount} deleted, ${errorCount} errors`);
-
         // 8. Delete state
         if (errorCount === 0) {
-          logger.info('Deleting state...');
           await stateBackend.deleteState(stackName);
-          logger.info('✓ State deleted');
+          logger.debug('State deleted');
         } else {
-          logger.warn('State not deleted due to errors during resource deletion');
+          logger.warn(`${errorCount} resource(s) failed to delete. State preserved.`);
         }
 
-        logger.info(`\n✓ Stack ${stackName} destroyed successfully`);
+        logger.info(
+          `\n✓ Stack ${stackName} destroyed (${deletedCount} deleted, ${errorCount} errors)`
+        );
       } finally {
         // 9. Release lock
         logger.debug('Releasing lock...');

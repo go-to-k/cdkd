@@ -5,6 +5,7 @@ import { SQSClient } from '@aws-sdk/client-sqs';
 import { LambdaClient } from '@aws-sdk/client-lambda';
 import { STSClient } from '@aws-sdk/client-sts';
 import { EC2Client } from '@aws-sdk/client-ec2';
+import { CloudFormationClient } from '@aws-sdk/client-cloudformation';
 
 /**
  * AWS client configuration
@@ -30,6 +31,7 @@ export class AwsClients {
   private lambdaClient?: LambdaClient;
   private stsClient?: STSClient;
   private ec2Client?: EC2Client;
+  private cloudFormationClient?: CloudFormationClient;
 
   constructor(private config: AwsClientConfig = {}) {}
 
@@ -187,6 +189,26 @@ export class AwsClients {
   }
 
   /**
+   * Get CloudFormation client
+   */
+  getCloudFormationClient(): CloudFormationClient {
+    if (!this.cloudFormationClient) {
+      this.cloudFormationClient = new CloudFormationClient({
+        ...(this.config.region && { region: this.config.region }),
+        ...(this.config.credentials && { credentials: this.config.credentials }),
+      });
+    }
+    return this.cloudFormationClient;
+  }
+
+  /**
+   * Convenience getter for CloudFormation client
+   */
+  get cloudFormation(): CloudFormationClient {
+    return this.getCloudFormationClient();
+  }
+
+  /**
    * Destroy all clients
    */
   destroy(): void {
@@ -197,6 +219,7 @@ export class AwsClients {
     this.lambdaClient?.destroy();
     this.stsClient?.destroy();
     this.ec2Client?.destroy();
+    this.cloudFormationClient?.destroy();
   }
 }
 

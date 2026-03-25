@@ -11,7 +11,8 @@ import { getAwsClients } from '../utils/aws-clients.js';
 import { getLogger } from '../utils/logger.js';
 import { ProvisioningError } from '../utils/error-handler.js';
 import { JsonPatchGenerator } from './json-patch-generator.js';
-import { mapAttributes } from './attribute-mapper.js';
+import { mapAttributes, hasAttributeMapping } from './attribute-mapper.js';
+import { getReadOnlyProperties } from './schema-cache.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -102,7 +103,7 @@ export class CloudControlProvider implements ResourceProvider {
       }
 
       // Enrich attributes with computed values for specific resource types
-      result.attributes = this.enrichResourceAttributes(
+      result.attributes = await this.enrichResourceAttributes(
         resourceType,
         progressEvent.Identifier,
         result.attributes || {}
@@ -190,7 +191,7 @@ export class CloudControlProvider implements ResourceProvider {
       }
 
       // Enrich attributes with computed values for specific resource types
-      result.attributes = this.enrichResourceAttributes(
+      result.attributes = await this.enrichResourceAttributes(
         resourceType,
         physicalId,
         result.attributes || {}
@@ -374,16 +375,43 @@ export class CloudControlProvider implements ResourceProvider {
    *
    * Some resource types don't return all attributes via Cloud Control API.
    * This method adds computed attributes based on resource type and physical ID.
+   *
+   * Phase A: Static attribute mapper (mapAttributes)
+   * Phase B: Schema-based automatic discovery via CloudFormation Registry
    */
-  private enrichResourceAttributes(
+  private async enrichResourceAttributes(
     resourceType: string,
     physicalId: string,
     attributes: Record<string, unknown>
-  ): Record<string, unknown> {
-    // First, map CC API property names to GetAtt-compatible attribute names
+  ): Promise<Record<string, unknown>> {
+    // Phase A: Map CC API property names to GetAtt-compatible attribute names
     const enriched = {
       ...mapAttributes(resourceType, attributes),
     };
+
+    // Phase B: Schema-based automatic attribute discovery
+    // For resource types with a static mapping, check if readOnly properties
+    // from the schema are present in the CC API response but weren't mapped.
+    // For resource types without a static mapping, mapAttributes already
+    // passes through all properties, so schema discovery adds no value.
+    if (hasAttributeMapping(resourceType)) {
+      try {
+        const readOnlyProps = await getReadOnlyProperties(resourceType);
+        for (const propName of readOnlyProps) {
+          // Only add if not already present in enriched attributes
+          // and the property exists in the raw CC API response
+          if (!(propName in enriched) && propName in attributes) {
+            enriched[propName] = attributes[propName];
+            this.logger.debug(`Schema discovery: added attribute ${propName} for ${resourceType}`);
+          }
+        }
+      } catch (error) {
+        // Schema discovery is best-effort; don't fail the operation
+        this.logger.debug(
+          `Schema discovery failed for ${resourceType}: ${error instanceof Error ? error.message : String(error)}`
+        );
+      }
+    }
 
     // Fallback: compute attributes that CC API may not return
     switch (resourceType) {

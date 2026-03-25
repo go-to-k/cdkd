@@ -15,6 +15,24 @@ import type { DiffCalculator } from '../analyzer/diff-calculator.js';
 import type { ProviderRegistry } from '../provisioning/provider-registry.js';
 
 /**
+ * Completed operation record for rollback tracking
+ */
+interface CompletedOperation {
+  /** Logical ID of the resource */
+  logicalId: string;
+  /** Type of change that was applied */
+  changeType: 'CREATE' | 'UPDATE' | 'DELETE';
+  /** Resource type (e.g., "AWS::S3::Bucket") */
+  resourceType: string;
+  /** Previous resource state (for UPDATE rollback) */
+  previousState?: ResourceState | undefined;
+  /** Physical ID of newly created resource (for CREATE rollback) */
+  physicalId?: string | undefined;
+  /** Properties used for creation (for CREATE rollback / delete) */
+  properties?: Record<string, unknown> | undefined;
+}
+
+/**
  * Deploy engine options
  */
 export interface DeployEngineOptions {
@@ -26,6 +44,8 @@ export interface DeployEngineOptions {
   lockTimeout?: number;
   /** User-provided parameter values */
   parameters?: Record<string, string>;
+  /** Skip rollback on failure (save partial state and fail) */
+  noRollback?: boolean;
 }
 
 /**
@@ -58,11 +78,13 @@ export interface DeployResult {
  * 6. Save new state
  * 7. Release lock
  *
- * TODO: Implement rollback mechanism
- * - Track all changes in a transaction log
- * - On failure, rollback in reverse order
- * - Support --no-rollback flag for debugging
- * - Similar to Terraform's behavior (no automatic rollback, manual state recovery)
+ * Rollback mechanism:
+ * - Tracks completed operations during deployment
+ * - On failure, rolls back in reverse order (best-effort)
+ * - Supports --no-rollback flag to skip rollback (saves partial state and fails)
+ * - CREATE → delete the newly created resource
+ * - UPDATE → restore previous properties
+ * - DELETE → cannot rollback (log warning)
  */
 export class DeployEngine {
   private logger = getLogger().child('DeployEngine');
@@ -79,6 +101,7 @@ export class DeployEngine {
     this.options.concurrency = options.concurrency ?? 10;
     this.options.dryRun = options.dryRun ?? false;
     this.options.lockTimeout = options.lockTimeout ?? 5 * 60 * 1000; // 5 minutes
+    this.options.noRollback = options.noRollback ?? false;
   }
 
   /**
@@ -248,6 +271,7 @@ export class DeployEngine {
     const limit = pLimit(this.options.concurrency!);
     const newResources: Record<string, ResourceState> = { ...currentState.resources };
     const actualCounts = { created: 0, updated: 0, deleted: 0, skipped: 0 };
+    const completedOperations: CompletedOperation[] = [];
 
     // Separate DELETE operations from CREATE/UPDATE
     const deleteChanges = new Set(
@@ -256,79 +280,33 @@ export class DeployEngine {
         .map(([logicalId]) => logicalId)
     );
 
-    // Step 1: Process CREATE/UPDATE in normal DAG order
-    for (let levelIndex = 0; levelIndex < executionLevels.length; levelIndex++) {
-      const levelNodes = executionLevels[levelIndex];
-      if (!levelNodes) continue;
-      const level = levelNodes.filter((id) => !deleteChanges.has(id));
-
-      if (level.length === 0) continue;
-
-      this.logger.info(
-        `Level ${levelIndex + 1}/${executionLevels.length} (${level.length} resources)`
-      );
-
-      await Promise.all(
-        level.map((logicalId) =>
-          limit(async () => {
-            const change = changes.get(logicalId);
-            if (!change || change.changeType === 'NO_CHANGE') {
-              this.logger.debug(`Skipping ${logicalId} (no change)`);
-              return;
-            }
-
-            await this.provisionResource(
-              logicalId,
-              change,
-              newResources,
-              stackName,
-              template,
-              parameterValues,
-              conditions,
-              actualCounts
-            );
-          })
-        )
-      );
-
-      // Save partial state after each level to prevent orphaned resources on failure
-      if (currentEtag !== undefined) {
-        try {
-          const partialState: StackState = {
-            version: 1,
-            stackName: currentState.stackName,
-            resources: newResources,
-            outputs: currentState.outputs,
-            lastModified: Date.now(),
-          };
-          currentEtag = await this.stateBackend.saveState(stackName, partialState, currentEtag);
-          this.logger.debug(`Partial state saved after level ${levelIndex + 1}`);
-        } catch (error) {
-          this.logger.warn(
-            `Failed to save partial state after level ${levelIndex + 1}: ${error instanceof Error ? error.message : String(error)}`
-          );
-        }
-      }
-    }
-
-    // Step 2: Process DELETE operations
-    // Resources to delete may not be in the DAG (they're in state but not in template)
-    if (deleteChanges.size > 0) {
-      this.logger.info(`Deleting ${deleteChanges.size} resource(s)`);
-
-      // Collect DELETE resources that are in the DAG (process in reverse order)
-      const processedDeletes = new Set<string>();
-      for (let levelIndex = executionLevels.length - 1; levelIndex >= 0; levelIndex--) {
+    try {
+      // Step 1: Process CREATE/UPDATE in normal DAG order
+      for (let levelIndex = 0; levelIndex < executionLevels.length; levelIndex++) {
         const levelNodes = executionLevels[levelIndex];
         if (!levelNodes) continue;
-        const level = levelNodes.filter((id) => deleteChanges.has(id));
+        const level = levelNodes.filter((id) => !deleteChanges.has(id));
 
         if (level.length === 0) continue;
+
+        this.logger.info(
+          `Level ${levelIndex + 1}/${executionLevels.length} (${level.length} resources)`
+        );
 
         await Promise.all(
           level.map((logicalId) =>
             limit(async () => {
-              const change = changes.get(logicalId)!;
+              const change = changes.get(logicalId);
+              if (!change || change.changeType === 'NO_CHANGE') {
+                this.logger.debug(`Skipping ${logicalId} (no change)`);
+                return;
+              }
+
+              // Capture previous state before provisioning (for rollback)
+              const previousState = currentState.resources[logicalId]
+                ? { ...currentState.resources[logicalId] }
+                : undefined;
+
               await this.provisionResource(
                 logicalId,
                 change,
@@ -339,52 +317,168 @@ export class DeployEngine {
                 conditions,
                 actualCounts
               );
-              processedDeletes.add(logicalId);
-            })
-          )
-        );
-      }
 
-      // Process DELETE resources NOT in DAG (orphaned from state)
-      const orphanedDeletes = [...deleteChanges].filter((id) => !processedDeletes.has(id));
-      if (orphanedDeletes.length > 0) {
-        await Promise.all(
-          orphanedDeletes.map((logicalId) =>
-            limit(async () => {
-              const change = changes.get(logicalId)!;
-              await this.provisionResource(
+              // Track completed operation for potential rollback
+              completedOperations.push({
                 logicalId,
-                change,
-                newResources,
-                stackName,
-                template,
-                parameterValues,
-                conditions,
-                actualCounts
-              );
+                changeType: change.changeType as 'CREATE' | 'UPDATE',
+                resourceType: change.resourceType,
+                previousState,
+                physicalId: newResources[logicalId]?.physicalId,
+                properties: newResources[logicalId]?.properties,
+              });
             })
           )
         );
-      }
 
-      // Save partial state after DELETE operations
-      if (currentEtag !== undefined) {
-        try {
-          const partialState: StackState = {
-            version: 1,
-            stackName: currentState.stackName,
-            resources: newResources,
-            outputs: currentState.outputs,
-            lastModified: Date.now(),
-          };
-          currentEtag = await this.stateBackend.saveState(stackName, partialState, currentEtag);
-          this.logger.debug('Partial state saved after DELETE operations');
-        } catch (error) {
-          this.logger.warn(
-            `Failed to save partial state: ${error instanceof Error ? error.message : String(error)}`
-          );
+        // Save partial state after each level to prevent orphaned resources on failure
+        if (currentEtag !== undefined) {
+          try {
+            const partialState: StackState = {
+              version: 1,
+              stackName: currentState.stackName,
+              resources: newResources,
+              outputs: currentState.outputs,
+              lastModified: Date.now(),
+            };
+            currentEtag = await this.stateBackend.saveState(stackName, partialState, currentEtag);
+            this.logger.debug(`Partial state saved after level ${levelIndex + 1}`);
+          } catch (error) {
+            this.logger.warn(
+              `Failed to save partial state after level ${levelIndex + 1}: ${error instanceof Error ? error.message : String(error)}`
+            );
+          }
         }
       }
+
+      // Step 2: Process DELETE operations
+      // Resources to delete may not be in the DAG (they're in state but not in template)
+      if (deleteChanges.size > 0) {
+        this.logger.info(`Deleting ${deleteChanges.size} resource(s)`);
+
+        // Collect DELETE resources that are in the DAG (process in reverse order)
+        const processedDeletes = new Set<string>();
+        for (let levelIndex = executionLevels.length - 1; levelIndex >= 0; levelIndex--) {
+          const levelNodes = executionLevels[levelIndex];
+          if (!levelNodes) continue;
+          const level = levelNodes.filter((id) => deleteChanges.has(id));
+
+          if (level.length === 0) continue;
+
+          await Promise.all(
+            level.map((logicalId) =>
+              limit(async () => {
+                const change = changes.get(logicalId)!;
+
+                // Capture previous state before deletion (for rollback warning)
+                const previousState = currentState.resources[logicalId]
+                  ? { ...currentState.resources[logicalId] }
+                  : undefined;
+
+                await this.provisionResource(
+                  logicalId,
+                  change,
+                  newResources,
+                  stackName,
+                  template,
+                  parameterValues,
+                  conditions,
+                  actualCounts
+                );
+                processedDeletes.add(logicalId);
+
+                // Track completed DELETE operation
+                completedOperations.push({
+                  logicalId,
+                  changeType: 'DELETE',
+                  resourceType: change.resourceType,
+                  previousState,
+                });
+              })
+            )
+          );
+        }
+
+        // Process DELETE resources NOT in DAG (orphaned from state)
+        const orphanedDeletes = [...deleteChanges].filter((id) => !processedDeletes.has(id));
+        if (orphanedDeletes.length > 0) {
+          await Promise.all(
+            orphanedDeletes.map((logicalId) =>
+              limit(async () => {
+                const change = changes.get(logicalId)!;
+
+                const previousState = currentState.resources[logicalId]
+                  ? { ...currentState.resources[logicalId] }
+                  : undefined;
+
+                await this.provisionResource(
+                  logicalId,
+                  change,
+                  newResources,
+                  stackName,
+                  template,
+                  parameterValues,
+                  conditions,
+                  actualCounts
+                );
+
+                completedOperations.push({
+                  logicalId,
+                  changeType: 'DELETE',
+                  resourceType: change.resourceType,
+                  previousState,
+                });
+              })
+            )
+          );
+        }
+
+        // Save partial state after DELETE operations
+        if (currentEtag !== undefined) {
+          try {
+            const partialState: StackState = {
+              version: 1,
+              stackName: currentState.stackName,
+              resources: newResources,
+              outputs: currentState.outputs,
+              lastModified: Date.now(),
+            };
+            currentEtag = await this.stateBackend.saveState(stackName, partialState, currentEtag);
+            this.logger.debug('Partial state saved after DELETE operations');
+          } catch (error) {
+            this.logger.warn(
+              `Failed to save partial state: ${error instanceof Error ? error.message : String(error)}`
+            );
+          }
+        }
+      }
+    } catch (error) {
+      // Deployment failed — attempt rollback unless --no-rollback is set
+      if (this.options.noRollback) {
+        this.logger.warn('Deployment failed. --no-rollback is set, skipping rollback.');
+        this.logger.warn('Partial state has been saved. Manual cleanup may be required.');
+      } else {
+        await this.performRollback(completedOperations, newResources, stackName);
+      }
+
+      // Save state after rollback (or partial state if no-rollback)
+      try {
+        const failureState: StackState = {
+          version: 1,
+          stackName: currentState.stackName,
+          resources: newResources,
+          outputs: currentState.outputs,
+          lastModified: Date.now(),
+        };
+        await this.stateBackend.saveState(stackName, failureState, currentEtag);
+        this.logger.debug('State saved after deployment failure');
+      } catch (saveError) {
+        this.logger.warn(
+          `Failed to save state after deployment failure: ${saveError instanceof Error ? saveError.message : String(saveError)}`
+        );
+      }
+
+      throw error;
     }
 
     // Resolve outputs
@@ -406,6 +500,109 @@ export class DeployEngine {
       },
       actualCounts,
     };
+  }
+
+  /**
+   * Perform best-effort rollback of completed operations in reverse order
+   *
+   * - CREATE → delete the newly created resource
+   * - UPDATE → update back to previous properties
+   * - DELETE → cannot rollback (resource already deleted), log warning
+   */
+  private async performRollback(
+    completedOperations: CompletedOperation[],
+    stateResources: Record<string, ResourceState>,
+    _stackName: string
+  ): Promise<void> {
+    if (completedOperations.length === 0) {
+      this.logger.info('No completed operations to roll back.');
+      return;
+    }
+
+    this.logger.info(
+      `Rolling back ${completedOperations.length} completed operation(s) in reverse order...`
+    );
+
+    // Process in reverse order
+    for (let i = completedOperations.length - 1; i >= 0; i--) {
+      const op = completedOperations[i]!;
+      try {
+        switch (op.changeType) {
+          case 'CREATE': {
+            // Rollback CREATE by deleting the newly created resource
+            if (!op.physicalId) {
+              this.logger.warn(
+                `  Rollback: Cannot delete ${op.logicalId} — no physical ID recorded`
+              );
+              break;
+            }
+
+            this.logger.info(
+              `  Rollback: Deleting created resource ${op.logicalId} (${op.resourceType})`
+            );
+            const provider = this.providerRegistry.getProvider(op.resourceType);
+            await provider.delete(op.logicalId, op.physicalId, op.resourceType, op.properties);
+
+            // Remove from state
+            delete stateResources[op.logicalId];
+            this.logger.info(`  Rollback: ${op.logicalId} deleted successfully`);
+            break;
+          }
+
+          case 'UPDATE': {
+            // Rollback UPDATE by restoring previous properties
+            if (!op.previousState) {
+              this.logger.warn(
+                `  Rollback: Cannot restore ${op.logicalId} — no previous state available`
+              );
+              break;
+            }
+
+            this.logger.info(
+              `  Rollback: Restoring ${op.logicalId} (${op.resourceType}) to previous state`
+            );
+            const provider = this.providerRegistry.getProvider(op.resourceType);
+            const currentResource = stateResources[op.logicalId];
+
+            if (!currentResource) {
+              this.logger.warn(
+                `  Rollback: Cannot restore ${op.logicalId} — resource not found in current state`
+              );
+              break;
+            }
+
+            await provider.update(
+              op.logicalId,
+              currentResource.physicalId,
+              op.resourceType,
+              op.previousState.properties,
+              currentResource.properties
+            );
+
+            // Restore previous state
+            stateResources[op.logicalId] = op.previousState;
+            this.logger.info(`  Rollback: ${op.logicalId} restored successfully`);
+            break;
+          }
+
+          case 'DELETE': {
+            // Cannot rollback DELETE — resource is already deleted
+            this.logger.warn(
+              `  Rollback: Cannot restore deleted resource ${op.logicalId} (${op.resourceType}) — resource has already been deleted`
+            );
+            break;
+          }
+        }
+      } catch (rollbackError) {
+        // Best-effort: log warning and continue with remaining rollbacks
+        this.logger.warn(
+          `  Rollback failed for ${op.logicalId} (${op.changeType}): ${rollbackError instanceof Error ? rollbackError.message : String(rollbackError)}`
+        );
+        this.logger.warn('  Continuing with remaining rollback operations...');
+      }
+    }
+
+    this.logger.info('Rollback completed (best-effort).');
   }
 
   /**
