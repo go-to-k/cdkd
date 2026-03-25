@@ -440,10 +440,13 @@ export class DeployEngine {
               `Replacing ${logicalId} (${resourceType}) - immutable properties changed: ${replacedProps}`
             );
 
-            // Check UpdateReplacePolicy - if Retain, keep old resource
+            // 1. Create new resource first (CFn order: safe - old resource survives if CREATE fails)
+            this.logger.info(`  Creating new ${logicalId}...`);
+            const createResult = await provider.create(logicalId, resourceType, resolvedProps);
+
+            // 2. Delete old resource (after successful CREATE)
             const updateReplacePolicy = template?.Resources?.[logicalId]?.UpdateReplacePolicy;
 
-            // 1. Delete old resource first (avoids name conflicts like S3 bucket names)
             if (updateReplacePolicy === 'Retain') {
               this.logger.info(
                 `  Retaining old ${logicalId} (${currentResource.physicalId}) - UpdateReplacePolicy: Retain`
@@ -464,10 +467,6 @@ export class DeployEngine {
                 );
               }
             }
-
-            // 2. Create new resource
-            this.logger.info(`  Creating new ${logicalId}...`);
-            const createResult = await provider.create(logicalId, resourceType, resolvedProps);
 
             stateResources[logicalId] = {
               physicalId: createResult.physicalId,

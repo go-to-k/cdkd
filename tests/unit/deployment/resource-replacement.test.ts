@@ -194,10 +194,10 @@ describe('DeployEngine - Resource Replacement', () => {
       expect.objectContaining({ BucketName: 'old-bucket-name' })
     );
 
-    // Verify delete was called before create (avoids name conflicts)
-    const deleteOrder = mockProvider.delete.mock.invocationCallOrder[0];
+    // Verify create was called before delete (CFn order: CREATE new → DELETE old)
     const createOrder = mockProvider.create.mock.invocationCallOrder[0];
-    expect(deleteOrder).toBeLessThan(createOrder);
+    const deleteOrder = mockProvider.delete.mock.invocationCallOrder[0];
+    expect(createOrder).toBeLessThan(deleteOrder);
 
     // 3. State should be updated with new physicalId
     expect(mockStateBackend.saveState).toHaveBeenCalledTimes(1);
