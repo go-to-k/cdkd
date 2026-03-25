@@ -1,11 +1,7 @@
 import {
   IAMClient,
-  CreatePolicyCommand,
-  DeletePolicyCommand,
-  GetPolicyCommand,
   PutRolePolicyCommand,
   DeleteRolePolicyCommand,
-  GetRolePolicyCommand,
   NoSuchEntityException,
 } from '@aws-sdk/client-iam';
 import { getLogger } from '../../utils/logger.js';

@@ -1,5 +1,5 @@
 import { readFile } from 'fs/promises';
-import { join, dirname } from 'path';
+import { join } from 'path';
 import type { AssetManifest, FileAsset } from '../types/assets.js';
 import { getLogger } from '../utils/logger.js';
 

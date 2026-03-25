@@ -1,4 +1,4 @@
-import { SQSClient, SetQueueAttributesCommand, GetQueueAttributesCommand } from '@aws-sdk/client-sqs';
+import { SQSClient, SetQueueAttributesCommand } from '@aws-sdk/client-sqs';
 import { getLogger } from '../../utils/logger.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
@@ -76,7 +76,7 @@ export class SQSQueuePolicyProvider implements ResourceProvider {
 
       // Physical ID is the first queue URL
       return {
-        physicalId: queues[0],
+        physicalId: queues[0]!,
         attributes: {},
       };
     } catch (error) {
@@ -84,7 +84,7 @@ export class SQSQueuePolicyProvider implements ResourceProvider {
         `Failed to create SQS queue policy ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
         resourceType,
         logicalId,
-        queues[0],
+        queues[0]!,
         error instanceof Error ? error : undefined
       );
     }
@@ -98,7 +98,7 @@ export class SQSQueuePolicyProvider implements ResourceProvider {
     physicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
-    previousProperties: Record<string, unknown>
+    _previousProperties: Record<string, unknown>
   ): Promise<ResourceUpdateResult> {
     this.logger.info(`Updating SQS queue policy ${logicalId}: ${physicalId}`);
 
@@ -146,7 +146,7 @@ export class SQSQueuePolicyProvider implements ResourceProvider {
       this.logger.info(`Successfully updated SQS queue policy ${logicalId}`);
 
       return {
-        physicalId: queues[0],
+        physicalId: queues[0]!,
         wasReplaced: false,
         attributes: {},
       };

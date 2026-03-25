@@ -1,7 +1,6 @@
 import {
   S3Client,
   PutBucketPolicyCommand,
-  GetBucketPolicyCommand,
   DeleteBucketPolicyCommand,
   NoSuchBucket,
 } from '@aws-sdk/client-s3';
@@ -98,7 +97,7 @@ export class S3BucketPolicyProvider implements ResourceProvider {
     physicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
-    previousProperties: Record<string, unknown>
+    _previousProperties: Record<string, unknown>
   ): Promise<ResourceUpdateResult> {
     this.logger.info(`Updating S3 bucket policy ${logicalId}: ${physicalId}`);
 

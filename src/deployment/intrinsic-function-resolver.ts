@@ -38,11 +38,13 @@ export interface ResolverContext {
  * - Fn::Split
  * - Fn::If (Conditions)
  * - Fn::Equals
+ * - Fn::And (logical AND)
+ * - Fn::Or (logical OR)
+ * - Fn::Not (logical NOT)
  * - Fn::ImportValue (cross-stack references)
  *
  * Not yet supported:
  * - Fn::FindInMap, Fn::GetAZs, Fn::Base64
- * - Fn::And, Fn::Or, Fn::Not (advanced condition functions)
  */
 /**
  * AWS Account information cache
@@ -281,6 +283,18 @@ export class IntrinsicFunctionResolver {
       return await this.resolveEquals(obj['Fn::Equals'] as [unknown, unknown], context);
     }
 
+    if ('Fn::And' in obj) {
+      return await this.resolveAnd(obj['Fn::And'] as unknown[], context);
+    }
+
+    if ('Fn::Or' in obj) {
+      return await this.resolveOr(obj['Fn::Or'] as unknown[], context);
+    }
+
+    if ('Fn::Not' in obj) {
+      return await this.resolveNot(obj['Fn::Not'] as [unknown], context);
+    }
+
     if ('Fn::ImportValue' in obj) {
       return await this.resolveImportValue(obj['Fn::ImportValue'] as unknown, context);
     }
@@ -382,7 +396,7 @@ export class IntrinsicFunctionResolver {
   private async constructAttribute(
     resource: ResourceState,
     attributeName: string,
-    context: ResolverContext
+    _context: ResolverContext
   ): Promise<unknown> {
     const { resourceType, physicalId } = resource;
     const accountInfo = await getAccountInfo();
@@ -705,6 +719,95 @@ export class IntrinsicFunctionResolver {
 
     this.logger.debug(
       `Resolved Fn::Equals: ${JSON.stringify(resolved1)} === ${JSON.stringify(resolved2)} -> ${result}`
+    );
+
+    return result;
+  }
+
+  /**
+   * Resolve Fn::And intrinsic function
+   *
+   * Returns true if all conditions evaluate to true
+   * Syntax: { "Fn::And": [ condition1, condition2, ... ] }
+   */
+  private async resolveAnd(
+    conditions: unknown[],
+    context: ResolverContext
+  ): Promise<boolean> {
+    if (!Array.isArray(conditions) || conditions.length < 2 || conditions.length > 10) {
+      throw new Error(`Fn::And requires between 2 and 10 conditions, got ${conditions.length}`);
+    }
+
+    // Resolve all conditions
+    const results: boolean[] = [];
+    for (const condition of conditions) {
+      const resolved = await this.resolveValue(condition, context);
+      results.push(Boolean(resolved));
+    }
+
+    // Return true if all are true
+    const result = results.every((r) => r === true);
+
+    this.logger.debug(
+      `Resolved Fn::And: [${results.join(', ')}] -> ${result}`
+    );
+
+    return result;
+  }
+
+  /**
+   * Resolve Fn::Or intrinsic function
+   *
+   * Returns true if at least one condition evaluates to true
+   * Syntax: { "Fn::Or": [ condition1, condition2, ... ] }
+   */
+  private async resolveOr(
+    conditions: unknown[],
+    context: ResolverContext
+  ): Promise<boolean> {
+    if (!Array.isArray(conditions) || conditions.length < 2 || conditions.length > 10) {
+      throw new Error(`Fn::Or requires between 2 and 10 conditions, got ${conditions.length}`);
+    }
+
+    // Resolve all conditions
+    const results: boolean[] = [];
+    for (const condition of conditions) {
+      const resolved = await this.resolveValue(condition, context);
+      results.push(Boolean(resolved));
+    }
+
+    // Return true if at least one is true
+    const result = results.some((r) => r === true);
+
+    this.logger.debug(
+      `Resolved Fn::Or: [${results.join(', ')}] -> ${result}`
+    );
+
+    return result;
+  }
+
+  /**
+   * Resolve Fn::Not intrinsic function
+   *
+   * Returns the inverse of the condition
+   * Syntax: { "Fn::Not": [ condition ] }
+   */
+  private async resolveNot(
+    notArgs: [unknown],
+    context: ResolverContext
+  ): Promise<boolean> {
+    if (!Array.isArray(notArgs) || notArgs.length !== 1) {
+      throw new Error(`Fn::Not requires exactly one condition, got ${Array.isArray(notArgs) ? notArgs.length : 0}`);
+    }
+
+    const [condition] = notArgs;
+
+    // Resolve the condition
+    const resolved = await this.resolveValue(condition, context);
+    const result = !Boolean(resolved);
+
+    this.logger.debug(
+      `Resolved Fn::Not: ${Boolean(resolved)} -> ${result}`
     );
 
     return result;

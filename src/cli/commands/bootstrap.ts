@@ -1,5 +1,5 @@
 import { Command } from 'commander';
-import { S3Client, CreateBucketCommand, HeadBucketCommand } from '@aws-sdk/client-s3';
+import { CreateBucketCommand, HeadBucketCommand, type BucketLocationConstraint } from '@aws-sdk/client-s3';
 import { commonOptions } from '../options.js';
 import { getLogger } from '../../utils/logger.js';
 import { withErrorHandling } from '../../utils/error-handler.js';
@@ -68,7 +68,7 @@ async function bootstrapCommand(options: {
       const createBucketParams: {
         Bucket: string;
         CreateBucketConfiguration?: {
-          LocationConstraint: string;
+          LocationConstraint: BucketLocationConstraint;
         };
       } = {
         Bucket: bucketName,
@@ -77,7 +77,7 @@ async function bootstrapCommand(options: {
       // For regions other than us-east-1, LocationConstraint is required
       if (region !== 'us-east-1') {
         createBucketParams.CreateBucketConfiguration = {
-          LocationConstraint: region,
+          LocationConstraint: region as BucketLocationConstraint,
         };
       }
 

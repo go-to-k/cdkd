@@ -5,6 +5,7 @@ import { getLogger } from '../utils/logger.js';
 import { DependencyError } from '../utils/error-handler.js';
 
 const { Graph, alg } = graphlib;
+type GraphType = graphlib.Graph;
 
 /**
  * Dependency graph builder for CloudFormation resources
@@ -23,7 +24,7 @@ export class DagBuilder {
    * - Nodes = resource logical IDs
    * - Edges = dependencies (A -> B means B depends on A)
    */
-  buildGraph(template: CloudFormationTemplate): Graph {
+  buildGraph(template: CloudFormationTemplate): GraphType {
     const graph = new Graph({ directed: true });
 
     this.logger.debug('Building dependency graph...');
@@ -85,15 +86,15 @@ export class DagBuilder {
    *
    * Resources in the same level can be executed in parallel.
    */
-  getExecutionLevels(graph: Graph): string[][] {
+  getExecutionLevels(graph: GraphType): string[][] {
     const levels: string[][] = [];
     const graphCopy = new Graph({ directed: true });
 
     // Copy the graph
-    graph.nodes().forEach((node) => {
+    graph.nodes().forEach((node: string) => {
       graphCopy.setNode(node, graph.node(node));
     });
-    graph.edges().forEach((edge) => {
+    graph.edges().forEach((edge: graphlib.Edge) => {
       graphCopy.setEdge(edge.v, edge.w);
     });
 
@@ -136,7 +137,7 @@ export class DagBuilder {
   /**
    * Find all cycles in the graph
    */
-  private findCycles(graph: Graph): string[][] {
+  private findCycles(graph: GraphType): string[][] {
     const cycles: string[][] = [];
     const visited = new Set<string>();
     const recursionStack = new Set<string>();
@@ -181,12 +182,12 @@ export class DagBuilder {
   /**
    * Get all dependencies for a resource (transitive)
    */
-  getAllDependencies(graph: Graph, logicalId: string): Set<string> {
+  getAllDependencies(graph: GraphType, logicalId: string): Set<string> {
     const dependencies = new Set<string>();
 
     const visit = (node: string) => {
       const predecessors = graph.predecessors(node) || [];
-      predecessors.forEach((pred) => {
+      predecessors.forEach((pred: string) => {
         if (!dependencies.has(pred)) {
           dependencies.add(pred);
           visit(pred); // Recursively visit dependencies
@@ -201,12 +202,12 @@ export class DagBuilder {
   /**
    * Get all dependents for a resource (transitive)
    */
-  getAllDependents(graph: Graph, logicalId: string): Set<string> {
+  getAllDependents(graph: GraphType, logicalId: string): Set<string> {
     const dependents = new Set<string>();
 
     const visit = (node: string) => {
       const successors = graph.successors(node) || [];
-      successors.forEach((succ) => {
+      successors.forEach((succ: string) => {
         if (!dependents.has(succ)) {
           dependents.add(succ);
           visit(succ); // Recursively visit dependents
@@ -221,21 +222,21 @@ export class DagBuilder {
   /**
    * Get direct dependencies for a resource
    */
-  getDirectDependencies(graph: Graph, logicalId: string): string[] {
+  getDirectDependencies(graph: GraphType, logicalId: string): string[] {
     return graph.predecessors(logicalId) || [];
   }
 
   /**
    * Get direct dependents for a resource
    */
-  getDirectDependents(graph: Graph, logicalId: string): string[] {
+  getDirectDependents(graph: GraphType, logicalId: string): string[] {
     return graph.successors(logicalId) || [];
   }
 
   /**
    * Check if resource A depends on resource B
    */
-  dependsOn(graph: Graph, resourceA: string, resourceB: string): boolean {
+  dependsOn(graph: GraphType, resourceA: string, resourceB: string): boolean {
     const deps = this.getAllDependencies(graph, resourceA);
     return deps.has(resourceB);
   }
