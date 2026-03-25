@@ -86,7 +86,7 @@ export class DeployEngine {
    */
   async deploy(stackName: string, template: CloudFormationTemplate): Promise<DeployResult> {
     const startTime = Date.now();
-    this.logger.info(`Starting deployment for stack: ${stackName}`);
+    this.logger.debug(`Starting deployment for stack: ${stackName}`);
 
     // TODO: Use acquireLockWithRetry for better resilience
     // Currently fails immediately if lock is held. Should retry with exponential backoff
@@ -147,12 +147,12 @@ export class DeployEngine {
           .filter((type) => type !== 'AWS::CDK::Metadata')
       );
       this.providerRegistry.validateResourceTypes(resourceTypes);
-      this.logger.info(`✓ All resource types are supported`);
+      this.logger.debug(`All resource types validated`);
 
       // 4. Build dependency graph
       const dag = this.dagBuilder.buildGraph(template);
       const executionLevels = this.dagBuilder.getExecutionLevels(dag);
-      this.logger.info(`Dependency graph: ${executionLevels.length} execution levels`);
+      this.logger.debug(`Dependency graph: ${executionLevels.length} execution levels`);
 
       // 5. Calculate diff
       const changes = this.diffCalculator.calculateDiff(currentState, template);
@@ -311,20 +311,19 @@ export class DeployEngine {
       }
     }
 
-    // Step 2: Process DELETE in reverse DAG order
+    // Step 2: Process DELETE operations
+    // Resources to delete may not be in the DAG (they're in state but not in template)
     if (deleteChanges.size > 0) {
-      this.logger.info(`Processing ${deleteChanges.size} DELETE operations in reverse order`);
+      this.logger.info(`Deleting ${deleteChanges.size} resource(s)`);
 
+      // Collect DELETE resources that are in the DAG (process in reverse order)
+      const processedDeletes = new Set<string>();
       for (let levelIndex = executionLevels.length - 1; levelIndex >= 0; levelIndex--) {
         const levelNodes = executionLevels[levelIndex];
         if (!levelNodes) continue;
         const level = levelNodes.filter((id) => deleteChanges.has(id));
 
         if (level.length === 0) continue;
-
-        this.logger.info(
-          `Executing reverse level ${executionLevels.length - levelIndex}/${executionLevels.length}: ${level.length} resources (DELETE)`
-        );
 
         await Promise.all(
           level.map((logicalId) =>
@@ -340,29 +339,50 @@ export class DeployEngine {
                 conditions,
                 actualCounts
               );
+              processedDeletes.add(logicalId);
             })
           )
         );
+      }
 
-        // Save partial state after DELETE level
-        if (currentEtag !== undefined) {
-          try {
-            const partialState: StackState = {
-              version: 1,
-              stackName: currentState.stackName,
-              resources: newResources,
-              outputs: currentState.outputs,
-              lastModified: Date.now(),
-            };
-            currentEtag = await this.stateBackend.saveState(stackName, partialState, currentEtag);
-            this.logger.debug(
-              `Partial state saved after reverse level ${executionLevels.length - levelIndex}`
-            );
-          } catch (error) {
-            this.logger.warn(
-              `Failed to save partial state: ${error instanceof Error ? error.message : String(error)}`
-            );
-          }
+      // Process DELETE resources NOT in DAG (orphaned from state)
+      const orphanedDeletes = [...deleteChanges].filter((id) => !processedDeletes.has(id));
+      if (orphanedDeletes.length > 0) {
+        await Promise.all(
+          orphanedDeletes.map((logicalId) =>
+            limit(async () => {
+              const change = changes.get(logicalId)!;
+              await this.provisionResource(
+                logicalId,
+                change,
+                newResources,
+                stackName,
+                template,
+                parameterValues,
+                conditions,
+                actualCounts
+              );
+            })
+          )
+        );
+      }
+
+      // Save partial state after DELETE operations
+      if (currentEtag !== undefined) {
+        try {
+          const partialState: StackState = {
+            version: 1,
+            stackName: currentState.stackName,
+            resources: newResources,
+            outputs: currentState.outputs,
+            lastModified: Date.now(),
+          };
+          currentEtag = await this.stateBackend.saveState(stackName, partialState, currentEtag);
+          this.logger.debug('Partial state saved after DELETE operations');
+        } catch (error) {
+          this.logger.warn(
+            `Failed to save partial state: ${error instanceof Error ? error.message : String(error)}`
+          );
         }
       }
     }

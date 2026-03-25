@@ -63,7 +63,7 @@ async function deployCommand(
   const region = options.region || process.env['AWS_REGION'] || 'us-east-1';
   const stateBucket = await resolveStateBucketWithDefault(options.stateBucket, region);
 
-  logger.info('Starting deployment...');
+  logger.debug('Starting deployment...');
   logger.debug('Options:', options);
 
   // Initialize AWS clients with region/profile

@@ -102,7 +102,7 @@ export async function resolveStateBucketWithDefault(
 
   // Fall back to default bucket name from account info
   const logger = getLogger();
-  logger.info('No state bucket specified, resolving default from account...');
+  logger.debug('No state bucket specified, resolving default from account...');
 
   const { GetCallerIdentityCommand } = await import('@aws-sdk/client-sts');
   const { getAwsClients } = await import('../utils/aws-clients.js');
@@ -110,6 +110,6 @@ export async function resolveStateBucketWithDefault(
   const identity = await awsClients.sts.send(new GetCallerIdentityCommand({}));
   const accountId = identity.Account!;
   const bucketName = getDefaultStateBucketName(accountId, region);
-  logger.info(`Using default state bucket: ${bucketName}`);
+  logger.info(`State bucket: ${bucketName}`);
   return bucketName;
 }

@@ -125,7 +125,7 @@ export class DiffCalculator {
     }
 
     const summary = this.getSummary(changes);
-    this.logger.info(
+    this.logger.debug(
       `Diff calculated: ${summary.create} CREATE, ${summary.update} UPDATE, ${summary.delete} DELETE, ${summary.noChange} NO_CHANGE`
     );
 
