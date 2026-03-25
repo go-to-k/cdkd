@@ -18,7 +18,7 @@ import { S3BucketPolicyProvider } from '../../provisioning/providers/s3-bucket-p
 import { SQSQueuePolicyProvider } from '../../provisioning/providers/sqs-queue-policy-provider.js';
 import { setAwsClients, AwsClients } from '../../utils/aws-clients.js';
 import * as readline from 'node:readline/promises';
-import { resolveStateBucket } from '../config-loader.js';
+import { resolveStateBucketWithDefault } from '../config-loader.js';
 
 /**
  * Destroy command implementation
@@ -42,14 +42,9 @@ async function destroyCommand(
     logger.setLevel('debug');
   }
 
-  // Resolve --state-bucket from CLI, env, or cdk.json
-  const stateBucket = resolveStateBucket(options.stateBucket);
-  if (!stateBucket) {
-    throw new Error(
-      'No state bucket specified. Use --state-bucket, set CDKQ_STATE_BUCKET env var, or add context.cdkq.stateBucket to cdk.json'
-    );
-  }
-  options.stateBucket = stateBucket;
+  // Resolve --state-bucket from CLI, env, cdk.json, or default
+  const region = options.region || process.env['AWS_REGION'] || 'us-east-1';
+  const stateBucket = await resolveStateBucketWithDefault(options.stateBucket, region);
 
   logger.info('Starting stack destruction...');
   logger.debug('Options:', options);

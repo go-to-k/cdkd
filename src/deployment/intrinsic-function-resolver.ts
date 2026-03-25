@@ -1,4 +1,5 @@
 import { GetCallerIdentityCommand } from '@aws-sdk/client-sts';
+import { DescribeAvailabilityZonesCommand } from '@aws-sdk/client-ec2';
 import { getLogger } from '../utils/logger.js';
 import { getAwsClients } from '../utils/aws-clients.js';
 import type { CloudFormationTemplate } from '../types/resource.js';
@@ -52,9 +53,7 @@ export interface ResolverContext {
  * - Fn::ImportValue (cross-stack references)
  * - Fn::FindInMap (mapping lookups)
  * - Fn::Base64 (base64 encoding)
- *
- * Not yet supported:
- * - Fn::GetAZs
+ * - Fn::GetAZs (availability zone listing)
  */
 /**
  * AWS Account information cache
@@ -66,6 +65,11 @@ interface AwsAccountInfo {
 }
 
 let cachedAccountInfo: AwsAccountInfo | null = null;
+
+/**
+ * Cache for availability zones per region
+ */
+const cachedAvailabilityZones: Record<string, string[]> = {};
 
 /**
  * Get AWS account information from STS
@@ -107,6 +111,10 @@ async function getAccountInfo(): Promise<AwsAccountInfo> {
  */
 export function resetAccountInfoCache(): void {
   cachedAccountInfo = null;
+  // Also reset AZ cache
+  for (const key of Object.keys(cachedAvailabilityZones)) {
+    delete cachedAvailabilityZones[key];
+  }
 }
 
 /**
@@ -314,6 +322,10 @@ export class IntrinsicFunctionResolver {
 
     if ('Fn::Base64' in obj) {
       return await this.resolveBase64(obj['Fn::Base64'], context);
+    }
+
+    if ('Fn::GetAZs' in obj) {
+      return await this.resolveGetAZs(obj['Fn::GetAZs'], context);
     }
 
     // Not an intrinsic function: recursively resolve object properties
@@ -958,6 +970,69 @@ export class IntrinsicFunctionResolver {
     const result = Buffer.from(resolvedValue).toString('base64');
     this.logger.debug(`Resolved Fn::Base64: ${resolvedValue} -> ${result}`);
     return result;
+  }
+
+  /**
+   * Resolve Fn::GetAZs intrinsic function
+   *
+   * Fn::GetAZs: region
+   * Returns a list of availability zones for the specified region.
+   * If region is empty string or {"Ref": "AWS::Region"}, uses the current region.
+   * Results are cached per region to avoid repeated API calls.
+   */
+  private async resolveGetAZs(value: unknown, context: ResolverContext): Promise<string[]> {
+    // Recursively resolve the value first (it could be a Ref or other intrinsic function)
+    const resolvedValue = await this.resolveValue(value, context);
+
+    let region: string;
+    if (typeof resolvedValue === 'string' && resolvedValue !== '') {
+      region = resolvedValue;
+    } else {
+      // Empty string or non-string: use current region
+      const accountInfo = await getAccountInfo();
+      region = accountInfo.region;
+    }
+
+    // Check cache
+    const cached = cachedAvailabilityZones[region];
+    if (cached) {
+      this.logger.debug(`Resolved Fn::GetAZs from cache: ${region} -> ${JSON.stringify(cached)}`);
+      return cached;
+    }
+
+    // Call EC2 DescribeAvailabilityZones
+    const awsClients = getAwsClients();
+    const ec2Client = awsClients.ec2;
+
+    try {
+      const response = await ec2Client.send(
+        new DescribeAvailabilityZonesCommand({
+          Filters: [
+            {
+              Name: 'region-name',
+              Values: [region],
+            },
+            {
+              Name: 'state',
+              Values: ['available'],
+            },
+          ],
+        })
+      );
+
+      const azNames = (response.AvailabilityZones || [])
+        .map((az) => az.ZoneName)
+        .filter((name): name is string => name !== undefined)
+        .sort();
+
+      cachedAvailabilityZones[region] = azNames;
+      this.logger.debug(`Resolved Fn::GetAZs: ${region} -> ${JSON.stringify(azNames)}`);
+      return azNames;
+    } catch (error) {
+      throw new Error(
+        `Fn::GetAZs: failed to describe availability zones for region '${region}': ${error instanceof Error ? error.message : String(error)}`
+      );
+    }
   }
 
   /**

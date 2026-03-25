@@ -22,13 +22,25 @@ vi.mock('../../../src/utils/logger.js', () => ({
   }),
 }));
 
-// Mock AWS clients (for STS in pseudo parameter resolution)
+// Mock EC2 DescribeAvailabilityZones response
+const mockEc2Send = vi.fn().mockResolvedValue({
+  AvailabilityZones: [
+    { ZoneName: 'us-east-1a', State: 'available' },
+    { ZoneName: 'us-east-1b', State: 'available' },
+    { ZoneName: 'us-east-1c', State: 'available' },
+  ],
+});
+
+// Mock AWS clients (for STS in pseudo parameter resolution and EC2 for GetAZs)
 vi.mock('../../../src/utils/aws-clients.js', () => ({
   getAwsClients: () => ({
     sts: {
       send: vi.fn().mockResolvedValue({
         Account: '123456789012',
       }),
+    },
+    ec2: {
+      send: mockEc2Send,
     },
   }),
 }));
@@ -316,5 +328,140 @@ describe('IntrinsicFunctionResolver - Fn::Base64', () => {
     await expect(
       resolver.resolve({ 'Fn::Base64': ['not', 'a', 'string'] }, context)
     ).rejects.toThrow('Fn::Base64: value must resolve to a string');
+  });
+});
+
+describe('IntrinsicFunctionResolver - Fn::GetAZs', () => {
+  let resolver: IntrinsicFunctionResolver;
+
+  beforeEach(() => {
+    resolver = new IntrinsicFunctionResolver();
+    resetAccountInfoCache();
+    mockEc2Send.mockClear();
+    mockEc2Send.mockResolvedValue({
+      AvailabilityZones: [
+        { ZoneName: 'us-east-1a', State: 'available' },
+        { ZoneName: 'us-east-1b', State: 'available' },
+        { ZoneName: 'us-east-1c', State: 'available' },
+      ],
+    });
+  });
+
+  it('should resolve Fn::GetAZs with empty string (current region)', async () => {
+    const template: CloudFormationTemplate = {
+      Resources: {},
+    };
+
+    const context: ResolverContext = {
+      template,
+      resources: {},
+    };
+
+    const result = await resolver.resolve({ 'Fn::GetAZs': '' }, context);
+
+    expect(result).toEqual(['us-east-1a', 'us-east-1b', 'us-east-1c']);
+    expect(mockEc2Send).toHaveBeenCalledTimes(1);
+  });
+
+  it('should resolve Fn::GetAZs with explicit region', async () => {
+    mockEc2Send.mockResolvedValue({
+      AvailabilityZones: [
+        { ZoneName: 'eu-west-1a', State: 'available' },
+        { ZoneName: 'eu-west-1b', State: 'available' },
+      ],
+    });
+
+    const template: CloudFormationTemplate = {
+      Resources: {},
+    };
+
+    const context: ResolverContext = {
+      template,
+      resources: {},
+    };
+
+    const result = await resolver.resolve({ 'Fn::GetAZs': 'eu-west-1' }, context);
+
+    expect(result).toEqual(['eu-west-1a', 'eu-west-1b']);
+    expect(mockEc2Send).toHaveBeenCalledTimes(1);
+  });
+
+  it('should resolve Fn::GetAZs with Ref to AWS::Region', async () => {
+    const template: CloudFormationTemplate = {
+      Resources: {},
+    };
+
+    const context: ResolverContext = {
+      template,
+      resources: {},
+    };
+
+    const result = await resolver.resolve(
+      { 'Fn::GetAZs': { Ref: 'AWS::Region' } },
+      context
+    );
+
+    expect(result).toEqual(['us-east-1a', 'us-east-1b', 'us-east-1c']);
+    expect(mockEc2Send).toHaveBeenCalledTimes(1);
+  });
+
+  it('should cache results per region and not make repeated API calls', async () => {
+    const template: CloudFormationTemplate = {
+      Resources: {},
+    };
+
+    const context: ResolverContext = {
+      template,
+      resources: {},
+    };
+
+    // First call
+    await resolver.resolve({ 'Fn::GetAZs': '' }, context);
+    // Second call (should use cache)
+    await resolver.resolve({ 'Fn::GetAZs': '' }, context);
+
+    expect(mockEc2Send).toHaveBeenCalledTimes(1);
+  });
+
+  it('should return sorted AZ names', async () => {
+    mockEc2Send.mockResolvedValue({
+      AvailabilityZones: [
+        { ZoneName: 'us-east-1c', State: 'available' },
+        { ZoneName: 'us-east-1a', State: 'available' },
+        { ZoneName: 'us-east-1b', State: 'available' },
+      ],
+    });
+
+    const template: CloudFormationTemplate = {
+      Resources: {},
+    };
+
+    const context: ResolverContext = {
+      template,
+      resources: {},
+    };
+
+    const result = await resolver.resolve({ 'Fn::GetAZs': '' }, context);
+
+    expect(result).toEqual(['us-east-1a', 'us-east-1b', 'us-east-1c']);
+  });
+
+  it('should throw error when EC2 API call fails', async () => {
+    mockEc2Send.mockRejectedValue(new Error('Access Denied'));
+
+    const template: CloudFormationTemplate = {
+      Resources: {},
+    };
+
+    const context: ResolverContext = {
+      template,
+      resources: {},
+    };
+
+    await expect(
+      resolver.resolve({ 'Fn::GetAZs': 'ap-northeast-1' }, context)
+    ).rejects.toThrow(
+      "Fn::GetAZs: failed to describe availability zones for region 'ap-northeast-1': Access Denied"
+    );
   });
 });

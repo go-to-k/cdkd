@@ -11,6 +11,7 @@ import { getAwsClients } from '../utils/aws-clients.js';
 import { getLogger } from '../utils/logger.js';
 import { ProvisioningError } from '../utils/error-handler.js';
 import { JsonPatchGenerator } from './json-patch-generator.js';
+import { mapAttributes } from './attribute-mapper.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -379,8 +380,12 @@ export class CloudControlProvider implements ResourceProvider {
     physicalId: string,
     attributes: Record<string, unknown>
   ): Record<string, unknown> {
-    const enriched = { ...attributes };
+    // First, map CC API property names to GetAtt-compatible attribute names
+    const enriched = {
+      ...mapAttributes(resourceType, attributes),
+    };
 
+    // Fallback: compute attributes that CC API may not return
     switch (resourceType) {
       case 'AWS::S3::Bucket':
         // S3 bucket ARN: arn:aws:s3:::bucket-name

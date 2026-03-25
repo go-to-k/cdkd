@@ -83,3 +83,33 @@ export function resolveStateBucket(cliBucket?: string): string | undefined {
 export function getDefaultStateBucketName(accountId: string, region: string): string {
   return `cdkq-state-${accountId}-${region}`;
 }
+
+/**
+ * Resolve state bucket with STS fallback
+ *
+ * Priority: CLI option > CDKQ_STATE_BUCKET env > cdk.json > default (cdkq-state-{accountId}-{region})
+ *
+ * If no explicit bucket is configured, uses STS GetCallerIdentity to generate
+ * a default bucket name. Requires AWS credentials to be configured.
+ */
+export async function resolveStateBucketWithDefault(
+  cliBucket: string | undefined,
+  region: string
+): Promise<string> {
+  // Try synchronous resolution first
+  const syncResult = resolveStateBucket(cliBucket);
+  if (syncResult) return syncResult;
+
+  // Fall back to default bucket name from account info
+  const logger = getLogger();
+  logger.info('No state bucket specified, resolving default from account...');
+
+  const { GetCallerIdentityCommand } = await import('@aws-sdk/client-sts');
+  const { getAwsClients } = await import('../utils/aws-clients.js');
+  const awsClients = getAwsClients();
+  const identity = await awsClients.sts.send(new GetCallerIdentityCommand({}));
+  const accountId = identity.Account!;
+  const bucketName = getDefaultStateBucketName(accountId, region);
+  logger.info(`Using default state bucket: ${bucketName}`);
+  return bucketName;
+}

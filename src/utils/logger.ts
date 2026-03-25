@@ -25,6 +25,10 @@ function formatTimestamp(): string {
 
 /**
  * Console logger implementation
+ *
+ * Supports two output modes:
+ * - verbose (debug level): timestamps, module prefixes, all details
+ * - compact (info level): clean output without timestamps or prefixes
  */
 export class ConsoleLogger implements Logger {
   constructor(
@@ -40,22 +44,39 @@ export class ConsoleLogger implements Logger {
   }
 
   private formatMessage(level: LogLevel, message: string, ...args: unknown[]): string {
-    const timestamp = formatTimestamp();
-    const levelStr = level.toUpperCase().padEnd(5);
     const formattedArgs = args.length > 0 ? ' ' + args.map((a) => JSON.stringify(a)).join(' ') : '';
 
-    if (this.useColors) {
-      const levelColor = {
-        debug: colors.gray,
-        info: colors.blue,
-        warn: colors.yellow,
-        error: colors.red,
-      }[level];
+    // Verbose mode: full timestamps and level
+    if (this.level === 'debug') {
+      const timestamp = formatTimestamp();
+      const levelStr = level.toUpperCase().padEnd(5);
 
-      return `${colors.dim}${timestamp}${colors.reset} ${levelColor}${levelStr}${colors.reset} ${message}${formattedArgs}`;
+      if (this.useColors) {
+        const levelColor = {
+          debug: colors.gray,
+          info: colors.blue,
+          warn: colors.yellow,
+          error: colors.red,
+        }[level];
+
+        return `${colors.dim}${timestamp}${colors.reset} ${levelColor}${levelStr}${colors.reset} ${message}${formattedArgs}`;
+      }
+
+      return `${timestamp} ${levelStr} ${message}${formattedArgs}`;
     }
 
-    return `${timestamp} ${levelStr} ${message}${formattedArgs}`;
+    // Compact mode: clean output
+    if (this.useColors) {
+      if (level === 'error') {
+        return `${colors.red}${message}${formattedArgs}${colors.reset}`;
+      }
+      if (level === 'warn') {
+        return `${colors.yellow}${message}${formattedArgs}${colors.reset}`;
+      }
+      return `${message}${formattedArgs}`;
+    }
+
+    return `${message}${formattedArgs}`;
   }
 
   debug(message: string, ...args: unknown[]): void {
@@ -91,6 +112,8 @@ export class ConsoleLogger implements Logger {
 
   /**
    * Create a child logger with a prefix
+   *
+   * In verbose mode, prefix is shown as [Prefix]. In compact mode, prefix is hidden.
    */
   child(prefix: string): ConsoleLogger {
     const childLogger = new ConsoleLogger(this.level, this.useColors);
@@ -99,10 +122,28 @@ export class ConsoleLogger implements Logger {
     const originalWarn = childLogger.warn.bind(childLogger);
     const originalError = childLogger.error.bind(childLogger);
 
-    childLogger.debug = (msg, ...args) => originalDebug(`[${prefix}] ${msg}`, ...args);
-    childLogger.info = (msg, ...args) => originalInfo(`[${prefix}] ${msg}`, ...args);
-    childLogger.warn = (msg, ...args) => originalWarn(`[${prefix}] ${msg}`, ...args);
-    childLogger.error = (msg, ...args) => originalError(`[${prefix}] ${msg}`, ...args);
+    // Sync level from global logger on each call; add prefix only in verbose mode
+    const syncLevel = () => {
+      const global = globalLogger;
+      if (global) childLogger.level = global.level;
+    };
+
+    childLogger.debug = (msg, ...args) => {
+      syncLevel();
+      originalDebug(`[${prefix}] ${msg}`, ...args);
+    };
+    childLogger.info = (msg, ...args) => {
+      syncLevel();
+      originalInfo(childLogger.level === 'debug' ? `[${prefix}] ${msg}` : msg, ...args);
+    };
+    childLogger.warn = (msg, ...args) => {
+      syncLevel();
+      originalWarn(childLogger.level === 'debug' ? `[${prefix}] ${msg}` : msg, ...args);
+    };
+    childLogger.error = (msg, ...args) => {
+      syncLevel();
+      originalError(childLogger.level === 'debug' ? `[${prefix}] ${msg}` : msg, ...args);
+    };
 
     return childLogger;
   }

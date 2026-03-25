@@ -22,7 +22,7 @@ import { S3BucketPolicyProvider } from '../../provisioning/providers/s3-bucket-p
 import { SQSQueuePolicyProvider } from '../../provisioning/providers/sqs-queue-policy-provider.js';
 import { DeployEngine } from '../../deployment/deploy-engine.js';
 import { setAwsClients, AwsClients } from '../../utils/aws-clients.js';
-import { resolveApp, resolveStateBucket } from '../config-loader.js';
+import { resolveApp, resolveStateBucketWithDefault } from '../config-loader.js';
 
 /**
  * Deploy command implementation
@@ -59,14 +59,9 @@ async function deployCommand(
   }
   options.app = app;
 
-  // Resolve --state-bucket from CLI, env, or cdk.json
-  const stateBucket = resolveStateBucket(options.stateBucket);
-  if (!stateBucket) {
-    throw new Error(
-      'No state bucket specified. Use --state-bucket, set CDKQ_STATE_BUCKET env var, or add context.cdkq.stateBucket to cdk.json'
-    );
-  }
-  options.stateBucket = stateBucket;
+  // Resolve --state-bucket from CLI, env, cdk.json, or default (cdkq-state-{accountId}-{region})
+  const region = options.region || process.env['AWS_REGION'] || 'us-east-1';
+  const stateBucket = await resolveStateBucketWithDefault(options.stateBucket, region);
 
   logger.info('Starting deployment...');
   logger.debug('Options:', options);

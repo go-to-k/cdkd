@@ -4,6 +4,7 @@ import { IAMClient } from '@aws-sdk/client-iam';
 import { SQSClient } from '@aws-sdk/client-sqs';
 import { LambdaClient } from '@aws-sdk/client-lambda';
 import { STSClient } from '@aws-sdk/client-sts';
+import { EC2Client } from '@aws-sdk/client-ec2';
 
 /**
  * AWS client configuration
@@ -28,6 +29,7 @@ export class AwsClients {
   private sqsClient?: SQSClient;
   private lambdaClient?: LambdaClient;
   private stsClient?: STSClient;
+  private ec2Client?: EC2Client;
 
   constructor(private config: AwsClientConfig = {}) {}
 
@@ -145,6 +147,26 @@ export class AwsClients {
   }
 
   /**
+   * Get EC2 client
+   */
+  getEC2Client(): EC2Client {
+    if (!this.ec2Client) {
+      this.ec2Client = new EC2Client({
+        ...(this.config.region && { region: this.config.region }),
+        ...(this.config.credentials && { credentials: this.config.credentials }),
+      });
+    }
+    return this.ec2Client;
+  }
+
+  /**
+   * Convenience getter for EC2 client
+   */
+  get ec2(): EC2Client {
+    return this.getEC2Client();
+  }
+
+  /**
    * Get STS client
    */
   getSTSClient(): STSClient {
@@ -174,6 +196,7 @@ export class AwsClients {
     this.sqsClient?.destroy();
     this.lambdaClient?.destroy();
     this.stsClient?.destroy();
+    this.ec2Client?.destroy();
   }
 }
 
