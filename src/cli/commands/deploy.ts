@@ -87,7 +87,7 @@ async function deployCommand(
     // 2. Load CloudAssembly and get stacks
     const assemblyLoader = new AssemblyLoader();
     const allStacks = assemblyLoader.getAllStacks(assembly);
-    logger.info(`Found ${allStacks.length} stack(s) in assembly`);
+    logger.debug(`Found ${allStacks.length} stack(s) in assembly`);
 
     // Determine target stacks: positional args > --stack > --all > auto (single stack)
     const stackPatterns = stacks.length > 0 ? stacks : options.stack ? [options.stack] : [];
@@ -123,7 +123,6 @@ async function deployCommand(
 
     // 3. Publish assets (unless --skip-assets)
     if (!options.skipAssets) {
-      logger.info('Publishing assets...');
       const assetPublisher = new AssetPublisher();
 
       // Try to find asset manifests for each stack
@@ -136,7 +135,6 @@ async function deployCommand(
             ...(options.region && { region: options.region }),
             ...(options.profile && { profile: options.profile }),
           });
-          logger.info(`✓ Assets published for stack ${stack.stackName}`);
           assetsPublished = true;
         } catch (error) {
           // Check if this is a "file not found" error (assets.json doesn't exist)
@@ -158,12 +156,8 @@ async function deployCommand(
       }
 
       if (assetsPublished) {
-        logger.info('✓ All assets published successfully');
-      } else {
-        logger.info('No assets to publish');
+        logger.info('✓ Assets published');
       }
-    } else {
-      logger.info('Skipping asset publishing (--skip-assets)');
     }
 
     // 4. Initialize deployment components

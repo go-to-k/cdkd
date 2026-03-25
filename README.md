@@ -81,7 +81,7 @@ AWS CDK is great for defining infrastructure as code, but CloudFormation deploym
 | `Fn::Not` | ✅ Supported | Logical NOT |
 | `Fn::ImportValue` | ✅ Supported | Cross-stack references via S3 state |
 | `Fn::FindInMap` | ✅ Supported | Mapping lookup |
-| `Fn::GetAZs` | ❌ Not yet | Availability Zone list |
+| `Fn::GetAZs` | ✅ Supported | Availability Zone list |
 | `Fn::Base64` | ✅ Supported | Base64 encoding |
 
 ### Pseudo Parameters
@@ -130,7 +130,7 @@ AWS CDK is great for defining infrastructure as code, but CloudFormation deploym
 | Rollback | ❌ | Not yet implemented |
 | `Fn::FindInMap` | ✅ | Mapping lookup |
 | `Fn::Base64` | ✅ | Base64 encoding |
-| `Fn::GetAZs` | ❌ | Not yet implemented |
+| `Fn::GetAZs` | ✅ | Availability Zone list |
 | DeletionPolicy: Retain | ✅ | Skip deletion for retained resources |
 | UpdateReplacePolicy: Retain | ✅ | Keep old resource on replacement |
 
@@ -301,7 +301,7 @@ See [docs/implementation-plan.md](docs/implementation-plan.md) for detailed impl
 - ✅ Custom Resource support (Lambda-backed, Create/Update/Delete)
 - ✅ Real AWS Account ID resolution via STS GetCallerIdentity
 - ✅ SDK Providers: IAM Role/Policy, S3 Bucket Policy, SQS Queue Policy
-- ✅ Intrinsic function resolution (Ref, Fn::GetAtt, Fn::Join, Fn::Sub, Fn::Select, Fn::Split, Fn::If, Fn::Equals, Fn::And, Fn::Or, Fn::Not, Fn::ImportValue)
+- ✅ Intrinsic function resolution (all CloudFormation intrinsic functions supported)
 - ✅ Pseudo parameters: AWS::Region, AWS::AccountId, AWS::Partition, AWS::NoValue, AWS::URLSuffix
 - ✅ CloudFormation Parameters support (with default values and type coercion)
 - ✅ Conditions evaluation (with logical operators: And, Or, Not)
@@ -311,18 +311,25 @@ See [docs/implementation-plan.md](docs/implementation-plan.md) for detailed impl
 - ✅ Type safety improvements (error handling, any type elimination)
 - ✅ Resource replacement detection (immutable property detection for 10+ AWS resource types)
 - ✅ Code quality improvements (eliminated ~80 lines of duplicate code in DeployEngine)
-- ✅ Integration testing (9 examples verified with real AWS deployments)
+- ✅ Integration testing (9 examples verified with real AWS deployments, including ecr and apigateway)
 - ✅ UPDATE operations verified (JSON Patch working for S3, Lambda, IAM resources)
 - ✅ Environment variable support for UPDATE testing (`CDKQ_TEST_UPDATE=true`)
+- ✅ Fn::GetAZs (all intrinsic functions now supported)
+- ✅ Partial state save after each DAG level (prevents orphaned resources)
+- ✅ CREATE retry with exponential backoff (IAM propagation delays)
+- ✅ CC API polling with exponential backoff (1s→2s→4s→8s→10s)
+- ✅ Compact output mode (default clean output, `--verbose` for full details)
+- ✅ `--state-bucket` auto-resolves from STS account ID: `cdkq-state-{accountId}-{region}`
+- ✅ Attribute mapper: CC API property names mapped to GetAtt attribute names
+- ✅ E2E test script (`tests/e2e/run-e2e.sh`)
+- ✅ 82 unit tests
 
 **Not Yet Implemented**:
 
 - Custom Resources: SNS-backed and async/Step Functions patterns (Lambda sync only)
 - Custom Resources: CDK internal custom resources (`Custom::S3AutoDeleteObjects` etc.) — ResponseURL issue
-- Advanced intrinsic functions (`Fn::GetAZs`)
 - Rollback mechanism
 - Progress bar / advanced UI
-- Default bootstrap bucket name (currently `--state-bucket` is required)
 
 See [docs/implementation-plan.md](docs/implementation-plan.md) for complete roadmap.
 

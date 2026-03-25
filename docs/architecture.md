@@ -202,9 +202,7 @@ Resolves CloudFormation intrinsic functions
 - `Fn::And`, `Fn::Or`, `Fn::Not`: Logical operators for Conditions
 - `Fn::ImportValue`: Cross-stack references
 
-**Unsupported Functions**:
-
-- `Fn::GetAZs`
+All CloudFormation intrinsic functions are now supported.
 
 ### 5. State Layer (`src/state/`)
 
@@ -650,7 +648,7 @@ Each layer has clear responsibilities
 1. **CloudFormation Macros**: Not supported
 2. **Nested Stacks**: Not supported
 3. **Change Sets**: No concept (always executes immediately)
-4. **Some intrinsic functions**: `Fn::GetAZs` not yet implemented
+4. ~~Some intrinsic functions~~: All intrinsic functions now supported
 
 ### Phase 9 and Beyond Plans
 

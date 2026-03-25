@@ -205,10 +205,9 @@ export class DeployEngine {
 
       // 7. Save final state (ETag may have been updated by partial saves)
       const newEtag = await this.stateBackend.saveState(stackName, newState);
-      this.logger.info(`✓ State saved successfully (new ETag: ${newEtag})`);
+      this.logger.debug(`State saved (ETag: ${newEtag})`);
 
       const durationMs = Date.now() - startTime;
-      this.logger.info(`Deployment completed in ${(durationMs / 1000).toFixed(2)}s`);
 
       return {
         stackName,
@@ -260,7 +259,7 @@ export class DeployEngine {
       if (level.length === 0) continue;
 
       this.logger.info(
-        `Executing level ${levelIndex + 1}/${executionLevels.length}: ${level.length} resources (CREATE/UPDATE)`
+        `Level ${levelIndex + 1}/${executionLevels.length} (${level.length} resources)`
       );
 
       await Promise.all(
@@ -396,7 +395,6 @@ export class DeployEngine {
     try {
       switch (change.changeType) {
         case 'CREATE': {
-          this.logger.info(`Creating ${logicalId} (${resourceType})`);
           const desiredProps = change.desiredProperties || {};
 
           // Resolve intrinsic functions in properties
@@ -437,7 +435,7 @@ export class DeployEngine {
             ...(dependencies && { dependencies }),
           };
 
-          this.logger.info(`✓ Created ${logicalId}: ${result.physicalId}`);
+          this.logger.info(`  ✅ ${logicalId} (${resourceType})`);
           break;
         }
 
@@ -527,7 +525,7 @@ export class DeployEngine {
             );
           } else {
             // Normal update (in-place)
-            this.logger.info(`Updating ${logicalId} (${resourceType})`);
+            this.logger.debug(`Updating ${logicalId} (${resourceType})`);
 
             const result = await provider.update(
               logicalId,
@@ -551,7 +549,7 @@ export class DeployEngine {
               ...(dependencies && { dependencies }),
             };
 
-            this.logger.info(`✓ Updated ${logicalId}`);
+            this.logger.info(`  ✅ ${logicalId} (${resourceType})`);
           }
           break;
         }
@@ -570,7 +568,7 @@ export class DeployEngine {
             break;
           }
 
-          this.logger.info(`Deleting ${logicalId} (${resourceType})`);
+          this.logger.debug(`Deleting ${logicalId} (${resourceType})`);
           await provider.delete(
             logicalId,
             currentResource.physicalId,
@@ -579,7 +577,7 @@ export class DeployEngine {
           );
 
           delete stateResources[logicalId];
-          this.logger.info(`✓ Deleted ${logicalId}`);
+          this.logger.info(`  ✅ ${logicalId} (${resourceType}) deleted`);
           break;
         }
       }

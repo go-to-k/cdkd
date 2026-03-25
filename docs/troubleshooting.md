@@ -474,34 +474,18 @@ CloudFormation intrinsic function not supported by cdkq is being used.
 | `Fn::Not` | ✅ |
 | `Fn::ImportValue` | ✅ |
 | `Fn::FindInMap` | ✅ |
-| `Fn::GetAZs` | ❌ |
+| `Fn::GetAZs` | ✅ |
 | `Fn::Base64` | ✅ |
 
 #### Solutions
 
-**1. Replace with supported function**
+**1. All intrinsic functions are now supported**
 
-```typescript
-// Example: Fn::GetAZs is not supported
-new cdk.CfnOutput(this, 'FirstAZ', {
-  value: cdk.Fn.select(0, cdk.Fn.getAzs()),  // ❌ Fn::GetAZs not supported
-});
-
-// Alternative: Specify directly
-new cdk.CfnOutput(this, 'FirstAZ', {
-  value: 'us-east-1a',  // ✅ Works
-});
-
-// Or use a list of known AZs
-const azs = ['us-east-1a', 'us-east-1b', 'us-east-1c'];
-new cdk.CfnOutput(this, 'FirstAZ', {
-  value: cdk.Fn.select(0, azs),  // ✅ Fn::Select is supported
-});
-```
+All CloudFormation intrinsic functions are supported as of 2026-03-26, including `Fn::GetAZs`. If you encounter this error, ensure you are using the latest version of cdkq.
 
 **2. Extend intrinsic function implementation**
 
-Add implementation to `src/deployment/intrinsic-function-resolver.ts`.
+If a new function needs support, add implementation to `src/deployment/intrinsic-function-resolver.ts`.
 
 Example for Fn::Base64:
 

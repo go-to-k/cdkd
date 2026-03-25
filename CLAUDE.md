@@ -67,8 +67,7 @@ cdkq has a 7-layer system architecture:
    - Executes resources in parallel by level (resources without dependencies run concurrently)
 
 4. **Intrinsic Function Resolution**
-   - Fully supported: `Ref`, `Fn::GetAtt`, `Fn::Join`, `Fn::Sub`, `Fn::Select`, `Fn::Split`, `Fn::If`, `Fn::Equals`, `Fn::And`, `Fn::Or`, `Fn::Not`, `Fn::ImportValue`
-   - Not yet supported: `Fn::GetAZs`
+   - All CloudFormation intrinsic functions supported: `Ref`, `Fn::GetAtt`, `Fn::Join`, `Fn::Sub`, `Fn::Select`, `Fn::Split`, `Fn::If`, `Fn::Equals`, `Fn::And`, `Fn::Or`, `Fn::Not`, `Fn::ImportValue`, `Fn::FindInMap`, `Fn::Base64`, `Fn::GetAZs`
 
 ## Build and Test Commands
 
@@ -232,7 +231,7 @@ registry.register('AWS::IAM::Role', new IAMRoleProvider());
 - `tests/integration/examples/**`
 - Uses actual AWS account
 - Environment variables: `STATE_BUCKET`, `AWS_REGION`
-- 7 examples verified with real AWS deployments (as of 2026-03-25):
+- 9 examples verified with real AWS deployments (as of 2026-03-26):
   - basic: S3 bucket (CREATE + UPDATE verified)
   - conditions: Conditional resources with AWS::NoValue
   - parameters: CloudFormation Parameters with default values
@@ -240,6 +239,8 @@ registry.register('AWS::IAM::Role', new IAMRoleProvider());
   - lambda: Lambda + DynamoDB + IAM (CREATE + UPDATE verified)
   - cross-stack-references: Fn::ImportValue (Exporter + Consumer)
   - multi-resource: Known issue with Custom Resource CloudFormation integration
+  - ecr: ECR repository deployment
+  - apigateway: API Gateway + Lambda integration
 
 ### UPDATE Testing
 
@@ -285,7 +286,6 @@ See [docs/provider-development.md](docs/provider-development.md) for details.
 
 ## Known Limitations
 
-- Some intrinsic functions not supported (Fn::GetAZs)
 - NOT recommended for production use
 
 **Recently Implemented** (2026-03-26):
@@ -303,6 +303,14 @@ See [docs/provider-development.md](docs/provider-development.md) for details.
 - ✅ Resource replacement detection (immutable property detection for 10+ AWS resource types)
 - ✅ AWS::NoValue pseudo parameter (for conditional property omission)
 - ✅ Fn::FindInMap (Mappings lookup) and Fn::Base64 (base64 encoding)
+- ✅ Fn::GetAZs (all intrinsic functions now supported)
+- ✅ Partial state save after each DAG level (prevents orphaned resources)
+- ✅ CREATE retry with exponential backoff (IAM propagation delays)
+- ✅ CC API polling with exponential backoff (1s→2s→4s→8s→10s)
+- ✅ Compact output mode (default clean output, `--verbose` for full details)
+- ✅ `--state-bucket` auto-resolves from STS account ID: `cdkq-state-{accountId}-{region}`
+- ✅ Attribute mapper: CC API property names mapped to GetAtt attribute names
+- ✅ 82 unit tests, 9 integration examples, E2E test script
 - ✅ DeletionPolicy: Retain support (skip deletion for retained resources)
 - ✅ Resource replacement for immutable property changes (CREATE→DELETE)
 - ✅ Type safety improvements (error handling, any type elimination in custom resources)

@@ -429,8 +429,7 @@ node ${CDKQ_PATH}/dist/cli.js deploy ... --verbose
 
 1. **Cloud Control API Update Processing**: The current implementation performs differential updates using JSON Patch, but complete updates may fail for some resources.
 
-2. **Some CloudFormation Intrinsic Functions**: The following functions are not yet supported:
-   - Fn::GetAZs
+2. **CloudFormation Intrinsic Functions**: All intrinsic functions are now supported.
 
 3. **Pseudo Parameters**: The following parameters are supported:
    - ✅ `AWS::AccountId` - Retrieves actual value from STS GetCallerIdentity
