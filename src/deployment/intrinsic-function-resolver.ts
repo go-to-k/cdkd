@@ -50,9 +50,11 @@ export interface ResolverContext {
  * - Fn::Or (logical OR)
  * - Fn::Not (logical NOT)
  * - Fn::ImportValue (cross-stack references)
+ * - Fn::FindInMap (mapping lookups)
+ * - Fn::Base64 (base64 encoding)
  *
  * Not yet supported:
- * - Fn::FindInMap, Fn::GetAZs, Fn::Base64
+ * - Fn::GetAZs
  */
 /**
  * AWS Account information cache
@@ -301,6 +303,17 @@ export class IntrinsicFunctionResolver {
 
     if ('Fn::ImportValue' in obj) {
       return await this.resolveImportValue(obj['Fn::ImportValue'], context);
+    }
+
+    if ('Fn::FindInMap' in obj) {
+      return await this.resolveFindInMap(
+        obj['Fn::FindInMap'] as [unknown, unknown, unknown],
+        context
+      );
+    }
+
+    if ('Fn::Base64' in obj) {
+      return await this.resolveBase64(obj['Fn::Base64'], context);
     }
 
     // Not an intrinsic function: recursively resolve object properties
@@ -878,6 +891,73 @@ export class IntrinsicFunctionResolver {
         `Searched ${allStacks.length} stacks. ` +
         `Make sure the exporting stack has been deployed and the Output has an Export.Name property.`
     );
+  }
+
+  /**
+   * Resolve Fn::FindInMap intrinsic function
+   *
+   * Fn::FindInMap: [MapName, TopLevelKey, SecondLevelKey]
+   * Looks up a value in the Mappings section of the template
+   */
+  private async resolveFindInMap(
+    findInMapArgs: [unknown, unknown, unknown],
+    context: ResolverContext
+  ): Promise<unknown> {
+    const [rawMapName, rawTopLevelKey, rawSecondLevelKey] = findInMapArgs;
+
+    // Recursively resolve each argument (they could be Refs or other intrinsic functions)
+    const mapName = String(await this.resolveValue(rawMapName, context));
+    const topLevelKey = String(await this.resolveValue(rawTopLevelKey, context));
+    const secondLevelKey = String(await this.resolveValue(rawSecondLevelKey, context));
+
+    // Access the Mappings section of the template
+    const mappings = context.template.Mappings;
+    if (!mappings) {
+      throw new Error(`Fn::FindInMap: no Mappings section found in template`);
+    }
+
+    const map = mappings[mapName] as Record<string, Record<string, unknown>> | undefined;
+    if (!map) {
+      throw new Error(`Fn::FindInMap: mapping '${mapName}' not found in Mappings section`);
+    }
+
+    const topLevel = map[topLevelKey];
+    if (!topLevel || typeof topLevel !== 'object') {
+      throw new Error(
+        `Fn::FindInMap: top-level key '${topLevelKey}' not found in mapping '${mapName}'`
+      );
+    }
+
+    if (!(secondLevelKey in topLevel)) {
+      throw new Error(
+        `Fn::FindInMap: second-level key '${secondLevelKey}' not found in mapping '${mapName}' -> '${topLevelKey}'`
+      );
+    }
+
+    const result = topLevel[secondLevelKey];
+    this.logger.debug(
+      `Resolved Fn::FindInMap: ${mapName}.${topLevelKey}.${secondLevelKey} -> ${JSON.stringify(result)}`
+    );
+    return result;
+  }
+
+  /**
+   * Resolve Fn::Base64 intrinsic function
+   *
+   * Fn::Base64: valueToEncode
+   * Returns the Base64 representation of the input string
+   */
+  private async resolveBase64(value: unknown, context: ResolverContext): Promise<string> {
+    // Recursively resolve the value first (it could be another intrinsic function)
+    const resolvedValue = await this.resolveValue(value, context);
+
+    if (typeof resolvedValue !== 'string') {
+      throw new Error(`Fn::Base64: value must resolve to a string, got ${typeof resolvedValue}`);
+    }
+
+    const result = Buffer.from(resolvedValue).toString('base64');
+    this.logger.debug(`Resolved Fn::Base64: ${resolvedValue} -> ${result}`);
+    return result;
   }
 
   /**

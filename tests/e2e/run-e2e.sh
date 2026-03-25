@@ -1,0 +1,217 @@
+#!/usr/bin/env bash
+#
+# cdkq E2E Test Script
+#
+# Runs a full deploy -> diff -> update -> destroy cycle using the basic example.
+# Exits immediately on any step failure and cleans up resources on interruption.
+#
+
+set -euo pipefail
+
+# --------------------------------------------------------------------------
+# Colors and output helpers
+# --------------------------------------------------------------------------
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[0;33m'
+CYAN='\033[0;36m'
+BOLD='\033[1m'
+RESET='\033[0m'
+
+pass() { echo -e "${GREEN}✓ $*${RESET}"; }
+fail() { echo -e "${RED}✗ $*${RESET}"; }
+info() { echo -e "${CYAN}→ $*${RESET}"; }
+header() { echo -e "\n${BOLD}========== $* ==========${RESET}\n"; }
+
+# --------------------------------------------------------------------------
+# Parameters
+# --------------------------------------------------------------------------
+STATE_BUCKET="${STATE_BUCKET:-}"
+AWS_REGION="${AWS_REGION:-us-east-1}"
+CDKQ_PATH="${CDKQ_PATH:-../../dist/cli.js}"
+
+if [[ -z "${STATE_BUCKET}" ]]; then
+  echo -e "${RED}ERROR: STATE_BUCKET environment variable is required.${RESET}"
+  echo ""
+  echo "Usage:"
+  echo "  STATE_BUCKET=my-bucket ./run-e2e.sh"
+  echo "  STATE_BUCKET=my-bucket AWS_REGION=ap-northeast-1 ./run-e2e.sh"
+  echo "  STATE_BUCKET=my-bucket CDKQ_PATH=/path/to/cli.js ./run-e2e.sh"
+  exit 1
+fi
+
+# --------------------------------------------------------------------------
+# Resolve paths
+# --------------------------------------------------------------------------
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+BASIC_EXAMPLE_DIR="${SCRIPT_DIR}/../integration/examples/basic"
+CDKQ_BIN="$(cd "${SCRIPT_DIR}" && node -e "const p = require('path'); console.log(p.resolve('${CDKQ_PATH}'))")"
+
+if [[ ! -d "${BASIC_EXAMPLE_DIR}" ]]; then
+  fail "Basic example directory not found: ${BASIC_EXAMPLE_DIR}"
+  exit 1
+fi
+
+if [[ ! -f "${CDKQ_BIN}" ]]; then
+  fail "cdkq CLI not found at: ${CDKQ_BIN}"
+  echo "  Hint: Run 'npm run build' in the project root first."
+  exit 1
+fi
+
+# --------------------------------------------------------------------------
+# Common cdkq arguments
+# --------------------------------------------------------------------------
+APP_CMD="npx ts-node --prefer-ts-exts bin/app.ts"
+CDKQ_COMMON_ARGS=(
+  --app "${APP_CMD}"
+  --state-bucket "${STATE_BUCKET}"
+  --region "${AWS_REGION}"
+)
+
+run_cdkq() {
+  # Run cdkq from the basic example directory
+  (cd "${BASIC_EXAMPLE_DIR}" && node "${CDKQ_BIN}" "$@")
+}
+
+# --------------------------------------------------------------------------
+# Timer helpers
+# --------------------------------------------------------------------------
+START_TIME="${EPOCHSECONDS:-$(date +%s)}"
+
+elapsed() {
+  local now="${EPOCHSECONDS:-$(date +%s)}"
+  local diff=$(( now - START_TIME ))
+  local mins=$(( diff / 60 ))
+  local secs=$(( diff % 60 ))
+  printf '%dm%02ds' "${mins}" "${secs}"
+}
+
+# --------------------------------------------------------------------------
+# Cleanup trap – always attempt destroy on interruption
+# --------------------------------------------------------------------------
+CLEANUP_NEEDED=false
+
+cleanup() {
+  if [[ "${CLEANUP_NEEDED}" == "true" ]]; then
+    echo ""
+    echo -e "${YELLOW}Interrupted – running cleanup destroy...${RESET}"
+    run_cdkq destroy "${CDKQ_COMMON_ARGS[@]}" --force --verbose 2>&1 || true
+    echo -e "${YELLOW}Cleanup complete.${RESET}"
+  fi
+  echo ""
+  echo -e "${BOLD}Total time: $(elapsed)${RESET}"
+}
+
+trap cleanup EXIT
+trap 'exit 130' INT TERM
+
+# --------------------------------------------------------------------------
+# Pre-flight: install dependencies if needed
+# --------------------------------------------------------------------------
+header "Pre-flight checks"
+
+info "cdkq binary: ${CDKQ_BIN}"
+info "Example dir:  ${BASIC_EXAMPLE_DIR}"
+info "State bucket: ${STATE_BUCKET}"
+info "AWS region:   ${AWS_REGION}"
+
+if [[ ! -d "${BASIC_EXAMPLE_DIR}/node_modules" ]]; then
+  info "Installing dependencies for basic example..."
+  (cd "${BASIC_EXAMPLE_DIR}" && npm install --silent)
+  pass "Dependencies installed"
+else
+  pass "Dependencies already installed"
+fi
+
+STEP=0
+TOTAL_STEPS=6
+
+step_header() {
+  STEP=$(( STEP + 1 ))
+  header "Step ${STEP}/${TOTAL_STEPS}: $*"
+}
+
+# --------------------------------------------------------------------------
+# Step 1: Initial deploy (CREATE)
+# --------------------------------------------------------------------------
+step_header "Deploy (CREATE)"
+
+info "Running: cdkq deploy"
+CLEANUP_NEEDED=true
+
+run_cdkq deploy "${CDKQ_COMMON_ARGS[@]}" --verbose
+pass "Initial deploy succeeded [$(elapsed)]"
+
+# --------------------------------------------------------------------------
+# Step 2: Diff after create (expect no changes)
+# --------------------------------------------------------------------------
+step_header "Diff after CREATE (expect no changes)"
+
+info "Running: cdkq diff"
+DIFF_OUTPUT=$(run_cdkq diff "${CDKQ_COMMON_ARGS[@]}" 2>&1) || true
+
+if echo "${DIFF_OUTPUT}" | grep -q "No changes detected"; then
+  pass "Diff shows no changes as expected [$(elapsed)]"
+else
+  echo "${DIFF_OUTPUT}"
+  fail "Diff unexpectedly shows changes after clean deploy"
+  exit 1
+fi
+
+# --------------------------------------------------------------------------
+# Step 3: Update deploy (add UpdateTest tag)
+# --------------------------------------------------------------------------
+step_header "Deploy (UPDATE with CDKQ_TEST_UPDATE=true)"
+
+info "Running: CDKQ_TEST_UPDATE=true cdkq deploy"
+CDKQ_TEST_UPDATE=true run_cdkq deploy "${CDKQ_COMMON_ARGS[@]}" --verbose
+pass "Update deploy succeeded [$(elapsed)]"
+
+# --------------------------------------------------------------------------
+# Step 4: Diff after update (expect no changes)
+# --------------------------------------------------------------------------
+step_header "Diff after UPDATE (expect no changes)"
+
+info "Running: CDKQ_TEST_UPDATE=true cdkq diff"
+DIFF_OUTPUT=$(CDKQ_TEST_UPDATE=true run_cdkq diff "${CDKQ_COMMON_ARGS[@]}" 2>&1) || true
+
+if echo "${DIFF_OUTPUT}" | grep -q "No changes detected"; then
+  pass "Diff shows no changes as expected [$(elapsed)]"
+else
+  echo "${DIFF_OUTPUT}"
+  fail "Diff unexpectedly shows changes after update deploy"
+  exit 1
+fi
+
+# --------------------------------------------------------------------------
+# Step 5: Destroy
+# --------------------------------------------------------------------------
+step_header "Destroy"
+
+info "Running: cdkq destroy --force"
+run_cdkq destroy "${CDKQ_COMMON_ARGS[@]}" --force --verbose
+pass "Destroy succeeded [$(elapsed)]"
+
+# --------------------------------------------------------------------------
+# Step 6: Verify clean state
+# --------------------------------------------------------------------------
+step_header "Verify clean state"
+
+info "Checking that state has been removed from S3..."
+STATE_KEY="cdkq/stacks/CdkqBasicExample/state.json"
+
+if aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}" --region "${AWS_REGION}" 2>/dev/null; then
+  fail "State file still exists in S3: s3://${STATE_BUCKET}/${STATE_KEY}"
+  exit 1
+else
+  pass "State file has been cleaned up [$(elapsed)]"
+fi
+
+CLEANUP_NEEDED=false
+
+# --------------------------------------------------------------------------
+# Summary
+# --------------------------------------------------------------------------
+header "E2E Test Complete"
+pass "All ${TOTAL_STEPS} steps passed successfully!"
+echo -e "${BOLD}Total time: $(elapsed)${RESET}"
