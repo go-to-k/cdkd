@@ -191,7 +191,7 @@ export class DeployEngine {
         };
       }
 
-      // 6. Execute deployment
+      // 6. Execute deployment (with partial state saves after each level)
       const newState = await this.executeDeployment(
         template,
         currentState,
@@ -199,12 +199,12 @@ export class DeployEngine {
         executionLevels,
         stackName,
         parameterValues,
-        conditions
+        conditions,
+        currentEtag
       );
 
-      // 7. Save new state with optimistic locking
-      // currentEtag is the old ETag - S3 will only save if the current state matches this ETag
-      const newEtag = await this.stateBackend.saveState(stackName, newState, currentEtag);
+      // 7. Save final state (ETag may have been updated by partial saves)
+      const newEtag = await this.stateBackend.saveState(stackName, newState);
       this.logger.info(`✓ State saved successfully (new ETag: ${newEtag})`);
 
       const durationMs = Date.now() - startTime;
@@ -238,7 +238,8 @@ export class DeployEngine {
     executionLevels: string[][],
     stackName: string,
     parameterValues?: Record<string, unknown>,
-    conditions?: Record<string, boolean>
+    conditions?: Record<string, boolean>,
+    currentEtag?: string
   ): Promise<StackState> {
     const limit = pLimit(this.options.concurrency!);
     const newResources: Record<string, ResourceState> = { ...currentState.resources };
@@ -284,7 +285,24 @@ export class DeployEngine {
         )
       );
 
-      this.logger.debug(`Level ${levelIndex + 1} completed`);
+      // Save partial state after each level to prevent orphaned resources on failure
+      if (currentEtag !== undefined) {
+        try {
+          const partialState: StackState = {
+            version: 1,
+            stackName: currentState.stackName,
+            resources: newResources,
+            outputs: currentState.outputs,
+            lastModified: Date.now(),
+          };
+          currentEtag = await this.stateBackend.saveState(stackName, partialState, currentEtag);
+          this.logger.debug(`Partial state saved after level ${levelIndex + 1}`);
+        } catch (error) {
+          this.logger.warn(
+            `Failed to save partial state after level ${levelIndex + 1}: ${error instanceof Error ? error.message : String(error)}`
+          );
+        }
+      }
     }
 
     // Step 2: Process DELETE in reverse DAG order
@@ -319,7 +337,26 @@ export class DeployEngine {
           )
         );
 
-        this.logger.debug(`Reverse level ${executionLevels.length - levelIndex} completed`);
+        // Save partial state after DELETE level
+        if (currentEtag !== undefined) {
+          try {
+            const partialState: StackState = {
+              version: 1,
+              stackName: currentState.stackName,
+              resources: newResources,
+              outputs: currentState.outputs,
+              lastModified: Date.now(),
+            };
+            currentEtag = await this.stateBackend.saveState(stackName, partialState, currentEtag);
+            this.logger.debug(
+              `Partial state saved after reverse level ${executionLevels.length - levelIndex}`
+            );
+          } catch (error) {
+            this.logger.warn(
+              `Failed to save partial state: ${error instanceof Error ? error.message : String(error)}`
+            );
+          }
+        }
       }
     }
 
@@ -584,26 +621,6 @@ export class DeployEngine {
         lastError = error;
         const message = error instanceof Error ? error.message : String(error);
 
-        // "Already exists" = orphaned resource from a previous failed deployment
-        // Adopt it instead of failing
-        if (
-          message.includes('already exists') ||
-          message.includes('AlreadyExists') ||
-          message.includes('EntityAlreadyExists') ||
-          message.includes('BucketAlreadyOwnedByYou')
-        ) {
-          this.logger.warn(
-            `  ⚠ Resource ${logicalId} (${resourceType}) already exists in AWS but not in cdkq state.`
-          );
-          this.logger.warn(
-            `    This may be from a previous failed deployment. Adopting existing resource.`
-          );
-          this.logger.warn(
-            `    If this resource belongs to another stack/service, delete it manually first.`
-          );
-          return this.adoptExistingResource(logicalId, resourceType, properties);
-        }
-
         // Retry on transient IAM propagation errors
         const isRetryable =
           message.includes('cannot be assumed by Lambda') ||
@@ -624,48 +641,6 @@ export class DeployEngine {
     }
 
     throw lastError;
-  }
-
-  /**
-   * Adopt an existing resource that was orphaned from a previous failed deployment
-   *
-   * Extracts the physical ID from the resource properties and returns a result
-   * as if the resource was just created.
-   */
-  private adoptExistingResource(
-    logicalId: string,
-    _resourceType: string,
-    properties: Record<string, unknown>
-  ): ResourceCreateResult {
-    // Try to determine physical ID from properties
-    let physicalId = logicalId;
-
-    // Common property names that contain the physical ID
-    const nameProps = [
-      'BucketName',
-      'TableName',
-      'FunctionName',
-      'RoleName',
-      'PolicyName',
-      'QueueName',
-      'TopicName',
-      'RepositoryName',
-      'ClusterName',
-      'LogGroupName',
-    ];
-
-    for (const prop of nameProps) {
-      if (typeof properties[prop] === 'string') {
-        physicalId = properties[prop];
-        break;
-      }
-    }
-
-    this.logger.info(`  ✓ Adopted ${logicalId}: ${physicalId}`);
-
-    return {
-      physicalId,
-    };
   }
 
   /**

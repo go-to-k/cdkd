@@ -200,7 +200,8 @@ describe('DeployEngine - Resource Replacement', () => {
     expect(createOrder).toBeLessThan(deleteOrder);
 
     // 3. State should be updated with new physicalId
-    expect(mockStateBackend.saveState).toHaveBeenCalledTimes(1);
+    // saveState is called: partial save after level + final save
+    expect(mockStateBackend.saveState).toHaveBeenCalled();
     const savedState = mockStateBackend.saveState.mock.calls[0][1] as StackState;
     expect(savedState.resources['MyBucket'].physicalId).toBe('new-bucket-physical-id');
     expect(savedState.resources['MyBucket'].attributes).toEqual({
