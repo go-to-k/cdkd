@@ -37,7 +37,9 @@ export function loadCdkJson(cwd?: string): CdkConfig | null {
     logger.debug(`Loaded cdk.json from ${cdkJsonPath}`);
     return config;
   } catch (error) {
-    logger.warn(`Failed to parse cdk.json: ${error instanceof Error ? error.message : String(error)}`);
+    logger.warn(
+      `Failed to parse cdk.json: ${error instanceof Error ? error.message : String(error)}`
+    );
     return null;
   }
 }

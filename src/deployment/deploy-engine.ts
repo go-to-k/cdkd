@@ -445,9 +445,7 @@ export class DeployEngine {
             const createResult = await provider.create(logicalId, resourceType, resolvedProps);
 
             // 2. Delete old resource
-            this.logger.info(
-              `  Deleting old ${logicalId} (${currentResource.physicalId})...`
-            );
+            this.logger.info(`  Deleting old ${logicalId} (${currentResource.physicalId})...`);
             try {
               await provider.delete(
                 logicalId,

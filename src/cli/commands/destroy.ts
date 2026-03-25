@@ -1,5 +1,11 @@
 import { Command } from 'commander';
-import { appOptions, commonOptions, stateOptions, stackOptions, destroyOptions } from '../options.js';
+import {
+  appOptions,
+  commonOptions,
+  stateOptions,
+  stackOptions,
+  destroyOptions,
+} from '../options.js';
 import { getLogger } from '../../utils/logger.js';
 import { withErrorHandling } from '../../utils/error-handler.js';
 import { S3StateBackend } from '../../state/s3-state-backend.js';
@@ -193,7 +199,12 @@ async function destroyCommand(options: {
               logger.info(`  Deleting ${logicalId} (${resource.resourceType})...`);
 
               const provider = providerRegistry.getProvider(resource.resourceType);
-              await provider.delete(logicalId, resource.physicalId, resource.resourceType, resource.properties);
+              await provider.delete(
+                logicalId,
+                resource.physicalId,
+                resource.resourceType,
+                resource.properties
+              );
 
               logger.info(`  ✓ Deleted ${logicalId}`);
               deletedCount++;

@@ -111,7 +111,7 @@ export function resetAccountInfoCache(): void {
  * CloudFormation Parameter definition
  */
 export interface ParameterDefinition {
-  Type: 'String' | 'Number' | 'List<Number>' | 'CommaDelimitedList' | string;
+  Type: string;
   Default?: unknown;
   AllowedValues?: unknown[];
   AllowedPattern?: string;
@@ -651,7 +651,7 @@ export class IntrinsicFunctionResolver {
       );
     }
 
-    const result = resolvedList[index];
+    const result: unknown = resolvedList[index];
     this.logger.debug(`Resolved Fn::Select: index ${index} -> ${JSON.stringify(result)}`);
     return result;
   }

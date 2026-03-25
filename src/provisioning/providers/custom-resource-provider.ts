@@ -1,8 +1,4 @@
-import {
-  LambdaClient,
-  InvokeCommand,
-  type InvocationResponse,
-} from '@aws-sdk/client-lambda';
+import { LambdaClient, InvokeCommand, type InvocationResponse } from '@aws-sdk/client-lambda';
 import {
   S3Client,
   PutObjectCommand,
@@ -391,9 +387,7 @@ export class CustomResourceProvider implements ResourceProvider {
       const errorPayload = lambdaResponse.Payload
         ? Buffer.from(lambdaResponse.Payload).toString()
         : 'Unknown';
-      throw new Error(
-        `Lambda function error (${lambdaResponse.FunctionError}): ${errorPayload}`
-      );
+      throw new Error(`Lambda function error (${lambdaResponse.FunctionError}): ${errorPayload}`);
     }
 
     // Try to parse direct Lambda response
@@ -401,7 +395,10 @@ export class CustomResourceProvider implements ResourceProvider {
       const payload = parseLambdaPayload(lambdaResponse.Payload);
 
       // Check if this is a full cfn-response (has Status field)
-      if ('Status' in payload && (payload['Status'] === 'SUCCESS' || payload['Status'] === 'FAILED')) {
+      if (
+        'Status' in payload &&
+        (payload['Status'] === 'SUCCESS' || payload['Status'] === 'FAILED')
+      ) {
         this.logger.debug(`Got direct cfn-response from Lambda for ${logicalId}`);
         await this.cleanupResponseObject(responseKey);
         return payload as unknown as CfnCustomResourceResponse;
@@ -440,9 +437,7 @@ export class CustomResourceProvider implements ResourceProvider {
       };
     }
 
-    this.logger.debug(
-      `Waiting for S3 response from Lambda for ${logicalId} (${operation})`
-    );
+    this.logger.debug(`Waiting for S3 response from Lambda for ${logicalId} (${operation})`);
     return await this.pollS3Response(responseKey, logicalId, operation);
   }
 
@@ -476,7 +471,9 @@ export class CustomResourceProvider implements ResourceProvider {
       expiresIn: 300,
     });
 
-    this.logger.debug(`Generated pre-signed URL for response: s3://${this.responseBucket}/${responseKey}`);
+    this.logger.debug(
+      `Generated pre-signed URL for response: s3://${this.responseBucket}/${responseKey}`
+    );
     return presignedUrl;
   }
 
@@ -520,9 +517,7 @@ export class CustomResourceProvider implements ResourceProvider {
       } catch (error) {
         const err = error as { name?: string };
         if (err.name !== 'NoSuchKey') {
-          this.logger.debug(
-            `Error reading S3 response for ${logicalId}: ${err.name}`
-          );
+          this.logger.debug(`Error reading S3 response for ${logicalId}: ${err.name}`);
         }
       }
 
