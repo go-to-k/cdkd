@@ -55,9 +55,7 @@ export class SQSQueuePolicyProvider implements ResourceProvider {
     try {
       // Serialize policy document
       const policyDoc =
-        typeof policyDocument === 'string'
-          ? policyDocument
-          : JSON.stringify(policyDocument);
+        typeof policyDocument === 'string' ? policyDocument : JSON.stringify(policyDocument);
 
       // Apply policy to all queues
       for (const queueUrl of queues) {
@@ -84,7 +82,7 @@ export class SQSQueuePolicyProvider implements ResourceProvider {
         `Failed to create SQS queue policy ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
         resourceType,
         logicalId,
-        queues[0]!,
+        queues[0],
         error instanceof Error ? error : undefined
       );
     }
@@ -126,9 +124,7 @@ export class SQSQueuePolicyProvider implements ResourceProvider {
     try {
       // Serialize policy document
       const policyDoc =
-        typeof policyDocument === 'string'
-          ? policyDocument
-          : JSON.stringify(policyDocument);
+        typeof policyDocument === 'string' ? policyDocument : JSON.stringify(policyDocument);
 
       // Apply policy to all queues
       for (const queueUrl of queues) {
@@ -164,7 +160,12 @@ export class SQSQueuePolicyProvider implements ResourceProvider {
   /**
    * Delete an SQS queue policy
    */
-  async delete(logicalId: string, physicalId: string, resourceType: string, _properties?: Record<string, unknown>): Promise<void> {
+  async delete(
+    logicalId: string,
+    physicalId: string,
+    resourceType: string,
+    _properties?: Record<string, unknown>
+  ): Promise<void> {
     this.logger.info(`Deleting SQS queue policy ${logicalId}: ${physicalId}`);
 
     try {

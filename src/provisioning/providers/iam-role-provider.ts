@@ -61,9 +61,7 @@ export class IAMRoleProvider implements ResourceProvider {
     const prefix = roleName.substring(0, maxPrefixLength);
 
     const shortened = `${prefix}-${hash}`;
-    this.logger.warn(
-      `Role name "${roleName}" exceeds 64 chars, shortened to "${shortened}"`
-    );
+    this.logger.warn(`Role name "${roleName}" exceeds 64 chars, shortened to "${shortened}"`);
 
     return shortened;
   }
@@ -312,7 +310,12 @@ export class IAMRoleProvider implements ResourceProvider {
   /**
    * Delete an IAM role
    */
-  async delete(logicalId: string, physicalId: string, resourceType: string, _properties?: Record<string, unknown>): Promise<void> {
+  async delete(
+    logicalId: string,
+    physicalId: string,
+    resourceType: string,
+    _properties?: Record<string, unknown>
+  ): Promise<void> {
     this.logger.info(`Deleting IAM role ${logicalId}: ${physicalId}`);
 
     try {

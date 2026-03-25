@@ -267,7 +267,15 @@ export class DeployEngine {
               return;
             }
 
-            await this.provisionResource(logicalId, change, newResources, stackName, template, parameterValues, conditions);
+            await this.provisionResource(
+              logicalId,
+              change,
+              newResources,
+              stackName,
+              template,
+              parameterValues,
+              conditions
+            );
           })
         )
       );
@@ -294,7 +302,15 @@ export class DeployEngine {
           level.map((logicalId) =>
             limit(async () => {
               const change = changes.get(logicalId)!;
-              await this.provisionResource(logicalId, change, newResources, stackName, template, parameterValues, conditions);
+              await this.provisionResource(
+                logicalId,
+                change,
+                newResources,
+                stackName,
+                template,
+                parameterValues,
+                conditions
+              );
             })
           )
         );
@@ -304,7 +320,13 @@ export class DeployEngine {
     }
 
     // Resolve outputs
-    const outputs = await this.resolveOutputs(template, newResources, stackName, parameterValues, conditions);
+    const outputs = await this.resolveOutputs(
+      template,
+      newResources,
+      stackName,
+      parameterValues,
+      conditions
+    );
 
     return {
       version: 1,
@@ -340,7 +362,8 @@ export class DeployEngine {
           const context = {
             template: template!,
             resources: stateResources,
-            ...(parameterValues && Object.keys(parameterValues).length > 0 && { parameters: parameterValues }),
+            ...(parameterValues &&
+              Object.keys(parameterValues).length > 0 && { parameters: parameterValues }),
             ...(conditions && Object.keys(conditions).length > 0 && { conditions }),
             stateBackend: this.stateBackend,
             stackName,
@@ -386,7 +409,8 @@ export class DeployEngine {
           const context = {
             template: template!,
             resources: stateResources,
-            ...(parameterValues && Object.keys(parameterValues).length > 0 && { parameters: parameterValues }),
+            ...(parameterValues &&
+              Object.keys(parameterValues).length > 0 && { parameters: parameterValues }),
             ...(conditions && Object.keys(conditions).length > 0 && { conditions }),
             stateBackend: this.stateBackend,
             stackName,
@@ -483,7 +507,8 @@ export class DeployEngine {
     const context = {
       template: template,
       resources: resources,
-      ...(parameterValues && Object.keys(parameterValues).length > 0 && { parameters: parameterValues }),
+      ...(parameterValues &&
+        Object.keys(parameterValues).length > 0 && { parameters: parameterValues }),
       ...(conditions && Object.keys(conditions).length > 0 && { conditions }),
       stateBackend: this.stateBackend,
       stackName,

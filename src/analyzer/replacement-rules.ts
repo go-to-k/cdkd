@@ -19,10 +19,7 @@ interface ReplacementRule {
   /** Properties that never require replacement */
   updateableProperties?: Set<string>;
   /** Custom logic for conditional replacement */
-  conditionalReplacements?: Map<
-    string,
-    (oldValue: unknown, newValue: unknown) => boolean
-  >;
+  conditionalReplacements?: Map<string, (oldValue: unknown, newValue: unknown) => boolean>;
 }
 
 /**
@@ -60,9 +57,7 @@ export class ReplacementRulesRegistry {
 
     // Check if property always requires replacement
     if (rule.replacementProperties.has(propertyPath)) {
-      this.logger.debug(
-        `Property ${propertyPath} of ${resourceType} requires replacement`
-      );
+      this.logger.debug(`Property ${propertyPath} of ${resourceType} requires replacement`);
       return true;
     }
 
@@ -192,12 +187,7 @@ export class ReplacementRulesRegistry {
       replacementProperties: new Set([
         'TopicName', // Changing topic name requires replacement
       ]),
-      updateableProperties: new Set([
-        'DisplayName',
-        'Subscription',
-        'KmsMasterKeyId',
-        'Tags',
-      ]),
+      updateableProperties: new Set(['DisplayName', 'Subscription', 'KmsMasterKeyId', 'Tags']),
     });
 
     // ECR Repository
@@ -219,10 +209,7 @@ export class ReplacementRulesRegistry {
       replacementProperties: new Set([
         'LogGroupName', // Changing log group name requires replacement
       ]),
-      updateableProperties: new Set([
-        'RetentionInDays',
-        'KmsKeyId',
-      ]),
+      updateableProperties: new Set(['RetentionInDays', 'KmsKeyId']),
     });
 
     // API Gateway RestApi
@@ -257,8 +244,6 @@ export class ReplacementRulesRegistry {
     });
 
     // Add more resource types as needed
-    this.logger.debug(
-      `Initialized replacement rules for ${this.rules.size} resource types`
-    );
+    this.logger.debug(`Initialized replacement rules for ${this.rules.size} resource types`);
   }
 }

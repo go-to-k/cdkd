@@ -201,9 +201,7 @@ export class IntrinsicFunctionResolver {
    * Conditions are defined in the Conditions section of the CloudFormation template
    * and can reference parameters and pseudo parameters
    */
-  async evaluateConditions(
-    context: ResolverContext
-  ): Promise<Record<string, boolean>> {
+  async evaluateConditions(context: ResolverContext): Promise<Record<string, boolean>> {
     const conditions: Record<string, boolean> = {};
     const templateConditions = context.template.Conditions;
 
@@ -273,10 +271,7 @@ export class IntrinsicFunctionResolver {
     }
 
     if ('Fn::If' in obj) {
-      return await this.resolveIf(
-        obj['Fn::If'] as [string, unknown, unknown],
-        context
-      );
+      return await this.resolveIf(obj['Fn::If'] as [string, unknown, unknown], context);
     }
 
     if ('Fn::Equals' in obj) {
@@ -296,7 +291,7 @@ export class IntrinsicFunctionResolver {
     }
 
     if ('Fn::ImportValue' in obj) {
-      return await this.resolveImportValue(obj['Fn::ImportValue'] as unknown, context);
+      return await this.resolveImportValue(obj['Fn::ImportValue'], context);
     }
 
     // Not an intrinsic function: recursively resolve object properties
@@ -682,9 +677,7 @@ export class IntrinsicFunctionResolver {
 
     // Check if condition is evaluated in context
     if (!context.conditions || !(conditionName in context.conditions)) {
-      this.logger.warn(
-        `Condition ${conditionName} not found in context, assuming false`
-      );
+      this.logger.warn(`Condition ${conditionName} not found in context, assuming false`);
       return await this.resolveValue(valueIfFalse, context);
     }
 
@@ -730,10 +723,7 @@ export class IntrinsicFunctionResolver {
    * Returns true if all conditions evaluate to true
    * Syntax: { "Fn::And": [ condition1, condition2, ... ] }
    */
-  private async resolveAnd(
-    conditions: unknown[],
-    context: ResolverContext
-  ): Promise<boolean> {
+  private async resolveAnd(conditions: unknown[], context: ResolverContext): Promise<boolean> {
     if (!Array.isArray(conditions) || conditions.length < 2 || conditions.length > 10) {
       throw new Error(`Fn::And requires between 2 and 10 conditions, got ${conditions.length}`);
     }
@@ -748,9 +738,7 @@ export class IntrinsicFunctionResolver {
     // Return true if all are true
     const result = results.every((r) => r === true);
 
-    this.logger.debug(
-      `Resolved Fn::And: [${results.join(', ')}] -> ${result}`
-    );
+    this.logger.debug(`Resolved Fn::And: [${results.join(', ')}] -> ${result}`);
 
     return result;
   }
@@ -761,10 +749,7 @@ export class IntrinsicFunctionResolver {
    * Returns true if at least one condition evaluates to true
    * Syntax: { "Fn::Or": [ condition1, condition2, ... ] }
    */
-  private async resolveOr(
-    conditions: unknown[],
-    context: ResolverContext
-  ): Promise<boolean> {
+  private async resolveOr(conditions: unknown[], context: ResolverContext): Promise<boolean> {
     if (!Array.isArray(conditions) || conditions.length < 2 || conditions.length > 10) {
       throw new Error(`Fn::Or requires between 2 and 10 conditions, got ${conditions.length}`);
     }
@@ -779,9 +764,7 @@ export class IntrinsicFunctionResolver {
     // Return true if at least one is true
     const result = results.some((r) => r === true);
 
-    this.logger.debug(
-      `Resolved Fn::Or: [${results.join(', ')}] -> ${result}`
-    );
+    this.logger.debug(`Resolved Fn::Or: [${results.join(', ')}] -> ${result}`);
 
     return result;
   }
@@ -792,23 +775,20 @@ export class IntrinsicFunctionResolver {
    * Returns the inverse of the condition
    * Syntax: { "Fn::Not": [ condition ] }
    */
-  private async resolveNot(
-    notArgs: [unknown],
-    context: ResolverContext
-  ): Promise<boolean> {
+  private async resolveNot(notArgs: [unknown], context: ResolverContext): Promise<boolean> {
     if (!Array.isArray(notArgs) || notArgs.length !== 1) {
-      throw new Error(`Fn::Not requires exactly one condition, got ${Array.isArray(notArgs) ? notArgs.length : 0}`);
+      throw new Error(
+        `Fn::Not requires exactly one condition, got ${Array.isArray(notArgs) ? notArgs.length : 0}`
+      );
     }
 
     const [condition] = notArgs;
 
     // Resolve the condition
     const resolved = await this.resolveValue(condition, context);
-    const result = !Boolean(resolved);
+    const result = !resolved;
 
-    this.logger.debug(
-      `Resolved Fn::Not: ${Boolean(resolved)} -> ${result}`
-    );
+    this.logger.debug(`Resolved Fn::Not: ${Boolean(resolved)} -> ${result}`);
 
     return result;
   }
@@ -833,9 +813,7 @@ export class IntrinsicFunctionResolver {
 
     // Check if we have a state backend
     if (!context.stateBackend) {
-      throw new Error(
-        'Fn::ImportValue: state backend is required for cross-stack references'
-      );
+      throw new Error('Fn::ImportValue: state backend is required for cross-stack references');
     }
 
     this.logger.debug(`Resolving Fn::ImportValue: ${exportName}`);

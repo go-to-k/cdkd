@@ -1,5 +1,9 @@
 import { Command } from 'commander';
-import { CreateBucketCommand, HeadBucketCommand, type BucketLocationConstraint } from '@aws-sdk/client-s3';
+import {
+  CreateBucketCommand,
+  HeadBucketCommand,
+  type BucketLocationConstraint,
+} from '@aws-sdk/client-s3';
 import { commonOptions } from '../options.js';
 import { getLogger } from '../../utils/logger.js';
 import { withErrorHandling } from '../../utils/error-handler.js';

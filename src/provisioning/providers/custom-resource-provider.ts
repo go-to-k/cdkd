@@ -71,9 +71,7 @@ export class CustomResourceProvider implements ResourceProvider {
       );
 
       // Parse response
-      const payload = response.Payload
-        ? JSON.parse(Buffer.from(response.Payload).toString())
-        : {};
+      const payload = response.Payload ? JSON.parse(Buffer.from(response.Payload).toString()) : {};
 
       this.logger.debug(`Lambda response: ${JSON.stringify(payload, null, 2)}`);
 
@@ -152,9 +150,7 @@ export class CustomResourceProvider implements ResourceProvider {
       );
 
       // Parse response
-      const payload = response.Payload
-        ? JSON.parse(Buffer.from(response.Payload).toString())
-        : {};
+      const payload = response.Payload ? JSON.parse(Buffer.from(response.Payload).toString()) : {};
 
       if (response.FunctionError) {
         throw new Error(
@@ -206,9 +202,7 @@ export class CustomResourceProvider implements ResourceProvider {
     const serviceToken = properties['ServiceToken'] as string | undefined;
 
     if (!serviceToken) {
-      this.logger.warn(
-        `No ServiceToken found for custom resource ${logicalId}, skipping deletion`
-      );
+      this.logger.warn(`No ServiceToken found for custom resource ${logicalId}, skipping deletion`);
       return;
     }
 
@@ -237,9 +231,7 @@ export class CustomResourceProvider implements ResourceProvider {
       );
 
       // Parse response
-      const payload = response.Payload
-        ? JSON.parse(Buffer.from(response.Payload).toString())
-        : {};
+      const payload = response.Payload ? JSON.parse(Buffer.from(response.Payload).toString()) : {};
 
       if (response.FunctionError) {
         throw new Error(

@@ -111,7 +111,10 @@ async function deployCommand(options: {
             // For all other errors, fail the deployment
             // Asset publishing failures can cause resource creation failures later
             // (e.g., Lambda function with missing code, Docker images, etc.)
-            logger.error(`Asset publishing failed for stack ${stack.stackName}:`, err.message || String(error));
+            logger.error(
+              `Asset publishing failed for stack ${stack.stackName}:`,
+              err.message || String(error)
+            );
             throw error;
           }
         }
