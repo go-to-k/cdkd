@@ -149,11 +149,12 @@ async function destroyCommand(
         });
 
         const answer = await rl.question(
-          `\nAre you sure you want to destroy stack "${stackName}" and delete all ${resourceCount} resources? (y/n): `
+          `\nAre you sure you want to destroy stack "${stackName}" and delete all ${resourceCount} resources? (Y/n): `
         );
         rl.close();
 
-        if (answer.toLowerCase() !== 'y' && answer.toLowerCase() !== 'yes') {
+        const trimmed = answer.trim().toLowerCase();
+        if (trimmed === 'n' || trimmed === 'no') {
           logger.info('Destroy cancelled');
           continue;
         }
