@@ -127,7 +127,7 @@ AWS CDK is great for defining infrastructure as code, but CloudFormation deploym
 | Asset publishing (ECR) | ✅ | Via `@aws-cdk/cdk-assets-lib` |
 | Custom Resources (SNS-backed) | ❌ | Lambda-backed only |
 | Custom Resources (async/SFN) | ❌ | Sync invocation only |
-| Rollback | ❌ | Not yet implemented |
+| Rollback | ✅ | --no-rollback flag to skip |
 | `Fn::FindInMap` | ✅ | Mapping lookup |
 | `Fn::Base64` | ✅ | Base64 encoding |
 | `Fn::GetAZs` | ✅ | Availability Zone list |
@@ -312,7 +312,7 @@ See [docs/implementation-plan.md](docs/implementation-plan.md) for detailed impl
 - ✅ Type safety improvements (error handling, any type elimination)
 - ✅ Resource replacement detection (immutable property detection for 10+ AWS resource types)
 - ✅ Code quality improvements (eliminated ~80 lines of duplicate code in DeployEngine)
-- ✅ Integration testing (9 examples verified with real AWS deployments, including ecr and apigateway)
+- ✅ Integration testing (10 examples verified with real AWS deployments, including ecr and apigateway)
 - ✅ UPDATE operations verified (JSON Patch working for S3, Lambda, IAM resources)
 - ✅ Environment variable support for UPDATE testing (`CDKQ_TEST_UPDATE=true`)
 - ✅ Fn::GetAZs (all intrinsic functions now supported)
@@ -323,7 +323,7 @@ See [docs/implementation-plan.md](docs/implementation-plan.md) for detailed impl
 - ✅ `--state-bucket` auto-resolves from STS account ID: `cdkq-state-{accountId}-{region}`
 - ✅ Attribute mapper: CC API property names mapped to GetAtt attribute names
 - ✅ E2E test script (`tests/e2e/run-e2e.sh`)
-- ✅ 82 unit tests
+- ✅ 118 unit tests
 
 **Not Yet Implemented**:
 
