@@ -191,9 +191,15 @@ npx cdkq diff MyStack
 # Dry run (plan only, no changes)
 npx cdkq deploy --dry-run
 
+# Deploy with no rollback on failure (Terraform-style)
+npx cdkq deploy --no-rollback
+
 # Destroy resources
 npx cdkq destroy MyStack
 npx cdkq destroy --all --force
+
+# Force-unlock a stale lock from interrupted deploy
+npx cdkq force-unlock MyStack
 ```
 
 ## Examples

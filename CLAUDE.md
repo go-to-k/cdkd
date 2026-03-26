@@ -97,7 +97,7 @@ npm run typecheck
 
 ### Core Directories
 
-- **src/cli/** - CLI command implementations (deploy, destroy, diff, synth, bootstrap), config resolution
+- **src/cli/** - CLI command implementations (deploy, destroy, diff, synth, bootstrap, force-unlock), config resolution
 - **src/synthesis/** - CDK app synthesis (using @aws-cdk/toolkit-lib)
 - **src/analyzer/** - DAG builder, template parser, intrinsic function resolution
 - **src/state/** - S3 state backend, lock manager
