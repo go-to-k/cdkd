@@ -5,6 +5,7 @@ import {
   PutBucketVersioningCommand,
   PutBucketTaggingCommand,
   NoSuchBucket,
+  type BucketLocationConstraint,
 } from '@aws-sdk/client-s3';
 import { getLogger } from '../../utils/logger.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
@@ -160,7 +161,7 @@ export class S3BucketProvider implements ResourceProvider {
       const region = await this.getRegion();
       if (region !== 'us-east-1') {
         createParams.CreateBucketConfiguration = {
-          LocationConstraint: region as import('@aws-sdk/client-s3').BucketLocationConstraint,
+          LocationConstraint: region as BucketLocationConstraint,
         };
       }
 
