@@ -2,6 +2,7 @@ import { S3Client } from '@aws-sdk/client-s3';
 import { CloudControlClient } from '@aws-sdk/client-cloudcontrol';
 import { IAMClient } from '@aws-sdk/client-iam';
 import { SQSClient } from '@aws-sdk/client-sqs';
+import { SNSClient } from '@aws-sdk/client-sns';
 import { LambdaClient } from '@aws-sdk/client-lambda';
 import { STSClient } from '@aws-sdk/client-sts';
 import { EC2Client } from '@aws-sdk/client-ec2';
@@ -28,6 +29,7 @@ export class AwsClients {
   private cloudControlClient?: CloudControlClient;
   private iamClient?: IAMClient;
   private sqsClient?: SQSClient;
+  private snsClient?: SNSClient;
   private lambdaClient?: LambdaClient;
   private stsClient?: STSClient;
   private ec2Client?: EC2Client;
@@ -129,6 +131,26 @@ export class AwsClients {
   }
 
   /**
+   * Get SNS client
+   */
+  getSNSClient(): SNSClient {
+    if (!this.snsClient) {
+      this.snsClient = new SNSClient({
+        ...(this.config.region && { region: this.config.region }),
+        ...(this.config.credentials && { credentials: this.config.credentials }),
+      });
+    }
+    return this.snsClient;
+  }
+
+  /**
+   * Convenience getter for SNS client
+   */
+  get sns(): SNSClient {
+    return this.getSNSClient();
+  }
+
+  /**
    * Get Lambda client
    */
   getLambdaClient(): LambdaClient {
@@ -216,6 +238,7 @@ export class AwsClients {
     this.cloudControlClient?.destroy();
     this.iamClient?.destroy();
     this.sqsClient?.destroy();
+    this.snsClient?.destroy();
     this.lambdaClient?.destroy();
     this.stsClient?.destroy();
     this.ec2Client?.destroy();

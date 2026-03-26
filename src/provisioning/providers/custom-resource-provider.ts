@@ -1,4 +1,5 @@
 import { LambdaClient, InvokeCommand, type InvocationResponse } from '@aws-sdk/client-lambda';
+import { SNSClient, PublishCommand } from '@aws-sdk/client-sns';
 import {
   S3Client,
   PutObjectCommand,
@@ -114,6 +115,7 @@ function parseLambdaPayload(payloadBytes: Uint8Array | undefined): CustomResourc
  */
 export class CustomResourceProvider implements ResourceProvider {
   private lambdaClient: LambdaClient;
+  private snsClient: SNSClient;
   private s3Client: S3Client;
   private logger = getLogger().child('CustomResourceProvider');
   private responseBucket: string | undefined;
@@ -127,6 +129,7 @@ export class CustomResourceProvider implements ResourceProvider {
   constructor(config?: CustomResourceProviderConfig) {
     const awsClients = getAwsClients();
     this.lambdaClient = awsClients.lambda;
+    this.snsClient = awsClients.sns;
     this.s3Client = awsClients.s3;
     this.responseBucket = config?.responseBucket;
     this.responsePrefix = config?.responsePrefix ?? 'custom-resource-responses';
@@ -175,11 +178,11 @@ export class CustomResourceProvider implements ResourceProvider {
         ResourceProperties: properties,
       };
 
-      this.logger.debug(`Invoking Lambda for custom resource create: ${serviceToken}`);
+      this.logger.debug(`Sending custom resource create request: ${serviceToken}`);
 
-      const response = await this.invokeLambda(serviceToken, request);
-      const cfnResponse = await this.getCustomResourceResponse(
-        response,
+      const cfnResponse = await this.sendRequest(
+        serviceToken,
+        request,
         responseKey,
         logicalId,
         'Create'
@@ -249,11 +252,11 @@ export class CustomResourceProvider implements ResourceProvider {
         OldResourceProperties: previousProperties,
       };
 
-      this.logger.debug(`Invoking Lambda for custom resource update: ${serviceToken}`);
+      this.logger.debug(`Sending custom resource update request: ${serviceToken}`);
 
-      const response = await this.invokeLambda(serviceToken, request);
-      const cfnResponse = await this.getCustomResourceResponse(
-        response,
+      const cfnResponse = await this.sendRequest(
+        serviceToken,
+        request,
         responseKey,
         logicalId,
         'Update'
@@ -327,11 +330,11 @@ export class CustomResourceProvider implements ResourceProvider {
         ResourceProperties: properties,
       };
 
-      this.logger.debug(`Invoking Lambda for custom resource delete: ${serviceToken}`);
+      this.logger.debug(`Sending custom resource delete request: ${serviceToken}`);
 
-      const response = await this.invokeLambda(serviceToken, request);
-      const cfnResponse = await this.getCustomResourceResponse(
-        response,
+      const cfnResponse = await this.sendRequest(
+        serviceToken,
+        request,
         responseKey,
         logicalId,
         'Delete'
@@ -350,6 +353,47 @@ export class CustomResourceProvider implements ResourceProvider {
         `Failed to delete custom resource ${logicalId}, but continuing: ${error instanceof Error ? error.message : String(error)}`
       );
     }
+  }
+
+  /**
+   * Check if a ServiceToken is an SNS topic ARN
+   */
+  isSnsServiceToken(serviceToken: string): boolean {
+    return serviceToken.startsWith('arn:aws:sns:');
+  }
+
+  /**
+   * Send custom resource request via the appropriate service (Lambda or SNS)
+   * For Lambda: invokes synchronously and returns the response
+   * For SNS: publishes to topic and polls S3 for response
+   */
+  private async sendRequest(
+    serviceToken: string,
+    request: Record<string, unknown>,
+    responseKey: string,
+    logicalId: string,
+    operation: string
+  ): Promise<CfnCustomResourceResponse> {
+    if (this.isSnsServiceToken(serviceToken)) {
+      this.logger.debug(`ServiceToken is SNS topic, publishing to: ${serviceToken}`);
+      await this.publishToSns(serviceToken, request);
+      return await this.pollS3Response(responseKey, logicalId, operation);
+    }
+
+    const response = await this.invokeLambda(serviceToken, request);
+    return await this.getCustomResourceResponse(response, responseKey, logicalId, operation);
+  }
+
+  /**
+   * Publish custom resource request to an SNS topic
+   */
+  private async publishToSns(topicArn: string, request: Record<string, unknown>): Promise<void> {
+    await this.snsClient.send(
+      new PublishCommand({
+        TopicArn: topicArn,
+        Message: JSON.stringify(request),
+      })
+    );
   }
 
   /**
