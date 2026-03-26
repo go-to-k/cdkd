@@ -31,6 +31,39 @@ import type {
  * Use isSupportedResourceType() to check before usage.
  */
 /**
+ * Properties that CC API expects as JSON strings, not objects.
+ * CC API schema declares these as type: ["string", "object"] but
+ * the implementation only accepts strings.
+ */
+const JSON_STRING_PROPERTIES: Record<string, Set<string>> = {
+  'AWS::Events::Rule': new Set(['EventPattern']),
+  'AWS::IAM::Role': new Set(['AssumeRolePolicyDocument']),
+  'AWS::SNS::Topic': new Set(['Policy']),
+  'AWS::SQS::Queue': new Set(['Policy', 'RedrivePolicy', 'RedriveAllowPolicy']),
+  'AWS::S3::BucketPolicy': new Set(['PolicyDocument']),
+  'AWS::Lambda::Function': new Set(['Environment']),
+};
+
+/**
+ * Stringify object properties that CC API expects as JSON strings.
+ */
+function stringifyJsonProperties(
+  resourceType: string,
+  properties: Record<string, unknown>
+): Record<string, unknown> {
+  const jsonProps = JSON_STRING_PROPERTIES[resourceType];
+  if (!jsonProps) return properties;
+
+  const result = { ...properties };
+  for (const key of jsonProps) {
+    if (key in result && typeof result[key] === 'object' && result[key] !== null) {
+      result[key] = JSON.stringify(result[key]);
+    }
+  }
+  return result;
+}
+
+/**
  * Recursively strip null and undefined values from an object.
  * This prevents CC API errors caused by null property values
  * (e.g., EventBridge Rule with null ScheduleExpression causes Java NPE).
@@ -85,10 +118,11 @@ export class CloudControlProvider implements ResourceProvider {
     try {
       // Start resource creation
       const cleanProperties = stripNullValues(properties) as Record<string, unknown>;
+      const ccProperties = stringifyJsonProperties(resourceType, cleanProperties);
       const createResponse = await this.cloudControlClient.send(
         new CreateResourceCommand({
           TypeName: resourceType,
-          DesiredState: JSON.stringify(cleanProperties),
+          DesiredState: JSON.stringify(ccProperties),
         })
       );
 
@@ -158,9 +192,15 @@ export class CloudControlProvider implements ResourceProvider {
     );
 
     try {
-      // Strip null/undefined values before generating patch
-      const cleanPreviousProperties = stripNullValues(previousProperties) as Record<string, unknown>;
-      const cleanProperties = stripNullValues(properties) as Record<string, unknown>;
+      // Strip null/undefined values and stringify JSON properties before generating patch
+      const cleanPreviousProperties = stringifyJsonProperties(
+        resourceType,
+        stripNullValues(previousProperties) as Record<string, unknown>
+      );
+      const cleanProperties = stringifyJsonProperties(
+        resourceType,
+        stripNullValues(properties) as Record<string, unknown>
+      );
 
       // Generate JSON Patch document
       const patch = this.patchGenerator.generatePatch(cleanPreviousProperties, cleanProperties);
