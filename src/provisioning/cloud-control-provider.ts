@@ -92,7 +92,7 @@ export class CloudControlProvider implements ResourceProvider {
 
   // Maximum time to wait for operation completion (15 minutes)
   private readonly MAX_WAIT_TIME_MS = 15 * 60 * 1000;
-  // Initial poll interval (1 second) - increases with exponential backoff
+  // Initial poll interval (1 second) - increases with 1.5x exponential backoff
   private readonly INITIAL_POLL_INTERVAL_MS = 1_000;
   // Maximum poll interval (10 seconds)
   private readonly MAX_POLL_INTERVAL_MS = 10_000;
@@ -404,9 +404,12 @@ export class CloudControlProvider implements ResourceProvider {
 
         case 'IN_PROGRESS':
         case 'PENDING':
-          // Exponential backoff: 1s → 2s → 4s → 8s → 10s (capped)
+          // Exponential backoff with 1.5x multiplier for flatter curve:
+          // 1s → 1.5s → 2.25s → 3.4s → 5s → 7.5s → 10s (capped)
+          // Most CC API operations complete in 1-5s, so slower ramp-up
+          // polls more frequently during the common case.
           await this.sleep(pollInterval);
-          pollInterval = Math.min(pollInterval * 2, this.MAX_POLL_INTERVAL_MS);
+          pollInterval = Math.min(Math.ceil(pollInterval * 1.5), this.MAX_POLL_INTERVAL_MS);
           break;
 
         default:
@@ -414,7 +417,7 @@ export class CloudControlProvider implements ResourceProvider {
             `Unknown operation status for ${logicalId}: ${progressEvent.OperationStatus}`
           );
           await this.sleep(pollInterval);
-          pollInterval = Math.min(pollInterval * 2, this.MAX_POLL_INTERVAL_MS);
+          pollInterval = Math.min(Math.ceil(pollInterval * 1.5), this.MAX_POLL_INTERVAL_MS);
       }
     }
 
