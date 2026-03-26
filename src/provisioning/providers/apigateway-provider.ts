@@ -895,7 +895,7 @@ export class ApiGatewayProvider implements ResourceProvider {
             restApiId,
             resourceId,
             httpMethod,
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any, @typescript-eslint/no-unsafe-assignment
             type: integration['Type'] as any,
             integrationHttpMethod: integration['IntegrationHttpMethod'] as string | undefined,
             uri: integration['Uri'] as string | undefined,

@@ -85,6 +85,7 @@ export class CloudFrontOAIProvider implements ResourceProvider {
    * OAI config is effectively immutable (only Comment can change, which is cosmetic).
    * No replacement needed for Comment changes.
    */
+  // eslint-disable-next-line @typescript-eslint/require-await
   async update(
     logicalId: string,
     physicalId: string,
