@@ -425,9 +425,10 @@ For resources not supported by Cloud Control API or requiring fine-grained contr
    - `EventBridgeClient`: `PutRule`, `PutTargets`, `RemoveTargets`, `DeleteRule`
    - Handles JSON string properties (EventPattern)
 
-6. **`apigateway-provider.ts`** - `AWS::ApiGateway::Account`, `AWS::ApiGateway::Resource`
-   - `APIGatewayClient`: `UpdateAccount`, `CreateResource`, `DeleteResource`
+6. **`apigateway-provider.ts`** - `AWS::ApiGateway::Account`, `AWS::ApiGateway::Resource`, `AWS::ApiGateway::Deployment`, `AWS::ApiGateway::Stage`
+   - `APIGatewayClient`: `UpdateAccount`, `CreateResource`, `DeleteResource`, `CreateDeployment`, `DeleteDeployment`, `CreateStage`, `UpdateStage`, `DeleteStage`
    - IAM trust propagation retry logic for Account
+   - RootResourceId enrichment via GetRestApi
 
 7. **`custom-resource-provider.ts`** - `Custom::*`
    - Lambda-backed custom resources
@@ -665,7 +666,13 @@ Each layer has clear responsibilities
 1. **CloudFormation Macros**: Not supported
 2. **Nested Stacks**: Not supported
 3. **Change Sets**: No concept (always executes immediately)
-4. All intrinsic functions are now supported
+4. All intrinsic functions are now supported (15/15)
+5. All pseudo parameters are now supported (7/7)
+
+### Known Destroy Issues
+
+- CloudFront OAI: CC API DELETE returns "Invalid request" (manual cleanup needed)
+- Bedrock AgentCore Runtime: CC API + IAM propagation issue (SDK Provider needed)
 
 ### Phase 9 and Beyond Plans
 

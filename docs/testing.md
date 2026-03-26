@@ -486,6 +486,8 @@ For resources not supported by Cloud Control API, you can implement SDK provider
 - `AWS::Events::Rule` - EventBridge rules
 - `AWS::ApiGateway::Account` - API Gateway account settings
 - `AWS::ApiGateway::Resource` - API Gateway resources
+- `AWS::ApiGateway::Deployment` - API Gateway deployments
+- `AWS::ApiGateway::Stage` - API Gateway stages
 - `Custom::*` - Lambda-backed custom resources (Create/Update/Delete)
 
 If you use other resources not supported by Cloud Control API, an error message will be displayed.

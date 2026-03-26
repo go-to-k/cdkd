@@ -388,6 +388,8 @@ registry.register('AWS::SQS::QueuePolicy', new SQSQueuePolicyProvider());
 registry.register('AWS::Events::Rule', new EventBridgeRuleProvider());
 registry.register('AWS::ApiGateway::Account', new ApiGatewayProvider());
 registry.register('AWS::ApiGateway::Resource', new ApiGatewayProvider());
+registry.register('AWS::ApiGateway::Deployment', new ApiGatewayProvider());
+registry.register('AWS::ApiGateway::Stage', new ApiGatewayProvider());
 
 // Wildcard matching for Custom::*
 if (resourceType.startsWith('Custom::')) {

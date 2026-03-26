@@ -51,6 +51,8 @@
     "@aws-cdk/cloud-assembly-api": "^2.2.0",
     "@aws-cdk/toolkit-lib": "^1.19.1",
     "@aws-sdk/client-api-gateway": "^3.1017.0",
+    "@aws-sdk/client-bedrock-agentcore": "^3.1017.0",
+    "@aws-sdk/client-bedrock-agentcore-control": "^3.1017.0",
     "@aws-sdk/client-cloudcontrol": "^3.0.0",
     "@aws-sdk/client-cloudformation": "^3.1017.0",
     "@aws-sdk/client-cloudfront": "^3.1017.0",

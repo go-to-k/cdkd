@@ -126,7 +126,9 @@ The speed gain comes from eliminating CloudFormation overhead (stack creation, c
 | **Events** | AWS::Events::Rule | SDK Provider | ✅ |
 | **API Gateway** | AWS::ApiGateway::Account | SDK Provider | ✅ |
 | **API Gateway** | AWS::ApiGateway::Resource | SDK Provider | ✅ |
-| **Custom** | Custom::* (Lambda-backed) | SDK Provider | ✅ (sync only) |
+| **API Gateway** | AWS::ApiGateway::Deployment | SDK Provider | ✅ |
+| **API Gateway** | AWS::ApiGateway::Stage | SDK Provider | ✅ |
+| **Custom** | Custom::* (Lambda/SNS-backed) | SDK Provider | ✅ |
 | **Other** | 200+ resource types | Cloud Control | ✅ |
 
 > **Note**: Cloud Control API supports 200+ resource types. Resources not listed above may work via Cloud Control API. SDK Providers are used for resources not supported by Cloud Control API.
@@ -144,11 +146,15 @@ The speed gain comes from eliminating CloudFormation overhead (stack creation, c
 | DELETE idempotency | ✅ | Not-found errors treated as success |
 | Asset publishing (S3) | ✅ | Lambda code packages |
 | Asset publishing (ECR) | ✅ | Via `@aws-cdk/cdk-assets-lib` |
-| Custom Resources (SNS-backed) | ❌ | Lambda-backed only |
-| Custom Resources (async/SFN) | ❌ | Sync invocation only |
+| Custom Resources (SNS-backed) | ✅ | SNS Topic ServiceToken + S3 response |
+| Custom Resources (async/SFN) | ❌ | Step Functions backend not supported |
 | Rollback | ✅ | --no-rollback flag to skip |
 | DeletionPolicy: Retain | ✅ | Skip deletion for retained resources |
 | UpdateReplacePolicy: Retain | ✅ | Keep old resource on replacement |
+| Implicit delete dependencies | ✅ | VPC/IGW/EventBus/Subnet/RouteTable ordering |
+| Attribute enrichment | ✅ | CloudFront OAI, DynamoDB StreamArn, API Gateway RootResourceId |
+| CC API null value stripping | ✅ | Removes null values before API calls |
+| Retry with HTTP status codes | ✅ | 429/503 + cause chain inspection |
 
 ## Prerequisites
 
@@ -401,8 +407,8 @@ After deployment, outputs are resolved and saved to state:
 
 ## Testing
 
-- **204 unit tests** covering all layers
-- **19 integration examples** verified with real AWS deployments
+- **233 unit tests** covering all layers
+- **19 integration examples** verified with real AWS deployments (all 19 CREATE successful on AWS)
 - **E2E test script** for automated deploy/update/destroy cycles
 
 ```bash
@@ -429,8 +435,12 @@ See [docs/implementation-plan.md](docs/implementation-plan.md) for detailed impl
 
 **Not Yet Implemented**:
 
-- Custom Resources: SNS-backed (Lambda-backed is supported)
 - Custom Resources: Step Functions / async patterns
+
+**Known Destroy Issues**:
+
+- CloudFront OAI: CC API DELETE returns "Invalid request" (manual cleanup needed)
+- Bedrock AgentCore Runtime: CC API + IAM propagation issue (SDK Provider needed)
 
 See [docs/implementation-plan.md](docs/implementation-plan.md) for complete roadmap.
 

@@ -22,6 +22,7 @@ import { S3BucketPolicyProvider } from '../../provisioning/providers/s3-bucket-p
 import { SQSQueuePolicyProvider } from '../../provisioning/providers/sqs-queue-policy-provider.js';
 import { ApiGatewayProvider } from '../../provisioning/providers/apigateway-provider.js';
 import { EventBridgeRuleProvider } from '../../provisioning/providers/eventbridge-rule-provider.js';
+import { AgentCoreRuntimeProvider } from '../../provisioning/providers/agentcore-runtime-provider.js';
 import { DeployEngine } from '../../deployment/deploy-engine.js';
 import { setAwsClients, AwsClients } from '../../utils/aws-clients.js';
 import { resolveApp, resolveStateBucketWithDefault } from '../config-loader.js';

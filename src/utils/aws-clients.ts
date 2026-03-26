@@ -13,6 +13,7 @@ import { EventBridgeClient } from '@aws-sdk/client-eventbridge';
 import { SecretsManagerClient } from '@aws-sdk/client-secrets-manager';
 import { SSMClient } from '@aws-sdk/client-ssm';
 import { CloudFrontClient } from '@aws-sdk/client-cloudfront';
+import { BedrockAgentCoreControlClient } from '@aws-sdk/client-bedrock-agentcore-control';
 
 /**
  * AWS client configuration
@@ -46,6 +47,7 @@ export class AwsClients {
   private secretsManagerClient?: SecretsManagerClient;
   private ssmClient?: SSMClient;
   private cloudFrontClient?: CloudFrontClient;
+  private bedrockAgentCoreControlClient?: BedrockAgentCoreControlClient;
 
   constructor(private config: AwsClientConfig = {}) {}
 
@@ -363,6 +365,26 @@ export class AwsClients {
   }
 
   /**
+   * Get BedrockAgentCoreControl client
+   */
+  getBedrockAgentCoreControlClient(): BedrockAgentCoreControlClient {
+    if (!this.bedrockAgentCoreControlClient) {
+      this.bedrockAgentCoreControlClient = new BedrockAgentCoreControlClient({
+        ...(this.config.region && { region: this.config.region }),
+        ...(this.config.credentials && { credentials: this.config.credentials }),
+      });
+    }
+    return this.bedrockAgentCoreControlClient;
+  }
+
+  /**
+   * Convenience getter for BedrockAgentCoreControl client
+   */
+  get bedrockAgentCoreControl(): BedrockAgentCoreControlClient {
+    return this.getBedrockAgentCoreControlClient();
+  }
+
+  /**
    * Destroy all clients
    */
   destroy(): void {
@@ -381,6 +403,7 @@ export class AwsClients {
     this.secretsManagerClient?.destroy();
     this.ssmClient?.destroy();
     this.cloudFrontClient?.destroy();
+    this.bedrockAgentCoreControlClient?.destroy();
   }
 }
 

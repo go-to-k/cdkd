@@ -748,6 +748,28 @@ node dist/cli.js deploy --app "..." --state-bucket ${STATE_BUCKET} --dry-run
 
 ---
 
+## Known Destroy Issues
+
+### CloudFront OAI DELETE Failure
+
+**Symptoms**: CC API DELETE for CloudFront Origin Access Identity returns "Invalid request".
+
+**Workaround**: Manually delete the OAI via AWS Console or CLI after `cdkq destroy`.
+
+### Bedrock AgentCore Runtime IAM Propagation
+
+**Symptoms**: AgentCore Runtime creation fails due to IAM role propagation delays when using CC API.
+
+**Workaround**: An SDK Provider is needed for this resource type. Currently not implemented.
+
+### Lambda Permission "No policy found"
+
+**Symptoms**: DELETE for Lambda Permission returns "No policy found" error.
+
+**Resolution**: This is handled automatically by cdkq's idempotent delete logic (not-found errors treated as success).
+
+---
+
 ## Frequently Asked Questions (FAQ)
 
 ### Q: Is a CloudFormation stack created?
