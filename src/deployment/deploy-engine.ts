@@ -799,6 +799,7 @@ export class DeployEngine {
               msg.includes('does not exist') ||
               msg.includes('was not found') ||
               msg.includes('not found') ||
+              msg.includes('No policy found') ||
               msg.includes('NoSuchEntity') ||
               msg.includes('NotFoundException') ||
               msg.includes('ResourceNotFoundException')
