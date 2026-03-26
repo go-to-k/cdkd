@@ -219,18 +219,14 @@ export class IAMRoleProvider implements ResourceProvider {
       // Create new role
       const createResult = await this.create(logicalId, resourceType, properties);
 
-      // TODO: Improve old role deletion handling
-      // Currently we silently ignore deletion failures, which can lead to resource leaks.
-      // Should either:
-      // 1. Fail the update operation if old role can't be deleted
-      // 2. Track orphaned resources in state for later cleanup
-      // 3. Implement a cleanup mechanism for failed deletions
-
-      // Delete old role (best effort)
+      // Delete old role with full cleanup (managed policies, inline policies, instance profiles)
       try {
         await this.delete(logicalId, physicalId, resourceType);
       } catch (error) {
-        this.logger.warn(`Failed to delete old role ${physicalId}: ${String(error)}`);
+        this.logger.warn(
+          `Failed to delete old role ${physicalId} during replacement: ${String(error)}. ` +
+            `The old role may be orphaned and require manual cleanup.`
+        );
       }
 
       const result: ResourceUpdateResult = {
