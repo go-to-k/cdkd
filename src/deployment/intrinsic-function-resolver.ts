@@ -368,7 +368,7 @@ export class IntrinsicFunctionResolver {
     }
 
     // Check if it's a pseudo parameter
-    const pseudoValue = await this.resolvePseudoParameter(logicalId);
+    const pseudoValue = await this.resolvePseudoParameter(logicalId, context);
     if (pseudoValue !== undefined) {
       const valueStr =
         typeof pseudoValue === 'symbol' ? pseudoValue.toString() : String(pseudoValue);
@@ -664,7 +664,7 @@ export class IntrinsicFunctionResolver {
         replacement = String(variables[varNameStr]);
       } else {
         // Check if it's a pseudo parameter
-        const pseudoValue = await this.resolvePseudoParameter(varNameStr);
+        const pseudoValue = await this.resolvePseudoParameter(varNameStr, context);
         if (pseudoValue !== undefined) {
           replacement = String(pseudoValue);
         } else {
@@ -1092,7 +1092,10 @@ export class IntrinsicFunctionResolver {
    *
    * Pseudo parameters are built-in CloudFormation references like AWS::Region
    */
-  private async resolvePseudoParameter(name: string): Promise<string | symbol | undefined> {
+  private async resolvePseudoParameter(
+    name: string,
+    context?: ResolverContext
+  ): Promise<string | symbol | undefined> {
     switch (name) {
       case 'AWS::Region': {
         const accountInfo = await getAccountInfo();
@@ -1110,12 +1113,13 @@ export class IntrinsicFunctionResolver {
       }
 
       case 'AWS::StackName':
-        // Stack name should be passed in context if needed
-        return undefined;
+        return context?.stackName ?? 'UnknownStack';
 
-      case 'AWS::StackId':
-        // We don't use CloudFormation, so no stack ID
-        return undefined;
+      case 'AWS::StackId': {
+        // cdkq doesn't use CloudFormation stacks, generate a synthetic ID
+        const info = await getAccountInfo();
+        return `arn:aws:cloudformation:${info.region}:${info.accountId}:stack/${context?.stackName ?? 'UnknownStack'}/cdkq`;
+      }
 
       case 'AWS::URLSuffix':
         return 'amazonaws.com';

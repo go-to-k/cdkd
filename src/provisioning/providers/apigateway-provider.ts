@@ -278,6 +278,7 @@ export class ApiGatewayProvider implements ResourceProvider {
         const message = error instanceof Error ? error.message : String(error);
         const isIamPropagationError =
           message.toLowerCase().includes('not authorized') ||
+          message.toLowerCase().includes('does not have required permissions') ||
           message.toLowerCase().includes('the role arn does not have required trust');
 
         if (isIamPropagationError && attempt < ApiGatewayProvider.MAX_IAM_RETRIES) {
