@@ -502,18 +502,15 @@ cdkq は CDK CLI (`aws-cdk`) を**置き換える**のではなく、**デプロ
      - 例: CC API `TableArn` → GetAtt `Arn` のズレ吸収
    - [x] `enrichResourceAttributes()` を拡張し、より多くのリソースタイプでCC APIレスポンスを活用
 
-2. **Phase B: CloudFormation Registry Schema の活用** ✅ **完了**
-   - [x] `aws cloudformation describe-type` で readOnly 属性一覧を自動取得
-   - [x] スキーマキャッシュ（ローカルファイル or メモリ）
-   - [x] CC API プロパティ名 → GetAtt 属性名の自動マッピング生成
-   - [x] 対象: CC API がプロパティとして返すが、GetAtt 名と異なる属性
+2. **Phase B: ARN Builder（ルールベースフォールバック）** ✅ **完了**
+   - [x] `constructAttribute()` で主要リソースのARN構築実装済み
+   - [x] DynamoDB, S3, IAM, Lambda, SQS, SNS, LogGroup, ECS Cluster 対応
+   - [x] `getAccountInfo()` でアカウントID/リージョン/パーティション取得
 
-3. **Phase C: ARN Builder（ルールベースフォールバック）**（優先度: 中）
-   - [ ] `src/utils/arn-builder.ts` の新規作成
-   - [ ] リソースタイプ → ARN 形式のマッピング表
-   - [ ] `getAccountInfo()` の export・共通化
-   - [ ] `partition` の動的解決（aws-cn, aws-us-gov 対応）
-   - [ ] 既存の `constructAttribute()` コードをユーティリティに移行
+3. **Phase C: CloudFormation Registry Schema の活用** ✅ **完了**
+   - [x] `aws cloudformation describe-type` で readOnly 属性一覧を自動取得
+   - [x] スキーマキャッシュ（メモリ）
+   - [x] CC API プロパティ名 → GetAtt 属性名の自動マッピング生成
 
 **解決優先度**: ① CC API レスポンス → ② Schema マッピング → ③ ARN Builder（現在の `constructAttribute()`）
 
