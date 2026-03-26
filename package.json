@@ -1,7 +1,7 @@
 {
   "name": "cdkd",
   "version": "0.1.0",
-  "description": "CDK Quick Deploy - Deploy AWS CDK apps directly via SDK/Cloud Control API",
+  "description": "CDK Direct - Deploy AWS CDK apps directly via SDK/Cloud Control API",
   "main": "dist/index.js",
   "bin": {
     "cdkd": "./dist/cli.js"

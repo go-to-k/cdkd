@@ -1,5 +1,5 @@
 /**
- * cdkd - CDK Quick Deploy
+ * cdkd - CDK Direct
  *
  * Library exports for programmatic usage
  */

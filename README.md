@@ -1,6 +1,6 @@
 # cdkd
 
-**cdkd** (CDK Quick Deploy) - Deploy AWS CDK apps directly via SDK/Cloud Control API, bypassing CloudFormation stacks for faster deployments.
+**cdkd** (CDK Direct) - Deploy AWS CDK apps directly via SDK/Cloud Control API, bypassing CloudFormation stacks for faster deployments.
 
 > **⚠️ WARNING: NOT PRODUCTION READY**
 >
@@ -12,7 +12,7 @@
 
 AWS CDK is great for defining infrastructure as code, but all deployments go through CloudFormation. **cdkd** is an experimental alternative that deploys CDK apps directly via AWS SDK, bypassing CloudFormation entirely:
 
-- **Direct provisioning** via AWS SDK (34 resource types) and Cloud Control API (200+ types)
+- **Direct provisioning** via AWS SDK and Cloud Control API
 - **No CloudFormation stacks** - no change sets, no stack limits
 - **Parallel resource deployment** based on dependency analysis (DAG)
 - **100% CDK compatible** - use your existing CDK code as-is
@@ -57,13 +57,13 @@ AWS CDK is great for defining infrastructure as code, but all deployments go thr
 ┌────────┐ ┌────────┐
 │  SDK   │ │ Cloud  │
 │Provider│ │Control │  Fallback for 200+
-│(34 typ)│ │  API   │  additional types
+│        │ │  API   │  additional types
 └────────┘ └────────┘
 ```
 
 ## Features
 
-- **Fast SDK Providers**: Direct synchronous API calls for common resource types (34 types) - no polling overhead
+- **Fast SDK Providers**: Direct synchronous API calls for common resource types - no polling overhead
 - **Broad resource coverage**: Cloud Control API fallback for 200+ additional resource types
 - **Hybrid deployment strategy**: SDK Providers preferred for performance, Cloud Control API as fallback
 - **S3-based state management**: No DynamoDB required, uses S3 conditional writes for locking

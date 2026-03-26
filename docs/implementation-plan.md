@@ -2,7 +2,7 @@
 
 ## 1. プロジェクト概要
 
-**cdkd** (CDK Quick Deploy) は、AWS CDK アプリケーションを CloudFormation スタックを介さずに、SDK/Cloud Control API 経由で直接デプロイする高速デプロイツールです。
+**cdkd** (CDK Direct) は、AWS CDK アプリケーションを CloudFormation スタックを介さずに、SDK/Cloud Control API 経由で直接デプロイする高速デプロイツールです。
 
 ### コアコンセプト
 

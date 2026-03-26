@@ -2,7 +2,7 @@
 
 ## Overview
 
-**cdkd** (CDK Quick Deploy) is a tool that deploys AWS CDK applications directly without going through CloudFormation. It leverages CDK's synthesis capabilities while using SDK Providers (preferred for performance) and Cloud Control API (fallback) for fast deployments.
+**cdkd** (CDK Direct) is a tool that deploys AWS CDK applications directly without going through CloudFormation. It leverages CDK's synthesis capabilities while using SDK Providers (preferred for performance) and Cloud Control API (fallback) for fast deployments.
 
 ## Architecture Diagram
 
