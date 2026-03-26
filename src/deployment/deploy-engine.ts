@@ -2,11 +2,7 @@ import pLimit from 'p-limit';
 import { getLogger } from '../utils/logger.js';
 import { ProvisioningError } from '../utils/error-handler.js';
 import { IntrinsicFunctionResolver } from './intrinsic-function-resolver.js';
-import type {
-  CloudFormationTemplate,
-  ResourceProvider,
-  ResourceCreateResult,
-} from '../types/resource.js';
+import type { CloudFormationTemplate } from '../types/resource.js';
 import type { StackState, ResourceState, ResourceChange } from '../types/state.js';
 import type { S3StateBackend } from '../state/s3-state-backend.js';
 import type { LockManager } from '../state/lock-manager.js';
@@ -652,11 +648,9 @@ export class DeployEngine {
             unknown
           >;
 
-          const result = await this.createWithRetry(
-            provider,
-            logicalId,
-            resourceType,
-            resolvedProps
+          const result = await this.withRetry(
+            () => provider.create(logicalId, resourceType, resolvedProps),
+            logicalId
           );
 
           // Extract dependencies from template
@@ -738,7 +732,10 @@ export class DeployEngine {
 
             // 1. Create new resource first (CFn order: safe - old resource survives if CREATE fails)
             this.logger.info(`  Creating new ${logicalId}...`);
-            const createResult = await provider.create(logicalId, resourceType, resolvedProps);
+            const createResult = await this.withRetry(
+              () => provider.create(logicalId, resourceType, resolvedProps),
+              logicalId
+            );
 
             // 2. Delete old resource (after successful CREATE)
             const updateReplacePolicy = template?.Resources?.[logicalId]?.UpdateReplacePolicy;
@@ -780,12 +777,16 @@ export class DeployEngine {
             // Normal update (in-place)
             this.logger.debug(`Updating ${logicalId} (${resourceType})`);
 
-            const result = await provider.update(
-              logicalId,
-              currentResource.physicalId,
-              resourceType,
-              resolvedProps,
-              currentProps
+            const result = await this.withRetry(
+              () =>
+                provider.update(
+                  logicalId,
+                  currentResource.physicalId,
+                  resourceType,
+                  resolvedProps,
+                  currentProps
+                ),
+              logicalId
             );
 
             if (result.wasReplaced) {
@@ -861,19 +862,20 @@ export class DeployEngine {
    * AWS eventual consistency (e.g., Lambda fails if IAM Role hasn't propagated yet).
    * CloudFormation handles this internally; cdkq retries with exponential backoff.
    */
-  private async createWithRetry(
-    provider: ResourceProvider,
+  /**
+   * Execute an operation with retry for transient IAM propagation errors
+   */
+  private async withRetry<T>(
+    operation: () => Promise<T>,
     logicalId: string,
-    resourceType: string,
-    properties: Record<string, unknown>,
     maxRetries: number = 3,
     initialDelayMs: number = 5_000
-  ): Promise<ResourceCreateResult> {
+  ): Promise<T> {
     let lastError: unknown;
 
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
       try {
-        return await provider.create(logicalId, resourceType, properties);
+        return await operation();
       } catch (error) {
         lastError = error;
         const message = error instanceof Error ? error.message : String(error);
