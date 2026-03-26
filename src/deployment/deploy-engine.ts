@@ -926,7 +926,9 @@ export class DeployEngine {
           message.includes('cannot be assumed by Lambda') ||
           message.includes('role defined for the function') ||
           message.includes('not authorized to perform') ||
-          message.includes('The provided execution role');
+          message.includes('The provided execution role') ||
+          message.includes('trust policy allows assumption') ||
+          message.includes('Role validation failed');
 
         if (!isRetryable || attempt >= maxRetries) {
           throw error;
