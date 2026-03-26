@@ -122,8 +122,7 @@ export class RDSProvider implements ResourceProvider {
   ): Promise<ResourceCreateResult> {
     this.logger.debug(`Creating DBSubnetGroup ${logicalId}`);
 
-    const dbSubnetGroupName =
-      (properties['DBSubnetGroupName'] as string | undefined) || logicalId;
+    const dbSubnetGroupName = (properties['DBSubnetGroupName'] as string | undefined) || logicalId;
 
     try {
       const tags = this.buildTags(properties);
@@ -212,9 +211,7 @@ export class RDSProvider implements ResourceProvider {
       this.logger.debug(`Successfully deleted DBSubnetGroup ${logicalId}`);
     } catch (error) {
       if (this.isNotFoundError(error, 'DBSubnetGroupNotFoundFault')) {
-        this.logger.debug(
-          `DBSubnetGroup ${physicalId} does not exist, skipping deletion`
-        );
+        this.logger.debug(`DBSubnetGroup ${physicalId} does not exist, skipping deletion`);
         return;
       }
       const cause = error instanceof Error ? error : undefined;
@@ -280,9 +277,7 @@ export class RDSProvider implements ResourceProvider {
         throw new Error('CreateDBCluster did not return DBCluster');
       }
 
-      this.logger.debug(
-        `Successfully created DBCluster ${logicalId}: ${dbClusterIdentifier}`
-      );
+      this.logger.debug(`Successfully created DBCluster ${logicalId}: ${dbClusterIdentifier}`);
 
       // Wait for cluster to become available
       await this.waitForClusterAvailable(dbClusterIdentifier);
@@ -414,9 +409,7 @@ export class RDSProvider implements ResourceProvider {
       await this.waitForClusterDeleted(physicalId);
     } catch (error) {
       if (this.isNotFoundError(error, 'DBClusterNotFoundFault')) {
-        this.logger.debug(
-          `DBCluster ${physicalId} does not exist, skipping deletion`
-        );
+        this.logger.debug(`DBCluster ${physicalId} does not exist, skipping deletion`);
         return;
       }
       const cause = error instanceof Error ? error : undefined;
@@ -462,9 +455,7 @@ export class RDSProvider implements ResourceProvider {
         throw new Error('CreateDBInstance did not return DBInstance');
       }
 
-      this.logger.debug(
-        `Successfully created DBInstance ${logicalId}: ${dbInstanceIdentifier}`
-      );
+      this.logger.debug(`Successfully created DBInstance ${logicalId}: ${dbInstanceIdentifier}`);
 
       // Wait for instance to become available
       await this.waitForInstanceAvailable(dbInstanceIdentifier);
@@ -575,9 +566,7 @@ export class RDSProvider implements ResourceProvider {
       await this.waitForInstanceDeleted(physicalId);
     } catch (error) {
       if (this.isNotFoundError(error, 'DBInstanceNotFoundFault')) {
-        this.logger.debug(
-          `DBInstance ${physicalId} does not exist, skipping deletion`
-        );
+        this.logger.debug(`DBInstance ${physicalId} does not exist, skipping deletion`);
         return;
       }
       const cause = error instanceof Error ? error : undefined;
@@ -593,9 +582,7 @@ export class RDSProvider implements ResourceProvider {
 
   // ─── Helpers ──────────────────────────────────────────────────────
 
-  private buildTags(
-    properties: Record<string, unknown>
-  ): Array<{ Key: string; Value: string }> {
+  private buildTags(properties: Record<string, unknown>): Array<{ Key: string; Value: string }> {
     if (!properties['Tags']) return [];
     return properties['Tags'] as Array<{ Key: string; Value: string }>;
   }
@@ -605,9 +592,7 @@ export class RDSProvider implements ResourceProvider {
     const name = (error as { name?: string }).name ?? '';
     const message = error.message.toLowerCase();
     return (
-      name === faultName ||
-      message.includes('not found') ||
-      message.includes('does not exist')
+      name === faultName || message.includes('not found') || message.includes('does not exist')
     );
   }
 
@@ -651,9 +636,7 @@ export class RDSProvider implements ResourceProvider {
       delay = Math.min(delay * 2, 30_000);
     }
 
-    throw new Error(
-      `Timed out waiting for DBCluster ${dbClusterIdentifier} to become available`
-    );
+    throw new Error(`Timed out waiting for DBCluster ${dbClusterIdentifier} to become available`);
   }
 
   /**
@@ -685,9 +668,7 @@ export class RDSProvider implements ResourceProvider {
       delay = Math.min(delay * 2, 30_000);
     }
 
-    throw new Error(
-      `Timed out waiting for DBCluster ${dbClusterIdentifier} to be deleted`
-    );
+    throw new Error(`Timed out waiting for DBCluster ${dbClusterIdentifier} to be deleted`);
   }
 
   /**
@@ -712,9 +693,7 @@ export class RDSProvider implements ResourceProvider {
       delay = Math.min(delay * 2, 30_000);
     }
 
-    throw new Error(
-      `Timed out waiting for DBInstance ${dbInstanceIdentifier} to become available`
-    );
+    throw new Error(`Timed out waiting for DBInstance ${dbInstanceIdentifier} to become available`);
   }
 
   /**
@@ -746,9 +725,7 @@ export class RDSProvider implements ResourceProvider {
       delay = Math.min(delay * 2, 30_000);
     }
 
-    throw new Error(
-      `Timed out waiting for DBInstance ${dbInstanceIdentifier} to be deleted`
-    );
+    throw new Error(`Timed out waiting for DBInstance ${dbInstanceIdentifier} to be deleted`);
   }
 
   private sleep(ms: number): Promise<void> {

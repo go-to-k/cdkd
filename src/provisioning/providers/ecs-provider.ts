@@ -31,6 +31,22 @@ import {
   type PlacementConstraint,
   type PlacementStrategy,
   type ServiceRegistry,
+  type ClusterConfiguration,
+  type NetworkMode,
+  type Compatibility,
+  type TaskDefinitionPlacementConstraint,
+  type RuntimePlatform,
+  type ProxyConfiguration,
+  type PidMode,
+  type IpcMode,
+  type LaunchType,
+  type SchedulingStrategy,
+  type PropagateTags,
+  type TransportProtocol,
+  type ApplicationProtocol,
+  type LogDriver,
+  type EFSVolumeConfiguration,
+  type AssignPublicIp,
 } from '@aws-sdk/client-ecs';
 import { getLogger } from '../../utils/logger.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
@@ -43,9 +59,7 @@ import type {
 /**
  * Convert CFn Tags (Array<{Key, Value}>) to ECS Tags (Array<{key, value}>)
  */
-function convertTags(
-  tags?: Array<{ Key: string; Value: string }>
-): Tag[] | undefined {
+function convertTags(tags?: Array<{ Key: string; Value: string }>): Tag[] | undefined {
   if (!tags || tags.length === 0) return undefined;
   return tags.map((t) => ({ key: t.Key, value: t.Value }));
 }
@@ -109,7 +123,13 @@ export class ECSProvider implements ResourceProvider {
       case 'AWS::ECS::TaskDefinition':
         return this.updateTaskDefinition(logicalId, physicalId, resourceType, properties);
       case 'AWS::ECS::Service':
-        return this.updateService(logicalId, physicalId, resourceType, properties, previousProperties);
+        return this.updateService(
+          logicalId,
+          physicalId,
+          resourceType,
+          properties,
+          previousProperties
+        );
       default:
         throw new ProvisioningError(
           `Unsupported resource type: ${resourceType}`,
@@ -180,13 +200,13 @@ export class ECSProvider implements ResourceProvider {
           defaultCapacityProviderStrategy: properties['DefaultCapacityProviderStrategy'] as
             | CapacityProviderStrategyItem[]
             | undefined,
-          configuration: properties['Configuration'] as
-            | { executeCommandConfiguration?: { kmsKeyId?: string; logging?: string; logConfiguration?: Record<string, unknown> } }
-            | undefined,
+          configuration: properties['Configuration'] as ClusterConfiguration | undefined,
           settings: properties['ClusterSettings'] as
-            | Array<{ name: string; value: string }>
+            | Array<{ name: 'containerInsights'; value: string }>
             | undefined,
-          tags: convertTags(properties['Tags'] as Array<{ Key: string; Value: string }> | undefined),
+          tags: convertTags(
+            properties['Tags'] as Array<{ Key: string; Value: string }> | undefined
+          ),
         })
       );
 
@@ -232,7 +252,8 @@ export class ECSProvider implements ResourceProvider {
             cluster: physicalId,
             capacityProviders: (properties['CapacityProviders'] as string[]) || [],
             defaultCapacityProviderStrategy:
-              (properties['DefaultCapacityProviderStrategy'] as CapacityProviderStrategyItem[]) || [],
+              (properties['DefaultCapacityProviderStrategy'] as CapacityProviderStrategyItem[]) ||
+              [],
           })
         );
         this.logger.debug(`Updated capacity providers for ECS cluster ${physicalId}`);
@@ -291,14 +312,9 @@ export class ECSProvider implements ResourceProvider {
     }
   }
 
-  private async getClusterAttribute(
-    physicalId: string,
-    attributeName: string
-  ): Promise<unknown> {
+  private async getClusterAttribute(physicalId: string, attributeName: string): Promise<unknown> {
     const client = this.getClient();
-    const response = await client.send(
-      new DescribeClustersCommand({ clusters: [physicalId] })
-    );
+    const response = await client.send(new DescribeClustersCommand({ clusters: [physicalId] }));
     const cluster = response.clusters?.[0];
     if (!cluster) return undefined;
 
@@ -329,28 +345,26 @@ export class ECSProvider implements ResourceProvider {
           ),
           cpu: properties['Cpu'] as string | undefined,
           memory: properties['Memory'] as string | undefined,
-          networkMode: properties['NetworkMode'] as string | undefined,
-          requiresCompatibilities: properties['RequiresCompatibilities'] as string[] | undefined,
+          networkMode: properties['NetworkMode'] as NetworkMode | undefined,
+          requiresCompatibilities: properties['RequiresCompatibilities'] as
+            | Compatibility[]
+            | undefined,
           executionRoleArn: properties['ExecutionRoleArn'] as string | undefined,
           taskRoleArn: properties['TaskRoleArn'] as string | undefined,
           volumes: this.convertVolumes(
             properties['Volumes'] as Array<Record<string, unknown>> | undefined
           ),
           placementConstraints: properties['PlacementConstraints'] as
-            | PlacementConstraint[]
+            | TaskDefinitionPlacementConstraint[]
             | undefined,
-          tags: convertTags(properties['Tags'] as Array<{ Key: string; Value: string }> | undefined),
-          runtimePlatform: properties['RuntimePlatform'] as
-            | { cpuArchitecture?: string; operatingSystemFamily?: string }
-            | undefined,
-          proxyConfiguration: properties['ProxyConfiguration'] as
-            | { type?: string; containerName: string; properties?: Array<{ name: string; value: string }> }
-            | undefined,
-          pidMode: properties['PidMode'] as string | undefined,
-          ipcMode: properties['IpcMode'] as string | undefined,
-          ephemeralStorage: properties['EphemeralStorage'] as
-            | { sizeInGiB: number }
-            | undefined,
+          tags: convertTags(
+            properties['Tags'] as Array<{ Key: string; Value: string }> | undefined
+          ),
+          runtimePlatform: properties['RuntimePlatform'] as RuntimePlatform | undefined,
+          proxyConfiguration: properties['ProxyConfiguration'] as ProxyConfiguration | undefined,
+          pidMode: properties['PidMode'] as PidMode | undefined,
+          ipcMode: properties['IpcMode'] as IpcMode | undefined,
+          ephemeralStorage: properties['EphemeralStorage'] as { sizeInGiB: number } | undefined,
         })
       );
 
@@ -395,9 +409,7 @@ export class ECSProvider implements ResourceProvider {
     // Deregister old revision
     try {
       const client = this.getClient();
-      await client.send(
-        new DeregisterTaskDefinitionCommand({ taskDefinition: physicalId })
-      );
+      await client.send(new DeregisterTaskDefinitionCommand({ taskDefinition: physicalId }));
       this.logger.debug(`Deregistered old task definition revision: ${physicalId}`);
     } catch (error) {
       this.logger.debug(
@@ -408,7 +420,7 @@ export class ECSProvider implements ResourceProvider {
     return {
       physicalId: result.physicalId,
       wasReplaced: false,
-      attributes: result.attributes,
+      attributes: result.attributes ?? {},
     };
   }
 
@@ -421,9 +433,7 @@ export class ECSProvider implements ResourceProvider {
     const client = this.getClient();
 
     try {
-      await client.send(
-        new DeregisterTaskDefinitionCommand({ taskDefinition: physicalId })
-      );
+      await client.send(new DeregisterTaskDefinitionCommand({ taskDefinition: physicalId }));
       this.logger.debug(`Successfully deregistered ECS task definition ${logicalId}`);
     } catch (error) {
       // Handle not found for idempotent delete
@@ -480,7 +490,7 @@ export class ECSProvider implements ResourceProvider {
           serviceName,
           taskDefinition: properties['TaskDefinition'] as string | undefined,
           desiredCount: properties['DesiredCount'] as number | undefined,
-          launchType: properties['LaunchType'] as string | undefined,
+          launchType: properties['LaunchType'] as LaunchType | undefined,
           networkConfiguration: this.convertNetworkConfiguration(
             properties['NetworkConfiguration'] as Record<string, unknown> | undefined
           ),
@@ -494,21 +504,19 @@ export class ECSProvider implements ResourceProvider {
           placementConstraints: properties['PlacementConstraints'] as
             | PlacementConstraint[]
             | undefined,
-          placementStrategy: properties['PlacementStrategy'] as
-            | PlacementStrategy[]
-            | undefined,
+          placementStrategy: properties['PlacementStrategy'] as PlacementStrategy[] | undefined,
           platformVersion: properties['PlatformVersion'] as string | undefined,
           healthCheckGracePeriodSeconds: properties['HealthCheckGracePeriodSeconds'] as
             | number
             | undefined,
-          schedulingStrategy: properties['SchedulingStrategy'] as string | undefined,
+          schedulingStrategy: properties['SchedulingStrategy'] as SchedulingStrategy | undefined,
           enableECSManagedTags: properties['EnableECSManagedTags'] as boolean | undefined,
-          propagateTags: properties['PropagateTags'] as string | undefined,
+          propagateTags: properties['PropagateTags'] as PropagateTags | undefined,
           enableExecuteCommand: properties['EnableExecuteCommand'] as boolean | undefined,
-          serviceRegistries: properties['ServiceRegistries'] as
-            | ServiceRegistry[]
-            | undefined,
-          tags: convertTags(properties['Tags'] as Array<{ Key: string; Value: string }> | undefined),
+          serviceRegistries: properties['ServiceRegistries'] as ServiceRegistry[] | undefined,
+          tags: convertTags(
+            properties['Tags'] as Array<{ Key: string; Value: string }> | undefined
+          ),
         })
       );
 
@@ -517,9 +525,7 @@ export class ECSProvider implements ResourceProvider {
         throw new Error('CreateService did not return service ARN');
       }
 
-      this.logger.debug(
-        `Successfully created ECS service ${logicalId}: ${service.serviceArn}`
-      );
+      this.logger.debug(`Successfully created ECS service ${logicalId}: ${service.serviceArn}`);
 
       return {
         physicalId: service.serviceArn,
@@ -581,9 +587,7 @@ export class ECSProvider implements ResourceProvider {
           placementConstraints: properties['PlacementConstraints'] as
             | PlacementConstraint[]
             | undefined,
-          placementStrategy: properties['PlacementStrategy'] as
-            | PlacementStrategy[]
-            | undefined,
+          placementStrategy: properties['PlacementStrategy'] as PlacementStrategy[] | undefined,
           platformVersion: properties['PlatformVersion'] as string | undefined,
           healthCheckGracePeriodSeconds: properties['HealthCheckGracePeriodSeconds'] as
             | number
@@ -639,7 +643,9 @@ export class ECSProvider implements ResourceProvider {
       } catch (error) {
         // If service not found during scale down, it's already gone
         if (this.isServiceNotFoundException(error)) {
-          this.logger.debug(`ECS service ${physicalId} not found during scale down, skipping deletion`);
+          this.logger.debug(
+            `ECS service ${physicalId} not found during scale down, skipping deletion`
+          );
           return;
         }
         throw error;
@@ -670,10 +676,7 @@ export class ECSProvider implements ResourceProvider {
     }
   }
 
-  private async getServiceAttribute(
-    physicalId: string,
-    attributeName: string
-  ): Promise<unknown> {
+  private async getServiceAttribute(physicalId: string, attributeName: string): Promise<unknown> {
     const client = this.getClient();
 
     // Extract cluster from service ARN if possible
@@ -757,8 +760,8 @@ export class ECSProvider implements ResourceProvider {
     return mappings.map((m) => ({
       containerPort: m['ContainerPort'] as number | undefined,
       hostPort: m['HostPort'] as number | undefined,
-      protocol: m['Protocol'] as string | undefined,
-      appProtocol: m['AppProtocol'] as string | undefined,
+      protocol: m['Protocol'] as TransportProtocol | undefined,
+      appProtocol: m['AppProtocol'] as ApplicationProtocol | undefined,
       name: m['Name'] as string | undefined,
     }));
   }
@@ -766,13 +769,11 @@ export class ECSProvider implements ResourceProvider {
   /**
    * Convert CFn LogConfiguration to ECS SDK format
    */
-  private convertLogConfiguration(
-    config?: Record<string, unknown>
-  ): LogConfiguration | undefined {
+  private convertLogConfiguration(config?: Record<string, unknown>): LogConfiguration | undefined {
     if (!config) return undefined;
 
     return {
-      logDriver: config['LogDriver'] as string,
+      logDriver: config['LogDriver'] as LogDriver,
       options: config['Options'] as Record<string, string> | undefined,
       secretOptions: config['SecretOptions'] as Secret[] | undefined,
     };
@@ -781,9 +782,7 @@ export class ECSProvider implements ResourceProvider {
   /**
    * Convert CFn HealthCheck to ECS SDK format
    */
-  private convertHealthCheck(
-    check?: Record<string, unknown>
-  ): HealthCheck | undefined {
+  private convertHealthCheck(check?: Record<string, unknown>): HealthCheck | undefined {
     if (!check) return undefined;
 
     return {
@@ -798,23 +797,13 @@ export class ECSProvider implements ResourceProvider {
   /**
    * Convert CFn Volumes to ECS SDK format
    */
-  private convertVolumes(
-    volumes?: Array<Record<string, unknown>>
-  ): Volume[] | undefined {
+  private convertVolumes(volumes?: Array<Record<string, unknown>>): Volume[] | undefined {
     if (!volumes) return undefined;
 
     return volumes.map((v) => ({
       name: v['Name'] as string,
       host: v['Host'] as { sourcePath?: string } | undefined,
-      efsVolumeConfiguration: v['EFSVolumeConfiguration'] as
-        | {
-            fileSystemId: string;
-            rootDirectory?: string;
-            transitEncryption?: string;
-            transitEncryptionPort?: number;
-            authorizationConfig?: { accessPointId?: string; iam?: string };
-          }
-        | undefined,
+      efsVolumeConfiguration: v['EFSVolumeConfiguration'] as EFSVolumeConfiguration | undefined,
     }));
   }
 
@@ -826,16 +815,14 @@ export class ECSProvider implements ResourceProvider {
   ): NetworkConfiguration | undefined {
     if (!config) return undefined;
 
-    const awsvpcConfig = config['AwsvpcConfiguration'] as
-      | Record<string, unknown>
-      | undefined;
+    const awsvpcConfig = config['AwsvpcConfiguration'] as Record<string, unknown> | undefined;
     if (!awsvpcConfig) return undefined;
 
     return {
       awsvpcConfiguration: {
         subnets: awsvpcConfig['Subnets'] as string[],
         securityGroups: awsvpcConfig['SecurityGroups'] as string[] | undefined,
-        assignPublicIp: awsvpcConfig['AssignPublicIp'] as string | undefined,
+        assignPublicIp: awsvpcConfig['AssignPublicIp'] as AssignPublicIp | undefined,
       },
     };
   }
@@ -846,8 +833,7 @@ export class ECSProvider implements ResourceProvider {
   private isClusterNotFoundException(error: unknown): boolean {
     if (error instanceof Error) {
       return (
-        error.name === 'ClusterNotFoundException' ||
-        error.message.includes('Cluster not found')
+        error.name === 'ClusterNotFoundException' || error.message.includes('Cluster not found')
       );
     }
     return false;

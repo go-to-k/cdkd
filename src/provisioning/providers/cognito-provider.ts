@@ -5,6 +5,18 @@ import {
   UpdateUserPoolCommand,
   DescribeUserPoolCommand,
   ResourceNotFoundException,
+  type VerifiedAttributeType,
+  type UsernameAttributeType,
+  type UserPoolMfaType,
+  type DeletionProtectionType,
+  type SchemaAttributeType,
+  type LambdaConfigType,
+  type PasswordPolicyType,
+  type AdminCreateUserConfigType,
+  type AccountRecoverySettingType,
+  type UserAttributeUpdateSettingsType,
+  type CreateUserPoolCommandInput,
+  type UpdateUserPoolCommandInput,
 } from '@aws-sdk/client-cognito-identity-provider';
 import { getLogger } from '../../utils/logger.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
@@ -46,53 +58,59 @@ export class CognitoUserPoolProvider implements ResourceProvider {
     const poolName = (properties['UserPoolName'] as string | undefined) || logicalId;
 
     try {
-      const createParams: import('@aws-sdk/client-cognito-identity-provider').CreateUserPoolCommandInput =
-        {
-          PoolName: poolName,
-        };
+      const createParams: CreateUserPoolCommandInput = {
+        PoolName: poolName,
+      };
 
       if (properties['AutoVerifiedAttributes']) {
-        createParams.AutoVerifiedAttributes = properties['AutoVerifiedAttributes'] as string[];
+        createParams.AutoVerifiedAttributes = properties[
+          'AutoVerifiedAttributes'
+        ] as VerifiedAttributeType[];
       }
       if (properties['UsernameAttributes']) {
-        createParams.UsernameAttributes = properties['UsernameAttributes'] as string[];
+        createParams.UsernameAttributes = properties[
+          'UsernameAttributes'
+        ] as UsernameAttributeType[];
       }
       if (properties['Policies']) {
         const policies = properties['Policies'] as Record<string, unknown>;
         if (policies['PasswordPolicy']) {
           createParams.Policies = {
-            PasswordPolicy: policies['PasswordPolicy'] as import('@aws-sdk/client-cognito-identity-provider').PasswordPolicyType,
+            PasswordPolicy: policies['PasswordPolicy'] as PasswordPolicyType,
           };
         }
       }
       if (properties['Schema']) {
-        createParams.Schema =
-          properties['Schema'] as import('@aws-sdk/client-cognito-identity-provider').SchemaAttributeType[];
+        createParams.Schema = properties['Schema'] as SchemaAttributeType[];
       }
       if (properties['LambdaConfig']) {
-        createParams.LambdaConfig =
-          properties['LambdaConfig'] as import('@aws-sdk/client-cognito-identity-provider').LambdaConfigType;
+        createParams.LambdaConfig = properties['LambdaConfig'] as LambdaConfigType;
       }
       if (properties['MfaConfiguration']) {
-        createParams.MfaConfiguration = properties['MfaConfiguration'] as string;
+        createParams.MfaConfiguration = properties['MfaConfiguration'] as UserPoolMfaType;
       }
       if (properties['UserPoolTags']) {
         createParams.UserPoolTags = properties['UserPoolTags'] as Record<string, string>;
       }
       if (properties['AdminCreateUserConfig']) {
-        createParams.AdminCreateUserConfig =
-          properties['AdminCreateUserConfig'] as import('@aws-sdk/client-cognito-identity-provider').AdminCreateUserConfigType;
+        createParams.AdminCreateUserConfig = properties[
+          'AdminCreateUserConfig'
+        ] as AdminCreateUserConfigType;
       }
       if (properties['AccountRecoverySetting']) {
-        createParams.AccountRecoverySetting =
-          properties['AccountRecoverySetting'] as import('@aws-sdk/client-cognito-identity-provider').AccountRecoverySettingType;
+        createParams.AccountRecoverySetting = properties[
+          'AccountRecoverySetting'
+        ] as AccountRecoverySettingType;
       }
       if (properties['UserAttributeUpdateSettings']) {
-        createParams.UserAttributeUpdateSettings =
-          properties['UserAttributeUpdateSettings'] as import('@aws-sdk/client-cognito-identity-provider').UserAttributeUpdateSettingsType;
+        createParams.UserAttributeUpdateSettings = properties[
+          'UserAttributeUpdateSettings'
+        ] as UserAttributeUpdateSettingsType;
       }
       if (properties['DeletionProtection']) {
-        createParams.DeletionProtection = properties['DeletionProtection'] as string;
+        createParams.DeletionProtection = properties[
+          'DeletionProtection'
+        ] as DeletionProtectionType;
       }
 
       const response = await this.getClient().send(new CreateUserPoolCommand(createParams));
@@ -147,46 +165,51 @@ export class CognitoUserPoolProvider implements ResourceProvider {
     this.logger.debug(`Updating Cognito User Pool ${logicalId}: ${physicalId}`);
 
     try {
-      const updateParams: import('@aws-sdk/client-cognito-identity-provider').UpdateUserPoolCommandInput =
-        {
-          UserPoolId: physicalId,
-        };
+      const updateParams: UpdateUserPoolCommandInput = {
+        UserPoolId: physicalId,
+      };
 
       if (properties['Policies']) {
         const policies = properties['Policies'] as Record<string, unknown>;
         if (policies['PasswordPolicy']) {
           updateParams.Policies = {
-            PasswordPolicy: policies['PasswordPolicy'] as import('@aws-sdk/client-cognito-identity-provider').PasswordPolicyType,
+            PasswordPolicy: policies['PasswordPolicy'] as PasswordPolicyType,
           };
         }
       }
       if (properties['LambdaConfig']) {
-        updateParams.LambdaConfig =
-          properties['LambdaConfig'] as import('@aws-sdk/client-cognito-identity-provider').LambdaConfigType;
+        updateParams.LambdaConfig = properties['LambdaConfig'] as LambdaConfigType;
       }
       if (properties['AutoVerifiedAttributes']) {
-        updateParams.AutoVerifiedAttributes = properties['AutoVerifiedAttributes'] as string[];
+        updateParams.AutoVerifiedAttributes = properties[
+          'AutoVerifiedAttributes'
+        ] as VerifiedAttributeType[];
       }
       if (properties['MfaConfiguration']) {
-        updateParams.MfaConfiguration = properties['MfaConfiguration'] as string;
+        updateParams.MfaConfiguration = properties['MfaConfiguration'] as UserPoolMfaType;
       }
       if (properties['AdminCreateUserConfig']) {
-        updateParams.AdminCreateUserConfig =
-          properties['AdminCreateUserConfig'] as import('@aws-sdk/client-cognito-identity-provider').AdminCreateUserConfigType;
+        updateParams.AdminCreateUserConfig = properties[
+          'AdminCreateUserConfig'
+        ] as AdminCreateUserConfigType;
       }
       if (properties['AccountRecoverySetting']) {
-        updateParams.AccountRecoverySetting =
-          properties['AccountRecoverySetting'] as import('@aws-sdk/client-cognito-identity-provider').AccountRecoverySettingType;
+        updateParams.AccountRecoverySetting = properties[
+          'AccountRecoverySetting'
+        ] as AccountRecoverySettingType;
       }
       if (properties['UserPoolTags']) {
         updateParams.UserPoolTags = properties['UserPoolTags'] as Record<string, string>;
       }
       if (properties['DeletionProtection']) {
-        updateParams.DeletionProtection = properties['DeletionProtection'] as string;
+        updateParams.DeletionProtection = properties[
+          'DeletionProtection'
+        ] as DeletionProtectionType;
       }
       if (properties['UserAttributeUpdateSettings']) {
-        updateParams.UserAttributeUpdateSettings =
-          properties['UserAttributeUpdateSettings'] as import('@aws-sdk/client-cognito-identity-provider').UserAttributeUpdateSettingsType;
+        updateParams.UserAttributeUpdateSettings = properties[
+          'UserAttributeUpdateSettings'
+        ] as UserAttributeUpdateSettingsType;
       }
 
       await this.getClient().send(new UpdateUserPoolCommand(updateParams));
@@ -237,15 +260,11 @@ export class CognitoUserPoolProvider implements ResourceProvider {
     this.logger.debug(`Deleting Cognito User Pool ${logicalId}: ${physicalId}`);
 
     try {
-      await this.getClient().send(
-        new DeleteUserPoolCommand({ UserPoolId: physicalId })
-      );
+      await this.getClient().send(new DeleteUserPoolCommand({ UserPoolId: physicalId }));
       this.logger.debug(`Successfully deleted Cognito User Pool ${logicalId}`);
     } catch (error) {
       if (error instanceof ResourceNotFoundException) {
-        this.logger.debug(
-          `Cognito User Pool ${physicalId} does not exist, skipping deletion`
-        );
+        this.logger.debug(`Cognito User Pool ${physicalId} does not exist, skipping deletion`);
         return;
       }
       const cause = error instanceof Error ? error : undefined;

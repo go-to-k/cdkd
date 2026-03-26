@@ -179,7 +179,7 @@ step_header "Diff after CREATE (expect no changes)"
 info "Running: cdkd diff"
 DIFF_OUTPUT=$(run_cdkd diff "${CDKD_COMMON_ARGS[@]}" 2>&1) || true
 
-if echo "${DIFF_OUTPUT}" | grep -q "No changes detected"; then
+if echo "${DIFF_OUTPUT}" | grep -qE "No changes detected|0 to create, 0 to update, 0 to delete"; then
   pass "Diff shows no changes as expected [$(elapsed)]"
 else
   echo "${DIFF_OUTPUT}"
@@ -204,7 +204,7 @@ step_header "Diff after UPDATE (expect no changes)"
 info "Running: CDKD_TEST_UPDATE=true cdkd diff"
 DIFF_OUTPUT=$(CDKD_TEST_UPDATE=true run_cdkd diff "${CDKD_COMMON_ARGS[@]}" 2>&1) || true
 
-if echo "${DIFF_OUTPUT}" | grep -q "No changes detected"; then
+if echo "${DIFF_OUTPUT}" | grep -qE "No changes detected|0 to create, 0 to update, 0 to delete"; then
   pass "Diff shows no changes as expected [$(elapsed)]"
 else
   echo "${DIFF_OUTPUT}"

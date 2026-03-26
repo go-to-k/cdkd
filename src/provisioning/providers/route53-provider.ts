@@ -5,6 +5,8 @@ import {
   GetHostedZoneCommand,
   ChangeResourceRecordSetsCommand,
   UpdateHostedZoneCommentCommand,
+  type ResourceRecordSet,
+  type RRType,
 } from '@aws-sdk/client-route-53';
 import { getLogger } from '../../utils/logger.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
@@ -140,11 +142,13 @@ export class Route53Provider implements ResourceProvider {
         new CreateHostedZoneCommand({
           Name: name,
           CallerReference: `${logicalId}-${Date.now()}`,
-          ...(hostedZoneConfig?.Comment && {
-            HostedZoneConfig: {
-              Comment: hostedZoneConfig.Comment as string,
-            },
-          }),
+          ...(hostedZoneConfig && hostedZoneConfig['Comment']
+            ? {
+                HostedZoneConfig: {
+                  Comment: hostedZoneConfig['Comment'] as string,
+                },
+              }
+            : {}),
         })
       );
 
@@ -193,7 +197,7 @@ export class Route53Provider implements ResourceProvider {
       const hostedZoneConfig = properties['HostedZoneConfig'] as
         | Record<string, unknown>
         | undefined;
-      const comment = (hostedZoneConfig?.Comment as string) ?? '';
+      const comment = (hostedZoneConfig?.['Comment'] as string) ?? '';
 
       await this.getClient().send(
         new UpdateHostedZoneCommentCommand({
@@ -203,9 +207,7 @@ export class Route53Provider implements ResourceProvider {
       );
 
       // Retrieve name servers
-      const getResponse = await this.getClient().send(
-        new GetHostedZoneCommand({ Id: physicalId })
-      );
+      const getResponse = await this.getClient().send(new GetHostedZoneCommand({ Id: physicalId }));
       const nameServers = getResponse.DelegationSet?.NameServers ?? [];
 
       this.logger.debug(`Successfully updated hosted zone ${logicalId}`);
@@ -238,15 +240,11 @@ export class Route53Provider implements ResourceProvider {
     this.logger.debug(`Deleting Route 53 hosted zone ${logicalId}: ${physicalId}`);
 
     try {
-      await this.getClient().send(
-        new DeleteHostedZoneCommand({ Id: physicalId })
-      );
+      await this.getClient().send(new DeleteHostedZoneCommand({ Id: physicalId }));
       this.logger.debug(`Successfully deleted hosted zone ${logicalId}`);
     } catch (error) {
       if (error instanceof Error && error.name === 'NoSuchHostedZone') {
-        this.logger.debug(
-          `Hosted zone ${physicalId} does not exist, skipping deletion`
-        );
+        this.logger.debug(`Hosted zone ${physicalId} does not exist, skipping deletion`);
         return;
       }
       const cause = error instanceof Error ? error : undefined;
@@ -268,9 +266,7 @@ export class Route53Provider implements ResourceProvider {
       case 'Id':
         return physicalId;
       case 'NameServers': {
-        const response = await this.getClient().send(
-          new GetHostedZoneCommand({ Id: physicalId })
-        );
+        const response = await this.getClient().send(new GetHostedZoneCommand({ Id: physicalId }));
         return (response.DelegationSet?.NameServers ?? []).join(',');
       }
       default:
@@ -317,9 +313,7 @@ export class Route53Provider implements ResourceProvider {
       );
 
       const compositeId = `${hostedZoneId}|${recordName}|${recordType}`;
-      this.logger.debug(
-        `Successfully created record set ${logicalId}: ${compositeId}`
-      );
+      this.logger.debug(`Successfully created record set ${logicalId}: ${compositeId}`);
 
       return {
         physicalId: compositeId,
@@ -449,12 +443,9 @@ export class Route53Provider implements ResourceProvider {
       // Treat "not found" errors as success for idempotency
       if (
         error instanceof Error &&
-        (error.name === 'InvalidChangeBatch' ||
-          error.message.includes('it was not found'))
+        (error.name === 'InvalidChangeBatch' || error.message.includes('it was not found'))
       ) {
-        this.logger.debug(
-          `Record set ${physicalId} does not exist, skipping deletion`
-        );
+        this.logger.debug(`Record set ${physicalId} does not exist, skipping deletion`);
         return;
       }
       if (error instanceof Error && error.name === 'NoSuchHostedZone') {
@@ -482,48 +473,40 @@ export class Route53Provider implements ResourceProvider {
    * Handles conversion of CDK-style ResourceRecords (array of strings)
    * to SDK-style ResourceRecords (array of {Value}).
    */
-  private buildResourceRecordSet(
-    properties: Record<string, unknown>
-  ): Record<string, unknown> {
+  private buildResourceRecordSet(properties: Record<string, unknown>): ResourceRecordSet {
     const name = properties['Name'] as string;
     const type = properties['Type'] as string;
     const ttl = properties['TTL'] as string | number | undefined;
-    const resourceRecords = properties['ResourceRecords'] as
-      | unknown[]
-      | undefined;
-    const aliasTarget = properties['AliasTarget'] as
-      | Record<string, unknown>
-      | undefined;
+    const resourceRecords = properties['ResourceRecords'] as unknown[] | undefined;
+    const aliasTarget = properties['AliasTarget'] as Record<string, unknown> | undefined;
 
-    const recordSet: Record<string, unknown> = {
+    const recordSet: ResourceRecordSet = {
       Name: name,
-      Type: type,
+      Type: type as RRType,
     };
 
     if (aliasTarget) {
-      recordSet['AliasTarget'] = {
+      recordSet.AliasTarget = {
         HostedZoneId: aliasTarget['HostedZoneId'] as string,
         DNSName: aliasTarget['DNSName'] as string,
-        EvaluateTargetHealth: aliasTarget['EvaluateTargetHealth'] ?? false,
+        EvaluateTargetHealth: (aliasTarget['EvaluateTargetHealth'] as boolean) ?? false,
       };
     } else {
       // Standard record with TTL and ResourceRecords
       if (ttl !== undefined) {
-        recordSet['TTL'] = Number(ttl);
+        recordSet.TTL = Number(ttl);
       }
 
       if (resourceRecords) {
         // CDK provides ResourceRecords as array of strings,
         // SDK expects array of {Value: string}
-        recordSet['ResourceRecords'] = (resourceRecords as unknown[]).map(
-          (record) => {
-            if (typeof record === 'string') {
-              return { Value: record };
-            }
-            // Already in {Value: string} format
-            return record;
+        recordSet.ResourceRecords = resourceRecords.map((record) => {
+          if (typeof record === 'string') {
+            return { Value: record };
           }
-        );
+          // Already in {Value: string} format
+          return record as { Value: string };
+        });
       }
     }
 

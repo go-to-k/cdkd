@@ -20,7 +20,7 @@ export class Route53Stack extends cdk.Stack {
 
     // Create a hosted zone for testing
     const zone = new route53.HostedZone(this, 'TestZone', {
-      zoneName: 'cdkd-integ-test.example.com',
+      zoneName: `cdkd-test-${this.account}.internal`,
     });
 
     // A Record

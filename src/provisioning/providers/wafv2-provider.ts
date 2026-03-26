@@ -9,6 +9,7 @@ import {
   type Rule,
   type DefaultAction,
   type VisibilityConfig,
+  type Scope,
 } from '@aws-sdk/client-wafv2';
 import { getLogger } from '../../utils/logger.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
@@ -25,18 +26,18 @@ import type {
  *   arn:aws:wafv2:{region}:{account}:regional/webacl/{name}/{id}
  *   arn:aws:wafv2:{region}:{account}:global/webacl/{name}/{id}
  */
-function parseWebACLArn(arn: string): { id: string; name: string; scope: string } {
+function parseWebACLArn(arn: string): { id: string; name: string; scope: Scope } {
   // Example: arn:aws:wafv2:us-east-1:123456789012:regional/webacl/my-acl/abc-123
   const parts = arn.split(':');
   // parts[5] = "regional/webacl/my-acl/abc-123" or "global/webacl/my-acl/abc-123"
   const resourcePart = parts.slice(5).join(':');
   const segments = resourcePart.split('/');
   // segments: ["regional", "webacl", "my-acl", "abc-123"]
-  const scopeRaw = segments[0]; // "regional" or "global"
-  const name = segments[2];
-  const id = segments[3];
+  const scopeRaw = segments[0]!; // "regional" or "global"
+  const name = segments[2]!;
+  const id = segments[3]!;
 
-  const scope = scopeRaw === 'global' ? 'CLOUDFRONT' : 'REGIONAL';
+  const scope: Scope = scopeRaw === 'global' ? 'CLOUDFRONT' : 'REGIONAL';
 
   return { id, name, scope };
 }
@@ -71,7 +72,7 @@ export class WAFv2WebACLProvider implements ResourceProvider {
     this.logger.debug(`Creating WAFv2 WebACL ${logicalId}`);
 
     const name = (properties['Name'] as string | undefined) || logicalId;
-    const scope = (properties['Scope'] as string) || 'REGIONAL';
+    const scope = ((properties['Scope'] as string) || 'REGIONAL') as Scope;
 
     try {
       // Build tags
@@ -107,7 +108,7 @@ export class WAFv2WebACLProvider implements ResourceProvider {
         attributes: {
           Arn: summary.ARN,
           Id: summary.Id,
-          LabelNamespace: summary.LabelNamespace,
+          LabelNamespace: (summary as Record<string, unknown>)['LabelNamespace'],
         },
       };
     } catch (error) {

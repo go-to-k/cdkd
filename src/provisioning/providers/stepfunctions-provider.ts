@@ -48,8 +48,7 @@ export class StepFunctionsProvider implements ResourceProvider {
   ): Promise<ResourceCreateResult> {
     this.logger.debug(`Creating Step Functions state machine ${logicalId}`);
 
-    const stateMachineName =
-      (properties['StateMachineName'] as string | undefined) || logicalId;
+    const stateMachineName = (properties['StateMachineName'] as string | undefined) || logicalId;
     const roleArn = properties['RoleArn'] as string | undefined;
 
     if (!roleArn) {
@@ -85,9 +84,7 @@ export class StepFunctionsProvider implements ResourceProvider {
         tags: tags,
       };
 
-      const response = await this.getClient().send(
-        new CreateStateMachineCommand(createParams)
-      );
+      const response = await this.getClient().send(new CreateStateMachineCommand(createParams));
 
       const stateMachineArn = response.stateMachineArn;
       if (!stateMachineArn) {
@@ -191,9 +188,7 @@ export class StepFunctionsProvider implements ResourceProvider {
     this.logger.debug(`Deleting Step Functions state machine ${logicalId}: ${physicalId}`);
 
     try {
-      await this.getClient().send(
-        new DeleteStateMachineCommand({ stateMachineArn: physicalId })
-      );
+      await this.getClient().send(new DeleteStateMachineCommand({ stateMachineArn: physicalId }));
       this.logger.debug(`Successfully deleted Step Functions state machine ${logicalId}`);
     } catch (error) {
       if (error instanceof StateMachineDoesNotExist) {

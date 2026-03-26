@@ -13,9 +13,15 @@ import {
   type Tag,
   type Action,
   type Certificate,
+  type LoadBalancerSchemeEnum,
+  type LoadBalancerTypeEnum,
+  type IpAddressType,
+  type ProtocolEnum,
+  type TargetTypeEnum,
 } from '@aws-sdk/client-elastic-load-balancing-v2';
 import { getLogger } from '../../utils/logger.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
+import { generateResourceName } from '../resource-name.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -73,7 +79,7 @@ export class ELBv2Provider implements ResourceProvider {
     physicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
-    previousProperties: Record<string, unknown>
+    _previousProperties: Record<string, unknown>
   ): Promise<ResourceUpdateResult> {
     switch (resourceType) {
       case 'AWS::ElasticLoadBalancingV2::LoadBalancer':
@@ -127,17 +133,21 @@ export class ELBv2Provider implements ResourceProvider {
     try {
       const tags = this.extractTags(properties);
 
+      const lbName = generateResourceName((properties['Name'] as string | undefined) || logicalId, {
+        maxLength: 32,
+      });
+
       const response = await this.getClient().send(
         new CreateLoadBalancerCommand({
-          Name: properties['Name'] as string | undefined,
+          Name: lbName,
           Subnets: properties['Subnets'] as string[] | undefined,
           SubnetMappings: properties['SubnetMappings'] as
             | Array<{ SubnetId: string; AllocationId?: string; PrivateIPv4Address?: string }>
             | undefined,
           SecurityGroups: properties['SecurityGroups'] as string[] | undefined,
-          Scheme: properties['Scheme'] as string | undefined,
-          Type: properties['Type'] as string | undefined,
-          IpAddressType: properties['IpAddressType'] as string | undefined,
+          Scheme: properties['Scheme'] as LoadBalancerSchemeEnum | undefined,
+          Type: properties['Type'] as LoadBalancerTypeEnum | undefined,
+          IpAddressType: properties['IpAddressType'] as IpAddressType | undefined,
           ...(tags.length > 0 && { Tags: tags }),
         })
       );
@@ -219,9 +229,7 @@ export class ELBv2Provider implements ResourceProvider {
     this.logger.debug(`Deleting LoadBalancer ${logicalId}: ${physicalId}`);
 
     try {
-      await this.getClient().send(
-        new DeleteLoadBalancerCommand({ LoadBalancerArn: physicalId })
-      );
+      await this.getClient().send(new DeleteLoadBalancerCommand({ LoadBalancerArn: physicalId }));
       this.logger.debug(`Successfully deleted LoadBalancer ${logicalId}`);
     } catch (error) {
       if (this.isNotFoundError(error)) {
@@ -252,32 +260,41 @@ export class ELBv2Provider implements ResourceProvider {
       const tags = this.extractTags(properties);
       const matcher = properties['Matcher'] as { HttpCode?: string; GrpcCode?: string } | undefined;
 
+      const tgName = generateResourceName((properties['Name'] as string | undefined) || logicalId, {
+        maxLength: 32,
+      });
+
       const response = await this.getClient().send(
         new CreateTargetGroupCommand({
-          Name: properties['Name'] as string | undefined,
-          Protocol: properties['Protocol'] as string | undefined,
+          Name: tgName,
+          Protocol: properties['Protocol'] as ProtocolEnum | undefined,
           Port: properties['Port'] !== undefined ? Number(properties['Port']) : undefined,
           VpcId: properties['VpcId'] as string | undefined,
-          TargetType: properties['TargetType'] as string | undefined,
+          TargetType: properties['TargetType'] as TargetTypeEnum | undefined,
           ProtocolVersion: properties['ProtocolVersion'] as string | undefined,
-          HealthCheckProtocol: properties['HealthCheckProtocol'] as string | undefined,
+          HealthCheckProtocol: properties['HealthCheckProtocol'] as ProtocolEnum | undefined,
           HealthCheckPort: properties['HealthCheckPort'] as string | undefined,
           HealthCheckPath: properties['HealthCheckPath'] as string | undefined,
-          HealthCheckEnabled: properties['HealthCheckEnabled'] !== undefined
-            ? Boolean(properties['HealthCheckEnabled'])
-            : undefined,
-          HealthCheckIntervalSeconds: properties['HealthCheckIntervalSeconds'] !== undefined
-            ? Number(properties['HealthCheckIntervalSeconds'])
-            : undefined,
-          HealthCheckTimeoutSeconds: properties['HealthCheckTimeoutSeconds'] !== undefined
-            ? Number(properties['HealthCheckTimeoutSeconds'])
-            : undefined,
-          HealthyThresholdCount: properties['HealthyThresholdCount'] !== undefined
-            ? Number(properties['HealthyThresholdCount'])
-            : undefined,
-          UnhealthyThresholdCount: properties['UnhealthyThresholdCount'] !== undefined
-            ? Number(properties['UnhealthyThresholdCount'])
-            : undefined,
+          HealthCheckEnabled:
+            properties['HealthCheckEnabled'] !== undefined
+              ? Boolean(properties['HealthCheckEnabled'])
+              : undefined,
+          HealthCheckIntervalSeconds:
+            properties['HealthCheckIntervalSeconds'] !== undefined
+              ? Number(properties['HealthCheckIntervalSeconds'])
+              : undefined,
+          HealthCheckTimeoutSeconds:
+            properties['HealthCheckTimeoutSeconds'] !== undefined
+              ? Number(properties['HealthCheckTimeoutSeconds'])
+              : undefined,
+          HealthyThresholdCount:
+            properties['HealthyThresholdCount'] !== undefined
+              ? Number(properties['HealthyThresholdCount'])
+              : undefined,
+          UnhealthyThresholdCount:
+            properties['UnhealthyThresholdCount'] !== undefined
+              ? Number(properties['UnhealthyThresholdCount'])
+              : undefined,
           ...(matcher && { Matcher: matcher }),
           ...(tags.length > 0 && { Tags: tags }),
         })
@@ -324,24 +341,29 @@ export class ELBv2Provider implements ResourceProvider {
       await this.getClient().send(
         new ModifyTargetGroupCommand({
           TargetGroupArn: physicalId,
-          HealthCheckProtocol: properties['HealthCheckProtocol'] as string | undefined,
+          HealthCheckProtocol: properties['HealthCheckProtocol'] as ProtocolEnum | undefined,
           HealthCheckPort: properties['HealthCheckPort'] as string | undefined,
           HealthCheckPath: properties['HealthCheckPath'] as string | undefined,
-          HealthCheckEnabled: properties['HealthCheckEnabled'] !== undefined
-            ? Boolean(properties['HealthCheckEnabled'])
-            : undefined,
-          HealthCheckIntervalSeconds: properties['HealthCheckIntervalSeconds'] !== undefined
-            ? Number(properties['HealthCheckIntervalSeconds'])
-            : undefined,
-          HealthCheckTimeoutSeconds: properties['HealthCheckTimeoutSeconds'] !== undefined
-            ? Number(properties['HealthCheckTimeoutSeconds'])
-            : undefined,
-          HealthyThresholdCount: properties['HealthyThresholdCount'] !== undefined
-            ? Number(properties['HealthyThresholdCount'])
-            : undefined,
-          UnhealthyThresholdCount: properties['UnhealthyThresholdCount'] !== undefined
-            ? Number(properties['UnhealthyThresholdCount'])
-            : undefined,
+          HealthCheckEnabled:
+            properties['HealthCheckEnabled'] !== undefined
+              ? Boolean(properties['HealthCheckEnabled'])
+              : undefined,
+          HealthCheckIntervalSeconds:
+            properties['HealthCheckIntervalSeconds'] !== undefined
+              ? Number(properties['HealthCheckIntervalSeconds'])
+              : undefined,
+          HealthCheckTimeoutSeconds:
+            properties['HealthCheckTimeoutSeconds'] !== undefined
+              ? Number(properties['HealthCheckTimeoutSeconds'])
+              : undefined,
+          HealthyThresholdCount:
+            properties['HealthyThresholdCount'] !== undefined
+              ? Number(properties['HealthyThresholdCount'])
+              : undefined,
+          UnhealthyThresholdCount:
+            properties['UnhealthyThresholdCount'] !== undefined
+              ? Number(properties['UnhealthyThresholdCount'])
+              : undefined,
           ...(matcher && { Matcher: matcher }),
         })
       );
@@ -383,9 +405,7 @@ export class ELBv2Provider implements ResourceProvider {
     this.logger.debug(`Deleting TargetGroup ${logicalId}: ${physicalId}`);
 
     try {
-      await this.getClient().send(
-        new DeleteTargetGroupCommand({ TargetGroupArn: physicalId })
-      );
+      await this.getClient().send(new DeleteTargetGroupCommand({ TargetGroupArn: physicalId }));
       this.logger.debug(`Successfully deleted TargetGroup ${logicalId}`);
     } catch (error) {
       if (this.isNotFoundError(error)) {
@@ -425,9 +445,9 @@ export class ELBv2Provider implements ResourceProvider {
         new CreateListenerCommand({
           LoadBalancerArn: properties['LoadBalancerArn'] as string,
           Port: properties['Port'] !== undefined ? Number(properties['Port']) : undefined,
-          Protocol: properties['Protocol'] as string | undefined,
+          Protocol: properties['Protocol'] as ProtocolEnum | undefined,
           SslPolicy: properties['SslPolicy'] as string | undefined,
-          ...(defaultActions && { DefaultActions: defaultActions }),
+          DefaultActions: defaultActions ?? [],
           ...(certificates && { Certificates: certificates }),
           ...(tags.length > 0 && { Tags: tags }),
         })
@@ -478,7 +498,7 @@ export class ELBv2Provider implements ResourceProvider {
         new ModifyListenerCommand({
           ListenerArn: physicalId,
           Port: properties['Port'] !== undefined ? Number(properties['Port']) : undefined,
-          Protocol: properties['Protocol'] as string | undefined,
+          Protocol: properties['Protocol'] as ProtocolEnum | undefined,
           SslPolicy: properties['SslPolicy'] as string | undefined,
           ...(defaultActions && { DefaultActions: defaultActions }),
           ...(certificates && { Certificates: certificates }),
@@ -514,9 +534,7 @@ export class ELBv2Provider implements ResourceProvider {
     this.logger.debug(`Deleting Listener ${logicalId}: ${physicalId}`);
 
     try {
-      await this.getClient().send(
-        new DeleteListenerCommand({ ListenerArn: physicalId })
-      );
+      await this.getClient().send(new DeleteListenerCommand({ ListenerArn: physicalId }));
       this.logger.debug(`Successfully deleted Listener ${logicalId}`);
     } catch (error) {
       if (this.isNotFoundError(error)) {

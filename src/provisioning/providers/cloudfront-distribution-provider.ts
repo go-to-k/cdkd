@@ -6,6 +6,7 @@ import {
   GetDistributionCommand,
   GetDistributionConfigCommand,
   NoSuchDistribution,
+  type DistributionConfig,
 } from '@aws-sdk/client-cloudfront';
 import { getLogger } from '../../utils/logger.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
@@ -71,7 +72,8 @@ export class CloudFrontDistributionProvider implements ResourceProvider {
     this.logger.debug(`Creating CloudFront Distribution ${logicalId}`);
 
     try {
-      const distributionConfig = (properties['DistributionConfig'] as Record<string, unknown>) ?? {};
+      const distributionConfig =
+        (properties['DistributionConfig'] as Record<string, unknown>) ?? {};
       const sdkConfig = this.convertToSdkFormat({
         ...distributionConfig,
         CallerReference: Date.now().toString(),
@@ -79,8 +81,7 @@ export class CloudFrontDistributionProvider implements ResourceProvider {
 
       const response = await this.cloudFrontClient.send(
         new CreateDistributionCommand({
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          DistributionConfig: sdkConfig as any,
+          DistributionConfig: sdkConfig as unknown as DistributionConfig,
         })
       );
 
@@ -134,7 +135,8 @@ export class CloudFrontDistributionProvider implements ResourceProvider {
       const currentConfig = getConfigResponse.DistributionConfig!;
 
       // Merge new properties into existing config, preserving CallerReference
-      const newDistributionConfig = (properties['DistributionConfig'] as Record<string, unknown>) ?? {};
+      const newDistributionConfig =
+        (properties['DistributionConfig'] as Record<string, unknown>) ?? {};
       const sdkConfig = this.convertToSdkFormat({
         ...newDistributionConfig,
         CallerReference: currentConfig.CallerReference,
@@ -144,8 +146,7 @@ export class CloudFrontDistributionProvider implements ResourceProvider {
         new UpdateDistributionCommand({
           Id: physicalId,
           IfMatch: etag,
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          DistributionConfig: sdkConfig as any,
+          DistributionConfig: sdkConfig as unknown as DistributionConfig,
         })
       );
 
@@ -281,9 +282,7 @@ export class CloudFrontDistributionProvider implements ResourceProvider {
       return response.Distribution?.DomainName;
     }
 
-    throw new Error(
-      `Unsupported attribute: ${attributeName} for AWS::CloudFront::Distribution`
-    );
+    throw new Error(`Unsupported attribute: ${attributeName} for AWS::CloudFront::Distribution`);
   }
 
   /**
@@ -347,8 +346,8 @@ export class CloudFrontDistributionProvider implements ResourceProvider {
     if (result['CacheBehaviors'] && typeof result['CacheBehaviors'] === 'object') {
       const cacheBehaviors = result['CacheBehaviors'] as Record<string, unknown>;
       if (Array.isArray(cacheBehaviors['Items'])) {
-        cacheBehaviors['Items'] = (cacheBehaviors['Items'] as Record<string, unknown>[]).map(
-          (cb) => this.convertCacheBehavior(cb)
+        cacheBehaviors['Items'] = (cacheBehaviors['Items'] as Record<string, unknown>[]).map((cb) =>
+          this.convertCacheBehavior(cb)
         );
       }
     }
@@ -437,7 +436,7 @@ export class CloudFrontDistributionProvider implements ResourceProvider {
     if (path.length === 0) return;
 
     if (path.length === 1) {
-      const key = path[0];
+      const key = path[0]!;
       if (obj[key] !== undefined) {
         obj[key] = this.wrapWithQuantity(obj[key]);
       }
@@ -445,10 +444,11 @@ export class CloudFrontDistributionProvider implements ResourceProvider {
     }
 
     const [head, ...rest] = path;
-    if (obj[head] && typeof obj[head] === 'object') {
+    const headKey = head!;
+    if (obj[headKey] && typeof obj[headKey] === 'object') {
       // Shallow copy the nested object to avoid mutating the original
-      const nested = { ...(obj[head] as Record<string, unknown>) };
-      obj[head] = nested;
+      const nested = { ...(obj[headKey] as Record<string, unknown>) };
+      obj[headKey] = nested;
       this.applyQuantityAtPath(nested, rest);
     }
   }
