@@ -35,13 +35,15 @@ export class Synthesizer {
       ioHost: {
         // Handle toolkit messages
         notify: (msg) => {
-          // Show error-level messages even in compact mode
+          // Show relevant messages in compact mode
           const message =
             typeof msg === 'object' && msg !== null
               ? (msg as unknown as Record<string, unknown>)
               : {};
           const level = message['level'] as string | undefined;
-          if (level === 'error' && message['message']) {
+          const code = message['code'] as string | undefined;
+          // CDK_ASSEMBLY_E1002 is bundling progress (not actually an error)
+          if (level === 'error' && code !== 'CDK_ASSEMBLY_E1002' && message['message']) {
             this.logger.error(String(message['message']));
           } else {
             this.logger.debug('Toolkit message:', msg);
