@@ -354,60 +354,19 @@ export class DeployEngine {
         }
       }
 
-      // Step 2: Process DELETE operations
-      // Resources to delete may not be in the DAG (they're in state but not in template)
+      // Step 2: Process DELETE operations in reverse dependency order
       if (deleteChanges.size > 0) {
         this.logger.info(`Deleting ${deleteChanges.size} resource(s)`);
 
-        // Collect DELETE resources that are in the DAG (process in reverse order)
-        const processedDeletes = new Set<string>();
-        for (let levelIndex = executionLevels.length - 1; levelIndex >= 0; levelIndex--) {
-          const levelNodes = executionLevels[levelIndex];
-          if (!levelNodes) continue;
-          const level = levelNodes.filter((id) => deleteChanges.has(id));
+        // Build deletion levels from state dependencies (reverse topological order)
+        const deletionLevels = this.buildDeletionLevels(deleteChanges, currentState);
 
+        for (let levelIndex = 0; levelIndex < deletionLevels.length; levelIndex++) {
+          const level = deletionLevels[levelIndex]!;
           if (level.length === 0) continue;
 
           await Promise.all(
             level.map((logicalId) =>
-              limit(async () => {
-                const change = changes.get(logicalId)!;
-
-                // Capture previous state before deletion (for rollback warning)
-                const previousState = currentState.resources[logicalId]
-                  ? { ...currentState.resources[logicalId] }
-                  : undefined;
-
-                await this.provisionResource(
-                  logicalId,
-                  change,
-                  newResources,
-                  stackName,
-                  template,
-                  parameterValues,
-                  conditions,
-                  actualCounts,
-                  progress
-                );
-                processedDeletes.add(logicalId);
-
-                // Track completed DELETE operation
-                completedOperations.push({
-                  logicalId,
-                  changeType: 'DELETE',
-                  resourceType: change.resourceType,
-                  previousState,
-                });
-              })
-            )
-          );
-        }
-
-        // Process DELETE resources NOT in DAG (orphaned from state)
-        const orphanedDeletes = [...deleteChanges].filter((id) => !processedDeletes.has(id));
-        if (orphanedDeletes.length > 0) {
-          await Promise.all(
-            orphanedDeletes.map((logicalId) =>
               limit(async () => {
                 const change = changes.get(logicalId)!;
 
@@ -862,6 +821,71 @@ export class DeployEngine {
    * AWS eventual consistency (e.g., Lambda fails if IAM Role hasn't propagated yet).
    * CloudFormation handles this internally; cdkq retries with exponential backoff.
    */
+  /**
+   * Build deletion levels from state dependencies (reverse topological order).
+   * Resources that are depended upon by others are deleted LAST.
+   */
+  private buildDeletionLevels(
+    deleteIds: Set<string>,
+    state: StackState
+  ): string[][] {
+    // Build reverse dependency map: resource → resources that depend on it
+    const dependedBy = new Map<string, Set<string>>();
+    const inDegree = new Map<string, number>();
+
+    for (const id of deleteIds) {
+      if (!dependedBy.has(id)) dependedBy.set(id, new Set());
+      if (!inDegree.has(id)) inDegree.set(id, 0);
+    }
+
+    for (const id of deleteIds) {
+      const resource = state.resources[id];
+      if (!resource?.dependencies) continue;
+      for (const dep of resource.dependencies) {
+        if (!deleteIds.has(dep)) continue;
+        // id depends on dep → dep must be deleted AFTER id
+        if (!dependedBy.has(dep)) dependedBy.set(dep, new Set());
+        dependedBy.get(dep)!.add(id);
+        inDegree.set(id, (inDegree.get(id) ?? 0) + 1);
+      }
+    }
+
+    // Topological sort (Kahn's algorithm) — produces levels for parallel delete
+    const levels: string[][] = [];
+    let remaining = new Set(deleteIds);
+
+    while (remaining.size > 0) {
+      // Find resources with no remaining dependents (safe to delete now)
+      const level: string[] = [];
+      for (const id of remaining) {
+        const dependents = dependedBy.get(id);
+        const hasPendingDependents = dependents
+          ? [...dependents].some((d) => remaining.has(d))
+          : false;
+        if (!hasPendingDependents) {
+          level.push(id);
+        }
+      }
+
+      if (level.length === 0) {
+        // Circular dependency fallback: delete all remaining
+        this.logger.warn(
+          `Circular dependency detected in delete order, deleting remaining ${remaining.size} resources`
+        );
+        levels.push([...remaining]);
+        break;
+      }
+
+      levels.push(level);
+      remaining = new Set([...remaining].filter((id) => !level.includes(id)));
+    }
+
+    this.logger.debug(
+      `Delete order: ${levels.length} levels - ${levels.map((l, i) => `L${i + 1}(${l.length})`).join(', ')}`
+    );
+    return levels;
+  }
+
   /**
    * Execute an operation with retry for transient IAM propagation errors
    */
