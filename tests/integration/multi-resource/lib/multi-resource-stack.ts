@@ -56,7 +56,7 @@ export class MultiResourceStack extends cdk.Stack {
     });
 
     // 2. Create S3 bucket for data storage
-    const dataBucket = new s3.Bucket(this, 'DataBucket', {
+    const dataBucket = new s3.Bucket(this, 'MultiDataBucket', {
       removalPolicy: cdk.RemovalPolicy.DESTROY,
       autoDeleteObjects: true,
       versioned: true,
@@ -79,14 +79,14 @@ export class MultiResourceStack extends cdk.Stack {
     });
 
     // 3. Create SQS queue for event buffering
-    const processingQueue = new sqs.Queue(this, 'ProcessingQueue', {
+    const processingQueue = new sqs.Queue(this, 'MultiProcessingQueue', {
       visibilityTimeout: cdk.Duration.seconds(300),
       receiveMessageWaitTime: cdk.Duration.seconds(20),
       retentionPeriod: cdk.Duration.days(4),
     });
 
     // Create Dead Letter Queue
-    const dlq = new sqs.Queue(this, 'DeadLetterQueue', {
+    const dlq = new sqs.Queue(this, 'MultiDLQ', {
       retentionPeriod: cdk.Duration.days(14),
     });
 
@@ -130,7 +130,7 @@ export class MultiResourceStack extends cdk.Stack {
     );
 
     // 5. Create Lambda function for processing
-    const processorFunction = new lambda.Function(this, 'ProcessorFunction', {
+    const processorFunction = new lambda.Function(this, 'MultiProcessorFunction', {
       runtime: lambda.Runtime.PYTHON_3_12,
       handler: 'index.handler',
       code: lambda.Code.fromAsset(path.join(__dirname, '../lambda')),

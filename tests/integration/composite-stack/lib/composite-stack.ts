@@ -49,7 +49,7 @@ export class CompositeStack extends cdk.Stack {
     // ========================================
     // S3 Bucket
     // ========================================
-    const bucket = new s3.Bucket(this, 'DataBucket', {
+    const bucket = new s3.Bucket(this, 'CompositeDataBucket', {
       removalPolicy: cdk.RemovalPolicy.DESTROY,
       autoDeleteObjects: false,
       encryption: s3.BucketEncryption.S3_MANAGED,
@@ -59,7 +59,7 @@ export class CompositeStack extends cdk.Stack {
     // ========================================
     // DynamoDB Table
     // ========================================
-    const table = new dynamodb.Table(this, 'ItemsTable', {
+    const table = new dynamodb.Table(this, 'CompositeItemsTable', {
       partitionKey: {
         name: 'pk',
         type: dynamodb.AttributeType.STRING,
@@ -75,11 +75,11 @@ export class CompositeStack extends cdk.Stack {
     // ========================================
     // SQS Dead Letter Queue + Primary Queue
     // ========================================
-    const dlq = new sqs.Queue(this, 'DeadLetterQueue', {
+    const dlq = new sqs.Queue(this, 'CompositeDLQ', {
       retentionPeriod: cdk.Duration.days(14),
     });
 
-    const primaryQueue = new sqs.Queue(this, 'PrimaryQueue', {
+    const primaryQueue = new sqs.Queue(this, 'CompositePrimaryQueue', {
       visibilityTimeout: cdk.Duration.seconds(60),
       deadLetterQueue: {
         queue: dlq,
@@ -90,7 +90,7 @@ export class CompositeStack extends cdk.Stack {
     // ========================================
     // SNS Topic + SQS Subscription
     // ========================================
-    const topic = new sns.Topic(this, 'NotificationTopic', {
+    const topic = new sns.Topic(this, 'CompositeNotificationTopic', {
       displayName: 'cdkd Composite Stack Notifications',
     });
 
@@ -147,7 +147,7 @@ export class CompositeStack extends cdk.Stack {
     // ========================================
     // Lambda Function (inline code, using custom role)
     // ========================================
-    const fn = new lambda.Function(this, 'ProcessorFunction', {
+    const fn = new lambda.Function(this, 'CompositeProcessorFunction', {
       runtime: lambda.Runtime.NODEJS_20_X,
       handler: 'index.handler',
       code: lambda.Code.fromInline(`

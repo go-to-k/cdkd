@@ -14,7 +14,7 @@ import * as agentcore from '@aws-cdk/aws-bedrock-agentcore-alpha';
  *
  * Note: AgentCore may not be available in all regions.
  */
-export class BedrockAgentStack extends cdk.Stack {
+export class BedrockAgentcoreStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
     super(scope, id, props);
 

@@ -216,10 +216,10 @@ cd /Users/goto/github/cdkd/tests/integration/rds-aurora
 npm install
 ```
 
-#### Bedrock Agent Example
+#### Bedrock AgentCore Example
 
 ```bash
-cd /Users/goto/github/cdkd/tests/integration/bedrock-agent
+cd /Users/goto/github/cdkd/tests/integration/bedrock-agentcore
 npm install
 ```
 

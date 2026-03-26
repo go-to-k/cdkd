@@ -44,7 +44,7 @@ export class FullStackDemoStack extends cdk.Stack {
     super(scope, id, props);
 
     // ─── DynamoDB Table ───────────────────────────────────────────
-    const table = new dynamodb.Table(this, 'ItemsTable', {
+    const table = new dynamodb.Table(this, 'DemoItemsTable', {
       partitionKey: {
         name: 'PK',
         type: dynamodb.AttributeType.STRING,
@@ -74,17 +74,17 @@ export class FullStackDemoStack extends cdk.Stack {
     });
 
     // ─── SNS Topic (notifications) ───────────────────────────────
-    const notificationTopic = new sns.Topic(this, 'NotificationTopic', {
+    const notificationTopic = new sns.Topic(this, 'DemoNotificationTopic', {
       displayName: 'Full Stack Demo Notifications',
     });
 
     // ─── SQS Dead Letter Queue ───────────────────────────────────
-    const dlq = new sqs.Queue(this, 'DeadLetterQueue', {
+    const dlq = new sqs.Queue(this, 'DemoDLQ', {
       retentionPeriod: cdk.Duration.days(14),
     });
 
     // ─── SQS Queue (async processing) ────────────────────────────
-    const processingQueue = new sqs.Queue(this, 'ProcessingQueue', {
+    const processingQueue = new sqs.Queue(this, 'DemoProcessingQueue', {
       visibilityTimeout: cdk.Duration.seconds(60),
       deadLetterQueue: {
         queue: dlq,
