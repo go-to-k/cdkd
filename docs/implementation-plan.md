@@ -563,10 +563,10 @@ cdkq は CDK CLI (`aws-cdk`) を**置き換える**のではなく、**デプロ
    - [x] SNS Topic ServiceToken 検出 + PublishCommand 実装
    - [x] S3 レスポンス待ち
 
-3. **Phase C: Step Functions 統合**（優先度: 低）
-   - [ ] CDK の `Provider` フレームワーク対応
-   - [ ] `isCompleteHandler` / `onEventHandler` パターン
-   - [ ] 非同期 CRUD + ポーリング
+3. **Phase C: Step Functions 統合** ✅ **完了**
+   - [x] CDK の `Provider` フレームワーク対応 — 標準カスタムリソースとして既存 CustomResourceProvider で動作
+   - [x] `isCompleteHandler` / `onEventHandler` パターン — Framework Lambda が内部で SFn ポーリングを処理
+   - [x] 非同期 CRUD + ポーリング — async パターン自動検出、最大1時間ポーリング、pre-signed URL 2時間
 
 **現状の制限事項**:
 
