@@ -38,11 +38,11 @@ export class RdsAuroraStack extends cdk.Stack {
       allowAllOutbound: true,
     });
 
-    // Allow MySQL port within the VPC
+    // Allow MySQL port from within the VPC (using VPC CIDR is not supported yet, use security group self-reference)
     securityGroup.addIngressRule(
-      ec2.Peer.ipv4(vpc.vpcCidrBlock),
+      securityGroup,
       ec2.Port.tcp(3306),
-      'Allow MySQL access from within VPC'
+      'Allow MySQL access from within security group'
     );
 
     // Create Aurora Serverless v2 cluster (MySQL)
