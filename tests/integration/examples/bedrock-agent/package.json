@@ -12,5 +12,8 @@
     "constructs": "^10.0.0",
     "ts-node": "^10.9.2",
     "typescript": "^5.7.2"
+  },
+  "dependencies": {
+    "@aws-cdk/aws-bedrock-agentcore-alpha": "^2.244.0-alpha.0"
   }
 }

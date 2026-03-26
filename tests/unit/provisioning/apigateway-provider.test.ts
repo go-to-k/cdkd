@@ -408,6 +408,398 @@ describe('ApiGatewayProvider', () => {
     });
   });
 
+  // ─── AWS::ApiGateway::Deployment ─────────────────────────────────
+
+  describe('AWS::ApiGateway::Deployment', () => {
+    const resourceType = 'AWS::ApiGateway::Deployment';
+
+    describe('create', () => {
+      it('should create a deployment with restApiId', async () => {
+        mockSend.mockResolvedValueOnce({ id: 'deploy-123' });
+
+        const result = await provider.create('MyDeployment', resourceType, {
+          RestApiId: 'api-id',
+        });
+
+        expect(result.physicalId).toBe('deploy-123');
+        expect(result.attributes).toEqual({ DeploymentId: 'deploy-123' });
+        expect(mockSend).toHaveBeenCalledTimes(1);
+
+        const command = mockSend.mock.calls[0][0];
+        expect(command.constructor.name).toBe('CreateDeploymentCommand');
+        expect(command.input).toEqual({
+          restApiId: 'api-id',
+          description: undefined,
+        });
+      });
+
+      it('should create a deployment with description', async () => {
+        mockSend.mockResolvedValueOnce({ id: 'deploy-456' });
+
+        const result = await provider.create('MyDeployment', resourceType, {
+          RestApiId: 'api-id',
+          Description: 'My deployment',
+        });
+
+        expect(result.physicalId).toBe('deploy-456');
+
+        const command = mockSend.mock.calls[0][0];
+        expect(command.input.description).toBe('My deployment');
+      });
+
+      it('should throw when RestApiId is missing', async () => {
+        await expect(
+          provider.create('MyDeployment', resourceType, {})
+        ).rejects.toThrow('RestApiId is required for API Gateway Deployment');
+      });
+
+      it('should throw on API error', async () => {
+        mockSend.mockRejectedValueOnce(new Error('API error'));
+
+        await expect(
+          provider.create('MyDeployment', resourceType, {
+            RestApiId: 'api-id',
+          })
+        ).rejects.toThrow('Failed to create API Gateway Deployment');
+      });
+    });
+
+    describe('update', () => {
+      it('should return no-op (deployments are immutable)', async () => {
+        const result = await provider.update(
+          'MyDeployment',
+          'deploy-123',
+          resourceType,
+          { RestApiId: 'api-id' },
+          { RestApiId: 'api-id' }
+        );
+
+        expect(result.physicalId).toBe('deploy-123');
+        expect(result.wasReplaced).toBe(false);
+        expect(result.attributes).toEqual({ DeploymentId: 'deploy-123' });
+        expect(mockSend).not.toHaveBeenCalled();
+      });
+    });
+
+    describe('delete', () => {
+      it('should delete a deployment', async () => {
+        mockSend.mockResolvedValueOnce({});
+
+        await provider.delete('MyDeployment', 'deploy-123', resourceType, {
+          RestApiId: 'api-id',
+        });
+
+        expect(mockSend).toHaveBeenCalledTimes(1);
+
+        const command = mockSend.mock.calls[0][0];
+        expect(command.constructor.name).toBe('DeleteDeploymentCommand');
+        expect(command.input).toEqual({
+          restApiId: 'api-id',
+          deploymentId: 'deploy-123',
+        });
+      });
+
+      it('should skip deletion when deployment not found', async () => {
+        mockSend.mockRejectedValueOnce(
+          new NotFoundException({ $metadata: {}, message: 'not found' })
+        );
+
+        await provider.delete('MyDeployment', 'deploy-123', resourceType, {
+          RestApiId: 'api-id',
+        });
+
+        expect(mockSend).toHaveBeenCalledTimes(1);
+      });
+
+      it('should throw when RestApiId is missing', async () => {
+        await expect(
+          provider.delete('MyDeployment', 'deploy-123', resourceType, {})
+        ).rejects.toThrow('RestApiId is required to delete API Gateway Deployment');
+      });
+
+      it('should throw when properties are not provided', async () => {
+        await expect(
+          provider.delete('MyDeployment', 'deploy-123', resourceType)
+        ).rejects.toThrow('RestApiId is required to delete API Gateway Deployment');
+      });
+
+      it('should throw on API error', async () => {
+        mockSend.mockRejectedValueOnce(new Error('service error'));
+
+        await expect(
+          provider.delete('MyDeployment', 'deploy-123', resourceType, {
+            RestApiId: 'api-id',
+          })
+        ).rejects.toThrow('Failed to delete API Gateway Deployment');
+      });
+    });
+
+    describe('getAttribute', () => {
+      it('should return physicalId for DeploymentId attribute', async () => {
+        const result = await provider.getAttribute(
+          'deploy-123',
+          resourceType,
+          'DeploymentId'
+        );
+
+        expect(result).toBe('deploy-123');
+      });
+
+      it('should return undefined for unknown attributes', async () => {
+        const result = await provider.getAttribute(
+          'deploy-123',
+          resourceType,
+          'UnknownAttr'
+        );
+
+        expect(result).toBeUndefined();
+      });
+    });
+  });
+
+  // ─── AWS::ApiGateway::Stage ────────────────────────────────────
+
+  describe('AWS::ApiGateway::Stage', () => {
+    const resourceType = 'AWS::ApiGateway::Stage';
+
+    describe('create', () => {
+      it('should create a stage with required properties', async () => {
+        mockSend.mockResolvedValueOnce({});
+
+        const result = await provider.create('MyStage', resourceType, {
+          RestApiId: 'api-id',
+          StageName: 'prod',
+          DeploymentId: 'deploy-123',
+        });
+
+        expect(result.physicalId).toBe('prod');
+        expect(result.attributes).toEqual({ StageName: 'prod' });
+        expect(mockSend).toHaveBeenCalledTimes(1);
+
+        const command = mockSend.mock.calls[0][0];
+        expect(command.constructor.name).toBe('CreateStageCommand');
+        expect(command.input).toEqual({
+          restApiId: 'api-id',
+          stageName: 'prod',
+          deploymentId: 'deploy-123',
+          description: undefined,
+        });
+      });
+
+      it('should create a stage with description', async () => {
+        mockSend.mockResolvedValueOnce({});
+
+        const result = await provider.create('MyStage', resourceType, {
+          RestApiId: 'api-id',
+          StageName: 'prod',
+          DeploymentId: 'deploy-123',
+          Description: 'Production stage',
+        });
+
+        expect(result.physicalId).toBe('prod');
+
+        const command = mockSend.mock.calls[0][0];
+        expect(command.input.description).toBe('Production stage');
+      });
+
+      it('should throw when required properties are missing', async () => {
+        await expect(
+          provider.create('MyStage', resourceType, {
+            RestApiId: 'api-id',
+            StageName: 'prod',
+          })
+        ).rejects.toThrow('RestApiId, StageName, and DeploymentId are required');
+      });
+
+      it('should throw when RestApiId is missing', async () => {
+        await expect(
+          provider.create('MyStage', resourceType, {
+            StageName: 'prod',
+            DeploymentId: 'deploy-123',
+          })
+        ).rejects.toThrow('RestApiId, StageName, and DeploymentId are required');
+      });
+
+      it('should throw on API error', async () => {
+        mockSend.mockRejectedValueOnce(new Error('API error'));
+
+        await expect(
+          provider.create('MyStage', resourceType, {
+            RestApiId: 'api-id',
+            StageName: 'prod',
+            DeploymentId: 'deploy-123',
+          })
+        ).rejects.toThrow('Failed to create API Gateway Stage');
+      });
+    });
+
+    describe('update', () => {
+      it('should update stage when deploymentId changes', async () => {
+        mockSend.mockResolvedValueOnce({});
+
+        const result = await provider.update(
+          'MyStage',
+          'prod',
+          resourceType,
+          { RestApiId: 'api-id', StageName: 'prod', DeploymentId: 'deploy-456' },
+          { RestApiId: 'api-id', StageName: 'prod', DeploymentId: 'deploy-123' }
+        );
+
+        expect(result.physicalId).toBe('prod');
+        expect(result.wasReplaced).toBe(false);
+        expect(result.attributes).toEqual({ StageName: 'prod' });
+        expect(mockSend).toHaveBeenCalledTimes(1);
+
+        const command = mockSend.mock.calls[0][0];
+        expect(command.constructor.name).toBe('UpdateStageCommand');
+        expect(command.input).toEqual({
+          restApiId: 'api-id',
+          stageName: 'prod',
+          patchOperations: [
+            { op: 'replace', path: '/deploymentId', value: 'deploy-456' },
+          ],
+        });
+      });
+
+      it('should update stage when description changes', async () => {
+        mockSend.mockResolvedValueOnce({});
+
+        const result = await provider.update(
+          'MyStage',
+          'prod',
+          resourceType,
+          { RestApiId: 'api-id', StageName: 'prod', DeploymentId: 'deploy-123', Description: 'New desc' },
+          { RestApiId: 'api-id', StageName: 'prod', DeploymentId: 'deploy-123', Description: 'Old desc' }
+        );
+
+        expect(result.physicalId).toBe('prod');
+        expect(result.wasReplaced).toBe(false);
+        expect(mockSend).toHaveBeenCalledTimes(1);
+
+        const command = mockSend.mock.calls[0][0];
+        expect(command.input.patchOperations).toEqual([
+          { op: 'replace', path: '/description', value: 'New desc' },
+        ]);
+      });
+
+      it('should return no-op when nothing changed', async () => {
+        const result = await provider.update(
+          'MyStage',
+          'prod',
+          resourceType,
+          { RestApiId: 'api-id', StageName: 'prod', DeploymentId: 'deploy-123' },
+          { RestApiId: 'api-id', StageName: 'prod', DeploymentId: 'deploy-123' }
+        );
+
+        expect(result.physicalId).toBe('prod');
+        expect(result.wasReplaced).toBe(false);
+        expect(result.attributes).toEqual({ StageName: 'prod' });
+        expect(mockSend).not.toHaveBeenCalled();
+      });
+
+      it('should throw when RestApiId is missing', async () => {
+        await expect(
+          provider.update(
+            'MyStage',
+            'prod',
+            resourceType,
+            { StageName: 'prod', DeploymentId: 'deploy-123' },
+            { StageName: 'prod', DeploymentId: 'deploy-123' }
+          )
+        ).rejects.toThrow('RestApiId is required to update API Gateway Stage');
+      });
+
+      it('should throw on API error', async () => {
+        mockSend.mockRejectedValueOnce(new Error('service error'));
+
+        await expect(
+          provider.update(
+            'MyStage',
+            'prod',
+            resourceType,
+            { RestApiId: 'api-id', StageName: 'prod', DeploymentId: 'deploy-456' },
+            { RestApiId: 'api-id', StageName: 'prod', DeploymentId: 'deploy-123' }
+          )
+        ).rejects.toThrow('Failed to update API Gateway Stage');
+      });
+    });
+
+    describe('delete', () => {
+      it('should delete a stage', async () => {
+        mockSend.mockResolvedValueOnce({});
+
+        await provider.delete('MyStage', 'prod', resourceType, {
+          RestApiId: 'api-id',
+        });
+
+        expect(mockSend).toHaveBeenCalledTimes(1);
+
+        const command = mockSend.mock.calls[0][0];
+        expect(command.constructor.name).toBe('DeleteStageCommand');
+        expect(command.input).toEqual({
+          restApiId: 'api-id',
+          stageName: 'prod',
+        });
+      });
+
+      it('should skip deletion when stage not found', async () => {
+        mockSend.mockRejectedValueOnce(
+          new NotFoundException({ $metadata: {}, message: 'not found' })
+        );
+
+        await provider.delete('MyStage', 'prod', resourceType, {
+          RestApiId: 'api-id',
+        });
+
+        expect(mockSend).toHaveBeenCalledTimes(1);
+      });
+
+      it('should throw when RestApiId is missing', async () => {
+        await expect(
+          provider.delete('MyStage', 'prod', resourceType, {})
+        ).rejects.toThrow('RestApiId is required to delete API Gateway Stage');
+      });
+
+      it('should throw when properties are not provided', async () => {
+        await expect(
+          provider.delete('MyStage', 'prod', resourceType)
+        ).rejects.toThrow('RestApiId is required to delete API Gateway Stage');
+      });
+
+      it('should throw on API error', async () => {
+        mockSend.mockRejectedValueOnce(new Error('service error'));
+
+        await expect(
+          provider.delete('MyStage', 'prod', resourceType, {
+            RestApiId: 'api-id',
+          })
+        ).rejects.toThrow('Failed to delete API Gateway Stage');
+      });
+    });
+
+    describe('getAttribute', () => {
+      it('should return physicalId for StageName attribute', async () => {
+        const result = await provider.getAttribute(
+          'prod',
+          resourceType,
+          'StageName'
+        );
+
+        expect(result).toBe('prod');
+      });
+
+      it('should return undefined for unknown attributes', async () => {
+        const result = await provider.getAttribute(
+          'prod',
+          resourceType,
+          'UnknownAttr'
+        );
+
+        expect(result).toBeUndefined();
+      });
+    });
+  });
+
   // ─── Unsupported resource type ────────────────────────────────────
 
   describe('unsupported resource type', () => {

@@ -3,6 +3,11 @@ import {
   UpdateAccountCommand,
   CreateResourceCommand,
   DeleteResourceCommand,
+  CreateDeploymentCommand,
+  DeleteDeploymentCommand,
+  CreateStageCommand,
+  UpdateStageCommand,
+  DeleteStageCommand,
   NotFoundException,
 } from '@aws-sdk/client-api-gateway';
 import { getLogger } from '../../utils/logger.js';
@@ -20,10 +25,14 @@ import type {
  * Implements resource provisioning for:
  * - AWS::ApiGateway::Account (API Gateway account settings)
  * - AWS::ApiGateway::Resource (API Gateway resource / path)
+ * - AWS::ApiGateway::Deployment (API Gateway deployment)
+ * - AWS::ApiGateway::Stage (API Gateway stage)
  *
  * These resource types have issues with Cloud Control API:
  * - Account: Needs IAM trust propagation retry logic
  * - Resource: Needs parent ID resolution from properties
+ * - Deployment: Needs RestApiId from Ref resolution
+ * - Stage: Needs RestApiId, StageName, DeploymentId from properties
  */
 export class ApiGatewayProvider implements ResourceProvider {
   private apiGatewayClient: APIGatewayClient;
@@ -52,6 +61,10 @@ export class ApiGatewayProvider implements ResourceProvider {
         return this.createAccount(logicalId, resourceType, properties);
       case 'AWS::ApiGateway::Resource':
         return this.createResource(logicalId, resourceType, properties);
+      case 'AWS::ApiGateway::Deployment':
+        return this.createDeployment(logicalId, resourceType, properties);
+      case 'AWS::ApiGateway::Stage':
+        return this.createStage(logicalId, resourceType, properties);
       default:
         throw new ProvisioningError(
           `Unsupported resource type: ${resourceType}`,
@@ -82,6 +95,16 @@ export class ApiGatewayProvider implements ResourceProvider {
           properties,
           previousProperties
         );
+      case 'AWS::ApiGateway::Deployment':
+        return this.updateDeployment(logicalId, physicalId, resourceType);
+      case 'AWS::ApiGateway::Stage':
+        return this.updateStage(
+          logicalId,
+          physicalId,
+          resourceType,
+          properties,
+          previousProperties
+        );
       default:
         throw new ProvisioningError(
           `Unsupported resource type: ${resourceType}`,
@@ -106,6 +129,10 @@ export class ApiGatewayProvider implements ResourceProvider {
         return this.deleteAccount(logicalId, physicalId, resourceType);
       case 'AWS::ApiGateway::Resource':
         return this.deleteResource(logicalId, physicalId, resourceType, properties);
+      case 'AWS::ApiGateway::Deployment':
+        return this.deleteDeployment(logicalId, physicalId, resourceType, properties);
+      case 'AWS::ApiGateway::Stage':
+        return this.deleteStage(logicalId, physicalId, resourceType, properties);
       default:
         throw new ProvisioningError(
           `Unsupported resource type: ${resourceType}`,
@@ -130,6 +157,10 @@ export class ApiGatewayProvider implements ResourceProvider {
         return undefined;
       case 'AWS::ApiGateway::Resource':
         return this.getResourceAttribute(physicalId, resourceType, attributeName);
+      case 'AWS::ApiGateway::Deployment':
+        return this.getDeploymentAttribute(physicalId, attributeName);
+      case 'AWS::ApiGateway::Stage':
+        return this.getStageAttribute(physicalId, attributeName);
       default:
         return undefined;
     }
@@ -462,6 +493,350 @@ export class ApiGatewayProvider implements ResourceProvider {
   ): Promise<unknown> {
     // ResourceId is the most common attribute
     if (attributeName === 'ResourceId') {
+      return physicalId;
+    }
+
+    return undefined;
+  }
+
+  // ─── AWS::ApiGateway::Deployment ───────────────────────────────────
+
+  /**
+   * Create an API Gateway Deployment
+   */
+  private async createDeployment(
+    logicalId: string,
+    resourceType: string,
+    properties: Record<string, unknown>
+  ): Promise<ResourceCreateResult> {
+    this.logger.debug(`Creating API Gateway Deployment ${logicalId}`);
+
+    const restApiId = properties['RestApiId'] as string;
+
+    if (!restApiId) {
+      throw new ProvisioningError(
+        `RestApiId is required for API Gateway Deployment ${logicalId}`,
+        resourceType,
+        logicalId
+      );
+    }
+
+    try {
+      const response = await this.apiGatewayClient.send(
+        new CreateDeploymentCommand({
+          restApiId,
+          description: properties['Description'] as string | undefined,
+        })
+      );
+
+      const deploymentId = response.id!;
+      this.logger.debug(
+        `Successfully created API Gateway Deployment ${logicalId}: ${deploymentId}`
+      );
+
+      return {
+        physicalId: deploymentId,
+        attributes: {
+          DeploymentId: deploymentId,
+        },
+      };
+    } catch (error) {
+      const cause = error instanceof Error ? error : undefined;
+      throw new ProvisioningError(
+        `Failed to create API Gateway Deployment ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        resourceType,
+        logicalId,
+        undefined,
+        cause
+      );
+    }
+  }
+
+  /**
+   * Update an API Gateway Deployment
+   *
+   * Deployments are immutable - updates are not supported.
+   * The deployment engine should handle replacement if needed.
+   */
+  private async updateDeployment(
+    logicalId: string,
+    physicalId: string,
+    _resourceType: string
+  ): Promise<ResourceUpdateResult> {
+    this.logger.debug(`Updating API Gateway Deployment ${logicalId}: ${physicalId} (no-op)`);
+
+    return {
+      physicalId,
+      wasReplaced: false,
+      attributes: {
+        DeploymentId: physicalId,
+      },
+    };
+  }
+
+  /**
+   * Delete an API Gateway Deployment
+   */
+  private async deleteDeployment(
+    logicalId: string,
+    physicalId: string,
+    resourceType: string,
+    properties?: Record<string, unknown>
+  ): Promise<void> {
+    this.logger.debug(`Deleting API Gateway Deployment ${logicalId}: ${physicalId}`);
+
+    const restApiId = properties?.['RestApiId'] as string | undefined;
+
+    if (!restApiId) {
+      throw new ProvisioningError(
+        `RestApiId is required to delete API Gateway Deployment ${logicalId}`,
+        resourceType,
+        logicalId,
+        physicalId
+      );
+    }
+
+    try {
+      await this.apiGatewayClient.send(
+        new DeleteDeploymentCommand({
+          restApiId,
+          deploymentId: physicalId,
+        })
+      );
+
+      this.logger.debug(`Successfully deleted API Gateway Deployment ${logicalId}`);
+    } catch (error) {
+      if (error instanceof NotFoundException) {
+        this.logger.debug(
+          `API Gateway Deployment ${physicalId} does not exist, skipping deletion`
+        );
+        return;
+      }
+
+      const cause = error instanceof Error ? error : undefined;
+      throw new ProvisioningError(
+        `Failed to delete API Gateway Deployment ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        resourceType,
+        logicalId,
+        physicalId,
+        cause
+      );
+    }
+  }
+
+  /**
+   * Get API Gateway Deployment attribute
+   */
+  // eslint-disable-next-line @typescript-eslint/require-await
+  private async getDeploymentAttribute(
+    physicalId: string,
+    attributeName: string
+  ): Promise<unknown> {
+    if (attributeName === 'DeploymentId') {
+      return physicalId;
+    }
+
+    return undefined;
+  }
+
+  // ─── AWS::ApiGateway::Stage ──────────────────────────────────────
+
+  /**
+   * Create an API Gateway Stage
+   */
+  private async createStage(
+    logicalId: string,
+    resourceType: string,
+    properties: Record<string, unknown>
+  ): Promise<ResourceCreateResult> {
+    this.logger.debug(`Creating API Gateway Stage ${logicalId}`);
+
+    const restApiId = properties['RestApiId'] as string;
+    const stageName = properties['StageName'] as string;
+    const deploymentId = properties['DeploymentId'] as string;
+
+    if (!restApiId || !stageName || !deploymentId) {
+      throw new ProvisioningError(
+        `RestApiId, StageName, and DeploymentId are required for API Gateway Stage ${logicalId}`,
+        resourceType,
+        logicalId
+      );
+    }
+
+    try {
+      await this.apiGatewayClient.send(
+        new CreateStageCommand({
+          restApiId,
+          stageName,
+          deploymentId,
+          description: properties['Description'] as string | undefined,
+        })
+      );
+
+      this.logger.debug(`Successfully created API Gateway Stage ${logicalId}: ${stageName}`);
+
+      return {
+        physicalId: stageName,
+        attributes: {
+          StageName: stageName,
+        },
+      };
+    } catch (error) {
+      const cause = error instanceof Error ? error : undefined;
+      throw new ProvisioningError(
+        `Failed to create API Gateway Stage ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        resourceType,
+        logicalId,
+        undefined,
+        cause
+      );
+    }
+  }
+
+  /**
+   * Update an API Gateway Stage
+   *
+   * Uses UpdateStageCommand with patch operations for changed properties.
+   */
+  private async updateStage(
+    logicalId: string,
+    physicalId: string,
+    resourceType: string,
+    properties: Record<string, unknown>,
+    previousProperties: Record<string, unknown>
+  ): Promise<ResourceUpdateResult> {
+    this.logger.debug(`Updating API Gateway Stage ${logicalId}: ${physicalId}`);
+
+    const restApiId = properties['RestApiId'] as string;
+
+    if (!restApiId) {
+      throw new ProvisioningError(
+        `RestApiId is required to update API Gateway Stage ${logicalId}`,
+        resourceType,
+        logicalId,
+        physicalId
+      );
+    }
+
+    // Build patch operations for changed properties
+    const patchOperations: Array<{ op: 'replace'; path: string; value: string }> = [];
+
+    const deploymentId = properties['DeploymentId'] as string | undefined;
+    const prevDeploymentId = previousProperties['DeploymentId'] as string | undefined;
+    if (deploymentId && deploymentId !== prevDeploymentId) {
+      patchOperations.push({ op: 'replace', path: '/deploymentId', value: deploymentId });
+    }
+
+    const description = properties['Description'] as string | undefined;
+    const prevDescription = previousProperties['Description'] as string | undefined;
+    if (description !== prevDescription) {
+      patchOperations.push({
+        op: 'replace',
+        path: '/description',
+        value: description ?? '',
+      });
+    }
+
+    if (patchOperations.length === 0) {
+      this.logger.debug(`No changes detected for API Gateway Stage ${logicalId}`);
+      return {
+        physicalId,
+        wasReplaced: false,
+        attributes: {
+          StageName: physicalId,
+        },
+      };
+    }
+
+    try {
+      await this.apiGatewayClient.send(
+        new UpdateStageCommand({
+          restApiId,
+          stageName: physicalId,
+          patchOperations,
+        })
+      );
+
+      this.logger.debug(`Successfully updated API Gateway Stage ${logicalId}`);
+
+      return {
+        physicalId,
+        wasReplaced: false,
+        attributes: {
+          StageName: physicalId,
+        },
+      };
+    } catch (error) {
+      const cause = error instanceof Error ? error : undefined;
+      throw new ProvisioningError(
+        `Failed to update API Gateway Stage ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        resourceType,
+        logicalId,
+        physicalId,
+        cause
+      );
+    }
+  }
+
+  /**
+   * Delete an API Gateway Stage
+   */
+  private async deleteStage(
+    logicalId: string,
+    physicalId: string,
+    resourceType: string,
+    properties?: Record<string, unknown>
+  ): Promise<void> {
+    this.logger.debug(`Deleting API Gateway Stage ${logicalId}: ${physicalId}`);
+
+    const restApiId = properties?.['RestApiId'] as string | undefined;
+
+    if (!restApiId) {
+      throw new ProvisioningError(
+        `RestApiId is required to delete API Gateway Stage ${logicalId}`,
+        resourceType,
+        logicalId,
+        physicalId
+      );
+    }
+
+    try {
+      await this.apiGatewayClient.send(
+        new DeleteStageCommand({
+          restApiId,
+          stageName: physicalId,
+        })
+      );
+
+      this.logger.debug(`Successfully deleted API Gateway Stage ${logicalId}`);
+    } catch (error) {
+      if (error instanceof NotFoundException) {
+        this.logger.debug(
+          `API Gateway Stage ${physicalId} does not exist, skipping deletion`
+        );
+        return;
+      }
+
+      const cause = error instanceof Error ? error : undefined;
+      throw new ProvisioningError(
+        `Failed to delete API Gateway Stage ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        resourceType,
+        logicalId,
+        physicalId,
+        cause
+      );
+    }
+  }
+
+  /**
+   * Get API Gateway Stage attribute
+   */
+  // eslint-disable-next-line @typescript-eslint/require-await
+  private async getStageAttribute(
+    physicalId: string,
+    attributeName: string
+  ): Promise<unknown> {
+    if (attributeName === 'StageName') {
       return physicalId;
     }
 

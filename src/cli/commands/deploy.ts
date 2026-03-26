@@ -184,6 +184,8 @@ async function deployCommand(
     const apigwProvider = new ApiGatewayProvider();
     providerRegistry.register('AWS::ApiGateway::Account', apigwProvider);
     providerRegistry.register('AWS::ApiGateway::Resource', apigwProvider);
+    providerRegistry.register('AWS::ApiGateway::Deployment', apigwProvider);
+    providerRegistry.register('AWS::ApiGateway::Stage', apigwProvider);
     providerRegistry.register('AWS::Events::Rule', new EventBridgeRuleProvider());
 
     // Configure custom resource response handling via S3 (for cfn-response based handlers)
