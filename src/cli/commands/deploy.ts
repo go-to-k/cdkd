@@ -188,6 +188,7 @@ async function deployCommand(
     providerRegistry.register('AWS::ApiGateway::Deployment', apigwProvider);
     providerRegistry.register('AWS::ApiGateway::Stage', apigwProvider);
     providerRegistry.register('AWS::Events::Rule', new EventBridgeRuleProvider());
+    providerRegistry.register('AWS::BedrockAgentCore::Runtime', new AgentCoreRuntimeProvider());
 
     // Configure custom resource response handling via S3 (for cfn-response based handlers)
     providerRegistry.setCustomResourceResponseBucket(stateBucket);

@@ -79,25 +79,25 @@ export class AgentCoreRuntimeProvider implements ResourceProvider {
       };
 
       if (properties['AgentRuntimeArtifact'] !== undefined) {
-        input.agentRuntimeArtifact = properties['AgentRuntimeArtifact'];
+        input['agentRuntimeArtifact'] = properties['AgentRuntimeArtifact'];
       }
       if (properties['NetworkConfiguration'] !== undefined) {
-        input.networkConfiguration = properties['NetworkConfiguration'];
+        input['networkConfiguration'] = properties['NetworkConfiguration'];
       }
       if (properties['Description'] !== undefined) {
-        input.description = properties['Description'];
+        input['description'] = properties['Description'];
       }
       if (properties['AuthorizerConfiguration'] !== undefined) {
-        input.authorizerConfiguration = properties['AuthorizerConfiguration'];
+        input['authorizerConfiguration'] = properties['AuthorizerConfiguration'];
       }
       if (properties['ProtocolConfiguration'] !== undefined) {
-        input.protocolConfiguration = properties['ProtocolConfiguration'];
+        input['protocolConfiguration'] = properties['ProtocolConfiguration'];
       }
       if (properties['EnvironmentVariables'] !== undefined) {
-        input.environmentVariables = properties['EnvironmentVariables'];
+        input['environmentVariables'] = properties['EnvironmentVariables'];
       }
       if (properties['ClientToken'] !== undefined) {
-        input.clientToken = properties['ClientToken'];
+        input['clientToken'] = properties['ClientToken'];
       }
 
       // eslint-disable-next-line @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-explicit-any
@@ -158,25 +158,25 @@ export class AgentCoreRuntimeProvider implements ResourceProvider {
       };
 
       if (properties['AgentRuntimeArtifact'] !== undefined) {
-        input.agentRuntimeArtifact = properties['AgentRuntimeArtifact'];
+        input['agentRuntimeArtifact'] = properties['AgentRuntimeArtifact'];
       }
       if (properties['NetworkConfiguration'] !== undefined) {
-        input.networkConfiguration = properties['NetworkConfiguration'];
+        input['networkConfiguration'] = properties['NetworkConfiguration'];
       }
       if (properties['Description'] !== undefined) {
-        input.description = properties['Description'];
+        input['description'] = properties['Description'];
       }
       if (properties['AuthorizerConfiguration'] !== undefined) {
-        input.authorizerConfiguration = properties['AuthorizerConfiguration'];
+        input['authorizerConfiguration'] = properties['AuthorizerConfiguration'];
       }
       if (properties['ProtocolConfiguration'] !== undefined) {
-        input.protocolConfiguration = properties['ProtocolConfiguration'];
+        input['protocolConfiguration'] = properties['ProtocolConfiguration'];
       }
       if (properties['EnvironmentVariables'] !== undefined) {
-        input.environmentVariables = properties['EnvironmentVariables'];
+        input['environmentVariables'] = properties['EnvironmentVariables'];
       }
       if (properties['ClientToken'] !== undefined) {
-        input.clientToken = properties['ClientToken'];
+        input['clientToken'] = properties['ClientToken'];
       }
 
       // eslint-disable-next-line @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-explicit-any
