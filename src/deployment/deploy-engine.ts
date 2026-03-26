@@ -1035,7 +1035,16 @@ export class DeployEngine {
       }
     }
 
-    // If we couldn't look up the resource, throw a descriptive error
+    // Fallback: if CC API GetResource fails (e.g., AccessDenied for AgentCore),
+    // use the first identifier candidate as physicalId
+    if (identifierCandidates.length > 0) {
+      const fallbackId = identifierCandidates[0]!;
+      this.logger.warn(
+        `Could not verify ${logicalId} via CC API, using "${fallbackId}" as physical ID (best-effort)`
+      );
+      return { physicalId: fallbackId };
+    }
+
     throw new Error(
       `Resource ${logicalId} (${resourceType}) already exists but could not retrieve its state. ` +
         `This may happen when a previous CREATE attempt succeeded asynchronously. ` +
@@ -1064,6 +1073,8 @@ export class DeployEngine {
       'AWS::Events::Rule': ['Name'],
       'AWS::StepFunctions::StateMachine': ['StateMachineName'],
       'AWS::Logs::LogGroup': ['LogGroupName'],
+      'AWS::BedrockAgentCore::Runtime': ['RuntimeName'],
+      'AWS::Bedrock::Agent': ['AgentName'],
     };
 
     const specificProps = identifierPropertyMap[resourceType];
