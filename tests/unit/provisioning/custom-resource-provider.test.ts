@@ -256,4 +256,217 @@ describe('CustomResourceProvider', () => {
       expect(mockLambdaSend).not.toHaveBeenCalled();
     });
   });
+
+  describe('async Provider framework (isCompleteHandler pattern)', () => {
+    it('should detect async pattern when Lambda returns null payload and poll S3 with longer timeout', async () => {
+      // Use a short async timeout for testing
+      const asyncProvider = new CustomResourceProvider({
+        responseBucket: 'test-bucket',
+        asyncResponseTimeoutMs: 10_000,
+      });
+
+      // S3 PutObject for placeholder
+      mockS3Send.mockResolvedValueOnce({});
+
+      // Lambda invoke returns null (CDK Provider framework starts Step Functions and returns nothing)
+      mockLambdaSend.mockResolvedValueOnce({
+        Payload: Buffer.from('null'),
+      });
+
+      // S3 GetObject: first poll returns empty (Step Functions still running)
+      mockS3Send.mockResolvedValueOnce({
+        Body: {
+          transformToString: () => Promise.resolve(''),
+        },
+      });
+
+      // S3 GetObject: second poll returns the response (Step Functions completed)
+      mockS3Send.mockResolvedValueOnce({
+        Body: {
+          transformToString: () =>
+            Promise.resolve(
+              JSON.stringify({
+                Status: 'SUCCESS',
+                PhysicalResourceId: 'async-resource-123',
+                Data: { AsyncResult: 'completed' },
+              })
+            ),
+        },
+      });
+
+      // S3 DeleteObject for cleanup
+      mockS3Send.mockResolvedValueOnce({});
+
+      const result = await asyncProvider.create('MyAsyncCustom', 'Custom::AsyncResource', {
+        ServiceToken: 'arn:aws:lambda:us-east-1:123456789012:function:provider-framework-onEvent',
+      });
+
+      expect(result.physicalId).toBe('async-resource-123');
+      expect(result.attributes).toEqual({ AsyncResult: 'completed' });
+      expect(mockLambdaSend).toHaveBeenCalledTimes(1);
+    });
+
+    it('should detect async pattern when Lambda returns empty object', async () => {
+      const asyncProvider = new CustomResourceProvider({
+        responseBucket: 'test-bucket',
+        asyncResponseTimeoutMs: 10_000,
+      });
+
+      // S3 PutObject for placeholder
+      mockS3Send.mockResolvedValueOnce({});
+
+      // Lambda invoke returns empty object (no PhysicalResourceId, no Status, no Data)
+      mockLambdaSend.mockResolvedValueOnce({
+        Payload: Buffer.from(JSON.stringify({})),
+      });
+
+      // S3 GetObject returns response immediately
+      mockS3Send.mockResolvedValueOnce({
+        Body: {
+          transformToString: () =>
+            Promise.resolve(
+              JSON.stringify({
+                Status: 'SUCCESS',
+                PhysicalResourceId: 'async-resource-456',
+                Data: { Output: 'done' },
+              })
+            ),
+        },
+      });
+
+      // S3 DeleteObject for cleanup
+      mockS3Send.mockResolvedValueOnce({});
+
+      const result = await asyncProvider.create('MyAsyncCustom2', 'Custom::AsyncResource', {
+        ServiceToken: 'arn:aws:lambda:us-east-1:123456789012:function:provider-framework-onEvent',
+      });
+
+      expect(result.physicalId).toBe('async-resource-456');
+      expect(result.attributes).toEqual({ Output: 'done' });
+    });
+
+    it('should handle async FAILED response from Step Functions', async () => {
+      const asyncProvider = new CustomResourceProvider({
+        responseBucket: 'test-bucket',
+        asyncResponseTimeoutMs: 10_000,
+      });
+
+      // S3 PutObject for placeholder
+      mockS3Send.mockResolvedValueOnce({});
+
+      // Lambda invoke returns null (async pattern)
+      mockLambdaSend.mockResolvedValueOnce({
+        Payload: Buffer.from('null'),
+      });
+
+      // S3 GetObject returns FAILED (Step Functions timed out or isComplete failed)
+      mockS3Send.mockResolvedValueOnce({
+        Body: {
+          transformToString: () =>
+            Promise.resolve(
+              JSON.stringify({
+                Status: 'FAILED',
+                Reason: 'Operation timed out',
+              })
+            ),
+        },
+      });
+
+      // S3 DeleteObject for cleanup
+      mockS3Send.mockResolvedValueOnce({});
+
+      await expect(
+        asyncProvider.create('MyFailingAsync', 'Custom::AsyncResource', {
+          ServiceToken:
+            'arn:aws:lambda:us-east-1:123456789012:function:provider-framework-onEvent',
+        })
+      ).rejects.toThrow('Custom resource handler returned FAILED: Operation timed out');
+    });
+
+    it('should use configurable async timeout', async () => {
+      // Very short timeout to trigger timeout quickly
+      const asyncProvider = new CustomResourceProvider({
+        responseBucket: 'test-bucket',
+        asyncResponseTimeoutMs: 100,
+      });
+
+      // S3 PutObject for placeholder
+      mockS3Send.mockResolvedValueOnce({});
+
+      // Lambda invoke returns null (async pattern)
+      mockLambdaSend.mockResolvedValueOnce({
+        Payload: Buffer.from('null'),
+      });
+
+      // S3 GetObject keeps returning empty (Step Functions never completes)
+      mockS3Send.mockImplementation(() =>
+        Promise.resolve({
+          Body: {
+            transformToString: () => Promise.resolve(''),
+          },
+        })
+      );
+
+      await expect(
+        asyncProvider.create('MyTimedOutAsync', 'Custom::AsyncResource', {
+          ServiceToken:
+            'arn:aws:lambda:us-east-1:123456789012:function:provider-framework-onEvent',
+        })
+      ).rejects.toThrow(
+        /Timeout waiting for custom resource response.*Provider framework with isCompleteHandler/
+      );
+    });
+
+    it('should handle update with async Provider framework', async () => {
+      const asyncProvider = new CustomResourceProvider({
+        responseBucket: 'test-bucket',
+        asyncResponseTimeoutMs: 10_000,
+      });
+
+      // S3 PutObject for placeholder
+      mockS3Send.mockResolvedValueOnce({});
+
+      // Lambda invoke returns null (async pattern)
+      mockLambdaSend.mockResolvedValueOnce({
+        Payload: Buffer.from('null'),
+      });
+
+      // S3 GetObject returns success response
+      mockS3Send.mockResolvedValueOnce({
+        Body: {
+          transformToString: () =>
+            Promise.resolve(
+              JSON.stringify({
+                Status: 'SUCCESS',
+                PhysicalResourceId: 'async-resource-123',
+                Data: { UpdatedOutput: 'new-value' },
+              })
+            ),
+        },
+      });
+
+      // S3 DeleteObject for cleanup
+      mockS3Send.mockResolvedValueOnce({});
+
+      const result = await asyncProvider.update(
+        'MyAsyncCustom',
+        'async-resource-123',
+        'Custom::AsyncResource',
+        {
+          ServiceToken:
+            'arn:aws:lambda:us-east-1:123456789012:function:provider-framework-onEvent',
+          Prop: 'new',
+        },
+        {
+          ServiceToken:
+            'arn:aws:lambda:us-east-1:123456789012:function:provider-framework-onEvent',
+          Prop: 'old',
+        }
+      );
+
+      expect(result.physicalId).toBe('async-resource-123');
+      expect(result.wasReplaced).toBe(false);
+      expect(result.attributes).toEqual({ UpdatedOutput: 'new-value' });
+    });
+  });
 });

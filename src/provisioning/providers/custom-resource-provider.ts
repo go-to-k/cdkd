@@ -113,11 +113,26 @@ function parseLambdaPayload(payloadBytes: Uint8Array | undefined): CustomResourc
  * This provider follows the CloudFormation custom resource protocol:
  * https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/custom-resources.html
  *
+ * Supports both standard custom resources and CDK's Provider framework:
+ *
+ * **Standard custom resources:**
+ * - ServiceToken Lambda is invoked synchronously
+ * - Handler sends cfn-response to ResponseURL (S3 pre-signed URL) or returns directly
+ * - Short polling timeout (30 seconds)
+ *
+ * **CDK Provider framework (with isCompleteHandler):**
+ * - ServiceToken points to the framework's onEvent wrapper Lambda
+ * - Lambda invokes user's onEventHandler, then starts a Step Functions state machine
+ * - Step Functions polls the isCompleteHandler until IsComplete: true
+ * - Step Functions sends cfn-response to ResponseURL when done
+ * - Lambda returns null/empty payload (async pattern detected automatically)
+ * - Long polling timeout with exponential backoff (default: 1 hour)
+ *
  * Response handling strategy:
- * 1. Generate a pre-signed S3 PUT URL as the ResponseURL
+ * 1. Generate a pre-signed S3 PUT URL as the ResponseURL (valid for 2 hours)
  * 2. Invoke Lambda synchronously (RequestResponse)
  * 3. Check Lambda payload for direct response (simple handlers)
- * 4. If no direct response, read the response from S3 (cfn-response handlers)
+ * 4. If no direct response, detect async pattern and poll S3 with appropriate timeout
  */
 export class CustomResourceProvider implements ResourceProvider {
   private lambdaClient: LambdaClient;
@@ -127,10 +142,16 @@ export class CustomResourceProvider implements ResourceProvider {
   private responseBucket: string | undefined;
   private responsePrefix: string;
 
-  /** Max time to wait for S3 response after Lambda invocation (30 seconds) */
-  private readonly RESPONSE_WAIT_TIMEOUT_MS = 30_000;
-  /** Poll interval for checking S3 response (1 second) */
-  private readonly RESPONSE_POLL_INTERVAL_MS = 1_000;
+  /** Max time to wait for synchronous S3 response after Lambda invocation (30 seconds) */
+  private readonly SYNC_RESPONSE_TIMEOUT_MS = 30_000;
+  /** Max time to wait for async S3 response (CDK Provider framework with isCompleteHandler) */
+  private readonly asyncResponseTimeoutMs: number;
+  /** Default async response timeout: 1 hour (matches CDK's default totalTimeout) */
+  private static readonly DEFAULT_ASYNC_RESPONSE_TIMEOUT_MS = 3_600_000;
+  /** Initial poll interval for checking S3 response (2 seconds) */
+  private readonly INITIAL_POLL_INTERVAL_MS = 2_000;
+  /** Max poll interval for async polling with exponential backoff (30 seconds) */
+  private readonly MAX_POLL_INTERVAL_MS = 30_000;
 
   constructor(config?: CustomResourceProviderConfig) {
     const awsClients = getAwsClients();
@@ -139,6 +160,8 @@ export class CustomResourceProvider implements ResourceProvider {
     this.s3Client = awsClients.s3;
     this.responseBucket = config?.responseBucket;
     this.responsePrefix = config?.responsePrefix ?? 'custom-resource-responses';
+    this.asyncResponseTimeoutMs =
+      config?.asyncResponseTimeoutMs ?? CustomResourceProvider.DEFAULT_ASYNC_RESPONSE_TIMEOUT_MS;
   }
 
   /**
@@ -441,6 +464,10 @@ export class CustomResourceProvider implements ResourceProvider {
     }
 
     // Try to parse direct Lambda response
+    // Track whether Lambda returned a meaningful payload. If not, this likely indicates
+    // an async pattern (e.g., CDK Provider framework with isCompleteHandler that delegates
+    // to Step Functions for polling).
+    let hasDirectPayload = false;
     try {
       const payload = parseLambdaPayload(lambdaResponse.Payload);
 
@@ -469,6 +496,10 @@ export class CustomResourceProvider implements ResourceProvider {
         }
         return result;
       }
+
+      // Payload parsed but contained no recognizable fields (e.g., empty object from
+      // CDK Provider framework after starting Step Functions). Mark as no direct payload.
+      hasDirectPayload = Object.keys(payload).length > 0;
     } catch {
       // Payload parsing failed, try S3
       this.logger.debug(`Lambda payload parse failed for ${logicalId}, checking S3 response`);
@@ -487,8 +518,24 @@ export class CustomResourceProvider implements ResourceProvider {
       };
     }
 
-    this.logger.debug(`Waiting for S3 response from Lambda for ${logicalId} (${operation})`);
-    return await this.pollS3Response(responseKey, logicalId, operation);
+    // Detect async custom resource pattern (CDK Provider framework with isCompleteHandler).
+    // When the framework Lambda starts a Step Functions state machine for async polling,
+    // it returns no meaningful payload (empty/null). In this case, the Step Functions
+    // will eventually PUT the cfn-response to the ResponseURL, which may take up to
+    // the configured totalTimeout (default: 1 hour in CDK).
+    // We use a longer timeout for this case vs the short timeout for synchronous handlers.
+    const isAsyncPattern = !hasDirectPayload;
+    if (isAsyncPattern) {
+      this.logger.info(
+        `Custom resource ${logicalId} appears to use async Provider framework (no direct Lambda response). ` +
+          `Waiting up to ${Math.round(this.asyncResponseTimeoutMs / 60_000)} minutes for Step Functions completion.`
+      );
+    } else {
+      this.logger.debug(`Waiting for S3 response from Lambda for ${logicalId} (${operation})`);
+    }
+
+    const timeoutMs = isAsyncPattern ? this.asyncResponseTimeoutMs : this.SYNC_RESPONSE_TIMEOUT_MS;
+    return await this.pollS3Response(responseKey, logicalId, operation, timeoutMs, isAsyncPattern);
   }
 
   /**
@@ -510,7 +557,8 @@ export class CustomResourceProvider implements ResourceProvider {
       })
     );
 
-    // Generate pre-signed PUT URL (valid for 5 minutes)
+    // Generate pre-signed PUT URL (valid for 2 hours to accommodate async Provider framework
+    // patterns where Step Functions may poll isCompleteHandler for up to 1 hour)
     // Don't specify ContentType so any Content-Type is accepted (cfn-response may send different types)
     const command = new PutObjectCommand({
       Bucket: this.responseBucket,
@@ -518,7 +566,7 @@ export class CustomResourceProvider implements ResourceProvider {
     });
 
     const presignedUrl = await getSignedUrl(this.s3Client, command, {
-      expiresIn: 300,
+      expiresIn: 7200,
     });
 
     this.logger.debug(
@@ -529,15 +577,30 @@ export class CustomResourceProvider implements ResourceProvider {
 
   /**
    * Poll S3 for the custom resource response
+   *
+   * Uses exponential backoff for polling interval:
+   * - Sync mode (standard handlers): starts at 2s, no backoff (short timeout)
+   * - Async mode (Provider framework with isCompleteHandler): starts at 2s, backs off to 30s max
+   *
+   * @param responseKey S3 key where response will be written
+   * @param logicalId Logical resource ID for logging
+   * @param operation Operation type (Create/Update/Delete) for logging
+   * @param timeoutMs Maximum time to wait for response
+   * @param useBackoff Whether to use exponential backoff (for async/long-running operations)
    */
   private async pollS3Response(
     responseKey: string,
     logicalId: string,
-    operation: string
+    operation: string,
+    timeoutMs: number = this.SYNC_RESPONSE_TIMEOUT_MS,
+    useBackoff: boolean = false
   ): Promise<CfnCustomResourceResponse> {
     const startTime = Date.now();
+    let currentInterval = this.INITIAL_POLL_INTERVAL_MS;
+    let pollCount = 0;
 
-    while (Date.now() - startTime < this.RESPONSE_WAIT_TIMEOUT_MS) {
+    while (Date.now() - startTime < timeoutMs) {
+      pollCount++;
       try {
         const response = await this.s3Client.send(
           new GetObjectCommand({
@@ -571,16 +634,34 @@ export class CustomResourceProvider implements ResourceProvider {
         }
       }
 
-      await this.sleep(this.RESPONSE_POLL_INTERVAL_MS);
+      await this.sleep(currentInterval);
+
+      // Apply exponential backoff for async patterns (long-running operations)
+      if (useBackoff) {
+        currentInterval = Math.min(currentInterval * 1.5, this.MAX_POLL_INTERVAL_MS);
+
+        // Log progress periodically for long-running operations
+        if (pollCount % 10 === 0) {
+          const elapsedSec = Math.round((Date.now() - startTime) / 1000);
+          this.logger.info(
+            `Still waiting for async custom resource ${logicalId} (${operation})... ` +
+              `${elapsedSec}s elapsed, polling every ${Math.round(currentInterval / 1000)}s`
+          );
+        }
+      }
     }
 
     // Cleanup on timeout
     await this.cleanupResponseObject(responseKey);
 
+    const elapsedMin = Math.round((Date.now() - startTime) / 60_000);
     throw new Error(
       `Timeout waiting for custom resource response for ${logicalId} (${operation}) ` +
-        `after ${this.RESPONSE_WAIT_TIMEOUT_MS / 1000}s. ` +
-        `The Lambda handler may not be sending a response to ResponseURL.`
+        `after ${elapsedMin} minutes. ` +
+        (useBackoff
+          ? `The async custom resource handler (Provider framework with isCompleteHandler) did not complete within the timeout. ` +
+            `Check the Step Functions execution and isCompleteHandler Lambda logs for errors.`
+          : `The Lambda handler may not be sending a response to ResponseURL.`)
     );
   }
 
@@ -609,9 +690,6 @@ export class CustomResourceProvider implements ResourceProvider {
     }
   }
 
-  /**
-   * Sleep for specified milliseconds
-   */
   /**
    * Convert property values to strings for CloudFormation compatibility
    *
