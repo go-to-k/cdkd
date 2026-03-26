@@ -18,9 +18,9 @@ export class RdsAuroraStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
     super(scope, id, props);
 
-    // Create VPC with 1 AZ and no NAT gateways to minimize cost
+    // Create VPC with 2 AZs (Aurora requires at least 2 subnets) and no NAT gateways
     const vpc = new ec2.Vpc(this, 'AuroraVpc', {
-      maxAzs: 1,
+      maxAzs: 2,
       natGateways: 0,
       subnetConfiguration: [
         {

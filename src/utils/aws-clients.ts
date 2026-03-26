@@ -9,6 +9,7 @@ import { EC2Client } from '@aws-sdk/client-ec2';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { CloudFormationClient } from '@aws-sdk/client-cloudformation';
 import { APIGatewayClient } from '@aws-sdk/client-api-gateway';
+import { EventBridgeClient } from '@aws-sdk/client-eventbridge';
 
 /**
  * AWS client configuration
@@ -38,6 +39,7 @@ export class AwsClients {
   private dynamoDBClient?: DynamoDBClient;
   private cloudFormationClient?: CloudFormationClient;
   private apiGatewayClient?: APIGatewayClient;
+  private eventBridgeClient?: EventBridgeClient;
 
   constructor(private config: AwsClientConfig = {}) {}
 
@@ -275,6 +277,26 @@ export class AwsClients {
   }
 
   /**
+   * Get EventBridge client
+   */
+  getEventBridgeClient(): EventBridgeClient {
+    if (!this.eventBridgeClient) {
+      this.eventBridgeClient = new EventBridgeClient({
+        ...(this.config.region && { region: this.config.region }),
+        ...(this.config.credentials && { credentials: this.config.credentials }),
+      });
+    }
+    return this.eventBridgeClient;
+  }
+
+  /**
+   * Convenience getter for EventBridge client
+   */
+  get eventBridge(): EventBridgeClient {
+    return this.getEventBridgeClient();
+  }
+
+  /**
    * Destroy all clients
    */
   destroy(): void {
@@ -289,6 +311,7 @@ export class AwsClients {
     this.dynamoDBClient?.destroy();
     this.cloudFormationClient?.destroy();
     this.apiGatewayClient?.destroy();
+    this.eventBridgeClient?.destroy();
   }
 }
 

@@ -785,12 +785,31 @@ export class DeployEngine {
           }
 
           this.logger.debug(`Deleting ${logicalId} (${resourceType})`);
-          await provider.delete(
-            logicalId,
-            currentResource.physicalId,
-            resourceType,
-            currentResource.properties
-          );
+          try {
+            await provider.delete(
+              logicalId,
+              currentResource.physicalId,
+              resourceType,
+              currentResource.properties
+            );
+          } catch (deleteError) {
+            const msg = deleteError instanceof Error ? deleteError.message : String(deleteError);
+            // Treat "not found" errors as success (resource already deleted)
+            if (
+              msg.includes('does not exist') ||
+              msg.includes('was not found') ||
+              msg.includes('not found') ||
+              msg.includes('NoSuchEntity') ||
+              msg.includes('NotFoundException') ||
+              msg.includes('ResourceNotFoundException')
+            ) {
+              this.logger.debug(
+                `Resource ${logicalId} already deleted (${msg}), removing from state`
+              );
+            } else {
+              throw deleteError;
+            }
+          }
 
           delete stateResources[logicalId];
           if (counts) counts.deleted++;

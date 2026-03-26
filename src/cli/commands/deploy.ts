@@ -20,6 +20,8 @@ import { IAMRoleProvider } from '../../provisioning/providers/iam-role-provider.
 import { IAMPolicyProvider } from '../../provisioning/providers/iam-policy-provider.js';
 import { S3BucketPolicyProvider } from '../../provisioning/providers/s3-bucket-policy-provider.js';
 import { SQSQueuePolicyProvider } from '../../provisioning/providers/sqs-queue-policy-provider.js';
+import { ApiGatewayProvider } from '../../provisioning/providers/apigateway-provider.js';
+import { EventBridgeRuleProvider } from '../../provisioning/providers/eventbridge-rule-provider.js';
 import { DeployEngine } from '../../deployment/deploy-engine.js';
 import { setAwsClients, AwsClients } from '../../utils/aws-clients.js';
 import { resolveApp, resolveStateBucketWithDefault } from '../config-loader.js';
@@ -179,6 +181,10 @@ async function deployCommand(
     providerRegistry.register('AWS::IAM::Policy', new IAMPolicyProvider());
     providerRegistry.register('AWS::S3::BucketPolicy', new S3BucketPolicyProvider());
     providerRegistry.register('AWS::SQS::QueuePolicy', new SQSQueuePolicyProvider());
+    const apigwProvider = new ApiGatewayProvider();
+    providerRegistry.register('AWS::ApiGateway::Account', apigwProvider);
+    providerRegistry.register('AWS::ApiGateway::Resource', apigwProvider);
+    providerRegistry.register('AWS::Events::Rule', new EventBridgeRuleProvider());
 
     // Configure custom resource response handling via S3 (for cfn-response based handlers)
     providerRegistry.setCustomResourceResponseBucket(stateBucket);
