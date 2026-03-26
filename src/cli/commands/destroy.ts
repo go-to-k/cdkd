@@ -19,6 +19,7 @@ import { SQSQueuePolicyProvider } from '../../provisioning/providers/sqs-queue-p
 import { ApiGatewayProvider } from '../../provisioning/providers/apigateway-provider.js';
 import { EventBridgeRuleProvider } from '../../provisioning/providers/eventbridge-rule-provider.js';
 import { AgentCoreRuntimeProvider } from '../../provisioning/providers/agentcore-runtime-provider.js';
+import { CloudFrontOAIProvider } from '../../provisioning/providers/cloudfront-oai-provider.js';
 import { setAwsClients, AwsClients } from '../../utils/aws-clients.js';
 import * as readline from 'node:readline/promises';
 import { resolveStateBucketWithDefault } from '../config-loader.js';
@@ -80,8 +81,13 @@ async function destroyCommand(
     providerRegistry.register('AWS::ApiGateway::Resource', apigwProvider);
     providerRegistry.register('AWS::ApiGateway::Deployment', apigwProvider);
     providerRegistry.register('AWS::ApiGateway::Stage', apigwProvider);
+    providerRegistry.register('AWS::ApiGateway::Method', apigwProvider);
     providerRegistry.register('AWS::Events::Rule', new EventBridgeRuleProvider());
     providerRegistry.register('AWS::BedrockAgentCore::Runtime', new AgentCoreRuntimeProvider());
+    providerRegistry.register(
+      'AWS::CloudFront::CloudFrontOriginAccessIdentity',
+      new CloudFrontOAIProvider()
+    );
 
     // Configure custom resource response handling via S3
     providerRegistry.setCustomResourceResponseBucket(stateBucket);

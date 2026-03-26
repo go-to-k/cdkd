@@ -9,6 +9,7 @@ import type { LockManager } from '../state/lock-manager.js';
 import type { DagBuilder } from '../analyzer/dag-builder.js';
 import type { DiffCalculator } from '../analyzer/diff-calculator.js';
 import type { ProviderRegistry } from '../provisioning/provider-registry.js';
+import { TemplateParser } from '../analyzer/template-parser.js';
 
 /**
  * Completed operation record for rollback tracking
@@ -612,19 +613,16 @@ export class DeployEngine {
             logicalId
           );
 
-          // Extract dependencies from template
-          const dependencies = template?.Resources?.[logicalId]?.DependsOn
-            ? Array.isArray(template.Resources[logicalId].DependsOn)
-              ? (template.Resources[logicalId].DependsOn as string[])
-              : [template.Resources[logicalId].DependsOn as string]
-            : undefined;
+          // Extract ALL dependencies from template (Ref, Fn::GetAtt, DependsOn)
+          // so that deletion order is correct even without implicit type-based deps
+          const dependencies = this.extractAllDependencies(template, logicalId);
 
           stateResources[logicalId] = {
             physicalId: result.physicalId,
             resourceType,
             properties: resolvedProps,
             ...(result.attributes && { attributes: result.attributes }),
-            ...(dependencies && { dependencies }),
+            ...(dependencies && dependencies.length > 0 && { dependencies }),
           };
 
           if (counts) counts.created++;
@@ -672,12 +670,8 @@ export class DeployEngine {
           // Check if this update requires resource replacement (immutable property changed)
           const needsReplacement = change.propertyChanges?.some((pc) => pc.requiresReplacement);
 
-          // Extract dependencies from template
-          const dependencies = template?.Resources?.[logicalId]?.DependsOn
-            ? Array.isArray(template.Resources[logicalId].DependsOn)
-              ? (template.Resources[logicalId].DependsOn as string[])
-              : [template.Resources[logicalId].DependsOn as string]
-            : undefined;
+          // Extract ALL dependencies from template (Ref, Fn::GetAtt, DependsOn)
+          const dependencies = this.extractAllDependencies(template, logicalId);
 
           if (needsReplacement) {
             // Resource replacement: DELETE old → CREATE new
@@ -725,7 +719,7 @@ export class DeployEngine {
               resourceType,
               properties: resolvedProps,
               ...(createResult.attributes && { attributes: createResult.attributes }),
-              ...(dependencies && { dependencies }),
+              ...(dependencies && dependencies.length > 0 && { dependencies }),
             };
 
             if (counts) counts.updated++;
@@ -759,7 +753,7 @@ export class DeployEngine {
               resourceType,
               properties: resolvedProps,
               ...(result.attributes && { attributes: result.attributes }),
-              ...(dependencies && { dependencies }),
+              ...(dependencies && dependencies.length > 0 && { dependencies }),
             };
 
             if (counts) counts.updated++;
@@ -841,6 +835,24 @@ export class DeployEngine {
    * AWS eventual consistency (e.g., Lambda fails if IAM Role hasn't propagated yet).
    * CloudFormation handles this internally; cdkq retries with exponential backoff.
    */
+  /**
+   * Extract ALL dependencies for a resource from the template.
+   *
+   * Uses TemplateParser.extractDependencies() to capture Ref, Fn::GetAtt,
+   * and DependsOn dependencies. This ensures the state contains complete
+   * dependency information for correct deletion ordering (not just DependsOn).
+   */
+  private extractAllDependencies(
+    template: CloudFormationTemplate | undefined,
+    logicalId: string
+  ): string[] | undefined {
+    const resource = template?.Resources?.[logicalId];
+    if (!resource) return undefined;
+    const parser = new TemplateParser();
+    const deps = parser.extractDependencies(resource);
+    return deps.size > 0 ? [...deps] : undefined;
+  }
+
   /**
    * Implicit dependency map for correct deletion order.
    *

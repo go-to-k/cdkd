@@ -8,6 +8,9 @@ import {
   CreateStageCommand,
   UpdateStageCommand,
   DeleteStageCommand,
+  PutMethodCommand,
+  DeleteMethodCommand,
+  PutIntegrationCommand,
   NotFoundException,
 } from '@aws-sdk/client-api-gateway';
 import { getLogger } from '../../utils/logger.js';
@@ -27,6 +30,7 @@ import type {
  * - AWS::ApiGateway::Resource (API Gateway resource / path)
  * - AWS::ApiGateway::Deployment (API Gateway deployment)
  * - AWS::ApiGateway::Stage (API Gateway stage)
+ * - AWS::ApiGateway::Method (API Gateway method)
  *
  * These resource types have issues with Cloud Control API:
  * - Account: Needs IAM trust propagation retry logic
@@ -65,6 +69,8 @@ export class ApiGatewayProvider implements ResourceProvider {
         return this.createDeployment(logicalId, resourceType, properties);
       case 'AWS::ApiGateway::Stage':
         return this.createStage(logicalId, resourceType, properties);
+      case 'AWS::ApiGateway::Method':
+        return this.createMethod(logicalId, resourceType, properties);
       default:
         throw new ProvisioningError(
           `Unsupported resource type: ${resourceType}`,
@@ -105,6 +111,8 @@ export class ApiGatewayProvider implements ResourceProvider {
           properties,
           previousProperties
         );
+      case 'AWS::ApiGateway::Method':
+        return this.updateMethod(logicalId, physicalId);
       default:
         throw new ProvisioningError(
           `Unsupported resource type: ${resourceType}`,
@@ -133,6 +141,8 @@ export class ApiGatewayProvider implements ResourceProvider {
         return this.deleteDeployment(logicalId, physicalId, resourceType, properties);
       case 'AWS::ApiGateway::Stage':
         return this.deleteStage(logicalId, physicalId, resourceType, properties);
+      case 'AWS::ApiGateway::Method':
+        return this.deleteMethod(logicalId, physicalId, resourceType);
       default:
         throw new ProvisioningError(
           `Unsupported resource type: ${resourceType}`,
@@ -161,6 +171,8 @@ export class ApiGatewayProvider implements ResourceProvider {
         return this.getDeploymentAttribute(physicalId, attributeName);
       case 'AWS::ApiGateway::Stage':
         return this.getStageAttribute(physicalId, attributeName);
+      case 'AWS::ApiGateway::Method':
+        return this.getMethodAttribute(physicalId, attributeName);
       default:
         return undefined;
     }
@@ -832,6 +844,162 @@ export class ApiGatewayProvider implements ResourceProvider {
   private async getStageAttribute(physicalId: string, attributeName: string): Promise<unknown> {
     if (attributeName === 'StageName') {
       return physicalId;
+    }
+
+    return undefined;
+  }
+
+  // ─── AWS::ApiGateway::Method ──────────────────────────────────────
+
+  /**
+   * Create an API Gateway Method
+   *
+   * Creates a method on a resource and optionally sets up the integration.
+   * PhysicalId format: `{restApiId}|{resourceId}|{httpMethod}`
+   */
+  private async createMethod(
+    logicalId: string,
+    resourceType: string,
+    properties: Record<string, unknown>
+  ): Promise<ResourceCreateResult> {
+    this.logger.debug(`Creating API Gateway Method ${logicalId}`);
+
+    const restApiId = properties['RestApiId'] as string;
+    const resourceId = properties['ResourceId'] as string;
+    const httpMethod = properties['HttpMethod'] as string;
+    const authorizationType = (properties['AuthorizationType'] as string) ?? 'NONE';
+
+    if (!restApiId || !resourceId || !httpMethod) {
+      throw new ProvisioningError(
+        `RestApiId, ResourceId, and HttpMethod are required for API Gateway Method ${logicalId}`,
+        resourceType,
+        logicalId
+      );
+    }
+
+    try {
+      await this.apiGatewayClient.send(
+        new PutMethodCommand({
+          restApiId,
+          resourceId,
+          httpMethod,
+          authorizationType,
+        })
+      );
+
+      // If Integration property exists, set up the integration
+      const integration = properties['Integration'] as Record<string, unknown> | undefined;
+      if (integration) {
+        await this.apiGatewayClient.send(
+          new PutIntegrationCommand({
+            restApiId,
+            resourceId,
+            httpMethod,
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            type: integration['Type'] as any,
+            integrationHttpMethod: integration['IntegrationHttpMethod'] as string | undefined,
+            uri: integration['Uri'] as string | undefined,
+          })
+        );
+      }
+
+      const physicalId = `${restApiId}|${resourceId}|${httpMethod}`;
+      this.logger.debug(`Successfully created API Gateway Method ${logicalId}: ${physicalId}`);
+
+      return {
+        physicalId,
+        attributes: {},
+      };
+    } catch (error) {
+      const cause = error instanceof Error ? error : undefined;
+      throw new ProvisioningError(
+        `Failed to create API Gateway Method ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        resourceType,
+        logicalId,
+        undefined,
+        cause
+      );
+    }
+  }
+
+  /**
+   * Update an API Gateway Method
+   *
+   * Methods are typically replaced via new deployment, so this is a no-op.
+   */
+  // eslint-disable-next-line @typescript-eslint/require-await
+  private async updateMethod(logicalId: string, physicalId: string): Promise<ResourceUpdateResult> {
+    this.logger.debug(`Updating API Gateway Method ${logicalId}: ${physicalId} (no-op)`);
+
+    return {
+      physicalId,
+      wasReplaced: false,
+      attributes: {},
+    };
+  }
+
+  /**
+   * Delete an API Gateway Method
+   *
+   * Parses the composite physicalId (`restApiId|resourceId|httpMethod`) and
+   * calls DeleteMethodCommand. Handles NotFoundException gracefully.
+   */
+  private async deleteMethod(
+    logicalId: string,
+    physicalId: string,
+    resourceType: string
+  ): Promise<void> {
+    this.logger.debug(`Deleting API Gateway Method ${logicalId}: ${physicalId}`);
+
+    const parts = physicalId.split('|');
+    if (parts.length !== 3) {
+      throw new ProvisioningError(
+        `Invalid physicalId format for API Gateway Method ${logicalId}: expected "restApiId|resourceId|httpMethod", got "${physicalId}"`,
+        resourceType,
+        logicalId,
+        physicalId
+      );
+    }
+
+    const [restApiId, resourceId, httpMethod] = parts;
+
+    try {
+      await this.apiGatewayClient.send(
+        new DeleteMethodCommand({
+          restApiId,
+          resourceId,
+          httpMethod,
+        })
+      );
+
+      this.logger.debug(`Successfully deleted API Gateway Method ${logicalId}`);
+    } catch (error) {
+      if (error instanceof NotFoundException) {
+        this.logger.debug(`API Gateway Method ${physicalId} does not exist, skipping deletion`);
+        return;
+      }
+
+      const cause = error instanceof Error ? error : undefined;
+      throw new ProvisioningError(
+        `Failed to delete API Gateway Method ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        resourceType,
+        logicalId,
+        physicalId,
+        cause
+      );
+    }
+  }
+
+  /**
+   * Get API Gateway Method attribute
+   */
+  // eslint-disable-next-line @typescript-eslint/require-await
+  private async getMethodAttribute(physicalId: string, attributeName: string): Promise<unknown> {
+    const parts = physicalId.split('|');
+    if (parts.length === 3) {
+      if (attributeName === 'RestApiId') return parts[0];
+      if (attributeName === 'ResourceId') return parts[1];
+      if (attributeName === 'HttpMethod') return parts[2];
     }
 
     return undefined;

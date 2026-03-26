@@ -800,6 +800,228 @@ describe('ApiGatewayProvider', () => {
     });
   });
 
+  // ─── AWS::ApiGateway::Method ──────────────────────────────────────
+
+  describe('AWS::ApiGateway::Method', () => {
+    const resourceType = 'AWS::ApiGateway::Method';
+
+    describe('create', () => {
+      it('should create a method with required properties', async () => {
+        mockSend.mockResolvedValueOnce({}); // PutMethodCommand
+
+        const result = await provider.create('MyMethod', resourceType, {
+          RestApiId: 'api-id',
+          ResourceId: 'resource-id',
+          HttpMethod: 'GET',
+          AuthorizationType: 'NONE',
+        });
+
+        expect(result.physicalId).toBe('api-id|resource-id|GET');
+        expect(result.attributes).toEqual({});
+        expect(mockSend).toHaveBeenCalledTimes(1);
+
+        const command = mockSend.mock.calls[0][0];
+        expect(command.constructor.name).toBe('PutMethodCommand');
+        expect(command.input).toEqual({
+          restApiId: 'api-id',
+          resourceId: 'resource-id',
+          httpMethod: 'GET',
+          authorizationType: 'NONE',
+        });
+      });
+
+      it('should default authorizationType to NONE when not specified', async () => {
+        mockSend.mockResolvedValueOnce({}); // PutMethodCommand
+
+        const result = await provider.create('MyMethod', resourceType, {
+          RestApiId: 'api-id',
+          ResourceId: 'resource-id',
+          HttpMethod: 'POST',
+        });
+
+        expect(result.physicalId).toBe('api-id|resource-id|POST');
+
+        const command = mockSend.mock.calls[0][0];
+        expect(command.input.authorizationType).toBe('NONE');
+      });
+
+      it('should create method with integration', async () => {
+        mockSend.mockResolvedValueOnce({}); // PutMethodCommand
+        mockSend.mockResolvedValueOnce({}); // PutIntegrationCommand
+
+        const result = await provider.create('MyMethod', resourceType, {
+          RestApiId: 'api-id',
+          ResourceId: 'resource-id',
+          HttpMethod: 'POST',
+          AuthorizationType: 'NONE',
+          Integration: {
+            Type: 'AWS_PROXY',
+            IntegrationHttpMethod: 'POST',
+            Uri: 'arn:aws:apigateway:us-east-1:lambda:path/2015-03-31/functions/arn:aws:lambda:us-east-1:123456789012:function:MyFunc/invocations',
+          },
+        });
+
+        expect(result.physicalId).toBe('api-id|resource-id|POST');
+        expect(mockSend).toHaveBeenCalledTimes(2);
+
+        const putMethodCmd = mockSend.mock.calls[0][0];
+        expect(putMethodCmd.constructor.name).toBe('PutMethodCommand');
+
+        const putIntegrationCmd = mockSend.mock.calls[1][0];
+        expect(putIntegrationCmd.constructor.name).toBe('PutIntegrationCommand');
+        expect(putIntegrationCmd.input).toEqual({
+          restApiId: 'api-id',
+          resourceId: 'resource-id',
+          httpMethod: 'POST',
+          type: 'AWS_PROXY',
+          integrationHttpMethod: 'POST',
+          uri: 'arn:aws:apigateway:us-east-1:lambda:path/2015-03-31/functions/arn:aws:lambda:us-east-1:123456789012:function:MyFunc/invocations',
+        });
+      });
+
+      it('should throw when required properties are missing', async () => {
+        await expect(
+          provider.create('MyMethod', resourceType, {
+            RestApiId: 'api-id',
+            HttpMethod: 'GET',
+          })
+        ).rejects.toThrow('RestApiId, ResourceId, and HttpMethod are required');
+      });
+
+      it('should throw when RestApiId is missing', async () => {
+        await expect(
+          provider.create('MyMethod', resourceType, {
+            ResourceId: 'resource-id',
+            HttpMethod: 'GET',
+          })
+        ).rejects.toThrow('RestApiId, ResourceId, and HttpMethod are required');
+      });
+
+      it('should throw when HttpMethod is missing', async () => {
+        await expect(
+          provider.create('MyMethod', resourceType, {
+            RestApiId: 'api-id',
+            ResourceId: 'resource-id',
+          })
+        ).rejects.toThrow('RestApiId, ResourceId, and HttpMethod are required');
+      });
+
+      it('should throw on API error', async () => {
+        mockSend.mockRejectedValueOnce(new Error('API error'));
+
+        await expect(
+          provider.create('MyMethod', resourceType, {
+            RestApiId: 'api-id',
+            ResourceId: 'resource-id',
+            HttpMethod: 'GET',
+            AuthorizationType: 'NONE',
+          })
+        ).rejects.toThrow('Failed to create API Gateway Method');
+      });
+    });
+
+    describe('update', () => {
+      it('should return no-op (methods are replaced via new deployment)', async () => {
+        const result = await provider.update(
+          'MyMethod',
+          'api-id|resource-id|GET',
+          resourceType,
+          { RestApiId: 'api-id', ResourceId: 'resource-id', HttpMethod: 'GET' },
+          { RestApiId: 'api-id', ResourceId: 'resource-id', HttpMethod: 'GET' }
+        );
+
+        expect(result.physicalId).toBe('api-id|resource-id|GET');
+        expect(result.wasReplaced).toBe(false);
+        expect(result.attributes).toEqual({});
+        expect(mockSend).not.toHaveBeenCalled();
+      });
+    });
+
+    describe('delete', () => {
+      it('should delete a method by parsing physicalId', async () => {
+        mockSend.mockResolvedValueOnce({});
+
+        await provider.delete('MyMethod', 'api-id|resource-id|GET', resourceType);
+
+        expect(mockSend).toHaveBeenCalledTimes(1);
+
+        const command = mockSend.mock.calls[0][0];
+        expect(command.constructor.name).toBe('DeleteMethodCommand');
+        expect(command.input).toEqual({
+          restApiId: 'api-id',
+          resourceId: 'resource-id',
+          httpMethod: 'GET',
+        });
+      });
+
+      it('should skip deletion when method not found', async () => {
+        mockSend.mockRejectedValueOnce(
+          new NotFoundException({ $metadata: {}, message: 'not found' })
+        );
+
+        await provider.delete('MyMethod', 'api-id|resource-id|GET', resourceType);
+
+        expect(mockSend).toHaveBeenCalledTimes(1);
+      });
+
+      it('should throw on invalid physicalId format', async () => {
+        await expect(
+          provider.delete('MyMethod', 'invalid-id', resourceType)
+        ).rejects.toThrow('Invalid physicalId format for API Gateway Method');
+      });
+
+      it('should throw on API error', async () => {
+        mockSend.mockRejectedValueOnce(new Error('service error'));
+
+        await expect(
+          provider.delete('MyMethod', 'api-id|resource-id|GET', resourceType)
+        ).rejects.toThrow('Failed to delete API Gateway Method');
+      });
+    });
+
+    describe('getAttribute', () => {
+      it('should return RestApiId from physicalId', async () => {
+        const result = await provider.getAttribute(
+          'api-id|resource-id|GET',
+          resourceType,
+          'RestApiId'
+        );
+
+        expect(result).toBe('api-id');
+      });
+
+      it('should return ResourceId from physicalId', async () => {
+        const result = await provider.getAttribute(
+          'api-id|resource-id|GET',
+          resourceType,
+          'ResourceId'
+        );
+
+        expect(result).toBe('resource-id');
+      });
+
+      it('should return HttpMethod from physicalId', async () => {
+        const result = await provider.getAttribute(
+          'api-id|resource-id|GET',
+          resourceType,
+          'HttpMethod'
+        );
+
+        expect(result).toBe('GET');
+      });
+
+      it('should return undefined for unknown attributes', async () => {
+        const result = await provider.getAttribute(
+          'api-id|resource-id|GET',
+          resourceType,
+          'UnknownAttr'
+        );
+
+        expect(result).toBeUndefined();
+      });
+    });
+  });
+
   // ─── Unsupported resource type ────────────────────────────────────
 
   describe('unsupported resource type', () => {
