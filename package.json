@@ -4,7 +4,20 @@
   "description": "CDK Quick Deploy - Deploy AWS CDK apps directly via SDK/Cloud Control API",
   "main": "dist/index.js",
   "bin": {
-    "cdkq": "dist/cli.js"
+    "cdkq": "./dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/go-to-k/cdkq.git"
+  },
+  "homepage": "https://github.com/go-to-k/cdkq",
+  "bugs": {
+    "url": "https://github.com/go-to-k/cdkq/issues"
   },
   "type": "module",
   "scripts": {
@@ -24,9 +37,10 @@
     "aws",
     "cdk",
     "cloudformation",
-    "deployment",
-    "infrastructure",
-    "cloud-control-api"
+    "cloud-control",
+    "deploy",
+    "infrastructure-as-code",
+    "iac"
   ],
   "author": "",
   "license": "Apache-2.0",
