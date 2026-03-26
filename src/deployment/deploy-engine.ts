@@ -780,11 +780,17 @@ export class DeployEngine {
 
           this.logger.debug(`Deleting ${logicalId} (${resourceType})`);
           try {
-            await provider.delete(
+            await this.withRetry(
+              () =>
+                provider.delete(
+                  logicalId,
+                  currentResource.physicalId,
+                  resourceType,
+                  currentResource.properties
+                ),
               logicalId,
-              currentResource.physicalId,
-              resourceType,
-              currentResource.properties
+              3, // fewer retries for DELETE
+              5_000
             );
           } catch (deleteError) {
             const msg = deleteError instanceof Error ? deleteError.message : String(deleteError);
@@ -1057,7 +1063,7 @@ export class DeployEngine {
     if (causeStatus === 429 || causeStatus === 503) return true;
 
     // IAM propagation delay patterns
-    const iamPatterns = [
+    const retryablePatterns = [
       'cannot be assumed',
       'role defined for the function',
       'not authorized to perform',
@@ -1065,8 +1071,12 @@ export class DeployEngine {
       'trust policy',
       'Role validation failed',
       'does not have required permissions',
+      // DELETE dependency ordering (parallel deletion race conditions)
+      'has dependencies and cannot be deleted',
+      "can't be deleted since it has",
+      'DependencyViolation',
     ];
-    return iamPatterns.some((p) => message.includes(p));
+    return retryablePatterns.some((p) => message.includes(p));
   }
 
   /**

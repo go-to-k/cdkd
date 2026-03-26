@@ -286,18 +286,54 @@ async function destroyCommand(
 
             try {
               const provider = providerRegistry.getProvider(resource.resourceType);
-              await provider.delete(
-                logicalId,
-                resource.physicalId,
-                resource.resourceType,
-                resource.properties
-              );
+              // Retry DELETE for transient errors (throttle, dependency race)
+              let lastDeleteError: unknown;
+              for (let attempt = 0; attempt <= 3; attempt++) {
+                try {
+                  await provider.delete(
+                    logicalId,
+                    resource.physicalId,
+                    resource.resourceType,
+                    resource.properties
+                  );
+                  lastDeleteError = null;
+                  break;
+                } catch (retryError) {
+                  lastDeleteError = retryError;
+                  const msg = retryError instanceof Error ? retryError.message : String(retryError);
+                  const isRetryable =
+                    msg.includes('Too Many Requests') ||
+                    msg.includes('has dependencies') ||
+                    msg.includes("can't be deleted since") ||
+                    msg.includes('DependencyViolation');
+                  if (!isRetryable || attempt >= 3) break;
+                  const delay = 5000 * Math.pow(2, attempt);
+                  logger.debug(
+                    `  ⏳ Retrying delete ${logicalId} in ${delay / 1000}s (attempt ${attempt + 1}/3)`
+                  );
+                  await new Promise((resolve) => setTimeout(resolve, delay));
+                }
+              }
+              if (lastDeleteError) throw lastDeleteError;
 
               logger.info(`  ✅ ${logicalId} (${resource.resourceType}) deleted`);
               deletedCount++;
             } catch (error) {
-              logger.error(`  ✗ Failed to delete ${logicalId}:`, String(error));
-              errorCount++;
+              const msg = error instanceof Error ? error.message : String(error);
+              // Treat "not found" as already deleted
+              if (
+                msg.includes('does not exist') ||
+                msg.includes('not found') ||
+                msg.includes('No policy found') ||
+                msg.includes('NoSuchEntity') ||
+                msg.includes('NotFoundException')
+              ) {
+                logger.debug(`  ${logicalId} already deleted, removing from state`);
+                deletedCount++;
+              } else {
+                logger.error(`  ✗ Failed to delete ${logicalId}:`, String(error));
+                errorCount++;
+              }
             }
           });
 
