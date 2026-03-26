@@ -121,6 +121,8 @@ Currently implemented SDK Providers (`src/provisioning/providers/`):
 - `iam-policy-provider.ts` - AWS::IAM::Policy
 - `s3-bucket-policy-provider.ts` - AWS::S3::BucketPolicy
 - `sqs-queue-policy-provider.ts` - AWS::SQS::QueuePolicy
+- `eventbridge-rule-provider.ts` - AWS::Events::Rule
+- `apigateway-provider.ts` - AWS::ApiGateway::Account, AWS::ApiGateway::Resource
 
 These are custom implementations for resources not supported by Cloud Control API.
 
@@ -231,7 +233,7 @@ registry.register('AWS::IAM::Role', new IAMRoleProvider());
 - `tests/integration/examples/**`
 - Uses actual AWS account
 - Environment variables: `STATE_BUCKET`, `AWS_REGION`
-- 10 examples verified with real AWS deployments (as of 2026-03-26):
+- 19 examples verified with real AWS deployments (as of 2026-03-26):
   - basic: S3 bucket (CREATE + UPDATE verified)
   - conditions: Conditional resources with AWS::NoValue
   - parameters: CloudFormation Parameters with default values
@@ -241,6 +243,16 @@ registry.register('AWS::IAM::Role', new IAMRoleProvider());
   - multi-resource: Known issue with Custom Resource CloudFormation integration
   - ecr: ECR repository deployment
   - apigateway: API Gateway + Lambda integration
+  - ecs-fargate: ECS Fargate service deployment
+  - eventbridge: EventBridge rules
+  - sns-sqs-event: SNS + SQS event integration
+  - dynamodb-streams: DynamoDB Streams
+  - stepfunctions: Step Functions state machine
+  - ec2-vpc: EC2 VPC deployment
+  - s3-cloudfront: S3 + CloudFront distribution
+  - cloudwatch: CloudWatch alarms and dashboards
+  - rds-aurora: RDS Aurora cluster
+  - bedrock-agent: Bedrock Agent
 
 ### UPDATE Testing
 
@@ -310,10 +322,17 @@ See [docs/provider-development.md](docs/provider-development.md) for details.
 - ✅ Compact output mode (default clean output, `--verbose` for full details)
 - ✅ `--state-bucket` auto-resolves from STS account ID: `cdkq-state-{accountId}-{region}`
 - ✅ Attribute mapper: CC API property names mapped to GetAtt attribute names
-- ✅ 140 unit tests, 9 integration examples, E2E test script
+- ✅ 204 unit tests, 19 integration examples, E2E test script
 - ✅ DeletionPolicy: Retain support (skip deletion for retained resources)
 - ✅ Resource replacement for immutable property changes (CREATE→DELETE)
 - ✅ Type safety improvements (error handling, any type elimination in custom resources)
+- ✅ Dynamic References: `{{resolve:secretsmanager:...}}` and `{{resolve:ssm:...}}`
+- ✅ SDK Providers: EventBridge Rule, API Gateway Account, API Gateway Resource
+- ✅ ALL pseudo parameters supported (AWS::StackId included)
+- ✅ DELETE idempotency (not-found errors treated as success)
+- ✅ Destroy ordering: reverse dependency from state
+- ✅ CC API null value stripping
+- ✅ CC API JSON string properties (EventPattern)
 
 ## Dependencies
 

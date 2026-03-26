@@ -108,7 +108,7 @@ The speed gain comes from eliminating CloudFormation overhead (stack creation, c
 | `AWS::URLSuffix` | ✅ |
 | `AWS::NoValue` | ✅ |
 | `AWS::StackName` | ✅ |
-| `AWS::StackId` | ❌ Not yet |
+| `AWS::StackId` | ✅ |
 
 ### Resource Provisioning
 
@@ -123,6 +123,9 @@ The speed gain comes from eliminating CloudFormation overhead (stack creation, c
 | **IAM** | AWS::IAM::Policy | SDK Provider | ✅ |
 | **IAM** | AWS::S3::BucketPolicy | SDK Provider | ✅ |
 | **IAM** | AWS::SQS::QueuePolicy | SDK Provider | ✅ |
+| **Events** | AWS::Events::Rule | SDK Provider | ✅ |
+| **API Gateway** | AWS::ApiGateway::Account | SDK Provider | ✅ |
+| **API Gateway** | AWS::ApiGateway::Resource | SDK Provider | ✅ |
 | **Custom** | Custom::* (Lambda-backed) | SDK Provider | ✅ (sync only) |
 | **Other** | 200+ resource types | Cloud Control | ✅ |
 
@@ -137,6 +140,8 @@ The speed gain comes from eliminating CloudFormation overhead (stack creation, c
 | Cross-stack references | ✅ | Via `Fn::ImportValue` + S3 state |
 | JSON Patch updates | ✅ | RFC 6902, minimal patches |
 | Resource replacement detection | ✅ | 10+ resource types |
+| Dynamic References | ✅ | `{{resolve:secretsmanager:...}}`, `{{resolve:ssm:...}}` |
+| DELETE idempotency | ✅ | Not-found errors treated as success |
 | Asset publishing (S3) | ✅ | Lambda code packages |
 | Asset publishing (ECR) | ✅ | Via `@aws-cdk/cdk-assets-lib` |
 | Custom Resources (SNS-backed) | ❌ | Lambda-backed only |
@@ -312,6 +317,15 @@ See the [tests/integration/examples](tests/integration/examples) directory for w
 - [ecr](tests/integration/examples/ecr) - ECR repository deployment
 - [apigateway](tests/integration/examples/apigateway) - API Gateway integration
 - [ecs-fargate](tests/integration/examples/ecs-fargate) - ECS Fargate service deployment
+- [eventbridge](tests/integration/examples/eventbridge) - EventBridge rules
+- [sns-sqs-event](tests/integration/examples/sns-sqs-event) - SNS + SQS event integration
+- [dynamodb-streams](tests/integration/examples/dynamodb-streams) - DynamoDB Streams
+- [stepfunctions](tests/integration/examples/stepfunctions) - Step Functions state machine
+- [ec2-vpc](tests/integration/examples/ec2-vpc) - EC2 VPC deployment
+- [s3-cloudfront](tests/integration/examples/s3-cloudfront) - S3 + CloudFront distribution
+- [cloudwatch](tests/integration/examples/cloudwatch) - CloudWatch alarms and dashboards
+- [rds-aurora](tests/integration/examples/rds-aurora) - RDS Aurora cluster
+- [bedrock-agent](tests/integration/examples/bedrock-agent) - Bedrock Agent
 
 See [docs/testing.md](docs/testing.md) for detailed testing instructions including UPDATE operations.
 
@@ -387,8 +401,8 @@ After deployment, outputs are resolved and saved to state:
 
 ## Testing
 
-- **140 unit tests** covering all layers
-- **10 integration examples** verified with real AWS deployments
+- **204 unit tests** covering all layers
+- **19 integration examples** verified with real AWS deployments
 - **E2E test script** for automated deploy/update/destroy cycles
 
 ```bash
@@ -417,7 +431,6 @@ See [docs/implementation-plan.md](docs/implementation-plan.md) for detailed impl
 
 - Custom Resources: SNS-backed (Lambda-backed is supported)
 - Custom Resources: Step Functions / async patterns
-- `AWS::StackId` pseudo parameter
 
 See [docs/implementation-plan.md](docs/implementation-plan.md) for complete roadmap.
 

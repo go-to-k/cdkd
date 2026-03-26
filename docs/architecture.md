@@ -55,6 +55,9 @@
                                       │      provider.ts            │
                                       │    - sqs-queue-policy-      │
                                       │      provider.ts            │
+                                      │    - eventbridge-rule-      │
+                                      │      provider.ts            │
+                                      │    - apigateway-provider.ts │
                                       │    - custom-resource-       │
                                       │      provider.ts            │
                                       │  - json-patch-generator.ts  │
@@ -342,7 +345,10 @@ interface ResolutionContext {
 - `AWS::AccountId`: Retrieved from STS `GetCallerIdentity`
 - `AWS::Region`: From CLI options
 - `AWS::Partition`: "aws" (fixed)
-- `AWS::StackId`, `AWS::StackName`: Environment variable or hardcoded
+- `AWS::StackId`: Generated unique identifier
+- `AWS::StackName`: From stack configuration
+- `AWS::URLSuffix`: "amazonaws.com"
+- `AWS::NoValue`: For conditional property omission
 
 ### 7. Provisioning Layer (`src/provisioning/`)
 
@@ -415,7 +421,15 @@ For resources not supported by Cloud Control API or requiring fine-grained contr
 4. **`sqs-queue-policy-provider.ts`** - `AWS::SQS::QueuePolicy`
    - `SQSClient`: `SetQueueAttributes`, `GetQueueAttributes`
 
-5. **`custom-resource-provider.ts`** - `Custom::*`
+5. **`eventbridge-rule-provider.ts`** - `AWS::Events::Rule`
+   - `EventBridgeClient`: `PutRule`, `PutTargets`, `RemoveTargets`, `DeleteRule`
+   - Handles JSON string properties (EventPattern)
+
+6. **`apigateway-provider.ts`** - `AWS::ApiGateway::Account`, `AWS::ApiGateway::Resource`
+   - `APIGatewayClient`: `UpdateAccount`, `CreateResource`, `DeleteResource`
+   - IAM trust propagation retry logic for Account
+
+7. **`custom-resource-provider.ts`** - `Custom::*`
    - Lambda-backed custom resources
    - Invokes custom resource Lambda via `LambdaClient.invoke()`
    - Same request format as CloudFormation
@@ -642,7 +656,7 @@ Each layer has clear responsibilities
 ### 4. Sensitive Information
 
 - CloudFormation Parameters supported (with default values and type coercion)
-- Secrets Manager / Parameter Store `Ref` not supported
+- Dynamic References supported: `{{resolve:secretsmanager:...}}` and `{{resolve:ssm:...}}`
 
 ## Limitations and Future Extensions
 

@@ -375,6 +375,8 @@ import { IAMRoleProvider } from '../provisioning/providers/iam-role-provider.js'
 import { IAMPolicyProvider } from '../provisioning/providers/iam-policy-provider.js';
 import { S3BucketPolicyProvider } from '../provisioning/providers/s3-bucket-policy-provider.js';
 import { SQSQueuePolicyProvider } from '../provisioning/providers/sqs-queue-policy-provider.js';
+import { EventBridgeRuleProvider } from '../provisioning/providers/eventbridge-rule-provider.js';
+import { ApiGatewayProvider } from '../provisioning/providers/apigateway-provider.js';
 import { CustomResourceProvider } from '../provisioning/providers/custom-resource-provider.js';
 
 // Register providers
@@ -383,6 +385,9 @@ registry.register('AWS::IAM::Role', new IAMRoleProvider());
 registry.register('AWS::IAM::Policy', new IAMPolicyProvider());
 registry.register('AWS::S3::BucketPolicy', new S3BucketPolicyProvider());
 registry.register('AWS::SQS::QueuePolicy', new SQSQueuePolicyProvider());
+registry.register('AWS::Events::Rule', new EventBridgeRuleProvider());
+registry.register('AWS::ApiGateway::Account', new ApiGatewayProvider());
+registry.register('AWS::ApiGateway::Resource', new ApiGatewayProvider());
 
 // Wildcard matching for Custom::*
 if (resourceType.startsWith('Custom::')) {

@@ -153,6 +153,76 @@ npm install
 - REST API with API Gateway
 - Lambda integration
 
+#### ECS Fargate Example
+
+```bash
+cd /Users/goto/github/cdkq/tests/integration/examples/ecs-fargate
+npm install
+```
+
+#### EventBridge Example
+
+```bash
+cd /Users/goto/github/cdkq/tests/integration/examples/eventbridge
+npm install
+```
+
+#### SNS + SQS Event Example
+
+```bash
+cd /Users/goto/github/cdkq/tests/integration/examples/sns-sqs-event
+npm install
+```
+
+#### DynamoDB Streams Example
+
+```bash
+cd /Users/goto/github/cdkq/tests/integration/examples/dynamodb-streams
+npm install
+```
+
+#### Step Functions Example
+
+```bash
+cd /Users/goto/github/cdkq/tests/integration/examples/stepfunctions
+npm install
+```
+
+#### EC2 VPC Example
+
+```bash
+cd /Users/goto/github/cdkq/tests/integration/examples/ec2-vpc
+npm install
+```
+
+#### S3 + CloudFront Example
+
+```bash
+cd /Users/goto/github/cdkq/tests/integration/examples/s3-cloudfront
+npm install
+```
+
+#### CloudWatch Example
+
+```bash
+cd /Users/goto/github/cdkq/tests/integration/examples/cloudwatch
+npm install
+```
+
+#### RDS Aurora Example
+
+```bash
+cd /Users/goto/github/cdkq/tests/integration/examples/rds-aurora
+npm install
+```
+
+#### Bedrock Agent Example
+
+```bash
+cd /Users/goto/github/cdkq/tests/integration/examples/bedrock-agent
+npm install
+```
+
 For details on each example, refer to the README.md in each directory.
 
 ### Option B: Create a New CDK Application
@@ -413,6 +483,9 @@ For resources not supported by Cloud Control API, you can implement SDK provider
 - `AWS::IAM::Policy` - IAM policies (inline policy support)
 - `AWS::S3::BucketPolicy` - S3 bucket policies
 - `AWS::SQS::QueuePolicy` - SQS queue policies
+- `AWS::Events::Rule` - EventBridge rules
+- `AWS::ApiGateway::Account` - API Gateway account settings
+- `AWS::ApiGateway::Resource` - API Gateway resources
 - `Custom::*` - Lambda-backed custom resources (Create/Update/Delete)
 
 If you use other resources not supported by Cloud Control API, an error message will be displayed.
@@ -431,8 +504,11 @@ node ${CDKQ_PATH}/dist/cli.js deploy ... --verbose
 
 2. **CloudFormation Intrinsic Functions**: All intrinsic functions are now supported.
 
-3. **Pseudo Parameters**: The following parameters are supported:
+3. **Pseudo Parameters**: All pseudo parameters are supported:
    - ✅ `AWS::AccountId` - Retrieves actual value from STS GetCallerIdentity
    - ✅ `AWS::Region` - Uses configured region
    - ✅ `AWS::Partition` - Default "aws"
-   - ⚠️ Other pseudo parameters (such as AWS::StackId) return environment variable or hardcoded values
+   - ✅ `AWS::StackName` - From stack configuration
+   - ✅ `AWS::StackId` - Generated unique identifier
+   - ✅ `AWS::URLSuffix` - "amazonaws.com"
+   - ✅ `AWS::NoValue` - For conditional property omission

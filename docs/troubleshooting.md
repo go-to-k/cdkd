@@ -55,8 +55,8 @@ aws s3api get-object \
 # Delete lock file
 aws s3 rm s3://${STATE_BUCKET}/stacks/MyStack/lock.json
 
-# Or use cdkq command (planned for future implementation)
-# cdkq unlock --stack MyStack --force
+# Or use cdkq force-unlock command
+cdkq force-unlock MyStack
 ```
 
 **3. Increase retry count**
@@ -764,7 +764,7 @@ A: On next deployment, all resources will be treated as CREATE. If existing reso
 
 ### Q: Is there a rollback feature?
 
-A: Currently no. On error, partial state is saved and remaining changes applied as diff on next execution.
+A: Yes. By default, cdkq rolls back on failure. Use `--no-rollback` to skip rollback and keep partial state (Terraform-style). On next execution, remaining changes are applied as diff.
 
 ### Q: Are custom resources supported?
 
