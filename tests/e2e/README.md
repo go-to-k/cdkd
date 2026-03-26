@@ -1,89 +1,81 @@
 # cdkd E2E Tests
 
-End-to-end test script that runs a full deploy/diff/update/destroy lifecycle against a real AWS account.
+End-to-end test scripts that run a full deploy/diff/update/destroy lifecycle against a real AWS account.
 
 ## Prerequisites
 
 - AWS credentials configured (via environment variables, profile, or IAM role)
-- An S3 bucket for cdkd state management (created via `cdkd bootstrap` or manually)
-- Node.js >= 20.0.0
 - cdkd built (`npm run build` from project root)
+- `cdkd bootstrap` run at least once for the target region
 
-## Setup
+## Scripts
 
-Make the script executable:
+### `test-matrix.sh` — Run all tests
 
-```bash
-chmod +x tests/e2e/run-e2e.sh
-```
-
-## Usage
+Runs all integration tests sequentially with their required configuration. Each test's environment (e.g., context args) is defined in the matrix.
 
 ```bash
-# Run with basic example (default)
-STATE_BUCKET=my-cdkd-state-bucket ./tests/e2e/run-e2e.sh
+# Run all tests
+./tests/e2e/test-matrix.sh
 
-# Run with a specific example
-STATE_BUCKET=my-cdkd-state-bucket ./tests/e2e/run-e2e.sh ../integration/lambda
-
-# With custom region
-STATE_BUCKET=my-cdkd-state-bucket AWS_REGION=ap-northeast-1 ./tests/e2e/run-e2e.sh
-
-# With custom cdkd binary path
-STATE_BUCKET=my-cdkd-state-bucket CDKD_PATH=/absolute/path/to/dist/cli.js ./tests/e2e/run-e2e.sh
-
-# Run with absolute path to example
-STATE_BUCKET=my-cdkd-state-bucket ./tests/e2e/run-e2e.sh /path/to/tests/integration/lambda
+# Run specific tests
+./tests/e2e/test-matrix.sh basic lambda context-test
 ```
 
-## Parameters
+### `run-e2e.sh` — Run a single test
 
-| Parameter | Type | Required | Default | Description |
-|---|---|---|---|---|
-| `[example-dir]` | Argument | No | `basic` | Path to integration example directory |
-| `STATE_BUCKET` | Env var | Yes | - | S3 bucket name for cdkd state storage |
-| `AWS_REGION` | Env var | No | `us-east-1` | AWS region to deploy resources in |
-| `CDKD_PATH` | Env var | No | `../../dist/cli.js` | Path to cdkd CLI entry point |
+Runs one integration test through the full lifecycle.
+
+```bash
+# Run with defaults (STATE_BUCKET auto-resolved, region=us-east-1)
+./tests/e2e/run-e2e.sh ../integration/basic
+
+# With explicit state bucket
+STATE_BUCKET=my-bucket ./tests/e2e/run-e2e.sh ../integration/lambda
+```
+
+## Environment Variables
+
+| Variable | Required | Default | Description |
+|---|---|---|---|
+| `STATE_BUCKET` | No | `cdkd-state-{accountId}-{region}` (auto-resolved via STS) | S3 bucket for cdkd state |
+| `AWS_REGION` | No | `us-east-1` | AWS region |
+| `CDKD_PATH` | No | `../../dist/cli.js` | Path to cdkd CLI |
+| `CDKD_UPDATE_CONTEXT` | No | - | Context args for UPDATE step (e.g., `-c env=staging`) |
 
 ## Test Steps
 
-The script executes the following steps in order, failing fast on any error:
+Each test executes 5 steps, failing fast on any error:
 
-1. **Deploy (CREATE)** -- Deploys the chosen example
-2. **Diff after CREATE** -- Verifies no changes are detected after a clean deploy
-3. **Deploy (UPDATE)** -- Re-deploys with `CDKD_TEST_UPDATE=true` to trigger an update
-4. **Diff after UPDATE** -- Verifies no changes are detected after the update
-5. **Destroy** -- Destroys all resources with `--force`
+1. **Deploy (CREATE)** — Deploy the stack
+2. **Diff after CREATE** — Verify no changes detected
+3. **Deploy (UPDATE)** — Re-deploy with changes (`CDKD_TEST_UPDATE=true` or `CDKD_UPDATE_CONTEXT`)
+4. **Diff after UPDATE** — Verify no changes detected
+5. **Destroy** — Destroy all resources
 
-## Cleanup
+If interrupted (Ctrl+C), cleanup destroy runs automatically.
 
-If the script is interrupted with Ctrl+C or receives SIGTERM, it automatically runs `cdkd destroy --force` to clean up any deployed resources before exiting.
+## Test Matrix
+
+Tests with special configuration are defined in `test-matrix.sh`:
+
+| Test | Update Method |
+|---|---|
+| `context-test` | `-c env=from-cli -c featureFlag=true` |
+| All others | `CDKD_TEST_UPDATE=true` (adds UpdateTest tag) |
 
 ## Troubleshooting
 
 ### "cdkd CLI not found"
 
-Build the project first:
-
 ```bash
 npm run build
 ```
 
-### "STATE_BUCKET environment variable is required"
-
-Provide the S3 bucket name:
-
-```bash
-STATE_BUCKET=your-bucket-name ./tests/e2e/run-e2e.sh
-```
-
 ### "Diff unexpectedly shows changes"
 
-This can happen if the CDK synthesis produces non-deterministic output or if the diff calculator has a bug with certain property types. Check the diff output printed to the console for details.
+Check the diff output. Some resources have non-deterministic properties.
 
 ### AWS permission errors
 
-Ensure your AWS credentials have permissions for:
-
-- S3 (state bucket read/write, object deletion)
-- CloudFormation/Cloud Control API (resource create/update/delete)
+Ensure credentials have permissions for S3, IAM, and the resource types used in each test.

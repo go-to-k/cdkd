@@ -1,6 +1,7 @@
 import { ProviderRegistry } from './provider-registry.js';
 import { IAMRoleProvider } from './providers/iam-role-provider.js';
 import { IAMPolicyProvider } from './providers/iam-policy-provider.js';
+import { IAMInstanceProfileProvider } from './providers/iam-instance-profile-provider.js';
 import { S3BucketProvider } from './providers/s3-bucket-provider.js';
 import { S3BucketPolicyProvider } from './providers/s3-bucket-policy-provider.js';
 import { SQSQueueProvider } from './providers/sqs-queue-provider.js';
@@ -39,6 +40,7 @@ export function registerAllProviders(registry: ProviderRegistry): void {
   // IAM
   registry.register('AWS::IAM::Role', new IAMRoleProvider());
   registry.register('AWS::IAM::Policy', new IAMPolicyProvider());
+  registry.register('AWS::IAM::InstanceProfile', new IAMInstanceProfileProvider());
 
   // S3
   registry.register('AWS::S3::Bucket', new S3BucketProvider());
