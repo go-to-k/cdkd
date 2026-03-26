@@ -352,15 +352,39 @@ Built on modern AWS tooling:
 
 ## State Management
 
-State is stored in S3 with the following structure:
+State is stored in S3. Each stack has its own `state.json` and `lock.json`:
 
 ```
-s3://my-state-bucket/
-  └── stacks/
-      └── MyStack/
-          ├── lock.json      # Exclusive lock
-          └── state.json     # Resource state
+s3://{state-bucket}/
+  └── {prefix}/                     # Default: "cdkq" (configurable via --state-prefix)
+      ├── MyStack/
+      │   ├── state.json            # Resource state
+      │   └── lock.json             # Exclusive deploy lock
+      └── AnotherStack/
+          ├── state.json
+          └── lock.json
 ```
+
+### Configuration
+
+| Setting | CLI | cdk.json | Env var | Default |
+|---------|-----|----------|---------|---------|
+| Bucket | `--state-bucket` | `context.cdkq.stateBucket` | `CDKQ_STATE_BUCKET` | `cdkq-state-{accountId}-{region}` |
+| Prefix | `--state-prefix` | - | - | `cdkq` |
+
+### Multi-app isolation
+
+The state bucket is shared across all CDK apps in the same account/region by default. To isolate apps, use different prefixes:
+
+```bash
+# App A
+cdkq deploy --state-prefix app-a
+
+# App B
+cdkq deploy --state-prefix app-b
+```
+
+> **Note**: `cdkq destroy --all` only targets stacks from the current CDK app (determined by synthesis), not all stacks in the bucket.
 
 State schema:
 
