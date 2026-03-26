@@ -37,11 +37,6 @@ import type {
  */
 const JSON_STRING_PROPERTIES: Record<string, Set<string>> = {
   'AWS::Events::Rule': new Set(['EventPattern']),
-  'AWS::IAM::Role': new Set(['AssumeRolePolicyDocument']),
-  'AWS::SNS::Topic': new Set(['Policy']),
-  'AWS::SQS::Queue': new Set(['Policy', 'RedrivePolicy', 'RedriveAllowPolicy']),
-  'AWS::S3::BucketPolicy': new Set(['PolicyDocument']),
-  'AWS::Lambda::Function': new Set(['Environment']),
 };
 
 /**
