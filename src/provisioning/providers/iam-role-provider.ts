@@ -10,6 +10,8 @@ import {
   AttachRolePolicyCommand,
   DetachRolePolicyCommand,
   ListAttachedRolePoliciesCommand,
+  ListInstanceProfilesForRoleCommand,
+  RemoveRoleFromInstanceProfileCommand,
   TagRoleCommand,
   NoSuchEntityException,
 } from '@aws-sdk/client-iam';
@@ -311,6 +313,12 @@ export class IAMRoleProvider implements ResourceProvider {
 
   /**
    * Delete an IAM role
+   *
+   * Before deleting, performs full cleanup:
+   * 1. Detach all managed policies
+   * 2. Delete all inline policies
+   * 3. Remove role from all instance profiles
+   * 4. Delete the role itself
    */
   async delete(
     logicalId: string,
@@ -332,37 +340,16 @@ export class IAMRoleProvider implements ResourceProvider {
         throw error;
       }
 
-      // Detach all managed policies
-      const attachedPolicies = await this.iamClient.send(
-        new ListAttachedRolePoliciesCommand({ RoleName: physicalId })
-      );
-      for (const policy of attachedPolicies.AttachedPolicies || []) {
-        if (policy.PolicyArn) {
-          await this.iamClient.send(
-            new DetachRolePolicyCommand({
-              RoleName: physicalId,
-              PolicyArn: policy.PolicyArn,
-            })
-          );
-          this.logger.debug(`Detached managed policy ${policy.PolicyArn}`);
-        }
-      }
+      // Step 1: Detach all managed policies
+      await this.detachAllManagedPolicies(physicalId);
 
-      // Delete all inline policies
-      const inlinePolicies = await this.iamClient.send(
-        new ListRolePoliciesCommand({ RoleName: physicalId })
-      );
-      for (const policyName of inlinePolicies.PolicyNames || []) {
-        await this.iamClient.send(
-          new DeleteRolePolicyCommand({
-            RoleName: physicalId,
-            PolicyName: policyName,
-          })
-        );
-        this.logger.debug(`Deleted inline policy ${policyName}`);
-      }
+      // Step 2: Delete all inline policies
+      await this.deleteAllInlinePolicies(physicalId);
 
-      // Delete role
+      // Step 3: Remove role from all instance profiles
+      await this.removeFromAllInstanceProfiles(physicalId);
+
+      // Step 4: Delete the role
       await this.iamClient.send(new DeleteRoleCommand({ RoleName: physicalId }));
 
       this.logger.debug(`Successfully deleted IAM role ${logicalId}`);
@@ -375,6 +362,151 @@ export class IAMRoleProvider implements ResourceProvider {
         physicalId,
         cause
       );
+    }
+  }
+
+  /**
+   * Detach all managed policies from the role
+   */
+  private async detachAllManagedPolicies(roleName: string): Promise<void> {
+    this.logger.debug(`Detaching all managed policies from role ${roleName}`);
+
+    try {
+      const attachedPolicies = await this.iamClient.send(
+        new ListAttachedRolePoliciesCommand({ RoleName: roleName })
+      );
+
+      const policies = attachedPolicies.AttachedPolicies || [];
+      if (policies.length === 0) {
+        this.logger.debug(`No managed policies attached to role ${roleName}`);
+        return;
+      }
+
+      for (const policy of policies) {
+        if (policy.PolicyArn) {
+          try {
+            await this.iamClient.send(
+              new DetachRolePolicyCommand({
+                RoleName: roleName,
+                PolicyArn: policy.PolicyArn,
+              })
+            );
+            this.logger.debug(`Detached managed policy ${policy.PolicyArn} from role ${roleName}`);
+          } catch (error) {
+            if (error instanceof NoSuchEntityException) {
+              this.logger.debug(
+                `Managed policy ${policy.PolicyArn} already detached from role ${roleName}`
+              );
+            } else {
+              throw error;
+            }
+          }
+        }
+      }
+
+      this.logger.debug(`Detached ${policies.length} managed policies from role ${roleName}`);
+    } catch (error) {
+      if (error instanceof NoSuchEntityException) {
+        this.logger.debug(`Role ${roleName} not found when detaching managed policies`);
+        return;
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * Delete all inline policies from the role
+   */
+  private async deleteAllInlinePolicies(roleName: string): Promise<void> {
+    this.logger.debug(`Deleting all inline policies from role ${roleName}`);
+
+    try {
+      const inlinePolicies = await this.iamClient.send(
+        new ListRolePoliciesCommand({ RoleName: roleName })
+      );
+
+      const policyNames = inlinePolicies.PolicyNames || [];
+      if (policyNames.length === 0) {
+        this.logger.debug(`No inline policies on role ${roleName}`);
+        return;
+      }
+
+      for (const policyName of policyNames) {
+        try {
+          await this.iamClient.send(
+            new DeleteRolePolicyCommand({
+              RoleName: roleName,
+              PolicyName: policyName,
+            })
+          );
+          this.logger.debug(`Deleted inline policy ${policyName} from role ${roleName}`);
+        } catch (error) {
+          if (error instanceof NoSuchEntityException) {
+            this.logger.debug(`Inline policy ${policyName} already deleted from role ${roleName}`);
+          } else {
+            throw error;
+          }
+        }
+      }
+
+      this.logger.debug(`Deleted ${policyNames.length} inline policies from role ${roleName}`);
+    } catch (error) {
+      if (error instanceof NoSuchEntityException) {
+        this.logger.debug(`Role ${roleName} not found when deleting inline policies`);
+        return;
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * Remove the role from all instance profiles
+   */
+  private async removeFromAllInstanceProfiles(roleName: string): Promise<void> {
+    this.logger.debug(`Removing role ${roleName} from all instance profiles`);
+
+    try {
+      const instanceProfiles = await this.iamClient.send(
+        new ListInstanceProfilesForRoleCommand({ RoleName: roleName })
+      );
+
+      const profiles = instanceProfiles.InstanceProfiles || [];
+      if (profiles.length === 0) {
+        this.logger.debug(`No instance profiles associated with role ${roleName}`);
+        return;
+      }
+
+      for (const profile of profiles) {
+        if (profile.InstanceProfileName) {
+          try {
+            await this.iamClient.send(
+              new RemoveRoleFromInstanceProfileCommand({
+                RoleName: roleName,
+                InstanceProfileName: profile.InstanceProfileName,
+              })
+            );
+            this.logger.debug(
+              `Removed role ${roleName} from instance profile ${profile.InstanceProfileName}`
+            );
+          } catch (error) {
+            if (error instanceof NoSuchEntityException) {
+              this.logger.debug(
+                `Role ${roleName} already removed from instance profile ${profile.InstanceProfileName}`
+              );
+            } else {
+              throw error;
+            }
+          }
+        }
+      }
+
+      this.logger.debug(`Removed role ${roleName} from ${profiles.length} instance profiles`);
+    } catch (error) {
+      if (error instanceof NoSuchEntityException) {
+        this.logger.debug(`Role ${roleName} not found when removing from instance profiles`);
+        return;
+      }
+      throw error;
     }
   }
 

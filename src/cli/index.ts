@@ -5,6 +5,7 @@ import { createDeployCommand } from './commands/deploy.js';
 import { createDiffCommand } from './commands/diff.js';
 import { createDestroyCommand } from './commands/destroy.js';
 import { createPublishAssetsCommand } from './commands/publish-assets.js';
+import { createForceUnlockCommand } from './commands/force-unlock.js';
 
 /**
  * Main CLI program
@@ -24,6 +25,7 @@ async function main(): Promise<void> {
   program.addCommand(createDiffCommand());
   program.addCommand(createDestroyCommand());
   program.addCommand(createPublishAssetsCommand());
+  program.addCommand(createForceUnlockCommand());
 
   await program.parseAsync(process.argv);
 }

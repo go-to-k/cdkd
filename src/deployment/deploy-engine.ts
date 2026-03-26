@@ -214,6 +214,10 @@ export class DeployEngine {
         };
       }
 
+      // Progress counter for tracking overall deployment progress
+      const totalOperations = createChanges.length + updateChanges.length + deleteChanges.length;
+      const progress = { current: 0, total: totalOperations };
+
       // 6. Execute deployment (with partial state saves after each level)
       const { state: newState, actualCounts } = await this.executeDeployment(
         template,
@@ -223,7 +227,8 @@ export class DeployEngine {
         stackName,
         parameterValues,
         conditions,
-        currentEtag
+        currentEtag,
+        progress
       );
 
       // 7. Save final state (ETag may have been updated by partial saves)
@@ -263,7 +268,8 @@ export class DeployEngine {
     stackName: string,
     parameterValues?: Record<string, unknown>,
     conditions?: Record<string, boolean>,
-    currentEtag?: string
+    currentEtag?: string,
+    progress?: { current: number; total: number }
   ): Promise<{
     state: StackState;
     actualCounts: { created: number; updated: number; deleted: number; skipped: number };
@@ -315,7 +321,8 @@ export class DeployEngine {
                 template,
                 parameterValues,
                 conditions,
-                actualCounts
+                actualCounts,
+                progress
               );
 
               // Track completed operation for potential rollback
@@ -383,7 +390,8 @@ export class DeployEngine {
                   template,
                   parameterValues,
                   conditions,
-                  actualCounts
+                  actualCounts,
+                  progress
                 );
                 processedDeletes.add(logicalId);
 
@@ -419,7 +427,8 @@ export class DeployEngine {
                   template,
                   parameterValues,
                   conditions,
-                  actualCounts
+                  actualCounts,
+                  progress
                 );
 
                 completedOperations.push({
@@ -616,7 +625,8 @@ export class DeployEngine {
     template?: CloudFormationTemplate,
     parameterValues?: Record<string, unknown>,
     conditions?: Record<string, boolean>,
-    counts?: { created: number; updated: number; deleted: number; skipped: number }
+    counts?: { created: number; updated: number; deleted: number; skipped: number },
+    progress?: { current: number; total: number }
   ): Promise<void> {
     const resourceType = change.resourceType;
     const provider = this.providerRegistry.getProvider(resourceType);
@@ -664,8 +674,10 @@ export class DeployEngine {
             ...(dependencies && { dependencies }),
           };
 
-          this.logger.info(`  ✅ ${logicalId} (${resourceType})`);
           if (counts) counts.created++;
+          if (progress) progress.current++;
+          const createPrefix = progress ? `[${progress.current}/${progress.total}] ` : '  ';
+          this.logger.info(`${createPrefix}✅ ${logicalId} (${resourceType}) created`);
           break;
         }
 
@@ -760,10 +772,10 @@ export class DeployEngine {
               ...(dependencies && { dependencies }),
             };
 
-            this.logger.info(
-              `✓ Replaced ${logicalId}: ${currentResource.physicalId} → ${createResult.physicalId}`
-            );
             if (counts) counts.updated++;
+            if (progress) progress.current++;
+            const replacePrefix = progress ? `[${progress.current}/${progress.total}] ` : '  ';
+            this.logger.info(`${replacePrefix}✅ ${logicalId} (${resourceType}) replaced`);
           } else {
             // Normal update (in-place)
             this.logger.debug(`Updating ${logicalId} (${resourceType})`);
@@ -790,8 +802,10 @@ export class DeployEngine {
               ...(dependencies && { dependencies }),
             };
 
-            this.logger.info(`  ✅ ${logicalId} (${resourceType})`);
             if (counts) counts.updated++;
+            if (progress) progress.current++;
+            const updatePrefix = progress ? `[${progress.current}/${progress.total}] ` : '  ';
+            this.logger.info(`${updatePrefix}✅ ${logicalId} (${resourceType}) updated`);
           }
           break;
         }
@@ -819,8 +833,10 @@ export class DeployEngine {
           );
 
           delete stateResources[logicalId];
-          this.logger.info(`  ✅ ${logicalId} (${resourceType}) deleted`);
           if (counts) counts.deleted++;
+          if (progress) progress.current++;
+          const deletePrefix = progress ? `[${progress.current}/${progress.total}] ` : '  ';
+          this.logger.info(`${deletePrefix}✅ ${logicalId} (${resourceType}) deleted`);
           break;
         }
       }
