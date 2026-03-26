@@ -31,8 +31,8 @@ export class ApiGatewayProvider implements ResourceProvider {
 
   /** Maximum number of retries for IAM propagation delays */
   private static readonly MAX_IAM_RETRIES = 3;
-  /** Delay between IAM propagation retries (ms) */
-  private static readonly IAM_RETRY_DELAY_MS = 5000;
+  /** Delay between IAM propagation retries (ms) - exponential backoff */
+  private static readonly IAM_RETRY_DELAY_MS = 10000;
 
   constructor() {
     const awsClients = getAwsClients();
@@ -277,7 +277,8 @@ export class ApiGatewayProvider implements ResourceProvider {
         const isIamPropagationError =
           message.toLowerCase().includes('not authorized') ||
           message.toLowerCase().includes('does not have required permissions') ||
-          message.toLowerCase().includes('the role arn does not have required trust');
+          message.toLowerCase().includes('the role arn does not have required trust') ||
+          message.toLowerCase().includes('too many requests');
 
         if (isIamPropagationError && attempt < ApiGatewayProvider.MAX_IAM_RETRIES) {
           this.logger.warn(
