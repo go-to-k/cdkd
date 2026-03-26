@@ -921,22 +921,7 @@ export class DeployEngine {
         lastError = error;
         const message = error instanceof Error ? error.message : String(error);
 
-        // Retry on transient errors:
-        // - IAM propagation delays (role not yet assumable)
-        // - Throttling (429 / TooManyRequests)
-        // - Service unavailable (503)
-        const statusCode = (error as { $metadata?: { httpStatusCode?: number } }).$metadata
-          ?.httpStatusCode;
-        const isThrottleOrServerError = statusCode === 429 || statusCode === 503;
-        const isIamPropagation =
-          message.includes('cannot be assumed') ||
-          message.includes('role defined for the function') ||
-          message.includes('not authorized to perform') ||
-          message.includes('execution role') ||
-          message.includes('trust policy') ||
-          message.includes('Role validation failed') ||
-          message.includes('does not have required permissions');
-        const isRetryable = isThrottleOrServerError || isIamPropagation;
+        const isRetryable = this.isRetryableError(error, message);
 
         if (!isRetryable || attempt >= maxRetries) {
           throw error;
@@ -951,6 +936,35 @@ export class DeployEngine {
     }
 
     throw lastError;
+  }
+
+  /**
+   * Determine if an error is retryable (transient).
+   * Checks HTTP status codes (429 throttle, 503 unavailable)
+   * and IAM propagation delay message patterns.
+   */
+  private isRetryableError(error: unknown, message: string): boolean {
+    // Check HTTP status code from AWS SDK errors
+    const metadata = (error as { $metadata?: { httpStatusCode?: number } }).$metadata;
+    const statusCode = metadata?.httpStatusCode;
+    if (statusCode === 429 || statusCode === 503) return true;
+
+    // Check cause chain for wrapped errors
+    const cause = (error as { cause?: { $metadata?: { httpStatusCode?: number } } }).cause;
+    const causeStatus = cause?.$metadata?.httpStatusCode;
+    if (causeStatus === 429 || causeStatus === 503) return true;
+
+    // IAM propagation delay patterns
+    const iamPatterns = [
+      'cannot be assumed',
+      'role defined for the function',
+      'not authorized to perform',
+      'execution role',
+      'trust policy',
+      'Role validation failed',
+      'does not have required permissions',
+    ];
+    return iamPatterns.some((p) => message.includes(p));
   }
 
   /**
