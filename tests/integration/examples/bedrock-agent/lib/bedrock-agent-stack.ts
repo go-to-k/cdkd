@@ -22,7 +22,7 @@ export class BedrockAgentStack extends cdk.Stack {
     const codeArtifact = agentcore.AgentRuntimeArtifact.fromCodeAsset({
       path: path.join(__dirname, '..', 'agent-code'),
       runtime: agentcore.AgentCoreRuntime.PYTHON_3_12,
-      entrypoint: ['python', 'main.py'],
+      entrypoint: ['main.py'],
     });
 
     const codeRuntime = new agentcore.Runtime(this, 'CodeRuntime', {

@@ -921,14 +921,22 @@ export class DeployEngine {
         lastError = error;
         const message = error instanceof Error ? error.message : String(error);
 
-        // Retry on transient IAM propagation errors
-        const isRetryable =
-          message.includes('cannot be assumed by Lambda') ||
+        // Retry on transient errors:
+        // - IAM propagation delays (role not yet assumable)
+        // - Throttling (429 / TooManyRequests)
+        // - Service unavailable (503)
+        const statusCode = (error as { $metadata?: { httpStatusCode?: number } }).$metadata
+          ?.httpStatusCode;
+        const isThrottleOrServerError = statusCode === 429 || statusCode === 503;
+        const isIamPropagation =
+          message.includes('cannot be assumed') ||
           message.includes('role defined for the function') ||
           message.includes('not authorized to perform') ||
-          message.includes('The provided execution role') ||
-          message.includes('trust policy allows assumption') ||
-          message.includes('Role validation failed');
+          message.includes('execution role') ||
+          message.includes('trust policy') ||
+          message.includes('Role validation failed') ||
+          message.includes('does not have required permissions');
+        const isRetryable = isThrottleOrServerError || isIamPropagation;
 
         if (!isRetryable || attempt >= maxRetries) {
           throw error;
