@@ -10,6 +10,7 @@ import {
 import { DescribeTableCommand } from '@aws-sdk/client-dynamodb';
 import { GetRestApiCommand } from '@aws-sdk/client-api-gateway';
 import { GetCloudFrontOriginAccessIdentityCommand } from '@aws-sdk/client-cloudfront';
+import { GetFunctionUrlConfigCommand } from '@aws-sdk/client-lambda';
 import { getAwsClients } from '../utils/aws-clients.js';
 import { getLogger } from '../utils/logger.js';
 import { ProvisioningError } from '../utils/error-handler.js';
@@ -570,7 +571,33 @@ export class CloudControlProvider implements ResourceProvider {
         }
         break;
 
-      // Add more resource types as needed
+      case 'AWS::Lambda::Url':
+        // CC API CREATE response may not include FunctionUrl in ResourceModel.
+        // Use Lambda SDK to retrieve it for Fn::GetAtt resolution.
+        if (!enriched['FunctionUrl']) {
+          try {
+            const lambdaClient = getAwsClients().lambda;
+            // physicalId is the FunctionArn for Lambda URL
+            const urlConfig = await lambdaClient.send(
+              new GetFunctionUrlConfigCommand({ FunctionName: physicalId })
+            );
+            if (urlConfig.FunctionUrl) {
+              enriched['FunctionUrl'] = urlConfig.FunctionUrl;
+              this.logger.debug(
+                `Enriched Lambda URL FunctionUrl for ${physicalId}: ${urlConfig.FunctionUrl}`
+              );
+            }
+            if (urlConfig.FunctionArn) {
+              enriched['FunctionArn'] = urlConfig.FunctionArn;
+            }
+          } catch (error) {
+            this.logger.debug(
+              `Failed to get Lambda URL config for ${physicalId}: ${error instanceof Error ? error.message : String(error)}`
+            );
+          }
+        }
+        break;
+
       default:
         break;
     }
