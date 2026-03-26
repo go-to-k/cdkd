@@ -6,13 +6,15 @@
 # Exits immediately on any step failure and cleans up resources on interruption.
 #
 # Usage:
+#   ./run-e2e.sh [example-dir]
 #   STATE_BUCKET=my-bucket ./run-e2e.sh [example-dir]
 #
 # Arguments:
 #   example-dir  Path to an integration example (default: tests/integration/basic)
 #
 # Environment Variables:
-#   STATE_BUCKET  (required) S3 bucket name for cdkd state storage
+#   STATE_BUCKET  (optional) S3 bucket name for cdkd state storage
+#                 Auto-resolves to cdkd-state-{accountId}-{region} if not set
 #   AWS_REGION    (optional) AWS region, default: us-east-1
 #   CDKD_PATH     (optional) Path to cdkd CLI entry point, default: ../../dist/cli.js
 #
@@ -42,14 +44,13 @@ AWS_REGION="${AWS_REGION:-us-east-1}"
 CDKD_PATH="${CDKD_PATH:-../../dist/cli.js}"
 
 if [[ -z "${STATE_BUCKET}" ]]; then
-  echo -e "${RED}ERROR: STATE_BUCKET environment variable is required.${RESET}"
-  echo ""
-  echo "Usage:"
-  echo "  STATE_BUCKET=my-bucket ./run-e2e.sh [example-dir]"
-  echo "  STATE_BUCKET=my-bucket ./run-e2e.sh ../integration/lambda"
-  echo "  STATE_BUCKET=my-bucket AWS_REGION=ap-northeast-1 ./run-e2e.sh"
-  echo "  STATE_BUCKET=my-bucket CDKD_PATH=/path/to/cli.js ./run-e2e.sh"
-  exit 1
+  info "STATE_BUCKET not set, auto-resolving from AWS account..."
+  ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text 2>/dev/null) || {
+    fail "STATE_BUCKET not set and could not resolve AWS account ID"
+    exit 1
+  }
+  STATE_BUCKET="cdkd-state-${ACCOUNT_ID}-${AWS_REGION}"
+  info "Using default state bucket: ${STATE_BUCKET}"
 fi
 
 # --------------------------------------------------------------------------
@@ -123,7 +124,7 @@ cleanup() {
   if [[ "${CLEANUP_NEEDED}" == "true" ]]; then
     echo ""
     echo -e "${YELLOW}Interrupted – running cleanup destroy...${RESET}"
-    run_cdkd destroy "${CDKD_COMMON_ARGS[@]}" --force --verbose 2>&1 || true
+    run_cdkd destroy "${CDKD_COMMON_ARGS[@]}" --all --force --verbose 2>&1 || true
     echo -e "${YELLOW}Cleanup complete.${RESET}"
   fi
   echo ""
@@ -168,7 +169,7 @@ step_header "Deploy (CREATE)"
 info "Running: cdkd deploy"
 CLEANUP_NEEDED=true
 
-run_cdkd deploy "${CDKD_COMMON_ARGS[@]}" --verbose
+run_cdkd deploy "${CDKD_COMMON_ARGS[@]}" --all --verbose
 pass "Initial deploy succeeded [$(elapsed)]"
 
 # --------------------------------------------------------------------------
@@ -177,7 +178,7 @@ pass "Initial deploy succeeded [$(elapsed)]"
 step_header "Diff after CREATE (expect no changes)"
 
 info "Running: cdkd diff"
-DIFF_OUTPUT=$(run_cdkd diff "${CDKD_COMMON_ARGS[@]}" 2>&1) || true
+DIFF_OUTPUT=$(run_cdkd diff "${CDKD_COMMON_ARGS[@]}" --all 2>&1) || true
 
 if echo "${DIFF_OUTPUT}" | grep -qE "No changes detected|0 to create, 0 to update, 0 to delete"; then
   pass "Diff shows no changes as expected [$(elapsed)]"
@@ -193,7 +194,7 @@ fi
 step_header "Deploy (UPDATE with CDKD_TEST_UPDATE=true)"
 
 info "Running: CDKD_TEST_UPDATE=true cdkd deploy"
-CDKD_TEST_UPDATE=true run_cdkd deploy "${CDKD_COMMON_ARGS[@]}" --verbose
+CDKD_TEST_UPDATE=true run_cdkd deploy "${CDKD_COMMON_ARGS[@]}" --all --verbose
 pass "Update deploy succeeded [$(elapsed)]"
 
 # --------------------------------------------------------------------------
@@ -202,7 +203,7 @@ pass "Update deploy succeeded [$(elapsed)]"
 step_header "Diff after UPDATE (expect no changes)"
 
 info "Running: CDKD_TEST_UPDATE=true cdkd diff"
-DIFF_OUTPUT=$(CDKD_TEST_UPDATE=true run_cdkd diff "${CDKD_COMMON_ARGS[@]}" 2>&1) || true
+DIFF_OUTPUT=$(CDKD_TEST_UPDATE=true run_cdkd diff "${CDKD_COMMON_ARGS[@]}" --all 2>&1) || true
 
 if echo "${DIFF_OUTPUT}" | grep -qE "No changes detected|0 to create, 0 to update, 0 to delete"; then
   pass "Diff shows no changes as expected [$(elapsed)]"
@@ -218,7 +219,7 @@ fi
 step_header "Destroy"
 
 info "Running: cdkd destroy --force"
-run_cdkd destroy "${CDKD_COMMON_ARGS[@]}" --force --verbose
+run_cdkd destroy "${CDKD_COMMON_ARGS[@]}" --all --force --verbose
 pass "Destroy succeeded [$(elapsed)]"
 
 CLEANUP_NEEDED=false

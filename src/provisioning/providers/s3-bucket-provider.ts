@@ -10,6 +10,7 @@ import {
 import { getLogger } from '../../utils/logger.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
+import { generateResourceName } from '../resource-name.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -30,29 +31,6 @@ export class S3BucketProvider implements ResourceProvider {
   constructor() {
     const awsClients = getAwsClients();
     this.s3Client = awsClients.s3;
-  }
-
-  /**
-   * Generate a bucket name from logicalId when none is specified.
-   * S3 bucket names must be lowercase, 3-63 chars, no underscores.
-   */
-  private generateBucketName(logicalId: string): string {
-    // Create a short hash for uniqueness
-    const hash = Buffer.from(logicalId)
-      .toString('base64')
-      .replace(/[^a-zA-Z0-9]/g, '')
-      .substring(0, 8)
-      .toLowerCase();
-
-    // Sanitize logicalId: lowercase, replace underscores, truncate
-    const prefix = logicalId
-      .toLowerCase()
-      .replace(/[^a-z0-9-]/g, '-')
-      .replace(/-+/g, '-')
-      .replace(/^-|-$/g, '')
-      .substring(0, 50);
-
-    return `${prefix}-${hash}`;
   }
 
   /**
@@ -146,7 +124,12 @@ export class S3BucketProvider implements ResourceProvider {
     this.logger.debug(`Creating S3 bucket ${logicalId}`);
 
     const bucketName =
-      (properties['BucketName'] as string | undefined) || this.generateBucketName(logicalId);
+      (properties['BucketName'] as string | undefined) ||
+      generateResourceName(logicalId, {
+        maxLength: 63,
+        lowercase: true,
+        allowedPattern: /[^a-z0-9.-]/g,
+      });
 
     try {
       // CreateBucket params

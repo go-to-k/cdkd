@@ -8,6 +8,7 @@ import {
 import { getLogger } from '../../utils/logger.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
+import { generateResourceName } from '../resource-name.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -39,7 +40,9 @@ export class SSMParameterProvider implements ResourceProvider {
   ): Promise<ResourceCreateResult> {
     this.logger.debug(`Creating SSM parameter ${logicalId}`);
 
-    const name = (properties['Name'] as string | undefined) || `/${logicalId}`;
+    const name =
+      (properties['Name'] as string | undefined) ||
+      `/${generateResourceName(logicalId, { maxLength: 1023, allowedPattern: /[^a-zA-Z0-9-/_]/g })}`;
     const type = (properties['Type'] as string | undefined) || 'String';
     const value = properties['Value'] as string | undefined;
 

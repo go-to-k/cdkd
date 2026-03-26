@@ -13,6 +13,7 @@ import {
 } from '@aws-sdk/client-wafv2';
 import { getLogger } from '../../utils/logger.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
+import { generateResourceName } from '../resource-name.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -71,7 +72,9 @@ export class WAFv2WebACLProvider implements ResourceProvider {
   ): Promise<ResourceCreateResult> {
     this.logger.debug(`Creating WAFv2 WebACL ${logicalId}`);
 
-    const name = (properties['Name'] as string | undefined) || logicalId;
+    const name =
+      (properties['Name'] as string | undefined) ||
+      generateResourceName(logicalId, { maxLength: 128 });
     const scope = ((properties['Scope'] as string) || 'REGIONAL') as Scope;
 
     try {

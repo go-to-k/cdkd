@@ -8,6 +8,7 @@ import {
 import { getLogger } from '../../utils/logger.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
+import { generateResourceName } from '../resource-name.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -40,7 +41,9 @@ export class SecretsManagerSecretProvider implements ResourceProvider {
   ): Promise<ResourceCreateResult> {
     this.logger.debug(`Creating secret ${logicalId}`);
 
-    const name = (properties['Name'] as string | undefined) || logicalId;
+    const name =
+      (properties['Name'] as string | undefined) ||
+      generateResourceName(logicalId, { maxLength: 512, allowedPattern: /[^a-zA-Z0-9-/_]/g });
 
     try {
       // Build the secret value from GenerateSecretString or SecretString

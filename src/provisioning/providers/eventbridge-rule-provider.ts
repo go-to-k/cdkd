@@ -11,6 +11,7 @@ import {
 import { getLogger } from '../../utils/logger.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
+import { generateResourceName } from '../resource-name.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -59,7 +60,9 @@ export class EventBridgeRuleProvider implements ResourceProvider {
   ): Promise<ResourceCreateResult> {
     this.logger.debug(`Creating EventBridge rule ${logicalId}`);
 
-    const ruleName = (properties['Name'] as string | undefined) || logicalId;
+    const ruleName =
+      (properties['Name'] as string | undefined) ||
+      generateResourceName(logicalId, { maxLength: 64 });
     const targets = properties['Targets'] as RuleTarget[] | undefined;
 
     try {
@@ -139,7 +142,9 @@ export class EventBridgeRuleProvider implements ResourceProvider {
   ): Promise<ResourceUpdateResult> {
     this.logger.debug(`Updating EventBridge rule ${logicalId}: ${physicalId}`);
 
-    const ruleName = (properties['Name'] as string | undefined) || logicalId;
+    const ruleName =
+      (properties['Name'] as string | undefined) ||
+      generateResourceName(logicalId, { maxLength: 64 });
     const newTargets = properties['Targets'] as RuleTarget[] | undefined;
     const oldTargets = previousProperties['Targets'] as RuleTarget[] | undefined;
 

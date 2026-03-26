@@ -372,7 +372,7 @@ interface ResourceProvider {
 
 #### Cloud Control Provider (`cloud-control-provider.ts`)
 
-**Fallback Provider**: Handles resource types without a registered SDK Provider (supports 200+ types via async polling)
+**Fallback Provider**: Handles resource types without a registered SDK Provider (async polling)
 
 **AWS API**:
 
@@ -507,7 +507,7 @@ getClient<T>(ClientClass: new (...) => T, region: string): T
 │ SDK Providers   │  │ Cloud Control    │
 │ (preferred)     │  │ Provider         │
 │ - S3, Lambda    │  │ (fallback)       │
-│ - IAM, DynamoDB │  │ - 200+ types     │
+│ - IAM, DynamoDB │  │ - Many types     │
 │ - SQS, SNS, etc│  │ - Async polling  │
 └────────┬────────┘  └──────────────────┘
          │

@@ -15,6 +15,7 @@ import {
 import { getLogger } from '../../utils/logger.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
+import { generateResourceName } from '../resource-name.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -49,7 +50,9 @@ export class DynamoDBTableProvider implements ResourceProvider {
   ): Promise<ResourceCreateResult> {
     this.logger.debug(`Creating DynamoDB table ${logicalId}`);
 
-    const tableName = (properties['TableName'] as string | undefined) || logicalId;
+    const tableName =
+      (properties['TableName'] as string | undefined) ||
+      generateResourceName(logicalId, { maxLength: 255 });
     const keySchema = properties['KeySchema'] as KeySchemaElement[] | undefined;
     const attributeDefinitions = properties['AttributeDefinitions'] as
       | AttributeDefinition[]

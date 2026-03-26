@@ -7,6 +7,7 @@ import {
 import { getLogger } from '../../utils/logger.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
+import { generateResourceName } from '../resource-name.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -42,7 +43,9 @@ export class IAMPolicyProvider implements ResourceProvider {
   ): Promise<ResourceCreateResult> {
     this.logger.debug(`Creating IAM policy ${logicalId}`);
 
-    const policyName = (properties['PolicyName'] as string | undefined) || logicalId;
+    const policyName =
+      (properties['PolicyName'] as string | undefined) ||
+      generateResourceName(logicalId, { maxLength: 64 });
     const policyDocument = properties['PolicyDocument'];
     const roles = properties['Roles'] as string[] | undefined;
 
@@ -115,7 +118,9 @@ export class IAMPolicyProvider implements ResourceProvider {
   ): Promise<ResourceUpdateResult> {
     this.logger.debug(`Updating IAM policy ${logicalId}: ${physicalId}`);
 
-    const newPolicyName = (properties['PolicyName'] as string | undefined) || logicalId;
+    const newPolicyName =
+      (properties['PolicyName'] as string | undefined) ||
+      generateResourceName(logicalId, { maxLength: 64 });
     const newRoles = properties['Roles'] as string[] | undefined;
     const oldRoles = previousProperties['Roles'] as string[] | undefined;
     const policyDocument = properties['PolicyDocument'];

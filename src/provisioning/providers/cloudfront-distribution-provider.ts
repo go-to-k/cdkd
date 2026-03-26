@@ -328,6 +328,11 @@ export class CloudFrontDistributionProvider implements ResourceProvider {
   private convertToSdkFormat(config: Record<string, unknown>): Record<string, unknown> {
     const result = { ...config };
 
+    // Ensure Comment is never null (SDK requires non-null string)
+    if (result['Comment'] === null || result['Comment'] === undefined) {
+      result['Comment'] = '';
+    }
+
     // Convert top-level Quantity + Items fields
     for (const field of QUANTITY_ITEM_FIELDS) {
       if (result[field] !== undefined) {
@@ -422,6 +427,16 @@ export class CloudFrontDistributionProvider implements ResourceProvider {
         customOriginConfig['OriginSslProtocols'] = this.wrapWithQuantity(
           customOriginConfig['OriginSslProtocols']
         );
+      }
+      // Ensure HTTPPort and HTTPSPort have defaults (SDK requires non-null values)
+      if (customOriginConfig['HTTPPort'] === null || customOriginConfig['HTTPPort'] === undefined) {
+        customOriginConfig['HTTPPort'] = 80;
+      }
+      if (
+        customOriginConfig['HTTPSPort'] === null ||
+        customOriginConfig['HTTPSPort'] === undefined
+      ) {
+        customOriginConfig['HTTPSPort'] = 443;
       }
       result['CustomOriginConfig'] = customOriginConfig;
     }

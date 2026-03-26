@@ -14,6 +14,7 @@ import {
 } from '@aws-sdk/client-rds';
 import { getLogger } from '../../utils/logger.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
+import { generateResourceName } from '../resource-name.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -122,7 +123,9 @@ export class RDSProvider implements ResourceProvider {
   ): Promise<ResourceCreateResult> {
     this.logger.debug(`Creating DBSubnetGroup ${logicalId}`);
 
-    const dbSubnetGroupName = (properties['DBSubnetGroupName'] as string | undefined) || logicalId;
+    const dbSubnetGroupName =
+      (properties['DBSubnetGroupName'] as string | undefined) ||
+      generateResourceName(logicalId, { maxLength: 255, lowercase: true });
 
     try {
       const tags = this.buildTags(properties);
@@ -235,7 +238,8 @@ export class RDSProvider implements ResourceProvider {
     this.logger.debug(`Creating DBCluster ${logicalId}`);
 
     const dbClusterIdentifier =
-      (properties['DBClusterIdentifier'] as string | undefined) || logicalId.toLowerCase();
+      (properties['DBClusterIdentifier'] as string | undefined) ||
+      generateResourceName(logicalId, { maxLength: 63, lowercase: true });
 
     try {
       const tags = this.buildTags(properties);
@@ -433,7 +437,8 @@ export class RDSProvider implements ResourceProvider {
     this.logger.debug(`Creating DBInstance ${logicalId}`);
 
     const dbInstanceIdentifier =
-      (properties['DBInstanceIdentifier'] as string | undefined) || logicalId.toLowerCase();
+      (properties['DBInstanceIdentifier'] as string | undefined) ||
+      generateResourceName(logicalId, { maxLength: 63, lowercase: true });
 
     try {
       const tags = this.buildTags(properties);

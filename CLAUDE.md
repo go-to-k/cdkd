@@ -52,7 +52,7 @@ cdkd has a 7-layer system architecture:
 
 1. **Hybrid Provisioning Strategy**
    - Preferred: SDK Providers for common resource types - direct synchronous API calls, no polling overhead
-   - Fallback: Cloud Control API for 200+ additional resource types (requires async polling)
+   - Fallback: Cloud Control API for additional resource types (requires async polling)
    - Implemented with Provider Registry pattern
 
 2. **S3-based State Management**
@@ -261,7 +261,7 @@ registry.register('AWS::IAM::Role', new IAMRoleProvider());
 - `tests/integration/**`
 - Uses actual AWS account
 - Environment variables: `STATE_BUCKET`, `AWS_REGION`
-- 24 examples verified with real AWS deployments (see `tests/integration/` for full list)
+- Examples verified with real AWS deployments (see `tests/integration/` for full list)
 
 ### UPDATE Testing
 
@@ -332,7 +332,7 @@ See [docs/provider-development.md](docs/provider-development.md) for details.
 - ✅ Compact output mode (default clean output, `--verbose` for full details)
 - ✅ `--state-bucket` auto-resolves from STS account ID: `cdkd-state-{accountId}-{region}`
 - ✅ Attribute mapper: CC API property names mapped to GetAtt attribute names
-- ✅ 395 unit tests, 24 integration examples, E2E test script
+- ✅ Unit tests, integration examples, E2E test script
 - ✅ DeletionPolicy: Retain support (skip deletion for retained resources)
 - ✅ Resource replacement for immutable property changes (CREATE→DELETE)
 - ✅ Type safety improvements (error handling, any type elimination in custom resources)

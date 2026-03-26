@@ -9,6 +9,7 @@ import {
 import { getLogger } from '../../utils/logger.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
+import { generateResourceName } from '../resource-name.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -40,7 +41,9 @@ export class CloudWatchAlarmProvider implements ResourceProvider {
   ): Promise<ResourceCreateResult> {
     this.logger.debug(`Creating CloudWatch alarm ${logicalId}`);
 
-    const alarmName = (properties['AlarmName'] as string | undefined) || logicalId;
+    const alarmName =
+      (properties['AlarmName'] as string | undefined) ||
+      generateResourceName(logicalId, { maxLength: 256 });
 
     try {
       await this.cloudWatchClient.send(

@@ -72,10 +72,10 @@ describe('RDSProvider', () => {
           SubnetIds: ['subnet-aaa'],
         });
 
-        expect(result.physicalId).toBe('MySubnetGroup');
+        expect(result.physicalId).toBe('mysubnetgroup');
 
         const createCall = mockSend.mock.calls[0][0];
-        expect(createCall.input.DBSubnetGroupName).toBe('MySubnetGroup');
+        expect(createCall.input.DBSubnetGroupName).toBe('mysubnetgroup');
       });
 
       it('should throw ProvisioningError on failure', async () => {

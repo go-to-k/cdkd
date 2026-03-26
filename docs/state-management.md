@@ -144,7 +144,7 @@ Varies by resource type. Examples:
 | `AWS::SQS::Queue` | `https://sqs.us-east-1.amazonaws.com/123456789012/MyQueue` |
 | `Custom::MyResource` | Any string returned by custom resource |
 
-**Note**: cdkd supports **all resource types supported by Cloud Control API** (200+ resource types). The table above shows only a few examples. For resources not supported by Cloud Control API, custom SDK Providers can be implemented (see [provider-development.md](./provider-development.md)).
+**Note**: cdkd supports **all resource types supported by Cloud Control API**. The table above shows only a few examples. For resources not supported by Cloud Control API, custom SDK Providers can be implemented (see [provider-development.md](./provider-development.md)).
 
 #### Purpose of attributes
 

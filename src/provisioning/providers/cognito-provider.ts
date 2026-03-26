@@ -20,6 +20,7 @@ import {
 } from '@aws-sdk/client-cognito-identity-provider';
 import { getLogger } from '../../utils/logger.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
+import { generateResourceName } from '../resource-name.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -55,7 +56,9 @@ export class CognitoUserPoolProvider implements ResourceProvider {
   ): Promise<ResourceCreateResult> {
     this.logger.debug(`Creating Cognito User Pool ${logicalId}`);
 
-    const poolName = (properties['UserPoolName'] as string | undefined) || logicalId;
+    const poolName =
+      (properties['UserPoolName'] as string | undefined) ||
+      generateResourceName(logicalId, { maxLength: 128 });
 
     try {
       const createParams: CreateUserPoolCommandInput = {

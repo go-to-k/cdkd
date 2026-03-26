@@ -24,6 +24,29 @@ import {
   ResourceNotFoundException,
 } from '@aws-sdk/client-bedrock-agentcore-control';
 import { getLogger } from '../../utils/logger.js';
+
+/**
+ * Recursively convert PascalCase object keys to camelCase.
+ * Only converts keys of plain objects; string values, arrays of strings,
+ * and other primitives are left untouched.
+ */
+function pascalToCamelCaseKeys(value: unknown): unknown {
+  if (value === null || value === undefined) {
+    return value;
+  }
+  if (Array.isArray(value)) {
+    return value.map(pascalToCamelCaseKeys);
+  }
+  if (typeof value === 'object') {
+    const result: Record<string, unknown> = {};
+    for (const [key, val] of Object.entries(value as Record<string, unknown>)) {
+      const camelKey = key.charAt(0).toLowerCase() + key.slice(1);
+      result[camelKey] = pascalToCamelCaseKeys(val);
+    }
+    return result;
+  }
+  return value;
+}
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import type {
@@ -79,19 +102,21 @@ export class AgentCoreRuntimeProvider implements ResourceProvider {
       };
 
       if (properties['AgentRuntimeArtifact'] !== undefined) {
-        input['agentRuntimeArtifact'] = properties['AgentRuntimeArtifact'];
+        input['agentRuntimeArtifact'] = pascalToCamelCaseKeys(properties['AgentRuntimeArtifact']);
       }
       if (properties['NetworkConfiguration'] !== undefined) {
-        input['networkConfiguration'] = properties['NetworkConfiguration'];
+        input['networkConfiguration'] = pascalToCamelCaseKeys(properties['NetworkConfiguration']);
       }
       if (properties['Description'] !== undefined) {
         input['description'] = properties['Description'];
       }
       if (properties['AuthorizerConfiguration'] !== undefined) {
-        input['authorizerConfiguration'] = properties['AuthorizerConfiguration'];
+        input['authorizerConfiguration'] = pascalToCamelCaseKeys(
+          properties['AuthorizerConfiguration']
+        );
       }
       if (properties['ProtocolConfiguration'] !== undefined) {
-        input['protocolConfiguration'] = properties['ProtocolConfiguration'];
+        input['protocolConfiguration'] = pascalToCamelCaseKeys(properties['ProtocolConfiguration']);
       }
       if (properties['EnvironmentVariables'] !== undefined) {
         input['environmentVariables'] = properties['EnvironmentVariables'];
@@ -158,19 +183,21 @@ export class AgentCoreRuntimeProvider implements ResourceProvider {
       };
 
       if (properties['AgentRuntimeArtifact'] !== undefined) {
-        input['agentRuntimeArtifact'] = properties['AgentRuntimeArtifact'];
+        input['agentRuntimeArtifact'] = pascalToCamelCaseKeys(properties['AgentRuntimeArtifact']);
       }
       if (properties['NetworkConfiguration'] !== undefined) {
-        input['networkConfiguration'] = properties['NetworkConfiguration'];
+        input['networkConfiguration'] = pascalToCamelCaseKeys(properties['NetworkConfiguration']);
       }
       if (properties['Description'] !== undefined) {
         input['description'] = properties['Description'];
       }
       if (properties['AuthorizerConfiguration'] !== undefined) {
-        input['authorizerConfiguration'] = properties['AuthorizerConfiguration'];
+        input['authorizerConfiguration'] = pascalToCamelCaseKeys(
+          properties['AuthorizerConfiguration']
+        );
       }
       if (properties['ProtocolConfiguration'] !== undefined) {
-        input['protocolConfiguration'] = properties['ProtocolConfiguration'];
+        input['protocolConfiguration'] = pascalToCamelCaseKeys(properties['ProtocolConfiguration']);
       }
       if (properties['EnvironmentVariables'] !== undefined) {
         input['environmentVariables'] = properties['EnvironmentVariables'];

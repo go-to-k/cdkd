@@ -2,7 +2,7 @@
 
 ## Overview
 
-In cdkd, AWS resource provisioning is implemented through an abstraction layer called **Provider**. SDK Providers are preferred for performance — they make direct synchronous API calls with no polling overhead. Cloud Control API serves as a fallback for resource types without an SDK Provider (supports 200+ additional types, but requires async polling).
+In cdkd, AWS resource provisioning is implemented through an abstraction layer called **Provider**. SDK Providers are preferred for performance — they make direct synchronous API calls with no polling overhead. Cloud Control API serves as a fallback for resource types without an SDK Provider (requires async polling).
 
 Adding SDK Providers for frequently used resource types is one of the most impactful performance improvements. This guide explains how to add new providers.
 
@@ -373,14 +373,14 @@ Register in `src/cli/commands/deploy.ts` (and `destroy.ts`):
 ```typescript
 import { ProviderRegistry } from '../provisioning/provider-registry.js';
 import { IAMRoleProvider } from '../provisioning/providers/iam-role-provider.js';
-// ... (see deploy.ts for full list of 24 provider imports)
+// ... (see deploy.ts for full list of provider imports)
 
-// Register providers (34 resource types)
+// Register providers
 const registry = ProviderRegistry.getInstance();
 registry.register('AWS::IAM::Role', new IAMRoleProvider());
 registry.register('AWS::IAM::Policy', new IAMPolicyProvider());
 registry.register('AWS::S3::Bucket', new S3BucketProvider());
-// ... see src/cli/commands/deploy.ts for all 34 registrations
+// ... see src/cli/commands/deploy.ts for all registrations
 
 // Multi-type providers share a single instance:
 const ec2Provider = new EC2Provider();

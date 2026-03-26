@@ -19,6 +19,7 @@ import {
 import { getLogger } from '../../utils/logger.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
+import { generateResourceName } from '../resource-name.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -52,7 +53,9 @@ export class LambdaFunctionProvider implements ResourceProvider {
   ): Promise<ResourceCreateResult> {
     this.logger.debug(`Creating Lambda function ${logicalId}`);
 
-    const functionName = (properties['FunctionName'] as string | undefined) || logicalId;
+    const functionName =
+      (properties['FunctionName'] as string | undefined) ||
+      generateResourceName(logicalId, { maxLength: 64 });
     const code = properties['Code'] as Record<string, unknown> | undefined;
     const role = properties['Role'] as string | undefined;
 

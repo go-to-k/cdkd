@@ -1197,6 +1197,9 @@ export class DeployEngine {
       'has dependencies and cannot be deleted',
       "can't be deleted since it has",
       'DependencyViolation',
+      // AWS eventual consistency (dependency just created but not yet visible)
+      // e.g., RDS DBCluster referencing a just-created DBSubnetGroup
+      'does not exist',
     ];
     return retryablePatterns.some((p) => message.includes(p));
   }

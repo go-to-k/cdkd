@@ -50,6 +50,7 @@ import {
 } from '@aws-sdk/client-ecs';
 import { getLogger } from '../../utils/logger.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
+import { generateResourceName } from '../resource-name.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -190,7 +191,9 @@ export class ECSProvider implements ResourceProvider {
     this.logger.debug(`Creating ECS cluster ${logicalId}`);
     const client = this.getClient();
 
-    const clusterName = (properties['ClusterName'] as string | undefined) || logicalId;
+    const clusterName =
+      (properties['ClusterName'] as string | undefined) ||
+      generateResourceName(logicalId, { maxLength: 255 });
 
     try {
       const response = await client.send(
@@ -339,7 +342,9 @@ export class ECSProvider implements ResourceProvider {
     try {
       const response = await client.send(
         new RegisterTaskDefinitionCommand({
-          family: (properties['Family'] as string | undefined) || logicalId,
+          family:
+            (properties['Family'] as string | undefined) ||
+            generateResourceName(logicalId, { maxLength: 255 }),
           containerDefinitions: this.convertContainerDefinitions(
             properties['ContainerDefinitions'] as Array<Record<string, unknown>> | undefined
           ),
@@ -481,7 +486,9 @@ export class ECSProvider implements ResourceProvider {
     this.logger.debug(`Creating ECS service ${logicalId}`);
     const client = this.getClient();
 
-    const serviceName = (properties['ServiceName'] as string | undefined) || logicalId;
+    const serviceName =
+      (properties['ServiceName'] as string | undefined) ||
+      generateResourceName(logicalId, { maxLength: 255 });
 
     try {
       const response = await client.send(

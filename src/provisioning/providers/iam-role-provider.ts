@@ -18,6 +18,7 @@ import {
 import { getLogger } from '../../utils/logger.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
+import { generateResourceName } from '../resource-name.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -41,34 +42,6 @@ export class IAMRoleProvider implements ResourceProvider {
   }
 
   /**
-   * Shorten role name if it exceeds IAM's 64-character limit
-   *
-   * Strategy: Keep prefix + hash suffix to maintain uniqueness
-   */
-  private shortenRoleName(roleName: string): string {
-    const MAX_LENGTH = 64;
-
-    if (roleName.length <= MAX_LENGTH) {
-      return roleName;
-    }
-
-    // Create a short hash from the full name
-    const hash = Buffer.from(roleName)
-      .toString('base64')
-      .replace(/[^a-zA-Z0-9]/g, '')
-      .substring(0, 8);
-
-    // Keep prefix + hash to maintain readability and uniqueness
-    const maxPrefixLength = MAX_LENGTH - hash.length - 1; // -1 for separator
-    const prefix = roleName.substring(0, maxPrefixLength);
-
-    const shortened = `${prefix}-${hash}`;
-    this.logger.warn(`Role name "${roleName}" exceeds 64 chars, shortened to "${shortened}"`);
-
-    return shortened;
-  }
-
-  /**
    * Create an IAM role
    */
   async create(
@@ -78,8 +51,10 @@ export class IAMRoleProvider implements ResourceProvider {
   ): Promise<ResourceCreateResult> {
     this.logger.debug(`Creating IAM role ${logicalId}`);
 
-    const rawRoleName = (properties['RoleName'] as string | undefined) || logicalId;
-    const roleName = this.shortenRoleName(rawRoleName);
+    const roleName = generateResourceName(
+      (properties['RoleName'] as string | undefined) || logicalId,
+      { maxLength: 64 }
+    );
     const assumeRolePolicyDocument = properties['AssumeRolePolicyDocument'];
 
     if (!assumeRolePolicyDocument) {
@@ -210,7 +185,10 @@ export class IAMRoleProvider implements ResourceProvider {
   ): Promise<ResourceUpdateResult> {
     this.logger.debug(`Updating IAM role ${logicalId}: ${physicalId}`);
 
-    const newRoleName = (properties['RoleName'] as string | undefined) || logicalId;
+    const newRoleName = generateResourceName(
+      (properties['RoleName'] as string | undefined) || logicalId,
+      { maxLength: 64 }
+    );
 
     // Check if role name changed (requires replacement)
     if (newRoleName !== physicalId) {

@@ -10,6 +10,7 @@ import { STSClient, GetCallerIdentityCommand } from '@aws-sdk/client-sts';
 import { getLogger } from '../../utils/logger.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
+import { generateResourceName } from '../resource-name.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -44,7 +45,9 @@ export class LogsLogGroupProvider implements ResourceProvider {
   ): Promise<ResourceCreateResult> {
     this.logger.debug(`Creating log group ${logicalId}`);
 
-    const logGroupName = (properties['LogGroupName'] as string | undefined) || `/cdkd/${logicalId}`;
+    const logGroupName =
+      (properties['LogGroupName'] as string | undefined) ||
+      `/cdkd/${generateResourceName(logicalId, { maxLength: 506, allowedPattern: /[^a-zA-Z0-9-/_]/g })}`;
 
     try {
       const createParams: import('@aws-sdk/client-cloudwatch-logs').CreateLogGroupCommandInput = {

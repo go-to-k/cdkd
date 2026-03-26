@@ -56,7 +56,7 @@ AWS CDK is great for defining infrastructure as code, but all deployments go thr
     ▼         ▼
 ┌────────┐ ┌────────┐
 │  SDK   │ │ Cloud  │
-│Provider│ │Control │  Fallback for 200+
+│Provider│ │Control │  Fallback for many
 │        │ │  API   │  additional types
 └────────┘ └────────┘
 ```
@@ -66,7 +66,7 @@ AWS CDK is great for defining infrastructure as code, but all deployments go thr
 cdkd uses a hybrid provisioning strategy: hand-written **SDK Providers** call AWS SDK APIs directly for fast provisioning, while **Cloud Control API** (a generic AWS API that can operate on any resource type) is used as a fallback for resource types without an SDK Provider.
 
 - **Fast SDK Providers**: Direct synchronous API calls for common resource types
-- **Broad resource coverage**: Cloud Control API fallback for 200+ additional resource types
+- **Broad resource coverage**: Cloud Control API fallback for additional resource types
 - **Hybrid deployment strategy**: SDK Providers preferred for performance, Cloud Control API as fallback
 - **S3-based state management**: No DynamoDB required, uses S3 conditional writes for locking
 - **DAG-based parallelization**: Analyze `Ref`/`Fn::GetAtt` dependencies and execute in parallel
@@ -163,7 +163,7 @@ cdkd uses a hybrid provisioning strategy: hand-written **SDK Providers** call AW
 | **Auth** | AWS::Cognito::UserPool | SDK Provider | ✅ |
 | **AI/ML** | AWS::BedrockAgentCore::Runtime | SDK Provider | ✅ |
 | **Custom** | Custom::* (Lambda/SNS-backed) | SDK Provider | ✅ |
-| **Other** | 200+ resource types | Cloud Control | ✅ |
+| **Other** | All other resource types | Cloud Control | ✅ |
 
 ### Other Features
 

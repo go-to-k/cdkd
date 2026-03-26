@@ -10,6 +10,7 @@ import { STSClient, GetCallerIdentityCommand } from '@aws-sdk/client-sts';
 import { getLogger } from '../../utils/logger.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
+import { generateResourceName } from '../resource-name.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -64,7 +65,9 @@ export class SQSQueueProvider implements ResourceProvider {
   ): Promise<ResourceCreateResult> {
     this.logger.debug(`Creating SQS queue ${logicalId}`);
 
-    const queueName = (properties['QueueName'] as string | undefined) || logicalId;
+    const queueName =
+      (properties['QueueName'] as string | undefined) ||
+      generateResourceName(logicalId, { maxLength: 80 });
 
     try {
       // Convert CDK properties to SQS attributes
@@ -174,7 +177,9 @@ export class SQSQueueProvider implements ResourceProvider {
         })
       );
 
-      const queueName = (properties['QueueName'] as string | undefined) || logicalId;
+      const queueName =
+        (properties['QueueName'] as string | undefined) ||
+        generateResourceName(logicalId, { maxLength: 80 });
 
       return {
         physicalId,

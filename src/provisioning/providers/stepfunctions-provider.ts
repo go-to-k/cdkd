@@ -13,6 +13,7 @@ import {
 } from '@aws-sdk/client-sfn';
 import { getLogger } from '../../utils/logger.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
+import { generateResourceName } from '../resource-name.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -48,7 +49,9 @@ export class StepFunctionsProvider implements ResourceProvider {
   ): Promise<ResourceCreateResult> {
     this.logger.debug(`Creating Step Functions state machine ${logicalId}`);
 
-    const stateMachineName = (properties['StateMachineName'] as string | undefined) || logicalId;
+    const stateMachineName =
+      (properties['StateMachineName'] as string | undefined) ||
+      generateResourceName(logicalId, { maxLength: 80 });
     const roleArn = properties['RoleArn'] as string | undefined;
 
     if (!roleArn) {

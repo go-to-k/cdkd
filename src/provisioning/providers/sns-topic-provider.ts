@@ -9,6 +9,7 @@ import {
 import { getLogger } from '../../utils/logger.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
+import { generateResourceName } from '../resource-name.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -42,7 +43,9 @@ export class SNSTopicProvider implements ResourceProvider {
   ): Promise<ResourceCreateResult> {
     this.logger.debug(`Creating SNS topic ${logicalId}`);
 
-    const topicName = (properties['TopicName'] as string | undefined) || logicalId;
+    const topicName =
+      (properties['TopicName'] as string | undefined) ||
+      generateResourceName(logicalId, { maxLength: 256 });
 
     try {
       // Build attributes map for topic configuration
