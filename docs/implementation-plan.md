@@ -557,13 +557,20 @@ cdkq は CDK CLI (`aws-cdk`) を**置き換える**のではなく、**デプロ
 **実装内容**:
 
 - [x] **ECR 統合テスト**: Docker イメージアセットのビルド + ECR プッシュ ✅
-- [x] **API Gateway テスト**: REST API + Lambda 統合 ✅
-- [x] **ECS Fargate テスト**: ECS + Fargate 統合 ✅
-- [ ] **CloudWatch テスト**: Alarms, Log Groups
-- [ ] **SNS/SQS イベント連携テスト**: Topic → Queue → Lambda
-- [ ] **複合スタックテスト**: 既存の single-stack 例に多数リソース追加
+- [x] **API Gateway テスト**: REST API + Lambda 統合 ✅ (SDK Provider)
+- [x] **ECS Fargate テスト**: ECS + Fargate 統合 ✅ (15/15 deploy, 14/15 destroy)
+- [x] **CloudWatch テスト**: Alarm + MetricFilter + LogGroup + SNS action ✅
+- [x] **SNS/SQS イベント連携テスト**: Topic → 2 Queue (filter policy) → Lambda + DLQ ✅ (12/12)
+- [x] **Step Functions テスト**: StateMachine + Lambda + Choice/Wait/Succeed/Fail ✅ (5/5)
+- [x] **DynamoDB Streams テスト**: Table + Stream + Lambda event source ✅ (5/5)
+- [x] **EventBridge テスト**: Custom Bus + Event Pattern Rule + Lambda ✅ (SDK Provider)
+- [x] **S3 + CloudFront テスト**: Distribution + OAI + private S3 ✅
+- [x] **EC2/VPC テスト**: VPC + Subnet + SecurityGroup + IGW ✅
+- [x] **RDS Aurora テスト**: Aurora Serverless v2 + VPC + Secrets Manager ✅
+- [x] **Bedrock Agent テスト**: CfnAgent + IAM Role ✅
 - [x] **E2E フルサイクルテスト**: deploy → diff → update → destroy の自動化 ✅ (`tests/e2e/run-e2e.sh`)
 - [ ] **マルチスタック依存テスト**: 複数スタック間の依存関係
+- [ ] **複合スタックテスト**: 既存の single-stack 例に多数リソース追加
 
 **影響範囲**: `tests/integration/examples/`
 
@@ -575,7 +582,7 @@ cdkq は CDK CLI (`aws-cdk`) を**置き換える**のではなく、**デプロ
 
 - [ ] 対応組み込み関数の一覧表
 - [ ] Cloud Control API 対応リソース (200+) の代表例
-- [ ] SDK Provider 対応リソース (4種)
+- [ ] SDK Provider 対応リソース (7種: IAM Role/Policy, S3 BucketPolicy, SQS QueuePolicy, EventBridge Rule, API Gateway Account/Resource)
 - [ ] カスタムリソース対応状況
 - [ ] 未対応機能一覧
 
