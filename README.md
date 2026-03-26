@@ -23,15 +23,23 @@ AWS CDK is great for defining infrastructure as code, but CloudFormation deploym
 
 cdkq deploys resources directly via Cloud Control API, skipping the entire CloudFormation stack lifecycle:
 
+### Benchmark Results (S3 Bucket - single resource)
+
+| Operation | CloudFormation | cdkq | Speedup |
+| --- | --- | --- | --- |
+| **Deploy** | 38s | 26s | **1.5x** |
+| **Destroy** | 14s | 4s | **3.5x** |
+
+### Why cdkq is faster
+
 | | CloudFormation | cdkq |
 | --- | --- | --- |
-| Stack creation | ~5-10s | N/A (no stacks) |
-| Change set creation | ~5-10s | N/A (no change sets) |
+| Stack creation | ~5-10s overhead | N/A (no stacks) |
+| Change set creation | ~5-10s overhead | N/A (no change sets) |
 | Resource provisioning | Sequential | Parallel (DAG levels) |
 | Drift detection | Every deploy | N/A (state-based diff) |
-| **Typical 3-resource stack** | **~60s** | **~10s** |
 
-The speed gain comes from eliminating CloudFormation overhead (stack creation, change sets, polling) and deploying independent resources in parallel within each DAG level.
+> **Note:** The speedup increases with more resources. CloudFormation's overhead (stack creation, change sets, polling) is fixed per deploy, while cdkq's parallel DAG execution scales better. A 17-resource stack deploys in ~104s with cdkq.
 
 ## How it works
 
