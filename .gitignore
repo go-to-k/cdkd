@@ -36,3 +36,4 @@ cdk.out/
 # Temporary files
 *.tmp
 .cache/
+cdk.context.json
