@@ -536,6 +536,26 @@ export class IntrinsicFunctionResolver {
       }
     }
 
+    // CloudWatch Logs Log Group
+    if (resourceType === 'AWS::Logs::LogGroup') {
+      switch (attributeName) {
+        case 'Arn':
+          return `arn:${partition}:logs:${region}:${accountId}:log-group:${physicalId}:*`;
+        default:
+          return physicalId;
+      }
+    }
+
+    // ECS Cluster
+    if (resourceType === 'AWS::ECS::Cluster') {
+      switch (attributeName) {
+        case 'Arn':
+          return `arn:${partition}:ecs:${region}:${accountId}:cluster/${physicalId}`;
+        default:
+          return physicalId;
+      }
+    }
+
     // Default: return physical ID
     this.logger.warn(
       `Unknown attribute ${attributeName} for resource type ${resourceType}, returning physical ID`
