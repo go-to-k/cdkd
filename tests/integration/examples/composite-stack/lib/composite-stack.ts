@@ -53,7 +53,7 @@ export class CompositeStack extends cdk.Stack {
     });
 
     new kms.Alias(this, 'EncryptionKeyAlias', {
-      aliasName: `alias/cdkq-composite-${this.stackName}`,
+      aliasName: `alias/cdkq-composite-${cdk.Aws.ACCOUNT_ID}-${cdk.Aws.REGION}`,
       targetKey: encryptionKey,
     });
 
