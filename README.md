@@ -63,7 +63,7 @@ AWS CDK is great for defining infrastructure as code, but all deployments go thr
 
 ## Features
 
-- **Fast SDK Providers**: Direct synchronous API calls for common resource types - no polling overhead
+- **Fast SDK Providers**: Direct synchronous API calls for common resource types
 - **Broad resource coverage**: Cloud Control API fallback for 200+ additional resource types
 - **Hybrid deployment strategy**: SDK Providers preferred for performance, Cloud Control API as fallback
 - **S3-based state management**: No DynamoDB required, uses S3 conditional writes for locking
@@ -146,7 +146,7 @@ AWS CDK is great for defining infrastructure as code, but all deployments go thr
 | **Custom** | Custom::* (Lambda/SNS-backed) | SDK Provider | ✅ |
 | **Other** | 200+ resource types | Cloud Control | ✅ |
 
-> **Note**: SDK Providers are preferred for performance — they make direct synchronous API calls with no polling overhead. For resource types without an SDK Provider, Cloud Control API is used as a fallback (supports 200+ additional types).
+> **Note**: SDK Providers are hand-written providers that call AWS SDK APIs directly for fast provisioning. Cloud Control API is a generic AWS API that can operate on any resource type without custom implementation. SDK Providers are preferred for performance; Cloud Control API is used as a fallback for resource types without an SDK Provider.
 
 ### Other Features
 
