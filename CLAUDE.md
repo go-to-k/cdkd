@@ -201,6 +201,8 @@ registry.register('AWS::IAM::Role', new IAMRoleProvider());
 - Supports Lambda-backed Custom Resources
 - Create/Update/Delete lifecycle
 - ResponseURL uses S3 pre-signed URL for cfn-response handlers
+- CDK Provider framework: isCompleteHandler/onEventHandler async pattern detection
+- Async CRUD with polling (max 1hr), pre-signed URL validity 2hr
 - Implemented in `CustomResourceProvider`
 
 ### 5. Asset Publishing
