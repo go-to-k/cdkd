@@ -36,7 +36,10 @@ export class Synthesizer {
         // Handle toolkit messages
         notify: (msg) => {
           // Show error-level messages even in compact mode
-          const message = typeof msg === 'object' && msg !== null ? (msg as unknown as Record<string, unknown>) : {};
+          const message =
+            typeof msg === 'object' && msg !== null
+              ? (msg as unknown as Record<string, unknown>)
+              : {};
           const level = message['level'] as string | undefined;
           if (level === 'error' && message['message']) {
             this.logger.error(String(message['message']));
