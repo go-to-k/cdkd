@@ -124,10 +124,14 @@ The speed gain comes from eliminating CloudFormation overhead (stack creation, c
 | **IAM** | AWS::S3::BucketPolicy | SDK Provider | ✅ |
 | **IAM** | AWS::SQS::QueuePolicy | SDK Provider | ✅ |
 | **Events** | AWS::Events::Rule | SDK Provider | ✅ |
+| **Events** | AWS::Events::EventBus | SDK Provider | ✅ |
 | **API Gateway** | AWS::ApiGateway::Account | SDK Provider | ✅ |
 | **API Gateway** | AWS::ApiGateway::Resource | SDK Provider | ✅ |
 | **API Gateway** | AWS::ApiGateway::Deployment | SDK Provider | ✅ |
 | **API Gateway** | AWS::ApiGateway::Stage | SDK Provider | ✅ |
+| **API Gateway** | AWS::ApiGateway::Method | SDK Provider | ✅ |
+| **CDN** | AWS::CloudFront::CloudFrontOriginAccessIdentity | SDK Provider | ✅ |
+| **AI/ML** | AWS::BedrockAgentCore::Runtime | SDK Provider | ✅ |
 | **Custom** | Custom::* (Lambda/SNS-backed) | SDK Provider | ✅ |
 | **Other** | 200+ resource types | Cloud Control | ✅ |
 
@@ -407,8 +411,8 @@ After deployment, outputs are resolved and saved to state:
 
 ## Testing
 
-- **233 unit tests** covering all layers
-- **19 integration examples** verified with real AWS deployments (all 19 CREATE successful on AWS)
+- **277 unit tests** covering all layers
+- **19 integration examples** verified with real AWS deployments (all 19 CREATE + DESTROY successful on AWS)
 - **E2E test script** for automated deploy/update/destroy cycles
 
 ```bash
@@ -439,8 +443,7 @@ See [docs/implementation-plan.md](docs/implementation-plan.md) for detailed impl
 
 **Known Destroy Issues**:
 
-- CloudFront OAI: CC API DELETE returns "Invalid request" (manual cleanup needed)
-- Bedrock AgentCore Runtime: CC API + IAM propagation issue (SDK Provider needed)
+- None. All 19 integration examples now CREATE + DESTROY successfully.
 
 See [docs/implementation-plan.md](docs/implementation-plan.md) for complete roadmap.
 

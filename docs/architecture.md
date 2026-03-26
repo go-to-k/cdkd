@@ -57,7 +57,13 @@
                                       │      provider.ts            │
                                       │    - eventbridge-rule-      │
                                       │      provider.ts            │
+                                      │    - eventbridge-bus-       │
+                                      │      provider.ts            │
                                       │    - apigateway-provider.ts │
+                                      │    - cloudfront-oai-        │
+                                      │      provider.ts            │
+                                      │    - agentcore-runtime-     │
+                                      │      provider.ts            │
                                       │    - custom-resource-       │
                                       │      provider.ts            │
                                       │  - json-patch-generator.ts  │
@@ -425,12 +431,22 @@ For resources not supported by Cloud Control API or requiring fine-grained contr
    - `EventBridgeClient`: `PutRule`, `PutTargets`, `RemoveTargets`, `DeleteRule`
    - Handles JSON string properties (EventPattern)
 
-6. **`apigateway-provider.ts`** - `AWS::ApiGateway::Account`, `AWS::ApiGateway::Resource`, `AWS::ApiGateway::Deployment`, `AWS::ApiGateway::Stage`
-   - `APIGatewayClient`: `UpdateAccount`, `CreateResource`, `DeleteResource`, `CreateDeployment`, `DeleteDeployment`, `CreateStage`, `UpdateStage`, `DeleteStage`
+6. **`apigateway-provider.ts`** - `AWS::ApiGateway::Account`, `AWS::ApiGateway::Resource`, `AWS::ApiGateway::Deployment`, `AWS::ApiGateway::Stage`, `AWS::ApiGateway::Method`
+   - `APIGatewayClient`: `UpdateAccount`, `CreateResource`, `DeleteResource`, `CreateDeployment`, `DeleteDeployment`, `CreateStage`, `UpdateStage`, `DeleteStage`, `PutMethod`, `DeleteMethod`
    - IAM trust propagation retry logic for Account
    - RootResourceId enrichment via GetRestApi
 
-7. **`custom-resource-provider.ts`** - `Custom::*`
+7. **`eventbridge-bus-provider.ts`** - `AWS::Events::EventBus`
+   - `EventBridgeClient`: `CreateEventBus`, `DeleteEventBus`
+
+8. **`cloudfront-oai-provider.ts`** - `AWS::CloudFront::CloudFrontOriginAccessIdentity`
+   - `CloudFrontClient`: `CreateCloudFrontOriginAccessIdentity`, `DeleteCloudFrontOriginAccessIdentity`
+   - S3CanonicalUserId enrichment
+
+9. **`agentcore-runtime-provider.ts`** - `AWS::BedrockAgentCore::Runtime`
+   - SDK Provider for BedrockAgentCore Runtime (CC API has IAM propagation issues)
+
+10. **`custom-resource-provider.ts`** - `Custom::*`
    - Lambda-backed custom resources
    - Invokes custom resource Lambda via `LambdaClient.invoke()`
    - Same request format as CloudFormation
@@ -671,8 +687,7 @@ Each layer has clear responsibilities
 
 ### Known Destroy Issues
 
-- CloudFront OAI: CC API DELETE returns "Invalid request" (manual cleanup needed)
-- Bedrock AgentCore Runtime: CC API + IAM propagation issue (SDK Provider needed)
+- None. All 19 integration examples now CREATE + DESTROY successfully (CloudFront OAI and AgentCore Runtime resolved via SDK Providers).
 
 ### Phase 9 and Beyond Plans
 

@@ -484,10 +484,14 @@ For resources not supported by Cloud Control API, you can implement SDK provider
 - `AWS::S3::BucketPolicy` - S3 bucket policies
 - `AWS::SQS::QueuePolicy` - SQS queue policies
 - `AWS::Events::Rule` - EventBridge rules
+- `AWS::Events::EventBus` - EventBridge event buses
 - `AWS::ApiGateway::Account` - API Gateway account settings
 - `AWS::ApiGateway::Resource` - API Gateway resources
 - `AWS::ApiGateway::Deployment` - API Gateway deployments
 - `AWS::ApiGateway::Stage` - API Gateway stages
+- `AWS::ApiGateway::Method` - API Gateway methods
+- `AWS::CloudFront::CloudFrontOriginAccessIdentity` - CloudFront OAI
+- `AWS::BedrockAgentCore::Runtime` - Bedrock AgentCore runtime
 - `Custom::*` - Lambda-backed custom resources (Create/Update/Delete)
 
 If you use other resources not supported by Cloud Control API, an error message will be displayed.

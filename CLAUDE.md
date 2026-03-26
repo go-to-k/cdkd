@@ -122,9 +122,12 @@ Currently implemented SDK Providers (`src/provisioning/providers/`):
 - `s3-bucket-policy-provider.ts` - AWS::S3::BucketPolicy
 - `sqs-queue-policy-provider.ts` - AWS::SQS::QueuePolicy
 - `eventbridge-rule-provider.ts` - AWS::Events::Rule
-- `apigateway-provider.ts` - AWS::ApiGateway::Account, AWS::ApiGateway::Resource, AWS::ApiGateway::Deployment, AWS::ApiGateway::Stage
+- `eventbridge-bus-provider.ts` - AWS::Events::EventBus
+- `apigateway-provider.ts` - AWS::ApiGateway::Account, AWS::ApiGateway::Resource, AWS::ApiGateway::Deployment, AWS::ApiGateway::Stage, AWS::ApiGateway::Method
+- `cloudfront-oai-provider.ts` - AWS::CloudFront::CloudFrontOriginAccessIdentity
+- `agentcore-runtime-provider.ts` - AWS::BedrockAgentCore::Runtime
 
-These are custom implementations for resources not supported by Cloud Control API (9 resource types total).
+These are custom implementations for resources not supported by Cloud Control API (12 SDK Providers covering 13 resource types).
 
 ## State Schema
 
@@ -233,7 +236,7 @@ registry.register('AWS::IAM::Role', new IAMRoleProvider());
 - `tests/integration/examples/**`
 - Uses actual AWS account
 - Environment variables: `STATE_BUCKET`, `AWS_REGION`
-- 19 examples verified with real AWS deployments (all 19 CREATE successful on AWS, as of 2026-03-26):
+- 19 examples verified with real AWS deployments (all 19 CREATE + DESTROY successful on AWS, as of 2026-03-26):
   - basic: S3 bucket (CREATE + UPDATE verified)
   - conditions: Conditional resources with AWS::NoValue
   - parameters: CloudFormation Parameters with default values
@@ -322,12 +325,12 @@ See [docs/provider-development.md](docs/provider-development.md) for details.
 - ✅ Compact output mode (default clean output, `--verbose` for full details)
 - ✅ `--state-bucket` auto-resolves from STS account ID: `cdkq-state-{accountId}-{region}`
 - ✅ Attribute mapper: CC API property names mapped to GetAtt attribute names
-- ✅ 233 unit tests, 19 integration examples (all 19 CREATE successful on AWS), E2E test script
+- ✅ 277 unit tests, 19 integration examples (all 19 CREATE + DESTROY successful on AWS), E2E test script
 - ✅ DeletionPolicy: Retain support (skip deletion for retained resources)
 - ✅ Resource replacement for immutable property changes (CREATE→DELETE)
 - ✅ Type safety improvements (error handling, any type elimination in custom resources)
 - ✅ Dynamic References: `{{resolve:secretsmanager:...}}` and `{{resolve:ssm:...}}`
-- ✅ SDK Providers: EventBridge Rule, API Gateway Account/Resource/Deployment/Stage (9 SDK Providers total)
+- ✅ SDK Providers: EventBridge Rule/EventBus, API Gateway Account/Resource/Deployment/Stage/Method, CloudFront OAI, AgentCore Runtime (12 SDK Providers total)
 - ✅ ALL pseudo parameters supported (7/7 including AWS::StackName/StackId)
 - ✅ DELETE idempotency (not-found/No policy found treated as success)
 - ✅ Destroy ordering: reverse dependency from state + implicit type-based deps

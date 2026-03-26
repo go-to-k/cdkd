@@ -376,7 +376,10 @@ import { IAMPolicyProvider } from '../provisioning/providers/iam-policy-provider
 import { S3BucketPolicyProvider } from '../provisioning/providers/s3-bucket-policy-provider.js';
 import { SQSQueuePolicyProvider } from '../provisioning/providers/sqs-queue-policy-provider.js';
 import { EventBridgeRuleProvider } from '../provisioning/providers/eventbridge-rule-provider.js';
+import { EventBridgeBusProvider } from '../provisioning/providers/eventbridge-bus-provider.js';
 import { ApiGatewayProvider } from '../provisioning/providers/apigateway-provider.js';
+import { CloudFrontOAIProvider } from '../provisioning/providers/cloudfront-oai-provider.js';
+import { AgentCoreRuntimeProvider } from '../provisioning/providers/agentcore-runtime-provider.js';
 import { CustomResourceProvider } from '../provisioning/providers/custom-resource-provider.js';
 
 // Register providers
@@ -386,10 +389,15 @@ registry.register('AWS::IAM::Policy', new IAMPolicyProvider());
 registry.register('AWS::S3::BucketPolicy', new S3BucketPolicyProvider());
 registry.register('AWS::SQS::QueuePolicy', new SQSQueuePolicyProvider());
 registry.register('AWS::Events::Rule', new EventBridgeRuleProvider());
-registry.register('AWS::ApiGateway::Account', new ApiGatewayProvider());
-registry.register('AWS::ApiGateway::Resource', new ApiGatewayProvider());
-registry.register('AWS::ApiGateway::Deployment', new ApiGatewayProvider());
-registry.register('AWS::ApiGateway::Stage', new ApiGatewayProvider());
+registry.register('AWS::Events::EventBus', new EventBridgeBusProvider());
+const apigwProvider = new ApiGatewayProvider();
+registry.register('AWS::ApiGateway::Account', apigwProvider);
+registry.register('AWS::ApiGateway::Resource', apigwProvider);
+registry.register('AWS::ApiGateway::Deployment', apigwProvider);
+registry.register('AWS::ApiGateway::Stage', apigwProvider);
+registry.register('AWS::ApiGateway::Method', apigwProvider);
+registry.register('AWS::CloudFront::CloudFrontOriginAccessIdentity', new CloudFrontOAIProvider());
+registry.register('AWS::BedrockAgentCore::Runtime', new AgentCoreRuntimeProvider());
 
 // Wildcard matching for Custom::*
 if (resourceType.startsWith('Custom::')) {
