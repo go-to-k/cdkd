@@ -113,7 +113,7 @@ export class CompositeStack extends cdk.Stack {
     // CloudWatch Log Group
     // ========================================
     const logGroup = new logs.LogGroup(this, 'AppLogGroup', {
-      logGroupName: `/cdkq/composite-stack/${this.stackName}`,
+      // Let CDK auto-generate the name to avoid conflicts on retry
       retention: logs.RetentionDays.ONE_WEEK,
       removalPolicy: cdk.RemovalPolicy.DESTROY,
     });
@@ -232,7 +232,7 @@ export class CompositeStack extends cdk.Stack {
     // SSM Parameter
     // ========================================
     const ssmParam = new ssm.StringParameter(this, 'ConfigParameter', {
-      parameterName: `/cdkq/composite-stack/${this.stackName}/config`,
+      // Let CDK auto-generate the name to avoid conflicts on retry
       description: 'cdkq composite stack configuration parameter',
       stringValue: JSON.stringify({
         version: '1.0.0',
