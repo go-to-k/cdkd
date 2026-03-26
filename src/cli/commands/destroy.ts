@@ -191,6 +191,64 @@ async function destroyCommand(
           };
         }
 
+        // Add implicit dependencies for correct deletion order.
+        // Some AWS resources have ordering constraints not expressed via Ref/GetAtt.
+        const implicitDeleteDeps: Record<string, string[]> = {
+          'AWS::EC2::InternetGateway': ['AWS::EC2::VPCGatewayAttachment'],
+          'AWS::Events::EventBus': ['AWS::Events::Rule'],
+          'AWS::EC2::VPC': [
+            'AWS::EC2::Subnet',
+            'AWS::EC2::SecurityGroup',
+            'AWS::EC2::InternetGateway',
+            'AWS::EC2::VPCGatewayAttachment',
+            'AWS::EC2::RouteTable',
+          ],
+          'AWS::EC2::Subnet': ['AWS::EC2::SubnetRouteTableAssociation'],
+          'AWS::EC2::RouteTable': ['AWS::EC2::Route', 'AWS::EC2::SubnetRouteTableAssociation'],
+          'AWS::EC2::SecurityGroup': [
+            'AWS::EC2::SecurityGroupIngress',
+            'AWS::EC2::SecurityGroupEgress',
+          ],
+        };
+
+        // Build type → logicalId index
+        const typeToLogicalIds = new Map<string, string[]>();
+        for (const [logicalId, resource] of Object.entries(currentState.resources)) {
+          const ids = typeToLogicalIds.get(resource.resourceType) ?? [];
+          ids.push(logicalId);
+          typeToLogicalIds.set(resource.resourceType, ids);
+        }
+
+        // For each resource whose type has implicit deps, add DependsOn edges.
+        // If type X must be deleted AFTER type Y, then Y.DependsOn should include X
+        // in the creation-order DAG. When the DAG levels are reversed for deletion,
+        // Y (at a later creation level) is deleted first, then X.
+        for (const [logicalId, resource] of Object.entries(currentState.resources)) {
+          const mustDeleteAfter = implicitDeleteDeps[resource.resourceType];
+          if (!mustDeleteAfter) continue;
+
+          for (const depType of mustDeleteAfter) {
+            const depIds = typeToLogicalIds.get(depType);
+            if (!depIds) continue;
+            for (const depId of depIds) {
+              // depId (depType) must be deleted BEFORE logicalId (resource.resourceType).
+              // In creation DAG: depId depends on logicalId → depId is at a later level.
+              // Reversed for deletion: depId is processed first → deleted first.
+              const existing = template.Resources[depId]?.DependsOn ?? [];
+              const depsArray = Array.isArray(existing) ? existing : [existing];
+              if (!depsArray.includes(logicalId)) {
+                template.Resources[depId] = {
+                  ...template.Resources[depId]!,
+                  DependsOn: [...depsArray, logicalId],
+                };
+                logger.debug(
+                  `Implicit delete dependency: ${depId} (${depType}) must be deleted before ${logicalId} (${resource.resourceType})`
+                );
+              }
+            }
+          }
+        }
+
         const graph = dagBuilder.buildGraph(template);
         const executionLevels = dagBuilder.getExecutionLevels(graph);
 

@@ -842,6 +842,36 @@ export class DeployEngine {
    * CloudFormation handles this internally; cdkq retries with exponential backoff.
    */
   /**
+   * Implicit dependency map for correct deletion order.
+   *
+   * Key = resource type that must be deleted AFTER all value types are deleted.
+   * Value = resource types that must be deleted BEFORE the key type.
+   *
+   * Example: InternetGateway depends on VPCGatewayAttachment being deleted first,
+   * because AWS won't let you delete an IGW while it's still attached to a VPC.
+   */
+  private static readonly IMPLICIT_DELETE_DEPENDENCIES: Record<string, string[]> = {
+    // IGW must be deleted AFTER VPCGatewayAttachment
+    'AWS::EC2::InternetGateway': ['AWS::EC2::VPCGatewayAttachment'],
+    // EventBus must be deleted AFTER Rules on that bus
+    'AWS::Events::EventBus': ['AWS::Events::Rule'],
+    // VPC must be deleted AFTER all VPC-dependent resources
+    'AWS::EC2::VPC': [
+      'AWS::EC2::Subnet',
+      'AWS::EC2::SecurityGroup',
+      'AWS::EC2::InternetGateway',
+      'AWS::EC2::VPCGatewayAttachment',
+      'AWS::EC2::RouteTable',
+    ],
+    // Subnet must be deleted AFTER RouteTableAssociation
+    'AWS::EC2::Subnet': ['AWS::EC2::SubnetRouteTableAssociation'],
+    // RouteTable must be deleted AFTER Route and Association
+    'AWS::EC2::RouteTable': ['AWS::EC2::Route', 'AWS::EC2::SubnetRouteTableAssociation'],
+    // SecurityGroup must be deleted AFTER resources that reference it
+    'AWS::EC2::SecurityGroup': ['AWS::EC2::SecurityGroupIngress', 'AWS::EC2::SecurityGroupEgress'],
+  };
+
+  /**
    * Build deletion levels from state dependencies (reverse topological order).
    * Resources that are depended upon by others are deleted LAST.
    */
@@ -866,6 +896,12 @@ export class DeployEngine {
         inDegree.set(id, (inDegree.get(id) ?? 0) + 1);
       }
     }
+
+    // Add implicit dependencies based on resource types.
+    // For each resource being deleted, if its type has implicit dependencies,
+    // find other resources being deleted that match those dependency types
+    // and add edges so those dependents are deleted first.
+    this.addImplicitDeleteDependencies(deleteIds, state, dependedBy);
 
     // Topological sort (Kahn's algorithm) — produces levels for parallel delete
     const levels: string[][] = [];
@@ -901,6 +937,60 @@ export class DeployEngine {
       `Delete order: ${levels.length} levels - ${levels.map((l, i) => `L${i + 1}(${l.length})`).join(', ')}`
     );
     return levels;
+  }
+
+  /**
+   * Add implicit delete dependency edges based on resource type relationships.
+   *
+   * Some AWS resources have ordering constraints during deletion that are NOT
+   * expressed via Ref/GetAtt in CloudFormation templates. For example, an
+   * InternetGateway cannot be deleted until its VPCGatewayAttachment is removed,
+   * even though the attachment references the IGW (not the other way around).
+   *
+   * This method inspects resource types and adds edges so that dependents
+   * (e.g., VPCGatewayAttachment) are deleted BEFORE the resources they implicitly
+   * depend on (e.g., InternetGateway).
+   */
+  private addImplicitDeleteDependencies(
+    deleteIds: Set<string>,
+    state: StackState,
+    dependedBy: Map<string, Set<string>>
+  ): void {
+    // Build a type → logical IDs index for resources being deleted
+    const typeToIds = new Map<string, string[]>();
+    for (const id of deleteIds) {
+      const resource = state.resources[id];
+      if (!resource) continue;
+      const ids = typeToIds.get(resource.resourceType) ?? [];
+      ids.push(id);
+      typeToIds.set(resource.resourceType, ids);
+    }
+
+    for (const id of deleteIds) {
+      const resource = state.resources[id];
+      if (!resource) continue;
+
+      const mustDeleteAfter = DeployEngine.IMPLICIT_DELETE_DEPENDENCIES[resource.resourceType];
+      if (!mustDeleteAfter) continue;
+
+      for (const depType of mustDeleteAfter) {
+        const depIds = typeToIds.get(depType);
+        if (!depIds) continue;
+
+        for (const depId of depIds) {
+          // depId (of depType) must be deleted BEFORE id (of resource.resourceType)
+          // In the dependedBy map: id is "depended on" by depId
+          // meaning depId will be picked first (deleted first)
+          if (!dependedBy.has(id)) dependedBy.set(id, new Set());
+          if (!dependedBy.get(id)!.has(depId)) {
+            dependedBy.get(id)!.add(depId);
+            this.logger.debug(
+              `Implicit delete dependency: ${depId} (${depType}) must be deleted before ${id} (${resource.resourceType})`
+            );
+          }
+        }
+      }
+    }
   }
 
   /**
