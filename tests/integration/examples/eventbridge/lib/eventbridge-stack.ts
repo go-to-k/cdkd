@@ -9,7 +9,7 @@ import * as lambda from 'aws-cdk-lib/aws-lambda';
  *
  * Demonstrates:
  * - Custom EventBridge event bus creation
- * - EventBridge rule with schedule expression (rate)
+ * - EventBridge rule with event pattern on custom bus
  * - Lambda function as rule target (inline code)
  * - IAM permissions for EventBridge to invoke Lambda
  * - Fn::GetAtt for outputs
@@ -45,11 +45,14 @@ def handler(event, context):
       },
     });
 
-    // Create EventBridge rule on the custom bus with a schedule
-    const rule = new events.Rule(this, 'ScheduledRule', {
+    // Create EventBridge rule on the custom bus with an event pattern
+    const rule = new events.Rule(this, 'EventRule', {
       eventBus: bus,
-      schedule: events.Schedule.rate(cdk.Duration.hours(1)),
-      description: 'Triggers Lambda every hour for cdkq integration test',
+      eventPattern: {
+        source: ['cdkq.test'],
+        detailType: ['TestEvent'],
+      },
+      description: 'Routes cdkq test events to Lambda',
     });
 
     // Add Lambda function as the rule target
