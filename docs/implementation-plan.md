@@ -631,7 +631,7 @@ cdkq は CDK CLI (`aws-cdk`) を**置き換える**のではなく、**デプロ
 
 **インパクト最大化のための追加項目**:
 
-- [ ] ベンチマーク結果（CloudFormation vs cdkq の速度比較データ）— スクリプト作成済み、未実行
+- [x] ベンチマーク結果（CloudFormation vs cdkq の速度比較データ）— S3バケット1リソース: cdkq 26s vs CFn 38s (deploy 1.5x), cdkq 4s vs CFn 14s (destroy 3.5x)。単一リソースでは差が小さいため README 掲載は見送り
 - [x] 10+ リソースの実践的デモ（full-stack-demo: 16リソース）
 - [ ] GIF/動画デモ（README 掲載用）
 - [x] bootstrap デフォルトバケット名対応（UX 改善）
