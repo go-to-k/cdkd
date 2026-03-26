@@ -25,6 +25,11 @@ import { EventBridgeRuleProvider } from '../../provisioning/providers/eventbridg
 import { EventBridgeBusProvider } from '../../provisioning/providers/eventbridge-bus-provider.js';
 import { AgentCoreRuntimeProvider } from '../../provisioning/providers/agentcore-runtime-provider.js';
 import { CloudFrontOAIProvider } from '../../provisioning/providers/cloudfront-oai-provider.js';
+import { S3BucketProvider } from '../../provisioning/providers/s3-bucket-provider.js';
+import { LambdaFunctionProvider } from '../../provisioning/providers/lambda-function-provider.js';
+import { SQSQueueProvider } from '../../provisioning/providers/sqs-queue-provider.js';
+import { SNSTopicProvider } from '../../provisioning/providers/sns-topic-provider.js';
+import { DynamoDBTableProvider } from '../../provisioning/providers/dynamodb-table-provider.js';
 import { DeployEngine } from '../../deployment/deploy-engine.js';
 import { setAwsClients, AwsClients } from '../../utils/aws-clients.js';
 import { resolveApp, resolveStateBucketWithDefault } from '../config-loader.js';
@@ -180,10 +185,15 @@ async function deployCommand(
     const providerRegistry = new ProviderRegistry();
 
     // Register SDK providers for unsupported resource types
+    providerRegistry.register('AWS::S3::Bucket', new S3BucketProvider());
     providerRegistry.register('AWS::IAM::Role', new IAMRoleProvider());
     providerRegistry.register('AWS::IAM::Policy', new IAMPolicyProvider());
     providerRegistry.register('AWS::S3::BucketPolicy', new S3BucketPolicyProvider());
     providerRegistry.register('AWS::SQS::QueuePolicy', new SQSQueuePolicyProvider());
+    providerRegistry.register('AWS::Lambda::Function', new LambdaFunctionProvider());
+    providerRegistry.register('AWS::SQS::Queue', new SQSQueueProvider());
+    providerRegistry.register('AWS::SNS::Topic', new SNSTopicProvider());
+    providerRegistry.register('AWS::DynamoDB::Table', new DynamoDBTableProvider());
     const apigwProvider = new ApiGatewayProvider();
     providerRegistry.register('AWS::ApiGateway::Account', apigwProvider);
     providerRegistry.register('AWS::ApiGateway::Resource', apigwProvider);

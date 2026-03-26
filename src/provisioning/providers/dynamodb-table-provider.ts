@@ -1,0 +1,286 @@
+import {
+  DynamoDBClient,
+  CreateTableCommand,
+  DeleteTableCommand,
+  DescribeTableCommand,
+  ResourceNotFoundException,
+  type CreateTableCommandInput,
+  type KeySchemaElement,
+  type AttributeDefinition,
+  type GlobalSecondaryIndex,
+  type LocalSecondaryIndex,
+  type StreamSpecification,
+  type Tag,
+} from '@aws-sdk/client-dynamodb';
+import { getLogger } from '../../utils/logger.js';
+import { getAwsClients } from '../../utils/aws-clients.js';
+import { ProvisioningError } from '../../utils/error-handler.js';
+import type {
+  ResourceProvider,
+  ResourceCreateResult,
+  ResourceUpdateResult,
+} from '../../types/resource.js';
+
+/**
+ * AWS DynamoDB Table Provider
+ *
+ * Implements resource provisioning for AWS::DynamoDB::Table using the DynamoDB SDK.
+ * WHY: The CC API polls for DynamoDB table creation with exponential backoff
+ * (1s->2s->4s->8s->10s), but we can poll DescribeTable directly with shorter
+ * intervals, eliminating the CC API intermediary overhead and reducing total
+ * wait time.
+ */
+export class DynamoDBTableProvider implements ResourceProvider {
+  private dynamoDBClient: DynamoDBClient;
+  private logger = getLogger().child('DynamoDBTableProvider');
+
+  constructor() {
+    const awsClients = getAwsClients();
+    this.dynamoDBClient = awsClients.dynamoDB;
+  }
+
+  /**
+   * Create a DynamoDB table
+   */
+  async create(
+    logicalId: string,
+    resourceType: string,
+    properties: Record<string, unknown>
+  ): Promise<ResourceCreateResult> {
+    this.logger.debug(`Creating DynamoDB table ${logicalId}`);
+
+    const tableName = (properties['TableName'] as string | undefined) || logicalId;
+    const keySchema = properties['KeySchema'] as KeySchemaElement[] | undefined;
+    const attributeDefinitions = properties['AttributeDefinitions'] as
+      | AttributeDefinition[]
+      | undefined;
+
+    if (!keySchema) {
+      throw new ProvisioningError(
+        `KeySchema is required for DynamoDB table ${logicalId}`,
+        resourceType,
+        logicalId
+      );
+    }
+
+    if (!attributeDefinitions) {
+      throw new ProvisioningError(
+        `AttributeDefinitions is required for DynamoDB table ${logicalId}`,
+        resourceType,
+        logicalId
+      );
+    }
+
+    try {
+      // BillingMode (default: PROVISIONED)
+      const billingMode = (properties['BillingMode'] as string | undefined) || 'PROVISIONED';
+
+      const createParams: CreateTableCommandInput = {
+        TableName: tableName,
+        KeySchema: keySchema,
+        AttributeDefinitions: attributeDefinitions,
+        BillingMode: billingMode as 'PROVISIONED' | 'PAY_PER_REQUEST',
+      };
+
+      // Provisioned throughput (required when BillingMode is PROVISIONED)
+      if (billingMode === 'PROVISIONED') {
+        const pt = properties['ProvisionedThroughput'] as Record<string, unknown> | undefined;
+        createParams.ProvisionedThroughput = {
+          ReadCapacityUnits: Number(pt?.['ReadCapacityUnits'] ?? 5),
+          WriteCapacityUnits: Number(pt?.['WriteCapacityUnits'] ?? 5),
+        };
+      }
+
+      // Stream specification
+      if (properties['StreamSpecification']) {
+        createParams.StreamSpecification = properties['StreamSpecification'] as StreamSpecification;
+      }
+
+      // Global secondary indexes
+      if (properties['GlobalSecondaryIndexes']) {
+        createParams.GlobalSecondaryIndexes = properties[
+          'GlobalSecondaryIndexes'
+        ] as GlobalSecondaryIndex[];
+      }
+
+      // Local secondary indexes
+      if (properties['LocalSecondaryIndexes']) {
+        createParams.LocalSecondaryIndexes = properties[
+          'LocalSecondaryIndexes'
+        ] as LocalSecondaryIndex[];
+      }
+
+      // SSE specification
+      if (properties['SSESpecification']) {
+        createParams.SSESpecification = properties[
+          'SSESpecification'
+        ] as CreateTableCommandInput['SSESpecification'];
+      }
+
+      // Tags
+      if (properties['Tags']) {
+        createParams.Tags = properties['Tags'] as Tag[];
+      }
+
+      // DeletionProtectionEnabled
+      if (properties['DeletionProtectionEnabled'] !== undefined) {
+        createParams.DeletionProtectionEnabled = properties['DeletionProtectionEnabled'] as boolean;
+      }
+
+      // Table class
+      if (properties['TableClass']) {
+        createParams.TableClass = properties['TableClass'] as
+          | 'STANDARD'
+          | 'STANDARD_INFREQUENT_ACCESS';
+      }
+
+      await this.dynamoDBClient.send(new CreateTableCommand(createParams));
+
+      this.logger.debug(`CreateTable initiated for ${tableName}, waiting for ACTIVE status`);
+
+      // Poll until table is ACTIVE
+      const tableInfo = await this.waitForTableActive(tableName);
+
+      this.logger.debug(`Successfully created DynamoDB table ${logicalId}: ${tableName}`);
+
+      return {
+        physicalId: tableName,
+        attributes: {
+          Arn: tableInfo.tableArn,
+          TableId: tableInfo.tableId,
+          StreamArn: tableInfo.streamArn,
+          TableName: tableName,
+        },
+      };
+    } catch (error) {
+      if (error instanceof ProvisioningError) {
+        throw error;
+      }
+      const cause = error instanceof Error ? error : undefined;
+      throw new ProvisioningError(
+        `Failed to create DynamoDB table ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        resourceType,
+        logicalId,
+        tableName,
+        cause
+      );
+    }
+  }
+
+  /**
+   * Update a DynamoDB table
+   *
+   * DynamoDB tables have limited in-place update capabilities.
+   * For immutable property changes (KeySchema, etc.), the deployment layer
+   * handles replacement via DELETE + CREATE.
+   */
+  async update(
+    logicalId: string,
+    physicalId: string,
+    resourceType: string,
+    _properties: Record<string, unknown>,
+    _previousProperties: Record<string, unknown>
+  ): Promise<ResourceUpdateResult> {
+    this.logger.debug(`Updating DynamoDB table ${logicalId}: ${physicalId}`);
+
+    try {
+      // Get current table description for attributes
+      const response = await this.dynamoDBClient.send(
+        new DescribeTableCommand({ TableName: physicalId })
+      );
+
+      const table = response.Table;
+
+      return {
+        physicalId,
+        wasReplaced: false,
+        attributes: {
+          Arn: table?.TableArn,
+          TableId: table?.TableId,
+          StreamArn: table?.LatestStreamArn,
+          TableName: physicalId,
+        },
+      };
+    } catch (error) {
+      const cause = error instanceof Error ? error : undefined;
+      throw new ProvisioningError(
+        `Failed to update DynamoDB table ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        resourceType,
+        logicalId,
+        physicalId,
+        cause
+      );
+    }
+  }
+
+  /**
+   * Delete a DynamoDB table
+   */
+  async delete(
+    logicalId: string,
+    physicalId: string,
+    resourceType: string,
+    _properties?: Record<string, unknown>
+  ): Promise<void> {
+    this.logger.debug(`Deleting DynamoDB table ${logicalId}: ${physicalId}`);
+
+    try {
+      await this.dynamoDBClient.send(new DeleteTableCommand({ TableName: physicalId }));
+      this.logger.debug(`Successfully deleted DynamoDB table ${logicalId}`);
+    } catch (error) {
+      if (error instanceof ResourceNotFoundException) {
+        this.logger.debug(`DynamoDB table ${physicalId} does not exist, skipping deletion`);
+        return;
+      }
+      const cause = error instanceof Error ? error : undefined;
+      throw new ProvisioningError(
+        `Failed to delete DynamoDB table ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        resourceType,
+        logicalId,
+        physicalId,
+        cause
+      );
+    }
+  }
+
+  /**
+   * Poll DescribeTable until the table reaches ACTIVE status
+   *
+   * Uses a tight polling loop (1s intervals) instead of CC API's exponential
+   * backoff (1s->2s->4s->8s->10s), reducing total wait time.
+   */
+  private async waitForTableActive(
+    tableName: string,
+    maxAttempts = 60
+  ): Promise<{
+    tableArn: string | undefined;
+    tableId: string | undefined;
+    streamArn: string | undefined;
+  }> {
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      const response = await this.dynamoDBClient.send(
+        new DescribeTableCommand({ TableName: tableName })
+      );
+
+      const status = response.Table?.TableStatus;
+      this.logger.debug(`Table ${tableName} status: ${status} (attempt ${attempt}/${maxAttempts})`);
+
+      if (status === 'ACTIVE') {
+        return {
+          tableArn: response.Table?.TableArn,
+          tableId: response.Table?.TableId,
+          streamArn: response.Table?.LatestStreamArn,
+        };
+      }
+
+      if (status !== 'CREATING') {
+        throw new Error(`Unexpected table status: ${status}`);
+      }
+
+      // Wait 1 second between polls
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+    }
+
+    throw new Error(`Table ${tableName} did not reach ACTIVE status within ${maxAttempts} seconds`);
+  }
+}

@@ -43,19 +43,8 @@ export class CompositeStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
     super(scope, id, props);
 
-    // ========================================
-    // KMS Key + Alias
-    // ========================================
-    const encryptionKey = new kms.Key(this, 'EncryptionKey', {
-      description: 'cdkq composite stack encryption key',
-      enableKeyRotation: true,
-      removalPolicy: cdk.RemovalPolicy.DESTROY,
-    });
-
-    new kms.Alias(this, 'EncryptionKeyAlias', {
-      aliasName: `alias/cdkq-composite-${cdk.Aws.ACCOUNT_ID}-${cdk.Aws.REGION}`,
-      targetKey: encryptionKey,
-    });
+    // KMS Key removed for benchmark (adds ~60s due to CC API polling)
+    // To re-enable: uncomment and add back CfnOutput below
 
     // ========================================
     // S3 Bucket
@@ -320,7 +309,7 @@ export class CompositeStack extends cdk.Stack {
     });
 
     new cdk.CfnOutput(this, 'KmsKeyArn', {
-      value: encryptionKey.keyArn,
+      value: 'kms-disabled-for-benchmark',
       description: 'KMS Key ARN',
     });
   }
