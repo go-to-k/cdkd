@@ -35,6 +35,11 @@ const ATTRIBUTE_ALIAS_REGISTRY: Record<string, AttributeAliasMap> = {
     FunctionName: 'FunctionName',
   },
 
+  'AWS::Lambda::Url': {
+    FunctionUrl: 'FunctionUrl',
+    FunctionArn: 'FunctionArn',
+  },
+
   'AWS::SQS::Queue': {
     QueueArn: 'Arn',
     QueueUrl: 'QueueUrl',
