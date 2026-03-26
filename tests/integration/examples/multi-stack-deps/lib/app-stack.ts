@@ -22,7 +22,9 @@ export class AppStack extends cdk.Stack {
     const role = new iam.Role(this, 'LambdaRole', {
       assumedBy: new iam.ServicePrincipal('lambda.amazonaws.com'),
       managedPolicies: [
-        iam.ManagedPolicy.fromAwsManagedPolicyArn(
+        iam.ManagedPolicy.fromManagedPolicyArn(
+          this,
+          'LambdaBasicExec',
           'arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole'
         ),
       ],
