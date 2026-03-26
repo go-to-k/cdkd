@@ -72,6 +72,8 @@ cdkd uses a hybrid provisioning strategy: hand-written **SDK Providers** call AW
 - **DAG-based parallelization**: Analyze `Ref`/`Fn::GetAtt` dependencies and execute in parallel
 - **Asset handling**: Leverages `@aws-cdk/cdk-assets-lib` for Lambda packages, Docker images, etc.
 
+> **Note**: Resource types not covered by either SDK Providers or Cloud Control API cannot be deployed with cdkd. If you encounter an unsupported resource type, deployment will fail with a clear error message.
+
 ## Supported Features
 
 ### Intrinsic Functions
@@ -144,6 +146,21 @@ cdkd uses a hybrid provisioning strategy: hand-written **SDK Providers** call AW
 | **API Gateway** | AWS::ApiGateway::Stage | SDK Provider | ✅ |
 | **API Gateway** | AWS::ApiGateway::Method | SDK Provider | ✅ |
 | **CDN** | AWS::CloudFront::CloudFrontOriginAccessIdentity | SDK Provider | ✅ |
+| **CDN** | AWS::CloudFront::Distribution | SDK Provider | ✅ |
+| **Orchestration** | AWS::StepFunctions::StateMachine | SDK Provider | ✅ |
+| **Container** | AWS::ECS::Cluster | SDK Provider | ✅ |
+| **Container** | AWS::ECS::TaskDefinition | SDK Provider | ✅ |
+| **Container** | AWS::ECS::Service | SDK Provider | ✅ |
+| **Load Balancing** | AWS::ElasticLoadBalancingV2::LoadBalancer | SDK Provider | ✅ |
+| **Load Balancing** | AWS::ElasticLoadBalancingV2::TargetGroup | SDK Provider | ✅ |
+| **Load Balancing** | AWS::ElasticLoadBalancingV2::Listener | SDK Provider | ✅ |
+| **Database** | AWS::RDS::DBSubnetGroup | SDK Provider | ✅ |
+| **Database** | AWS::RDS::DBCluster | SDK Provider | ✅ |
+| **Database** | AWS::RDS::DBInstance | SDK Provider | ✅ |
+| **DNS** | AWS::Route53::HostedZone | SDK Provider | ✅ |
+| **DNS** | AWS::Route53::RecordSet | SDK Provider | ✅ |
+| **Security** | AWS::WAFv2::WebACL | SDK Provider | ✅ |
+| **Auth** | AWS::Cognito::UserPool | SDK Provider | ✅ |
 | **AI/ML** | AWS::BedrockAgentCore::Runtime | SDK Provider | ✅ |
 | **Custom** | Custom::* (Lambda/SNS-backed) | SDK Provider | ✅ |
 | **Other** | 200+ resource types | Cloud Control | ✅ |
@@ -257,32 +274,7 @@ npx cdkd destroy --all --force
 npx cdkd force-unlock MyStack
 ```
 
-## Usage Examples
-
-### Simple S3 Bucket
-
-```typescript
-import * as cdk from 'aws-cdk-lib';
-import * as s3 from 'aws-cdk-lib/aws-s3';
-
-const app = new cdk.App();
-const stack = new cdk.Stack(app, 'MyBucketStack');
-new s3.Bucket(stack, 'MyBucket', {
-  removalPolicy: cdk.RemovalPolicy.DESTROY,
-});
-```
-
-```bash
-$ cdkd deploy
-MyBucketStack
-  MyBucket  CREATE  AWS::S3::Bucket  ✓  (3.2s)
-
-✓ Deployed MyBucketStack (1 resource, 4.1s)
-```
-
-### Lambda + DynamoDB + IAM
-
-A typical serverless stack with multiple resources deployed in parallel:
+## Example
 
 ```typescript
 const table = new dynamodb.Table(stack, 'Table', {
@@ -309,51 +301,6 @@ LambdaStack
 ```
 
 Resources without dependencies (ServiceRole and Table) are created in parallel.
-
-### Multi-Stack with Cross-Stack References
-
-```bash
-# Deploy all stacks (respects dependency order)
-$ cdkd deploy --all
-ExporterStack
-  SharedBucket  CREATE  AWS::S3::Bucket  ✓  (3.1s)
-✓ Deployed ExporterStack (1 resource, 4.0s)
-
-ConsumerStack
-  Consumer  CREATE  AWS::SQS::Queue  ✓  (2.3s)
-✓ Deployed ConsumerStack (1 resource, 3.1s)
-```
-
-## Examples
-
-See the [tests/integration/examples](tests/integration/examples) directory for working examples:
-
-- [basic](tests/integration/examples/basic) - Simple S3 bucket deployment
-- [conditions](tests/integration/examples/conditions) - CloudFormation Conditions and AWS::NoValue
-- [parameters](tests/integration/examples/parameters) - CloudFormation Parameters with default values
-- [intrinsic-functions](tests/integration/examples/intrinsic-functions) - Intrinsic function resolution
-- [lambda](tests/integration/examples/lambda) - Lambda + DynamoDB + IAM integration
-- [cross-stack-references](tests/integration/examples/cross-stack-references) - Cross-stack references with Fn::ImportValue
-- [multi-resource](tests/integration/examples/multi-resource) - S3 + Lambda + DynamoDB + SQS + IAM
-- [ecr](tests/integration/examples/ecr) - ECR repository deployment
-- [apigateway](tests/integration/examples/apigateway) - API Gateway integration
-- [ecs-fargate](tests/integration/examples/ecs-fargate) - ECS Fargate service deployment
-- [eventbridge](tests/integration/examples/eventbridge) - EventBridge rules
-- [sns-sqs-event](tests/integration/examples/sns-sqs-event) - SNS + SQS event integration
-- [dynamodb-streams](tests/integration/examples/dynamodb-streams) - DynamoDB Streams
-- [stepfunctions](tests/integration/examples/stepfunctions) - Step Functions state machine
-- [ec2-vpc](tests/integration/examples/ec2-vpc) - EC2 VPC deployment
-- [s3-cloudfront](tests/integration/examples/s3-cloudfront) - S3 + CloudFront distribution
-- [cloudwatch](tests/integration/examples/cloudwatch) - CloudWatch alarms and dashboards
-- [rds-aurora](tests/integration/examples/rds-aurora) - RDS Aurora cluster
-- [bedrock-agent](tests/integration/examples/bedrock-agent) - Bedrock Agent
-- [cloudfront-function-url](tests/integration/examples/cloudfront-function-url) - CloudFront + Lambda Function URL
-- [custom-resource-provider](tests/integration/examples/custom-resource-provider) - CDK Provider framework (isCompleteHandler/onEventHandler)
-- [multi-stack-deps](tests/integration/examples/multi-stack-deps) - Multi-stack dependency ordering
-- [composite-stack](tests/integration/examples/composite-stack) - Composite stack patterns
-- [full-stack-demo](tests/integration/examples/full-stack-demo) - Full-stack demo application
-
-See [docs/testing.md](docs/testing.md) for detailed testing instructions including UPDATE operations.
 
 ## Architecture
 
@@ -433,7 +380,7 @@ new cdk.CfnOutput(this, 'BucketArn', {
 });
 ```
 
-After deployment, outputs are resolved and saved to state:
+After deployment, outputs are resolved and saved to the S3 state file:
 
 ```json
 {
@@ -451,9 +398,9 @@ After deployment, outputs are resolved and saved to state:
 
 ## Testing
 
-- **291 unit tests** covering all layers
-- **24 integration examples** verified with real AWS deployments (see `tests/integration/examples/`)
-- **E2E test script** for automated deploy/diff/update/destroy cycles
+- Unit tests covering all layers
+- Integration examples verified with real AWS deployments (see `tests/integration/`)
+- E2E test script for automated deploy/diff/update/destroy cycles
 
 ```bash
 npm test                # Run unit tests
@@ -461,23 +408,6 @@ npm run test:coverage   # With coverage report
 ```
 
 See [docs/testing.md](docs/testing.md) for integration and E2E testing instructions.
-
-## Development Roadmap
-
-See [docs/implementation-plan.md](docs/implementation-plan.md) for detailed implementation plan.
-
-**Completed Phases**:
-
-- ✅ **Phase 1-2**: Foundation (CLI, logging, synthesis, assets)
-- ✅ **Phase 3**: State Management (S3 backend, optimistic locking)
-- ✅ **Phase 4**: Dependency Analysis (DAG builder, template parser)
-- ✅ **Phase 5-6**: Resource Provisioning (Cloud Control API, SDK providers)
-- ✅ **Phase 7**: Orchestration (parallel execution, DAG-based deployment)
-- ✅ **Phase 8**: CLI Integration (deploy, diff, destroy commands)
-
-**Current Phase**: Phase 9 - Testing & Documentation
-
-See [docs/implementation-plan.md](docs/implementation-plan.md) for complete roadmap.
 
 ## License
 

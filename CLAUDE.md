@@ -51,7 +51,7 @@ cdkd has a 7-layer system architecture:
 ### Key Architectural Decisions
 
 1. **Hybrid Provisioning Strategy**
-   - Preferred: SDK Providers for common resource types (34 types) - direct synchronous API calls, no polling overhead
+   - Preferred: SDK Providers for common resource types - direct synchronous API calls, no polling overhead
    - Fallback: Cloud Control API for 200+ additional resource types (requires async polling)
    - Implemented with Provider Registry pattern
 
@@ -139,10 +139,18 @@ Currently implemented SDK Providers (`src/provisioning/providers/`):
 - `ec2-provider.ts` - AWS::EC2::VPC, Subnet, InternetGateway, VPCGatewayAttachment, RouteTable, Route, SubnetRouteTableAssociation, SecurityGroup, SecurityGroupIngress
 - `apigateway-provider.ts` - AWS::ApiGateway::Account, Resource, Deployment, Stage, Method
 - `cloudfront-oai-provider.ts` - AWS::CloudFront::CloudFrontOriginAccessIdentity
+- `cloudfront-distribution-provider.ts` - AWS::CloudFront::Distribution
+- `stepfunctions-provider.ts` - AWS::StepFunctions::StateMachine
+- `ecs-provider.ts` - AWS::ECS::Cluster, TaskDefinition, Service
+- `elbv2-provider.ts` - AWS::ElasticLoadBalancingV2::LoadBalancer, TargetGroup, Listener
+- `rds-provider.ts` - AWS::RDS::DBSubnetGroup, DBCluster, DBInstance
+- `route53-provider.ts` - AWS::Route53::HostedZone, RecordSet
+- `wafv2-provider.ts` - AWS::WAFv2::WebACL
+- `cognito-provider.ts` - AWS::Cognito::UserPool
 - `agentcore-runtime-provider.ts` - AWS::BedrockAgentCore::Runtime
 - `custom-resource-provider.ts` - Custom::* (Lambda/SNS-backed, CDK Provider framework with isCompleteHandler/onEventHandler async pattern)
 
-SDK Providers are preferred over Cloud Control API for performance -- they make direct synchronous API calls with no polling overhead. Cloud Control API is used as a fallback for resource types without an SDK Provider (34 resource types covered by SDK Providers).
+SDK Providers are preferred over Cloud Control API for performance -- they make direct synchronous API calls with no polling overhead. Cloud Control API is used as a fallback for resource types without an SDK Provider.
 
 ## State Schema
 
@@ -250,15 +258,15 @@ registry.register('AWS::IAM::Role', new IAMRoleProvider());
 
 ### Integration Tests
 
-- `tests/integration/examples/**`
+- `tests/integration/**`
 - Uses actual AWS account
 - Environment variables: `STATE_BUCKET`, `AWS_REGION`
-- 24 examples verified with real AWS deployments (see `tests/integration/examples/` for full list)
+- 24 examples verified with real AWS deployments (see `tests/integration/` for full list)
 
 ### UPDATE Testing
 
 - Environment variable `CDKD_TEST_UPDATE=true` enables UPDATE test mode
-- Example: `tests/integration/examples/basic/lib/basic-stack.ts`
+- Example: `tests/integration/basic/lib/basic-stack.ts`
 - Allows testing UPDATE operations without modifying code
 - JSON Patch (RFC 6902) verified working for S3, Lambda, IAM resources
 
@@ -324,12 +332,12 @@ See [docs/provider-development.md](docs/provider-development.md) for details.
 - ✅ Compact output mode (default clean output, `--verbose` for full details)
 - ✅ `--state-bucket` auto-resolves from STS account ID: `cdkd-state-{accountId}-{region}`
 - ✅ Attribute mapper: CC API property names mapped to GetAtt attribute names
-- ✅ 291 unit tests, 24 integration examples, E2E test script
+- ✅ 395 unit tests, 24 integration examples, E2E test script
 - ✅ DeletionPolicy: Retain support (skip deletion for retained resources)
 - ✅ Resource replacement for immutable property changes (CREATE→DELETE)
 - ✅ Type safety improvements (error handling, any type elimination in custom resources)
 - ✅ Dynamic References: `{{resolve:secretsmanager:...}}` and `{{resolve:ssm:...}}`
-- ✅ SDK Providers: 34 resource types (see SDK Providers section above for full list)
+- ✅ SDK Providers: see SDK Providers section above for full list
 - ✅ ALL pseudo parameters supported (7/7 including AWS::StackName/StackId)
 - ✅ DELETE idempotency (not-found/No policy found treated as success)
 - ✅ Destroy ordering: reverse dependency from state + implicit type-based deps

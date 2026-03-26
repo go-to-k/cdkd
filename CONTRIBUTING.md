@@ -46,7 +46,7 @@ See [docs/provider-development.md](docs/provider-development.md) for a step-by-s
 
 ## Adding Integration Tests
 
-Add new examples under `tests/integration/examples/`. See existing examples for patterns.
+Add new examples under `tests/integration/`. See existing examples for patterns.
 
 ## Code Style
 

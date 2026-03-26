@@ -20,7 +20,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
-EXAMPLE_DIR="$PROJECT_ROOT/tests/integration/examples/basic"
+EXAMPLE_DIR="$PROJECT_ROOT/tests/integration/basic"
 STACK_NAME="CdkdBasicExample"
 CDK_APP="npx ts-node bin/app.ts"
 

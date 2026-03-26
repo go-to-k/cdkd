@@ -49,7 +49,7 @@ export STATE_BUCKET="your-state-bucket"
 export AWS_REGION="us-east-1"
 
 node dist/cli.js deploy \
-  --app "npx ts-node tests/integration/examples/multi-stack-deps/bin/app.ts" \
+  --app "npx ts-node tests/integration/multi-stack-deps/bin/app.ts" \
   --all \
   --state-bucket $STATE_BUCKET \
   --region $AWS_REGION \
@@ -63,7 +63,7 @@ Deploy stacks one at a time in dependency order:
 ```bash
 # 1. Deploy NetworkStack
 node dist/cli.js deploy \
-  --app "npx ts-node tests/integration/examples/multi-stack-deps/bin/app.ts" \
+  --app "npx ts-node tests/integration/multi-stack-deps/bin/app.ts" \
   CdkdNetworkStack \
   --state-bucket $STATE_BUCKET \
   --region $AWS_REGION \
@@ -71,7 +71,7 @@ node dist/cli.js deploy \
 
 # 2. Deploy DataStack
 node dist/cli.js deploy \
-  --app "npx ts-node tests/integration/examples/multi-stack-deps/bin/app.ts" \
+  --app "npx ts-node tests/integration/multi-stack-deps/bin/app.ts" \
   CdkdDataStack \
   --state-bucket $STATE_BUCKET \
   --region $AWS_REGION \
@@ -79,7 +79,7 @@ node dist/cli.js deploy \
 
 # 3. Deploy AppStack
 node dist/cli.js deploy \
-  --app "npx ts-node tests/integration/examples/multi-stack-deps/bin/app.ts" \
+  --app "npx ts-node tests/integration/multi-stack-deps/bin/app.ts" \
   CdkdAppStack \
   --state-bucket $STATE_BUCKET \
   --region $AWS_REGION \
@@ -93,7 +93,7 @@ Delete stacks in reverse dependency order:
 ```bash
 # Using --all (cdkd handles reverse ordering)
 node dist/cli.js destroy \
-  --app "npx ts-node tests/integration/examples/multi-stack-deps/bin/app.ts" \
+  --app "npx ts-node tests/integration/multi-stack-deps/bin/app.ts" \
   --all \
   --state-bucket $STATE_BUCKET \
   --region $AWS_REGION \

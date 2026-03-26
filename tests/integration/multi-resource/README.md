@@ -103,7 +103,7 @@ This example tests the following cdkd features:
 
 ### Prerequisites
 ```bash
-cd tests/integration/examples/multi-resource
+cd tests/integration/multi-resource
 npm install
 npm run build
 ```

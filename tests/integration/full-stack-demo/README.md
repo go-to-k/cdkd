@@ -37,10 +37,10 @@ CloudWatch Log Group + Alarm -> SNS (error alerts)
 
 ```bash
 # From the cdkd project root
-cdkd deploy FullStackDemoStack --app "npx ts-node tests/integration/examples/full-stack-demo/bin/app.ts"
+cdkd deploy FullStackDemoStack --app "npx ts-node tests/integration/full-stack-demo/bin/app.ts"
 
 # Or from this directory
-cd tests/integration/examples/full-stack-demo
+cd tests/integration/full-stack-demo
 npm install
 cdkd deploy
 ```

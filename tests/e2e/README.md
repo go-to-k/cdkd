@@ -24,7 +24,7 @@ chmod +x tests/e2e/run-e2e.sh
 STATE_BUCKET=my-cdkd-state-bucket ./tests/e2e/run-e2e.sh
 
 # Run with a specific example
-STATE_BUCKET=my-cdkd-state-bucket ./tests/e2e/run-e2e.sh ../integration/examples/lambda
+STATE_BUCKET=my-cdkd-state-bucket ./tests/e2e/run-e2e.sh ../integration/lambda
 
 # With custom region
 STATE_BUCKET=my-cdkd-state-bucket AWS_REGION=ap-northeast-1 ./tests/e2e/run-e2e.sh
@@ -33,7 +33,7 @@ STATE_BUCKET=my-cdkd-state-bucket AWS_REGION=ap-northeast-1 ./tests/e2e/run-e2e.
 STATE_BUCKET=my-cdkd-state-bucket CDKD_PATH=/absolute/path/to/dist/cli.js ./tests/e2e/run-e2e.sh
 
 # Run with absolute path to example
-STATE_BUCKET=my-cdkd-state-bucket ./tests/e2e/run-e2e.sh /path/to/tests/integration/examples/lambda
+STATE_BUCKET=my-cdkd-state-bucket ./tests/e2e/run-e2e.sh /path/to/tests/integration/lambda
 ```
 
 ## Parameters

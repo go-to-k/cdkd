@@ -22,7 +22,7 @@ This example tests EventBridge resource deployment with cdkd.
 ## Deploy
 
 ```bash
-cd tests/integration/examples/eventbridge
+cd tests/integration/eventbridge
 npm install
 cdkd deploy EventBridgeStack
 ```

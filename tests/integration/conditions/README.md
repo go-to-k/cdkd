@@ -60,7 +60,7 @@ This example tests the following cdkd features:
 
 ### Prerequisites
 ```bash
-cd tests/integration/examples/conditions
+cd tests/integration/conditions
 npm install
 npm run build
 ```

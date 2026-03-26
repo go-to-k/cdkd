@@ -22,7 +22,7 @@ This example demonstrates cdkd deployment of CloudWatch monitoring resources.
 ## Deploy
 
 ```bash
-cd tests/integration/examples/cloudwatch
+cd tests/integration/cloudwatch
 npm install
 cdkd deploy CloudWatchStack
 ```

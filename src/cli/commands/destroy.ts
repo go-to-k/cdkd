@@ -14,24 +14,7 @@ import { S3StateBackend } from '../../state/s3-state-backend.js';
 import { LockManager } from '../../state/lock-manager.js';
 import { DagBuilder } from '../../analyzer/dag-builder.js';
 import { ProviderRegistry } from '../../provisioning/provider-registry.js';
-import { IAMRoleProvider } from '../../provisioning/providers/iam-role-provider.js';
-import { IAMPolicyProvider } from '../../provisioning/providers/iam-policy-provider.js';
-import { S3BucketPolicyProvider } from '../../provisioning/providers/s3-bucket-policy-provider.js';
-import { SQSQueuePolicyProvider } from '../../provisioning/providers/sqs-queue-policy-provider.js';
-import { ApiGatewayProvider } from '../../provisioning/providers/apigateway-provider.js';
-import { EventBridgeRuleProvider } from '../../provisioning/providers/eventbridge-rule-provider.js';
-import { EventBridgeBusProvider } from '../../provisioning/providers/eventbridge-bus-provider.js';
-import { AgentCoreRuntimeProvider } from '../../provisioning/providers/agentcore-runtime-provider.js';
-import { CloudFrontOAIProvider } from '../../provisioning/providers/cloudfront-oai-provider.js';
-import { EC2Provider } from '../../provisioning/providers/ec2-provider.js';
-import { S3BucketProvider } from '../../provisioning/providers/s3-bucket-provider.js';
-import { LambdaFunctionProvider } from '../../provisioning/providers/lambda-function-provider.js';
-import { SQSQueueProvider } from '../../provisioning/providers/sqs-queue-provider.js';
-import { SNSTopicProvider } from '../../provisioning/providers/sns-topic-provider.js';
-import { DynamoDBTableProvider } from '../../provisioning/providers/dynamodb-table-provider.js';
-import { SNSSubscriptionProvider } from '../../provisioning/providers/sns-subscription-provider.js';
-import { CloudWatchAlarmProvider } from '../../provisioning/providers/cloudwatch-alarm-provider.js';
-import { SSMParameterProvider } from '../../provisioning/providers/ssm-parameter-provider.js';
+import { registerAllProviders } from '../../provisioning/register-providers.js';
 import { setAwsClients, AwsClients } from '../../utils/aws-clients.js';
 import * as readline from 'node:readline/promises';
 import { resolveApp, resolveStateBucketWithDefault } from '../config-loader.js';
@@ -85,42 +68,8 @@ async function destroyCommand(
     const dagBuilder = new DagBuilder();
     const providerRegistry = new ProviderRegistry();
 
-    // Register SDK providers for unsupported resource types
-    providerRegistry.register('AWS::S3::Bucket', new S3BucketProvider());
-    providerRegistry.register('AWS::IAM::Role', new IAMRoleProvider());
-    providerRegistry.register('AWS::IAM::Policy', new IAMPolicyProvider());
-    providerRegistry.register('AWS::S3::BucketPolicy', new S3BucketPolicyProvider());
-    providerRegistry.register('AWS::SQS::QueuePolicy', new SQSQueuePolicyProvider());
-    providerRegistry.register('AWS::Lambda::Function', new LambdaFunctionProvider());
-    providerRegistry.register('AWS::SQS::Queue', new SQSQueueProvider());
-    providerRegistry.register('AWS::SNS::Topic', new SNSTopicProvider());
-    providerRegistry.register('AWS::DynamoDB::Table', new DynamoDBTableProvider());
-    const apigwProvider = new ApiGatewayProvider();
-    providerRegistry.register('AWS::ApiGateway::Account', apigwProvider);
-    providerRegistry.register('AWS::ApiGateway::Resource', apigwProvider);
-    providerRegistry.register('AWS::ApiGateway::Deployment', apigwProvider);
-    providerRegistry.register('AWS::ApiGateway::Stage', apigwProvider);
-    providerRegistry.register('AWS::ApiGateway::Method', apigwProvider);
-    providerRegistry.register('AWS::Events::Rule', new EventBridgeRuleProvider());
-    providerRegistry.register('AWS::Events::EventBus', new EventBridgeBusProvider());
-    providerRegistry.register('AWS::BedrockAgentCore::Runtime', new AgentCoreRuntimeProvider());
-    providerRegistry.register(
-      'AWS::CloudFront::CloudFrontOriginAccessIdentity',
-      new CloudFrontOAIProvider()
-    );
-    providerRegistry.register('AWS::SNS::Subscription', new SNSSubscriptionProvider());
-    providerRegistry.register('AWS::CloudWatch::Alarm', new CloudWatchAlarmProvider());
-    providerRegistry.register('AWS::SSM::Parameter', new SSMParameterProvider());
-    const ec2Provider = new EC2Provider();
-    providerRegistry.register('AWS::EC2::VPC', ec2Provider);
-    providerRegistry.register('AWS::EC2::Subnet', ec2Provider);
-    providerRegistry.register('AWS::EC2::InternetGateway', ec2Provider);
-    providerRegistry.register('AWS::EC2::VPCGatewayAttachment', ec2Provider);
-    providerRegistry.register('AWS::EC2::RouteTable', ec2Provider);
-    providerRegistry.register('AWS::EC2::Route', ec2Provider);
-    providerRegistry.register('AWS::EC2::SubnetRouteTableAssociation', ec2Provider);
-    providerRegistry.register('AWS::EC2::SecurityGroup', ec2Provider);
-    providerRegistry.register('AWS::EC2::SecurityGroupIngress', ec2Provider);
+    // Register all SDK providers
+    registerAllProviders(providerRegistry);
 
     // Configure custom resource response handling via S3
     providerRegistry.setCustomResourceResponseBucket(stateBucket);

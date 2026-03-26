@@ -49,8 +49,6 @@
                                       │  - provider-registry.ts     │
                                       │  - cloud-control-provider.ts│
                                       │  - providers/:              │
-                                      │    - 24 provider files      │
-                                      │    - 34 resource types      │
                                       │    - See src/provisioning/  │
                                       │      providers/ for full    │
                                       │      list                   │
@@ -397,7 +395,7 @@ generatePatch(oldProps: any, newProps: any): JSONPatchOperation[]
 
 #### SDK Providers (`providers/`)
 
-**Preferred Providers**: SDK Providers make direct synchronous API calls with no polling overhead, making them significantly faster than Cloud Control API. They cover 34 resource types across 24 provider files.
+**Preferred Providers**: SDK Providers make direct synchronous API calls with no polling overhead, making them significantly faster than Cloud Control API.
 
 **Implemented Providers** (see `src/provisioning/providers/` for full list):
 

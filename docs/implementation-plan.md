@@ -395,7 +395,7 @@ cdkd は CDK CLI (`aws-cdk`) を**置き換える**のではなく、**デプロ
 
 #### 7. 統合テスト用の例の整備 ✅ **完了**
 
-- [x] tests/integration/examples ディレクトリ構造の作成
+- [x] tests/integration ディレクトリ構造の作成
 - [x] basic example (シンプルな S3 バケット)
 - [x] intrinsic-functions example (組み込み関数のテスト)
 - [x] lambda example (Lambda + DynamoDB + IAM)
@@ -422,7 +422,7 @@ cdkd は CDK CLI (`aws-cdk`) を**置き換える**のではなく、**デプロ
 - [x] composite-stack example (19リソースの複合スタック)
 - [x] full-stack-demo example (16リソースの実践的デモ)
 
-**実装**: `tests/integration/examples/` (合計24例)
+**実装**: `tests/integration/` (合計24例)
 
 **主要な例**:
 
@@ -597,7 +597,7 @@ cdkd は CDK CLI (`aws-cdk`) を**置き換える**のではなく、**デプロ
 - [x] **マルチスタック依存テスト**: 複数スタック間の依存関係 (multi-stack-deps: 3スタック、Fn::ImportValue で検証済み)
 - [x] **複合スタックテスト**: 既存の single-stack 例に多数リソース追加 (composite-stack: 19リソースで検証済み)
 
-**影響範囲**: `tests/integration/examples/`
+**影響範囲**: `tests/integration/`
 
 #### 19. 対応機能/リソース表の README 追加
 
@@ -633,7 +633,7 @@ cdkd は CDK CLI (`aws-cdk`) を**置き換える**のではなく、**デプロ
 
 - [x] ベンチマーク結果（CloudFormation vs cdkd の速度比較データ）— S3バケット1リソース: cdkd 26s vs CFn 38s (deploy 1.5x), cdkd 4s vs CFn 14s (destroy 3.5x)。単一リソースでは差が小さいため README 掲載は見送り
 - [x] 10+ リソースの実践的デモ（full-stack-demo: 16リソース）
-- [ ] GIF/動画デモ（README 掲載用）— 公開後
+- [ ] GIF/動画デモ（README 掲載用）
 - [x] bootstrap デフォルトバケット名対応（UX 改善）
 - [x] `CDKD_STATE_BUCKET` 環境変数対応
 
@@ -905,7 +905,7 @@ npm test
 # 統合テスト（例: basic）
 export STATE_BUCKET="your-bucket-name"
 export AWS_REGION="us-east-1"
-cd tests/integration/examples/basic
+cd tests/integration/basic
 node ../../../../dist/cli.js deploy \
   --app "npx ts-node --prefer-ts-exts bin/app.ts" \
   --stack CdkdBasicExample \

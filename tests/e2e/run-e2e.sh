@@ -9,7 +9,7 @@
 #   STATE_BUCKET=my-bucket ./run-e2e.sh [example-dir]
 #
 # Arguments:
-#   example-dir  Path to an integration example (default: tests/integration/examples/basic)
+#   example-dir  Path to an integration example (default: tests/integration/basic)
 #
 # Environment Variables:
 #   STATE_BUCKET  (required) S3 bucket name for cdkd state storage
@@ -46,7 +46,7 @@ if [[ -z "${STATE_BUCKET}" ]]; then
   echo ""
   echo "Usage:"
   echo "  STATE_BUCKET=my-bucket ./run-e2e.sh [example-dir]"
-  echo "  STATE_BUCKET=my-bucket ./run-e2e.sh ../integration/examples/lambda"
+  echo "  STATE_BUCKET=my-bucket ./run-e2e.sh ../integration/lambda"
   echo "  STATE_BUCKET=my-bucket AWS_REGION=ap-northeast-1 ./run-e2e.sh"
   echo "  STATE_BUCKET=my-bucket CDKD_PATH=/path/to/cli.js ./run-e2e.sh"
   exit 1
@@ -66,7 +66,7 @@ if [[ -n "${1:-}" ]]; then
     EXAMPLE_DIR="$(cd "${SCRIPT_DIR}" && cd "${1}" 2>/dev/null && pwd)" || EXAMPLE_DIR="${SCRIPT_DIR}/${1}"
   fi
 else
-  EXAMPLE_DIR="${SCRIPT_DIR}/../integration/examples/basic"
+  EXAMPLE_DIR="${SCRIPT_DIR}/../integration/basic"
 fi
 
 # Normalize path
