@@ -132,7 +132,10 @@ export class DeployEngine {
       this.logger.debug(`Template has ${Object.keys(template.Resources || {}).length} resources`);
 
       // 2.5. Resolve parameters from template and user input
-      const parameterValues = this.resolver.resolveParameters(template, this.options.parameters);
+      const parameterValues = await this.resolver.resolveParameters(
+        template,
+        this.options.parameters
+      );
       this.logger.debug(
         `Resolved ${Object.keys(parameterValues).length} parameters: ${Object.keys(parameterValues).join(', ')}`
       );

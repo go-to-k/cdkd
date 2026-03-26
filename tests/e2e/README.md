@@ -12,14 +12,23 @@ End-to-end test scripts that run a full deploy/diff/update/destroy lifecycle aga
 
 ### `test-matrix.sh` — Run all tests
 
-Runs all integration tests sequentially with their required configuration. Each test's environment (e.g., context args) is defined in the matrix.
+Runs all integration tests in parallel (default 4 concurrent) with per-test configuration defined in the matrix.
 
 ```bash
-# Run all tests
+# Run all tests (4 parallel by default)
 ./tests/e2e/test-matrix.sh
+
+# Run with 8 parallel jobs
+./tests/e2e/test-matrix.sh -j 8
+
+# Run sequentially
+./tests/e2e/test-matrix.sh -j 1
 
 # Run specific tests
 ./tests/e2e/test-matrix.sh basic lambda context-test
+
+# Specific tests with custom parallelism
+./tests/e2e/test-matrix.sh -j 2 alb route53 wafv2 cognito
 ```
 
 ### `run-e2e.sh` — Run a single test

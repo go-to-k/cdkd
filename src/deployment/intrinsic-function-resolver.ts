@@ -158,10 +158,10 @@ export class IntrinsicFunctionResolver {
    * @param userParameters User-provided parameter values (e.g., from CLI)
    * @returns Record of parameter names to resolved values
    */
-  resolveParameters(
+  async resolveParameters(
     template: CloudFormationTemplate,
     userParameters?: Record<string, string>
-  ): Record<string, unknown> {
+  ): Promise<Record<string, unknown>> {
     const parameters: Record<string, unknown> = {};
     const templateParameters = template.Parameters;
 
@@ -184,6 +184,16 @@ export class IntrinsicFunctionResolver {
 
       // Use default value if available
       if ('Default' in paramDef) {
+        // SSM Parameter type: resolve the default value (SSM parameter path) via SSM API
+        if (paramDef.Type.startsWith('AWS::SSM::Parameter::Value')) {
+          const ssmPath = String(paramDef.Default);
+          this.logger.debug(`Parameter ${name}: resolving SSM parameter path ${ssmPath}`);
+          const resolved = await this.resolveSSMParameter(ssmPath);
+          parameters[name] = resolved;
+          this.logger.debug(`Parameter ${name}: resolved SSM value ${resolved}`);
+          continue;
+        }
+
         parameters[name] = paramDef.Default;
         this.logger.debug(
           `Parameter ${name}: using default value ${typeof paramDef.Default === 'object' ? JSON.stringify(paramDef.Default) : String(paramDef.Default)}`
@@ -198,6 +208,16 @@ export class IntrinsicFunctionResolver {
     }
 
     return parameters;
+  }
+
+  /**
+   * Resolve an SSM Parameter Store path to its actual value.
+   * Used for parameters with type AWS::SSM::Parameter::Value<...>.
+   */
+  private async resolveSSMParameter(parameterName: string): Promise<string> {
+    const client = getAwsClients().ssm;
+    const response = await client.send(new GetParameterCommand({ Name: parameterName }));
+    return response.Parameter?.Value ?? '';
   }
 
   /**
