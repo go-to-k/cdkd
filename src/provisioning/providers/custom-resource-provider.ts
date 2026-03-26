@@ -49,6 +49,12 @@ export interface CustomResourceProviderConfig {
   responseBucket?: string;
   /** S3 key prefix for response objects */
   responsePrefix?: string;
+  /**
+   * Max time (ms) to wait for async custom resource responses (e.g., CDK Provider framework
+   * with isCompleteHandler that uses Step Functions polling).
+   * Default: 1 hour (3600000ms), matching CDK's default totalTimeout.
+   */
+  asyncResponseTimeoutMs?: number;
 }
 
 /**
