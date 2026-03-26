@@ -8,6 +8,8 @@ import {
 } from '../options.js';
 import { getLogger } from '../../utils/logger.js';
 import { withErrorHandling } from '../../utils/error-handler.js';
+import { Synthesizer } from '../../synthesis/synthesizer.js';
+import { AssemblyLoader } from '../../synthesis/assembly-loader.js';
 import { S3StateBackend } from '../../state/s3-state-backend.js';
 import { LockManager } from '../../state/lock-manager.js';
 import { DagBuilder } from '../../analyzer/dag-builder.js';
@@ -32,7 +34,7 @@ import { CloudWatchAlarmProvider } from '../../provisioning/providers/cloudwatch
 import { SSMParameterProvider } from '../../provisioning/providers/ssm-parameter-provider.js';
 import { setAwsClients, AwsClients } from '../../utils/aws-clients.js';
 import * as readline from 'node:readline/promises';
-import { resolveStateBucketWithDefault } from '../config-loader.js';
+import { resolveApp, resolveStateBucketWithDefault } from '../config-loader.js';
 
 /**
  * Destroy command implementation
@@ -40,6 +42,8 @@ import { resolveStateBucketWithDefault } from '../config-loader.js';
 async function destroyCommand(
   stackArgs: string[],
   options: {
+    app?: string;
+    output?: string;
     stateBucket?: string;
     statePrefix: string;
     stack?: string;
@@ -127,7 +131,33 @@ async function destroyCommand(
 
     let stackNames: string[];
     if (options.all) {
-      stackNames = allStateStacks;
+      // When --app is provided, only destroy stacks from the current app
+      // This prevents accidentally destroying stacks from other CDK apps
+      // Synthesize app to get the list of stacks - --all only destroys stacks
+      // that belong to the current CDK app, NOT all stacks in the state bucket
+      const appCmd = options.app || resolveApp();
+      if (!appCmd) {
+        throw new Error(
+          '--all requires --app or cdk.json to determine which stacks belong to this app. ' +
+            'Without it, cdkq cannot safely determine which stacks to destroy.'
+        );
+      }
+      try {
+        const synthesizer = new Synthesizer();
+        const result = await synthesizer.synthesize({
+          app: appCmd,
+          output: options.output || 'cdk.out',
+        });
+        const loader = new AssemblyLoader();
+        const appStacks = loader.getAllStacks(result.cloudAssembly).map((s) => s.stackName);
+        stackNames = appStacks.filter((name) => allStateStacks.includes(name));
+        await result.dispose();
+      } catch (synthError) {
+        throw new Error(
+          `Failed to synthesize app for --all: ${synthError instanceof Error ? synthError.message : String(synthError)}. ` +
+            'Specify stack names explicitly instead of using --all.'
+        );
+      }
     } else if (stackPatterns.length > 0) {
       stackNames = allStateStacks.filter((name) =>
         stackPatterns.some((pattern) =>
