@@ -10,6 +10,40 @@ import { setAwsClients, AwsClients } from '../../utils/aws-clients.js';
 import { resolveApp, resolveStateBucketWithDefault } from '../config-loader.js';
 
 /**
+ * Check if a value contains CloudFormation intrinsic functions.
+ * Used to detect false-positive diffs where state has resolved values
+ * but template has unresolved intrinsics (Ref, Fn::Sub, Fn::GetAtt, etc.)
+ */
+function containsIntrinsicFunction(value: unknown): boolean {
+  if (value === null || value === undefined) return false;
+  if (typeof value !== 'object') return false;
+  if (Array.isArray(value)) return value.some(containsIntrinsicFunction);
+  const obj = value as Record<string, unknown>;
+  const intrinsicKeys = [
+    'Ref',
+    'Fn::Sub',
+    'Fn::GetAtt',
+    'Fn::Join',
+    'Fn::Select',
+    'Fn::Split',
+    'Fn::If',
+    'Fn::ImportValue',
+    'Fn::FindInMap',
+    'Fn::Base64',
+    'Fn::GetAZs',
+    'Fn::Equals',
+    'Fn::And',
+    'Fn::Or',
+    'Fn::Not',
+  ];
+  for (const key of intrinsicKeys) {
+    if (key in obj) return true;
+  }
+  // Check nested values
+  return Object.values(obj).some(containsIntrinsicFunction);
+}
+
+/**
  * Diff command implementation
  */
 async function diffCommand(
@@ -158,12 +192,7 @@ async function diffCommand(
           case 'UPDATE': {
             // Filter out false-positive property changes (resolved vs unresolved intrinsic)
             const realChanges = (change.propertyChanges ?? []).filter(
-              (pc) =>
-                !(
-                  typeof pc.oldValue === 'string' &&
-                  typeof pc.newValue === 'object' &&
-                  pc.newValue !== null
-                )
+              (pc) => !containsIntrinsicFunction(pc.newValue)
             );
             if (realChanges.length === 0 && (change.propertyChanges ?? []).length > 0) {
               // All changes were false positives, skip this resource
@@ -173,22 +202,16 @@ async function diffCommand(
             logger.info(`  [~] ${logicalId} (${change.resourceType})`);
             if (change.propertyChanges && change.propertyChanges.length > 0) {
               for (const propChange of change.propertyChanges) {
+                // Skip false-positive diffs caused by intrinsic functions
+                // State stores resolved values, template has unresolved intrinsics
+                if (containsIntrinsicFunction(propChange.newValue)) {
+                  continue;
+                }
                 const requiresReplace = propChange.requiresReplacement
                   ? ' [requires replacement]'
                   : '';
                 const oldStr = JSON.stringify(propChange.oldValue, null, 2);
                 const newStr = JSON.stringify(propChange.newValue, null, 2);
-                // Skip false-positive diffs where only intrinsic function format differs
-                // (e.g., resolved ARN vs {"Fn::GetAtt": [...]})
-                if (
-                  typeof propChange.oldValue === 'string' &&
-                  typeof propChange.newValue === 'object' &&
-                  propChange.newValue !== null
-                ) {
-                  // Old value is resolved string, new value is unresolved intrinsic
-                  // This is a false positive from comparing state (resolved) with template (unresolved)
-                  continue;
-                }
                 logger.info(`      - ${propChange.path}:${requiresReplace}`);
                 logger.info(`          old: ${oldStr}`);
                 logger.info(`          new: ${newStr}`);
