@@ -36,7 +36,7 @@ describe('ApiGatewayProvider', () => {
 
   beforeEach(() => {
     vi.useFakeTimers();
-    vi.clearAllMocks();
+    mockSend.mockReset();
     provider = new ApiGatewayProvider();
   });
 
@@ -94,7 +94,7 @@ describe('ApiGatewayProvider', () => {
         });
 
         // Advance past the retry delay
-        await vi.advanceTimersByTimeAsync(5000);
+        await vi.advanceTimersByTimeAsync(10000);
 
         const result = await promise;
         expect(result.physicalId).toBe('ApiGatewayAccount');
@@ -109,7 +109,7 @@ describe('ApiGatewayProvider', () => {
           CloudWatchRoleArn: 'arn:aws:iam::123456789012:role/ApiGwCloudWatchRole',
         });
 
-        await vi.advanceTimersByTimeAsync(5000);
+        await vi.advanceTimersByTimeAsync(10000);
 
         const result = await promise;
         expect(result.physicalId).toBe('ApiGatewayAccount');
@@ -128,8 +128,8 @@ describe('ApiGatewayProvider', () => {
           })
           .catch((e: unknown) => e);
 
-        // Advance past both retry delays
-        await vi.advanceTimersByTimeAsync(10000);
+        // Advance past both retry delays (2 retries x 10000ms)
+        await vi.advanceTimersByTimeAsync(20000);
 
         const result = await promise;
         expect(result).toBeDefined();
@@ -179,7 +179,7 @@ describe('ApiGatewayProvider', () => {
           {}
         );
 
-        await vi.advanceTimersByTimeAsync(5000);
+        await vi.advanceTimersByTimeAsync(10000);
 
         const result = await promise;
         expect(result.physicalId).toBe('ApiGatewayAccount');
@@ -191,7 +191,7 @@ describe('ApiGatewayProvider', () => {
       it('should clear CloudWatchRoleArn on delete', async () => {
         mockSend.mockResolvedValueOnce({});
 
-        await provider.delete('MyAccount', 'ApiGatewayAccount', resourceType);
+        await provider.delete('MyAccount', 'ApiGatewayAccount', resourceType, {});
 
         expect(mockSend).toHaveBeenCalledTimes(1);
 
@@ -210,7 +210,7 @@ describe('ApiGatewayProvider', () => {
         mockSend.mockRejectedValueOnce(new Error('Service error'));
 
         await expect(
-          provider.delete('MyAccount', 'ApiGatewayAccount', resourceType)
+          provider.delete('MyAccount', 'ApiGatewayAccount', resourceType, {})
         ).rejects.toThrow('Failed to delete API Gateway Account');
       });
     });
