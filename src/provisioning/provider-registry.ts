@@ -123,6 +123,13 @@ export class ProviderRegistry {
   }
 
   /**
+   * Get the Cloud Control provider instance (for resource state lookup)
+   */
+  getCloudControlProvider(): CloudControlProvider {
+    return this.cloudControlProvider;
+  }
+
+  /**
    * Get all registered resource types (excluding Cloud Control)
    */
   getRegisteredTypes(): string[] {

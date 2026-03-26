@@ -12,6 +12,7 @@ import { APIGatewayClient } from '@aws-sdk/client-api-gateway';
 import { EventBridgeClient } from '@aws-sdk/client-eventbridge';
 import { SecretsManagerClient } from '@aws-sdk/client-secrets-manager';
 import { SSMClient } from '@aws-sdk/client-ssm';
+import { CloudFrontClient } from '@aws-sdk/client-cloudfront';
 
 /**
  * AWS client configuration
@@ -44,6 +45,7 @@ export class AwsClients {
   private eventBridgeClient?: EventBridgeClient;
   private secretsManagerClient?: SecretsManagerClient;
   private ssmClient?: SSMClient;
+  private cloudFrontClient?: CloudFrontClient;
 
   constructor(private config: AwsClientConfig = {}) {}
 
@@ -341,6 +343,26 @@ export class AwsClients {
   }
 
   /**
+   * Get CloudFront client
+   */
+  getCloudFrontClient(): CloudFrontClient {
+    if (!this.cloudFrontClient) {
+      this.cloudFrontClient = new CloudFrontClient({
+        ...(this.config.region && { region: this.config.region }),
+        ...(this.config.credentials && { credentials: this.config.credentials }),
+      });
+    }
+    return this.cloudFrontClient;
+  }
+
+  /**
+   * Convenience getter for CloudFront client
+   */
+  get cloudFront(): CloudFrontClient {
+    return this.getCloudFrontClient();
+  }
+
+  /**
    * Destroy all clients
    */
   destroy(): void {
@@ -358,6 +380,7 @@ export class AwsClients {
     this.eventBridgeClient?.destroy();
     this.secretsManagerClient?.destroy();
     this.ssmClient?.destroy();
+    this.cloudFrontClient?.destroy();
   }
 }
 

@@ -9,6 +9,7 @@ import {
 } from '@aws-sdk/client-cloudcontrol';
 import { DescribeTableCommand } from '@aws-sdk/client-dynamodb';
 import { GetRestApiCommand } from '@aws-sdk/client-api-gateway';
+import { GetCloudFrontOriginAccessIdentityCommand } from '@aws-sdk/client-cloudfront';
 import { getAwsClients } from '../utils/aws-clients.js';
 import { getLogger } from '../utils/logger.js';
 import { ProvisioningError } from '../utils/error-handler.js';
@@ -541,6 +542,32 @@ export class CloudControlProvider implements ResourceProvider {
         // Ensure RestApiId is set (physical ID is the rest-api-id)
         if (!enriched['RestApiId']) {
           enriched['RestApiId'] = physicalId;
+        }
+        break;
+
+      case 'AWS::CloudFront::CloudFrontOriginAccessIdentity':
+        // CC API response doesn't include S3CanonicalUserId.
+        // Call CloudFront SDK to retrieve it for Fn::GetAtt resolution.
+        if (!enriched['S3CanonicalUserId']) {
+          try {
+            const cloudFrontClient = getAwsClients().cloudFront;
+            const oaiResponse = await cloudFrontClient.send(
+              new GetCloudFrontOriginAccessIdentityCommand({ Id: physicalId })
+            );
+            const s3CanonicalUserId =
+              oaiResponse.CloudFrontOriginAccessIdentity?.S3CanonicalUserId;
+            if (s3CanonicalUserId) {
+              enriched['S3CanonicalUserId'] = s3CanonicalUserId;
+              this.logger.debug(
+                `Enriched CloudFront OAI S3CanonicalUserId for ${physicalId}: ${s3CanonicalUserId}`
+              );
+            }
+          } catch (error) {
+            // Best-effort: don't fail the operation
+            this.logger.debug(
+              `Failed to get CloudFront OAI S3CanonicalUserId for ${physicalId}: ${error instanceof Error ? error.message : String(error)}`
+            );
+          }
         }
         break;
 

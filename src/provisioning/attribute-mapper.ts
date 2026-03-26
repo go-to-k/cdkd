@@ -118,6 +118,11 @@ const ATTRIBUTE_ALIAS_REGISTRY: Record<string, AttributeAliasMap> = {
   'AWS::ApiGateway::Stage': {
     // Stage name is used as physical ID; no additional aliases needed
   },
+
+  'AWS::CloudFront::CloudFrontOriginAccessIdentity': {
+    S3CanonicalUserId: 'S3CanonicalUserId',
+    Id: 'Id',
+  },
 };
 
 /**

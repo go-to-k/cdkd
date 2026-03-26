@@ -607,10 +607,29 @@ export class DeployEngine {
             unknown
           >;
 
-          const result = await this.withRetry(
-            () => provider.create(logicalId, resourceType, resolvedProps),
-            logicalId
-          );
+          let result;
+          try {
+            result = await this.withRetry(
+              () => provider.create(logicalId, resourceType, resolvedProps),
+              logicalId
+            );
+          } catch (createError) {
+            // Only adopt if "already exists" during a RETRY (not first attempt)
+            // First attempt "already exists" = resource from another stack/manual creation
+            const retryAttempt = (createError as { _retryAttempt?: number })._retryAttempt;
+            if (this.isAlreadyExistsError(createError) && retryAttempt && retryAttempt > 0) {
+              this.logger.info(
+                `Resource ${logicalId} already created (retry attempt ${retryAttempt} succeeded), adopting`
+              );
+              result = await this.recoverExistingResource(
+                logicalId,
+                resourceType,
+                resolvedProps
+              );
+            } else {
+              throw createError;
+            }
+          }
 
           // Extract dependencies from template
           const dependencies = template?.Resources?.[logicalId]?.DependsOn
@@ -691,10 +710,27 @@ export class DeployEngine {
 
             // 1. Create new resource first (CFn order: safe - old resource survives if CREATE fails)
             this.logger.info(`  Creating new ${logicalId}...`);
-            const createResult = await this.withRetry(
-              () => provider.create(logicalId, resourceType, resolvedProps),
-              logicalId
-            );
+            let createResult;
+            try {
+              createResult = await this.withRetry(
+                () => provider.create(logicalId, resourceType, resolvedProps),
+                logicalId
+              );
+            } catch (createError) {
+              const retryAttempt = (createError as { _retryAttempt?: number })._retryAttempt;
+              if (this.isAlreadyExistsError(createError) && retryAttempt && retryAttempt > 0) {
+                this.logger.info(
+                  `Resource ${logicalId} already created (retry attempt ${retryAttempt} succeeded), adopting`
+                );
+                createResult = await this.recoverExistingResource(
+                  logicalId,
+                  resourceType,
+                  resolvedProps
+                );
+              } else {
+                throw createError;
+              }
+            }
 
             // 2. Delete old resource (after successful CREATE)
             const updateReplacePolicy = template?.Resources?.[logicalId]?.UpdateReplacePolicy;
@@ -921,6 +957,13 @@ export class DeployEngine {
         lastError = error;
         const message = error instanceof Error ? error.message : String(error);
 
+        // "already exists" during retry = previous attempt succeeded asynchronously
+        if (attempt > 0 && this.isAlreadyExistsError(error)) {
+          const enriched = error as Error & { _retryAttempt?: number };
+          enriched._retryAttempt = attempt;
+          throw error;
+        }
+
         const isRetryable = this.isRetryableError(error, message);
 
         if (!isRetryable || attempt >= maxRetries) {
@@ -936,6 +979,113 @@ export class DeployEngine {
     }
 
     throw lastError;
+  }
+
+  /**
+   * Check if an error indicates the resource already exists.
+   * This typically happens when a CREATE retry fires after the first attempt
+   * actually succeeded asynchronously.
+   */
+  private isAlreadyExistsError(error: unknown): boolean {
+    const message = error instanceof Error ? error.message : String(error);
+    const errorName = (error as { name?: string }).name;
+
+    return (
+      errorName === 'AlreadyExistsException' ||
+      message.includes('AlreadyExists') ||
+      message.includes('already exists')
+    );
+  }
+
+  /**
+   * Recover an existing resource after an "already exists" error.
+   * Uses Cloud Control API GetResource to retrieve the physical ID and attributes.
+   * Falls back to constructing a minimal result from the resource properties.
+   */
+  private async recoverExistingResource(
+    logicalId: string,
+    resourceType: string,
+    properties: Record<string, unknown>
+  ): Promise<{ physicalId: string; attributes?: Record<string, unknown> }> {
+    // Try to look up the resource via Cloud Control API
+    // We need to figure out the identifier. For many resources, the identifier
+    // is a name property. Common patterns: BucketName, FunctionName, RoleName, etc.
+    const ccProvider = this.providerRegistry.getCloudControlProvider();
+
+    // Try common identifier property names
+    const identifierCandidates = this.getIdentifierCandidates(resourceType, properties);
+
+    for (const identifier of identifierCandidates) {
+      try {
+        const state = await ccProvider.getResourceState(resourceType, identifier);
+        if (state) {
+          this.logger.debug(
+            `Recovered existing resource ${logicalId} with identifier: ${identifier}`
+          );
+          return {
+            physicalId: identifier,
+            attributes: state,
+          };
+        }
+      } catch {
+        // Try next candidate
+        this.logger.debug(
+          `Failed to recover ${logicalId} with identifier "${identifier}", trying next candidate`
+        );
+      }
+    }
+
+    // If we couldn't look up the resource, throw a descriptive error
+    throw new Error(
+      `Resource ${logicalId} (${resourceType}) already exists but could not retrieve its state. ` +
+        `This may happen when a previous CREATE attempt succeeded asynchronously. ` +
+        `Delete the resource manually or remove it from the template and redeploy.`
+    );
+  }
+
+  /**
+   * Get candidate identifiers for a resource type based on its properties.
+   * Different resource types use different properties as their primary identifier.
+   */
+  private getIdentifierCandidates(
+    resourceType: string,
+    properties: Record<string, unknown>
+  ): string[] {
+    const candidates: string[] = [];
+
+    // Resource-type-specific identifier properties
+    const identifierPropertyMap: Record<string, string[]> = {
+      'AWS::S3::Bucket': ['BucketName'],
+      'AWS::Lambda::Function': ['FunctionName'],
+      'AWS::DynamoDB::Table': ['TableName'],
+      'AWS::SQS::Queue': ['QueueName'],
+      'AWS::SNS::Topic': ['TopicName'],
+      'AWS::ECR::Repository': ['RepositoryName'],
+      'AWS::Events::Rule': ['Name'],
+      'AWS::StepFunctions::StateMachine': ['StateMachineName'],
+      'AWS::Logs::LogGroup': ['LogGroupName'],
+    };
+
+    const specificProps = identifierPropertyMap[resourceType];
+    if (specificProps) {
+      for (const prop of specificProps) {
+        const value = properties[prop];
+        if (typeof value === 'string' && value) {
+          candidates.push(value);
+        }
+      }
+    }
+
+    // Generic fallback: try common naming patterns
+    const genericProps = ['Name', 'Id', `${resourceType.split('::').pop()}Name`];
+    for (const prop of genericProps) {
+      const value = properties[prop];
+      if (typeof value === 'string' && value && !candidates.includes(value)) {
+        candidates.push(value);
+      }
+    }
+
+    return candidates;
   }
 
   /**
