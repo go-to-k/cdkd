@@ -10,6 +10,8 @@ import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { CloudFormationClient } from '@aws-sdk/client-cloudformation';
 import { APIGatewayClient } from '@aws-sdk/client-api-gateway';
 import { EventBridgeClient } from '@aws-sdk/client-eventbridge';
+import { SecretsManagerClient } from '@aws-sdk/client-secrets-manager';
+import { SSMClient } from '@aws-sdk/client-ssm';
 
 /**
  * AWS client configuration
@@ -40,6 +42,8 @@ export class AwsClients {
   private cloudFormationClient?: CloudFormationClient;
   private apiGatewayClient?: APIGatewayClient;
   private eventBridgeClient?: EventBridgeClient;
+  private secretsManagerClient?: SecretsManagerClient;
+  private ssmClient?: SSMClient;
 
   constructor(private config: AwsClientConfig = {}) {}
 
@@ -297,6 +301,46 @@ export class AwsClients {
   }
 
   /**
+   * Get Secrets Manager client
+   */
+  getSecretsManagerClient(): SecretsManagerClient {
+    if (!this.secretsManagerClient) {
+      this.secretsManagerClient = new SecretsManagerClient({
+        ...(this.config.region && { region: this.config.region }),
+        ...(this.config.credentials && { credentials: this.config.credentials }),
+      });
+    }
+    return this.secretsManagerClient;
+  }
+
+  /**
+   * Convenience getter for Secrets Manager client
+   */
+  get secretsManager(): SecretsManagerClient {
+    return this.getSecretsManagerClient();
+  }
+
+  /**
+   * Get SSM client
+   */
+  getSSMClient(): SSMClient {
+    if (!this.ssmClient) {
+      this.ssmClient = new SSMClient({
+        ...(this.config.region && { region: this.config.region }),
+        ...(this.config.credentials && { credentials: this.config.credentials }),
+      });
+    }
+    return this.ssmClient;
+  }
+
+  /**
+   * Convenience getter for SSM client
+   */
+  get ssm(): SSMClient {
+    return this.getSSMClient();
+  }
+
+  /**
    * Destroy all clients
    */
   destroy(): void {
@@ -312,6 +356,8 @@ export class AwsClients {
     this.cloudFormationClient?.destroy();
     this.apiGatewayClient?.destroy();
     this.eventBridgeClient?.destroy();
+    this.secretsManagerClient?.destroy();
+    this.ssmClient?.destroy();
   }
 }
 

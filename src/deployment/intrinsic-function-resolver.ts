@@ -1,5 +1,7 @@
 import { GetCallerIdentityCommand } from '@aws-sdk/client-sts';
 import { DescribeAvailabilityZonesCommand } from '@aws-sdk/client-ec2';
+import { GetSecretValueCommand } from '@aws-sdk/client-secrets-manager';
+import { GetParameterCommand } from '@aws-sdk/client-ssm';
 import { getLogger } from '../utils/logger.js';
 import { getAwsClients } from '../utils/aws-clients.js';
 import type { CloudFormationTemplate } from '../types/resource.js';
@@ -72,6 +74,11 @@ let cachedAccountInfo: AwsAccountInfo | null = null;
 const cachedAvailabilityZones: Record<string, string[]> = {};
 
 /**
+ * Cache for resolved dynamic references (secretsmanager, ssm)
+ */
+const cachedDynamicReferences: Record<string, string> = {};
+
+/**
  * Get AWS account information from STS
  */
 async function getAccountInfo(): Promise<AwsAccountInfo> {
@@ -114,6 +121,10 @@ export function resetAccountInfoCache(): void {
   // Also reset AZ cache
   for (const key of Object.keys(cachedAvailabilityZones)) {
     delete cachedAvailabilityZones[key];
+  }
+  // Also reset dynamic reference cache
+  for (const key of Object.keys(cachedDynamicReferences)) {
+    delete cachedDynamicReferences[key];
   }
 }
 
@@ -248,8 +259,11 @@ export class IntrinsicFunctionResolver {
    * Recursively resolve a value
    */
   private async resolveValue(value: unknown, context: ResolverContext): Promise<unknown> {
-    // Primitives: return as-is
+    // Primitives: return as-is (but check strings for dynamic references)
     if (typeof value !== 'object' || value === null) {
+      if (typeof value === 'string' && value.includes('{{resolve:')) {
+        return await this.resolveDynamicReferences(value);
+      }
       return value;
     }
 
@@ -1134,5 +1148,156 @@ export class IntrinsicFunctionResolver {
       default:
         return undefined;
     }
+  }
+
+  /**
+   * Resolve CloudFormation Dynamic References in a string value
+   *
+   * Supports:
+   * - {{resolve:secretsmanager:SECRET_ID:SecretString:JSON_KEY:VERSION_STAGE:VERSION_ID}}
+   * - {{resolve:ssm:PARAMETER_NAME}}
+   *
+   * Results are cached to avoid repeated API calls.
+   */
+  async resolveDynamicReferences(value: string): Promise<string> {
+    // Match all {{resolve:...}} patterns
+    const pattern = /\{\{resolve:([^}]+)\}\}/g;
+    let result = value;
+    let match: RegExpExecArray | null;
+
+    // Collect all matches first (to avoid issues with modifying string during iteration)
+    const matches: Array<{ fullMatch: string; inner: string }> = [];
+    while ((match = pattern.exec(value)) !== null) {
+      matches.push({ fullMatch: match[0], inner: match[1]! });
+    }
+
+    for (const { fullMatch, inner } of matches) {
+      // Check cache first
+      if (fullMatch in cachedDynamicReferences) {
+        result = result.replace(fullMatch, cachedDynamicReferences[fullMatch]!);
+        continue;
+      }
+
+      const parts = inner.split(':');
+      const service = parts[0];
+
+      let resolved: string;
+
+      if (service === 'secretsmanager') {
+        resolved = await this.resolveSecretsManagerReference(parts);
+      } else if (service === 'ssm') {
+        resolved = await this.resolveSSMReference(parts);
+      } else {
+        this.logger.warn(`Unsupported dynamic reference service: ${service}`);
+        continue;
+      }
+
+      cachedDynamicReferences[fullMatch] = resolved;
+      result = result.replace(fullMatch, resolved);
+    }
+
+    return result;
+  }
+
+  /**
+   * Resolve a Secrets Manager dynamic reference
+   *
+   * Format: secretsmanager:SECRET_ID:SecretString:JSON_KEY:VERSION_STAGE:VERSION_ID
+   * Parts[0] = 'secretsmanager'
+   * Parts[1] = SECRET_ID
+   * Parts[2] = 'SecretString'
+   * Parts[3] = JSON_KEY (can be empty)
+   * Parts[4] = VERSION_STAGE (can be empty, defaults to AWSCURRENT)
+   * Parts[5] = VERSION_ID (can be empty)
+   */
+  private async resolveSecretsManagerReference(parts: string[]): Promise<string> {
+    const secretId = parts[1];
+    const jsonKey = parts[3] || '';
+    const versionStage = parts[4] || 'AWSCURRENT';
+    const versionId = parts[5] || '';
+
+    if (!secretId) {
+      throw new Error('Dynamic reference: secretsmanager SECRET_ID is required');
+    }
+
+    this.logger.debug(
+      `Resolving dynamic reference: secretsmanager:${secretId}:SecretString:${jsonKey}:${versionStage}:${versionId}`
+    );
+
+    const awsClients = getAwsClients();
+    const client = awsClients.secretsManager;
+
+    const command = new GetSecretValueCommand({
+      SecretId: secretId,
+      ...(versionStage && versionStage !== '' && { VersionStage: versionStage }),
+      ...(versionId && versionId !== '' && { VersionId: versionId }),
+    });
+
+    const response = await client.send(command);
+    const secretString = response.SecretString;
+
+    if (!secretString) {
+      throw new Error(
+        `Dynamic reference: secret '${secretId}' does not contain a SecretString value`
+      );
+    }
+
+    // If JSON_KEY is specified, parse JSON and extract the key
+    if (jsonKey) {
+      try {
+        const parsed = JSON.parse(secretString) as Record<string, unknown>;
+        const keyValue = parsed[jsonKey];
+        if (keyValue === undefined) {
+          throw new Error(`Dynamic reference: key '${jsonKey}' not found in secret '${secretId}'`);
+        }
+        return String(keyValue);
+      } catch (error) {
+        if (error instanceof SyntaxError) {
+          throw new Error(
+            `Dynamic reference: secret '${secretId}' is not valid JSON but JSON_KEY '${jsonKey}' was specified`
+          );
+        }
+        throw error;
+      }
+    }
+
+    // No JSON_KEY: return full secret string
+    return secretString;
+  }
+
+  /**
+   * Resolve an SSM Parameter Store dynamic reference
+   *
+   * Format: ssm:PARAMETER_NAME
+   * Parts[0] = 'ssm'
+   * Parts[1] = PARAMETER_NAME
+   */
+  private async resolveSSMReference(parts: string[]): Promise<string> {
+    const parameterName = parts.slice(1).join(':');
+
+    if (!parameterName) {
+      throw new Error('Dynamic reference: ssm PARAMETER_NAME is required');
+    }
+
+    this.logger.debug(`Resolving dynamic reference: ssm:${parameterName}`);
+
+    const awsClients = getAwsClients();
+    const client = awsClients.ssm;
+
+    const command = new GetParameterCommand({
+      Name: parameterName,
+      WithDecryption: true,
+    });
+
+    const response = await client.send(command);
+    const paramValue = response.Parameter?.Value;
+
+    if (paramValue === undefined || paramValue === null) {
+      throw new Error(
+        `Dynamic reference: SSM parameter '${parameterName}' not found or has no value`
+      );
+    }
+
+    return paramValue;
   }
 }
