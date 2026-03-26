@@ -614,9 +614,7 @@ export class CustomResourceProvider implements ResourceProvider {
    * BucketNotificationsHandler) depend on this behavior (e.g., calling .lower()
    * on boolean values).
    */
-  private stringifyProperties(
-    properties: Record<string, unknown>
-  ): Record<string, unknown> {
+  private stringifyProperties(properties: Record<string, unknown>): Record<string, unknown> {
     const result: Record<string, unknown> = {};
     for (const [key, value] of Object.entries(properties)) {
       if (typeof value === 'boolean') {
