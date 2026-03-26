@@ -125,23 +125,13 @@ async function destroyCommand(
     // Configure custom resource response handling via S3
     providerRegistry.setCustomResourceResponseBucket(stateBucket);
 
-    // 2. Get list of stacks to destroy
-    const stackPatterns = stackArgs.length > 0 ? stackArgs : options.stack ? [options.stack] : [];
-    const allStateStacks = await stateBackend.listStacks();
+    // 2. Resolve stacks to destroy (CDK CLI compatible behavior)
+    // Always synth to determine which stacks belong to this CDK app.
+    // This prevents accidentally destroying stacks from other apps.
+    const appCmd = options.app || resolveApp();
+    let appStackNames: string[] = [];
 
-    let stackNames: string[];
-    if (options.all) {
-      // When --app is provided, only destroy stacks from the current app
-      // This prevents accidentally destroying stacks from other CDK apps
-      // Synthesize app to get the list of stacks - --all only destroys stacks
-      // that belong to the current CDK app, NOT all stacks in the state bucket
-      const appCmd = options.app || resolveApp();
-      if (!appCmd) {
-        throw new Error(
-          '--all requires --app or cdk.json to determine which stacks belong to this app. ' +
-            'Without it, cdkq cannot safely determine which stacks to destroy.'
-        );
-      }
+    if (appCmd) {
       try {
         const synthesizer = new Synthesizer();
         const result = await synthesizer.synthesize({
@@ -149,25 +139,38 @@ async function destroyCommand(
           output: options.output || 'cdk.out',
         });
         const loader = new AssemblyLoader();
-        const appStacks = loader.getAllStacks(result.cloudAssembly).map((s) => s.stackName);
-        stackNames = appStacks.filter((name) => allStateStacks.includes(name));
+        appStackNames = loader.getAllStacks(result.cloudAssembly).map((s) => s.stackName);
         await result.dispose();
-      } catch (synthError) {
-        throw new Error(
-          `Failed to synthesize app for --all: ${synthError instanceof Error ? synthError.message : String(synthError)}. ` +
-            'Specify stack names explicitly instead of using --all.'
-        );
+      } catch {
+        logger.debug('Could not synthesize app, falling back to state-based stack list');
       }
+    }
+
+    // If synth failed or no --app, fall back to stacks in state
+    const allStateStacks = await stateBackend.listStacks();
+    const candidateStacks =
+      appStackNames.length > 0
+        ? appStackNames.filter((name) => allStateStacks.includes(name))
+        : allStateStacks;
+
+    const stackPatterns = stackArgs.length > 0 ? stackArgs : options.stack ? [options.stack] : [];
+
+    let stackNames: string[];
+    if (options.all) {
+      // --all: destroy all stacks in the current app
+      stackNames = candidateStacks;
     } else if (stackPatterns.length > 0) {
-      stackNames = allStateStacks.filter((name) =>
+      // Explicit stack names or wildcards
+      stackNames = candidateStacks.filter((name) =>
         stackPatterns.some((pattern) =>
           pattern.includes('*')
             ? new RegExp('^' + pattern.replace(/\*/g, '.*') + '$').test(name)
             : name === pattern
         )
       );
-    } else if (allStateStacks.length === 1) {
-      stackNames = allStateStacks;
+    } else if (candidateStacks.length === 1) {
+      // Single stack: auto-select (CDK CLI compatible)
+      stackNames = candidateStacks;
     } else if (allStateStacks.length === 0) {
       logger.info('No stacks found in state');
       return;
