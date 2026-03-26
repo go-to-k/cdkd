@@ -91,7 +91,7 @@ export class EventBridgeRuleProvider implements ResourceProvider {
         putRuleParams['RoleArn'] = properties['RoleArn'];
       }
 
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any, @typescript-eslint/no-unsafe-argument
       const response = await this.eventBridgeClient.send(new PutRuleCommand(putRuleParams as any));
 
       const ruleArn = response.RuleArn!;
@@ -171,7 +171,7 @@ export class EventBridgeRuleProvider implements ResourceProvider {
         putRuleParams['RoleArn'] = properties['RoleArn'];
       }
 
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any, @typescript-eslint/no-unsafe-argument
       const response = await this.eventBridgeClient.send(new PutRuleCommand(putRuleParams as any));
 
       const ruleArn = response.RuleArn!;

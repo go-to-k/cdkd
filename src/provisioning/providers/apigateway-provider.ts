@@ -270,9 +270,7 @@ export class ApiGatewayProvider implements ResourceProvider {
 
     for (let attempt = 1; attempt <= ApiGatewayProvider.MAX_IAM_RETRIES; attempt++) {
       try {
-        await this.apiGatewayClient.send(
-          new UpdateAccountCommand({ patchOperations })
-        );
+        await this.apiGatewayClient.send(new UpdateAccountCommand({ patchOperations }));
         return;
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
@@ -455,6 +453,7 @@ export class ApiGatewayProvider implements ResourceProvider {
   /**
    * Get API Gateway Resource attribute
    */
+  // eslint-disable-next-line @typescript-eslint/require-await
   private async getResourceAttribute(
     physicalId: string,
     _resourceType: string,

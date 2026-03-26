@@ -844,10 +844,7 @@ export class DeployEngine {
    * Build deletion levels from state dependencies (reverse topological order).
    * Resources that are depended upon by others are deleted LAST.
    */
-  private buildDeletionLevels(
-    deleteIds: Set<string>,
-    state: StackState
-  ): string[][] {
+  private buildDeletionLevels(deleteIds: Set<string>, state: StackState): string[][] {
     // Build reverse dependency map: resource → resources that depend on it
     const dependedBy = new Map<string, Set<string>>();
     const inDegree = new Map<string, number>();
