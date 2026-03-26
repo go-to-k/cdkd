@@ -114,10 +114,12 @@ export class CloudControlProvider implements ResourceProvider {
       // Start resource creation
       const cleanProperties = stripNullValues(properties) as Record<string, unknown>;
       const ccProperties = stringifyJsonProperties(resourceType, cleanProperties);
+      const desiredState = JSON.stringify(ccProperties);
+      this.logger.debug(`DesiredState for ${logicalId}: ${desiredState}`);
       const createResponse = await this.cloudControlClient.send(
         new CreateResourceCommand({
           TypeName: resourceType,
-          DesiredState: JSON.stringify(ccProperties),
+          DesiredState: desiredState,
         })
       );
 
