@@ -1,5 +1,12 @@
 import { Command } from 'commander';
-import { appOptions, commonOptions, stateOptions, stackOptions } from '../options.js';
+import {
+  appOptions,
+  commonOptions,
+  stateOptions,
+  stackOptions,
+  contextOptions,
+  parseContextOptions,
+} from '../options.js';
 import { getLogger } from '../../utils/logger.js';
 import { withErrorHandling } from '../../utils/error-handler.js';
 import { Synthesizer } from '../../synthesis/synthesizer.js';
@@ -58,6 +65,7 @@ async function diffCommand(
     region?: string;
     profile?: string;
     verbose: boolean;
+    context?: string[];
   }
 ): Promise<void> {
   const logger = getLogger();
@@ -94,11 +102,13 @@ async function diffCommand(
     // 1. Synthesize CDK app
     logger.info('Synthesizing CDK app...');
     const synthesizer = new Synthesizer();
+    const context = parseContextOptions(options.context);
     const { cloudAssembly: assembly, dispose } = await synthesizer.synthesize({
       app: options.app,
       output: options.output,
       ...(options.region && { region: options.region }),
       ...(options.profile && { profile: options.profile }),
+      ...(Object.keys(context).length > 0 && { context }),
     });
     disposeAssembly = dispose;
 
@@ -247,8 +257,8 @@ export function createDiffCommand(): Command {
     .action(withErrorHandling(diffCommand));
 
   // Add options
-  [...commonOptions, ...appOptions, ...stateOptions, ...stackOptions].forEach((opt) =>
-    cmd.addOption(opt)
+  [...commonOptions, ...appOptions, ...stateOptions, ...stackOptions, ...contextOptions].forEach(
+    (opt) => cmd.addOption(opt)
   );
 
   return cmd;

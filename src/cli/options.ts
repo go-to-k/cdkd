@@ -1,6 +1,22 @@
 import { Option } from 'commander';
 
 /**
+ * Parse context key=value pairs from CLI arguments into a Record
+ */
+export function parseContextOptions(contextArgs?: string[]): Record<string, string> {
+  const context: Record<string, string> = {};
+  if (contextArgs) {
+    for (const arg of contextArgs) {
+      const eqIndex = arg.indexOf('=');
+      if (eqIndex > 0) {
+        context[arg.substring(0, eqIndex)] = arg.substring(eqIndex + 1);
+      }
+    }
+  }
+  return context;
+}
+
+/**
  * Common CLI options
  */
 export const commonOptions = [
@@ -51,6 +67,18 @@ export const deployOptions = [
   new Option('--dry-run', 'Show changes without applying').default(false),
   new Option('--skip-assets', 'Skip asset publishing').default(false),
   new Option('--no-rollback', 'Skip rollback on deployment failure').default(false),
+];
+
+/**
+ * Context options
+ *
+ * -c / --context can be specified multiple times to pass context key=value pairs
+ */
+export const contextOptions = [
+  new Option(
+    '-c, --context <key=value...>',
+    'Set context values (can be specified multiple times)'
+  ),
 ];
 
 /**

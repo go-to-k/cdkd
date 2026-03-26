@@ -234,6 +234,36 @@ describe('IntrinsicFunctionResolver - Dynamic References', () => {
 
       expect(result).toBe('versioned-value');
     });
+
+    it('should resolve secretsmanager reference with ARN-based secret ID', async () => {
+      mockSecretsManagerSend.mockResolvedValue({
+        SecretString: JSON.stringify({ password: 'arn-secret-pass' }),
+      });
+
+      const result = await resolver.resolveDynamicReferences(
+        '{{resolve:secretsmanager:arn:aws:secretsmanager:us-east-1:123456789012:secret:SecretName-XXXXX:SecretString:password::}}'
+      );
+
+      expect(result).toBe('arn-secret-pass');
+      expect(mockSecretsManagerSend).toHaveBeenCalledTimes(1);
+      // Verify the SecretId passed to the API is the full ARN
+      const callArgs = mockSecretsManagerSend.mock.calls[0]![0];
+      expect(callArgs.input.SecretId).toBe(
+        'arn:aws:secretsmanager:us-east-1:123456789012:secret:SecretName-XXXXX'
+      );
+    });
+
+    it('should resolve secretsmanager ARN reference without JSON key', async () => {
+      mockSecretsManagerSend.mockResolvedValue({
+        SecretString: 'full-secret-value',
+      });
+
+      const result = await resolver.resolveDynamicReferences(
+        '{{resolve:secretsmanager:arn:aws:secretsmanager:us-east-1:123456789012:secret:MySecret-abc123:SecretString:::}}'
+      );
+
+      expect(result).toBe('full-secret-value');
+    });
   });
 
   describe('resolveValue integration with dynamic references', () => {

@@ -628,7 +628,11 @@ export class IntrinsicFunctionResolver {
       })
     );
 
-    const result = resolvedValues.join(delimiter);
+    let result = resolvedValues.join(delimiter);
+    // Resolve any dynamic references in the joined result
+    if (result.includes('{{resolve:')) {
+      result = await this.resolveDynamicReferences(result);
+    }
     this.logger.debug(`Resolved Fn::Join: ${result}`);
     return result;
   }
@@ -713,6 +717,10 @@ export class IntrinsicFunctionResolver {
       result = result.replace(match, replacement);
     }
 
+    // Resolve any dynamic references in the substituted result
+    if (result.includes('{{resolve:')) {
+      result = await this.resolveDynamicReferences(result);
+    }
     this.logger.debug(`Resolved Fn::Sub: ${result}`);
     return result;
   }
@@ -1184,7 +1192,7 @@ export class IntrinsicFunctionResolver {
       let resolved: string;
 
       if (service === 'secretsmanager') {
-        resolved = await this.resolveSecretsManagerReference(parts);
+        resolved = await this.resolveSecretsManagerReference(inner);
       } else if (service === 'ssm') {
         resolved = await this.resolveSSMReference(parts);
       } else {
@@ -1203,18 +1211,51 @@ export class IntrinsicFunctionResolver {
    * Resolve a Secrets Manager dynamic reference
    *
    * Format: secretsmanager:SECRET_ID:SecretString:JSON_KEY:VERSION_STAGE:VERSION_ID
-   * Parts[0] = 'secretsmanager'
-   * Parts[1] = SECRET_ID
-   * Parts[2] = 'SecretString'
-   * Parts[3] = JSON_KEY (can be empty)
-   * Parts[4] = VERSION_STAGE (can be empty, defaults to AWSCURRENT)
-   * Parts[5] = VERSION_ID (can be empty)
+   * SECRET_ID can be a simple name or an ARN (arn:aws:secretsmanager:REGION:ACCOUNT:secret:NAME)
+   * which contains colons, so we cannot simply split on ':'.
+   * Instead, we find ':SecretString:' or ':SecretBinary:' as the delimiter.
    */
-  private async resolveSecretsManagerReference(parts: string[]): Promise<string> {
-    const secretId = parts[1];
-    const jsonKey = parts[3] || '';
-    const versionStage = parts[4] || 'AWSCURRENT';
-    const versionId = parts[5] || '';
+  private async resolveSecretsManagerReference(inner: string): Promise<string> {
+    // inner = "secretsmanager:SECRET_ID:SecretString:JSON_KEY:VERSION_STAGE:VERSION_ID"
+    // Remove the "secretsmanager:" prefix
+    const afterService = inner.substring('secretsmanager:'.length);
+
+    // Find :SecretString: or :SecretBinary: as the delimiter between SECRET_ID and the rest
+    let secretId: string;
+    let jsonKey = '';
+    let versionStage = '';
+    let versionId = '';
+
+    const secretStringIdx = afterService.indexOf(':SecretString:');
+    const secretBinaryIdx = afterService.indexOf(':SecretBinary:');
+    const delimiterIdx =
+      secretStringIdx >= 0 && secretBinaryIdx >= 0
+        ? Math.min(secretStringIdx, secretBinaryIdx)
+        : secretStringIdx >= 0
+          ? secretStringIdx
+          : secretBinaryIdx;
+    const delimiterLen =
+      delimiterIdx >= 0 && delimiterIdx === secretBinaryIdx
+        ? ':SecretBinary:'.length
+        : ':SecretString:'.length;
+
+    if (delimiterIdx >= 0) {
+      secretId = afterService.substring(0, delimiterIdx);
+      // remaining = "JSON_KEY:VERSION_STAGE:VERSION_ID"
+      const remaining = afterService.substring(delimiterIdx + delimiterLen);
+      const remainingParts = remaining.split(':');
+      jsonKey = remainingParts[0] || '';
+      versionStage = remainingParts[1] || '';
+      versionId = remainingParts[2] || '';
+    } else {
+      // No :SecretString: or :SecretBinary: found, treat entire afterService as SECRET_ID
+      secretId = afterService;
+    }
+
+    // Empty strings should be treated as undefined (handles trailing :: in references)
+    if (!versionStage) {
+      versionStage = 'AWSCURRENT';
+    }
 
     if (!secretId) {
       throw new Error('Dynamic reference: secretsmanager SECRET_ID is required');

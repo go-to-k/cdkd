@@ -1193,6 +1193,8 @@ export class DeployEngine {
       'trust policy',
       'Role validation failed',
       'does not have required permissions',
+      'Trusted Entity',
+      'currently in the following state: Pending',
       // DELETE dependency ordering (parallel deletion race conditions)
       'has dependencies and cannot be deleted',
       "can't be deleted since it has",

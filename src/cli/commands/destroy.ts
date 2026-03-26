@@ -5,6 +5,8 @@ import {
   stateOptions,
   stackOptions,
   destroyOptions,
+  contextOptions,
+  parseContextOptions,
 } from '../options.js';
 import { getLogger } from '../../utils/logger.js';
 import { withErrorHandling } from '../../utils/error-handler.js';
@@ -35,6 +37,7 @@ async function destroyCommand(
     profile?: string;
     force: boolean;
     verbose: boolean;
+    context?: string[];
   }
 ): Promise<void> {
   const logger = getLogger();
@@ -83,9 +86,11 @@ async function destroyCommand(
     if (appCmd) {
       try {
         const synthesizer = new Synthesizer();
+        const context = parseContextOptions(options.context);
         const result = await synthesizer.synthesize({
           app: appCmd,
           output: options.output || 'cdk.out',
+          ...(Object.keys(context).length > 0 && { context }),
         });
         const loader = new AssemblyLoader();
         appStackNames = loader.getAllStacks(result.cloudAssembly).map((s) => s.stackName);
@@ -395,9 +400,14 @@ export function createDestroyCommand(): Command {
     .action(withErrorHandling(destroyCommand));
 
   // Add options (appOptions accepted for CDK CLI compatibility, but not used)
-  [...commonOptions, ...appOptions, ...stateOptions, ...stackOptions, ...destroyOptions].forEach(
-    (opt) => cmd.addOption(opt)
-  );
+  [
+    ...commonOptions,
+    ...appOptions,
+    ...stateOptions,
+    ...stackOptions,
+    ...destroyOptions,
+    ...contextOptions,
+  ].forEach((opt) => cmd.addOption(opt));
 
   return cmd;
 }

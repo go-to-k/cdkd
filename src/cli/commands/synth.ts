@@ -1,7 +1,7 @@
 import { Command } from 'commander';
 import { writeFileSync } from 'fs';
 import { join } from 'path';
-import { appOptions, commonOptions } from '../options.js';
+import { appOptions, commonOptions, contextOptions, parseContextOptions } from '../options.js';
 import { getLogger } from '../../utils/logger.js';
 import { withErrorHandling } from '../../utils/error-handler.js';
 import { Synthesizer, type SynthesisOptions } from '../../synthesis/synthesizer.js';
@@ -17,6 +17,7 @@ async function synthCommand(options: {
   verbose: boolean;
   region?: string;
   profile?: string;
+  context?: string[];
 }): Promise<void> {
   const logger = getLogger();
 
@@ -42,12 +43,14 @@ async function synthCommand(options: {
   const assemblyLoader = new AssemblyLoader();
 
   // Synthesize CDK app
+  const context = parseContextOptions(options.context);
   const synthOptions: SynthesisOptions = {
     app: options.app,
     output: options.output,
     validateStacks: true,
     ...(options.region && { region: options.region }),
     ...(options.profile && { profile: options.profile }),
+    ...(Object.keys(context).length > 0 && { context }),
   };
 
   const { cloudAssembly: assembly, dispose } = await synthesizer.synthesize(synthOptions);
@@ -91,7 +94,7 @@ export function createSynthCommand(): Command {
     .action(withErrorHandling(synthCommand));
 
   // Add options
-  [...commonOptions, ...appOptions].forEach((opt) => cmd.addOption(opt));
+  [...commonOptions, ...appOptions, ...contextOptions].forEach((opt) => cmd.addOption(opt));
 
   return cmd;
 }

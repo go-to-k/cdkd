@@ -1,4 +1,4 @@
-import { Toolkit, type ICloudAssemblySource } from '@aws-cdk/toolkit-lib';
+import { Toolkit, CdkAppMultiContext, type ICloudAssemblySource } from '@aws-cdk/toolkit-lib';
 import type { CloudAssembly } from '@aws-cdk/cloud-assembly-api';
 import { getLogger } from '../utils/logger.js';
 import { SynthesisError } from '../utils/error-handler.js';
@@ -21,6 +21,9 @@ export interface SynthesisOptions {
 
   /** Validate stacks during synthesis */
   validateStacks?: boolean;
+
+  /** Context key-value pairs (CLI -c/--context) */
+  context?: Record<string, string>;
 }
 
 /**
@@ -77,7 +80,17 @@ export class Synthesizer {
       // 3. Saving context values to cdk.context.json
       // Note: The 'output' option seems to be ignored in some cases,
       // and it uses the current working directory's cdk.out
-      const source = await this.toolkit.fromCdkApp(options.app);
+
+      // If CLI context values are provided, use CdkAppMultiContext to merge them
+      // with cdk.json context (CLI values take precedence)
+      const sourceOptions =
+        options.context && Object.keys(options.context).length > 0
+          ? {
+              contextStore: new CdkAppMultiContext(process.cwd(), options.context),
+            }
+          : undefined;
+
+      const source = await this.toolkit.fromCdkApp(options.app, sourceOptions);
 
       return source;
     } catch (error) {

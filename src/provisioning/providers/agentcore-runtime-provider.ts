@@ -116,7 +116,25 @@ export class AgentCoreRuntimeProvider implements ResourceProvider {
         );
       }
       if (properties['ProtocolConfiguration'] !== undefined) {
-        input['protocolConfiguration'] = pascalToCamelCaseKeys(properties['ProtocolConfiguration']);
+        // CFn template has ProtocolConfiguration as a string (e.g. "HTTP"),
+        // but the SDK expects an object { serverProtocol: "HTTP" }
+        const proto = properties['ProtocolConfiguration'];
+        if (typeof proto === 'string') {
+          input['protocolConfiguration'] = { serverProtocol: proto };
+        } else {
+          input['protocolConfiguration'] = pascalToCamelCaseKeys(proto);
+        }
+      }
+      // Skip empty LifecycleConfiguration (CFn template may have {} which SDK rejects)
+      if (
+        properties['LifecycleConfiguration'] !== undefined &&
+        typeof properties['LifecycleConfiguration'] === 'object' &&
+        properties['LifecycleConfiguration'] !== null &&
+        Object.keys(properties['LifecycleConfiguration'] as Record<string, unknown>).length > 0
+      ) {
+        input['lifecycleConfiguration'] = pascalToCamelCaseKeys(
+          properties['LifecycleConfiguration']
+        );
       }
       if (properties['EnvironmentVariables'] !== undefined) {
         input['environmentVariables'] = properties['EnvironmentVariables'];
@@ -197,7 +215,22 @@ export class AgentCoreRuntimeProvider implements ResourceProvider {
         );
       }
       if (properties['ProtocolConfiguration'] !== undefined) {
-        input['protocolConfiguration'] = pascalToCamelCaseKeys(properties['ProtocolConfiguration']);
+        const proto = properties['ProtocolConfiguration'];
+        if (typeof proto === 'string') {
+          input['protocolConfiguration'] = { serverProtocol: proto };
+        } else {
+          input['protocolConfiguration'] = pascalToCamelCaseKeys(proto);
+        }
+      }
+      if (
+        properties['LifecycleConfiguration'] !== undefined &&
+        typeof properties['LifecycleConfiguration'] === 'object' &&
+        properties['LifecycleConfiguration'] !== null &&
+        Object.keys(properties['LifecycleConfiguration'] as Record<string, unknown>).length > 0
+      ) {
+        input['lifecycleConfiguration'] = pascalToCamelCaseKeys(
+          properties['LifecycleConfiguration']
+        );
       }
       if (properties['EnvironmentVariables'] !== undefined) {
         input['environmentVariables'] = properties['EnvironmentVariables'];
