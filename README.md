@@ -329,14 +329,12 @@ See [docs/implementation-plan.md](docs/implementation-plan.md) for detailed impl
 - ✅ `--state-bucket` auto-resolves from STS account ID: `cdkq-state-{accountId}-{region}`
 - ✅ Attribute mapper: CC API property names mapped to GetAtt attribute names
 - ✅ E2E test script (`tests/e2e/run-e2e.sh`)
-- ✅ 118 unit tests
+- ✅ 140 unit tests
 
 **Not Yet Implemented**:
 
-- Custom Resources: SNS-backed and async/Step Functions patterns (Lambda sync only)
-- Rollback mechanism
-- Progress bar / advanced UI
-- Lock TTL / force-unlock CLI command
+- Custom Resources: Step Functions direct integration (SNS-backed is supported)
+- `Fn::GetAZs` attribute caching across stacks
 
 See [docs/implementation-plan.md](docs/implementation-plan.md) for complete roadmap.
 

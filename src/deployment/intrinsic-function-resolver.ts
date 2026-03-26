@@ -556,6 +556,38 @@ export class IntrinsicFunctionResolver {
       }
     }
 
+    // EC2 Security Group
+    if (resourceType === 'AWS::EC2::SecurityGroup') {
+      switch (attributeName) {
+        case 'GroupId':
+          return physicalId; // Physical ID is already the group ID (sg-xxx)
+        case 'VpcId':
+          return undefined; // Would need API call
+        default:
+          return physicalId;
+      }
+    }
+
+    // EC2 VPC
+    if (resourceType === 'AWS::EC2::VPC') {
+      switch (attributeName) {
+        case 'VpcId':
+          return physicalId;
+        default:
+          return physicalId;
+      }
+    }
+
+    // EC2 Subnet
+    if (resourceType === 'AWS::EC2::Subnet') {
+      switch (attributeName) {
+        case 'SubnetId':
+          return physicalId;
+        default:
+          return physicalId;
+      }
+    }
+
     // Default: return physical ID
     this.logger.warn(
       `Unknown attribute ${attributeName} for resource type ${resourceType}, returning physical ID`

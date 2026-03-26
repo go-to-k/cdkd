@@ -79,7 +79,9 @@ export class Synthesizer {
   /**
    * Synthesize CDK app to CloudFormation template
    */
-  async synthesize(options: SynthesisOptions): Promise<CloudAssembly> {
+  async synthesize(
+    options: SynthesisOptions
+  ): Promise<{ cloudAssembly: CloudAssembly; dispose: () => Promise<void> }> {
     try {
       this.logger.debug('Synthesizing CDK app...');
 
@@ -109,7 +111,7 @@ export class Synthesizer {
         this.logger.debug('Stacks in assembly:', stackNames);
       }
 
-      return cloudAssembly;
+      return { cloudAssembly, dispose: () => assemblySource.dispose() };
     } catch (error) {
       throw new SynthesisError(
         `Synthesis failed: ${error instanceof Error ? error.message : String(error)}`,

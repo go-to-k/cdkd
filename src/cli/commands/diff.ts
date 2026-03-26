@@ -55,16 +55,18 @@ async function diffCommand(
   });
   setAwsClients(awsClients);
 
+  let disposeAssembly: (() => Promise<void>) | undefined;
   try {
     // 1. Synthesize CDK app
     logger.info('Synthesizing CDK app...');
     const synthesizer = new Synthesizer();
-    const assembly = await synthesizer.synthesize({
+    const { cloudAssembly: assembly, dispose } = await synthesizer.synthesize({
       app: options.app,
       output: options.output,
       ...(options.region && { region: options.region }),
       ...(options.profile && { profile: options.profile }),
     });
+    disposeAssembly = dispose;
 
     // 2. Load CloudAssembly and get stacks
     const assemblyLoader = new AssemblyLoader();
@@ -177,7 +179,9 @@ async function diffCommand(
       logger.info(`\n${createCount} to create, ${updateCount} to update, ${deleteCount} to delete`);
     }
   } finally {
-    // Cleanup AWS clients
+    if (disposeAssembly) {
+      await disposeAssembly();
+    }
     awsClients.destroy();
   }
 }

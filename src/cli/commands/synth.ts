@@ -50,32 +50,36 @@ async function synthCommand(options: {
     ...(options.profile && { profile: options.profile }),
   };
 
-  const assembly = await synthesizer.synthesize(synthOptions);
+  const { cloudAssembly: assembly, dispose } = await synthesizer.synthesize(synthOptions);
 
-  // Get all stacks
-  const stacks = assemblyLoader.getAllStacks(assembly);
+  try {
+    // Get all stacks
+    const stacks = assemblyLoader.getAllStacks(assembly);
 
-  logger.info(`✅ Synthesis complete! Found ${stacks.length} stack(s):`);
+    logger.info(`✅ Synthesis complete! Found ${stacks.length} stack(s):`);
 
-  // Display stack information
-  for (const stack of stacks) {
-    const resourceCount = Object.keys(stack.template.Resources ?? {}).length;
-    const outputCount = Object.keys(stack.template.Outputs ?? {}).length;
+    // Display stack information
+    for (const stack of stacks) {
+      const resourceCount = Object.keys(stack.template.Resources ?? {}).length;
+      const outputCount = Object.keys(stack.template.Outputs ?? {}).length;
 
-    logger.info(`  • ${stack.stackName}`);
-    logger.info(`    - Resources: ${resourceCount}`);
-    logger.info(`    - Outputs: ${outputCount}`);
-    logger.info(`    - Has assets: ${assemblyLoader.hasAssets(stack) ? 'Yes' : 'No'}`);
+      logger.info(`  • ${stack.stackName}`);
+      logger.info(`    - Resources: ${resourceCount}`);
+      logger.info(`    - Outputs: ${outputCount}`);
+      logger.info(`    - Has assets: ${assemblyLoader.hasAssets(stack) ? 'Yes' : 'No'}`);
 
-    if (options.verbose) {
-      // Write template to output directory for inspection
-      const templatePath = join(options.output, `${stack.stackName}.template.json`);
-      writeFileSync(templatePath, JSON.stringify(stack.template, null, 2));
-      logger.debug(`    - Template written to: ${templatePath}`);
+      if (options.verbose) {
+        // Write template to output directory for inspection
+        const templatePath = join(options.output, `${stack.stackName}.template.json`);
+        writeFileSync(templatePath, JSON.stringify(stack.template, null, 2));
+        logger.debug(`    - Template written to: ${templatePath}`);
+      }
     }
-  }
 
-  logger.info(`\nOutput: ${assembly.directory}`);
+    logger.info(`\nOutput: ${assembly.directory}`);
+  } finally {
+    await dispose();
+  }
 }
 
 /**

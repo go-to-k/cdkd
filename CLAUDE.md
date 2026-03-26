@@ -310,7 +310,7 @@ See [docs/provider-development.md](docs/provider-development.md) for details.
 - ✅ Compact output mode (default clean output, `--verbose` for full details)
 - ✅ `--state-bucket` auto-resolves from STS account ID: `cdkq-state-{accountId}-{region}`
 - ✅ Attribute mapper: CC API property names mapped to GetAtt attribute names
-- ✅ 118 unit tests, 9 integration examples, E2E test script
+- ✅ 140 unit tests, 9 integration examples, E2E test script
 - ✅ DeletionPolicy: Retain support (skip deletion for retained resources)
 - ✅ Resource replacement for immutable property changes (CREATE→DELETE)
 - ✅ Type safety improvements (error handling, any type elimination in custom resources)
