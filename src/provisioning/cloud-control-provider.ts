@@ -117,15 +117,10 @@ export class CloudControlProvider implements ResourceProvider {
       const ccProperties = stringifyJsonProperties(resourceType, cleanProperties);
       const desiredState = JSON.stringify(ccProperties);
       this.logger.debug(`DesiredState for ${logicalId}: ${desiredState}`);
-      // Use ClientToken for idempotency - same token retries return the same result
-      // logicalId is unique per stack, so this ensures idempotency across retries
-      // when the same create() call is retried by withRetry()
-      const clientToken = `cdkq-${logicalId}`;
       const createResponse = await this.cloudControlClient.send(
         new CreateResourceCommand({
           TypeName: resourceType,
           DesiredState: desiredState,
-          ClientToken: clientToken,
         })
       );
 
