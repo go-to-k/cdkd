@@ -945,8 +945,8 @@ export class DeployEngine {
   private async withRetry<T>(
     operation: () => Promise<T>,
     logicalId: string,
-    maxRetries: number = 3,
-    initialDelayMs: number = 5_000
+    maxRetries: number = 5,
+    initialDelayMs: number = 10_000
   ): Promise<T> {
     let lastError: unknown;
 
