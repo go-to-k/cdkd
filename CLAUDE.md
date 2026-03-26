@@ -126,6 +126,7 @@ Currently implemented SDK Providers (`src/provisioning/providers/`):
 - `apigateway-provider.ts` - AWS::ApiGateway::Account, AWS::ApiGateway::Resource, AWS::ApiGateway::Deployment, AWS::ApiGateway::Stage, AWS::ApiGateway::Method
 - `cloudfront-oai-provider.ts` - AWS::CloudFront::CloudFrontOriginAccessIdentity
 - `agentcore-runtime-provider.ts` - AWS::BedrockAgentCore::Runtime
+- `custom-resource-provider.ts` - Custom::* (Lambda/SNS-backed, CDK Provider framework with isCompleteHandler/onEventHandler async pattern)
 
 These are custom implementations for resources not supported by Cloud Control API (12 SDK Providers covering 13 resource types).
 
@@ -236,7 +237,7 @@ registry.register('AWS::IAM::Role', new IAMRoleProvider());
 - `tests/integration/examples/**`
 - Uses actual AWS account
 - Environment variables: `STATE_BUCKET`, `AWS_REGION`
-- 19 examples verified with real AWS deployments (all 19 CREATE + DESTROY successful on AWS, as of 2026-03-26):
+- 21 examples verified with real AWS deployments (all 21 CREATE + DESTROY successful on AWS, as of 2026-03-26):
   - basic: S3 bucket (CREATE + UPDATE verified)
   - conditions: Conditional resources with AWS::NoValue
   - parameters: CloudFormation Parameters with default values
@@ -256,6 +257,8 @@ registry.register('AWS::IAM::Role', new IAMRoleProvider());
   - cloudwatch: CloudWatch alarms and dashboards
   - rds-aurora: RDS Aurora cluster
   - bedrock-agent: Bedrock Agent
+  - cloudfront-function-url: CloudFront + Lambda Function URL (6 resources)
+  - custom-resource-provider: CDK Provider framework (isCompleteHandler/onEventHandler)
 
 ### UPDATE Testing
 
@@ -325,7 +328,7 @@ See [docs/provider-development.md](docs/provider-development.md) for details.
 - ✅ Compact output mode (default clean output, `--verbose` for full details)
 - ✅ `--state-bucket` auto-resolves from STS account ID: `cdkq-state-{accountId}-{region}`
 - ✅ Attribute mapper: CC API property names mapped to GetAtt attribute names
-- ✅ 277 unit tests, 19 integration examples (all 19 CREATE + DESTROY successful on AWS), E2E test script
+- ✅ 282 unit tests, 21 integration examples (all 21 CREATE + DESTROY successful on AWS), E2E test script
 - ✅ DeletionPolicy: Retain support (skip deletion for retained resources)
 - ✅ Resource replacement for immutable property changes (CREATE→DELETE)
 - ✅ Type safety improvements (error handling, any type elimination in custom resources)
@@ -341,6 +344,10 @@ See [docs/provider-development.md](docs/provider-development.md) for details.
 - ✅ DynamoDB StreamArn enrichment via DescribeTable
 - ✅ API Gateway RootResourceId enrichment via GetRestApi
 - ✅ isRetryableError with HTTP status code (429/503) + cause chain
+- ✅ CDK Provider framework: isCompleteHandler/onEventHandler async pattern detection, max 1hr polling, pre-signed URL 2hr
+- ✅ Lambda FunctionUrl attribute enrichment (GetFunctionUrlConfig API)
+- ✅ CloudFront + Lambda Function URL integration test (6/6 CREATE+DESTROY)
+- ✅ Phase C (CFn Registry Schema) completed: auto-discovery of CC API property-to-GetAtt mappings
 
 ## Dependencies
 

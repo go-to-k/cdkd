@@ -223,6 +223,32 @@ cd /Users/goto/github/cdkq/tests/integration/examples/bedrock-agent
 npm install
 ```
 
+#### CloudFront + Lambda Function URL Example
+
+```bash
+cd /Users/goto/github/cdkq/tests/integration/examples/cloudfront-function-url
+npm install
+```
+
+**Tested features**:
+
+- CloudFront distribution with Lambda Function URL origin
+- Lambda FunctionUrl attribute enrichment (GetFunctionUrlConfig API)
+- 6 resources: CREATE + DESTROY verified
+
+#### CDK Provider Framework Example (isCompleteHandler/onEventHandler)
+
+```bash
+cd /Users/goto/github/cdkq/tests/integration/examples/custom-resource-provider
+npm install
+```
+
+**Tested features**:
+
+- CDK Provider framework with isCompleteHandler/onEventHandler
+- Async pattern detection and polling
+- Pre-signed URL for cfn-response (2hr validity)
+
 For details on each example, refer to the README.md in each directory.
 
 ### Option B: Create a New CDK Application

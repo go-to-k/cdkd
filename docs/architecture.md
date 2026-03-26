@@ -447,10 +447,12 @@ For resources not supported by Cloud Control API or requiring fine-grained contr
    - SDK Provider for BedrockAgentCore Runtime (CC API has IAM propagation issues)
 
 10. **`custom-resource-provider.ts`** - `Custom::*`
-   - Lambda-backed custom resources
+   - Lambda-backed custom resources (including CDK Provider framework)
    - Invokes custom resource Lambda via `LambdaClient.invoke()`
    - Same request format as CloudFormation
    - Saves `PhysicalResourceId` from response to state
+   - CDK Provider framework support: isCompleteHandler/onEventHandler async pattern detection
+   - Async CRUD with polling (max 1hr), pre-signed URL validity 2hr
 
 **How to Add Providers**:
 See [provider-development.md](./provider-development.md)
@@ -687,7 +689,7 @@ Each layer has clear responsibilities
 
 ### Known Destroy Issues
 
-- None. All 19 integration examples now CREATE + DESTROY successfully (CloudFront OAI and AgentCore Runtime resolved via SDK Providers).
+- None. All 21 integration examples now CREATE + DESTROY successfully (CloudFront OAI and AgentCore Runtime resolved via SDK Providers).
 
 ### Phase 9 and Beyond Plans
 

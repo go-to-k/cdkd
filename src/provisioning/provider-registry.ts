@@ -87,8 +87,8 @@ export class ProviderRegistry {
       return this.cloudControlProvider;
     }
 
-    // 3. Check if it's a custom resource (starts with "Custom::")
-    if (resourceType.startsWith('Custom::')) {
+    // 3. Check if it's a custom resource (Custom:: prefix or AWS::CloudFormation::CustomResource)
+    if (resourceType.startsWith('Custom::') || resourceType === 'AWS::CloudFormation::CustomResource') {
       this.logger.debug(`Using Custom Resource provider for ${resourceType}`);
       return this.customResourceProvider;
     }
@@ -118,7 +118,8 @@ export class ProviderRegistry {
     return (
       this.providers.has(resourceType) ||
       CloudControlProvider.isSupportedResourceType(resourceType) ||
-      resourceType.startsWith('Custom::')
+      resourceType.startsWith('Custom::') ||
+      resourceType === 'AWS::CloudFormation::CustomResource'
     );
   }
 

@@ -760,7 +760,7 @@ node dist/cli.js deploy --app "..." --state-bucket ${STATE_BUCKET} --dry-run
 
 **Previously**: AgentCore Runtime creation failed due to IAM role propagation delays when using CC API.
 
-**Resolution**: Resolved via dedicated SDK Provider (`agentcore-runtime-provider.ts`). All 19 integration examples now CREATE + DESTROY successfully.
+**Resolution**: Resolved via dedicated SDK Provider (`agentcore-runtime-provider.ts`). All 21 integration examples now CREATE + DESTROY successfully.
 
 ### Lambda Permission "No policy found"
 

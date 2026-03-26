@@ -151,12 +151,12 @@ The speed gain comes from eliminating CloudFormation overhead (stack creation, c
 | Asset publishing (S3) | ✅ | Lambda code packages |
 | Asset publishing (ECR) | ✅ | Via `@aws-cdk/cdk-assets-lib` |
 | Custom Resources (SNS-backed) | ✅ | SNS Topic ServiceToken + S3 response |
-| Custom Resources (async/SFN) | ❌ | Step Functions backend not supported |
+| Custom Resources (CDK Provider) | ✅ | isCompleteHandler/onEventHandler async pattern detection |
 | Rollback | ✅ | --no-rollback flag to skip |
 | DeletionPolicy: Retain | ✅ | Skip deletion for retained resources |
 | UpdateReplacePolicy: Retain | ✅ | Keep old resource on replacement |
 | Implicit delete dependencies | ✅ | VPC/IGW/EventBus/Subnet/RouteTable ordering |
-| Attribute enrichment | ✅ | CloudFront OAI, DynamoDB StreamArn, API Gateway RootResourceId |
+| Attribute enrichment | ✅ | CloudFront OAI, DynamoDB StreamArn, API Gateway RootResourceId, Lambda FunctionUrl |
 | CC API null value stripping | ✅ | Removes null values before API calls |
 | Retry with HTTP status codes | ✅ | 429/503 + cause chain inspection |
 
@@ -336,6 +336,8 @@ See the [tests/integration/examples](tests/integration/examples) directory for w
 - [cloudwatch](tests/integration/examples/cloudwatch) - CloudWatch alarms and dashboards
 - [rds-aurora](tests/integration/examples/rds-aurora) - RDS Aurora cluster
 - [bedrock-agent](tests/integration/examples/bedrock-agent) - Bedrock Agent
+- [cloudfront-function-url](tests/integration/examples/cloudfront-function-url) - CloudFront + Lambda Function URL
+- [custom-resource-provider](tests/integration/examples/custom-resource-provider) - CDK Provider framework (isCompleteHandler/onEventHandler)
 
 See [docs/testing.md](docs/testing.md) for detailed testing instructions including UPDATE operations.
 
@@ -411,8 +413,8 @@ After deployment, outputs are resolved and saved to state:
 
 ## Testing
 
-- **277 unit tests** covering all layers
-- **19 integration examples** verified with real AWS deployments (all 19 CREATE + DESTROY successful on AWS)
+- **282 unit tests** covering all layers
+- **21 integration examples** verified with real AWS deployments (all 21 CREATE + DESTROY successful on AWS)
 - **E2E test script** for automated deploy/update/destroy cycles
 
 ```bash
@@ -437,13 +439,9 @@ See [docs/implementation-plan.md](docs/implementation-plan.md) for detailed impl
 
 **Current Phase**: Phase 9 - Testing & Documentation
 
-**Not Yet Implemented**:
-
-- Custom Resources: Step Functions / async patterns
-
 **Known Destroy Issues**:
 
-- None. All 19 integration examples now CREATE + DESTROY successfully.
+- None. All 21 integration examples now CREATE + DESTROY successfully.
 
 See [docs/implementation-plan.md](docs/implementation-plan.md) for complete roadmap.
 
