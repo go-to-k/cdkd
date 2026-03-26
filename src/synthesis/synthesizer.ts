@@ -35,7 +35,14 @@ export class Synthesizer {
       ioHost: {
         // Handle toolkit messages
         notify: (msg) => {
-          this.logger.debug('Toolkit message:', msg);
+          // Show error-level messages even in compact mode
+          const message = typeof msg === 'object' && msg !== null ? (msg as unknown as Record<string, unknown>) : {};
+          const level = message['level'] as string | undefined;
+          if (level === 'error' && message['message']) {
+            this.logger.error(String(message['message']));
+          } else {
+            this.logger.debug('Toolkit message:', msg);
+          }
           return Promise.resolve();
         },
         // Handle toolkit requests (use default responses)
@@ -113,8 +120,20 @@ export class Synthesizer {
 
       return { cloudAssembly, dispose: () => assemblySource.dispose() };
     } catch (error) {
+      // Try to extract stderr/stdout from the subprocess error for better diagnostics
+      let details = '';
+      if (error instanceof Error) {
+        const err = error as unknown as Record<string, unknown>;
+        if (err['stderr']) details += `\n\nstderr:\n${String(err['stderr'])}`;
+        if (err['stdout']) details += `\n\nstdout:\n${String(err['stdout'])}`;
+        if (err['cause'] && err['cause'] instanceof Error) {
+          const cause = err['cause'] as unknown as Record<string, unknown>;
+          if (cause['stderr']) details += `\n\nstderr:\n${String(cause['stderr'])}`;
+          if (cause['stdout']) details += `\n\nstdout:\n${String(cause['stdout'])}`;
+        }
+      }
       throw new SynthesisError(
-        `Synthesis failed: ${error instanceof Error ? error.message : String(error)}`,
+        `Synthesis failed: ${error instanceof Error ? error.message : String(error)}${details}`,
         error instanceof Error ? error : undefined
       );
     }
