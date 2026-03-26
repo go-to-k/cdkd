@@ -91,9 +91,13 @@ export class DynamoDBTableProvider implements ResourceProvider {
         };
       }
 
-      // Stream specification
+      // Stream specification - CDK omits StreamEnabled, SDK requires it
       if (properties['StreamSpecification']) {
-        createParams.StreamSpecification = properties['StreamSpecification'] as StreamSpecification;
+        const streamSpec = properties['StreamSpecification'] as Record<string, unknown>;
+        createParams.StreamSpecification = {
+          StreamEnabled: true,
+          StreamViewType: streamSpec['StreamViewType'] as string,
+        } as StreamSpecification;
       }
 
       // Global secondary indexes
