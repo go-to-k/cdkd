@@ -141,8 +141,7 @@ async function diffCommand(
         continue;
       }
 
-      logger.info(`\nChanges for stack ${stackInfo.stackName}:`);
-      logger.info(`Total changes: ${changes.size}`);
+      logger.info(`\nStack ${stackInfo.stackName}:`);
 
       let createCount = 0;
       let updateCount = 0;
@@ -175,10 +174,7 @@ async function diffCommand(
         }
       }
 
-      logger.info(`\nSummary:`);
-      logger.info(`  Created: ${createCount}`);
-      logger.info(`  Updated: ${updateCount}`);
-      logger.info(`  Deleted: ${deleteCount}`);
+      logger.info(`\n${createCount} to create, ${updateCount} to update, ${deleteCount} to delete`);
     }
   } finally {
     // Cleanup AWS clients
