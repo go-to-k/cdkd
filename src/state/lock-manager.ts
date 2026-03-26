@@ -4,6 +4,7 @@ import {
   GetObjectCommand,
   DeleteObjectCommand,
   NoSuchKey,
+  S3ServiceException,
 } from '@aws-sdk/client-s3';
 import type { LockInfo } from '../types/state.js';
 import type { StateBackendConfig } from '../types/config.js';
@@ -119,8 +120,7 @@ export class LockManager {
       return true;
     } catch (error) {
       // Check for PreconditionFailed error (S3 condition not met - lock already exists)
-      const err = error as { name?: string };
-      if (err.name === 'PreconditionFailed') {
+      if (error instanceof S3ServiceException && error.name === 'PreconditionFailed') {
         this.logger.debug(`Lock already exists for stack: ${stackName}`);
 
         // Check if the existing lock is expired
@@ -151,8 +151,10 @@ export class LockManager {
             );
             return true;
           } catch (retryError) {
-            const retryErr = retryError as { name?: string };
-            if (retryErr.name === 'PreconditionFailed') {
+            if (
+              retryError instanceof S3ServiceException &&
+              retryError.name === 'PreconditionFailed'
+            ) {
               // Another process acquired the lock between our delete and retry
               this.logger.debug(
                 `Lock was acquired by another process during expired lock cleanup for stack: ${stackName}`
@@ -200,7 +202,7 @@ export class LockManager {
 
       return lockInfo;
     } catch (error) {
-      if (error instanceof NoSuchKey || (error as { name: string }).name === 'NoSuchKey') {
+      if (error instanceof NoSuchKey) {
         this.logger.debug(`No lock exists for stack: ${stackName}`);
         return null;
       }

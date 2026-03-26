@@ -2,9 +2,9 @@
 
 ## Overview
 
-In cdkq, AWS resource provisioning is implemented through an abstraction layer called **Provider**. By default, Cloud Control API is used, but for unsupported resource types or when fine-grained control is needed, you can implement custom SDK Providers.
+In cdkq, AWS resource provisioning is implemented through an abstraction layer called **Provider**. SDK Providers are preferred for performance — they make direct synchronous API calls with no polling overhead. Cloud Control API serves as a fallback for resource types without an SDK Provider (supports 200+ additional types, but requires async polling).
 
-This guide explains how to add new providers.
+Adding SDK Providers for frequently used resource types is one of the most impactful performance improvements. This guide explains how to add new providers.
 
 ## Provider Interface
 
@@ -82,7 +82,7 @@ export interface ResourceUpdateResult {
 
 ### 1. Simple Example: S3 Bucket Policy Provider
 
-S3 bucket policies are not supported by Cloud Control API, so an SDK Provider is needed.
+S3 bucket policies benefit from an SDK Provider for fast, synchronous operations without CC API polling overhead.
 
 #### File: `src/provisioning/providers/s3-bucket-policy-provider.ts`
 
@@ -350,16 +350,17 @@ export class ProviderRegistry {
   /**
    * Get a provider
    *
-   * Returns Cloud Control Provider if not registered (default)
+   * Returns registered SDK Provider if available (preferred for performance),
+   * falls back to Cloud Control Provider for unregistered types
    */
   getProvider(resourceType: string): ResourceProvider {
     const provider = this.providers.get(resourceType);
 
     if (provider) {
-      return provider;
+      return provider;  // SDK Provider (fast, synchronous)
     }
 
-    // Default is Cloud Control API
+    // Fallback to Cloud Control API (async polling)
     return this.cloudControlProvider;
   }
 }
@@ -409,19 +410,18 @@ if (resourceType.startsWith('Custom::')) {
 
 ### Step 1: Research Resource Type
 
-First, check if the target resource is supported by Cloud Control API:
+Check if an SDK Provider already exists for the target resource type, and whether it would benefit from a dedicated provider:
+
+- **Performance**: SDK Providers make direct synchronous API calls (no polling), significantly faster than CC API
+- **CC API limitations**: Some resources are not supported or have bugs in Cloud Control API
+- **Fine-grained control**: Some resources need special handling (e.g., IAM propagation retries, inline policies)
 
 ```bash
-# Check Cloud Control API support status
-aws cloudcontrol list-resource-requests \
-  --resource-type AWS::Lambda::Function \
-  --region us-east-1
-
-# Or check CloudFormation documentation
+# Check if CC API supports the resource (for reference)
 # https://docs.aws.amazon.com/cloudcontrolapi/latest/userguide/supported-resources.html
 ```
 
-If **not supported** or **incomplete implementation**, an SDK Provider is needed.
+Adding an SDK Provider is recommended for **any frequently used resource type** to improve deployment speed.
 
 ### Step 2: Check AWS SDK Client
 
@@ -860,13 +860,13 @@ return {
 
 ### Provider is Not Being Called
 
-**Cause**: Not registered in Registry
+**Cause**: Not registered in Registry (falling back to Cloud Control API)
 
 **Check**:
 
 ```typescript
 const provider = registry.getProvider('AWS::Xxx::Resource');
-console.log(provider.constructor.name);  // → "CloudControlProvider" if not registered
+console.log(provider.constructor.name);  // → "CloudControlProvider" if SDK Provider not registered
 ```
 
 ### Attributes Not Resolved

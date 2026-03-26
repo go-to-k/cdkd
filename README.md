@@ -57,16 +57,17 @@ AWS CDK is great for defining infrastructure as code, but CloudFormation deploym
     ┌────┴────┐
     ▼         ▼
 ┌────────┐ ┌────────┐
-│ Cloud  │ │  SDK   │
-│Control │ │Provider│  Lambda/S3/IAM/etc.
-│  API   │ │        │
+│  SDK   │ │ Cloud  │
+│Provider│ │Control │  Fallback for 200+
+│ (fast) │ │  API   │  additional types
 └────────┘ └────────┘
 ```
 
 ## Features
 
-- **Broad resource support**: Supports 200+ AWS resource types via Cloud Control API
-- **Hybrid deployment strategy**: Cloud Control API first, fallback to SDK for unsupported resources
+- **Fast SDK Providers**: Direct synchronous API calls for common resource types (17 types) - no polling overhead
+- **Broad resource coverage**: Cloud Control API fallback for 200+ additional resource types
+- **Hybrid deployment strategy**: SDK Providers preferred for performance, Cloud Control API as fallback
 - **S3-based state management**: No DynamoDB required, uses S3 conditional writes for locking
 - **DAG-based parallelization**: Analyze `Ref`/`Fn::GetAtt` dependencies and execute in parallel
 - **Asset handling**: Leverages `@aws-cdk/cdk-assets-lib` for Lambda packages, Docker images, etc.
@@ -109,15 +110,15 @@ AWS CDK is great for defining infrastructure as code, but CloudFormation deploym
 
 | Category | Resource Type | Provider | Status |
 |----------|--------------|----------|--------|
-| **Compute** | AWS::Lambda::Function | Cloud Control | ✅ |
-| **Storage** | AWS::S3::Bucket | Cloud Control | ✅ |
-| **Database** | AWS::DynamoDB::Table | Cloud Control | ✅ |
-| **Messaging** | AWS::SQS::Queue | Cloud Control | ✅ |
-| **Messaging** | AWS::SNS::Topic | Cloud Control | ✅ |
 | **IAM** | AWS::IAM::Role | SDK Provider | ✅ |
 | **IAM** | AWS::IAM::Policy | SDK Provider | ✅ |
-| **IAM** | AWS::S3::BucketPolicy | SDK Provider | ✅ |
-| **IAM** | AWS::SQS::QueuePolicy | SDK Provider | ✅ |
+| **Storage** | AWS::S3::Bucket | SDK Provider | ✅ |
+| **Storage** | AWS::S3::BucketPolicy | SDK Provider | ✅ |
+| **Messaging** | AWS::SQS::Queue | SDK Provider | ✅ |
+| **Messaging** | AWS::SQS::QueuePolicy | SDK Provider | ✅ |
+| **Messaging** | AWS::SNS::Topic | SDK Provider | ✅ |
+| **Compute** | AWS::Lambda::Function | SDK Provider | ✅ |
+| **Database** | AWS::DynamoDB::Table | SDK Provider | ✅ |
 | **Events** | AWS::Events::Rule | SDK Provider | ✅ |
 | **Events** | AWS::Events::EventBus | SDK Provider | ✅ |
 | **API Gateway** | AWS::ApiGateway::Account | SDK Provider | ✅ |
@@ -130,7 +131,7 @@ AWS CDK is great for defining infrastructure as code, but CloudFormation deploym
 | **Custom** | Custom::* (Lambda/SNS-backed) | SDK Provider | ✅ |
 | **Other** | 200+ resource types | Cloud Control | ✅ |
 
-> **Note**: Cloud Control API supports 200+ resource types. Resources not listed above may work via Cloud Control API. SDK Providers are used for resources not supported by Cloud Control API.
+> **Note**: SDK Providers are preferred for performance — they make direct synchronous API calls with no polling overhead. For resource types without an SDK Provider, Cloud Control API is used as a fallback (supports 200+ additional types).
 
 ### Other Features
 
@@ -333,6 +334,9 @@ See the [tests/integration/examples](tests/integration/examples) directory for w
 - [bedrock-agent](tests/integration/examples/bedrock-agent) - Bedrock Agent
 - [cloudfront-function-url](tests/integration/examples/cloudfront-function-url) - CloudFront + Lambda Function URL
 - [custom-resource-provider](tests/integration/examples/custom-resource-provider) - CDK Provider framework (isCompleteHandler/onEventHandler)
+- [multi-stack-deps](tests/integration/examples/multi-stack-deps) - Multi-stack dependency ordering
+- [composite-stack](tests/integration/examples/composite-stack) - Composite stack patterns
+- [full-stack-demo](tests/integration/examples/full-stack-demo) - Full-stack demo application
 
 See [docs/testing.md](docs/testing.md) for detailed testing instructions including UPDATE operations.
 
@@ -343,7 +347,7 @@ Built on modern AWS tooling:
 - **[@aws-cdk/toolkit-lib](https://docs.aws.amazon.com/cdk/api/toolkit-lib/)** - CDK synthesis (GA since Feb 2025)
 - **[@aws-cdk/cdk-assets-lib](https://www.npmjs.com/package/@aws-cdk/cdk-assets-lib)** - Asset publishing
 - **AWS SDK v3** - Direct resource provisioning
-- **Cloud Control API** - Unified resource management where supported
+- **Cloud Control API** - Fallback resource management for types without SDK Providers
 - **S3 Conditional Writes** - State locking via `If-None-Match`/`If-Match`
 
 ## State Management
@@ -408,8 +412,8 @@ After deployment, outputs are resolved and saved to state:
 
 ## Testing
 
-- **282 unit tests** covering all layers
-- **21 integration examples** verified with real AWS deployments (all 21 CREATE + DESTROY successful on AWS)
+- **291 unit tests** covering all layers
+- **24 integration examples** verified with real AWS deployments
 - **E2E test script** for automated deploy/update/destroy cycles
 
 ```bash
@@ -436,7 +440,7 @@ See [docs/implementation-plan.md](docs/implementation-plan.md) for detailed impl
 
 **Known Destroy Issues**:
 
-- None. All 21 integration examples now CREATE + DESTROY successfully.
+- None. All 24 integration examples now CREATE + DESTROY successfully.
 
 See [docs/implementation-plan.md](docs/implementation-plan.md) for complete roadmap.
 

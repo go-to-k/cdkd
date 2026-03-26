@@ -2,7 +2,7 @@
 
 ## Overview
 
-**cdkq** (CDK Quick Deploy) is a tool that deploys AWS CDK applications directly without going through CloudFormation. It leverages CDK's synthesis capabilities while using Cloud Control API and AWS SDK for fast deployments.
+**cdkq** (CDK Quick Deploy) is a tool that deploys AWS CDK applications directly without going through CloudFormation. It leverages CDK's synthesis capabilities while using SDK Providers (preferred for performance) and Cloud Control API (fallback) for fast deployments.
 
 ## Architecture Diagram
 
@@ -386,7 +386,7 @@ interface ResourceProvider {
 
 #### Cloud Control Provider (`cloud-control-provider.ts`)
 
-**Default Provider**: Attempts to handle all resource types
+**Fallback Provider**: Handles resource types without a registered SDK Provider (supports 200+ types via async polling)
 
 **AWS API**:
 
@@ -409,7 +409,7 @@ generatePatch(oldProps: any, newProps: any): JSONPatchOperation[]
 
 #### SDK Providers (`providers/`)
 
-For resources not supported by Cloud Control API or requiring fine-grained control
+**Preferred Providers**: SDK Providers make direct synchronous API calls with no polling overhead, making them significantly faster than Cloud Control API. They are used for common resource types (17 types) where performance matters most
 
 **Implemented Providers**:
 
@@ -532,12 +532,13 @@ getClient<T>(ClientClass: new (...) => T, region: string): T
          │                  │
          ▼                  ▼
 ┌─────────────────┐  ┌──────────────────┐
-│ Cloud Control   │  │ SDK Providers    │
-│ Provider        │  │ - IAM Role       │
-│ - S3 Bucket     │  │ - IAM Policy     │
-│ - Lambda Func   │  │ - Custom::*      │
-│ - DynamoDB      │  └──────────────────┘
-└────────┬────────┘
+│ SDK Providers   │  │ Cloud Control    │
+│ (preferred)     │  │ Provider         │
+│ - S3, Lambda    │  │ (fallback)       │
+│ - IAM, DynamoDB │  │ - 200+ types     │
+│ - SQS, SNS, etc│  │ - Async polling  │
+└────────┬────────┘  └──────────────────┘
+         │
          │
          ▼
 ┌─────────────────────────┐
@@ -652,8 +653,9 @@ Each layer has clear responsibilities
 ### Bottlenecks
 
 1. **Asset Publishing**: S3 upload of Lambda code (seconds to tens of seconds)
-2. **Cloud Control API Rate Limits**: Limits per resource type
-3. **Dependency Chains**: More levels reduce parallelism
+2. **Cloud Control API Polling**: CC API requires async polling for resource operations (mitigated by using SDK Providers for common types)
+3. **Cloud Control API Rate Limits**: Limits per resource type
+4. **Dependency Chains**: More levels reduce parallelism
 
 ## Security Considerations
 
@@ -686,10 +688,6 @@ Each layer has clear responsibilities
 3. **Change Sets**: No concept (always executes immediately)
 4. All intrinsic functions are now supported (15/15)
 5. All pseudo parameters are now supported (7/7)
-
-### Known Destroy Issues
-
-- None. All 21 integration examples now CREATE + DESTROY successfully (CloudFront OAI and AgentCore Runtime resolved via SDK Providers).
 
 ### Phase 9 and Beyond Plans
 

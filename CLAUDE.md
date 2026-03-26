@@ -44,15 +44,15 @@ cdkq has a 7-layer system architecture:
                               ▼
                  ┌────────────────────────────┐
                  │ 7. Provisioning Layer      │ → Resource create/update/delete
-                 │    (src/provisioning/)     │    Cloud Control API + SDK
+                 │    (src/provisioning/)     │    SDK Providers + CC API fallback
                  └────────────────────────────┘
 ```
 
 ### Key Architectural Decisions
 
 1. **Hybrid Provisioning Strategy**
-   - Default: Cloud Control API (supports 200+ resource types)
-   - Fallback: SDK Provider (for CC API unsupported resources)
+   - Preferred: SDK Providers for common resource types (17 types) - direct synchronous API calls, no polling overhead
+   - Fallback: Cloud Control API for 200+ additional resource types (requires async polling)
    - Implemented with Provider Registry pattern
 
 2. **S3-based State Management**
@@ -119,8 +119,13 @@ Currently implemented SDK Providers (`src/provisioning/providers/`):
 
 - `iam-role-provider.ts` - AWS::IAM::Role
 - `iam-policy-provider.ts` - AWS::IAM::Policy
+- `s3-bucket-provider.ts` - AWS::S3::Bucket
 - `s3-bucket-policy-provider.ts` - AWS::S3::BucketPolicy
+- `sqs-queue-provider.ts` - AWS::SQS::Queue
 - `sqs-queue-policy-provider.ts` - AWS::SQS::QueuePolicy
+- `sns-topic-provider.ts` - AWS::SNS::Topic
+- `lambda-function-provider.ts` - AWS::Lambda::Function
+- `dynamodb-table-provider.ts` - AWS::DynamoDB::Table
 - `eventbridge-rule-provider.ts` - AWS::Events::Rule
 - `eventbridge-bus-provider.ts` - AWS::Events::EventBus
 - `apigateway-provider.ts` - AWS::ApiGateway::Account, AWS::ApiGateway::Resource, AWS::ApiGateway::Deployment, AWS::ApiGateway::Stage, AWS::ApiGateway::Method
@@ -128,7 +133,7 @@ Currently implemented SDK Providers (`src/provisioning/providers/`):
 - `agentcore-runtime-provider.ts` - AWS::BedrockAgentCore::Runtime
 - `custom-resource-provider.ts` - Custom::* (Lambda/SNS-backed, CDK Provider framework with isCompleteHandler/onEventHandler async pattern)
 
-These are custom implementations for resources not supported by Cloud Control API (12 SDK Providers covering 13 resource types).
+SDK Providers are preferred over Cloud Control API for performance — they make direct synchronous API calls with no polling overhead. Cloud Control API is used as a fallback for resource types without an SDK Provider (17 SDK Providers covering 17 resource types).
 
 ## State Schema
 
@@ -239,7 +244,7 @@ registry.register('AWS::IAM::Role', new IAMRoleProvider());
 - `tests/integration/examples/**`
 - Uses actual AWS account
 - Environment variables: `STATE_BUCKET`, `AWS_REGION`
-- 21 examples verified with real AWS deployments (all 21 CREATE + DESTROY successful on AWS, as of 2026-03-26):
+- 24 examples verified with real AWS deployments (as of 2026-03-26):
   - basic: S3 bucket (CREATE + UPDATE verified)
   - conditions: Conditional resources with AWS::NoValue
   - parameters: CloudFormation Parameters with default values
@@ -331,12 +336,12 @@ See [docs/provider-development.md](docs/provider-development.md) for details.
 - ✅ Compact output mode (default clean output, `--verbose` for full details)
 - ✅ `--state-bucket` auto-resolves from STS account ID: `cdkq-state-{accountId}-{region}`
 - ✅ Attribute mapper: CC API property names mapped to GetAtt attribute names
-- ✅ 282 unit tests, 21 integration examples (all 21 CREATE + DESTROY successful on AWS), E2E test script
+- ✅ 291 unit tests, 24 integration examples, E2E test script
 - ✅ DeletionPolicy: Retain support (skip deletion for retained resources)
 - ✅ Resource replacement for immutable property changes (CREATE→DELETE)
 - ✅ Type safety improvements (error handling, any type elimination in custom resources)
 - ✅ Dynamic References: `{{resolve:secretsmanager:...}}` and `{{resolve:ssm:...}}`
-- ✅ SDK Providers: EventBridge Rule/EventBus, API Gateway Account/Resource/Deployment/Stage/Method, CloudFront OAI, AgentCore Runtime (12 SDK Providers total)
+- ✅ SDK Providers: S3 Bucket, SQS Queue, SNS Topic, Lambda Function, DynamoDB Table, EventBridge Rule/EventBus, API Gateway Account/Resource/Deployment/Stage/Method, CloudFront OAI, AgentCore Runtime (17 SDK Providers total)
 - ✅ ALL pseudo parameters supported (7/7 including AWS::StackName/StackId)
 - ✅ DELETE idempotency (not-found/No policy found treated as success)
 - ✅ Destroy ordering: reverse dependency from state + implicit type-based deps
