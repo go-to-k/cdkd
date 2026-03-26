@@ -59,13 +59,13 @@ AWS CDK is great for defining infrastructure as code, but CloudFormation deploym
 ┌────────┐ ┌────────┐
 │  SDK   │ │ Cloud  │
 │Provider│ │Control │  Fallback for 200+
-│ (fast) │ │  API   │  additional types
+│(34 typ)│ │  API   │  additional types
 └────────┘ └────────┘
 ```
 
 ## Features
 
-- **Fast SDK Providers**: Direct synchronous API calls for common resource types (17 types) - no polling overhead
+- **Fast SDK Providers**: Direct synchronous API calls for common resource types (34 types) - no polling overhead
 - **Broad resource coverage**: Cloud Control API fallback for 200+ additional resource types
 - **Hybrid deployment strategy**: SDK Providers preferred for performance, Cloud Control API as fallback
 - **S3-based state management**: No DynamoDB required, uses S3 conditional writes for locking
@@ -117,10 +117,27 @@ AWS CDK is great for defining infrastructure as code, but CloudFormation deploym
 | **Messaging** | AWS::SQS::Queue | SDK Provider | ✅ |
 | **Messaging** | AWS::SQS::QueuePolicy | SDK Provider | ✅ |
 | **Messaging** | AWS::SNS::Topic | SDK Provider | ✅ |
+| **Messaging** | AWS::SNS::Subscription | SDK Provider | ✅ |
 | **Compute** | AWS::Lambda::Function | SDK Provider | ✅ |
+| **Compute** | AWS::Lambda::Permission | SDK Provider | ✅ |
+| **Compute** | AWS::Lambda::Url | SDK Provider | ✅ |
+| **Compute** | AWS::Lambda::EventSourceMapping | SDK Provider | ✅ |
 | **Database** | AWS::DynamoDB::Table | SDK Provider | ✅ |
+| **Monitoring** | AWS::Logs::LogGroup | SDK Provider | ✅ |
+| **Monitoring** | AWS::CloudWatch::Alarm | SDK Provider | ✅ |
+| **Secrets** | AWS::SecretsManager::Secret | SDK Provider | ✅ |
+| **Config** | AWS::SSM::Parameter | SDK Provider | ✅ |
 | **Events** | AWS::Events::Rule | SDK Provider | ✅ |
 | **Events** | AWS::Events::EventBus | SDK Provider | ✅ |
+| **Networking** | AWS::EC2::VPC | SDK Provider | ✅ |
+| **Networking** | AWS::EC2::Subnet | SDK Provider | ✅ |
+| **Networking** | AWS::EC2::InternetGateway | SDK Provider | ✅ |
+| **Networking** | AWS::EC2::VPCGatewayAttachment | SDK Provider | ✅ |
+| **Networking** | AWS::EC2::RouteTable | SDK Provider | ✅ |
+| **Networking** | AWS::EC2::Route | SDK Provider | ✅ |
+| **Networking** | AWS::EC2::SubnetRouteTableAssociation | SDK Provider | ✅ |
+| **Networking** | AWS::EC2::SecurityGroup | SDK Provider | ✅ |
+| **Networking** | AWS::EC2::SecurityGroupIngress | SDK Provider | ✅ |
 | **API Gateway** | AWS::ApiGateway::Account | SDK Provider | ✅ |
 | **API Gateway** | AWS::ApiGateway::Resource | SDK Provider | ✅ |
 | **API Gateway** | AWS::ApiGateway::Deployment | SDK Provider | ✅ |
@@ -437,8 +454,8 @@ After deployment, outputs are resolved and saved to state:
 ## Testing
 
 - **291 unit tests** covering all layers
-- **24 integration examples** verified with real AWS deployments
-- **E2E test script** for automated deploy/update/destroy cycles
+- **24 integration examples** verified with real AWS deployments (see `tests/integration/examples/`)
+- **E2E test script** for automated deploy/diff/update/destroy cycles
 
 ```bash
 npm test                # Run unit tests
@@ -461,10 +478,6 @@ See [docs/implementation-plan.md](docs/implementation-plan.md) for detailed impl
 - ✅ **Phase 8**: CLI Integration (deploy, diff, destroy commands)
 
 **Current Phase**: Phase 9 - Testing & Documentation
-
-**Known Destroy Issues**:
-
-- None. All 24 integration examples now CREATE + DESTROY successfully.
 
 See [docs/implementation-plan.md](docs/implementation-plan.md) for complete roadmap.
 

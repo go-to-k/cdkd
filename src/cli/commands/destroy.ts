@@ -146,12 +146,22 @@ async function destroyCommand(
       }
     }
 
-    // If synth failed or no --app, fall back to stacks in state
+    // Determine candidate stacks
     const allStateStacks = await stateBackend.listStacks();
-    const candidateStacks =
-      appStackNames.length > 0
-        ? appStackNames.filter((name) => allStateStacks.includes(name))
-        : allStateStacks;
+    let candidateStacks: string[];
+    if (appStackNames.length > 0) {
+      // App synth succeeded: only consider stacks from this app
+      candidateStacks = appStackNames.filter((name) => allStateStacks.includes(name));
+    } else if (stackArgs.length > 0 || options.stack) {
+      // No synth but explicit stack names given: use state stacks (user knows what they want)
+      candidateStacks = allStateStacks;
+    } else {
+      // No synth and no explicit stacks: refuse to guess
+      throw new Error(
+        'Could not determine which stacks belong to this app. ' +
+          'Specify stack names explicitly, or ensure --app / cdk.json is configured.'
+      );
+    }
 
     const stackPatterns = stackArgs.length > 0 ? stackArgs : options.stack ? [options.stack] : [];
 
