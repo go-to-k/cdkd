@@ -1131,6 +1131,18 @@ export class DeployEngine {
       try {
         const value = await this.resolver.resolve(output.Value, context);
         outputs[outputKey] = value;
+
+        // If the output has an Export.Name, also store under that key
+        // so Fn::ImportValue can find it by export name
+        if (output.Export?.Name) {
+          const exportName =
+            typeof output.Export.Name === 'string'
+              ? output.Export.Name
+              : await this.resolver.resolve(output.Export.Name, context);
+          if (typeof exportName === 'string') {
+            outputs[exportName] = value;
+          }
+        }
       } catch (error) {
         this.logger.warn(`Failed to resolve output ${outputKey}: ${String(error)}`);
         outputs[outputKey] = undefined;
