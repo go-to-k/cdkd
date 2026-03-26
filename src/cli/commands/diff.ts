@@ -155,7 +155,20 @@ async function diffCommand(
             createCount++;
             logger.info(`  [+] ${logicalId} (${change.resourceType})`);
             break;
-          case 'UPDATE':
+          case 'UPDATE': {
+            // Filter out false-positive property changes (resolved vs unresolved intrinsic)
+            const realChanges = (change.propertyChanges ?? []).filter(
+              (pc) =>
+                !(
+                  typeof pc.oldValue === 'string' &&
+                  typeof pc.newValue === 'object' &&
+                  pc.newValue !== null
+                )
+            );
+            if (realChanges.length === 0 && (change.propertyChanges ?? []).length > 0) {
+              // All changes were false positives, skip this resource
+              break;
+            }
             updateCount++;
             logger.info(`  [~] ${logicalId} (${change.resourceType})`);
             if (change.propertyChanges && change.propertyChanges.length > 0) {
@@ -163,12 +176,26 @@ async function diffCommand(
                 const requiresReplace = propChange.requiresReplacement
                   ? ' [requires replacement]'
                   : '';
-                logger.info(
-                  `      - ${propChange.path}: ${JSON.stringify(propChange.oldValue)} → ${JSON.stringify(propChange.newValue)}${requiresReplace}`
-                );
+                const oldStr = JSON.stringify(propChange.oldValue, null, 2);
+                const newStr = JSON.stringify(propChange.newValue, null, 2);
+                // Skip false-positive diffs where only intrinsic function format differs
+                // (e.g., resolved ARN vs {"Fn::GetAtt": [...]})
+                if (
+                  typeof propChange.oldValue === 'string' &&
+                  typeof propChange.newValue === 'object' &&
+                  propChange.newValue !== null
+                ) {
+                  // Old value is resolved string, new value is unresolved intrinsic
+                  // This is a false positive from comparing state (resolved) with template (unresolved)
+                  continue;
+                }
+                logger.info(`      - ${propChange.path}:${requiresReplace}`);
+                logger.info(`          old: ${oldStr}`);
+                logger.info(`          new: ${newStr}`);
               }
             }
             break;
+          }
           case 'DELETE':
             deleteCount++;
             logger.info(`  [-] ${logicalId} (${change.resourceType})`);
