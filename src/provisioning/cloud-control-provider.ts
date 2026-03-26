@@ -7,6 +7,8 @@ import {
   GetResourceRequestStatusCommand,
   type ProgressEvent,
 } from '@aws-sdk/client-cloudcontrol';
+import { DescribeTableCommand } from '@aws-sdk/client-dynamodb';
+import { GetRestApiCommand } from '@aws-sdk/client-api-gateway';
 import { getAwsClients } from '../utils/aws-clients.js';
 import { getLogger } from '../utils/logger.js';
 import { ProvisioningError } from '../utils/error-handler.js';
@@ -28,6 +30,31 @@ import type {
  * Note: Not all AWS resources are supported by Cloud Control API.
  * Use isSupportedResourceType() to check before usage.
  */
+/**
+ * Recursively strip null and undefined values from an object.
+ * This prevents CC API errors caused by null property values
+ * (e.g., EventBridge Rule with null ScheduleExpression causes Java NPE).
+ */
+function stripNullValues(obj: unknown): unknown {
+  if (obj === null || obj === undefined) {
+    return undefined;
+  }
+  if (Array.isArray(obj)) {
+    return obj.map(stripNullValues).filter((v) => v !== undefined);
+  }
+  if (typeof obj === 'object') {
+    const result: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(obj as Record<string, unknown>)) {
+      const stripped = stripNullValues(value);
+      if (stripped !== undefined) {
+        result[key] = stripped;
+      }
+    }
+    return result;
+  }
+  return obj;
+}
+
 export class CloudControlProvider implements ResourceProvider {
   private cloudControlClient: CloudControlClient;
   private logger = getLogger().child('CloudControlProvider');
@@ -57,10 +84,11 @@ export class CloudControlProvider implements ResourceProvider {
 
     try {
       // Start resource creation
+      const cleanProperties = stripNullValues(properties) as Record<string, unknown>;
       const createResponse = await this.cloudControlClient.send(
         new CreateResourceCommand({
           TypeName: resourceType,
-          DesiredState: JSON.stringify(properties),
+          DesiredState: JSON.stringify(cleanProperties),
         })
       );
 
@@ -130,8 +158,12 @@ export class CloudControlProvider implements ResourceProvider {
     );
 
     try {
+      // Strip null/undefined values before generating patch
+      const cleanPreviousProperties = stripNullValues(previousProperties) as Record<string, unknown>;
+      const cleanProperties = stripNullValues(properties) as Record<string, unknown>;
+
       // Generate JSON Patch document
-      const patch = this.patchGenerator.generatePatch(previousProperties, properties);
+      const patch = this.patchGenerator.generatePatch(cleanPreviousProperties, cleanProperties);
 
       if (patch.length === 0) {
         // No changes detected
@@ -419,6 +451,59 @@ export class CloudControlProvider implements ResourceProvider {
         // S3 bucket ARN: arn:aws:s3:::bucket-name
         if (!enriched['Arn']) {
           enriched['Arn'] = `arn:aws:s3:::${physicalId}`;
+        }
+        break;
+
+      case 'AWS::DynamoDB::Table':
+        // CC API GetResource doesn't include StreamArn in the ResourceModel.
+        // Call DescribeTable to retrieve LatestStreamArn when streams are enabled.
+        if (!enriched['StreamArn']) {
+          try {
+            const dynamoDBClient = getAwsClients().dynamoDB;
+            const describeResponse = await dynamoDBClient.send(
+              new DescribeTableCommand({ TableName: physicalId })
+            );
+            const latestStreamArn = describeResponse.Table?.LatestStreamArn;
+            if (latestStreamArn) {
+              enriched['StreamArn'] = latestStreamArn;
+              this.logger.debug(
+                `Enriched DynamoDB StreamArn for ${physicalId}: ${latestStreamArn}`
+              );
+            }
+          } catch (error) {
+            // Best-effort: don't fail the operation if DescribeTable fails
+            this.logger.debug(
+              `Failed to get DynamoDB StreamArn for ${physicalId}: ${error instanceof Error ? error.message : String(error)}`
+            );
+          }
+        }
+        break;
+
+      case 'AWS::ApiGateway::RestApi':
+        // CC API ResourceModel may not include RootResourceId.
+        // Use the API Gateway SDK to retrieve it.
+        if (!enriched['RootResourceId']) {
+          try {
+            const apiGatewayClient = getAwsClients().apiGateway;
+            const getRestApiResponse = await apiGatewayClient.send(
+              new GetRestApiCommand({ restApiId: physicalId })
+            );
+            if (getRestApiResponse.rootResourceId) {
+              enriched['RootResourceId'] = getRestApiResponse.rootResourceId;
+              this.logger.debug(
+                `Enriched RestApi RootResourceId for ${physicalId}: ${getRestApiResponse.rootResourceId}`
+              );
+            }
+          } catch (error) {
+            // Best-effort: don't fail the operation if GetRestApi fails
+            this.logger.debug(
+              `Failed to get RestApi RootResourceId for ${physicalId}: ${error instanceof Error ? error.message : String(error)}`
+            );
+          }
+        }
+        // Ensure RestApiId is set (physical ID is the rest-api-id)
+        if (!enriched['RestApiId']) {
+          enriched['RestApiId'] = physicalId;
         }
         break;
 

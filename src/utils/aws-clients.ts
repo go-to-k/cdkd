@@ -6,7 +6,9 @@ import { SNSClient } from '@aws-sdk/client-sns';
 import { LambdaClient } from '@aws-sdk/client-lambda';
 import { STSClient } from '@aws-sdk/client-sts';
 import { EC2Client } from '@aws-sdk/client-ec2';
+import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { CloudFormationClient } from '@aws-sdk/client-cloudformation';
+import { APIGatewayClient } from '@aws-sdk/client-api-gateway';
 
 /**
  * AWS client configuration
@@ -33,7 +35,9 @@ export class AwsClients {
   private lambdaClient?: LambdaClient;
   private stsClient?: STSClient;
   private ec2Client?: EC2Client;
+  private dynamoDBClient?: DynamoDBClient;
   private cloudFormationClient?: CloudFormationClient;
+  private apiGatewayClient?: APIGatewayClient;
 
   constructor(private config: AwsClientConfig = {}) {}
 
@@ -211,6 +215,26 @@ export class AwsClients {
   }
 
   /**
+   * Get DynamoDB client
+   */
+  getDynamoDBClient(): DynamoDBClient {
+    if (!this.dynamoDBClient) {
+      this.dynamoDBClient = new DynamoDBClient({
+        ...(this.config.region && { region: this.config.region }),
+        ...(this.config.credentials && { credentials: this.config.credentials }),
+      });
+    }
+    return this.dynamoDBClient;
+  }
+
+  /**
+   * Convenience getter for DynamoDB client
+   */
+  get dynamoDB(): DynamoDBClient {
+    return this.getDynamoDBClient();
+  }
+
+  /**
    * Get CloudFormation client
    */
   getCloudFormationClient(): CloudFormationClient {
@@ -231,6 +255,26 @@ export class AwsClients {
   }
 
   /**
+   * Get API Gateway client
+   */
+  getAPIGatewayClient(): APIGatewayClient {
+    if (!this.apiGatewayClient) {
+      this.apiGatewayClient = new APIGatewayClient({
+        ...(this.config.region && { region: this.config.region }),
+        ...(this.config.credentials && { credentials: this.config.credentials }),
+      });
+    }
+    return this.apiGatewayClient;
+  }
+
+  /**
+   * Convenience getter for API Gateway client
+   */
+  get apiGateway(): APIGatewayClient {
+    return this.getAPIGatewayClient();
+  }
+
+  /**
    * Destroy all clients
    */
   destroy(): void {
@@ -242,7 +286,9 @@ export class AwsClients {
     this.lambdaClient?.destroy();
     this.stsClient?.destroy();
     this.ec2Client?.destroy();
+    this.dynamoDBClient?.destroy();
     this.cloudFormationClient?.destroy();
+    this.apiGatewayClient?.destroy();
   }
 }
 

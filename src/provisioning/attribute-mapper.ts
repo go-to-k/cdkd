@@ -105,6 +105,19 @@ const ATTRIBUTE_ALIAS_REGISTRY: Record<string, AttributeAliasMap> = {
     ServiceArn: 'ServiceArn',
     Name: 'Name',
   },
+
+  'AWS::ApiGateway::RestApi': {
+    RestApiId: 'RestApiId',
+    RootResourceId: 'RootResourceId',
+  },
+
+  'AWS::ApiGateway::Deployment': {
+    DeploymentId: 'DeploymentId',
+  },
+
+  'AWS::ApiGateway::Stage': {
+    // Stage name is used as physical ID; no additional aliases needed
+  },
 };
 
 /**

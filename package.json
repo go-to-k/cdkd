@@ -50,8 +50,10 @@
   "dependencies": {
     "@aws-cdk/cloud-assembly-api": "^2.2.0",
     "@aws-cdk/toolkit-lib": "^1.19.1",
+    "@aws-sdk/client-api-gateway": "^3.1017.0",
     "@aws-sdk/client-cloudcontrol": "^3.0.0",
     "@aws-sdk/client-cloudformation": "^3.1017.0",
+    "@aws-sdk/client-dynamodb": "^3.1017.0",
     "@aws-sdk/client-ec2": "^3.1016.0",
     "@aws-sdk/client-iam": "^3.0.0",
     "@aws-sdk/client-lambda": "^3.0.0",
