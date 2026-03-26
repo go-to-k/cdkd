@@ -175,7 +175,7 @@ export class CustomResourceProvider implements ResourceProvider {
         ResourceType: resourceType,
         LogicalResourceId: logicalId,
         StackId: `arn:aws:cloudformation:us-east-1:000000000000:stack/cdkq-${logicalId}/cdkq`,
-        ResourceProperties: properties,
+        ResourceProperties: this.stringifyProperties(properties),
       };
 
       this.logger.debug(`Sending custom resource create request: ${serviceToken}`);
@@ -248,8 +248,8 @@ export class CustomResourceProvider implements ResourceProvider {
         LogicalResourceId: logicalId,
         PhysicalResourceId: physicalId,
         StackId: `arn:aws:cloudformation:us-east-1:000000000000:stack/cdkq-${logicalId}/cdkq`,
-        ResourceProperties: properties,
-        OldResourceProperties: previousProperties,
+        ResourceProperties: this.stringifyProperties(properties),
+        OldResourceProperties: this.stringifyProperties(previousProperties),
       };
 
       this.logger.debug(`Sending custom resource update request: ${serviceToken}`);
@@ -327,7 +327,7 @@ export class CustomResourceProvider implements ResourceProvider {
         LogicalResourceId: logicalId,
         PhysicalResourceId: physicalId,
         StackId: `arn:aws:cloudformation:us-east-1:000000000000:stack/cdkq-${logicalId}/cdkq`,
-        ResourceProperties: properties,
+        ResourceProperties: this.stringifyProperties(properties),
       };
 
       this.logger.debug(`Sending custom resource delete request: ${serviceToken}`);
@@ -606,6 +606,32 @@ export class CustomResourceProvider implements ResourceProvider {
   /**
    * Sleep for specified milliseconds
    */
+  /**
+   * Convert property values to strings for CloudFormation compatibility
+   *
+   * CloudFormation converts all ResourceProperties values to strings before
+   * passing them to Lambda handlers. Some CDK internal handlers (like
+   * BucketNotificationsHandler) depend on this behavior (e.g., calling .lower()
+   * on boolean values).
+   */
+  private stringifyProperties(
+    properties: Record<string, unknown>
+  ): Record<string, unknown> {
+    const result: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(properties)) {
+      if (typeof value === 'boolean') {
+        result[key] = String(value);
+      } else if (typeof value === 'number') {
+        result[key] = String(value);
+      } else if (typeof value === 'object' && value !== null && !Array.isArray(value)) {
+        result[key] = this.stringifyProperties(value as Record<string, unknown>);
+      } else {
+        result[key] = value;
+      }
+    }
+    return result;
+  }
+
   private sleep(ms: number): Promise<void> {
     return new Promise((resolve) => setTimeout(resolve, ms));
   }
