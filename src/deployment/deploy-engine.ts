@@ -418,6 +418,25 @@ export class DeployEngine {
         }
       }
     } catch (error) {
+      // Save partial state BEFORE rollback to track all successfully provisioned
+      // resources (including those in the failed level). This prevents orphaned
+      // resources — resources that exist in AWS but not in the state file.
+      try {
+        const preRollbackState: StackState = {
+          version: 1,
+          stackName: currentState.stackName,
+          resources: newResources,
+          outputs: currentState.outputs,
+          lastModified: Date.now(),
+        };
+        currentEtag = await this.stateBackend.saveState(stackName, preRollbackState, currentEtag);
+        this.logger.debug('Partial state saved before rollback (orphaned resource tracking)');
+      } catch (saveError) {
+        this.logger.warn(
+          `Failed to save partial state before rollback: ${saveError instanceof Error ? saveError.message : String(saveError)}`
+        );
+      }
+
       // Deployment failed — attempt rollback unless --no-rollback is set
       if (this.options.noRollback) {
         this.logger.warn('Deployment failed. --no-rollback is set, skipping rollback.');
@@ -426,16 +445,18 @@ export class DeployEngine {
         await this.performRollback(completedOperations, newResources, stackName);
       }
 
-      // Save state after rollback (or partial state if no-rollback)
+      // Save state after rollback (reflects rolled-back resource state)
+      // or re-save partial state if no-rollback (already saved above, but
+      // rollback may have modified newResources)
       try {
-        const failureState: StackState = {
+        const postRollbackState: StackState = {
           version: 1,
           stackName: currentState.stackName,
           resources: newResources,
           outputs: currentState.outputs,
           lastModified: Date.now(),
         };
-        await this.stateBackend.saveState(stackName, failureState, currentEtag);
+        await this.stateBackend.saveState(stackName, postRollbackState, currentEtag);
         this.logger.debug('State saved after deployment failure');
       } catch (saveError) {
         this.logger.warn(

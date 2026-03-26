@@ -11,6 +11,7 @@ This document summarizes common issues when using cdkq and their solutions.
 5. [Intrinsic Function Issues](#intrinsic-function-issues)
 6. [Permission Errors](#permission-errors)
 7. [Performance Issues](#performance-issues)
+8. [Orphaned Resources](#orphaned-resources)
 
 ---
 
@@ -701,6 +702,91 @@ cdkq includes built-in retry logic with exponential backoff for CREATE operation
 **2. Use SDK Provider**
 
 Implement provider that uses SDK directly instead of Cloud Control API.
+
+---
+
+## Orphaned Resources
+
+### Overview
+
+Orphaned resources are AWS resources that exist in your account but are not tracked in cdkq's state file. This can happen when a deployment fails partway through a DAG level — some resources in that level may have been successfully created while others failed.
+
+### How cdkq Prevents Orphans
+
+cdkq uses a multi-layered approach to prevent orphaned resources:
+
+1. **Per-resource in-memory state update**: Each resource updates the in-memory state (`newResources`) immediately upon successful provisioning, even before the entire DAG level completes.
+
+2. **Per-level partial state save**: After each DAG level completes successfully, state is persisted to S3. This prevents orphans if the process crashes between levels.
+
+3. **Pre-rollback state save**: If any resource in a level fails, cdkq saves the current in-memory state (including all successfully provisioned resources from the failed level) to S3 **before** attempting rollback. This ensures that even resources created in the same level as the failure are tracked.
+
+4. **Post-rollback state save**: After rollback completes (or is skipped with `--no-rollback`), state is saved again to reflect the rolled-back resource state.
+
+### Detecting Orphaned Resources
+
+If you suspect orphaned resources exist (e.g., due to a process crash before state could be saved), you can manually compare the state file against actual AWS resources:
+
+```bash
+# Download state file
+aws s3 cp s3://${STATE_BUCKET}/stacks/MyStack/state.json /tmp/state.json
+
+# List resources tracked in state
+cat /tmp/state.json | jq '.resources | keys[]'
+
+# Compare against actual AWS resources using Cloud Control API
+aws cloudcontrol list-resources --type-name AWS::S3::Bucket
+aws cloudcontrol list-resources --type-name AWS::Lambda::Function
+```
+
+### Future: `cdkq orphans` Command
+
+A dedicated `cdkq orphans` (or `cdkq check`) command is planned to automate orphan detection. The approach:
+
+1. **Read the state file** for the target stack to get all tracked resources and their physical IDs.
+2. **Read the synthesized template** to get all expected resource types and logical IDs.
+3. **Query AWS** for each resource type in the template using Cloud Control API `GetResource` with the expected physical ID pattern, or by listing resources and matching tags/naming conventions.
+4. **Compare**: Resources that exist in AWS but are not in the state file are potential orphans. Resources in the state file but not in AWS indicate state drift.
+5. **Report**: Display a table of orphaned/drifted resources with recommended actions (import to state, delete from AWS, or remove from state).
+
+Example planned interface:
+
+```bash
+# Check for orphaned resources
+cdkq orphans MyStack
+
+# Example output:
+# Orphaned Resources (exist in AWS but not in state):
+#   AWS::IAM::Role    my-stack-role-abc123    (likely from failed deploy on 2026-03-25)
+#   AWS::S3::Bucket   my-stack-bucket-xyz     (likely from failed deploy on 2026-03-25)
+#
+# Recommended: Run 'cdkq deploy MyStack' to reconcile, or delete manually.
+```
+
+### Recovering from Orphaned Resources
+
+**If state was saved (most cases)**:
+
+Running `cdkq deploy` again will reconcile the state — existing resources will be detected as already created and handled as updates or no-ops.
+
+**If state was NOT saved (rare — process crash)**:
+
+```bash
+# Option 1: Delete state and redeploy (resources will error on CREATE if they exist)
+aws s3 rm s3://${STATE_BUCKET}/stacks/MyStack/state.json
+cdkq deploy MyStack  # May need manual cleanup of duplicates
+
+# Option 2: Manually reconstruct state
+aws s3 cp s3://${STATE_BUCKET}/stacks/MyStack/state.json /tmp/state.json
+# Add entries for orphaned resources with their physical IDs
+vim /tmp/state.json
+aws s3 cp /tmp/state.json s3://${STATE_BUCKET}/stacks/MyStack/state.json
+
+# Option 3: Destroy everything and start fresh
+# Manually delete orphaned resources first, then:
+cdkq destroy MyStack --force
+cdkq deploy MyStack
+```
 
 ---
 

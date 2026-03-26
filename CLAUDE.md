@@ -325,6 +325,7 @@ See [docs/provider-development.md](docs/provider-development.md) for details.
 - ✅ Fn::FindInMap (Mappings lookup) and Fn::Base64 (base64 encoding)
 - ✅ Fn::GetAZs (all intrinsic functions now supported)
 - ✅ Partial state save after each DAG level (prevents orphaned resources)
+- ✅ Pre-rollback state save on failure (tracks resources from partially-failed levels)
 - ✅ CREATE retry with exponential backoff (IAM propagation delays)
 - ✅ CC API polling with exponential backoff (1s→2s→4s→8s→10s)
 - ✅ Compact output mode (default clean output, `--verbose` for full details)
