@@ -17,6 +17,7 @@
 #                 Auto-resolves to cdkd-state-{accountId}-{region} if not set
 #   AWS_REGION    (optional) AWS region, default: us-east-1
 #   CDKD_PATH     (optional) Path to cdkd CLI entry point, default: ../../dist/cli.js
+#   CDKD_UPDATE_CONTEXT  (optional) Context args for UPDATE step, e.g. "-c env=staging -c flag=true"
 #
 
 set -euo pipefail
@@ -189,12 +190,21 @@ else
 fi
 
 # --------------------------------------------------------------------------
-# Step 3: Update deploy (add UpdateTest tag)
+# Step 3: Update deploy
 # --------------------------------------------------------------------------
-step_header "Deploy (UPDATE with CDKD_TEST_UPDATE=true)"
-
-info "Running: CDKD_TEST_UPDATE=true cdkd deploy"
-CDKD_TEST_UPDATE=true run_cdkd deploy "${CDKD_COMMON_ARGS[@]}" --all --verbose
+# Build update args: use CDKD_UPDATE_CONTEXT if set, otherwise CDKD_TEST_UPDATE=true
+UPDATE_EXTRA_ARGS=()
+if [[ -n "${CDKD_UPDATE_CONTEXT:-}" ]]; then
+  # shellcheck disable=SC2086
+  read -ra UPDATE_EXTRA_ARGS <<< ${CDKD_UPDATE_CONTEXT}
+  step_header "Deploy (UPDATE with context: ${CDKD_UPDATE_CONTEXT})"
+  info "Running: cdkd deploy ${CDKD_UPDATE_CONTEXT}"
+  run_cdkd deploy "${CDKD_COMMON_ARGS[@]}" --all "${UPDATE_EXTRA_ARGS[@]}" --verbose
+else
+  step_header "Deploy (UPDATE with CDKD_TEST_UPDATE=true)"
+  info "Running: CDKD_TEST_UPDATE=true cdkd deploy"
+  CDKD_TEST_UPDATE=true run_cdkd deploy "${CDKD_COMMON_ARGS[@]}" --all --verbose
+fi
 pass "Update deploy succeeded [$(elapsed)]"
 
 # --------------------------------------------------------------------------
@@ -202,8 +212,13 @@ pass "Update deploy succeeded [$(elapsed)]"
 # --------------------------------------------------------------------------
 step_header "Diff after UPDATE (expect no changes)"
 
-info "Running: CDKD_TEST_UPDATE=true cdkd diff"
-DIFF_OUTPUT=$(CDKD_TEST_UPDATE=true run_cdkd diff "${CDKD_COMMON_ARGS[@]}" --all 2>&1) || true
+if [[ ${#UPDATE_EXTRA_ARGS[@]} -gt 0 ]]; then
+  info "Running: cdkd diff ${CDKD_UPDATE_CONTEXT}"
+  DIFF_OUTPUT=$(run_cdkd diff "${CDKD_COMMON_ARGS[@]}" --all "${UPDATE_EXTRA_ARGS[@]}" 2>&1) || true
+else
+  info "Running: CDKD_TEST_UPDATE=true cdkd diff"
+  DIFF_OUTPUT=$(CDKD_TEST_UPDATE=true run_cdkd diff "${CDKD_COMMON_ARGS[@]}" --all 2>&1) || true
+fi
 
 if echo "${DIFF_OUTPUT}" | grep -qE "No changes detected|0 to create, 0 to update, 0 to delete"; then
   pass "Diff shows no changes as expected [$(elapsed)]"

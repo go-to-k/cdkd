@@ -368,29 +368,28 @@ export class ProviderRegistry {
 
 ### Registration Location
 
-Register in `src/cli/commands/deploy.ts` (and `destroy.ts`):
+Register in `src/provisioning/register-providers.ts`:
 
 ```typescript
-import { ProviderRegistry } from '../provisioning/provider-registry.js';
-import { IAMRoleProvider } from '../provisioning/providers/iam-role-provider.js';
-// ... (see deploy.ts for full list of provider imports)
+import { ProviderRegistry } from './provider-registry.js';
+import { IAMRoleProvider } from './providers/iam-role-provider.js';
+// ... (see register-providers.ts for full list of provider imports)
 
-// Register providers
-const registry = ProviderRegistry.getInstance();
-registry.register('AWS::IAM::Role', new IAMRoleProvider());
-registry.register('AWS::IAM::Policy', new IAMPolicyProvider());
-registry.register('AWS::S3::Bucket', new S3BucketProvider());
-// ... see src/cli/commands/deploy.ts for all registrations
+export function registerAllProviders(): void {
+  const registry = ProviderRegistry.getInstance();
+  registry.register('AWS::IAM::Role', new IAMRoleProvider());
+  registry.register('AWS::IAM::Policy', new IAMPolicyProvider());
+  registry.register('AWS::S3::Bucket', new S3BucketProvider());
+  // ... see register-providers.ts for all registrations
 
-// Multi-type providers share a single instance:
-const ec2Provider = new EC2Provider();
-registry.register('AWS::EC2::VPC', ec2Provider);
-registry.register('AWS::EC2::Subnet', ec2Provider);
-// ... (9 EC2 types total)
+  // Multi-type providers share a single instance:
+  const ec2Provider = new EC2Provider();
+  registry.register('AWS::EC2::VPC', ec2Provider);
+  registry.register('AWS::EC2::Subnet', ec2Provider);
+  // ... (9 EC2 types total)
 
-// Wildcard matching for Custom::*
-if (resourceType.startsWith('Custom::')) {
-  return new CustomResourceProvider();
+  // Wildcard matching for Custom::*
+  // handled by ProviderRegistry.getProvider()
 }
 ```
 
@@ -665,13 +664,12 @@ export class AwsClients {
 
 ### Step 5: Register Provider
 
-Register in `src/deployment/deploy-engine.ts` or `src/provisioning/provider-registry.ts`:
+Register in `src/provisioning/register-providers.ts` within the `registerAllProviders()` function:
 
 ```typescript
-import { XxxResourceProvider } from '../provisioning/providers/xxx-resource-provider.js';
+import { XxxResourceProvider } from './providers/xxx-resource-provider.js';
 
-// During initialization
-const registry = ProviderRegistry.getInstance();
+// Add to registerAllProviders()
 registry.register('AWS::Xxx::Resource', new XxxResourceProvider());
 ```
 

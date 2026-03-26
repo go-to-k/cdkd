@@ -7,12 +7,24 @@ export class ContextTestStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
     super(scope, id, props);
 
-    // Read context values
-    const env = this.node.tryGetContext('env') || 'default';
-    const featureFlag = this.node.tryGetContext('featureFlag') === 'true';
+    // Read context values (required - must be provided via cdk.json or CLI -c)
+    const env = this.node.tryGetContext('env') as string | undefined;
+    if (!env) {
+      throw new Error(
+        "Context value 'env' is required. Set it in cdk.json or pass via -c env=<value>"
+      );
+    }
+
+    const featureFlagStr = this.node.tryGetContext('featureFlag') as string | undefined;
+    if (featureFlagStr === undefined) {
+      throw new Error(
+        "Context value 'featureFlag' is required. Set it in cdk.json or pass via -c featureFlag=<value>"
+      );
+    }
+    const featureFlag = featureFlagStr === 'true';
 
     // Use context in resource configuration
-    const bucket = new s3.Bucket(this, 'ContextBucket', {
+    new s3.Bucket(this, 'ContextBucket', {
       removalPolicy: cdk.RemovalPolicy.DESTROY,
     });
 

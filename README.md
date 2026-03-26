@@ -226,7 +226,7 @@ That's it. cdkd reads `--app` from `cdk.json` and auto-resolves the state bucket
 
 ## Usage
 
-Options like `--app` and `--state-bucket` can be omitted if configured via `cdk.json` or environment variables (`CDKD_APP`, `CDKD_STATE_BUCKET`).
+Options like `--app`, `--state-bucket`, and `--context` can be omitted if configured via `cdk.json` or environment variables (`CDKD_APP`, `CDKD_STATE_BUCKET`).
 
 ```bash
 # Bootstrap (create S3 bucket for state)
@@ -249,6 +249,9 @@ npx cdkd deploy --all
 
 # Deploy with wildcard
 npx cdkd deploy 'My*'
+
+# Deploy with context values
+npx cdkd deploy -c env=staging -c featureFlag=true
 
 # Deploy with explicit options
 npx cdkd deploy MyStack \

@@ -108,6 +108,7 @@ npm run typecheck
 ### Important Files
 
 - **src/cli/config-loader.ts** - Config resolution (cdk.json, env vars for `--app` and `--state-bucket`)
+- **src/provisioning/register-providers.ts** - Shared provider registration (called from deploy.ts and destroy.ts)
 - **src/types/** - Type definitions (config, state, resources, etc.)
 - **src/utils/** - Logger, error handler, AWS client factory
 - **build.mjs** - esbuild build script (ESM modules)
@@ -212,6 +213,7 @@ registry.register('AWS::IAM::Role', new IAMRoleProvider());
 
 - `--app` is optional: falls back to `CDKD_APP` env var, then `cdk.json` `"app"` field
 - `--state-bucket` is optional: falls back to `CDKD_STATE_BUCKET` env var, then `cdk.json` `context.cdkd.stateBucket`
+- `--context` / `-c` is optional: accepts `key=value` pairs (repeatable), merged with cdk.json context (CLI takes precedence)
 - Stack names are positional arguments: `cdkd deploy MyStack` (not `--stack-name`)
 - `--all` flag targets all stacks for deploy/diff/destroy (`destroy --all` only targets stacks from the current CDK app via synthesis)
 - Wildcard support: `cdkd deploy 'My*'`
@@ -276,7 +278,7 @@ registry.register('AWS::IAM::Role', new IAMRoleProvider());
 
 1. Create new file in `src/provisioning/providers/`
 2. Implement `ResourceProvider` interface
-3. Register with `ProviderRegistry.getInstance().register()` (in `src/provisioning/provider-registry.ts`)
+3. Register in `src/provisioning/register-providers.ts` within the `registerAllProviders()` function
 4. Write tests
 
 See [docs/provider-development.md](docs/provider-development.md) for details.

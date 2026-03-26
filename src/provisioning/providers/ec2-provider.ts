@@ -23,7 +23,14 @@ import {
   CreateTagsCommand,
   DescribeSubnetsCommand,
   DescribeSecurityGroupsCommand,
+  RunInstancesCommand,
+  TerminateInstancesCommand,
+  DescribeInstancesCommand,
+  waitUntilInstanceRunning,
   type Tenancy,
+  type _InstanceType,
+  type VolumeType,
+  type BlockDeviceMapping,
 } from '@aws-sdk/client-ec2';
 import { getLogger } from '../../utils/logger.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
@@ -47,6 +54,7 @@ import type {
  * - AWS::EC2::SubnetRouteTableAssociation
  * - AWS::EC2::SecurityGroup
  * - AWS::EC2::SecurityGroupIngress
+ * - AWS::EC2::Instance
  */
 export class EC2Provider implements ResourceProvider {
   private ec2Client: EC2Client;
@@ -83,6 +91,8 @@ export class EC2Provider implements ResourceProvider {
         return this.createSecurityGroup(logicalId, resourceType, properties);
       case 'AWS::EC2::SecurityGroupIngress':
         return this.createSecurityGroupIngress(logicalId, resourceType, properties);
+      case 'AWS::EC2::Instance':
+        return this.createInstance(logicalId, resourceType, properties);
       default:
         throw new ProvisioningError(
           `Unsupported resource type: ${resourceType}`,
@@ -130,6 +140,8 @@ export class EC2Provider implements ResourceProvider {
           properties,
           previousProperties
         );
+      case 'AWS::EC2::Instance':
+        return this.updateInstance(logicalId, physicalId, resourceType, properties);
       default:
         throw new ProvisioningError(
           `Unsupported resource type: ${resourceType}`,
@@ -165,6 +177,8 @@ export class EC2Provider implements ResourceProvider {
         return this.deleteSecurityGroup(logicalId, physicalId, resourceType);
       case 'AWS::EC2::SecurityGroupIngress':
         return this.deleteSecurityGroupIngress(logicalId, physicalId, resourceType, properties);
+      case 'AWS::EC2::Instance':
+        return this.deleteInstance(logicalId, physicalId, resourceType);
       default:
         throw new ProvisioningError(
           `Unsupported resource type: ${resourceType}`,
@@ -187,6 +201,8 @@ export class EC2Provider implements ResourceProvider {
         return this.getSubnetAttribute(physicalId, attributeName);
       case 'AWS::EC2::SecurityGroup':
         return this.getSecurityGroupAttribute(physicalId, attributeName);
+      case 'AWS::EC2::Instance':
+        return this.getInstanceAttribute(physicalId, attributeName);
       default:
         return undefined;
     }
@@ -1242,6 +1258,224 @@ export class EC2Provider implements ResourceProvider {
     }
   }
 
+  // ─── AWS::EC2::Instance ──────────────────────────────────────────
+
+  private async createInstance(
+    logicalId: string,
+    resourceType: string,
+    properties: Record<string, unknown>
+  ): Promise<ResourceCreateResult> {
+    this.logger.debug(`Creating EC2 Instance ${logicalId}`);
+
+    const imageId = properties['ImageId'] as string;
+    if (!imageId) {
+      throw new ProvisioningError(
+        `ImageId is required for EC2 Instance ${logicalId}`,
+        resourceType,
+        logicalId
+      );
+    }
+
+    const instanceType = (properties['InstanceType'] as string) ?? 't3.micro';
+
+    try {
+      const securityGroupIds = properties['SecurityGroupIds'] as string[] | undefined;
+      const securityGroups = properties['SecurityGroups'] as string[] | undefined;
+      const iamInstanceProfile = properties['IamInstanceProfile'] as
+        | Record<string, unknown>
+        | undefined;
+
+      const response = await this.ec2Client.send(
+        new RunInstancesCommand({
+          ImageId: imageId,
+          InstanceType: instanceType as _InstanceType,
+          KeyName: (properties['KeyName'] as string) ?? undefined,
+          SecurityGroupIds: securityGroupIds ?? undefined,
+          SecurityGroups: securityGroups ?? undefined,
+          SubnetId: (properties['SubnetId'] as string) ?? undefined,
+          UserData: (properties['UserData'] as string) ?? undefined,
+          MinCount: 1,
+          MaxCount: 1,
+          IamInstanceProfile: iamInstanceProfile
+            ? {
+                Arn: iamInstanceProfile['Arn'] as string | undefined,
+                Name: iamInstanceProfile['Name'] as string | undefined,
+              }
+            : undefined,
+          BlockDeviceMappings: this.buildBlockDeviceMappings(properties),
+        })
+      );
+
+      const instance = response.Instances?.[0];
+      if (!instance?.InstanceId) {
+        throw new Error('No instance ID returned from RunInstances');
+      }
+
+      const instanceId = instance.InstanceId;
+
+      // Apply tags
+      await this.applyTags(instanceId, properties, logicalId);
+
+      // Wait for instance to reach running state
+      this.logger.debug(`Waiting for instance ${instanceId} to be running...`);
+      await waitUntilInstanceRunning(
+        { client: this.ec2Client, maxWaitTime: 300 },
+        { InstanceIds: [instanceId] }
+      );
+
+      // Describe instance to get attributes after running
+      const describeResponse = await this.ec2Client.send(
+        new DescribeInstancesCommand({ InstanceIds: [instanceId] })
+      );
+      const runningInstance = describeResponse.Reservations?.[0]?.Instances?.[0];
+
+      const attributes: Record<string, unknown> = {
+        InstanceId: instanceId,
+        PrivateIp: runningInstance?.PrivateIpAddress ?? '',
+        PublicIp: runningInstance?.PublicIpAddress ?? '',
+        PrivateDnsName: runningInstance?.PrivateDnsName ?? '',
+        PublicDnsName: runningInstance?.PublicDnsName ?? '',
+        AvailabilityZone: runningInstance?.Placement?.AvailabilityZone ?? '',
+      };
+
+      this.logger.debug(`Successfully created EC2 Instance ${logicalId}: ${instanceId}`);
+
+      return { physicalId: instanceId, attributes };
+    } catch (error) {
+      if (error instanceof ProvisioningError) throw error;
+      const cause = error instanceof Error ? error : undefined;
+      throw new ProvisioningError(
+        `Failed to create EC2 Instance ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        resourceType,
+        logicalId,
+        undefined,
+        cause
+      );
+    }
+  }
+
+  private async updateInstance(
+    logicalId: string,
+    physicalId: string,
+    resourceType: string,
+    _properties: Record<string, unknown>
+  ): Promise<ResourceUpdateResult> {
+    // Most EC2 Instance property changes require replacement.
+    // Immutable properties (ImageId, SubnetId, KeyName) are handled by
+    // the deployment engine's replacement detection.
+    // For simplicity, tags-only updates are supported here.
+    this.logger.debug(`Updating EC2 Instance ${logicalId}: ${physicalId}`);
+
+    try {
+      await this.applyTags(physicalId, _properties, logicalId);
+
+      // Refresh attributes
+      const describeResponse = await this.ec2Client.send(
+        new DescribeInstancesCommand({ InstanceIds: [physicalId] })
+      );
+      const instance = describeResponse.Reservations?.[0]?.Instances?.[0];
+
+      return {
+        physicalId,
+        wasReplaced: false,
+        attributes: {
+          InstanceId: physicalId,
+          PrivateIp: instance?.PrivateIpAddress ?? '',
+          PublicIp: instance?.PublicIpAddress ?? '',
+          PrivateDnsName: instance?.PrivateDnsName ?? '',
+          PublicDnsName: instance?.PublicDnsName ?? '',
+          AvailabilityZone: instance?.Placement?.AvailabilityZone ?? '',
+        },
+      };
+    } catch (error) {
+      const cause = error instanceof Error ? error : undefined;
+      throw new ProvisioningError(
+        `Failed to update EC2 Instance ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        resourceType,
+        logicalId,
+        physicalId,
+        cause
+      );
+    }
+  }
+
+  private async deleteInstance(
+    logicalId: string,
+    physicalId: string,
+    resourceType: string
+  ): Promise<void> {
+    this.logger.debug(`Terminating EC2 Instance ${logicalId}: ${physicalId}`);
+
+    try {
+      await this.ec2Client.send(new TerminateInstancesCommand({ InstanceIds: [physicalId] }));
+      this.logger.debug(`Successfully terminated EC2 Instance ${logicalId}: ${physicalId}`);
+    } catch (error) {
+      if (this.isNotFoundError(error)) {
+        this.logger.debug(
+          `EC2 Instance ${physicalId} already terminated (not found), treating as success`
+        );
+        return;
+      }
+      const cause = error instanceof Error ? error : undefined;
+      throw new ProvisioningError(
+        `Failed to terminate EC2 Instance ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        resourceType,
+        logicalId,
+        physicalId,
+        cause
+      );
+    }
+  }
+
+  private async getInstanceAttribute(physicalId: string, attributeName: string): Promise<unknown> {
+    const response = await this.ec2Client.send(
+      new DescribeInstancesCommand({ InstanceIds: [physicalId] })
+    );
+    const instance = response.Reservations?.[0]?.Instances?.[0];
+    if (!instance) return undefined;
+
+    switch (attributeName) {
+      case 'InstanceId':
+        return instance.InstanceId;
+      case 'PrivateIp':
+        return instance.PrivateIpAddress;
+      case 'PublicIp':
+        return instance.PublicIpAddress;
+      case 'PrivateDnsName':
+        return instance.PrivateDnsName;
+      case 'PublicDnsName':
+        return instance.PublicDnsName;
+      case 'AvailabilityZone':
+        return instance.Placement?.AvailabilityZone;
+      default:
+        return undefined;
+    }
+  }
+
+  private buildBlockDeviceMappings(
+    properties: Record<string, unknown>
+  ): BlockDeviceMapping[] | undefined {
+    const mappings = properties['BlockDeviceMappings'] as
+      | Array<Record<string, unknown>>
+      | undefined;
+    if (!mappings || !Array.isArray(mappings)) return undefined;
+
+    return mappings.map((m) => {
+      const ebs = m['Ebs'] as Record<string, unknown> | undefined;
+      const result: BlockDeviceMapping = {
+        DeviceName: m['DeviceName'] as string,
+      };
+      if (ebs) {
+        result.Ebs = {
+          VolumeSize: ebs['VolumeSize'] as number | undefined,
+          VolumeType: ebs['VolumeType'] as VolumeType | undefined,
+          DeleteOnTermination: (ebs['DeleteOnTermination'] as boolean) ?? true,
+        };
+      }
+      return result;
+    });
+  }
+
   // ─── Helpers ──────────────────────────────────────────────────────
 
   /**
@@ -1332,7 +1566,8 @@ export class EC2Provider implements ResourceProvider {
       name === 'InvalidRouteTableID.NotFound' ||
       name === 'InvalidGroup.NotFound' ||
       name === 'InvalidAssociationID.NotFound' ||
-      name === 'InvalidRoute.NotFound'
+      name === 'InvalidRoute.NotFound' ||
+      name === 'InvalidInstanceID.NotFound'
     );
   }
 }

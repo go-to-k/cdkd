@@ -84,6 +84,7 @@ export function registerAllProviders(registry: ProviderRegistry): void {
   registry.register('AWS::EC2::SubnetRouteTableAssociation', ec2Provider);
   registry.register('AWS::EC2::SecurityGroup', ec2Provider);
   registry.register('AWS::EC2::SecurityGroupIngress', ec2Provider);
+  registry.register('AWS::EC2::Instance', ec2Provider);
 
   // API Gateway
   const apigwProvider = new ApiGatewayProvider();

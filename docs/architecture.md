@@ -397,37 +397,9 @@ generatePatch(oldProps: any, newProps: any): JSONPatchOperation[]
 
 **Preferred Providers**: SDK Providers make direct synchronous API calls with no polling overhead, making them significantly faster than Cloud Control API.
 
-**Implemented Providers** (see `src/provisioning/providers/` for full list):
+**Implemented Providers**: IAM, S3, SQS, SNS, Lambda, DynamoDB, CloudWatch, Secrets Manager, SSM, EventBridge, EC2 (VPC/Subnet/SecurityGroup etc.), API Gateway, CloudFront, StepFunctions, ECS, ELBv2, RDS, Route53, WAFv2, Cognito, BedrockAgentCore, Custom Resources. See `src/provisioning/providers/` and [README](../README.md) for full list.
 
-| Provider File | Resource Types |
-|---|---|
-| `iam-role-provider.ts` | AWS::IAM::Role |
-| `iam-policy-provider.ts` | AWS::IAM::Policy |
-| `s3-bucket-provider.ts` | AWS::S3::Bucket |
-| `s3-bucket-policy-provider.ts` | AWS::S3::BucketPolicy |
-| `sqs-queue-provider.ts` | AWS::SQS::Queue |
-| `sqs-queue-policy-provider.ts` | AWS::SQS::QueuePolicy |
-| `sns-topic-provider.ts` | AWS::SNS::Topic |
-| `sns-subscription-provider.ts` | AWS::SNS::Subscription |
-| `lambda-function-provider.ts` | AWS::Lambda::Function |
-| `lambda-permission-provider.ts` | AWS::Lambda::Permission |
-| `lambda-url-provider.ts` | AWS::Lambda::Url |
-| `lambda-eventsource-provider.ts` | AWS::Lambda::EventSourceMapping |
-| `dynamodb-table-provider.ts` | AWS::DynamoDB::Table |
-| `logs-loggroup-provider.ts` | AWS::Logs::LogGroup |
-| `cloudwatch-alarm-provider.ts` | AWS::CloudWatch::Alarm |
-| `secretsmanager-secret-provider.ts` | AWS::SecretsManager::Secret |
-| `ssm-parameter-provider.ts` | AWS::SSM::Parameter |
-| `eventbridge-rule-provider.ts` | AWS::Events::Rule |
-| `eventbridge-bus-provider.ts` | AWS::Events::EventBus |
-| `ec2-provider.ts` | AWS::EC2::VPC, Subnet, InternetGateway, VPCGatewayAttachment, RouteTable, Route, SubnetRouteTableAssociation, SecurityGroup, SecurityGroupIngress (9 types) |
-| `apigateway-provider.ts` | AWS::ApiGateway::Account, Resource, Deployment, Stage, Method (5 types) |
-| `cloudfront-oai-provider.ts` | AWS::CloudFront::CloudFrontOriginAccessIdentity |
-| `agentcore-runtime-provider.ts` | AWS::BedrockAgentCore::Runtime |
-| `custom-resource-provider.ts` | Custom::* (Lambda/SNS-backed, CDK Provider framework) |
-
-**How to Add Providers**:
-See [provider-development.md](./provider-development.md)
+**How to Add Providers**: See [provider-development.md](./provider-development.md)
 
 ### 8. Utilities (`src/utils/`)
 
