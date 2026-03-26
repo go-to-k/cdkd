@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-**cdkq** (CDK Quick Deploy) is an experimental project that deploys AWS CDK applications directly via AWS SDK/Cloud Control API without going through CloudFormation. It aims to eliminate CloudFormation overhead and achieve faster deployments.
+**cdkd** (CDK Quick Deploy) is an experimental project that deploys AWS CDK applications directly via AWS SDK/Cloud Control API without going through CloudFormation. It aims to eliminate CloudFormation overhead and achieve faster deployments.
 
 **Important Notes**:
 
@@ -14,7 +14,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Architecture Overview
 
-cdkq has a 7-layer system architecture:
+cdkd has a 7-layer system architecture:
 
 ```
 ┌─────────────────────────────────────────────┐
@@ -202,11 +202,11 @@ registry.register('AWS::IAM::Role', new IAMRoleProvider());
 
 ### 3. CLI Configuration Resolution
 
-- `--app` is optional: falls back to `CDKQ_APP` env var, then `cdk.json` `"app"` field
-- `--state-bucket` is optional: falls back to `CDKQ_STATE_BUCKET` env var, then `cdk.json` `context.cdkq.stateBucket`
-- Stack names are positional arguments: `cdkq deploy MyStack` (not `--stack-name`)
+- `--app` is optional: falls back to `CDKD_APP` env var, then `cdk.json` `"app"` field
+- `--state-bucket` is optional: falls back to `CDKD_STATE_BUCKET` env var, then `cdk.json` `context.cdkd.stateBucket`
+- Stack names are positional arguments: `cdkd deploy MyStack` (not `--stack-name`)
 - `--all` flag targets all stacks for deploy/diff/destroy (`destroy --all` only targets stacks from the current CDK app via synthesis)
-- Wildcard support: `cdkq deploy 'My*'`
+- Wildcard support: `cdkd deploy 'My*'`
 - Single stack auto-detected (no stack name needed)
 - Implemented in `src/cli/config-loader.ts`
 
@@ -257,7 +257,7 @@ registry.register('AWS::IAM::Role', new IAMRoleProvider());
 
 ### UPDATE Testing
 
-- Environment variable `CDKQ_TEST_UPDATE=true` enables UPDATE test mode
+- Environment variable `CDKD_TEST_UPDATE=true` enables UPDATE test mode
 - Example: `tests/integration/examples/basic/lib/basic-stack.ts`
 - Allows testing UPDATE operations without modifying code
 - JSON Patch (RFC 6902) verified working for S3, Lambda, IAM resources
@@ -305,7 +305,7 @@ See [docs/provider-development.md](docs/provider-development.md) for details.
 
 - ✅ CLI: `--app` and `--state-bucket` optional (fallback to env vars / cdk.json)
 - ✅ CLI: Positional stack names, `--all` flag, wildcard support, single stack auto-detection
-- ✅ CLI: `cdkq destroy` accepts `--app` option; confirmation accepts y/yes
+- ✅ CLI: `cdkd destroy` accepts `--app` option; confirmation accepts y/yes
 - ✅ Resource replacement: immutable property changes trigger DELETE then CREATE
 - ✅ Custom Resource ResponseURL: S3 pre-signed URL for cfn-response handlers
 - ✅ CloudFormation Parameters support (with default values and type coercion)
@@ -322,7 +322,7 @@ See [docs/provider-development.md](docs/provider-development.md) for details.
 - ✅ CREATE retry with exponential backoff (IAM propagation delays)
 - ✅ CC API polling with exponential backoff (1s→2s→4s→8s→10s)
 - ✅ Compact output mode (default clean output, `--verbose` for full details)
-- ✅ `--state-bucket` auto-resolves from STS account ID: `cdkq-state-{accountId}-{region}`
+- ✅ `--state-bucket` auto-resolves from STS account ID: `cdkd-state-{accountId}-{region}`
 - ✅ Attribute mapper: CC API property names mapped to GetAtt attribute names
 - ✅ 291 unit tests, 24 integration examples, E2E test script
 - ✅ DeletionPolicy: Retain support (skip deletion for retained resources)

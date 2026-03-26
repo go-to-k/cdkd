@@ -5,7 +5,7 @@ import * as s3 from 'aws-cdk-lib/aws-s3';
 /**
  * Basic example stack with a single S3 bucket
  *
- * This is the simplest possible cdkq deployment example.
+ * This is the simplest possible cdkd deployment example.
  * It creates a single S3 bucket with no dependencies.
  */
 export class BasicStack extends cdk.Stack {
@@ -20,11 +20,11 @@ export class BasicStack extends cdk.Stack {
 
     // Add tags to test JSON Patch updates
     cdk.Tags.of(bucket).add('Environment', 'Test');
-    cdk.Tags.of(bucket).add('Project', 'cdkq');
+    cdk.Tags.of(bucket).add('Project', 'cdkd');
 
-    // Add UPDATE test tag only when CDKQ_TEST_UPDATE is set
+    // Add UPDATE test tag only when CDKD_TEST_UPDATE is set
     // This allows testing UPDATE operations without code changes
-    if (process.env.CDKQ_TEST_UPDATE === 'true') {
+    if (process.env.CDKD_TEST_UPDATE === 'true') {
       cdk.Tags.of(bucket).add('UpdateTest', 'true');
     }
 

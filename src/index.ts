@@ -1,5 +1,5 @@
 /**
- * cdkq - CDK Quick Deploy
+ * cdkd - CDK Quick Deploy
  *
  * Library exports for programmatic usage
  */
@@ -23,7 +23,7 @@ export type {
   ResourceUpdateResult,
 } from './types/resource.js';
 export type {
-  CdkqConfig,
+  CdkdConfig,
   DeployOptions,
   StateBackendConfig,
   Logger,
@@ -33,7 +33,7 @@ export type {
 // Utilities
 export { ConsoleLogger, getLogger, setLogger } from './utils/logger.js';
 export {
-  CdkqError,
+  CdkdError,
   StateError,
   LockError,
   SynthesisError,
@@ -41,7 +41,7 @@ export {
   ProvisioningError,
   DependencyError,
   ConfigError,
-  isCdkqError,
+  isCdkdError,
   formatError,
 } from './utils/error-handler.js';
 export { AwsClients, getAwsClients, setAwsClients, resetAwsClients } from './utils/aws-clients.js';

@@ -1,6 +1,6 @@
 # Cross-Stack References Example
 
-This example demonstrates cross-stack references using `Fn::ImportValue` with cdkq.
+This example demonstrates cross-stack references using `Fn::ImportValue` with cdkd.
 
 ## Architecture
 
@@ -29,14 +29,14 @@ npm install
 First, deploy the exporter stack that creates resources and exports values:
 
 ```bash
-cd /Users/goto/github/cdkq
+cd /Users/goto/github/cdkd
 export STATE_BUCKET="your-state-bucket"
 export AWS_REGION="us-east-1"
 
 # Deploy exporter stack
 node dist/cli.js deploy \
   --app "npx ts-node tests/integration/examples/cross-stack-references/bin/app.ts" \
-  --stack CdkqExporterStack \
+  --stack CdkdExporterStack \
   --state-bucket $STATE_BUCKET \
   --region $AWS_REGION \
   --verbose
@@ -50,7 +50,7 @@ After the exporter stack is deployed, deploy the consumer stack that imports the
 # Deploy consumer stack
 node dist/cli.js deploy \
   --app "npx ts-node tests/integration/examples/cross-stack-references/bin/app.ts" \
-  --stack CdkqConsumerStack \
+  --stack CdkdConsumerStack \
   --state-bucket $STATE_BUCKET \
   --region $AWS_REGION \
   --verbose
@@ -60,7 +60,7 @@ node dist/cli.js deploy \
 
 1. **Exporter Stack Deployment**:
    - Creates an S3 bucket
-   - Saves exported values to state file (`s3://<bucket>/stacks/CdkqExporterStack/state.json`)
+   - Saves exported values to state file (`s3://<bucket>/stacks/CdkdExporterStack/state.json`)
    - Outputs include `BucketNameExport` and `BucketArnExport`
 
 2. **Consumer Stack Deployment**:
@@ -76,14 +76,14 @@ Delete stacks in reverse order (consumer first, then exporter):
 ```bash
 # Delete consumer stack
 node dist/cli.js destroy \
-  --stack CdkqConsumerStack \
+  --stack CdkdConsumerStack \
   --state-bucket $STATE_BUCKET \
   --region $AWS_REGION \
   --force
 
 # Delete exporter stack
 node dist/cli.js destroy \
-  --stack CdkqExporterStack \
+  --stack CdkdExporterStack \
   --state-bucket $STATE_BUCKET \
   --region $AWS_REGION \
   --force
@@ -91,9 +91,9 @@ node dist/cli.js destroy \
 
 ## How It Works
 
-cdkq implements `Fn::ImportValue` by:
+cdkd implements `Fn::ImportValue` by:
 
-1. **Export**: When a stack has `CfnOutput` with `exportName`, cdkq saves the resolved value in the state file under `exports`:
+1. **Export**: When a stack has `CfnOutput` with `exportName`, cdkd saves the resolved value in the state file under `exports`:
    ```json
    {
      "exports": {
@@ -102,7 +102,7 @@ cdkq implements `Fn::ImportValue` by:
    }
    ```
 
-2. **Import**: When another stack uses `Fn::ImportValue`, cdkq:
+2. **Import**: When another stack uses `Fn::ImportValue`, cdkd:
    - Queries all stacks in the state bucket
    - Finds the export with matching name
    - Resolves the imported value during template processing

@@ -1,8 +1,8 @@
 {
-  "name": "cdkq-example-basic",
+  "name": "cdkd-example-basic",
   "version": "1.0.0",
   "private": true,
-  "description": "Basic cdkq example with S3 bucket",
+  "description": "Basic cdkd example with S3 bucket",
   "scripts": {
     "build": "tsc",
     "watch": "tsc -w"

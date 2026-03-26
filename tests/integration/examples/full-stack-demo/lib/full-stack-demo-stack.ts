@@ -14,7 +14,7 @@ import * as secretsmanager from 'aws-cdk-lib/aws-secretsmanager';
 /**
  * Full Stack Demo - Serverless API Backend
  *
- * A realistic serverless application showcasing cdkq's ability to deploy
+ * A realistic serverless application showcasing cdkd's ability to deploy
  * 15+ AWS resources with complex dependencies via Cloud Control API.
  *
  * Architecture:
@@ -99,7 +99,7 @@ export class FullStackDemoStack extends cdk.Stack {
 
     // ─── CloudWatch Log Group ────────────────────────────────────
     const logGroup = new logs.LogGroup(this, 'ApiLogGroup', {
-      logGroupName: `/cdkq/full-stack-demo/${this.stackName}`,
+      logGroupName: `/cdkd/full-stack-demo/${this.stackName}`,
       retention: logs.RetentionDays.ONE_WEEK,
       removalPolicy: cdk.RemovalPolicy.DESTROY,
     });
@@ -130,7 +130,7 @@ def handler(event, context):
 
     try:
         if method == 'GET' and path == '/':
-            return respond(200, {'message': 'Hello from cdkq!', 'service': 'full-stack-demo'})
+            return respond(200, {'message': 'Hello from cdkd!', 'service': 'full-stack-demo'})
 
         if method == 'GET' and path == '/items':
             result = table.scan(Limit=50)

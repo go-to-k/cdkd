@@ -18,13 +18,13 @@ This example deploys an Aurora Serverless v2 (MySQL) cluster with minimal cost c
 ## Deploy
 
 ```bash
-cdkq deploy RdsAuroraStack
+cdkd deploy RdsAuroraStack
 ```
 
 ## Destroy
 
 ```bash
-cdkq destroy RdsAuroraStack
+cdkd destroy RdsAuroraStack
 ```
 
 ## Cost Notes

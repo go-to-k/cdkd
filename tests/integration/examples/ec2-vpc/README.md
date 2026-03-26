@@ -1,6 +1,6 @@
 # EC2/VPC Example
 
-Minimal VPC and Security Group deployment example for cdkq.
+Minimal VPC and Security Group deployment example for cdkd.
 
 ## Resources Created
 
@@ -22,11 +22,11 @@ No EC2 instances are created to avoid costs.
 ## Deploy
 
 ```bash
-cdkq deploy Ec2VpcStack
+cdkd deploy Ec2VpcStack
 ```
 
 ## Destroy
 
 ```bash
-cdkq destroy Ec2VpcStack
+cdkd destroy Ec2VpcStack
 ```

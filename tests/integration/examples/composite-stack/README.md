@@ -1,6 +1,6 @@
 # Composite Stack Example
 
-Tests many diverse resource types in a single stack to identify unsupported resources in cdkq.
+Tests many diverse resource types in a single stack to identify unsupported resources in cdkd.
 
 ## Resource Types
 
@@ -32,13 +32,13 @@ Plus auto-generated resources from CDK (IAM policies, Lambda permissions, etc.) 
 ## Deploy
 
 ```bash
-cdkq deploy CdkqCompositeStackExample
+cdkd deploy CdkdCompositeStackExample
 ```
 
 ## Destroy
 
 ```bash
-cdkq destroy CdkqCompositeStackExample
+cdkd destroy CdkdCompositeStackExample
 ```
 
 ## What This Tests

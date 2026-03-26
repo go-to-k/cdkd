@@ -11,7 +11,7 @@ This stack includes the following resources:
 - **Event Source Mapping**: Connects DynamoDB stream to Lambda
 - **IAM Role**: Lambda execution role with DynamoDB stream read permissions
 
-## Features Tested in cdkq
+## Features Tested in cdkd
 
 1. **DynamoDB Streams**: Table created with `StreamViewType.NEW_AND_OLD_IMAGES`
 2. **Inline Lambda Code**: Function deployed with inline Python code (no asset publishing)
@@ -27,7 +27,7 @@ This stack includes the following resources:
 # Install packages
 npm install
 
-# Deploy with cdkq
+# Deploy with cdkd
 node ../../../dist/cli.js deploy \
   --app "npx ts-node --prefer-ts-exts bin/app.ts" \
   --state-bucket <your-state-bucket> \

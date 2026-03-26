@@ -26,7 +26,7 @@ exports.handler = async (event) => {
     statusCode: 200,
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
-      message: "Hello from cdkq!",
+      message: "Hello from cdkd!",
       timestamp: new Date().toISOString(),
     }),
   };
@@ -38,8 +38,8 @@ exports.handler = async (event) => {
 
     // Create REST API Gateway
     const api = new apigateway.RestApi(this, 'HelloApi', {
-      restApiName: 'cdkq-hello-api',
-      description: 'A simple API Gateway + Lambda example for cdkq testing',
+      restApiName: 'cdkd-hello-api',
+      description: 'A simple API Gateway + Lambda example for cdkd testing',
     });
 
     // Add GET /hello endpoint with Lambda integration

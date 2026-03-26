@@ -4,7 +4,7 @@ This example implements a practical microservice architecture with multiple AWS 
 
 ## Purpose
 
-Implement realistic serverless application patterns and verify that cdkq properly handles:
+Implement realistic serverless application patterns and verify that cdkd properly handles:
 
 - Multiple resource types (S3, Lambda, DynamoDB, SQS, IAM)
 - Complex dependency graphs
@@ -63,9 +63,9 @@ S3 Bucket (uploads/)
    - SQS consume permissions
    - CloudWatch Logs permissions
 
-## Features Tested in cdkq
+## Features Tested in cdkd
 
-This example tests the following cdkq features:
+This example tests the following cdkd features:
 
 ### 1. Dependency Graph Construction
 - Detect implicit dependencies between resources
@@ -110,7 +110,7 @@ npm run build
 
 ### Initial Deployment
 ```bash
-cdkq deploy
+cdkd deploy
 ```
 
 The following resources will be created during deployment:
@@ -128,7 +128,7 @@ The following resources will be created during deployment:
 ```bash
 # Use the bucket name obtained from Outputs
 BUCKET_NAME=$(aws cloudformation describe-stacks \
-  --stack-name CdkqMultiResourceExample \
+  --stack-name CdkdMultiResourceExample \
   --query 'Stacks[0].Outputs[?OutputKey==`DataBucketName`].OutputValue' \
   --output text)
 
@@ -140,7 +140,7 @@ aws s3 cp test.json s3://$BUCKET_NAME/uploads/test.json
 #### 2. Check Lambda Execution Logs
 ```bash
 FUNCTION_NAME=$(aws cloudformation describe-stacks \
-  --stack-name CdkqMultiResourceExample \
+  --stack-name CdkdMultiResourceExample \
   --query 'Stacks[0].Outputs[?OutputKey==`ProcessorFunctionName`].OutputValue' \
   --output text)
 
@@ -150,7 +150,7 @@ aws logs tail /aws/lambda/$FUNCTION_NAME --follow
 #### 3. Check Metadata Stored in DynamoDB
 ```bash
 TABLE_NAME=$(aws cloudformation describe-stacks \
-  --stack-name CdkqMultiResourceExample \
+  --stack-name CdkdMultiResourceExample \
   --query 'Stacks[0].Outputs[?OutputKey==`MetadataTableName`].OutputValue' \
   --output text)
 
@@ -166,7 +166,7 @@ memorySize: 1024,  // Change from 512 to 1024
 ```
 
 Expected behavior:
-- cdkq detects memory size change
+- cdkd detects memory size change
 - Update property with JSON Patch
 - Lambda function is not recreated (update only)
 
@@ -182,7 +182,7 @@ metadataTable.addGlobalSecondaryIndex({
 ```
 
 Expected behavior:
-- cdkq detects new GSI
+- cdkd detects new GSI
 - Add GSI to DynamoDB table
 - Existing data is preserved
 
@@ -197,7 +197,7 @@ transitions: [
 ```
 
 Expected behavior:
-- cdkq detects lifecycle rule change
+- cdkd detects lifecycle rule change
 - Update rules with JSON Patch
 - S3 bucket is not recreated
 
@@ -217,7 +217,7 @@ SQS Queue ← (notification) S3 Bucket
 S3 Service Principal
 ```
 
-cdkq creates resources in the following order:
+cdkd creates resources in the following order:
 1. DynamoDB Table
 2. S3 Bucket
 3. SQS Queues (DLQ, Processing Queue)

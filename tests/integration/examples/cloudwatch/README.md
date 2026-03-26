@@ -1,6 +1,6 @@
 # CloudWatch Integration Test
 
-This example demonstrates cdkq deployment of CloudWatch monitoring resources.
+This example demonstrates cdkd deployment of CloudWatch monitoring resources.
 
 ## Resources
 
@@ -24,11 +24,11 @@ This example demonstrates cdkq deployment of CloudWatch monitoring resources.
 ```bash
 cd tests/integration/examples/cloudwatch
 npm install
-cdkq deploy CloudWatchStack
+cdkd deploy CloudWatchStack
 ```
 
 ## Destroy
 
 ```bash
-cdkq destroy CloudWatchStack
+cdkd destroy CloudWatchStack
 ```

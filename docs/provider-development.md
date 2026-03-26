@@ -1,8 +1,8 @@
-# cdkq Provider Development Guide
+# cdkd Provider Development Guide
 
 ## Overview
 
-In cdkq, AWS resource provisioning is implemented through an abstraction layer called **Provider**. SDK Providers are preferred for performance — they make direct synchronous API calls with no polling overhead. Cloud Control API serves as a fallback for resource types without an SDK Provider (supports 200+ additional types, but requires async polling).
+In cdkd, AWS resource provisioning is implemented through an abstraction layer called **Provider**. SDK Providers are preferred for performance — they make direct synchronous API calls with no polling overhead. Cloud Control API serves as a fallback for resource types without an SDK Provider (supports 200+ additional types, but requires async polling).
 
 Adding SDK Providers for frequently used resource types is one of the most impactful performance improvements. This guide explains how to add new providers.
 
@@ -894,23 +894,23 @@ Future consideration for adding Providers as external plugins:
 
 ```bash
 # Install plugin
-npm install cdkq-provider-custom-service
+npm install cdkd-provider-custom-service
 
 # Enable in configuration
-# cdkq.config.json
+# cdkd.config.json
 {
   "providers": [
-    "cdkq-provider-custom-service"
+    "cdkd-provider-custom-service"
   ]
 }
 ```
 
 ### Import Terraform Providers
 
-Bridge Terraform Providers to cdkq Providers:
+Bridge Terraform Providers to cdkd Providers:
 
 ```typescript
-import { TerraformProviderBridge } from 'cdkq-terraform-bridge';
+import { TerraformProviderBridge } from 'cdkd-terraform-bridge';
 
 const awsProvider = new TerraformProviderBridge('hashicorp/aws');
 registry.register('AWS::CustomService::Resource', awsProvider);

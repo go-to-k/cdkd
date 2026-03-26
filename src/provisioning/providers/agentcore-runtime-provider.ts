@@ -4,7 +4,7 @@
  * Uses direct SDK calls instead of Cloud Control API because:
  * 1. CC API CREATE is async - it returns IN_PROGRESS, then polls for completion
  * 2. IAM role propagation to BedrockAgentCore is very slow (30-60+ seconds)
- * 3. When CC API polling returns FAILED (role validation), cdkq retries CREATE
+ * 3. When CC API polling returns FAILED (role validation), cdkd retries CREATE
  * 4. But the first CREATE actually succeeded asynchronously in the background
  * 5. The retry then fails with "already exists"
  * 6. CC API ClientToken caches the failure result, making it worse

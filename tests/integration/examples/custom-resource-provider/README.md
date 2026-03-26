@@ -7,8 +7,8 @@ This example demonstrates the CDK Provider framework with the async custom resou
 - **CDK Provider framework**: Uses `aws-cdk-lib/custom-resources.Provider` with both `onEventHandler` and `isCompleteHandler`
 - **Step Functions orchestration**: The Provider construct creates a Step Functions state machine to orchestrate the async polling
 - **S3 pre-signed URL for cfn-response**: Long-lived (2 hour expiry) pre-signed URLs for the async callback
-- **Async pattern detection**: cdkq detects `IsComplete: false` and polls via the isComplete handler
-- **Long polling timeout**: Tests that cdkq properly waits for the async operation to complete
+- **Async pattern detection**: cdkd detects `IsComplete: false` and polls via the isComplete handler
+- **Long polling timeout**: Tests that cdkd properly waits for the async operation to complete
 
 ## Architecture
 
@@ -29,11 +29,11 @@ Provider (Step Functions State Machine)
 ## Deploy
 
 ```bash
-cdkq deploy CustomResourceProviderStack
+cdkd deploy CustomResourceProviderStack
 ```
 
 ## Destroy
 
 ```bash
-cdkq destroy CustomResourceProviderStack
+cdkd destroy CustomResourceProviderStack
 ```

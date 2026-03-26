@@ -1,28 +1,28 @@
-# How to Test cdkq
+# How to Test cdkd
 
 ## Prerequisites
 
 1. AWS Account
 2. AWS CLI configured (`aws configure`)
 3. Node.js 20 or higher
-4. cdkq built (`npm run build`)
+4. cdkd built (`npm run build`)
 
 ## 1. Create Test S3 Bucket
 
-cdkq uses an S3 bucket for state management. You can easily create one using the `bootstrap` command:
+cdkd uses an S3 bucket for state management. You can easily create one using the `bootstrap` command:
 
 ### Method A: Using bootstrap command (Recommended)
 
 ```bash
-# Set cdkq path (from cdkq root directory)
-CDKQ_PATH="/Users/goto/github/cdkq"
+# Set cdkd path (from cdkd root directory)
+CDKD_PATH="/Users/goto/github/cdkd"
 
 # Bucket name must be globally unique
-export STATE_BUCKET="cdkq-state-$(whoami)-$(date +%s)"
+export STATE_BUCKET="cdkd-state-$(whoami)-$(date +%s)"
 export AWS_REGION="us-east-1"  # Change to your preferred region
 
 # Create bucket with bootstrap command
-node ${CDKQ_PATH}/dist/cli.js bootstrap \
+node ${CDKD_PATH}/dist/cli.js bootstrap \
   --state-bucket ${STATE_BUCKET} \
   --region ${AWS_REGION} \
   --verbose
@@ -34,7 +34,7 @@ echo "State bucket created: ${STATE_BUCKET}"
 
 ```bash
 # Bucket name must be globally unique
-export STATE_BUCKET="cdkq-state-$(whoami)-$(date +%s)"
+export STATE_BUCKET="cdkd-state-$(whoami)-$(date +%s)"
 export AWS_REGION="us-east-1"  # Change to your preferred region
 
 # Create S3 bucket
@@ -45,23 +45,23 @@ echo "State bucket created: ${STATE_BUCKET}"
 
 ## 2. Prepare Test CDK Application
 
-cdkq provides multiple test examples:
+cdkd provides multiple test examples:
 
 ### Option A: Use Existing Examples (Recommended)
 
-The cdkq repository includes several examples:
+The cdkd repository includes several examples:
 
 #### Basic Example (Simple S3 Bucket)
 
 ```bash
-cd /Users/goto/github/cdkq/tests/integration/examples/basic
+cd /Users/goto/github/cdkd/tests/integration/examples/basic
 npm install
 ```
 
 #### Intrinsic Functions Example (Testing Built-in Functions)
 
 ```bash
-cd /Users/goto/github/cdkq/tests/integration/examples/intrinsic-functions
+cd /Users/goto/github/cdkd/tests/integration/examples/intrinsic-functions
 npm install
 ```
 
@@ -70,7 +70,7 @@ npm install
 A practical integration example with Lambda functions and DynamoDB tables:
 
 ```bash
-cd /Users/goto/github/cdkq/tests/integration/examples/lambda
+cd /Users/goto/github/cdkd/tests/integration/examples/lambda
 npm install
 ```
 
@@ -86,14 +86,14 @@ npm install
 Event-driven architecture with S3 + Lambda + DynamoDB + SQS + IAM:
 
 ```bash
-cd /Users/goto/github/cdkq/tests/integration/examples/multi-resource
+cd /Users/goto/github/cdkd/tests/integration/examples/multi-resource
 npm install
 ```
 
 #### Parameters Example (CloudFormation Parameters) ✅ Implemented
 
 ```bash
-cd /Users/goto/github/cdkq/tests/integration/examples/parameters
+cd /Users/goto/github/cdkd/tests/integration/examples/parameters
 npm install
 ```
 
@@ -106,7 +106,7 @@ npm install
 #### Conditions Example (CloudFormation Conditions) ✅ Implemented
 
 ```bash
-cd /Users/goto/github/cdkq/tests/integration/examples/conditions
+cd /Users/goto/github/cdkd/tests/integration/examples/conditions
 npm install
 ```
 
@@ -119,7 +119,7 @@ npm install
 #### Cross-Stack References Example (Fn::ImportValue) ✅ Implemented
 
 ```bash
-cd /Users/goto/github/cdkq/tests/integration/examples/cross-stack-references
+cd /Users/goto/github/cdkd/tests/integration/examples/cross-stack-references
 npm install
 ```
 
@@ -132,7 +132,7 @@ npm install
 #### ECR Example (Docker Image Lambda with ECR)
 
 ```bash
-cd /Users/goto/github/cdkq/tests/integration/examples/ecr
+cd /Users/goto/github/cdkd/tests/integration/examples/ecr
 npm install
 ```
 
@@ -144,7 +144,7 @@ npm install
 #### API Gateway Example (REST API + Lambda)
 
 ```bash
-cd /Users/goto/github/cdkq/tests/integration/examples/apigateway
+cd /Users/goto/github/cdkd/tests/integration/examples/apigateway
 npm install
 ```
 
@@ -156,77 +156,77 @@ npm install
 #### ECS Fargate Example
 
 ```bash
-cd /Users/goto/github/cdkq/tests/integration/examples/ecs-fargate
+cd /Users/goto/github/cdkd/tests/integration/examples/ecs-fargate
 npm install
 ```
 
 #### EventBridge Example
 
 ```bash
-cd /Users/goto/github/cdkq/tests/integration/examples/eventbridge
+cd /Users/goto/github/cdkd/tests/integration/examples/eventbridge
 npm install
 ```
 
 #### SNS + SQS Event Example
 
 ```bash
-cd /Users/goto/github/cdkq/tests/integration/examples/sns-sqs-event
+cd /Users/goto/github/cdkd/tests/integration/examples/sns-sqs-event
 npm install
 ```
 
 #### DynamoDB Streams Example
 
 ```bash
-cd /Users/goto/github/cdkq/tests/integration/examples/dynamodb-streams
+cd /Users/goto/github/cdkd/tests/integration/examples/dynamodb-streams
 npm install
 ```
 
 #### Step Functions Example
 
 ```bash
-cd /Users/goto/github/cdkq/tests/integration/examples/stepfunctions
+cd /Users/goto/github/cdkd/tests/integration/examples/stepfunctions
 npm install
 ```
 
 #### EC2 VPC Example
 
 ```bash
-cd /Users/goto/github/cdkq/tests/integration/examples/ec2-vpc
+cd /Users/goto/github/cdkd/tests/integration/examples/ec2-vpc
 npm install
 ```
 
 #### S3 + CloudFront Example
 
 ```bash
-cd /Users/goto/github/cdkq/tests/integration/examples/s3-cloudfront
+cd /Users/goto/github/cdkd/tests/integration/examples/s3-cloudfront
 npm install
 ```
 
 #### CloudWatch Example
 
 ```bash
-cd /Users/goto/github/cdkq/tests/integration/examples/cloudwatch
+cd /Users/goto/github/cdkd/tests/integration/examples/cloudwatch
 npm install
 ```
 
 #### RDS Aurora Example
 
 ```bash
-cd /Users/goto/github/cdkq/tests/integration/examples/rds-aurora
+cd /Users/goto/github/cdkd/tests/integration/examples/rds-aurora
 npm install
 ```
 
 #### Bedrock Agent Example
 
 ```bash
-cd /Users/goto/github/cdkq/tests/integration/examples/bedrock-agent
+cd /Users/goto/github/cdkd/tests/integration/examples/bedrock-agent
 npm install
 ```
 
 #### CloudFront + Lambda Function URL Example
 
 ```bash
-cd /Users/goto/github/cdkq/tests/integration/examples/cloudfront-function-url
+cd /Users/goto/github/cdkd/tests/integration/examples/cloudfront-function-url
 npm install
 ```
 
@@ -239,7 +239,7 @@ npm install
 #### CDK Provider Framework Example (isCompleteHandler/onEventHandler)
 
 ```bash
-cd /Users/goto/github/cdkq/tests/integration/examples/custom-resource-provider
+cd /Users/goto/github/cdkd/tests/integration/examples/custom-resource-provider
 npm install
 ```
 
@@ -257,7 +257,7 @@ You can also create and test a simple CDK application:
 
 ```bash
 # Create test directory
-directory="/tmp/cdkq-test"
+directory="/tmp/cdkd-test"
 mkdir -p ${directory}
 cd ${directory}
 
@@ -265,12 +265,12 @@ cd ${directory}
 npx aws-cdk@latest init app --language typescript
 
 # Change to a simple stack
-cat > lib/cdkq-test-stack.ts <<'EOF'
+cat > lib/cdkd-test-stack.ts <<'EOF'
 import * as cdk from 'aws-cdk-lib';
 import { Construct } from 'constructs';
 import * as s3 from 'aws-cdk-lib/aws-s3';
 
-export class CdkqTestStack extends cdk.Stack {
+export class CdkdTestStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
     super(scope, id, props);
 
@@ -298,16 +298,16 @@ EOF
 npm run build
 ```
 
-## 3. Deploy Using cdkq
+## 3. Deploy Using cdkd
 
 ```bash
-# Set cdkq path (from cdkq root directory)
-CDKQ_PATH="/Users/goto/github/cdkq"
+# Set cdkd path (from cdkd root directory)
+CDKD_PATH="/Users/goto/github/cdkd"
 
 # First, check changes with diff
 # --app and --state-bucket can be omitted if set via env vars or cdk.json
-node ${CDKQ_PATH}/dist/cli.js diff \
-  --app "npx ts-node --prefer-ts-exts bin/cdkq-test.ts" \
+node ${CDKD_PATH}/dist/cli.js diff \
+  --app "npx ts-node --prefer-ts-exts bin/cdkd-test.ts" \
   --output cdk.out \
   --state-bucket ${STATE_BUCKET} \
   --state-prefix "stacks" \
@@ -316,8 +316,8 @@ node ${CDKQ_PATH}/dist/cli.js diff \
 
 # Execute deployment (first time will create all resources)
 # Stack name is a positional argument (auto-detected if single stack)
-node ${CDKQ_PATH}/dist/cli.js deploy \
-  --app "npx ts-node --prefer-ts-exts bin/cdkq-test.ts" \
+node ${CDKD_PATH}/dist/cli.js deploy \
+  --app "npx ts-node --prefer-ts-exts bin/cdkd-test.ts" \
   --output cdk.out \
   --state-bucket ${STATE_BUCKET} \
   --state-prefix "stacks" \
@@ -329,7 +329,7 @@ node ${CDKQ_PATH}/dist/cli.js deploy \
 
 ```bash
 # Check if bucket was created via AWS Console or CLI
-aws s3 ls | grep cdkq-test-bucket
+aws s3 ls | grep cdkd-test-bucket
 
 # Check state files
 aws s3 ls s3://${STATE_BUCKET}/stacks/ --recursive
@@ -337,22 +337,22 @@ aws s3 ls s3://${STATE_BUCKET}/stacks/ --recursive
 
 ## 5. Test UPDATE Operations (JSON Patch)
 
-cdkq supports resource updates via Cloud Control API JSON Patch (RFC 6902). Test UPDATE operations to verify changes are applied without recreating resources:
+cdkd supports resource updates via Cloud Control API JSON Patch (RFC 6902). Test UPDATE operations to verify changes are applied without recreating resources:
 
 ### Method A: Using the basic example with environment variable
 
 ```bash
-cd /Users/goto/github/cdkq/tests/integration/examples/basic
+cd /Users/goto/github/cdkd/tests/integration/examples/basic
 
 # First deployment (CREATE)
 # Stack name is positional; auto-detected if single stack
-node ../../../../dist/cli.js deploy CdkqBasicExample \
+node ../../../../dist/cli.js deploy CdkdBasicExample \
   --app "npx ts-node --prefer-ts-exts bin/app.ts" \
   --state-bucket ${STATE_BUCKET} \
   --region ${AWS_REGION}
 
 # Second deployment with UPDATE test tag (UPDATE)
-CDKQ_TEST_UPDATE=true node ../../../../dist/cli.js deploy CdkqBasicExample \
+CDKD_TEST_UPDATE=true node ../../../../dist/cli.js deploy CdkdBasicExample \
   --app "npx ts-node --prefer-ts-exts bin/app.ts" \
   --state-bucket ${STATE_BUCKET} \
   --region ${AWS_REGION}
@@ -361,7 +361,7 @@ CDKQ_TEST_UPDATE=true node ../../../../dist/cli.js deploy CdkqBasicExample \
 # Expected: "Changes: +0 ~1 -0" (1 resource updated)
 ```
 
-The `CDKQ_TEST_UPDATE=true` environment variable adds an additional tag to the S3 bucket without modifying the code. This allows testing UPDATE operations repeatedly.
+The `CDKD_TEST_UPDATE=true` environment variable adds an additional tag to the S3 bucket without modifying the code. This allows testing UPDATE operations repeatedly.
 
 ### Method B: Manual code changes
 
@@ -369,18 +369,18 @@ Alternatively, modify the stack code directly and re-deploy to test updates.
 
 ## 6. Test CloudFormation Intrinsic Functions
 
-cdkq supports CloudFormation intrinsic functions (Ref, Fn::GetAtt, Fn::Join, Fn::Sub).
+cdkd supports CloudFormation intrinsic functions (Ref, Fn::GetAtt, Fn::Join, Fn::Sub).
 Verify that resources using these functions can be deployed:
 
 ```bash
 # Change to a stack using intrinsic functions
-cat > lib/cdkq-test-stack.ts <<'EOF'
+cat > lib/cdkd-test-stack.ts <<'EOF'
 import * as cdk from 'aws-cdk-lib';
 import { Construct } from 'constructs';
 import * as s3 from 'aws-cdk-lib/aws-s3';
 import * as iam from 'aws-cdk-lib/aws-iam';
 
-export class CdkqTestStack extends cdk.Stack {
+export class CdkdTestStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
     super(scope, id, props);
 
@@ -393,7 +393,7 @@ export class CdkqTestStack extends cdk.Stack {
     // Create IAM role (using Ref to reference bucket)
     const role = new iam.Role(this, 'TestRole', {
       assumedBy: new iam.ServicePrincipal('lambda.amazonaws.com'),
-      description: 'Test role for cdkq',
+      description: 'Test role for cdkd',
     });
 
     // Grant read permissions to bucket (using Fn::GetAtt)
@@ -426,15 +426,15 @@ EOF
 npm run build
 
 # Check changes with diff
-node ${CDKQ_PATH}/dist/cli.js diff \
-  --app "npx ts-node --prefer-ts-exts bin/cdkq-test.ts" \
+node ${CDKD_PATH}/dist/cli.js diff \
+  --app "npx ts-node --prefer-ts-exts bin/cdkd-test.ts" \
   --state-bucket ${STATE_BUCKET} \
   --region ${AWS_REGION} \
   --verbose
 
 # Deploy updates
-node ${CDKQ_PATH}/dist/cli.js deploy \
-  --app "npx ts-node --prefer-ts-exts bin/cdkq-test.ts" \
+node ${CDKD_PATH}/dist/cli.js deploy \
+  --app "npx ts-node --prefer-ts-exts bin/cdkd-test.ts" \
   --state-bucket ${STATE_BUCKET} \
   --region ${AWS_REGION} \
   --verbose
@@ -445,8 +445,8 @@ node ${CDKQ_PATH}/dist/cli.js deploy \
 Display execution plan only without making actual changes:
 
 ```bash
-node ${CDKQ_PATH}/dist/cli.js deploy \
-  --app "npx ts-node --prefer-ts-exts bin/cdkq-test.ts" \
+node ${CDKD_PATH}/dist/cli.js deploy \
+  --app "npx ts-node --prefer-ts-exts bin/cdkd-test.ts" \
   --state-bucket ${STATE_BUCKET} \
   --region ${AWS_REGION} \
   --dry-run \
@@ -457,16 +457,16 @@ node ${CDKQ_PATH}/dist/cli.js deploy \
 
 ```bash
 # Delete resources with destroy command (stack name is positional)
-node ${CDKQ_PATH}/dist/cli.js destroy CdkqTestStack \
-  --app "npx ts-node --prefer-ts-exts bin/cdkq-test.ts" \
+node ${CDKD_PATH}/dist/cli.js destroy CdkdTestStack \
+  --app "npx ts-node --prefer-ts-exts bin/cdkd-test.ts" \
   --state-bucket ${STATE_BUCKET} \
   --state-prefix "stacks" \
   --region ${AWS_REGION} \
   --verbose
 
 # To skip confirmation prompt
-node ${CDKQ_PATH}/dist/cli.js destroy CdkqTestStack \
-  --app "npx ts-node --prefer-ts-exts bin/cdkq-test.ts" \
+node ${CDKD_PATH}/dist/cli.js destroy CdkdTestStack \
+  --app "npx ts-node --prefer-ts-exts bin/cdkd-test.ts" \
   --state-bucket ${STATE_BUCKET} \
   --state-prefix "stacks" \
   --region ${AWS_REGION} \
@@ -493,7 +493,7 @@ If your CDK application uses assets (such as Lambda function code), asset publis
 
 ```bash
 # Skip asset publishing
-node ${CDKQ_PATH}/dist/cli.js deploy \
+node ${CDKD_PATH}/dist/cli.js deploy \
   --app "..." \
   --state-bucket ${STATE_BUCKET} \
   --skip-assets
@@ -501,9 +501,9 @@ node ${CDKQ_PATH}/dist/cli.js deploy \
 
 ### Resource Type Support
 
-**cdkq automatically supports all resource types supported by Cloud Control API (over 200 types).**
+**cdkd automatically supports all resource types supported by Cloud Control API (over 200 types).**
 
-For resources not supported by Cloud Control API, you can implement SDK providers. cdkq currently includes 34 SDK provider resource types (see `src/provisioning/providers/` for the full list). Key providers include IAM Role/Policy, S3 Bucket/BucketPolicy, Lambda Function/Permission/Url/EventSourceMapping, DynamoDB Table, SQS Queue/QueuePolicy, SNS Topic/Subscription, EC2 VPC/Subnet/SecurityGroup and related networking resources, API Gateway, EventBridge, CloudWatch, Logs, SecretsManager, SSM, CloudFront OAI, and Custom::* resources.
+For resources not supported by Cloud Control API, you can implement SDK providers. cdkd currently includes 34 SDK provider resource types (see `src/provisioning/providers/` for the full list). Key providers include IAM Role/Policy, S3 Bucket/BucketPolicy, Lambda Function/Permission/Url/EventSourceMapping, DynamoDB Table, SQS Queue/QueuePolicy, SNS Topic/Subscription, EC2 VPC/Subnet/SecurityGroup and related networking resources, API Gateway, EventBridge, CloudWatch, Logs, SecretsManager, SSM, CloudFront OAI, and Custom::* resources.
 
 If you use other resources not supported by Cloud Control API, an error message will be displayed.
 
@@ -512,7 +512,7 @@ If you use other resources not supported by Cloud Control API, an error message 
 Add the `--verbose` flag to display detailed logs:
 
 ```bash
-node ${CDKQ_PATH}/dist/cli.js deploy ... --verbose
+node ${CDKD_PATH}/dist/cli.js deploy ... --verbose
 ```
 
 ## Known Issues and Limitations

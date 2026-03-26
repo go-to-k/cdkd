@@ -26,11 +26,11 @@ This example deploys an S3 bucket with a CloudFront distribution using Origin Ac
 ## Deploy
 
 ```bash
-cdkq deploy S3CloudFrontStack
+cdkd deploy S3CloudFrontStack
 ```
 
 ## Destroy
 
 ```bash
-cdkq destroy S3CloudFrontStack
+cdkd destroy S3CloudFrontStack
 ```

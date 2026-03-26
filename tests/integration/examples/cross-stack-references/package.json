@@ -1,5 +1,5 @@
 {
-  "name": "cdkq-example-cross-stack-references",
+  "name": "cdkd-example-cross-stack-references",
   "version": "1.0.0",
   "private": true,
   "description": "Cross-stack references example with Fn::ImportValue",

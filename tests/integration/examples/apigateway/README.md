@@ -12,7 +12,7 @@ This stack includes the following resources:
 - **IAM Role**: Lambda execution role (auto-created by CDK)
 - **Lambda Permission**: Allows API Gateway to invoke the Lambda function
 
-## Features Tested in cdkq
+## Features Tested in cdkd
 
 1. **API Gateway REST API**: Resource creation via Cloud Control API
 2. **Lambda with Inline Code**: No asset publishing required
@@ -27,7 +27,7 @@ This stack includes the following resources:
 # Install packages
 npm install
 
-# Deploy with cdkq
+# Deploy with cdkd
 node ../../../dist/cli.js deploy \
   --app "npx ts-node --prefer-ts-exts bin/app.ts" \
   --state-bucket <your-state-bucket> \
@@ -49,7 +49,7 @@ Expected response:
 
 ```json
 {
-  "message": "Hello from cdkq!",
+  "message": "Hello from cdkd!",
   "timestamp": "2026-03-26T..."
 }
 ```

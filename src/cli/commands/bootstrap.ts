@@ -32,7 +32,7 @@ async function bootstrapCommand(options: {
     logger.setLevel('debug');
   }
 
-  logger.info('Starting cdkq bootstrap...');
+  logger.info('Starting cdkd bootstrap...');
   logger.debug('Options:', options);
 
   // Initialize AWS clients with region/profile
@@ -172,7 +172,7 @@ async function bootstrapCommand(options: {
     logger.info('\n✓ Bootstrap completed successfully');
     logger.info(`\nState bucket: ${bucketName}`);
     logger.info(`Region: ${region}`);
-    logger.info('\nYou can now use cdkq deploy with:');
+    logger.info('\nYou can now use cdkd deploy with:');
     logger.info(`  --state-bucket ${bucketName}`);
     logger.info(`  --region ${region}`);
   } finally {
@@ -185,10 +185,10 @@ async function bootstrapCommand(options: {
  */
 export function createBootstrapCommand(): Command {
   const cmd = new Command('bootstrap')
-    .description('Bootstrap cdkq by creating required S3 bucket for state management')
+    .description('Bootstrap cdkd by creating required S3 bucket for state management')
     .option(
       '--state-bucket <bucket>',
-      'Name of S3 bucket to create for state storage (default: cdkq-state-{accountId}-{region})'
+      'Name of S3 bucket to create for state storage (default: cdkd-state-{accountId}-{region})'
     )
     .option('--force', 'Force reconfiguration of existing bucket', false)
     .action(withErrorHandling(bootstrapCommand));

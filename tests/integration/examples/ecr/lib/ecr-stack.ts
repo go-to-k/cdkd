@@ -8,7 +8,7 @@ import * as lambda from 'aws-cdk-lib/aws-lambda';
  * Demonstrates:
  * - Docker image asset building and publishing to ECR
  * - Lambda function using DockerImageFunction
- * - ECR asset publishing pipeline via cdkq
+ * - ECR asset publishing pipeline via cdkd
  * - IAM role creation for Lambda execution
  */
 export class EcrStack extends cdk.Stack {
@@ -21,7 +21,7 @@ export class EcrStack extends cdk.Stack {
       memorySize: 256,
       timeout: cdk.Duration.seconds(30),
       environment: {
-        DEPLOYED_BY: 'cdkq',
+        DEPLOYED_BY: 'cdkd',
       },
     });
 

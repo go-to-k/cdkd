@@ -35,7 +35,7 @@ export class EcsFargateStack extends cdk.Stack {
     // Create ECS Cluster
     const cluster = new ecs.Cluster(this, 'Cluster', {
       vpc,
-      clusterName: `cdkq-ecs-fargate-test`,
+      clusterName: `cdkd-ecs-fargate-test`,
     });
 
     // Create Fargate Task Definition
@@ -51,7 +51,7 @@ export class EcsFargateStack extends cdk.Stack {
       ),
       memoryLimitMiB: 512,
       logging: ecs.LogDrivers.awsLogs({
-        streamPrefix: 'cdkq-ecs-fargate',
+        streamPrefix: 'cdkd-ecs-fargate',
       }),
       command: ['echo', 'hello'],
     });

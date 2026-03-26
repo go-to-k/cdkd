@@ -1,8 +1,8 @@
 {
-  "name": "cdkq-example-multi-resource",
+  "name": "cdkd-example-multi-resource",
   "version": "1.0.0",
   "private": true,
-  "description": "Multi-resource example with complex dependencies for cdkq",
+  "description": "Multi-resource example with complex dependencies for cdkd",
   "scripts": {
     "build": "tsc",
     "watch": "tsc -w"

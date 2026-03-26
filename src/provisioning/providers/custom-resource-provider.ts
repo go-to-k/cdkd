@@ -193,7 +193,7 @@ export class CustomResourceProvider implements ResourceProvider {
     }
 
     try {
-      const requestId = `cdkq-${Date.now()}-${Math.random().toString(36).substring(7)}`;
+      const requestId = `cdkd-${Date.now()}-${Math.random().toString(36).substring(7)}`;
       const responseKey = this.getResponseKey(requestId);
       const responseURL = await this.generateResponseURL(responseKey);
 
@@ -203,7 +203,7 @@ export class CustomResourceProvider implements ResourceProvider {
         ResponseURL: responseURL,
         ResourceType: resourceType,
         LogicalResourceId: logicalId,
-        StackId: `arn:aws:cloudformation:us-east-1:000000000000:stack/cdkq-${logicalId}/cdkq`,
+        StackId: `arn:aws:cloudformation:us-east-1:000000000000:stack/cdkd-${logicalId}/cdkd`,
         ResourceProperties: this.stringifyProperties(properties),
       };
 
@@ -265,7 +265,7 @@ export class CustomResourceProvider implements ResourceProvider {
     }
 
     try {
-      const requestId = `cdkq-${Date.now()}-${Math.random().toString(36).substring(7)}`;
+      const requestId = `cdkd-${Date.now()}-${Math.random().toString(36).substring(7)}`;
       const responseKey = this.getResponseKey(requestId);
       const responseURL = await this.generateResponseURL(responseKey);
 
@@ -276,7 +276,7 @@ export class CustomResourceProvider implements ResourceProvider {
         ResourceType: resourceType,
         LogicalResourceId: logicalId,
         PhysicalResourceId: physicalId,
-        StackId: `arn:aws:cloudformation:us-east-1:000000000000:stack/cdkq-${logicalId}/cdkq`,
+        StackId: `arn:aws:cloudformation:us-east-1:000000000000:stack/cdkd-${logicalId}/cdkd`,
         ResourceProperties: this.stringifyProperties(properties),
         OldResourceProperties: this.stringifyProperties(previousProperties),
       };
@@ -344,7 +344,7 @@ export class CustomResourceProvider implements ResourceProvider {
     }
 
     try {
-      const requestId = `cdkq-${Date.now()}-${Math.random().toString(36).substring(7)}`;
+      const requestId = `cdkd-${Date.now()}-${Math.random().toString(36).substring(7)}`;
       const responseKey = this.getResponseKey(requestId);
       const responseURL = await this.generateResponseURL(responseKey);
 
@@ -355,7 +355,7 @@ export class CustomResourceProvider implements ResourceProvider {
         ResourceType: resourceType,
         LogicalResourceId: logicalId,
         PhysicalResourceId: physicalId,
-        StackId: `arn:aws:cloudformation:us-east-1:000000000000:stack/cdkq-${logicalId}/cdkq`,
+        StackId: `arn:aws:cloudformation:us-east-1:000000000000:stack/cdkd-${logicalId}/cdkd`,
         ResourceProperties: this.stringifyProperties(properties),
       };
 

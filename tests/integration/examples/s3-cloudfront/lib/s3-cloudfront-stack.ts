@@ -51,7 +51,7 @@ export class S3CloudFrontStack extends cdk.Stack {
         viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
       },
       defaultRootObject: 'index.html',
-      comment: 'S3 CloudFront Distribution (cdkq integration test)',
+      comment: 'S3 CloudFront Distribution (cdkd integration test)',
     });
 
     // Outputs

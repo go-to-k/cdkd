@@ -26,7 +26,7 @@ export class BedrockAgentStack extends cdk.Stack {
     });
 
     const codeRuntime = new agentcore.Runtime(this, 'CodeRuntime', {
-      runtimeName: 'cdkq_test_code_runtime',
+      runtimeName: 'cdkd_test_code_runtime',
       agentRuntimeArtifact: codeArtifact,
     });
 
@@ -36,7 +36,7 @@ export class BedrockAgentStack extends cdk.Stack {
     );
 
     const dockerRuntime = new agentcore.Runtime(this, 'DockerRuntime', {
-      runtimeName: 'cdkq_test_docker_runtime',
+      runtimeName: 'cdkd_test_docker_runtime',
       agentRuntimeArtifact: dockerArtifact,
     });
 

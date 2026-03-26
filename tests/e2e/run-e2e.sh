@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# cdkq E2E Test Script
+# cdkd E2E Test Script
 #
 # Runs a full deploy -> diff -> update -> destroy cycle for any integration example.
 # Exits immediately on any step failure and cleans up resources on interruption.
@@ -12,9 +12,9 @@
 #   example-dir  Path to an integration example (default: tests/integration/examples/basic)
 #
 # Environment Variables:
-#   STATE_BUCKET  (required) S3 bucket name for cdkq state storage
+#   STATE_BUCKET  (required) S3 bucket name for cdkd state storage
 #   AWS_REGION    (optional) AWS region, default: us-east-1
-#   CDKQ_PATH     (optional) Path to cdkq CLI entry point, default: ../../dist/cli.js
+#   CDKD_PATH     (optional) Path to cdkd CLI entry point, default: ../../dist/cli.js
 #
 
 set -euo pipefail
@@ -39,7 +39,7 @@ header() { echo -e "\n${BOLD}========== $* ==========${RESET}\n"; }
 # --------------------------------------------------------------------------
 STATE_BUCKET="${STATE_BUCKET:-}"
 AWS_REGION="${AWS_REGION:-us-east-1}"
-CDKQ_PATH="${CDKQ_PATH:-../../dist/cli.js}"
+CDKD_PATH="${CDKD_PATH:-../../dist/cli.js}"
 
 if [[ -z "${STATE_BUCKET}" ]]; then
   echo -e "${RED}ERROR: STATE_BUCKET environment variable is required.${RESET}"
@@ -48,7 +48,7 @@ if [[ -z "${STATE_BUCKET}" ]]; then
   echo "  STATE_BUCKET=my-bucket ./run-e2e.sh [example-dir]"
   echo "  STATE_BUCKET=my-bucket ./run-e2e.sh ../integration/examples/lambda"
   echo "  STATE_BUCKET=my-bucket AWS_REGION=ap-northeast-1 ./run-e2e.sh"
-  echo "  STATE_BUCKET=my-bucket CDKQ_PATH=/path/to/cli.js ./run-e2e.sh"
+  echo "  STATE_BUCKET=my-bucket CDKD_PATH=/path/to/cli.js ./run-e2e.sh"
   exit 1
 fi
 
@@ -73,32 +73,32 @@ fi
 EXAMPLE_DIR="$(cd "${EXAMPLE_DIR}" 2>/dev/null && pwd)" || true
 EXAMPLE_NAME="$(basename "${EXAMPLE_DIR}")"
 
-CDKQ_BIN="$(cd "${SCRIPT_DIR}" && node -e "const p = require('path'); console.log(p.resolve('${CDKQ_PATH}'))")"
+CDKD_BIN="$(cd "${SCRIPT_DIR}" && node -e "const p = require('path'); console.log(p.resolve('${CDKD_PATH}'))")"
 
 if [[ ! -d "${EXAMPLE_DIR}" ]]; then
   fail "Example directory not found: ${EXAMPLE_DIR}"
   exit 1
 fi
 
-if [[ ! -f "${CDKQ_BIN}" ]]; then
-  fail "cdkq CLI not found at: ${CDKQ_BIN}"
+if [[ ! -f "${CDKD_BIN}" ]]; then
+  fail "cdkd CLI not found at: ${CDKD_BIN}"
   echo "  Hint: Run 'npm run build' in the project root first."
   exit 1
 fi
 
 # --------------------------------------------------------------------------
-# Common cdkq arguments
+# Common cdkd arguments
 # --------------------------------------------------------------------------
 APP_CMD="npx ts-node --prefer-ts-exts bin/app.ts"
-CDKQ_COMMON_ARGS=(
+CDKD_COMMON_ARGS=(
   --app "${APP_CMD}"
   --state-bucket "${STATE_BUCKET}"
   --region "${AWS_REGION}"
 )
 
-run_cdkq() {
-  # Run cdkq from the example directory
-  (cd "${EXAMPLE_DIR}" && node "${CDKQ_BIN}" "$@")
+run_cdkd() {
+  # Run cdkd from the example directory
+  (cd "${EXAMPLE_DIR}" && node "${CDKD_BIN}" "$@")
 }
 
 # --------------------------------------------------------------------------
@@ -123,7 +123,7 @@ cleanup() {
   if [[ "${CLEANUP_NEEDED}" == "true" ]]; then
     echo ""
     echo -e "${YELLOW}Interrupted – running cleanup destroy...${RESET}"
-    run_cdkq destroy "${CDKQ_COMMON_ARGS[@]}" --force --verbose 2>&1 || true
+    run_cdkd destroy "${CDKD_COMMON_ARGS[@]}" --force --verbose 2>&1 || true
     echo -e "${YELLOW}Cleanup complete.${RESET}"
   fi
   echo ""
@@ -138,7 +138,7 @@ trap 'exit 130' INT TERM
 # --------------------------------------------------------------------------
 header "Pre-flight checks [${EXAMPLE_NAME}]"
 
-info "cdkq binary: ${CDKQ_BIN}"
+info "cdkd binary: ${CDKD_BIN}"
 info "Example dir:  ${EXAMPLE_DIR}"
 info "Example name: ${EXAMPLE_NAME}"
 info "State bucket: ${STATE_BUCKET}"
@@ -165,10 +165,10 @@ step_header() {
 # --------------------------------------------------------------------------
 step_header "Deploy (CREATE)"
 
-info "Running: cdkq deploy"
+info "Running: cdkd deploy"
 CLEANUP_NEEDED=true
 
-run_cdkq deploy "${CDKQ_COMMON_ARGS[@]}" --verbose
+run_cdkd deploy "${CDKD_COMMON_ARGS[@]}" --verbose
 pass "Initial deploy succeeded [$(elapsed)]"
 
 # --------------------------------------------------------------------------
@@ -176,8 +176,8 @@ pass "Initial deploy succeeded [$(elapsed)]"
 # --------------------------------------------------------------------------
 step_header "Diff after CREATE (expect no changes)"
 
-info "Running: cdkq diff"
-DIFF_OUTPUT=$(run_cdkq diff "${CDKQ_COMMON_ARGS[@]}" 2>&1) || true
+info "Running: cdkd diff"
+DIFF_OUTPUT=$(run_cdkd diff "${CDKD_COMMON_ARGS[@]}" 2>&1) || true
 
 if echo "${DIFF_OUTPUT}" | grep -q "No changes detected"; then
   pass "Diff shows no changes as expected [$(elapsed)]"
@@ -190,10 +190,10 @@ fi
 # --------------------------------------------------------------------------
 # Step 3: Update deploy (add UpdateTest tag)
 # --------------------------------------------------------------------------
-step_header "Deploy (UPDATE with CDKQ_TEST_UPDATE=true)"
+step_header "Deploy (UPDATE with CDKD_TEST_UPDATE=true)"
 
-info "Running: CDKQ_TEST_UPDATE=true cdkq deploy"
-CDKQ_TEST_UPDATE=true run_cdkq deploy "${CDKQ_COMMON_ARGS[@]}" --verbose
+info "Running: CDKD_TEST_UPDATE=true cdkd deploy"
+CDKD_TEST_UPDATE=true run_cdkd deploy "${CDKD_COMMON_ARGS[@]}" --verbose
 pass "Update deploy succeeded [$(elapsed)]"
 
 # --------------------------------------------------------------------------
@@ -201,8 +201,8 @@ pass "Update deploy succeeded [$(elapsed)]"
 # --------------------------------------------------------------------------
 step_header "Diff after UPDATE (expect no changes)"
 
-info "Running: CDKQ_TEST_UPDATE=true cdkq diff"
-DIFF_OUTPUT=$(CDKQ_TEST_UPDATE=true run_cdkq diff "${CDKQ_COMMON_ARGS[@]}" 2>&1) || true
+info "Running: CDKD_TEST_UPDATE=true cdkd diff"
+DIFF_OUTPUT=$(CDKD_TEST_UPDATE=true run_cdkd diff "${CDKD_COMMON_ARGS[@]}" 2>&1) || true
 
 if echo "${DIFF_OUTPUT}" | grep -q "No changes detected"; then
   pass "Diff shows no changes as expected [$(elapsed)]"
@@ -217,8 +217,8 @@ fi
 # --------------------------------------------------------------------------
 step_header "Destroy"
 
-info "Running: cdkq destroy --force"
-run_cdkq destroy "${CDKQ_COMMON_ARGS[@]}" --force --verbose
+info "Running: cdkd destroy --force"
+run_cdkd destroy "${CDKD_COMMON_ARGS[@]}" --force --verbose
 pass "Destroy succeeded [$(elapsed)]"
 
 CLEANUP_NEEDED=false

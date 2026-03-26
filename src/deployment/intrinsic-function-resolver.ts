@@ -1130,9 +1130,9 @@ export class IntrinsicFunctionResolver {
         return context?.stackName ?? 'UnknownStack';
 
       case 'AWS::StackId': {
-        // cdkq doesn't use CloudFormation stacks, generate a synthetic ID
+        // cdkd doesn't use CloudFormation stacks, generate a synthetic ID
         const info = await getAccountInfo();
-        return `arn:aws:cloudformation:${info.region}:${info.accountId}:stack/${context?.stackName ?? 'UnknownStack'}/cdkq`;
+        return `arn:aws:cloudformation:${info.region}:${info.accountId}:stack/${context?.stackName ?? 'UnknownStack'}/cdkd`;
       }
 
       case 'AWS::URLSuffix':

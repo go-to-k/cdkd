@@ -1,16 +1,16 @@
 #!/usr/bin/env bash
 #
-# run-benchmark.sh - Compare cdkq vs CloudFormation deployment speed
+# run-benchmark.sh - Compare cdkd vs CloudFormation deployment speed
 #
 # Usage:
 #   STATE_BUCKET=my-bucket AWS_REGION=ap-northeast-1 ./tests/benchmark/run-benchmark.sh
 #
 # Environment variables:
-#   STATE_BUCKET  - S3 bucket for cdkq state (optional: auto-resolved from STS account)
+#   STATE_BUCKET  - S3 bucket for cdkd state (optional: auto-resolved from STS account)
 #   AWS_REGION    - AWS region (default: ap-northeast-1)
-#   CDKQ_BIN      - Path to cdkq binary (default: ./dist/cli.js)
+#   CDKD_BIN      - Path to cdkd binary (default: ./dist/cli.js)
 #   SKIP_CFN      - Set to "true" to skip CloudFormation benchmark
-#   SKIP_CDKQ     - Set to "true" to skip cdkq benchmark
+#   SKIP_CDKD     - Set to "true" to skip cdkd benchmark
 #   RUNS          - Number of runs for averaging (default: 1)
 #
 
@@ -21,17 +21,17 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 EXAMPLE_DIR="$PROJECT_ROOT/tests/integration/examples/basic"
-STACK_NAME="CdkqBasicExample"
+STACK_NAME="CdkdBasicExample"
 CDK_APP="npx ts-node bin/app.ts"
 
 AWS_REGION="${AWS_REGION:-ap-northeast-1}"
-CDKQ_BIN="${CDKQ_BIN:-$PROJECT_ROOT/dist/cli.js}"
+CDKD_BIN="${CDKD_BIN:-$PROJECT_ROOT/dist/cli.js}"
 SKIP_CFN="${SKIP_CFN:-false}"
-SKIP_CDKQ="${SKIP_CDKQ:-false}"
+SKIP_CDKD="${SKIP_CDKD:-false}"
 RUNS="${RUNS:-1}"
 
-# Stack name suffix to avoid collisions between cdkq and CFn
-CDKQ_STACK="$STACK_NAME"
+# Stack name suffix to avoid collisions between cdkd and CFn
+CDKD_STACK="$STACK_NAME"
 CFN_STACK="${STACK_NAME}Cfn"
 
 # Results file
@@ -73,12 +73,12 @@ elapsed_sec() {
 
 # Calculates speedup ratio
 calc_speedup() {
-  local cdkq_ms=$1
+  local cdkd_ms=$1
   local cfn_ms=$2
-  if [[ "$cdkq_ms" -eq 0 ]] || [[ "$cfn_ms" -eq 0 ]]; then
+  if [[ "$cdkd_ms" -eq 0 ]] || [[ "$cfn_ms" -eq 0 ]]; then
     echo "N/A"
   else
-    python3 -c "print(f'{$cfn_ms / $cdkq_ms:.1f}x')"
+    python3 -c "print(f'{$cfn_ms / $cdkd_ms:.1f}x')"
   fi
 }
 
@@ -104,12 +104,12 @@ check_prerequisites() {
   fi
   ok "AWS credentials valid"
 
-  # Check cdkq is built
-  if [[ ! -f "$CDKQ_BIN" ]]; then
-    warn "cdkq binary not found at $CDKQ_BIN. Building..."
+  # Check cdkd is built
+  if [[ ! -f "$CDKD_BIN" ]]; then
+    warn "cdkd binary not found at $CDKD_BIN. Building..."
     (cd "$PROJECT_ROOT" && npm run build)
   fi
-  ok "cdkq binary available"
+  ok "cdkd binary available"
 
   # Check CDK CLI (for CloudFormation benchmark)
   if [[ "$SKIP_CFN" != "true" ]]; then
@@ -139,19 +139,19 @@ check_prerequisites() {
   echo ""
 }
 
-# ─── cdkq benchmark ─────────────────────────────────────────────────────────
+# ─── cdkd benchmark ─────────────────────────────────────────────────────────
 
-# Synthesize with cdkq (measures synthesis time)
-cdkq_synth() {
+# Synthesize with cdkd (measures synthesis time)
+cdkd_synth() {
   local start end
   start=$(now_ms)
-  (cd "$EXAMPLE_DIR" && node "$CDKQ_BIN" synth --app "$CDK_APP" "$CDKQ_STACK" >/dev/null 2>&1)
+  (cd "$EXAMPLE_DIR" && node "$CDKD_BIN" synth --app "$CDK_APP" "$CDKD_STACK" >/dev/null 2>&1)
   end=$(now_ms)
   echo $((end - start))
 }
 
-# Deploy with cdkq (measures deploy time including synthesis)
-cdkq_deploy() {
+# Deploy with cdkd (measures deploy time including synthesis)
+cdkd_deploy() {
   local state_bucket_args=""
   if [[ -n "${STATE_BUCKET:-}" ]]; then
     state_bucket_args="--state-bucket $STATE_BUCKET"
@@ -159,50 +159,50 @@ cdkq_deploy() {
 
   local start end
   start=$(now_ms)
-  (cd "$EXAMPLE_DIR" && node "$CDKQ_BIN" deploy --app "$CDK_APP" $state_bucket_args "$CDKQ_STACK" 2>&1) || true
+  (cd "$EXAMPLE_DIR" && node "$CDKD_BIN" deploy --app "$CDK_APP" $state_bucket_args "$CDKD_STACK" 2>&1) || true
   end=$(now_ms)
   echo $((end - start))
 }
 
-# Destroy with cdkq
-cdkq_destroy() {
+# Destroy with cdkd
+cdkd_destroy() {
   local state_bucket_args=""
   if [[ -n "${STATE_BUCKET:-}" ]]; then
     state_bucket_args="--state-bucket $STATE_BUCKET"
   fi
 
-  info "Destroying cdkq stack..."
-  (cd "$EXAMPLE_DIR" && node "$CDKQ_BIN" destroy --app "$CDK_APP" $state_bucket_args --force "$CDKQ_STACK" 2>&1) || {
-    warn "cdkq destroy failed (stack may not exist)"
+  info "Destroying cdkd stack..."
+  (cd "$EXAMPLE_DIR" && node "$CDKD_BIN" destroy --app "$CDK_APP" $state_bucket_args --force "$CDKD_STACK" 2>&1) || {
+    warn "cdkd destroy failed (stack may not exist)"
   }
 }
 
-run_cdkq_benchmark() {
-  phase "Running cdkq benchmark (run $1/$RUNS)"
+run_cdkd_benchmark() {
+  phase "Running cdkd benchmark (run $1/$RUNS)"
 
   # Clean up first
-  cdkq_destroy >/dev/null 2>&1 || true
+  cdkd_destroy >/dev/null 2>&1 || true
 
   # Synthesis only
   info "Measuring synthesis time..."
   local synth_ms
-  synth_ms=$(cdkq_synth)
+  synth_ms=$(cdkd_synth)
   ok "Synthesis: $(fmt_time "$synth_ms")"
 
   # Full deploy (includes synthesis + asset publishing + resource creation)
   info "Measuring deploy time..."
   local deploy_ms
-  deploy_ms=$(cdkq_deploy)
+  deploy_ms=$(cdkd_deploy)
   ok "Deploy: $(fmt_time "$deploy_ms")"
 
   # Clean up
   info "Cleaning up..."
-  cdkq_destroy >/dev/null 2>&1 || true
+  cdkd_destroy >/dev/null 2>&1 || true
 
   # Export results
-  CDKQ_SYNTH_MS=$synth_ms
-  CDKQ_DEPLOY_MS=$deploy_ms
-  CDKQ_TOTAL_MS=$((synth_ms + deploy_ms))
+  CDKD_SYNTH_MS=$synth_ms
+  CDKD_DEPLOY_MS=$deploy_ms
+  CDKD_TOTAL_MS=$((synth_ms + deploy_ms))
 
   echo ""
 }
@@ -268,19 +268,19 @@ run_cfn_benchmark() {
 # ─── Results output ──────────────────────────────────────────────────────────
 
 print_results() {
-  local cdkq_synth_s cfn_synth_s cdkq_deploy_s cfn_deploy_s cdkq_total_s cfn_total_s
+  local cdkd_synth_s cfn_synth_s cdkd_deploy_s cfn_deploy_s cdkd_total_s cfn_total_s
   local synth_speedup deploy_speedup total_speedup
 
-  cdkq_synth_s=$(fmt_time "${CDKQ_SYNTH_MS:-0}")
+  cdkd_synth_s=$(fmt_time "${CDKD_SYNTH_MS:-0}")
   cfn_synth_s=$(fmt_time "${CFN_SYNTH_MS:-0}")
-  cdkq_deploy_s=$(fmt_time "${CDKQ_DEPLOY_MS:-0}")
+  cdkd_deploy_s=$(fmt_time "${CDKD_DEPLOY_MS:-0}")
   cfn_deploy_s=$(fmt_time "${CFN_DEPLOY_MS:-0}")
-  cdkq_total_s=$(fmt_time "${CDKQ_TOTAL_MS:-0}")
+  cdkd_total_s=$(fmt_time "${CDKD_TOTAL_MS:-0}")
   cfn_total_s=$(fmt_time "${CFN_TOTAL_MS:-0}")
 
-  synth_speedup=$(calc_speedup "${CDKQ_SYNTH_MS:-0}" "${CFN_SYNTH_MS:-0}")
-  deploy_speedup=$(calc_speedup "${CDKQ_DEPLOY_MS:-0}" "${CFN_DEPLOY_MS:-0}")
-  total_speedup=$(calc_speedup "${CDKQ_TOTAL_MS:-0}" "${CFN_TOTAL_MS:-0}")
+  synth_speedup=$(calc_speedup "${CDKD_SYNTH_MS:-0}" "${CFN_SYNTH_MS:-0}")
+  deploy_speedup=$(calc_speedup "${CDKD_DEPLOY_MS:-0}" "${CFN_DEPLOY_MS:-0}")
+  total_speedup=$(calc_speedup "${CDKD_TOTAL_MS:-0}" "${CFN_TOTAL_MS:-0}")
 
   local output
   output=$(cat <<EOF
@@ -290,15 +290,15 @@ print_results() {
 **Region**: $AWS_REGION
 **Stack**: $STACK_NAME (S3 bucket with tags and outputs)
 
-| Phase          | cdkq           | CloudFormation  | Speedup        |
+| Phase          | cdkd           | CloudFormation  | Speedup        |
 |----------------|----------------|-----------------|----------------|
-| Synthesis      | $cdkq_synth_s  | $cfn_synth_s    | $synth_speedup |
-| Deploy (total) | $cdkq_deploy_s | $cfn_deploy_s   | $deploy_speedup|
-| **Total**      | **$cdkq_total_s** | **$cfn_total_s** | **$total_speedup** |
+| Synthesis      | $cdkd_synth_s  | $cfn_synth_s    | $synth_speedup |
+| Deploy (total) | $cdkd_deploy_s | $cfn_deploy_s   | $deploy_speedup|
+| **Total**      | **$cdkd_total_s** | **$cfn_total_s** | **$total_speedup** |
 
 ### Notes
 
-- **cdkq** deploys directly via Cloud Control API, skipping CloudFormation entirely
+- **cdkd** deploys directly via Cloud Control API, skipping CloudFormation entirely
 - **CloudFormation** goes through change set creation, execution, and stack status polling
 - Synthesis time should be roughly equal (both use the same CDK app)
 - Deploy speedup comes from eliminating CloudFormation overhead:
@@ -310,7 +310,7 @@ print_results() {
 ### Environment
 
 - Node.js: $(node --version)
-- cdkq: $(node "$CDKQ_BIN" --version 2>/dev/null || echo "dev")
+- cdkd: $(node "$CDKD_BIN" --version 2>/dev/null || echo "dev")
 - CDK CLI: $(cdk --version 2>/dev/null || echo "not installed")
 EOF
 )
@@ -331,10 +331,10 @@ print_single_results() {
   local tool=$1
   local synth_s deploy_s total_s
 
-  if [[ "$tool" == "cdkq" ]]; then
-    synth_s=$(fmt_time "${CDKQ_SYNTH_MS:-0}")
-    deploy_s=$(fmt_time "${CDKQ_DEPLOY_MS:-0}")
-    total_s=$(fmt_time "${CDKQ_TOTAL_MS:-0}")
+  if [[ "$tool" == "cdkd" ]]; then
+    synth_s=$(fmt_time "${CDKD_SYNTH_MS:-0}")
+    deploy_s=$(fmt_time "${CDKD_DEPLOY_MS:-0}")
+    total_s=$(fmt_time "${CDKD_TOTAL_MS:-0}")
   else
     synth_s=$(fmt_time "${CFN_SYNTH_MS:-0}")
     deploy_s=$(fmt_time "${CFN_DEPLOY_MS:-0}")
@@ -373,7 +373,7 @@ cleanup() {
   local exit_code=$?
   if [[ $exit_code -ne 0 ]]; then
     warn "Benchmark interrupted. Cleaning up..."
-    cdkq_destroy >/dev/null 2>&1 || true
+    cdkd_destroy >/dev/null 2>&1 || true
     if [[ "$SKIP_CFN" != "true" ]]; then
       cfn_destroy >/dev/null 2>&1 || true
     fi
@@ -388,7 +388,7 @@ trap cleanup INT TERM
 main() {
   echo ""
   echo "============================================"
-  echo "  cdkq vs CloudFormation Benchmark"
+  echo "  cdkd vs CloudFormation Benchmark"
   echo "  Example: basic (S3 Bucket)"
   echo "============================================"
   echo ""
@@ -396,17 +396,17 @@ main() {
   check_prerequisites
 
   # Initialize result variables
-  CDKQ_SYNTH_MS=0
-  CDKQ_DEPLOY_MS=0
-  CDKQ_TOTAL_MS=0
+  CDKD_SYNTH_MS=0
+  CDKD_DEPLOY_MS=0
+  CDKD_TOTAL_MS=0
   CFN_SYNTH_MS=0
   CFN_DEPLOY_MS=0
   CFN_TOTAL_MS=0
 
   # Run benchmarks
-  if [[ "$SKIP_CDKQ" != "true" ]]; then
+  if [[ "$SKIP_CDKD" != "true" ]]; then
     for i in $(seq 1 "$RUNS"); do
-      run_cdkq_benchmark "$i"
+      run_cdkd_benchmark "$i"
     done
   fi
 
@@ -417,10 +417,10 @@ main() {
   fi
 
   # Print results
-  if [[ "$SKIP_CDKQ" == "true" ]]; then
+  if [[ "$SKIP_CDKD" == "true" ]]; then
     print_single_results "CloudFormation"
   elif [[ "$SKIP_CFN" == "true" ]]; then
-    print_single_results "cdkq"
+    print_single_results "cdkd"
   else
     print_results
   fi

@@ -3,7 +3,7 @@ import os
 
 def handler(event, context):
     """
-    Simple Lambda function handler for testing cdkq deployment.
+    Simple Lambda function handler for testing cdkd deployment.
 
     Demonstrates:
     - Environment variable access (TABLE_NAME from CDK)
@@ -14,7 +14,7 @@ def handler(event, context):
     return {
         'statusCode': 200,
         'body': json.dumps({
-            'message': 'Hello from cdkq Lambda!',
+            'message': 'Hello from cdkd Lambda!',
             'tableName': table_name,
             'event': event
         })

@@ -14,7 +14,7 @@ This stack includes the following resources:
 - **Security Group**: Default security group for the service
 - **CloudWatch Log Group**: For container log streaming
 
-## Features Tested in cdkq
+## Features Tested in cdkd
 
 1. **VPC and Networking**: VPC, subnet, internet gateway, route table provisioning
 2. **ECS Cluster**: Cluster creation with VPC association
@@ -30,7 +30,7 @@ This stack includes the following resources:
 # Install packages
 npm install
 
-# Deploy with cdkq
+# Deploy with cdkd
 node ../../../dist/cli.js deploy \
   --app "npx ts-node --prefer-ts-exts bin/app.ts" \
   --state-bucket <your-state-bucket> \

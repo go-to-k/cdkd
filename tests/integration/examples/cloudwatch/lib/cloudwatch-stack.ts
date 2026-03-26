@@ -27,7 +27,7 @@ export class CloudWatchStack extends cdk.Stack {
 
     // Create CloudWatch Log Group
     const logGroup = new logs.LogGroup(this, 'AppLogGroup', {
-      logGroupName: `/cdkq/cloudwatch-example/${this.stackName}`,
+      logGroupName: `/cdkd/cloudwatch-example/${this.stackName}`,
       retention: logs.RetentionDays.ONE_WEEK,
       removalPolicy: cdk.RemovalPolicy.DESTROY,
     });
@@ -36,7 +36,7 @@ export class CloudWatchStack extends cdk.Stack {
     const metricFilter = new logs.MetricFilter(this, 'ErrorMetricFilter', {
       logGroup,
       filterPattern: logs.FilterPattern.literal('ERROR'),
-      metricNamespace: 'CdkqCloudWatchExample',
+      metricNamespace: 'CdkdCloudWatchExample',
       metricName: 'ErrorCount',
       metricValue: '1',
       defaultValue: 0,

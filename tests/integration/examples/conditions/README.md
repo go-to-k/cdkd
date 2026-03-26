@@ -1,10 +1,10 @@
 # CloudFormation Conditions Example
 
-This example demonstrates how to use CloudFormation Conditions with cdkq.
+This example demonstrates how to use CloudFormation Conditions with cdkd.
 
 ## Purpose
 
-Implement key CloudFormation Conditions features and test how cdkq handles them:
+Implement key CloudFormation Conditions features and test how cdkd handles them:
 
 - **CfnParameter**: Modify stack behavior based on user input
 - **CfnCondition**: Define conditional expressions (Fn::Equals, Fn::And, etc.)
@@ -36,9 +36,9 @@ This stack includes the following resources:
 - `VersioningStatus`: Versioning status
 - `EnvironmentType`: Environment type
 
-## Features Tested in cdkq
+## Features Tested in cdkd
 
-This example tests the following cdkq features:
+This example tests the following cdkd features:
 
 1. **Parameter Processing**
    - CfnParameter parsing and management
@@ -67,26 +67,26 @@ npm run build
 
 ### Deploy in Development Environment
 ```bash
-cdkq deploy --parameters Environment=Development,EnableVersioning=false
+cdkd deploy --parameters Environment=Development,EnableVersioning=false
 ```
 
 ### Deploy in Production Environment
 ```bash
-cdkq deploy --parameters Environment=Production,EnableVersioning=true
+cdkd deploy --parameters Environment=Production,EnableVersioning=true
 ```
 
 ### Update by Changing Parameters
 ```bash
 # Change from Development to Production
-cdkq deploy --parameters Environment=Production,EnableVersioning=false
+cdkd deploy --parameters Environment=Production,EnableVersioning=false
 
 # Enable versioning
-cdkq deploy --parameters Environment=Production,EnableVersioning=true
+cdkd deploy --parameters Environment=Production,EnableVersioning=true
 ```
 
 ## Current Limitations
 
-**Important**: This example is created to demonstrate future feature enhancements for cdkq. **CloudFormation Conditions are not fully supported in the current cdkq implementation.**
+**Important**: This example is created to demonstrate future feature enhancements for cdkd. **CloudFormation Conditions are not fully supported in the current cdkd implementation.**
 
 Current limitations:
 - ❌ CfnCondition evaluation engine not implemented
@@ -99,7 +99,7 @@ This example is provided for the following purposes:
 2. Reference specification for future implementation
 3. Foundation for integration tests (after implementation)
 
-## Planned cdkq Extensions
+## Planned cdkd Extensions
 
 Features required for this example to work fully:
 

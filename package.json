@@ -1,10 +1,10 @@
 {
-  "name": "cdkq",
+  "name": "cdkd",
   "version": "0.1.0",
   "description": "CDK Quick Deploy - Deploy AWS CDK apps directly via SDK/Cloud Control API",
   "main": "dist/index.js",
   "bin": {
-    "cdkq": "./dist/cli.js"
+    "cdkd": "./dist/cli.js"
   },
   "files": [
     "dist",
@@ -13,11 +13,11 @@
   ],
   "repository": {
     "type": "git",
-    "url": "https://github.com/go-to-k/cdkq.git"
+    "url": "https://github.com/go-to-k/cdkd.git"
   },
-  "homepage": "https://github.com/go-to-k/cdkq",
+  "homepage": "https://github.com/go-to-k/cdkd",
   "bugs": {
-    "url": "https://github.com/go-to-k/cdkq/issues"
+    "url": "https://github.com/go-to-k/cdkd/issues"
   },
   "type": "module",
   "scripts": {

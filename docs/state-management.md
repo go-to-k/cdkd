@@ -1,8 +1,8 @@
-# cdkq State Management Specification
+# cdkd State Management Specification
 
 ## Overview
 
-cdkq adopts a state management system with S3 as the backend. Unlike CloudFormation's server-side state management, state is explicitly managed on the client side.
+cdkd adopts a state management system with S3 as the backend. Unlike CloudFormation's server-side state management, state is explicitly managed on the client side.
 
 ## Design Principles
 
@@ -38,14 +38,14 @@ s3://{STATE_BUCKET}/{STATE_PREFIX}/
 ### Configuration Example
 
 ```bash
-export STATE_BUCKET="cdkq-state-myteam-1234567890"
-export STATE_PREFIX="stacks"  # Default: "cdkq"
+export STATE_BUCKET="cdkd-state-myteam-1234567890"
+export STATE_PREFIX="stacks"  # Default: "cdkd"
 ```
 
 Result:
 
 ```
-s3://cdkq-state-myteam-1234567890/stacks/
+s3://cdkd-state-myteam-1234567890/stacks/
   ├── MyAppStack/
   │   ├── lock.json
   │   └── state.json
@@ -144,7 +144,7 @@ Varies by resource type. Examples:
 | `AWS::SQS::Queue` | `https://sqs.us-east-1.amazonaws.com/123456789012/MyQueue` |
 | `Custom::MyResource` | Any string returned by custom resource |
 
-**Note**: cdkq supports **all resource types supported by Cloud Control API** (200+ resource types). The table above shows only a few examples. For resources not supported by Cloud Control API, custom SDK Providers can be implemented (see [provider-development.md](./provider-development.md)).
+**Note**: cdkd supports **all resource types supported by Cloud Control API** (200+ resource types). The table above shows only a few examples. For resources not supported by Cloud Control API, custom SDK Providers can be implemented (see [provider-development.md](./provider-development.md)).
 
 #### Purpose of attributes
 
@@ -157,7 +157,7 @@ Example:
 !GetAtt MyBucket.Arn
 ```
 
-↓ cdkq resolves
+↓ cdkd resolves
 
 ```typescript
 const bucketState = state.resources['MyBucket'];
@@ -367,7 +367,7 @@ S3's ETag is returned **with double quotes**:
 }
 ```
 
-cdkq stores and uses ETags as-is.
+cdkd stores and uses ETags as-is.
 
 ## Deployment Flow and State Management
 
@@ -446,7 +446,7 @@ async deploy(stackName: string) {
 
 ### Behavior on Partial Failure
 
-cdkq catches errors per resource and saves **only successful resources** to state.
+cdkd catches errors per resource and saves **only successful resources** to state.
 
 ```typescript
 // deploy-engine.ts
@@ -555,7 +555,7 @@ function computeDeletionOrder(resources: Record<string, ResourceState>): string[
     {
       "Effect": "Allow",
       "Principal": {
-        "AWS": "arn:aws:iam::123456789012:role/CdkqDeployRole"
+        "AWS": "arn:aws:iam::123456789012:role/CdkdDeployRole"
       },
       "Action": [
         "s3:GetObject",
@@ -564,8 +564,8 @@ function computeDeletionOrder(resources: Record<string, ResourceState>): string[
         "s3:ListBucket"
       ],
       "Resource": [
-        "arn:aws:s3:::cdkq-state-bucket",
-        "arn:aws:s3:::cdkq-state-bucket/*"
+        "arn:aws:s3:::cdkd-state-bucket",
+        "arn:aws:s3:::cdkd-state-bucket/*"
       ]
     }
   ]
@@ -576,7 +576,7 @@ function computeDeletionOrder(resources: Record<string, ResourceState>): string[
 
 ```bash
 aws s3api put-bucket-encryption \
-  --bucket cdkq-state-bucket \
+  --bucket cdkd-state-bucket \
   --server-side-encryption-configuration '{
     "Rules": [{
       "ApplyServerSideEncryptionByDefault": {
@@ -590,7 +590,7 @@ Or use KMS:
 
 ```bash
 aws s3api put-bucket-encryption \
-  --bucket cdkq-state-bucket \
+  --bucket cdkd-state-bucket \
   --server-side-encryption-configuration '{
     "Rules": [{
       "ApplyServerSideEncryptionByDefault": {
@@ -607,7 +607,7 @@ Retains state file history and enables recovery from accidental deletion.
 
 ```bash
 aws s3api put-bucket-versioning \
-  --bucket cdkq-state-bucket \
+  --bucket cdkd-state-bucket \
   --versioning-configuration Status=Enabled
 ```
 
@@ -617,8 +617,8 @@ In addition to S3 versioning, regular backups are recommended:
 
 ```bash
 # Daily backup example
-aws s3 sync s3://cdkq-state-bucket/stacks/ \
-  s3://cdkq-state-backup/$(date +%Y%m%d)/
+aws s3 sync s3://cdkd-state-bucket/stacks/ \
+  s3://cdkd-state-backup/$(date +%Y%m%d)/
 ```
 
 ### Team Environment Operations
@@ -628,7 +628,7 @@ aws s3 sync s3://cdkq-state-bucket/stacks/ \
 ```bash
 # Check lock status
 aws s3api get-object \
-  --bucket cdkq-state-bucket \
+  --bucket cdkd-state-bucket \
   --key stacks/MyStack/lock.json \
   /dev/stdout
 
@@ -644,16 +644,16 @@ aws s3api get-object \
 
 ```bash
 # Display all stacks
-aws s3 ls s3://cdkq-state-bucket/stacks/ --recursive \
+aws s3 ls s3://cdkd-state-bucket/stacks/ --recursive \
   | grep state.json \
   | awk '{print $4}' \
   | sed 's|stacks/||; s|/state.json||'
 ```
 
-Or cdkq command (planned for future implementation):
+Or cdkd command (planned for future implementation):
 
 ```bash
-cdkq list --state-bucket cdkq-state-bucket
+cdkd list --state-bucket cdkd-state-bucket
 ```
 
 ## State Migration and Version Management
@@ -684,7 +684,7 @@ interface StackStateV2 {
 Migration tool (planned):
 
 ```bash
-cdkq migrate-state --from-version 1 --to-version 2
+cdkd migrate-state --from-version 1 --to-version 2
 ```
 
 ## Troubleshooting
@@ -696,29 +696,29 @@ cdkq migrate-state --from-version 1 --to-version 2
 ```bash
 # List versions
 aws s3api list-object-versions \
-  --bucket cdkq-state-bucket \
+  --bucket cdkd-state-bucket \
   --prefix stacks/MyStack/state.json
 
 # Restore specific version
 aws s3api get-object \
-  --bucket cdkq-state-bucket \
+  --bucket cdkd-state-bucket \
   --key stacks/MyStack/state.json \
   --version-id abc123 \
   /tmp/state-backup.json
 
 # Restore
 aws s3 cp /tmp/state-backup.json \
-  s3://cdkq-state-bucket/stacks/MyStack/state.json
+  s3://cdkd-state-bucket/stacks/MyStack/state.json
 ```
 
 ### If Lock Remains
 
 ```bash
 # Force delete lock
-aws s3 rm s3://cdkq-state-bucket/stacks/MyStack/lock.json
+aws s3 rm s3://cdkd-state-bucket/stacks/MyStack/lock.json
 
-# Or cdkq command (planned for future implementation)
-# cdkq unlock --stack MyStack --force
+# Or cdkd command (planned for future implementation)
+# cdkd unlock --stack MyStack --force
 ```
 
 ### If State and Resources Don't Match
@@ -730,29 +730,29 @@ If you manually changed AWS resources, state file and actual resources will dive
 1. **Reset state** (delete only state, keep resources)
 
    ```bash
-   aws s3 rm s3://cdkq-state-bucket/stacks/MyStack/state.json
+   aws s3 rm s3://cdkd-state-bucket/stacks/MyStack/state.json
    ```
 
-   On next `cdkq deploy`, all resources will be treated as CREATE, so existing resources will cause errors.
+   On next `cdkd deploy`, all resources will be treated as CREATE, so existing resources will cause errors.
 
 2. **Manually fix state** (advanced)
 
    ```bash
    # Download state file
-   aws s3 cp s3://cdkq-state-bucket/stacks/MyStack/state.json /tmp/state.json
+   aws s3 cp s3://cdkd-state-bucket/stacks/MyStack/state.json /tmp/state.json
 
    # Edit
    vim /tmp/state.json
 
    # Upload
-   aws s3 cp /tmp/state.json s3://cdkq-state-bucket/stacks/MyStack/state.json
+   aws s3 cp /tmp/state.json s3://cdkd-state-bucket/stacks/MyStack/state.json
    ```
 
 3. **Delete and recreate resources**
 
    ```bash
-   cdkq destroy --stack MyStack --force
-   cdkq deploy --app "..." --stack MyStack
+   cdkd destroy --stack MyStack --force
+   cdkd deploy --app "..." --stack MyStack
    ```
 
 ## Future Extensions
@@ -762,15 +762,15 @@ If you manually changed AWS resources, state file and actual resources will dive
 Feature to detect differences between actual AWS resources and state file:
 
 ```bash
-cdkq detect-drift --stack MyStack
+cdkd detect-drift --stack MyStack
 ```
 
 ### State Import
 
-Feature to import existing AWS resources into cdkq state:
+Feature to import existing AWS resources into cdkd state:
 
 ```bash
-cdkq import --stack MyStack \
+cdkd import --stack MyStack \
   --resource MyBucket=s3://existing-bucket-name
 ```
 
@@ -779,8 +779,8 @@ cdkq import --stack MyStack \
 Support for other backends like DynamoDB or Consul:
 
 ```bash
-cdkq deploy --state-backend dynamodb \
-  --state-table cdkq-locks
+cdkd deploy --state-backend dynamodb \
+  --state-table cdkd-locks
 ```
 
 ## References

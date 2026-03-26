@@ -6,7 +6,7 @@ import * as iam from 'aws-cdk-lib/aws-iam';
 /**
  * Example stack demonstrating CloudFormation intrinsic function resolution
  *
- * This stack tests cdkq's ability to resolve:
+ * This stack tests cdkd's ability to resolve:
  * - Ref: References to resource physical IDs
  * - Fn::GetAtt: Get resource attributes
  * - Fn::Join: String concatenation
@@ -27,7 +27,7 @@ export class IntrinsicFunctionsStack extends cdk.Stack {
     // Create IAM role (uses Ref to bucket name)
     const role = new iam.Role(this, 'TestRole', {
       assumedBy: new iam.ServicePrincipal('lambda.amazonaws.com'),
-      description: 'Test role for cdkq intrinsic functions',
+      description: 'Test role for cdkd intrinsic functions',
     });
 
     // Add inline policy (uses Fn::GetAtt for bucket ARN)

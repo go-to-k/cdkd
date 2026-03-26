@@ -1,7 +1,7 @@
 /**
- * Global configuration for cdkq
+ * Global configuration for cdkd
  */
-export interface CdkqConfig {
+export interface CdkdConfig {
   /** CDK app command (e.g., "npx ts-node app.ts") */
   app: string;
 

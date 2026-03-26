@@ -177,7 +177,7 @@ export class ProviderRegistry {
         `The following resource types are not supported:\n` +
           unsupportedTypes.map((type) => `  - ${type}`).join('\n') +
           `\n\nThese resource types are not supported by Cloud Control API and no SDK provider is registered.\n` +
-          `Please report this issue at https://github.com/your-org/cdkq/issues so we can add SDK provider support.`
+          `Please report this issue at https://github.com/your-org/cdkd/issues so we can add SDK provider support.`
       );
     }
 

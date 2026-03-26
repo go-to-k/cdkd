@@ -26,11 +26,11 @@ Tests event-driven architecture: SNS topic with multiple SQS subscribers, DLQ, a
 
 ```bash
 npm install
-cdkq deploy --app "npx ts-node --prefer-ts-exts bin/app.ts"
+cdkd deploy --app "npx ts-node --prefer-ts-exts bin/app.ts"
 ```
 
 ## Cleanup
 
 ```bash
-cdkq destroy --force
+cdkd destroy --force
 ```

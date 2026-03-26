@@ -1,24 +1,24 @@
 import { getLogger } from './logger.js';
 
 /**
- * Base error class for cdkq
+ * Base error class for cdkd
  */
-export class CdkqError extends Error {
+export class CdkdError extends Error {
   constructor(
     message: string,
     public readonly code: string,
     public readonly cause?: Error
   ) {
     super(message);
-    this.name = 'CdkqError';
-    Object.setPrototypeOf(this, CdkqError.prototype);
+    this.name = 'CdkdError';
+    Object.setPrototypeOf(this, CdkdError.prototype);
   }
 }
 
 /**
  * State management errors
  */
-export class StateError extends CdkqError {
+export class StateError extends CdkdError {
   constructor(message: string, cause?: Error) {
     super(message, 'STATE_ERROR', cause);
     this.name = 'StateError';
@@ -29,7 +29,7 @@ export class StateError extends CdkqError {
 /**
  * Lock acquisition errors
  */
-export class LockError extends CdkqError {
+export class LockError extends CdkdError {
   constructor(message: string, cause?: Error) {
     super(message, 'LOCK_ERROR', cause);
     this.name = 'LockError';
@@ -40,7 +40,7 @@ export class LockError extends CdkqError {
 /**
  * Synthesis errors
  */
-export class SynthesisError extends CdkqError {
+export class SynthesisError extends CdkdError {
   constructor(message: string, cause?: Error) {
     super(message, 'SYNTHESIS_ERROR', cause);
     this.name = 'SynthesisError';
@@ -51,7 +51,7 @@ export class SynthesisError extends CdkqError {
 /**
  * Asset errors
  */
-export class AssetError extends CdkqError {
+export class AssetError extends CdkdError {
   constructor(message: string, cause?: Error) {
     super(message, 'ASSET_ERROR', cause);
     this.name = 'AssetError';
@@ -62,7 +62,7 @@ export class AssetError extends CdkqError {
 /**
  * Resource provisioning errors
  */
-export class ProvisioningError extends CdkqError {
+export class ProvisioningError extends CdkdError {
   constructor(
     message: string,
     public readonly resourceType: string,
@@ -79,7 +79,7 @@ export class ProvisioningError extends CdkqError {
 /**
  * Dependency resolution errors
  */
-export class DependencyError extends CdkqError {
+export class DependencyError extends CdkdError {
   constructor(message: string, cause?: Error) {
     super(message, 'DEPENDENCY_ERROR', cause);
     this.name = 'DependencyError';
@@ -90,7 +90,7 @@ export class DependencyError extends CdkqError {
 /**
  * Configuration errors
  */
-export class ConfigError extends CdkqError {
+export class ConfigError extends CdkdError {
   constructor(message: string, cause?: Error) {
     super(message, 'CONFIG_ERROR', cause);
     this.name = 'ConfigError';
@@ -99,17 +99,17 @@ export class ConfigError extends CdkqError {
 }
 
 /**
- * Check if error is a cdkq error
+ * Check if error is a cdkd error
  */
-export function isCdkqError(error: unknown): error is CdkqError {
-  return error instanceof CdkqError;
+export function isCdkdError(error: unknown): error is CdkdError {
+  return error instanceof CdkdError;
 }
 
 /**
  * Format error for display
  */
 export function formatError(error: unknown): string {
-  if (isCdkqError(error)) {
+  if (isCdkdError(error)) {
     let message = `${error.name}: ${error.message}`;
     if (error.cause) {
       message += `\nCaused by: ${error.cause.message}`;

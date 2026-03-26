@@ -12,12 +12,12 @@ export const commonOptions = [
 /**
  * App options
  *
- * --app is optional: falls back to CDKQ_APP env var, then cdk.json "app" field
+ * --app is optional: falls back to CDKD_APP env var, then cdk.json "app" field
  */
 export const appOptions = [
   new Option(
     '--app <command>',
-    'CDK app command (e.g., "npx ts-node app.ts"). Falls back to cdk.json or CDKQ_APP env'
+    'CDK app command (e.g., "npx ts-node app.ts"). Falls back to cdk.json or CDKD_APP env'
   ),
   new Option('--output <path>', 'Output directory for synthesis').default('cdk.out'),
 ];
@@ -25,15 +25,15 @@ export const appOptions = [
 /**
  * State backend options
  *
- * --state-bucket is optional: falls back to CDKQ_STATE_BUCKET env var,
- * then cdk.json context.cdkq.stateBucket
+ * --state-bucket is optional: falls back to CDKD_STATE_BUCKET env var,
+ * then cdk.json context.cdkd.stateBucket
  */
 export const stateOptions = [
   new Option(
     '--state-bucket <bucket>',
-    'S3 bucket for state storage. Falls back to CDKQ_STATE_BUCKET env or cdk.json'
+    'S3 bucket for state storage. Falls back to CDKD_STATE_BUCKET env or cdk.json'
   ),
-  new Option('--state-prefix <prefix>', 'S3 key prefix for state files').default('cdkq'),
+  new Option('--state-prefix <prefix>', 'S3 key prefix for state files').default('cdkd'),
 ];
 
 /**

@@ -7,13 +7,13 @@ An example using CloudFormation Parameters.
 This stack includes the following:
 
 - **Parameters**:
-  - `BucketPrefix`: Prefix for S3 bucket name (default: "cdkq-test")
+  - `BucketPrefix`: Prefix for S3 bucket name (default: "cdkd-test")
   - `EnableVersioning`: Flag to enable versioning (default: "false")
 
 - **Resources**:
   - **S3 Bucket**: Uses the prefix and versioning settings specified in parameters
 
-## Features Tested in cdkq
+## Features Tested in cdkd
 
 1. **Parameters Section**: Processing the Parameters section in CloudFormation templates
 2. **Ref (Parameters)**: Referencing parameter values with `{ Ref: 'BucketPrefix' }`
@@ -26,7 +26,7 @@ This stack includes the following:
 # Install packages
 npm install
 
-# Deploy with cdkq
+# Deploy with cdkd
 node ../../../../dist/cli.js deploy \
   --app "npx ts-node --prefer-ts-exts bin/app.ts" \
   --state-bucket <your-state-bucket> \

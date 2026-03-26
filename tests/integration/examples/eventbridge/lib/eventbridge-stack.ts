@@ -21,7 +21,7 @@ export class EventBridgeStack extends cdk.Stack {
 
     // Create custom EventBridge event bus
     const bus = new events.EventBus(this, 'CustomBus', {
-      eventBusName: `cdkq-test-bus-${cdk.Aws.ACCOUNT_ID}`,
+      eventBusName: `cdkd-test-bus-${cdk.Aws.ACCOUNT_ID}`,
     });
 
     // Create Lambda function with inline code as the rule target
@@ -49,10 +49,10 @@ def handler(event, context):
     const rule = new events.Rule(this, 'EventRule', {
       eventBus: bus,
       eventPattern: {
-        source: ['cdkq.test'],
+        source: ['cdkd.test'],
         detailType: ['TestEvent'],
       },
-      description: 'Routes cdkq test events to Lambda',
+      description: 'Routes cdkd test events to Lambda',
     });
 
     // Add Lambda function as the rule target

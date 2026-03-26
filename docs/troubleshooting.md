@@ -1,6 +1,6 @@
-# cdkq Troubleshooting Guide
+# cdkd Troubleshooting Guide
 
-This document summarizes common issues when using cdkq and their solutions.
+This document summarizes common issues when using cdkd and their solutions.
 
 ## Table of Contents
 
@@ -56,8 +56,8 @@ aws s3api get-object \
 # Delete lock file
 aws s3 rm s3://${STATE_BUCKET}/stacks/MyStack/lock.json
 
-# Or use cdkq force-unlock command
-cdkq force-unlock MyStack
+# Or use cdkd force-unlock command
+cdkd force-unlock MyStack
 ```
 
 **3. Increase retry count**
@@ -173,11 +173,11 @@ node dist/cli.js deploy --app "..." --state-bucket ${STATE_BUCKET}
 #### Symptoms
 
 - Manually deleted/modified resources in AWS Console
-- cdkq tries to update non-existent resources
+- cdkd tries to update non-existent resources
 
 #### Causes
 
-cdkq's state file and actual AWS resources have diverged.
+cdkd's state file and actual AWS resources have diverged.
 
 #### Solutions
 
@@ -254,7 +254,7 @@ aws s3 rb s3://my-bucket-name --force
 **3. Import existing resource to state (planned for future implementation)**
 
 ```bash
-# cdkq import --stack MyStack --resource MyBucket=s3://my-bucket-name
+# cdkd import --stack MyStack --resource MyBucket=s3://my-bucket-name
 ```
 
 ### Issue: "Provider not found" Error
@@ -285,7 +285,7 @@ Refer to [provider-development.md](./provider-development.md) to implement a cus
 
 **3. Temporarily use CloudFormation**
 
-For resources not supported by cdkq, use regular `cdk deploy`.
+For resources not supported by cdkd, use regular `cdk deploy`.
 
 ### Issue: "Update requires replacement" Error
 
@@ -362,13 +362,13 @@ AssetPublisherError: Failed to publish asset: Access Denied
 
 **1. Run CDK Bootstrap (required prerequisite)**
 
-cdkq uses CDK's bootstrap bucket for asset uploads. The `cdkq bootstrap` command only creates the state management bucket — it does NOT create the asset bucket. You must run CDK bootstrap separately:
+cdkd uses CDK's bootstrap bucket for asset uploads. The `cdkd bootstrap` command only creates the state management bucket — it does NOT create the asset bucket. You must run CDK bootstrap separately:
 
 ```bash
 npx cdk bootstrap aws://123456789012/us-east-1
 ```
 
-> **Custom bootstrap**: If you use a custom qualifier (e.g., `--qualifier myqualifier`), CDK synthesis will embed the custom bucket name in the asset manifest. cdkq reads destinations from the manifest, so custom bootstrap is fully supported.
+> **Custom bootstrap**: If you use a custom qualifier (e.g., `--qualifier myqualifier`), CDK synthesis will embed the custom bucket name in the asset manifest. cdkd reads destinations from the manifest, so custom bootstrap is fully supported.
 
 **2. Skip asset publishing**
 
@@ -456,7 +456,7 @@ Error: Cannot resolve intrinsic function: Fn::Select
 
 #### Causes
 
-CloudFormation intrinsic function not supported by cdkq is being used.
+CloudFormation intrinsic function not supported by cdkd is being used.
 
 #### Support Status
 
@@ -482,7 +482,7 @@ CloudFormation intrinsic function not supported by cdkq is being used.
 
 **1. All intrinsic functions are now supported**
 
-All CloudFormation intrinsic functions are supported as of 2026-03-26, including `Fn::GetAZs`. If you encounter this error, ensure you are using the latest version of cdkq.
+All CloudFormation intrinsic functions are supported as of 2026-03-26, including `Fn::GetAZs`. If you encounter this error, ensure you are using the latest version of cdkd.
 
 **2. Extend intrinsic function implementation**
 
@@ -511,7 +511,7 @@ Pseudo parameter not resolved.
 
 #### Solutions
 
-cdkq retrieves actual Account ID via STS GetCallerIdentity. Verify AWS credentials are properly configured:
+cdkd retrieves actual Account ID via STS GetCallerIdentity. Verify AWS credentials are properly configured:
 
 ```bash
 # Check credentials
@@ -546,7 +546,7 @@ IAM user/role lacks required permissions.
 
 **1. Grant required permissions**
 
-Main permissions required by cdkq:
+Main permissions required by cdkd:
 
 ```json
 {
@@ -697,7 +697,7 @@ Cloud Control API has the following rate limits:
 
 **1. Retry logic with exponential backoff (built-in)**
 
-cdkq includes built-in retry logic with exponential backoff for CREATE operations (handling IAM propagation delays) and CC API polling (1s->2s->4s->8s->10s cap). If rate limit errors persist, consider reducing parallelism or staggering deployments.
+cdkd includes built-in retry logic with exponential backoff for CREATE operations (handling IAM propagation delays) and CC API polling (1s->2s->4s->8s->10s cap). If rate limit errors persist, consider reducing parallelism or staggering deployments.
 
 **2. Use SDK Provider**
 
@@ -709,17 +709,17 @@ Implement provider that uses SDK directly instead of Cloud Control API.
 
 ### Overview
 
-Orphaned resources are AWS resources that exist in your account but are not tracked in cdkq's state file. This can happen when a deployment fails partway through a DAG level — some resources in that level may have been successfully created while others failed.
+Orphaned resources are AWS resources that exist in your account but are not tracked in cdkd's state file. This can happen when a deployment fails partway through a DAG level — some resources in that level may have been successfully created while others failed.
 
-### How cdkq Prevents Orphans
+### How cdkd Prevents Orphans
 
-cdkq uses a multi-layered approach to prevent orphaned resources:
+cdkd uses a multi-layered approach to prevent orphaned resources:
 
 1. **Per-resource in-memory state update**: Each resource updates the in-memory state (`newResources`) immediately upon successful provisioning, even before the entire DAG level completes.
 
 2. **Per-level partial state save**: After each DAG level completes successfully, state is persisted to S3. This prevents orphans if the process crashes between levels.
 
-3. **Pre-rollback state save**: If any resource in a level fails, cdkq saves the current in-memory state (including all successfully provisioned resources from the failed level) to S3 **before** attempting rollback. This ensures that even resources created in the same level as the failure are tracked.
+3. **Pre-rollback state save**: If any resource in a level fails, cdkd saves the current in-memory state (including all successfully provisioned resources from the failed level) to S3 **before** attempting rollback. This ensures that even resources created in the same level as the failure are tracked.
 
 4. **Post-rollback state save**: After rollback completes (or is skipped with `--no-rollback`), state is saved again to reflect the rolled-back resource state.
 
@@ -739,9 +739,9 @@ aws cloudcontrol list-resources --type-name AWS::S3::Bucket
 aws cloudcontrol list-resources --type-name AWS::Lambda::Function
 ```
 
-### Future: `cdkq orphans` Command
+### Future: `cdkd orphans` Command
 
-A dedicated `cdkq orphans` (or `cdkq check`) command is planned to automate orphan detection. The approach:
+A dedicated `cdkd orphans` (or `cdkd check`) command is planned to automate orphan detection. The approach:
 
 1. **Read the state file** for the target stack to get all tracked resources and their physical IDs.
 2. **Read the synthesized template** to get all expected resource types and logical IDs.
@@ -753,28 +753,28 @@ Example planned interface:
 
 ```bash
 # Check for orphaned resources
-cdkq orphans MyStack
+cdkd orphans MyStack
 
 # Example output:
 # Orphaned Resources (exist in AWS but not in state):
 #   AWS::IAM::Role    my-stack-role-abc123    (likely from failed deploy on 2026-03-25)
 #   AWS::S3::Bucket   my-stack-bucket-xyz     (likely from failed deploy on 2026-03-25)
 #
-# Recommended: Run 'cdkq deploy MyStack' to reconcile, or delete manually.
+# Recommended: Run 'cdkd deploy MyStack' to reconcile, or delete manually.
 ```
 
 ### Recovering from Orphaned Resources
 
 **If state was saved (most cases)**:
 
-Running `cdkq deploy` again will reconcile the state — existing resources will be detected as already created and handled as updates or no-ops.
+Running `cdkd deploy` again will reconcile the state — existing resources will be detected as already created and handled as updates or no-ops.
 
 **If state was NOT saved (rare — process crash)**:
 
 ```bash
 # Option 1: Delete state and redeploy (resources will error on CREATE if they exist)
 aws s3 rm s3://${STATE_BUCKET}/stacks/MyStack/state.json
-cdkq deploy MyStack  # May need manual cleanup of duplicates
+cdkd deploy MyStack  # May need manual cleanup of duplicates
 
 # Option 2: Manually reconstruct state
 aws s3 cp s3://${STATE_BUCKET}/stacks/MyStack/state.json /tmp/state.json
@@ -784,8 +784,8 @@ aws s3 cp /tmp/state.json s3://${STATE_BUCKET}/stacks/MyStack/state.json
 
 # Option 3: Destroy everything and start fresh
 # Manually delete orphaned resources first, then:
-cdkq destroy MyStack --force
-cdkq deploy MyStack
+cdkd destroy MyStack --force
+cdkd deploy MyStack
 ```
 
 ---
@@ -846,7 +846,7 @@ Resolved via dedicated SDK Provider (`agentcore-runtime-provider.ts`).
 
 ### Lambda Permission "No policy found"
 
-Handled automatically by cdkq's idempotent delete logic (not-found errors treated as success).
+Handled automatically by cdkd's idempotent delete logic (not-found errors treated as success).
 
 ---
 
@@ -854,11 +854,11 @@ Handled automatically by cdkq's idempotent delete logic (not-found errors treate
 
 ### Q: Is a CloudFormation stack created?
 
-A: No, cdkq does not use CloudFormation. Resources are provisioned directly via Cloud Control API and AWS SDK.
+A: No, cdkd does not use CloudFormation. Resources are provisioned directly via Cloud Control API and AWS SDK.
 
-### Q: Can I use CloudFormation and cdkq for the same stack?
+### Q: Can I use CloudFormation and cdkd for the same stack?
 
-A: No. Stacks deployed with CloudFormation should be managed with `cdk deploy` or `aws cloudformation`, and stacks deployed with cdkq should be managed with `cdkq`.
+A: No. Stacks deployed with CloudFormation should be managed with `cdk deploy` or `aws cloudformation`, and stacks deployed with cdkd should be managed with `cdkd`.
 
 ### Q: What happens if I delete the state file?
 
@@ -866,7 +866,7 @@ A: On next deployment, all resources will be treated as CREATE. If existing reso
 
 ### Q: Is there a rollback feature?
 
-A: Yes. By default, cdkq rolls back on failure. Use `--no-rollback` to skip rollback and keep partial state (Terraform-style). On next execution, remaining changes are applied as diff.
+A: Yes. By default, cdkd rolls back on failure. Use `--no-rollback` to skip rollback and keep partial state (Terraform-style). On next execution, remaining changes are applied as diff.
 
 ### Q: Are custom resources supported?
 
@@ -879,12 +879,12 @@ A: Yes, Lambda-backed custom resources (`Custom::*`) are supported.
 ### Issue Reporting
 
 Report on GitHub Issues:
-https://github.com/YOUR_REPO/cdkq/issues
+https://github.com/YOUR_REPO/cdkd/issues
 
 ### Questions
 
 Ask questions on GitHub Discussions:
-https://github.com/YOUR_REPO/cdkq/discussions
+https://github.com/YOUR_REPO/cdkd/discussions
 
 ### Documentation
 

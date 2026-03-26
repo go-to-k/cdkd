@@ -7,7 +7,7 @@ def handler(event, context):
     return {
         "statusCode": 200,
         "body": json.dumps({
-            "message": "Hello from Docker Lambda deployed by cdkq!",
+            "message": "Hello from Docker Lambda deployed by cdkd!",
             "deployed_by": os.environ.get("DEPLOYED_BY", "unknown"),
         }),
     }

@@ -1,6 +1,6 @@
-# cdkq
+# cdkd
 
-**cdkq** (CDK Quick Deploy) - Deploy AWS CDK apps directly via SDK/Cloud Control API, bypassing CloudFormation stacks for faster deployments.
+**cdkd** (CDK Quick Deploy) - Deploy AWS CDK apps directly via SDK/Cloud Control API, bypassing CloudFormation stacks for faster deployments.
 
 > **⚠️ WARNING: NOT PRODUCTION READY**
 >
@@ -8,18 +8,18 @@
 
 > **Note**: This is an experimental/educational project exploring alternative deployment approaches for AWS CDK. It is **not intended to replace** the official AWS CDK CLI, but rather to experiment with direct SDK/Cloud Control API provisioning as a learning exercise and proof of concept.
 
-## Why cdkq?
+## Why cdkd?
 
-AWS CDK is great for defining infrastructure as code, but all deployments go through CloudFormation. **cdkq** is an experimental alternative that deploys CDK apps directly via AWS SDK, bypassing CloudFormation entirely:
+AWS CDK is great for defining infrastructure as code, but all deployments go through CloudFormation. **cdkd** is an experimental alternative that deploys CDK apps directly via AWS SDK, bypassing CloudFormation entirely:
 
 - **Direct provisioning** via AWS SDK (34 resource types) and Cloud Control API (200+ types)
 - **No CloudFormation stacks** - no change sets, no stack limits
 - **Parallel resource deployment** based on dependency analysis (DAG)
 - **100% CDK compatible** - use your existing CDK code as-is
 
-## How cdkq differs from CloudFormation
+## How cdkd differs from CloudFormation
 
-| | CloudFormation | cdkq |
+| | CloudFormation | cdkd |
 | --- | --- | --- |
 | Stack creation | Required | N/A (no stacks) |
 | Change set creation | Required | N/A (direct diff) |
@@ -46,7 +46,7 @@ AWS CDK is great for defining infrastructure as code, but all deployments go thr
          │
          ▼
 ┌─────────────────┐
-│ cdkq Engine     │
+│ cdkd Engine     │
 │ - DAG Analysis  │  Dependency graph construction
 │ - Diff Calc     │  Compare with existing resources
 │ - Parallel Exec │  Deploy by levels
@@ -174,87 +174,87 @@ AWS CDK is great for defining infrastructure as code, but all deployments go thr
 ## Prerequisites
 
 - **Node.js** >= 20.0.0
-- **AWS CDK Bootstrap**: You must run `cdk bootstrap` before using cdkq. cdkq uses CDK's bootstrap bucket (`cdk-hnb659fds-assets-*`) for asset uploads (Lambda code, Docker images). Custom bootstrap qualifiers are supported — CDK embeds the correct bucket/repo names in the asset manifest during synthesis.
+- **AWS CDK Bootstrap**: You must run `cdk bootstrap` before using cdkd. cdkd uses CDK's bootstrap bucket (`cdk-hnb659fds-assets-*`) for asset uploads (Lambda code, Docker images). Custom bootstrap qualifiers are supported — CDK embeds the correct bucket/repo names in the asset manifest during synthesis.
 - **AWS Credentials**: Configured via environment variables, `~/.aws/credentials`, or `--profile` option
 
 ## Installation
 
 ```bash
-npm install -g cdkq
+npm install -g cdkd
 ```
 
 Or use with npx (no installation required):
 
 ```bash
-npx cdkq --help
+npx cdkd --help
 ```
 
 ## Quick Start
 
 ```bash
 # Bootstrap (creates S3 state bucket - only needed once per account/region)
-cdkq bootstrap
+cdkd bootstrap
 
 # Deploy your CDK app
-cdkq deploy
+cdkd deploy
 
 # Check what would change
-cdkq diff
+cdkd diff
 
 # Tear down
-cdkq destroy
+cdkd destroy
 ```
 
-That's it. cdkq reads `--app` from `cdk.json` and auto-resolves the state bucket from your AWS account ID (`cdkq-state-{accountId}-{region}`).
+That's it. cdkd reads `--app` from `cdk.json` and auto-resolves the state bucket from your AWS account ID (`cdkd-state-{accountId}-{region}`).
 
 ## Usage
 
-Options like `--app` and `--state-bucket` can be omitted if configured via `cdk.json` or environment variables (`CDKQ_APP`, `CDKQ_STATE_BUCKET`).
+Options like `--app` and `--state-bucket` can be omitted if configured via `cdk.json` or environment variables (`CDKD_APP`, `CDKD_STATE_BUCKET`).
 
 ```bash
 # Bootstrap (create S3 bucket for state)
-npx cdkq bootstrap \
-  --state-bucket my-cdkq-state \
+npx cdkd bootstrap \
+  --state-bucket my-cdkd-state \
   --region us-east-1
 
 # Synthesize only
-npx cdkq synth --app "npx ts-node app.ts"
+npx cdkd synth --app "npx ts-node app.ts"
 
 # Deploy (single stack auto-detected, reads --app from cdk.json)
-npx cdkq deploy
+npx cdkd deploy
 
 # Deploy specific stack(s)
-npx cdkq deploy MyStack
-npx cdkq deploy Stack1 Stack2
+npx cdkd deploy MyStack
+npx cdkd deploy Stack1 Stack2
 
 # Deploy all stacks
-npx cdkq deploy --all
+npx cdkd deploy --all
 
 # Deploy with wildcard
-npx cdkq deploy 'My*'
+npx cdkd deploy 'My*'
 
 # Deploy with explicit options
-npx cdkq deploy MyStack \
+npx cdkd deploy MyStack \
   --app "npx ts-node app.ts" \
-  --state-bucket my-cdkq-state \
+  --state-bucket my-cdkd-state \
   --region us-east-1 \
   --verbose
 
 # Show diff (what would change)
-npx cdkq diff MyStack
+npx cdkd diff MyStack
 
 # Dry run (plan only, no changes)
-npx cdkq deploy --dry-run
+npx cdkd deploy --dry-run
 
 # Deploy with no rollback on failure (Terraform-style)
-npx cdkq deploy --no-rollback
+npx cdkd deploy --no-rollback
 
 # Destroy resources
-npx cdkq destroy MyStack
-npx cdkq destroy --all --force
+npx cdkd destroy MyStack
+npx cdkd destroy --all --force
 
 # Force-unlock a stale lock from interrupted deploy
-npx cdkq force-unlock MyStack
+npx cdkd force-unlock MyStack
 ```
 
 ## Usage Examples
@@ -273,7 +273,7 @@ new s3.Bucket(stack, 'MyBucket', {
 ```
 
 ```bash
-$ cdkq deploy
+$ cdkd deploy
 MyBucketStack
   MyBucket  CREATE  AWS::S3::Bucket  ✓  (3.2s)
 
@@ -298,7 +298,7 @@ table.grantReadWriteData(fn);
 ```
 
 ```bash
-$ cdkq deploy
+$ cdkd deploy
 LambdaStack
   ServiceRole     CREATE  AWS::IAM::Role             ✓  (2.1s)
   Table           CREATE  AWS::DynamoDB::Table        ✓  (1.8s)
@@ -314,7 +314,7 @@ Resources without dependencies (ServiceRole and Table) are created in parallel.
 
 ```bash
 # Deploy all stacks (respects dependency order)
-$ cdkq deploy --all
+$ cdkd deploy --all
 ExporterStack
   SharedBucket  CREATE  AWS::S3::Bucket  ✓  (3.1s)
 ✓ Deployed ExporterStack (1 resource, 4.0s)
@@ -371,7 +371,7 @@ State is stored in S3. Each stack has its own `state.json` and `lock.json`:
 
 ```
 s3://{state-bucket}/
-  └── {prefix}/                     # Default: "cdkq" (configurable via --state-prefix)
+  └── {prefix}/                     # Default: "cdkd" (configurable via --state-prefix)
       ├── MyStack/
       │   ├── state.json            # Resource state
       │   └── lock.json             # Exclusive deploy lock
@@ -384,8 +384,8 @@ s3://{state-bucket}/
 
 | Setting | CLI | cdk.json | Env var | Default |
 |---------|-----|----------|---------|---------|
-| Bucket | `--state-bucket` | `context.cdkq.stateBucket` | `CDKQ_STATE_BUCKET` | `cdkq-state-{accountId}-{region}` |
-| Prefix | `--state-prefix` | - | - | `cdkq` |
+| Bucket | `--state-bucket` | `context.cdkd.stateBucket` | `CDKD_STATE_BUCKET` | `cdkd-state-{accountId}-{region}` |
+| Prefix | `--state-prefix` | - | - | `cdkd` |
 
 ### Multi-app isolation
 
@@ -393,13 +393,13 @@ The state bucket is shared across all CDK apps in the same account/region by def
 
 ```bash
 # App A
-cdkq deploy --state-prefix app-a
+cdkd deploy --state-prefix app-a
 
 # App B
-cdkq deploy --state-prefix app-b
+cdkd deploy --state-prefix app-b
 ```
 
-> **Note**: `cdkq destroy --all` only targets stacks from the current CDK app (determined by synthesis), not all stacks in the bucket.
+> **Note**: `cdkd destroy --all` only targets stacks from the current CDK app (determined by synthesis), not all stacks in the bucket.
 
 State schema:
 
@@ -446,7 +446,7 @@ After deployment, outputs are resolved and saved to state:
 **Key differences from CloudFormation**:
 
 - CloudFormation: Outputs accessible via `aws cloudformation describe-stacks`
-- cdkq: Outputs saved in S3 state file (e.g., `s3://bucket/cdkq/MyStack/state.json`)
+- cdkd: Outputs saved in S3 state file (e.g., `s3://bucket/cdkd/MyStack/state.json`)
 - Both resolve intrinsic functions (Ref, Fn::GetAtt, etc.) to actual values
 
 ## Testing

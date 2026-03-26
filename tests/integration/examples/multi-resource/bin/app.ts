@@ -5,6 +5,6 @@ import { MultiResourceStack } from '../lib/multi-resource-stack';
 
 const app = new cdk.App();
 
-new MultiResourceStack(app, 'CdkqMultiResourceExample', {
-  description: 'Multi-resource example with complex dependencies for cdkq',
+new MultiResourceStack(app, 'CdkdMultiResourceExample', {
+  description: 'Multi-resource example with complex dependencies for cdkd',
 });

@@ -1,6 +1,6 @@
 # Intrinsic Functions Example
 
-This example demonstrates cdkq's ability to resolve CloudFormation intrinsic functions during deployment.
+This example demonstrates cdkd's ability to resolve CloudFormation intrinsic functions during deployment.
 
 ## Features
 
@@ -31,7 +31,7 @@ IAM Policy (inline)
 
 ```bash
 # Set environment variables
-export STATE_BUCKET="your-cdkq-state-bucket"
+export STATE_BUCKET="your-cdkd-state-bucket"
 export AWS_REGION="us-east-1"
 
 # Bootstrap (first time only)
@@ -62,14 +62,14 @@ Resolved Fn::Join: arn:aws:s3:::actual-bucket-name/*
 ```bash
 node ../../../../dist/cli.js destroy \
   --state-bucket ${STATE_BUCKET} \
-  --stack CdkqIntrinsicFunctionsExample \
+  --stack CdkdIntrinsicFunctionsExample \
   --region ${AWS_REGION} \
   --force
 ```
 
 ## What This Tests
 
-1. **Dependency Analysis**: cdkq correctly identifies that IAM role depends on S3 bucket
-2. **Intrinsic Function Resolution**: cdkq resolves Ref and Fn::GetAtt before provisioning
-3. **Attribute Enrichment**: cdkq generates missing attributes (e.g., S3 bucket ARN) when Cloud Control API doesn't return them
-4. **SDK Providers**: cdkq uses IAM SDK provider for IAM::Policy (not supported by Cloud Control API)
+1. **Dependency Analysis**: cdkd correctly identifies that IAM role depends on S3 bucket
+2. **Intrinsic Function Resolution**: cdkd resolves Ref and Fn::GetAtt before provisioning
+3. **Attribute Enrichment**: cdkd generates missing attributes (e.g., S3 bucket ARN) when Cloud Control API doesn't return them
+4. **SDK Providers**: cdkd uses IAM SDK provider for IAM::Policy (not supported by Cloud Control API)

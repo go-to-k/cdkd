@@ -37,8 +37,8 @@ describe('config-loader', () => {
     vi.resetAllMocks();
     // Clone env so mutations don't leak between tests
     process.env = { ...originalEnv };
-    delete process.env['CDKQ_APP'];
-    delete process.env['CDKQ_STATE_BUCKET'];
+    delete process.env['CDKD_APP'];
+    delete process.env['CDKD_STATE_BUCKET'];
   });
 
   afterEach(() => {
@@ -102,8 +102,8 @@ describe('config-loader', () => {
       expect(result).toBe('npx ts-node bin/app.ts');
     });
 
-    it('should fall back to CDKQ_APP env var when CLI value is not provided', () => {
-      process.env['CDKQ_APP'] = 'npx ts-node bin/env-app.ts';
+    it('should fall back to CDKD_APP env var when CLI value is not provided', () => {
+      process.env['CDKD_APP'] = 'npx ts-node bin/env-app.ts';
 
       const result = resolveApp();
 
@@ -130,7 +130,7 @@ describe('config-loader', () => {
     });
 
     it('should prioritize CLI over env var', () => {
-      process.env['CDKQ_APP'] = 'env-app';
+      process.env['CDKD_APP'] = 'env-app';
 
       const result = resolveApp('cli-app');
 
@@ -138,7 +138,7 @@ describe('config-loader', () => {
     });
 
     it('should prioritize env var over cdk.json', () => {
-      process.env['CDKQ_APP'] = 'env-app';
+      process.env['CDKD_APP'] = 'env-app';
       vi.mocked(existsSync).mockReturnValue(true);
       vi.mocked(readFileSync).mockReturnValue(JSON.stringify({ app: 'cdk-json-app' }));
 
@@ -155,8 +155,8 @@ describe('config-loader', () => {
       expect(result).toBe('my-cli-bucket');
     });
 
-    it('should fall back to CDKQ_STATE_BUCKET env var when CLI value is not provided', () => {
-      process.env['CDKQ_STATE_BUCKET'] = 'my-env-bucket';
+    it('should fall back to CDKD_STATE_BUCKET env var when CLI value is not provided', () => {
+      process.env['CDKD_STATE_BUCKET'] = 'my-env-bucket';
 
       const result = resolveStateBucket();
 
@@ -169,7 +169,7 @@ describe('config-loader', () => {
         JSON.stringify({
           app: 'npx ts-node bin/app.ts',
           context: {
-            cdkq: {
+            cdkd: {
               stateBucket: 'my-cdk-json-bucket',
             },
           },
@@ -190,7 +190,7 @@ describe('config-loader', () => {
     });
 
     it('should prioritize CLI over env var', () => {
-      process.env['CDKQ_STATE_BUCKET'] = 'env-bucket';
+      process.env['CDKD_STATE_BUCKET'] = 'env-bucket';
 
       const result = resolveStateBucket('cli-bucket');
 
@@ -198,11 +198,11 @@ describe('config-loader', () => {
     });
 
     it('should prioritize env var over cdk.json', () => {
-      process.env['CDKQ_STATE_BUCKET'] = 'env-bucket';
+      process.env['CDKD_STATE_BUCKET'] = 'env-bucket';
       vi.mocked(existsSync).mockReturnValue(true);
       vi.mocked(readFileSync).mockReturnValue(
         JSON.stringify({
-          context: { cdkq: { stateBucket: 'cdk-json-bucket' } },
+          context: { cdkd: { stateBucket: 'cdk-json-bucket' } },
         })
       );
 
@@ -211,11 +211,11 @@ describe('config-loader', () => {
       expect(result).toBe('env-bucket');
     });
 
-    it('should return undefined when cdk.json context.cdkq.stateBucket is not a string', () => {
+    it('should return undefined when cdk.json context.cdkd.stateBucket is not a string', () => {
       vi.mocked(existsSync).mockReturnValue(true);
       vi.mocked(readFileSync).mockReturnValue(
         JSON.stringify({
-          context: { cdkq: { stateBucket: 12345 } },
+          context: { cdkd: { stateBucket: 12345 } },
         })
       );
 
@@ -224,7 +224,7 @@ describe('config-loader', () => {
       expect(result).toBeUndefined();
     });
 
-    it('should return undefined when cdk.json has no cdkq context', () => {
+    it('should return undefined when cdk.json has no cdkd context', () => {
       vi.mocked(existsSync).mockReturnValue(true);
       vi.mocked(readFileSync).mockReturnValue(
         JSON.stringify({
@@ -243,13 +243,13 @@ describe('config-loader', () => {
     it('should generate correct format with account ID and region', () => {
       const result = getDefaultStateBucketName('123456789012', 'us-east-1');
 
-      expect(result).toBe('cdkq-state-123456789012-us-east-1');
+      expect(result).toBe('cdkd-state-123456789012-us-east-1');
     });
 
     it('should handle different regions', () => {
       const result = getDefaultStateBucketName('111122223333', 'ap-northeast-1');
 
-      expect(result).toBe('cdkq-state-111122223333-ap-northeast-1');
+      expect(result).toBe('cdkd-state-111122223333-ap-northeast-1');
     });
   });
 });

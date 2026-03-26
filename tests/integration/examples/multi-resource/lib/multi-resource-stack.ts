@@ -168,15 +168,15 @@ export class MultiResourceStack extends cdk.Stack {
     );
 
     // 7. Add tags to all resources
-    cdk.Tags.of(this).add('Project', 'cdkq-multi-resource');
+    cdk.Tags.of(this).add('Project', 'cdkd-multi-resource');
     cdk.Tags.of(this).add('Environment', 'Test');
-    cdk.Tags.of(this).add('ManagedBy', 'cdkq');
+    cdk.Tags.of(this).add('ManagedBy', 'cdkd');
 
     // 8. Create outputs
     new cdk.CfnOutput(this, 'DataBucketName', {
       value: dataBucket.bucketName,
       description: 'Name of the S3 data bucket',
-      exportName: 'CdkqMultiResourceDataBucket',
+      exportName: 'CdkdMultiResourceDataBucket',
     });
 
     new cdk.CfnOutput(this, 'DataBucketArn', {
@@ -187,7 +187,7 @@ export class MultiResourceStack extends cdk.Stack {
     new cdk.CfnOutput(this, 'MetadataTableName', {
       value: metadataTable.tableName,
       description: 'Name of the DynamoDB metadata table',
-      exportName: 'CdkqMultiResourceMetadataTable',
+      exportName: 'CdkdMultiResourceMetadataTable',
     });
 
     new cdk.CfnOutput(this, 'MetadataTableArn', {
@@ -213,7 +213,7 @@ export class MultiResourceStack extends cdk.Stack {
     new cdk.CfnOutput(this, 'ProcessorFunctionArn', {
       value: processorFunction.functionArn,
       description: 'ARN of the Lambda processor function',
-      exportName: 'CdkqMultiResourceProcessorFunction',
+      exportName: 'CdkdMultiResourceProcessorFunction',
     });
 
     new cdk.CfnOutput(this, 'DeadLetterQueueUrl', {

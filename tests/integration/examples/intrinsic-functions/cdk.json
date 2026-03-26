@@ -1,8 +1,8 @@
 {
   "app": "npx ts-node --prefer-ts-exts bin/app.ts",
   "context": {
-    "cdkq": {
-      "stateBucket": "cdkq-state-test"
+    "cdkd": {
+      "stateBucket": "cdkd-state-test"
     }
   }
 }

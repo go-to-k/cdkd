@@ -1,8 +1,8 @@
-# cdkq Architecture Documentation
+# cdkd Architecture Documentation
 
 ## Overview
 
-**cdkq** (CDK Quick Deploy) is a tool that deploys AWS CDK applications directly without going through CloudFormation. It leverages CDK's synthesis capabilities while using SDK Providers (preferred for performance) and Cloud Control API (fallback) for fast deployments.
+**cdkd** (CDK Quick Deploy) is a tool that deploys AWS CDK applications directly without going through CloudFormation. It leverages CDK's synthesis capabilities while using SDK Providers (preferred for performance) and Cloud Control API (fallback) for fast deployments.
 
 ## Architecture Diagram
 
@@ -95,7 +95,7 @@
 **Synthesis Flow**:
 
 ```
-1. User CDK App (--app option, CDKQ_APP env var, or cdk.json "app" field)
+1. User CDK App (--app option, CDKD_APP env var, or cdk.json "app" field)
    ↓
 2. @aws-cdk/toolkit-lib.synth()
    ↓
@@ -460,14 +460,14 @@ getClient<T>(ClientClass: new (...) => T, region: string): T
 ```
 ┌─────────────┐
 │ User        │
-│ $ cdkq      │
+│ $ cdkd      │
 │   deploy    │
 └──────┬──────┘
        │
        ▼
 ┌─────────────────┐
 │ CLI Layer       │
-│ config-loader   │  --app (or CDKQ_APP / cdk.json), --state-bucket (or env/cdk.json)
+│ config-loader   │  --app (or CDKD_APP / cdk.json), --state-bucket (or env/cdk.json)
 └────────┬────────┘
          │
          ▼
@@ -552,7 +552,7 @@ getClient<T>(ClientClass: new (...) => T, region: string): T
 ```
 ┌─────────────┐
 │ User        │
-│ $ cdkq      │
+│ $ cdkd      │
 │   destroy   │
 └──────┬──────┘
        │
@@ -617,7 +617,7 @@ Each layer has clear responsibilities
 
 ### Comparison with CloudFormation
 
-| Item | CloudFormation | cdkq |
+| Item | CloudFormation | cdkd |
 |------|----------------|------|
 | **Small Stack (5 resources)** | 60-90 seconds | 15-25 seconds |
 | **Medium Stack (20 resources)** | 3-5 minutes | 40-80 seconds |

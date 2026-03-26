@@ -10,7 +10,7 @@ This stack includes the following resources:
 - **ECR Repository**: Automatically created by CDK for the Docker image asset
 - **IAM Role**: Lambda execution role
 
-## Features Tested in cdkq
+## Features Tested in cdkd
 
 1. **Docker Image Asset Publishing**: Docker image from `docker/` directory is built and pushed to ECR
 2. **ECR Integration**: Image asset is published to an ECR repository via `cdk-assets-lib`
@@ -30,7 +30,7 @@ This stack includes the following resources:
 # Install packages
 npm install
 
-# Deploy with cdkq
+# Deploy with cdkd
 node ../../../dist/cli.js deploy \
   --app "npx ts-node --prefer-ts-exts bin/app.ts" \
   --state-bucket <your-state-bucket> \
@@ -43,7 +43,7 @@ node ../../../dist/cli.js deploy \
 - [ ] Docker image is built from `docker/Dockerfile`
 - [ ] Image is pushed to ECR repository
 - [ ] Lambda function is created with the Docker image URI
-- [ ] Environment variable `DEPLOYED_BY` is set to `cdkq`
+- [ ] Environment variable `DEPLOYED_BY` is set to `cdkd`
 - [ ] IAM execution role is correctly created and attached
 - [ ] Outputs are correctly resolved (function name, ARN)
 - [ ] Lambda function can be invoked successfully

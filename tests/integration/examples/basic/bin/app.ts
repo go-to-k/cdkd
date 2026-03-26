@@ -5,6 +5,6 @@ import { BasicStack } from '../lib/basic-stack';
 
 const app = new cdk.App();
 
-new BasicStack(app, 'CdkqBasicExample', {
-  description: 'Basic cdkq example with S3 bucket',
+new BasicStack(app, 'CdkdBasicExample', {
+  description: 'Basic cdkd example with S3 bucket',
 });

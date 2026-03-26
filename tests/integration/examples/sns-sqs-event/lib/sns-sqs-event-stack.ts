@@ -12,18 +12,18 @@ export class SnsSqsEventStack extends cdk.Stack {
 
     // SNS Topic
     const topic = new sns.Topic(this, 'EventTopic', {
-      topicName: 'cdkq-sns-sqs-test-topic',
+      topicName: 'cdkd-sns-sqs-test-topic',
     });
 
     // Dead Letter Queue
     const dlq = new sqs.Queue(this, 'DeadLetterQueue', {
-      queueName: 'cdkq-sns-sqs-test-dlq',
+      queueName: 'cdkd-sns-sqs-test-dlq',
       retentionPeriod: cdk.Duration.days(14),
     });
 
     // Primary Queue (with DLQ)
     const primaryQueue = new sqs.Queue(this, 'PrimaryQueue', {
-      queueName: 'cdkq-sns-sqs-test-primary',
+      queueName: 'cdkd-sns-sqs-test-primary',
       visibilityTimeout: cdk.Duration.seconds(30),
       deadLetterQueue: {
         queue: dlq,
@@ -33,7 +33,7 @@ export class SnsSqsEventStack extends cdk.Stack {
 
     // Secondary Queue (no DLQ, filter by attribute)
     const secondaryQueue = new sqs.Queue(this, 'SecondaryQueue', {
-      queueName: 'cdkq-sns-sqs-test-secondary',
+      queueName: 'cdkd-sns-sqs-test-secondary',
       visibilityTimeout: cdk.Duration.seconds(60),
     });
 

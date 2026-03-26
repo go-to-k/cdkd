@@ -961,7 +961,7 @@ export class DeployEngine {
    *
    * Some resources fail immediately after their dependencies are created due to
    * AWS eventual consistency (e.g., Lambda fails if IAM Role hasn't propagated yet).
-   * CloudFormation handles this internally; cdkq retries with exponential backoff.
+   * CloudFormation handles this internally; cdkd retries with exponential backoff.
    */
   /**
    * Extract ALL dependencies for a resource from the template.

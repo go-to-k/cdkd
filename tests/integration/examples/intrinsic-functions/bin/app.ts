@@ -5,6 +5,6 @@ import { IntrinsicFunctionsStack } from '../lib/intrinsic-functions-stack';
 
 const app = new cdk.App();
 
-new IntrinsicFunctionsStack(app, 'CdkqIntrinsicFunctionsExample', {
-  description: 'cdkq example demonstrating CloudFormation intrinsic function resolution',
+new IntrinsicFunctionsStack(app, 'CdkdIntrinsicFunctionsExample', {
+  description: 'cdkd example demonstrating CloudFormation intrinsic function resolution',
 });

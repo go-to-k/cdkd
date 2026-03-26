@@ -18,7 +18,7 @@ Start → InvokeProcessor (Lambda) → WaitOneSecond (1s) → CheckResult (Choic
                                                             └── otherwise     → ProcessingFailed
 ```
 
-## Features Tested in cdkq
+## Features Tested in cdkd
 
 1. **Inline Lambda Code**: Lambda function with `Code.fromInline()` (no asset publishing needed)
 2. **Step Functions State Machine**: State machine creation via Cloud Control API
@@ -33,7 +33,7 @@ Start → InvokeProcessor (Lambda) → WaitOneSecond (1s) → CheckResult (Choic
 # Install packages
 npm install
 
-# Deploy with cdkq
+# Deploy with cdkd
 node ../../../dist/cli.js deploy \
   --app "npx ts-node --prefer-ts-exts bin/app.ts" \
   --state-bucket <your-state-bucket> \

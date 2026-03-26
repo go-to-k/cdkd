@@ -7,17 +7,17 @@ import { AppStack } from '../lib/app-stack';
 const app = new cdk.App();
 
 // Stack 1: Network resources (VPC + Security Group)
-const networkStack = new NetworkStack(app, 'CdkqNetworkStack', {
+const networkStack = new NetworkStack(app, 'CdkdNetworkStack', {
   description: 'Network stack with VPC and Security Group (exports VPC ID)',
 });
 
 // Stack 2: Data resources (DynamoDB + S3) - depends on NetworkStack for ordering
-const dataStack = new DataStack(app, 'CdkqDataStack', {
+const dataStack = new DataStack(app, 'CdkdDataStack', {
   description: 'Data stack with DynamoDB table and S3 bucket (exports table/bucket names)',
 });
 dataStack.addDependency(networkStack);
 
 // Stack 3: Application resources (Lambda + IAM) - imports from DataStack
-new AppStack(app, 'CdkqAppStack', {
+new AppStack(app, 'CdkdAppStack', {
   description: 'App stack with Lambda that imports DataStack values via Fn::ImportValue',
 });

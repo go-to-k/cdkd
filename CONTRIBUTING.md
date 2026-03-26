@@ -1,13 +1,13 @@
-# Contributing to cdkq
+# Contributing to cdkd
 
-Thank you for your interest in contributing to cdkq!
+Thank you for your interest in contributing to cdkd!
 
 ## Development Setup
 
 ```bash
 # Clone the repository
-git clone https://github.com/go-to-k/cdkq.git
-cd cdkq
+git clone https://github.com/go-to-k/cdkd.git
+cd cdkd
 
 # Install dependencies
 npm install

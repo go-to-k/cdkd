@@ -44,7 +44,7 @@ export class LogsLogGroupProvider implements ResourceProvider {
   ): Promise<ResourceCreateResult> {
     this.logger.debug(`Creating log group ${logicalId}`);
 
-    const logGroupName = (properties['LogGroupName'] as string | undefined) || `/cdkq/${logicalId}`;
+    const logGroupName = (properties['LogGroupName'] as string | undefined) || `/cdkd/${logicalId}`;
 
     try {
       const createParams: import('@aws-sdk/client-cloudwatch-logs').CreateLogGroupCommandInput = {

@@ -1,8 +1,8 @@
 {
-  "name": "cdkq-example-conditions",
+  "name": "cdkd-example-conditions",
   "version": "1.0.0",
   "private": true,
-  "description": "CloudFormation Conditions example with cdkq",
+  "description": "CloudFormation Conditions example with cdkd",
   "scripts": {
     "build": "tsc",
     "watch": "tsc -w"

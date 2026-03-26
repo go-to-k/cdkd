@@ -1,6 +1,6 @@
 # Basic Example
 
-This is the simplest possible cdkq deployment example. It demonstrates:
+This is the simplest possible cdkd deployment example. It demonstrates:
 
 - Creating a single S3 bucket
 - Using Cloud Control API for resource provisioning
@@ -14,7 +14,7 @@ This is the simplest possible cdkq deployment example. It demonstrates:
 
 ```bash
 # Set environment variables
-export STATE_BUCKET="your-cdkq-state-bucket"
+export STATE_BUCKET="your-cdkd-state-bucket"
 export AWS_REGION="us-east-1"
 
 # Bootstrap (first time only)
@@ -35,7 +35,7 @@ node ../../../dist/cli.js deploy \
 ```bash
 node ../../../dist/cli.js destroy \
   --state-bucket ${STATE_BUCKET} \
-  --stack CdkqBasicExample \
+  --stack CdkdBasicExample \
   --region ${AWS_REGION} \
   --force
 ```

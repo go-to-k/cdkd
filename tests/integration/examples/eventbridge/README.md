@@ -1,6 +1,6 @@
 # EventBridge Integration Test
 
-This example tests EventBridge resource deployment with cdkq.
+This example tests EventBridge resource deployment with cdkd.
 
 ## Resources Created
 
@@ -24,11 +24,11 @@ This example tests EventBridge resource deployment with cdkq.
 ```bash
 cd tests/integration/examples/eventbridge
 npm install
-cdkq deploy EventBridgeStack
+cdkd deploy EventBridgeStack
 ```
 
 ## Destroy
 
 ```bash
-cdkq destroy EventBridgeStack
+cdkd destroy EventBridgeStack
 ```

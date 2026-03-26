@@ -5,6 +5,6 @@ import { ConditionsStack } from '../lib/conditions-stack';
 
 const app = new cdk.App();
 
-new ConditionsStack(app, 'CdkqConditionsExample', {
-  description: 'CloudFormation Conditions example with cdkq',
+new ConditionsStack(app, 'CdkdConditionsExample', {
+  description: 'CloudFormation Conditions example with cdkd',
 });

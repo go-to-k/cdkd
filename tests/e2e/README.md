@@ -1,13 +1,13 @@
-# cdkq E2E Tests
+# cdkd E2E Tests
 
 End-to-end test script that runs a full deploy/diff/update/destroy lifecycle against a real AWS account.
 
 ## Prerequisites
 
 - AWS credentials configured (via environment variables, profile, or IAM role)
-- An S3 bucket for cdkq state management (created via `cdkq bootstrap` or manually)
+- An S3 bucket for cdkd state management (created via `cdkd bootstrap` or manually)
 - Node.js >= 20.0.0
-- cdkq built (`npm run build` from project root)
+- cdkd built (`npm run build` from project root)
 
 ## Setup
 
@@ -21,19 +21,19 @@ chmod +x tests/e2e/run-e2e.sh
 
 ```bash
 # Run with basic example (default)
-STATE_BUCKET=my-cdkq-state-bucket ./tests/e2e/run-e2e.sh
+STATE_BUCKET=my-cdkd-state-bucket ./tests/e2e/run-e2e.sh
 
 # Run with a specific example
-STATE_BUCKET=my-cdkq-state-bucket ./tests/e2e/run-e2e.sh ../integration/examples/lambda
+STATE_BUCKET=my-cdkd-state-bucket ./tests/e2e/run-e2e.sh ../integration/examples/lambda
 
 # With custom region
-STATE_BUCKET=my-cdkq-state-bucket AWS_REGION=ap-northeast-1 ./tests/e2e/run-e2e.sh
+STATE_BUCKET=my-cdkd-state-bucket AWS_REGION=ap-northeast-1 ./tests/e2e/run-e2e.sh
 
-# With custom cdkq binary path
-STATE_BUCKET=my-cdkq-state-bucket CDKQ_PATH=/absolute/path/to/dist/cli.js ./tests/e2e/run-e2e.sh
+# With custom cdkd binary path
+STATE_BUCKET=my-cdkd-state-bucket CDKD_PATH=/absolute/path/to/dist/cli.js ./tests/e2e/run-e2e.sh
 
 # Run with absolute path to example
-STATE_BUCKET=my-cdkq-state-bucket ./tests/e2e/run-e2e.sh /path/to/tests/integration/examples/lambda
+STATE_BUCKET=my-cdkd-state-bucket ./tests/e2e/run-e2e.sh /path/to/tests/integration/examples/lambda
 ```
 
 ## Parameters
@@ -41,9 +41,9 @@ STATE_BUCKET=my-cdkq-state-bucket ./tests/e2e/run-e2e.sh /path/to/tests/integrat
 | Parameter | Type | Required | Default | Description |
 |---|---|---|---|---|
 | `[example-dir]` | Argument | No | `basic` | Path to integration example directory |
-| `STATE_BUCKET` | Env var | Yes | - | S3 bucket name for cdkq state storage |
+| `STATE_BUCKET` | Env var | Yes | - | S3 bucket name for cdkd state storage |
 | `AWS_REGION` | Env var | No | `us-east-1` | AWS region to deploy resources in |
-| `CDKQ_PATH` | Env var | No | `../../dist/cli.js` | Path to cdkq CLI entry point |
+| `CDKD_PATH` | Env var | No | `../../dist/cli.js` | Path to cdkd CLI entry point |
 
 ## Test Steps
 
@@ -51,17 +51,17 @@ The script executes the following steps in order, failing fast on any error:
 
 1. **Deploy (CREATE)** -- Deploys the chosen example
 2. **Diff after CREATE** -- Verifies no changes are detected after a clean deploy
-3. **Deploy (UPDATE)** -- Re-deploys with `CDKQ_TEST_UPDATE=true` to trigger an update
+3. **Deploy (UPDATE)** -- Re-deploys with `CDKD_TEST_UPDATE=true` to trigger an update
 4. **Diff after UPDATE** -- Verifies no changes are detected after the update
 5. **Destroy** -- Destroys all resources with `--force`
 
 ## Cleanup
 
-If the script is interrupted with Ctrl+C or receives SIGTERM, it automatically runs `cdkq destroy --force` to clean up any deployed resources before exiting.
+If the script is interrupted with Ctrl+C or receives SIGTERM, it automatically runs `cdkd destroy --force` to clean up any deployed resources before exiting.
 
 ## Troubleshooting
 
-### "cdkq CLI not found"
+### "cdkd CLI not found"
 
 Build the project first:
 

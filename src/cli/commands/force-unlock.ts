@@ -32,7 +32,7 @@ async function forceUnlockCommand(
   // Resolve stack name
   const stackPatterns = stackArgs.length > 0 ? stackArgs : options.stack ? [options.stack] : [];
   if (stackPatterns.length === 0) {
-    throw new Error('Stack name is required. Usage: cdkq force-unlock <stack-name>');
+    throw new Error('Stack name is required. Usage: cdkd force-unlock <stack-name>');
   }
 
   // Initialize AWS clients

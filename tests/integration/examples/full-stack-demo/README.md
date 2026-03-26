@@ -1,6 +1,6 @@
 # Full Stack Demo - Serverless API Backend
 
-A realistic serverless application demonstrating cdkq's ability to deploy 15+ AWS resources with complex dependencies directly via Cloud Control API, bypassing CloudFormation.
+A realistic serverless application demonstrating cdkd's ability to deploy 15+ AWS resources with complex dependencies directly via Cloud Control API, bypassing CloudFormation.
 
 ## Architecture
 
@@ -36,20 +36,20 @@ CloudWatch Log Group + Alarm -> SNS (error alerts)
 ## Deploy
 
 ```bash
-# From the cdkq project root
-cdkq deploy FullStackDemoStack --app "npx ts-node tests/integration/examples/full-stack-demo/bin/app.ts"
+# From the cdkd project root
+cdkd deploy FullStackDemoStack --app "npx ts-node tests/integration/examples/full-stack-demo/bin/app.ts"
 
 # Or from this directory
 cd tests/integration/examples/full-stack-demo
 npm install
-cdkq deploy
+cdkd deploy
 ```
 
 ## Test the API
 
 ```bash
 # Get the Function URL from outputs
-URL=$(cdkq diff FullStackDemoStack --app "..." | grep FunctionUrl)
+URL=$(cdkd diff FullStackDemoStack --app "..." | grep FunctionUrl)
 
 # Health check
 curl $URL
@@ -64,5 +64,5 @@ curl -X POST $URL/items -d '{"id": "item-1", "data": "hello world"}'
 ## Destroy
 
 ```bash
-cdkq destroy FullStackDemoStack
+cdkd destroy FullStackDemoStack
 ```

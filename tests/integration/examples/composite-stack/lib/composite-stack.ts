@@ -18,7 +18,7 @@ import * as kms from 'aws-cdk-lib/aws-kms';
  * Composite (complex) stack example
  *
  * Tests many diverse resource types in a single stack to find
- * unsupported resources in cdkq. Target: 20+ resources including
+ * unsupported resources in cdkd. Target: 20+ resources including
  * auto-generated IAM roles and policies.
  *
  * Resource types included:
@@ -91,7 +91,7 @@ export class CompositeStack extends cdk.Stack {
     // SNS Topic + SQS Subscription
     // ========================================
     const topic = new sns.Topic(this, 'NotificationTopic', {
-      displayName: 'cdkq Composite Stack Notifications',
+      displayName: 'cdkd Composite Stack Notifications',
     });
 
     topic.addSubscription(
@@ -112,7 +112,7 @@ export class CompositeStack extends cdk.Stack {
     // ========================================
     const customRole = new iam.Role(this, 'CustomRole', {
       assumedBy: new iam.ServicePrincipal('lambda.amazonaws.com'),
-      description: 'Custom IAM role for cdkq composite stack',
+      description: 'Custom IAM role for cdkd composite stack',
       managedPolicies: [
         iam.ManagedPolicy.fromAwsManagedPolicyName(
           'service-role/AWSLambdaBasicExecutionRole'
@@ -156,7 +156,7 @@ export class CompositeStack extends cdk.Stack {
           const response = {
             statusCode: 200,
             body: JSON.stringify({
-              message: 'cdkq composite stack processor',
+              message: 'cdkd composite stack processor',
               tableName: process.env.TABLE_NAME,
               bucketName: process.env.BUCKET_NAME,
               timestamp: new Date().toISOString(),
@@ -207,7 +207,7 @@ export class CompositeStack extends cdk.Stack {
     // Secrets Manager Secret
     // ========================================
     const secret = new secretsmanager.Secret(this, 'AppSecret', {
-      description: 'cdkq composite stack application secret',
+      description: 'cdkd composite stack application secret',
       generateSecretString: {
         secretStringTemplate: JSON.stringify({ username: 'admin' }),
         generateStringKey: 'password',
@@ -222,7 +222,7 @@ export class CompositeStack extends cdk.Stack {
     // ========================================
     const ssmParam = new ssm.StringParameter(this, 'ConfigParameter', {
       // Let CDK auto-generate the name to avoid conflicts on retry
-      description: 'cdkq composite stack configuration parameter',
+      description: 'cdkd composite stack configuration parameter',
       stringValue: JSON.stringify({
         version: '1.0.0',
         environment: 'test',

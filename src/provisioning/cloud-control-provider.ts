@@ -624,7 +624,7 @@ export class CloudControlProvider implements ResourceProvider {
     if (err.name === 'UnsupportedActionException' || err.name === 'TypeNotFoundException') {
       throw new ProvisioningError(
         `Resource type ${resourceType} is not supported by Cloud Control API and no SDK provider is registered.\n` +
-          `Please report this issue at https://github.com/your-org/cdkq/issues so we can add SDK provider support.\n` +
+          `Please report this issue at https://github.com/your-org/cdkd/issues so we can add SDK provider support.\n` +
           `Error: ${err.message || 'Unknown error'}`,
         resourceType,
         logicalId,

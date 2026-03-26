@@ -1,8 +1,8 @@
 {
-  "name": "cdkq-example-intrinsic-functions",
+  "name": "cdkd-example-intrinsic-functions",
   "version": "1.0.0",
   "private": true,
-  "description": "cdkq example demonstrating CloudFormation intrinsic function resolution",
+  "description": "cdkd example demonstrating CloudFormation intrinsic function resolution",
   "scripts": {
     "build": "tsc",
     "watch": "tsc -w"

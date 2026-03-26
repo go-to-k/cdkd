@@ -5,7 +5,7 @@ import * as s3 from 'aws-cdk-lib/aws-s3';
 /**
  * CloudFormation Conditions example stack
  *
- * This example demonstrates how to use CloudFormation Conditions with cdkq.
+ * This example demonstrates how to use CloudFormation Conditions with cdkd.
  * It shows:
  * - CfnParameter for user input
  * - CfnCondition with Fn::Equals
@@ -61,13 +61,13 @@ export class ConditionsStack extends cdk.Stack {
 
     // Add conditional tags based on environment
     cdk.Tags.of(basicBucket).add('Environment', environmentParam.valueAsString);
-    cdk.Tags.of(basicBucket).add('Project', 'cdkq-conditions');
+    cdk.Tags.of(basicBucket).add('Project', 'cdkd-conditions');
 
     // Create a production-only bucket using CfnBucket with conditions
     const prodBucket = new s3.CfnBucket(this, 'ProductionBucket', {
       bucketName: cdk.Fn.conditionIf(
         isProduction.logicalId,
-        `cdkq-prod-bucket-${cdk.Aws.ACCOUNT_ID}`,
+        `cdkd-prod-bucket-${cdk.Aws.ACCOUNT_ID}`,
         cdk.Aws.NO_VALUE
       ).toString(),
       versioningConfiguration: cdk.Fn.conditionIf(

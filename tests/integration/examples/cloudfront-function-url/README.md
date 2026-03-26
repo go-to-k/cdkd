@@ -12,7 +12,7 @@ This stack includes the following resources:
 - **IAM Role**: Lambda execution role
 - **Lambda Permission**: Grants CloudFront invoke access
 
-## Features Tested in cdkq
+## Features Tested in cdkd
 
 1. **Lambda Function URL**: AWS::Lambda::Url resource creation
 2. **CloudFront Distribution**: Distribution with HTTP origin (not S3)
@@ -27,7 +27,7 @@ This stack includes the following resources:
 # Install packages
 npm install
 
-# Deploy with cdkq
+# Deploy with cdkd
 node ../../../dist/cli.js deploy \
   --app "npx ts-node --prefer-ts-exts bin/app.ts" \
   --state-bucket <your-state-bucket> \

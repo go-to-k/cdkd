@@ -14,7 +14,7 @@ async function main(): Promise<void> {
   const program = new Command();
 
   program
-    .name('cdkq')
+    .name('cdkd')
     .description('CDK Quick Deploy - Deploy AWS CDK apps directly via SDK/Cloud Control API')
     .version('0.1.0');
 

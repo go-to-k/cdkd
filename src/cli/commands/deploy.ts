@@ -74,12 +74,12 @@ async function deployCommand(
   const app = resolveApp(options.app);
   if (!app) {
     throw new Error(
-      'No app command specified. Use --app, set CDKQ_APP env var, or add "app" to cdk.json'
+      'No app command specified. Use --app, set CDKD_APP env var, or add "app" to cdk.json'
     );
   }
   options.app = app;
 
-  // Resolve --state-bucket from CLI, env, cdk.json, or default (cdkq-state-{accountId}-{region})
+  // Resolve --state-bucket from CLI, env, cdk.json, or default (cdkd-state-{accountId}-{region})
   const region = options.region || process.env['AWS_REGION'] || 'us-east-1';
   const stateBucket = await resolveStateBucketWithDefault(options.stateBucket, region);
 

@@ -11,7 +11,7 @@ This stack includes the following resources:
 - **IAM Role**: Lambda execution role with DynamoDB access permissions
 - **IAM Policy**: Read/write permissions for the DynamoDB table
 
-## Features Tested in cdkq
+## Features Tested in cdkd
 
 1. **Lambda Asset Publishing**: Code from `lambda/` directory is uploaded to S3
 2. **Ref in Environment Variables**: DynamoDB table name is referenced in the `TABLE_NAME` environment variable
@@ -25,7 +25,7 @@ This stack includes the following resources:
 # Install packages
 npm install
 
-# Deploy with cdkq
+# Deploy with cdkd
 node ../../../dist/cli.js deploy \
   --app "npx ts-node --prefer-ts-exts bin/app.ts" \
   --state-bucket <your-state-bucket> \

@@ -1,5 +1,5 @@
 {
-  "name": "cdkq-example-multi-stack-deps",
+  "name": "cdkd-example-multi-stack-deps",
   "version": "1.0.0",
   "private": true,
   "description": "Multi-stack dependency example with cross-stack Fn::ImportValue",

@@ -1,6 +1,6 @@
 # Bedrock Agent Example
 
-This example demonstrates deploying an Amazon Bedrock Agent using cdkq.
+This example demonstrates deploying an Amazon Bedrock Agent using cdkd.
 
 ## Resources Created
 
@@ -19,11 +19,11 @@ This example demonstrates deploying an Amazon Bedrock Agent using cdkq.
 # Install dependencies
 npm install
 
-# Deploy with cdkq
-cdkq deploy BedrockAgentStack
+# Deploy with cdkd
+cdkd deploy BedrockAgentStack
 
 # Destroy
-cdkq destroy BedrockAgentStack
+cdkd destroy BedrockAgentStack
 ```
 
 ## Outputs

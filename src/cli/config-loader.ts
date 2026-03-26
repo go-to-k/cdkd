@@ -12,9 +12,9 @@ export interface CdkConfig {
 }
 
 /**
- * cdkq-specific configuration extracted from cdk.json context or environment
+ * cdkd-specific configuration extracted from cdk.json context or environment
  */
-export interface CdkqConfig {
+export interface CdkdConfig {
   stateBucket?: string;
 }
 
@@ -47,12 +47,12 @@ export function loadCdkJson(cwd?: string): CdkConfig | null {
 /**
  * Resolve the --app option from CLI, cdk.json, or environment
  *
- * Priority: CLI option > CDKQ_APP env > cdk.json app field
+ * Priority: CLI option > CDKD_APP env > cdk.json app field
  */
 export function resolveApp(cliApp?: string): string | undefined {
   if (cliApp) return cliApp;
 
-  const envApp = process.env['CDKQ_APP'];
+  const envApp = process.env['CDKD_APP'];
   if (envApp) return envApp;
 
   const cdkJson = loadCdkJson();
@@ -62,32 +62,32 @@ export function resolveApp(cliApp?: string): string | undefined {
 /**
  * Resolve the --state-bucket option from CLI, cdk.json context, or environment
  *
- * Priority: CLI option > CDKQ_STATE_BUCKET env > cdk.json context.cdkq.stateBucket
+ * Priority: CLI option > CDKD_STATE_BUCKET env > cdk.json context.cdkd.stateBucket
  */
 export function resolveStateBucket(cliBucket?: string): string | undefined {
   if (cliBucket) return cliBucket;
 
-  const envBucket = process.env['CDKQ_STATE_BUCKET'];
+  const envBucket = process.env['CDKD_STATE_BUCKET'];
   if (envBucket) return envBucket;
 
   const cdkJson = loadCdkJson();
-  const cdkqContext = cdkJson?.context?.['cdkq'] as Record<string, unknown> | undefined;
-  const bucket = cdkqContext?.['stateBucket'];
+  const cdkdContext = cdkJson?.context?.['cdkd'] as Record<string, unknown> | undefined;
+  const bucket = cdkdContext?.['stateBucket'];
   return typeof bucket === 'string' ? bucket : undefined;
 }
 
 /**
  * Generate default state bucket name from account info
- * Format: cdkq-state-{accountId}-{region}
+ * Format: cdkd-state-{accountId}-{region}
  */
 export function getDefaultStateBucketName(accountId: string, region: string): string {
-  return `cdkq-state-${accountId}-${region}`;
+  return `cdkd-state-${accountId}-${region}`;
 }
 
 /**
  * Resolve state bucket with STS fallback
  *
- * Priority: CLI option > CDKQ_STATE_BUCKET env > cdk.json > default (cdkq-state-{accountId}-{region})
+ * Priority: CLI option > CDKD_STATE_BUCKET env > cdk.json > default (cdkd-state-{accountId}-{region})
  *
  * If no explicit bucket is configured, uses STS GetCallerIdentity to generate
  * a default bucket name. Requires AWS credentials to be configured.

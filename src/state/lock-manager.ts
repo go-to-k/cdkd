@@ -59,7 +59,7 @@ export class LockManager {
       const pid = process.pid;
       return `${user}@${host}:${pid}`;
     } catch {
-      return `cdkq:${process.pid}`;
+      return `cdkd:${process.pid}`;
     }
   }
 

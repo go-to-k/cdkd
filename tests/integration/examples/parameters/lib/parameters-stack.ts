@@ -11,7 +11,7 @@ import * as s3 from 'aws-cdk-lib/aws-s3';
  * - Default values for parameters
  * - Parameter types (String, Number, etc.)
  *
- * Note: cdkq needs to support Parameters section in templates
+ * Note: cdkd needs to support Parameters section in templates
  * and resolve Ref to parameter values.
  */
 export class ParametersStack extends cdk.Stack {
@@ -21,7 +21,7 @@ export class ParametersStack extends cdk.Stack {
     // Define parameters
     const bucketPrefix = new cdk.CfnParameter(this, 'BucketPrefix', {
       type: 'String',
-      default: 'cdkq-test',
+      default: 'cdkd-test',
       description: 'Prefix for the S3 bucket name',
       minLength: 3,
       maxLength: 20,
