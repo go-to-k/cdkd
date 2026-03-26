@@ -10,7 +10,7 @@
 
 ## Why cdkq?
 
-AWS CDK is great for defining infrastructure as code, but deployments go through CloudFormation which adds overhead (stack creation, change sets, drift detection). **cdkq** is an experimental alternative that deploys CDK apps directly:
+AWS CDK is great for defining infrastructure as code, but all deployments go through CloudFormation. **cdkq** is an experimental alternative that deploys CDK apps directly via AWS SDK, bypassing CloudFormation entirely:
 
 - **Direct provisioning** via AWS SDK (34 resource types) and Cloud Control API (200+ types)
 - **No CloudFormation stacks** - no change sets, no stack limits
