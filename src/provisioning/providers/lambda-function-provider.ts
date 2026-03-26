@@ -1,3 +1,4 @@
+import * as zlib from 'node:zlib';
 import {
   LambdaClient,
   CreateFunctionCommand,
@@ -271,12 +272,89 @@ export class LambdaFunctionProvider implements ResourceProvider {
       result.S3ObjectVersion = code['S3ObjectVersion'] as string;
     }
     if (code['ZipFile']) {
-      result.ZipFile = Buffer.from(code['ZipFile'] as string, 'utf-8');
+      // Lambda SDK expects a zip binary, not raw text.
+      // CloudFormation's ZipFile property auto-zips inline code, but SDK does not.
+      // Create a minimal zip with the code as index.* file.
+      result.ZipFile = this.createZipFromInlineCode(code['ZipFile'] as string);
     }
     if (code['ImageUri']) {
       result.ImageUri = code['ImageUri'] as string;
     }
 
     return result;
+  }
+
+  /**
+   * Create a zip file from inline code text.
+   *
+   * CloudFormation's ZipFile property automatically wraps inline code in a zip,
+   * but the Lambda SDK expects actual zip binary. This creates a minimal zip
+   * containing the code as index.* (matching the Handler).
+   */
+  private createZipFromInlineCode(code: string): Uint8Array {
+    const fileData = Buffer.from(code, 'utf-8');
+    const crc32 = this.crc32(fileData);
+    const compressedData = zlib.deflateRawSync(fileData);
+
+    // Determine filename from handler or default to index.py
+    const fileName = Buffer.from('index.py');
+    const now = new Date();
+    const modTime =
+      ((now.getHours() << 11) | (now.getMinutes() << 5) | (now.getSeconds() >> 1)) & 0xffff;
+    const modDate =
+      (((now.getFullYear() - 1980) << 9) | ((now.getMonth() + 1) << 5) | now.getDate()) & 0xffff;
+
+    // Local file header
+    const localHeader = Buffer.alloc(30 + fileName.length);
+    localHeader.writeUInt32LE(0x04034b50, 0); // signature
+    localHeader.writeUInt16LE(20, 4); // version needed
+    localHeader.writeUInt16LE(0, 6); // flags
+    localHeader.writeUInt16LE(8, 8); // compression: deflate
+    localHeader.writeUInt16LE(modTime, 10);
+    localHeader.writeUInt16LE(modDate, 12);
+    localHeader.writeUInt32LE(crc32, 14);
+    localHeader.writeUInt32LE(compressedData.length, 18);
+    localHeader.writeUInt32LE(fileData.length, 22);
+    localHeader.writeUInt16LE(fileName.length, 26);
+    localHeader.writeUInt16LE(0, 28); // extra field length
+    fileName.copy(localHeader, 30);
+
+    // Central directory
+    const centralDir = Buffer.alloc(46 + fileName.length);
+    centralDir.writeUInt32LE(0x02014b50, 0);
+    centralDir.writeUInt16LE(20, 4);
+    centralDir.writeUInt16LE(20, 6);
+    centralDir.writeUInt16LE(0, 8);
+    centralDir.writeUInt16LE(8, 10);
+    centralDir.writeUInt16LE(modTime, 12);
+    centralDir.writeUInt16LE(modDate, 14);
+    centralDir.writeUInt32LE(crc32, 16);
+    centralDir.writeUInt32LE(compressedData.length, 20);
+    centralDir.writeUInt32LE(fileData.length, 24);
+    centralDir.writeUInt16LE(fileName.length, 28);
+    centralDir.writeUInt32LE(0, 42); // offset to local header
+
+    // End of central directory
+    const endRecord = Buffer.alloc(22);
+    const cdOffset = localHeader.length + compressedData.length;
+    const cdSize = centralDir.length;
+    endRecord.writeUInt32LE(0x06054b50, 0);
+    endRecord.writeUInt16LE(1, 8); // entries on disk
+    endRecord.writeUInt16LE(1, 10); // total entries
+    endRecord.writeUInt32LE(cdSize, 12);
+    endRecord.writeUInt32LE(cdOffset, 16);
+
+    return Buffer.concat([localHeader, compressedData, centralDir, endRecord]);
+  }
+
+  private crc32(data: Buffer): number {
+    let crc = 0xffffffff;
+    for (const byte of data) {
+      crc ^= byte;
+      for (let i = 0; i < 8; i++) {
+        crc = (crc >>> 1) ^ (crc & 1 ? 0xedb88320 : 0);
+      }
+    }
+    return (crc ^ 0xffffffff) >>> 0;
   }
 }
