@@ -48,7 +48,7 @@ describe('DeployEngine - Resource Replacement', () => {
   };
 
   let mockLockManager: {
-    acquireLock: ReturnType<typeof vi.fn>;
+    acquireLockWithRetry: ReturnType<typeof vi.fn>;
     releaseLock: ReturnType<typeof vi.fn>;
   };
 
@@ -120,7 +120,7 @@ describe('DeployEngine - Resource Replacement', () => {
     };
 
     mockLockManager = {
-      acquireLock: vi.fn().mockResolvedValue(true),
+      acquireLockWithRetry: vi.fn().mockResolvedValue(true),
       releaseLock: vi.fn().mockResolvedValue(undefined),
     };
 

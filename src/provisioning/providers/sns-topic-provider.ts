@@ -112,6 +112,7 @@ export class SNSTopicProvider implements ResourceProvider {
    * SNS topics have limited mutable properties (DisplayName, KmsMasterKeyId, etc.).
    * TopicName is immutable and requires replacement (handled by deployment layer).
    */
+  // eslint-disable-next-line @typescript-eslint/require-await
   async update(
     logicalId: string,
     physicalId: string,

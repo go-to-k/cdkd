@@ -1,0 +1,1338 @@
+import {
+  EC2Client,
+  CreateVpcCommand,
+  DeleteVpcCommand,
+  ModifyVpcAttributeCommand,
+  DescribeVpcsCommand,
+  CreateSubnetCommand,
+  DeleteSubnetCommand,
+  CreateInternetGatewayCommand,
+  DeleteInternetGatewayCommand,
+  AttachInternetGatewayCommand,
+  DetachInternetGatewayCommand,
+  CreateRouteTableCommand,
+  DeleteRouteTableCommand,
+  CreateRouteCommand,
+  DeleteRouteCommand,
+  AssociateRouteTableCommand,
+  DisassociateRouteTableCommand,
+  CreateSecurityGroupCommand,
+  DeleteSecurityGroupCommand,
+  AuthorizeSecurityGroupIngressCommand,
+  RevokeSecurityGroupIngressCommand,
+  CreateTagsCommand,
+  DescribeSubnetsCommand,
+  DescribeSecurityGroupsCommand,
+  type Tenancy,
+} from '@aws-sdk/client-ec2';
+import { getLogger } from '../../utils/logger.js';
+import { getAwsClients } from '../../utils/aws-clients.js';
+import { ProvisioningError } from '../../utils/error-handler.js';
+import type {
+  ResourceProvider,
+  ResourceCreateResult,
+  ResourceUpdateResult,
+} from '../../types/resource.js';
+
+/**
+ * AWS EC2 Networking Provider
+ *
+ * Implements resource provisioning for EC2 networking resources:
+ * - AWS::EC2::VPC
+ * - AWS::EC2::Subnet
+ * - AWS::EC2::InternetGateway
+ * - AWS::EC2::VPCGatewayAttachment
+ * - AWS::EC2::RouteTable
+ * - AWS::EC2::Route
+ * - AWS::EC2::SubnetRouteTableAssociation
+ * - AWS::EC2::SecurityGroup
+ * - AWS::EC2::SecurityGroupIngress
+ */
+export class EC2Provider implements ResourceProvider {
+  private ec2Client: EC2Client;
+  private logger = getLogger().child('EC2Provider');
+
+  constructor() {
+    const awsClients = getAwsClients();
+    this.ec2Client = awsClients.ec2;
+  }
+
+  // ─── Dispatch ─────────────────────────────────────────────────────
+
+  async create(
+    logicalId: string,
+    resourceType: string,
+    properties: Record<string, unknown>
+  ): Promise<ResourceCreateResult> {
+    switch (resourceType) {
+      case 'AWS::EC2::VPC':
+        return this.createVpc(logicalId, resourceType, properties);
+      case 'AWS::EC2::Subnet':
+        return this.createSubnet(logicalId, resourceType, properties);
+      case 'AWS::EC2::InternetGateway':
+        return this.createInternetGateway(logicalId, resourceType, properties);
+      case 'AWS::EC2::VPCGatewayAttachment':
+        return this.createVpcGatewayAttachment(logicalId, resourceType, properties);
+      case 'AWS::EC2::RouteTable':
+        return this.createRouteTable(logicalId, resourceType, properties);
+      case 'AWS::EC2::Route':
+        return this.createRoute(logicalId, resourceType, properties);
+      case 'AWS::EC2::SubnetRouteTableAssociation':
+        return this.createSubnetRouteTableAssociation(logicalId, resourceType, properties);
+      case 'AWS::EC2::SecurityGroup':
+        return this.createSecurityGroup(logicalId, resourceType, properties);
+      case 'AWS::EC2::SecurityGroupIngress':
+        return this.createSecurityGroupIngress(logicalId, resourceType, properties);
+      default:
+        throw new ProvisioningError(
+          `Unsupported resource type: ${resourceType}`,
+          resourceType,
+          logicalId
+        );
+    }
+  }
+
+  async update(
+    logicalId: string,
+    physicalId: string,
+    resourceType: string,
+    properties: Record<string, unknown>,
+    previousProperties: Record<string, unknown>
+  ): Promise<ResourceUpdateResult> {
+    switch (resourceType) {
+      case 'AWS::EC2::VPC':
+        return this.updateVpc(logicalId, physicalId, resourceType, properties);
+      case 'AWS::EC2::Subnet':
+        return this.updateSubnet(logicalId, physicalId);
+      case 'AWS::EC2::InternetGateway':
+        return this.updateInternetGateway(logicalId, physicalId);
+      case 'AWS::EC2::VPCGatewayAttachment':
+        return this.updateVpcGatewayAttachment(logicalId, physicalId);
+      case 'AWS::EC2::RouteTable':
+        return this.updateRouteTable(logicalId, physicalId);
+      case 'AWS::EC2::Route':
+        return this.updateRoute(
+          logicalId,
+          physicalId,
+          resourceType,
+          properties,
+          previousProperties
+        );
+      case 'AWS::EC2::SubnetRouteTableAssociation':
+        return this.updateSubnetRouteTableAssociation(logicalId, physicalId);
+      case 'AWS::EC2::SecurityGroup':
+        return this.updateSecurityGroup(logicalId, physicalId, resourceType, properties);
+      case 'AWS::EC2::SecurityGroupIngress':
+        return this.updateSecurityGroupIngress(
+          logicalId,
+          physicalId,
+          resourceType,
+          properties,
+          previousProperties
+        );
+      default:
+        throw new ProvisioningError(
+          `Unsupported resource type: ${resourceType}`,
+          resourceType,
+          logicalId,
+          physicalId
+        );
+    }
+  }
+
+  async delete(
+    logicalId: string,
+    physicalId: string,
+    resourceType: string,
+    properties?: Record<string, unknown>
+  ): Promise<void> {
+    switch (resourceType) {
+      case 'AWS::EC2::VPC':
+        return this.deleteVpc(logicalId, physicalId, resourceType);
+      case 'AWS::EC2::Subnet':
+        return this.deleteSubnet(logicalId, physicalId, resourceType);
+      case 'AWS::EC2::InternetGateway':
+        return this.deleteInternetGateway(logicalId, physicalId, resourceType);
+      case 'AWS::EC2::VPCGatewayAttachment':
+        return this.deleteVpcGatewayAttachment(logicalId, physicalId, resourceType);
+      case 'AWS::EC2::RouteTable':
+        return this.deleteRouteTable(logicalId, physicalId, resourceType);
+      case 'AWS::EC2::Route':
+        return this.deleteRoute(logicalId, physicalId, resourceType);
+      case 'AWS::EC2::SubnetRouteTableAssociation':
+        return this.deleteSubnetRouteTableAssociation(logicalId, physicalId, resourceType);
+      case 'AWS::EC2::SecurityGroup':
+        return this.deleteSecurityGroup(logicalId, physicalId, resourceType);
+      case 'AWS::EC2::SecurityGroupIngress':
+        return this.deleteSecurityGroupIngress(logicalId, physicalId, resourceType, properties);
+      default:
+        throw new ProvisioningError(
+          `Unsupported resource type: ${resourceType}`,
+          resourceType,
+          logicalId,
+          physicalId
+        );
+    }
+  }
+
+  async getAttribute(
+    physicalId: string,
+    resourceType: string,
+    attributeName: string
+  ): Promise<unknown> {
+    switch (resourceType) {
+      case 'AWS::EC2::VPC':
+        return this.getVpcAttribute(physicalId, attributeName);
+      case 'AWS::EC2::Subnet':
+        return this.getSubnetAttribute(physicalId, attributeName);
+      case 'AWS::EC2::SecurityGroup':
+        return this.getSecurityGroupAttribute(physicalId, attributeName);
+      default:
+        return undefined;
+    }
+  }
+
+  // ─── AWS::EC2::VPC ────────────────────────────────────────────────
+
+  private async createVpc(
+    logicalId: string,
+    resourceType: string,
+    properties: Record<string, unknown>
+  ): Promise<ResourceCreateResult> {
+    this.logger.debug(`Creating VPC ${logicalId}`);
+
+    const cidrBlock = properties['CidrBlock'] as string;
+    if (!cidrBlock) {
+      throw new ProvisioningError(
+        `CidrBlock is required for VPC ${logicalId}`,
+        resourceType,
+        logicalId
+      );
+    }
+
+    try {
+      const response = await this.ec2Client.send(
+        new CreateVpcCommand({
+          CidrBlock: cidrBlock,
+          InstanceTenancy: (properties['InstanceTenancy'] as Tenancy) ?? undefined,
+        })
+      );
+
+      const vpcId = response.Vpc!.VpcId!;
+
+      // Apply DNS settings
+      if (
+        properties['EnableDnsHostnames'] === true ||
+        properties['EnableDnsHostnames'] === 'true'
+      ) {
+        await this.ec2Client.send(
+          new ModifyVpcAttributeCommand({
+            VpcId: vpcId,
+            EnableDnsHostnames: { Value: true },
+          })
+        );
+      }
+
+      if (properties['EnableDnsSupport'] === false || properties['EnableDnsSupport'] === 'false') {
+        await this.ec2Client.send(
+          new ModifyVpcAttributeCommand({
+            VpcId: vpcId,
+            EnableDnsSupport: { Value: false },
+          })
+        );
+      }
+
+      // Apply tags
+      await this.applyTags(vpcId, properties, logicalId);
+
+      // Fetch VPC details for attributes
+      const describeResponse = await this.ec2Client.send(
+        new DescribeVpcsCommand({ VpcIds: [vpcId] })
+      );
+      const vpc = describeResponse.Vpcs?.[0];
+
+      this.logger.debug(`Successfully created VPC ${logicalId}: ${vpcId}`);
+
+      return {
+        physicalId: vpcId,
+        attributes: {
+          VpcId: vpcId,
+          CidrBlock: cidrBlock,
+          DefaultNetworkAcl: vpc?.IsDefault ? '' : '',
+          DefaultSecurityGroup: '',
+        },
+      };
+    } catch (error) {
+      const cause = error instanceof Error ? error : undefined;
+      throw new ProvisioningError(
+        `Failed to create VPC ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        resourceType,
+        logicalId,
+        undefined,
+        cause
+      );
+    }
+  }
+
+  private async updateVpc(
+    logicalId: string,
+    physicalId: string,
+    resourceType: string,
+    properties: Record<string, unknown>
+  ): Promise<ResourceUpdateResult> {
+    this.logger.debug(`Updating VPC ${logicalId}: ${physicalId}`);
+
+    try {
+      // Update DNS settings
+      if (properties['EnableDnsHostnames'] !== undefined) {
+        const value =
+          properties['EnableDnsHostnames'] === true || properties['EnableDnsHostnames'] === 'true';
+        await this.ec2Client.send(
+          new ModifyVpcAttributeCommand({
+            VpcId: physicalId,
+            EnableDnsHostnames: { Value: value },
+          })
+        );
+      }
+
+      if (properties['EnableDnsSupport'] !== undefined) {
+        const value =
+          properties['EnableDnsSupport'] === true || properties['EnableDnsSupport'] === 'true';
+        await this.ec2Client.send(
+          new ModifyVpcAttributeCommand({
+            VpcId: physicalId,
+            EnableDnsSupport: { Value: value },
+          })
+        );
+      }
+
+      // Update tags
+      await this.applyTags(physicalId, properties, logicalId);
+
+      this.logger.debug(`Successfully updated VPC ${logicalId}`);
+
+      return {
+        physicalId,
+        wasReplaced: false,
+        attributes: {
+          VpcId: physicalId,
+          CidrBlock: properties['CidrBlock'] as string,
+        },
+      };
+    } catch (error) {
+      const cause = error instanceof Error ? error : undefined;
+      throw new ProvisioningError(
+        `Failed to update VPC ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        resourceType,
+        logicalId,
+        physicalId,
+        cause
+      );
+    }
+  }
+
+  private async deleteVpc(
+    logicalId: string,
+    physicalId: string,
+    resourceType: string
+  ): Promise<void> {
+    this.logger.debug(`Deleting VPC ${logicalId}: ${physicalId}`);
+
+    try {
+      await this.ec2Client.send(new DeleteVpcCommand({ VpcId: physicalId }));
+      this.logger.debug(`Successfully deleted VPC ${logicalId}`);
+    } catch (error) {
+      if (this.isNotFoundError(error)) {
+        this.logger.debug(`VPC ${physicalId} does not exist, skipping deletion`);
+        return;
+      }
+      const cause = error instanceof Error ? error : undefined;
+      throw new ProvisioningError(
+        `Failed to delete VPC ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        resourceType,
+        logicalId,
+        physicalId,
+        cause
+      );
+    }
+  }
+
+  private async getVpcAttribute(physicalId: string, attributeName: string): Promise<unknown> {
+    if (attributeName === 'VpcId') return physicalId;
+
+    try {
+      const response = await this.ec2Client.send(new DescribeVpcsCommand({ VpcIds: [physicalId] }));
+      const vpc = response.Vpcs?.[0];
+      if (!vpc) return undefined;
+
+      switch (attributeName) {
+        case 'CidrBlock':
+          return vpc.CidrBlock;
+        case 'DefaultNetworkAcl':
+          return vpc.DhcpOptionsId; // Placeholder - need separate API call for NACL
+        case 'DefaultSecurityGroup':
+          return undefined; // Requires DescribeSecurityGroups filter
+        default:
+          return undefined;
+      }
+    } catch {
+      return undefined;
+    }
+  }
+
+  // ─── AWS::EC2::Subnet ─────────────────────────────────────────────
+
+  private async createSubnet(
+    logicalId: string,
+    resourceType: string,
+    properties: Record<string, unknown>
+  ): Promise<ResourceCreateResult> {
+    this.logger.debug(`Creating Subnet ${logicalId}`);
+
+    const vpcId = properties['VpcId'] as string;
+    const cidrBlock = properties['CidrBlock'] as string;
+
+    if (!vpcId || !cidrBlock) {
+      throw new ProvisioningError(
+        `VpcId and CidrBlock are required for Subnet ${logicalId}`,
+        resourceType,
+        logicalId
+      );
+    }
+
+    try {
+      const response = await this.ec2Client.send(
+        new CreateSubnetCommand({
+          VpcId: vpcId,
+          CidrBlock: cidrBlock,
+          AvailabilityZone: (properties['AvailabilityZone'] as string) ?? undefined,
+        })
+      );
+
+      const subnetId = response.Subnet!.SubnetId!;
+      const availabilityZone = response.Subnet!.AvailabilityZone!;
+
+      // Apply tags
+      await this.applyTags(subnetId, properties, logicalId);
+
+      this.logger.debug(`Successfully created Subnet ${logicalId}: ${subnetId}`);
+
+      return {
+        physicalId: subnetId,
+        attributes: {
+          SubnetId: subnetId,
+          AvailabilityZone: availabilityZone,
+        },
+      };
+    } catch (error) {
+      const cause = error instanceof Error ? error : undefined;
+      throw new ProvisioningError(
+        `Failed to create Subnet ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        resourceType,
+        logicalId,
+        undefined,
+        cause
+      );
+    }
+  }
+
+  // eslint-disable-next-line @typescript-eslint/require-await
+  private async updateSubnet(logicalId: string, physicalId: string): Promise<ResourceUpdateResult> {
+    this.logger.debug(`Updating Subnet ${logicalId}: ${physicalId} (no-op, immutable properties)`);
+    return { physicalId, wasReplaced: false };
+  }
+
+  private async deleteSubnet(
+    logicalId: string,
+    physicalId: string,
+    resourceType: string
+  ): Promise<void> {
+    this.logger.debug(`Deleting Subnet ${logicalId}: ${physicalId}`);
+
+    try {
+      await this.ec2Client.send(new DeleteSubnetCommand({ SubnetId: physicalId }));
+      this.logger.debug(`Successfully deleted Subnet ${logicalId}`);
+    } catch (error) {
+      if (this.isNotFoundError(error)) {
+        this.logger.debug(`Subnet ${physicalId} does not exist, skipping deletion`);
+        return;
+      }
+      const cause = error instanceof Error ? error : undefined;
+      throw new ProvisioningError(
+        `Failed to delete Subnet ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        resourceType,
+        logicalId,
+        physicalId,
+        cause
+      );
+    }
+  }
+
+  private async getSubnetAttribute(physicalId: string, attributeName: string): Promise<unknown> {
+    if (attributeName === 'SubnetId') return physicalId;
+
+    try {
+      const response = await this.ec2Client.send(
+        new DescribeSubnetsCommand({ SubnetIds: [physicalId] })
+      );
+      const subnet = response.Subnets?.[0];
+      if (!subnet) return undefined;
+
+      if (attributeName === 'AvailabilityZone') return subnet.AvailabilityZone;
+      return undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  // ─── AWS::EC2::InternetGateway ────────────────────────────────────
+
+  private async createInternetGateway(
+    logicalId: string,
+    resourceType: string,
+    properties: Record<string, unknown>
+  ): Promise<ResourceCreateResult> {
+    this.logger.debug(`Creating InternetGateway ${logicalId}`);
+
+    try {
+      const response = await this.ec2Client.send(new CreateInternetGatewayCommand({}));
+      const igwId = response.InternetGateway!.InternetGatewayId!;
+
+      // Apply tags
+      await this.applyTags(igwId, properties, logicalId);
+
+      this.logger.debug(`Successfully created InternetGateway ${logicalId}: ${igwId}`);
+
+      return {
+        physicalId: igwId,
+        attributes: {
+          InternetGatewayId: igwId,
+        },
+      };
+    } catch (error) {
+      const cause = error instanceof Error ? error : undefined;
+      throw new ProvisioningError(
+        `Failed to create InternetGateway ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        resourceType,
+        logicalId,
+        undefined,
+        cause
+      );
+    }
+  }
+
+  // eslint-disable-next-line @typescript-eslint/require-await
+  private async updateInternetGateway(
+    logicalId: string,
+    physicalId: string
+  ): Promise<ResourceUpdateResult> {
+    this.logger.debug(`Updating InternetGateway ${logicalId}: ${physicalId} (no-op)`);
+    return { physicalId, wasReplaced: false };
+  }
+
+  private async deleteInternetGateway(
+    logicalId: string,
+    physicalId: string,
+    resourceType: string
+  ): Promise<void> {
+    this.logger.debug(`Deleting InternetGateway ${logicalId}: ${physicalId}`);
+
+    try {
+      await this.ec2Client.send(
+        new DeleteInternetGatewayCommand({ InternetGatewayId: physicalId })
+      );
+      this.logger.debug(`Successfully deleted InternetGateway ${logicalId}`);
+    } catch (error) {
+      if (this.isNotFoundError(error)) {
+        this.logger.debug(`InternetGateway ${physicalId} does not exist, skipping deletion`);
+        return;
+      }
+      const cause = error instanceof Error ? error : undefined;
+      throw new ProvisioningError(
+        `Failed to delete InternetGateway ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        resourceType,
+        logicalId,
+        physicalId,
+        cause
+      );
+    }
+  }
+
+  // ─── AWS::EC2::VPCGatewayAttachment ───────────────────────────────
+
+  private async createVpcGatewayAttachment(
+    logicalId: string,
+    resourceType: string,
+    properties: Record<string, unknown>
+  ): Promise<ResourceCreateResult> {
+    this.logger.debug(`Creating VPCGatewayAttachment ${logicalId}`);
+
+    const vpcId = properties['VpcId'] as string;
+    const internetGatewayId = properties['InternetGatewayId'] as string;
+
+    if (!vpcId || !internetGatewayId) {
+      throw new ProvisioningError(
+        `VpcId and InternetGatewayId are required for VPCGatewayAttachment ${logicalId}`,
+        resourceType,
+        logicalId
+      );
+    }
+
+    try {
+      await this.ec2Client.send(
+        new AttachInternetGatewayCommand({
+          VpcId: vpcId,
+          InternetGatewayId: internetGatewayId,
+        })
+      );
+
+      const physicalId = `${internetGatewayId}|${vpcId}`;
+      this.logger.debug(`Successfully created VPCGatewayAttachment ${logicalId}: ${physicalId}`);
+
+      return {
+        physicalId,
+        attributes: {},
+      };
+    } catch (error) {
+      const cause = error instanceof Error ? error : undefined;
+      throw new ProvisioningError(
+        `Failed to create VPCGatewayAttachment ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        resourceType,
+        logicalId,
+        undefined,
+        cause
+      );
+    }
+  }
+
+  // eslint-disable-next-line @typescript-eslint/require-await
+  private async updateVpcGatewayAttachment(
+    logicalId: string,
+    physicalId: string
+  ): Promise<ResourceUpdateResult> {
+    this.logger.debug(`Updating VPCGatewayAttachment ${logicalId}: ${physicalId} (no-op)`);
+    return { physicalId, wasReplaced: false };
+  }
+
+  private async deleteVpcGatewayAttachment(
+    logicalId: string,
+    physicalId: string,
+    resourceType: string
+  ): Promise<void> {
+    this.logger.debug(`Deleting VPCGatewayAttachment ${logicalId}: ${physicalId}`);
+
+    const parts = physicalId.split('|');
+    if (parts.length !== 2) {
+      throw new ProvisioningError(
+        `Invalid physicalId format for VPCGatewayAttachment ${logicalId}: expected "IGW|VpcId", got "${physicalId}"`,
+        resourceType,
+        logicalId,
+        physicalId
+      );
+    }
+
+    const [internetGatewayId, vpcId] = parts;
+
+    try {
+      await this.ec2Client.send(
+        new DetachInternetGatewayCommand({
+          InternetGatewayId: internetGatewayId,
+          VpcId: vpcId,
+        })
+      );
+      this.logger.debug(`Successfully deleted VPCGatewayAttachment ${logicalId}`);
+    } catch (error) {
+      if (this.isNotFoundError(error)) {
+        this.logger.debug(`VPCGatewayAttachment ${physicalId} does not exist, skipping deletion`);
+        return;
+      }
+      const cause = error instanceof Error ? error : undefined;
+      throw new ProvisioningError(
+        `Failed to delete VPCGatewayAttachment ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        resourceType,
+        logicalId,
+        physicalId,
+        cause
+      );
+    }
+  }
+
+  // ─── AWS::EC2::RouteTable ─────────────────────────────────────────
+
+  private async createRouteTable(
+    logicalId: string,
+    resourceType: string,
+    properties: Record<string, unknown>
+  ): Promise<ResourceCreateResult> {
+    this.logger.debug(`Creating RouteTable ${logicalId}`);
+
+    const vpcId = properties['VpcId'] as string;
+    if (!vpcId) {
+      throw new ProvisioningError(
+        `VpcId is required for RouteTable ${logicalId}`,
+        resourceType,
+        logicalId
+      );
+    }
+
+    try {
+      const response = await this.ec2Client.send(new CreateRouteTableCommand({ VpcId: vpcId }));
+
+      const routeTableId = response.RouteTable!.RouteTableId!;
+
+      // Apply tags
+      await this.applyTags(routeTableId, properties, logicalId);
+
+      this.logger.debug(`Successfully created RouteTable ${logicalId}: ${routeTableId}`);
+
+      return {
+        physicalId: routeTableId,
+        attributes: {
+          RouteTableId: routeTableId,
+        },
+      };
+    } catch (error) {
+      const cause = error instanceof Error ? error : undefined;
+      throw new ProvisioningError(
+        `Failed to create RouteTable ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        resourceType,
+        logicalId,
+        undefined,
+        cause
+      );
+    }
+  }
+
+  // eslint-disable-next-line @typescript-eslint/require-await
+  private async updateRouteTable(
+    logicalId: string,
+    physicalId: string
+  ): Promise<ResourceUpdateResult> {
+    this.logger.debug(`Updating RouteTable ${logicalId}: ${physicalId} (no-op)`);
+    return { physicalId, wasReplaced: false };
+  }
+
+  private async deleteRouteTable(
+    logicalId: string,
+    physicalId: string,
+    resourceType: string
+  ): Promise<void> {
+    this.logger.debug(`Deleting RouteTable ${logicalId}: ${physicalId}`);
+
+    try {
+      await this.ec2Client.send(new DeleteRouteTableCommand({ RouteTableId: physicalId }));
+      this.logger.debug(`Successfully deleted RouteTable ${logicalId}`);
+    } catch (error) {
+      if (this.isNotFoundError(error)) {
+        this.logger.debug(`RouteTable ${physicalId} does not exist, skipping deletion`);
+        return;
+      }
+      const cause = error instanceof Error ? error : undefined;
+      throw new ProvisioningError(
+        `Failed to delete RouteTable ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        resourceType,
+        logicalId,
+        physicalId,
+        cause
+      );
+    }
+  }
+
+  // ─── AWS::EC2::Route ──────────────────────────────────────────────
+
+  private async createRoute(
+    logicalId: string,
+    resourceType: string,
+    properties: Record<string, unknown>
+  ): Promise<ResourceCreateResult> {
+    this.logger.debug(`Creating Route ${logicalId}`);
+
+    const routeTableId = properties['RouteTableId'] as string;
+    const destinationCidrBlock = properties['DestinationCidrBlock'] as string;
+
+    if (!routeTableId || !destinationCidrBlock) {
+      throw new ProvisioningError(
+        `RouteTableId and DestinationCidrBlock are required for Route ${logicalId}`,
+        resourceType,
+        logicalId
+      );
+    }
+
+    try {
+      await this.ec2Client.send(
+        new CreateRouteCommand({
+          RouteTableId: routeTableId,
+          DestinationCidrBlock: destinationCidrBlock,
+          GatewayId: (properties['GatewayId'] as string) ?? undefined,
+          NatGatewayId: (properties['NatGatewayId'] as string) ?? undefined,
+          InstanceId: (properties['InstanceId'] as string) ?? undefined,
+          NetworkInterfaceId: (properties['NetworkInterfaceId'] as string) ?? undefined,
+          VpcPeeringConnectionId: (properties['VpcPeeringConnectionId'] as string) ?? undefined,
+        })
+      );
+
+      const physicalId = `${routeTableId}|${destinationCidrBlock}`;
+      this.logger.debug(`Successfully created Route ${logicalId}: ${physicalId}`);
+
+      return {
+        physicalId,
+        attributes: {},
+      };
+    } catch (error) {
+      const cause = error instanceof Error ? error : undefined;
+      throw new ProvisioningError(
+        `Failed to create Route ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        resourceType,
+        logicalId,
+        undefined,
+        cause
+      );
+    }
+  }
+
+  private async updateRoute(
+    logicalId: string,
+    physicalId: string,
+    resourceType: string,
+    properties: Record<string, unknown>,
+    _previousProperties: Record<string, unknown>
+  ): Promise<ResourceUpdateResult> {
+    this.logger.debug(`Updating Route ${logicalId}: ${physicalId}`);
+
+    // Route updates require replacement (DestinationCidrBlock and RouteTableId are immutable)
+    // For target changes, we delete and recreate
+    try {
+      await this.deleteRoute(logicalId, physicalId, resourceType);
+      const createResult = await this.createRoute(logicalId, resourceType, properties);
+      return {
+        physicalId: createResult.physicalId,
+        wasReplaced: true,
+        ...(createResult.attributes && { attributes: createResult.attributes }),
+      };
+    } catch (error) {
+      const cause = error instanceof Error ? error : undefined;
+      throw new ProvisioningError(
+        `Failed to update Route ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        resourceType,
+        logicalId,
+        physicalId,
+        cause
+      );
+    }
+  }
+
+  private async deleteRoute(
+    logicalId: string,
+    physicalId: string,
+    resourceType: string
+  ): Promise<void> {
+    this.logger.debug(`Deleting Route ${logicalId}: ${physicalId}`);
+
+    const parts = physicalId.split('|');
+    if (parts.length !== 2) {
+      throw new ProvisioningError(
+        `Invalid physicalId format for Route ${logicalId}: expected "RouteTableId|DestinationCidrBlock", got "${physicalId}"`,
+        resourceType,
+        logicalId,
+        physicalId
+      );
+    }
+
+    const [routeTableId, destinationCidrBlock] = parts;
+
+    try {
+      await this.ec2Client.send(
+        new DeleteRouteCommand({
+          RouteTableId: routeTableId,
+          DestinationCidrBlock: destinationCidrBlock,
+        })
+      );
+      this.logger.debug(`Successfully deleted Route ${logicalId}`);
+    } catch (error) {
+      if (this.isNotFoundError(error)) {
+        this.logger.debug(`Route ${physicalId} does not exist, skipping deletion`);
+        return;
+      }
+      const cause = error instanceof Error ? error : undefined;
+      throw new ProvisioningError(
+        `Failed to delete Route ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        resourceType,
+        logicalId,
+        physicalId,
+        cause
+      );
+    }
+  }
+
+  // ─── AWS::EC2::SubnetRouteTableAssociation ────────────────────────
+
+  private async createSubnetRouteTableAssociation(
+    logicalId: string,
+    resourceType: string,
+    properties: Record<string, unknown>
+  ): Promise<ResourceCreateResult> {
+    this.logger.debug(`Creating SubnetRouteTableAssociation ${logicalId}`);
+
+    const subnetId = properties['SubnetId'] as string;
+    const routeTableId = properties['RouteTableId'] as string;
+
+    if (!subnetId || !routeTableId) {
+      throw new ProvisioningError(
+        `SubnetId and RouteTableId are required for SubnetRouteTableAssociation ${logicalId}`,
+        resourceType,
+        logicalId
+      );
+    }
+
+    try {
+      const response = await this.ec2Client.send(
+        new AssociateRouteTableCommand({
+          SubnetId: subnetId,
+          RouteTableId: routeTableId,
+        })
+      );
+
+      const associationId = response.AssociationId!;
+      this.logger.debug(
+        `Successfully created SubnetRouteTableAssociation ${logicalId}: ${associationId}`
+      );
+
+      return {
+        physicalId: associationId,
+        attributes: {},
+      };
+    } catch (error) {
+      const cause = error instanceof Error ? error : undefined;
+      throw new ProvisioningError(
+        `Failed to create SubnetRouteTableAssociation ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        resourceType,
+        logicalId,
+        undefined,
+        cause
+      );
+    }
+  }
+
+  // eslint-disable-next-line @typescript-eslint/require-await
+  private async updateSubnetRouteTableAssociation(
+    logicalId: string,
+    physicalId: string
+  ): Promise<ResourceUpdateResult> {
+    this.logger.debug(
+      `Updating SubnetRouteTableAssociation ${logicalId}: ${physicalId} (no-op, requires replacement)`
+    );
+    return { physicalId, wasReplaced: false };
+  }
+
+  private async deleteSubnetRouteTableAssociation(
+    logicalId: string,
+    physicalId: string,
+    resourceType: string
+  ): Promise<void> {
+    this.logger.debug(`Deleting SubnetRouteTableAssociation ${logicalId}: ${physicalId}`);
+
+    try {
+      await this.ec2Client.send(new DisassociateRouteTableCommand({ AssociationId: physicalId }));
+      this.logger.debug(`Successfully deleted SubnetRouteTableAssociation ${logicalId}`);
+    } catch (error) {
+      if (this.isNotFoundError(error)) {
+        this.logger.debug(
+          `SubnetRouteTableAssociation ${physicalId} does not exist, skipping deletion`
+        );
+        return;
+      }
+      const cause = error instanceof Error ? error : undefined;
+      throw new ProvisioningError(
+        `Failed to delete SubnetRouteTableAssociation ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        resourceType,
+        logicalId,
+        physicalId,
+        cause
+      );
+    }
+  }
+
+  // ─── AWS::EC2::SecurityGroup ──────────────────────────────────────
+
+  private async createSecurityGroup(
+    logicalId: string,
+    resourceType: string,
+    properties: Record<string, unknown>
+  ): Promise<ResourceCreateResult> {
+    this.logger.debug(`Creating SecurityGroup ${logicalId}`);
+
+    const groupDescription = properties['GroupDescription'] as string;
+    if (!groupDescription) {
+      throw new ProvisioningError(
+        `GroupDescription is required for SecurityGroup ${logicalId}`,
+        resourceType,
+        logicalId
+      );
+    }
+
+    try {
+      const response = await this.ec2Client.send(
+        new CreateSecurityGroupCommand({
+          GroupName: (properties['GroupName'] as string) ?? logicalId,
+          Description: groupDescription,
+          VpcId: (properties['VpcId'] as string) ?? undefined,
+        })
+      );
+
+      const groupId = response.GroupId!;
+
+      // Apply tags
+      await this.applyTags(groupId, properties, logicalId);
+
+      // Add ingress rules if specified inline
+      const ingressRules = properties['SecurityGroupIngress'] as
+        | Array<Record<string, unknown>>
+        | undefined;
+      if (ingressRules && Array.isArray(ingressRules)) {
+        for (const rule of ingressRules) {
+          await this.ec2Client.send(
+            new AuthorizeSecurityGroupIngressCommand({
+              GroupId: groupId,
+              IpPermissions: [this.buildIpPermission(rule)],
+            })
+          );
+        }
+      }
+
+      this.logger.debug(`Successfully created SecurityGroup ${logicalId}: ${groupId}`);
+
+      return {
+        physicalId: groupId,
+        attributes: {
+          GroupId: groupId,
+          VpcId: (properties['VpcId'] as string) ?? '',
+        },
+      };
+    } catch (error) {
+      const cause = error instanceof Error ? error : undefined;
+      throw new ProvisioningError(
+        `Failed to create SecurityGroup ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        resourceType,
+        logicalId,
+        undefined,
+        cause
+      );
+    }
+  }
+
+  private async updateSecurityGroup(
+    logicalId: string,
+    physicalId: string,
+    resourceType: string,
+    properties: Record<string, unknown>
+  ): Promise<ResourceUpdateResult> {
+    this.logger.debug(`Updating SecurityGroup ${logicalId}: ${physicalId}`);
+
+    try {
+      // Update tags
+      await this.applyTags(physicalId, properties, logicalId);
+
+      this.logger.debug(`Successfully updated SecurityGroup ${logicalId}`);
+
+      return {
+        physicalId,
+        wasReplaced: false,
+        attributes: {
+          GroupId: physicalId,
+          VpcId: (properties['VpcId'] as string) ?? '',
+        },
+      };
+    } catch (error) {
+      const cause = error instanceof Error ? error : undefined;
+      throw new ProvisioningError(
+        `Failed to update SecurityGroup ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        resourceType,
+        logicalId,
+        physicalId,
+        cause
+      );
+    }
+  }
+
+  private async deleteSecurityGroup(
+    logicalId: string,
+    physicalId: string,
+    resourceType: string
+  ): Promise<void> {
+    this.logger.debug(`Deleting SecurityGroup ${logicalId}: ${physicalId}`);
+
+    try {
+      await this.ec2Client.send(new DeleteSecurityGroupCommand({ GroupId: physicalId }));
+      this.logger.debug(`Successfully deleted SecurityGroup ${logicalId}`);
+    } catch (error) {
+      if (this.isNotFoundError(error)) {
+        this.logger.debug(`SecurityGroup ${physicalId} does not exist, skipping deletion`);
+        return;
+      }
+      const cause = error instanceof Error ? error : undefined;
+      throw new ProvisioningError(
+        `Failed to delete SecurityGroup ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        resourceType,
+        logicalId,
+        physicalId,
+        cause
+      );
+    }
+  }
+
+  private async getSecurityGroupAttribute(
+    physicalId: string,
+    attributeName: string
+  ): Promise<unknown> {
+    if (attributeName === 'GroupId') return physicalId;
+
+    try {
+      const response = await this.ec2Client.send(
+        new DescribeSecurityGroupsCommand({ GroupIds: [physicalId] })
+      );
+      const sg = response.SecurityGroups?.[0];
+      if (!sg) return undefined;
+
+      if (attributeName === 'VpcId') return sg.VpcId;
+      return undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  // ─── AWS::EC2::SecurityGroupIngress ───────────────────────────────
+
+  private async createSecurityGroupIngress(
+    logicalId: string,
+    resourceType: string,
+    properties: Record<string, unknown>
+  ): Promise<ResourceCreateResult> {
+    this.logger.debug(`Creating SecurityGroupIngress ${logicalId}`);
+
+    const groupId = properties['GroupId'] as string;
+    if (!groupId) {
+      throw new ProvisioningError(
+        `GroupId is required for SecurityGroupIngress ${logicalId}`,
+        resourceType,
+        logicalId
+      );
+    }
+
+    const ipProtocol = (properties['IpProtocol'] as string) ?? '-1';
+    const fromPort = properties['FromPort'] as number | undefined;
+    const toPort = properties['ToPort'] as number | undefined;
+
+    try {
+      await this.ec2Client.send(
+        new AuthorizeSecurityGroupIngressCommand({
+          GroupId: groupId,
+          IpPermissions: [this.buildIpPermission(properties)],
+        })
+      );
+
+      const physicalId = `${groupId}|${ipProtocol}|${fromPort ?? '-1'}|${toPort ?? '-1'}`;
+      this.logger.debug(`Successfully created SecurityGroupIngress ${logicalId}: ${physicalId}`);
+
+      return {
+        physicalId,
+        attributes: {},
+      };
+    } catch (error) {
+      const cause = error instanceof Error ? error : undefined;
+      throw new ProvisioningError(
+        `Failed to create SecurityGroupIngress ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        resourceType,
+        logicalId,
+        undefined,
+        cause
+      );
+    }
+  }
+
+  private async updateSecurityGroupIngress(
+    logicalId: string,
+    physicalId: string,
+    resourceType: string,
+    properties: Record<string, unknown>,
+    previousProperties: Record<string, unknown>
+  ): Promise<ResourceUpdateResult> {
+    this.logger.debug(`Updating SecurityGroupIngress ${logicalId}: ${physicalId}`);
+
+    // SecurityGroupIngress updates require replacement: revoke old, authorize new
+    try {
+      await this.deleteSecurityGroupIngress(
+        logicalId,
+        physicalId,
+        resourceType,
+        previousProperties
+      );
+      const createResult = await this.createSecurityGroupIngress(
+        logicalId,
+        resourceType,
+        properties
+      );
+      return {
+        physicalId: createResult.physicalId,
+        wasReplaced: true,
+        ...(createResult.attributes && { attributes: createResult.attributes }),
+      };
+    } catch (error) {
+      const cause = error instanceof Error ? error : undefined;
+      throw new ProvisioningError(
+        `Failed to update SecurityGroupIngress ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        resourceType,
+        logicalId,
+        physicalId,
+        cause
+      );
+    }
+  }
+
+  private async deleteSecurityGroupIngress(
+    logicalId: string,
+    physicalId: string,
+    resourceType: string,
+    properties?: Record<string, unknown>
+  ): Promise<void> {
+    this.logger.debug(`Deleting SecurityGroupIngress ${logicalId}: ${physicalId}`);
+
+    // Parse composite physicalId: GroupId|Protocol|FromPort|ToPort
+    const parts = physicalId.split('|');
+    if (parts.length !== 4) {
+      throw new ProvisioningError(
+        `Invalid physicalId format for SecurityGroupIngress ${logicalId}: expected "GroupId|Protocol|FromPort|ToPort", got "${physicalId}"`,
+        resourceType,
+        logicalId,
+        physicalId
+      );
+    }
+
+    const [groupId, ipProtocol, fromPortStr, toPortStr] = parts;
+
+    // Build IpPermission from properties if available, otherwise from physicalId
+    const ipPermission = properties
+      ? this.buildIpPermission(properties)
+      : {
+          IpProtocol: ipProtocol,
+          FromPort: fromPortStr !== '-1' ? Number(fromPortStr) : undefined,
+          ToPort: toPortStr !== '-1' ? Number(toPortStr) : undefined,
+        };
+
+    try {
+      await this.ec2Client.send(
+        new RevokeSecurityGroupIngressCommand({
+          GroupId: groupId,
+          IpPermissions: [ipPermission],
+        })
+      );
+      this.logger.debug(`Successfully deleted SecurityGroupIngress ${logicalId}`);
+    } catch (error) {
+      if (this.isNotFoundError(error)) {
+        this.logger.debug(`SecurityGroupIngress ${physicalId} does not exist, skipping deletion`);
+        return;
+      }
+      const cause = error instanceof Error ? error : undefined;
+      throw new ProvisioningError(
+        `Failed to delete SecurityGroupIngress ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        resourceType,
+        logicalId,
+        physicalId,
+        cause
+      );
+    }
+  }
+
+  // ─── Helpers ──────────────────────────────────────────────────────
+
+  /**
+   * Build an IpPermission object from CloudFormation-style properties
+   */
+  private buildIpPermission(properties: Record<string, unknown>): {
+    IpProtocol: string;
+    FromPort?: number;
+    ToPort?: number;
+    IpRanges?: Array<{ CidrIp: string; Description?: string }>;
+    UserIdGroupPairs?: Array<{ GroupId: string; Description?: string }>;
+  } {
+    const ipProtocol = (properties['IpProtocol'] as string) ?? '-1';
+    const fromPort = properties['FromPort'] as number | undefined;
+    const toPort = properties['ToPort'] as number | undefined;
+
+    const permission: {
+      IpProtocol: string;
+      FromPort?: number;
+      ToPort?: number;
+      IpRanges?: Array<{ CidrIp: string; Description?: string }>;
+      UserIdGroupPairs?: Array<{ GroupId: string; Description?: string }>;
+    } = { IpProtocol: ipProtocol };
+
+    if (fromPort !== undefined) permission.FromPort = fromPort;
+    if (toPort !== undefined) permission.ToPort = toPort;
+
+    const cidrIp = properties['CidrIp'] as string | undefined;
+    const description = properties['Description'] as string | undefined;
+    if (cidrIp) {
+      const ipRange: { CidrIp: string; Description?: string } = { CidrIp: cidrIp };
+      if (description) ipRange.Description = description;
+      permission.IpRanges = [ipRange];
+    }
+
+    const sourceSecurityGroupId = properties['SourceSecurityGroupId'] as string | undefined;
+    if (sourceSecurityGroupId) {
+      const groupPair: { GroupId: string; Description?: string } = {
+        GroupId: sourceSecurityGroupId,
+      };
+      if (description) groupPair.Description = description;
+      permission.UserIdGroupPairs = [groupPair];
+    }
+
+    return permission;
+  }
+
+  /**
+   * Apply tags to an EC2 resource
+   */
+  private async applyTags(
+    resourceId: string,
+    properties: Record<string, unknown>,
+    logicalId: string
+  ): Promise<void> {
+    const tags = properties['Tags'] as Array<{ Key: string; Value: string }> | undefined;
+    if (tags && Array.isArray(tags) && tags.length > 0) {
+      try {
+        await this.ec2Client.send(
+          new CreateTagsCommand({
+            Resources: [resourceId],
+            Tags: tags.map((t) => ({ Key: t.Key, Value: t.Value })),
+          })
+        );
+        this.logger.debug(`Applied ${tags.length} tag(s) to ${logicalId}`);
+      } catch (error) {
+        this.logger.warn(
+          `Failed to apply tags to ${logicalId}: ${error instanceof Error ? error.message : String(error)}`
+        );
+      }
+    }
+  }
+
+  /**
+   * Check if an error indicates the resource was not found
+   */
+  private isNotFoundError(error: unknown): boolean {
+    if (!(error instanceof Error)) return false;
+    const message = error.message.toLowerCase();
+    const name = (error as { name?: string }).name ?? '';
+    return (
+      message.includes('not found') ||
+      message.includes('does not exist') ||
+      message.includes('invalidparametervalue') ||
+      name === 'InvalidVpcID.NotFound' ||
+      name === 'InvalidSubnetID.NotFound' ||
+      name === 'InvalidInternetGatewayID.NotFound' ||
+      name === 'InvalidRouteTableID.NotFound' ||
+      name === 'InvalidGroup.NotFound' ||
+      name === 'InvalidAssociationID.NotFound' ||
+      name === 'InvalidRoute.NotFound'
+    );
+  }
+}

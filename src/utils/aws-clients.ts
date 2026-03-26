@@ -13,6 +13,8 @@ import { EventBridgeClient } from '@aws-sdk/client-eventbridge';
 import { SecretsManagerClient } from '@aws-sdk/client-secrets-manager';
 import { SSMClient } from '@aws-sdk/client-ssm';
 import { CloudFrontClient } from '@aws-sdk/client-cloudfront';
+import { CloudWatchClient } from '@aws-sdk/client-cloudwatch';
+import { CloudWatchLogsClient } from '@aws-sdk/client-cloudwatch-logs';
 import { BedrockAgentCoreControlClient } from '@aws-sdk/client-bedrock-agentcore-control';
 
 /**
@@ -47,6 +49,8 @@ export class AwsClients {
   private secretsManagerClient?: SecretsManagerClient;
   private ssmClient?: SSMClient;
   private cloudFrontClient?: CloudFrontClient;
+  private cloudWatchClient?: CloudWatchClient;
+  private cloudWatchLogsClient?: CloudWatchLogsClient;
   private bedrockAgentCoreControlClient?: BedrockAgentCoreControlClient;
 
   constructor(private config: AwsClientConfig = {}) {}
@@ -365,6 +369,46 @@ export class AwsClients {
   }
 
   /**
+   * Get CloudWatch client
+   */
+  getCloudWatchClient(): CloudWatchClient {
+    if (!this.cloudWatchClient) {
+      this.cloudWatchClient = new CloudWatchClient({
+        ...(this.config.region && { region: this.config.region }),
+        ...(this.config.credentials && { credentials: this.config.credentials }),
+      });
+    }
+    return this.cloudWatchClient;
+  }
+
+  /**
+   * Convenience getter for CloudWatch client
+   */
+  get cloudWatch(): CloudWatchClient {
+    return this.getCloudWatchClient();
+  }
+
+  /**
+   * Get CloudWatch Logs client
+   */
+  getCloudWatchLogsClient(): CloudWatchLogsClient {
+    if (!this.cloudWatchLogsClient) {
+      this.cloudWatchLogsClient = new CloudWatchLogsClient({
+        ...(this.config.region && { region: this.config.region }),
+        ...(this.config.credentials && { credentials: this.config.credentials }),
+      });
+    }
+    return this.cloudWatchLogsClient;
+  }
+
+  /**
+   * Convenience getter for CloudWatch Logs client
+   */
+  get cloudWatchLogs(): CloudWatchLogsClient {
+    return this.getCloudWatchLogsClient();
+  }
+
+  /**
    * Get BedrockAgentCoreControl client
    */
   getBedrockAgentCoreControlClient(): BedrockAgentCoreControlClient {
@@ -403,6 +447,8 @@ export class AwsClients {
     this.secretsManagerClient?.destroy();
     this.ssmClient?.destroy();
     this.cloudFrontClient?.destroy();
+    this.cloudWatchClient?.destroy();
+    this.cloudWatchLogsClient?.destroy();
     this.bedrockAgentCoreControlClient?.destroy();
   }
 }

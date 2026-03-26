@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { S3Client } from '@aws-sdk/client-s3';
+import { S3Client, S3ServiceException, NoSuchKey } from '@aws-sdk/client-s3';
 import { LockManager } from '../../../src/state/lock-manager.js';
 import type { LockInfo } from '../../../src/types/state.js';
 import type { StateBackendConfig } from '../../../src/types/config.js';
@@ -107,8 +107,7 @@ describe('LockManager', () => {
 
     it('should return false when lock exists and is not expired', async () => {
       // First call: PutObject fails (lock exists)
-      const preconditionError = new Error('PreconditionFailed');
-      preconditionError.name = 'PreconditionFailed';
+      const preconditionError = new S3ServiceException({ name: 'PreconditionFailed', $fault: 'client', $metadata: {} });
       s3Client.send.mockRejectedValueOnce(preconditionError);
 
       // Second call: GetObject returns a valid non-expired lock
@@ -129,8 +128,7 @@ describe('LockManager', () => {
 
     it('should clean up expired lock and re-acquire', async () => {
       // First call: PutObject fails (lock exists)
-      const preconditionError = new Error('PreconditionFailed');
-      preconditionError.name = 'PreconditionFailed';
+      const preconditionError = new S3ServiceException({ name: 'PreconditionFailed', $fault: 'client', $metadata: {} });
       s3Client.send.mockRejectedValueOnce(preconditionError);
 
       // Second call: GetObject returns an expired lock
@@ -159,8 +157,7 @@ describe('LockManager', () => {
 
     it('should return false if another process acquires lock during expired lock cleanup', async () => {
       // First call: PutObject fails
-      const preconditionError1 = new Error('PreconditionFailed');
-      preconditionError1.name = 'PreconditionFailed';
+      const preconditionError1 = new S3ServiceException({ name: 'PreconditionFailed', $fault: 'client', $metadata: {} });
       s3Client.send.mockRejectedValueOnce(preconditionError1);
 
       // Second call: GetObject returns expired lock
@@ -177,8 +174,7 @@ describe('LockManager', () => {
       s3Client.send.mockResolvedValueOnce({});
 
       // Fourth call: PutObject fails again (another process got the lock)
-      const preconditionError2 = new Error('PreconditionFailed');
-      preconditionError2.name = 'PreconditionFailed';
+      const preconditionError2 = new S3ServiceException({ name: 'PreconditionFailed', $fault: 'client', $metadata: {} });
       s3Client.send.mockRejectedValueOnce(preconditionError2);
 
       const result = await lockManager.acquireLock('test-stack', 'my-user');
@@ -214,8 +210,7 @@ describe('LockManager', () => {
     });
 
     it('should return null when no lock exists', async () => {
-      const noSuchKeyError = new Error('NoSuchKey');
-      noSuchKeyError.name = 'NoSuchKey';
+      const noSuchKeyError = new NoSuchKey({ message: 'NoSuchKey', $metadata: {} });
       s3Client.send.mockRejectedValueOnce(noSuchKeyError);
 
       const result = await lockManager.getLockInfo('test-stack');
@@ -285,8 +280,7 @@ describe('LockManager', () => {
     });
 
     it('should do nothing when no lock exists', async () => {
-      const noSuchKeyError = new Error('NoSuchKey');
-      noSuchKeyError.name = 'NoSuchKey';
+      const noSuchKeyError = new NoSuchKey({ message: 'NoSuchKey', $metadata: {} });
       s3Client.send.mockRejectedValueOnce(noSuchKeyError);
 
       await lockManager.forceReleaseLock('test-stack');
@@ -307,8 +301,7 @@ describe('LockManager', () => {
 
     it('should retry and succeed on second attempt', async () => {
       // First attempt: PutObject fails
-      const preconditionError = new Error('PreconditionFailed');
-      preconditionError.name = 'PreconditionFailed';
+      const preconditionError = new S3ServiceException({ name: 'PreconditionFailed', $fault: 'client', $metadata: {} });
       s3Client.send.mockRejectedValueOnce(preconditionError);
 
       // getLockInfo for first failed attempt: lock not expired
@@ -336,8 +329,7 @@ describe('LockManager', () => {
 
     it('should clean up expired lock during retry and acquire', async () => {
       // First attempt: PutObject fails
-      const preconditionError = new Error('PreconditionFailed');
-      preconditionError.name = 'PreconditionFailed';
+      const preconditionError = new S3ServiceException({ name: 'PreconditionFailed', $fault: 'client', $metadata: {} });
       s3Client.send.mockRejectedValueOnce(preconditionError);
 
       // GetObject: expired lock

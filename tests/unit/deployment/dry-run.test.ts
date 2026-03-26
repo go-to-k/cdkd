@@ -48,7 +48,7 @@ describe('DeployEngine - Dry Run Mode', () => {
   };
 
   let mockLockManager: {
-    acquireLock: ReturnType<typeof vi.fn>;
+    acquireLockWithRetry: ReturnType<typeof vi.fn>;
     releaseLock: ReturnType<typeof vi.fn>;
   };
 
@@ -101,7 +101,7 @@ describe('DeployEngine - Dry Run Mode', () => {
     };
 
     mockLockManager = {
-      acquireLock: vi.fn().mockResolvedValue(true),
+      acquireLockWithRetry: vi.fn().mockResolvedValue(true),
       releaseLock: vi.fn().mockResolvedValue(undefined),
     };
 
@@ -472,7 +472,7 @@ describe('DeployEngine - Dry Run Mode', () => {
       await engine.deploy(stackName, template);
 
       // Lock is acquired and released (current implementation behavior)
-      expect(mockLockManager.acquireLock).toHaveBeenCalledWith(stackName, undefined, 'deploy');
+      expect(mockLockManager.acquireLockWithRetry).toHaveBeenCalledWith(stackName, undefined, 'deploy');
       expect(mockLockManager.releaseLock).toHaveBeenCalledWith(stackName);
     });
   });
@@ -524,7 +524,7 @@ describe('DeployEngine - Dry Run Mode', () => {
         etag: 'etag-123',
       });
       mockStateBackend.saveState.mockResolvedValue('etag-456');
-      mockLockManager.acquireLock.mockResolvedValue(true);
+      mockLockManager.acquireLockWithRetry.mockResolvedValue(true);
       mockLockManager.releaseLock.mockResolvedValue(undefined);
       mockDagBuilder.buildGraph.mockReturnValue({});
       mockDagBuilder.getExecutionLevels.mockReturnValue([['MyBucket']]);

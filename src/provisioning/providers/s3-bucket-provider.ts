@@ -152,7 +152,7 @@ export class S3BucketProvider implements ResourceProvider {
       // CreateBucket params
       const createParams: {
         Bucket: string;
-        CreateBucketConfiguration?: { LocationConstraint: string };
+        CreateBucketConfiguration?: { LocationConstraint: BucketLocationConstraint };
       } = {
         Bucket: bucketName,
       };

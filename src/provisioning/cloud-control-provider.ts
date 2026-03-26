@@ -249,9 +249,9 @@ export class CloudControlProvider implements ResourceProvider {
       this.logger.debug(`Updated resource ${logicalId}`);
 
       // Parse resource properties to extract attributes
-      // TODO: Detect resource replacement from Cloud Control API response
-      // Currently hardcoded to false, but some property changes (immutable properties)
-      // may trigger resource replacement. Need to check progressEvent for replacement indication.
+      // Resource replacement for immutable property changes is detected and handled
+      // by DeployEngine (immutable property detection + CREATE→DELETE flow) before
+      // reaching this update method, so wasReplaced is always false here.
       const result: ResourceUpdateResult = {
         physicalId,
         wasReplaced: false,

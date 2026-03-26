@@ -108,17 +108,8 @@ export class DeployEngine {
     const startTime = Date.now();
     this.logger.debug(`Starting deployment for stack: ${stackName}`);
 
-    // TODO: Use acquireLockWithRetry for better resilience
-    // Currently fails immediately if lock is held. Should retry with exponential backoff
-    // to handle transient lock conflicts gracefully.
-
-    // Acquire lock
-    const lockAcquired = await this.lockManager.acquireLock(stackName, undefined, 'deploy');
-    if (!lockAcquired) {
-      throw new Error(
-        `Failed to acquire lock for stack ${stackName}. Stack may be locked by another process.`
-      );
-    }
+    // Acquire lock with retry (retries up to 3 times with 2s delay for transient lock conflicts)
+    await this.lockManager.acquireLockWithRetry(stackName, undefined, 'deploy');
 
     try {
       // 1. Load current state
@@ -136,8 +127,8 @@ export class DeployEngine {
         `Loaded current state: ${Object.keys(currentState.resources).length} resources`
       );
 
-      // 2. Parse template (note: we use the original template directly for now)
-      // TODO: Implement full template parsing/validation if needed
+      // 2. Template parsing is handled by DagBuilder (dependency analysis) and
+      // IntrinsicResolver (intrinsic function resolution) in later steps
       this.logger.debug(`Template has ${Object.keys(template.Resources || {}).length} resources`);
 
       // 2.5. Resolve parameters from template and user input

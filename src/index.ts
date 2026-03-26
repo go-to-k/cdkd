@@ -74,4 +74,4 @@ export {
   type DeployResult,
 } from './deployment/deploy-engine.js';
 
-// TODO: Add more SDK providers for CC API unsupported resources as needed
+// SDK providers for CC API unsupported/problematic resources are in src/provisioning/providers/
