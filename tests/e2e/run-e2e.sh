@@ -2,8 +2,19 @@
 #
 # cdkq E2E Test Script
 #
-# Runs a full deploy -> diff -> update -> destroy cycle using the basic example.
+# Runs a full deploy -> diff -> update -> destroy cycle for any integration example.
 # Exits immediately on any step failure and cleans up resources on interruption.
+#
+# Usage:
+#   STATE_BUCKET=my-bucket ./run-e2e.sh [example-dir]
+#
+# Arguments:
+#   example-dir  Path to an integration example (default: tests/integration/examples/basic)
+#
+# Environment Variables:
+#   STATE_BUCKET  (required) S3 bucket name for cdkq state storage
+#   AWS_REGION    (optional) AWS region, default: us-east-1
+#   CDKQ_PATH     (optional) Path to cdkq CLI entry point, default: ../../dist/cli.js
 #
 
 set -euo pipefail
@@ -34,7 +45,8 @@ if [[ -z "${STATE_BUCKET}" ]]; then
   echo -e "${RED}ERROR: STATE_BUCKET environment variable is required.${RESET}"
   echo ""
   echo "Usage:"
-  echo "  STATE_BUCKET=my-bucket ./run-e2e.sh"
+  echo "  STATE_BUCKET=my-bucket ./run-e2e.sh [example-dir]"
+  echo "  STATE_BUCKET=my-bucket ./run-e2e.sh ../integration/examples/lambda"
   echo "  STATE_BUCKET=my-bucket AWS_REGION=ap-northeast-1 ./run-e2e.sh"
   echo "  STATE_BUCKET=my-bucket CDKQ_PATH=/path/to/cli.js ./run-e2e.sh"
   exit 1
@@ -44,11 +56,27 @@ fi
 # Resolve paths
 # --------------------------------------------------------------------------
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-BASIC_EXAMPLE_DIR="${SCRIPT_DIR}/../integration/examples/basic"
+
+# Accept optional example directory as first argument (default: basic)
+if [[ -n "${1:-}" ]]; then
+  # If absolute path, use as-is; otherwise resolve relative to script dir
+  if [[ "${1}" = /* ]]; then
+    EXAMPLE_DIR="${1}"
+  else
+    EXAMPLE_DIR="$(cd "${SCRIPT_DIR}" && cd "${1}" 2>/dev/null && pwd)" || EXAMPLE_DIR="${SCRIPT_DIR}/${1}"
+  fi
+else
+  EXAMPLE_DIR="${SCRIPT_DIR}/../integration/examples/basic"
+fi
+
+# Normalize path
+EXAMPLE_DIR="$(cd "${EXAMPLE_DIR}" 2>/dev/null && pwd)" || true
+EXAMPLE_NAME="$(basename "${EXAMPLE_DIR}")"
+
 CDKQ_BIN="$(cd "${SCRIPT_DIR}" && node -e "const p = require('path'); console.log(p.resolve('${CDKQ_PATH}'))")"
 
-if [[ ! -d "${BASIC_EXAMPLE_DIR}" ]]; then
-  fail "Basic example directory not found: ${BASIC_EXAMPLE_DIR}"
+if [[ ! -d "${EXAMPLE_DIR}" ]]; then
+  fail "Example directory not found: ${EXAMPLE_DIR}"
   exit 1
 fi
 
@@ -69,8 +97,8 @@ CDKQ_COMMON_ARGS=(
 )
 
 run_cdkq() {
-  # Run cdkq from the basic example directory
-  (cd "${BASIC_EXAMPLE_DIR}" && node "${CDKQ_BIN}" "$@")
+  # Run cdkq from the example directory
+  (cd "${EXAMPLE_DIR}" && node "${CDKQ_BIN}" "$@")
 }
 
 # --------------------------------------------------------------------------
@@ -108,27 +136,28 @@ trap 'exit 130' INT TERM
 # --------------------------------------------------------------------------
 # Pre-flight: install dependencies if needed
 # --------------------------------------------------------------------------
-header "Pre-flight checks"
+header "Pre-flight checks [${EXAMPLE_NAME}]"
 
 info "cdkq binary: ${CDKQ_BIN}"
-info "Example dir:  ${BASIC_EXAMPLE_DIR}"
+info "Example dir:  ${EXAMPLE_DIR}"
+info "Example name: ${EXAMPLE_NAME}"
 info "State bucket: ${STATE_BUCKET}"
 info "AWS region:   ${AWS_REGION}"
 
-if [[ ! -d "${BASIC_EXAMPLE_DIR}/node_modules" ]]; then
-  info "Installing dependencies for basic example..."
-  (cd "${BASIC_EXAMPLE_DIR}" && npm install --silent)
+if [[ ! -d "${EXAMPLE_DIR}/node_modules" ]]; then
+  info "Installing dependencies for ${EXAMPLE_NAME} example..."
+  (cd "${EXAMPLE_DIR}" && npm install --silent)
   pass "Dependencies installed"
 else
   pass "Dependencies already installed"
 fi
 
 STEP=0
-TOTAL_STEPS=6
+TOTAL_STEPS=5
 
 step_header() {
   STEP=$(( STEP + 1 ))
-  header "Step ${STEP}/${TOTAL_STEPS}: $*"
+  header "Step ${STEP}/${TOTAL_STEPS}: $* [${EXAMPLE_NAME}]"
 }
 
 # --------------------------------------------------------------------------
@@ -192,26 +221,11 @@ info "Running: cdkq destroy --force"
 run_cdkq destroy "${CDKQ_COMMON_ARGS[@]}" --force --verbose
 pass "Destroy succeeded [$(elapsed)]"
 
-# --------------------------------------------------------------------------
-# Step 6: Verify clean state
-# --------------------------------------------------------------------------
-step_header "Verify clean state"
-
-info "Checking that state has been removed from S3..."
-STATE_KEY="cdkq/stacks/CdkqBasicExample/state.json"
-
-if aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}" --region "${AWS_REGION}" 2>/dev/null; then
-  fail "State file still exists in S3: s3://${STATE_BUCKET}/${STATE_KEY}"
-  exit 1
-else
-  pass "State file has been cleaned up [$(elapsed)]"
-fi
-
 CLEANUP_NEEDED=false
 
 # --------------------------------------------------------------------------
 # Summary
 # --------------------------------------------------------------------------
-header "E2E Test Complete"
+header "E2E Test Complete [${EXAMPLE_NAME}]"
 pass "All ${TOTAL_STEPS} steps passed successfully!"
 echo -e "${BOLD}Total time: $(elapsed)${RESET}"

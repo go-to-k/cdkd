@@ -49,23 +49,11 @@
                                       │  - provider-registry.ts     │
                                       │  - cloud-control-provider.ts│
                                       │  - providers/:              │
-                                      │    - iam-role-provider.ts   │
-                                      │    - iam-policy-provider.ts │
-                                      │    - s3-bucket-policy-      │
-                                      │      provider.ts            │
-                                      │    - sqs-queue-policy-      │
-                                      │      provider.ts            │
-                                      │    - eventbridge-rule-      │
-                                      │      provider.ts            │
-                                      │    - eventbridge-bus-       │
-                                      │      provider.ts            │
-                                      │    - apigateway-provider.ts │
-                                      │    - cloudfront-oai-        │
-                                      │      provider.ts            │
-                                      │    - agentcore-runtime-     │
-                                      │      provider.ts            │
-                                      │    - custom-resource-       │
-                                      │      provider.ts            │
+                                      │    - 24 provider files      │
+                                      │    - 34 resource types      │
+                                      │    - See src/provisioning/  │
+                                      │      providers/ for full    │
+                                      │      list                   │
                                       │  - json-patch-generator.ts  │
                                       └─────────────────────────────┘
 ```
@@ -409,50 +397,36 @@ generatePatch(oldProps: any, newProps: any): JSONPatchOperation[]
 
 #### SDK Providers (`providers/`)
 
-**Preferred Providers**: SDK Providers make direct synchronous API calls with no polling overhead, making them significantly faster than Cloud Control API. They are used for common resource types (17 types) where performance matters most
+**Preferred Providers**: SDK Providers make direct synchronous API calls with no polling overhead, making them significantly faster than Cloud Control API. They cover 34 resource types across 24 provider files.
 
-**Implemented Providers**:
+**Implemented Providers** (see `src/provisioning/providers/` for full list):
 
-1. **`iam-role-provider.ts`** - `AWS::IAM::Role`
-   - `IAMClient`: `CreateRole`, `UpdateRole`, `DeleteRole`
-   - Inline policy management: `PutRolePolicy`, `DeleteRolePolicy`
-
-2. **`iam-policy-provider.ts`** - `AWS::IAM::Policy`
-   - `IAMClient`: `CreatePolicy`, `CreatePolicyVersion`, `DeletePolicy`
-   - Handles inline vs managed policies
-
-3. **`s3-bucket-policy-provider.ts`** - `AWS::S3::BucketPolicy`
-   - `S3Client`: `PutBucketPolicy`, `DeleteBucketPolicy`
-
-4. **`sqs-queue-policy-provider.ts`** - `AWS::SQS::QueuePolicy`
-   - `SQSClient`: `SetQueueAttributes`, `GetQueueAttributes`
-
-5. **`eventbridge-rule-provider.ts`** - `AWS::Events::Rule`
-   - `EventBridgeClient`: `PutRule`, `PutTargets`, `RemoveTargets`, `DeleteRule`
-   - Handles JSON string properties (EventPattern)
-
-6. **`apigateway-provider.ts`** - `AWS::ApiGateway::Account`, `AWS::ApiGateway::Resource`, `AWS::ApiGateway::Deployment`, `AWS::ApiGateway::Stage`, `AWS::ApiGateway::Method`
-   - `APIGatewayClient`: `UpdateAccount`, `CreateResource`, `DeleteResource`, `CreateDeployment`, `DeleteDeployment`, `CreateStage`, `UpdateStage`, `DeleteStage`, `PutMethod`, `DeleteMethod`
-   - IAM trust propagation retry logic for Account
-   - RootResourceId enrichment via GetRestApi
-
-7. **`eventbridge-bus-provider.ts`** - `AWS::Events::EventBus`
-   - `EventBridgeClient`: `CreateEventBus`, `DeleteEventBus`
-
-8. **`cloudfront-oai-provider.ts`** - `AWS::CloudFront::CloudFrontOriginAccessIdentity`
-   - `CloudFrontClient`: `CreateCloudFrontOriginAccessIdentity`, `DeleteCloudFrontOriginAccessIdentity`
-   - S3CanonicalUserId enrichment
-
-9. **`agentcore-runtime-provider.ts`** - `AWS::BedrockAgentCore::Runtime`
-   - SDK Provider for BedrockAgentCore Runtime (CC API has IAM propagation issues)
-
-10. **`custom-resource-provider.ts`** - `Custom::*`
-   - Lambda-backed custom resources (including CDK Provider framework)
-   - Invokes custom resource Lambda via `LambdaClient.invoke()`
-   - Same request format as CloudFormation
-   - Saves `PhysicalResourceId` from response to state
-   - CDK Provider framework support: isCompleteHandler/onEventHandler async pattern detection
-   - Async CRUD with polling (max 1hr), pre-signed URL validity 2hr
+| Provider File | Resource Types |
+|---|---|
+| `iam-role-provider.ts` | AWS::IAM::Role |
+| `iam-policy-provider.ts` | AWS::IAM::Policy |
+| `s3-bucket-provider.ts` | AWS::S3::Bucket |
+| `s3-bucket-policy-provider.ts` | AWS::S3::BucketPolicy |
+| `sqs-queue-provider.ts` | AWS::SQS::Queue |
+| `sqs-queue-policy-provider.ts` | AWS::SQS::QueuePolicy |
+| `sns-topic-provider.ts` | AWS::SNS::Topic |
+| `sns-subscription-provider.ts` | AWS::SNS::Subscription |
+| `lambda-function-provider.ts` | AWS::Lambda::Function |
+| `lambda-permission-provider.ts` | AWS::Lambda::Permission |
+| `lambda-url-provider.ts` | AWS::Lambda::Url |
+| `lambda-eventsource-provider.ts` | AWS::Lambda::EventSourceMapping |
+| `dynamodb-table-provider.ts` | AWS::DynamoDB::Table |
+| `logs-loggroup-provider.ts` | AWS::Logs::LogGroup |
+| `cloudwatch-alarm-provider.ts` | AWS::CloudWatch::Alarm |
+| `secretsmanager-secret-provider.ts` | AWS::SecretsManager::Secret |
+| `ssm-parameter-provider.ts` | AWS::SSM::Parameter |
+| `eventbridge-rule-provider.ts` | AWS::Events::Rule |
+| `eventbridge-bus-provider.ts` | AWS::Events::EventBus |
+| `ec2-provider.ts` | AWS::EC2::VPC, Subnet, InternetGateway, VPCGatewayAttachment, RouteTable, Route, SubnetRouteTableAssociation, SecurityGroup, SecurityGroupIngress (9 types) |
+| `apigateway-provider.ts` | AWS::ApiGateway::Account, Resource, Deployment, Stage, Method (5 types) |
+| `cloudfront-oai-provider.ts` | AWS::CloudFront::CloudFrontOriginAccessIdentity |
+| `agentcore-runtime-provider.ts` | AWS::BedrockAgentCore::Runtime |
+| `custom-resource-provider.ts` | Custom::* (Lambda/SNS-backed, CDK Provider framework) |
 
 **How to Add Providers**:
 See [provider-development.md](./provider-development.md)
@@ -585,7 +559,7 @@ getClient<T>(ClientClass: new (...) => T, region: string): T
        ▼
 ┌─────────────────┐
 │ CLI Layer       │
-│ destroy.ts      │  <stackName>, --app, --force, --all
+│ destroy.ts      │  <stackName>, --app, --force, --all (synth-based)
 └────────┬────────┘
          │
          ▼

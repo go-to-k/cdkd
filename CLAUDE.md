@@ -51,7 +51,7 @@ cdkq has a 7-layer system architecture:
 ### Key Architectural Decisions
 
 1. **Hybrid Provisioning Strategy**
-   - Preferred: SDK Providers for common resource types (17 types) - direct synchronous API calls, no polling overhead
+   - Preferred: SDK Providers for common resource types (34 types) - direct synchronous API calls, no polling overhead
    - Fallback: Cloud Control API for 200+ additional resource types (requires async polling)
    - Implemented with Provider Registry pattern
 
@@ -124,16 +124,25 @@ Currently implemented SDK Providers (`src/provisioning/providers/`):
 - `sqs-queue-provider.ts` - AWS::SQS::Queue
 - `sqs-queue-policy-provider.ts` - AWS::SQS::QueuePolicy
 - `sns-topic-provider.ts` - AWS::SNS::Topic
+- `sns-subscription-provider.ts` - AWS::SNS::Subscription
 - `lambda-function-provider.ts` - AWS::Lambda::Function
+- `lambda-permission-provider.ts` - AWS::Lambda::Permission
+- `lambda-url-provider.ts` - AWS::Lambda::Url
+- `lambda-eventsource-provider.ts` - AWS::Lambda::EventSourceMapping
 - `dynamodb-table-provider.ts` - AWS::DynamoDB::Table
+- `logs-loggroup-provider.ts` - AWS::Logs::LogGroup
+- `cloudwatch-alarm-provider.ts` - AWS::CloudWatch::Alarm
+- `secretsmanager-secret-provider.ts` - AWS::SecretsManager::Secret
+- `ssm-parameter-provider.ts` - AWS::SSM::Parameter
 - `eventbridge-rule-provider.ts` - AWS::Events::Rule
 - `eventbridge-bus-provider.ts` - AWS::Events::EventBus
-- `apigateway-provider.ts` - AWS::ApiGateway::Account, AWS::ApiGateway::Resource, AWS::ApiGateway::Deployment, AWS::ApiGateway::Stage, AWS::ApiGateway::Method
+- `ec2-provider.ts` - AWS::EC2::VPC, Subnet, InternetGateway, VPCGatewayAttachment, RouteTable, Route, SubnetRouteTableAssociation, SecurityGroup, SecurityGroupIngress
+- `apigateway-provider.ts` - AWS::ApiGateway::Account, Resource, Deployment, Stage, Method
 - `cloudfront-oai-provider.ts` - AWS::CloudFront::CloudFrontOriginAccessIdentity
 - `agentcore-runtime-provider.ts` - AWS::BedrockAgentCore::Runtime
 - `custom-resource-provider.ts` - Custom::* (Lambda/SNS-backed, CDK Provider framework with isCompleteHandler/onEventHandler async pattern)
 
-SDK Providers are preferred over Cloud Control API for performance — they make direct synchronous API calls with no polling overhead. Cloud Control API is used as a fallback for resource types without an SDK Provider (17 SDK Providers covering 17 resource types).
+SDK Providers are preferred over Cloud Control API for performance -- they make direct synchronous API calls with no polling overhead. Cloud Control API is used as a fallback for resource types without an SDK Provider (34 resource types covered by SDK Providers).
 
 ## State Schema
 
@@ -196,7 +205,7 @@ registry.register('AWS::IAM::Role', new IAMRoleProvider());
 - `--app` is optional: falls back to `CDKQ_APP` env var, then `cdk.json` `"app"` field
 - `--state-bucket` is optional: falls back to `CDKQ_STATE_BUCKET` env var, then `cdk.json` `context.cdkq.stateBucket`
 - Stack names are positional arguments: `cdkq deploy MyStack` (not `--stack-name`)
-- `--all` flag targets all stacks for deploy/diff/destroy
+- `--all` flag targets all stacks for deploy/diff/destroy (`destroy --all` only targets stacks from the current CDK app via synthesis)
 - Wildcard support: `cdkq deploy 'My*'`
 - Single stack auto-detected (no stack name needed)
 - Implemented in `src/cli/config-loader.ts`
@@ -244,28 +253,7 @@ registry.register('AWS::IAM::Role', new IAMRoleProvider());
 - `tests/integration/examples/**`
 - Uses actual AWS account
 - Environment variables: `STATE_BUCKET`, `AWS_REGION`
-- 24 examples verified with real AWS deployments (as of 2026-03-26):
-  - basic: S3 bucket (CREATE + UPDATE verified)
-  - conditions: Conditional resources with AWS::NoValue
-  - parameters: CloudFormation Parameters with default values
-  - intrinsic-functions: Ref, GetAtt, Join, Sub
-  - lambda: Lambda + DynamoDB + IAM (CREATE + UPDATE verified)
-  - cross-stack-references: Fn::ImportValue (Exporter + Consumer)
-  - multi-resource: Known issue with Custom Resource CloudFormation integration
-  - ecr: ECR repository deployment
-  - apigateway: API Gateway + Lambda integration
-  - ecs-fargate: ECS Fargate service deployment
-  - eventbridge: EventBridge rules
-  - sns-sqs-event: SNS + SQS event integration
-  - dynamodb-streams: DynamoDB Streams
-  - stepfunctions: Step Functions state machine
-  - ec2-vpc: EC2 VPC deployment
-  - s3-cloudfront: S3 + CloudFront distribution
-  - cloudwatch: CloudWatch alarms and dashboards
-  - rds-aurora: RDS Aurora cluster
-  - bedrock-agent: Bedrock Agent
-  - cloudfront-function-url: CloudFront + Lambda Function URL (6 resources)
-  - custom-resource-provider: CDK Provider framework (isCompleteHandler/onEventHandler)
+- 24 examples verified with real AWS deployments (see `tests/integration/examples/` for full list)
 
 ### UPDATE Testing
 
@@ -341,7 +329,7 @@ See [docs/provider-development.md](docs/provider-development.md) for details.
 - ✅ Resource replacement for immutable property changes (CREATE→DELETE)
 - ✅ Type safety improvements (error handling, any type elimination in custom resources)
 - ✅ Dynamic References: `{{resolve:secretsmanager:...}}` and `{{resolve:ssm:...}}`
-- ✅ SDK Providers: S3 Bucket, SQS Queue, SNS Topic, Lambda Function, DynamoDB Table, EventBridge Rule/EventBus, API Gateway Account/Resource/Deployment/Stage/Method, CloudFront OAI, AgentCore Runtime (17 SDK Providers total)
+- ✅ SDK Providers: 34 resource types (see SDK Providers section above for full list)
 - ✅ ALL pseudo parameters supported (7/7 including AWS::StackName/StackId)
 - ✅ DELETE idempotency (not-found/No policy found treated as success)
 - ✅ Destroy ordering: reverse dependency from state + implicit type-based deps

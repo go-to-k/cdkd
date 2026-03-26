@@ -503,22 +503,7 @@ node ${CDKQ_PATH}/dist/cli.js deploy \
 
 **cdkq automatically supports all resource types supported by Cloud Control API (over 200 types).**
 
-For resources not supported by Cloud Control API, you can implement SDK providers. Currently implemented SDK providers:
-
-- `AWS::IAM::Role` - IAM roles
-- `AWS::IAM::Policy` - IAM policies (inline policy support)
-- `AWS::S3::BucketPolicy` - S3 bucket policies
-- `AWS::SQS::QueuePolicy` - SQS queue policies
-- `AWS::Events::Rule` - EventBridge rules
-- `AWS::Events::EventBus` - EventBridge event buses
-- `AWS::ApiGateway::Account` - API Gateway account settings
-- `AWS::ApiGateway::Resource` - API Gateway resources
-- `AWS::ApiGateway::Deployment` - API Gateway deployments
-- `AWS::ApiGateway::Stage` - API Gateway stages
-- `AWS::ApiGateway::Method` - API Gateway methods
-- `AWS::CloudFront::CloudFrontOriginAccessIdentity` - CloudFront OAI
-- `AWS::BedrockAgentCore::Runtime` - Bedrock AgentCore runtime
-- `Custom::*` - Lambda-backed custom resources (Create/Update/Delete)
+For resources not supported by Cloud Control API, you can implement SDK providers. cdkq currently includes 34 SDK provider resource types (see `src/provisioning/providers/` for the full list). Key providers include IAM Role/Policy, S3 Bucket/BucketPolicy, Lambda Function/Permission/Url/EventSourceMapping, DynamoDB Table, SQS Queue/QueuePolicy, SNS Topic/Subscription, EC2 VPC/Subnet/SecurityGroup and related networking resources, API Gateway, EventBridge, CloudWatch, Logs, SecretsManager, SSM, CloudFront OAI, and Custom::* resources.
 
 If you use other resources not supported by Cloud Control API, an error message will be displayed.
 
