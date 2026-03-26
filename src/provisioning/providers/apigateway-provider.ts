@@ -558,6 +558,7 @@ export class ApiGatewayProvider implements ResourceProvider {
    * Deployments are immutable - updates are not supported.
    * The deployment engine should handle replacement if needed.
    */
+  // eslint-disable-next-line @typescript-eslint/require-await
   private async updateDeployment(
     logicalId: string,
     physicalId: string,
@@ -607,9 +608,7 @@ export class ApiGatewayProvider implements ResourceProvider {
       this.logger.debug(`Successfully deleted API Gateway Deployment ${logicalId}`);
     } catch (error) {
       if (error instanceof NotFoundException) {
-        this.logger.debug(
-          `API Gateway Deployment ${physicalId} does not exist, skipping deletion`
-        );
+        this.logger.debug(`API Gateway Deployment ${physicalId} does not exist, skipping deletion`);
         return;
       }
 
@@ -811,9 +810,7 @@ export class ApiGatewayProvider implements ResourceProvider {
       this.logger.debug(`Successfully deleted API Gateway Stage ${logicalId}`);
     } catch (error) {
       if (error instanceof NotFoundException) {
-        this.logger.debug(
-          `API Gateway Stage ${physicalId} does not exist, skipping deletion`
-        );
+        this.logger.debug(`API Gateway Stage ${physicalId} does not exist, skipping deletion`);
         return;
       }
 
@@ -832,10 +829,7 @@ export class ApiGatewayProvider implements ResourceProvider {
    * Get API Gateway Stage attribute
    */
   // eslint-disable-next-line @typescript-eslint/require-await
-  private async getStageAttribute(
-    physicalId: string,
-    attributeName: string
-  ): Promise<unknown> {
+  private async getStageAttribute(physicalId: string, attributeName: string): Promise<unknown> {
     if (attributeName === 'StageName') {
       return physicalId;
     }
