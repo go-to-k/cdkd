@@ -110,7 +110,7 @@ def handler(event, context):
       apiId: httpApi.ref,
       authorizerType: 'JWT',
       name: 'jwt-authorizer',
-      identitySource: '$request.header.Authorization',
+      identitySource: ['$request.header.Authorization'],
       jwtConfiguration: {
         audience: [userPoolClient.userPoolClientId],
         issuer: `https://cognito-idp.${this.region}.amazonaws.com/${userPool.userPoolId}`,

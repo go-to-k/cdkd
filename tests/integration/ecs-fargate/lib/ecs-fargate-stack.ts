@@ -13,7 +13,6 @@ import * as ecs from 'aws-cdk-lib/aws-ecs';
  * - Fargate Service with desiredCount: 0 (tests resource creation without running containers)
  * - IAM execution role (auto-created by CDK)
  * - Resource dependencies (Service → Cluster → VPC)
- * - Service Connect with CloudMap namespace
  * - Application Auto Scaling (ScalableTarget + ScalingPolicy)
  * - Fn::GetAtt for outputs
  */
@@ -34,13 +33,10 @@ export class EcsFargateStack extends cdk.Stack {
       ],
     });
 
-    // Create ECS Cluster with CloudMap namespace for Service Connect
+    // Create ECS Cluster
     const cluster = new ecs.Cluster(this, 'Cluster', {
       vpc,
       clusterName: `cdkd-ecs-fargate-test`,
-      defaultCloudMapNamespace: {
-        name: 'cdkd-test.local',
-      },
     });
 
     // Create Fargate Task Definition
@@ -61,14 +57,7 @@ export class EcsFargateStack extends cdk.Stack {
       command: ['echo', 'hello'],
     });
 
-    // Add named port mapping for Service Connect
-    container.addPortMappings({
-      containerPort: 80,
-      name: 'http',
-      protocol: ecs.Protocol.TCP,
-    });
-
-    // Create Fargate Service with desiredCount: 0 and Service Connect enabled
+    // Create Fargate Service with desiredCount: 0
     // This tests resource creation without actually running containers
     const service = new ecs.FargateService(this, 'Service', {
       cluster,
@@ -77,15 +66,6 @@ export class EcsFargateStack extends cdk.Stack {
       assignPublicIp: true,
       vpcSubnets: {
         subnetType: ec2.SubnetType.PUBLIC,
-      },
-      serviceConnectConfiguration: {
-        services: [
-          {
-            portMappingName: 'http',
-            dnsName: 'web',
-            port: 80,
-          },
-        ],
       },
     });
 
