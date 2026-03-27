@@ -44,8 +44,16 @@ export class Synthesizer {
               ? (msg as unknown as Record<string, unknown>)
               : {};
           const level = message['level'] as string | undefined;
+          const code = message['code'] as string | undefined;
           if (level === 'error' && message['message']) {
-            this.logger.error(String(message['message']));
+            const msg = String(message['message']);
+            // CDK_ASSEMBLY_E1002 is subprocess stderr - show as warn (includes
+            // bundling progress, deprecation warnings, AND actual errors)
+            if (code === 'CDK_ASSEMBLY_E1002') {
+              this.logger.warn(msg);
+            } else {
+              this.logger.error(msg);
+            }
           } else {
             this.logger.debug('Toolkit message:', msg);
           }
