@@ -120,6 +120,8 @@ Currently implemented SDK Providers (`src/provisioning/providers/`):
 
 - `iam-role-provider.ts` - AWS::IAM::Role
 - `iam-policy-provider.ts` - AWS::IAM::Policy
+- `iam-instance-profile-provider.ts` - AWS::IAM::InstanceProfile
+- `iam-user-group-provider.ts` - AWS::IAM::User, Group, UserToGroupAddition
 - `s3-bucket-provider.ts` - AWS::S3::Bucket
 - `s3-bucket-policy-provider.ts` - AWS::S3::BucketPolicy
 - `sqs-queue-provider.ts` - AWS::SQS::Queue
