@@ -88,6 +88,9 @@ export class InfraSecurityStack extends cdk.Stack {
       },
     });
 
+    // Grant the role encrypt/decrypt on the KMS key (generates AWS::KMS::Grant)
+    key.grantEncryptDecrypt(appRole);
+
     // CfnOutputs
     new cdk.CfnOutput(this, 'VpcId', {
       value: vpc.vpcId,
