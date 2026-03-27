@@ -33,10 +33,13 @@ export class EcsFargateStack extends cdk.Stack {
       ],
     });
 
-    // Create ECS Cluster
+    // Create ECS Cluster with Cloud Map namespace for Service Connect
     const cluster = new ecs.Cluster(this, 'Cluster', {
       vpc,
       clusterName: `cdkd-ecs-fargate-test`,
+      defaultCloudMapNamespace: {
+        name: 'cdkd-test.local',
+      },
     });
 
     // Create Fargate Task Definition
@@ -55,9 +58,15 @@ export class EcsFargateStack extends cdk.Stack {
         streamPrefix: 'cdkd-ecs-fargate',
       }),
       command: ['echo', 'hello'],
+      portMappings: [
+        {
+          containerPort: 80,
+          name: 'http',
+        },
+      ],
     });
 
-    // Create Fargate Service with desiredCount: 0
+    // Create Fargate Service with desiredCount: 0 and Service Connect
     // This tests resource creation without actually running containers
     const service = new ecs.FargateService(this, 'Service', {
       cluster,
@@ -66,6 +75,13 @@ export class EcsFargateStack extends cdk.Stack {
       assignPublicIp: true,
       vpcSubnets: {
         subnetType: ec2.SubnetType.PUBLIC,
+      },
+      serviceConnectConfiguration: {
+        services: [
+          {
+            portMappingName: 'http',
+          },
+        ],
       },
     });
 

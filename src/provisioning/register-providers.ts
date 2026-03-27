@@ -34,6 +34,7 @@ import { Route53Provider } from './providers/route53-provider.js';
 import { WAFv2WebACLProvider } from './providers/wafv2-provider.js';
 import { CognitoUserPoolProvider } from './providers/cognito-provider.js';
 import { ElastiCacheProvider } from './providers/elasticache-provider.js';
+import { ServiceDiscoveryProvider } from './providers/servicediscovery-provider.js';
 
 /**
  * Register all SDK providers with the given registry.
@@ -148,6 +149,11 @@ export function registerAllProviders(registry: ProviderRegistry): void {
   const elasticacheProvider = new ElastiCacheProvider();
   registry.register('AWS::ElastiCache::SubnetGroup', elasticacheProvider);
   registry.register('AWS::ElastiCache::CacheCluster', elasticacheProvider);
+
+  // Service Discovery
+  const serviceDiscoveryProvider = new ServiceDiscoveryProvider();
+  registry.register('AWS::ServiceDiscovery::PrivateDnsNamespace', serviceDiscoveryProvider);
+  registry.register('AWS::ServiceDiscovery::Service', serviceDiscoveryProvider);
 
   // Bedrock
   registry.register('AWS::BedrockAgentCore::Runtime', new AgentCoreRuntimeProvider());
