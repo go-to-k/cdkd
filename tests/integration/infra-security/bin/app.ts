@@ -1,10 +1,10 @@
 #!/usr/bin/env node
 import 'source-map-support/register';
 import * as cdk from 'aws-cdk-lib';
-import { SecretsLambdaStack } from '../lib/secrets-lambda-stack';
+import { InfraSecurityStack } from '../lib/infra-security-stack';
 
 const app = new cdk.App();
-new SecretsLambdaStack(app, 'SecretsLambdaStack', {
+new InfraSecurityStack(app, 'InfraSecurityStack', {
   env: {
     account: process.env.CDK_DEFAULT_ACCOUNT,
     region: process.env.CDK_DEFAULT_REGION,

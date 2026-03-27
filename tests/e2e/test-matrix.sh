@@ -84,6 +84,10 @@ TESTS=(
   "cloudfront-function-url|"
   "bedrock-agentcore|"
   "context-test|-c env=from-cli -c featureFlag=true"
+  "serverless-api|"
+  "event-driven|"
+  "infra-security|"
+  "monitoring|"
 )
 
 # --------------------------------------------------------------------------
