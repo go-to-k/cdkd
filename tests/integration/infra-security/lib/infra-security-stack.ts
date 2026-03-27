@@ -89,7 +89,17 @@ export class InfraSecurityStack extends cdk.Stack {
     });
 
     // Grant the role encrypt/decrypt on the KMS key (generates AWS::KMS::Grant)
-    key.grantEncryptDecrypt(appRole);
+    key.grantEncryptDecrypt(role);
+
+    // IAM Group + User
+    const group = new iam.Group(this, 'AppGroup', {
+      managedPolicies: [
+        iam.ManagedPolicy.fromAwsManagedPolicyName('AmazonS3ReadOnlyAccess'),
+      ],
+    });
+
+    const user = new iam.User(this, 'AppUser');
+    group.addUser(user);
 
     // CfnOutputs
     new cdk.CfnOutput(this, 'VpcId', {
