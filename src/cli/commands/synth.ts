@@ -92,18 +92,28 @@ async function synthCommand(options: {
 }
 
 /**
- * Simple JSON to YAML converter (no external dependency)
+ * Simple JSON to YAML converter (CDK CLI compatible output)
  */
 function toYaml(obj: unknown, indent = 0): string {
   const prefix = '  '.repeat(indent);
 
   if (obj === null || obj === undefined) return 'null\n';
   if (typeof obj === 'boolean') return `${obj}\n`;
-  if (typeof obj === 'number') return `${obj}\n`;
+  if (typeof obj === 'number') return `"${obj}"\n`;
   if (typeof obj === 'string') {
-    if (obj.includes('\n') || obj.includes(':') || obj.includes('#') || obj.startsWith('{')) {
-      return `"${obj.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n')}"\n`;
+    // Strings that need quoting
+    if (obj.includes('\n')) {
+      // Multi-line: use single quotes with escaped content
+      return `'${obj.replace(/'/g, "''")}'\n`;
     }
+    if (obj.startsWith('{') || obj.startsWith('[') || obj.startsWith('"')) {
+      // JSON-like strings: use single quotes (like CDK CLI)
+      return `'${obj.replace(/'/g, "''")}'\n`;
+    }
+    if (obj.includes('#') || obj === '' || obj === 'true' || obj === 'false' || obj === 'null') {
+      return `"${obj}"\n`;
+    }
+    // Plain string (no quoting needed for colons in values like AWS::S3::Bucket)
     return `${obj}\n`;
   }
 
@@ -122,7 +132,8 @@ function toYaml(obj: unknown, indent = 0): string {
     if (entries.length === 0) return '{}\n';
     let result = '\n';
     for (const [key, value] of entries) {
-      const safeKey = key.includes(':') || key.includes(' ') ? `"${key}"` : key;
+      // Keys with special chars need quoting, but AWS:: style keys don't
+      const safeKey = key.includes(' ') ? `"${key}"` : key;
       if (typeof value === 'object' && value !== null) {
         result += `${prefix}${safeKey}:${toYaml(value, indent + 1)}`;
       } else {
