@@ -91,6 +91,13 @@ export class CloudFrontDistributionProvider implements ResourceProvider {
 
       this.logger.debug(`Created CloudFront Distribution: ${distributionId} (${domainName})`);
 
+      // Wait for distribution to be fully deployed (like CloudFormation does)
+      // Set CDKD_SKIP_CF_WAIT=true to skip and return immediately
+      if (process.env['CDKD_SKIP_CF_WAIT'] !== 'true') {
+        this.logger.debug(`Waiting for Distribution ${distributionId} to reach Deployed status...`);
+        await this.waitForDistributionDeployed(distributionId);
+      }
+
       return {
         physicalId: distributionId,
         attributes: {
