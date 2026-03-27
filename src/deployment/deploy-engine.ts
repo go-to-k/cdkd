@@ -84,9 +84,20 @@ export interface DeployResult {
  * - UPDATE → restore previous properties
  * - DELETE → cannot rollback (log warning)
  */
+/**
+ * Error thrown when deployment is interrupted by SIGINT
+ */
+class InterruptedError extends Error {
+  constructor() {
+    super('Deployment interrupted by user (Ctrl+C)');
+    this.name = 'InterruptedError';
+  }
+}
+
 export class DeployEngine {
   private logger = getLogger().child('DeployEngine');
   private resolver = new IntrinsicFunctionResolver();
+  private interrupted = false;
 
   constructor(
     private stateBackend: S3StateBackend,
@@ -114,6 +125,14 @@ export class DeployEngine {
 
     // Acquire lock with retry (retries up to 3 times with 2s delay for transient lock conflicts)
     await this.lockManager.acquireLockWithRetry(stackName, undefined, 'deploy');
+
+    // Register SIGINT handler to save partial state on Ctrl+C
+    this.interrupted = false;
+    const sigintHandler = () => {
+      this.logger.info('Interrupted — saving partial state after current operations complete...');
+      this.interrupted = true;
+    };
+    process.on('SIGINT', sigintHandler);
 
     try {
       // 1. Load current state
@@ -243,9 +262,17 @@ export class DeployEngine {
         durationMs,
       };
     } finally {
+      // Remove SIGINT handler
+      process.removeListener('SIGINT', sigintHandler);
+
       // Always release lock
       await this.lockManager.releaseLock(stackName);
       this.logger.debug('Lock released');
+
+      // Exit with standard SIGINT code after cleanup
+      if (this.interrupted) {
+        process.exit(130);
+      }
     }
   }
 
@@ -274,6 +301,29 @@ export class DeployEngine {
     const actualCounts = { created: 0, updated: 0, deleted: 0, skipped: 0 };
     const completedOperations: CompletedOperation[] = [];
 
+    // Serialize per-resource state saves to avoid ETag conflicts from concurrent writes
+    let saveChain: Promise<void> = Promise.resolve();
+    const saveStateAfterResource = (logicalId: string): void => {
+      if (currentEtag === undefined) return;
+      saveChain = saveChain.then(async () => {
+        try {
+          const partialState: StackState = {
+            version: 1,
+            stackName: currentState.stackName,
+            resources: newResources,
+            outputs: currentState.outputs,
+            lastModified: Date.now(),
+          };
+          currentEtag = await this.stateBackend.saveState(stackName, partialState, currentEtag);
+          this.logger.debug(`State saved after ${logicalId}`);
+        } catch (error) {
+          this.logger.warn(
+            `Failed to save state after ${logicalId}: ${error instanceof Error ? error.message : String(error)}`
+          );
+        }
+      });
+    };
+
     // Separate DELETE operations from CREATE/UPDATE
     const deleteChanges = new Set(
       Array.from(changes.entries())
@@ -284,6 +334,11 @@ export class DeployEngine {
     try {
       // Step 1: Process CREATE/UPDATE in normal DAG order
       for (let levelIndex = 0; levelIndex < executionLevels.length; levelIndex++) {
+        // Check for SIGINT before starting next level
+        if (this.interrupted) {
+          throw new InterruptedError();
+        }
+
         const levelNodes = executionLevels[levelIndex];
         if (!levelNodes) continue;
         const level = levelNodes.filter((id) => !deleteChanges.has(id));
@@ -329,28 +384,15 @@ export class DeployEngine {
                 physicalId: newResources[logicalId]?.physicalId,
                 properties: newResources[logicalId]?.properties,
               });
+
+              // Save state immediately after each successful resource provision
+              saveStateAfterResource(logicalId);
             })
           )
         );
 
-        // Save partial state after each level to prevent orphaned resources on failure
-        if (currentEtag !== undefined) {
-          try {
-            const partialState: StackState = {
-              version: 1,
-              stackName: currentState.stackName,
-              resources: newResources,
-              outputs: currentState.outputs,
-              lastModified: Date.now(),
-            };
-            currentEtag = await this.stateBackend.saveState(stackName, partialState, currentEtag);
-            this.logger.debug(`Partial state saved after level ${levelIndex + 1}`);
-          } catch (error) {
-            this.logger.warn(
-              `Failed to save partial state after level ${levelIndex + 1}: ${error instanceof Error ? error.message : String(error)}`
-            );
-          }
-        }
+        // Wait for any pending per-resource state saves to complete before next level
+        await saveChain;
       }
 
       // Step 2: Process DELETE operations in reverse dependency order
@@ -361,6 +403,11 @@ export class DeployEngine {
         const deletionLevels = this.buildDeletionLevels(deleteChanges, currentState);
 
         for (let levelIndex = 0; levelIndex < deletionLevels.length; levelIndex++) {
+          // Check for SIGINT before starting next deletion level
+          if (this.interrupted) {
+            throw new InterruptedError();
+          }
+
           const level = deletionLevels[levelIndex]!;
           if (level.length === 0) continue;
 
@@ -391,28 +438,15 @@ export class DeployEngine {
                   resourceType: change.resourceType,
                   previousState,
                 });
+
+                // Save state immediately after each successful resource deletion
+                saveStateAfterResource(logicalId);
               })
             )
           );
-        }
 
-        // Save partial state after DELETE operations
-        if (currentEtag !== undefined) {
-          try {
-            const partialState: StackState = {
-              version: 1,
-              stackName: currentState.stackName,
-              resources: newResources,
-              outputs: currentState.outputs,
-              lastModified: Date.now(),
-            };
-            currentEtag = await this.stateBackend.saveState(stackName, partialState, currentEtag);
-            this.logger.debug('Partial state saved after DELETE operations');
-          } catch (error) {
-            this.logger.warn(
-              `Failed to save partial state: ${error instanceof Error ? error.message : String(error)}`
-            );
-          }
+          // Wait for any pending per-resource state saves to complete before next deletion level
+          await saveChain;
         }
       }
     } catch (error) {
@@ -433,6 +467,15 @@ export class DeployEngine {
         this.logger.warn(
           `Failed to save partial state before rollback: ${saveError instanceof Error ? saveError.message : String(saveError)}`
         );
+      }
+
+      // On SIGINT, skip rollback — just save partial state and let the caller exit
+      if (error instanceof InterruptedError) {
+        this.logger.info(
+          `Partial state saved (${Object.keys(newResources).length} resources). ` +
+            'Run deploy again to resume, or destroy to clean up.'
+        );
+        throw error;
       }
 
       // Deployment failed — attempt rollback unless --no-rollback is set
