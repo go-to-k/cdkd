@@ -59,9 +59,14 @@ async function synthCommand(options: {
     // Get all stacks
     const stacks = assemblyLoader.getAllStacks(assembly);
 
+    // Print YAML template to stdout (like CDK CLI) for single stack
+    if (stacks.length === 1) {
+      const template = stacks[0]!.template;
+      process.stdout.write(toYaml(template));
+    }
+
     logger.info(`✅ Synthesis complete! Found ${stacks.length} stack(s):`);
 
-    // Display stack information
     for (const stack of stacks) {
       const resourceCount = Object.keys(stack.template.Resources ?? {}).length;
       const outputCount = Object.keys(stack.template.Outputs ?? {}).length;
@@ -72,17 +77,10 @@ async function synthCommand(options: {
       logger.info(`    - Has assets: ${assemblyLoader.hasAssets(stack) ? 'Yes' : 'No'}`);
 
       if (options.verbose) {
-        // Write template to output directory for inspection
         const templatePath = join(options.output, `${stack.stackName}.template.json`);
         writeFileSync(templatePath, JSON.stringify(stack.template, null, 2));
         logger.debug(`    - Template written to: ${templatePath}`);
       }
-    }
-
-    // Print YAML template to stdout (like CDK CLI) for single stack
-    if (stacks.length === 1) {
-      const template = stacks[0]!.template;
-      process.stdout.write(toYaml(template));
     }
 
     logger.info(`\nOutput: ${assembly.directory}`);
