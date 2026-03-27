@@ -67,6 +67,9 @@ export const deployOptions = [
   new Option('--dry-run', 'Show changes without applying').default(false),
   new Option('--skip-assets', 'Skip asset publishing').default(false),
   new Option('--no-rollback', 'Skip rollback on deployment failure').default(false),
+  new Option('--no-wait', 'Skip waiting for async resources (CloudFront, RDS, etc.)').default(
+    false
+  ),
 ];
 
 /**

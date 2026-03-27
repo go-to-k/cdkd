@@ -300,8 +300,8 @@ npx cdkd deploy --no-rollback
 npx cdkd destroy MyStack
 npx cdkd destroy --all --force
 
-# Skip CloudFront Distribution deploy wait (faster, distribution deploys async)
-CDKD_SKIP_CF_WAIT=true npx cdkd deploy
+# Skip waiting for async resources like CloudFront, RDS, ElastiCache (faster deploy)
+npx cdkd deploy --no-wait
 
 # Force-unlock a stale lock from interrupted deploy
 npx cdkd force-unlock MyStack

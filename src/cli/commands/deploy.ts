@@ -41,6 +41,7 @@ async function deployCommand(
     dryRun: boolean;
     skipAssets: boolean;
     noRollback: boolean;
+    noWait: boolean;
     verbose: boolean;
     context?: string[];
   }
@@ -49,6 +50,11 @@ async function deployCommand(
 
   if (options.verbose) {
     logger.setLevel('debug');
+  }
+
+  // Skip waiting for async resources (CloudFront, RDS, ElastiCache, etc.)
+  if (options.noWait) {
+    process.env['CDKD_NO_WAIT'] = 'true';
   }
 
   // Resolve --app from CLI, env, or cdk.json

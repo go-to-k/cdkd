@@ -68,6 +68,8 @@ export class AwsClients {
       this.s3Client = new S3Client({
         ...(this.config.region && { region: this.config.region }),
         ...(this.config.credentials && { credentials: this.config.credentials }),
+        // Suppress "Are you using a Stream of unknown length" warning
+        logger: { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} },
       });
     }
     return this.s3Client;

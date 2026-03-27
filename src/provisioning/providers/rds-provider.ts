@@ -283,8 +283,10 @@ export class RDSProvider implements ResourceProvider {
 
       this.logger.debug(`Successfully created DBCluster ${logicalId}: ${dbClusterIdentifier}`);
 
-      // Wait for cluster to become available
-      await this.waitForClusterAvailable(dbClusterIdentifier);
+      // Wait for cluster to become available (skip with --no-wait)
+      if (process.env['CDKD_NO_WAIT'] !== 'true') {
+        await this.waitForClusterAvailable(dbClusterIdentifier);
+      }
 
       // Describe to get final attributes
       const described = await this.describeDBCluster(dbClusterIdentifier);
@@ -462,8 +464,10 @@ export class RDSProvider implements ResourceProvider {
 
       this.logger.debug(`Successfully created DBInstance ${logicalId}: ${dbInstanceIdentifier}`);
 
-      // Wait for instance to become available
-      await this.waitForInstanceAvailable(dbInstanceIdentifier);
+      // Wait for instance to become available (skip with --no-wait)
+      if (process.env['CDKD_NO_WAIT'] !== 'true') {
+        await this.waitForInstanceAvailable(dbInstanceIdentifier);
+      }
 
       // Describe to get final attributes
       const described = await this.describeDBInstance(dbInstanceIdentifier);

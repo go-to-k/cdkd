@@ -267,8 +267,10 @@ export class ElastiCacheProvider implements ResourceProvider {
 
       this.logger.debug(`Successfully created CacheCluster ${logicalId}: ${cacheClusterId}`);
 
-      // Wait for cluster to become available
-      await this.waitForClusterAvailable(cacheClusterId);
+      // Wait for cluster to become available (skip with --no-wait)
+      if (process.env['CDKD_NO_WAIT'] !== 'true') {
+        await this.waitForClusterAvailable(cacheClusterId);
+      }
 
       // Describe to get final attributes
       const described = await this.describeCacheCluster(cacheClusterId);

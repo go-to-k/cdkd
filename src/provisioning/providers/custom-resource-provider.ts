@@ -526,9 +526,9 @@ export class CustomResourceProvider implements ResourceProvider {
     // We use a longer timeout for this case vs the short timeout for synchronous handlers.
     const isAsyncPattern = !hasDirectPayload;
     if (isAsyncPattern) {
-      this.logger.info(
-        `Custom resource ${logicalId} appears to use async Provider framework (no direct Lambda response). ` +
-          `Waiting up to ${Math.round(this.asyncResponseTimeoutMs / 60_000)} minutes for Step Functions completion.`
+      this.logger.debug(
+        `Custom resource ${logicalId} uses async Provider framework. ` +
+          `Waiting up to ${Math.round(this.asyncResponseTimeoutMs / 60_000)} minutes.`
       );
     } else {
       this.logger.debug(`Waiting for S3 response from Lambda for ${logicalId} (${operation})`);
