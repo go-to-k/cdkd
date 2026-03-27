@@ -64,7 +64,7 @@ def handler(event, context):
         title: 'Lambda Invocations',
         left: [fn.metricInvocations()],
         width: 12,
-      }),
+      })
     );
 
     // CloudWatch Alarm on Lambda errors

@@ -8,6 +8,7 @@ import { SQSQueueProvider } from './providers/sqs-queue-provider.js';
 import { SQSQueuePolicyProvider } from './providers/sqs-queue-policy-provider.js';
 import { SNSTopicProvider } from './providers/sns-topic-provider.js';
 import { SNSSubscriptionProvider } from './providers/sns-subscription-provider.js';
+import { SNSTopicPolicyProvider } from './providers/sns-topic-policy-provider.js';
 import { LambdaFunctionProvider } from './providers/lambda-function-provider.js';
 import { LambdaPermissionProvider } from './providers/lambda-permission-provider.js';
 import { LambdaUrlProvider } from './providers/lambda-url-provider.js';
@@ -57,6 +58,7 @@ export function registerAllProviders(registry: ProviderRegistry): void {
   // SNS
   registry.register('AWS::SNS::Topic', new SNSTopicProvider());
   registry.register('AWS::SNS::Subscription', new SNSSubscriptionProvider());
+  registry.register('AWS::SNS::TopicPolicy', new SNSTopicPolicyProvider());
 
   // Lambda
   registry.register('AWS::Lambda::Function', new LambdaFunctionProvider());

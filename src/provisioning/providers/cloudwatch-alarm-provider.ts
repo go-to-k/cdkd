@@ -2,6 +2,7 @@ import {
   CloudWatchClient,
   PutMetricAlarmCommand,
   DeleteAlarmsCommand,
+  DescribeAlarmsCommand,
   type Statistic,
   type ComparisonOperator,
   type StandardUnit,
@@ -52,10 +53,13 @@ export class CloudWatchAlarmProvider implements ResourceProvider {
 
       this.logger.debug(`Successfully created CloudWatch alarm ${logicalId}: ${alarmName}`);
 
+      // Fetch the actual ARN from AWS (includes correct region and account)
+      const alarmArn = await this.getAlarmArn(alarmName);
+
       return {
         physicalId: alarmName,
         attributes: {
-          Arn: `arn:aws:cloudwatch:*:*:alarm:${alarmName}`,
+          Arn: alarmArn,
         },
       };
     } catch (error) {
@@ -91,11 +95,14 @@ export class CloudWatchAlarmProvider implements ResourceProvider {
 
       this.logger.debug(`Successfully updated CloudWatch alarm ${logicalId}`);
 
+      // Fetch the actual ARN from AWS (includes correct region and account)
+      const alarmArn = await this.getAlarmArn(physicalId);
+
       return {
         physicalId,
         wasReplaced: false,
         attributes: {
-          Arn: `arn:aws:cloudwatch:*:*:alarm:${physicalId}`,
+          Arn: alarmArn,
         },
       };
     } catch (error) {
@@ -143,6 +150,41 @@ export class CloudWatchAlarmProvider implements ResourceProvider {
         physicalId,
         cause
       );
+    }
+  }
+
+  /**
+   * Get the actual alarm ARN from AWS via DescribeAlarms.
+   * Falls back to constructing an ARN from client config if the describe call fails.
+   */
+  private async getAlarmArn(alarmName: string): Promise<string> {
+    try {
+      const response = await this.cloudWatchClient.send(
+        new DescribeAlarmsCommand({
+          AlarmNames: [alarmName],
+        })
+      );
+      const arn = response.MetricAlarms?.[0]?.AlarmArn;
+      if (arn) {
+        return arn;
+      }
+      // Also check CompositeAlarms
+      const compositeArn = response.CompositeAlarms?.[0]?.AlarmArn;
+      if (compositeArn) {
+        return compositeArn;
+      }
+    } catch (error) {
+      this.logger.debug(
+        `Failed to describe alarm ${alarmName}, constructing ARN from config: ${error instanceof Error ? error.message : String(error)}`
+      );
+    }
+    // Fallback: construct ARN from client config
+    try {
+      const region =
+        (await this.cloudWatchClient.config.region()) || process.env['AWS_REGION'] || 'us-east-1';
+      return `arn:aws:cloudwatch:${region}:*:alarm:${alarmName}`;
+    } catch {
+      return `arn:aws:cloudwatch:*:*:alarm:${alarmName}`;
     }
   }
 
