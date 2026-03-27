@@ -628,7 +628,9 @@ export class CloudControlProvider implements ResourceProvider {
             const kinesisAccountInfo = await getAccountInfo();
             enriched['Arn'] =
               `arn:${kinesisAccountInfo.partition}:kinesis:${kinesisAccountInfo.region}:${kinesisAccountInfo.accountId}:stream/${physicalId}`;
-            this.logger.debug(`Enriched Kinesis Stream Arn for ${physicalId}: ${String(enriched['Arn'])}`);
+            this.logger.debug(
+              `Enriched Kinesis Stream Arn for ${physicalId}: ${String(enriched['Arn'])}`
+            );
           } catch (error) {
             this.logger.debug(
               `Failed to construct Kinesis Stream Arn for ${physicalId}: ${error instanceof Error ? error.message : String(error)}`
