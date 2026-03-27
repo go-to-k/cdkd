@@ -106,14 +106,14 @@ async function destroyCommand(
     if (appStackNames.length > 0) {
       // App synth succeeded: only consider stacks from this app
       candidateStacks = appStackNames.filter((name) => allStateStacks.includes(name));
-    } else if (stackArgs.length > 0 || options.stack) {
-      // No synth but explicit stack names given: use state stacks (user knows what they want)
+    } else if (stackArgs.length > 0 || options.stack || options.all) {
+      // No synth but explicit stack names or --all given: use state stacks
       candidateStacks = allStateStacks;
     } else {
       // No synth and no explicit stacks: refuse to guess
       throw new Error(
         'Could not determine which stacks belong to this app. ' +
-          'Specify stack names explicitly, or ensure --app / cdk.json is configured.'
+          'Specify stack names explicitly, use --all, or ensure --app / cdk.json is configured.'
       );
     }
 
