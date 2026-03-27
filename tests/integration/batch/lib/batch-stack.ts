@@ -45,7 +45,9 @@ export class BatchStack extends cdk.Stack {
     const executionRole = new iam.Role(this, 'BatchExecutionRole', {
       assumedBy: new iam.ServicePrincipal('ecs-tasks.amazonaws.com'),
       managedPolicies: [
-        iam.ManagedPolicy.fromAwsManagedPolicyArn(
+        iam.ManagedPolicy.fromManagedPolicyArn(
+          this,
+          'EcsTaskExecPolicy',
           'arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy'
         ),
       ],

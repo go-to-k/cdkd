@@ -37,6 +37,7 @@ import { WAFv2WebACLProvider } from './providers/wafv2-provider.js';
 import { CognitoUserPoolProvider } from './providers/cognito-provider.js';
 import { ElastiCacheProvider } from './providers/elasticache-provider.js';
 import { ServiceDiscoveryProvider } from './providers/servicediscovery-provider.js';
+import { AppSyncProvider } from './providers/appsync-provider.js';
 
 /**
  * Register all SDK providers with the given registry.
@@ -99,6 +100,9 @@ export function registerAllProviders(registry: ProviderRegistry): void {
   registry.register('AWS::EC2::SecurityGroup', ec2Provider);
   registry.register('AWS::EC2::SecurityGroupIngress', ec2Provider);
   registry.register('AWS::EC2::Instance', ec2Provider);
+  registry.register('AWS::EC2::NetworkAcl', ec2Provider);
+  registry.register('AWS::EC2::NetworkAclEntry', ec2Provider);
+  registry.register('AWS::EC2::SubnetNetworkAclAssociation', ec2Provider);
 
   // API Gateway
   const apigwProvider = new ApiGatewayProvider();
@@ -165,4 +169,12 @@ export function registerAllProviders(registry: ProviderRegistry): void {
 
   // Bedrock
   registry.register('AWS::BedrockAgentCore::Runtime', new AgentCoreRuntimeProvider());
+
+  // AppSync
+  const appSyncProvider = new AppSyncProvider();
+  registry.register('AWS::AppSync::GraphQLApi', appSyncProvider);
+  registry.register('AWS::AppSync::GraphQLSchema', appSyncProvider);
+  registry.register('AWS::AppSync::DataSource', appSyncProvider);
+  registry.register('AWS::AppSync::Resolver', appSyncProvider);
+  registry.register('AWS::AppSync::ApiKey', appSyncProvider);
 }

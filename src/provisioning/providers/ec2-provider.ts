@@ -28,6 +28,12 @@ import {
   DescribeInstancesCommand,
   waitUntilInstanceRunning,
   waitUntilInstanceTerminated,
+  CreateNetworkAclCommand,
+  DeleteNetworkAclCommand,
+  CreateNetworkAclEntryCommand,
+  DeleteNetworkAclEntryCommand,
+  ReplaceNetworkAclAssociationCommand,
+  DescribeNetworkAclsCommand,
   type Tenancy,
   type _InstanceType,
   type VolumeType,
@@ -94,6 +100,12 @@ export class EC2Provider implements ResourceProvider {
         return this.createSecurityGroupIngress(logicalId, resourceType, properties);
       case 'AWS::EC2::Instance':
         return this.createInstance(logicalId, resourceType, properties);
+      case 'AWS::EC2::NetworkAcl':
+        return this.createNetworkAcl(logicalId, resourceType, properties);
+      case 'AWS::EC2::NetworkAclEntry':
+        return this.createNetworkAclEntry(logicalId, resourceType, properties);
+      case 'AWS::EC2::SubnetNetworkAclAssociation':
+        return this.createSubnetNetworkAclAssociation(logicalId, resourceType, properties);
       default:
         throw new ProvisioningError(
           `Unsupported resource type: ${resourceType}`,
@@ -143,6 +155,10 @@ export class EC2Provider implements ResourceProvider {
         );
       case 'AWS::EC2::Instance':
         return this.updateInstance(logicalId, physicalId, resourceType, properties);
+      case 'AWS::EC2::NetworkAcl':
+      case 'AWS::EC2::NetworkAclEntry':
+      case 'AWS::EC2::SubnetNetworkAclAssociation':
+        return { physicalId, wasReplaced: false };
       default:
         throw new ProvisioningError(
           `Unsupported resource type: ${resourceType}`,
@@ -180,6 +196,14 @@ export class EC2Provider implements ResourceProvider {
         return this.deleteSecurityGroupIngress(logicalId, physicalId, resourceType, properties);
       case 'AWS::EC2::Instance':
         return this.deleteInstance(logicalId, physicalId, resourceType);
+      case 'AWS::EC2::NetworkAcl':
+        return this.deleteNetworkAcl(logicalId, physicalId, resourceType);
+      case 'AWS::EC2::NetworkAclEntry':
+        return this.deleteNetworkAclEntry(logicalId, physicalId, resourceType);
+      case 'AWS::EC2::SubnetNetworkAclAssociation':
+        // Association replacement is atomic; no explicit delete needed
+        this.logger.debug(`SubnetNetworkAclAssociation ${logicalId} delete is a no-op`);
+        return;
       default:
         throw new ProvisioningError(
           `Unsupported resource type: ${resourceType}`,
@@ -1538,6 +1562,270 @@ export class EC2Provider implements ResourceProvider {
     return permission;
   }
 
+  // ─── AWS::EC2::NetworkAcl ────────────────────────────────────────
+
+  private async createNetworkAcl(
+    logicalId: string,
+    resourceType: string,
+    properties: Record<string, unknown>
+  ): Promise<ResourceCreateResult> {
+    this.logger.debug(`Creating NetworkAcl ${logicalId}`);
+
+    const vpcId = properties['VpcId'] as string;
+    if (!vpcId) {
+      throw new ProvisioningError(
+        `VpcId is required for NetworkAcl ${logicalId}`,
+        resourceType,
+        logicalId
+      );
+    }
+
+    try {
+      const response = await this.ec2Client.send(new CreateNetworkAclCommand({ VpcId: vpcId }));
+
+      const networkAclId = response.NetworkAcl!.NetworkAclId!;
+
+      // Apply tags
+      await this.applyTags(networkAclId, properties, logicalId);
+
+      this.logger.debug(`Successfully created NetworkAcl ${logicalId}: ${networkAclId}`);
+
+      return {
+        physicalId: networkAclId,
+        attributes: {
+          Id: networkAclId,
+        },
+      };
+    } catch (error) {
+      const cause = error instanceof Error ? error : undefined;
+      throw new ProvisioningError(
+        `Failed to create NetworkAcl ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        resourceType,
+        logicalId,
+        undefined,
+        cause
+      );
+    }
+  }
+
+  private async deleteNetworkAcl(
+    logicalId: string,
+    physicalId: string,
+    resourceType: string
+  ): Promise<void> {
+    this.logger.debug(`Deleting NetworkAcl ${logicalId}: ${physicalId}`);
+
+    try {
+      await this.ec2Client.send(new DeleteNetworkAclCommand({ NetworkAclId: physicalId }));
+      this.logger.debug(`Successfully deleted NetworkAcl ${logicalId}`);
+    } catch (error) {
+      if (this.isNotFoundError(error)) {
+        this.logger.debug(`NetworkAcl ${physicalId} does not exist, skipping deletion`);
+        return;
+      }
+      const cause = error instanceof Error ? error : undefined;
+      throw new ProvisioningError(
+        `Failed to delete NetworkAcl ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        resourceType,
+        logicalId,
+        physicalId,
+        cause
+      );
+    }
+  }
+
+  // ─── AWS::EC2::NetworkAclEntry ─────────────────────────────────────
+
+  private async createNetworkAclEntry(
+    logicalId: string,
+    resourceType: string,
+    properties: Record<string, unknown>
+  ): Promise<ResourceCreateResult> {
+    this.logger.debug(`Creating NetworkAclEntry ${logicalId}`);
+
+    const networkAclId = properties['NetworkAclId'] as string;
+    const ruleNumber = properties['RuleNumber'] as number;
+    const protocol = properties['Protocol'] as number;
+    const ruleAction = properties['RuleAction'] as string;
+    const egress = (properties['Egress'] as boolean) ?? false;
+
+    if (!networkAclId || ruleNumber === undefined || protocol === undefined || !ruleAction) {
+      throw new ProvisioningError(
+        `NetworkAclId, RuleNumber, Protocol, and RuleAction are required for NetworkAclEntry ${logicalId}`,
+        resourceType,
+        logicalId
+      );
+    }
+
+    try {
+      const cidrBlock = properties['CidrBlock'] as string | undefined;
+      const ipv6CidrBlock = properties['Ipv6CidrBlock'] as string | undefined;
+      const portRange = properties['PortRange'] as Record<string, unknown> | undefined;
+      const icmpTypeCode = properties['IcmpTypeCode'] as Record<string, unknown> | undefined;
+
+      await this.ec2Client.send(
+        new CreateNetworkAclEntryCommand({
+          NetworkAclId: networkAclId,
+          RuleNumber: ruleNumber,
+          Protocol: String(protocol),
+          RuleAction: ruleAction as 'allow' | 'deny',
+          Egress: egress,
+          CidrBlock: cidrBlock,
+          Ipv6CidrBlock: ipv6CidrBlock,
+          PortRange: portRange
+            ? {
+                From: portRange['From'] as number,
+                To: portRange['To'] as number,
+              }
+            : undefined,
+          IcmpTypeCode: icmpTypeCode
+            ? {
+                Code: icmpTypeCode['Code'] as number,
+                Type: icmpTypeCode['Type'] as number,
+              }
+            : undefined,
+        })
+      );
+
+      const physicalId = `${networkAclId}|${ruleNumber}|${egress}`;
+      this.logger.debug(`Successfully created NetworkAclEntry ${logicalId}: ${physicalId}`);
+
+      return {
+        physicalId,
+        attributes: {},
+      };
+    } catch (error) {
+      const cause = error instanceof Error ? error : undefined;
+      throw new ProvisioningError(
+        `Failed to create NetworkAclEntry ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        resourceType,
+        logicalId,
+        undefined,
+        cause
+      );
+    }
+  }
+
+  private async deleteNetworkAclEntry(
+    logicalId: string,
+    physicalId: string,
+    resourceType: string
+  ): Promise<void> {
+    this.logger.debug(`Deleting NetworkAclEntry ${logicalId}: ${physicalId}`);
+
+    const parts = physicalId.split('|');
+    if (parts.length < 3) {
+      this.logger.warn(`Invalid NetworkAclEntry physical ID format: ${physicalId}, skipping`);
+      return;
+    }
+    const networkAclId = parts[0]!;
+    const ruleNumber = parseInt(parts[1]!, 10);
+    const egress = parts[2] === 'true';
+
+    try {
+      await this.ec2Client.send(
+        new DeleteNetworkAclEntryCommand({
+          NetworkAclId: networkAclId,
+          RuleNumber: ruleNumber,
+          Egress: egress,
+        })
+      );
+      this.logger.debug(`Successfully deleted NetworkAclEntry ${logicalId}`);
+    } catch (error) {
+      if (this.isNotFoundError(error)) {
+        this.logger.debug(`NetworkAclEntry ${physicalId} does not exist, skipping deletion`);
+        return;
+      }
+      const cause = error instanceof Error ? error : undefined;
+      throw new ProvisioningError(
+        `Failed to delete NetworkAclEntry ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        resourceType,
+        logicalId,
+        physicalId,
+        cause
+      );
+    }
+  }
+
+  // ─── AWS::EC2::SubnetNetworkAclAssociation ─────────────────────────
+
+  private async createSubnetNetworkAclAssociation(
+    logicalId: string,
+    resourceType: string,
+    properties: Record<string, unknown>
+  ): Promise<ResourceCreateResult> {
+    this.logger.debug(`Creating SubnetNetworkAclAssociation ${logicalId}`);
+
+    const networkAclId = properties['NetworkAclId'] as string;
+    const subnetId = properties['SubnetId'] as string;
+
+    if (!networkAclId || !subnetId) {
+      throw new ProvisioningError(
+        `NetworkAclId and SubnetId are required for SubnetNetworkAclAssociation ${logicalId}`,
+        resourceType,
+        logicalId
+      );
+    }
+
+    try {
+      // Find the current NACL association for the subnet
+      const describeResponse = await this.ec2Client.send(
+        new DescribeNetworkAclsCommand({
+          Filters: [{ Name: 'association.subnet-id', Values: [subnetId] }],
+        })
+      );
+
+      let currentAssociationId: string | undefined;
+      for (const nacl of describeResponse.NetworkAcls ?? []) {
+        for (const assoc of nacl.Associations ?? []) {
+          if (assoc.SubnetId === subnetId) {
+            currentAssociationId = assoc.NetworkAclAssociationId;
+            break;
+          }
+        }
+        if (currentAssociationId) break;
+      }
+
+      if (!currentAssociationId) {
+        throw new ProvisioningError(
+          `No current NACL association found for subnet ${subnetId}`,
+          resourceType,
+          logicalId
+        );
+      }
+
+      // Replace the association
+      const response = await this.ec2Client.send(
+        new ReplaceNetworkAclAssociationCommand({
+          AssociationId: currentAssociationId,
+          NetworkAclId: networkAclId,
+        })
+      );
+
+      const newAssociationId = response.NewAssociationId!;
+      this.logger.debug(
+        `Successfully created SubnetNetworkAclAssociation ${logicalId}: ${newAssociationId}`
+      );
+
+      return {
+        physicalId: newAssociationId,
+        attributes: {
+          AssociationId: newAssociationId,
+        },
+      };
+    } catch (error) {
+      if (error instanceof ProvisioningError) throw error;
+      const cause = error instanceof Error ? error : undefined;
+      throw new ProvisioningError(
+        `Failed to create SubnetNetworkAclAssociation ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        resourceType,
+        logicalId,
+        undefined,
+        cause
+      );
+    }
+  }
+
   /**
    * Apply tags to an EC2 resource
    */
@@ -1582,7 +1870,9 @@ export class EC2Provider implements ResourceProvider {
       name === 'InvalidGroup.NotFound' ||
       name === 'InvalidAssociationID.NotFound' ||
       name === 'InvalidRoute.NotFound' ||
-      name === 'InvalidInstanceID.NotFound'
+      name === 'InvalidInstanceID.NotFound' ||
+      name === 'InvalidNetworkAclID.NotFound' ||
+      name === 'InvalidNetworkAclEntry.NotFound'
     );
   }
 }
