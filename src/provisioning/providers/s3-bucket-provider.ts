@@ -188,8 +188,21 @@ export class S3BucketProvider implements ResourceProvider {
         };
       }
 
-      await this.s3Client.send(new CreateBucketCommand(createParams));
-      this.logger.debug(`Created S3 bucket: ${bucketName}`);
+      try {
+        await this.s3Client.send(new CreateBucketCommand(createParams));
+        this.logger.debug(`Created S3 bucket: ${bucketName}`);
+      } catch (createError) {
+        // "BucketAlreadyOwnedByYou" is success (idempotent create)
+        if (
+          createError instanceof Error &&
+          (createError.name === 'BucketAlreadyOwnedByYou' ||
+            createError.message.includes('you already own it'))
+        ) {
+          this.logger.debug(`S3 bucket ${bucketName} already exists and is owned by you`);
+        } else {
+          throw createError;
+        }
+      }
 
       // Apply additional configuration
       await this.applyConfiguration(bucketName, properties);
