@@ -116,48 +116,7 @@ npm run typecheck
 
 ### SDK Providers
 
-Currently implemented SDK Providers (`src/provisioning/providers/`):
-
-- `iam-role-provider.ts` - AWS::IAM::Role
-- `iam-policy-provider.ts` - AWS::IAM::Policy
-- `iam-instance-profile-provider.ts` - AWS::IAM::InstanceProfile
-- `iam-user-group-provider.ts` - AWS::IAM::User, Group, UserToGroupAddition
-- `s3-bucket-provider.ts` - AWS::S3::Bucket
-- `s3-bucket-policy-provider.ts` - AWS::S3::BucketPolicy
-- `sqs-queue-provider.ts` - AWS::SQS::Queue
-- `sqs-queue-policy-provider.ts` - AWS::SQS::QueuePolicy
-- `sns-topic-provider.ts` - AWS::SNS::Topic
-- `sns-subscription-provider.ts` - AWS::SNS::Subscription
-- `sns-topic-policy-provider.ts` - AWS::SNS::TopicPolicy
-- `lambda-function-provider.ts` - AWS::Lambda::Function
-- `lambda-permission-provider.ts` - AWS::Lambda::Permission
-- `lambda-url-provider.ts` - AWS::Lambda::Url
-- `lambda-eventsource-provider.ts` - AWS::Lambda::EventSourceMapping
-- `lambda-layer-provider.ts` - AWS::Lambda::LayerVersion
-- `dynamodb-table-provider.ts` - AWS::DynamoDB::Table
-- `logs-loggroup-provider.ts` - AWS::Logs::LogGroup
-- `cloudwatch-alarm-provider.ts` - AWS::CloudWatch::Alarm
-- `secretsmanager-secret-provider.ts` - AWS::SecretsManager::Secret
-- `ssm-parameter-provider.ts` - AWS::SSM::Parameter
-- `eventbridge-rule-provider.ts` - AWS::Events::Rule
-- `eventbridge-bus-provider.ts` - AWS::Events::EventBus
-- `iam-instance-profile-provider.ts` - AWS::IAM::InstanceProfile
-- `ec2-provider.ts` - AWS::EC2::VPC, Subnet, InternetGateway, VPCGatewayAttachment, RouteTable, Route, SubnetRouteTableAssociation, SecurityGroup, SecurityGroupIngress, Instance
-- `apigateway-provider.ts` - AWS::ApiGateway::Account, Authorizer, Resource, Deployment, Stage, Method
-- `apigatewayv2-provider.ts` - AWS::ApiGatewayV2::Api, Stage, Integration, Route, Authorizer
-- `cloudfront-oai-provider.ts` - AWS::CloudFront::CloudFrontOriginAccessIdentity
-- `cloudfront-distribution-provider.ts` - AWS::CloudFront::Distribution
-- `stepfunctions-provider.ts` - AWS::StepFunctions::StateMachine
-- `ecs-provider.ts` - AWS::ECS::Cluster, TaskDefinition, Service
-- `elbv2-provider.ts` - AWS::ElasticLoadBalancingV2::LoadBalancer, TargetGroup, Listener
-- `rds-provider.ts` - AWS::RDS::DBSubnetGroup, DBCluster, DBInstance
-- `route53-provider.ts` - AWS::Route53::HostedZone, RecordSet
-- `wafv2-provider.ts` - AWS::WAFv2::WebACL
-- `cognito-provider.ts` - AWS::Cognito::UserPool
-- `elasticache-provider.ts` - AWS::ElastiCache::CacheCluster, SubnetGroup
-- `servicediscovery-provider.ts` - AWS::ServiceDiscovery::PrivateDnsNamespace, Service
-- `agentcore-runtime-provider.ts` - AWS::BedrockAgentCore::Runtime
-- `custom-resource-provider.ts` - Custom::* (Lambda/SNS-backed, CDK Provider framework with isCompleteHandler/onEventHandler async pattern)
+SDK Providers are in `src/provisioning/providers/`. See [README](../README.md) for the full list of supported resource types. Registration is centralized in `src/provisioning/register-providers.ts`.
 
 SDK Providers are preferred over Cloud Control API for performance -- they make direct synchronous API calls with no polling overhead. Cloud Control API is used as a fallback for resource types without an SDK Provider.
 
