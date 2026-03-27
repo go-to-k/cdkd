@@ -27,6 +27,7 @@ import {
   TerminateInstancesCommand,
   DescribeInstancesCommand,
   waitUntilInstanceRunning,
+  waitUntilInstanceTerminated,
   type Tenancy,
   type _InstanceType,
   type VolumeType,
@@ -1408,7 +1409,15 @@ export class EC2Provider implements ResourceProvider {
 
     try {
       await this.ec2Client.send(new TerminateInstancesCommand({ InstanceIds: [physicalId] }));
-      this.logger.debug(`Successfully terminated EC2 Instance ${logicalId}: ${physicalId}`);
+      this.logger.debug(`Terminate requested for EC2 Instance ${logicalId}, waiting...`);
+
+      // Wait for instance to reach terminated state so ENIs are released
+      await waitUntilInstanceTerminated(
+        { client: this.ec2Client, maxWaitTime: 300 },
+        { InstanceIds: [physicalId] }
+      );
+
+      this.logger.debug(`EC2 Instance ${logicalId} terminated: ${physicalId}`);
     } catch (error) {
       if (this.isNotFoundError(error)) {
         this.logger.debug(

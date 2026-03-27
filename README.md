@@ -114,6 +114,7 @@ cdkd uses a hybrid provisioning strategy: hand-written **SDK Providers** call AW
 |----------|--------------|----------|--------|
 | **IAM** | AWS::IAM::Role | SDK Provider | ✅ |
 | **IAM** | AWS::IAM::Policy | SDK Provider | ✅ |
+| **IAM** | AWS::IAM::InstanceProfile | SDK Provider | ✅ |
 | **Storage** | AWS::S3::Bucket | SDK Provider | ✅ |
 | **Storage** | AWS::S3::BucketPolicy | SDK Provider | ✅ |
 | **Messaging** | AWS::SQS::Queue | SDK Provider | ✅ |
@@ -140,6 +141,7 @@ cdkd uses a hybrid provisioning strategy: hand-written **SDK Providers** call AW
 | **Networking** | AWS::EC2::SubnetRouteTableAssociation | SDK Provider | ✅ |
 | **Networking** | AWS::EC2::SecurityGroup | SDK Provider | ✅ |
 | **Networking** | AWS::EC2::SecurityGroupIngress | SDK Provider | ✅ |
+| **Compute** | AWS::EC2::Instance | SDK Provider | ✅ |
 | **API Gateway** | AWS::ApiGateway::Account | SDK Provider | ✅ |
 | **API Gateway** | AWS::ApiGateway::Resource | SDK Provider | ✅ |
 | **API Gateway** | AWS::ApiGateway::Deployment | SDK Provider | ✅ |

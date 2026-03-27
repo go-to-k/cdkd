@@ -1010,7 +1010,7 @@ export class DeployEngine {
     'AWS::EC2::Subnet': ['AWS::EC2::SubnetRouteTableAssociation'],
     // RouteTable must be deleted AFTER Route and Association
     'AWS::EC2::RouteTable': ['AWS::EC2::Route', 'AWS::EC2::SubnetRouteTableAssociation'],
-    // SecurityGroup must be deleted AFTER resources that reference it
+    // SecurityGroup must be deleted AFTER SecurityGroupIngress/Egress
     'AWS::EC2::SecurityGroup': ['AWS::EC2::SecurityGroupIngress', 'AWS::EC2::SecurityGroupEgress'],
   };
 
