@@ -138,18 +138,8 @@ export class Synthesizer {
 
       return { cloudAssembly, dispose: () => assemblySource.dispose() };
     } catch (error) {
-      // Try to extract stderr/stdout from the subprocess error for better diagnostics
-      let details = '';
-      if (error instanceof Error) {
-        const err = error as unknown as Record<string, unknown>;
-        if (err['stderr']) details += `\n\nstderr:\n${String(err['stderr'])}`;
-        if (err['stdout']) details += `\n\nstdout:\n${String(err['stdout'])}`;
-        if (err['cause'] && err['cause'] instanceof Error) {
-          const cause = err['cause'] as unknown as Record<string, unknown>;
-          if (cause['stderr']) details += `\n\nstderr:\n${String(cause['stderr'])}`;
-          if (cause['stdout']) details += `\n\nstdout:\n${String(cause['stdout'])}`;
-        }
-      }
+      // Extract stderr/stdout from the subprocess error chain for diagnostics
+      const details = this.extractErrorDetails(error);
       throw new SynthesisError(
         `Synthesis failed: ${error instanceof Error ? error.message : String(error)}${details}`,
         error instanceof Error ? error : undefined
@@ -186,5 +176,31 @@ export class Synthesizer {
         error instanceof Error ? error : undefined
       );
     }
+  }
+
+  /**
+   * Extract stderr/stdout details from error cause chain
+   */
+  private extractErrorDetails(error: unknown): string {
+    let details = '';
+    let current: unknown = error;
+
+    // Walk the cause chain up to 5 levels deep
+    for (let i = 0; i < 5 && current; i++) {
+      if (current instanceof Error || (typeof current === 'object' && current !== null)) {
+        const obj = current as Record<string, unknown>;
+        if (obj['stderr'] && String(obj['stderr']).trim()) {
+          details += `\n\nstderr:\n${String(obj['stderr']).trim()}`;
+        }
+        if (obj['stdout'] && String(obj['stdout']).trim()) {
+          details += `\n\nstdout:\n${String(obj['stdout']).trim()}`;
+        }
+        current = obj['cause'];
+      } else {
+        break;
+      }
+    }
+
+    return details;
   }
 }
