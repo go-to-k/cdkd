@@ -349,7 +349,10 @@ export class DeployEngine {
           `Level ${levelIndex + 1}/${executionLevels.length} (${level.length} resources)`
         );
 
-        await Promise.all(
+        // Use allSettled to ensure ALL parallel tasks complete before checking errors.
+        // Promise.all rejects immediately on first failure, leaving background tasks
+        // that create resources without tracking them in completedOperations.
+        const results = await Promise.allSettled(
           level.map((logicalId) =>
             limit(async () => {
               const change = changes.get(logicalId);
@@ -393,6 +396,15 @@ export class DeployEngine {
 
         // Wait for any pending per-resource state saves to complete before next level
         await saveChain;
+
+        // Check for failures after ALL tasks in the level have completed
+        const failures = results.filter(
+          (r): r is PromiseRejectedResult => r.status === 'rejected'
+        );
+        if (failures.length > 0) {
+          // Throw the first failure to trigger rollback (all completed ops are tracked)
+          throw failures[0]!.reason;
+        }
       }
 
       // Step 2: Process DELETE operations in reverse dependency order
@@ -411,7 +423,7 @@ export class DeployEngine {
           const level = deletionLevels[levelIndex]!;
           if (level.length === 0) continue;
 
-          await Promise.all(
+          const deleteResults = await Promise.allSettled(
             level.map((logicalId) =>
               limit(async () => {
                 const change = changes.get(logicalId)!;
@@ -447,6 +459,13 @@ export class DeployEngine {
 
           // Wait for any pending per-resource state saves to complete before next deletion level
           await saveChain;
+
+          const deleteFailures = deleteResults.filter(
+            (r): r is PromiseRejectedResult => r.status === 'rejected'
+          );
+          if (deleteFailures.length > 0) {
+            throw deleteFailures[0]!.reason;
+          }
         }
       }
     } catch (error) {
