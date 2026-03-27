@@ -47,10 +47,10 @@ export class Synthesizer {
           const code = message['code'] as string | undefined;
           if (level === 'error' && message['message']) {
             const msg = String(message['message']);
-            // CDK_ASSEMBLY_E1002 is subprocess stderr - show as warn (includes
-            // bundling progress, deprecation warnings, AND actual errors)
+            // CDK_ASSEMBLY_E1002 is subprocess stderr (bundling progress,
+            // deprecation warnings, and actual errors) - show as info
             if (code === 'CDK_ASSEMBLY_E1002') {
-              this.logger.warn(msg);
+              this.logger.info(msg);
             } else {
               this.logger.error(msg);
             }
