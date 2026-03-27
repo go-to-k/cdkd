@@ -148,7 +148,18 @@ export class DiffCalculator {
     // Get all property keys
     const allKeys = new Set([...Object.keys(currentProperties), ...Object.keys(desiredProperties)]);
 
+    // Properties to ignore in diff (non-deterministic, changes on every synth)
+    const ignoredProperties = new Set<string>();
+    if (
+      resourceType === 'AWS::CloudFormation::CustomResource' ||
+      resourceType.startsWith('Custom::')
+    ) {
+      ignoredProperties.add('Timestamp');
+    }
+
     for (const key of allKeys) {
+      if (ignoredProperties.has(key)) continue;
+
       const oldValue = currentProperties[key];
       const newValue = desiredProperties[key];
 

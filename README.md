@@ -125,6 +125,7 @@ cdkd uses a hybrid provisioning strategy: hand-written **SDK Providers** call AW
 | **Compute** | AWS::Lambda::Permission | SDK Provider | ✅ |
 | **Compute** | AWS::Lambda::Url | SDK Provider | ✅ |
 | **Compute** | AWS::Lambda::EventSourceMapping | SDK Provider | ✅ |
+| **Compute** | AWS::Lambda::LayerVersion | SDK Provider | ✅ |
 | **Database** | AWS::DynamoDB::Table | SDK Provider | ✅ |
 | **Monitoring** | AWS::Logs::LogGroup | SDK Provider | ✅ |
 | **Monitoring** | AWS::CloudWatch::Alarm | SDK Provider | ✅ |
@@ -147,6 +148,11 @@ cdkd uses a hybrid provisioning strategy: hand-written **SDK Providers** call AW
 | **API Gateway** | AWS::ApiGateway::Deployment | SDK Provider | ✅ |
 | **API Gateway** | AWS::ApiGateway::Stage | SDK Provider | ✅ |
 | **API Gateway** | AWS::ApiGateway::Method | SDK Provider | ✅ |
+| **API Gateway** | AWS::ApiGatewayV2::Api | SDK Provider | ✅ |
+| **API Gateway** | AWS::ApiGatewayV2::Stage | SDK Provider | ✅ |
+| **API Gateway** | AWS::ApiGatewayV2::Integration | SDK Provider | ✅ |
+| **API Gateway** | AWS::ApiGatewayV2::Route | SDK Provider | ✅ |
+| **API Gateway** | AWS::ApiGatewayV2::Authorizer | SDK Provider | ✅ |
 | **CDN** | AWS::CloudFront::CloudFrontOriginAccessIdentity | SDK Provider | ✅ |
 | **CDN** | AWS::CloudFront::Distribution | SDK Provider | ✅ |
 | **Orchestration** | AWS::StepFunctions::StateMachine | SDK Provider | ✅ |
@@ -163,6 +169,10 @@ cdkd uses a hybrid provisioning strategy: hand-written **SDK Providers** call AW
 | **DNS** | AWS::Route53::RecordSet | SDK Provider | ✅ |
 | **Security** | AWS::WAFv2::WebACL | SDK Provider | ✅ |
 | **Auth** | AWS::Cognito::UserPool | SDK Provider | ✅ |
+| **Cache** | AWS::ElastiCache::CacheCluster | SDK Provider | ✅ |
+| **Cache** | AWS::ElastiCache::SubnetGroup | SDK Provider | ✅ |
+| **Discovery** | AWS::ServiceDiscovery::PrivateDnsNamespace | SDK Provider | ✅ |
+| **Discovery** | AWS::ServiceDiscovery::Service | SDK Provider | ✅ |
 | **AI/ML** | AWS::BedrockAgentCore::Runtime | SDK Provider | ✅ |
 | **Custom** | Custom::* (Lambda/SNS-backed) | SDK Provider | ✅ |
 | **Other** | All other resource types | Cloud Control | ✅ |

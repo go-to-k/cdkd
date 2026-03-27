@@ -130,6 +130,7 @@ Currently implemented SDK Providers (`src/provisioning/providers/`):
 - `lambda-permission-provider.ts` - AWS::Lambda::Permission
 - `lambda-url-provider.ts` - AWS::Lambda::Url
 - `lambda-eventsource-provider.ts` - AWS::Lambda::EventSourceMapping
+- `lambda-layer-provider.ts` - AWS::Lambda::LayerVersion
 - `dynamodb-table-provider.ts` - AWS::DynamoDB::Table
 - `logs-loggroup-provider.ts` - AWS::Logs::LogGroup
 - `cloudwatch-alarm-provider.ts` - AWS::CloudWatch::Alarm
@@ -140,6 +141,7 @@ Currently implemented SDK Providers (`src/provisioning/providers/`):
 - `iam-instance-profile-provider.ts` - AWS::IAM::InstanceProfile
 - `ec2-provider.ts` - AWS::EC2::VPC, Subnet, InternetGateway, VPCGatewayAttachment, RouteTable, Route, SubnetRouteTableAssociation, SecurityGroup, SecurityGroupIngress, Instance
 - `apigateway-provider.ts` - AWS::ApiGateway::Account, Resource, Deployment, Stage, Method
+- `apigatewayv2-provider.ts` - AWS::ApiGatewayV2::Api, Stage, Integration, Route, Authorizer
 - `cloudfront-oai-provider.ts` - AWS::CloudFront::CloudFrontOriginAccessIdentity
 - `cloudfront-distribution-provider.ts` - AWS::CloudFront::Distribution
 - `stepfunctions-provider.ts` - AWS::StepFunctions::StateMachine
@@ -149,6 +151,8 @@ Currently implemented SDK Providers (`src/provisioning/providers/`):
 - `route53-provider.ts` - AWS::Route53::HostedZone, RecordSet
 - `wafv2-provider.ts` - AWS::WAFv2::WebACL
 - `cognito-provider.ts` - AWS::Cognito::UserPool
+- `elasticache-provider.ts` - AWS::ElastiCache::CacheCluster, SubnetGroup
+- `servicediscovery-provider.ts` - AWS::ServiceDiscovery::PrivateDnsNamespace, Service
 - `agentcore-runtime-provider.ts` - AWS::BedrockAgentCore::Runtime
 - `custom-resource-provider.ts` - Custom::* (Lambda/SNS-backed, CDK Provider framework with isCompleteHandler/onEventHandler async pattern)
 
