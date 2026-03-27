@@ -148,6 +148,7 @@ cdkd uses a hybrid provisioning strategy: hand-written **SDK Providers** call AW
 | **API Gateway** | AWS::ApiGateway::Deployment | SDK Provider | ✅ |
 | **API Gateway** | AWS::ApiGateway::Stage | SDK Provider | ✅ |
 | **API Gateway** | AWS::ApiGateway::Method | SDK Provider | ✅ |
+| **API Gateway** | AWS::ApiGateway::Authorizer | SDK Provider | ✅ |
 | **API Gateway** | AWS::ApiGatewayV2::Api | SDK Provider | ✅ |
 | **API Gateway** | AWS::ApiGatewayV2::Stage | SDK Provider | ✅ |
 | **API Gateway** | AWS::ApiGatewayV2::Integration | SDK Provider | ✅ |

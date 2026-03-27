@@ -140,7 +140,7 @@ Currently implemented SDK Providers (`src/provisioning/providers/`):
 - `eventbridge-bus-provider.ts` - AWS::Events::EventBus
 - `iam-instance-profile-provider.ts` - AWS::IAM::InstanceProfile
 - `ec2-provider.ts` - AWS::EC2::VPC, Subnet, InternetGateway, VPCGatewayAttachment, RouteTable, Route, SubnetRouteTableAssociation, SecurityGroup, SecurityGroupIngress, Instance
-- `apigateway-provider.ts` - AWS::ApiGateway::Account, Resource, Deployment, Stage, Method
+- `apigateway-provider.ts` - AWS::ApiGateway::Account, Authorizer, Resource, Deployment, Stage, Method
 - `apigatewayv2-provider.ts` - AWS::ApiGatewayV2::Api, Stage, Integration, Route, Authorizer
 - `cloudfront-oai-provider.ts` - AWS::CloudFront::CloudFrontOriginAccessIdentity
 - `cloudfront-distribution-provider.ts` - AWS::CloudFront::Distribution
