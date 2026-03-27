@@ -3,6 +3,7 @@ import { Construct } from 'constructs';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
 import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
 import * as sns from 'aws-cdk-lib/aws-sns';
+import * as cognito from 'aws-cdk-lib/aws-cognito';
 import * as apigatewayv2 from 'aws-cdk-lib/aws-apigatewayv2';
 
 /**
@@ -75,6 +76,13 @@ def handler(event, context):
       principal: 'apigateway.amazonaws.com',
     });
 
+    // Cognito UserPool for JWT auth
+    const userPool = new cognito.UserPool(this, 'ApiUserPool', {
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+    });
+
+    const userPoolClient = userPool.addClient('ApiClient');
+
     // API Gateway V2 HTTP API (L1 constructs)
     const httpApi = new apigatewayv2.CfnApi(this, 'HttpApi', {
       name: 'cdkd-serverless-api',
@@ -97,10 +105,24 @@ def handler(event, context):
       payloadFormatVersion: '2.0',
     });
 
-    // Default route
+    // JWT Authorizer
+    const authorizer = new apigatewayv2.CfnAuthorizer(this, 'JwtAuthorizer', {
+      apiId: httpApi.ref,
+      authorizerType: 'JWT',
+      name: 'jwt-authorizer',
+      identitySource: '$request.header.Authorization',
+      jwtConfiguration: {
+        audience: [userPoolClient.userPoolClientId],
+        issuer: `https://cognito-idp.${this.region}.amazonaws.com/${userPool.userPoolId}`,
+      },
+    });
+
+    // Default route with JWT authorization
     new apigatewayv2.CfnRoute(this, 'DefaultRoute', {
       apiId: httpApi.ref,
       routeKey: '$default',
+      authorizationType: 'JWT',
+      authorizerId: authorizer.ref,
       target: cdk.Fn.join('/', ['integrations', integration.ref]),
     });
 
@@ -118,6 +140,11 @@ def handler(event, context):
     new cdk.CfnOutput(this, 'TopicArn', {
       value: topic.topicArn,
       description: 'SNS Topic ARN',
+    });
+
+    new cdk.CfnOutput(this, 'UserPoolId', {
+      value: userPool.userPoolId,
+      description: 'Cognito UserPool ID',
     });
   }
 }

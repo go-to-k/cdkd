@@ -33,6 +33,7 @@ import { RDSProvider } from './providers/rds-provider.js';
 import { Route53Provider } from './providers/route53-provider.js';
 import { WAFv2WebACLProvider } from './providers/wafv2-provider.js';
 import { CognitoUserPoolProvider } from './providers/cognito-provider.js';
+import { ElastiCacheProvider } from './providers/elasticache-provider.js';
 
 /**
  * Register all SDK providers with the given registry.
@@ -142,6 +143,11 @@ export function registerAllProviders(registry: ProviderRegistry): void {
 
   // Cognito
   registry.register('AWS::Cognito::UserPool', new CognitoUserPoolProvider());
+
+  // ElastiCache
+  const elasticacheProvider = new ElastiCacheProvider();
+  registry.register('AWS::ElastiCache::SubnetGroup', elasticacheProvider);
+  registry.register('AWS::ElastiCache::CacheCluster', elasticacheProvider);
 
   // Bedrock
   registry.register('AWS::BedrockAgentCore::Runtime', new AgentCoreRuntimeProvider());

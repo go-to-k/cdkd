@@ -13,6 +13,8 @@ import * as ecs from 'aws-cdk-lib/aws-ecs';
  * - Fargate Service with desiredCount: 0 (tests resource creation without running containers)
  * - IAM execution role (auto-created by CDK)
  * - Resource dependencies (Service → Cluster → VPC)
+ * - Service Connect with CloudMap namespace
+ * - Application Auto Scaling (ScalableTarget + ScalingPolicy)
  * - Fn::GetAtt for outputs
  */
 export class EcsFargateStack extends cdk.Stack {
@@ -32,10 +34,13 @@ export class EcsFargateStack extends cdk.Stack {
       ],
     });
 
-    // Create ECS Cluster
+    // Create ECS Cluster with CloudMap namespace for Service Connect
     const cluster = new ecs.Cluster(this, 'Cluster', {
       vpc,
       clusterName: `cdkd-ecs-fargate-test`,
+      defaultCloudMapNamespace: {
+        name: 'cdkd-test.local',
+      },
     });
 
     // Create Fargate Task Definition
@@ -45,7 +50,7 @@ export class EcsFargateStack extends cdk.Stack {
     });
 
     // Add container using a public ECR image (no Docker build needed)
-    taskDefinition.addContainer('AppContainer', {
+    const container = taskDefinition.addContainer('AppContainer', {
       image: ecs.ContainerImage.fromRegistry(
         'public.ecr.aws/amazonlinux/amazonlinux:latest'
       ),
@@ -56,7 +61,14 @@ export class EcsFargateStack extends cdk.Stack {
       command: ['echo', 'hello'],
     });
 
-    // Create Fargate Service with desiredCount: 0
+    // Add named port mapping for Service Connect
+    container.addPortMappings({
+      containerPort: 80,
+      name: 'http',
+      protocol: ecs.Protocol.TCP,
+    });
+
+    // Create Fargate Service with desiredCount: 0 and Service Connect enabled
     // This tests resource creation without actually running containers
     const service = new ecs.FargateService(this, 'Service', {
       cluster,
@@ -66,6 +78,27 @@ export class EcsFargateStack extends cdk.Stack {
       vpcSubnets: {
         subnetType: ec2.SubnetType.PUBLIC,
       },
+      serviceConnectConfiguration: {
+        services: [
+          {
+            portMappingName: 'http',
+            dnsName: 'web',
+            port: 80,
+          },
+        ],
+      },
+    });
+
+    // Auto Scaling for the Fargate Service
+    const scaling = service.autoScaleTaskCount({
+      minCapacity: 1,
+      maxCapacity: 3,
+    });
+
+    scaling.scaleOnCpuUtilization('CpuScaling', {
+      targetUtilizationPercent: 70,
+      scaleInCooldown: cdk.Duration.seconds(60),
+      scaleOutCooldown: cdk.Duration.seconds(60),
     });
 
     // Outputs using Fn::GetAtt
@@ -92,6 +125,16 @@ export class EcsFargateStack extends cdk.Stack {
     new cdk.CfnOutput(this, 'VpcId', {
       value: vpc.vpcId,
       description: 'VPC ID',
+    });
+
+    new cdk.CfnOutput(this, 'AutoScalingMinCapacity', {
+      value: '1',
+      description: 'Auto Scaling min capacity',
+    });
+
+    new cdk.CfnOutput(this, 'AutoScalingMaxCapacity', {
+      value: '3',
+      description: 'Auto Scaling max capacity',
     });
   }
 }

@@ -65,7 +65,21 @@ export class RdsAuroraStack extends cdk.Stack {
       removalPolicy: cdk.RemovalPolicy.DESTROY,
     });
 
+    // Create RDS Proxy for the Aurora cluster
+    const proxy = new rds.DatabaseProxy(this, 'AuroraProxy', {
+      proxyTarget: rds.ProxyTarget.fromCluster(cluster),
+      secrets: [cluster.secret!],
+      vpc,
+      securityGroups: [securityGroup],
+      requireTLS: false,
+    });
+
     // Outputs
+    new cdk.CfnOutput(this, 'ProxyEndpoint', {
+      value: proxy.endpoint,
+      description: 'RDS Proxy endpoint',
+    });
+
     new cdk.CfnOutput(this, 'ClusterEndpoint', {
       value: cluster.clusterEndpoint.hostname,
       description: 'Aurora cluster endpoint',

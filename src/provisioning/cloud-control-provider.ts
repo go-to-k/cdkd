@@ -608,6 +608,37 @@ export class CloudControlProvider implements ResourceProvider {
         }
         break;
 
+      case 'AWS::Lambda::Version':
+        // CC API physicalId for Lambda Version is the full version ARN
+        // (e.g., arn:aws:lambda:us-east-1:123456:function:MyFunc:1).
+        // Lambda::Alias FunctionVersion property needs just the version number.
+        if (!enriched['Version']) {
+          const versionSegments = physicalId.split(':');
+          const versionNumber = versionSegments[versionSegments.length - 1];
+          enriched['Version'] = versionNumber;
+          this.logger.debug(
+            `Enriched Lambda Version for ${physicalId}: ${versionNumber}`
+          );
+        }
+        break;
+
+      case 'AWS::Kinesis::Stream':
+        // CC API physicalId for Kinesis Stream is the stream name, not the ARN.
+        // Fn::GetAtt [Stream, Arn] needs the full ARN.
+        if (!enriched['Arn']) {
+          try {
+            const kinesisAccountInfo = await getAccountInfo();
+            enriched['Arn'] =
+              `arn:${kinesisAccountInfo.partition}:kinesis:${kinesisAccountInfo.region}:${kinesisAccountInfo.accountId}:stream/${physicalId}`;
+            this.logger.debug(`Enriched Kinesis Stream Arn for ${physicalId}: ${enriched['Arn']}`);
+          } catch (error) {
+            this.logger.debug(
+              `Failed to construct Kinesis Stream Arn for ${physicalId}: ${error instanceof Error ? error.message : String(error)}`
+            );
+          }
+        }
+        break;
+
       case 'AWS::Lambda::Url':
         // CC API CREATE response may not include FunctionUrl in ResourceModel.
         // Use Lambda SDK to retrieve it for Fn::GetAtt resolution.
