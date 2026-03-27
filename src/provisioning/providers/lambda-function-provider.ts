@@ -336,6 +336,7 @@ export class LambdaFunctionProvider implements ResourceProvider {
     centralDir.writeUInt32LE(fileData.length, 24);
     centralDir.writeUInt16LE(fileName.length, 28);
     centralDir.writeUInt32LE(0, 42); // offset to local header
+    fileName.copy(centralDir, 46);
 
     // End of central directory
     const endRecord = Buffer.alloc(22);
