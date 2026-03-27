@@ -378,7 +378,13 @@ export class GlueProvider implements ResourceProvider {
     }
 
     if (tableInput['Parameters'] !== undefined) {
-      result.Parameters = tableInput['Parameters'] as Record<string, string>;
+      // Convert all values to strings (CDK may pass booleans/numbers)
+      const rawParams = tableInput['Parameters'] as Record<string, unknown>;
+      const params: Record<string, string> = {};
+      for (const [k, v] of Object.entries(rawParams)) {
+        params[k] = String(v);
+      }
+      result.Parameters = params;
     }
 
     if (tableInput['Owner'] !== undefined) {
