@@ -1208,7 +1208,7 @@ export class DeployEngine {
         }
 
         const delay = initialDelayMs * Math.pow(2, attempt);
-        this.logger.info(
+        this.logger.debug(
           `  ⏳ Retrying ${logicalId} in ${delay / 1000}s (attempt ${attempt + 1}/${maxRetries}) - ${message}`
         );
         await new Promise((resolve) => setTimeout(resolve, delay));
