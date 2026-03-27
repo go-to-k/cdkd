@@ -1207,6 +1207,10 @@ export class DeployEngine {
       'does not exist',
       // AppSync schema is being created asynchronously
       'Schema is currently being altered',
+      // IAM principal not yet propagated to S3 bucket policy
+      'Invalid principal in policy',
+      // S3 bucket creation/deletion still in progress
+      'conflicting conditional operation',
     ];
     return retryablePatterns.some((p) => message.includes(p));
   }
