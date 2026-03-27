@@ -222,7 +222,7 @@ cdkd uses a hybrid provisioning strategy: hand-written **SDK Providers** call AW
 ## Installation
 
 ```bash
-npm install -g cdkd
+pnpm add -g cdkd
 ```
 
 Or use with npx (no installation required):
@@ -431,8 +431,8 @@ After deployment, outputs are resolved and saved to the S3 state file:
 - E2E test script for automated deploy/diff/update/destroy cycles
 
 ```bash
-npm test                # Run unit tests
-npm run test:coverage   # With coverage report
+pnpm test                # Run unit tests
+pnpm run test:coverage   # With coverage report
 ```
 
 See [docs/testing.md](docs/testing.md) for integration and E2E testing instructions.

@@ -73,24 +73,24 @@ cdkd has a 7-layer system architecture:
 
 ```bash
 # Build (using esbuild)
-npm run build
+pnpm run build
 
 # Watch mode (for development)
-npm run dev
+pnpm run dev
 
 # Test (using Vitest)
-npm test
-npm run test:ui         # UI mode
-npm run test:coverage   # Coverage
+pnpm test
+pnpm run test:ui         # UI mode
+pnpm run test:coverage   # Coverage
 
 # Lint/Format
-npm run lint
-npm run lint:fix
-npm run format
-npm run format:check
+pnpm run lint
+pnpm run lint:fix
+pnpm run format
+pnpm run format:check
 
 # Type check
-npm run typecheck
+pnpm run typecheck
 ```
 
 ## Key Files and Directories

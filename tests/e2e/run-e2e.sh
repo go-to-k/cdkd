@@ -84,7 +84,7 @@ fi
 
 if [[ ! -f "${CDKD_BIN}" ]]; then
   fail "cdkd CLI not found at: ${CDKD_BIN}"
-  echo "  Hint: Run 'npm run build' in the project root first."
+  echo "  Hint: Run 'pnpm run build' in the project root first."
   exit 1
 fi
 
