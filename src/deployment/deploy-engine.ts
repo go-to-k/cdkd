@@ -1,6 +1,7 @@
 import pLimit from 'p-limit';
 import { getLogger } from '../utils/logger.js';
 import { ProvisioningError } from '../utils/error-handler.js';
+import { setCurrentStackName } from '../provisioning/resource-name.js';
 import { IntrinsicFunctionResolver } from './intrinsic-function-resolver.js';
 import type { CloudFormationTemplate } from '../types/resource.js';
 import type { StackState, ResourceState, ResourceChange } from '../types/state.js';
@@ -107,6 +108,9 @@ export class DeployEngine {
   async deploy(stackName: string, template: CloudFormationTemplate): Promise<DeployResult> {
     const startTime = Date.now();
     this.logger.debug(`Starting deployment for stack: ${stackName}`);
+
+    // Set stack name for resource name generation (CloudFormation-compatible naming)
+    setCurrentStackName(stackName);
 
     // Acquire lock with retry (retries up to 3 times with 2s delay for transient lock conflicts)
     await this.lockManager.acquireLockWithRetry(stackName, undefined, 'deploy');
