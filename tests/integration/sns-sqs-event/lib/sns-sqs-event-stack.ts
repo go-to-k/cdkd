@@ -5,6 +5,7 @@ import * as sqs from 'aws-cdk-lib/aws-sqs';
 import * as subscriptions from 'aws-cdk-lib/aws-sns-subscriptions';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
 import * as eventsources from 'aws-cdk-lib/aws-lambda-event-sources';
+import * as iam from 'aws-cdk-lib/aws-iam';
 
 export class SnsSqsEventStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
@@ -71,6 +72,20 @@ export class SnsSqsEventStack extends cdk.Stack {
         batchSize: 5,
       })
     );
+
+    // SNS Topic Policy
+    new sns.TopicPolicy(this, 'TopicPolicy', {
+      topics: [topic],
+      policyDocument: new iam.PolicyDocument({
+        statements: [
+          new iam.PolicyStatement({
+            actions: ['sns:Publish'],
+            principals: [new iam.ServicePrincipal('events.amazonaws.com')],
+            resources: [topic.topicArn],
+          }),
+        ],
+      }),
+    });
 
     // Outputs
     new cdk.CfnOutput(this, 'TopicArn', { value: topic.topicArn });

@@ -76,6 +76,11 @@ def handler(event, context):
     // Alarm action: send to SNS topic
     alarm.addAlarmAction(new cloudwatch_actions.SnsAction(topic));
 
+    // Composite Alarm
+    const compositeAlarm = new cloudwatch.CompositeAlarm(this, 'CompositeAlarm', {
+      alarmRule: cloudwatch.AlarmRule.allOf(alarm),
+    });
+
     // Outputs
     new cdk.CfnOutput(this, 'DashboardName', {
       value: dashboard.dashboardName,
@@ -90,6 +95,11 @@ def handler(event, context):
     new cdk.CfnOutput(this, 'LogGroupName', {
       value: logGroup.logGroupName,
       description: 'CloudWatch Log Group name',
+    });
+
+    new cdk.CfnOutput(this, 'CompositeAlarmName', {
+      value: compositeAlarm.alarmName,
+      description: 'CloudWatch Composite Alarm name',
     });
   }
 }

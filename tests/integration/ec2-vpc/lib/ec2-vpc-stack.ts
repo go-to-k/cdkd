@@ -44,6 +44,12 @@ export class Ec2VpcStack extends cdk.Stack {
       'Allow HTTP from anywhere'
     );
 
+    // VPC Flow Log (to CloudWatch Logs)
+    const flowLog = new ec2.FlowLog(this, 'VpcFlowLog', {
+      resourceType: ec2.FlowLogResourceType.fromVpc(vpc),
+      destination: ec2.FlowLogDestination.toCloudWatchLogs(),
+    });
+
     // Outputs
     new cdk.CfnOutput(this, 'VpcId', {
       value: vpc.vpcId,
@@ -58,6 +64,11 @@ export class Ec2VpcStack extends cdk.Stack {
     new cdk.CfnOutput(this, 'PublicSubnetIds', {
       value: vpc.publicSubnets.map((s) => s.subnetId).join(','),
       description: 'Public Subnet IDs',
+    });
+
+    new cdk.CfnOutput(this, 'FlowLogId', {
+      value: flowLog.flowLogId,
+      description: 'VPC Flow Log ID',
     });
   }
 }
