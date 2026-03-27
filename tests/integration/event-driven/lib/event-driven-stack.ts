@@ -36,7 +36,6 @@ export class EventDrivenStack extends cdk.Stack {
         '    return {"statusCode": 200, "processed": len(event["Records"])}',
       ].join('\n')),
       timeout: cdk.Duration.seconds(30),
-      removalPolicy: cdk.RemovalPolicy.DESTROY,
     });
 
     sqsHandler.addEventSource(
@@ -63,7 +62,6 @@ export class EventDrivenStack extends cdk.Stack {
         '    return {"statusCode": 200}',
       ].join('\n')),
       timeout: cdk.Duration.seconds(30),
-      removalPolicy: cdk.RemovalPolicy.DESTROY,
     });
 
     topic.addSubscription(
@@ -85,7 +83,6 @@ export class EventDrivenStack extends cdk.Stack {
         '    return {"statusCode": 200}',
       ].join('\n')),
       timeout: cdk.Duration.seconds(30),
-      removalPolicy: cdk.RemovalPolicy.DESTROY,
     });
 
     const bucket = new s3.Bucket(this, 'EventBucket', {

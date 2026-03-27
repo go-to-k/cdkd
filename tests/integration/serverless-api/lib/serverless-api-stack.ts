@@ -9,7 +9,7 @@ import * as apigatewayv2 from 'aws-cdk-lib/aws-apigatewayv2';
  * Serverless API example stack
  *
  * Demonstrates a realistic serverless API pattern combining:
- * - API Gateway v2 HTTP API (L1 CfnApi with protocolType: 'HTTP')
+ * - API Gateway V2 HTTP API (CfnApi, CfnStage, CfnIntegration, CfnRoute L1 constructs)
  * - Lambda Function with inline Python handler returning JSON
  * - DynamoDB Table for data persistence
  * - SNS Topic for notifications
@@ -68,11 +68,25 @@ def handler(event, context):
     table.grantReadWriteData(fn);
     topic.grantPublish(fn);
 
-    // API Gateway v2 HTTP API (L1 constructs)
+    // Lambda permission for API Gateway V2 to invoke the function
+    new lambda.CfnPermission(this, 'ApiInvokePermission', {
+      action: 'lambda:InvokeFunction',
+      functionName: fn.functionName,
+      principal: 'apigateway.amazonaws.com',
+    });
+
+    // API Gateway V2 HTTP API (L1 constructs)
     const httpApi = new apigatewayv2.CfnApi(this, 'HttpApi', {
       name: 'cdkd-serverless-api',
       protocolType: 'HTTP',
       description: 'Serverless HTTP API for cdkd testing',
+    });
+
+    // Default stage with auto-deploy
+    new apigatewayv2.CfnStage(this, 'DefaultStage', {
+      apiId: httpApi.ref,
+      stageName: '$default',
+      autoDeploy: true,
     });
 
     // Lambda integration
@@ -90,35 +104,9 @@ def handler(event, context):
       target: cdk.Fn.join('/', ['integrations', integration.ref]),
     });
 
-    // Stage
-    new apigatewayv2.CfnStage(this, 'DefaultStage', {
-      apiId: httpApi.ref,
-      stageName: '$default',
-      autoDeploy: true,
-    });
-
-    // Grant API Gateway permission to invoke the Lambda
-    fn.addPermission('ApiGatewayInvoke', {
-      principal: new cdk.aws_iam.ServicePrincipal('apigateway.amazonaws.com'),
-      sourceArn: cdk.Arn.format(
-        {
-          service: 'execute-api',
-          resource: httpApi.ref,
-          resourceName: '*',
-        },
-        this,
-      ),
-    });
-
     // Outputs
     new cdk.CfnOutput(this, 'ApiUrl', {
-      value: cdk.Fn.join('', [
-        'https://',
-        httpApi.ref,
-        '.execute-api.',
-        this.region,
-        '.amazonaws.com',
-      ]),
+      value: httpApi.attrApiEndpoint,
       description: 'HTTP API URL',
     });
 

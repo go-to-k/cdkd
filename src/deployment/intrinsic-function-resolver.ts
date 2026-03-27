@@ -81,7 +81,7 @@ const cachedDynamicReferences: Record<string, string> = {};
 /**
  * Get AWS account information from STS
  */
-async function getAccountInfo(): Promise<AwsAccountInfo> {
+export async function getAccountInfo(): Promise<AwsAccountInfo> {
   if (cachedAccountInfo) {
     return cachedAccountInfo;
   }

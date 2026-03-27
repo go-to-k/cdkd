@@ -14,7 +14,7 @@ import * as iam from 'aws-cdk-lib/aws-iam';
  * - KMS Key with alias and key rotation enabled
  * - S3 Bucket encrypted with the KMS key
  * - SSM StringParameter storing config values
- * - IAM Role with inline policy + managed policy (AmazonS3ReadOnlyAccess)
+ * - IAM Role with inline S3 access policy + managed policy (AmazonS3ReadOnlyAccess)
  * - CfnOutputs for VPC ID, KMS key ARN, bucket name, parameter name, role ARN
  */
 export class InfraSecurityStack extends cdk.Stack {
@@ -77,11 +77,11 @@ export class InfraSecurityStack extends cdk.Stack {
         iam.ManagedPolicy.fromAwsManagedPolicyName('AmazonS3ReadOnlyAccess'),
       ],
       inlinePolicies: {
-        KmsDecryptPolicy: new iam.PolicyDocument({
+        S3AccessPolicy: new iam.PolicyDocument({
           statements: [
             new iam.PolicyStatement({
-              actions: ['kms:Decrypt', 'kms:DescribeKey'],
-              resources: [key.keyArn],
+              actions: ['s3:GetObject', 's3:ListBucket'],
+              resources: ['*'],
             }),
           ],
         }),

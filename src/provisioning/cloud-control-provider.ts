@@ -11,6 +11,7 @@ import { DescribeTableCommand } from '@aws-sdk/client-dynamodb';
 import { GetRestApiCommand } from '@aws-sdk/client-api-gateway';
 import { GetCloudFrontOriginAccessIdentityCommand } from '@aws-sdk/client-cloudfront';
 import { GetFunctionUrlConfigCommand } from '@aws-sdk/client-lambda';
+import { getAccountInfo } from '../deployment/intrinsic-function-resolver.js';
 import { getAwsClients } from '../utils/aws-clients.js';
 import { getLogger } from '../utils/logger.js';
 import { ProvisioningError } from '../utils/error-handler.js';
@@ -571,6 +572,39 @@ export class CloudControlProvider implements ResourceProvider {
               `Failed to get CloudFront OAI S3CanonicalUserId for ${physicalId}: ${error instanceof Error ? error.message : String(error)}`
             );
           }
+        }
+        break;
+
+      case 'AWS::KMS::Key':
+        // CC API may not return Arn in ResourceModel.
+        // Physical ID is the KeyId (UUID), so construct the ARN.
+        if (!enriched['Arn']) {
+          try {
+            const kmsAccountInfo = await getAccountInfo();
+            enriched['Arn'] =
+              `arn:${kmsAccountInfo.partition}:kms:${kmsAccountInfo.region}:${kmsAccountInfo.accountId}:key/${physicalId}`;
+            this.logger.debug(`Enriched KMS Key Arn for ${physicalId}: ${enriched['Arn']}`);
+          } catch (error) {
+            this.logger.debug(
+              `Failed to construct KMS Key Arn for ${physicalId}: ${error instanceof Error ? error.message : String(error)}`
+            );
+          }
+        }
+        if (!enriched['KeyId']) {
+          enriched['KeyId'] = physicalId;
+        }
+        break;
+
+      case 'AWS::EC2::EIP':
+        // CC API returns composite physicalId: "PublicIp|AllocationId"
+        // Extract individual attributes for Fn::GetAtt resolution
+        if (physicalId.includes('|')) {
+          const [publicIp, allocationId] = physicalId.split('|');
+          if (!enriched['AllocationId']) enriched['AllocationId'] = allocationId;
+          if (!enriched['PublicIp']) enriched['PublicIp'] = publicIp;
+          this.logger.debug(
+            `Enriched EIP attributes: AllocationId=${allocationId}, PublicIp=${publicIp}`
+          );
         }
         break;
 

@@ -21,6 +21,7 @@ import { EventBridgeRuleProvider } from './providers/eventbridge-rule-provider.j
 import { EventBridgeBusProvider } from './providers/eventbridge-bus-provider.js';
 import { EC2Provider } from './providers/ec2-provider.js';
 import { ApiGatewayProvider } from './providers/apigateway-provider.js';
+import { ApiGatewayV2Provider } from './providers/apigatewayv2-provider.js';
 import { CloudFrontOAIProvider } from './providers/cloudfront-oai-provider.js';
 import { CloudFrontDistributionProvider } from './providers/cloudfront-distribution-provider.js';
 import { AgentCoreRuntimeProvider } from './providers/agentcore-runtime-provider.js';
@@ -95,6 +96,13 @@ export function registerAllProviders(registry: ProviderRegistry): void {
   registry.register('AWS::ApiGateway::Deployment', apigwProvider);
   registry.register('AWS::ApiGateway::Stage', apigwProvider);
   registry.register('AWS::ApiGateway::Method', apigwProvider);
+
+  // API Gateway V2 (HTTP API)
+  const apigwV2Provider = new ApiGatewayV2Provider();
+  registry.register('AWS::ApiGatewayV2::Api', apigwV2Provider);
+  registry.register('AWS::ApiGatewayV2::Stage', apigwV2Provider);
+  registry.register('AWS::ApiGatewayV2::Integration', apigwV2Provider);
+  registry.register('AWS::ApiGatewayV2::Route', apigwV2Provider);
 
   // CloudFront
   registry.register('AWS::CloudFront::CloudFrontOriginAccessIdentity', new CloudFrontOAIProvider());
