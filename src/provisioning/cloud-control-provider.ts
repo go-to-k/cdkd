@@ -595,6 +595,11 @@ export class CloudControlProvider implements ResourceProvider {
         }
         break;
 
+      case 'AWS::CloudFront::OriginAccessControl':
+        // CC API physicalId is the OAC ID
+        if (!enriched['Id']) enriched['Id'] = physicalId;
+        break;
+
       case 'AWS::EC2::EIP':
         // CC API returns composite physicalId: "PublicIp|AllocationId"
         // Extract individual attributes for Fn::GetAtt resolution
