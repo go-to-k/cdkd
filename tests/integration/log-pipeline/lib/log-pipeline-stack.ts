@@ -5,6 +5,9 @@ import * as destinations from 'aws-cdk-lib/aws-logs-destinations';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
 import * as kinesis from 'aws-cdk-lib/aws-kinesis';
 import * as cloudwatch from 'aws-cdk-lib/aws-cloudwatch';
+import * as s3 from 'aws-cdk-lib/aws-s3';
+import * as iam from 'aws-cdk-lib/aws-iam';
+import * as firehose from 'aws-cdk-lib/aws-kinesisfirehose';
 
 /**
  * Log processing pipeline stack
@@ -16,9 +19,10 @@ import * as cloudwatch from 'aws-cdk-lib/aws-cloudwatch';
  * - Kinesis Data Stream as alternative destination
  * - MetricFilter on the LogGroup
  * - CloudWatch Alarm on the metric
- * - CfnOutputs for log group name, function name, stream name
+ * - Kinesis Firehose DeliveryStream (S3 destination)
+ * - CfnOutputs for log group name, function name, stream name, delivery stream name
  *
- * Tests AWS::Logs::SubscriptionFilter and AWS::Logs::MetricFilter
+ * Tests AWS::Logs::SubscriptionFilter, AWS::Logs::MetricFilter, AWS::KinesisFirehose::DeliveryStream
  */
 export class LogPipelineStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
@@ -88,6 +92,27 @@ def handler(event, context):
       treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
     });
 
+    // S3 Bucket for Firehose delivery
+    const deliveryBucket = new s3.Bucket(this, 'DeliveryBucket', {
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+    });
+
+    // IAM Role for Firehose to write to S3
+    const firehoseRole = new iam.Role(this, 'FirehoseDeliveryRole', {
+      assumedBy: new iam.ServicePrincipal('firehose.amazonaws.com'),
+    });
+
+    deliveryBucket.grantReadWrite(firehoseRole);
+
+    // Kinesis Firehose DeliveryStream -> S3
+    const deliveryStream = new firehose.CfnDeliveryStream(this, 'LogDeliveryStream', {
+      deliveryStreamName: `cdkd-log-delivery-${this.account}`,
+      s3DestinationConfiguration: {
+        bucketArn: deliveryBucket.bucketArn,
+        roleArn: firehoseRole.roleArn,
+      },
+    });
+
     // Outputs
     new cdk.CfnOutput(this, 'LogGroupName', {
       value: logGroup.logGroupName,
@@ -107,6 +132,11 @@ def handler(event, context):
     new cdk.CfnOutput(this, 'AlarmArn', {
       value: alarm.alarmArn,
       description: 'CloudWatch Alarm ARN',
+    });
+
+    new cdk.CfnOutput(this, 'DeliveryStreamName', {
+      value: deliveryStream.ref,
+      description: 'Kinesis Firehose Delivery Stream name',
     });
   }
 }
