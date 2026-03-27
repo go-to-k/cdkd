@@ -146,6 +146,9 @@ cdkd uses a hybrid provisioning strategy: hand-written **SDK Providers** call AW
 | **Networking** | AWS::EC2::SubnetRouteTableAssociation | SDK Provider | ✅ |
 | **Networking** | AWS::EC2::SecurityGroup | SDK Provider | ✅ |
 | **Networking** | AWS::EC2::SecurityGroupIngress | SDK Provider | ✅ |
+| **Networking** | AWS::EC2::NetworkAcl | SDK Provider | ✅ |
+| **Networking** | AWS::EC2::NetworkAclEntry | SDK Provider | ✅ |
+| **Networking** | AWS::EC2::SubnetNetworkAclAssociation | SDK Provider | ✅ |
 | **Compute** | AWS::EC2::Instance | SDK Provider | ✅ |
 | **API Gateway** | AWS::ApiGateway::Account | SDK Provider | ✅ |
 | **API Gateway** | AWS::ApiGateway::Resource | SDK Provider | ✅ |
@@ -178,6 +181,11 @@ cdkd uses a hybrid provisioning strategy: hand-written **SDK Providers** call AW
 | **Cache** | AWS::ElastiCache::SubnetGroup | SDK Provider | ✅ |
 | **Discovery** | AWS::ServiceDiscovery::PrivateDnsNamespace | SDK Provider | ✅ |
 | **Discovery** | AWS::ServiceDiscovery::Service | SDK Provider | ✅ |
+| **GraphQL** | AWS::AppSync::GraphQLApi | SDK Provider | ✅ |
+| **GraphQL** | AWS::AppSync::GraphQLSchema | SDK Provider | ✅ |
+| **GraphQL** | AWS::AppSync::DataSource | SDK Provider | ✅ |
+| **GraphQL** | AWS::AppSync::Resolver | SDK Provider | ✅ |
+| **GraphQL** | AWS::AppSync::ApiKey | SDK Provider | ✅ |
 | **AI/ML** | AWS::BedrockAgentCore::Runtime | SDK Provider | ✅ |
 | **Custom** | Custom::* (Lambda/SNS-backed) | SDK Provider | ✅ |
 | **Other** | All other resource types | Cloud Control | ✅ |

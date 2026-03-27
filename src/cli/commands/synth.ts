@@ -1,6 +1,7 @@
 import { Command } from 'commander';
 import { writeFileSync } from 'fs';
 import { join } from 'path';
+import * as yaml from 'yaml';
 import { appOptions, commonOptions, contextOptions, parseContextOptions } from '../options.js';
 import { getLogger } from '../../utils/logger.js';
 import { withErrorHandling } from '../../utils/error-handler.js';
@@ -80,6 +81,12 @@ async function synthCommand(options: {
     }
 
     logger.info(`\nOutput: ${assembly.directory}`);
+
+    // Print YAML template to stdout (like CDK CLI) for single stack
+    if (stacks.length === 1) {
+      const template = stacks[0]!.template;
+      process.stdout.write(yaml.stringify(template));
+    }
   } finally {
     await dispose();
   }

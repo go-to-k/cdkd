@@ -82,7 +82,8 @@
     "@aws-sdk/s3-request-presigner": "^3.1016.0",
     "commander": "^12.0.0",
     "graphlib": "^2.1.8",
-    "p-limit": "^5.0.0"
+    "p-limit": "^5.0.0",
+    "yaml": "^2.8.3"
   },
   "devDependencies": {
     "@semantic-release/changelog": "^6.0.3",
