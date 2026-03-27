@@ -42,13 +42,12 @@ export function generateResourceName(name: string, options: ResourceNameOptions)
   // Include stack name for uniqueness (like CloudFormation does)
   const fullName = currentStackName ? `${currentStackName}-${name}` : name;
 
-  let sanitized = fullName.replace(allowedPattern, '-');
-  if (lowercase) {
-    sanitized = sanitized.toLowerCase();
-  }
+  // Apply lowercase BEFORE pattern matching (so A-Z aren't removed by /[^a-z0-9.-]/)
+  let sanitized = lowercase ? fullName.toLowerCase() : fullName;
+  sanitized = sanitized.replace(allowedPattern, '-');
 
-  // Remove leading/trailing hyphens
-  sanitized = sanitized.replace(/^-+|-+$/g, '');
+  // Collapse consecutive hyphens and remove leading/trailing
+  sanitized = sanitized.replace(/-{2,}/g, '-').replace(/^-+|-+$/g, '');
 
   if (sanitized.length <= maxLength) {
     return sanitized;
