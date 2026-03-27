@@ -79,13 +79,13 @@ async function synthCommand(options: {
       }
     }
 
-    logger.info(`\nOutput: ${assembly.directory}`);
-
     // Print YAML template to stdout (like CDK CLI) for single stack
     if (stacks.length === 1) {
       const template = stacks[0]!.template;
       process.stdout.write(toYaml(template));
     }
+
+    logger.info(`\nOutput: ${assembly.directory}`);
   } finally {
     await dispose();
   }
