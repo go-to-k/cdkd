@@ -1205,6 +1205,8 @@ export class DeployEngine {
       // AWS eventual consistency (dependency just created but not yet visible)
       // e.g., RDS DBCluster referencing a just-created DBSubnetGroup
       'does not exist',
+      // AppSync schema is being created asynchronously
+      'Schema is currently being altered',
     ];
     return retryablePatterns.some((p) => message.includes(p));
   }
