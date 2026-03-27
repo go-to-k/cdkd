@@ -88,6 +88,11 @@ TESTS=(
   "event-driven|"
   "infra-security|"
   "monitoring|"
+  "data-pipeline|"
+  "scheduled-task|"
+  "microservices|"
+  "api-cognito|"
+  "vpc-lambda|"
 )
 
 # --------------------------------------------------------------------------

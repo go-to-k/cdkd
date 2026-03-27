@@ -12,10 +12,29 @@ export class BasicStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
     super(scope, id, props);
 
-    // Create a simple S3 bucket
+    // Create S3 bucket with lifecycle, versioning, and CORS
     const bucket = new s3.Bucket(this, 'ExampleBucket', {
       removalPolicy: cdk.RemovalPolicy.DESTROY,
       autoDeleteObjects: false,
+      versioned: true,
+      lifecycleRules: [
+        {
+          transitions: [
+            {
+              storageClass: s3.StorageClass.INFREQUENT_ACCESS,
+              transitionAfter: cdk.Duration.days(30),
+            },
+          ],
+          expiration: cdk.Duration.days(90),
+        },
+      ],
+      cors: [
+        {
+          allowedMethods: [s3.HttpMethods.GET],
+          allowedOrigins: ['*'],
+          allowedHeaders: ['*'],
+        },
+      ],
     });
 
     // Add tags to test JSON Patch updates
