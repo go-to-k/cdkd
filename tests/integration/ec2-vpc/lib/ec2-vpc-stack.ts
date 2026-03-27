@@ -9,10 +9,11 @@ import * as ec2 from 'aws-cdk-lib/aws-ec2';
  * - VPC creation with public subnet (1 AZ, no NAT gateways for cost saving)
  * - Security Group with ingress rule
  * - Resource dependencies (Security Group depends on VPC)
- * - Fn::GetAtt for outputs (VPC ID, Security Group ID, Subnet IDs)
+ * - Network ACL with custom ingress/egress rules
+ * - Fn::GetAtt for outputs (VPC ID, Security Group ID, Subnet IDs, NACL ID)
  *
  * Note: No EC2 instances are created to avoid costs.
- * This stack only provisions networking resources (VPC, Subnet, Security Group).
+ * This stack only provisions networking resources (VPC, Subnet, Security Group, NACL).
  */
 export class Ec2VpcStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
@@ -50,6 +51,26 @@ export class Ec2VpcStack extends cdk.Stack {
       destination: ec2.FlowLogDestination.toCloudWatchLogs(),
     });
 
+    // Custom Network ACL
+    const nacl = new ec2.NetworkAcl(this, 'CustomNacl', {
+      vpc,
+      subnetSelection: { subnetType: ec2.SubnetType.PUBLIC },
+    });
+
+    nacl.addEntry('AllowHTTPIn', {
+      cidr: ec2.AclCidr.anyIpv4(),
+      ruleNumber: 100,
+      traffic: ec2.AclTraffic.tcpPort(80),
+      direction: ec2.TrafficDirection.INGRESS,
+    });
+
+    nacl.addEntry('AllowAllOut', {
+      cidr: ec2.AclCidr.anyIpv4(),
+      ruleNumber: 100,
+      traffic: ec2.AclTraffic.allTraffic(),
+      direction: ec2.TrafficDirection.EGRESS,
+    });
+
     // Outputs
     new cdk.CfnOutput(this, 'VpcId', {
       value: vpc.vpcId,
@@ -69,6 +90,11 @@ export class Ec2VpcStack extends cdk.Stack {
     new cdk.CfnOutput(this, 'FlowLogId', {
       value: flowLog.flowLogId,
       description: 'VPC Flow Log ID',
+    });
+
+    new cdk.CfnOutput(this, 'NaclId', {
+      value: nacl.networkAclId,
+      description: 'Custom Network ACL ID',
     });
   }
 }

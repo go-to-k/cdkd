@@ -95,6 +95,8 @@ TESTS=(
   "vpc-lambda|"
   "cache-streaming|"
   "alb-advanced|"
+  "appsync|"
+  "batch|"
   "efs-lambda|"
   "log-pipeline|"
 )
