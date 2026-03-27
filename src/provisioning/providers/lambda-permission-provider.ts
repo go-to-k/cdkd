@@ -67,8 +67,16 @@ export class LambdaPermissionProvider implements ResourceProvider {
       );
     }
 
-    // Generate a unique StatementId from the logicalId
-    const statementId = logicalId.replace(/[^a-zA-Z0-9_-]/g, '');
+    // Generate a unique StatementId from the logicalId (max 100 chars)
+    let statementId = logicalId.replace(/[^a-zA-Z0-9_-]/g, '');
+    if (statementId.length > 100) {
+      const hash = require('node:crypto')
+        .createHash('sha256')
+        .update(logicalId)
+        .digest('hex')
+        .substring(0, 8);
+      statementId = `${statementId.substring(0, 91)}-${hash}`;
+    }
 
     try {
       const addParams: import('@aws-sdk/client-lambda').AddPermissionCommandInput = {

@@ -333,6 +333,14 @@ export class CloudFrontDistributionProvider implements ResourceProvider {
       result['Comment'] = '';
     }
 
+    // Ensure Logging has IncludeCookies and Enabled defaults
+    if (result['Logging'] && typeof result['Logging'] === 'object') {
+      const logging = result['Logging'] as Record<string, unknown>;
+      if (logging['IncludeCookies'] === undefined) logging['IncludeCookies'] = false;
+      if (logging['Enabled'] === undefined) logging['Enabled'] = true;
+      if (logging['Prefix'] === undefined) logging['Prefix'] = '';
+    }
+
     // Convert top-level Quantity + Items fields
     for (const field of QUANTITY_ITEM_FIELDS) {
       if (result[field] !== undefined) {
