@@ -186,6 +186,8 @@ cdkd uses a hybrid provisioning strategy: hand-written **SDK Providers** call AW
 | **GraphQL** | AWS::AppSync::DataSource | SDK Provider | ✅ |
 | **GraphQL** | AWS::AppSync::Resolver | SDK Provider | ✅ |
 | **GraphQL** | AWS::AppSync::ApiKey | SDK Provider | ✅ |
+| **Analytics** | AWS::Glue::Database | SDK Provider | ✅ |
+| **Analytics** | AWS::Glue::Table | SDK Provider | ✅ |
 | **AI/ML** | AWS::BedrockAgentCore::Runtime | SDK Provider | ✅ |
 | **Custom** | Custom::* (Lambda/SNS-backed) | SDK Provider | ✅ |
 | **Other** | All other resource types | Cloud Control | ✅ |

@@ -38,6 +38,7 @@ import { CognitoUserPoolProvider } from './providers/cognito-provider.js';
 import { ElastiCacheProvider } from './providers/elasticache-provider.js';
 import { ServiceDiscoveryProvider } from './providers/servicediscovery-provider.js';
 import { AppSyncProvider } from './providers/appsync-provider.js';
+import { GlueProvider } from './providers/glue-provider.js';
 
 /**
  * Register all SDK providers with the given registry.
@@ -177,4 +178,9 @@ export function registerAllProviders(registry: ProviderRegistry): void {
   registry.register('AWS::AppSync::DataSource', appSyncProvider);
   registry.register('AWS::AppSync::Resolver', appSyncProvider);
   registry.register('AWS::AppSync::ApiKey', appSyncProvider);
+
+  // Glue
+  const glueProvider = new GlueProvider();
+  registry.register('AWS::Glue::Database', glueProvider);
+  registry.register('AWS::Glue::Table', glueProvider);
 }
