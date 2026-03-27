@@ -185,27 +185,6 @@ export class GlueProvider implements ResourceProvider {
           ...(catalogId && { CatalogId: catalogId }),
         })
       );
-
-      // Verify deletion actually succeeded
-      try {
-        await this.getClient().send(
-          new GetDatabaseCommand({
-            Name: physicalId,
-            ...(catalogId && { CatalogId: catalogId }),
-          })
-        );
-        // If GetDatabase succeeds, the database still exists
-        this.logger.warn(`Glue Database ${physicalId} still exists after delete, retrying...`);
-        await this.getClient().send(
-          new DeleteDatabaseCommand({
-            Name: physicalId,
-            ...(catalogId && { CatalogId: catalogId }),
-          })
-        );
-      } catch {
-        // GetDatabase threw = database doesn't exist = delete succeeded
-      }
-
       this.logger.debug(`Successfully deleted Glue Database ${logicalId}`);
     } catch (error) {
       if (error instanceof EntityNotFoundException) {
