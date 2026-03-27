@@ -7,6 +7,34 @@ import { createDestroyCommand } from './commands/destroy.js';
 import { createPublishAssetsCommand } from './commands/publish-assets.js';
 import { createForceUnlockCommand } from './commands/force-unlock.js';
 
+const SUBCOMMANDS = new Set([
+  'bootstrap',
+  'synth',
+  'deploy',
+  'diff',
+  'destroy',
+  'publish-assets',
+  'force-unlock',
+]);
+
+/**
+ * Reorder args so options before the subcommand are moved after it.
+ * e.g., `cdkd -c ENV=dev deploy` → `cdkd deploy -c ENV=dev`
+ */
+function reorderArgs(argv: string[]): string[] {
+  // argv[0] = node, argv[1] = script, rest = user args
+  const prefix = argv.slice(0, 2);
+  const userArgs = argv.slice(2);
+
+  // Find the subcommand index
+  const cmdIndex = userArgs.findIndex((arg) => SUBCOMMANDS.has(arg));
+  if (cmdIndex <= 0) return argv; // No reordering needed
+
+  const beforeCmd = userArgs.slice(0, cmdIndex);
+  const cmdAndAfter = userArgs.slice(cmdIndex);
+  return [...prefix, ...cmdAndAfter, ...beforeCmd];
+}
+
 /**
  * Main CLI program
  */
@@ -16,7 +44,8 @@ async function main(): Promise<void> {
   program
     .name('cdkd')
     .description('CDK Direct - Deploy AWS CDK apps directly via SDK/Cloud Control API')
-    .version('0.1.0');
+    .version('0.1.0')
+;
 
   // Add commands
   program.addCommand(createBootstrapCommand());
@@ -27,7 +56,10 @@ async function main(): Promise<void> {
   program.addCommand(createPublishAssetsCommand());
   program.addCommand(createForceUnlockCommand());
 
-  await program.parseAsync(process.argv);
+  // Reorder args: move options before subcommand to after it
+  // This allows `cdkd -c key=value deploy` like CDK CLI
+  const args = reorderArgs(process.argv);
+  await program.parseAsync(args);
 }
 
 // Run the CLI
