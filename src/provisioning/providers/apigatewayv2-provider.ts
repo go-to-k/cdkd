@@ -554,7 +554,7 @@ export class ApiGatewayV2Provider implements ResourceProvider {
           Name: name,
           IdentitySource: (properties['IdentitySource'] as string | string[] | undefined)
             ? typeof properties['IdentitySource'] === 'string'
-              ? [properties['IdentitySource'] as string]
+              ? [properties['IdentitySource']]
               : (properties['IdentitySource'] as string[])
             : undefined,
           JwtConfiguration: properties['JwtConfiguration'] as

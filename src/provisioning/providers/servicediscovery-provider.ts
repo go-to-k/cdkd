@@ -163,9 +163,7 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
       // Build ARN
       const arn = await this.buildNamespaceArn(namespaceId);
 
-      this.logger.debug(
-        `Successfully created private DNS namespace ${logicalId}: ${namespaceId}`
-      );
+      this.logger.debug(`Successfully created private DNS namespace ${logicalId}: ${namespaceId}`);
 
       return {
         physicalId: namespaceId,
@@ -212,9 +210,7 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
     const client = this.getClient();
 
     try {
-      const response = await client.send(
-        new DeleteNamespaceCommand({ Id: physicalId })
-      );
+      const response = await client.send(new DeleteNamespaceCommand({ Id: physicalId }));
 
       const operationId = response.OperationId;
       if (operationId) {
@@ -224,9 +220,7 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
       this.logger.debug(`Successfully deleted private DNS namespace ${logicalId}`);
     } catch (error) {
       if (error instanceof NamespaceNotFound) {
-        this.logger.debug(
-          `Namespace ${physicalId} does not exist, skipping deletion`
-        );
+        this.logger.debug(`Namespace ${physicalId} does not exist, skipping deletion`);
         return;
       }
       const cause = error instanceof Error ? error : undefined;
@@ -336,9 +330,7 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
       this.logger.debug(`Successfully deleted service discovery service ${logicalId}`);
     } catch (error) {
       if (error instanceof ServiceNotFound) {
-        this.logger.debug(
-          `Service ${physicalId} does not exist, skipping deletion`
-        );
+        this.logger.debug(`Service ${physicalId} does not exist, skipping deletion`);
         return;
       }
       const cause = error instanceof Error ? error : undefined;
@@ -368,9 +360,7 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
     let delay = 1000; // start at 1s
 
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
-      const result = await client.send(
-        new GetOperationCommand({ OperationId: operationId })
-      );
+      const result = await client.send(new GetOperationCommand({ OperationId: operationId }));
 
       const status = result.Operation?.Status;
 

@@ -240,9 +240,8 @@ export class ElastiCacheProvider implements ResourceProvider {
           CacheClusterId: cacheClusterId,
           Engine: properties['Engine'] as string,
           CacheNodeType: properties['CacheNodeType'] as string,
-          NumCacheNodes: properties['NumCacheNodes'] != null
-            ? Number(properties['NumCacheNodes'])
-            : undefined,
+          NumCacheNodes:
+            properties['NumCacheNodes'] != null ? Number(properties['NumCacheNodes']) : undefined,
           CacheSubnetGroupName: properties['CacheSubnetGroupName'] as string | undefined,
           SecurityGroupIds: properties['VpcSecurityGroupIds'] as string[] | undefined,
           Port: properties['Port'] != null ? Number(properties['Port']) : undefined,
@@ -256,9 +255,10 @@ export class ElastiCacheProvider implements ResourceProvider {
           PreferredAvailabilityZones: properties['PreferredAvailabilityZones'] as
             | string[]
             | undefined,
-          SnapshotRetentionLimit: properties['SnapshotRetentionLimit'] != null
-            ? Number(properties['SnapshotRetentionLimit'])
-            : undefined,
+          SnapshotRetentionLimit:
+            properties['SnapshotRetentionLimit'] != null
+              ? Number(properties['SnapshotRetentionLimit'])
+              : undefined,
           SnapshotWindow: properties['SnapshotWindow'] as string | undefined,
           AutoMinorVersionUpgrade: properties['AutoMinorVersionUpgrade'] as boolean | undefined,
           ...(tags.length > 0 && { Tags: tags }),
@@ -319,18 +319,18 @@ export class ElastiCacheProvider implements ResourceProvider {
       await this.getClient().send(
         new ModifyCacheClusterCommand({
           CacheClusterId: physicalId,
-          NumCacheNodes: properties['NumCacheNodes'] != null
-            ? Number(properties['NumCacheNodes'])
-            : undefined,
+          NumCacheNodes:
+            properties['NumCacheNodes'] != null ? Number(properties['NumCacheNodes']) : undefined,
           SecurityGroupIds: properties['VpcSecurityGroupIds'] as string[] | undefined,
           CacheParameterGroupName: properties['CacheParameterGroupName'] as string | undefined,
           EngineVersion: properties['EngineVersion'] as string | undefined,
           PreferredMaintenanceWindow: properties['PreferredMaintenanceWindow'] as
             | string
             | undefined,
-          SnapshotRetentionLimit: properties['SnapshotRetentionLimit'] != null
-            ? Number(properties['SnapshotRetentionLimit'])
-            : undefined,
+          SnapshotRetentionLimit:
+            properties['SnapshotRetentionLimit'] != null
+              ? Number(properties['SnapshotRetentionLimit'])
+              : undefined,
           SnapshotWindow: properties['SnapshotWindow'] as string | undefined,
           AutoMinorVersionUpgrade: properties['AutoMinorVersionUpgrade'] as boolean | undefined,
           ApplyImmediately: true,
@@ -466,10 +466,7 @@ export class ElastiCacheProvider implements ResourceProvider {
   /**
    * Wait for a CacheCluster to be deleted
    */
-  private async waitForClusterDeleted(
-    cacheClusterId: string,
-    maxWaitMs = 600_000
-  ): Promise<void> {
+  private async waitForClusterDeleted(cacheClusterId: string, maxWaitMs = 600_000): Promise<void> {
     const startTime = Date.now();
     let delay = 10_000;
 
