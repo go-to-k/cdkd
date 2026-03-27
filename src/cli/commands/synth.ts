@@ -65,7 +65,7 @@ async function synthCommand(options: {
       process.stdout.write(toYaml(template));
     }
 
-    logger.info(`✅ Synthesis complete! Found ${stacks.length} stack(s):`);
+    logger.info(`\n✅ Synthesis complete! Found ${stacks.length} stack(s):`);
 
     for (const stack of stacks) {
       const resourceCount = Object.keys(stack.template.Resources ?? {}).length;
