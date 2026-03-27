@@ -44,9 +44,7 @@ export class Synthesizer {
               ? (msg as unknown as Record<string, unknown>)
               : {};
           const level = message['level'] as string | undefined;
-          const code = message['code'] as string | undefined;
-          // CDK_ASSEMBLY_E1002 is bundling progress (not actually an error)
-          if (level === 'error' && code !== 'CDK_ASSEMBLY_E1002' && message['message']) {
+          if (level === 'error' && message['message']) {
             this.logger.error(String(message['message']));
           } else {
             this.logger.debug('Toolkit message:', msg);
@@ -140,6 +138,7 @@ export class Synthesizer {
     } catch (error) {
       // Extract stderr/stdout from the subprocess error chain for diagnostics
       const details = this.extractErrorDetails(error);
+
       throw new SynthesisError(
         `Synthesis failed: ${error instanceof Error ? error.message : String(error)}${details}`,
         error instanceof Error ? error : undefined
