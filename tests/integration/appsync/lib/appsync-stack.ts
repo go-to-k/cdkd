@@ -50,7 +50,7 @@ schema {
     });
 
     // DynamoDB table for data source
-    const table = new dynamodb.Table(this, 'ItemsTable', {
+    const table = new dynamodb.Table(this, 'AppSyncDataTable', {
       partitionKey: {
         name: 'id',
         type: dynamodb.AttributeType.STRING,
