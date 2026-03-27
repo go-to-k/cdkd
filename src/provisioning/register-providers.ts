@@ -108,6 +108,7 @@ export function registerAllProviders(registry: ProviderRegistry): void {
   registry.register('AWS::ApiGatewayV2::Stage', apigwV2Provider);
   registry.register('AWS::ApiGatewayV2::Integration', apigwV2Provider);
   registry.register('AWS::ApiGatewayV2::Route', apigwV2Provider);
+  registry.register('AWS::ApiGatewayV2::Authorizer', apigwV2Provider);
 
   // CloudFront
   registry.register('AWS::CloudFront::CloudFrontOriginAccessIdentity', new CloudFrontOAIProvider());

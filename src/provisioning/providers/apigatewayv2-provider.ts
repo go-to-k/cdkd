@@ -8,10 +8,13 @@ import {
   DeleteIntegrationCommand,
   CreateRouteCommand,
   DeleteRouteCommand,
+  CreateAuthorizerCommand,
+  DeleteAuthorizerCommand,
   NotFoundException,
   type ProtocolType,
   type IntegrationType,
   type AuthorizationType,
+  type AuthorizerType,
 } from '@aws-sdk/client-apigatewayv2';
 import { getLogger } from '../../utils/logger.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
@@ -59,6 +62,8 @@ export class ApiGatewayV2Provider implements ResourceProvider {
         return this.createIntegration(logicalId, resourceType, properties);
       case 'AWS::ApiGatewayV2::Route':
         return this.createRoute(logicalId, resourceType, properties);
+      case 'AWS::ApiGatewayV2::Authorizer':
+        return this.createAuthorizer(logicalId, resourceType, properties);
       default:
         throw new ProvisioningError(
           `Unsupported resource type: ${resourceType}`,
@@ -103,6 +108,8 @@ export class ApiGatewayV2Provider implements ResourceProvider {
         return this.deleteIntegration(logicalId, physicalId, resourceType, properties);
       case 'AWS::ApiGatewayV2::Route':
         return this.deleteRoute(logicalId, physicalId, resourceType, properties);
+      case 'AWS::ApiGatewayV2::Authorizer':
+        return this.deleteAuthorizer(logicalId, physicalId, resourceType, properties);
       default:
         throw new ProvisioningError(
           `Unsupported resource type: ${resourceType}`,
@@ -128,6 +135,9 @@ export class ApiGatewayV2Provider implements ResourceProvider {
         return this.getIntegrationAttribute(physicalId, attributeName);
       case 'AWS::ApiGatewayV2::Route':
         return this.getRouteAttribute(physicalId, attributeName);
+      case 'AWS::ApiGatewayV2::Authorizer':
+        if (attributeName === 'AuthorizerId') return physicalId;
+        return undefined;
       default:
         return undefined;
     }
@@ -512,5 +522,111 @@ export class ApiGatewayV2Provider implements ResourceProvider {
   private getRouteAttribute(physicalId: string, attributeName: string): unknown {
     if (attributeName === 'RouteId') return physicalId;
     return undefined;
+  }
+
+  // ─── AWS::ApiGatewayV2::Authorizer ────────────────────────────────
+
+  private async createAuthorizer(
+    logicalId: string,
+    resourceType: string,
+    properties: Record<string, unknown>
+  ): Promise<ResourceCreateResult> {
+    this.logger.debug(`Creating API Gateway V2 Authorizer ${logicalId}`);
+
+    const apiId = properties['ApiId'] as string;
+    const authorizerType = properties['AuthorizerType'] as string;
+    const name = (properties['Name'] as string) || logicalId;
+
+    if (!apiId || !authorizerType) {
+      throw new ProvisioningError(
+        `ApiId and AuthorizerType are required for API Gateway V2 Authorizer ${logicalId}`,
+        resourceType,
+        logicalId
+      );
+    }
+
+    try {
+      const response = await this.getClient().send(
+        new CreateAuthorizerCommand({
+          ApiId: apiId,
+          AuthorizerType: authorizerType as AuthorizerType,
+          Name: name,
+          IdentitySource: (properties['IdentitySource'] as string | string[] | undefined)
+            ? typeof properties['IdentitySource'] === 'string'
+              ? [properties['IdentitySource'] as string]
+              : (properties['IdentitySource'] as string[])
+            : undefined,
+          JwtConfiguration: properties['JwtConfiguration'] as
+            | { Audience?: string[]; Issuer?: string }
+            | undefined,
+          AuthorizerUri: properties['AuthorizerUri'] as string | undefined,
+          AuthorizerPayloadFormatVersion: properties['AuthorizerPayloadFormatVersion'] as
+            | string
+            | undefined,
+        })
+      );
+
+      const authorizerId = response.AuthorizerId!;
+      this.logger.debug(
+        `Successfully created API Gateway V2 Authorizer ${logicalId}: ${authorizerId}`
+      );
+
+      return {
+        physicalId: authorizerId,
+        attributes: {
+          AuthorizerId: authorizerId,
+        },
+      };
+    } catch (error) {
+      const cause = error instanceof Error ? error : undefined;
+      throw new ProvisioningError(
+        `Failed to create API Gateway V2 Authorizer ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        resourceType,
+        logicalId,
+        undefined,
+        cause
+      );
+    }
+  }
+
+  private async deleteAuthorizer(
+    logicalId: string,
+    physicalId: string,
+    resourceType: string,
+    properties?: Record<string, unknown>
+  ): Promise<void> {
+    this.logger.debug(`Deleting API Gateway V2 Authorizer ${logicalId}: ${physicalId}`);
+
+    const apiId = properties?.['ApiId'] as string | undefined;
+    if (!apiId) {
+      throw new ProvisioningError(
+        `ApiId is required to delete Authorizer ${logicalId}`,
+        resourceType,
+        logicalId,
+        physicalId
+      );
+    }
+
+    try {
+      await this.getClient().send(
+        new DeleteAuthorizerCommand({ ApiId: apiId, AuthorizerId: physicalId })
+      );
+      this.logger.debug(`Successfully deleted API Gateway V2 Authorizer ${logicalId}`);
+    } catch (error) {
+      if (error instanceof NotFoundException) {
+        this.logger.debug(
+          `API Gateway V2 Authorizer ${physicalId} does not exist, skipping deletion`
+        );
+        return;
+      }
+      const cause = error instanceof Error ? error : undefined;
+      throw new ProvisioningError(
+        `Failed to delete API Gateway V2 Authorizer ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        resourceType,
+        logicalId,
+        physicalId,
+        cause
+      );
+    }
   }
 }
