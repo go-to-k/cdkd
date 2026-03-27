@@ -1155,6 +1155,14 @@ export class EC2Provider implements ResourceProvider {
         attributes: {},
       };
     } catch (error) {
+      // Treat "already exists" as success (idempotent, like CloudFormation)
+      if (error instanceof Error && error.message.includes('already exists')) {
+        const physicalId = `${groupId}|${ipProtocol}|${fromPort ?? '-1'}|${toPort ?? '-1'}`;
+        this.logger.debug(
+          `SecurityGroupIngress ${logicalId} already exists, treating as success`
+        );
+        return { physicalId, attributes: {} };
+      }
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
         `Failed to create SecurityGroupIngress ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
