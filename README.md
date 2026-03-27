@@ -300,12 +300,21 @@ npx cdkd deploy --no-rollback
 npx cdkd destroy MyStack
 npx cdkd destroy --all --force
 
-# Skip waiting for async resources like CloudFront, RDS, ElastiCache (faster deploy)
-npx cdkd deploy --no-wait
-
 # Force-unlock a stale lock from interrupted deploy
 npx cdkd force-unlock MyStack
 ```
+
+## `--no-wait`
+
+By default, cdkd waits for async resources (CloudFront Distribution, RDS Cluster/Instance, ElastiCache) to reach a ready state before completing — the same behavior as CloudFormation.
+
+Use `--no-wait` to skip this and return immediately after resource creation:
+
+```bash
+cdkd deploy --no-wait
+```
+
+This can significantly speed up deployments with CloudFront (which takes 3-15 minutes to deploy to edge locations). The resource is fully functional once AWS finishes the async deployment.
 
 ## Example
 
