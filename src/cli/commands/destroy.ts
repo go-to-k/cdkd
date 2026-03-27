@@ -140,12 +140,12 @@ async function destroyCommand(
     } else if (candidateStacks.length === 1) {
       // Single stack: auto-select (CDK CLI compatible)
       stackNames = candidateStacks;
-    } else if (allStateStacks.length === 0) {
+    } else if (candidateStacks.length === 0) {
       logger.info('No stacks found in state');
       return;
     } else {
       throw new Error(
-        `Multiple stacks found: ${allStateStacks.join(', ')}. ` +
+        `Multiple stacks found: ${candidateStacks.join(', ')}. ` +
           `Specify stack name(s) or use --all`
       );
     }
