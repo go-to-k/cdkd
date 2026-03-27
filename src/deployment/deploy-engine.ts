@@ -582,7 +582,7 @@ export class DeployEngine {
       }
     }
 
-    this.logger.info('Rollback completed (best-effort).');
+    this.logger.info('Rollback completed. Some resources may remain if deletion failed.');
   }
 
   /**
