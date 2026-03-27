@@ -11,6 +11,8 @@ import {
   PutMethodCommand,
   DeleteMethodCommand,
   PutIntegrationCommand,
+  CreateAuthorizerCommand,
+  DeleteAuthorizerCommand,
   NotFoundException,
 } from '@aws-sdk/client-api-gateway';
 import { getLogger } from '../../utils/logger.js';
@@ -27,6 +29,7 @@ import type {
  *
  * Implements resource provisioning for:
  * - AWS::ApiGateway::Account (API Gateway account settings)
+ * - AWS::ApiGateway::Authorizer (API Gateway authorizer - Cognito, Token, Request)
  * - AWS::ApiGateway::Resource (API Gateway resource / path)
  * - AWS::ApiGateway::Deployment (API Gateway deployment)
  * - AWS::ApiGateway::Stage (API Gateway stage)
@@ -63,6 +66,8 @@ export class ApiGatewayProvider implements ResourceProvider {
     switch (resourceType) {
       case 'AWS::ApiGateway::Account':
         return this.createAccount(logicalId, resourceType, properties);
+      case 'AWS::ApiGateway::Authorizer':
+        return this.createAuthorizer(logicalId, resourceType, properties);
       case 'AWS::ApiGateway::Resource':
         return this.createResource(logicalId, resourceType, properties);
       case 'AWS::ApiGateway::Deployment':
@@ -93,6 +98,8 @@ export class ApiGatewayProvider implements ResourceProvider {
     switch (resourceType) {
       case 'AWS::ApiGateway::Account':
         return this.updateAccount(logicalId, physicalId, resourceType, properties);
+      case 'AWS::ApiGateway::Authorizer':
+        return this.updateAuthorizer(logicalId, physicalId, resourceType);
       case 'AWS::ApiGateway::Resource':
         return this.updateResource(
           logicalId,
@@ -135,6 +142,8 @@ export class ApiGatewayProvider implements ResourceProvider {
     switch (resourceType) {
       case 'AWS::ApiGateway::Account':
         return this.deleteAccount(logicalId, physicalId, resourceType);
+      case 'AWS::ApiGateway::Authorizer':
+        return this.deleteAuthorizer(logicalId, physicalId, resourceType, properties);
       case 'AWS::ApiGateway::Resource':
         return this.deleteResource(logicalId, physicalId, resourceType, properties);
       case 'AWS::ApiGateway::Deployment':
@@ -165,6 +174,8 @@ export class ApiGatewayProvider implements ResourceProvider {
       case 'AWS::ApiGateway::Account':
         // Account has no useful GetAtt attributes
         return undefined;
+      case 'AWS::ApiGateway::Authorizer':
+        return this.getAuthorizerAttribute(physicalId, attributeName);
       case 'AWS::ApiGateway::Resource':
         return this.getResourceAttribute(physicalId, resourceType, attributeName);
       case 'AWS::ApiGateway::Deployment':
@@ -335,6 +346,163 @@ export class ApiGatewayProvider implements ResourceProvider {
         throw error;
       }
     }
+  }
+
+  // ─── AWS::ApiGateway::Authorizer ────────────────────────────────────
+
+  /**
+   * Create an API Gateway Authorizer
+   *
+   * Physical ID is the authorizer ID (not composite), so that Ref resolves
+   * to the authorizer ID that API Gateway Methods expect for AuthorizerId.
+   */
+  private async createAuthorizer(
+    logicalId: string,
+    resourceType: string,
+    properties: Record<string, unknown>
+  ): Promise<ResourceCreateResult> {
+    this.logger.debug(`Creating API Gateway Authorizer ${logicalId}`);
+
+    const restApiId = properties['RestApiId'] as string;
+    const name = properties['Name'] as string;
+    const type = properties['Type'] as string;
+
+    if (!restApiId || !name || !type) {
+      throw new ProvisioningError(
+        `RestApiId, Name, and Type are required for API Gateway Authorizer ${logicalId}`,
+        resourceType,
+        logicalId
+      );
+    }
+
+    try {
+      const providerArns = properties['ProviderARNs'] as string[] | undefined;
+
+      const response = await this.apiGatewayClient.send(
+        new CreateAuthorizerCommand({
+          restApiId,
+          name,
+          type: type as 'TOKEN' | 'REQUEST' | 'COGNITO_USER_POOLS',
+          providerARNs: providerArns,
+          authorizerUri: properties['AuthorizerUri'] as string | undefined,
+          authorizerCredentials: properties['AuthorizerCredentials'] as string | undefined,
+          identitySource: properties['IdentitySource'] as string | undefined,
+          identityValidationExpression: properties['IdentityValidationExpression'] as
+            | string
+            | undefined,
+          authorizerResultTtlInSeconds: properties['AuthorizerResultTtlInSeconds'] as
+            | number
+            | undefined,
+        })
+      );
+
+      const authorizerId = response.id!;
+      this.logger.debug(
+        `Successfully created API Gateway Authorizer ${logicalId}: ${authorizerId}`
+      );
+
+      return {
+        physicalId: authorizerId,
+        attributes: {
+          AuthorizerId: authorizerId,
+        },
+      };
+    } catch (error) {
+      const cause = error instanceof Error ? error : undefined;
+      throw new ProvisioningError(
+        `Failed to create API Gateway Authorizer ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        resourceType,
+        logicalId,
+        undefined,
+        cause
+      );
+    }
+  }
+
+  /**
+   * Update an API Gateway Authorizer
+   *
+   * Authorizer updates are not commonly needed. For now, this is a no-op.
+   * The deployment engine handles replacement for immutable property changes.
+   */
+  // eslint-disable-next-line @typescript-eslint/require-await
+  private async updateAuthorizer(
+    logicalId: string,
+    physicalId: string,
+    _resourceType: string
+  ): Promise<ResourceUpdateResult> {
+    this.logger.debug(`Updating API Gateway Authorizer ${logicalId}: ${physicalId} (no-op)`);
+
+    return {
+      physicalId,
+      wasReplaced: false,
+      attributes: {
+        AuthorizerId: physicalId,
+      },
+    };
+  }
+
+  /**
+   * Delete an API Gateway Authorizer
+   */
+  private async deleteAuthorizer(
+    logicalId: string,
+    physicalId: string,
+    resourceType: string,
+    properties?: Record<string, unknown>
+  ): Promise<void> {
+    this.logger.debug(`Deleting API Gateway Authorizer ${logicalId}: ${physicalId}`);
+
+    const restApiId = properties?.['RestApiId'] as string | undefined;
+
+    if (!restApiId) {
+      throw new ProvisioningError(
+        `RestApiId is required to delete API Gateway Authorizer ${logicalId}`,
+        resourceType,
+        logicalId,
+        physicalId
+      );
+    }
+
+    try {
+      await this.apiGatewayClient.send(
+        new DeleteAuthorizerCommand({
+          restApiId,
+          authorizerId: physicalId,
+        })
+      );
+
+      this.logger.debug(`Successfully deleted API Gateway Authorizer ${logicalId}`);
+    } catch (error) {
+      if (error instanceof NotFoundException) {
+        this.logger.debug(`API Gateway Authorizer ${physicalId} does not exist, skipping deletion`);
+        return;
+      }
+
+      const cause = error instanceof Error ? error : undefined;
+      throw new ProvisioningError(
+        `Failed to delete API Gateway Authorizer ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        resourceType,
+        logicalId,
+        physicalId,
+        cause
+      );
+    }
+  }
+
+  /**
+   * Get API Gateway Authorizer attribute
+   */
+  // eslint-disable-next-line @typescript-eslint/require-await
+  private async getAuthorizerAttribute(
+    physicalId: string,
+    attributeName: string
+  ): Promise<unknown> {
+    if (attributeName === 'AuthorizerId') {
+      return physicalId;
+    }
+
+    return undefined;
   }
 
   // ─── AWS::ApiGateway::Resource ──────────────────────────────────────
@@ -868,6 +1036,7 @@ export class ApiGatewayProvider implements ResourceProvider {
     const resourceId = properties['ResourceId'] as string;
     const httpMethod = properties['HttpMethod'] as string;
     const authorizationType = (properties['AuthorizationType'] as string) ?? 'NONE';
+    const authorizerId = properties['AuthorizerId'] as string | undefined;
 
     if (!restApiId || !resourceId || !httpMethod) {
       throw new ProvisioningError(
@@ -884,6 +1053,7 @@ export class ApiGatewayProvider implements ResourceProvider {
           resourceId,
           httpMethod,
           authorizationType,
+          authorizerId,
         })
       );
 

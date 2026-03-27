@@ -93,6 +93,10 @@ TESTS=(
   "microservices|"
   "api-cognito|"
   "vpc-lambda|"
+  "cache-streaming|"
+  "alb-advanced|"
+  "efs-lambda|"
+  "log-pipeline|"
 )
 
 # --------------------------------------------------------------------------

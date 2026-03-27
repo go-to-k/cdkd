@@ -12,6 +12,7 @@ import { LambdaFunctionProvider } from './providers/lambda-function-provider.js'
 import { LambdaPermissionProvider } from './providers/lambda-permission-provider.js';
 import { LambdaUrlProvider } from './providers/lambda-url-provider.js';
 import { LambdaEventSourceMappingProvider } from './providers/lambda-eventsource-provider.js';
+import { LambdaLayerVersionProvider } from './providers/lambda-layer-provider.js';
 import { DynamoDBTableProvider } from './providers/dynamodb-table-provider.js';
 import { LogsLogGroupProvider } from './providers/logs-loggroup-provider.js';
 import { CloudWatchAlarmProvider } from './providers/cloudwatch-alarm-provider.js';
@@ -60,6 +61,7 @@ export function registerAllProviders(registry: ProviderRegistry): void {
   registry.register('AWS::Lambda::Permission', new LambdaPermissionProvider());
   registry.register('AWS::Lambda::Url', new LambdaUrlProvider());
   registry.register('AWS::Lambda::EventSourceMapping', new LambdaEventSourceMappingProvider());
+  registry.register('AWS::Lambda::LayerVersion', new LambdaLayerVersionProvider());
 
   // DynamoDB
   registry.register('AWS::DynamoDB::Table', new DynamoDBTableProvider());
@@ -92,6 +94,7 @@ export function registerAllProviders(registry: ProviderRegistry): void {
   // API Gateway
   const apigwProvider = new ApiGatewayProvider();
   registry.register('AWS::ApiGateway::Account', apigwProvider);
+  registry.register('AWS::ApiGateway::Authorizer', apigwProvider);
   registry.register('AWS::ApiGateway::Resource', apigwProvider);
   registry.register('AWS::ApiGateway::Deployment', apigwProvider);
   registry.register('AWS::ApiGateway::Stage', apigwProvider);
