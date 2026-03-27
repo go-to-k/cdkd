@@ -75,6 +75,7 @@ export class AppSyncProvider implements ResourceProvider {
     }
   }
 
+  // eslint-disable-next-line @typescript-eslint/require-await
   async update(
     logicalId: string,
     physicalId: string,
@@ -115,6 +116,7 @@ export class AppSyncProvider implements ResourceProvider {
     }
   }
 
+  // eslint-disable-next-line @typescript-eslint/require-await
   async getAttribute(
     physicalId: string,
     resourceType: string,
