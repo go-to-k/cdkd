@@ -54,6 +54,11 @@ async function destroyCommand(
   logger.debug('Options:', options);
 
   // Initialize AWS clients with region/profile
+  // Also set AWS_REGION env for providers using local SDK clients
+  if (options.region) {
+    process.env['AWS_REGION'] = options.region;
+    process.env['AWS_DEFAULT_REGION'] = options.region;
+  }
   const awsClients = new AwsClients({
     ...(options.region && { region: options.region }),
     ...(options.profile && { profile: options.profile }),
