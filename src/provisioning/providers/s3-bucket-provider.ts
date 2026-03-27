@@ -4,8 +4,11 @@ import {
   DeleteBucketCommand,
   PutBucketVersioningCommand,
   PutBucketTaggingCommand,
+  PutBucketOwnershipControlsCommand,
+  PutBucketNotificationConfigurationCommand,
   NoSuchBucket,
   type BucketLocationConstraint,
+  type ObjectOwnership,
 } from '@aws-sdk/client-s3';
 import { getLogger } from '../../utils/logger.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
@@ -110,6 +113,43 @@ export class S3BucketProvider implements ResourceProvider {
     const tags = properties['Tags'] as Array<{ Key: string; Value: string }> | undefined;
     if (tags && Array.isArray(tags) && tags.length > 0) {
       await this.applyTags(bucketName, tags);
+    }
+
+    // Ownership Controls (e.g., BucketOwnerPreferred for CloudFront logs)
+    const ownershipControls = properties['OwnershipControls'] as
+      | { Rules: Array<{ ObjectOwnership: string }> }
+      | undefined;
+    if (ownershipControls?.Rules) {
+      await this.s3Client.send(
+        new PutBucketOwnershipControlsCommand({
+          Bucket: bucketName,
+          OwnershipControls: {
+            Rules: ownershipControls.Rules.map((r) => ({
+              ObjectOwnership: r.ObjectOwnership as ObjectOwnership,
+            })),
+          },
+        })
+      );
+      this.logger.debug(`Applied ownership controls to bucket ${bucketName}`);
+    }
+
+    // Notification Configuration (EventBridge)
+    const notifConfig = properties['NotificationConfiguration'] as
+      | Record<string, unknown>
+      | undefined;
+    if (notifConfig?.['EventBridgeConfiguration']) {
+      const ebConfig = notifConfig['EventBridgeConfiguration'] as { EventBridgeEnabled?: boolean };
+      await this.s3Client.send(
+        new PutBucketNotificationConfigurationCommand({
+          Bucket: bucketName,
+          NotificationConfiguration: {
+            EventBridgeConfiguration: {
+              EventBridgeEnabled: ebConfig.EventBridgeEnabled ?? true,
+            },
+          },
+        })
+      );
+      this.logger.debug(`Applied EventBridge notification to bucket ${bucketName}`);
     }
   }
 
