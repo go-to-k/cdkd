@@ -398,9 +398,7 @@ export class DeployEngine {
         await saveChain;
 
         // Check for failures after ALL tasks in the level have completed
-        const failures = results.filter(
-          (r): r is PromiseRejectedResult => r.status === 'rejected'
-        );
+        const failures = results.filter((r): r is PromiseRejectedResult => r.status === 'rejected');
         if (failures.length > 0) {
           // Throw the first failure to trigger rollback (all completed ops are tracked)
           throw failures[0]!.reason;
