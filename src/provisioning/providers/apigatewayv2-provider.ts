@@ -457,6 +457,7 @@ export class ApiGatewayV2Provider implements ResourceProvider {
           RouteKey: routeKey,
           Target: properties['Target'] as string | undefined,
           AuthorizationType: properties['AuthorizationType'] as AuthorizationType | undefined,
+          AuthorizerId: properties['AuthorizerId'] as string | undefined,
         })
       );
 
