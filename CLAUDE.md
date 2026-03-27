@@ -126,6 +126,7 @@ Currently implemented SDK Providers (`src/provisioning/providers/`):
 - `sqs-queue-policy-provider.ts` - AWS::SQS::QueuePolicy
 - `sns-topic-provider.ts` - AWS::SNS::Topic
 - `sns-subscription-provider.ts` - AWS::SNS::Subscription
+- `sns-topic-policy-provider.ts` - AWS::SNS::TopicPolicy
 - `lambda-function-provider.ts` - AWS::Lambda::Function
 - `lambda-permission-provider.ts` - AWS::Lambda::Permission
 - `lambda-url-provider.ts` - AWS::Lambda::Url

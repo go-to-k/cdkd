@@ -121,6 +121,7 @@ cdkd uses a hybrid provisioning strategy: hand-written **SDK Providers** call AW
 | **Messaging** | AWS::SQS::QueuePolicy | SDK Provider | ✅ |
 | **Messaging** | AWS::SNS::Topic | SDK Provider | ✅ |
 | **Messaging** | AWS::SNS::Subscription | SDK Provider | ✅ |
+| **Messaging** | AWS::SNS::TopicPolicy | SDK Provider | ✅ |
 | **Compute** | AWS::Lambda::Function | SDK Provider | ✅ |
 | **Compute** | AWS::Lambda::Permission | SDK Provider | ✅ |
 | **Compute** | AWS::Lambda::Url | SDK Provider | ✅ |
