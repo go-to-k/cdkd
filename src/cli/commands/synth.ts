@@ -1,7 +1,6 @@
 import { Command } from 'commander';
 import { writeFileSync } from 'fs';
 import { join } from 'path';
-import * as yaml from 'yaml';
 import { appOptions, commonOptions, contextOptions, parseContextOptions } from '../options.js';
 import { getLogger } from '../../utils/logger.js';
 import { withErrorHandling } from '../../utils/error-handler.js';
@@ -85,11 +84,55 @@ async function synthCommand(options: {
     // Print YAML template to stdout (like CDK CLI) for single stack
     if (stacks.length === 1) {
       const template = stacks[0]!.template;
-      process.stdout.write(yaml.stringify(template));
+      process.stdout.write(toYaml(template));
     }
   } finally {
     await dispose();
   }
+}
+
+/**
+ * Simple JSON to YAML converter (no external dependency)
+ */
+function toYaml(obj: unknown, indent = 0): string {
+  const prefix = '  '.repeat(indent);
+
+  if (obj === null || obj === undefined) return 'null\n';
+  if (typeof obj === 'boolean') return `${obj}\n`;
+  if (typeof obj === 'number') return `${obj}\n`;
+  if (typeof obj === 'string') {
+    if (obj.includes('\n') || obj.includes(':') || obj.includes('#') || obj.startsWith('{')) {
+      return `"${obj.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n')}"\n`;
+    }
+    return `${obj}\n`;
+  }
+
+  if (Array.isArray(obj)) {
+    if (obj.length === 0) return '[]\n';
+    let result = '\n';
+    for (const item of obj) {
+      const value = toYaml(item, indent + 1).trimStart();
+      result += `${prefix}- ${value}`;
+    }
+    return result;
+  }
+
+  if (typeof obj === 'object') {
+    const entries = Object.entries(obj as Record<string, unknown>);
+    if (entries.length === 0) return '{}\n';
+    let result = '\n';
+    for (const [key, value] of entries) {
+      const safeKey = key.includes(':') || key.includes(' ') ? `"${key}"` : key;
+      if (typeof value === 'object' && value !== null) {
+        result += `${prefix}${safeKey}:${toYaml(value, indent + 1)}`;
+      } else {
+        result += `${prefix}${safeKey}: ${toYaml(value, indent + 1).trimStart()}`;
+      }
+    }
+    return result;
+  }
+
+  return `${String(obj)}\n`;
 }
 
 /**
