@@ -115,11 +115,7 @@ export class AppSyncProvider implements ResourceProvider {
     }
   }
 
-  getAttribute(
-    physicalId: string,
-    resourceType: string,
-    attributeName: string
-  ): Promise<unknown> {
+  getAttribute(physicalId: string, resourceType: string, attributeName: string): Promise<unknown> {
     this.logger.debug(`getAttribute for ${resourceType} ${physicalId}: ${attributeName}`);
     return Promise.resolve(undefined);
   }

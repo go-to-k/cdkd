@@ -44,8 +44,7 @@ async function main(): Promise<void> {
   program
     .name('cdkd')
     .description('CDK Direct - Deploy AWS CDK apps directly via SDK/Cloud Control API')
-    .version('0.1.0')
-;
+    .version('0.1.0');
 
   // Add commands
   program.addCommand(createBootstrapCommand());
