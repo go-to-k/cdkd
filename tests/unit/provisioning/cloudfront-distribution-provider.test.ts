@@ -41,11 +41,16 @@ describe('CloudFrontDistributionProvider', () => {
 
   describe('create', () => {
     it('should create distribution and return Id as physicalId with DomainName attribute', async () => {
+      // CreateDistributionCommand
       mockSend.mockResolvedValueOnce({
         Distribution: {
           Id: 'EDFDVBD6EXAMPLE',
           DomainName: 'd111111abcdef8.cloudfront.net',
         },
+      });
+      // GetDistributionCommand (waitForDistributionDeployed)
+      mockSend.mockResolvedValueOnce({
+        Distribution: { Id: 'EDFDVBD6EXAMPLE', Status: 'Deployed' },
       });
 
       const result = await provider.create(
@@ -68,7 +73,7 @@ describe('CloudFrontDistributionProvider', () => {
         DistributionId: 'EDFDVBD6EXAMPLE',
         DomainName: 'd111111abcdef8.cloudfront.net',
       });
-      expect(mockSend).toHaveBeenCalledTimes(1);
+      expect(mockSend).toHaveBeenCalledTimes(2);
 
       const createCall = mockSend.mock.calls[0][0];
       expect(createCall.constructor.name).toBe('CreateDistributionCommand');
@@ -77,11 +82,16 @@ describe('CloudFrontDistributionProvider', () => {
     });
 
     it('should convert DistributionConfig with Origins Items to SDK Quantity format', async () => {
+      // CreateDistributionCommand
       mockSend.mockResolvedValueOnce({
         Distribution: {
           Id: 'EDFDVBD6EXAMPLE',
           DomainName: 'd111111abcdef8.cloudfront.net',
         },
+      });
+      // GetDistributionCommand (waitForDistributionDeployed)
+      mockSend.mockResolvedValueOnce({
+        Distribution: { Id: 'EDFDVBD6EXAMPLE', Status: 'Deployed' },
       });
 
       await provider.create('MyDistribution', 'AWS::CloudFront::Distribution', {

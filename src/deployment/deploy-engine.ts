@@ -1275,6 +1275,8 @@ export class DeployEngine {
       'Invalid principal in policy',
       // S3 bucket creation/deletion still in progress
       'conflicting conditional operation',
+      // Secrets Manager: ForceDeleteWithoutRecovery may take a moment to propagate
+      'scheduled for deletion',
     ];
     return retryablePatterns.some((p) => message.includes(p));
   }
