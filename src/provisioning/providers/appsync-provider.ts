@@ -75,8 +75,7 @@ export class AppSyncProvider implements ResourceProvider {
     }
   }
 
-  // eslint-disable-next-line @typescript-eslint/require-await
-  async update(
+  update(
     logicalId: string,
     physicalId: string,
     resourceType: string,
@@ -84,7 +83,7 @@ export class AppSyncProvider implements ResourceProvider {
     _previousProperties: Record<string, unknown>
   ): Promise<ResourceUpdateResult> {
     this.logger.debug(`Update for ${resourceType} ${logicalId} (${physicalId}) - no-op, immutable`);
-    return { physicalId, wasReplaced: false };
+    return Promise.resolve({ physicalId, wasReplaced: false });
   }
 
   async delete(
@@ -116,14 +115,13 @@ export class AppSyncProvider implements ResourceProvider {
     }
   }
 
-  // eslint-disable-next-line @typescript-eslint/require-await
-  async getAttribute(
+  getAttribute(
     physicalId: string,
     resourceType: string,
     attributeName: string
   ): Promise<unknown> {
     this.logger.debug(`getAttribute for ${resourceType} ${physicalId}: ${attributeName}`);
-    return undefined;
+    return Promise.resolve(undefined);
   }
 
   // ─── AWS::AppSync::GraphQLApi ──────────────────────────────────────
