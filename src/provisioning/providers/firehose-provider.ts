@@ -344,6 +344,10 @@ export class FirehoseProvider implements ResourceProvider {
         `Successfully created Firehose delivery stream ${logicalId}: ${physicalId}`
       );
 
+      // Wait for delivery stream to become ACTIVE before returning.
+      // SubscriptionFilter and other dependents fail if the stream is still CREATING.
+      await this.waitForActive(physicalId, logicalId);
+
       return {
         physicalId,
         attributes: {
@@ -545,5 +549,29 @@ export class FirehoseProvider implements ResourceProvider {
     }
 
     return result;
+  }
+
+  /**
+   * Wait for a delivery stream to become ACTIVE.
+   * Firehose CreateDeliveryStream returns immediately while the stream is still CREATING.
+   */
+  private async waitForActive(streamName: string, logicalId: string): Promise<void> {
+    const { DescribeDeliveryStreamCommand } = await import('@aws-sdk/client-firehose');
+    const maxAttempts = 30;
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      const resp = await this.getClient().send(
+        new DescribeDeliveryStreamCommand({ DeliveryStreamName: streamName })
+      );
+      const status = resp.DeliveryStreamDescription?.DeliveryStreamStatus;
+      if (status === 'ACTIVE') {
+        this.logger.debug(`Firehose ${logicalId} is ACTIVE`);
+        return;
+      }
+      this.logger.debug(
+        `Firehose ${logicalId} status: ${status} (attempt ${attempt}/${maxAttempts})`
+      );
+      await new Promise((resolve) => setTimeout(resolve, 2000));
+    }
+    this.logger.warn(`Firehose ${logicalId} did not reach ACTIVE after ${maxAttempts} attempts`);
   }
 }
