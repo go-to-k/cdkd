@@ -294,40 +294,85 @@ async function deployCommand(
       // Single stack: deploy directly
       await deployStack(targetStacks[0]!);
     } else {
-      // Multiple stacks: deploy in dependency order, parallelizing independent stacks
-      // Cross-region stacks get their own clients per deploy, so parallel is safe.
+      // Multiple stacks: deploy in dependency order, parallelizing independent stacks.
+      // Failure handling:
+      //   - Failed stack is logged and marked as failed
+      //   - Stacks that depend on failed stacks are skipped
+      //   - Independent stacks continue deploying
+      //   - Final error summary is reported at the end
       const deployed = new Set<string>();
+      const failed = new Set<string>();
+      const skipped = new Set<string>();
       const deploying = new Map<string, Promise<void>>();
       const remaining = new Set(targetStacks.map((s) => s.stackName));
       const stackMap = new Map(targetStacks.map((s) => [s.stackName, s]));
+      const errors: Array<{ stackName: string; error: unknown }> = [];
+
+      // Check if a stack has a failed dependency (direct or transitive)
+      const hasFailedDependency = (stackName: string): boolean => {
+        const stack = stackMap.get(stackName);
+        if (!stack) return false;
+        return stack.dependencyNames.some(
+          (dep) => failed.has(dep) || skipped.has(dep)
+        );
+      };
 
       while (remaining.size > 0) {
-        // Find stacks whose dependencies are all deployed
+        // Find stacks whose dependencies are all deployed (skip if dep failed)
         const ready: string[] = [];
+        const toSkip: string[] = [];
+
         for (const name of remaining) {
+          if (deploying.has(name)) continue;
+
+          if (hasFailedDependency(name)) {
+            toSkip.push(name);
+            continue;
+          }
+
           const stack = stackMap.get(name)!;
           const depsReady = stack.dependencyNames.every(
             (dep) => deployed.has(dep) || !remaining.has(dep)
           );
-          if (depsReady && !deploying.has(name)) {
+          if (depsReady) {
             ready.push(name);
           }
         }
 
+        // Skip stacks with failed dependencies
+        for (const name of toSkip) {
+          logger.warn(`Skipping stack ${name}: dependency failed`);
+          skipped.add(name);
+          remaining.delete(name);
+        }
+
         if (ready.length === 0 && deploying.size === 0) {
-          throw new Error(
-            `Circular dependency detected among stacks: ${[...remaining].join(', ')}`
-          );
+          if (remaining.size > 0) {
+            // Remaining stacks can't proceed (circular dep or all deps failed)
+            for (const name of remaining) {
+              skipped.add(name);
+            }
+            remaining.clear();
+          }
+          break;
         }
 
         // Start deploying ready stacks in parallel
         for (const name of ready) {
           const stack = stackMap.get(name)!;
-          const promise = deployStack(stack).then(() => {
-            deployed.add(name);
-            remaining.delete(name);
-            deploying.delete(name);
-          });
+          const promise = deployStack(stack)
+            .then(() => {
+              deployed.add(name);
+            })
+            .catch((error) => {
+              logger.error(`Stack ${name} failed: ${error instanceof Error ? error.message : String(error)}`);
+              failed.add(name);
+              errors.push({ stackName: name, error });
+            })
+            .finally(() => {
+              remaining.delete(name);
+              deploying.delete(name);
+            });
           deploying.set(name, promise);
         }
 
@@ -335,6 +380,21 @@ async function deployCommand(
         if (deploying.size > 0) {
           await Promise.race(deploying.values());
         }
+      }
+
+      // Wait for any remaining in-flight deployments
+      if (deploying.size > 0) {
+        await Promise.allSettled(deploying.values());
+      }
+
+      // Report summary
+      if (failed.size > 0 || skipped.size > 0) {
+        if (skipped.size > 0) {
+          logger.warn(`\nSkipped stacks (dependency failed): ${[...skipped].join(', ')}`);
+        }
+        throw new Error(
+          `${failed.size} stack(s) failed: ${errors.map((e) => e.stackName).join(', ')}`
+        );
       }
     }
   } finally {
