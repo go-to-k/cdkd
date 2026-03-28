@@ -168,8 +168,15 @@ export class CustomResourceProvider implements ResourceProvider {
    * Set the S3 bucket for custom resource responses
    * Called by ProviderRegistry when state bucket is configured
    */
-  setResponseBucket(bucket: string): void {
+  setResponseBucket(bucket: string, bucketRegion?: string): void {
     this.responseBucket = bucket;
+    // For cross-region deploy: S3 client for response bucket must use the bucket's region,
+    // not the stack's region. The state bucket is always in the base region.
+    if (bucketRegion) {
+      this.s3Client = new S3Client(
+        bucketRegion ? { region: bucketRegion } : {}
+      );
+    }
   }
 
   /**

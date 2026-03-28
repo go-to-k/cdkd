@@ -27,8 +27,8 @@ export class ProviderRegistry {
    * Configure the response bucket for custom resources
    * This allows Lambda handlers using cfn-response to send responses via S3
    */
-  setCustomResourceResponseBucket(bucket: string): void {
-    this.customResourceProvider.setResponseBucket(bucket);
+  setCustomResourceResponseBucket(bucket: string, bucketRegion?: string): void {
+    this.customResourceProvider.setResponseBucket(bucket, bucketRegion);
     this.logger.debug(`Custom resource response bucket set to: ${bucket}`);
   }
 

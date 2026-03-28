@@ -260,7 +260,7 @@ async function deployCommand(
       const stackLockManager = new LockManager(stateS3Client.s3, stateConfig);
       const stackProviderRegistry = new ProviderRegistry();
       registerAllProviders(stackProviderRegistry);
-      stackProviderRegistry.setCustomResourceResponseBucket(stateBucket);
+      stackProviderRegistry.setCustomResourceResponseBucket(stateBucket, baseRegion);
 
       const stackDeployEngine = new DeployEngine(
         stackStateBackend,
