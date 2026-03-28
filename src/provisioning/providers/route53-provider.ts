@@ -29,11 +29,14 @@ import type {
  */
 export class Route53Provider implements ResourceProvider {
   private route53Client?: Route53Client;
+  private readonly providerRegion = process.env['AWS_REGION'];
   private logger = getLogger().child('Route53Provider');
 
   private getClient(): Route53Client {
     if (!this.route53Client) {
-      this.route53Client = new Route53Client({});
+      this.route53Client = new Route53Client(
+        this.providerRegion ? { region: this.providerRegion } : {}
+      );
     }
     return this.route53Client;
   }

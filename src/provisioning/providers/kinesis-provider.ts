@@ -26,11 +26,12 @@ import type {
  */
 export class KinesisStreamProvider implements ResourceProvider {
   private client: KinesisClient | undefined;
+  private readonly providerRegion = process.env['AWS_REGION'];
   private logger = getLogger().child('KinesisProvider');
 
   private getClient(): KinesisClient {
     if (!this.client) {
-      this.client = new KinesisClient({});
+      this.client = new KinesisClient(this.providerRegion ? { region: this.providerRegion } : {});
     }
     return this.client;
   }

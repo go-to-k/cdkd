@@ -37,11 +37,14 @@ import type {
  */
 export class CognitoUserPoolProvider implements ResourceProvider {
   private cognitoClient?: CognitoIdentityProviderClient;
+  private readonly providerRegion = process.env['AWS_REGION'];
   private logger = getLogger().child('CognitoUserPoolProvider');
 
   private getClient(): CognitoIdentityProviderClient {
     if (!this.cognitoClient) {
-      this.cognitoClient = new CognitoIdentityProviderClient({});
+      this.cognitoClient = new CognitoIdentityProviderClient(
+        this.providerRegion ? { region: this.providerRegion } : {}
+      );
     }
     return this.cognitoClient;
   }

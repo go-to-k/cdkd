@@ -33,11 +33,12 @@ import type {
  */
 export class KMSProvider implements ResourceProvider {
   private client: KMSClient | undefined;
+  private readonly providerRegion = process.env['AWS_REGION'];
   private logger = getLogger().child('KMSProvider');
 
   private getClient(): KMSClient {
     if (!this.client) {
-      this.client = new KMSClient({});
+      this.client = new KMSClient(this.providerRegion ? { region: this.providerRegion } : {});
     }
     return this.client;
   }

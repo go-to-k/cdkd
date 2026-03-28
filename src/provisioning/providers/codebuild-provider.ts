@@ -29,11 +29,12 @@ import type {
  */
 export class CodeBuildProvider implements ResourceProvider {
   private client: CodeBuildClient | undefined;
+  private readonly providerRegion = process.env['AWS_REGION'];
   private logger = getLogger().child('CodeBuildProvider');
 
   private getClient(): CodeBuildClient {
     if (!this.client) {
-      this.client = new CodeBuildClient({});
+      this.client = new CodeBuildClient(this.providerRegion ? { region: this.providerRegion } : {});
     }
     return this.client;
   }

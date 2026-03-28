@@ -42,11 +42,14 @@ import type {
  */
 export class ELBv2Provider implements ResourceProvider {
   private elbv2Client?: ElasticLoadBalancingV2Client;
+  private readonly providerRegion = process.env['AWS_REGION'];
   private logger = getLogger().child('ELBv2Provider');
 
   private getClient(): ElasticLoadBalancingV2Client {
     if (!this.elbv2Client) {
-      this.elbv2Client = new ElasticLoadBalancingV2Client({});
+      this.elbv2Client = new ElasticLoadBalancingV2Client(
+        this.providerRegion ? { region: this.providerRegion } : {}
+      );
     }
     return this.elbv2Client;
   }

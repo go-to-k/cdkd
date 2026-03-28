@@ -53,11 +53,14 @@ function parseWebACLArn(arn: string): { id: string; name: string; scope: Scope }
  */
 export class WAFv2WebACLProvider implements ResourceProvider {
   private wafv2Client?: WAFV2Client;
+  private readonly providerRegion = process.env['AWS_REGION'];
   private logger = getLogger().child('WAFv2WebACLProvider');
 
   private getClient(): WAFV2Client {
     if (!this.wafv2Client) {
-      this.wafv2Client = new WAFV2Client({});
+      this.wafv2Client = new WAFV2Client(
+        this.providerRegion ? { region: this.providerRegion } : {}
+      );
     }
     return this.wafv2Client;
   }

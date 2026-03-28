@@ -25,11 +25,12 @@ import type {
  */
 export class S3VectorsProvider implements ResourceProvider {
   private client: S3VectorsClient | undefined;
+  private readonly providerRegion = process.env['AWS_REGION'];
   private logger = getLogger().child('S3VectorsProvider');
 
   private getClient(): S3VectorsClient {
     if (!this.client) {
-      this.client = new S3VectorsClient({});
+      this.client = new S3VectorsClient(this.providerRegion ? { region: this.providerRegion } : {});
     }
     return this.client;
   }

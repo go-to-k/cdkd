@@ -31,11 +31,12 @@ import type {
  */
 export class S3TablesProvider implements ResourceProvider {
   private client: S3TablesClient | undefined;
+  private readonly providerRegion = process.env['AWS_REGION'];
   private logger = getLogger().child('S3TablesProvider');
 
   private getClient(): S3TablesClient {
     if (!this.client) {
-      this.client = new S3TablesClient({});
+      this.client = new S3TablesClient(this.providerRegion ? { region: this.providerRegion } : {});
     }
     return this.client;
   }

@@ -39,11 +39,12 @@ import type {
  */
 export class AppSyncProvider implements ResourceProvider {
   private client: AppSyncClient | undefined;
+  private readonly providerRegion = process.env['AWS_REGION'];
   private logger = getLogger().child('AppSyncProvider');
 
   private getClient(): AppSyncClient {
     if (!this.client) {
-      this.client = new AppSyncClient({});
+      this.client = new AppSyncClient(this.providerRegion ? { region: this.providerRegion } : {});
     }
     return this.client;
   }

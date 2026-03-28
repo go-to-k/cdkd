@@ -33,18 +33,21 @@ import type {
 export class ServiceDiscoveryProvider implements ResourceProvider {
   private client?: ServiceDiscoveryClient;
   private stsClient?: STSClient;
+  private readonly providerRegion = process.env['AWS_REGION'];
   private logger = getLogger().child('ServiceDiscoveryProvider');
 
   private getClient(): ServiceDiscoveryClient {
     if (!this.client) {
-      this.client = new ServiceDiscoveryClient({});
+      this.client = new ServiceDiscoveryClient(
+        this.providerRegion ? { region: this.providerRegion } : {}
+      );
     }
     return this.client;
   }
 
   private getStsClient(): STSClient {
     if (!this.stsClient) {
-      this.stsClient = new STSClient({});
+      this.stsClient = new STSClient(this.providerRegion ? { region: this.providerRegion } : {});
     }
     return this.stsClient;
   }

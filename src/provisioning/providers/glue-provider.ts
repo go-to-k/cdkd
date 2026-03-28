@@ -32,11 +32,12 @@ import type {
  */
 export class GlueProvider implements ResourceProvider {
   private client: GlueClient | undefined;
+  private readonly providerRegion = process.env['AWS_REGION'];
   private logger = getLogger().child('GlueProvider');
 
   private getClient(): GlueClient {
     if (!this.client) {
-      this.client = new GlueClient({});
+      this.client = new GlueClient(this.providerRegion ? { region: this.providerRegion } : {});
     }
     return this.client;
   }

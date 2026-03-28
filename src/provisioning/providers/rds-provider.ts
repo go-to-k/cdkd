@@ -35,11 +35,12 @@ import type {
  */
 export class RDSProvider implements ResourceProvider {
   private rdsClient?: RDSClient;
+  private readonly providerRegion = process.env['AWS_REGION'];
   private logger = getLogger().child('RDSProvider');
 
   private getClient(): RDSClient {
     if (!this.rdsClient) {
-      this.rdsClient = new RDSClient({});
+      this.rdsClient = new RDSClient(this.providerRegion ? { region: this.providerRegion } : {});
     }
     return this.rdsClient;
   }

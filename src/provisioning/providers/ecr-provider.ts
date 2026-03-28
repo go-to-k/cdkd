@@ -27,11 +27,12 @@ import type {
  */
 export class ECRProvider implements ResourceProvider {
   private client?: ECRClient;
+  private readonly providerRegion = process.env['AWS_REGION'];
   private logger = getLogger().child('ECRProvider');
 
   private getClient(): ECRClient {
     if (!this.client) {
-      this.client = new ECRClient({});
+      this.client = new ECRClient(this.providerRegion ? { region: this.providerRegion } : {});
     }
     return this.client;
   }

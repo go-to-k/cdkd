@@ -30,6 +30,7 @@ export class S3DirectoryBucketProvider implements ResourceProvider {
   private logger = getLogger().child('S3DirectoryBucketProvider');
 
   private ec2Client: EC2Client | undefined;
+  private readonly providerRegion = process.env['AWS_REGION'];
 
   constructor() {
     const awsClients = getAwsClients();
@@ -39,7 +40,7 @@ export class S3DirectoryBucketProvider implements ResourceProvider {
 
   private getEc2Client(): EC2Client {
     if (!this.ec2Client) {
-      this.ec2Client = new EC2Client({});
+      this.ec2Client = new EC2Client(this.providerRegion ? { region: this.providerRegion } : {});
     }
     return this.ec2Client;
   }

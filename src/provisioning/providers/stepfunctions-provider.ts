@@ -30,11 +30,12 @@ import type {
  */
 export class StepFunctionsProvider implements ResourceProvider {
   private sfnClient?: SFNClient;
+  private readonly providerRegion = process.env['AWS_REGION'];
   private logger = getLogger().child('StepFunctionsProvider');
 
   private getClient(): SFNClient {
     if (!this.sfnClient) {
-      this.sfnClient = new SFNClient({});
+      this.sfnClient = new SFNClient(this.providerRegion ? { region: this.providerRegion } : {});
     }
     return this.sfnClient;
   }

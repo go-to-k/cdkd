@@ -35,11 +35,12 @@ import type {
  */
 export class EFSProvider implements ResourceProvider {
   private client: EFSClient | undefined;
+  private readonly providerRegion = process.env['AWS_REGION'];
   private logger = getLogger().child('EFSProvider');
 
   private getClient(): EFSClient {
     if (!this.client) {
-      this.client = new EFSClient({});
+      this.client = new EFSClient(this.providerRegion ? { region: this.providerRegion } : {});
     }
     return this.client;
   }

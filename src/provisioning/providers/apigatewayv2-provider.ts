@@ -37,11 +37,14 @@ import type {
  */
 export class ApiGatewayV2Provider implements ResourceProvider {
   private client: ApiGatewayV2Client | undefined;
+  private readonly providerRegion = process.env['AWS_REGION'];
   private logger = getLogger().child('ApiGatewayV2Provider');
 
   private getClient(): ApiGatewayV2Client {
     if (!this.client) {
-      this.client = new ApiGatewayV2Client({});
+      this.client = new ApiGatewayV2Client(
+        this.providerRegion ? { region: this.providerRegion } : {}
+      );
     }
     return this.client;
   }

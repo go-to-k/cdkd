@@ -355,7 +355,9 @@ async function deployCommand(
           break;
         }
 
-        // Start deploying ready stacks in parallel
+        // Start deploying ready stacks in parallel.
+        // Each stack gets its own AwsClients/ProviderRegistry with explicit region,
+        // so cross-region parallel deploy is safe.
         for (const name of ready) {
           const stack = stackMap.get(name)!;
           const promise = deployStack(stack)

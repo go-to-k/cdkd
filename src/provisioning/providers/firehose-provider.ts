@@ -26,11 +26,12 @@ import type {
  */
 export class FirehoseProvider implements ResourceProvider {
   private client: FirehoseClient | undefined;
+  private readonly providerRegion = process.env['AWS_REGION'];
   private logger = getLogger().child('FirehoseProvider');
 
   private getClient(): FirehoseClient {
     if (!this.client) {
-      this.client = new FirehoseClient({});
+      this.client = new FirehoseClient(this.providerRegion ? { region: this.providerRegion } : {});
     }
     return this.client;
   }

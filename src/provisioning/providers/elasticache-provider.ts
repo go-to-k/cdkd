@@ -30,11 +30,14 @@ import type {
  */
 export class ElastiCacheProvider implements ResourceProvider {
   private client?: ElastiCacheClient;
+  private readonly providerRegion = process.env['AWS_REGION'];
   private logger = getLogger().child('ElastiCacheProvider');
 
   private getClient(): ElastiCacheClient {
     if (!this.client) {
-      this.client = new ElastiCacheClient({});
+      this.client = new ElastiCacheClient(
+        this.providerRegion ? { region: this.providerRegion } : {}
+      );
     }
     return this.client;
   }

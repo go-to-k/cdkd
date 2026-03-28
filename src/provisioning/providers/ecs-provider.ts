@@ -79,11 +79,12 @@ function convertTags(tags?: Array<{ Key: string; Value: string }>): Tag[] | unde
  */
 export class ECSProvider implements ResourceProvider {
   private ecsClient?: ECSClient;
+  private readonly providerRegion = process.env['AWS_REGION'];
   private logger = getLogger().child('ECSProvider');
 
   private getClient(): ECSClient {
     if (!this.ecsClient) {
-      this.ecsClient = new ECSClient({});
+      this.ecsClient = new ECSClient(this.providerRegion ? { region: this.providerRegion } : {});
     }
     return this.ecsClient;
   }

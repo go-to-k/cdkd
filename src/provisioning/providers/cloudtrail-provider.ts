@@ -26,11 +26,14 @@ import type {
  */
 export class CloudTrailProvider implements ResourceProvider {
   private client: CloudTrailClient | undefined;
+  private readonly providerRegion = process.env['AWS_REGION'];
   private logger = getLogger().child('CloudTrailProvider');
 
   private getClient(): CloudTrailClient {
     if (!this.client) {
-      this.client = new CloudTrailClient({});
+      this.client = new CloudTrailClient(
+        this.providerRegion ? { region: this.providerRegion } : {}
+      );
     }
     return this.client;
   }
