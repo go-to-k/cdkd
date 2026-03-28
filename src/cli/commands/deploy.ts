@@ -312,9 +312,7 @@ async function deployCommand(
       const hasFailedDependency = (stackName: string): boolean => {
         const stack = stackMap.get(stackName);
         if (!stack) return false;
-        return stack.dependencyNames.some(
-          (dep) => failed.has(dep) || skipped.has(dep)
-        );
+        return stack.dependencyNames.some((dep) => failed.has(dep) || skipped.has(dep));
       };
 
       while (remaining.size > 0) {
@@ -365,7 +363,9 @@ async function deployCommand(
               deployed.add(name);
             })
             .catch((error) => {
-              logger.error(`Stack ${name} failed: ${error instanceof Error ? error.message : String(error)}`);
+              logger.error(
+                `Stack ${name} failed: ${error instanceof Error ? error.message : String(error)}`
+              );
               failed.add(name);
               errors.push({ stackName: name, error });
             })

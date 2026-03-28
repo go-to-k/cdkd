@@ -1206,7 +1206,7 @@ export class DeployEngine {
   private async withRetry<T>(
     operation: () => Promise<T>,
     logicalId: string,
-    maxRetries: number = 5,
+    maxRetries: number = 8,
     initialDelayMs: number = 10_000
   ): Promise<T> {
     let lastError: unknown;
