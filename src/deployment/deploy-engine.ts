@@ -1110,6 +1110,7 @@ export class DeployEngine {
       'AWS::EC2::Subnet',
       'AWS::EC2::SecurityGroup',
       'AWS::EC2::InternetGateway',
+      'AWS::EC2::EgressOnlyInternetGateway',
       'AWS::EC2::VPCGatewayAttachment',
       'AWS::EC2::RouteTable',
     ],
@@ -1287,7 +1288,10 @@ export class DeployEngine {
         ? sdkProvider.preparePropertiesForFallback(logicalId, resourceType, resolvedProps)
         : resolvedProps;
 
-      return { provider: this.providerRegistry.getCloudControlProvider(), properties: fallbackProps };
+      return {
+        provider: this.providerRegistry.getCloudControlProvider(),
+        properties: fallbackProps,
+      };
     }
 
     // CC API fallback not available — fail to prevent silent property loss
