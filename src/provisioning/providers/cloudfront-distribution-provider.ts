@@ -300,29 +300,50 @@ export class CloudFrontDistributionProvider implements ResourceProvider {
     const maxAttempts = 60;
     let delay = 5000; // start at 5s
     const maxDelay = 30000;
+    let interrupted = false;
 
-    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-      const response = await this.cloudFrontClient.send(
-        new GetDistributionCommand({ Id: distributionId })
-      );
-      const status = response.Distribution?.Status;
+    const sigintHandler = () => {
+      interrupted = true;
+    };
+    process.on('SIGINT', sigintHandler);
 
-      if (status === 'Deployed') {
-        this.logger.debug(`Distribution ${distributionId} is now Deployed`);
-        return;
+    try {
+      for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+        if (interrupted) {
+          this.logger.debug(
+            `Distribution ${distributionId} wait interrupted by SIGINT, proceeding`
+          );
+          return;
+        }
+
+        const response = await this.cloudFrontClient.send(
+          new GetDistributionCommand({ Id: distributionId })
+        );
+        const status = response.Distribution?.Status;
+
+        if (status === 'Deployed') {
+          this.logger.debug(`Distribution ${distributionId} is now Deployed`);
+          return;
+        }
+
+        this.logger.debug(
+          `Distribution ${distributionId} status: ${status} (attempt ${attempt}/${maxAttempts})`
+        );
+
+        // Interruptible sleep: check SIGINT every second
+        const sleepEnd = Date.now() + delay;
+        while (Date.now() < sleepEnd && !interrupted) {
+          await new Promise((resolve) => setTimeout(resolve, 1000));
+        }
+        delay = Math.min(delay * 1.5, maxDelay);
       }
 
       this.logger.debug(
-        `Distribution ${distributionId} status: ${status} (attempt ${attempt}/${maxAttempts})`
+        `Distribution ${distributionId} did not reach Deployed status within timeout, proceeding with deletion attempt`
       );
-
-      await new Promise((resolve) => setTimeout(resolve, delay));
-      delay = Math.min(delay * 1.5, maxDelay);
+    } finally {
+      process.removeListener('SIGINT', sigintHandler);
     }
-
-    this.logger.debug(
-      `Distribution ${distributionId} did not reach Deployed status within timeout, proceeding with deletion attempt`
-    );
   }
 
   /**
