@@ -1,7 +1,7 @@
 import pLimit from 'p-limit';
 import { getLogger } from '../utils/logger.js';
 import { ProvisioningError } from '../utils/error-handler.js';
-import { setCurrentStackName } from '../provisioning/resource-name.js';
+import { setCurrentStackName, applyDefaultNameForFallback } from '../provisioning/resource-name.js';
 import { IntrinsicFunctionResolver } from './intrinsic-function-resolver.js';
 import type { CloudFormationTemplate, ResourceProvider } from '../types/resource.js';
 import type { StackState, ResourceState, ResourceChange } from '../types/state.js';
@@ -1282,11 +1282,11 @@ export class DeployEngine {
         `${logicalId}: SDK provider does not handle [${unhandledProps.join(', ')}] — falling back to CC API for create/update`
       );
 
-      // Allow SDK provider to pre-process properties (e.g., apply default name generation)
-      // so CC API receives the same defaults the SDK provider would have applied
+      // Apply default name generation so CC API uses the same names SDK provider would have.
+      // If the provider has custom pre-processing, use that instead.
       const fallbackProps = sdkProvider.preparePropertiesForFallback
         ? sdkProvider.preparePropertiesForFallback(logicalId, resourceType, resolvedProps)
-        : resolvedProps;
+        : applyDefaultNameForFallback(logicalId, resourceType, resolvedProps);
 
       return {
         provider: this.providerRegistry.getCloudControlProvider(),
