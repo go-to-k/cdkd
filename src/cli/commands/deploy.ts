@@ -272,7 +272,8 @@ async function deployCommand(
           concurrency: options.concurrency,
           dryRun: options.dryRun,
           noRollback: options.noRollback,
-        }
+        },
+        stackRegion
       );
 
       try {

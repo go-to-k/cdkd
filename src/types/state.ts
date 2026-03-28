@@ -8,6 +8,9 @@ export interface StackState {
   /** Stack name */
   stackName: string;
 
+  /** Target region for this stack (for cross-region support) */
+  region?: string;
+
   /** Resources in the stack */
   resources: Record<string, ResourceState>;
 

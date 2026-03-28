@@ -99,14 +99,19 @@ export class DeployEngine {
   private resolver = new IntrinsicFunctionResolver();
   private interrupted = false;
 
+  /** Target region for this stack (saved in state for cross-region destroy) */
+  private stackRegion: string | undefined;
+
   constructor(
     private stateBackend: S3StateBackend,
     private lockManager: LockManager,
     private dagBuilder: DagBuilder,
     private diffCalculator: DiffCalculator,
     private providerRegistry: ProviderRegistry,
-    private options: DeployEngineOptions = {}
+    private options: DeployEngineOptions = {},
+    stackRegion?: string
   ) {
+    this.stackRegion = stackRegion;
     this.options.concurrency = options.concurrency ?? 10;
     this.options.dryRun = options.dryRun ?? false;
     this.options.lockTimeout = options.lockTimeout ?? 5 * 60 * 1000; // 5 minutes
@@ -139,6 +144,7 @@ export class DeployEngine {
       const currentStateData = await this.stateBackend.getState(stackName);
       const currentState: StackState = currentStateData?.state ?? {
         version: 1,
+        ...(this.stackRegion && { region: this.stackRegion }),
         stackName,
         resources: {},
         outputs: {},
@@ -309,6 +315,7 @@ export class DeployEngine {
         try {
           const partialState: StackState = {
             version: 1,
+            ...(this.stackRegion && { region: this.stackRegion }),
             stackName: currentState.stackName,
             resources: newResources,
             outputs: currentState.outputs,
@@ -473,6 +480,7 @@ export class DeployEngine {
       try {
         const preRollbackState: StackState = {
           version: 1,
+          ...(this.stackRegion && { region: this.stackRegion }),
           stackName: currentState.stackName,
           resources: newResources,
           outputs: currentState.outputs,
@@ -509,6 +517,7 @@ export class DeployEngine {
       try {
         const postRollbackState: StackState = {
           version: 1,
+          ...(this.stackRegion && { region: this.stackRegion }),
           stackName: currentState.stackName,
           resources: newResources,
           outputs: currentState.outputs,
@@ -526,6 +535,7 @@ export class DeployEngine {
           const freshEtag = freshState?.etag;
           const postRollbackState: StackState = {
             version: 1,
+            ...(this.stackRegion && { region: this.stackRegion }),
             stackName: currentState.stackName,
             resources: newResources,
             outputs: currentState.outputs,
@@ -555,6 +565,7 @@ export class DeployEngine {
     return {
       state: {
         version: 1,
+        ...(this.stackRegion && { region: this.stackRegion }),
         stackName: currentState.stackName,
         resources: newResources,
         outputs,

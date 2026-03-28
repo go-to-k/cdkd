@@ -202,7 +202,28 @@ async function destroyCommand(
         }
       }
 
-      // 5. Acquire lock
+      // 5. Switch region if stack was deployed to a different region
+      const stackRegion = currentState.region;
+      let destroyProviderRegistry = providerRegistry;
+      let destroyAwsClients: AwsClients | undefined;
+
+      if (stackRegion && stackRegion !== region) {
+        logger.info(`Stack region: ${stackRegion}`);
+        process.env['AWS_REGION'] = stackRegion;
+        process.env['AWS_DEFAULT_REGION'] = stackRegion;
+
+        destroyAwsClients = new AwsClients({
+          region: stackRegion,
+          ...(options.profile && { profile: options.profile }),
+        });
+        setAwsClients(destroyAwsClients);
+
+        destroyProviderRegistry = new ProviderRegistry();
+        registerAllProviders(destroyProviderRegistry);
+        destroyProviderRegistry.setCustomResourceResponseBucket(stateBucket);
+      }
+
+      // Acquire lock (always uses base region for state bucket)
       logger.info(`\nAcquiring lock for stack ${stackName}...`);
       await lockManager.acquireLock(stackName, 'destroy');
 
@@ -320,7 +341,7 @@ async function destroyCommand(
             }
 
             try {
-              const provider = providerRegistry.getProvider(resource.resourceType);
+              const provider = destroyProviderRegistry.getProvider(resource.resourceType);
               // Retry DELETE for transient errors (throttle, dependency race)
               let lastDeleteError: unknown;
               for (let attempt = 0; attempt <= 3; attempt++) {
@@ -390,6 +411,14 @@ async function destroyCommand(
         // 9. Release lock
         logger.debug('Releasing lock...');
         await lockManager.releaseLock(stackName);
+
+        // Restore region if changed
+        if (destroyAwsClients) {
+          destroyAwsClients.destroy();
+          process.env['AWS_REGION'] = region;
+          process.env['AWS_DEFAULT_REGION'] = region;
+          setAwsClients(awsClients);
+        }
       }
     }
   } finally {
