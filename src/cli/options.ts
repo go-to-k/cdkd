@@ -66,10 +66,8 @@ export const deployOptions = [
     .argParser((value) => parseInt(value, 10)),
   new Option('--dry-run', 'Show changes without applying').default(false),
   new Option('--skip-assets', 'Skip asset publishing').default(false),
-  new Option('--no-rollback', 'Skip rollback on deployment failure').default(false),
-  new Option('--no-wait', 'Skip waiting for async resources (CloudFront, RDS, etc.)').default(
-    false
-  ),
+  new Option('--no-rollback', 'Skip rollback on deployment failure'),
+  new Option('--no-wait', 'Skip waiting for async resources (CloudFront, RDS, etc.)'),
   new Option(
     '-e, --exclusively',
     'Only deploy requested stacks, do not include dependencies'

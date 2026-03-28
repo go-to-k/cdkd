@@ -40,8 +40,8 @@ async function deployCommand(
     concurrency: number;
     dryRun: boolean;
     skipAssets: boolean;
-    noRollback: boolean;
-    noWait: boolean;
+    rollback: boolean;
+    wait: boolean;
     exclusively: boolean;
     verbose: boolean;
     context?: string[];
@@ -54,7 +54,7 @@ async function deployCommand(
   }
 
   // Skip waiting for async resources (CloudFront, RDS, ElastiCache, etc.)
-  if (options.noWait) {
+  if (!options.wait) {
     process.env['CDKD_NO_WAIT'] = 'true';
   }
 
@@ -271,7 +271,7 @@ async function deployCommand(
         {
           concurrency: options.concurrency,
           dryRun: options.dryRun,
-          noRollback: options.noRollback,
+          noRollback: !options.rollback,
         },
         stackRegion
       );
