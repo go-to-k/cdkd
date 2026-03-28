@@ -103,6 +103,7 @@ TESTS=(
   "lambda-versioning|"
   "kms-encryption|"
   "efs-standalone|"
+  "ci-cd|"
 )
 
 # --------------------------------------------------------------------------

@@ -5,7 +5,6 @@ import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
 import * as sns from 'aws-cdk-lib/aws-sns';
 import * as cognito from 'aws-cdk-lib/aws-cognito';
 import * as apigatewayv2 from 'aws-cdk-lib/aws-apigatewayv2';
-
 /**
  * Serverless API example stack
  *
@@ -146,5 +145,6 @@ def handler(event, context):
       value: userPool.userPoolId,
       description: 'Cognito UserPool ID',
     });
+
   }
 }

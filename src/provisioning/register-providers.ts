@@ -44,6 +44,7 @@ import { KinesisStreamProvider } from './providers/kinesis-provider.js';
 import { EFSProvider } from './providers/efs-provider.js';
 import { FirehoseProvider } from './providers/firehose-provider.js';
 import { CloudTrailProvider } from './providers/cloudtrail-provider.js';
+import { CodeBuildProvider } from './providers/codebuild-provider.js';
 
 /**
  * Register all SDK providers with the given registry.
@@ -208,4 +209,7 @@ export function registerAllProviders(registry: ProviderRegistry): void {
 
   // CloudTrail
   registry.register('AWS::CloudTrail::Trail', new CloudTrailProvider());
+
+  // CodeBuild
+  registry.register('AWS::CodeBuild::Project', new CodeBuildProvider());
 }

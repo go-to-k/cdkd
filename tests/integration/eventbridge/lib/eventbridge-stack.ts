@@ -3,7 +3,9 @@ import { Construct } from 'constructs';
 import * as events from 'aws-cdk-lib/aws-events';
 import * as targets from 'aws-cdk-lib/aws-events-targets';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
+import * as sqs from 'aws-cdk-lib/aws-sqs';
 import * as scheduler from 'aws-cdk-lib/aws-scheduler';
+import * as pipes from 'aws-cdk-lib/aws-pipes';
 import * as iam from 'aws-cdk-lib/aws-iam';
 
 /**
@@ -15,6 +17,7 @@ import * as iam from 'aws-cdk-lib/aws-iam';
  * - Lambda function as rule target (inline code)
  * - IAM permissions for EventBridge to invoke Lambda
  * - EventBridge Scheduler Schedule (AWS::Scheduler::Schedule)
+ * - EventBridge Pipe: SQS → Lambda (AWS::Pipes::Pipe)
  * - Fn::GetAtt for outputs
  * - Resource dependencies (Rule depends on Bus and Lambda)
  */
@@ -79,6 +82,25 @@ def handler(event, context):
       },
     });
 
+    // EventBridge Pipes: SQS → Lambda
+    const pipeSource = new sqs.Queue(this, 'PipeSourceQueue', {
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+    });
+
+    const pipeRole = new iam.Role(this, 'PipeRole', {
+      assumedBy: new iam.ServicePrincipal('pipes.amazonaws.com'),
+    });
+    pipeSource.grantConsumeMessages(pipeRole);
+    fn.grantInvoke(pipeRole);
+
+    new pipes.CfnPipe(this, 'SqsToLambdaPipe', {
+      name: `${this.stackName}-sqs-to-lambda`,
+      source: pipeSource.queueArn,
+      target: fn.functionArn,
+      roleArn: pipeRole.roleArn,
+      desiredState: 'STOPPED',
+    });
+
     // Outputs
     new cdk.CfnOutput(this, 'EventBusName', {
       value: bus.eventBusName,
@@ -98,6 +120,11 @@ def handler(event, context):
     new cdk.CfnOutput(this, 'SchedulerRoleArn', {
       value: schedulerRole.roleArn,
       description: 'EventBridge Scheduler role ARN',
+    });
+
+    new cdk.CfnOutput(this, 'PipeSourceQueueUrl', {
+      value: pipeSource.queueUrl,
+      description: 'Pipe source SQS queue URL',
     });
   }
 }
