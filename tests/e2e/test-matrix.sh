@@ -104,6 +104,7 @@ TESTS=(
   "kms-encryption|"
   "efs-standalone|"
   "ci-cd|"
+  "s3-directory-bucket|"
 )
 
 # --------------------------------------------------------------------------

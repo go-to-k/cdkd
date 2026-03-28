@@ -45,6 +45,9 @@ import { EFSProvider } from './providers/efs-provider.js';
 import { FirehoseProvider } from './providers/firehose-provider.js';
 import { CloudTrailProvider } from './providers/cloudtrail-provider.js';
 import { CodeBuildProvider } from './providers/codebuild-provider.js';
+import { S3VectorsProvider } from './providers/s3-vectors-provider.js';
+import { S3DirectoryBucketProvider } from './providers/s3-directory-bucket-provider.js';
+import { S3TablesProvider } from './providers/s3-tables-provider.js';
 
 /**
  * Register all SDK providers with the given registry.
@@ -63,6 +66,7 @@ export function registerAllProviders(registry: ProviderRegistry): void {
   // S3
   registry.register('AWS::S3::Bucket', new S3BucketProvider());
   registry.register('AWS::S3::BucketPolicy', new S3BucketPolicyProvider());
+  registry.register('AWS::S3Express::DirectoryBucket', new S3DirectoryBucketProvider());
 
   // SQS
   registry.register('AWS::SQS::Queue', new SQSQueueProvider());
@@ -212,4 +216,13 @@ export function registerAllProviders(registry: ProviderRegistry): void {
 
   // CodeBuild
   registry.register('AWS::CodeBuild::Project', new CodeBuildProvider());
+
+  // S3 Vectors
+  registry.register('AWS::S3Vectors::VectorBucket', new S3VectorsProvider());
+
+  // S3 Tables
+  const s3TablesProvider = new S3TablesProvider();
+  registry.register('AWS::S3Tables::TableBucket', s3TablesProvider);
+  registry.register('AWS::S3Tables::Namespace', s3TablesProvider);
+  registry.register('AWS::S3Tables::Table', s3TablesProvider);
 }
