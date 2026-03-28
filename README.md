@@ -245,7 +245,13 @@ git clone https://github.com/goto-bus-stop/cdkd.git
 cd cdkd
 pnpm install
 pnpm run build
-pnpm link --global
+npm link
+```
+
+If `cdkd` is not found after `npm link`, set an alias in the current shell:
+
+```bash
+alias cdkd="node $(pwd)/dist/cli.js"
 ```
 
 ## Quick Start
