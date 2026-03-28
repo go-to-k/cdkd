@@ -272,12 +272,13 @@ export class DeployEngine {
       process.removeListener('SIGINT', sigintHandler);
 
       // Always release lock
-      await this.lockManager.releaseLock(stackName);
-      this.logger.debug('Lock released');
-
-      // Exit with standard SIGINT code after cleanup
-      if (this.interrupted) {
-        process.exit(130);
+      try {
+        await this.lockManager.releaseLock(stackName);
+        this.logger.debug('Lock released');
+      } catch (lockError) {
+        this.logger.warn(
+          `Failed to release lock: ${lockError instanceof Error ? lockError.message : String(lockError)}`
+        );
       }
     }
   }
