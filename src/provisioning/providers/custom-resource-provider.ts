@@ -604,70 +604,87 @@ export class CustomResourceProvider implements ResourceProvider {
     let currentInterval = this.INITIAL_POLL_INTERVAL_MS;
     let pollCount = 0;
 
-    while (Date.now() - startTime < timeoutMs) {
-      pollCount++;
-      try {
-        const response = await this.s3Client.send(
-          new GetObjectCommand({
-            Bucket: this.responseBucket!,
-            Key: responseKey,
-          })
-        );
+    // Listen for SIGINT to abort polling early
+    let interrupted = false;
+    const sigintHandler = () => {
+      interrupted = true;
+    };
+    process.on('SIGINT', sigintHandler);
 
-        const body = await response.Body?.transformToString();
-        if (body && body.length > 0) {
-          this.logger.debug(`Got S3 response for ${logicalId}: ${body.substring(0, 200)}`);
+    try {
+      while (Date.now() - startTime < timeoutMs) {
+        if (interrupted) {
+          await this.cleanupResponseObject(responseKey);
+          process.removeListener('SIGINT', sigintHandler);
+          throw new Error(`Custom resource ${logicalId} interrupted by user`);
+        }
 
-          try {
-            const cfnResponse = JSON.parse(body) as CfnCustomResourceResponse;
+        pollCount++;
+        try {
+          const response = await this.s3Client.send(
+            new GetObjectCommand({
+              Bucket: this.responseBucket!,
+              Key: responseKey,
+            })
+          );
 
-            // Validate response has required fields
-            if (cfnResponse.Status === 'SUCCESS' || cfnResponse.Status === 'FAILED') {
-              // Cleanup the response object
-              await this.cleanupResponseObject(responseKey);
-              return cfnResponse;
+          const body = await response.Body?.transformToString();
+          if (body && body.length > 0) {
+            this.logger.debug(`Got S3 response for ${logicalId}: ${body.substring(0, 200)}`);
+
+            try {
+              const cfnResponse = JSON.parse(body) as CfnCustomResourceResponse;
+
+              // Validate response has required fields
+              if (cfnResponse.Status === 'SUCCESS' || cfnResponse.Status === 'FAILED') {
+                // Cleanup the response object
+                await this.cleanupResponseObject(responseKey);
+                return cfnResponse;
+              }
+            } catch {
+              // JSON parse failed, response not yet written properly
+              this.logger.debug(`S3 response not yet valid JSON for ${logicalId}, retrying...`);
             }
-          } catch {
-            // JSON parse failed, response not yet written properly
-            this.logger.debug(`S3 response not yet valid JSON for ${logicalId}, retrying...`);
+          }
+        } catch (error) {
+          const err = error as { name?: string };
+          if (err.name !== 'NoSuchKey') {
+            this.logger.debug(`Error reading S3 response for ${logicalId}: ${err.name}`);
           }
         }
-      } catch (error) {
-        const err = error as { name?: string };
-        if (err.name !== 'NoSuchKey') {
-          this.logger.debug(`Error reading S3 response for ${logicalId}: ${err.name}`);
+
+        await this.sleep(currentInterval);
+
+        // Apply exponential backoff for async patterns (long-running operations)
+        if (useBackoff) {
+          currentInterval = Math.min(currentInterval * 1.5, this.MAX_POLL_INTERVAL_MS);
+
+          // Log progress periodically for long-running operations
+          if (pollCount % 10 === 0) {
+            const elapsedSec = Math.round((Date.now() - startTime) / 1000);
+            this.logger.info(
+              `Still waiting for async custom resource ${logicalId} (${operation})... ` +
+                `${elapsedSec}s elapsed, polling every ${Math.round(currentInterval / 1000)}s`
+            );
+          }
         }
       }
 
-      await this.sleep(currentInterval);
+      // Cleanup on timeout
+      await this.cleanupResponseObject(responseKey);
 
-      // Apply exponential backoff for async patterns (long-running operations)
-      if (useBackoff) {
-        currentInterval = Math.min(currentInterval * 1.5, this.MAX_POLL_INTERVAL_MS);
-
-        // Log progress periodically for long-running operations
-        if (pollCount % 10 === 0) {
-          const elapsedSec = Math.round((Date.now() - startTime) / 1000);
-          this.logger.info(
-            `Still waiting for async custom resource ${logicalId} (${operation})... ` +
-              `${elapsedSec}s elapsed, polling every ${Math.round(currentInterval / 1000)}s`
-          );
-        }
-      }
+      const elapsedMin = Math.round((Date.now() - startTime) / 60_000);
+      throw new Error(
+        `Timeout waiting for custom resource response for ${logicalId} (${operation}) ` +
+          `after ${elapsedMin} minutes. ` +
+          (useBackoff
+            ? `The async custom resource handler (Provider framework with isCompleteHandler) did not complete within the timeout. ` +
+              `Check the Step Functions execution and isCompleteHandler Lambda logs for errors.`
+            : `The Lambda handler may not be sending a response to ResponseURL.`)
+      );
+    } finally {
+      process.removeListener('SIGINT', sigintHandler);
     }
-
-    // Cleanup on timeout
-    await this.cleanupResponseObject(responseKey);
-
-    const elapsedMin = Math.round((Date.now() - startTime) / 60_000);
-    throw new Error(
-      `Timeout waiting for custom resource response for ${logicalId} (${operation}) ` +
-        `after ${elapsedMin} minutes. ` +
-        (useBackoff
-          ? `The async custom resource handler (Provider framework with isCompleteHandler) did not complete within the timeout. ` +
-            `Check the Step Functions execution and isCompleteHandler Lambda logs for errors.`
-          : `The Lambda handler may not be sending a response to ResponseURL.`)
-    );
   }
 
   /**

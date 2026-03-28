@@ -287,9 +287,7 @@ export class EC2Provider implements ResourceProvider {
       await this.applyTags(vpcId, properties, logicalId);
 
       // Fetch VPC details for attributes
-      await this.ec2Client.send(
-        new DescribeVpcsCommand({ VpcIds: [vpcId] })
-      );
+      await this.ec2Client.send(new DescribeVpcsCommand({ VpcIds: [vpcId] }));
 
       // Fetch default security group for the VPC
       let defaultSgId = '';
