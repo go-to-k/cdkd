@@ -160,18 +160,19 @@ export class SNSTopicPolicyProvider implements ResourceProvider {
 
     for (const topicArn of topicArns) {
       try {
-        await this.setTopicPolicy(topicArn, '{}');
+        await this.setTopicPolicy(topicArn, '');
         this.logger.debug(`Removed policy from topic ${topicArn}`);
       } catch (error) {
-        // If the topic doesn't exist, that's fine - skip it
+        // If the topic doesn't exist or policy is already empty, skip it
         if (
           error instanceof Error &&
           (error.name === 'NotFoundException' ||
             error.name === 'NotFound' ||
             error.message.includes('not found') ||
-            error.message.includes('does not exist'))
+            error.message.includes('does not exist') ||
+            error.message.includes('Invalid parameter'))
         ) {
-          this.logger.debug(`Topic ${topicArn} does not exist, skipping policy removal`);
+          this.logger.debug(`Topic ${topicArn} not found or policy already removed, skipping`);
           continue;
         }
         const cause = error instanceof Error ? error : undefined;

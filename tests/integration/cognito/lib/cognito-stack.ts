@@ -2,6 +2,13 @@ import * as cdk from 'aws-cdk-lib';
 import { Construct } from 'constructs';
 import * as cognito from 'aws-cdk-lib/aws-cognito';
 
+/**
+ * Cognito example stack
+ *
+ * Demonstrates:
+ * - AWS::Cognito::UserPool
+ * - AWS::Cognito::UserPoolDomain
+ */
 export class CognitoStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
     super(scope, id, props);
@@ -25,6 +32,13 @@ export class CognitoStack extends cdk.Stack {
       },
       accountRecovery: cognito.AccountRecovery.EMAIL_ONLY,
       removalPolicy: cdk.RemovalPolicy.DESTROY,
+    });
+
+    // UserPool Domain (hosted UI)
+    userPool.addDomain('Domain', {
+      cognitoDomain: {
+        domainPrefix: `cdkd-test-${this.account}`,
+      },
     });
 
     // Outputs

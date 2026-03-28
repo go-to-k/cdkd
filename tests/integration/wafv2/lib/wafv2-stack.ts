@@ -7,6 +7,7 @@ import * as apigateway from 'aws-cdk-lib/aws-apigateway';
  * WAFv2 integration test stack.
  *
  * Resources:
+ * - AWS::WAFv2::IPSet
  * - AWS::WAFv2::WebACL
  * - AWS::WAFv2::WebACLAssociation
  * - AWS::ApiGateway::RestApi
@@ -14,6 +15,15 @@ import * as apigateway from 'aws-cdk-lib/aws-apigateway';
 export class Wafv2Stack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
     super(scope, id, props);
+
+    // WAFv2 IP Set (for IP-based access control)
+    const ipSet = new wafv2.CfnIPSet(this, 'BlockedIPs', {
+      name: `cdkd-test-blocked-ips-${cdk.Aws.ACCOUNT_ID}`,
+      scope: 'REGIONAL',
+      ipAddressVersion: 'IPV4',
+      addresses: ['192.0.2.0/24', '198.51.100.0/24'],
+      description: 'Test IP set for cdkd',
+    });
 
     // WAFv2 Web ACL with basic rules
     const webAcl = new wafv2.CfnWebACL(this, 'WebAcl', {
@@ -71,6 +81,11 @@ export class Wafv2Stack extends cdk.Stack {
 
     new cdk.CfnOutput(this, 'WebAclId', {
       value: webAcl.attrId,
+    });
+
+    new cdk.CfnOutput(this, 'IPSetArn', {
+      value: ipSet.attrArn,
+      description: 'WAFv2 IP Set ARN',
     });
 
     new cdk.CfnOutput(this, 'ApiUrl', {

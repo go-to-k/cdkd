@@ -53,6 +53,22 @@ export class SnsSqsEventStack extends cdk.Stack {
       })
     );
 
+    // FIFO Topic + Queue (ordered message delivery)
+    const fifoTopic = new sns.Topic(this, 'FifoTopic', {
+      topicName: `cdkd-sns-sqs-test-fifo-${this.account}.fifo`,
+      fifo: true,
+      contentBasedDeduplication: true,
+    });
+
+    const fifoQueue = new sqs.Queue(this, 'FifoQueue', {
+      queueName: `cdkd-sns-sqs-test-fifo-${this.account}.fifo`,
+      fifo: true,
+      contentBasedDeduplication: true,
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+    });
+
+    fifoTopic.addSubscription(new subscriptions.SqsSubscription(fifoQueue));
+
     // Lambda processor triggered by primary queue
     const processor = new lambda.Function(this, 'Processor', {
       runtime: lambda.Runtime.NODEJS_20_X,
@@ -93,5 +109,7 @@ export class SnsSqsEventStack extends cdk.Stack {
     new cdk.CfnOutput(this, 'SecondaryQueueUrl', { value: secondaryQueue.queueUrl });
     new cdk.CfnOutput(this, 'DlqUrl', { value: dlq.queueUrl });
     new cdk.CfnOutput(this, 'ProcessorFunctionName', { value: processor.functionName });
+    new cdk.CfnOutput(this, 'FifoQueueUrl', { value: fifoQueue.queueUrl });
+    new cdk.CfnOutput(this, 'FifoTopicArn', { value: fifoTopic.topicArn });
   }
 }

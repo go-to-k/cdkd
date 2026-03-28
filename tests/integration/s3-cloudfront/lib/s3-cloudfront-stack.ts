@@ -13,6 +13,7 @@ import * as iam from 'aws-cdk-lib/aws-iam';
  * - CloudFront Origin Access Identity (OAI)
  * - CloudFront Distribution with S3 origin
  * - S3 Bucket Policy granting OAI read access
+ * - CloudFront Origin Access Control (OAC) resource (AWS::CloudFront::OriginAccessControl)
  * - CfnOutputs for distribution domain and bucket name
  *
  * Note: CloudFront distributions can take several minutes to create.
@@ -54,6 +55,17 @@ export class S3CloudFrontStack extends cdk.Stack {
       comment: 'S3 CloudFront Distribution (cdkd integration test)',
     });
 
+    // CloudFront Origin Access Control (OAC) - modern replacement for OAI
+    const oac = new cloudfront.CfnOriginAccessControl(this, 'OAC', {
+      originAccessControlConfig: {
+        name: `${this.stackName}-oac`,
+        originAccessControlOriginType: 's3',
+        signingBehavior: 'always',
+        signingProtocol: 'sigv4',
+        description: 'OAC for S3 origin',
+      },
+    });
+
     // Outputs
     new cdk.CfnOutput(this, 'DistributionDomainName', {
       value: distribution.distributionDomainName,
@@ -73,6 +85,11 @@ export class S3CloudFrontStack extends cdk.Stack {
     new cdk.CfnOutput(this, 'BucketArn', {
       value: bucket.bucketArn,
       description: 'S3 bucket ARN',
+    });
+
+    new cdk.CfnOutput(this, 'OACId', {
+      value: oac.attrId,
+      description: 'CloudFront Origin Access Control ID',
     });
   }
 }
