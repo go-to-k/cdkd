@@ -73,8 +73,7 @@ export class ApiGatewayV2Provider implements ResourceProvider {
     }
   }
 
-  // eslint-disable-next-line @typescript-eslint/require-await
-  async update(
+  update(
     logicalId: string,
     physicalId: string,
     resourceType: string,
@@ -86,11 +85,11 @@ export class ApiGatewayV2Provider implements ResourceProvider {
     // immutable property detection when needed.
     this.logger.debug(`Updating ${resourceType} ${logicalId}: ${physicalId} (no-op)`);
 
-    return {
+    return Promise.resolve({
       physicalId,
       wasReplaced: false,
       attributes: {},
-    };
+    });
   }
 
   async delete(
@@ -120,26 +119,21 @@ export class ApiGatewayV2Provider implements ResourceProvider {
     }
   }
 
-  // eslint-disable-next-line @typescript-eslint/require-await
-  async getAttribute(
-    physicalId: string,
-    resourceType: string,
-    attributeName: string
-  ): Promise<unknown> {
+  getAttribute(physicalId: string, resourceType: string, attributeName: string): Promise<unknown> {
     switch (resourceType) {
       case 'AWS::ApiGatewayV2::Api':
-        return this.getApiAttribute(physicalId, attributeName);
+        return Promise.resolve(this.getApiAttribute(physicalId, attributeName));
       case 'AWS::ApiGatewayV2::Stage':
-        return this.getStageAttribute(physicalId, attributeName);
+        return Promise.resolve(this.getStageAttribute(physicalId, attributeName));
       case 'AWS::ApiGatewayV2::Integration':
-        return this.getIntegrationAttribute(physicalId, attributeName);
+        return Promise.resolve(this.getIntegrationAttribute(physicalId, attributeName));
       case 'AWS::ApiGatewayV2::Route':
-        return this.getRouteAttribute(physicalId, attributeName);
+        return Promise.resolve(this.getRouteAttribute(physicalId, attributeName));
       case 'AWS::ApiGatewayV2::Authorizer':
-        if (attributeName === 'AuthorizerId') return physicalId;
-        return undefined;
+        if (attributeName === 'AuthorizerId') return Promise.resolve(physicalId);
+        return Promise.resolve(undefined);
       default:
-        return undefined;
+        return Promise.resolve(undefined);
     }
   }
 

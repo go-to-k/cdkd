@@ -39,6 +39,10 @@ import { ElastiCacheProvider } from './providers/elasticache-provider.js';
 import { ServiceDiscoveryProvider } from './providers/servicediscovery-provider.js';
 import { AppSyncProvider } from './providers/appsync-provider.js';
 import { GlueProvider } from './providers/glue-provider.js';
+import { KMSProvider } from './providers/kms-provider.js';
+import { KinesisStreamProvider } from './providers/kinesis-provider.js';
+import { EFSProvider } from './providers/efs-provider.js';
+import { FirehoseProvider } from './providers/firehose-provider.js';
 
 /**
  * Register all SDK providers with the given registry.
@@ -183,4 +187,21 @@ export function registerAllProviders(registry: ProviderRegistry): void {
   const glueProvider = new GlueProvider();
   registry.register('AWS::Glue::Database', glueProvider);
   registry.register('AWS::Glue::Table', glueProvider);
+
+  // KMS
+  const kmsProvider = new KMSProvider();
+  registry.register('AWS::KMS::Key', kmsProvider);
+  registry.register('AWS::KMS::Alias', kmsProvider);
+
+  // Kinesis
+  registry.register('AWS::Kinesis::Stream', new KinesisStreamProvider());
+
+  // EFS
+  const efsProvider = new EFSProvider();
+  registry.register('AWS::EFS::FileSystem', efsProvider);
+  registry.register('AWS::EFS::MountTarget', efsProvider);
+  registry.register('AWS::EFS::AccessPoint', efsProvider);
+
+  // Firehose
+  registry.register('AWS::KinesisFirehose::DeliveryStream', new FirehoseProvider());
 }

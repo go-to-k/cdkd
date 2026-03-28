@@ -71,10 +71,9 @@ export class EventBridgeBusProvider implements ResourceProvider {
     }
   }
 
-  // eslint-disable-next-line @typescript-eslint/require-await
-  async update(_logicalId: string, physicalId: string): Promise<ResourceUpdateResult> {
+  update(_logicalId: string, physicalId: string): Promise<ResourceUpdateResult> {
     // EventBus properties are immutable (Name can't change)
-    return { physicalId, wasReplaced: false, attributes: {} };
+    return Promise.resolve({ physicalId, wasReplaced: false, attributes: {} });
   }
 
   async delete(logicalId: string, physicalId: string, resourceType: string): Promise<void> {
@@ -108,20 +107,15 @@ export class EventBridgeBusProvider implements ResourceProvider {
     }
   }
 
-  // eslint-disable-next-line @typescript-eslint/require-await
-  async getAttribute(
-    physicalId: string,
-    _resourceType: string,
-    attributeName: string
-  ): Promise<unknown> {
+  getAttribute(physicalId: string, _resourceType: string, attributeName: string): Promise<unknown> {
     if (attributeName === 'Arn') {
       // Can't construct ARN without region/account, return physicalId
-      return undefined;
+      return Promise.resolve(undefined);
     }
     if (attributeName === 'Name') {
-      return physicalId;
+      return Promise.resolve(physicalId);
     }
-    return undefined;
+    return Promise.resolve(undefined);
   }
 
   /**

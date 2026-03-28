@@ -425,21 +425,20 @@ export class ApiGatewayProvider implements ResourceProvider {
    * Authorizer updates are not commonly needed. For now, this is a no-op.
    * The deployment engine handles replacement for immutable property changes.
    */
-  // eslint-disable-next-line @typescript-eslint/require-await
-  private async updateAuthorizer(
+  private updateAuthorizer(
     logicalId: string,
     physicalId: string,
     _resourceType: string
   ): Promise<ResourceUpdateResult> {
     this.logger.debug(`Updating API Gateway Authorizer ${logicalId}: ${physicalId} (no-op)`);
 
-    return {
+    return Promise.resolve({
       physicalId,
       wasReplaced: false,
       attributes: {
         AuthorizerId: physicalId,
       },
-    };
+    });
   }
 
   /**
@@ -493,16 +492,12 @@ export class ApiGatewayProvider implements ResourceProvider {
   /**
    * Get API Gateway Authorizer attribute
    */
-  // eslint-disable-next-line @typescript-eslint/require-await
-  private async getAuthorizerAttribute(
-    physicalId: string,
-    attributeName: string
-  ): Promise<unknown> {
+  private getAuthorizerAttribute(physicalId: string, attributeName: string): Promise<unknown> {
     if (attributeName === 'AuthorizerId') {
-      return physicalId;
+      return Promise.resolve(physicalId);
     }
 
-    return undefined;
+    return Promise.resolve(undefined);
   }
 
   // ─── AWS::ApiGateway::Resource ──────────────────────────────────────
@@ -665,18 +660,17 @@ export class ApiGatewayProvider implements ResourceProvider {
   /**
    * Get API Gateway Resource attribute
    */
-  // eslint-disable-next-line @typescript-eslint/require-await
-  private async getResourceAttribute(
+  private getResourceAttribute(
     physicalId: string,
     _resourceType: string,
     attributeName: string
   ): Promise<unknown> {
     // ResourceId is the most common attribute
     if (attributeName === 'ResourceId') {
-      return physicalId;
+      return Promise.resolve(physicalId);
     }
 
-    return undefined;
+    return Promise.resolve(undefined);
   }
 
   // ─── AWS::ApiGateway::Deployment ───────────────────────────────────
@@ -738,21 +732,20 @@ export class ApiGatewayProvider implements ResourceProvider {
    * Deployments are immutable - updates are not supported.
    * The deployment engine should handle replacement if needed.
    */
-  // eslint-disable-next-line @typescript-eslint/require-await
-  private async updateDeployment(
+  private updateDeployment(
     logicalId: string,
     physicalId: string,
     _resourceType: string
   ): Promise<ResourceUpdateResult> {
     this.logger.debug(`Updating API Gateway Deployment ${logicalId}: ${physicalId} (no-op)`);
 
-    return {
+    return Promise.resolve({
       physicalId,
       wasReplaced: false,
       attributes: {
         DeploymentId: physicalId,
       },
-    };
+    });
   }
 
   /**
@@ -806,16 +799,12 @@ export class ApiGatewayProvider implements ResourceProvider {
   /**
    * Get API Gateway Deployment attribute
    */
-  // eslint-disable-next-line @typescript-eslint/require-await
-  private async getDeploymentAttribute(
-    physicalId: string,
-    attributeName: string
-  ): Promise<unknown> {
+  private getDeploymentAttribute(physicalId: string, attributeName: string): Promise<unknown> {
     if (attributeName === 'DeploymentId') {
-      return physicalId;
+      return Promise.resolve(physicalId);
     }
 
-    return undefined;
+    return Promise.resolve(undefined);
   }
 
   // ─── AWS::ApiGateway::Stage ──────────────────────────────────────
@@ -1008,13 +997,12 @@ export class ApiGatewayProvider implements ResourceProvider {
   /**
    * Get API Gateway Stage attribute
    */
-  // eslint-disable-next-line @typescript-eslint/require-await
-  private async getStageAttribute(physicalId: string, attributeName: string): Promise<unknown> {
+  private getStageAttribute(physicalId: string, attributeName: string): Promise<unknown> {
     if (attributeName === 'StageName') {
-      return physicalId;
+      return Promise.resolve(physicalId);
     }
 
-    return undefined;
+    return Promise.resolve(undefined);
   }
 
   // ─── AWS::ApiGateway::Method ──────────────────────────────────────
@@ -1097,15 +1085,14 @@ export class ApiGatewayProvider implements ResourceProvider {
    *
    * Methods are typically replaced via new deployment, so this is a no-op.
    */
-  // eslint-disable-next-line @typescript-eslint/require-await
-  private async updateMethod(logicalId: string, physicalId: string): Promise<ResourceUpdateResult> {
+  private updateMethod(logicalId: string, physicalId: string): Promise<ResourceUpdateResult> {
     this.logger.debug(`Updating API Gateway Method ${logicalId}: ${physicalId} (no-op)`);
 
-    return {
+    return Promise.resolve({
       physicalId,
       wasReplaced: false,
       attributes: {},
-    };
+    });
   }
 
   /**
@@ -1163,16 +1150,15 @@ export class ApiGatewayProvider implements ResourceProvider {
   /**
    * Get API Gateway Method attribute
    */
-  // eslint-disable-next-line @typescript-eslint/require-await
-  private async getMethodAttribute(physicalId: string, attributeName: string): Promise<unknown> {
+  private getMethodAttribute(physicalId: string, attributeName: string): Promise<unknown> {
     const parts = physicalId.split('|');
     if (parts.length === 3) {
-      if (attributeName === 'RestApiId') return parts[0];
-      if (attributeName === 'ResourceId') return parts[1];
-      if (attributeName === 'HttpMethod') return parts[2];
+      if (attributeName === 'RestApiId') return Promise.resolve(parts[0]);
+      if (attributeName === 'ResourceId') return Promise.resolve(parts[1]);
+      if (attributeName === 'HttpMethod') return Promise.resolve(parts[2]);
     }
 
-    return undefined;
+    return Promise.resolve(undefined);
   }
 
   /**

@@ -115,8 +115,7 @@ export class SNSTopicProvider implements ResourceProvider {
    * SNS topics have limited mutable properties (DisplayName, KmsMasterKeyId, etc.).
    * TopicName is immutable and requires replacement (handled by deployment layer).
    */
-  // eslint-disable-next-line @typescript-eslint/require-await
-  async update(
+  update(
     logicalId: string,
     physicalId: string,
     _resourceType: string,
@@ -131,14 +130,14 @@ export class SNSTopicProvider implements ResourceProvider {
 
     const topicName = physicalId.split(':').pop() || logicalId;
 
-    return {
+    return Promise.resolve({
       physicalId,
       wasReplaced: false,
       attributes: {
         TopicArn: physicalId,
         TopicName: topicName,
       },
-    };
+    });
   }
 
   /**

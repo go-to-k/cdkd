@@ -477,10 +477,9 @@ export class EC2Provider implements ResourceProvider {
     }
   }
 
-  // eslint-disable-next-line @typescript-eslint/require-await
-  private async updateSubnet(logicalId: string, physicalId: string): Promise<ResourceUpdateResult> {
+  private updateSubnet(logicalId: string, physicalId: string): Promise<ResourceUpdateResult> {
     this.logger.debug(`Updating Subnet ${logicalId}: ${physicalId} (no-op, immutable properties)`);
-    return { physicalId, wasReplaced: false };
+    return Promise.resolve({ physicalId, wasReplaced: false });
   }
 
   private async deleteSubnet(
@@ -562,13 +561,12 @@ export class EC2Provider implements ResourceProvider {
     }
   }
 
-  // eslint-disable-next-line @typescript-eslint/require-await
-  private async updateInternetGateway(
+  private updateInternetGateway(
     logicalId: string,
     physicalId: string
   ): Promise<ResourceUpdateResult> {
     this.logger.debug(`Updating InternetGateway ${logicalId}: ${physicalId} (no-op)`);
-    return { physicalId, wasReplaced: false };
+    return Promise.resolve({ physicalId, wasReplaced: false });
   }
 
   private async deleteInternetGateway(
@@ -646,13 +644,12 @@ export class EC2Provider implements ResourceProvider {
     }
   }
 
-  // eslint-disable-next-line @typescript-eslint/require-await
-  private async updateVpcGatewayAttachment(
+  private updateVpcGatewayAttachment(
     logicalId: string,
     physicalId: string
   ): Promise<ResourceUpdateResult> {
     this.logger.debug(`Updating VPCGatewayAttachment ${logicalId}: ${physicalId} (no-op)`);
-    return { physicalId, wasReplaced: false };
+    return Promise.resolve({ physicalId, wasReplaced: false });
   }
 
   private async deleteVpcGatewayAttachment(
@@ -744,13 +741,9 @@ export class EC2Provider implements ResourceProvider {
     }
   }
 
-  // eslint-disable-next-line @typescript-eslint/require-await
-  private async updateRouteTable(
-    logicalId: string,
-    physicalId: string
-  ): Promise<ResourceUpdateResult> {
+  private updateRouteTable(logicalId: string, physicalId: string): Promise<ResourceUpdateResult> {
     this.logger.debug(`Updating RouteTable ${logicalId}: ${physicalId} (no-op)`);
-    return { physicalId, wasReplaced: false };
+    return Promise.resolve({ physicalId, wasReplaced: false });
   }
 
   private async deleteRouteTable(
@@ -954,15 +947,14 @@ export class EC2Provider implements ResourceProvider {
     }
   }
 
-  // eslint-disable-next-line @typescript-eslint/require-await
-  private async updateSubnetRouteTableAssociation(
+  private updateSubnetRouteTableAssociation(
     logicalId: string,
     physicalId: string
   ): Promise<ResourceUpdateResult> {
     this.logger.debug(
       `Updating SubnetRouteTableAssociation ${logicalId}: ${physicalId} (no-op, requires replacement)`
     );
-    return { physicalId, wasReplaced: false };
+    return Promise.resolve({ physicalId, wasReplaced: false });
   }
 
   private async deleteSubnetRouteTableAssociation(

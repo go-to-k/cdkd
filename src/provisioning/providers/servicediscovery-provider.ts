@@ -70,8 +70,7 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
     }
   }
 
-  // eslint-disable-next-line @typescript-eslint/require-await
-  async update(
+  update(
     logicalId: string,
     physicalId: string,
     resourceType: string,
@@ -185,20 +184,16 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
     }
   }
 
-  // eslint-disable-next-line @typescript-eslint/require-await
-  private async updateNamespace(
-    logicalId: string,
-    physicalId: string
-  ): Promise<ResourceUpdateResult> {
+  private updateNamespace(logicalId: string, physicalId: string): Promise<ResourceUpdateResult> {
     this.logger.debug(`Updating private DNS namespace ${logicalId}: ${physicalId} (no-op)`);
     // Name and Vpc are immutable; updates require replacement (handled by deployment layer)
-    return {
+    return Promise.resolve({
       physicalId,
       wasReplaced: false,
       attributes: {
         Id: physicalId,
       },
-    };
+    });
   }
 
   private async deleteNamespace(
@@ -302,19 +297,15 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
     }
   }
 
-  // eslint-disable-next-line @typescript-eslint/require-await
-  private async updateService(
-    logicalId: string,
-    physicalId: string
-  ): Promise<ResourceUpdateResult> {
+  private updateService(logicalId: string, physicalId: string): Promise<ResourceUpdateResult> {
     this.logger.debug(`Updating service discovery service ${logicalId}: ${physicalId} (no-op)`);
-    return {
+    return Promise.resolve({
       physicalId,
       wasReplaced: false,
       attributes: {
         Id: physicalId,
       },
-    };
+    });
   }
 
   private async deleteService(

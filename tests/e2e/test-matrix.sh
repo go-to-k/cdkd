@@ -99,6 +99,10 @@ TESTS=(
   "batch|"
   "efs-lambda|"
   "log-pipeline|"
+  "data-analytics|"
+  "lambda-versioning|"
+  "kms-encryption|"
+  "efs-standalone|"
 )
 
 # --------------------------------------------------------------------------
