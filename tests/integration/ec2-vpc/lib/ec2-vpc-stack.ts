@@ -7,7 +7,7 @@ import * as ec2 from 'aws-cdk-lib/aws-ec2';
  *
  * Demonstrates:
  * - VPC creation with public subnet (1 AZ, no NAT gateways for cost saving)
- * - Security Group with ingress rule
+ * - Security Group with ingress rule and explicit egress rule
  * - Resource dependencies (Security Group depends on VPC)
  * - Network ACL with custom ingress/egress rules
  * - Elastic IP address
@@ -82,6 +82,16 @@ export class Ec2VpcStack extends cdk.Stack {
     // VPC Endpoint (S3 Gateway - free)
     vpc.addGatewayEndpoint('S3Endpoint', {
       service: ec2.GatewayVpcEndpointAwsService.S3,
+    });
+
+    // Explicit SecurityGroupEgress rule
+    new ec2.CfnSecurityGroupEgress(this, 'TestEgress', {
+      groupId: securityGroup.securityGroupId,
+      ipProtocol: 'tcp',
+      fromPort: 443,
+      toPort: 443,
+      cidrIp: '0.0.0.0/0',
+      description: 'Allow HTTPS outbound',
     });
 
     // Launch Template

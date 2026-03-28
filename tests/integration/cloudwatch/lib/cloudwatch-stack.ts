@@ -58,6 +58,12 @@ export class CloudWatchStack extends cdk.Stack {
     // Add SNS action to alarm
     alarm.addAlarmAction(new cloudwatch_actions.SnsAction(alarmTopic));
 
+    // Explicit LogStream
+    new logs.CfnLogStream(this, 'TestLogStream', {
+      logGroupName: logGroup.logGroupName,
+      logStreamName: `${this.stackName}-test-stream`,
+    });
+
     // Outputs
     new cdk.CfnOutput(this, 'LogGroupName', {
       value: logGroup.logGroupName,

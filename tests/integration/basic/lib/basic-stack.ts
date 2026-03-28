@@ -1,6 +1,7 @@
 import * as cdk from 'aws-cdk-lib';
 import { Construct } from 'constructs';
 import * as s3 from 'aws-cdk-lib/aws-s3';
+import * as ssm from 'aws-cdk-lib/aws-ssm';
 
 /**
  * Basic example stack with a single S3 bucket
@@ -46,6 +47,21 @@ export class BasicStack extends cdk.Stack {
     if (process.env.CDKD_TEST_UPDATE === 'true') {
       cdk.Tags.of(bucket).add('UpdateTest', 'true');
     }
+
+    // SSM Document (simple automation)
+    new ssm.CfnDocument(this, 'TestDocument', {
+      content: {
+        schemaVersion: '2.2',
+        description: 'Test SSM document for cdkd',
+        mainSteps: [{
+          action: 'aws:runShellScript',
+          name: 'test',
+          inputs: { runCommand: ['echo "hello"'] },
+        }],
+      },
+      documentType: 'Command',
+      name: `${this.stackName}-test-doc`,
+    });
 
     // Output the bucket name
     new cdk.CfnOutput(this, 'BucketName', {

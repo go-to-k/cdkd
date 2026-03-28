@@ -48,9 +48,17 @@ export class AlbStack extends cdk.Stack {
     });
 
     // Listener
-    alb.addListener('Listener', {
+    const listener = alb.addListener('Listener', {
       port: 80,
       defaultTargetGroups: [targetGroup],
+    });
+
+    // ListenerRule (path-based routing)
+    new elbv2.CfnListenerRule(this, 'HealthRule', {
+      listenerArn: listener.listenerArn,
+      priority: 1,
+      conditions: [{ field: 'path-pattern', values: ['/health'] }],
+      actions: [{ type: 'fixed-response', fixedResponseConfig: { statusCode: '200', contentType: 'text/plain', messageBody: 'OK' } }],
     });
 
     // Outputs
