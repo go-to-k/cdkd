@@ -236,6 +236,9 @@ async function destroyCommand(
           'AWS::EC2::InternetGateway': ['AWS::EC2::VPCGatewayAttachment'],
           'AWS::Events::EventBus': ['AWS::Events::Rule'],
           'AWS::Athena::WorkGroup': ['AWS::Athena::NamedQuery'],
+          'AWS::CloudFront::ResponseHeadersPolicy': ['AWS::CloudFront::Distribution'],
+          'AWS::CloudFront::CachePolicy': ['AWS::CloudFront::Distribution'],
+          'AWS::CloudFront::OriginAccessControl': ['AWS::CloudFront::Distribution'],
           'AWS::EC2::VPC': [
             'AWS::EC2::Subnet',
             'AWS::EC2::SecurityGroup',
