@@ -11,6 +11,7 @@ import * as athena from 'aws-cdk-lib/aws-athena';
  * - AWS::Glue::Database (SDK Provider)
  * - AWS::Glue::Table (SDK Provider)
  * - AWS::Athena::WorkGroup (L1 CfnWorkGroup)
+ * - AWS::Athena::NamedQuery (L1 CfnNamedQuery)
  * - AWS::S3::Bucket for query results
  * - CfnOutputs for workgroup name, database name, bucket name
  */
@@ -64,6 +65,14 @@ export class DataAnalyticsStack extends cdk.Stack {
           outputLocation: `s3://${bucket.bucketName}/athena-results/`,
         },
       },
+    });
+
+    // Athena Named Query
+    new athena.CfnNamedQuery(this, 'SampleQuery', {
+      database: database.ref,
+      queryString: 'SELECT event_id, timestamp FROM events LIMIT 10',
+      name: `${this.stackName}-sample-query`,
+      workGroup: workGroup.name,
     });
 
     // Outputs

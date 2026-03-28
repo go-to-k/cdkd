@@ -235,6 +235,7 @@ async function destroyCommand(
         const implicitDeleteDeps: Record<string, string[]> = {
           'AWS::EC2::InternetGateway': ['AWS::EC2::VPCGatewayAttachment'],
           'AWS::Events::EventBus': ['AWS::Events::Rule'],
+          'AWS::Athena::WorkGroup': ['AWS::Athena::NamedQuery'],
           'AWS::EC2::VPC': [
             'AWS::EC2::Subnet',
             'AWS::EC2::SecurityGroup',

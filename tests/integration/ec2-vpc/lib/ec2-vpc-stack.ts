@@ -10,10 +10,13 @@ import * as ec2 from 'aws-cdk-lib/aws-ec2';
  * - Security Group with ingress rule
  * - Resource dependencies (Security Group depends on VPC)
  * - Network ACL with custom ingress/egress rules
- * - Fn::GetAtt for outputs (VPC ID, Security Group ID, Subnet IDs, NACL ID)
+ * - Elastic IP address
+ * - VPC Gateway Endpoint (S3)
+ * - Launch Template
+ * - Fn::GetAtt for outputs (VPC ID, Security Group ID, Subnet IDs, NACL ID, EIP, Launch Template)
  *
  * Note: No EC2 instances are created to avoid costs.
- * This stack only provisions networking resources (VPC, Subnet, Security Group, NACL).
+ * This stack only provisions networking resources (VPC, Subnet, Security Group, NACL, EIP, VPC Endpoint, Launch Template).
  */
 export class Ec2VpcStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
@@ -71,6 +74,22 @@ export class Ec2VpcStack extends cdk.Stack {
       direction: ec2.TrafficDirection.EGRESS,
     });
 
+    // Elastic IP
+    const eip = new ec2.CfnEIP(this, 'TestEip', {
+      tags: [{ key: 'Name', value: `${this.stackName}/TestEip` }],
+    });
+
+    // VPC Endpoint (S3 Gateway - free)
+    vpc.addGatewayEndpoint('S3Endpoint', {
+      service: ec2.GatewayVpcEndpointAwsService.S3,
+    });
+
+    // Launch Template
+    const launchTemplate = new ec2.LaunchTemplate(this, 'TestLaunchTemplate', {
+      instanceType: ec2.InstanceType.of(ec2.InstanceClass.T3, ec2.InstanceSize.MICRO),
+      machineImage: ec2.MachineImage.latestAmazonLinux2023(),
+    });
+
     // Outputs
     new cdk.CfnOutput(this, 'VpcId', {
       value: vpc.vpcId,
@@ -95,6 +114,16 @@ export class Ec2VpcStack extends cdk.Stack {
     new cdk.CfnOutput(this, 'NaclId', {
       value: nacl.networkAclId,
       description: 'Custom Network ACL ID',
+    });
+
+    new cdk.CfnOutput(this, 'EipAllocationId', {
+      value: eip.attrAllocationId,
+      description: 'Elastic IP Allocation ID',
+    });
+
+    new cdk.CfnOutput(this, 'LaunchTemplateId', {
+      value: launchTemplate.launchTemplateId!,
+      description: 'Launch Template ID',
     });
   }
 }

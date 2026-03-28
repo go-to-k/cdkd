@@ -12,6 +12,8 @@ import * as lambdaEventSources from 'aws-cdk-lib/aws-lambda-event-sources';
  * - Lambda function with inline code triggered by DynamoDB stream
  * - Event source mapping connecting stream to Lambda
  * - IAM role with stream read permissions
+ * - ApplicationAutoScaling ScalableTarget for read/write capacity
+ * - ApplicationAutoScaling ScalingPolicy with target tracking (70% utilization)
  * - Fn::GetAtt for outputs (table ARN, stream ARN, function name)
  */
 export class DynamodbStreamsStack extends cdk.Stack {
@@ -24,9 +26,29 @@ export class DynamodbStreamsStack extends cdk.Stack {
         name: 'id',
         type: dynamodb.AttributeType.STRING,
       },
-      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      billingMode: dynamodb.BillingMode.PROVISIONED,
+      readCapacity: 5,
+      writeCapacity: 5,
       removalPolicy: cdk.RemovalPolicy.DESTROY,
       stream: dynamodb.StreamViewType.NEW_AND_OLD_IMAGES,
+    });
+
+    // Auto-scaling for read capacity
+    const readScaling = table.autoScaleReadCapacity({
+      minCapacity: 5,
+      maxCapacity: 20,
+    });
+    readScaling.scaleOnUtilization({
+      targetUtilizationPercent: 70,
+    });
+
+    // Auto-scaling for write capacity
+    const writeScaling = table.autoScaleWriteCapacity({
+      minCapacity: 5,
+      maxCapacity: 20,
+    });
+    writeScaling.scaleOnUtilization({
+      targetUtilizationPercent: 70,
     });
 
     // Create Lambda function with inline code to process stream records

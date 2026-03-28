@@ -1277,6 +1277,11 @@ export class DeployEngine {
       'conflicting conditional operation',
       // Secrets Manager: ForceDeleteWithoutRecovery may take a moment to propagate
       'scheduled for deletion',
+      // DynamoDB Streams / Kinesis: IAM role not yet propagated
+      'Cannot access stream',
+      'Please ensure the role can perform',
+      // KMS: IAM role not yet propagated for CreateGrant
+      'KMS key is invalid for CreateGrant',
     ];
     return retryablePatterns.some((p) => message.includes(p));
   }
