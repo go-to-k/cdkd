@@ -212,49 +212,75 @@ async function deployCommand(
       bucket: stateBucket,
       prefix: options.statePrefix,
     };
-    const stateBackend = new S3StateBackend(awsClients.s3, stateConfig);
-    const lockManager = new LockManager(awsClients.s3, stateConfig);
     const dagBuilder = new DagBuilder();
     const diffCalculator = new DiffCalculator();
-    const providerRegistry = new ProviderRegistry();
 
-    // Register all SDK providers
-    registerAllProviders(providerRegistry);
+    // 5. Deploy stacks (parallel within same region, cross-region handled via env vars)
+    const baseRegion = options.region || process.env['AWS_REGION'] || 'us-east-1';
 
-    // Configure custom resource response handling via S3 (for cfn-response based handlers)
-    providerRegistry.setCustomResourceResponseBucket(stateBucket);
+    const switchRegion = (region: string): void => {
+      process.env['AWS_REGION'] = region;
+      process.env['AWS_DEFAULT_REGION'] = region;
+    };
 
-    const deployEngine = new DeployEngine(
-      stateBackend,
-      lockManager,
-      dagBuilder,
-      diffCalculator,
-      providerRegistry,
-      {
-        concurrency: options.concurrency,
-        dryRun: options.dryRun,
-        noRollback: options.noRollback,
-      }
-    );
-
-    // 5. Deploy stacks (parallel for independent stacks, sequential for dependencies)
     const deployStack = async (stackInfo: (typeof targetStacks)[0]) => {
-      logger.info(`\nDeploying stack: ${stackInfo.stackName}`);
-      const template = assemblyLoader.getTemplate(assembly, stackInfo.stackName);
-      const result = await deployEngine.deploy(stackInfo.stackName, template);
+      const stackRegion = stackInfo.region || baseRegion;
+      logger.info(
+        `\nDeploying stack: ${stackInfo.stackName}${stackRegion !== baseRegion ? ` (region: ${stackRegion})` : ''}`
+      );
 
-      logger.info('\nDeployment Summary:');
-      logger.info(`  Stack: ${result.stackName}`);
-      logger.info(`  Created: ${result.created}`);
-      logger.info(`  Updated: ${result.updated}`);
-      logger.info(`  Deleted: ${result.deleted}`);
-      logger.info(`  Unchanged: ${result.unchanged}`);
-      logger.info(`  Duration: ${(result.durationMs / 1000).toFixed(2)}s`);
+      // Switch region for this stack (providers create local clients that pick up env)
+      switchRegion(stackRegion);
 
-      if (options.dryRun) {
-        logger.info('\n✓ Dry run completed - no actual changes made');
-      } else {
-        logger.info('\n✓ Deployment completed successfully');
+      // Re-create global AWS clients for the stack's region (CC API, state backend)
+      const stackAwsClients = new AwsClients({
+        region: stackRegion,
+        ...(options.profile && { profile: options.profile }),
+      });
+      setAwsClients(stackAwsClients);
+
+      // Re-create deployment components for the stack's region
+      const stackStateBackend = new S3StateBackend(stackAwsClients.s3, stateConfig);
+      const stackLockManager = new LockManager(stackAwsClients.s3, stateConfig);
+      const stackProviderRegistry = new ProviderRegistry();
+      registerAllProviders(stackProviderRegistry);
+      stackProviderRegistry.setCustomResourceResponseBucket(stateBucket);
+
+      const stackDeployEngine = new DeployEngine(
+        stackStateBackend,
+        stackLockManager,
+        dagBuilder,
+        diffCalculator,
+        stackProviderRegistry,
+        {
+          concurrency: options.concurrency,
+          dryRun: options.dryRun,
+          noRollback: options.noRollback,
+        }
+      );
+
+      try {
+        const template = assemblyLoader.getTemplate(assembly, stackInfo.stackName);
+        const result = await stackDeployEngine.deploy(stackInfo.stackName, template);
+
+        logger.info('\nDeployment Summary:');
+        logger.info(`  Stack: ${result.stackName}`);
+        logger.info(`  Created: ${result.created}`);
+        logger.info(`  Updated: ${result.updated}`);
+        logger.info(`  Deleted: ${result.deleted}`);
+        logger.info(`  Unchanged: ${result.unchanged}`);
+        logger.info(`  Duration: ${(result.durationMs / 1000).toFixed(2)}s`);
+
+        if (options.dryRun) {
+          logger.info('\n✓ Dry run completed - no actual changes made');
+        } else {
+          logger.info('\n✓ Deployment completed successfully');
+        }
+      } finally {
+        stackAwsClients.destroy();
+        // Restore base region
+        switchRegion(baseRegion);
+        setAwsClients(awsClients);
       }
     };
 
@@ -263,6 +289,7 @@ async function deployCommand(
       await deployStack(targetStacks[0]!);
     } else {
       // Multiple stacks: deploy in dependency order, parallelizing independent stacks
+      // Cross-region stacks get their own clients per deploy, so parallel is safe.
       const deployed = new Set<string>();
       const deploying = new Map<string, Promise<void>>();
       const remaining = new Set(targetStacks.map((s) => s.stackName));

@@ -253,16 +253,59 @@ export class CognitoUserPoolProvider implements ResourceProvider {
 
   /**
    * Delete a Cognito User Pool
+   *
+   * If DeletionProtection is ACTIVE, it is automatically disabled before deletion.
    */
   async delete(
     logicalId: string,
     physicalId: string,
     resourceType: string,
-    _properties?: Record<string, unknown>
+    properties?: Record<string, unknown>
   ): Promise<void> {
     this.logger.debug(`Deleting Cognito User Pool ${logicalId}: ${physicalId}`);
 
     try {
+      // Check if DeletionProtection is ACTIVE and disable it before deletion
+      const deletionProtection = properties?.['DeletionProtection'] as string | undefined;
+      if (deletionProtection === 'ACTIVE') {
+        this.logger.debug(
+          `Disabling DeletionProtection on Cognito User Pool ${physicalId} before deletion`
+        );
+        await this.getClient().send(
+          new UpdateUserPoolCommand({
+            UserPoolId: physicalId,
+            DeletionProtection: 'INACTIVE',
+          })
+        );
+      } else {
+        // Properties may not reflect current state; describe to check
+        try {
+          const describeResponse = await this.getClient().send(
+            new DescribeUserPoolCommand({ UserPoolId: physicalId })
+          );
+          if (describeResponse.UserPool?.DeletionProtection === 'ACTIVE') {
+            this.logger.debug(
+              `Disabling DeletionProtection on Cognito User Pool ${physicalId} before deletion`
+            );
+            await this.getClient().send(
+              new UpdateUserPoolCommand({
+                UserPoolId: physicalId,
+                DeletionProtection: 'INACTIVE',
+              })
+            );
+          }
+        } catch (descError) {
+          if (descError instanceof ResourceNotFoundException) {
+            this.logger.debug(`Cognito User Pool ${physicalId} does not exist, skipping deletion`);
+            return;
+          }
+          // If describe fails for another reason, proceed with delete attempt anyway
+          this.logger.debug(
+            `Failed to describe Cognito User Pool ${physicalId}, proceeding with delete`
+          );
+        }
+      }
+
       await this.getClient().send(new DeleteUserPoolCommand({ UserPoolId: physicalId }));
       this.logger.debug(`Successfully deleted Cognito User Pool ${logicalId}`);
     } catch (error) {

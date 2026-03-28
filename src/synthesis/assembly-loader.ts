@@ -21,6 +21,12 @@ export interface StackInfo {
 
   /** Stack dependency names (other stacks this stack depends on) */
   dependencyNames: string[];
+
+  /** Target region from CDK environment */
+  region?: string;
+
+  /** Target account from CDK environment */
+  account?: string;
 }
 
 /**
@@ -109,6 +115,20 @@ export class AssemblyLoader {
       artifact,
       dependencyNames,
     };
+
+    // Extract target region/account from artifact environment
+    // artifact.environment is an Environment object with account/region fields
+    // account/region may be "unknown-account"/"unknown-region" if unresolved
+    const env = artifact.environment;
+    if (env) {
+      if (env.account && env.account !== 'unknown-account') {
+        result.account = env.account;
+      }
+      if (env.region && env.region !== 'unknown-region') {
+        result.region = env.region;
+        this.logger.debug(`Stack '${stackName}' target: region=${result.region}`);
+      }
+    }
 
     if (assetDependency) {
       // For asset manifest artifacts, we need the manifest file path
