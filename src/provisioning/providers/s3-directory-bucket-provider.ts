@@ -29,6 +29,10 @@ export class S3DirectoryBucketProvider implements ResourceProvider {
   private stsClient: STSClient;
   private logger = getLogger().child('S3DirectoryBucketProvider');
 
+  handledProperties = new Map<string, ReadonlySet<string>>([
+    ['AWS::S3Express::DirectoryBucket', new Set(['DataRedundancy', 'LocationName', 'BucketName'])],
+  ]);
+
   private ec2Client: EC2Client | undefined;
   private readonly providerRegion = process.env['AWS_REGION'];
 

@@ -50,7 +50,7 @@ export class LambdaStack extends cdk.Stack {
     // Create Lambda function with layer
     const fn = new lambda.Function(this, 'Handler', {
       runtime: lambda.Runtime.PYTHON_3_12,
-      code: lambda.Code.fromAsset('lambda'),
+      code: lambda.Code.fromAsset(path.join(__dirname, '../lambda')),
       handler: 'index.handler',
       environment: {
         TABLE_NAME: table.tableName,

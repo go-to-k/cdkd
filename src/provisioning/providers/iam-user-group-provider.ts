@@ -9,6 +9,17 @@ import {
   AttachGroupPolicyCommand,
   DetachGroupPolicyCommand,
   ListAttachedGroupPoliciesCommand,
+  AttachUserPolicyCommand,
+  DetachUserPolicyCommand,
+  ListAttachedUserPoliciesCommand,
+  PutUserPolicyCommand,
+  DeleteUserPolicyCommand,
+  ListUserPoliciesCommand,
+  PutGroupPolicyCommand,
+  DeleteGroupPolicyCommand,
+  ListGroupPoliciesCommand,
+  CreateLoginProfileCommand,
+  UpdateLoginProfileCommand,
   AddUserToGroupCommand,
   RemoveUserFromGroupCommand,
   ListGroupsForUserCommand,
@@ -17,6 +28,8 @@ import {
   DeleteAccessKeyCommand,
   NoSuchEntityException,
   TagUserCommand,
+  PutUserPermissionsBoundaryCommand,
+  DeleteUserPermissionsBoundaryCommand,
 } from '@aws-sdk/client-iam';
 import { getLogger } from '../../utils/logger.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
@@ -41,6 +54,24 @@ import type {
 export class IAMUserGroupProvider implements ResourceProvider {
   private iamClient: IAMClient;
   private logger = getLogger().child('IAMUserGroupProvider');
+
+  handledProperties = new Map<string, ReadonlySet<string>>([
+    [
+      'AWS::IAM::User',
+      new Set([
+        'UserName',
+        'Path',
+        'Tags',
+        'LoginProfile',
+        'ManagedPolicyArns',
+        'Groups',
+        'Policies',
+        'PermissionsBoundary',
+      ]),
+    ],
+    ['AWS::IAM::Group', new Set(['GroupName', 'Path', 'ManagedPolicyArns', 'Policies'])],
+    ['AWS::IAM::UserToGroupAddition', new Set(['GroupName', 'Users'])],
+  ]);
 
   constructor() {
     const awsClients = getAwsClients();
@@ -79,7 +110,7 @@ export class IAMUserGroupProvider implements ResourceProvider {
   ): Promise<ResourceUpdateResult> {
     switch (resourceType) {
       case 'AWS::IAM::User':
-        return this.updateUser(logicalId, physicalId, resourceType, properties);
+        return this.updateUser(logicalId, physicalId, resourceType, properties, previousProperties);
       case 'AWS::IAM::Group':
         return this.updateGroup(
           logicalId,
@@ -163,6 +194,82 @@ export class IAMUserGroupProvider implements ResourceProvider {
 
       const response = await this.iamClient.send(new CreateUserCommand(createParams));
 
+      // Set permissions boundary if specified
+      const permissionsBoundary = properties['PermissionsBoundary'] as string | undefined;
+      if (permissionsBoundary) {
+        await this.iamClient.send(
+          new PutUserPermissionsBoundaryCommand({
+            UserName: userName,
+            PermissionsBoundary: permissionsBoundary,
+          })
+        );
+        this.logger.debug(`Set permissions boundary on user ${userName}`);
+      }
+
+      // Create login profile if specified
+      const loginProfile = properties['LoginProfile'] as
+        | { Password: string; PasswordResetRequired?: boolean }
+        | undefined;
+      if (loginProfile) {
+        await this.iamClient.send(
+          new CreateLoginProfileCommand({
+            UserName: userName,
+            Password: loginProfile.Password,
+            PasswordResetRequired: loginProfile.PasswordResetRequired ?? false,
+          })
+        );
+        this.logger.debug(`Created login profile for user ${userName}`);
+      }
+
+      // Attach managed policies if specified
+      const managedPolicyArns = properties['ManagedPolicyArns'] as string[] | undefined;
+      if (managedPolicyArns && Array.isArray(managedPolicyArns)) {
+        for (const policyArn of managedPolicyArns) {
+          await this.iamClient.send(
+            new AttachUserPolicyCommand({
+              UserName: userName,
+              PolicyArn: policyArn,
+            })
+          );
+          this.logger.debug(`Attached managed policy ${policyArn} to user ${userName}`);
+        }
+      }
+
+      // Add user to groups if specified
+      const userGroups = properties['Groups'] as string[] | undefined;
+      if (userGroups && Array.isArray(userGroups)) {
+        for (const groupName of userGroups) {
+          await this.iamClient.send(
+            new AddUserToGroupCommand({
+              UserName: userName,
+              GroupName: groupName,
+            })
+          );
+          this.logger.debug(`Added user ${userName} to group ${groupName}`);
+        }
+      }
+
+      // Add inline policies if specified
+      const policies = properties['Policies'] as
+        | Array<{ PolicyName: string; PolicyDocument: unknown }>
+        | undefined;
+      if (policies && Array.isArray(policies)) {
+        for (const policy of policies) {
+          const policyDoc =
+            typeof policy.PolicyDocument === 'string'
+              ? policy.PolicyDocument
+              : JSON.stringify(policy.PolicyDocument);
+          await this.iamClient.send(
+            new PutUserPolicyCommand({
+              UserName: userName,
+              PolicyName: policy.PolicyName,
+              PolicyDocument: policyDoc,
+            })
+          );
+          this.logger.debug(`Added inline policy ${policy.PolicyName} to user ${userName}`);
+        }
+      }
+
       this.logger.debug(`Successfully created IAM user ${logicalId}: ${userName}`);
 
       return {
@@ -187,7 +294,8 @@ export class IAMUserGroupProvider implements ResourceProvider {
     logicalId: string,
     physicalId: string,
     resourceType: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    previousProperties: Record<string, unknown>
   ): Promise<ResourceUpdateResult> {
     this.logger.debug(`Updating IAM user ${logicalId}: ${physicalId}`);
 
@@ -203,6 +311,87 @@ export class IAMUserGroupProvider implements ResourceProvider {
         );
         this.logger.debug(`Tagged user ${physicalId}`);
       }
+
+      // Update permissions boundary
+      const newPermBoundary = properties['PermissionsBoundary'] as string | undefined;
+      const oldPermBoundary = previousProperties['PermissionsBoundary'] as string | undefined;
+      if (newPermBoundary !== oldPermBoundary) {
+        if (newPermBoundary) {
+          await this.iamClient.send(
+            new PutUserPermissionsBoundaryCommand({
+              UserName: physicalId,
+              PermissionsBoundary: newPermBoundary,
+            })
+          );
+          this.logger.debug(`Updated permissions boundary on user ${physicalId}`);
+        } else if (oldPermBoundary) {
+          await this.iamClient.send(
+            new DeleteUserPermissionsBoundaryCommand({ UserName: physicalId })
+          );
+          this.logger.debug(`Removed permissions boundary from user ${physicalId}`);
+        }
+      }
+
+      // Update login profile
+      const newLoginProfile = properties['LoginProfile'] as
+        | { Password: string; PasswordResetRequired?: boolean }
+        | undefined;
+      const oldLoginProfile = previousProperties['LoginProfile'] as
+        | { Password: string; PasswordResetRequired?: boolean }
+        | undefined;
+      if (newLoginProfile && !oldLoginProfile) {
+        await this.iamClient.send(
+          new CreateLoginProfileCommand({
+            UserName: physicalId,
+            Password: newLoginProfile.Password,
+            PasswordResetRequired: newLoginProfile.PasswordResetRequired ?? false,
+          })
+        );
+        this.logger.debug(`Created login profile for user ${physicalId}`);
+      } else if (newLoginProfile && oldLoginProfile) {
+        await this.iamClient.send(
+          new UpdateLoginProfileCommand({
+            UserName: physicalId,
+            Password: newLoginProfile.Password,
+            PasswordResetRequired: newLoginProfile.PasswordResetRequired ?? false,
+          })
+        );
+        this.logger.debug(`Updated login profile for user ${physicalId}`);
+      } else if (!newLoginProfile && oldLoginProfile) {
+        try {
+          await this.iamClient.send(new DeleteLoginProfileCommand({ UserName: physicalId }));
+          this.logger.debug(`Deleted login profile for user ${physicalId}`);
+        } catch (error) {
+          if (!(error instanceof NoSuchEntityException)) {
+            throw error;
+          }
+        }
+      }
+
+      // Update managed policies
+      await this.updateUserManagedPolicies(
+        physicalId,
+        properties['ManagedPolicyArns'] as string[] | undefined,
+        previousProperties['ManagedPolicyArns'] as string[] | undefined
+      );
+
+      // Update groups
+      await this.updateUserGroups(
+        physicalId,
+        properties['Groups'] as string[] | undefined,
+        previousProperties['Groups'] as string[] | undefined
+      );
+
+      // Update inline policies
+      await this.updateUserInlinePolicies(
+        physicalId,
+        properties['Policies'] as
+          | Array<{ PolicyName: string; PolicyDocument: unknown }>
+          | undefined,
+        previousProperties['Policies'] as
+          | Array<{ PolicyName: string; PolicyDocument: unknown }>
+          | undefined
+      );
 
       // Get updated user info
       const getUserResponse = await this.iamClient.send(
@@ -250,7 +439,13 @@ export class IAMUserGroupProvider implements ResourceProvider {
       // Step 1: Remove from all groups
       await this.removeUserFromAllGroups(physicalId);
 
-      // Step 2: Delete login profile if exists
+      // Step 2: Detach all managed policies
+      await this.detachAllUserPolicies(physicalId);
+
+      // Step 3: Delete all inline policies
+      await this.deleteAllUserInlinePolicies(physicalId);
+
+      // Step 4: Delete login profile if exists
       try {
         await this.iamClient.send(new DeleteLoginProfileCommand({ UserName: physicalId }));
         this.logger.debug(`Deleted login profile for user ${physicalId}`);
@@ -260,10 +455,21 @@ export class IAMUserGroupProvider implements ResourceProvider {
         }
       }
 
-      // Step 3: Delete all access keys
+      // Step 5: Delete all access keys
       await this.deleteAllAccessKeys(physicalId);
 
-      // Step 4: Delete the user
+      // Step 6: Delete permissions boundary if exists
+      try {
+        await this.iamClient.send(
+          new DeleteUserPermissionsBoundaryCommand({ UserName: physicalId })
+        );
+      } catch (error) {
+        if (!(error instanceof NoSuchEntityException)) {
+          throw error;
+        }
+      }
+
+      // Step 7: Delete the user
       await this.iamClient.send(new DeleteUserCommand({ UserName: physicalId }));
 
       this.logger.debug(`Successfully deleted IAM user ${logicalId}`);
@@ -335,6 +541,191 @@ export class IAMUserGroupProvider implements ResourceProvider {
     }
   }
 
+  private async detachAllUserPolicies(userName: string): Promise<void> {
+    try {
+      const response = await this.iamClient.send(
+        new ListAttachedUserPoliciesCommand({ UserName: userName })
+      );
+
+      const policies = response.AttachedPolicies || [];
+      for (const policy of policies) {
+        if (policy.PolicyArn) {
+          try {
+            await this.iamClient.send(
+              new DetachUserPolicyCommand({
+                UserName: userName,
+                PolicyArn: policy.PolicyArn,
+              })
+            );
+            this.logger.debug(`Detached managed policy ${policy.PolicyArn} from user ${userName}`);
+          } catch (error) {
+            if (!(error instanceof NoSuchEntityException)) {
+              throw error;
+            }
+          }
+        }
+      }
+    } catch (error) {
+      if (error instanceof NoSuchEntityException) {
+        return;
+      }
+      throw error;
+    }
+  }
+
+  private async deleteAllUserInlinePolicies(userName: string): Promise<void> {
+    try {
+      const response = await this.iamClient.send(
+        new ListUserPoliciesCommand({ UserName: userName })
+      );
+
+      const policyNames = response.PolicyNames || [];
+      for (const policyName of policyNames) {
+        try {
+          await this.iamClient.send(
+            new DeleteUserPolicyCommand({
+              UserName: userName,
+              PolicyName: policyName,
+            })
+          );
+          this.logger.debug(`Deleted inline policy ${policyName} from user ${userName}`);
+        } catch (error) {
+          if (!(error instanceof NoSuchEntityException)) {
+            throw error;
+          }
+        }
+      }
+    } catch (error) {
+      if (error instanceof NoSuchEntityException) {
+        return;
+      }
+      throw error;
+    }
+  }
+
+  private async updateUserManagedPolicies(
+    userName: string,
+    newPolicies: string[] | undefined,
+    oldPolicies: string[] | undefined
+  ): Promise<void> {
+    const newSet = new Set(newPolicies || []);
+    const oldSet = new Set(oldPolicies || []);
+
+    // Attach new policies
+    for (const policyArn of newSet) {
+      if (!oldSet.has(policyArn)) {
+        await this.iamClient.send(
+          new AttachUserPolicyCommand({
+            UserName: userName,
+            PolicyArn: policyArn,
+          })
+        );
+        this.logger.debug(`Attached managed policy ${policyArn} to user ${userName}`);
+      }
+    }
+
+    // Detach removed policies
+    for (const policyArn of oldSet) {
+      if (!newSet.has(policyArn)) {
+        try {
+          await this.iamClient.send(
+            new DetachUserPolicyCommand({
+              UserName: userName,
+              PolicyArn: policyArn,
+            })
+          );
+          this.logger.debug(`Detached managed policy ${policyArn} from user ${userName}`);
+        } catch (error) {
+          if (!(error instanceof NoSuchEntityException)) {
+            throw error;
+          }
+        }
+      }
+    }
+  }
+
+  private async updateUserGroups(
+    userName: string,
+    newGroups: string[] | undefined,
+    oldGroups: string[] | undefined
+  ): Promise<void> {
+    const newSet = new Set(newGroups || []);
+    const oldSet = new Set(oldGroups || []);
+
+    // Add to new groups
+    for (const groupName of newSet) {
+      if (!oldSet.has(groupName)) {
+        await this.iamClient.send(
+          new AddUserToGroupCommand({
+            UserName: userName,
+            GroupName: groupName,
+          })
+        );
+        this.logger.debug(`Added user ${userName} to group ${groupName}`);
+      }
+    }
+
+    // Remove from old groups
+    for (const groupName of oldSet) {
+      if (!newSet.has(groupName)) {
+        try {
+          await this.iamClient.send(
+            new RemoveUserFromGroupCommand({
+              UserName: userName,
+              GroupName: groupName,
+            })
+          );
+          this.logger.debug(`Removed user ${userName} from group ${groupName}`);
+        } catch (error) {
+          if (!(error instanceof NoSuchEntityException)) {
+            throw error;
+          }
+        }
+      }
+    }
+  }
+
+  private async updateUserInlinePolicies(
+    userName: string,
+    newPolicies: Array<{ PolicyName: string; PolicyDocument: unknown }> | undefined,
+    oldPolicies: Array<{ PolicyName: string; PolicyDocument: unknown }> | undefined
+  ): Promise<void> {
+    const newMap = new Map((newPolicies || []).map((p) => [p.PolicyName, p.PolicyDocument]));
+    const oldMap = new Map((oldPolicies || []).map((p) => [p.PolicyName, p.PolicyDocument]));
+
+    // Add or update policies
+    for (const [policyName, policyDoc] of newMap) {
+      const policyDocument = typeof policyDoc === 'string' ? policyDoc : JSON.stringify(policyDoc);
+      await this.iamClient.send(
+        new PutUserPolicyCommand({
+          UserName: userName,
+          PolicyName: policyName,
+          PolicyDocument: policyDocument,
+        })
+      );
+      this.logger.debug(`Updated inline policy ${policyName} on user ${userName}`);
+    }
+
+    // Delete removed policies
+    for (const policyName of oldMap.keys()) {
+      if (!newMap.has(policyName)) {
+        try {
+          await this.iamClient.send(
+            new DeleteUserPolicyCommand({
+              UserName: userName,
+              PolicyName: policyName,
+            })
+          );
+          this.logger.debug(`Deleted inline policy ${policyName} from user ${userName}`);
+        } catch (error) {
+          if (!(error instanceof NoSuchEntityException)) {
+            throw error;
+          }
+        }
+      }
+    }
+  }
+
   // ─── AWS::IAM::Group ─────────────────────────────────────────────
 
   private async createGroup(
@@ -377,6 +768,27 @@ export class IAMUserGroupProvider implements ResourceProvider {
         }
       }
 
+      // Add inline policies if specified
+      const policies = properties['Policies'] as
+        | Array<{ PolicyName: string; PolicyDocument: unknown }>
+        | undefined;
+      if (policies && Array.isArray(policies)) {
+        for (const policy of policies) {
+          const policyDoc =
+            typeof policy.PolicyDocument === 'string'
+              ? policy.PolicyDocument
+              : JSON.stringify(policy.PolicyDocument);
+          await this.iamClient.send(
+            new PutGroupPolicyCommand({
+              GroupName: groupName,
+              PolicyName: policy.PolicyName,
+              PolicyDocument: policyDoc,
+            })
+          );
+          this.logger.debug(`Added inline policy ${policy.PolicyName} to group ${groupName}`);
+        }
+      }
+
       this.logger.debug(`Successfully created IAM group ${logicalId}: ${groupName}`);
 
       return {
@@ -412,6 +824,17 @@ export class IAMUserGroupProvider implements ResourceProvider {
         physicalId,
         properties['ManagedPolicyArns'] as string[] | undefined,
         previousProperties['ManagedPolicyArns'] as string[] | undefined
+      );
+
+      // Update inline policies
+      await this.updateGroupInlinePolicies(
+        physicalId,
+        properties['Policies'] as
+          | Array<{ PolicyName: string; PolicyDocument: unknown }>
+          | undefined,
+        previousProperties['Policies'] as
+          | Array<{ PolicyName: string; PolicyDocument: unknown }>
+          | undefined
       );
 
       // Get updated group info
@@ -451,10 +874,13 @@ export class IAMUserGroupProvider implements ResourceProvider {
       // Step 1: Detach all managed policies
       await this.detachAllGroupPolicies(physicalId);
 
-      // Step 2: Remove all users from group
+      // Step 2: Delete all inline policies
+      await this.deleteAllGroupInlinePolicies(physicalId);
+
+      // Step 3: Remove all users from group
       await this.removeAllUsersFromGroup(physicalId);
 
-      // Step 3: Delete the group
+      // Step 4: Delete the group
       await this.iamClient.send(new DeleteGroupCommand({ GroupName: physicalId }));
 
       this.logger.debug(`Successfully deleted IAM group ${logicalId}`);
@@ -569,6 +995,77 @@ export class IAMUserGroupProvider implements ResourceProvider {
           })
         );
         this.logger.debug(`Detached managed policy ${policyArn} from group ${groupName}`);
+      }
+    }
+  }
+
+  private async deleteAllGroupInlinePolicies(groupName: string): Promise<void> {
+    try {
+      const response = await this.iamClient.send(
+        new ListGroupPoliciesCommand({ GroupName: groupName })
+      );
+
+      const policyNames = response.PolicyNames || [];
+      for (const policyName of policyNames) {
+        try {
+          await this.iamClient.send(
+            new DeleteGroupPolicyCommand({
+              GroupName: groupName,
+              PolicyName: policyName,
+            })
+          );
+          this.logger.debug(`Deleted inline policy ${policyName} from group ${groupName}`);
+        } catch (error) {
+          if (!(error instanceof NoSuchEntityException)) {
+            throw error;
+          }
+        }
+      }
+    } catch (error) {
+      if (error instanceof NoSuchEntityException) {
+        return;
+      }
+      throw error;
+    }
+  }
+
+  private async updateGroupInlinePolicies(
+    groupName: string,
+    newPolicies: Array<{ PolicyName: string; PolicyDocument: unknown }> | undefined,
+    oldPolicies: Array<{ PolicyName: string; PolicyDocument: unknown }> | undefined
+  ): Promise<void> {
+    const newMap = new Map((newPolicies || []).map((p) => [p.PolicyName, p.PolicyDocument]));
+    const oldMap = new Map((oldPolicies || []).map((p) => [p.PolicyName, p.PolicyDocument]));
+
+    // Add or update policies
+    for (const [policyName, policyDoc] of newMap) {
+      const policyDocument = typeof policyDoc === 'string' ? policyDoc : JSON.stringify(policyDoc);
+      await this.iamClient.send(
+        new PutGroupPolicyCommand({
+          GroupName: groupName,
+          PolicyName: policyName,
+          PolicyDocument: policyDocument,
+        })
+      );
+      this.logger.debug(`Updated inline policy ${policyName} on group ${groupName}`);
+    }
+
+    // Delete removed policies
+    for (const policyName of oldMap.keys()) {
+      if (!newMap.has(policyName)) {
+        try {
+          await this.iamClient.send(
+            new DeleteGroupPolicyCommand({
+              GroupName: groupName,
+              PolicyName: policyName,
+            })
+          );
+          this.logger.debug(`Deleted inline policy ${policyName} from group ${groupName}`);
+        } catch (error) {
+          if (!(error instanceof NoSuchEntityException)) {
+            throw error;
+          }
+        }
       }
     }
   }

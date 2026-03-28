@@ -20,6 +20,10 @@ import type {
 export class SNSTopicPolicyProvider implements ResourceProvider {
   private logger = getLogger().child('SNSTopicPolicyProvider');
 
+  handledProperties = new Map<string, ReadonlySet<string>>([
+    ['AWS::SNS::TopicPolicy', new Set(['Topics', 'PolicyDocument'])],
+  ]);
+
   /**
    * Create an SNS topic policy
    *

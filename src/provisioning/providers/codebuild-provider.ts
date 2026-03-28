@@ -8,7 +8,12 @@ import {
   type EnvironmentType,
   type ComputeType,
   type ArtifactsType,
+  type ArtifactNamespace,
+  type ArtifactPackaging,
   type EnvironmentVariableType,
+  type CacheType,
+  type CacheMode,
+  type ImagePullCredentialsType,
 } from '@aws-sdk/client-codebuild';
 import { getLogger } from '../../utils/logger.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
@@ -32,11 +37,79 @@ export class CodeBuildProvider implements ResourceProvider {
   private readonly providerRegion = process.env['AWS_REGION'];
   private logger = getLogger().child('CodeBuildProvider');
 
+  handledProperties = new Map<string, ReadonlySet<string>>([
+    [
+      'AWS::CodeBuild::Project',
+      new Set([
+        'Name',
+        'Source',
+        'Environment',
+        'ServiceRole',
+        'Artifacts',
+        'Tags',
+        'Description',
+        'TimeoutInMinutes',
+        'QueuedTimeoutInMinutes',
+        'EncryptionKey',
+        'Cache',
+        'VpcConfig',
+        'LogsConfig',
+        'ConcurrentBuildLimit',
+        'SecondaryArtifacts',
+        'SecondarySources',
+        'SecondarySourceVersions',
+        'FileSystemLocations',
+        'BuildBatchConfig',
+        'BadgeEnabled',
+        'SourceVersion',
+      ]),
+    ],
+  ]);
+
   private getClient(): CodeBuildClient {
     if (!this.client) {
       this.client = new CodeBuildClient(this.providerRegion ? { region: this.providerRegion } : {});
     }
     return this.client;
+  }
+
+  private mapSource(source: Record<string, unknown> | undefined) {
+    if (!source) {
+      return { type: 'NO_SOURCE' as SourceType };
+    }
+
+    let buildspec: string | undefined;
+    if (source['BuildSpec'] !== undefined) {
+      const bs = source['BuildSpec'];
+      buildspec = typeof bs === 'object' ? JSON.stringify(bs) : (bs as string);
+    }
+
+    return {
+      type: ((source['Type'] as string) ?? 'NO_SOURCE') as SourceType,
+      buildspec,
+      location: source['Location'] as string | undefined,
+      gitCloneDepth: source['GitCloneDepth'] as number | undefined,
+      insecureSsl: source['InsecureSsl'] as boolean | undefined,
+      reportBuildStatus: source['ReportBuildStatus'] as boolean | undefined,
+    };
+  }
+
+  private mapArtifacts(artifacts: Record<string, unknown> | undefined) {
+    if (!artifacts) {
+      return { type: 'NO_ARTIFACTS' as ArtifactsType };
+    }
+
+    return {
+      type: ((artifacts['Type'] as string) ?? 'NO_ARTIFACTS') as ArtifactsType,
+      location: artifacts['Location'] as string | undefined,
+      path: artifacts['Path'] as string | undefined,
+      name: artifacts['Name'] as string | undefined,
+      namespaceType: artifacts['NamespaceType'] as ArtifactNamespace | undefined,
+      packaging: artifacts['Packaging'] as ArtifactPackaging | undefined,
+      overrideArtifactName: artifacts['OverrideArtifactName'] as boolean | undefined,
+      encryptionDisabled: artifacts['EncryptionDisabled'] as boolean | undefined,
+      artifactIdentifier: artifacts['ArtifactIdentifier'] as string | undefined,
+    };
   }
 
   private mapProperties(logicalId: string, properties: Record<string, unknown>) {
@@ -47,23 +120,120 @@ export class CodeBuildProvider implements ResourceProvider {
     const artifacts = properties['Artifacts'] as Record<string, unknown> | undefined;
     const tags = properties['Tags'] as Array<{ Key: string; Value: string }> | undefined;
 
-    let buildspec: string | undefined;
-    if (source?.['BuildSpec'] !== undefined) {
-      const bs = source['BuildSpec'];
-      buildspec = typeof bs === 'object' ? JSON.stringify(bs) : (bs as string);
-    }
-
     const envVars = environment?.['EnvironmentVariables'] as
       | Array<{ Name: string; Value: string; Type?: string }>
       | undefined;
 
+    // Map Cache (CFn PascalCase -> SDK camelCase)
+    const cfnCache = properties['Cache'] as Record<string, unknown> | undefined;
+    const cache = cfnCache
+      ? {
+          type: cfnCache['Type'] as string as CacheType,
+          location: cfnCache['Location'] as string | undefined,
+          modes: cfnCache['Modes'] as CacheMode[] | undefined,
+        }
+      : undefined;
+
+    // Map VpcConfig
+    const cfnVpcConfig = properties['VpcConfig'] as Record<string, unknown> | undefined;
+    const vpcConfig = cfnVpcConfig
+      ? {
+          vpcId: cfnVpcConfig['VpcId'] as string | undefined,
+          subnets: cfnVpcConfig['Subnets'] as string[] | undefined,
+          securityGroupIds: cfnVpcConfig['SecurityGroupIds'] as string[] | undefined,
+        }
+      : undefined;
+
+    // Map LogsConfig
+    const cfnLogsConfig = properties['LogsConfig'] as Record<string, unknown> | undefined;
+    let logsConfig: Record<string, unknown> | undefined;
+    if (cfnLogsConfig) {
+      const cwLogs = cfnLogsConfig['CloudWatchLogs'] as Record<string, unknown> | undefined;
+      const s3Logs = cfnLogsConfig['S3Logs'] as Record<string, unknown> | undefined;
+      logsConfig = {
+        cloudWatchLogs: cwLogs
+          ? {
+              status: cwLogs['Status'] as string | undefined,
+              groupName: cwLogs['GroupName'] as string | undefined,
+              streamName: cwLogs['StreamName'] as string | undefined,
+            }
+          : undefined,
+        s3Logs: s3Logs
+          ? {
+              status: s3Logs['Status'] as string | undefined,
+              location: s3Logs['Location'] as string | undefined,
+              encryptionDisabled: s3Logs['EncryptionDisabled'] as boolean | undefined,
+            }
+          : undefined,
+      };
+    }
+
+    // Map SecondarySources
+    const cfnSecondarySources = properties['SecondarySources'] as
+      | Array<Record<string, unknown>>
+      | undefined;
+    const secondarySources = cfnSecondarySources
+      ? cfnSecondarySources.map((s) => this.mapSource(s))
+      : undefined;
+
+    // Map SecondaryArtifacts
+    const cfnSecondaryArtifacts = properties['SecondaryArtifacts'] as
+      | Array<Record<string, unknown>>
+      | undefined;
+    const secondaryArtifacts = cfnSecondaryArtifacts
+      ? cfnSecondaryArtifacts.map((a) => this.mapArtifacts(a))
+      : undefined;
+
+    // Map SecondarySourceVersions
+    const cfnSecondarySourceVersions = properties['SecondarySourceVersions'] as
+      | Array<Record<string, unknown>>
+      | undefined;
+    const secondarySourceVersions = cfnSecondarySourceVersions
+      ? cfnSecondarySourceVersions.map((sv) => ({
+          sourceIdentifier: sv['SourceIdentifier'] as string,
+          sourceVersion: sv['SourceVersion'] as string,
+        }))
+      : undefined;
+
+    // Map FileSystemLocations
+    const cfnFileSystemLocations = properties['FileSystemLocations'] as
+      | Array<Record<string, unknown>>
+      | undefined;
+    const fileSystemLocations = cfnFileSystemLocations
+      ? cfnFileSystemLocations.map((fsl) => ({
+          type: fsl['Type'] as 'EFS' | undefined,
+          location: fsl['Location'] as string | undefined,
+          mountPoint: fsl['MountPoint'] as string | undefined,
+          identifier: fsl['Identifier'] as string | undefined,
+          mountOptions: fsl['MountOptions'] as string | undefined,
+        }))
+      : undefined;
+
+    // Map BuildBatchConfig
+    const cfnBuildBatchConfig = properties['BuildBatchConfig'] as
+      | Record<string, unknown>
+      | undefined;
+    let buildBatchConfig: Record<string, unknown> | undefined;
+    if (cfnBuildBatchConfig) {
+      const restrictions = cfnBuildBatchConfig['Restrictions'] as
+        | Record<string, unknown>
+        | undefined;
+      buildBatchConfig = {
+        serviceRole: cfnBuildBatchConfig['ServiceRole'] as string | undefined,
+        combineArtifacts: cfnBuildBatchConfig['CombineArtifacts'] as boolean | undefined,
+        timeoutInMins: cfnBuildBatchConfig['TimeoutInMins'] as number | undefined,
+        restrictions: restrictions
+          ? {
+              maximumBuildsAllowed: restrictions['MaximumBuildsAllowed'] as number | undefined,
+              computeTypesAllowed: restrictions['ComputeTypesAllowed'] as string[] | undefined,
+            }
+          : undefined,
+      };
+    }
+
     return {
       name,
-      source: {
-        type: ((source?.['Type'] as string) ?? 'NO_SOURCE') as SourceType,
-        buildspec,
-        location: source?.['Location'] as string | undefined,
-      },
+      source: this.mapSource(source),
       environment: {
         type: ((environment?.['Type'] as string) ?? 'LINUX_CONTAINER') as EnvironmentType,
         computeType: ((environment?.['ComputeType'] as string) ??
@@ -76,12 +246,40 @@ export class CodeBuildProvider implements ResourceProvider {
               type: (v.Type ?? 'PLAINTEXT') as EnvironmentVariableType,
             }))
           : undefined,
+        privilegedMode: environment?.['PrivilegedMode'] as boolean | undefined,
+        certificate: environment?.['Certificate'] as string | undefined,
+        imagePullCredentialsType: environment?.['ImagePullCredentialsType'] as
+          | ImagePullCredentialsType
+          | undefined,
+        registryCredential: environment?.['RegistryCredential']
+          ? {
+              credential: (environment['RegistryCredential'] as Record<string, unknown>)[
+                'Credential'
+              ] as string,
+              credentialProvider: (environment['RegistryCredential'] as Record<string, unknown>)[
+                'CredentialProvider'
+              ] as 'SECRETS_MANAGER',
+            }
+          : undefined,
       },
       serviceRole,
-      artifacts: {
-        type: ((artifacts?.['Type'] as string) ?? 'NO_ARTIFACTS') as ArtifactsType,
-      },
+      artifacts: this.mapArtifacts(artifacts),
       tags: tags ? tags.map((t) => ({ key: t.Key, value: t.Value })) : undefined,
+      description: properties['Description'] as string | undefined,
+      timeoutInMinutes: properties['TimeoutInMinutes'] as number | undefined,
+      queuedTimeoutInMinutes: properties['QueuedTimeoutInMinutes'] as number | undefined,
+      encryptionKey: properties['EncryptionKey'] as string | undefined,
+      cache,
+      vpcConfig,
+      logsConfig,
+      concurrentBuildLimit: properties['ConcurrentBuildLimit'] as number | undefined,
+      secondarySources,
+      secondaryArtifacts,
+      secondarySourceVersions,
+      fileSystemLocations,
+      buildBatchConfig,
+      badgeEnabled: properties['BadgeEnabled'] as boolean | undefined,
+      sourceVersion: properties['SourceVersion'] as string | undefined,
     };
   }
 

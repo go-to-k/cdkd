@@ -26,6 +26,9 @@ import type {
 export class IAMInstanceProfileProvider implements ResourceProvider {
   private iamClient: IAMClient;
   private logger = getLogger().child('IAMInstanceProfileProvider');
+  handledProperties = new Map<string, ReadonlySet<string>>([
+    ['AWS::IAM::InstanceProfile', new Set(['InstanceProfileName', 'Path', 'Roles'])],
+  ]);
 
   constructor() {
     const awsClients = getAwsClients();

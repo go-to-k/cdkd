@@ -8,6 +8,7 @@ import {
   type CreateStateMachineCommandInput,
   type LoggingConfiguration,
   type TracingConfiguration,
+  type EncryptionConfiguration,
   type Tag,
   type StateMachineType,
 } from '@aws-sdk/client-sfn';
@@ -32,6 +33,24 @@ export class StepFunctionsProvider implements ResourceProvider {
   private sfnClient?: SFNClient;
   private readonly providerRegion = process.env['AWS_REGION'];
   private logger = getLogger().child('StepFunctionsProvider');
+
+  handledProperties = new Map<string, ReadonlySet<string>>([
+    [
+      'AWS::StepFunctions::StateMachine',
+      new Set([
+        'StateMachineName',
+        'RoleArn',
+        'StateMachineType',
+        'LoggingConfiguration',
+        'TracingConfiguration',
+        'Tags',
+        'DefinitionString',
+        'Definition',
+        'DefinitionSubstitutions',
+        'EncryptionConfiguration',
+      ]),
+    ],
+  ]);
 
   private getClient(): SFNClient {
     if (!this.sfnClient) {
@@ -74,6 +93,21 @@ export class StepFunctionsProvider implements ResourceProvider {
         tags = tagList.map((tag) => ({ key: tag.Key, value: tag.Value }));
       }
 
+      // Map EncryptionConfiguration (CFn PascalCase -> SDK camelCase)
+      const cfnEncConfig = properties['EncryptionConfiguration'] as
+        | Record<string, unknown>
+        | undefined;
+      let encryptionConfiguration: EncryptionConfiguration | undefined;
+      if (cfnEncConfig) {
+        encryptionConfiguration = {
+          type: cfnEncConfig['Type'] as EncryptionConfiguration['type'],
+          kmsKeyId: cfnEncConfig['KmsKeyId'] as string | undefined,
+          kmsDataKeyReusePeriodSeconds: cfnEncConfig['KmsDataKeyReusePeriodSeconds'] as
+            | number
+            | undefined,
+        };
+      }
+
       const createParams: CreateStateMachineCommandInput = {
         name: stateMachineName,
         definition: definitionString,
@@ -86,6 +120,7 @@ export class StepFunctionsProvider implements ResourceProvider {
           | TracingConfiguration
           | undefined,
         tags: tags,
+        encryptionConfiguration,
       };
 
       const response = await this.getClient().send(new CreateStateMachineCommand(createParams));
@@ -138,6 +173,21 @@ export class StepFunctionsProvider implements ResourceProvider {
     try {
       const definitionString = this.buildDefinitionString(properties);
 
+      // Map EncryptionConfiguration for update
+      const cfnEncConfig = properties['EncryptionConfiguration'] as
+        | Record<string, unknown>
+        | undefined;
+      let encryptionConfiguration: EncryptionConfiguration | undefined;
+      if (cfnEncConfig) {
+        encryptionConfiguration = {
+          type: cfnEncConfig['Type'] as EncryptionConfiguration['type'],
+          kmsKeyId: cfnEncConfig['KmsKeyId'] as string | undefined,
+          kmsDataKeyReusePeriodSeconds: cfnEncConfig['KmsDataKeyReusePeriodSeconds'] as
+            | number
+            | undefined,
+        };
+      }
+
       await this.getClient().send(
         new UpdateStateMachineCommand({
           stateMachineArn: physicalId,
@@ -149,6 +199,7 @@ export class StepFunctionsProvider implements ResourceProvider {
           tracingConfiguration: properties['TracingConfiguration'] as
             | TracingConfiguration
             | undefined,
+          encryptionConfiguration,
         })
       );
 

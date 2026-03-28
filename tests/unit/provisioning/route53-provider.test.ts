@@ -73,6 +73,9 @@ describe('Route53Provider', () => {
 
     describe('delete', () => {
       it('should delete hosted zone', async () => {
+        // First call: ListQueryLoggingConfigs (cleanup before delete)
+        mockSend.mockResolvedValueOnce({ QueryLoggingConfigs: [] });
+        // Second call: DeleteHostedZone
         mockSend.mockResolvedValueOnce({});
 
         await provider.delete(
@@ -81,14 +84,20 @@ describe('Route53Provider', () => {
           'AWS::Route53::HostedZone'
         );
 
-        expect(mockSend).toHaveBeenCalledTimes(1);
+        expect(mockSend).toHaveBeenCalledTimes(2);
 
-        const deleteCall = mockSend.mock.calls[0][0];
+        const listCall = mockSend.mock.calls[0][0];
+        expect(listCall.constructor.name).toBe('ListQueryLoggingConfigsCommand');
+
+        const deleteCall = mockSend.mock.calls[1][0];
         expect(deleteCall.constructor.name).toBe('DeleteHostedZoneCommand');
         expect(deleteCall.input.Id).toBe('Z1234567890');
       });
 
       it('should handle NoSuchHostedZone', async () => {
+        // ListQueryLoggingConfigs succeeds (or fails gracefully)
+        mockSend.mockResolvedValueOnce({ QueryLoggingConfigs: [] });
+        // DeleteHostedZone throws NoSuchHostedZone
         const error = new Error('No such hosted zone');
         error.name = 'NoSuchHostedZone';
         mockSend.mockRejectedValueOnce(error);
@@ -99,7 +108,7 @@ describe('Route53Provider', () => {
           'AWS::Route53::HostedZone'
         );
 
-        expect(mockSend).toHaveBeenCalledTimes(1);
+        expect(mockSend).toHaveBeenCalledTimes(2);
       });
     });
   });

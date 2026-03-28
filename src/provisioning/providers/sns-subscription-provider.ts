@@ -23,6 +23,10 @@ export class SNSSubscriptionProvider implements ResourceProvider {
   private snsClient: SNSClient;
   private logger = getLogger().child('SNSSubscriptionProvider');
 
+  handledProperties = new Map<string, ReadonlySet<string>>([
+    ['AWS::SNS::Subscription', new Set(['TopicArn', 'Protocol', 'Endpoint', 'FilterPolicy'])],
+  ]);
+
   constructor() {
     const awsClients = getAwsClients();
     this.snsClient = awsClients.sns;

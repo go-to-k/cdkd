@@ -6,6 +6,7 @@ import * as subscriptions from 'aws-cdk-lib/aws-sns-subscriptions';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
 import * as eventsources from 'aws-cdk-lib/aws-lambda-event-sources';
 import * as ssm from 'aws-cdk-lib/aws-ssm';
+import * as path from 'path';
 
 /**
  * Microservices communication stack
@@ -69,7 +70,7 @@ export class MicroservicesStack extends cdk.Stack {
     const serviceAFn = new lambda.Function(this, 'ServiceAFunction', {
       functionName: 'cdkd-microservices-service-a',
       runtime: lambda.Runtime.PYTHON_3_12,
-      code: lambda.Code.fromAsset('lambda/service-a'),
+      code: lambda.Code.fromAsset(path.join(__dirname, '../lambda/service-a')),
       handler: 'index.handler',
       timeout: cdk.Duration.seconds(30),
       environment: {
@@ -125,7 +126,7 @@ export class MicroservicesStack extends cdk.Stack {
     const serviceBFn = new lambda.Function(this, 'ServiceBFunction', {
       functionName: 'cdkd-microservices-service-b',
       runtime: lambda.Runtime.PYTHON_3_12,
-      code: lambda.Code.fromAsset('lambda/service-b'),
+      code: lambda.Code.fromAsset(path.join(__dirname, '../lambda/service-b')),
       handler: 'index.handler',
       timeout: cdk.Duration.seconds(30),
       environment: {

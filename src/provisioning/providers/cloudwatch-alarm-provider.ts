@@ -28,6 +28,32 @@ export class CloudWatchAlarmProvider implements ResourceProvider {
   private cloudWatchClient: CloudWatchClient;
   private logger = getLogger().child('CloudWatchAlarmProvider');
 
+  handledProperties = new Map<string, ReadonlySet<string>>([
+    [
+      'AWS::CloudWatch::Alarm',
+      new Set([
+        'AlarmName',
+        'ComparisonOperator',
+        'EvaluationPeriods',
+        'Threshold',
+        'ActionsEnabled',
+        'AlarmActions',
+        'AlarmDescription',
+        'DatapointsToAlarm',
+        'InsufficientDataActions',
+        'OKActions',
+        'TreatMissingData',
+        'Unit',
+        'Metrics',
+        'MetricName',
+        'Namespace',
+        'Period',
+        'Statistic',
+        'Dimensions',
+      ]),
+    ],
+  ]);
+
   constructor() {
     const awsClients = getAwsClients();
     this.cloudWatchClient = awsClients.cloudWatch;

@@ -26,6 +26,34 @@ import type {
 export class LambdaEventSourceMappingProvider implements ResourceProvider {
   private lambdaClient: LambdaClient;
   private logger = getLogger().child('LambdaEventSourceMappingProvider');
+  handledProperties = new Map<string, ReadonlySet<string>>([
+    [
+      'AWS::Lambda::EventSourceMapping',
+      new Set([
+        'FunctionName',
+        'EventSourceArn',
+        'BatchSize',
+        'StartingPosition',
+        'Enabled',
+        'MaximumBatchingWindowInSeconds',
+        'MaximumRetryAttempts',
+        'BisectBatchOnFunctionError',
+        'MaximumRecordAgeInSeconds',
+        'ParallelizationFactor',
+        'FilterCriteria',
+        'DestinationConfig',
+        'TumblingWindowInSeconds',
+        'FunctionResponseTypes',
+        'SourceAccessConfigurations',
+        'SelfManagedEventSource',
+        'SelfManagedKafkaEventSourceConfig',
+        'AmazonManagedKafkaEventSourceConfig',
+        'DocumentDBEventSourceConfig',
+        'ScalingConfig',
+        'Tags',
+      ]),
+    ],
+  ]);
 
   constructor() {
     const awsClients = getAwsClients();
@@ -77,6 +105,44 @@ export class LambdaEventSourceMappingProvider implements ResourceProvider {
         params.FilterCriteria = properties['FilterCriteria'] as {
           Filters?: Array<{ Pattern?: string }>;
         };
+      if (properties['DestinationConfig'])
+        params.DestinationConfig = properties[
+          'DestinationConfig'
+        ] as import('@aws-sdk/client-lambda').DestinationConfig;
+      if (properties['TumblingWindowInSeconds'])
+        params.TumblingWindowInSeconds = properties['TumblingWindowInSeconds'] as number;
+      if (properties['FunctionResponseTypes'])
+        params.FunctionResponseTypes = properties[
+          'FunctionResponseTypes'
+        ] as import('@aws-sdk/client-lambda').FunctionResponseType[];
+      if (properties['SourceAccessConfigurations'])
+        params.SourceAccessConfigurations = properties[
+          'SourceAccessConfigurations'
+        ] as import('@aws-sdk/client-lambda').SourceAccessConfiguration[];
+      if (properties['SelfManagedEventSource'])
+        params.SelfManagedEventSource = properties[
+          'SelfManagedEventSource'
+        ] as import('@aws-sdk/client-lambda').SelfManagedEventSource;
+      if (properties['SelfManagedKafkaEventSourceConfig'])
+        params.SelfManagedKafkaEventSourceConfig = properties[
+          'SelfManagedKafkaEventSourceConfig'
+        ] as import('@aws-sdk/client-lambda').SelfManagedKafkaEventSourceConfig;
+      if (properties['AmazonManagedKafkaEventSourceConfig'])
+        params.AmazonManagedKafkaEventSourceConfig = properties[
+          'AmazonManagedKafkaEventSourceConfig'
+        ] as import('@aws-sdk/client-lambda').AmazonManagedKafkaEventSourceConfig;
+      if (properties['DocumentDBEventSourceConfig'])
+        params.DocumentDBEventSourceConfig = properties[
+          'DocumentDBEventSourceConfig'
+        ] as import('@aws-sdk/client-lambda').DocumentDBEventSourceConfig;
+      if (properties['ScalingConfig'])
+        params.ScalingConfig = properties[
+          'ScalingConfig'
+        ] as import('@aws-sdk/client-lambda').ScalingConfig;
+      if (properties['Tags']) {
+        const cfnTags = properties['Tags'] as Array<{ Key: string; Value: string }>;
+        params.Tags = Object.fromEntries(cfnTags.map((t) => [t.Key, t.Value]));
+      }
 
       const response = await this.lambdaClient.send(new CreateEventSourceMappingCommand(params));
 
@@ -140,6 +206,28 @@ export class LambdaEventSourceMappingProvider implements ResourceProvider {
       updateParams.FilterCriteria = properties['FilterCriteria'] as {
         Filters?: Array<{ Pattern?: string }>;
       };
+    if (properties['DestinationConfig'])
+      updateParams.DestinationConfig = properties[
+        'DestinationConfig'
+      ] as import('@aws-sdk/client-lambda').DestinationConfig;
+    if (properties['TumblingWindowInSeconds'])
+      updateParams.TumblingWindowInSeconds = properties['TumblingWindowInSeconds'] as number;
+    if (properties['FunctionResponseTypes'])
+      updateParams.FunctionResponseTypes = properties[
+        'FunctionResponseTypes'
+      ] as import('@aws-sdk/client-lambda').FunctionResponseType[];
+    if (properties['SourceAccessConfigurations'])
+      updateParams.SourceAccessConfigurations = properties[
+        'SourceAccessConfigurations'
+      ] as import('@aws-sdk/client-lambda').SourceAccessConfiguration[];
+    if (properties['ScalingConfig'])
+      updateParams.ScalingConfig = properties[
+        'ScalingConfig'
+      ] as import('@aws-sdk/client-lambda').ScalingConfig;
+    if (properties['DocumentDBEventSourceConfig'])
+      updateParams.DocumentDBEventSourceConfig = properties[
+        'DocumentDBEventSourceConfig'
+      ] as import('@aws-sdk/client-lambda').DocumentDBEventSourceConfig;
 
     await this.lambdaClient.send(new UpdateEventSourceMappingCommand(updateParams));
 

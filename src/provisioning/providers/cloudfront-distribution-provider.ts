@@ -56,6 +56,10 @@ export class CloudFrontDistributionProvider implements ResourceProvider {
   private cloudFrontClient: CloudFrontClient;
   private logger = getLogger().child('CloudFrontDistributionProvider');
 
+  handledProperties = new Map<string, ReadonlySet<string>>([
+    ['AWS::CloudFront::Distribution', new Set(['DistributionConfig'])],
+  ]);
+
   constructor() {
     const awsClients = getAwsClients();
     this.cloudFrontClient = awsClients.cloudFront;

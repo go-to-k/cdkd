@@ -42,6 +42,43 @@ export class AppSyncProvider implements ResourceProvider {
   private readonly providerRegion = process.env['AWS_REGION'];
   private logger = getLogger().child('AppSyncProvider');
 
+  handledProperties = new Map<string, ReadonlySet<string>>([
+    [
+      'AWS::AppSync::GraphQLApi',
+      new Set(['Name', 'AuthenticationType', 'XrayEnabled', 'LogConfig', 'Tags']),
+    ],
+    ['AWS::AppSync::GraphQLSchema', new Set(['ApiId', 'Definition', 'DefinitionS3Location'])],
+    [
+      'AWS::AppSync::DataSource',
+      new Set([
+        'ApiId',
+        'Name',
+        'Type',
+        'Description',
+        'ServiceRoleArn',
+        'DynamoDBConfig',
+        'LambdaConfig',
+        'HttpConfig',
+      ]),
+    ],
+    [
+      'AWS::AppSync::Resolver',
+      new Set([
+        'ApiId',
+        'TypeName',
+        'FieldName',
+        'DataSourceName',
+        'RequestMappingTemplate',
+        'ResponseMappingTemplate',
+        'Kind',
+        'PipelineConfig',
+        'Runtime',
+        'Code',
+      ]),
+    ],
+    ['AWS::AppSync::ApiKey', new Set(['ApiId', 'Description', 'Expires'])],
+  ]);
+
   private getClient(): AppSyncClient {
     if (!this.client) {
       this.client = new AppSyncClient(this.providerRegion ? { region: this.providerRegion } : {});

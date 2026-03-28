@@ -48,6 +48,28 @@ export class SQSQueueProvider implements ResourceProvider {
   private sqsClient: SQSClient;
   private stsClient: STSClient;
   private logger = getLogger().child('SQSQueueProvider');
+  handledProperties = new Map<string, ReadonlySet<string>>([
+    [
+      'AWS::SQS::Queue',
+      new Set([
+        'QueueName',
+        'VisibilityTimeout',
+        'MaximumMessageSize',
+        'MessageRetentionPeriod',
+        'DelaySeconds',
+        'ReceiveMessageWaitTimeSeconds',
+        'RedrivePolicy',
+        'FifoQueue',
+        'ContentBasedDeduplication',
+        'KmsMasterKeyId',
+        'KmsDataKeyReusePeriodSeconds',
+        'SqsManagedSseEnabled',
+        'DeduplicationScope',
+        'FifoThroughputLimit',
+        'Tags',
+      ]),
+    ],
+  ]);
 
   constructor() {
     const awsClients = getAwsClients();

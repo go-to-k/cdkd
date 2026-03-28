@@ -37,6 +37,28 @@ import type {
 export class LambdaFunctionProvider implements ResourceProvider {
   private lambdaClient: LambdaClient;
   private logger = getLogger().child('LambdaFunctionProvider');
+  handledProperties = new Map<string, ReadonlySet<string>>([
+    [
+      'AWS::Lambda::Function',
+      new Set([
+        'FunctionName',
+        'Code',
+        'Role',
+        'Tags',
+        'Handler',
+        'Runtime',
+        'Timeout',
+        'MemorySize',
+        'Description',
+        'Environment',
+        'Layers',
+        'Architectures',
+        'PackageType',
+        'TracingConfig',
+        'EphemeralStorage',
+      ]),
+    ],
+  ]);
 
   constructor() {
     const awsClients = getAwsClients();

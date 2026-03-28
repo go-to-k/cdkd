@@ -35,6 +35,11 @@ export class GlueProvider implements ResourceProvider {
   private readonly providerRegion = process.env['AWS_REGION'];
   private logger = getLogger().child('GlueProvider');
 
+  handledProperties = new Map<string, ReadonlySet<string>>([
+    ['AWS::Glue::Database', new Set(['DatabaseInput', 'CatalogId'])],
+    ['AWS::Glue::Table', new Set(['DatabaseName', 'TableInput', 'CatalogId'])],
+  ]);
+
   private getClient(): GlueClient {
     if (!this.client) {
       this.client = new GlueClient(this.providerRegion ? { region: this.providerRegion } : {});

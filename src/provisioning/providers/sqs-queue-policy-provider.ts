@@ -18,6 +18,10 @@ export class SQSQueuePolicyProvider implements ResourceProvider {
   private sqsClient: SQSClient;
   private logger = getLogger().child('SQSQueuePolicyProvider');
 
+  handledProperties = new Map<string, ReadonlySet<string>>([
+    ['AWS::SQS::QueuePolicy', new Set(['Queues', 'PolicyDocument'])],
+  ]);
+
   constructor() {
     const awsClients = getAwsClients();
     this.sqsClient = awsClients.sqs;

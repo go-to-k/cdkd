@@ -2,8 +2,11 @@ import {
   SSMClient,
   PutParameterCommand,
   DeleteParameterCommand,
+  AddTagsToResourceCommand,
+  RemoveTagsFromResourceCommand,
   ParameterNotFound,
   type ParameterType,
+  type Tag,
 } from '@aws-sdk/client-ssm';
 import { getLogger } from '../../utils/logger.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
@@ -24,6 +27,23 @@ import type {
 export class SSMParameterProvider implements ResourceProvider {
   private ssmClient: SSMClient;
   private logger = getLogger().child('SSMParameterProvider');
+
+  handledProperties = new Map<string, ReadonlySet<string>>([
+    [
+      'AWS::SSM::Parameter',
+      new Set([
+        'Name',
+        'Type',
+        'Value',
+        'Description',
+        'Tags',
+        'AllowedPattern',
+        'Tier',
+        'Policies',
+        'DataType',
+      ]),
+    ],
+  ]);
 
   constructor() {
     const awsClients = getAwsClients();
@@ -55,15 +75,40 @@ export class SSMParameterProvider implements ResourceProvider {
     }
 
     try {
-      await this.ssmClient.send(
-        new PutParameterCommand({
-          Name: name,
-          Type: type as ParameterType,
-          Value: value,
-          Description: properties['Description'] as string | undefined,
-          Overwrite: false,
-        })
-      );
+      const putParams: import('@aws-sdk/client-ssm').PutParameterCommandInput = {
+        Name: name,
+        Type: type as ParameterType,
+        Value: value,
+        Description: properties['Description'] as string | undefined,
+        Overwrite: false,
+      };
+      if (properties['AllowedPattern']) {
+        putParams.AllowedPattern = properties['AllowedPattern'] as string;
+      }
+      if (properties['Tier']) {
+        putParams.Tier = properties['Tier'] as import('@aws-sdk/client-ssm').ParameterTier;
+      }
+      if (properties['Policies']) {
+        putParams.Policies = properties['Policies'] as string;
+      }
+      if (properties['DataType']) {
+        putParams.DataType = properties['DataType'] as string;
+      }
+
+      await this.ssmClient.send(new PutParameterCommand(putParams));
+
+      // Apply tags if specified
+      if (properties['Tags']) {
+        const cfnTags = properties['Tags'] as Array<{ Key: string; Value: string }>;
+        const ssmTags: Tag[] = cfnTags.map((t) => ({ Key: t.Key, Value: t.Value }));
+        await this.ssmClient.send(
+          new AddTagsToResourceCommand({
+            ResourceType: 'Parameter',
+            ResourceId: name,
+            Tags: ssmTags,
+          })
+        );
+      }
 
       this.logger.debug(`Successfully created SSM parameter ${logicalId}: ${name}`);
 
@@ -94,7 +139,7 @@ export class SSMParameterProvider implements ResourceProvider {
     physicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
-    _previousProperties: Record<string, unknown>
+    previousProperties: Record<string, unknown>
   ): Promise<ResourceUpdateResult> {
     this.logger.debug(`Updating SSM parameter ${logicalId}: ${physicalId}`);
 
@@ -111,15 +156,57 @@ export class SSMParameterProvider implements ResourceProvider {
     }
 
     try {
-      await this.ssmClient.send(
-        new PutParameterCommand({
-          Name: physicalId,
-          Type: type as ParameterType,
-          Value: value,
-          Description: properties['Description'] as string | undefined,
-          Overwrite: true,
-        })
-      );
+      const putParams: import('@aws-sdk/client-ssm').PutParameterCommandInput = {
+        Name: physicalId,
+        Type: type as ParameterType,
+        Value: value,
+        Description: properties['Description'] as string | undefined,
+        Overwrite: true,
+      };
+      if (properties['AllowedPattern']) {
+        putParams.AllowedPattern = properties['AllowedPattern'] as string;
+      }
+      if (properties['Tier']) {
+        putParams.Tier = properties['Tier'] as import('@aws-sdk/client-ssm').ParameterTier;
+      }
+      if (properties['Policies']) {
+        putParams.Policies = properties['Policies'] as string;
+      }
+      if (properties['DataType']) {
+        putParams.DataType = properties['DataType'] as string;
+      }
+
+      await this.ssmClient.send(new PutParameterCommand(putParams));
+
+      // Update Tags if changed
+      const newTags = properties['Tags'] as Array<{ Key: string; Value: string }> | undefined;
+      const oldTags = previousProperties['Tags'] as
+        | Array<{ Key: string; Value: string }>
+        | undefined;
+      if (JSON.stringify(newTags) !== JSON.stringify(oldTags)) {
+        // Remove old tags
+        if (oldTags && oldTags.length > 0) {
+          await this.ssmClient.send(
+            new RemoveTagsFromResourceCommand({
+              ResourceType: 'Parameter',
+              ResourceId: physicalId,
+              TagKeys: oldTags.map((t) => t.Key),
+            })
+          );
+        }
+        // Apply new tags
+        if (newTags && newTags.length > 0) {
+          const ssmTags: Tag[] = newTags.map((t) => ({ Key: t.Key, Value: t.Value }));
+          await this.ssmClient.send(
+            new AddTagsToResourceCommand({
+              ResourceType: 'Parameter',
+              ResourceId: physicalId,
+              Tags: ssmTags,
+            })
+          );
+        }
+        this.logger.debug(`Updated tags for SSM parameter ${physicalId}`);
+      }
 
       this.logger.debug(`Successfully updated SSM parameter ${logicalId}`);
 

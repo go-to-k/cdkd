@@ -26,6 +26,12 @@ import type {
 export class LambdaUrlProvider implements ResourceProvider {
   private lambdaClient: LambdaClient;
   private logger = getLogger().child('LambdaUrlProvider');
+  handledProperties = new Map<string, ReadonlySet<string>>([
+    [
+      'AWS::Lambda::Url',
+      new Set(['TargetFunctionArn', 'AuthType', 'Qualifier', 'InvokeMode', 'Cors']),
+    ],
+  ]);
 
   constructor() {
     const awsClients = getAwsClients();

@@ -6,7 +6,10 @@ import {
   DeleteRuleCommand,
   DescribeRuleCommand,
   ListTargetsByRuleCommand,
+  TagResourceCommand,
+  UntagResourceCommand,
   ResourceNotFoundException,
+  type Tag,
 } from '@aws-sdk/client-eventbridge';
 import { getLogger } from '../../utils/logger.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
@@ -44,6 +47,23 @@ interface RuleTarget {
 export class EventBridgeRuleProvider implements ResourceProvider {
   private eventBridgeClient: EventBridgeClient;
   private logger = getLogger().child('EventBridgeRuleProvider');
+
+  handledProperties = new Map<string, ReadonlySet<string>>([
+    [
+      'AWS::Events::Rule',
+      new Set([
+        'Name',
+        'Description',
+        'EventBusName',
+        'EventPattern',
+        'State',
+        'ScheduleExpression',
+        'RoleArn',
+        'Targets',
+        'Tags',
+      ]),
+    ],
+  ]);
 
   constructor() {
     const awsClients = getAwsClients();
@@ -92,6 +112,11 @@ export class EventBridgeRuleProvider implements ResourceProvider {
       }
       if (properties['RoleArn'] !== undefined) {
         putRuleParams['RoleArn'] = properties['RoleArn'];
+      }
+
+      // Add tags to PutRule if specified
+      if (properties['Tags']) {
+        putRuleParams['Tags'] = properties['Tags'];
       }
 
       // eslint-disable-next-line @typescript-eslint/no-explicit-any, @typescript-eslint/no-unsafe-argument
@@ -211,6 +236,34 @@ export class EventBridgeRuleProvider implements ResourceProvider {
           })
         );
         this.logger.debug(`Updated ${newTargets.length} targets on rule ${ruleName}`);
+      }
+
+      // Update Tags if changed
+      const newTags = properties['Tags'] as Tag[] | undefined;
+      const oldTags = previousProperties['Tags'] as Tag[] | undefined;
+      if (JSON.stringify(newTags) !== JSON.stringify(oldTags)) {
+        // Remove old tags
+        if (oldTags && oldTags.length > 0) {
+          const oldTagKeys = oldTags.map((t) => t.Key).filter((k): k is string => !!k);
+          if (oldTagKeys.length > 0) {
+            await this.eventBridgeClient.send(
+              new UntagResourceCommand({
+                ResourceARN: ruleArn,
+                TagKeys: oldTagKeys,
+              })
+            );
+          }
+        }
+        // Apply new tags
+        if (newTags && newTags.length > 0) {
+          await this.eventBridgeClient.send(
+            new TagResourceCommand({
+              ResourceARN: ruleArn,
+              Tags: newTags,
+            })
+          );
+        }
+        this.logger.debug(`Updated tags for rule ${ruleName}`);
       }
 
       this.logger.debug(`Successfully updated EventBridge rule ${logicalId}`);

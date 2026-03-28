@@ -5,7 +5,12 @@ import {
   DescribeStreamCommand,
   UpdateShardCountCommand,
   AddTagsToStreamCommand,
+  IncreaseStreamRetentionPeriodCommand,
+  DecreaseStreamRetentionPeriodCommand,
+  StartStreamEncryptionCommand,
+  StopStreamEncryptionCommand,
   ResourceNotFoundException,
+  type EncryptionType,
 } from '@aws-sdk/client-kinesis';
 import { getLogger } from '../../utils/logger.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
@@ -28,6 +33,20 @@ export class KinesisStreamProvider implements ResourceProvider {
   private client: KinesisClient | undefined;
   private readonly providerRegion = process.env['AWS_REGION'];
   private logger = getLogger().child('KinesisProvider');
+
+  handledProperties = new Map<string, ReadonlySet<string>>([
+    [
+      'AWS::Kinesis::Stream',
+      new Set([
+        'Name',
+        'StreamModeDetails',
+        'ShardCount',
+        'Tags',
+        'RetentionPeriodHours',
+        'StreamEncryption',
+      ]),
+    ],
+  ]);
 
   private getClient(): KinesisClient {
     if (!this.client) {
@@ -93,10 +112,49 @@ export class KinesisStreamProvider implements ResourceProvider {
         }
       }
 
-      // Apply RetentionPeriodHours if specified (requires separate API call after creation)
-      // Note: Default is 24 hours, UpdateShardCount doesn't handle this.
-      // Kinesis uses IncreaseStreamRetentionPeriod / DecreaseStreamRetentionPeriod
-      // but for simplicity we skip non-default retention in create.
+      // Apply RetentionPeriodHours if specified (default is 24 hours)
+      const retentionPeriodHours = properties['RetentionPeriodHours'] as number | undefined;
+      if (retentionPeriodHours !== undefined && retentionPeriodHours !== 24) {
+        this.logger.debug(
+          `Setting retention period to ${retentionPeriodHours} hours for ${streamName}`
+        );
+        if (retentionPeriodHours > 24) {
+          await this.getClient().send(
+            new IncreaseStreamRetentionPeriodCommand({
+              StreamName: streamName,
+              RetentionPeriodHours: retentionPeriodHours,
+            })
+          );
+        } else {
+          await this.getClient().send(
+            new DecreaseStreamRetentionPeriodCommand({
+              StreamName: streamName,
+              RetentionPeriodHours: retentionPeriodHours,
+            })
+          );
+        }
+        // Wait for stream to become ACTIVE after retention period change
+        await this.waitForStreamActive(streamName);
+      }
+
+      // Apply StreamEncryption if specified
+      const streamEncryption = properties['StreamEncryption'] as
+        | Record<string, unknown>
+        | undefined;
+      if (streamEncryption) {
+        const encryptionType = (streamEncryption['EncryptionType'] as string) ?? 'KMS';
+        const keyId = streamEncryption['KeyId'] as string;
+        this.logger.debug(`Enabling stream encryption for ${streamName}`);
+        await this.getClient().send(
+          new StartStreamEncryptionCommand({
+            StreamName: streamName,
+            EncryptionType: encryptionType as EncryptionType,
+            KeyId: keyId,
+          })
+        );
+        // Wait for stream to become ACTIVE after encryption change
+        await this.waitForStreamActive(streamName);
+      }
 
       this.logger.debug(`Successfully created Kinesis stream ${logicalId}: ${streamName}`);
 
@@ -161,6 +219,65 @@ export class KinesisStreamProvider implements ResourceProvider {
           );
 
           // Wait for stream to become ACTIVE after resharding
+          await this.waitForStreamActive(physicalId);
+        }
+      }
+
+      // Update RetentionPeriodHours if changed
+      const newRetention = properties['RetentionPeriodHours'] as number | undefined;
+      const oldRetention = previousProperties['RetentionPeriodHours'] as number | undefined;
+      const effectiveNewRetention = newRetention ?? 24;
+      const effectiveOldRetention = oldRetention ?? 24;
+      if (effectiveNewRetention !== effectiveOldRetention) {
+        this.logger.debug(
+          `Updating retention period for ${physicalId}: ${effectiveOldRetention} -> ${effectiveNewRetention}`
+        );
+        if (effectiveNewRetention > effectiveOldRetention) {
+          await this.getClient().send(
+            new IncreaseStreamRetentionPeriodCommand({
+              StreamName: physicalId,
+              RetentionPeriodHours: effectiveNewRetention,
+            })
+          );
+        } else {
+          await this.getClient().send(
+            new DecreaseStreamRetentionPeriodCommand({
+              StreamName: physicalId,
+              RetentionPeriodHours: effectiveNewRetention,
+            })
+          );
+        }
+        await this.waitForStreamActive(physicalId);
+      }
+
+      // Update StreamEncryption if changed
+      const newEncryption = properties['StreamEncryption'] as Record<string, unknown> | undefined;
+      const oldEncryption = previousProperties['StreamEncryption'] as
+        | Record<string, unknown>
+        | undefined;
+      if (JSON.stringify(newEncryption) !== JSON.stringify(oldEncryption)) {
+        // Remove old encryption if it existed
+        if (oldEncryption) {
+          await this.getClient().send(
+            new StopStreamEncryptionCommand({
+              StreamName: physicalId,
+              EncryptionType: ((oldEncryption['EncryptionType'] as string) ??
+                'KMS') as EncryptionType,
+              KeyId: oldEncryption['KeyId'] as string,
+            })
+          );
+          await this.waitForStreamActive(physicalId);
+        }
+        // Apply new encryption
+        if (newEncryption) {
+          await this.getClient().send(
+            new StartStreamEncryptionCommand({
+              StreamName: physicalId,
+              EncryptionType: ((newEncryption['EncryptionType'] as string) ??
+                'KMS') as EncryptionType,
+              KeyId: newEncryption['KeyId'] as string,
+            })
+          );
           await this.waitForStreamActive(physicalId);
         }
       }

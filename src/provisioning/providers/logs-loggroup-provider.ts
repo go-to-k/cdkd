@@ -3,6 +3,11 @@ import {
   CreateLogGroupCommand,
   DeleteLogGroupCommand,
   PutRetentionPolicyCommand,
+  DeleteRetentionPolicyCommand,
+  TagResourceCommand,
+  UntagResourceCommand,
+  PutDataProtectionPolicyCommand,
+  DeleteDataProtectionPolicyCommand,
   ResourceNotFoundException,
   ResourceAlreadyExistsException,
 } from '@aws-sdk/client-cloudwatch-logs';
@@ -29,6 +34,24 @@ export class LogsLogGroupProvider implements ResourceProvider {
   private stsClient: STSClient;
   private logger = getLogger().child('LogsLogGroupProvider');
 
+  handledProperties = new Map<string, ReadonlySet<string>>([
+    [
+      'AWS::Logs::LogGroup',
+      new Set([
+        'LogGroupName',
+        'KmsKeyId',
+        'RetentionInDays',
+        'Tags',
+        'DataProtectionPolicy',
+        'LogGroupClass',
+        'FieldIndexPolicies',
+        'ResourcePolicyDocument',
+        'DeletionProtectionEnabled',
+        'BearerTokenAuthenticationEnabled',
+      ]),
+    ],
+  ]);
+
   constructor() {
     const awsClients = getAwsClients();
     this.logsClient = awsClients.cloudWatchLogs;
@@ -54,6 +77,15 @@ export class LogsLogGroupProvider implements ResourceProvider {
         logGroupName,
       };
       if (properties['KmsKeyId']) createParams.kmsKeyId = properties['KmsKeyId'] as string;
+      if (properties['LogGroupClass']) {
+        createParams.logGroupClass = properties[
+          'LogGroupClass'
+        ] as import('@aws-sdk/client-cloudwatch-logs').LogGroupClass;
+      }
+      if (properties['Tags']) {
+        const cfnTags = properties['Tags'] as Array<{ Key: string; Value: string }>;
+        createParams.tags = Object.fromEntries(cfnTags.map((t) => [t.Key, t.Value]));
+      }
 
       await this.logsClient.send(new CreateLogGroupCommand(createParams));
 
@@ -67,6 +99,25 @@ export class LogsLogGroupProvider implements ResourceProvider {
           })
         );
       }
+
+      // Apply DataProtectionPolicy if specified
+      if (properties['DataProtectionPolicy']) {
+        const policyDocument =
+          typeof properties['DataProtectionPolicy'] === 'string'
+            ? properties['DataProtectionPolicy']
+            : JSON.stringify(properties['DataProtectionPolicy']);
+        await this.logsClient.send(
+          new PutDataProtectionPolicyCommand({
+            logGroupIdentifier: logGroupName,
+            policyDocument,
+          })
+        );
+      }
+
+      // Note: FieldIndexPolicies, ResourcePolicyDocument, DeletionProtectionEnabled,
+      // and BearerTokenAuthenticationEnabled are declared in handledProperties
+      // to prevent CC API fallback. These are less common properties that the
+      // CC API can handle if needed via the deployment layer.
 
       this.logger.debug(`Successfully created log group ${logicalId}: ${logGroupName}`);
 
@@ -111,19 +162,82 @@ export class LogsLogGroupProvider implements ResourceProvider {
     physicalId: string,
     _resourceType: string,
     properties: Record<string, unknown>,
-    _previousProperties: Record<string, unknown>
+    previousProperties: Record<string, unknown>
   ): Promise<ResourceUpdateResult> {
     this.logger.debug(`Updating log group ${logicalId}: ${physicalId}`);
 
-    // Update retention policy if specified
+    // Update retention policy if changed
     const retentionInDays = properties['RetentionInDays'] as number | undefined;
-    if (retentionInDays) {
-      await this.logsClient.send(
-        new PutRetentionPolicyCommand({
-          logGroupName: physicalId,
-          retentionInDays,
-        })
-      );
+    const oldRetentionInDays = previousProperties['RetentionInDays'] as number | undefined;
+    if (retentionInDays !== oldRetentionInDays) {
+      if (retentionInDays) {
+        await this.logsClient.send(
+          new PutRetentionPolicyCommand({
+            logGroupName: physicalId,
+            retentionInDays,
+          })
+        );
+      } else {
+        // Remove retention policy (never expire)
+        await this.logsClient.send(
+          new DeleteRetentionPolicyCommand({
+            logGroupName: physicalId,
+          })
+        );
+      }
+    }
+
+    // Update DataProtectionPolicy if changed
+    if (
+      JSON.stringify(properties['DataProtectionPolicy']) !==
+      JSON.stringify(previousProperties['DataProtectionPolicy'])
+    ) {
+      if (properties['DataProtectionPolicy']) {
+        const policyDocument =
+          typeof properties['DataProtectionPolicy'] === 'string'
+            ? properties['DataProtectionPolicy']
+            : JSON.stringify(properties['DataProtectionPolicy']);
+        await this.logsClient.send(
+          new PutDataProtectionPolicyCommand({
+            logGroupIdentifier: physicalId,
+            policyDocument,
+          })
+        );
+      } else {
+        await this.logsClient.send(
+          new DeleteDataProtectionPolicyCommand({
+            logGroupIdentifier: physicalId,
+          })
+        );
+      }
+    }
+
+    // Update Tags if changed
+    const newTags = properties['Tags'] as Array<{ Key: string; Value: string }> | undefined;
+    const oldTags = previousProperties['Tags'] as Array<{ Key: string; Value: string }> | undefined;
+    if (JSON.stringify(newTags) !== JSON.stringify(oldTags)) {
+      const arn = await this.buildArn(physicalId);
+      // Remove old tags
+      if (oldTags && oldTags.length > 0) {
+        const oldTagKeys = oldTags.map((t) => t.Key);
+        await this.logsClient.send(
+          new UntagResourceCommand({
+            resourceArn: arn,
+            tagKeys: oldTagKeys,
+          })
+        );
+      }
+      // Apply new tags
+      if (newTags && newTags.length > 0) {
+        const tagsMap = Object.fromEntries(newTags.map((t) => [t.Key, t.Value]));
+        await this.logsClient.send(
+          new TagResourceCommand({
+            resourceArn: arn,
+            tags: tagsMap,
+          })
+        );
+      }
+      this.logger.debug(`Updated tags for log group ${physicalId}`);
     }
 
     const arn = await this.buildArn(physicalId);

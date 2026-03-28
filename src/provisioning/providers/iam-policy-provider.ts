@@ -2,6 +2,10 @@ import {
   IAMClient,
   PutRolePolicyCommand,
   DeleteRolePolicyCommand,
+  PutGroupPolicyCommand,
+  DeleteGroupPolicyCommand,
+  PutUserPolicyCommand,
+  DeleteUserPolicyCommand,
   NoSuchEntityException,
 } from '@aws-sdk/client-iam';
 import { getLogger } from '../../utils/logger.js';
@@ -26,6 +30,9 @@ import type {
 export class IAMPolicyProvider implements ResourceProvider {
   private iamClient: IAMClient;
   private logger = getLogger().child('IAMPolicyProvider');
+  handledProperties = new Map<string, ReadonlySet<string>>([
+    ['AWS::IAM::Policy', new Set(['PolicyName', 'PolicyDocument', 'Roles', 'Groups', 'Users'])],
+  ]);
 
   constructor() {
     // Use global AWS clients manager for better resource management
@@ -48,6 +55,8 @@ export class IAMPolicyProvider implements ResourceProvider {
       generateResourceName(logicalId, { maxLength: 64 });
     const policyDocument = properties['PolicyDocument'];
     const roles = properties['Roles'] as string[] | undefined;
+    const groups = properties['Groups'] as string[] | undefined;
+    const users = properties['Users'] as string[] | undefined;
 
     if (!policyDocument) {
       throw new ProvisioningError(
@@ -57,9 +66,12 @@ export class IAMPolicyProvider implements ResourceProvider {
       );
     }
 
-    if (!roles || roles.length === 0) {
+    // At least one of Roles, Groups, or Users must be specified
+    const hasTargets =
+      (roles && roles.length > 0) || (groups && groups.length > 0) || (users && users.length > 0);
+    if (!hasTargets) {
       throw new ProvisioningError(
-        `Roles is required for IAM policy ${logicalId}`,
+        `At least one of Roles, Groups, or Users is required for IAM policy ${logicalId}`,
         resourceType,
         logicalId
       );
@@ -72,21 +84,51 @@ export class IAMPolicyProvider implements ResourceProvider {
 
       // Attach policy to all roles
       // Note: AWS::IAM::Policy in CloudFormation is actually an inline policy
-      for (const roleName of roles) {
-        await this.iamClient.send(
-          new PutRolePolicyCommand({
-            RoleName: roleName,
-            PolicyName: policyName,
-            PolicyDocument: policyDoc,
-          })
-        );
-        this.logger.debug(`Attached inline policy ${policyName} to role ${roleName}`);
+      if (roles) {
+        for (const roleName of roles) {
+          await this.iamClient.send(
+            new PutRolePolicyCommand({
+              RoleName: roleName,
+              PolicyName: policyName,
+              PolicyDocument: policyDoc,
+            })
+          );
+          this.logger.debug(`Attached inline policy ${policyName} to role ${roleName}`);
+        }
+      }
+
+      // Attach policy to all groups
+      if (groups) {
+        for (const groupName of groups) {
+          await this.iamClient.send(
+            new PutGroupPolicyCommand({
+              GroupName: groupName,
+              PolicyName: policyName,
+              PolicyDocument: policyDoc,
+            })
+          );
+          this.logger.debug(`Attached inline policy ${policyName} to group ${groupName}`);
+        }
+      }
+
+      // Attach policy to all users
+      if (users) {
+        for (const userName of users) {
+          await this.iamClient.send(
+            new PutUserPolicyCommand({
+              UserName: userName,
+              PolicyName: policyName,
+              PolicyDocument: policyDoc,
+            })
+          );
+          this.logger.debug(`Attached inline policy ${policyName} to user ${userName}`);
+        }
       }
 
       this.logger.debug(`Successfully created IAM policy ${logicalId}: ${policyName}`);
 
-      // For inline policies, physical ID is a combination of policy name and first role
-      const physicalId = `${policyName}:${roles[0]}`;
+      // For inline policies, physical ID is the policy name
+      const physicalId = policyName;
 
       return {
         physicalId,
@@ -123,6 +165,10 @@ export class IAMPolicyProvider implements ResourceProvider {
       generateResourceName(logicalId, { maxLength: 64 });
     const newRoles = properties['Roles'] as string[] | undefined;
     const oldRoles = previousProperties['Roles'] as string[] | undefined;
+    const newGroups = properties['Groups'] as string[] | undefined;
+    const oldGroups = previousProperties['Groups'] as string[] | undefined;
+    const newUsers = properties['Users'] as string[] | undefined;
+    const oldUsers = previousProperties['Users'] as string[] | undefined;
     const policyDocument = properties['PolicyDocument'];
 
     if (!policyDocument) {
@@ -134,9 +180,14 @@ export class IAMPolicyProvider implements ResourceProvider {
       );
     }
 
-    if (!newRoles || newRoles.length === 0) {
+    // At least one of Roles, Groups, or Users must be specified
+    const hasTargets =
+      (newRoles && newRoles.length > 0) ||
+      (newGroups && newGroups.length > 0) ||
+      (newUsers && newUsers.length > 0);
+    if (!hasTargets) {
       throw new ProvisioningError(
-        `Roles is required for IAM policy ${logicalId}`,
+        `At least one of Roles, Groups, or Users is required for IAM policy ${logicalId}`,
         resourceType,
         logicalId,
         physicalId
@@ -148,10 +199,14 @@ export class IAMPolicyProvider implements ResourceProvider {
       const policyDoc =
         typeof policyDocument === 'string' ? policyDocument : JSON.stringify(policyDocument);
 
-      const newRoleSet = new Set(newRoles);
+      // Derive old policy name from physical ID (may contain ':roleName' suffix from old format)
+      const oldPolicyName = physicalId.includes(':') ? physicalId.split(':')[0] : physicalId;
+
+      // ── Roles ──
+      const newRoleSet = new Set(newRoles || []);
       const oldRoleSet = new Set(oldRoles || []);
 
-      // Attach policy to new roles
+      // Attach/update policy on current roles
       for (const roleName of newRoleSet) {
         await this.iamClient.send(
           new PutRolePolicyCommand({
@@ -163,8 +218,7 @@ export class IAMPolicyProvider implements ResourceProvider {
         this.logger.debug(`Attached inline policy ${newPolicyName} to role ${roleName}`);
       }
 
-      // Remove policy from old roles that are no longer in the list
-      const [oldPolicyName] = physicalId.split(':');
+      // Remove policy from old roles no longer in the list
       for (const roleName of oldRoleSet) {
         if (!newRoleSet.has(roleName)) {
           try {
@@ -183,9 +237,79 @@ export class IAMPolicyProvider implements ResourceProvider {
         }
       }
 
+      // ── Groups ──
+      const newGroupSet = new Set(newGroups || []);
+      const oldGroupSet = new Set(oldGroups || []);
+
+      // Attach/update policy on current groups
+      for (const groupName of newGroupSet) {
+        await this.iamClient.send(
+          new PutGroupPolicyCommand({
+            GroupName: groupName,
+            PolicyName: newPolicyName,
+            PolicyDocument: policyDoc,
+          })
+        );
+        this.logger.debug(`Attached inline policy ${newPolicyName} to group ${groupName}`);
+      }
+
+      // Remove policy from old groups no longer in the list
+      for (const groupName of oldGroupSet) {
+        if (!newGroupSet.has(groupName)) {
+          try {
+            await this.iamClient.send(
+              new DeleteGroupPolicyCommand({
+                GroupName: groupName,
+                PolicyName: oldPolicyName,
+              })
+            );
+            this.logger.debug(`Removed inline policy ${oldPolicyName} from group ${groupName}`);
+          } catch (error) {
+            if (!(error instanceof NoSuchEntityException)) {
+              throw error;
+            }
+          }
+        }
+      }
+
+      // ── Users ──
+      const newUserSet = new Set(newUsers || []);
+      const oldUserSet = new Set(oldUsers || []);
+
+      // Attach/update policy on current users
+      for (const userName of newUserSet) {
+        await this.iamClient.send(
+          new PutUserPolicyCommand({
+            UserName: userName,
+            PolicyName: newPolicyName,
+            PolicyDocument: policyDoc,
+          })
+        );
+        this.logger.debug(`Attached inline policy ${newPolicyName} to user ${userName}`);
+      }
+
+      // Remove policy from old users no longer in the list
+      for (const userName of oldUserSet) {
+        if (!newUserSet.has(userName)) {
+          try {
+            await this.iamClient.send(
+              new DeleteUserPolicyCommand({
+                UserName: userName,
+                PolicyName: oldPolicyName,
+              })
+            );
+            this.logger.debug(`Removed inline policy ${oldPolicyName} from user ${userName}`);
+          } catch (error) {
+            if (!(error instanceof NoSuchEntityException)) {
+              throw error;
+            }
+          }
+        }
+      }
+
       this.logger.debug(`Successfully updated IAM policy ${logicalId}`);
 
-      const newPhysicalId = `${newPolicyName}:${newRoles[0]}`;
+      const newPhysicalId = newPolicyName;
 
       return {
         physicalId: newPhysicalId,
@@ -213,36 +337,98 @@ export class IAMPolicyProvider implements ResourceProvider {
     logicalId: string,
     physicalId: string,
     resourceType: string,
-    _properties?: Record<string, unknown>
+    properties?: Record<string, unknown>
   ): Promise<void> {
     this.logger.debug(`Deleting IAM policy ${logicalId}: ${physicalId}`);
 
-    // Parse physical ID to get policy name and role
-    const [policyName, firstRole] = physicalId.split(':');
+    // Physical ID is the policy name (new format) or "policyName:roleName" (old format)
+    const policyName = physicalId.includes(':') ? physicalId.split(':')[0] : physicalId;
 
-    if (!policyName || !firstRole) {
+    if (!policyName) {
       this.logger.warn(`Invalid physical ID format: ${physicalId}, skipping deletion`);
       return;
     }
 
     try {
-      // We need to get the list of roles this policy is attached to
-      // Since we only store the first role in physical ID, we need to try deleting from that role
-      // This is a limitation - if the policy was attached to multiple roles, we might leak
+      // Get target lists from properties (state stores these)
+      const roles = properties?.['Roles'] as string[] | undefined;
+      const groups = properties?.['Groups'] as string[] | undefined;
+      const users = properties?.['Users'] as string[] | undefined;
 
-      try {
-        await this.iamClient.send(
-          new DeleteRolePolicyCommand({
-            RoleName: firstRole,
-            PolicyName: policyName,
-          })
-        );
-        this.logger.debug(`Deleted inline policy ${policyName} from role ${firstRole}`);
-      } catch (error) {
-        if (error instanceof NoSuchEntityException) {
-          this.logger.debug(`Policy ${policyName} on role ${firstRole} does not exist, skipping`);
-        } else {
-          throw error;
+      // If no properties available, try legacy format (physicalId = "policyName:roleName")
+      if (!roles && !groups && !users && physicalId.includes(':')) {
+        const firstRole = physicalId.split(':')[1];
+        if (firstRole) {
+          try {
+            await this.iamClient.send(
+              new DeleteRolePolicyCommand({
+                RoleName: firstRole,
+                PolicyName: policyName,
+              })
+            );
+            this.logger.debug(`Deleted inline policy ${policyName} from role ${firstRole}`);
+          } catch (error) {
+            if (!(error instanceof NoSuchEntityException)) {
+              throw error;
+            }
+          }
+        }
+      }
+
+      // Delete from all roles
+      if (roles) {
+        for (const roleName of roles) {
+          try {
+            await this.iamClient.send(
+              new DeleteRolePolicyCommand({
+                RoleName: roleName,
+                PolicyName: policyName,
+              })
+            );
+            this.logger.debug(`Deleted inline policy ${policyName} from role ${roleName}`);
+          } catch (error) {
+            if (!(error instanceof NoSuchEntityException)) {
+              throw error;
+            }
+          }
+        }
+      }
+
+      // Delete from all groups
+      if (groups) {
+        for (const groupName of groups) {
+          try {
+            await this.iamClient.send(
+              new DeleteGroupPolicyCommand({
+                GroupName: groupName,
+                PolicyName: policyName,
+              })
+            );
+            this.logger.debug(`Deleted inline policy ${policyName} from group ${groupName}`);
+          } catch (error) {
+            if (!(error instanceof NoSuchEntityException)) {
+              throw error;
+            }
+          }
+        }
+      }
+
+      // Delete from all users
+      if (users) {
+        for (const userName of users) {
+          try {
+            await this.iamClient.send(
+              new DeleteUserPolicyCommand({
+                UserName: userName,
+                PolicyName: policyName,
+              })
+            );
+            this.logger.debug(`Deleted inline policy ${policyName} from user ${userName}`);
+          } catch (error) {
+            if (!(error instanceof NoSuchEntityException)) {
+              throw error;
+            }
+          }
         }
       }
 

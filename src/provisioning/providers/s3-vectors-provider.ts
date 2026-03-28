@@ -28,6 +28,10 @@ export class S3VectorsProvider implements ResourceProvider {
   private readonly providerRegion = process.env['AWS_REGION'];
   private logger = getLogger().child('S3VectorsProvider');
 
+  handledProperties = new Map<string, ReadonlySet<string>>([
+    ['AWS::S3Vectors::VectorBucket', new Set(['VectorBucketName', 'EncryptionConfiguration'])],
+  ]);
+
   private getClient(): S3VectorsClient {
     if (!this.client) {
       this.client = new S3VectorsClient(this.providerRegion ? { region: this.providerRegion } : {});

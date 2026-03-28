@@ -54,7 +54,7 @@ def handler(event, context):
     });
 
     // CloudWatch LogGroup for Lambda with 1 week retention
-    const logGroup = new logs.LogGroup(this, 'ScheduledFunctionLogGroup', {
+    new logs.LogGroup(this, 'ScheduledFunctionLogGroup', {
       logGroupName: `/aws/lambda/${fn.functionName}`,
       retention: logs.RetentionDays.ONE_WEEK,
       removalPolicy: cdk.RemovalPolicy.DESTROY,

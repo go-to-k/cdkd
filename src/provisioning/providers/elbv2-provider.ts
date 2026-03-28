@@ -45,6 +45,54 @@ export class ELBv2Provider implements ResourceProvider {
   private readonly providerRegion = process.env['AWS_REGION'];
   private logger = getLogger().child('ELBv2Provider');
 
+  handledProperties = new Map<string, ReadonlySet<string>>([
+    [
+      'AWS::ElasticLoadBalancingV2::LoadBalancer',
+      new Set([
+        'Name',
+        'Subnets',
+        'SubnetMappings',
+        'SecurityGroups',
+        'Scheme',
+        'Type',
+        'IpAddressType',
+        'Tags',
+      ]),
+    ],
+    [
+      'AWS::ElasticLoadBalancingV2::TargetGroup',
+      new Set([
+        'Protocol',
+        'Port',
+        'VpcId',
+        'TargetType',
+        'ProtocolVersion',
+        'HealthCheckProtocol',
+        'HealthCheckPort',
+        'HealthCheckPath',
+        'HealthCheckEnabled',
+        'HealthCheckIntervalSeconds',
+        'HealthCheckTimeoutSeconds',
+        'HealthyThresholdCount',
+        'UnhealthyThresholdCount',
+        'Matcher',
+        'Name',
+        'Tags',
+      ]),
+    ],
+    [
+      'AWS::ElasticLoadBalancingV2::Listener',
+      new Set([
+        'LoadBalancerArn',
+        'Certificates',
+        'DefaultActions',
+        'Port',
+        'Protocol',
+        'SslPolicy',
+      ]),
+    ],
+  ]);
+
   private getClient(): ElasticLoadBalancingV2Client {
     if (!this.elbv2Client) {
       this.elbv2Client = new ElasticLoadBalancingV2Client(

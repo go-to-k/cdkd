@@ -29,6 +29,19 @@ import type {
 export class LambdaLayerVersionProvider implements ResourceProvider {
   private lambdaClient: LambdaClient;
   private logger = getLogger().child('LambdaLayerVersionProvider');
+  handledProperties = new Map<string, ReadonlySet<string>>([
+    [
+      'AWS::Lambda::LayerVersion',
+      new Set([
+        'LayerName',
+        'Content',
+        'CompatibleRuntimes',
+        'CompatibleArchitectures',
+        'Description',
+        'LicenseInfo',
+      ]),
+    ],
+  ]);
 
   constructor() {
     const awsClients = getAwsClients();

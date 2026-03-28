@@ -9,6 +9,9 @@ import {
   ServiceNotFound,
   type DnsConfig,
   type HealthCheckCustomConfig,
+  type HealthCheckConfig,
+  type Tag,
+  type ServiceTypeOption,
 } from '@aws-sdk/client-servicediscovery';
 import { STSClient, GetCallerIdentityCommand } from '@aws-sdk/client-sts';
 import { getLogger } from '../../utils/logger.js';
@@ -35,6 +38,23 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
   private stsClient?: STSClient;
   private readonly providerRegion = process.env['AWS_REGION'];
   private logger = getLogger().child('ServiceDiscoveryProvider');
+
+  handledProperties = new Map<string, ReadonlySet<string>>([
+    ['AWS::ServiceDiscovery::PrivateDnsNamespace', new Set(['Name', 'Vpc', 'Description', 'Tags'])],
+    [
+      'AWS::ServiceDiscovery::Service',
+      new Set([
+        'Name',
+        'NamespaceId',
+        'DnsConfig',
+        'HealthCheckCustomConfig',
+        'Description',
+        'HealthCheckConfig',
+        'Tags',
+        'Type',
+      ]),
+    ],
+  ]);
 
   private getClient(): ServiceDiscoveryClient {
     if (!this.client) {
@@ -129,6 +149,7 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
     const name = properties['Name'] as string;
     const vpc = properties['Vpc'] as string;
     const description = properties['Description'] as string | undefined;
+    const tags = properties['Tags'] as Tag[] | undefined;
 
     if (!name) {
       throw new ProvisioningError(
@@ -151,6 +172,7 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
           Name: name,
           Vpc: vpc,
           ...(description && { Description: description }),
+          ...(tags && tags.length > 0 && { Tags: tags }),
         })
       );
 
@@ -249,6 +271,9 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
     const healthCheckCustomConfig = properties['HealthCheckCustomConfig'] as
       | HealthCheckCustomConfig
       | undefined;
+    const healthCheckConfig = properties['HealthCheckConfig'] as HealthCheckConfig | undefined;
+    const tags = properties['Tags'] as Tag[] | undefined;
+    const type = properties['Type'] as ServiceTypeOption | undefined;
 
     if (!name) {
       throw new ProvisioningError(
@@ -268,6 +293,9 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
           ...(healthCheckCustomConfig && {
             HealthCheckCustomConfig: healthCheckCustomConfig,
           }),
+          ...(healthCheckConfig && { HealthCheckConfig: healthCheckConfig }),
+          ...(tags && tags.length > 0 && { Tags: tags }),
+          ...(type && { Type: type }),
         })
       );
 

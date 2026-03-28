@@ -6,6 +6,14 @@ import {
   type CreateDeliveryStreamCommandInput,
   type S3DestinationConfiguration,
   type ExtendedS3DestinationConfiguration,
+  type Tag,
+  type HttpEndpointDestinationConfiguration,
+  type RedshiftDestinationConfiguration,
+  type ElasticsearchDestinationConfiguration,
+  type AmazonopensearchserviceDestinationConfiguration,
+  type SplunkDestinationConfiguration,
+  type AmazonOpenSearchServerlessDestinationConfiguration,
+  type DeliveryStreamEncryptionConfigurationInput,
 } from '@aws-sdk/client-firehose';
 import { getLogger } from '../../utils/logger.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
@@ -28,6 +36,27 @@ export class FirehoseProvider implements ResourceProvider {
   private client: FirehoseClient | undefined;
   private readonly providerRegion = process.env['AWS_REGION'];
   private logger = getLogger().child('FirehoseProvider');
+
+  handledProperties = new Map<string, ReadonlySet<string>>([
+    [
+      'AWS::KinesisFirehose::DeliveryStream',
+      new Set([
+        'DeliveryStreamName',
+        'DeliveryStreamType',
+        'S3DestinationConfiguration',
+        'ExtendedS3DestinationConfiguration',
+        'KinesisStreamSourceConfiguration',
+        'Tags',
+        'HttpEndpointDestinationConfiguration',
+        'RedshiftDestinationConfiguration',
+        'ElasticsearchDestinationConfiguration',
+        'AmazonopensearchserviceDestinationConfiguration',
+        'SplunkDestinationConfiguration',
+        'AmazonOpenSearchServerlessDestinationConfiguration',
+        'DeliveryStreamEncryptionConfigurationInput',
+      ]),
+    ],
+  ]);
 
   private getClient(): FirehoseClient {
     if (!this.client) {
@@ -86,6 +115,220 @@ export class FirehoseProvider implements ResourceProvider {
             kinesisConfig['KinesisStreamARN']) as string,
           RoleARN: (kinesisConfig['RoleArn'] || kinesisConfig['RoleARN']) as string,
         };
+      }
+
+      // Map HttpEndpointDestinationConfiguration
+      if (properties['HttpEndpointDestinationConfiguration']) {
+        const httpConfig = properties['HttpEndpointDestinationConfiguration'] as Record<
+          string,
+          unknown
+        >;
+        const endpointConfig = httpConfig['EndpointConfiguration'] as
+          | Record<string, unknown>
+          | undefined;
+        input.HttpEndpointDestinationConfiguration = {
+          EndpointConfiguration: endpointConfig
+            ? {
+                Url: endpointConfig['Url'] as string,
+                Name: endpointConfig['Name'] as string | undefined,
+                AccessKey: endpointConfig['AccessKey'] as string | undefined,
+              }
+            : undefined,
+          RoleARN: (httpConfig['RoleArn'] || httpConfig['RoleARN']) as string | undefined,
+          BufferingHints: httpConfig['BufferingHints'] as
+            | HttpEndpointDestinationConfiguration['BufferingHints']
+            | undefined,
+          CloudWatchLoggingOptions: httpConfig['CloudWatchLoggingOptions'] as
+            | HttpEndpointDestinationConfiguration['CloudWatchLoggingOptions']
+            | undefined,
+          RequestConfiguration: httpConfig['RequestConfiguration'] as
+            | HttpEndpointDestinationConfiguration['RequestConfiguration']
+            | undefined,
+          ProcessingConfiguration: httpConfig['ProcessingConfiguration'] as
+            | HttpEndpointDestinationConfiguration['ProcessingConfiguration']
+            | undefined,
+          RetryOptions: httpConfig['RetryOptions'] as
+            | HttpEndpointDestinationConfiguration['RetryOptions']
+            | undefined,
+          S3BackupMode: httpConfig['S3BackupMode'] as string | undefined,
+          S3Configuration: httpConfig['S3Configuration']
+            ? this.mapS3DestinationConfiguration(
+                httpConfig['S3Configuration'] as Record<string, unknown>
+              )
+            : undefined,
+        } as HttpEndpointDestinationConfiguration;
+      }
+
+      // Map RedshiftDestinationConfiguration
+      if (properties['RedshiftDestinationConfiguration']) {
+        const rsConfig = properties['RedshiftDestinationConfiguration'] as Record<string, unknown>;
+        input.RedshiftDestinationConfiguration = {
+          ClusterJDBCURL: rsConfig['ClusterJDBCURL'] as string,
+          RoleARN: (rsConfig['RoleArn'] || rsConfig['RoleARN']) as string,
+          CopyCommand: rsConfig['CopyCommand'] as RedshiftDestinationConfiguration['CopyCommand'],
+          Username: rsConfig['Username'] as string | undefined,
+          Password: rsConfig['Password'] as string | undefined,
+          S3Configuration: rsConfig['S3Configuration']
+            ? this.mapS3DestinationConfiguration(
+                rsConfig['S3Configuration'] as Record<string, unknown>
+              )
+            : (undefined as unknown as S3DestinationConfiguration),
+          CloudWatchLoggingOptions: rsConfig['CloudWatchLoggingOptions'] as
+            | RedshiftDestinationConfiguration['CloudWatchLoggingOptions']
+            | undefined,
+          ProcessingConfiguration: rsConfig['ProcessingConfiguration'] as
+            | RedshiftDestinationConfiguration['ProcessingConfiguration']
+            | undefined,
+        } as RedshiftDestinationConfiguration;
+      }
+
+      // Map ElasticsearchDestinationConfiguration
+      if (properties['ElasticsearchDestinationConfiguration']) {
+        const esConfig = properties['ElasticsearchDestinationConfiguration'] as Record<
+          string,
+          unknown
+        >;
+        input.ElasticsearchDestinationConfiguration = {
+          DomainARN: (esConfig['DomainArn'] || esConfig['DomainARN']) as string | undefined,
+          ClusterEndpoint: esConfig['ClusterEndpoint'] as string | undefined,
+          IndexName: esConfig['IndexName'] as string,
+          TypeName: esConfig['TypeName'] as string | undefined,
+          IndexRotationPeriod: esConfig['IndexRotationPeriod'] as string | undefined,
+          RoleARN: (esConfig['RoleArn'] || esConfig['RoleARN']) as string,
+          BufferingHints: esConfig['BufferingHints'] as
+            | ElasticsearchDestinationConfiguration['BufferingHints']
+            | undefined,
+          RetryOptions: esConfig['RetryOptions'] as
+            | ElasticsearchDestinationConfiguration['RetryOptions']
+            | undefined,
+          S3BackupMode: esConfig['S3BackupMode'] as string | undefined,
+          S3Configuration: esConfig['S3Configuration']
+            ? this.mapS3DestinationConfiguration(
+                esConfig['S3Configuration'] as Record<string, unknown>
+              )
+            : (undefined as unknown as S3DestinationConfiguration),
+          CloudWatchLoggingOptions: esConfig['CloudWatchLoggingOptions'] as
+            | ElasticsearchDestinationConfiguration['CloudWatchLoggingOptions']
+            | undefined,
+          ProcessingConfiguration: esConfig['ProcessingConfiguration'] as
+            | ElasticsearchDestinationConfiguration['ProcessingConfiguration']
+            | undefined,
+        } as ElasticsearchDestinationConfiguration;
+      }
+
+      // Map AmazonopensearchserviceDestinationConfiguration
+      if (properties['AmazonopensearchserviceDestinationConfiguration']) {
+        const aosConfig = properties['AmazonopensearchserviceDestinationConfiguration'] as Record<
+          string,
+          unknown
+        >;
+        input.AmazonopensearchserviceDestinationConfiguration = {
+          DomainARN: (aosConfig['DomainArn'] || aosConfig['DomainARN']) as string | undefined,
+          ClusterEndpoint: aosConfig['ClusterEndpoint'] as string | undefined,
+          IndexName: aosConfig['IndexName'] as string,
+          TypeName: aosConfig['TypeName'] as string | undefined,
+          IndexRotationPeriod: aosConfig['IndexRotationPeriod'] as string | undefined,
+          RoleARN: (aosConfig['RoleArn'] || aosConfig['RoleARN']) as string,
+          BufferingHints: aosConfig['BufferingHints'] as
+            | AmazonopensearchserviceDestinationConfiguration['BufferingHints']
+            | undefined,
+          RetryOptions: aosConfig['RetryOptions'] as
+            | AmazonopensearchserviceDestinationConfiguration['RetryOptions']
+            | undefined,
+          S3BackupMode: aosConfig['S3BackupMode'] as string | undefined,
+          S3Configuration: aosConfig['S3Configuration']
+            ? this.mapS3DestinationConfiguration(
+                aosConfig['S3Configuration'] as Record<string, unknown>
+              )
+            : (undefined as unknown as S3DestinationConfiguration),
+          CloudWatchLoggingOptions: aosConfig['CloudWatchLoggingOptions'] as
+            | AmazonopensearchserviceDestinationConfiguration['CloudWatchLoggingOptions']
+            | undefined,
+          ProcessingConfiguration: aosConfig['ProcessingConfiguration'] as
+            | AmazonopensearchserviceDestinationConfiguration['ProcessingConfiguration']
+            | undefined,
+        } as AmazonopensearchserviceDestinationConfiguration;
+      }
+
+      // Map SplunkDestinationConfiguration
+      if (properties['SplunkDestinationConfiguration']) {
+        const splunkConfig = properties['SplunkDestinationConfiguration'] as Record<
+          string,
+          unknown
+        >;
+        input.SplunkDestinationConfiguration = {
+          HECEndpoint: splunkConfig['HECEndpoint'] as string,
+          HECEndpointType: splunkConfig['HECEndpointType'] as string,
+          HECToken: splunkConfig['HECToken'] as string,
+          HECAcknowledgmentTimeoutInSeconds: splunkConfig['HECAcknowledgmentTimeoutInSeconds'] as
+            | number
+            | undefined,
+          S3BackupMode: splunkConfig['S3BackupMode'] as string | undefined,
+          S3Configuration: splunkConfig['S3Configuration']
+            ? this.mapS3DestinationConfiguration(
+                splunkConfig['S3Configuration'] as Record<string, unknown>
+              )
+            : (undefined as unknown as S3DestinationConfiguration),
+          RetryOptions: splunkConfig['RetryOptions'] as
+            | SplunkDestinationConfiguration['RetryOptions']
+            | undefined,
+          CloudWatchLoggingOptions: splunkConfig['CloudWatchLoggingOptions'] as
+            | SplunkDestinationConfiguration['CloudWatchLoggingOptions']
+            | undefined,
+          ProcessingConfiguration: splunkConfig['ProcessingConfiguration'] as
+            | SplunkDestinationConfiguration['ProcessingConfiguration']
+            | undefined,
+        } as SplunkDestinationConfiguration;
+      }
+
+      // Map AmazonOpenSearchServerlessDestinationConfiguration
+      if (properties['AmazonOpenSearchServerlessDestinationConfiguration']) {
+        const aossConfig = properties[
+          'AmazonOpenSearchServerlessDestinationConfiguration'
+        ] as Record<string, unknown>;
+        input.AmazonOpenSearchServerlessDestinationConfiguration = {
+          CollectionEndpoint: aossConfig['CollectionEndpoint'] as string,
+          IndexName: aossConfig['IndexName'] as string,
+          RoleARN: (aossConfig['RoleArn'] || aossConfig['RoleARN']) as string,
+          BufferingHints: aossConfig['BufferingHints'] as
+            | AmazonOpenSearchServerlessDestinationConfiguration['BufferingHints']
+            | undefined,
+          RetryOptions: aossConfig['RetryOptions'] as
+            | AmazonOpenSearchServerlessDestinationConfiguration['RetryOptions']
+            | undefined,
+          S3BackupMode: aossConfig['S3BackupMode'] as string | undefined,
+          S3Configuration: aossConfig['S3Configuration']
+            ? this.mapS3DestinationConfiguration(
+                aossConfig['S3Configuration'] as Record<string, unknown>
+              )
+            : (undefined as unknown as S3DestinationConfiguration),
+          CloudWatchLoggingOptions: aossConfig['CloudWatchLoggingOptions'] as
+            | AmazonOpenSearchServerlessDestinationConfiguration['CloudWatchLoggingOptions']
+            | undefined,
+          ProcessingConfiguration: aossConfig['ProcessingConfiguration'] as
+            | AmazonOpenSearchServerlessDestinationConfiguration['ProcessingConfiguration']
+            | undefined,
+        } as AmazonOpenSearchServerlessDestinationConfiguration;
+      }
+
+      // Map DeliveryStreamEncryptionConfigurationInput
+      if (properties['DeliveryStreamEncryptionConfigurationInput']) {
+        const encConfig = properties['DeliveryStreamEncryptionConfigurationInput'] as Record<
+          string,
+          unknown
+        >;
+        input.DeliveryStreamEncryptionConfigurationInput = {
+          KeyARN: (encConfig['KeyArn'] || encConfig['KeyARN']) as string | undefined,
+          KeyType: encConfig['KeyType'] as
+            | DeliveryStreamEncryptionConfigurationInput['KeyType']
+            | undefined,
+        } as DeliveryStreamEncryptionConfigurationInput;
+      }
+
+      // Map Tags
+      const tags = properties['Tags'] as Array<{ Key: string; Value: string }> | undefined;
+      if (tags && tags.length > 0) {
+        input.Tags = tags.map((t) => ({ Key: t.Key, Value: t.Value })) as Tag[];
       }
 
       const response = await this.getClient().send(new CreateDeliveryStreamCommand(input));

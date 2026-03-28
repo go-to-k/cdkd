@@ -34,6 +34,12 @@ export class S3TablesProvider implements ResourceProvider {
   private readonly providerRegion = process.env['AWS_REGION'];
   private logger = getLogger().child('S3TablesProvider');
 
+  handledProperties = new Map<string, ReadonlySet<string>>([
+    ['AWS::S3Tables::TableBucket', new Set(['TableBucketName'])],
+    ['AWS::S3Tables::Namespace', new Set(['TableBucketARN', 'Namespace'])],
+    ['AWS::S3Tables::Table', new Set(['TableBucketARN', 'Namespace', 'Name', 'Format'])],
+  ]);
+
   private getClient(): S3TablesClient {
     if (!this.client) {
       this.client = new S3TablesClient(this.providerRegion ? { region: this.providerRegion } : {});

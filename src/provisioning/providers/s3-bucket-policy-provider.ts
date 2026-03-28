@@ -23,6 +23,10 @@ export class S3BucketPolicyProvider implements ResourceProvider {
   private s3Client: S3Client;
   private logger = getLogger().child('S3BucketPolicyProvider');
 
+  handledProperties = new Map<string, ReadonlySet<string>>([
+    ['AWS::S3::BucketPolicy', new Set(['Bucket', 'PolicyDocument'])],
+  ]);
+
   constructor() {
     const awsClients = getAwsClients();
     this.s3Client = awsClients.s3;

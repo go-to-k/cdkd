@@ -3,10 +3,16 @@ import {
   CreateRepositoryCommand,
   DeleteRepositoryCommand,
   DescribeRepositoriesCommand,
+  PutLifecyclePolicyCommand,
+  SetRepositoryPolicyCommand,
+  PutImageScanningConfigurationCommand,
+  PutImageTagMutabilityCommand,
+  TagResourceCommand,
   RepositoryNotFoundException,
   type ImageScanningConfiguration,
   type EncryptionConfiguration,
   type ImageTagMutability,
+  type Tag,
 } from '@aws-sdk/client-ecr';
 import { getLogger } from '../../utils/logger.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
@@ -29,6 +35,22 @@ export class ECRProvider implements ResourceProvider {
   private client?: ECRClient;
   private readonly providerRegion = process.env['AWS_REGION'];
   private logger = getLogger().child('ECRProvider');
+  handledProperties = new Map<string, ReadonlySet<string>>([
+    [
+      'AWS::ECR::Repository',
+      new Set([
+        'RepositoryName',
+        'ImageScanningConfiguration',
+        'ImageTagMutability',
+        'EncryptionConfiguration',
+        'LifecyclePolicy',
+        'RepositoryPolicyText',
+        'Tags',
+        'EmptyOnDelete',
+        'ImageTagMutabilityExclusionFilters',
+      ]),
+    ],
+  ]);
 
   private getClient(): ECRClient {
     if (!this.client) {
@@ -52,6 +74,9 @@ export class ECRProvider implements ResourceProvider {
       generateResourceName(logicalId, { maxLength: 256 }).toLowerCase();
 
     try {
+      // Convert CFn Tags format to SDK tags format
+      const tags = properties['Tags'] as Tag[] | undefined;
+
       const response = await this.getClient().send(
         new CreateRepositoryCommand({
           repositoryName,
@@ -74,6 +99,7 @@ export class ECRProvider implements ResourceProvider {
                 ] as EncryptionConfiguration,
               }
             : {}),
+          ...(tags ? { tags } : {}),
         })
       );
 
@@ -84,6 +110,36 @@ export class ECRProvider implements ResourceProvider {
 
       const arn = repo.repositoryArn ?? '';
       const repositoryUri = repo.repositoryUri ?? '';
+
+      // Apply lifecycle policy (separate API call)
+      const lifecyclePolicy = properties['LifecyclePolicy'] as
+        | { LifecyclePolicyText?: string }
+        | undefined;
+      if (lifecyclePolicy?.LifecyclePolicyText) {
+        await this.getClient().send(
+          new PutLifecyclePolicyCommand({
+            repositoryName: repo.repositoryName,
+            lifecyclePolicyText: lifecyclePolicy.LifecyclePolicyText,
+          })
+        );
+        this.logger.debug(`Applied lifecycle policy to ${repo.repositoryName}`);
+      }
+
+      // Apply repository policy (separate API call)
+      const repositoryPolicyText = properties['RepositoryPolicyText'];
+      if (repositoryPolicyText) {
+        const policyText =
+          typeof repositoryPolicyText === 'string'
+            ? repositoryPolicyText
+            : JSON.stringify(repositoryPolicyText);
+        await this.getClient().send(
+          new SetRepositoryPolicyCommand({
+            repositoryName: repo.repositoryName,
+            policyText,
+          })
+        );
+        this.logger.debug(`Applied repository policy to ${repo.repositoryName}`);
+      }
 
       this.logger.debug(`Successfully created ECR Repository ${logicalId}: ${repo.repositoryName}`);
 
@@ -109,43 +165,128 @@ export class ECRProvider implements ResourceProvider {
   /**
    * Update an ECR Repository
    *
-   * Note: Most ECR repository properties are immutable. RepositoryName changes
-   * require replacement. Only ImageScanningConfiguration and ImageTagMutability
-   * can be updated, but we keep this as a no-op since the CC API handles updates
-   * and these updates are rarely needed.
+   * Mutable properties: ImageScanningConfiguration, ImageTagMutability,
+   * LifecyclePolicy, RepositoryPolicyText, Tags.
+   * Immutable: RepositoryName, EncryptionConfiguration (require replacement).
    */
   async update(
     logicalId: string,
     physicalId: string,
     _resourceType: string,
-    _properties: Record<string, unknown>,
-    _previousProperties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    previousProperties: Record<string, unknown>
   ): Promise<ResourceUpdateResult> {
-    this.logger.debug(`Update for ECR Repository ${logicalId} (${physicalId}) - no-op`);
+    this.logger.debug(`Updating ECR Repository ${logicalId} (${physicalId})`);
 
-    // Describe the repository to get current attributes
     try {
+      // Update ImageScanningConfiguration if changed
+      const newScanConfig = properties['ImageScanningConfiguration'] as
+        | ImageScanningConfiguration
+        | undefined;
+      const oldScanConfig = previousProperties['ImageScanningConfiguration'] as
+        | ImageScanningConfiguration
+        | undefined;
+      if (JSON.stringify(newScanConfig) !== JSON.stringify(oldScanConfig)) {
+        await this.getClient().send(
+          new PutImageScanningConfigurationCommand({
+            repositoryName: physicalId,
+            imageScanningConfiguration: newScanConfig ?? { scanOnPush: false },
+          })
+        );
+        this.logger.debug(`Updated image scanning configuration for ${physicalId}`);
+      }
+
+      // Update ImageTagMutability if changed
+      const newMutability = properties['ImageTagMutability'] as ImageTagMutability | undefined;
+      const oldMutability = previousProperties['ImageTagMutability'] as
+        | ImageTagMutability
+        | undefined;
+      if (newMutability !== oldMutability) {
+        await this.getClient().send(
+          new PutImageTagMutabilityCommand({
+            repositoryName: physicalId,
+            imageTagMutability: newMutability ?? 'MUTABLE',
+          })
+        );
+        this.logger.debug(`Updated image tag mutability for ${physicalId}`);
+      }
+
+      // Update LifecyclePolicy if changed
+      const newLifecycle = properties['LifecyclePolicy'] as
+        | { LifecyclePolicyText?: string }
+        | undefined;
+      const oldLifecycle = previousProperties['LifecyclePolicy'] as
+        | { LifecyclePolicyText?: string }
+        | undefined;
+      if (JSON.stringify(newLifecycle) !== JSON.stringify(oldLifecycle)) {
+        if (newLifecycle?.LifecyclePolicyText) {
+          await this.getClient().send(
+            new PutLifecyclePolicyCommand({
+              repositoryName: physicalId,
+              lifecyclePolicyText: newLifecycle.LifecyclePolicyText,
+            })
+          );
+          this.logger.debug(`Updated lifecycle policy for ${physicalId}`);
+        }
+      }
+
+      // Update RepositoryPolicyText if changed
+      const newPolicy = properties['RepositoryPolicyText'];
+      const oldPolicy = previousProperties['RepositoryPolicyText'];
+      if (JSON.stringify(newPolicy) !== JSON.stringify(oldPolicy) && newPolicy) {
+        const policyText = typeof newPolicy === 'string' ? newPolicy : JSON.stringify(newPolicy);
+        await this.getClient().send(
+          new SetRepositoryPolicyCommand({
+            repositoryName: physicalId,
+            policyText,
+          })
+        );
+        this.logger.debug(`Updated repository policy for ${physicalId}`);
+      }
+
+      // Update Tags if changed
+      const newTags = properties['Tags'] as Tag[] | undefined;
+      const oldTags = previousProperties['Tags'] as Tag[] | undefined;
+      if (JSON.stringify(newTags) !== JSON.stringify(oldTags)) {
+        // Get repository ARN for tagging
+        const describeResponse = await this.getClient().send(
+          new DescribeRepositoriesCommand({ repositoryNames: [physicalId] })
+        );
+        const repoArn = describeResponse.repositories?.[0]?.repositoryArn;
+        if (repoArn && newTags) {
+          await this.getClient().send(
+            new TagResourceCommand({
+              resourceArn: repoArn,
+              tags: newTags,
+            })
+          );
+          this.logger.debug(`Updated tags for ${physicalId}`);
+        }
+      }
+
+      // Get current attributes
       const response = await this.getClient().send(
         new DescribeRepositoriesCommand({ repositoryNames: [physicalId] })
       );
-
       const repo = response.repositories?.[0];
-      const arn = repo?.repositoryArn ?? '';
-      const repositoryUri = repo?.repositoryUri ?? '';
 
       return {
         physicalId,
         wasReplaced: false,
         attributes: {
-          Arn: arn,
-          RepositoryUri: repositoryUri,
+          Arn: repo?.repositoryArn ?? '',
+          RepositoryUri: repo?.repositoryUri ?? '',
         },
       };
-    } catch {
-      return {
+    } catch (error) {
+      const cause = error instanceof Error ? error : undefined;
+      throw new ProvisioningError(
+        `Failed to update ECR Repository ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        _resourceType,
+        logicalId,
         physicalId,
-        wasReplaced: false,
-      };
+        cause
+      );
     }
   }
 

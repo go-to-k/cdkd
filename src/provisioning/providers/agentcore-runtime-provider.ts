@@ -65,6 +65,24 @@ export class AgentCoreRuntimeProvider implements ResourceProvider {
   private client: BedrockAgentCoreControlClient;
   private logger = getLogger().child('AgentCoreRuntimeProvider');
 
+  handledProperties = new Map<string, ReadonlySet<string>>([
+    [
+      'AWS::BedrockAgentCore::Runtime',
+      new Set([
+        'AgentRuntimeName',
+        'RoleArn',
+        'AgentRuntimeArtifact',
+        'NetworkConfiguration',
+        'Description',
+        'AuthorizerConfiguration',
+        'ProtocolConfiguration',
+        'LifecycleConfiguration',
+        'EnvironmentVariables',
+        'ClientToken',
+      ]),
+    ],
+  ]);
+
   constructor() {
     const awsClients = getAwsClients();
     this.client = awsClients.bedrockAgentCoreControl;

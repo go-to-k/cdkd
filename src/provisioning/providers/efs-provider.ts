@@ -38,6 +38,25 @@ export class EFSProvider implements ResourceProvider {
   private readonly providerRegion = process.env['AWS_REGION'];
   private logger = getLogger().child('EFSProvider');
 
+  handledProperties = new Map<string, ReadonlySet<string>>([
+    [
+      'AWS::EFS::FileSystem',
+      new Set([
+        'FileSystemTags',
+        'Encrypted',
+        'KmsKeyId',
+        'PerformanceMode',
+        'ThroughputMode',
+        'ProvisionedThroughputInMibps',
+      ]),
+    ],
+    ['AWS::EFS::MountTarget', new Set(['FileSystemId', 'SubnetId', 'SecurityGroups'])],
+    [
+      'AWS::EFS::AccessPoint',
+      new Set(['FileSystemId', 'PosixUser', 'RootDirectory', 'AccessPointTags']),
+    ],
+  ]);
+
   private getClient(): EFSClient {
     if (!this.client) {
       this.client = new EFSClient(this.providerRegion ? { region: this.providerRegion } : {});

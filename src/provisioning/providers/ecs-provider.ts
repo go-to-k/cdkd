@@ -82,6 +82,65 @@ export class ECSProvider implements ResourceProvider {
   private readonly providerRegion = process.env['AWS_REGION'];
   private logger = getLogger().child('ECSProvider');
 
+  handledProperties = new Map<string, ReadonlySet<string>>([
+    [
+      'AWS::ECS::Cluster',
+      new Set([
+        'ClusterName',
+        'CapacityProviders',
+        'DefaultCapacityProviderStrategy',
+        'Configuration',
+        'ClusterSettings',
+        'Tags',
+      ]),
+    ],
+    [
+      'AWS::ECS::TaskDefinition',
+      new Set([
+        'Family',
+        'ContainerDefinitions',
+        'Cpu',
+        'Memory',
+        'NetworkMode',
+        'RequiresCompatibilities',
+        'ExecutionRoleArn',
+        'TaskRoleArn',
+        'Volumes',
+        'PlacementConstraints',
+        'RuntimePlatform',
+        'ProxyConfiguration',
+        'PidMode',
+        'IpcMode',
+        'EphemeralStorage',
+        'Tags',
+      ]),
+    ],
+    [
+      'AWS::ECS::Service',
+      new Set([
+        'Cluster',
+        'ServiceName',
+        'TaskDefinition',
+        'DesiredCount',
+        'LaunchType',
+        'NetworkConfiguration',
+        'LoadBalancers',
+        'CapacityProviderStrategy',
+        'DeploymentConfiguration',
+        'PlacementConstraints',
+        'PlacementStrategy',
+        'PlatformVersion',
+        'HealthCheckGracePeriodSeconds',
+        'SchedulingStrategy',
+        'EnableECSManagedTags',
+        'PropagateTags',
+        'EnableExecuteCommand',
+        'ServiceRegistries',
+        'Tags',
+      ]),
+    ],
+  ]);
+
   private getClient(): ECSClient {
     if (!this.ecsClient) {
       this.ecsClient = new ECSClient(this.providerRegion ? { region: this.providerRegion } : {});

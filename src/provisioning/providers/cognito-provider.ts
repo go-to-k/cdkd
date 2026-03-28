@@ -7,6 +7,7 @@ import {
   ResourceNotFoundException,
   type VerifiedAttributeType,
   type UsernameAttributeType,
+  type AliasAttributeType,
   type UserPoolMfaType,
   type DeletionProtectionType,
   type SchemaAttributeType,
@@ -15,6 +16,12 @@ import {
   type AdminCreateUserConfigType,
   type AccountRecoverySettingType,
   type UserAttributeUpdateSettingsType,
+  type EmailConfigurationType,
+  type SmsConfigurationType,
+  type VerificationMessageTemplateType,
+  type UsernameConfigurationType,
+  type DeviceConfigurationType,
+  type UserPoolAddOnsType,
   type CreateUserPoolCommandInput,
   type UpdateUserPoolCommandInput,
 } from '@aws-sdk/client-cognito-identity-provider';
@@ -39,6 +46,37 @@ export class CognitoUserPoolProvider implements ResourceProvider {
   private cognitoClient?: CognitoIdentityProviderClient;
   private readonly providerRegion = process.env['AWS_REGION'];
   private logger = getLogger().child('CognitoUserPoolProvider');
+
+  handledProperties = new Map<string, ReadonlySet<string>>([
+    [
+      'AWS::Cognito::UserPool',
+      new Set([
+        'UserPoolName',
+        'AutoVerifiedAttributes',
+        'UsernameAttributes',
+        'AliasAttributes',
+        'Policies',
+        'Schema',
+        'LambdaConfig',
+        'MfaConfiguration',
+        'UserPoolTags',
+        'AdminCreateUserConfig',
+        'AccountRecoverySetting',
+        'UserAttributeUpdateSettings',
+        'DeletionProtection',
+        'EmailConfiguration',
+        'SmsConfiguration',
+        'VerificationMessageTemplate',
+        'UsernameConfiguration',
+        'DeviceConfiguration',
+        'UserPoolAddOns',
+        'EmailVerificationMessage',
+        'EmailVerificationSubject',
+        'SmsAuthenticationMessage',
+        'SmsVerificationMessage',
+      ]),
+    ],
+  ]);
 
   private getClient(): CognitoIdentityProviderClient {
     if (!this.cognitoClient) {
@@ -117,6 +155,47 @@ export class CognitoUserPoolProvider implements ResourceProvider {
         createParams.DeletionProtection = properties[
           'DeletionProtection'
         ] as DeletionProtectionType;
+      }
+      if (properties['AliasAttributes']) {
+        createParams.AliasAttributes = properties['AliasAttributes'] as AliasAttributeType[];
+      }
+      if (properties['EmailConfiguration']) {
+        createParams.EmailConfiguration = properties[
+          'EmailConfiguration'
+        ] as EmailConfigurationType;
+      }
+      if (properties['SmsConfiguration']) {
+        createParams.SmsConfiguration = properties['SmsConfiguration'] as SmsConfigurationType;
+      }
+      if (properties['VerificationMessageTemplate']) {
+        createParams.VerificationMessageTemplate = properties[
+          'VerificationMessageTemplate'
+        ] as VerificationMessageTemplateType;
+      }
+      if (properties['UsernameConfiguration']) {
+        createParams.UsernameConfiguration = properties[
+          'UsernameConfiguration'
+        ] as UsernameConfigurationType;
+      }
+      if (properties['DeviceConfiguration']) {
+        createParams.DeviceConfiguration = properties[
+          'DeviceConfiguration'
+        ] as DeviceConfigurationType;
+      }
+      if (properties['UserPoolAddOns']) {
+        createParams.UserPoolAddOns = properties['UserPoolAddOns'] as UserPoolAddOnsType;
+      }
+      if (properties['EmailVerificationMessage']) {
+        createParams.EmailVerificationMessage = properties['EmailVerificationMessage'] as string;
+      }
+      if (properties['EmailVerificationSubject']) {
+        createParams.EmailVerificationSubject = properties['EmailVerificationSubject'] as string;
+      }
+      if (properties['SmsAuthenticationMessage']) {
+        createParams.SmsAuthenticationMessage = properties['SmsAuthenticationMessage'] as string;
+      }
+      if (properties['SmsVerificationMessage']) {
+        createParams.SmsVerificationMessage = properties['SmsVerificationMessage'] as string;
       }
 
       const response = await this.getClient().send(new CreateUserPoolCommand(createParams));
@@ -216,6 +295,39 @@ export class CognitoUserPoolProvider implements ResourceProvider {
         updateParams.UserAttributeUpdateSettings = properties[
           'UserAttributeUpdateSettings'
         ] as UserAttributeUpdateSettingsType;
+      }
+      if (properties['EmailConfiguration']) {
+        updateParams.EmailConfiguration = properties[
+          'EmailConfiguration'
+        ] as EmailConfigurationType;
+      }
+      if (properties['SmsConfiguration']) {
+        updateParams.SmsConfiguration = properties['SmsConfiguration'] as SmsConfigurationType;
+      }
+      if (properties['VerificationMessageTemplate']) {
+        updateParams.VerificationMessageTemplate = properties[
+          'VerificationMessageTemplate'
+        ] as VerificationMessageTemplateType;
+      }
+      if (properties['DeviceConfiguration']) {
+        updateParams.DeviceConfiguration = properties[
+          'DeviceConfiguration'
+        ] as DeviceConfigurationType;
+      }
+      if (properties['UserPoolAddOns']) {
+        updateParams.UserPoolAddOns = properties['UserPoolAddOns'] as UserPoolAddOnsType;
+      }
+      if (properties['EmailVerificationMessage']) {
+        updateParams.EmailVerificationMessage = properties['EmailVerificationMessage'] as string;
+      }
+      if (properties['EmailVerificationSubject']) {
+        updateParams.EmailVerificationSubject = properties['EmailVerificationSubject'] as string;
+      }
+      if (properties['SmsAuthenticationMessage']) {
+        updateParams.SmsAuthenticationMessage = properties['SmsAuthenticationMessage'] as string;
+      }
+      if (properties['SmsVerificationMessage']) {
+        updateParams.SmsVerificationMessage = properties['SmsVerificationMessage'] as string;
       }
 
       await this.getClient().send(new UpdateUserPoolCommand(updateParams));

@@ -3,7 +3,12 @@ import {
   CreateSecretCommand,
   DeleteSecretCommand,
   UpdateSecretCommand,
+  TagResourceCommand,
+  UntagResourceCommand,
+  ReplicateSecretToRegionsCommand,
+  RemoveRegionsFromReplicationCommand,
   ResourceNotFoundException,
+  type Tag,
 } from '@aws-sdk/client-secrets-manager';
 import { getLogger } from '../../utils/logger.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
@@ -25,6 +30,21 @@ import type {
 export class SecretsManagerSecretProvider implements ResourceProvider {
   private smClient: SecretsManagerClient;
   private logger = getLogger().child('SecretsManagerSecretProvider');
+
+  handledProperties = new Map<string, ReadonlySet<string>>([
+    [
+      'AWS::SecretsManager::Secret',
+      new Set([
+        'Name',
+        'GenerateSecretString',
+        'SecretString',
+        'Description',
+        'KmsKeyId',
+        'Tags',
+        'ReplicaRegions',
+      ]),
+    ],
+  ]);
 
   constructor() {
     const awsClients = getAwsClients();
@@ -64,6 +84,16 @@ export class SecretsManagerSecretProvider implements ResourceProvider {
       if (secretString) createParams.SecretString = secretString;
       if (properties['Description']) createParams.Description = properties['Description'] as string;
       if (properties['KmsKeyId']) createParams.KmsKeyId = properties['KmsKeyId'] as string;
+      if (properties['Tags']) {
+        createParams.Tags = properties['Tags'] as Tag[];
+      }
+      if (properties['ReplicaRegions']) {
+        const replicaRegions = properties['ReplicaRegions'] as Array<Record<string, unknown>>;
+        createParams.AddReplicaRegions = replicaRegions.map((r) => ({
+          Region: r['Region'] as string,
+          KmsKeyId: r['KmsKeyId'] as string | undefined,
+        }));
+      }
 
       const response = await this.smClient.send(new CreateSecretCommand(createParams));
 
@@ -100,7 +130,7 @@ export class SecretsManagerSecretProvider implements ResourceProvider {
     physicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
-    _previousProperties: Record<string, unknown>
+    previousProperties: Record<string, unknown>
   ): Promise<ResourceUpdateResult> {
     this.logger.debug(`Updating secret ${logicalId}: ${physicalId}`);
 
@@ -124,6 +154,76 @@ export class SecretsManagerSecretProvider implements ResourceProvider {
       if (properties['KmsKeyId']) updateParams.KmsKeyId = properties['KmsKeyId'] as string;
 
       await this.smClient.send(new UpdateSecretCommand(updateParams));
+
+      // Update Tags if changed
+      const newTags = properties['Tags'] as Tag[] | undefined;
+      const oldTags = previousProperties['Tags'] as Tag[] | undefined;
+      if (JSON.stringify(newTags) !== JSON.stringify(oldTags)) {
+        // Remove old tags
+        if (oldTags && oldTags.length > 0) {
+          const oldTagKeys = oldTags.map((t) => t.Key).filter((k): k is string => !!k);
+          if (oldTagKeys.length > 0) {
+            await this.smClient.send(
+              new UntagResourceCommand({
+                SecretId: physicalId,
+                TagKeys: oldTagKeys,
+              })
+            );
+          }
+        }
+        // Apply new tags
+        if (newTags && newTags.length > 0) {
+          await this.smClient.send(
+            new TagResourceCommand({
+              SecretId: physicalId,
+              Tags: newTags,
+            })
+          );
+        }
+        this.logger.debug(`Updated tags for secret ${physicalId}`);
+      }
+
+      // Update ReplicaRegions if changed
+      const newReplicas = properties['ReplicaRegions'] as
+        | Array<Record<string, unknown>>
+        | undefined;
+      const oldReplicas = previousProperties['ReplicaRegions'] as
+        | Array<Record<string, unknown>>
+        | undefined;
+      if (JSON.stringify(newReplicas) !== JSON.stringify(oldReplicas)) {
+        // Remove old replica regions that are no longer present
+        if (oldReplicas && oldReplicas.length > 0) {
+          const newRegionSet = new Set((newReplicas || []).map((r) => r['Region'] as string));
+          const regionsToRemove = oldReplicas
+            .map((r) => r['Region'] as string)
+            .filter((region) => !newRegionSet.has(region));
+          if (regionsToRemove.length > 0) {
+            await this.smClient.send(
+              new RemoveRegionsFromReplicationCommand({
+                SecretId: physicalId,
+                RemoveReplicaRegions: regionsToRemove,
+              })
+            );
+          }
+        }
+        // Add new replica regions
+        if (newReplicas && newReplicas.length > 0) {
+          const oldRegionSet = new Set((oldReplicas || []).map((r) => r['Region'] as string));
+          const regionsToAdd = newReplicas.filter((r) => !oldRegionSet.has(r['Region'] as string));
+          if (regionsToAdd.length > 0) {
+            await this.smClient.send(
+              new ReplicateSecretToRegionsCommand({
+                SecretId: physicalId,
+                AddReplicaRegions: regionsToAdd.map((r) => ({
+                  Region: r['Region'] as string,
+                  KmsKeyId: r['KmsKeyId'] as string | undefined,
+                })),
+              })
+            );
+          }
+        }
+        this.logger.debug(`Updated replica regions for secret ${physicalId}`);
+      }
 
       this.logger.debug(`Successfully updated secret ${logicalId}`);
 

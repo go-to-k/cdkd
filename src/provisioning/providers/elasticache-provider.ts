@@ -8,6 +8,9 @@ import {
   ModifyCacheSubnetGroupCommand,
   ModifyCacheClusterCommand,
   type AZMode,
+  type LogDeliveryConfigurationRequest,
+  type NetworkType,
+  type IpDiscovery,
 } from '@aws-sdk/client-elasticache';
 import { getLogger } from '../../utils/logger.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
@@ -32,6 +35,41 @@ export class ElastiCacheProvider implements ResourceProvider {
   private client?: ElastiCacheClient;
   private readonly providerRegion = process.env['AWS_REGION'];
   private logger = getLogger().child('ElastiCacheProvider');
+
+  handledProperties = new Map<string, ReadonlySet<string>>([
+    [
+      'AWS::ElastiCache::SubnetGroup',
+      new Set(['CacheSubnetGroupName', 'CacheSubnetGroupDescription', 'SubnetIds', 'Tags']),
+    ],
+    [
+      'AWS::ElastiCache::CacheCluster',
+      new Set([
+        'ClusterName',
+        'Engine',
+        'CacheNodeType',
+        'NumCacheNodes',
+        'CacheSubnetGroupName',
+        'VpcSecurityGroupIds',
+        'Port',
+        'EngineVersion',
+        'CacheParameterGroupName',
+        'PreferredMaintenanceWindow',
+        'AZMode',
+        'PreferredAvailabilityZone',
+        'PreferredAvailabilityZones',
+        'SnapshotRetentionLimit',
+        'SnapshotWindow',
+        'AutoMinorVersionUpgrade',
+        'Tags',
+        'NotificationTopicArn',
+        'SnapshotName',
+        'LogDeliveryConfigurations',
+        'NetworkType',
+        'IpDiscovery',
+        'TransitEncryptionEnabled',
+      ]),
+    ],
+  ]);
 
   private getClient(): ElastiCacheClient {
     if (!this.client) {
@@ -264,6 +302,14 @@ export class ElastiCacheProvider implements ResourceProvider {
               : undefined,
           SnapshotWindow: properties['SnapshotWindow'] as string | undefined,
           AutoMinorVersionUpgrade: properties['AutoMinorVersionUpgrade'] as boolean | undefined,
+          NotificationTopicArn: properties['NotificationTopicArn'] as string | undefined,
+          SnapshotName: properties['SnapshotName'] as string | undefined,
+          LogDeliveryConfigurations: properties['LogDeliveryConfigurations'] as
+            | LogDeliveryConfigurationRequest[]
+            | undefined,
+          NetworkType: properties['NetworkType'] as NetworkType | undefined,
+          IpDiscovery: properties['IpDiscovery'] as IpDiscovery | undefined,
+          TransitEncryptionEnabled: properties['TransitEncryptionEnabled'] as boolean | undefined,
           ...(tags.length > 0 && { Tags: tags }),
         })
       );
@@ -338,6 +384,11 @@ export class ElastiCacheProvider implements ResourceProvider {
               : undefined,
           SnapshotWindow: properties['SnapshotWindow'] as string | undefined,
           AutoMinorVersionUpgrade: properties['AutoMinorVersionUpgrade'] as boolean | undefined,
+          NotificationTopicArn: properties['NotificationTopicArn'] as string | undefined,
+          LogDeliveryConfigurations: properties['LogDeliveryConfigurations'] as
+            | LogDeliveryConfigurationRequest[]
+            | undefined,
+          IpDiscovery: properties['IpDiscovery'] as IpDiscovery | undefined,
           ApplyImmediately: true,
         })
       );

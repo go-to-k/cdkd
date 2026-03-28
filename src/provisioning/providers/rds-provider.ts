@@ -38,6 +38,45 @@ export class RDSProvider implements ResourceProvider {
   private readonly providerRegion = process.env['AWS_REGION'];
   private logger = getLogger().child('RDSProvider');
 
+  handledProperties = new Map<string, ReadonlySet<string>>([
+    [
+      'AWS::RDS::DBSubnetGroup',
+      new Set(['DBSubnetGroupName', 'DBSubnetGroupDescription', 'SubnetIds', 'Tags']),
+    ],
+    [
+      'AWS::RDS::DBCluster',
+      new Set([
+        'DBClusterIdentifier',
+        'Engine',
+        'EngineVersion',
+        'MasterUsername',
+        'MasterUserPassword',
+        'DatabaseName',
+        'Port',
+        'VpcSecurityGroupIds',
+        'DBSubnetGroupName',
+        'StorageEncrypted',
+        'KmsKeyId',
+        'BackupRetentionPeriod',
+        'DeletionProtection',
+        'ServerlessV2ScalingConfiguration',
+        'Tags',
+      ]),
+    ],
+    [
+      'AWS::RDS::DBInstance',
+      new Set([
+        'DBInstanceIdentifier',
+        'DBInstanceClass',
+        'Engine',
+        'DBClusterIdentifier',
+        'DBSubnetGroupName',
+        'PubliclyAccessible',
+        'Tags',
+      ]),
+    ],
+  ]);
+
   private getClient(): RDSClient {
     if (!this.rdsClient) {
       this.rdsClient = new RDSClient(this.providerRegion ? { region: this.providerRegion } : {});

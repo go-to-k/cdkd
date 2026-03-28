@@ -2,6 +2,7 @@ import {
   IAMClient,
   CreateRoleCommand,
   UpdateRoleCommand,
+  UpdateAssumeRolePolicyCommand,
   DeleteRoleCommand,
   GetRoleCommand,
   PutRolePolicyCommand,
@@ -13,6 +14,9 @@ import {
   ListInstanceProfilesForRoleCommand,
   RemoveRoleFromInstanceProfileCommand,
   TagRoleCommand,
+  UntagRoleCommand,
+  PutRolePermissionsBoundaryCommand,
+  DeleteRolePermissionsBoundaryCommand,
   NoSuchEntityException,
 } from '@aws-sdk/client-iam';
 import { getLogger } from '../../utils/logger.js';
@@ -34,6 +38,22 @@ import type {
 export class IAMRoleProvider implements ResourceProvider {
   private iamClient: IAMClient;
   private logger = getLogger().child('IAMRoleProvider');
+  handledProperties = new Map<string, ReadonlySet<string>>([
+    [
+      'AWS::IAM::Role',
+      new Set([
+        'RoleName',
+        'AssumeRolePolicyDocument',
+        'Description',
+        'MaxSessionDuration',
+        'Path',
+        'PermissionsBoundary',
+        'ManagedPolicyArns',
+        'Policies',
+        'Tags',
+      ]),
+    ],
+  ]);
 
   constructor() {
     // Use global AWS clients manager for better resource management
@@ -190,9 +210,17 @@ export class IAMRoleProvider implements ResourceProvider {
       { maxLength: 64 }
     );
 
-    // Check if role name changed (requires replacement)
-    if (newRoleName !== physicalId) {
-      this.logger.debug(`Role name changed, replacing role: ${physicalId} -> ${newRoleName}`);
+    // Check if immutable properties changed (requires replacement)
+    // RoleName and Path are immutable - cannot be changed after creation
+    const newPath = (properties['Path'] as string | undefined) || '/';
+    const oldPath = (previousProperties['Path'] as string | undefined) || '/';
+    const needsReplacement = newRoleName !== physicalId || newPath !== oldPath;
+
+    if (needsReplacement) {
+      const reason = newRoleName !== physicalId ? 'RoleName' : 'Path';
+      this.logger.debug(
+        `${reason} changed, replacing role: ${physicalId} (${reason}: ${reason === 'RoleName' ? `${physicalId} -> ${newRoleName}` : `${oldPath} -> ${newPath}`})`
+      );
 
       // Create new role
       const createResult = await this.create(logicalId, resourceType, properties);
@@ -220,7 +248,7 @@ export class IAMRoleProvider implements ResourceProvider {
     }
 
     try {
-      // Update role properties
+      // Update role properties (Description, MaxSessionDuration)
       const updateParams: {
         RoleName: string;
         Description?: string;
@@ -238,6 +266,51 @@ export class IAMRoleProvider implements ResourceProvider {
 
       await this.iamClient.send(new UpdateRoleCommand(updateParams));
 
+      // Update AssumeRolePolicyDocument if changed
+      const newAssumePolicy = properties['AssumeRolePolicyDocument'];
+      const oldAssumePolicy = previousProperties['AssumeRolePolicyDocument'];
+      if (newAssumePolicy) {
+        const newPolicyStr =
+          typeof newAssumePolicy === 'string' ? newAssumePolicy : JSON.stringify(newAssumePolicy);
+        const oldPolicyStr = oldAssumePolicy
+          ? typeof oldAssumePolicy === 'string'
+            ? oldAssumePolicy
+            : JSON.stringify(oldAssumePolicy)
+          : '';
+
+        if (newPolicyStr !== oldPolicyStr) {
+          await this.iamClient.send(
+            new UpdateAssumeRolePolicyCommand({
+              RoleName: physicalId,
+              PolicyDocument: newPolicyStr,
+            })
+          );
+          this.logger.debug(`Updated assume role policy for ${physicalId}`);
+        }
+      }
+
+      // Update PermissionsBoundary
+      const newBoundary = properties['PermissionsBoundary'] as string | undefined;
+      const oldBoundary = previousProperties['PermissionsBoundary'] as string | undefined;
+      if (newBoundary !== oldBoundary) {
+        if (newBoundary) {
+          await this.iamClient.send(
+            new PutRolePermissionsBoundaryCommand({
+              RoleName: physicalId,
+              PermissionsBoundary: newBoundary,
+            })
+          );
+          this.logger.debug(`Set permissions boundary for ${physicalId}: ${newBoundary}`);
+        } else if (oldBoundary) {
+          await this.iamClient.send(
+            new DeleteRolePermissionsBoundaryCommand({
+              RoleName: physicalId,
+            })
+          );
+          this.logger.debug(`Removed permissions boundary from ${physicalId}`);
+        }
+      }
+
       // Update managed policies
       await this.updateManagedPolicies(
         physicalId,
@@ -254,6 +327,13 @@ export class IAMRoleProvider implements ResourceProvider {
         previousProperties['Policies'] as
           | Array<{ PolicyName: string; PolicyDocument: unknown }>
           | undefined
+      );
+
+      // Update tags
+      await this.updateTags(
+        physicalId,
+        properties['Tags'] as Array<{ Key: string; Value: string }> | undefined,
+        previousProperties['Tags'] as Array<{ Key: string; Value: string }> | undefined
       );
 
       this.logger.debug(`Successfully updated IAM role ${logicalId}`);
@@ -558,6 +638,54 @@ export class IAMRoleProvider implements ResourceProvider {
         );
         this.logger.debug(`Deleted inline policy ${policyName}`);
       }
+    }
+  }
+
+  /**
+   * Update tags on the role
+   */
+  private async updateTags(
+    roleName: string,
+    newTags: Array<{ Key: string; Value: string }> | undefined,
+    oldTags: Array<{ Key: string; Value: string }> | undefined
+  ): Promise<void> {
+    const newTagMap = new Map((newTags || []).map((t) => [t.Key, t.Value]));
+    const oldTagMap = new Map((oldTags || []).map((t) => [t.Key, t.Value]));
+
+    // Find tags to remove (present in old but not in new)
+    const tagsToRemove: string[] = [];
+    for (const key of oldTagMap.keys()) {
+      if (!newTagMap.has(key)) {
+        tagsToRemove.push(key);
+      }
+    }
+
+    // Find tags to add/update (new or changed value)
+    const tagsToAdd: Array<{ Key: string; Value: string }> = [];
+    for (const [key, value] of newTagMap) {
+      if (oldTagMap.get(key) !== value) {
+        tagsToAdd.push({ Key: key, Value: value });
+      }
+    }
+
+    if (tagsToRemove.length > 0) {
+      await this.iamClient.send(
+        new UntagRoleCommand({
+          RoleName: roleName,
+          TagKeys: tagsToRemove,
+        })
+      );
+      this.logger.debug(`Removed ${tagsToRemove.length} tags from role ${roleName}`);
+    }
+
+    if (tagsToAdd.length > 0) {
+      await this.iamClient.send(
+        new TagRoleCommand({
+          RoleName: roleName,
+          Tags: tagsToAdd,
+        })
+      );
+      this.logger.debug(`Added/updated ${tagsToAdd.length} tags on role ${roleName}`);
     }
   }
 }

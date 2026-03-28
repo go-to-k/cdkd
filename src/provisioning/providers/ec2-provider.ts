@@ -28,6 +28,7 @@ import {
   DescribeInstancesCommand,
   waitUntilInstanceRunning,
   waitUntilInstanceTerminated,
+  ModifySubnetAttributeCommand,
   CreateNetworkAclCommand,
   DeleteNetworkAclCommand,
   CreateNetworkAclEntryCommand,
@@ -66,6 +67,80 @@ import type {
 export class EC2Provider implements ResourceProvider {
   private ec2Client: EC2Client;
   private logger = getLogger().child('EC2Provider');
+
+  handledProperties = new Map<string, ReadonlySet<string>>([
+    [
+      'AWS::EC2::VPC',
+      new Set(['CidrBlock', 'InstanceTenancy', 'EnableDnsHostnames', 'EnableDnsSupport', 'Tags']),
+    ],
+    [
+      'AWS::EC2::Subnet',
+      new Set(['VpcId', 'CidrBlock', 'AvailabilityZone', 'MapPublicIpOnLaunch', 'Tags']),
+    ],
+    ['AWS::EC2::InternetGateway', new Set(['Tags'])],
+    ['AWS::EC2::VPCGatewayAttachment', new Set(['VpcId', 'InternetGatewayId'])],
+    ['AWS::EC2::RouteTable', new Set(['VpcId', 'Tags'])],
+    [
+      'AWS::EC2::Route',
+      new Set([
+        'RouteTableId',
+        'DestinationCidrBlock',
+        'GatewayId',
+        'NatGatewayId',
+        'InstanceId',
+        'NetworkInterfaceId',
+        'VpcPeeringConnectionId',
+      ]),
+    ],
+    ['AWS::EC2::SubnetRouteTableAssociation', new Set(['SubnetId', 'RouteTableId'])],
+    [
+      'AWS::EC2::SecurityGroup',
+      new Set(['GroupDescription', 'GroupName', 'VpcId', 'SecurityGroupIngress', 'Tags']),
+    ],
+    [
+      'AWS::EC2::SecurityGroupIngress',
+      new Set([
+        'GroupId',
+        'IpProtocol',
+        'FromPort',
+        'ToPort',
+        'CidrIp',
+        'Description',
+        'SourceSecurityGroupId',
+      ]),
+    ],
+    [
+      'AWS::EC2::Instance',
+      new Set([
+        'ImageId',
+        'InstanceType',
+        'KeyName',
+        'SecurityGroupIds',
+        'SecurityGroups',
+        'SubnetId',
+        'IamInstanceProfile',
+        'UserData',
+        'BlockDeviceMappings',
+        'Tags',
+      ]),
+    ],
+    ['AWS::EC2::NetworkAcl', new Set(['VpcId', 'Tags'])],
+    [
+      'AWS::EC2::NetworkAclEntry',
+      new Set([
+        'NetworkAclId',
+        'RuleNumber',
+        'Protocol',
+        'RuleAction',
+        'Egress',
+        'CidrBlock',
+        'Ipv6CidrBlock',
+        'PortRange',
+        'IcmpTypeCode',
+      ]),
+    ],
+    ['AWS::EC2::SubnetNetworkAclAssociation', new Set(['SubnetId', 'NetworkAclId'])],
+  ]);
 
   constructor() {
     const awsClients = getAwsClients();
@@ -477,6 +552,17 @@ export class EC2Provider implements ResourceProvider {
 
       // Apply tags
       await this.applyTags(subnetId, properties, logicalId);
+
+      // Set MapPublicIpOnLaunch if specified
+      const mapPublicIp = properties['MapPublicIpOnLaunch'];
+      if (mapPublicIp === true || mapPublicIp === 'true') {
+        await this.ec2Client.send(
+          new ModifySubnetAttributeCommand({
+            SubnetId: subnetId,
+            MapPublicIpOnLaunch: { Value: true },
+          })
+        );
+      }
 
       this.logger.debug(`Successfully created Subnet ${logicalId}: ${subnetId}`);
 

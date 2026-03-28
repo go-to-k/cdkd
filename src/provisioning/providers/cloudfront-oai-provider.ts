@@ -24,6 +24,13 @@ export class CloudFrontOAIProvider implements ResourceProvider {
   private cloudFrontClient: CloudFrontClient;
   private logger = getLogger().child('CloudFrontOAIProvider');
 
+  handledProperties = new Map<string, ReadonlySet<string>>([
+    [
+      'AWS::CloudFront::CloudFrontOriginAccessIdentity',
+      new Set(['CloudFrontOriginAccessIdentityConfig']),
+    ],
+  ]);
+
   constructor() {
     const awsClients = getAwsClients();
     this.cloudFrontClient = awsClients.cloudFront;

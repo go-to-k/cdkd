@@ -76,6 +76,41 @@ export interface ResourceUpdateResult {
  */
 export interface ResourceProvider {
   /**
+   * Map of resource type → set of CloudFormation property names handled in create/update.
+   * When defined for a resource type, if a template contains properties NOT in the set
+   * and the resource type is supported by Cloud Control API, the deploy engine will fall
+   * back to CC API for create/update operations to ensure all properties are applied.
+   *
+   * If undefined or the resource type is not in the map, the provider is assumed to
+   * handle ALL properties (no safety net).
+   * DELETE always uses the SDK provider regardless of this setting.
+   */
+  handledProperties?: ReadonlyMap<string, ReadonlySet<string>>;
+
+  /**
+   * If true, the provider refuses CC API fallback for create/update.
+   * When unhandled properties are detected, the deploy engine will throw an error
+   * instead of falling back to CC API.
+   *
+   * Use this for providers that exist because CC API has known issues with this
+   * resource type (e.g., bugs, incorrect behavior, missing features).
+   */
+  disableCcApiFallback?: boolean;
+  /**
+   * Optional: Pre-process properties before CC API fallback.
+   * Called when the safety net falls back to CC API for create/update, allowing
+   * the SDK provider to apply custom transformations (e.g., default name generation)
+   * so that CC API receives the same defaults the SDK provider would have applied.
+   *
+   * If not implemented, properties are passed to CC API as-is.
+   */
+  preparePropertiesForFallback?(
+    logicalId: string,
+    resourceType: string,
+    properties: Record<string, unknown>
+  ): Record<string, unknown>;
+
+  /**
    * Create a new resource
    * @param logicalId Logical ID from template
    * @param resourceType CloudFormation resource type (e.g., "AWS::S3::Bucket")

@@ -24,6 +24,21 @@ import type {
 export class LambdaPermissionProvider implements ResourceProvider {
   private lambdaClient: LambdaClient;
   private logger = getLogger().child('LambdaPermissionProvider');
+  handledProperties = new Map<string, ReadonlySet<string>>([
+    [
+      'AWS::Lambda::Permission',
+      new Set([
+        'FunctionName',
+        'Action',
+        'Principal',
+        'SourceArn',
+        'SourceAccount',
+        'PrincipalOrgID',
+        'EventSourceToken',
+        'FunctionUrlAuthType',
+      ]),
+    ],
+  ]);
 
   constructor() {
     const awsClients = getAwsClients();

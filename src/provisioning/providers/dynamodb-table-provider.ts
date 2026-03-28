@@ -34,6 +34,25 @@ import type {
 export class DynamoDBTableProvider implements ResourceProvider {
   private dynamoDBClient: DynamoDBClient;
   private logger = getLogger().child('DynamoDBTableProvider');
+  handledProperties = new Map<string, ReadonlySet<string>>([
+    [
+      'AWS::DynamoDB::Table',
+      new Set([
+        'TableName',
+        'KeySchema',
+        'AttributeDefinitions',
+        'BillingMode',
+        'ProvisionedThroughput',
+        'StreamSpecification',
+        'GlobalSecondaryIndexes',
+        'LocalSecondaryIndexes',
+        'SSESpecification',
+        'Tags',
+        'DeletionProtectionEnabled',
+        'TableClass',
+      ]),
+    ],
+  ]);
 
   constructor() {
     const awsClients = getAwsClients();

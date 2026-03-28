@@ -11,6 +11,7 @@ import {
   PutMethodCommand,
   DeleteMethodCommand,
   PutIntegrationCommand,
+  PutMethodResponseCommand,
   CreateAuthorizerCommand,
   DeleteAuthorizerCommand,
   NotFoundException,
@@ -44,6 +45,42 @@ import type {
 export class ApiGatewayProvider implements ResourceProvider {
   private apiGatewayClient: APIGatewayClient;
   private logger = getLogger().child('ApiGatewayProvider');
+
+  handledProperties = new Map<string, ReadonlySet<string>>([
+    ['AWS::ApiGateway::Account', new Set(['CloudWatchRoleArn'])],
+    [
+      'AWS::ApiGateway::Authorizer',
+      new Set([
+        'RestApiId',
+        'Name',
+        'Type',
+        'ProviderARNs',
+        'AuthorizerUri',
+        'AuthorizerCredentials',
+        'IdentitySource',
+        'IdentityValidationExpression',
+        'AuthorizerResultTtlInSeconds',
+      ]),
+    ],
+    ['AWS::ApiGateway::Resource', new Set(['RestApiId', 'ParentId', 'PathPart'])],
+    ['AWS::ApiGateway::Deployment', new Set(['RestApiId', 'Description'])],
+    [
+      'AWS::ApiGateway::Stage',
+      new Set(['RestApiId', 'StageName', 'DeploymentId', 'Description', 'Tags']),
+    ],
+    [
+      'AWS::ApiGateway::Method',
+      new Set([
+        'RestApiId',
+        'ResourceId',
+        'HttpMethod',
+        'AuthorizationType',
+        'AuthorizerId',
+        'Integration',
+        'MethodResponses',
+      ]),
+    ],
+  ]);
 
   /** Maximum number of retries for IAM propagation delays */
   private static readonly MAX_IAM_RETRIES = 3;
@@ -838,6 +875,7 @@ export class ApiGatewayProvider implements ResourceProvider {
           stageName,
           deploymentId,
           description: properties['Description'] as string | undefined,
+          tags: this.cfnTagsToRecord(properties['Tags']),
         })
       );
 
@@ -1061,6 +1099,26 @@ export class ApiGatewayProvider implements ResourceProvider {
         );
       }
 
+      // If MethodResponses property exists, set up method responses
+      const methodResponses = properties['MethodResponses'] as
+        | Array<Record<string, unknown>>
+        | undefined;
+      if (methodResponses) {
+        for (const resp of methodResponses) {
+          const statusCode = String(resp['StatusCode']);
+          await this.apiGatewayClient.send(
+            new PutMethodResponseCommand({
+              restApiId,
+              resourceId,
+              httpMethod,
+              statusCode,
+              responseModels: resp['ResponseModels'] as Record<string, string> | undefined,
+              responseParameters: resp['ResponseParameters'] as Record<string, boolean> | undefined,
+            })
+          );
+        }
+      }
+
       const physicalId = `${restApiId}|${resourceId}|${httpMethod}`;
       this.logger.debug(`Successfully created API Gateway Method ${logicalId}: ${physicalId}`);
 
@@ -1166,5 +1224,17 @@ export class ApiGatewayProvider implements ResourceProvider {
    */
   private sleep(ms: number): Promise<void> {
     return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  /**
+   * Convert CloudFormation Tags (Array<{Key, Value}>) to SDK tags (Record<string, string>).
+   */
+  private cfnTagsToRecord(tags: unknown): Record<string, string> | undefined {
+    if (!tags || !Array.isArray(tags)) return undefined;
+    const result: Record<string, string> = {};
+    for (const tag of tags as Array<{ Key: string; Value: string }>) {
+      result[tag.Key] = tag.Value;
+    }
+    return result;
   }
 }

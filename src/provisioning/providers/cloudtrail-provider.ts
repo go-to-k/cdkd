@@ -5,7 +5,11 @@ import {
   UpdateTrailCommand,
   StartLoggingCommand,
   StopLoggingCommand,
+  PutEventSelectorsCommand,
+  PutInsightSelectorsCommand,
   TrailNotFoundException,
+  type EventSelector,
+  type InsightSelector,
 } from '@aws-sdk/client-cloudtrail';
 import { getLogger } from '../../utils/logger.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
@@ -28,6 +32,29 @@ export class CloudTrailProvider implements ResourceProvider {
   private client: CloudTrailClient | undefined;
   private readonly providerRegion = process.env['AWS_REGION'];
   private logger = getLogger().child('CloudTrailProvider');
+
+  handledProperties = new Map<string, ReadonlySet<string>>([
+    [
+      'AWS::CloudTrail::Trail',
+      new Set([
+        'S3BucketName',
+        'TrailName',
+        'S3KeyPrefix',
+        'IsMultiRegionTrail',
+        'IncludeGlobalServiceEvents',
+        'EnableLogFileValidation',
+        'IsLogging',
+        'Tags',
+        'CloudWatchLogsLogGroupArn',
+        'CloudWatchLogsRoleArn',
+        'KMSKeyId',
+        'SnsTopicName',
+        'EventSelectors',
+        'InsightSelectors',
+        'IsOrganizationTrail',
+      ]),
+    ],
+  ]);
 
   private getClient(): CloudTrailClient {
     if (!this.client) {
@@ -63,6 +90,13 @@ export class CloudTrailProvider implements ResourceProvider {
     const enableLogFileValidation = properties['EnableLogFileValidation'] as boolean | undefined;
     const isLogging = properties['IsLogging'] as boolean | undefined;
     const tags = properties['Tags'] as Array<{ Key: string; Value: string }> | undefined;
+    const cloudWatchLogsLogGroupArn = properties['CloudWatchLogsLogGroupArn'] as string | undefined;
+    const cloudWatchLogsRoleArn = properties['CloudWatchLogsRoleArn'] as string | undefined;
+    const kmsKeyId = properties['KMSKeyId'] as string | undefined;
+    const snsTopicName = properties['SnsTopicName'] as string | undefined;
+    const isOrganizationTrail = properties['IsOrganizationTrail'] as boolean | undefined;
+    const eventSelectors = properties['EventSelectors'] as EventSelector[] | undefined;
+    const insightSelectors = properties['InsightSelectors'] as InsightSelector[] | undefined;
 
     try {
       const result = await this.getClient().send(
@@ -74,10 +108,37 @@ export class CloudTrailProvider implements ResourceProvider {
           IncludeGlobalServiceEvents: includeGlobalServiceEvents,
           EnableLogFileValidation: enableLogFileValidation,
           TagsList: tags ? tags.map((t) => ({ Key: t.Key, Value: t.Value })) : undefined,
+          CloudWatchLogsLogGroupArn: cloudWatchLogsLogGroupArn,
+          CloudWatchLogsRoleArn: cloudWatchLogsRoleArn,
+          KmsKeyId: kmsKeyId,
+          SnsTopicName: snsTopicName,
+          IsOrganizationTrail: isOrganizationTrail,
         })
       );
 
       const trailArn = result.TrailARN!;
+
+      // Apply EventSelectors if specified (requires separate API call)
+      if (eventSelectors && eventSelectors.length > 0) {
+        this.logger.debug(`Setting event selectors for CloudTrail Trail ${logicalId}`);
+        await this.getClient().send(
+          new PutEventSelectorsCommand({
+            TrailName: trailArn,
+            EventSelectors: eventSelectors,
+          })
+        );
+      }
+
+      // Apply InsightSelectors if specified (requires separate API call)
+      if (insightSelectors && insightSelectors.length > 0) {
+        this.logger.debug(`Setting insight selectors for CloudTrail Trail ${logicalId}`);
+        await this.getClient().send(
+          new PutInsightSelectorsCommand({
+            TrailName: trailArn,
+            InsightSelectors: insightSelectors,
+          })
+        );
+      }
 
       // Start logging if IsLogging is true (default behavior)
       if (isLogging !== false) {
@@ -122,6 +183,11 @@ export class CloudTrailProvider implements ResourceProvider {
       | undefined;
     const enableLogFileValidation = properties['EnableLogFileValidation'] as boolean | undefined;
     const isLogging = properties['IsLogging'] as boolean | undefined;
+    const cloudWatchLogsLogGroupArn = properties['CloudWatchLogsLogGroupArn'] as string | undefined;
+    const cloudWatchLogsRoleArn = properties['CloudWatchLogsRoleArn'] as string | undefined;
+    const kmsKeyId = properties['KMSKeyId'] as string | undefined;
+    const snsTopicName = properties['SnsTopicName'] as string | undefined;
+    const isOrganizationTrail = properties['IsOrganizationTrail'] as boolean | undefined;
 
     try {
       await this.getClient().send(
@@ -132,8 +198,45 @@ export class CloudTrailProvider implements ResourceProvider {
           IsMultiRegionTrail: isMultiRegionTrail,
           IncludeGlobalServiceEvents: includeGlobalServiceEvents,
           EnableLogFileValidation: enableLogFileValidation,
+          CloudWatchLogsLogGroupArn: cloudWatchLogsLogGroupArn,
+          CloudWatchLogsRoleArn: cloudWatchLogsRoleArn,
+          KmsKeyId: kmsKeyId,
+          SnsTopicName: snsTopicName,
+          IsOrganizationTrail: isOrganizationTrail,
         })
       );
+
+      // Update EventSelectors if changed
+      const newEventSelectors = properties['EventSelectors'] as EventSelector[] | undefined;
+      const oldEventSelectors = previousProperties['EventSelectors'] as EventSelector[] | undefined;
+      if (JSON.stringify(newEventSelectors) !== JSON.stringify(oldEventSelectors)) {
+        if (newEventSelectors && newEventSelectors.length > 0) {
+          this.logger.debug(`Updating event selectors for CloudTrail Trail ${logicalId}`);
+          await this.getClient().send(
+            new PutEventSelectorsCommand({
+              TrailName: physicalId,
+              EventSelectors: newEventSelectors,
+            })
+          );
+        }
+      }
+
+      // Update InsightSelectors if changed
+      const newInsightSelectors = properties['InsightSelectors'] as InsightSelector[] | undefined;
+      const oldInsightSelectors = previousProperties['InsightSelectors'] as
+        | InsightSelector[]
+        | undefined;
+      if (JSON.stringify(newInsightSelectors) !== JSON.stringify(oldInsightSelectors)) {
+        if (newInsightSelectors && newInsightSelectors.length > 0) {
+          this.logger.debug(`Updating insight selectors for CloudTrail Trail ${logicalId}`);
+          await this.getClient().send(
+            new PutInsightSelectorsCommand({
+              TrailName: physicalId,
+              InsightSelectors: newInsightSelectors,
+            })
+          );
+        }
+      }
 
       // Handle IsLogging changes
       const oldIsLogging = previousProperties['IsLogging'] as boolean | undefined;

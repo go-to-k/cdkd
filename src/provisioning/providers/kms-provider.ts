@@ -9,9 +9,14 @@ import {
   DisableKeyRotationCommand,
   UpdateKeyDescriptionCommand,
   PutKeyPolicyCommand,
+  EnableKeyCommand,
+  DisableKeyCommand,
+  TagResourceCommand,
+  UntagResourceCommand,
   NotFoundException,
   type KeyUsageType,
   type KeySpec,
+  type OriginType,
 } from '@aws-sdk/client-kms';
 import { getLogger } from '../../utils/logger.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
@@ -35,6 +40,27 @@ export class KMSProvider implements ResourceProvider {
   private client: KMSClient | undefined;
   private readonly providerRegion = process.env['AWS_REGION'];
   private logger = getLogger().child('KMSProvider');
+
+  handledProperties = new Map<string, ReadonlySet<string>>([
+    [
+      'AWS::KMS::Key',
+      new Set([
+        'Description',
+        'KeyPolicy',
+        'KeySpec',
+        'KeyUsage',
+        'EnableKeyRotation',
+        'Tags',
+        'Enabled',
+        'MultiRegion',
+        'PendingWindowInDays',
+        'RotationPeriodInDays',
+        'Origin',
+        'BypassPolicyLockoutSafetyCheck',
+      ]),
+    ],
+    ['AWS::KMS::Alias', new Set(['AliasName', 'TargetKeyId'])],
+  ]);
 
   private getClient(): KMSClient {
     if (!this.client) {
@@ -94,7 +120,7 @@ export class KMSProvider implements ResourceProvider {
   ): Promise<void> {
     switch (resourceType) {
       case 'AWS::KMS::Key':
-        return this.deleteKey(logicalId, physicalId, resourceType);
+        return this.deleteKey(logicalId, physicalId, resourceType, _properties);
       case 'AWS::KMS::Alias':
         return this.deleteAlias(logicalId, physicalId, resourceType);
       default:
@@ -121,6 +147,12 @@ export class KMSProvider implements ResourceProvider {
     const keySpec = properties['KeySpec'] as string | undefined;
     const keyUsage = properties['KeyUsage'] as string | undefined;
     const enableKeyRotation = properties['EnableKeyRotation'] as boolean | undefined;
+    const tags = properties['Tags'] as Array<{ Key: string; Value: string }> | undefined;
+    const multiRegion = properties['MultiRegion'] as boolean | undefined;
+    const origin = properties['Origin'] as string | undefined;
+    const bypassPolicyLockoutSafetyCheck = properties['BypassPolicyLockoutSafetyCheck'] as
+      | boolean
+      | undefined;
 
     try {
       const result = await this.getClient().send(
@@ -133,6 +165,10 @@ export class KMSProvider implements ResourceProvider {
               ? keyPolicy
               : JSON.stringify(keyPolicy)
             : undefined,
+          Tags: tags ? tags.map((t) => ({ TagKey: t.Key, TagValue: t.Value })) : undefined,
+          MultiRegion: multiRegion,
+          Origin: origin as OriginType | undefined,
+          BypassPolicyLockoutSafetyCheck: bypassPolicyLockoutSafetyCheck,
         })
       );
 
@@ -141,8 +177,23 @@ export class KMSProvider implements ResourceProvider {
 
       // EnableKeyRotation must be called separately after key creation
       if (enableKeyRotation) {
+        const rotationPeriodInDays = properties['RotationPeriodInDays'] as number | undefined;
         this.logger.debug(`Enabling key rotation for KMS Key ${logicalId}`);
-        await this.getClient().send(new EnableKeyRotationCommand({ KeyId: keyId }));
+        await this.getClient().send(
+          new EnableKeyRotationCommand({
+            KeyId: keyId,
+            ...(rotationPeriodInDays !== undefined && {
+              RotationPeriodInDays: rotationPeriodInDays,
+            }),
+          })
+        );
+      }
+
+      // Disable key if Enabled is explicitly false
+      const enabled = properties['Enabled'] as boolean | undefined;
+      if (enabled === false) {
+        this.logger.debug(`Disabling KMS Key ${logicalId}`);
+        await this.getClient().send(new DisableKeyCommand({ KeyId: keyId }));
       }
 
       this.logger.debug(`Successfully created KMS Key ${logicalId}: ${keyId}`);
@@ -194,11 +245,58 @@ export class KMSProvider implements ResourceProvider {
       const oldEnableKeyRotation = previousProperties['EnableKeyRotation'] as boolean | undefined;
       if (newEnableKeyRotation !== oldEnableKeyRotation) {
         if (newEnableKeyRotation) {
+          const rotationPeriodInDays = properties['RotationPeriodInDays'] as number | undefined;
           this.logger.debug(`Enabling key rotation for KMS Key ${logicalId}`);
-          await this.getClient().send(new EnableKeyRotationCommand({ KeyId: physicalId }));
+          await this.getClient().send(
+            new EnableKeyRotationCommand({
+              KeyId: physicalId,
+              ...(rotationPeriodInDays !== undefined && {
+                RotationPeriodInDays: rotationPeriodInDays,
+              }),
+            })
+          );
         } else {
           this.logger.debug(`Disabling key rotation for KMS Key ${logicalId}`);
           await this.getClient().send(new DisableKeyRotationCommand({ KeyId: physicalId }));
+        }
+      }
+
+      // Update Enabled if changed
+      const newEnabled = properties['Enabled'] as boolean | undefined;
+      const oldEnabled = previousProperties['Enabled'] as boolean | undefined;
+      if (newEnabled !== oldEnabled) {
+        if (newEnabled === false) {
+          this.logger.debug(`Disabling KMS Key ${logicalId}`);
+          await this.getClient().send(new DisableKeyCommand({ KeyId: physicalId }));
+        } else {
+          this.logger.debug(`Enabling KMS Key ${logicalId}`);
+          await this.getClient().send(new EnableKeyCommand({ KeyId: physicalId }));
+        }
+      }
+
+      // Update Tags if changed
+      const newTags = properties['Tags'] as Array<{ Key: string; Value: string }> | undefined;
+      const oldTags = previousProperties['Tags'] as
+        | Array<{ Key: string; Value: string }>
+        | undefined;
+      if (JSON.stringify(newTags) !== JSON.stringify(oldTags)) {
+        // Remove old tags
+        if (oldTags && oldTags.length > 0) {
+          await this.getClient().send(
+            new UntagResourceCommand({
+              KeyId: physicalId,
+              TagKeys: oldTags.map((t) => t.Key),
+            })
+          );
+        }
+        // Add new tags
+        if (newTags && newTags.length > 0) {
+          await this.getClient().send(
+            new TagResourceCommand({
+              KeyId: physicalId,
+              Tags: newTags.map((t) => ({ TagKey: t.Key, TagValue: t.Value })),
+            })
+          );
         }
       }
 
@@ -244,15 +342,18 @@ export class KMSProvider implements ResourceProvider {
   private async deleteKey(
     logicalId: string,
     physicalId: string,
-    resourceType: string
+    resourceType: string,
+    properties?: Record<string, unknown>
   ): Promise<void> {
     this.logger.debug(`Scheduling deletion for KMS Key ${logicalId}: ${physicalId}`);
+
+    const pendingWindowInDays = (properties?.['PendingWindowInDays'] as number | undefined) ?? 7;
 
     try {
       await this.getClient().send(
         new ScheduleKeyDeletionCommand({
           KeyId: physicalId,
-          PendingWindowInDays: 7,
+          PendingWindowInDays: pendingWindowInDays,
         })
       );
       this.logger.debug(`Successfully scheduled deletion for KMS Key ${logicalId}`);

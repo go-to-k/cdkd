@@ -10,6 +10,10 @@ import {
   type DefaultAction,
   type VisibilityConfig,
   type Scope,
+  type CaptchaConfig,
+  type ChallengeConfig,
+  type CustomResponseBody,
+  type AssociationConfig,
 } from '@aws-sdk/client-wafv2';
 import { getLogger } from '../../utils/logger.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
@@ -56,6 +60,26 @@ export class WAFv2WebACLProvider implements ResourceProvider {
   private readonly providerRegion = process.env['AWS_REGION'];
   private logger = getLogger().child('WAFv2WebACLProvider');
 
+  handledProperties = new Map<string, ReadonlySet<string>>([
+    [
+      'AWS::WAFv2::WebACL',
+      new Set([
+        'Name',
+        'Scope',
+        'Tags',
+        'DefaultAction',
+        'Description',
+        'Rules',
+        'VisibilityConfig',
+        'CustomResponseBodies',
+        'CaptchaConfig',
+        'ChallengeConfig',
+        'TokenDomains',
+        'AssociationConfig',
+      ]),
+    ],
+  ]);
+
   private getClient(): WAFV2Client {
     if (!this.wafv2Client) {
       this.wafv2Client = new WAFV2Client(
@@ -99,6 +123,13 @@ export class WAFv2WebACLProvider implements ResourceProvider {
           Rules: (properties['Rules'] as Rule[]) || [],
           VisibilityConfig: properties['VisibilityConfig'] as VisibilityConfig,
           ...(tags.length > 0 && { Tags: tags }),
+          CustomResponseBodies: properties['CustomResponseBodies'] as
+            | Record<string, CustomResponseBody>
+            | undefined,
+          CaptchaConfig: properties['CaptchaConfig'] as CaptchaConfig | undefined,
+          ChallengeConfig: properties['ChallengeConfig'] as ChallengeConfig | undefined,
+          TokenDomains: properties['TokenDomains'] as string[] | undefined,
+          AssociationConfig: properties['AssociationConfig'] as AssociationConfig | undefined,
         })
       );
 
@@ -172,6 +203,13 @@ export class WAFv2WebACLProvider implements ResourceProvider {
           Description: properties['Description'] as string | undefined,
           Rules: (properties['Rules'] as Rule[]) || [],
           VisibilityConfig: properties['VisibilityConfig'] as VisibilityConfig,
+          CustomResponseBodies: properties['CustomResponseBodies'] as
+            | Record<string, CustomResponseBody>
+            | undefined,
+          CaptchaConfig: properties['CaptchaConfig'] as CaptchaConfig | undefined,
+          ChallengeConfig: properties['ChallengeConfig'] as ChallengeConfig | undefined,
+          TokenDomains: properties['TokenDomains'] as string[] | undefined,
+          AssociationConfig: properties['AssociationConfig'] as AssociationConfig | undefined,
         })
       );
 

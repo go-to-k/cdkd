@@ -5,8 +5,16 @@ import {
   GetHostedZoneCommand,
   ChangeResourceRecordSetsCommand,
   UpdateHostedZoneCommentCommand,
+  ChangeTagsForResourceCommand,
+  AssociateVPCWithHostedZoneCommand,
+  DisassociateVPCFromHostedZoneCommand,
+  CreateQueryLoggingConfigCommand,
+  DeleteQueryLoggingConfigCommand,
+  ListQueryLoggingConfigsCommand,
+  ListHostedZonesByNameCommand,
   type ResourceRecordSet,
   type RRType,
+  type VPCRegion,
 } from '@aws-sdk/client-route-53';
 import { getLogger } from '../../utils/logger.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
@@ -31,6 +39,33 @@ export class Route53Provider implements ResourceProvider {
   private route53Client?: Route53Client;
   private readonly providerRegion = process.env['AWS_REGION'];
   private logger = getLogger().child('Route53Provider');
+
+  handledProperties = new Map<string, ReadonlySet<string>>([
+    [
+      'AWS::Route53::HostedZone',
+      new Set(['Name', 'HostedZoneConfig', 'HostedZoneTags', 'VPCs', 'QueryLoggingConfig']),
+    ],
+    [
+      'AWS::Route53::RecordSet',
+      new Set([
+        'HostedZoneId',
+        'HostedZoneName',
+        'Name',
+        'Type',
+        'TTL',
+        'ResourceRecords',
+        'AliasTarget',
+        'SetIdentifier',
+        'Weight',
+        'Region',
+        'Failover',
+        'MultiValueAnswer',
+        'HealthCheckId',
+        'Comment',
+        'GeoLocation',
+      ]),
+    ],
+  ]);
 
   private getClient(): Route53Client {
     if (!this.route53Client) {
@@ -141,6 +176,11 @@ export class Route53Provider implements ResourceProvider {
         | Record<string, unknown>
         | undefined;
 
+      // VPCs property (for private hosted zones)
+      const vpcs = properties['VPCs'] as Array<Record<string, unknown>> | undefined;
+      // For CreateHostedZone, only one VPC can be specified; additional VPCs are associated after creation
+      const firstVpc = vpcs && vpcs.length > 0 ? vpcs[0] : undefined;
+
       const response = await this.getClient().send(
         new CreateHostedZoneCommand({
           Name: name,
@@ -149,6 +189,18 @@ export class Route53Provider implements ResourceProvider {
             ? {
                 HostedZoneConfig: {
                   Comment: hostedZoneConfig['Comment'] as string,
+                  // When VPCs are specified, this is a private hosted zone
+                  ...(firstVpc ? { PrivateZone: true } : {}),
+                },
+              }
+            : firstVpc
+              ? { HostedZoneConfig: { PrivateZone: true } }
+              : {}),
+          ...(firstVpc
+            ? {
+                VPC: {
+                  VPCId: firstVpc['VPCId'] as string,
+                  VPCRegion: firstVpc['VPCRegion'] as VPCRegion | undefined,
                 },
               }
             : {}),
@@ -162,6 +214,31 @@ export class Route53Provider implements ResourceProvider {
 
       // Extract zone ID without /hostedzone/ prefix
       const zoneId = hostedZone.Id.replace('/hostedzone/', '');
+
+      // Associate additional VPCs (index 1+) after creation
+      if (vpcs && vpcs.length > 1) {
+        for (let i = 1; i < vpcs.length; i++) {
+          const additionalVpc = vpcs[i]!;
+          this.logger.debug(
+            `Associating additional VPC ${String(additionalVpc['VPCId'])} with hosted zone ${zoneId}`
+          );
+          await this.getClient().send(
+            new AssociateVPCWithHostedZoneCommand({
+              HostedZoneId: zoneId,
+              VPC: {
+                VPCId: additionalVpc['VPCId'] as string,
+                VPCRegion: additionalVpc['VPCRegion'] as VPCRegion | undefined,
+              },
+            })
+          );
+        }
+      }
+
+      // Apply tags (HostedZoneTags)
+      await this.applyHostedZoneTags(zoneId, properties, logicalId);
+
+      // Configure query logging
+      await this.applyQueryLoggingConfig(zoneId, properties, logicalId);
 
       // Collect name servers
       const nameServers = response.DelegationSet?.NameServers ?? [];
@@ -209,6 +286,17 @@ export class Route53Provider implements ResourceProvider {
         })
       );
 
+      // Update tags (replace all tags)
+      await this.applyHostedZoneTags(physicalId, properties, logicalId);
+
+      // Update query logging config
+      await this.applyQueryLoggingConfig(physicalId, properties, logicalId);
+
+      // Note: VPC associations on update are complex (need to diff current vs desired).
+      // For now, we handle VPCs that need to be added. Full diff requires GetHostedZone
+      // to compare current VPCs, which we'll do here.
+      await this.syncVPCAssociations(physicalId, properties, logicalId);
+
       // Retrieve name servers
       const getResponse = await this.getClient().send(new GetHostedZoneCommand({ Id: physicalId }));
       const nameServers = getResponse.DelegationSet?.NameServers ?? [];
@@ -243,6 +331,9 @@ export class Route53Provider implements ResourceProvider {
     this.logger.debug(`Deleting Route 53 hosted zone ${logicalId}: ${physicalId}`);
 
     try {
+      // Delete query logging config before deleting hosted zone
+      await this.deleteQueryLoggingConfigForZone(physicalId, logicalId);
+
       await this.getClient().send(new DeleteHostedZoneCommand({ Id: physicalId }));
       this.logger.debug(`Successfully deleted hosted zone ${logicalId}`);
     } catch (error) {
@@ -286,14 +377,7 @@ export class Route53Provider implements ResourceProvider {
   ): Promise<ResourceCreateResult> {
     this.logger.debug(`Creating Route 53 record set ${logicalId}`);
 
-    const hostedZoneId = properties['HostedZoneId'] as string | undefined;
-    if (!hostedZoneId) {
-      throw new ProvisioningError(
-        `HostedZoneId is required for record set ${logicalId}`,
-        resourceType,
-        logicalId
-      );
-    }
+    const hostedZoneId = await this.resolveHostedZoneId(properties, logicalId, resourceType);
 
     const recordName = properties['Name'] as string;
     const recordType = properties['Type'] as string;
@@ -301,10 +385,13 @@ export class Route53Provider implements ResourceProvider {
     try {
       const resourceRecordSet = this.buildResourceRecordSet(properties);
 
+      const comment = properties['Comment'] as string | undefined;
+
       await this.getClient().send(
         new ChangeResourceRecordSetsCommand({
           HostedZoneId: hostedZoneId,
           ChangeBatch: {
+            ...(comment ? { Comment: comment } : {}),
             Changes: [
               {
                 Action: 'CREATE',
@@ -343,15 +430,12 @@ export class Route53Provider implements ResourceProvider {
   ): Promise<ResourceUpdateResult> {
     this.logger.debug(`Updating Route 53 record set ${logicalId}: ${physicalId}`);
 
-    const hostedZoneId = properties['HostedZoneId'] as string | undefined;
-    if (!hostedZoneId) {
-      throw new ProvisioningError(
-        `HostedZoneId is required for record set ${logicalId}`,
-        resourceType,
-        logicalId,
-        physicalId
-      );
-    }
+    const hostedZoneId = await this.resolveHostedZoneId(
+      properties,
+      logicalId,
+      resourceType,
+      physicalId
+    );
 
     const recordName = properties['Name'] as string;
     const recordType = properties['Type'] as string;
@@ -359,10 +443,13 @@ export class Route53Provider implements ResourceProvider {
     try {
       const resourceRecordSet = this.buildResourceRecordSet(properties);
 
+      const comment = properties['Comment'] as string | undefined;
+
       await this.getClient().send(
         new ChangeResourceRecordSetsCommand({
           HostedZoneId: hostedZoneId,
           ChangeBatch: {
+            ...(comment ? { Comment: comment } : {}),
             Changes: [
               {
                 Action: 'UPSERT',
@@ -475,6 +562,8 @@ export class Route53Provider implements ResourceProvider {
    *
    * Handles conversion of CDK-style ResourceRecords (array of strings)
    * to SDK-style ResourceRecords (array of {Value}).
+   * Also handles routing policy properties: Weight, Region, Failover,
+   * MultiValueAnswer, GeoLocation, SetIdentifier, and HealthCheckId.
    */
   private buildResourceRecordSet(properties: Record<string, unknown>): ResourceRecordSet {
     const name = properties['Name'] as string;
@@ -513,6 +602,272 @@ export class Route53Provider implements ResourceProvider {
       }
     }
 
+    // Routing policy properties
+    const setIdentifier = properties['SetIdentifier'] as string | undefined;
+    if (setIdentifier) {
+      recordSet.SetIdentifier = setIdentifier;
+    }
+
+    const weight = properties['Weight'] as number | string | undefined;
+    if (weight !== undefined) {
+      recordSet.Weight = Number(weight);
+    }
+
+    const region = properties['Region'] as string | undefined;
+    if (region) {
+      recordSet.Region = region as ResourceRecordSet['Region'];
+    }
+
+    const failover = properties['Failover'] as string | undefined;
+    if (failover) {
+      recordSet.Failover = failover as ResourceRecordSet['Failover'];
+    }
+
+    const multiValueAnswer = properties['MultiValueAnswer'] as boolean | string | undefined;
+    if (multiValueAnswer !== undefined) {
+      recordSet.MultiValueAnswer =
+        typeof multiValueAnswer === 'string'
+          ? multiValueAnswer.toLowerCase() === 'true'
+          : multiValueAnswer;
+    }
+
+    const healthCheckId = properties['HealthCheckId'] as string | undefined;
+    if (healthCheckId) {
+      recordSet.HealthCheckId = healthCheckId;
+    }
+
+    const geoLocation = properties['GeoLocation'] as Record<string, unknown> | undefined;
+    if (geoLocation) {
+      recordSet.GeoLocation = {
+        ...(geoLocation['ContinentCode']
+          ? { ContinentCode: geoLocation['ContinentCode'] as string }
+          : {}),
+        ...(geoLocation['CountryCode']
+          ? { CountryCode: geoLocation['CountryCode'] as string }
+          : {}),
+        ...(geoLocation['SubdivisionCode']
+          ? { SubdivisionCode: geoLocation['SubdivisionCode'] as string }
+          : {}),
+      };
+    }
+
     return recordSet;
+  }
+
+  // ─── HostedZone Helpers ───────────────────────────────────────────
+
+  /**
+   * Apply tags to a hosted zone using ChangeTagsForResource.
+   * CFn property: HostedZoneTags (array of {Key, Value}).
+   */
+  private async applyHostedZoneTags(
+    zoneId: string,
+    properties: Record<string, unknown>,
+    logicalId: string
+  ): Promise<void> {
+    const tags = properties['HostedZoneTags'] as Array<{ Key: string; Value: string }> | undefined;
+    if (!tags || !Array.isArray(tags) || tags.length === 0) return;
+
+    try {
+      await this.getClient().send(
+        new ChangeTagsForResourceCommand({
+          ResourceType: 'hostedzone',
+          ResourceId: zoneId,
+          AddTags: tags.map((t) => ({ Key: t.Key, Value: t.Value })),
+        })
+      );
+      this.logger.debug(`Applied ${tags.length} tag(s) to hosted zone ${logicalId}`);
+    } catch (error) {
+      this.logger.warn(
+        `Failed to apply tags to hosted zone ${logicalId}: ${error instanceof Error ? error.message : String(error)}`
+      );
+    }
+  }
+
+  /**
+   * Apply QueryLoggingConfig to a hosted zone.
+   * CFn property: QueryLoggingConfig ({ CloudWatchLogsLogGroupArn }).
+   * Only one query logging config per hosted zone is allowed.
+   */
+  private async applyQueryLoggingConfig(
+    zoneId: string,
+    properties: Record<string, unknown>,
+    logicalId: string
+  ): Promise<void> {
+    const queryLoggingConfig = properties['QueryLoggingConfig'] as
+      | Record<string, unknown>
+      | undefined;
+    if (!queryLoggingConfig) return;
+
+    const cloudWatchLogsLogGroupArn = queryLoggingConfig['CloudWatchLogsLogGroupArn'] as
+      | string
+      | undefined;
+    if (!cloudWatchLogsLogGroupArn) return;
+
+    try {
+      // Delete existing query logging config first (only one allowed per zone)
+      await this.deleteQueryLoggingConfigForZone(zoneId, logicalId);
+
+      await this.getClient().send(
+        new CreateQueryLoggingConfigCommand({
+          HostedZoneId: zoneId,
+          CloudWatchLogsLogGroupArn: cloudWatchLogsLogGroupArn,
+        })
+      );
+      this.logger.debug(`Applied query logging config to hosted zone ${logicalId}`);
+    } catch (error) {
+      // QueryLoggingConfigAlreadyExists is not fatal if we tried to delete first
+      if (error instanceof Error && error.name === 'QueryLoggingConfigAlreadyExists') {
+        this.logger.debug(`Query logging config already exists for hosted zone ${logicalId}`);
+        return;
+      }
+      this.logger.warn(
+        `Failed to apply query logging config to hosted zone ${logicalId}: ${error instanceof Error ? error.message : String(error)}`
+      );
+    }
+  }
+
+  /**
+   * Delete query logging config(s) for a hosted zone.
+   */
+  private async deleteQueryLoggingConfigForZone(zoneId: string, logicalId: string): Promise<void> {
+    try {
+      const listResponse = await this.getClient().send(
+        new ListQueryLoggingConfigsCommand({ HostedZoneId: zoneId })
+      );
+      const configs = listResponse.QueryLoggingConfigs ?? [];
+      for (const config of configs) {
+        if (config.Id) {
+          await this.getClient().send(new DeleteQueryLoggingConfigCommand({ Id: config.Id }));
+          this.logger.debug(
+            `Deleted query logging config ${config.Id} for hosted zone ${logicalId}`
+          );
+        }
+      }
+    } catch (error) {
+      // NoSuchHostedZone or NoSuchQueryLoggingConfig are not fatal during cleanup
+      if (
+        error instanceof Error &&
+        (error.name === 'NoSuchHostedZone' || error.name === 'NoSuchQueryLoggingConfig')
+      ) {
+        return;
+      }
+      this.logger.warn(
+        `Failed to delete query logging config for hosted zone ${logicalId}: ${error instanceof Error ? error.message : String(error)}`
+      );
+    }
+  }
+
+  /**
+   * Sync VPC associations for a private hosted zone during update.
+   * Compares current VPC associations with desired ones and adds/removes as needed.
+   */
+  private async syncVPCAssociations(
+    zoneId: string,
+    properties: Record<string, unknown>,
+    logicalId: string
+  ): Promise<void> {
+    const desiredVpcs = properties['VPCs'] as Array<Record<string, unknown>> | undefined;
+    if (!desiredVpcs || desiredVpcs.length === 0) return;
+
+    try {
+      // Get current VPC associations
+      const getResponse = await this.getClient().send(new GetHostedZoneCommand({ Id: zoneId }));
+      const currentVpcs = getResponse.VPCs ?? [];
+
+      const currentVpcIds = new Set(currentVpcs.map((v) => v.VPCId));
+      const desiredVpcIds = new Set(desiredVpcs.map((v) => v['VPCId'] as string));
+
+      // Associate new VPCs
+      for (const vpc of desiredVpcs) {
+        const vpcId = vpc['VPCId'] as string;
+        if (!currentVpcIds.has(vpcId)) {
+          this.logger.debug(`Associating VPC ${vpcId} with hosted zone ${zoneId}`);
+          await this.getClient().send(
+            new AssociateVPCWithHostedZoneCommand({
+              HostedZoneId: zoneId,
+              VPC: {
+                VPCId: vpcId,
+                VPCRegion: vpc['VPCRegion'] as VPCRegion | undefined,
+              },
+            })
+          );
+        }
+      }
+
+      // Disassociate removed VPCs (but never remove the last one)
+      for (const vpc of currentVpcs) {
+        if (vpc.VPCId && !desiredVpcIds.has(vpc.VPCId)) {
+          // Don't disassociate if it would leave 0 VPCs
+          if (currentVpcs.length <= 1) {
+            this.logger.warn(
+              `Cannot disassociate last VPC ${vpc.VPCId} from hosted zone ${logicalId}`
+            );
+            continue;
+          }
+          this.logger.debug(`Disassociating VPC ${vpc.VPCId} from hosted zone ${zoneId}`);
+          await this.getClient().send(
+            new DisassociateVPCFromHostedZoneCommand({
+              HostedZoneId: zoneId,
+              VPC: {
+                VPCId: vpc.VPCId,
+                VPCRegion: vpc.VPCRegion,
+              },
+            })
+          );
+        }
+      }
+    } catch (error) {
+      this.logger.warn(
+        `Failed to sync VPC associations for hosted zone ${logicalId}: ${error instanceof Error ? error.message : String(error)}`
+      );
+    }
+  }
+
+  // ─── RecordSet Helpers ────────────────────────────────────────────
+
+  /**
+   * Resolve HostedZoneId from properties.
+   * If HostedZoneId is provided, use it directly.
+   * If HostedZoneName is provided, resolve it to a HostedZoneId via ListHostedZonesByName.
+   */
+  private async resolveHostedZoneId(
+    properties: Record<string, unknown>,
+    logicalId: string,
+    resourceType: string,
+    physicalId?: string
+  ): Promise<string> {
+    const hostedZoneId = properties['HostedZoneId'] as string | undefined;
+    if (hostedZoneId) return hostedZoneId;
+
+    const hostedZoneName = properties['HostedZoneName'] as string | undefined;
+    if (hostedZoneName) {
+      try {
+        const response = await this.getClient().send(
+          new ListHostedZonesByNameCommand({
+            DNSName: hostedZoneName,
+            MaxItems: 1,
+          })
+        );
+        const zones = response.HostedZones ?? [];
+        // Match the zone name (Route53 returns names with trailing dot)
+        const normalizedName = hostedZoneName.endsWith('.') ? hostedZoneName : `${hostedZoneName}.`;
+        const matchedZone = zones.find((z) => z.Name === normalizedName);
+        if (matchedZone?.Id) {
+          return matchedZone.Id.replace('/hostedzone/', '');
+        }
+      } catch (error) {
+        this.logger.warn(
+          `Failed to resolve HostedZoneName "${hostedZoneName}" for ${logicalId}: ${error instanceof Error ? error.message : String(error)}`
+        );
+      }
+    }
+
+    throw new ProvisioningError(
+      `Either HostedZoneId or HostedZoneName is required for record set ${logicalId}`,
+      resourceType,
+      logicalId,
+      physicalId
+    );
   }
 }

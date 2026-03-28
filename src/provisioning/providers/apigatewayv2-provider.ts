@@ -40,6 +40,43 @@ export class ApiGatewayV2Provider implements ResourceProvider {
   private readonly providerRegion = process.env['AWS_REGION'];
   private logger = getLogger().child('ApiGatewayV2Provider');
 
+  handledProperties = new Map<string, ReadonlySet<string>>([
+    [
+      'AWS::ApiGatewayV2::Api',
+      new Set(['Name', 'ProtocolType', 'Description', 'CorsConfiguration', 'Tags']),
+    ],
+    [
+      'AWS::ApiGatewayV2::Stage',
+      new Set(['ApiId', 'StageName', 'AutoDeploy', 'Description', 'Tags']),
+    ],
+    [
+      'AWS::ApiGatewayV2::Integration',
+      new Set([
+        'ApiId',
+        'IntegrationType',
+        'IntegrationUri',
+        'IntegrationMethod',
+        'PayloadFormatVersion',
+      ]),
+    ],
+    [
+      'AWS::ApiGatewayV2::Route',
+      new Set(['ApiId', 'RouteKey', 'Target', 'AuthorizationType', 'AuthorizerId']),
+    ],
+    [
+      'AWS::ApiGatewayV2::Authorizer',
+      new Set([
+        'ApiId',
+        'AuthorizerType',
+        'Name',
+        'IdentitySource',
+        'JwtConfiguration',
+        'AuthorizerUri',
+        'AuthorizerPayloadFormatVersion',
+      ]),
+    ],
+  ]);
+
   private getClient(): ApiGatewayV2Client {
     if (!this.client) {
       this.client = new ApiGatewayV2Client(
@@ -176,6 +213,7 @@ export class ApiGatewayV2Provider implements ResourceProvider {
                 MaxAge?: number;
               }
             | undefined,
+          Tags: this.cfnTagsToRecord(properties['Tags']),
         })
       );
 
@@ -262,6 +300,7 @@ export class ApiGatewayV2Provider implements ResourceProvider {
           StageName: stageName,
           AutoDeploy: properties['AutoDeploy'] as boolean | undefined,
           Description: properties['Description'] as string | undefined,
+          Tags: this.cfnTagsToRecord(properties['Tags']),
         })
       );
 
@@ -626,5 +665,19 @@ export class ApiGatewayV2Provider implements ResourceProvider {
         cause
       );
     }
+  }
+
+  // ─── Helpers ──────────────────────────────────────────────────────
+
+  /**
+   * Convert CloudFormation Tags (Array<{Key, Value}>) to SDK Tags (Record<string, string>).
+   */
+  private cfnTagsToRecord(tags: unknown): Record<string, string> | undefined {
+    if (!tags || !Array.isArray(tags)) return undefined;
+    const result: Record<string, string> = {};
+    for (const tag of tags as Array<{ Key: string; Value: string }>) {
+      result[tag.Key] = tag.Value;
+    }
+    return result;
   }
 }

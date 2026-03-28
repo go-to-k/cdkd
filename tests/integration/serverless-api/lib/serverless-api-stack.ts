@@ -39,7 +39,8 @@ export class ServerlessApiStack extends cdk.Stack {
     // Lambda Function with inline Python handler
     const fn = new lambda.Function(this, 'ApiHandler', {
       runtime: lambda.Runtime.PYTHON_3_12,
-      code: lambda.Code.fromInline(`
+      code: lambda.Code.fromInline(
+        `
 import json
 import os
 
@@ -55,7 +56,8 @@ def handler(event, context):
             'topic': topic_arn,
         })
     }
-      `.trim()),
+      `.trim()
+      ),
       handler: 'index.handler',
       timeout: cdk.Duration.seconds(10),
       environment: {
@@ -145,6 +147,5 @@ def handler(event, context):
       value: userPool.userPoolId,
       description: 'Cognito UserPool ID',
     });
-
   }
 }

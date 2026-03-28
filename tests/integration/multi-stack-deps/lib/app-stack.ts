@@ -2,6 +2,7 @@ import * as cdk from 'aws-cdk-lib';
 import { Construct } from 'constructs';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
 import * as iam from 'aws-cdk-lib/aws-iam';
+import * as path from 'path';
 
 /**
  * Application stack with Lambda function and IAM role.
@@ -48,7 +49,7 @@ export class AppStack extends cdk.Stack {
     const fn = new lambda.Function(this, 'AppFunction', {
       runtime: lambda.Runtime.PYTHON_3_12,
       handler: 'index.handler',
-      code: lambda.Code.fromAsset('lambda'),
+      code: lambda.Code.fromAsset(path.join(__dirname, '../lambda')),
       role,
       environment: {
         TABLE_NAME: tableName,
