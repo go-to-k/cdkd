@@ -232,16 +232,21 @@ async function deployCommand(
       // Switch region for this stack (providers create local clients that pick up env)
       switchRegion(stackRegion);
 
-      // Re-create global AWS clients for the stack's region (CC API, state backend)
+      // Create stack-specific AWS clients for resource provisioning (stack's region)
       const stackAwsClients = new AwsClients({
         region: stackRegion,
         ...(options.profile && { profile: options.profile }),
       });
       setAwsClients(stackAwsClients);
 
-      // Re-create deployment components for the stack's region
-      const stackStateBackend = new S3StateBackend(stackAwsClients.s3, stateConfig);
-      const stackLockManager = new LockManager(stackAwsClients.s3, stateConfig);
+      // State backend and lock manager use base region (state bucket region),
+      // NOT the stack's region. The state bucket is always in the base region.
+      const stateS3Client = new AwsClients({
+        region: baseRegion,
+        ...(options.profile && { profile: options.profile }),
+      });
+      const stackStateBackend = new S3StateBackend(stateS3Client.s3, stateConfig);
+      const stackLockManager = new LockManager(stateS3Client.s3, stateConfig);
       const stackProviderRegistry = new ProviderRegistry();
       registerAllProviders(stackProviderRegistry);
       stackProviderRegistry.setCustomResourceResponseBucket(stateBucket);
@@ -278,6 +283,7 @@ async function deployCommand(
         }
       } finally {
         stackAwsClients.destroy();
+        stateS3Client.destroy();
         // Restore base region
         switchRegion(baseRegion);
         setAwsClients(awsClients);
