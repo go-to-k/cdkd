@@ -287,10 +287,25 @@ export class EC2Provider implements ResourceProvider {
       await this.applyTags(vpcId, properties, logicalId);
 
       // Fetch VPC details for attributes
-      const describeResponse = await this.ec2Client.send(
+      await this.ec2Client.send(
         new DescribeVpcsCommand({ VpcIds: [vpcId] })
       );
-      const vpc = describeResponse.Vpcs?.[0];
+
+      // Fetch default security group for the VPC
+      let defaultSgId = '';
+      try {
+        const sgResponse = await this.ec2Client.send(
+          new DescribeSecurityGroupsCommand({
+            Filters: [
+              { Name: 'vpc-id', Values: [vpcId] },
+              { Name: 'group-name', Values: ['default'] },
+            ],
+          })
+        );
+        defaultSgId = sgResponse.SecurityGroups?.[0]?.GroupId || '';
+      } catch {
+        this.logger.debug(`Failed to get default SG for VPC ${vpcId}`);
+      }
 
       this.logger.debug(`Successfully created VPC ${logicalId}: ${vpcId}`);
 
@@ -299,8 +314,8 @@ export class EC2Provider implements ResourceProvider {
         attributes: {
           VpcId: vpcId,
           CidrBlock: cidrBlock,
-          DefaultNetworkAcl: vpc?.IsDefault ? '' : '',
-          DefaultSecurityGroup: '',
+          DefaultNetworkAcl: '',
+          DefaultSecurityGroup: defaultSgId,
         },
       };
     } catch (error) {
