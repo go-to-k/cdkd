@@ -9,6 +9,7 @@ import { STSClient, GetCallerIdentityCommand } from '@aws-sdk/client-sts';
 import { getLogger } from '../../utils/logger.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
+import { generateResourceName } from '../resource-name.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -70,18 +71,21 @@ export class S3DirectoryBucketProvider implements ResourceProvider {
   ): Promise<ResourceCreateResult> {
     this.logger.debug(`Creating S3 Express Directory Bucket ${logicalId}`);
 
-    const bucketName = properties['BucketName'] as string;
-    if (!bucketName) {
-      throw new ProvisioningError(
-        `BucketName is required for S3 Express Directory Bucket ${logicalId}`,
-        resourceType,
-        logicalId,
-        undefined
-      );
-    }
-
     const dataRedundancy = (properties['DataRedundancy'] as string) || 'SingleAvailabilityZone';
     const locationName = properties['LocationName'] as string | undefined;
+
+    // Generate bucket name if not specified
+    // Directory bucket names must follow: {name}--{az-id}--x-s3
+    let bucketName = properties['BucketName'] as string | undefined;
+    if (!bucketName) {
+      const baseName = generateResourceName(logicalId, {
+        maxLength: 64,
+        lowercase: true,
+      });
+      // locationName is like "us-east-1a--x-s3", use it directly as suffix
+      const suffix = locationName || 'us-east-1a--x-s3';
+      bucketName = `${baseName}--${suffix}`;
+    }
 
     try {
       await this.s3Client.send(

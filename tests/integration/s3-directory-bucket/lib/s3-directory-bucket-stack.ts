@@ -1,13 +1,13 @@
 import * as cdk from 'aws-cdk-lib';
 import { Construct } from 'constructs';
-import * as s3 from 'aws-cdk-lib/aws-s3';
+import * as s3express from 'aws-cdk-lib/aws-s3express';
 
 export class S3DirectoryBucketStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
     super(scope, id, props);
 
     // S3 Express Directory Bucket
-    const bucket = new s3.CfnDirectoryBucket(this, 'DirectoryBucket', {
+    const bucket = new s3express.CfnDirectoryBucket(this, 'DirectoryBucket', {
       dataRedundancy: 'SingleAvailabilityZone',
       locationName: `${this.region}a--x-s3`, // first AZ
     });
