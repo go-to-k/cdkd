@@ -87,6 +87,17 @@ async function deployCommand(
   setAwsClients(awsClients);
 
   let disposeAssembly: (() => Promise<void>) | undefined;
+  let deployInterrupted = false;
+  const topLevelSigintHandler = () => {
+    if (deployInterrupted) {
+      logger.info('Force exit');
+      process.exit(130);
+    }
+    logger.info('\nInterrupted — waiting for in-progress operations to complete...');
+    deployInterrupted = true;
+  };
+  process.on('SIGINT', topLevelSigintHandler);
+
   try {
     // 1. Synthesize CDK app
     logger.info('Synthesizing CDK app...');
@@ -216,18 +227,6 @@ async function deployCommand(
     const diffCalculator = new DiffCalculator();
 
     // 5. Deploy stacks (parallel within same region, cross-region handled via env vars)
-    // Top-level SIGINT handler for graceful exit
-    let deployInterrupted = false;
-    const topLevelSigintHandler = () => {
-      if (deployInterrupted) {
-        logger.info('Force exit');
-        process.exit(130);
-      }
-      logger.info('\nInterrupted — waiting for in-progress operations to complete...');
-      deployInterrupted = true;
-    };
-    process.on('SIGINT', topLevelSigintHandler);
-
     const baseRegion = options.region || process.env['AWS_REGION'] || 'us-east-1';
 
     const switchRegion = (region: string): void => {
