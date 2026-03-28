@@ -678,11 +678,10 @@ cdkd deploy MyStack                           # 位置引数（cdk.json から -
 
 ### Phase 10: 開発環境改善
 
-- [ ] **npm から pnpm への移行**
+- [x] **npm から pnpm への移行**
 
 - [x] **プログレス表示** — [1/N] 形式のカウンター表示 ✅
-- [ ] **ESLint + Prettier から Vite+ への移行**
-- [ ] **esbuild から Vite+ への移行**
+- [ ] **ESLint / Prettier / esbuild から Vite+ への移行**
 
 ### Phase 11: リリース準備
 
