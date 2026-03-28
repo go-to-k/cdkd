@@ -1246,7 +1246,11 @@ export class DeployEngine {
         this.logger.debug(
           `  ⏳ Retrying ${logicalId} in ${delay / 1000}s (attempt ${attempt + 1}/${maxRetries}) - ${message}`
         );
-        await new Promise((resolve) => setTimeout(resolve, delay));
+        // Interruptible sleep: check for SIGINT every second during delay
+        for (let waited = 0; waited < delay; waited += 1000) {
+          if (this.interrupted) throw new InterruptedError();
+          await new Promise((resolve) => setTimeout(resolve, Math.min(1000, delay - waited)));
+        }
       }
     }
 

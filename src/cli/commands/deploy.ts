@@ -365,11 +365,15 @@ async function deployCommand(
               deployed.add(name);
             })
             .catch((error) => {
-              logger.error(
-                `Stack ${name} failed: ${error instanceof Error ? error.message : String(error)}`
-              );
-              failed.add(name);
-              errors.push({ stackName: name, error });
+              const msg = error instanceof Error ? error.message : String(error);
+              // SIGINT interruption: don't treat as stack failure, propagate
+              if (msg.includes('interrupted') || msg.includes('Interrupted')) {
+                logger.info(`Stack ${name} interrupted by user`);
+              } else {
+                logger.error(`Stack ${name} failed: ${msg}`);
+                failed.add(name);
+                errors.push({ stackName: name, error });
+              }
             })
             .finally(() => {
               remaining.delete(name);
