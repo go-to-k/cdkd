@@ -962,17 +962,56 @@ export class DeployEngine {
             const { provider: updateProvider, properties: updateProps } =
               this.selectProviderWithSafetyNet(provider, resourceType, resolvedProps, logicalId);
 
-            const result = await this.withRetry(
-              () =>
-                updateProvider.update(
+            let result;
+            try {
+              result = await this.withRetry(
+                () =>
+                  updateProvider.update(
+                    logicalId,
+                    currentResource.physicalId,
+                    resourceType,
+                    updateProps,
+                    currentProps
+                  ),
+                logicalId
+              );
+            } catch (updateError) {
+              // If UPDATE is not supported (e.g., CC API UnsupportedActionException),
+              // fall back to DELETE → CREATE (replacement)
+              const msg = updateError instanceof Error ? updateError.message : String(updateError);
+              if (
+                msg.includes('UnsupportedActionException') ||
+                msg.includes('does not support UPDATE')
+              ) {
+                this.logger.info(
+                  `UPDATE not supported for ${logicalId} (${resourceType}), replacing (DELETE → CREATE)`
+                );
+                await provider.delete(
                   logicalId,
                   currentResource.physicalId,
                   resourceType,
-                  updateProps,
                   currentProps
-                ),
-              logicalId
-            );
+                );
+                const { provider: replProvider, properties: replProps } =
+                  this.selectProviderWithSafetyNet(
+                    provider,
+                    resourceType,
+                    resolvedProps,
+                    logicalId
+                  );
+                const createResult = await this.withRetry(
+                  () => replProvider.create(logicalId, resourceType, replProps),
+                  logicalId
+                );
+                result = {
+                  physicalId: createResult.physicalId,
+                  attributes: createResult.attributes,
+                  wasReplaced: true,
+                };
+              } else {
+                throw updateError;
+              }
+            }
 
             if (result.wasReplaced) {
               this.logger.info(
