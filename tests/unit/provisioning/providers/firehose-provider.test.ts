@@ -43,9 +43,13 @@ describe('FirehoseProvider', () => {
 
   describe('create', () => {
     it('should create delivery stream with S3DestinationConfiguration (BucketArn→BucketARN, RoleArn→RoleARN mapping)', async () => {
-      mockSend.mockResolvedValue({
-        DeliveryStreamARN: 'arn:aws:firehose:us-east-1:123456789012:deliverystream/test-stream',
-      });
+      mockSend
+        .mockResolvedValueOnce({
+          DeliveryStreamARN: 'arn:aws:firehose:us-east-1:123456789012:deliverystream/test-stream',
+        })
+        .mockResolvedValueOnce({
+          DeliveryStreamDescription: { DeliveryStreamStatus: 'ACTIVE' },
+        });
 
       const result = await provider.create(
         'MyDeliveryStream',
@@ -64,7 +68,7 @@ describe('FirehoseProvider', () => {
       expect(result.attributes).toEqual({
         Arn: 'arn:aws:firehose:us-east-1:123456789012:deliverystream/test-stream',
       });
-      expect(mockSend).toHaveBeenCalledTimes(1);
+      expect(mockSend).toHaveBeenCalledTimes(2);
 
       const cmd = mockSend.mock.calls[0][0];
       expect(cmd.constructor.name).toBe('CreateDeliveryStreamCommand');
@@ -77,9 +81,13 @@ describe('FirehoseProvider', () => {
     });
 
     it('should create delivery stream with ExtendedS3DestinationConfiguration', async () => {
-      mockSend.mockResolvedValue({
-        DeliveryStreamARN: 'arn:aws:firehose:us-east-1:123456789012:deliverystream/ext-stream',
-      });
+      mockSend
+        .mockResolvedValueOnce({
+          DeliveryStreamARN: 'arn:aws:firehose:us-east-1:123456789012:deliverystream/ext-stream',
+        })
+        .mockResolvedValueOnce({
+          DeliveryStreamDescription: { DeliveryStreamStatus: 'ACTIVE' },
+        });
 
       const result = await provider.create(
         'MyExtStream',
@@ -121,9 +129,14 @@ describe('FirehoseProvider', () => {
     });
 
     it('should create delivery stream with KinesisStreamSourceConfiguration', async () => {
-      mockSend.mockResolvedValue({
-        DeliveryStreamARN: 'arn:aws:firehose:us-east-1:123456789012:deliverystream/kinesis-stream',
-      });
+      mockSend
+        .mockResolvedValueOnce({
+          DeliveryStreamARN:
+            'arn:aws:firehose:us-east-1:123456789012:deliverystream/kinesis-stream',
+        })
+        .mockResolvedValueOnce({
+          DeliveryStreamDescription: { DeliveryStreamStatus: 'ACTIVE' },
+        });
 
       const result = await provider.create(
         'MyKinesisStream',
