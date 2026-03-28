@@ -56,6 +56,7 @@ export class ELBv2Provider implements ResourceProvider {
         'Scheme',
         'Type',
         'IpAddressType',
+        'LoadBalancerAttributes',
         'Tags',
       ]),
     ],
@@ -209,6 +210,27 @@ export class ELBv2Provider implements ResourceProvider {
       }
 
       this.logger.debug(`Successfully created LoadBalancer ${logicalId}: ${lb.LoadBalancerArn}`);
+
+      // Apply LoadBalancerAttributes if specified
+      const lbAttributes = properties['LoadBalancerAttributes'] as
+        | Array<{ Key: string; Value: string }>
+        | undefined;
+      if (lbAttributes && lbAttributes.length > 0) {
+        const { ModifyLoadBalancerAttributesCommand } =
+          await import('@aws-sdk/client-elastic-load-balancing-v2');
+        await this.getClient().send(
+          new ModifyLoadBalancerAttributesCommand({
+            LoadBalancerArn: lb.LoadBalancerArn,
+            Attributes: lbAttributes.map((attr) => ({
+              Key: attr.Key,
+              Value: attr.Value,
+            })),
+          })
+        );
+        this.logger.debug(
+          `Applied ${lbAttributes.length} LoadBalancer attributes for ${logicalId}`
+        );
+      }
 
       return {
         physicalId: lb.LoadBalancerArn,
