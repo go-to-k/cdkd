@@ -5,17 +5,19 @@ import * as kms from 'aws-cdk-lib/aws-kms';
 import * as s3 from 'aws-cdk-lib/aws-s3';
 import * as ssm from 'aws-cdk-lib/aws-ssm';
 import * as iam from 'aws-cdk-lib/aws-iam';
+import * as cloudtrail from 'aws-cdk-lib/aws-cloudtrail';
 
 /**
  * Infrastructure & Security pattern stack
  *
- * Demonstrates:
+ * Demonstrates (AWS::CloudTrail::Trail, and more):
  * - VPC with 2 AZs, 1 NAT Gateway, public + private subnets
  * - KMS Key with alias and key rotation enabled
  * - S3 Bucket encrypted with the KMS key
  * - SSM StringParameter storing config values
  * - IAM Role with inline S3 access policy + managed policy (AmazonS3ReadOnlyAccess)
- * - CfnOutputs for VPC ID, KMS key ARN, bucket name, parameter name, role ARN
+ * - CloudTrail Trail with S3 data events on the secure bucket
+ * - CfnOutputs for VPC ID, KMS key ARN, bucket name, parameter name, role ARN, trail ARN
  */
 export class InfraSecurityStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
@@ -101,6 +103,13 @@ export class InfraSecurityStack extends cdk.Stack {
     const user = new iam.User(this, 'AppUser');
     group.addUser(user);
 
+    // CloudTrail Trail (S3 data events on the secure bucket)
+    const trail = new cloudtrail.Trail(this, 'AuditTrail', {
+      bucket: bucket,
+      isMultiRegionTrail: false,
+      includeGlobalServiceEvents: false,
+    });
+
     // CfnOutputs
     new cdk.CfnOutput(this, 'VpcId', {
       value: vpc.vpcId,
@@ -125,6 +134,11 @@ export class InfraSecurityStack extends cdk.Stack {
     new cdk.CfnOutput(this, 'RoleArn', {
       value: role.roleArn,
       description: 'IAM Role ARN',
+    });
+
+    new cdk.CfnOutput(this, 'TrailArn', {
+      value: trail.trailArn,
+      description: 'CloudTrail Trail ARN',
     });
   }
 }

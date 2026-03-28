@@ -43,6 +43,7 @@ import { KMSProvider } from './providers/kms-provider.js';
 import { KinesisStreamProvider } from './providers/kinesis-provider.js';
 import { EFSProvider } from './providers/efs-provider.js';
 import { FirehoseProvider } from './providers/firehose-provider.js';
+import { CloudTrailProvider } from './providers/cloudtrail-provider.js';
 
 /**
  * Register all SDK providers with the given registry.
@@ -204,4 +205,7 @@ export function registerAllProviders(registry: ProviderRegistry): void {
 
   // Firehose
   registry.register('AWS::KinesisFirehose::DeliveryStream', new FirehoseProvider());
+
+  // CloudTrail
+  registry.register('AWS::CloudTrail::Trail', new CloudTrailProvider());
 }

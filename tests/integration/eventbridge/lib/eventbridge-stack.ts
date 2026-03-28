@@ -3,6 +3,8 @@ import { Construct } from 'constructs';
 import * as events from 'aws-cdk-lib/aws-events';
 import * as targets from 'aws-cdk-lib/aws-events-targets';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
+import * as scheduler from 'aws-cdk-lib/aws-scheduler';
+import * as iam from 'aws-cdk-lib/aws-iam';
 
 /**
  * EventBridge example stack
@@ -12,6 +14,7 @@ import * as lambda from 'aws-cdk-lib/aws-lambda';
  * - EventBridge rule with event pattern on custom bus
  * - Lambda function as rule target (inline code)
  * - IAM permissions for EventBridge to invoke Lambda
+ * - EventBridge Scheduler Schedule (AWS::Scheduler::Schedule)
  * - Fn::GetAtt for outputs
  * - Resource dependencies (Rule depends on Bus and Lambda)
  */
@@ -59,6 +62,23 @@ def handler(event, context):
     // This automatically creates the necessary Lambda invoke permission
     rule.addTarget(new targets.LambdaFunction(fn));
 
+    // EventBridge Scheduler: runs every hour (disabled to avoid costs)
+    const schedulerRole = new iam.Role(this, 'SchedulerRole', {
+      assumedBy: new iam.ServicePrincipal('scheduler.amazonaws.com'),
+    });
+    fn.grantInvoke(schedulerRole);
+
+    new scheduler.CfnSchedule(this, 'HourlySchedule', {
+      name: `${this.stackName}-hourly`,
+      scheduleExpression: 'rate(1 hour)',
+      state: 'DISABLED',
+      flexibleTimeWindow: { mode: 'OFF' },
+      target: {
+        arn: fn.functionArn,
+        roleArn: schedulerRole.roleArn,
+      },
+    });
+
     // Outputs
     new cdk.CfnOutput(this, 'EventBusName', {
       value: bus.eventBusName,
@@ -73,6 +93,11 @@ def handler(event, context):
     new cdk.CfnOutput(this, 'FunctionName', {
       value: fn.functionName,
       description: 'Lambda function name',
+    });
+
+    new cdk.CfnOutput(this, 'SchedulerRoleArn', {
+      value: schedulerRole.roleArn,
+      description: 'EventBridge Scheduler role ARN',
     });
   }
 }

@@ -58,10 +58,14 @@ describe('EFSProvider', () => {
   describe('AWS::EFS::FileSystem', () => {
     describe('create', () => {
       it('should create file system with CreationToken', async () => {
-        mockSend.mockResolvedValueOnce({
-          FileSystemId: 'fs-12345678',
-          FileSystemArn: 'arn:aws:elasticfilesystem:us-east-1:123456789012:file-system/fs-12345678',
-        });
+        mockSend
+          .mockResolvedValueOnce({
+            FileSystemId: 'fs-12345678',
+            FileSystemArn: 'arn:aws:elasticfilesystem:us-east-1:123456789012:file-system/fs-12345678',
+          })
+          .mockResolvedValueOnce({
+            FileSystems: [{ LifeCycleState: 'available' }],
+          });
 
         const result = await provider.create('MyFileSystem', 'AWS::EFS::FileSystem', {});
 
@@ -70,7 +74,7 @@ describe('EFSProvider', () => {
           Arn: 'arn:aws:elasticfilesystem:us-east-1:123456789012:file-system/fs-12345678',
           FileSystemId: 'fs-12345678',
         });
-        expect(mockSend).toHaveBeenCalledTimes(1);
+        expect(mockSend).toHaveBeenCalledTimes(2);
 
         const cmd = mockSend.mock.calls[0][0];
         expect(cmd).toBeInstanceOf(CreateFileSystemCommand);
@@ -78,10 +82,14 @@ describe('EFSProvider', () => {
       });
 
       it('should create file system with tags and encryption', async () => {
-        mockSend.mockResolvedValueOnce({
-          FileSystemId: 'fs-encrypted',
-          FileSystemArn: 'arn:aws:elasticfilesystem:us-east-1:123456789012:file-system/fs-encrypted',
-        });
+        mockSend
+          .mockResolvedValueOnce({
+            FileSystemId: 'fs-encrypted',
+            FileSystemArn: 'arn:aws:elasticfilesystem:us-east-1:123456789012:file-system/fs-encrypted',
+          })
+          .mockResolvedValueOnce({
+            FileSystems: [{ LifeCycleState: 'available' }],
+          });
 
         const result = await provider.create('EncryptedFS', 'AWS::EFS::FileSystem', {
           Encrypted: true,
@@ -95,7 +103,7 @@ describe('EFSProvider', () => {
         });
 
         expect(result.physicalId).toBe('fs-encrypted');
-        expect(mockSend).toHaveBeenCalledTimes(1);
+        expect(mockSend).toHaveBeenCalledTimes(2);
 
         const cmd = mockSend.mock.calls[0][0];
         expect(cmd).toBeInstanceOf(CreateFileSystemCommand);

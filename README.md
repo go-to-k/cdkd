@@ -195,6 +195,7 @@ cdkd uses a hybrid provisioning strategy: hand-written **SDK Providers** call AW
 | **Storage** | AWS::EFS::FileSystem | SDK Provider | ✅ |
 | **Storage** | AWS::EFS::MountTarget | SDK Provider | ✅ |
 | **Storage** | AWS::EFS::AccessPoint | SDK Provider | ✅ |
+| **Audit** | AWS::CloudTrail::Trail | SDK Provider | ✅ |
 | **AI/ML** | AWS::BedrockAgentCore::Runtime | SDK Provider | ✅ |
 | **Custom** | Custom::* (Lambda/SNS-backed) | SDK Provider | ✅ |
 | **Other** | All other resource types | Cloud Control | ✅ |
