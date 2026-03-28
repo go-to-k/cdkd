@@ -572,7 +572,10 @@ export class IntrinsicFunctionResolver {
               `VPC ${physicalId} IPv6 CIDR did not reach 'associated' state after ${maxAttempts} attempts`
             );
             return [];
-          } catch {
+          } catch (error) {
+            this.logger.warn(
+              `Failed to fetch VPC Ipv6CidrBlocks for ${physicalId}: ${error instanceof Error ? error.message : String(error)}`
+            );
             return [];
           }
         }
