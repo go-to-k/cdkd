@@ -56,6 +56,7 @@ export interface ResolverContext {
  * - Fn::FindInMap (mapping lookups)
  * - Fn::Base64 (base64 encoding)
  * - Fn::GetAZs (availability zone listing)
+ * - Fn::Cidr (CIDR address block calculation)
  */
 /**
  * AWS Account information cache
@@ -362,6 +363,10 @@ export class IntrinsicFunctionResolver {
       return await this.resolveGetAZs(obj['Fn::GetAZs'], context);
     }
 
+    if ('Fn::Cidr' in obj) {
+      return await this.resolveCidr(obj['Fn::Cidr'] as [unknown, unknown, unknown], context);
+    }
+
     // Not an intrinsic function: recursively resolve object properties
     const resolved: Record<string, unknown> = {};
     for (const [key, val] of Object.entries(obj)) {
@@ -523,21 +528,45 @@ export class IntrinsicFunctionResolver {
         case 'CidrBlock':
           return resource.attributes?.['CidrBlock'] || resource.properties?.['CidrBlock'];
         case 'Ipv6CidrBlocks': {
-          // Must fetch dynamically - IPv6 CIDR is added by VPCCidrBlock resource after VPC creation
+          // Must fetch dynamically - IPv6 CIDR is added by VPCCidrBlock resource after VPC creation.
+          // After CC API reports VPCCidrBlock CREATE success, the CIDR may still be in
+          // 'associating' state. Retry up to 30s waiting for 'associated'.
           try {
             const { EC2Client, DescribeVpcsCommand } = await import('@aws-sdk/client-ec2');
             const ec2 = new EC2Client(
               process.env['AWS_REGION'] ? { region: process.env['AWS_REGION'] } : {}
             );
-            const resp = await ec2.send(new DescribeVpcsCommand({ VpcIds: [physicalId] }));
-            const blocks =
-              resp.Vpcs?.[0]?.Ipv6CidrBlockAssociationSet?.filter(
-                (a) => a.Ipv6CidrBlockState?.State === 'associated'
-              ).map((a) => a.Ipv6CidrBlock) || [];
-            this.logger.debug(
-              `Resolved VPC Ipv6CidrBlocks for ${physicalId}: ${JSON.stringify(blocks)}`
+            const maxAttempts = 15;
+            for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+              const resp = await ec2.send(new DescribeVpcsCommand({ VpcIds: [physicalId] }));
+              const associations = resp.Vpcs?.[0]?.Ipv6CidrBlockAssociationSet || [];
+              const blocks = associations
+                .filter((a) => a.Ipv6CidrBlockState?.State === 'associated')
+                .map((a) => a.Ipv6CidrBlock);
+              if (blocks.length > 0) {
+                this.logger.debug(
+                  `Resolved VPC Ipv6CidrBlocks for ${physicalId}: ${JSON.stringify(blocks)}`
+                );
+                return blocks;
+              }
+              // Check if there are any associating CIDRs — if so, wait and retry
+              const associating = associations.filter(
+                (a) => a.Ipv6CidrBlockState?.State === 'associating'
+              );
+              if (associating.length === 0) {
+                // No IPv6 CIDRs at all
+                this.logger.debug(`No IPv6 CIDR associations found for VPC ${physicalId}`);
+                return [];
+              }
+              this.logger.debug(
+                `VPC ${physicalId} IPv6 CIDR still associating (attempt ${attempt}/${maxAttempts}), waiting...`
+              );
+              await new Promise((resolve) => setTimeout(resolve, 2000));
+            }
+            this.logger.warn(
+              `VPC ${physicalId} IPv6 CIDR did not reach 'associated' state after ${maxAttempts} attempts`
             );
-            return blocks;
+            return [];
           } catch {
             return [];
           }
@@ -1368,6 +1397,126 @@ export class IntrinsicFunctionResolver {
    * Parts[0] = 'ssm'
    * Parts[1] = PARAMETER_NAME
    */
+  /**
+   * Resolve Fn::Cidr intrinsic function
+   *
+   * Fn::Cidr returns an array of CIDR address blocks.
+   * Syntax: { "Fn::Cidr": [ ipBlock, count, cidrBits ] }
+   * - ipBlock: The user-specified CIDR address block to be split
+   * - count: The number of CIDRs to generate
+   * - cidrBits: The number of subnet bits for the CIDR (e.g., "64" for /64 in IPv6)
+   */
+  private async resolveCidr(
+    args: [unknown, unknown, unknown],
+    context: ResolverContext
+  ): Promise<string[]> {
+    const [rawIpBlock, rawCount, rawCidrBits] = args;
+    const ipBlock = (await this.resolveValue(rawIpBlock, context)) as string;
+    const count = Number(await this.resolveValue(rawCount, context));
+    const cidrBits = Number(await this.resolveValue(rawCidrBits, context));
+
+    if (!ipBlock || typeof ipBlock !== 'string') {
+      throw new Error(
+        `Fn::Cidr: ipBlock must be a string, got ${typeof ipBlock}: ${JSON.stringify(ipBlock)}`
+      );
+    }
+
+    this.logger.debug(
+      `Resolving Fn::Cidr: ipBlock=${ipBlock}, count=${count}, cidrBits=${cidrBits}`
+    );
+
+    const isIpv6 = ipBlock.includes(':');
+    const results: string[] = [];
+
+    if (isIpv6) {
+      // IPv6 CIDR calculation
+      // Parse the base IPv6 address and prefix
+      const [baseAddr, prefixStr] = ipBlock.split('/');
+      const basePrefix = parseInt(prefixStr!, 10);
+      const subnetPrefix = 128 - cidrBits; // cidrBits = host bits, so subnet prefix = 128 - cidrBits
+
+      // Expand IPv6 address to full form
+      const expanded = this.expandIPv6(baseAddr!);
+      const addrBigInt = this.ipv6ToBigInt(expanded);
+
+      // Calculate subnet size
+      const subnetSize = BigInt(1) << BigInt(128 - subnetPrefix);
+
+      // Mask the base address to the network prefix
+      const prefixMask =
+        (BigInt(1) << BigInt(128)) -
+        BigInt(1) -
+        ((BigInt(1) << BigInt(128 - basePrefix)) - BigInt(1));
+      const networkBase = addrBigInt & prefixMask;
+
+      for (let i = 0; i < count; i++) {
+        const subnetAddr = networkBase + subnetSize * BigInt(i);
+        results.push(`${this.bigIntToIPv6(subnetAddr)}/${subnetPrefix}`);
+      }
+    } else {
+      // IPv4 CIDR calculation
+      const [baseAddr, prefixStr] = ipBlock.split('/');
+      const basePrefix = parseInt(prefixStr!, 10);
+      const subnetPrefix = 32 - cidrBits;
+
+      const parts = baseAddr!.split('.').map(Number);
+      const baseInt = ((parts[0]! << 24) | (parts[1]! << 16) | (parts[2]! << 8) | parts[3]!) >>> 0;
+      const subnetSize = 1 << (32 - subnetPrefix);
+      const prefixMask = (0xffffffff << (32 - basePrefix)) >>> 0;
+      const networkBase = (baseInt & prefixMask) >>> 0;
+
+      for (let i = 0; i < count; i++) {
+        const subnetAddr = (networkBase + subnetSize * i) >>> 0;
+        const a = (subnetAddr >>> 24) & 0xff;
+        const b = (subnetAddr >>> 16) & 0xff;
+        const c = (subnetAddr >>> 8) & 0xff;
+        const d = subnetAddr & 0xff;
+        results.push(`${a}.${b}.${c}.${d}/${subnetPrefix}`);
+      }
+    }
+
+    this.logger.debug(`Fn::Cidr result: ${JSON.stringify(results)}`);
+    return results;
+  }
+
+  /** Expand IPv6 address to full 8-group form */
+  private expandIPv6(addr: string): string {
+    // Handle :: expansion
+    if (addr.includes('::')) {
+      const [left, right] = addr.split('::');
+      const leftParts = left ? left.split(':') : [];
+      const rightParts = right ? right.split(':') : [];
+      const missing = 8 - leftParts.length - rightParts.length;
+      const middle = Array.from({ length: missing }, () => '0000');
+      const all = [...leftParts, ...middle, ...rightParts];
+      return all.map((p: string) => p.padStart(4, '0')).join(':');
+    }
+    return addr
+      .split(':')
+      .map((p) => p.padStart(4, '0'))
+      .join(':');
+  }
+
+  /** Convert expanded IPv6 string to BigInt */
+  private ipv6ToBigInt(expanded: string): bigint {
+    const parts = expanded.split(':');
+    let result = BigInt(0);
+    for (const part of parts) {
+      result = (result << BigInt(16)) | BigInt(parseInt(part, 16));
+    }
+    return result;
+  }
+
+  /** Convert BigInt to compressed IPv6 string */
+  private bigIntToIPv6(n: bigint): string {
+    const parts: string[] = [];
+    for (let i = 7; i >= 0; i--) {
+      parts.push(((n >> BigInt(i * 16)) & BigInt(0xffff)).toString(16));
+    }
+    // Simple format — don't compress with :: for clarity
+    return parts.join(':');
+  }
+
   private async resolveSSMReference(parts: string[]): Promise<string> {
     const parameterName = parts.slice(1).join(':');
 

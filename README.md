@@ -95,6 +95,7 @@ cdkd uses a hybrid provisioning strategy: hand-written **SDK Providers** call AW
 | `Fn::FindInMap` | ✅ Supported | Mapping lookup |
 | `Fn::GetAZs` | ✅ Supported | Availability Zone list |
 | `Fn::Base64` | ✅ Supported | Base64 encoding |
+| `Fn::Cidr` | ✅ Supported | CIDR address block generation |
 
 ### Pseudo Parameters
 
