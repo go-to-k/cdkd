@@ -447,7 +447,12 @@ export class IntrinsicFunctionResolver {
     }
 
     // Check if attribute exists in resource.attributes
-    if (resource.attributes?.[attributeName] !== undefined) {
+    // For VPC Ipv6CidrBlocks, always use constructAttribute (dynamic fetch with retry)
+    // because the stored value may be stale (empty array from before VPCCidrBlock association)
+    const skipCachedAttribute =
+      resource.resourceType === 'AWS::EC2::VPC' && attributeName === 'Ipv6CidrBlocks';
+
+    if (!skipCachedAttribute && resource.attributes?.[attributeName] !== undefined) {
       const value = resource.attributes[attributeName];
       this.logger.debug(
         `Resolved Fn::GetAtt from attributes: ${logicalId}.${attributeName} -> ${typeof value === 'object' ? JSON.stringify(value) : String(value)}`
