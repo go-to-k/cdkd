@@ -765,9 +765,10 @@ export class IntrinsicFunctionResolver {
     }
 
     if (index < 0 || index >= resolvedList.length) {
-      throw new Error(
+      this.logger.warn(
         `Fn::Select: index ${index} out of bounds (array length: ${resolvedList.length})`
       );
+      return `{{Fn::Select:${index}:OutOfBounds}}`;
     }
 
     const result: unknown = resolvedList[index];

@@ -605,6 +605,33 @@ export class CloudControlProvider implements ResourceProvider {
         if (!enriched['HealthCheckId']) enriched['HealthCheckId'] = physicalId;
         break;
 
+      case 'AWS::ECR::Repository':
+        // CC API physicalId is the repository name, construct ARN
+        if (!enriched['Arn']) {
+          try {
+            const ecrAccountInfo = await getAccountInfo();
+            enriched['Arn'] =
+              `arn:${ecrAccountInfo.partition}:ecr:${ecrAccountInfo.region}:${ecrAccountInfo.accountId}:repository/${physicalId}`;
+            this.logger.debug(
+              `Enriched ECR Repository Arn for ${physicalId}: ${String(enriched['Arn'])}`
+            );
+          } catch (error) {
+            this.logger.debug(
+              `Failed to construct ECR Repository Arn: ${error instanceof Error ? error.message : String(error)}`
+            );
+          }
+        }
+        if (!enriched['RepositoryUri']) {
+          try {
+            const ecrAccountInfo = await getAccountInfo();
+            enriched['RepositoryUri'] =
+              `${ecrAccountInfo.accountId}.dkr.ecr.${ecrAccountInfo.region}.amazonaws.com/${physicalId}`;
+          } catch {
+            /* best effort */
+          }
+        }
+        break;
+
       case 'AWS::EC2::EIP':
         // CC API returns composite physicalId: "PublicIp|AllocationId"
         // Extract individual attributes for Fn::GetAtt resolution

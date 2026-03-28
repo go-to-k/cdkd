@@ -204,9 +204,12 @@ export class ECSProvider implements ResourceProvider {
             | CapacityProviderStrategyItem[]
             | undefined,
           configuration: properties['Configuration'] as ClusterConfiguration | undefined,
-          settings: properties['ClusterSettings'] as
-            | Array<{ name: 'containerInsights'; value: string }>
-            | undefined,
+          settings: properties['ClusterSettings']
+            ? (properties['ClusterSettings'] as Array<Record<string, unknown>>).map((s) => ({
+                name: (s['Name'] || s['name']) as string as 'containerInsights',
+                value: ((s['Value'] || s['value']) as string) ?? undefined,
+              }))
+            : undefined,
           tags: convertTags(
             properties['Tags'] as Array<{ Key: string; Value: string }> | undefined
           ),

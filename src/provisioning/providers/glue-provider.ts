@@ -451,7 +451,16 @@ export class GlueProvider implements ResourceProvider {
     }
 
     if (sd['SerdeInfo'] !== undefined) {
-      result.SerdeInfo = sd['SerdeInfo'] as SerDeInfo;
+      const serde = sd['SerdeInfo'] as Record<string, unknown>;
+      if (serde['Parameters']) {
+        const params = serde['Parameters'] as Record<string, unknown>;
+        const converted: Record<string, string> = {};
+        for (const [k, v] of Object.entries(params)) {
+          converted[k] = String(v);
+        }
+        serde['Parameters'] = converted;
+      }
+      result.SerdeInfo = serde as SerDeInfo;
     }
 
     if (sd['BucketColumns'] !== undefined) {

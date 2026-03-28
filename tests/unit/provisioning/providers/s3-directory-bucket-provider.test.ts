@@ -8,6 +8,17 @@ import {
 
 // Mock AWS clients before importing the provider
 const mockSend = vi.fn();
+const mockEc2Send = vi.hoisted(() => vi.fn());
+
+vi.mock('@aws-sdk/client-ec2', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@aws-sdk/client-ec2')>();
+  return {
+    ...actual,
+    EC2Client: vi.fn().mockImplementation(() => ({
+      send: mockEc2Send,
+    })),
+  };
+});
 
 vi.mock('../../../../src/utils/aws-clients.js', () => ({
   getAwsClients: () => ({
@@ -47,6 +58,10 @@ describe('S3DirectoryBucketProvider', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    // Default EC2 mock: resolve AZ name to AZ ID
+    mockEc2Send.mockResolvedValue({
+      AvailabilityZones: [{ ZoneId: 'use1-az4', ZoneName: 'us-east-1c' }],
+    });
     provider = new S3DirectoryBucketProvider();
   });
 
@@ -61,38 +76,45 @@ describe('S3DirectoryBucketProvider', () => {
         'DirectoryBucket',
         'AWS::S3Express::DirectoryBucket',
         {
-          BucketName: 'my-bucket--usea1-az1--x-s3',
+          BucketName: 'my-bucket--use1-az4--x-s3',
           DataRedundancy: 'SingleAvailabilityZone',
-          LocationName: 'usea1-az1--x-s3',
+          LocationName: 'us-east-1c--x-s3',
         }
       );
 
-      expect(result.physicalId).toBe('my-bucket--usea1-az1--x-s3');
+      expect(result.physicalId).toBe('my-bucket--use1-az4--x-s3');
       expect(result.attributes).toEqual({
-        Arn: 'arn:aws:s3express:us-east-1:123456789012:bucket/my-bucket--usea1-az1--x-s3',
+        Arn: 'arn:aws:s3express:us-east-1:123456789012:bucket/my-bucket--use1-az4--x-s3',
       });
 
       expect(mockSend).toHaveBeenCalledTimes(2);
       expect(mockSend.mock.calls[0][0]).toBeInstanceOf(CreateBucketCommand);
       expect(mockSend.mock.calls[0][0].input).toEqual({
-        Bucket: 'my-bucket--usea1-az1--x-s3',
+        Bucket: 'my-bucket--use1-az4--x-s3',
         CreateBucketConfiguration: {
           Bucket: {
             Type: 'Directory',
             DataRedundancy: 'SingleAvailabilityZone',
           },
           Location: {
-            Name: 'usea1-az1--x-s3',
+            Name: 'use1-az4',
             Type: 'AvailabilityZone',
           },
         },
       });
     });
 
-    it('should throw when BucketName is not provided', async () => {
-      await expect(
-        provider.create('DirectoryBucket', 'AWS::S3Express::DirectoryBucket', {})
-      ).rejects.toThrow('BucketName is required');
+    it('should auto-generate bucket name when BucketName is not provided', async () => {
+      mockSend
+        .mockResolvedValueOnce({}) // CreateBucketCommand
+        .mockResolvedValueOnce({ Account: '123456789012' }); // STS GetCallerIdentity
+
+      const result = await provider.create('DirectoryBucket', 'AWS::S3Express::DirectoryBucket', {
+        DataRedundancy: 'SingleAvailabilityZone',
+        LocationName: 'us-east-1c--x-s3',
+      });
+
+      expect(result.physicalId).toContain('--use1-az4--x-s3');
     });
   });
 
@@ -105,7 +127,7 @@ describe('S3DirectoryBucketProvider', () => {
 
       await provider.delete(
         'DirectoryBucket',
-        'my-bucket--usea1-az1--x-s3',
+        'my-bucket--use1-az4--x-s3',
         'AWS::S3Express::DirectoryBucket'
       );
 
@@ -113,7 +135,7 @@ describe('S3DirectoryBucketProvider', () => {
       expect(mockSend.mock.calls[0][0]).toBeInstanceOf(ListObjectsV2Command);
       expect(mockSend.mock.calls[1][0]).toBeInstanceOf(DeleteBucketCommand);
       expect(mockSend.mock.calls[1][0].input).toEqual({
-        Bucket: 'my-bucket--usea1-az1--x-s3',
+        Bucket: 'my-bucket--use1-az4--x-s3',
       });
     });
 
@@ -129,7 +151,7 @@ describe('S3DirectoryBucketProvider', () => {
 
       await provider.delete(
         'DirectoryBucket',
-        'my-bucket--usea1-az1--x-s3',
+        'my-bucket--use1-az4--x-s3',
         'AWS::S3Express::DirectoryBucket'
       );
 
@@ -137,7 +159,7 @@ describe('S3DirectoryBucketProvider', () => {
       expect(mockSend.mock.calls[0][0]).toBeInstanceOf(ListObjectsV2Command);
       expect(mockSend.mock.calls[1][0]).toBeInstanceOf(DeleteObjectsCommand);
       expect(mockSend.mock.calls[1][0].input).toEqual({
-        Bucket: 'my-bucket--usea1-az1--x-s3',
+        Bucket: 'my-bucket--use1-az4--x-s3',
         Delete: {
           Objects: [{ Key: 'file1.txt' }, { Key: 'file2.txt' }],
           Quiet: true,
@@ -154,7 +176,7 @@ describe('S3DirectoryBucketProvider', () => {
       await expect(
         provider.delete(
           'DirectoryBucket',
-          'my-bucket--usea1-az1--x-s3',
+          'my-bucket--use1-az4--x-s3',
           'AWS::S3Express::DirectoryBucket'
         )
       ).resolves.not.toThrow();
@@ -164,17 +186,17 @@ describe('S3DirectoryBucketProvider', () => {
   });
 
   describe('update', () => {
-    it('should be a no-op and return existing physicalId', () => {
-      const result = provider.update(
+    it('should be a no-op and return existing physicalId', async () => {
+      const result = await provider.update(
         'DirectoryBucket',
-        'my-bucket--usea1-az1--x-s3',
+        'my-bucket--use1-az4--x-s3',
         'AWS::S3Express::DirectoryBucket',
-        { BucketName: 'my-bucket--usea1-az1--x-s3' },
-        { BucketName: 'my-bucket--usea1-az1--x-s3' }
+        { BucketName: 'my-bucket--use1-az4--x-s3' },
+        { BucketName: 'my-bucket--use1-az4--x-s3' }
       );
 
       expect(result).toEqual({
-        physicalId: 'my-bucket--usea1-az1--x-s3',
+        physicalId: 'my-bucket--use1-az4--x-s3',
         wasReplaced: false,
       });
       expect(mockSend).not.toHaveBeenCalled();

@@ -6,10 +6,7 @@ import {
   DeleteObjectsCommand,
 } from '@aws-sdk/client-s3';
 import { STSClient, GetCallerIdentityCommand } from '@aws-sdk/client-sts';
-import {
-  EC2Client,
-  DescribeAvailabilityZonesCommand,
-} from '@aws-sdk/client-ec2';
+import { EC2Client, DescribeAvailabilityZonesCommand } from '@aws-sdk/client-ec2';
 import { getLogger } from '../../utils/logger.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';

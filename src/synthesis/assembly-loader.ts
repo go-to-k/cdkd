@@ -76,18 +76,32 @@ export class AssemblyLoader {
     });
 
     // Extract stack dependency names (other stacks this stack depends on)
+    // artifact.dependencies returns CloudArtifact instances.
+    // For stack-to-stack dependencies, the dependency is a CloudFormationStackArtifact
+    // which has a `stackName` property. We check via 'in' operator since the base
+    // CloudArtifact type doesn't declare it.
     const dependencyNames = artifact.dependencies
       .filter((dep) => {
-        // Only include stack dependencies (not asset manifests)
+        // Exclude asset manifest dependencies
         const id = dep.id;
         return !id.endsWith('.assets') && !id.includes('.assets.json');
       })
+      .filter((dep) => {
+        // Only include dependencies that are actually stack artifacts
+        // CloudFormationStackArtifact has stackName and template properties
+        return (
+          'stackName' in dep &&
+          typeof (dep as unknown as Record<string, unknown>)['stackName'] === 'string'
+        );
+      })
       .map((dep) => {
-        // The dependency artifact might have a different stackName
-        const depArtifact = dep as { stackName?: string };
-        return depArtifact.stackName || dep.id;
+        return (dep as unknown as Record<string, unknown>)['stackName'] as string;
       })
       .filter((name) => name !== stackName); // Exclude self-references
+
+    if (dependencyNames.length > 0) {
+      this.logger.debug(`Stack '${stackName}' depends on: [${dependencyNames.join(', ')}]`);
+    }
 
     const result: StackInfo = {
       stackName,

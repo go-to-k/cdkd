@@ -227,7 +227,7 @@ cdkd uses a hybrid provisioning strategy: hand-written **SDK Providers** call AW
 | Implicit delete dependencies | ✅ | VPC/IGW/EventBus/Subnet/RouteTable ordering |
 | Stack dependency resolution | ✅ | Auto-deploy dependency stacks, `-e` to skip |
 | Multi-stack parallel deploy | ✅ | Independent stacks deployed in parallel |
-| Attribute enrichment | ✅ | CloudFront OAI, DynamoDB StreamArn, API Gateway RootResourceId, Lambda FunctionUrl, Route53 HealthCheckId |
+| Attribute enrichment | ✅ | CloudFront OAI, DynamoDB StreamArn, API Gateway RootResourceId, Lambda FunctionUrl, Route53 HealthCheckId, ECR Repository Arn |
 | CC API null value stripping | ✅ | Removes null values before API calls |
 | Retry with HTTP status codes | ✅ | 429/503 + cause chain inspection |
 
