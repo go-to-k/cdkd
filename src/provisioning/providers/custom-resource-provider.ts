@@ -173,9 +173,7 @@ export class CustomResourceProvider implements ResourceProvider {
     // For cross-region deploy: S3 client for response bucket must use the bucket's region,
     // not the stack's region. The state bucket is always in the base region.
     if (bucketRegion) {
-      this.s3Client = new S3Client(
-        bucketRegion ? { region: bucketRegion } : {}
-      );
+      this.s3Client = new S3Client(bucketRegion ? { region: bucketRegion } : {});
     }
   }
 
