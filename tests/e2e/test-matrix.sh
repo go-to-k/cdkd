@@ -105,6 +105,8 @@ TESTS=(
   "efs-standalone|"
   "ci-cd|"
   "s3-directory-bucket|"
+  "s3-tables|"
+  "s3-vectors|"
 )
 
 # --------------------------------------------------------------------------

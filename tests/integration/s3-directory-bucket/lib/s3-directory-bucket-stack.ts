@@ -9,7 +9,7 @@ export class S3DirectoryBucketStack extends cdk.Stack {
     // S3 Express Directory Bucket
     const bucket = new s3express.CfnDirectoryBucket(this, 'DirectoryBucket', {
       dataRedundancy: 'SingleAvailabilityZone',
-      locationName: `${this.region}a--x-s3`, // first AZ
+      locationName: `${this.region}c--x-s3`, // us-east-1c (use1-az4, S3 Express supported)
     });
 
     new cdk.CfnOutput(this, 'BucketName', {

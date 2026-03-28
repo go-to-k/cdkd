@@ -63,7 +63,7 @@ export class S3VectorsProvider implements ResourceProvider {
     switch (resourceType) {
       case 'AWS::S3Vectors::VectorBucket':
         // VectorBucket does not support updates
-        return { physicalId: _physicalId, wasReplaced: false };
+        return Promise.resolve({ physicalId: _physicalId, wasReplaced: false });
       default:
         throw new ProvisioningError(
           `Unsupported resource type: ${resourceType}`,

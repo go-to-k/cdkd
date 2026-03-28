@@ -6,6 +6,10 @@ import {
   DeleteObjectsCommand,
 } from '@aws-sdk/client-s3';
 import { STSClient, GetCallerIdentityCommand } from '@aws-sdk/client-sts';
+import {
+  EC2Client,
+  DescribeAvailabilityZonesCommand,
+} from '@aws-sdk/client-ec2';
 import { getLogger } from '../../utils/logger.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
@@ -28,10 +32,43 @@ export class S3DirectoryBucketProvider implements ResourceProvider {
   private stsClient: STSClient;
   private logger = getLogger().child('S3DirectoryBucketProvider');
 
+  private ec2Client: EC2Client | undefined;
+
   constructor() {
     const awsClients = getAwsClients();
     this.s3Client = awsClients.s3;
     this.stsClient = awsClients.sts;
+  }
+
+  private getEc2Client(): EC2Client {
+    if (!this.ec2Client) {
+      this.ec2Client = new EC2Client({});
+    }
+    return this.ec2Client;
+  }
+
+  /**
+   * Convert AZ name (us-east-1a) to AZ ID (use1-az1) via EC2 DescribeAvailabilityZones
+   */
+  private async getAzId(azName: string): Promise<string> {
+    try {
+      const response = await this.getEc2Client().send(
+        new DescribeAvailabilityZonesCommand({
+          ZoneNames: [azName],
+        })
+      );
+      const azId = response.AvailabilityZones?.[0]?.ZoneId;
+      if (azId) {
+        this.logger.debug(`Resolved AZ name ${azName} → AZ ID ${azId}`);
+        return azId;
+      }
+    } catch (error) {
+      this.logger.debug(
+        `Failed to resolve AZ ID for ${azName}: ${error instanceof Error ? error.message : String(error)}`
+      );
+    }
+    // Fallback: return the AZ name as-is
+    return azName;
   }
 
   /**
@@ -72,7 +109,12 @@ export class S3DirectoryBucketProvider implements ResourceProvider {
     this.logger.debug(`Creating S3 Express Directory Bucket ${logicalId}`);
 
     const dataRedundancy = (properties['DataRedundancy'] as string) || 'SingleAvailabilityZone';
-    const locationName = properties['LocationName'] as string | undefined;
+    // CFn LocationName: "us-east-1a--x-s3" → extract AZ name: "us-east-1a"
+    const cfnLocationName = properties['LocationName'] as string | undefined;
+    const azName = cfnLocationName?.replace(/--x-s3$/, '') || 'us-east-1a';
+
+    // S3 CreateBucket API requires AZ ID (use1-az1), not AZ name (us-east-1a)
+    const azId = await this.getAzId(azName);
 
     // Generate bucket name if not specified
     // Directory bucket names must follow: {name}--{az-id}--x-s3
@@ -82,9 +124,7 @@ export class S3DirectoryBucketProvider implements ResourceProvider {
         maxLength: 64,
         lowercase: true,
       });
-      // locationName is like "us-east-1a--x-s3", use it directly as suffix
-      const suffix = locationName || 'us-east-1a--x-s3';
-      bucketName = `${baseName}--${suffix}`;
+      bucketName = `${baseName}--${azId}--x-s3`;
     }
 
     try {
@@ -97,7 +137,7 @@ export class S3DirectoryBucketProvider implements ResourceProvider {
               DataRedundancy: dataRedundancy as 'SingleAvailabilityZone',
             },
             Location: {
-              Name: locationName,
+              Name: azId,
               Type: 'AvailabilityZone',
             },
           },
@@ -138,10 +178,10 @@ export class S3DirectoryBucketProvider implements ResourceProvider {
     this.logger.debug(
       `Update for S3 Express Directory Bucket ${logicalId} is a no-op (immutable properties)`
     );
-    return {
+    return Promise.resolve({
       physicalId,
       wasReplaced: false,
-    };
+    });
   }
 
   /**
