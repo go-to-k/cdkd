@@ -220,7 +220,9 @@ cdkd uses a hybrid provisioning strategy: hand-written **SDK Providers** call AW
 | DeletionPolicy: Retain | ✅ | Skip deletion for retained resources |
 | UpdateReplacePolicy: Retain | ✅ | Keep old resource on replacement |
 | Implicit delete dependencies | ✅ | VPC/IGW/EventBus/Subnet/RouteTable ordering |
-| Attribute enrichment | ✅ | CloudFront OAI, DynamoDB StreamArn, API Gateway RootResourceId, Lambda FunctionUrl |
+| Stack dependency resolution | ✅ | Auto-deploy dependency stacks, `-e` to skip |
+| Multi-stack parallel deploy | ✅ | Independent stacks deployed in parallel |
+| Attribute enrichment | ✅ | CloudFront OAI, DynamoDB StreamArn, API Gateway RootResourceId, Lambda FunctionUrl, Route53 HealthCheckId |
 | CC API null value stripping | ✅ | Removes null values before API calls |
 | Retry with HTTP status codes | ✅ | 429/503 + cause chain inspection |
 
@@ -304,6 +306,9 @@ npx cdkd deploy --dry-run
 
 # Deploy with no rollback on failure (Terraform-style)
 npx cdkd deploy --no-rollback
+
+# Deploy only the specified stack (skip dependency auto-inclusion)
+npx cdkd deploy -e MyStack
 
 # Destroy resources
 npx cdkd destroy MyStack

@@ -18,6 +18,9 @@ export interface StackInfo {
 
   /** Asset manifest path (if exists) */
   assetManifestPath?: string;
+
+  /** Stack dependency names (other stacks this stack depends on) */
+  dependencyNames: string[];
 }
 
 /**
@@ -72,10 +75,25 @@ export class AssemblyLoader {
       return id.endsWith('.assets') || id.includes('.assets.json');
     });
 
+    // Extract stack dependency names (other stacks this stack depends on)
+    const dependencyNames = artifact.dependencies
+      .filter((dep) => {
+        // Only include stack dependencies (not asset manifests)
+        const id = dep.id;
+        return !id.endsWith('.assets') && !id.includes('.assets.json');
+      })
+      .map((dep) => {
+        // The dependency artifact might have a different stackName
+        const depArtifact = dep as { stackName?: string };
+        return depArtifact.stackName || dep.id;
+      })
+      .filter((name) => name !== stackName); // Exclude self-references
+
     const result: StackInfo = {
       stackName,
       template,
       artifact,
+      dependencyNames,
     };
 
     if (assetDependency) {

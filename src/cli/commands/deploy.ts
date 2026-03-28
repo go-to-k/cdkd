@@ -42,6 +42,7 @@ async function deployCommand(
     skipAssets: boolean;
     noRollback: boolean;
     noWait: boolean;
+    exclusively: boolean;
     verbose: boolean;
     context?: string[];
   }
@@ -137,6 +138,36 @@ async function deployCommand(
       );
     }
 
+    // Auto-include dependency stacks (CDK CLI compatible behavior)
+    // When deploying StackA that depends on StackB, also deploy StackB first.
+    // Use -e / --exclusively to skip this and deploy only the requested stacks.
+    if (!options.exclusively) {
+      const targetNames = new Set(targetStacks.map((s) => s.stackName));
+      const allStackMap = new Map(allStacks.map((s) => [s.stackName, s]));
+
+      const addDependencies = (stackName: string): void => {
+        const stack = allStackMap.get(stackName);
+        if (!stack) return;
+        for (const depName of stack.dependencyNames) {
+          if (!targetNames.has(depName)) {
+            const depStack = allStackMap.get(depName);
+            if (depStack) {
+              targetNames.add(depName);
+              targetStacks.push(depStack);
+              logger.debug(
+                `Auto-including dependency stack: ${depName} (required by ${stackName})`
+              );
+              addDependencies(depName); // Recursive
+            }
+          }
+        }
+      };
+
+      for (const stack of [...targetStacks]) {
+        addDependencies(stack.stackName);
+      }
+    }
+
     // 3. Publish assets (unless --skip-assets)
     if (!options.skipAssets) {
       const assetPublisher = new AssetPublisher();
@@ -206,12 +237,10 @@ async function deployCommand(
       }
     );
 
-    // 5. Deploy each stack
-    for (const stackInfo of targetStacks) {
+    // 5. Deploy stacks (parallel for independent stacks, sequential for dependencies)
+    const deployStack = async (stackInfo: (typeof targetStacks)[0]) => {
       logger.info(`\nDeploying stack: ${stackInfo.stackName}`);
-
       const template = assemblyLoader.getTemplate(assembly, stackInfo.stackName);
-
       const result = await deployEngine.deploy(stackInfo.stackName, template);
 
       logger.info('\nDeployment Summary:');
@@ -226,6 +255,53 @@ async function deployCommand(
         logger.info('\n✓ Dry run completed - no actual changes made');
       } else {
         logger.info('\n✓ Deployment completed successfully');
+      }
+    };
+
+    if (targetStacks.length === 1) {
+      // Single stack: deploy directly
+      await deployStack(targetStacks[0]!);
+    } else {
+      // Multiple stacks: deploy in dependency order, parallelizing independent stacks
+      const deployed = new Set<string>();
+      const deploying = new Map<string, Promise<void>>();
+      const remaining = new Set(targetStacks.map((s) => s.stackName));
+      const stackMap = new Map(targetStacks.map((s) => [s.stackName, s]));
+
+      while (remaining.size > 0) {
+        // Find stacks whose dependencies are all deployed
+        const ready: string[] = [];
+        for (const name of remaining) {
+          const stack = stackMap.get(name)!;
+          const depsReady = stack.dependencyNames.every(
+            (dep) => deployed.has(dep) || !remaining.has(dep)
+          );
+          if (depsReady && !deploying.has(name)) {
+            ready.push(name);
+          }
+        }
+
+        if (ready.length === 0 && deploying.size === 0) {
+          throw new Error(
+            `Circular dependency detected among stacks: ${[...remaining].join(', ')}`
+          );
+        }
+
+        // Start deploying ready stacks in parallel
+        for (const name of ready) {
+          const stack = stackMap.get(name)!;
+          const promise = deployStack(stack).then(() => {
+            deployed.add(name);
+            remaining.delete(name);
+            deploying.delete(name);
+          });
+          deploying.set(name, promise);
+        }
+
+        // Wait for at least one to complete before checking again
+        if (deploying.size > 0) {
+          await Promise.race(deploying.values());
+        }
       }
     }
   } finally {

@@ -70,6 +70,10 @@ export const deployOptions = [
   new Option('--no-wait', 'Skip waiting for async resources (CloudFront, RDS, etc.)').default(
     false
   ),
+  new Option(
+    '-e, --exclusively',
+    'Only deploy requested stacks, do not include dependencies'
+  ).default(false),
 ];
 
 /**

@@ -600,6 +600,11 @@ export class CloudControlProvider implements ResourceProvider {
         if (!enriched['Id']) enriched['Id'] = physicalId;
         break;
 
+      case 'AWS::Route53::HealthCheck':
+        // CC API physicalId is the HealthCheck ID
+        if (!enriched['HealthCheckId']) enriched['HealthCheckId'] = physicalId;
+        break;
+
       case 'AWS::EC2::EIP':
         // CC API returns composite physicalId: "PublicIp|AllocationId"
         // Extract individual attributes for Fn::GetAtt resolution

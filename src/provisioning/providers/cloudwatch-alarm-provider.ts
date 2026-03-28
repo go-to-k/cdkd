@@ -6,6 +6,7 @@ import {
   type Statistic,
   type ComparisonOperator,
   type StandardUnit,
+  type PutMetricAlarmCommandInput,
 } from '@aws-sdk/client-cloudwatch';
 import { getLogger } from '../../utils/logger.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
@@ -191,25 +192,63 @@ export class CloudWatchAlarmProvider implements ResourceProvider {
   /**
    * Build PutMetricAlarm parameters from CDK properties
    */
-  private buildAlarmParams(alarmName: string, properties: Record<string, unknown>) {
-    return {
+  private buildAlarmParams(
+    alarmName: string,
+    properties: Record<string, unknown>
+  ): PutMetricAlarmCommandInput {
+    const params: Record<string, unknown> = {
       AlarmName: alarmName,
       ComparisonOperator: properties['ComparisonOperator'] as ComparisonOperator | undefined,
       EvaluationPeriods: properties['EvaluationPeriods'] as number,
-      MetricName: properties['MetricName'] as string | undefined,
-      Namespace: properties['Namespace'] as string | undefined,
-      Period: properties['Period'] as number | undefined,
-      Statistic: properties['Statistic'] as Statistic | undefined,
       Threshold: properties['Threshold'] as number | undefined,
       ActionsEnabled: properties['ActionsEnabled'] as boolean | undefined,
       AlarmActions: properties['AlarmActions'] as string[] | undefined,
       AlarmDescription: properties['AlarmDescription'] as string | undefined,
       DatapointsToAlarm: properties['DatapointsToAlarm'] as number | undefined,
-      Dimensions: properties['Dimensions'] as Array<{ Name: string; Value: string }> | undefined,
       InsufficientDataActions: properties['InsufficientDataActions'] as string[] | undefined,
       OKActions: properties['OKActions'] as string[] | undefined,
       TreatMissingData: properties['TreatMissingData'] as string | undefined,
       Unit: properties['Unit'] as StandardUnit | undefined,
     };
+
+    // Metrics array (math expressions / composite metrics)
+    if (properties['Metrics']) {
+      const metrics = properties['Metrics'] as Array<Record<string, unknown>>;
+      params['Metrics'] = metrics.map((m) => {
+        const entry: Record<string, unknown> = {
+          Id: m['Id'] as string,
+        };
+        if (m['Expression'] !== undefined) entry['Expression'] = m['Expression'];
+        if (m['Label'] !== undefined) entry['Label'] = m['Label'];
+        if (m['ReturnData'] !== undefined) entry['ReturnData'] = m['ReturnData'];
+        if (m['Period'] !== undefined) entry['Period'] = m['Period'];
+        if (m['MetricStat'] !== undefined) {
+          const stat = m['MetricStat'] as Record<string, unknown>;
+          const metric = stat['Metric'] as Record<string, unknown>;
+          entry['MetricStat'] = {
+            Metric: {
+              MetricName: metric['MetricName'],
+              Namespace: metric['Namespace'],
+              Dimensions: metric['Dimensions'],
+            },
+            Period: stat['Period'],
+            Stat: stat['Stat'],
+            Unit: stat['Unit'],
+          };
+        }
+        return entry;
+      });
+    } else {
+      // Simple metric alarm (MetricName / Namespace / Dimensions)
+      params['MetricName'] = properties['MetricName'] as string | undefined;
+      params['Namespace'] = properties['Namespace'] as string | undefined;
+      params['Period'] = properties['Period'] as number | undefined;
+      params['Statistic'] = properties['Statistic'] as Statistic | undefined;
+      params['Dimensions'] = properties['Dimensions'] as
+        | Array<{ Name: string; Value: string }>
+        | undefined;
+    }
+
+    return params as unknown as PutMetricAlarmCommandInput;
   }
 }
