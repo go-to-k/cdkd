@@ -503,9 +503,9 @@ export class DeployEngine {
         await this.performRollback(completedOperations, newResources, stackName);
       }
 
-      // Save state after rollback (reflects rolled-back resource state)
-      // or re-save partial state if no-rollback (already saved above, but
-      // rollback may have modified newResources)
+      // Save state after rollback (reflects rolled-back resource state).
+      // This is critical: if rollback deleted resources, the state must reflect
+      // that. Otherwise, next deploy will think deleted resources still exist.
       try {
         const postRollbackState: StackState = {
           version: 1,
@@ -517,9 +517,27 @@ export class DeployEngine {
         await this.stateBackend.saveState(stackName, postRollbackState, currentEtag);
         this.logger.debug('State saved after deployment failure');
       } catch (saveError) {
-        this.logger.warn(
-          `Failed to save state after deployment failure: ${saveError instanceof Error ? saveError.message : String(saveError)}`
+        // ETag mismatch from per-resource saves — force overwrite with fresh ETag
+        this.logger.debug(
+          `Retrying state save after rollback (ETag mismatch): ${saveError instanceof Error ? saveError.message : String(saveError)}`
         );
+        try {
+          const freshState = await this.stateBackend.getState(stackName);
+          const freshEtag = freshState?.etag;
+          const postRollbackState: StackState = {
+            version: 1,
+            stackName: currentState.stackName,
+            resources: newResources,
+            outputs: currentState.outputs,
+            lastModified: Date.now(),
+          };
+          await this.stateBackend.saveState(stackName, postRollbackState, freshEtag);
+          this.logger.debug('State saved after deployment failure (retry succeeded)');
+        } catch (retryError) {
+          this.logger.warn(
+            `Failed to save state after rollback: ${retryError instanceof Error ? retryError.message : String(retryError)}`
+          );
+        }
       }
 
       throw error;
