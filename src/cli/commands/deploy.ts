@@ -216,6 +216,18 @@ async function deployCommand(
     const diffCalculator = new DiffCalculator();
 
     // 5. Deploy stacks (parallel within same region, cross-region handled via env vars)
+    // Top-level SIGINT handler for graceful exit
+    let deployInterrupted = false;
+    const topLevelSigintHandler = () => {
+      if (deployInterrupted) {
+        logger.info('Force exit');
+        process.exit(130);
+      }
+      logger.info('\nInterrupted — waiting for in-progress operations to complete...');
+      deployInterrupted = true;
+    };
+    process.on('SIGINT', topLevelSigintHandler);
+
     const baseRegion = options.region || process.env['AWS_REGION'] || 'us-east-1';
 
     const switchRegion = (region: string): void => {
@@ -316,6 +328,15 @@ async function deployCommand(
       };
 
       while (remaining.size > 0) {
+        // Check for SIGINT
+        if (deployInterrupted) {
+          logger.info('Deployment interrupted. Waiting for in-progress stacks to finish...');
+          if (deploying.size > 0) {
+            await Promise.allSettled(deploying.values());
+          }
+          break;
+        }
+
         // Find stacks whose dependencies are all deployed (skip if dep failed)
         const ready: string[] = [];
         const toSkip: string[] = [];
@@ -404,6 +425,7 @@ async function deployCommand(
       }
     }
   } finally {
+    process.removeListener('SIGINT', topLevelSigintHandler);
     // Dispose cloud assembly to release cdk.out lock
     if (disposeAssembly) {
       await disposeAssembly();
