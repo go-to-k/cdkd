@@ -241,13 +241,11 @@ cdkd uses a hybrid provisioning strategy: hand-written **SDK Providers** call AW
 ## Installation
 
 ```bash
-pnpm add -g cdkd
-```
-
-Or use with npx (no installation required):
-
-```bash
-npx cdkd --help
+git clone https://github.com/goto-bus-stop/cdkd.git
+cd cdkd
+pnpm install
+pnpm run build
+pnpm link --global
 ```
 
 ## Quick Start
@@ -274,54 +272,54 @@ Options like `--app`, `--state-bucket`, and `--context` can be omitted if config
 
 ```bash
 # Bootstrap (create S3 bucket for state)
-npx cdkd bootstrap \
+cdkd bootstrap \
   --state-bucket my-cdkd-state \
   --region us-east-1
 
 # Synthesize only
-npx cdkd synth --app "npx ts-node app.ts"
+cdkd synth --app "npx ts-node app.ts"
 
 # Deploy (single stack auto-detected, reads --app from cdk.json)
-npx cdkd deploy
+cdkd deploy
 
 # Deploy specific stack(s)
-npx cdkd deploy MyStack
-npx cdkd deploy Stack1 Stack2
+cdkd deploy MyStack
+cdkd deploy Stack1 Stack2
 
 # Deploy all stacks
-npx cdkd deploy --all
+cdkd deploy --all
 
 # Deploy with wildcard
-npx cdkd deploy 'My*'
+cdkd deploy 'My*'
 
 # Deploy with context values
-npx cdkd deploy -c env=staging -c featureFlag=true
+cdkd deploy -c env=staging -c featureFlag=true
 
 # Deploy with explicit options
-npx cdkd deploy MyStack \
+cdkd deploy MyStack \
   --app "npx ts-node app.ts" \
   --state-bucket my-cdkd-state \
   --region us-east-1 \
   --verbose
 
 # Show diff (what would change)
-npx cdkd diff MyStack
+cdkd diff MyStack
 
 # Dry run (plan only, no changes)
-npx cdkd deploy --dry-run
+cdkd deploy --dry-run
 
 # Deploy with no rollback on failure (Terraform-style)
-npx cdkd deploy --no-rollback
+cdkd deploy --no-rollback
 
 # Deploy only the specified stack (skip dependency auto-inclusion)
-npx cdkd deploy -e MyStack
+cdkd deploy -e MyStack
 
 # Destroy resources
-npx cdkd destroy MyStack
-npx cdkd destroy --all --force
+cdkd destroy MyStack
+cdkd destroy --all --force
 
 # Force-unlock a stale lock from interrupted deploy
-npx cdkd force-unlock MyStack
+cdkd force-unlock MyStack
 ```
 
 ## `--no-wait`
