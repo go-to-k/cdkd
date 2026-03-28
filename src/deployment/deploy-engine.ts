@@ -3,13 +3,14 @@ import { getLogger } from '../utils/logger.js';
 import { ProvisioningError } from '../utils/error-handler.js';
 import { setCurrentStackName } from '../provisioning/resource-name.js';
 import { IntrinsicFunctionResolver } from './intrinsic-function-resolver.js';
-import type { CloudFormationTemplate } from '../types/resource.js';
+import type { CloudFormationTemplate, ResourceProvider } from '../types/resource.js';
 import type { StackState, ResourceState, ResourceChange } from '../types/state.js';
 import type { S3StateBackend } from '../state/s3-state-backend.js';
 import type { LockManager } from '../state/lock-manager.js';
 import type { DagBuilder } from '../analyzer/dag-builder.js';
 import type { DiffCalculator } from '../analyzer/diff-calculator.js';
-import type { ProviderRegistry } from '../provisioning/provider-registry.js';
+import { ProviderRegistry } from '../provisioning/provider-registry.js';
+import { CloudControlProvider } from '../provisioning/cloud-control-provider.js';
 import { TemplateParser } from '../analyzer/template-parser.js';
 
 /**
@@ -96,7 +97,7 @@ class InterruptedError extends Error {
 
 export class DeployEngine {
   private logger = getLogger().child('DeployEngine');
-  private resolver = new IntrinsicFunctionResolver();
+  private resolver: IntrinsicFunctionResolver;
   private interrupted = false;
 
   /** Target region for this stack (saved in state for cross-region destroy) */
@@ -112,6 +113,7 @@ export class DeployEngine {
     stackRegion?: string
   ) {
     this.stackRegion = stackRegion;
+    this.resolver = new IntrinsicFunctionResolver(stackRegion);
     this.options.concurrency = options.concurrency ?? 10;
     this.options.dryRun = options.dryRun ?? false;
     this.options.lockTimeout = options.lockTimeout ?? 5 * 60 * 1000; // 5 minutes
@@ -827,8 +829,13 @@ export class DeployEngine {
             unknown
           >;
 
+          // Safety net: if SDK provider doesn't handle all template properties,
+          // fall back to CC API for create to ensure no properties are silently dropped
+          const { provider: createProvider, properties: createProps } =
+            this.selectProviderWithSafetyNet(provider, resourceType, resolvedProps, logicalId);
+
           const result = await this.withRetry(
-            () => provider.create(logicalId, resourceType, resolvedProps),
+            () => createProvider.create(logicalId, resourceType, createProps),
             logicalId
           );
 
@@ -904,8 +911,10 @@ export class DeployEngine {
 
             // 1. Create new resource first (CFn order: safe - old resource survives if CREATE fails)
             this.logger.info(`  Creating new ${logicalId}...`);
+            const { provider: replaceProvider, properties: replaceProps } =
+              this.selectProviderWithSafetyNet(provider, resourceType, resolvedProps, logicalId);
             const createResult = await this.withRetry(
-              () => provider.create(logicalId, resourceType, resolvedProps),
+              () => replaceProvider.create(logicalId, resourceType, replaceProps),
               logicalId
             );
 
@@ -949,13 +958,17 @@ export class DeployEngine {
             // Normal update (in-place)
             this.logger.debug(`Updating ${logicalId} (${resourceType})`);
 
+            // Safety net: fall back to CC API if SDK provider doesn't handle all properties
+            const { provider: updateProvider, properties: updateProps } =
+              this.selectProviderWithSafetyNet(provider, resourceType, resolvedProps, logicalId);
+
             const result = await this.withRetry(
               () =>
-                provider.update(
+                updateProvider.update(
                   logicalId,
                   currentResource.physicalId,
                   resourceType,
-                  resolvedProps,
+                  updateProps,
                   currentProps
                 ),
               logicalId
@@ -1228,6 +1241,68 @@ export class DeployEngine {
         }
       }
     }
+  }
+
+  /**
+   * Select the appropriate provider for create/update, falling back to CC API
+   * if the SDK provider doesn't handle all template properties.
+   *
+   * This safety net prevents properties from being silently dropped when an SDK
+   * provider only maps a subset of CloudFormation properties.
+   *
+   * DELETE always uses the SDK provider (force-delete, cleanup, etc.).
+   */
+  private selectProviderWithSafetyNet(
+    sdkProvider: ResourceProvider,
+    resourceType: string,
+    resolvedProps: Record<string, unknown>,
+    logicalId: string
+  ): { provider: ResourceProvider; properties: Record<string, unknown> } {
+    const handledSet = sdkProvider.handledProperties?.get(resourceType);
+    if (!handledSet) {
+      // Provider doesn't declare handledProperties for this type — assume full coverage
+      return { provider: sdkProvider, properties: resolvedProps };
+    }
+
+    const templateProps = Object.keys(resolvedProps);
+    const unhandledProps = templateProps.filter((p) => !handledSet.has(p));
+
+    if (unhandledProps.length === 0) {
+      // All properties are handled by the SDK provider
+      return { provider: sdkProvider, properties: resolvedProps };
+    }
+
+    // There are unhandled properties — try to fall back to CC API
+    if (
+      CloudControlProvider.isSupportedResourceType(resourceType) &&
+      !sdkProvider.disableCcApiFallback
+    ) {
+      this.logger.info(
+        `${logicalId}: SDK provider does not handle [${unhandledProps.join(', ')}] — falling back to CC API for create/update`
+      );
+
+      // Allow SDK provider to pre-process properties (e.g., apply default name generation)
+      // so CC API receives the same defaults the SDK provider would have applied
+      const fallbackProps = sdkProvider.preparePropertiesForFallback
+        ? sdkProvider.preparePropertiesForFallback(logicalId, resourceType, resolvedProps)
+        : resolvedProps;
+
+      return { provider: this.providerRegistry.getCloudControlProvider(), properties: fallbackProps };
+    }
+
+    // CC API fallback not available — fail to prevent silent property loss
+    const reason = sdkProvider.disableCcApiFallback
+      ? 'CC API fallback is disabled for this provider (known CC API issues)'
+      : `CC API does not support ${resourceType}`;
+    throw new ProvisioningError(
+      `SDK provider for ${resourceType} does not handle properties [${unhandledProps.join(', ')}] ` +
+        `and ${reason}. ` +
+        `These properties would be silently dropped. ` +
+        `Please update the SDK provider to handle all required properties.`,
+      resourceType,
+      logicalId,
+      ''
+    );
   }
 
   /**

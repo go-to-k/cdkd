@@ -82,8 +82,12 @@ const cachedDynamicReferences: Record<string, string> = {};
 /**
  * Get AWS account information from STS
  */
-export async function getAccountInfo(): Promise<AwsAccountInfo> {
+export async function getAccountInfo(overrideRegion?: string): Promise<AwsAccountInfo> {
   if (cachedAccountInfo) {
+    // If an override region is provided, return with that region
+    if (overrideRegion && overrideRegion !== cachedAccountInfo.region) {
+      return { ...cachedAccountInfo, region: overrideRegion };
+    }
     return cachedAccountInfo;
   }
 
@@ -94,11 +98,15 @@ export async function getAccountInfo(): Promise<AwsAccountInfo> {
   try {
     const response = await stsClient.send(new GetCallerIdentityCommand({}));
     const accountId = response.Account || '123456789012';
-    const region = process.env['AWS_REGION'] || 'us-east-1';
+    const region = overrideRegion || process.env['AWS_REGION'] || 'us-east-1';
     const partition = 'aws'; // Could be aws-cn, aws-us-gov, etc.
 
     cachedAccountInfo = { accountId, region, partition };
     logger.debug(`Retrieved AWS account info: ${accountId}, ${region}, ${partition}`);
+    // Return with override if different from cached
+    if (overrideRegion && overrideRegion !== region) {
+      return { ...cachedAccountInfo, region: overrideRegion };
+    }
     return cachedAccountInfo;
   } catch (error) {
     logger.warn(
@@ -107,7 +115,7 @@ export async function getAccountInfo(): Promise<AwsAccountInfo> {
     // Fallback to environment variables or defaults
     cachedAccountInfo = {
       accountId: process.env['AWS_ACCOUNT_ID'] || '123456789012',
-      region: process.env['AWS_REGION'] || 'us-east-1',
+      region: overrideRegion || process.env['AWS_REGION'] || 'us-east-1',
       partition: 'aws',
     };
     return cachedAccountInfo;
@@ -148,6 +156,11 @@ export interface ParameterDefinition {
 
 export class IntrinsicFunctionResolver {
   private logger = getLogger().child('IntrinsicFunctionResolver');
+  private readonly resolverRegion: string;
+
+  constructor(region?: string) {
+    this.resolverRegion = region || process.env['AWS_REGION'] || 'us-east-1';
+  }
 
   /**
    * Resolve parameter values from template Parameters section
@@ -480,7 +493,7 @@ export class IntrinsicFunctionResolver {
     _context: ResolverContext
   ): Promise<unknown> {
     const { resourceType, physicalId } = resource;
-    const accountInfo = await getAccountInfo();
+    const accountInfo = await getAccountInfo(this.resolverRegion);
     const { region, accountId, partition } = accountInfo;
 
     // DynamoDB Table
@@ -538,9 +551,7 @@ export class IntrinsicFunctionResolver {
           // 'associating' state. Retry up to 30s waiting for 'associated'.
           try {
             const { EC2Client, DescribeVpcsCommand } = await import('@aws-sdk/client-ec2');
-            const ec2 = new EC2Client(
-              process.env['AWS_REGION'] ? { region: process.env['AWS_REGION'] } : {}
-            );
+            const ec2 = new EC2Client({ region: this.resolverRegion });
             const maxAttempts = 15;
             for (let attempt = 1; attempt <= maxAttempts; attempt++) {
               const resp = await ec2.send(new DescribeVpcsCommand({ VpcIds: [physicalId] }));
@@ -1155,7 +1166,7 @@ export class IntrinsicFunctionResolver {
       region = resolvedValue;
     } else {
       // Empty string or non-string: use current region
-      const accountInfo = await getAccountInfo();
+      const accountInfo = await getAccountInfo(this.resolverRegion);
       region = accountInfo.region;
     }
 
@@ -1212,17 +1223,17 @@ export class IntrinsicFunctionResolver {
   ): Promise<string | symbol | undefined> {
     switch (name) {
       case 'AWS::Region': {
-        const accountInfo = await getAccountInfo();
+        const accountInfo = await getAccountInfo(this.resolverRegion);
         return accountInfo.region;
       }
 
       case 'AWS::AccountId': {
-        const accountInfo = await getAccountInfo();
+        const accountInfo = await getAccountInfo(this.resolverRegion);
         return accountInfo.accountId;
       }
 
       case 'AWS::Partition': {
-        const accountInfo = await getAccountInfo();
+        const accountInfo = await getAccountInfo(this.resolverRegion);
         return accountInfo.partition;
       }
 
@@ -1231,7 +1242,7 @@ export class IntrinsicFunctionResolver {
 
       case 'AWS::StackId': {
         // cdkd doesn't use CloudFormation stacks, generate a synthetic ID
-        const info = await getAccountInfo();
+        const info = await getAccountInfo(this.resolverRegion);
         return `arn:aws:cloudformation:${info.region}:${info.accountId}:stack/${context?.stackName ?? 'UnknownStack'}/cdkd`;
       }
 
