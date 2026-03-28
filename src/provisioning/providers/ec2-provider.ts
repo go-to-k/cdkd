@@ -422,6 +422,15 @@ export class EC2Provider implements ResourceProvider {
       switch (attributeName) {
         case 'CidrBlock':
           return vpc.CidrBlock;
+        case 'Ipv6CidrBlocks':
+          // Return array of IPv6 CIDR blocks associated with this VPC
+          return (
+            vpc.Ipv6CidrBlockAssociationSet?.filter(
+              (a) => a.Ipv6CidrBlockState?.State === 'associated'
+            ).map((a) => a.Ipv6CidrBlock) || []
+          );
+        case 'CidrBlockAssociations':
+          return vpc.CidrBlockAssociationSet?.map((a) => a.AssociationId) || [];
         case 'DefaultNetworkAcl':
           return vpc.DhcpOptionsId; // Placeholder - need separate API call for NACL
         case 'DefaultSecurityGroup':

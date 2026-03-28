@@ -515,6 +515,40 @@ export class IntrinsicFunctionResolver {
       }
     }
 
+    // EC2 VPC - dynamic attributes (IPv6 CIDR requires DescribeVpcs after VPCCidrBlock association)
+    if (resourceType === 'AWS::EC2::VPC') {
+      switch (attributeName) {
+        case 'VpcId':
+          return physicalId;
+        case 'CidrBlock':
+          return resource.attributes?.['CidrBlock'] || resource.properties?.['CidrBlock'];
+        case 'Ipv6CidrBlocks': {
+          // Must fetch dynamically - IPv6 CIDR is added by VPCCidrBlock resource after VPC creation
+          try {
+            const { EC2Client, DescribeVpcsCommand } = await import('@aws-sdk/client-ec2');
+            const ec2 = new EC2Client(
+              process.env['AWS_REGION'] ? { region: process.env['AWS_REGION'] } : {}
+            );
+            const resp = await ec2.send(new DescribeVpcsCommand({ VpcIds: [physicalId] }));
+            const blocks =
+              resp.Vpcs?.[0]?.Ipv6CidrBlockAssociationSet?.filter(
+                (a) => a.Ipv6CidrBlockState?.State === 'associated'
+              ).map((a) => a.Ipv6CidrBlock) || [];
+            this.logger.debug(
+              `Resolved VPC Ipv6CidrBlocks for ${physicalId}: ${JSON.stringify(blocks)}`
+            );
+            return blocks;
+          } catch {
+            return [];
+          }
+        }
+        case 'DefaultSecurityGroup':
+          return resource.attributes?.['DefaultSecurityGroup'] || physicalId;
+        default:
+          return physicalId;
+      }
+    }
+
     // IAM Policy
     if (resourceType === 'AWS::IAM::Policy') {
       switch (attributeName) {
