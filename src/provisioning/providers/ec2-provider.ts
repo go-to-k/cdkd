@@ -469,22 +469,38 @@ export class EC2Provider implements ResourceProvider {
   ): Promise<void> {
     this.logger.debug(`Deleting VPC ${logicalId}: ${physicalId}`);
 
-    try {
-      await this.ec2Client.send(new DeleteVpcCommand({ VpcId: physicalId }));
-      this.logger.debug(`Successfully deleted VPC ${logicalId}`);
-    } catch (error) {
-      if (this.isNotFoundError(error)) {
-        this.logger.debug(`VPC ${physicalId} does not exist, skipping deletion`);
+    // Retry with backoff for DependencyViolation (ENI cleanup, SG deletion delay)
+    const maxAttempts = 10;
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      try {
+        await this.ec2Client.send(new DeleteVpcCommand({ VpcId: physicalId }));
+        this.logger.debug(`Successfully deleted VPC ${logicalId}`);
         return;
+      } catch (error) {
+        if (this.isNotFoundError(error)) {
+          this.logger.debug(`VPC ${physicalId} does not exist, skipping deletion`);
+          return;
+        }
+        const msg = error instanceof Error ? error.message : String(error);
+        if (
+          (msg.includes('DependencyViolation') || msg.includes('has dependencies')) &&
+          attempt < maxAttempts
+        ) {
+          this.logger.debug(
+            `VPC ${physicalId} has dependencies (attempt ${attempt}/${maxAttempts}), retrying in ${attempt * 5}s...`
+          );
+          await new Promise((resolve) => setTimeout(resolve, attempt * 5000));
+          continue;
+        }
+        const cause = error instanceof Error ? error : undefined;
+        throw new ProvisioningError(
+          `Failed to delete VPC ${logicalId}: ${msg}`,
+          resourceType,
+          logicalId,
+          physicalId,
+          cause
+        );
       }
-      const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to delete VPC ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
-      );
     }
   }
 
@@ -1216,22 +1232,35 @@ export class EC2Provider implements ResourceProvider {
   ): Promise<void> {
     this.logger.debug(`Deleting SecurityGroup ${logicalId}: ${physicalId}`);
 
-    try {
-      await this.ec2Client.send(new DeleteSecurityGroupCommand({ GroupId: physicalId }));
-      this.logger.debug(`Successfully deleted SecurityGroup ${logicalId}`);
-    } catch (error) {
-      if (this.isNotFoundError(error)) {
-        this.logger.debug(`SecurityGroup ${physicalId} does not exist, skipping deletion`);
+    // Retry with backoff for "dependent object" errors (e.g., ECS ENI cleanup delay)
+    const maxAttempts = 10;
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      try {
+        await this.ec2Client.send(new DeleteSecurityGroupCommand({ GroupId: physicalId }));
+        this.logger.debug(`Successfully deleted SecurityGroup ${logicalId}`);
         return;
+      } catch (error) {
+        if (this.isNotFoundError(error)) {
+          this.logger.debug(`SecurityGroup ${physicalId} does not exist, skipping deletion`);
+          return;
+        }
+        const msg = error instanceof Error ? error.message : String(error);
+        if (msg.includes('dependent object') && attempt < maxAttempts) {
+          this.logger.debug(
+            `SecurityGroup ${physicalId} has dependent objects (attempt ${attempt}/${maxAttempts}), retrying in ${attempt * 5}s...`
+          );
+          await new Promise((resolve) => setTimeout(resolve, attempt * 5000));
+          continue;
+        }
+        const cause = error instanceof Error ? error : undefined;
+        throw new ProvisioningError(
+          `Failed to delete SecurityGroup ${logicalId}: ${msg}`,
+          resourceType,
+          logicalId,
+          physicalId,
+          cause
+        );
       }
-      const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to delete SecurityGroup ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
-      );
     }
   }
 
