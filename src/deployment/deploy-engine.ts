@@ -986,12 +986,29 @@ export class DeployEngine {
                 this.logger.info(
                   `UPDATE not supported for ${logicalId} (${resourceType}), replacing (DELETE → CREATE)`
                 );
-                await provider.delete(
-                  logicalId,
-                  currentResource.physicalId,
-                  resourceType,
-                  currentProps
-                );
+                try {
+                  await provider.delete(
+                    logicalId,
+                    currentResource.physicalId,
+                    resourceType,
+                    currentProps
+                  );
+                } catch (deleteError) {
+                  // If old resource doesn't exist (already deleted), proceed with CREATE
+                  const deleteMsg =
+                    deleteError instanceof Error ? deleteError.message : String(deleteError);
+                  if (
+                    deleteMsg.includes('does not exist') ||
+                    deleteMsg.includes('not found') ||
+                    deleteMsg.includes('NotFound')
+                  ) {
+                    this.logger.debug(
+                      `Old resource ${logicalId} already gone, proceeding with CREATE`
+                    );
+                  } else {
+                    throw deleteError;
+                  }
+                }
                 const { provider: replProvider, properties: replProps } =
                   this.selectProviderWithSafetyNet(
                     provider,

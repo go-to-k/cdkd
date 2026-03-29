@@ -315,6 +315,17 @@ export class CloudControlProvider implements ResourceProvider {
 
       this.logger.debug(`Deleted resource ${logicalId}`);
     } catch (error) {
+      // Treat "not found" / "does not exist" as idempotent success for DELETE
+      const err = error as { name?: string; message?: string };
+      if (
+        err.name === 'ResourceNotFoundException' ||
+        err.message?.includes('does not exist') ||
+        err.message?.includes('not found') ||
+        err.message?.includes('NotFound')
+      ) {
+        this.logger.debug(`Resource ${logicalId} already deleted (not found), treating as success`);
+        return;
+      }
       this.handleError(error, 'DELETE', resourceType, logicalId, physicalId);
     }
   }
