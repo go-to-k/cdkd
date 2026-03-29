@@ -564,7 +564,9 @@ export class ECSProvider implements ResourceProvider {
           networkConfiguration: this.convertNetworkConfiguration(
             properties['NetworkConfiguration'] as Record<string, unknown> | undefined
           ),
-          loadBalancers: properties['LoadBalancers'] as LoadBalancer[] | undefined,
+          loadBalancers: this.convertLoadBalancers(
+            properties['LoadBalancers'] as Array<Record<string, unknown>> | undefined
+          ),
           capacityProviderStrategy: properties['CapacityProviderStrategy'] as
             | CapacityProviderStrategyItem[]
             | undefined,
@@ -880,6 +882,19 @@ export class ECSProvider implements ResourceProvider {
   /**
    * Convert CFn NetworkConfiguration to ECS SDK format
    */
+  /**
+   * Convert CFn PascalCase LoadBalancers to SDK camelCase
+   */
+  private convertLoadBalancers(lbs?: Array<Record<string, unknown>>): LoadBalancer[] | undefined {
+    if (!lbs) return undefined;
+    return lbs.map((lb) => ({
+      targetGroupArn: lb['TargetGroupArn'] as string | undefined,
+      containerName: lb['ContainerName'] as string | undefined,
+      containerPort: lb['ContainerPort'] as number | undefined,
+      loadBalancerName: lb['LoadBalancerName'] as string | undefined,
+    }));
+  }
+
   private convertNetworkConfiguration(
     config?: Record<string, unknown>
   ): NetworkConfiguration | undefined {
