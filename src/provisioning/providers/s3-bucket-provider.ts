@@ -21,6 +21,8 @@ import {
   PutBucketReplicationCommand,
   PutObjectLockConfigurationCommand,
   NoSuchBucket,
+  ListObjectVersionsCommand,
+  DeleteObjectsCommand,
   type BucketLocationConstraint,
   type ObjectOwnership,
   type CORSRule,
@@ -1121,21 +1123,12 @@ export class S3BucketProvider implements ResourceProvider {
     this.logger.debug(`Deleting S3 bucket ${logicalId}: ${physicalId}`);
 
     try {
-      try {
-        await this.s3Client.send(
-          new DeleteBucketCommand({
-            Bucket: physicalId,
-          })
-        );
-        this.logger.debug(`Successfully deleted S3 bucket ${logicalId}`);
-      } catch (error) {
-        if (error instanceof NoSuchBucket) {
-          this.logger.debug(`Bucket ${physicalId} does not exist, skipping deletion`);
-          return;
-        }
-        throw error;
-      }
+      await this.deleteBucketWithEmptyRetry(logicalId, physicalId);
     } catch (error) {
+      if (error instanceof NoSuchBucket) {
+        this.logger.debug(`Bucket ${physicalId} does not exist, skipping deletion`);
+        return;
+      }
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
         `Failed to delete S3 bucket ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
@@ -1144,6 +1137,77 @@ export class S3BucketProvider implements ResourceProvider {
         physicalId,
         cause
       );
+    }
+  }
+
+  /**
+   * Delete a bucket, emptying it first if not empty.
+   * Handles the race condition where objects (e.g., ALB logs) are written
+   * after CustomResource cleanup but before bucket deletion.
+   */
+  private async deleteBucketWithEmptyRetry(logicalId: string, bucketName: string): Promise<void> {
+    const maxAttempts = 3;
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      try {
+        await this.s3Client.send(new DeleteBucketCommand({ Bucket: bucketName }));
+        this.logger.debug(`Successfully deleted S3 bucket ${logicalId}`);
+        return;
+      } catch (error) {
+        const msg = error instanceof Error ? error.message : String(error);
+        if (msg.includes('not empty') || msg.includes('BucketNotEmpty')) {
+          this.logger.debug(
+            `Bucket ${bucketName} not empty (attempt ${attempt}/${maxAttempts}), emptying...`
+          );
+          await this.emptyBucket(bucketName);
+          continue;
+        }
+        throw error;
+      }
+    }
+    // Final attempt after emptying
+    await this.s3Client.send(new DeleteBucketCommand({ Bucket: bucketName }));
+    this.logger.debug(`Successfully deleted S3 bucket ${logicalId}`);
+  }
+
+  /**
+   * Empty a bucket by deleting all object versions and delete markers.
+   */
+  private async emptyBucket(bucketName: string): Promise<void> {
+    let keyMarker: string | undefined;
+    let versionIdMarker: string | undefined;
+
+    // eslint-disable-next-line no-constant-condition
+    while (true) {
+      const listResp = await this.s3Client.send(
+        new ListObjectVersionsCommand({
+          Bucket: bucketName,
+          MaxKeys: 1000,
+          ...(keyMarker && { KeyMarker: keyMarker }),
+          ...(versionIdMarker && { VersionIdMarker: versionIdMarker }),
+        })
+      );
+
+      const objects: Array<{ Key: string; VersionId: string }> = [];
+      for (const v of listResp.Versions || []) {
+        if (v.Key && v.VersionId) objects.push({ Key: v.Key, VersionId: v.VersionId });
+      }
+      for (const d of listResp.DeleteMarkers || []) {
+        if (d.Key && d.VersionId) objects.push({ Key: d.Key, VersionId: d.VersionId });
+      }
+
+      if (objects.length > 0) {
+        await this.s3Client.send(
+          new DeleteObjectsCommand({
+            Bucket: bucketName,
+            Delete: { Objects: objects, Quiet: true },
+          })
+        );
+        this.logger.debug(`Emptied ${objects.length} objects from ${bucketName}`);
+      }
+
+      if (!listResp.IsTruncated) break;
+      keyMarker = listResp.NextKeyMarker;
+      versionIdMarker = listResp.NextVersionIdMarker;
     }
   }
 }
