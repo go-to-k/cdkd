@@ -378,17 +378,25 @@ export class DeployEngine {
                 ? { ...currentState.resources[logicalId] }
                 : undefined;
 
-              await this.provisionResource(
-                logicalId,
-                change,
-                newResources,
-                stackName,
-                template,
-                parameterValues,
-                conditions,
-                actualCounts,
-                progress
-              );
+              try {
+                await this.provisionResource(
+                  logicalId,
+                  change,
+                  newResources,
+                  stackName,
+                  template,
+                  parameterValues,
+                  conditions,
+                  actualCounts,
+                  progress
+                );
+              } catch (provisionError) {
+                // Signal interruption so that long-running operations (e.g., CloudFront
+                // waitForDeployed) in sibling tasks abort promptly instead of blocking
+                // the entire level until they time out.
+                this.interrupted = true;
+                throw provisionError;
+              }
 
               // Track completed operation for potential rollback
               completedOperations.push({
