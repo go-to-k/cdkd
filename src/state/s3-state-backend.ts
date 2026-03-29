@@ -126,11 +126,13 @@ export class S3StateBackend {
         `Saving state for stack: ${stackName}${expectedEtag ? `, expected ETag: ${expectedEtag}` : ''}`
       );
 
+      const body = JSON.stringify(state, null, 2);
       const response = await this.s3Client.send(
         new PutObjectCommand({
           Bucket: this.config.bucket,
           Key: key,
-          Body: JSON.stringify(state, null, 2),
+          Body: body,
+          ContentLength: Buffer.byteLength(body),
           ContentType: 'application/json',
           ...(expectedEtag && { IfMatch: expectedEtag }),
         })

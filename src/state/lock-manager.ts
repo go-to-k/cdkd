@@ -106,11 +106,13 @@ export class LockManager {
     try {
       this.logger.debug(`Attempting to acquire lock for stack: ${stackName}`);
 
+      const lockBody = JSON.stringify(lockInfo, null, 2);
       await this.s3Client.send(
         new PutObjectCommand({
           Bucket: this.config.bucket,
           Key: key,
-          Body: JSON.stringify(lockInfo, null, 2),
+          Body: lockBody,
+          ContentLength: Buffer.byteLength(lockBody),
           ContentType: 'application/json',
           IfNoneMatch: '*', // Only succeed if object doesn't exist
         })
@@ -136,11 +138,13 @@ export class LockManager {
 
           // Retry once after cleaning up expired lock
           try {
+            const retryBody = JSON.stringify(lockInfo, null, 2);
             await this.s3Client.send(
               new PutObjectCommand({
                 Bucket: this.config.bucket,
                 Key: key,
-                Body: JSON.stringify(lockInfo, null, 2),
+                Body: retryBody,
+                ContentLength: Buffer.byteLength(retryBody),
                 ContentType: 'application/json',
                 IfNoneMatch: '*',
               })

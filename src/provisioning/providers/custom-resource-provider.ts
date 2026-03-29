@@ -558,6 +558,7 @@ export class CustomResourceProvider implements ResourceProvider {
         Bucket: this.responseBucket,
         Key: responseKey,
         Body: '',
+        ContentLength: 0,
         ContentType: 'application/json',
       })
     );
