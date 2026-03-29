@@ -90,10 +90,10 @@ async function deployCommand(
   let deployInterrupted = false;
   const topLevelSigintHandler = () => {
     if (deployInterrupted) {
-      logger.info('Force exit');
+      process.stderr.write('\nForce exit\n');
       process.exit(130);
     }
-    logger.info('\nInterrupted — waiting for in-progress operations to complete...');
+    process.stderr.write('\nInterrupted — waiting for in-progress operations to complete...\n');
     deployInterrupted = true;
   };
   process.on('SIGINT', topLevelSigintHandler);

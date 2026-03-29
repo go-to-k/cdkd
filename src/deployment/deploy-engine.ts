@@ -136,7 +136,9 @@ export class DeployEngine {
     // Register SIGINT handler to save partial state on Ctrl+C
     this.interrupted = false;
     const sigintHandler = () => {
-      this.logger.info('Interrupted — saving partial state after current operations complete...');
+      process.stderr.write(
+        '\nInterrupted — saving partial state after current operations complete...\n'
+      );
       this.interrupted = true;
     };
     process.on('SIGINT', sigintHandler);
