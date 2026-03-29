@@ -152,18 +152,21 @@ export class LambdaPermissionProvider implements ResourceProvider {
       const oldFunctionName =
         (previousProperties['FunctionName'] as string) || (properties['FunctionName'] as string);
 
+      // physicalId may be in "functionArn|statementId" format (from CC API)
+      const oldStatementId = physicalId.includes('|') ? physicalId.split('|').pop()! : physicalId;
+
       try {
         await this.lambdaClient.send(
           new RemovePermissionCommand({
             FunctionName: oldFunctionName,
-            StatementId: physicalId,
+            StatementId: oldStatementId,
           })
         );
       } catch (error) {
         if (!(error instanceof ResourceNotFoundException)) {
           throw error;
         }
-        this.logger.debug(`Old permission ${physicalId} not found, continuing with add`);
+        this.logger.debug(`Old permission ${oldStatementId} not found, continuing with add`);
       }
 
       // Add new permission
@@ -208,11 +211,18 @@ export class LambdaPermissionProvider implements ResourceProvider {
       return;
     }
 
+    // physicalId may be in "functionArn|statementId" format (from CC API)
+    // Extract just the statementId part
+    let statementId = physicalId;
+    if (physicalId.includes('|')) {
+      statementId = physicalId.split('|').pop()!;
+    }
+
     try {
       await this.lambdaClient.send(
         new RemovePermissionCommand({
           FunctionName: functionName,
-          StatementId: physicalId,
+          StatementId: statementId,
         })
       );
       this.logger.debug(`Successfully deleted Lambda permission ${logicalId}`);
