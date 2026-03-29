@@ -80,7 +80,7 @@ export class CloudFrontDistributionProvider implements ResourceProvider {
         (properties['DistributionConfig'] as Record<string, unknown>) ?? {};
       const sdkConfig = this.convertToSdkFormat({
         ...distributionConfig,
-        CallerReference: Date.now().toString(),
+        CallerReference: `${Date.now()}-${logicalId}-${Math.random().toString(36).slice(2, 8)}`,
       });
 
       const response = await this.cloudFrontClient.send(
