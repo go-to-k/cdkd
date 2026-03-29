@@ -85,8 +85,10 @@ export class EC2Provider implements ResourceProvider {
       new Set([
         'RouteTableId',
         'DestinationCidrBlock',
+        'DestinationIpv6CidrBlock',
         'GatewayId',
         'NatGatewayId',
+        'EgressOnlyInternetGatewayId',
         'InstanceId',
         'NetworkInterfaceId',
         'VpcPeeringConnectionId',
@@ -890,30 +892,38 @@ export class EC2Provider implements ResourceProvider {
     this.logger.debug(`Creating Route ${logicalId}`);
 
     const routeTableId = properties['RouteTableId'] as string;
-    const destinationCidrBlock = properties['DestinationCidrBlock'] as string;
+    const destinationCidrBlock = properties['DestinationCidrBlock'] as string | undefined;
+    const destinationIpv6CidrBlock = properties['DestinationIpv6CidrBlock'] as string | undefined;
+    const cidr = destinationCidrBlock || destinationIpv6CidrBlock;
 
-    if (!routeTableId || !destinationCidrBlock) {
+    if (!routeTableId || !cidr) {
       throw new ProvisioningError(
-        `RouteTableId and DestinationCidrBlock are required for Route ${logicalId}`,
+        `RouteTableId and DestinationCidrBlock/DestinationIpv6CidrBlock are required for Route ${logicalId}`,
         resourceType,
         logicalId
       );
     }
 
+    const isIpv6 = !destinationCidrBlock && !!destinationIpv6CidrBlock;
+
     try {
       await this.ec2Client.send(
         new CreateRouteCommand({
           RouteTableId: routeTableId,
-          DestinationCidrBlock: destinationCidrBlock,
+          ...(isIpv6
+            ? { DestinationIpv6CidrBlock: destinationIpv6CidrBlock }
+            : { DestinationCidrBlock: destinationCidrBlock }),
           GatewayId: (properties['GatewayId'] as string) ?? undefined,
           NatGatewayId: (properties['NatGatewayId'] as string) ?? undefined,
+          EgressOnlyInternetGatewayId:
+            (properties['EgressOnlyInternetGatewayId'] as string) ?? undefined,
           InstanceId: (properties['InstanceId'] as string) ?? undefined,
           NetworkInterfaceId: (properties['NetworkInterfaceId'] as string) ?? undefined,
           VpcPeeringConnectionId: (properties['VpcPeeringConnectionId'] as string) ?? undefined,
         })
       );
 
-      const physicalId = `${routeTableId}|${destinationCidrBlock}`;
+      const physicalId = `${routeTableId}|${cidr}`;
       this.logger.debug(`Successfully created Route ${logicalId}: ${physicalId}`);
 
       return {
@@ -983,10 +993,14 @@ export class EC2Provider implements ResourceProvider {
     const [routeTableId, destinationCidrBlock] = parts;
 
     try {
+      // IPv6 CIDRs (containing ':') must use DestinationIpv6CidrBlock
+      const isIpv6 = destinationCidrBlock?.includes(':');
       await this.ec2Client.send(
         new DeleteRouteCommand({
           RouteTableId: routeTableId,
-          DestinationCidrBlock: destinationCidrBlock,
+          ...(isIpv6
+            ? { DestinationIpv6CidrBlock: destinationCidrBlock }
+            : { DestinationCidrBlock: destinationCidrBlock }),
         })
       );
       this.logger.debug(`Successfully deleted Route ${logicalId}`);
