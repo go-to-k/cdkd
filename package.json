@@ -1,0 +1,133 @@
+{
+  "name": "cdkd",
+  "version": "0.1.0",
+  "description": "CDK Direct - Deploy AWS CDK apps directly via SDK/Cloud Control API",
+  "main": "dist/index.js",
+  "bin": {
+    "cdkd": "./dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/go-to-k/cdkd.git"
+  },
+  "homepage": "https://github.com/go-to-k/cdkd",
+  "bugs": {
+    "url": "https://github.com/go-to-k/cdkd/issues"
+  },
+  "type": "module",
+  "scripts": {
+    "build": "node build.mjs",
+    "dev": "node build.mjs --watch",
+    "test": "vitest",
+    "test:ui": "vitest --ui",
+    "test:coverage": "vitest --coverage",
+    "lint": "eslint src --ext .ts",
+    "lint:fix": "eslint src --ext .ts --fix",
+    "format": "prettier --write \"src/**/*.ts\"",
+    "format:check": "prettier --check \"src/**/*.ts\"",
+    "typecheck": "tsc --noEmit",
+    "prepublishOnly": "pnpm run build"
+  },
+  "keywords": [
+    "aws",
+    "cdk",
+    "cloudformation",
+    "cloud-control",
+    "deploy",
+    "infrastructure-as-code",
+    "iac"
+  ],
+  "author": "",
+  "license": "Apache-2.0",
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "dependencies": {
+    "@aws-cdk/cdk-assets-lib": "^1.4.2",
+    "@aws-cdk/cloud-assembly-api": "^2.2.0",
+    "@aws-cdk/toolkit-lib": "^1.19.1",
+    "@aws-sdk/client-api-gateway": "^3.1017.0",
+    "@aws-sdk/client-apigatewayv2": "^3.1018.0",
+    "@aws-sdk/client-appsync": "^3.1018.0",
+    "@aws-sdk/client-bedrock-agentcore": "^3.1017.0",
+    "@aws-sdk/client-bedrock-agentcore-control": "^3.1017.0",
+    "@aws-sdk/client-cloudcontrol": "^3.0.0",
+    "@aws-sdk/client-cloudformation": "^3.1017.0",
+    "@aws-sdk/client-cloudfront": "^3.1017.0",
+    "@aws-sdk/client-cloudtrail": "^3.1019.0",
+    "@aws-sdk/client-cloudwatch": "^3.1017.0",
+    "@aws-sdk/client-cloudwatch-logs": "^3.1018.0",
+    "@aws-sdk/client-codebuild": "^3.1019.0",
+    "@aws-sdk/client-cognito-identity-provider": "^3.1017.0",
+    "@aws-sdk/client-dynamodb": "^3.1017.0",
+    "@aws-sdk/client-ec2": "^3.1016.0",
+    "@aws-sdk/client-ecr": "^3.1019.0",
+    "@aws-sdk/client-ecs": "^3.1017.0",
+    "@aws-sdk/client-efs": "^3.1018.0",
+    "@aws-sdk/client-elastic-load-balancing-v2": "^3.1017.0",
+    "@aws-sdk/client-elasticache": "^3.1018.0",
+    "@aws-sdk/client-eventbridge": "^3.1017.0",
+    "@aws-sdk/client-firehose": "^3.1018.0",
+    "@aws-sdk/client-glue": "^3.1018.0",
+    "@aws-sdk/client-iam": "^3.0.0",
+    "@aws-sdk/client-kinesis": "^3.1018.0",
+    "@aws-sdk/client-kms": "^3.1018.0",
+    "@aws-sdk/client-lambda": "^3.0.0",
+    "@aws-sdk/client-rds": "^3.1017.0",
+    "@aws-sdk/client-route-53": "^3.1017.0",
+    "@aws-sdk/client-s3": "^3.0.0",
+    "@aws-sdk/client-s3tables": "^3.1019.0",
+    "@aws-sdk/client-s3vectors": "^3.1019.0",
+    "@aws-sdk/client-secrets-manager": "^3.1017.0",
+    "@aws-sdk/client-servicediscovery": "^3.1018.0",
+    "@aws-sdk/client-sfn": "^3.1017.0",
+    "@aws-sdk/client-sns": "^3.1017.0",
+    "@aws-sdk/client-sqs": "^3.0.0",
+    "@aws-sdk/client-ssm": "^3.1017.0",
+    "@aws-sdk/client-sts": "^3.1016.0",
+    "@aws-sdk/client-wafv2": "^3.1017.0",
+    "@aws-sdk/s3-request-presigner": "^3.1016.0",
+    "commander": "^12.0.0",
+    "graphlib": "^2.1.8",
+    "p-limit": "^5.0.0"
+  },
+  "devDependencies": {
+    "@semantic-release/changelog": "^6.0.3",
+    "@semantic-release/git": "^10.0.1",
+    "@types/graphlib": "^2.1.12",
+    "@types/node": "^20.0.0",
+    "@typescript-eslint/eslint-plugin": "^7.0.0",
+    "@typescript-eslint/parser": "^7.0.0",
+    "@vitest/ui": "^1.0.0",
+    "esbuild": "^0.20.0",
+    "eslint": "^8.57.0",
+    "eslint-config-prettier": "^9.0.0",
+    "eslint-plugin-prettier": "^5.0.0",
+    "prettier": "^3.0.0",
+    "semantic-release": "^25.0.3",
+    "typescript": "^5.4.0",
+    "vitest": "^1.0.0"
+  },
+  "peerDependencies": {
+    "aws-cdk-lib": "^2.0.0",
+    "constructs": "^10.0.0"
+  },
+  "peerDependenciesMeta": {
+    "aws-cdk-lib": {
+      "optional": false
+    },
+    "constructs": {
+      "optional": false
+    }
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "esbuild"
+    ]
+  }
+}

@@ -1,0 +1,19 @@
+{
+  "name": "cdkd-example-s3-tables",
+  "version": "1.0.0",
+  "private": true,
+  "description": "S3 Tables cdkd example with S3 Table Bucket",
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc -w"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "typescript": "^5.0.0",
+    "ts-node": "^10.0.0"
+  },
+  "dependencies": {
+    "aws-cdk-lib": "^2.169.0",
+    "constructs": "^10.0.0"
+  }
+}

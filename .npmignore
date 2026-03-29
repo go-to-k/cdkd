@@ -1,0 +1,26 @@
+# Source files (dist/ contains the built output)
+src/
+tests/
+types/
+
+# Config files
+.eslintrc.json
+.prettierrc
+tsconfig.json
+tsconfig.test.json
+vitest.config.ts
+build.mjs
+
+# Git/CI
+.github/
+.git/
+
+# IDE
+.vscode/
+.idea/
+
+# Development
+*.test.ts
+*.spec.ts
+CLAUDE.md
+docs/

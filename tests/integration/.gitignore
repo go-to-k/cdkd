@@ -1,0 +1,15 @@
+# TypeScript build artifacts
+*.js
+*.d.ts
+*.js.map
+
+# Dependencies
+node_modules/
+package-lock.json
+
+# CDK output
+cdk.out/
+
+# Keep source files
+!bin/*.ts
+!lib/*.ts

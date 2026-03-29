@@ -1,0 +1,247 @@
+#!/usr/bin/env bash
+#
+# cdkd E2E Test Script
+#
+# Runs a full deploy -> diff -> update -> destroy cycle for any integration example.
+# Exits immediately on any step failure and cleans up resources on interruption.
+#
+# Usage:
+#   ./run-e2e.sh [example-dir]
+#   STATE_BUCKET=my-bucket ./run-e2e.sh [example-dir]
+#
+# Arguments:
+#   example-dir  Path to an integration example (default: tests/integration/basic)
+#
+# Environment Variables:
+#   STATE_BUCKET  (optional) S3 bucket name for cdkd state storage
+#                 Auto-resolves to cdkd-state-{accountId}-{region} if not set
+#   AWS_REGION    (optional) AWS region, default: us-east-1
+#   CDKD_PATH     (optional) Path to cdkd CLI entry point, default: ../../dist/cli.js
+#   CDKD_UPDATE_CONTEXT  (optional) Context args for UPDATE step, e.g. "-c env=staging -c flag=true"
+#
+
+set -euo pipefail
+
+# --------------------------------------------------------------------------
+# Colors and output helpers
+# --------------------------------------------------------------------------
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[0;33m'
+CYAN='\033[0;36m'
+BOLD='\033[1m'
+RESET='\033[0m'
+
+pass() { echo -e "${GREEN}✓ $*${RESET}"; }
+fail() { echo -e "${RED}✗ $*${RESET}"; }
+info() { echo -e "${CYAN}→ $*${RESET}"; }
+header() { echo -e "\n${BOLD}========== $* ==========${RESET}\n"; }
+
+# --------------------------------------------------------------------------
+# Parameters
+# --------------------------------------------------------------------------
+STATE_BUCKET="${STATE_BUCKET:-}"
+AWS_REGION="${AWS_REGION:-us-east-1}"
+CDKD_PATH="${CDKD_PATH:-../../dist/cli.js}"
+
+if [[ -z "${STATE_BUCKET}" ]]; then
+  info "STATE_BUCKET not set, auto-resolving from AWS account..."
+  ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text 2>/dev/null) || {
+    fail "STATE_BUCKET not set and could not resolve AWS account ID"
+    exit 1
+  }
+  STATE_BUCKET="cdkd-state-${ACCOUNT_ID}-${AWS_REGION}"
+  info "Using default state bucket: ${STATE_BUCKET}"
+fi
+
+# --------------------------------------------------------------------------
+# Resolve paths
+# --------------------------------------------------------------------------
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Accept optional example directory as first argument (default: basic)
+if [[ -n "${1:-}" ]]; then
+  # If absolute path, use as-is; otherwise resolve relative to script dir
+  if [[ "${1}" = /* ]]; then
+    EXAMPLE_DIR="${1}"
+  else
+    EXAMPLE_DIR="$(cd "${SCRIPT_DIR}" && cd "${1}" 2>/dev/null && pwd)" || EXAMPLE_DIR="${SCRIPT_DIR}/${1}"
+  fi
+else
+  EXAMPLE_DIR="${SCRIPT_DIR}/../integration/basic"
+fi
+
+# Normalize path
+EXAMPLE_DIR="$(cd "${EXAMPLE_DIR}" 2>/dev/null && pwd)" || true
+EXAMPLE_NAME="$(basename "${EXAMPLE_DIR}")"
+
+CDKD_BIN="$(cd "${SCRIPT_DIR}" && node -e "const p = require('path'); console.log(p.resolve('${CDKD_PATH}'))")"
+
+if [[ ! -d "${EXAMPLE_DIR}" ]]; then
+  fail "Example directory not found: ${EXAMPLE_DIR}"
+  exit 1
+fi
+
+if [[ ! -f "${CDKD_BIN}" ]]; then
+  fail "cdkd CLI not found at: ${CDKD_BIN}"
+  echo "  Hint: Run 'pnpm run build' in the project root first."
+  exit 1
+fi
+
+# --------------------------------------------------------------------------
+# Common cdkd arguments
+# --------------------------------------------------------------------------
+APP_CMD="npx ts-node --prefer-ts-exts bin/app.ts"
+CDKD_COMMON_ARGS=(
+  --app "${APP_CMD}"
+  --state-bucket "${STATE_BUCKET}"
+  --region "${AWS_REGION}"
+)
+
+run_cdkd() {
+  # Run cdkd from the example directory
+  (cd "${EXAMPLE_DIR}" && node "${CDKD_BIN}" "$@")
+}
+
+# --------------------------------------------------------------------------
+# Timer helpers
+# --------------------------------------------------------------------------
+START_TIME="${EPOCHSECONDS:-$(date +%s)}"
+
+elapsed() {
+  local now="${EPOCHSECONDS:-$(date +%s)}"
+  local diff=$(( now - START_TIME ))
+  local mins=$(( diff / 60 ))
+  local secs=$(( diff % 60 ))
+  printf '%dm%02ds' "${mins}" "${secs}"
+}
+
+# --------------------------------------------------------------------------
+# Cleanup trap – always attempt destroy on interruption
+# --------------------------------------------------------------------------
+CLEANUP_NEEDED=false
+
+cleanup() {
+  if [[ "${CLEANUP_NEEDED}" == "true" ]]; then
+    echo ""
+    echo -e "${YELLOW}Interrupted – running cleanup destroy...${RESET}"
+    run_cdkd destroy "${CDKD_COMMON_ARGS[@]}" --all --force --verbose 2>&1 || true
+    echo -e "${YELLOW}Cleanup complete.${RESET}"
+  fi
+  echo ""
+  echo -e "${BOLD}Total time: $(elapsed)${RESET}"
+}
+
+trap cleanup EXIT
+trap 'exit 130' INT TERM
+
+# --------------------------------------------------------------------------
+# Pre-flight: install dependencies if needed
+# --------------------------------------------------------------------------
+header "Pre-flight checks [${EXAMPLE_NAME}]"
+
+info "cdkd binary: ${CDKD_BIN}"
+info "Example dir:  ${EXAMPLE_DIR}"
+info "Example name: ${EXAMPLE_NAME}"
+info "State bucket: ${STATE_BUCKET}"
+info "AWS region:   ${AWS_REGION}"
+
+if [[ ! -d "${EXAMPLE_DIR}/node_modules" ]]; then
+  info "Installing dependencies for ${EXAMPLE_NAME} example..."
+  (cd "${EXAMPLE_DIR}" && npm install --silent)
+  pass "Dependencies installed"
+else
+  pass "Dependencies already installed"
+fi
+
+STEP=0
+TOTAL_STEPS=5
+
+step_header() {
+  STEP=$(( STEP + 1 ))
+  header "Step ${STEP}/${TOTAL_STEPS}: $* [${EXAMPLE_NAME}]"
+}
+
+# --------------------------------------------------------------------------
+# Step 1: Initial deploy (CREATE)
+# --------------------------------------------------------------------------
+step_header "Deploy (CREATE)"
+
+info "Running: cdkd deploy"
+CLEANUP_NEEDED=true
+
+run_cdkd deploy "${CDKD_COMMON_ARGS[@]}" --all --verbose
+pass "Initial deploy succeeded [$(elapsed)]"
+
+# --------------------------------------------------------------------------
+# Step 2: Diff after create (expect no changes)
+# --------------------------------------------------------------------------
+step_header "Diff after CREATE (expect no changes)"
+
+info "Running: cdkd diff"
+DIFF_OUTPUT=$(run_cdkd diff "${CDKD_COMMON_ARGS[@]}" --all 2>&1) || true
+
+if echo "${DIFF_OUTPUT}" | grep -qE "No changes detected|0 to create, 0 to update, 0 to delete"; then
+  pass "Diff shows no changes as expected [$(elapsed)]"
+else
+  echo "${DIFF_OUTPUT}"
+  fail "Diff unexpectedly shows changes after clean deploy"
+  exit 1
+fi
+
+# --------------------------------------------------------------------------
+# Step 3: Update deploy
+# --------------------------------------------------------------------------
+# Build update args: use CDKD_UPDATE_CONTEXT if set, otherwise CDKD_TEST_UPDATE=true
+UPDATE_EXTRA_ARGS=()
+if [[ -n "${CDKD_UPDATE_CONTEXT:-}" ]]; then
+  # shellcheck disable=SC2086
+  read -ra UPDATE_EXTRA_ARGS <<< ${CDKD_UPDATE_CONTEXT}
+  step_header "Deploy (UPDATE with context: ${CDKD_UPDATE_CONTEXT})"
+  info "Running: cdkd deploy ${CDKD_UPDATE_CONTEXT}"
+  run_cdkd deploy "${CDKD_COMMON_ARGS[@]}" --all "${UPDATE_EXTRA_ARGS[@]}" --verbose
+else
+  step_header "Deploy (UPDATE with CDKD_TEST_UPDATE=true)"
+  info "Running: CDKD_TEST_UPDATE=true cdkd deploy"
+  CDKD_TEST_UPDATE=true run_cdkd deploy "${CDKD_COMMON_ARGS[@]}" --all --verbose
+fi
+pass "Update deploy succeeded [$(elapsed)]"
+
+# --------------------------------------------------------------------------
+# Step 4: Diff after update (expect no changes)
+# --------------------------------------------------------------------------
+step_header "Diff after UPDATE (expect no changes)"
+
+if [[ ${#UPDATE_EXTRA_ARGS[@]} -gt 0 ]]; then
+  info "Running: cdkd diff ${CDKD_UPDATE_CONTEXT}"
+  DIFF_OUTPUT=$(run_cdkd diff "${CDKD_COMMON_ARGS[@]}" --all "${UPDATE_EXTRA_ARGS[@]}" 2>&1) || true
+else
+  info "Running: CDKD_TEST_UPDATE=true cdkd diff"
+  DIFF_OUTPUT=$(CDKD_TEST_UPDATE=true run_cdkd diff "${CDKD_COMMON_ARGS[@]}" --all 2>&1) || true
+fi
+
+if echo "${DIFF_OUTPUT}" | grep -qE "No changes detected|0 to create, 0 to update, 0 to delete"; then
+  pass "Diff shows no changes as expected [$(elapsed)]"
+else
+  echo "${DIFF_OUTPUT}"
+  fail "Diff unexpectedly shows changes after update deploy"
+  exit 1
+fi
+
+# --------------------------------------------------------------------------
+# Step 5: Destroy
+# --------------------------------------------------------------------------
+step_header "Destroy"
+
+info "Running: cdkd destroy --force"
+run_cdkd destroy "${CDKD_COMMON_ARGS[@]}" --all --force --verbose
+pass "Destroy succeeded [$(elapsed)]"
+
+CLEANUP_NEEDED=false
+
+# --------------------------------------------------------------------------
+# Summary
+# --------------------------------------------------------------------------
+header "E2E Test Complete [${EXAMPLE_NAME}]"
+pass "All ${TOTAL_STEPS} steps passed successfully!"
+echo -e "${BOLD}Total time: $(elapsed)${RESET}"
