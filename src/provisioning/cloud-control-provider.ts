@@ -16,8 +16,6 @@ import { getAwsClients } from '../utils/aws-clients.js';
 import { getLogger } from '../utils/logger.js';
 import { ProvisioningError } from '../utils/error-handler.js';
 import { JsonPatchGenerator } from './json-patch-generator.js';
-import { mapAttributes, hasAttributeMapping } from './attribute-mapper.js';
-import { getReadOnlyProperties } from './schema-cache.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -459,45 +457,17 @@ export class CloudControlProvider implements ResourceProvider {
   /**
    * Enrich resource attributes with computed values
    *
-   * Some resource types don't return all attributes via Cloud Control API.
-   * This method adds computed attributes based on resource type and physical ID.
-   *
-   * Phase A: Static attribute mapper (mapAttributes)
-   * Phase B: Schema-based automatic discovery via CloudFormation Registry
+   * CC API GetResource returns property names that match CloudFormation
+   * Fn::GetAtt attribute names, so all properties are passed through as-is.
+   * This method adds fallback attributes for edge cases where CC API
+   * may not return certain values.
    */
   private async enrichResourceAttributes(
     resourceType: string,
     physicalId: string,
     attributes: Record<string, unknown>
   ): Promise<Record<string, unknown>> {
-    // Phase A: Map CC API property names to GetAtt-compatible attribute names
-    const enriched = {
-      ...mapAttributes(resourceType, attributes),
-    };
-
-    // Phase B: Schema-based automatic attribute discovery
-    // For resource types with a static mapping, check if readOnly properties
-    // from the schema are present in the CC API response but weren't mapped.
-    // For resource types without a static mapping, mapAttributes already
-    // passes through all properties, so schema discovery adds no value.
-    if (hasAttributeMapping(resourceType)) {
-      try {
-        const readOnlyProps = await getReadOnlyProperties(resourceType);
-        for (const propName of readOnlyProps) {
-          // Only add if not already present in enriched attributes
-          // and the property exists in the raw CC API response
-          if (!(propName in enriched) && propName in attributes) {
-            enriched[propName] = attributes[propName];
-            this.logger.debug(`Schema discovery: added attribute ${propName} for ${resourceType}`);
-          }
-        }
-      } catch (error) {
-        // Schema discovery is best-effort; don't fail the operation
-        this.logger.debug(
-          `Schema discovery failed for ${resourceType}: ${error instanceof Error ? error.message : String(error)}`
-        );
-      }
-    }
+    const enriched: Record<string, unknown> = { ...attributes };
 
     // Fallback: compute attributes that CC API may not return
     switch (resourceType) {
@@ -509,8 +479,8 @@ export class CloudControlProvider implements ResourceProvider {
         break;
 
       case 'AWS::DynamoDB::Table':
-        // CC API GetResource doesn't include StreamArn in the ResourceModel.
-        // Call DescribeTable to retrieve LatestStreamArn when streams are enabled.
+        // Fallback: CC API GetResource may not include StreamArn when streams are enabled.
+        // Call DescribeTable to retrieve LatestStreamArn if not already present.
         if (!enriched['StreamArn']) {
           try {
             const dynamoDBClient = getAwsClients().dynamoDB;
@@ -534,8 +504,8 @@ export class CloudControlProvider implements ResourceProvider {
         break;
 
       case 'AWS::ApiGateway::RestApi':
-        // CC API ResourceModel may not include RootResourceId.
-        // Use the API Gateway SDK to retrieve it.
+        // Fallback: ensure RootResourceId is present.
+        // CC API GetResource typically returns it, but retrieve via SDK if missing.
         if (!enriched['RootResourceId']) {
           try {
             const apiGatewayClient = getAwsClients().apiGateway;
@@ -562,8 +532,8 @@ export class CloudControlProvider implements ResourceProvider {
         break;
 
       case 'AWS::CloudFront::CloudFrontOriginAccessIdentity':
-        // CC API response doesn't include S3CanonicalUserId.
-        // Call CloudFront SDK to retrieve it for Fn::GetAtt resolution.
+        // Fallback: ensure S3CanonicalUserId is present.
+        // CC API GetResource typically returns it, but retrieve via SDK if missing.
         if (!enriched['S3CanonicalUserId']) {
           try {
             const cloudFrontClient = getAwsClients().cloudFront;
