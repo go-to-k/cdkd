@@ -300,7 +300,7 @@ See [docs/provider-development.md](docs/provider-development.md) for details.
 - ✅ CC API polling with exponential backoff (1s→2s→4s→8s→10s)
 - ✅ Compact output mode (default clean output, `--verbose` for full details)
 - ✅ `--state-bucket` auto-resolves from STS account ID: `cdkd-state-{accountId}-{region}`
-- ✅ Attribute mapper: CC API property names mapped to GetAtt attribute names
+- ✅ CC API GetResource returns GetAtt-compatible attribute names (no mapping needed)
 - ✅ Unit tests, integration examples, E2E test script
 - ✅ DeletionPolicy: Retain support (skip deletion for retained resources)
 - ✅ Resource replacement for immutable property changes (CREATE→DELETE)
@@ -320,7 +320,7 @@ See [docs/provider-development.md](docs/provider-development.md) for details.
 - ✅ CDK Provider framework: isCompleteHandler/onEventHandler async pattern detection, max 1hr polling, pre-signed URL 2hr
 - ✅ Lambda FunctionUrl attribute enrichment (GetFunctionUrlConfig API)
 - ✅ CloudFront + Lambda Function URL integration test (6/6 CREATE+DESTROY)
-- ✅ Phase C (CFn Registry Schema) completed: auto-discovery of CC API property-to-GetAtt mappings
+- ✅ Removed attribute-mapper and schema-cache (CC API returns GetAtt-compatible names directly)
 
 ## Dependencies
 
