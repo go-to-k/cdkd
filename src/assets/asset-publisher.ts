@@ -66,8 +66,7 @@ export class AssetPublisher {
       // Count assets
       const fileAssets = Object.entries(manifest.files || {}).filter(
         ([, asset]) =>
-          !asset.source.path.endsWith('.json') &&
-          !asset.source.path.endsWith('.template.json')
+          !asset.source.path.endsWith('.json') && !asset.source.path.endsWith('.template.json')
       );
       const dockerAssets = Object.entries(manifest.dockerImages || {});
       const totalAssets = fileAssets.length + dockerAssets.length;
@@ -77,7 +76,9 @@ export class AssetPublisher {
         return;
       }
 
-      this.logger.debug(`Assets to publish: ${fileAssets.length} files, ${dockerAssets.length} docker images`);
+      this.logger.debug(
+        `Assets to publish: ${fileAssets.length} files, ${dockerAssets.length} docker images`
+      );
 
       // Publish file assets
       for (const [hash, asset] of fileAssets) {

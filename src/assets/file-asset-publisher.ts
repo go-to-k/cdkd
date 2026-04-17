@@ -1,10 +1,6 @@
 import { createReadStream, statSync } from 'node:fs';
 import { join, basename } from 'node:path';
-import {
-  S3Client,
-  HeadObjectCommand,
-  PutObjectCommand,
-} from '@aws-sdk/client-s3';
+import { S3Client, HeadObjectCommand, PutObjectCommand } from '@aws-sdk/client-s3';
 import type { FileAsset } from '../types/assets.js';
 import { getLogger } from '../utils/logger.js';
 
@@ -82,11 +78,7 @@ export class FileAssetPublisher {
   /**
    * Check if an S3 object exists
    */
-  private async objectExists(
-    client: S3Client,
-    bucket: string,
-    key: string
-  ): Promise<boolean> {
+  private async objectExists(client: S3Client, bucket: string, key: string): Promise<boolean> {
     try {
       await client.send(new HeadObjectCommand({ Bucket: bucket, Key: key }));
       return true;

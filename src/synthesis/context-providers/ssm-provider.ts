@@ -28,9 +28,7 @@ export class SSMContextProvider implements ContextProvider {
     });
 
     try {
-      const response = await client.send(
-        new GetParameterCommand({ Name: parameterName })
-      );
+      const response = await client.send(new GetParameterCommand({ Name: parameterName }));
 
       if (!response.Parameter || response.Parameter.Value === undefined) {
         // Check if we should suppress this error

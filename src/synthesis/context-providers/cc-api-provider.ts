@@ -66,7 +66,9 @@ export class CcApiContextProvider implements ContextProvider {
           this.logger.debug(`No resources found, returning dummy value`);
           return dummyValue;
         }
-        throw new Error(`No ${typeName} resource found${exactIdentifier ? ` with identifier ${exactIdentifier}` : ''}`);
+        throw new Error(
+          `No ${typeName} resource found${exactIdentifier ? ` with identifier ${exactIdentifier}` : ''}`
+        );
       }
 
       // Extract requested properties
@@ -186,23 +188,17 @@ export class CcApiContextProvider implements ContextProvider {
     switch (expectedMatchCount) {
       case 'exactly-one':
         if (count !== 1) {
-          throw new Error(
-            `Expected exactly one ${typeName}${context}, found ${count}`
-          );
+          throw new Error(`Expected exactly one ${typeName}${context}, found ${count}`);
         }
         break;
       case 'at-least-one':
         if (count < 1) {
-          throw new Error(
-            `Expected at least one ${typeName}${context}, found none`
-          );
+          throw new Error(`Expected at least one ${typeName}${context}, found none`);
         }
         break;
       case 'at-most-one':
         if (count > 1) {
-          throw new Error(
-            `Expected at most one ${typeName}${context}, found ${count}`
-          );
+          throw new Error(`Expected at most one ${typeName}${context}, found ${count}`);
         }
         break;
       case 'any':

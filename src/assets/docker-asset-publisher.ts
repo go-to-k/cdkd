@@ -145,20 +145,14 @@ export class DockerAssetPublisher {
       });
     } catch (error) {
       const err = error as { stderr?: string; message?: string };
-      throw new AssetError(
-        `Docker build failed: ${err.stderr || err.message || String(error)}`
-      );
+      throw new AssetError(`Docker build failed: ${err.stderr || err.message || String(error)}`);
     }
   }
 
   /**
    * Authenticate with ECR
    */
-  private async ecrLogin(
-    client: ECRClient,
-    accountId: string,
-    region: string
-  ): Promise<void> {
+  private async ecrLogin(client: ECRClient, accountId: string, region: string): Promise<void> {
     const response = await client.send(new GetAuthorizationTokenCommand({}));
     const authData = response.authorizationData?.[0];
 
@@ -168,22 +162,20 @@ export class DockerAssetPublisher {
 
     const token = Buffer.from(authData.authorizationToken, 'base64').toString();
     const [username, password] = token.split(':');
-    const endpoint = authData.proxyEndpoint || `https://${accountId}.dkr.ecr.${region}.amazonaws.com`;
+    const endpoint =
+      authData.proxyEndpoint || `https://${accountId}.dkr.ecr.${region}.amazonaws.com`;
 
     try {
-      await execFileAsync('docker', [
-        'login',
-        '--username', username!,
-        '--password-stdin',
-        endpoint,
-      ], {
-        input: password,
-      } as Parameters<typeof execFileAsync>[2]);
+      await execFileAsync(
+        'docker',
+        ['login', '--username', username!, '--password-stdin', endpoint],
+        {
+          input: password,
+        } as Parameters<typeof execFileAsync>[2]
+      );
     } catch (error) {
       const err = error as { stderr?: string; message?: string };
-      throw new AssetError(
-        `ECR login failed: ${err.stderr || err.message || String(error)}`
-      );
+      throw new AssetError(`ECR login failed: ${err.stderr || err.message || String(error)}`);
     }
   }
 
@@ -205,9 +197,7 @@ export class DockerAssetPublisher {
       });
     } catch (error) {
       const err = error as { stderr?: string; message?: string };
-      throw new AssetError(
-        `Docker push failed: ${err.stderr || err.message || String(error)}`
-      );
+      throw new AssetError(`Docker push failed: ${err.stderr || err.message || String(error)}`);
     }
   }
 

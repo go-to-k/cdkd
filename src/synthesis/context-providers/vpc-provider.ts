@@ -43,9 +43,7 @@ export class VpcContextProvider implements ContextProvider {
           }))
         : [];
 
-      const vpcsResponse = await client.send(
-        new DescribeVpcsCommand({ Filters: vpcFilters })
-      );
+      const vpcsResponse = await client.send(new DescribeVpcsCommand({ Filters: vpcFilters }));
 
       const vpcs = vpcsResponse.Vpcs ?? [];
       if (vpcs.length === 0) {
@@ -54,7 +52,7 @@ export class VpcContextProvider implements ContextProvider {
       if (vpcs.length > 1) {
         throw new Error(
           `Multiple VPCs found matching filter: ${JSON.stringify(filter)}. ` +
-          `Found: ${vpcs.map((v) => v.VpcId).join(', ')}`
+            `Found: ${vpcs.map((v) => v.VpcId).join(', ')}`
         );
       }
 
@@ -174,7 +172,10 @@ export class VpcContextProvider implements ContextProvider {
     subnets: Subnet[],
     subnetRouteTableMap: Map<string, string>,
     mainRouteTableId: string | undefined,
-    routeTables: { routeTableId: string; routes: { gatewayId?: string | undefined; natGatewayId?: string | undefined }[] }[],
+    routeTables: {
+      routeTableId: string;
+      routes: { gatewayId?: string | undefined; natGatewayId?: string | undefined }[];
+    }[],
     subnetGroupNameTag: string
   ): SubnetInfo[] {
     // Build route table → has IGW/NAT mapping
@@ -251,11 +252,13 @@ export class VpcContextProvider implements ContextProvider {
     return Array.from(groups.entries()).map(([, groupSubnets]) => ({
       name: groupSubnets[0]!.name,
       type: groupSubnets[0]!.type,
-      subnets: groupSubnets.sort((a, b) => a.az.localeCompare(b.az)).map((s) => ({
-        subnetId: s.subnetId,
-        availabilityZone: s.az,
-        routeTableId: s.routeTableId,
-      })),
+      subnets: groupSubnets
+        .sort((a, b) => a.az.localeCompare(b.az))
+        .map((s) => ({
+          subnetId: s.subnetId,
+          availabilityZone: s.az,
+          routeTableId: s.routeTableId,
+        })),
     }));
   }
 }

@@ -98,6 +98,7 @@ export class Synthesizer {
       ...(options.profile && { profile: options.profile }),
     });
 
+    // eslint-disable-next-line no-constant-condition
     while (true) {
       // Load cdk.context.json (re-read each iteration — providers may have updated it)
       const cdkContextJson = this.contextStore.load();
@@ -139,8 +140,8 @@ export class Synthesizer {
       if (previousMissingKeys && setsEqual(missingKeys, previousMissingKeys)) {
         throw new SynthesisError(
           'Context resolution made no progress. ' +
-          `Missing context keys: ${[...missingKeys].join(', ')}. ` +
-          'Ensure cdk.context.json is correctly configured or required AWS permissions are granted.'
+            `Missing context keys: ${[...missingKeys].join(', ')}. ` +
+            'Ensure cdk.context.json is correctly configured or required AWS permissions are granted.'
         );
       }
       previousMissingKeys = missingKeys;

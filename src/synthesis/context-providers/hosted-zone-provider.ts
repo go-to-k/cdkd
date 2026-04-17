@@ -57,9 +57,7 @@ export class HostedZoneContextProvider implements ContextProvider {
       if (vpcId && filtered.length > 0) {
         const vpcFiltered = [];
         for (const zone of filtered) {
-          const zoneDetail = await client.send(
-            new GetHostedZoneCommand({ Id: zone.Id })
-          );
+          const zoneDetail = await client.send(new GetHostedZoneCommand({ Id: zone.Id }));
           const zoneVpcs = zoneDetail.VPCs ?? [];
           if (zoneVpcs.some((v) => v.VPCId === vpcId)) {
             vpcFiltered.push(zone);
@@ -71,15 +69,15 @@ export class HostedZoneContextProvider implements ContextProvider {
       if (filtered.length === 0) {
         throw new Error(
           `No hosted zone found for domain: ${domainName}` +
-          (privateZone !== undefined ? ` (private: ${privateZone})` : '') +
-          (vpcId ? ` (vpcId: ${vpcId})` : '')
+            (privateZone !== undefined ? ` (private: ${privateZone})` : '') +
+            (vpcId ? ` (vpcId: ${vpcId})` : '')
         );
       }
 
       if (filtered.length > 1) {
         throw new Error(
           `Multiple hosted zones found for domain: ${domainName}. ` +
-          `Found: ${filtered.map((z) => z.Id).join(', ')}`
+            `Found: ${filtered.map((z) => z.Id).join(', ')}`
         );
       }
 

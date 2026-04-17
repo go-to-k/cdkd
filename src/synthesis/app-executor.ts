@@ -146,12 +146,7 @@ export class AppExecutor {
       });
 
       proc.on('error', (error) => {
-        reject(
-          new SynthesisError(
-            `Failed to execute CDK app: ${error.message}`,
-            error
-          )
-        );
+        reject(new SynthesisError(`Failed to execute CDK app: ${error.message}`, error));
       });
 
       proc.on('close', (code) => {

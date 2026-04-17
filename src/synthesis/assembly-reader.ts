@@ -113,7 +113,11 @@ export class AssemblyReader {
   /**
    * Get template for a specific stack
    */
-  getTemplate(assemblyDir: string, manifest: AssemblyManifest, stackName: string): CloudFormationTemplate {
+  getTemplate(
+    assemblyDir: string,
+    manifest: AssemblyManifest,
+    stackName: string
+  ): CloudFormationTemplate {
     return this.getStack(assemblyDir, manifest, stackName).template;
   }
 
@@ -171,7 +175,9 @@ export class AssemblyReader {
       );
     }
 
-    this.logger.debug(`Stack: ${stackName}, Resources: ${Object.keys(template.Resources ?? {}).length}`);
+    this.logger.debug(
+      `Stack: ${stackName}, Resources: ${Object.keys(template.Resources ?? {}).length}`
+    );
 
     // Find asset manifest for this stack
     let assetManifestPath: string | undefined;

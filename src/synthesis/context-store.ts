@@ -31,7 +31,9 @@ export class ContextStore {
     try {
       const content = readFileSync(filePath, 'utf-8');
       const context = JSON.parse(content) as Record<string, unknown>;
-      this.logger.debug(`Loaded ${Object.keys(context).length} context value(s) from cdk.context.json`);
+      this.logger.debug(
+        `Loaded ${Object.keys(context).length} context value(s) from cdk.context.json`
+      );
       return context;
     } catch (error) {
       this.logger.warn(
