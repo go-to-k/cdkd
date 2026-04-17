@@ -88,20 +88,25 @@ AWS CDK is great for defining infrastructure as code, but all deployments go thr
        └── Re-execute CDK app with updated context
 
 3. Asset Publishing (self-implemented, no cdk-assets dependency)
-   ├── File assets → S3 (ZIP packaging if needed, skip if exists)
-   └── Docker images → ECR (docker build + tag + push, skip if exists)
+   ├── Publish all stacks' assets sequentially before any deployment
+   ├── File assets → S3 (ZIP packaging if needed, skip if already exists via HeadObject)
+   ├── Docker images → ECR (docker build + tag + push, skip if already exists via DescribeImages)
+   └── Shared assets across stacks: uploaded once, skipped on subsequent stacks
 
 4. Deployment (per stack, parallelized by dependency order)
-   ├── Acquire S3 lock (optimistic locking)
-   ├── Load current state from S3
-   ├── Build DAG from template (Ref/Fn::GetAtt/DependsOn)
-   ├── Calculate diff (CREATE/UPDATE/DELETE)
-   ├── Resolve intrinsic functions (Ref, Fn::Sub, Fn::Join, etc.)
-   ├── Execute by levels (parallel within each level):
-   │   ├── SDK Providers (direct API calls, preferred)
-   │   └── Cloud Control API (fallback, async polling)
-   ├── Save state after each level (partial state save)
-   └── Release lock
+   ├── Independent stacks deploy in parallel, dependent stacks wait
+   ├── Per-stack flow:
+   │   ├── Acquire S3 lock (optimistic locking)
+   │   ├── Load current state from S3
+   │   ├── Build DAG from template (Ref/Fn::GetAtt/DependsOn)
+   │   ├── Calculate diff (CREATE/UPDATE/DELETE)
+   │   ├── Resolve intrinsic functions (Ref, Fn::Sub, Fn::Join, etc.)
+   │   ├── Execute by levels (parallel within each level):
+   │   │   ├── SDK Providers (direct API calls, preferred)
+   │   │   └── Cloud Control API (fallback, async polling)
+   │   ├── Save state after each level (partial state save)
+   │   └── Release lock
+   └── synth does NOT publish assets or deploy (deploy only)
 ```
 
 ## Features
