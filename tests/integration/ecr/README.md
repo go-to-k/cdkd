@@ -13,7 +13,7 @@ This stack includes the following resources:
 ## Features Tested in cdkd
 
 1. **Docker Image Asset Publishing**: Docker image from `docker/` directory is built and pushed to ECR
-2. **ECR Integration**: Image asset is published to an ECR repository via `cdk-assets-lib`
+2. **ECR Integration**: Image asset is published to an ECR repository via cdkd's self-implemented Docker asset publisher
 3. **DockerImageFunction**: Lambda function configured with a container image URI
 4. **IAM Role Creation**: Automatic execution role for the Lambda function
 5. **Fn::GetAtt**: Retrieve Lambda function name and ARN in outputs
