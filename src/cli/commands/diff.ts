@@ -10,7 +10,6 @@ import {
 import { getLogger } from '../../utils/logger.js';
 import { withErrorHandling } from '../../utils/error-handler.js';
 import { Synthesizer } from '../../synthesis/synthesizer.js';
-import { AssemblyLoader } from '../../synthesis/assembly-loader.js';
 import { S3StateBackend } from '../../state/s3-state-backend.js';
 import { DiffCalculator } from '../../analyzer/diff-calculator.js';
 import { setAwsClients, AwsClients } from '../../utils/aws-clients.js';
@@ -97,24 +96,20 @@ async function diffCommand(
   });
   setAwsClients(awsClients);
 
-  let disposeAssembly: (() => Promise<void>) | undefined;
   try {
     // 1. Synthesize CDK app
     logger.info('Synthesizing CDK app...');
     const synthesizer = new Synthesizer();
     const context = parseContextOptions(options.context);
-    const { cloudAssembly: assembly, dispose } = await synthesizer.synthesize({
+    const result = await synthesizer.synthesize({
       app: options.app,
       output: options.output,
       ...(options.region && { region: options.region }),
       ...(options.profile && { profile: options.profile }),
       ...(Object.keys(context).length > 0 && { context }),
     });
-    disposeAssembly = dispose;
 
-    // 2. Load CloudAssembly and get stacks
-    const assemblyLoader = new AssemblyLoader();
-    const allStacks = assemblyLoader.getAllStacks(assembly);
+    const { stacks: allStacks } = result;
     logger.info(`Found ${allStacks.length} stack(s) in assembly`);
 
     // Determine target stacks: positional args > --stack > --all > auto (single stack)
@@ -160,7 +155,7 @@ async function diffCommand(
     for (const stackInfo of targetStacks) {
       logger.info(`\nCalculating diff for stack: ${stackInfo.stackName}`);
 
-      const template = assemblyLoader.getTemplate(assembly, stackInfo.stackName);
+      const template = stackInfo.template;
 
       // Load current state
       let currentState;
@@ -213,7 +208,6 @@ async function diffCommand(
             if (change.propertyChanges && change.propertyChanges.length > 0) {
               for (const propChange of change.propertyChanges) {
                 // Skip false-positive diffs caused by intrinsic functions
-                // State stores resolved values, template has unresolved intrinsics
                 if (containsIntrinsicFunction(propChange.newValue)) {
                   continue;
                 }
@@ -239,9 +233,6 @@ async function diffCommand(
       logger.info(`\n${createCount} to create, ${updateCount} to update, ${deleteCount} to delete`);
     }
   } finally {
-    if (disposeAssembly) {
-      await disposeAssembly();
-    }
     awsClients.destroy();
   }
 }

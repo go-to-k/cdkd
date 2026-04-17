@@ -35,7 +35,7 @@ AWS CDK is great for defining infrastructure as code, but all deployments go thr
          │
          ▼
 ┌─────────────────┐
-│ toolkit-lib     │  Synthesis + Context Resolution
+│ cdkd Synthesis  │  Subprocess + Cloud Assembly parser
 └────────┬────────┘
          │
          ▼
@@ -70,7 +70,7 @@ cdkd uses a hybrid provisioning strategy: hand-written **SDK Providers** call AW
 - **Hybrid deployment strategy**: SDK Providers preferred for performance, Cloud Control API as fallback
 - **S3-based state management**: No DynamoDB required, uses S3 conditional writes for locking
 - **DAG-based parallelization**: Analyze `Ref`/`Fn::GetAtt` dependencies and execute in parallel
-- **Asset handling**: Leverages `@aws-cdk/cdk-assets-lib` for Lambda packages, Docker images, etc.
+- **Asset handling**: Self-implemented asset publisher for Lambda packages (S3 with ZIP packaging) and Docker images (ECR)
 
 > **Note**: Resource types not covered by either SDK Providers or Cloud Control API cannot be deployed with cdkd. If you encounter an unsupported resource type, deployment will fail with a clear error message.
 
@@ -219,7 +219,7 @@ cdkd uses a hybrid provisioning strategy: hand-written **SDK Providers** call AW
 | Dynamic References | ✅ | `{{resolve:secretsmanager:...}}`, `{{resolve:ssm:...}}` |
 | DELETE idempotency | ✅ | Not-found errors treated as success |
 | Asset publishing (S3) | ✅ | Lambda code packages |
-| Asset publishing (ECR) | ✅ | Via `@aws-cdk/cdk-assets-lib` |
+| Asset publishing (ECR) | ✅ | Self-implemented Docker image publishing |
 | Custom Resources (SNS-backed) | ✅ | SNS Topic ServiceToken + S3 response |
 | Custom Resources (CDK Provider) | ✅ | isCompleteHandler/onEventHandler async pattern detection |
 | Rollback | ✅ | --no-rollback flag to skip |
@@ -372,8 +372,8 @@ Resources without dependencies (ServiceRole and Table) are created in parallel.
 
 Built on modern AWS tooling:
 
-- **[@aws-cdk/toolkit-lib](https://docs.aws.amazon.com/cdk/api/toolkit-lib/)** - CDK synthesis (GA since Feb 2025)
-- **[@aws-cdk/cdk-assets-lib](https://www.npmjs.com/package/@aws-cdk/cdk-assets-lib)** - Asset publishing
+- **Self-implemented synthesis** - Subprocess execution of CDK app + Cloud Assembly (manifest.json) direct parsing + context provider loop (missing context → SDK lookup → re-synthesize)
+- **Self-implemented asset publisher** - S3 file upload with ZIP packaging (via `archiver`) and ECR Docker image publishing
 - **AWS SDK v3** - Direct resource provisioning
 - **Cloud Control API** - Fallback resource management for types without SDK Providers
 - **S3 Conditional Writes** - State locking via `If-None-Match`/`If-Match`

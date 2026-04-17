@@ -47,8 +47,10 @@ export {
 export { AwsClients, getAwsClients, setAwsClients, resetAwsClients } from './utils/aws-clients.js';
 
 // Synthesis
-export { Synthesizer, type SynthesisOptions } from './synthesis/synthesizer.js';
-export { AssemblyLoader, type StackInfo } from './synthesis/assembly-loader.js';
+export { Synthesizer, type SynthesisOptions, type SynthesisResult } from './synthesis/synthesizer.js';
+export { AssemblyReader, type StackInfo } from './synthesis/assembly-reader.js';
+// Backward compatibility alias
+export { AssemblyLoader } from './synthesis/assembly-loader.js';
 
 // Assets
 export { AssetPublisher, type AssetPublisherOptions } from './assets/asset-publisher.js';

@@ -5,7 +5,7 @@ import { appOptions, commonOptions, contextOptions, parseContextOptions } from '
 import { getLogger } from '../../utils/logger.js';
 import { withErrorHandling } from '../../utils/error-handler.js';
 import { Synthesizer, type SynthesisOptions } from '../../synthesis/synthesizer.js';
-import { AssemblyLoader } from '../../synthesis/assembly-loader.js';
+import { AssemblyReader } from '../../synthesis/assembly-reader.js';
 import { resolveApp } from '../config-loader.js';
 
 /**
@@ -40,53 +40,46 @@ async function synthCommand(options: {
 
   // Create synthesizer
   const synthesizer = new Synthesizer();
-  const assemblyLoader = new AssemblyLoader();
+  const assemblyReader = new AssemblyReader();
 
   // Synthesize CDK app
   const context = parseContextOptions(options.context);
   const synthOptions: SynthesisOptions = {
     app: options.app,
     output: options.output,
-    validateStacks: true,
     ...(options.region && { region: options.region }),
     ...(options.profile && { profile: options.profile }),
     ...(Object.keys(context).length > 0 && { context }),
   };
 
-  const { cloudAssembly: assembly, dispose } = await synthesizer.synthesize(synthOptions);
+  const result = await synthesizer.synthesize(synthOptions);
+  const { stacks, assemblyDir } = result;
 
-  try {
-    // Get all stacks
-    const stacks = assemblyLoader.getAllStacks(assembly);
-
-    // Print YAML template to stdout (like CDK CLI) for single stack
-    if (stacks.length === 1) {
-      const template = stacks[0]!.template;
-      process.stdout.write(toYaml(template));
-    }
-
-    logger.info(`\n✅ Synthesis complete! Found ${stacks.length} stack(s):`);
-
-    for (const stack of stacks) {
-      const resourceCount = Object.keys(stack.template.Resources ?? {}).length;
-      const outputCount = Object.keys(stack.template.Outputs ?? {}).length;
-
-      logger.info(`  • ${stack.stackName}`);
-      logger.info(`    - Resources: ${resourceCount}`);
-      logger.info(`    - Outputs: ${outputCount}`);
-      logger.info(`    - Has assets: ${assemblyLoader.hasAssets(stack) ? 'Yes' : 'No'}`);
-
-      if (options.verbose) {
-        const templatePath = join(options.output, `${stack.stackName}.template.json`);
-        writeFileSync(templatePath, JSON.stringify(stack.template, null, 2));
-        logger.debug(`    - Template written to: ${templatePath}`);
-      }
-    }
-
-    logger.info(`\nOutput: ${assembly.directory}`);
-  } finally {
-    await dispose();
+  // Print YAML template to stdout (like CDK CLI) for single stack
+  if (stacks.length === 1) {
+    const template = stacks[0]!.template;
+    process.stdout.write(toYaml(template));
   }
+
+  logger.info(`\n✅ Synthesis complete! Found ${stacks.length} stack(s):`);
+
+  for (const stack of stacks) {
+    const resourceCount = Object.keys(stack.template.Resources ?? {}).length;
+    const outputCount = Object.keys(stack.template.Outputs ?? {}).length;
+
+    logger.info(`  • ${stack.stackName}`);
+    logger.info(`    - Resources: ${resourceCount}`);
+    logger.info(`    - Outputs: ${outputCount}`);
+    logger.info(`    - Has assets: ${assemblyReader.hasAssets(stack) ? 'Yes' : 'No'}`);
+
+    if (options.verbose) {
+      const templatePath = join(options.output, `${stack.stackName}.template.json`);
+      writeFileSync(templatePath, JSON.stringify(stack.template, null, 2));
+      logger.debug(`    - Template written to: ${templatePath}`);
+    }
+  }
+
+  logger.info(`\nOutput: ${assemblyDir}`);
 }
 
 /**

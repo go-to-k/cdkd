@@ -11,7 +11,6 @@ import {
 import { getLogger } from '../../utils/logger.js';
 import { withErrorHandling } from '../../utils/error-handler.js';
 import { Synthesizer } from '../../synthesis/synthesizer.js';
-import { AssemblyLoader } from '../../synthesis/assembly-loader.js';
 import { AssetPublisher } from '../../assets/asset-publisher.js';
 import { S3StateBackend } from '../../state/s3-state-backend.js';
 import { LockManager } from '../../state/lock-manager.js';
@@ -86,7 +85,6 @@ async function deployCommand(
   });
   setAwsClients(awsClients);
 
-  let disposeAssembly: (() => Promise<void>) | undefined;
   let deployInterrupted = false;
   const topLevelSigintHandler = () => {
     if (deployInterrupted) {
@@ -103,18 +101,16 @@ async function deployCommand(
     logger.info('Synthesizing CDK app...');
     const synthesizer = new Synthesizer();
     const context = parseContextOptions(options.context);
-    const { cloudAssembly: assembly, dispose } = await synthesizer.synthesize({
+    const result = await synthesizer.synthesize({
       app: options.app,
       output: options.output,
       ...(options.region && { region: options.region }),
       ...(options.profile && { profile: options.profile }),
       ...(Object.keys(context).length > 0 && { context }),
     });
-    disposeAssembly = dispose;
 
-    // 2. Load CloudAssembly and get stacks
-    const assemblyLoader = new AssemblyLoader();
-    const allStacks = assemblyLoader.getAllStacks(assembly);
+    const { stacks: allStacks } = result;
+
     logger.debug(`Found ${allStacks.length} stack(s) in assembly`);
 
     // Determine target stacks: positional args > --stack > --all > auto (single stack)
@@ -186,24 +182,22 @@ async function deployCommand(
       // Try to find asset manifests for each stack
       let assetsPublished = false;
       for (const stack of allStacks) {
-        const manifestPath = `${assembly.directory}/${stack.stackName}.assets.json`;
+        if (!stack.assetManifestPath) {
+          logger.debug(`No assets manifest found for stack ${stack.stackName} - skipping`);
+          continue;
+        }
 
         try {
-          await assetPublisher.publishFromManifest(manifestPath, {
+          await assetPublisher.publishFromManifest(stack.assetManifestPath, {
             ...(options.region && { region: options.region }),
             ...(options.profile && { profile: options.profile }),
           });
           assetsPublished = true;
         } catch (error) {
-          // Check if this is a "file not found" error (assets.json doesn't exist)
-          // This is expected when the CDK app has no assets (e.g., infrastructure-only stacks)
           const err = error as { code?: string; message?: string };
           if (err.code === 'ENOENT' || err.message?.includes('ENOENT')) {
             logger.debug(`No assets manifest found for stack ${stack.stackName} - skipping`);
           } else {
-            // For all other errors, fail the deployment
-            // Asset publishing failures can cause resource creation failures later
-            // (e.g., Lambda function with missing code, Docker images, etc.)
             logger.error(
               `Asset publishing failed for stack ${stack.stackName}:`,
               err.message || String(error)
@@ -277,16 +271,16 @@ async function deployCommand(
       );
 
       try {
-        const template = assemblyLoader.getTemplate(assembly, stackInfo.stackName);
-        const result = await stackDeployEngine.deploy(stackInfo.stackName, template);
+        const template = stackInfo.template;
+        const deployResult = await stackDeployEngine.deploy(stackInfo.stackName, template);
 
         logger.info('\nDeployment Summary:');
-        logger.info(`  Stack: ${result.stackName}`);
-        logger.info(`  Created: ${result.created}`);
-        logger.info(`  Updated: ${result.updated}`);
-        logger.info(`  Deleted: ${result.deleted}`);
-        logger.info(`  Unchanged: ${result.unchanged}`);
-        logger.info(`  Duration: ${(result.durationMs / 1000).toFixed(2)}s`);
+        logger.info(`  Stack: ${deployResult.stackName}`);
+        logger.info(`  Created: ${deployResult.created}`);
+        logger.info(`  Updated: ${deployResult.updated}`);
+        logger.info(`  Deleted: ${deployResult.deleted}`);
+        logger.info(`  Unchanged: ${deployResult.unchanged}`);
+        logger.info(`  Duration: ${(deployResult.durationMs / 1000).toFixed(2)}s`);
 
         if (options.dryRun) {
           logger.info('\n✓ Dry run completed - no actual changes made');
@@ -307,11 +301,6 @@ async function deployCommand(
       await deployStack(targetStacks[0]!);
     } else {
       // Multiple stacks: deploy in dependency order, parallelizing independent stacks.
-      // Failure handling:
-      //   - Failed stack is logged and marked as failed
-      //   - Stacks that depend on failed stacks are skipped
-      //   - Independent stacks continue deploying
-      //   - Final error summary is reported at the end
       const deployed = new Set<string>();
       const failed = new Set<string>();
       const skipped = new Set<string>();
@@ -320,7 +309,6 @@ async function deployCommand(
       const stackMap = new Map(targetStacks.map((s) => [s.stackName, s]));
       const errors: Array<{ stackName: string; error: unknown }> = [];
 
-      // Check if a stack has a failed dependency (direct or transitive)
       const hasFailedDependency = (stackName: string): boolean => {
         const stack = stackMap.get(stackName);
         if (!stack) return false;
@@ -328,7 +316,6 @@ async function deployCommand(
       };
 
       while (remaining.size > 0) {
-        // Check for SIGINT
         if (deployInterrupted) {
           logger.info('Deployment interrupted. Waiting for in-progress stacks to finish...');
           if (deploying.size > 0) {
@@ -337,7 +324,6 @@ async function deployCommand(
           break;
         }
 
-        // Find stacks whose dependencies are all deployed (skip if dep failed)
         const ready: string[] = [];
         const toSkip: string[] = [];
 
@@ -358,7 +344,6 @@ async function deployCommand(
           }
         }
 
-        // Skip stacks with failed dependencies
         for (const name of toSkip) {
           logger.warn(`Skipping stack ${name}: dependency failed`);
           skipped.add(name);
@@ -367,7 +352,6 @@ async function deployCommand(
 
         if (ready.length === 0 && deploying.size === 0) {
           if (remaining.size > 0) {
-            // Remaining stacks can't proceed (circular dep or all deps failed)
             for (const name of remaining) {
               skipped.add(name);
             }
@@ -376,9 +360,6 @@ async function deployCommand(
           break;
         }
 
-        // Start deploying ready stacks in parallel.
-        // Each stack gets its own AwsClients/ProviderRegistry with explicit region,
-        // so cross-region parallel deploy is safe.
         for (const name of ready) {
           const stack = stackMap.get(name)!;
           const promise = deployStack(stack)
@@ -387,7 +368,6 @@ async function deployCommand(
             })
             .catch((error) => {
               const msg = error instanceof Error ? error.message : String(error);
-              // SIGINT interruption: don't treat as stack failure, propagate
               if (msg.includes('interrupted') || msg.includes('Interrupted')) {
                 logger.info(`Stack ${name} interrupted by user`);
               } else {
@@ -403,18 +383,15 @@ async function deployCommand(
           deploying.set(name, promise);
         }
 
-        // Wait for at least one to complete before checking again
         if (deploying.size > 0) {
           await Promise.race(deploying.values());
         }
       }
 
-      // Wait for any remaining in-flight deployments
       if (deploying.size > 0) {
         await Promise.allSettled(deploying.values());
       }
 
-      // Report summary
       if (failed.size > 0 || skipped.size > 0) {
         if (skipped.size > 0) {
           logger.warn(`\nSkipped stacks (dependency failed): ${[...skipped].join(', ')}`);
@@ -426,10 +403,6 @@ async function deployCommand(
     }
   } finally {
     process.removeListener('SIGINT', topLevelSigintHandler);
-    // Dispose cloud assembly to release cdk.out lock
-    if (disposeAssembly) {
-      await disposeAssembly();
-    }
     awsClients.destroy();
   }
 }

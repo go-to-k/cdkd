@@ -11,7 +11,6 @@ import {
 import { getLogger } from '../../utils/logger.js';
 import { withErrorHandling } from '../../utils/error-handler.js';
 import { Synthesizer } from '../../synthesis/synthesizer.js';
-import { AssemblyLoader } from '../../synthesis/assembly-loader.js';
 import { S3StateBackend } from '../../state/s3-state-backend.js';
 import { LockManager } from '../../state/lock-manager.js';
 import { DagBuilder } from '../../analyzer/dag-builder.js';
@@ -84,7 +83,6 @@ async function destroyCommand(
 
     // 2. Resolve stacks to destroy (CDK CLI compatible behavior)
     // Always synth to determine which stacks belong to this CDK app.
-    // This prevents accidentally destroying stacks from other apps.
     const appCmd = options.app || resolveApp();
     let appStackNames: string[] = [];
 
@@ -97,9 +95,7 @@ async function destroyCommand(
           output: options.output || 'cdk.out',
           ...(Object.keys(context).length > 0 && { context }),
         });
-        const loader = new AssemblyLoader();
-        appStackNames = loader.getAllStacks(result.cloudAssembly).map((s) => s.stackName);
-        await result.dispose();
+        appStackNames = result.stacks.map((s) => s.stackName);
       } catch {
         logger.debug('Could not synthesize app, falling back to state-based stack list');
       }
@@ -252,7 +248,6 @@ async function destroyCommand(
         }
 
         // Add implicit dependencies for correct deletion order.
-        // Some AWS resources have ordering constraints not expressed via Ref/GetAtt.
         const implicitDeleteDeps: Record<string, string[]> = {
           'AWS::EC2::InternetGateway': ['AWS::EC2::VPCGatewayAttachment'],
           'AWS::Events::EventBus': ['AWS::Events::Rule'],
@@ -283,10 +278,6 @@ async function destroyCommand(
           typeToLogicalIds.set(resource.resourceType, ids);
         }
 
-        // For each resource whose type has implicit deps, add DependsOn edges.
-        // If type X must be deleted AFTER type Y, then Y.DependsOn should include X
-        // in the creation-order DAG. When the DAG levels are reversed for deletion,
-        // Y (at a later creation level) is deleted first, then X.
         for (const [logicalId, resource] of Object.entries(currentState.resources)) {
           const mustDeleteAfter = implicitDeleteDeps[resource.resourceType];
           if (!mustDeleteAfter) continue;
@@ -295,9 +286,6 @@ async function destroyCommand(
             const depIds = typeToLogicalIds.get(depType);
             if (!depIds) continue;
             for (const depId of depIds) {
-              // depId (depType) must be deleted BEFORE logicalId (resource.resourceType).
-              // In creation DAG: depId depends on logicalId → depId is at a later level.
-              // Reversed for deletion: depId is processed first → deleted first.
               const existing = template.Resources[depId]?.DependsOn ?? [];
               const depsArray = Array.isArray(existing) ? existing : [existing];
               if (!depsArray.includes(logicalId)) {
