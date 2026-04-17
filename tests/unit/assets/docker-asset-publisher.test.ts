@@ -1,9 +1,12 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-const { mockEcrSend, mockEcrDestroy, mockExecFile } = vi.hoisted(() => ({
+import { EventEmitter } from 'node:events';
+
+const { mockEcrSend, mockEcrDestroy, mockExecFile, mockSpawn } = vi.hoisted(() => ({
   mockEcrSend: vi.fn(),
   mockEcrDestroy: vi.fn(),
   mockExecFile: vi.fn(),
+  mockSpawn: vi.fn(),
 }));
 
 // Mock @aws-sdk/client-ecr
@@ -25,6 +28,7 @@ vi.mock('@aws-sdk/client-ecr', () => ({
 // Mock node:child_process
 vi.mock('node:child_process', () => ({
   execFile: mockExecFile,
+  spawn: mockSpawn,
 }));
 
 // Mock node:util
@@ -77,6 +81,14 @@ describe('DockerAssetPublisher', () => {
     publisher = new DockerAssetPublisher();
     // Default: execFile succeeds
     mockExecFile.mockResolvedValue({ stdout: '', stderr: '' });
+    // Default: spawn (for docker login) succeeds
+    mockSpawn.mockImplementation(() => {
+      const proc = new EventEmitter();
+      (proc as unknown as Record<string, unknown>).stdin = { write: vi.fn(), end: vi.fn() };
+      (proc as unknown as Record<string, unknown>).stderr = new EventEmitter();
+      process.nextTick(() => proc.emit('close', 0));
+      return proc;
+    });
   });
 
   it('should build and push Docker image to ECR', async () => {
@@ -113,11 +125,11 @@ describe('DockerAssetPublisher', () => {
       expect.objectContaining({ maxBuffer: 50 * 1024 * 1024 })
     );
 
-    // Verify docker login was called
-    expect(mockExecFile).toHaveBeenCalledWith(
+    // Verify docker login was called via spawn
+    expect(mockSpawn).toHaveBeenCalledWith(
       'docker',
       ['login', '--username', 'AWS', '--password-stdin', 'https://123456789012.dkr.ecr.us-east-1.amazonaws.com'],
-      expect.objectContaining({ input: 'mock-password' })
+      expect.objectContaining({ stdio: ['pipe', 'pipe', 'pipe'] })
     );
 
     // Verify docker tag was called
@@ -231,10 +243,19 @@ describe('DockerAssetPublisher', () => {
 
     mockExecFile.mockImplementation((_cmd: string, args: string[]) => {
       if (args[0] === 'build') callOrder.push('build');
-      if (args[0] === 'login') callOrder.push('login');
       if (args[0] === 'tag') callOrder.push('tag');
       if (args[0] === 'push') callOrder.push('push');
       return Promise.resolve({ stdout: '', stderr: '' });
+    });
+
+    // docker login uses spawn (--password-stdin requires stdin pipe)
+    mockSpawn.mockImplementation(() => {
+      callOrder.push('login');
+      const proc = new EventEmitter();
+      (proc as unknown as Record<string, unknown>).stdin = { write: vi.fn(), end: vi.fn() };
+      (proc as unknown as Record<string, unknown>).stderr = new EventEmitter();
+      process.nextTick(() => proc.emit('close', 0));
+      return proc;
     });
 
     await publisher.publish(
@@ -245,7 +266,7 @@ describe('DockerAssetPublisher', () => {
       'us-east-1'
     );
 
-    // Build first, then auth, then tag+push
+    // Build first, then auth, then login (spawn), then tag+push
     expect(callOrder).toEqual(['build', 'getAuthToken', 'login', 'tag', 'push']);
   });
 

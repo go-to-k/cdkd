@@ -1,4 +1,4 @@
-import { execFile } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
 import {
   ECRClient,
@@ -165,18 +165,36 @@ export class DockerAssetPublisher {
     const endpoint =
       authData.proxyEndpoint || `https://${accountId}.dkr.ecr.${region}.amazonaws.com`;
 
-    try {
-      await execFileAsync(
+    await new Promise<void>((resolve, reject) => {
+      const proc = spawn(
         'docker',
         ['login', '--username', username!, '--password-stdin', endpoint],
         {
-          input: password,
-        } as Parameters<typeof execFileAsync>[2]
+          stdio: ['pipe', 'pipe', 'pipe'],
+        }
       );
-    } catch (error) {
-      const err = error as { stderr?: string; message?: string };
-      throw new AssetError(`ECR login failed: ${err.stderr || err.message || String(error)}`);
-    }
+
+      let stderr = '';
+      proc.stderr?.on('data', (data: Buffer) => {
+        stderr += data.toString();
+      });
+
+      proc.on('close', (code) => {
+        if (code === 0) {
+          resolve();
+        } else {
+          reject(new AssetError(`ECR login failed: ${stderr.trim()}`));
+        }
+      });
+
+      proc.on('error', (err) => {
+        reject(new AssetError(`ECR login failed: ${err.message}`));
+      });
+
+      // Write password to stdin and close
+      proc.stdin?.write(password);
+      proc.stdin?.end();
+    });
   }
 
   /**
