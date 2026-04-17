@@ -61,6 +61,49 @@ AWS CDK is great for defining infrastructure as code, but all deployments go thr
 └────────┘ └────────┘
 ```
 
+### Detailed Processing Flow (`cdkd deploy`)
+
+```
+1. CLI Layer
+   ├── Resolve --app (CLI > CDKD_APP env > cdk.json "app")
+   ├── Resolve --state-bucket (CLI > env > cdk.json > auto: cdkd-state-{accountId}-{region})
+   └── Initialize AWS clients
+
+2. Synthesis (self-implemented, no CDK CLI dependency)
+   ├── Load context:
+   │   ├── cdk.json "context" field (static)
+   │   ├── cdk.context.json (cached lookups)
+   │   └── CLI -c key=value (highest priority)
+   ├── Execute CDK app as subprocess
+   │   ├── child_process.spawn(app command)
+   │   ├── Pass env: CDK_OUTDIR, CDK_CONTEXT_JSON, CDK_DEFAULT_REGION/ACCOUNT
+   │   └── App writes Cloud Assembly to cdk.out/
+   ├── Parse cdk.out/manifest.json
+   │   ├── Extract stacks (type: aws:cloudformation:stack)
+   │   ├── Extract asset manifests (type: cdk:asset-manifest)
+   │   └── Extract stack dependencies
+   └── Context provider loop (if missing context detected):
+       ├── Resolve via SDK: AZ, VPC, SSM, HostedZone, Cloud Control API
+       ├── Save to cdk.context.json
+       └── Re-execute CDK app with updated context
+
+3. Asset Publishing (self-implemented, no cdk-assets dependency)
+   ├── File assets → S3 (ZIP packaging if needed, skip if exists)
+   └── Docker images → ECR (docker build + tag + push, skip if exists)
+
+4. Deployment (per stack, parallelized by dependency order)
+   ├── Acquire S3 lock (optimistic locking)
+   ├── Load current state from S3
+   ├── Build DAG from template (Ref/Fn::GetAtt/DependsOn)
+   ├── Calculate diff (CREATE/UPDATE/DELETE)
+   ├── Resolve intrinsic functions (Ref, Fn::Sub, Fn::Join, etc.)
+   ├── Execute by levels (parallel within each level):
+   │   ├── SDK Providers (direct API calls, preferred)
+   │   └── Cloud Control API (fallback, async polling)
+   ├── Save state after each level (partial state save)
+   └── Release lock
+```
+
 ## Features
 
 cdkd uses a hybrid provisioning strategy: hand-written **SDK Providers** call AWS SDK APIs directly for fast provisioning, while **Cloud Control API** (a generic AWS API that can operate on any resource type) is used as a fallback for resource types without an SDK Provider.
