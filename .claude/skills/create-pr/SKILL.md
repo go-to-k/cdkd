@@ -10,22 +10,27 @@ Run all quality checks and create a GitHub PR if everything passes.
 
 ## Steps
 
-1. **Run `/verify-pr`** — typecheck, lint, build, tests, CI, docs consistency, leftover resources. If any check fails, stop and report.
+1. **Ensure on a feature branch**:
+   - `git branch --show-current` — check current branch
+   - If on `main`, ask the user for a branch name and create it: `git checkout -b <branch-name>`
+   - Branch naming convention: `feat/`, `fix/`, `refactor/`, `docs/` prefix
 
-2. **Ensure changes are committed and pushed**:
+2. **Run `/verify-pr`** — typecheck, lint, build, tests, CI, docs consistency, leftover resources. If any check fails, stop and report.
+
+4. **Ensure changes are committed and pushed**:
    - `git status` — if uncommitted changes exist, ask the user whether to commit them
-   - `git push` — ensure remote is up to date
+   - `git push -u origin <branch>` — ensure remote is up to date
 
-3. **Check if PR already exists** for the current branch:
+5. **Check if PR already exists** for the current branch:
    - `gh pr view --json number,url -q '.url' 2>/dev/null`
    - If PR exists, report the URL and ask if the user wants to update it
 
-4. **Gather PR context**:
+6. **Gather PR context**:
    - `git log main...HEAD --oneline` — all commits in this branch
    - `git diff main...HEAD --stat` — changed files summary
    - Determine base branch (default: `main`, overridable with `--base`)
 
-5. **Draft PR title and body**:
+7. **Draft PR title and body**:
    - Title: concise, under 70 characters, based on the commits
    - Body format:
      ```
@@ -38,7 +43,7 @@ Run all quality checks and create a GitHub PR if everything passes.
      - [ ] Documentation updated
      ```
 
-6. **Create PR**:
+8. **Create PR**:
    ```bash
    gh pr create --title "..." --body "$(cat <<'EOF'
    ...
@@ -46,7 +51,7 @@ Run all quality checks and create a GitHub PR if everything passes.
    )"
    ```
 
-7. **Report** the PR URL.
+9. **Report** the PR URL.
 
 ## Important
 
