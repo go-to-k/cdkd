@@ -1,7 +1,7 @@
 ---
 name: integ
 description: Run integration tests (deploy + destroy) against real AWS. Use when you need to verify cdkd works end-to-end with actual AWS resources.
-argument-hint: "[basic|lambda|ecr|cross-stack|vpc-lookup|all]"
+argument-hint: "<test-name|all> [--synth-only] [--no-destroy]"
 ---
 
 # Integration Test Runner
@@ -10,7 +10,8 @@ Run integration tests against a real AWS account. These tests deploy actual AWS 
 
 ## Arguments
 
-- `test-name`: Which test to run. Options: `basic`, `lambda`, `ecr`, `cross-stack`, `vpc-lookup`, `all`. If not specified, use the `AskUserQuestion` tool to ask which test to run.
+- `test-name`: Which test to run. Run `ls tests/integration/` to see all available tests. If not specified, use the `AskUserQuestion` tool to ask which test to run, showing the available options.
+- `all`: Run all tests
 - `--synth-only`: Only run synthesis, skip deploy/destroy
 - `--no-destroy`: Deploy but don't destroy (for debugging)
 
@@ -18,28 +19,20 @@ Run integration tests against a real AWS account. These tests deploy actual AWS 
 
 1. **Build first**: Run `pnpm run build` to ensure dist/ is up to date.
 
-2. **Determine state bucket**: Resolve dynamically via `aws sts get-caller-identity --query Account --output text` to get the account ID, then construct `cdkd-state-{accountId}-us-east-1`.
+2. **List available tests**: Run `ls tests/integration/` to discover all test directories dynamically. Do NOT rely on a hardcoded list.
 
-3. **Run the test(s)**:
+3. **Determine state bucket**: Resolve dynamically via `aws sts get-caller-identity --query Account --output text` to get the account ID, then construct `cdkd-state-{accountId}-us-east-1`.
+
+4. **Run the test(s)**:
    - Navigate to `tests/integration/<test-name>/`
    - Ensure dependencies: `npm install` if node_modules doesn't exist
    - Run synth: `node ../../../dist/cli.js synth --region us-east-1`
    - Run deploy: `node ../../../dist/cli.js deploy --region us-east-1 --state-bucket <bucket> --verbose`
    - Run destroy: `node ../../../dist/cli.js destroy --region us-east-1 --state-bucket <bucket> --force`
 
-4. **Verify cleanup**: Check `aws s3 ls s3://<bucket>/stacks/ --region us-east-1` to confirm no leftover state.
+5. **Verify cleanup**: Check `aws s3 ls s3://<bucket>/stacks/ --region us-east-1` to confirm no leftover state.
 
-5. **Report results**: Show pass/fail for each test, including resource counts and timing.
-
-## Test directories
-
-| Test | What it covers |
-|------|---------------|
-| `basic` | S3 bucket + IAM role, basic CRUD |
-| `lambda` | Lambda + Layer + DynamoDB, file assets |
-| `ecr` | Docker image build + ECR push |
-| `cross-stack` | Cross-stack references (Fn::ImportValue) |
-| `vpc-lookup` | Context provider loop (Vpc.fromLookup) |
+6. **Report results**: Show pass/fail for each test, including resource counts and timing.
 
 ## Important
 
