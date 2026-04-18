@@ -23,7 +23,7 @@ Run each check and report pass/fail:
 
 3. **CI status**
    - If PR number is not provided as argument, auto-detect via `gh pr view --json number -q .number`
-   - If no PR exists for current branch, ask the user for the PR number
+   - If no PR exists for current branch, use the `AskUserQuestion` tool to ask for the PR number
    - `gh pr checks <PR-number>` - all checks pass
    - If checks are pending, wait and recheck
 

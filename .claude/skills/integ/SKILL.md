@@ -10,7 +10,7 @@ Run integration tests against a real AWS account. These tests deploy actual AWS 
 
 ## Arguments
 
-- `test-name`: Which test to run. Options: `basic`, `lambda`, `ecr`, `cross-stack`, `vpc-lookup`, `all`. Default: ask the user which test to run if not specified.
+- `test-name`: Which test to run. Options: `basic`, `lambda`, `ecr`, `cross-stack`, `vpc-lookup`, `all`. If not specified, use the `AskUserQuestion` tool to ask which test to run.
 - `--synth-only`: Only run synthesis, skip deploy/destroy
 - `--no-destroy`: Deploy but don't destroy (for debugging)
 
