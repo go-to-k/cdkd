@@ -654,11 +654,11 @@ getClient<T>(ClientClass: new (...) => T, region: string): T
 ┌───────────────────────┐     ┌─────────────────┴───────┐
 │ Missing context?      │─Yes→│ ContextProviderRegistry │
 │ (check manifest       │     │ resolve(key, props)     │
-│  missing entries)     │     │ - AZ provider           │
-└──────────┬────────────┘     │ - SSM provider          │
-           │ No               │ - HostedZone provider   │
-           ▼                  │ - VPC provider           │
-┌───────────────────────┐     │ - CC API provider       │
+│  missing entries)     │     │ (all CDK provider types │
+└──────────┬────────────┘     │  supported — see        │
+           │ No               │  context-providers/)    │
+           ▼                  │                         │
+┌───────────────────────┐     │                         │
 │ Return final assembly │     └─────────────┬───────────┘
 └───────────────────────┘                   │
                                             ▼
