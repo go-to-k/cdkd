@@ -136,36 +136,27 @@ export class FileAssetPublisher {
     bucket: string,
     key: string
   ): Promise<void> {
-    // Dynamic import archiver (dev dependency)
     const archiver = await import('archiver');
-    const { PassThrough } = await import('node:stream');
 
-    const passThrough = new PassThrough();
-    const chunks: Buffer[] = [];
+    // Collect all archive data into a buffer before uploading
+    const body = await new Promise<Buffer>((resolve, reject) => {
+      const chunks: Buffer[] = [];
+      const archive = archiver.default('zip', { zlib: { level: 9 } });
 
-    // Collect archive data into buffer
-    passThrough.on('data', (chunk: Buffer) => chunks.push(chunk));
+      archive.on('data', (chunk: Buffer) => chunks.push(chunk));
+      archive.on('end', () => resolve(Buffer.concat(chunks)));
+      archive.on('error', reject);
 
-    const archive = archiver.default('zip', { zlib: { level: 9 } });
-    archive.pipe(passThrough);
+      // Check if dirPath is a file or directory
+      const stat = statSync(dirPath);
+      if (stat.isDirectory()) {
+        archive.directory(dirPath, false);
+      } else {
+        archive.file(dirPath, { name: basename(dirPath) });
+      }
 
-    // Check if dirPath is a file or directory
-    const stat = statSync(dirPath);
-    if (stat.isDirectory()) {
-      archive.directory(dirPath, false);
-    } else {
-      archive.file(dirPath, { name: basename(dirPath) });
-    }
-
-    await archive.finalize();
-
-    // Wait for all data to be collected
-    await new Promise<void>((resolve, reject) => {
-      passThrough.on('end', resolve);
-      passThrough.on('error', reject);
+      void archive.finalize();
     });
-
-    const body = Buffer.concat(chunks);
 
     await client.send(
       new PutObjectCommand({

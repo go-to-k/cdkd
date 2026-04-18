@@ -18,20 +18,30 @@ vi.mock('node:fs', () => ({
   statSync: vi.fn().mockReturnValue({ size: 1024, isDirectory: () => false }),
 }));
 
-// Mock archiver
+// Mock archiver - emits data/end events like a real archive stream
 vi.mock('archiver', () => ({
   default: vi.fn().mockImplementation(() => {
+    const handlers: Record<string, ((...args: unknown[]) => void)[]> = {};
     const archive = {
-      pipe: vi.fn(),
+      on: vi.fn().mockImplementation((event: string, handler: (...args: unknown[]) => void) => {
+        if (!handlers[event]) handlers[event] = [];
+        handlers[event]!.push(handler);
+        return archive;
+      }),
       directory: vi.fn(),
       file: vi.fn(),
-      finalize: vi.fn().mockResolvedValue(undefined),
+      finalize: vi.fn().mockImplementation(() => {
+        // Emit data then end
+        const dataChunk = Buffer.from('mock-zip-data');
+        for (const h of handlers['data'] ?? []) h(dataChunk);
+        for (const h of handlers['end'] ?? []) h();
+      }),
     };
     return archive;
   }),
 }));
 
-// Mock node:stream
+// Mock node:stream (no longer used by file-asset-publisher but kept for safety)
 vi.mock('node:stream', () => ({
   PassThrough: vi.fn().mockImplementation(() => {
     const handlers: Record<string, Function[]> = {};
