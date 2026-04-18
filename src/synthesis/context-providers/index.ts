@@ -5,6 +5,13 @@ import { SSMContextProvider } from './ssm-provider.js';
 import { HostedZoneContextProvider } from './hosted-zone-provider.js';
 import { VpcContextProvider } from './vpc-provider.js';
 import { CcApiContextProvider } from './cc-api-provider.js';
+import { AmiContextProvider } from './ami-provider.js';
+import { SecurityGroupContextProvider } from './security-group-provider.js';
+import {
+  LoadBalancerContextProvider,
+  LoadBalancerListenerContextProvider,
+} from './load-balancer-provider.js';
+import { KeyContextProvider } from './key-provider.js';
 
 const PROVIDER_ERROR_KEY = '$providerError';
 const TRANSIENT_CONTEXT_KEY = '$dontSaveContext';
@@ -46,6 +53,11 @@ export class ContextProviderRegistry {
     this.register('hosted-zone', new HostedZoneContextProvider(awsConfig));
     this.register('vpc-provider', new VpcContextProvider(awsConfig));
     this.register('cc-api-provider', new CcApiContextProvider(awsConfig));
+    this.register('ami', new AmiContextProvider(awsConfig));
+    this.register('security-group', new SecurityGroupContextProvider(awsConfig));
+    this.register('load-balancer', new LoadBalancerContextProvider(awsConfig));
+    this.register('load-balancer-listener', new LoadBalancerListenerContextProvider(awsConfig));
+    this.register('key-provider', new KeyContextProvider(awsConfig));
   }
 
   /**
