@@ -28,7 +28,7 @@ export interface AssetPublisherOptions {
    * Concurrency for Docker image builds (CPU/memory bound).
    * Default: 4
    */
-  dockerBuildConcurrency?: number;
+  imageBuildConcurrency?: number;
 }
 
 /**
@@ -91,7 +91,7 @@ export class AssetPublisher {
       );
 
       const fileConcurrency = options.filePublishConcurrency ?? 8;
-      const dockerConcurrency = options.dockerBuildConcurrency ?? 4;
+      const dockerConcurrency = options.imageBuildConcurrency ?? 4;
 
       // Publish file assets in parallel (I/O bound, high concurrency)
       if (fileAssets.length > 0) {

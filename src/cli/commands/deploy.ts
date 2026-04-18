@@ -38,6 +38,8 @@ async function deployCommand(
     profile?: string;
     concurrency: number;
     stackConcurrency: number;
+    assetPublishConcurrency: number;
+    imageBuildConcurrency: number;
     dryRun: boolean;
     skipAssets: boolean;
     rollback: boolean;
@@ -195,6 +197,8 @@ async function deployCommand(
           await assetPublisher.publishFromManifest(stack.assetManifestPath, {
             region: assetRegion,
             ...(options.profile && { profile: options.profile }),
+            filePublishConcurrency: options.assetPublishConcurrency,
+            imageBuildConcurrency: options.imageBuildConcurrency,
           });
           assetsPublished = true;
         } catch (error) {

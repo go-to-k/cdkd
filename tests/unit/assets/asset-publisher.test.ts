@@ -340,7 +340,7 @@ describe('AssetPublisher', () => {
       await publisher.publishFromManifest('/tmp/cdk.out/manifest.json', {
         accountId: '123456789012',
         region: 'us-east-1',
-        dockerBuildConcurrency: 3,
+        imageBuildConcurrency: 3,
       });
 
       expect(mockDockerPublish).toHaveBeenCalledTimes(3);
