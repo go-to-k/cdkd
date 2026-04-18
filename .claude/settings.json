@@ -1,0 +1,17 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "jq -r '.tool_input.file_path // .tool_response.filePath' | { read -r f; echo \"$f\" | grep -qE '\\.(ts|tsx)$' && pnpm run typecheck && pnpm run lint:fix && pnpm run build && npx vitest --run; } 2>/dev/null || true",
+            "timeout": 120,
+            "statusMessage": "Running typecheck, lint, build, and tests..."
+          }
+        ]
+      }
+    ]
+  }
+}
