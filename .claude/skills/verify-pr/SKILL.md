@@ -1,12 +1,12 @@
 ---
 name: verify-pr
-description: Comprehensive PR readiness check before merge. Run all quality checks, tests, CI status, documentation consistency, and AWS resource cleanup verification.
+description: Comprehensive PR readiness check before merge. Run quality checks, tests, CI, documentation, AWS resource cleanup, and code review.
 argument-hint: "[PR-number]"
 ---
 
 # PR Readiness Verification
 
-Run all checks to verify a PR is ready to merge.
+Run all checks and review code to verify a PR is ready to merge.
 
 ## Checklist
 
@@ -44,6 +44,17 @@ Run each check and report pass/fail:
    - Grep for removed imports, old module names, or deprecated references in source files
    - Check `src/index.ts` exports are consistent
 
+8. **Code review**
+   - `git diff main...HEAD` — review the actual diff
+   - For each change: is it correct? complete? necessary?
+   - Check for:
+     - Logic errors or unhandled edge cases
+     - Unnecessary changes (reverted code still in diff, dead code, unrelated changes)
+     - Inconsistencies between changed files
+   - Verify PR title/body accurately reflect the actual diff (not stale commit messages)
+   - Verify all callers of changed functions handle the new behavior
+   - Verify type definitions are consistent with implementation
+
 ## Output
 
 Present results as a table:
@@ -59,6 +70,7 @@ Present results as a table:
 | working tree | clean/dirty |
 | docs consistency | pass/fail |
 | leftover resources | none/found |
+| code review | pass/issues found |
 
 If all pass, confirm "PR is ready to merge."
 If any fail, list the issues to fix.
