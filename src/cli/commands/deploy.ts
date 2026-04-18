@@ -118,7 +118,6 @@ async function deployCommand(
       ...(options.profile && { profile: options.profile }),
       ...(Object.keys(context).length > 0 && { context }),
     });
-
     const { stacks: allStacks } = result;
 
     let targetStacks;
