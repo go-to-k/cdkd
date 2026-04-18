@@ -274,6 +274,6 @@ describe('AssetPublisher', () => {
         accountId: '123456789012',
         region: 'us-east-1',
       })
-    ).rejects.toThrow('Asset publishing failed: Upload failed');
+    ).rejects.toThrow(/Asset publishing failed:.*Upload failed/);
   });
 });

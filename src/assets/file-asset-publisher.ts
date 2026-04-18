@@ -83,11 +83,25 @@ export class FileAssetPublisher {
       await client.send(new HeadObjectCommand({ Bucket: bucket, Key: key }));
       return true;
     } catch (error) {
-      const err = error as { name?: string; $metadata?: { httpStatusCode?: number } };
+      const err = error as {
+        name?: string;
+        message?: string;
+        $metadata?: { httpStatusCode?: number };
+      };
       if (err.name === 'NotFound' || err.$metadata?.httpStatusCode === 404) {
         return false;
       }
-      throw error;
+      // Provide helpful error for common issues
+      const statusCode = err.$metadata?.httpStatusCode;
+      if (statusCode === 301 || err.name === 'PermanentRedirect') {
+        throw new Error(
+          `S3 bucket '${bucket}' is in a different region. ` +
+            `Use --region to specify the correct region, or check asset manifest destination.`
+        );
+      }
+      throw new Error(
+        `Failed to check S3 object s3://${bucket}/${key}: ${err.name || 'UnknownError'}: ${err.message || String(error)}`
+      );
     }
   }
 

@@ -111,8 +111,13 @@ export class AssetPublisher {
       if (error instanceof AssetError) {
         throw error;
       }
+      // Extract detailed error information from AWS SDK errors
+      const err = error as Record<string, unknown>;
+      const message = String(err['message'] || err['name'] || error);
+      const code = String(err['Code'] || err['code'] || err['name'] || '');
+      const detail = code ? `${code}: ${message}` : message;
       throw new AssetError(
-        `Asset publishing failed: ${error instanceof Error ? error.message : String(error)}`,
+        `Asset publishing failed: ${detail}`,
         error instanceof Error ? error : undefined
       );
     }

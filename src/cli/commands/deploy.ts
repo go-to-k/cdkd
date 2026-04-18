@@ -188,8 +188,11 @@ async function deployCommand(
         }
 
         try {
+          // Use stack's target region for asset publishing (falls back to CLI --region or default)
+          const assetRegion =
+            stack.region || options.region || process.env['AWS_REGION'] || 'us-east-1';
           await assetPublisher.publishFromManifest(stack.assetManifestPath, {
-            ...(options.region && { region: options.region }),
+            region: assetRegion,
             ...(options.profile && { profile: options.profile }),
           });
           assetsPublished = true;
