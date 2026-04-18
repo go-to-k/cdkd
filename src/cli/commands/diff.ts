@@ -16,43 +16,6 @@ import { setAwsClients, AwsClients } from '../../utils/aws-clients.js';
 import { resolveApp, resolveStateBucketWithDefault } from '../config-loader.js';
 
 /**
- * Check if a value is purely an unresolved CloudFormation intrinsic function.
- * Used to detect false-positive diffs where state has resolved values
- * but template has unresolved intrinsics (Ref, Fn::Sub, Fn::GetAtt, etc.)
- *
- * Only returns true when the top-level value itself IS an intrinsic function,
- * not when it merely contains one as a nested value. This prevents masking
- * real changes in objects that happen to contain intrinsic siblings
- * (e.g., Environment.Variables with both plain strings and Fn::Join).
- */
-function isUnresolvedIntrinsic(value: unknown): boolean {
-  if (value === null || value === undefined) return false;
-  if (typeof value !== 'object') return false;
-  if (Array.isArray(value)) return false;
-  const obj = value as Record<string, unknown>;
-  const keys = Object.keys(obj);
-  const intrinsicKeys = [
-    'Ref',
-    'Fn::Sub',
-    'Fn::GetAtt',
-    'Fn::Join',
-    'Fn::Select',
-    'Fn::Split',
-    'Fn::If',
-    'Fn::ImportValue',
-    'Fn::FindInMap',
-    'Fn::Base64',
-    'Fn::GetAZs',
-    'Fn::Equals',
-    'Fn::And',
-    'Fn::Or',
-    'Fn::Not',
-  ];
-  // A pure intrinsic has exactly one key which is an intrinsic function name
-  return keys.length === 1 && intrinsicKeys.includes(keys[0]!);
-}
-
-/**
  * Diff command implementation
  */
 async function diffCommand(
@@ -198,22 +161,10 @@ async function diffCommand(
             logger.info(`  [+] ${logicalId} (${change.resourceType})`);
             break;
           case 'UPDATE': {
-            // Filter out false-positive property changes (resolved vs unresolved intrinsic)
-            const realChanges = (change.propertyChanges ?? []).filter(
-              (pc) => !isUnresolvedIntrinsic(pc.newValue)
-            );
-            if (realChanges.length === 0 && (change.propertyChanges ?? []).length > 0) {
-              // All changes were false positives, skip this resource
-              break;
-            }
             updateCount++;
             logger.info(`  [~] ${logicalId} (${change.resourceType})`);
             if (change.propertyChanges && change.propertyChanges.length > 0) {
               for (const propChange of change.propertyChanges) {
-                // Skip false-positive diffs caused by intrinsic functions
-                if (isUnresolvedIntrinsic(propChange.newValue)) {
-                  continue;
-                }
                 const requiresReplace = propChange.requiresReplacement
                   ? ' [requires replacement]'
                   : '';

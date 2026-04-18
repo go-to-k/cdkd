@@ -192,6 +192,11 @@ export class DiffCalculator {
 
   /**
    * Deep equality check for values
+   *
+   * When comparing state (resolved values) with template (unresolved intrinsics),
+   * treats intrinsic functions as "not comparable" and assumes equal.
+   * This prevents false-positive diffs where the only difference is that
+   * state has e.g. "arn:aws:iam::123:role/MyRole" and template has { "Fn::GetAtt": [...] }.
    */
   private valuesEqual(a: unknown, b: unknown): boolean {
     // Strict equality check
@@ -202,6 +207,12 @@ export class DiffCalculator {
     // Null/undefined check
     if (a == null || b == null) {
       return a === b;
+    }
+
+    // If either side is an unresolved intrinsic function, we can't compare
+    // (state has resolved value, template has intrinsic) — treat as equal
+    if (this.containsIntrinsic(a) || this.containsIntrinsic(b)) {
+      return true;
     }
 
     // Array check
@@ -229,6 +240,37 @@ export class DiffCalculator {
 
     // Primitive types
     return false;
+  }
+
+  private static readonly INTRINSIC_KEYS = new Set([
+    'Ref',
+    'Fn::Sub',
+    'Fn::GetAtt',
+    'Fn::Join',
+    'Fn::Select',
+    'Fn::Split',
+    'Fn::If',
+    'Fn::ImportValue',
+    'Fn::FindInMap',
+    'Fn::Base64',
+    'Fn::GetAZs',
+    'Fn::Equals',
+    'Fn::And',
+    'Fn::Or',
+    'Fn::Not',
+  ]);
+
+  /**
+   * Check if a value contains a CloudFormation intrinsic function at any depth
+   */
+  private containsIntrinsic(value: unknown): boolean {
+    if (value === null || value === undefined || typeof value !== 'object') return false;
+    if (Array.isArray(value)) return value.some((v) => this.containsIntrinsic(v));
+    const obj = value as Record<string, unknown>;
+    for (const key of Object.keys(obj)) {
+      if (DiffCalculator.INTRINSIC_KEYS.has(key)) return true;
+    }
+    return Object.values(obj).some((v) => this.containsIntrinsic(v));
   }
 
   /**
