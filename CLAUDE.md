@@ -379,4 +379,4 @@ See [docs/provider-development.md](docs/provider-development.md) for details.
 - **After changing source code that affects behavior or public API**: Run `/check-docs` to verify README.md, CLAUDE.md, and docs/ are consistent with the changes
 - **When running integration tests**: Use `/run-integ` with the appropriate test name (e.g., `/run-integ lambda`)
 - **After running integration tests**: Verify no leftover AWS resources remain (`aws s3 ls s3://cdkd-state-{accountId}-{region}/stacks/` should return empty or error)
-- **After fixing documentation or code**: Commit and push immediately. Do not leave uncommitted changes.
+- **After fixing documentation or code**: Commit and push immediately. Do not leave uncommitted changes. Before reporting completion to the user, always run `git status` to verify nothing is uncommitted.
