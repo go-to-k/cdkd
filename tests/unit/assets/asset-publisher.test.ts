@@ -277,7 +277,7 @@ describe('AssetPublisher', () => {
         accountId: '123456789012',
         region: 'us-east-1',
       })
-    ).rejects.toThrow(/Asset publishing failed:.*Upload failed/);
+    ).rejects.toThrow(/Upload failed/);
   });
 
   describe('parallel publishing', () => {
@@ -304,7 +304,7 @@ describe('AssetPublisher', () => {
       await publisher.publishFromManifest('/tmp/cdk.out/manifest.json', {
         accountId: '123456789012',
         region: 'us-east-1',
-        filePublishConcurrency: 4,
+        assetPublishConcurrency: 4,
       });
 
       expect(mockFilePublish).toHaveBeenCalledTimes(4);
@@ -340,7 +340,7 @@ describe('AssetPublisher', () => {
       await publisher.publishFromManifest('/tmp/cdk.out/manifest.json', {
         accountId: '123456789012',
         region: 'us-east-1',
-        imageBuildConcurrency: 3,
+        assetPublishConcurrency: 3,
       });
 
       expect(mockDockerPublish).toHaveBeenCalledTimes(3);
@@ -376,7 +376,7 @@ describe('AssetPublisher', () => {
       await publisher.publishFromManifest('/tmp/cdk.out/manifest.json', {
         accountId: '123456789012',
         region: 'us-east-1',
-        filePublishConcurrency: 3,
+        assetPublishConcurrency: 3,
       });
 
       expect(mockFilePublish).toHaveBeenCalledTimes(10);
@@ -409,9 +409,9 @@ describe('AssetPublisher', () => {
         publisher.publishFromManifest('/tmp/cdk.out/manifest.json', {
           accountId: '123456789012',
           region: 'us-east-1',
-          filePublishConcurrency: 2,
+          assetPublishConcurrency: 2,
         })
-      ).rejects.toThrow(/2 asset\(s\) failed to publish/);
+      ).rejects.toThrow(/2 node\(s\) failed/);
     });
   });
 });

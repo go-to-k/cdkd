@@ -1,4 +1,4 @@
-import { Command } from 'commander';
+import { Option, Command } from 'commander';
 import { commonOptions } from '../options.js';
 import { getLogger } from '../../utils/logger.js';
 import { withErrorHandling } from '../../utils/error-handler.js';
@@ -12,7 +12,7 @@ async function publishAssetsCommand(options: {
   verbose: boolean;
   region?: string;
   profile?: string;
-  parallel?: boolean;
+  assetPublishConcurrency: number;
 }): Promise<void> {
   const logger = getLogger();
 
@@ -28,7 +28,7 @@ async function publishAssetsCommand(options: {
   await publisher.publishFromManifest(options.path, {
     ...(options.profile && { profile: options.profile }),
     ...(options.region && { region: options.region }),
-    ...(options.parallel && { publishInParallel: options.parallel }),
+    assetPublishConcurrency: options.assetPublishConcurrency,
   });
 
   logger.info('✅ Asset publishing complete');
@@ -41,7 +41,11 @@ export function createPublishAssetsCommand(): Command {
   const cmd = new Command('publish-assets')
     .description('Publish assets to S3/ECR from asset manifest')
     .requiredOption('--path <path>', 'Path to asset manifest file or directory')
-    .option('--parallel', 'Publish assets in parallel', false)
+    .addOption(
+      new Option('--asset-publish-concurrency <number>', 'Maximum concurrent asset operations')
+        .default(8)
+        .argParser((value) => parseInt(value, 10))
+    )
     .action(withErrorHandling(publishAssetsCommand));
 
   // Add common options

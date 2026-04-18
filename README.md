@@ -384,8 +384,7 @@ cdkd force-unlock MyStack
 | --- | --- | --- |
 | `--concurrency` | 10 | Maximum concurrent resource operations per stack |
 | `--stack-concurrency` | 4 | Maximum concurrent stack deployments |
-| `--asset-publish-concurrency` | 8 | Maximum concurrent file asset S3 uploads |
-| `--image-build-concurrency` | 4 | Maximum concurrent Docker image builds |
+| `--asset-publish-concurrency` | 8 | Maximum concurrent asset operations (S3 uploads + Docker builds) |
 
 ## `--no-wait`
 

@@ -1,9 +1,23 @@
 import { readFileSync } from 'node:fs';
 import { FileAssetPublisher } from './file-asset-publisher.js';
 import { DockerAssetPublisher } from './docker-asset-publisher.js';
-import type { AssetManifest } from '../types/assets.js';
+import type { AssetManifest, FileAsset, DockerImageAsset } from '../types/assets.js';
+import { WorkGraph, type WorkNode } from '../deployment/work-graph.js';
 import { getLogger } from '../utils/logger.js';
 import { AssetError } from '../utils/error-handler.js';
+
+/**
+ * Data attached to an asset-publish WorkNode
+ */
+export interface AssetNodeData {
+  kind: 'file' | 'docker';
+  hash: string;
+  asset: FileAsset | DockerImageAsset;
+  cdkOutputDir: string;
+  accountId: string;
+  region: string;
+  profile?: string;
+}
 
 /**
  * Asset publishing options
@@ -19,24 +33,17 @@ export interface AssetPublisherOptions {
   accountId?: string;
 
   /**
-   * Concurrency for file asset publishing (I/O bound).
+   * Concurrency for asset publishing.
    * Default: 8
    */
-  filePublishConcurrency?: number;
-
-  /**
-   * Concurrency for Docker image builds (CPU/memory bound).
-   * Default: 4
-   */
-  imageBuildConcurrency?: number;
+  assetPublishConcurrency?: number;
 }
 
 /**
  * Asset publisher
  *
- * Orchestrates file and Docker image asset publishing with parallelization.
- * - File publish: 8 concurrent uploads (I/O bound)
- * - Docker build+push: 4 concurrent (CPU/memory bound)
+ * Orchestrates file and Docker image asset publishing via WorkGraph.
+ * Used both by `deploy` (nodes added to shared graph) and `publish-assets` (standalone).
  */
 export class AssetPublisher {
   private logger = getLogger().child('AssetPublisher');
@@ -44,7 +51,102 @@ export class AssetPublisher {
   private dockerPublisher = new DockerAssetPublisher();
 
   /**
-   * Publish assets from asset manifest file
+   * Add asset-publish nodes from a manifest to a WorkGraph.
+   * Returns the node IDs added (for wiring as dependencies).
+   */
+  addAssetsToGraph(
+    graph: WorkGraph,
+    manifestPath: string,
+    options: { accountId: string; region: string; profile?: string; nodePrefix?: string }
+  ): string[] {
+    const content = readFileSync(manifestPath, 'utf-8');
+    const manifest = JSON.parse(content) as AssetManifest;
+    const cdkOutputDir = manifestPath.replace(/\/[^/]+$/, '');
+    const prefix = options.nodePrefix || '';
+    const nodeIds: string[] = [];
+
+    // File assets
+    const fileAssets = Object.entries(manifest.files || {}).filter(
+      ([, asset]) =>
+        !asset.source.path.endsWith('.json') && !asset.source.path.endsWith('.template.json')
+    );
+    for (const [hash, asset] of fileAssets) {
+      const nodeId = `asset-publish:${prefix}file:${hash}`;
+      graph.addNode({
+        id: nodeId,
+        type: 'asset-publish',
+        dependencies: new Set(),
+        state: 'pending',
+        data: {
+          kind: 'file',
+          hash,
+          asset,
+          cdkOutputDir,
+          accountId: options.accountId,
+          region: options.region,
+          ...(options.profile && { profile: options.profile }),
+        } satisfies AssetNodeData,
+      });
+      nodeIds.push(nodeId);
+    }
+
+    // Docker assets
+    for (const [hash, asset] of Object.entries(manifest.dockerImages || {})) {
+      const nodeId = `asset-publish:${prefix}docker:${hash}`;
+      graph.addNode({
+        id: nodeId,
+        type: 'asset-publish',
+        dependencies: new Set(),
+        state: 'pending',
+        data: {
+          kind: 'docker',
+          hash,
+          asset,
+          cdkOutputDir,
+          accountId: options.accountId,
+          region: options.region,
+          ...(options.profile && { profile: options.profile }),
+        } satisfies AssetNodeData,
+      });
+      nodeIds.push(nodeId);
+    }
+
+    this.logger.debug(
+      `Added ${fileAssets.length} file + ${Object.keys(manifest.dockerImages || {}).length} docker asset(s) to graph`
+    );
+
+    return nodeIds;
+  }
+
+  /**
+   * Execute an asset-publish node
+   */
+  async executeNode(node: WorkNode): Promise<void> {
+    const data = node.data as AssetNodeData;
+    if (data.kind === 'file') {
+      await this.filePublisher.publish(
+        data.hash,
+        data.asset as FileAsset,
+        data.cdkOutputDir,
+        data.accountId,
+        data.region,
+        data.profile
+      );
+    } else {
+      await this.dockerPublisher.publish(
+        data.hash,
+        data.asset as DockerImageAsset,
+        data.cdkOutputDir,
+        data.accountId,
+        data.region,
+        data.profile
+      );
+    }
+    this.logger.debug(`✅ Published: ${node.id}`);
+  }
+
+  /**
+   * Publish assets from manifest file (standalone, uses WorkGraph internally)
    */
   async publishFromManifest(
     manifestPath: string,
@@ -53,19 +155,11 @@ export class AssetPublisher {
     try {
       this.logger.debug('Loading asset manifest:', manifestPath);
 
-      // Load and parse manifest
-      const content = readFileSync(manifestPath, 'utf-8');
-      const manifest = JSON.parse(content) as AssetManifest;
-
-      // Determine cdkOutputDir from manifest path
-      const cdkOutputDir = manifestPath.replace(/\/[^/]+$/, '');
-
       // Resolve account and region
       const region = options.region || process.env['AWS_REGION'] || 'us-east-1';
       let accountId = options.accountId;
 
       if (!accountId) {
-        // Resolve from STS
         const { STSClient, GetCallerIdentityCommand } = await import('@aws-sdk/client-sts');
         const stsClient = new STSClient({ region });
         const identity = await stsClient.send(new GetCallerIdentityCommand({}));
@@ -73,70 +167,28 @@ export class AssetPublisher {
         stsClient.destroy();
       }
 
-      // Collect assets
-      const fileAssets = Object.entries(manifest.files || {}).filter(
-        ([, asset]) =>
-          !asset.source.path.endsWith('.json') && !asset.source.path.endsWith('.template.json')
-      );
-      const dockerAssets = Object.entries(manifest.dockerImages || {});
-      const totalAssets = fileAssets.length + dockerAssets.length;
+      const graph = new WorkGraph();
+      const nodeIds = this.addAssetsToGraph(graph, manifestPath, {
+        accountId,
+        region,
+        ...(options.profile && { profile: options.profile }),
+      });
 
-      if (totalAssets === 0) {
+      if (nodeIds.length === 0) {
         this.logger.debug('No assets to publish');
         return;
       }
 
-      this.logger.debug(
-        `Assets to publish: ${fileAssets.length} files, ${dockerAssets.length} docker images`
+      const concurrency = options.assetPublishConcurrency ?? 8;
+      await graph.execute({ 'asset-publish': concurrency, stack: 0 }, (node) =>
+        this.executeNode(node)
       );
-
-      const fileConcurrency = options.filePublishConcurrency ?? 8;
-      const dockerConcurrency = options.imageBuildConcurrency ?? 4;
-
-      // Publish file assets in parallel (I/O bound, high concurrency)
-      if (fileAssets.length > 0) {
-        await this.runWithConcurrency(
-          fileAssets,
-          async ([hash, asset]) => {
-            this.logger.debug(`Publishing file asset: ${asset.displayName || hash}`);
-            await this.filePublisher.publish(
-              hash,
-              asset,
-              cdkOutputDir,
-              accountId,
-              region,
-              options.profile
-            );
-          },
-          fileConcurrency
-        );
-      }
-
-      // Build and publish Docker images in parallel (CPU/memory bound, lower concurrency)
-      if (dockerAssets.length > 0) {
-        await this.runWithConcurrency(
-          dockerAssets,
-          async ([hash, asset]) => {
-            this.logger.debug(`Publishing Docker image: ${asset.displayName || hash}`);
-            await this.dockerPublisher.publish(
-              hash,
-              asset,
-              cdkOutputDir,
-              accountId,
-              region,
-              options.profile
-            );
-          },
-          dockerConcurrency
-        );
-      }
 
       this.logger.debug('✅ All assets published successfully');
     } catch (error) {
       if (error instanceof AssetError) {
         throw error;
       }
-      // Extract detailed error information from AWS SDK errors
       const err = error as Record<string, unknown>;
       const message = String(err['message'] || err['name'] || error);
       const code = String(err['Code'] || err['code'] || err['name'] || '');
@@ -144,54 +196,6 @@ export class AssetPublisher {
       throw new AssetError(
         `Asset publishing failed: ${detail}`,
         error instanceof Error ? error : undefined
-      );
-    }
-  }
-
-  /**
-   * Run tasks with bounded concurrency
-   */
-  private async runWithConcurrency<T>(
-    items: T[],
-    fn: (item: T) => Promise<void>,
-    concurrency: number
-  ): Promise<void> {
-    if (items.length === 0) return;
-
-    // For single item or concurrency 1, run sequentially
-    if (items.length === 1 || concurrency <= 1) {
-      for (const item of items) {
-        await fn(item);
-      }
-      return;
-    }
-
-    const errors: Error[] = [];
-    let index = 0;
-
-    const runNext = async (): Promise<void> => {
-      while (index < items.length) {
-        const currentIndex = index++;
-        try {
-          await fn(items[currentIndex]!);
-        } catch (error) {
-          errors.push(error instanceof Error ? error : new Error(String(error)));
-          // Continue processing remaining items to avoid partial state
-        }
-      }
-    };
-
-    // Start up to `concurrency` workers
-    const workers = Array.from({ length: Math.min(concurrency, items.length) }, () => runNext());
-    await Promise.all(workers);
-
-    if (errors.length > 0) {
-      if (errors.length === 1) {
-        throw errors[0];
-      }
-      throw new AssetError(
-        `${errors.length} asset(s) failed to publish:\n${errors.map((e) => `  - ${e.message}`).join('\n')}`,
-        errors[0]
       );
     }
   }

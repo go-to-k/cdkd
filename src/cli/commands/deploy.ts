@@ -1,4 +1,3 @@
-import { readFileSync } from 'node:fs';
 import { Command } from 'commander';
 import {
   appOptions,
@@ -12,6 +11,7 @@ import {
 import { getLogger } from '../../utils/logger.js';
 import { withErrorHandling } from '../../utils/error-handler.js';
 import { Synthesizer } from '../../synthesis/synthesizer.js';
+import { AssetPublisher } from '../../assets/asset-publisher.js';
 import { S3StateBackend } from '../../state/s3-state-backend.js';
 import { LockManager } from '../../state/lock-manager.js';
 import { DagBuilder } from '../../analyzer/dag-builder.js';
@@ -40,7 +40,6 @@ async function deployCommand(
     concurrency: number;
     stackConcurrency: number;
     assetPublishConcurrency: number;
-    imageBuildConcurrency: number;
     dryRun: boolean;
     skipAssets: boolean;
     rollback: boolean;
@@ -180,7 +179,6 @@ async function deployCommand(
     }
 
     // 3. Build work graph: asset-publish → stack deploy (DAG)
-    // Resolve account ID once for asset publishing
     const { STSClient, GetCallerIdentityCommand } = await import('@aws-sdk/client-sts');
     const stsClient = new STSClient({
       region: options.region || process.env['AWS_REGION'] || 'us-east-1',
@@ -189,13 +187,7 @@ async function deployCommand(
     const accountId = callerIdentity.Account!;
     stsClient.destroy();
 
-    const filePublisher = new (
-      await import('../../assets/file-asset-publisher.js')
-    ).FileAssetPublisher();
-    const dockerPublisher = new (
-      await import('../../assets/docker-asset-publisher.js')
-    ).DockerAssetPublisher();
-
+    const assetPublisher = new AssetPublisher();
     const stateConfig = {
       bucket: stateBucket,
       prefix: options.statePrefix,
@@ -217,40 +209,18 @@ async function deployCommand(
       const stackNodeId = `stack:${stack.stackName}`;
       const stackDeps = new Set<string>();
 
-      // Add asset-publish nodes for this stack
+      // Add asset-publish nodes via AssetPublisher
       if (!options.skipAssets && stack.assetManifestPath) {
         try {
-          const content = readFileSync(stack.assetManifestPath, 'utf-8');
-          const manifest = JSON.parse(content) as import('../../types/assets.js').AssetManifest;
-
-          // File assets
-          const fileAssets = Object.entries(manifest.files || {}).filter(
-            ([, asset]) =>
-              !asset.source.path.endsWith('.json') && !asset.source.path.endsWith('.template.json')
-          );
-          for (const [hash, asset] of fileAssets) {
-            const nodeId = `asset-publish:${stack.stackName}:file:${hash}`;
-            workGraph.addNode({
-              id: nodeId,
-              type: 'asset-publish',
-              dependencies: new Set(),
-              state: 'pending',
-              data: { kind: 'file', hash, asset, stack },
-            });
-            stackDeps.add(nodeId);
-          }
-
-          // Docker assets
-          for (const [hash, asset] of Object.entries(manifest.dockerImages || {})) {
-            const nodeId = `asset-publish:${stack.stackName}:docker:${hash}`;
-            workGraph.addNode({
-              id: nodeId,
-              type: 'asset-publish',
-              dependencies: new Set(),
-              state: 'pending',
-              data: { kind: 'docker', hash, asset, stack },
-            });
-            stackDeps.add(nodeId);
+          const assetRegion = stack.region || baseRegion;
+          const nodeIds = assetPublisher.addAssetsToGraph(workGraph, stack.assetManifestPath, {
+            accountId,
+            region: assetRegion,
+            ...(options.profile && { profile: options.profile }),
+            nodePrefix: `${stack.stackName}:`,
+          });
+          for (const id of nodeIds) {
+            stackDeps.add(id);
           }
         } catch (error) {
           const err = error as { code?: string };
@@ -258,14 +228,13 @@ async function deployCommand(
         }
       }
 
-      // Add inter-stack dependencies: this stack's deploy depends on dependency stacks' deploy
+      // Add inter-stack dependencies
       for (const depName of stack.dependencyNames) {
         if (stackMap.has(depName)) {
           stackDeps.add(`stack:${depName}`);
         }
       }
 
-      // Add stack deploy node
       workGraph.addNode({
         id: stackNodeId,
         type: 'stack',
@@ -286,38 +255,8 @@ async function deployCommand(
       },
       async (node) => {
         if (node.type === 'asset-publish') {
-          const { kind, hash, asset, stack } = node.data as {
-            kind: 'file' | 'docker';
-            hash: string;
-            asset: unknown;
-            stack: (typeof targetStacks)[0];
-          };
-          const assetRegion = stack.region || baseRegion;
-
-          const cdkOutputDir = stack.assetManifestPath!.replace(/\/[^/]+$/, '');
-          if (kind === 'file') {
-            await filePublisher.publish(
-              hash,
-              asset as import('../../types/assets.js').FileAsset,
-              cdkOutputDir,
-              accountId,
-              assetRegion,
-              options.profile
-            );
-          } else {
-            await dockerPublisher.publish(
-              hash,
-              asset as import('../../types/assets.js').DockerImageAsset,
-              cdkOutputDir,
-              accountId,
-              assetRegion,
-              options.profile
-            );
-          }
-
-          logger.debug(`✅ Published asset: ${node.id}`);
+          await assetPublisher.executeNode(node);
         } else {
-          // Stack deploy
           const { stack: stackInfo } = node.data as { stack: (typeof targetStacks)[0] };
           const stackRegion = stackInfo.region || baseRegion;
 
