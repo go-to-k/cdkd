@@ -16,15 +16,21 @@ import { setAwsClients, AwsClients } from '../../utils/aws-clients.js';
 import { resolveApp, resolveStateBucketWithDefault } from '../config-loader.js';
 
 /**
- * Check if a value contains CloudFormation intrinsic functions.
+ * Check if a value is purely an unresolved CloudFormation intrinsic function.
  * Used to detect false-positive diffs where state has resolved values
  * but template has unresolved intrinsics (Ref, Fn::Sub, Fn::GetAtt, etc.)
+ *
+ * Only returns true when the top-level value itself IS an intrinsic function,
+ * not when it merely contains one as a nested value. This prevents masking
+ * real changes in objects that happen to contain intrinsic siblings
+ * (e.g., Environment.Variables with both plain strings and Fn::Join).
  */
-function containsIntrinsicFunction(value: unknown): boolean {
+function isUnresolvedIntrinsic(value: unknown): boolean {
   if (value === null || value === undefined) return false;
   if (typeof value !== 'object') return false;
-  if (Array.isArray(value)) return value.some(containsIntrinsicFunction);
+  if (Array.isArray(value)) return false;
   const obj = value as Record<string, unknown>;
+  const keys = Object.keys(obj);
   const intrinsicKeys = [
     'Ref',
     'Fn::Sub',
@@ -42,11 +48,8 @@ function containsIntrinsicFunction(value: unknown): boolean {
     'Fn::Or',
     'Fn::Not',
   ];
-  for (const key of intrinsicKeys) {
-    if (key in obj) return true;
-  }
-  // Check nested values
-  return Object.values(obj).some(containsIntrinsicFunction);
+  // A pure intrinsic has exactly one key which is an intrinsic function name
+  return keys.length === 1 && intrinsicKeys.includes(keys[0]!);
 }
 
 /**
@@ -197,7 +200,7 @@ async function diffCommand(
           case 'UPDATE': {
             // Filter out false-positive property changes (resolved vs unresolved intrinsic)
             const realChanges = (change.propertyChanges ?? []).filter(
-              (pc) => !containsIntrinsicFunction(pc.newValue)
+              (pc) => !isUnresolvedIntrinsic(pc.newValue)
             );
             if (realChanges.length === 0 && (change.propertyChanges ?? []).length > 0) {
               // All changes were false positives, skip this resource
@@ -208,7 +211,7 @@ async function diffCommand(
             if (change.propertyChanges && change.propertyChanges.length > 0) {
               for (const propChange of change.propertyChanges) {
                 // Skip false-positive diffs caused by intrinsic functions
-                if (containsIntrinsicFunction(propChange.newValue)) {
+                if (isUnresolvedIntrinsic(propChange.newValue)) {
                   continue;
                 }
                 const requiresReplace = propChange.requiresReplacement
