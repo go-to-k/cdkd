@@ -89,16 +89,12 @@ AWS CDK is great for defining infrastructure as code, but all deployments go thr
        ├── Save to cdk.context.json
        └── Re-execute CDK app with updated context
 
-3. Asset Publishing (self-implemented, no cdk-assets dependency)
-   ├── Publish all stacks' assets before any deployment
-   ├── Region resolved from asset manifest destination (stack's target region)
-   ├── File assets → S3: 8 concurrent uploads (I/O bound, skip if exists via HeadObject)
-   ├── Docker images → ECR: 4 concurrent build+push (CPU bound, skip if exists via DescribeImages)
-   └── Shared assets across stacks: uploaded once, skipped on subsequent stacks
-
-4. Deployment (per stack, parallelized by dependency order)
-   ├── Up to 4 stacks deploy in parallel (--stack-concurrency), dependent stacks wait
+3. Asset Publishing + Deployment (pipelined per stack)
+   ├── Up to 4 stacks run in parallel (--stack-concurrency), dependent stacks wait
    ├── Per-stack flow:
+   │   ├── Publish assets (file: 8 concurrent S3 uploads, docker: 4 concurrent build+push)
+   │   │   ├── Region resolved from asset manifest destination (stack's target region)
+   │   │   └── Skip if already exists (HeadObject for S3, DescribeImages for ECR)
    │   ├── Acquire S3 lock (optimistic locking)
    │   ├── Load current state from S3
    │   ├── Build DAG from template (Ref/Fn::GetAtt/DependsOn)

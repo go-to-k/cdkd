@@ -178,49 +178,8 @@ async function deployCommand(
       }
     }
 
-    // 3. Publish assets (unless --skip-assets)
-    if (!options.skipAssets) {
-      const assetPublisher = new AssetPublisher();
-
-      // Try to find asset manifests for each stack
-      let assetsPublished = false;
-      for (const stack of allStacks) {
-        if (!stack.assetManifestPath) {
-          logger.debug(`No assets manifest found for stack ${stack.stackName} - skipping`);
-          continue;
-        }
-
-        try {
-          // Use stack's target region for asset publishing (falls back to CLI --region or default)
-          const assetRegion =
-            stack.region || options.region || process.env['AWS_REGION'] || 'us-east-1';
-          await assetPublisher.publishFromManifest(stack.assetManifestPath, {
-            region: assetRegion,
-            ...(options.profile && { profile: options.profile }),
-            filePublishConcurrency: options.assetPublishConcurrency,
-            imageBuildConcurrency: options.imageBuildConcurrency,
-          });
-          assetsPublished = true;
-        } catch (error) {
-          const err = error as { code?: string; message?: string };
-          if (err.code === 'ENOENT' || err.message?.includes('ENOENT')) {
-            logger.debug(`No assets manifest found for stack ${stack.stackName} - skipping`);
-          } else {
-            logger.error(
-              `Asset publishing failed for stack ${stack.stackName}:`,
-              err.message || String(error)
-            );
-            throw error;
-          }
-        }
-      }
-
-      if (assetsPublished) {
-        logger.info('✓ Assets published');
-      }
-    }
-
-    // 4. Initialize deployment components
+    // 3. Initialize deployment components
+    const assetPublisher = options.skipAssets ? null : new AssetPublisher();
     const stateConfig = {
       bucket: stateBucket,
       prefix: options.statePrefix,
@@ -236,8 +195,30 @@ async function deployCommand(
       process.env['AWS_DEFAULT_REGION'] = region;
     };
 
-    const deployStack = async (stackInfo: (typeof targetStacks)[0]) => {
+    const publishAndDeployStack = async (stackInfo: (typeof targetStacks)[0]) => {
       const stackRegion = stackInfo.region || baseRegion;
+
+      // Publish assets for this stack (pipelined: publish → deploy per stack)
+      if (assetPublisher && stackInfo.assetManifestPath) {
+        try {
+          const assetRegion = stackRegion;
+          await assetPublisher.publishFromManifest(stackInfo.assetManifestPath, {
+            region: assetRegion,
+            ...(options.profile && { profile: options.profile }),
+            filePublishConcurrency: options.assetPublishConcurrency,
+            imageBuildConcurrency: options.imageBuildConcurrency,
+          });
+          logger.info(`✓ Assets published for ${stackInfo.stackName}`);
+        } catch (error) {
+          const err = error as { code?: string; message?: string };
+          if (err.code === 'ENOENT' || err.message?.includes('ENOENT')) {
+            logger.debug(`No assets manifest found for stack ${stackInfo.stackName} - skipping`);
+          } else {
+            throw error;
+          }
+        }
+      }
+
       logger.info(
         `\nDeploying stack: ${stackInfo.stackName}${stackRegion !== baseRegion ? ` (region: ${stackRegion})` : ''}`
       );
@@ -306,7 +287,7 @@ async function deployCommand(
 
     if (targetStacks.length === 1) {
       // Single stack: deploy directly
-      await deployStack(targetStacks[0]!);
+      await publishAndDeployStack(targetStacks[0]!);
     } else {
       // Multiple stacks: deploy in dependency order, parallelizing independent stacks.
       const deployed = new Set<string>();
@@ -376,7 +357,7 @@ async function deployCommand(
 
         for (const name of ready) {
           const stack = stackMap.get(name)!;
-          const promise = deployStack(stack)
+          const promise = publishAndDeployStack(stack)
             .then(() => {
               deployed.add(name);
             })
