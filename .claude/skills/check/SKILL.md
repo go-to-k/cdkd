@@ -1,11 +1,11 @@
 ---
-name: verify
-description: Run local quality checks (typecheck, lint, build, tests). Lightweight alternative to /verify-pr that skips CI, docs, and AWS resource checks.
+name: check
+description: Run local quality checks (typecheck, lint, build, tests). Quick check during development.
 ---
 
-# Local Verification
+# Local Quality Check
 
-Run all local quality checks. Use when you want to verify the current state without committing or checking CI.
+Run all local quality checks. Use during development to verify the current state quickly.
 
 ## Steps
 

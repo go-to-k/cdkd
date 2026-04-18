@@ -31,7 +31,8 @@ Run all quality checks and create a GitHub PR if everything passes.
    - Determine base branch (default: `main`, overridable with `--base`)
 
 7. **Draft PR title and body**:
-   - Title: concise, under 70 characters, based on the commits
+   - Title: concise, under 70 characters
+   - **Base the title and body on the actual diff (`git diff main...HEAD`), not just commit messages** — commit messages may reflect intermediate iterations that were later reverted
    - **Always write the PR title and body in English**
    - Body format:
      ```
@@ -59,3 +60,4 @@ Run all quality checks and create a GitHub PR if everything passes.
 - Do NOT create a PR if any `/verify-pr` check fails
 - Always push before creating the PR
 - If the branch has no commits ahead of main, warn and stop
+- `gh pr edit` may fail silently (e.g., Projects Classic deprecation). After updating a PR, verify the result with `gh pr view`. If `gh pr edit` fails, fall back to `gh api repos/{owner}/{repo}/pulls/{number} -X PATCH`

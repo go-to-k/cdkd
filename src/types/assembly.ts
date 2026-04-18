@@ -49,7 +49,8 @@ export type ArtifactType =
   | 'aws:cloudformation:stack'
   | 'cdk:asset-manifest'
   | 'cdk:tree'
-  | 'nested-cloud-assembly';
+  | 'cdk:cloud-assembly'
+  | 'cdk:feature-flag-report';
 
 /**
  * CloudFormation stack artifact properties
