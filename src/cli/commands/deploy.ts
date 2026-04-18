@@ -40,6 +40,7 @@ async function deployCommand(
     concurrency: number;
     stackConcurrency: number;
     assetPublishConcurrency: number;
+    imageBuildConcurrency: number;
     dryRun: boolean;
     skipAssets: boolean;
     rollback: boolean;
@@ -250,11 +251,12 @@ async function deployCommand(
     // Execute work graph
     await workGraph.execute(
       {
+        'asset-build': options.imageBuildConcurrency,
         'asset-publish': options.assetPublishConcurrency,
         stack: options.stackConcurrency,
       },
       async (node) => {
-        if (node.type === 'asset-publish') {
+        if (node.type === 'asset-build' || node.type === 'asset-publish') {
           await assetPublisher.executeNode(node);
         } else {
           const { stack: stackInfo } = node.data as { stack: (typeof targetStacks)[0] };

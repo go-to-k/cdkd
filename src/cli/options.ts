@@ -69,9 +69,12 @@ export const deployOptions = [
     .argParser((value) => parseInt(value, 10)),
   new Option(
     '--asset-publish-concurrency <number>',
-    'Maximum concurrent asset operations (S3 uploads + Docker builds)'
+    'Maximum concurrent asset publish operations (S3 uploads + ECR push)'
   )
     .default(8)
+    .argParser((value) => parseInt(value, 10)),
+  new Option('--image-build-concurrency <number>', 'Maximum concurrent Docker image builds')
+    .default(4)
     .argParser((value) => parseInt(value, 10)),
   new Option('--dry-run', 'Show changes without applying').default(false),
   new Option('--skip-assets', 'Skip asset publishing').default(false),

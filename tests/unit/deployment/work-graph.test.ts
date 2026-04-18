@@ -38,7 +38,7 @@ describe('WorkGraph', () => {
     graph.addNode(makeNode('stack:A', 'stack'));
 
     const executed: string[] = [];
-    await graph.execute({ 'asset-publish': 8, stack: 4 }, async (node) => {
+    await graph.execute({ 'asset-build': 4, 'asset-publish': 8, stack: 4 }, async (node) => {
       executed.push(node.id);
     });
 
@@ -51,7 +51,7 @@ describe('WorkGraph', () => {
     graph.addNode(makeNode('stack:A', 'stack', ['asset:A']));
 
     const executed: string[] = [];
-    await graph.execute({ 'asset-publish': 8, stack: 4 }, async (node) => {
+    await graph.execute({ 'asset-build': 4, 'asset-publish': 8, stack: 4 }, async (node) => {
       executed.push(node.id);
     });
 
@@ -65,7 +65,7 @@ describe('WorkGraph', () => {
     graph.addNode(makeNode('stack:A', 'stack', ['asset:A', 'asset:B']));
 
     const callOrder: string[] = [];
-    await graph.execute({ 'asset-publish': 8, stack: 4 }, async (node) => {
+    await graph.execute({ 'asset-build': 4, 'asset-publish': 8, stack: 4 }, async (node) => {
       callOrder.push(`start:${node.id}`);
       await new Promise((r) => setTimeout(r, 10));
       callOrder.push(`end:${node.id}`);
@@ -93,7 +93,7 @@ describe('WorkGraph', () => {
     let concurrent = 0;
     let maxConcurrent = 0;
 
-    await graph.execute({ 'asset-publish': 2, stack: 4 }, async (node) => {
+    await graph.execute({ 'asset-build': 4, 'asset-publish': 2, stack: 4 }, async (node) => {
       if (node.type === 'asset-publish') {
         concurrent++;
         maxConcurrent = Math.max(maxConcurrent, concurrent);
@@ -113,7 +113,7 @@ describe('WorkGraph', () => {
 
     const executed: string[] = [];
     await expect(
-      graph.execute({ 'asset-publish': 8, stack: 4 }, async (node) => {
+      graph.execute({ 'asset-build': 4, 'asset-publish': 8, stack: 4 }, async (node) => {
         executed.push(node.id);
         if (node.id === 'asset:A') {
           throw new Error('publish failed');
@@ -130,7 +130,7 @@ describe('WorkGraph', () => {
     graph.addNode(makeNode('stack:B', 'stack', ['stack:A']));
 
     const executed: string[] = [];
-    await graph.execute({ 'asset-publish': 8, stack: 4 }, async (node) => {
+    await graph.execute({ 'asset-build': 4, 'asset-publish': 8, stack: 4 }, async (node) => {
       executed.push(node.id);
     });
 
@@ -143,7 +143,7 @@ describe('WorkGraph', () => {
     graph.addNode(makeNode('stack:B', 'stack'));
 
     const callOrder: string[] = [];
-    await graph.execute({ 'asset-publish': 8, stack: 4 }, async (node) => {
+    await graph.execute({ 'asset-build': 4, 'asset-publish': 8, stack: 4 }, async (node) => {
       callOrder.push(`start:${node.id}`);
       await new Promise((r) => setTimeout(r, 10));
       callOrder.push(`end:${node.id}`);
@@ -165,7 +165,7 @@ describe('WorkGraph', () => {
     graph.addNode(makeNode('stack:B', 'stack', ['asset:B']));
 
     const callOrder: string[] = [];
-    await graph.execute({ 'asset-publish': 8, stack: 4 }, async (node) => {
+    await graph.execute({ 'asset-build': 4, 'asset-publish': 8, stack: 4 }, async (node) => {
       callOrder.push(`start:${node.id}`);
       await new Promise((r) => setTimeout(r, 10));
       callOrder.push(`end:${node.id}`);
@@ -189,13 +189,13 @@ describe('WorkGraph', () => {
     graph.addNode(makeNode('asset:B', 'asset-publish'));
     graph.addNode(makeNode('stack:A', 'stack'));
 
-    expect(graph.summary()).toEqual({ 'asset-publish': 2, stack: 1 });
+    expect(graph.summary()).toEqual({ 'asset-build': 0, 'asset-publish': 2, stack: 1 });
   });
 
   it('should handle empty graph', async () => {
     const graph = new WorkGraph();
     const executed: string[] = [];
-    await graph.execute({ 'asset-publish': 8, stack: 4 }, async (node) => {
+    await graph.execute({ 'asset-build': 4, 'asset-publish': 8, stack: 4 }, async (node) => {
       executed.push(node.id);
     });
     expect(executed).toEqual([]);

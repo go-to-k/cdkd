@@ -14,10 +14,14 @@ vi.mock('../../../src/assets/file-asset-publisher.js', () => ({
 }));
 
 // Mock DockerAssetPublisher
+const mockDockerBuild = vi.fn();
+const mockDockerPush = vi.fn();
 const mockDockerPublish = vi.fn();
 vi.mock('../../../src/assets/docker-asset-publisher.js', () => ({
   DockerAssetPublisher: vi.fn().mockImplementation(() => ({
     publish: mockDockerPublish,
+    build: mockDockerBuild,
+    push: mockDockerPush,
   })),
 }));
 
@@ -71,6 +75,8 @@ describe('AssetPublisher', () => {
     publisher = new AssetPublisher();
     mockFilePublish.mockResolvedValue(undefined);
     mockDockerPublish.mockResolvedValue(undefined);
+    mockDockerBuild.mockResolvedValue(undefined);
+    mockDockerPush.mockResolvedValue(undefined);
   });
 
   it('should publish file assets from manifest', async () => {
@@ -129,13 +135,16 @@ describe('AssetPublisher', () => {
       region: 'us-east-1',
     });
 
-    expect(mockDockerPublish).toHaveBeenCalledWith(
-      'docker456',
+    expect(mockDockerBuild).toHaveBeenCalledWith(
       manifest.dockerImages['docker456'],
       '/tmp/cdk.out',
+      'cdkd-asset-docker456'
+    );
+    expect(mockDockerPush).toHaveBeenCalledWith(
+      manifest.dockerImages['docker456'],
       '123456789012',
       'us-east-1',
-      undefined
+      'cdkd-asset-docker456'
     );
   });
 
@@ -317,12 +326,12 @@ describe('AssetPublisher', () => {
       expect(startsBeforeFirstEnd.length).toBeGreaterThanOrEqual(2);
     });
 
-    it('should publish multiple docker assets in parallel', async () => {
+    it('should build multiple docker assets in parallel', async () => {
       const callOrder: string[] = [];
-      mockDockerPublish.mockImplementation(async (hash: string) => {
-        callOrder.push(`start-${hash}`);
+      mockDockerBuild.mockImplementation(async (_asset: unknown, _dir: string, tag: string) => {
+        callOrder.push(`start-${tag}`);
         await new Promise((r) => setTimeout(r, 10));
-        callOrder.push(`end-${hash}`);
+        callOrder.push(`end-${tag}`);
       });
 
       const dockerImages: Record<string, (typeof manifest.dockerImages)[string]> = {};
@@ -340,10 +349,11 @@ describe('AssetPublisher', () => {
       await publisher.publishFromManifest('/tmp/cdk.out/manifest.json', {
         accountId: '123456789012',
         region: 'us-east-1',
-        assetPublishConcurrency: 3,
+        imageBuildConcurrency: 3,
       });
 
-      expect(mockDockerPublish).toHaveBeenCalledTimes(3);
+      expect(mockDockerBuild).toHaveBeenCalledTimes(3);
+      expect(mockDockerPush).toHaveBeenCalledTimes(3);
       const startsBeforeFirstEnd = callOrder
         .slice(0, callOrder.indexOf(callOrder.find((e) => e.startsWith('end-'))!))
         .filter((e) => e.startsWith('start-'));

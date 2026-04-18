@@ -367,10 +367,14 @@ DAG-based orchestrator for asset publishing and stack deployment. Each asset and
 
 | Type | Concurrency | Description |
 | --- | --- | --- |
-| `asset-publish` | 8 (default) | S3 file upload or Docker build+push |
+| `asset-build` | 4 (default) | Docker image build (CPU/memory bound) |
+| `asset-publish` | 8 (default) | S3 file upload or ECR push (I/O bound) |
 | `stack` | 4 (default) | Stack deployment via DeployEngine |
 
-**Dependencies**: `asset-publish → stack` (all assets complete before deploy), `stack → stack` (CDK inter-stack dependencies).
+**Dependencies**:
+- File assets: `asset-publish → stack`
+- Docker assets: `asset-build → asset-publish → stack`
+- Inter-stack: `stack → stack` (CDK dependency order)
 
 **Algorithm**: Lazy ready-pool evaluation — nodes become ready when all dependencies are completed. Per-type concurrency limits, failure propagation (downstream nodes skipped), deadlock detection.
 

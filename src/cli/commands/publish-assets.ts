@@ -13,6 +13,7 @@ async function publishAssetsCommand(options: {
   region?: string;
   profile?: string;
   assetPublishConcurrency: number;
+  imageBuildConcurrency: number;
 }): Promise<void> {
   const logger = getLogger();
 
@@ -29,6 +30,7 @@ async function publishAssetsCommand(options: {
     ...(options.profile && { profile: options.profile }),
     ...(options.region && { region: options.region }),
     assetPublishConcurrency: options.assetPublishConcurrency,
+    imageBuildConcurrency: options.imageBuildConcurrency,
   });
 
   logger.info('✅ Asset publishing complete');
@@ -42,8 +44,16 @@ export function createPublishAssetsCommand(): Command {
     .description('Publish assets to S3/ECR from asset manifest')
     .requiredOption('--path <path>', 'Path to asset manifest file or directory')
     .addOption(
-      new Option('--asset-publish-concurrency <number>', 'Maximum concurrent asset operations')
+      new Option(
+        '--asset-publish-concurrency <number>',
+        'Maximum concurrent asset publish operations'
+      )
         .default(8)
+        .argParser((value) => parseInt(value, 10))
+    )
+    .addOption(
+      new Option('--image-build-concurrency <number>', 'Maximum concurrent Docker image builds')
+        .default(4)
         .argParser((value) => parseInt(value, 10))
     )
     .action(withErrorHandling(publishAssetsCommand));

@@ -3,7 +3,7 @@ import { getLogger } from '../utils/logger.js';
 /**
  * Node types in the work graph
  */
-export type WorkNodeType = 'asset-publish' | 'stack';
+export type WorkNodeType = 'asset-build' | 'asset-publish' | 'stack';
 
 /**
  * Node states
@@ -26,24 +26,27 @@ export interface WorkNode {
  * Concurrency limits per node type
  */
 export interface WorkGraphConcurrency {
+  'asset-build': number;
   'asset-publish': number;
   stack: number;
 }
 
 /**
- * Work graph for orchestrating asset publishing and stack deployments.
+ * Work graph for orchestrating asset building, publishing and stack deployments.
  *
  * Manages a DAG of nodes with dependencies, executing them in parallel
  * with per-type concurrency limits. Nodes become ready when all their
  * dependencies are completed.
  *
  * Node types:
- * - asset-publish: S3 upload or Docker build+push
- * - stack: Stack deployment (depends on its asset-publish nodes)
+ * - asset-build: Docker image build (CPU/memory bound)
+ * - asset-publish: S3 upload or ECR push (I/O bound)
+ * - stack: Stack deployment (depends on its asset nodes)
  *
  * Dependencies:
- * - asset-publish → stack (all stack's assets must be published before deploy)
- * - stack → stack (inter-stack dependencies from CDK)
+ * - File assets: asset-publish → stack
+ * - Docker assets: asset-build → asset-publish → stack
+ * - Inter-stack: stack → stack (CDK dependency order)
  */
 export class WorkGraph {
   private nodes = new Map<string, WorkNode>();
@@ -60,7 +63,7 @@ export class WorkGraph {
     concurrency: WorkGraphConcurrency,
     fn: (node: WorkNode) => Promise<void>
   ): Promise<void> {
-    const active: Record<WorkNodeType, number> = { 'asset-publish': 0, stack: 0 };
+    const active: Record<WorkNodeType, number> = { 'asset-build': 0, 'asset-publish': 0, stack: 0 };
     const errors: Array<{ nodeId: string; error: unknown }> = [];
 
     return new Promise<void>((resolve, reject) => {
@@ -116,14 +119,13 @@ export class WorkGraph {
         }
 
         // Check termination
-        const totalActive = active['asset-publish'] + active['stack'];
+        const totalActive = active['asset-build'] + active['asset-publish'] + active['stack'];
         if (totalActive === 0) {
           const pending = [...this.nodes.values()].filter(
             (n) => n.state === 'pending' || n.state === 'queued'
           );
 
           if (pending.length > 0) {
-            // Cycle detection: pending nodes exist but nothing is running or ready
             reject(
               new Error(
                 `Deadlock detected: ${pending.length} node(s) stuck with unresolvable dependencies`
@@ -159,10 +161,10 @@ export class WorkGraph {
   }
 
   /**
-   * Get summary of node counts by type and state
+   * Get summary of node counts by type
    */
   summary(): Record<WorkNodeType, number> {
-    const counts: Record<WorkNodeType, number> = { 'asset-publish': 0, stack: 0 };
+    const counts: Record<WorkNodeType, number> = { 'asset-build': 0, 'asset-publish': 0, stack: 0 };
     for (const node of this.nodes.values()) {
       counts[node.type]++;
     }

@@ -7,17 +7,41 @@ import { getLogger } from '../utils/logger.js';
 import { AssetError } from '../utils/error-handler.js';
 
 /**
- * Data attached to an asset-publish WorkNode
+ * Data attached to a file asset-publish node
  */
-export interface AssetNodeData {
-  kind: 'file' | 'docker';
+export interface FileAssetNodeData {
+  kind: 'file';
   hash: string;
-  asset: FileAsset | DockerImageAsset;
+  asset: FileAsset;
   cdkOutputDir: string;
   accountId: string;
   region: string;
   profile?: string;
 }
+
+/**
+ * Data attached to a Docker asset-build node
+ */
+export interface DockerBuildNodeData {
+  kind: 'docker-build';
+  hash: string;
+  asset: DockerImageAsset;
+  cdkOutputDir: string;
+  localTag: string;
+}
+
+/**
+ * Data attached to a Docker asset-publish node
+ */
+export interface DockerPublishNodeData {
+  kind: 'docker-publish';
+  asset: DockerImageAsset;
+  accountId: string;
+  region: string;
+  localTag: string;
+}
+
+export type AssetNodeData = FileAssetNodeData | DockerBuildNodeData | DockerPublishNodeData;
 
 /**
  * Asset publishing options
@@ -32,18 +56,19 @@ export interface AssetPublisherOptions {
   /** AWS account ID */
   accountId?: string;
 
-  /**
-   * Concurrency for asset publishing.
-   * Default: 8
-   */
+  /** Concurrency for asset publishing (S3 uploads + ECR push). Default: 8 */
   assetPublishConcurrency?: number;
+
+  /** Concurrency for Docker image builds. Default: 4 */
+  imageBuildConcurrency?: number;
 }
 
 /**
  * Asset publisher
  *
  * Orchestrates file and Docker image asset publishing via WorkGraph.
- * Used both by `deploy` (nodes added to shared graph) and `publish-assets` (standalone).
+ * - File assets: single asset-publish node (S3 upload)
+ * - Docker assets: asset-build node → asset-publish node (build then push)
  */
 export class AssetPublisher {
   private logger = getLogger().child('AssetPublisher');
@@ -51,8 +76,8 @@ export class AssetPublisher {
   private dockerPublisher = new DockerAssetPublisher();
 
   /**
-   * Add asset-publish nodes from a manifest to a WorkGraph.
-   * Returns the node IDs added (for wiring as dependencies).
+   * Add asset nodes from a manifest to a WorkGraph.
+   * Returns the node IDs that stack deploy should depend on.
    */
   addAssetsToGraph(
     graph: WorkGraph,
@@ -65,7 +90,7 @@ export class AssetPublisher {
     const prefix = options.nodePrefix || '';
     const nodeIds: string[] = [];
 
-    // File assets
+    // File assets: single publish node
     const fileAssets = Object.entries(manifest.files || {}).filter(
       ([, asset]) =>
         !asset.source.path.endsWith('.json') && !asset.source.path.endsWith('.template.json')
@@ -85,30 +110,47 @@ export class AssetPublisher {
           accountId: options.accountId,
           region: options.region,
           ...(options.profile && { profile: options.profile }),
-        } satisfies AssetNodeData,
+        } satisfies FileAssetNodeData,
       });
       nodeIds.push(nodeId);
     }
 
-    // Docker assets
+    // Docker assets: build node → publish node
     for (const [hash, asset] of Object.entries(manifest.dockerImages || {})) {
-      const nodeId = `asset-publish:${prefix}docker:${hash}`;
+      const localTag = `cdkd-asset-${hash}`;
+      const buildNodeId = `asset-build:${prefix}docker:${hash}`;
+      const publishNodeId = `asset-publish:${prefix}docker:${hash}`;
+
       graph.addNode({
-        id: nodeId,
-        type: 'asset-publish',
+        id: buildNodeId,
+        type: 'asset-build',
         dependencies: new Set(),
         state: 'pending',
         data: {
-          kind: 'docker',
+          kind: 'docker-build',
           hash,
           asset,
           cdkOutputDir,
+          localTag,
+        } satisfies DockerBuildNodeData,
+      });
+
+      graph.addNode({
+        id: publishNodeId,
+        type: 'asset-publish',
+        dependencies: new Set([buildNodeId]),
+        state: 'pending',
+        data: {
+          kind: 'docker-publish',
+          asset,
           accountId: options.accountId,
           region: options.region,
-          ...(options.profile && { profile: options.profile }),
-        } satisfies AssetNodeData,
+          localTag,
+        } satisfies DockerPublishNodeData,
       });
-      nodeIds.push(nodeId);
+
+      // Stack depends on the publish node (not build)
+      nodeIds.push(publishNodeId);
     }
 
     this.logger.debug(
@@ -119,30 +161,27 @@ export class AssetPublisher {
   }
 
   /**
-   * Execute an asset-publish node
+   * Execute an asset node (build or publish)
    */
   async executeNode(node: WorkNode): Promise<void> {
     const data = node.data as AssetNodeData;
+
     if (data.kind === 'file') {
       await this.filePublisher.publish(
         data.hash,
-        data.asset as FileAsset,
+        data.asset,
         data.cdkOutputDir,
         data.accountId,
         data.region,
         data.profile
       );
-    } else {
-      await this.dockerPublisher.publish(
-        data.hash,
-        data.asset as DockerImageAsset,
-        data.cdkOutputDir,
-        data.accountId,
-        data.region,
-        data.profile
-      );
+    } else if (data.kind === 'docker-build') {
+      await this.dockerPublisher.build(data.asset, data.cdkOutputDir, data.localTag);
+    } else if (data.kind === 'docker-publish') {
+      await this.dockerPublisher.push(data.asset, data.accountId, data.region, data.localTag);
     }
-    this.logger.debug(`✅ Published: ${node.id}`);
+
+    this.logger.debug(`✅ ${node.id}`);
   }
 
   /**
@@ -155,7 +194,6 @@ export class AssetPublisher {
     try {
       this.logger.debug('Loading asset manifest:', manifestPath);
 
-      // Resolve account and region
       const region = options.region || process.env['AWS_REGION'] || 'us-east-1';
       let accountId = options.accountId;
 
@@ -179,9 +217,13 @@ export class AssetPublisher {
         return;
       }
 
-      const concurrency = options.assetPublishConcurrency ?? 8;
-      await graph.execute({ 'asset-publish': concurrency, stack: 0 }, (node) =>
-        this.executeNode(node)
+      await graph.execute(
+        {
+          'asset-build': options.imageBuildConcurrency ?? 4,
+          'asset-publish': options.assetPublishConcurrency ?? 8,
+          stack: 0,
+        },
+        (node) => this.executeNode(node)
       );
 
       this.logger.debug('✅ All assets published successfully');
