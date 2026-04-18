@@ -37,6 +37,9 @@ Build cdkd and output commands that can be pasted into another CDK project's ter
    # Deploy (verbose)
    node /path/to/cdkd/dist/cli.js deploy --verbose
 
+   # Deploy (no wait - don't wait for resource stabilization)
+   node /path/to/cdkd/dist/cli.js deploy --no-wait
+
    # Destroy
    node /path/to/cdkd/dist/cli.js destroy --force
    ```
