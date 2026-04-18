@@ -347,6 +347,8 @@ See [docs/provider-development.md](docs/provider-development.md) for details.
 - ✅ Self-implemented asset publishing (removed @aws-cdk/cdk-assets-lib, using archiver for ZIP)
 - ✅ Context providers for missing context resolution (see `src/synthesis/context-providers/` for full list)
 - ✅ Cloud Assembly manifest.json direct parsing with custom type definitions
+- ✅ WorkGraph DAG orchestrator for asset publishing and stack deployment (build→publish→deploy pipeline)
+- ✅ Concurrency options: `--asset-publish-concurrency` (default 8), `--image-build-concurrency` (default 4)
 
 ## Dependencies
 
