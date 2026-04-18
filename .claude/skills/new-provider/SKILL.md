@@ -52,6 +52,8 @@ The user provides an AWS resource type like `AWS::SES::EmailIdentity`.
 
 9. **Run typecheck, lint, build, and tests** to verify everything works.
 
+10. **Create integration test** by invoking `/new-integ` with a test name based on the resource type (e.g., `ses-email-identity`). The integ test should create a minimal CDK stack using the new resource type.
+
 ## Important
 
 - Follow the exact patterns used by existing providers
@@ -59,3 +61,4 @@ The user provides an AWS resource type like `AWS::SES::EmailIdentity`.
 - Physical ID should match what CloudFormation uses for that resource type
 - Include delete idempotency (not-found errors treated as success)
 - Do NOT add the SDK client package yourself; tell the user if it's missing
+- Always create an integration test after the provider is implemented

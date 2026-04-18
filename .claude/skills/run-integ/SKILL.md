@@ -1,5 +1,5 @@
 ---
-name: integ
+name: run-integ
 description: Run integration tests (deploy + destroy) against real AWS. Use when you need to verify cdkd works end-to-end with actual AWS resources.
 argument-hint: "<test-name|all> [--synth-only] [--no-destroy]"
 ---
