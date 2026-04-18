@@ -15,6 +15,81 @@ import { DiffCalculator } from '../../analyzer/diff-calculator.js';
 import { setAwsClients, AwsClients } from '../../utils/aws-clients.js';
 import { resolveApp, resolveStateBucketWithDefault } from '../config-loader.js';
 
+const INTRINSIC_KEYS = new Set([
+  'Ref',
+  'Fn::Sub',
+  'Fn::GetAtt',
+  'Fn::Join',
+  'Fn::Select',
+  'Fn::Split',
+  'Fn::If',
+  'Fn::ImportValue',
+  'Fn::FindInMap',
+  'Fn::Base64',
+  'Fn::GetAZs',
+  'Fn::Equals',
+  'Fn::And',
+  'Fn::Or',
+  'Fn::Not',
+]);
+
+function isIntrinsic(value: unknown): boolean {
+  if (value === null || value === undefined || typeof value !== 'object' || Array.isArray(value)) {
+    return false;
+  }
+  const keys = Object.keys(value as Record<string, unknown>);
+  return keys.length === 1 && INTRINSIC_KEYS.has(keys[0]!);
+}
+
+/**
+ * Strip unchanged and intrinsic-only values from a diff value.
+ *
+ * Recursively compares `value` against `other` and keeps only the keys
+ * whose values actually differ (excluding intrinsic vs resolved mismatches).
+ * This produces a minimal diff showing only real changes.
+ */
+function stripUnchangedValues(value: unknown, other: unknown): unknown {
+  // Primitives or nulls: return as-is (the caller already determined these differ)
+  if (value === null || value === undefined || typeof value !== 'object') return value;
+  if (Array.isArray(value)) return value;
+
+  // If value itself is an intrinsic, omit it (it's not a real change)
+  if (isIntrinsic(value)) return undefined;
+  // If the other side is an intrinsic, the resolved value on this side is not a real change
+  if (isIntrinsic(other)) return undefined;
+
+  if (other === null || other === undefined || typeof other !== 'object' || Array.isArray(other)) {
+    return value;
+  }
+
+  const valObj = value as Record<string, unknown>;
+  const otherObj = other as Record<string, unknown>;
+  const result: Record<string, unknown> = {};
+
+  for (const key of Object.keys(valObj)) {
+    const v = valObj[key];
+    const o = otherObj[key];
+
+    // If either side is intrinsic for this key, skip (not a real change)
+    if (isIntrinsic(v) || isIntrinsic(o)) continue;
+
+    // If values are deeply equal, skip
+    if (JSON.stringify(v) === JSON.stringify(o)) continue;
+
+    // Recurse for nested objects
+    if (typeof v === 'object' && v !== null && typeof o === 'object' && o !== null) {
+      const filtered = stripUnchangedValues(v, o);
+      if (filtered !== undefined && JSON.stringify(filtered) !== '{}') {
+        result[key] = filtered;
+      }
+    } else {
+      result[key] = v;
+    }
+  }
+
+  return Object.keys(result).length > 0 ? result : value;
+}
+
 /**
  * Diff command implementation
  */
@@ -168,8 +243,11 @@ async function diffCommand(
                 const requiresReplace = propChange.requiresReplacement
                   ? ' [requires replacement]'
                   : '';
-                const oldStr = JSON.stringify(propChange.oldValue, null, 2);
-                const newStr = JSON.stringify(propChange.newValue, null, 2);
+                // Strip unchanged and intrinsic values to show only actual changes
+                const oldFiltered = stripUnchangedValues(propChange.oldValue, propChange.newValue);
+                const newFiltered = stripUnchangedValues(propChange.newValue, propChange.oldValue);
+                const oldStr = JSON.stringify(oldFiltered, null, 2);
+                const newStr = JSON.stringify(newFiltered, null, 2);
                 logger.info(`      - ${propChange.path}:${requiresReplace}`);
                 logger.info(`          old: ${oldStr}`);
                 logger.info(`          new: ${newStr}`);
