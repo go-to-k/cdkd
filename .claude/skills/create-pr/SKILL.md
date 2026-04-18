@@ -60,3 +60,4 @@ Run all quality checks and create a GitHub PR if everything passes.
 - Do NOT create a PR if any `/verify-pr` check fails
 - Always push before creating the PR
 - If the branch has no commits ahead of main, warn and stop
+- `gh pr edit` may fail silently (e.g., Projects Classic deprecation). After updating a PR, verify the result with `gh pr view`. If `gh pr edit` fails, fall back to `gh api repos/{owner}/{repo}/pulls/{number} -X PATCH`
