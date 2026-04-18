@@ -79,6 +79,14 @@ export class Synthesizer {
     const cdkJsonContext = (cdkJson?.context as Record<string, unknown>) ?? {};
     const cliContext = (options.context as Record<string, unknown>) ?? {};
 
+    // CDK CLI injects these context values by default for framework compatibility
+    const cdkDefaults: Record<string, unknown> = {
+      'aws:cdk:enable-path-metadata': true,
+      'aws:cdk:enable-asset-metadata': true,
+      'aws:cdk:version-reporting': true,
+      'aws:cdk:bundling-stacks': ['**'],
+    };
+
     // Resolve AWS account/region for context passing
     const region = options.region || process.env['AWS_REGION'] || process.env['AWS_DEFAULT_REGION'];
     let accountId: string | undefined;
@@ -103,8 +111,9 @@ export class Synthesizer {
       // Load cdk.context.json (re-read each iteration — providers may have updated it)
       const cdkContextJson = this.contextStore.load();
 
-      // Merge context: cdk.json < cdk.context.json < CLI -c (CLI wins)
+      // Merge context: defaults < cdk.json < cdk.context.json < CLI -c (CLI wins)
       const mergedContext: Record<string, unknown> = {
+        ...cdkDefaults,
         ...cdkJsonContext,
         ...cdkContextJson,
         ...cliContext,
