@@ -18,15 +18,25 @@ export interface AssetPublisherOptions {
   /** AWS account ID */
   accountId?: string;
 
-  /** Whether to publish in parallel */
-  publishInParallel?: boolean;
+  /**
+   * Concurrency for file asset publishing (I/O bound).
+   * Default: 8
+   */
+  filePublishConcurrency?: number;
+
+  /**
+   * Concurrency for Docker image builds (CPU/memory bound).
+   * Default: 4
+   */
+  dockerBuildConcurrency?: number;
 }
 
 /**
  * Asset publisher
  *
- * Orchestrates file and Docker image asset publishing.
- * Replaces @aws-cdk/cdk-assets-lib with self-implemented publishers.
+ * Orchestrates file and Docker image asset publishing with parallelization.
+ * - File publish: 8 concurrent uploads (I/O bound)
+ * - Docker build+push: 4 concurrent (CPU/memory bound)
  */
 export class AssetPublisher {
   private logger = getLogger().child('AssetPublisher');
@@ -63,7 +73,7 @@ export class AssetPublisher {
         stsClient.destroy();
       }
 
-      // Count assets
+      // Collect assets
       const fileAssets = Object.entries(manifest.files || {}).filter(
         ([, asset]) =>
           !asset.source.path.endsWith('.json') && !asset.source.path.endsWith('.template.json')
@@ -80,29 +90,44 @@ export class AssetPublisher {
         `Assets to publish: ${fileAssets.length} files, ${dockerAssets.length} docker images`
       );
 
-      // Publish file assets
-      for (const [hash, asset] of fileAssets) {
-        this.logger.debug(`Publishing file asset: ${asset.displayName || hash}`);
-        await this.filePublisher.publish(
-          hash,
-          asset,
-          cdkOutputDir,
-          accountId,
-          region,
-          options.profile
+      const fileConcurrency = options.filePublishConcurrency ?? 8;
+      const dockerConcurrency = options.dockerBuildConcurrency ?? 4;
+
+      // Publish file assets in parallel (I/O bound, high concurrency)
+      if (fileAssets.length > 0) {
+        await this.runWithConcurrency(
+          fileAssets,
+          async ([hash, asset]) => {
+            this.logger.debug(`Publishing file asset: ${asset.displayName || hash}`);
+            await this.filePublisher.publish(
+              hash,
+              asset,
+              cdkOutputDir,
+              accountId,
+              region,
+              options.profile
+            );
+          },
+          fileConcurrency
         );
       }
 
-      // Publish Docker image assets
-      for (const [hash, asset] of dockerAssets) {
-        this.logger.debug(`Publishing Docker image: ${asset.displayName || hash}`);
-        await this.dockerPublisher.publish(
-          hash,
-          asset,
-          cdkOutputDir,
-          accountId,
-          region,
-          options.profile
+      // Build and publish Docker images in parallel (CPU/memory bound, lower concurrency)
+      if (dockerAssets.length > 0) {
+        await this.runWithConcurrency(
+          dockerAssets,
+          async ([hash, asset]) => {
+            this.logger.debug(`Publishing Docker image: ${asset.displayName || hash}`);
+            await this.dockerPublisher.publish(
+              hash,
+              asset,
+              cdkOutputDir,
+              accountId,
+              region,
+              options.profile
+            );
+          },
+          dockerConcurrency
         );
       }
 
@@ -119,6 +144,54 @@ export class AssetPublisher {
       throw new AssetError(
         `Asset publishing failed: ${detail}`,
         error instanceof Error ? error : undefined
+      );
+    }
+  }
+
+  /**
+   * Run tasks with bounded concurrency
+   */
+  private async runWithConcurrency<T>(
+    items: T[],
+    fn: (item: T) => Promise<void>,
+    concurrency: number
+  ): Promise<void> {
+    if (items.length === 0) return;
+
+    // For single item or concurrency 1, run sequentially
+    if (items.length === 1 || concurrency <= 1) {
+      for (const item of items) {
+        await fn(item);
+      }
+      return;
+    }
+
+    const errors: Error[] = [];
+    let index = 0;
+
+    const runNext = async (): Promise<void> => {
+      while (index < items.length) {
+        const currentIndex = index++;
+        try {
+          await fn(items[currentIndex]!);
+        } catch (error) {
+          errors.push(error instanceof Error ? error : new Error(String(error)));
+          // Continue processing remaining items to avoid partial state
+        }
+      }
+    };
+
+    // Start up to `concurrency` workers
+    const workers = Array.from({ length: Math.min(concurrency, items.length) }, () => runNext());
+    await Promise.all(workers);
+
+    if (errors.length > 0) {
+      if (errors.length === 1) {
+        throw errors[0];
+      }
+      throw new AssetError(
+        `${errors.length} asset(s) failed to publish:\n${errors.map((e) => `  - ${e.message}`).join('\n')}`,
+        errors[0]
       );
     }
   }

@@ -37,6 +37,7 @@ async function deployCommand(
     region?: string;
     profile?: string;
     concurrency: number;
+    stackConcurrency: number;
     dryRun: boolean;
     skipAssets: boolean;
     rollback: boolean;
@@ -345,6 +346,12 @@ async function deployCommand(
           if (depsReady) {
             ready.push(name);
           }
+        }
+
+        // Limit to stack concurrency
+        const slotsAvailable = options.stackConcurrency - deploying.size;
+        if (slotsAvailable < ready.length) {
+          ready.splice(slotsAvailable);
         }
 
         for (const name of toSkip) {

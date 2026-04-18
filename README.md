@@ -90,14 +90,14 @@ AWS CDK is great for defining infrastructure as code, but all deployments go thr
        └── Re-execute CDK app with updated context
 
 3. Asset Publishing (self-implemented, no cdk-assets dependency)
-   ├── Publish all stacks' assets sequentially before any deployment
+   ├── Publish all stacks' assets before any deployment
    ├── Region resolved from asset manifest destination (stack's target region)
-   ├── File assets → S3 (ZIP packaging if needed, skip if already exists via HeadObject)
-   ├── Docker images → ECR (docker build + tag + push, skip if already exists via DescribeImages)
+   ├── File assets → S3: 8 concurrent uploads (I/O bound, skip if exists via HeadObject)
+   ├── Docker images → ECR: 4 concurrent build+push (CPU bound, skip if exists via DescribeImages)
    └── Shared assets across stacks: uploaded once, skipped on subsequent stacks
 
 4. Deployment (per stack, parallelized by dependency order)
-   ├── Independent stacks deploy in parallel, dependent stacks wait
+   ├── Up to 4 stacks deploy in parallel (--stack-concurrency), dependent stacks wait
    ├── Per-stack flow:
    │   ├── Acquire S3 lock (optimistic locking)
    │   ├── Load current state from S3

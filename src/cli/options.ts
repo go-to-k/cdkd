@@ -64,6 +64,9 @@ export const deployOptions = [
   new Option('--concurrency <number>', 'Maximum concurrent resource operations')
     .default(10)
     .argParser((value) => parseInt(value, 10)),
+  new Option('--stack-concurrency <number>', 'Maximum concurrent stack deployments')
+    .default(4)
+    .argParser((value) => parseInt(value, 10)),
   new Option('--dry-run', 'Show changes without applying').default(false),
   new Option('--skip-assets', 'Skip asset publishing').default(false),
   new Option('--no-rollback', 'Skip rollback on deployment failure'),
