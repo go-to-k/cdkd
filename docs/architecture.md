@@ -194,14 +194,7 @@ Publishes Docker image assets to ECR:
 
 #### `asset-publisher.ts` - AssetPublisher
 
-Orchestrator that reads asset manifests and delegates to the appropriate publisher (file or Docker) based on asset type. Publishes assets in parallel using a bounded concurrency worker pool.
-
-**Default Concurrency**:
-
-| Operation | Concurrency | Rationale |
-| --- | --- | --- |
-| File publish (S3) | 8 | I/O bound |
-| Docker build+push | 4 | CPU/memory bound |
+Orchestrator that reads asset manifests and delegates to the appropriate publisher (file or Docker) based on asset type. Used by standalone `publish-assets` command. For `deploy`, the `WorkGraph` DAG manages individual asset nodes directly.
 
 **Asset Types**:
 
@@ -364,7 +357,22 @@ interface LockInfo {
 
 ### 6. Deployment Layer (`src/deployment/`)
 
-**Responsibilities**: Deployment execution control, intrinsic function resolution
+**Responsibilities**: Deployment execution control, intrinsic function resolution, work graph orchestration
+
+#### `work-graph.ts` - WorkGraph
+
+DAG-based orchestrator for asset publishing and stack deployment. Each asset and stack deploy is a node with typed dependencies.
+
+**Node Types**:
+
+| Type | Concurrency | Description |
+| --- | --- | --- |
+| `asset-publish` | 8 (default) | S3 file upload or Docker build+push |
+| `stack` | 4 (default) | Stack deployment via DeployEngine |
+
+**Dependencies**: `asset-publish → stack` (all assets complete before deploy), `stack → stack` (CDK inter-stack dependencies).
+
+**Algorithm**: Lazy ready-pool evaluation — nodes become ready when all dependencies are completed. Per-type concurrency limits, failure propagation (downstream nodes skipped), deadlock detection.
 
 #### `deploy-engine.ts`
 

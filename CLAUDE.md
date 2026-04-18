@@ -103,7 +103,7 @@ pnpm run typecheck
 - **src/synthesis/** - CDK app synthesis (self-implemented: subprocess execution, Cloud Assembly parsing, context providers)
 - **src/analyzer/** - DAG builder, template parser, intrinsic function resolution
 - **src/state/** - S3 state backend, lock manager
-- **src/deployment/** - DeployEngine (orchestration)
+- **src/deployment/** - DeployEngine (orchestration), WorkGraph (DAG-based asset+deploy scheduling)
 - **src/provisioning/** - Provider registry, Cloud Control provider, SDK providers
 - **src/assets/** - Asset publisher (self-implemented S3 file upload with ZIP packaging, ECR Docker image build & push)
 
