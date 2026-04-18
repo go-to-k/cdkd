@@ -247,8 +247,14 @@ async function diffCommand(
                 const oldFiltered = stripUnchangedValues(propChange.oldValue, propChange.newValue);
                 const newFiltered = stripUnchangedValues(propChange.newValue, propChange.oldValue);
                 const indent = '              ';
-                const oldStr = JSON.stringify(oldFiltered, null, 2).replace(/\n/g, `\n${indent}`);
-                const newStr = JSON.stringify(newFiltered, null, 2).replace(/\n/g, `\n${indent}`);
+                const oldStr = (JSON.stringify(oldFiltered, null, 2) ?? 'undefined').replace(
+                  /\n/g,
+                  `\n${indent}`
+                );
+                const newStr = (JSON.stringify(newFiltered, null, 2) ?? 'undefined').replace(
+                  /\n/g,
+                  `\n${indent}`
+                );
                 logger.info(`      - ${propChange.path}:${requiresReplace}`);
                 logger.info(`          old: ${oldStr}`);
                 logger.info(`          new: ${newStr}`);
