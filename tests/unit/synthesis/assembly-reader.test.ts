@@ -214,6 +214,133 @@ describe('AssemblyReader', () => {
       expect(stacks[0].account).toBeUndefined();
     });
 
+    it('should traverse nested assemblies (Stages) to find stacks', () => {
+      // Top-level manifest has a nested cloud assembly (Stage), no direct stacks
+      const topManifest: AssemblyManifest = {
+        version: '38.0.0',
+        artifacts: {
+          'assembly-MyStage': {
+            type: 'cdk:cloud-assembly',
+            properties: {
+              directoryName: 'assembly-MyStage',
+              displayName: 'MyStage',
+            },
+          },
+          'Tree': {
+            type: 'cdk:tree',
+            properties: { file: 'tree.json' },
+          },
+        },
+      };
+
+      // Nested manifest inside assembly-MyStage/
+      const nestedManifest: AssemblyManifest = {
+        version: '38.0.0',
+        artifacts: {
+          'MyStageCdkSampleStackAssets': {
+            type: 'cdk:asset-manifest',
+            properties: {
+              file: 'MyStageCdkSampleStack.assets.json',
+            },
+          },
+          'MyStageCdkSampleStack': {
+            type: 'aws:cloudformation:stack',
+            environment: 'aws://123456789012/us-east-1',
+            properties: {
+              templateFile: 'MyStageCdkSampleStack.template.json',
+              stackName: 'MyStage-CdkSampleStack',
+            },
+            dependencies: ['MyStageCdkSampleStackAssets'],
+          },
+        },
+      };
+
+      vi.mocked(readFileSync)
+        // 1st call: nested manifest.json
+        .mockReturnValueOnce(JSON.stringify(nestedManifest))
+        // 2nd call: stack template
+        .mockReturnValueOnce(JSON.stringify(sampleTemplate));
+
+      const stacks = reader.getAllStacks('/tmp/cdk.out', topManifest);
+
+      expect(stacks).toHaveLength(1);
+      expect(stacks[0].stackName).toBe('MyStage-CdkSampleStack');
+      expect(stacks[0].assetManifestPath).toBe(
+        '/tmp/cdk.out/assembly-MyStage/MyStageCdkSampleStack.assets.json'
+      );
+    });
+
+    it('should combine stacks from top-level and nested assemblies', () => {
+      const topManifest: AssemblyManifest = {
+        version: '38.0.0',
+        artifacts: {
+          'TopStack': {
+            type: 'aws:cloudformation:stack',
+            environment: 'aws://123456789012/us-east-1',
+            properties: {
+              templateFile: 'TopStack.template.json',
+              stackName: 'TopStack',
+            },
+          },
+          'assembly-MyStage': {
+            type: 'cdk:cloud-assembly',
+            properties: {
+              directoryName: 'assembly-MyStage',
+            },
+          },
+        },
+      };
+
+      const nestedManifest: AssemblyManifest = {
+        version: '38.0.0',
+        artifacts: {
+          'NestedStack': {
+            type: 'aws:cloudformation:stack',
+            environment: 'aws://123456789012/us-east-1',
+            properties: {
+              templateFile: 'NestedStack.template.json',
+              stackName: 'NestedStack',
+            },
+          },
+        },
+      };
+
+      vi.mocked(readFileSync)
+        // 1st call: TopStack template
+        .mockReturnValueOnce(JSON.stringify(sampleTemplate))
+        // 2nd call: nested manifest.json
+        .mockReturnValueOnce(JSON.stringify(nestedManifest))
+        // 3rd call: NestedStack template
+        .mockReturnValueOnce(JSON.stringify(sampleTemplate));
+
+      const stacks = reader.getAllStacks('/tmp/cdk.out', topManifest);
+
+      expect(stacks).toHaveLength(2);
+      expect(stacks.map((s) => s.stackName).sort()).toEqual(['NestedStack', 'TopStack']);
+    });
+
+    it('should handle nested assembly read failure gracefully', () => {
+      const topManifest: AssemblyManifest = {
+        version: '38.0.0',
+        artifacts: {
+          'assembly-BadStage': {
+            type: 'cdk:cloud-assembly',
+            properties: {
+              directoryName: 'assembly-BadStage',
+            },
+          },
+        },
+      };
+
+      vi.mocked(readFileSync).mockImplementation(() => {
+        throw new Error('ENOENT: no such file or directory');
+      });
+
+      const stacks = reader.getAllStacks('/tmp/cdk.out', topManifest);
+
+      expect(stacks).toHaveLength(0);
+    });
+
     it('should use artifactId as stackName when stackName property is missing', () => {
       const manifest: AssemblyManifest = {
         version: '38.0.0',
