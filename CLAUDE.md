@@ -375,4 +375,5 @@ See [docs/provider-development.md](docs/provider-development.md) for details.
 - **Before creating a PR or commit**: Run `/verify-pr` to confirm all checks pass (typecheck, lint, build, tests, CI, docs consistency, no leftover AWS resources)
 - **After changing source code that affects behavior or public API**: Run `/check-docs` to verify README.md, CLAUDE.md, and docs/ are consistent with the changes
 - **When running integration tests**: Use `/integ` with the appropriate test name (e.g., `/integ lambda`)
+- **After running integration tests**: Verify no leftover AWS resources remain (`aws s3 ls s3://cdkd-state-{accountId}-{region}/stacks/` should return empty or error)
 - **After fixing documentation or code**: Commit and push immediately. Do not leave uncommitted changes.
