@@ -108,7 +108,7 @@ pnpm run typecheck
 ### Important Files
 
 - **src/cli/config-loader.ts** - Config resolution (cdk.json, env vars for `--app` and `--state-bucket`)
-- **src/synthesis/app-executor.ts** - Executes CDK app as subprocess with proper env vars (CDK_OUTDIR, CDK_CONTEXT, CDK_DEFAULT_REGION, etc.)
+- **src/synthesis/app-executor.ts** - Executes CDK app as subprocess with proper env vars (CDK_OUTDIR, CDK_CONTEXT_JSON, CDK_DEFAULT_REGION, etc.)
 - **src/synthesis/assembly-reader.ts** - Reads and parses Cloud Assembly manifest.json directly
 - **src/synthesis/synthesizer.ts** - Orchestrates synthesis with context provider loop
 - **src/synthesis/context-providers/** - Context providers (see `src/synthesis/context-providers/` for full list) for missing context resolution
@@ -205,7 +205,7 @@ registry.register('AWS::IAM::Role', new IAMRoleProvider());
 ### 5. Synthesis
 
 - Synthesis orchestration (no external CDK toolkit dependencies; CDK app itself generates templates)
-- `AppExecutor` runs CDK app as subprocess with env vars (CDK_OUTDIR, CDK_CONTEXT, CDK_DEFAULT_REGION, etc.)
+- `AppExecutor` runs CDK app as subprocess with env vars (CDK_OUTDIR, CDK_CONTEXT_JSON, CDK_DEFAULT_REGION, etc.)
 - `AssemblyReader` parses Cloud Assembly manifest.json directly
 - `Synthesizer` orchestrates synthesis with context provider loop for missing context resolution
 - Context providers: see `src/synthesis/context-providers/` for full list (in `src/synthesis/context-providers/`)

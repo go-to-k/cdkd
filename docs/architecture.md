@@ -155,7 +155,7 @@ All CDK context provider types are supported. See `src/synthesis/context-provide
 1. User CDK App (--app option, CDKD_APP env var, or cdk.json "app" field)
    ↓
 2. AppExecutor.execute() via child_process.spawn()
-   ↓  (with CDK_OUTDIR, CDK_CONTEXT, CDK_DEFAULT_REGION/ACCOUNT env vars)
+   ↓  (with CDK_OUTDIR, CDK_CONTEXT_JSON, CDK_DEFAULT_REGION/ACCOUNT env vars)
 3. Output to cdk.out/ directory
    - manifest.json
    - {StackName}.template.json
@@ -654,7 +654,7 @@ getClient<T>(ClientClass: new (...) => T, region: string): T
 │ AppExecutor           │
 │ spawn(cdkApp)         │◄──────────────────────┐
 │ env: CDK_OUTDIR,      │                       │
-│   CDK_CONTEXT,        │                       │
+│   CDK_CONTEXT_JSON,   │                       │
 │   CDK_DEFAULT_REGION  │                       │
 └──────────┬────────────┘                       │
            │                                    │
