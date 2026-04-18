@@ -1,7 +1,7 @@
 ---
+name: new-provider
 description: Scaffold a new SDK Provider for a given AWS resource type (e.g., AWS::SES::EmailIdentity). Creates provider file, registers it, and generates test boilerplate.
-user_invocable: true
-argument: AWS resource type (e.g., AWS::SES::EmailIdentity)
+argument-hint: "<AWS::Service::Resource>"
 ---
 
 # New Provider Scaffold
