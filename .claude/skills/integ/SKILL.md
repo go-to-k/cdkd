@@ -30,7 +30,16 @@ Run integration tests against a real AWS account. These tests deploy actual AWS 
    - Run deploy: `node ../../../dist/cli.js deploy --region us-east-1 --state-bucket <bucket> --verbose`
    - Run destroy: `node ../../../dist/cli.js destroy --region us-east-1 --state-bucket <bucket> --force`
 
-5. **Verify cleanup**: Check `aws s3 ls s3://<bucket>/stacks/ --region us-east-1` to confirm no leftover state.
+5. **Verify cleanup**:
+   - Check `aws s3 ls s3://<bucket>/stacks/ --region us-east-1` to confirm no leftover state
+   - Also verify actual AWS resources are gone by checking with stack name prefix filters. Get stack names from the synth output, then for each stack name query AWS APIs filtered by that prefix:
+     - `aws iam list-roles --query 'Roles[?contains(RoleName, \`{StackName}\`)].RoleName'`
+     - `aws lambda list-functions --region us-east-1 --query 'Functions[?contains(FunctionName, \`{StackName}\`)].FunctionName'`
+     - `aws s3api list-buckets --query 'Buckets[?contains(Name, \`{stackName-lowercase}\`)].Name'`
+     - `aws ecr describe-repositories --region us-east-1 --query 'repositories[?contains(repositoryName, \`{stackName-lowercase}\`)].repositoryName'`
+     - `aws dynamodb list-tables --region us-east-1 --query 'TableNames[?contains(@, \`{StackName}\`)]'`
+   - Only check resource types relevant to the test being run
+   - NEVER delete resources in this step — only report findings. Use `/cleanup` skill to delete if needed.
 
 6. **Report results**: Show pass/fail for each test, including resource counts and timing.
 
