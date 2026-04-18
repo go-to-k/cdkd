@@ -210,7 +210,7 @@ registry.register('AWS::IAM::Role', new IAMRoleProvider());
 
 - Synthesis orchestration (no external CDK toolkit dependencies; CDK app itself generates templates)
 - `AppExecutor` runs CDK app as subprocess with env vars (CDK_OUTDIR, CDK_CONTEXT_JSON, CDK_DEFAULT_REGION, etc.)
-- `AssemblyReader` parses Cloud Assembly manifest.json directly
+- `AssemblyReader` parses Cloud Assembly manifest.json directly (recursively traverses nested assemblies for CDK Stage support)
 - `Synthesizer` orchestrates synthesis with context provider loop for missing context resolution
 - Context providers: see `src/synthesis/context-providers/` for full list (in `src/synthesis/context-providers/`)
 - `ContextStore` manages cdk.context.json read/write
@@ -347,6 +347,7 @@ See [docs/provider-development.md](docs/provider-development.md) for details.
 - ✅ Self-implemented asset publishing (removed @aws-cdk/cdk-assets-lib, using archiver for ZIP)
 - ✅ Context providers for missing context resolution (see `src/synthesis/context-providers/` for full list)
 - ✅ Cloud Assembly manifest.json direct parsing with custom type definitions
+- ✅ Nested cloud assembly traversal (CDK Stage support)
 - ✅ WorkGraph DAG orchestrator for asset publishing and stack deployment (build→publish→deploy pipeline)
 - ✅ Concurrency options: `--asset-publish-concurrency` (default 8), `--image-build-concurrency` (default 4)
 
@@ -372,6 +373,8 @@ See [docs/provider-development.md](docs/provider-development.md) for details.
 
 ## Workflow Rules
 
+- **When adding new functionality or fixing bugs**: Always add corresponding unit tests. Do not wait to be asked.
+- **After modifying source code**: Always run `pnpm run build` before telling the user to test. The user runs cdkd via `node dist/cli.js`, so source changes without a build have no effect.
 - **Before creating a PR or commit**: Run `/verify-pr` to confirm all checks pass (typecheck, lint, build, tests, CI, docs consistency, no leftover AWS resources)
 - **After changing source code that affects behavior or public API**: Run `/check-docs` to verify README.md, CLAUDE.md, and docs/ are consistent with the changes
 - **When running integration tests**: Use `/run-integ` with the appropriate test name (e.g., `/run-integ lambda`)
