@@ -6,7 +6,7 @@ import { Construct } from 'constructs';
 /**
  * Stack that uses Vpc.fromLookup() to trigger the context provider loop.
  *
- * This tests that cdkd's self-implemented synthesis correctly handles:
+ * This tests that cdkd's synthesis orchestration correctly handles:
  * 1. First synthesis → missing context detected (vpc-provider)
  * 2. Context provider resolves VPC info via EC2 SDK calls
  * 3. Saves result to cdk.context.json

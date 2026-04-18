@@ -2,7 +2,7 @@
 
 ## Overview
 
-**cdkd** (CDK Direct) is a tool that deploys AWS CDK applications directly without going through CloudFormation. It implements its own synthesis and asset publishing pipeline, then uses SDK Providers (preferred for performance) and Cloud Control API (fallback) for fast deployments.
+**cdkd** (CDK Direct) is a tool that deploys AWS CDK applications directly without going through CloudFormation. It orchestrates CDK app synthesis (via subprocess execution) and implements its own asset publishing pipeline, then uses SDK Providers (preferred for performance) and Cloud Control API (fallback) for fast deployments.
 
 ## Architecture Diagram
 
@@ -85,7 +85,7 @@
 
 **Responsibilities**: CDK application execution, CloudFormation template generation, context provider resolution
 
-cdkd implements its own synthesis pipeline without external CDK toolkit dependencies. The synthesis layer executes the user's CDK app as a child process, reads the resulting cloud assembly output, and handles context provider resolution through an iterative loop.
+cdkd orchestrates CDK app synthesis without external CDK toolkit dependencies. The CDK app itself (aws-cdk-lib) generates the CloudFormation template — cdkd's role is to execute the app as a child process, read the resulting cloud assembly output, and handle context provider resolution through an iterative loop.
 
 **Main Components**:
 

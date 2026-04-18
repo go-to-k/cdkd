@@ -420,7 +420,7 @@ Resources without dependencies (ServiceRole and Table) are created in parallel.
 
 Built on modern AWS tooling:
 
-- **Self-implemented synthesis** - Subprocess execution of CDK app + Cloud Assembly (manifest.json) direct parsing + context provider loop (missing context → SDK lookup → re-synthesize)
+- **Synthesis orchestration** - Executes CDK app as subprocess (synthesis itself is done by aws-cdk-lib), parses Cloud Assembly (manifest.json) directly, context provider loop (missing context → SDK lookup → re-synthesize)
 - **Self-implemented asset publisher** - S3 file upload with ZIP packaging (via `archiver`) and ECR Docker image publishing
 - **AWS SDK v3** - Direct resource provisioning
 - **Cloud Control API** - Fallback resource management for types without SDK Providers
