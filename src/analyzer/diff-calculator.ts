@@ -268,14 +268,22 @@ export class DiffCalculator {
       const aObj = a as Record<string, unknown>;
       const bObj = b as Record<string, unknown>;
 
-      const aKeys = Object.keys(aObj);
       const bKeys = Object.keys(bObj);
 
-      if (aKeys.length !== bKeys.length) {
-        return false;
+      // Check keys in new (template) side exist in old (state) side with equal values.
+      // Keys only in old side are ignored — they are typically AWS-added defaults
+      // (e.g., IncludeCookies, Enabled, Prefix in CloudFront Logging) that don't
+      // appear in the template but get stored in state after deployment.
+      // Keys only in new side are real additions and will cause inequality.
+      for (const key of bKeys) {
+        if (!(key in aObj)) {
+          return false; // New key added in template
+        }
+        if (!this.valuesEqual(aObj[key], bObj[key])) {
+          return false;
+        }
       }
-
-      return aKeys.every((key) => this.valuesEqual(aObj[key], bObj[key]));
+      return true;
     }
 
     // Primitive types
