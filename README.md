@@ -70,9 +70,11 @@ AWS CDK is great for defining infrastructure as code, but all deployments go thr
    └── Initialize AWS clients
 
 2. Synthesis (self-implemented, no CDK CLI dependency)
-   ├── Load context:
-   │   ├── cdk.json "context" field (static)
-   │   ├── cdk.context.json (cached lookups)
+   ├── Load context (merge order, later wins):
+   │   ├── CDK defaults (path-metadata, asset-metadata, version-reporting, bundling-stacks)
+   │   ├── ~/.cdk.json "context" field (user defaults)
+   │   ├── cdk.json "context" field (project settings)
+   │   ├── cdk.context.json (cached lookups, reloaded each iteration)
    │   └── CLI -c key=value (highest priority)
    ├── Execute CDK app as subprocess
    │   ├── child_process.spawn(app command)
@@ -89,6 +91,7 @@ AWS CDK is great for defining infrastructure as code, but all deployments go thr
 
 3. Asset Publishing (self-implemented, no cdk-assets dependency)
    ├── Publish all stacks' assets sequentially before any deployment
+   ├── Region resolved from asset manifest destination (stack's target region)
    ├── File assets → S3 (ZIP packaging if needed, skip if already exists via HeadObject)
    ├── Docker images → ECR (docker build + tag + push, skip if already exists via DescribeImages)
    └── Shared assets across stacks: uploaded once, skipped on subsequent stacks

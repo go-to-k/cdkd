@@ -94,7 +94,7 @@ cdkd orchestrates CDK app synthesis without external CDK toolkit dependencies. T
 Executes the CDK app command via `child_process.spawn()` with the following environment variables:
 
 - `CDK_OUTDIR`: Output directory for synthesized templates (e.g., `cdk.out`)
-- `CDK_CONTEXT`: Serialized JSON context (includes cached context from `cdk.context.json`)
+- `CDK_CONTEXT_JSON`: Serialized JSON context (includes cached context from `cdk.context.json`)
 - `CDK_DEFAULT_REGION`: AWS region
 - `CDK_DEFAULT_ACCOUNT`: AWS account ID
 
@@ -124,10 +124,18 @@ Orchestrates the context provider loop:
    ↓
 6. Re-execute CDK app with updated context → go to step 1
    ↓  (if no missing context)
-7. Return final cloud assembly
+7. Return final assembly with stacks and asset manifests
 ```
 
 This iterative loop mirrors the behavior of the CDK CLI: when a CDK app encounters a construct that requires runtime context (e.g., `Vpc.fromLookup()`), it records the missing context key and exits. The synthesizer detects these missing keys, resolves them via AWS SDK calls, caches the results, and re-runs synthesis until all context is satisfied.
+
+**Context Merge Order** (later wins):
+
+1. CDK defaults (`aws:cdk:enable-path-metadata`, `aws:cdk:enable-asset-metadata`, `aws:cdk:version-reporting`, `aws:cdk:bundling-stacks`)
+2. `~/.cdk.json` "context" field (user-level defaults)
+3. `cdk.json` "context" field (project-level settings)
+4. `cdk.context.json` (cached lookup results, reloaded each iteration)
+5. CLI `-c key=value` (highest priority)
 
 #### `context-store.ts` - ContextStore
 
@@ -251,6 +259,12 @@ calculateDiff(
 - `UPDATE`: Property change
 - `DELETE`: Resource deletion
 - `NO_CHANGE`: No change
+
+**Comparison Behavior**:
+
+- **Intrinsic function handling**: When comparing state (resolved values) vs template (unresolved intrinsics), intrinsic functions are detected per-value at each level of recursion. If the new value is an intrinsic (e.g., `{ "Fn::Join": [...] }`), it is treated as equal to the old resolved value since the actual resolved result cannot be determined without deployment.
+- **AWS default key filtering**: AWS APIs often return additional properties not present in the template (e.g., `IncludeCookies: false`, `Enabled: true`). During comparison, only keys present in the template (new) side are compared; extra keys in the state (old) side are ignored as AWS-added defaults.
+- **Diff display**: When showing property changes, only the actually changed sub-properties are displayed. Unchanged sibling values and intrinsic-containing values are stripped from the output to reduce noise.
 
 #### `intrinsic-function-resolver.ts`
 
