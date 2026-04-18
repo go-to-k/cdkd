@@ -26,7 +26,7 @@ Detect and optionally delete AWS resources left behind by cdkd integration tests
    - If a prefix is given, use that
    - Otherwise, discover all integration test stack names by running synth or reading `bin/app.ts` in each `tests/integration/*/` directory. Look for the CDK construct ID (second argument to `new *Stack(app, '<id>')`)
 
-2. **Resolve region and account**: Use `--region us-east-1` and resolve account ID via `aws sts get-caller-identity`
+2. **Resolve region and account**: Scan both `us-east-1` and `ap-northeast-1`. Resolve account ID via `aws sts get-caller-identity`. IAM is global so only needs one query.
 
 3. **Check S3 state**: `aws s3 ls s3://cdkd-state-{accountId}-us-east-1/stacks/ --region us-east-1`
 
