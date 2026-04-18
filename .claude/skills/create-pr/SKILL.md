@@ -32,6 +32,7 @@ Run all quality checks and create a GitHub PR if everything passes.
 
 7. **Draft PR title and body**:
    - Title: concise, under 70 characters, based on the commits
+   - **Always write the PR title and body in English**
    - Body format:
      ```
      ## Summary
