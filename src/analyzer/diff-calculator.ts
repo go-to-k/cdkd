@@ -190,58 +190,6 @@ export class DiffCalculator {
     return changes;
   }
 
-  /**
-   * Deep equality check for values
-   *
-   * When comparing state (resolved values) with template (unresolved intrinsics),
-   * treats intrinsic functions as "not comparable" and assumes equal.
-   * This prevents false-positive diffs where the only difference is that
-   * state has e.g. "arn:aws:iam::123:role/MyRole" and template has { "Fn::GetAtt": [...] }.
-   */
-  private valuesEqual(a: unknown, b: unknown): boolean {
-    // Strict equality check
-    if (a === b) {
-      return true;
-    }
-
-    // Null/undefined check
-    if (a == null || b == null) {
-      return a === b;
-    }
-
-    // If either side is an unresolved intrinsic function, we can't compare
-    // (state has resolved value, template has intrinsic) — treat as equal
-    if (this.containsIntrinsic(a) || this.containsIntrinsic(b)) {
-      return true;
-    }
-
-    // Array check
-    if (Array.isArray(a) && Array.isArray(b)) {
-      if (a.length !== b.length) {
-        return false;
-      }
-      return a.every((val, index) => this.valuesEqual(val, b[index]));
-    }
-
-    // Object check
-    if (typeof a === 'object' && typeof b === 'object') {
-      const aObj = a as Record<string, unknown>;
-      const bObj = b as Record<string, unknown>;
-
-      const aKeys = Object.keys(aObj);
-      const bKeys = Object.keys(bObj);
-
-      if (aKeys.length !== bKeys.length) {
-        return false;
-      }
-
-      return aKeys.every((key) => this.valuesEqual(aObj[key], bObj[key]));
-    }
-
-    // Primitive types
-    return false;
-  }
-
   private static readonly INTRINSIC_KEYS = new Set([
     'Ref',
     'Fn::Sub',
@@ -261,16 +209,77 @@ export class DiffCalculator {
   ]);
 
   /**
-   * Check if a value contains a CloudFormation intrinsic function at any depth
+   * Check if a value is itself a CloudFormation intrinsic function.
+   * e.g. { "Ref": "MyResource" } or { "Fn::GetAtt": ["Res", "Arn"] }
+   * Does NOT match objects that merely contain intrinsics as nested children.
    */
-  private containsIntrinsic(value: unknown): boolean {
-    if (value === null || value === undefined || typeof value !== 'object') return false;
-    if (Array.isArray(value)) return value.some((v) => this.containsIntrinsic(v));
-    const obj = value as Record<string, unknown>;
-    for (const key of Object.keys(obj)) {
-      if (DiffCalculator.INTRINSIC_KEYS.has(key)) return true;
+  private static isIntrinsic(value: unknown): boolean {
+    if (
+      value === null ||
+      value === undefined ||
+      typeof value !== 'object' ||
+      Array.isArray(value)
+    ) {
+      return false;
     }
-    return Object.values(obj).some((v) => this.containsIntrinsic(v));
+    const keys = Object.keys(value as Record<string, unknown>);
+    return keys.length === 1 && DiffCalculator.INTRINSIC_KEYS.has(keys[0]!);
+  }
+
+  /**
+   * Deep equality check for values
+   *
+   * When comparing state (resolved values) with template (unresolved intrinsics),
+   * treats intrinsic function nodes as "not comparable" and assumes equal.
+   * This check happens at each level of recursion, so only the specific value
+   * that IS an intrinsic gets skipped — sibling values are still compared normally.
+   *
+   * Example: { Variables: { AZURE_REGION: "japaneast", SECRET_NAME: { "Fn::Join": ... } } }
+   * - AZURE_REGION: compared normally (string vs string)
+   * - SECRET_NAME: one side is intrinsic → treated as equal (skip)
+   */
+  private valuesEqual(a: unknown, b: unknown): boolean {
+    // Strict equality check
+    if (a === b) {
+      return true;
+    }
+
+    // Null/undefined check
+    if (a == null || b == null) {
+      return a === b;
+    }
+
+    // If either side is an intrinsic function node, we can't compare
+    // (state has resolved value like "arn:...", template has { "Fn::GetAtt": [...] })
+    if (DiffCalculator.isIntrinsic(a) || DiffCalculator.isIntrinsic(b)) {
+      return true;
+    }
+
+    // Array check
+    if (Array.isArray(a) && Array.isArray(b)) {
+      if (a.length !== b.length) {
+        return false;
+      }
+      return a.every((val, index) => this.valuesEqual(val, b[index]));
+    }
+
+    // Object check — recurse into each key so intrinsics are detected per-value
+    if (typeof a === 'object' && typeof b === 'object') {
+      const aObj = a as Record<string, unknown>;
+      const bObj = b as Record<string, unknown>;
+
+      const aKeys = Object.keys(aObj);
+      const bKeys = Object.keys(bObj);
+
+      if (aKeys.length !== bKeys.length) {
+        return false;
+      }
+
+      return aKeys.every((key) => this.valuesEqual(aObj[key], bObj[key]));
+    }
+
+    // Primitive types
+    return false;
   }
 
   /**
