@@ -83,7 +83,7 @@ AWS CDK is great for defining infrastructure as code, but all deployments go thr
    │   ├── Extract asset manifests (type: cdk:asset-manifest)
    │   └── Extract stack dependencies
    └── Context provider loop (if missing context detected):
-       ├── Resolve via SDK: AZ, VPC, SSM, HostedZone, Cloud Control API
+       ├── Resolve via AWS SDK (all CDK context provider types supported)
        ├── Save to cdk.context.json
        └── Re-execute CDK app with updated context
 

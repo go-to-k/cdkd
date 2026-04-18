@@ -22,7 +22,7 @@
 │  - synthesizer.ts: Context provider loop orchestrator          │
 │  - context-store.ts: cdk.context.json read/write               │
 │  - context-provider-registry.ts: Context provider registry     │
-│  - context-providers/: AZ, SSM, HostedZone, VPC, CC API       │
+│  - context-providers/: Missing context resolution providers    │
 └───────────────────────────┬─────────────────────────────────────┘
                             │
                  ┌──────────┴──────────┐
@@ -139,13 +139,7 @@ Registry of context providers that resolve missing context during synthesis. Eac
 
 **Built-in Context Providers** (`context-providers/`):
 
-| Provider | Context Key | Description |
-| -------- | ----------- | ----------- |
-| Availability Zones | `availability-zones` | Lists AZs for a region via EC2 DescribeAvailabilityZones |
-| SSM | `ssm` | Reads SSM Parameter Store values |
-| Hosted Zone | `hosted-zone` | Looks up Route53 hosted zone IDs |
-| VPC Provider | `vpc-provider` | Looks up VPC details (ID, subnets, route tables, etc.) |
-| CC API Provider | `cc-api-provider` | Generic Cloud Control API-based context lookups |
+All CDK context provider types are supported. See `src/synthesis/context-providers/` for the full list of implementations.
 
 **Synthesis Flow**:
 

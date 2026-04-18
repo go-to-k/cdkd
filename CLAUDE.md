@@ -111,7 +111,7 @@ pnpm run typecheck
 - **src/synthesis/app-executor.ts** - Executes CDK app as subprocess with proper env vars (CDK_OUTDIR, CDK_CONTEXT, CDK_DEFAULT_REGION, etc.)
 - **src/synthesis/assembly-reader.ts** - Reads and parses Cloud Assembly manifest.json directly
 - **src/synthesis/synthesizer.ts** - Orchestrates synthesis with context provider loop
-- **src/synthesis/context-providers/** - Context providers (AZ, SSM, HostedZone, VPC, CC API) for missing context resolution
+- **src/synthesis/context-providers/** - Context providers (see `src/synthesis/context-providers/` for full list) for missing context resolution
 - **src/assets/file-asset-publisher.ts** - S3 file upload with ZIP packaging support
 - **src/assets/docker-asset-publisher.ts** - ECR Docker image build & push
 - **src/types/assembly.ts** - Cloud Assembly types (AssemblyManifest, MissingContext, etc.)
@@ -204,11 +204,11 @@ registry.register('AWS::IAM::Role', new IAMRoleProvider());
 
 ### 5. Synthesis
 
-- Self-implemented (no external CDK synthesis libraries)
+- Synthesis orchestration (no external CDK toolkit dependencies; CDK app itself generates templates)
 - `AppExecutor` runs CDK app as subprocess with env vars (CDK_OUTDIR, CDK_CONTEXT, CDK_DEFAULT_REGION, etc.)
 - `AssemblyReader` parses Cloud Assembly manifest.json directly
 - `Synthesizer` orchestrates synthesis with context provider loop for missing context resolution
-- Context providers: AZ, SSM, HostedZone, VPC, CC API (in `src/synthesis/context-providers/`)
+- Context providers: see `src/synthesis/context-providers/` for full list (in `src/synthesis/context-providers/`)
 - `ContextStore` manages cdk.context.json read/write
 
 ### 6. Asset Publishing
@@ -338,9 +338,9 @@ See [docs/provider-development.md](docs/provider-development.md) for details.
 - ✅ Lambda FunctionUrl attribute enrichment (GetFunctionUrlConfig API)
 - ✅ CloudFront + Lambda Function URL integration test (6/6 CREATE+DESTROY)
 - ✅ Removed attribute-mapper and schema-cache (CC API returns GetAtt-compatible names directly)
-- ✅ Self-implemented CDK synthesis (removed @aws-cdk/toolkit-lib and @aws-cdk/cloud-assembly-api)
+- ✅ CDK synthesis orchestration without toolkit-lib (removed @aws-cdk/toolkit-lib and @aws-cdk/cloud-assembly-api)
 - ✅ Self-implemented asset publishing (removed @aws-cdk/cdk-assets-lib, using archiver for ZIP)
-- ✅ Context providers for missing context resolution (AZ, SSM, HostedZone, VPC, CC API)
+- ✅ Context providers for missing context resolution (see `src/synthesis/context-providers/` for full list)
 - ✅ Cloud Assembly manifest.json direct parsing with custom type definitions
 
 ## Dependencies
