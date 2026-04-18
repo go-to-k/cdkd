@@ -246,8 +246,9 @@ async function diffCommand(
                 // Strip unchanged and intrinsic values to show only actual changes
                 const oldFiltered = stripUnchangedValues(propChange.oldValue, propChange.newValue);
                 const newFiltered = stripUnchangedValues(propChange.newValue, propChange.oldValue);
-                const oldStr = JSON.stringify(oldFiltered, null, 2);
-                const newStr = JSON.stringify(newFiltered, null, 2);
+                const indent = '              ';
+                const oldStr = JSON.stringify(oldFiltered, null, 2).replace(/\n/g, `\n${indent}`);
+                const newStr = JSON.stringify(newFiltered, null, 2).replace(/\n/g, `\n${indent}`);
                 logger.info(`      - ${propChange.path}:${requiresReplace}`);
                 logger.info(`          old: ${oldStr}`);
                 logger.info(`          new: ${newStr}`);
