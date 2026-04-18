@@ -194,7 +194,14 @@ Publishes Docker image assets to ECR:
 
 #### `asset-publisher.ts` - AssetPublisher
 
-Orchestrator that reads asset manifests and delegates to the appropriate publisher (file or Docker) based on asset type.
+Orchestrator that reads asset manifests and delegates to the appropriate publisher (file or Docker) based on asset type. Publishes assets in parallel using a bounded concurrency worker pool.
+
+**Default Concurrency**:
+
+| Operation | Concurrency | Rationale |
+| --- | --- | --- |
+| File publish (S3) | 8 | I/O bound |
+| Docker build+push | 4 | CPU/memory bound |
 
 **Asset Types**:
 
