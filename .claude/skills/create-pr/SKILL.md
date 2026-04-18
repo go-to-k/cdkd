@@ -31,7 +31,8 @@ Run all quality checks and create a GitHub PR if everything passes.
    - Determine base branch (default: `main`, overridable with `--base`)
 
 7. **Draft PR title and body**:
-   - Title: concise, under 70 characters, based on the commits
+   - Title: concise, under 70 characters
+   - **Base the title and body on the actual diff (`git diff main...HEAD`), not just commit messages** — commit messages may reflect intermediate iterations that were later reverted
    - **Always write the PR title and body in English**
    - Body format:
      ```
