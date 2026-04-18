@@ -20,6 +20,7 @@ Run each check and report pass/fail:
 2. **Tests**
    - `npx vitest --run` - all unit tests pass
    - Report test count (files and tests)
+   - **Test coverage check**: compare `git diff main...HEAD` for `src/` changes vs `tests/` changes. If new logic was added or modified in `src/` but no corresponding test files were added or updated, flag as **fail** and add the missing tests before proceeding
 
 3. **CI status**
    - If PR number is not provided as argument, auto-detect via `gh pr view --json number -q .number`
@@ -53,6 +54,7 @@ Present results as a table:
 | lint | pass/fail |
 | build | pass/fail |
 | tests (N files, M tests) | pass/fail |
+| test coverage for changes | pass/fail |
 | CI | pass/fail |
 | working tree | clean/dirty |
 | docs consistency | pass/fail |
