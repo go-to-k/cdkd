@@ -25,6 +25,7 @@ vi.mock('../../../src/utils/logger.js', () => ({
 import { existsSync, readFileSync } from 'node:fs';
 import {
   loadCdkJson,
+  loadUserCdkJson,
   resolveApp,
   resolveStateBucket,
   getDefaultStateBucketName,
@@ -236,6 +237,29 @@ describe('config-loader', () => {
       const result = resolveStateBucket();
 
       expect(result).toBeUndefined();
+    });
+  });
+
+  describe('loadUserCdkJson', () => {
+    it('should load ~/.cdk.json when it exists', () => {
+      vi.mocked(existsSync).mockReturnValue(true);
+      vi.mocked(readFileSync).mockReturnValue(
+        JSON.stringify({ context: { 'user-key': 'user-value' } })
+      );
+
+      const result = loadUserCdkJson();
+
+      expect(result).toEqual({ context: { 'user-key': 'user-value' } });
+      const calledPath = vi.mocked(existsSync).mock.calls[0]![0] as string;
+      expect(calledPath).toMatch(/\.cdk\.json$/);
+    });
+
+    it('should return null when ~/.cdk.json does not exist', () => {
+      vi.mocked(existsSync).mockReturnValue(false);
+
+      const result = loadUserCdkJson();
+
+      expect(result).toBeNull();
     });
   });
 

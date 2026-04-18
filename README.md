@@ -35,7 +35,7 @@ AWS CDK is great for defining infrastructure as code, but all deployments go thr
          │
          ▼
 ┌─────────────────┐
-│ toolkit-lib     │  Synthesis + Context Resolution
+│ cdkd Synthesis  │  Subprocess + Cloud Assembly parser
 └────────┬────────┘
          │
          ▼
@@ -61,6 +61,57 @@ AWS CDK is great for defining infrastructure as code, but all deployments go thr
 └────────┘ └────────┘
 ```
 
+### Detailed Processing Flow (`cdkd deploy`)
+
+```
+1. CLI Layer
+   ├── Resolve --app (CLI > CDKD_APP env > cdk.json "app")
+   ├── Resolve --state-bucket (CLI > env > cdk.json > auto: cdkd-state-{accountId}-{region})
+   └── Initialize AWS clients
+
+2. Synthesis (self-implemented, no CDK CLI dependency)
+   ├── Load context (merge order, later wins):
+   │   ├── CDK defaults (path-metadata, asset-metadata, version-reporting, bundling-stacks)
+   │   ├── ~/.cdk.json "context" field (user defaults)
+   │   ├── cdk.json "context" field (project settings)
+   │   ├── cdk.context.json (cached lookups, reloaded each iteration)
+   │   └── CLI -c key=value (highest priority)
+   ├── Execute CDK app as subprocess
+   │   ├── child_process.spawn(app command)
+   │   ├── Pass env: CDK_OUTDIR, CDK_CONTEXT_JSON, CDK_DEFAULT_REGION/ACCOUNT
+   │   └── App writes Cloud Assembly to cdk.out/
+   ├── Parse cdk.out/manifest.json
+   │   ├── Extract stacks (type: aws:cloudformation:stack)
+   │   ├── Extract asset manifests (type: cdk:asset-manifest)
+   │   └── Extract stack dependencies
+   └── Context provider loop (if missing context detected):
+       ├── Resolve via AWS SDK (all CDK context provider types supported)
+       ├── Save to cdk.context.json
+       └── Re-execute CDK app with updated context
+
+3. Asset Publishing (self-implemented, no cdk-assets dependency)
+   ├── Publish all stacks' assets sequentially before any deployment
+   ├── Region resolved from asset manifest destination (stack's target region)
+   ├── File assets → S3 (ZIP packaging if needed, skip if already exists via HeadObject)
+   ├── Docker images → ECR (docker build + tag + push, skip if already exists via DescribeImages)
+   └── Shared assets across stacks: uploaded once, skipped on subsequent stacks
+
+4. Deployment (per stack, parallelized by dependency order)
+   ├── Independent stacks deploy in parallel, dependent stacks wait
+   ├── Per-stack flow:
+   │   ├── Acquire S3 lock (optimistic locking)
+   │   ├── Load current state from S3
+   │   ├── Build DAG from template (Ref/Fn::GetAtt/DependsOn)
+   │   ├── Calculate diff (CREATE/UPDATE/DELETE)
+   │   ├── Resolve intrinsic functions (Ref, Fn::Sub, Fn::Join, etc.)
+   │   ├── Execute by levels (parallel within each level):
+   │   │   ├── SDK Providers (direct API calls, preferred)
+   │   │   └── Cloud Control API (fallback, async polling)
+   │   ├── Save state after each level (partial state save)
+   │   └── Release lock
+   └── synth does NOT publish assets or deploy (deploy only)
+```
+
 ## Features
 
 cdkd uses a hybrid provisioning strategy: hand-written **SDK Providers** call AWS SDK APIs directly for fast provisioning, while **Cloud Control API** (a generic AWS API that can operate on any resource type) is used as a fallback for resource types without an SDK Provider.
@@ -70,7 +121,7 @@ cdkd uses a hybrid provisioning strategy: hand-written **SDK Providers** call AW
 - **Hybrid deployment strategy**: SDK Providers preferred for performance, Cloud Control API as fallback
 - **S3-based state management**: No DynamoDB required, uses S3 conditional writes for locking
 - **DAG-based parallelization**: Analyze `Ref`/`Fn::GetAtt` dependencies and execute in parallel
-- **Asset handling**: Leverages `@aws-cdk/cdk-assets-lib` for Lambda packages, Docker images, etc.
+- **Asset handling**: Self-implemented asset publisher for Lambda packages (S3 with ZIP packaging) and Docker images (ECR)
 
 > **Note**: Resource types not covered by either SDK Providers or Cloud Control API cannot be deployed with cdkd. If you encounter an unsupported resource type, deployment will fail with a clear error message.
 
@@ -219,7 +270,7 @@ cdkd uses a hybrid provisioning strategy: hand-written **SDK Providers** call AW
 | Dynamic References | ✅ | `{{resolve:secretsmanager:...}}`, `{{resolve:ssm:...}}` |
 | DELETE idempotency | ✅ | Not-found errors treated as success |
 | Asset publishing (S3) | ✅ | Lambda code packages |
-| Asset publishing (ECR) | ✅ | Via `@aws-cdk/cdk-assets-lib` |
+| Asset publishing (ECR) | ✅ | Self-implemented Docker image publishing |
 | Custom Resources (SNS-backed) | ✅ | SNS Topic ServiceToken + S3 response |
 | Custom Resources (CDK Provider) | ✅ | isCompleteHandler/onEventHandler async pattern detection |
 | Rollback | ✅ | --no-rollback flag to skip |
@@ -372,8 +423,8 @@ Resources without dependencies (ServiceRole and Table) are created in parallel.
 
 Built on modern AWS tooling:
 
-- **[@aws-cdk/toolkit-lib](https://docs.aws.amazon.com/cdk/api/toolkit-lib/)** - CDK synthesis (GA since Feb 2025)
-- **[@aws-cdk/cdk-assets-lib](https://www.npmjs.com/package/@aws-cdk/cdk-assets-lib)** - Asset publishing
+- **Synthesis orchestration** - Executes CDK app as subprocess (synthesis itself is done by aws-cdk-lib), parses Cloud Assembly (manifest.json) directly, context provider loop (missing context → SDK lookup → re-synthesize)
+- **Self-implemented asset publisher** - S3 file upload with ZIP packaging (via `archiver`) and ECR Docker image publishing
 - **AWS SDK v3** - Direct resource provisioning
 - **Cloud Control API** - Fallback resource management for types without SDK Providers
 - **S3 Conditional Writes** - State locking via `If-None-Match`/`If-Match`

@@ -1,5 +1,6 @@
 import { readFileSync, existsSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { resolve, join } from 'node:path';
+import { homedir } from 'node:os';
 import { getLogger } from '../utils/logger.js';
 
 /**
@@ -19,29 +20,44 @@ export interface CdkdConfig {
 }
 
 /**
- * Load cdk.json from the current working directory
+ * Load a JSON config file and return as CdkConfig, or null if not found.
  */
-export function loadCdkJson(cwd?: string): CdkConfig | null {
+function loadJsonConfig(filePath: string): CdkConfig | null {
   const logger = getLogger();
-  const dir = cwd || process.cwd();
-  const cdkJsonPath = resolve(dir, 'cdk.json');
 
-  if (!existsSync(cdkJsonPath)) {
-    logger.debug('No cdk.json found in current directory');
+  if (!existsSync(filePath)) {
     return null;
   }
 
   try {
-    const content = readFileSync(cdkJsonPath, 'utf-8');
+    const content = readFileSync(filePath, 'utf-8');
     const config = JSON.parse(content) as CdkConfig;
-    logger.debug(`Loaded cdk.json from ${cdkJsonPath}`);
+    logger.debug(`Loaded config from ${filePath}`);
     return config;
   } catch (error) {
     logger.warn(
-      `Failed to parse cdk.json: ${error instanceof Error ? error.message : String(error)}`
+      `Failed to parse ${filePath}: ${error instanceof Error ? error.message : String(error)}`
     );
     return null;
   }
+}
+
+/**
+ * Load cdk.json from the current working directory
+ */
+export function loadCdkJson(cwd?: string): CdkConfig | null {
+  const dir = cwd || process.cwd();
+  return loadJsonConfig(resolve(dir, 'cdk.json'));
+}
+
+/**
+ * Load user-level defaults from ~/.cdk.json
+ *
+ * CDK CLI reads this as user-level defaults (lowest priority).
+ * Context values from ~/.cdk.json are merged below project cdk.json context.
+ */
+export function loadUserCdkJson(): CdkConfig | null {
+  return loadJsonConfig(join(homedir(), '.cdk.json'));
 }
 
 /**

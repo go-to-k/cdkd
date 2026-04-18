@@ -236,6 +236,34 @@ npm install
 - Lambda FunctionUrl attribute enrichment (GetFunctionUrlConfig API)
 - 6 resources: CREATE + DESTROY verified
 
+#### VPC Lookup Example (Context Provider Loop)
+
+```bash
+cd /Users/goto/github/cdkd/tests/integration/vpc-lookup
+npm install
+```
+
+**Tested features**:
+
+- Context provider loop (missing context → SDK resolution → cdk.context.json save → re-synthesis)
+- `Vpc.fromLookup()` triggers VPC context provider
+- Verifies `cdk.context.json` is generated with resolved VPC info
+- Deploy uses the resolved VPC ID in SSM Parameter
+
+```bash
+# Synth (generates cdk.context.json on first run)
+node ../../../dist/cli.js synth --region us-east-1
+
+# Verify cdk.context.json was created
+cat cdk.context.json
+
+# Deploy
+node ../../../dist/cli.js deploy --region us-east-1 --state-bucket <your-state-bucket>
+
+# Destroy
+node ../../../dist/cli.js destroy --region us-east-1 --state-bucket <your-state-bucket> --force
+```
+
 #### CDK Provider Framework Example (isCompleteHandler/onEventHandler)
 
 ```bash

@@ -10,44 +10,84 @@ import {
 import { getLogger } from '../../utils/logger.js';
 import { withErrorHandling } from '../../utils/error-handler.js';
 import { Synthesizer } from '../../synthesis/synthesizer.js';
-import { AssemblyLoader } from '../../synthesis/assembly-loader.js';
 import { S3StateBackend } from '../../state/s3-state-backend.js';
 import { DiffCalculator } from '../../analyzer/diff-calculator.js';
 import { setAwsClients, AwsClients } from '../../utils/aws-clients.js';
 import { resolveApp, resolveStateBucketWithDefault } from '../config-loader.js';
 
-/**
- * Check if a value contains CloudFormation intrinsic functions.
- * Used to detect false-positive diffs where state has resolved values
- * but template has unresolved intrinsics (Ref, Fn::Sub, Fn::GetAtt, etc.)
- */
-function containsIntrinsicFunction(value: unknown): boolean {
-  if (value === null || value === undefined) return false;
-  if (typeof value !== 'object') return false;
-  if (Array.isArray(value)) return value.some(containsIntrinsicFunction);
-  const obj = value as Record<string, unknown>;
-  const intrinsicKeys = [
-    'Ref',
-    'Fn::Sub',
-    'Fn::GetAtt',
-    'Fn::Join',
-    'Fn::Select',
-    'Fn::Split',
-    'Fn::If',
-    'Fn::ImportValue',
-    'Fn::FindInMap',
-    'Fn::Base64',
-    'Fn::GetAZs',
-    'Fn::Equals',
-    'Fn::And',
-    'Fn::Or',
-    'Fn::Not',
-  ];
-  for (const key of intrinsicKeys) {
-    if (key in obj) return true;
+const INTRINSIC_KEYS = new Set([
+  'Ref',
+  'Fn::Sub',
+  'Fn::GetAtt',
+  'Fn::Join',
+  'Fn::Select',
+  'Fn::Split',
+  'Fn::If',
+  'Fn::ImportValue',
+  'Fn::FindInMap',
+  'Fn::Base64',
+  'Fn::GetAZs',
+  'Fn::Equals',
+  'Fn::And',
+  'Fn::Or',
+  'Fn::Not',
+]);
+
+function isIntrinsic(value: unknown): boolean {
+  if (value === null || value === undefined || typeof value !== 'object' || Array.isArray(value)) {
+    return false;
   }
-  // Check nested values
-  return Object.values(obj).some(containsIntrinsicFunction);
+  const keys = Object.keys(value as Record<string, unknown>);
+  return keys.length === 1 && INTRINSIC_KEYS.has(keys[0]!);
+}
+
+/**
+ * Strip unchanged and intrinsic-only values from a diff value.
+ *
+ * Recursively compares `value` against `other` and keeps only the keys
+ * whose values actually differ (excluding intrinsic vs resolved mismatches).
+ * This produces a minimal diff showing only real changes.
+ */
+function stripUnchangedValues(value: unknown, other: unknown): unknown {
+  // Primitives or nulls: return as-is (the caller already determined these differ)
+  if (value === null || value === undefined || typeof value !== 'object') return value;
+  if (Array.isArray(value)) return value;
+
+  // If value itself is an intrinsic, omit it (it's not a real change)
+  if (isIntrinsic(value)) return undefined;
+  // If the other side is an intrinsic, the resolved value on this side is not a real change
+  if (isIntrinsic(other)) return undefined;
+
+  if (other === null || other === undefined || typeof other !== 'object' || Array.isArray(other)) {
+    return value;
+  }
+
+  const valObj = value as Record<string, unknown>;
+  const otherObj = other as Record<string, unknown>;
+  const result: Record<string, unknown> = {};
+
+  for (const key of Object.keys(valObj)) {
+    const v = valObj[key];
+    const o = otherObj[key];
+
+    // If either side is intrinsic for this key, skip (not a real change)
+    if (isIntrinsic(v) || isIntrinsic(o)) continue;
+
+    // If values are deeply equal, skip
+    if (JSON.stringify(v) === JSON.stringify(o)) continue;
+
+    // Recurse for nested objects
+    if (typeof v === 'object' && v !== null && typeof o === 'object' && o !== null) {
+      const filtered = stripUnchangedValues(v, o);
+      if (filtered !== undefined && JSON.stringify(filtered) !== '{}') {
+        result[key] = filtered;
+      }
+    } else {
+      result[key] = v;
+    }
+  }
+
+  return Object.keys(result).length > 0 ? result : value;
 }
 
 /**
@@ -97,24 +137,20 @@ async function diffCommand(
   });
   setAwsClients(awsClients);
 
-  let disposeAssembly: (() => Promise<void>) | undefined;
   try {
     // 1. Synthesize CDK app
     logger.info('Synthesizing CDK app...');
     const synthesizer = new Synthesizer();
     const context = parseContextOptions(options.context);
-    const { cloudAssembly: assembly, dispose } = await synthesizer.synthesize({
+    const result = await synthesizer.synthesize({
       app: options.app,
       output: options.output,
       ...(options.region && { region: options.region }),
       ...(options.profile && { profile: options.profile }),
       ...(Object.keys(context).length > 0 && { context }),
     });
-    disposeAssembly = dispose;
 
-    // 2. Load CloudAssembly and get stacks
-    const assemblyLoader = new AssemblyLoader();
-    const allStacks = assemblyLoader.getAllStacks(assembly);
+    const { stacks: allStacks } = result;
     logger.info(`Found ${allStacks.length} stack(s) in assembly`);
 
     // Determine target stacks: positional args > --stack > --all > auto (single stack)
@@ -160,7 +196,7 @@ async function diffCommand(
     for (const stackInfo of targetStacks) {
       logger.info(`\nCalculating diff for stack: ${stackInfo.stackName}`);
 
-      const template = assemblyLoader.getTemplate(assembly, stackInfo.stackName);
+      const template = stackInfo.template;
 
       // Load current state
       let currentState;
@@ -200,28 +236,25 @@ async function diffCommand(
             logger.info(`  [+] ${logicalId} (${change.resourceType})`);
             break;
           case 'UPDATE': {
-            // Filter out false-positive property changes (resolved vs unresolved intrinsic)
-            const realChanges = (change.propertyChanges ?? []).filter(
-              (pc) => !containsIntrinsicFunction(pc.newValue)
-            );
-            if (realChanges.length === 0 && (change.propertyChanges ?? []).length > 0) {
-              // All changes were false positives, skip this resource
-              break;
-            }
             updateCount++;
             logger.info(`  [~] ${logicalId} (${change.resourceType})`);
             if (change.propertyChanges && change.propertyChanges.length > 0) {
               for (const propChange of change.propertyChanges) {
-                // Skip false-positive diffs caused by intrinsic functions
-                // State stores resolved values, template has unresolved intrinsics
-                if (containsIntrinsicFunction(propChange.newValue)) {
-                  continue;
-                }
                 const requiresReplace = propChange.requiresReplacement
                   ? ' [requires replacement]'
                   : '';
-                const oldStr = JSON.stringify(propChange.oldValue, null, 2);
-                const newStr = JSON.stringify(propChange.newValue, null, 2);
+                // Strip unchanged and intrinsic values to show only actual changes
+                const oldFiltered = stripUnchangedValues(propChange.oldValue, propChange.newValue);
+                const newFiltered = stripUnchangedValues(propChange.newValue, propChange.oldValue);
+                const indent = '              ';
+                const oldStr = (JSON.stringify(oldFiltered, null, 2) ?? 'undefined').replace(
+                  /\n/g,
+                  `\n${indent}`
+                );
+                const newStr = (JSON.stringify(newFiltered, null, 2) ?? 'undefined').replace(
+                  /\n/g,
+                  `\n${indent}`
+                );
                 logger.info(`      - ${propChange.path}:${requiresReplace}`);
                 logger.info(`          old: ${oldStr}`);
                 logger.info(`          new: ${newStr}`);
@@ -239,9 +272,6 @@ async function diffCommand(
       logger.info(`\n${createCount} to create, ${updateCount} to update, ${deleteCount} to delete`);
     }
   } finally {
-    if (disposeAssembly) {
-      await disposeAssembly();
-    }
     awsClients.destroy();
   }
 }

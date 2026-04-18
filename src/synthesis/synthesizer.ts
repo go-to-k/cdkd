@@ -1,5 +1,12 @@
-import { Toolkit, CdkAppMultiContext, type ICloudAssemblySource } from '@aws-cdk/toolkit-lib';
-import type { CloudAssembly } from '@aws-cdk/cloud-assembly-api';
+import { mkdirSync } from 'node:fs';
+import { resolve } from 'node:path';
+import { GetCallerIdentityCommand, STSClient } from '@aws-sdk/client-sts';
+import { AppExecutor } from './app-executor.js';
+import { AssemblyReader, type StackInfo } from './assembly-reader.js';
+import { ContextStore } from './context-store.js';
+import { ContextProviderRegistry } from './context-providers/index.js';
+import type { AssemblyManifest } from '../types/assembly.js';
+import { loadCdkJson, loadUserCdkJson } from '../cli/config-loader.js';
 import { getLogger } from '../utils/logger.js';
 import { SynthesisError } from '../utils/error-handler.js';
 
@@ -10,7 +17,7 @@ export interface SynthesisOptions {
   /** CDK app command (e.g., "npx ts-node app.ts") */
   app: string;
 
-  /** Output directory for synthesis */
+  /** Output directory for synthesis (default: "cdk.out") */
   output?: string;
 
   /** AWS profile to use */
@@ -19,195 +26,167 @@ export interface SynthesisOptions {
   /** AWS region */
   region?: string;
 
-  /** Validate stacks during synthesis */
-  validateStacks?: boolean;
-
   /** Context key-value pairs (CLI -c/--context) */
   context?: Record<string, string>;
 }
 
 /**
- * CDK app synthesizer using toolkit-lib
+ * Synthesis result
+ */
+export interface SynthesisResult {
+  /** Cloud assembly manifest */
+  manifest: AssemblyManifest;
+
+  /** Assembly directory (absolute path) */
+  assemblyDir: string;
+
+  /** All stacks in the assembly */
+  stacks: StackInfo[];
+}
+
+/**
+ * CDK app synthesizer
+ *
+ * Replaces @aws-cdk/toolkit-lib with self-implemented:
+ * - Subprocess execution of CDK app
+ * - Cloud assembly manifest parsing
+ * - Context provider loop (missing context → SDK lookup → re-synthesize)
  */
 export class Synthesizer {
-  private toolkit: Toolkit;
   private logger = getLogger().child('Synthesizer');
-
-  constructor() {
-    this.toolkit = new Toolkit({
-      ioHost: {
-        // Handle toolkit messages
-        notify: (msg) => {
-          // Show relevant messages in compact mode
-          const message =
-            typeof msg === 'object' && msg !== null
-              ? (msg as unknown as Record<string, unknown>)
-              : {};
-          const level = message['level'] as string | undefined;
-          const code = message['code'] as string | undefined;
-          if (level === 'error' && message['message']) {
-            const msg = String(message['message']);
-            // CDK_ASSEMBLY_E1002 is subprocess stderr (bundling progress,
-            // deprecation warnings, and actual errors) - show as info
-            if (code === 'CDK_ASSEMBLY_E1002') {
-              this.logger.info(msg);
-            } else {
-              this.logger.error(msg);
-            }
-          } else {
-            this.logger.debug('Toolkit message:', msg);
-          }
-          return Promise.resolve();
-        },
-        // Handle toolkit requests (use default responses)
-        requestResponse: (msg) => {
-          this.logger.debug('Toolkit request:', msg);
-          return Promise.resolve(msg.defaultResponse);
-        },
-      },
-    });
-  }
+  private appExecutor = new AppExecutor();
+  private assemblyReader = new AssemblyReader();
+  private contextStore = new ContextStore();
 
   /**
-   * Create a cloud assembly source from CDK app command
+   * Synthesize CDK app to cloud assembly
    *
-   * Note: Using fromCdkApp() which:
-   * - Automatically reads cdk.json from the project directory
-   * - Handles context lookups and caching
-   * - Mimics CDK CLI behavior closely
+   * Implements the context provider loop:
+   * 1. Merge context (cdk.json context + cdk.context.json + CLI -c)
+   * 2. Execute CDK app subprocess
+   * 3. Read manifest.json
+   * 4. If missing context → resolve via providers → save to cdk.context.json → re-execute
+   * 5. Return assembly with stacks
    */
-  async createSource(options: SynthesisOptions): Promise<ICloudAssemblySource> {
+  async synthesize(options: SynthesisOptions): Promise<SynthesisResult> {
+    const outputDir = resolve(options.output || 'cdk.out');
+
+    // Ensure output directory exists
+    mkdirSync(outputDir, { recursive: true });
+
+    // Load static context (doesn't change during loop)
+    // Priority: defaults < ~/.cdk.json < cdk.json < cdk.context.json < CLI -c
+    const userCdkJson = loadUserCdkJson();
+    const userContext = (userCdkJson?.context as Record<string, unknown>) ?? {};
+    const cdkJson = loadCdkJson();
+    const cdkJsonContext = (cdkJson?.context as Record<string, unknown>) ?? {};
+    const cliContext = (options.context as Record<string, unknown>) ?? {};
+
+    // CDK CLI injects these context values by default for framework compatibility
+    const cdkDefaults: Record<string, unknown> = {
+      'aws:cdk:enable-path-metadata': true,
+      'aws:cdk:enable-asset-metadata': true,
+      'aws:cdk:version-reporting': true,
+      'aws:cdk:bundling-stacks': ['**'],
+    };
+
+    // Resolve AWS account/region for context passing
+    const region = options.region || process.env['AWS_REGION'] || process.env['AWS_DEFAULT_REGION'];
+    let accountId: string | undefined;
     try {
-      this.logger.debug('Creating cloud assembly source from app:', options.app);
-
-      // fromCdkApp automatically handles:
-      // 1. Reading cdk.json for configuration
-      // 2. Context lookups (VPC IDs, AZ info, etc.)
-      // 3. Saving context values to cdk.context.json
-      // Note: The 'output' option seems to be ignored in some cases,
-      // and it uses the current working directory's cdk.out
-
-      // If CLI context values are provided, use CdkAppMultiContext to merge them
-      // with cdk.json context (CLI values take precedence)
-      const sourceOptions =
-        options.context && Object.keys(options.context).length > 0
-          ? {
-              contextStore: new CdkAppMultiContext(process.cwd(), options.context),
-            }
-          : undefined;
-
-      const source = await this.toolkit.fromCdkApp(options.app, sourceOptions);
-
-      return source;
-    } catch (error) {
-      throw new SynthesisError(
-        `Failed to create cloud assembly source: ${error instanceof Error ? error.message : String(error)}`,
-        error instanceof Error ? error : undefined
-      );
+      const stsClient = new STSClient({ ...(region && { region }) });
+      const identity = await stsClient.send(new GetCallerIdentityCommand({}));
+      accountId = identity.Account;
+      stsClient.destroy();
+    } catch {
+      this.logger.debug('Could not resolve AWS account ID via STS');
     }
-  }
 
-  /**
-   * Synthesize CDK app to CloudFormation template
-   */
-  async synthesize(
-    options: SynthesisOptions
-  ): Promise<{ cloudAssembly: CloudAssembly; dispose: () => Promise<void> }> {
-    try {
-      this.logger.debug('Synthesizing CDK app...');
+    // Context provider loop
+    let previousMissingKeys: Set<string> | undefined;
+    const contextProviderRegistry = new ContextProviderRegistry({
+      ...(region && { region }),
+      ...(options.profile && { profile: options.profile }),
+    });
 
-      // Create cloud assembly source
-      const source = await this.createSource(options);
+    // eslint-disable-next-line no-constant-condition
+    while (true) {
+      // Load cdk.context.json (re-read each iteration — providers may have updated it)
+      const cdkContextJson = this.contextStore.load();
 
-      // Perform synthesis
-      this.logger.debug('Running synth operation...');
-      const assemblySource = await this.toolkit.synth(source, {
-        validateStacks: options.validateStacks ?? true,
+      // Merge context: defaults < ~/.cdk.json < cdk.json < cdk.context.json < CLI -c (CLI wins)
+      const mergedContext: Record<string, unknown> = {
+        ...cdkDefaults,
+        ...userContext,
+        ...cdkJsonContext,
+        ...cdkContextJson,
+        ...cliContext,
+      };
+
+      // Execute CDK app
+      this.logger.debug('Executing CDK app...');
+      await this.appExecutor.execute({
+        app: options.app,
+        outputDir,
+        context: mergedContext,
+        ...(region && { region }),
+        ...(accountId && { accountId }),
       });
 
-      const cloudAssembly = assemblySource.cloudAssembly;
+      // Read manifest
+      const manifest = this.assemblyReader.readManifest(outputDir);
 
-      this.logger.debug('Synthesis complete');
-      this.logger.debug('Assembly directory:', cloudAssembly.directory);
-      this.logger.debug('Assembly type:', typeof cloudAssembly);
-      this.logger.debug('Assembly has stacks?', !!cloudAssembly.stacks);
-      this.logger.debug('Assembly stacks length:', cloudAssembly.stacks?.length);
-      if (cloudAssembly.artifacts) {
-        this.logger.debug('Assembly artifacts:', Object.keys(cloudAssembly.artifacts));
+      // Check for missing context
+      if (!manifest.missing || manifest.missing.length === 0) {
+        // Synthesis complete
+        const stacks = this.assemblyReader.getAllStacks(outputDir, manifest);
+        this.logger.debug(`Synthesis complete: ${stacks.length} stack(s)`);
+
+        return { manifest, assemblyDir: outputDir, stacks };
       }
 
-      // Log stack names
-      const stackNames = cloudAssembly.stacks?.map((s) => s.stackName) ?? [];
-      if (stackNames.length > 0) {
-        this.logger.debug('Stacks in assembly:', stackNames);
+      // Missing context detected
+      const missingKeys = new Set(manifest.missing.map((m) => m.key));
+      this.logger.debug(`Missing context: ${manifest.missing.length} value(s)`);
+
+      // Check for no progress (same missing keys as last iteration)
+      if (previousMissingKeys && setsEqual(missingKeys, previousMissingKeys)) {
+        throw new SynthesisError(
+          'Context resolution made no progress. ' +
+            `Missing context keys: ${[...missingKeys].join(', ')}. ` +
+            'Ensure cdk.context.json is correctly configured or required AWS permissions are granted.'
+        );
       }
+      previousMissingKeys = missingKeys;
 
-      return { cloudAssembly, dispose: () => assemblySource.dispose() };
-    } catch (error) {
-      // Extract stderr/stdout from the subprocess error chain for diagnostics
-      const details = this.extractErrorDetails(error);
+      // Resolve missing context via providers
+      this.logger.info('Resolving missing context...');
+      const resolved = await contextProviderRegistry.resolve(manifest.missing);
 
-      throw new SynthesisError(
-        `Synthesis failed: ${error instanceof Error ? error.message : String(error)}${details}`,
-        error instanceof Error ? error : undefined
-      );
+      // Save resolved values to cdk.context.json
+      this.contextStore.save(resolved);
+
+      // Loop: re-execute CDK app with updated context
+      this.logger.debug('Re-synthesizing with resolved context...');
     }
   }
 
   /**
-   * List stacks in CDK app
+   * List stack names in CDK app
    */
   async listStacks(options: SynthesisOptions): Promise<string[]> {
-    try {
-      const source = await this.createSource(options);
-      const details = await this.toolkit.list(source);
-
-      // Validate that details is an array
-      if (!Array.isArray(details)) {
-        throw new SynthesisError('Unexpected response from toolkit.list: not an array');
-      }
-
-      // Map stack names with validation
-      return details.map((stack) => {
-        if (typeof stack === 'object' && stack !== null && 'name' in stack) {
-          const name = (stack as { name: unknown }).name;
-          if (typeof name === 'string') {
-            return name;
-          }
-        }
-        throw new SynthesisError('Invalid stack object in list response');
-      });
-    } catch (error) {
-      throw new SynthesisError(
-        `Failed to list stacks: ${error instanceof Error ? error.message : String(error)}`,
-        error instanceof Error ? error : undefined
-      );
-    }
+    const result = await this.synthesize(options);
+    return result.stacks.map((s) => s.stackName);
   }
+}
 
-  /**
-   * Extract stderr/stdout details from error cause chain
-   */
-  private extractErrorDetails(error: unknown): string {
-    let details = '';
-    let current: unknown = error;
-
-    // Walk the cause chain up to 5 levels deep
-    for (let i = 0; i < 5 && current; i++) {
-      if (current instanceof Error || (typeof current === 'object' && current !== null)) {
-        const obj = current as Record<string, unknown>;
-        if (obj['stderr'] && String(obj['stderr']).trim()) {
-          details += `\n\nstderr:\n${String(obj['stderr']).trim()}`;
-        }
-        if (obj['stdout'] && String(obj['stdout']).trim()) {
-          details += `\n\nstdout:\n${String(obj['stdout']).trim()}`;
-        }
-        current = obj['cause'];
-      } else {
-        break;
-      }
-    }
-
-    return details;
+/**
+ * Check if two sets contain the same elements
+ */
+function setsEqual<T>(a: Set<T>, b: Set<T>): boolean {
+  if (a.size !== b.size) return false;
+  for (const item of a) {
+    if (!b.has(item)) return false;
   }
+  return true;
 }

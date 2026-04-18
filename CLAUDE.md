@@ -22,8 +22,8 @@ cdkd has a 7-layer system architecture:
 └────────────────┬────────────────────────────┘
                  ▼
 ┌─────────────────────────────────────────────┐
-│ 2. Synthesis Layer (src/synthesis/)         │ → CDK app → CFn template conversion
-└────────────────┬────────────────────────────┘
+│ 2. Synthesis Layer (src/synthesis/)         │ → CDK app subprocess execution
+└────────────────┬────────────────────────────┘   Cloud Assembly parsing, context providers
                  ▼
         ┌────────┴────────┐
         ▼                 ▼
@@ -98,18 +98,25 @@ pnpm run typecheck
 ### Core Directories
 
 - **src/cli/** - CLI command implementations (deploy, destroy, diff, synth, bootstrap, force-unlock), config resolution
-- **src/synthesis/** - CDK app synthesis (using @aws-cdk/toolkit-lib)
+- **src/synthesis/** - CDK app synthesis (self-implemented: subprocess execution, Cloud Assembly parsing, context providers)
 - **src/analyzer/** - DAG builder, template parser, intrinsic function resolution
 - **src/state/** - S3 state backend, lock manager
 - **src/deployment/** - DeployEngine (orchestration)
 - **src/provisioning/** - Provider registry, Cloud Control provider, SDK providers
-- **src/assets/** - Asset publisher (Lambda code, Docker images)
+- **src/assets/** - Asset publisher (self-implemented S3 file upload with ZIP packaging, ECR Docker image build & push)
 
 ### Important Files
 
 - **src/cli/config-loader.ts** - Config resolution (cdk.json, env vars for `--app` and `--state-bucket`)
+- **src/synthesis/app-executor.ts** - Executes CDK app as subprocess with proper env vars (CDK_OUTDIR, CDK_CONTEXT_JSON, CDK_DEFAULT_REGION, etc.)
+- **src/synthesis/assembly-reader.ts** - Reads and parses Cloud Assembly manifest.json directly
+- **src/synthesis/synthesizer.ts** - Orchestrates synthesis with context provider loop
+- **src/synthesis/context-providers/** - Context providers (see `src/synthesis/context-providers/` for full list) for missing context resolution
+- **src/assets/file-asset-publisher.ts** - S3 file upload with ZIP packaging support
+- **src/assets/docker-asset-publisher.ts** - ECR Docker image build & push
+- **src/types/assembly.ts** - Cloud Assembly types (AssemblyManifest, MissingContext, etc.)
 - **src/provisioning/register-providers.ts** - Shared provider registration (called from deploy.ts and destroy.ts)
-- **src/types/** - Type definitions (config, state, resources, etc.)
+- **src/types/** - Type definitions (config, state, resources, assembly, etc.)
 - **src/utils/** - Logger, error handler, AWS client factory
 - **build.mjs** - esbuild build script (ESM modules)
 - **vitest.config.ts** - Vitest configuration
@@ -173,7 +180,6 @@ registry.register('AWS::IAM::Role', new IAMRoleProvider());
 ### 2. Build System (esbuild)
 
 - Uses esbuild in `build.mjs`
-- CDK libraries are externalized (placed in dependencies)
 - graphlib has special handling for ESM compatibility
 
 ### 3. CLI Configuration Resolution
@@ -196,13 +202,24 @@ registry.register('AWS::IAM::Role', new IAMRoleProvider());
 - Async CRUD with polling (max 1hr), pre-signed URL validity 2hr
 - Implemented in `CustomResourceProvider`
 
-### 5. Asset Publishing
+### 5. Synthesis
 
-- Uses `@aws-cdk/cdk-assets-lib`
-- Publishes Lambda code packages to S3/ECR
-- Implemented in `AssetsPublisher` class
+- Synthesis orchestration (no external CDK toolkit dependencies; CDK app itself generates templates)
+- `AppExecutor` runs CDK app as subprocess with env vars (CDK_OUTDIR, CDK_CONTEXT_JSON, CDK_DEFAULT_REGION, etc.)
+- `AssemblyReader` parses Cloud Assembly manifest.json directly
+- `Synthesizer` orchestrates synthesis with context provider loop for missing context resolution
+- Context providers: see `src/synthesis/context-providers/` for full list (in `src/synthesis/context-providers/`)
+- `ContextStore` manages cdk.context.json read/write
 
-### 6. Intrinsic Function Resolution
+### 6. Asset Publishing
+
+- Self-implemented (no external CDK asset libraries)
+- `FileAssetPublisher` handles S3 file upload with ZIP packaging (using `archiver`)
+- `DockerAssetPublisher` handles ECR Docker image build & push
+- `AssetPublisher` orchestrates using above publishers
+- `AssetManifestLoader` loads asset manifests from cdk.out
+
+### 7. Intrinsic Function Resolution
 
 - Implemented in `IntrinsicResolver` class (`src/analyzer/intrinsic-resolver.ts`)
 - Ref: References other resource's PhysicalId
@@ -210,7 +227,7 @@ registry.register('AWS::IAM::Role', new IAMRoleProvider());
 - Fn::Join: String concatenation
 - Fn::Sub: Template string substitution
 
-### 7. Dependency Analysis
+### 8. Dependency Analysis
 
 - Implemented in `DagBuilder` class (`src/analyzer/dag-builder.ts`)
 - Scans template to detect `Ref` / `Fn::GetAtt` / `DependsOn`
@@ -321,15 +338,18 @@ See [docs/provider-development.md](docs/provider-development.md) for details.
 - ✅ Lambda FunctionUrl attribute enrichment (GetFunctionUrlConfig API)
 - ✅ CloudFront + Lambda Function URL integration test (6/6 CREATE+DESTROY)
 - ✅ Removed attribute-mapper and schema-cache (CC API returns GetAtt-compatible names directly)
+- ✅ CDK synthesis orchestration without toolkit-lib (removed @aws-cdk/toolkit-lib and @aws-cdk/cloud-assembly-api)
+- ✅ Self-implemented asset publishing (removed @aws-cdk/cdk-assets-lib, using archiver for ZIP)
+- ✅ Context providers for missing context resolution (see `src/synthesis/context-providers/` for full list)
+- ✅ Cloud Assembly manifest.json direct parsing with custom type definitions
 
 ## Dependencies
 
 ### Key Dependencies
 
-- `@aws-cdk/toolkit-lib` - CDK synthesis (GA)
-- `@aws-cdk/cdk-assets-lib` - Asset publishing
 - `@aws-sdk/client-*` - AWS SDK v3 (various services)
 - `graphlib` - DAG construction
+- `archiver` - ZIP packaging for file assets
 
 ### Dev Dependencies
 

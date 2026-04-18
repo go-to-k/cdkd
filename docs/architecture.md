@@ -2,7 +2,7 @@
 
 ## Overview
 
-**cdkd** (CDK Direct) is a tool that deploys AWS CDK applications directly without going through CloudFormation. It leverages CDK's synthesis capabilities while using SDK Providers (preferred for performance) and Cloud Control API (fallback) for fast deployments.
+**cdkd** (CDK Direct) is a tool that deploys AWS CDK applications directly without going through CloudFormation. It orchestrates CDK app synthesis (via subprocess execution) and implements its own asset publishing pipeline, then uses SDK Providers (preferred for performance) and Cloud Control API (fallback) for fast deployments.
 
 ## Architecture Diagram
 
@@ -17,8 +17,12 @@
 ┌───────────────────────────▼─────────────────────────────────────┐
 │                    Synthesis Layer                              │
 │  (src/synthesis/)                                               │
-│  - synthesizer.ts: @aws-cdk/toolkit-lib wrapper                │
-│  - assembly-loader.ts: CloudAssembly loader                    │
+│  - app-executor.ts: CDK app execution via child_process        │
+│  - assembly-reader.ts: manifest.json/template parser           │
+│  - synthesizer.ts: Context provider loop orchestrator          │
+│  - context-store.ts: cdk.context.json read/write               │
+│  - context-provider-registry.ts: Context provider registry     │
+│  - context-providers/: Missing context resolution providers    │
 └───────────────────────────┬─────────────────────────────────────┘
                             │
                  ┌──────────┴──────────┐
@@ -26,11 +30,12 @@
 ┌────────────────▼──────┐   ┌─────────▼────────────────────────────┐
 │    Assets Layer       │   │      Analysis Layer                  │
 │  (src/assets/)        │   │  (src/analyzer/)                     │
-│  - asset-manifest-    │   │  - template-parser.ts: Template parsing│
-│    loader.ts          │   │  - dag-builder.ts: Dependency graph  │
-│  - asset-publisher.ts │   │  - diff-calculator.ts: Diff calculation│
-│    (@aws-cdk/cdk-     │   │  - intrinsic-function-resolver.ts    │
-│     assets-lib)       │   │                                      │
+│  - file-asset-        │   │  - template-parser.ts: Template parsing│
+│    publisher.ts       │   │  - dag-builder.ts: Dependency graph  │
+│  - docker-asset-      │   │  - diff-calculator.ts: Diff calculation│
+│    publisher.ts       │   │  - intrinsic-function-resolver.ts    │
+│  - asset-publisher.ts │   │                                      │
+│    (orchestrator)     │   │                                      │
 └───────────────────────┘   └──────────┬───────────────────────────┘
                                        │
                             ┌──────────┴──────────┐
@@ -78,45 +83,118 @@
 
 ### 2. Synthesis Layer (`src/synthesis/`)
 
-**Responsibilities**: CDK application synthesis, CloudFormation template generation
+**Responsibilities**: CDK application execution, CloudFormation template generation, context provider resolution
+
+cdkd orchestrates CDK app synthesis without external CDK toolkit dependencies. The CDK app itself (aws-cdk-lib) generates the CloudFormation template — cdkd's role is to execute the app as a child process, read the resulting cloud assembly output, and handle context provider resolution through an iterative loop.
 
 **Main Components**:
 
-- `synthesizer.ts`: Wraps `@aws-cdk/toolkit-lib`'s `synth()`
-- `assembly-loader.ts`: Loads CloudAssembly from `cdk.out/`
+#### `app-executor.ts` - AppExecutor
 
-**External Dependencies**:
+Executes the CDK app command via `child_process.spawn()` with the following environment variables:
 
-- `@aws-cdk/toolkit-lib`: CDK official synthesis library (GA)
-- `aws-cdk-lib`: User's CDK app dependency
+- `CDK_OUTDIR`: Output directory for synthesized templates (e.g., `cdk.out`)
+- `CDK_CONTEXT_JSON`: Serialized JSON context (includes cached context from `cdk.context.json`)
+- `CDK_DEFAULT_REGION`: AWS region
+- `CDK_DEFAULT_ACCOUNT`: AWS account ID
+
+#### `assembly-reader.ts` - AssemblyReader
+
+Reads the cloud assembly output directly from the `cdk.out/` directory:
+
+- Parses `manifest.json` to discover stack artifacts and asset manifests
+- Extracts CloudFormation templates (`{StackName}.template.json`)
+- Extracts asset manifests (`{StackName}.assets.json`)
+- Resolves artifact dependencies and metadata
+
+#### `synthesizer.ts` - Synthesizer
+
+Orchestrates the context provider loop:
+
+```
+1. Execute CDK app (AppExecutor)
+   ↓
+2. Read cloud assembly (AssemblyReader)
+   ↓
+3. Check for missing context in manifest
+   ↓  (if missing context found)
+4. Resolve missing context via ContextProviderRegistry
+   ↓
+5. Save resolved context to cdk.context.json (ContextStore)
+   ↓
+6. Re-execute CDK app with updated context → go to step 1
+   ↓  (if no missing context)
+7. Return final assembly with stacks and asset manifests
+```
+
+This iterative loop mirrors the behavior of the CDK CLI: when a CDK app encounters a construct that requires runtime context (e.g., `Vpc.fromLookup()`), it records the missing context key and exits. The synthesizer detects these missing keys, resolves them via AWS SDK calls, caches the results, and re-runs synthesis until all context is satisfied.
+
+**Context Merge Order** (later wins):
+
+1. CDK defaults (`aws:cdk:enable-path-metadata`, `aws:cdk:enable-asset-metadata`, `aws:cdk:version-reporting`, `aws:cdk:bundling-stacks`)
+2. `~/.cdk.json` "context" field (user-level defaults)
+3. `cdk.json` "context" field (project-level settings)
+4. `cdk.context.json` (cached lookup results, reloaded each iteration)
+5. CLI `-c key=value` (highest priority)
+
+#### `context-store.ts` - ContextStore
+
+Reads and writes `cdk.context.json` for context caching. This file persists resolved context values across synthesis runs, avoiding redundant AWS API calls.
+
+#### `context-provider-registry.ts` - ContextProviderRegistry
+
+Registry of context providers that resolve missing context during synthesis. Each provider handles a specific context type.
+
+**Built-in Context Providers** (`context-providers/`):
+
+All CDK context provider types are supported. See `src/synthesis/context-providers/` for the full list of implementations.
 
 **Synthesis Flow**:
 
 ```
 1. User CDK App (--app option, CDKD_APP env var, or cdk.json "app" field)
    ↓
-2. @aws-cdk/toolkit-lib.synth()
-   ↓
+2. AppExecutor.execute() via child_process.spawn()
+   ↓  (with CDK_OUTDIR, CDK_CONTEXT_JSON, CDK_DEFAULT_REGION/ACCOUNT env vars)
 3. Output to cdk.out/ directory
    - manifest.json
    - {StackName}.template.json
    - {StackName}.assets.json
    ↓
-4. assembly-loader loads CloudAssembly
+4. AssemblyReader parses manifest.json
+   ↓
+5. Check for missing context → resolve via providers → re-synthesize if needed
+   ↓
+6. Return final assembly with stacks and asset manifests
 ```
 
 ### 3. Assets Layer (`src/assets/`)
 
 **Responsibilities**: Publish assets like Lambda code, Docker images to S3/ECR
 
+cdkd implements its own asset publishing without external dependencies.
+
 **Main Components**:
 
-- `asset-manifest-loader.ts`: Reads `{StackName}.assets.json`
-- `asset-publisher.ts`: Publishes assets using `@aws-cdk/cdk-assets-lib`
+#### `file-asset-publisher.ts` - FileAssetPublisher
 
-**External Dependencies**:
+Publishes file assets (Lambda code packages, etc.) to S3:
 
-- `@aws-cdk/cdk-assets-lib`: CDK official asset publishing library
+- Checks for existing assets via `HeadObject` (skips if already published)
+- Supports ZIP packaging for directory assets
+- Uploads to the CDK asset bucket
+
+#### `docker-asset-publisher.ts` - DockerAssetPublisher
+
+Publishes Docker image assets to ECR:
+
+- Authenticates with ECR via `GetAuthorizationToken`
+- Builds Docker images from source
+- Tags and pushes images to the ECR repository
+
+#### `asset-publisher.ts` - AssetPublisher
+
+Orchestrator that reads asset manifests and delegates to the appropriate publisher (file or Docker) based on asset type.
 
 **Asset Types**:
 
@@ -181,6 +259,12 @@ calculateDiff(
 - `UPDATE`: Property change
 - `DELETE`: Resource deletion
 - `NO_CHANGE`: No change
+
+**Comparison Behavior**:
+
+- **Intrinsic function handling**: When comparing state (resolved values) vs template (unresolved intrinsics), intrinsic functions are detected per-value at each level of recursion. If the new value is an intrinsic (e.g., `{ "Fn::Join": [...] }`), it is treated as equal to the old resolved value since the actual resolved result cannot be determined without deployment.
+- **AWS default key filtering**: AWS APIs often return additional properties not present in the template (e.g., `IncludeCookies: false`, `Enabled: true`). During comparison, only keys present in the template (new) side are compared; extra keys in the state (old) side are ignored as AWS-added defaults.
+- **Diff display**: When showing property changes, only the actually changed sub-properties are displayed. Unchanged sibling values and intrinsic-containing values are stripped from the output to reduce noise.
 
 #### `intrinsic-function-resolver.ts`
 
@@ -443,8 +527,9 @@ getClient<T>(ClientClass: new (...) => T, region: string): T
          ▼
 ┌─────────────────────────┐
 │ Synthesis Layer         │
-│ @aws-cdk/toolkit-lib    │  CDK App → CloudFormation Template
-│ synthesizer.ts          │
+│ AppExecutor             │  Execute CDK app via child_process.spawn()
+│ AssemblyReader          │  Parse manifest.json from cdk.out/
+│ Synthesizer             │  Context provider loop (resolve missing context)
 └────────┬────────────────┘
          │
     ┌────┴────┐
@@ -556,6 +641,50 @@ getClient<T>(ClientClass: new (...) => T, region: string): T
 └─────────────────────────┘
 ```
 
+### 4. Context Provider Resolution Loop
+
+```
+┌───────────────────────┐
+│ Synthesizer           │
+│ synthesize()          │
+└──────────┬────────────┘
+           │
+           ▼
+┌───────────────────────┐
+│ AppExecutor           │
+│ spawn(cdkApp)         │◄──────────────────────┐
+│ env: CDK_OUTDIR,      │                       │
+│   CDK_CONTEXT_JSON,   │                       │
+│   CDK_DEFAULT_REGION  │                       │
+└──────────┬────────────┘                       │
+           │                                    │
+           ▼                                    │
+┌───────────────────────┐                       │
+│ AssemblyReader        │                       │
+│ read manifest.json    │                       │
+└──────────┬────────────┘                       │
+           │                                    │
+           ▼                                    │
+┌───────────────────────┐     ┌─────────────────┴───────┐
+│ Missing context?      │─Yes→│ ContextProviderRegistry │
+│ (check manifest       │     │ resolve(key, props)     │
+│  missing entries)     │     │ (all CDK provider types │
+└──────────┬────────────┘     │  supported — see        │
+           │ No               │  context-providers/)    │
+           ▼                  │                         │
+┌───────────────────────┐     │                         │
+│ Return final assembly │     └─────────────┬───────────┘
+└───────────────────────┘                   │
+                                            ▼
+                              ┌─────────────────────────┐
+                              │ ContextStore             │
+                              │ save to cdk.context.json │
+                              └─────────────┬───────────┘
+                                            │
+                                            │ (re-synthesize)
+                                            └───────────────┘
+```
+
 ## Design Principles
 
 ### 1. Single Responsibility Principle (SRP)
@@ -563,7 +692,7 @@ getClient<T>(ClientClass: new (...) => T, region: string): T
 Each layer has clear responsibilities
 
 - CLI: UI/UX
-- Synthesis: CDK synthesis
+- Synthesis: CDK app execution and context resolution
 - Analysis: Analysis and planning
 - Deployment: Execution control
 - Provisioning: AWS API calls
@@ -576,6 +705,7 @@ Each layer has clear responsibilities
 ### 3. Open/Closed Principle (OCP)
 
 - Can add new providers (Registry pattern)
+- Can add new context providers (ContextProviderRegistry pattern)
 - Extensible without modifying existing code
 
 ### 4. Fail-Fast with State Recovery
@@ -583,12 +713,18 @@ Each layer has clear responsibilities
 - Saves partial state even on error
 - Can re-run as diff on next execution
 
+### 5. Zero External CDK Dependencies
+
+- Synthesis, assembly reading, and asset publishing are all implemented internally
+- No dependency on `@aws-cdk/toolkit-lib`, `@aws-cdk/cloud-assembly-api`, or `@aws-cdk/cdk-assets-lib`
+- Only `aws-cdk-lib` is required as the user's CDK app dependency
+
 ## Performance Characteristics
 
 ### Comparison with CloudFormation
 
 | Item | CloudFormation | cdkd |
-|------|----------------|------|
+| ---- | -------------- | ---- |
 | **Small Stack (5 resources)** | 60-90 seconds | 15-25 seconds |
 | **Medium Stack (20 resources)** | 3-5 minutes | 40-80 seconds |
 | **Parallel Execution** | Mainly sequential | Fully parallel by DAG level |
@@ -644,5 +780,4 @@ Each layer has clear responsibilities
 - [State Management Specification](./state-management.md)
 - [Provider Development Guide](./provider-development.md)
 - [Troubleshooting](./troubleshooting.md)
-- [AWS CDK Toolkit Lib Documentation](https://docs.aws.amazon.com/cdk/api/toolkit-lib/)
 - [AWS Cloud Control API Reference](https://docs.aws.amazon.com/cloudcontrolapi/latest/APIReference/Welcome.html)

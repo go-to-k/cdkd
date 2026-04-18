@@ -190,8 +190,53 @@ export class DiffCalculator {
     return changes;
   }
 
+  private static readonly INTRINSIC_KEYS = new Set([
+    'Ref',
+    'Fn::Sub',
+    'Fn::GetAtt',
+    'Fn::Join',
+    'Fn::Select',
+    'Fn::Split',
+    'Fn::If',
+    'Fn::ImportValue',
+    'Fn::FindInMap',
+    'Fn::Base64',
+    'Fn::GetAZs',
+    'Fn::Equals',
+    'Fn::And',
+    'Fn::Or',
+    'Fn::Not',
+  ]);
+
+  /**
+   * Check if a value is itself a CloudFormation intrinsic function.
+   * e.g. { "Ref": "MyResource" } or { "Fn::GetAtt": ["Res", "Arn"] }
+   * Does NOT match objects that merely contain intrinsics as nested children.
+   */
+  private static isIntrinsic(value: unknown): boolean {
+    if (
+      value === null ||
+      value === undefined ||
+      typeof value !== 'object' ||
+      Array.isArray(value)
+    ) {
+      return false;
+    }
+    const keys = Object.keys(value as Record<string, unknown>);
+    return keys.length === 1 && DiffCalculator.INTRINSIC_KEYS.has(keys[0]!);
+  }
+
   /**
    * Deep equality check for values
+   *
+   * When comparing state (resolved values) with template (unresolved intrinsics),
+   * treats intrinsic function nodes as "not comparable" and assumes equal.
+   * This check happens at each level of recursion, so only the specific value
+   * that IS an intrinsic gets skipped — sibling values are still compared normally.
+   *
+   * Example: { Variables: { AZURE_REGION: "japaneast", SECRET_NAME: { "Fn::Join": ... } } }
+   * - AZURE_REGION: compared normally (string vs string)
+   * - SECRET_NAME: one side is intrinsic → treated as equal (skip)
    */
   private valuesEqual(a: unknown, b: unknown): boolean {
     // Strict equality check
@@ -204,6 +249,12 @@ export class DiffCalculator {
       return a === b;
     }
 
+    // If either side is an intrinsic function node, we can't compare
+    // (state has resolved value like "arn:...", template has { "Fn::GetAtt": [...] })
+    if (DiffCalculator.isIntrinsic(a) || DiffCalculator.isIntrinsic(b)) {
+      return true;
+    }
+
     // Array check
     if (Array.isArray(a) && Array.isArray(b)) {
       if (a.length !== b.length) {
@@ -212,19 +263,27 @@ export class DiffCalculator {
       return a.every((val, index) => this.valuesEqual(val, b[index]));
     }
 
-    // Object check
+    // Object check — recurse into each key so intrinsics are detected per-value
     if (typeof a === 'object' && typeof b === 'object') {
       const aObj = a as Record<string, unknown>;
       const bObj = b as Record<string, unknown>;
 
-      const aKeys = Object.keys(aObj);
       const bKeys = Object.keys(bObj);
 
-      if (aKeys.length !== bKeys.length) {
-        return false;
+      // Check keys in new (template) side exist in old (state) side with equal values.
+      // Keys only in old side are ignored — they are typically AWS-added defaults
+      // (e.g., IncludeCookies, Enabled, Prefix in CloudFront Logging) that don't
+      // appear in the template but get stored in state after deployment.
+      // Keys only in new side are real additions and will cause inequality.
+      for (const key of bKeys) {
+        if (!(key in aObj)) {
+          return false; // New key added in template
+        }
+        if (!this.valuesEqual(aObj[key], bObj[key])) {
+          return false;
+        }
       }
-
-      return aKeys.every((key) => this.valuesEqual(aObj[key], bObj[key]));
+      return true;
     }
 
     // Primitive types

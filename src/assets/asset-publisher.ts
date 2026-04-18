@@ -1,10 +1,7 @@
-import {
-  AssetManifest,
-  AssetPublishing,
-  DefaultAwsClient,
-  EventType,
-  type IPublishProgressListener,
-} from '@aws-cdk/cdk-assets-lib';
+import { readFileSync } from 'node:fs';
+import { FileAssetPublisher } from './file-asset-publisher.js';
+import { DockerAssetPublisher } from './docker-asset-publisher.js';
+import type { AssetManifest } from '../types/assets.js';
 import { getLogger } from '../utils/logger.js';
 import { AssetError } from '../utils/error-handler.js';
 
@@ -18,21 +15,23 @@ export interface AssetPublisherOptions {
   /** AWS region */
   region?: string;
 
-  /** Whether to build assets */
-  buildAssets?: boolean;
-
-  /** Whether to publish assets */
-  publishAssets?: boolean;
+  /** AWS account ID */
+  accountId?: string;
 
   /** Whether to publish in parallel */
   publishInParallel?: boolean;
 }
 
 /**
- * Asset publisher using cdk-assets library
+ * Asset publisher
+ *
+ * Orchestrates file and Docker image asset publishing.
+ * Replaces @aws-cdk/cdk-assets-lib with self-implemented publishers.
  */
 export class AssetPublisher {
   private logger = getLogger().child('AssetPublisher');
+  private filePublisher = new FileAssetPublisher();
+  private dockerPublisher = new DockerAssetPublisher();
 
   /**
    * Publish assets from asset manifest file
@@ -44,52 +43,81 @@ export class AssetPublisher {
     try {
       this.logger.debug('Loading asset manifest:', manifestPath);
 
-      // Load asset manifest
-      const manifest = AssetManifest.fromPath(manifestPath);
+      // Load and parse manifest
+      const content = readFileSync(manifestPath, 'utf-8');
+      const manifest = JSON.parse(content) as AssetManifest;
 
-      this.logger.debug('Manifest directory:', manifest.directory);
-      this.logger.debug('Assets to publish:', manifest.entries.length);
+      // Determine cdkOutputDir from manifest path
+      const cdkOutputDir = manifestPath.replace(/\/[^/]+$/, '');
 
-      // Create AWS client (profile only, region is handled by AWS SDK defaults)
-      const aws = new DefaultAwsClient(options.profile);
+      // Resolve account and region
+      const region = options.region || process.env['AWS_REGION'] || 'us-east-1';
+      let accountId = options.accountId;
 
-      // Set region via environment variable if specified
-      if (options.region) {
-        process.env['AWS_REGION'] = options.region;
+      if (!accountId) {
+        // Resolve from STS
+        const { STSClient, GetCallerIdentityCommand } = await import('@aws-sdk/client-sts');
+        const stsClient = new STSClient({ region });
+        const identity = await stsClient.send(new GetCallerIdentityCommand({}));
+        accountId = identity.Account!;
+        stsClient.destroy();
       }
 
-      // Create progress listener
-      const progressListener: IPublishProgressListener = {
-        onPublishEvent: (type, event) => {
-          if (type === EventType.START) {
-            this.logger.debug(`Publishing asset: ${event.message || 'unknown'}`);
-          } else if (type === EventType.SUCCESS) {
-            this.logger.debug(`✅ Published: ${event.message || 'unknown'}`);
-          } else if (type === EventType.FAIL) {
-            this.logger.error(`❌ Failed: ${event.message || 'unknown'}`);
-          }
-        },
-      };
+      // Count assets
+      const fileAssets = Object.entries(manifest.files || {}).filter(
+        ([, asset]) =>
+          !asset.source.path.endsWith('.json') && !asset.source.path.endsWith('.template.json')
+      );
+      const dockerAssets = Object.entries(manifest.dockerImages || {});
+      const totalAssets = fileAssets.length + dockerAssets.length;
 
-      // Create asset publisher
-      const publisher = new AssetPublishing(manifest, {
-        aws,
-        progressListener,
-        publishInParallel: options.publishInParallel ?? false,
-        throwOnError: true,
-      });
+      if (totalAssets === 0) {
+        this.logger.debug('No assets to publish');
+        return;
+      }
 
-      // Publish all assets
-      this.logger.debug('Publishing assets...');
-      await publisher.publish();
+      this.logger.debug(
+        `Assets to publish: ${fileAssets.length} files, ${dockerAssets.length} docker images`
+      );
+
+      // Publish file assets
+      for (const [hash, asset] of fileAssets) {
+        this.logger.debug(`Publishing file asset: ${asset.displayName || hash}`);
+        await this.filePublisher.publish(
+          hash,
+          asset,
+          cdkOutputDir,
+          accountId,
+          region,
+          options.profile
+        );
+      }
+
+      // Publish Docker image assets
+      for (const [hash, asset] of dockerAssets) {
+        this.logger.debug(`Publishing Docker image: ${asset.displayName || hash}`);
+        await this.dockerPublisher.publish(
+          hash,
+          asset,
+          cdkOutputDir,
+          accountId,
+          region,
+          options.profile
+        );
+      }
 
       this.logger.debug('✅ All assets published successfully');
     } catch (error) {
       if (error instanceof AssetError) {
         throw error;
       }
+      // Extract detailed error information from AWS SDK errors
+      const err = error as Record<string, unknown>;
+      const message = String(err['message'] || err['name'] || error);
+      const code = String(err['Code'] || err['code'] || err['name'] || '');
+      const detail = code ? `${code}: ${message}` : message;
       throw new AssetError(
-        `Asset publishing failed: ${error instanceof Error ? error.message : String(error)}`,
+        `Asset publishing failed: ${detail}`,
         error instanceof Error ? error : undefined
       );
     }
@@ -100,10 +128,13 @@ export class AssetPublisher {
    */
   hasAssets(manifestPath: string): boolean {
     try {
-      const manifest = AssetManifest.fromPath(manifestPath);
-      return manifest.entries.length > 0;
-    } catch (error) {
-      this.logger.warn('Failed to check assets:', error);
+      const content = readFileSync(manifestPath, 'utf-8');
+      const manifest = JSON.parse(content) as AssetManifest;
+      const fileCount = Object.keys(manifest.files || {}).length;
+      const dockerCount = Object.keys(manifest.dockerImages || {}).length;
+      return fileCount + dockerCount > 0;
+    } catch {
+      this.logger.warn('Failed to check assets');
       return false;
     }
   }

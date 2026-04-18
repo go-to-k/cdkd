@@ -16,13 +16,10 @@ const commonOptions = {
   sourcemap: true,
   minify: false,
   external: [
-    // CDK libraries (don't bundle well, use Node.js built-in requires)
-    '@aws-cdk/toolkit-lib',
-    '@aws-cdk/cdk-assets-lib',
-    '@aws-cdk/cloud-assembly-api',
     // AWS SDK clients (bundled separately by users)
     '@aws-sdk/*',
     // Dependencies that don't bundle well
+    'archiver',
     'commander',
     'graphlib',
     'p-limit',
