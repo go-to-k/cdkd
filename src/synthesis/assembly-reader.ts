@@ -64,7 +64,7 @@ export class AssemblyReader {
   }
 
   /**
-   * Get all stacks from assembly
+   * Get all stacks from assembly (recursively traverses nested assemblies / Stages)
    */
   getAllStacks(assemblyDir: string, manifest: AssemblyManifest): StackInfo[] {
     if (!manifest.artifacts) {
@@ -78,16 +78,31 @@ export class AssemblyReader {
     const stacks: StackInfo[] = [];
 
     for (const [artifactId, artifact] of Object.entries(manifest.artifacts)) {
-      if (artifact.type !== 'aws:cloudformation:stack') continue;
-
-      const stackInfo = this.extractStackInfo(
-        assemblyDir,
-        artifactId,
-        artifact,
-        manifest,
-        assetManifestMap
-      );
-      stacks.push(stackInfo);
+      if (artifact.type === 'aws:cloudformation:stack') {
+        const stackInfo = this.extractStackInfo(
+          assemblyDir,
+          artifactId,
+          artifact,
+          manifest,
+          assetManifestMap
+        );
+        stacks.push(stackInfo);
+      } else if (artifact.type === 'cdk:cloud-assembly') {
+        // Nested assembly (Stage) — recurse into subdirectory
+        const props = artifact.properties as { directoryName?: string } | undefined;
+        if (props?.directoryName) {
+          const nestedDir = join(assemblyDir, props.directoryName);
+          try {
+            const nestedManifest = this.readManifest(nestedDir);
+            const nestedStacks = this.getAllStacks(nestedDir, nestedManifest);
+            stacks.push(...nestedStacks);
+          } catch (error) {
+            this.logger.warn(
+              `Failed to read nested assembly '${props.directoryName}': ${error instanceof Error ? error.message : String(error)}`
+            );
+          }
+        }
+      }
     }
 
     this.logger.debug(`Found ${stacks.length} stack(s) in assembly`);

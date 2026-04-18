@@ -343,7 +343,7 @@ node ${CDKD_PATH}/dist/cli.js diff \
   --verbose
 
 # Execute deployment (first time will create all resources)
-# Stack name is a positional argument (required, or use --all)
+# Stack name is a positional argument (auto-detected if single stack)
 node ${CDKD_PATH}/dist/cli.js deploy \
   --app "npx ts-node --prefer-ts-exts bin/cdkd-test.ts" \
   --output cdk.out \
@@ -373,7 +373,7 @@ cdkd supports resource updates via Cloud Control API JSON Patch (RFC 6902). Test
 cd /Users/goto/github/cdkd/tests/integration/basic
 
 # First deployment (CREATE)
-# Stack name is positional (required, or use --all)
+# Stack name is positional; auto-detected if single stack
 node ../../../../dist/cli.js deploy CdkdBasicExample \
   --app "npx ts-node --prefer-ts-exts bin/app.ts" \
   --state-bucket ${STATE_BUCKET} \

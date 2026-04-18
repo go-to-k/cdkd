@@ -335,8 +335,8 @@ cdkd bootstrap \
 # Synthesize only
 cdkd synth --app "npx ts-node app.ts"
 
-# Deploy (reads --app from cdk.json, specify stack name or --all)
-cdkd deploy MyStack
+# Deploy (single stack auto-detected, reads --app from cdk.json)
+cdkd deploy
 
 # Deploy specific stack(s)
 cdkd deploy MyStack

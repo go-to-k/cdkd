@@ -193,7 +193,7 @@ registry.register('AWS::IAM::Role', new IAMRoleProvider());
 - Stack names are positional arguments: `cdkd deploy MyStack` (not `--stack-name`)
 - `--all` flag targets all stacks for deploy/diff/destroy (`destroy --all` only targets stacks from the current CDK app via synthesis)
 - Wildcard support: `cdkd deploy 'My*'`
-- Stack name(s) or `--all` required for deploy/diff
+- Single stack auto-detected (no stack name needed)
 - Concurrency options: `--concurrency` (resource ops, default 10), `--stack-concurrency` (stacks, default 4), `--asset-publish-concurrency` (S3+ECR, default 8), `--image-build-concurrency` (Docker builds, default 4)
 - Implemented in `src/cli/config-loader.ts`
 
@@ -303,7 +303,7 @@ See [docs/provider-development.md](docs/provider-development.md) for details.
 **Recently Implemented** (2026-03-26):
 
 - ✅ CLI: `--app` and `--state-bucket` optional (fallback to env vars / cdk.json)
-- ✅ CLI: Positional stack names, `--all` flag, wildcard support
+- ✅ CLI: Positional stack names, `--all` flag, wildcard support, single stack auto-detection
 - ✅ CLI: `cdkd destroy` accepts `--app` option; confirmation accepts y/yes
 - ✅ Resource replacement: immutable property changes trigger DELETE then CREATE
 - ✅ Custom Resource ResponseURL: S3 pre-signed URL for cfn-response handlers

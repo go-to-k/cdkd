@@ -138,12 +138,6 @@ async function diffCommand(
   setAwsClients(awsClients);
 
   try {
-    // Determine target stacks early (before synthesis) to avoid unnecessary Docker builds
-    const stackPatterns = stacks.length > 0 ? stacks : options.stack ? [options.stack] : [];
-    if (stackPatterns.length === 0 && !options.all) {
-      throw new Error('Specify stack name(s) or use --all');
-    }
-
     // 1. Synthesize CDK app
     logger.info('Synthesizing CDK app...');
     const synthesizer = new Synthesizer();
@@ -157,20 +151,28 @@ async function diffCommand(
     });
 
     const { stacks: allStacks } = result;
-
     logger.info(`Found ${allStacks.length} stack(s) in assembly`);
 
+    // Determine target stacks: positional args > --stack > --all > auto (single stack)
+    const stackPatterns = stacks.length > 0 ? stacks : options.stack ? [options.stack] : [];
     let targetStacks;
 
     if (options.all) {
       targetStacks = allStacks;
-    } else {
+    } else if (stackPatterns.length > 0) {
       targetStacks = allStacks.filter((s) =>
         stackPatterns.some((pattern) =>
           pattern.includes('*')
             ? new RegExp('^' + pattern.replace(/\*/g, '.*') + '$').test(s.stackName)
             : s.stackName === pattern
         )
+      );
+    } else if (allStacks.length === 1) {
+      targetStacks = allStacks;
+    } else {
+      throw new Error(
+        `Multiple stacks found: ${allStacks.map((s) => s.stackName).join(', ')}. ` +
+          `Specify stack name(s) or use --all`
       );
     }
 
