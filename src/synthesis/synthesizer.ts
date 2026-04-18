@@ -6,7 +6,7 @@ import { AssemblyReader, type StackInfo } from './assembly-reader.js';
 import { ContextStore } from './context-store.js';
 import { ContextProviderRegistry } from './context-providers/index.js';
 import type { AssemblyManifest } from '../types/assembly.js';
-import { loadCdkJson } from '../cli/config-loader.js';
+import { loadCdkJson, loadUserCdkJson } from '../cli/config-loader.js';
 import { getLogger } from '../utils/logger.js';
 import { SynthesisError } from '../utils/error-handler.js';
 
@@ -75,6 +75,9 @@ export class Synthesizer {
     mkdirSync(outputDir, { recursive: true });
 
     // Load static context (doesn't change during loop)
+    // Priority: defaults < ~/.cdk.json < cdk.json < cdk.context.json < CLI -c
+    const userCdkJson = loadUserCdkJson();
+    const userContext = (userCdkJson?.context as Record<string, unknown>) ?? {};
     const cdkJson = loadCdkJson();
     const cdkJsonContext = (cdkJson?.context as Record<string, unknown>) ?? {};
     const cliContext = (options.context as Record<string, unknown>) ?? {};
@@ -111,9 +114,10 @@ export class Synthesizer {
       // Load cdk.context.json (re-read each iteration — providers may have updated it)
       const cdkContextJson = this.contextStore.load();
 
-      // Merge context: defaults < cdk.json < cdk.context.json < CLI -c (CLI wins)
+      // Merge context: defaults < ~/.cdk.json < cdk.json < cdk.context.json < CLI -c (CLI wins)
       const mergedContext: Record<string, unknown> = {
         ...cdkDefaults,
+        ...userContext,
         ...cdkJsonContext,
         ...cdkContextJson,
         ...cliContext,
