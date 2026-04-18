@@ -14,10 +14,14 @@ vi.mock('../../../src/assets/file-asset-publisher.js', () => ({
 }));
 
 // Mock DockerAssetPublisher
+const mockDockerBuild = vi.fn();
+const mockDockerPush = vi.fn();
 const mockDockerPublish = vi.fn();
 vi.mock('../../../src/assets/docker-asset-publisher.js', () => ({
   DockerAssetPublisher: vi.fn().mockImplementation(() => ({
     publish: mockDockerPublish,
+    build: mockDockerBuild,
+    push: mockDockerPush,
   })),
 }));
 
@@ -29,7 +33,10 @@ vi.mock('@aws-sdk/client-sts', () => ({
     send: mockStsSend,
     destroy: mockStsDestroy,
   })),
-  GetCallerIdentityCommand: vi.fn().mockImplementation((input) => ({ ...input, _type: 'GetCallerIdentity' })),
+  GetCallerIdentityCommand: vi.fn().mockImplementation((input) => ({
+    ...input,
+    _type: 'GetCallerIdentity',
+  })),
 }));
 
 // Mock logger
@@ -68,16 +75,18 @@ describe('AssetPublisher', () => {
     publisher = new AssetPublisher();
     mockFilePublish.mockResolvedValue(undefined);
     mockDockerPublish.mockResolvedValue(undefined);
+    mockDockerBuild.mockResolvedValue(undefined);
+    mockDockerPush.mockResolvedValue(undefined);
   });
 
   it('should publish file assets from manifest', async () => {
     const manifest = makeManifest({
       files: {
-        'abc123': {
+        abc123: {
           displayName: 'LambdaCode',
           source: { path: 'asset.abc123/index.js', packaging: 'file' },
           destinations: {
-            'current': {
+            current: {
               bucketName: 'cdk-assets-bucket',
               objectKey: 'assets/abc123.js',
             },
@@ -106,11 +115,11 @@ describe('AssetPublisher', () => {
   it('should publish docker image assets from manifest', async () => {
     const manifest = makeManifest({
       dockerImages: {
-        'docker456': {
+        docker456: {
           displayName: 'MyImage',
           source: { directory: 'asset.docker456' },
           destinations: {
-            'current': {
+            current: {
               repositoryName: 'my-repo',
               imageTag: 'latest',
             },
@@ -126,13 +135,16 @@ describe('AssetPublisher', () => {
       region: 'us-east-1',
     });
 
-    expect(mockDockerPublish).toHaveBeenCalledWith(
-      'docker456',
+    expect(mockDockerBuild).toHaveBeenCalledWith(
       manifest.dockerImages['docker456'],
       '/tmp/cdk.out',
+      'cdkd-asset-docker456'
+    );
+    expect(mockDockerPush).toHaveBeenCalledWith(
+      manifest.dockerImages['docker456'],
       '123456789012',
       'us-east-1',
-      undefined
+      'cdkd-asset-docker456'
     );
   });
 
@@ -143,7 +155,7 @@ describe('AssetPublisher', () => {
           displayName: 'CFnTemplate',
           source: { path: 'MyStack.template.json', packaging: 'file' },
           destinations: {
-            'current': {
+            current: {
               bucketName: 'cdk-assets-bucket',
               objectKey: 'template.json',
             },
@@ -153,7 +165,7 @@ describe('AssetPublisher', () => {
           displayName: 'CFnTemplate2',
           source: { path: 'output.json', packaging: 'file' },
           destinations: {
-            'current': {
+            current: {
               bucketName: 'cdk-assets-bucket',
               objectKey: 'output.json',
             },
@@ -163,7 +175,7 @@ describe('AssetPublisher', () => {
           displayName: 'LambdaCode',
           source: { path: 'asset.lambda/index.js', packaging: 'zip' },
           destinations: {
-            'current': {
+            current: {
               bucketName: 'cdk-assets-bucket',
               objectKey: 'assets/lambda.zip',
             },
@@ -196,11 +208,11 @@ describe('AssetPublisher', () => {
 
     const manifest = makeManifest({
       files: {
-        'abc123': {
+        abc123: {
           displayName: 'Asset',
           source: { path: 'asset.abc123/handler.py', packaging: 'zip' },
           destinations: {
-            'current': {
+            current: {
               bucketName: 'bucket',
               objectKey: 'key',
             },
@@ -247,11 +259,11 @@ describe('AssetPublisher', () => {
 
     const manifest = makeManifest({
       files: {
-        'abc123': {
+        abc123: {
           displayName: 'FailAsset',
           source: { path: 'asset.abc123/index.js', packaging: 'file' },
           destinations: {
-            'current': {
+            current: {
               bucketName: 'bucket',
               objectKey: 'key',
             },
@@ -274,6 +286,142 @@ describe('AssetPublisher', () => {
         accountId: '123456789012',
         region: 'us-east-1',
       })
-    ).rejects.toThrow(/Asset publishing failed:.*Upload failed/);
+    ).rejects.toThrow(/Upload failed/);
+  });
+
+  describe('parallel publishing', () => {
+    it('should publish multiple file assets in parallel', async () => {
+      const callOrder: string[] = [];
+      mockFilePublish.mockImplementation(async (hash: string) => {
+        callOrder.push(`start-${hash}`);
+        await new Promise((r) => setTimeout(r, 10));
+        callOrder.push(`end-${hash}`);
+      });
+
+      const files: Record<string, (typeof manifest.files)[string]> = {};
+      for (let i = 0; i < 4; i++) {
+        files[`hash${i}`] = {
+          displayName: `Asset${i}`,
+          source: { path: `asset.hash${i}/index.js`, packaging: 'zip' as const },
+          destinations: { current: { bucketName: 'bucket', objectKey: `key${i}` } },
+        };
+      }
+      const manifest = makeManifest({ files });
+
+      vi.mocked(readFileSync).mockReturnValue(JSON.stringify(manifest));
+
+      await publisher.publishFromManifest('/tmp/cdk.out/manifest.json', {
+        accountId: '123456789012',
+        region: 'us-east-1',
+        assetPublishConcurrency: 4,
+      });
+
+      expect(mockFilePublish).toHaveBeenCalledTimes(4);
+      // All should start before any finishes (parallel)
+      const starts = callOrder.filter((e) => e.startsWith('start-'));
+      const firstEnd = callOrder.indexOf(callOrder.find((e) => e.startsWith('end-'))!);
+      expect(starts.length).toBeGreaterThanOrEqual(2);
+      // At least 2 starts before first end indicates parallelism
+      const startsBeforeFirstEnd = callOrder.slice(0, firstEnd).filter((e) => e.startsWith('start-'));
+      expect(startsBeforeFirstEnd.length).toBeGreaterThanOrEqual(2);
+    });
+
+    it('should build multiple docker assets in parallel', async () => {
+      const callOrder: string[] = [];
+      mockDockerBuild.mockImplementation(async (_asset: unknown, _dir: string, tag: string) => {
+        callOrder.push(`start-${tag}`);
+        await new Promise((r) => setTimeout(r, 10));
+        callOrder.push(`end-${tag}`);
+      });
+
+      const dockerImages: Record<string, (typeof manifest.dockerImages)[string]> = {};
+      for (let i = 0; i < 3; i++) {
+        dockerImages[`docker${i}`] = {
+          displayName: `Image${i}`,
+          source: { directory: `asset.docker${i}` },
+          destinations: { current: { repositoryName: 'repo', imageTag: `tag${i}` } },
+        };
+      }
+      const manifest = makeManifest({ dockerImages });
+
+      vi.mocked(readFileSync).mockReturnValue(JSON.stringify(manifest));
+
+      await publisher.publishFromManifest('/tmp/cdk.out/manifest.json', {
+        accountId: '123456789012',
+        region: 'us-east-1',
+        imageBuildConcurrency: 3,
+      });
+
+      expect(mockDockerBuild).toHaveBeenCalledTimes(3);
+      expect(mockDockerPush).toHaveBeenCalledTimes(3);
+      const startsBeforeFirstEnd = callOrder
+        .slice(0, callOrder.indexOf(callOrder.find((e) => e.startsWith('end-'))!))
+        .filter((e) => e.startsWith('start-'));
+      expect(startsBeforeFirstEnd.length).toBeGreaterThanOrEqual(2);
+    });
+
+    it('should respect concurrency limit', async () => {
+      let concurrent = 0;
+      let maxConcurrent = 0;
+
+      mockFilePublish.mockImplementation(async () => {
+        concurrent++;
+        maxConcurrent = Math.max(maxConcurrent, concurrent);
+        await new Promise((r) => setTimeout(r, 20));
+        concurrent--;
+      });
+
+      const files: Record<string, (typeof manifest.files)[string]> = {};
+      for (let i = 0; i < 10; i++) {
+        files[`hash${i}`] = {
+          displayName: `Asset${i}`,
+          source: { path: `asset.hash${i}/index.js`, packaging: 'zip' as const },
+          destinations: { current: { bucketName: 'bucket', objectKey: `key${i}` } },
+        };
+      }
+      const manifest = makeManifest({ files });
+
+      vi.mocked(readFileSync).mockReturnValue(JSON.stringify(manifest));
+
+      await publisher.publishFromManifest('/tmp/cdk.out/manifest.json', {
+        accountId: '123456789012',
+        region: 'us-east-1',
+        assetPublishConcurrency: 3,
+      });
+
+      expect(mockFilePublish).toHaveBeenCalledTimes(10);
+      expect(maxConcurrent).toBeLessThanOrEqual(3);
+      expect(maxConcurrent).toBeGreaterThanOrEqual(2); // Should actually use parallelism
+    });
+
+    it('should collect all errors from parallel publishing', async () => {
+      let callCount = 0;
+      mockFilePublish.mockImplementation(async () => {
+        callCount++;
+        if (callCount === 1 || callCount === 3) {
+          throw new Error(`Fail ${callCount}`);
+        }
+      });
+
+      const files: Record<string, (typeof manifest.files)[string]> = {};
+      for (let i = 0; i < 4; i++) {
+        files[`hash${i}`] = {
+          displayName: `Asset${i}`,
+          source: { path: `asset.hash${i}/index.js`, packaging: 'zip' as const },
+          destinations: { current: { bucketName: 'bucket', objectKey: `key${i}` } },
+        };
+      }
+      const manifest = makeManifest({ files });
+
+      vi.mocked(readFileSync).mockReturnValue(JSON.stringify(manifest));
+
+      await expect(
+        publisher.publishFromManifest('/tmp/cdk.out/manifest.json', {
+          accountId: '123456789012',
+          region: 'us-east-1',
+          assetPublishConcurrency: 2,
+        })
+      ).rejects.toThrow(/2 node\(s\) failed/);
+    });
   });
 });

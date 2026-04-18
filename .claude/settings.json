@@ -1,0 +1,41 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "jq -r '.tool_input.file_path // .tool_response.filePath' | { read -r f; echo \"$f\" | grep -qE '\\.(ts|tsx)$' && pnpm run typecheck && pnpm run lint:fix && pnpm run build && npx vitest --run; } 2>/dev/null || true",
+            "timeout": 120,
+            "statusMessage": "Running typecheck, lint, build, and tests..."
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "status=$(git status --porcelain 2>/dev/null); if [ -n \"$status\" ]; then printf '{\"systemMessage\": \"⚠️ 未コミットの変更があります。コミット・プッシュを忘れていませんか?\\n%s\"}' \"$(echo \"$status\" | head -10)\"; fi",
+            "timeout": 10,
+            "statusMessage": "Checking for uncommitted changes..."
+          }
+        ]
+      }
+    ],
+    "PreCompact": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "printf '{\"hookSpecificOutput\": {\"hookEventName\": \"PreCompact\", \"additionalContext\": \"コンパクト前の注意: 現在の作業状態、未解決の問題、次にやるべきことをTodoWriteに記録してからコンパクトしてください。\"}}'",
+            "timeout": 5,
+            "statusMessage": "Preparing for context compaction..."
+          }
+        ]
+      }
+    ]
+  }
+}

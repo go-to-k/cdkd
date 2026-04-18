@@ -25,15 +25,17 @@ cdkd has a 7-layer system architecture:
 │ 2. Synthesis Layer (src/synthesis/)         │ → CDK app subprocess execution
 └────────────────┬────────────────────────────┘   Cloud Assembly parsing, context providers
                  ▼
-        ┌────────┴────────┐
-        ▼                 ▼
-┌──────────────┐  ┌──────────────────────────┐
-│ 3. Assets    │  │ 4. Analysis Layer        │ → Dependency analysis (DAG building)
-│    Layer     │  │    (src/analyzer/)       │    Template parsing
-│ (src/assets/)│  └──────────┬───────────────┘
-└──────────────┘             ▼
-                 ┌────────────────────────────┐
-                 │ 5. State Layer             │ → S3-based state management
+                 ▼  (per stack, pipelined)
+┌─────────────────────────────────────────────┐
+│ 3. Assets Layer (src/assets/)              │ → Asset publish to S3/ECR
+└────────────────┬────────────────────────────┘
+                 ▼
+┌─────────────────────────────────────────────┐
+│ 4. Analysis Layer (src/analyzer/)          │ → Dependency analysis (DAG building)
+└────────────────┬────────────────────────────┘   Template parsing
+                 ▼
+┌─────────────────────────────────────────────┐
+│ 5. State Layer                             │ → S3-based state management
                  │    (src/state/)            │    Optimistic locking
                  └────────────┬───────────────┘
                               ▼
@@ -101,7 +103,7 @@ pnpm run typecheck
 - **src/synthesis/** - CDK app synthesis (self-implemented: subprocess execution, Cloud Assembly parsing, context providers)
 - **src/analyzer/** - DAG builder, template parser, intrinsic function resolution
 - **src/state/** - S3 state backend, lock manager
-- **src/deployment/** - DeployEngine (orchestration)
+- **src/deployment/** - DeployEngine (orchestration), WorkGraph (DAG-based asset+deploy scheduling)
 - **src/provisioning/** - Provider registry, Cloud Control provider, SDK providers
 - **src/assets/** - Asset publisher (self-implemented S3 file upload with ZIP packaging, ECR Docker image build & push)
 
@@ -112,6 +114,7 @@ pnpm run typecheck
 - **src/synthesis/assembly-reader.ts** - Reads and parses Cloud Assembly manifest.json directly
 - **src/synthesis/synthesizer.ts** - Orchestrates synthesis with context provider loop
 - **src/synthesis/context-providers/** - Context providers (see `src/synthesis/context-providers/` for full list) for missing context resolution
+- **src/deployment/work-graph.ts** - WorkGraph DAG orchestrator for asset publishing and stack deployment
 - **src/assets/file-asset-publisher.ts** - S3 file upload with ZIP packaging support
 - **src/assets/docker-asset-publisher.ts** - ECR Docker image build & push
 - **src/types/assembly.ts** - Cloud Assembly types (AssemblyManifest, MissingContext, etc.)
@@ -191,6 +194,7 @@ registry.register('AWS::IAM::Role', new IAMRoleProvider());
 - `--all` flag targets all stacks for deploy/diff/destroy (`destroy --all` only targets stacks from the current CDK app via synthesis)
 - Wildcard support: `cdkd deploy 'My*'`
 - Single stack auto-detected (no stack name needed)
+- Concurrency options: `--concurrency` (resource ops, default 10), `--stack-concurrency` (stacks, default 4), `--asset-publish-concurrency` (S3+ECR, default 8), `--image-build-concurrency` (Docker builds, default 4)
 - Implemented in `src/cli/config-loader.ts`
 
 ### 4. Custom Resources
@@ -216,7 +220,8 @@ registry.register('AWS::IAM::Role', new IAMRoleProvider());
 - Self-implemented (no external CDK asset libraries)
 - `FileAssetPublisher` handles S3 file upload with ZIP packaging (using `archiver`)
 - `DockerAssetPublisher` handles ECR Docker image build & push
-- `AssetPublisher` orchestrates using above publishers
+- `AssetPublisher` orchestrates using above publishers (standalone `publish-assets` command)
+- For `deploy`, `WorkGraph` manages asset nodes directly: file assets as `asset-publish` nodes, Docker assets as `asset-build → asset-publish` node chains
 - `AssetManifestLoader` loads asset manifests from cdk.out
 
 ### 7. Intrinsic Function Resolution
@@ -342,6 +347,8 @@ See [docs/provider-development.md](docs/provider-development.md) for details.
 - ✅ Self-implemented asset publishing (removed @aws-cdk/cdk-assets-lib, using archiver for ZIP)
 - ✅ Context providers for missing context resolution (see `src/synthesis/context-providers/` for full list)
 - ✅ Cloud Assembly manifest.json direct parsing with custom type definitions
+- ✅ WorkGraph DAG orchestrator for asset publishing and stack deployment (build→publish→deploy pipeline)
+- ✅ Concurrency options: `--asset-publish-concurrency` (default 8), `--image-build-concurrency` (default 4)
 
 ## Dependencies
 
@@ -362,3 +369,11 @@ See [docs/provider-development.md](docs/provider-development.md) for details.
 ## Node.js Version
 
 - **Required**: Node.js >= 20.0.0 (from `package.json` engines field)
+
+## Workflow Rules
+
+- **Before creating a PR or commit**: Run `/verify-pr` to confirm all checks pass (typecheck, lint, build, tests, CI, docs consistency, no leftover AWS resources)
+- **After changing source code that affects behavior or public API**: Run `/check-docs` to verify README.md, CLAUDE.md, and docs/ are consistent with the changes
+- **When running integration tests**: Use `/run-integ` with the appropriate test name (e.g., `/run-integ lambda`)
+- **After running integration tests**: Verify no leftover AWS resources remain (`aws s3 ls s3://cdkd-state-{accountId}-{region}/stacks/` should return empty or error)
+- **After fixing documentation or code**: Commit and push immediately. Do not leave uncommitted changes.

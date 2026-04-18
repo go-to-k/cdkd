@@ -194,7 +194,7 @@ Publishes Docker image assets to ECR:
 
 #### `asset-publisher.ts` - AssetPublisher
 
-Orchestrator that reads asset manifests and delegates to the appropriate publisher (file or Docker) based on asset type.
+Orchestrator that reads asset manifests and delegates to the appropriate publisher (file or Docker) based on asset type. Used by standalone `publish-assets` command. For `deploy`, the `WorkGraph` DAG manages individual asset nodes directly.
 
 **Asset Types**:
 
@@ -357,7 +357,26 @@ interface LockInfo {
 
 ### 6. Deployment Layer (`src/deployment/`)
 
-**Responsibilities**: Deployment execution control, intrinsic function resolution
+**Responsibilities**: Deployment execution control, intrinsic function resolution, work graph orchestration
+
+#### `work-graph.ts` - WorkGraph
+
+DAG-based orchestrator for asset publishing and stack deployment. Each asset and stack deploy is a node with typed dependencies.
+
+**Node Types**:
+
+| Type | Concurrency | Description |
+| --- | --- | --- |
+| `asset-build` | 4 (default) | Docker image build (CPU/memory bound) |
+| `asset-publish` | 8 (default) | S3 file upload or ECR push (I/O bound) |
+| `stack` | 4 (default) | Stack deployment via DeployEngine |
+
+**Dependencies**:
+- File assets: `asset-publish → stack`
+- Docker assets: `asset-build → asset-publish → stack`
+- Inter-stack: `stack → stack` (CDK dependency order)
+
+**Algorithm**: Lazy ready-pool evaluation — nodes become ready when all dependencies are completed. Per-type concurrency limits, failure propagation (downstream nodes skipped), deadlock detection.
 
 #### `deploy-engine.ts`
 
@@ -532,23 +551,28 @@ getClient<T>(ClientClass: new (...) => T, region: string): T
 │ Synthesizer             │  Context provider loop (resolve missing context)
 └────────┬────────────────┘
          │
-    ┌────┴────┐
-    │         │
-    ▼         ▼
-┌─────────┐  ┌──────────────────┐
-│ Assets  │  │ Analysis Layer   │
-│ Layer   │  │ - Template Parse │
-│         │  │ - DAG Build      │
-│ Publish │  │ - Diff Calc      │
-│ to S3/  │  │   (all CREATE)   │
-│ ECR     │  └────────┬─────────┘
-└─────────┘           │
-                      ▼
-         ┌─────────────────────────┐
-         │ State Layer             │
-         │ - Lock Acquire          │
-         │ - Get State (null)      │
-         └────────┬────────────────┘
+         │  (per stack, pipelined)
+         ▼
+┌─────────────────────────┐
+│ Assets Layer            │
+│ - Publish to S3/ECR     │  File: 8 concurrent, Docker: 4 concurrent
+│ - Skip if exists        │
+└────────┬────────────────┘
+         │
+         ▼
+┌─────────────────────────┐
+│ State Layer             │
+│ - Lock Acquire          │
+│ - Get State (null)      │
+└────────┬────────────────┘
+         │
+         ▼
+┌─────────────────────────┐
+│ Analysis Layer          │
+│ - Template Parse        │
+│ - DAG Build             │
+│ - Diff Calc (all CREATE)│
+└────────┬────────────────┘
                   │
                   ▼
          ┌─────────────────────────┐

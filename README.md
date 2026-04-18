@@ -89,16 +89,15 @@ AWS CDK is great for defining infrastructure as code, but all deployments go thr
        ├── Save to cdk.context.json
        └── Re-execute CDK app with updated context
 
-3. Asset Publishing (self-implemented, no cdk-assets dependency)
-   ├── Publish all stacks' assets sequentially before any deployment
+3. Asset Publishing + Deployment (WorkGraph DAG)
+   ├── Each asset is a node, each stack deploy is a node
+   │   ├── asset-publish nodes: 8 concurrent (file S3 uploads + Docker build+push)
+   │   ├── stack nodes: 4 concurrent deployments
+   │   ├── Dependencies: asset-publish → stack (all assets complete before deploy)
+   │   └── Inter-stack: stack A → stack B (CDK dependency order)
    ├── Region resolved from asset manifest destination (stack's target region)
-   ├── File assets → S3 (ZIP packaging if needed, skip if already exists via HeadObject)
-   ├── Docker images → ECR (docker build + tag + push, skip if already exists via DescribeImages)
-   └── Shared assets across stacks: uploaded once, skipped on subsequent stacks
-
-4. Deployment (per stack, parallelized by dependency order)
-   ├── Independent stacks deploy in parallel, dependent stacks wait
-   ├── Per-stack flow:
+   ├── Skip if already exists (HeadObject for S3, DescribeImages for ECR)
+   ├── Per-stack deploy flow:
    │   ├── Acquire S3 lock (optimistic locking)
    │   ├── Load current state from S3
    │   ├── Build DAG from template (Ref/Fn::GetAtt/DependsOn)
@@ -378,6 +377,15 @@ cdkd destroy --all --force
 # Force-unlock a stale lock from interrupted deploy
 cdkd force-unlock MyStack
 ```
+
+### Concurrency Options
+
+| Option | Default | Description |
+| --- | --- | --- |
+| `--concurrency` | 10 | Maximum concurrent resource operations per stack |
+| `--stack-concurrency` | 4 | Maximum concurrent stack deployments |
+| `--asset-publish-concurrency` | 8 | Maximum concurrent asset publish operations (S3 + ECR push) |
+| `--image-build-concurrency` | 4 | Maximum concurrent Docker image builds |
 
 ## `--no-wait`
 

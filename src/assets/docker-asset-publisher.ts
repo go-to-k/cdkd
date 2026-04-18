@@ -32,8 +32,7 @@ export class DockerAssetPublisher {
     asset: DockerImageAsset,
     cdkOutputDir: string,
     accountId: string,
-    region: string,
-    _profile?: string
+    region: string
   ): Promise<void> {
     for (const [, dest] of Object.entries(asset.destinations)) {
       const repositoryName = this.resolvePlaceholders(dest.repositoryName, accountId, region);
@@ -63,6 +62,52 @@ export class DockerAssetPublisher {
         await this.ecrLogin(client, accountId, destRegion);
 
         // Tag and push
+        const fullUri = `${accountId}.dkr.ecr.${destRegion}.amazonaws.com/${repositoryName}:${imageTag}`;
+        await this.tagImage(localTag, fullUri);
+        await this.pushImage(fullUri);
+
+        this.logger.debug(`✅ Published: ${ecrUri}`);
+      } finally {
+        client.destroy();
+      }
+    }
+  }
+
+  /**
+   * Build a Docker image (public, used by WorkGraph asset-build nodes)
+   */
+  async build(asset: DockerImageAsset, cdkOutputDir: string, localTag: string): Promise<void> {
+    await this.buildImage(asset, cdkOutputDir, localTag);
+  }
+
+  /**
+   * Push a pre-built Docker image to ECR (public, used by WorkGraph asset-publish nodes)
+   */
+  async push(
+    asset: DockerImageAsset,
+    accountId: string,
+    region: string,
+    localTag: string
+  ): Promise<void> {
+    for (const [, dest] of Object.entries(asset.destinations)) {
+      const repositoryName = this.resolvePlaceholders(dest.repositoryName, accountId, region);
+      const imageTag = this.resolvePlaceholders(dest.imageTag, accountId, region);
+      const destRegion = dest.region
+        ? this.resolvePlaceholders(dest.region, accountId, region)
+        : region;
+
+      const ecrUri = `${accountId}.dkr.ecr.${destRegion}.amazonaws.com/${repositoryName}:${imageTag}`;
+
+      const client = new ECRClient({ region: destRegion });
+
+      try {
+        if (await this.imageExists(client, repositoryName, imageTag)) {
+          this.logger.debug(`Image already exists, skipping: ${ecrUri}`);
+          continue;
+        }
+
+        await this.ecrLogin(client, accountId, destRegion);
+
         const fullUri = `${accountId}.dkr.ecr.${destRegion}.amazonaws.com/${repositoryName}:${imageTag}`;
         await this.tagImage(localTag, fullUri);
         await this.pushImage(fullUri);
