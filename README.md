@@ -375,6 +375,15 @@ cdkd destroy --all --force
 cdkd force-unlock MyStack
 ```
 
+### Concurrency Options
+
+| Option | Default | Description |
+| --- | --- | --- |
+| `--concurrency` | 10 | Maximum concurrent resource operations per stack |
+| `--stack-concurrency` | 4 | Maximum concurrent stack deployments |
+| `--asset-publish-concurrency` | 8 | Maximum concurrent file asset S3 uploads |
+| `--image-build-concurrency` | 4 | Maximum concurrent Docker image builds |
+
 ## `--no-wait`
 
 By default, cdkd waits for async resources (CloudFront Distribution, RDS Cluster/Instance, ElastiCache) to reach a ready state before completing — the same behavior as CloudFormation.

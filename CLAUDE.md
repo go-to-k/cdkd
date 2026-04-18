@@ -25,15 +25,17 @@ cdkd has a 7-layer system architecture:
 │ 2. Synthesis Layer (src/synthesis/)         │ → CDK app subprocess execution
 └────────────────┬────────────────────────────┘   Cloud Assembly parsing, context providers
                  ▼
-        ┌────────┴────────┐
-        ▼                 ▼
-┌──────────────┐  ┌──────────────────────────┐
-│ 3. Assets    │  │ 4. Analysis Layer        │ → Dependency analysis (DAG building)
-│    Layer     │  │    (src/analyzer/)       │    Template parsing
-│ (src/assets/)│  └──────────┬───────────────┘
-└──────────────┘             ▼
-                 ┌────────────────────────────┐
-                 │ 5. State Layer             │ → S3-based state management
+                 ▼  (per stack, pipelined)
+┌─────────────────────────────────────────────┐
+│ 3. Assets Layer (src/assets/)              │ → Asset publish to S3/ECR
+└────────────────┬────────────────────────────┘
+                 ▼
+┌─────────────────────────────────────────────┐
+│ 4. Analysis Layer (src/analyzer/)          │ → Dependency analysis (DAG building)
+└────────────────┬────────────────────────────┘   Template parsing
+                 ▼
+┌─────────────────────────────────────────────┐
+│ 5. State Layer                             │ → S3-based state management
                  │    (src/state/)            │    Optimistic locking
                  └────────────┬───────────────┘
                               ▼

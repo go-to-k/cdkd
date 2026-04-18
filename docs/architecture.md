@@ -539,23 +539,28 @@ getClient<T>(ClientClass: new (...) => T, region: string): T
 │ Synthesizer             │  Context provider loop (resolve missing context)
 └────────┬────────────────┘
          │
-    ┌────┴────┐
-    │         │
-    ▼         ▼
-┌─────────┐  ┌──────────────────┐
-│ Assets  │  │ Analysis Layer   │
-│ Layer   │  │ - Template Parse │
-│         │  │ - DAG Build      │
-│ Publish │  │ - Diff Calc      │
-│ to S3/  │  │   (all CREATE)   │
-│ ECR     │  └────────┬─────────┘
-└─────────┘           │
-                      ▼
-         ┌─────────────────────────┐
-         │ State Layer             │
-         │ - Lock Acquire          │
-         │ - Get State (null)      │
-         └────────┬────────────────┘
+         │  (per stack, pipelined)
+         ▼
+┌─────────────────────────┐
+│ Assets Layer            │
+│ - Publish to S3/ECR     │  File: 8 concurrent, Docker: 4 concurrent
+│ - Skip if exists        │
+└────────┬────────────────┘
+         │
+         ▼
+┌─────────────────────────┐
+│ State Layer             │
+│ - Lock Acquire          │
+│ - Get State (null)      │
+└────────┬────────────────┘
+         │
+         ▼
+┌─────────────────────────┐
+│ Analysis Layer          │
+│ - Template Parse        │
+│ - DAG Build             │
+│ - Diff Calc (all CREATE)│
+└────────┬────────────────┘
                   │
                   ▼
          ┌─────────────────────────┐
