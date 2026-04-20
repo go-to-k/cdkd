@@ -23,6 +23,43 @@ Build cdkd and output commands that can be pasted into another CDK project's ter
 
 3. **Output the commands** for the user to copy-paste. Use the absolute path.
 
+   ### Option A: Global install via pnpm link (recommended — use `cdkd` as a global command)
+
+   First-time setup (run once in the cdkd repo root):
+
+   ```bash
+   # Configure pnpm global bin directory (first time only; adds PATH to shell rc)
+   pnpm setup
+
+   # Reload shell so PNPM_HOME is on PATH
+   source ~/.zshrc   # or ~/.bashrc
+
+   # Register cdkd globally (run from the cdkd repo root)
+   pnpm link --global
+   ```
+
+   After linking, `cdkd` is available as a global command from any directory:
+
+   ```bash
+   # Bootstrap
+   cdkd bootstrap
+
+   # Synth / Diff / Deploy / Destroy
+   cdkd synth
+   cdkd diff
+   cdkd deploy
+   cdkd deploy -c KEY=VALUE
+   cdkd deploy --verbose
+   cdkd deploy --no-wait
+   cdkd destroy --force
+   ```
+
+   To unlink later: `pnpm unlink --global cdkd` (from anywhere) or `pnpm rm --global cdkd`.
+
+   Note: `pnpm link --global` points to the current `dist/cli.js`, so re-running `pnpm run build` in the cdkd repo picks up changes automatically — no re-link needed.
+
+   ### Option B: Direct `node` invocation (no install needed)
+
    ### Default (auto-resolves bucket: `cdkd-state-{accountId}-{region}`)
 
    ```
@@ -67,7 +104,12 @@ Build cdkd and output commands that can be pasted into another CDK project's ter
    node /path/to/cdkd/dist/cli.js destroy --state-bucket my-custom-cdkd-state-bucket --force
    ```
 
+   (If globally linked via Option A, replace `node /path/to/cdkd/dist/cli.js` with `cdkd` in any of the above.)
+
 4. **Remind the user**:
+   - `pnpm setup` + `pnpm link --global` is a one-time setup; after that just use `cdkd` anywhere
+   - `pnpm setup` writes `PNPM_HOME` to your shell rc — open a new shell or `source` the rc before `pnpm link --global`
+   - Re-building cdkd (`pnpm run build`) automatically updates the linked global binary
    - `--region` is optional if `AWS_REGION` or `CDK_DEFAULT_REGION` is set
    - `--state-bucket` auto-resolves to `cdkd-state-{accountId}-{region}` if omitted
    - Custom bucket can be set via `--state-bucket` flag, `CDKD_STATE_BUCKET` env var, or `context.cdkd.stateBucket` in cdk.json (priority: CLI > env > cdk.json)
