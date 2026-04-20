@@ -12,7 +12,7 @@
 
 AWS CDK is great for defining infrastructure as code, but all deployments go through CloudFormation. **cdkd** is an experimental alternative that deploys CDK apps directly via AWS SDK, bypassing CloudFormation entirely:
 
-- **Fully self-contained** - synthesis, asset publishing, context resolution all self-implemented without CDK CLI dependencies
+- **Fully self-contained** - no CDK CLI dependencies, everything built from scratch
 - **Direct provisioning** via AWS SDK and Cloud Control API instead of CloudFormation
 - **100% CDK compatible** - use your existing CDK code as-is
 
