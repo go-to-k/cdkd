@@ -38,7 +38,9 @@ Build cdkd and output commands that can be pasted into another CDK project's ter
    pnpm link --global
    ```
 
-   After linking, `cdkd` is available as a global command from any directory:
+   After linking, `cdkd` is available as a global command from any directory.
+
+   #### Default (auto-resolves bucket: `cdkd-state-{accountId}-{region}`)
 
    ```bash
    # Bootstrap
@@ -52,6 +54,22 @@ Build cdkd and output commands that can be pasted into another CDK project's ter
    cdkd deploy --verbose
    cdkd deploy --no-wait
    cdkd destroy --force
+   ```
+
+   #### Custom state bucket
+
+   ```bash
+   # Bootstrap
+   cdkd bootstrap --state-bucket my-custom-cdkd-state-bucket
+
+   # Deploy (--state-bucket flag)
+   cdkd deploy --state-bucket my-custom-cdkd-state-bucket
+
+   # Deploy (CDKD_STATE_BUCKET env var)
+   CDKD_STATE_BUCKET=my-custom-cdkd-state-bucket cdkd deploy
+
+   # Destroy
+   cdkd destroy --state-bucket my-custom-cdkd-state-bucket --force
    ```
 
    To unlink later: `pnpm unlink --global cdkd` (from anywhere) or `pnpm rm --global cdkd`.
