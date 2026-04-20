@@ -14,8 +14,6 @@
 
 ## Features
 
-Key capabilities:
-
 - **Synthesis orchestration**: CDK app subprocess execution, Cloud Assembly parsing, context provider loop
 - **Asset handling**: Self-implemented asset publisher for S3 file assets (ZIP packaging) and Docker images (ECR)
 - **Context resolution**: Self-implemented context provider loop for Vpc.fromLookup(), AZ, SSM, HostedZone, etc.
