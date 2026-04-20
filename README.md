@@ -18,7 +18,7 @@ AWS CDK is great for defining infrastructure as code, but all deployments go thr
 
 ## Features
 
-cdkd uses a hybrid provisioning strategy: hand-written **SDK Providers** call AWS SDK APIs directly for fast provisioning, while **Cloud Control API** (a generic AWS API that can operate on any resource type) is used as a fallback for resource types without an SDK Provider.
+cdkd implements the entire CDK deployment pipeline from scratch — synthesis orchestration, context resolution, asset publishing, and resource provisioning — using only AWS SDK, with no dependency on CDK CLI internals.
 
 - **Asset handling**: Self-implemented asset publisher for S3 file assets (ZIP packaging) and Docker images (ECR)
 - **Context resolution**: Self-implemented context provider loop for Vpc.fromLookup(), AZ, SSM, HostedZone, etc.
