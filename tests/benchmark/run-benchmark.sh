@@ -3,15 +3,21 @@
 # run-benchmark.sh - Compare cdkd vs CloudFormation deployment speed
 #
 # Usage:
-#   STATE_BUCKET=my-bucket AWS_REGION=ap-northeast-1 ./tests/benchmark/run-benchmark.sh
+#   ./tests/benchmark/run-benchmark.sh [scenario]
+#
+# Scenarios:
+#   bench-sdk    - 5 resources, all served by cdkd SDK providers (default)
+#   bench-ccapi  - 5 resources, all fall through to Cloud Control API
+#   basic        - single S3 bucket (legacy scenario)
+#   all          - runs bench-sdk then bench-ccapi
 #
 # Environment variables:
 #   STATE_BUCKET  - S3 bucket for cdkd state (optional: auto-resolved from STS account)
-#   AWS_REGION    - AWS region (default: ap-northeast-1)
+#   AWS_REGION    - AWS region (default: us-east-1)
 #   CDKD_BIN      - Path to cdkd binary (default: ./dist/cli.js)
 #   SKIP_CFN      - Set to "true" to skip CloudFormation benchmark
 #   SKIP_CDKD     - Set to "true" to skip cdkd benchmark
-#   RUNS          - Number of runs for averaging (default: 1)
+#   RUNS          - Number of runs (last result is used) (default: 1)
 #
 
 set -euo pipefail
@@ -20,22 +26,14 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
-EXAMPLE_DIR="$PROJECT_ROOT/tests/integration/basic"
-STACK_NAME="CdkdBasicExample"
-CDK_APP="npx ts-node bin/app.ts"
 
-AWS_REGION="${AWS_REGION:-ap-northeast-1}"
+AWS_REGION="${AWS_REGION:-us-east-1}"
 CDKD_BIN="${CDKD_BIN:-$PROJECT_ROOT/dist/cli.js}"
 SKIP_CFN="${SKIP_CFN:-false}"
 SKIP_CDKD="${SKIP_CDKD:-false}"
 RUNS="${RUNS:-1}"
 
-# Stack name suffix to avoid collisions between cdkd and CFn
-CDKD_STACK="$STACK_NAME"
-CFN_STACK="${STACK_NAME}Cfn"
-
-# Results file
-RESULTS_FILE="$SCRIPT_DIR/results-$(date +%Y%m%d-%H%M%S).md"
+SCENARIO="${1:-bench-sdk}"
 
 # ─── Color helpers ───────────────────────────────────────────────────────────
 
@@ -44,7 +42,7 @@ GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 CYAN='\033[0;36m'
-NC='\033[0m' # No Color
+NC='\033[0m'
 
 info()  { echo -e "${BLUE}[INFO]${NC}  $*"; }
 ok()    { echo -e "${GREEN}[OK]${NC}    $*"; }
@@ -52,26 +50,50 @@ warn()  { echo -e "${YELLOW}[WARN]${NC}  $*"; }
 err()   { echo -e "${RED}[ERROR]${NC} $*"; }
 phase() { echo -e "${CYAN}>>> $*${NC}"; }
 
+# ─── Scenario configuration ──────────────────────────────────────────────────
+
+# Resolves scenario name → (EXAMPLE_DIR, CDKD_STACK, CFN_STACK, LABEL).
+# Sets globals: EXAMPLE_DIR, CDKD_STACK, CFN_STACK, SCENARIO_LABEL.
+configure_scenario() {
+  local name="$1"
+  case "$name" in
+    basic)
+      EXAMPLE_DIR="$PROJECT_ROOT/tests/integration/basic"
+      CDKD_STACK="CdkdBasicExample"
+      CFN_STACK="CdkdBasicExampleCfn"
+      SCENARIO_LABEL="basic (S3 bucket + SSM document)"
+      ;;
+    bench-sdk)
+      EXAMPLE_DIR="$PROJECT_ROOT/tests/integration/bench-sdk"
+      CDKD_STACK="CdkdBenchSdk"
+      CFN_STACK="CdkdBenchSdk"
+      SCENARIO_LABEL="bench-sdk (5 resources, SDK providers only)"
+      ;;
+    bench-ccapi)
+      EXAMPLE_DIR="$PROJECT_ROOT/tests/integration/bench-ccapi"
+      CDKD_STACK="CdkdBenchCcapi"
+      CFN_STACK="CdkdBenchCcapi"
+      SCENARIO_LABEL="bench-ccapi (5 resources, Cloud Control API only)"
+      ;;
+    *)
+      err "Unknown scenario: $name"
+      err "Valid scenarios: bench-sdk, bench-ccapi, basic, all"
+      exit 1
+      ;;
+  esac
+  CDK_APP="npx ts-node --prefer-ts-exts bin/app.ts"
+}
+
 # ─── Utility functions ───────────────────────────────────────────────────────
 
-# Returns current time in milliseconds
 now_ms() {
   if [[ "$(uname)" == "Darwin" ]]; then
-    # macOS: use python3 for millisecond precision
     python3 -c 'import time; print(int(time.time() * 1000))'
   else
     date +%s%3N
   fi
 }
 
-# Calculates elapsed time in seconds (with 1 decimal)
-elapsed_sec() {
-  local start_ms=$1
-  local end_ms=$2
-  python3 -c "print(f'{($end_ms - $start_ms) / 1000:.1f}')"
-}
-
-# Calculates speedup ratio
 calc_speedup() {
   local cdkd_ms=$1
   local cfn_ms=$2
@@ -82,7 +104,6 @@ calc_speedup() {
   fi
 }
 
-# Format milliseconds to human-readable string
 fmt_time() {
   local ms=$1
   if [[ "$ms" -eq 0 ]]; then
@@ -97,21 +118,18 @@ fmt_time() {
 check_prerequisites() {
   phase "Checking prerequisites"
 
-  # Check AWS credentials
   if ! aws sts get-caller-identity &>/dev/null; then
     err "AWS credentials not configured. Please configure AWS CLI."
     exit 1
   fi
   ok "AWS credentials valid"
 
-  # Check cdkd is built
   if [[ ! -f "$CDKD_BIN" ]]; then
     warn "cdkd binary not found at $CDKD_BIN. Building..."
-    (cd "$PROJECT_ROOT" && npm run build)
+    (cd "$PROJECT_ROOT" && pnpm run build)
   fi
   ok "cdkd binary available"
 
-  # Check CDK CLI (for CloudFormation benchmark)
   if [[ "$SKIP_CFN" != "true" ]]; then
     if ! command -v cdk &>/dev/null; then
       warn "cdk CLI not found. Install with: npm install -g aws-cdk"
@@ -122,14 +140,12 @@ check_prerequisites() {
     fi
   fi
 
-  # Check example directory
   if [[ ! -d "$EXAMPLE_DIR" ]]; then
     err "Example directory not found: $EXAMPLE_DIR"
     exit 1
   fi
-  ok "Example directory found"
+  ok "Example directory found: $EXAMPLE_DIR"
 
-  # Install example dependencies if needed
   if [[ ! -d "$EXAMPLE_DIR/node_modules" ]]; then
     info "Installing example dependencies..."
     (cd "$EXAMPLE_DIR" && npm install)
@@ -141,7 +157,6 @@ check_prerequisites() {
 
 # ─── cdkd benchmark ─────────────────────────────────────────────────────────
 
-# Synthesize with cdkd (measures synthesis time)
 cdkd_synth() {
   local start end
   start=$(now_ms)
@@ -150,29 +165,27 @@ cdkd_synth() {
   echo $((end - start))
 }
 
-# Deploy with cdkd (measures deploy time including synthesis)
 cdkd_deploy() {
-  local state_bucket_args=""
+  local -a state_bucket_args=()
   if [[ -n "${STATE_BUCKET:-}" ]]; then
-    state_bucket_args="--state-bucket $STATE_BUCKET"
+    state_bucket_args=(--state-bucket "$STATE_BUCKET")
   fi
 
   local start end
   start=$(now_ms)
-  (cd "$EXAMPLE_DIR" && node "$CDKD_BIN" deploy --app "$CDK_APP" $state_bucket_args "$CDKD_STACK" 2>&1) || true
+  (cd "$EXAMPLE_DIR" && node "$CDKD_BIN" deploy --app "$CDK_APP" "${state_bucket_args[@]+"${state_bucket_args[@]}"}" "$CDKD_STACK" >>"$DEPLOY_LOG" 2>&1) || true
   end=$(now_ms)
   echo $((end - start))
 }
 
-# Destroy with cdkd
 cdkd_destroy() {
-  local state_bucket_args=""
+  local -a state_bucket_args=()
   if [[ -n "${STATE_BUCKET:-}" ]]; then
-    state_bucket_args="--state-bucket $STATE_BUCKET"
+    state_bucket_args=(--state-bucket "$STATE_BUCKET")
   fi
 
   info "Destroying cdkd stack..."
-  (cd "$EXAMPLE_DIR" && node "$CDKD_BIN" destroy --app "$CDK_APP" $state_bucket_args --force "$CDKD_STACK" 2>&1) || {
+  (cd "$EXAMPLE_DIR" && node "$CDKD_BIN" destroy --app "$CDK_APP" "${state_bucket_args[@]+"${state_bucket_args[@]}"}" --force "$CDKD_STACK" 2>&1) || {
     warn "cdkd destroy failed (stack may not exist)"
   }
 }
@@ -180,26 +193,21 @@ cdkd_destroy() {
 run_cdkd_benchmark() {
   phase "Running cdkd benchmark (run $1/$RUNS)"
 
-  # Clean up first
   cdkd_destroy >/dev/null 2>&1 || true
 
-  # Synthesis only
   info "Measuring synthesis time..."
   local synth_ms
   synth_ms=$(cdkd_synth)
   ok "Synthesis: $(fmt_time "$synth_ms")"
 
-  # Full deploy (includes synthesis + asset publishing + resource creation)
   info "Measuring deploy time..."
   local deploy_ms
   deploy_ms=$(cdkd_deploy)
   ok "Deploy: $(fmt_time "$deploy_ms")"
 
-  # Clean up
   info "Cleaning up..."
   cdkd_destroy >/dev/null 2>&1 || true
 
-  # Export results
   CDKD_SYNTH_MS=$synth_ms
   CDKD_DEPLOY_MS=$deploy_ms
   CDKD_TOTAL_MS=$((synth_ms + deploy_ms))
@@ -209,7 +217,6 @@ run_cdkd_benchmark() {
 
 # ─── CloudFormation benchmark ────────────────────────────────────────────────
 
-# Synthesize with cdk (measures synthesis time)
 cfn_synth() {
   local start end
   start=$(now_ms)
@@ -218,16 +225,14 @@ cfn_synth() {
   echo $((end - start))
 }
 
-# Deploy with cdk (CloudFormation)
 cfn_deploy() {
   local start end
   start=$(now_ms)
-  (cd "$EXAMPLE_DIR" && npx cdk deploy "$CFN_STACK" --require-approval never 2>&1) || true
+  (cd "$EXAMPLE_DIR" && npx cdk deploy "$CFN_STACK" --require-approval never >>"$DEPLOY_LOG" 2>&1) || true
   end=$(now_ms)
   echo $((end - start))
 }
 
-# Destroy with cdk
 cfn_destroy() {
   info "Destroying CloudFormation stack..."
   (cd "$EXAMPLE_DIR" && npx cdk destroy "$CFN_STACK" --force 2>&1) || {
@@ -238,26 +243,21 @@ cfn_destroy() {
 run_cfn_benchmark() {
   phase "Running CloudFormation benchmark (run $1/$RUNS)"
 
-  # Clean up first
   cfn_destroy >/dev/null 2>&1 || true
 
-  # Synthesis only
   info "Measuring synthesis time..."
   local synth_ms
   synth_ms=$(cfn_synth)
   ok "Synthesis: $(fmt_time "$synth_ms")"
 
-  # Full deploy
   info "Measuring deploy time (this will take a while due to CloudFormation)..."
   local deploy_ms
   deploy_ms=$(cfn_deploy)
   ok "Deploy: $(fmt_time "$deploy_ms")"
 
-  # Clean up
   info "Cleaning up..."
   cfn_destroy >/dev/null 2>&1 || true
 
-  # Export results
   CFN_SYNTH_MS=$synth_ms
   CFN_DEPLOY_MS=$deploy_ms
   CFN_TOTAL_MS=$((synth_ms + deploy_ms))
@@ -284,28 +284,17 @@ print_results() {
 
   local output
   output=$(cat <<EOF
-## Benchmark Results: basic (S3 Bucket)
+## Benchmark Results: $SCENARIO_LABEL
 
 **Date**: $(date '+%Y-%m-%d %H:%M:%S')
 **Region**: $AWS_REGION
-**Stack**: $STACK_NAME (S3 bucket with tags and outputs)
+**Scenario**: $SCENARIO
 
 | Phase          | cdkd           | CloudFormation  | Speedup        |
 |----------------|----------------|-----------------|----------------|
 | Synthesis      | $cdkd_synth_s  | $cfn_synth_s    | $synth_speedup |
 | Deploy (total) | $cdkd_deploy_s | $cfn_deploy_s   | $deploy_speedup|
 | **Total**      | **$cdkd_total_s** | **$cfn_total_s** | **$total_speedup** |
-
-### Notes
-
-- **cdkd** deploys directly via Cloud Control API, skipping CloudFormation entirely
-- **CloudFormation** goes through change set creation, execution, and stack status polling
-- Synthesis time should be roughly equal (both use the same CDK app)
-- Deploy speedup comes from eliminating CloudFormation overhead:
-  - No change set creation/execution
-  - No stack status polling (CREATE_IN_PROGRESS -> CREATE_COMPLETE)
-  - No drift detection
-  - Direct API calls to provision resources
 
 ### Environment
 
@@ -322,8 +311,8 @@ EOF
   echo ""
   echo "================================================================"
 
-  # Save to file
-  echo "$output" > "$RESULTS_FILE"
+  echo "$output" >> "$RESULTS_FILE"
+  echo "" >> "$RESULTS_FILE"
   info "Results saved to: $RESULTS_FILE"
 }
 
@@ -343,10 +332,11 @@ print_single_results() {
 
   local output
   output=$(cat <<EOF
-## Benchmark Results: basic (S3 Bucket) - $tool only
+## Benchmark Results: $SCENARIO_LABEL - $tool only
 
 **Date**: $(date '+%Y-%m-%d %H:%M:%S')
 **Region**: $AWS_REGION
+**Scenario**: $SCENARIO
 
 | Phase          | $tool          |
 |----------------|----------------|
@@ -363,7 +353,8 @@ EOF
   echo ""
   echo "================================================================"
 
-  echo "$output" > "$RESULTS_FILE"
+  echo "$output" >> "$RESULTS_FILE"
+  echo "" >> "$RESULTS_FILE"
   info "Results saved to: $RESULTS_FILE"
 }
 
@@ -383,19 +374,21 @@ cleanup() {
 
 trap cleanup INT TERM
 
-# ─── Main ────────────────────────────────────────────────────────────────────
+# ─── Scenario run ────────────────────────────────────────────────────────────
 
-main() {
+run_scenario() {
+  local scenario_name="$1"
+  configure_scenario "$scenario_name"
+
   echo ""
   echo "============================================"
   echo "  cdkd vs CloudFormation Benchmark"
-  echo "  Example: basic (S3 Bucket)"
+  echo "  Scenario: $SCENARIO_LABEL"
   echo "============================================"
   echo ""
 
   check_prerequisites
 
-  # Initialize result variables
   CDKD_SYNTH_MS=0
   CDKD_DEPLOY_MS=0
   CDKD_TOTAL_MS=0
@@ -403,7 +396,6 @@ main() {
   CFN_DEPLOY_MS=0
   CFN_TOTAL_MS=0
 
-  # Run benchmarks
   if [[ "$SKIP_CDKD" != "true" ]]; then
     for i in $(seq 1 "$RUNS"); do
       run_cdkd_benchmark "$i"
@@ -416,7 +408,6 @@ main() {
     done
   fi
 
-  # Print results
   if [[ "$SKIP_CDKD" == "true" ]]; then
     print_single_results "CloudFormation"
   elif [[ "$SKIP_CFN" == "true" ]]; then
@@ -424,9 +415,31 @@ main() {
   else
     print_results
   fi
+}
+
+# ─── Main ────────────────────────────────────────────────────────────────────
+
+main() {
+  local timestamp
+  timestamp="$(date +%Y%m%d-%H%M%S)"
+  RESULTS_FILE="$SCRIPT_DIR/results-$timestamp.md"
+  DEPLOY_LOG="$SCRIPT_DIR/deploy-$timestamp.log"
+  : > "$RESULTS_FILE"
+  : > "$DEPLOY_LOG"
+
+  if [[ "$SCENARIO" == "all" ]]; then
+    SCENARIO="bench-sdk"
+    run_scenario "bench-sdk"
+    SCENARIO="bench-ccapi"
+    run_scenario "bench-ccapi"
+  else
+    run_scenario "$SCENARIO"
+  fi
 
   echo ""
   ok "Benchmark complete!"
+  info "Results: $RESULTS_FILE"
+  info "Deploy log (for debugging): $DEPLOY_LOG"
 }
 
 main "$@"

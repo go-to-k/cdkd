@@ -1,67 +1,74 @@
 # cdkd Benchmark
 
-cdkd と CloudFormation のデプロイ速度を比較するベンチマークスクリプトです。
+Scripts for comparing deploy speed between cdkd and AWS CDK (CloudFormation).
 
-## 概要
+## Scenarios
 
-`basic` サンプル（S3 バケット）を使用して、以下のフェーズを個別に計測します:
+| Scenario | Resources | Purpose |
+| --- | --- | --- |
+| `bench-sdk` | S3 / DynamoDB / SQS / SNS / SSM Parameter (5, independent) | All resources are served by cdkd's native SDK providers. Pure SDK vs CloudFormation comparison. |
+| `bench-ccapi` | SSM Document × 3 + Athena WorkGroup × 2 (5, independent) | No SDK provider registered — all resources fall through to Cloud Control API. Exercises the fallback path. |
+| `basic` | S3 Bucket + SSM Document (legacy) | Kept for backward compatibility. |
 
-- **Synthesis** - CDK アプリから CloudFormation テンプレートへの変換時間
-- **Deploy** - リソース作成を含むデプロイ全体の時間（Synthesis + アセット発行 + リソース作成）
-- **Total** - 上記の合計
+All resources are independent within each scenario, so cdkd's DAG scheduler can provision them fully in parallel.
 
-## 前提条件
+## Measured phases
 
-- AWS 認証情報が設定済みであること
+- **Synthesis** — CDK app → template (`cdkd synth` / `cdk synth`)
+- **Deploy** — end-to-end deploy time (synthesis + asset publishing + resource provisioning)
+- **Total** — sum of the above
+
+## Prerequisites
+
+- AWS credentials configured
 - Node.js >= 20.0.0
-- cdkd がビルド済みであること（`npm run build`）
-- CloudFormation ベンチマークには `cdk` CLI が必要（`npm install -g aws-cdk`）
+- cdkd built (`pnpm run build`)
+- `cdk` CLI installed for the CloudFormation side (`npm install -g aws-cdk`)
 
-## 使い方
-
-### 基本
+## Usage
 
 ```bash
-# cdkd と CloudFormation の両方を計測
+# bench-sdk scenario (default)
 ./tests/benchmark/run-benchmark.sh
 
-# State bucket を明示的に指定
-STATE_BUCKET=my-bucket AWS_REGION=ap-northeast-1 ./tests/benchmark/run-benchmark.sh
+# bench-ccapi scenario
+./tests/benchmark/run-benchmark.sh bench-ccapi
+
+# Run both sequentially
+./tests/benchmark/run-benchmark.sh all
+
+# Legacy scenario
+./tests/benchmark/run-benchmark.sh basic
 ```
 
-### cdkd のみ計測
+### Run only one side
 
 ```bash
-SKIP_CFN=true ./tests/benchmark/run-benchmark.sh
+SKIP_CFN=true  ./tests/benchmark/run-benchmark.sh bench-sdk
+SKIP_CDKD=true ./tests/benchmark/run-benchmark.sh bench-sdk
 ```
 
-### CloudFormation のみ計測
+### Override the region
 
 ```bash
-SKIP_CDKD=true ./tests/benchmark/run-benchmark.sh
+AWS_REGION=ap-northeast-1 ./tests/benchmark/run-benchmark.sh bench-sdk
 ```
 
-### リージョン指定
+## Environment variables
 
-```bash
-AWS_REGION=us-east-1 ./tests/benchmark/run-benchmark.sh
-```
+| Variable | Description | Default |
+| --- | --- | --- |
+| `STATE_BUCKET` | S3 bucket for cdkd state | auto-resolved (`cdkd-state-{accountId}-{region}`) |
+| `AWS_REGION` | AWS region | `us-east-1` |
+| `CDKD_BIN` | Path to the cdkd binary | `./dist/cli.js` |
+| `SKIP_CFN` | Set to `true` to skip the CloudFormation benchmark | `false` |
+| `SKIP_CDKD` | Set to `true` to skip the cdkd benchmark | `false` |
+| `RUNS` | Number of runs (last result is used) | `1` |
 
-## 環境変数
+## Example output
 
-| 変数 | 説明 | デフォルト |
-|------|------|-----------|
-| `STATE_BUCKET` | cdkd の状態管理用 S3 バケット | 自動解決（`cdkd-state-{accountId}-{region}`） |
-| `AWS_REGION` | AWS リージョン | `ap-northeast-1` |
-| `CDKD_BIN` | cdkd バイナリのパス | `./dist/cli.js` |
-| `SKIP_CFN` | `true` で CloudFormation ベンチマークをスキップ | `false` |
-| `SKIP_CDKD` | `true` で cdkd ベンチマークをスキップ | `false` |
-| `RUNS` | 計測回数（最後の結果が使用される） | `1` |
-
-## 出力例
-
-```
-## Benchmark Results: basic (S3 Bucket)
+```text
+## Benchmark Results: bench-sdk (5 resources, SDK providers only)
 
 | Phase          | cdkd    | CloudFormation | Speedup |
 |----------------|---------|----------------|---------|
@@ -70,21 +77,20 @@ AWS_REGION=us-east-1 ./tests/benchmark/run-benchmark.sh
 | Total          | 12.7s   | 66.5s          | 5.2x    |
 ```
 
-結果は `tests/benchmark/results-YYYYMMDD-HHMMSS.md` にも保存されます。
+Each run also writes `tests/benchmark/results-YYYYMMDD-HHMMSS.md` (with `all`, both scenarios are appended to the same file).
 
-## cdkd が速い理由
+## Why cdkd is faster
 
-cdkd は CloudFormation をバイパスし、Cloud Control API を直接使用してリソースをプロビジョニングします。これにより以下のオーバーヘッドが排除されます:
+cdkd bypasses CloudFormation and provisions directly via the AWS SDK (or Cloud Control API as a fallback), eliminating:
 
-1. **Change Set の作成・実行** - CloudFormation は変更セットを作成してから実行する 2 段階のプロセス
-2. **スタックステータスのポーリング** - `CREATE_IN_PROGRESS` -> `CREATE_COMPLETE` の状態遷移待ち
-3. **ドリフト検出** - CloudFormation の内部的な整合性チェック
-4. **テンプレートの検証** - CloudFormation 側でのテンプレート解析
+1. **Change set creation and execution** — a two-step roundtrip
+2. **Stack status polling** — waiting for `CREATE_IN_PROGRESS` → `CREATE_COMPLETE`
+3. **Drift detection and template validation**
 
-cdkd は DAG ベースの並列実行により、依存関係のないリソースを同時にデプロイすることも可能です。
+DAG-based parallel execution also lets cdkd provision resources with no dependencies concurrently.
 
-## 注意事項
+## Notes
 
-- ベンチマーク結果はネットワーク状況や AWS API のレイテンシにより変動します
-- 初回実行時は CDK Toolkit のブートストラップが必要な場合があります（CloudFormation 側）
-- 結果ファイル（`results-*.md`）は `.gitignore` に追加することを推奨します
+- Results vary with network conditions and AWS API latency.
+- `bench-ccapi` includes Cloud Control API polling (1s→2s→4s→8s→10s), so cdkd's lead is smaller than on `bench-sdk`.
+- `results-*.md` files are intentionally not committed.

@@ -25,6 +25,34 @@
 
 > **Note**: Resource types not covered by either SDK Providers or Cloud Control API cannot be deployed with cdkd. If you encounter an unsupported resource type, deployment will fail with a clear error message.
 
+## Benchmark
+
+**cdkd deploys up to ~5x faster than AWS CDK (CloudFormation).**
+
+Measured on `us-east-1` with 5 independent resources per stack (fully parallelized by cdkd's DAG scheduler).
+
+### SDK Provider path — **4.8x faster** (20.5s vs 98.4s)
+
+Stack: S3 Bucket, DynamoDB Table, SQS Queue, SNS Topic, SSM Parameter.
+
+| Phase | cdkd | AWS CDK (CFn) | Speedup |
+| --- | --- | --- | --- |
+| Synthesis | 3.5s | 4.1s | 1.2x |
+| Deploy | 17.0s | 94.4s | **5.5x** |
+| **Total** | **20.5s** | **98.4s** | **4.8x** |
+
+### Cloud Control API fallback path — **1.5x faster** (44.6s vs 69.1s)
+
+Stack: SSM Document × 3 + Athena WorkGroup × 2 (no SDK provider — CC API fallback).
+
+| Phase | cdkd | AWS CDK (CFn) | Speedup |
+| --- | --- | --- | --- |
+| Synthesis | 3.7s | 4.2s | 1.1x |
+| Deploy | 40.9s | 64.9s | **1.6x** |
+| **Total** | **44.6s** | **69.1s** | **1.5x** |
+
+Reproduce with `./tests/benchmark/run-benchmark.sh all`. See [tests/benchmark/README.md](tests/benchmark/README.md) for details.
+
 ## How it works
 
 ```

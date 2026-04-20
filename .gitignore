@@ -37,3 +37,6 @@ cdk.out/
 *.tmp
 .cache/
 cdk.context.json
+
+# Benchmark artifacts
+tests/benchmark/results-*.md
