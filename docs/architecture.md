@@ -247,10 +247,11 @@ Level 2: Depends on Level 1 (Lambda Function)
 Compares current state (S3) with template and calculates changes
 
 ```typescript
-calculateDiff(
+async calculateDiff(
   currentState: StackState,
-  template: CloudFormationTemplate
-): ResourceDiff[]
+  template: CloudFormationTemplate,
+  resolveFn?: IntrinsicResolveFn
+): Promise<Map<string, ResourceChange>>
 ```
 
 **Diff Types**:
@@ -262,7 +263,7 @@ calculateDiff(
 
 **Comparison Behavior**:
 
-- **Intrinsic function handling**: When comparing state (resolved values) vs template (unresolved intrinsics), intrinsic functions are detected per-value at each level of recursion. If the new value is an intrinsic (e.g., `{ "Fn::Join": [...] }`), it is treated as equal to the old resolved value since the actual resolved result cannot be determined without deployment.
+- **Intrinsic function handling**: State stores resolved values while templates hold unresolved intrinsics. When a `resolveFn` is supplied (always the case from `deploy`/`diff`), desired properties are resolved against current state before comparison, so changes buried inside an intrinsic (e.g. a literal like `-value` → `-value2` inside `Fn::Join`) are detected. If resolution throws for a particular value (e.g. `Ref` to a not-yet-created resource), that value falls back to the legacy "treat intrinsic as equal" behavior so CREATE-time diffs don't fail. When no `resolveFn` is supplied, intrinsics are detected per-value and treated as equal to the old resolved value.
 - **AWS default key filtering**: AWS APIs often return additional properties not present in the template (e.g., `IncludeCookies: false`, `Enabled: true`). During comparison, only keys present in the template (new) side are compared; extra keys in the state (old) side are ignored as AWS-added defaults.
 - **Diff display**: When showing property changes, only the actually changed sub-properties are displayed. Unchanged sibling values and intrinsic-containing values are stripped from the output to reduce noise.
 

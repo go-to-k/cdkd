@@ -199,7 +199,7 @@ describe('DeployEngine - Safety Net (CC API Fallback)', () => {
       ],
     ]);
 
-    mockDiffCalculator.calculateDiff.mockReturnValue(changes);
+    mockDiffCalculator.calculateDiff.mockResolvedValue(changes);
     return template;
   }
 

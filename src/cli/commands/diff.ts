@@ -12,6 +12,7 @@ import { withErrorHandling } from '../../utils/error-handler.js';
 import { Synthesizer } from '../../synthesis/synthesizer.js';
 import { S3StateBackend } from '../../state/s3-state-backend.js';
 import { DiffCalculator } from '../../analyzer/diff-calculator.js';
+import { IntrinsicFunctionResolver } from '../../deployment/intrinsic-function-resolver.js';
 import { setAwsClients, AwsClients } from '../../utils/aws-clients.js';
 import { resolveApp, resolveStateBucketWithDefault } from '../config-loader.js';
 
@@ -191,6 +192,7 @@ async function diffCommand(
     };
     const stateBackend = new S3StateBackend(awsClients.s3, stateConfig);
     const diffCalculator = new DiffCalculator();
+    const intrinsicResolver = new IntrinsicFunctionResolver(region);
 
     // 4. Calculate and display diff for each stack
     for (const stackInfo of targetStacks) {
@@ -214,8 +216,17 @@ async function diffCommand(
         };
       }
 
-      // Calculate diff
-      const changes = diffCalculator.calculateDiff(currentState, template);
+      // Calculate diff. A best-effort intrinsic resolver lets us detect changes
+      // buried inside intrinsics (e.g. Fn::Join literal args) against resolved
+      // values in state. Resolution failures fall back to the unresolved value.
+      const diffResolveFn = (value: unknown) =>
+        intrinsicResolver.resolve(value, {
+          template,
+          resources: currentState.resources,
+          stateBackend,
+          stackName: stackInfo.stackName,
+        });
+      const changes = await diffCalculator.calculateDiff(currentState, template, diffResolveFn);
 
       // Display changes
       if (changes.size === 0) {

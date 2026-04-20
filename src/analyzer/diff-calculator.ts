@@ -4,6 +4,13 @@ import { getLogger } from '../utils/logger.js';
 import { ReplacementRulesRegistry } from './replacement-rules.js';
 
 /**
+ * Best-effort resolver for intrinsic functions during diff calculation.
+ * Should return the resolved value on success, or the original value if resolution fails.
+ * Kept as a callback to avoid circular dependency between analyzer and deployment layers.
+ */
+export type IntrinsicResolveFn = (value: unknown) => Promise<unknown>;
+
+/**
  * Diff calculator for comparing desired state (template) with current state
  */
 export class DiffCalculator {
@@ -15,12 +22,18 @@ export class DiffCalculator {
    *
    * @param currentState Current stack state (use existing state or create a new StackState with empty resources for new stacks)
    * @param desiredTemplate Desired CloudFormation template
+   * @param resolveFn Optional intrinsic resolver. When provided, desired properties are
+   *                  resolved against current state before comparison so that changes
+   *                  buried inside intrinsics (e.g. `Fn::Join` literal args) are detected.
+   *                  If resolution throws for a given property value, the unresolved
+   *                  value is used (falling back to the original "assume equal" behavior).
    * @returns Map of logical ID to resource change
    */
-  calculateDiff(
+  async calculateDiff(
     currentState: StackState,
-    desiredTemplate: CloudFormationTemplate
-  ): Map<string, ResourceChange> {
+    desiredTemplate: CloudFormationTemplate,
+    resolveFn?: IntrinsicResolveFn
+  ): Promise<Map<string, ResourceChange>> {
     const changes = new Map<string, ResourceChange>();
 
     const currentResources = currentState.resources;
@@ -79,11 +92,22 @@ export class DiffCalculator {
           `UPDATE (Type change): ${logicalId} (${currentResource.resourceType} -> ${desiredResource.Type})`
         );
       } else {
-        // Resource exists with same type -> check properties
+        // Resource exists with same type -> check properties.
+        //
+        // State stores already-resolved values (e.g. "my-bucket-value"), while the
+        // template holds unresolved intrinsics (e.g. { "Fn::Join": [...] }). When an
+        // intrinsic wraps literal content that changed (e.g. "-value" -> "-value2"),
+        // a naive comparison would short-circuit on the intrinsic node and miss the
+        // change. Resolving desired props against current state first avoids that.
+        const rawDesiredProps = desiredResource.Properties || {};
+        const desiredPropsForCompare = resolveFn
+          ? await this.resolveBestEffort(rawDesiredProps, resolveFn)
+          : rawDesiredProps;
+
         const propertyChanges = this.compareProperties(
           desiredResource.Type,
           currentResource.properties,
-          desiredResource.Properties || {}
+          desiredPropsForCompare
         );
 
         if (propertyChanges.length > 0) {
@@ -93,7 +117,7 @@ export class DiffCalculator {
             changeType: 'UPDATE',
             resourceType: desiredResource.Type,
             currentProperties: currentResource.properties,
-            desiredProperties: desiredResource.Properties || {},
+            desiredProperties: rawDesiredProps,
             propertyChanges,
           });
           this.logger.debug(`UPDATE: ${logicalId} (${propertyChanges.length} property changes)`);
@@ -104,7 +128,7 @@ export class DiffCalculator {
             changeType: 'NO_CHANGE',
             resourceType: desiredResource.Type,
             currentProperties: currentResource.properties,
-            desiredProperties: desiredResource.Properties || {},
+            desiredProperties: rawDesiredProps,
           });
           this.logger.debug(`NO_CHANGE: ${logicalId}`);
         }
@@ -130,6 +154,29 @@ export class DiffCalculator {
     );
 
     return changes;
+  }
+
+  /**
+   * Best-effort resolution of template property intrinsics against current state.
+   *
+   * Iterates top-level properties and resolves each independently: if resolution
+   * throws (e.g. Ref to a resource that isn't in state yet), the original value
+   * is kept so downstream comparison falls back to the "assume intrinsic equals
+   * anything" behavior for that one value instead of failing the whole diff.
+   */
+  private async resolveBestEffort(
+    properties: Record<string, unknown>,
+    resolveFn: IntrinsicResolveFn
+  ): Promise<Record<string, unknown>> {
+    const resolved: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(properties)) {
+      try {
+        resolved[key] = await resolveFn(value);
+      } catch {
+        resolved[key] = value;
+      }
+    }
+    return resolved;
   }
 
   /**

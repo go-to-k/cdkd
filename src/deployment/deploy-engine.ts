@@ -202,7 +202,23 @@ export class DeployEngine {
       this.logger.debug(`Dependency graph: ${executionLevels.length} execution levels`);
 
       // 5. Calculate diff
-      const changes = this.diffCalculator.calculateDiff(currentState, template);
+      // Pass a best-effort resolver so that changes hidden inside intrinsics (e.g.
+      // `Fn::Join` literal args like "-value" -> "-value2") are detected against
+      // the already-resolved values stored in state.
+      const diffResolverContext = {
+        template,
+        resources: currentState.resources,
+        ...(Object.keys(parameterValues).length > 0 && { parameters: parameterValues }),
+        ...(Object.keys(conditions).length > 0 && { conditions }),
+        stateBackend: this.stateBackend,
+        stackName,
+      };
+      const diffResolveFn = (value: unknown) => this.resolver.resolve(value, diffResolverContext);
+      const changes = await this.diffCalculator.calculateDiff(
+        currentState,
+        template,
+        diffResolveFn
+      );
       const hasChanges = this.diffCalculator.hasChanges(changes);
 
       if (!hasChanges) {

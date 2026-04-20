@@ -173,7 +173,7 @@ describe('DeployEngine - Dry Run Mode', () => {
         ],
       ]);
 
-      mockDiffCalculator.calculateDiff.mockReturnValue(changes);
+      mockDiffCalculator.calculateDiff.mockResolvedValue(changes);
 
       const engine = createDryRunEngine();
       const result = await engine.deploy(stackName, template);
@@ -234,7 +234,7 @@ describe('DeployEngine - Dry Run Mode', () => {
         ],
       ]);
 
-      mockDiffCalculator.calculateDiff.mockReturnValue(changes);
+      mockDiffCalculator.calculateDiff.mockResolvedValue(changes);
 
       const engine = createDryRunEngine();
       const result = await engine.deploy(stackName, template);
@@ -291,7 +291,7 @@ describe('DeployEngine - Dry Run Mode', () => {
         ],
       ]);
 
-      mockDiffCalculator.calculateDiff.mockReturnValue(changes);
+      mockDiffCalculator.calculateDiff.mockResolvedValue(changes);
 
       const engine = createDryRunEngine();
       const result = await engine.deploy(stackName, template);
@@ -400,7 +400,7 @@ describe('DeployEngine - Dry Run Mode', () => {
         ],
       ]);
 
-      mockDiffCalculator.calculateDiff.mockReturnValue(changes);
+      mockDiffCalculator.calculateDiff.mockResolvedValue(changes);
 
       const engine = createDryRunEngine();
       const result = await engine.deploy(stackName, template);
@@ -441,7 +441,7 @@ describe('DeployEngine - Dry Run Mode', () => {
         ],
       ]);
 
-      mockDiffCalculator.calculateDiff.mockReturnValue(changes);
+      mockDiffCalculator.calculateDiff.mockResolvedValue(changes);
 
       const engine = createDryRunEngine();
       await engine.deploy(stackName, template);
@@ -466,7 +466,7 @@ describe('DeployEngine - Dry Run Mode', () => {
         ],
       ]);
 
-      mockDiffCalculator.calculateDiff.mockReturnValue(changes);
+      mockDiffCalculator.calculateDiff.mockResolvedValue(changes);
 
       const engine = createDryRunEngine();
       await engine.deploy(stackName, template);
@@ -500,7 +500,7 @@ describe('DeployEngine - Dry Run Mode', () => {
         ],
       ]);
 
-      mockDiffCalculator.calculateDiff.mockReturnValue(changes);
+      mockDiffCalculator.calculateDiff.mockResolvedValue(changes);
 
       // Dry-run mode
       const dryRunEngine = createDryRunEngine();
@@ -528,7 +528,7 @@ describe('DeployEngine - Dry Run Mode', () => {
       mockLockManager.releaseLock.mockResolvedValue(undefined);
       mockDagBuilder.buildGraph.mockReturnValue({});
       mockDagBuilder.getExecutionLevels.mockReturnValue([['MyBucket']]);
-      mockDiffCalculator.calculateDiff.mockReturnValue(changes);
+      mockDiffCalculator.calculateDiff.mockResolvedValue(changes);
       mockDiffCalculator.hasChanges.mockReturnValue(true);
       mockDiffCalculator.filterByType.mockImplementation(
         (ch: Map<string, ResourceChange>, type: string) => {
@@ -584,7 +584,7 @@ describe('DeployEngine - Dry Run Mode', () => {
 
       // No changes detected
       mockDiffCalculator.hasChanges.mockReturnValue(false);
-      mockDiffCalculator.calculateDiff.mockReturnValue(new Map());
+      mockDiffCalculator.calculateDiff.mockResolvedValue(new Map());
 
       const engine = createDryRunEngine();
       const result = await engine.deploy(stackName, template);
@@ -625,7 +625,7 @@ describe('DeployEngine - Dry Run Mode', () => {
         ],
       ]);
 
-      mockDiffCalculator.calculateDiff.mockReturnValue(changes);
+      mockDiffCalculator.calculateDiff.mockResolvedValue(changes);
 
       const engine = createDryRunEngine();
       const result = await engine.deploy(stackName, template);
