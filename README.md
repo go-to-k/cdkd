@@ -14,8 +14,9 @@
 
 ## Features
 
-cdkd implements the entire CDK deployment pipeline from scratch — synthesis orchestration, context resolution, asset publishing, and resource provisioning — using only AWS SDK, with no dependency on CDK CLI internals.
+Key capabilities:
 
+- **Synthesis orchestration**: CDK app subprocess execution, Cloud Assembly parsing, context provider loop
 - **Asset handling**: Self-implemented asset publisher for S3 file assets (ZIP packaging) and Docker images (ECR)
 - **Context resolution**: Self-implemented context provider loop for Vpc.fromLookup(), AZ, SSM, HostedZone, etc.
 - **Hybrid provisioning**: SDK Providers for fast direct API calls, Cloud Control API fallback for broad resource coverage
