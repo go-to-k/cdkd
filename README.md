@@ -1,9 +1,9 @@
 # cdkd
 
-**cdkd** (CDK Direct) - A self-contained CDK deployment tool with no CDK CLI dependencies.
+**cdkd** (CDK Direct) - A from-scratch CDK CLI that provisions via AWS SDK instead of CloudFormation.
 
 - **Direct provisioning** via AWS SDK and Cloud Control API instead of CloudFormation
-- **100% CDK compatible** - use your existing CDK code as-is
+- **CDK compatible** - use your existing CDK app code as-is
 - **Everything built from scratch** - synthesis, asset publishing, context resolution, state management
 
 > **⚠️ WARNING: NOT PRODUCTION READY**
