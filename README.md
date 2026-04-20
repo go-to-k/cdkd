@@ -7,7 +7,7 @@
 - **CDK compatible** - use your existing CDK app code as-is
 - **Own deployment engine** - diff calculation, dependency graph, parallel execution, state management (what CloudFormation handles internally)
 
-![cdkd demo](https://github.com/user-attachments/assets/1c6818ef-8ef6-4fd6-ae75-d61114d20c88)
+![cdkd demo](https://github.com/user-attachments/assets/b4acc20e-3008-4d01-82f5-742d080b937e)
 
 > **⚠️ WARNING: NOT PRODUCTION READY**
 >
