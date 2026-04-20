@@ -23,15 +23,6 @@
 
 > **Note**: Resource types not covered by either SDK Providers or Cloud Control API cannot be deployed with cdkd. If you encounter an unsupported resource type, deployment will fail with a clear error message.
 
-## How cdkd differs from CloudFormation
-
-| | CloudFormation | cdkd |
-| --- | --- | --- |
-| Stack creation | Required | N/A (no stacks) |
-| Change set creation | Required | N/A (direct diff) |
-| Resource provisioning | Sequential | Parallel (DAG levels) |
-| State management | CloudFormation service | S3 (self-managed) |
-
 ## How it works
 
 ```
