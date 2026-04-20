@@ -167,7 +167,7 @@ describe('DeployEngine - Resource Replacement', () => {
       ],
     ]);
 
-    mockDiffCalculator.calculateDiff.mockReturnValue(changes);
+    mockDiffCalculator.calculateDiff.mockResolvedValue(changes);
 
     const engine = new DeployEngine(
       mockStateBackend as any,
@@ -239,7 +239,7 @@ describe('DeployEngine - Resource Replacement', () => {
       ],
     ]);
 
-    mockDiffCalculator.calculateDiff.mockReturnValue(changes);
+    mockDiffCalculator.calculateDiff.mockResolvedValue(changes);
 
     const engine = new DeployEngine(
       mockStateBackend as any,
@@ -281,7 +281,7 @@ describe('DeployEngine - Resource Replacement', () => {
       ],
     ]);
 
-    mockDiffCalculator.calculateDiff.mockReturnValue(changes);
+    mockDiffCalculator.calculateDiff.mockResolvedValue(changes);
 
     const engine = new DeployEngine(
       mockStateBackend as any,
@@ -335,7 +335,7 @@ describe('DeployEngine - Resource Replacement', () => {
       ],
     ]);
 
-    mockDiffCalculator.calculateDiff.mockReturnValue(changes);
+    mockDiffCalculator.calculateDiff.mockResolvedValue(changes);
 
     const engine = new DeployEngine(
       mockStateBackend as any,
@@ -377,7 +377,7 @@ describe('DeployEngine - Resource Replacement', () => {
       ],
     ]);
 
-    mockDiffCalculator.calculateDiff.mockReturnValue(changes);
+    mockDiffCalculator.calculateDiff.mockResolvedValue(changes);
 
     const engine = new DeployEngine(
       mockStateBackend as any,
