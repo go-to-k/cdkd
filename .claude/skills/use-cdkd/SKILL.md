@@ -21,14 +21,13 @@ Build cdkd and output commands that can be pasted into another CDK project's ter
    echo "$(pwd)/dist/cli.js"
    ```
 
-3. **Output the commands** for the user to copy-paste. Use the absolute path:
+3. **Output the commands** for the user to copy-paste. Use the absolute path.
+
+   ### Default (auto-resolves bucket: `cdkd-state-{accountId}-{region}`)
 
    ```
-   # Bootstrap (default bucket: cdkd-state-{accountId}-{region})
+   # Bootstrap
    node /path/to/cdkd/dist/cli.js bootstrap
-
-   # Bootstrap (custom state bucket)
-   node /path/to/cdkd/dist/cli.js bootstrap --state-bucket my-custom-cdkd-state-bucket
 
    # Synth
    node /path/to/cdkd/dist/cli.js synth
@@ -38,12 +37,6 @@ Build cdkd and output commands that can be pasted into another CDK project's ter
 
    # Deploy
    node /path/to/cdkd/dist/cli.js deploy
-
-   # Deploy (with custom state bucket)
-   node /path/to/cdkd/dist/cli.js deploy --state-bucket my-custom-cdkd-state-bucket
-
-   # Deploy (with custom state bucket via env var)
-   CDKD_STATE_BUCKET=my-custom-cdkd-state-bucket node /path/to/cdkd/dist/cli.js deploy
 
    # Deploy (with context)
    node /path/to/cdkd/dist/cli.js deploy -c KEY=VALUE
@@ -56,8 +49,21 @@ Build cdkd and output commands that can be pasted into another CDK project's ter
 
    # Destroy
    node /path/to/cdkd/dist/cli.js destroy --force
+   ```
 
-   # Destroy (with custom state bucket)
+   ### Custom state bucket
+
+   ```
+   # Bootstrap
+   node /path/to/cdkd/dist/cli.js bootstrap --state-bucket my-custom-cdkd-state-bucket
+
+   # Deploy (--state-bucket flag)
+   node /path/to/cdkd/dist/cli.js deploy --state-bucket my-custom-cdkd-state-bucket
+
+   # Deploy (CDKD_STATE_BUCKET env var)
+   CDKD_STATE_BUCKET=my-custom-cdkd-state-bucket node /path/to/cdkd/dist/cli.js deploy
+
+   # Destroy
    node /path/to/cdkd/dist/cli.js destroy --state-bucket my-custom-cdkd-state-bucket --force
    ```
 
