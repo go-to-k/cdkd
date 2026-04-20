@@ -14,7 +14,6 @@ AWS CDK is great for defining infrastructure as code, but all deployments go thr
 
 - **Fully self-contained** - synthesis, asset publishing, context resolution all self-implemented without CDK CLI dependencies
 - **Direct provisioning** via AWS SDK and Cloud Control API instead of CloudFormation
-- **Parallel resource deployment** based on dependency analysis (DAG)
 - **100% CDK compatible** - use your existing CDK code as-is
 
 ## How cdkd differs from CloudFormation
