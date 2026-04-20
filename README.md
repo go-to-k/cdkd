@@ -16,6 +16,19 @@ AWS CDK is great for defining infrastructure as code, but all deployments go thr
 - **Direct provisioning** via AWS SDK and Cloud Control API instead of CloudFormation
 - **100% CDK compatible** - use your existing CDK code as-is
 
+## Features
+
+cdkd uses a hybrid provisioning strategy: hand-written **SDK Providers** call AWS SDK APIs directly for fast provisioning, while **Cloud Control API** (a generic AWS API that can operate on any resource type) is used as a fallback for resource types without an SDK Provider.
+
+- **Fast SDK Providers**: Direct synchronous API calls for common resource types
+- **Broad resource coverage**: Cloud Control API fallback for additional resource types
+- **Hybrid deployment strategy**: SDK Providers preferred for performance, Cloud Control API as fallback
+- **S3-based state management**: No DynamoDB required, uses S3 conditional writes for locking
+- **DAG-based parallelization**: Analyze `Ref`/`Fn::GetAtt` dependencies and execute in parallel
+- **Asset handling**: Self-implemented asset publisher for Lambda packages (S3 with ZIP packaging) and Docker images (ECR)
+
+> **Note**: Resource types not covered by either SDK Providers or Cloud Control API cannot be deployed with cdkd. If you encounter an unsupported resource type, deployment will fail with a clear error message.
+
 ## How cdkd differs from CloudFormation
 
 | | CloudFormation | cdkd |
@@ -109,19 +122,6 @@ AWS CDK is great for defining infrastructure as code, but all deployments go thr
    │   └── Release lock
    └── synth does NOT publish assets or deploy (deploy only)
 ```
-
-## Features
-
-cdkd uses a hybrid provisioning strategy: hand-written **SDK Providers** call AWS SDK APIs directly for fast provisioning, while **Cloud Control API** (a generic AWS API that can operate on any resource type) is used as a fallback for resource types without an SDK Provider.
-
-- **Fast SDK Providers**: Direct synchronous API calls for common resource types
-- **Broad resource coverage**: Cloud Control API fallback for additional resource types
-- **Hybrid deployment strategy**: SDK Providers preferred for performance, Cloud Control API as fallback
-- **S3-based state management**: No DynamoDB required, uses S3 conditional writes for locking
-- **DAG-based parallelization**: Analyze `Ref`/`Fn::GetAtt` dependencies and execute in parallel
-- **Asset handling**: Self-implemented asset publisher for Lambda packages (S3 with ZIP packaging) and Docker images (ECR)
-
-> **Note**: Resource types not covered by either SDK Providers or Cloud Control API cannot be deployed with cdkd. If you encounter an unsupported resource type, deployment will fail with a clear error message.
 
 ## Supported Features
 
