@@ -360,19 +360,23 @@ EOF
 
 # ─── Cleanup on exit ────────────────────────────────────────────────────────
 
+# Fires on any exit path (normal, set -e failure, INT, TERM, HUP). Only
+# destroys when the script exited abnormally — the happy path already
+# cleans up inside run_*_benchmark. SIGKILL cannot be trapped.
 cleanup() {
   local exit_code=$?
   if [[ $exit_code -ne 0 ]]; then
-    warn "Benchmark interrupted. Cleaning up..."
-    cdkd_destroy >/dev/null 2>&1 || true
-    if [[ "$SKIP_CFN" != "true" ]]; then
-      cfn_destroy >/dev/null 2>&1 || true
+    warn "Benchmark exited abnormally (code $exit_code). Cleaning up..."
+    if [[ -n "${EXAMPLE_DIR:-}" ]]; then
+      cdkd_destroy >/dev/null 2>&1 || true
+      if [[ "$SKIP_CFN" != "true" ]]; then
+        cfn_destroy >/dev/null 2>&1 || true
+      fi
     fi
   fi
-  exit $exit_code
 }
 
-trap cleanup INT TERM
+trap cleanup EXIT
 
 # ─── Scenario run ────────────────────────────────────────────────────────────
 
