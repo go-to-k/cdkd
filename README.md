@@ -1,6 +1,6 @@
 # cdkd
 
-**cdkd** (CDK Direct) - Deploy AWS CDK apps directly via SDK/Cloud Control API, bypassing CloudFormation stacks for faster deployments.
+**cdkd** (CDK Direct) - Deploy AWS CDK apps directly via SDK/Cloud Control API, bypassing CloudFormation entirely. Self-contained CDK deployment tool with no CDK CLI dependencies.
 
 > **⚠️ WARNING: NOT PRODUCTION READY**
 >
