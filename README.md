@@ -4,7 +4,7 @@
 
 - **Direct provisioning** via AWS SDK and Cloud Control API instead of CloudFormation
 - **CDK compatible** - use your existing CDK app code as-is
-- **Everything built from scratch** - synthesis, asset publishing, context resolution, state management
+- **Everything built from scratch** - synthesis, asset publishing, context resolution, state management, dependency graph
 
 > **⚠️ WARNING: NOT PRODUCTION READY**
 >
