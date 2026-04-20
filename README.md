@@ -1,10 +1,11 @@
 # cdkd
 
-**cdkd** (CDK Direct) - A from-scratch CDK CLI that provisions via AWS SDK instead of CloudFormation.
+**cdkd** (CDK Direct) - A from-scratch CDK CLI with its own deployment engine — provisions via AWS SDK instead of CloudFormation.
 
 - **Direct provisioning** via AWS SDK instead of CloudFormation
+- **From-scratch CDK CLI** - synthesis orchestration, asset publishing, context resolution (no aws-cdk / toolkit-lib dependency)
 - **CDK compatible** - use your existing CDK app code as-is
-- **Everything built from scratch** - synthesis, asset publishing, context resolution, state management, dependency graph
+- **Own deployment engine** - diff calculation, dependency graph, parallel execution, state management (what CloudFormation handles internally)
 
 > **⚠️ WARNING: NOT PRODUCTION READY**
 >
@@ -18,6 +19,7 @@
 - **Asset handling**: Self-implemented asset publisher for S3 file assets (ZIP packaging) and Docker images (ECR)
 - **Context resolution**: Self-implemented context provider loop for Vpc.fromLookup(), AZ, SSM, HostedZone, etc.
 - **Hybrid provisioning**: SDK Providers for fast direct API calls, Cloud Control API fallback for broad resource coverage
+- **Diff calculation**: Self-implemented resource/property-level diff between desired template and current state
 - **S3-based state management**: No DynamoDB required, uses S3 conditional writes for locking
 - **DAG-based parallelization**: Analyze `Ref`/`Fn::GetAtt` dependencies and execute in parallel
 
