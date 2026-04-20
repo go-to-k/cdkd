@@ -20,9 +20,7 @@ AWS CDK is great for defining infrastructure as code, but all deployments go thr
 
 cdkd uses a hybrid provisioning strategy: hand-written **SDK Providers** call AWS SDK APIs directly for fast provisioning, while **Cloud Control API** (a generic AWS API that can operate on any resource type) is used as a fallback for resource types without an SDK Provider.
 
-- **Fast SDK Providers**: Direct synchronous API calls for common resource types
-- **Broad resource coverage**: Cloud Control API fallback for additional resource types
-- **Hybrid deployment strategy**: SDK Providers preferred for performance, Cloud Control API as fallback
+- **Hybrid provisioning**: SDK Providers for fast direct API calls, Cloud Control API fallback for broad resource coverage
 - **S3-based state management**: No DynamoDB required, uses S3 conditional writes for locking
 - **DAG-based parallelization**: Analyze `Ref`/`Fn::GetAtt` dependencies and execute in parallel
 - **Asset handling**: Self-implemented asset publisher for Lambda packages (S3 with ZIP packaging) and Docker images (ECR)
