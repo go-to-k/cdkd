@@ -1,20 +1,16 @@
 # cdkd
 
-**cdkd** (CDK Direct) - Deploy AWS CDK apps directly via SDK/Cloud Control API, bypassing CloudFormation entirely. Self-contained CDK deployment tool with no CDK CLI dependencies.
+**cdkd** (CDK Direct) - A self-contained CDK deployment tool with no CDK CLI dependencies.
+
+- **Direct provisioning** via AWS SDK and Cloud Control API instead of CloudFormation
+- **100% CDK compatible** - use your existing CDK code as-is
+- **Everything built from scratch** - synthesis, asset publishing, context resolution, state management
 
 > **⚠️ WARNING: NOT PRODUCTION READY**
 >
 > This project is in early development and is **NOT suitable for production use**. Features are incomplete, APIs may change without notice, and there may be bugs that could affect your AWS infrastructure. Use at your own risk in development/testing environments only.
 
 > **Note**: This is an experimental/educational project exploring alternative deployment approaches for AWS CDK. It is **not intended to replace** the official AWS CDK CLI, but rather to experiment with direct SDK/Cloud Control API provisioning as a learning exercise and proof of concept.
-
-## Why cdkd?
-
-AWS CDK is great for defining infrastructure as code, but all deployments go through CloudFormation. **cdkd** is an experimental alternative that deploys CDK apps directly via AWS SDK, bypassing CloudFormation entirely:
-
-- **Fully self-contained** - no CDK CLI dependencies, everything built from scratch
-- **Direct provisioning** via AWS SDK and Cloud Control API instead of CloudFormation
-- **100% CDK compatible** - use your existing CDK code as-is
 
 ## Features
 
