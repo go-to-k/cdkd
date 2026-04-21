@@ -33,9 +33,9 @@ current=$(printf '{"head":"%s","content":"%s"}' "$head" "$content")
 saved=$(cat "$MARKER" 2>/dev/null || echo "")
 
 if [ "$current" = "$saved" ]; then
-  msg="⚠️ 未コミットの変更があります (/check 済・コミット可能)"
+  msg="WARNING: Uncommitted changes (/check passed, commit allowed)"
 else
-  msg="⚠️ 未コミットの変更があります。/check を走らせるとコミット可能になります (マーカー無効)"
+  msg="WARNING: Uncommitted changes. Run /check to allow commit (marker invalid)"
 fi
 
 # Escape the status snippet for inclusion in JSON.

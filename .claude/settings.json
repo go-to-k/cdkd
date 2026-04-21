@@ -44,7 +44,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "printf '{\"hookSpecificOutput\": {\"hookEventName\": \"PreCompact\", \"additionalContext\": \"コンパクト前の注意: 現在の作業状態、未解決の問題、次にやるべきことをTodoWriteに記録してからコンパクトしてください。\"}}'",
+            "command": "printf '{\"hookSpecificOutput\": {\"hookEventName\": \"PreCompact\", \"additionalContext\": \"Before compaction: record current work state, unresolved issues, and next actions into TodoWrite before compacting.\"}}'",
             "timeout": 5,
             "statusMessage": "Preparing for context compaction..."
           }
