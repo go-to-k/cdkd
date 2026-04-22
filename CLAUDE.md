@@ -375,7 +375,7 @@ See [docs/provider-development.md](docs/provider-development.md) for details.
 
 - **When adding new functionality or fixing bugs**: Always add corresponding unit tests. Do not wait to be asked.
 - **After modifying source code**: Always run `pnpm run build` before telling the user to test. The user runs cdkd via `node dist/cli.js`, so source changes without a build have no effect.
-- **Before every commit**: Run `/check` (typecheck, lint, build, tests). A PreToolUse hook (`.claude/hooks/check-gate.sh`) blocks `git commit` unless `/check` has left a content-matching marker — if you see "Blocked by check-gate", run `/check` and retry. Any edits after `/check` invalidate the marker, so re-run it before committing again.
+- **Before every commit**: Run `/check` (typecheck, lint, build, tests). A PreToolUse hook (`.claude/hooks/check-gate.sh`) blocks `git commit` unless `/check` has recorded a matching marker via [markgate](https://github.com/go-to-k/markgate) — if you see "Blocked by check-gate", run `/check` and retry. Any edits after `/check` invalidate the marker, so re-run it before committing again. Install markgate via `mise install` at the repo root (see CONTRIBUTING.md).
 - **Before creating or merging a PR**: Run `/verify-pr` (adds CI status, docs consistency, AWS resource cleanup, code review on top of `/check`)
 - **After changing source code that affects behavior or public API**: Run `/check-docs` to verify README.md, CLAUDE.md, and docs/ are consistent with the changes
 - **When running integration tests**: Use `/run-integ` with the appropriate test name (e.g., `/run-integ lambda`)

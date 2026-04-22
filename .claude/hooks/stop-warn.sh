@@ -2,13 +2,13 @@
 # stop-warn.sh
 #
 # Stop hook. Emits a systemMessage when there are uncommitted changes,
-# nudging Claude to commit-and-push. When the /check marker is stale
-# (or missing), the message says so — a bare commit would be blocked.
+# nudging Claude to commit-and-push. When the markgate /check marker is
+# stale (or missing), the message says so -- a bare commit would be
+# blocked.
 
 set -u
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-MARKER="${CDKD_CHECK_MARKER:-/tmp/cdkd-check-marker.json}"
 
 cd "$REPO" 2>/dev/null || exit 0
 
@@ -17,22 +17,7 @@ if [ -z "$status" ]; then
   exit 0
 fi
 
-head=$(git rev-parse HEAD 2>/dev/null || echo "none")
-content=$({
-  git diff HEAD --name-only 2>/dev/null
-  git ls-files --others --exclude-standard 2>/dev/null
-} | sort -u | while IFS= read -r f; do
-  if [ -f "$f" ]; then
-    printf 'FILE:%s\n' "$f"
-    cat "$f"
-  else
-    printf 'DEL:%s\n' "$f"
-  fi
-done | shasum -a 256 | cut -c1-16)
-current=$(printf '{"head":"%s","content":"%s"}' "$head" "$content")
-saved=$(cat "$MARKER" 2>/dev/null || echo "")
-
-if [ "$current" = "$saved" ]; then
+if command -v markgate >/dev/null 2>&1 && markgate verify check >/dev/null 2>&1; then
   msg="WARNING: Uncommitted changes (/check passed, commit allowed)"
 else
   msg="WARNING: Uncommitted changes. Run /check to allow commit (marker invalid)"

@@ -4,10 +4,15 @@ Thank you for your interest in contributing to cdkd!
 
 ## Development Setup
 
+This repo pins developer tooling via [mise](https://mise.jdx.dev/). `mise install` fetches [markgate](https://github.com/go-to-k/markgate), which the commit-gate hook depends on. If you prefer not to use mise, install markgate by any means (Homebrew, `go install`, release binary) and skip that step.
+
 ```bash
 # Clone the repository
 git clone https://github.com/go-to-k/cdkd.git
 cd cdkd
+
+# Install pinned developer tools (markgate, etc.)
+mise install
 
 # Install dependencies
 npm install
