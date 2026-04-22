@@ -11,7 +11,9 @@ This repo pins developer tooling via [mise](https://mise.jdx.dev/). `mise instal
 git clone https://github.com/go-to-k/cdkd.git
 cd cdkd
 
-# Install pinned developer tools (markgate, etc.)
+# Trust the mise config, then install pinned developer tools (markgate, etc.)
+# (mise requires explicit trust on first checkout or whenever .mise.toml changes)
+mise trust
 mise install
 
 # Install dependencies
