@@ -34,10 +34,10 @@ If any fail, show the error output and STOP — do not write the commit-gate mar
 
 After all four checks pass, record a marker so the PreToolUse `check-gate` hook (see `.claude/hooks/check-gate.sh`) allows the next `git commit`. The marker is managed by [markgate](https://github.com/go-to-k/markgate) and captures the current working tree state; any subsequent edits invalidate it and require re-running `/check`.
 
-Run this from the repo root:
+Run this from the repo root (cdkd pins markgate via mise, so use `mise exec` to avoid PATH issues when shims aren't active):
 
 ```bash
-markgate set check
+mise exec -- markgate set check
 ```
 
 Skip this step if any check failed — a stale or missing marker correctly forces the user (or Claude) to re-run `/check` after fixing the failure.
