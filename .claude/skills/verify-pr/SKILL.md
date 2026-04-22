@@ -77,22 +77,10 @@ If any fail, list the issues to fix.
 
 ## Final Step
 
-After all checks pass, write the commit-gate marker (so the PreToolUse `check-gate` hook allows the next `git commit` — `/verify-pr` is a superset of `/check`, so its success implies `/check` success):
+After all checks pass, record the commit-gate marker via [markgate](https://github.com/go-to-k/markgate) so the PreToolUse `check-gate` hook allows the next `git commit` — `/verify-pr` is a superset of `/check`, so its success implies `/check` success:
 
 ```bash
-head=$(git rev-parse HEAD)
-content=$({
-  git diff HEAD --name-only
-  git ls-files --others --exclude-standard
-} | sort -u | while IFS= read -r f; do
-  if [ -f "$f" ]; then
-    printf 'FILE:%s\n' "$f"
-    cat "$f"
-  else
-    printf 'DEL:%s\n' "$f"
-  fi
-done | shasum -a 256 | cut -c1-16)
-printf '{"head":"%s","content":"%s"}' "$head" "$content" > /tmp/cdkd-check-marker.json
+markgate set check
 ```
 
 Then, if there are uncommitted changes (e.g., lint fixes, doc updates made during this run), commit them and push to the remote. This ensures the remote branch is always up to date when reporting "PR is ready to merge."
