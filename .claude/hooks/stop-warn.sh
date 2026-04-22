@@ -17,7 +17,17 @@ if [ -z "$status" ]; then
   exit 0
 fi
 
-if command -v markgate >/dev/null 2>&1 && markgate verify check >/dev/null 2>&1; then
+# Prefer direct `markgate`; fall back to `mise exec --` for users who
+# installed via `mise install` without shims on PATH.
+if command -v markgate >/dev/null 2>&1; then
+  markgate=(markgate)
+elif command -v mise >/dev/null 2>&1; then
+  markgate=(mise exec -- markgate)
+else
+  markgate=()
+fi
+
+if [ ${#markgate[@]} -gt 0 ] && "${markgate[@]}" verify check >/dev/null 2>&1; then
   msg="WARNING: Uncommitted changes (/check passed, commit allowed)"
 else
   msg="WARNING: Uncommitted changes. Run /check to allow commit (marker invalid)"

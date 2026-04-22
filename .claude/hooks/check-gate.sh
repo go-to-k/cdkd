@@ -20,12 +20,19 @@ fi
 
 cd "$REPO" 2>/dev/null || exit 0
 
-if ! command -v markgate >/dev/null 2>&1; then
+# Prefer direct `markgate` (Homebrew/go install/mise-activated shim); fall back
+# to `mise exec --` so users who installed via `mise install` but don't have
+# shims on PATH still work.
+if command -v markgate >/dev/null 2>&1; then
+  markgate=(markgate)
+elif command -v mise >/dev/null 2>&1; then
+  markgate=(mise exec -- markgate)
+else
   echo "Blocked by check-gate: markgate is not installed. Run 'mise install' at the repo root (see CONTRIBUTING.md)." >&2
   exit 2
 fi
 
-if markgate verify check >/dev/null 2>&1; then
+if "${markgate[@]}" verify check >/dev/null 2>&1; then
   exit 0
 fi
 
