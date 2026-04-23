@@ -306,6 +306,16 @@ Reproduce with `./tests/benchmark/run-benchmark.sh all`. See [tests/benchmark/RE
 
 ## Installation
 
+### From npm (experimental)
+
+```bash
+npm i -g cdkd@experimental
+```
+
+> Published under the `experimental` dist-tag while the project is in early development. There is no `latest` tag yet — always pin to `@experimental` (or a specific version) so `npm i -g cdkd` does not silently resolve to a future stable release with different behavior.
+
+### From source
+
 ```bash
 git clone https://github.com/goto-bus-stop/cdkd.git
 cd cdkd
