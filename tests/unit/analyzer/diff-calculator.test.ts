@@ -168,4 +168,27 @@ describe('DiffCalculator - intrinsic-aware diff', () => {
     const changes = await calc.calculateDiff(state, template, resolve);
     expect(changes.get('Bucket')?.changeType).toBe('UPDATE');
   });
+
+  it('excludes AWS::CDK::Metadata from change entries so level counts reflect real work only', async () => {
+    const state = baseState();
+
+    const template: CloudFormationTemplate = {
+      Resources: {
+        Bucket: {
+          Type: 'AWS::S3::Bucket',
+          Properties: { BucketName: 'my-bucket' },
+        },
+        CDKMetadata: {
+          Type: 'AWS::CDK::Metadata',
+          Properties: { Analytics: 'v2:deflate64:abc' },
+        },
+      },
+    };
+
+    const calc = new DiffCalculator();
+    const changes = await calc.calculateDiff(state, template);
+
+    expect(changes.has('CDKMetadata')).toBe(false);
+    expect(changes.get('Bucket')?.changeType).toBe('CREATE');
+  });
 });

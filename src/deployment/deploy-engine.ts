@@ -369,7 +369,13 @@ export class DeployEngine {
 
         const levelNodes = executionLevels[levelIndex];
         if (!levelNodes) continue;
-        const level = levelNodes.filter((id) => !deleteChanges.has(id));
+        // Exclude DELETE (handled in Step 2), NO_CHANGE, and nodes without a change
+        // entry (e.g. AWS::CDK::Metadata) so the level count reflects real work.
+        const level = levelNodes.filter((id) => {
+          if (deleteChanges.has(id)) return false;
+          const change = changes.get(id);
+          return !!change && change.changeType !== 'NO_CHANGE';
+        });
 
         if (level.length === 0) continue;
 
