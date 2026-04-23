@@ -309,7 +309,8 @@ Reproduce with `./tests/benchmark/run-benchmark.sh all`. See [tests/benchmark/RE
 ### From npm (experimental)
 
 ```bash
-npm i -g @go-to-k/cdkd@experimental
+npm i -g @go-to-k/cdkd@experimental   # latest experimental
+npm i -g @go-to-k/cdkd@0.1.0          # pin to a specific version
 ```
 
 The installed binary is `cdkd` — run it the same way in either install path.
