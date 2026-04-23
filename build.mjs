@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import * as esbuild from 'esbuild';
+import { readFileSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 
@@ -8,6 +9,8 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
 const watchMode = process.argv.includes('--watch');
+
+const pkg = JSON.parse(readFileSync(join(__dirname, 'package.json'), 'utf-8'));
 
 const commonOptions = {
   bundle: true,
@@ -24,6 +27,9 @@ const commonOptions = {
     'graphlib',
     'p-limit',
   ],
+  define: {
+    __CDKD_VERSION__: JSON.stringify(pkg.version),
+  },
   logLevel: 'info',
 };
 
