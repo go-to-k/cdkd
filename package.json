@@ -1,6 +1,6 @@
 {
-  "name": "cdkd",
-  "version": "0.1.0",
+  "name": "@go-to-k/cdkd",
+  "version": "0.0.0-development",
   "description": "CDK Direct - Deploy AWS CDK apps directly via SDK/Cloud Control API",
   "main": "dist/index.js",
   "bin": {
@@ -95,6 +95,10 @@
     "p-limit": "^5.0.0"
   },
   "devDependencies": {
+    "@semantic-release/changelog": "^6.0.3",
+    "@semantic-release/git": "^10.0.1",
+    "@semantic-release/github": "^12.0.0",
+    "@semantic-release/npm": "^13.0.0",
     "@types/archiver": "^6.0.0",
     "@types/graphlib": "^2.1.12",
     "@types/node": "^20.0.0",
@@ -106,6 +110,7 @@
     "eslint-config-prettier": "^9.0.0",
     "eslint-plugin-prettier": "^5.0.0",
     "prettier": "^3.0.0",
+    "semantic-release": "^25.0.0",
     "typescript": "^5.4.0",
     "vitest": "^1.0.0"
   },
