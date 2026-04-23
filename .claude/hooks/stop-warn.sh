@@ -17,8 +17,9 @@ if [ -z "$status" ]; then
   exit 0
 fi
 
-# Prefer direct `markgate`; fall back to `mise exec --` for users who
-# installed via `mise install` without shims on PATH.
+# Prefer direct `markgate` to avoid `mise exec` startup overhead on every
+# Stop hook; fall back to `mise exec --` for users who installed via
+# `mise install` without shims on PATH.
 if command -v markgate >/dev/null 2>&1; then
   markgate=(markgate)
 elif command -v mise >/dev/null 2>&1; then
