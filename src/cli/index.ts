@@ -1,4 +1,8 @@
 import { Command } from 'commander';
+
+// Injected at build time by esbuild `define` from package.json
+declare const __CDKD_VERSION__: string;
+
 import { createBootstrapCommand } from './commands/bootstrap.js';
 import { createSynthCommand } from './commands/synth.js';
 import { createDeployCommand } from './commands/deploy.js';
@@ -44,7 +48,7 @@ async function main(): Promise<void> {
   program
     .name('cdkd')
     .description('CDK Direct - Deploy AWS CDK apps directly via SDK/Cloud Control API')
-    .version('0.1.0');
+    .version(__CDKD_VERSION__);
 
   // Add commands
   program.addCommand(createBootstrapCommand());
