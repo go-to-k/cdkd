@@ -71,6 +71,8 @@ async function destroyCommand(
       prefix: options.statePrefix,
     };
     const stateBackend = new S3StateBackend(awsClients.s3, stateConfig);
+    // Fail fast if the state bucket is missing, before synth or any destructive work.
+    await stateBackend.verifyBucketExists();
     const lockManager = new LockManager(awsClients.s3, stateConfig);
     const dagBuilder = new DagBuilder();
     const providerRegistry = new ProviderRegistry();
