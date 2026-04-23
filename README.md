@@ -307,7 +307,7 @@ Reproduce with `./tests/benchmark/run-benchmark.sh all`. See [tests/benchmark/RE
 ## Installation
 
 ```bash
-git clone https://github.com/goto-bus-stop/cdkd.git
+git clone https://github.com/go-to-k/cdkd.git
 cd cdkd
 pnpm install
 pnpm run build
