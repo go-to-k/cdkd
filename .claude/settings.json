@@ -6,6 +6,13 @@
         "hooks": [
           {
             "type": "command",
+            "command": ".claude/hooks/branch-gate.sh",
+            "if": "Bash(git commit*) or Bash(git push*)",
+            "timeout": 10,
+            "statusMessage": "Checking current branch..."
+          },
+          {
+            "type": "command",
             "command": ".claude/hooks/check-gate.sh",
             "if": "Bash(git commit*)",
             "timeout": 10,
