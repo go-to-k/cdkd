@@ -306,16 +306,16 @@ Reproduce with `./tests/benchmark/run-benchmark.sh all`. See [tests/benchmark/RE
 
 ## Installation
 
-### From npm (experimental)
+### From npm
 
 ```bash
-npm i -g @go-to-k/cdkd@experimental   # latest experimental
-npm i -g @go-to-k/cdkd@0.1.0          # pin to a specific version
+npm i -g @go-to-k/cdkd          # latest release
+npm i -g @go-to-k/cdkd@0.0.2    # pin to a specific version
 ```
 
 The installed binary is `cdkd` — run it the same way in either install path.
 
-> Published under the `experimental` dist-tag while the project is in early development. There is no `latest` tag yet — always pin to `@experimental` (or a specific version) so `npm i -g @go-to-k/cdkd` does not silently resolve to a future stable release with different behavior.
+> cdkd is an experimental / educational project and is not intended for production use — see the warning at the top of this README. Pin to a specific version if you need reproducible installs.
 
 ### From source
 
