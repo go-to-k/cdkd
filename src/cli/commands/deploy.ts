@@ -89,6 +89,13 @@ async function deployCommand(
   });
   setAwsClients(awsClients);
 
+  // Fail fast if the state bucket is missing, before running synth / docker builds / asset uploads.
+  const preflightStateBackend = new S3StateBackend(awsClients.s3, {
+    bucket: stateBucket,
+    prefix: options.statePrefix,
+  });
+  await preflightStateBackend.verifyBucketExists();
+
   let deployInterrupted = false;
   const topLevelSigintHandler = () => {
     if (deployInterrupted) {

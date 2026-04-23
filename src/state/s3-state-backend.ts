@@ -3,6 +3,7 @@ import {
   GetObjectCommand,
   PutObjectCommand,
   DeleteObjectCommand,
+  HeadBucketCommand,
   HeadObjectCommand,
   ListObjectsV2Command,
   NoSuchKey,
@@ -28,6 +29,31 @@ export class S3StateBackend {
    */
   private getStateKey(stackName: string): string {
     return `${this.config.prefix}/${stackName}/state.json`;
+  }
+
+  /**
+   * Verify that the configured state bucket exists.
+   *
+   * Called early in deploy/destroy to fail fast before expensive work
+   * (asset publishing, Docker builds) runs against a missing bucket.
+   */
+  async verifyBucketExists(): Promise<void> {
+    try {
+      await this.s3Client.send(new HeadBucketCommand({ Bucket: this.config.bucket }));
+    } catch (error) {
+      const name = (error as { name?: string }).name;
+      if (name === 'NotFound' || name === 'NoSuchBucket') {
+        throw new StateError(
+          `State bucket '${this.config.bucket}' does not exist. ` +
+            `Run 'cdkd bootstrap' to create it, or specify an existing bucket via ` +
+            `--state-bucket, CDKD_STATE_BUCKET, or cdk.json context.cdkd.stateBucket.`
+        );
+      }
+      throw new StateError(
+        `Failed to verify state bucket '${this.config.bucket}': ${error instanceof Error ? error.message : String(error)}`,
+        error instanceof Error ? error : undefined
+      );
+    }
   }
 
   /**
