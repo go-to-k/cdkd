@@ -602,4 +602,176 @@ describe('DagBuilder', () => {
       expect(dependents).not.toContain('Function');
     });
   });
+
+  describe('custom resource implicit policy dependencies', () => {
+    // A Custom Resource only Ref's its ServiceToken Lambda, so without this
+    // implicit edge the Lambda's inline AWS::IAM::Policy can be in the same
+    // execution level as the Custom Resource — letting the handler invoke
+    // before the policy attachment API returns (AccessDenied race).
+    const buildCustomResourceTemplate = (
+      overrides: Partial<CloudFormationTemplate['Resources']> = {}
+    ): CloudFormationTemplate => ({
+      Resources: {
+        SeederRole: {
+          Type: 'AWS::IAM::Role',
+          Properties: {},
+        },
+        SeederRoleDefaultPolicy: {
+          Type: 'AWS::IAM::Policy',
+          Properties: {
+            Roles: [{ Ref: 'SeederRole' }],
+            PolicyDocument: {},
+          },
+        },
+        SeederFunction: {
+          Type: 'AWS::Lambda::Function',
+          Properties: {
+            Role: { 'Fn::GetAtt': ['SeederRole', 'Arn'] },
+          },
+        },
+        SeederCustomResource: {
+          Type: 'Custom::Seeder',
+          Properties: {
+            ServiceToken: { 'Fn::GetAtt': ['SeederFunction', 'Arn'] },
+          },
+        },
+        ...overrides,
+      },
+    });
+
+    it('adds an implicit edge from Lambda role policy to Custom Resource', () => {
+      const template = buildCustomResourceTemplate();
+      const graph = dagBuilder.buildGraph(template);
+
+      const deps = dagBuilder.getDirectDependencies(graph, 'SeederCustomResource');
+      expect(deps).toContain('SeederRoleDefaultPolicy');
+      expect(deps).toContain('SeederFunction');
+    });
+
+    it('places Custom Resource in a later execution level than role policy', () => {
+      const template = buildCustomResourceTemplate();
+      const graph = dagBuilder.buildGraph(template);
+      const levels = dagBuilder.getExecutionLevels(graph);
+
+      const levelOf = (id: string): number => levels.findIndex((lvl) => lvl.includes(id));
+      expect(levelOf('SeederRoleDefaultPolicy')).toBeGreaterThanOrEqual(0);
+      expect(levelOf('SeederCustomResource')).toBeGreaterThan(levelOf('SeederRoleDefaultPolicy'));
+    });
+
+    it('supports AWS::CloudFormation::CustomResource type', () => {
+      const template = buildCustomResourceTemplate({
+        SeederCustomResource: {
+          Type: 'AWS::CloudFormation::CustomResource',
+          Properties: {
+            ServiceToken: { 'Fn::GetAtt': ['SeederFunction', 'Arn'] },
+          },
+        },
+      });
+      const graph = dagBuilder.buildGraph(template);
+
+      const deps = dagBuilder.getDirectDependencies(graph, 'SeederCustomResource');
+      expect(deps).toContain('SeederRoleDefaultPolicy');
+    });
+
+    it('supports AWS::IAM::ManagedPolicy attached via Roles', () => {
+      const template = buildCustomResourceTemplate({
+        SeederRoleDefaultPolicy: {
+          Type: 'AWS::IAM::ManagedPolicy',
+          Properties: {
+            Roles: [{ Ref: 'SeederRole' }],
+            PolicyDocument: {},
+          },
+        },
+      });
+      const graph = dagBuilder.buildGraph(template);
+
+      const deps = dagBuilder.getDirectDependencies(graph, 'SeederCustomResource');
+      expect(deps).toContain('SeederRoleDefaultPolicy');
+    });
+
+    it('supports AWS::IAM::RolePolicy attached via RoleName', () => {
+      const template = buildCustomResourceTemplate({
+        SeederRoleDefaultPolicy: {
+          Type: 'AWS::IAM::RolePolicy',
+          Properties: {
+            RoleName: { Ref: 'SeederRole' },
+            PolicyDocument: {},
+          },
+        },
+      });
+      const graph = dagBuilder.buildGraph(template);
+
+      const deps = dagBuilder.getDirectDependencies(graph, 'SeederCustomResource');
+      expect(deps).toContain('SeederRoleDefaultPolicy');
+    });
+
+    it('does not add edges from policies attached to unrelated roles', () => {
+      const template = buildCustomResourceTemplate({
+        OtherRole: {
+          Type: 'AWS::IAM::Role',
+          Properties: {},
+        },
+        OtherPolicy: {
+          Type: 'AWS::IAM::Policy',
+          Properties: {
+            Roles: [{ Ref: 'OtherRole' }],
+            PolicyDocument: {},
+          },
+        },
+      });
+      const graph = dagBuilder.buildGraph(template);
+
+      const deps = dagBuilder.getDirectDependencies(graph, 'SeederCustomResource');
+      expect(deps).not.toContain('OtherPolicy');
+    });
+
+    it('skips when ServiceToken is not a Lambda (SNS-backed custom resource)', () => {
+      const template: CloudFormationTemplate = {
+        Resources: {
+          Topic: {
+            Type: 'AWS::SNS::Topic',
+            Properties: {},
+          },
+          SomeRole: {
+            Type: 'AWS::IAM::Role',
+            Properties: {},
+          },
+          SomePolicy: {
+            Type: 'AWS::IAM::Policy',
+            Properties: {
+              Roles: [{ Ref: 'SomeRole' }],
+              PolicyDocument: {},
+            },
+          },
+          SnsBackedCustomResource: {
+            Type: 'Custom::Sns',
+            Properties: {
+              ServiceToken: { Ref: 'Topic' },
+            },
+          },
+        },
+      };
+      const graph = dagBuilder.buildGraph(template);
+
+      const deps = dagBuilder.getDirectDependencies(graph, 'SnsBackedCustomResource');
+      expect(deps).not.toContain('SomePolicy');
+    });
+
+    it('is idempotent when policy already has an explicit edge', () => {
+      const template = buildCustomResourceTemplate({
+        SeederCustomResource: {
+          Type: 'Custom::Seeder',
+          Properties: {
+            ServiceToken: { 'Fn::GetAtt': ['SeederFunction', 'Arn'] },
+          },
+          DependsOn: 'SeederRoleDefaultPolicy',
+        },
+      });
+      const graph = dagBuilder.buildGraph(template);
+
+      const deps = dagBuilder.getDirectDependencies(graph, 'SeederCustomResource');
+      // Explicit DependsOn + implicit edge must not produce duplicates
+      expect(deps.filter((d) => d === 'SeederRoleDefaultPolicy')).toHaveLength(1);
+    });
+  });
 });

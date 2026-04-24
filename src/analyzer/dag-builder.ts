@@ -1,11 +1,17 @@
 import graphlib from 'graphlib';
-import type { CloudFormationTemplate } from '../types/resource.js';
+import type { CloudFormationTemplate, TemplateResource } from '../types/resource.js';
 import { TemplateParser } from './template-parser.js';
 import { getLogger } from '../utils/logger.js';
 import { DependencyError } from '../utils/error-handler.js';
 
 const { Graph, alg } = graphlib;
 type GraphType = graphlib.Graph;
+
+const IAM_ROLE_POLICY_TYPES: ReadonlySet<string> = new Set([
+  'AWS::IAM::Policy',
+  'AWS::IAM::RolePolicy',
+  'AWS::IAM::ManagedPolicy',
+]);
 
 /**
  * Dependency graph builder for CloudFormation resources
@@ -64,6 +70,15 @@ export class DagBuilder {
     }
 
     this.logger.debug(`Dependency graph built: ${resourceIds.length} nodes, ${edgeCount} edges`);
+
+    // Add implicit edges from IAM::Policy (and friends) attached to a Custom
+    // Resource's ServiceToken Lambda's execution role.
+    // WHY: CloudFormation templates only express deps via Ref/GetAtt/DependsOn.
+    // A Custom Resource typically refs only the Lambda (via ServiceToken), not the
+    // inline IAM::Policy that grants the Lambda its runtime permissions. Without this
+    // edge the Custom Resource can run before the policy attachment API returns, so
+    // the handler hits AccessDenied in the middle of deploy.
+    edgeCount += this.addCustomResourcePolicyEdges(graph, template);
 
     // Validate graph is acyclic
     if (!alg.isAcyclic(graph)) {
@@ -239,5 +254,133 @@ export class DagBuilder {
   dependsOn(graph: GraphType, resourceA: string, resourceB: string): boolean {
     const deps = this.getAllDependencies(graph, resourceA);
     return deps.has(resourceB);
+  }
+
+  /**
+   * Add implicit edges from IAM::Policy resources to Custom Resources whose
+   * ServiceToken Lambda's execution role those policies attach to.
+   *
+   * Returns the number of edges added.
+   */
+  private addCustomResourcePolicyEdges(graph: GraphType, template: CloudFormationTemplate): number {
+    const rolePolicies = this.buildRolePoliciesMap(template);
+    if (rolePolicies.size === 0) {
+      return 0;
+    }
+
+    let added = 0;
+    for (const logicalId of this.parser.getResourceIds(template)) {
+      const resource = this.parser.getResource(template, logicalId);
+      if (!resource || !this.isCustomResourceType(resource.Type)) {
+        continue;
+      }
+
+      const serviceToken = (resource.Properties ?? {})['ServiceToken'];
+      const lambdaId = this.extractLogicalIdFromReference(serviceToken);
+      if (!lambdaId) continue;
+
+      const lambdaResource = this.parser.getResource(template, lambdaId);
+      if (!lambdaResource || lambdaResource.Type !== 'AWS::Lambda::Function') {
+        continue;
+      }
+
+      const roleId = this.extractLogicalIdFromReference((lambdaResource.Properties ?? {})['Role']);
+      if (!roleId) continue;
+
+      const policies = rolePolicies.get(roleId);
+      if (!policies) continue;
+
+      for (const policyId of policies) {
+        if (policyId === logicalId) continue;
+        if (!graph.hasNode(policyId)) continue;
+        if (graph.hasEdge(policyId, logicalId)) continue;
+        graph.setEdge(policyId, logicalId);
+        added++;
+        this.logger.debug(
+          `Added implicit edge (custom resource policy): ${policyId} -> ${logicalId}`
+        );
+      }
+    }
+
+    if (added > 0) {
+      this.logger.debug(`Added ${added} implicit edges for custom resource policies`);
+    }
+    return added;
+  }
+
+  private isCustomResourceType(type: string): boolean {
+    return type === 'AWS::CloudFormation::CustomResource' || type.startsWith('Custom::');
+  }
+
+  /**
+   * Build a map of roleLogicalId -> Set<policyLogicalId> by scanning the
+   * template for IAM::Policy / IAM::RolePolicy / IAM::ManagedPolicy resources
+   * that attach to a role by Ref/GetAtt.
+   */
+  private buildRolePoliciesMap(template: CloudFormationTemplate): Map<string, Set<string>> {
+    const map = new Map<string, Set<string>>();
+
+    for (const [policyId, resource] of Object.entries(template.Resources)) {
+      if (!IAM_ROLE_POLICY_TYPES.has(resource.Type)) continue;
+
+      for (const roleId of this.extractAttachedRoleIds(resource)) {
+        let set = map.get(roleId);
+        if (!set) {
+          set = new Set();
+          map.set(roleId, set);
+        }
+        set.add(policyId);
+      }
+    }
+
+    return map;
+  }
+
+  /**
+   * Extract the logical IDs of IAM::Role resources that a policy resource
+   * attaches to. Supports both `Roles: [Ref]` (IAM::Policy / IAM::ManagedPolicy)
+   * and `RoleName: Ref` (IAM::RolePolicy) shapes.
+   */
+  private extractAttachedRoleIds(resource: TemplateResource): string[] {
+    const ids: string[] = [];
+    const props = resource.Properties ?? {};
+
+    const roles = props['Roles'];
+    if (Array.isArray(roles)) {
+      for (const entry of roles) {
+        const id = this.extractLogicalIdFromReference(entry);
+        if (id) ids.push(id);
+      }
+    }
+
+    const roleName = props['RoleName'];
+    const roleNameId = this.extractLogicalIdFromReference(roleName);
+    if (roleNameId) ids.push(roleNameId);
+
+    return ids;
+  }
+
+  /**
+   * Extract a resource logical ID from a direct Ref or Fn::GetAtt expression.
+   * Returns undefined for literals or intrinsics we can't statically resolve
+   * (Fn::Join, Fn::ImportValue, etc.) — callers should skip in that case.
+   */
+  private extractLogicalIdFromReference(value: unknown): string | undefined {
+    if (typeof value !== 'object' || value === null) return undefined;
+    const obj = value as Record<string, unknown>;
+
+    if ('Ref' in obj && typeof obj['Ref'] === 'string') {
+      const ref = obj['Ref'];
+      return ref.startsWith('AWS::') ? undefined : ref;
+    }
+
+    if ('Fn::GetAtt' in obj) {
+      const getAtt = obj['Fn::GetAtt'];
+      if (Array.isArray(getAtt) && typeof getAtt[0] === 'string') {
+        return getAtt[0];
+      }
+    }
+
+    return undefined;
   }
 }
