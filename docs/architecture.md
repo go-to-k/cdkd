@@ -233,6 +233,7 @@ buildDAG(resources: ParsedResource[]): ResourceDAG
 - `DependsOn` attribute
 - `Ref` function (`{ "Ref": "LogicalId" }`)
 - `Fn::GetAtt` function (`{ "Fn::GetAtt": ["LogicalId", "Attribute"] }`)
+- **Implicit edges for Custom Resources**: `AWS::IAM::Policy` / `AWS::IAM::RolePolicy` / `AWS::IAM::ManagedPolicy` resources attached to a Custom Resource's ServiceToken Lambda execution role get an automatic edge to the Custom Resource itself, so the handler can't be invoked before the inline policy attachment has returned (avoids AccessDenied during deploy)
 
 **Determining Parallel Execution Levels**:
 

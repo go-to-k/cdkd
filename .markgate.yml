@@ -1,0 +1,35 @@
+# markgate configuration — https://github.com/go-to-k/markgate
+#
+# Two narrow-scope gates back the pre-commit checks for this repo.
+# Each gate only invalidates when files in its own `include` set change,
+# so a tests-only commit doesn't re-run doc checks and a docs-only
+# commit doesn't re-run typecheck/build/tests.
+#
+# Gates:
+#   check — typecheck/lint/build/unit tests (set by /check and /verify-pr)
+#   docs  — README/CLAUDE.md/docs consistency with src (set by /check-docs and /verify-pr)
+#
+# The PreToolUse hook in .claude/hooks/check-gate.sh verifies BOTH on
+# every `git commit`. Whichever gate's scope was touched must be re-run.
+
+gates:
+  check:
+    hash: files
+    include:
+      - "src/**"
+      - "tests/**"
+      - "package.json"
+      - "pnpm-lock.yaml"
+      - "tsconfig*.json"
+      - "vitest.config.ts"
+      - "build.mjs"
+      - ".eslintrc*"
+      - ".prettierrc*"
+
+  docs:
+    hash: files
+    include:
+      - "src/**"
+      - "docs/**"
+      - "README.md"
+      - "CLAUDE.md"
