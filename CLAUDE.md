@@ -238,6 +238,7 @@ registry.register('AWS::IAM::Role', new IAMRoleProvider());
 - Scans template to detect `Ref` / `Fn::GetAtt` / `DependsOn`
 - Builds DAG with graphlib
 - Determines execution order with topological sort
+- **Implicit edge for Custom Resources**: any `AWS::IAM::Policy` / `AWS::IAM::RolePolicy` / `AWS::IAM::ManagedPolicy` attached to a Custom Resource's ServiceToken Lambda execution role automatically gets an edge to the Custom Resource, preventing the handler from being invoked before inline policy attachment returns (avoids mid-deploy AccessDenied race)
 
 ## Testing Strategy
 
