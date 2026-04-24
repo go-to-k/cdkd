@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
 # check-gate.sh
 #
-# PreToolUse hook. Blocks `git commit` unless the /check skill has
-# recorded a markgate marker for the current content state. Emitted
-# inline so Claude reads the failure reason and re-runs /check.
+# PreToolUse hook. Blocks `git commit` unless both the `check` and
+# `docs` markgate markers are fresh for the current content state.
+# Each gate is scoped (see .markgate.yml) so edits to tests-only
+# invalidate only `check`, and edits to docs-only invalidate only
+# `docs`. Error messages identify which gate needs re-running.
 
 set -u
 
@@ -32,9 +34,23 @@ else
   exit 2
 fi
 
-if "${markgate[@]}" verify check >/dev/null 2>&1; then
+"${markgate[@]}" verify check >/dev/null 2>&1
+check_status=$?
+
+"${markgate[@]}" verify docs >/dev/null 2>&1
+docs_status=$?
+
+if [ "$check_status" -eq 0 ] && [ "$docs_status" -eq 0 ]; then
   exit 0
 fi
 
-echo "Blocked by check-gate: run /check first (or re-run if content changed since), then retry the commit." >&2
+msg="Blocked by check-gate:"
+if [ "$check_status" -ne 0 ]; then
+  msg="$msg run /check first (or re-run if src/tests/config changed);"
+fi
+if [ "$docs_status" -ne 0 ]; then
+  msg="$msg run /check-docs first (or re-run if src/docs/README/CLAUDE.md changed);"
+fi
+msg="$msg then retry the commit."
+echo "$msg" >&2
 exit 2

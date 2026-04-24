@@ -77,10 +77,11 @@ If any fail, list the issues to fix.
 
 ## Final Step
 
-After all checks pass, record the commit-gate marker via [markgate](https://github.com/go-to-k/markgate) so the PreToolUse `check-gate` hook allows the next `git commit` — `/verify-pr` is a superset of `/check`, so its success implies `/check` success. cdkd pins markgate via mise, so use `mise exec` to avoid PATH issues when shims aren't active:
+After all checks pass, record BOTH commit-gate markers via [markgate](https://github.com/go-to-k/markgate) so the PreToolUse `check-gate` hook allows the next `git commit`. `/verify-pr` is a superset of both `/check` (code correctness) and `/check-docs` (docs consistency), so its success implies both. cdkd pins markgate via mise, so use `mise exec` to avoid PATH issues when shims aren't active:
 
 ```bash
 mise exec -- markgate set check
+mise exec -- markgate set docs
 ```
 
 Then, if there are uncommitted changes (e.g., lint fixes, doc updates made during this run), commit them and push to the remote. This ensures the remote branch is always up to date when reporting "PR is ready to merge."

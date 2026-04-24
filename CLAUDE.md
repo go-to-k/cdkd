@@ -376,10 +376,13 @@ See [docs/provider-development.md](docs/provider-development.md) for details.
 
 - **When adding new functionality or fixing bugs**: Always add corresponding unit tests. Do not wait to be asked.
 - **After modifying source code**: Always run `pnpm run build` before telling the user to test. The user runs cdkd via `node dist/cli.js`, so source changes without a build have no effect.
-- **Before every commit**: Run `/check` (typecheck, lint, build, tests). A PreToolUse hook (`.claude/hooks/check-gate.sh`) blocks `git commit` unless `/check` has recorded a matching marker via [markgate](https://github.com/go-to-k/markgate) — if you see "Blocked by check-gate", run `/check` and retry. Any edits after `/check` invalidate the marker, so re-run it before committing again. Install markgate via `mise install` at the repo root (see CONTRIBUTING.md).
+- **Before every commit**: Two markgate gates guard `git commit` via `.claude/hooks/check-gate.sh`. Both must be fresh:
+  - `check` — recorded by `/check` (typecheck, lint, build, tests). Scope: `src/**`, `tests/**`, build/test configs (see `.markgate.yml`). Only invalidated by changes in that scope.
+  - `docs` — recorded by `/check-docs` (README.md / CLAUDE.md / docs/ consistency with src). Scope: `src/**`, `docs/**`, `README.md`, `CLAUDE.md`. Only invalidated by changes in that scope.
+
+  A tests-only commit only needs `/check`; a docs-only commit only needs `/check-docs`; a src edit needs both. If you see "Blocked by check-gate", the message names exactly which skill to re-run. `/verify-pr` refreshes both markers in one shot. Install markgate via `mise install` at the repo root (see CONTRIBUTING.md).
 - **Never commit or push directly to `main`**: All changes must land via a feature branch + PR. Before committing, run `git switch -c <branch>` (e.g., `fix/xxx`, `feat/xxx`, `docs/xxx`). A PreToolUse hook (`.claude/hooks/branch-gate.sh`) blocks `git commit` and `git push` when the current branch is `main` or `master` — if you see "Blocked by branch-gate", create a feature branch and retry.
 - **Before creating or merging a PR**: Run `/verify-pr` (adds CI status, docs consistency, AWS resource cleanup, code review on top of `/check`)
-- **After changing source code that affects behavior or public API**: Run `/check-docs` to verify README.md, CLAUDE.md, and docs/ are consistent with the changes
 - **When running integration tests**: Use `/run-integ` with the appropriate test name (e.g., `/run-integ lambda`)
 - **After running integration tests**: Verify no leftover AWS resources remain (`aws s3 ls s3://cdkd-state-{accountId}-{region}/stacks/` should return empty or error)
 - **After fixing documentation or code**: Commit to a feature branch (not `main`) and push immediately. Do not leave uncommitted changes. Before reporting completion to the user, always run `git status` to verify nothing is uncommitted and that you are not on `main`.

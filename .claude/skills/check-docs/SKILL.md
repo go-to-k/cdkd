@@ -38,6 +38,18 @@ You are checking whether documentation is up to date with recent code changes in
 
 5. **Fix the issues** if the user agrees, or ask for confirmation first.
 
+## Commit-gate marker (on success only)
+
+After documentation is verified consistent (either no issues were found, or all issues were fixed), record the `docs` markgate marker so the PreToolUse `check-gate` hook (see `.claude/hooks/check-gate.sh`) allows the next `git commit`. The `docs` gate is scoped to `src/**`, `docs/**`, `README.md`, and `CLAUDE.md` via `.markgate.yml`, so it only invalidates when one of those is edited.
+
+Run from the repo root (use `mise exec` to avoid PATH issues when shims aren't active):
+
+```bash
+mise exec -- markgate set docs
+```
+
+Skip this step if issues remain unfixed — a stale or missing marker correctly forces the user (or Claude) to re-run `/check-docs` after fixing docs.
+
 ## Important
 
 - Do NOT add documentation that doesn't exist yet (don't create new doc files)
