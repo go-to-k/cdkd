@@ -396,7 +396,7 @@ async deploy(options: DeployOptions): Promise<void> {
   6. Calculate diff
   7. Display execution plan
   8. Exit here if --dry-run
-  9. Execute in parallel by level
+  9. Execute via event-driven DAG dispatch
      - CREATE: Create resource via provider
      - UPDATE: Generate JSON Patch → Provider update
      - DELETE: Delete in reverse dependency order
@@ -406,16 +406,26 @@ async deploy(options: DeployOptions): Promise<void> {
 }
 ```
 
-**Parallel Execution**:
+**Event-driven Execution**:
+
+Each resource is dispatched as soon as ALL of its own dependencies complete —
+it does not wait for unrelated siblings in the same DAG level to finish.
+A bounded concurrency limit (`--concurrency`, default 10) caps the number of
+in-flight provisioning operations.
 
 ```typescript
-for (const level of executionLevels) {
-  await Promise.all(
-    level.resources.map(resource =>
-      this.provisionResource(resource)
-    )
-  )
+const executor = new DagExecutor();
+for (const id of createUpdateIds) {
+  executor.add({
+    id,
+    dependencies: new Set(dagBuilder.getDirectDependencies(dag, id)),
+    state: 'pending',
+    data: changes.get(id),
+  });
 }
+await executor.execute(concurrency, async (node) => {
+  await this.provisionResource(node.id, node.data);
+});
 ```
 
 **Error Handling**:
@@ -753,7 +763,7 @@ Each layer has clear responsibilities
 | ---- | -------------- | ---- |
 | **Small Stack (5 resources)** | 60-90 seconds | 15-25 seconds |
 | **Medium Stack (20 resources)** | 3-5 minutes | 40-80 seconds |
-| **Parallel Execution** | Mainly sequential | Fully parallel by DAG level |
+| **Parallel Execution** | Mainly sequential | Event-driven DAG dispatch (each resource starts as soon as its own deps complete) |
 | **Rollback** | Automatic | Manual (recover from state) |
 
 ### Bottlenecks
@@ -761,7 +771,7 @@ Each layer has clear responsibilities
 1. **Asset Publishing**: S3 upload of Lambda code (seconds to tens of seconds)
 2. **Cloud Control API Polling**: CC API requires async polling for resource operations (mitigated by using SDK Providers for common types)
 3. **Cloud Control API Rate Limits**: Limits per resource type
-4. **Dependency Chains**: More levels reduce parallelism
+4. **Dependency Chains**: Long critical paths through the DAG cap parallelism
 
 ## Security Considerations
 

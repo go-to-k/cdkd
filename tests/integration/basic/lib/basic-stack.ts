@@ -1,6 +1,7 @@
 import * as cdk from 'aws-cdk-lib';
 import { Construct } from 'constructs';
 import * as s3 from 'aws-cdk-lib/aws-s3';
+import * as sqs from 'aws-cdk-lib/aws-sqs';
 import * as ssm from 'aws-cdk-lib/aws-ssm';
 
 /**
@@ -73,5 +74,18 @@ export class BasicStack extends cdk.Stack {
       value: bucket.bucketArn,
       description: 'ARN of the S3 bucket',
     });
+
+    // Inject a deliberately-failing resource for rollback testing.
+    // SQS messageRetentionPeriod must be in [60, 1209600]; 9999999 is invalid
+    // and AWS rejects CreateQueue. The good resources above succeed in parallel
+    // (event-driven dispatch), so this exercises the "sibling success then
+    // rollback" path against real AWS — matches the unit-test scenario in
+    // tests/unit/deployment/rollback.test.ts.
+    if (process.env.CDKD_TEST_FAIL === 'true') {
+      new sqs.CfnQueue(this, 'FailingQueue', {
+        queueName: `${this.stackName}-failing-queue`,
+        messageRetentionPeriod: 9999999,
+      });
+    }
   }
 }

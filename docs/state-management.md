@@ -400,24 +400,27 @@ async deploy(stackName: string) {
     // 7. Calculate diff
     const diffs = diffCalculator.calculate(currentState, template);
 
-    // 8. Execute resources (parallel by level)
+    // 8. Execute resources (event-driven DAG dispatch)
     const newResourceStates = {};
-    for (const level of dag.levels) {
-      await Promise.all(
-        level.resources.map(async (resource) => {
-          const result = await provisionResource(resource, diffs);
-
-          // Record result to state
-          newResourceStates[resource.logicalId] = {
-            physicalId: result.physicalId,
-            resourceType: resource.resourceType,
-            properties: resource.properties,
-            attributes: result.attributes,
-            dependencies: resource.dependencies,
-          };
-        })
-      );
+    const executor = new DagExecutor();
+    for (const resource of resources) {
+      executor.add({
+        id: resource.logicalId,
+        dependencies: new Set(resource.dependencies),
+        state: 'pending',
+        data: resource,
+      });
     }
+    await executor.execute(concurrency, async (node) => {
+      const result = await provisionResource(node.data, diffs);
+      newResourceStates[node.id] = {
+        physicalId: result.physicalId,
+        resourceType: node.data.resourceType,
+        properties: node.data.properties,
+        attributes: result.attributes,
+        dependencies: node.data.dependencies,
+      };
+    });
 
     // 9. Resolve Outputs
     const outputs = resolveOutputs(template.Outputs, newResourceStates);
@@ -449,25 +452,24 @@ async deploy(stackName: string) {
 cdkd catches errors per resource and saves **only successful resources** to state.
 
 ```typescript
-// deploy-engine.ts
+// deploy-engine.ts (event-driven DAG dispatch)
 const newResourceStates = {};
+const executor = new DagExecutor();
+// ... add nodes ...
 
-for (const level of dag.levels) {
-  const results = await Promise.allSettled(
-    level.resources.map(resource => provisionResource(resource))
-  );
-
-  results.forEach((result, index) => {
-    if (result.status === 'fulfilled') {
-      // Record only successful resources
-      const resource = level.resources[index];
-      newResourceStates[resource.logicalId] = result.value;
-    } else {
-      // Log failures
-      logger.error(`Failed to provision ${resource.logicalId}:`, result.reason);
-    }
+try {
+  await executor.execute(concurrency, async (node) => {
+    const result = await provisionResource(node.data);
+    // Record successful resource immediately (per-resource state save)
+    newResourceStates[node.id] = result;
   });
+} catch (error) {
+  // First failure aborts dispatch — downstream nodes are auto-skipped.
+  // Already-completed resources remain in newResourceStates for rollback.
+  logger.error('Provisioning failed:', error);
+  throw error;
 }
+// (placeholder — see actual code for the full rollback path)
 
 // Save only successful state
 await s3StateBackend.saveState(stackName, newState);

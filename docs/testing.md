@@ -391,6 +391,26 @@ CDKD_TEST_UPDATE=true node ../../../../dist/cli.js deploy CdkdBasicExample \
 
 The `CDKD_TEST_UPDATE=true` environment variable adds an additional tag to the S3 bucket without modifying the code. This allows testing UPDATE operations repeatedly.
 
+### Failure injection (CDKD_TEST_FAIL)
+
+To verify rollback against real AWS, the `basic` stack supports a third toggle:
+
+```bash
+# Deploy with a deliberately-failing SQS Queue injected.
+# The good resources (S3 bucket, SSM Document) succeed in parallel;
+# the SQS Queue's invalid MessageRetentionPeriod is rejected by AWS,
+# triggering rollback that deletes the already-completed siblings.
+CDKD_TEST_FAIL=true node ../../../../dist/cli.js deploy CdkdBasicExample \
+  --app "npx ts-node --prefer-ts-exts bin/app.ts" \
+  --state-bucket ${STATE_BUCKET} \
+  --region ${AWS_REGION}
+
+# Expected: deploy fails with rollback log, and `aws s3 ls
+# s3://${STATE_BUCKET}/stacks/` shows no leftover state.
+```
+
+Use this to sanity-check the dispatcher's rollback path against AWS without writing a separate failing CDK app each time.
+
 ### Method B: Manual code changes
 
 Alternatively, modify the stack code directly and re-deploy to test updates.

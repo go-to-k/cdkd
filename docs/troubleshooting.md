@@ -633,7 +633,7 @@ aws iam get-role --role-name cdk-hnb659fds-deploy-role-123456789012-us-east-1
 
 #### Causes
 
-- Dependencies are serialized (many DAG levels)
+- Long dependency chains in the DAG (the critical path caps how fast a deploy can finish, even with event-driven dispatch)
 - Cloud Control API rate limits
 - Asset publishing takes time
 
@@ -709,17 +709,17 @@ Implement provider that uses SDK directly instead of Cloud Control API.
 
 ### Overview
 
-Orphaned resources are AWS resources that exist in your account but are not tracked in cdkd's state file. This can happen when a deployment fails partway through a DAG level — some resources in that level may have been successfully created while others failed.
+Orphaned resources are AWS resources that exist in your account but are not tracked in cdkd's state file. This can happen when a deployment fails partway through — some resources may have been successfully created while others failed in flight.
 
 ### How cdkd Prevents Orphans
 
 cdkd uses a multi-layered approach to prevent orphaned resources:
 
-1. **Per-resource in-memory state update**: Each resource updates the in-memory state (`newResources`) immediately upon successful provisioning, even before the entire DAG level completes.
+1. **Per-resource in-memory state update**: Each resource updates the in-memory state (`newResources`) immediately upon successful provisioning.
 
-2. **Per-level partial state save**: After each DAG level completes successfully, state is persisted to S3. This prevents orphans if the process crashes between levels.
+2. **Per-resource partial state save**: After each successful resource provision, state is persisted to S3 (serialized via a save chain to avoid ETag conflicts). This prevents orphans if the process crashes mid-deploy.
 
-3. **Pre-rollback state save**: If any resource in a level fails, cdkd saves the current in-memory state (including all successfully provisioned resources from the failed level) to S3 **before** attempting rollback. This ensures that even resources created in the same level as the failure are tracked.
+3. **Pre-rollback state save**: If any resource fails, cdkd saves the current in-memory state (including all successfully provisioned resources up to that point) to S3 **before** attempting rollback. This ensures that resources completed concurrently with the failed one are still tracked.
 
 4. **Post-rollback state save**: After rollback completes (or is skipped with `--no-rollback`), state is saved again to reflect the rolled-back resource state.
 
