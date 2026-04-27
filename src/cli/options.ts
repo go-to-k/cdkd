@@ -23,17 +23,23 @@ export const commonOptions = [
   new Option('--verbose', 'Enable verbose logging').default(false),
   new Option('--region <region>', 'AWS region'),
   new Option('--profile <profile>', 'AWS profile'),
+  new Option(
+    '-y, --yes',
+    'Automatically answer interactive prompts with the recommended response (e.g. confirm destroy)'
+  ).default(false),
 ];
 
 /**
  * App options
  *
- * --app is optional: falls back to CDKD_APP env var, then cdk.json "app" field
+ * --app is optional: falls back to CDKD_APP env var, then cdk.json "app" field.
+ * Accepts either a shell command (e.g. "npx ts-node app.ts") or a path to a
+ * pre-synthesized cloud assembly directory (e.g. "cdk.out").
  */
 export const appOptions = [
   new Option(
-    '--app <command>',
-    'CDK app command (e.g., "npx ts-node app.ts"). Falls back to cdk.json or CDKD_APP env'
+    '-a, --app <command>',
+    'CDK app command (e.g., "npx ts-node app.ts") or path to a pre-synthesized cloud assembly directory. Falls back to cdk.json or CDKD_APP env'
   ),
   new Option('--output <path>', 'Output directory for synthesis').default('cdk.out'),
 ];
@@ -101,4 +107,8 @@ export const contextOptions = [
 /**
  * Destroy options
  */
-export const destroyOptions = [new Option('--force', 'Skip confirmation prompt').default(false)];
+export const destroyOptions = [
+  new Option('-f, --force', 'Do not ask for confirmation before destroying the stacks').default(
+    false
+  ),
+];

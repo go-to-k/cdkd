@@ -34,6 +34,7 @@ async function destroyCommand(
     all?: boolean;
     region?: string;
     profile?: string;
+    yes: boolean;
     force: boolean;
     verbose: boolean;
     context?: string[];
@@ -181,8 +182,8 @@ async function destroyCommand(
         logger.info(`  - ${logicalId} (${resource.resourceType})`);
       }
 
-      // 4. Confirm (unless --force)
-      if (!options.force) {
+      // 4. Confirm (unless -y/--yes or --force)
+      if (!options.yes && !options.force) {
         const rl = readline.createInterface({
           input: process.stdin,
           output: process.stdout,

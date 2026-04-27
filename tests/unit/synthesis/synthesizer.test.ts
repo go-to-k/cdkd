@@ -55,8 +55,12 @@ vi.mock('@aws-sdk/client-sts', () => ({
 }));
 
 // Mock node:fs
+const mockExistsSync = vi.fn();
+const mockStatSync = vi.fn();
 vi.mock('node:fs', () => ({
   mkdirSync: vi.fn(),
+  existsSync: (...args: unknown[]) => mockExistsSync(...args),
+  statSync: (...args: unknown[]) => mockStatSync(...args),
 }));
 
 // Mock logger
@@ -91,6 +95,9 @@ describe('Synthesizer', () => {
     mockContextStoreLoad.mockReturnValue({});
     mockLoadCdkJson.mockReturnValue(null);
     mockLoadUserCdkJson.mockReturnValue(null);
+    // Default: --app is treated as a shell command (no existing directory)
+    mockExistsSync.mockReturnValue(false);
+    mockStatSync.mockReturnValue({ isDirectory: () => false });
   });
 
   describe('context merge order', () => {
@@ -194,6 +201,33 @@ describe('Synthesizer', () => {
 
       const passedContext = mockExecute.mock.calls[0]![0].context as Record<string, unknown>;
       expect(passedContext['aws:cdk:enable-path-metadata']).toBe(false);
+    });
+
+    it('should skip subprocess execution when --app points at an existing directory', async () => {
+      mockExistsSync.mockReturnValue(true);
+      mockStatSync.mockReturnValue({ isDirectory: () => true });
+      mockReadManifest.mockReturnValue({ version: '38.0.0', artifacts: {} });
+      mockGetAllStacks.mockReturnValue([]);
+
+      const result = await synthesizer.synthesize({ app: 'cdk.out' });
+
+      expect(mockExecute).not.toHaveBeenCalled();
+      expect(mockReadManifest).toHaveBeenCalledTimes(1);
+      expect(result.assemblyDir).toMatch(/cdk\.out$/);
+    });
+
+    it('should pass through pre-synthesized assembly even when manifest reports missing context (CDK CLI parity)', async () => {
+      mockExistsSync.mockReturnValue(true);
+      mockStatSync.mockReturnValue({ isDirectory: () => true });
+      mockReadManifest.mockReturnValue({
+        version: '38.0.0',
+        artifacts: {},
+        missing: [{ key: 'foo', provider: 'availability-zones', props: {} }],
+      });
+      mockGetAllStacks.mockReturnValue([]);
+
+      await expect(synthesizer.synthesize({ app: 'cdk.out' })).resolves.toBeDefined();
+      expect(mockExecute).not.toHaveBeenCalled();
     });
 
     it('should pass cdk.json feature flags to CDK app', async () => {

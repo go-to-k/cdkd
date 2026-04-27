@@ -99,6 +99,8 @@ Reproduce with `./tests/benchmark/run-benchmark.sh all`. See [tests/benchmark/RE
    └── Initialize AWS clients
 
 2. Synthesis (self-implemented, no CDK CLI dependency)
+   ├── Short-circuit: if --app is an existing directory, treat it as a
+   │   pre-synthesized cloud assembly and skip the steps below
    ├── Load context (merge order, later wins):
    │   ├── CDK defaults (path-metadata, asset-metadata, version-reporting, bundling-stacks)
    │   ├── ~/.cdk.json "context" field (user defaults)
@@ -363,6 +365,9 @@ cdkd bootstrap \
 
 # Synthesize only
 cdkd synth --app "npx ts-node app.ts"
+
+# Deploy from a pre-synthesized cloud assembly directory
+cdkd deploy --app cdk.out
 
 # Deploy (single stack auto-detected, reads --app from cdk.json)
 cdkd deploy
