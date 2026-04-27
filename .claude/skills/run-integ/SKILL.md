@@ -27,8 +27,13 @@ Run integration tests against a real AWS account. These tests deploy actual AWS 
    - Navigate to `tests/integration/<test-name>/`
    - Ensure dependencies: `npm install` if node_modules doesn't exist
    - Run synth: `node ../../../dist/cli.js synth --region us-east-1`
-   - Run deploy: `node ../../../dist/cli.js deploy --region us-east-1 --state-bucket <bucket> --verbose`
-   - Run destroy: `node ../../../dist/cli.js destroy --region us-east-1 --state-bucket <bucket> --force`
+   - **Detect multi-stack apps**: read the synth output. If it lists more
+     than one stack (e.g. `multi-stack-deps`, `composite-stack`,
+     `cross-stack-references`), pass `--all` to deploy and destroy.
+     Without `--all`, deploy/destroy will fail with `Multiple stacks
+     found: ... Specify stack name(s) or use --all`.
+   - Run deploy: `node ../../../dist/cli.js deploy [--all] --region us-east-1 --state-bucket <bucket> --verbose`
+   - Run destroy: `node ../../../dist/cli.js destroy [--all] --region us-east-1 --state-bucket <bucket> --force`
 
 5. **Verify cleanup**:
    - Check `aws s3 ls s3://<bucket>/stacks/ --region us-east-1` to confirm no leftover state
