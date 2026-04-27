@@ -51,9 +51,33 @@ Run each check and report pass/fail:
      - Logic errors or unhandled edge cases
      - Unnecessary changes (reverted code still in diff, dead code, unrelated changes)
      - Inconsistencies between changed files
-   - Verify PR title/body accurately reflect the actual diff (not stale commit messages)
    - Verify all callers of changed functions handle the new behavior
    - Verify type definitions are consistent with implementation
+
+9. **PR body freshness** (skip if no PR exists yet — `/create-pr` will write it from scratch)
+   - When a PR has follow-up commits after creation, the body authored at PR-create time often goes stale (mentions reverted features, removed checks, or wrong rationale). Detect and fix it.
+   - Commands:
+     - `gh pr view <PR> --json commits -q '.commits | length'` — commit count on the PR
+     - `git log main..HEAD --oneline | wc -l` — commit count locally
+     - If they match and >1, the PR has been iterated on; the initial body is almost certainly stale
+   - Read the current body (`gh pr view <PR> --json body -q .body`) and compare against the actual final diff (`git diff main...HEAD`). Flag any of:
+     - Bullets describing behavior that was reverted in a later commit
+     - Bullets describing checks/validations the code no longer performs
+     - File:line citations that no longer exist
+     - Wording that contradicts the current README.md / CLAUDE.md
+   - If stale, rewrite the body and patch via:
+     ```bash
+     # Write desired body to a file (avoids shell escaping issues with backticks)
+     cat > /tmp/pr-body.md <<'EOF'
+     ## Summary
+     ...
+     ## Test plan
+     ...
+     EOF
+     gh api repos/{owner}/{repo}/pulls/{number} -X PATCH --field "body=@/tmp/pr-body.md" -q '.html_url'
+     ```
+     Note: `gh pr edit --body` may fail with "Projects (classic) is being deprecated" — fall back to the `gh api PATCH` form above.
+   - Verify with `gh pr view <PR> --json body -q .body | head -5` that backticks and special chars rendered correctly.
 
 ## Output
 
@@ -71,6 +95,7 @@ Present results as a table:
 | docs consistency | pass/fail |
 | leftover resources | none/found |
 | code review | pass/issues found |
+| PR body freshness | up-to-date/stale (updated)/n-a (no PR yet) |
 
 If all pass, confirm "PR is ready to merge."
 If any fail, list the issues to fix.
