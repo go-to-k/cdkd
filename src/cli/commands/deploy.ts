@@ -46,6 +46,7 @@ async function deployCommand(
     rollback: boolean;
     wait: boolean;
     exclusively: boolean;
+    yes: boolean;
     verbose: boolean;
     context?: string[];
   }

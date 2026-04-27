@@ -187,7 +187,7 @@ registry.register('AWS::IAM::Role', new IAMRoleProvider());
 
 ### 3. CLI Configuration Resolution
 
-- `--app` is optional: falls back to `CDKD_APP` env var, then `cdk.json` `"app"` field
+- `--app` (`-a`) is optional: falls back to `CDKD_APP` env var, then `cdk.json` `"app"` field. Accepts either a shell command (`"npx ts-node app.ts"`) or a path to a pre-synthesized cloud assembly directory (`cdk.out`); when a directory is given, synthesis is skipped and the manifest is read directly.
 - `--state-bucket` is optional: falls back to `CDKD_STATE_BUCKET` env var, then `cdk.json` `context.cdkd.stateBucket`
 - `--context` / `-c` is optional: accepts `key=value` pairs (repeatable), merged with cdk.json context (CLI takes precedence)
 - Stack names are positional arguments: `cdkd deploy MyStack` (not `--stack-name`)
@@ -195,6 +195,7 @@ registry.register('AWS::IAM::Role', new IAMRoleProvider());
 - Wildcard support: `cdkd deploy 'My*'`
 - Single stack auto-detected (no stack name needed)
 - Concurrency options: `--concurrency` (resource ops, default 10), `--stack-concurrency` (stacks, default 4), `--asset-publish-concurrency` (S3+ECR, default 8), `--image-build-concurrency` (Docker builds, default 4)
+- `-y` / `--yes` is a global flag (CDK CLI parity) that auto-confirms interactive prompts (e.g. `destroy`); `cdkd destroy` also accepts `--force` as an alias for backwards-compatibility
 - Implemented in `src/cli/config-loader.ts`
 
 ### 4. Custom Resources

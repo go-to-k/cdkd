@@ -1,4 +1,4 @@
-import { mkdirSync } from 'node:fs';
+import { existsSync, mkdirSync, statSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { GetCallerIdentityCommand, STSClient } from '@aws-sdk/client-sts';
 import { AppExecutor } from './app-executor.js';
@@ -69,6 +69,23 @@ export class Synthesizer {
    * 5. Return assembly with stacks
    */
   async synthesize(options: SynthesisOptions): Promise<SynthesisResult> {
+    // CDK CLI compatibility: if --app points at an existing directory, treat it
+    // as a pre-synthesized cloud assembly and skip subprocess execution.
+    const appPath = resolve(options.app);
+    if (existsSync(appPath) && statSync(appPath).isDirectory()) {
+      this.logger.debug(`Using pre-synthesized cloud assembly at ${appPath}`);
+      const manifest = this.assemblyReader.readManifest(appPath);
+      if (manifest.missing && manifest.missing.length > 0) {
+        throw new SynthesisError(
+          `Pre-synthesized assembly at ${appPath} has unresolved context. ` +
+            'Re-synthesize with the CDK CLI before pointing --app at the assembly directory.'
+        );
+      }
+      const stacks = this.assemblyReader.getAllStacks(appPath, manifest);
+      this.logger.debug(`Loaded ${stacks.length} stack(s) from pre-synthesized assembly`);
+      return { manifest, assemblyDir: appPath, stacks };
+    }
+
     const outputDir = resolve(options.output || 'cdk.out');
 
     // Ensure output directory exists
