@@ -191,6 +191,31 @@ describe('DagExecutor', () => {
     expect(ran).toEqual(['X']);
   });
 
+  it('leaves no pending nodes when cancellation lands AFTER all nodes already completed', async () => {
+    // Simulates SIGINT firing right at the end of a deploy: every node already
+    // completed, then cancelled() flips. The executor must resolve cleanly with
+    // no nodes left pending — caller can use values() to detect that nothing
+    // was actually interrupted.
+    const exec = new DagExecutor<null>();
+    exec.add(node('A'));
+    exec.add(node('B', ['A']));
+
+    let cancelledFlag = false;
+    const ran: string[] = [];
+    await exec.execute(
+      4,
+      async (n) => {
+        ran.push(n.id);
+        if (n.id === 'B') cancelledFlag = true; // last node — flip after it runs
+      },
+      () => cancelledFlag
+    );
+
+    expect(ran).toEqual(['A', 'B']);
+    expect([...exec.values()].every((n) => n.state === 'completed')).toBe(true);
+    expect([...exec.values()].some((n) => n.state === 'pending')).toBe(false);
+  });
+
   it('stops dispatching when cancelled() returns true and resolves cleanly after drain', async () => {
     const exec = new DagExecutor<null>();
     exec.add(node('A'));

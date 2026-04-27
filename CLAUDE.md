@@ -265,6 +265,16 @@ registry.register('AWS::IAM::Role', new IAMRoleProvider());
 - Allows testing UPDATE operations without modifying code
 - JSON Patch (RFC 6902) verified working for S3, Lambda, IAM resources
 
+### Rollback Testing (failure injection)
+
+- Environment variable `CDKD_TEST_FAIL=true` injects a deliberately-failing
+  resource (an `AWS::SQS::Queue` with an out-of-range `MessageRetentionPeriod`)
+  into the `basic` stack
+- Verifies against real AWS that already-completed siblings get rolled back
+  when one resource fails: `CDKD_TEST_FAIL=true cdkd deploy CdkdBasicExample`
+- After rollback, S3 and SSM Document should both be deleted and state file
+  should be empty
+
 ## Common Development Tasks
 
 ### Adding a New SDK Provider

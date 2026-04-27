@@ -445,10 +445,13 @@ export class DeployEngine {
           await saveChain;
         }
 
-        // If SIGINT fired during dispatch but no provision threw, the executor
-        // resolves cleanly with pending nodes. Translate that into an explicit
-        // interruption error so the catch path can save partial state + rollback.
-        if (this.interrupted) {
+        // If SIGINT fired AND there is still un-provisioned work (some nodes
+        // remained pending because dispatch was cancelled), surface it as an
+        // explicit interruption so the catch path saves partial state.
+        // If every node already completed before SIGINT landed, treat the deploy
+        // as fully successful — matches the prior level-loop's "loop exits, no
+        // check" behaviour at the very end of execution.
+        if (this.interrupted && this.hasPending(createUpdateExecutor)) {
           throw new InterruptedError();
         }
       }
@@ -511,7 +514,7 @@ export class DeployEngine {
           await saveChain;
         }
 
-        if (this.interrupted) {
+        if (this.interrupted && this.hasPending(deleteExecutor)) {
           throw new InterruptedError();
         }
       }
@@ -1227,6 +1230,18 @@ export class DeployEngine {
    * must finish deleting before X starts — i.e., Y depends on X (or is otherwise
    * required to vanish first per implicit type rules).
    */
+  /**
+   * Returns true if the executor still has un-started pending nodes —
+   * used to distinguish "SIGINT cancelled real work" from "SIGINT landed
+   * after all nodes already completed" (the latter should not error).
+   */
+  private hasPending<T>(executor: DagExecutor<T>): boolean {
+    for (const node of executor.values()) {
+      if (node.state === 'pending') return true;
+    }
+    return false;
+  }
+
   private buildDeletionDependencies(
     deleteIds: Set<string>,
     state: StackState
