@@ -78,6 +78,7 @@ describe('DeployEngine - Safety Net (CC API Fallback)', () => {
   let mockDagBuilder: {
     buildGraph: ReturnType<typeof vi.fn>;
     getExecutionLevels: ReturnType<typeof vi.fn>;
+    getDirectDependencies: ReturnType<typeof vi.fn>;
   };
 
   let mockDiffCalculator: {
@@ -145,6 +146,7 @@ describe('DeployEngine - Safety Net (CC API Fallback)', () => {
     mockDagBuilder = {
       buildGraph: vi.fn().mockReturnValue({}),
       getExecutionLevels: vi.fn().mockReturnValue([['TestResource']]),
+      getDirectDependencies: vi.fn().mockReturnValue([]),
     };
 
     mockDiffCalculator = {

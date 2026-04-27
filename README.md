@@ -78,7 +78,7 @@ Reproduce with `./tests/benchmark/run-benchmark.sh all`. See [tests/benchmark/RE
 │ cdkd Engine     │
 │ - DAG Analysis  │  Dependency graph construction
 │ - Diff Calc     │  Compare with existing resources
-│ - Parallel Exec │  Deploy by levels
+│ - Parallel Exec │  Event-driven dispatch
 └────────┬────────┘
          │
     ┌────┴────┐
@@ -134,10 +134,11 @@ Reproduce with `./tests/benchmark/run-benchmark.sh all`. See [tests/benchmark/RE
    │   ├── Build DAG from template (Ref/Fn::GetAtt/DependsOn)
    │   ├── Calculate diff (CREATE/UPDATE/DELETE)
    │   ├── Resolve intrinsic functions (Ref, Fn::Sub, Fn::Join, etc.)
-   │   ├── Execute by levels (parallel within each level):
+   │   ├── Execute via event-driven DAG dispatch (a resource starts as
+   │   │   soon as ALL of its own deps complete; no level barrier):
    │   │   ├── SDK Providers (direct API calls, preferred)
    │   │   └── Cloud Control API (fallback, async polling)
-   │   ├── Save state after each level (partial state save)
+   │   ├── Save state after each successful resource (partial state save)
    │   └── Release lock
    └── synth does NOT publish assets or deploy (deploy only)
 ```
@@ -459,7 +460,7 @@ LambdaStack
 ✓ Deployed LambdaStack (4 resources, 7.2s)
 ```
 
-Resources without dependencies (ServiceRole and Table) are created in parallel.
+Resources are dispatched as soon as their own dependencies complete (event-driven DAG). ServiceRole and Table run in parallel; DefaultPolicy starts the moment ServiceRole is done — without waiting for Table — and Handler starts the moment DefaultPolicy is done.
 
 ## Architecture
 

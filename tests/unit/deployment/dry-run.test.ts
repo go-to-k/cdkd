@@ -108,6 +108,7 @@ describe('DeployEngine - Dry Run Mode', () => {
     mockDagBuilder = {
       buildGraph: vi.fn().mockReturnValue({}),
       getExecutionLevels: vi.fn().mockReturnValue([['MyBucket']]),
+      getDirectDependencies: vi.fn().mockReturnValue([]),
     };
 
     mockDiffCalculator = {

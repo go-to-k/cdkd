@@ -1,8 +1,8 @@
-import pLimit from 'p-limit';
 import { getLogger } from '../utils/logger.js';
 import { ProvisioningError } from '../utils/error-handler.js';
 import { setCurrentStackName, applyDefaultNameForFallback } from '../provisioning/resource-name.js';
 import { IntrinsicFunctionResolver } from './intrinsic-function-resolver.js';
+import { DagExecutor } from './dag-executor.js';
 import type { CloudFormationTemplate, ResourceProvider } from '../types/resource.js';
 import type { StackState, ResourceState, ResourceChange } from '../types/state.js';
 import type { S3StateBackend } from '../state/s3-state-backend.js';
@@ -258,11 +258,12 @@ export class DeployEngine {
       const totalOperations = createChanges.length + updateChanges.length + deleteChanges.length;
       const progress = { current: 0, total: totalOperations };
 
-      // 6. Execute deployment (with partial state saves after each level)
+      // 6. Execute deployment (event-driven DAG dispatch with partial state saves)
       const { state: newState, actualCounts } = await this.executeDeployment(
         template,
         currentState,
         changes,
+        dag,
         executionLevels,
         stackName,
         parameterValues,
@@ -304,15 +305,19 @@ export class DeployEngine {
   }
 
   /**
-   * Execute deployment by processing resources in DAG order
+   * Execute deployment by processing resources via event-driven DAG dispatch.
    *
-   * Important: DELETE operations are executed in reverse dependency order,
-   * while CREATE/UPDATE follow normal dependency order.
+   * - CREATE/UPDATE follow forward dependency order (a node starts as soon as
+   *   ALL of its dependencies are completed — does not wait for unrelated
+   *   siblings in the same "level")
+   * - DELETE follows reverse dependency order (a node starts as soon as all
+   *   resources that depend ON it have finished deleting)
    */
   private async executeDeployment(
     template: CloudFormationTemplate,
     currentState: StackState,
     changes: Map<string, ResourceChange>,
+    dag: ReturnType<DagBuilder['buildGraph']>,
     executionLevels: string[][],
     stackName: string,
     parameterValues?: Record<string, unknown>,
@@ -323,7 +328,7 @@ export class DeployEngine {
     state: StackState;
     actualCounts: { created: number; updated: number; deleted: number; skipped: number };
   }> {
-    const limit = pLimit(this.options.concurrency!);
+    const concurrency = this.options.concurrency!;
     const newResources: Record<string, ResourceState> = { ...currentState.resources };
     const actualCounts = { created: 0, updated: 0, deleted: 0, skipped: 0 };
     const completedOperations: CompletedOperation[] = [];
@@ -360,42 +365,43 @@ export class DeployEngine {
     );
 
     try {
-      // Step 1: Process CREATE/UPDATE in normal DAG order
-      for (let levelIndex = 0; levelIndex < executionLevels.length; levelIndex++) {
-        // Check for SIGINT before starting next level
-        if (this.interrupted) {
-          throw new InterruptedError();
-        }
+      // Step 1: Process CREATE/UPDATE via event-driven DAG dispatch.
+      // A node starts as soon as ALL of its dependencies are completed, rather
+      // than waiting for an entire "level" of unrelated siblings to finish.
+      const createUpdateIds: string[] = [];
+      for (const [id, change] of changes.entries()) {
+        if (deleteChanges.has(id)) continue;
+        if (change.changeType === 'NO_CHANGE') continue;
+        createUpdateIds.push(id);
+      }
 
-        const levelNodes = executionLevels[levelIndex];
-        if (!levelNodes) continue;
-        // Exclude DELETE (handled in Step 2), NO_CHANGE, and nodes without a change
-        // entry (e.g. AWS::CDK::Metadata) so the level count reflects real work.
-        const level = levelNodes.filter((id) => {
-          if (deleteChanges.has(id)) return false;
-          const change = changes.get(id);
-          return !!change && change.changeType !== 'NO_CHANGE';
-        });
-
-        if (level.length === 0) continue;
-
+      if (createUpdateIds.length > 0) {
         this.logger.info(
-          `Level ${levelIndex + 1}/${executionLevels.length} (${level.length} resources)`
+          `Deploying ${createUpdateIds.length} resource(s) (DAG: ${executionLevels.length} levels, max parallel: ${concurrency})`
         );
 
-        // Use allSettled to ensure ALL parallel tasks complete before checking errors.
-        // Promise.all rejects immediately on first failure, leaving background tasks
-        // that create resources without tracking them in completedOperations.
-        const results = await Promise.allSettled(
-          level.map((logicalId) =>
-            limit(async () => {
-              const change = changes.get(logicalId);
-              if (!change || change.changeType === 'NO_CHANGE') {
-                this.logger.debug(`Skipping ${logicalId} (no change)`);
-                return;
-              }
+        const createUpdateExecutor = new DagExecutor<ResourceChange>();
+        const provisionable = new Set(createUpdateIds);
+        for (const id of createUpdateIds) {
+          const allDeps = this.dagBuilder.getDirectDependencies(dag, id);
+          // Only carry deps that are themselves being provisioned in this phase;
+          // NO_CHANGE / DELETE / non-DAG deps are already satisfied.
+          const deps = new Set(allDeps.filter((d) => provisionable.has(d)));
+          createUpdateExecutor.add({
+            id,
+            dependencies: deps,
+            state: 'pending',
+            data: changes.get(id)!,
+          });
+        }
 
-              // Capture previous state before provisioning (for rollback)
+        try {
+          await createUpdateExecutor.execute(
+            concurrency,
+            async (node) => {
+              const logicalId = node.id;
+              const change = node.data;
+
               const previousState = currentState.resources[logicalId]
                 ? { ...currentState.resources[logicalId] }
                 : undefined;
@@ -415,12 +421,11 @@ export class DeployEngine {
               } catch (provisionError) {
                 // Signal interruption so that long-running operations (e.g., CloudFront
                 // waitForDeployed) in sibling tasks abort promptly instead of blocking
-                // the entire level until they time out.
+                // until their own polling timeouts fire.
                 this.interrupted = true;
                 throw provisionError;
               }
 
-              // Track completed operation for potential rollback
               completedOperations.push({
                 logicalId,
                 changeType: change.changeType as 'CREATE' | 'UPDATE',
@@ -430,48 +435,51 @@ export class DeployEngine {
                 properties: newResources[logicalId]?.properties,
               });
 
-              // Save state immediately after each successful resource provision
               saveStateAfterResource(logicalId);
-            })
-          )
-        );
+            },
+            () => this.interrupted
+          );
+        } finally {
+          // Wait for any pending per-resource state saves before the next phase or
+          // before propagating an error — prevents partial-save races.
+          await saveChain;
+        }
 
-        // Wait for any pending per-resource state saves to complete before next level
-        await saveChain;
-
-        // Check for failures after ALL tasks in the level have completed
-        const failures = results.filter((r): r is PromiseRejectedResult => r.status === 'rejected');
-        if (failures.length > 0) {
-          // Throw the first failure to trigger rollback (all completed ops are tracked)
-          throw failures[0]!.reason;
+        // If SIGINT fired during dispatch but no provision threw, the executor
+        // resolves cleanly with pending nodes. Translate that into an explicit
+        // interruption error so the catch path can save partial state + rollback.
+        if (this.interrupted) {
+          throw new InterruptedError();
         }
       }
 
-      // Step 2: Process DELETE operations in reverse dependency order
+      // Step 2: Process DELETE operations in reverse dependency order.
       if (deleteChanges.size > 0) {
         this.logger.info(`Deleting ${deleteChanges.size} resource(s)`);
 
-        // Build deletion levels from state dependencies (reverse topological order)
-        const deletionLevels = this.buildDeletionLevels(deleteChanges, currentState);
+        const deleteDeps = this.buildDeletionDependencies(deleteChanges, currentState);
+        const deleteExecutor = new DagExecutor<ResourceChange>();
+        for (const id of deleteChanges) {
+          deleteExecutor.add({
+            id,
+            dependencies: deleteDeps.get(id) ?? new Set(),
+            state: 'pending',
+            data: changes.get(id)!,
+          });
+        }
 
-        for (let levelIndex = 0; levelIndex < deletionLevels.length; levelIndex++) {
-          // Check for SIGINT before starting next deletion level
-          if (this.interrupted) {
-            throw new InterruptedError();
-          }
+        try {
+          await deleteExecutor.execute(
+            concurrency,
+            async (node) => {
+              const logicalId = node.id;
+              const change = node.data;
 
-          const level = deletionLevels[levelIndex]!;
-          if (level.length === 0) continue;
+              const previousState = currentState.resources[logicalId]
+                ? { ...currentState.resources[logicalId] }
+                : undefined;
 
-          const deleteResults = await Promise.allSettled(
-            level.map((logicalId) =>
-              limit(async () => {
-                const change = changes.get(logicalId)!;
-
-                const previousState = currentState.resources[logicalId]
-                  ? { ...currentState.resources[logicalId] }
-                  : undefined;
-
+              try {
                 await this.provisionResource(
                   logicalId,
                   change,
@@ -483,29 +491,28 @@ export class DeployEngine {
                   actualCounts,
                   progress
                 );
+              } catch (provisionError) {
+                this.interrupted = true;
+                throw provisionError;
+              }
 
-                completedOperations.push({
-                  logicalId,
-                  changeType: 'DELETE',
-                  resourceType: change.resourceType,
-                  previousState,
-                });
+              completedOperations.push({
+                logicalId,
+                changeType: 'DELETE',
+                resourceType: change.resourceType,
+                previousState,
+              });
 
-                // Save state immediately after each successful resource deletion
-                saveStateAfterResource(logicalId);
-              })
-            )
+              saveStateAfterResource(logicalId);
+            },
+            () => this.interrupted
           );
-
-          // Wait for any pending per-resource state saves to complete before next deletion level
+        } finally {
           await saveChain;
+        }
 
-          const deleteFailures = deleteResults.filter(
-            (r): r is PromiseRejectedResult => r.status === 'rejected'
-          );
-          if (deleteFailures.length > 0) {
-            throw deleteFailures[0]!.reason;
-          }
+        if (this.interrupted) {
+          throw new InterruptedError();
         }
       }
     } catch (error) {
@@ -670,7 +677,7 @@ export class DeployEngine {
    * Sort CREATE rollback operations so that resources depending on others
    * are deleted first (reverse dependency order).
    *
-   * Uses state dependencies to build deletion levels, similar to buildDeletionLevels.
+   * Uses state dependencies to build deletion levels, similar to buildDeletionDependencies.
    */
   private sortRollbackCreates(
     createOps: CompletedOperation[],
@@ -1211,17 +1218,21 @@ export class DeployEngine {
   };
 
   /**
-   * Build deletion levels from state dependencies (reverse topological order).
-   * Resources that are depended upon by others are deleted LAST.
+   * Build a per-resource map of "must be deleted before me" dependencies for
+   * the DELETE phase, derived from state-recorded dependencies plus implicit
+   * type-based ordering rules.
+   *
+   * For a resource X, the returned set contains every resource Y such that Y
+   * must finish deleting before X starts — i.e., Y depends on X (or is otherwise
+   * required to vanish first per implicit type rules).
    */
-  private buildDeletionLevels(deleteIds: Set<string>, state: StackState): string[][] {
-    // Build reverse dependency map: resource → resources that depend on it
+  private buildDeletionDependencies(
+    deleteIds: Set<string>,
+    state: StackState
+  ): Map<string, Set<string>> {
     const dependedBy = new Map<string, Set<string>>();
-    const inDegree = new Map<string, number>();
-
     for (const id of deleteIds) {
-      if (!dependedBy.has(id)) dependedBy.set(id, new Set());
-      if (!inDegree.has(id)) inDegree.set(id, 0);
+      dependedBy.set(id, new Set());
     }
 
     for (const id of deleteIds) {
@@ -1229,53 +1240,14 @@ export class DeployEngine {
       if (!resource?.dependencies) continue;
       for (const dep of resource.dependencies) {
         if (!deleteIds.has(dep)) continue;
-        // id depends on dep → dep must be deleted AFTER id
-        if (!dependedBy.has(dep)) dependedBy.set(dep, new Set());
+        // id depends on dep → dep must be deleted AFTER id (i.e., id is in dep's deletion deps)
         dependedBy.get(dep)!.add(id);
-        inDegree.set(id, (inDegree.get(id) ?? 0) + 1);
       }
     }
 
-    // Add implicit dependencies based on resource types.
-    // For each resource being deleted, if its type has implicit dependencies,
-    // find other resources being deleted that match those dependency types
-    // and add edges so those dependents are deleted first.
     this.addImplicitDeleteDependencies(deleteIds, state, dependedBy);
 
-    // Topological sort (Kahn's algorithm) — produces levels for parallel delete
-    const levels: string[][] = [];
-    let remaining = new Set(deleteIds);
-
-    while (remaining.size > 0) {
-      // Find resources with no remaining dependents (safe to delete now)
-      const level: string[] = [];
-      for (const id of remaining) {
-        const dependents = dependedBy.get(id);
-        const hasPendingDependents = dependents
-          ? [...dependents].some((d) => remaining.has(d))
-          : false;
-        if (!hasPendingDependents) {
-          level.push(id);
-        }
-      }
-
-      if (level.length === 0) {
-        // Circular dependency fallback: delete all remaining
-        this.logger.warn(
-          `Circular dependency detected in delete order, deleting remaining ${remaining.size} resources`
-        );
-        levels.push([...remaining]);
-        break;
-      }
-
-      levels.push(level);
-      remaining = new Set([...remaining].filter((id) => !level.includes(id)));
-    }
-
-    this.logger.debug(
-      `Delete order: ${levels.length} levels - ${levels.map((l, i) => `L${i + 1}(${l.length})`).join(', ')}`
-    );
-    return levels;
+    return dependedBy;
   }
 
   /**

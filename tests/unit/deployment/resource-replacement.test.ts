@@ -55,6 +55,7 @@ describe('DeployEngine - Resource Replacement', () => {
   let mockDagBuilder: {
     buildGraph: ReturnType<typeof vi.fn>;
     getExecutionLevels: ReturnType<typeof vi.fn>;
+    getDirectDependencies: ReturnType<typeof vi.fn>;
   };
 
   let mockDiffCalculator: {
@@ -127,6 +128,7 @@ describe('DeployEngine - Resource Replacement', () => {
     mockDagBuilder = {
       buildGraph: vi.fn().mockReturnValue({}),
       getExecutionLevels: vi.fn().mockReturnValue([['MyBucket']]),
+      getDirectDependencies: vi.fn().mockReturnValue([]),
     };
 
     mockDiffCalculator = {

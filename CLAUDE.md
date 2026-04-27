@@ -63,10 +63,11 @@ cdkd has a 7-layer system architecture:
    - State structure: `s3://bucket/stacks/{stackName}/state.json`
    - Lock structure: `s3://bucket/stacks/{stackName}/lock.json`
 
-3. **DAG-based Parallel Execution**
-   - Analyzes dependencies via `Ref` / `Fn::GetAtt`
-   - Determines execution order with topological sort
-   - Executes resources in parallel by level (resources without dependencies run concurrently)
+3. **Event-driven DAG Execution**
+   - Analyzes dependencies via `Ref` / `Fn::GetAtt` / `DependsOn`
+   - Dispatches each resource as soon as ALL of its own dependencies complete (no level barrier — downstream work does not wait for unrelated siblings in the same DAG level)
+   - Bounded by `--concurrency` across the whole stack
+   - Implemented in `src/deployment/dag-executor.ts`
 
 4. **Intrinsic Function Resolution**
    - All CloudFormation intrinsic functions supported: `Ref`, `Fn::GetAtt`, `Fn::Join`, `Fn::Sub`, `Fn::Select`, `Fn::Split`, `Fn::If`, `Fn::Equals`, `Fn::And`, `Fn::Or`, `Fn::Not`, `Fn::ImportValue`, `Fn::FindInMap`, `Fn::Base64`, `Fn::GetAZs`, `Fn::Cidr`
@@ -114,6 +115,7 @@ pnpm run typecheck
 - **src/synthesis/assembly-reader.ts** - Reads and parses Cloud Assembly manifest.json directly
 - **src/synthesis/synthesizer.ts** - Orchestrates synthesis with context provider loop
 - **src/synthesis/context-providers/** - Context providers (see `src/synthesis/context-providers/` for full list) for missing context resolution
+- **src/deployment/dag-executor.ts** - Generic event-driven DAG dispatcher (used inside a stack to schedule resource provisioning as soon as each resource's deps complete; no level barriers)
 - **src/deployment/work-graph.ts** - WorkGraph DAG orchestrator for asset publishing and stack deployment
 - **src/assets/file-asset-publisher.ts** - S3 file upload with ZIP packaging support
 - **src/assets/docker-asset-publisher.ts** - ECR Docker image build & push
@@ -318,8 +320,9 @@ See [docs/provider-development.md](docs/provider-development.md) for details.
 - ✅ AWS::NoValue pseudo parameter (for conditional property omission)
 - ✅ Fn::FindInMap (Mappings lookup) and Fn::Base64 (base64 encoding)
 - ✅ Fn::GetAZs (all intrinsic functions now supported)
-- ✅ Partial state save after each DAG level (prevents orphaned resources)
-- ✅ Pre-rollback state save on failure (tracks resources from partially-failed levels)
+- ✅ Per-resource partial state save (prevents orphaned resources mid-deploy)
+- ✅ Pre-rollback state save on failure (tracks resources completed concurrently with the failed one)
+- ✅ Event-driven DAG dispatch (each resource starts as soon as its own deps complete; no level barrier)
 - ✅ CREATE retry with exponential backoff (IAM propagation delays)
 - ✅ CC API polling with exponential backoff (1s→2s→4s→8s→10s)
 - ✅ Compact output mode (default clean output, `--verbose` for full details)
