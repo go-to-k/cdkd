@@ -517,8 +517,9 @@ export class DeployEngine {
       }
     } catch (error) {
       // Save partial state BEFORE rollback to track all successfully provisioned
-      // resources (including those in the failed level). This prevents orphaned
-      // resources — resources that exist in AWS but not in the state file.
+      // resources (including those that completed concurrently with the one that
+      // failed). This prevents orphaned resources — resources that exist in AWS
+      // but not in the state file.
       try {
         const preRollbackState: StackState = {
           version: 1,
@@ -624,12 +625,12 @@ export class DeployEngine {
    * - UPDATE → update back to previous properties
    * - DELETE → cannot rollback (resource already deleted), log warning
    *
-   * Resources created in the same DAG level may have dependencies between them
-   * (e.g., IAM Policy depends on IAM Role). When rolling back CREATEs (deleting),
-   * dependent resources must be deleted before their dependencies. This method
-   * sorts CREATE rollback operations using dependency information from state,
-   * then processes UPDATE/DELETE rollbacks, and finally processes sorted CREATE
-   * rollback deletions.
+   * Resources completed concurrently in the dispatcher may have dependencies
+   * between them (e.g., IAM Policy depends on IAM Role). When rolling back
+   * CREATEs (deleting), dependent resources must be deleted before their
+   * dependencies. This method sorts CREATE rollback operations using dependency
+   * information from state, then processes UPDATE/DELETE rollbacks, and finally
+   * processes sorted CREATE rollback deletions.
    */
   private async performRollback(
     completedOperations: CompletedOperation[],
@@ -662,7 +663,7 @@ export class DeployEngine {
     }
 
     // Step 2: Process CREATE rollbacks (deletions) in dependency-aware order
-    // Build deletion levels so dependents are deleted before their dependencies
+    // (reverse dependency: dependents are deleted before their dependencies)
     if (createOps.length > 0) {
       const sortedCreateOps = this.sortRollbackCreates(createOps, stateResources);
       for (const op of sortedCreateOps) {
@@ -677,7 +678,7 @@ export class DeployEngine {
    * Sort CREATE rollback operations so that resources depending on others
    * are deleted first (reverse dependency order).
    *
-   * Uses state dependencies to build deletion levels, similar to buildDeletionDependencies.
+   * Uses state dependencies to determine reverse-dependency order, similar to buildDeletionDependencies.
    */
   private sortRollbackCreates(
     createOps: CompletedOperation[],
