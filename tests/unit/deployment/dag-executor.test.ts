@@ -135,6 +135,28 @@ describe('DagExecutor', () => {
     expect([...exec.values()].find((n) => n.id === 'C')?.state).toBe('skipped');
   });
 
+  it('propagates skip transitively regardless of node insertion order', async () => {
+    // Insert leaf-first so that a single-pass skip-marking would leave
+    // descendants in 'pending' state. The fixed-point loop must catch them.
+    const exec = new DagExecutor<null>();
+    exec.add(node('D', ['C']));
+    exec.add(node('C', ['B']));
+    exec.add(node('B', ['A']));
+    exec.add(node('A'));
+
+    await expect(
+      exec.execute(4, async (n) => {
+        if (n.id === 'A') throw new Error('A boom');
+      })
+    ).rejects.toThrow('A boom');
+
+    const stateOf = (id: string) => [...exec.values()].find((n) => n.id === id)?.state;
+    expect(stateOf('A')).toBe('failed');
+    expect(stateOf('B')).toBe('skipped');
+    expect(stateOf('C')).toBe('skipped');
+    expect(stateOf('D')).toBe('skipped');
+  });
+
   it('drains in-flight independent nodes when one fails (does not rollback their state)', async () => {
     const exec = new DagExecutor<null>();
     exec.add(node('A'));

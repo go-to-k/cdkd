@@ -61,16 +61,24 @@ export class DagExecutor<T = unknown> {
 
     return new Promise<void>((resolve, reject) => {
       const dispatch = (): void => {
-        // Mark nodes whose dependencies failed/skipped as skipped.
-        for (const node of this.nodes.values()) {
-          if (node.state !== 'pending') continue;
-          const hasFailedDep = [...node.dependencies].some((depId) => {
-            const dep = this.nodes.get(depId);
-            return dep && (dep.state === 'failed' || dep.state === 'skipped');
-          });
-          if (hasFailedDep) {
-            node.state = 'skipped';
-            this.logger.debug(`Skipped ${node.id}: dependency failed or was skipped`);
+        // Mark nodes whose dependencies failed/skipped as skipped — to a
+        // fixed point, so transitive dependents propagate within a single
+        // dispatch (e.g., A→B→C where A failed must mark BOTH B and C as
+        // skipped, regardless of node insertion order).
+        let changed = true;
+        while (changed) {
+          changed = false;
+          for (const node of this.nodes.values()) {
+            if (node.state !== 'pending') continue;
+            const hasFailedDep = [...node.dependencies].some((depId) => {
+              const dep = this.nodes.get(depId);
+              return dep && (dep.state === 'failed' || dep.state === 'skipped');
+            });
+            if (hasFailedDep) {
+              node.state = 'skipped';
+              changed = true;
+              this.logger.debug(`Skipped ${node.id}: dependency failed or was skipped`);
+            }
           }
         }
 
