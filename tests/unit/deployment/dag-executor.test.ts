@@ -157,6 +157,67 @@ describe('DagExecutor', () => {
     expect(stateOf('D')).toBe('skipped');
   });
 
+  it('does not reject until ALL in-flight nodes have observably finished their work', async () => {
+    // Drain-before-reject guarantee: a sibling that started before another
+    // node failed must finish its full fn() body — including any state
+    // mutations the deploy-engine relies on (completedOperations.push,
+    // saveStateAfterResource) — before execute() rejects. Otherwise the
+    // outer catch could observe inconsistent state and rollback would miss
+    // resources that already succeeded in AWS.
+    const exec = new DagExecutor<null>();
+    exec.add(node('A'));
+    exec.add(node('B'));
+    exec.add(node('C'));
+
+    // Logical clock (millisecond timestamps coarsen too much under setTimeout).
+    let tick = 0;
+    const observedAt: Record<string, number> = {};
+
+    const failure = new Error('B failed first');
+    await expect(
+      exec.execute(8, async (n) => {
+        // B fails FAST so its rejection is queued before A/C finish.
+        await new Promise((r) => setTimeout(r, n.id === 'B' ? 5 : 50));
+        if (n.id === 'B') throw failure;
+        observedAt[n.id] = ++tick;
+      })
+    ).rejects.toBe(failure);
+    const rejectedAt = ++tick;
+
+    // Both surviving siblings ran their body to completion BEFORE reject fired.
+    expect(observedAt['A']).toBeDefined();
+    expect(observedAt['C']).toBeDefined();
+    expect(observedAt['A']).toBeLessThan(rejectedAt);
+    expect(observedAt['C']).toBeLessThan(rejectedAt);
+  });
+
+  it('collects multiple concurrent failures but rejects with the FIRST one (rest are silent)', async () => {
+    // Matches the prior level-sync behavior of `Promise.allSettled` then
+    // `throw failures[0]!.reason`. The other errors don't disappear from
+    // node state — each failed node has state === 'failed' — they're just
+    // not surfaced through the rejection.
+    const exec = new DagExecutor<null>();
+    exec.add(node('A'));
+    exec.add(node('B'));
+    exec.add(node('C'));
+
+    const errA = new Error('A boom');
+    const errC = new Error('C boom');
+
+    await expect(
+      exec.execute(8, async (n) => {
+        // A fails first, C fails later (still concurrently with B's success).
+        await new Promise((r) => setTimeout(r, n.id === 'A' ? 5 : 30));
+        if (n.id === 'A') throw errA;
+        if (n.id === 'C') throw errC;
+      })
+    ).rejects.toBe(errA); // FIRST error wins
+
+    expect([...exec.values()].find((n) => n.id === 'A')?.state).toBe('failed');
+    expect([...exec.values()].find((n) => n.id === 'B')?.state).toBe('completed');
+    expect([...exec.values()].find((n) => n.id === 'C')?.state).toBe('failed');
+  });
+
   it('drains in-flight independent nodes when one fails (does not rollback their state)', async () => {
     const exec = new DagExecutor<null>();
     exec.add(node('A'));

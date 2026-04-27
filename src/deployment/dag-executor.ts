@@ -116,6 +116,14 @@ export class DagExecutor<T = unknown> {
         }
 
         if (active === 0) {
+          // Drain-before-reject guarantee: we only reach this point after every
+          // in-flight node has settled (success OR failure), because each fn()
+          // promise's .finally() decrements `active` and re-runs dispatch. So
+          // when a node fails early, sibling nodes already running are allowed
+          // to complete normally — their successful completion is visible to
+          // the caller (e.g., for state-save and rollback bookkeeping) BEFORE
+          // execute() rejects. Don't change to "reject as soon as errors[] is
+          // non-empty" without revisiting the deploy-engine catch path.
           if (errors.length > 0) {
             reject(errors[0]!.error);
             return;

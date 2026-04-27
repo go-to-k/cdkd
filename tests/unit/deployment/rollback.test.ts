@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { DeployEngine } from '../../../src/deployment/deploy-engine.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
-import type { ResourceChange, StackState } from '../../../src/types/state.js';
+import type { ResourceChange, ResourceState, StackState } from '../../../src/types/state.js';
 
 vi.mock('../../../src/utils/logger.js', () => ({
   getLogger: () => ({
@@ -69,29 +69,39 @@ describe('DeployEngine - Rollback (event-driven dispatch)', () => {
     deleteCalls = [];
   });
 
+  let mockStateBackend: {
+    getState: ReturnType<typeof vi.fn>;
+    saveState: ReturnType<typeof vi.fn>;
+  };
+
   function buildEngine(opts: {
     template: CloudFormationTemplate;
     changes: Map<string, ResourceChange>;
     deps: Record<string, string[]>;
     failOn?: Set<string>;
+    deleteFailOn?: Set<string>;
     noRollback?: boolean;
+    currentResources?: Record<string, ResourceState>;
   }) {
     mockProvider = createSdkProvider(opts.failOn);
     // Track delete calls in order so we can verify rollback behavior.
     // ResourceProvider.delete signature: (logicalId, physicalId, resourceType, properties?)
     mockProvider.delete = vi.fn().mockImplementation(async (logicalId: string) => {
+      if (opts.deleteFailOn?.has(logicalId)) {
+        throw new Error(`delete failed: ${logicalId}`);
+      }
       deleteCalls.push(logicalId);
     });
 
     const currentState: StackState = {
       version: 1,
       stackName,
-      resources: {},
+      resources: opts.currentResources ?? {},
       outputs: {},
       lastModified: Date.now(),
     };
 
-    const mockStateBackend = {
+    mockStateBackend = {
       getState: vi.fn().mockResolvedValue({ state: currentState, etag: 'etag-0' }),
       saveState: vi.fn().mockResolvedValue('etag-1'),
     };
@@ -247,5 +257,45 @@ describe('DeployEngine - Rollback (event-driven dispatch)', () => {
 
     await expect(engine.deploy(stackName, template)).rejects.toThrow(/Failed to create resource B/);
     expect(deleteCalls).toEqual([]);
+  });
+
+  it('saves state reflecting partial deletion when a DELETE fails mid-phase', async () => {
+    // 3 DELETE changes dispatched concurrently. provider.delete throws for B.
+    // A and C complete normally. Pre-rollback state save (in deploy-engine's
+    // catch path) MUST reflect that A and C are gone but B remains — otherwise
+    // the next deploy will think A/C still exist and skip them, leaving them
+    // orphaned in AWS.
+    const template: CloudFormationTemplate = { Resources: {} }; // empty new template = all DELETE
+    const changes = new Map<string, ResourceChange>([
+      ['A', { ...makeChange('A', 'AWS::S3::Bucket'), changeType: 'DELETE' }],
+      ['B', { ...makeChange('B', 'AWS::S3::Bucket'), changeType: 'DELETE' }],
+      ['C', { ...makeChange('C', 'AWS::S3::Bucket'), changeType: 'DELETE' }],
+    ]);
+    const currentResources: Record<string, ResourceState> = {
+      A: { physicalId: 'phys-A', resourceType: 'AWS::S3::Bucket', properties: {} },
+      B: { physicalId: 'phys-B', resourceType: 'AWS::S3::Bucket', properties: {} },
+      C: { physicalId: 'phys-C', resourceType: 'AWS::S3::Bucket', properties: {} },
+    };
+
+    const engine = buildEngine({
+      template,
+      changes,
+      deps: { A: [], B: [], C: [] },
+      deleteFailOn: new Set(['B']),
+      currentResources,
+      noRollback: true, // suppress no-op DELETE rollback path; focus on state save
+    });
+
+    await expect(engine.deploy(stackName, template)).rejects.toThrow(/Failed to delete resource B/);
+
+    // Inspect the most recent saveState call (could be pre-rollback or post-).
+    const calls = mockStateBackend.saveState.mock.calls;
+    expect(calls.length).toBeGreaterThan(0);
+    const finalSavedState = calls[calls.length - 1]![1] as StackState;
+
+    // A and C deleted from state; B remains because its delete failed.
+    expect(finalSavedState.resources['A']).toBeUndefined();
+    expect(finalSavedState.resources['C']).toBeUndefined();
+    expect(finalSavedState.resources['B']).toBeDefined();
   });
 });
