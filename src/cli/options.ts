@@ -106,9 +106,9 @@ export const contextOptions = [
 
 /**
  * Destroy options
- *
- * `--force` is kept alongside the global `-y, --yes` for CDK CLI parity.
  */
 export const destroyOptions = [
-  new Option('--force', 'Skip confirmation prompt (alias of --yes)').default(false),
+  new Option('-f, --force', 'Do not ask for confirmation before destroying the stacks').default(
+    false
+  ),
 ];

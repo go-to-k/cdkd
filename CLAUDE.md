@@ -195,7 +195,7 @@ registry.register('AWS::IAM::Role', new IAMRoleProvider());
 - Wildcard support: `cdkd deploy 'My*'`
 - Single stack auto-detected (no stack name needed)
 - Concurrency options: `--concurrency` (resource ops, default 10), `--stack-concurrency` (stacks, default 4), `--asset-publish-concurrency` (S3+ECR, default 8), `--image-build-concurrency` (Docker builds, default 4)
-- `-y` / `--yes` is a global flag (CDK CLI parity) that auto-confirms interactive prompts (e.g. `destroy`); `cdkd destroy` also accepts `--force` as an alias for backwards-compatibility
+- `-y` / `--yes` is a global flag (CDK CLI parity) that auto-confirms interactive prompts (e.g. `destroy`). `cdkd destroy` additionally accepts `-f` / `--force` — a destroy-specific flag with the same effect as `-y` in this context (matching CDK CLI, where `--force` is per-subcommand and overlaps with the global `--yes` only in the destroy confirmation path)
 - Implemented in `src/cli/config-loader.ts`
 
 ### 4. Custom Resources

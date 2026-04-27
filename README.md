@@ -406,7 +406,7 @@ cdkd deploy -e MyStack
 
 # Destroy resources
 cdkd destroy MyStack
-cdkd destroy --all -y          # auto-confirm (--force is also accepted)
+cdkd destroy --all -y          # auto-confirm prompts (or -f/--force)
 
 # Force-unlock a stale lock from interrupted deploy
 cdkd force-unlock MyStack
