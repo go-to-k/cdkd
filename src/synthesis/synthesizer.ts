@@ -71,16 +71,11 @@ export class Synthesizer {
   async synthesize(options: SynthesisOptions): Promise<SynthesisResult> {
     // CDK CLI compatibility: if --app points at an existing directory, treat it
     // as a pre-synthesized cloud assembly and skip subprocess execution.
+    // See aws-cdk/lib/cxapp/exec.ts: "bypass 'synth' if app points to a cloud assembly".
     const appPath = resolve(options.app);
     if (existsSync(appPath) && statSync(appPath).isDirectory()) {
       this.logger.debug(`Using pre-synthesized cloud assembly at ${appPath}`);
       const manifest = this.assemblyReader.readManifest(appPath);
-      if (manifest.missing && manifest.missing.length > 0) {
-        throw new SynthesisError(
-          `Pre-synthesized assembly at ${appPath} has unresolved context. ` +
-            'Re-synthesize with the CDK CLI before pointing --app at the assembly directory.'
-        );
-      }
       const stacks = this.assemblyReader.getAllStacks(appPath, manifest);
       this.logger.debug(`Loaded ${stacks.length} stack(s) from pre-synthesized assembly`);
       return { manifest, assemblyDir: appPath, stacks };

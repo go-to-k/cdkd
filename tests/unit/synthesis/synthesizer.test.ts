@@ -216,7 +216,7 @@ describe('Synthesizer', () => {
       expect(result.assemblyDir).toMatch(/cdk\.out$/);
     });
 
-    it('should reject pre-synthesized assembly with unresolved missing context', async () => {
+    it('should pass through pre-synthesized assembly even when manifest reports missing context (CDK CLI parity)', async () => {
       mockExistsSync.mockReturnValue(true);
       mockStatSync.mockReturnValue({ isDirectory: () => true });
       mockReadManifest.mockReturnValue({
@@ -224,10 +224,9 @@ describe('Synthesizer', () => {
         artifacts: {},
         missing: [{ key: 'foo', provider: 'availability-zones', props: {} }],
       });
+      mockGetAllStacks.mockReturnValue([]);
 
-      await expect(synthesizer.synthesize({ app: 'cdk.out' })).rejects.toThrow(
-        /unresolved context/i
-      );
+      await expect(synthesizer.synthesize({ app: 'cdk.out' })).resolves.toBeDefined();
       expect(mockExecute).not.toHaveBeenCalled();
     });
 
