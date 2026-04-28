@@ -188,7 +188,12 @@ describe('extractLambdaVpcDeleteDeps', () => {
     expect(edges).toHaveLength(2);
   });
 
-  it('ignores non-array SubnetIds / SecurityGroupIds gracefully', () => {
+  it('walks any-shape SubnetIds / SecurityGroupIds (intentional defensive walking)', () => {
+    // CloudFormation specifies VpcConfig.SubnetIds / SecurityGroupIds as List,
+    // so a non-array value is technically invalid input. The extractor still
+    // walks any object value defensively — a single Ref object is collected
+    // when its target exists. Here the target does not exist as a logical ID,
+    // and the scalar string value yields nothing, so we expect zero edges.
     const resources: Record<string, ResourceLike> = {
       Fn: {
         Type: 'AWS::Lambda::Function',
@@ -200,9 +205,75 @@ describe('extractLambdaVpcDeleteDeps', () => {
         },
       },
     };
-    // The extractor walks any object value, so a single Ref object is still
-    // collected — but only if the target exists. Here the target does not
-    // exist as a logical ID, so we expect zero edges.
     expect(extractLambdaVpcDeleteDeps(resources)).toEqual([]);
+  });
+
+  it('walks a single Ref object (non-array) and emits an edge when the target exists', () => {
+    // Sibling of the previous test: when the malformed (non-array) Ref points
+    // at an existing logical ID, the defensive walk DOES collect it. This
+    // pins down the current behavior so future refactors do not silently
+    // change it.
+    const resources: Record<string, ResourceLike> = {
+      Fn: {
+        Type: 'AWS::Lambda::Function',
+        Properties: {
+          VpcConfig: {
+            SubnetIds: { Ref: 'SubnetA' },
+          },
+        },
+      },
+      SubnetA: { Type: 'AWS::EC2::Subnet', Properties: {} },
+    };
+    expect(extractLambdaVpcDeleteDeps(resources)).toEqual([
+      { before: 'Fn', after: 'SubnetA' },
+    ]);
+  });
+
+  it('returns no edges when SubnetIds is an empty array', () => {
+    const resources: Record<string, ResourceLike> = {
+      Fn: {
+        Type: 'AWS::Lambda::Function',
+        Properties: {
+          VpcConfig: {
+            SubnetIds: [],
+          },
+        },
+      },
+    };
+    expect(extractLambdaVpcDeleteDeps(resources)).toEqual([]);
+  });
+
+  it('extracts edges from SecurityGroupIds only when SubnetIds is absent', () => {
+    const resources: Record<string, ResourceLike> = {
+      Fn: {
+        Type: 'AWS::Lambda::Function',
+        Properties: {
+          VpcConfig: {
+            SecurityGroupIds: [{ Ref: 'SgOnly' }],
+          },
+        },
+      },
+      SgOnly: { Type: 'AWS::EC2::SecurityGroup', Properties: {} },
+    };
+    expect(extractLambdaVpcDeleteDeps(resources)).toEqual([
+      { before: 'Fn', after: 'SgOnly' },
+    ]);
+  });
+
+  it('extracts edges from SubnetIds only when SecurityGroupIds is absent', () => {
+    const resources: Record<string, ResourceLike> = {
+      Fn: {
+        Type: 'AWS::Lambda::Function',
+        Properties: {
+          VpcConfig: {
+            SubnetIds: [{ Ref: 'SubnetOnly' }],
+          },
+        },
+      },
+      SubnetOnly: { Type: 'AWS::EC2::Subnet', Properties: {} },
+    };
+    expect(extractLambdaVpcDeleteDeps(resources)).toEqual([
+      { before: 'Fn', after: 'SubnetOnly' },
+    ]);
   });
 });
