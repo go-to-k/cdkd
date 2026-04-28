@@ -12,6 +12,7 @@ import type { DiffCalculator } from '../analyzer/diff-calculator.js';
 import { ProviderRegistry } from '../provisioning/provider-registry.js';
 import { CloudControlProvider } from '../provisioning/cloud-control-provider.js';
 import { TemplateParser } from '../analyzer/template-parser.js';
+import { IMPLICIT_DELETE_DEPENDENCIES } from '../analyzer/implicit-delete-deps.js';
 
 /**
  * Completed operation record for rollback tracking
@@ -1190,36 +1191,9 @@ export class DeployEngine {
     return deps.size > 0 ? [...deps] : undefined;
   }
 
-  /**
-   * Implicit dependency map for correct deletion order.
-   *
-   * Key = resource type that must be deleted AFTER all value types are deleted.
-   * Value = resource types that must be deleted BEFORE the key type.
-   *
-   * Example: InternetGateway depends on VPCGatewayAttachment being deleted first,
-   * because AWS won't let you delete an IGW while it's still attached to a VPC.
-   */
-  private static readonly IMPLICIT_DELETE_DEPENDENCIES: Record<string, string[]> = {
-    // IGW must be deleted AFTER VPCGatewayAttachment
-    'AWS::EC2::InternetGateway': ['AWS::EC2::VPCGatewayAttachment'],
-    // EventBus must be deleted AFTER Rules on that bus
-    'AWS::Events::EventBus': ['AWS::Events::Rule'],
-    // VPC must be deleted AFTER all VPC-dependent resources
-    'AWS::EC2::VPC': [
-      'AWS::EC2::Subnet',
-      'AWS::EC2::SecurityGroup',
-      'AWS::EC2::InternetGateway',
-      'AWS::EC2::EgressOnlyInternetGateway',
-      'AWS::EC2::VPCGatewayAttachment',
-      'AWS::EC2::RouteTable',
-    ],
-    // Subnet must be deleted AFTER RouteTableAssociation
-    'AWS::EC2::Subnet': ['AWS::EC2::SubnetRouteTableAssociation'],
-    // RouteTable must be deleted AFTER Route and Association
-    'AWS::EC2::RouteTable': ['AWS::EC2::Route', 'AWS::EC2::SubnetRouteTableAssociation'],
-    // SecurityGroup must be deleted AFTER SecurityGroupIngress/Egress
-    'AWS::EC2::SecurityGroup': ['AWS::EC2::SecurityGroupIngress', 'AWS::EC2::SecurityGroupEgress'],
-  };
+  // Type-based implicit deletion ordering rules are defined in
+  // src/analyzer/implicit-delete-deps.ts so the deploy DELETE phase and the
+  // standalone destroy command apply the same rules.
 
   /**
    * Build a per-resource map of "must be deleted before me" dependencies for
@@ -1297,7 +1271,7 @@ export class DeployEngine {
       const resource = state.resources[id];
       if (!resource) continue;
 
-      const mustDeleteAfter = DeployEngine.IMPLICIT_DELETE_DEPENDENCIES[resource.resourceType];
+      const mustDeleteAfter = IMPLICIT_DELETE_DEPENDENCIES[resource.resourceType];
       if (!mustDeleteAfter) continue;
 
       for (const depType of mustDeleteAfter) {

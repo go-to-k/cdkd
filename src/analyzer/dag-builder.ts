@@ -1,6 +1,7 @@
 import graphlib from 'graphlib';
 import type { CloudFormationTemplate, TemplateResource } from '../types/resource.js';
 import { TemplateParser } from './template-parser.js';
+import { extractLambdaVpcDeleteDeps } from './lambda-vpc-deps.js';
 import { getLogger } from '../utils/logger.js';
 import { DependencyError } from '../utils/error-handler.js';
 
@@ -79,6 +80,14 @@ export class DagBuilder {
     // edge the Custom Resource can run before the policy attachment API returns, so
     // the handler hits AccessDenied in the middle of deploy.
     edgeCount += this.addCustomResourcePolicyEdges(graph, template);
+
+    // Defense-in-depth edges for AWS::Lambda::Function VpcConfig: even though
+    // Refs in `Properties.VpcConfig.SubnetIds` / `SecurityGroupIds` are
+    // already picked up by extractDependencies (and so will produce edges in
+    // the loop above), an explicit pass guards against future regressions in
+    // the recursive extractor and makes the Lambda-vs-VPC ordering visible
+    // in the DAG even when those properties are wrapped in unusual shapes.
+    edgeCount += this.addLambdaVpcEdges(graph, template);
 
     // Validate graph is acyclic
     if (!alg.isAcyclic(graph)) {
@@ -304,6 +313,45 @@ export class DagBuilder {
 
     if (added > 0) {
       this.logger.debug(`Added ${added} implicit edges for custom resource policies`);
+    }
+    return added;
+  }
+
+  /**
+   * Add edges from Subnets / SecurityGroups referenced by an
+   * AWS::Lambda::Function VpcConfig to the Lambda itself.
+   *
+   * Same direction as a normal `Ref`-derived edge (Subnet -> Lambda), so for
+   * deploy this just duplicates what extractDependencies already produced.
+   * The point is robustness: if a future template massages the VpcConfig
+   * shape in a way the recursive extractor doesn't anticipate, this pass
+   * still ties the Lambda to its networking resources so that the
+   * deletion-time reverse traversal continues to delete Lambda before
+   * Subnet / SecurityGroup.
+   *
+   * Returns the number of NEW edges added (existing edges are skipped).
+   */
+  private addLambdaVpcEdges(graph: GraphType, template: CloudFormationTemplate): number {
+    const edges = extractLambdaVpcDeleteDeps(template.Resources);
+    if (edges.length === 0) return 0;
+
+    let added = 0;
+    for (const edge of edges) {
+      // edge: { before: lambdaId, after: vpcResourceId }
+      // Edge convention: setEdge(depId, dependentId) means dependentId
+      // depends on depId. The Lambda depends on the Subnet / SG, so
+      // depId = vpcResourceId (after), dependentId = lambdaId (before).
+      const depId = edge.after;
+      const dependentId = edge.before;
+      if (!graph.hasNode(depId) || !graph.hasNode(dependentId)) continue;
+      if (graph.hasEdge(depId, dependentId)) continue;
+      graph.setEdge(depId, dependentId);
+      added++;
+      this.logger.debug(`Added implicit edge (lambda vpc): ${depId} -> ${dependentId}`);
+    }
+
+    if (added > 0) {
+      this.logger.debug(`Added ${added} implicit edges for Lambda VpcConfig`);
     }
     return added;
   }

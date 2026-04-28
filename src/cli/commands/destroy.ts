@@ -14,6 +14,7 @@ import { Synthesizer } from '../../synthesis/synthesizer.js';
 import { S3StateBackend } from '../../state/s3-state-backend.js';
 import { LockManager } from '../../state/lock-manager.js';
 import { DagBuilder } from '../../analyzer/dag-builder.js';
+import { IMPLICIT_DELETE_DEPENDENCIES } from '../../analyzer/implicit-delete-deps.js';
 import { ProviderRegistry } from '../../provisioning/provider-registry.js';
 import { registerAllProviders } from '../../provisioning/register-providers.js';
 import { setAwsClients, AwsClients } from '../../utils/aws-clients.js';
@@ -250,28 +251,8 @@ async function destroyCommand(
           };
         }
 
-        // Add implicit dependencies for correct deletion order.
-        const implicitDeleteDeps: Record<string, string[]> = {
-          'AWS::EC2::InternetGateway': ['AWS::EC2::VPCGatewayAttachment'],
-          'AWS::Events::EventBus': ['AWS::Events::Rule'],
-          'AWS::Athena::WorkGroup': ['AWS::Athena::NamedQuery'],
-          'AWS::CloudFront::ResponseHeadersPolicy': ['AWS::CloudFront::Distribution'],
-          'AWS::CloudFront::CachePolicy': ['AWS::CloudFront::Distribution'],
-          'AWS::CloudFront::OriginAccessControl': ['AWS::CloudFront::Distribution'],
-          'AWS::EC2::VPC': [
-            'AWS::EC2::Subnet',
-            'AWS::EC2::SecurityGroup',
-            'AWS::EC2::InternetGateway',
-            'AWS::EC2::VPCGatewayAttachment',
-            'AWS::EC2::RouteTable',
-          ],
-          'AWS::EC2::Subnet': ['AWS::EC2::SubnetRouteTableAssociation'],
-          'AWS::EC2::RouteTable': ['AWS::EC2::Route', 'AWS::EC2::SubnetRouteTableAssociation'],
-          'AWS::EC2::SecurityGroup': [
-            'AWS::EC2::SecurityGroupIngress',
-            'AWS::EC2::SecurityGroupEgress',
-          ],
-        };
+        // Type-based implicit deletion ordering rules are shared with the
+        // deploy DELETE phase (src/analyzer/implicit-delete-deps.ts).
 
         // Build type → logicalId index
         const typeToLogicalIds = new Map<string, string[]>();
@@ -282,7 +263,7 @@ async function destroyCommand(
         }
 
         for (const [logicalId, resource] of Object.entries(currentState.resources)) {
-          const mustDeleteAfter = implicitDeleteDeps[resource.resourceType];
+          const mustDeleteAfter = IMPLICIT_DELETE_DEPENDENCIES[resource.resourceType];
           if (!mustDeleteAfter) continue;
 
           for (const depType of mustDeleteAfter) {

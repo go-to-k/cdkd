@@ -234,6 +234,7 @@ buildDAG(resources: ParsedResource[]): ResourceDAG
 - `Ref` function (`{ "Ref": "LogicalId" }`)
 - `Fn::GetAtt` function (`{ "Fn::GetAtt": ["LogicalId", "Attribute"] }`)
 - **Implicit edges for Custom Resources**: `AWS::IAM::Policy` / `AWS::IAM::RolePolicy` / `AWS::IAM::ManagedPolicy` resources attached to a Custom Resource's ServiceToken Lambda execution role get an automatic edge to the Custom Resource itself, so the handler can't be invoked before the inline policy attachment has returned (avoids AccessDenied during deploy)
+- **Implicit edges for Lambda VpcConfig**: every `AWS::EC2::Subnet` / `AWS::EC2::SecurityGroup` referenced by an `AWS::Lambda::Function` `VpcConfig.SubnetIds` / `SecurityGroupIds` gets an explicit edge to the Lambda. For DELETE-time reverse traversal this guarantees the Lambda is removed before its Subnets/SGs so the asynchronous ENI detach has time to complete before EC2 rejects the subnet/SG delete with `DependencyViolation`. Implemented via `extractLambdaVpcDeleteDeps` in `src/analyzer/lambda-vpc-deps.ts`.
 
 **Determining Parallel Execution Levels**:
 
@@ -659,6 +660,10 @@ getClient<T>(ClientClass: new (...) => T, region: string): T
 │ - Get State             │
 │ - Rebuild DAG from      │
 │   state.dependencies    │
+│ - Apply implicit type-  │
+│   based delete deps     │
+│   (analyzer/implicit-   │
+│    delete-deps.ts)      │
 └────────┬────────────────┘
          │
          ▼
