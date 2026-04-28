@@ -118,6 +118,7 @@ export class EC2Provider implements ResourceProvider {
         'CidrIp',
         'Description',
         'SourceSecurityGroupId',
+        'SourceSecurityGroupOwnerId',
       ]),
     ],
     [
@@ -1256,6 +1257,14 @@ export class EC2Provider implements ResourceProvider {
       // Update tags
       await this.applyTags(physicalId, properties, logicalId);
 
+      // Diff and apply ingress rule changes (symmetric with egress below).
+      await this.applySecurityGroupRuleDiff(
+        physicalId,
+        (previousProperties['SecurityGroupIngress'] as Array<Record<string, unknown>>) ?? [],
+        (properties['SecurityGroupIngress'] as Array<Record<string, unknown>>) ?? [],
+        'ingress'
+      );
+
       // Diff and apply egress rule changes
       await this.applySecurityGroupRuleDiff(
         physicalId,
@@ -1737,7 +1746,7 @@ export class EC2Provider implements ResourceProvider {
     ToPort?: number;
     IpRanges?: Array<{ CidrIp: string; Description?: string }>;
     Ipv6Ranges?: Array<{ CidrIpv6: string; Description?: string }>;
-    UserIdGroupPairs?: Array<{ GroupId: string; Description?: string }>;
+    UserIdGroupPairs?: Array<{ GroupId: string; UserId?: string; Description?: string }>;
     PrefixListIds?: Array<{ PrefixListId: string; Description?: string }>;
   } {
     const ipProtocol = (properties['IpProtocol'] as string) ?? '-1';
@@ -1750,7 +1759,7 @@ export class EC2Provider implements ResourceProvider {
       ToPort?: number;
       IpRanges?: Array<{ CidrIp: string; Description?: string }>;
       Ipv6Ranges?: Array<{ CidrIpv6: string; Description?: string }>;
-      UserIdGroupPairs?: Array<{ GroupId: string; Description?: string }>;
+      UserIdGroupPairs?: Array<{ GroupId: string; UserId?: string; Description?: string }>;
       PrefixListIds?: Array<{ PrefixListId: string; Description?: string }>;
     } = { IpProtocol: ipProtocol };
 
@@ -1778,9 +1787,18 @@ export class EC2Provider implements ResourceProvider {
         ? (properties['DestinationSecurityGroupId'] as string | undefined)
         : (properties['SourceSecurityGroupId'] as string | undefined);
     if (peerGroupId) {
-      const groupPair: { GroupId: string; Description?: string } = {
+      const groupPair: { GroupId: string; UserId?: string; Description?: string } = {
         GroupId: peerGroupId,
       };
+      // Cross-account peer reference: CFn supports SourceSecurityGroupOwnerId on
+      // ingress rules to point at a security group in another AWS account. Map
+      // it to the UserIdGroupPairs[].UserId field on the EC2 API. CFn does not
+      // define a Destination*OwnerId counterpart for egress, so this is
+      // ingress-only.
+      if (direction === 'ingress') {
+        const peerOwnerId = properties['SourceSecurityGroupOwnerId'] as string | undefined;
+        if (peerOwnerId) groupPair.UserId = peerOwnerId;
+      }
       if (description) groupPair.Description = description;
       permission.UserIdGroupPairs = [groupPair];
     }
@@ -1824,6 +1842,12 @@ export class EC2Provider implements ResourceProvider {
         direction === 'egress'
           ? (rule['DestinationPrefixListId'] as string | undefined)
           : (rule['SourcePrefixListId'] as string | undefined);
+      // Include the cross-account peer owner id (ingress only) so a same-id
+      // group in a different account is not collapsed into the same rule.
+      const peerOwner =
+        direction === 'ingress'
+          ? (rule['SourceSecurityGroupOwnerId'] as string | undefined)
+          : undefined;
       return JSON.stringify({
         p: rule['IpProtocol'] ?? '-1',
         f: rule['FromPort'] ?? null,
@@ -1831,6 +1855,7 @@ export class EC2Provider implements ResourceProvider {
         c4: rule['CidrIp'] ?? null,
         c6: rule['CidrIpv6'] ?? null,
         peer: peerKey ?? null,
+        peerOwner: peerOwner ?? null,
         pl: prefixKey ?? null,
         d: rule['Description'] ?? null,
       });

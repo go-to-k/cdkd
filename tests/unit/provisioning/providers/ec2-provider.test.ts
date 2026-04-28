@@ -193,6 +193,125 @@ describe('EC2Provider - SecurityGroup egress handling', () => {
       );
     });
 
+    it('should map SourceSecurityGroupOwnerId to UserIdGroupPairs[].UserId on ingress (cross-account peer)', async () => {
+      // Cross-account ingress rule: GroupId comes from SourceSecurityGroupId
+      // and UserId from SourceSecurityGroupOwnerId. The default egress is
+      // untouched (no SecurityGroupEgress provided).
+      mockSend
+        .mockResolvedValueOnce({ GroupId: 'sg-xacct' }) // CreateSecurityGroupCommand
+        .mockResolvedValueOnce({}); // AuthorizeSecurityGroupIngressCommand
+
+      await provider.create('XAcctSg', 'AWS::EC2::SecurityGroup', {
+        GroupDescription: 'Cross-account peer',
+        VpcId: 'vpc-abc',
+        SecurityGroupIngress: [
+          {
+            IpProtocol: 'tcp',
+            FromPort: 443,
+            ToPort: 443,
+            SourceSecurityGroupId: 'sg-peer',
+            SourceSecurityGroupOwnerId: '111122223333',
+            Description: 'from peer account',
+          },
+        ],
+      });
+
+      const commands = mockSend.mock.calls.map((c) => c[0]);
+      const authorizeIngressCmds = commands.filter(
+        (c) => c instanceof AuthorizeSecurityGroupIngressCommand
+      );
+      expect(authorizeIngressCmds).toHaveLength(1);
+      expect(authorizeIngressCmds[0].input).toEqual({
+        GroupId: 'sg-xacct',
+        IpPermissions: [
+          {
+            IpProtocol: 'tcp',
+            FromPort: 443,
+            ToPort: 443,
+            UserIdGroupPairs: [
+              {
+                GroupId: 'sg-peer',
+                UserId: '111122223333',
+                Description: 'from peer account',
+              },
+            ],
+          },
+        ],
+      });
+    });
+
+    it('should not set UserId on egress when DestinationSecurityGroupId is provided (no CFn equivalent)', async () => {
+      // CFn does not define a Destination*OwnerId counterpart; even if a
+      // SourceSecurityGroupOwnerId is accidentally present on an egress rule,
+      // it must not leak into UserIdGroupPairs[].UserId.
+      mockSend
+        .mockResolvedValueOnce({ GroupId: 'sg-egress-only' }) // Create
+        .mockResolvedValueOnce({}) // Revoke default egress
+        .mockResolvedValueOnce({}); // Authorize egress
+
+      await provider.create('EgressOnly', 'AWS::EC2::SecurityGroup', {
+        GroupDescription: 'egress-only',
+        SecurityGroupEgress: [
+          {
+            IpProtocol: 'tcp',
+            FromPort: 5432,
+            ToPort: 5432,
+            DestinationSecurityGroupId: 'sg-db',
+            // Stray field - must be ignored on the egress path.
+            SourceSecurityGroupOwnerId: '999988887777',
+          },
+        ],
+      });
+
+      const commands = mockSend.mock.calls.map((c) => c[0]);
+      const authorizeEgressCmds = commands.filter(
+        (c) => c instanceof AuthorizeSecurityGroupEgressCommand
+      );
+      expect(authorizeEgressCmds).toHaveLength(1);
+      expect(authorizeEgressCmds[0].input).toEqual({
+        GroupId: 'sg-egress-only',
+        IpPermissions: [
+          {
+            IpProtocol: 'tcp',
+            FromPort: 5432,
+            ToPort: 5432,
+            UserIdGroupPairs: [{ GroupId: 'sg-db' }],
+          },
+        ],
+      });
+    });
+
+    it('should tolerate "already exists" when authorizing during a diff apply', async () => {
+      // Replays the authorize-on-update path where AWS reports the rule already
+      // exists (e.g. retry after a partial failure). The provider should treat
+      // this as success rather than throwing. Properties include no Tags and
+      // no previous ingress, so the only AWS call we make is the egress
+      // authorize that we want to reject.
+      const alreadyExists = new Error(
+        'the specified rule "peer: 0.0.0.0/0, TCP, from port: 443, to port: 443, ALLOW" already exists'
+      );
+
+      mockSend.mockRejectedValueOnce(alreadyExists);
+
+      await provider.update(
+        'Sg1',
+        'sg-tolerant-diff',
+        'AWS::EC2::SecurityGroup',
+        {
+          GroupDescription: 'd',
+          SecurityGroupEgress: [
+            { IpProtocol: 'tcp', FromPort: 443, ToPort: 443, CidrIp: '0.0.0.0/0' },
+          ],
+        },
+        { GroupDescription: 'd' }
+      );
+
+      const commands = mockSend.mock.calls.map((c) => c[0]);
+      expect(commands.filter((c) => c instanceof AuthorizeSecurityGroupEgressCommand)).toHaveLength(
+        1
+      );
+    });
+
     it('should still process SecurityGroupIngress alongside SecurityGroupEgress', async () => {
       mockSend
         .mockResolvedValueOnce({ GroupId: 'sg-mixed' }) // Create
@@ -353,6 +472,143 @@ describe('EC2Provider - SecurityGroup egress handling', () => {
       expect(commands.filter((c) => c instanceof AuthorizeSecurityGroupEgressCommand)).toHaveLength(
         0
       );
+    });
+  });
+
+  describe('updateSecurityGroup ingress rule diff', () => {
+    it('should authorize newly added ingress rules and revoke removed ones', async () => {
+      mockSend.mockResolvedValue({});
+
+      const previous = {
+        GroupDescription: 'desc',
+        SecurityGroupIngress: [
+          { IpProtocol: 'tcp', FromPort: 22, ToPort: 22, CidrIp: '0.0.0.0/0' }, // removed
+          { IpProtocol: 'tcp', FromPort: 80, ToPort: 80, CidrIp: '10.0.0.0/8' }, // unchanged
+        ],
+      };
+      const next = {
+        GroupDescription: 'desc',
+        SecurityGroupIngress: [
+          { IpProtocol: 'tcp', FromPort: 80, ToPort: 80, CidrIp: '10.0.0.0/8' }, // unchanged
+          {
+            IpProtocol: 'tcp',
+            FromPort: 443,
+            ToPort: 443,
+            SourceSecurityGroupId: 'sg-peer',
+            SourceSecurityGroupOwnerId: '111122223333',
+          }, // added (cross-account)
+        ],
+      };
+
+      await provider.update('Sg1', 'sg-deadbeef', 'AWS::EC2::SecurityGroup', next, previous);
+
+      const commands = mockSend.mock.calls.map((c) => c[0]);
+      const revokeIngressCmds = commands.filter(
+        (c) => c instanceof RevokeSecurityGroupIngressCommand
+      );
+      const authorizeIngressCmds = commands.filter(
+        (c) => c instanceof AuthorizeSecurityGroupIngressCommand
+      );
+
+      expect(revokeIngressCmds).toHaveLength(1);
+      expect(revokeIngressCmds[0].input).toEqual({
+        GroupId: 'sg-deadbeef',
+        IpPermissions: [
+          {
+            IpProtocol: 'tcp',
+            FromPort: 22,
+            ToPort: 22,
+            IpRanges: [{ CidrIp: '0.0.0.0/0' }],
+          },
+        ],
+      });
+
+      expect(authorizeIngressCmds).toHaveLength(1);
+      expect(authorizeIngressCmds[0].input).toEqual({
+        GroupId: 'sg-deadbeef',
+        IpPermissions: [
+          {
+            IpProtocol: 'tcp',
+            FromPort: 443,
+            ToPort: 443,
+            UserIdGroupPairs: [{ GroupId: 'sg-peer', UserId: '111122223333' }],
+          },
+        ],
+      });
+    });
+
+    it('should be a no-op (no authorize/revoke) when ingress rules are unchanged', async () => {
+      mockSend.mockResolvedValue({});
+
+      const rules = [
+        { IpProtocol: 'tcp', FromPort: 22, ToPort: 22, CidrIp: '0.0.0.0/0' },
+      ];
+
+      await provider.update(
+        'Sg1',
+        'sg-stable-ingress',
+        'AWS::EC2::SecurityGroup',
+        { GroupDescription: 'd', SecurityGroupIngress: rules },
+        { GroupDescription: 'd', SecurityGroupIngress: rules }
+      );
+
+      const commands = mockSend.mock.calls.map((c) => c[0]);
+      expect(commands.filter((c) => c instanceof RevokeSecurityGroupIngressCommand)).toHaveLength(
+        0
+      );
+      expect(
+        commands.filter((c) => c instanceof AuthorizeSecurityGroupIngressCommand)
+      ).toHaveLength(0);
+    });
+
+    it('should authorize all ingress rules when previous had none', async () => {
+      mockSend.mockResolvedValue({});
+
+      await provider.update(
+        'Sg1',
+        'sg-fresh-ingress',
+        'AWS::EC2::SecurityGroup',
+        {
+          GroupDescription: 'd',
+          SecurityGroupIngress: [
+            { IpProtocol: 'tcp', FromPort: 22, ToPort: 22, CidrIp: '0.0.0.0/0' },
+          ],
+        },
+        { GroupDescription: 'd' }
+      );
+
+      const commands = mockSend.mock.calls.map((c) => c[0]);
+      expect(
+        commands.filter((c) => c instanceof AuthorizeSecurityGroupIngressCommand)
+      ).toHaveLength(1);
+      expect(commands.filter((c) => c instanceof RevokeSecurityGroupIngressCommand)).toHaveLength(
+        0
+      );
+    });
+
+    it('should revoke all ingress rules when next has none', async () => {
+      mockSend.mockResolvedValue({});
+
+      await provider.update(
+        'Sg1',
+        'sg-empty-ingress',
+        'AWS::EC2::SecurityGroup',
+        { GroupDescription: 'd' },
+        {
+          GroupDescription: 'd',
+          SecurityGroupIngress: [
+            { IpProtocol: 'tcp', FromPort: 22, ToPort: 22, CidrIp: '0.0.0.0/0' },
+          ],
+        }
+      );
+
+      const commands = mockSend.mock.calls.map((c) => c[0]);
+      expect(commands.filter((c) => c instanceof RevokeSecurityGroupIngressCommand)).toHaveLength(
+        1
+      );
+      expect(
+        commands.filter((c) => c instanceof AuthorizeSecurityGroupIngressCommand)
+      ).toHaveLength(0);
     });
   });
 
