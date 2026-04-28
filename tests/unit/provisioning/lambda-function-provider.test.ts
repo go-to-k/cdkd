@@ -151,6 +151,75 @@ describe('LambdaFunctionProvider', () => {
         SecurityGroupIds: ['sg-new'],
       });
     });
+
+    it('detaches the function from a VPC by sending empty arrays when VpcConfig is removed', async () => {
+      // UpdateFunctionConfiguration treats an absent VpcConfig as "no
+      // change", so we must explicitly send empty SubnetIds and
+      // SecurityGroupIds to detach a function from its VPC.
+      mockLambdaSend
+        .mockResolvedValueOnce({})
+        .mockResolvedValueOnce({
+          Configuration: {
+            FunctionName: 'fn-detach',
+            FunctionArn: 'arn:aws:lambda:us-east-1:123456789012:function:fn-detach',
+          },
+        });
+
+      await provider.update(
+        'VpcFn',
+        'fn-detach',
+        'AWS::Lambda::Function',
+        {
+          Role: 'arn:aws:iam::123456789012:role/exec',
+          // VpcConfig intentionally absent.
+        },
+        {
+          Role: 'arn:aws:iam::123456789012:role/exec',
+          VpcConfig: {
+            SubnetIds: ['subnet-old'],
+            SecurityGroupIds: ['sg-old'],
+          },
+        }
+      );
+
+      const cmd = mockLambdaSend.mock.calls[0][0];
+      expect(cmd).toBeInstanceOf(UpdateFunctionConfigurationCommand);
+      expect(cmd.input.VpcConfig).toEqual({
+        SubnetIds: [],
+        SecurityGroupIds: [],
+      });
+    });
+
+    it('does not send VpcConfig at all when neither previous nor new has VpcConfig', async () => {
+      // Force a config update by changing Timeout, then verify the input
+      // does not include a synthetic empty VpcConfig.
+      mockLambdaSend
+        .mockResolvedValueOnce({})
+        .mockResolvedValueOnce({
+          Configuration: {
+            FunctionName: 'fn-no-vpc',
+            FunctionArn: 'arn:aws:lambda:us-east-1:123456789012:function:fn-no-vpc',
+          },
+        });
+
+      await provider.update(
+        'NoVpcFn',
+        'fn-no-vpc',
+        'AWS::Lambda::Function',
+        {
+          Role: 'arn:aws:iam::123456789012:role/exec',
+          Timeout: 30,
+        },
+        {
+          Role: 'arn:aws:iam::123456789012:role/exec',
+          Timeout: 10,
+        }
+      );
+
+      const cmd = mockLambdaSend.mock.calls[0][0];
+      expect(cmd).toBeInstanceOf(UpdateFunctionConfigurationCommand);
+      expect(cmd.input.VpcConfig).toBeUndefined();
+    });
   });
 
   describe('delete', () => {
@@ -239,6 +308,29 @@ describe('LambdaFunctionProvider', () => {
       await promise;
 
       // Only one poll needed because the matched ENI does not belong to fn-vpc.
+      expect(mockEc2Send).toHaveBeenCalledTimes(1);
+    });
+
+    it('rejects ENIs where the function name appears only as a non-hyphen-bounded prefix', async () => {
+      // For function "fn", an ENI for "myfn" must not be counted: the
+      // function-name token in the Description is hyphen-bounded, so
+      // "myfn" (preceded by "y") is correctly excluded.
+      mockLambdaSend.mockResolvedValueOnce({});
+
+      mockEc2Send.mockResolvedValueOnce({
+        NetworkInterfaces: [
+          {
+            NetworkInterfaceId: 'eni-myfn',
+            Description: 'AWS Lambda VPC ENI-myfn-abc123',
+          },
+        ],
+      });
+
+      await provider.delete('Fn', 'fn', 'AWS::Lambda::Function', {
+        VpcConfig: { SubnetIds: ['subnet-aaa'], SecurityGroupIds: ['sg-1'] },
+      });
+
+      // Single poll exits immediately because no ENI matches.
       expect(mockEc2Send).toHaveBeenCalledTimes(1);
     });
 

@@ -216,7 +216,10 @@ export class LambdaFunctionProvider implements ResourceProvider {
           Layers: properties['Layers'] as string[] | undefined,
           TracingConfig: properties['TracingConfig'] as TracingConfig | undefined,
           EphemeralStorage: properties['EphemeralStorage'] as EphemeralStorage | undefined,
-          VpcConfig: this.buildVpcConfig(properties['VpcConfig']),
+          VpcConfig: this.buildVpcConfigForUpdate(
+            properties['VpcConfig'],
+            previousProperties['VpcConfig']
+          ),
         };
 
         await this.lambdaClient.send(new UpdateFunctionConfigurationCommand(configParams));
@@ -341,6 +344,27 @@ export class LambdaFunctionProvider implements ResourceProvider {
   }
 
   /**
+   * Build VpcConfig for an update call, accounting for VPC detach.
+   *
+   * UpdateFunctionConfiguration treats an absent VpcConfig as "no change",
+   * so omitting it cannot move a function out of its existing VPC. To
+   * detach we must explicitly send empty SubnetIds / SecurityGroupIds.
+   */
+  private buildVpcConfigForUpdate(
+    newRaw: unknown,
+    previousRaw: unknown
+  ): VpcConfig | undefined {
+    const next = this.buildVpcConfig(newRaw);
+    if (next) {
+      return next;
+    }
+    if (this.hasVpcConfig(previousRaw)) {
+      return { SubnetIds: [], SecurityGroupIds: [] };
+    }
+    return undefined;
+  }
+
+  /**
    * Determine whether the function actually attaches to a VPC, i.e. has at
    * least one Subnet ID. A bare VpcConfig with empty arrays does not create
    * any ENIs, so we skip the wait in that case.
@@ -378,15 +402,21 @@ export class LambdaFunctionProvider implements ResourceProvider {
       `Waiting for Lambda VPC ENIs to detach for function ${functionName} (timeout ${this.eniWaitTimeoutMs}ms)`
     );
 
-    // Build a substring matcher tolerant of the canonical Lambda ENI Description.
+    // Match the canonical Lambda ENI Description prefix and require the
+    // function name to appear as a hyphen-bounded token. This prevents a
+    // function named "fn" from matching ENIs whose function-name token has
+    // "fn" as a prefix only (e.g. "myfn"). It cannot disambiguate when one
+    // function name is itself a hyphen-prefix of another (e.g. "fn" vs
+    // "fn-foo"), which is a known limitation of the substring approach.
     const descriptionNeedle = `AWS Lambda VPC ENI`;
+    const functionNamePattern = new RegExp(`(^|-)${escapeRegExp(functionName)}(-|$)`);
 
     // Loop until either ENIs are gone or we exceed the configured timeout.
     for (;;) {
       attempt++;
       let count: number;
       try {
-        count = await this.countLambdaEnis(functionName, descriptionNeedle);
+        count = await this.countLambdaEnis(descriptionNeedle, functionNamePattern);
       } catch (error) {
         // Don't abort delete on transient EC2 errors; warn and continue.
         this.logger.warn(
@@ -430,7 +460,10 @@ export class LambdaFunctionProvider implements ResourceProvider {
    * Server-side filter (`description`) does not support wildcards in EC2's API,
    * so we filter client-side after narrowing on `requester-id` + `status`.
    */
-  private async countLambdaEnis(functionName: string, descriptionNeedle: string): Promise<number> {
+  private async countLambdaEnis(
+    descriptionNeedle: string,
+    functionNamePattern: RegExp
+  ): Promise<number> {
     let nextToken: string | undefined;
     let count = 0;
     do {
@@ -446,7 +479,7 @@ export class LambdaFunctionProvider implements ResourceProvider {
 
       for (const ni of resp.NetworkInterfaces ?? []) {
         const desc = ni.Description ?? '';
-        if (desc.includes(descriptionNeedle) && desc.includes(functionName)) {
+        if (desc.includes(descriptionNeedle) && functionNamePattern.test(desc)) {
           count++;
         }
       }
@@ -561,4 +594,8 @@ export class LambdaFunctionProvider implements ResourceProvider {
     }
     return (crc ^ 0xffffffff) >>> 0;
   }
+}
+
+function escapeRegExp(input: string): string {
+  return input.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
