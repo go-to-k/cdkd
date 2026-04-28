@@ -20,6 +20,8 @@ import {
   DeleteSecurityGroupCommand,
   AuthorizeSecurityGroupIngressCommand,
   RevokeSecurityGroupIngressCommand,
+  AuthorizeSecurityGroupEgressCommand,
+  RevokeSecurityGroupEgressCommand,
   CreateTagsCommand,
   DescribeSubnetsCommand,
   DescribeSecurityGroupsCommand,
@@ -97,7 +99,14 @@ export class EC2Provider implements ResourceProvider {
     ['AWS::EC2::SubnetRouteTableAssociation', new Set(['SubnetId', 'RouteTableId'])],
     [
       'AWS::EC2::SecurityGroup',
-      new Set(['GroupDescription', 'GroupName', 'VpcId', 'SecurityGroupIngress', 'Tags']),
+      new Set([
+        'GroupDescription',
+        'GroupName',
+        'VpcId',
+        'SecurityGroupIngress',
+        'SecurityGroupEgress',
+        'Tags',
+      ]),
     ],
     [
       'AWS::EC2::SecurityGroupIngress',
@@ -109,6 +118,7 @@ export class EC2Provider implements ResourceProvider {
         'CidrIp',
         'Description',
         'SourceSecurityGroupId',
+        'SourceSecurityGroupOwnerId',
       ]),
     ],
     [
@@ -221,7 +231,13 @@ export class EC2Provider implements ResourceProvider {
       case 'AWS::EC2::SubnetRouteTableAssociation':
         return this.updateSubnetRouteTableAssociation(logicalId, physicalId);
       case 'AWS::EC2::SecurityGroup':
-        return this.updateSecurityGroup(logicalId, physicalId, resourceType, properties);
+        return this.updateSecurityGroup(
+          logicalId,
+          physicalId,
+          resourceType,
+          properties,
+          previousProperties
+        );
       case 'AWS::EC2::SecurityGroupIngress':
         return this.updateSecurityGroupIngress(
           logicalId,
@@ -1170,6 +1186,43 @@ export class EC2Provider implements ResourceProvider {
         }
       }
 
+      // Egress rules: when explicit SecurityGroupEgress is provided, CFn replaces
+      // the AWS-default "allow all egress" rule (0.0.0.0/0, -1) with the supplied rules.
+      // We replicate this by revoking the default rule first, then authorizing each.
+      const egressRules = properties['SecurityGroupEgress'] as
+        | Array<Record<string, unknown>>
+        | undefined;
+      if (egressRules && Array.isArray(egressRules)) {
+        // Revoke the AWS-default "allow all egress" rule so it does not coexist
+        // with user-specified rules. Tolerate "not found" if the default is absent.
+        try {
+          await this.ec2Client.send(
+            new RevokeSecurityGroupEgressCommand({
+              GroupId: groupId,
+              IpPermissions: [
+                {
+                  IpProtocol: '-1',
+                  IpRanges: [{ CidrIp: '0.0.0.0/0' }],
+                },
+              ],
+            })
+          );
+        } catch (error) {
+          if (!this.isNotFoundError(error)) {
+            throw error;
+          }
+        }
+
+        for (const rule of egressRules) {
+          await this.ec2Client.send(
+            new AuthorizeSecurityGroupEgressCommand({
+              GroupId: groupId,
+              IpPermissions: [this.buildIpPermission(rule, 'egress')],
+            })
+          );
+        }
+      }
+
       this.logger.debug(`Successfully created SecurityGroup ${logicalId}: ${groupId}`);
 
       return {
@@ -1195,13 +1248,30 @@ export class EC2Provider implements ResourceProvider {
     logicalId: string,
     physicalId: string,
     resourceType: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    previousProperties: Record<string, unknown>
   ): Promise<ResourceUpdateResult> {
     this.logger.debug(`Updating SecurityGroup ${logicalId}: ${physicalId}`);
 
     try {
       // Update tags
       await this.applyTags(physicalId, properties, logicalId);
+
+      // Diff and apply ingress rule changes (symmetric with egress below).
+      await this.applySecurityGroupRuleDiff(
+        physicalId,
+        (previousProperties['SecurityGroupIngress'] as Array<Record<string, unknown>>) ?? [],
+        (properties['SecurityGroupIngress'] as Array<Record<string, unknown>>) ?? [],
+        'ingress'
+      );
+
+      // Diff and apply egress rule changes
+      await this.applySecurityGroupRuleDiff(
+        physicalId,
+        (previousProperties['SecurityGroupEgress'] as Array<Record<string, unknown>>) ?? [],
+        (properties['SecurityGroupEgress'] as Array<Record<string, unknown>>) ?? [],
+        'egress'
+      );
 
       this.logger.debug(`Successfully updated SecurityGroup ${logicalId}`);
 
@@ -1661,14 +1731,23 @@ export class EC2Provider implements ResourceProvider {
   // ─── Helpers ──────────────────────────────────────────────────────
 
   /**
-   * Build an IpPermission object from CloudFormation-style properties
+   * Build an IpPermission object from CloudFormation-style properties.
+   *
+   * The EC2 IpPermission shape is identical for ingress and egress; only the
+   * CFn property names that point to the "other" security group differ
+   * (SourceSecurityGroupId vs DestinationSecurityGroupId).
    */
-  private buildIpPermission(properties: Record<string, unknown>): {
+  private buildIpPermission(
+    properties: Record<string, unknown>,
+    direction: 'ingress' | 'egress' = 'ingress'
+  ): {
     IpProtocol: string;
     FromPort?: number;
     ToPort?: number;
     IpRanges?: Array<{ CidrIp: string; Description?: string }>;
-    UserIdGroupPairs?: Array<{ GroupId: string; Description?: string }>;
+    Ipv6Ranges?: Array<{ CidrIpv6: string; Description?: string }>;
+    UserIdGroupPairs?: Array<{ GroupId: string; UserId?: string; Description?: string }>;
+    PrefixListIds?: Array<{ PrefixListId: string; Description?: string }>;
   } {
     const ipProtocol = (properties['IpProtocol'] as string) ?? '-1';
     const fromPort = properties['FromPort'] as number | undefined;
@@ -1679,30 +1758,169 @@ export class EC2Provider implements ResourceProvider {
       FromPort?: number;
       ToPort?: number;
       IpRanges?: Array<{ CidrIp: string; Description?: string }>;
-      UserIdGroupPairs?: Array<{ GroupId: string; Description?: string }>;
+      Ipv6Ranges?: Array<{ CidrIpv6: string; Description?: string }>;
+      UserIdGroupPairs?: Array<{ GroupId: string; UserId?: string; Description?: string }>;
+      PrefixListIds?: Array<{ PrefixListId: string; Description?: string }>;
     } = { IpProtocol: ipProtocol };
 
     if (fromPort !== undefined) permission.FromPort = fromPort;
     if (toPort !== undefined) permission.ToPort = toPort;
 
     const cidrIp = properties['CidrIp'] as string | undefined;
+    const cidrIpv6 = properties['CidrIpv6'] as string | undefined;
     const description = properties['Description'] as string | undefined;
     if (cidrIp) {
       const ipRange: { CidrIp: string; Description?: string } = { CidrIp: cidrIp };
       if (description) ipRange.Description = description;
       permission.IpRanges = [ipRange];
     }
+    if (cidrIpv6) {
+      const ipv6Range: { CidrIpv6: string; Description?: string } = { CidrIpv6: cidrIpv6 };
+      if (description) ipv6Range.Description = description;
+      permission.Ipv6Ranges = [ipv6Range];
+    }
 
-    const sourceSecurityGroupId = properties['SourceSecurityGroupId'] as string | undefined;
-    if (sourceSecurityGroupId) {
-      const groupPair: { GroupId: string; Description?: string } = {
-        GroupId: sourceSecurityGroupId,
+    // Source SG (ingress) and destination SG (egress) map to the same
+    // UserIdGroupPairs slot on the underlying EC2 IpPermission shape.
+    const peerGroupId =
+      direction === 'egress'
+        ? (properties['DestinationSecurityGroupId'] as string | undefined)
+        : (properties['SourceSecurityGroupId'] as string | undefined);
+    if (peerGroupId) {
+      const groupPair: { GroupId: string; UserId?: string; Description?: string } = {
+        GroupId: peerGroupId,
       };
+      // Cross-account peer reference: CFn supports SourceSecurityGroupOwnerId on
+      // ingress rules to point at a security group in another AWS account. Map
+      // it to the UserIdGroupPairs[].UserId field on the EC2 API. CFn does not
+      // define a Destination*OwnerId counterpart for egress, so this is
+      // ingress-only.
+      if (direction === 'ingress') {
+        const peerOwnerId = properties['SourceSecurityGroupOwnerId'] as string | undefined;
+        if (peerOwnerId) groupPair.UserId = peerOwnerId;
+      }
       if (description) groupPair.Description = description;
       permission.UserIdGroupPairs = [groupPair];
     }
 
+    // Prefix list (egress only in CFn, but harmless to read for both)
+    const prefixListId =
+      direction === 'egress'
+        ? (properties['DestinationPrefixListId'] as string | undefined)
+        : (properties['SourcePrefixListId'] as string | undefined);
+    if (prefixListId) {
+      const prefixEntry: { PrefixListId: string; Description?: string } = {
+        PrefixListId: prefixListId,
+      };
+      if (description) prefixEntry.Description = description;
+      permission.PrefixListIds = [prefixEntry];
+    }
+
     return permission;
+  }
+
+  /**
+   * Compute the diff between two sets of SecurityGroup rule definitions
+   * (ingress or egress) and apply the resulting authorize/revoke calls.
+   *
+   * Rules are identified by a deterministic key derived from their full
+   * shape — protocol, ports, CIDR, peer group, prefix list, description —
+   * so updating any of those fields counts as a replacement (revoke + authorize).
+   */
+  private async applySecurityGroupRuleDiff(
+    groupId: string,
+    previousRules: Array<Record<string, unknown>>,
+    nextRules: Array<Record<string, unknown>>,
+    direction: 'ingress' | 'egress'
+  ): Promise<void> {
+    const ruleKey = (rule: Record<string, unknown>): string => {
+      const peerKey =
+        direction === 'egress'
+          ? (rule['DestinationSecurityGroupId'] as string | undefined)
+          : (rule['SourceSecurityGroupId'] as string | undefined);
+      const prefixKey =
+        direction === 'egress'
+          ? (rule['DestinationPrefixListId'] as string | undefined)
+          : (rule['SourcePrefixListId'] as string | undefined);
+      // Include the cross-account peer owner id (ingress only) so a same-id
+      // group in a different account is not collapsed into the same rule.
+      const peerOwner =
+        direction === 'ingress'
+          ? (rule['SourceSecurityGroupOwnerId'] as string | undefined)
+          : undefined;
+      return JSON.stringify({
+        p: rule['IpProtocol'] ?? '-1',
+        f: rule['FromPort'] ?? null,
+        t: rule['ToPort'] ?? null,
+        c4: rule['CidrIp'] ?? null,
+        c6: rule['CidrIpv6'] ?? null,
+        peer: peerKey ?? null,
+        peerOwner: peerOwner ?? null,
+        pl: prefixKey ?? null,
+        d: rule['Description'] ?? null,
+      });
+    };
+
+    const prevByKey = new Map<string, Record<string, unknown>>();
+    for (const rule of previousRules) prevByKey.set(ruleKey(rule), rule);
+    const nextByKey = new Map<string, Record<string, unknown>>();
+    for (const rule of nextRules) nextByKey.set(ruleKey(rule), rule);
+
+    const toRevoke: Array<Record<string, unknown>> = [];
+    for (const [key, rule] of prevByKey) {
+      if (!nextByKey.has(key)) toRevoke.push(rule);
+    }
+    const toAuthorize: Array<Record<string, unknown>> = [];
+    for (const [key, rule] of nextByKey) {
+      if (!prevByKey.has(key)) toAuthorize.push(rule);
+    }
+
+    for (const rule of toRevoke) {
+      try {
+        if (direction === 'egress') {
+          await this.ec2Client.send(
+            new RevokeSecurityGroupEgressCommand({
+              GroupId: groupId,
+              IpPermissions: [this.buildIpPermission(rule, 'egress')],
+            })
+          );
+        } else {
+          await this.ec2Client.send(
+            new RevokeSecurityGroupIngressCommand({
+              GroupId: groupId,
+              IpPermissions: [this.buildIpPermission(rule, 'ingress')],
+            })
+          );
+        }
+      } catch (error) {
+        if (!this.isNotFoundError(error)) throw error;
+      }
+    }
+
+    for (const rule of toAuthorize) {
+      try {
+        if (direction === 'egress') {
+          await this.ec2Client.send(
+            new AuthorizeSecurityGroupEgressCommand({
+              GroupId: groupId,
+              IpPermissions: [this.buildIpPermission(rule, 'egress')],
+            })
+          );
+        } else {
+          await this.ec2Client.send(
+            new AuthorizeSecurityGroupIngressCommand({
+              GroupId: groupId,
+              IpPermissions: [this.buildIpPermission(rule, 'ingress')],
+            })
+          );
+        }
+      } catch (error) {
+        // Tolerate "already exists" to keep the diff idempotent across retries.
+        if (!(error instanceof Error && error.message.includes('already exists'))) {
+          throw error;
+        }
+      }
+    }
   }
 
   // ─── AWS::EC2::NetworkAcl ────────────────────────────────────────
