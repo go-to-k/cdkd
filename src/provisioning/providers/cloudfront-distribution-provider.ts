@@ -99,7 +99,7 @@ export class CloudFrontDistributionProvider implements ResourceProvider {
       // Skip with --no-wait or CDKD_NO_WAIT=true
       if (process.env['CDKD_NO_WAIT'] !== 'true') {
         this.logger.debug(`Waiting for Distribution ${distributionId} to reach Deployed status...`);
-        await this.waitForDistributionDeployed(distributionId);
+        await this.waitForDistributionStable(distributionId);
       }
 
       return {
@@ -239,8 +239,14 @@ export class CloudFrontDistributionProvider implements ResourceProvider {
         );
         etag = updateResponse.ETag!;
 
-        // Wait for the distribution to be fully deployed (Disabled state)
-        await this.waitForDistributionDeployed(physicalId);
+        // Wait until the disable is fully propagated. We must check BOTH
+        // Status==='Deployed' AND DistributionConfig.Enabled===false, because
+        // CloudFront's read-after-write is eventually consistent: a GetDistribution
+        // call made shortly after UpdateDistribution can still return the previous
+        // (Enabled=true, Status=Deployed) snapshot, which would otherwise cause us
+        // to exit the wait loop on the very first poll and fire DeleteDistribution
+        // against an enabled distribution (yielding DistributionNotDisabled).
+        await this.waitForDistributionStable(physicalId, false);
 
         // Re-fetch ETag after waiting (state may have changed)
         const refreshResponse = await this.cloudFrontClient.send(
@@ -297,10 +303,19 @@ export class CloudFrontDistributionProvider implements ResourceProvider {
   }
 
   /**
-   * Wait for a distribution to reach "Deployed" status.
+   * Wait for a distribution to reach a stable state.
+   *
+   * "Stable" means Status === 'Deployed'. When `expectedEnabled` is provided,
+   * we additionally require DistributionConfig.Enabled === expectedEnabled —
+   * this guards against CloudFront's eventually-consistent reads that can
+   * briefly return the pre-update snapshot after UpdateDistribution returns.
+   *
    * Uses exponential backoff polling.
    */
-  private async waitForDistributionDeployed(distributionId: string): Promise<void> {
+  private async waitForDistributionStable(
+    distributionId: string,
+    expectedEnabled?: boolean
+  ): Promise<void> {
     const maxAttempts = 60;
     let delay = 5000; // start at 5s
     const maxDelay = 30000;
@@ -324,14 +339,21 @@ export class CloudFrontDistributionProvider implements ResourceProvider {
           new GetDistributionCommand({ Id: distributionId })
         );
         const status = response.Distribution?.Status;
+        const enabled = response.Distribution?.DistributionConfig?.Enabled;
 
-        if (status === 'Deployed') {
-          this.logger.debug(`Distribution ${distributionId} is now Deployed`);
+        const enabledMatches = expectedEnabled === undefined || enabled === expectedEnabled;
+
+        if (status === 'Deployed' && enabledMatches) {
+          this.logger.debug(
+            `Distribution ${distributionId} is stable (Status=Deployed, Enabled=${enabled})`
+          );
           return;
         }
 
         this.logger.debug(
-          `Distribution ${distributionId} status: ${status} (attempt ${attempt}/${maxAttempts})`
+          `Distribution ${distributionId} status: ${status}, enabled: ${enabled}` +
+            (expectedEnabled === undefined ? '' : ` (waiting for Enabled=${expectedEnabled})`) +
+            ` (attempt ${attempt}/${maxAttempts})`
         );
 
         // Interruptible sleep: check SIGINT every second
@@ -343,7 +365,7 @@ export class CloudFrontDistributionProvider implements ResourceProvider {
       }
 
       this.logger.debug(
-        `Distribution ${distributionId} did not reach Deployed status within timeout, proceeding with deletion attempt`
+        `Distribution ${distributionId} did not reach stable state within timeout, proceeding with next step`
       );
     } finally {
       process.removeListener('SIGINT', sigintHandler);
