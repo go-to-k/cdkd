@@ -15,7 +15,9 @@ import {
   type Architecture,
   type TracingConfig,
   type EphemeralStorage,
+  type VpcConfig,
 } from '@aws-sdk/client-lambda';
+import { EC2Client, DescribeNetworkInterfacesCommand } from '@aws-sdk/client-ec2';
 import { getLogger } from '../../utils/logger.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
@@ -36,6 +38,7 @@ import type {
  */
 export class LambdaFunctionProvider implements ResourceProvider {
   private lambdaClient: LambdaClient;
+  private ec2Client: EC2Client;
   private logger = getLogger().child('LambdaFunctionProvider');
   handledProperties = new Map<string, ReadonlySet<string>>([
     [
@@ -56,13 +59,23 @@ export class LambdaFunctionProvider implements ResourceProvider {
         'PackageType',
         'TracingConfig',
         'EphemeralStorage',
+        'VpcConfig',
       ]),
     ],
   ]);
 
+  // ENI detach polling configuration (overridable for tests).
+  // Lambda VPC ENI detach is async and can take 20-40 minutes in the worst case;
+  // we poll up to 10 minutes and then warn-and-continue, since downstream Subnet/SG
+  // deletion has its own retry logic that handles a small remaining window.
+  private readonly eniWaitTimeoutMs: number = 10 * 60 * 1000;
+  private readonly eniWaitInitialDelayMs: number = 10_000;
+  private readonly eniWaitMaxDelayMs: number = 30_000;
+
   constructor() {
     const awsClients = getAwsClients();
     this.lambdaClient = awsClients.lambda;
+    this.ec2Client = awsClients.ec2;
   }
 
   /**
@@ -125,6 +138,7 @@ export class LambdaFunctionProvider implements ResourceProvider {
         PackageType: properties['PackageType'] as 'Zip' | 'Image' | undefined,
         TracingConfig: properties['TracingConfig'] as TracingConfig | undefined,
         EphemeralStorage: properties['EphemeralStorage'] as EphemeralStorage | undefined,
+        VpcConfig: this.buildVpcConfig(properties['VpcConfig']),
         Tags: tags,
       };
 
@@ -176,6 +190,7 @@ export class LambdaFunctionProvider implements ResourceProvider {
         'Layers',
         'TracingConfig',
         'EphemeralStorage',
+        'VpcConfig',
       ];
 
       let hasConfigChanges = false;
@@ -201,6 +216,10 @@ export class LambdaFunctionProvider implements ResourceProvider {
           Layers: properties['Layers'] as string[] | undefined,
           TracingConfig: properties['TracingConfig'] as TracingConfig | undefined,
           EphemeralStorage: properties['EphemeralStorage'] as EphemeralStorage | undefined,
+          VpcConfig: this.buildVpcConfigForUpdate(
+            properties['VpcConfig'],
+            previousProperties['VpcConfig']
+          ),
         };
 
         await this.lambdaClient.send(new UpdateFunctionConfigurationCommand(configParams));
@@ -253,14 +272,25 @@ export class LambdaFunctionProvider implements ResourceProvider {
 
   /**
    * Delete a Lambda function
+   *
+   * For VPC-enabled Lambda functions, AWS detaches the hyperplane ENIs
+   * asynchronously after DeleteFunction returns. If we let downstream
+   * resource deletion (Subnet / SecurityGroup) proceed immediately, those
+   * deletions fail with "has dependencies" / "has a dependent object".
+   *
+   * To smooth this out, when properties carry a VpcConfig with subnets or
+   * security groups, we poll DescribeNetworkInterfaces for the function's
+   * managed ENIs and only return once they are gone (or the timeout elapses).
    */
   async delete(
     logicalId: string,
     physicalId: string,
     resourceType: string,
-    _properties?: Record<string, unknown>
+    properties?: Record<string, unknown>
   ): Promise<void> {
     this.logger.debug(`Deleting Lambda function ${logicalId}: ${physicalId}`);
+
+    const hasVpcConfig = this.hasVpcConfig(properties?.['VpcConfig']);
 
     try {
       await this.lambdaClient.send(new DeleteFunctionCommand({ FunctionName: physicalId }));
@@ -279,6 +309,184 @@ export class LambdaFunctionProvider implements ResourceProvider {
         cause
       );
     }
+
+    if (hasVpcConfig) {
+      await this.waitForLambdaEnisDetached(physicalId);
+    }
+  }
+
+  /**
+   * Build Lambda VpcConfig parameter from CDK properties.
+   *
+   * Returns undefined when VpcConfig is unset, so the SDK leaves the function
+   * outside any VPC. Returns an empty config (no subnets, no SGs) when caller
+   * explicitly clears it on update — that detaches the function from its VPC.
+   */
+  private buildVpcConfig(raw: unknown): VpcConfig | undefined {
+    if (raw === undefined || raw === null) {
+      return undefined;
+    }
+    if (typeof raw !== 'object') {
+      return undefined;
+    }
+    const vpc = raw as Record<string, unknown>;
+    const result: VpcConfig = {};
+    if (Array.isArray(vpc['SubnetIds'])) {
+      result.SubnetIds = vpc['SubnetIds'] as string[];
+    }
+    if (Array.isArray(vpc['SecurityGroupIds'])) {
+      result.SecurityGroupIds = vpc['SecurityGroupIds'] as string[];
+    }
+    if (typeof vpc['Ipv6AllowedForDualStack'] === 'boolean') {
+      result.Ipv6AllowedForDualStack = vpc['Ipv6AllowedForDualStack'];
+    }
+    return result;
+  }
+
+  /**
+   * Build VpcConfig for an update call, accounting for VPC detach.
+   *
+   * UpdateFunctionConfiguration treats an absent VpcConfig as "no change",
+   * so omitting it cannot move a function out of its existing VPC. To
+   * detach we must explicitly send empty SubnetIds / SecurityGroupIds.
+   */
+  private buildVpcConfigForUpdate(newRaw: unknown, previousRaw: unknown): VpcConfig | undefined {
+    const next = this.buildVpcConfig(newRaw);
+    if (next) {
+      return next;
+    }
+    if (this.hasVpcConfig(previousRaw)) {
+      return { SubnetIds: [], SecurityGroupIds: [] };
+    }
+    return undefined;
+  }
+
+  /**
+   * Determine whether the function actually attaches to a VPC, i.e. has at
+   * least one Subnet ID. A bare VpcConfig with empty arrays does not create
+   * any ENIs, so we skip the wait in that case.
+   */
+  private hasVpcConfig(raw: unknown): boolean {
+    if (raw === undefined || raw === null || typeof raw !== 'object') {
+      return false;
+    }
+    const vpc = raw as Record<string, unknown>;
+    const subnets = vpc['SubnetIds'];
+    return Array.isArray(subnets) && subnets.length > 0;
+  }
+
+  /**
+   * Poll DescribeNetworkInterfaces until the Lambda-managed ENIs for the
+   * given function are gone, or the configured timeout elapses.
+   *
+   * Lambda VPC ENIs carry a Description like:
+   *   "AWS Lambda VPC ENI-<functionName>-<uuid>"
+   * We match on a substring to be tolerant of format drift.
+   *
+   * Polling: starts at eniWaitInitialDelayMs (10s), exponential backoff up
+   * to eniWaitMaxDelayMs (30s), bounded by eniWaitTimeoutMs (10min).
+   *
+   * Timeout is treated as a soft warning: detach can legitimately take 20-40
+   * minutes in degraded conditions, and downstream Subnet/SG deletion has
+   * its own retries to handle the residual window.
+   */
+  private async waitForLambdaEnisDetached(functionName: string): Promise<void> {
+    const start = Date.now();
+    let delay = this.eniWaitInitialDelayMs;
+    let attempt = 0;
+
+    this.logger.debug(
+      `Waiting for Lambda VPC ENIs to detach for function ${functionName} (timeout ${this.eniWaitTimeoutMs}ms)`
+    );
+
+    // Match the canonical Lambda ENI Description prefix and require the
+    // function name to appear as a hyphen-bounded token. This prevents a
+    // function named "fn" from matching ENIs whose function-name token has
+    // "fn" as a prefix only (e.g. "myfn"). It cannot disambiguate when one
+    // function name is itself a hyphen-prefix of another (e.g. "fn" vs
+    // "fn-foo"), which is a known limitation of the substring approach.
+    const descriptionNeedle = `AWS Lambda VPC ENI`;
+    const functionNamePattern = new RegExp(`(^|-)${escapeRegExp(functionName)}(-|$)`);
+
+    // Loop until either ENIs are gone or we exceed the configured timeout.
+    for (;;) {
+      attempt++;
+      let count: number;
+      try {
+        count = await this.countLambdaEnis(descriptionNeedle, functionNamePattern);
+      } catch (error) {
+        // Don't abort delete on transient EC2 errors; warn and continue.
+        this.logger.warn(
+          `DescribeNetworkInterfaces failed while waiting for Lambda ENIs of ${functionName}: ${
+            error instanceof Error ? error.message : String(error)
+          }`
+        );
+        count = -1;
+      }
+
+      if (count === 0) {
+        this.logger.debug(
+          `Lambda ENIs for ${functionName} fully detached after ${attempt} poll(s) / ${
+            Date.now() - start
+          }ms`
+        );
+        return;
+      }
+
+      const elapsed = Date.now() - start;
+      if (elapsed >= this.eniWaitTimeoutMs) {
+        this.logger.warn(
+          `Timeout (${this.eniWaitTimeoutMs}ms) waiting for Lambda VPC ENIs of ${functionName} ` +
+            `to detach (remaining: ${count >= 0 ? count : 'unknown'}). ` +
+            `Continuing — downstream Subnet/SG deletion will retry as needed.`
+        );
+        return;
+      }
+
+      const remaining = this.eniWaitTimeoutMs - elapsed;
+      const sleepMs = Math.min(delay, remaining);
+      await this.sleep(sleepMs);
+      delay = Math.min(delay * 2, this.eniWaitMaxDelayMs);
+    }
+  }
+
+  /**
+   * Count remaining Lambda-managed ENIs for the given function, paginating
+   * through DescribeNetworkInterfaces and filtering on Description substring.
+   *
+   * Server-side filter (`description`) does not support wildcards in EC2's API,
+   * so we filter client-side after narrowing on `requester-id` + `status`.
+   */
+  private async countLambdaEnis(
+    descriptionNeedle: string,
+    functionNamePattern: RegExp
+  ): Promise<number> {
+    let nextToken: string | undefined;
+    let count = 0;
+    do {
+      const resp = await this.ec2Client.send(
+        new DescribeNetworkInterfacesCommand({
+          Filters: [
+            // Lambda hyperplane ENIs are owned by the Lambda service principal.
+            { Name: 'requester-id', Values: ['*:awslambda_*'] },
+          ],
+          NextToken: nextToken,
+        })
+      );
+
+      for (const ni of resp.NetworkInterfaces ?? []) {
+        const desc = ni.Description ?? '';
+        if (desc.includes(descriptionNeedle) && functionNamePattern.test(desc)) {
+          count++;
+        }
+      }
+      nextToken = resp.NextToken;
+    } while (nextToken);
+    return count;
+  }
+
+  private sleep(ms: number): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, ms));
   }
 
   /**
@@ -383,4 +591,8 @@ export class LambdaFunctionProvider implements ResourceProvider {
     }
     return (crc ^ 0xffffffff) >>> 0;
   }
+}
+
+function escapeRegExp(input: string): string {
+  return input.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
