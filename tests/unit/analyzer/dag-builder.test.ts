@@ -774,4 +774,73 @@ describe('DagBuilder', () => {
       expect(deps.filter((d) => d === 'SeederRoleDefaultPolicy')).toHaveLength(1);
     });
   });
+
+  describe('addLambdaVpcEdges', () => {
+    it('adds Subnet -> Lambda and SecurityGroup -> Lambda edges from VpcConfig', () => {
+      const template: CloudFormationTemplate = {
+        Resources: {
+          SubnetA: { Type: 'AWS::EC2::Subnet', Properties: {} },
+          SgA: { Type: 'AWS::EC2::SecurityGroup', Properties: {} },
+          Fn: {
+            Type: 'AWS::Lambda::Function',
+            Properties: {
+              VpcConfig: {
+                SubnetIds: [{ Ref: 'SubnetA' }],
+                SecurityGroupIds: [{ Ref: 'SgA' }],
+              },
+            },
+          },
+        },
+      };
+
+      const graph = dagBuilder.buildGraph(template);
+
+      expect(graph.hasEdge('SubnetA', 'Fn')).toBe(true);
+      expect(graph.hasEdge('SgA', 'Fn')).toBe(true);
+
+      // Lambda must come after Subnet/SG in execution order, which means
+      // for the reversed deletion traversal Lambda is removed BEFORE
+      // Subnet/SG — exactly what we need to wait for ENI detach.
+      const lambdaDeps = dagBuilder.getDirectDependencies(graph, 'Fn');
+      expect(lambdaDeps).toContain('SubnetA');
+      expect(lambdaDeps).toContain('SgA');
+    });
+
+    it('does not duplicate edges already added by Ref extraction', () => {
+      const template: CloudFormationTemplate = {
+        Resources: {
+          SubnetA: { Type: 'AWS::EC2::Subnet', Properties: {} },
+          Fn: {
+            Type: 'AWS::Lambda::Function',
+            Properties: {
+              VpcConfig: { SubnetIds: [{ Ref: 'SubnetA' }] },
+            },
+          },
+        },
+      };
+
+      const graph = dagBuilder.buildGraph(template);
+      // Only one edge from SubnetA to Fn (Ref extraction + implicit pass
+      // converge on the same edge, no double-count).
+      const subnetSuccessors = graph.successors('SubnetA') ?? [];
+      expect(subnetSuccessors.filter((id) => id === 'Fn')).toHaveLength(1);
+    });
+
+    it('is a no-op for Lambda without VpcConfig', () => {
+      const template: CloudFormationTemplate = {
+        Resources: {
+          Role: { Type: 'AWS::IAM::Role', Properties: {} },
+          Fn: {
+            Type: 'AWS::Lambda::Function',
+            Properties: { Role: { 'Fn::GetAtt': ['Role', 'Arn'] } },
+          },
+        },
+      };
+
+      const graph = dagBuilder.buildGraph(template);
+      // Only the Role -> Fn edge from Fn::GetAtt; no VPC-related edges.
+      expect(graph.edgeCount()).toBe(1);
+      expect(graph.hasEdge('Role', 'Fn')).toBe(true);
+    });
+  });
 });

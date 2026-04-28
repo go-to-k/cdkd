@@ -242,6 +242,8 @@ registry.register('AWS::IAM::Role', new IAMRoleProvider());
 - Builds DAG with graphlib
 - Determines execution order with topological sort
 - **Implicit edge for Custom Resources**: any `AWS::IAM::Policy` / `AWS::IAM::RolePolicy` / `AWS::IAM::ManagedPolicy` attached to a Custom Resource's ServiceToken Lambda execution role automatically gets an edge to the Custom Resource, preventing the handler from being invoked before inline policy attachment returns (avoids mid-deploy AccessDenied race)
+- **Implicit edge for Lambda VpcConfig**: every `AWS::EC2::Subnet` / `AWS::EC2::SecurityGroup` referenced by a Lambda's `Properties.VpcConfig.SubnetIds` / `SecurityGroupIds` gets an explicit edge to the Lambda (`src/analyzer/lambda-vpc-deps.ts`). Defense-in-depth on top of `extractDependencies`; for the reversed deletion traversal this guarantees Lambda is removed before its Subnet/SG so the asynchronous ENI detach has time to complete before EC2 rejects the subnet/SG delete with `DependencyViolation`.
+- **Type-based deletion ordering rules**: `src/analyzer/implicit-delete-deps.ts` centralizes type-pair rules (e.g. VPC after Subnet, Subnet after Lambda) shared by the deploy DELETE phase and the standalone destroy command.
 
 ## Testing Strategy
 
@@ -350,6 +352,7 @@ See [docs/provider-development.md](docs/provider-development.md) for details.
 - ✅ CC API null value stripping + JSON string properties (EventPattern)
 - ✅ CC API ClientToken removed (caches failure results, incompatible with retry)
 - ✅ Implicit delete dependencies for VPC/IGW/EventBus/Subnet/RouteTable
+- ✅ Implicit delete dependency: Subnet/SecurityGroup must be deleted AFTER Lambda::Function (avoids Lambda VpcConfig ENI detach race in DependencyViolation)
 - ✅ CloudFront OAI S3CanonicalUserId enrichment
 - ✅ DynamoDB StreamArn enrichment via DescribeTable
 - ✅ API Gateway RootResourceId enrichment via GetRestApi
