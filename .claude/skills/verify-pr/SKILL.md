@@ -38,7 +38,9 @@ Run each check and report pass/fail:
 
 6. **Leftover resources**
    - Resolve account ID via `aws sts get-caller-identity --query Account --output text`
-   - `aws s3 ls s3://cdkd-state-{accountId}-us-east-1/stacks/ --region us-east-1` - no leftover state
+   - `aws s3 ls s3://cdkd-state-{accountId}-us-east-1/stacks/ --region us-east-1` — no leftover state
+   - **For deletion-touching PRs** (any change under `src/provisioning/providers/*` `delete()`, `src/deployment/destroy.ts`, `src/analyzer/dag-builder.ts`, `IMPLICIT_DELETE_DEPENDENCIES`, etc.): also confirm that an end-to-end real-AWS destroy was run via `/run-integ <relevant-test>` and reported zero errors / zero orphans. CI is necessary but not sufficient — it does not exercise real-AWS destroy. If unverified, **fail this check** and run the integ before merging.
+   - For each region this PR may have created resources in (typically `us-east-1`), spot-check the most failure-prone resource types — VPCs (`describe-vpcs --filters "Name=tag:Name,Values=Cdkd*/Vpc"`), Lambda hyperplane ENIs (`describe-network-interfaces --filters "Name=requester-id,Values=*:awslambda_*"`), CloudFront Distributions, NAT Gateways. Any match against a stack name in this PR's diff = orphan, must be cleaned up before merge.
 
 7. **No stale references**
    - Grep for removed imports, old module names, or deprecated references in source files
