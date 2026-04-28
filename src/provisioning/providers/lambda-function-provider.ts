@@ -350,10 +350,7 @@ export class LambdaFunctionProvider implements ResourceProvider {
    * so omitting it cannot move a function out of its existing VPC. To
    * detach we must explicitly send empty SubnetIds / SecurityGroupIds.
    */
-  private buildVpcConfigForUpdate(
-    newRaw: unknown,
-    previousRaw: unknown
-  ): VpcConfig | undefined {
+  private buildVpcConfigForUpdate(newRaw: unknown, previousRaw: unknown): VpcConfig | undefined {
     const next = this.buildVpcConfig(newRaw);
     if (next) {
       return next;
