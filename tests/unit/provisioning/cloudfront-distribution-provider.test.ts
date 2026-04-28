@@ -48,9 +48,13 @@ describe('CloudFrontDistributionProvider', () => {
           DomainName: 'd111111abcdef8.cloudfront.net',
         },
       });
-      // GetDistributionCommand (waitForDistributionDeployed)
+      // GetDistributionCommand (waitForDistributionStable)
       mockSend.mockResolvedValueOnce({
-        Distribution: { Id: 'EDFDVBD6EXAMPLE', Status: 'Deployed' },
+        Distribution: {
+          Id: 'EDFDVBD6EXAMPLE',
+          Status: 'Deployed',
+          DistributionConfig: { Enabled: true },
+        },
       });
 
       const result = await provider.create(
@@ -89,9 +93,13 @@ describe('CloudFrontDistributionProvider', () => {
           DomainName: 'd111111abcdef8.cloudfront.net',
         },
       });
-      // GetDistributionCommand (waitForDistributionDeployed)
+      // GetDistributionCommand (waitForDistributionStable)
       mockSend.mockResolvedValueOnce({
-        Distribution: { Id: 'EDFDVBD6EXAMPLE', Status: 'Deployed' },
+        Distribution: {
+          Id: 'EDFDVBD6EXAMPLE',
+          Status: 'Deployed',
+          DistributionConfig: { Enabled: true },
+        },
       });
 
       await provider.create('MyDistribution', 'AWS::CloudFront::Distribution', {
@@ -222,11 +230,12 @@ describe('CloudFrontDistributionProvider', () => {
       mockSend.mockResolvedValueOnce({
         ETag: 'E3NEWETAG',
       });
-      // GetDistributionCommand (wait for deployed - returns Deployed immediately)
+      // GetDistributionCommand (wait for stable: Status=Deployed AND Enabled=false)
       mockSend.mockResolvedValueOnce({
         Distribution: {
           Id: 'EDFDVBD6EXAMPLE',
           Status: 'Deployed',
+          DistributionConfig: { Enabled: false },
         },
       });
       // GetDistributionConfigCommand (re-fetch ETag after waiting)
@@ -265,6 +274,83 @@ describe('CloudFrontDistributionProvider', () => {
       expect(deleteCall.constructor.name).toBe('DeleteDistributionCommand');
       expect(deleteCall.input.Id).toBe('EDFDVBD6EXAMPLE');
       expect(deleteCall.input.IfMatch).toBe('E4FINALETAG');
+    });
+
+    it('should keep waiting when GetDistribution still reports Enabled=true after disable (eventual consistency)', async () => {
+      // Speed up the test: cap the wait loop with a fake timer for the sleeps.
+      // We don't actually need timers here because each polling round only sleeps
+      // when the stable condition is not met; we satisfy it on the second poll.
+      vi.useFakeTimers();
+
+      try {
+        // GetDistributionConfigCommand (initial)
+        mockSend.mockResolvedValueOnce({
+          ETag: 'E2QWRUHAPOMQZL',
+          DistributionConfig: {
+            CallerReference: 'original-caller-ref',
+            Enabled: true,
+          },
+        });
+        // UpdateDistributionCommand (disable)
+        mockSend.mockResolvedValueOnce({
+          ETag: 'E3NEWETAG',
+        });
+        // GetDistributionCommand (1st poll: stale read - still Enabled=true)
+        mockSend.mockResolvedValueOnce({
+          Distribution: {
+            Id: 'EDFDVBD6EXAMPLE',
+            Status: 'Deployed',
+            DistributionConfig: { Enabled: true },
+          },
+        });
+        // GetDistributionCommand (2nd poll: still propagating, InProgress)
+        mockSend.mockResolvedValueOnce({
+          Distribution: {
+            Id: 'EDFDVBD6EXAMPLE',
+            Status: 'InProgress',
+            DistributionConfig: { Enabled: false },
+          },
+        });
+        // GetDistributionCommand (3rd poll: stable Disabled+Deployed)
+        mockSend.mockResolvedValueOnce({
+          Distribution: {
+            Id: 'EDFDVBD6EXAMPLE',
+            Status: 'Deployed',
+            DistributionConfig: { Enabled: false },
+          },
+        });
+        // GetDistributionConfigCommand (re-fetch ETag after waiting)
+        mockSend.mockResolvedValueOnce({
+          ETag: 'E4FINALETAG',
+          DistributionConfig: {
+            CallerReference: 'original-caller-ref',
+            Enabled: false,
+          },
+        });
+        // DeleteDistributionCommand
+        mockSend.mockResolvedValueOnce({});
+
+        const deletePromise = provider.delete(
+          'MyDistribution',
+          'EDFDVBD6EXAMPLE',
+          'AWS::CloudFront::Distribution'
+        );
+
+        // Advance fake timers far enough to flush all the sleep loops
+        // (5s + 7.5s + 11.25s = ~24s of polling backoff).
+        await vi.advanceTimersByTimeAsync(60_000);
+        await deletePromise;
+
+        // The wait loop must NOT exit early on the first stale Deployed read.
+        // We expect: GetConfig + Update + 3xGet + GetConfig + Delete = 7 calls.
+        expect(mockSend).toHaveBeenCalledTimes(7);
+
+        const deleteCall = mockSend.mock.calls[6][0];
+        expect(deleteCall.constructor.name).toBe('DeleteDistributionCommand');
+        expect(deleteCall.input.IfMatch).toBe('E4FINALETAG');
+      } finally {
+        vi.useRealTimers();
+      }
     });
 
     it('should handle NoSuchDistribution gracefully', async () => {
