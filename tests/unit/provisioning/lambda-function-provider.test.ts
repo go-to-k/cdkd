@@ -223,28 +223,45 @@ describe('LambdaFunctionProvider', () => {
   });
 
   describe('delete', () => {
-    it('does not poll EC2 when function has no VpcConfig', async () => {
+    it('skips VPC handling when no VpcConfig is provided', async () => {
       mockLambdaSend.mockResolvedValueOnce({});
 
       await provider.delete('Fn', 'fn-no-vpc', 'AWS::Lambda::Function', {});
 
       expect(mockLambdaSend).toHaveBeenCalledTimes(1);
-      const cmd = mockLambdaSend.mock.calls[0][0];
-      expect(cmd).toBeInstanceOf(DeleteFunctionCommand);
+      expect(mockLambdaSend.mock.calls[0][0]).toBeInstanceOf(DeleteFunctionCommand);
       expect(mockEc2Send).not.toHaveBeenCalled();
     });
 
-    it('does not poll EC2 when VpcConfig has empty SubnetIds', async () => {
+    it('skips VPC handling when VpcConfig has empty SubnetIds', async () => {
       mockLambdaSend.mockResolvedValueOnce({});
 
       await provider.delete('Fn', 'fn-empty', 'AWS::Lambda::Function', {
         VpcConfig: { SubnetIds: [], SecurityGroupIds: [] },
       });
 
+      expect(mockLambdaSend).toHaveBeenCalledTimes(1);
       expect(mockEc2Send).not.toHaveBeenCalled();
     });
 
-    it('treats ResourceNotFoundException as already-deleted (no ENI wait)', async () => {
+    it('pre-detaches VPC config (UpdateFunctionConfiguration with empty arrays) before DeleteFunction', async () => {
+      mockLambdaSend
+        .mockResolvedValueOnce({}) // UpdateFunctionConfiguration (pre-detach)
+        .mockResolvedValueOnce({}); // DeleteFunction
+      mockEc2Send.mockResolvedValueOnce({ NetworkInterfaces: [] });
+
+      await provider.delete('Fn', 'fn-vpc', 'AWS::Lambda::Function', {
+        VpcConfig: { SubnetIds: ['subnet-aaa'], SecurityGroupIds: ['sg-1'] },
+      });
+
+      expect(mockLambdaSend).toHaveBeenCalledTimes(2);
+      const updateCmd = mockLambdaSend.mock.calls[0][0];
+      expect(updateCmd).toBeInstanceOf(UpdateFunctionConfigurationCommand);
+      expect(updateCmd.input.VpcConfig).toEqual({ SubnetIds: [], SecurityGroupIds: [] });
+      expect(mockLambdaSend.mock.calls[1][0]).toBeInstanceOf(DeleteFunctionCommand);
+    });
+
+    it('returns early when pre-detach hits ResourceNotFoundException (function already gone)', async () => {
       mockLambdaSend.mockRejectedValueOnce(
         new ResourceNotFoundException({
           message: 'Function not found',
@@ -256,72 +273,60 @@ describe('LambdaFunctionProvider', () => {
         VpcConfig: { SubnetIds: ['subnet-aaa'], SecurityGroupIds: ['sg-1'] },
       });
 
+      expect(mockLambdaSend).toHaveBeenCalledTimes(1);
       expect(mockEc2Send).not.toHaveBeenCalled();
     });
 
-    it('polls DescribeNetworkInterfaces and returns once Lambda ENIs are gone', async () => {
-      mockLambdaSend.mockResolvedValueOnce({}); // DeleteFunction
+    it('continues with DeleteFunction when pre-detach fails with non-NotFound error', async () => {
+      mockLambdaSend
+        .mockRejectedValueOnce(new Error('Throttling'))
+        .mockResolvedValueOnce({}); // DeleteFunction
+      mockEc2Send.mockResolvedValueOnce({ NetworkInterfaces: [] });
 
-      // 1st poll: 1 ENI still present.
-      // 2nd poll: 0 ENIs — wait completes.
+      await provider.delete('Fn', 'fn-vpc', 'AWS::Lambda::Function', {
+        VpcConfig: { SubnetIds: ['subnet-aaa'], SecurityGroupIds: ['sg-1'] },
+      });
+
+      expect(mockLambdaSend).toHaveBeenCalledTimes(2);
+      expect(mockLambdaSend.mock.calls[1][0]).toBeInstanceOf(DeleteFunctionCommand);
+    });
+
+    it('directly deletes Lambda ENIs after DeleteFunction succeeds', async () => {
+      mockLambdaSend.mockResolvedValueOnce({}).mockResolvedValueOnce({});
+
       mockEc2Send
         .mockResolvedValueOnce({
           NetworkInterfaces: [
             {
               NetworkInterfaceId: 'eni-aaa',
-              Description: 'AWS Lambda VPC ENI-fn-vpc-abc123',
+              Description: 'AWS Lambda VPC ENI-fn-vpc',
+              Status: 'available',
             },
           ],
         })
-        .mockResolvedValueOnce({ NetworkInterfaces: [] });
+        .mockResolvedValueOnce({}) // DeleteNetworkInterface success
+        .mockResolvedValueOnce({ NetworkInterfaces: [] }); // 2nd list: empty
 
       const promise = provider.delete('Fn', 'fn-vpc', 'AWS::Lambda::Function', {
         VpcConfig: { SubnetIds: ['subnet-aaa'], SecurityGroupIds: ['sg-1'] },
       });
 
-      // Advance past first poll's backoff (10s).
       await vi.advanceTimersByTimeAsync(15_000);
-
       await promise;
 
-      expect(mockEc2Send).toHaveBeenCalledTimes(2);
-      const cmd = mockEc2Send.mock.calls[0][0];
-      expect(cmd).toBeInstanceOf(DescribeNetworkInterfacesCommand);
-    });
-
-    it('ignores ENIs whose Description does not match the function name', async () => {
-      mockLambdaSend.mockResolvedValueOnce({});
-
-      mockEc2Send.mockResolvedValueOnce({
-        NetworkInterfaces: [
-          {
-            NetworkInterfaceId: 'eni-other',
-            Description: 'AWS Lambda VPC ENI-other-function-xyz',
-          },
-        ],
-      });
-
-      const promise = provider.delete('Fn', 'fn-vpc', 'AWS::Lambda::Function', {
-        VpcConfig: { SubnetIds: ['subnet-aaa'], SecurityGroupIds: ['sg-1'] },
-      });
-
-      await promise;
-
-      // Only one poll needed because the matched ENI does not belong to fn-vpc.
-      expect(mockEc2Send).toHaveBeenCalledTimes(1);
+      expect(mockEc2Send).toHaveBeenCalledTimes(3);
+      expect(mockEc2Send.mock.calls[0][0]).toBeInstanceOf(DescribeNetworkInterfacesCommand);
     });
 
     it('rejects ENIs where the function name appears only as a non-hyphen-bounded prefix', async () => {
-      // For function "fn", an ENI for "myfn" must not be counted: the
-      // function-name token in the Description is hyphen-bounded, so
-      // "myfn" (preceded by "y") is correctly excluded.
-      mockLambdaSend.mockResolvedValueOnce({});
+      mockLambdaSend.mockResolvedValueOnce({}).mockResolvedValueOnce({});
 
       mockEc2Send.mockResolvedValueOnce({
         NetworkInterfaces: [
           {
             NetworkInterfaceId: 'eni-myfn',
             Description: 'AWS Lambda VPC ENI-myfn-abc123',
+            Status: 'available',
           },
         ],
       });
@@ -330,64 +335,87 @@ describe('LambdaFunctionProvider', () => {
         VpcConfig: { SubnetIds: ['subnet-aaa'], SecurityGroupIds: ['sg-1'] },
       });
 
-      // Single poll exits immediately because no ENI matches.
+      // Single list call: nothing matched, no DeleteNetworkInterface call.
       expect(mockEc2Send).toHaveBeenCalledTimes(1);
     });
 
     it('paginates DescribeNetworkInterfaces using NextToken', async () => {
-      mockLambdaSend.mockResolvedValueOnce({});
+      mockLambdaSend.mockResolvedValueOnce({}).mockResolvedValueOnce({});
 
-      // First page returns NextToken with no matching ENIs;
-      // second page returns no matching ENIs and no NextToken — count is 0.
       mockEc2Send
         .mockResolvedValueOnce({
           NetworkInterfaces: [
             {
               NetworkInterfaceId: 'eni-x',
               Description: 'AWS Lambda VPC ENI-other-fn-xxx',
+              Status: 'available',
             },
           ],
           NextToken: 'page2',
         })
-        .mockResolvedValueOnce({
-          NetworkInterfaces: [],
-        });
+        .mockResolvedValueOnce({ NetworkInterfaces: [] });
 
       await provider.delete('Fn', 'fn-vpc', 'AWS::Lambda::Function', {
         VpcConfig: { SubnetIds: ['subnet-aaa'], SecurityGroupIds: ['sg-1'] },
       });
 
+      // Two list pages, no ENI matched -> no Delete call, single iteration.
       expect(mockEc2Send).toHaveBeenCalledTimes(2);
-      const secondCmd = mockEc2Send.mock.calls[1][0];
-      expect(secondCmd.input.NextToken).toBe('page2');
+      expect(mockEc2Send.mock.calls[1][0].input.NextToken).toBe('page2');
     });
 
-    it('warns and resolves on ENI-wait timeout instead of throwing', async () => {
-      mockLambdaSend.mockResolvedValueOnce({});
+    it('retries when DeleteNetworkInterface fails on in-use ENI', async () => {
+      mockLambdaSend.mockResolvedValueOnce({}).mockResolvedValueOnce({});
 
-      // Always return one matching ENI — the wait should give up after 10min.
-      mockEc2Send.mockResolvedValue({
-        NetworkInterfaces: [
-          {
-            NetworkInterfaceId: 'eni-stuck',
-            Description: 'AWS Lambda VPC ENI-fn-vpc-stuck',
-          },
-        ],
+      mockEc2Send
+        .mockResolvedValueOnce({
+          NetworkInterfaces: [
+            {
+              NetworkInterfaceId: 'eni-inuse',
+              Description: 'AWS Lambda VPC ENI-fn-vpc',
+              Status: 'in-use',
+            },
+          ],
+        })
+        .mockRejectedValueOnce(new Error('InvalidParameterValue: in-use'))
+        .mockResolvedValueOnce({ NetworkInterfaces: [] }); // re-list: AWS detached + cleaned up
+
+      const promise = provider.delete('Fn', 'fn-vpc', 'AWS::Lambda::Function', {
+        VpcConfig: { SubnetIds: ['subnet-aaa'], SecurityGroupIds: ['sg-1'] },
+      });
+
+      await vi.advanceTimersByTimeAsync(15_000);
+      await expect(promise).resolves.toBeUndefined();
+    });
+
+    it('warns and resolves when cleanup hits the timeout (does not throw)', async () => {
+      mockLambdaSend.mockResolvedValueOnce({}).mockResolvedValueOnce({});
+
+      mockEc2Send.mockImplementation(async (cmd: { constructor: { name: string } }) => {
+        if (cmd.constructor.name === 'DescribeNetworkInterfacesCommand') {
+          return {
+            NetworkInterfaces: [
+              {
+                NetworkInterfaceId: 'eni-stuck',
+                Description: 'AWS Lambda VPC ENI-fn-vpc',
+                Status: 'in-use',
+              },
+            ],
+          };
+        }
+        throw new Error('In-use');
       });
 
       const promise = provider.delete('Fn', 'fn-vpc', 'AWS::Lambda::Function', {
         VpcConfig: { SubnetIds: ['subnet-aaa'], SecurityGroupIds: ['sg-1'] },
       });
 
-      // Advance well past the 10-minute timeout so the loop exits.
       await vi.advanceTimersByTimeAsync(11 * 60 * 1000);
-
-      // Must resolve (not reject) — timeout is a soft warning.
       await expect(promise).resolves.toBeUndefined();
     });
 
-    it('continues polling after a transient EC2 failure', async () => {
-      mockLambdaSend.mockResolvedValueOnce({});
+    it('continues polling after a transient DescribeNetworkInterfaces failure', async () => {
+      mockLambdaSend.mockResolvedValueOnce({}).mockResolvedValueOnce({});
 
       mockEc2Send
         .mockRejectedValueOnce(new Error('ThrottlingException'))
@@ -397,9 +425,7 @@ describe('LambdaFunctionProvider', () => {
         VpcConfig: { SubnetIds: ['subnet-aaa'], SecurityGroupIds: ['sg-1'] },
       });
 
-      // Advance past the first poll's backoff.
       await vi.advanceTimersByTimeAsync(15_000);
-
       await expect(promise).resolves.toBeUndefined();
       expect(mockEc2Send).toHaveBeenCalledTimes(2);
     });

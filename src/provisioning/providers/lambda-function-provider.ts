@@ -17,7 +17,11 @@ import {
   type EphemeralStorage,
   type VpcConfig,
 } from '@aws-sdk/client-lambda';
-import { EC2Client, DescribeNetworkInterfacesCommand } from '@aws-sdk/client-ec2';
+import {
+  EC2Client,
+  DescribeNetworkInterfacesCommand,
+  DeleteNetworkInterfaceCommand,
+} from '@aws-sdk/client-ec2';
 import { getLogger } from '../../utils/logger.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
@@ -292,6 +296,37 @@ export class LambdaFunctionProvider implements ResourceProvider {
 
     const hasVpcConfig = this.hasVpcConfig(properties?.['VpcConfig']);
 
+    // For VPC-attached functions, detach the VPC config BEFORE deletion.
+    // DeleteFunction does not synchronously release Lambda hyperplane ENIs;
+    // AWS reclaims them eventually, often well past any reasonable wait
+    // window. UpdateFunctionConfiguration with empty SubnetIds / SecurityGroupIds
+    // triggers an explicit ENI release that completes in seconds-to-minutes,
+    // letting downstream Subnet / SecurityGroup deletes proceed.
+    if (hasVpcConfig) {
+      try {
+        await this.lambdaClient.send(
+          new UpdateFunctionConfigurationCommand({
+            FunctionName: physicalId,
+            VpcConfig: { SubnetIds: [], SecurityGroupIds: [] },
+          })
+        );
+        this.logger.debug(`Detached VPC config from Lambda ${physicalId} before deletion`);
+      } catch (error) {
+        if (error instanceof ResourceNotFoundException) {
+          // Function is already gone — nothing more to do, including ENI wait
+          // (AWS owns the cleanup at this point).
+          return;
+        }
+        // Best-effort: don't fail the entire delete if pre-detach errors.
+        // The post-DeleteFunction ENI wait below remains as a safety net.
+        this.logger.warn(
+          `Pre-delete VPC detach failed for ${physicalId}: ${
+            error instanceof Error ? error.message : String(error)
+          } — continuing with delete`
+        );
+      }
+    }
+
     try {
       await this.lambdaClient.send(new DeleteFunctionCommand({ FunctionName: physicalId }));
       this.logger.debug(`Successfully deleted Lambda function ${logicalId}`);
@@ -311,7 +346,7 @@ export class LambdaFunctionProvider implements ResourceProvider {
     }
 
     if (hasVpcConfig) {
-      await this.waitForLambdaEnisDetached(physicalId);
+      await this.cleanupLambdaEnis(physicalId);
     }
   }
 
@@ -376,68 +411,97 @@ export class LambdaFunctionProvider implements ResourceProvider {
   }
 
   /**
-   * Poll DescribeNetworkInterfaces until the Lambda-managed ENIs for the
-   * given function are gone, or the configured timeout elapses.
+   * Clean up Lambda-managed ENIs for the given function: list, then attempt
+   * DeleteNetworkInterface on each. Repeat until no matching ENIs remain
+   * or the configured timeout elapses.
    *
-   * Lambda VPC ENIs carry a Description like:
-   *   "AWS Lambda VPC ENI-<functionName>-<uuid>"
-   * We match on a substring to be tolerant of format drift.
+   * Why direct delete (not just wait): an `available` ENI still counts as a
+   * Subnet / SecurityGroup dependency, so DeleteSubnet / DeleteSecurityGroup
+   * fail until the ENI itself is gone. AWS's eventual cleanup of unused
+   * Lambda hyperplane ENIs can take well over an hour, which is far longer
+   * than any reasonable destroy budget. Calling DeleteNetworkInterface
+   * ourselves (best-effort) clears `available` ENIs in seconds.
+   *
+   * In-use ENIs (e.g. immediately after the pre-delete VPC detach) cannot
+   * be deleted yet — we swallow that error and retry on the next iteration
+   * once they transition to `available`.
+   *
+   * Lambda VPC ENI Descriptions follow the pattern
+   *   "AWS Lambda VPC ENI-<functionName>"
+   * (and historically "AWS Lambda VPC ENI-<functionName>-<uuid>"). We
+   * narrow the query with a `requester-id` filter and then match the
+   * function name as a hyphen-bounded token to avoid false positives like
+   * "myfn" matching for function "fn".
    *
    * Polling: starts at eniWaitInitialDelayMs (10s), exponential backoff up
    * to eniWaitMaxDelayMs (30s), bounded by eniWaitTimeoutMs (10min).
-   *
-   * Timeout is treated as a soft warning: detach can legitimately take 20-40
-   * minutes in degraded conditions, and downstream Subnet/SG deletion has
-   * its own retries to handle the residual window.
+   * Timeout is a soft warning — downstream Subnet/SG deletion has its own
+   * retries.
    */
-  private async waitForLambdaEnisDetached(functionName: string): Promise<void> {
+  private async cleanupLambdaEnis(functionName: string): Promise<void> {
     const start = Date.now();
     let delay = this.eniWaitInitialDelayMs;
     let attempt = 0;
 
     this.logger.debug(
-      `Waiting for Lambda VPC ENIs to detach for function ${functionName} (timeout ${this.eniWaitTimeoutMs}ms)`
+      `Cleaning up Lambda VPC ENIs for function ${functionName} (timeout ${this.eniWaitTimeoutMs}ms)`
     );
 
-    // Match the canonical Lambda ENI Description prefix and require the
-    // function name to appear as a hyphen-bounded token. This prevents a
-    // function named "fn" from matching ENIs whose function-name token has
-    // "fn" as a prefix only (e.g. "myfn"). It cannot disambiguate when one
-    // function name is itself a hyphen-prefix of another (e.g. "fn" vs
-    // "fn-foo"), which is a known limitation of the substring approach.
     const descriptionNeedle = `AWS Lambda VPC ENI`;
     const functionNamePattern = new RegExp(`(^|-)${escapeRegExp(functionName)}(-|$)`);
 
-    // Loop until either ENIs are gone or we exceed the configured timeout.
     for (;;) {
       attempt++;
-      let count: number;
+
+      let enis: { id: string; status: string }[] = [];
+      let listFailed = false;
       try {
-        count = await this.countLambdaEnis(descriptionNeedle, functionNamePattern);
+        enis = await this.listLambdaEnis(descriptionNeedle, functionNamePattern);
       } catch (error) {
-        // Don't abort delete on transient EC2 errors; warn and continue.
         this.logger.warn(
-          `DescribeNetworkInterfaces failed while waiting for Lambda ENIs of ${functionName}: ${
+          `DescribeNetworkInterfaces failed while cleaning up Lambda ENIs of ${functionName}: ${
             error instanceof Error ? error.message : String(error)
           }`
         );
-        count = -1;
+        listFailed = true;
       }
 
-      if (count === 0) {
+      // Only treat an empty list as success if we actually got it from AWS;
+      // a transient List failure must retry rather than declare cleanup done.
+      if (!listFailed && enis.length === 0) {
         this.logger.debug(
-          `Lambda ENIs for ${functionName} fully detached after ${attempt} poll(s) / ${
+          `Lambda ENIs for ${functionName} fully cleaned up after ${attempt} attempt(s) / ${
             Date.now() - start
           }ms`
         );
         return;
       }
 
+      // Best-effort delete: in-use ENIs reject and we'll retry next loop.
+      if (enis.length > 0) {
+        await Promise.all(
+          enis.map(async (eni) => {
+            try {
+              await this.ec2Client.send(
+                new DeleteNetworkInterfaceCommand({ NetworkInterfaceId: eni.id })
+              );
+              this.logger.debug(`Deleted Lambda ENI ${eni.id} for ${functionName}`);
+            } catch (error) {
+              this.logger.debug(
+                `ENI ${eni.id} (status=${eni.status}) not yet deletable: ${
+                  error instanceof Error ? error.message : String(error)
+                }`
+              );
+            }
+          })
+        );
+      }
+
       const elapsed = Date.now() - start;
       if (elapsed >= this.eniWaitTimeoutMs) {
         this.logger.warn(
-          `Timeout (${this.eniWaitTimeoutMs}ms) waiting for Lambda VPC ENIs of ${functionName} ` +
-            `to detach (remaining: ${count >= 0 ? count : 'unknown'}). ` +
+          `Timeout (${this.eniWaitTimeoutMs}ms) cleaning up Lambda VPC ENIs of ${functionName} ` +
+            `(${enis.length} remaining). ` +
             `Continuing — downstream Subnet/SG deletion will retry as needed.`
         );
         return;
@@ -451,18 +515,18 @@ export class LambdaFunctionProvider implements ResourceProvider {
   }
 
   /**
-   * Count remaining Lambda-managed ENIs for the given function, paginating
-   * through DescribeNetworkInterfaces and filtering on Description substring.
+   * List Lambda-managed ENIs for the given function, paginating through
+   * DescribeNetworkInterfaces and filtering on Description substring.
    *
-   * Server-side filter (`description`) does not support wildcards in EC2's API,
-   * so we filter client-side after narrowing on `requester-id` + `status`.
+   * Server-side filter (`description`) does not support wildcards on this
+   * API, so we narrow with `requester-id` + match Description client-side.
    */
-  private async countLambdaEnis(
+  private async listLambdaEnis(
     descriptionNeedle: string,
     functionNamePattern: RegExp
-  ): Promise<number> {
+  ): Promise<{ id: string; status: string }[]> {
+    const enis: { id: string; status: string }[] = [];
     let nextToken: string | undefined;
-    let count = 0;
     do {
       const resp = await this.ec2Client.send(
         new DescribeNetworkInterfacesCommand({
@@ -476,13 +540,17 @@ export class LambdaFunctionProvider implements ResourceProvider {
 
       for (const ni of resp.NetworkInterfaces ?? []) {
         const desc = ni.Description ?? '';
-        if (desc.includes(descriptionNeedle) && functionNamePattern.test(desc)) {
-          count++;
+        if (
+          ni.NetworkInterfaceId &&
+          desc.includes(descriptionNeedle) &&
+          functionNamePattern.test(desc)
+        ) {
+          enis.push({ id: ni.NetworkInterfaceId, status: ni.Status ?? 'unknown' });
         }
       }
       nextToken = resp.NextToken;
     } while (nextToken);
-    return count;
+    return enis;
   }
 
   private sleep(ms: number): Promise<void> {
