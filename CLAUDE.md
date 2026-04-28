@@ -368,7 +368,7 @@ See [docs/provider-development.md](docs/provider-development.md) for details.
 - ✅ Nested cloud assembly traversal (CDK Stage support)
 - ✅ WorkGraph DAG orchestrator for asset publishing and stack deployment (build→publish→deploy pipeline)
 - ✅ Concurrency options: `--asset-publish-concurrency` (default 8), `--image-build-concurrency` (default 4)
-- ✅ Lambda VpcConfig SDK provider support (avoids CC API fallback) + ENI detach wait on delete (avoids downstream Subnet/SG "has dependencies" failures)
+- ✅ Lambda VpcConfig SDK provider support (avoids CC API fallback) + pre-delete VPC detach (UpdateFunctionConfiguration with empty arrays) + active ENI cleanup via DeleteNetworkInterface on delete (avoids downstream Subnet/SG "has dependencies" failures — `DeleteFunction` alone does not synchronously release Lambda hyperplane ENIs, AWS reclaims them only eventually)
 
 ## Dependencies
 
