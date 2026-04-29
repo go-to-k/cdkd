@@ -318,6 +318,42 @@ describe('LambdaFunctionProvider', () => {
       expect(mockEc2Send.mock.calls[0][0]).toBeInstanceOf(DescribeNetworkInterfacesCommand);
     });
 
+    it('matches ENIs whose Description token is a hyphen-prefix of the physical function name (CDK suffix)', async () => {
+      // Real-world AWS pattern: CDK-managed Lambda functions get an
+      // auto-generated 8-char suffix on the physical name
+      // (e.g. CdkdBenchCdkSample-ApiFunction-zZBaJTabq03f), but the AWS
+      // Lambda VPC ENI Description carries only the token *without* that
+      // suffix (AWS Lambda VPC ENI-CdkdBenchCdkSample-ApiFunction).
+      // The matcher must still treat them as belonging to that function.
+      const physicalName = 'CdkdBenchCdkSample-ApiFunction-zZBaJTabq03f';
+      const eniDescription = 'AWS Lambda VPC ENI-CdkdBenchCdkSample-ApiFunction';
+
+      mockLambdaSend.mockResolvedValueOnce({}).mockResolvedValueOnce({});
+
+      mockEc2Send
+        .mockResolvedValueOnce({
+          NetworkInterfaces: [
+            {
+              NetworkInterfaceId: 'eni-cdk',
+              Description: eniDescription,
+              Status: 'available',
+            },
+          ],
+        })
+        .mockResolvedValueOnce({}) // DeleteNetworkInterface
+        .mockResolvedValueOnce({ NetworkInterfaces: [] });
+
+      const promise = provider.delete('Fn', physicalName, 'AWS::Lambda::Function', {
+        VpcConfig: { SubnetIds: ['subnet-aaa'], SecurityGroupIds: ['sg-1'] },
+      });
+
+      await vi.advanceTimersByTimeAsync(15_000);
+      await promise;
+
+      // 1 list + 1 DeleteNetworkInterface + 1 re-list = 3 calls.
+      expect(mockEc2Send).toHaveBeenCalledTimes(3);
+    });
+
     it('rejects ENIs where the function name appears only as a non-hyphen-bounded prefix', async () => {
       mockLambdaSend.mockResolvedValueOnce({}).mockResolvedValueOnce({});
 

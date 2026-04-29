@@ -447,8 +447,14 @@ export class LambdaFunctionProvider implements ResourceProvider {
       `Cleaning up Lambda VPC ENIs for function ${functionName} (timeout ${this.eniWaitTimeoutMs}ms)`
     );
 
-    const descriptionNeedle = `AWS Lambda VPC ENI`;
-    const functionNamePattern = new RegExp(`(^|-)${escapeRegExp(functionName)}(-|$)`);
+    // Lambda VPC ENI Descriptions follow `AWS Lambda VPC ENI-<name>` where
+    // <name> is typically the *logical* portion of the function name (e.g.
+    // CDK's `<StackName>-<LogicalId>`), NOT necessarily the full physical
+    // function name (which carries an extra auto-generated 8-char suffix
+    // like `-zZBaJTabq03f`). Matching on the full physicalId as a token
+    // therefore misses the ENIs entirely. Instead, parse the suffix out of
+    // each Description and check it against the physicalId as a prefix
+    // match.
 
     for (;;) {
       attempt++;
@@ -456,7 +462,7 @@ export class LambdaFunctionProvider implements ResourceProvider {
       let enis: { id: string; status: string }[] = [];
       let listFailed = false;
       try {
-        enis = await this.listLambdaEnis(descriptionNeedle, functionNamePattern);
+        enis = await this.listLambdaEnis(functionName);
       } catch (error) {
         this.logger.warn(
           `DescribeNetworkInterfaces failed while cleaning up Lambda ENIs of ${functionName}: ${
@@ -521,11 +527,9 @@ export class LambdaFunctionProvider implements ResourceProvider {
    * Server-side filter (`description`) does not support wildcards on this
    * API, so we narrow with `requester-id` + match Description client-side.
    */
-  private async listLambdaEnis(
-    descriptionNeedle: string,
-    functionNamePattern: RegExp
-  ): Promise<{ id: string; status: string }[]> {
+  private async listLambdaEnis(functionName: string): Promise<{ id: string; status: string }[]> {
     const enis: { id: string; status: string }[] = [];
+    const descriptionPrefix = 'AWS Lambda VPC ENI-';
     let nextToken: string | undefined;
     do {
       const resp = await this.ec2Client.send(
@@ -540,11 +544,17 @@ export class LambdaFunctionProvider implements ResourceProvider {
 
       for (const ni of resp.NetworkInterfaces ?? []) {
         const desc = ni.Description ?? '';
-        if (
-          ni.NetworkInterfaceId &&
-          desc.includes(descriptionNeedle) &&
-          functionNamePattern.test(desc)
-        ) {
+        if (!ni.NetworkInterfaceId || !desc.startsWith(descriptionPrefix)) {
+          continue;
+        }
+        // The portion after `AWS Lambda VPC ENI-` is the function-name token
+        // AWS uses on the ENI. It usually omits the CDK auto-generated 8-char
+        // suffix at the end of the physical function name, so match by
+        // checking that physicalId starts with `<token>-` (allowing the
+        // suffix) or equals it exactly. This is hyphen-bounded so a function
+        // named `fn` does NOT match an ENI whose token is `myfn`.
+        const token = desc.slice(descriptionPrefix.length);
+        if (functionName === token || functionName.startsWith(`${token}-`)) {
           enis.push({ id: ni.NetworkInterfaceId, status: ni.Status ?? 'unknown' });
         }
       }
@@ -659,8 +669,4 @@ export class LambdaFunctionProvider implements ResourceProvider {
     }
     return (crc ^ 0xffffffff) >>> 0;
   }
-}
-
-function escapeRegExp(input: string): string {
-  return input.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
