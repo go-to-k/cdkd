@@ -118,6 +118,7 @@ pnpm run typecheck
 - **src/synthesis/context-providers/** - Context providers (see `src/synthesis/context-providers/` for full list) for missing context resolution
 - **src/deployment/dag-executor.ts** - Generic event-driven DAG dispatcher (used inside a stack to schedule resource provisioning as soon as each resource's deps complete; no level barriers)
 - **src/deployment/work-graph.ts** - WorkGraph DAG orchestrator for asset publishing and stack deployment
+- **src/deployment/retryable-errors.ts** - Shared transient-error classifier (HTTP 429/503 + message-pattern table covering IAM/CW Logs/KMS/etc. propagation delays). Used by DeployEngine's withRetry to decide whether to back off and retry vs. fail fast.
 - **src/assets/file-asset-publisher.ts** - S3 file upload with ZIP packaging support
 - **src/assets/docker-asset-publisher.ts** - ECR Docker image build & push
 - **src/types/assembly.ts** - Cloud Assembly types (AssemblyManifest, MissingContext, etc.)
