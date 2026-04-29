@@ -39,8 +39,13 @@ Run each check and report pass/fail:
 6. **Leftover resources**
    - Resolve account ID via `aws sts get-caller-identity --query Account --output text`
    - `aws s3 ls s3://cdkd-state-{accountId}-us-east-1/stacks/ --region us-east-1` — no leftover state
-   - **For deletion-touching PRs** (any change under `src/provisioning/providers/*` `delete()`, `src/deployment/destroy.ts`, `src/analyzer/dag-builder.ts`, `IMPLICIT_DELETE_DEPENDENCIES`, etc.): also confirm that an end-to-end real-AWS destroy was run via `/run-integ <relevant-test>` and reported zero errors / zero orphans. CI is necessary but not sufficient — it does not exercise real-AWS destroy. If unverified, **fail this check** and run the integ before merging.
-   - For each region this PR may have created resources in (typically `us-east-1`), spot-check the most failure-prone resource types — VPCs (`describe-vpcs --filters "Name=tag:Name,Values=Cdkd*/Vpc"`), Lambda hyperplane ENIs (`describe-network-interfaces --filters "Name=requester-id,Values=*:awslambda_*"`), CloudFront Distributions, NAT Gateways. Any match against a stack name in this PR's diff = orphan, must be cleaned up before merge.
+   - **For deletion-touching PRs** (any change under `src/provisioning/providers/**`, `src/cli/commands/destroy.ts`, `src/analyzer/dag-builder.ts`, `IMPLICIT_DELETE_DEPENDENCIES`, etc.): the `integ-destroy` markgate gate **physically blocks `gh pr merge`** when its marker is stale (see `.claude/hooks/integ-destroy-gate.sh`). This step verifies the gate state explicitly so failures surface here rather than at merge time:
+     ```bash
+     mise exec -- markgate verify integ-destroy
+     ```
+     If this exits non-zero, run `/run-integ <relevant-test>` (e.g. `bench-cdk-sample`) and confirm it reports 0 errors / 0 orphans — the skill itself will then call `markgate set integ-destroy`.
+     CI is necessary but not sufficient — it does not exercise real-AWS destroy. The gate is the structural enforcement of that fact.
+   - For each region this PR may have created resources in (typically `us-east-1`), spot-check the most failure-prone resource types — VPCs (`describe-vpcs --filters "Name=tag:Name,Values=Cdkd*/Vpc"`), Lambda hyperplane ENIs (`describe-network-interfaces --filters "Name=description,Values=AWS Lambda VPC ENI-*"`), CloudFront Distributions, NAT Gateways. Any match against a stack name in this PR's diff = orphan, must be cleaned up before merge.
 
 7. **No stale references**
    - Grep for removed imports, old module names, or deprecated references in source files

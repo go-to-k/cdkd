@@ -17,6 +17,13 @@
             "if": "Bash(git commit*)",
             "timeout": 10,
             "statusMessage": "Checking /check marker..."
+          },
+          {
+            "type": "command",
+            "command": ".claude/hooks/integ-destroy-gate.sh",
+            "if": "Bash(gh pr merge*)",
+            "timeout": 10,
+            "statusMessage": "Checking integ-destroy marker..."
           }
         ]
       }
