@@ -55,6 +55,9 @@ async function deployCommand(
 
   if (options.verbose) {
     logger.setLevel('debug');
+    // Disable the live progress renderer in verbose mode — debug logs would
+    // interleave too aggressively with the live area's in-flight task lines.
+    process.env['CDKD_NO_LIVE'] = '1';
   }
 
   // Skip waiting for async resources (CloudFront, RDS, ElastiCache, etc.)

@@ -1,4 +1,5 @@
 import type { Logger, LogLevel } from '../types/config.js';
+import { getLiveRenderer } from './live-renderer.js';
 
 /**
  * ANSI color codes
@@ -81,25 +82,29 @@ export class ConsoleLogger implements Logger {
 
   debug(message: string, ...args: unknown[]): void {
     if (this.shouldLog('debug')) {
-      console.debug(this.formatMessage('debug', message, ...args));
+      const formatted = this.formatMessage('debug', message, ...args);
+      getLiveRenderer().printAbove(() => console.debug(formatted));
     }
   }
 
   info(message: string, ...args: unknown[]): void {
     if (this.shouldLog('info')) {
-      console.info(this.formatMessage('info', message, ...args));
+      const formatted = this.formatMessage('info', message, ...args);
+      getLiveRenderer().printAbove(() => console.info(formatted));
     }
   }
 
   warn(message: string, ...args: unknown[]): void {
     if (this.shouldLog('warn')) {
-      console.warn(this.formatMessage('warn', message, ...args));
+      const formatted = this.formatMessage('warn', message, ...args);
+      getLiveRenderer().printAbove(() => console.warn(formatted));
     }
   }
 
   error(message: string, ...args: unknown[]): void {
     if (this.shouldLog('error')) {
-      console.error(this.formatMessage('error', message, ...args));
+      const formatted = this.formatMessage('error', message, ...args);
+      getLiveRenderer().printAbove(() => console.error(formatted));
     }
   }
 
