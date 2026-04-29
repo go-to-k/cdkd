@@ -51,18 +51,20 @@ Blocked by integ-destroy-gate: this PR touches deletion logic
 (provider delete(), destroy.ts, dag-builder, IMPLICIT_DELETE_DEPENDENCIES,
 or similar) and the `integ-destroy` marker is stale.
 
-Required:
+Required action — no exceptions:
   /run-integ <test-name>      # e.g. /run-integ bench-cdk-sample
 
-The skill must report:
-  - destroy completed: 0 errors
+The skill is the ONLY legitimate setter of this marker. It will run
+deploy + destroy against real AWS and only call
+`markgate set integ-destroy` if BOTH of the following hold:
+  - destroy completed with 0 errors
   - 0 orphan resources after the post-destroy verification
 
-Only then will it set the `integ-destroy` marker and let the merge
-through. If you genuinely need to bypass (rare — typically only when
-you have a verified-good run from an earlier commit and the diff is
-docs/test-only), reset the marker manually and document why in the PR
-body:
-    mise exec -- markgate set integ-destroy
+Do NOT call `markgate set integ-destroy` directly from a shell to
+bypass this hook. The whole point of the gate is that an unverified
+destroy cannot reach main; setting the marker by hand defeats it. If
+you believe the file in scope is genuinely unrelated to deletion
+behavior, the right fix is to narrow `.markgate.yml` integ-destroy
+scope, not to bypass the marker.
 EOF
 exit 2
