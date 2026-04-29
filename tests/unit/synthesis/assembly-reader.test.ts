@@ -40,6 +40,7 @@ function createSampleManifest(): AssemblyManifest {
       'MyStack': {
         type: 'aws:cloudformation:stack',
         environment: 'aws://123456789012/us-east-1',
+        displayName: 'MyStack',
         properties: {
           templateFile: 'MyStack.template.json',
           stackName: 'MyStack',
@@ -143,8 +144,67 @@ describe('AssemblyReader', () => {
 
       expect(stacks).toHaveLength(1);
       expect(stacks[0].stackName).toBe('MyStack');
+      expect(stacks[0].displayName).toBe('MyStack');
       expect(stacks[0].artifactId).toBe('MyStack');
       expect(stacks[0].template).toEqual(sampleTemplate);
+    });
+
+    it('should fall back displayName to stackName when artifact has no displayName', () => {
+      const manifest: AssemblyManifest = {
+        version: '38.0.0',
+        artifacts: {
+          'MyStack': {
+            type: 'aws:cloudformation:stack',
+            environment: 'aws://123456789012/us-east-1',
+            properties: {
+              templateFile: 'MyStack.template.json',
+              stackName: 'MyStack',
+            },
+          },
+        },
+      };
+      vi.mocked(readFileSync).mockReturnValueOnce(JSON.stringify(sampleTemplate));
+
+      const stacks = reader.getAllStacks('/tmp/cdk.out', manifest);
+
+      expect(stacks[0].displayName).toBe('MyStack');
+    });
+
+    it('should preserve hierarchical displayName for stacks under a Stage', () => {
+      const topManifest: AssemblyManifest = {
+        version: '38.0.0',
+        artifacts: {
+          'assembly-MyStage': {
+            type: 'cdk:cloud-assembly',
+            properties: { directoryName: 'assembly-MyStage' },
+          },
+        },
+      };
+
+      const nestedManifest: AssemblyManifest = {
+        version: '38.0.0',
+        artifacts: {
+          'MyStageCdkSampleStack': {
+            type: 'aws:cloudformation:stack',
+            environment: 'aws://123456789012/us-east-1',
+            displayName: 'MyStage/CdkSampleStack',
+            properties: {
+              templateFile: 'MyStageCdkSampleStack.template.json',
+              stackName: 'MyStage-CdkSampleStack',
+            },
+          },
+        },
+      };
+
+      vi.mocked(readFileSync)
+        .mockReturnValueOnce(JSON.stringify(nestedManifest))
+        .mockReturnValueOnce(JSON.stringify(sampleTemplate));
+
+      const stacks = reader.getAllStacks('/tmp/cdk.out', topManifest);
+
+      expect(stacks).toHaveLength(1);
+      expect(stacks[0].stackName).toBe('MyStage-CdkSampleStack');
+      expect(stacks[0].displayName).toBe('MyStage/CdkSampleStack');
     });
 
     it('should extract asset manifest paths (type cdk:asset-manifest)', () => {

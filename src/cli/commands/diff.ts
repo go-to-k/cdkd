@@ -15,6 +15,7 @@ import { DiffCalculator } from '../../analyzer/diff-calculator.js';
 import { IntrinsicFunctionResolver } from '../../deployment/intrinsic-function-resolver.js';
 import { setAwsClients, AwsClients } from '../../utils/aws-clients.js';
 import { resolveApp, resolveStateBucketWithDefault } from '../config-loader.js';
+import { matchStacks, describeStack } from '../stack-matcher.js';
 
 const INTRINSIC_KEYS = new Set([
   'Ref',
@@ -161,18 +162,12 @@ async function diffCommand(
     if (options.all) {
       targetStacks = allStacks;
     } else if (stackPatterns.length > 0) {
-      targetStacks = allStacks.filter((s) =>
-        stackPatterns.some((pattern) =>
-          pattern.includes('*')
-            ? new RegExp('^' + pattern.replace(/\*/g, '.*') + '$').test(s.stackName)
-            : s.stackName === pattern
-        )
-      );
+      targetStacks = matchStacks(allStacks, stackPatterns);
     } else if (allStacks.length === 1) {
       targetStacks = allStacks;
     } else {
       throw new Error(
-        `Multiple stacks found: ${allStacks.map((s) => s.stackName).join(', ')}. ` +
+        `Multiple stacks found: ${allStacks.map(describeStack).join(', ')}. ` +
           `Specify stack name(s) or use --all`
       );
     }
@@ -180,7 +175,7 @@ async function diffCommand(
     if (targetStacks.length === 0) {
       throw new Error(
         stackPatterns.length > 0
-          ? `No stacks matching ${stackPatterns.join(', ')} found in assembly`
+          ? `No stacks matching ${stackPatterns.join(', ')} found in assembly. Available: ${allStacks.map(describeStack).join(', ')}`
           : 'No stacks found in assembly'
       );
     }
@@ -293,7 +288,10 @@ async function diffCommand(
 export function createDiffCommand(): Command {
   const cmd = new Command('diff')
     .description('Show difference between current state and desired state')
-    .argument('[stacks...]', 'Stack name(s) to diff (supports wildcards)')
+    .argument(
+      '[stacks...]',
+      "Stack name(s) to diff. Accepts physical CloudFormation names (e.g. 'MyStage-Api') or CDK display paths (e.g. 'MyStage/Api'). Supports wildcards (e.g. 'MyStage/*')."
+    )
     .option('--all', 'Diff all stacks', false)
     .action(withErrorHandling(diffCommand));
 

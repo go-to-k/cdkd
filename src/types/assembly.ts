@@ -32,6 +32,12 @@ export interface ArtifactManifest {
   /** Target environment (e.g., "aws://123456789012/us-east-1") */
   environment?: string;
 
+  /**
+   * Hierarchical display name (e.g., "MyStage/MyStack" for stacks under a Stage,
+   * or just "MyStack" at the top level). Set by CDK synth.
+   */
+  displayName?: string;
+
   /** Artifact-specific properties */
   properties?: Record<string, unknown>;
 

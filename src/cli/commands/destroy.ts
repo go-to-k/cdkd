@@ -20,6 +20,7 @@ import { registerAllProviders } from '../../provisioning/register-providers.js';
 import { setAwsClients, AwsClients } from '../../utils/aws-clients.js';
 import * as readline from 'node:readline/promises';
 import { resolveApp, resolveStateBucketWithDefault } from '../config-loader.js';
+import { matchStacks, describeStack, type StackLike } from '../stack-matcher.js';
 
 /**
  * Destroy command implementation
@@ -88,7 +89,7 @@ async function destroyCommand(
     // 2. Resolve stacks to destroy (CDK CLI compatible behavior)
     // Always synth to determine which stacks belong to this CDK app.
     const appCmd = options.app || resolveApp();
-    let appStackNames: string[] = [];
+    let appStacks: StackLike[] = [];
 
     if (appCmd) {
       try {
@@ -99,21 +100,27 @@ async function destroyCommand(
           output: options.output || 'cdk.out',
           ...(Object.keys(context).length > 0 && { context }),
         });
-        appStackNames = result.stacks.map((s) => s.stackName);
+        appStacks = result.stacks.map((s) => ({
+          stackName: s.stackName,
+          displayName: s.displayName,
+        }));
       } catch {
         logger.debug('Could not synthesize app, falling back to state-based stack list');
       }
     }
 
-    // Determine candidate stacks
+    // Determine candidate stacks. State only carries physical names, so when synth
+    // is unavailable we fall back to a stackName-only candidate list (display-path
+    // patterns like "MyStage/MyStack" simply will not match anything in that mode).
     const allStateStacks = await stateBackend.listStacks();
-    let candidateStacks: string[];
-    if (appStackNames.length > 0) {
+    let candidateStacks: StackLike[];
+    if (appStacks.length > 0) {
       // App synth succeeded: only consider stacks from this app
-      candidateStacks = appStackNames.filter((name) => allStateStacks.includes(name));
+      const stateSet = new Set(allStateStacks);
+      candidateStacks = appStacks.filter((s) => stateSet.has(s.stackName));
     } else if (stackArgs.length > 0 || options.stack || options.all) {
       // No synth but explicit stack names or --all given: use state stacks
-      candidateStacks = allStateStacks;
+      candidateStacks = allStateStacks.map((name) => ({ stackName: name }));
     } else {
       // No synth and no explicit stacks: refuse to guess
       throw new Error(
@@ -127,25 +134,19 @@ async function destroyCommand(
     let stackNames: string[];
     if (options.all) {
       // --all: destroy all stacks in the current app
-      stackNames = candidateStacks;
+      stackNames = candidateStacks.map((s) => s.stackName);
     } else if (stackPatterns.length > 0) {
       // Explicit stack names or wildcards
-      stackNames = candidateStacks.filter((name) =>
-        stackPatterns.some((pattern) =>
-          pattern.includes('*')
-            ? new RegExp('^' + pattern.replace(/\*/g, '.*') + '$').test(name)
-            : name === pattern
-        )
-      );
+      stackNames = matchStacks(candidateStacks, stackPatterns).map((s) => s.stackName);
     } else if (candidateStacks.length === 1) {
       // Single stack: auto-select (CDK CLI compatible)
-      stackNames = candidateStacks;
+      stackNames = candidateStacks.map((s) => s.stackName);
     } else if (candidateStacks.length === 0) {
       logger.info('No stacks found in state');
       return;
     } else {
       throw new Error(
-        `Multiple stacks found: ${candidateStacks.join(', ')}. ` +
+        `Multiple stacks found: ${candidateStacks.map(describeStack).join(', ')}. ` +
           `Specify stack name(s) or use --all`
       );
     }
@@ -405,7 +406,10 @@ async function destroyCommand(
 export function createDestroyCommand(): Command {
   const cmd = new Command('destroy')
     .description('Destroy all resources in the stack')
-    .argument('[stacks...]', 'Stack name(s) to destroy (supports wildcards)')
+    .argument(
+      '[stacks...]',
+      "Stack name(s) to destroy. Accepts physical CloudFormation names (e.g. 'MyStage-Api') or CDK display paths (e.g. 'MyStage/Api'). Supports wildcards (e.g. 'MyStage/*')."
+    )
     .option('--all', 'Destroy all stacks', false)
     .action(withErrorHandling(destroyCommand));
 
