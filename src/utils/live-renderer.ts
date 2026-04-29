@@ -32,6 +32,8 @@ export class LiveRenderer {
   private spinnerIndex = 0;
   private interval: NodeJS.Timeout | null = null;
   private linesDrawn = 0;
+  private cursorHidden = false;
+  private exitListener: (() => void) | null = null;
 
   constructor(private readonly stream: NodeJS.WriteStream = process.stdout) {}
 
@@ -49,6 +51,14 @@ export class LiveRenderer {
     if (process.env['CDKD_NO_LIVE'] === '1') return false;
 
     this.active = true;
+    this.hideCursor();
+    // Restore the cursor on abrupt process exit (e.g., uncaught exception
+    // before stop() runs). Removed in stop() to avoid leaking listeners
+    // across renderer instances.
+    if (!this.exitListener) {
+      this.exitListener = () => this.showCursor();
+      process.on('exit', this.exitListener);
+    }
     this.interval = setInterval(() => this.draw(), FRAME_INTERVAL_MS);
     if (typeof this.interval.unref === 'function') this.interval.unref();
     return true;
@@ -61,6 +71,11 @@ export class LiveRenderer {
       this.interval = null;
     }
     this.clear();
+    this.showCursor();
+    if (this.exitListener) {
+      process.removeListener('exit', this.exitListener);
+      this.exitListener = null;
+    }
     this.tasks.clear();
     this.active = false;
   }
@@ -107,13 +122,35 @@ export class LiveRenderer {
     const frame = SPINNER_FRAMES[this.spinnerIndex % SPINNER_FRAMES.length]!;
     this.spinnerIndex++;
 
+    // Truncate to terminal width so a long label does not wrap and confuse
+    // the line-up clear logic. Default to 80 if columns is unavailable.
+    const cols = this.stream.columns ?? 80;
     const lines: string[] = [];
     for (const task of this.tasks.values()) {
       const elapsed = ((Date.now() - task.startedAt) / 1000).toFixed(1);
-      lines.push(`  ${frame} ${task.label} (${elapsed}s)`);
+      const raw = `  ${frame} ${task.label} (${elapsed}s)`;
+      lines.push(this.truncate(raw, cols));
     }
     this.stream.write(lines.join('\n') + '\n');
     this.linesDrawn = lines.length;
+  }
+
+  private truncate(s: string, maxLen: number): string {
+    if (s.length <= maxLen) return s;
+    if (maxLen <= 1) return '…';
+    return s.substring(0, maxLen - 1) + '…';
+  }
+
+  private hideCursor(): void {
+    if (this.cursorHidden) return;
+    this.stream.write(`${ESC}?25l`);
+    this.cursorHidden = true;
+  }
+
+  private showCursor(): void {
+    if (!this.cursorHidden) return;
+    this.stream.write(`${ESC}?25h`);
+    this.cursorHidden = false;
   }
 }
 

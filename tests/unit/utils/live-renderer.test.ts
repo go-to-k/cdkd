@@ -3,6 +3,7 @@ import { LiveRenderer } from '../../../src/utils/live-renderer.js';
 
 class FakeStream {
   isTTY = true;
+  columns: number | undefined = 200;
   chunks: string[] = [];
   write(s: string): boolean {
     this.chunks.push(s);
@@ -177,6 +178,43 @@ describe('LiveRenderer', () => {
 
     vi.advanceTimersByTime(200);
     expect(stream.chunks.length).toBe(0);
+
+    r.stop();
+  });
+
+  it('hides cursor on start and restores it on stop', () => {
+    const stream = new FakeStream();
+    const r = makeRenderer(stream);
+    r.start();
+    // Cursor-hide ANSI (\x1b[?25l) should have been written during start
+    expect(stream.output()).toContain('\x1b[?25l');
+
+    stream.reset();
+    r.stop();
+    // Cursor-show ANSI (\x1b[?25h) should be written during stop
+    expect(stream.output()).toContain('\x1b[?25h');
+  });
+
+  it('truncates labels that exceed terminal width', () => {
+    const stream = new FakeStream();
+    stream.columns = 30;
+    const r = makeRenderer(stream);
+    r.start();
+    stream.reset();
+
+    const longLabel = 'Creating SomeReallyLongResourceLogicalIdThatDefinitelyOverflows';
+    r.addTask('A', longLabel);
+
+    const out = stream.output();
+    // The full long label must not appear (it would have wrapped). The
+    // ellipsis indicates truncation.
+    expect(out).not.toContain(longLabel);
+    expect(out).toContain('…');
+    // Each rendered line must fit within the column budget. The renderer
+    // writes lines separated by '\n', plus a trailing newline; check the
+    // longest non-empty line.
+    const longest = out.split('\n').reduce((m, l) => Math.max(m, l.length), 0);
+    expect(longest).toBeLessThanOrEqual(30);
 
     r.stop();
   });

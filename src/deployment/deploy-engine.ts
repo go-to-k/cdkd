@@ -145,9 +145,13 @@ export class DeployEngine {
     // Register SIGINT handler to save partial state on Ctrl+C
     this.interrupted = false;
     const sigintHandler = () => {
-      process.stderr.write(
-        '\nInterrupted — saving partial state after current operations complete...\n'
-      );
+      // Route the interrupt notice through the live renderer so it does not
+      // collide with the in-flight task display.
+      renderer.printAbove(() => {
+        process.stderr.write(
+          '\nInterrupted — saving partial state after current operations complete...\n'
+        );
+      });
       this.interrupted = true;
     };
     process.on('SIGINT', sigintHandler);
@@ -864,12 +868,17 @@ export class DeployEngine {
     const provider = this.providerRegistry.getProvider(resourceType);
 
     const renderer = getLiveRenderer();
+    const needsReplacement =
+      change.changeType === 'UPDATE' &&
+      (change.propertyChanges?.some((pc) => pc.requiresReplacement) ?? false);
     const verb =
       change.changeType === 'CREATE'
         ? 'Creating'
-        : change.changeType === 'UPDATE'
-          ? 'Updating'
-          : 'Deleting';
+        : change.changeType === 'DELETE'
+          ? 'Deleting'
+          : needsReplacement
+            ? 'Replacing'
+            : 'Updating';
     renderer.addTask(logicalId, `${verb} ${logicalId} (${resourceType})`);
 
     try {
