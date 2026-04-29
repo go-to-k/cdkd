@@ -46,7 +46,16 @@ export function toYaml(obj: unknown, indent = 0): string {
     for (const [key, value] of entries) {
       // Keys with special chars need quoting, but AWS:: style keys don't
       const safeKey = key.includes(' ') ? `"${key}"` : key;
-      if (typeof value === 'object' && value !== null) {
+      // Non-empty arrays / objects render their contents on subsequent lines,
+      // so the colon is followed directly by the leading newline returned by
+      // the recursive toYaml call. Empty containers (`[]` / `{}`) and scalar
+      // values render inline, so they need a space after the colon to match
+      // standard YAML formatting (e.g. `dependencies: []`, not `dependencies:[]`).
+      const isContainer = typeof value === 'object' && value !== null;
+      const isEmptyContainer =
+        isContainer &&
+        (Array.isArray(value) ? value.length === 0 : Object.keys(value).length === 0);
+      if (isContainer && !isEmptyContainer) {
         result += `${prefix}${safeKey}:${toYaml(value, indent + 1)}`;
       } else {
         result += `${prefix}${safeKey}: ${toYaml(value, indent + 1).trimStart()}`;

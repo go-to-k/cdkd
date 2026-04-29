@@ -50,4 +50,17 @@ describe('toYaml', () => {
     ]);
     expect(result).toBe('\n- id: StackA\n  name: StackA\n- id: StackB\n  name: StackB\n');
   });
+
+  it('renders empty array values with a space after the colon', () => {
+    // Regression: `dependencies:[]` (no space) is invalid-ish YAML and looked
+    // off in `cdkd list --show-dependencies` output. Standard YAML uses
+    // `dependencies: []`.
+    const result = toYaml({ id: 'StackA', dependencies: [] });
+    expect(result).toBe('\nid: StackA\ndependencies: []\n');
+  });
+
+  it('renders empty object values with a space after the colon', () => {
+    const result = toYaml({ name: 'X', tags: {} });
+    expect(result).toBe('\nname: X\ntags: {}\n');
+  });
 });
