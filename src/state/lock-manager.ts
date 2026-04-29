@@ -223,6 +223,19 @@ export class LockManager {
   }
 
   /**
+   * Check whether a lock currently exists for a stack
+   *
+   * Returns true if a lock file is present in S3 (regardless of expiry).
+   * This is intended for read-only inspection (e.g. `cdkd state list --long`),
+   * not for acquisition decisions — use `acquireLock` for that, which has its
+   * own expired-lock cleanup logic.
+   */
+  async isLocked(stackName: string): Promise<boolean> {
+    const lockInfo = await this.getLockInfo(stackName);
+    return lockInfo !== null;
+  }
+
+  /**
    * Release a lock for a stack
    */
   async releaseLock(stackName: string): Promise<void> {

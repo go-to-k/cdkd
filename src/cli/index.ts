@@ -11,6 +11,7 @@ import { createDiffCommand } from './commands/diff.js';
 import { createDestroyCommand } from './commands/destroy.js';
 import { createPublishAssetsCommand } from './commands/publish-assets.js';
 import { createForceUnlockCommand } from './commands/force-unlock.js';
+import { createStateCommand } from './commands/state.js';
 
 const SUBCOMMANDS = new Set([
   'bootstrap',
@@ -22,6 +23,7 @@ const SUBCOMMANDS = new Set([
   'destroy',
   'publish-assets',
   'force-unlock',
+  'state',
 ]);
 
 /**
@@ -62,6 +64,7 @@ async function main(): Promise<void> {
   program.addCommand(createDestroyCommand());
   program.addCommand(createPublishAssetsCommand());
   program.addCommand(createForceUnlockCommand());
+  program.addCommand(createStateCommand());
 
   // Reorder args: move options before subcommand to after it
   // This allows `cdkd -c key=value deploy` like CDK CLI
