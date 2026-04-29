@@ -325,6 +325,15 @@ export class LambdaFunctionProvider implements ResourceProvider {
           } — continuing with delete`
         );
       }
+
+      // Wait for the UpdateFunctionConfiguration to fully apply before
+      // calling DeleteFunction. Lambda processes the VPC detach
+      // asynchronously: LastUpdateStatus transitions InProgress -> Successful,
+      // and the hyperplane ENIs only flip from `in-use` to `available` once
+      // that completes. Calling DeleteFunction while LastUpdateStatus is
+      // still `InProgress` aborts the detach mid-flight, leaving ENIs
+      // attached and blocking downstream Subnet / SG deletion.
+      await this.waitForLambdaUpdateCompleted(physicalId);
     }
 
     try {
@@ -438,6 +447,67 @@ export class LambdaFunctionProvider implements ResourceProvider {
    * Timeout is a soft warning — downstream Subnet/SG deletion has its own
    * retries.
    */
+  /**
+   * Poll GetFunction until LastUpdateStatus is no longer `InProgress`.
+   *
+   * After UpdateFunctionConfiguration the Lambda service processes the
+   * change (including VPC detach + hyperplane ENI release) asynchronously.
+   * Returning early — i.e. calling DeleteFunction while the update is still
+   * `InProgress` — aborts the detach, leaving ENIs attached and blocking
+   * downstream Subnet / SG deletion.
+   *
+   * Bounded by eniWaitTimeoutMs (10min) and treated as a soft warning on
+   * timeout: the subsequent ENI cleanup loop and downstream retries cover
+   * the residual edge case.
+   */
+  private async waitForLambdaUpdateCompleted(functionName: string): Promise<void> {
+    const start = Date.now();
+    let delay = this.eniWaitInitialDelayMs;
+
+    for (;;) {
+      let status: string | undefined;
+      try {
+        const resp = await this.lambdaClient.send(
+          new GetFunctionCommand({ FunctionName: functionName })
+        );
+        status = resp.Configuration?.LastUpdateStatus;
+      } catch (error) {
+        if (error instanceof ResourceNotFoundException) {
+          // Function disappeared — caller will skip ENI cleanup too.
+          return;
+        }
+        // Transient error — log and retry.
+        this.logger.debug(
+          `GetFunction failed while waiting for ${functionName} update: ${
+            error instanceof Error ? error.message : String(error)
+          }`
+        );
+      }
+
+      if (status && status !== 'InProgress') {
+        this.logger.debug(
+          `Lambda ${functionName} update completed (LastUpdateStatus=${status}) after ${
+            Date.now() - start
+          }ms`
+        );
+        return;
+      }
+
+      const elapsed = Date.now() - start;
+      if (elapsed >= this.eniWaitTimeoutMs) {
+        this.logger.warn(
+          `Timeout (${this.eniWaitTimeoutMs}ms) waiting for Lambda ${functionName} update to complete; proceeding with delete`
+        );
+        return;
+      }
+
+      const remaining = this.eniWaitTimeoutMs - elapsed;
+      const sleepMs = Math.min(delay, remaining);
+      await this.sleep(sleepMs);
+      delay = Math.min(delay * 2, this.eniWaitMaxDelayMs);
+    }
+  }
+
   private async cleanupLambdaEnis(functionName: string): Promise<void> {
     const start = Date.now();
     let delay = this.eniWaitInitialDelayMs;
