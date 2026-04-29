@@ -1,3 +1,10 @@
+## [0.5.1](https://github.com/go-to-k/cdkd/compare/v0.5.0...v0.5.1) (2026-04-29)
+
+
+### Performance Improvements
+
+* **deploy:** faster CREATE retry backoff (1s init + 8s cap) ([#54](https://github.com/go-to-k/cdkd/issues/54)) ([2df06a7](https://github.com/go-to-k/cdkd/commit/2df06a770bb2cc30f95093dce522df7243b5da48))
+
 # [0.5.0](https://github.com/go-to-k/cdkd/compare/v0.4.1...v0.5.0) (2026-04-29)
 
 
