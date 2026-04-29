@@ -24,6 +24,27 @@
             "if": "Bash(gh pr merge*)",
             "timeout": 10,
             "statusMessage": "Checking integ-destroy marker..."
+          },
+          {
+            "type": "command",
+            "command": ".claude/hooks/verify-pr-gate.sh",
+            "if": "Bash(gh pr create*) or Bash(gh pr merge*)",
+            "timeout": 10,
+            "statusMessage": "Checking verify-pr marker..."
+          },
+          {
+            "type": "command",
+            "command": ".claude/hooks/commit-msg-heredoc-gate.sh",
+            "if": "Bash(git commit*)",
+            "timeout": 10,
+            "statusMessage": "Checking commit message format..."
+          },
+          {
+            "type": "command",
+            "command": ".claude/hooks/gh-pr-edit-deprecation-gate.sh",
+            "if": "Bash(gh pr edit*)",
+            "timeout": 10,
+            "statusMessage": "Checking gh pr edit usage..."
           }
         ]
       }

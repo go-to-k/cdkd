@@ -1,15 +1,24 @@
 # markgate configuration — https://github.com/go-to-k/markgate
 #
-# Three narrow-scope gates back the pre-commit / pre-merge checks for
-# this repo. Each gate only invalidates when files in its own `include`
-# set change, so a tests-only commit doesn't re-run doc checks and a
-# docs-only commit doesn't re-run typecheck/build/tests.
+# Four narrow-scope gates back the pre-commit / pre-PR / pre-merge
+# checks for this repo. Each gate only invalidates when files in its
+# own `include` set change, so a tests-only commit doesn't re-run doc
+# checks and a docs-only commit doesn't re-run typecheck/build/tests.
 #
 # Gates:
 #   check          — typecheck/lint/build/unit tests
 #                    (set by /check and /verify-pr).
 #   docs           — README/CLAUDE.md/docs consistency with src
 #                    (set by /check-docs and /verify-pr).
+#   verify-pr      — full PR-readiness checklist (live-test of changed
+#                    behavior, shared-utility caller verification, PR
+#                    title + body freshness, and a retrospective that
+#                    proposes new rules/hooks/skills for any pattern
+#                    that surfaced in the session). Set ONLY by
+#                    /verify-pr. The PreToolUse hook in
+#                    .claude/hooks/verify-pr-gate.sh blocks
+#                    `gh pr create` and `gh pr merge` (incl. --auto)
+#                    when this gate is stale.
 #   integ-destroy  — real-AWS deploy + destroy with zero orphan
 #                    resources. Set ONLY by /run-integ when the destroy
 #                    step finishes with 0 errors and the post-destroy
@@ -43,6 +52,25 @@ gates:
       - "docs/**"
       - "README.md"
       - "CLAUDE.md"
+
+  verify-pr:
+    hash: files
+    # Scope: anything that could plausibly invalidate the live-test /
+    # shared-utility / docs / scope-match / retrospective checks
+    # walked by /verify-pr. Union of `check` + `docs` plus any other
+    # source the skill inspects. If any of these change after
+    # /verify-pr is set, the marker goes stale and the
+    # `gh pr create` / `gh pr merge` gate refuses until /verify-pr is
+    # re-run end-to-end.
+    include:
+      - "src/**"
+      - "tests/**"
+      - "docs/**"
+      - "README.md"
+      - "CLAUDE.md"
+      - "package.json"
+      - "pnpm-lock.yaml"
+      - "tsconfig*.json"
 
   integ-destroy:
     hash: files

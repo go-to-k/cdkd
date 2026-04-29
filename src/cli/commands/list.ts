@@ -153,7 +153,7 @@ async function listCommand(
   // Output mode selection (mirrors CDK CLI):
   // - --long → full record per stack (id, name, environment, [dependencies])
   // - --show-dependencies (without --long) → {id, dependencies} per stack
-  // - default → bare displayName, one per line
+  // - default → CDK-style display id, one per line
   // - --json switches the structured outputs to JSON instead of YAML.
   if (options.long) {
     const records = sorted.map((s) => toLongRecord(s, options.showDependencies));
@@ -163,7 +163,7 @@ async function listCommand(
 
   if (options.showDependencies) {
     const records: DependencyRecord[] = sorted.map((s) => ({
-      id: s.displayName,
+      id: formatDisplayId(s),
       dependencies: [...s.dependencyNames],
     }));
     emitStructured(records, options.json);
@@ -171,8 +171,24 @@ async function listCommand(
   }
 
   for (const stack of sorted) {
-    process.stdout.write(`${stack.displayName}\n`);
+    process.stdout.write(`${formatDisplayId(stack)}\n`);
   }
+}
+
+/**
+ * Render a stack as it appears in default `cdkd list` output, matching CDK
+ * CLI's "display id" format.
+ *
+ * If the hierarchical display path differs from the physical CloudFormation
+ * stack name (e.g. for a stack inside a CDK Stage), append the physical name
+ * in parens: `MyStage/MyStack (MyStage-MyStack)`. Otherwise just the display
+ * path. CDK CLI does this in `CloudFormationArtifact.displayName`; see
+ * aws-cdk-cli/packages/@aws-cdk/cloud-assembly-api/lib/artifacts/cloudformation-artifact.ts.
+ */
+function formatDisplayId(stack: StackInfo): string {
+  return stack.displayName === stack.stackName
+    ? stack.displayName
+    : `${stack.displayName} (${stack.stackName})`;
 }
 
 /**
