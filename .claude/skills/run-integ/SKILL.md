@@ -68,6 +68,26 @@ Run integration tests against a real AWS account. These tests deploy actual AWS 
 
 7. **Report results**: Show pass/fail for each test, including resource counts and timing. Always state explicitly "destroy completed: 0 errors, 0 orphans" or itemize what remained / what was force-cleaned.
 
+8. **Set the `integ-destroy` markgate marker (only on full clean success)**:
+
+   When — and ONLY when — all of the following hold:
+   - the destroy step finished with **0 errors**,
+   - step 5 found **0 leftover resources**,
+   - step 6 was either skipped (because nothing to clean up) or completed with the post-cleanup re-check showing 0 orphans,
+
+   record the gate so subsequent `gh pr merge` calls are unblocked:
+
+   ```bash
+   mise exec -- markgate set integ-destroy
+   ```
+
+   If any of the above failed, do NOT set the marker — that is the
+   whole point of the gate. The hook
+   `.claude/hooks/integ-destroy-gate.sh` will block `gh pr merge` for
+   any PR that touches deletion-related code (see `.markgate.yml`
+   `integ-destroy.include`) until this marker is fresh, so a
+   destroy-untested change physically cannot reach main.
+
 ## Important
 
 - Always use `--region us-east-1` for integration tests

@@ -1,16 +1,26 @@
 # markgate configuration — https://github.com/go-to-k/markgate
 #
-# Two narrow-scope gates back the pre-commit checks for this repo.
-# Each gate only invalidates when files in its own `include` set change,
-# so a tests-only commit doesn't re-run doc checks and a docs-only
-# commit doesn't re-run typecheck/build/tests.
+# Three narrow-scope gates back the pre-commit / pre-merge checks for
+# this repo. Each gate only invalidates when files in its own `include`
+# set change, so a tests-only commit doesn't re-run doc checks and a
+# docs-only commit doesn't re-run typecheck/build/tests.
 #
 # Gates:
-#   check — typecheck/lint/build/unit tests (set by /check and /verify-pr)
-#   docs  — README/CLAUDE.md/docs consistency with src (set by /check-docs and /verify-pr)
+#   check          — typecheck/lint/build/unit tests
+#                    (set by /check and /verify-pr).
+#   docs           — README/CLAUDE.md/docs consistency with src
+#                    (set by /check-docs and /verify-pr).
+#   integ-destroy  — real-AWS deploy + destroy with zero orphan
+#                    resources. Set ONLY by /run-integ when the destroy
+#                    step finishes with 0 errors and the post-destroy
+#                    AWS state is empty. The PreToolUse hook in
+#                    .claude/hooks/integ-destroy-gate.sh blocks
+#                    `gh pr merge` (and `gh pr merge --auto`) when this
+#                    gate is stale, so deletion-touching code never
+#                    reaches main without a verified destroy.
 #
-# The PreToolUse hook in .claude/hooks/check-gate.sh verifies BOTH on
-# every `git commit`. Whichever gate's scope was touched must be re-run.
+# The PreToolUse hook in .claude/hooks/check-gate.sh verifies `check`
+# and `docs` on every `git commit`.
 
 gates:
   check:
@@ -33,3 +43,19 @@ gates:
       - "docs/**"
       - "README.md"
       - "CLAUDE.md"
+
+  integ-destroy:
+    hash: files
+    # Scope: every code path that participates in real-AWS resource
+    # destruction. Editing any of these REQUIRES a fresh `/run-integ`
+    # destroy verification before the PR can be merged. The list is
+    # intentionally broad — false positives (forced extra integ runs)
+    # are far cheaper than false negatives (broken destroy reaching a
+    # release tag).
+    include:
+      - "src/provisioning/providers/**"
+      - "src/cli/commands/destroy.ts"
+      - "src/deployment/deploy-engine.ts"
+      - "src/analyzer/dag-builder.ts"
+      - "src/analyzer/implicit-delete-deps.ts"
+      - "src/analyzer/lambda-vpc-deps.ts"
