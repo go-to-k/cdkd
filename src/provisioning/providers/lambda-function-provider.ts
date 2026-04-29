@@ -72,9 +72,22 @@ export class LambdaFunctionProvider implements ResourceProvider {
   // Lambda VPC ENI detach is async and can take 20-40 minutes in the worst case;
   // we poll up to 10 minutes and then warn-and-continue, since downstream Subnet/SG
   // deletion has its own retry logic that handles a small remaining window.
+  // Budget for waiting on UpdateFunctionConfiguration to fully apply
+  // (LastUpdateStatus -> Successful) after pre-delete VPC detach.
   private readonly eniWaitTimeoutMs: number = 10 * 60 * 1000;
   private readonly eniWaitInitialDelayMs: number = 10_000;
   private readonly eniWaitMaxDelayMs: number = 30_000;
+
+  // delstack-style ENI cleanup tunables.
+  // - initial sleep: gives AWS time to publish post-detach ENI state via
+  //   DescribeNetworkInterfaces (right after the update, the API can return
+  //   an empty list even though ENIs still exist).
+  // - per-ENI retry budget: an in-use ENI cannot be deleted until AWS
+  //   finishes the asynchronous detach; budget gives that time to land.
+  // - retry interval: polling cadence inside the per-ENI loop.
+  private readonly eniInitialSleepMs: number = 10_000;
+  private readonly eniDeleteRetryBudgetMs: number = 90_000;
+  private readonly eniDeleteRetryIntervalMs: number = 5_000;
 
   constructor() {
     const awsClients = getAwsClients();
@@ -509,84 +522,61 @@ export class LambdaFunctionProvider implements ResourceProvider {
   }
 
   private async cleanupLambdaEnis(functionName: string): Promise<void> {
+    this.logger.debug(`Cleaning up Lambda VPC ENIs for function ${functionName}`);
+
+    // Mirror delstack's ENI cleanup pattern: an unconditional initial sleep
+    // gives AWS time to register the post-detach ENI state in the API plane
+    // (DescribeNetworkInterfaces can transiently return an empty list right
+    // after UpdateFunctionConfiguration, even though ENIs still exist), then
+    // delete each matched ENI in parallel with a per-ENI retry budget.
+    await this.sleep(this.eniInitialSleepMs);
+
+    let enis: { id: string; status: string }[] = [];
+    try {
+      enis = await this.listLambdaEnis(functionName);
+    } catch (error) {
+      this.logger.warn(
+        `DescribeNetworkInterfaces failed for ${functionName}: ${
+          error instanceof Error ? error.message : String(error)
+        } — downstream Subnet/SG deletion will fall back to its own ENI cleanup`
+      );
+      return;
+    }
+
+    if (enis.length === 0) {
+      this.logger.debug(`No Lambda ENIs found for ${functionName} after initial sleep`);
+      return;
+    }
+
+    // Per-ENI parallel delete with retry. An in-use ENI cannot be deleted
+    // until AWS finishes the asynchronous detach triggered by the prior
+    // UpdateFunctionConfiguration; budget gives that detach time to land.
+    await Promise.all(enis.map((eni) => this.deleteEniWithRetry(eni.id, functionName)));
+  }
+
+  private async deleteEniWithRetry(eniId: string, functionName: string): Promise<void> {
     const start = Date.now();
-    let delay = this.eniWaitInitialDelayMs;
-    let attempt = 0;
-
-    this.logger.debug(
-      `Cleaning up Lambda VPC ENIs for function ${functionName} (timeout ${this.eniWaitTimeoutMs}ms)`
-    );
-
-    // Lambda VPC ENI Descriptions follow `AWS Lambda VPC ENI-<name>` where
-    // <name> is typically the *logical* portion of the function name (e.g.
-    // CDK's `<StackName>-<LogicalId>`), NOT necessarily the full physical
-    // function name (which carries an extra auto-generated 8-char suffix
-    // like `-zZBaJTabq03f`). Matching on the full physicalId as a token
-    // therefore misses the ENIs entirely. Instead, parse the suffix out of
-    // each Description and check it against the physicalId as a prefix
-    // match.
-
     for (;;) {
-      attempt++;
-
-      let enis: { id: string; status: string }[] = [];
-      let listFailed = false;
       try {
-        enis = await this.listLambdaEnis(functionName);
+        await this.ec2Client.send(new DeleteNetworkInterfaceCommand({ NetworkInterfaceId: eniId }));
+        this.logger.debug(`Deleted Lambda ENI ${eniId} for ${functionName}`);
+        return;
       } catch (error) {
-        this.logger.warn(
-          `DescribeNetworkInterfaces failed while cleaning up Lambda ENIs of ${functionName}: ${
-            error instanceof Error ? error.message : String(error)
-          }`
-        );
-        listFailed = true;
+        const msg = error instanceof Error ? error.message : String(error);
+        if (msg.includes('InvalidNetworkInterfaceID.NotFound') || msg.includes('does not exist')) {
+          // Already gone — treat as success.
+          return;
+        }
+        const elapsed = Date.now() - start;
+        if (elapsed >= this.eniDeleteRetryBudgetMs) {
+          this.logger.warn(
+            `Gave up deleting ENI ${eniId} for ${functionName} after ${elapsed}ms: ${msg} — ` +
+              `downstream Subnet/SG deletion will retry`
+          );
+          return;
+        }
+        await this.sleep(this.eniDeleteRetryIntervalMs);
       }
-
-      // Only treat an empty list as success if we actually got it from AWS;
-      // a transient List failure must retry rather than declare cleanup done.
-      if (!listFailed && enis.length === 0) {
-        this.logger.debug(
-          `Lambda ENIs for ${functionName} fully cleaned up after ${attempt} attempt(s) / ${
-            Date.now() - start
-          }ms`
-        );
-        return;
-      }
-
-      // Best-effort delete: in-use ENIs reject and we'll retry next loop.
-      if (enis.length > 0) {
-        await Promise.all(
-          enis.map(async (eni) => {
-            try {
-              await this.ec2Client.send(
-                new DeleteNetworkInterfaceCommand({ NetworkInterfaceId: eni.id })
-              );
-              this.logger.debug(`Deleted Lambda ENI ${eni.id} for ${functionName}`);
-            } catch (error) {
-              this.logger.debug(
-                `ENI ${eni.id} (status=${eni.status}) not yet deletable: ${
-                  error instanceof Error ? error.message : String(error)
-                }`
-              );
-            }
-          })
-        );
-      }
-
-      const elapsed = Date.now() - start;
-      if (elapsed >= this.eniWaitTimeoutMs) {
-        this.logger.warn(
-          `Timeout (${this.eniWaitTimeoutMs}ms) cleaning up Lambda VPC ENIs of ${functionName} ` +
-            `(${enis.length} remaining). ` +
-            `Continuing — downstream Subnet/SG deletion will retry as needed.`
-        );
-        return;
-      }
-
-      const remaining = this.eniWaitTimeoutMs - elapsed;
-      const sleepMs = Math.min(delay, remaining);
-      await this.sleep(sleepMs);
-      delay = Math.min(delay * 2, this.eniWaitMaxDelayMs);
     }
   }
 

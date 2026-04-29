@@ -37,6 +37,8 @@ import {
   DeleteNetworkAclEntryCommand,
   ReplaceNetworkAclAssociationCommand,
   DescribeNetworkAclsCommand,
+  DescribeNetworkInterfacesCommand,
+  DeleteNetworkInterfaceCommand,
   type Tenancy,
   type _InstanceType,
   type VolumeType,
@@ -631,23 +633,95 @@ export class EC2Provider implements ResourceProvider {
   ): Promise<void> {
     this.logger.debug(`Deleting Subnet ${logicalId}: ${physicalId}`);
 
-    try {
-      await this.ec2Client.send(new DeleteSubnetCommand({ SubnetId: physicalId }));
-      this.logger.debug(`Successfully deleted Subnet ${logicalId}`);
-    } catch (error) {
-      if (this.isNotFoundError(error)) {
-        this.logger.debug(`Subnet ${physicalId} does not exist, skipping deletion`);
+    // Subnet deletes commonly fail with "has dependencies" when Lambda
+    // hyperplane ENIs are still attached. The Lambda provider tries to
+    // clean those up first, but its budget is finite and AWS's ENI release
+    // is asynchronous — by the time we get here, leftover ENIs may still
+    // exist. Retry with a side-channel: best-effort delete remaining
+    // Lambda-managed ENIs in the subnet, sleep, then retry the subnet.
+    const maxAttempts = 10;
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      try {
+        await this.ec2Client.send(new DeleteSubnetCommand({ SubnetId: physicalId }));
+        this.logger.debug(`Successfully deleted Subnet ${logicalId}`);
         return;
+      } catch (error) {
+        if (this.isNotFoundError(error)) {
+          this.logger.debug(`Subnet ${physicalId} does not exist, skipping deletion`);
+          return;
+        }
+        const msg = error instanceof Error ? error.message : String(error);
+        const isDependencyError =
+          msg.includes('has dependencies') || msg.includes('DependencyViolation');
+        if (isDependencyError && attempt < maxAttempts) {
+          await this.cleanupSubnetLambdaEnis(physicalId);
+          this.logger.debug(
+            `Subnet ${physicalId} has dependencies (attempt ${attempt}/${maxAttempts}), retrying in ${attempt * 5}s...`
+          );
+          await new Promise((resolve) => setTimeout(resolve, attempt * 5000));
+          continue;
+        }
+        const cause = error instanceof Error ? error : undefined;
+        throw new ProvisioningError(
+          `Failed to delete Subnet ${logicalId}: ${msg}`,
+          resourceType,
+          logicalId,
+          physicalId,
+          cause
+        );
       }
-      const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to delete Subnet ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
-      );
     }
+  }
+
+  /**
+   * Best-effort: list Lambda-managed ENIs in the given subnet and try to
+   * delete each one. Used as a side-channel cleanup when DeleteSubnet
+   * fails with "has dependencies" — the Lambda provider's own ENI cleanup
+   * may have run out of budget before AWS finished detaching, so a second
+   * attempt from the subnet side typically succeeds a few seconds later
+   * once the ENIs flip from `in-use` to `available`.
+   */
+  private async cleanupSubnetLambdaEnis(subnetId: string): Promise<void> {
+    let enis: { id: string; status: string }[];
+    try {
+      const resp = await this.ec2Client.send(
+        new DescribeNetworkInterfacesCommand({
+          Filters: [
+            { Name: 'subnet-id', Values: [subnetId] },
+            { Name: 'requester-id', Values: ['*:awslambda_*'] },
+          ],
+        })
+      );
+      enis = (resp.NetworkInterfaces ?? [])
+        .filter((ni) => ni.NetworkInterfaceId)
+        .map((ni) => ({ id: ni.NetworkInterfaceId!, status: ni.Status ?? 'unknown' }));
+    } catch (err) {
+      this.logger.debug(
+        `cleanupSubnetLambdaEnis: DescribeNetworkInterfaces failed for ${subnetId}: ${
+          err instanceof Error ? err.message : String(err)
+        }`
+      );
+      return;
+    }
+    if (enis.length === 0) return;
+    await Promise.all(
+      enis.map(async (eni) => {
+        try {
+          await this.ec2Client.send(
+            new DeleteNetworkInterfaceCommand({ NetworkInterfaceId: eni.id })
+          );
+          this.logger.debug(
+            `cleanupSubnetLambdaEnis: deleted Lambda ENI ${eni.id} in subnet ${subnetId}`
+          );
+        } catch (err) {
+          this.logger.debug(
+            `cleanupSubnetLambdaEnis: ENI ${eni.id} (status=${eni.status}) not yet deletable: ${
+              err instanceof Error ? err.message : String(err)
+            }`
+          );
+        }
+      })
+    );
   }
 
   private async getSubnetAttribute(physicalId: string, attributeName: string): Promise<unknown> {
@@ -1316,6 +1390,9 @@ export class EC2Provider implements ResourceProvider {
         }
         const msg = error instanceof Error ? error.message : String(error);
         if (msg.includes('dependent object') && attempt < maxAttempts) {
+          // Same side-channel as deleteSubnet: clean up Lambda-managed
+          // ENIs that still reference this SG, then sleep and retry.
+          await this.cleanupSecurityGroupLambdaEnis(physicalId);
           this.logger.debug(
             `SecurityGroup ${physicalId} has dependent objects (attempt ${attempt}/${maxAttempts}), retrying in ${attempt * 5}s...`
           );
@@ -1332,6 +1409,54 @@ export class EC2Provider implements ResourceProvider {
         );
       }
     }
+  }
+
+  /**
+   * Best-effort: list Lambda-managed ENIs that reference the given security
+   * group and try to delete each one. Mirror of cleanupSubnetLambdaEnis but
+   * filtered by `group-id`.
+   */
+  private async cleanupSecurityGroupLambdaEnis(groupId: string): Promise<void> {
+    let enis: { id: string; status: string }[];
+    try {
+      const resp = await this.ec2Client.send(
+        new DescribeNetworkInterfacesCommand({
+          Filters: [
+            { Name: 'group-id', Values: [groupId] },
+            { Name: 'requester-id', Values: ['*:awslambda_*'] },
+          ],
+        })
+      );
+      enis = (resp.NetworkInterfaces ?? [])
+        .filter((ni) => ni.NetworkInterfaceId)
+        .map((ni) => ({ id: ni.NetworkInterfaceId!, status: ni.Status ?? 'unknown' }));
+    } catch (err) {
+      this.logger.debug(
+        `cleanupSecurityGroupLambdaEnis: DescribeNetworkInterfaces failed for ${groupId}: ${
+          err instanceof Error ? err.message : String(err)
+        }`
+      );
+      return;
+    }
+    if (enis.length === 0) return;
+    await Promise.all(
+      enis.map(async (eni) => {
+        try {
+          await this.ec2Client.send(
+            new DeleteNetworkInterfaceCommand({ NetworkInterfaceId: eni.id })
+          );
+          this.logger.debug(
+            `cleanupSecurityGroupLambdaEnis: deleted Lambda ENI ${eni.id} for SG ${groupId}`
+          );
+        } catch (err) {
+          this.logger.debug(
+            `cleanupSecurityGroupLambdaEnis: ENI ${eni.id} (status=${eni.status}) not yet deletable: ${
+              err instanceof Error ? err.message : String(err)
+            }`
+          );
+        }
+      })
+    );
   }
 
   private async getSecurityGroupAttribute(
