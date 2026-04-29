@@ -111,6 +111,7 @@ pnpm run typecheck
 ### Important Files
 
 - **src/cli/config-loader.ts** - Config resolution (cdk.json, env vars for `--app` and `--state-bucket`)
+- **src/cli/stack-matcher.ts** - Shared stack-name matcher used by deploy/diff/destroy. Routes patterns by whether they contain `/` (display-path) or not (physical name) and returns a deduplicated union.
 - **src/synthesis/app-executor.ts** - Executes CDK app as subprocess with proper env vars (CDK_OUTDIR, CDK_CONTEXT_JSON, CDK_DEFAULT_REGION, etc.)
 - **src/synthesis/assembly-reader.ts** - Reads and parses Cloud Assembly manifest.json directly
 - **src/synthesis/synthesizer.ts** - Orchestrates synthesis with context provider loop
@@ -195,6 +196,7 @@ registry.register('AWS::IAM::Role', new IAMRoleProvider());
 - Stack names are positional arguments: `cdkd deploy MyStack` (not `--stack-name`)
 - `--all` flag targets all stacks for deploy/diff/destroy (`destroy --all` only targets stacks from the current CDK app via synthesis)
 - Wildcard support: `cdkd deploy 'My*'`
+- Stack selection accepts both forms (CDK CLI parity): the **physical** CloudFormation stack name (`MyStage-MyStack`) and the **hierarchical display path** from CDK synth (`MyStage/MyStack`). Patterns containing `/` are matched against the display path; patterns without `/` are matched against the physical name. This makes Stage-scoped wildcards like `cdkd deploy 'MyStage/*'` work as expected. For `destroy`, display-path matching requires synth to succeed (state alone only carries physical names). Implemented in `src/cli/stack-matcher.ts`.
 - Single stack auto-detected (no stack name needed)
 - Concurrency options: `--concurrency` (resource ops, default 10), `--stack-concurrency` (stacks, default 4), `--asset-publish-concurrency` (S3+ECR, default 8), `--image-build-concurrency` (Docker builds, default 4)
 - `-y` / `--yes` is a global flag (CDK CLI parity) that auto-confirms interactive prompts (e.g. `destroy`). `cdkd destroy` additionally accepts `-f` / `--force` — a destroy-specific flag with the same effect as `-y` in this context (matching CDK CLI, where `--force` is per-subcommand and overlaps with the global `--yes` only in the destroy confirmation path)

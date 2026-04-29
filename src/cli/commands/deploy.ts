@@ -22,6 +22,7 @@ import { DeployEngine } from '../../deployment/deploy-engine.js';
 import { WorkGraph } from '../../deployment/work-graph.js';
 import { setAwsClients, AwsClients } from '../../utils/aws-clients.js';
 import { resolveApp, resolveStateBucketWithDefault } from '../config-loader.js';
+import { matchStacks, describeStack } from '../stack-matcher.js';
 
 /**
  * Deploy command implementation
@@ -135,19 +136,13 @@ async function deployCommand(
     if (options.all) {
       targetStacks = allStacks;
     } else if (stackPatterns.length > 0) {
-      targetStacks = allStacks.filter((s) =>
-        stackPatterns.some((pattern) =>
-          pattern.includes('*')
-            ? new RegExp('^' + pattern.replace(/\*/g, '.*') + '$').test(s.stackName)
-            : s.stackName === pattern
-        )
-      );
+      targetStacks = matchStacks(allStacks, stackPatterns);
     } else if (allStacks.length === 1) {
       // Single stack: auto-select
       targetStacks = allStacks;
     } else {
       throw new Error(
-        `Multiple stacks found: ${allStacks.map((s) => s.stackName).join(', ')}. ` +
+        `Multiple stacks found: ${allStacks.map(describeStack).join(', ')}. ` +
           `Specify stack name(s) or use --all`
       );
     }
@@ -155,7 +150,7 @@ async function deployCommand(
     if (targetStacks.length === 0) {
       throw new Error(
         stackPatterns.length > 0
-          ? `No stacks matching ${stackPatterns.join(', ')} found in assembly. Available: ${allStacks.map((s) => s.stackName).join(', ')}`
+          ? `No stacks matching ${stackPatterns.join(', ')} found in assembly. Available: ${allStacks.map(describeStack).join(', ')}`
           : 'No stacks found in assembly'
       );
     }
@@ -349,7 +344,10 @@ async function deployCommand(
 export function createDeployCommand(): Command {
   const cmd = new Command('deploy')
     .description('Deploy CDK app using SDK/Cloud Control API')
-    .argument('[stacks...]', 'Stack name(s) to deploy (supports wildcards)')
+    .argument(
+      '[stacks...]',
+      "Stack name(s) to deploy. Accepts physical CloudFormation names (e.g. 'MyStage-Api') or CDK display paths (e.g. 'MyStage/Api'). Supports wildcards (e.g. 'MyStage/*')."
+    )
     .option('--all', 'Deploy all stacks', false)
     .action(withErrorHandling(deployCommand));
 

@@ -380,8 +380,14 @@ cdkd deploy Stack1 Stack2
 # Deploy all stacks
 cdkd deploy --all
 
-# Deploy with wildcard
+# Deploy with wildcard (matched against the physical CloudFormation stack name)
 cdkd deploy 'My*'
+
+# Deploy stacks under a CDK Stage using the hierarchical path (CDK CLI parity)
+# Patterns containing '/' are routed to the CDK display path; both forms work:
+cdkd deploy 'MyStage/*'        # all stacks under MyStage
+cdkd deploy MyStage/Api        # specific stack by display path
+cdkd deploy MyStage-Api        # same stack by physical CloudFormation name
 
 # Deploy with context values
 cdkd deploy -c env=staging -c featureFlag=true

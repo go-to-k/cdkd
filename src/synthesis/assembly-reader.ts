@@ -16,8 +16,15 @@ import { SynthesisError } from '../utils/error-handler.js';
  * Stack information extracted from cloud assembly
  */
 export interface StackInfo {
-  /** Stack name */
+  /** Physical CloudFormation stack name (e.g., "MyStage-MyStack") */
   stackName: string;
+
+  /**
+   * Hierarchical display name from CDK synth (e.g., "MyStage/MyStack" for stacks
+   * under a Stage, or "MyStack" at the top level). Falls back to `stackName` when
+   * the assembly does not carry one.
+   */
+  displayName: string;
 
   /** Artifact ID in manifest */
   artifactId: string;
@@ -233,6 +240,7 @@ export class AssemblyReader {
 
     return {
       stackName,
+      displayName: artifact.displayName ?? stackName,
       artifactId,
       template,
       assetManifestPath,
