@@ -83,10 +83,12 @@ describe('cdkd list', () => {
     mockResolveApp.mockReturnValue('npx ts-node app.ts');
   });
 
-  it('prints displayName per line by default', async () => {
+  it('prints CDK display id per line by default, with physical name in parens when it differs', async () => {
     mockSynthesize.mockResolvedValue({
       stacks: [
+        // displayName === stackName: just the display path
         makeStack({ stackName: 'StackA', displayName: 'StackA' }),
+        // displayName !== stackName (Stage-scoped): parens form
         makeStack({ stackName: 'MyStage-Api', displayName: 'MyStage/Api' }),
       ],
       manifest: {},
@@ -96,7 +98,7 @@ describe('cdkd list', () => {
     const { stdout, error } = await runList([]);
 
     expect(error).toBeUndefined();
-    expect(stdout).toBe('StackA\nMyStage/Api\n');
+    expect(stdout).toBe('StackA\nMyStage/Api (MyStage-Api)\n');
   });
 
   it('orders stacks by dependency (deps first)', async () => {
@@ -214,7 +216,7 @@ describe('cdkd list', () => {
     });
 
     const { stdout } = await runList(['MyStage-*']);
-    expect(stdout).toBe('MyStage/Api\nMyStage/Db\n');
+    expect(stdout).toBe('MyStage/Api (MyStage-Api)\nMyStage/Db (MyStage-Db)\n');
   });
 
   it('filters stacks by display-path wildcard', async () => {
@@ -228,7 +230,30 @@ describe('cdkd list', () => {
     });
 
     const { stdout } = await runList(['MyStage/*']);
-    expect(stdout).toBe('MyStage/Api\n');
+    expect(stdout).toBe('MyStage/Api (MyStage-Api)\n');
+  });
+
+  it('--show-dependencies (no --long) carries the parens form in id', async () => {
+    mockSynthesize.mockResolvedValue({
+      stacks: [
+        makeStack({
+          stackName: 'MyStage-Api',
+          displayName: 'MyStage/Api',
+          dependencyNames: ['MyStage-Db'],
+        }),
+        makeStack({ stackName: 'MyStage-Db', displayName: 'MyStage/Db' }),
+      ],
+      manifest: {},
+      assemblyDir: '/tmp/cdk.out',
+    });
+
+    const { stdout } = await runList(['--show-dependencies', '--json']);
+
+    const parsed = JSON.parse(stdout) as Array<{ id: string; dependencies: string[] }>;
+    expect(parsed).toEqual([
+      { id: 'MyStage/Db (MyStage-Db)', dependencies: [] },
+      { id: 'MyStage/Api (MyStage-Api)', dependencies: ['MyStage-Db'] },
+    ]);
   });
 
   it('errors when no stacks match the pattern', async () => {
