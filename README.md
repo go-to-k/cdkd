@@ -342,6 +342,9 @@ alias cdkd="node $(pwd)/dist/cli.js"
 # Bootstrap (creates S3 state bucket - only needed once per account/region)
 cdkd bootstrap
 
+# List stacks in the CDK app
+cdkd list
+
 # Deploy your CDK app
 cdkd deploy
 
@@ -366,6 +369,14 @@ cdkd bootstrap \
 
 # Synthesize only
 cdkd synth --app "npx ts-node app.ts"
+
+# List all stacks in the CDK app (alias: ls)
+cdkd list
+cdkd ls
+cdkd list --long              # YAML records with id/name/environment
+cdkd list --long --json       # same, but JSON
+cdkd list --show-dependencies # id + dependency list per stack
+cdkd list 'MyStage/*'         # filter by display path (CDK CLI parity)
 
 # Deploy from a pre-synthesized cloud assembly directory
 cdkd deploy --app cdk.out
