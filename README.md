@@ -417,6 +417,11 @@ cdkd destroy --all --force
 
 # Force-unlock a stale lock from interrupted deploy
 cdkd force-unlock MyStack
+
+# List stacks registered in the cdkd state bucket
+cdkd state list
+cdkd state ls --long          # include resource count, last-modified, lock status
+cdkd state list --json        # JSON output (alone, or combined with --long)
 ```
 
 ### Concurrency Options

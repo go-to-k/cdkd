@@ -219,6 +219,43 @@ describe('LockManager', () => {
     });
   });
 
+  describe('isLocked', () => {
+    it('returns true when a lock file exists', async () => {
+      const lockInfo: LockInfo = {
+        owner: 'user@host:1',
+        timestamp: Date.now(),
+        expiresAt: Date.now() + 30 * 60 * 1000,
+        operation: 'deploy',
+      };
+      s3Client.send.mockResolvedValueOnce({
+        Body: { transformToString: () => Promise.resolve(JSON.stringify(lockInfo)) },
+      });
+
+      await expect(lockManager.isLocked('test-stack')).resolves.toBe(true);
+    });
+
+    it('returns true even when the existing lock is expired', async () => {
+      const expired: LockInfo = {
+        owner: 'old@host:1',
+        timestamp: Date.now() - 60 * 60 * 1000,
+        expiresAt: Date.now() - 30 * 60 * 1000,
+      };
+      s3Client.send.mockResolvedValueOnce({
+        Body: { transformToString: () => Promise.resolve(JSON.stringify(expired)) },
+      });
+
+      // isLocked is a presence check; expiry is irrelevant here.
+      await expect(lockManager.isLocked('test-stack')).resolves.toBe(true);
+    });
+
+    it('returns false when no lock file exists', async () => {
+      const noSuchKeyError = new NoSuchKey({ message: 'NoSuchKey', $metadata: {} });
+      s3Client.send.mockRejectedValueOnce(noSuchKeyError);
+
+      await expect(lockManager.isLocked('test-stack')).resolves.toBe(false);
+    });
+  });
+
   describe('releaseLock', () => {
     it('should delete the lock file', async () => {
       s3Client.send.mockResolvedValueOnce({});
