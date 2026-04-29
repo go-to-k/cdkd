@@ -9,6 +9,7 @@ import {
   parseContextOptions,
 } from '../options.js';
 import { getLogger } from '../../utils/logger.js';
+import { getLiveRenderer } from '../../utils/live-renderer.js';
 import { withErrorHandling } from '../../utils/error-handler.js';
 import { Synthesizer } from '../../synthesis/synthesizer.js';
 import { S3StateBackend } from '../../state/s3-state-backend.js';
@@ -45,6 +46,9 @@ async function destroyCommand(
 
   if (options.verbose) {
     logger.setLevel('debug');
+    // Disable the live progress renderer in verbose mode — debug logs would
+    // interleave too aggressively with the live area's in-flight task lines.
+    process.env['CDKD_NO_LIVE'] = '1';
   }
 
   // Resolve --state-bucket from CLI, env, cdk.json, or default
@@ -227,6 +231,12 @@ async function destroyCommand(
       logger.info(`\nAcquiring lock for stack ${stackName}...`);
       await lockManager.acquireLock(stackName, 'destroy');
 
+      // Live progress renderer (multi-line in-flight display at bottom of TTY).
+      // Self-disables on non-TTY and when `CDKD_NO_LIVE=1` is set (the CLI
+      // sets this in verbose mode).
+      const renderer = getLiveRenderer();
+      renderer.start();
+
       try {
         // 6. Build dependency graph from current state
         logger.info('Building dependency graph...');
@@ -312,6 +322,7 @@ async function destroyCommand(
               return;
             }
 
+            renderer.addTask(logicalId, `Deleting ${logicalId} (${resource.resourceType})`);
             try {
               const provider = destroyProviderRegistry.getProvider(resource.resourceType);
               // Retry DELETE for transient errors (throttle, dependency race)
@@ -344,9 +355,11 @@ async function destroyCommand(
               }
               if (lastDeleteError) throw lastDeleteError;
 
+              renderer.removeTask(logicalId);
               logger.info(`  ✅ ${logicalId} (${resource.resourceType}) deleted`);
               deletedCount++;
             } catch (error) {
+              renderer.removeTask(logicalId);
               const msg = error instanceof Error ? error.message : String(error);
               // Treat "not found" as already deleted
               if (
@@ -362,6 +375,10 @@ async function destroyCommand(
                 logger.error(`  ✗ Failed to delete ${logicalId}:`, String(error));
                 errorCount++;
               }
+            } finally {
+              // Safety net for any path that didn't explicitly remove the task.
+              // removeTask is idempotent.
+              renderer.removeTask(logicalId);
             }
           });
 
@@ -380,6 +397,10 @@ async function destroyCommand(
           `\n✓ Stack ${stackName} destroyed (${deletedCount} deleted, ${errorCount} errors)`
         );
       } finally {
+        // Stop live renderer before releasing the lock so any pending in-flight
+        // task lines are cleared cleanly.
+        renderer.stop();
+
         // 9. Release lock
         logger.debug('Releasing lock...');
         await lockManager.releaseLock(stackName);

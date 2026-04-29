@@ -122,7 +122,7 @@ pnpm run typecheck
 - **src/types/assembly.ts** - Cloud Assembly types (AssemblyManifest, MissingContext, etc.)
 - **src/provisioning/register-providers.ts** - Shared provider registration (called from deploy.ts and destroy.ts)
 - **src/types/** - Type definitions (config, state, resources, assembly, etc.)
-- **src/utils/** - Logger, error handler, AWS client factory
+- **src/utils/** - Logger, live progress renderer (multi-line in-flight task display), error handler, AWS client factory
 - **build.mjs** - esbuild build script (ESM modules)
 - **vitest.config.ts** - Vitest configuration
 
@@ -338,6 +338,7 @@ See [docs/provider-development.md](docs/provider-development.md) for details.
 - ✅ CREATE retry with exponential backoff (IAM propagation delays)
 - ✅ CC API polling with exponential backoff (1s→2s→4s→8s→10s)
 - ✅ Compact output mode (default clean output, `--verbose` for full details)
+- ✅ Live progress renderer (`src/utils/live-renderer.ts`) — multi-line in-flight task area at the bottom of the terminal during `deploy` / `destroy`, showing `Creating <logical-id>...` / `Deleting <logical-id>...` lines that disappear as each resource completes. Self-disables on non-TTY and when `CDKD_NO_LIVE=1` (the CLI sets this in `--verbose` mode so debug logs do not interleave with the live area)
 - ✅ `--state-bucket` auto-resolves from STS account ID: `cdkd-state-{accountId}-{region}`
 - ✅ CC API GetResource returns GetAtt-compatible attribute names (no mapping needed)
 - ✅ Unit tests, integration examples, E2E test script

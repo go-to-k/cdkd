@@ -1,4 +1,5 @@
 import { getLogger } from '../utils/logger.js';
+import { getLiveRenderer } from '../utils/live-renderer.js';
 import { ProvisioningError } from '../utils/error-handler.js';
 import { setCurrentStackName, applyDefaultNameForFallback } from '../provisioning/resource-name.js';
 import { IntrinsicFunctionResolver } from './intrinsic-function-resolver.js';
@@ -134,12 +135,23 @@ export class DeployEngine {
     // Acquire lock with retry (retries up to 3 times with 2s delay for transient lock conflicts)
     await this.lockManager.acquireLockWithRetry(stackName, undefined, 'deploy');
 
+    // Live progress renderer: shows in-flight resources as a multi-line area
+    // at the bottom of the terminal. Self-disables on non-TTY and when
+    // `CDKD_NO_LIVE=1` is set (the CLI sets this in verbose mode so debug
+    // logs do not interleave with the live area).
+    const renderer = getLiveRenderer();
+    renderer.start();
+
     // Register SIGINT handler to save partial state on Ctrl+C
     this.interrupted = false;
     const sigintHandler = () => {
-      process.stderr.write(
-        '\nInterrupted — saving partial state after current operations complete...\n'
-      );
+      // Route the interrupt notice through the live renderer so it does not
+      // collide with the in-flight task display.
+      renderer.printAbove(() => {
+        process.stderr.write(
+          '\nInterrupted — saving partial state after current operations complete...\n'
+        );
+      });
       this.interrupted = true;
     };
     process.on('SIGINT', sigintHandler);
@@ -290,6 +302,9 @@ export class DeployEngine {
         durationMs,
       };
     } finally {
+      // Stop live renderer (clears any remaining in-flight task display)
+      renderer.stop();
+
       // Remove SIGINT handler
       process.removeListener('SIGINT', sigintHandler);
 
@@ -852,6 +867,20 @@ export class DeployEngine {
     const resourceType = change.resourceType;
     const provider = this.providerRegistry.getProvider(resourceType);
 
+    const renderer = getLiveRenderer();
+    const needsReplacement =
+      change.changeType === 'UPDATE' &&
+      (change.propertyChanges?.some((pc) => pc.requiresReplacement) ?? false);
+    const verb =
+      change.changeType === 'CREATE'
+        ? 'Creating'
+        : change.changeType === 'DELETE'
+          ? 'Deleting'
+          : needsReplacement
+            ? 'Replacing'
+            : 'Updating';
+    renderer.addTask(logicalId, `${verb} ${logicalId} (${resourceType})`);
+
     try {
       switch (change.changeType) {
         case 'CREATE': {
@@ -898,6 +927,7 @@ export class DeployEngine {
           if (counts) counts.created++;
           if (progress) progress.current++;
           const createPrefix = progress ? `[${progress.current}/${progress.total}] ` : '  ';
+          renderer.removeTask(logicalId);
           this.logger.info(`${createPrefix}✅ ${logicalId} (${resourceType}) created`);
           break;
         }
@@ -997,6 +1027,7 @@ export class DeployEngine {
             if (counts) counts.updated++;
             if (progress) progress.current++;
             const replacePrefix = progress ? `[${progress.current}/${progress.total}] ` : '  ';
+            renderer.removeTask(logicalId);
             this.logger.info(`${replacePrefix}✅ ${logicalId} (${resourceType}) replaced`);
           } else {
             // Normal update (in-place)
@@ -1091,6 +1122,7 @@ export class DeployEngine {
             if (counts) counts.updated++;
             if (progress) progress.current++;
             const updatePrefix = progress ? `[${progress.current}/${progress.total}] ` : '  ';
+            renderer.removeTask(logicalId);
             this.logger.info(`${updatePrefix}✅ ${logicalId} (${resourceType}) updated`);
           }
           break;
@@ -1148,11 +1180,13 @@ export class DeployEngine {
           if (counts) counts.deleted++;
           if (progress) progress.current++;
           const deletePrefix = progress ? `[${progress.current}/${progress.total}] ` : '  ';
+          renderer.removeTask(logicalId);
           this.logger.info(`${deletePrefix}✅ ${logicalId} (${resourceType}) deleted`);
           break;
         }
       }
     } catch (error) {
+      renderer.removeTask(logicalId);
       const message = error instanceof Error ? error.message : String(error);
       this.logger.error(`Failed to ${change.changeType.toLowerCase()} ${logicalId}: ${message}`);
 
@@ -1163,6 +1197,11 @@ export class DeployEngine {
         stateResources[logicalId]?.physicalId,
         error instanceof Error ? error : undefined
       );
+    } finally {
+      // Safety net for early-break paths (UPDATE skip, DeletionPolicy: Retain).
+      // removeTask is idempotent, so calling it again after the explicit calls
+      // above is a no-op.
+      renderer.removeTask(logicalId);
     }
   }
 
