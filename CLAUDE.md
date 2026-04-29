@@ -394,6 +394,13 @@ See [docs/provider-development.md](docs/provider-development.md) for details.
 
 - **When adding new functionality or fixing bugs**: Always add corresponding unit tests. Do not wait to be asked.
 - **After modifying source code**: Always run `pnpm run build` before telling the user to test. The user runs cdkd via `node dist/cli.js`, so source changes without a build have no effect.
+- **Self-review before commit (4 axes)**: Once the implementation feels complete, walk these four axes BEFORE running `/check` and committing — the markgate hook checks that tests pass, not that the work is *good*:
+  1. **Implementation gaps** — anything in the agreed scope still missing? (e.g. updated `deploy.ts` but forgot the parallel change in `destroy.ts` / `diff.ts`; tests not added; docs not updated)
+  2. **Oddities** — anything in the diff strange or inconsistent? (dead code, leftover names from the old shape, error messages that no longer make sense, half-applied refactors)
+  3. **Polish opportunities** — small in-scope improvements you noticed and dismissed as "out of scope"? Default to including them in the same PR if they touch the same files and carry no behavior-break risk; defer only when they belong to a genuinely different concern.
+  4. **Regression risk** — full test suite run (not just the new tests)? Any renamed/removed exports that other call-sites might depend on? Any behavior change a reviewer might miss in the diff?
+
+  Surface findings out loud (in chat or todos) and fix them before invoking `/check`. The cost of one more pass is small compared to a follow-up PR or a missed regression.
 - **Before every commit**: Two markgate gates guard `git commit` via `.claude/hooks/check-gate.sh`. Both must be fresh:
   - `check` — recorded by `/check` (typecheck, lint, build, tests). Scope: `src/**`, `tests/**`, build/test configs (see `.markgate.yml`). Only invalidated by changes in that scope.
   - `docs` — recorded by `/check-docs` (README.md / CLAUDE.md / docs/ consistency with src). Scope: `src/**`, `docs/**`, `README.md`, `CLAUDE.md`. Only invalidated by changes in that scope.
