@@ -422,6 +422,11 @@ cdkd force-unlock MyStack
 cdkd state list
 cdkd state ls --long          # include resource count, last-modified, lock status
 cdkd state list --json        # JSON output (alone, or combined with --long)
+
+# List resources of a single stack from state
+cdkd state resources MyStack          # aligned columns: LogicalID, Type, PhysicalID
+cdkd state resources MyStack --long   # per-resource block with dependencies and attributes
+cdkd state resources MyStack --json   # full JSON array
 ```
 
 ### Concurrency Options

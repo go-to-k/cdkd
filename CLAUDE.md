@@ -100,7 +100,7 @@ pnpm run typecheck
 
 ### Core Directories
 
-- **src/cli/** - CLI command implementations (deploy, destroy, diff, synth, bootstrap, force-unlock, state), config resolution. `state` is a parent command with `state list` (alias `ls`) for inspecting stacks in the configured S3 state bucket; `state show` / `state rm` are planned siblings.
+- **src/cli/** - CLI command implementations (deploy, destroy, diff, synth, bootstrap, force-unlock, state), config resolution. `state` is a parent command with `state list` (alias `ls`) for stacks in the configured S3 state bucket and `state resources <stack>` for the resources recorded in a single stack's state file; `state show` / `state rm` are planned siblings.
 - **src/synthesis/** - CDK app synthesis (self-implemented: subprocess execution, Cloud Assembly parsing, context providers)
 - **src/analyzer/** - DAG builder, template parser, intrinsic function resolution
 - **src/state/** - S3 state backend, lock manager
