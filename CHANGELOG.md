@@ -1,3 +1,10 @@
+# [0.6.0](https://github.com/go-to-k/cdkd/compare/v0.5.1...v0.6.0) (2026-04-29)
+
+
+### Features
+
+* **cli:** add state command (list/resources/show/rm subcommands) ([#53](https://github.com/go-to-k/cdkd/issues/53)) ([5818f82](https://github.com/go-to-k/cdkd/commit/5818f826a4abbe43bebc1ee9dd1db8178431c79e))
+
 ## [0.5.1](https://github.com/go-to-k/cdkd/compare/v0.5.0...v0.5.1) (2026-04-29)
 
 
