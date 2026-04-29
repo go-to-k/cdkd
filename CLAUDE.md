@@ -100,7 +100,7 @@ pnpm run typecheck
 
 ### Core Directories
 
-- **src/cli/** - CLI command implementations (deploy, destroy, diff, synth, bootstrap, force-unlock, state), config resolution. `state` is a parent command for inspecting and manipulating cdkd's S3 state bucket: `state list` (alias `ls`) lists deployed stacks; `state resources <stack>` lists the resources of one stack; `state show <stack>` renders the full state record (metadata, outputs, resources incl. properties); `state rm <stack>...` removes cdkd's state record for stacks (does NOT delete AWS resources — `cdkd destroy` is the equivalent for the actual resources).
+- **src/cli/** - CLI command implementations (deploy, destroy, diff, synth, list/ls, bootstrap, force-unlock, state), config resolution. `state` is a parent command for inspecting and manipulating cdkd's S3 state bucket: `state list` (alias `ls`) lists deployed stacks; `state resources <stack>` lists the resources of one stack; `state show <stack>` renders the full state record (metadata, outputs, resources incl. properties); `state rm <stack>...` removes cdkd's state record for stacks (does NOT delete AWS resources — `cdkd destroy` is the equivalent for the actual resources).
 - **src/synthesis/** - CDK app synthesis (self-implemented: subprocess execution, Cloud Assembly parsing, context providers)
 - **src/analyzer/** - DAG builder, template parser, intrinsic function resolution
 - **src/state/** - S3 state backend, lock manager
@@ -111,13 +111,15 @@ pnpm run typecheck
 ### Important Files
 
 - **src/cli/config-loader.ts** - Config resolution (cdk.json, env vars for `--app` and `--state-bucket`)
-- **src/cli/stack-matcher.ts** - Shared stack-name matcher used by deploy/diff/destroy. Routes patterns by whether they contain `/` (display-path) or not (physical name) and returns a deduplicated union.
+- **src/cli/stack-matcher.ts** - Shared stack-name matcher used by deploy/diff/destroy/list. Routes patterns by whether they contain `/` (display-path) or not (physical name) and returns a deduplicated union.
 - **src/synthesis/app-executor.ts** - Executes CDK app as subprocess with proper env vars (CDK_OUTDIR, CDK_CONTEXT_JSON, CDK_DEFAULT_REGION, etc.)
 - **src/synthesis/assembly-reader.ts** - Reads and parses Cloud Assembly manifest.json directly
 - **src/synthesis/synthesizer.ts** - Orchestrates synthesis with context provider loop
 - **src/synthesis/context-providers/** - Context providers (see `src/synthesis/context-providers/` for full list) for missing context resolution
 - **src/deployment/dag-executor.ts** - Generic event-driven DAG dispatcher (used inside a stack to schedule resource provisioning as soon as each resource's deps complete; no level barriers)
 - **src/deployment/work-graph.ts** - WorkGraph DAG orchestrator for asset publishing and stack deployment
+- **src/deployment/retryable-errors.ts** - Shared transient-error classifier (HTTP 429/503 + message-pattern table covering IAM/CW Logs/SQS/KMS/etc. propagation delays). Consumed by `withRetry` in `src/deployment/retry.ts` to decide whether to back off and retry vs. fail fast.
+- **src/deployment/retry.ts** - Exponential-backoff retry helper used by DeployEngine; 1s -> 2s -> 4s -> 8s schedule capped at 8s for the typical AWS eventual-consistency window. Delegates retryable-error classification to `retryable-errors.ts`.
 - **src/assets/file-asset-publisher.ts** - S3 file upload with ZIP packaging support
 - **src/assets/docker-asset-publisher.ts** - ECR Docker image build & push
 - **src/types/assembly.ts** - Cloud Assembly types (AssemblyManifest, MissingContext, etc.)
@@ -198,6 +200,7 @@ registry.register('AWS::IAM::Role', new IAMRoleProvider());
 - Wildcard support: `cdkd deploy 'My*'`
 - Stack selection accepts both forms (CDK CLI parity): the **physical** CloudFormation stack name (`MyStage-MyStack`) and the **hierarchical display path** from CDK synth (`MyStage/MyStack`). Patterns containing `/` are matched against the display path; patterns without `/` are matched against the physical name. This makes Stage-scoped wildcards like `cdkd deploy 'MyStage/*'` work as expected. For `destroy`, display-path matching requires synth to succeed (state alone only carries physical names). Implemented in `src/cli/stack-matcher.ts`.
 - Single stack auto-detected (no stack name needed)
+- `cdkd list` (alias `ls`) — CDK CLI parity. Default output: each stack's CDK display path on its own line, ordered by dependency. `--long` / `-l` emits structured `{id, name, environment, [dependencies]}` records (YAML, or JSON with `--json`); `--show-dependencies` / `-d` emits `{id, dependencies}` pairs. Positional patterns filter by physical name or display path with the same routing rules as deploy/diff/destroy. No state bucket / AWS credentials needed beyond what synthesis itself requires.
 - Concurrency options: `--concurrency` (resource ops, default 10), `--stack-concurrency` (stacks, default 4), `--asset-publish-concurrency` (S3+ECR, default 8), `--image-build-concurrency` (Docker builds, default 4)
 - `-y` / `--yes` is a global flag (CDK CLI parity) that auto-confirms interactive prompts (e.g. `destroy`). `cdkd destroy` additionally accepts `-f` / `--force` — a destroy-specific flag with the same effect as `-y` in this context (matching CDK CLI, where `--force` is per-subcommand and overlaps with the global `--yes` only in the destroy confirmation path)
 - Implemented in `src/cli/config-loader.ts`
@@ -323,6 +326,7 @@ See [docs/provider-development.md](docs/provider-development.md) for details.
 - ✅ CLI: `--app` and `--state-bucket` optional (fallback to env vars / cdk.json)
 - ✅ CLI: Positional stack names, `--all` flag, wildcard support, single stack auto-detection
 - ✅ CLI: `cdkd destroy` accepts `--app` option; confirmation accepts y/yes
+- ✅ CLI: `cdkd list` / `cdkd ls` (CDK CLI parity) — default per-line display path; `--long`, `--show-dependencies`, `--json` for structured output; reuses shared stack-matcher for pattern filtering
 - ✅ Resource replacement: immutable property changes trigger DELETE then CREATE
 - ✅ Custom Resource ResponseURL: S3 pre-signed URL for cfn-response handlers
 - ✅ CloudFormation Parameters support (with default values and type coercion)

@@ -642,21 +642,20 @@ aws s3api get-object \
 # }
 ```
 
-#### List Stacks
+#### List Stacks Stored in S3
 
 ```bash
-# Display all stacks
+# Display all stacks present in the state bucket
 aws s3 ls s3://cdkd-state-bucket/stacks/ --recursive \
   | grep state.json \
   | awk '{print $4}' \
   | sed 's|stacks/||; s|/state.json||'
 ```
 
-Or cdkd command (planned for future implementation):
-
-```bash
-cdkd list --state-bucket cdkd-state-bucket
-```
+Note: `cdkd list` (alias `ls`) lists stacks from the local CDK app via
+synthesis (CDK CLI parity — see README), not from the S3 state bucket.
+Listing deployed stacks from the state bucket is currently only supported
+via the AWS CLI snippet above.
 
 ## State Migration and Version Management
 

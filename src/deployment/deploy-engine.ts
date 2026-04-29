@@ -14,6 +14,7 @@ import { ProviderRegistry } from '../provisioning/provider-registry.js';
 import { CloudControlProvider } from '../provisioning/cloud-control-provider.js';
 import { TemplateParser } from '../analyzer/template-parser.js';
 import { IMPLICIT_DELETE_DEPENDENCIES } from '../analyzer/implicit-delete-deps.js';
+import { withRetry } from './retry.js';
 
 /**
  * Completed operation record for rollback tracking
@@ -1399,93 +1400,25 @@ export class DeployEngine {
   }
 
   /**
-   * Execute an operation with retry for transient IAM propagation errors
+   * Execute an operation with retry for transient IAM propagation errors.
+   *
+   * Thin wrapper over `withRetry` from ./retry.js that injects this engine's
+   * SIGINT-aware interrupt check and logger. The actual backoff schedule
+   * lives there.
    */
   private async withRetry<T>(
     operation: () => Promise<T>,
     logicalId: string,
-    maxRetries: number = 8,
-    initialDelayMs: number = 10_000
+    maxRetries?: number,
+    initialDelayMs?: number
   ): Promise<T> {
-    let lastError: unknown;
-
-    for (let attempt = 0; attempt <= maxRetries; attempt++) {
-      try {
-        return await operation();
-      } catch (error) {
-        lastError = error;
-        const message = error instanceof Error ? error.message : String(error);
-
-        const isRetryable = this.isRetryableError(error, message);
-
-        if (!isRetryable || attempt >= maxRetries) {
-          throw error;
-        }
-
-        const delay = initialDelayMs * Math.pow(2, attempt);
-        this.logger.debug(
-          `  ⏳ Retrying ${logicalId} in ${delay / 1000}s (attempt ${attempt + 1}/${maxRetries}) - ${message}`
-        );
-        // Interruptible sleep: check for SIGINT every second during delay
-        for (let waited = 0; waited < delay; waited += 1000) {
-          if (this.interrupted) throw new InterruptedError();
-          await new Promise((resolve) => setTimeout(resolve, Math.min(1000, delay - waited)));
-        }
-      }
-    }
-
-    throw lastError;
-  }
-
-  /**
-   * Determine if an error is retryable (transient).
-   * Checks HTTP status codes (429 throttle, 503 unavailable)
-   * and IAM propagation delay message patterns.
-   */
-  private isRetryableError(error: unknown, message: string): boolean {
-    // Check HTTP status code from AWS SDK errors
-    const metadata = (error as { $metadata?: { httpStatusCode?: number } }).$metadata;
-    const statusCode = metadata?.httpStatusCode;
-    if (statusCode === 429 || statusCode === 503) return true;
-
-    // Check cause chain for wrapped errors
-    const cause = (error as { cause?: { $metadata?: { httpStatusCode?: number } } }).cause;
-    const causeStatus = cause?.$metadata?.httpStatusCode;
-    if (causeStatus === 429 || causeStatus === 503) return true;
-
-    // IAM propagation delay patterns
-    const retryablePatterns = [
-      'cannot be assumed',
-      'role defined for the function',
-      'not authorized to perform',
-      'execution role',
-      'trust policy',
-      'Role validation failed',
-      'does not have required permissions',
-      'Trusted Entity',
-      'currently in the following state: Pending',
-      // DELETE dependency ordering (parallel deletion race conditions)
-      'has dependencies and cannot be deleted',
-      "can't be deleted since it has",
-      'DependencyViolation',
-      // AWS eventual consistency (dependency just created but not yet visible)
-      // e.g., RDS DBCluster referencing a just-created DBSubnetGroup
-      'does not exist',
-      // AppSync schema is being created asynchronously
-      'Schema is currently being altered',
-      // IAM principal not yet propagated to S3 bucket policy
-      'Invalid principal in policy',
-      // S3 bucket creation/deletion still in progress
-      'conflicting conditional operation',
-      // Secrets Manager: ForceDeleteWithoutRecovery may take a moment to propagate
-      'scheduled for deletion',
-      // DynamoDB Streams / Kinesis: IAM role not yet propagated
-      'Cannot access stream',
-      'Please ensure the role can perform',
-      // KMS: IAM role not yet propagated for CreateGrant
-      'KMS key is invalid for CreateGrant',
-    ];
-    return retryablePatterns.some((p) => message.includes(p));
+    return withRetry(operation, logicalId, {
+      ...(maxRetries !== undefined && { maxRetries }),
+      ...(initialDelayMs !== undefined && { initialDelayMs }),
+      logger: this.logger,
+      isInterrupted: () => this.interrupted,
+      onInterrupted: () => new InterruptedError(),
+    });
   }
 
   /**

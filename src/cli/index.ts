@@ -5,6 +5,7 @@ declare const __CDKD_VERSION__: string;
 
 import { createBootstrapCommand } from './commands/bootstrap.js';
 import { createSynthCommand } from './commands/synth.js';
+import { createListCommand } from './commands/list.js';
 import { createDeployCommand } from './commands/deploy.js';
 import { createDiffCommand } from './commands/diff.js';
 import { createDestroyCommand } from './commands/destroy.js';
@@ -15,6 +16,8 @@ import { createStateCommand } from './commands/state.js';
 const SUBCOMMANDS = new Set([
   'bootstrap',
   'synth',
+  'list',
+  'ls',
   'deploy',
   'diff',
   'destroy',
@@ -55,6 +58,7 @@ async function main(): Promise<void> {
   // Add commands
   program.addCommand(createBootstrapCommand());
   program.addCommand(createSynthCommand());
+  program.addCommand(createListCommand());
   program.addCommand(createDeployCommand());
   program.addCommand(createDiffCommand());
   program.addCommand(createDestroyCommand());
