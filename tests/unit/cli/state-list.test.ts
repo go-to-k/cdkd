@@ -46,10 +46,12 @@ const mockGetState =
       stackName: string
     ) => Promise<{ state: { resources: Record<string, unknown>; lastModified: number } } | null>
   >();
+const mockVerifyBucketExists = vi.fn<() => Promise<void>>();
 vi.mock('../../../src/state/s3-state-backend.js', () => ({
   S3StateBackend: vi.fn().mockImplementation(() => ({
     listStacks: mockListStacks,
     getState: mockGetState,
+    verifyBucketExists: mockVerifyBucketExists,
   })),
 }));
 
@@ -102,6 +104,8 @@ describe('cdkd state list', () => {
     mockListStacks.mockReset();
     mockGetState.mockReset();
     mockIsLocked.mockReset();
+    mockVerifyBucketExists.mockReset();
+    mockVerifyBucketExists.mockResolvedValue();
   });
 
   afterEach(() => {

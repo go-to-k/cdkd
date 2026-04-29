@@ -37,9 +37,11 @@ vi.mock('../../../src/utils/aws-clients.ts', () => {
 });
 
 const mockGetState = vi.fn<(stackName: string) => Promise<{ state: StackState } | null>>();
+const mockVerifyBucketExists = vi.fn<() => Promise<void>>();
 vi.mock('../../../src/state/s3-state-backend.js', () => ({
   S3StateBackend: vi.fn().mockImplementation(() => ({
     getState: mockGetState,
+    verifyBucketExists: mockVerifyBucketExists,
   })),
 }));
 
@@ -107,6 +109,8 @@ describe('cdkd state resources', () => {
 
   beforeEach(() => {
     mockGetState.mockReset();
+    mockVerifyBucketExists.mockReset();
+    mockVerifyBucketExists.mockResolvedValue();
     errorSpy.mockReset();
     exitSpy = vi.spyOn(process, 'exit').mockImplementation((() => {
       throw new Error('process.exit-mock');

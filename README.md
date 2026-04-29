@@ -427,6 +427,15 @@ cdkd state list --json        # JSON output (alone, or combined with --long)
 cdkd state resources MyStack          # aligned columns: LogicalID, Type, PhysicalID
 cdkd state resources MyStack --long   # per-resource block with dependencies and attributes
 cdkd state resources MyStack --json   # full JSON array
+
+# Show full state record for a stack (metadata, outputs, all resources incl. properties)
+cdkd state show MyStack
+cdkd state show MyStack --json        # raw {state, lock} JSON
+
+# Remove cdkd's state record for a stack (does NOT delete AWS resources)
+cdkd state rm MyStack                 # confirmation prompt (y/N)
+cdkd state rm MyStack --yes           # skip confirmation
+cdkd state rm StackA StackB --force   # also bypass the locked-stack refusal
 ```
 
 ### Concurrency Options
