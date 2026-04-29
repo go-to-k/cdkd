@@ -688,7 +688,10 @@ export class EC2Provider implements ResourceProvider {
         new DescribeNetworkInterfacesCommand({
           Filters: [
             { Name: 'subnet-id', Values: [subnetId] },
-            { Name: 'requester-id', Values: ['*:awslambda_*'] },
+            // `description` filter is the only reliable way to find Lambda
+            // hyperplane ENIs — `requester-id` does not actually contain the
+            // string "awslambda" (it is an AROA principal id).
+            { Name: 'description', Values: ['AWS Lambda VPC ENI-*'] },
           ],
         })
       );
@@ -1423,7 +1426,9 @@ export class EC2Provider implements ResourceProvider {
         new DescribeNetworkInterfacesCommand({
           Filters: [
             { Name: 'group-id', Values: [groupId] },
-            { Name: 'requester-id', Values: ['*:awslambda_*'] },
+            // See cleanupSubnetLambdaEnis: requester-id does not contain
+            // "awslambda" — filter on description instead.
+            { Name: 'description', Values: ['AWS Lambda VPC ENI-*'] },
           ],
         })
       );

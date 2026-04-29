@@ -585,10 +585,14 @@ export class LambdaFunctionProvider implements ResourceProvider {
 
   /**
    * List Lambda-managed ENIs for the given function, paginating through
-   * DescribeNetworkInterfaces and filtering on Description substring.
+   * DescribeNetworkInterfaces and filtering on Description.
    *
-   * Server-side filter (`description`) does not support wildcards on this
-   * API, so we narrow with `requester-id` + match Description client-side.
+   * We filter directly on `description=AWS Lambda VPC ENI-*` (the EC2 API
+   * supports `*` wildcards on this filter — same approach as delstack). An
+   * earlier attempt narrowed with `requester-id=*:awslambda_*`, but real
+   * Lambda hyperplane ENIs carry a RequesterId of the form
+   * `AROAXXX...:<account-id>` (no literal "awslambda" substring), so that
+   * filter matched nothing and the cleanup loop quietly listed zero ENIs.
    */
   private async listLambdaEnis(functionName: string): Promise<{ id: string; status: string }[]> {
     const enis: { id: string; status: string }[] = [];
@@ -597,10 +601,7 @@ export class LambdaFunctionProvider implements ResourceProvider {
     do {
       const resp = await this.ec2Client.send(
         new DescribeNetworkInterfacesCommand({
-          Filters: [
-            // Lambda hyperplane ENIs are owned by the Lambda service principal.
-            { Name: 'requester-id', Values: ['*:awslambda_*'] },
-          ],
+          Filters: [{ Name: 'description', Values: [`${descriptionPrefix}*`] }],
           NextToken: nextToken,
         })
       );
