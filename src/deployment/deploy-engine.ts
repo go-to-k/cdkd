@@ -14,7 +14,7 @@ import { ProviderRegistry } from '../provisioning/provider-registry.js';
 import { CloudControlProvider } from '../provisioning/cloud-control-provider.js';
 import { TemplateParser } from '../analyzer/template-parser.js';
 import { IMPLICIT_DELETE_DEPENDENCIES } from '../analyzer/implicit-delete-deps.js';
-import { isRetryableTransientError } from './retryable-errors.js';
+import { withRetry } from './retry.js';
 
 /**
  * Completed operation record for rollback tracking
@@ -1400,42 +1400,25 @@ export class DeployEngine {
   }
 
   /**
-   * Execute an operation with retry for transient IAM propagation errors
+   * Execute an operation with retry for transient IAM propagation errors.
+   *
+   * Thin wrapper over `withRetry` from ./retry.js that injects this engine's
+   * SIGINT-aware interrupt check and logger. The actual backoff schedule
+   * lives there.
    */
   private async withRetry<T>(
     operation: () => Promise<T>,
     logicalId: string,
-    maxRetries: number = 8,
-    initialDelayMs: number = 10_000
+    maxRetries?: number,
+    initialDelayMs?: number
   ): Promise<T> {
-    let lastError: unknown;
-
-    for (let attempt = 0; attempt <= maxRetries; attempt++) {
-      try {
-        return await operation();
-      } catch (error) {
-        lastError = error;
-        const message = error instanceof Error ? error.message : String(error);
-
-        const isRetryable = isRetryableTransientError(error, message);
-
-        if (!isRetryable || attempt >= maxRetries) {
-          throw error;
-        }
-
-        const delay = initialDelayMs * Math.pow(2, attempt);
-        this.logger.debug(
-          `  ⏳ Retrying ${logicalId} in ${delay / 1000}s (attempt ${attempt + 1}/${maxRetries}) - ${message}`
-        );
-        // Interruptible sleep: check for SIGINT every second during delay
-        for (let waited = 0; waited < delay; waited += 1000) {
-          if (this.interrupted) throw new InterruptedError();
-          await new Promise((resolve) => setTimeout(resolve, Math.min(1000, delay - waited)));
-        }
-      }
-    }
-
-    throw lastError;
+    return withRetry(operation, logicalId, {
+      ...(maxRetries !== undefined && { maxRetries }),
+      ...(initialDelayMs !== undefined && { initialDelayMs }),
+      logger: this.logger,
+      isInterrupted: () => this.interrupted,
+      onInterrupted: () => new InterruptedError(),
+    });
   }
 
   /**

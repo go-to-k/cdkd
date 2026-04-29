@@ -40,6 +40,11 @@ export const RETRYABLE_ERROR_MESSAGE_PATTERNS: readonly string[] = [
   // by delivering a test message; if the stream is freshly ACTIVE or the
   // assumed role hasn't propagated, the probe fails with "Invalid request".
   'Could not deliver test message',
+  // SQS: same-name queue can't be re-created until 60s after a delete.
+  // Hits when a stack is destroyed and re-deployed in quick succession
+  // (a common dev / iteration loop). Retry recovers within ~60s instead
+  // of failing the whole deploy.
+  'wait 60 seconds',
 ];
 
 /**

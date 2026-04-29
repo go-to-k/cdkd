@@ -697,7 +697,7 @@ Cloud Control API has the following rate limits:
 
 **1. Retry logic with exponential backoff (built-in)**
 
-cdkd includes built-in retry logic with exponential backoff for CREATE operations (handling IAM propagation delays) and CC API polling (1s->2s->4s->8s->10s cap). If rate limit errors persist, consider reducing parallelism or staggering deployments.
+cdkd includes built-in retry logic with exponential backoff for CREATE operations (handling IAM propagation delays — 1s->2s->4s->8s->8s->8s->8s->8s, capped at 8s, up to 8 retries) and CC API polling (1s->2s->4s->8s->10s cap). If rate limit errors persist, consider reducing parallelism or staggering deployments.
 
 **2. Use SDK Provider**
 
