@@ -244,9 +244,10 @@ describe('LambdaFunctionProvider', () => {
       expect(mockEc2Send).not.toHaveBeenCalled();
     });
 
-    it('pre-detaches VPC config (UpdateFunctionConfiguration with empty arrays) before DeleteFunction', async () => {
+    it('pre-detaches VPC config (UpdateFunctionConfiguration with empty arrays) and waits for Active before DeleteFunction', async () => {
       mockLambdaSend
         .mockResolvedValueOnce({}) // UpdateFunctionConfiguration (pre-detach)
+        .mockResolvedValueOnce({ Configuration: { LastUpdateStatus: 'Successful' } }) // GetFunction (wait)
         .mockResolvedValueOnce({}); // DeleteFunction
       mockEc2Send.mockResolvedValueOnce({ NetworkInterfaces: [] });
 
@@ -254,11 +255,11 @@ describe('LambdaFunctionProvider', () => {
         VpcConfig: { SubnetIds: ['subnet-aaa'], SecurityGroupIds: ['sg-1'] },
       });
 
-      expect(mockLambdaSend).toHaveBeenCalledTimes(2);
+      expect(mockLambdaSend).toHaveBeenCalledTimes(3);
       const updateCmd = mockLambdaSend.mock.calls[0][0];
       expect(updateCmd).toBeInstanceOf(UpdateFunctionConfigurationCommand);
       expect(updateCmd.input.VpcConfig).toEqual({ SubnetIds: [], SecurityGroupIds: [] });
-      expect(mockLambdaSend.mock.calls[1][0]).toBeInstanceOf(DeleteFunctionCommand);
+      expect(mockLambdaSend.mock.calls[2][0]).toBeInstanceOf(DeleteFunctionCommand);
     });
 
     it('returns early when pre-detach hits ResourceNotFoundException (function already gone)', async () => {
@@ -280,6 +281,7 @@ describe('LambdaFunctionProvider', () => {
     it('continues with DeleteFunction when pre-detach fails with non-NotFound error', async () => {
       mockLambdaSend
         .mockRejectedValueOnce(new Error('Throttling'))
+        .mockResolvedValueOnce({ Configuration: { LastUpdateStatus: 'Successful' } }) // GetFunction (wait still runs)
         .mockResolvedValueOnce({}); // DeleteFunction
       mockEc2Send.mockResolvedValueOnce({ NetworkInterfaces: [] });
 
@@ -287,12 +289,15 @@ describe('LambdaFunctionProvider', () => {
         VpcConfig: { SubnetIds: ['subnet-aaa'], SecurityGroupIds: ['sg-1'] },
       });
 
-      expect(mockLambdaSend).toHaveBeenCalledTimes(2);
-      expect(mockLambdaSend.mock.calls[1][0]).toBeInstanceOf(DeleteFunctionCommand);
+      expect(mockLambdaSend).toHaveBeenCalledTimes(3);
+      expect(mockLambdaSend.mock.calls[2][0]).toBeInstanceOf(DeleteFunctionCommand);
     });
 
     it('directly deletes Lambda ENIs after DeleteFunction succeeds', async () => {
-      mockLambdaSend.mockResolvedValueOnce({}).mockResolvedValueOnce({});
+      mockLambdaSend
+        .mockResolvedValueOnce({}) // UpdateFunctionConfiguration (pre-detach)
+        .mockResolvedValueOnce({ Configuration: { LastUpdateStatus: 'Successful' } }) // GetFunction (wait for Active)
+        .mockResolvedValueOnce({}); // DeleteFunction
 
       mockEc2Send
         .mockResolvedValueOnce({
@@ -328,7 +333,10 @@ describe('LambdaFunctionProvider', () => {
       const physicalName = 'CdkdBenchCdkSample-ApiFunction-zZBaJTabq03f';
       const eniDescription = 'AWS Lambda VPC ENI-CdkdBenchCdkSample-ApiFunction';
 
-      mockLambdaSend.mockResolvedValueOnce({}).mockResolvedValueOnce({});
+      mockLambdaSend
+        .mockResolvedValueOnce({}) // UpdateFunctionConfiguration (pre-detach)
+        .mockResolvedValueOnce({ Configuration: { LastUpdateStatus: 'Successful' } }) // GetFunction (wait for Active)
+        .mockResolvedValueOnce({}); // DeleteFunction
 
       mockEc2Send
         .mockResolvedValueOnce({
@@ -355,7 +363,10 @@ describe('LambdaFunctionProvider', () => {
     });
 
     it('rejects ENIs where the function name appears only as a non-hyphen-bounded prefix', async () => {
-      mockLambdaSend.mockResolvedValueOnce({}).mockResolvedValueOnce({});
+      mockLambdaSend
+        .mockResolvedValueOnce({}) // UpdateFunctionConfiguration (pre-detach)
+        .mockResolvedValueOnce({ Configuration: { LastUpdateStatus: 'Successful' } }) // GetFunction (wait for Active)
+        .mockResolvedValueOnce({}); // DeleteFunction
 
       mockEc2Send.mockResolvedValueOnce({
         NetworkInterfaces: [
@@ -376,7 +387,10 @@ describe('LambdaFunctionProvider', () => {
     });
 
     it('paginates DescribeNetworkInterfaces using NextToken', async () => {
-      mockLambdaSend.mockResolvedValueOnce({}).mockResolvedValueOnce({});
+      mockLambdaSend
+        .mockResolvedValueOnce({}) // UpdateFunctionConfiguration (pre-detach)
+        .mockResolvedValueOnce({ Configuration: { LastUpdateStatus: 'Successful' } }) // GetFunction (wait for Active)
+        .mockResolvedValueOnce({}); // DeleteFunction
 
       mockEc2Send
         .mockResolvedValueOnce({
@@ -401,7 +415,10 @@ describe('LambdaFunctionProvider', () => {
     });
 
     it('retries when DeleteNetworkInterface fails on in-use ENI', async () => {
-      mockLambdaSend.mockResolvedValueOnce({}).mockResolvedValueOnce({});
+      mockLambdaSend
+        .mockResolvedValueOnce({}) // UpdateFunctionConfiguration (pre-detach)
+        .mockResolvedValueOnce({ Configuration: { LastUpdateStatus: 'Successful' } }) // GetFunction (wait for Active)
+        .mockResolvedValueOnce({}); // DeleteFunction
 
       mockEc2Send
         .mockResolvedValueOnce({
@@ -425,7 +442,10 @@ describe('LambdaFunctionProvider', () => {
     });
 
     it('warns and resolves when cleanup hits the timeout (does not throw)', async () => {
-      mockLambdaSend.mockResolvedValueOnce({}).mockResolvedValueOnce({});
+      mockLambdaSend
+        .mockResolvedValueOnce({}) // UpdateFunctionConfiguration (pre-detach)
+        .mockResolvedValueOnce({ Configuration: { LastUpdateStatus: 'Successful' } }) // GetFunction (wait for Active)
+        .mockResolvedValueOnce({}); // DeleteFunction
 
       mockEc2Send.mockImplementation(async (cmd: { constructor: { name: string } }) => {
         if (cmd.constructor.name === 'DescribeNetworkInterfacesCommand') {
@@ -451,7 +471,10 @@ describe('LambdaFunctionProvider', () => {
     });
 
     it('continues polling after a transient DescribeNetworkInterfaces failure', async () => {
-      mockLambdaSend.mockResolvedValueOnce({}).mockResolvedValueOnce({});
+      mockLambdaSend
+        .mockResolvedValueOnce({}) // UpdateFunctionConfiguration (pre-detach)
+        .mockResolvedValueOnce({ Configuration: { LastUpdateStatus: 'Successful' } }) // GetFunction (wait for Active)
+        .mockResolvedValueOnce({}); // DeleteFunction
 
       mockEc2Send
         .mockRejectedValueOnce(new Error('ThrottlingException'))
