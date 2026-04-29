@@ -50,6 +50,11 @@ describe('isRetryableTransientError', () => {
         'AWS::Logs::SubscriptionFilter. Could not deliver test message to specified Kinesis stream. Check if the given Kinesis stream is in ACTIVE state.',
         'CW Logs SubscriptionFilter probe',
       ],
+      // SQS same-name 60s recreation cooldown (rapid destroy/redeploy loops)
+      [
+        'You must wait 60 seconds after deleting a queue before you can create another with the same name.',
+        'SQS 60s recreation cooldown',
+      ],
       // DELETE race conditions
       ['DependencyViolation: resource has dependencies', 'DependencyViolation'],
       // KMS role propagation
