@@ -435,8 +435,8 @@ describe('LambdaFunctionProvider', () => {
       const promise = provider.delete('Fn', 'fn-vpc', 'AWS::Lambda::Function', {
         VpcConfig: { SubnetIds: ['subnet-aaa'], SecurityGroupIds: ['sg-1'] },
       });
-      // Past initial sleep + the 5s retry interval.
-      await vi.advanceTimersByTimeAsync(20_000);
+      // Past initial sleep (10s) + one 15s retry interval.
+      await vi.advanceTimersByTimeAsync(30_000);
       await expect(promise).resolves.toBeUndefined();
     });
 
@@ -464,8 +464,8 @@ describe('LambdaFunctionProvider', () => {
       const promise = provider.delete('Fn', 'fn-vpc', 'AWS::Lambda::Function', {
         VpcConfig: { SubnetIds: ['subnet-aaa'], SecurityGroupIds: ['sg-1'] },
       });
-      // Past initial sleep + the 90s budget for DeleteNetworkInterface retries.
-      await vi.advanceTimersByTimeAsync(2 * 60 * 1000);
+      // Past initial sleep + the 30-minute per-ENI budget.
+      await vi.advanceTimersByTimeAsync(31 * 60 * 1000);
       await expect(promise).resolves.toBeUndefined();
     });
 

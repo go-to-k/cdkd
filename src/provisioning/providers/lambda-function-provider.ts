@@ -83,11 +83,14 @@ export class LambdaFunctionProvider implements ResourceProvider {
   //   DescribeNetworkInterfaces (right after the update, the API can return
   //   an empty list even though ENIs still exist).
   // - per-ENI retry budget: an in-use ENI cannot be deleted until AWS
-  //   finishes the asynchronous detach; budget gives that time to land.
+  //   finishes the asynchronous detach. AWS's hyperplane ENI release is
+  //   eventually-consistent and can take 5-30 minutes in practice — the
+  //   budget here must cover that worst case so downstream Subnet/SG
+  //   deletes don't race ahead and fail with "has dependencies".
   // - retry interval: polling cadence inside the per-ENI loop.
   private readonly eniInitialSleepMs: number = 10_000;
-  private readonly eniDeleteRetryBudgetMs: number = 90_000;
-  private readonly eniDeleteRetryIntervalMs: number = 5_000;
+  private readonly eniDeleteRetryBudgetMs: number = 30 * 60 * 1000;
+  private readonly eniDeleteRetryIntervalMs: number = 15_000;
 
   constructor() {
     const awsClients = getAwsClients();
