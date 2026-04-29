@@ -1,3 +1,10 @@
+# [0.7.0](https://github.com/go-to-k/cdkd/compare/v0.6.0...v0.7.0) (2026-04-29)
+
+
+### Features
+
+* **cli:** physical stack name in cdkd list + spec-correct empty containers in toYaml + PR-readiness infra ([#55](https://github.com/go-to-k/cdkd/issues/55)) ([3353c47](https://github.com/go-to-k/cdkd/commit/3353c47d492f3790e93b31e0180f809759a4d813))
+
 # [0.6.0](https://github.com/go-to-k/cdkd/compare/v0.5.1...v0.6.0) (2026-04-29)
 
 
