@@ -115,9 +115,17 @@ async function setupStateBackend(options: {
   const bucket = await resolveStateBucketWithDefault(options.stateBucket, region);
   const prefix = options.statePrefix;
   const stateConfig = { bucket, prefix };
-  const stateBackend = new S3StateBackend(awsClients.s3, stateConfig);
+  // Pass region/profile so the backend can rebuild its S3 client if the
+  // bucket lives in a region different from the CLI's profile region.
+  const stateBackend = new S3StateBackend(awsClients.s3, stateConfig, {
+    region,
+    ...(options.profile && { profile: options.profile }),
+  });
   const lockManager = new LockManager(awsClients.s3, stateConfig);
 
+  // verifyBucketExists() triggers ensureClientForBucket() which resolves the
+  // bucket region via GetBucketLocation. Every state subcommand that follows
+  // sees a fully-ready backend.
   await stateBackend.verifyBucketExists();
 
   return {

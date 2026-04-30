@@ -13,6 +13,7 @@ import { S3StateBackend } from '../../../src/state/s3-state-backend.js';
 import type { StateBackendConfig } from '../../../src/types/config.js';
 import type { StackState } from '../../../src/types/state.js';
 import { StateError } from '../../../src/utils/error-handler.js';
+import { clearBucketRegionCache } from '../../../src/utils/aws-region-resolver.js';
 
 vi.mock('@aws-sdk/client-s3', async () => {
   const actual = await vi.importActual<typeof import('@aws-sdk/client-s3')>('@aws-sdk/client-s3');
@@ -20,7 +21,20 @@ vi.mock('@aws-sdk/client-s3', async () => {
     ...actual,
     S3Client: vi.fn().mockImplementation(() => ({
       send: vi.fn(),
+      destroy: vi.fn(),
     })),
+  };
+});
+
+// Mock the region resolver so tests don't issue real GetBucketLocation calls.
+// Each test case overrides the implementation as needed.
+vi.mock('../../../src/utils/aws-region-resolver.js', async () => {
+  const actual = await vi.importActual<
+    typeof import('../../../src/utils/aws-region-resolver.js')
+  >('../../../src/utils/aws-region-resolver.js');
+  return {
+    ...actual,
+    resolveBucketRegion: vi.fn(),
   };
 });
 
@@ -39,18 +53,43 @@ vi.mock('../../../src/utils/logger.js', () => ({
   }),
 }));
 
+/**
+ * Build a fake S3Client whose `.config.region()` returns the given region.
+ * Mirrors the shape S3StateBackend reads in `ensureClientForBucket`.
+ */
+function makeFakeClient(region: string): {
+  send: ReturnType<typeof vi.fn>;
+  destroy: ReturnType<typeof vi.fn>;
+  config: { region: () => Promise<string> };
+} {
+  return {
+    send: vi.fn(),
+    destroy: vi.fn(),
+    config: { region: () => Promise.resolve(region) },
+  };
+}
+
 describe('S3StateBackend.verifyBucketExists', () => {
-  let s3Client: { send: ReturnType<typeof vi.fn> };
+  let s3Client: ReturnType<typeof makeFakeClient>;
   let backend: S3StateBackend;
   const config: StateBackendConfig = {
     bucket: 'my-state-bucket',
     prefix: 'stacks',
   };
 
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.clearAllMocks();
-    s3Client = { send: vi.fn() };
-    backend = new S3StateBackend(s3Client as unknown as S3Client, config);
+    clearBucketRegionCache();
+    // Default: bucket is already in the same region as the client, so
+    // ensureClientForBucket() does not rebuild the client.
+    const { resolveBucketRegion } = await import(
+      '../../../src/utils/aws-region-resolver.js'
+    );
+    vi.mocked(resolveBucketRegion).mockResolvedValue('us-east-1');
+    s3Client = makeFakeClient('us-east-1');
+    backend = new S3StateBackend(s3Client as unknown as S3Client, config, {
+      region: 'us-east-1',
+    });
   });
 
   it('resolves when the bucket exists', async () => {
@@ -92,6 +131,104 @@ describe('S3StateBackend.verifyBucketExists', () => {
     expect(caught).toBeInstanceOf(StateError);
     expect((caught as Error).message).toMatch(/Failed to verify state bucket/);
     expect((caught as Error).message).not.toMatch(/cdkd bootstrap/);
+  });
+
+  it('routes the AWS SDK v3 UnknownError through normalizeAwsError (404 → bucket does not exist)', async () => {
+    const unknown = Object.assign(new Error('UnknownError'), {
+      name: 'Unknown',
+      $metadata: { httpStatusCode: 404 },
+    });
+    s3Client.send.mockRejectedValue(unknown);
+
+    const caught = await backend.verifyBucketExists().catch((e: unknown) => e);
+    expect(caught).toBeInstanceOf(StateError);
+    // The verifyBucketExists wrapper takes the normalized message and
+    // re-wraps it; the inner-message text is what we care about here.
+    expect((caught as Error).message).toMatch(/Bucket 'my-state-bucket' does not exist/);
+    expect((caught as Error).message).not.toMatch(/UnknownError/);
+  });
+});
+
+describe('S3StateBackend.ensureClientForBucket — region rebuild', () => {
+  const config: StateBackendConfig = {
+    bucket: 'cross-region-bucket',
+    prefix: 'stacks',
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    clearBucketRegionCache();
+  });
+
+  it('rebuilds the S3 client when the resolved bucket region differs', async () => {
+    const { resolveBucketRegion } = await import(
+      '../../../src/utils/aws-region-resolver.js'
+    );
+    // Bucket lives in us-west-2, client was created for us-east-1.
+    vi.mocked(resolveBucketRegion).mockResolvedValue('us-west-2');
+
+    const initialClient = makeFakeClient('us-east-1');
+    initialClient.send.mockResolvedValue({}); // HeadBucket returns ok
+
+    const backend = new S3StateBackend(initialClient as unknown as S3Client, config, {
+      region: 'us-east-1',
+    });
+
+    await backend.verifyBucketExists();
+
+    // The original us-east-1 client should have been destroyed in favor of
+    // a us-west-2 client.
+    expect(initialClient.destroy).toHaveBeenCalled();
+    // S3Client constructor invoked once to build the replacement.
+    expect(vi.mocked(S3Client)).toHaveBeenCalledWith(
+      expect.objectContaining({ region: 'us-west-2' })
+    );
+  });
+
+  it('does not rebuild the client when the resolved region matches', async () => {
+    const { resolveBucketRegion } = await import(
+      '../../../src/utils/aws-region-resolver.js'
+    );
+    vi.mocked(resolveBucketRegion).mockResolvedValue('us-east-1');
+
+    const initialClient = makeFakeClient('us-east-1');
+    initialClient.send.mockResolvedValue({});
+
+    // Reset the constructor call counter so we can assert on rebuilds only.
+    vi.mocked(S3Client).mockClear();
+
+    const backend = new S3StateBackend(initialClient as unknown as S3Client, config, {
+      region: 'us-east-1',
+    });
+
+    await backend.verifyBucketExists();
+
+    expect(initialClient.destroy).not.toHaveBeenCalled();
+    // No replacement client was constructed.
+    expect(vi.mocked(S3Client)).not.toHaveBeenCalled();
+  });
+
+  it('only resolves the bucket region once across multiple public calls', async () => {
+    const { resolveBucketRegion } = await import(
+      '../../../src/utils/aws-region-resolver.js'
+    );
+    vi.mocked(resolveBucketRegion).mockResolvedValue('us-east-1');
+
+    const initialClient = makeFakeClient('us-east-1');
+    // Each public call issues one S3 send (HeadBucket / ListObjectsV2 / etc.).
+    initialClient.send.mockResolvedValue({ CommonPrefixes: [] });
+
+    const backend = new S3StateBackend(initialClient as unknown as S3Client, config, {
+      region: 'us-east-1',
+    });
+
+    await backend.verifyBucketExists();
+    await backend.listStacks();
+    await backend.listStacks();
+
+    // resolveBucketRegion should have been called exactly once even though
+    // three public methods ran.
+    expect(vi.mocked(resolveBucketRegion)).toHaveBeenCalledTimes(1);
   });
 });
 

@@ -69,6 +69,7 @@ cdkd has a 7-layer system architecture:
      readable; the next write auto-migrates and deletes the legacy key.
    - An old cdkd binary fails clearly on a `version: 2` blob instead of
      silently mishandling unknown fields.
+   - State bucket region is resolved dynamically via `GetBucketLocation` (`src/utils/aws-region-resolver.ts`); the state-bucket S3 client is rebuilt for the bucket's actual region before any state operation, so the CLI works regardless of the profile region. Provisioning clients (CC API, Lambda, IAM, etc.) keep using `env.region` — only the state-bucket S3 client is region-corrected.
 
 3. **Event-driven DAG Execution**
    - Analyzes dependencies via `Ref` / `Fn::GetAtt` / `DependsOn`
@@ -132,7 +133,7 @@ pnpm run typecheck
 - **src/types/assembly.ts** - Cloud Assembly types (AssemblyManifest, MissingContext, etc.)
 - **src/provisioning/register-providers.ts** - Shared provider registration (called from deploy.ts and destroy.ts)
 - **src/types/** - Type definitions (config, state, resources, assembly, etc.)
-- **src/utils/** - Logger, live progress renderer (multi-line in-flight task display), error handler, AWS client factory
+- **src/utils/** - Logger, live progress renderer (multi-line in-flight task display), error handler (incl. `normalizeAwsError` for AWS SDK v3 synthetic UnknownError → actionable HTTP-status-keyed messages), AWS client factory, AWS region resolver (`aws-region-resolver.ts` — caches bucket-region lookups via `GetBucketLocation` so the state-bucket S3 client can be rebuilt for the bucket's actual region)
 - **build.mjs** - esbuild build script (ESM modules)
 - **vitest.config.ts** - Vitest configuration
 

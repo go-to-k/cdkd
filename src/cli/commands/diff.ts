@@ -186,7 +186,12 @@ async function diffCommand(
       bucket: stateBucket,
       prefix: options.statePrefix,
     };
-    const stateBackend = new S3StateBackend(awsClients.s3, stateConfig);
+    // Pass region/profile so the backend can rebuild its S3 client if the
+    // bucket lives in a region different from the CLI's profile region.
+    const stateBackend = new S3StateBackend(awsClients.s3, stateConfig, {
+      region,
+      ...(options.profile && { profile: options.profile }),
+    });
     const diffCalculator = new DiffCalculator();
     const intrinsicResolver = new IntrinsicFunctionResolver(region);
 
