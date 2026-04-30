@@ -43,8 +43,15 @@ export {
   ConfigError,
   isCdkdError,
   formatError,
+  normalizeAwsError,
+  type NormalizeAwsErrorContext,
 } from './utils/error-handler.js';
 export { AwsClients, getAwsClients, setAwsClients, resetAwsClients } from './utils/aws-clients.js';
+export {
+  resolveBucketRegion,
+  clearBucketRegionCache,
+  type ResolveBucketRegionOptions,
+} from './utils/aws-region-resolver.js';
 
 // Synthesis
 export {
