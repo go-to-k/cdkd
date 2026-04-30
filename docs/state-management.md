@@ -786,7 +786,11 @@ aws s3api get-object \
 #### List Stacks Stored in S3
 
 ```bash
-# Display all stacks present in the state bucket
+# Display all stacks present in the state bucket (cdkd-native)
+cdkd state list
+cdkd state ls --long          # include resource count, last-modified, lock status
+
+# Or, low-level via the AWS CLI:
 aws s3 ls s3://cdkd-state-bucket/stacks/ --recursive \
   | grep state.json \
   | awk '{print $4}' \
@@ -794,9 +798,23 @@ aws s3 ls s3://cdkd-state-bucket/stacks/ --recursive \
 ```
 
 Note: `cdkd list` (alias `ls`) lists stacks from the local CDK app via
-synthesis (CDK CLI parity — see README), not from the S3 state bucket.
-Listing deployed stacks from the state bucket is currently only supported
-via the AWS CLI snippet above.
+synthesis (CDK CLI parity — see README), which is a different question
+from `cdkd state list` (what is registered in the S3 state bucket).
+
+#### Inspect the State Bucket Itself
+
+```bash
+# Bucket name, region (auto-detected via GetBucketLocation), source
+# (cli-flag / env / cdk.json / default), schema version, stack count.
+cdkd state info
+cdkd state info --json
+```
+
+Routine commands (`deploy`, `destroy`, `diff`, etc.) no longer print the
+bucket banner by default — the bucket name includes the AWS account id,
+which would leak via screenshots and public CI logs. Pass `--verbose` to
+surface it in those commands' debug logs, or use `cdkd state info` for an
+explicit on-demand answer.
 
 ## State Migration and Version Management
 

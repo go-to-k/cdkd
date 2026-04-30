@@ -76,20 +76,48 @@ export function resolveApp(cliApp?: string): string | undefined {
 }
 
 /**
+ * Source of a resolved state-bucket name.
+ *
+ * Reported by `cdkd state info` so users can see *why* a particular bucket was
+ * chosen. The CLI flag wins over the env var, which wins over cdk.json, which
+ * falls through to a default name derived from the STS account id.
+ */
+export type StateBucketSource = 'cli-flag' | 'env' | 'cdk.json' | 'default' | 'default-legacy';
+
+/**
+ * Result of resolving the state bucket, including the source that won.
+ */
+export interface ResolvedStateBucket {
+  bucket: string;
+  source: StateBucketSource;
+}
+
+/**
  * Resolve the --state-bucket option from CLI, cdk.json context, or environment
  *
  * Priority: CLI option > CDKD_STATE_BUCKET env > cdk.json context.cdkd.stateBucket
  */
 export function resolveStateBucket(cliBucket?: string): string | undefined {
-  if (cliBucket) return cliBucket;
+  return resolveStateBucketWithSource(cliBucket)?.bucket;
+}
+
+/**
+ * Like {@link resolveStateBucket}, but also reports which source provided the
+ * value. Returns `undefined` when no synchronous source is configured (caller
+ * should fall back to the STS-derived default).
+ */
+export function resolveStateBucketWithSource(cliBucket?: string): ResolvedStateBucket | undefined {
+  if (cliBucket) return { bucket: cliBucket, source: 'cli-flag' };
 
   const envBucket = process.env['CDKD_STATE_BUCKET'];
-  if (envBucket) return envBucket;
+  if (envBucket) return { bucket: envBucket, source: 'env' };
 
   const cdkJson = loadCdkJson();
   const cdkdContext = cdkJson?.context?.['cdkd'] as Record<string, unknown> | undefined;
   const bucket = cdkdContext?.['stateBucket'];
-  return typeof bucket === 'string' ? bucket : undefined;
+  if (typeof bucket === 'string') return { bucket, source: 'cdk.json' };
+
+  return undefined;
 }
 
 /**
@@ -147,13 +175,30 @@ export function getLegacyStateBucketName(accountId: string, region: string): str
  * real region here.
  *
  * Requires AWS credentials to be configured (STS GetCallerIdentity).
+ *
+ * The bucket name is logged at debug level only — it includes the AWS account
+ * id, which would leak via screenshots / public CI logs if printed by default.
+ * Use `cdkd state info` to inspect on demand, or pass `--verbose` to surface
+ * it in routine commands.
  */
 export async function resolveStateBucketWithDefault(
   cliBucket: string | undefined,
   region: string
 ): Promise<string> {
+  return (await resolveStateBucketWithDefaultAndSource(cliBucket, region)).bucket;
+}
+
+/**
+ * Like {@link resolveStateBucketWithDefault}, but also reports which source
+ * provided the value (`'cli-flag'` / `'env'` / `'cdk.json'` / `'default'` /
+ * `'default-legacy'`).
+ */
+export async function resolveStateBucketWithDefaultAndSource(
+  cliBucket: string | undefined,
+  region: string
+): Promise<ResolvedStateBucket> {
   // Step 1: explicit value short-circuits the lookup chain.
-  const syncResult = resolveStateBucket(cliBucket);
+  const syncResult = resolveStateBucketWithSource(cliBucket);
   if (syncResult) return syncResult;
 
   const logger = getLogger();
@@ -180,8 +225,9 @@ export async function resolveStateBucketWithDefault(
   try {
     // Step 2: try the new region-free name first.
     if (await bucketExists(probe, newName)) {
-      logger.info(`State bucket: ${newName}`);
-      return newName;
+      // Logged at debug only — see resolveStateBucketWithDefault doc-comment.
+      logger.debug(`State bucket: ${newName}`);
+      return { bucket: newName, source: 'default' };
     }
 
     // TODO(remove-bc-after-1.x): drop the legacy fallback branch in PR 99.
@@ -193,7 +239,7 @@ export async function resolveStateBucketWithDefault(
           `Future cdkd versions will drop legacy support; consider migrating with ` +
           `cdkd state migrate-bucket (coming in a future release).`
       );
-      return legacyName;
+      return { bucket: legacyName, source: 'default-legacy' };
     }
 
     // Step 4: neither bucket exists.
