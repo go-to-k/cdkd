@@ -93,39 +93,160 @@ export function resolveStateBucket(cliBucket?: string): string | undefined {
 }
 
 /**
- * Generate default state bucket name from account info
- * Format: cdkd-state-{accountId}-{region}
+ * Generate default state bucket name from account info.
+ *
+ * Format: `cdkd-state-{accountId}` (region intentionally omitted).
+ *
+ * S3 bucket names are globally unique, so embedding the profile region in the
+ * default name made teammates with different profile regions look up
+ * different buckets and silently fork their state. Dropping the region from
+ * the default lets the whole team converge on a single bucket — its actual
+ * region is auto-detected at runtime via `GetBucketLocation`
+ * ({@link import('../utils/aws-region-resolver.js').resolveBucketRegion}).
  */
-export function getDefaultStateBucketName(accountId: string, region: string): string {
+export function getDefaultStateBucketName(accountId: string): string {
+  return `cdkd-state-${accountId}`;
+}
+
+/**
+ * Generate the **legacy** default state bucket name.
+ *
+ * Format: `cdkd-state-{accountId}-{region}` — the pre-v0.8 default.
+ *
+ * Used only by the backwards-compatibility fallback in
+ * {@link resolveStateBucketWithDefault}: if the new region-free bucket is not
+ * found, cdkd checks the legacy region-suffixed name so users who already
+ * bootstrapped under the old default keep working until they migrate.
+ *
+ * TODO(remove-bc-after-1.x): Remove this helper and all callers when the
+ * backwards-compat read path is dropped (tracked in PR 99 of the
+ * region/state refactor — see `docs/plans/04-state-bucket-naming.md`).
+ */
+export function getLegacyStateBucketName(accountId: string, region: string): string {
   return `cdkd-state-${accountId}-${region}`;
 }
 
 /**
- * Resolve state bucket with STS fallback
+ * Resolve state bucket with STS fallback.
  *
- * Priority: CLI option > CDKD_STATE_BUCKET env > cdk.json > default (cdkd-state-{accountId}-{region})
+ * Priority:
+ * 1. Explicit value from `--state-bucket` / `CDKD_STATE_BUCKET` /
+ *    `cdk.json context.cdkd.stateBucket` — used as-is.
+ * 2. Default name `cdkd-state-{accountId}` (new). Verified to exist via
+ *    `HeadBucket` against a region-agnostic S3 client (the actual region is
+ *    resolved separately by {@link
+ *    import('../utils/aws-region-resolver.js').resolveBucketRegion}).
+ * 3. Legacy name `cdkd-state-{accountId}-{region}` — only consulted if step 2
+ *    returned `NoSuchBucket` / 404. Logs a deprecation warning.
+ * 4. Neither found → throw a "run cdkd bootstrap" error pointing at the new
+ *    name.
  *
- * If no explicit bucket is configured, uses STS GetCallerIdentity to generate
- * a default bucket name. Requires AWS credentials to be configured.
+ * `region` is the CLI's *profile* region; it is used only to construct the
+ * legacy fallback name. The actual state-bucket region is resolved later by
+ * `resolveBucketRegion`, so the caller does not need to pass the bucket's
+ * real region here.
+ *
+ * Requires AWS credentials to be configured (STS GetCallerIdentity).
  */
 export async function resolveStateBucketWithDefault(
   cliBucket: string | undefined,
   region: string
 ): Promise<string> {
-  // Try synchronous resolution first
+  // Step 1: explicit value short-circuits the lookup chain.
   const syncResult = resolveStateBucket(cliBucket);
   if (syncResult) return syncResult;
 
-  // Fall back to default bucket name from account info
   const logger = getLogger();
   logger.debug('No state bucket specified, resolving default from account...');
 
   const { GetCallerIdentityCommand } = await import('@aws-sdk/client-sts');
+  const { S3Client } = await import('@aws-sdk/client-s3');
   const { getAwsClients } = await import('../utils/aws-clients.js');
   const awsClients = getAwsClients();
   const identity = await awsClients.sts.send(new GetCallerIdentityCommand({}));
   const accountId = identity.Account!;
-  const bucketName = getDefaultStateBucketName(accountId, region);
-  logger.info(`State bucket: ${bucketName}`);
-  return bucketName;
+
+  const newName = getDefaultStateBucketName(accountId);
+  // TODO(remove-bc-after-1.x): legacy name kept for the backwards-compat read
+  // path; remove together with the fallback branch below in PR 99.
+  const legacyName = getLegacyStateBucketName(accountId, region);
+
+  // Use a region-agnostic client (us-east-1) for the existence checks. S3
+  // returns 301 / 404 globally for both names — we don't need the real bucket
+  // region to ask whether the bucket exists. The state-bucket S3 client used
+  // for actual reads/writes is rebuilt against the bucket's real region via
+  // `resolveBucketRegion` later in the flow.
+  const probe = new S3Client({ region: 'us-east-1' });
+  try {
+    // Step 2: try the new region-free name first.
+    if (await bucketExists(probe, newName)) {
+      logger.info(`State bucket: ${newName}`);
+      return newName;
+    }
+
+    // TODO(remove-bc-after-1.x): drop the legacy fallback branch in PR 99.
+    // Step 3: fall back to the legacy region-suffixed name.
+    if (await bucketExists(probe, legacyName)) {
+      logger.warn(
+        `Using legacy state bucket name '${legacyName}'. ` +
+          `The default has changed to '${newName}'. ` +
+          `Future cdkd versions will drop legacy support; consider migrating with ` +
+          `cdkd state migrate-bucket (coming in a future release).`
+      );
+      return legacyName;
+    }
+
+    // Step 4: neither bucket exists.
+    throw new Error(
+      `No cdkd state bucket found for account ${accountId}. ` +
+        `Looked for '${newName}' (current default) and '${legacyName}' (legacy default). ` +
+        `Run 'cdkd bootstrap' to create '${newName}'.`
+    );
+  } finally {
+    probe.destroy();
+  }
+}
+
+/**
+ * Probe whether an S3 bucket exists from this account's perspective.
+ *
+ * Returns:
+ *  - `true` for any 2xx (`HeadBucket` succeeded) **or** 301 (the bucket
+ *    exists, just in a different region — we can still use it because the
+ *    real region is resolved later by `resolveBucketRegion`).
+ *  - `true` for 403 (we lack permission to head it, but it exists; let the
+ *    state-backend produce a more specific error later).
+ *  - `false` for 404 / `NotFound` / `NoSuchBucket`.
+ *  - Re-throws anything else so credential / network failures aren't silently
+ *    swallowed by the lookup chain.
+ */
+async function bucketExists(
+  client: import('@aws-sdk/client-s3').S3Client,
+  bucketName: string
+): Promise<boolean> {
+  const { HeadBucketCommand } = await import('@aws-sdk/client-s3');
+  try {
+    await client.send(new HeadBucketCommand({ Bucket: bucketName }));
+    return true;
+  } catch (error) {
+    const err = error as {
+      name?: string;
+      $metadata?: { httpStatusCode?: number };
+      message?: string;
+    };
+    const status = err.$metadata?.httpStatusCode;
+    if (err.name === 'NotFound' || err.name === 'NoSuchBucket' || status === 404) {
+      return false;
+    }
+    // 301 = bucket exists in a different region (cross-region HEAD redirect).
+    // 403 = bucket exists but we lack `s3:ListBucket` — treat as existing so
+    // the downstream operation surfaces the real "access denied" error.
+    if (status === 301 || status === 403) {
+      return true;
+    }
+    // AWS SDK v3 synthetic Unknown error — covers the empty-body 301 redirect
+    // case where the SDK fails to parse the status. We can't distinguish from
+    // here, so re-throw and let the caller decide.
+    throw error;
+  }
 }

@@ -58,7 +58,7 @@ AWS_REGION=ap-northeast-1 ./tests/benchmark/run-benchmark.sh bench-sdk
 
 | Variable | Description | Default |
 | --- | --- | --- |
-| `STATE_BUCKET` | S3 bucket for cdkd state | auto-resolved (`cdkd-state-{accountId}-{region}`) |
+| `STATE_BUCKET` | S3 bucket for cdkd state | auto-resolved (`cdkd-state-{accountId}`; legacy `cdkd-state-{accountId}-{region}` still falls through with a deprecation warning) |
 | `AWS_REGION` | AWS region | `us-east-1` |
 | `CDKD_BIN` | Path to the cdkd binary | `./dist/cli.js` |
 | `SKIP_CFN` | Set to `true` to skip the CloudFormation benchmark | `false` |

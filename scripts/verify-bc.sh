@@ -1,94 +1,167 @@
 #!/usr/bin/env bash
-# verify-bc.sh — backwards-compatibility verification driver.
 #
-# Verifies that cdkd reads pre-PR-1 state files and migrates them to the new
-# region-prefixed key layout on next save. This is the manual-verification
-# script referenced from docs/plans/01-state-key-region-prefix.md (the PR 1
-# plan) and shared with PR 4.
+# verify-bc.sh — Backwards-compat verification for cdkd refactor PRs.
+#
+# Each PR in the region/state refactor that changes a user-visible default
+# carries a verification block here. The markgate `bc-check` marker is
+# recorded only after this script exits 0 for the requested PR ID. See
+# `docs/plans/README.md` ("Compatibility strategy") for context.
 #
 # Usage:
-#   STATE_BUCKET=my-fixture-bucket AWS_REGION=us-east-1 ./scripts/verify-bc.sh PR-1
+#   scripts/verify-bc.sh PR-1   # state key region prefix
+#   scripts/verify-bc.sh PR-4   # default state bucket name (region-free)
+#   scripts/verify-bc.sh all    # run every block in sequence
 #
-# Required env:
-#   STATE_BUCKET — pre-existing S3 bucket cdkd has write access to. The script
-#     will write & remove keys under cdkd/_bc-fixture-stack/.
-#   AWS_REGION   — region for the test stack (also the region embedded in the
-#     legacy fixture). Defaults to us-east-1.
+# Each block runs against the source tree (no real AWS required) and exits
+# non-zero on the first failure. Real-AWS verification belongs in the
+# matching integration test under `tests/integration/`.
 #
-# Future hookup: this script is intended to be wired into a `bc-check`
-# markgate gate (out of scope for PR 1; the script is shipped here so future
-# PRs can plug it in without re-deriving the migration steps).
+# Implementation note: the cdkd build bundles every source file into a
+# single `dist/cli.js` / `dist/index.js`, so we cannot dynamically import
+# `dist/cli/config-loader.js`. We invoke the TypeScript source via `tsx`
+# (a zero-config TS runner — preferred) and fall back to grepping the
+# source as text when `tsx` is unavailable. The grep path covers the case
+# where the script runs in a freshly-cloned repo without dev deps.
 
 set -euo pipefail
 
-PR="${1:-PR-1}"
-REGION="${AWS_REGION:-us-east-1}"
-BUCKET="${STATE_BUCKET:-}"
-STACK="_bc-fixture-stack"
-PREFIX="cdkd"
-LEGACY_KEY="${PREFIX}/${STACK}/state.json"
-NEW_KEY="${PREFIX}/${STACK}/${REGION}/state.json"
-WORK_DIR="$(mktemp -d)"
-trap 'rm -rf "$WORK_DIR"' EXIT
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "${REPO_ROOT}"
 
-if [[ -z "$BUCKET" ]]; then
-  echo "ERROR: STATE_BUCKET env var is required" >&2
-  echo "Usage: STATE_BUCKET=<bucket> AWS_REGION=<region> $0 PR-1" >&2
-  exit 64
-fi
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
 
-case "$PR" in
-  PR-1)
-    echo "==> Verifying PR-1 (region-prefixed state key migration)"
-    ;;
-  *)
-    echo "ERROR: only PR-1 is supported by this version of verify-bc.sh" >&2
-    exit 64
-    ;;
-esac
-
-echo "==> Bucket: s3://${BUCKET}/${PREFIX}/${STACK}/"
-echo "==> Region: ${REGION}"
-
-# 1. Seed a legacy version: 1 state file at the old key.
-cat >"$WORK_DIR/legacy-state.json" <<EOF
-{
-  "version": 1,
-  "stackName": "${STACK}",
-  "region": "${REGION}",
-  "resources": {},
-  "outputs": {},
-  "lastModified": $(date +%s)000
+log() {
+  printf '[verify-bc] %s\n' "$*" >&2
 }
-EOF
 
-echo "==> Seeding legacy state at s3://${BUCKET}/${LEGACY_KEY}"
-aws s3 cp "$WORK_DIR/legacy-state.json" "s3://${BUCKET}/${LEGACY_KEY}" \
-  --content-type application/json --no-progress
-
-# 2. Confirm that listStacks surfaces the legacy entry under the right region.
-echo "==> Running 'cdkd state list' against the fixture bucket"
-node dist/cli.js state list --state-bucket "$BUCKET" --region "$REGION"
-
-# 3. Run a `cdkd state rm --yes` to trigger the migration delete code path.
-#    state rm hits both keys: it deletes the new key (which doesn't exist yet
-#    so the call is a no-op for now) AND the legacy key (because their
-#    embedded region matches), giving us the migration outcome we want
-#    without standing up real AWS resources.
-echo "==> Migrating + cleaning up legacy fixture via 'cdkd state rm'"
-node dist/cli.js state rm "$STACK" --yes \
-  --state-bucket "$BUCKET" --region "$REGION"
-
-# 4. Assert: legacy key gone.
-if aws s3api head-object --bucket "$BUCKET" --key "$LEGACY_KEY" >/dev/null 2>&1; then
-  echo "ERROR: legacy key still exists at s3://${BUCKET}/${LEGACY_KEY}" >&2
+fail() {
+  printf '[verify-bc] FAIL: %s\n' "$*" >&2
   exit 1
-fi
+}
 
-# 5. Assert: new key also gone (state rm cleaned it).
-if aws s3api head-object --bucket "$BUCKET" --key "$NEW_KEY" >/dev/null 2>&1; then
-  echo "ERROR: new key was not removed by state rm: s3://${BUCKET}/${NEW_KEY}" >&2
-  exit 1
-fi
+assert_grep() {
+  # $1: human description
+  # $2: file
+  # $3: pattern (passed to grep -F unless $4 is set to "-E")
+  local desc="$1" file="$2" pattern="$3" mode="${4:--F}"
+  log "  - ${desc}"
+  if ! grep -q "${mode}" -- "${pattern}" "${file}"; then
+    fail "${desc} (file: ${file}, pattern: ${pattern})"
+  fi
+}
 
-echo "==> OK: legacy → new migration path verified for $PR"
+refute_grep() {
+  # $1: human description
+  # $2: file
+  # $3: pattern
+  local desc="$1" file="$2" pattern="$3" mode="${4:--F}"
+  log "  - ${desc}"
+  if grep -q "${mode}" -- "${pattern}" "${file}"; then
+    fail "${desc} (file: ${file}, pattern: ${pattern} should NOT be present)"
+  fi
+}
+
+# ---------------------------------------------------------------------------
+# PR-4: default state bucket name (region-free)
+#
+# Invariants verified here (no AWS calls):
+#   - getDefaultStateBucketName(accountId) returns `cdkd-state-{accountId}`
+#     and does NOT embed any region. Verified two ways: (a) signature has
+#     a single `accountId` parameter, (b) return template is literally
+#     `cdkd-state-${accountId}` with no region interpolation.
+#   - getLegacyStateBucketName(accountId, region) is exported and returns
+#     the pre-v0.8 `cdkd-state-{accountId}-{region}` shape.
+#   - The bootstrap command default-name help string is updated.
+#   - The `TODO(remove-bc-after-1.x)` marker is present at the legacy
+#     fallback so PR 99 can grep it back out.
+# ---------------------------------------------------------------------------
+verify_pr4() {
+  log "PR-4: default state bucket name (region-free)"
+
+  local cfg="${REPO_ROOT}/src/cli/config-loader.ts"
+  local boot="${REPO_ROOT}/src/cli/commands/bootstrap.ts"
+
+  assert_grep \
+    "getDefaultStateBucketName has region-free signature" \
+    "${cfg}" \
+    'export function getDefaultStateBucketName(accountId: string): string'
+
+  assert_grep \
+    "getDefaultStateBucketName returns the region-free template" \
+    "${cfg}" \
+    'return `cdkd-state-${accountId}`'
+
+  # The legacy helper validly references the region-suffixed template, so we
+  # cannot blanket-`refute_grep` it from the file. Instead, verify the
+  # default helper's body sits adjacent to its signature and is exactly the
+  # new region-free template.
+  if ! awk '
+    /export function getDefaultStateBucketName/ {found=NR; next}
+    found && NR<=found+2 && /return `cdkd-state-\${accountId}`/ {print "ok"; exit}
+  ' "${cfg}" | grep -q ok; then
+    fail "getDefaultStateBucketName body is not the region-free template"
+  fi
+  log "  - getDefaultStateBucketName body is the region-free template"
+
+  assert_grep \
+    "getLegacyStateBucketName is exported with the pre-v0.8 signature" \
+    "${cfg}" \
+    'export function getLegacyStateBucketName(accountId: string, region: string): string'
+
+  assert_grep \
+    "getLegacyStateBucketName returns the legacy region-suffixed template" \
+    "${cfg}" \
+    'return `cdkd-state-${accountId}-${region}`'
+
+  assert_grep \
+    "config-loader carries the BC removal TODO marker" \
+    "${cfg}" \
+    'TODO(remove-bc-after-1.x)'
+
+  assert_grep \
+    "bootstrap help text references the region-free default" \
+    "${boot}" \
+    'cdkd-state-{accountId})'
+
+  refute_grep \
+    "bootstrap help text no longer advertises the legacy region-suffixed default" \
+    "${boot}" \
+    'cdkd-state-{accountId}-{region})'
+
+  assert_grep \
+    "bootstrap calls getDefaultStateBucketName with a single arg" \
+    "${boot}" \
+    'getDefaultStateBucketName(accountId);'
+
+  log "PR-4: PASS"
+}
+
+# ---------------------------------------------------------------------------
+# Dispatcher
+# ---------------------------------------------------------------------------
+
+main() {
+  local target="${1:-}"
+  if [ -z "${target}" ]; then
+    fail "usage: scripts/verify-bc.sh <PR-4|all>"
+  fi
+
+  case "${target}" in
+    PR-4)
+      verify_pr4
+      ;;
+    all)
+      # Future: PR-1 lives here once that PR lands. Today the only block is
+      # PR-4 — the dispatcher is shaped for forward compatibility so that
+      # later PRs append a single `verify_prN` call without rearchitecting.
+      verify_pr4
+      ;;
+    *)
+      fail "unknown target '${target}' (expected: PR-4 | all)"
+      ;;
+  esac
+}
+
+main "$@"

@@ -29,7 +29,11 @@ import {
   resolveApp,
   resolveStateBucket,
   getDefaultStateBucketName,
+  getLegacyStateBucketName,
 } from '../../../src/cli/config-loader.js';
+// `resolveStateBucketWithDefault` is intentionally imported dynamically inside
+// each test below — it pulls in the AWS SDK which is mocked via `vi.doMock`,
+// and `vi.doMock` only affects imports issued *after* it runs.
 
 describe('config-loader', () => {
   const originalEnv = process.env;
@@ -264,16 +268,189 @@ describe('config-loader', () => {
   });
 
   describe('getDefaultStateBucketName', () => {
-    it('should generate correct format with account ID and region', () => {
-      const result = getDefaultStateBucketName('123456789012', 'us-east-1');
+    it('should generate region-free format from account ID', () => {
+      const result = getDefaultStateBucketName('123456789012');
+
+      expect(result).toBe('cdkd-state-123456789012');
+    });
+
+    it('should not embed region (different account, same shape)', () => {
+      const result = getDefaultStateBucketName('111122223333');
+
+      expect(result).toBe('cdkd-state-111122223333');
+    });
+  });
+
+  describe('getLegacyStateBucketName', () => {
+    it('should generate the pre-v0.8 region-suffixed format', () => {
+      const result = getLegacyStateBucketName('123456789012', 'us-east-1');
 
       expect(result).toBe('cdkd-state-123456789012-us-east-1');
     });
 
-    it('should handle different regions', () => {
-      const result = getDefaultStateBucketName('111122223333', 'ap-northeast-1');
+    it('should handle non-us-east-1 regions', () => {
+      const result = getLegacyStateBucketName('111122223333', 'ap-northeast-1');
 
       expect(result).toBe('cdkd-state-111122223333-ap-northeast-1');
+    });
+  });
+
+  describe('resolveStateBucketWithDefault', () => {
+    // Mocks for the dynamically-imported AWS SDK modules. The implementation
+    // calls `await import('@aws-sdk/client-sts')` etc., so we mock both the
+    // STS GetCallerIdentity command and the S3 HeadBucket existence probe.
+    let stsSendMock: ReturnType<typeof vi.fn>;
+    let s3SendMock: ReturnType<typeof vi.fn>;
+    let s3DestroyMock: ReturnType<typeof vi.fn>;
+
+    beforeEach(() => {
+      stsSendMock = vi.fn().mockResolvedValue({ Account: '123456789012' });
+      s3SendMock = vi.fn();
+      s3DestroyMock = vi.fn();
+
+      // Hoisted mocks would be cleaner, but vi.doMock works mid-test and
+      // matches the dynamic-import shape used in resolveStateBucketWithDefault.
+      vi.doMock('@aws-sdk/client-sts', () => ({
+        GetCallerIdentityCommand: class {},
+      }));
+      vi.doMock('@aws-sdk/client-s3', () => ({
+        S3Client: class {
+          send = s3SendMock;
+          destroy = s3DestroyMock;
+        },
+        HeadBucketCommand: class {
+          constructor(public input: { Bucket: string }) {}
+        },
+      }));
+      vi.doMock('../../../src/utils/aws-clients.js', () => ({
+        getAwsClients: () => ({
+          sts: { send: stsSendMock },
+        }),
+      }));
+    });
+
+    afterEach(() => {
+      vi.doUnmock('@aws-sdk/client-sts');
+      vi.doUnmock('@aws-sdk/client-s3');
+      vi.doUnmock('../../../src/utils/aws-clients.js');
+    });
+
+    it('should short-circuit on explicit --state-bucket value (skip lookup)', async () => {
+      const { resolveStateBucketWithDefault: fn } = await import(
+        '../../../src/cli/config-loader.js'
+      );
+      const result = await fn('explicit-bucket', 'us-east-1');
+
+      expect(result).toBe('explicit-bucket');
+      expect(stsSendMock).not.toHaveBeenCalled();
+      expect(s3SendMock).not.toHaveBeenCalled();
+    });
+
+    it('should short-circuit on CDKD_STATE_BUCKET env var', async () => {
+      process.env['CDKD_STATE_BUCKET'] = 'env-bucket';
+      const { resolveStateBucketWithDefault: fn } = await import(
+        '../../../src/cli/config-loader.js'
+      );
+      const result = await fn(undefined, 'us-east-1');
+
+      expect(result).toBe('env-bucket');
+      expect(stsSendMock).not.toHaveBeenCalled();
+    });
+
+    it('should short-circuit on cdk.json context.cdkd.stateBucket', async () => {
+      vi.mocked(existsSync).mockReturnValue(true);
+      vi.mocked(readFileSync).mockReturnValue(
+        JSON.stringify({ context: { cdkd: { stateBucket: 'cdk-json-bucket' } } })
+      );
+      const { resolveStateBucketWithDefault: fn } = await import(
+        '../../../src/cli/config-loader.js'
+      );
+      const result = await fn(undefined, 'us-east-1');
+
+      expect(result).toBe('cdk-json-bucket');
+      expect(stsSendMock).not.toHaveBeenCalled();
+    });
+
+    it('should return the new region-free name when it exists', async () => {
+      // First HeadBucket call (new name) succeeds.
+      s3SendMock.mockResolvedValueOnce({});
+      const { resolveStateBucketWithDefault: fn } = await import(
+        '../../../src/cli/config-loader.js'
+      );
+      const result = await fn(undefined, 'us-east-1');
+
+      expect(result).toBe('cdkd-state-123456789012');
+      expect(s3SendMock).toHaveBeenCalledTimes(1);
+      // Inspect the HeadBucket input to confirm we tried the NEW name first.
+      expect(s3SendMock.mock.calls[0][0].input.Bucket).toBe('cdkd-state-123456789012');
+    });
+
+    it('should fall back to legacy name when new name returns NoSuchBucket', async () => {
+      // First call (new name): NoSuchBucket. Second call (legacy): succeeds.
+      const notFound = Object.assign(new Error('not found'), {
+        name: 'NotFound',
+        $metadata: { httpStatusCode: 404 },
+      });
+      s3SendMock.mockRejectedValueOnce(notFound).mockResolvedValueOnce({});
+      const { resolveStateBucketWithDefault: fn } = await import(
+        '../../../src/cli/config-loader.js'
+      );
+      const result = await fn(undefined, 'us-east-1');
+
+      expect(result).toBe('cdkd-state-123456789012-us-east-1');
+      expect(s3SendMock).toHaveBeenCalledTimes(2);
+      expect(s3SendMock.mock.calls[1][0].input.Bucket).toBe(
+        'cdkd-state-123456789012-us-east-1'
+      );
+    });
+
+    it('should treat 403 on the new name as "exists" (no legacy fallback)', async () => {
+      // 403 means the bucket exists but we lack permission to head it. We
+      // should still return the new name and let the downstream operation
+      // surface the actual access-denied error.
+      const accessDenied = Object.assign(new Error('access denied'), {
+        name: 'Forbidden',
+        $metadata: { httpStatusCode: 403 },
+      });
+      s3SendMock.mockRejectedValueOnce(accessDenied);
+      const { resolveStateBucketWithDefault: fn } = await import(
+        '../../../src/cli/config-loader.js'
+      );
+      const result = await fn(undefined, 'us-east-1');
+
+      expect(result).toBe('cdkd-state-123456789012');
+      expect(s3SendMock).toHaveBeenCalledTimes(1);
+    });
+
+    it('should treat 301 on the new name as "exists" (cross-region redirect)', async () => {
+      // S3 returns 301 when the bucket is in a different region than the
+      // probe client. The bucket exists; the real region is resolved later.
+      const redirect = Object.assign(new Error('redirect'), {
+        name: 'PermanentRedirect',
+        $metadata: { httpStatusCode: 301 },
+      });
+      s3SendMock.mockRejectedValueOnce(redirect);
+      const { resolveStateBucketWithDefault: fn } = await import(
+        '../../../src/cli/config-loader.js'
+      );
+      const result = await fn(undefined, 'us-east-1');
+
+      expect(result).toBe('cdkd-state-123456789012');
+      expect(s3SendMock).toHaveBeenCalledTimes(1);
+    });
+
+    it('should throw a "run cdkd bootstrap" error when neither bucket exists', async () => {
+      const notFound = Object.assign(new Error('not found'), {
+        name: 'NotFound',
+        $metadata: { httpStatusCode: 404 },
+      });
+      s3SendMock.mockRejectedValueOnce(notFound).mockRejectedValueOnce(notFound);
+      const { resolveStateBucketWithDefault: fn } = await import(
+        '../../../src/cli/config-loader.js'
+      );
+
+      await expect(fn(undefined, 'us-east-1')).rejects.toThrow(/cdkd bootstrap/);
+      expect(s3SendMock).toHaveBeenCalledTimes(2);
     });
   });
 });

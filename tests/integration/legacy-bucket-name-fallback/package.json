@@ -1,0 +1,19 @@
+{
+  "name": "cdkd-integ-legacy-bucket-name-fallback",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Verify cdkd falls back to the legacy region-suffixed state bucket name (cdkd-state-{accountId}-{region}) when the new region-free name (cdkd-state-{accountId}) does not exist, and emits the deprecation warning.",
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc -w"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "typescript": "^5.0.0",
+    "ts-node": "^10.0.0"
+  },
+  "dependencies": {
+    "aws-cdk-lib": "^2.169.0",
+    "constructs": "^10.0.0"
+  }
+}
