@@ -135,7 +135,8 @@ describe('DeployEngine - Dry Run Mode', () => {
       mockDagBuilder as any,
       mockDiffCalculator as any,
       mockProviderRegistry as any,
-      { dryRun: true }
+      { dryRun: true },
+      'us-east-1'
     );
   }
 
@@ -147,7 +148,8 @@ describe('DeployEngine - Dry Run Mode', () => {
       mockDagBuilder as any,
       mockDiffCalculator as any,
       mockProviderRegistry as any,
-      { dryRun: false }
+      { dryRun: false },
+      'us-east-1'
     );
   }
 
@@ -473,8 +475,13 @@ describe('DeployEngine - Dry Run Mode', () => {
       await engine.deploy(stackName, template);
 
       // Lock is acquired and released (current implementation behavior)
-      expect(mockLockManager.acquireLockWithRetry).toHaveBeenCalledWith(stackName, undefined, 'deploy');
-      expect(mockLockManager.releaseLock).toHaveBeenCalledWith(stackName);
+      expect(mockLockManager.acquireLockWithRetry).toHaveBeenCalledWith(
+        stackName,
+        'us-east-1',
+        undefined,
+        'deploy'
+      );
+      expect(mockLockManager.releaseLock).toHaveBeenCalledWith(stackName, 'us-east-1');
     });
   });
 

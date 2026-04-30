@@ -138,7 +138,8 @@ describe('DeployEngine - Rollback (event-driven dispatch)', () => {
       mockDagBuilder as never,
       mockDiffCalculator as never,
       mockProviderRegistry as never,
-      { concurrency: 4, noRollback: opts.noRollback ?? false }
+      { concurrency: 4, noRollback: opts.noRollback ?? false },
+      'us-east-1'
     );
   }
 
@@ -291,7 +292,8 @@ describe('DeployEngine - Rollback (event-driven dispatch)', () => {
     // Inspect the most recent saveState call (could be pre-rollback or post-).
     const calls = mockStateBackend.saveState.mock.calls;
     expect(calls.length).toBeGreaterThan(0);
-    const finalSavedState = calls[calls.length - 1]![1] as StackState;
+    // saveState now: (stackName, region, state, options) — state is index 2.
+    const finalSavedState = calls[calls.length - 1]![2] as StackState;
 
     // A and C deleted from state; B remains because its delete failed.
     expect(finalSavedState.resources['A']).toBeUndefined();

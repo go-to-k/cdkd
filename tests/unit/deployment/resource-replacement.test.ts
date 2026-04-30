@@ -176,7 +176,9 @@ describe('DeployEngine - Resource Replacement', () => {
       mockLockManager as any,
       mockDagBuilder as any,
       mockDiffCalculator as any,
-      mockProviderRegistry as any
+      mockProviderRegistry as any,
+      {},
+      'us-east-1'
     );
 
     const result = await engine.deploy(stackName, template);
@@ -204,7 +206,8 @@ describe('DeployEngine - Resource Replacement', () => {
     // 3. State should be updated with new physicalId
     // saveState is called: partial save after level + final save
     expect(mockStateBackend.saveState).toHaveBeenCalled();
-    const savedState = mockStateBackend.saveState.mock.calls[0][1] as StackState;
+    // saveState is now (stackName, region, state, options) — state is index 2.
+    const savedState = mockStateBackend.saveState.mock.calls[0][2] as StackState;
     expect(savedState.resources['MyBucket'].physicalId).toBe('new-bucket-physical-id');
     expect(savedState.resources['MyBucket'].attributes).toEqual({
       Arn: 'arn:aws:s3:::new-bucket-name',
@@ -248,7 +251,9 @@ describe('DeployEngine - Resource Replacement', () => {
       mockLockManager as any,
       mockDagBuilder as any,
       mockDiffCalculator as any,
-      mockProviderRegistry as any
+      mockProviderRegistry as any,
+      {},
+      'us-east-1'
     );
 
     await engine.deploy(stackName, template);
@@ -290,7 +295,9 @@ describe('DeployEngine - Resource Replacement', () => {
       mockLockManager as any,
       mockDagBuilder as any,
       mockDiffCalculator as any,
-      mockProviderRegistry as any
+      mockProviderRegistry as any,
+      {},
+      'us-east-1'
     );
 
     // Should NOT throw even though delete failed - the code catches delete errors as warnings
@@ -303,7 +310,8 @@ describe('DeployEngine - Resource Replacement', () => {
     expect(mockProvider.delete).toHaveBeenCalledTimes(1);
 
     // State should still be saved with the new physicalId
-    const savedState = mockStateBackend.saveState.mock.calls[0][1] as StackState;
+    // saveState is now (stackName, region, state, options) — state is index 2.
+    const savedState = mockStateBackend.saveState.mock.calls[0][2] as StackState;
     expect(savedState.resources['MyBucket'].physicalId).toBe('new-bucket-physical-id');
 
     expect(result.updated).toBe(1);
@@ -344,7 +352,9 @@ describe('DeployEngine - Resource Replacement', () => {
       mockLockManager as any,
       mockDagBuilder as any,
       mockDiffCalculator as any,
-      mockProviderRegistry as any
+      mockProviderRegistry as any,
+      {},
+      'us-east-1'
     );
 
     await engine.deploy(stackName, template);
@@ -386,12 +396,14 @@ describe('DeployEngine - Resource Replacement', () => {
       mockLockManager as any,
       mockDagBuilder as any,
       mockDiffCalculator as any,
-      mockProviderRegistry as any
+      mockProviderRegistry as any,
+      {},
+      'us-east-1'
     );
 
     await expect(engine.deploy(stackName, template)).rejects.toThrow();
 
     // Lock should still be released
-    expect(mockLockManager.releaseLock).toHaveBeenCalledWith(stackName);
+    expect(mockLockManager.releaseLock).toHaveBeenCalledWith(stackName, 'us-east-1');
   });
 });

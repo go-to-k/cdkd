@@ -39,11 +39,13 @@ vi.mock('../../../src/utils/aws-clients.ts', () => {
 });
 
 // Mock S3StateBackend.
-const mockListStacks = vi.fn<() => Promise<string[]>>();
+const mockListStacks =
+  vi.fn<() => Promise<Array<{ stackName: string; region?: string }>>>();
 const mockGetState =
   vi.fn<
     (
-      stackName: string
+      stackName: string,
+      region: string
     ) => Promise<{ state: { resources: Record<string, unknown>; lastModified: number } } | null>
   >();
 const mockVerifyBucketExists = vi.fn<() => Promise<void>>();
@@ -56,7 +58,7 @@ vi.mock('../../../src/state/s3-state-backend.js', () => ({
 }));
 
 // Mock LockManager.
-const mockIsLocked = vi.fn<(stackName: string) => Promise<boolean>>();
+const mockIsLocked = vi.fn<(stackName: string, region?: string) => Promise<boolean>>();
 vi.mock('../../../src/state/lock-manager.js', () => ({
   LockManager: vi.fn().mockImplementation(() => ({
     isLocked: mockIsLocked,
@@ -118,26 +120,63 @@ describe('cdkd state list', () => {
     expect(out).toBe('');
   });
 
-  it('prints stack names sorted alphabetically, one per line', async () => {
-    mockListStacks.mockResolvedValue(['Charlie', 'alpha', 'Bravo']);
+  it('prints "Stack (region)" sorted alphabetically, one per line', async () => {
+    mockListStacks.mockResolvedValue([
+      { stackName: 'Charlie', region: 'us-east-1' },
+      { stackName: 'alpha', region: 'us-west-2' },
+      { stackName: 'Bravo', region: 'eu-west-1' },
+    ]);
     const out = await runStateList(['list']);
-    expect(out).toBe('Bravo\nCharlie\nalpha\n');
+    expect(out).toBe('Bravo (eu-west-1)\nCharlie (us-east-1)\nalpha (us-west-2)\n');
+  });
+
+  it('renders the same stack name in two regions as two rows', async () => {
+    // The whole point of region-prefixed state keys: a stack name can have
+    // independent state per region. `state list` should surface that.
+    mockListStacks.mockResolvedValue([
+      { stackName: 'MyStack', region: 'us-west-2' },
+      { stackName: 'MyStack', region: 'us-east-1' },
+    ]);
+    const out = await runStateList(['list']);
+    expect(out).toBe('MyStack (us-east-1)\nMyStack (us-west-2)\n');
+  });
+
+  it('renders legacy version-1 records (no region) as plain stack name', async () => {
+    mockListStacks.mockResolvedValue([
+      { stackName: 'LegacyStack' /* region: undefined */ },
+    ]);
+    const out = await runStateList(['list']);
+    expect(out).toBe('LegacyStack\n');
   });
 
   it('supports the `ls` alias', async () => {
-    mockListStacks.mockResolvedValue(['One', 'Two']);
+    mockListStacks.mockResolvedValue([
+      { stackName: 'One', region: 'us-east-1' },
+      { stackName: 'Two', region: 'us-east-1' },
+    ]);
     const out = await runStateList(['ls']);
-    expect(out).toBe('One\nTwo\n');
+    expect(out).toBe('One (us-east-1)\nTwo (us-east-1)\n');
   });
 
-  it('emits a JSON array of stack names with --json', async () => {
-    mockListStacks.mockResolvedValue(['B', 'a', 'C']);
+  it('emits a JSON array of {stackName, region} with --json', async () => {
+    mockListStacks.mockResolvedValue([
+      { stackName: 'B', region: 'us-east-1' },
+      { stackName: 'a', region: 'us-west-2' },
+      { stackName: 'C' /* legacy */ },
+    ]);
     const out = await runStateList(['list', '--json']);
-    expect(JSON.parse(out)).toEqual(['B', 'C', 'a']);
+    expect(JSON.parse(out)).toEqual([
+      { stackName: 'B', region: 'us-east-1' },
+      { stackName: 'C', region: null },
+      { stackName: 'a', region: 'us-west-2' },
+    ]);
   });
 
   it('emits long human-readable details with --long', async () => {
-    mockListStacks.mockResolvedValue(['StackA', 'StackB']);
+    mockListStacks.mockResolvedValue([
+      { stackName: 'StackA', region: 'us-east-1' },
+      { stackName: 'StackB', region: 'us-west-2' },
+    ]);
     mockGetState.mockImplementation(async (name) => {
       if (name === 'StackA') {
         return {
@@ -158,18 +197,20 @@ describe('cdkd state list', () => {
 
     const out = await runStateList(['list', '--long']);
 
-    expect(out).toContain('StackA');
+    expect(out).toContain('StackA (us-east-1)');
+    expect(out).toContain('  Region: us-east-1');
     expect(out).toContain('  Resources: 3');
     expect(out).toContain('  Last Modified: 2026-04-29T10:23:45.000Z');
     expect(out).toContain('  Lock: unlocked');
-    expect(out).toContain('StackB');
+    expect(out).toContain('StackB (us-west-2)');
+    expect(out).toContain('  Region: us-west-2');
     expect(out).toContain('  Resources: 0');
     expect(out).toContain('  Last Modified: 2026-04-25T08:00:00.000Z');
     expect(out).toContain('  Lock: locked');
   });
 
   it('handles missing state by reporting zero resources and unknown last-modified', async () => {
-    mockListStacks.mockResolvedValue(['Orphan']);
+    mockListStacks.mockResolvedValue([{ stackName: 'Orphan', region: 'us-east-1' }]);
     mockGetState.mockResolvedValue(null);
     mockIsLocked.mockResolvedValue(false);
 
@@ -182,7 +223,7 @@ describe('cdkd state list', () => {
   });
 
   it('emits a JSON array of details when --long --json is combined', async () => {
-    mockListStacks.mockResolvedValue(['X']);
+    mockListStacks.mockResolvedValue([{ stackName: 'X', region: 'us-east-1' }]);
     mockGetState.mockResolvedValue({
       state: {
         resources: { R1: {}, R2: {} },
@@ -197,6 +238,7 @@ describe('cdkd state list', () => {
     expect(parsed).toEqual([
       {
         stackName: 'X',
+        region: 'us-east-1',
         resourceCount: 2,
         lastModified: '2026-01-01T00:00:00.000Z',
         locked: true,
@@ -204,8 +246,11 @@ describe('cdkd state list', () => {
     ]);
   });
 
-  it('fetches state and lock status for each stack', async () => {
-    mockListStacks.mockResolvedValue(['One', 'Two']);
+  it('fetches state and lock status for each (stackName, region) pair', async () => {
+    mockListStacks.mockResolvedValue([
+      { stackName: 'One', region: 'us-east-1' },
+      { stackName: 'Two', region: 'us-west-2' },
+    ]);
     mockGetState.mockResolvedValue({
       state: { resources: {}, lastModified: 0 },
     });
@@ -213,9 +258,9 @@ describe('cdkd state list', () => {
 
     await runStateList(['list', '--long']);
 
-    expect(mockGetState).toHaveBeenCalledWith('One');
-    expect(mockGetState).toHaveBeenCalledWith('Two');
-    expect(mockIsLocked).toHaveBeenCalledWith('One');
-    expect(mockIsLocked).toHaveBeenCalledWith('Two');
+    expect(mockGetState).toHaveBeenCalledWith('One', 'us-east-1');
+    expect(mockGetState).toHaveBeenCalledWith('Two', 'us-west-2');
+    expect(mockIsLocked).toHaveBeenCalledWith('One', 'us-east-1');
+    expect(mockIsLocked).toHaveBeenCalledWith('Two', 'us-west-2');
   });
 });

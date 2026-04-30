@@ -1,9 +1,9 @@
 import * as readline from 'node:readline/promises';
-import { Command } from 'commander';
+import { Command, Option } from 'commander';
 import { commonOptions, stateOptions } from '../options.js';
 import { getLogger } from '../../utils/logger.js';
 import { withErrorHandling } from '../../utils/error-handler.js';
-import { S3StateBackend } from '../../state/s3-state-backend.js';
+import { S3StateBackend, type StackStateRef } from '../../state/s3-state-backend.js';
 import { LockManager } from '../../state/lock-manager.js';
 import { setAwsClients, AwsClients } from '../../utils/aws-clients.js';
 import { resolveStateBucketWithDefault } from '../config-loader.js';
@@ -14,6 +14,11 @@ import type { LockInfo } from '../../types/state.js';
  */
 interface StackDetail {
   stackName: string;
+  /**
+   * Region recorded for this state record. `null` for legacy `version: 1`
+   * state where no region was persisted in the state body.
+   */
+  region: string | null;
   resourceCount: number;
   lastModified: string | null;
   locked: boolean;
@@ -31,6 +36,50 @@ interface ResourceDetail {
   physicalId: string;
   dependencies: string[];
   attributes: Record<string, unknown>;
+}
+
+/**
+ * Render `Stack` or `Stack (region)` — used by every state subcommand's
+ * default output mode and ambiguity error messages.
+ */
+function formatStackRef(ref: StackStateRef): string {
+  return ref.region ? `${ref.stackName} (${ref.region})` : ref.stackName;
+}
+
+/**
+ * Resolve a stack name + optional region flag against the `listStacks` index
+ * built up front. When a name resolves to multiple regions and the caller
+ * didn't pin one, surface a clear error listing the candidates so the user
+ * knows exactly which `--region X` to add.
+ */
+function resolveSingleRegion(
+  stackName: string,
+  refs: StackStateRef[],
+  requestedRegion: string | undefined
+): StackStateRef {
+  const matches = refs.filter((r) => r.stackName === stackName);
+  if (matches.length === 0) {
+    throw new Error(
+      `No state found for stack '${stackName}'. Run 'cdkd state list' to see available stacks.`
+    );
+  }
+  if (requestedRegion) {
+    const ref = matches.find((r) => r.region === requestedRegion);
+    if (!ref) {
+      const seen = matches.map((r) => r.region ?? '(legacy)').join(', ');
+      throw new Error(
+        `No state found for stack '${stackName}' in region '${requestedRegion}'. ` +
+          `Available regions: ${seen}.`
+      );
+    }
+    return ref;
+  }
+  if (matches.length === 1) return matches[0]!;
+  const regions = matches.map((r) => r.region ?? '(legacy)').join(', ');
+  throw new Error(
+    `Stack '${stackName}' has state in multiple regions: ${regions}. ` +
+      `Re-run with --region <region> to disambiguate.`
+  );
 }
 
 /**
@@ -81,11 +130,32 @@ async function setupStateBackend(options: {
 }
 
 /**
+ * Stable sort for `StackStateRef[]` — alphabetical by stackName (ASCII order,
+ * matches the legacy `state list` sort), then by region with `null`/legacy
+ * entries last.
+ */
+function sortRefs(refs: StackStateRef[]): StackStateRef[] {
+  return refs.slice().sort((a, b) => {
+    if (a.stackName < b.stackName) return -1;
+    if (a.stackName > b.stackName) return 1;
+    const ar = a.region ?? '￿';
+    const br = b.region ?? '￿';
+    if (ar < br) return -1;
+    if (ar > br) return 1;
+    return 0;
+  });
+}
+
+/**
  * `cdkd state list` command implementation
  *
- * Lists stacks registered in the configured S3 state bucket.
+ * Lists stacks registered in the configured S3 state bucket. Each row is a
+ * `(stackName, region)` pair — the same `stackName` deployed to two regions
+ * shows up as two rows, which is the whole point of the region-prefixed
+ * state key layout introduced in PR 1.
  *
- * - Default: stack names, one per line, sorted alphabetically.
+ * - Default: `Stack (region)` per line, sorted alphabetically. Legacy
+ *   `version: 1` records (no region) appear as plain `Stack` rows.
  * - `--long`/`-l`: include resource count, last-modified time, and lock status.
  * - `--json`: emit a JSON array (alongside or instead of the long form).
  */
@@ -103,32 +173,42 @@ async function stateListCommand(options: {
 
   const setup = await setupStateBackend(options);
   try {
-    const stackNames = (await setup.stateBackend.listStacks()).slice().sort();
+    const refs = sortRefs(await setup.stateBackend.listStacks());
 
-    // Default mode: just print sorted stack names, one per line.
+    // Default mode: `Stack (region)` per line, sorted.
     if (!options.long && !options.json) {
-      for (const name of stackNames) {
-        process.stdout.write(`${name}\n`);
+      for (const ref of refs) {
+        process.stdout.write(`${formatStackRef(ref)}\n`);
       }
       return;
     }
 
-    // --json without --long: array of names.
+    // --json without --long: array of `{stackName, region}` records.
     if (options.json && !options.long) {
-      process.stdout.write(`${JSON.stringify(stackNames, null, 2)}\n`);
+      const payload = refs.map((r) => ({ stackName: r.stackName, region: r.region ?? null }));
+      process.stdout.write(`${JSON.stringify(payload, null, 2)}\n`);
       return;
     }
 
     // --long (with or without --json): fetch detail per stack in parallel.
     const details: StackDetail[] = await Promise.all(
-      stackNames.map(async (stackName): Promise<StackDetail> => {
+      refs.map(async (ref): Promise<StackDetail> => {
+        // For legacy refs (no region), passing the legacy region string would
+        // miss the legacy key — instead, lookup with whichever region the ref
+        // carries (could be `undefined` for very-legacy records). The state
+        // backend's getState uses the region as part of the key; for legacy
+        // records the region embedded in the file is the one that matches.
+        const lookupRegion = ref.region ?? '';
         const [stateResult, locked] = await Promise.all([
-          setup.stateBackend.getState(stackName),
-          setup.lockManager.isLocked(stackName),
+          lookupRegion
+            ? setup.stateBackend.getState(ref.stackName, lookupRegion)
+            : Promise.resolve(null),
+          setup.lockManager.isLocked(ref.stackName, ref.region),
         ]);
         const state = stateResult?.state;
         return {
-          stackName,
+          stackName: ref.stackName,
+          region: ref.region ?? null,
           resourceCount: state ? Object.keys(state.resources).length : 0,
           lastModified:
             state && typeof state.lastModified === 'number'
@@ -147,7 +227,13 @@ async function stateListCommand(options: {
     // Long human-readable format.
     const lines: string[] = [];
     for (const detail of details) {
-      lines.push(detail.stackName);
+      lines.push(
+        formatStackRef({
+          stackName: detail.stackName,
+          ...(detail.region ? { region: detail.region } : {}),
+        })
+      );
+      lines.push(`  Region: ${detail.region ?? '(legacy)'}`);
       lines.push(`  Resources: ${detail.resourceCount}`);
       lines.push(`  Last Modified: ${detail.lastModified ?? 'unknown'}`);
       lines.push(`  Lock: ${detail.locked ? 'locked' : 'unlocked'}`);
@@ -191,6 +277,10 @@ function createStateListCommand(): Command {
  * - `--long`/`-l`: per-resource block including dependencies and attributes.
  * - `--json`: emit a JSON array of full resource detail objects.
  *
+ * When the same stack name has state in multiple regions, requires
+ * `--region <region>` to disambiguate. The error message lists candidate
+ * regions so the next attempt is one keystroke away.
+ *
  * Properties are intentionally omitted from all output modes — `state show`
  * is the right command when properties are needed.
  */
@@ -202,6 +292,7 @@ async function stateResourcesCommand(
     stateBucket?: string;
     statePrefix: string;
     region?: string;
+    stackRegion?: string;
     profile?: string;
     verbose: boolean;
   }
@@ -211,10 +302,19 @@ async function stateResourcesCommand(
 
   const setup = await setupStateBackend(options);
   try {
-    const stateResult = await setup.stateBackend.getState(stackName);
+    const refs = await setup.stateBackend.listStacks();
+    const ref = resolveSingleRegion(stackName, refs, options.stackRegion);
+    if (!ref.region) {
+      throw new Error(
+        `Stack '${stackName}' has only a legacy state record without a region. ` +
+          `Run 'cdkd deploy ${stackName}' (or any cdkd write) to migrate it to the region-scoped layout, ` +
+          `then re-run this command.`
+      );
+    }
+    const stateResult = await setup.stateBackend.getState(stackName, ref.region);
     if (!stateResult) {
       throw new Error(
-        `No state found for stack '${stackName}' in s3://${setup.bucket}/${setup.prefix}/. ` +
+        `No state found for stack '${stackName}' (${ref.region}) in s3://${setup.bucket}/${setup.prefix}/. ` +
           `Run 'cdkd state list' to see available stacks.`
       );
     }
@@ -330,6 +430,7 @@ function createStateResourcesCommand(): Command {
     .argument('<stack>', 'Stack name (physical CloudFormation name)')
     .option('-l, --long', 'Include dependencies and attributes per resource', false)
     .option('--json', 'Output as JSON', false)
+    .addOption(stackRegionOption())
     .action(withErrorHandling(stateResourcesCommand));
 
   [...commonOptions, ...stateOptions].forEach((opt) => cmd.addOption(opt));
@@ -345,6 +446,9 @@ function createStateResourcesCommand(): Command {
  * most verbose `state` subcommand — use `state list` / `state resources` for
  * lighter inspection.
  *
+ * When the same stack name has state in multiple regions, requires
+ * `--region <region>` to disambiguate.
+ *
  * - Default: human-readable multi-line format.
  * - `--json`: a `{state, lock}` object containing the raw `StackState` plus
  *   the lock record (or null).
@@ -356,6 +460,7 @@ async function stateShowCommand(
     stateBucket?: string;
     statePrefix: string;
     region?: string;
+    stackRegion?: string;
     profile?: string;
     verbose: boolean;
   }
@@ -365,14 +470,24 @@ async function stateShowCommand(
 
   const setup = await setupStateBackend(options);
   try {
+    const refs = await setup.stateBackend.listStacks();
+    const ref = resolveSingleRegion(stackName, refs, options.stackRegion);
+    if (!ref.region) {
+      throw new Error(
+        `Stack '${stackName}' has only a legacy state record without a region. ` +
+          `Run 'cdkd deploy ${stackName}' (or any cdkd write) to migrate it to the region-scoped layout, ` +
+          `then re-run this command.`
+      );
+    }
+
     const [stateResult, lockInfo] = await Promise.all([
-      setup.stateBackend.getState(stackName),
-      setup.lockManager.getLockInfo(stackName),
+      setup.stateBackend.getState(stackName, ref.region),
+      setup.lockManager.getLockInfo(stackName, ref.region),
     ]);
 
     if (!stateResult) {
       throw new Error(
-        `No state found for stack '${stackName}' in s3://${setup.bucket}/${setup.prefix}/. ` +
+        `No state found for stack '${stackName}' (${ref.region}) in s3://${setup.bucket}/${setup.prefix}/. ` +
           `Run 'cdkd state list' to see available stacks.`
       );
     }
@@ -450,6 +565,7 @@ function createStateShowCommand(): Command {
     .description('Show the full cdkd state record for a stack (metadata, outputs, resources)')
     .argument('<stack>', 'Stack name (physical CloudFormation name)')
     .option('--json', 'Output the raw state and lock as JSON', false)
+    .addOption(stackRegionOption())
     .action(withErrorHandling(stateShowCommand));
 
   [...commonOptions, ...stateOptions].forEach((opt) => cmd.addOption(opt));
@@ -465,8 +581,12 @@ function createStateShowCommand(): Command {
  * `cdkd destroy` is the command that deletes those.
  *
  * Behavior:
- * - Refuses to remove a locked stack unless `--force` is set, since tearing
- *   the lock out from under an in-flight deploy can corrupt state.
+ * - Default: removes all region keys recorded for the stack, with a single
+ *   confirmation that lists every region being affected. Use
+ *   `--region <region>` to scope removal to one region when a stack name has
+ *   state in multiple regions.
+ * - Refuses to remove a locked region's state unless `--force` is set, since
+ *   tearing the lock out from under an in-flight deploy can corrupt state.
  * - Confirmation prompt defaults to `(y/N)`, requiring an explicit `y` —
  *   this is more cautious than `cdkd destroy` because the operation orphans
  *   AWS resources from cdkd's view rather than reconciling them.
@@ -481,6 +601,7 @@ async function stateRmCommand(
     stateBucket?: string;
     statePrefix: string;
     region?: string;
+    stackRegion?: string;
     profile?: string;
     verbose: boolean;
   }
@@ -494,30 +615,51 @@ async function stateRmCommand(
 
   const setup = await setupStateBackend(options);
   try {
+    const refs = await setup.stateBackend.listStacks();
+
     for (const stackName of stackArgs) {
-      const exists = await setup.stateBackend.stateExists(stackName);
-      if (!exists) {
+      const stackRefs = refs.filter((r) => r.stackName === stackName);
+      if (stackRefs.length === 0) {
         logger.info(`No state found for stack: ${stackName}, skipping`);
         continue;
       }
 
-      // Refuse to remove a locked stack unless --force is set: an active
-      // deploy could be racing with us and ripping the lock out from under it
-      // would produce arbitrary mid-deploy corruption.
+      // Pick which region(s) to remove. With --region, restrict to one. The
+      // legacy entry (region: undefined) is matched only when --region is
+      // absent — there's no legacy-only flag because the legacy key is
+      // self-identifying via its missing region.
+      const targets = options.stackRegion
+        ? stackRefs.filter((r) => r.region === options.stackRegion)
+        : stackRefs;
+
+      if (targets.length === 0) {
+        const seen = stackRefs.map((r) => r.region ?? '(legacy)').join(', ');
+        throw new Error(
+          `No state found for stack '${stackName}' in region '${options.stackRegion}'. ` +
+            `Available regions: ${seen}.`
+        );
+      }
+
+      // Lock check applies per region; --force bypasses it.
       if (!options.force) {
-        const locked = await setup.lockManager.isLocked(stackName);
-        if (locked) {
-          throw new Error(
-            `Stack '${stackName}' is locked. Run 'cdkd force-unlock ${stackName}' first, ` +
-              `or pass --force to remove anyway.`
-          );
+        for (const target of targets) {
+          const locked = await setup.lockManager.isLocked(stackName, target.region);
+          if (locked) {
+            const where = target.region ?? '(legacy)';
+            throw new Error(
+              `Stack '${stackName}' (${where}) is locked. ` +
+                `Run 'cdkd force-unlock ${stackName}${target.region ? ` --stack-region ${target.region}` : ''}' first, ` +
+                `or pass --force to remove anyway.`
+            );
+          }
         }
       }
 
-      // Confirmation prompt unless --yes / --force.
+      // Single confirmation listing all regions being affected.
       if (!options.yes && !options.force) {
+        const targetList = targets.map((t) => formatStackRef(t)).join(', ');
         process.stdout.write(
-          `\nWARNING: This removes cdkd's state record for '${stackName}' only. ` +
+          `\nWARNING: This removes cdkd's state record for [${targetList}] only. ` +
             `AWS resources will NOT be deleted.\n` +
             `Use 'cdkd destroy ${stackName}' if you want to delete the actual resources.\n\n`
         );
@@ -526,7 +668,7 @@ async function stateRmCommand(
           output: process.stdout,
         });
         const answer = await rl.question(
-          `Remove state for stack '${stackName}' from s3://${setup.bucket}/${setup.prefix}/? (y/N): `
+          `Remove state for ${targetList} from s3://${setup.bucket}/${setup.prefix}/? (y/N): `
         );
         rl.close();
         const trimmed = answer.trim().toLowerCase();
@@ -536,15 +678,36 @@ async function stateRmCommand(
         }
       }
 
-      // Remove state.json AND any lingering lock.json. forceReleaseLock is
-      // idempotent (no-op when no lock present).
-      await setup.stateBackend.deleteState(stackName);
-      await setup.lockManager.forceReleaseLock(stackName);
-      logger.info(`✓ Removed state for stack: ${stackName}`);
+      // Iterate over every selected region. forceReleaseLock is idempotent
+      // (no-op when no lock present). For legacy-only refs (no region) we
+      // pass `undefined` to delete the legacy key; deleteState handles both.
+      for (const target of targets) {
+        if (target.region) {
+          await setup.stateBackend.deleteState(stackName, target.region);
+          await setup.lockManager.forceReleaseLock(stackName, target.region);
+        } else {
+          // Pure legacy record without a region body field: just sweep the
+          // legacy key (which is what the no-region forceReleaseLock targets).
+          await setup.lockManager.forceReleaseLock(stackName, undefined);
+        }
+        logger.info(`✓ Removed state for stack: ${formatStackRef(target)}`);
+      }
     }
   } finally {
     setup.dispose();
   }
+}
+
+/**
+ * Reusable `--region <region>` option for state subcommands. Aliased at the
+ * commander level via `stackRegion` so it doesn't collide with the global
+ * `--region` (AWS profile region) defined in `commonOptions`.
+ */
+function stackRegionOption(): Option {
+  return new Option(
+    '--stack-region <region>',
+    'Region of the stack record to operate on. Required when the same stack name has state in multiple regions.'
+  );
 }
 
 /**
@@ -555,6 +718,7 @@ function createStateRmCommand(): Command {
     .description('Remove cdkd state for one or more stacks (does NOT delete AWS resources)')
     .argument('<stacks...>', 'Stack name(s) to remove from state')
     .option('-f, --force', 'Skip confirmation and remove even if the stack is locked', false)
+    .addOption(stackRegionOption())
     .action(withErrorHandling(stateRmCommand));
 
   [...commonOptions, ...stateOptions].forEach((opt) => cmd.addOption(opt));

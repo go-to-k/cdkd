@@ -93,7 +93,11 @@ async function destroyCommand(
     // 2. Resolve stacks to destroy (CDK CLI compatible behavior)
     // Always synth to determine which stacks belong to this CDK app.
     const appCmd = options.app || resolveApp();
-    let appStacks: StackLike[] = [];
+    // Local extension of `StackLike` that also carries the synth-derived
+    // region. Stack-matcher only reads stackName/displayName, so this is
+    // backwards-compatible everywhere matchStacks is used.
+    type AppStack = StackLike & { region?: string };
+    let appStacks: AppStack[] = [];
 
     if (appCmd) {
       try {
@@ -107,24 +111,38 @@ async function destroyCommand(
         appStacks = result.stacks.map((s) => ({
           stackName: s.stackName,
           displayName: s.displayName,
+          ...(s.region && { region: s.region }),
         }));
       } catch {
         logger.debug('Could not synthesize app, falling back to state-based stack list');
       }
     }
 
-    // Determine candidate stacks. State only carries physical names, so when synth
-    // is unavailable we fall back to a stackName-only candidate list (display-path
-    // patterns like "MyStage/MyStack" simply will not match anything in that mode).
-    const allStateStacks = await stateBackend.listStacks();
+    // Determine candidate stacks. State only carries physical names + regions
+    // (no display path), so when synth is unavailable we fall back to a
+    // stackName-only candidate list (display-path patterns like
+    // "MyStage/MyStack" simply will not match anything in that mode).
+    const allStateRefs = await stateBackend.listStacks();
+    // Map stackName -> first region (collision warning emitted later if a
+    // stack has multiple region keys). Synth-driven destroy is single-region:
+    // if synth.region matches one of the records we use it; otherwise we
+    // surface a clear error.
     let candidateStacks: StackLike[];
     if (appStacks.length > 0) {
       // App synth succeeded: only consider stacks from this app
-      const stateSet = new Set(allStateStacks);
-      candidateStacks = appStacks.filter((s) => stateSet.has(s.stackName));
+      const stateNames = new Set(allStateRefs.map((r) => r.stackName));
+      candidateStacks = appStacks.filter((s) => stateNames.has(s.stackName));
     } else if (stackArgs.length > 0 || options.stack || options.all) {
       // No synth but explicit stack names or --all given: use state stacks
-      candidateStacks = allStateStacks.map((name) => ({ stackName: name }));
+      // (deduplicate by name so a stack with two region records appears once
+      // — the per-stack loop handles the multi-region case explicitly)
+      const seen = new Set<string>();
+      candidateStacks = [];
+      for (const ref of allStateRefs) {
+        if (seen.has(ref.stackName)) continue;
+        seen.add(ref.stackName);
+        candidateStacks.push({ stackName: ref.stackName });
+      }
     } else {
       // No synth and no explicit stacks: refuse to guess
       throw new Error(
@@ -162,12 +180,51 @@ async function destroyCommand(
 
     logger.info(`Found ${stackNames.length} stack(s) to destroy: ${stackNames.join(', ')}`);
 
+    // Index state refs by stack name so we can resolve which region(s) each
+    // stack has. Built once so the per-stack loop is cheap.
+    const stateRefsByName = new Map<string, typeof allStateRefs>();
+    for (const ref of allStateRefs) {
+      const arr = stateRefsByName.get(ref.stackName) ?? [];
+      arr.push(ref);
+      stateRefsByName.set(ref.stackName, arr);
+    }
+
     // 3. Process each stack
     for (const stackName of stackNames) {
       logger.info(`\nPreparing to destroy stack: ${stackName}`);
 
-      // Load current state
-      const stateResult = await stateBackend.getState(stackName);
+      // Pick the region for this stack. If synth ran, prefer the synth region
+      // (so a user changing env.region targets only that region). Otherwise,
+      // use the unique state region; refuse with a helpful error when the
+      // stack has multiple regions and the user did not pin one.
+      const refs = stateRefsByName.get(stackName) ?? [];
+      const synthStack = appStacks.find((s) => s.stackName === stackName);
+      const synthRegion = synthStack?.region;
+      let stackTargetRegion: string;
+      if (refs.length === 0) {
+        logger.warn(`No state found for stack ${stackName}, skipping`);
+        continue;
+      } else if (refs.length === 1) {
+        const onlyRegion = refs[0]?.region;
+        if (!onlyRegion) {
+          // Legacy state with no recorded region: fall back to the CLI region.
+          stackTargetRegion = region;
+        } else {
+          stackTargetRegion = onlyRegion;
+        }
+      } else if (synthRegion && refs.some((r) => r.region === synthRegion)) {
+        stackTargetRegion = synthRegion;
+      } else {
+        const regions = refs.map((r) => r.region ?? '(legacy)').join(', ');
+        throw new Error(
+          `Stack '${stackName}' has state in multiple regions: ${regions}. ` +
+            `Use 'cdkd state rm ${stackName} --region <region>' to remove cdkd's record for one ` +
+            `region, or run destroy from a CDK app whose env.region matches one of them.`
+        );
+      }
+
+      // Load current state for the chosen region
+      const stateResult = await stateBackend.getState(stackName, stackTargetRegion);
       if (!stateResult) {
         logger.warn(`No state found for stack ${stackName}, skipping`);
         continue;
@@ -177,7 +234,7 @@ async function destroyCommand(
       const resourceCount = Object.keys(currentState.resources).length;
       if (resourceCount === 0) {
         logger.info(`Stack ${stackName} has no resources, cleaning up state...`);
-        await stateBackend.deleteState(stackName);
+        await stateBackend.deleteState(stackName, stackTargetRegion);
         logger.info('✓ State deleted');
         continue;
       }
@@ -208,7 +265,7 @@ async function destroyCommand(
       }
 
       // 5. Switch region if stack was deployed to a different region
-      const stackRegion = currentState.region;
+      const stackRegion = stackTargetRegion;
       let destroyProviderRegistry = providerRegistry;
       let destroyAwsClients: AwsClients | undefined;
 
@@ -230,7 +287,7 @@ async function destroyCommand(
 
       // Acquire lock (always uses base region for state bucket)
       logger.info(`\nAcquiring lock for stack ${stackName}...`);
-      await lockManager.acquireLock(stackName, 'destroy');
+      await lockManager.acquireLock(stackName, stackRegion, undefined, 'destroy');
 
       // Live progress renderer (multi-line in-flight display at bottom of TTY).
       // Self-disables on non-TTY and when `CDKD_NO_LIVE=1` is set (the CLI
@@ -388,7 +445,7 @@ async function destroyCommand(
 
         // 8. Delete state
         if (errorCount === 0) {
-          await stateBackend.deleteState(stackName);
+          await stateBackend.deleteState(stackName, stackRegion);
           logger.debug('State deleted');
         } else {
           logger.warn(`${errorCount} resource(s) failed to delete. State preserved.`);
@@ -404,7 +461,7 @@ async function destroyCommand(
 
         // 9. Release lock
         logger.debug('Releasing lock...');
-        await lockManager.releaseLock(stackName);
+        await lockManager.releaseLock(stackName, stackRegion);
 
         // Restore region if changed
         if (destroyAwsClients) {

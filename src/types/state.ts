@@ -1,14 +1,34 @@
 /**
+ * Schema versions for cdkd state.json.
+ *
+ * - 1 — legacy layout: `s3://{bucket}/cdkd/{stackName}/state.json` (pre PR 1).
+ * - 2 — region-prefixed layout: `s3://{bucket}/cdkd/{stackName}/{region}/state.json`.
+ *
+ * cdkd readers handle both. Writers always emit `version: 2`. An older cdkd
+ * binary that only knows `version: 1` will fail with a clear error when it
+ * encounters `version: 2`, rather than silently mishandling the new format.
+ */
+export type StateSchemaVersion = 1 | 2;
+export const STATE_SCHEMA_VERSION_LEGACY: StateSchemaVersion = 1;
+export const STATE_SCHEMA_VERSION_CURRENT: StateSchemaVersion = 2;
+
+/**
  * Stack state stored in S3
  */
 export interface StackState {
-  /** Schema version */
-  version: number;
+  /**
+   * Schema version. `1` is the legacy unversioned-key layout, `2` is the
+   * region-prefixed layout. New writes always use the current version.
+   */
+  version: StateSchemaVersion;
 
   /** Stack name */
   stackName: string;
 
-  /** Target region for this stack (for cross-region support) */
+  /**
+   * Target region for this stack. Required on `version: 2` since the region
+   * is part of the S3 key. Optional on `version: 1` for backwards compat.
+   */
   region?: string;
 
   /** Resources in the stack */

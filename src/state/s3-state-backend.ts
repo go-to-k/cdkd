@@ -8,13 +8,43 @@ import {
   ListObjectsV2Command,
   NoSuchKey,
 } from '@aws-sdk/client-s3';
-import type { StackState } from '../types/state.js';
+import {
+  STATE_SCHEMA_VERSION_CURRENT,
+  STATE_SCHEMA_VERSION_LEGACY,
+  type StackState,
+} from '../types/state.js';
 import type { StateBackendConfig } from '../types/config.js';
 import { getLogger } from '../utils/logger.js';
 import { StateError } from '../utils/error-handler.js';
 
 /**
+ * Identifier of a state record. The legacy layout (`version: 1`) didn't have
+ * region in the S3 key, so reads from the legacy key carry `region:
+ * undefined`.
+ */
+export interface StackStateRef {
+  stackName: string;
+  /** Region of the state. `undefined` ONLY for legacy `version: 1` records. */
+  region?: string;
+}
+
+/**
+ * The `version: 1` legacy state key under the `cdkd/` prefix. Two layers
+ * deep — split off into a constant so call sites can clearly distinguish
+ * "two-segment legacy key" from "three-segment new key".
+ */
+const LEGACY_KEY_DEPTH = 2;
+/** The `version: 2` region-prefixed key. */
+const NEW_KEY_DEPTH = 3;
+
+/**
  * S3-based state backend using conditional writes for optimistic locking
+ *
+ * State keys are region-scoped (`{prefix}/{stackName}/{region}/state.json`)
+ * to prevent two regions of the same stackName from overwriting each other's
+ * state. Legacy `{prefix}/{stackName}/state.json` keys (schema `version: 1`)
+ * are still readable; the next `saveState` for that stack auto-migrates by
+ * writing the new key and deleting the legacy one.
  */
 export class S3StateBackend {
   private logger = getLogger().child('S3StateBackend');
@@ -25,9 +55,17 @@ export class S3StateBackend {
   ) {}
 
   /**
-   * Get the S3 key for a stack's state file
+   * Get the new (region-scoped) S3 key for a stack's state file.
    */
-  private getStateKey(stackName: string): string {
+  private getStateKey(stackName: string, region: string): string {
+    return `${this.config.prefix}/${stackName}/${region}/state.json`;
+  }
+
+  /**
+   * Get the legacy (pre-region-prefix) S3 key for a stack's state file.
+   * Used for backwards-compatible reads and for the migration delete.
+   */
+  private getLegacyStateKey(stackName: string): string {
     return `${this.config.prefix}/${stackName}/state.json`;
   }
 
@@ -57,118 +95,173 @@ export class S3StateBackend {
   }
 
   /**
-   * Check if state exists for a stack
+   * Check if state exists for a stack in the given region.
+   *
+   * Returns true for either layout: the new region-scoped key, or the legacy
+   * key when its embedded `region` matches the requested region. This lets
+   * `cdkd state rm <stack> --region X` and `cdkd destroy <stack>` see legacy
+   * state without forcing a write-through migration first.
    */
-  async stateExists(stackName: string): Promise<boolean> {
-    const key = this.getStateKey(stackName);
+  async stateExists(stackName: string, region: string): Promise<boolean> {
+    const newKey = this.getStateKey(stackName, region);
 
-    try {
-      await this.s3Client.send(
-        new HeadObjectCommand({
-          Bucket: this.config.bucket,
-          Key: key,
-        })
-      );
+    if (await this.headObject(newKey)) {
       return true;
-    } catch (error) {
-      if (error instanceof NoSuchKey || (error as { name: string }).name === 'NotFound') {
-        return false;
-      }
-      throw new StateError(
-        `Failed to check if state exists for stack '${stackName}': ${error instanceof Error ? error.message : String(error)}`,
-        error instanceof Error ? error : undefined
-      );
     }
+
+    return this.legacyMatchesRegion(stackName, region);
   }
 
   /**
-   * Get state for a stack
+   * Get state for a stack, transparently falling back to the legacy key.
    *
-   * Note: S3 returns ETag with surrounding quotes (e.g., "abc123").
-   * We preserve the quotes as they are required for IfMatch conditions.
+   * Lookup order:
+   * 1. `{prefix}/{stackName}/{region}/state.json` (current `version: 2` key).
+   * 2. `{prefix}/{stackName}/state.json` (legacy `version: 1` key) — only
+   *    accepted if its embedded `region` matches the requested region.
+   *
+   * When a legacy hit is returned, `migrationPending` is `true`. Callers that
+   * subsequently `saveState` automatically migrate by writing the new key and
+   * deleting the legacy one (see `saveState`'s `legacyMigration` argument).
+   *
+   * Note: S3 returns ETag with surrounding quotes (e.g., `"abc123"`). We
+   * preserve the quotes — they are required for `IfMatch` conditions.
    */
-  async getState(stackName: string): Promise<{ state: StackState; etag: string } | null> {
-    const key = this.getStateKey(stackName);
+  async getState(
+    stackName: string,
+    region: string
+  ): Promise<{ state: StackState; etag: string; migrationPending?: boolean } | null> {
+    const newKey = this.getStateKey(stackName, region);
 
+    // 1. Try new region-scoped key first.
     try {
-      this.logger.debug(`Getting state for stack: ${stackName}`);
+      this.logger.debug(`Getting state for stack: ${stackName} (${region})`);
 
       const response = await this.s3Client.send(
         new GetObjectCommand({
           Bucket: this.config.bucket,
-          Key: key,
+          Key: newKey,
         })
       );
 
       if (!response.Body) {
-        throw new StateError(`State file for stack '${stackName}' has no body`);
+        throw new StateError(`State file for stack '${stackName}' (${region}) has no body`);
       }
-
       if (!response.ETag) {
-        throw new StateError(`State file for stack '${stackName}' has no ETag`);
+        throw new StateError(`State file for stack '${stackName}' (${region}) has no ETag`);
       }
 
       const bodyString = await response.Body.transformToString();
-      const state = JSON.parse(bodyString) as StackState;
-
-      this.logger.debug(`Retrieved state for stack: ${stackName}, ETag: ${response.ETag}`);
-
-      // ETag is returned with quotes (e.g., "abc123") which is required for IfMatch
-      return {
-        state,
-        etag: response.ETag,
-      };
+      const state = this.parseStateBody(bodyString, stackName);
+      this.logger.debug(`Retrieved state: ${stackName} (${region}), ETag: ${response.ETag}`);
+      return { state, etag: response.ETag };
     } catch (error) {
-      if (error instanceof NoSuchKey || (error as { name: string }).name === 'NoSuchKey') {
-        this.logger.debug(`No existing state for stack: ${stackName}`);
-        return null;
+      if (!isNoSuchKey(error)) {
+        if (error instanceof StateError) throw error;
+        throw new StateError(
+          `Failed to get state for stack '${stackName}' (${region}): ${error instanceof Error ? error.message : String(error)}`,
+          error instanceof Error ? error : undefined
+        );
       }
-
-      if (error instanceof StateError) {
-        throw error;
-      }
-
-      throw new StateError(
-        `Failed to get state for stack '${stackName}': ${error instanceof Error ? error.message : String(error)}`,
-        error instanceof Error ? error : undefined
-      );
+      this.logger.debug(`No state at new key for stack: ${stackName} (${region})`);
     }
+
+    // 2. Fall back to legacy key when it exists AND its region matches.
+    const legacy = await this.tryGetLegacy(stackName, region);
+    if (legacy) {
+      this.logger.warn(
+        `Loaded legacy state for stack '${stackName}' from '${this.getLegacyStateKey(stackName)}'. ` +
+          `It will be migrated to the region-scoped layout on next save.`
+      );
+      return { ...legacy, migrationPending: true };
+    }
+
+    return null;
   }
 
   /**
-   * Save state for a stack with optimistic locking
+   * Save state for a stack with optimistic locking.
+   *
+   * Always writes to the new region-scoped key. The state body is rewritten
+   * with `version: 2` and the supplied region.
+   *
+   * If the caller observed `migrationPending: true` from `getState`, it
+   * should pass the legacy ETag back via `expectedEtag` AND set
+   * `migrateLegacy: true`. After the new key is written successfully, the
+   * legacy key is deleted to complete migration. The legacy delete is a
+   * best-effort follow-up — a failure is logged but does not unwind the new
+   * write.
    *
    * @param stackName Stack name
+   * @param region Target region (load-bearing — part of the S3 key)
    * @param state State to save
-   * @param expectedEtag Expected ETag for optimistic locking (optional for new state).
-   *                     Must include quotes if provided (e.g., "abc123")
-   * @returns New ETag (with quotes, e.g., "abc123")
+   * @param options Optimistic-lock ETag + legacy-migration flag
+   * @returns New ETag (with quotes, e.g., `"abc123"`)
    */
-  async saveState(stackName: string, state: StackState, expectedEtag?: string): Promise<string> {
-    const key = this.getStateKey(stackName);
+  async saveState(
+    stackName: string,
+    region: string,
+    state: StackState,
+    options: { expectedEtag?: string; migrateLegacy?: boolean } = {}
+  ): Promise<string> {
+    const newKey = this.getStateKey(stackName, region);
+    const { expectedEtag, migrateLegacy } = options;
+
+    // Normalize the body: schema version + region are load-bearing on disk.
+    const body: StackState = {
+      ...state,
+      version: STATE_SCHEMA_VERSION_CURRENT,
+      stackName,
+      region,
+    };
 
     try {
       this.logger.debug(
-        `Saving state for stack: ${stackName}${expectedEtag ? `, expected ETag: ${expectedEtag}` : ''}`
+        `Saving state: ${stackName} (${region})${expectedEtag ? `, expected ETag: ${expectedEtag}` : ''}`
       );
 
-      const body = JSON.stringify(state, null, 2);
+      const bodyString = JSON.stringify(body, null, 2);
       const response = await this.s3Client.send(
         new PutObjectCommand({
           Bucket: this.config.bucket,
-          Key: key,
-          Body: body,
-          ContentLength: Buffer.byteLength(body),
+          Key: newKey,
+          Body: bodyString,
+          ContentLength: Buffer.byteLength(bodyString),
           ContentType: 'application/json',
-          ...(expectedEtag && { IfMatch: expectedEtag }),
+          // The legacy ETag is for a different key; only forward it when we're
+          // updating in-place at the new key.
+          ...(!migrateLegacy && expectedEtag && { IfMatch: expectedEtag }),
         })
       );
 
       if (!response.ETag) {
-        throw new StateError(`No ETag returned after saving state for stack '${stackName}'`);
+        throw new StateError(
+          `No ETag returned after saving state for stack '${stackName}' (${region})`
+        );
       }
+      this.logger.debug(`State saved: ${stackName} (${region}), new ETag: ${response.ETag}`);
 
-      this.logger.debug(`State saved for stack: ${stackName}, new ETag: ${response.ETag}`);
+      // Migration tail: best-effort delete of the legacy key. We don't fail
+      // the save if this errors — the new key is the source of truth and a
+      // residual legacy key is recoverable (next call will migrate again).
+      if (migrateLegacy) {
+        try {
+          await this.s3Client.send(
+            new DeleteObjectCommand({
+              Bucket: this.config.bucket,
+              Key: this.getLegacyStateKey(stackName),
+            })
+          );
+          this.logger.info(
+            `Migrated state for stack '${stackName}' to region-scoped layout (${region})`
+          );
+        } catch (deleteError) {
+          this.logger.warn(
+            `Migrated stack '${stackName}' to new key, but failed to delete legacy key: ` +
+              `${deleteError instanceof Error ? deleteError.message : String(deleteError)}`
+          );
+        }
+      }
 
       return response.ETag;
     } catch (error) {
@@ -179,68 +272,120 @@ export class S3StateBackend {
       }
 
       throw new StateError(
-        `Failed to save state for stack '${stackName}': ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to save state for stack '${stackName}' (${region}): ${error instanceof Error ? error.message : String(error)}`,
         error instanceof Error ? error : undefined
       );
     }
   }
 
   /**
-   * Delete state for a stack
+   * Delete state for a stack in the given region.
+   *
+   * Removes both the new key and the legacy key (if present). Legacy removal
+   * is region-conditional: a legacy state file with a different `region`
+   * field is left alone.
    */
-  async deleteState(stackName: string): Promise<void> {
-    const key = this.getStateKey(stackName);
-
+  async deleteState(stackName: string, region: string): Promise<void> {
     try {
-      this.logger.debug(`Deleting state for stack: ${stackName}`);
+      this.logger.debug(`Deleting state: ${stackName} (${region})`);
 
       await this.s3Client.send(
         new DeleteObjectCommand({
           Bucket: this.config.bucket,
-          Key: key,
+          Key: this.getStateKey(stackName, region),
         })
       );
 
-      this.logger.debug(`State deleted for stack: ${stackName}`);
+      // Sweep the legacy key only if it belongs to the same region.
+      if (await this.legacyMatchesRegion(stackName, region)) {
+        await this.s3Client.send(
+          new DeleteObjectCommand({
+            Bucket: this.config.bucket,
+            Key: this.getLegacyStateKey(stackName),
+          })
+        );
+        this.logger.debug(`Deleted legacy state for stack: ${stackName}`);
+      }
+
+      this.logger.debug(`State deleted: ${stackName} (${region})`);
     } catch (error) {
       throw new StateError(
-        `Failed to delete state for stack '${stackName}': ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to delete state for stack '${stackName}' (${region}): ${error instanceof Error ? error.message : String(error)}`,
         error instanceof Error ? error : undefined
       );
     }
   }
 
   /**
-   * List all stacks with state
+   * List all stacks with state in the bucket.
+   *
+   * Returns one `{stackName, region}` pair per state file. Both layouts
+   * are enumerated:
+   *
+   * - `{prefix}/{stackName}/{region}/state.json` (new) — `region` is the
+   *   path segment.
+   * - `{prefix}/{stackName}/state.json` (legacy) — `region` is read from the
+   *   state body when present, otherwise `undefined`.
+   *
+   * Pairs are deduplicated by `(stackName, region)` so a stack mid-migration
+   * shows up exactly once.
    */
-  async listStacks(): Promise<string[]> {
+  async listStacks(): Promise<StackStateRef[]> {
     try {
       this.logger.debug('Listing all stacks');
 
-      const response = await this.s3Client.send(
-        new ListObjectsV2Command({
-          Bucket: this.config.bucket,
-          Prefix: `${this.config.prefix}/`,
-          Delimiter: '/',
-        })
-      );
+      const prefix = `${this.config.prefix}/`;
+      const refs: StackStateRef[] = [];
+      const seen = new Set<string>();
+      let continuationToken: string | undefined;
 
-      if (!response.CommonPrefixes) {
-        return [];
-      }
+      do {
+        const response = await this.s3Client.send(
+          new ListObjectsV2Command({
+            Bucket: this.config.bucket,
+            Prefix: prefix,
+            ...(continuationToken && { ContinuationToken: continuationToken }),
+          })
+        );
 
-      // Extract stack names from prefixes
-      // Prefix format: "{prefix}/{stackName}/"
-      const stackNames = response.CommonPrefixes.map((prefix) => {
-        const prefixStr = prefix.Prefix || '';
-        const parts = prefixStr.split('/');
-        // Get the second-to-last part (stack name)
-        return parts[parts.length - 2];
-      }).filter((name): name is string => Boolean(name));
+        for (const obj of response.Contents ?? []) {
+          const key = obj.Key;
+          if (!key) continue;
+          if (!key.endsWith('/state.json')) continue;
 
-      this.logger.debug(`Found ${stackNames.length} stacks`);
+          const rest = key.slice(prefix.length);
+          const segments = rest.split('/');
 
-      return stackNames;
+          // New key: {stackName}/{region}/state.json
+          if (segments.length === NEW_KEY_DEPTH) {
+            const [stackName, region] = segments;
+            if (!stackName || !region) continue;
+            const dedupeKey = `${stackName}\0${region}`;
+            if (!seen.has(dedupeKey)) {
+              seen.add(dedupeKey);
+              refs.push({ stackName, region });
+            }
+            continue;
+          }
+
+          // Legacy key: {stackName}/state.json
+          if (segments.length === LEGACY_KEY_DEPTH) {
+            const [stackName] = segments;
+            if (!stackName) continue;
+            const region = await this.readLegacyRegion(stackName);
+            const dedupeKey = `${stackName}\0${region ?? ''}`;
+            if (!seen.has(dedupeKey)) {
+              seen.add(dedupeKey);
+              refs.push({ stackName, ...(region ? { region } : {}) });
+            }
+          }
+        }
+
+        continuationToken = response.IsTruncated ? response.NextContinuationToken : undefined;
+      } while (continuationToken);
+
+      this.logger.debug(`Found ${refs.length} stack(s) across regions`);
+      return refs;
     } catch (error) {
       throw new StateError(
         `Failed to list stacks: ${error instanceof Error ? error.message : String(error)}`,
@@ -248,4 +393,146 @@ export class S3StateBackend {
       );
     }
   }
+
+  /**
+   * HeadObject probe — returns true on 200, false on NotFound. Other errors
+   * propagate so we don't accidentally swallow IAM denials.
+   */
+  private async headObject(key: string): Promise<boolean> {
+    try {
+      await this.s3Client.send(
+        new HeadObjectCommand({
+          Bucket: this.config.bucket,
+          Key: key,
+        })
+      );
+      return true;
+    } catch (error) {
+      if (isNoSuchKey(error) || (error as { name?: string }).name === 'NotFound') {
+        return false;
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * Read the legacy state's `region` field. Used for region matching during
+   * `stateExists` / `deleteState` and for assigning a region to legacy
+   * entries during `listStacks`.
+   */
+  private async readLegacyRegion(stackName: string): Promise<string | undefined> {
+    try {
+      const response = await this.s3Client.send(
+        new GetObjectCommand({
+          Bucket: this.config.bucket,
+          Key: this.getLegacyStateKey(stackName),
+        })
+      );
+      if (!response.Body) return undefined;
+      const bodyString = await response.Body.transformToString();
+      const state = JSON.parse(bodyString) as Partial<StackState>;
+      return typeof state.region === 'string' ? state.region : undefined;
+    } catch (error) {
+      if (isNoSuchKey(error)) return undefined;
+      // Don't fail the whole list on a single bad legacy file — log & skip.
+      this.logger.debug(
+        `Could not read legacy state region for '${stackName}': ${error instanceof Error ? error.message : String(error)}`
+      );
+      return undefined;
+    }
+  }
+
+  private async legacyMatchesRegion(stackName: string, region: string): Promise<boolean> {
+    const legacyRegion = await this.readLegacyRegion(stackName);
+    return legacyRegion === region;
+  }
+
+  /**
+   * Try to read the legacy `version: 1` state. Returns null when the legacy
+   * key is missing or its embedded region does not match the caller's region.
+   */
+  private async tryGetLegacy(
+    stackName: string,
+    region: string
+  ): Promise<{ state: StackState; etag: string } | null> {
+    try {
+      const response = await this.s3Client.send(
+        new GetObjectCommand({
+          Bucket: this.config.bucket,
+          Key: this.getLegacyStateKey(stackName),
+        })
+      );
+
+      if (!response.Body || !response.ETag) {
+        return null;
+      }
+
+      const bodyString = await response.Body.transformToString();
+      const state = this.parseStateBody(bodyString, stackName);
+
+      // Region gate: the same `stackName` may have lived in a different region
+      // before the user changed `env.region`. We do NOT want to silently load
+      // that record for a different target region — that's the silent-failure
+      // bug PR 1 fixes.
+      if (state.region && state.region !== region) {
+        this.logger.debug(
+          `Legacy state for stack '${stackName}' has region '${state.region}', ` +
+            `not '${region}' — skipping legacy fallback.`
+        );
+        return null;
+      }
+
+      return { state, etag: response.ETag };
+    } catch (error) {
+      if (isNoSuchKey(error)) return null;
+      throw new StateError(
+        `Failed to get legacy state for stack '${stackName}': ${error instanceof Error ? error.message : String(error)}`,
+        error instanceof Error ? error : undefined
+      );
+    }
+  }
+
+  /**
+   * Parse a state body and validate the schema version. Future-proofs against
+   * a binary that predates schema version `N` reading a `version: N+1` blob:
+   * the old binary would otherwise treat unknown fields as defaults and
+   * silently lose data on the next save.
+   */
+  private parseStateBody(bodyString: string, stackName: string): StackState {
+    let parsed: StackState;
+    try {
+      parsed = JSON.parse(bodyString) as StackState;
+    } catch (error) {
+      throw new StateError(
+        `State file for stack '${stackName}' is not valid JSON: ${error instanceof Error ? error.message : String(error)}`,
+        error instanceof Error ? error : undefined
+      );
+    }
+
+    const v = parsed.version;
+    if (
+      v !== STATE_SCHEMA_VERSION_LEGACY &&
+      v !== STATE_SCHEMA_VERSION_CURRENT &&
+      v !== undefined
+    ) {
+      throw new StateError(
+        `Unsupported state schema version ${String(v)} for stack '${stackName}'. ` +
+          `This cdkd binary supports versions ${String(STATE_SCHEMA_VERSION_LEGACY)} and ${String(STATE_SCHEMA_VERSION_CURRENT)}. ` +
+          `Upgrade cdkd to a version that supports schema ${String(v)}.`
+      );
+    }
+
+    return parsed;
+  }
+}
+
+/**
+ * Treat S3 NoSuchKey-equivalents uniformly. The SDK throws `NoSuchKey` from
+ * `GetObject` and `{name: 'NoSuchKey'}` from low-level callsites; HeadObject
+ * raises `{name: 'NotFound'}` instead.
+ */
+function isNoSuchKey(error: unknown): boolean {
+  if (error instanceof NoSuchKey) return true;
+  const name = (error as { name?: string } | null)?.name;
+  return name === 'NoSuchKey';
 }

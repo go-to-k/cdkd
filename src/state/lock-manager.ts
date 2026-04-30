@@ -43,10 +43,24 @@ export class LockManager {
   }
 
   /**
-   * Get the S3 key for a stack's lock file
+   * Get the S3 key for a stack's lock file.
+   *
+   * Locks are region-scoped, mirroring the state key layout
+   * (`{prefix}/{stackName}/{region}/lock.json`). Two regions of the same
+   * stackName can therefore be operated on in parallel without contention,
+   * matching cdkd's parallel execution model.
+   *
+   * The `region` argument is required for new callers; for backwards
+   * compatibility with `state list --long` (which only sees stack names),
+   * passing `undefined` falls back to the legacy `{prefix}/{stackName}/lock.json`
+   * key — that mode is purely for legacy lock cleanup and is NOT used by
+   * deploy / destroy / diff anymore.
    */
-  private getLockKey(stackName: string): string {
-    return `${this.config.prefix}/${stackName}/lock.json`;
+  private getLockKey(stackName: string, region: string | undefined): string {
+    if (region === undefined) {
+      return `${this.config.prefix}/${stackName}/lock.json`;
+    }
+    return `${this.config.prefix}/${stackName}/${region}/lock.json`;
   }
 
   /**
@@ -88,11 +102,17 @@ export class LockManager {
    * If an expired lock exists, it will be cleaned up and re-acquired.
    *
    * @param stackName Stack name
+   * @param region Target region (lock key is region-scoped)
    * @param owner Lock owner identifier (defaults to user@hostname:pid)
    * @param operation Operation being performed (e.g., "deploy", "destroy")
    */
-  async acquireLock(stackName: string, owner?: string, operation?: string): Promise<boolean> {
-    const key = this.getLockKey(stackName);
+  async acquireLock(
+    stackName: string,
+    region: string,
+    owner?: string,
+    operation?: string
+  ): Promise<boolean> {
+    const key = this.getLockKey(stackName, region);
     const lockOwner = owner || this.getDefaultOwner();
     const now = Date.now();
 
@@ -104,7 +124,7 @@ export class LockManager {
     };
 
     try {
-      this.logger.debug(`Attempting to acquire lock for stack: ${stackName}`);
+      this.logger.debug(`Attempting to acquire lock for stack: ${stackName} (${region})`);
 
       const lockBody = JSON.stringify(lockInfo, null, 2);
       await this.s3Client.send(
@@ -118,23 +138,23 @@ export class LockManager {
         })
       );
 
-      this.logger.debug(`Lock acquired for stack: ${stackName}, owner: ${lockOwner}`);
+      this.logger.debug(`Lock acquired for stack: ${stackName} (${region}), owner: ${lockOwner}`);
       return true;
     } catch (error) {
       // Check for PreconditionFailed error (S3 condition not met - lock already exists)
       if (error instanceof S3ServiceException && error.name === 'PreconditionFailed') {
-        this.logger.debug(`Lock already exists for stack: ${stackName}`);
+        this.logger.debug(`Lock already exists for stack: ${stackName} (${region})`);
 
         // Check if the existing lock is expired
-        const existingLock = await this.getLockInfo(stackName);
+        const existingLock = await this.getLockInfo(stackName, region);
         if (existingLock && this.isLockExpired(existingLock)) {
           this.logger.info(
-            `Expired lock detected for stack: ${stackName} (owner: ${existingLock.owner}, ` +
+            `Expired lock detected for stack: ${stackName} (${region}, owner: ${existingLock.owner}, ` +
               `expired ${this.formatDuration(now - existingLock.expiresAt)} ago). Cleaning up...`
           );
 
           // Delete the expired lock and retry acquisition
-          await this.deleteLock(stackName);
+          await this.deleteLock(stackName, region);
 
           // Retry once after cleaning up expired lock
           try {
@@ -151,7 +171,7 @@ export class LockManager {
             );
 
             this.logger.debug(
-              `Lock acquired for stack: ${stackName} after expired lock cleanup, owner: ${lockOwner}`
+              `Lock acquired for stack: ${stackName} (${region}) after expired lock cleanup, owner: ${lockOwner}`
             );
             return true;
           } catch (retryError) {
@@ -161,7 +181,7 @@ export class LockManager {
             ) {
               // Another process acquired the lock between our delete and retry
               this.logger.debug(
-                `Lock was acquired by another process during expired lock cleanup for stack: ${stackName}`
+                `Lock was acquired by another process during expired lock cleanup for stack: ${stackName} (${region})`
               );
               return false;
             }
@@ -173,17 +193,21 @@ export class LockManager {
       }
 
       throw new LockError(
-        `Failed to acquire lock for stack '${stackName}': ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to acquire lock for stack '${stackName}' (${region}): ${error instanceof Error ? error.message : String(error)}`,
         error instanceof Error ? error : undefined
       );
     }
   }
 
   /**
-   * Get current lock information
+   * Get current lock information.
+   *
+   * `region` is required for the new region-scoped lock layout. Pass
+   * `undefined` only to inspect a legacy `{prefix}/{stackName}/lock.json`
+   * file (e.g. for state-listing tools that don't yet know the region).
    */
-  async getLockInfo(stackName: string): Promise<LockInfo | null> {
-    const key = this.getLockKey(stackName);
+  async getLockInfo(stackName: string, region: string | undefined): Promise<LockInfo | null> {
+    const key = this.getLockKey(stackName, region);
 
     try {
       this.logger.debug(`Getting lock info for stack: ${stackName}`);
@@ -230,19 +254,19 @@ export class LockManager {
    * not for acquisition decisions — use `acquireLock` for that, which has its
    * own expired-lock cleanup logic.
    */
-  async isLocked(stackName: string): Promise<boolean> {
-    const lockInfo = await this.getLockInfo(stackName);
+  async isLocked(stackName: string, region: string | undefined): Promise<boolean> {
+    const lockInfo = await this.getLockInfo(stackName, region);
     return lockInfo !== null;
   }
 
   /**
    * Release a lock for a stack
    */
-  async releaseLock(stackName: string): Promise<void> {
-    const key = this.getLockKey(stackName);
+  async releaseLock(stackName: string, region: string): Promise<void> {
+    const key = this.getLockKey(stackName, region);
 
     try {
-      this.logger.debug(`Releasing lock for stack: ${stackName}`);
+      this.logger.debug(`Releasing lock for stack: ${stackName} (${region})`);
 
       await this.s3Client.send(
         new DeleteObjectCommand({
@@ -251,10 +275,10 @@ export class LockManager {
         })
       );
 
-      this.logger.debug(`Lock released for stack: ${stackName}`);
+      this.logger.debug(`Lock released for stack: ${stackName} (${region})`);
     } catch (error) {
       throw new LockError(
-        `Failed to release lock for stack '${stackName}': ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to release lock for stack '${stackName}' (${region}): ${error instanceof Error ? error.message : String(error)}`,
         error instanceof Error ? error : undefined
       );
     }
@@ -265,29 +289,35 @@ export class LockManager {
    *
    * This is intended for CLI usage (e.g., --force-unlock flag) when a lock
    * is stuck and needs manual intervention.
+   *
+   * Pass `region: undefined` to operate on a legacy
+   * `{prefix}/{stackName}/lock.json` file.
    */
-  async forceReleaseLock(stackName: string): Promise<void> {
-    const lockInfo = await this.getLockInfo(stackName);
+  async forceReleaseLock(stackName: string, region: string | undefined): Promise<void> {
+    const lockInfo = await this.getLockInfo(stackName, region);
 
     if (!lockInfo) {
-      this.logger.warn(`No lock to force release for stack: ${stackName}`);
+      this.logger.warn(
+        `No lock to force release for stack: ${stackName}${region ? ` (${region})` : ''}`
+      );
       return;
     }
 
     this.logger.warn(
-      `Force releasing lock for stack: ${stackName}, owner: ${lockInfo.owner}` +
+      `Force releasing lock for stack: ${stackName}${region ? ` (${region})` : ''}, ` +
+        `owner: ${lockInfo.owner}` +
         `${lockInfo.operation ? `, operation: ${lockInfo.operation}` : ''}` +
         `, expired: ${this.isLockExpired(lockInfo)}`
     );
 
-    await this.deleteLock(stackName);
+    await this.deleteLock(stackName, region);
   }
 
   /**
    * Internal method to delete the lock file from S3
    */
-  private async deleteLock(stackName: string): Promise<void> {
-    const key = this.getLockKey(stackName);
+  private async deleteLock(stackName: string, region: string | undefined): Promise<void> {
+    const key = this.getLockKey(stackName, region);
 
     await this.s3Client.send(
       new DeleteObjectCommand({
@@ -312,27 +342,28 @@ export class LockManager {
    */
   async acquireLockWithRetry(
     stackName: string,
+    region: string,
     owner?: string,
     operation?: string,
     maxRetries = 3,
     retryDelay = 2000
   ): Promise<void> {
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
-      const acquired = await this.acquireLock(stackName, owner, operation);
+      const acquired = await this.acquireLock(stackName, region, owner, operation);
 
       if (acquired) {
         return;
       }
 
       // Lock exists and is not expired - show info and possibly retry
-      const lockInfo = await this.getLockInfo(stackName);
+      const lockInfo = await this.getLockInfo(stackName, region);
 
       if (lockInfo) {
         const remainingMs = lockInfo.expiresAt - Date.now();
 
         if (attempt < maxRetries) {
           this.logger.info(
-            `Stack '${stackName}' is locked by ${lockInfo.owner}` +
+            `Stack '${stackName}' (${region}) is locked by ${lockInfo.owner}` +
               `${lockInfo.operation ? ` (operation: ${lockInfo.operation})` : ''}` +
               `. Lock expires in ${this.formatDuration(remainingMs)}.` +
               ` Retrying in ${this.formatDuration(retryDelay)}... (attempt ${attempt + 1}/${maxRetries})`
@@ -344,11 +375,11 @@ export class LockManager {
     }
 
     // Failed to acquire lock after all retries
-    const lockInfo = await this.getLockInfo(stackName);
+    const lockInfo = await this.getLockInfo(stackName, region);
     const expiresIn = lockInfo ? this.formatDuration(lockInfo.expiresAt - Date.now()) : 'unknown';
 
     throw new LockError(
-      `Failed to acquire lock for stack '${stackName}' after ${maxRetries + 1} attempts. ` +
+      `Failed to acquire lock for stack '${stackName}' (${region}) after ${maxRetries + 1} attempts. ` +
         (lockInfo
           ? `Locked by: ${lockInfo.owner}` +
             `${lockInfo.operation ? `, operation: ${lockInfo.operation}` : ''}` +

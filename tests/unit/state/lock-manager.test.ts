@@ -54,7 +54,7 @@ describe('LockManager', () => {
       s3Client.send.mockResolvedValueOnce({});
 
       const now = Date.now();
-      await manager.acquireLock('test-stack');
+      await manager.acquireLock('test-stack', 'us-east-1');
 
       const putCall = s3Client.send.mock.calls[0][0];
       const lockBody = JSON.parse(putCall.input.Body) as LockInfo;
@@ -73,7 +73,7 @@ describe('LockManager', () => {
       s3Client.send.mockResolvedValueOnce({});
 
       const now = Date.now();
-      await manager.acquireLock('test-stack');
+      await manager.acquireLock('test-stack', 'us-east-1');
 
       const putCall = s3Client.send.mock.calls[0][0];
       const lockBody = JSON.parse(putCall.input.Body) as LockInfo;
@@ -85,16 +85,22 @@ describe('LockManager', () => {
   });
 
   describe('acquireLock', () => {
-    it('should acquire lock successfully with expiresAt', async () => {
+    it('should acquire lock successfully with expiresAt at the region-scoped key', async () => {
       s3Client.send.mockResolvedValueOnce({});
 
-      const result = await lockManager.acquireLock('test-stack', 'test-owner', 'deploy');
+      const result = await lockManager.acquireLock(
+        'test-stack',
+        'us-west-2',
+        'test-owner',
+        'deploy'
+      );
 
       expect(result).toBe(true);
 
       const putCall = s3Client.send.mock.calls[0][0];
       expect(putCall.input.Bucket).toBe('test-bucket');
-      expect(putCall.input.Key).toBe('stacks/test-stack/lock.json');
+      // Region is part of the lock key now (PR 1 — collection model extension).
+      expect(putCall.input.Key).toBe('stacks/test-stack/us-west-2/lock.json');
       expect(putCall.input.IfNoneMatch).toBe('*');
 
       const lockBody = JSON.parse(putCall.input.Body) as LockInfo;
@@ -121,7 +127,7 @@ describe('LockManager', () => {
         Body: { transformToString: () => Promise.resolve(JSON.stringify(existingLock)) },
       });
 
-      const result = await lockManager.acquireLock('test-stack', 'my-user');
+      const result = await lockManager.acquireLock('test-stack', 'us-east-1', 'my-user');
 
       expect(result).toBe(false);
     });
@@ -148,7 +154,7 @@ describe('LockManager', () => {
       // Fourth call: PutObject retry succeeds
       s3Client.send.mockResolvedValueOnce({});
 
-      const result = await lockManager.acquireLock('test-stack', 'new-user');
+      const result = await lockManager.acquireLock('test-stack', 'us-east-1', 'new-user');
 
       expect(result).toBe(true);
       // Verify 4 S3 calls: PutObject(fail), GetObject, DeleteObject, PutObject(success)
@@ -177,7 +183,7 @@ describe('LockManager', () => {
       const preconditionError2 = new S3ServiceException({ name: 'PreconditionFailed', $fault: 'client', $metadata: {} });
       s3Client.send.mockRejectedValueOnce(preconditionError2);
 
-      const result = await lockManager.acquireLock('test-stack', 'my-user');
+      const result = await lockManager.acquireLock('test-stack', 'us-east-1', 'my-user');
 
       expect(result).toBe(false);
     });
@@ -187,7 +193,7 @@ describe('LockManager', () => {
       s3Error.name = 'AccessDenied';
       s3Client.send.mockRejectedValueOnce(s3Error);
 
-      await expect(lockManager.acquireLock('test-stack')).rejects.toThrow(LockError);
+      await expect(lockManager.acquireLock('test-stack', 'us-east-1')).rejects.toThrow(LockError);
     });
   });
 
@@ -204,7 +210,7 @@ describe('LockManager', () => {
         Body: { transformToString: () => Promise.resolve(JSON.stringify(lockInfo)) },
       });
 
-      const result = await lockManager.getLockInfo('test-stack');
+      const result = await lockManager.getLockInfo('test-stack', 'us-east-1');
 
       expect(result).toEqual(lockInfo);
     });
@@ -213,7 +219,7 @@ describe('LockManager', () => {
       const noSuchKeyError = new NoSuchKey({ message: 'NoSuchKey', $metadata: {} });
       s3Client.send.mockRejectedValueOnce(noSuchKeyError);
 
-      const result = await lockManager.getLockInfo('test-stack');
+      const result = await lockManager.getLockInfo('test-stack', 'us-east-1');
 
       expect(result).toBeNull();
     });
@@ -231,7 +237,7 @@ describe('LockManager', () => {
         Body: { transformToString: () => Promise.resolve(JSON.stringify(lockInfo)) },
       });
 
-      await expect(lockManager.isLocked('test-stack')).resolves.toBe(true);
+      await expect(lockManager.isLocked('test-stack', 'us-east-1')).resolves.toBe(true);
     });
 
     it('returns true even when the existing lock is expired', async () => {
@@ -245,32 +251,45 @@ describe('LockManager', () => {
       });
 
       // isLocked is a presence check; expiry is irrelevant here.
-      await expect(lockManager.isLocked('test-stack')).resolves.toBe(true);
+      await expect(lockManager.isLocked('test-stack', 'us-east-1')).resolves.toBe(true);
     });
 
     it('returns false when no lock file exists', async () => {
       const noSuchKeyError = new NoSuchKey({ message: 'NoSuchKey', $metadata: {} });
       s3Client.send.mockRejectedValueOnce(noSuchKeyError);
 
-      await expect(lockManager.isLocked('test-stack')).resolves.toBe(false);
+      await expect(lockManager.isLocked('test-stack', 'us-east-1')).resolves.toBe(false);
+    });
+
+    it('falls back to the legacy lock key when region is undefined', async () => {
+      // Legacy callers (state-list integrations that haven't been updated to
+      // pass the per-record region) probe the legacy `{prefix}/{stackName}/lock.json`
+      // key directly.
+      const noSuchKeyError = new NoSuchKey({ message: 'NoSuchKey', $metadata: {} });
+      s3Client.send.mockRejectedValueOnce(noSuchKeyError);
+
+      await expect(lockManager.isLocked('test-stack', undefined)).resolves.toBe(false);
+
+      const get = s3Client.send.mock.calls[0][0];
+      expect(get.input.Key).toBe('stacks/test-stack/lock.json');
     });
   });
 
   describe('releaseLock', () => {
-    it('should delete the lock file', async () => {
+    it('should delete the region-scoped lock file', async () => {
       s3Client.send.mockResolvedValueOnce({});
 
-      await lockManager.releaseLock('test-stack');
+      await lockManager.releaseLock('test-stack', 'us-west-2');
 
       const deleteCall = s3Client.send.mock.calls[0][0];
       expect(deleteCall.input.Bucket).toBe('test-bucket');
-      expect(deleteCall.input.Key).toBe('stacks/test-stack/lock.json');
+      expect(deleteCall.input.Key).toBe('stacks/test-stack/us-west-2/lock.json');
     });
 
     it('should throw LockError on failure', async () => {
       s3Client.send.mockRejectedValueOnce(new Error('Network error'));
 
-      await expect(lockManager.releaseLock('test-stack')).rejects.toThrow(LockError);
+      await expect(lockManager.releaseLock('test-stack', 'us-east-1')).rejects.toThrow(LockError);
     });
   });
 
@@ -292,7 +311,7 @@ describe('LockManager', () => {
       // DeleteObject succeeds
       s3Client.send.mockResolvedValueOnce({});
 
-      await lockManager.forceReleaseLock('test-stack');
+      await lockManager.forceReleaseLock('test-stack', 'us-east-1');
 
       // Should have called GetObject + DeleteObject
       expect(s3Client.send).toHaveBeenCalledTimes(2);
@@ -311,7 +330,7 @@ describe('LockManager', () => {
       });
       s3Client.send.mockResolvedValueOnce({});
 
-      await lockManager.forceReleaseLock('test-stack');
+      await lockManager.forceReleaseLock('test-stack', 'us-east-1');
 
       expect(s3Client.send).toHaveBeenCalledTimes(2);
     });
@@ -320,7 +339,7 @@ describe('LockManager', () => {
       const noSuchKeyError = new NoSuchKey({ message: 'NoSuchKey', $metadata: {} });
       s3Client.send.mockRejectedValueOnce(noSuchKeyError);
 
-      await lockManager.forceReleaseLock('test-stack');
+      await lockManager.forceReleaseLock('test-stack', 'us-east-1');
 
       // Only GetObject was called, no DeleteObject
       expect(s3Client.send).toHaveBeenCalledTimes(1);
@@ -331,7 +350,7 @@ describe('LockManager', () => {
     it('should acquire on first attempt', async () => {
       s3Client.send.mockResolvedValueOnce({});
 
-      await lockManager.acquireLockWithRetry('test-stack', 'user', 'deploy');
+      await lockManager.acquireLockWithRetry('test-stack', 'us-east-1', 'user', 'deploy');
 
       expect(s3Client.send).toHaveBeenCalledTimes(1);
     });
@@ -361,7 +380,7 @@ describe('LockManager', () => {
       // Second attempt: PutObject succeeds
       s3Client.send.mockResolvedValueOnce({});
 
-      await lockManager.acquireLockWithRetry('test-stack', 'user', 'deploy', 3, 10);
+      await lockManager.acquireLockWithRetry('test-stack', 'us-east-1', 'user', 'deploy', 3, 10);
     });
 
     it('should clean up expired lock during retry and acquire', async () => {
@@ -385,7 +404,7 @@ describe('LockManager', () => {
       // PutObject retry succeeds (inside acquireLock)
       s3Client.send.mockResolvedValueOnce({});
 
-      await lockManager.acquireLockWithRetry('test-stack', 'user', 'deploy', 3, 10);
+      await lockManager.acquireLockWithRetry('test-stack', 'us-east-1', 'user', 'deploy', 3, 10);
     });
 
     it('should throw LockError after all retries exhausted', async () => {
@@ -415,7 +434,7 @@ describe('LockManager', () => {
       }
 
       await expect(
-        lockManager.acquireLockWithRetry('test-stack', 'user', 'deploy', 3, 10)
+        lockManager.acquireLockWithRetry('test-stack', 'us-east-1', 'user', 'deploy', 3, 10)
       ).rejects.toThrow(LockError);
     });
 
@@ -426,7 +445,7 @@ describe('LockManager', () => {
       s3Client.send.mockRejectedValue(err);
 
       try {
-        await lockManager.acquireLockWithRetry('test-stack', 'user', 'deploy', 1, 10);
+        await lockManager.acquireLockWithRetry('test-stack', 'us-east-1', 'user', 'deploy', 1, 10);
         expect.unreachable('Should have thrown');
       } catch (error) {
         expect(error).toBeInstanceOf(LockError);
@@ -440,7 +459,7 @@ describe('LockManager', () => {
     it('should write lock with correct JSON structure', async () => {
       s3Client.send.mockResolvedValueOnce({});
 
-      await lockManager.acquireLock('test-stack', 'user@host:123', 'deploy');
+      await lockManager.acquireLock('test-stack', 'us-east-1', 'user@host:123', 'deploy');
 
       const putCall = s3Client.send.mock.calls[0][0];
       const lockBody = JSON.parse(putCall.input.Body);
@@ -458,7 +477,7 @@ describe('LockManager', () => {
     it('should omit operation when not provided', async () => {
       s3Client.send.mockResolvedValueOnce({});
 
-      await lockManager.acquireLock('test-stack', 'user@host:123');
+      await lockManager.acquireLock('test-stack', 'us-east-1', 'user@host:123');
 
       const putCall = s3Client.send.mock.calls[0][0];
       const lockBody = JSON.parse(putCall.input.Body);

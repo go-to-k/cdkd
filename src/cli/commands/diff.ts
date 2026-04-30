@@ -11,6 +11,7 @@ import { getLogger } from '../../utils/logger.js';
 import { withErrorHandling } from '../../utils/error-handler.js';
 import { Synthesizer } from '../../synthesis/synthesizer.js';
 import { S3StateBackend } from '../../state/s3-state-backend.js';
+import { STATE_SCHEMA_VERSION_CURRENT } from '../../types/state.js';
 import { DiffCalculator } from '../../analyzer/diff-calculator.js';
 import { IntrinsicFunctionResolver } from '../../deployment/intrinsic-function-resolver.js';
 import { setAwsClients, AwsClients } from '../../utils/aws-clients.js';
@@ -194,21 +195,24 @@ async function diffCommand(
       logger.info(`\nCalculating diff for stack: ${stackInfo.stackName}`);
 
       const template = stackInfo.template;
+      // Stack region drives the state key. Falls back to the CLI region only
+      // when synth couldn't determine a region (e.g. env-agnostic stacks).
+      const stackRegion = stackInfo.region || region;
 
       // Load current state
-      let currentState;
-      const stateResult = await stateBackend.getState(stackInfo.stackName);
-      if (stateResult) {
-        currentState = stateResult.state;
-      } else {
-        logger.debug(`No existing state for ${stackInfo.stackName}`);
-        currentState = {
-          stackName: stackInfo.stackName,
-          resources: {},
-          outputs: {},
-          version: 1,
-          lastModified: Date.now(),
-        };
+      const stateResult = await stateBackend.getState(stackInfo.stackName, stackRegion);
+      const currentState = stateResult
+        ? stateResult.state
+        : {
+            stackName: stackInfo.stackName,
+            region: stackRegion,
+            resources: {},
+            outputs: {},
+            version: STATE_SCHEMA_VERSION_CURRENT,
+            lastModified: Date.now(),
+          };
+      if (!stateResult) {
+        logger.debug(`No existing state for ${stackInfo.stackName} (${stackRegion})`);
       }
 
       // Calculate diff. A best-effort intrinsic resolver lets us detect changes

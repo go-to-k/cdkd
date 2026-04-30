@@ -1,8 +1,9 @@
-import { Command } from 'commander';
+import { Command, Option } from 'commander';
 import { commonOptions, stateOptions, stackOptions } from '../options.js';
 import { getLogger } from '../../utils/logger.js';
 import { withErrorHandling } from '../../utils/error-handler.js';
 import { LockManager } from '../../state/lock-manager.js';
+import { S3StateBackend } from '../../state/s3-state-backend.js';
 import { setAwsClients, AwsClients } from '../../utils/aws-clients.js';
 import { resolveStateBucketWithDefault } from '../config-loader.js';
 
@@ -18,6 +19,7 @@ async function forceUnlockCommand(
     stateBucket?: string;
     statePrefix: string;
     stack?: string;
+    stackRegion?: string;
     region?: string;
     profile?: string;
     verbose: boolean;
@@ -51,19 +53,40 @@ async function forceUnlockCommand(
       prefix: options.statePrefix,
     };
     const lockManager = new LockManager(awsClients.s3, stateConfig);
+    const stateBackend = new S3StateBackend(awsClients.s3, stateConfig);
 
     for (const stackName of stackPatterns) {
-      logger.info(`Force-unlocking stack: ${stackName}`);
-
-      try {
-        await lockManager.forceReleaseLock(stackName);
-        logger.info(`✓ Lock released for stack: ${stackName}`);
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        if (message.includes('No lock found') || message.includes('NoSuchKey')) {
-          logger.info(`No lock found for stack: ${stackName}`);
+      // Determine which region(s) to release. Order:
+      //   1. Explicit `--stack-region` flag.
+      //   2. Region(s) discovered in S3 state for this stack name (new
+      //      region-prefixed key + legacy key).
+      //   3. Fallback to the CLI region when no state record exists yet.
+      let regionsToTry: (string | undefined)[];
+      if (options.stackRegion) {
+        regionsToTry = [options.stackRegion];
+      } else {
+        const refs = await stateBackend.listStacks();
+        const matched = refs.filter((r) => r.stackName === stackName);
+        if (matched.length === 0) {
+          regionsToTry = [region];
         } else {
-          logger.error(`Failed to unlock stack ${stackName}: ${message}`);
+          regionsToTry = matched.map((r) => r.region);
+        }
+      }
+
+      for (const r of regionsToTry) {
+        const where = r ? `${stackName} (${r})` : `${stackName} (legacy lock key)`;
+        logger.info(`Force-unlocking stack: ${where}`);
+        try {
+          await lockManager.forceReleaseLock(stackName, r);
+          logger.info(`✓ Lock released for stack: ${where}`);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          if (message.includes('No lock found') || message.includes('NoSuchKey')) {
+            logger.info(`No lock found for stack: ${where}`);
+          } else {
+            logger.error(`Failed to unlock stack ${where}: ${message}`);
+          }
         }
       }
     }
@@ -79,6 +102,13 @@ export function createForceUnlockCommand(): Command {
   const cmd = new Command('force-unlock')
     .description('Force-release a stale lock on a stack')
     .argument('[stacks...]', 'Stack name(s) to unlock')
+    .addOption(
+      new Option(
+        '--stack-region <region>',
+        'Stack region whose lock to release (use when the same stack name has locks in multiple regions). ' +
+          'Defaults to all regions where the stack has state.'
+      )
+    )
     .action(withErrorHandling(forceUnlockCommand));
 
   [...commonOptions, ...stateOptions, ...stackOptions].forEach((opt) => cmd.addOption(opt));
