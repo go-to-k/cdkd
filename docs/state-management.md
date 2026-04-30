@@ -661,6 +661,30 @@ function computeDeletionOrder(resources: Record<string, ResourceState>): string[
 }
 ```
 
+### Cleanup Options
+
+cdkd ships three commands that touch state during cleanup. Choose based on
+whether the CDK app is available, and whether you also want to delete the
+underlying AWS resources:
+
+| Command | Needs CDK app? | Deletes AWS resources? | Removes state record? |
+| --- | --- | --- | --- |
+| `cdkd destroy <stack>` | Yes (synth) | Yes | Yes |
+| `cdkd state destroy <stack>` | No | Yes | Yes |
+| `cdkd state rm <stack>` | No | **No** | Yes |
+
+`cdkd destroy` is the canonical path when you have the CDK source — it synths
+the app, intersects against state, and deletes resources in reverse dependency
+order. `cdkd state destroy` is the same per-stack pipeline (the logic is hoisted
+into `src/cli/commands/destroy-runner.ts` and shared by both commands), but
+sourced from the state record instead of synth output, so it works from any
+working directory given access to the state bucket. Use it for cleanup from a
+machine without the CDK source, CI cleanup jobs after the source repo is gone,
+or a forgotten stack referenced only by name. `cdkd state rm` only forgets the
+state record — the AWS resources stay alive — and is the right tool when you
+intentionally want cdkd to stop tracking a stack without touching its
+resources.
+
 ## Security and Best Practices
 
 ### S3 Bucket Configuration

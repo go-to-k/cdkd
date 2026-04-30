@@ -11,19 +11,16 @@ import {
   warnIfDeprecatedRegion,
 } from '../options.js';
 import { getLogger } from '../../utils/logger.js';
-import { getLiveRenderer } from '../../utils/live-renderer.js';
 import { withErrorHandling } from '../../utils/error-handler.js';
 import { Synthesizer } from '../../synthesis/synthesizer.js';
 import { S3StateBackend } from '../../state/s3-state-backend.js';
 import { LockManager } from '../../state/lock-manager.js';
-import { DagBuilder } from '../../analyzer/dag-builder.js';
-import { IMPLICIT_DELETE_DEPENDENCIES } from '../../analyzer/implicit-delete-deps.js';
 import { ProviderRegistry } from '../../provisioning/provider-registry.js';
 import { registerAllProviders } from '../../provisioning/register-providers.js';
 import { setAwsClients, AwsClients } from '../../utils/aws-clients.js';
-import * as readline from 'node:readline/promises';
 import { resolveApp, resolveStateBucketWithDefault } from '../config-loader.js';
 import { matchStacks, describeStack, type StackLike } from '../stack-matcher.js';
+import { runDestroyForStack } from './destroy-runner.js';
 
 /**
  * Destroy command implementation
@@ -92,7 +89,6 @@ async function destroyCommand(
     // Fail fast if the state bucket is missing, before synth or any destructive work.
     await stateBackend.verifyBucketExists();
     const lockManager = new LockManager(awsClients.s3, stateConfig);
-    const dagBuilder = new DagBuilder();
     const providerRegistry = new ProviderRegistry();
 
     // Register all SDK providers
@@ -200,7 +196,7 @@ async function destroyCommand(
       stateRefsByName.set(ref.stackName, arr);
     }
 
-    // 3. Process each stack
+    // 3. Process each stack via the shared destroy runner.
     for (const stackName of stackNames) {
       logger.info(`\nPreparing to destroy stack: ${stackName}`);
 
@@ -240,249 +236,17 @@ async function destroyCommand(
         logger.warn(`No state found for stack ${stackName}, skipping`);
         continue;
       }
-      const currentState = stateResult.state;
 
-      const resourceCount = Object.keys(currentState.resources).length;
-      if (resourceCount === 0) {
-        logger.info(`Stack ${stackName} has no resources, cleaning up state...`);
-        await stateBackend.deleteState(stackName, stackTargetRegion);
-        logger.info('✓ State deleted');
-        continue;
-      }
-
-      // Show resources to be deleted
-      logger.info(`\nResources to be deleted (${resourceCount}):`);
-      for (const [logicalId, resource] of Object.entries(currentState.resources)) {
-        logger.info(`  - ${logicalId} (${resource.resourceType})`);
-      }
-
-      // 4. Confirm (unless -y/--yes or --force)
-      if (!options.yes && !options.force) {
-        const rl = readline.createInterface({
-          input: process.stdin,
-          output: process.stdout,
-        });
-
-        const answer = await rl.question(
-          `\nAre you sure you want to destroy stack "${stackName}" and delete all ${resourceCount} resources? (Y/n): `
-        );
-        rl.close();
-
-        const trimmed = answer.trim().toLowerCase();
-        if (trimmed === 'n' || trimmed === 'no') {
-          logger.info('Destroy cancelled');
-          continue;
-        }
-      }
-
-      // 5. Switch region if stack was deployed to a different region
-      const stackRegion = stackTargetRegion;
-      let destroyProviderRegistry = providerRegistry;
-      let destroyAwsClients: AwsClients | undefined;
-
-      if (stackRegion && stackRegion !== region) {
-        logger.info(`Stack region: ${stackRegion}`);
-        process.env['AWS_REGION'] = stackRegion;
-        process.env['AWS_DEFAULT_REGION'] = stackRegion;
-
-        destroyAwsClients = new AwsClients({
-          region: stackRegion,
-          ...(options.profile && { profile: options.profile }),
-        });
-        setAwsClients(destroyAwsClients);
-
-        destroyProviderRegistry = new ProviderRegistry();
-        registerAllProviders(destroyProviderRegistry);
-        destroyProviderRegistry.setCustomResourceResponseBucket(stateBucket);
-      }
-
-      // Acquire lock (always uses base region for state bucket)
-      logger.info(`\nAcquiring lock for stack ${stackName}...`);
-      await lockManager.acquireLock(stackName, stackRegion, undefined, 'destroy');
-
-      // Live progress renderer (multi-line in-flight display at bottom of TTY).
-      // Self-disables on non-TTY and when `CDKD_NO_LIVE=1` is set (the CLI
-      // sets this in verbose mode).
-      const renderer = getLiveRenderer();
-      renderer.start();
-
-      try {
-        // 6. Build dependency graph from current state
-        logger.info('Building dependency graph...');
-
-        // Create a minimal template from current state for DAG building
-        const template = {
-          AWSTemplateFormatVersion: '2010-09-09',
-          Resources: {} as Record<
-            string,
-            { Type: string; Properties: Record<string, unknown>; DependsOn?: string[] }
-          >,
-        };
-
-        for (const [logicalId, resource] of Object.entries(currentState.resources)) {
-          template.Resources[logicalId] = {
-            Type: resource.resourceType,
-            Properties: resource.properties || {},
-            ...(resource.dependencies &&
-              resource.dependencies.length > 0 && {
-                DependsOn: resource.dependencies,
-              }),
-          };
-        }
-
-        // Type-based implicit deletion ordering rules are shared with the
-        // deploy DELETE phase (src/analyzer/implicit-delete-deps.ts).
-
-        // Build type → logicalId index
-        const typeToLogicalIds = new Map<string, string[]>();
-        for (const [logicalId, resource] of Object.entries(currentState.resources)) {
-          const ids = typeToLogicalIds.get(resource.resourceType) ?? [];
-          ids.push(logicalId);
-          typeToLogicalIds.set(resource.resourceType, ids);
-        }
-
-        for (const [logicalId, resource] of Object.entries(currentState.resources)) {
-          const mustDeleteAfter = IMPLICIT_DELETE_DEPENDENCIES[resource.resourceType];
-          if (!mustDeleteAfter) continue;
-
-          for (const depType of mustDeleteAfter) {
-            const depIds = typeToLogicalIds.get(depType);
-            if (!depIds) continue;
-            for (const depId of depIds) {
-              const existing = template.Resources[depId]?.DependsOn ?? [];
-              const depsArray = Array.isArray(existing) ? existing : [existing];
-              if (!depsArray.includes(logicalId)) {
-                template.Resources[depId] = {
-                  ...template.Resources[depId]!,
-                  DependsOn: [...depsArray, logicalId],
-                };
-                logger.debug(
-                  `Implicit delete dependency: ${depId} (${depType}) must be deleted before ${logicalId} (${resource.resourceType})`
-                );
-              }
-            }
-          }
-        }
-
-        const graph = dagBuilder.buildGraph(template);
-        const executionLevels = dagBuilder.getExecutionLevels(graph);
-
-        logger.debug(`Dependency graph: ${executionLevels.length} level(s)`);
-
-        let deletedCount = 0;
-        let errorCount = 0;
-
-        // Process levels in reverse order for deletion
-        for (let levelIndex = executionLevels.length - 1; levelIndex >= 0; levelIndex--) {
-          const level = executionLevels[levelIndex];
-          if (!level) {
-            continue;
-          }
-
-          logger.debug(
-            `Deletion level ${executionLevels.length - levelIndex}/${executionLevels.length} (${level.length} resources)`
-          );
-
-          // Delete resources in parallel within each level
-          const deletePromises = level.map(async (logicalId) => {
-            const resource = currentState.resources[logicalId];
-            if (!resource) {
-              logger.warn(`Resource ${logicalId} not found in state, skipping`);
-              return;
-            }
-
-            renderer.addTask(logicalId, `Deleting ${logicalId} (${resource.resourceType})`);
-            try {
-              const provider = destroyProviderRegistry.getProvider(resource.resourceType);
-              // Retry DELETE for transient errors (throttle, dependency race)
-              let lastDeleteError: unknown;
-              for (let attempt = 0; attempt <= 3; attempt++) {
-                try {
-                  await provider.delete(
-                    logicalId,
-                    resource.physicalId,
-                    resource.resourceType,
-                    resource.properties,
-                    { expectedRegion: currentState.region }
-                  );
-                  lastDeleteError = null;
-                  break;
-                } catch (retryError) {
-                  lastDeleteError = retryError;
-                  const msg = retryError instanceof Error ? retryError.message : String(retryError);
-                  const isRetryable =
-                    msg.includes('Too Many Requests') ||
-                    msg.includes('has dependencies') ||
-                    msg.includes("can't be deleted since") ||
-                    msg.includes('DependencyViolation');
-                  if (!isRetryable || attempt >= 3) break;
-                  const delay = 5000 * Math.pow(2, attempt);
-                  logger.debug(
-                    `  ⏳ Retrying delete ${logicalId} in ${delay / 1000}s (attempt ${attempt + 1}/3)`
-                  );
-                  await new Promise((resolve) => setTimeout(resolve, delay));
-                }
-              }
-              if (lastDeleteError) throw lastDeleteError;
-
-              renderer.removeTask(logicalId);
-              logger.info(`  ✅ ${logicalId} (${resource.resourceType}) deleted`);
-              deletedCount++;
-            } catch (error) {
-              renderer.removeTask(logicalId);
-              const msg = error instanceof Error ? error.message : String(error);
-              // Treat "not found" as already deleted
-              if (
-                msg.includes('does not exist') ||
-                msg.includes('not found') ||
-                msg.includes('No policy found') ||
-                msg.includes('NoSuchEntity') ||
-                msg.includes('NotFoundException')
-              ) {
-                logger.debug(`  ${logicalId} already deleted, removing from state`);
-                deletedCount++;
-              } else {
-                logger.error(`  ✗ Failed to delete ${logicalId}:`, String(error));
-                errorCount++;
-              }
-            } finally {
-              // Safety net for any path that didn't explicitly remove the task.
-              // removeTask is idempotent.
-              renderer.removeTask(logicalId);
-            }
-          });
-
-          await Promise.all(deletePromises);
-        }
-
-        // 8. Delete state
-        if (errorCount === 0) {
-          await stateBackend.deleteState(stackName, stackRegion);
-          logger.debug('State deleted');
-        } else {
-          logger.warn(`${errorCount} resource(s) failed to delete. State preserved.`);
-        }
-
-        logger.info(
-          `\n✓ Stack ${stackName} destroyed (${deletedCount} deleted, ${errorCount} errors)`
-        );
-      } finally {
-        // Stop live renderer before releasing the lock so any pending in-flight
-        // task lines are cleared cleanly.
-        renderer.stop();
-
-        // 9. Release lock
-        logger.debug('Releasing lock...');
-        await lockManager.releaseLock(stackName, stackRegion);
-
-        // Restore region if changed
-        if (destroyAwsClients) {
-          destroyAwsClients.destroy();
-          process.env['AWS_REGION'] = region;
-          process.env['AWS_DEFAULT_REGION'] = region;
-          setAwsClients(awsClients);
-        }
-      }
+      await runDestroyForStack(stackName, stateResult.state, {
+        stateBackend,
+        lockManager,
+        providerRegistry,
+        baseAwsClients: awsClients,
+        baseRegion: region,
+        ...(options.profile && { profile: options.profile }),
+        stateBucket,
+        skipConfirmation: options.yes || options.force,
+      });
     }
   } finally {
     // Cleanup AWS clients

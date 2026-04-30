@@ -12,6 +12,9 @@ import { S3StateBackend, type StackStateRef } from '../../state/s3-state-backend
 import { LockManager } from '../../state/lock-manager.js';
 import { setAwsClients, AwsClients } from '../../utils/aws-clients.js';
 import { resolveStateBucketWithDefault } from '../config-loader.js';
+import { ProviderRegistry } from '../../provisioning/provider-registry.js';
+import { registerAllProviders } from '../../provisioning/register-providers.js';
+import { runDestroyForStack } from './destroy-runner.js';
 import type { LockInfo } from '../../types/state.js';
 
 /**
@@ -106,6 +109,8 @@ async function setupStateBackend(options: {
 }): Promise<{
   stateBackend: S3StateBackend;
   lockManager: LockManager;
+  awsClients: AwsClients;
+  region: string;
   bucket: string;
   prefix: string;
   dispose: () => void;
@@ -140,6 +145,8 @@ async function setupStateBackend(options: {
   return {
     stateBackend,
     lockManager,
+    awsClients,
+    region,
     bucket,
     prefix,
     dispose: () => awsClients.destroy(),
@@ -764,6 +771,221 @@ function createStateRmCommand(): Command {
 }
 
 /**
+ * `cdkd state destroy <stacks...>` command implementation
+ *
+ * Destroys a stack's AWS resources AND removes its state record, **without**
+ * requiring the CDK app (no synth). The intended audience is anyone who
+ * needs to clean up a stack from a working directory that doesn't have the
+ * CDK source — a teammate on a different machine, a CI cleanup job after the
+ * source repo is gone, etc.
+ *
+ * Naming distinction:
+ * - `cdkd destroy` — synth-driven, requires the CDK app, deletes resources +
+ *   state.
+ * - `cdkd state destroy` — state-driven, no synth needed, deletes resources +
+ *   state.
+ * - `cdkd state rm` — state-driven, no synth needed, deletes ONLY the state
+ *   record. AWS resources are left intact.
+ *
+ * Region scoping: when a stack name has multiple state records spread across
+ * regions (PR 1 territory), `--region` selects one. With the current single-
+ * region-per-name layout the flag still works — it sets the AWS clients'
+ * region and refuses to proceed if the loaded state.region disagrees.
+ */
+async function stateDestroyCommand(
+  stackArgs: string[],
+  options: {
+    all?: boolean;
+    yes: boolean;
+    stateBucket?: string;
+    statePrefix: string;
+    region?: string;
+    stackRegion?: string;
+    profile?: string;
+    verbose: boolean;
+  }
+): Promise<void> {
+  const logger = getLogger();
+  if (options.verbose) {
+    logger.setLevel('debug');
+    // Disable the live progress renderer in verbose mode — debug logs would
+    // interleave too aggressively with the live area's in-flight task lines.
+    process.env['CDKD_NO_LIVE'] = '1';
+  }
+
+  if (!options.all && stackArgs.length === 0) {
+    throw new Error(
+      'Stack name is required. Usage: cdkd state destroy <stack> [<stack>...] | --all'
+    );
+  }
+
+  const setup = await setupStateBackend(options);
+  const providerRegistry = new ProviderRegistry();
+  registerAllProviders(providerRegistry);
+  providerRegistry.setCustomResourceResponseBucket(setup.bucket);
+
+  try {
+    // Resolve target stack names from S3 (no synth). After PR 1, listStacks
+    // returns one ref per (stackName, region) pair — same stackName across
+    // two regions is two entries.
+    const stateRefs = await setup.stateBackend.listStacks();
+    const knownStackNames = new Set(stateRefs.map((r) => r.stackName));
+    let stackNames: string[];
+    if (options.all) {
+      stackNames = [...knownStackNames].sort();
+      if (stackNames.length === 0) {
+        logger.info('No stacks found in state');
+        return;
+      }
+    } else {
+      // Be strict: every named stack must exist in state. Silently skipping
+      // typos here would be more dangerous than helpful for a destroy command.
+      const missing = stackArgs.filter((name) => !knownStackNames.has(name));
+      if (missing.length > 0) {
+        throw new Error(
+          `No state found for stack(s): ${missing.join(', ')}. ` +
+            `Run 'cdkd state list' to see available stacks.`
+        );
+      }
+      stackNames = stackArgs;
+    }
+
+    // --all confirmation prompt (single prompt for the whole batch). The
+    // per-stack prompt inside `runDestroyForStack` covers the per-stack case
+    // when `--yes` is not given.
+    if (options.all && !options.yes) {
+      process.stdout.write(
+        `\nWARNING: This destroys ${stackNames.length} stack(s) and removes their state records:\n`
+      );
+      for (const name of stackNames) {
+        process.stdout.write(`  - ${name}\n`);
+      }
+      process.stdout.write('\n');
+      const rl = readline.createInterface({
+        input: process.stdin,
+        output: process.stdout,
+      });
+      const answer = await rl.question(`Destroy all ${stackNames.length} stack(s)? (y/N): `);
+      rl.close();
+      const trimmed = answer.trim().toLowerCase();
+      if (trimmed !== 'y' && trimmed !== 'yes') {
+        logger.info('Destroy cancelled');
+        return;
+      }
+    }
+
+    logger.info(`Found ${stackNames.length} stack(s) to destroy: ${stackNames.join(', ')}`);
+
+    let totalErrors = 0;
+    for (const stackName of stackNames) {
+      // After PR 1, the same stackName can have state in multiple regions.
+      // Pick the right ref(s):
+      // - If --stack-region is given, take the matching ref (skip with warning if none).
+      // - If only one region exists, take it.
+      // - If multiple regions exist and no --stack-region, error out (ambiguous).
+      const refs = stateRefs.filter((r) => r.stackName === stackName);
+      let targets: typeof refs;
+      if (options.stackRegion) {
+        targets = refs.filter((r) => r.region === options.stackRegion || !r.region);
+        if (targets.length === 0) {
+          logger.warn(
+            `Skipping ${stackName}: no state record matches --stack-region '${options.stackRegion}'`
+          );
+          continue;
+        }
+      } else if (refs.length === 1) {
+        targets = refs;
+      } else {
+        const regions = refs.map((r) => r.region ?? '(legacy)').join(', ');
+        throw new Error(
+          `Stack '${stackName}' has state in multiple regions: ${regions}. ` +
+            `Use --region <region> to pick one.`
+        );
+      }
+
+      for (const ref of targets) {
+        logger.info(
+          `\nPreparing to destroy stack: ${stackName}${ref.region ? ` (${ref.region})` : ''}`
+        );
+
+        const stateResult = await setup.stateBackend.getState(
+          stackName,
+          ref.region ?? setup.region
+        );
+        if (!stateResult) {
+          logger.warn(
+            `No state found for stack ${stackName}${ref.region ? ` in ${ref.region}` : ''}, skipping`
+          );
+          continue;
+        }
+
+        const result = await runDestroyForStack(stackName, stateResult.state, {
+          stateBackend: setup.stateBackend,
+          lockManager: setup.lockManager,
+          providerRegistry,
+          baseAwsClients: setup.awsClients,
+          baseRegion: setup.region,
+          ...(options.profile && { profile: options.profile }),
+          stateBucket: setup.bucket,
+          // --yes covers both the --all batch prompt above (already consumed)
+          // and the per-stack prompt inside the runner. Per-stack prompts are
+          // skipped when `options.yes` is set OR `--all` was set (the user
+          // already accepted the batch prompt).
+          skipConfirmation: options.yes || options.all === true,
+        });
+        totalErrors += result.errorCount;
+      }
+    }
+
+    if (totalErrors > 0) {
+      throw new Error(
+        `Destroy completed with ${totalErrors} resource error(s). ` +
+          `Inspect 'cdkd state show <stack>' and re-run.`
+      );
+    }
+  } finally {
+    setup.dispose();
+  }
+}
+
+/**
+ * Create the `state destroy` subcommand.
+ */
+function createStateDestroyCommand(): Command {
+  const cmd = new Command('destroy')
+    .description(
+      "Destroy a stack's AWS resources and remove its state record without requiring the CDK app. " +
+        "For removing only the state record (keeping AWS resources intact), use 'cdkd state rm'."
+    )
+    .argument('[stacks...]', 'Stack name(s) to destroy (physical CloudFormation names)')
+    .option('--all', 'Destroy every stack in the state bucket', false)
+    .addOption(stackRegionOption())
+    .addHelpText(
+      'after',
+      [
+        '',
+        'Examples:',
+        '  cdkd state destroy MyStack',
+        '  cdkd state destroy MyStack OtherStack',
+        '  cdkd state destroy --all -y',
+        '  cdkd state destroy MyStack --state-bucket cdkd-state-test',
+        '  cdkd state destroy MyStack --stack-region us-west-2',
+        '',
+        "For removing only the state record (keeping AWS resources intact), use 'cdkd state rm'.",
+      ].join('\n')
+    )
+    .action(withErrorHandling(stateDestroyCommand));
+
+  [...commonOptions, ...stateOptions].forEach((opt) => cmd.addOption(opt));
+
+  // --region is deprecated on every state subcommand (PR 5). Accepted for
+  // backward compatibility; warning emitted at runtime.
+  cmd.addOption(deprecatedRegionOption);
+
+  return cmd;
+}
+
+/**
  * Create the `state` parent command.
  *
  * Subcommands:
@@ -771,6 +993,8 @@ function createStateRmCommand(): Command {
  * - `state resources <stack>` — list resources of one stack
  * - `state show <stack>` — full state record (metadata, outputs, resources)
  * - `state rm <stack>...` — remove cdkd's state record (NOT AWS resources)
+ * - `state destroy <stack>...` — delete AWS resources AND state record
+ *   without requiring the CDK app (CDK-app-free version of `cdkd destroy`)
  */
 export function createStateCommand(): Command {
   const cmd = new Command('state').description('Manage cdkd state stored in S3');
@@ -778,5 +1002,6 @@ export function createStateCommand(): Command {
   cmd.addCommand(createStateResourcesCommand());
   cmd.addCommand(createStateShowCommand());
   cmd.addCommand(createStateRmCommand());
+  cmd.addCommand(createStateDestroyCommand());
   return cmd;
 }

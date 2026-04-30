@@ -446,7 +446,19 @@ cdkd state show MyStack --json        # raw {state, lock} JSON
 cdkd state rm MyStack                 # confirmation prompt (y/N)
 cdkd state rm MyStack --yes           # skip confirmation
 cdkd state rm StackA StackB --force   # also bypass the locked-stack refusal
+
+# Destroy a stack's AWS resources AND remove its state record, without
+# requiring the CDK app (no synth — works from any working directory).
+cdkd state destroy MyStack            # per-stack confirmation prompt
+cdkd state destroy MyStack OtherStack --yes
+cdkd state destroy --all -y           # every stack in the bucket
+cdkd state destroy MyStack --region us-east-1
 ```
+
+> `cdkd state destroy` vs `cdkd state rm`: `state destroy` deletes both the
+> AWS resources and the state record (the equivalent of `cdkd destroy` minus
+> the CDK-app dependency). `state rm` only forgets the state record and
+> leaves the AWS resources intact.
 
 ### Concurrency Options
 
