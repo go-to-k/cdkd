@@ -487,9 +487,11 @@ pnpm run build && pnpm run typecheck && pnpm run lint && \
 
 ---
 
-## 7. Operating-rule reminders (from CLAUDE.md)
+## 7. Operating-rule reminders (from CLAUDE.md and the rollout owner)
 
 These bite if forgotten:
+
+### From CLAUDE.md (repo-wide)
 
 1. **No commits/pushes to `main`.** `branch-gate.sh` blocks it.
 2. **`git commit -F <file>` for messages.** Heredoc style
@@ -506,6 +508,26 @@ These bite if forgotten:
 5. **Committed files are English-only** (this is OSS).
 6. **Tests passing ≠ feature working.** The `/verify-pr` live-test
    step is non-negotiable for user-visible changes.
+
+### From the rollout owner (specific to this work)
+
+7. **If you spawn a subagent, it MUST use Opus 4.7.** Pass
+   `model: "opus"` on every `Agent` tool invocation. Never silently
+   fall back to Sonnet / Haiku — the rollout owner explicitly
+   requires Opus 4.7 quality on this work.
+8. **Parallelizable tasks run in `git worktree`s.** Use Agent's
+   `isolation: "worktree"` for subagents, or `git worktree add` for
+   manual parallel work. **However**, the merge phase itself is
+   inherently sequential (markgate gates serialize, stacked PRs
+   need their base merged first) — see §5 callout 5. Worktree
+   parallelism applies to any post-merge implementation work
+   (cleanup PR, fixes, etc.) that may come up.
+9. **Open PRs but don't merge without confirming.** The rollout
+   owner reviews each PR before merge. Default to `gh pr create`
+   only; let the owner decide on `gh pr merge`. Exception: this
+   document was written under explicit instruction "1個ずつマージ
+   していこう" — proceeding with merges is sanctioned for this
+   rollout.
 
 ---
 
