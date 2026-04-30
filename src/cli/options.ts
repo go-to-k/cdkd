@@ -17,17 +17,52 @@ export function parseContextOptions(contextArgs?: string[]): Record<string, stri
 }
 
 /**
- * Common CLI options
+ * Common CLI options.
+ *
+ * Note: `--region` is intentionally NOT in `commonOptions`. Since PR 3
+ * (dynamic region resolution) and PR 4 (region-free default state bucket
+ * name), `--region` no longer has a useful role on most commands. It is
+ * still required by `cdkd bootstrap` (which needs to know where to create
+ * a new bucket) and is added directly there. Other commands accept it for
+ * backward compatibility via `deprecatedRegionOption` and emit a
+ * deprecation warning when it is passed; the value is otherwise ignored.
  */
 export const commonOptions = [
   new Option('--verbose', 'Enable verbose logging').default(false),
-  new Option('--region <region>', 'AWS region'),
   new Option('--profile <profile>', 'AWS profile'),
   new Option(
     '-y, --yes',
     'Automatically answer interactive prompts with the recommended response (e.g. confirm destroy)'
   ).default(false),
 ];
+
+/**
+ * Deprecated `--region` option attached to non-bootstrap commands.
+ *
+ * Kept (rather than fully removed) so that scripts or muscle memory passing
+ * `--region` do not break. The value is parsed but ignored — see
+ * `warnIfDeprecatedRegion` for the runtime warning. Final removal is
+ * tracked in PR 99 (see `docs/plans/05-region-flag-cleanup.md`).
+ */
+export const deprecatedRegionOption = new Option(
+  '--region <region>',
+  '[deprecated] No effect on this command; use AWS_REGION or your AWS profile'
+).hideHelp();
+
+/**
+ * Emit a one-shot stderr warning when a non-bootstrap command receives
+ * `--region`. PR 5 consolidates `--region` to bootstrap-only; everywhere
+ * else the SDK picks up the region from `AWS_REGION` / profile, and
+ * passing the flag does nothing useful.
+ */
+export function warnIfDeprecatedRegion(options: { region?: string }): void {
+  if (options.region !== undefined) {
+    process.stderr.write(
+      'Warning: --region is deprecated for this command and has no effect. ' +
+        'Use the AWS_REGION environment variable or your AWS profile to override the SDK default region.\n'
+    );
+  }
+}
 
 /**
  * App options

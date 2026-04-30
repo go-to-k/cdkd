@@ -50,11 +50,21 @@ function makeStack(overrides: Partial<StackInfo> & { stackName: string }): Stack
  * subcommand's own argv (no node/script prefix). exitOverride prevents
  * Commander from calling process.exit on parse errors.
  */
-async function runList(args: string[]): Promise<{ stdout: string; error?: Error }> {
+async function runList(
+  args: string[]
+): Promise<{ stdout: string; stderr: string; error?: Error }> {
   const cmd = createListCommand();
   cmd.exitOverride();
 
   const writeSpy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+  // Direct replacement (rather than vi.spyOn) for stderr — under vitest's
+  // output capture vi.spyOn does not always intercept process.stderr.write.
+  const stderrChunks: string[] = [];
+  const originalStderrWrite = process.stderr.write.bind(process.stderr);
+  process.stderr.write = ((chunk: string | Uint8Array): boolean => {
+    stderrChunks.push(typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString('utf-8'));
+    return true;
+  }) as typeof process.stderr.write;
   const exitSpy = vi.spyOn(process, 'exit').mockImplementation(((_code?: number) => {
     throw new Error('__process.exit__');
   }) as never);
@@ -68,12 +78,14 @@ async function runList(args: string[]): Promise<{ stdout: string; error?: Error 
   }
 
   const stdout = writeSpy.mock.calls.map((c) => String(c[0])).join('');
+  const stderr = stderrChunks.join('');
 
   writeSpy.mockRestore();
+  process.stderr.write = originalStderrWrite;
   exitSpy.mockRestore();
   errorLogSpy.mockRestore();
 
-  return { stdout, ...(error && { error }) };
+  return { stdout, stderr, ...(error && { error }) };
 }
 
 describe('cdkd list', () => {
@@ -276,5 +288,33 @@ describe('cdkd list', () => {
     const { error } = await runList([]);
     expect(error).toBeDefined();
     expect(error?.message).toBe('__process.exit__');
+  });
+
+  it('emits a deprecation warning to stderr when --region is passed (PR 5)', async () => {
+    mockSynthesize.mockResolvedValue({
+      stacks: [makeStack({ stackName: 'StackA', displayName: 'StackA' })],
+      manifest: {},
+      assemblyDir: '/tmp/cdk.out',
+    });
+
+    const { stdout, stderr, error } = await runList(['--region', 'us-east-1']);
+
+    expect(error).toBeUndefined();
+    // Command still runs to completion.
+    expect(stdout).toBe('StackA\n');
+    // Warning is on stderr, mentions --region and points users at AWS_REGION.
+    expect(stderr).toMatch(/--region is deprecated for this command and has no effect/);
+    expect(stderr).toMatch(/AWS_REGION/);
+  });
+
+  it('does not emit the deprecation warning when --region is omitted', async () => {
+    mockSynthesize.mockResolvedValue({
+      stacks: [makeStack({ stackName: 'StackA', displayName: 'StackA' })],
+      manifest: {},
+      assemblyDir: '/tmp/cdk.out',
+    });
+
+    const { stderr } = await runList([]);
+    expect(stderr).not.toMatch(/--region is deprecated/);
   });
 });

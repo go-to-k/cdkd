@@ -210,6 +210,7 @@ registry.register('AWS::IAM::Role', new IAMRoleProvider());
 
 - `--app` (`-a`) is optional: falls back to `CDKD_APP` env var, then `cdk.json` `"app"` field. Accepts either a shell command (`"npx ts-node app.ts"`) or a path to a pre-synthesized cloud assembly directory (`cdk.out`); when a directory is given, synthesis is skipped and the manifest is read directly.
 - `--state-bucket` is optional: falls back to `CDKD_STATE_BUCKET` env var, then `cdk.json` `context.cdkd.stateBucket`
+- `--region` is **bootstrap-only** as of PR 5 (`docs/plans/05-region-flag-cleanup.md`). `cdkd bootstrap` uses it to pick the region of the new state bucket; every other command (`deploy`, `destroy`, `diff`, `synth`, `list`, `state`, `force-unlock`, `publish-assets`) accepts `--region` for backward compatibility but emits a deprecation warning and ignores the value — provisioning clients pick up the region from `AWS_REGION` / the AWS profile, and the state-bucket client auto-detects the bucket's region via `GetBucketLocation` (PR 3).
 - `--context` / `-c` is optional: accepts `key=value` pairs (repeatable), merged with cdk.json context (CLI takes precedence)
 - Stack names are positional arguments: `cdkd deploy MyStack` (not `--stack-name`)
 - `--all` flag targets all stacks for deploy/diff/destroy (`destroy --all` only targets stacks from the current CDK app via synthesis)

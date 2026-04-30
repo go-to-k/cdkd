@@ -244,9 +244,11 @@ GET request, not a HEAD — avoids the SDK glitch) and rebuilds its S3
 client to that region before any state operation. If you still see this
 error, please file a bug with the full stack trace.
 
-You no longer need to set `--region` to match the bucket region — the
-CLI's region option (and the profile region) only affect provisioning
-clients, not the state-bucket client.
+You no longer need to set the region to match the bucket region. As of
+PR 5 (`docs/plans/05-region-flag-cleanup.md`), `--region` is reserved for
+`cdkd bootstrap` (where it picks the new bucket's region); on every
+other command it is deprecated and ignored. Use `AWS_REGION` or your
+AWS profile to control the SDK's default region for provisioning.
 
 ---
 

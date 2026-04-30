@@ -1,4 +1,4 @@
-import { Command } from 'commander';
+import { Command, Option } from 'commander';
 import {
   CreateBucketCommand,
   HeadBucketCommand,
@@ -197,9 +197,19 @@ export function createBootstrapCommand(): Command {
       'Name of S3 bucket to create for state storage (default: cdkd-state-{accountId})'
     )
     .option('--force', 'Force reconfiguration of existing bucket', false)
+    .addOption(
+      // Bootstrap-specific: needs to know which region to create the bucket
+      // in. After PR 5, `--region` is removed from `commonOptions` and only
+      // re-added explicitly here — every other command resolves the region
+      // from `AWS_REGION` / profile.
+      new Option(
+        '--region <region>',
+        'AWS region in which to create the state bucket (defaults to AWS_REGION env or us-east-1)'
+      )
+    )
     .action(withErrorHandling(bootstrapCommand));
 
-  // Add common options (includes --region, --profile, --verbose)
+  // Add common options (--profile, --verbose, --yes)
   commonOptions.forEach((opt) => cmd.addOption(opt));
 
   return cmd;

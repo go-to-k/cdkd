@@ -1,5 +1,11 @@
 import { Command, Option } from 'commander';
-import { commonOptions, stateOptions, stackOptions } from '../options.js';
+import {
+  commonOptions,
+  deprecatedRegionOption,
+  stateOptions,
+  stackOptions,
+  warnIfDeprecatedRegion,
+} from '../options.js';
 import { getLogger } from '../../utils/logger.js';
 import { withErrorHandling } from '../../utils/error-handler.js';
 import { LockManager } from '../../state/lock-manager.js';
@@ -30,6 +36,10 @@ async function forceUnlockCommand(
   if (options.verbose) {
     logger.setLevel('debug');
   }
+
+  // PR 5: --region is deprecated on non-bootstrap commands. Warn but keep
+  // the rest of the pipeline working as before.
+  warnIfDeprecatedRegion(options);
 
   // Resolve stack name
   const stackPatterns = stackArgs.length > 0 ? stackArgs : options.stack ? [options.stack] : [];
@@ -112,6 +122,10 @@ export function createForceUnlockCommand(): Command {
     .action(withErrorHandling(forceUnlockCommand));
 
   [...commonOptions, ...stateOptions, ...stackOptions].forEach((opt) => cmd.addOption(opt));
+
+  // --region is deprecated for force-unlock (PR 5). Accepted for backward
+  // compatibility; warning emitted at runtime via warnIfDeprecatedRegion.
+  cmd.addOption(deprecatedRegionOption);
 
   return cmd;
 }

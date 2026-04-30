@@ -1,5 +1,5 @@
 import { Option, Command } from 'commander';
-import { commonOptions } from '../options.js';
+import { commonOptions, deprecatedRegionOption, warnIfDeprecatedRegion } from '../options.js';
 import { getLogger } from '../../utils/logger.js';
 import { withErrorHandling } from '../../utils/error-handler.js';
 import { AssetPublisher } from '../../assets/asset-publisher.js';
@@ -20,6 +20,10 @@ async function publishAssetsCommand(options: {
   if (options.verbose) {
     logger.setLevel('debug');
   }
+
+  // PR 5: --region is deprecated on non-bootstrap commands. Warn but keep
+  // the rest of the pipeline working as before.
+  warnIfDeprecatedRegion(options);
 
   logger.info('Publishing assets...');
   logger.debug('Asset manifest path:', options.path);
@@ -60,6 +64,10 @@ export function createPublishAssetsCommand(): Command {
 
   // Add common options
   commonOptions.forEach((opt) => cmd.addOption(opt));
+
+  // --region is deprecated for publish-assets (PR 5). Accepted for backward
+  // compatibility; warning emitted at runtime via warnIfDeprecatedRegion.
+  cmd.addOption(deprecatedRegionOption);
 
   return cmd;
 }

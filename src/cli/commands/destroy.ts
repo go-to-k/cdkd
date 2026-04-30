@@ -2,11 +2,13 @@ import { Command } from 'commander';
 import {
   appOptions,
   commonOptions,
+  deprecatedRegionOption,
   stateOptions,
   stackOptions,
   destroyOptions,
   contextOptions,
   parseContextOptions,
+  warnIfDeprecatedRegion,
 } from '../options.js';
 import { getLogger } from '../../utils/logger.js';
 import { getLiveRenderer } from '../../utils/live-renderer.js';
@@ -51,6 +53,10 @@ async function destroyCommand(
     // interleave too aggressively with the live area's in-flight task lines.
     process.env['CDKD_NO_LIVE'] = '1';
   }
+
+  // PR 5: --region is deprecated on non-bootstrap commands. Warn but keep
+  // the rest of the pipeline working as before.
+  warnIfDeprecatedRegion(options);
 
   // Resolve --state-bucket from CLI, env, cdk.json, or default
   const region = options.region || process.env['AWS_REGION'] || 'us-east-1';
@@ -506,6 +512,10 @@ export function createDestroyCommand(): Command {
     ...destroyOptions,
     ...contextOptions,
   ].forEach((opt) => cmd.addOption(opt));
+
+  // --region is deprecated for destroy (PR 5). Accepted for backward
+  // compatibility; warning emitted at runtime via warnIfDeprecatedRegion.
+  cmd.addOption(deprecatedRegionOption);
 
   return cmd;
 }
