@@ -22,6 +22,7 @@ import {
 import { getLogger } from '../../utils/logger.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { generateResourceName } from '../resource-name.js';
+import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -154,15 +155,16 @@ export class ELBv2Provider implements ResourceProvider {
     logicalId: string,
     physicalId: string,
     resourceType: string,
-    _properties?: Record<string, unknown>
+    _properties?: Record<string, unknown>,
+    context?: DeleteContext
   ): Promise<void> {
     switch (resourceType) {
       case 'AWS::ElasticLoadBalancingV2::LoadBalancer':
-        return this.deleteLoadBalancer(logicalId, physicalId, resourceType);
+        return this.deleteLoadBalancer(logicalId, physicalId, resourceType, context);
       case 'AWS::ElasticLoadBalancingV2::TargetGroup':
-        return this.deleteTargetGroup(logicalId, physicalId, resourceType);
+        return this.deleteTargetGroup(logicalId, physicalId, resourceType, context);
       case 'AWS::ElasticLoadBalancingV2::Listener':
-        return this.deleteListener(logicalId, physicalId, resourceType);
+        return this.deleteListener(logicalId, physicalId, resourceType, context);
       default:
         throw new ProvisioningError(
           `Unsupported resource type: ${resourceType}`,
@@ -297,7 +299,8 @@ export class ELBv2Provider implements ResourceProvider {
   private async deleteLoadBalancer(
     logicalId: string,
     physicalId: string,
-    resourceType: string
+    resourceType: string,
+    context?: DeleteContext
   ): Promise<void> {
     this.logger.debug(`Deleting LoadBalancer ${logicalId}: ${physicalId}`);
 
@@ -306,6 +309,14 @@ export class ELBv2Provider implements ResourceProvider {
       this.logger.debug(`Successfully deleted LoadBalancer ${logicalId}`);
     } catch (error) {
       if (this.isNotFoundError(error)) {
+        const clientRegion = await this.getClient().config.region();
+        assertRegionMatch(
+          clientRegion,
+          context?.expectedRegion,
+          resourceType,
+          logicalId,
+          physicalId
+        );
         this.logger.debug(`LoadBalancer ${physicalId} does not exist, skipping deletion`);
         return;
       }
@@ -473,7 +484,8 @@ export class ELBv2Provider implements ResourceProvider {
   private async deleteTargetGroup(
     logicalId: string,
     physicalId: string,
-    resourceType: string
+    resourceType: string,
+    context?: DeleteContext
   ): Promise<void> {
     this.logger.debug(`Deleting TargetGroup ${logicalId}: ${physicalId}`);
 
@@ -482,6 +494,14 @@ export class ELBv2Provider implements ResourceProvider {
       this.logger.debug(`Successfully deleted TargetGroup ${logicalId}`);
     } catch (error) {
       if (this.isNotFoundError(error)) {
+        const clientRegion = await this.getClient().config.region();
+        assertRegionMatch(
+          clientRegion,
+          context?.expectedRegion,
+          resourceType,
+          logicalId,
+          physicalId
+        );
         this.logger.debug(`TargetGroup ${physicalId} does not exist, skipping deletion`);
         return;
       }
@@ -602,7 +622,8 @@ export class ELBv2Provider implements ResourceProvider {
   private async deleteListener(
     logicalId: string,
     physicalId: string,
-    resourceType: string
+    resourceType: string,
+    context?: DeleteContext
   ): Promise<void> {
     this.logger.debug(`Deleting Listener ${logicalId}: ${physicalId}`);
 
@@ -611,6 +632,14 @@ export class ELBv2Provider implements ResourceProvider {
       this.logger.debug(`Successfully deleted Listener ${logicalId}`);
     } catch (error) {
       if (this.isNotFoundError(error)) {
+        const clientRegion = await this.getClient().config.region();
+        assertRegionMatch(
+          clientRegion,
+          context?.expectedRegion,
+          resourceType,
+          logicalId,
+          physicalId
+        );
         this.logger.debug(`Listener ${physicalId} does not exist, skipping deletion`);
         return;
       }

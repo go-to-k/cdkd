@@ -14,6 +14,7 @@ import {
 } from '@aws-sdk/client-glue';
 import { getLogger } from '../../utils/logger.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
+import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -98,13 +99,14 @@ export class GlueProvider implements ResourceProvider {
     logicalId: string,
     physicalId: string,
     resourceType: string,
-    _properties?: Record<string, unknown>
+    properties?: Record<string, unknown>,
+    context?: DeleteContext
   ): Promise<void> {
     switch (resourceType) {
       case 'AWS::Glue::Database':
-        return this.deleteDatabase(logicalId, physicalId, resourceType);
+        return this.deleteDatabase(logicalId, physicalId, resourceType, properties, context);
       case 'AWS::Glue::Table':
-        return this.deleteTable(logicalId, physicalId, resourceType);
+        return this.deleteTable(logicalId, physicalId, resourceType, properties, context);
       default:
         throw new ProvisioningError(
           `Unsupported resource type: ${resourceType}`,
@@ -179,7 +181,8 @@ export class GlueProvider implements ResourceProvider {
     logicalId: string,
     physicalId: string,
     resourceType: string,
-    properties?: Record<string, unknown>
+    properties?: Record<string, unknown>,
+    context?: DeleteContext
   ): Promise<void> {
     this.logger.debug(`Deleting Glue Database ${logicalId}: ${physicalId}`);
 
@@ -194,6 +197,14 @@ export class GlueProvider implements ResourceProvider {
       this.logger.debug(`Successfully deleted Glue Database ${logicalId}`);
     } catch (error) {
       if (error instanceof EntityNotFoundException) {
+        const clientRegion = await this.getClient().config.region();
+        assertRegionMatch(
+          clientRegion,
+          context?.expectedRegion,
+          resourceType,
+          logicalId,
+          physicalId
+        );
         this.logger.debug(`Glue Database ${physicalId} does not exist, skipping deletion`);
         return;
       }
@@ -334,7 +345,9 @@ export class GlueProvider implements ResourceProvider {
   private async deleteTable(
     logicalId: string,
     physicalId: string,
-    resourceType: string
+    resourceType: string,
+    _properties?: Record<string, unknown>,
+    context?: DeleteContext
   ): Promise<void> {
     this.logger.debug(`Deleting Glue Table ${logicalId}: ${physicalId}`);
 
@@ -354,6 +367,14 @@ export class GlueProvider implements ResourceProvider {
       this.logger.debug(`Successfully deleted Glue Table ${logicalId}`);
     } catch (error) {
       if (error instanceof EntityNotFoundException) {
+        const clientRegion = await this.getClient().config.region();
+        assertRegionMatch(
+          clientRegion,
+          context?.expectedRegion,
+          resourceType,
+          logicalId,
+          physicalId
+        );
         this.logger.debug(`Glue Table ${physicalId} does not exist, skipping deletion`);
         return;
       }

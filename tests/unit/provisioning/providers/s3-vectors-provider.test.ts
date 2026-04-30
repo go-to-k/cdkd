@@ -8,6 +8,7 @@ vi.mock('@aws-sdk/client-s3vectors', async (importOriginal) => {
     ...actual,
     S3VectorsClient: vi.fn().mockImplementation(() => ({
       send: mockSend,
+      config: { region: () => Promise.resolve('us-east-1') },
     })),
   };
 });

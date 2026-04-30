@@ -13,6 +13,7 @@ import {
 import { getLogger } from '../../utils/logger.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
+import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { generateResourceName } from '../resource-name.js';
 import type {
   ResourceProvider,
@@ -253,7 +254,8 @@ export class SecretsManagerSecretProvider implements ResourceProvider {
     logicalId: string,
     physicalId: string,
     resourceType: string,
-    _properties?: Record<string, unknown>
+    _properties?: Record<string, unknown>,
+    context?: DeleteContext
   ): Promise<void> {
     this.logger.debug(`Deleting secret ${logicalId}: ${physicalId}`);
 
@@ -267,6 +269,14 @@ export class SecretsManagerSecretProvider implements ResourceProvider {
       this.logger.debug(`Successfully deleted secret ${logicalId}`);
     } catch (error) {
       if (error instanceof ResourceNotFoundException) {
+        const clientRegion = await this.smClient.config.region();
+        assertRegionMatch(
+          clientRegion,
+          context?.expectedRegion,
+          resourceType,
+          logicalId,
+          physicalId
+        );
         this.logger.debug(`Secret ${physicalId} does not exist, skipping deletion`);
         return;
       }

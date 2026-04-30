@@ -8,6 +8,7 @@ import {
 import { getLogger } from '../../utils/logger.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
+import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -116,7 +117,8 @@ export class CloudFrontOAIProvider implements ResourceProvider {
     logicalId: string,
     physicalId: string,
     resourceType: string,
-    _properties?: Record<string, unknown>
+    _properties?: Record<string, unknown>,
+    context?: DeleteContext
   ): Promise<void> {
     this.logger.debug(`Deleting CloudFront OAI ${logicalId}: ${physicalId}`);
 
@@ -130,6 +132,14 @@ export class CloudFrontOAIProvider implements ResourceProvider {
         etag = getResponse.ETag!;
       } catch (error) {
         if (error instanceof NoSuchCloudFrontOriginAccessIdentity) {
+          const clientRegion = await this.cloudFrontClient.config.region();
+          assertRegionMatch(
+            clientRegion,
+            context?.expectedRegion,
+            resourceType,
+            logicalId,
+            physicalId
+          );
           this.logger.debug(`OAI ${physicalId} does not exist, skipping deletion`);
           return;
         }
@@ -147,6 +157,14 @@ export class CloudFrontOAIProvider implements ResourceProvider {
       this.logger.debug(`Successfully deleted CloudFront OAI ${logicalId}`);
     } catch (error) {
       if (error instanceof NoSuchCloudFrontOriginAccessIdentity) {
+        const clientRegion = await this.cloudFrontClient.config.region();
+        assertRegionMatch(
+          clientRegion,
+          context?.expectedRegion,
+          resourceType,
+          logicalId,
+          physicalId
+        );
         this.logger.debug(`OAI ${physicalId} does not exist, skipping deletion`);
         return;
       }

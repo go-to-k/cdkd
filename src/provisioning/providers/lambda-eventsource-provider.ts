@@ -10,6 +10,7 @@ import {
 import { getLogger } from '../../utils/logger.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
+import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -249,7 +250,8 @@ export class LambdaEventSourceMappingProvider implements ResourceProvider {
     logicalId: string,
     physicalId: string,
     resourceType: string,
-    _properties?: Record<string, unknown>
+    _properties?: Record<string, unknown>,
+    context?: DeleteContext
   ): Promise<void> {
     this.logger.debug(`Deleting event source mapping ${logicalId}: ${physicalId}`);
 
@@ -259,6 +261,14 @@ export class LambdaEventSourceMappingProvider implements ResourceProvider {
         await this.lambdaClient.send(new GetEventSourceMappingCommand({ UUID: physicalId }));
       } catch (error) {
         if (error instanceof ResourceNotFoundException) {
+          const clientRegion = await this.lambdaClient.config.region();
+          assertRegionMatch(
+            clientRegion,
+            context?.expectedRegion,
+            resourceType,
+            logicalId,
+            physicalId
+          );
           this.logger.debug(`Event source mapping ${physicalId} does not exist, skipping deletion`);
           return;
         }
@@ -269,6 +279,14 @@ export class LambdaEventSourceMappingProvider implements ResourceProvider {
       this.logger.debug(`Successfully deleted event source mapping ${logicalId}`);
     } catch (error) {
       if (error instanceof ResourceNotFoundException) {
+        const clientRegion = await this.lambdaClient.config.region();
+        assertRegionMatch(
+          clientRegion,
+          context?.expectedRegion,
+          resourceType,
+          logicalId,
+          physicalId
+        );
         this.logger.debug(`Event source mapping ${physicalId} does not exist, skipping deletion`);
         return;
       }

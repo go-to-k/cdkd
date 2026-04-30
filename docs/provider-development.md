@@ -53,12 +53,19 @@ export interface ResourceProvider {
    * @param physicalId AWS physical ID
    * @param resourceType CloudFormation resource type
    * @param properties Resource properties (optional, for cleanup logic)
+   * @param context Delete-time context (optional). `context.expectedRegion`
+   *   is the region recorded in the stack state when the resource was
+   *   created. Providers MUST verify the AWS client's region against
+   *   `context.expectedRegion` before treating a `*NotFound` error as
+   *   idempotent delete success — see the "DELETE idempotency" section
+   *   below.
    */
   delete(
     logicalId: string,
     physicalId: string,
     resourceType: string,
-    properties?: Record<string, unknown>
+    properties?: Record<string, unknown>,
+    context?: DeleteContext
   ): Promise<void>;
 }
 ```
@@ -739,18 +746,53 @@ try {
 - Handle when `create` is called on existing resource
 - Handle when `delete` is called on non-existent resource
 
+**Region verification on `*NotFound`**: A `*NotFound` error during DELETE
+must NOT be treated as idempotent success without confirming that the AWS
+client's region matches the region the resource was deployed to. A destroy
+run pointing at the wrong region would otherwise receive `NotFound` for
+every resource and silently strip them all from state, leaving the actual
+AWS resources orphaned in the real region (this is the silent-failure
+incident that motivated PR 2 of the region/state refactor).
+
+Providers MUST call `assertRegionMatch()` from
+`src/provisioning/region-check.ts` before returning early on a `*NotFound`
+error:
+
 ```typescript
-// Example during deletion
-try {
-  await this.client.send(new GetXxxCommand({ Id: physicalId }));
-} catch (error) {
-  if (error instanceof ResourceNotFoundException) {
-    this.logger.info('Resource not found, skipping deletion');
-    return;
+import { assertRegionMatch, type DeleteContext } from '../region-check.js';
+
+async delete(
+  logicalId: string,
+  physicalId: string,
+  resourceType: string,
+  _properties?: Record<string, unknown>,
+  context?: DeleteContext,
+): Promise<void> {
+  try {
+    await this.client.send(new DeleteXxxCommand({ Id: physicalId }));
+  } catch (error) {
+    if (error instanceof ResourceNotFoundException) {
+      const clientRegion = await this.client.config.region();
+      assertRegionMatch(
+        clientRegion,
+        context?.expectedRegion,
+        resourceType,
+        logicalId,
+        physicalId,
+      );
+      this.logger.info('Resource not found, skipping deletion');
+      return;
+    }
+    throw error;
   }
-  throw error;
 }
 ```
+
+`assertRegionMatch` is a no-op when `context.expectedRegion` is undefined,
+preserving the existing idempotent semantics for callers that have not
+been threaded with state region. When set, a region mismatch throws a
+`ProvisioningError` that surfaces both regions and a hint to rerun with
+the correct `--region`.
 
 ### 3. Returning Attributes
 

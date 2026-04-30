@@ -49,6 +49,7 @@ function pascalToCamelCaseKeys(value: unknown): unknown {
 }
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
+import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -293,7 +294,8 @@ export class AgentCoreRuntimeProvider implements ResourceProvider {
     logicalId: string,
     physicalId: string,
     resourceType: string,
-    _properties?: Record<string, unknown>
+    _properties?: Record<string, unknown>,
+    context?: DeleteContext
   ): Promise<void> {
     this.logger.debug(`Deleting BedrockAgentCore Runtime ${logicalId}: ${physicalId}`);
 
@@ -307,6 +309,14 @@ export class AgentCoreRuntimeProvider implements ResourceProvider {
       this.logger.debug(`Successfully deleted BedrockAgentCore Runtime ${logicalId}`);
     } catch (error) {
       if (error instanceof ResourceNotFoundException) {
+        const clientRegion = await this.client.config.region();
+        assertRegionMatch(
+          clientRegion,
+          context?.expectedRegion,
+          resourceType,
+          logicalId,
+          physicalId
+        );
         this.logger.debug(`Runtime ${physicalId} does not exist, skipping deletion`);
         return;
       }

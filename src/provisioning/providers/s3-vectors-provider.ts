@@ -8,6 +8,7 @@ import {
 } from '@aws-sdk/client-s3vectors';
 import { getLogger } from '../../utils/logger.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
+import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -83,11 +84,12 @@ export class S3VectorsProvider implements ResourceProvider {
     logicalId: string,
     physicalId: string,
     resourceType: string,
-    _properties?: Record<string, unknown>
+    _properties?: Record<string, unknown>,
+    context?: DeleteContext
   ): Promise<void> {
     switch (resourceType) {
       case 'AWS::S3Vectors::VectorBucket':
-        return this.deleteVectorBucket(logicalId, physicalId, resourceType);
+        return this.deleteVectorBucket(logicalId, physicalId, resourceType, context);
       default:
         throw new ProvisioningError(
           `Unsupported resource type: ${resourceType}`,
@@ -158,7 +160,8 @@ export class S3VectorsProvider implements ResourceProvider {
   private async deleteVectorBucket(
     logicalId: string,
     physicalId: string,
-    resourceType: string
+    resourceType: string,
+    context?: DeleteContext
   ): Promise<void> {
     this.logger.debug(`Deleting S3 VectorBucket ${logicalId}: ${physicalId}`);
 
@@ -176,6 +179,14 @@ export class S3VectorsProvider implements ResourceProvider {
     } catch (error) {
       // Idempotency: treat not-found as success
       if (this.isNotFoundError(error)) {
+        const clientRegion = await this.getClient().config.region();
+        assertRegionMatch(
+          clientRegion,
+          context?.expectedRegion,
+          resourceType,
+          logicalId,
+          physicalId
+        );
         this.logger.debug(`S3 VectorBucket ${physicalId} does not exist, skipping deletion`);
         return;
       }

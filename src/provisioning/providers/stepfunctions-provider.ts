@@ -14,6 +14,7 @@ import {
 } from '@aws-sdk/client-sfn';
 import { getLogger } from '../../utils/logger.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
+import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { generateResourceName } from '../resource-name.js';
 import type {
   ResourceProvider,
@@ -238,7 +239,8 @@ export class StepFunctionsProvider implements ResourceProvider {
     logicalId: string,
     physicalId: string,
     resourceType: string,
-    _properties?: Record<string, unknown>
+    _properties?: Record<string, unknown>,
+    context?: DeleteContext
   ): Promise<void> {
     this.logger.debug(`Deleting Step Functions state machine ${logicalId}: ${physicalId}`);
 
@@ -247,6 +249,14 @@ export class StepFunctionsProvider implements ResourceProvider {
       this.logger.debug(`Successfully deleted Step Functions state machine ${logicalId}`);
     } catch (error) {
       if (error instanceof StateMachineDoesNotExist) {
+        const clientRegion = await this.getClient().config.region();
+        assertRegionMatch(
+          clientRegion,
+          context?.expectedRegion,
+          resourceType,
+          logicalId,
+          physicalId
+        );
         this.logger.debug(
           `Step Functions state machine ${physicalId} does not exist, skipping deletion`
         );

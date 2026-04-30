@@ -10,6 +10,7 @@ import { STSClient, GetCallerIdentityCommand } from '@aws-sdk/client-sts';
 import { getLogger } from '../../utils/logger.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
+import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { generateResourceName } from '../resource-name.js';
 import type {
   ResourceProvider,
@@ -231,7 +232,8 @@ export class SQSQueueProvider implements ResourceProvider {
     logicalId: string,
     physicalId: string,
     resourceType: string,
-    _properties?: Record<string, unknown>
+    _properties?: Record<string, unknown>,
+    context?: DeleteContext
   ): Promise<void> {
     this.logger.debug(`Deleting SQS queue ${logicalId}: ${physicalId}`);
 
@@ -240,6 +242,14 @@ export class SQSQueueProvider implements ResourceProvider {
       this.logger.debug(`Successfully deleted SQS queue ${logicalId}`);
     } catch (error) {
       if (error instanceof QueueDoesNotExist) {
+        const clientRegion = await this.sqsClient.config.region();
+        assertRegionMatch(
+          clientRegion,
+          context?.expectedRegion,
+          resourceType,
+          logicalId,
+          physicalId
+        );
         this.logger.debug(`SQS queue ${physicalId} does not exist, skipping deletion`);
         return;
       }

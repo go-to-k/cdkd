@@ -19,6 +19,7 @@ import {
 import { getLogger } from '../../utils/logger.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
+import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -174,21 +175,22 @@ export class ApiGatewayProvider implements ResourceProvider {
     logicalId: string,
     physicalId: string,
     resourceType: string,
-    properties?: Record<string, unknown>
+    properties?: Record<string, unknown>,
+    context?: DeleteContext
   ): Promise<void> {
     switch (resourceType) {
       case 'AWS::ApiGateway::Account':
         return this.deleteAccount(logicalId, physicalId, resourceType);
       case 'AWS::ApiGateway::Authorizer':
-        return this.deleteAuthorizer(logicalId, physicalId, resourceType, properties);
+        return this.deleteAuthorizer(logicalId, physicalId, resourceType, properties, context);
       case 'AWS::ApiGateway::Resource':
-        return this.deleteResource(logicalId, physicalId, resourceType, properties);
+        return this.deleteResource(logicalId, physicalId, resourceType, properties, context);
       case 'AWS::ApiGateway::Deployment':
-        return this.deleteDeployment(logicalId, physicalId, resourceType, properties);
+        return this.deleteDeployment(logicalId, physicalId, resourceType, properties, context);
       case 'AWS::ApiGateway::Stage':
-        return this.deleteStage(logicalId, physicalId, resourceType, properties);
+        return this.deleteStage(logicalId, physicalId, resourceType, properties, context);
       case 'AWS::ApiGateway::Method':
-        return this.deleteMethod(logicalId, physicalId, resourceType);
+        return this.deleteMethod(logicalId, physicalId, resourceType, context);
       default:
         throw new ProvisioningError(
           `Unsupported resource type: ${resourceType}`,
@@ -485,7 +487,8 @@ export class ApiGatewayProvider implements ResourceProvider {
     logicalId: string,
     physicalId: string,
     resourceType: string,
-    properties?: Record<string, unknown>
+    properties?: Record<string, unknown>,
+    context?: DeleteContext
   ): Promise<void> {
     this.logger.debug(`Deleting API Gateway Authorizer ${logicalId}: ${physicalId}`);
 
@@ -511,6 +514,14 @@ export class ApiGatewayProvider implements ResourceProvider {
       this.logger.debug(`Successfully deleted API Gateway Authorizer ${logicalId}`);
     } catch (error) {
       if (error instanceof NotFoundException) {
+        const clientRegion = await this.apiGatewayClient.config.region();
+        assertRegionMatch(
+          clientRegion,
+          context?.expectedRegion,
+          resourceType,
+          logicalId,
+          physicalId
+        );
         this.logger.debug(`API Gateway Authorizer ${physicalId} does not exist, skipping deletion`);
         return;
       }
@@ -653,7 +664,8 @@ export class ApiGatewayProvider implements ResourceProvider {
     logicalId: string,
     physicalId: string,
     resourceType: string,
-    properties?: Record<string, unknown>
+    properties?: Record<string, unknown>,
+    context?: DeleteContext
   ): Promise<void> {
     this.logger.debug(`Deleting API Gateway Resource ${logicalId}: ${physicalId}`);
 
@@ -679,6 +691,14 @@ export class ApiGatewayProvider implements ResourceProvider {
       this.logger.debug(`Successfully deleted API Gateway Resource ${logicalId}`);
     } catch (error) {
       if (error instanceof NotFoundException) {
+        const clientRegion = await this.apiGatewayClient.config.region();
+        assertRegionMatch(
+          clientRegion,
+          context?.expectedRegion,
+          resourceType,
+          logicalId,
+          physicalId
+        );
         this.logger.debug(`API Gateway Resource ${physicalId} does not exist, skipping deletion`);
         return;
       }
@@ -792,7 +812,8 @@ export class ApiGatewayProvider implements ResourceProvider {
     logicalId: string,
     physicalId: string,
     resourceType: string,
-    properties?: Record<string, unknown>
+    properties?: Record<string, unknown>,
+    context?: DeleteContext
   ): Promise<void> {
     this.logger.debug(`Deleting API Gateway Deployment ${logicalId}: ${physicalId}`);
 
@@ -818,6 +839,14 @@ export class ApiGatewayProvider implements ResourceProvider {
       this.logger.debug(`Successfully deleted API Gateway Deployment ${logicalId}`);
     } catch (error) {
       if (error instanceof NotFoundException) {
+        const clientRegion = await this.apiGatewayClient.config.region();
+        assertRegionMatch(
+          clientRegion,
+          context?.expectedRegion,
+          resourceType,
+          logicalId,
+          physicalId
+        );
         this.logger.debug(`API Gateway Deployment ${physicalId} does not exist, skipping deletion`);
         return;
       }
@@ -991,7 +1020,8 @@ export class ApiGatewayProvider implements ResourceProvider {
     logicalId: string,
     physicalId: string,
     resourceType: string,
-    properties?: Record<string, unknown>
+    properties?: Record<string, unknown>,
+    context?: DeleteContext
   ): Promise<void> {
     this.logger.debug(`Deleting API Gateway Stage ${logicalId}: ${physicalId}`);
 
@@ -1017,6 +1047,14 @@ export class ApiGatewayProvider implements ResourceProvider {
       this.logger.debug(`Successfully deleted API Gateway Stage ${logicalId}`);
     } catch (error) {
       if (error instanceof NotFoundException) {
+        const clientRegion = await this.apiGatewayClient.config.region();
+        assertRegionMatch(
+          clientRegion,
+          context?.expectedRegion,
+          resourceType,
+          logicalId,
+          physicalId
+        );
         this.logger.debug(`API Gateway Stage ${physicalId} does not exist, skipping deletion`);
         return;
       }
@@ -1162,7 +1200,8 @@ export class ApiGatewayProvider implements ResourceProvider {
   private async deleteMethod(
     logicalId: string,
     physicalId: string,
-    resourceType: string
+    resourceType: string,
+    context?: DeleteContext
   ): Promise<void> {
     this.logger.debug(`Deleting API Gateway Method ${logicalId}: ${physicalId}`);
 
@@ -1190,6 +1229,14 @@ export class ApiGatewayProvider implements ResourceProvider {
       this.logger.debug(`Successfully deleted API Gateway Method ${logicalId}`);
     } catch (error) {
       if (error instanceof NotFoundException) {
+        const clientRegion = await this.apiGatewayClient.config.region();
+        assertRegionMatch(
+          clientRegion,
+          context?.expectedRegion,
+          resourceType,
+          logicalId,
+          physicalId
+        );
         this.logger.debug(`API Gateway Method ${physicalId} does not exist, skipping deletion`);
         return;
       }

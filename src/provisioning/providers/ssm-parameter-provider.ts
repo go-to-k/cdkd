@@ -11,6 +11,7 @@ import {
 import { getLogger } from '../../utils/logger.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
+import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { generateResourceName } from '../resource-name.js';
 import type {
   ResourceProvider,
@@ -237,7 +238,8 @@ export class SSMParameterProvider implements ResourceProvider {
     logicalId: string,
     physicalId: string,
     resourceType: string,
-    _properties?: Record<string, unknown>
+    _properties?: Record<string, unknown>,
+    context?: DeleteContext
   ): Promise<void> {
     this.logger.debug(`Deleting SSM parameter ${logicalId}: ${physicalId}`);
 
@@ -251,6 +253,14 @@ export class SSMParameterProvider implements ResourceProvider {
       this.logger.debug(`Successfully deleted SSM parameter ${logicalId}`);
     } catch (error) {
       if (error instanceof ParameterNotFound) {
+        const clientRegion = await this.ssmClient.config.region();
+        assertRegionMatch(
+          clientRegion,
+          context?.expectedRegion,
+          resourceType,
+          logicalId,
+          physicalId
+        );
         this.logger.debug(`Parameter ${physicalId} does not exist, skipping deletion`);
         return;
       }

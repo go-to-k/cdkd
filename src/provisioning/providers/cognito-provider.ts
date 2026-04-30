@@ -28,6 +28,7 @@ import {
 import { getLogger } from '../../utils/logger.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { generateResourceName } from '../resource-name.js';
+import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -375,7 +376,8 @@ export class CognitoUserPoolProvider implements ResourceProvider {
     logicalId: string,
     physicalId: string,
     resourceType: string,
-    properties?: Record<string, unknown>
+    properties?: Record<string, unknown>,
+    context?: DeleteContext
   ): Promise<void> {
     this.logger.debug(`Deleting Cognito User Pool ${logicalId}: ${physicalId}`);
 
@@ -411,6 +413,14 @@ export class CognitoUserPoolProvider implements ResourceProvider {
           }
         } catch (descError) {
           if (descError instanceof ResourceNotFoundException) {
+            const clientRegion = await this.getClient().config.region();
+            assertRegionMatch(
+              clientRegion,
+              context?.expectedRegion,
+              resourceType,
+              logicalId,
+              physicalId
+            );
             this.logger.debug(`Cognito User Pool ${physicalId} does not exist, skipping deletion`);
             return;
           }
@@ -425,6 +435,14 @@ export class CognitoUserPoolProvider implements ResourceProvider {
       this.logger.debug(`Successfully deleted Cognito User Pool ${logicalId}`);
     } catch (error) {
       if (error instanceof ResourceNotFoundException) {
+        const clientRegion = await this.getClient().config.region();
+        assertRegionMatch(
+          clientRegion,
+          context?.expectedRegion,
+          resourceType,
+          logicalId,
+          physicalId
+        );
         this.logger.debug(`Cognito User Pool ${physicalId} does not exist, skipping deletion`);
         return;
       }

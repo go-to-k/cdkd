@@ -26,6 +26,7 @@ import { getLogger } from '../../utils/logger.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { generateResourceName } from '../resource-name.js';
+import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -306,7 +307,8 @@ export class LambdaFunctionProvider implements ResourceProvider {
     logicalId: string,
     physicalId: string,
     resourceType: string,
-    properties?: Record<string, unknown>
+    properties?: Record<string, unknown>,
+    context?: DeleteContext
   ): Promise<void> {
     this.logger.debug(`Deleting Lambda function ${logicalId}: ${physicalId}`);
 
@@ -329,6 +331,14 @@ export class LambdaFunctionProvider implements ResourceProvider {
         this.logger.debug(`Detached VPC config from Lambda ${physicalId} before deletion`);
       } catch (error) {
         if (error instanceof ResourceNotFoundException) {
+          const clientRegion = await this.lambdaClient.config.region();
+          assertRegionMatch(
+            clientRegion,
+            context?.expectedRegion,
+            resourceType,
+            logicalId,
+            physicalId
+          );
           // Function is already gone — nothing more to do, including ENI wait
           // (AWS owns the cleanup at this point).
           return;
@@ -357,6 +367,14 @@ export class LambdaFunctionProvider implements ResourceProvider {
       this.logger.debug(`Successfully deleted Lambda function ${logicalId}`);
     } catch (error) {
       if (error instanceof ResourceNotFoundException) {
+        const clientRegion = await this.lambdaClient.config.region();
+        assertRegionMatch(
+          clientRegion,
+          context?.expectedRegion,
+          resourceType,
+          logicalId,
+          physicalId
+        );
         this.logger.debug(`Lambda function ${physicalId} does not exist, skipping deletion`);
         return;
       }

@@ -8,6 +8,7 @@ vi.mock('@aws-sdk/client-kms', async (importOriginal) => {
     ...actual,
     KMSClient: vi.fn().mockImplementation(() => ({
       send: mockSend,
+      config: { region: () => Promise.resolve('us-east-1') },
     })),
   };
 });

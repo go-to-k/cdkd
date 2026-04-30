@@ -169,10 +169,17 @@ interface ResourceState {
 interface ResourceProvider {
   create(logicalId: string, resourceType: string, properties: Record<string, unknown>): Promise<ResourceCreateResult>;
   update(physicalId: string, logicalId: string, resourceType: string, oldProperties: Record<string, unknown>, newProperties: Record<string, unknown>): Promise<void>;
-  delete(physicalId: string, logicalId: string, resourceType: string, properties: Record<string, unknown>): Promise<void>;
+  delete(physicalId: string, logicalId: string, resourceType: string, properties: Record<string, unknown>, context?: { expectedRegion?: string }): Promise<void>;
   getAttribute(physicalId: string, logicalId: string, resourceType: string, attributeName: string): Promise<any>;
 }
 ```
+
+The `context.expectedRegion` parameter on `delete` is the region recorded
+in the stack state when the resource was created. Providers MUST verify
+the AWS client's region against `context.expectedRegion` (via the shared
+`assertRegionMatch()` helper in `src/provisioning/region-check.ts`)
+before treating a `*NotFound` error as idempotent delete success — see
+"DELETE idempotency" below and `docs/provider-development.md`.
 
 Register Provider for each resource type in Provider Registry:
 
@@ -362,7 +369,7 @@ See [docs/provider-development.md](docs/provider-development.md) for details.
 - ✅ Dynamic References: `{{resolve:secretsmanager:...}}` and `{{resolve:ssm:...}}`
 - ✅ SDK Providers: see SDK Providers section above for full list
 - ✅ ALL pseudo parameters supported (7/7 including AWS::StackName/StackId)
-- ✅ DELETE idempotency (not-found/No policy found treated as success)
+- ✅ DELETE idempotency (not-found/No policy found treated as success **only when client region matches state region** — region-mismatched destroys now surface `ProvisioningError` instead of silently stripping resources from state; helper at `src/provisioning/region-check.ts`)
 - ✅ Destroy ordering: reverse dependency from state + implicit type-based deps
 - ✅ CC API null value stripping + JSON string properties (EventPattern)
 - ✅ CC API ClientToken removed (caches failure results, incompatible with retry)

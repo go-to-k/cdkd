@@ -832,7 +832,9 @@ export class DeployEngine {
             `  Rollback: Deleting created resource ${op.logicalId} (${op.resourceType})`
           );
           const provider = this.providerRegistry.getProvider(op.resourceType);
-          await provider.delete(op.logicalId, op.physicalId, op.resourceType, op.properties);
+          await provider.delete(op.logicalId, op.physicalId, op.resourceType, op.properties, {
+            expectedRegion: this.stackRegion,
+          });
 
           // Remove from state
           delete stateResources[op.logicalId];
@@ -1049,7 +1051,8 @@ export class DeployEngine {
                   logicalId,
                   currentResource.physicalId,
                   resourceType,
-                  currentResource.properties
+                  currentResource.properties,
+                  { expectedRegion: this.stackRegion }
                 );
                 this.logger.info(`  ✓ Old resource deleted`);
               } catch (deleteError) {
@@ -1109,7 +1112,8 @@ export class DeployEngine {
                     logicalId,
                     currentResource.physicalId,
                     resourceType,
-                    currentProps
+                    currentProps,
+                    { expectedRegion: this.stackRegion }
                   );
                 } catch (deleteError) {
                   // If old resource doesn't exist (already deleted), proceed with CREATE
@@ -1193,7 +1197,8 @@ export class DeployEngine {
                   logicalId,
                   currentResource.physicalId,
                   resourceType,
-                  currentResource.properties
+                  currentResource.properties,
+                  { expectedRegion: this.stackRegion }
                 ),
               logicalId,
               3, // fewer retries for DELETE

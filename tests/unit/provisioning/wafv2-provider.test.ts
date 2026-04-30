@@ -7,7 +7,7 @@ vi.mock('@aws-sdk/client-wafv2', async () => {
   const actual = await vi.importActual('@aws-sdk/client-wafv2');
   return {
     ...actual,
-    WAFV2Client: vi.fn().mockImplementation(() => ({ send: mockSend })),
+    WAFV2Client: vi.fn().mockImplementation(() => ({ send: mockSend, config: { region: () => Promise.resolve('us-east-1') } })),
   };
 });
 

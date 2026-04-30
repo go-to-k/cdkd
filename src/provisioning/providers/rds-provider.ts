@@ -14,6 +14,7 @@ import {
 } from '@aws-sdk/client-rds';
 import { getLogger } from '../../utils/logger.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
+import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { generateResourceName } from '../resource-name.js';
 import type {
   ResourceProvider,
@@ -135,15 +136,16 @@ export class RDSProvider implements ResourceProvider {
     logicalId: string,
     physicalId: string,
     resourceType: string,
-    _properties?: Record<string, unknown>
+    _properties?: Record<string, unknown>,
+    context?: DeleteContext
   ): Promise<void> {
     switch (resourceType) {
       case 'AWS::RDS::DBSubnetGroup':
-        return this.deleteDBSubnetGroup(logicalId, physicalId, resourceType);
+        return this.deleteDBSubnetGroup(logicalId, physicalId, resourceType, context);
       case 'AWS::RDS::DBCluster':
-        return this.deleteDBCluster(logicalId, physicalId, resourceType);
+        return this.deleteDBCluster(logicalId, physicalId, resourceType, context);
       case 'AWS::RDS::DBInstance':
-        return this.deleteDBInstance(logicalId, physicalId, resourceType);
+        return this.deleteDBInstance(logicalId, physicalId, resourceType, context);
       default:
         throw new ProvisioningError(
           `Unsupported resource type: ${resourceType}`,
@@ -241,7 +243,8 @@ export class RDSProvider implements ResourceProvider {
   private async deleteDBSubnetGroup(
     logicalId: string,
     physicalId: string,
-    resourceType: string
+    resourceType: string,
+    context?: DeleteContext
   ): Promise<void> {
     this.logger.debug(`Deleting DBSubnetGroup ${logicalId}: ${physicalId}`);
 
@@ -254,6 +257,14 @@ export class RDSProvider implements ResourceProvider {
       this.logger.debug(`Successfully deleted DBSubnetGroup ${logicalId}`);
     } catch (error) {
       if (this.isNotFoundError(error, 'DBSubnetGroupNotFoundFault')) {
+        const clientRegion = await this.getClient().config.region();
+        assertRegionMatch(
+          clientRegion,
+          context?.expectedRegion,
+          resourceType,
+          logicalId,
+          physicalId
+        );
         this.logger.debug(`DBSubnetGroup ${physicalId} does not exist, skipping deletion`);
         return;
       }
@@ -420,7 +431,8 @@ export class RDSProvider implements ResourceProvider {
   private async deleteDBCluster(
     logicalId: string,
     physicalId: string,
-    resourceType: string
+    resourceType: string,
+    context?: DeleteContext
   ): Promise<void> {
     this.logger.debug(`Deleting DBCluster ${logicalId}: ${physicalId}`);
 
@@ -455,6 +467,14 @@ export class RDSProvider implements ResourceProvider {
       await this.waitForClusterDeleted(physicalId);
     } catch (error) {
       if (this.isNotFoundError(error, 'DBClusterNotFoundFault')) {
+        const clientRegion = await this.getClient().config.region();
+        assertRegionMatch(
+          clientRegion,
+          context?.expectedRegion,
+          resourceType,
+          logicalId,
+          physicalId
+        );
         this.logger.debug(`DBCluster ${physicalId} does not exist, skipping deletion`);
         return;
       }
@@ -580,7 +600,8 @@ export class RDSProvider implements ResourceProvider {
   private async deleteDBInstance(
     logicalId: string,
     physicalId: string,
-    resourceType: string
+    resourceType: string,
+    context?: DeleteContext
   ): Promise<void> {
     this.logger.debug(`Deleting DBInstance ${logicalId}: ${physicalId}`);
 
@@ -615,6 +636,14 @@ export class RDSProvider implements ResourceProvider {
       await this.waitForInstanceDeleted(physicalId);
     } catch (error) {
       if (this.isNotFoundError(error, 'DBInstanceNotFoundFault')) {
+        const clientRegion = await this.getClient().config.region();
+        assertRegionMatch(
+          clientRegion,
+          context?.expectedRegion,
+          resourceType,
+          logicalId,
+          physicalId
+        );
         this.logger.debug(`DBInstance ${physicalId} does not exist, skipping deletion`);
         return;
       }

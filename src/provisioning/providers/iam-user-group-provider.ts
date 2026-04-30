@@ -34,6 +34,7 @@ import {
 import { getLogger } from '../../utils/logger.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
+import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { generateResourceName } from '../resource-name.js';
 import type {
   ResourceProvider,
@@ -141,15 +142,22 @@ export class IAMUserGroupProvider implements ResourceProvider {
     logicalId: string,
     physicalId: string,
     resourceType: string,
-    properties?: Record<string, unknown>
+    properties?: Record<string, unknown>,
+    context?: DeleteContext
   ): Promise<void> {
     switch (resourceType) {
       case 'AWS::IAM::User':
-        return this.deleteUser(logicalId, physicalId, resourceType);
+        return this.deleteUser(logicalId, physicalId, resourceType, context);
       case 'AWS::IAM::Group':
-        return this.deleteGroup(logicalId, physicalId, resourceType);
+        return this.deleteGroup(logicalId, physicalId, resourceType, context);
       case 'AWS::IAM::UserToGroupAddition':
-        return this.deleteUserToGroupAddition(logicalId, physicalId, resourceType, properties);
+        return this.deleteUserToGroupAddition(
+          logicalId,
+          physicalId,
+          resourceType,
+          properties,
+          context
+        );
       default:
         throw new ProvisioningError(
           `Unsupported resource type: ${resourceType}`,
@@ -420,7 +428,8 @@ export class IAMUserGroupProvider implements ResourceProvider {
   private async deleteUser(
     logicalId: string,
     physicalId: string,
-    resourceType: string
+    resourceType: string,
+    context?: DeleteContext
   ): Promise<void> {
     this.logger.debug(`Deleting IAM user ${logicalId}: ${physicalId}`);
 
@@ -430,6 +439,14 @@ export class IAMUserGroupProvider implements ResourceProvider {
         await this.iamClient.send(new GetUserCommand({ UserName: physicalId }));
       } catch (error) {
         if (error instanceof NoSuchEntityException) {
+          const clientRegion = await this.iamClient.config.region();
+          assertRegionMatch(
+            clientRegion,
+            context?.expectedRegion,
+            resourceType,
+            logicalId,
+            physicalId
+          );
           this.logger.debug(`User ${physicalId} does not exist, skipping deletion`);
           return;
         }
@@ -866,7 +883,8 @@ export class IAMUserGroupProvider implements ResourceProvider {
   private async deleteGroup(
     logicalId: string,
     physicalId: string,
-    resourceType: string
+    resourceType: string,
+    context?: DeleteContext
   ): Promise<void> {
     this.logger.debug(`Deleting IAM group ${logicalId}: ${physicalId}`);
 
@@ -886,6 +904,14 @@ export class IAMUserGroupProvider implements ResourceProvider {
       this.logger.debug(`Successfully deleted IAM group ${logicalId}`);
     } catch (error) {
       if (error instanceof NoSuchEntityException) {
+        const clientRegion = await this.iamClient.config.region();
+        assertRegionMatch(
+          clientRegion,
+          context?.expectedRegion,
+          resourceType,
+          logicalId,
+          physicalId
+        );
         this.logger.debug(`Group ${physicalId} does not exist, skipping deletion`);
         return;
       }
@@ -1213,8 +1239,14 @@ export class IAMUserGroupProvider implements ResourceProvider {
     logicalId: string,
     physicalId: string,
     resourceType: string,
-    properties?: Record<string, unknown>
+    properties?: Record<string, unknown>,
+    _context?: DeleteContext
   ): Promise<void> {
+    // UserToGroupAddition is metadata-only (RemoveUserFromGroup); the
+    // "skipping" returns below trigger when input properties are missing,
+    // not when AWS reports the user/group missing, so the region check
+    // does not apply here. The context is accepted for interface
+    // consistency.
     this.logger.debug(`Deleting IAM UserToGroupAddition ${logicalId}`);
 
     if (!properties) {

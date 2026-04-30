@@ -6,7 +6,7 @@ const mockSend = vi.fn();
 
 vi.mock('../../../src/utils/aws-clients.js', () => ({
   getAwsClients: () => ({
-    eventBridge: { send: mockSend },
+    eventBridge: { send: mockSend, config: { region: () => Promise.resolve('us-east-1') } },
   }),
 }));
 

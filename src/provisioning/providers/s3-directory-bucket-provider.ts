@@ -10,6 +10,7 @@ import { EC2Client, DescribeAvailabilityZonesCommand } from '@aws-sdk/client-ec2
 import { getLogger } from '../../utils/logger.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
+import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { generateResourceName } from '../resource-name.js';
 import type {
   ResourceProvider,
@@ -196,7 +197,8 @@ export class S3DirectoryBucketProvider implements ResourceProvider {
     logicalId: string,
     physicalId: string,
     resourceType: string,
-    _properties?: Record<string, unknown>
+    _properties?: Record<string, unknown>,
+    context?: DeleteContext
   ): Promise<void> {
     this.logger.debug(`Deleting S3 Express Directory Bucket ${logicalId}: ${physicalId}`);
 
@@ -217,6 +219,14 @@ export class S3DirectoryBucketProvider implements ResourceProvider {
         error instanceof Error &&
         (error.name === 'NoSuchBucket' || error.name === 'BucketNotFound')
       ) {
+        const clientRegion = await this.s3Client.config.region();
+        assertRegionMatch(
+          clientRegion,
+          context?.expectedRegion,
+          resourceType,
+          logicalId,
+          physicalId
+        );
         this.logger.debug(`Bucket ${physicalId} does not exist, skipping deletion`);
         return;
       }

@@ -16,6 +16,7 @@ import { getAwsClients } from '../utils/aws-clients.js';
 import { getLogger } from '../utils/logger.js';
 import { ProvisioningError } from '../utils/error-handler.js';
 import { JsonPatchGenerator } from './json-patch-generator.js';
+import { assertRegionMatch, type DeleteContext } from './region-check.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -280,7 +281,8 @@ export class CloudControlProvider implements ResourceProvider {
     logicalId: string,
     physicalId: string,
     resourceType: string,
-    _properties?: Record<string, unknown>
+    _properties?: Record<string, unknown>,
+    context?: DeleteContext
   ): Promise<void> {
     this.logger.debug(
       `Deleting resource ${logicalId} (${resourceType}), physical ID: ${physicalId}`
@@ -313,7 +315,11 @@ export class CloudControlProvider implements ResourceProvider {
 
       this.logger.debug(`Deleted resource ${logicalId}`);
     } catch (error) {
-      // Treat "not found" / "does not exist" as idempotent success for DELETE
+      // Treat "not found" / "does not exist" as idempotent success for DELETE,
+      // but only when the AWS client is operating against the same region the
+      // resource was deployed to. A region mismatch must surface — otherwise a
+      // destroy run with the wrong region would silently strip every resource
+      // from state while leaving the actual AWS resources orphaned.
       const err = error as { name?: string; message?: string };
       if (
         err.name === 'ResourceNotFoundException' ||
@@ -321,6 +327,14 @@ export class CloudControlProvider implements ResourceProvider {
         err.message?.includes('not found') ||
         err.message?.includes('NotFound')
       ) {
+        const clientRegion = await this.cloudControlClient.config.region();
+        assertRegionMatch(
+          clientRegion,
+          context?.expectedRegion,
+          resourceType,
+          logicalId,
+          physicalId
+        );
         this.logger.debug(`Resource ${logicalId} already deleted (not found), treating as success`);
         return;
       }

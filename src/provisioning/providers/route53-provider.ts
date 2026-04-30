@@ -18,6 +18,7 @@ import {
 } from '@aws-sdk/client-route-53';
 import { getLogger } from '../../utils/logger.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
+import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -123,13 +124,14 @@ export class Route53Provider implements ResourceProvider {
     logicalId: string,
     physicalId: string,
     resourceType: string,
-    properties?: Record<string, unknown>
+    properties?: Record<string, unknown>,
+    context?: DeleteContext
   ): Promise<void> {
     switch (resourceType) {
       case 'AWS::Route53::HostedZone':
-        return this.deleteHostedZone(logicalId, physicalId, resourceType);
+        return this.deleteHostedZone(logicalId, physicalId, resourceType, context);
       case 'AWS::Route53::RecordSet':
-        return this.deleteRecordSet(logicalId, physicalId, resourceType, properties);
+        return this.deleteRecordSet(logicalId, physicalId, resourceType, properties, context);
       default:
         throw new ProvisioningError(
           `Unsupported resource type: ${resourceType}`,
@@ -326,7 +328,8 @@ export class Route53Provider implements ResourceProvider {
   private async deleteHostedZone(
     logicalId: string,
     physicalId: string,
-    resourceType: string
+    resourceType: string,
+    context?: DeleteContext
   ): Promise<void> {
     this.logger.debug(`Deleting Route 53 hosted zone ${logicalId}: ${physicalId}`);
 
@@ -338,6 +341,14 @@ export class Route53Provider implements ResourceProvider {
       this.logger.debug(`Successfully deleted hosted zone ${logicalId}`);
     } catch (error) {
       if (error instanceof Error && error.name === 'NoSuchHostedZone') {
+        const clientRegion = await this.getClient().config.region();
+        assertRegionMatch(
+          clientRegion,
+          context?.expectedRegion,
+          resourceType,
+          logicalId,
+          physicalId
+        );
         this.logger.debug(`Hosted zone ${physicalId} does not exist, skipping deletion`);
         return;
       }
@@ -484,7 +495,8 @@ export class Route53Provider implements ResourceProvider {
     logicalId: string,
     physicalId: string,
     resourceType: string,
-    properties?: Record<string, unknown>
+    properties?: Record<string, unknown>,
+    context?: DeleteContext
   ): Promise<void> {
     this.logger.debug(`Deleting Route 53 record set ${logicalId}: ${physicalId}`);
 
@@ -535,6 +547,14 @@ export class Route53Provider implements ResourceProvider {
         error instanceof Error &&
         (error.name === 'InvalidChangeBatch' || error.message.includes('it was not found'))
       ) {
+        const clientRegion = await this.getClient().config.region();
+        assertRegionMatch(
+          clientRegion,
+          context?.expectedRegion,
+          resourceType,
+          logicalId,
+          physicalId
+        );
         this.logger.debug(`Record set ${physicalId} does not exist, skipping deletion`);
         return;
       }
