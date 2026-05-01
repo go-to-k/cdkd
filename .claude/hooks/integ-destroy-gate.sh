@@ -28,6 +28,57 @@ fi
 
 cd "$REPO" 2>/dev/null || exit 0
 
+# Decide whether the diff actually touches deletion logic. The markgate
+# scope (.markgate.yml) is file-level, so it can't tell apart a real
+# delete-method change from an unrelated edit in the same file (e.g.
+# adding `provider.import` to every provider in PR #67 invalidated the
+# marker even though no provider's `delete` was modified). Use git diff
+# vs origin/main to look at the actual hunks: if no delete-touching
+# symbol is added or removed, skip the gate entirely.
+#
+# Heuristic:
+# - "always-delete" files: any change at all is delete-touching.
+# - provider files: only delete-touching when the diff hunks add/remove
+#   a delete-related symbol (delete*, IMPLICIT_DELETE, ENI/hyperplane,
+#   DependencyViolation).
+# - everything else: not delete-touching.
+#
+# When in doubt, fall through to verifying the marker — false positives
+# cost an integ-test run; false negatives cost a broken main.
+diff_base=""
+if git rev-parse --verify --quiet origin/main >/dev/null 2>&1; then
+  diff_base="origin/main"
+fi
+
+if [ -n "$diff_base" ]; then
+  changed_files=$(git diff --name-only "$diff_base"...HEAD 2>/dev/null)
+  delete_touch=0
+  always_delete='^(src/cli/commands/destroy(-runner)?\.ts|src/deployment/deploy-engine\.ts|src/analyzer/(dag-builder|implicit-delete-deps|lambda-vpc-deps)\.ts)$'
+  provider_pattern='^src/provisioning/(providers/.*\.ts|cloud-control-provider\.ts|region-check\.ts)$'
+  delete_symbol_pattern='^[-+].*\b(delete|IMPLICIT_DELETE|hyperplane|DependencyViolation|ENI|detach)\b'
+
+  while IFS= read -r f; do
+    [ -z "$f" ] && continue
+    if printf '%s' "$f" | grep -qE "$always_delete"; then
+      delete_touch=1
+      break
+    fi
+    if printf '%s' "$f" | grep -qE "$provider_pattern"; then
+      if git diff "$diff_base"...HEAD -- "$f" | grep -qE "$delete_symbol_pattern"; then
+        delete_touch=1
+        break
+      fi
+    fi
+  done <<EOF_FILES
+$changed_files
+EOF_FILES
+
+  if [ "$delete_touch" -eq 0 ]; then
+    # No delete-touching changes → gate is irrelevant. Skip.
+    exit 0
+  fi
+fi
+
 # Prefer direct `markgate`; fall back to `mise exec --` for users who
 # installed via `mise install` but don't have shims on PATH.
 if command -v markgate >/dev/null 2>&1; then
