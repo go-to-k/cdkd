@@ -112,7 +112,7 @@ function planS3(plan: Record<string, Array<() => unknown>>): void {
   });
 }
 
-describe('cdkd state migrate-bucket', () => {
+describe('cdkd state migrate', () => {
   let exitSpy: ReturnType<typeof vi.spyOn>;
 
   beforeEach(() => {
@@ -151,7 +151,7 @@ describe('cdkd state migrate-bucket', () => {
     });
 
     await expect(
-      runMigrate(['migrate-bucket', '--region', 'us-east-1', '--yes'])
+      runMigrate(['migrate', '--region', 'us-east-1', '--yes'])
     ).rejects.toThrow();
     const msg = String(errorSpy.mock.calls[0]?.[0] ?? '');
     expect(msg).toMatch(/Source bucket .* does not exist/);
@@ -170,7 +170,7 @@ describe('cdkd state migrate-bucket', () => {
       ],
     });
 
-    await expect(runMigrate(['migrate-bucket', '--region', 'us-east-1', '--yes'])).rejects.toThrow();
+    await expect(runMigrate(['migrate', '--region', 'us-east-1', '--yes'])).rejects.toThrow();
     const msg = String(errorSpy.mock.calls[0]?.[0] ?? '');
     expect(msg).toMatch(/active lock file/);
     expect(msg).toMatch(/lock\.json/);
@@ -184,7 +184,7 @@ describe('cdkd state migrate-bucket', () => {
       ],
     });
 
-    await runMigrate(['migrate-bucket', '--region', 'us-east-1', '--yes', '--dry-run']);
+    await runMigrate(['migrate', '--region', 'us-east-1', '--yes', '--dry-run']);
 
     // The plan only allows HeadBucket + one ListObjectsV2 (the lock check + source listing).
     // CopyObject / CreateBucket would have thrown "Unexpected S3 command".
@@ -202,7 +202,7 @@ describe('cdkd state migrate-bucket', () => {
     });
     readlineQuestion.mockResolvedValue('n');
 
-    await runMigrate(['migrate-bucket', '--region', 'us-east-1']);
+    await runMigrate(['migrate', '--region', 'us-east-1']);
 
     expect(readlineQuestion).toHaveBeenCalledTimes(1);
     expect(infoSpy).toHaveBeenCalledWith('Migration cancelled.');
@@ -211,7 +211,7 @@ describe('cdkd state migrate-bucket', () => {
   it('refuses when source and destination resolve to the same bucket', async () => {
     // Simulate user passing the same name explicitly.
     await runMigrate([
-      'migrate-bucket',
+      'migrate',
       '--region',
       'us-east-1',
       '--yes',
@@ -267,7 +267,7 @@ describe('cdkd state migrate-bucket', () => {
       CopyObjectCommand: [() => ({})],
     });
 
-    await runMigrate(['migrate-bucket', '--region', 'us-east-1', '--yes']);
+    await runMigrate(['migrate', '--region', 'us-east-1', '--yes']);
 
     expect(infoSpy).toHaveBeenCalledWith(expect.stringMatching(/Copied 2 object\(s\)/));
     expect(infoSpy).toHaveBeenCalledWith('✓ Object count verified at destination');
@@ -306,7 +306,7 @@ describe('cdkd state migrate-bucket', () => {
       DeleteBucketCommand: [() => ({})],
     });
 
-    await runMigrate(['migrate-bucket', '--region', 'us-east-1', '--yes', '--remove-legacy']);
+    await runMigrate(['migrate', '--region', 'us-east-1', '--yes', '--remove-legacy']);
 
     expect(infoSpy).toHaveBeenCalledWith(expect.stringMatching(/Deleted source bucket/));
   });
@@ -330,7 +330,7 @@ describe('cdkd state migrate-bucket', () => {
       CopyObjectCommand: [() => ({})],
     });
 
-    await runMigrate(['migrate-bucket', '--region', 'us-east-1', '--yes']);
+    await runMigrate(['migrate', '--region', 'us-east-1', '--yes']);
 
     expect(infoSpy).toHaveBeenCalledWith(
       expect.stringMatching(/Destination bucket .* already exists; reusing it\./)
@@ -369,7 +369,7 @@ describe('cdkd state migrate-bucket', () => {
       CopyObjectCommand: [() => ({}), () => ({})],
     });
 
-    await expect(runMigrate(['migrate-bucket', '--region', 'us-east-1', '--yes'])).rejects.toThrow();
+    await expect(runMigrate(['migrate', '--region', 'us-east-1', '--yes'])).rejects.toThrow();
     const msg = String(errorSpy.mock.calls[0]?.[0] ?? '');
     expect(msg).toMatch(/Migration verification failed/);
   });

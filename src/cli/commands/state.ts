@@ -24,7 +24,7 @@ import {
 import { ProviderRegistry } from '../../provisioning/provider-registry.js';
 import { registerAllProviders } from '../../provisioning/register-providers.js';
 import { runDestroyForStack } from './destroy-runner.js';
-import { createStateMigrateBucketCommand } from './state-migrate-bucket.js';
+import { createStateMigrateCommand } from './state-migrate.js';
 import type { LockInfo, StackState } from '../../types/state.js';
 
 /**
@@ -1011,7 +1011,7 @@ function formatBucketSource(source: StateBucketSource): string {
     case 'default':
       return 'default (account ID from STS)';
     case 'default-legacy':
-      return 'default (legacy region-suffixed name; cdkd state migrate-bucket recommended)';
+      return 'default (legacy region-suffixed name; cdkd state migrate recommended)';
   }
 }
 
@@ -1219,7 +1219,7 @@ function createStateInfoCommand(): Command {
  * - `state rm <stack>...` — remove cdkd's state record (NOT AWS resources)
  * - `state destroy <stack>...` — delete AWS resources AND state record
  *   without requiring the CDK app (CDK-app-free version of `cdkd destroy`)
- * - `state migrate-bucket` — copy all state from the legacy region-suffixed
+ * - `state migrate` — copy all state from the legacy region-suffixed
  *   default bucket to the region-free default; optionally delete the source
  */
 export function createStateCommand(): Command {
@@ -1230,6 +1230,6 @@ export function createStateCommand(): Command {
   cmd.addCommand(createStateShowCommand());
   cmd.addCommand(createStateRmCommand());
   cmd.addCommand(createStateDestroyCommand());
-  cmd.addCommand(createStateMigrateBucketCommand());
+  cmd.addCommand(createStateMigrateCommand());
   return cmd;
 }

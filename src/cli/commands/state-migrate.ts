@@ -23,7 +23,7 @@ import { setAwsClients, AwsClients } from '../../utils/aws-clients.js';
 import { resolveBucketRegion } from '../../utils/aws-region-resolver.js';
 import { getDefaultStateBucketName, getLegacyStateBucketName } from '../config-loader.js';
 
-interface MigrateBucketOptions {
+interface MigrateOptions {
   region?: string;
   profile?: string;
   legacyBucket?: string;
@@ -54,7 +54,7 @@ type Logger = ReturnType<typeof getLogger>;
  * - Source bucket is only deleted with `--remove-legacy` AND only after a
  *   post-copy object-count verification passes.
  */
-async function stateMigrateBucketCommand(options: MigrateBucketOptions): Promise<void> {
+async function stateMigrateCommand(options: MigrateOptions): Promise<void> {
   const logger = getLogger();
   if (options.verbose) logger.setLevel('debug');
 
@@ -391,7 +391,7 @@ async function confirmPrompt(prompt: string): Promise<boolean> {
 }
 
 /**
- * Create the `cdkd state migrate-bucket` subcommand.
+ * Create the `cdkd state migrate` subcommand.
  *
  * Migrates from the legacy region-suffixed default bucket
  * (`cdkd-state-{accountId}-{region}`) to the region-free default
@@ -399,8 +399,8 @@ async function confirmPrompt(prompt: string): Promise<boolean> {
  * region. The destination bucket is created on the first run and reused on
  * subsequent runs.
  */
-export function createStateMigrateBucketCommand(): Command {
-  const cmd = new Command('migrate-bucket')
+export function createStateMigrateCommand(): Command {
+  const cmd = new Command('migrate')
     .description(
       'Migrate state from the legacy region-suffixed bucket (cdkd-state-{account}-{region}) ' +
         'to the new region-free default (cdkd-state-{account}). Source bucket is kept by default; ' +
@@ -425,7 +425,7 @@ export function createStateMigrateBucketCommand(): Command {
       'Delete the source bucket after successful migration. Default: keep it.',
       false
     )
-    .action(withErrorHandling(stateMigrateBucketCommand));
+    .action(withErrorHandling(stateMigrateCommand));
 
   commonOptions.forEach((o) => cmd.addOption(o));
   return cmd;

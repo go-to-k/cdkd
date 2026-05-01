@@ -80,9 +80,12 @@ For users who already bootstrapped under that scheme, the lookup chain in
 
    ```text
    Using legacy state bucket name 'cdkd-state-123456789012-us-east-1'.
-   The default has changed to 'cdkd-state-123456789012'. Future cdkd
-   versions will drop legacy support; consider migrating with cdkd state
-   migrate-bucket (coming in a future release).
+   The default has changed to 'cdkd-state-123456789012'. To migrate, run:
+
+       cdkd state migrate --region us-east-1
+
+   (add --remove-legacy to delete the legacy bucket after a successful
+   copy; legacy support will be dropped in a future release.)
    ```
 
 3. If neither exists, fail with a "run cdkd bootstrap" error pointing at
@@ -91,20 +94,20 @@ For users who already bootstrapped under that scheme, the lookup chain in
 The legacy fallback is **temporary**. It will be dropped in a future
 release together with the `cdkd-state-{accountId}-{region}` legacy
 bucket name. Users who already bootstrapped under that name should
-migrate via `cdkd state migrate-bucket` (see below). See
+migrate via `cdkd state migrate` (see below). See
 [`docs/plans/04-state-bucket-naming.md`](./plans/04-state-bucket-naming.md)
 and [`docs/plans/99-future-bc-removal.md`](./plans/99-future-bc-removal.md).
 
-#### Migration path: `cdkd state migrate-bucket`
+#### Migration path: `cdkd state migrate`
 
 To silence the legacy-bucket warning and move state onto the new
 default name:
 
 ```bash
 # Per-region: run once for each region you have a legacy bucket in.
-cdkd state migrate-bucket --region us-east-1 --dry-run   # preview
-cdkd state migrate-bucket --region us-east-1             # copy, keep source
-cdkd state migrate-bucket --region us-east-1 --remove-legacy  # copy + delete source
+cdkd state migrate --region us-east-1 --dry-run   # preview
+cdkd state migrate --region us-east-1             # copy, keep source
+cdkd state migrate --region us-east-1 --remove-legacy  # copy + delete source
 ```
 
 Behavior:
