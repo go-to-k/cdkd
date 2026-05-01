@@ -1,16 +1,46 @@
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { createHash } from 'node:crypto';
 
 /**
- * Current stack name for resource name generation.
- * Set by deploy-engine before provisioning resources.
+ * Per-async-context stack name. Resource-name generation reads this so that
+ * concurrent deploys (`cdkd deploy --all` runs stacks in parallel up to
+ * `--stack-concurrency`) don't fight over a single shared variable.
+ *
+ * History: this was `let currentStackName: string | undefined` until
+ * 2026-05-01. Two parallel `deploy()` calls would each call
+ * `setCurrentStackName(...)` and the second would overwrite the first;
+ * any IAM Role / SQS Queue / etc. created by the first stack while the
+ * second was active would get the second stack's prefix in its physical
+ * name, then the second stack's own create attempt for the same logical
+ * id would collide ("Role with name X already exists"). Switching to
+ * `AsyncLocalStorage` scopes the value to each deploy's async chain.
  */
-let currentStackName: string | undefined;
+const stackNameStore = new AsyncLocalStorage<string>();
 
 /**
- * Set the current stack name for resource name generation.
+ * Run `fn` with `stackName` set as the stack name visible to
+ * `generateResourceName` for the duration of the callback (and any
+ * `await`s inside). Concurrent invocations each get an independent scope
+ * — this is the safe API for parallel deploys.
+ */
+export function withStackName<T>(stackName: string, fn: () => Promise<T>): Promise<T>;
+export function withStackName<T>(stackName: string, fn: () => T): T;
+export function withStackName<T>(stackName: string, fn: () => T | Promise<T>): T | Promise<T> {
+  return stackNameStore.run(stackName, fn);
+}
+
+/**
+ * Set the current async context's stack name.
+ *
+ * @deprecated Use {@link withStackName} for new code — it makes the scope
+ *   obvious at the call site. This setter now uses
+ *   `AsyncLocalStorage.enterWith` so it remains safe under
+ *   `--stack-concurrency > 1` (each `deploy()` call has its own async
+ *   resource, so the value does NOT leak across siblings), but
+ *   `withStackName` is structurally clearer.
  */
 export function setCurrentStackName(stackName: string): void {
-  currentStackName = stackName;
+  stackNameStore.enterWith(stackName);
 }
 
 /**
@@ -40,6 +70,7 @@ export function generateResourceName(name: string, options: ResourceNameOptions)
   const { maxLength, lowercase = false, allowedPattern = /[^a-zA-Z0-9-]/g } = options;
 
   // Include stack name for uniqueness (like CloudFormation does)
+  const currentStackName = stackNameStore.getStore();
   const fullName = currentStackName ? `${currentStackName}-${name}` : name;
 
   // Apply lowercase BEFORE pattern matching (so A-Z aren't removed by /[^a-z0-9.-]/)
