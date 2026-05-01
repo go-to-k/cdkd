@@ -1,3 +1,10 @@
+# [0.10.0](https://github.com/go-to-k/cdkd/compare/v0.9.0...v0.10.0) (2026-05-01)
+
+
+### Features
+
+* **state:** dynamic state-bucket region resolution + UnknownError normalization ([#60](https://github.com/go-to-k/cdkd/issues/60)) ([d0056cd](https://github.com/go-to-k/cdkd/commit/d0056cd6fcc85fa78f2ff071ecfc5957fb8bf3cf))
+
 # [0.9.0](https://github.com/go-to-k/cdkd/compare/v0.8.0...v0.9.0) (2026-05-01)
 
 
