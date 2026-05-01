@@ -111,3 +111,93 @@ describe('CloudControlProvider delete region verification', () => {
     ).rejects.toThrow(/eu-west-1/);
   });
 });
+
+describe('CloudControlProvider import (CC API fallback)', () => {
+  let provider: CloudControlProvider;
+
+  beforeEach(() => {
+    mockCloudControlSend.mockReset();
+    mockCloudControlConfigRegion.mockReset();
+    provider = new CloudControlProvider();
+  });
+
+  function makeInput(overrides: Partial<{ knownPhysicalId: string }> = {}) {
+    return {
+      logicalId: 'MyResource',
+      resourceType: 'AWS::SES::EmailIdentity',
+      cdkPath: 'MyStack/MyResource',
+      stackName: 'MyStack',
+      region: 'us-east-1',
+      properties: {},
+      ...overrides,
+    };
+  }
+
+  it('returns null when no knownPhysicalId is supplied (no auto lookup)', async () => {
+    // Even without sending a single CC API call, this returns null.
+    const result = await provider.import(makeInput());
+
+    expect(result).toBeNull();
+    expect(mockCloudControlSend).not.toHaveBeenCalled();
+  });
+
+  it('with knownPhysicalId: GetResource succeeds and ResourceModel is parsed into attributes', async () => {
+    mockCloudControlSend.mockResolvedValueOnce({
+      ResourceDescription: {
+        Identifier: 'user@example.com',
+        Properties: JSON.stringify({
+          EmailIdentity: 'user@example.com',
+          DkimAttributes: { SigningEnabled: true },
+          Arn: 'arn:aws:ses:us-east-1:123:identity/user@example.com',
+        }),
+      },
+    });
+
+    const result = await provider.import(makeInput({ knownPhysicalId: 'user@example.com' }));
+
+    expect(result).toEqual({
+      physicalId: 'user@example.com',
+      attributes: {
+        EmailIdentity: 'user@example.com',
+        DkimAttributes: { SigningEnabled: true },
+        Arn: 'arn:aws:ses:us-east-1:123:identity/user@example.com',
+      },
+    });
+    expect(mockCloudControlSend).toHaveBeenCalledTimes(1);
+  });
+
+  it('with knownPhysicalId: ResourceNotFoundException -> null', async () => {
+    const err = new Error('not found') as Error & { name: string };
+    err.name = 'ResourceNotFoundException';
+    mockCloudControlSend.mockRejectedValueOnce(err);
+
+    const result = await provider.import(makeInput({ knownPhysicalId: 'missing-id' }));
+
+    expect(result).toBeNull();
+  });
+
+  it('with knownPhysicalId: malformed ResourceModel JSON falls back to empty attributes', async () => {
+    mockCloudControlSend.mockResolvedValueOnce({
+      ResourceDescription: {
+        Identifier: 'x',
+        Properties: 'not-json{{{',
+      },
+    });
+
+    const result = await provider.import(makeInput({ knownPhysicalId: 'x' }));
+
+    // physicalId still returned — registering the resource is the
+    // priority; missing attributes are reconstructed at deploy time.
+    expect(result).toEqual({ physicalId: 'x', attributes: {} });
+  });
+
+  it('with knownPhysicalId: non-NotFound error is re-thrown', async () => {
+    const err = new Error('AccessDenied') as Error & { name: string };
+    err.name = 'AccessDeniedException';
+    mockCloudControlSend.mockRejectedValueOnce(err);
+
+    await expect(
+      provider.import(makeInput({ knownPhysicalId: 'x' }))
+    ).rejects.toThrow(/AccessDenied/);
+  });
+});

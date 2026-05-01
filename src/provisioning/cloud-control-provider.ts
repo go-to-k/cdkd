@@ -21,6 +21,8 @@ import type {
   ResourceProvider,
   ResourceCreateResult,
   ResourceUpdateResult,
+  ResourceImportInput,
+  ResourceImportResult,
 } from '../types/resource.js';
 
 /**
@@ -808,5 +810,76 @@ export class CloudControlProvider implements ResourceProvider {
     // Most other AWS:: resources should be supported
     // (This is optimistic; some may still fail)
     return resourceType.startsWith('AWS::');
+  }
+
+  /**
+   * Adopt an already-deployed resource into cdkd state via Cloud Control API.
+   *
+   * Strategy: explicit-override only.
+   *   - With `knownPhysicalId` (from `--resource <id>=<physicalId>` or
+   *     `--resource-mapping`): call `GetResource(TypeName, Identifier)`,
+   *     parse `ResourceModel` (returned as a JSON string by CC API), and
+   *     return its keys as `attributes`.
+   *   - Without `knownPhysicalId`: return `null`. CC API has no efficient
+   *     `aws:cdk:path`-tag lookup — `ListResources` returns identifiers
+   *     only, so tag lookup would require one `GetResource` per resource
+   *     in the account, plus per-service tag-API calls (which CC API
+   *     doesn't expose uniformly). Cost vs. value isn't worth it; users
+   *     who need adoption for CC-API-only resource types should pass
+   *     `--resource <id>=<physicalId>` for those resources.
+   *
+   * SDK providers (S3, Lambda, IAM Role, etc.) implement their own
+   * `import` with tag-based auto-lookup; this fallback only kicks in for
+   * resource types that don't have a dedicated SDK provider.
+   */
+  async import(input: ResourceImportInput): Promise<ResourceImportResult | null> {
+    if (!input.knownPhysicalId) {
+      // Explicit-override-only: no auto lookup via CC API.
+      return null;
+    }
+
+    try {
+      const resp = await this.cloudControlClient.send(
+        new GetResourceCommand({
+          TypeName: input.resourceType,
+          Identifier: input.knownPhysicalId,
+        })
+      );
+
+      // CC API returns `ResourceModel` as a JSON string of all the
+      // resource's properties — its keys map 1:1 to GetAtt-compatible
+      // attribute names. Parse and surface them so deploy-time
+      // `Fn::GetAtt` resolution can find them in state.
+      let attributes: Record<string, unknown> = {};
+      const raw = resp.ResourceDescription?.Properties;
+      if (typeof raw === 'string' && raw.length > 0) {
+        try {
+          const parsed = JSON.parse(raw) as unknown;
+          if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+            attributes = parsed as Record<string, unknown>;
+          }
+        } catch (parseErr) {
+          this.logger.debug(
+            `Failed to parse CC API ResourceModel for ${input.resourceType}/${input.knownPhysicalId}: ${
+              parseErr instanceof Error ? parseErr.message : String(parseErr)
+            }`
+          );
+          // Fall through with empty attributes — physicalId is enough
+          // to register the resource in state. Fn::GetAtt will
+          // reconstruct attributes via constructAttribute at deploy.
+        }
+      }
+
+      return { physicalId: input.knownPhysicalId, attributes };
+    } catch (error) {
+      // ResourceNotFoundException → null (caller marks "not found").
+      // Any other error (access denied, bad TypeName, throttling) →
+      // re-throw so the caller can surface it.
+      const err = error as { name?: string };
+      if (err.name === 'ResourceNotFoundException') {
+        return null;
+      }
+      throw error;
+    }
   }
 }
