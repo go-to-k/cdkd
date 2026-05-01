@@ -1,3 +1,10 @@
+# [0.15.0](https://github.com/go-to-k/cdkd/compare/v0.14.0...v0.15.0) (2026-05-01)
+
+
+### Features
+
+* **cli:** add cdkd import for adopting AWS-deployed resources ([#67](https://github.com/go-to-k/cdkd/issues/67)) ([f1cad24](https://github.com/go-to-k/cdkd/commit/f1cad2438868b48c56f5e268d1d0ea8ac4b958bf))
+
 # [0.14.0](https://github.com/go-to-k/cdkd/compare/v0.13.0...v0.14.0) (2026-05-01)
 
 
