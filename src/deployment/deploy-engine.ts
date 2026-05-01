@@ -1,7 +1,7 @@
 import { getLogger } from '../utils/logger.js';
 import { getLiveRenderer } from '../utils/live-renderer.js';
 import { ProvisioningError } from '../utils/error-handler.js';
-import { setCurrentStackName, applyDefaultNameForFallback } from '../provisioning/resource-name.js';
+import { withStackName, applyDefaultNameForFallback } from '../provisioning/resource-name.js';
 import { IntrinsicFunctionResolver } from './intrinsic-function-resolver.js';
 import { DagExecutor } from './dag-executor.js';
 import type { CloudFormationTemplate, ResourceProvider } from '../types/resource.js';
@@ -136,11 +136,19 @@ export class DeployEngine {
    * Deploy a CloudFormation template
    */
   async deploy(stackName: string, template: CloudFormationTemplate): Promise<DeployResult> {
+    // Scope `stackName` to this deploy's async chain so concurrent
+    // deploys (--stack-concurrency > 1) don't see each other's value.
+    // See `src/provisioning/resource-name.ts` for the AsyncLocalStorage
+    // background.
+    return withStackName(stackName, () => this.doDeploy(stackName, template));
+  }
+
+  private async doDeploy(
+    stackName: string,
+    template: CloudFormationTemplate
+  ): Promise<DeployResult> {
     const startTime = Date.now();
     this.logger.debug(`Starting deployment for stack: ${stackName}`);
-
-    // Set stack name for resource name generation (CloudFormation-compatible naming)
-    setCurrentStackName(stackName);
 
     // Acquire lock with retry (retries up to 3 times with 2s delay for transient lock conflicts)
     await this.lockManager.acquireLockWithRetry(stackName, this.stackRegion, undefined, 'deploy');
