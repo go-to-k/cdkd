@@ -1,3 +1,10 @@
+## [0.17.1](https://github.com/go-to-k/cdkd/compare/v0.17.0...v0.17.1) (2026-05-01)
+
+
+### Bug Fixes
+
+* **provisioning:** scope resource-name stack prefix per async context (parallel deploy bug) ([#74](https://github.com/go-to-k/cdkd/issues/74)) ([1b5fb83](https://github.com/go-to-k/cdkd/commit/1b5fb834206e9051d285332265f181cf60709a78))
+
 # [0.17.0](https://github.com/go-to-k/cdkd/compare/v0.16.1...v0.17.0) (2026-05-01)
 
 
