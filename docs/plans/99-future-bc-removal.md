@@ -19,10 +19,11 @@ of normal `cdkd deploy` / `destroy` operations:
      PR 4.
 2. **Ship a one-shot migration command** for users whose state was
    never touched in the interim and therefore was not auto-migrated:
-   - `cdkd state migrate` — bulk migrates legacy state files to the new
-     key layout in the same bucket.
-   - `cdkd state migrate-bucket` — copies every state file from the
-     legacy-named bucket into the new-named bucket.
+   - `cdkd state migrate-keys` (TBD) — bulk migrates legacy state files
+     to the new key layout in the same bucket.
+   - `cdkd state migrate` — already shipped in PR #66/#68 (v0.13.0 +
+     v0.15.0 rename); copies every state file from the legacy-named
+     bucket into the new-named bucket.
 
 ## Background
 
@@ -40,10 +41,12 @@ that population should be small.
   `src/state/s3-state-backend.ts` (PR 1 territory) and
   `src/cli/config-loader.ts` (PR 4 territory).
 - Remove related warning log lines.
-- Add `cdkd state migrate` and `cdkd state migrate-bucket` subcommands.
+- Add `cdkd state migrate-keys` subcommand (state-key layout
+  migration; the bucket-name migration `cdkd state migrate` already
+  shipped in PR #66/#68).
 - Provide a clear pre-removal warning in the previous release ("This is
   the last release that reads legacy state files; run `cdkd state
-  migrate` before upgrading").
+  migrate-keys` before upgrading").
 - Bump the major version (or document as a breaking change in semver-
   appropriate way).
 
@@ -53,10 +56,10 @@ that population should be small.
 
 ## Design
 
-### `cdkd state migrate`
+### `cdkd state migrate-keys` (TBD, this PR)
 
-```
-$ cdkd state migrate
+```text
+$ cdkd state migrate-keys
 Scanning bucket cdkd-state-123456789012 for legacy state files...
 Found 3 legacy state files:
   - cdkd/MyStack/state.json (region: us-west-2)
@@ -69,35 +72,29 @@ Migrate to new region-prefixed layout? (y/N) y
 3 files migrated, 0 failed.
 ```
 
-### `cdkd state migrate-bucket`
+### `cdkd state migrate` (already shipped in PR #66/#68)
 
-```
-$ cdkd state migrate-bucket
-Source: cdkd-state-123456789012-us-east-1 (legacy)
-Destination: cdkd-state-123456789012 (new default)
-Found 5 stacks in source. Copy and remove from source? (y/N) y
-✓ Copied 5 stacks (plus locks).
-✓ Verified destination matches source.
-✓ Source bucket emptied. To delete it: aws s3 rb s3://... --force
-```
+See `src/cli/commands/state-migrate.ts`. Behavior summary:
 
-The destination is created if missing (with the same versioning /
-encryption / policy as `cdkd bootstrap`).
-
-The source bucket is **emptied** but not deleted (S3 bucket deletion
-involves DNS-level cooldown, the user can decide if they want to take
-that step).
+- Source: legacy `cdkd-state-{accountId}-{region}` (per --region).
+- Destination: new region-free `cdkd-state-{accountId}` (created on
+  first run with the same versioning / encryption / policy as `cdkd
+  bootstrap`).
+- Refuses to start if any `**/lock.json` exists in the source.
+- Verifies destination object count >= source count before any cleanup.
+- Source kept by default; `--remove-legacy` to delete after copy.
 
 ## Implementation steps
 
 (Deferred — to be detailed when this PR is opened. Outline:)
 
 1. Remove legacy read branches from S3StateBackend and config-loader.
-2. Implement `cdkd state migrate` (single-bucket, key-layout migration).
-3. Implement `cdkd state migrate-bucket` (cross-bucket copy).
-4. Add a release-notes entry calling out the pre-upgrade migration step.
-5. Update docs to remove all mentions of legacy fallback.
-6. Track in GitHub issue (created at PR 1 / 4 merge time).
+2. Implement `cdkd state migrate-keys` (single-bucket, key-layout
+   migration). The bucket-name migration `cdkd state migrate` already
+   shipped in PR #66/#68 and does not need to be re-implemented here.
+3. Add a release-notes entry calling out the pre-upgrade migration step.
+4. Update docs to remove all mentions of legacy fallback.
+5. Track in GitHub issue (created at PR 1 / 4 merge time).
 
 ## Tests
 

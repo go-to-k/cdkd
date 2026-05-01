@@ -46,16 +46,23 @@ hiding the bucket-name banner from `deploy` output).
 
 ## PR list
 
-| # | Title | Depends on | Breaking change | Parallel | Plan |
-|---|---|---|---|---|---|
-| 1 | State key region prefix (collection model extension) | none | yes (auto-migrated) | ✅ | [01](./01-state-key-region-prefix.md) |
-| 2 | DELETE region verification | none | no | ✅ | [02](./02-delete-region-verification.md) |
-| 3 | Dynamic region resolution + UnknownError normalization | none | no | ✅ | [03](./03-dynamic-region-resolution.md) |
-| 4 | Default state bucket name (region-free) | PR 3 | yes (auto-migrated) | △ (after PR 3) | [04](./04-state-bucket-naming.md) |
-| 5 | `--region` flag cleanup | PR 3 | no (deprecation) | △ (after PR 3) | [05](./05-region-flag-cleanup.md) |
-| 6 | `cdkd state destroy` command | none | no | ✅ | [06](./06-state-destroy-command.md) |
-| 7 | Hide state bucket from deploy output + `cdkd state info` | none | no | ✅ | [07](./07-state-bucket-display.md) |
-| 99 | Backwards-compat removal + final migration command (future) | 1, 4 | yes | — | [99](./99-future-bc-removal.md) |
+| # | Title | Status | Plan |
+|---|---|---|---|
+| 1 | State key region prefix (collection model extension) | ✅ shipped (#57, v0.7.0) | [01](./01-state-key-region-prefix.md) |
+| 2 | DELETE region verification | ✅ shipped (#61, v0.8.0) | [02](./02-delete-region-verification.md) |
+| 3 | Dynamic region resolution + UnknownError normalization | ✅ shipped (#60, v0.9.0) | [03](./03-dynamic-region-resolution.md) |
+| 4 | Default state bucket name (region-free) | ✅ shipped (#62, v0.10.0) | [04](./04-state-bucket-naming.md) |
+| 5 | `--region` flag cleanup | ✅ shipped (#63, v0.11.0) | [05](./05-region-flag-cleanup.md) |
+| 6 | `cdkd state destroy` command | ✅ shipped (#58, v0.11.0) | [06](./06-state-destroy-command.md) |
+| 7 | Hide state bucket from deploy output + `cdkd state info` | ✅ shipped (#59, v0.12.0) | [07](./07-state-bucket-display.md) |
+| 99 | Backwards-compat removal + final migration command | ⏳ future, scheduled after `cdkd state migrate` is in production use for 1–2 releases | [99](./99-future-bc-removal.md) |
+
+**Follow-up PRs that landed alongside the rollout (not in the original plan):**
+
+| # | Title | Status |
+|---|---|---|
+| - | `cdkd state migrate-bucket` (now `cdkd state migrate`) — self-service migration off the legacy bucket name, closes the gap to PR 99 | ✅ shipped (#66, v0.13.0; renamed in #68) |
+| - | `cdkd import` — adopt AWS-deployed resources into cdkd state (disaster recovery + adoption story) | ✅ shipped (#67, v0.14.0) |
 
 ## Operating rules for this rollout
 

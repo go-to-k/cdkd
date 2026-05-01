@@ -236,7 +236,7 @@ export async function resolveStateBucketWithDefaultAndSource(
       logger.warn(
         `Using legacy state bucket name '${legacyName}'. ` +
           `The default has changed to '${newName}'. To migrate, run:\n\n` +
-          `    cdkd state migrate-bucket --region ${region}\n\n` +
+          `    cdkd state migrate --region ${region}\n\n` +
           `(add --remove-legacy to delete the legacy bucket after a successful copy; ` +
           `legacy support will be dropped in a future release.)`
       );
