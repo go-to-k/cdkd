@@ -1,3 +1,10 @@
+# [0.8.0](https://github.com/go-to-k/cdkd/compare/v0.7.0...v0.8.0) (2026-05-01)
+
+
+### Features
+
+* **state:** region-prefixed state key (collection model extension) ([#57](https://github.com/go-to-k/cdkd/issues/57)) ([83e5ddb](https://github.com/go-to-k/cdkd/commit/83e5ddb66ca4a2923aba1f9ccc106c4411864ae6))
+
 # [0.7.0](https://github.com/go-to-k/cdkd/compare/v0.6.0...v0.7.0) (2026-04-29)
 
 
