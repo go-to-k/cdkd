@@ -10,16 +10,21 @@ import {
   DescribeDBInstancesCommand,
   CreateDBSubnetGroupCommand,
   DeleteDBSubnetGroupCommand,
+  DescribeDBSubnetGroupsCommand,
   ModifyDBSubnetGroupCommand,
+  ListTagsForResourceCommand,
 } from '@aws-sdk/client-rds';
 import { getLogger } from '../../utils/logger.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { generateResourceName } from '../resource-name.js';
+import { matchesCdkPath, resolveExplicitPhysicalId } from '../import-helpers.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
   ResourceUpdateResult,
+  ResourceImportInput,
+  ResourceImportResult,
 } from '../../types/resource.js';
 
 /**
@@ -808,5 +813,132 @@ export class RDSProvider implements ResourceProvider {
 
   private sleep(ms: number): Promise<void> {
     return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  /**
+   * Adopt an existing RDS resource into cdkd state.
+   *
+   * Supported types: `AWS::RDS::DBInstance`, `AWS::RDS::DBCluster`,
+   * `AWS::RDS::DBSubnetGroup`. Identifier name properties (`DBInstance
+   * Identifier` / `DBClusterIdentifier` / `DBSubnetGroupName`) are
+   * usually present in CDK templates; fall back to `aws:cdk:path` tag
+   * lookup via the corresponding `Describe*` + `ListTagsForResource`
+   * pair otherwise.
+   */
+  async import(input: ResourceImportInput): Promise<ResourceImportResult | null> {
+    switch (input.resourceType) {
+      case 'AWS::RDS::DBInstance':
+        return this.importDBInstance(input);
+      case 'AWS::RDS::DBCluster':
+        return this.importDBCluster(input);
+      case 'AWS::RDS::DBSubnetGroup':
+        return this.importDBSubnetGroup(input);
+      default:
+        return null;
+    }
+  }
+
+  private async importDBInstance(input: ResourceImportInput): Promise<ResourceImportResult | null> {
+    const explicit = resolveExplicitPhysicalId(input, 'DBInstanceIdentifier');
+    if (explicit) {
+      try {
+        await this.getClient().send(
+          new DescribeDBInstancesCommand({ DBInstanceIdentifier: explicit })
+        );
+        return { physicalId: explicit, attributes: {} };
+      } catch (err) {
+        if ((err as { name?: string }).name === 'DBInstanceNotFoundFault') return null;
+        throw err;
+      }
+    }
+    if (!input.cdkPath) return null;
+
+    let marker: string | undefined;
+    do {
+      const list = await this.getClient().send(
+        new DescribeDBInstancesCommand({ ...(marker && { Marker: marker }) })
+      );
+      for (const inst of list.DBInstances ?? []) {
+        if (!inst.DBInstanceIdentifier || !inst.DBInstanceArn) continue;
+        const tagsResp = await this.getClient().send(
+          new ListTagsForResourceCommand({ ResourceName: inst.DBInstanceArn })
+        );
+        if (matchesCdkPath(tagsResp.TagList, input.cdkPath)) {
+          return { physicalId: inst.DBInstanceIdentifier, attributes: {} };
+        }
+      }
+      marker = list.Marker;
+    } while (marker);
+    return null;
+  }
+
+  private async importDBCluster(input: ResourceImportInput): Promise<ResourceImportResult | null> {
+    const explicit = resolveExplicitPhysicalId(input, 'DBClusterIdentifier');
+    if (explicit) {
+      try {
+        await this.getClient().send(
+          new DescribeDBClustersCommand({ DBClusterIdentifier: explicit })
+        );
+        return { physicalId: explicit, attributes: {} };
+      } catch (err) {
+        if ((err as { name?: string }).name === 'DBClusterNotFoundFault') return null;
+        throw err;
+      }
+    }
+    if (!input.cdkPath) return null;
+
+    let marker: string | undefined;
+    do {
+      const list = await this.getClient().send(
+        new DescribeDBClustersCommand({ ...(marker && { Marker: marker }) })
+      );
+      for (const c of list.DBClusters ?? []) {
+        if (!c.DBClusterIdentifier || !c.DBClusterArn) continue;
+        const tagsResp = await this.getClient().send(
+          new ListTagsForResourceCommand({ ResourceName: c.DBClusterArn })
+        );
+        if (matchesCdkPath(tagsResp.TagList, input.cdkPath)) {
+          return { physicalId: c.DBClusterIdentifier, attributes: {} };
+        }
+      }
+      marker = list.Marker;
+    } while (marker);
+    return null;
+  }
+
+  private async importDBSubnetGroup(
+    input: ResourceImportInput
+  ): Promise<ResourceImportResult | null> {
+    const explicit = resolveExplicitPhysicalId(input, 'DBSubnetGroupName');
+    if (explicit) {
+      try {
+        await this.getClient().send(
+          new DescribeDBSubnetGroupsCommand({ DBSubnetGroupName: explicit })
+        );
+        return { physicalId: explicit, attributes: {} };
+      } catch (err) {
+        if ((err as { name?: string }).name === 'DBSubnetGroupNotFoundFault') return null;
+        throw err;
+      }
+    }
+    if (!input.cdkPath) return null;
+
+    let marker: string | undefined;
+    do {
+      const list = await this.getClient().send(
+        new DescribeDBSubnetGroupsCommand({ ...(marker && { Marker: marker }) })
+      );
+      for (const sg of list.DBSubnetGroups ?? []) {
+        if (!sg.DBSubnetGroupName || !sg.DBSubnetGroupArn) continue;
+        const tagsResp = await this.getClient().send(
+          new ListTagsForResourceCommand({ ResourceName: sg.DBSubnetGroupArn })
+        );
+        if (matchesCdkPath(tagsResp.TagList, input.cdkPath)) {
+          return { physicalId: sg.DBSubnetGroupName, attributes: {} };
+        }
+      }
+      marker = list.Marker;
+    } while (marker);
+    return null;
   }
 }

@@ -5,6 +5,8 @@ import {
   DeleteDistributionCommand,
   GetDistributionCommand,
   GetDistributionConfigCommand,
+  ListDistributionsCommand,
+  ListTagsForResourceCommand,
   NoSuchDistribution,
   type DistributionConfig,
 } from '@aws-sdk/client-cloudfront';
@@ -12,10 +14,13 @@ import { getLogger } from '../../utils/logger.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
+import { matchesCdkPath } from '../import-helpers.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
   ResourceUpdateResult,
+  ResourceImportInput,
+  ResourceImportResult,
 } from '../../types/resource.js';
 
 /**
@@ -546,5 +551,50 @@ export class CloudFrontDistributionProvider implements ResourceProvider {
       obj[headKey] = nested;
       this.applyQuantityAtPath(nested, rest);
     }
+  }
+
+  /**
+   * Adopt an existing CloudFront distribution into cdkd state.
+   *
+   * CloudFront distributions don't carry a template-supplied name
+   * (physical id is the AWS-generated `E...` distribution id), so the
+   * lookup is either explicit-override or `aws:cdk:path` tag match
+   * via `ListDistributions` + `ListTagsForResource(ARN)`.
+   */
+  async import(input: ResourceImportInput): Promise<ResourceImportResult | null> {
+    if (input.knownPhysicalId) {
+      try {
+        await this.cloudFrontClient.send(new GetDistributionCommand({ Id: input.knownPhysicalId }));
+        return { physicalId: input.knownPhysicalId, attributes: {} };
+      } catch (err) {
+        if (err instanceof NoSuchDistribution) return null;
+        throw err;
+      }
+    }
+
+    if (!input.cdkPath) return null;
+
+    let marker: string | undefined;
+    do {
+      const list = await this.cloudFrontClient.send(
+        new ListDistributionsCommand({ ...(marker && { Marker: marker }) })
+      );
+      for (const d of list.DistributionList?.Items ?? []) {
+        if (!d.Id || !d.ARN) continue;
+        try {
+          const tagsResp = await this.cloudFrontClient.send(
+            new ListTagsForResourceCommand({ Resource: d.ARN })
+          );
+          if (matchesCdkPath(tagsResp.Tags?.Items, input.cdkPath)) {
+            return { physicalId: d.Id, attributes: {} };
+          }
+        } catch (err) {
+          if (err instanceof NoSuchDistribution) continue;
+          throw err;
+        }
+      }
+      marker = list.DistributionList?.IsTruncated ? list.DistributionList?.NextMarker : undefined;
+    } while (marker);
+    return null;
   }
 }
