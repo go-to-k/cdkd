@@ -368,8 +368,13 @@ describe('config-loader', () => {
           send = s3SendMock;
           destroy = s3DestroyMock;
         },
-        HeadBucketCommand: class {
+        HeadBucketCommand: class HeadBucketCommand {
+          static __cmd = 'HeadBucket' as const;
           constructor(public input: { Bucket: string }) {}
+        },
+        ListObjectsV2Command: class ListObjectsV2Command {
+          static __cmd = 'ListObjectsV2' as const;
+          constructor(public input: { Bucket: string; Prefix?: string; MaxKeys?: number }) {}
         },
       }));
       vi.doMock('../../../src/utils/aws-clients.js', () => ({
@@ -421,86 +426,168 @@ describe('config-loader', () => {
       expect(stsSendMock).not.toHaveBeenCalled();
     });
 
-    it('should return the new region-free name when it exists', async () => {
-      // First HeadBucket call (new name) succeeds.
-      s3SendMock.mockResolvedValueOnce({});
+    /**
+     * Drive the s3SendMock by command-class name. Cleaner than chaining
+     * `mockResolvedValueOnce` — the resolution flow now probes both
+     * buckets and may also list objects, so positional mocking is fragile.
+     */
+    function planS3({
+      newHead,
+      legacyHead,
+      newList,
+      legacyList,
+    }: {
+      newHead: 'ok' | '404' | '403' | '301';
+      legacyHead: 'ok' | '404' | '403' | '301';
+      newList?: 'empty' | 'has-state' | 'error';
+      legacyList?: 'empty' | 'has-state' | 'error';
+    }) {
+      const headResult = (kind: 'ok' | '404' | '403' | '301') => {
+        if (kind === 'ok') return Promise.resolve({});
+        const status = kind === '404' ? 404 : kind === '403' ? 403 : 301;
+        const name = kind === '404' ? 'NotFound' : kind === '403' ? 'Forbidden' : 'PermanentRedirect';
+        return Promise.reject(
+          Object.assign(new Error(name), { name, $metadata: { httpStatusCode: status } })
+        );
+      };
+      const listResult = (kind: 'empty' | 'has-state' | 'error') => {
+        if (kind === 'empty') return Promise.resolve({ KeyCount: 0 });
+        if (kind === 'has-state') return Promise.resolve({ KeyCount: 1 });
+        return Promise.reject(new Error('list failed'));
+      };
+
+      s3SendMock.mockImplementation((cmd: { constructor: { __cmd?: string }; input: { Bucket: string } }) => {
+        const kind = (cmd.constructor as unknown as { __cmd?: string }).__cmd;
+        const bucket = cmd.input.Bucket;
+        const isNew = bucket === 'cdkd-state-123456789012';
+        if (kind === 'HeadBucket') {
+          return headResult(isNew ? newHead : legacyHead);
+        }
+        if (kind === 'ListObjectsV2') {
+          const which = isNew ? newList : legacyList;
+          if (!which) {
+            return Promise.reject(new Error(`Unexpected ListObjectsV2 on ${bucket} (no plan)`));
+          }
+          return listResult(which);
+        }
+        return Promise.reject(new Error(`Unexpected command ${kind ?? '?'}`));
+      });
+    }
+
+    it('returns the new region-free name when it exists and legacy does not', async () => {
+      planS3({ newHead: 'ok', legacyHead: '404' });
       const { resolveStateBucketWithDefault: fn } = await import(
         '../../../src/cli/config-loader.js'
       );
       const result = await fn(undefined, 'us-east-1');
 
       expect(result).toBe('cdkd-state-123456789012');
-      expect(s3SendMock).toHaveBeenCalledTimes(1);
-      // Inspect the HeadBucket input to confirm we tried the NEW name first.
-      expect(s3SendMock.mock.calls[0][0].input.Bucket).toBe('cdkd-state-123456789012');
     });
 
-    it('should fall back to legacy name when new name returns NoSuchBucket', async () => {
-      // First call (new name): NoSuchBucket. Second call (legacy): succeeds.
-      const notFound = Object.assign(new Error('not found'), {
-        name: 'NotFound',
-        $metadata: { httpStatusCode: 404 },
-      });
-      s3SendMock.mockRejectedValueOnce(notFound).mockResolvedValueOnce({});
+    it('falls back to legacy name when new returns NoSuchBucket', async () => {
+      planS3({ newHead: '404', legacyHead: 'ok' });
       const { resolveStateBucketWithDefault: fn } = await import(
         '../../../src/cli/config-loader.js'
       );
       const result = await fn(undefined, 'us-east-1');
 
       expect(result).toBe('cdkd-state-123456789012-us-east-1');
-      expect(s3SendMock).toHaveBeenCalledTimes(2);
-      expect(s3SendMock.mock.calls[1][0].input.Bucket).toBe(
-        'cdkd-state-123456789012-us-east-1'
-      );
     });
 
-    it('should treat 403 on the new name as "exists" (no legacy fallback)', async () => {
-      // 403 means the bucket exists but we lack permission to head it. We
-      // should still return the new name and let the downstream operation
-      // surface the actual access-denied error.
-      const accessDenied = Object.assign(new Error('access denied'), {
-        name: 'Forbidden',
-        $metadata: { httpStatusCode: 403 },
-      });
-      s3SendMock.mockRejectedValueOnce(accessDenied);
+    it('treats 403 on the new name as "exists" and uses it (legacy not present)', async () => {
+      planS3({ newHead: '403', legacyHead: '404' });
       const { resolveStateBucketWithDefault: fn } = await import(
         '../../../src/cli/config-loader.js'
       );
       const result = await fn(undefined, 'us-east-1');
 
       expect(result).toBe('cdkd-state-123456789012');
-      expect(s3SendMock).toHaveBeenCalledTimes(1);
     });
 
-    it('should treat 301 on the new name as "exists" (cross-region redirect)', async () => {
-      // S3 returns 301 when the bucket is in a different region than the
-      // probe client. The bucket exists; the real region is resolved later.
-      const redirect = Object.assign(new Error('redirect'), {
-        name: 'PermanentRedirect',
-        $metadata: { httpStatusCode: 301 },
-      });
-      s3SendMock.mockRejectedValueOnce(redirect);
+    it('treats 301 on the new name as "exists" and uses it (legacy not present)', async () => {
+      planS3({ newHead: '301', legacyHead: '404' });
       const { resolveStateBucketWithDefault: fn } = await import(
         '../../../src/cli/config-loader.js'
       );
       const result = await fn(undefined, 'us-east-1');
 
       expect(result).toBe('cdkd-state-123456789012');
-      expect(s3SendMock).toHaveBeenCalledTimes(1);
     });
 
-    it('should throw a "run cdkd bootstrap" error when neither bucket exists', async () => {
-      const notFound = Object.assign(new Error('not found'), {
-        name: 'NotFound',
-        $metadata: { httpStatusCode: 404 },
-      });
-      s3SendMock.mockRejectedValueOnce(notFound).mockRejectedValueOnce(notFound);
+    it('throws a "run cdkd bootstrap" error when neither bucket exists', async () => {
+      planS3({ newHead: '404', legacyHead: '404' });
       const { resolveStateBucketWithDefault: fn } = await import(
         '../../../src/cli/config-loader.js'
       );
 
       await expect(fn(undefined, 'us-east-1')).rejects.toThrow(/cdkd bootstrap/);
-      expect(s3SendMock).toHaveBeenCalledTimes(2);
+    });
+
+    it('both buckets exist + new has state -> use new (legacy is probably stale)', async () => {
+      planS3({
+        newHead: 'ok',
+        legacyHead: 'ok',
+        newList: 'has-state',
+      });
+      const { resolveStateBucketWithDefaultAndSource: fn } = await import(
+        '../../../src/cli/config-loader.js'
+      );
+      const result = await fn(undefined, 'us-east-1');
+
+      expect(result).toEqual({ bucket: 'cdkd-state-123456789012', source: 'default' });
+    });
+
+    it('both buckets exist + new EMPTY + legacy has state -> fall back to legacy with warning', async () => {
+      // The upgrade-from-v0.7.0 case: legacy has state, a partial migration
+      // / probe / bootstrap left an empty new bucket behind. The previous
+      // code picked new and silently lost track of the existing stack;
+      // now we detect it and route to legacy.
+      planS3({
+        newHead: 'ok',
+        legacyHead: 'ok',
+        newList: 'empty',
+        legacyList: 'has-state',
+      });
+      const { resolveStateBucketWithDefaultAndSource: fn } = await import(
+        '../../../src/cli/config-loader.js'
+      );
+      const result = await fn(undefined, 'us-east-1');
+
+      expect(result).toEqual({
+        bucket: 'cdkd-state-123456789012-us-east-1',
+        source: 'default-legacy',
+      });
+    });
+
+    it('both buckets exist + both empty -> use new (no state to preserve)', async () => {
+      planS3({
+        newHead: 'ok',
+        legacyHead: 'ok',
+        newList: 'empty',
+        legacyList: 'empty',
+      });
+      const { resolveStateBucketWithDefaultAndSource: fn } = await import(
+        '../../../src/cli/config-loader.js'
+      );
+      const result = await fn(undefined, 'us-east-1');
+
+      expect(result).toEqual({ bucket: 'cdkd-state-123456789012', source: 'default' });
+    });
+
+    it('both buckets exist + new ListObjectsV2 errors -> conservatively use new', async () => {
+      // bucketHasAnyState's catch-all returns true so we don't silently
+      // route to legacy when we couldn't tell whether new is empty.
+      planS3({
+        newHead: 'ok',
+        legacyHead: 'ok',
+        newList: 'error',
+      });
+      const { resolveStateBucketWithDefaultAndSource: fn } = await import(
+        '../../../src/cli/config-loader.js'
+      );
+      const result = await fn(undefined, 'us-east-1');
+
+      expect(result).toEqual({ bucket: 'cdkd-state-123456789012', source: 'default' });
     });
   });
 });

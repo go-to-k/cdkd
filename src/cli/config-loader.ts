@@ -223,16 +223,51 @@ export async function resolveStateBucketWithDefaultAndSource(
   // `resolveBucketRegion` later in the flow.
   const probe = new S3Client({ region: 'us-east-1' });
   try {
-    // Step 2: try the new region-free name first.
-    if (await bucketExists(probe, newName)) {
+    const newExists = await bucketExists(probe, newName);
+    const legacyExists = await bucketExists(probe, legacyName);
+
+    // Step 2 / 3: pick the bucket that actually has state.
+    //
+    // Three sub-cases when one or both default buckets exist:
+    //
+    //   a. Only new exists  → use new (no legacy to consider).
+    //   b. Only legacy exists → use legacy + deprecation warning, point
+    //      the user at `cdkd state migrate`.
+    //   c. Both exist → previously we always picked new. That hid the
+    //      common upgrade path: legacy bucket from an earlier cdkd
+    //      version + an empty new bucket left behind by a partial
+    //      migration / probe / bootstrap. Picking new in that case
+    //      makes the next deploy think the stack is brand-new and
+    //      collide with the existing AWS resources. Now we look at
+    //      whether new actually has state under `cdkd/`. If new is
+    //      empty AND legacy has state, fall back to legacy with a
+    //      strong warning telling the user to run migrate.
+    if (newExists && legacyExists) {
+      const newHasState = await bucketHasAnyState(probe, newName);
+      if (!newHasState) {
+        const legacyHasState = await bucketHasAnyState(probe, legacyName);
+        if (legacyHasState) {
+          logger.warn(
+            `Both '${newName}' (new default) and '${legacyName}' (legacy default) exist, ` +
+              `but the new bucket is empty and the legacy one has state. Reading from legacy. ` +
+              `Run \`cdkd state migrate --region ${region}\` to copy the state into the new ` +
+              `bucket and stop seeing this warning.`
+          );
+          return { bucket: legacyName, source: 'default-legacy' };
+        }
+      }
+      logger.debug(`State bucket: ${newName}`);
+      return { bucket: newName, source: 'default' };
+    }
+
+    if (newExists) {
       // Logged at debug only — see resolveStateBucketWithDefault doc-comment.
       logger.debug(`State bucket: ${newName}`);
       return { bucket: newName, source: 'default' };
     }
 
     // TODO(remove-bc-after-1.x): drop the legacy fallback branch in PR 99.
-    // Step 3: fall back to the legacy region-suffixed name.
-    if (await bucketExists(probe, legacyName)) {
+    if (legacyExists) {
       logger.warn(
         `Using legacy state bucket name '${legacyName}'. ` +
           `The default has changed to '${newName}'. To migrate, run:\n\n` +
@@ -251,6 +286,40 @@ export async function resolveStateBucketWithDefaultAndSource(
     );
   } finally {
     probe.destroy();
+  }
+}
+
+/**
+ * Return `true` if the bucket has at least one object under the cdkd state
+ * prefix (`cdkd/`). Used to disambiguate "this bucket holds state" from
+ * "this bucket exists but is empty" — the latter happens when a previous
+ * `cdkd state migrate` probe / bootstrap left a fresh bucket behind that
+ * was never written to.
+ *
+ * Errors (network, access denied) are treated as "don't know" and return
+ * `true` — biases toward NOT silently picking the legacy bucket when the
+ * new one's state is uncertain. False positives here are harmless (the
+ * downstream getState call will surface the real read error); a false
+ * negative would silently route to legacy and be confusing.
+ */
+async function bucketHasAnyState(
+  client: import('@aws-sdk/client-s3').S3Client,
+  bucketName: string
+): Promise<boolean> {
+  const { ListObjectsV2Command } = await import('@aws-sdk/client-s3');
+  try {
+    const resp = await client.send(
+      new ListObjectsV2Command({
+        Bucket: bucketName,
+        Prefix: 'cdkd/',
+        MaxKeys: 1,
+      })
+    );
+    return (resp.KeyCount ?? 0) > 0;
+  } catch {
+    // Conservative: if we can't tell, assume the bucket has state so we
+    // don't silently fall through to the legacy bucket.
+    return true;
   }
 }
 
