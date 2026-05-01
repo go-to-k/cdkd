@@ -1,3 +1,10 @@
+## [0.16.1](https://github.com/go-to-k/cdkd/compare/v0.16.0...v0.16.1) (2026-05-01)
+
+
+### Bug Fixes
+
+* **cli:** fall back to legacy bucket when new is empty and legacy has state ([#72](https://github.com/go-to-k/cdkd/issues/72)) ([b48fd5d](https://github.com/go-to-k/cdkd/commit/b48fd5d9d4e7e888ab1ca1e5e6f2d2a5ed6facf4))
+
 # [0.16.0](https://github.com/go-to-k/cdkd/compare/v0.15.0...v0.16.0) (2026-05-01)
 
 
