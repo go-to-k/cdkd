@@ -353,7 +353,7 @@ Lightweight lock system using S3 Conditional Writes.
 await s3Client.send(
   new PutObjectCommand({
     Bucket: stateBucket,
-    Key: `stacks/${stackName}/lock.json`,
+    Key: `cdkd/${stackName}/${region}/lock.json`,
     Body: JSON.stringify(lockInfo),
     IfNoneMatch: '*',  // ← Important: only if object doesn't exist
   })
@@ -370,7 +370,7 @@ await s3Client.send(
 await s3Client.send(
   new DeleteObjectCommand({
     Bucket: stateBucket,
-    Key: `stacks/${stackName}/lock.json`,
+    Key: `cdkd/${stackName}/${region}/lock.json`,
   })
 );
 ```
@@ -760,7 +760,7 @@ In addition to S3 versioning, regular backups are recommended:
 
 ```bash
 # Daily backup example
-aws s3 sync s3://cdkd-state-bucket/stacks/ \
+aws s3 sync s3://cdkd-state-bucket/cdkd/ \
   s3://cdkd-state-backup/$(date +%Y%m%d)/
 ```
 
@@ -772,7 +772,7 @@ aws s3 sync s3://cdkd-state-bucket/stacks/ \
 # Check lock status
 aws s3api get-object \
   --bucket cdkd-state-bucket \
-  --key stacks/MyStack/lock.json \
+  --key cdkd/MyStack/us-east-1/lock.json \
   /dev/stdout
 
 # Example output:
@@ -791,10 +791,11 @@ cdkd state list
 cdkd state ls --long          # include resource count, last-modified, lock status
 
 # Or, low-level via the AWS CLI:
-aws s3 ls s3://cdkd-state-bucket/stacks/ --recursive \
+aws s3 ls s3://cdkd-state-bucket/cdkd/ --recursive \
   | grep state.json \
   | awk '{print $4}' \
-  | sed 's|stacks/||; s|/state.json||'
+  | sed 's|cdkd/||; s|/state.json||'
+# Output: <stackName>/<region>, one row per (stackName, region) pair.
 ```
 
 Note: `cdkd list` (alias `ls`) lists stacks from the local CDK app via
@@ -820,32 +821,13 @@ explicit on-demand answer.
 
 ### Schema Version
 
-Current version: **1**
+Current writers emit **`version: 2`** (region-prefixed key layout —
+`cdkd/{stackName}/{region}/state.json`). Older `version: 1` blobs at the
+non-region key (`cdkd/{stackName}/state.json`) are still readable; the
+next save migrates them to v2 and deletes the legacy key.
 
-If state schema changes in the future:
-
-```typescript
-// Future v2 example
-interface StackStateV2 {
-  version: 2,
-  stackName: string,
-  resources: Record<string, ResourceState>,
-  outputs: Record<string, string>,
-  metadata: {
-    createdAt: number,
-    lastModified: number,
-    deployedBy: string,
-  },
-  // New field added
-  parameters: Record<string, string>,
-}
-```
-
-Migration tool (planned):
-
-```bash
-cdkd migrate-state --from-version 1 --to-version 2
-```
+A `version: 1` writer encountering a `version: 2` blob fails closed
+rather than silently mishandling unknown fields.
 
 ## Troubleshooting
 
@@ -857,25 +839,25 @@ cdkd migrate-state --from-version 1 --to-version 2
 # List versions
 aws s3api list-object-versions \
   --bucket cdkd-state-bucket \
-  --prefix stacks/MyStack/state.json
+  --prefix cdkd/MyStack/us-east-1/state.json
 
 # Restore specific version
 aws s3api get-object \
   --bucket cdkd-state-bucket \
-  --key stacks/MyStack/state.json \
+  --key cdkd/MyStack/us-east-1/state.json \
   --version-id abc123 \
   /tmp/state-backup.json
 
 # Restore
 aws s3 cp /tmp/state-backup.json \
-  s3://cdkd-state-bucket/stacks/MyStack/state.json
+  s3://cdkd-state-bucket/cdkd/MyStack/us-east-1/state.json
 ```
 
 ### If Lock Remains
 
 ```bash
 # Force delete lock
-aws s3 rm s3://cdkd-state-bucket/stacks/MyStack/lock.json
+aws s3 rm s3://cdkd-state-bucket/cdkd/MyStack/us-east-1/lock.json
 
 # Or cdkd command (planned for future implementation)
 # cdkd unlock --stack MyStack --force
@@ -890,7 +872,7 @@ If you manually changed AWS resources, state file and actual resources will dive
 1. **Reset state** (delete only state, keep resources)
 
    ```bash
-   aws s3 rm s3://cdkd-state-bucket/stacks/MyStack/state.json
+   aws s3 rm s3://cdkd-state-bucket/cdkd/MyStack/us-east-1/state.json
    ```
 
    On next `cdkd deploy`, all resources will be treated as CREATE, so existing resources will cause errors.
@@ -899,13 +881,13 @@ If you manually changed AWS resources, state file and actual resources will dive
 
    ```bash
    # Download state file
-   aws s3 cp s3://cdkd-state-bucket/stacks/MyStack/state.json /tmp/state.json
+   aws s3 cp s3://cdkd-state-bucket/cdkd/MyStack/us-east-1/state.json /tmp/state.json
 
    # Edit
    vim /tmp/state.json
 
    # Upload
-   aws s3 cp /tmp/state.json s3://cdkd-state-bucket/stacks/MyStack/state.json
+   aws s3 cp /tmp/state.json s3://cdkd-state-bucket/cdkd/MyStack/us-east-1/state.json
    ```
 
 3. **Delete and recreate resources**

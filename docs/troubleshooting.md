@@ -39,7 +39,7 @@ Locked by: user@hostname:12345, operation: deploy
 # Check lock information
 aws s3api get-object \
   --bucket ${STATE_BUCKET} \
-  --key stacks/MyStack/lock.json \
+  --key cdkd/MyStack/us-east-1/lock.json \
   /dev/stdout
 
 # Example output:
@@ -54,7 +54,7 @@ aws s3api get-object \
 
 ```bash
 # Delete lock file
-aws s3 rm s3://${STATE_BUCKET}/stacks/MyStack/lock.json
+aws s3 rm s3://${STATE_BUCKET}/cdkd/MyStack/us-east-1/lock.json
 
 # Or use cdkd force-unlock command
 cdkd force-unlock MyStack
@@ -128,18 +128,18 @@ SyntaxError: Unexpected token in JSON at position 123
 # Get version list
 aws s3api list-object-versions \
   --bucket ${STATE_BUCKET} \
-  --prefix stacks/MyStack/state.json
+  --prefix cdkd/MyStack/us-east-1/state.json
 
 # Example output:
 # {
 #   "Versions": [
 #     {
-#       "Key": "stacks/MyStack/state.json",
+#       "Key": "cdkd/MyStack/us-east-1/state.json",
 #       "VersionId": "abc123",
 #       "LastModified": "2024-03-19T10:30:00.000Z"
 #     },
 #     {
-#       "Key": "stacks/MyStack/state.json",
+#       "Key": "cdkd/MyStack/us-east-1/state.json",
 #       "VersionId": "def456",
 #       "LastModified": "2024-03-19T09:00:00.000Z"
 #     }
@@ -149,20 +149,20 @@ aws s3api list-object-versions \
 # Restore old version
 aws s3api get-object \
   --bucket ${STATE_BUCKET} \
-  --key stacks/MyStack/state.json \
+  --key cdkd/MyStack/us-east-1/state.json \
   --version-id def456 \
   /tmp/state-backup.json
 
 # Restore
 aws s3 cp /tmp/state-backup.json \
-  s3://${STATE_BUCKET}/stacks/MyStack/state.json
+  s3://${STATE_BUCKET}/cdkd/MyStack/us-east-1/state.json
 ```
 
 **2. Reset state and redeploy**
 
 ```bash
 # Delete state (resources remain)
-aws s3 rm s3://${STATE_BUCKET}/stacks/MyStack/state.json
+aws s3 rm s3://${STATE_BUCKET}/cdkd/MyStack/us-east-1/state.json
 
 # Redeploy (will error if existing resources exist)
 node dist/cli.js deploy --app "..." --state-bucket ${STATE_BUCKET}
@@ -185,7 +185,7 @@ cdkd's state file and actual AWS resources have diverged.
 
 ```bash
 # Delete state
-aws s3 rm s3://${STATE_BUCKET}/stacks/MyStack/state.json
+aws s3 rm s3://${STATE_BUCKET}/cdkd/MyStack/us-east-1/state.json
 
 # Redeploy (all resources treated as CREATE)
 node dist/cli.js deploy --app "..." --state-bucket ${STATE_BUCKET}
@@ -195,13 +195,13 @@ node dist/cli.js deploy --app "..." --state-bucket ${STATE_BUCKET}
 
 ```bash
 # Download state
-aws s3 cp s3://${STATE_BUCKET}/stacks/MyStack/state.json /tmp/state.json
+aws s3 cp s3://${STATE_BUCKET}/cdkd/MyStack/us-east-1/state.json /tmp/state.json
 
 # Edit (remove entries for deleted resources)
 vim /tmp/state.json
 
 # Upload
-aws s3 cp /tmp/state.json s3://${STATE_BUCKET}/stacks/MyStack/state.json
+aws s3 cp /tmp/state.json s3://${STATE_BUCKET}/cdkd/MyStack/us-east-1/state.json
 ```
 
 **3. Delete and recreate entire stack**
@@ -765,7 +765,7 @@ If you suspect orphaned resources exist (e.g., due to a process crash before sta
 
 ```bash
 # Download state file
-aws s3 cp s3://${STATE_BUCKET}/stacks/MyStack/state.json /tmp/state.json
+aws s3 cp s3://${STATE_BUCKET}/cdkd/MyStack/us-east-1/state.json /tmp/state.json
 
 # List resources tracked in state
 cat /tmp/state.json | jq '.resources | keys[]'
@@ -809,14 +809,14 @@ Running `cdkd deploy` again will reconcile the state — existing resources will
 
 ```bash
 # Option 1: Delete state and redeploy (resources will error on CREATE if they exist)
-aws s3 rm s3://${STATE_BUCKET}/stacks/MyStack/state.json
+aws s3 rm s3://${STATE_BUCKET}/cdkd/MyStack/us-east-1/state.json
 cdkd deploy MyStack  # May need manual cleanup of duplicates
 
 # Option 2: Manually reconstruct state
-aws s3 cp s3://${STATE_BUCKET}/stacks/MyStack/state.json /tmp/state.json
+aws s3 cp s3://${STATE_BUCKET}/cdkd/MyStack/us-east-1/state.json /tmp/state.json
 # Add entries for orphaned resources with their physical IDs
 vim /tmp/state.json
-aws s3 cp /tmp/state.json s3://${STATE_BUCKET}/stacks/MyStack/state.json
+aws s3 cp /tmp/state.json s3://${STATE_BUCKET}/cdkd/MyStack/us-east-1/state.json
 
 # Option 3: Destroy everything and start fresh
 # Manually delete orphaned resources first, then:
@@ -843,7 +843,7 @@ node dist/cli.js deploy --app "..."
 
 ```bash
 # Download state file
-aws s3 cp s3://${STATE_BUCKET}/stacks/MyStack/state.json /tmp/state.json
+aws s3 cp s3://${STATE_BUCKET}/cdkd/MyStack/us-east-1/state.json /tmp/state.json
 
 # Format and display
 cat /tmp/state.json | jq .
