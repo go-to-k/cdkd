@@ -15,6 +15,7 @@ You are checking whether documentation is up to date with recent code changes in
    - `src/index.ts` — public exports
    - `src/cli/options.ts`, `src/cli/commands/**` — CLI surface described in README.md
    - `src/types/**` — public type definitions
+   - `src/state/**` — bucket name, key layout, lock layout, schema version. These are documented verbatim in `docs/state-management.md`, `docs/troubleshooting.md`, README.md ("Outputs" example path), and CLAUDE.md ("S3 storage structure"). A path-layout change in `s3-state-backend.ts` or `lock-manager.ts` invalidates ~30 shell snippets across those files; the auto-migration session of 2026-05-01 (PR #57 → v0.7.0) shipped before this trigger existed and the docs took the full rollout to be re-aligned.
    - **any new file added** anywhere under `src/**` — must be mentioned in CLAUDE.md "Key Files and Directories"
    - `package.json` — dependency additions/removals described in CLAUDE.md "Dependencies"
    - `README.md`, `CLAUDE.md`, `docs/**` — the docs themselves
