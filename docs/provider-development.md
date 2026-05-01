@@ -67,6 +67,22 @@ export interface ResourceProvider {
     properties?: Record<string, unknown>,
     context?: DeleteContext
   ): Promise<void>;
+
+  /**
+   * Adopt an existing AWS resource into cdkd state.
+   *
+   * Optional. Providers without an `import` implementation are reported
+   * by `cdkd import` as `unsupported` and skipped (Cloud Control API
+   * fallback handles them via `--resource <id>=<physicalId>` overrides).
+   *
+   * @param input Logical ID, resource type, CDK path, stack name, region,
+   *   template properties, and (optionally) the user-supplied
+   *   `knownPhysicalId` from `--resource` / `--resource-mapping`.
+   * @returns Physical ID + attributes (same shape as `create` returns),
+   *   or `null` when no matching AWS resource was found (caller treats
+   *   `null` as "skipped — not deployed yet", not as a failure).
+   */
+  import?(input: ResourceImportInput): Promise<ResourceImportResult | null>;
 }
 ```
 
@@ -641,6 +657,86 @@ export class XxxResourceProvider implements ResourceProvider {
   }
 }
 ```
+
+### Step 3.5: Implement `import` (Optional but Recommended)
+
+The `import` method lets `cdkd import <stack> --app "..."` adopt
+already-deployed AWS resources of this type into cdkd state — covering
+disaster recovery (state file lost), adoption (moving from another IaC
+tool), and re-syncing after rollback. Skipping `import` is allowed (CC
+API fallback handles overrides), but providers without it can only be
+adopted via `--resource <id>=<physicalId>` and won't participate in
+tag-based auto-lookup.
+
+The method follows a single shape across the 17+ providers that have
+shipped it. Pick the variant that matches your service's tag API:
+
+```typescript
+import {
+  CDK_PATH_TAG,
+  matchesCdkPath,
+  resolveExplicitPhysicalId,
+} from '../import-helpers.js';
+import type {
+  ResourceImportInput,
+  ResourceImportResult,
+} from '../../types/resource.js';
+
+async import(input: ResourceImportInput): Promise<ResourceImportResult | null> {
+  // 1. Explicit override OR Properties.<NameField> from template.
+  //    Pass `null` as the second arg if the resource type has no
+  //    template-supplied name field (e.g. KMS Key, CloudFront Distribution).
+  const explicit = resolveExplicitPhysicalId(input, '<NameField>');
+  if (explicit) {
+    try {
+      await this.client.send(new <Get|Head|Describe>Command({ /* ... */ }));
+      return { physicalId: explicit, attributes: {} };
+    } catch (err) {
+      if (err instanceof <NotFoundError>) return null;
+      throw err;
+    }
+  }
+  if (!input.cdkPath) return null;
+
+  // 2. Walk List* + ListTags* and match aws:cdk:path tag.
+  let token: string | undefined;
+  do {
+    const list = await this.client.send(new ListCommand({ ...(token && { NextToken: token }) }));
+    for (const item of list.Items ?? []) {
+      if (!item.Id) continue;
+      const tags = await this.client.send(new ListTagsCommand({ ResourceId: item.Id }));
+      // Choose ONE based on your service's tag API:
+      //   matchesCdkPath(tags.Tags, input.cdkPath)              ← Tag[] arrays (S3, IAM, EC2, RDS, …)
+      //   tags.Tags?.[CDK_PATH_TAG] === input.cdkPath           ← Record<string,string> maps (Lambda, SQS)
+      //   inline (key/value lowercase, not Key/Value)           ← ECS only — see ecs-provider.ts
+      if (matchesCdkPath(tags.Tags, input.cdkPath)) {
+        return { physicalId: item.Id, attributes: {} };
+      }
+    }
+    token = list.NextToken;
+  } while (token);
+  return null;
+}
+```
+
+Reference implementations to copy from:
+
+- **Tag[] array, name field present**: `s3-bucket-provider.ts`, `iam-role-provider.ts`, `dynamodb-table-provider.ts`
+- **Tag map (`Record<string,string>`)**: `lambda-function-provider.ts`, `sqs-queue-provider.ts`
+- **No name field, ARN required for tag lookup**: `cloudfront-distribution-provider.ts`, `cognito-provider.ts`
+- **Filter-based one-shot lookup (no per-item ListTags)**: `ec2-provider.ts` uses `Filters: [{Name: 'tag:aws:cdk:path', Values: [path]}]` directly on `Describe*`
+- **Lowercase key/value tag shape**: `ecs-provider.ts` (one of the few services that uses `key`/`value`)
+- **Explicit-override only** (auto lookup is impractical): `apigateway-provider.ts` for sub-resources scoped under a parent RestApi
+
+Notes:
+
+- **Return `null`, don't throw**, when nothing matches — `cdkd import` treats `null` as "not deployed yet", not as a failure
+- `attributes: {}` is fine for most types — the deploy-time `Fn::GetAtt`
+  resolver reconstructs missing attributes via `constructAttribute`
+  (see `src/deployment/intrinsic-function-resolver.ts`)
+- Tests for `import` go in the same file as the create/update/delete
+  tests, with three cases: explicit-override path, tag-based lookup
+  hit, tag-based lookup miss (returns `null`)
 
 ### Step 4: Add AWS Client
 
