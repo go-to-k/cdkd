@@ -54,6 +54,8 @@ import type {
   ResourceProvider,
   ResourceCreateResult,
   ResourceUpdateResult,
+  ResourceImportInput,
+  ResourceImportResult,
 } from '../../types/resource.js';
 
 /**
@@ -358,5 +360,27 @@ export class AgentCoreRuntimeProvider implements ResourceProvider {
     }
 
     throw new Error(`Unsupported attribute: ${attributeName} for AWS::BedrockAgentCore::Runtime`);
+  }
+
+  /**
+   * Adopt an existing BedrockAgentCore Runtime into cdkd state.
+   *
+   * **Explicit override only (for now).** The BedrockAgentCore SDK does
+   * expose `ListTagsForResource`, so a future PR could add full tag-based
+   * auto-lookup. For this batch we keep it override-only to ship
+   * consistently with the other batch-5 attachment-style providers; users
+   * adopting an existing runtime should pass
+   * `--resource <logicalId>=<agentRuntimeId>` (e.g. `runtime-12345`,
+   * matching the physical id format returned by `create()`).
+   */
+  // eslint-disable-next-line @typescript-eslint/require-await -- explicit-override-only intentionally has no AWS calls
+  async import(input: ResourceImportInput): Promise<ResourceImportResult | null> {
+    if (input.knownPhysicalId) {
+      return {
+        physicalId: input.knownPhysicalId,
+        attributes: { AgentRuntimeId: input.knownPhysicalId },
+      };
+    }
+    return null;
   }
 }

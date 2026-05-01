@@ -280,4 +280,35 @@ describe('CloudFrontOAIProvider', () => {
       ).rejects.toThrow('Unsupported attribute: UnsupportedAttr');
     });
   });
+
+  describe('import (explicit-override only)', () => {
+    function makeInput(overrides: Partial<{ knownPhysicalId: string }> = {}) {
+      return {
+        logicalId: 'MyOai',
+        resourceType: 'AWS::CloudFront::CloudFrontOriginAccessIdentity',
+        cdkPath: 'MyStack/MyOai',
+        stackName: 'MyStack',
+        region: 'us-east-1',
+        properties: {},
+        ...overrides,
+      };
+    }
+
+    it('returns physicalId when knownPhysicalId is supplied (no AWS calls)', async () => {
+      const result = await provider.import(makeInput({ knownPhysicalId: 'E1ABCDEF123456' }));
+
+      expect(result).toEqual({
+        physicalId: 'E1ABCDEF123456',
+        attributes: { Id: 'E1ABCDEF123456' },
+      });
+      expect(mockSend).not.toHaveBeenCalled();
+    });
+
+    it('returns null when knownPhysicalId is not supplied (no auto lookup)', async () => {
+      const result = await provider.import(makeInput());
+
+      expect(result).toBeNull();
+      expect(mockSend).not.toHaveBeenCalled();
+    });
+  });
 });

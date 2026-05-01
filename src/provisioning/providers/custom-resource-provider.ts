@@ -15,6 +15,8 @@ import type {
   ResourceProvider,
   ResourceCreateResult,
   ResourceUpdateResult,
+  ResourceImportInput,
+  ResourceImportResult,
 } from '../../types/resource.js';
 
 /**
@@ -747,5 +749,27 @@ export class CustomResourceProvider implements ResourceProvider {
 
   private sleep(ms: number): Promise<void> {
     return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  /**
+   * Adopt an existing custom resource into cdkd state.
+   *
+   * **Explicit override only.** A custom resource's identity is the
+   * `PhysicalResourceId` returned by its user-supplied Lambda handler at
+   * Create time — there is no AWS-side resource cdkd can introspect, no
+   * tag API, and no `aws:cdk:path` to look up by. cdkd cannot rediscover
+   * a custom resource without invoking the handler, which would mutate
+   * state.
+   *
+   * Users adopting an existing custom resource should pass
+   * `--resource <logicalId>=<physicalResourceId>` — the same value the
+   * handler returned originally.
+   */
+  // eslint-disable-next-line @typescript-eslint/require-await -- explicit-override-only intentionally has no AWS calls
+  async import(input: ResourceImportInput): Promise<ResourceImportResult | null> {
+    if (input.knownPhysicalId) {
+      return { physicalId: input.knownPhysicalId, attributes: {} };
+    }
+    return null;
   }
 }

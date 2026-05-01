@@ -469,4 +469,40 @@ describe('CustomResourceProvider', () => {
       expect(result.attributes).toEqual({ UpdatedOutput: 'new-value' });
     });
   });
+
+  describe('import (explicit-override only)', () => {
+    function makeInput(overrides: Partial<{ knownPhysicalId: string }> = {}) {
+      return {
+        logicalId: 'MyCustom',
+        resourceType: 'Custom::MyResource',
+        cdkPath: 'MyStack/MyCustom',
+        stackName: 'MyStack',
+        region: 'us-east-1',
+        properties: {
+          ServiceToken: 'arn:aws:lambda:us-east-1:123456789012:function:my-handler',
+        },
+        ...overrides,
+      };
+    }
+
+    it('returns physicalId when knownPhysicalId is supplied (no AWS calls)', async () => {
+      const result = await provider.import(
+        makeInput({ knownPhysicalId: 'cr-physical-id-42' })
+      );
+
+      expect(result).toEqual({ physicalId: 'cr-physical-id-42', attributes: {} });
+      expect(mockLambdaSend).not.toHaveBeenCalled();
+      expect(mockSnsSend).not.toHaveBeenCalled();
+      expect(mockS3Send).not.toHaveBeenCalled();
+    });
+
+    it('returns null when knownPhysicalId is not supplied (no auto lookup)', async () => {
+      const result = await provider.import(makeInput());
+
+      expect(result).toBeNull();
+      expect(mockLambdaSend).not.toHaveBeenCalled();
+      expect(mockSnsSend).not.toHaveBeenCalled();
+      expect(mockS3Send).not.toHaveBeenCalled();
+    });
+  });
 });

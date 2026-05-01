@@ -15,6 +15,8 @@ import type {
   ResourceProvider,
   ResourceCreateResult,
   ResourceUpdateResult,
+  ResourceImportInput,
+  ResourceImportResult,
 } from '../../types/resource.js';
 
 /**
@@ -299,5 +301,27 @@ export class LambdaEventSourceMappingProvider implements ResourceProvider {
         cause
       );
     }
+  }
+
+  /**
+   * Adopt an existing Lambda event source mapping into cdkd state.
+   *
+   * **Explicit override only.** Event source mappings are identified by a
+   * UUID returned at create time. While Lambda event source mappings ARE
+   * taggable since 2020, CDK does NOT propagate the `aws:cdk:path` tag to
+   * them by default (the `Tags` property must be explicitly opted into),
+   * and the natural lookup is by `(FunctionName, EventSourceArn)` — which
+   * the user already knows.
+   *
+   * Users adopting an existing event source mapping should pass
+   * `--resource <logicalId>=<UUID>` (matching the physical id format
+   * returned by `create()`).
+   */
+  // eslint-disable-next-line @typescript-eslint/require-await -- explicit-override-only intentionally has no AWS calls
+  async import(input: ResourceImportInput): Promise<ResourceImportResult | null> {
+    if (input.knownPhysicalId) {
+      return { physicalId: input.knownPhysicalId, attributes: { Id: input.knownPhysicalId } };
+    }
+    return null;
   }
 }

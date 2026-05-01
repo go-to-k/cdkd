@@ -314,4 +314,38 @@ describe('AgentCoreRuntimeProvider', () => {
       ).rejects.toThrow('Unsupported attribute: UnsupportedAttr');
     });
   });
+
+  describe('import (explicit-override only)', () => {
+    function makeInput(overrides: Partial<{ knownPhysicalId: string }> = {}) {
+      return {
+        logicalId: 'MyRuntime',
+        resourceType: 'AWS::BedrockAgentCore::Runtime',
+        cdkPath: 'MyStack/MyRuntime',
+        stackName: 'MyStack',
+        region: 'us-east-1',
+        properties: {
+          AgentRuntimeName: 'my-runtime',
+          RoleArn: 'arn:aws:iam::123456789012:role/my-role',
+        },
+        ...overrides,
+      };
+    }
+
+    it('returns physicalId when knownPhysicalId is supplied (no AWS calls)', async () => {
+      const result = await provider.import(makeInput({ knownPhysicalId: 'runtime-12345' }));
+
+      expect(result).toEqual({
+        physicalId: 'runtime-12345',
+        attributes: { AgentRuntimeId: 'runtime-12345' },
+      });
+      expect(mockSend).not.toHaveBeenCalled();
+    });
+
+    it('returns null when knownPhysicalId is not supplied (no auto lookup)', async () => {
+      const result = await provider.import(makeInput());
+
+      expect(result).toBeNull();
+      expect(mockSend).not.toHaveBeenCalled();
+    });
+  });
 });

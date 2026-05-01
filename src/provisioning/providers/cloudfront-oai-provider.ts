@@ -13,6 +13,8 @@ import type {
   ResourceProvider,
   ResourceCreateResult,
   ResourceUpdateResult,
+  ResourceImportInput,
+  ResourceImportResult,
 } from '../../types/resource.js';
 
 /**
@@ -201,5 +203,25 @@ export class CloudFrontOAIProvider implements ResourceProvider {
     throw new Error(
       `Unsupported attribute: ${attributeName} for AWS::CloudFront::CloudFrontOriginAccessIdentity`
     );
+  }
+
+  /**
+   * Adopt an existing CloudFront Origin Access Identity into cdkd state.
+   *
+   * **Explicit override only.** OAIs do not support tags — their identity
+   * is the `CallerReference` set at create time, plus the auto-generated
+   * `Id`. There is no `aws:cdk:path` tag API to look up by; CloudFront's
+   * `ListCloudFrontOriginAccessIdentities` returns Id/Comment/CallerReference
+   * but no tags.
+   *
+   * Users adopting an existing OAI should pass
+   * `--resource <logicalId>=<oaiId>` (e.g. `E1ABCDEF123456`).
+   */
+  // eslint-disable-next-line @typescript-eslint/require-await -- explicit-override-only intentionally has no AWS calls
+  async import(input: ResourceImportInput): Promise<ResourceImportResult | null> {
+    if (input.knownPhysicalId) {
+      return { physicalId: input.knownPhysicalId, attributes: { Id: input.knownPhysicalId } };
+    }
+    return null;
   }
 }

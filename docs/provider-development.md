@@ -668,7 +668,7 @@ API fallback handles overrides), but providers without it can only be
 adopted via `--resource <id>=<physicalId>` and won't participate in
 tag-based auto-lookup.
 
-The method follows a single shape across the 20+ providers that have
+The method follows a single shape across the 35+ providers that have
 shipped it. Pick the variant that matches your service's tag API:
 
 ```typescript
@@ -728,7 +728,7 @@ Reference implementations to copy from:
 - **Batch tag fetch (single `Describe*` call for many ARNs)**: `elbv2-provider.ts` uses `DescribeTags(ResourceArns: [...])` (up to 20 per call) on top of `DescribeLoadBalancers` / `DescribeTargetGroups`
 - **Filter-based one-shot lookup (no per-item ListTags)**: `ec2-provider.ts` uses `Filters: [{Name: 'tag:aws:cdk:path', Values: [path]}]` directly on `Describe*`
 - **Lowercase `key`/`value` tag shape**: `ecs-provider.ts`, `codebuild-provider.ts`, `stepfunctions-provider.ts` (the few services that use lowercase tag keys — `matchesCdkPath` from `import-helpers.ts` does NOT apply; match the lowercase fields manually)
-- **Explicit-override only** (auto lookup is impractical or the resource is not taggable): `apigateway-provider.ts`, `apigatewayv2-provider.ts`, `appsync-provider.ts` for sub-resources scoped under a parent RestApi / HttpApi / GraphqlApi; `route53-provider.ts` for RecordSets (not taggable); `efs-provider.ts` for MountTargets (not taggable); `elbv2-provider.ts` for Listeners (no taggable identity tying them to a CDK construct)
+- **Explicit-override only** (auto lookup is impractical, the resource is not taggable, or it is a sub-resource / attachment): `apigateway-provider.ts`, `apigatewayv2-provider.ts`, `appsync-provider.ts` for sub-resources scoped under a parent RestApi / HttpApi / GraphqlApi; `route53-provider.ts` for RecordSets (not taggable); `efs-provider.ts` for MountTargets (not taggable); `elbv2-provider.ts` for Listeners (no taggable identity tying them to a CDK construct); `sns-subscription-provider.ts`, `sns-topic-policy-provider.ts`, `sqs-queue-policy-provider.ts`, `s3-bucket-policy-provider.ts`, `lambda-permission-provider.ts`, `lambda-eventsource-provider.ts`, `lambda-url-provider.ts`, `custom-resource-provider.ts`, `cloudfront-oai-provider.ts`, `agentcore-runtime-provider.ts` for attachments / handler-returned identity. Pattern: `if (input.knownPhysicalId) return { physicalId: input.knownPhysicalId, attributes: {} }; return null;` — JSDoc the override-only choice naming the reason (no tag API, sub-resource scoping, attachment, identity carried by handler-returned PhysicalResourceId, etc).
 
 Notes:
 
