@@ -48,10 +48,13 @@ import { getLogger } from '../../utils/logger.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
+import { CDK_PATH_TAG } from '../import-helpers.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
   ResourceUpdateResult,
+  ResourceImportInput,
+  ResourceImportResult,
 } from '../../types/resource.js';
 
 /**
@@ -2481,5 +2484,92 @@ export class EC2Provider implements ResourceProvider {
       name === 'InvalidNetworkAclID.NotFound' ||
       name === 'InvalidNetworkAclEntry.NotFound'
     );
+  }
+
+  /**
+   * Adopt an existing EC2 networking resource into cdkd state.
+   *
+   * Supported types: `AWS::EC2::VPC`, `AWS::EC2::Subnet`,
+   * `AWS::EC2::SecurityGroup`. Other EC2 types this provider creates
+   * (RouteTable, Route, InternetGateway, VPCGatewayAttachment,
+   * NetworkAcl, Instance) return `null` from import — most have no
+   * stable identity to look up by tag (Routes are derived; SGIngress
+   * is rule-level), and the typical adoption story is "find the VPC,
+   * cdkd reconstructs the rest at deploy time".
+   *
+   * EC2 supports `Filters: [{Name: 'tag:aws:cdk:path', Values: [path]}]`
+   * directly on `Describe*`, so the lookup is one API call per type.
+   */
+  async import(input: ResourceImportInput): Promise<ResourceImportResult | null> {
+    // 1. Explicit override → verify by id and short-circuit.
+    if (input.knownPhysicalId) {
+      return this.verifyExplicit(input.resourceType, input.knownPhysicalId);
+    }
+
+    if (!input.cdkPath) return null;
+
+    const tagFilter = { Name: `tag:${CDK_PATH_TAG}`, Values: [input.cdkPath] };
+
+    try {
+      switch (input.resourceType) {
+        case 'AWS::EC2::VPC': {
+          const resp = await this.ec2Client.send(new DescribeVpcsCommand({ Filters: [tagFilter] }));
+          const vpc = resp.Vpcs?.[0];
+          return vpc?.VpcId ? { physicalId: vpc.VpcId, attributes: {} } : null;
+        }
+        case 'AWS::EC2::Subnet': {
+          const resp = await this.ec2Client.send(
+            new DescribeSubnetsCommand({ Filters: [tagFilter] })
+          );
+          const subnet = resp.Subnets?.[0];
+          return subnet?.SubnetId ? { physicalId: subnet.SubnetId, attributes: {} } : null;
+        }
+        case 'AWS::EC2::SecurityGroup': {
+          const resp = await this.ec2Client.send(
+            new DescribeSecurityGroupsCommand({ Filters: [tagFilter] })
+          );
+          const sg = resp.SecurityGroups?.[0];
+          return sg?.GroupId ? { physicalId: sg.GroupId, attributes: {} } : null;
+        }
+        default:
+          // Unsupported EC2 sub-type. Caller will report as
+          // "skipped — provider does not implement import (yet)".
+          return null;
+      }
+    } catch (error) {
+      if (this.isNotFoundError(error)) return null;
+      throw error;
+    }
+  }
+
+  private async verifyExplicit(
+    resourceType: string,
+    physicalId: string
+  ): Promise<ResourceImportResult | null> {
+    try {
+      switch (resourceType) {
+        case 'AWS::EC2::VPC': {
+          const resp = await this.ec2Client.send(new DescribeVpcsCommand({ VpcIds: [physicalId] }));
+          return resp.Vpcs?.[0] ? { physicalId, attributes: {} } : null;
+        }
+        case 'AWS::EC2::Subnet': {
+          const resp = await this.ec2Client.send(
+            new DescribeSubnetsCommand({ SubnetIds: [physicalId] })
+          );
+          return resp.Subnets?.[0] ? { physicalId, attributes: {} } : null;
+        }
+        case 'AWS::EC2::SecurityGroup': {
+          const resp = await this.ec2Client.send(
+            new DescribeSecurityGroupsCommand({ GroupIds: [physicalId] })
+          );
+          return resp.SecurityGroups?.[0] ? { physicalId, attributes: {} } : null;
+        }
+        default:
+          return null;
+      }
+    } catch (error) {
+      if (this.isNotFoundError(error)) return null;
+      throw error;
+    }
   }
 }

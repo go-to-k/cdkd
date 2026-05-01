@@ -24,6 +24,8 @@ import type {
   ResourceProvider,
   ResourceCreateResult,
   ResourceUpdateResult,
+  ResourceImportInput,
+  ResourceImportResult,
 } from '../../types/resource.js';
 
 /**
@@ -1283,5 +1285,32 @@ export class ApiGatewayProvider implements ResourceProvider {
       result[tag.Key] = tag.Value;
     }
     return result;
+  }
+
+  /**
+   * Adopt an existing API Gateway sub-resource into cdkd state.
+   *
+   * **Explicit override only.** API Gateway sub-resources (Authorizer,
+   * Resource, Deployment, Stage, Method) live under a parent `RestApi`,
+   * and their physical ids are not globally unique — they're scoped
+   * `<restApiId>/<sub-id>`. Auto-lookup by `aws:cdk:path` would need to
+   * walk every RestApi in the account, then every sub-resource within
+   * each, which is impractical and error-prone.
+   *
+   * `AWS::ApiGateway::RestApi` itself is handled by the Cloud Control
+   * API fallback (also explicit-override only — see
+   * `cloud-control-provider.ts`).
+   *
+   * Users adopting an existing API Gateway should pass
+   * `--resource <logicalId>=<physicalId>` for each sub-resource; the
+   * physical id format follows what `create()` returns for the same
+   * type (e.g. `<restApiId>|<resourceId>` for `AWS::ApiGateway::Resource`).
+   */
+  // eslint-disable-next-line @typescript-eslint/require-await -- explicit-override-only intentionally has no AWS calls
+  async import(input: ResourceImportInput): Promise<ResourceImportResult | null> {
+    if (input.knownPhysicalId) {
+      return { physicalId: input.knownPhysicalId, attributes: {} };
+    }
+    return null;
   }
 }

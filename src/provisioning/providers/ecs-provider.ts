@@ -11,6 +11,9 @@ import {
   UpdateServiceCommand,
   DeleteServiceCommand,
   DescribeServicesCommand,
+  ListClustersCommand,
+  ListServicesCommand,
+  ListTagsForResourceCommand,
   type Tag,
   type KeyValuePair,
   type PortMapping,
@@ -52,10 +55,13 @@ import { getLogger } from '../../utils/logger.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { generateResourceName } from '../resource-name.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
+import { resolveExplicitPhysicalId } from '../import-helpers.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
   ResourceUpdateResult,
+  ResourceImportInput,
+  ResourceImportResult,
 } from '../../types/resource.js';
 
 /**
@@ -987,6 +993,147 @@ export class ECSProvider implements ResourceProvider {
         error.message.includes('service not found') ||
         error.message.includes('Service not found')
       );
+    }
+    return false;
+  }
+
+  /**
+   * Adopt an existing ECS resource into cdkd state.
+   *
+   * Supported types: `AWS::ECS::Cluster`, `AWS::ECS::Service`,
+   * `AWS::ECS::TaskDefinition`. ECS uses lowercase `key`/`value` tags
+   * (vs the standard CFn `Key`/`Value`), so the standard
+   * `matchesCdkPath` helper doesn't apply — match the tag manually.
+   *
+   * Service has a composite physical id of `<clusterArn>|<serviceName>`
+   * (the form ECSProvider already uses internally for delete/update),
+   * so the explicit-override path takes that composite form when
+   * supplied.
+   */
+  async import(input: ResourceImportInput): Promise<ResourceImportResult | null> {
+    switch (input.resourceType) {
+      case 'AWS::ECS::Cluster':
+        return this.importCluster(input);
+      case 'AWS::ECS::Service':
+        return this.importService(input);
+      case 'AWS::ECS::TaskDefinition':
+        return this.importTaskDefinition(input);
+      default:
+        return null;
+    }
+  }
+
+  private async importCluster(input: ResourceImportInput): Promise<ResourceImportResult | null> {
+    const explicit = resolveExplicitPhysicalId(input, 'ClusterName');
+    if (explicit) {
+      try {
+        const resp = await this.getClient().send(
+          new DescribeClustersCommand({ clusters: [explicit] })
+        );
+        return resp.clusters?.[0]?.clusterName
+          ? { physicalId: resp.clusters[0].clusterName, attributes: {} }
+          : null;
+      } catch (err) {
+        if (this.isClusterNotFoundException(err) || this.isServiceNotFoundException(err)) {
+          return null;
+        }
+        throw err;
+      }
+    }
+    if (!input.cdkPath) return null;
+
+    let nextToken: string | undefined;
+    do {
+      const list = await this.getClient().send(
+        new ListClustersCommand({ ...(nextToken && { nextToken }) })
+      );
+      for (const arn of list.clusterArns ?? []) {
+        const tagsResp = await this.getClient().send(
+          new ListTagsForResourceCommand({ resourceArn: arn })
+        );
+        if (this.tagsMatchCdkPath(tagsResp.tags, input.cdkPath)) {
+          // Cluster physical id is the cluster name (last segment of ARN).
+          const name = arn.substring(arn.lastIndexOf('/') + 1);
+          return { physicalId: name, attributes: {} };
+        }
+      }
+      nextToken = list.nextToken;
+    } while (nextToken);
+    return null;
+  }
+
+  private async importService(input: ResourceImportInput): Promise<ResourceImportResult | null> {
+    // Service physical id is `<clusterArn>|<serviceName>` (cdkd internal
+    // composite form). Explicit override is honored as-is.
+    if (input.knownPhysicalId) {
+      return { physicalId: input.knownPhysicalId, attributes: {} };
+    }
+    if (!input.cdkPath) return null;
+
+    // Walk every cluster, then every service in that cluster, matching
+    // tags. Expensive on accounts with many clusters; users should
+    // prefer explicit overrides for ECS Services in adoption flows.
+    let clusterToken: string | undefined;
+    do {
+      const clusterList = await this.getClient().send(
+        new ListClustersCommand({ ...(clusterToken && { nextToken: clusterToken }) })
+      );
+      for (const clusterArn of clusterList.clusterArns ?? []) {
+        let svcToken: string | undefined;
+        do {
+          const svcList = await this.getClient().send(
+            new ListServicesCommand({
+              cluster: clusterArn,
+              ...(svcToken && { nextToken: svcToken }),
+            })
+          );
+          for (const svcArn of svcList.serviceArns ?? []) {
+            const tagsResp = await this.getClient().send(
+              new ListTagsForResourceCommand({ resourceArn: svcArn })
+            );
+            if (this.tagsMatchCdkPath(tagsResp.tags, input.cdkPath)) {
+              const svcName = svcArn.substring(svcArn.lastIndexOf('/') + 1);
+              return { physicalId: `${clusterArn}|${svcName}`, attributes: {} };
+            }
+          }
+          svcToken = svcList.nextToken;
+        } while (svcToken);
+      }
+      clusterToken = clusterList.nextToken;
+    } while (clusterToken);
+    return null;
+  }
+
+  private async importTaskDefinition(
+    input: ResourceImportInput
+  ): Promise<ResourceImportResult | null> {
+    // TaskDefinitions are immutable revisions; physical id is the full
+    // `family:revision` ARN. CDK templates rarely encode a stable
+    // identifier, so we only support explicit overrides for these.
+    if (input.knownPhysicalId) {
+      try {
+        const resp = await this.getClient().send(
+          new DescribeTaskDefinitionCommand({ taskDefinition: input.knownPhysicalId })
+        );
+        const arn = resp.taskDefinition?.taskDefinitionArn;
+        return arn ? { physicalId: arn, attributes: {} } : null;
+      } catch (err) {
+        if (this.isClusterNotFoundException(err) || this.isServiceNotFoundException(err)) {
+          return null;
+        }
+        throw err;
+      }
+    }
+    return null;
+  }
+
+  private tagsMatchCdkPath(
+    tags: Array<{ key?: string | undefined; value?: string | undefined }> | undefined,
+    cdkPath: string
+  ): boolean {
+    if (!tags) return false;
+    for (const t of tags) {
+      if (t.key === 'aws:cdk:path' && t.value === cdkPath) return true;
     }
     return false;
   }

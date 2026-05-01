@@ -4,6 +4,8 @@ import {
   DeleteUserPoolCommand,
   UpdateUserPoolCommand,
   DescribeUserPoolCommand,
+  ListUserPoolsCommand,
+  ListTagsForResourceCommand,
   ResourceNotFoundException,
   type VerifiedAttributeType,
   type UsernameAttributeType,
@@ -29,10 +31,13 @@ import { getLogger } from '../../utils/logger.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { generateResourceName } from '../resource-name.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
+import { CDK_PATH_TAG } from '../import-helpers.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
   ResourceUpdateResult,
+  ResourceImportInput,
+  ResourceImportResult,
 } from '../../types/resource.js';
 
 /**
@@ -455,5 +460,76 @@ export class CognitoUserPoolProvider implements ResourceProvider {
         cause
       );
     }
+  }
+
+  /**
+   * Adopt an existing Cognito User Pool into cdkd state.
+   *
+   * User Pool physical id is the AWS-generated `<region>_<random>` id.
+   * Lookup chain:
+   *  1. `--resource` override → `DescribeUserPool` to verify.
+   *  2. `Properties.UserPoolName` (when CDK template carries it) →
+   *     `ListUserPools` walk + name match.
+   *  3. `aws:cdk:path` tag match via `ListUserPools` +
+   *     `ListTagsForResource(<arn>)`. Cognito's tag map uses the same
+   *     `Tags: { [key]: value }` shape as Lambda.
+   */
+  async import(input: ResourceImportInput): Promise<ResourceImportResult | null> {
+    if (input.knownPhysicalId) {
+      try {
+        await this.getClient().send(
+          new DescribeUserPoolCommand({ UserPoolId: input.knownPhysicalId })
+        );
+        return { physicalId: input.knownPhysicalId, attributes: {} };
+      } catch (err) {
+        if (err instanceof ResourceNotFoundException) return null;
+        throw err;
+      }
+    }
+
+    const desiredName =
+      typeof input.properties?.['UserPoolName'] === 'string'
+        ? input.properties['UserPoolName']
+        : undefined;
+
+    let nextToken: string | undefined;
+    do {
+      const list = await this.getClient().send(
+        new ListUserPoolsCommand({
+          MaxResults: 60,
+          ...(nextToken && { NextToken: nextToken }),
+        })
+      );
+      for (const pool of list.UserPools ?? []) {
+        if (!pool.Id) continue;
+        if (desiredName && pool.Name === desiredName) {
+          return { physicalId: pool.Id, attributes: {} };
+        }
+        if (input.cdkPath) {
+          // Need the ARN for ListTagsForResource. Construct from id —
+          // physical id format is `<region>_<random>`, ARN is
+          // `arn:aws:cognito-idp:<region>:<account>:userpool/<id>`.
+          // Use DescribeUserPool to fetch the ARN cheaply.
+          try {
+            const desc = await this.getClient().send(
+              new DescribeUserPoolCommand({ UserPoolId: pool.Id })
+            );
+            const arn = desc.UserPool?.Arn;
+            if (!arn) continue;
+            const tagsResp = await this.getClient().send(
+              new ListTagsForResourceCommand({ ResourceArn: arn })
+            );
+            if (tagsResp.Tags?.[CDK_PATH_TAG] === input.cdkPath) {
+              return { physicalId: pool.Id, attributes: {} };
+            }
+          } catch (err) {
+            if (err instanceof ResourceNotFoundException) continue;
+            throw err;
+          }
+        }
+      }
+      nextToken = list.NextToken;
+    } while (nextToken);
+    return null;
   }
 }
