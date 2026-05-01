@@ -17,6 +17,7 @@ import {
 } from '@aws-sdk/client-wafv2';
 import { getLogger } from '../../utils/logger.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
+import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { generateResourceName } from '../resource-name.js';
 import type {
   ResourceProvider,
@@ -247,7 +248,8 @@ export class WAFv2WebACLProvider implements ResourceProvider {
     logicalId: string,
     physicalId: string,
     resourceType: string,
-    _properties?: Record<string, unknown>
+    _properties?: Record<string, unknown>,
+    context?: DeleteContext
   ): Promise<void> {
     this.logger.debug(`Deleting WAFv2 WebACL ${logicalId}: ${physicalId}`);
 
@@ -280,6 +282,14 @@ export class WAFv2WebACLProvider implements ResourceProvider {
       this.logger.debug(`Successfully deleted WAFv2 WebACL ${logicalId}`);
     } catch (error) {
       if (error instanceof WAFNonexistentItemException) {
+        const clientRegion = await this.getClient().config.region();
+        assertRegionMatch(
+          clientRegion,
+          context?.expectedRegion,
+          resourceType,
+          logicalId,
+          physicalId
+        );
         this.logger.debug(`WAFv2 WebACL ${physicalId} does not exist, skipping deletion`);
         return;
       }

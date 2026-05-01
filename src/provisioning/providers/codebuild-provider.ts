@@ -17,6 +17,7 @@ import {
 } from '@aws-sdk/client-codebuild';
 import { getLogger } from '../../utils/logger.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
+import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -353,7 +354,8 @@ export class CodeBuildProvider implements ResourceProvider {
     logicalId: string,
     physicalId: string,
     resourceType: string,
-    _properties?: Record<string, unknown>
+    _properties?: Record<string, unknown>,
+    context?: DeleteContext
   ): Promise<void> {
     this.logger.debug(`Deleting CodeBuild Project ${logicalId}: ${physicalId}`);
 
@@ -362,6 +364,14 @@ export class CodeBuildProvider implements ResourceProvider {
       this.logger.debug(`Successfully deleted CodeBuild Project ${logicalId}`);
     } catch (error) {
       if (error instanceof ResourceNotFoundException) {
+        const clientRegion = await this.getClient().config.region();
+        assertRegionMatch(
+          clientRegion,
+          context?.expectedRegion,
+          resourceType,
+          logicalId,
+          physicalId
+        );
         this.logger.debug(`CodeBuild Project ${physicalId} does not exist, skipping deletion`);
         return;
       }

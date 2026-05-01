@@ -47,6 +47,7 @@ import {
 import { getLogger } from '../../utils/logger.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
+import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -268,33 +269,40 @@ export class EC2Provider implements ResourceProvider {
     logicalId: string,
     physicalId: string,
     resourceType: string,
-    properties?: Record<string, unknown>
+    properties?: Record<string, unknown>,
+    context?: DeleteContext
   ): Promise<void> {
     switch (resourceType) {
       case 'AWS::EC2::VPC':
-        return this.deleteVpc(logicalId, physicalId, resourceType);
+        return this.deleteVpc(logicalId, physicalId, resourceType, context);
       case 'AWS::EC2::Subnet':
-        return this.deleteSubnet(logicalId, physicalId, resourceType);
+        return this.deleteSubnet(logicalId, physicalId, resourceType, context);
       case 'AWS::EC2::InternetGateway':
-        return this.deleteInternetGateway(logicalId, physicalId, resourceType);
+        return this.deleteInternetGateway(logicalId, physicalId, resourceType, context);
       case 'AWS::EC2::VPCGatewayAttachment':
-        return this.deleteVpcGatewayAttachment(logicalId, physicalId, resourceType);
+        return this.deleteVpcGatewayAttachment(logicalId, physicalId, resourceType, context);
       case 'AWS::EC2::RouteTable':
-        return this.deleteRouteTable(logicalId, physicalId, resourceType);
+        return this.deleteRouteTable(logicalId, physicalId, resourceType, context);
       case 'AWS::EC2::Route':
-        return this.deleteRoute(logicalId, physicalId, resourceType);
+        return this.deleteRoute(logicalId, physicalId, resourceType, context);
       case 'AWS::EC2::SubnetRouteTableAssociation':
-        return this.deleteSubnetRouteTableAssociation(logicalId, physicalId, resourceType);
+        return this.deleteSubnetRouteTableAssociation(logicalId, physicalId, resourceType, context);
       case 'AWS::EC2::SecurityGroup':
-        return this.deleteSecurityGroup(logicalId, physicalId, resourceType);
+        return this.deleteSecurityGroup(logicalId, physicalId, resourceType, context);
       case 'AWS::EC2::SecurityGroupIngress':
-        return this.deleteSecurityGroupIngress(logicalId, physicalId, resourceType, properties);
+        return this.deleteSecurityGroupIngress(
+          logicalId,
+          physicalId,
+          resourceType,
+          properties,
+          context
+        );
       case 'AWS::EC2::Instance':
-        return this.deleteInstance(logicalId, physicalId, resourceType);
+        return this.deleteInstance(logicalId, physicalId, resourceType, context);
       case 'AWS::EC2::NetworkAcl':
-        return this.deleteNetworkAcl(logicalId, physicalId, resourceType);
+        return this.deleteNetworkAcl(logicalId, physicalId, resourceType, context);
       case 'AWS::EC2::NetworkAclEntry':
-        return this.deleteNetworkAclEntry(logicalId, physicalId, resourceType);
+        return this.deleteNetworkAclEntry(logicalId, physicalId, resourceType, context);
       case 'AWS::EC2::SubnetNetworkAclAssociation':
         // Association replacement is atomic; no explicit delete needed
         this.logger.debug(`SubnetNetworkAclAssociation ${logicalId} delete is a no-op`);
@@ -483,7 +491,8 @@ export class EC2Provider implements ResourceProvider {
   private async deleteVpc(
     logicalId: string,
     physicalId: string,
-    resourceType: string
+    resourceType: string,
+    context?: DeleteContext
   ): Promise<void> {
     this.logger.debug(`Deleting VPC ${logicalId}: ${physicalId}`);
 
@@ -496,6 +505,14 @@ export class EC2Provider implements ResourceProvider {
         return;
       } catch (error) {
         if (this.isNotFoundError(error)) {
+          const clientRegion = await this.ec2Client.config.region();
+          assertRegionMatch(
+            clientRegion,
+            context?.expectedRegion,
+            resourceType,
+            logicalId,
+            physicalId
+          );
           this.logger.debug(`VPC ${physicalId} does not exist, skipping deletion`);
           return;
         }
@@ -629,7 +646,8 @@ export class EC2Provider implements ResourceProvider {
   private async deleteSubnet(
     logicalId: string,
     physicalId: string,
-    resourceType: string
+    resourceType: string,
+    context?: DeleteContext
   ): Promise<void> {
     this.logger.debug(`Deleting Subnet ${logicalId}: ${physicalId}`);
 
@@ -647,6 +665,14 @@ export class EC2Provider implements ResourceProvider {
         return;
       } catch (error) {
         if (this.isNotFoundError(error)) {
+          const clientRegion = await this.ec2Client.config.region();
+          assertRegionMatch(
+            clientRegion,
+            context?.expectedRegion,
+            resourceType,
+            logicalId,
+            physicalId
+          );
           this.logger.debug(`Subnet ${physicalId} does not exist, skipping deletion`);
           return;
         }
@@ -791,7 +817,8 @@ export class EC2Provider implements ResourceProvider {
   private async deleteInternetGateway(
     logicalId: string,
     physicalId: string,
-    resourceType: string
+    resourceType: string,
+    context?: DeleteContext
   ): Promise<void> {
     this.logger.debug(`Deleting InternetGateway ${logicalId}: ${physicalId}`);
 
@@ -802,6 +829,14 @@ export class EC2Provider implements ResourceProvider {
       this.logger.debug(`Successfully deleted InternetGateway ${logicalId}`);
     } catch (error) {
       if (this.isNotFoundError(error)) {
+        const clientRegion = await this.ec2Client.config.region();
+        assertRegionMatch(
+          clientRegion,
+          context?.expectedRegion,
+          resourceType,
+          logicalId,
+          physicalId
+        );
         this.logger.debug(`InternetGateway ${physicalId} does not exist, skipping deletion`);
         return;
       }
@@ -874,7 +909,8 @@ export class EC2Provider implements ResourceProvider {
   private async deleteVpcGatewayAttachment(
     logicalId: string,
     physicalId: string,
-    resourceType: string
+    resourceType: string,
+    context?: DeleteContext
   ): Promise<void> {
     this.logger.debug(`Deleting VPCGatewayAttachment ${logicalId}: ${physicalId}`);
 
@@ -900,6 +936,14 @@ export class EC2Provider implements ResourceProvider {
       this.logger.debug(`Successfully deleted VPCGatewayAttachment ${logicalId}`);
     } catch (error) {
       if (this.isNotFoundError(error)) {
+        const clientRegion = await this.ec2Client.config.region();
+        assertRegionMatch(
+          clientRegion,
+          context?.expectedRegion,
+          resourceType,
+          logicalId,
+          physicalId
+        );
         this.logger.debug(`VPCGatewayAttachment ${physicalId} does not exist, skipping deletion`);
         return;
       }
@@ -968,7 +1012,8 @@ export class EC2Provider implements ResourceProvider {
   private async deleteRouteTable(
     logicalId: string,
     physicalId: string,
-    resourceType: string
+    resourceType: string,
+    context?: DeleteContext
   ): Promise<void> {
     this.logger.debug(`Deleting RouteTable ${logicalId}: ${physicalId}`);
 
@@ -977,6 +1022,14 @@ export class EC2Provider implements ResourceProvider {
       this.logger.debug(`Successfully deleted RouteTable ${logicalId}`);
     } catch (error) {
       if (this.isNotFoundError(error)) {
+        const clientRegion = await this.ec2Client.config.region();
+        assertRegionMatch(
+          clientRegion,
+          context?.expectedRegion,
+          resourceType,
+          logicalId,
+          physicalId
+        );
         this.logger.debug(`RouteTable ${physicalId} does not exist, skipping deletion`);
         return;
       }
@@ -1085,7 +1138,8 @@ export class EC2Provider implements ResourceProvider {
   private async deleteRoute(
     logicalId: string,
     physicalId: string,
-    resourceType: string
+    resourceType: string,
+    context?: DeleteContext
   ): Promise<void> {
     this.logger.debug(`Deleting Route ${logicalId}: ${physicalId}`);
 
@@ -1115,6 +1169,14 @@ export class EC2Provider implements ResourceProvider {
       this.logger.debug(`Successfully deleted Route ${logicalId}`);
     } catch (error) {
       if (this.isNotFoundError(error)) {
+        const clientRegion = await this.ec2Client.config.region();
+        assertRegionMatch(
+          clientRegion,
+          context?.expectedRegion,
+          resourceType,
+          logicalId,
+          physicalId
+        );
         this.logger.debug(`Route ${physicalId} does not exist, skipping deletion`);
         return;
       }
@@ -1191,7 +1253,8 @@ export class EC2Provider implements ResourceProvider {
   private async deleteSubnetRouteTableAssociation(
     logicalId: string,
     physicalId: string,
-    resourceType: string
+    resourceType: string,
+    context?: DeleteContext
   ): Promise<void> {
     this.logger.debug(`Deleting SubnetRouteTableAssociation ${logicalId}: ${physicalId}`);
 
@@ -1200,6 +1263,14 @@ export class EC2Provider implements ResourceProvider {
       this.logger.debug(`Successfully deleted SubnetRouteTableAssociation ${logicalId}`);
     } catch (error) {
       if (this.isNotFoundError(error)) {
+        const clientRegion = await this.ec2Client.config.region();
+        assertRegionMatch(
+          clientRegion,
+          context?.expectedRegion,
+          resourceType,
+          logicalId,
+          physicalId
+        );
         this.logger.debug(
           `SubnetRouteTableAssociation ${physicalId} does not exist, skipping deletion`
         );
@@ -1375,7 +1446,8 @@ export class EC2Provider implements ResourceProvider {
   private async deleteSecurityGroup(
     logicalId: string,
     physicalId: string,
-    resourceType: string
+    resourceType: string,
+    context?: DeleteContext
   ): Promise<void> {
     this.logger.debug(`Deleting SecurityGroup ${logicalId}: ${physicalId}`);
 
@@ -1388,6 +1460,14 @@ export class EC2Provider implements ResourceProvider {
         return;
       } catch (error) {
         if (this.isNotFoundError(error)) {
+          const clientRegion = await this.ec2Client.config.region();
+          assertRegionMatch(
+            clientRegion,
+            context?.expectedRegion,
+            resourceType,
+            logicalId,
+            physicalId
+          );
           this.logger.debug(`SecurityGroup ${physicalId} does not exist, skipping deletion`);
           return;
         }
@@ -1582,7 +1662,8 @@ export class EC2Provider implements ResourceProvider {
     logicalId: string,
     physicalId: string,
     resourceType: string,
-    properties?: Record<string, unknown>
+    properties?: Record<string, unknown>,
+    context?: DeleteContext
   ): Promise<void> {
     this.logger.debug(`Deleting SecurityGroupIngress ${logicalId}: ${physicalId}`);
 
@@ -1618,6 +1699,14 @@ export class EC2Provider implements ResourceProvider {
       this.logger.debug(`Successfully deleted SecurityGroupIngress ${logicalId}`);
     } catch (error) {
       if (this.isNotFoundError(error)) {
+        const clientRegion = await this.ec2Client.config.region();
+        assertRegionMatch(
+          clientRegion,
+          context?.expectedRegion,
+          resourceType,
+          logicalId,
+          physicalId
+        );
         this.logger.debug(`SecurityGroupIngress ${physicalId} does not exist, skipping deletion`);
         return;
       }
@@ -1776,7 +1865,8 @@ export class EC2Provider implements ResourceProvider {
   private async deleteInstance(
     logicalId: string,
     physicalId: string,
-    resourceType: string
+    resourceType: string,
+    context?: DeleteContext
   ): Promise<void> {
     this.logger.debug(`Terminating EC2 Instance ${logicalId}: ${physicalId}`);
 
@@ -1793,6 +1883,14 @@ export class EC2Provider implements ResourceProvider {
       this.logger.debug(`EC2 Instance ${logicalId} terminated: ${physicalId}`);
     } catch (error) {
       if (this.isNotFoundError(error)) {
+        const clientRegion = await this.ec2Client.config.region();
+        assertRegionMatch(
+          clientRegion,
+          context?.expectedRegion,
+          resourceType,
+          logicalId,
+          physicalId
+        );
         this.logger.debug(
           `EC2 Instance ${physicalId} already terminated (not found), treating as success`
         );
@@ -2102,7 +2200,8 @@ export class EC2Provider implements ResourceProvider {
   private async deleteNetworkAcl(
     logicalId: string,
     physicalId: string,
-    resourceType: string
+    resourceType: string,
+    context?: DeleteContext
   ): Promise<void> {
     this.logger.debug(`Deleting NetworkAcl ${logicalId}: ${physicalId}`);
 
@@ -2111,6 +2210,14 @@ export class EC2Provider implements ResourceProvider {
       this.logger.debug(`Successfully deleted NetworkAcl ${logicalId}`);
     } catch (error) {
       if (this.isNotFoundError(error)) {
+        const clientRegion = await this.ec2Client.config.region();
+        assertRegionMatch(
+          clientRegion,
+          context?.expectedRegion,
+          resourceType,
+          logicalId,
+          physicalId
+        );
         this.logger.debug(`NetworkAcl ${physicalId} does not exist, skipping deletion`);
         return;
       }
@@ -2200,7 +2307,8 @@ export class EC2Provider implements ResourceProvider {
   private async deleteNetworkAclEntry(
     logicalId: string,
     physicalId: string,
-    resourceType: string
+    resourceType: string,
+    context?: DeleteContext
   ): Promise<void> {
     this.logger.debug(`Deleting NetworkAclEntry ${logicalId}: ${physicalId}`);
 
@@ -2224,6 +2332,14 @@ export class EC2Provider implements ResourceProvider {
       this.logger.debug(`Successfully deleted NetworkAclEntry ${logicalId}`);
     } catch (error) {
       if (this.isNotFoundError(error)) {
+        const clientRegion = await this.ec2Client.config.region();
+        assertRegionMatch(
+          clientRegion,
+          context?.expectedRegion,
+          resourceType,
+          logicalId,
+          physicalId
+        );
         this.logger.debug(`NetworkAclEntry ${physicalId} does not exist, skipping deletion`);
         return;
       }

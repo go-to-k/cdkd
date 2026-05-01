@@ -391,7 +391,8 @@ async function destroyCommand(
                     logicalId,
                     resource.physicalId,
                     resource.resourceType,
-                    resource.properties
+                    resource.properties,
+                    { expectedRegion: currentState.region }
                   );
                   lastDeleteError = null;
                   break;

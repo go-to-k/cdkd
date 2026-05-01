@@ -8,6 +8,7 @@ vi.mock('@aws-sdk/client-kinesis', async (importOriginal) => {
     ...actual,
     KinesisClient: vi.fn().mockImplementation(() => ({
       send: mockSend,
+      config: { region: () => Promise.resolve('us-east-1') },
     })),
   };
 });

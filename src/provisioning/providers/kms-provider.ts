@@ -20,6 +20,7 @@ import {
 } from '@aws-sdk/client-kms';
 import { getLogger } from '../../utils/logger.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
+import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -116,13 +117,14 @@ export class KMSProvider implements ResourceProvider {
     logicalId: string,
     physicalId: string,
     resourceType: string,
-    _properties?: Record<string, unknown>
+    _properties?: Record<string, unknown>,
+    context?: DeleteContext
   ): Promise<void> {
     switch (resourceType) {
       case 'AWS::KMS::Key':
-        return this.deleteKey(logicalId, physicalId, resourceType, _properties);
+        return this.deleteKey(logicalId, physicalId, resourceType, _properties, context);
       case 'AWS::KMS::Alias':
-        return this.deleteAlias(logicalId, physicalId, resourceType);
+        return this.deleteAlias(logicalId, physicalId, resourceType, context);
       default:
         throw new ProvisioningError(
           `Unsupported resource type: ${resourceType}`,
@@ -343,7 +345,8 @@ export class KMSProvider implements ResourceProvider {
     logicalId: string,
     physicalId: string,
     resourceType: string,
-    properties?: Record<string, unknown>
+    properties?: Record<string, unknown>,
+    context?: DeleteContext
   ): Promise<void> {
     this.logger.debug(`Scheduling deletion for KMS Key ${logicalId}: ${physicalId}`);
 
@@ -359,6 +362,14 @@ export class KMSProvider implements ResourceProvider {
       this.logger.debug(`Successfully scheduled deletion for KMS Key ${logicalId}`);
     } catch (error) {
       if (error instanceof NotFoundException) {
+        const clientRegion = await this.getClient().config.region();
+        assertRegionMatch(
+          clientRegion,
+          context?.expectedRegion,
+          resourceType,
+          logicalId,
+          physicalId
+        );
         this.logger.debug(`KMS Key ${physicalId} does not exist, skipping deletion`);
         return;
       }
@@ -470,7 +481,8 @@ export class KMSProvider implements ResourceProvider {
   private async deleteAlias(
     logicalId: string,
     physicalId: string,
-    resourceType: string
+    resourceType: string,
+    context?: DeleteContext
   ): Promise<void> {
     this.logger.debug(`Deleting KMS Alias ${logicalId}: ${physicalId}`);
 
@@ -483,6 +495,14 @@ export class KMSProvider implements ResourceProvider {
       this.logger.debug(`Successfully deleted KMS Alias ${logicalId}`);
     } catch (error) {
       if (error instanceof NotFoundException) {
+        const clientRegion = await this.getClient().config.region();
+        assertRegionMatch(
+          clientRegion,
+          context?.expectedRegion,
+          resourceType,
+          logicalId,
+          physicalId
+        );
         this.logger.debug(`KMS Alias ${physicalId} does not exist, skipping deletion`);
         return;
       }

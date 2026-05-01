@@ -12,6 +12,7 @@ import {
 } from '@aws-sdk/client-s3tables';
 import { getLogger } from '../../utils/logger.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
+import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -86,15 +87,16 @@ export class S3TablesProvider implements ResourceProvider {
     logicalId: string,
     physicalId: string,
     resourceType: string,
-    _properties?: Record<string, unknown>
+    _properties?: Record<string, unknown>,
+    context?: DeleteContext
   ): Promise<void> {
     switch (resourceType) {
       case 'AWS::S3Tables::TableBucket':
-        return this.deleteTableBucket(logicalId, physicalId, resourceType);
+        return this.deleteTableBucket(logicalId, physicalId, resourceType, context);
       case 'AWS::S3Tables::Namespace':
-        return this.deleteNamespace(logicalId, physicalId, resourceType);
+        return this.deleteNamespace(logicalId, physicalId, resourceType, context);
       case 'AWS::S3Tables::Table':
-        return this.deleteTable(logicalId, physicalId, resourceType);
+        return this.deleteTable(logicalId, physicalId, resourceType, context);
       default:
         throw new ProvisioningError(
           `Unsupported resource type: ${resourceType}`,
@@ -155,7 +157,8 @@ export class S3TablesProvider implements ResourceProvider {
   private async deleteTableBucket(
     logicalId: string,
     physicalId: string,
-    resourceType: string
+    resourceType: string,
+    context?: DeleteContext
   ): Promise<void> {
     this.logger.debug(`Deleting S3 Table Bucket ${logicalId}: ${physicalId}`);
 
@@ -171,6 +174,14 @@ export class S3TablesProvider implements ResourceProvider {
       this.logger.debug(`Successfully deleted S3 Table Bucket ${logicalId}`);
     } catch (error) {
       if (error instanceof NotFoundException) {
+        const clientRegion = await this.getClient().config.region();
+        assertRegionMatch(
+          clientRegion,
+          context?.expectedRegion,
+          resourceType,
+          logicalId,
+          physicalId
+        );
         this.logger.debug(`S3 Table Bucket ${physicalId} does not exist, skipping deletion`);
         return;
       }
@@ -320,7 +331,8 @@ export class S3TablesProvider implements ResourceProvider {
   private async deleteNamespace(
     logicalId: string,
     physicalId: string,
-    resourceType: string
+    resourceType: string,
+    context?: DeleteContext
   ): Promise<void> {
     this.logger.debug(`Deleting S3 Tables Namespace ${logicalId}: ${physicalId}`);
 
@@ -344,6 +356,14 @@ export class S3TablesProvider implements ResourceProvider {
       this.logger.debug(`Successfully deleted S3 Tables Namespace ${logicalId}`);
     } catch (error) {
       if (error instanceof NotFoundException) {
+        const clientRegion = await this.getClient().config.region();
+        assertRegionMatch(
+          clientRegion,
+          context?.expectedRegion,
+          resourceType,
+          logicalId,
+          physicalId
+        );
         this.logger.debug(`S3 Tables Namespace ${physicalId} does not exist, skipping deletion`);
         return;
       }
@@ -436,7 +456,8 @@ export class S3TablesProvider implements ResourceProvider {
   private async deleteTable(
     logicalId: string,
     physicalId: string,
-    resourceType: string
+    resourceType: string,
+    context?: DeleteContext
   ): Promise<void> {
     this.logger.debug(`Deleting S3 Tables Table ${logicalId}: ${physicalId}`);
 
@@ -465,6 +486,14 @@ export class S3TablesProvider implements ResourceProvider {
       this.logger.debug(`Successfully deleted S3 Tables Table ${logicalId}`);
     } catch (error) {
       if (error instanceof NotFoundException) {
+        const clientRegion = await this.getClient().config.region();
+        assertRegionMatch(
+          clientRegion,
+          context?.expectedRegion,
+          resourceType,
+          logicalId,
+          physicalId
+        );
         this.logger.debug(`S3 Tables Table ${physicalId} does not exist, skipping deletion`);
         return;
       }

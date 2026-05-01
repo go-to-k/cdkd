@@ -16,6 +16,7 @@ import {
 import { getLogger } from '../../utils/logger.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
+import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -194,7 +195,13 @@ export class EventBridgeBusProvider implements ResourceProvider {
     return { physicalId, wasReplaced: false, attributes: {} };
   }
 
-  async delete(logicalId: string, physicalId: string, resourceType: string): Promise<void> {
+  async delete(
+    logicalId: string,
+    physicalId: string,
+    resourceType: string,
+    _properties?: Record<string, unknown>,
+    context?: DeleteContext
+  ): Promise<void> {
     this.logger.debug(`Deleting EventBus ${logicalId}: ${physicalId}`);
 
     try {
@@ -206,11 +213,27 @@ export class EventBridgeBusProvider implements ResourceProvider {
       this.logger.debug(`Successfully deleted EventBus ${logicalId}`);
     } catch (error) {
       if (error instanceof ResourceNotFoundException) {
+        const clientRegion = await this.eventBridgeClient.config.region();
+        assertRegionMatch(
+          clientRegion,
+          context?.expectedRegion,
+          resourceType,
+          logicalId,
+          physicalId
+        );
         this.logger.debug(`EventBus ${physicalId} does not exist, skipping`);
         return;
       }
       const msg = error instanceof Error ? error.message : String(error);
       if (msg.includes('does not exist')) {
+        const clientRegion = await this.eventBridgeClient.config.region();
+        assertRegionMatch(
+          clientRegion,
+          context?.expectedRegion,
+          resourceType,
+          logicalId,
+          physicalId
+        );
         this.logger.debug(`EventBus ${physicalId} does not exist, skipping`);
         return;
       }

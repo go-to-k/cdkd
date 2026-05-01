@@ -8,6 +8,7 @@ vi.mock('@aws-sdk/client-codebuild', async (importOriginal) => {
     ...actual,
     CodeBuildClient: vi.fn().mockImplementation(() => ({
       send: mockSend,
+      config: { region: () => Promise.resolve('us-east-1') },
     })),
   };
 });

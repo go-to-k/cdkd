@@ -7,6 +7,7 @@ import {
 import { getLogger } from '../../utils/logger.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
+import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -163,7 +164,8 @@ export class S3BucketPolicyProvider implements ResourceProvider {
     logicalId: string,
     physicalId: string,
     resourceType: string,
-    _properties?: Record<string, unknown>
+    _properties?: Record<string, unknown>,
+    context?: DeleteContext
   ): Promise<void> {
     this.logger.debug(`Deleting S3 bucket policy ${logicalId}: ${physicalId}`);
 
@@ -177,6 +179,14 @@ export class S3BucketPolicyProvider implements ResourceProvider {
         this.logger.debug(`Successfully deleted S3 bucket policy ${logicalId}`);
       } catch (error) {
         if (error instanceof NoSuchBucket) {
+          const clientRegion = await this.s3Client.config.region();
+          assertRegionMatch(
+            clientRegion,
+            context?.expectedRegion,
+            resourceType,
+            logicalId,
+            physicalId
+          );
           this.logger.debug(`Bucket ${physicalId} does not exist, skipping policy deletion`);
           return;
         }
@@ -185,6 +195,14 @@ export class S3BucketPolicyProvider implements ResourceProvider {
           error instanceof Error &&
           (error.name === 'NoSuchBucketPolicy' || error.message.includes('does not have'))
         ) {
+          const clientRegion = await this.s3Client.config.region();
+          assertRegionMatch(
+            clientRegion,
+            context?.expectedRegion,
+            resourceType,
+            logicalId,
+            physicalId
+          );
           this.logger.debug(`Bucket policy for ${physicalId} does not exist, skipping`);
           return;
         }

@@ -17,6 +17,7 @@ import {
 import { getLogger } from '../../utils/logger.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { generateResourceName } from '../resource-name.js';
+import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -300,7 +301,8 @@ export class ECRProvider implements ResourceProvider {
     logicalId: string,
     physicalId: string,
     resourceType: string,
-    _properties?: Record<string, unknown>
+    _properties?: Record<string, unknown>,
+    context?: DeleteContext
   ): Promise<void> {
     this.logger.debug(`Deleting ECR Repository ${logicalId}: ${physicalId}`);
 
@@ -314,6 +316,14 @@ export class ECRProvider implements ResourceProvider {
       this.logger.debug(`Successfully deleted ECR Repository ${logicalId}`);
     } catch (error) {
       if (error instanceof RepositoryNotFoundException) {
+        const clientRegion = await this.getClient().config.region();
+        assertRegionMatch(
+          clientRegion,
+          context?.expectedRegion,
+          resourceType,
+          logicalId,
+          physicalId
+        );
         this.logger.debug(`ECR Repository ${physicalId} does not exist, skipping deletion`);
         return;
       }

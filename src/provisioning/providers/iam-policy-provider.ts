@@ -11,6 +11,7 @@ import {
 import { getLogger } from '../../utils/logger.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
+import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { generateResourceName } from '../resource-name.js';
 import type {
   ResourceProvider,
@@ -337,7 +338,8 @@ export class IAMPolicyProvider implements ResourceProvider {
     logicalId: string,
     physicalId: string,
     resourceType: string,
-    properties?: Record<string, unknown>
+    properties?: Record<string, unknown>,
+    context?: DeleteContext
   ): Promise<void> {
     this.logger.debug(`Deleting IAM policy ${logicalId}: ${physicalId}`);
 
@@ -348,6 +350,24 @@ export class IAMPolicyProvider implements ResourceProvider {
       this.logger.warn(`Invalid physical ID format: ${physicalId}, skipping deletion`);
       return;
     }
+
+    // Each per-target loop swallows NoSuchEntityException as idempotent
+    // delete success. A region mismatch would otherwise let *every* such
+    // exception slip through silently and orphan the underlying inline
+    // policy attachments. Assert region once up front: IAM is global, but
+    // the client region is still meaningful when the destroy run is
+    // pointing at a different account/region than where the stack was
+    // deployed.
+    const onNotFound = async (target: string): Promise<void> => {
+      const clientRegion = await this.iamClient.config.region();
+      assertRegionMatch(
+        clientRegion,
+        context?.expectedRegion,
+        resourceType,
+        logicalId,
+        `${physicalId} (${target})`
+      );
+    };
 
     try {
       // Get target lists from properties (state stores these)
@@ -368,7 +388,9 @@ export class IAMPolicyProvider implements ResourceProvider {
             );
             this.logger.debug(`Deleted inline policy ${policyName} from role ${firstRole}`);
           } catch (error) {
-            if (!(error instanceof NoSuchEntityException)) {
+            if (error instanceof NoSuchEntityException) {
+              await onNotFound(`role ${firstRole}`);
+            } else {
               throw error;
             }
           }
@@ -387,7 +409,9 @@ export class IAMPolicyProvider implements ResourceProvider {
             );
             this.logger.debug(`Deleted inline policy ${policyName} from role ${roleName}`);
           } catch (error) {
-            if (!(error instanceof NoSuchEntityException)) {
+            if (error instanceof NoSuchEntityException) {
+              await onNotFound(`role ${roleName}`);
+            } else {
               throw error;
             }
           }
@@ -406,7 +430,9 @@ export class IAMPolicyProvider implements ResourceProvider {
             );
             this.logger.debug(`Deleted inline policy ${policyName} from group ${groupName}`);
           } catch (error) {
-            if (!(error instanceof NoSuchEntityException)) {
+            if (error instanceof NoSuchEntityException) {
+              await onNotFound(`group ${groupName}`);
+            } else {
               throw error;
             }
           }
@@ -425,7 +451,9 @@ export class IAMPolicyProvider implements ResourceProvider {
             );
             this.logger.debug(`Deleted inline policy ${policyName} from user ${userName}`);
           } catch (error) {
-            if (!(error instanceof NoSuchEntityException)) {
+            if (error instanceof NoSuchEntityException) {
+              await onNotFound(`user ${userName}`);
+            } else {
               throw error;
             }
           }

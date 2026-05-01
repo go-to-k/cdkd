@@ -7,7 +7,7 @@ vi.mock('@aws-sdk/client-route-53', async () => {
   const actual = await vi.importActual('@aws-sdk/client-route-53');
   return {
     ...actual,
-    Route53Client: vi.fn().mockImplementation(() => ({ send: mockSend })),
+    Route53Client: vi.fn().mockImplementation(() => ({ send: mockSend, config: { region: () => Promise.resolve('us-east-1') } })),
   };
 });
 

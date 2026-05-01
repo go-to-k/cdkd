@@ -18,6 +18,7 @@ import {
 } from '@aws-sdk/client-appsync';
 import { getLogger } from '../../utils/logger.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
+import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -128,21 +129,22 @@ export class AppSyncProvider implements ResourceProvider {
     logicalId: string,
     physicalId: string,
     resourceType: string,
-    _properties?: Record<string, unknown>
+    _properties?: Record<string, unknown>,
+    context?: DeleteContext
   ): Promise<void> {
     switch (resourceType) {
       case 'AWS::AppSync::GraphQLApi':
-        return this.deleteGraphQLApi(logicalId, physicalId, resourceType);
+        return this.deleteGraphQLApi(logicalId, physicalId, resourceType, context);
       case 'AWS::AppSync::GraphQLSchema':
         // Schema is deleted with the API, no-op
         this.logger.debug(`Schema ${logicalId} is deleted with its API, skipping`);
         return;
       case 'AWS::AppSync::DataSource':
-        return this.deleteDataSource(logicalId, physicalId, resourceType);
+        return this.deleteDataSource(logicalId, physicalId, resourceType, context);
       case 'AWS::AppSync::Resolver':
-        return this.deleteResolver(logicalId, physicalId, resourceType);
+        return this.deleteResolver(logicalId, physicalId, resourceType, context);
       case 'AWS::AppSync::ApiKey':
-        return this.deleteApiKey(logicalId, physicalId, resourceType);
+        return this.deleteApiKey(logicalId, physicalId, resourceType, context);
       default:
         throw new ProvisioningError(
           `Unsupported resource type: ${resourceType}`,
@@ -241,7 +243,8 @@ export class AppSyncProvider implements ResourceProvider {
   private async deleteGraphQLApi(
     logicalId: string,
     physicalId: string,
-    resourceType: string
+    resourceType: string,
+    context?: DeleteContext
   ): Promise<void> {
     this.logger.debug(`Deleting GraphQL API ${logicalId}: ${physicalId}`);
 
@@ -250,6 +253,14 @@ export class AppSyncProvider implements ResourceProvider {
       this.logger.debug(`Successfully deleted GraphQL API ${logicalId}`);
     } catch (error) {
       if (this.isNotFoundError(error)) {
+        const clientRegion = await this.getClient().config.region();
+        assertRegionMatch(
+          clientRegion,
+          context?.expectedRegion,
+          resourceType,
+          logicalId,
+          physicalId
+        );
         this.logger.debug(`GraphQL API ${physicalId} does not exist, skipping deletion`);
         return;
       }
@@ -400,7 +411,8 @@ export class AppSyncProvider implements ResourceProvider {
   private async deleteDataSource(
     logicalId: string,
     physicalId: string,
-    resourceType: string
+    resourceType: string,
+    context?: DeleteContext
   ): Promise<void> {
     this.logger.debug(`Deleting DataSource ${logicalId}: ${physicalId}`);
 
@@ -415,6 +427,14 @@ export class AppSyncProvider implements ResourceProvider {
       this.logger.debug(`Successfully deleted DataSource ${logicalId}`);
     } catch (error) {
       if (this.isNotFoundError(error)) {
+        const clientRegion = await this.getClient().config.region();
+        assertRegionMatch(
+          clientRegion,
+          context?.expectedRegion,
+          resourceType,
+          logicalId,
+          physicalId
+        );
         this.logger.debug(`DataSource ${physicalId} does not exist, skipping deletion`);
         return;
       }
@@ -512,7 +532,8 @@ export class AppSyncProvider implements ResourceProvider {
   private async deleteResolver(
     logicalId: string,
     physicalId: string,
-    resourceType: string
+    resourceType: string,
+    context?: DeleteContext
   ): Promise<void> {
     this.logger.debug(`Deleting Resolver ${logicalId}: ${physicalId}`);
 
@@ -528,6 +549,14 @@ export class AppSyncProvider implements ResourceProvider {
       this.logger.debug(`Successfully deleted Resolver ${logicalId}`);
     } catch (error) {
       if (this.isNotFoundError(error)) {
+        const clientRegion = await this.getClient().config.region();
+        assertRegionMatch(
+          clientRegion,
+          context?.expectedRegion,
+          resourceType,
+          logicalId,
+          physicalId
+        );
         this.logger.debug(`Resolver ${physicalId} does not exist, skipping deletion`);
         return;
       }
@@ -597,7 +626,8 @@ export class AppSyncProvider implements ResourceProvider {
   private async deleteApiKey(
     logicalId: string,
     physicalId: string,
-    resourceType: string
+    resourceType: string,
+    context?: DeleteContext
   ): Promise<void> {
     this.logger.debug(`Deleting ApiKey ${logicalId}: ${physicalId}`);
 
@@ -612,6 +642,14 @@ export class AppSyncProvider implements ResourceProvider {
       this.logger.debug(`Successfully deleted ApiKey ${logicalId}`);
     } catch (error) {
       if (this.isNotFoundError(error)) {
+        const clientRegion = await this.getClient().config.region();
+        assertRegionMatch(
+          clientRegion,
+          context?.expectedRegion,
+          resourceType,
+          logicalId,
+          physicalId
+        );
         this.logger.debug(`ApiKey ${physicalId} does not exist, skipping deletion`);
         return;
       }

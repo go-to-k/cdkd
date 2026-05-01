@@ -10,6 +10,7 @@ import {
 import { getLogger } from '../../utils/logger.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
+import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { generateResourceName } from '../resource-name.js';
 import type {
   ResourceProvider,
@@ -186,7 +187,8 @@ export class IAMInstanceProfileProvider implements ResourceProvider {
     logicalId: string,
     physicalId: string,
     resourceType: string,
-    _properties?: Record<string, unknown>
+    _properties?: Record<string, unknown>,
+    context?: DeleteContext
   ): Promise<void> {
     this.logger.debug(`Deleting IAM instance profile ${logicalId}: ${physicalId}`);
 
@@ -203,6 +205,14 @@ export class IAMInstanceProfileProvider implements ResourceProvider {
           ) || [];
       } catch (error) {
         if (error instanceof NoSuchEntityException) {
+          const clientRegion = await this.iamClient.config.region();
+          assertRegionMatch(
+            clientRegion,
+            context?.expectedRegion,
+            resourceType,
+            logicalId,
+            physicalId
+          );
           this.logger.debug(`Instance profile ${physicalId} does not exist, skipping deletion`);
           return;
         }
@@ -234,6 +244,14 @@ export class IAMInstanceProfileProvider implements ResourceProvider {
       this.logger.debug(`Successfully deleted IAM instance profile ${logicalId}`);
     } catch (error) {
       if (error instanceof NoSuchEntityException) {
+        const clientRegion = await this.iamClient.config.region();
+        assertRegionMatch(
+          clientRegion,
+          context?.expectedRegion,
+          resourceType,
+          logicalId,
+          physicalId
+        );
         this.logger.debug(`Instance profile ${physicalId} does not exist, skipping deletion`);
         return;
       }

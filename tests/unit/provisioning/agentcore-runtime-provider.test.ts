@@ -6,7 +6,7 @@ const mockSend = vi.fn();
 
 vi.mock('../../../src/utils/aws-clients.js', () => ({
   getAwsClients: () => ({
-    bedrockAgentCoreControl: { send: mockSend },
+    bedrockAgentCoreControl: { send: mockSend, config: { region: () => Promise.resolve('us-east-1') } },
   }),
 }));
 

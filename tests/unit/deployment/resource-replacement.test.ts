@@ -195,7 +195,14 @@ describe('DeployEngine - Resource Replacement', () => {
       'MyBucket',
       'old-bucket-physical-id',
       'AWS::S3::Bucket',
-      expect.objectContaining({ BucketName: 'old-bucket-name' })
+      expect.objectContaining({ BucketName: 'old-bucket-name' }),
+      // PR-2: DeployEngine threads stack region through provider.delete so
+      // providers can refuse to swallow `*NotFound` when the AWS client's
+      // region does not match the region the resource was deployed to.
+      // PR-1 (#57) made stackRegion required on DeployEngine, so this test's
+      // engine is constructed with 'us-east-1' (line 181) and that value
+      // flows through.
+      expect.objectContaining({ expectedRegion: 'us-east-1' })
     );
 
     // Verify create was called before delete (CFn order: CREATE new → DELETE old)

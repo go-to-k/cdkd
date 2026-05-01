@@ -8,6 +8,7 @@ vi.mock('@aws-sdk/client-firehose', async (importOriginal) => {
     ...actual,
     FirehoseClient: vi.fn().mockImplementation(() => ({
       send: mockSend,
+      config: { region: () => Promise.resolve('us-east-1') },
     })),
   };
 });

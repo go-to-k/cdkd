@@ -20,6 +20,7 @@ vi.mock('@aws-sdk/client-efs', async (importOriginal) => {
     ...actual,
     EFSClient: vi.fn().mockImplementation(() => ({
       send: mockSend,
+      config: { region: () => Promise.resolve('us-east-1') },
     })),
   };
 });

@@ -10,6 +10,7 @@ import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { getLogger } from '../../utils/logger.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
+import { type DeleteContext } from '../region-check.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -330,8 +331,15 @@ export class CustomResourceProvider implements ResourceProvider {
     logicalId: string,
     physicalId: string,
     resourceType: string,
-    properties?: Record<string, unknown>
+    properties?: Record<string, unknown>,
+    _context?: DeleteContext
   ): Promise<void> {
+    // Custom resources delegate deletion to a user-provided Lambda handler.
+    // The Lambda invocation itself does not surface a `*NotFound` for the
+    // managed resource, so the region-mismatch check has no signal to act on
+    // here; the underlying Lambda's region is determined by its ARN, which is
+    // already encoded in the ServiceToken regardless of the cdkd client's
+    // region. The context parameter is accepted for interface conformity.
     this.logger.debug(`Deleting custom resource ${logicalId}: ${physicalId} (${resourceType})`);
 
     if (!properties) {

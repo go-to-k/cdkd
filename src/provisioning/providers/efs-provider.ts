@@ -16,6 +16,7 @@ import {
 } from '@aws-sdk/client-efs';
 import { getLogger } from '../../utils/logger.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
+import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -114,15 +115,16 @@ export class EFSProvider implements ResourceProvider {
     logicalId: string,
     physicalId: string,
     resourceType: string,
-    _properties?: Record<string, unknown>
+    _properties?: Record<string, unknown>,
+    context?: DeleteContext
   ): Promise<void> {
     switch (resourceType) {
       case 'AWS::EFS::FileSystem':
-        return this.deleteFileSystem(logicalId, physicalId, resourceType);
+        return this.deleteFileSystem(logicalId, physicalId, resourceType, context);
       case 'AWS::EFS::MountTarget':
-        return this.deleteMountTarget(logicalId, physicalId, resourceType);
+        return this.deleteMountTarget(logicalId, physicalId, resourceType, context);
       case 'AWS::EFS::AccessPoint':
-        return this.deleteAccessPoint(logicalId, physicalId, resourceType);
+        return this.deleteAccessPoint(logicalId, physicalId, resourceType, context);
       default:
         throw new ProvisioningError(
           `Unsupported resource type: ${resourceType}`,
@@ -191,7 +193,8 @@ export class EFSProvider implements ResourceProvider {
   private async deleteFileSystem(
     logicalId: string,
     physicalId: string,
-    resourceType: string
+    resourceType: string,
+    context?: DeleteContext
   ): Promise<void> {
     this.logger.debug(`Deleting EFS FileSystem ${logicalId}: ${physicalId}`);
 
@@ -204,6 +207,14 @@ export class EFSProvider implements ResourceProvider {
       this.logger.debug(`Successfully deleted EFS FileSystem ${logicalId}`);
     } catch (error) {
       if (error instanceof FileSystemNotFound) {
+        const clientRegion = await this.getClient().config.region();
+        assertRegionMatch(
+          clientRegion,
+          context?.expectedRegion,
+          resourceType,
+          logicalId,
+          physicalId
+        );
         this.logger.debug(`EFS FileSystem ${physicalId} does not exist, skipping deletion`);
         return;
       }
@@ -355,7 +366,8 @@ export class EFSProvider implements ResourceProvider {
   private async deleteMountTarget(
     logicalId: string,
     physicalId: string,
-    resourceType: string
+    resourceType: string,
+    context?: DeleteContext
   ): Promise<void> {
     this.logger.debug(`Deleting EFS MountTarget ${logicalId}: ${physicalId}`);
 
@@ -372,6 +384,14 @@ export class EFSProvider implements ResourceProvider {
       this.logger.debug(`Successfully deleted EFS MountTarget ${logicalId}`);
     } catch (error) {
       if (error instanceof MountTargetNotFound) {
+        const clientRegion = await this.getClient().config.region();
+        assertRegionMatch(
+          clientRegion,
+          context?.expectedRegion,
+          resourceType,
+          logicalId,
+          physicalId
+        );
         this.logger.debug(`EFS MountTarget ${physicalId} does not exist, skipping deletion`);
         return;
       }
@@ -511,7 +531,8 @@ export class EFSProvider implements ResourceProvider {
   private async deleteAccessPoint(
     logicalId: string,
     physicalId: string,
-    resourceType: string
+    resourceType: string,
+    context?: DeleteContext
   ): Promise<void> {
     this.logger.debug(`Deleting EFS AccessPoint ${logicalId}: ${physicalId}`);
 
@@ -524,6 +545,14 @@ export class EFSProvider implements ResourceProvider {
       this.logger.debug(`Successfully deleted EFS AccessPoint ${logicalId}`);
     } catch (error) {
       if (error instanceof AccessPointNotFound) {
+        const clientRegion = await this.getClient().config.region();
+        assertRegionMatch(
+          clientRegion,
+          context?.expectedRegion,
+          resourceType,
+          logicalId,
+          physicalId
+        );
         this.logger.debug(`EFS AccessPoint ${physicalId} does not exist, skipping deletion`);
         return;
       }

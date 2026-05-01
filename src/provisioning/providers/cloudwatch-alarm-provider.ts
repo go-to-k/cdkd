@@ -12,6 +12,7 @@ import { getLogger } from '../../utils/logger.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { generateResourceName } from '../resource-name.js';
+import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -151,7 +152,8 @@ export class CloudWatchAlarmProvider implements ResourceProvider {
     logicalId: string,
     physicalId: string,
     resourceType: string,
-    _properties?: Record<string, unknown>
+    _properties?: Record<string, unknown>,
+    context?: DeleteContext
   ): Promise<void> {
     this.logger.debug(`Deleting CloudWatch alarm ${logicalId}: ${physicalId}`);
 
@@ -165,6 +167,14 @@ export class CloudWatchAlarmProvider implements ResourceProvider {
       this.logger.debug(`Successfully deleted CloudWatch alarm ${logicalId}`);
     } catch (error) {
       if (error instanceof Error && error.name === 'ResourceNotFound') {
+        const clientRegion = await this.cloudWatchClient.config.region();
+        assertRegionMatch(
+          clientRegion,
+          context?.expectedRegion,
+          resourceType,
+          logicalId,
+          physicalId
+        );
         this.logger.debug(`Alarm ${physicalId} does not exist, skipping deletion`);
         return;
       }

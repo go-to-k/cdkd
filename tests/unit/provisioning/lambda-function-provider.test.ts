@@ -13,7 +13,12 @@ const mockEc2Send = vi.fn();
 
 vi.mock('../../../src/utils/aws-clients.js', () => ({
   getAwsClients: () => ({
-    lambda: { send: mockLambdaSend },
+    lambda: {
+      send: mockLambdaSend,
+      // config.region is consulted by region-check.ts before treating
+      // ResourceNotFoundException as idempotent delete success.
+      config: { region: () => Promise.resolve('us-east-1') },
+    },
     ec2: { send: mockEc2Send },
   }),
 }));
@@ -484,6 +489,59 @@ describe('LambdaFunctionProvider', () => {
       // Subnet/SG provider will retry from its side, so list-failure is non-fatal.
       await expect(promise).resolves.toBeUndefined();
       expect(mockEc2Send).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('delete region verification', () => {
+    // The PR-2 contract: a `*NotFound` error must not be treated as
+    // idempotent delete success when the AWS client's region differs from
+    // the region recorded in stack state. Otherwise a destroy run with the
+    // wrong region silently strips every resource from state and orphans
+    // the actual AWS resources in the real region (the originating bug).
+
+    it('treats NotFound as success when context.expectedRegion matches client region', async () => {
+      mockLambdaSend.mockRejectedValueOnce(
+        new ResourceNotFoundException({ message: 'Function not found', $metadata: {} })
+      );
+
+      // Mocked client.config.region() returns 'us-east-1' (see mock above).
+      await expect(
+        provider.delete(
+          'Fn',
+          'fn-gone',
+          'AWS::Lambda::Function',
+          {},
+          { expectedRegion: 'us-east-1' }
+        )
+      ).resolves.toBeUndefined();
+      expect(mockLambdaSend).toHaveBeenCalledTimes(1);
+    });
+
+    it('throws ProvisioningError on NotFound when context.expectedRegion does not match client region', async () => {
+      mockLambdaSend.mockRejectedValueOnce(
+        new ResourceNotFoundException({ message: 'Function not found', $metadata: {} })
+      );
+
+      await expect(
+        provider.delete(
+          'Fn',
+          'fn-gone',
+          'AWS::Lambda::Function',
+          {},
+          { expectedRegion: 'us-west-2' }
+        )
+      ).rejects.toThrow(/us-east-1.*us-west-2|us-west-2.*us-east-1/);
+    });
+
+    it('preserves existing idempotent NotFound behavior when context is omitted', async () => {
+      mockLambdaSend.mockRejectedValueOnce(
+        new ResourceNotFoundException({ message: 'Function not found', $metadata: {} })
+      );
+
+      // No context argument -> back-compat path, NotFound silently succeeds.
+      await expect(
+        provider.delete('Fn', 'fn-gone', 'AWS::Lambda::Function', {})
+      ).resolves.toBeUndefined();
     });
   });
 });

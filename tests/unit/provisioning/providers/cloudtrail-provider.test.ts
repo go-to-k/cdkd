@@ -8,6 +8,7 @@ vi.mock('@aws-sdk/client-cloudtrail', async (importOriginal) => {
     ...actual,
     CloudTrailClient: vi.fn().mockImplementation(() => ({
       send: mockSend,
+      config: { region: () => Promise.resolve('us-east-1') },
     })),
   };
 });

@@ -13,6 +13,7 @@ import {
 } from '@aws-sdk/client-cloudtrail';
 import { getLogger } from '../../utils/logger.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
+import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -269,7 +270,8 @@ export class CloudTrailProvider implements ResourceProvider {
     logicalId: string,
     physicalId: string,
     resourceType: string,
-    _properties?: Record<string, unknown>
+    _properties?: Record<string, unknown>,
+    context?: DeleteContext
   ): Promise<void> {
     this.logger.debug(`Deleting CloudTrail Trail ${logicalId}: ${physicalId}`);
 
@@ -285,6 +287,14 @@ export class CloudTrailProvider implements ResourceProvider {
       this.logger.debug(`Successfully deleted CloudTrail Trail ${logicalId}`);
     } catch (error) {
       if (error instanceof TrailNotFoundException) {
+        const clientRegion = await this.getClient().config.region();
+        assertRegionMatch(
+          clientRegion,
+          context?.expectedRegion,
+          resourceType,
+          logicalId,
+          physicalId
+        );
         this.logger.debug(`CloudTrail Trail ${physicalId} does not exist, skipping deletion`);
         return;
       }

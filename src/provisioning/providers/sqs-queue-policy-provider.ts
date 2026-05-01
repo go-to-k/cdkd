@@ -2,6 +2,7 @@ import { SQSClient, SetQueueAttributesCommand } from '@aws-sdk/client-sqs';
 import { getLogger } from '../../utils/logger.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
+import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -170,7 +171,8 @@ export class SQSQueuePolicyProvider implements ResourceProvider {
     logicalId: string,
     physicalId: string,
     resourceType: string,
-    _properties?: Record<string, unknown>
+    _properties?: Record<string, unknown>,
+    context?: DeleteContext
   ): Promise<void> {
     this.logger.debug(`Deleting SQS queue policy ${logicalId}: ${physicalId}`);
 
@@ -192,6 +194,14 @@ export class SQSQueuePolicyProvider implements ResourceProvider {
         error instanceof Error &&
         (error.name === 'QueueDoesNotExist' || error.message.includes('does not exist'))
       ) {
+        const clientRegion = await this.sqsClient.config.region();
+        assertRegionMatch(
+          clientRegion,
+          context?.expectedRegion,
+          resourceType,
+          logicalId,
+          physicalId
+        );
         this.logger.debug(`Queue ${physicalId} does not exist, skipping policy deletion`);
         return;
       }

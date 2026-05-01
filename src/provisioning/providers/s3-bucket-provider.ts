@@ -30,6 +30,7 @@ import {
 import { getLogger } from '../../utils/logger.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
+import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { generateResourceName } from '../resource-name.js';
 import type {
   ResourceProvider,
@@ -1118,7 +1119,8 @@ export class S3BucketProvider implements ResourceProvider {
     logicalId: string,
     physicalId: string,
     resourceType: string,
-    _properties?: Record<string, unknown>
+    _properties?: Record<string, unknown>,
+    context?: DeleteContext
   ): Promise<void> {
     this.logger.debug(`Deleting S3 bucket ${logicalId}: ${physicalId}`);
 
@@ -1126,6 +1128,14 @@ export class S3BucketProvider implements ResourceProvider {
       await this.deleteBucketWithEmptyRetry(logicalId, physicalId);
     } catch (error) {
       if (error instanceof NoSuchBucket) {
+        const clientRegion = await this.s3Client.config.region();
+        assertRegionMatch(
+          clientRegion,
+          context?.expectedRegion,
+          resourceType,
+          logicalId,
+          physicalId
+        );
         this.logger.debug(`Bucket ${physicalId} does not exist, skipping deletion`);
         return;
       }

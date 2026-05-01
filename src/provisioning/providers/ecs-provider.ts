@@ -51,6 +51,7 @@ import {
 import { getLogger } from '../../utils/logger.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { generateResourceName } from '../resource-name.js';
+import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -205,15 +206,16 @@ export class ECSProvider implements ResourceProvider {
     logicalId: string,
     physicalId: string,
     resourceType: string,
-    properties?: Record<string, unknown>
+    properties?: Record<string, unknown>,
+    context?: DeleteContext
   ): Promise<void> {
     switch (resourceType) {
       case 'AWS::ECS::Cluster':
-        return this.deleteCluster(logicalId, physicalId, resourceType);
+        return this.deleteCluster(logicalId, physicalId, resourceType, context);
       case 'AWS::ECS::TaskDefinition':
-        return this.deleteTaskDefinition(logicalId, physicalId, resourceType);
+        return this.deleteTaskDefinition(logicalId, physicalId, resourceType, context);
       case 'AWS::ECS::Service':
-        return this.deleteService(logicalId, physicalId, resourceType, properties);
+        return this.deleteService(logicalId, physicalId, resourceType, properties, context);
       default:
         throw new ProvisioningError(
           `Unsupported resource type: ${resourceType}`,
@@ -353,7 +355,8 @@ export class ECSProvider implements ResourceProvider {
   private async deleteCluster(
     logicalId: string,
     physicalId: string,
-    resourceType: string
+    resourceType: string,
+    context?: DeleteContext
   ): Promise<void> {
     this.logger.debug(`Deleting ECS cluster ${logicalId}: ${physicalId}`);
     const client = this.getClient();
@@ -364,6 +367,14 @@ export class ECSProvider implements ResourceProvider {
     } catch (error) {
       // Handle ClusterNotFoundException for idempotent delete
       if (this.isClusterNotFoundException(error)) {
+        const clientRegion = await client.config.region();
+        assertRegionMatch(
+          clientRegion,
+          context?.expectedRegion,
+          resourceType,
+          logicalId,
+          physicalId
+        );
         this.logger.debug(`ECS cluster ${physicalId} not found, skipping deletion`);
         return;
       }
@@ -495,7 +506,8 @@ export class ECSProvider implements ResourceProvider {
   private async deleteTaskDefinition(
     logicalId: string,
     physicalId: string,
-    resourceType: string
+    resourceType: string,
+    context?: DeleteContext
   ): Promise<void> {
     this.logger.debug(`Deleting ECS task definition ${logicalId}: ${physicalId}`);
     const client = this.getClient();
@@ -506,6 +518,14 @@ export class ECSProvider implements ResourceProvider {
     } catch (error) {
       // Handle not found for idempotent delete
       if (this.isNotFoundException(error)) {
+        const clientRegion = await client.config.region();
+        assertRegionMatch(
+          clientRegion,
+          context?.expectedRegion,
+          resourceType,
+          logicalId,
+          physicalId
+        );
         this.logger.debug(`ECS task definition ${physicalId} not found, skipping deletion`);
         return;
       }
@@ -694,7 +714,8 @@ export class ECSProvider implements ResourceProvider {
     logicalId: string,
     physicalId: string,
     resourceType: string,
-    properties?: Record<string, unknown>
+    properties?: Record<string, unknown>,
+    context?: DeleteContext
   ): Promise<void> {
     this.logger.debug(`Deleting ECS service ${logicalId}: ${physicalId}`);
     const client = this.getClient();
@@ -715,6 +736,14 @@ export class ECSProvider implements ResourceProvider {
       } catch (error) {
         // If service not found during scale down, it's already gone
         if (this.isServiceNotFoundException(error)) {
+          const clientRegion = await client.config.region();
+          assertRegionMatch(
+            clientRegion,
+            context?.expectedRegion,
+            resourceType,
+            logicalId,
+            physicalId
+          );
           this.logger.debug(
             `ECS service ${physicalId} not found during scale down, skipping deletion`
           );
@@ -734,6 +763,14 @@ export class ECSProvider implements ResourceProvider {
       this.logger.debug(`Successfully deleted ECS service ${logicalId}`);
     } catch (error) {
       if (this.isServiceNotFoundException(error)) {
+        const clientRegion = await client.config.region();
+        assertRegionMatch(
+          clientRegion,
+          context?.expectedRegion,
+          resourceType,
+          logicalId,
+          physicalId
+        );
         this.logger.debug(`ECS service ${physicalId} not found, skipping deletion`);
         return;
       }

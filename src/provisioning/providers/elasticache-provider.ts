@@ -15,6 +15,7 @@ import {
 import { getLogger } from '../../utils/logger.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { generateResourceName } from '../resource-name.js';
+import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -127,13 +128,14 @@ export class ElastiCacheProvider implements ResourceProvider {
     logicalId: string,
     physicalId: string,
     resourceType: string,
-    _properties?: Record<string, unknown>
+    _properties?: Record<string, unknown>,
+    context?: DeleteContext
   ): Promise<void> {
     switch (resourceType) {
       case 'AWS::ElastiCache::SubnetGroup':
-        return this.deleteSubnetGroup(logicalId, physicalId, resourceType);
+        return this.deleteSubnetGroup(logicalId, physicalId, resourceType, context);
       case 'AWS::ElastiCache::CacheCluster':
-        return this.deleteCacheCluster(logicalId, physicalId, resourceType);
+        return this.deleteCacheCluster(logicalId, physicalId, resourceType, context);
       default:
         throw new ProvisioningError(
           `Unsupported resource type: ${resourceType}`,
@@ -233,7 +235,8 @@ export class ElastiCacheProvider implements ResourceProvider {
   private async deleteSubnetGroup(
     logicalId: string,
     physicalId: string,
-    resourceType: string
+    resourceType: string,
+    context?: DeleteContext
   ): Promise<void> {
     this.logger.debug(`Deleting CacheSubnetGroup ${logicalId}: ${physicalId}`);
 
@@ -246,6 +249,14 @@ export class ElastiCacheProvider implements ResourceProvider {
       this.logger.debug(`Successfully deleted CacheSubnetGroup ${logicalId}`);
     } catch (error) {
       if (this.isNotFoundError(error, 'CacheSubnetGroupNotFoundFault')) {
+        const clientRegion = await this.getClient().config.region();
+        assertRegionMatch(
+          clientRegion,
+          context?.expectedRegion,
+          resourceType,
+          logicalId,
+          physicalId
+        );
         this.logger.debug(`CacheSubnetGroup ${physicalId} does not exist, skipping deletion`);
         return;
       }
@@ -437,7 +448,8 @@ export class ElastiCacheProvider implements ResourceProvider {
   private async deleteCacheCluster(
     logicalId: string,
     physicalId: string,
-    resourceType: string
+    resourceType: string,
+    context?: DeleteContext
   ): Promise<void> {
     this.logger.debug(`Deleting CacheCluster ${logicalId}: ${physicalId}`);
 
@@ -454,6 +466,14 @@ export class ElastiCacheProvider implements ResourceProvider {
       await this.waitForClusterDeleted(physicalId);
     } catch (error) {
       if (this.isNotFoundError(error, 'CacheClusterNotFoundFault')) {
+        const clientRegion = await this.getClient().config.region();
+        assertRegionMatch(
+          clientRegion,
+          context?.expectedRegion,
+          resourceType,
+          logicalId,
+          physicalId
+        );
         this.logger.debug(`CacheCluster ${physicalId} does not exist, skipping deletion`);
         return;
       }

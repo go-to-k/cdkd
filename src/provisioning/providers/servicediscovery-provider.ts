@@ -16,6 +16,7 @@ import {
 import { STSClient, GetCallerIdentityCommand } from '@aws-sdk/client-sts';
 import { getLogger } from '../../utils/logger.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
+import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -119,13 +120,14 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
     logicalId: string,
     physicalId: string,
     resourceType: string,
-    _properties?: Record<string, unknown>
+    _properties?: Record<string, unknown>,
+    context?: DeleteContext
   ): Promise<void> {
     switch (resourceType) {
       case 'AWS::ServiceDiscovery::PrivateDnsNamespace':
-        return this.deleteNamespace(logicalId, physicalId, resourceType);
+        return this.deleteNamespace(logicalId, physicalId, resourceType, context);
       case 'AWS::ServiceDiscovery::Service':
-        return this.deleteService(logicalId, physicalId, resourceType);
+        return this.deleteService(logicalId, physicalId, resourceType, context);
       default:
         throw new ProvisioningError(
           `Unsupported resource type: ${resourceType}`,
@@ -224,7 +226,8 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
   private async deleteNamespace(
     logicalId: string,
     physicalId: string,
-    resourceType: string
+    resourceType: string,
+    context?: DeleteContext
   ): Promise<void> {
     this.logger.debug(`Deleting private DNS namespace ${logicalId}: ${physicalId}`);
     const client = this.getClient();
@@ -240,6 +243,14 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
       this.logger.debug(`Successfully deleted private DNS namespace ${logicalId}`);
     } catch (error) {
       if (error instanceof NamespaceNotFound) {
+        const clientRegion = await this.getClient().config.region();
+        assertRegionMatch(
+          clientRegion,
+          context?.expectedRegion,
+          resourceType,
+          logicalId,
+          physicalId
+        );
         this.logger.debug(`Namespace ${physicalId} does not exist, skipping deletion`);
         return;
       }
@@ -342,7 +353,8 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
   private async deleteService(
     logicalId: string,
     physicalId: string,
-    resourceType: string
+    resourceType: string,
+    context?: DeleteContext
   ): Promise<void> {
     this.logger.debug(`Deleting service discovery service ${logicalId}: ${physicalId}`);
     const client = this.getClient();
@@ -352,6 +364,14 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
       this.logger.debug(`Successfully deleted service discovery service ${logicalId}`);
     } catch (error) {
       if (error instanceof ServiceNotFound) {
+        const clientRegion = await this.getClient().config.region();
+        assertRegionMatch(
+          clientRegion,
+          context?.expectedRegion,
+          resourceType,
+          logicalId,
+          physicalId
+        );
         this.logger.debug(`Service ${physicalId} does not exist, skipping deletion`);
         return;
       }

@@ -2,6 +2,7 @@ import { SetTopicAttributesCommand } from '@aws-sdk/client-sns';
 import { getLogger } from '../../utils/logger.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
+import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -156,7 +157,8 @@ export class SNSTopicPolicyProvider implements ResourceProvider {
     logicalId: string,
     physicalId: string,
     resourceType: string,
-    _properties?: Record<string, unknown>
+    _properties?: Record<string, unknown>,
+    context?: DeleteContext
   ): Promise<void> {
     this.logger.debug(`Deleting SNS topic policy ${logicalId}: ${physicalId}`);
 
@@ -176,6 +178,14 @@ export class SNSTopicPolicyProvider implements ResourceProvider {
             error.message.includes('does not exist') ||
             error.message.includes('Invalid parameter'))
         ) {
+          const clientRegion = await getAwsClients().sns.config.region();
+          assertRegionMatch(
+            clientRegion,
+            context?.expectedRegion,
+            resourceType,
+            logicalId,
+            topicArn
+          );
           this.logger.debug(`Topic ${topicArn} not found or policy already removed, skipping`);
           continue;
         }

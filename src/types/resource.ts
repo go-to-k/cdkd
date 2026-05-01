@@ -72,6 +72,16 @@ export interface ResourceUpdateResult {
 }
 
 /**
+ * Context passed to a provider's `delete` method.
+ *
+ * Re-exported from `src/provisioning/region-check.ts` so that callers
+ * implementing the provider interface only need to import from
+ * `src/types/resource.ts`.
+ */
+export type { DeleteContext } from '../provisioning/region-check.js';
+import type { DeleteContext } from '../provisioning/region-check.js';
+
+/**
  * Resource provider interface
  */
 export interface ResourceProvider {
@@ -146,12 +156,18 @@ export interface ResourceProvider {
    * @param physicalId Physical resource ID
    * @param resourceType CloudFormation resource type
    * @param properties Resource properties (optional, for providers that need them)
+   * @param context Delete-time context (optional, for back-compat). Contains
+   *   `expectedRegion` from the stack state so providers can refuse to treat
+   *   `NotFound` as idempotent success when the AWS client's region does not
+   *   match the region the resource was deployed to. See
+   *   `src/provisioning/region-check.ts` for the shared verification helper.
    */
   delete(
     logicalId: string,
     physicalId: string,
     resourceType: string,
-    properties?: Record<string, unknown>
+    properties?: Record<string, unknown>,
+    context?: DeleteContext
   ): Promise<void>;
 
   /**
