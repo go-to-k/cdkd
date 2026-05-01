@@ -1,3 +1,10 @@
+# [0.14.0](https://github.com/go-to-k/cdkd/compare/v0.13.0...v0.14.0) (2026-05-01)
+
+
+### Features
+
+* **cli:** add cdkd state migrate-bucket ([#66](https://github.com/go-to-k/cdkd/issues/66)) ([33dfd9b](https://github.com/go-to-k/cdkd/commit/33dfd9bc4e7dabca4b7d42fd60dfd54a962f4af5))
+
 # [0.13.0](https://github.com/go-to-k/cdkd/compare/v0.12.0...v0.13.0) (2026-05-01)
 
 
