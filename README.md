@@ -628,7 +628,7 @@ After deployment, outputs are resolved and saved to the S3 state file:
 **Key differences from CloudFormation**:
 
 - CloudFormation: Outputs accessible via `aws cloudformation describe-stacks`
-- cdkd: Outputs saved in S3 state file (e.g., `s3://bucket/cdkd/MyStack/state.json`)
+- cdkd: Outputs saved in S3 state file (e.g., `s3://bucket/cdkd/MyStack/us-east-1/state.json`)
 - Both resolve intrinsic functions (Ref, Fn::GetAtt, etc.) to actual values
 
 ## Testing

@@ -360,7 +360,7 @@ node ${CDKD_PATH}/dist/cli.js deploy \
 aws s3 ls | grep cdkd-test-bucket
 
 # Check state files
-aws s3 ls s3://${STATE_BUCKET}/stacks/ --recursive
+aws s3 ls s3://${STATE_BUCKET}/cdkd/ --recursive
 ```
 
 ## 5. Test UPDATE Operations (JSON Patch)
@@ -406,7 +406,7 @@ CDKD_TEST_FAIL=true node ../../../../dist/cli.js deploy CdkdBasicExample \
   --region ${AWS_REGION}
 
 # Expected: deploy fails with rollback log, and `aws s3 ls
-# s3://${STATE_BUCKET}/stacks/` shows no leftover state.
+# s3://${STATE_BUCKET}/cdkd/` shows no leftover state.
 ```
 
 Use this to sanity-check the dispatcher's rollback path against AWS without writing a separate failing CDK app each time.
