@@ -122,7 +122,7 @@ describe('cli/options.ts', () => {
       expect((regionOpt as unknown as { hidden?: boolean }).hidden).toBe(true);
     });
 
-    it.each(['list', 'resources', 'show', 'rm'])(
+    it.each(['list', 'resources', 'show', 'orphan'])(
       'state %s accepts --region but hides it from --help',
       (subcommandName) => {
         const stateCmd = createStateCommand();

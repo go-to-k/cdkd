@@ -225,7 +225,7 @@ async function destroyCommand(
         const regions = refs.map((r) => r.region ?? '(legacy)').join(', ');
         throw new Error(
           `Stack '${stackName}' has state in multiple regions: ${regions}. ` +
-            `Use 'cdkd state rm ${stackName} --region <region>' to remove cdkd's record for one ` +
+            `Use 'cdkd state orphan ${stackName} --region <region>' to remove cdkd's record for one ` +
             `region, or run destroy from a CDK app whose env.region matches one of them.`
         );
       }

@@ -86,7 +86,7 @@ function captureStdout(): { output: string[]; restore: () => void } {
   };
 }
 
-async function runStateRm(args: string[]): Promise<string> {
+async function runStateOrphan(args: string[]): Promise<string> {
   const cap = captureStdout();
   try {
     const stateCmd = createStateCommand();
@@ -99,7 +99,7 @@ async function runStateRm(args: string[]): Promise<string> {
   return cap.output.join('');
 }
 
-describe('cdkd state rm', () => {
+describe('cdkd state orphan', () => {
   let exitSpy: ReturnType<typeof vi.spyOn>;
 
   beforeEach(() => {
@@ -127,11 +127,11 @@ describe('cdkd state rm', () => {
   });
 
   it('skips a stack whose state does not exist (idempotent)', async () => {
-    // listStacks does not include the requested stack — `state rm` skips
+    // listStacks does not include the requested stack — `state orphan` skips
     // (no error: idempotent).
     mockListStacks.mockResolvedValue([]);
 
-    await runStateRm(['rm', 'Missing', '--yes']);
+    await runStateOrphan(['orphan', 'Missing', '--yes']);
 
     expect(mockDeleteState).not.toHaveBeenCalled();
     expect(mockForceReleaseLock).not.toHaveBeenCalled();
@@ -142,7 +142,7 @@ describe('cdkd state rm', () => {
     mockListStacks.mockResolvedValue([{ stackName: 'MyStack', region: 'us-east-1' }]);
     mockIsLocked.mockResolvedValue(false);
 
-    await runStateRm(['rm', 'MyStack', '--yes']);
+    await runStateOrphan(['orphan', 'MyStack', '--yes']);
 
     expect(readlineQuestion).not.toHaveBeenCalled();
     expect(mockDeleteState).toHaveBeenCalledWith('MyStack', 'us-east-1');
@@ -156,7 +156,7 @@ describe('cdkd state rm', () => {
     ]);
     mockIsLocked.mockResolvedValue(false);
 
-    await runStateRm(['rm', 'MyStack', '--yes']);
+    await runStateOrphan(['orphan', 'MyStack', '--yes']);
 
     expect(mockDeleteState).toHaveBeenCalledWith('MyStack', 'us-east-1');
     expect(mockDeleteState).toHaveBeenCalledWith('MyStack', 'us-west-2');
@@ -171,7 +171,7 @@ describe('cdkd state rm', () => {
     ]);
     mockIsLocked.mockResolvedValue(false);
 
-    await runStateRm(['rm', 'MyStack', '--yes', '--stack-region', 'us-east-1']);
+    await runStateOrphan(['orphan', 'MyStack', '--yes', '--stack-region', 'us-east-1']);
 
     expect(mockDeleteState).toHaveBeenCalledWith('MyStack', 'us-east-1');
     expect(mockDeleteState).not.toHaveBeenCalledWith('MyStack', 'us-west-2');
@@ -181,7 +181,7 @@ describe('cdkd state rm', () => {
     mockListStacks.mockResolvedValue([{ stackName: 'LockedStack', region: 'us-east-1' }]);
     mockIsLocked.mockResolvedValue(true);
 
-    await expect(runStateRm(['rm', 'LockedStack', '--yes'])).rejects.toThrow();
+    await expect(runStateOrphan(['orphan', 'LockedStack', '--yes'])).rejects.toThrow();
 
     expect(exitSpy).toHaveBeenCalledWith(1);
     const message = String(errorSpy.mock.calls[0]?.[0] ?? '');
@@ -192,7 +192,7 @@ describe('cdkd state rm', () => {
   it('removes a locked stack when --force is set (and skips lock check)', async () => {
     mockListStacks.mockResolvedValue([{ stackName: 'LockedStack', region: 'us-east-1' }]);
 
-    await runStateRm(['rm', 'LockedStack', '--force']);
+    await runStateOrphan(['orphan', 'LockedStack', '--force']);
 
     // --force bypasses both the lock check and the prompt.
     expect(mockIsLocked).not.toHaveBeenCalled();
@@ -206,7 +206,7 @@ describe('cdkd state rm', () => {
     mockIsLocked.mockResolvedValue(false);
     readlineQuestion.mockResolvedValue('y');
 
-    const out = await runStateRm(['rm', 'MyStack']);
+    const out = await runStateOrphan(['orphan', 'MyStack']);
 
     expect(readlineQuestion).toHaveBeenCalledTimes(1);
     expect(out).toMatch(/AWS resources will NOT be deleted/);
@@ -219,7 +219,7 @@ describe('cdkd state rm', () => {
     mockIsLocked.mockResolvedValue(false);
     readlineQuestion.mockResolvedValue('');
 
-    await runStateRm(['rm', 'MyStack']);
+    await runStateOrphan(['orphan', 'MyStack']);
 
     expect(mockDeleteState).not.toHaveBeenCalled();
     expect(mockForceReleaseLock).not.toHaveBeenCalled();
@@ -233,7 +233,7 @@ describe('cdkd state rm', () => {
     mockIsLocked.mockResolvedValue(false);
     readlineQuestion.mockResolvedValue('YES');
 
-    await runStateRm(['rm', 'MyStack']);
+    await runStateOrphan(['orphan', 'MyStack']);
 
     expect(mockDeleteState).toHaveBeenCalledWith('MyStack', 'us-east-1');
   });
@@ -246,7 +246,7 @@ describe('cdkd state rm', () => {
     mockIsLocked.mockResolvedValue(false);
     readlineQuestion.mockResolvedValueOnce('y').mockResolvedValueOnce('n');
 
-    await runStateRm(['rm', 'A', 'B']);
+    await runStateOrphan(['orphan', 'A', 'B']);
 
     expect(readlineQuestion).toHaveBeenCalledTimes(2);
     expect(mockDeleteState).toHaveBeenCalledWith('A', 'us-east-1');
