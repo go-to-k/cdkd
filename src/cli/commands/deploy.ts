@@ -95,10 +95,19 @@ async function deployCommand(
   setAwsClients(awsClients);
 
   // Fail fast if the state bucket is missing, before running synth / docker builds / asset uploads.
-  const preflightStateBackend = new S3StateBackend(awsClients.s3, {
-    bucket: stateBucket,
-    prefix: options.statePrefix,
-  });
+  // Passing region/profile lets the backend rebuild its S3 client when the
+  // state bucket lives in a region different from the CLI's profile region.
+  const preflightStateBackend = new S3StateBackend(
+    awsClients.s3,
+    {
+      bucket: stateBucket,
+      prefix: options.statePrefix,
+    },
+    {
+      region,
+      ...(options.profile && { profile: options.profile }),
+    }
+  );
   await preflightStateBackend.verifyBucketExists();
 
   let deployInterrupted = false;
@@ -284,7 +293,10 @@ async function deployCommand(
             region: baseRegion,
             ...(options.profile && { profile: options.profile }),
           });
-          const stackStateBackend = new S3StateBackend(stateS3Client.s3, stateConfig);
+          const stackStateBackend = new S3StateBackend(stateS3Client.s3, stateConfig, {
+            region: baseRegion,
+            ...(options.profile && { profile: options.profile }),
+          });
           const stackLockManager = new LockManager(stateS3Client.s3, stateConfig);
           const stackProviderRegistry = new ProviderRegistry();
           registerAllProviders(stackProviderRegistry);

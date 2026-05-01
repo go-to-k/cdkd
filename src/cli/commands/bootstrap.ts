@@ -10,7 +10,7 @@ import {
 import { GetCallerIdentityCommand } from '@aws-sdk/client-sts';
 import { commonOptions } from '../options.js';
 import { getLogger } from '../../utils/logger.js';
-import { withErrorHandling } from '../../utils/error-handler.js';
+import { withErrorHandling, normalizeAwsError } from '../../utils/error-handler.js';
 import { setAwsClients, AwsClients } from '../../utils/aws-clients.js';
 import { getDefaultStateBucketName } from '../config-loader.js';
 
@@ -63,7 +63,13 @@ async function bootstrapCommand(options: {
   }
 
   try {
-    // Check if bucket already exists
+    // Check if bucket already exists.
+    //
+    // The HeadBucket pre-check is the same call site that produces the
+    // AWS SDK v3 synthetic `UnknownError` when the bucket lives in a
+    // different region than the client. Routing the error through
+    // `normalizeAwsError` turns "UnknownError" into a concrete message
+    // ("different region", "access denied", etc.).
     let bucketExists = false;
     try {
       await s3Client.send(new HeadBucketCommand({ Bucket: bucketName }));
@@ -74,7 +80,7 @@ async function bootstrapCommand(options: {
       if (err.name === 'NotFound' || err.name === 'NoSuchBucket') {
         logger.debug(`Bucket ${bucketName} does not exist, will create`);
       } else {
-        throw error;
+        throw normalizeAwsError(error, { bucket: bucketName, operation: 'HeadBucket' });
       }
     }
 

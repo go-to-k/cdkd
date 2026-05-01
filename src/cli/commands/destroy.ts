@@ -77,7 +77,12 @@ async function destroyCommand(
       bucket: stateBucket,
       prefix: options.statePrefix,
     };
-    const stateBackend = new S3StateBackend(awsClients.s3, stateConfig);
+    // Pass region/profile so the backend can rebuild its S3 client if the
+    // bucket lives in a region different from the CLI's profile region.
+    const stateBackend = new S3StateBackend(awsClients.s3, stateConfig, {
+      ...(options.region && { region: options.region }),
+      ...(options.profile && { profile: options.profile }),
+    });
     // Fail fast if the state bucket is missing, before synth or any destructive work.
     await stateBackend.verifyBucketExists();
     const lockManager = new LockManager(awsClients.s3, stateConfig);

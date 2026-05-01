@@ -216,6 +216,40 @@ node dist/cli.js deploy --app "..." --state-bucket ${STATE_BUCKET}
 
 ---
 
+### Issue: "UnknownError" / cross-region state bucket
+
+#### Symptoms
+
+```
+StateError: Failed to verify state bucket 'my-bucket': UnknownError
+Caused by: UnknownError
+```
+
+…or similar AWS SDK v3 surface-level `UnknownError` on any S3 operation
+against the state bucket.
+
+#### Cause
+
+The state bucket lives in a region different from the one the AWS SDK
+client was constructed for. AWS SDK v3's region-redirect middleware does
+not handle the empty-body 301 HEAD response S3 returns in this case
+cleanly — the protocol parser falls through and produces a synthetic
+`Unknown` exception with the literal message `UnknownError`.
+
+#### Solution
+
+cdkd resolves this automatically as of PR 3 (`docs/plans/03-dynamic-region-resolution.md`):
+the state backend looks up the bucket region via `GetBucketLocation` (a
+GET request, not a HEAD — avoids the SDK glitch) and rebuilds its S3
+client to that region before any state operation. If you still see this
+error, please file a bug with the full stack trace.
+
+You no longer need to set `--region` to match the bucket region — the
+CLI's region option (and the profile region) only affect provisioning
+clients, not the state-bucket client.
+
+---
+
 ## Deployment Errors
 
 ### Issue: "Resource already exists" Error

@@ -1,0 +1,19 @@
+{
+  "name": "cdkd-example-cross-region-state-bucket",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Verifies that cdkd state list works when the state bucket is in a different region than the CLI's profile region",
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc -w"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "typescript": "^5.0.0",
+    "ts-node": "^10.0.0"
+  },
+  "dependencies": {
+    "aws-cdk-lib": "^2.169.0",
+    "constructs": "^10.0.0"
+  }
+}

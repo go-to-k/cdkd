@@ -15,7 +15,8 @@ import {
 } from '../types/state.js';
 import type { StateBackendConfig } from '../types/config.js';
 import { getLogger } from '../utils/logger.js';
-import { StateError } from '../utils/error-handler.js';
+import { StateError, normalizeAwsError } from '../utils/error-handler.js';
+import { resolveBucketRegion } from '../utils/aws-region-resolver.js';
 
 /**
  * Identifier of a state record. The legacy layout (`version: 1`) didn't have
@@ -38,20 +39,47 @@ const LEGACY_KEY_DEPTH = 2;
 const NEW_KEY_DEPTH = 3;
 
 /**
- * S3-based state backend using conditional writes for optimistic locking
+ * Options used to reconstruct the S3Client if the bucket lives in a region
+ * different from the one the initial client was built for.
+ *
+ * Mirrors {@link AwsClientConfig} from `aws-clients.ts` but kept local so
+ * the state backend doesn't depend on the CLI-side AwsClients wrapper.
+ */
+export interface S3ClientOptions {
+  region?: string;
+  profile?: string;
+  credentials?: {
+    accessKeyId: string;
+    secretAccessKey: string;
+    sessionToken?: string;
+  };
+}
+
+/**
+ * S3-based state backend using conditional writes for optimistic locking.
  *
  * State keys are region-scoped (`{prefix}/{stackName}/{region}/state.json`)
  * to prevent two regions of the same stackName from overwriting each other's
  * state. Legacy `{prefix}/{stackName}/state.json` keys (schema `version: 1`)
  * are still readable; the next `saveState` for that stack auto-migrates by
  * writing the new key and deleting the legacy one.
+ *
+ * The state bucket can live in a different AWS region from the rest of the
+ * cdkd CLI's resource provisioning. Before the first state operation, this
+ * backend resolves the bucket's actual region via `GetBucketLocation` and,
+ * if it differs from the client's configured region, rebuilds the S3Client
+ * for that region. Provisioning clients are unaffected — only the
+ * state-bucket S3 client is region-corrected.
  */
 export class S3StateBackend {
   private logger = getLogger().child('S3StateBackend');
+  private clientResolved = false;
+  private resolveInFlight: Promise<void> | null = null;
 
   constructor(
     private s3Client: S3Client,
-    private config: StateBackendConfig
+    private config: StateBackendConfig,
+    private clientOpts: S3ClientOptions = {}
   ) {}
 
   /**
@@ -70,12 +98,70 @@ export class S3StateBackend {
   }
 
   /**
+   * Resolve the state bucket's actual region and, if it differs from the
+   * client's currently-configured region, replace the S3Client with one
+   * pointed at the bucket's region.
+   *
+   * This is idempotent: subsequent calls return immediately. Concurrent
+   * callers (e.g. when several public methods race during a parallel deploy)
+   * share a single in-flight resolution promise so we never issue more than
+   * one `GetBucketLocation` per backend.
+   *
+   * Errors from `GetBucketLocation` are deliberately swallowed by
+   * `resolveBucketRegion` — the resolver returns `fallbackRegion` so the
+   * caller can surface the more actionable downstream error (e.g. the
+   * `HeadBucket` 404 routed via `normalizeAwsError`).
+   */
+  private async ensureClientForBucket(): Promise<void> {
+    if (this.clientResolved) return;
+    if (this.resolveInFlight) return this.resolveInFlight;
+
+    this.resolveInFlight = (async (): Promise<void> => {
+      try {
+        const currentRegion = await this.s3Client.config.region();
+        const fallbackRegion = typeof currentRegion === 'string' ? currentRegion : undefined;
+        const bucketRegion = await resolveBucketRegion(this.config.bucket, {
+          ...(this.clientOpts.profile && { profile: this.clientOpts.profile }),
+          ...(this.clientOpts.credentials && { credentials: this.clientOpts.credentials }),
+          ...(fallbackRegion && { fallbackRegion }),
+        });
+
+        if (bucketRegion !== currentRegion) {
+          this.logger.debug(
+            `State bucket '${this.config.bucket}' is in '${bucketRegion}' (client was '${currentRegion}'); rebuilding S3 client.`
+          );
+          const oldClient = this.s3Client;
+          this.s3Client = new S3Client({
+            region: bucketRegion,
+            ...(this.clientOpts.profile && { profile: this.clientOpts.profile }),
+            ...(this.clientOpts.credentials && { credentials: this.clientOpts.credentials }),
+            // Suppress "Are you using a Stream of unknown length" warning,
+            // matching the suppression in AwsClients.
+            logger: { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} },
+          });
+          oldClient.destroy();
+        }
+        this.clientResolved = true;
+      } finally {
+        this.resolveInFlight = null;
+      }
+    })();
+
+    return this.resolveInFlight;
+  }
+
+  /**
    * Verify that the configured state bucket exists.
    *
    * Called early in deploy/destroy to fail fast before expensive work
    * (asset publishing, Docker builds) runs against a missing bucket.
+   *
+   * Errors are routed through {@link normalizeAwsError} so the AWS SDK v3
+   * synthetic `UnknownError` (e.g. cross-region HEAD) becomes a concrete
+   * "Bucket does not exist" / "Access denied" / "different region" message.
    */
   async verifyBucketExists(): Promise<void> {
+    await this.ensureClientForBucket();
     try {
       await this.s3Client.send(new HeadBucketCommand({ Bucket: this.config.bucket }));
     } catch (error) {
@@ -87,9 +173,13 @@ export class S3StateBackend {
             `--state-bucket, CDKD_STATE_BUCKET, or cdk.json context.cdkd.stateBucket.`
         );
       }
+      const normalized = normalizeAwsError(error, {
+        bucket: this.config.bucket,
+        operation: 'HeadBucket',
+      });
       throw new StateError(
-        `Failed to verify state bucket '${this.config.bucket}': ${error instanceof Error ? error.message : String(error)}`,
-        error instanceof Error ? error : undefined
+        `Failed to verify state bucket '${this.config.bucket}': ${normalized.message}`,
+        normalized
       );
     }
   }
@@ -103,6 +193,7 @@ export class S3StateBackend {
    * state without forcing a write-through migration first.
    */
   async stateExists(stackName: string, region: string): Promise<boolean> {
+    await this.ensureClientForBucket();
     const newKey = this.getStateKey(stackName, region);
 
     if (await this.headObject(newKey)) {
@@ -131,6 +222,7 @@ export class S3StateBackend {
     stackName: string,
     region: string
   ): Promise<{ state: StackState; etag: string; migrationPending?: boolean } | null> {
+    await this.ensureClientForBucket();
     const newKey = this.getStateKey(stackName, region);
 
     // 1. Try new region-scoped key first.
@@ -204,6 +296,7 @@ export class S3StateBackend {
     state: StackState,
     options: { expectedEtag?: string; migrateLegacy?: boolean } = {}
   ): Promise<string> {
+    await this.ensureClientForBucket();
     const newKey = this.getStateKey(stackName, region);
     const { expectedEtag, migrateLegacy } = options;
 
@@ -271,9 +364,13 @@ export class S3StateBackend {
         );
       }
 
+      const normalized = normalizeAwsError(error, {
+        bucket: this.config.bucket,
+        operation: 'PutObject',
+      });
       throw new StateError(
-        `Failed to save state for stack '${stackName}' (${region}): ${error instanceof Error ? error.message : String(error)}`,
-        error instanceof Error ? error : undefined
+        `Failed to save state for stack '${stackName}' (${region}): ${normalized.message}`,
+        normalized
       );
     }
   }
@@ -286,6 +383,7 @@ export class S3StateBackend {
    * field is left alone.
    */
   async deleteState(stackName: string, region: string): Promise<void> {
+    await this.ensureClientForBucket();
     try {
       this.logger.debug(`Deleting state: ${stackName} (${region})`);
 
@@ -309,9 +407,13 @@ export class S3StateBackend {
 
       this.logger.debug(`State deleted: ${stackName} (${region})`);
     } catch (error) {
+      const normalized = normalizeAwsError(error, {
+        bucket: this.config.bucket,
+        operation: 'DeleteObject',
+      });
       throw new StateError(
-        `Failed to delete state for stack '${stackName}' (${region}): ${error instanceof Error ? error.message : String(error)}`,
-        error instanceof Error ? error : undefined
+        `Failed to delete state for stack '${stackName}' (${region}): ${normalized.message}`,
+        normalized
       );
     }
   }
@@ -331,6 +433,7 @@ export class S3StateBackend {
    * shows up exactly once.
    */
   async listStacks(): Promise<StackStateRef[]> {
+    await this.ensureClientForBucket();
     try {
       this.logger.debug('Listing all stacks');
 
@@ -387,10 +490,11 @@ export class S3StateBackend {
       this.logger.debug(`Found ${refs.length} stack(s) across regions`);
       return refs;
     } catch (error) {
-      throw new StateError(
-        `Failed to list stacks: ${error instanceof Error ? error.message : String(error)}`,
-        error instanceof Error ? error : undefined
-      );
+      const normalized = normalizeAwsError(error, {
+        bucket: this.config.bucket,
+        operation: 'ListObjectsV2',
+      });
+      throw new StateError(`Failed to list stacks: ${normalized.message}`, normalized);
     }
   }
 

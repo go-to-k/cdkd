@@ -48,6 +48,20 @@ export STATE_BUCKET="cdkd-state-myteam-1234567890"
 export STATE_PREFIX="cdkd"  # Default
 ```
 
+### State Bucket Region
+
+The state bucket can live in any AWS region — it does not have to match
+your CLI's profile region or the regions you deploy stacks into. cdkd
+auto-detects the bucket's region via `GetBucketLocation` (a GET, not a
+HEAD — has a body and avoids the AWS SDK v3 region-redirect parsing
+glitch on empty-body 301 HEAD responses) and rebuilds its state-bucket
+S3 client to that region before any state operation.
+
+This is intentionally scoped to the state-bucket S3 client only.
+Provisioning clients (Cloud Control API, Lambda, IAM, etc.) continue to
+use the stack's `env.region` so resources are still created in the
+region the CDK app declares.
+
 Result:
 
 ```
