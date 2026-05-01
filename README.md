@@ -431,8 +431,8 @@ cdkd force-unlock MyStack
 # Adopt already-deployed AWS resources into cdkd state.
 # See "Importing existing resources" below for the full guide (auto / selective /
 # hybrid modes, --resource overrides, --resource-mapping CDK CLI compatibility).
-cdkd import MyStack --app "npx ts-node app.ts" --dry-run
-cdkd import MyStack --app "npx ts-node app.ts" --yes
+cdkd import MyStack --dry-run
+cdkd import MyStack --yes
 
 # Inspect state-bucket info on demand (bucket name, region, source, schema version, stack count).
 # Routine commands (deploy / destroy / etc.) no longer print the bucket banner by default —
@@ -551,10 +551,14 @@ It reads the CDK app to find logical IDs, resource types, and
 dependencies, then matches each logical ID to a real AWS resource in
 one of three modes:
 
+All examples below assume cdkd reads the CDK app command from `cdk.json`
+(the typical case). Pass `--app "<command>"` only if you're running cdkd
+outside the CDK project directory or want to override `cdk.json`.
+
 ### Mode 1: auto (default — no flags)
 
 ```bash
-cdkd import MyStack --app "npx ts-node app.ts"
+cdkd import MyStack
 ```
 
 Imports **every** resource in the synthesized template by tag. cdkd
