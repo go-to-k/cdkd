@@ -1,3 +1,10 @@
+# [0.11.0](https://github.com/go-to-k/cdkd/compare/v0.10.0...v0.11.0) (2026-05-01)
+
+
+### Features
+
+* **state:** default bucket name without region (cdkd-state-{accountId}) ([#62](https://github.com/go-to-k/cdkd/issues/62)) ([11a676c](https://github.com/go-to-k/cdkd/commit/11a676cb8b571d462f1de03568b3665295997eae))
+
 # [0.10.0](https://github.com/go-to-k/cdkd/compare/v0.9.0...v0.10.0) (2026-05-01)
 
 
