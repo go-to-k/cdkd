@@ -1037,22 +1037,39 @@ export class IntrinsicFunctionResolver {
 
     this.logger.debug(`Resolving Fn::ImportValue: ${exportName}`);
 
-    // List all stacks
+    // List all stacks. Each entry is a `{stackName, region}` ref so the lookup
+    // hits the right region-scoped key. A legacy entry has `region: undefined`
+    // — we still let it through so cross-stack references keep working during
+    // a partial migration; the state backend's legacy-fallback handles it.
     const allStacks = await context.stateBackend.listStacks();
-    this.logger.debug(`Found ${allStacks.length} stacks to search for export: ${exportName}`);
+    this.logger.debug(
+      `Found ${allStacks.length} state record(s) to search for export: ${exportName}`
+    );
 
     // Search through all stacks for the export
-    for (const stackName of allStacks) {
+    for (const ref of allStacks) {
+      const { stackName: refStack, region: refRegion } = ref;
       // Skip the current stack (avoid self-reference)
-      if (context.stackName && stackName === context.stackName) {
-        this.logger.debug(`Skipping current stack: ${stackName}`);
+      if (context.stackName && refStack === context.stackName) {
+        this.logger.debug(`Skipping current stack: ${refStack}`);
         continue;
       }
 
       try {
-        const stateData = await context.stateBackend.getState(stackName);
+        // Without a region we can't read the new key — fall back to the
+        // current resolver region so legacy and same-region records still
+        // resolve. The legacy read path inside getState matches by embedded
+        // region, so an unrelated legacy record won't collide here.
+        const lookupRegion = refRegion ?? this.resolverRegion ?? '';
+        if (!lookupRegion) {
+          this.logger.debug(
+            `No region available for stack '${refStack}' — skipping (cdkd cannot read state without a region)`
+          );
+          continue;
+        }
+        const stateData = await context.stateBackend.getState(refStack, lookupRegion);
         if (!stateData) {
-          this.logger.debug(`No state found for stack: ${stackName}`);
+          this.logger.debug(`No state found for stack: ${refStack} (${lookupRegion})`);
           continue;
         }
 
@@ -1062,13 +1079,13 @@ export class IntrinsicFunctionResolver {
         if (state.outputs && exportName in state.outputs) {
           const value = state.outputs[exportName];
           this.logger.info(
-            `Resolved Fn::ImportValue: ${exportName} = ${JSON.stringify(value)} (from stack: ${stackName})`
+            `Resolved Fn::ImportValue: ${exportName} = ${JSON.stringify(value)} (from stack: ${refStack} / ${lookupRegion})`
           );
           return value;
         }
       } catch (error) {
         this.logger.warn(
-          `Failed to read state for stack ${stackName}: ${error instanceof Error ? error.message : String(error)}`
+          `Failed to read state for stack ${refStack}: ${error instanceof Error ? error.message : String(error)}`
         );
         continue;
       }
@@ -1077,7 +1094,7 @@ export class IntrinsicFunctionResolver {
     // Export not found in any stack
     throw new Error(
       `Fn::ImportValue: export '${exportName}' not found in any stack. ` +
-        `Searched ${allStacks.length} stacks. ` +
+        `Searched ${allStacks.length} state record(s). ` +
         `Make sure the exporting stack has been deployed and the Output has an Export.Name property.`
     );
   }

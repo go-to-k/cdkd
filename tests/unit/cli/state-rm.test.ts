@@ -36,19 +36,22 @@ vi.mock('../../../src/utils/aws-clients.ts', () => {
   };
 });
 
-const mockStateExists = vi.fn<(stackName: string) => Promise<boolean>>();
-const mockDeleteState = vi.fn<(stackName: string) => Promise<void>>();
+const mockStateExists = vi.fn<(stackName: string, region: string) => Promise<boolean>>();
+const mockDeleteState = vi.fn<(stackName: string, region: string) => Promise<void>>();
+const mockListStacks =
+  vi.fn<() => Promise<Array<{ stackName: string; region?: string }>>>();
 const mockVerifyBucketExists = vi.fn<() => Promise<void>>();
 vi.mock('../../../src/state/s3-state-backend.js', () => ({
   S3StateBackend: vi.fn().mockImplementation(() => ({
     stateExists: mockStateExists,
     deleteState: mockDeleteState,
+    listStacks: mockListStacks,
     verifyBucketExists: mockVerifyBucketExists,
   })),
 }));
 
-const mockIsLocked = vi.fn<(stackName: string) => Promise<boolean>>();
-const mockForceReleaseLock = vi.fn<(stackName: string) => Promise<void>>();
+const mockIsLocked = vi.fn<(stackName: string, region?: string) => Promise<boolean>>();
+const mockForceReleaseLock = vi.fn<(stackName: string, region?: string) => Promise<void>>();
 vi.mock('../../../src/state/lock-manager.js', () => ({
   LockManager: vi.fn().mockImplementation(() => ({
     isLocked: mockIsLocked,
@@ -103,6 +106,7 @@ describe('cdkd state rm', () => {
     mockStateExists.mockReset();
     mockDeleteState.mockReset();
     mockDeleteState.mockResolvedValue();
+    mockListStacks.mockReset();
     mockIsLocked.mockReset();
     mockForceReleaseLock.mockReset();
     mockForceReleaseLock.mockResolvedValue();
@@ -123,7 +127,9 @@ describe('cdkd state rm', () => {
   });
 
   it('skips a stack whose state does not exist (idempotent)', async () => {
-    mockStateExists.mockResolvedValue(false);
+    // listStacks does not include the requested stack — `state rm` skips
+    // (no error: idempotent).
+    mockListStacks.mockResolvedValue([]);
 
     await runStateRm(['rm', 'Missing', '--yes']);
 
@@ -133,42 +139,70 @@ describe('cdkd state rm', () => {
   });
 
   it('removes state.json AND lock.json when --yes skips the prompt', async () => {
-    mockStateExists.mockResolvedValue(true);
+    mockListStacks.mockResolvedValue([{ stackName: 'MyStack', region: 'us-east-1' }]);
     mockIsLocked.mockResolvedValue(false);
 
     await runStateRm(['rm', 'MyStack', '--yes']);
 
     expect(readlineQuestion).not.toHaveBeenCalled();
-    expect(mockDeleteState).toHaveBeenCalledWith('MyStack');
-    expect(mockForceReleaseLock).toHaveBeenCalledWith('MyStack');
+    expect(mockDeleteState).toHaveBeenCalledWith('MyStack', 'us-east-1');
+    expect(mockForceReleaseLock).toHaveBeenCalledWith('MyStack', 'us-east-1');
+  });
+
+  it('removes both regions when a stack has state in multiple regions (no --stack-region)', async () => {
+    mockListStacks.mockResolvedValue([
+      { stackName: 'MyStack', region: 'us-east-1' },
+      { stackName: 'MyStack', region: 'us-west-2' },
+    ]);
+    mockIsLocked.mockResolvedValue(false);
+
+    await runStateRm(['rm', 'MyStack', '--yes']);
+
+    expect(mockDeleteState).toHaveBeenCalledWith('MyStack', 'us-east-1');
+    expect(mockDeleteState).toHaveBeenCalledWith('MyStack', 'us-west-2');
+    expect(mockForceReleaseLock).toHaveBeenCalledWith('MyStack', 'us-east-1');
+    expect(mockForceReleaseLock).toHaveBeenCalledWith('MyStack', 'us-west-2');
+  });
+
+  it('scopes removal with --stack-region <region>', async () => {
+    mockListStacks.mockResolvedValue([
+      { stackName: 'MyStack', region: 'us-east-1' },
+      { stackName: 'MyStack', region: 'us-west-2' },
+    ]);
+    mockIsLocked.mockResolvedValue(false);
+
+    await runStateRm(['rm', 'MyStack', '--yes', '--stack-region', 'us-east-1']);
+
+    expect(mockDeleteState).toHaveBeenCalledWith('MyStack', 'us-east-1');
+    expect(mockDeleteState).not.toHaveBeenCalledWith('MyStack', 'us-west-2');
   });
 
   it('refuses to remove a locked stack without --force', async () => {
-    mockStateExists.mockResolvedValue(true);
+    mockListStacks.mockResolvedValue([{ stackName: 'LockedStack', region: 'us-east-1' }]);
     mockIsLocked.mockResolvedValue(true);
 
     await expect(runStateRm(['rm', 'LockedStack', '--yes'])).rejects.toThrow();
 
     expect(exitSpy).toHaveBeenCalledWith(1);
     const message = String(errorSpy.mock.calls[0]?.[0] ?? '');
-    expect(message).toMatch(/Stack 'LockedStack' is locked/);
+    expect(message).toMatch(/Stack 'LockedStack' \(us-east-1\) is locked/);
     expect(mockDeleteState).not.toHaveBeenCalled();
   });
 
   it('removes a locked stack when --force is set (and skips lock check)', async () => {
-    mockStateExists.mockResolvedValue(true);
+    mockListStacks.mockResolvedValue([{ stackName: 'LockedStack', region: 'us-east-1' }]);
 
     await runStateRm(['rm', 'LockedStack', '--force']);
 
     // --force bypasses both the lock check and the prompt.
     expect(mockIsLocked).not.toHaveBeenCalled();
     expect(readlineQuestion).not.toHaveBeenCalled();
-    expect(mockDeleteState).toHaveBeenCalledWith('LockedStack');
-    expect(mockForceReleaseLock).toHaveBeenCalledWith('LockedStack');
+    expect(mockDeleteState).toHaveBeenCalledWith('LockedStack', 'us-east-1');
+    expect(mockForceReleaseLock).toHaveBeenCalledWith('LockedStack', 'us-east-1');
   });
 
   it('prompts and deletes when the user answers `y`', async () => {
-    mockStateExists.mockResolvedValue(true);
+    mockListStacks.mockResolvedValue([{ stackName: 'MyStack', region: 'us-east-1' }]);
     mockIsLocked.mockResolvedValue(false);
     readlineQuestion.mockResolvedValue('y');
 
@@ -177,11 +211,11 @@ describe('cdkd state rm', () => {
     expect(readlineQuestion).toHaveBeenCalledTimes(1);
     expect(out).toMatch(/AWS resources will NOT be deleted/);
     expect(out).toMatch(/Use 'cdkd destroy MyStack'/);
-    expect(mockDeleteState).toHaveBeenCalledWith('MyStack');
+    expect(mockDeleteState).toHaveBeenCalledWith('MyStack', 'us-east-1');
   });
 
   it('prompts and cancels when the user answers `n` (or empty)', async () => {
-    mockStateExists.mockResolvedValue(true);
+    mockListStacks.mockResolvedValue([{ stackName: 'MyStack', region: 'us-east-1' }]);
     mockIsLocked.mockResolvedValue(false);
     readlineQuestion.mockResolvedValue('');
 
@@ -195,26 +229,29 @@ describe('cdkd state rm', () => {
   });
 
   it('accepts `yes` (full word) as confirmation, case-insensitively', async () => {
-    mockStateExists.mockResolvedValue(true);
+    mockListStacks.mockResolvedValue([{ stackName: 'MyStack', region: 'us-east-1' }]);
     mockIsLocked.mockResolvedValue(false);
     readlineQuestion.mockResolvedValue('YES');
 
     await runStateRm(['rm', 'MyStack']);
 
-    expect(mockDeleteState).toHaveBeenCalledWith('MyStack');
+    expect(mockDeleteState).toHaveBeenCalledWith('MyStack', 'us-east-1');
   });
 
   it('iterates over multiple stacks, each with its own confirmation', async () => {
-    mockStateExists.mockResolvedValue(true);
+    mockListStacks.mockResolvedValue([
+      { stackName: 'A', region: 'us-east-1' },
+      { stackName: 'B', region: 'us-east-1' },
+    ]);
     mockIsLocked.mockResolvedValue(false);
     readlineQuestion.mockResolvedValueOnce('y').mockResolvedValueOnce('n');
 
     await runStateRm(['rm', 'A', 'B']);
 
     expect(readlineQuestion).toHaveBeenCalledTimes(2);
-    expect(mockDeleteState).toHaveBeenCalledWith('A');
-    expect(mockDeleteState).not.toHaveBeenCalledWith('B');
-    expect(mockForceReleaseLock).toHaveBeenCalledWith('A');
-    expect(mockForceReleaseLock).not.toHaveBeenCalledWith('B');
+    expect(mockDeleteState).toHaveBeenCalledWith('A', 'us-east-1');
+    expect(mockDeleteState).not.toHaveBeenCalledWith('B', 'us-east-1');
+    expect(mockForceReleaseLock).toHaveBeenCalledWith('A', 'us-east-1');
+    expect(mockForceReleaseLock).not.toHaveBeenCalledWith('B', 'us-east-1');
   });
 });

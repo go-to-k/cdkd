@@ -28,31 +28,63 @@ cdkd adopts a state management system with S3 as the backend. Unlike CloudFormat
 
 ### Directory Layout
 
+State and lock keys are region-scoped (since PR 1, schema `version: 2`).
+The same `stackName` deployed to two different regions has two independent
+state files; changing `env.region` no longer silently overwrites the prior
+region's record.
+
 ```
 s3://{STATE_BUCKET}/{STATE_PREFIX}/
   └── {StackName}/
-      ├── lock.json      # Exclusive lock information
-      └── state.json     # Resource state
+      └── {Region}/
+          ├── lock.json      # Exclusive lock information (region-scoped)
+          └── state.json     # Resource state (region-scoped)
 ```
 
 ### Configuration Example
 
 ```bash
 export STATE_BUCKET="cdkd-state-myteam-1234567890"
-export STATE_PREFIX="stacks"  # Default: "cdkd"
+export STATE_PREFIX="cdkd"  # Default
 ```
 
 Result:
 
 ```
-s3://cdkd-state-myteam-1234567890/stacks/
+s3://cdkd-state-myteam-1234567890/cdkd/
   ├── MyAppStack/
-  │   ├── lock.json
-  │   └── state.json
+  │   └── us-east-1/
+  │       ├── lock.json
+  │       └── state.json
   └── DatabaseStack/
-      ├── lock.json
-      └── state.json
+      ├── us-east-1/
+      │   ├── lock.json
+      │   └── state.json
+      └── us-west-2/         # same stackName, different region — independent
+          ├── lock.json
+          └── state.json
 ```
+
+### Legacy layout (`version: 1`) — read path only
+
+State files written by cdkd before PR 1 used a flat per-stack layout:
+
+```
+s3://{STATE_BUCKET}/{STATE_PREFIX}/
+  └── {StackName}/
+      ├── lock.json      # not region-scoped
+      └── state.json     # version: 1, region recorded inside the body
+```
+
+cdkd still **reads** this layout (looking up the legacy key only when its
+embedded `region` field matches the requested region), and the next write
+auto-migrates: it writes the new region-scoped key, then deletes the legacy
+key. The legacy read path is temporary and will be removed in a future PR
+(see `docs/plans/99-future-bc-removal.md`).
+
+An older cdkd binary that only knows `version: 1` will **fail with a clear
+error** if it sees a `version: 2` blob (`Unsupported state schema version
+2. Upgrade cdkd.`) instead of silently mishandling unknown fields.
 
 ## State Schema
 
@@ -60,8 +92,9 @@ s3://cdkd-state-myteam-1234567890/stacks/
 
 ```typescript
 interface StackState {
-  version: number                          // Schema version (current: 1)
+  version: 1 | 2                           // 1 = legacy, 2 = region-prefixed
   stackName: string                        // Stack name
+  region?: string                          // Required on version: 2
   resources: Record<string, ResourceState> // Logical ID → Resource state
   outputs: Record<string, string>          // Output name → Resolved value
   lastModified: number                     // Unix timestamp (milliseconds)
@@ -72,8 +105,9 @@ interface StackState {
 
 ```json
 {
-  "version": 1,
+  "version": 2,
   "stackName": "MyAppStack",
+  "region": "us-east-1",
   "resources": {
     "MyBucket": {
       "physicalId": "myappstack-mybucket-abc123xyz",

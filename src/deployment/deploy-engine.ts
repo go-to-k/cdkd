@@ -5,7 +5,12 @@ import { setCurrentStackName, applyDefaultNameForFallback } from '../provisionin
 import { IntrinsicFunctionResolver } from './intrinsic-function-resolver.js';
 import { DagExecutor } from './dag-executor.js';
 import type { CloudFormationTemplate, ResourceProvider } from '../types/resource.js';
-import type { StackState, ResourceState, ResourceChange } from '../types/state.js';
+import {
+  STATE_SCHEMA_VERSION_CURRENT,
+  type StackState,
+  type ResourceState,
+  type ResourceChange,
+} from '../types/state.js';
 import type { S3StateBackend } from '../state/s3-state-backend.js';
 import type { LockManager } from '../state/lock-manager.js';
 import type { DagBuilder } from '../analyzer/dag-builder.js';
@@ -103,8 +108,12 @@ export class DeployEngine {
   private resolver: IntrinsicFunctionResolver;
   private interrupted = false;
 
-  /** Target region for this stack (saved in state for cross-region destroy) */
-  private stackRegion: string | undefined;
+  /**
+   * Target region for this stack. Required — load-bearing for the
+   * region-prefixed S3 state key and recorded in state.json for
+   * cross-region destroy.
+   */
+  private stackRegion: string;
 
   constructor(
     private stateBackend: S3StateBackend,
@@ -113,7 +122,7 @@ export class DeployEngine {
     private diffCalculator: DiffCalculator,
     private providerRegistry: ProviderRegistry,
     private options: DeployEngineOptions = {},
-    stackRegion?: string
+    stackRegion: string
   ) {
     this.stackRegion = stackRegion;
     this.resolver = new IntrinsicFunctionResolver(stackRegion);
@@ -134,7 +143,7 @@ export class DeployEngine {
     setCurrentStackName(stackName);
 
     // Acquire lock with retry (retries up to 3 times with 2s delay for transient lock conflicts)
-    await this.lockManager.acquireLockWithRetry(stackName, undefined, 'deploy');
+    await this.lockManager.acquireLockWithRetry(stackName, this.stackRegion, undefined, 'deploy');
 
     // Live progress renderer: shows in-flight resources as a multi-line area
     // at the bottom of the terminal. Self-disables on non-TTY and when
@@ -159,16 +168,19 @@ export class DeployEngine {
 
     try {
       // 1. Load current state
-      const currentStateData = await this.stateBackend.getState(stackName);
+      const currentStateData = await this.stateBackend.getState(stackName, this.stackRegion);
       const currentState: StackState = currentStateData?.state ?? {
-        version: 1,
-        ...(this.stackRegion && { region: this.stackRegion }),
+        version: STATE_SCHEMA_VERSION_CURRENT,
+        region: this.stackRegion,
         stackName,
         resources: {},
         outputs: {},
         lastModified: Date.now(),
       };
       const currentEtag = currentStateData?.etag;
+      // Set when we loaded a `version: 1` legacy record. The next save
+      // migrates it to the new key.
+      const migrationPending = currentStateData?.migrationPending ?? false;
 
       this.logger.debug(
         `Loaded current state: ${Object.keys(currentState.resources).length} resources`
@@ -283,11 +295,15 @@ export class DeployEngine {
         parameterValues,
         conditions,
         currentEtag,
-        progress
+        progress,
+        migrationPending
       );
 
-      // 7. Save final state (ETag may have been updated by partial saves)
-      const newEtag = await this.stateBackend.saveState(stackName, newState);
+      // 7. Save final state (ETag may have been updated by partial saves).
+      // The legacy migration delete (when migrationPending) was already done by
+      // the first per-resource save inside executeDeployment, so this final
+      // save is unconditionally region-scoped.
+      const newEtag = await this.stateBackend.saveState(stackName, this.stackRegion, newState);
       this.logger.debug(`State saved (ETag: ${newEtag})`);
 
       const durationMs = Date.now() - startTime;
@@ -311,7 +327,7 @@ export class DeployEngine {
 
       // Always release lock
       try {
-        await this.lockManager.releaseLock(stackName);
+        await this.lockManager.releaseLock(stackName, this.stackRegion);
         this.logger.debug('Lock released');
       } catch (lockError) {
         this.logger.warn(
@@ -340,7 +356,8 @@ export class DeployEngine {
     parameterValues?: Record<string, unknown>,
     conditions?: Record<string, boolean>,
     currentEtag?: string,
-    progress?: { current: number; total: number }
+    progress?: { current: number; total: number },
+    migrationPending = false
   ): Promise<{
     state: StackState;
     actualCounts: { created: number; updated: number; deleted: number; skipped: number };
@@ -349,6 +366,9 @@ export class DeployEngine {
     const newResources: Record<string, ResourceState> = { ...currentState.resources };
     const actualCounts = { created: 0, updated: 0, deleted: 0, skipped: 0 };
     const completedOperations: CompletedOperation[] = [];
+    // Tracked here so the FIRST per-resource save sweeps the legacy key; we
+    // don't want to delete it on every save.
+    let pendingMigration = migrationPending;
 
     // Serialize per-resource state saves to avoid ETag conflicts from concurrent writes
     let saveChain: Promise<void> = Promise.resolve();
@@ -357,14 +377,24 @@ export class DeployEngine {
       saveChain = saveChain.then(async () => {
         try {
           const partialState: StackState = {
-            version: 1,
-            ...(this.stackRegion && { region: this.stackRegion }),
+            version: STATE_SCHEMA_VERSION_CURRENT,
+            region: this.stackRegion,
             stackName: currentState.stackName,
             resources: newResources,
             outputs: currentState.outputs,
             lastModified: Date.now(),
           };
-          currentEtag = await this.stateBackend.saveState(stackName, partialState, currentEtag);
+          // Migration is a one-shot tail on the first save; subsequent saves
+          // overwrite the new key in-place under optimistic locking.
+          const migrate = pendingMigration;
+          const expectedEtag = migrate ? undefined : currentEtag;
+          currentEtag = await this.stateBackend.saveState(
+            stackName,
+            this.stackRegion,
+            partialState,
+            { ...(expectedEtag !== undefined && { expectedEtag }), migrateLegacy: migrate }
+          );
+          if (migrate) pendingMigration = false;
           this.logger.debug(`State saved after ${logicalId}`);
         } catch (error) {
           this.logger.warn(
@@ -542,14 +572,22 @@ export class DeployEngine {
       // but not in the state file.
       try {
         const preRollbackState: StackState = {
-          version: 1,
-          ...(this.stackRegion && { region: this.stackRegion }),
+          version: STATE_SCHEMA_VERSION_CURRENT,
+          region: this.stackRegion,
           stackName: currentState.stackName,
           resources: newResources,
           outputs: currentState.outputs,
           lastModified: Date.now(),
         };
-        currentEtag = await this.stateBackend.saveState(stackName, preRollbackState, currentEtag);
+        const migrate = pendingMigration;
+        const expectedEtag = migrate ? undefined : currentEtag;
+        currentEtag = await this.stateBackend.saveState(
+          stackName,
+          this.stackRegion,
+          preRollbackState,
+          { ...(expectedEtag !== undefined && { expectedEtag }), migrateLegacy: migrate }
+        );
+        if (migrate) pendingMigration = false;
         this.logger.debug('Partial state saved before rollback (orphaned resource tracking)');
       } catch (saveError) {
         this.logger.warn(
@@ -579,14 +617,16 @@ export class DeployEngine {
       // that. Otherwise, next deploy will think deleted resources still exist.
       try {
         const postRollbackState: StackState = {
-          version: 1,
-          ...(this.stackRegion && { region: this.stackRegion }),
+          version: STATE_SCHEMA_VERSION_CURRENT,
+          region: this.stackRegion,
           stackName: currentState.stackName,
           resources: newResources,
           outputs: currentState.outputs,
           lastModified: Date.now(),
         };
-        await this.stateBackend.saveState(stackName, postRollbackState, currentEtag);
+        await this.stateBackend.saveState(stackName, this.stackRegion, postRollbackState, {
+          ...(currentEtag !== undefined && { expectedEtag: currentEtag }),
+        });
         this.logger.debug('State saved after deployment failure');
       } catch (saveError) {
         // ETag mismatch from per-resource saves — force overwrite with fresh ETag
@@ -594,17 +634,19 @@ export class DeployEngine {
           `Retrying state save after rollback (ETag mismatch): ${saveError instanceof Error ? saveError.message : String(saveError)}`
         );
         try {
-          const freshState = await this.stateBackend.getState(stackName);
+          const freshState = await this.stateBackend.getState(stackName, this.stackRegion);
           const freshEtag = freshState?.etag;
           const postRollbackState: StackState = {
-            version: 1,
-            ...(this.stackRegion && { region: this.stackRegion }),
+            version: STATE_SCHEMA_VERSION_CURRENT,
+            region: this.stackRegion,
             stackName: currentState.stackName,
             resources: newResources,
             outputs: currentState.outputs,
             lastModified: Date.now(),
           };
-          await this.stateBackend.saveState(stackName, postRollbackState, freshEtag);
+          await this.stateBackend.saveState(stackName, this.stackRegion, postRollbackState, {
+            ...(freshEtag !== undefined && { expectedEtag: freshEtag }),
+          });
           this.logger.debug('State saved after deployment failure (retry succeeded)');
         } catch (retryError) {
           this.logger.warn(
@@ -627,8 +669,8 @@ export class DeployEngine {
 
     return {
       state: {
-        version: 1,
-        ...(this.stackRegion && { region: this.stackRegion }),
+        version: STATE_SCHEMA_VERSION_CURRENT,
+        region: this.stackRegion,
         stackName: currentState.stackName,
         resources: newResources,
         outputs,

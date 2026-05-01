@@ -510,18 +510,38 @@ Built on modern AWS tooling:
 
 ## State Management
 
-State is stored in S3. Each stack has its own `state.json` and `lock.json`:
+State is stored in S3. Keys are scoped by `(stackName, region)` so the same
+stack name deployed to two regions has two independent state files:
 
 ```
 s3://{state-bucket}/
   └── {prefix}/                     # Default: "cdkd" (configurable via --state-prefix)
       ├── MyStack/
-      │   ├── state.json            # Resource state
-      │   └── lock.json             # Exclusive deploy lock
+      │   └── us-east-1/
+      │       ├── state.json        # Resource state (version: 2)
+      │       └── lock.json         # Exclusive deploy lock
       └── AnotherStack/
-          ├── state.json
-          └── lock.json
+          ├── us-east-1/
+          │   ├── state.json
+          │   └── lock.json
+          └── us-west-2/             # same stackName, different region
+              ├── state.json
+              └── lock.json
 ```
+
+> **Caveat: same `stackName` in multiple regions becomes visible after
+> `env.region` changes.** Before this layout shipped, changing a stack's
+> `env.region` between deploys silently overwrote the prior region's state
+> and `cdkd destroy` ran against the wrong region. cdkd now treats the two
+> regions as independent. Use `cdkd state list` to see both, and
+> `cdkd state rm <stack> --stack-region <region>` to prune one without
+> touching the other.
+>
+> **Legacy layout migration:** state files written by cdkd before this
+> layout (`version: 1`, flat `cdkd/{stackName}/state.json`) are still
+> readable. The next cdkd write auto-migrates to the new key and removes
+> the legacy file. An older cdkd binary reading a `version: 2` file fails
+> with a clear "upgrade cdkd" error rather than silently mishandling it.
 
 ### Configuration
 
@@ -548,8 +568,9 @@ State schema:
 
 ```typescript
 {
-  version: 1,
+  version: 2,
   stackName: "MyStack",
+  region: "us-east-1",
   resources: {
     "MyFunction": {
       physicalId: "arn:aws:lambda:...",

@@ -60,8 +60,15 @@ cdkd has a 7-layer system architecture:
 2. **S3-based State Management**
    - No DynamoDB required
    - Optimistic locking via S3 Conditional Writes (`If-None-Match`, `If-Match`)
-   - State structure: `s3://bucket/stacks/{stackName}/state.json`
-   - Lock structure: `s3://bucket/stacks/{stackName}/lock.json`
+   - **Region-prefixed key layout (`version: 2`, since PR 1)**:
+     - State: `s3://bucket/cdkd/{stackName}/{region}/state.json`
+     - Lock:  `s3://bucket/cdkd/{stackName}/{region}/lock.json`
+   - The same `stackName` in two regions has two independent state files —
+     changing `env.region` no longer silently overwrites the prior region.
+   - Legacy `version: 1` layout (`cdkd/{stackName}/state.json`) is still
+     readable; the next write auto-migrates and deletes the legacy key.
+   - An old cdkd binary fails clearly on a `version: 2` blob instead of
+     silently mishandling unknown fields.
 
 3. **Event-driven DAG Execution**
    - Analyzes dependencies via `Ref` / `Fn::GetAtt` / `DependsOn`
@@ -100,7 +107,7 @@ pnpm run typecheck
 
 ### Core Directories
 
-- **src/cli/** - CLI command implementations (deploy, destroy, diff, synth, list/ls, bootstrap, force-unlock, state), config resolution. `state` is a parent command for inspecting and manipulating cdkd's S3 state bucket: `state list` (alias `ls`) lists deployed stacks; `state resources <stack>` lists the resources of one stack; `state show <stack>` renders the full state record (metadata, outputs, resources incl. properties); `state rm <stack>...` removes cdkd's state record for stacks (does NOT delete AWS resources — `cdkd destroy` is the equivalent for the actual resources).
+- **src/cli/** - CLI command implementations (deploy, destroy, diff, synth, list/ls, bootstrap, force-unlock, state), config resolution. `state` is a parent command for inspecting and manipulating cdkd's S3 state bucket: `state list` (alias `ls`) lists deployed stacks (one row per `(stackName, region)` pair under the new region-prefixed key layout); `state resources <stack>` and `state show <stack>` accept `--stack-region <region>` to disambiguate when the same stackName has state in multiple regions; `state rm <stack>...` removes cdkd's state record for every region by default, or scopes to one with `--stack-region <region>` (does NOT delete AWS resources — `cdkd destroy` is the equivalent for the actual resources).
 - **src/synthesis/** - CDK app synthesis (self-implemented: subprocess execution, Cloud Assembly parsing, context providers)
 - **src/analyzer/** - DAG builder, template parser, intrinsic function resolution
 - **src/state/** - S3 state backend, lock manager
@@ -139,8 +146,9 @@ SDK Providers are preferred over Cloud Control API for performance -- they make 
 
 ```typescript
 interface StackState {
-  version: number;
+  version: 1 | 2;       // 1 = legacy, 2 = region-prefixed (current writers)
   stackName: string;
+  region?: string;      // Required on version: 2 (load-bearing for the S3 key)
   resources: Record<string, ResourceState>;
   outputs: Record<string, string>;
   lastModified: number;

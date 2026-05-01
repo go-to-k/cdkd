@@ -36,11 +36,15 @@ vi.mock('../../../src/utils/aws-clients.ts', () => {
   };
 });
 
-const mockGetState = vi.fn<(stackName: string) => Promise<{ state: StackState } | null>>();
+const mockGetState =
+  vi.fn<(stackName: string, region: string) => Promise<{ state: StackState } | null>>();
+const mockListStacks =
+  vi.fn<() => Promise<Array<{ stackName: string; region?: string }>>>();
 const mockVerifyBucketExists = vi.fn<() => Promise<void>>();
 vi.mock('../../../src/state/s3-state-backend.js', () => ({
   S3StateBackend: vi.fn().mockImplementation(() => ({
     getState: mockGetState,
+    listStacks: mockListStacks,
     verifyBucketExists: mockVerifyBucketExists,
   })),
 }));
@@ -95,8 +99,9 @@ function makeResource(overrides: Partial<ResourceState> = {}): ResourceState {
 function makeState(resources: Record<string, ResourceState>): { state: StackState } {
   return {
     state: {
-      version: 1,
+      version: 2,
       stackName: 'TestStack',
+      region: 'us-east-1',
       resources,
       outputs: {},
       lastModified: 0,
@@ -104,11 +109,24 @@ function makeState(resources: Record<string, ResourceState>): { state: StackStat
   };
 }
 
+/**
+ * Default `listStacks` response used by every `state resources` test.
+ *
+ * The new flow disambiguates the stack name via `listStacks` before reading
+ * state, so every test needs the stack to appear at least once. Tests that
+ * exercise the missing-state path mock `listStacks` to return an empty list
+ * explicitly.
+ */
+function defaultListResponse(stackName = 'TestStack', region = 'us-east-1') {
+  return [{ stackName, region }];
+}
+
 describe('cdkd state resources', () => {
   let exitSpy: ReturnType<typeof vi.spyOn>;
 
   beforeEach(() => {
     mockGetState.mockReset();
+    mockListStacks.mockReset();
     mockVerifyBucketExists.mockReset();
     mockVerifyBucketExists.mockResolvedValue();
     errorSpy.mockReset();
@@ -123,6 +141,9 @@ describe('cdkd state resources', () => {
   });
 
   it('reports a clear error message when the stack has no state', async () => {
+    // listStacks: stack does not appear → resolveSingleRegion throws with the
+    // "No state found" error before we even get to getState.
+    mockListStacks.mockResolvedValue([]);
     mockGetState.mockResolvedValue(null);
 
     await expect(runStateResources(['resources', 'Missing'])).rejects.toThrow();
@@ -133,19 +154,44 @@ describe('cdkd state resources', () => {
     expect(message).toMatch(/No state found for stack 'Missing'/);
   });
 
+  it('errors when the stack has multiple regions and --stack-region is missing', async () => {
+    mockListStacks.mockResolvedValue([
+      { stackName: 'MyStack', region: 'us-west-2' },
+      { stackName: 'MyStack', region: 'us-east-1' },
+    ]);
+
+    await expect(runStateResources(['resources', 'MyStack'])).rejects.toThrow();
+    const message = String(errorSpy.mock.calls[0]?.[0] ?? '');
+    expect(message).toMatch(/multiple regions: us-west-2, us-east-1/);
+    expect(message).toMatch(/--region/);
+  });
+
+  it('disambiguates with --stack-region when a stack has multiple regions', async () => {
+    mockListStacks.mockResolvedValue([
+      { stackName: 'MyStack', region: 'us-west-2' },
+      { stackName: 'MyStack', region: 'us-east-1' },
+    ]);
+    mockGetState.mockResolvedValue(makeState({}));
+    await runStateResources(['resources', 'MyStack', '--stack-region', 'us-east-1']);
+    expect(mockGetState).toHaveBeenCalledWith('MyStack', 'us-east-1');
+  });
+
   it('emits nothing when the stack has zero resources (default)', async () => {
+    mockListStacks.mockResolvedValue(defaultListResponse('Empty'));
     mockGetState.mockResolvedValue(makeState({}));
     const out = await runStateResources(['resources', 'Empty']);
     expect(out).toBe('');
   });
 
   it('emits an empty JSON array when --json is set on a zero-resource stack', async () => {
+    mockListStacks.mockResolvedValue(defaultListResponse('Empty'));
     mockGetState.mockResolvedValue(makeState({}));
     const out = await runStateResources(['resources', 'Empty', '--json']);
     expect(JSON.parse(out)).toEqual([]);
   });
 
   it('prints aligned columns sorted by logical id by default', async () => {
+    mockListStacks.mockResolvedValue(defaultListResponse('StackA'));
     mockGetState.mockResolvedValue(
       makeState({
         ZebraBucket: makeResource({
@@ -170,6 +216,7 @@ describe('cdkd state resources', () => {
   });
 
   it('emits a long human-readable block per resource with --long', async () => {
+    mockListStacks.mockResolvedValue(defaultListResponse('StackA'));
     mockGetState.mockResolvedValue(
       makeState({
         MyFunction: makeResource({
@@ -194,6 +241,7 @@ describe('cdkd state resources', () => {
   });
 
   it('reports `(none)` for resources with no dependencies / no attributes under --long', async () => {
+    mockListStacks.mockResolvedValue(defaultListResponse('StackA'));
     mockGetState.mockResolvedValue(
       makeState({
         Bare: makeResource({ resourceType: 'AWS::S3::Bucket', physicalId: 'bare-bucket' }),
@@ -207,6 +255,7 @@ describe('cdkd state resources', () => {
   });
 
   it('renders structured attribute values as inline JSON under --long', async () => {
+    mockListStacks.mockResolvedValue(defaultListResponse('StackA'));
     mockGetState.mockResolvedValue(
       makeState({
         Table: makeResource({
@@ -227,6 +276,7 @@ describe('cdkd state resources', () => {
   });
 
   it('emits a JSON array of full resource details with --json', async () => {
+    mockListStacks.mockResolvedValue(defaultListResponse('StackA'));
     mockGetState.mockResolvedValue(
       makeState({
         Beta: makeResource({
@@ -261,6 +311,7 @@ describe('cdkd state resources', () => {
   });
 
   it('does not leak `properties` into any output mode', async () => {
+    mockListStacks.mockResolvedValue(defaultListResponse('StackA'));
     mockGetState.mockResolvedValue(
       makeState({
         Hidden: makeResource({

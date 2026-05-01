@@ -172,7 +172,9 @@ describe('DeployEngine - Safety Net (CC API Fallback)', () => {
       mockLockManager as any,
       mockDagBuilder as any,
       mockDiffCalculator as any,
-      mockProviderRegistry as any
+      mockProviderRegistry as any,
+      {},
+      'us-east-1'
     );
   }
 

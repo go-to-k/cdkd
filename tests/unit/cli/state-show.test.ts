@@ -36,16 +36,21 @@ vi.mock('../../../src/utils/aws-clients.ts', () => {
   };
 });
 
-const mockGetState = vi.fn<(stackName: string) => Promise<{ state: StackState } | null>>();
+const mockGetState =
+  vi.fn<(stackName: string, region: string) => Promise<{ state: StackState } | null>>();
+const mockListStacks =
+  vi.fn<() => Promise<Array<{ stackName: string; region?: string }>>>();
 const mockVerifyBucketExists = vi.fn<() => Promise<void>>();
 vi.mock('../../../src/state/s3-state-backend.js', () => ({
   S3StateBackend: vi.fn().mockImplementation(() => ({
     getState: mockGetState,
+    listStacks: mockListStacks,
     verifyBucketExists: mockVerifyBucketExists,
   })),
 }));
 
-const mockGetLockInfo = vi.fn<(stackName: string) => Promise<LockInfo | null>>();
+const mockGetLockInfo =
+  vi.fn<(stackName: string, region?: string) => Promise<LockInfo | null>>();
 vi.mock('../../../src/state/lock-manager.js', () => ({
   LockManager: vi.fn().mockImplementation(() => ({
     getLockInfo: mockGetLockInfo,
@@ -95,14 +100,18 @@ function makeResource(overrides: Partial<ResourceState> = {}): ResourceState {
 function makeState(overrides: Partial<StackState> = {}): { state: StackState } {
   return {
     state: {
-      version: overrides.version ?? 1,
+      version: overrides.version ?? 2,
       stackName: overrides.stackName ?? 'TestStack',
-      ...(overrides.region !== undefined && { region: overrides.region }),
+      region: overrides.region ?? 'us-east-1',
       resources: overrides.resources ?? {},
       outputs: overrides.outputs ?? {},
       lastModified: overrides.lastModified ?? Date.UTC(2026, 3, 29, 10, 23, 45),
     },
   };
+}
+
+function defaultListResponse(stackName = 'TestStack', region = 'us-east-1') {
+  return [{ stackName, region }];
 }
 
 describe('cdkd state show', () => {
@@ -111,6 +120,7 @@ describe('cdkd state show', () => {
   beforeEach(() => {
     mockGetState.mockReset();
     mockGetLockInfo.mockReset();
+    mockListStacks.mockReset();
     mockVerifyBucketExists.mockReset();
     mockVerifyBucketExists.mockResolvedValue();
     errorSpy.mockReset();
@@ -125,6 +135,7 @@ describe('cdkd state show', () => {
   });
 
   it('reports a clear error when the stack has no state', async () => {
+    mockListStacks.mockResolvedValue([]);
     mockGetState.mockResolvedValue(null);
     mockGetLockInfo.mockResolvedValue(null);
 
@@ -135,7 +146,19 @@ describe('cdkd state show', () => {
     expect(message).toMatch(/No state found for stack 'Missing'/);
   });
 
+  it('errors when the stack has multiple regions and --stack-region is missing', async () => {
+    mockListStacks.mockResolvedValue([
+      { stackName: 'MyStack', region: 'us-west-2' },
+      { stackName: 'MyStack', region: 'us-east-1' },
+    ]);
+
+    await expect(runStateShow(['show', 'MyStack'])).rejects.toThrow();
+    const message = String(errorSpy.mock.calls[0]?.[0] ?? '');
+    expect(message).toMatch(/multiple regions/);
+  });
+
   it('renders stack header, lock status, outputs, and resources', async () => {
+    mockListStacks.mockResolvedValue(defaultListResponse('MyStack'));
     mockGetState.mockResolvedValue(
       makeState({
         stackName: 'MyStack',
@@ -157,7 +180,7 @@ describe('cdkd state show', () => {
 
     expect(out).toContain('Stack: MyStack');
     expect(out).toContain('  Region: us-east-1');
-    expect(out).toContain('  Version: 1');
+    expect(out).toContain('  Version: 2');
     expect(out).toContain('  Last Modified: 2026-04-29T10:23:45.000Z');
     expect(out).toContain('  Lock: unlocked');
     expect(out).toContain('Outputs:');
@@ -173,6 +196,7 @@ describe('cdkd state show', () => {
   });
 
   it('renders a locked stack with owner / operation / expiry detail', async () => {
+    mockListStacks.mockResolvedValue(defaultListResponse('MyStack'));
     mockGetState.mockResolvedValue(makeState({ stackName: 'MyStack' }));
     mockGetLockInfo.mockResolvedValue({
       owner: 'alice@workstation:1234',
@@ -187,6 +211,7 @@ describe('cdkd state show', () => {
   });
 
   it('renders an expired lock when expiresAt is in the past', async () => {
+    mockListStacks.mockResolvedValue(defaultListResponse('MyStack'));
     mockGetState.mockResolvedValue(makeState({ stackName: 'MyStack' }));
     mockGetLockInfo.mockResolvedValue({
       owner: 'bob@host:5678',
@@ -200,6 +225,7 @@ describe('cdkd state show', () => {
   });
 
   it('reports `(none)` for resources with no attributes / no properties', async () => {
+    mockListStacks.mockResolvedValue(defaultListResponse('AnyStack'));
     mockGetState.mockResolvedValue(
       makeState({
         resources: {
@@ -217,6 +243,7 @@ describe('cdkd state show', () => {
   });
 
   it('omits the Outputs section when outputs are empty', async () => {
+    mockListStacks.mockResolvedValue(defaultListResponse('AnyStack'));
     mockGetState.mockResolvedValue(makeState({ outputs: {} }));
     mockGetLockInfo.mockResolvedValue(null);
 
@@ -226,6 +253,7 @@ describe('cdkd state show', () => {
   });
 
   it('emits a `{state, lock}` JSON object with --json', async () => {
+    mockListStacks.mockResolvedValue(defaultListResponse('JsonStack', 'us-west-2'));
     const stateRecord = makeState({
       stackName: 'JsonStack',
       region: 'us-west-2',
@@ -254,6 +282,7 @@ describe('cdkd state show', () => {
   });
 
   it('emits `lock: null` in JSON when the stack is unlocked', async () => {
+    mockListStacks.mockResolvedValue(defaultListResponse('UnlockedStack'));
     mockGetState.mockResolvedValue(makeState({ stackName: 'UnlockedStack' }));
     mockGetLockInfo.mockResolvedValue(null);
 
