@@ -1,3 +1,10 @@
+# [0.12.0](https://github.com/go-to-k/cdkd/compare/v0.11.0...v0.12.0) (2026-05-01)
+
+
+### Features
+
+* **cli:** cdkd state destroy command (CDK-app-free destroy) ([#58](https://github.com/go-to-k/cdkd/issues/58)) ([cacc26c](https://github.com/go-to-k/cdkd/commit/cacc26c81399032de775015a3bd60a02dda003cc))
+
 # [0.11.0](https://github.com/go-to-k/cdkd/compare/v0.10.0...v0.11.0) (2026-05-01)
 
 
