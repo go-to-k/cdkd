@@ -1,5 +1,6 @@
 import type { Logger, LogLevel } from '../types/config.js';
 import { getLiveRenderer } from './live-renderer.js';
+import { getCurrentStackOutputBuffer } from './stack-context.js';
 
 /**
  * ANSI color codes
@@ -80,31 +81,48 @@ export class ConsoleLogger implements Logger {
     return `${message}${formattedArgs}`;
   }
 
+  /**
+   * Route a formatted log line. When a per-stack output buffer is active in
+   * the current async context (parallel multi-stack deploy), capture the
+   * line into the buffer so it can be flushed as one atomic block when the
+   * stack finishes. Otherwise fall through to the live renderer / console
+   * as before.
+   */
+  private emit(level: LogLevel, formatted: string): void {
+    const buffer = getCurrentStackOutputBuffer();
+    if (buffer) {
+      buffer.lines.push(formatted);
+      return;
+    }
+    getLiveRenderer().printAbove(() => {
+      if (level === 'error') console.error(formatted);
+      else if (level === 'warn') console.warn(formatted);
+      else if (level === 'info') console.info(formatted);
+      else console.debug(formatted);
+    });
+  }
+
   debug(message: string, ...args: unknown[]): void {
     if (this.shouldLog('debug')) {
-      const formatted = this.formatMessage('debug', message, ...args);
-      getLiveRenderer().printAbove(() => console.debug(formatted));
+      this.emit('debug', this.formatMessage('debug', message, ...args));
     }
   }
 
   info(message: string, ...args: unknown[]): void {
     if (this.shouldLog('info')) {
-      const formatted = this.formatMessage('info', message, ...args);
-      getLiveRenderer().printAbove(() => console.info(formatted));
+      this.emit('info', this.formatMessage('info', message, ...args));
     }
   }
 
   warn(message: string, ...args: unknown[]): void {
     if (this.shouldLog('warn')) {
-      const formatted = this.formatMessage('warn', message, ...args);
-      getLiveRenderer().printAbove(() => console.warn(formatted));
+      this.emit('warn', this.formatMessage('warn', message, ...args));
     }
   }
 
   error(message: string, ...args: unknown[]): void {
     if (this.shouldLog('error')) {
-      const formatted = this.formatMessage('error', message, ...args);
-      getLiveRenderer().printAbove(() => console.error(formatted));
+      this.emit('error', this.formatMessage('error', message, ...args));
     }
   }
 
