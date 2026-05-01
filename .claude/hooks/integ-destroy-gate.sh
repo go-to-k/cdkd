@@ -55,7 +55,22 @@ if [ -n "$diff_base" ]; then
   delete_touch=0
   always_delete='^(src/cli/commands/destroy(-runner)?\.ts|src/deployment/deploy-engine\.ts|src/analyzer/(dag-builder|implicit-delete-deps|lambda-vpc-deps)\.ts)$'
   provider_pattern='^src/provisioning/(providers/.*\.ts|cloud-control-provider\.ts|region-check\.ts)$'
-  delete_symbol_pattern='^[-+].*\b(delete|IMPLICIT_DELETE|hyperplane|DependencyViolation|ENI|detach)\b'
+  # Match a delete-touching symbol on an added/removed line, but NOT inside
+  # a single-line comment. This avoids the false positives PR #73 hit
+  # (e.g. an ECS provider doc-comment containing the words "delete/update"
+  # tripped the gate even though the diff didn't change any delete code).
+  #
+  #   ^[-+]                  added or removed line
+  #   [^-+]                  one non-+/- char so we don't match the diff header `+++`/`---`
+  #   [[:space:]]*           leading indent
+  #   (?!//|\*|#)            negative lookahead — but POSIX grep -E doesn't
+  #                          support lookahead. Workaround: filter comment
+  #                          lines with a second grep -v pass below.
+  delete_symbol_pattern='^[-+][^-+].*\b(delete|IMPLICIT_DELETE|hyperplane|DependencyViolation|ENI|detach)\b'
+  # Lines we consider "comment only" — drop them before the symbol grep.
+  # Matches an added/removed line whose first non-whitespace content is
+  # a JS/TS/SH comment introducer (`//`, `/*`, `*` mid-block, `#`).
+  comment_line_pattern='^[-+][^-+][[:space:]]*(\*|/\*|//|#)'
 
   while IFS= read -r f; do
     [ -z "$f" ] && continue
@@ -64,7 +79,9 @@ if [ -n "$diff_base" ]; then
       break
     fi
     if printf '%s' "$f" | grep -qE "$provider_pattern"; then
-      if git diff "$diff_base"...HEAD -- "$f" | grep -qE "$delete_symbol_pattern"; then
+      if git diff "$diff_base"...HEAD -- "$f" \
+         | grep -vE "$comment_line_pattern" \
+         | grep -qE "$delete_symbol_pattern"; then
         delete_touch=1
         break
       fi
