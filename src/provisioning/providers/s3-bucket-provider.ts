@@ -3,6 +3,8 @@ import {
   S3Client,
   CreateBucketCommand,
   DeleteBucketCommand,
+  HeadBucketCommand,
+  ListBucketsCommand,
   PutBucketVersioningCommand,
   PutBucketTaggingCommand,
   PutBucketOwnershipControlsCommand,
@@ -20,6 +22,7 @@ import {
   PutBucketInventoryConfigurationCommand,
   PutBucketReplicationCommand,
   PutObjectLockConfigurationCommand,
+  GetBucketTaggingCommand,
   NoSuchBucket,
   ListObjectVersionsCommand,
   DeleteObjectsCommand,
@@ -27,6 +30,7 @@ import {
   type ObjectOwnership,
   type CORSRule,
 } from '@aws-sdk/client-s3';
+import { matchesCdkPath, resolveExplicitPhysicalId } from '../import-helpers.js';
 import { getLogger } from '../../utils/logger.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
@@ -36,6 +40,8 @@ import type {
   ResourceProvider,
   ResourceCreateResult,
   ResourceUpdateResult,
+  ResourceImportInput,
+  ResourceImportResult,
 } from '../../types/resource.js';
 
 /**
@@ -1148,6 +1154,59 @@ export class S3BucketProvider implements ResourceProvider {
         cause
       );
     }
+  }
+
+  /**
+   * Adopt an existing S3 bucket into cdkd state.
+   *
+   * Lookup order:
+   *  1. `--resource <id>=<name>` override or `Properties.BucketName` → use directly,
+   *     verify with `HeadBucket`.
+   *  2. `ListBuckets` + `GetBucketTagging`, match `aws:cdk:path` against the
+   *     CDK construct path.
+   *
+   * Returns `null` when nothing matches — caller treats this as
+   * "not deployed yet" rather than a failure.
+   */
+  async import(input: ResourceImportInput): Promise<ResourceImportResult | null> {
+    const explicit = resolveExplicitPhysicalId(input, 'BucketName');
+    if (explicit) {
+      try {
+        await this.s3Client.send(new HeadBucketCommand({ Bucket: explicit }));
+        return { physicalId: explicit, attributes: {} };
+      } catch (err) {
+        const e = err as { name?: string };
+        if (e.name === 'NotFound' || e.name === 'NoSuchBucket') {
+          return null;
+        }
+        throw err;
+      }
+    }
+
+    if (!input.cdkPath) return null;
+
+    const list = await this.s3Client.send(new ListBucketsCommand({}));
+    for (const b of list.Buckets ?? []) {
+      if (!b.Name) continue;
+      try {
+        const tagging = await this.s3Client.send(new GetBucketTaggingCommand({ Bucket: b.Name }));
+        if (matchesCdkPath(tagging.TagSet, input.cdkPath)) {
+          return { physicalId: b.Name, attributes: {} };
+        }
+      } catch (err) {
+        // NoSuchTagSet / cross-region 301 / access denied → skip this bucket
+        const e = err as { name?: string; $metadata?: { httpStatusCode?: number } };
+        if (
+          e.name === 'NoSuchTagSet' ||
+          e.name === 'AccessDenied' ||
+          e.$metadata?.httpStatusCode === 301
+        ) {
+          continue;
+        }
+        throw err;
+      }
+    }
+    return null;
   }
 
   /**

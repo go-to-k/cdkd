@@ -2,6 +2,8 @@ import {
   CloudWatchLogsClient,
   CreateLogGroupCommand,
   DeleteLogGroupCommand,
+  DescribeLogGroupsCommand,
+  ListTagsForResourceCommand,
   PutRetentionPolicyCommand,
   DeleteRetentionPolicyCommand,
   TagResourceCommand,
@@ -17,10 +19,13 @@ import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { generateResourceName } from '../resource-name.js';
+import { resolveExplicitPhysicalId } from '../import-helpers.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
   ResourceUpdateResult,
+  ResourceImportInput,
+  ResourceImportResult,
 } from '../../types/resource.js';
 
 /**
@@ -306,5 +311,61 @@ export class LogsLogGroupProvider implements ResourceProvider {
       // Fallback: return a placeholder ARN
       return `arn:aws:logs:unknown:unknown:log-group:${logGroupName}:*`;
     }
+  }
+
+  /**
+   * Adopt an existing CloudWatch Logs log group into cdkd state.
+   *
+   * Lookup order:
+   *  1. `--resource` override or `Properties.LogGroupName` → verify via
+   *     `DescribeLogGroups` (filtered by name prefix).
+   *  2. `aws:cdk:path` tag match via `DescribeLogGroups` + `ListTagsForResource`.
+   *
+   * `ListTagsForResource` for log groups uses the log-group ARN. The
+   * `DescribeLogGroups` response includes the ARN, so no extra round-trip
+   * is needed beyond the per-group tag lookup.
+   */
+  async import(input: ResourceImportInput): Promise<ResourceImportResult | null> {
+    const explicit = resolveExplicitPhysicalId(input, 'LogGroupName');
+    if (explicit) {
+      try {
+        const resp = await this.logsClient.send(
+          new DescribeLogGroupsCommand({ logGroupNamePrefix: explicit })
+        );
+        const found = resp.logGroups?.find((g) => g.logGroupName === explicit);
+        return found ? { physicalId: explicit, attributes: {} } : null;
+      } catch (err) {
+        if (err instanceof ResourceNotFoundException) return null;
+        throw err;
+      }
+    }
+
+    if (!input.cdkPath) return null;
+
+    let nextToken: string | undefined;
+    do {
+      const list = await this.logsClient.send(
+        new DescribeLogGroupsCommand({ ...(nextToken && { nextToken }) })
+      );
+      for (const g of list.logGroups ?? []) {
+        if (!g.logGroupName || !g.arn) continue;
+        // ListTagsForResource expects an ARN without the trailing ":*" CloudWatch
+        // appends to log-group ARNs in API responses. Strip it before the call.
+        const arnForTags = g.arn.replace(/:\*$/, '');
+        try {
+          const tagsResp = await this.logsClient.send(
+            new ListTagsForResourceCommand({ resourceArn: arnForTags })
+          );
+          if (tagsResp.tags?.['aws:cdk:path'] === input.cdkPath) {
+            return { physicalId: g.logGroupName, attributes: {} };
+          }
+        } catch (err) {
+          if (err instanceof ResourceNotFoundException) continue;
+          throw err;
+        }
+      }
+      nextToken = list.nextToken;
+    } while (nextToken);
+    return null;
   }
 }

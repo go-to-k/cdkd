@@ -1,5 +1,8 @@
 import {
   SSMClient,
+  DescribeParametersCommand,
+  GetParameterCommand,
+  ListTagsForResourceCommand,
   PutParameterCommand,
   DeleteParameterCommand,
   AddTagsToResourceCommand,
@@ -13,10 +16,13 @@ import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { generateResourceName } from '../resource-name.js';
+import { matchesCdkPath, resolveExplicitPhysicalId } from '../import-helpers.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
   ResourceUpdateResult,
+  ResourceImportInput,
+  ResourceImportResult,
 } from '../../types/resource.js';
 
 /**
@@ -274,5 +280,55 @@ export class SSMParameterProvider implements ResourceProvider {
         cause
       );
     }
+  }
+
+  /**
+   * Adopt an existing SSM parameter into cdkd state.
+   *
+   * SSM physical IDs ARE the parameter names (`/foo/bar`). The CDK template
+   * usually carries `Properties.Name` explicitly, so the explicit-name path
+   * covers most cases. The tag-based fallback is rarely needed.
+   *
+   * Lookup order:
+   *  1. `--resource` override or `Properties.Name` → verify via `GetParameter`.
+   *  2. `aws:cdk:path` tag match via `DescribeParameters` + `ListTagsForResource`
+   *     (`ResourceType: 'Parameter'`, `ResourceId: <name>`).
+   */
+  async import(input: ResourceImportInput): Promise<ResourceImportResult | null> {
+    const explicit = resolveExplicitPhysicalId(input, 'Name');
+    if (explicit) {
+      try {
+        await this.ssmClient.send(new GetParameterCommand({ Name: explicit }));
+        return { physicalId: explicit, attributes: {} };
+      } catch (err) {
+        if (err instanceof ParameterNotFound) return null;
+        throw err;
+      }
+    }
+
+    if (!input.cdkPath) return null;
+
+    let nextToken: string | undefined;
+    do {
+      const list = await this.ssmClient.send(
+        new DescribeParametersCommand({ ...(nextToken && { NextToken: nextToken }) })
+      );
+      for (const p of list.Parameters ?? []) {
+        if (!p.Name) continue;
+        try {
+          const tagsResp = await this.ssmClient.send(
+            new ListTagsForResourceCommand({ ResourceType: 'Parameter', ResourceId: p.Name })
+          );
+          if (matchesCdkPath(tagsResp.TagList, input.cdkPath)) {
+            return { physicalId: p.Name, attributes: {} };
+          }
+        } catch (err) {
+          if (err instanceof ParameterNotFound) continue;
+          throw err;
+        }
+      }
+      nextToken = list.NextToken;
+    } while (nextToken);
+    return null;
   }
 }

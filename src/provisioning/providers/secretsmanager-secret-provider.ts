@@ -2,6 +2,8 @@ import {
   SecretsManagerClient,
   CreateSecretCommand,
   DeleteSecretCommand,
+  DescribeSecretCommand,
+  ListSecretsCommand,
   UpdateSecretCommand,
   TagResourceCommand,
   UntagResourceCommand,
@@ -15,10 +17,13 @@ import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { generateResourceName } from '../resource-name.js';
+import { matchesCdkPath } from '../import-helpers.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
   ResourceUpdateResult,
+  ResourceImportInput,
+  ResourceImportResult,
 } from '../../types/resource.js';
 
 /**
@@ -344,5 +349,59 @@ export class SecretsManagerSecretProvider implements ResourceProvider {
     }
 
     return password;
+  }
+
+  /**
+   * Adopt an existing Secrets Manager secret into cdkd state.
+   *
+   * Secrets Manager physical IDs are full secret ARNs. The CDK template's
+   * `Properties.Name` (secret name) is enough to fetch the ARN via
+   * `DescribeSecret`.
+   *
+   * Lookup order:
+   *  1. `--resource` override (ARN) → verify via `DescribeSecret`.
+   *  2. `Properties.Name` → `DescribeSecret` (accepts name).
+   *  3. `aws:cdk:path` tag match via `ListSecrets` (which already returns Tags).
+   */
+  async import(input: ResourceImportInput): Promise<ResourceImportResult | null> {
+    if (input.knownPhysicalId) {
+      try {
+        const resp = await this.smClient.send(
+          new DescribeSecretCommand({ SecretId: input.knownPhysicalId })
+        );
+        return resp.ARN ? { physicalId: resp.ARN, attributes: {} } : null;
+      } catch (err) {
+        if (err instanceof ResourceNotFoundException) return null;
+        throw err;
+      }
+    }
+
+    const name =
+      typeof input.properties?.['Name'] === 'string' ? input.properties['Name'] : undefined;
+    if (name) {
+      try {
+        const resp = await this.smClient.send(new DescribeSecretCommand({ SecretId: name }));
+        return resp.ARN ? { physicalId: resp.ARN, attributes: {} } : null;
+      } catch (err) {
+        if (err instanceof ResourceNotFoundException) return null;
+        throw err;
+      }
+    }
+
+    if (!input.cdkPath) return null;
+
+    let nextToken: string | undefined;
+    do {
+      const list = await this.smClient.send(
+        new ListSecretsCommand({ ...(nextToken && { NextToken: nextToken }) })
+      );
+      for (const s of list.SecretList ?? []) {
+        if (s.ARN && matchesCdkPath(s.Tags, input.cdkPath)) {
+          return { physicalId: s.ARN, attributes: {} };
+        }
+      }
+      nextToken = list.NextToken;
+    } while (nextToken);
+    return null;
   }
 }

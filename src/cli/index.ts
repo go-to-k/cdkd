@@ -12,6 +12,7 @@ import { createDestroyCommand } from './commands/destroy.js';
 import { createPublishAssetsCommand } from './commands/publish-assets.js';
 import { createForceUnlockCommand } from './commands/force-unlock.js';
 import { createStateCommand } from './commands/state.js';
+import { createImportCommand } from './commands/import.js';
 
 const SUBCOMMANDS = new Set([
   'bootstrap',
@@ -21,6 +22,7 @@ const SUBCOMMANDS = new Set([
   'deploy',
   'diff',
   'destroy',
+  'import',
   'publish-assets',
   'force-unlock',
   'state',
@@ -62,6 +64,7 @@ async function main(): Promise<void> {
   program.addCommand(createDeployCommand());
   program.addCommand(createDiffCommand());
   program.addCommand(createDestroyCommand());
+  program.addCommand(createImportCommand());
   program.addCommand(createPublishAssetsCommand());
   program.addCommand(createForceUnlockCommand());
   program.addCommand(createStateCommand());

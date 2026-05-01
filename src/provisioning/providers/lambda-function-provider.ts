@@ -6,6 +6,8 @@ import {
   UpdateFunctionCodeCommand,
   DeleteFunctionCommand,
   GetFunctionCommand,
+  ListFunctionsCommand,
+  ListTagsCommand,
   ResourceNotFoundException,
   type FunctionCode,
   type CreateFunctionCommandInput,
@@ -17,6 +19,7 @@ import {
   type EphemeralStorage,
   type VpcConfig,
 } from '@aws-sdk/client-lambda';
+import { CDK_PATH_TAG, resolveExplicitPhysicalId } from '../import-helpers.js';
 import {
   EC2Client,
   DescribeNetworkInterfacesCommand,
@@ -31,6 +34,8 @@ import type {
   ResourceProvider,
   ResourceCreateResult,
   ResourceUpdateResult,
+  ResourceImportInput,
+  ResourceImportResult,
 } from '../../types/resource.js';
 
 /**
@@ -750,5 +755,55 @@ export class LambdaFunctionProvider implements ResourceProvider {
       }
     }
     return (crc ^ 0xffffffff) >>> 0;
+  }
+
+  /**
+   * Adopt an existing Lambda function into cdkd state.
+   *
+   * Lookup order:
+   *  1. `--resource` override or `Properties.FunctionName` → use directly,
+   *     verify via `GetFunction`.
+   *  2. `ListFunctions` + `ListTags`, match `aws:cdk:path` tag.
+   *
+   * Lambda's `ListTags` returns a `Tags` map keyed by tag name (unlike
+   * EC2/S3 which return an array of `{Key, Value}`), so we read it directly
+   * instead of going through the shared `matchesCdkPath` helper.
+   */
+  async import(input: ResourceImportInput): Promise<ResourceImportResult | null> {
+    const explicit = resolveExplicitPhysicalId(input, 'FunctionName');
+    if (explicit) {
+      try {
+        await this.lambdaClient.send(new GetFunctionCommand({ FunctionName: explicit }));
+        return { physicalId: explicit, attributes: {} };
+      } catch (err) {
+        if (err instanceof ResourceNotFoundException) return null;
+        throw err;
+      }
+    }
+
+    if (!input.cdkPath) return null;
+
+    let marker: string | undefined;
+    do {
+      const list = await this.lambdaClient.send(
+        new ListFunctionsCommand({ ...(marker && { Marker: marker }) })
+      );
+      for (const fn of list.Functions ?? []) {
+        if (!fn.FunctionArn || !fn.FunctionName) continue;
+        try {
+          const tagsResp = await this.lambdaClient.send(
+            new ListTagsCommand({ Resource: fn.FunctionArn })
+          );
+          if (tagsResp.Tags?.[CDK_PATH_TAG] === input.cdkPath) {
+            return { physicalId: fn.FunctionName, attributes: {} };
+          }
+        } catch (err) {
+          if (err instanceof ResourceNotFoundException) continue;
+          throw err;
+        }
+      }
+      marker = list.NextMarker;
+    } while (marker);
+    return null;
   }
 }

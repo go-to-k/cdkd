@@ -3,6 +3,8 @@ import {
   CreateTableCommand,
   DeleteTableCommand,
   DescribeTableCommand,
+  ListTablesCommand,
+  ListTagsOfResourceCommand,
   ResourceNotFoundException,
   type CreateTableCommandInput,
   type KeySchemaElement,
@@ -17,10 +19,13 @@ import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { generateResourceName } from '../resource-name.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
+import { matchesCdkPath, resolveExplicitPhysicalId } from '../import-helpers.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
   ResourceUpdateResult,
+  ResourceImportInput,
+  ResourceImportResult,
 } from '../../types/resource.js';
 
 /**
@@ -318,5 +323,60 @@ export class DynamoDBTableProvider implements ResourceProvider {
     }
 
     throw new Error(`Table ${tableName} did not reach ACTIVE status within ${maxAttempts} seconds`);
+  }
+
+  /**
+   * Adopt an existing DynamoDB table into cdkd state.
+   *
+   * Lookup order:
+   *  1. `--resource` override or `Properties.TableName` → verify via `DescribeTable`.
+   *  2. `ListTables` + `ListTagsOfResource`, match `aws:cdk:path` tag.
+   *
+   * Tags require the table ARN, which `DescribeTable` provides; the loop
+   * therefore costs one `DescribeTable` per table just to read the ARN.
+   * Acceptable for typical DynamoDB cardinalities.
+   */
+  async import(input: ResourceImportInput): Promise<ResourceImportResult | null> {
+    const explicit = resolveExplicitPhysicalId(input, 'TableName');
+    if (explicit) {
+      try {
+        await this.dynamoDBClient.send(new DescribeTableCommand({ TableName: explicit }));
+        return { physicalId: explicit, attributes: {} };
+      } catch (err) {
+        if (err instanceof ResourceNotFoundException) return null;
+        throw err;
+      }
+    }
+
+    if (!input.cdkPath) return null;
+
+    let exclusiveStartTableName: string | undefined;
+    do {
+      const list = await this.dynamoDBClient.send(
+        new ListTablesCommand({
+          ...(exclusiveStartTableName && { ExclusiveStartTableName: exclusiveStartTableName }),
+        })
+      );
+      for (const name of list.TableNames ?? []) {
+        try {
+          const desc = await this.dynamoDBClient.send(
+            new DescribeTableCommand({ TableName: name })
+          );
+          const arn = desc.Table?.TableArn;
+          if (!arn) continue;
+          const tagsResp = await this.dynamoDBClient.send(
+            new ListTagsOfResourceCommand({ ResourceArn: arn })
+          );
+          if (matchesCdkPath(tagsResp.Tags, input.cdkPath)) {
+            return { physicalId: name, attributes: {} };
+          }
+        } catch (err) {
+          if (err instanceof ResourceNotFoundException) continue;
+          throw err;
+        }
+      }
+      exclusiveStartTableName = list.LastEvaluatedTableName;
+    } while (exclusiveStartTableName);
+    return null;
   }
 }

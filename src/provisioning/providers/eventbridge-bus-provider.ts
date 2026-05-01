@@ -4,7 +4,9 @@ import {
   DeleteEventBusCommand,
   UpdateEventBusCommand,
   DescribeEventBusCommand,
+  ListEventBusesCommand,
   ListRulesCommand,
+  ListTagsForResourceCommand,
   RemoveTargetsCommand,
   DeleteRuleCommand,
   ListTargetsByRuleCommand,
@@ -17,10 +19,13 @@ import { getLogger } from '../../utils/logger.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
+import { matchesCdkPath, resolveExplicitPhysicalId } from '../import-helpers.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
   ResourceUpdateResult,
+  ResourceImportInput,
+  ResourceImportResult,
 } from '../../types/resource.js';
 
 /**
@@ -320,5 +325,50 @@ export class EventBridgeBusProvider implements ResourceProvider {
         `Failed to list rules on bus ${busName}: ${error instanceof Error ? error.message : String(error)}`
       );
     }
+  }
+
+  /**
+   * Adopt an existing EventBridge event bus into cdkd state.
+   *
+   * Lookup order:
+   *  1. `--resource` override or `Properties.Name` → verify via `DescribeEventBus`.
+   *  2. `aws:cdk:path` tag match via `ListEventBuses` + `ListTagsForResource`.
+   */
+  async import(input: ResourceImportInput): Promise<ResourceImportResult | null> {
+    const explicit = resolveExplicitPhysicalId(input, 'Name');
+    if (explicit) {
+      try {
+        await this.eventBridgeClient.send(new DescribeEventBusCommand({ Name: explicit }));
+        return { physicalId: explicit, attributes: {} };
+      } catch (err) {
+        if (err instanceof ResourceNotFoundException) return null;
+        throw err;
+      }
+    }
+
+    if (!input.cdkPath) return null;
+
+    let nextToken: string | undefined;
+    do {
+      const list = await this.eventBridgeClient.send(
+        new ListEventBusesCommand({ ...(nextToken && { NextToken: nextToken }) })
+      );
+      for (const bus of list.EventBuses ?? []) {
+        if (!bus.Name || !bus.Arn) continue;
+        try {
+          const tagsResp = await this.eventBridgeClient.send(
+            new ListTagsForResourceCommand({ ResourceARN: bus.Arn })
+          );
+          if (matchesCdkPath(tagsResp.Tags, input.cdkPath)) {
+            return { physicalId: bus.Name, attributes: {} };
+          }
+        } catch (err) {
+          if (err instanceof ResourceNotFoundException) continue;
+          throw err;
+        }
+      }
+      nextToken = list.NextToken;
+    } while (nextToken);
+    return null;
   }
 }
