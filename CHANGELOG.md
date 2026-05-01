@@ -1,3 +1,10 @@
+# [0.16.0](https://github.com/go-to-k/cdkd/compare/v0.15.0...v0.16.0) (2026-05-01)
+
+
+### Features
+
+* **provisioning:** add import to CloudControlProvider (explicit-override only) ([#71](https://github.com/go-to-k/cdkd/issues/71)) ([80739cc](https://github.com/go-to-k/cdkd/commit/80739cc31f531fbcb748653750c84e223a15dfd2))
+
 # [0.15.0](https://github.com/go-to-k/cdkd/compare/v0.14.0...v0.15.0) (2026-05-01)
 
 
