@@ -1,3 +1,10 @@
+# [0.13.0](https://github.com/go-to-k/cdkd/compare/v0.12.0...v0.13.0) (2026-05-01)
+
+
+### Features
+
+* **cli:** hide state bucket from default output, add cdkd state info ([#59](https://github.com/go-to-k/cdkd/issues/59)) ([03b3bd8](https://github.com/go-to-k/cdkd/commit/03b3bd817ffe657c10363b4fc436c9aae153e2f7))
+
 # [0.12.0](https://github.com/go-to-k/cdkd/compare/v0.11.0...v0.12.0) (2026-05-01)
 
 
