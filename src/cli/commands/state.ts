@@ -1,6 +1,11 @@
 import * as readline from 'node:readline/promises';
 import { Command, Option } from 'commander';
 import {
+  GetBucketLocationCommand,
+  GetObjectCommand,
+  ListObjectsV2Command,
+} from '@aws-sdk/client-s3';
+import {
   commonOptions,
   deprecatedRegionOption,
   stateOptions,
@@ -11,11 +16,15 @@ import { withErrorHandling } from '../../utils/error-handler.js';
 import { S3StateBackend, type StackStateRef } from '../../state/s3-state-backend.js';
 import { LockManager } from '../../state/lock-manager.js';
 import { setAwsClients, AwsClients } from '../../utils/aws-clients.js';
-import { resolveStateBucketWithDefault } from '../config-loader.js';
+import {
+  resolveStateBucketWithDefault,
+  resolveStateBucketWithDefaultAndSource,
+  type StateBucketSource,
+} from '../config-loader.js';
 import { ProviderRegistry } from '../../provisioning/provider-registry.js';
 import { registerAllProviders } from '../../provisioning/register-providers.js';
 import { runDestroyForStack } from './destroy-runner.js';
-import type { LockInfo } from '../../types/state.js';
+import type { LockInfo, StackState } from '../../types/state.js';
 
 /**
  * Detail row for a single stack when --long is requested.
@@ -986,9 +995,223 @@ function createStateDestroyCommand(): Command {
 }
 
 /**
+ * Human-readable label for a {@link StateBucketSource}.
+ *
+ * Mirrors the `Source` column documented in `docs/plans/07-state-bucket-display.md`.
+ */
+function formatBucketSource(source: StateBucketSource): string {
+  switch (source) {
+    case 'cli-flag':
+      return '--state-bucket flag';
+    case 'env':
+      return 'CDKD_STATE_BUCKET env';
+    case 'cdk.json':
+      return 'cdk.json (context.cdkd.stateBucket)';
+    case 'default':
+      return 'default (account ID from STS)';
+    case 'default-legacy':
+      return 'default (legacy region-suffixed name; cdkd state migrate-bucket recommended)';
+  }
+}
+
+/**
+ * Detect the bucket's actual region via S3 `GetBucketLocation`.
+ *
+ * Returns `undefined` when the call fails — the command should still succeed
+ * and just report `unknown` rather than crash on a permission issue or a
+ * not-yet-bootstrapped bucket. (Bucket existence is verified separately
+ * via {@link setupStateBackend}, so getting here implies the bucket is
+ * reachable; `GetBucketLocation` failing is most often a permissions gap.)
+ */
+async function detectBucketRegion(
+  awsClients: AwsClients,
+  bucket: string
+): Promise<string | undefined> {
+  try {
+    const resp = await awsClients.s3.send(new GetBucketLocationCommand({ Bucket: bucket }));
+    // S3 returns `null`/empty for us-east-1 (historical quirk).
+    const constraint: string | undefined = resp.LocationConstraint;
+    if (!constraint) return 'us-east-1';
+    // EU is the legacy alias for eu-west-1.
+    if (constraint === 'EU') return 'eu-west-1';
+    return constraint;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Walk the state-bucket prefix and collect every state.json key, regardless of
+ * which layout produced it.
+ *
+ * Two layouts are supported here so the command keeps working both before and
+ * after PR 1 (region segment) lands:
+ * - Legacy: `<prefix>/<stackName>/state.json`
+ * - New:    `<prefix>/<stackName>/<region>/state.json`
+ *
+ * Returns the full set of state-file keys; the count is the unique-stacks
+ * tally we want for the `Stacks:` line.
+ */
+async function listStateFileKeys(
+  awsClients: AwsClients,
+  bucket: string,
+  prefix: string
+): Promise<string[]> {
+  const keys: string[] = [];
+  let continuationToken: string | undefined;
+  const searchPrefix = `${prefix}/`;
+  do {
+    const resp = await awsClients.s3.send(
+      new ListObjectsV2Command({
+        Bucket: bucket,
+        Prefix: searchPrefix,
+        ...(continuationToken && { ContinuationToken: continuationToken }),
+      })
+    );
+    for (const obj of resp.Contents ?? []) {
+      const key = obj.Key;
+      if (typeof key === 'string' && key.endsWith('/state.json')) {
+        keys.push(key);
+      }
+    }
+    continuationToken = resp.NextContinuationToken;
+  } while (continuationToken);
+  return keys;
+}
+
+/**
+ * Read one of the discovered state.json keys and pluck its schema version.
+ * Returns `'unknown'` when no state files exist or parsing fails — we don't
+ * want a cosmetic command to crash on an unexpected payload.
+ */
+async function readSchemaVersion(
+  awsClients: AwsClients,
+  bucket: string,
+  keys: string[]
+): Promise<number | 'unknown'> {
+  if (keys.length === 0) return 'unknown';
+  try {
+    const resp = await awsClients.s3.send(new GetObjectCommand({ Bucket: bucket, Key: keys[0]! }));
+    if (!resp.Body) return 'unknown';
+    const body = await resp.Body.transformToString();
+    const parsed = JSON.parse(body) as Partial<StackState>;
+    return typeof parsed.version === 'number' ? parsed.version : 'unknown';
+  } catch {
+    return 'unknown';
+  }
+}
+
+/**
+ * Shape of `cdkd state info --json` output. Documented as a stable contract
+ * in the plan; downstream tooling may parse it.
+ */
+interface StateInfoJson {
+  bucket: string;
+  region: string | null;
+  regionSource: 'flag' | 'auto-detected' | 'unknown';
+  bucketSource: StateBucketSource;
+  schemaVersion: number | 'unknown';
+  stackCount: number;
+}
+
+/**
+ * `cdkd state info` command implementation.
+ *
+ * Prints the state-bucket information that used to appear as a banner on
+ * every command. Removed from default output (PR 7) because the bucket name
+ * leaks the AWS account id into screenshots and CI logs; surface it
+ * explicitly here when the user actually wants to know.
+ *
+ * Output shows: bucket name, region (auto-detected via `GetBucketLocation`),
+ * the source that resolved the bucket (cli flag / env / cdk.json / default),
+ * the state schema version (read from the first state file, or `unknown`
+ * when the bucket is empty), and the total stack count (counts state files
+ * at both `<prefix>/<stackName>/state.json` and
+ * `<prefix>/<stackName>/<region>/state.json` so the result is correct
+ * before and after PR 1's region-aware layout lands).
+ *
+ * `--json` emits the {@link StateInfoJson} shape for tooling.
+ */
+async function stateInfoCommand(options: {
+  json: boolean;
+  stateBucket?: string;
+  statePrefix: string;
+  region?: string;
+  profile?: string;
+  verbose: boolean;
+}): Promise<void> {
+  const logger = getLogger();
+  if (options.verbose) logger.setLevel('debug');
+
+  const awsClients = new AwsClients({
+    ...(options.region && { region: options.region }),
+    ...(options.profile && { profile: options.profile }),
+  });
+  setAwsClients(awsClients);
+
+  try {
+    const region = options.region || process.env['AWS_REGION'] || 'us-east-1';
+    const resolved = await resolveStateBucketWithDefaultAndSource(options.stateBucket, region);
+    const bucket = resolved.bucket;
+    const prefix = options.statePrefix;
+
+    const stateBackend = new S3StateBackend(awsClients.s3, { bucket, prefix });
+    await stateBackend.verifyBucketExists();
+
+    const detectedRegion = await detectBucketRegion(awsClients, bucket);
+    const stateFileKeys = await listStateFileKeys(awsClients, bucket, prefix);
+    const schemaVersion = await readSchemaVersion(awsClients, bucket, stateFileKeys);
+
+    if (options.json) {
+      const json: StateInfoJson = {
+        bucket,
+        region: detectedRegion ?? null,
+        regionSource: detectedRegion ? 'auto-detected' : 'unknown',
+        bucketSource: resolved.source,
+        schemaVersion,
+        stackCount: stateFileKeys.length,
+      };
+      process.stdout.write(`${JSON.stringify(json, null, 2)}\n`);
+      return;
+    }
+
+    const lines: string[] = [];
+    lines.push(`State bucket:    ${bucket}`);
+    if (detectedRegion) {
+      lines.push(`Region:          ${detectedRegion} (auto-detected via GetBucketLocation)`);
+    } else {
+      lines.push('Region:          unknown (GetBucketLocation failed or denied)');
+    }
+    lines.push(`Source:          ${formatBucketSource(resolved.source)}`);
+    lines.push(`Schema version:  ${schemaVersion}`);
+    lines.push(`Stacks:          ${stateFileKeys.length}`);
+    process.stdout.write(`${lines.join('\n')}\n`);
+  } finally {
+    awsClients.destroy();
+  }
+}
+
+/**
+ * Create the `state info` subcommand.
+ */
+function createStateInfoCommand(): Command {
+  const cmd = new Command('info')
+    .description(
+      'Show cdkd state bucket info (bucket name, region, source, schema version, stack count)'
+    )
+    .option('--json', 'Output as JSON', false)
+    .action(withErrorHandling(stateInfoCommand));
+
+  [...commonOptions, ...stateOptions].forEach((opt) => cmd.addOption(opt));
+
+  return cmd;
+}
+
+/**
  * Create the `state` parent command.
  *
  * Subcommands:
+ * - `state info` — show bucket name, region, source, schema version, stack count
  * - `state list` (alias `ls`) — list stacks in the state bucket
  * - `state resources <stack>` — list resources of one stack
  * - `state show <stack>` — full state record (metadata, outputs, resources)
@@ -998,6 +1221,7 @@ function createStateDestroyCommand(): Command {
  */
 export function createStateCommand(): Command {
   const cmd = new Command('state').description('Manage cdkd state stored in S3');
+  cmd.addCommand(createStateInfoCommand());
   cmd.addCommand(createStateListCommand());
   cmd.addCommand(createStateResourcesCommand());
   cmd.addCommand(createStateShowCommand());

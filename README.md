@@ -428,6 +428,13 @@ cdkd destroy --all --force
 # Force-unlock a stale lock from interrupted deploy
 cdkd force-unlock MyStack
 
+# Inspect state-bucket info on demand (bucket name, region, source, schema version, stack count).
+# Routine commands (deploy / destroy / etc.) no longer print the bucket banner by default —
+# pass --verbose to surface it in their debug logs, or use this subcommand for an explicit answer.
+cdkd state info
+cdkd state info --json        # JSON output for tooling
+cdkd state info --state-bucket my-bucket  # explicit bucket; reports Source: --state-bucket flag
+
 # List stacks registered in the cdkd state bucket
 cdkd state list
 cdkd state ls --long          # include resource count, last-modified, lock status

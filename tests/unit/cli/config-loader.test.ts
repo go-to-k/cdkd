@@ -28,6 +28,7 @@ import {
   loadUserCdkJson,
   resolveApp,
   resolveStateBucket,
+  resolveStateBucketWithSource,
   getDefaultStateBucketName,
   getLegacyStateBucketName,
 } from '../../../src/cli/config-loader.js';
@@ -241,6 +242,55 @@ describe('config-loader', () => {
       const result = resolveStateBucket();
 
       expect(result).toBeUndefined();
+    });
+  });
+
+  describe('resolveStateBucketWithSource', () => {
+    it('reports cli-flag source when CLI value is provided', () => {
+      const result = resolveStateBucketWithSource('my-cli-bucket');
+
+      expect(result).toEqual({ bucket: 'my-cli-bucket', source: 'cli-flag' });
+    });
+
+    it('reports env source when CDKD_STATE_BUCKET is set', () => {
+      process.env['CDKD_STATE_BUCKET'] = 'my-env-bucket';
+
+      const result = resolveStateBucketWithSource();
+
+      expect(result).toEqual({ bucket: 'my-env-bucket', source: 'env' });
+    });
+
+    it('reports cdk.json source when context provides the bucket', () => {
+      vi.mocked(existsSync).mockReturnValue(true);
+      vi.mocked(readFileSync).mockReturnValue(
+        JSON.stringify({
+          context: { cdkd: { stateBucket: 'my-cdk-json-bucket' } },
+        })
+      );
+
+      const result = resolveStateBucketWithSource();
+
+      expect(result).toEqual({ bucket: 'my-cdk-json-bucket', source: 'cdk.json' });
+    });
+
+    it('returns undefined when no source provides a value', () => {
+      vi.mocked(existsSync).mockReturnValue(false);
+
+      const result = resolveStateBucketWithSource();
+
+      expect(result).toBeUndefined();
+    });
+
+    it('prioritizes cli-flag over env and cdk.json', () => {
+      process.env['CDKD_STATE_BUCKET'] = 'env-bucket';
+      vi.mocked(existsSync).mockReturnValue(true);
+      vi.mocked(readFileSync).mockReturnValue(
+        JSON.stringify({ context: { cdkd: { stateBucket: 'cdk-json' } } })
+      );
+
+      const result = resolveStateBucketWithSource('cli-bucket');
+
+      expect(result).toEqual({ bucket: 'cli-bucket', source: 'cli-flag' });
     });
   });
 
