@@ -101,6 +101,38 @@ async function runStateList(args: string[]): Promise<string> {
   return cap.output.join('');
 }
 
+/**
+ * Same as runStateList but also returns captured stderr. Used by the
+ * deprecation-warning test below. Uses the same direct-replacement
+ * technique as captureStdout because vi.spyOn on process.stderr.write
+ * does not always intercept under vitest's output capture.
+ */
+async function runStateListWithStderr(args: string[]): Promise<{
+  stdout: string;
+  stderr: string;
+}> {
+  const cap = captureStdout();
+  const errOutput: string[] = [];
+  const originalErr = process.stderr.write.bind(process.stderr);
+  process.stderr.write = ((chunk: string | Uint8Array): boolean => {
+    errOutput.push(typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString('utf-8'));
+    return true;
+  }) as typeof process.stderr.write;
+  try {
+    const stateCmd = createStateCommand();
+    stateCmd.exitOverride();
+    stateCmd.commands.forEach((sub) => sub.exitOverride());
+    await stateCmd.parseAsync(args, { from: 'user' });
+  } finally {
+    cap.restore();
+    process.stderr.write = originalErr;
+  }
+  return {
+    stdout: cap.output.join(''),
+    stderr: errOutput.join(''),
+  };
+}
+
 describe('cdkd state list', () => {
   beforeEach(() => {
     mockListStacks.mockReset();
@@ -262,5 +294,24 @@ describe('cdkd state list', () => {
     expect(mockGetState).toHaveBeenCalledWith('Two', 'us-west-2');
     expect(mockIsLocked).toHaveBeenCalledWith('One', 'us-east-1');
     expect(mockIsLocked).toHaveBeenCalledWith('Two', 'us-west-2');
+  });
+
+  it('emits a deprecation warning to stderr when --region is passed (PR 5)', async () => {
+    mockListStacks.mockResolvedValue([{ stackName: 'StackA', region: 'us-east-1' }]);
+    const { stdout, stderr } = await runStateListWithStderr([
+      'list',
+      '--region',
+      'us-west-2',
+    ]);
+    // Command still completes successfully (PR 1 added region suffix to default output).
+    expect(stdout).toBe('StackA (us-east-1)\n');
+    expect(stderr).toMatch(/--region is deprecated for this command and has no effect/);
+    expect(stderr).toMatch(/AWS_REGION/);
+  });
+
+  it('does not emit the deprecation warning when --region is omitted', async () => {
+    mockListStacks.mockResolvedValue([{ stackName: 'StackA', region: 'us-east-1' }]);
+    const { stderr } = await runStateListWithStderr(['list']);
+    expect(stderr).not.toMatch(/--region is deprecated/);
   });
 });

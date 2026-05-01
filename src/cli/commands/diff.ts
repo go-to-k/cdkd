@@ -2,10 +2,12 @@ import { Command } from 'commander';
 import {
   appOptions,
   commonOptions,
+  deprecatedRegionOption,
   stateOptions,
   stackOptions,
   contextOptions,
   parseContextOptions,
+  warnIfDeprecatedRegion,
 } from '../options.js';
 import { getLogger } from '../../utils/logger.js';
 import { withErrorHandling } from '../../utils/error-handler.js';
@@ -116,6 +118,10 @@ async function diffCommand(
   if (options.verbose) {
     logger.setLevel('debug');
   }
+
+  // PR 5: --region is deprecated on non-bootstrap commands. Warn but keep
+  // the rest of the pipeline working as before.
+  warnIfDeprecatedRegion(options);
 
   // Resolve --app from CLI, env, or cdk.json
   const app = resolveApp(options.app);
@@ -308,6 +314,10 @@ export function createDiffCommand(): Command {
   [...commonOptions, ...appOptions, ...stateOptions, ...stackOptions, ...contextOptions].forEach(
     (opt) => cmd.addOption(opt)
   );
+
+  // --region is deprecated for diff (PR 5). Accepted for backward
+  // compatibility; warning emitted at runtime via warnIfDeprecatedRegion.
+  cmd.addOption(deprecatedRegionOption);
 
   return cmd;
 }

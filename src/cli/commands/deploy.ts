@@ -2,11 +2,13 @@ import { Command } from 'commander';
 import {
   appOptions,
   commonOptions,
+  deprecatedRegionOption,
   stateOptions,
   stackOptions,
   deployOptions,
   contextOptions,
   parseContextOptions,
+  warnIfDeprecatedRegion,
 } from '../options.js';
 import { getLogger } from '../../utils/logger.js';
 import { withErrorHandling } from '../../utils/error-handler.js';
@@ -60,6 +62,10 @@ async function deployCommand(
     // interleave too aggressively with the live area's in-flight task lines.
     process.env['CDKD_NO_LIVE'] = '1';
   }
+
+  // PR 5: --region is deprecated on non-bootstrap commands. Warn but keep
+  // the rest of the pipeline working as before.
+  warnIfDeprecatedRegion(options);
 
   // Skip waiting for async resources (CloudFront, RDS, ElastiCache, etc.)
   if (!options.wait) {
@@ -373,6 +379,10 @@ export function createDeployCommand(): Command {
     ...deployOptions,
     ...contextOptions,
   ].forEach((opt) => cmd.addOption(opt));
+
+  // --region is deprecated for deploy (PR 5). Accepted for backward
+  // compatibility; warning emitted at runtime via warnIfDeprecatedRegion.
+  cmd.addOption(deprecatedRegionOption);
 
   return cmd;
 }

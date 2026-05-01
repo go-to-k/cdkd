@@ -1,7 +1,14 @@
 import { Command } from 'commander';
 import { writeFileSync } from 'fs';
 import { join } from 'path';
-import { appOptions, commonOptions, contextOptions, parseContextOptions } from '../options.js';
+import {
+  appOptions,
+  commonOptions,
+  contextOptions,
+  deprecatedRegionOption,
+  parseContextOptions,
+  warnIfDeprecatedRegion,
+} from '../options.js';
 import { getLogger } from '../../utils/logger.js';
 import { withErrorHandling } from '../../utils/error-handler.js';
 import { Synthesizer, type SynthesisOptions } from '../../synthesis/synthesizer.js';
@@ -25,6 +32,10 @@ async function synthCommand(options: {
   if (options.verbose) {
     logger.setLevel('debug');
   }
+
+  // PR 5: --region is deprecated on non-bootstrap commands. Warn but keep
+  // the rest of the pipeline working as before.
+  warnIfDeprecatedRegion(options);
 
   // Resolve --app from CLI, env, or cdk.json
   const app = resolveApp(options.app);
@@ -93,6 +104,10 @@ export function createSynthCommand(): Command {
 
   // Add options
   [...commonOptions, ...appOptions, ...contextOptions].forEach((opt) => cmd.addOption(opt));
+
+  // --region is deprecated for synth (PR 5). Accepted for backward
+  // compatibility; warning emitted at runtime via warnIfDeprecatedRegion.
+  cmd.addOption(deprecatedRegionOption);
 
   return cmd;
 }

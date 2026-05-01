@@ -1,6 +1,11 @@
 import * as readline from 'node:readline/promises';
 import { Command, Option } from 'commander';
-import { commonOptions, stateOptions } from '../options.js';
+import {
+  commonOptions,
+  deprecatedRegionOption,
+  stateOptions,
+  warnIfDeprecatedRegion,
+} from '../options.js';
 import { getLogger } from '../../utils/logger.js';
 import { withErrorHandling } from '../../utils/error-handler.js';
 import { S3StateBackend, type StackStateRef } from '../../state/s3-state-backend.js';
@@ -105,6 +110,10 @@ async function setupStateBackend(options: {
   prefix: string;
   dispose: () => void;
 }> {
+  // PR 5: --region is deprecated on every state subcommand. Warn here so
+  // the four subcommands inherit the warning via this shared bootstrap.
+  warnIfDeprecatedRegion(options);
+
   const awsClients = new AwsClients({
     ...(options.region && { region: options.region }),
     ...(options.profile && { profile: options.profile }),
@@ -271,6 +280,11 @@ function createStateListCommand(): Command {
     .action(withErrorHandling(stateListCommand));
 
   [...commonOptions, ...stateOptions].forEach((opt) => cmd.addOption(opt));
+
+  // --region is deprecated for state subcommands (PR 5). Accepted for
+  // backward compatibility; warning emitted at runtime via
+  // warnIfDeprecatedRegion (called from setupStateBackend).
+  cmd.addOption(deprecatedRegionOption);
 
   return cmd;
 }
@@ -443,6 +457,11 @@ function createStateResourcesCommand(): Command {
 
   [...commonOptions, ...stateOptions].forEach((opt) => cmd.addOption(opt));
 
+  // --region is deprecated for state subcommands (PR 5). Accepted for
+  // backward compatibility; warning emitted at runtime via
+  // warnIfDeprecatedRegion (called from setupStateBackend).
+  cmd.addOption(deprecatedRegionOption);
+
   return cmd;
 }
 
@@ -577,6 +596,11 @@ function createStateShowCommand(): Command {
     .action(withErrorHandling(stateShowCommand));
 
   [...commonOptions, ...stateOptions].forEach((opt) => cmd.addOption(opt));
+
+  // --region is deprecated for state subcommands (PR 5). Accepted for
+  // backward compatibility; warning emitted at runtime via
+  // warnIfDeprecatedRegion (called from setupStateBackend).
+  cmd.addOption(deprecatedRegionOption);
 
   return cmd;
 }
@@ -730,6 +754,11 @@ function createStateRmCommand(): Command {
     .action(withErrorHandling(stateRmCommand));
 
   [...commonOptions, ...stateOptions].forEach((opt) => cmd.addOption(opt));
+
+  // --region is deprecated for state subcommands (PR 5). Accepted for
+  // backward compatibility; warning emitted at runtime via
+  // warnIfDeprecatedRegion (called from setupStateBackend).
+  cmd.addOption(deprecatedRegionOption);
 
   return cmd;
 }

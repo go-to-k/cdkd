@@ -407,7 +407,6 @@ cdkd deploy -c env=staging -c featureFlag=true
 cdkd deploy MyStack \
   --app "npx ts-node app.ts" \
   --state-bucket my-cdkd-state \
-  --region us-east-1 \
   --verbose
 
 # Show diff (what would change)
