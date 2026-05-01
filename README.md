@@ -428,6 +428,15 @@ cdkd destroy --all --force
 # Force-unlock a stale lock from interrupted deploy
 cdkd force-unlock MyStack
 
+# Adopt already-deployed AWS resources into cdkd state.
+# Reads the CDK app to find logical IDs, types, and dependencies; uses the
+# `aws:cdk:path` tag (or explicit overrides) to find each resource in AWS.
+cdkd import MyStack --app "npx ts-node app.ts" --dry-run            # preview
+cdkd import MyStack --app "npx ts-node app.ts" --yes                # auto-import via tags
+cdkd import MyStack --resource MyBucket=my-bucket-name --yes        # explicit override (repeatable)
+cdkd import MyStack --resource-mapping mapping.json --yes           # CDK CLI mapping-file compat
+cdkd import MyStack --force                                         # overwrite existing state
+
 # Inspect state-bucket info on demand (bucket name, region, source, schema version, stack count).
 # Routine commands (deploy / destroy / etc.) no longer print the bucket banner by default —
 # pass --verbose to surface it in their debug logs, or use this subcommand for an explicit answer.

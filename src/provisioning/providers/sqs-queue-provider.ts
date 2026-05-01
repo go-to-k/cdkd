@@ -3,6 +3,9 @@ import {
   CreateQueueCommand,
   DeleteQueueCommand,
   GetQueueAttributesCommand,
+  GetQueueUrlCommand,
+  ListQueuesCommand,
+  ListQueueTagsCommand,
   SetQueueAttributesCommand,
   QueueDoesNotExist,
 } from '@aws-sdk/client-sqs';
@@ -12,10 +15,13 @@ import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { generateResourceName } from '../resource-name.js';
+import { CDK_PATH_TAG, resolveExplicitPhysicalId } from '../import-helpers.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
   ResourceUpdateResult,
+  ResourceImportInput,
+  ResourceImportResult,
 } from '../../types/resource.js';
 
 /**
@@ -278,5 +284,66 @@ export class SQSQueueProvider implements ResourceProvider {
       this.logger.warn('Failed to construct SQS ARN from STS, using placeholder');
       return `arn:aws:sqs:unknown:unknown:${queueName}`;
     }
+  }
+
+  /**
+   * Adopt an existing SQS queue into cdkd state.
+   *
+   * SQS physical IDs are queue URLs (`https://sqs.us-east-1.amazonaws.com/<account>/<name>`).
+   *
+   * Lookup order:
+   *  1. `--resource` override (URL) → verify via `GetQueueAttributes`.
+   *  2. `Properties.QueueName` → `GetQueueUrl` for direct lookup.
+   *  3. `aws:cdk:path` tag match via `ListQueues` + `ListQueueTags`.
+   */
+  async import(input: ResourceImportInput): Promise<ResourceImportResult | null> {
+    if (input.knownPhysicalId) {
+      try {
+        await this.sqsClient.send(
+          new GetQueueAttributesCommand({
+            QueueUrl: input.knownPhysicalId,
+            AttributeNames: ['QueueArn'],
+          })
+        );
+        return { physicalId: input.knownPhysicalId, attributes: {} };
+      } catch (err) {
+        if (err instanceof QueueDoesNotExist) return null;
+        throw err;
+      }
+    }
+
+    const explicitName = resolveExplicitPhysicalId(input, 'QueueName');
+    if (explicitName && !input.knownPhysicalId) {
+      try {
+        const resp = await this.sqsClient.send(new GetQueueUrlCommand({ QueueName: explicitName }));
+        if (resp.QueueUrl) return { physicalId: resp.QueueUrl, attributes: {} };
+        return null;
+      } catch (err) {
+        if (err instanceof QueueDoesNotExist) return null;
+        throw err;
+      }
+    }
+
+    if (!input.cdkPath) return null;
+
+    let nextToken: string | undefined;
+    do {
+      const list = await this.sqsClient.send(
+        new ListQueuesCommand({ ...(nextToken && { NextToken: nextToken }) })
+      );
+      for (const url of list.QueueUrls ?? []) {
+        try {
+          const tagsResp = await this.sqsClient.send(new ListQueueTagsCommand({ QueueUrl: url }));
+          if (tagsResp.Tags?.[CDK_PATH_TAG] === input.cdkPath) {
+            return { physicalId: url, attributes: {} };
+          }
+        } catch (err) {
+          if (err instanceof QueueDoesNotExist) continue;
+          throw err;
+        }
+      }
+      nextToken = list.NextToken;
+    } while (nextToken);
+    return null;
   }
 }

@@ -17,6 +17,8 @@ import {
   UntagRoleCommand,
   PutRolePermissionsBoundaryCommand,
   DeleteRolePermissionsBoundaryCommand,
+  ListRolesCommand,
+  ListRoleTagsCommand,
   NoSuchEntityException,
 } from '@aws-sdk/client-iam';
 import { getLogger } from '../../utils/logger.js';
@@ -24,10 +26,13 @@ import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { generateResourceName } from '../resource-name.js';
+import { matchesCdkPath, resolveExplicitPhysicalId } from '../import-helpers.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
   ResourceUpdateResult,
+  ResourceImportInput,
+  ResourceImportResult,
 } from '../../types/resource.js';
 
 /**
@@ -697,5 +702,56 @@ export class IAMRoleProvider implements ResourceProvider {
       );
       this.logger.debug(`Added/updated ${tagsToAdd.length} tags on role ${roleName}`);
     }
+  }
+
+  /**
+   * Adopt an existing IAM role into cdkd state.
+   *
+   * Lookup order:
+   *  1. `--resource` override or `Properties.RoleName` → use directly,
+   *     verify via `GetRole`.
+   *  2. `ListRoles` + `ListRoleTags`, match `aws:cdk:path` tag.
+   *
+   * `ListRoles` is paginated and IAM is global (no region scoping), so this
+   * walks every role in the account once. Acceptable for the cardinalities
+   * we expect (typically <100 roles per account); larger accounts may want
+   * to provide `--resource` overrides instead.
+   */
+  async import(input: ResourceImportInput): Promise<ResourceImportResult | null> {
+    const explicit = resolveExplicitPhysicalId(input, 'RoleName');
+    if (explicit) {
+      try {
+        await this.iamClient.send(new GetRoleCommand({ RoleName: explicit }));
+        return { physicalId: explicit, attributes: {} };
+      } catch (err) {
+        if (err instanceof NoSuchEntityException) return null;
+        throw err;
+      }
+    }
+
+    if (!input.cdkPath) return null;
+
+    let marker: string | undefined;
+    do {
+      const list = await this.iamClient.send(
+        new ListRolesCommand({ ...(marker && { Marker: marker }) })
+      );
+      for (const role of list.Roles ?? []) {
+        if (!role.RoleName) continue;
+        try {
+          const tags = await this.iamClient.send(
+            new ListRoleTagsCommand({ RoleName: role.RoleName })
+          );
+          if (matchesCdkPath(tags.Tags, input.cdkPath)) {
+            return { physicalId: role.RoleName, attributes: {} };
+          }
+        } catch (err) {
+          if (err instanceof NoSuchEntityException) continue;
+          throw err;
+        }
+      }
+      marker = list.IsTruncated ? list.Marker : undefined;
+    } while (marker);
+    return null;
   }
 }

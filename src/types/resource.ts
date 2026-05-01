@@ -72,6 +72,63 @@ export interface ResourceUpdateResult {
 }
 
 /**
+ * Input passed to a provider's `import` method.
+ *
+ * Carries everything a provider needs to find an existing AWS resource that
+ * corresponds to a logicalId in the user's CDK template:
+ * - the logicalId itself (sometimes embedded in physical names),
+ * - the resource's CDK path (`aws:cdk:path` tag) for tag-based lookup,
+ * - the parent stack name and AWS region,
+ * - the template properties (often contain explicit names like `BucketName`
+ *   that bypass the tag lookup entirely).
+ */
+export interface ResourceImportInput {
+  /** Logical ID from the CDK template (e.g., `MyBucket`). */
+  logicalId: string;
+
+  /** CloudFormation resource type (e.g., `AWS::S3::Bucket`). */
+  resourceType: string;
+
+  /**
+   * CDK construct path that CDK encodes into the `aws:cdk:path` tag, e.g.
+   * `MyStack/MyConstruct/MyBucket`. The most reliable lookup key when present.
+   */
+  cdkPath: string;
+
+  /** Physical CloudFormation stack name (used for naming-pattern fallback). */
+  stackName: string;
+
+  /** AWS region the resource lives in. */
+  region: string;
+
+  /** Properties from the template (resolved as far as possible). */
+  properties: Record<string, unknown>;
+
+  /**
+   * Caller-supplied physical id, e.g. via `--resource MyBucket=my-bucket` or
+   * `--resource-mapping`. When set, the provider should treat it as ground
+   * truth: verify the resource exists and fetch attributes, but do NOT
+   * search. When `undefined`, the provider performs its own lookup
+   * (tag-based, name-based, etc.).
+   */
+  knownPhysicalId?: string;
+}
+
+/**
+ * Result returned by a provider's `import` method.
+ *
+ * `null` from the provider means "no matching resource found in AWS" — the
+ * caller (state-import command) marks it as skipped, not as a failure, since
+ * the user's template might reference resources that have not been deployed.
+ */
+export interface ResourceImportResult {
+  /** Physical resource ID. */
+  physicalId: string;
+  /** Resource attributes for `Fn::GetAtt` resolution (same shape as `create` returns). */
+  attributes?: Record<string, unknown>;
+}
+
+/**
  * Context passed to a provider's `delete` method.
  *
  * Re-exported from `src/provisioning/region-check.ts` so that callers
@@ -178,6 +235,34 @@ export interface ResourceProvider {
    * @returns Attribute value
    */
   getAttribute?(physicalId: string, resourceType: string, attributeName: string): Promise<unknown>;
+
+  /**
+   * Find an already-deployed AWS resource matching the given logicalId from
+   * the CDK template, and return its physical id + attributes so the state
+   * file can be reconstructed.
+   *
+   * Used by `cdkd state import` to recover state after disasters (lost state
+   * file, manual deletion, drift between cdkd and AWS) and to adopt
+   * AWS-resident resources into cdkd's management.
+   *
+   * Lookup strategy is provider-specific. Recommended order:
+   *   1. If the template's `properties` carries an explicit name field
+   *      (`BucketName`, `FunctionName`, `RoleName`, etc.), look up by name —
+   *      it's exact and cheap.
+   *   2. Otherwise, walk the service's `List*` API and match against the
+   *      `aws:cdk:path` tag (every CDK-deployed resource carries one).
+   *   3. Last resort: stack-name prefix matching on physical names. Risky;
+   *      providers may choose to skip rather than guess.
+   *
+   * Return `null` if no matching resource is found — the caller treats this
+   * as "skipped" (not an error). Throw on AWS errors so the caller can
+   * surface them.
+   *
+   * Optional: providers without an `import` implementation are reported as
+   * unsupported by `cdkd state import` and the corresponding logical IDs are
+   * skipped with a warning.
+   */
+  import?(input: ResourceImportInput): Promise<ResourceImportResult | null>;
 }
 
 /**

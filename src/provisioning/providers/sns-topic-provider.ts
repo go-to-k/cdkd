@@ -2,6 +2,9 @@ import {
   SNSClient,
   CreateTopicCommand,
   DeleteTopicCommand,
+  GetTopicAttributesCommand,
+  ListTopicsCommand,
+  ListTagsForResourceCommand,
   SetTopicAttributesCommand,
   TagResourceCommand,
   UntagResourceCommand,
@@ -14,10 +17,13 @@ import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { generateResourceName } from '../resource-name.js';
+import { matchesCdkPath, resolveExplicitPhysicalId } from '../import-helpers.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
   ResourceUpdateResult,
+  ResourceImportInput,
+  ResourceImportResult,
 } from '../../types/resource.js';
 
 /**
@@ -379,5 +385,70 @@ export class SNSTopicProvider implements ResourceProvider {
         cause
       );
     }
+  }
+
+  /**
+   * Adopt an existing SNS topic into cdkd state.
+   *
+   * SNS physical IDs are full ARNs (`arn:aws:sns:...:TopicName`). The
+   * `--resource` override is expected to receive an ARN; bare topic names
+   * trigger a `ListTopics` walk that resolves to the ARN.
+   *
+   * Lookup order:
+   *  1. `--resource` override → trust as ARN, verify via `GetTopicAttributes`.
+   *  2. `Properties.TopicName` → `ListTopics` to find matching ARN.
+   *  3. `aws:cdk:path` tag match via `ListTopics` + `ListTagsForResource`.
+   */
+  async import(input: ResourceImportInput): Promise<ResourceImportResult | null> {
+    if (input.knownPhysicalId) {
+      try {
+        await this.snsClient.send(
+          new GetTopicAttributesCommand({ TopicArn: input.knownPhysicalId })
+        );
+        return { physicalId: input.knownPhysicalId, attributes: {} };
+      } catch (err) {
+        if (err instanceof NotFoundException) return null;
+        throw err;
+      }
+    }
+
+    const desiredName =
+      typeof input.properties?.['TopicName'] === 'string'
+        ? input.properties['TopicName']
+        : undefined;
+
+    let nextToken: string | undefined;
+    do {
+      const list = await this.snsClient.send(
+        new ListTopicsCommand({ ...(nextToken && { NextToken: nextToken }) })
+      );
+      for (const t of list.Topics ?? []) {
+        if (!t.TopicArn) continue;
+        // ARN tail is the topic name: arn:aws:sns:...:NAME
+        const arnTail = t.TopicArn.substring(t.TopicArn.lastIndexOf(':') + 1);
+        if (desiredName && arnTail === desiredName) {
+          return { physicalId: t.TopicArn, attributes: {} };
+        }
+        if (input.cdkPath) {
+          try {
+            const tagsResp = await this.snsClient.send(
+              new ListTagsForResourceCommand({ ResourceArn: t.TopicArn })
+            );
+            if (matchesCdkPath(tagsResp.Tags, input.cdkPath)) {
+              return { physicalId: t.TopicArn, attributes: {} };
+            }
+          } catch (err) {
+            if (err instanceof NotFoundException) continue;
+            throw err;
+          }
+        }
+      }
+      nextToken = list.NextToken;
+    } while (nextToken);
+
+    // resolveExplicitPhysicalId would have returned an explicit value above
+    // — this branch is reachable only when nothing matched.
+    void resolveExplicitPhysicalId;
+    return null;
   }
 }

@@ -1,6 +1,10 @@
 import {
   KMSClient,
   CreateKeyCommand,
+  DescribeKeyCommand,
+  ListAliasesCommand,
+  ListKeysCommand,
+  ListResourceTagsCommand,
   ScheduleKeyDeletionCommand,
   CreateAliasCommand,
   DeleteAliasCommand,
@@ -21,10 +25,13 @@ import {
 import { getLogger } from '../../utils/logger.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
+import { CDK_PATH_TAG } from '../import-helpers.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
   ResourceUpdateResult,
+  ResourceImportInput,
+  ResourceImportResult,
 } from '../../types/resource.js';
 
 /**
@@ -515,5 +522,84 @@ export class KMSProvider implements ResourceProvider {
         cause
       );
     }
+  }
+
+  /**
+   * Adopt an existing KMS key or alias into cdkd state.
+   *
+   * KMS keys have no `Properties.KeyName` field — physical IDs are
+   * AWS-generated UUIDs. So:
+   *  - For `AWS::KMS::Key`: `--resource MyKey=<keyId>` is the only explicit
+   *    path; auto-lookup walks `ListKeys` + `ListResourceTags` matching
+   *    `aws:cdk:path`.
+   *  - For `AWS::KMS::Alias`: `Properties.AliasName` is explicit and reliable.
+   */
+  async import(input: ResourceImportInput): Promise<ResourceImportResult | null> {
+    if (input.resourceType === 'AWS::KMS::Alias') {
+      const aliasName =
+        input.knownPhysicalId ??
+        (typeof input.properties?.['AliasName'] === 'string'
+          ? input.properties['AliasName']
+          : undefined);
+      if (!aliasName) return null;
+      try {
+        // ListAliases doesn't support filtering by name; walk to verify.
+        let marker: string | undefined;
+        do {
+          const list = await this.getClient().send(
+            new ListAliasesCommand({ ...(marker && { Marker: marker }) })
+          );
+          const found = list.Aliases?.find(
+            (a: { AliasName?: string | undefined }) => a.AliasName === aliasName
+          );
+          if (found) return { physicalId: aliasName, attributes: {} };
+          marker = list.NextMarker;
+        } while (marker);
+        return null;
+      } catch (err) {
+        if (err instanceof NotFoundException) return null;
+        throw err;
+      }
+    }
+
+    // AWS::KMS::Key
+    if (input.knownPhysicalId) {
+      try {
+        await this.getClient().send(new DescribeKeyCommand({ KeyId: input.knownPhysicalId }));
+        return { physicalId: input.knownPhysicalId, attributes: {} };
+      } catch (err) {
+        if (err instanceof NotFoundException) return null;
+        throw err;
+      }
+    }
+
+    if (!input.cdkPath) return null;
+
+    let marker: string | undefined;
+    do {
+      const list = await this.getClient().send(
+        new ListKeysCommand({ ...(marker && { Marker: marker }) })
+      );
+      for (const key of list.Keys ?? []) {
+        if (!key.KeyId) continue;
+        try {
+          const tagsResp = await this.getClient().send(
+            new ListResourceTagsCommand({ KeyId: key.KeyId })
+          );
+          for (const tag of tagsResp.Tags ?? []) {
+            if (tag.TagKey === CDK_PATH_TAG && tag.TagValue === input.cdkPath) {
+              return { physicalId: key.KeyId, attributes: {} };
+            }
+          }
+        } catch (err) {
+          // AWS-managed keys lack ListResourceTags permission. Skip silently.
+          const name = (err as { name?: string }).name;
+          if (name === 'AccessDeniedException' || err instanceof NotFoundException) continue;
+          throw err;
+        }
+      }
+      marker = list.NextMarker;
+    } while (marker);
+    return null;
   }
 }
