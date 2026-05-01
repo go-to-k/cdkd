@@ -37,6 +37,8 @@ import {
   CreateProjectCommand,
   DeleteProjectCommand,
   UpdateProjectCommand,
+  BatchGetProjectsCommand,
+  ListProjectsCommand,
   ResourceNotFoundException,
 } from '@aws-sdk/client-codebuild';
 
@@ -182,6 +184,79 @@ describe('CodeBuildProvider', () => {
       await expect(
         provider.delete('MyProject', 'my-project', 'AWS::CodeBuild::Project')
       ).resolves.not.toThrow();
+    });
+  });
+
+  // ─── import ─────────────────────────────────────────────────────────
+
+  describe('import', () => {
+    function makeInput(overrides: Partial<{ knownPhysicalId: string; cdkPath: string; properties: Record<string, unknown> }> = {}) {
+      return {
+        logicalId: 'MyProject',
+        resourceType: 'AWS::CodeBuild::Project',
+        cdkPath: 'MyStack/MyProject/Resource',
+        stackName: 'MyStack',
+        region: 'us-east-1',
+        properties: {},
+        ...overrides,
+      };
+    }
+
+    it('explicit override: verifies via BatchGetProjects and returns the physicalId', async () => {
+      mockSend.mockResolvedValueOnce({
+        projects: [{ name: 'my-project', arn: 'arn:aws:codebuild:us-east-1:123456789012:project/my-project' }],
+        projectsNotFound: [],
+      });
+
+      const result = await provider.import(makeInput({ knownPhysicalId: 'my-project' }));
+
+      expect(result).toEqual({ physicalId: 'my-project', attributes: {} });
+      expect(mockSend).toHaveBeenCalledTimes(1);
+      expect(mockSend.mock.calls[0][0]).toBeInstanceOf(BatchGetProjectsCommand);
+      expect(mockSend.mock.calls[0][0].input).toEqual({ names: ['my-project'] });
+    });
+
+    it('tag-based lookup: ListProjects + BatchGetProjects matches lowercase key/value tag', async () => {
+      mockSend
+        // ListProjects
+        .mockResolvedValueOnce({ projects: ['other-project', 'my-project'] })
+        // BatchGetProjects
+        .mockResolvedValueOnce({
+          projects: [
+            {
+              name: 'other-project',
+              tags: [{ key: 'aws:cdk:path', value: 'OtherStack/Project/Resource' }],
+            },
+            {
+              name: 'my-project',
+              tags: [{ key: 'aws:cdk:path', value: 'MyStack/MyProject/Resource' }],
+            },
+          ],
+        });
+
+      const result = await provider.import(makeInput());
+
+      expect(result).toEqual({ physicalId: 'my-project', attributes: {} });
+      expect(mockSend.mock.calls[0][0]).toBeInstanceOf(ListProjectsCommand);
+      expect(mockSend.mock.calls[1][0]).toBeInstanceOf(BatchGetProjectsCommand);
+      expect(mockSend.mock.calls[1][0].input).toEqual({ names: ['other-project', 'my-project'] });
+    });
+
+    it('returns null when no project matches the cdkPath', async () => {
+      mockSend
+        .mockResolvedValueOnce({ projects: ['unrelated'] })
+        .mockResolvedValueOnce({
+          projects: [
+            {
+              name: 'unrelated',
+              tags: [{ key: 'aws:cdk:path', value: 'OtherStack/Project/Resource' }],
+            },
+          ],
+        });
+
+      const result = await provider.import(makeInput());
+
+      expect(result).toBeNull();
     });
   });
 });

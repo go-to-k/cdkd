@@ -39,6 +39,9 @@ import {
   UpdateTrailCommand,
   StartLoggingCommand,
   StopLoggingCommand,
+  GetTrailCommand,
+  ListTrailsCommand,
+  ListTagsCommand,
   TrailNotFoundException,
 } from '@aws-sdk/client-cloudtrail';
 
@@ -251,6 +254,103 @@ describe('CloudTrailProvider', () => {
           'AWS::CloudTrail::Trail'
         )
       ).resolves.not.toThrow();
+    });
+  });
+
+  // ─── import ─────────────────────────────────────────────────────────
+
+  describe('import', () => {
+    function makeInput(overrides: Partial<{ knownPhysicalId: string; cdkPath: string; properties: Record<string, unknown> }> = {}) {
+      return {
+        logicalId: 'MyTrail',
+        resourceType: 'AWS::CloudTrail::Trail',
+        cdkPath: 'MyStack/MyTrail/Resource',
+        stackName: 'MyStack',
+        region: 'us-east-1',
+        properties: {},
+        ...overrides,
+      };
+    }
+
+    it('explicit override: verifies via GetTrail and returns the physicalId', async () => {
+      mockSend.mockResolvedValueOnce({
+        Trail: {
+          Name: 'my-trail',
+          TrailARN: 'arn:aws:cloudtrail:us-east-1:123456789012:trail/my-trail',
+        },
+      });
+
+      const result = await provider.import(makeInput({ knownPhysicalId: 'my-trail' }));
+
+      expect(result).toEqual({ physicalId: 'my-trail', attributes: {} });
+      expect(mockSend).toHaveBeenCalledTimes(1);
+      expect(mockSend.mock.calls[0][0]).toBeInstanceOf(GetTrailCommand);
+      expect(mockSend.mock.calls[0][0].input).toEqual({ Name: 'my-trail' });
+    });
+
+    it('tag-based lookup: ListTrails + ListTags matches aws:cdk:path', async () => {
+      mockSend
+        // ListTrails
+        .mockResolvedValueOnce({
+          Trails: [
+            {
+              Name: 'other-trail',
+              TrailARN: 'arn:aws:cloudtrail:us-east-1:123456789012:trail/other-trail',
+            },
+            {
+              Name: 'my-trail',
+              TrailARN: 'arn:aws:cloudtrail:us-east-1:123456789012:trail/my-trail',
+            },
+          ],
+        })
+        // ListTags(other-trail)
+        .mockResolvedValueOnce({
+          ResourceTagList: [
+            {
+              ResourceId: 'arn:aws:cloudtrail:us-east-1:123456789012:trail/other-trail',
+              TagsList: [{ Key: 'aws:cdk:path', Value: 'OtherStack/Trail/Resource' }],
+            },
+          ],
+        })
+        // ListTags(my-trail)
+        .mockResolvedValueOnce({
+          ResourceTagList: [
+            {
+              ResourceId: 'arn:aws:cloudtrail:us-east-1:123456789012:trail/my-trail',
+              TagsList: [{ Key: 'aws:cdk:path', Value: 'MyStack/MyTrail/Resource' }],
+            },
+          ],
+        });
+
+      const result = await provider.import(makeInput());
+
+      expect(result).toEqual({ physicalId: 'my-trail', attributes: {} });
+      expect(mockSend.mock.calls[0][0]).toBeInstanceOf(ListTrailsCommand);
+      expect(mockSend.mock.calls[1][0]).toBeInstanceOf(ListTagsCommand);
+    });
+
+    it('returns null when no trail matches the cdkPath', async () => {
+      mockSend
+        .mockResolvedValueOnce({
+          Trails: [
+            {
+              Name: 'unrelated',
+              TrailARN: 'arn:aws:cloudtrail:us-east-1:123456789012:trail/unrelated',
+            },
+          ],
+        })
+        .mockResolvedValueOnce({
+          ResourceTagList: [
+            {
+              ResourceId: 'arn:aws:cloudtrail:us-east-1:123456789012:trail/unrelated',
+              TagsList: [{ Key: 'aws:cdk:path', Value: 'OtherStack/Trail/Resource' }],
+            },
+          ],
+        });
+
+      const result = await provider.import(makeInput());
+
+      expect(result).toBeNull();
     });
   });
 });

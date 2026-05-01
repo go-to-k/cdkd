@@ -668,7 +668,7 @@ API fallback handles overrides), but providers without it can only be
 adopted via `--resource <id>=<physicalId>` and won't participate in
 tag-based auto-lookup.
 
-The method follows a single shape across the 17+ providers that have
+The method follows a single shape across the 20+ providers that have
 shipped it. Pick the variant that matches your service's tag API:
 
 ```typescript
@@ -725,8 +725,8 @@ Reference implementations to copy from:
 - **Tag map (`Record<string,string>`)**: `lambda-function-provider.ts`, `sqs-queue-provider.ts`
 - **No name field, ARN required for tag lookup**: `cloudfront-distribution-provider.ts`, `cognito-provider.ts`
 - **Filter-based one-shot lookup (no per-item ListTags)**: `ec2-provider.ts` uses `Filters: [{Name: 'tag:aws:cdk:path', Values: [path]}]` directly on `Describe*`
-- **Lowercase key/value tag shape**: `ecs-provider.ts` (one of the few services that uses `key`/`value`)
-- **Explicit-override only** (auto lookup is impractical): `apigateway-provider.ts` for sub-resources scoped under a parent RestApi
+- **Lowercase key/value tag shape**: `ecs-provider.ts`, `codebuild-provider.ts` (the few services that use `key`/`value` instead of `Key`/`Value`)
+- **Explicit-override only** (auto lookup is impractical): `apigateway-provider.ts`, `apigatewayv2-provider.ts`, `appsync-provider.ts` for sub-resources scoped under a parent RestApi / HttpApi / GraphqlApi
 
 Notes:
 

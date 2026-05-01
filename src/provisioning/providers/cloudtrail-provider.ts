@@ -7,6 +7,9 @@ import {
   StopLoggingCommand,
   PutEventSelectorsCommand,
   PutInsightSelectorsCommand,
+  GetTrailCommand,
+  ListTrailsCommand,
+  ListTagsCommand,
   TrailNotFoundException,
   type EventSelector,
   type InsightSelector,
@@ -14,10 +17,13 @@ import {
 import { getLogger } from '../../utils/logger.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
+import { matchesCdkPath, resolveExplicitPhysicalId } from '../import-helpers.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
   ResourceUpdateResult,
+  ResourceImportInput,
+  ResourceImportResult,
 } from '../../types/resource.js';
 
 /**
@@ -316,5 +322,52 @@ export class CloudTrailProvider implements ResourceProvider {
   ): Promise<unknown> {
     // Arn is stored in attributes during create
     return Promise.resolve(attributeName);
+  }
+
+  /**
+   * Adopt an existing CloudTrail trail into cdkd state.
+   *
+   * Lookup order:
+   *  1. `--resource` override or `Properties.TrailName` → verify via `GetTrail`.
+   *  2. `ListTrails` + `ListTags` (CloudTrail uses `Tag[]` arrays per ARN),
+   *     match `aws:cdk:path` tag.
+   */
+  async import(input: ResourceImportInput): Promise<ResourceImportResult | null> {
+    const explicit = resolveExplicitPhysicalId(input, 'TrailName');
+    if (explicit) {
+      try {
+        await this.getClient().send(new GetTrailCommand({ Name: explicit }));
+        return { physicalId: explicit, attributes: {} };
+      } catch (err) {
+        if (err instanceof TrailNotFoundException) return null;
+        throw err;
+      }
+    }
+
+    if (!input.cdkPath) return null;
+
+    let nextToken: string | undefined;
+    do {
+      const list = await this.getClient().send(
+        new ListTrailsCommand({ ...(nextToken && { NextToken: nextToken }) })
+      );
+      for (const trail of list.Trails ?? []) {
+        if (!trail.TrailARN || !trail.Name) continue;
+        try {
+          const tagsResp = await this.getClient().send(
+            new ListTagsCommand({ ResourceIdList: [trail.TrailARN] })
+          );
+          const list2 = tagsResp.ResourceTagList?.[0];
+          if (matchesCdkPath(list2?.TagsList, input.cdkPath)) {
+            return { physicalId: trail.Name, attributes: {} };
+          }
+        } catch (err) {
+          if (err instanceof TrailNotFoundException) continue;
+          throw err;
+        }
+      }
+      nextToken = list.NextToken;
+    } while (nextToken);
+    return null;
   }
 }
