@@ -88,34 +88,52 @@ For users who already bootstrapped under that scheme, the lookup chain in
 3. If neither exists, fail with a "run cdkd bootstrap" error pointing at
    the new name.
 
-The legacy fallback is **temporary**. A future PR will drop it together
-with shipping a `cdkd state migrate-bucket` command for users who never
-touched their state in the interim. See
+The legacy fallback is **temporary**. It will be dropped in a future
+release together with the `cdkd-state-{accountId}-{region}` legacy
+bucket name. Users who already bootstrapped under that name should
+migrate via `cdkd state migrate-bucket` (see below). See
 [`docs/plans/04-state-bucket-naming.md`](./plans/04-state-bucket-naming.md)
 and [`docs/plans/99-future-bc-removal.md`](./plans/99-future-bc-removal.md).
 
-#### Migration path
+#### Migration path: `cdkd state migrate-bucket`
 
-If you previously bootstrapped with the legacy name and want to silence
-the warning:
+To silence the legacy-bucket warning and move state onto the new
+default name:
 
-1. `cdkd bootstrap` (creates `cdkd-state-{accountId}` with the new default).
-2. Copy any existing state from the legacy bucket:
+```bash
+# Per-region: run once for each region you have a legacy bucket in.
+cdkd state migrate-bucket --region us-east-1 --dry-run   # preview
+cdkd state migrate-bucket --region us-east-1             # copy, keep source
+cdkd state migrate-bucket --region us-east-1 --remove-legacy  # copy + delete source
+```
 
-   ```bash
-   aws s3 sync \
-     s3://cdkd-state-{accountId}-{region}/ \
-     s3://cdkd-state-{accountId}/
-   ```
+Behavior:
 
-3. Delete the legacy bucket once you've verified the new one works:
+- Copies every object from `cdkd-state-{accountId}-{region}` (source) to
+  `cdkd-state-{accountId}` (destination). The destination is created on
+  first run with the same hardening as `cdkd bootstrap` (versioning,
+  AES-256, account-only access policy).
+- Refuses to start if any `**/lock.json` exists in the source bucket
+  (an in-flight `cdkd deploy` / `destroy` would race the copy).
+  `cdkd force-unlock <stack>` first if a lock is stale.
+- After copy, verifies the destination object count is at least the
+  source count before any source-bucket cleanup.
+- **Source bucket is kept by default**. Pass `--remove-legacy` to delete
+  it after a successful copy. The deletion empties every prior version
+  and delete-marker (the bucket has versioning enabled), so once
+  removed, history is gone — verify the destination first.
+- Re-running on the same region is idempotent: `CopyObject` on an
+  existing destination key is a no-op for the user.
+- Multi-region setups: invoke the command **once per region**. The
+  destination bucket is reused across runs.
 
-   ```bash
-   aws s3 rb s3://cdkd-state-{accountId}-{region} --force
-   ```
+Manual fallback (equivalent shell):
 
-A dedicated `cdkd state migrate-bucket` command will automate this in a
-future release.
+```bash
+aws s3 mb s3://cdkd-state-{accountId} --region us-east-1
+aws s3 sync s3://cdkd-state-{accountId}-us-east-1 s3://cdkd-state-{accountId}
+aws s3 rb s3://cdkd-state-{accountId}-us-east-1 --force   # only if you're sure
+```
 
 ### State Bucket Region
 
