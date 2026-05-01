@@ -362,6 +362,138 @@ describe('cdkd import', () => {
     expect(mockSaveState).not.toHaveBeenCalled();
   });
 
+  describe('selective vs auto mode (CDK CLI parity)', () => {
+    const tmpl3 = () =>
+      template({
+        MyBucket: {
+          Type: 'AWS::S3::Bucket',
+          Properties: {},
+          Metadata: { 'aws:cdk:path': 'S/MyBucket' },
+        },
+        MyFn: {
+          Type: 'AWS::Lambda::Function',
+          Properties: {},
+          Metadata: { 'aws:cdk:path': 'S/MyFn' },
+        },
+        MyTable: {
+          Type: 'AWS::DynamoDB::Table',
+          Properties: {},
+          Metadata: { 'aws:cdk:path': 'S/MyTable' },
+        },
+      });
+
+    it('selective mode: --resource imports ONLY listed resources, others go out-of-scope', async () => {
+      mockSynthesize.mockResolvedValue({ stacks: [stackInfo('S', tmpl3())] });
+      mockHasProvider.mockReturnValue(true);
+
+      const bucketImport = vi.fn(async () => ({ physicalId: 'manual-bucket', attributes: {} }));
+      const fnImport = vi.fn(async () => ({ physicalId: 'tagged-fn', attributes: {} }));
+      const tableImport = vi.fn(async () => ({ physicalId: 'tagged-table', attributes: {} }));
+      mockGetProvider.mockImplementation((t: string) => {
+        if (t === 'AWS::S3::Bucket') return { import: bucketImport };
+        if (t === 'AWS::Lambda::Function') return { import: fnImport };
+        if (t === 'AWS::DynamoDB::Table') return { import: tableImport };
+        return {};
+      });
+
+      await runImport(['import', '--app', 'x', '--resource', 'MyBucket=manual-bucket', '--yes']);
+
+      // Only MyBucket should have hit a provider — MyFn and MyTable are
+      // skipped at the dispatcher, never reaching the provider.
+      expect(bucketImport).toHaveBeenCalledTimes(1);
+      expect(fnImport).not.toHaveBeenCalled();
+      expect(tableImport).not.toHaveBeenCalled();
+
+      // State carries only MyBucket.
+      const [, , state] = mockSaveState.mock.calls[0] as unknown as [
+        string,
+        string,
+        { resources: Record<string, unknown> },
+      ];
+      expect(Object.keys(state.resources)).toEqual(['MyBucket']);
+
+      // Summary calls out the out-of-scope count.
+      const summaryCall = infoSpy.mock.calls.find((c) => String(c[0]).startsWith('Summary:'));
+      expect(String(summaryCall?.[0])).toMatch(/2 out of scope/);
+    });
+
+    it('--auto with --resource: explicit ID for listed, tag-import for the rest', async () => {
+      mockSynthesize.mockResolvedValue({ stacks: [stackInfo('S', tmpl3())] });
+      mockHasProvider.mockReturnValue(true);
+
+      const bucketImport = vi.fn(async () => ({ physicalId: 'manual-bucket', attributes: {} }));
+      const fnImport = vi.fn(async () => ({ physicalId: 'tagged-fn', attributes: {} }));
+      const tableImport = vi.fn(async () => ({ physicalId: 'tagged-table', attributes: {} }));
+      mockGetProvider.mockImplementation((t: string) => {
+        if (t === 'AWS::S3::Bucket') return { import: bucketImport };
+        if (t === 'AWS::Lambda::Function') return { import: fnImport };
+        if (t === 'AWS::DynamoDB::Table') return { import: tableImport };
+        return {};
+      });
+
+      await runImport([
+        'import',
+        '--app',
+        'x',
+        '--resource',
+        'MyBucket=manual-bucket',
+        '--auto',
+        '--yes',
+      ]);
+
+      // All three providers hit. MyBucket gets explicit knownPhysicalId; the
+      // others go through tag-based lookup with no override.
+      expect(bucketImport).toHaveBeenCalledWith(
+        expect.objectContaining({ logicalId: 'MyBucket', knownPhysicalId: 'manual-bucket' })
+      );
+      // The other two have no `knownPhysicalId` key at all (the spread
+      // omits it when no override exists) — they go through tag-based
+      // lookup. Use `not.toHaveProperty` to assert absence.
+      expect(fnImport).toHaveBeenCalledWith(expect.objectContaining({ logicalId: 'MyFn' }));
+      expect(fnImport.mock.calls[0]![0]).not.toHaveProperty('knownPhysicalId');
+      expect(tableImport).toHaveBeenCalledWith(expect.objectContaining({ logicalId: 'MyTable' }));
+      expect(tableImport.mock.calls[0]![0]).not.toHaveProperty('knownPhysicalId');
+
+      const [, , state] = mockSaveState.mock.calls[0] as unknown as [
+        string,
+        string,
+        { resources: Record<string, unknown> },
+      ];
+      expect(Object.keys(state.resources).sort()).toEqual(['MyBucket', 'MyFn', 'MyTable']);
+    });
+
+    it('no flags: auto-imports every resource via tags (cdkd default)', async () => {
+      mockSynthesize.mockResolvedValue({ stacks: [stackInfo('S', tmpl3())] });
+      mockHasProvider.mockReturnValue(true);
+
+      const bucketImport = vi.fn(async () => ({ physicalId: 'b', attributes: {} }));
+      const fnImport = vi.fn(async () => ({ physicalId: 'f', attributes: {} }));
+      const tableImport = vi.fn(async () => ({ physicalId: 't', attributes: {} }));
+      mockGetProvider.mockImplementation((t: string) => {
+        if (t === 'AWS::S3::Bucket') return { import: bucketImport };
+        if (t === 'AWS::Lambda::Function') return { import: fnImport };
+        if (t === 'AWS::DynamoDB::Table') return { import: tableImport };
+        return {};
+      });
+
+      await runImport(['import', '--app', 'x', '--yes']);
+
+      expect(bucketImport).toHaveBeenCalledTimes(1);
+      expect(fnImport).toHaveBeenCalledTimes(1);
+      expect(tableImport).toHaveBeenCalledTimes(1);
+    });
+
+    it('rejects --resource with a logical ID not in the template', async () => {
+      mockSynthesize.mockResolvedValue({ stacks: [stackInfo('S', tmpl3())] });
+      mockHasProvider.mockReturnValue(true);
+
+      await expect(
+        runImport(['import', '--app', 'x', '--resource', 'TypoLogicalId=foo', '--yes'])
+      ).rejects.toThrow();
+      expect(errorSpy.mock.calls[0]?.[0]).toMatch(/'TypoLogicalId'.*not in the synthesized template/);
+    });
+  });
+
   it('auto-selects the single stack when no positional arg is given', async () => {
     const tmpl = template({
       MyBucket: {

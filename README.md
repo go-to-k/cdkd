@@ -429,13 +429,10 @@ cdkd destroy --all --force
 cdkd force-unlock MyStack
 
 # Adopt already-deployed AWS resources into cdkd state.
-# Reads the CDK app to find logical IDs, types, and dependencies; uses the
-# `aws:cdk:path` tag (or explicit overrides) to find each resource in AWS.
-cdkd import MyStack --app "npx ts-node app.ts" --dry-run            # preview
-cdkd import MyStack --app "npx ts-node app.ts" --yes                # auto-import via tags
-cdkd import MyStack --resource MyBucket=my-bucket-name --yes        # explicit override (repeatable)
-cdkd import MyStack --resource-mapping mapping.json --yes           # CDK CLI mapping-file compat
-cdkd import MyStack --force                                         # overwrite existing state
+# See "Importing existing resources" below for the full guide (auto / selective /
+# hybrid modes, --resource overrides, --resource-mapping CDK CLI compatibility).
+cdkd import MyStack --app "npx ts-node app.ts" --dry-run
+cdkd import MyStack --app "npx ts-node app.ts" --yes
 
 # Inspect state-bucket info on demand (bucket name, region, source, schema version, stack count).
 # Routine commands (deploy / destroy / etc.) no longer print the bucket banner by default —
@@ -542,6 +539,103 @@ Built on modern AWS tooling:
 - **AWS SDK v3** - Direct resource provisioning
 - **Cloud Control API** - Fallback resource management for types without SDK Providers
 - **S3 Conditional Writes** - State locking via `If-None-Match`/`If-Match`
+
+## Importing existing resources
+
+`cdkd import` adopts AWS resources that are already deployed (e.g. via
+`cdk deploy`, manual creation, or another tool) into cdkd state, so the
+next `cdkd deploy` updates them in-place instead of trying to CREATE
+duplicates.
+
+It reads the CDK app to find logical IDs, resource types, and
+dependencies, then matches each logical ID to a real AWS resource in
+one of three modes:
+
+### Mode 1: auto (default — no flags)
+
+```bash
+cdkd import MyStack --app "npx ts-node app.ts"
+```
+
+Imports **every** resource in the synthesized template by tag. cdkd
+looks up each resource using its `aws:cdk:path` tag (which CDK
+automatically writes), so resources deployed by `cdk deploy` are found
+without any manual work. Useful for **adopting a whole stack** that was
+previously deployed by `cdk deploy`. This is cdkd's value-add over
+`cdk import` — CDK CLI does not have a tag-based bulk-import mode.
+
+### Mode 2: selective (CDK CLI parity — when explicit overrides are given)
+
+```bash
+# Import ONLY MyBucket; the other resources in the template are left alone.
+cdkd import MyStack --resource MyBucket=my-bucket-name
+
+# Several resources at once (--resource is repeatable).
+cdkd import MyStack \
+  --resource MyBucket=my-bucket-name \
+  --resource MyFn=my-function-name
+
+# CDK CLI compat: read overrides from a JSON file.
+cdkd import MyStack --resource-mapping mapping.json
+# mapping.json: { "MyBucket": "my-bucket-name", "MyFn": "my-function-name" }
+```
+
+When at least one `--resource` flag (or a `--resource-mapping` file) is
+supplied, **only the listed resources are imported**. Every other
+resource in the template is reported as `out of scope` and left out of
+state — the next `cdkd deploy` will treat them as new and CREATE them.
+This matches the semantics of `cdk import --resource-mapping`. cdkd
+validates that every override key is a real logical ID in the
+template; a typo aborts the run rather than silently importing nothing.
+
+Use selective mode when you want to **adopt a few specific resources**
+out of a larger stack — for example, you have one S3 bucket that was
+created manually that you want cdkd to manage, while the rest of the
+stack will be deployed fresh.
+
+### Mode 3: hybrid (`--auto` with overrides)
+
+```bash
+cdkd import MyStack \
+  --resource MyBucket=my-bucket-name \
+  --auto
+```
+
+Listed resources use the explicit physical ID you supplied; **every
+other resource still goes through tag-based auto-import**. Useful when
+you have one resource whose tag-based lookup is unreliable (e.g. you
+deleted and re-created it without the tag) but you want cdkd to find
+the rest by tag automatically.
+
+### Common flags
+
+| Flag        | Purpose                                                                       |
+| ----------- | ----------------------------------------------------------------------------- |
+| `--dry-run` | Preview what would be imported. State is NOT written.                         |
+| `--yes`     | Skip the confirmation prompt before writing state.                            |
+| `--force`   | Overwrite an existing state record. Without this, existing state aborts.      |
+
+### After import
+
+Run `cdkd diff` to see how the imported state lines up with the
+template. If the resource's actual properties differ from the template,
+the next `cdkd deploy` will UPDATE them to match. If you imported only
+some resources (selective mode), the remaining template resources
+appear as `to create` in the diff.
+
+### Provider support
+
+Tag-based auto-lookup is implemented for the most-used resource types
+(S3 Bucket, Lambda Function, IAM Role, SNS Topic, SQS Queue, DynamoDB
+Table, Logs LogGroup, EventBridge EventBus, KMS Key/Alias, Secrets
+Manager Secret, SSM Parameter, EC2 VPC/Subnet/SecurityGroup, RDS,
+ECS Cluster/Service/TaskDefinition, CloudFront Distribution, Cognito
+User Pool — the full list is in [CLAUDE.md](CLAUDE.md)). For resource
+types without auto-lookup support (ApiGateway sub-resources, niche
+services, anything in Cloud Control API), use the explicit
+`--resource <id>=<physicalId>` override mode — selective mode handles
+exactly this case. Resource types whose provider does not implement
+import are reported as `unsupported` and skipped.
 
 ## State Management
 
