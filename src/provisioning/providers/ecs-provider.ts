@@ -1006,7 +1006,7 @@ export class ECSProvider implements ResourceProvider {
    * `matchesCdkPath` helper doesn't apply — match the tag manually.
    *
    * Service has a composite physical id of `<clusterArn>|<serviceName>`
-   * (the form ECSProvider already uses internally for delete/update),
+   * (the form ECSProvider uses internally for mutation operations),
    * so the explicit-override path takes that composite form when
    * supplied.
    */
