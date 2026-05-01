@@ -273,4 +273,83 @@ describe('Route53Provider', () => {
       });
     });
   });
+
+  describe('import', () => {
+    function makeInput(overrides: Record<string, unknown> = {}) {
+      return {
+        logicalId: 'MyZone',
+        resourceType: 'AWS::Route53::HostedZone',
+        cdkPath: 'MyStack/MyZone',
+        stackName: 'MyStack',
+        region: 'us-east-1',
+        properties: {},
+        ...overrides,
+      };
+    }
+
+    it('explicit override (HostedZone): GetHostedZone verifies and returns id', async () => {
+      mockSend.mockResolvedValueOnce({ HostedZone: { Id: '/hostedzone/Z123' } });
+
+      const result = await provider.import(makeInput({ knownPhysicalId: 'Z123' }));
+
+      expect(result).toEqual({ physicalId: 'Z123', attributes: {} });
+      const call = mockSend.mock.calls[0][0];
+      expect(call.constructor.name).toBe('GetHostedZoneCommand');
+      expect(call.input).toEqual({ Id: 'Z123' });
+    });
+
+    it('tag-based lookup (HostedZone): walks ListHostedZones + ListTagsForResource', async () => {
+      // ListHostedZones
+      mockSend.mockResolvedValueOnce({
+        HostedZones: [
+          { Id: '/hostedzone/ZAAA', Name: 'a.example.com.' },
+          { Id: '/hostedzone/ZBBB', Name: 'b.example.com.' },
+        ],
+        IsTruncated: false,
+      });
+      // ListTagsForResource for ZAAA
+      mockSend.mockResolvedValueOnce({
+        ResourceTagSet: { Tags: [{ Key: 'aws:cdk:path', Value: 'OtherStack/Other' }] },
+      });
+      // ListTagsForResource for ZBBB
+      mockSend.mockResolvedValueOnce({
+        ResourceTagSet: { Tags: [{ Key: 'aws:cdk:path', Value: 'MyStack/MyZone' }] },
+      });
+
+      const result = await provider.import(makeInput());
+      expect(result).toEqual({ physicalId: 'ZBBB', attributes: {} });
+    });
+
+    it('returns null (HostedZone) when no zone matches', async () => {
+      mockSend.mockResolvedValueOnce({
+        HostedZones: [{ Id: '/hostedzone/Zonly', Name: 'only.example.com.' }],
+        IsTruncated: false,
+      });
+      mockSend.mockResolvedValueOnce({
+        ResourceTagSet: { Tags: [{ Key: 'aws:cdk:path', Value: 'OtherStack/Other' }] },
+      });
+
+      const result = await provider.import(makeInput());
+      expect(result).toBeNull();
+    });
+
+    it('RecordSet: explicit override returned as-is, no AWS calls', async () => {
+      const result = await provider.import(
+        makeInput({
+          resourceType: 'AWS::Route53::RecordSet',
+          knownPhysicalId: 'Z123|www.example.com.|A',
+        })
+      );
+      expect(result).toEqual({ physicalId: 'Z123|www.example.com.|A', attributes: {} });
+      expect(mockSend).not.toHaveBeenCalled();
+    });
+
+    it('RecordSet: returns null without explicit override (not taggable)', async () => {
+      const result = await provider.import(
+        makeInput({ resourceType: 'AWS::Route53::RecordSet' })
+      );
+      expect(result).toBeNull();
+      expect(mockSend).not.toHaveBeenCalled();
+    });
+  });
 });

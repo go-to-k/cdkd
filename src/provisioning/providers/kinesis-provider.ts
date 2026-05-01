@@ -9,6 +9,8 @@ import {
   DecreaseStreamRetentionPeriodCommand,
   StartStreamEncryptionCommand,
   StopStreamEncryptionCommand,
+  ListStreamsCommand,
+  ListTagsForStreamCommand,
   ResourceNotFoundException,
   type EncryptionType,
 } from '@aws-sdk/client-kinesis';
@@ -16,10 +18,13 @@ import { getLogger } from '../../utils/logger.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { generateResourceName } from '../resource-name.js';
+import { matchesCdkPath, resolveExplicitPhysicalId } from '../import-helpers.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
   ResourceUpdateResult,
+  ResourceImportInput,
+  ResourceImportResult,
 } from '../../types/resource.js';
 
 /**
@@ -349,6 +354,58 @@ export class KinesisStreamProvider implements ResourceProvider {
         cause
       );
     }
+  }
+
+  /**
+   * Adopt an existing Kinesis stream into cdkd state.
+   *
+   * Lookup order:
+   *  1. `--resource <id>=<name>` override or `Properties.Name` → verify
+   *     with `DescribeStream`.
+   *  2. Walk `ListStreams` (paged via `ExclusiveStartStreamName`) and
+   *     match the `aws:cdk:path` tag via `ListTagsForStream(StreamName)`.
+   *
+   * Kinesis tags use the standard `Tag[]` array shape (`Key`/`Value`),
+   * so `matchesCdkPath` from import-helpers applies directly.
+   */
+  async import(input: ResourceImportInput): Promise<ResourceImportResult | null> {
+    const explicit = resolveExplicitPhysicalId(input, 'Name');
+    if (explicit) {
+      try {
+        await this.getClient().send(new DescribeStreamCommand({ StreamName: explicit }));
+        return { physicalId: explicit, attributes: {} };
+      } catch (err) {
+        if (err instanceof ResourceNotFoundException) return null;
+        throw err;
+      }
+    }
+
+    if (!input.cdkPath) return null;
+
+    let exclusiveStartStreamName: string | undefined;
+    // ListStreams paginates via `ExclusiveStartStreamName` rather than
+    // `NextToken` — set the next page boundary to the last name we saw
+    // when `HasMoreStreams` is true.
+    // eslint-disable-next-line no-constant-condition
+    while (true) {
+      const list = await this.getClient().send(
+        new ListStreamsCommand({
+          ...(exclusiveStartStreamName && { ExclusiveStartStreamName: exclusiveStartStreamName }),
+        })
+      );
+      const names = list.StreamNames ?? [];
+      for (const streamName of names) {
+        const tagsResp = await this.getClient().send(
+          new ListTagsForStreamCommand({ StreamName: streamName })
+        );
+        if (matchesCdkPath(tagsResp.Tags, input.cdkPath)) {
+          return { physicalId: streamName, attributes: {} };
+        }
+      }
+      if (!list.HasMoreStreams || names.length === 0) break;
+      exclusiveStartStreamName = names[names.length - 1];
+    }
+    return null;
   }
 
   /**

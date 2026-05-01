@@ -3,23 +3,29 @@ import {
   CreateCacheClusterCommand,
   DeleteCacheClusterCommand,
   DescribeCacheClustersCommand,
+  DescribeCacheSubnetGroupsCommand,
   CreateCacheSubnetGroupCommand,
   DeleteCacheSubnetGroupCommand,
   ModifyCacheSubnetGroupCommand,
   ModifyCacheClusterCommand,
+  ListTagsForResourceCommand,
   type AZMode,
   type LogDeliveryConfigurationRequest,
   type NetworkType,
   type IpDiscovery,
 } from '@aws-sdk/client-elasticache';
+import { STSClient, GetCallerIdentityCommand } from '@aws-sdk/client-sts';
 import { getLogger } from '../../utils/logger.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { generateResourceName } from '../resource-name.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
+import { matchesCdkPath, resolveExplicitPhysicalId } from '../import-helpers.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
   ResourceUpdateResult,
+  ResourceImportInput,
+  ResourceImportResult,
 } from '../../types/resource.js';
 
 /**
@@ -34,6 +40,8 @@ import type {
  */
 export class ElastiCacheProvider implements ResourceProvider {
   private client?: ElastiCacheClient;
+  private stsClient?: STSClient;
+  private cachedAccountId: string | undefined;
   private readonly providerRegion = process.env['AWS_REGION'];
   private logger = getLogger().child('ElastiCacheProvider');
 
@@ -570,5 +578,141 @@ export class ElastiCacheProvider implements ResourceProvider {
 
   private sleep(ms: number): Promise<void> {
     return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  /**
+   * Adopt an existing ElastiCache resource into cdkd state.
+   *
+   * Supported types:
+   *  - `AWS::ElastiCache::CacheCluster` — full tag-based lookup via
+   *    `DescribeCacheClusters` + `ListTagsForResource(ResourceName=arn)`.
+   *  - `AWS::ElastiCache::SubnetGroup` — full tag-based lookup via
+   *    `DescribeCacheSubnetGroups` + `ListTagsForResource(ResourceName=arn)`.
+   *
+   * `ListTagsForResource` requires an ARN. Both `CacheCluster.ARN` and
+   * `CacheSubnetGroup.ARN` are returned by the Describe APIs, so no
+   * extra reconstruction is needed in normal flow; for the explicit
+   * override path we build the ARN from `region` + STS account id +
+   * the resource name.
+   */
+  async import(input: ResourceImportInput): Promise<ResourceImportResult | null> {
+    switch (input.resourceType) {
+      case 'AWS::ElastiCache::CacheCluster':
+        return this.importCacheCluster(input);
+      case 'AWS::ElastiCache::SubnetGroup':
+        return this.importSubnetGroup(input);
+      default:
+        return null;
+    }
+  }
+
+  private async importCacheCluster(
+    input: ResourceImportInput
+  ): Promise<ResourceImportResult | null> {
+    const explicit = resolveExplicitPhysicalId(input, 'ClusterName');
+    if (explicit) {
+      try {
+        const resp = await this.getClient().send(
+          new DescribeCacheClustersCommand({ CacheClusterId: explicit })
+        );
+        const c = resp.CacheClusters?.[0];
+        return c?.CacheClusterId ? { physicalId: c.CacheClusterId, attributes: {} } : null;
+      } catch (err) {
+        if (this.isNotFoundError(err, 'CacheClusterNotFoundFault')) return null;
+        throw err;
+      }
+    }
+
+    if (!input.cdkPath) return null;
+
+    let marker: string | undefined;
+    do {
+      const list = await this.getClient().send(
+        new DescribeCacheClustersCommand({ ...(marker && { Marker: marker }) })
+      );
+      for (const c of list.CacheClusters ?? []) {
+        if (!c.CacheClusterId) continue;
+        const arn = c.ARN ?? (await this.buildClusterArn(c.CacheClusterId));
+        const tagsResp = await this.getClient().send(
+          new ListTagsForResourceCommand({ ResourceName: arn })
+        );
+        if (matchesCdkPath(tagsResp.TagList, input.cdkPath)) {
+          return { physicalId: c.CacheClusterId, attributes: {} };
+        }
+      }
+      marker = list.Marker;
+    } while (marker);
+    return null;
+  }
+
+  private async importSubnetGroup(
+    input: ResourceImportInput
+  ): Promise<ResourceImportResult | null> {
+    const explicit = resolveExplicitPhysicalId(input, 'CacheSubnetGroupName');
+    if (explicit) {
+      try {
+        const resp = await this.getClient().send(
+          new DescribeCacheSubnetGroupsCommand({ CacheSubnetGroupName: explicit })
+        );
+        const g = resp.CacheSubnetGroups?.[0];
+        return g?.CacheSubnetGroupName
+          ? { physicalId: g.CacheSubnetGroupName, attributes: {} }
+          : null;
+      } catch (err) {
+        if (this.isNotFoundError(err, 'CacheSubnetGroupNotFoundFault')) return null;
+        throw err;
+      }
+    }
+
+    if (!input.cdkPath) return null;
+
+    let marker: string | undefined;
+    do {
+      const list = await this.getClient().send(
+        new DescribeCacheSubnetGroupsCommand({ ...(marker && { Marker: marker }) })
+      );
+      for (const g of list.CacheSubnetGroups ?? []) {
+        if (!g.CacheSubnetGroupName) continue;
+        const arn = g.ARN ?? (await this.buildSubnetGroupArn(g.CacheSubnetGroupName));
+        const tagsResp = await this.getClient().send(
+          new ListTagsForResourceCommand({ ResourceName: arn })
+        );
+        if (matchesCdkPath(tagsResp.TagList, input.cdkPath)) {
+          return { physicalId: g.CacheSubnetGroupName, attributes: {} };
+        }
+      }
+      marker = list.Marker;
+    } while (marker);
+    return null;
+  }
+
+  private async buildClusterArn(clusterName: string): Promise<string> {
+    const region = await this.getRegion();
+    const account = await this.getAccountId();
+    return `arn:aws:elasticache:${region}:${account}:cluster:${clusterName}`;
+  }
+
+  private async buildSubnetGroupArn(subnetGroupName: string): Promise<string> {
+    const region = await this.getRegion();
+    const account = await this.getAccountId();
+    return `arn:aws:elasticache:${region}:${account}:subnetgroup:${subnetGroupName}`;
+  }
+
+  private async getRegion(): Promise<string> {
+    const region = await this.getClient().config.region();
+    return region || this.providerRegion || 'us-east-1';
+  }
+
+  private async getAccountId(): Promise<string> {
+    if (this.cachedAccountId) return this.cachedAccountId;
+    if (!this.stsClient) {
+      this.stsClient = new STSClient(this.providerRegion ? { region: this.providerRegion } : {});
+    }
+    const identity = await this.stsClient.send(new GetCallerIdentityCommand({}));
+    if (!identity.Account) {
+      throw new Error('Failed to resolve AWS account id from STS');
+    }
+    this.cachedAccountId = identity.Account;
+    return this.cachedAccountId;
   }
 }

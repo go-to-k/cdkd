@@ -7,6 +7,7 @@ import {
   DeleteTargetGroupCommand,
   ModifyTargetGroupCommand,
   DescribeTargetGroupsCommand,
+  DescribeTagsCommand,
   CreateListenerCommand,
   DeleteListenerCommand,
   ModifyListenerCommand,
@@ -23,10 +24,13 @@ import { getLogger } from '../../utils/logger.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { generateResourceName } from '../resource-name.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
+import { matchesCdkPath } from '../import-helpers.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
   ResourceUpdateResult,
+  ResourceImportInput,
+  ResourceImportResult,
 } from '../../types/resource.js';
 
 /**
@@ -684,6 +688,124 @@ export class ELBv2Provider implements ResourceProvider {
   ): Certificate[] | undefined {
     if (!certificates || certificates.length === 0) return undefined;
     return certificates as unknown as Certificate[];
+  }
+
+  /**
+   * Adopt an existing ELBv2 LoadBalancer or TargetGroup into cdkd state.
+   *
+   * Lookup order:
+   *  1. `--resource <id>=<arn>` override → verify with `DescribeLoadBalancers`
+   *     or `DescribeTargetGroups`.
+   *  2. Walk `DescribeLoadBalancers` / `DescribeTargetGroups` paginators →
+   *     batch-fetch tags for each ARN with `DescribeTags(ResourceArns)`
+   *     and match `aws:cdk:path` (standard `Key`/`Value` Tag[] shape).
+   *
+   * Listener is not auto-importable (no template-supplied stable
+   * identifier and no convenient tag-by-LB-context shortcut); use
+   * `--resource <listenerId>=<arn>` for those.
+   */
+  async import(input: ResourceImportInput): Promise<ResourceImportResult | null> {
+    switch (input.resourceType) {
+      case 'AWS::ElasticLoadBalancingV2::LoadBalancer':
+        return this.importLoadBalancer(input);
+      case 'AWS::ElasticLoadBalancingV2::TargetGroup':
+        return this.importTargetGroup(input);
+      case 'AWS::ElasticLoadBalancingV2::Listener':
+        // Listener: only honor explicit overrides.
+        if (input.knownPhysicalId) {
+          return { physicalId: input.knownPhysicalId, attributes: {} };
+        }
+        return null;
+      default:
+        return null;
+    }
+  }
+
+  private async importLoadBalancer(
+    input: ResourceImportInput
+  ): Promise<ResourceImportResult | null> {
+    if (input.knownPhysicalId) {
+      try {
+        const resp = await this.getClient().send(
+          new DescribeLoadBalancersCommand({ LoadBalancerArns: [input.knownPhysicalId] })
+        );
+        return resp.LoadBalancers?.[0]?.LoadBalancerArn
+          ? { physicalId: resp.LoadBalancers[0].LoadBalancerArn, attributes: {} }
+          : null;
+      } catch (err) {
+        if (this.isNotFoundError(err)) return null;
+        throw err;
+      }
+    }
+
+    if (!input.cdkPath) return null;
+
+    let marker: string | undefined;
+    do {
+      const list = await this.getClient().send(
+        new DescribeLoadBalancersCommand({ ...(marker && { Marker: marker }) })
+      );
+      const arns = (list.LoadBalancers ?? [])
+        .map((lb) => lb.LoadBalancerArn)
+        .filter((arn): arn is string => Boolean(arn));
+      // DescribeTags accepts up to 20 ARNs per call.
+      for (let i = 0; i < arns.length; i += 20) {
+        const batch = arns.slice(i, i + 20);
+        const tagsResp = await this.getClient().send(
+          new DescribeTagsCommand({ ResourceArns: batch })
+        );
+        for (const td of tagsResp.TagDescriptions ?? []) {
+          if (td.ResourceArn && matchesCdkPath(td.Tags, input.cdkPath)) {
+            return { physicalId: td.ResourceArn, attributes: {} };
+          }
+        }
+      }
+      marker = list.NextMarker;
+    } while (marker);
+    return null;
+  }
+
+  private async importTargetGroup(
+    input: ResourceImportInput
+  ): Promise<ResourceImportResult | null> {
+    if (input.knownPhysicalId) {
+      try {
+        const resp = await this.getClient().send(
+          new DescribeTargetGroupsCommand({ TargetGroupArns: [input.knownPhysicalId] })
+        );
+        return resp.TargetGroups?.[0]?.TargetGroupArn
+          ? { physicalId: resp.TargetGroups[0].TargetGroupArn, attributes: {} }
+          : null;
+      } catch (err) {
+        if (this.isNotFoundError(err)) return null;
+        throw err;
+      }
+    }
+
+    if (!input.cdkPath) return null;
+
+    let marker: string | undefined;
+    do {
+      const list = await this.getClient().send(
+        new DescribeTargetGroupsCommand({ ...(marker && { Marker: marker }) })
+      );
+      const arns = (list.TargetGroups ?? [])
+        .map((tg) => tg.TargetGroupArn)
+        .filter((arn): arn is string => Boolean(arn));
+      for (let i = 0; i < arns.length; i += 20) {
+        const batch = arns.slice(i, i + 20);
+        const tagsResp = await this.getClient().send(
+          new DescribeTagsCommand({ ResourceArns: batch })
+        );
+        for (const td of tagsResp.TagDescriptions ?? []) {
+          if (td.ResourceArn && matchesCdkPath(td.Tags, input.cdkPath)) {
+            return { physicalId: td.ResourceArn, attributes: {} };
+          }
+        }
+      }
+      marker = list.NextMarker;
+    } while (marker);
+    return null;
   }
 
   /**

@@ -8,6 +8,7 @@ import {
   CreateAccessPointCommand,
   DeleteAccessPointCommand,
   DescribeFileSystemsCommand,
+  DescribeAccessPointsCommand,
   FileSystemNotFound,
   MountTargetNotFound,
   AccessPointNotFound,
@@ -17,10 +18,13 @@ import {
 import { getLogger } from '../../utils/logger.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
+import { matchesCdkPath } from '../import-helpers.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
   ResourceUpdateResult,
+  ResourceImportInput,
+  ResourceImportResult,
 } from '../../types/resource.js';
 
 /**
@@ -565,5 +569,104 @@ export class EFSProvider implements ResourceProvider {
         cause
       );
     }
+  }
+
+  /**
+   * Adopt an existing EFS resource into cdkd state.
+   *
+   * Supported types:
+   *  - `AWS::EFS::FileSystem` — full tag-based lookup via
+   *    `DescribeFileSystems` with `Tags` inline on each item.
+   *  - `AWS::EFS::AccessPoint` — full tag-based lookup via
+   *    `DescribeAccessPoints` with `Tags` inline on each item.
+   *  - `AWS::EFS::MountTarget` — override-only (mount targets are
+   *    not taggable; auto lookup is impractical).
+   */
+  async import(input: ResourceImportInput): Promise<ResourceImportResult | null> {
+    switch (input.resourceType) {
+      case 'AWS::EFS::FileSystem':
+        return this.importFileSystem(input);
+      case 'AWS::EFS::AccessPoint':
+        return this.importAccessPoint(input);
+      case 'AWS::EFS::MountTarget':
+        if (input.knownPhysicalId) {
+          return { physicalId: input.knownPhysicalId, attributes: {} };
+        }
+        return null;
+      default:
+        return null;
+    }
+  }
+
+  private async importFileSystem(input: ResourceImportInput): Promise<ResourceImportResult | null> {
+    if (input.knownPhysicalId) {
+      try {
+        const resp = await this.getClient().send(
+          new DescribeFileSystemsCommand({ FileSystemId: input.knownPhysicalId })
+        );
+        const fs = resp.FileSystems?.[0];
+        return fs?.FileSystemId ? { physicalId: fs.FileSystemId, attributes: {} } : null;
+      } catch (err) {
+        if (err instanceof FileSystemNotFound) return null;
+        throw err;
+      }
+    }
+
+    if (!input.cdkPath) return null;
+
+    let marker: string | undefined;
+    do {
+      const list = await this.getClient().send(
+        new DescribeFileSystemsCommand({ ...(marker && { Marker: marker }) })
+      );
+      for (const fs of list.FileSystems ?? []) {
+        if (!fs.FileSystemId) continue;
+        if (matchesCdkPath(fs.Tags, input.cdkPath)) {
+          return { physicalId: fs.FileSystemId, attributes: {} };
+        }
+      }
+      marker = list.NextMarker;
+    } while (marker);
+    return null;
+  }
+
+  private async importAccessPoint(
+    input: ResourceImportInput
+  ): Promise<ResourceImportResult | null> {
+    if (input.knownPhysicalId) {
+      try {
+        const resp = await this.getClient().send(
+          new DescribeAccessPointsCommand({ AccessPointId: input.knownPhysicalId })
+        );
+        const ap = resp.AccessPoints?.[0];
+        return ap?.AccessPointId ? { physicalId: ap.AccessPointId, attributes: {} } : null;
+      } catch (err) {
+        if (err instanceof AccessPointNotFound) return null;
+        throw err;
+      }
+    }
+
+    if (!input.cdkPath) return null;
+
+    // Scope to the parent FileSystemId when the template provides one,
+    // otherwise scan all access points in the account.
+    const fileSystemId = input.properties['FileSystemId'] as string | undefined;
+    let nextToken: string | undefined;
+    do {
+      const list = await this.getClient().send(
+        new DescribeAccessPointsCommand({
+          ...(nextToken && { NextToken: nextToken }),
+          ...(fileSystemId && { FileSystemId: fileSystemId }),
+        })
+      );
+      for (const ap of list.AccessPoints ?? []) {
+        if (!ap.AccessPointId) continue;
+        if (matchesCdkPath(ap.Tags, input.cdkPath)) {
+          return { physicalId: ap.AccessPointId, attributes: {} };
+        }
+      }
+      nextToken = list.NextToken;
+    } while (nextToken);
+    return null;
   }
 }
