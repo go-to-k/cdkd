@@ -1009,6 +1009,8 @@ function formatBucketSource(source: StateBucketSource): string {
       return 'cdk.json (context.cdkd.stateBucket)';
     case 'default':
       return 'default (account ID from STS)';
+    case 'default-legacy':
+      return 'default (legacy region-suffixed name; cdkd state migrate-bucket recommended)';
   }
 }
 
