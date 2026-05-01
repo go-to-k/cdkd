@@ -47,7 +47,7 @@ STATE_BUCKET=my-bucket ./tests/e2e/run-e2e.sh ../integration/lambda
 
 | Variable | Required | Default | Description |
 |---|---|---|---|
-| `STATE_BUCKET` | No | `cdkd-state-{accountId}-{region}` (auto-resolved via STS) | S3 bucket for cdkd state |
+| `STATE_BUCKET` | No | `cdkd-state-{accountId}` (auto-resolved via STS; legacy `cdkd-state-{accountId}-{region}` still falls through with a deprecation warning) | S3 bucket for cdkd state |
 | `AWS_REGION` | No | `us-east-1` | AWS region |
 | `CDKD_PATH` | No | `../../dist/cli.js` | Path to cdkd CLI |
 | `CDKD_UPDATE_CONTEXT` | No | - | Context args for UPDATE step (e.g., `-c env=staging`) |

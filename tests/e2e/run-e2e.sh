@@ -14,7 +14,9 @@
 #
 # Environment Variables:
 #   STATE_BUCKET  (optional) S3 bucket name for cdkd state storage
-#                 Auto-resolves to cdkd-state-{accountId}-{region} if not set
+#                 Auto-resolves to cdkd-state-{accountId} if not set
+#                 (legacy cdkd-state-{accountId}-{region} still falls through
+#                 with a deprecation warning)
 #   AWS_REGION    (optional) AWS region, default: us-east-1
 #   CDKD_PATH     (optional) Path to cdkd CLI entry point, default: ../../dist/cli.js
 #   CDKD_UPDATE_CONTEXT  (optional) Context args for UPDATE step, e.g. "-c env=staging -c flag=true"

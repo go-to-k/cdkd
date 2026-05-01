@@ -48,6 +48,75 @@ export STATE_BUCKET="cdkd-state-myteam-1234567890"
 export STATE_PREFIX="cdkd"  # Default
 ```
 
+### Default Bucket Name
+
+When `--state-bucket` / `CDKD_STATE_BUCKET` / `cdk.json
+context.cdkd.stateBucket` are all unset, cdkd derives the bucket name from
+the caller's STS account ID:
+
+```
+cdkd-state-{accountId}
+```
+
+The default name is intentionally **region-free**. S3 bucket names are
+globally unique, so a single name resolves to the same bucket for every
+teammate regardless of their profile region — two engineers with profile
+regions `us-east-1` and `ap-northeast-1` see the same state instead of
+silently forking into two regional buckets.
+
+The bucket's actual region is not encoded in the name; cdkd resolves it at
+runtime via `GetBucketLocation` (see "State Bucket Region" below).
+
+#### Backwards-compat fallback
+
+Pre-v0.8 cdkd used `cdkd-state-{accountId}-{region}` as the default name.
+For users who already bootstrapped under that scheme, the lookup chain in
+`resolveStateBucketWithDefault` is:
+
+1. Probe `cdkd-state-{accountId}` (current default). If it exists, use it.
+2. If not found (`HeadBucket` returns 404 / `NoSuchBucket`), probe
+   `cdkd-state-{accountId}-{profileRegion}` (legacy default). If it exists,
+   use it and emit a deprecation warning:
+
+   ```text
+   Using legacy state bucket name 'cdkd-state-123456789012-us-east-1'.
+   The default has changed to 'cdkd-state-123456789012'. Future cdkd
+   versions will drop legacy support; consider migrating with cdkd state
+   migrate-bucket (coming in a future release).
+   ```
+
+3. If neither exists, fail with a "run cdkd bootstrap" error pointing at
+   the new name.
+
+The legacy fallback is **temporary**. A future PR will drop it together
+with shipping a `cdkd state migrate-bucket` command for users who never
+touched their state in the interim. See
+[`docs/plans/04-state-bucket-naming.md`](./plans/04-state-bucket-naming.md)
+and [`docs/plans/99-future-bc-removal.md`](./plans/99-future-bc-removal.md).
+
+#### Migration path
+
+If you previously bootstrapped with the legacy name and want to silence
+the warning:
+
+1. `cdkd bootstrap` (creates `cdkd-state-{accountId}` with the new default).
+2. Copy any existing state from the legacy bucket:
+
+   ```bash
+   aws s3 sync \
+     s3://cdkd-state-{accountId}-{region}/ \
+     s3://cdkd-state-{accountId}/
+   ```
+
+3. Delete the legacy bucket once you've verified the new one works:
+
+   ```bash
+   aws s3 rb s3://cdkd-state-{accountId}-{region} --force
+   ```
+
+A dedicated `cdkd state migrate-bucket` command will automate this in a
+future release.
+
 ### State Bucket Region
 
 The state bucket can live in any AWS region — it does not have to match

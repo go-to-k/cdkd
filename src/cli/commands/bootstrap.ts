@@ -58,7 +58,7 @@ async function bootstrapCommand(options: {
     logger.info('No --state-bucket specified, resolving default bucket name...');
     const identity = await awsClients.sts.send(new GetCallerIdentityCommand({}));
     accountId = identity.Account!;
-    bucketName = getDefaultStateBucketName(accountId, region);
+    bucketName = getDefaultStateBucketName(accountId);
     logger.info(`Using default state bucket: ${bucketName}`);
   }
 
@@ -194,7 +194,7 @@ export function createBootstrapCommand(): Command {
     .description('Bootstrap cdkd by creating required S3 bucket for state management')
     .option(
       '--state-bucket <bucket>',
-      'Name of S3 bucket to create for state storage (default: cdkd-state-{accountId}-{region})'
+      'Name of S3 bucket to create for state storage (default: cdkd-state-{accountId})'
     )
     .option('--force', 'Force reconfiguration of existing bucket', false)
     .action(withErrorHandling(bootstrapCommand));

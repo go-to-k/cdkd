@@ -75,7 +75,8 @@ async function deployCommand(
   }
   options.app = app;
 
-  // Resolve --state-bucket from CLI, env, cdk.json, or default (cdkd-state-{accountId}-{region})
+  // Resolve --state-bucket from CLI, env, cdk.json, or default (cdkd-state-{accountId};
+  // legacy cdkd-state-{accountId}-{region} is consulted only as a fallback)
   const region = options.region || process.env['AWS_REGION'] || 'us-east-1';
   const stateBucket = await resolveStateBucketWithDefault(options.stateBucket, region);
 

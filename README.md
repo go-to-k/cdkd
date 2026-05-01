@@ -95,7 +95,7 @@ Reproduce with `./tests/benchmark/run-benchmark.sh all`. See [tests/benchmark/RE
 ```
 1. CLI Layer
    ├── Resolve --app (CLI > CDKD_APP env > cdk.json "app")
-   ├── Resolve --state-bucket (CLI > env > cdk.json > auto: cdkd-state-{accountId}-{region})
+   ├── Resolve --state-bucket (CLI > env > cdk.json > auto: cdkd-state-{accountId}, with legacy fallback to cdkd-state-{accountId}-{region})
    └── Initialize AWS clients
 
 2. Synthesis (self-implemented, no CDK CLI dependency)
@@ -355,7 +355,7 @@ cdkd diff
 cdkd destroy
 ```
 
-That's it. cdkd reads `--app` from `cdk.json` and auto-resolves the state bucket from your AWS account ID (`cdkd-state-{accountId}-{region}`).
+That's it. cdkd reads `--app` from `cdk.json` and auto-resolves the state bucket from your AWS account ID (`cdkd-state-{accountId}`). If you bootstrapped under a previous cdkd version, the legacy region-suffixed name (`cdkd-state-{accountId}-{region}`) is still picked up automatically with a deprecation warning.
 
 ## Usage
 
@@ -547,7 +547,7 @@ s3://{state-bucket}/
 
 | Setting | CLI | cdk.json | Env var | Default |
 |---------|-----|----------|---------|---------|
-| Bucket | `--state-bucket` | `context.cdkd.stateBucket` | `CDKD_STATE_BUCKET` | `cdkd-state-{accountId}-{region}` |
+| Bucket | `--state-bucket` | `context.cdkd.stateBucket` | `CDKD_STATE_BUCKET` | `cdkd-state-{accountId}` (legacy `cdkd-state-{accountId}-{region}` is still read with a deprecation warning) |
 | Prefix | `--state-prefix` | - | - | `cdkd` |
 
 ### Multi-app isolation
