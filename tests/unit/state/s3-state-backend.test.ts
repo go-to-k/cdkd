@@ -267,16 +267,22 @@ function bodyOf(state: StackState) {
 }
 
 describe('S3StateBackend region-prefixed key layout (PR 1)', () => {
-  let s3Client: { send: ReturnType<typeof vi.fn> };
+  let s3Client: ReturnType<typeof makeFakeClient>;
   let backend: S3StateBackend;
   const config: StateBackendConfig = {
     bucket: 'state-bucket',
     prefix: 'cdkd',
   };
 
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.clearAllMocks();
-    s3Client = { send: vi.fn() };
+    clearBucketRegionCache();
+    // Bucket is in the same region as the client; ensureClientForBucket() is a no-op.
+    const { resolveBucketRegion } = await import(
+      '../../../src/utils/aws-region-resolver.js'
+    );
+    vi.mocked(resolveBucketRegion).mockResolvedValue('us-east-1');
+    s3Client = makeFakeClient('us-east-1');
     backend = new S3StateBackend(s3Client as unknown as S3Client, config);
   });
 
