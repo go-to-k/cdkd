@@ -37,7 +37,21 @@ cd "$REPO" 2>/dev/null || exit 0
 # symbol is added or removed, skip the gate entirely.
 #
 # Heuristic:
-# - "always-delete" files: any change at all is delete-touching.
+# - "strict-delete" files (dag-builder.ts, implicit-delete-deps.ts,
+#   lambda-vpc-deps.ts): any change at all is delete-touching. These
+#   are small high-stakes analyzer files where a typical addition is an
+#   array entry like `'AWS::Foo': ['AWS::Bar']` whose text does NOT
+#   contain the delete-symbol vocabulary, so the hunk filter would
+#   miss it. Keep strict.
+# - "filtered-delete" files (destroy.ts, destroy-runner.ts,
+#   deploy-engine.ts): considered delete-touching ONLY when the diff
+#   hunks add/remove a delete-related symbol — same filter as provider
+#   files. These are larger files that mix delete logic with UX
+#   strings, command wiring, log messages, etc. Pure UX-string edits
+#   here have no behavioral effect on the destroy path (e.g. PR #84
+#   fixed a `--region` → `--stack-region` error message in destroy.ts);
+#   the old strict rule made such trivial PRs un-mergeable until
+#   /run-integ was re-run, even though no destroy code changed.
 # - provider files: only delete-touching when the diff hunks add/remove
 #   a delete-related symbol (delete*, IMPLICIT_DELETE, ENI/hyperplane,
 #   DependencyViolation).
@@ -53,7 +67,11 @@ fi
 if [ -n "$diff_base" ]; then
   changed_files=$(git diff --name-only "$diff_base"...HEAD 2>/dev/null)
   delete_touch=0
-  always_delete='^(src/cli/commands/destroy(-runner)?\.ts|src/deployment/deploy-engine\.ts|src/analyzer/(dag-builder|implicit-delete-deps|lambda-vpc-deps)\.ts)$'
+  # Strict files — any change triggers (small high-stakes analyzer
+  # files; see header comment for rationale).
+  strict_delete='^src/analyzer/(dag-builder|implicit-delete-deps|lambda-vpc-deps)\.ts$'
+  # Hunk-filtered files — only delete-symbol changes trigger.
+  filtered_delete='^(src/cli/commands/destroy(-runner)?\.ts|src/deployment/deploy-engine\.ts)$'
   provider_pattern='^src/provisioning/(providers/.*\.ts|cloud-control-provider\.ts|region-check\.ts)$'
   # Match a delete-touching symbol on an added/removed line, but NOT inside
   # a single-line comment. This avoids the false positives PR #73 hit
@@ -74,11 +92,17 @@ if [ -n "$diff_base" ]; then
 
   while IFS= read -r f; do
     [ -z "$f" ] && continue
-    if printf '%s' "$f" | grep -qE "$always_delete"; then
+    # Strict-delete files: any change at all is delete-touching.
+    if printf '%s' "$f" | grep -qE "$strict_delete"; then
       delete_touch=1
       break
     fi
-    if printf '%s' "$f" | grep -qE "$provider_pattern"; then
+    # Filtered-delete files (command/orchestration) and provider files
+    # share the same hunk filter: only mark the gate as delete-touching
+    # when the diff lines add or remove a delete-related symbol. A file
+    # in either group with only string / log / typing edits passes
+    # through.
+    if printf '%s' "$f" | grep -qE "$filtered_delete|$provider_pattern"; then
       if git diff "$diff_base"...HEAD -- "$f" \
          | grep -vE "$comment_line_pattern" \
          | grep -qE "$delete_symbol_pattern"; then
