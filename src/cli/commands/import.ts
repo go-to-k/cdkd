@@ -35,6 +35,18 @@ interface ImportOptions {
   profile?: string;
   resource?: string[];
   resourceMapping?: string;
+  /**
+   * When true, resources NOT in `--resource` / `--resource-mapping` still
+   * go through tag-based auto-import. Default is `false` for CDK CLI parity:
+   * when explicit overrides are supplied, only those resources are imported
+   * and the rest are skipped (left for the next deploy to create). Pass
+   * `--auto` to opt back into hybrid mode (current pre-PR behavior).
+   *
+   * No-flag invocation (`cdkd import MyStack`) always auto-imports
+   * everything via tags — this flag only matters once at least one of
+   * `--resource` / `--resource-mapping` is also supplied.
+   */
+  auto: boolean;
   dryRun: boolean;
   yes: boolean;
   force: boolean;
@@ -48,9 +60,18 @@ interface ImportOptions {
  * `imported` — resource found and added to state.
  * `skipped-no-impl` — provider doesn't implement `import`.
  * `skipped-not-found` — provider returned `null` (no matching AWS resource).
+ * `skipped-out-of-scope` — explicit-override mode and this resource was not
+ *    listed; user opted not to import it. Kept distinct from
+ *    `skipped-not-found` because it doesn't reflect AWS state.
  * `failed` — provider threw; logged but lets the rest of the stack proceed.
  */
-type ImportOutcome = 'imported' | 'skipped-no-impl' | 'skipped-not-found' | 'failed';
+
+type ImportOutcome =
+  | 'imported'
+  | 'skipped-no-impl'
+  | 'skipped-not-found'
+  | 'skipped-out-of-scope'
+  | 'failed';
 
 interface ImportRow {
   logicalId: string;
@@ -158,11 +179,41 @@ async function importCommand(stackArg: string | undefined, options: ImportOption
       logger.debug(`User-supplied physical IDs: ${[...overrides.keys()].join(', ')}`);
     }
 
+    // Selective vs auto mode. CDK CLI parity: when the user passes
+    // `--resource X=Y` (or `--resource-mapping`), only those resources are
+    // imported; the rest are skipped (and will be CREATEd on the next
+    // deploy). The user can opt into the old hybrid behavior — explicit
+    // overrides PLUS tag-based auto-import for everything else — with
+    // `--auto`. With no overrides at all, auto mode is implied (the user
+    // is asking cdkd to find every resource by tag).
+    const selectiveMode = overrides.size > 0 && !options.auto;
+    if (selectiveMode) {
+      logger.info(
+        `Selective mode: only importing the ${overrides.size} resource(s) you listed ` +
+          `(${[...overrides.keys()].join(', ')}). ` +
+          `Pass --auto to also tag-import the rest.`
+      );
+    }
+
     const template = stackInfo.template;
     const templateParser = new TemplateParser();
     const resources = collectImportableResources(template);
 
     logger.info(`Found ${resources.length} resource(s) in template`);
+
+    // Validate that every override key actually exists in the template —
+    // a typo'd logical ID would otherwise be silently ignored in selective
+    // mode and the user wouldn't know why their import "did nothing".
+    const templateLogicalIds = new Set(resources.map((r) => r.logicalId));
+    for (const overrideId of overrides.keys()) {
+      if (!templateLogicalIds.has(overrideId)) {
+        throw new Error(
+          `--resource / --resource-mapping references logical ID '${overrideId}' ` +
+            `which is not in the synthesized template for stack '${stackInfo.stackName}'. ` +
+            `Available IDs: ${[...templateLogicalIds].join(', ')}`
+        );
+      }
+    }
 
     // Acquire the lock up front — even in dry-run we want to fail fast if
     // another process is mid-deploy (the dry-run plan would lie about the
@@ -173,6 +224,19 @@ async function importCommand(stackArg: string | undefined, options: ImportOption
     try {
       const rows: ImportRow[] = [];
       for (const { logicalId, resource } of resources) {
+        // Selective mode: skip resources not in overrides up front. They
+        // never hit the provider, so the summary correctly distinguishes
+        // "out of scope" from "AWS not found".
+        if (selectiveMode && !overrides.has(logicalId)) {
+          rows.push({
+            logicalId,
+            resourceType: resource.Type,
+            outcome: 'skipped-out-of-scope',
+            reason: 'not in --resource / --resource-mapping (use --auto to include)',
+          });
+          continue;
+        }
+
         const outcome = await importOne({
           logicalId,
           resource,
@@ -433,6 +497,7 @@ function printSummary(rows: ImportRow[]): void {
     imported: 0,
     'skipped-no-impl': 0,
     'skipped-not-found': 0,
+    'skipped-out-of-scope': 0,
     failed: 0,
   } as Record<ImportOutcome, number>;
 
@@ -448,7 +513,8 @@ function printSummary(rows: ImportRow[]): void {
   logger.info('');
   logger.info(
     `Summary: ${counts.imported} imported, ${counts['skipped-not-found']} not found, ` +
-      `${counts['skipped-no-impl']} unsupported, ${counts.failed} failed`
+      `${counts['skipped-no-impl']} unsupported, ` +
+      `${counts['skipped-out-of-scope']} out of scope, ${counts.failed} failed`
   );
 }
 
@@ -460,6 +526,8 @@ function formatOutcome(outcome: ImportOutcome): string {
       return '·';
     case 'skipped-no-impl':
       return '?';
+    case 'skipped-out-of-scope':
+      return '-';
     case 'failed':
       return '✗';
   }
@@ -484,29 +552,33 @@ async function confirmPrompt(prompt: string): Promise<boolean> {
  * (`cdkd state ...` subcommands are reserved for state-only operations
  * that don't need the CDK code.)
  *
- * Usage modes (both supported in one command — they compose):
- *   1. **Whole-stack auto-import** (no overrides):
- *      `cdkd import MyStack --app "..."`
- *      Reads the template; for each resource, asks the registered provider
- *      to find the physical id (typically by `aws:cdk:path` tag) and fetch
- *      attributes.
- *   2. **Resource-level explicit override** (one or many):
- *      `cdkd import MyStack --app "..." \
- *           --resource MyBucket=my-bucket-name \
- *           --resource MyFn=my-function`
- *      For each `--resource`, the provider trusts the supplied physical id
- *      and only fetches attributes. Resources NOT in the override list still
- *      go through tag-based auto-import.
- *   3. **CDK CLI compatibility**: `--resource-mapping <file.json>` reads
- *      `{ "<logicalId>": "<physicalId>", ... }` (matches `cdk import`'s
- *      mapping format) so existing CDK users can reuse their files.
+ * Three usage modes:
+ *
+ *   1. **Auto mode** (no overrides): `cdkd import MyStack`
+ *      Imports every resource in the template via tag-based lookup
+ *      (`aws:cdk:path`). cdkd's value-add over CDK CLI — useful for
+ *      adopting a whole stack that was previously deployed by `cdk deploy`.
+ *
+ *   2. **Selective mode** (CDK CLI parity, default when overrides given):
+ *      `cdkd import MyStack --resource MyBucket=my-bucket-name`
+ *      `cdkd import MyStack --resource-mapping mapping.json`
+ *      ONLY the listed resources are imported; the rest are skipped
+ *      ("out of scope") and will be CREATEd on the next deploy. Matches
+ *      `cdk import --resource-mapping` semantics.
+ *
+ *   3. **Hybrid mode** (`--auto` with overrides):
+ *      `cdkd import MyStack --resource MyBucket=name --auto`
+ *      Listed resources use the explicit physical id; all other
+ *      resources still go through tag-based auto-import. The pre-PR
+ *      default behavior, now opt-in.
  */
 export function createImportCommand(): Command {
   const cmd = new Command('import')
     .description(
       'Adopt already-deployed AWS resources into cdkd state. Reads the CDK app to find ' +
-        'logical IDs, resource types, and dependencies; uses the aws:cdk:path tag (or ' +
-        'explicit --resource overrides) to find each resource in AWS.'
+        'logical IDs, resource types, and dependencies. With no flags, imports every ' +
+        'resource via the aws:cdk:path tag. With --resource / --resource-mapping, only ' +
+        'the listed resources are imported (CDK CLI parity); pass --auto to also tag-import the rest.'
     )
     .argument(
       '[stack]',
@@ -515,14 +587,23 @@ export function createImportCommand(): Command {
     .option(
       '--resource <id=physical>',
       'Explicit physical-id override for one logical ID. Repeatable. ' +
-        'Bypasses tag-based auto-lookup for that resource only.',
+        'When at least one --resource is given, only listed resources are imported ' +
+        '(CDK CLI parity). Pass --auto to also tag-import everything else.',
       collectMultiple,
       [] as string[]
     )
     .option(
       '--resource-mapping <file>',
       'Path to a JSON file of {logicalId: physicalId} overrides ' +
-        '(CDK CLI `cdk import --resource-mapping` compatible).'
+        '(CDK CLI `cdk import --resource-mapping` compatible). ' +
+        'Implies selective mode unless --auto is set.'
+    )
+    .option(
+      '--auto',
+      'Hybrid mode: when explicit overrides are supplied, ALSO tag-import ' +
+        'every other resource in the template. Without this flag, --resource / ' +
+        '--resource-mapping behave as a whitelist (CDK CLI parity).',
+      false
     )
     .option('--dry-run', 'Show planned imports without writing state', false)
     .option(
