@@ -1,3 +1,10 @@
+# [0.18.0](https://github.com/go-to-k/cdkd/compare/v0.17.1...v0.18.0) (2026-05-02)
+
+
+### Features
+
+* rename state rm to orphan + add cdkd orphan + 0.x-friendly releaseRules ([#79](https://github.com/go-to-k/cdkd/issues/79)) ([dc701dd](https://github.com/go-to-k/cdkd/commit/dc701dd1aa365b8b0d9a1e98f1c16d9079bd00fb))
+
 ## [0.17.1](https://github.com/go-to-k/cdkd/compare/v0.17.0...v0.17.1) (2026-05-01)
 
 
