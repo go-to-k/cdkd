@@ -112,7 +112,105 @@ pnpm run typecheck
 
   **Top-level vs `state` subcommand split**: top-level commands (`deploy`, `destroy`, `diff`, `synth`, `list`, `import`, `orphan`) require a CDK app — they synthesize a template to know what they're operating on. The `cdkd state ...` subcommand family (`state info`, `state list`, `state resources`, `state show`, `state orphan`, `state destroy`, `state migrate`) operates on the S3 state bucket only and does NOT need the CDK code; it's the right place to inspect / clean up state when the CDK app is missing or you don't want to synth. The `orphan` / `state orphan` distinction mirrors `destroy` / `state destroy`: synth-driven (uses CDK code) vs state-driven (works against the bucket alone). Both `orphan` variants delete ONLY the cdkd state record; AWS resources are left intact (use `destroy` / `state destroy` to delete them).
 
-  `cdkd import <stack> --app "..."` adopts AWS-deployed resources into cdkd state. Three modes: (1) **auto** (no flags) — every resource in the template is looked up by its `aws:cdk:path` tag (cdkd's value-add over CDK CLI for whole-stack adoption); (2) **selective** (CDK CLI parity, default whenever `--resource <logicalId>=<physicalId>` or `--resource-mapping <file.json>` is supplied) — ONLY the listed resources are imported, every other template resource is reported as `out of scope` and left out of state for the next deploy to CREATE. Matches `cdk import --resource-mapping` semantics, including refusing to silently no-op on a typo'd logical ID; (3) **hybrid** (`--auto` with overrides) — listed resources use the explicit physical id; the rest still go through tag-based auto-import (the pre-PR default, now opt-in). Refuses to overwrite an existing state file without `--force`. `provider.import` is implemented for S3 Bucket, Lambda Function, IAM Role, IAM InstanceProfile, IAM User, IAM Group, SNS Topic, SQS Queue, DynamoDB Table, Logs LogGroup, EventBridge EventBus / Rule, KMS Key/Alias, Secrets Manager Secret, SSM Parameter, EC2 (VPC / Subnet / SecurityGroup), RDS (DBInstance / DBCluster / DBSubnetGroup), ECS (Cluster / Service / TaskDefinition), CloudFront Distribution, Cognito User Pool, ApiGateway V2 API, AppSync GraphqlApi, CloudTrail, CloudWatch Alarm, CodeBuild Project, ECR Repository, ELBv2 (LoadBalancer / TargetGroup), Route53 HostedZone, Step Functions StateMachine, Glue (Database / Table), Kinesis Stream, Kinesis Firehose DeliveryStream, WAFv2 WebACL, EFS (FileSystem / AccessPoint), ElastiCache (CacheCluster / SubnetGroup), Lambda LayerVersion, ServiceDiscovery (Service / PrivateDnsNamespace), S3Express DirectoryBucket, S3Tables (TableBucket / Namespace / Table), and S3Vectors VectorBucket — full tag-based auto-lookup. IAM Policy (inline) and IAM UserToGroupAddition are explicit-override only because they have no standalone identity / list API. ApiGateway sub-resources (Authorizer / Resource / Deployment / Stage / Method), ApiGateway V2 sub-resources (Stage / Integration / Route / Authorizer), AppSync sub-resources (GraphQLSchema / DataSource / Resolver / ApiKey), Route53 RecordSet, ELBv2 Listener, and EFS MountTarget implement `import` only for `--resource` explicit overrides (no per-resource taggable identity for auto lookup); use the override mode for those. Override-only sub-resources and attachments — SNS::Subscription, SNS::TopicPolicy, SQS::QueuePolicy, S3::BucketPolicy, Lambda::Permission, Lambda::EventSourceMapping, Lambda::Url, CloudFormation::CustomResource, CloudFront::CloudFrontOriginAccessIdentity, BedrockAgentCore::Runtime — also accept `--resource <id>=<physical>` only (BedrockAgentCore actually has `ListTagsForResource` and could grow auto-lookup later, but ships override-only in this batch). The Cloud Control API fallback also implements `import` for any other CC-API-supported type, again via `--resource <id>=<physicalId>` only — auto tag-based lookup over CC API is too expensive to run by default. Resources whose provider does not implement import are reported as `unsupported` and skipped. `state` is a parent command for inspecting and manipulating cdkd's S3 state bucket: `state info` prints bucket name, region (auto-detected via `GetBucketLocation`), the source that resolved the bucket (`cli-flag` / `env` / `cdk.json` / `default` / `default-legacy`), the schema version, and a stack count (with `--json` for tooling); `state list` (alias `ls`) lists deployed stacks (one row per `(stackName, region)` pair under the new region-prefixed key layout); `state resources <stack>` and `state show <stack>` accept `--stack-region <region>` to disambiguate when the same stackName has state in multiple regions; `state orphan <stack>...` removes cdkd's state record for every region by default, or scopes to one with `--stack-region <region>` (does NOT delete AWS resources — name mirrors aws-cdk-cli's new `cdk orphan`); `cdkd orphan <stack>...` is the synth-driven counterpart that also removes only the state record but takes the same stack-selection / pattern-matching pipeline as `deploy` / `destroy` / `import`; `state destroy <stack>...` deletes AWS resources AND the state record without requiring the CDK app (the CDK-app-free counterpart to `cdkd destroy`). The per-stack destroy logic is hoisted into `src/cli/commands/destroy-runner.ts` and shared by both `cdkd destroy` and `cdkd state destroy`. `state migrate` copies all state from the legacy region-suffixed default bucket (`cdkd-state-{accountId}-{region}`) to the new region-free default (`cdkd-state-{accountId}`); refuses to run while any stack has an active lock; verifies object-count parity before any source cleanup; source bucket is kept by default and only deleted with `--remove-legacy`. The bucket-name banner is no longer printed in routine command output (it includes the AWS account id, which would leak via screenshots / public CI logs); pass `--verbose` to surface it in debug logs, or use `state info` for an explicit on-demand answer.
+  `cdkd import <stack> --app "..."` adopts AWS-deployed resources into cdkd state. Three modes: (1) **auto** (no flags) — every resource in the template is looked up by its `aws:cdk:path` tag (cdkd's value-add over CDK CLI for whole-stack adoption); (2) **selective** (CDK CLI parity, default whenever `--resource <logicalId>=<physicalId>` or `--resource-mapping <file.json>` is supplied) — ONLY the listed resources are imported, every other template resource is reported as `out of scope` and left out of state for the next deploy to CREATE. Matches `cdk import --resource-mapping` semantics, including refusing to silently no-op on a typo'd logical ID; (3) **hybrid** (`--auto` with overrides) — listed resources use the explicit physical id; the rest still go through tag-based auto-import (the pre-PR default, now opt-in). Refuses to overwrite an existing state file without `--force`.
+
+  **`provider.import` support coverage** (each entry is independent — keep additions one-per-line so parallel PRs don't conflict on rebase):
+
+  *Auto-lookup (tag-based, no flag needed)*:
+  - AWS::S3::Bucket
+  - AWS::Lambda::Function
+  - AWS::IAM::Role
+  - AWS::IAM::InstanceProfile
+  - AWS::IAM::User
+  - AWS::IAM::Group
+  - AWS::SNS::Topic
+  - AWS::SQS::Queue
+  - AWS::DynamoDB::Table
+  - AWS::Logs::LogGroup
+  - AWS::Events::EventBus
+  - AWS::Events::Rule
+  - AWS::KMS::Key
+  - AWS::KMS::Alias
+  - AWS::SecretsManager::Secret
+  - AWS::SSM::Parameter
+  - AWS::EC2::VPC
+  - AWS::EC2::Subnet
+  - AWS::EC2::SecurityGroup
+  - AWS::RDS::DBInstance
+  - AWS::RDS::DBCluster
+  - AWS::RDS::DBSubnetGroup
+  - AWS::ECS::Cluster
+  - AWS::ECS::Service
+  - AWS::ECS::TaskDefinition
+  - AWS::CloudFront::Distribution
+  - AWS::Cognito::UserPool
+  - AWS::ApiGatewayV2::Api
+  - AWS::AppSync::GraphQLApi
+  - AWS::CloudTrail::Trail
+  - AWS::CloudWatch::Alarm
+  - AWS::CodeBuild::Project
+  - AWS::ECR::Repository
+  - AWS::ElasticLoadBalancingV2::LoadBalancer
+  - AWS::ElasticLoadBalancingV2::TargetGroup
+  - AWS::Route53::HostedZone
+  - AWS::StepFunctions::StateMachine
+  - AWS::Glue::Database
+  - AWS::Glue::Table
+  - AWS::Kinesis::Stream
+  - AWS::KinesisFirehose::DeliveryStream
+  - AWS::WAFv2::WebACL
+  - AWS::EFS::FileSystem
+  - AWS::EFS::AccessPoint
+  - AWS::ElastiCache::CacheCluster
+  - AWS::ElastiCache::SubnetGroup
+  - AWS::Lambda::LayerVersion
+  - AWS::ServiceDiscovery::Service
+  - AWS::ServiceDiscovery::PrivateDnsNamespace
+  - AWS::S3Express::DirectoryBucket
+  - AWS::S3Tables::TableBucket
+  - AWS::S3Tables::Namespace
+  - AWS::S3Tables::Table
+  - AWS::S3Vectors::VectorBucket
+
+  *Override-only — no standalone identity / list API* (require `--resource <id>=<physical>`):
+  - AWS::IAM::Policy (inline)
+  - AWS::IAM::UserToGroupAddition
+
+  *Override-only — sub-resources without per-resource taggable identity* (require `--resource <id>=<physical>`):
+  - AWS::ApiGateway::Authorizer
+  - AWS::ApiGateway::Resource
+  - AWS::ApiGateway::Deployment
+  - AWS::ApiGateway::Stage
+  - AWS::ApiGateway::Method
+  - AWS::ApiGatewayV2::Stage
+  - AWS::ApiGatewayV2::Integration
+  - AWS::ApiGatewayV2::Route
+  - AWS::ApiGatewayV2::Authorizer
+  - AWS::AppSync::GraphQLSchema
+  - AWS::AppSync::DataSource
+  - AWS::AppSync::Resolver
+  - AWS::AppSync::ApiKey
+  - AWS::Route53::RecordSet
+  - AWS::ElasticLoadBalancingV2::Listener
+  - AWS::EFS::MountTarget
+
+  *Override-only — sub-resources / attachments* (require `--resource <id>=<physical>`):
+  - AWS::SNS::Subscription
+  - AWS::SNS::TopicPolicy
+  - AWS::SQS::QueuePolicy
+  - AWS::S3::BucketPolicy
+  - AWS::Lambda::Permission
+  - AWS::Lambda::EventSourceMapping
+  - AWS::Lambda::Url
+  - AWS::CloudFormation::CustomResource
+  - AWS::CloudFront::CloudFrontOriginAccessIdentity
+  - AWS::BedrockAgentCore::Runtime (has `ListTagsForResource`; could grow auto-lookup later)
+
+  *Cloud Control API fallback*: any other CC-API-supported type, override-only via `--resource <id>=<physicalId>` (auto tag-based lookup over CC API is too expensive to run by default).
+
+  *Unsupported*: providers that do not implement `import` are reported as `unsupported` and skipped.
+
+  `state` is a parent command for inspecting and manipulating cdkd's S3 state bucket: `state info` prints bucket name, region (auto-detected via `GetBucketLocation`), the source that resolved the bucket (`cli-flag` / `env` / `cdk.json` / `default` / `default-legacy`), the schema version, and a stack count (with `--json` for tooling); `state list` (alias `ls`) lists deployed stacks (one row per `(stackName, region)` pair under the new region-prefixed key layout); `state resources <stack>` and `state show <stack>` accept `--stack-region <region>` to disambiguate when the same stackName has state in multiple regions; `state orphan <stack>...` removes cdkd's state record for every region by default, or scopes to one with `--stack-region <region>` (does NOT delete AWS resources — name mirrors aws-cdk-cli's new `cdk orphan`); `cdkd orphan <stack>...` is the synth-driven counterpart that also removes only the state record but takes the same stack-selection / pattern-matching pipeline as `deploy` / `destroy` / `import`; `state destroy <stack>...` deletes AWS resources AND the state record without requiring the CDK app (the CDK-app-free counterpart to `cdkd destroy`). The per-stack destroy logic is hoisted into `src/cli/commands/destroy-runner.ts` and shared by both `cdkd destroy` and `cdkd state destroy`. `state migrate` copies all state from the legacy region-suffixed default bucket (`cdkd-state-{accountId}-{region}`) to the new region-free default (`cdkd-state-{accountId}`); refuses to run while any stack has an active lock; verifies object-count parity before any source cleanup; source bucket is kept by default and only deleted with `--remove-legacy`. The bucket-name banner is no longer printed in routine command output (it includes the AWS account id, which would leak via screenshots / public CI logs); pass `--verbose` to surface it in debug logs, or use `state info` for an explicit on-demand answer.
 - **src/synthesis/** - CDK app synthesis (self-implemented: subprocess execution, Cloud Assembly parsing, context providers)
 - **src/analyzer/** - DAG builder, template parser, intrinsic function resolution
 - **src/state/** - S3 state backend, lock manager
