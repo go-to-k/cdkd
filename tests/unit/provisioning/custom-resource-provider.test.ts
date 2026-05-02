@@ -505,4 +505,80 @@ describe('CustomResourceProvider', () => {
       expect(mockS3Send).not.toHaveBeenCalled();
     });
   });
+
+  // Regression test for https://github.com/go-to-k/cdkd/issues/90
+  //
+  // The S3 key used to sign the pre-signed ResponseURL given to the Lambda
+  // MUST match the S3 key cdkd polls afterwards. If the two are generated
+  // separately, the Lambda writes its cfn-response to one key while cdkd
+  // polls a different one and the deploy hangs for up to 1 hour (the
+  // polling timeout).
+  describe('issue #90: ResponseURL key consistency', () => {
+    it('uses the same S3 key for the placeholder put, the request payload, and the polling read', async () => {
+      // Async pattern — Lambda returns null so cdkd falls into the S3 polling loop.
+      const asyncProvider = new CustomResourceProvider({
+        responseBucket: 'test-bucket',
+        asyncResponseTimeoutMs: 10_000,
+      });
+
+      // Capture every S3 command in order so we can compare keys across
+      // the placeholder PutObject, the polling GetObject, and the cleanup
+      // DeleteObject.
+      const s3Commands: Array<{ name: string; key: string | undefined }> = [];
+      mockS3Send.mockImplementation((cmd: { constructor: { name: string }; input: { Key?: string } }) => {
+        s3Commands.push({ name: cmd.constructor.name, key: cmd.input.Key });
+        if (cmd.constructor.name === 'GetObjectCommand') {
+          return Promise.resolve({
+            Body: {
+              transformToString: () =>
+                Promise.resolve(
+                  JSON.stringify({
+                    Status: 'SUCCESS',
+                    PhysicalResourceId: 'cr-physical-id',
+                  })
+                ),
+            },
+          });
+        }
+        return Promise.resolve({});
+      });
+
+      // Capture the Lambda invocation so we can extract the RequestId
+      // baked into the payload — the polling key must derive from it.
+      let invokedRequestId: string | undefined;
+      mockLambdaSend.mockImplementationOnce((cmd: { input: { Payload: Uint8Array } }) => {
+        const payload = JSON.parse(Buffer.from(cmd.input.Payload).toString()) as {
+          RequestId: string;
+          ResponseURL: string;
+        };
+        invokedRequestId = payload.RequestId;
+        // null payload triggers the async polling path.
+        return Promise.resolve({ Payload: Buffer.from('null') });
+      });
+
+      const result = await asyncProvider.create('MyCustom', 'Custom::MyResource', {
+        ServiceToken: 'arn:aws:lambda:us-east-1:123456789012:function:my-handler',
+      });
+
+      expect(result.physicalId).toBe('cr-physical-id');
+
+      // S3 command sequence: PutObject (placeholder) -> GetObject (poll) -> DeleteObject (cleanup).
+      const putKey = s3Commands.find((c) => c.name === 'PutObjectCommand')?.key;
+      const getKey = s3Commands.find((c) => c.name === 'GetObjectCommand')?.key;
+      const deleteKey = s3Commands.find((c) => c.name === 'DeleteObjectCommand')?.key;
+
+      expect(putKey).toBeDefined();
+      expect(getKey).toBeDefined();
+      expect(deleteKey).toBeDefined();
+
+      // The load-bearing assertion: the URL the Lambda was handed (via the
+      // placeholder put) and the key cdkd polls must be the same key.
+      expect(getKey).toBe(putKey);
+      expect(deleteKey).toBe(putKey);
+
+      // And the Lambda's RequestId must be the one embedded in that key.
+      expect(invokedRequestId).toBeDefined();
+      expect(getKey).toContain(invokedRequestId!);
+    });
+  });
 });
