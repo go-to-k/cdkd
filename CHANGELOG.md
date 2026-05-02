@@ -1,3 +1,10 @@
+# [0.24.0](https://github.com/go-to-k/cdkd/compare/v0.23.2...v0.24.0) (2026-05-02)
+
+
+### Features
+
+* **import:** add --resource-mapping-inline '<json>' for cdk import parity ([#97](https://github.com/go-to-k/cdkd/issues/97)) ([322776c](https://github.com/go-to-k/cdkd/commit/322776c71fb15667553cecb6d6810c352d560bb7))
+
 ## [0.23.2](https://github.com/go-to-k/cdkd/compare/v0.23.1...v0.23.2) (2026-05-02)
 
 
