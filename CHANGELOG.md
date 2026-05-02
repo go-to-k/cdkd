@@ -1,3 +1,10 @@
+# [0.19.0](https://github.com/go-to-k/cdkd/compare/v0.18.1...v0.19.0) (2026-05-02)
+
+
+### Features
+
+* **provisioning:** add import to 6 more SDK providers (batch 2) ([#80](https://github.com/go-to-k/cdkd/issues/80)) ([139dcc6](https://github.com/go-to-k/cdkd/commit/139dcc644ba81b1389f8f0edac84aab9f019781f))
+
 ## [0.18.1](https://github.com/go-to-k/cdkd/compare/v0.18.0...v0.18.1) (2026-05-02)
 
 
