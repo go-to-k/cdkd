@@ -84,7 +84,19 @@ if [ -n "$diff_base" ]; then
   #   (?!//|\*|#)            negative lookahead — but POSIX grep -E doesn't
   #                          support lookahead. Workaround: filter comment
   #                          lines with a second grep -v pass below.
-  delete_symbol_pattern='^[-+][^-+].*\b(delete|IMPLICIT_DELETE|hyperplane|DependencyViolation|ENI|detach)\b'
+  # `rollback` is included so a refactor that changes the order of
+  # `partial state → rollback → final state` in `deploy-engine.ts`
+  # (which would leak orphans on failure) trips the gate even when
+  # the diff doesn't textually mention the literal CRUD verbs.
+  #
+  # Word boundaries (\b) are dropped so camelCase identifiers match:
+  # `performRollback`, `deleteResource`, `detachVpc` should all hit
+  # the gate. Combined with `grep -i` below, this matches `Rollback`,
+  # `rollback`, `ROLLBACK`, etc. The trade-off is occasional false
+  # positives on substrings (e.g. an unrelated word containing `eni`)
+  # — which only cost an integ-test run, vs false negatives that
+  # cost a broken main.
+  delete_symbol_pattern='^[-+][^-+].*(delete|rollback|IMPLICIT_DELETE|hyperplane|DependencyViolation|ENI|detach)'
   # Lines we consider "comment only" — drop them before the symbol grep.
   # Matches an added/removed line whose first non-whitespace content is
   # a JS/TS/SH comment introducer (`//`, `/*`, `*` mid-block, `#`).
@@ -103,9 +115,13 @@ if [ -n "$diff_base" ]; then
     # in either group with only string / log / typing edits passes
     # through.
     if printf '%s' "$f" | grep -qE "$filtered_delete|$provider_pattern"; then
+      # `-i` so identifier names like `performRollback` (camelCase) and
+      # `Delete`/`DELETE` (mixed case in CFN-style constants) match the
+      # lowercase patterns. Word boundaries (\b) keep matches scoped to
+      # whole words / camelCase boundaries; `EnigmaFoo` is safe.
       if git diff "$diff_base"...HEAD -- "$f" \
          | grep -vE "$comment_line_pattern" \
-         | grep -qE "$delete_symbol_pattern"; then
+         | grep -qiE "$delete_symbol_pattern"; then
         delete_touch=1
         break
       fi
