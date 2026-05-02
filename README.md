@@ -502,6 +502,40 @@ cdkd deploy --no-wait
 
 This can significantly speed up deployments with CloudFront (which takes 3-15 minutes to deploy to edge locations). The resource is fully functional once AWS finishes the async deployment.
 
+## Per-resource timeout
+
+Both `cdkd deploy` and `cdkd destroy` (including `cdkd state destroy`) enforce a wall-clock deadline on every individual CREATE / UPDATE / DELETE so a stuck Cloud Control polling loop, hung Custom Resource handler, or slow ENI release cannot block the run forever.
+
+| Option | Default | Description |
+| --- | --- | --- |
+| `--resource-warn-after <duration>` | `5m` | Warn when a single resource operation has been running longer than this. The live progress line is suffixed with `[taking longer than expected, Nm+]` and a `WARN` log line is emitted (printed above the live area in TTY mode, plain stderr otherwise). |
+| `--resource-timeout <duration>` | `30m` | Abort a single resource operation that exceeds this. The deploy / destroy fails with `ResourceTimeoutError` (wrapped in `ProvisioningError`) and the existing rollback / state-preservation path runs. |
+
+Durations are written as `<number>s`, `<number>m`, or `<number>h` (e.g. `30s`, `90s`, `5m`, `1.5h`). Zero, negative, missing-unit, and unknown-unit values are rejected at parse time.
+
+```bash
+# Bump the per-resource budget to one hour (matches the Custom Resource provider's polling cap)
+cdkd deploy --resource-timeout 1h
+
+# Surface "still running" warnings sooner on a fast-feedback dev loop
+cdkd deploy --resource-warn-after 90s --resource-timeout 10m
+```
+
+### Why the default is 30m, not 1h
+
+cdkd's Custom Resource provider polls async handlers (`isCompleteHandler` pattern) for up to one hour before giving up. Setting the per-resource timeout to 1h by default would make a single hung Custom Resource hold the whole stack for an hour even though no other resource type ever needs more than a few minutes. A shorter default (`30m`) catches stuck operations faster, and stacks that legitimately rely on long-running Custom Resources opt into the higher budget explicitly with `--resource-timeout 1h`.
+
+The error message on timeout names the resource, type, region, elapsed time, and operation, and reminds you to re-run with `--resource-timeout 1h` (or higher) for genuinely-long resources:
+
+```text
+Resource MyBucket (AWS::S3::Bucket) in us-east-1 timed out after 30m during CREATE (elapsed 30m).
+This may indicate a stuck Cloud Control polling loop, hung Custom Resource, or
+slow ENI provisioning. Re-run with --resource-timeout 1h if the resource genuinely
+needs more time, or --verbose to see the underlying provider activity.
+```
+
+Note: `--resource-warn-after` must be less than `--resource-timeout`. Reversed values are rejected at parse time.
+
 ## Example
 
 ```typescript

@@ -1,6 +1,6 @@
 import { getLogger } from '../utils/logger.js';
 import { getLiveRenderer } from '../utils/live-renderer.js';
-import { ProvisioningError } from '../utils/error-handler.js';
+import { ProvisioningError, ResourceTimeoutError } from '../utils/error-handler.js';
 import { withStackName, applyDefaultNameForFallback } from '../provisioning/resource-name.js';
 import { IntrinsicFunctionResolver } from './intrinsic-function-resolver.js';
 import { DagExecutor } from './dag-executor.js';
@@ -20,6 +20,7 @@ import { CloudControlProvider } from '../provisioning/cloud-control-provider.js'
 import { TemplateParser } from '../analyzer/template-parser.js';
 import { IMPLICIT_DELETE_DEPENDENCIES } from '../analyzer/implicit-delete-deps.js';
 import { withRetry } from './retry.js';
+import { withResourceDeadline } from './resource-deadline.js';
 
 /**
  * Completed operation record for rollback tracking
@@ -40,6 +41,20 @@ interface CompletedOperation {
 }
 
 /**
+ * Default per-resource warn threshold: warn the user when a single
+ * resource has been in flight for 5 minutes. Most CC API resources
+ * complete in under a minute; 5m is the agreed elbow.
+ */
+export const DEFAULT_RESOURCE_WARN_AFTER_MS = 5 * 60 * 1000;
+
+/**
+ * Default per-resource hard timeout: abort after 30 minutes. Matches the
+ * design doc — Custom-Resource-heavy stacks should pass `--resource-timeout 1h`
+ * explicitly because the Custom Resource provider's polling cap is 1h.
+ */
+export const DEFAULT_RESOURCE_TIMEOUT_MS = 30 * 60 * 1000;
+
+/**
  * Deploy engine options
  */
 export interface DeployEngineOptions {
@@ -53,6 +68,20 @@ export interface DeployEngineOptions {
   parameters?: Record<string, string>;
   /** Skip rollback on failure (save partial state and fail) */
   noRollback?: boolean;
+  /**
+   * Per-resource warn threshold (ms). When a single CREATE / UPDATE /
+   * DELETE has been running this long, the live renderer's task label
+   * gets a "[taking longer than expected, Nm+]" suffix and a
+   * `logger.warn` line is emitted. Defaults to
+   * {@link DEFAULT_RESOURCE_WARN_AFTER_MS}.
+   */
+  resourceWarnAfterMs?: number;
+  /**
+   * Per-resource hard timeout (ms). When a single resource exceeds this,
+   * `ResourceTimeoutError` is thrown and the existing rollback path
+   * runs. Defaults to {@link DEFAULT_RESOURCE_TIMEOUT_MS}.
+   */
+  resourceTimeoutMs?: number;
 }
 
 /**
@@ -130,6 +159,9 @@ export class DeployEngine {
     this.options.dryRun = options.dryRun ?? false;
     this.options.lockTimeout = options.lockTimeout ?? 5 * 60 * 1000; // 5 minutes
     this.options.noRollback = options.noRollback ?? false;
+    this.options.resourceWarnAfterMs =
+      options.resourceWarnAfterMs ?? DEFAULT_RESOURCE_WARN_AFTER_MS;
+    this.options.resourceTimeoutMs = options.resourceTimeoutMs ?? DEFAULT_RESOURCE_TIMEOUT_MS;
   }
 
   /**
@@ -918,7 +950,6 @@ export class DeployEngine {
     progress?: { current: number; total: number }
   ): Promise<void> {
     const resourceType = change.resourceType;
-    const provider = this.providerRegistry.getProvider(resourceType);
 
     const renderer = getLiveRenderer();
     const needsReplacement =
@@ -932,315 +963,64 @@ export class DeployEngine {
           : needsReplacement
             ? 'Replacing'
             : 'Updating';
-    renderer.addTask(logicalId, `${verb} ${logicalId} (${resourceType})`);
+    const baseLabel = `${verb} ${logicalId} (${resourceType})`;
+    renderer.addTask(logicalId, baseLabel);
+
+    // Operation classification for the timeout error message. UPDATE and
+    // its replacement-replacement form are both surfaced as 'UPDATE' since
+    // the user-facing distinction (which immutable property triggered it)
+    // is already in the renderer label.
+    const operationKind: 'CREATE' | 'UPDATE' | 'DELETE' =
+      change.changeType === 'CREATE'
+        ? 'CREATE'
+        : change.changeType === 'DELETE'
+          ? 'DELETE'
+          : 'UPDATE';
+
+    const warnAfterMs = this.options.resourceWarnAfterMs ?? DEFAULT_RESOURCE_WARN_AFTER_MS;
+    const timeoutMs = this.options.resourceTimeoutMs ?? DEFAULT_RESOURCE_TIMEOUT_MS;
 
     try {
-      switch (change.changeType) {
-        case 'CREATE': {
-          const desiredProps = change.desiredProperties || {};
-
-          // Resolve intrinsic functions in properties
-          const context = {
-            template: template!,
-            resources: stateResources,
-            ...(parameterValues &&
-              Object.keys(parameterValues).length > 0 && { parameters: parameterValues }),
-            ...(conditions && Object.keys(conditions).length > 0 && { conditions }),
-            stateBackend: this.stateBackend,
+      await withResourceDeadline(
+        async () => {
+          await this.provisionResourceBody(
+            logicalId,
+            change,
+            stateResources,
             stackName,
-          };
-
-          const resolvedProps = (await this.resolver.resolve(desiredProps, context)) as Record<
-            string,
-            unknown
-          >;
-
-          // Safety net: if SDK provider doesn't handle all template properties,
-          // fall back to CC API for create to ensure no properties are silently dropped
-          const { provider: createProvider, properties: createProps } =
-            this.selectProviderWithSafetyNet(provider, resourceType, resolvedProps, logicalId);
-
-          const result = await this.withRetry(
-            () => createProvider.create(logicalId, resourceType, createProps),
-            logicalId
+            template,
+            parameterValues,
+            conditions,
+            counts,
+            progress
           );
-
-          // Extract ALL dependencies from template (Ref, Fn::GetAtt, DependsOn)
-          // so that deletion order is correct even without implicit type-based deps
-          const dependencies = this.extractAllDependencies(template, logicalId);
-
-          stateResources[logicalId] = {
-            physicalId: result.physicalId,
-            resourceType,
-            properties: resolvedProps,
-            ...(result.attributes && { attributes: result.attributes }),
-            ...(dependencies && dependencies.length > 0 && { dependencies }),
-          };
-
-          if (counts) counts.created++;
-          if (progress) progress.current++;
-          const createPrefix = progress ? `[${progress.current}/${progress.total}] ` : '  ';
-          renderer.removeTask(logicalId);
-          this.logger.info(`${createPrefix}✅ ${logicalId} (${resourceType}) created`);
-          break;
-        }
-
-        case 'UPDATE': {
-          const currentResource = stateResources[logicalId];
-          if (!currentResource) {
-            throw new Error(`Cannot update ${logicalId}: resource not found in state`);
-          }
-
-          const desiredProps = change.desiredProperties || {};
-          const currentProps = change.currentProperties || {};
-
-          // Resolve intrinsic functions in properties
-          const context = {
-            template: template!,
-            resources: stateResources,
-            ...(parameterValues &&
-              Object.keys(parameterValues).length > 0 && { parameters: parameterValues }),
-            ...(conditions && Object.keys(conditions).length > 0 && { conditions }),
-            stateBackend: this.stateBackend,
-            stackName,
-          };
-
-          const resolvedProps = (await this.resolver.resolve(desiredProps, context)) as Record<
-            string,
-            unknown
-          >;
-
-          // Re-check diff after resolving intrinsic functions
-          // DiffCalculator compares unresolved template vs resolved state, which may produce false positives
-          if (JSON.stringify(resolvedProps) === JSON.stringify(currentProps)) {
-            this.logger.debug(
-              `Skipping ${logicalId}: no actual changes after intrinsic function resolution`
-            );
-            if (counts) counts.skipped++;
-            break;
-          }
-
-          // Check if this update requires resource replacement (immutable property changed)
-          const needsReplacement = change.propertyChanges?.some((pc) => pc.requiresReplacement);
-
-          // Extract ALL dependencies from template (Ref, Fn::GetAtt, DependsOn)
-          const dependencies = this.extractAllDependencies(template, logicalId);
-
-          if (needsReplacement) {
-            // Resource replacement: DELETE old → CREATE new
-            const replacedProps = change.propertyChanges
-              ?.filter((pc) => pc.requiresReplacement)
-              .map((pc) => pc.path)
-              .join(', ');
-            this.logger.info(
-              `Replacing ${logicalId} (${resourceType}) - immutable properties changed: ${replacedProps}`
-            );
-
-            // 1. Create new resource first (CFn order: safe - old resource survives if CREATE fails)
-            this.logger.info(`  Creating new ${logicalId}...`);
-            const { provider: replaceProvider, properties: replaceProps } =
-              this.selectProviderWithSafetyNet(provider, resourceType, resolvedProps, logicalId);
-            const createResult = await this.withRetry(
-              () => replaceProvider.create(logicalId, resourceType, replaceProps),
-              logicalId
-            );
-
-            // 2. Delete old resource (after successful CREATE)
-            const updateReplacePolicy = template?.Resources?.[logicalId]?.UpdateReplacePolicy;
-
-            if (updateReplacePolicy === 'Retain') {
-              this.logger.info(
-                `  Retaining old ${logicalId} (${currentResource.physicalId}) - UpdateReplacePolicy: Retain`
+        },
+        {
+          warnAfterMs,
+          timeoutMs,
+          onWarn: (elapsedMs) => {
+            const minutes = Math.max(1, Math.round(elapsedMs / 60_000));
+            const warnSuffix = ` [taking longer than expected, ${minutes}m+]`;
+            // Mutate the live renderer's task label in place (TTY mode)
+            // and emit a warn line above the live area (non-TTY / verbose).
+            renderer.updateTaskLabel(logicalId, `${baseLabel}${warnSuffix}`);
+            renderer.printAbove(() => {
+              this.logger.warn(
+                `${logicalId} (${resourceType}) has been ${operationKind === 'CREATE' ? 'creating' : operationKind === 'DELETE' ? 'deleting' : 'updating'} for ${minutes}m — still waiting`
               );
-            } else {
-              this.logger.info(`  Deleting old ${logicalId} (${currentResource.physicalId})...`);
-              try {
-                await provider.delete(
-                  logicalId,
-                  currentResource.physicalId,
-                  resourceType,
-                  currentResource.properties,
-                  { expectedRegion: this.stackRegion }
-                );
-                this.logger.info(`  ✓ Old resource deleted`);
-              } catch (deleteError) {
-                this.logger.warn(
-                  `  ⚠ Failed to delete old resource ${logicalId} (${currentResource.physicalId}): ${deleteError instanceof Error ? deleteError.message : String(deleteError)}`
-                );
-              }
-            }
-
-            stateResources[logicalId] = {
-              physicalId: createResult.physicalId,
-              resourceType,
-              properties: resolvedProps,
-              ...(createResult.attributes && { attributes: createResult.attributes }),
-              ...(dependencies && dependencies.length > 0 && { dependencies }),
-            };
-
-            if (counts) counts.updated++;
-            if (progress) progress.current++;
-            const replacePrefix = progress ? `[${progress.current}/${progress.total}] ` : '  ';
-            renderer.removeTask(logicalId);
-            this.logger.info(`${replacePrefix}✅ ${logicalId} (${resourceType}) replaced`);
-          } else {
-            // Normal update (in-place)
-            this.logger.debug(`Updating ${logicalId} (${resourceType})`);
-
-            // Safety net: fall back to CC API if SDK provider doesn't handle all properties
-            const { provider: updateProvider, properties: updateProps } =
-              this.selectProviderWithSafetyNet(provider, resourceType, resolvedProps, logicalId);
-
-            let result;
-            try {
-              result = await this.withRetry(
-                () =>
-                  updateProvider.update(
-                    logicalId,
-                    currentResource.physicalId,
-                    resourceType,
-                    updateProps,
-                    currentProps
-                  ),
-                logicalId
-              );
-            } catch (updateError) {
-              // If UPDATE is not supported (e.g., CC API UnsupportedActionException),
-              // fall back to DELETE → CREATE (replacement)
-              const msg = updateError instanceof Error ? updateError.message : String(updateError);
-              if (
-                msg.includes('UnsupportedActionException') ||
-                msg.includes('does not support UPDATE')
-              ) {
-                this.logger.info(
-                  `UPDATE not supported for ${logicalId} (${resourceType}), replacing (DELETE → CREATE)`
-                );
-                try {
-                  await provider.delete(
-                    logicalId,
-                    currentResource.physicalId,
-                    resourceType,
-                    currentProps,
-                    { expectedRegion: this.stackRegion }
-                  );
-                } catch (deleteError) {
-                  // If old resource doesn't exist (already deleted), proceed with CREATE
-                  const deleteMsg =
-                    deleteError instanceof Error ? deleteError.message : String(deleteError);
-                  if (
-                    deleteMsg.includes('does not exist') ||
-                    deleteMsg.includes('not found') ||
-                    deleteMsg.includes('NotFound')
-                  ) {
-                    this.logger.debug(
-                      `Old resource ${logicalId} already gone, proceeding with CREATE`
-                    );
-                  } else {
-                    throw deleteError;
-                  }
-                }
-                const { provider: replProvider, properties: replProps } =
-                  this.selectProviderWithSafetyNet(
-                    provider,
-                    resourceType,
-                    resolvedProps,
-                    logicalId
-                  );
-                const createResult = await this.withRetry(
-                  () => replProvider.create(logicalId, resourceType, replProps),
-                  logicalId
-                );
-                result = {
-                  physicalId: createResult.physicalId,
-                  attributes: createResult.attributes,
-                  wasReplaced: true,
-                };
-              } else {
-                throw updateError;
-              }
-            }
-
-            if (result.wasReplaced) {
-              this.logger.info(
-                `Resource ${logicalId} was replaced: ${currentResource.physicalId} -> ${result.physicalId}`
-              );
-            }
-
-            stateResources[logicalId] = {
-              physicalId: result.physicalId,
-              resourceType,
-              properties: resolvedProps,
-              ...(result.attributes && { attributes: result.attributes }),
-              ...(dependencies && dependencies.length > 0 && { dependencies }),
-            };
-
-            if (counts) counts.updated++;
-            if (progress) progress.current++;
-            const updatePrefix = progress ? `[${progress.current}/${progress.total}] ` : '  ';
-            renderer.removeTask(logicalId);
-            this.logger.info(`${updatePrefix}✅ ${logicalId} (${resourceType}) updated`);
-          }
-          break;
-        }
-
-        case 'DELETE': {
-          const currentResource = stateResources[logicalId];
-          if (!currentResource) {
-            throw new Error(`Cannot delete ${logicalId}: resource not found in state`);
-          }
-
-          // Check DeletionPolicy from template
-          const deletionPolicy = template?.Resources?.[logicalId]?.DeletionPolicy;
-          if (deletionPolicy === 'Retain') {
-            this.logger.info(`Retaining ${logicalId} (${resourceType}) - DeletionPolicy: Retain`);
-            delete stateResources[logicalId];
-            break;
-          }
-
-          this.logger.debug(`Deleting ${logicalId} (${resourceType})`);
-          try {
-            await this.withRetry(
-              () =>
-                provider.delete(
-                  logicalId,
-                  currentResource.physicalId,
-                  resourceType,
-                  currentResource.properties,
-                  { expectedRegion: this.stackRegion }
-                ),
+            });
+          },
+          onTimeout: (elapsedMs) =>
+            new ResourceTimeoutError(
               logicalId,
-              3, // fewer retries for DELETE
-              5_000
-            );
-          } catch (deleteError) {
-            const msg = deleteError instanceof Error ? deleteError.message : String(deleteError);
-            // Treat "not found" errors as success (resource already deleted)
-            if (
-              msg.includes('does not exist') ||
-              msg.includes('was not found') ||
-              msg.includes('not found') ||
-              msg.includes('No policy found') ||
-              msg.includes('NoSuchEntity') ||
-              msg.includes('NotFoundException') ||
-              msg.includes('ResourceNotFoundException')
-            ) {
-              this.logger.debug(
-                `Resource ${logicalId} already deleted (${msg}), removing from state`
-              );
-            } else {
-              throw deleteError;
-            }
-          }
-
-          delete stateResources[logicalId];
-          if (counts) counts.deleted++;
-          if (progress) progress.current++;
-          const deletePrefix = progress ? `[${progress.current}/${progress.total}] ` : '  ';
-          renderer.removeTask(logicalId);
-          this.logger.info(`${deletePrefix}✅ ${logicalId} (${resourceType}) deleted`);
-          break;
+              resourceType,
+              this.stackRegion,
+              elapsedMs,
+              operationKind,
+              timeoutMs
+            ),
         }
-      }
+      );
     } catch (error) {
       renderer.removeTask(logicalId);
       const message = error instanceof Error ? error.message : String(error);
@@ -1258,6 +1038,330 @@ export class DeployEngine {
       // removeTask is idempotent, so calling it again after the explicit calls
       // above is a no-op.
       renderer.removeTask(logicalId);
+    }
+  }
+
+  /**
+   * Inner body of provisionResource, extracted so the outer wrapper can
+   * apply the per-resource deadline (`withResourceDeadline`) without
+   * having the timeout / warn timer code dwarf the real provisioning
+   * logic. Behaviour is unchanged from the pre-deadline implementation.
+   */
+  private async provisionResourceBody(
+    logicalId: string,
+    change: ResourceChange,
+    stateResources: Record<string, ResourceState>,
+    stackName: string,
+    template?: CloudFormationTemplate,
+    parameterValues?: Record<string, unknown>,
+    conditions?: Record<string, boolean>,
+    counts?: { created: number; updated: number; deleted: number; skipped: number },
+    progress?: { current: number; total: number }
+  ): Promise<void> {
+    const resourceType = change.resourceType;
+    const provider = this.providerRegistry.getProvider(resourceType);
+    const renderer = getLiveRenderer();
+
+    switch (change.changeType) {
+      case 'CREATE': {
+        const desiredProps = change.desiredProperties || {};
+
+        // Resolve intrinsic functions in properties
+        const context = {
+          template: template!,
+          resources: stateResources,
+          ...(parameterValues &&
+            Object.keys(parameterValues).length > 0 && { parameters: parameterValues }),
+          ...(conditions && Object.keys(conditions).length > 0 && { conditions }),
+          stateBackend: this.stateBackend,
+          stackName,
+        };
+
+        const resolvedProps = (await this.resolver.resolve(desiredProps, context)) as Record<
+          string,
+          unknown
+        >;
+
+        // Safety net: if SDK provider doesn't handle all template properties,
+        // fall back to CC API for create to ensure no properties are silently dropped
+        const { provider: createProvider, properties: createProps } =
+          this.selectProviderWithSafetyNet(provider, resourceType, resolvedProps, logicalId);
+
+        const result = await this.withRetry(
+          () => createProvider.create(logicalId, resourceType, createProps),
+          logicalId
+        );
+
+        // Extract ALL dependencies from template (Ref, Fn::GetAtt, DependsOn)
+        // so that deletion order is correct even without implicit type-based deps
+        const dependencies = this.extractAllDependencies(template, logicalId);
+
+        stateResources[logicalId] = {
+          physicalId: result.physicalId,
+          resourceType,
+          properties: resolvedProps,
+          ...(result.attributes && { attributes: result.attributes }),
+          ...(dependencies && dependencies.length > 0 && { dependencies }),
+        };
+
+        if (counts) counts.created++;
+        if (progress) progress.current++;
+        const createPrefix = progress ? `[${progress.current}/${progress.total}] ` : '  ';
+        renderer.removeTask(logicalId);
+        this.logger.info(`${createPrefix}✅ ${logicalId} (${resourceType}) created`);
+        break;
+      }
+
+      case 'UPDATE': {
+        const currentResource = stateResources[logicalId];
+        if (!currentResource) {
+          throw new Error(`Cannot update ${logicalId}: resource not found in state`);
+        }
+
+        const desiredProps = change.desiredProperties || {};
+        const currentProps = change.currentProperties || {};
+
+        // Resolve intrinsic functions in properties
+        const context = {
+          template: template!,
+          resources: stateResources,
+          ...(parameterValues &&
+            Object.keys(parameterValues).length > 0 && { parameters: parameterValues }),
+          ...(conditions && Object.keys(conditions).length > 0 && { conditions }),
+          stateBackend: this.stateBackend,
+          stackName,
+        };
+
+        const resolvedProps = (await this.resolver.resolve(desiredProps, context)) as Record<
+          string,
+          unknown
+        >;
+
+        // Re-check diff after resolving intrinsic functions
+        // DiffCalculator compares unresolved template vs resolved state, which may produce false positives
+        if (JSON.stringify(resolvedProps) === JSON.stringify(currentProps)) {
+          this.logger.debug(
+            `Skipping ${logicalId}: no actual changes after intrinsic function resolution`
+          );
+          if (counts) counts.skipped++;
+          break;
+        }
+
+        // Check if this update requires resource replacement (immutable property changed)
+        const needsReplacement = change.propertyChanges?.some((pc) => pc.requiresReplacement);
+
+        // Extract ALL dependencies from template (Ref, Fn::GetAtt, DependsOn)
+        const dependencies = this.extractAllDependencies(template, logicalId);
+
+        if (needsReplacement) {
+          // Resource replacement: DELETE old → CREATE new
+          const replacedProps = change.propertyChanges
+            ?.filter((pc) => pc.requiresReplacement)
+            .map((pc) => pc.path)
+            .join(', ');
+          this.logger.info(
+            `Replacing ${logicalId} (${resourceType}) - immutable properties changed: ${replacedProps}`
+          );
+
+          // 1. Create new resource first (CFn order: safe - old resource survives if CREATE fails)
+          this.logger.info(`  Creating new ${logicalId}...`);
+          const { provider: replaceProvider, properties: replaceProps } =
+            this.selectProviderWithSafetyNet(provider, resourceType, resolvedProps, logicalId);
+          const createResult = await this.withRetry(
+            () => replaceProvider.create(logicalId, resourceType, replaceProps),
+            logicalId
+          );
+
+          // 2. Delete old resource (after successful CREATE)
+          const updateReplacePolicy = template?.Resources?.[logicalId]?.UpdateReplacePolicy;
+
+          if (updateReplacePolicy === 'Retain') {
+            this.logger.info(
+              `  Retaining old ${logicalId} (${currentResource.physicalId}) - UpdateReplacePolicy: Retain`
+            );
+          } else {
+            this.logger.info(`  Deleting old ${logicalId} (${currentResource.physicalId})...`);
+            try {
+              await provider.delete(
+                logicalId,
+                currentResource.physicalId,
+                resourceType,
+                currentResource.properties,
+                { expectedRegion: this.stackRegion }
+              );
+              this.logger.info(`  ✓ Old resource deleted`);
+            } catch (deleteError) {
+              this.logger.warn(
+                `  ⚠ Failed to delete old resource ${logicalId} (${currentResource.physicalId}): ${deleteError instanceof Error ? deleteError.message : String(deleteError)}`
+              );
+            }
+          }
+
+          stateResources[logicalId] = {
+            physicalId: createResult.physicalId,
+            resourceType,
+            properties: resolvedProps,
+            ...(createResult.attributes && { attributes: createResult.attributes }),
+            ...(dependencies && dependencies.length > 0 && { dependencies }),
+          };
+
+          if (counts) counts.updated++;
+          if (progress) progress.current++;
+          const replacePrefix = progress ? `[${progress.current}/${progress.total}] ` : '  ';
+          renderer.removeTask(logicalId);
+          this.logger.info(`${replacePrefix}✅ ${logicalId} (${resourceType}) replaced`);
+        } else {
+          // Normal update (in-place)
+          this.logger.debug(`Updating ${logicalId} (${resourceType})`);
+
+          // Safety net: fall back to CC API if SDK provider doesn't handle all properties
+          const { provider: updateProvider, properties: updateProps } =
+            this.selectProviderWithSafetyNet(provider, resourceType, resolvedProps, logicalId);
+
+          let result;
+          try {
+            result = await this.withRetry(
+              () =>
+                updateProvider.update(
+                  logicalId,
+                  currentResource.physicalId,
+                  resourceType,
+                  updateProps,
+                  currentProps
+                ),
+              logicalId
+            );
+          } catch (updateError) {
+            // If UPDATE is not supported (e.g., CC API UnsupportedActionException),
+            // fall back to DELETE → CREATE (replacement)
+            const msg = updateError instanceof Error ? updateError.message : String(updateError);
+            if (
+              msg.includes('UnsupportedActionException') ||
+              msg.includes('does not support UPDATE')
+            ) {
+              this.logger.info(
+                `UPDATE not supported for ${logicalId} (${resourceType}), replacing (DELETE → CREATE)`
+              );
+              try {
+                await provider.delete(
+                  logicalId,
+                  currentResource.physicalId,
+                  resourceType,
+                  currentProps,
+                  { expectedRegion: this.stackRegion }
+                );
+              } catch (deleteError) {
+                // If old resource doesn't exist (already deleted), proceed with CREATE
+                const deleteMsg =
+                  deleteError instanceof Error ? deleteError.message : String(deleteError);
+                if (
+                  deleteMsg.includes('does not exist') ||
+                  deleteMsg.includes('not found') ||
+                  deleteMsg.includes('NotFound')
+                ) {
+                  this.logger.debug(
+                    `Old resource ${logicalId} already gone, proceeding with CREATE`
+                  );
+                } else {
+                  throw deleteError;
+                }
+              }
+              const { provider: replProvider, properties: replProps } =
+                this.selectProviderWithSafetyNet(provider, resourceType, resolvedProps, logicalId);
+              const createResult = await this.withRetry(
+                () => replProvider.create(logicalId, resourceType, replProps),
+                logicalId
+              );
+              result = {
+                physicalId: createResult.physicalId,
+                attributes: createResult.attributes,
+                wasReplaced: true,
+              };
+            } else {
+              throw updateError;
+            }
+          }
+
+          if (result.wasReplaced) {
+            this.logger.info(
+              `Resource ${logicalId} was replaced: ${currentResource.physicalId} -> ${result.physicalId}`
+            );
+          }
+
+          stateResources[logicalId] = {
+            physicalId: result.physicalId,
+            resourceType,
+            properties: resolvedProps,
+            ...(result.attributes && { attributes: result.attributes }),
+            ...(dependencies && dependencies.length > 0 && { dependencies }),
+          };
+
+          if (counts) counts.updated++;
+          if (progress) progress.current++;
+          const updatePrefix = progress ? `[${progress.current}/${progress.total}] ` : '  ';
+          renderer.removeTask(logicalId);
+          this.logger.info(`${updatePrefix}✅ ${logicalId} (${resourceType}) updated`);
+        }
+        break;
+      }
+
+      case 'DELETE': {
+        const currentResource = stateResources[logicalId];
+        if (!currentResource) {
+          throw new Error(`Cannot delete ${logicalId}: resource not found in state`);
+        }
+
+        // Check DeletionPolicy from template
+        const deletionPolicy = template?.Resources?.[logicalId]?.DeletionPolicy;
+        if (deletionPolicy === 'Retain') {
+          this.logger.info(`Retaining ${logicalId} (${resourceType}) - DeletionPolicy: Retain`);
+          delete stateResources[logicalId];
+          break;
+        }
+
+        this.logger.debug(`Deleting ${logicalId} (${resourceType})`);
+        try {
+          await this.withRetry(
+            () =>
+              provider.delete(
+                logicalId,
+                currentResource.physicalId,
+                resourceType,
+                currentResource.properties,
+                { expectedRegion: this.stackRegion }
+              ),
+            logicalId,
+            3, // fewer retries for DELETE
+            5_000
+          );
+        } catch (deleteError) {
+          const msg = deleteError instanceof Error ? deleteError.message : String(deleteError);
+          // Treat "not found" errors as success (resource already deleted)
+          if (
+            msg.includes('does not exist') ||
+            msg.includes('was not found') ||
+            msg.includes('not found') ||
+            msg.includes('No policy found') ||
+            msg.includes('NoSuchEntity') ||
+            msg.includes('NotFoundException') ||
+            msg.includes('ResourceNotFoundException')
+          ) {
+            this.logger.debug(
+              `Resource ${logicalId} already deleted (${msg}), removing from state`
+            );
+          } else {
+            throw deleteError;
+          }
+        }
+
+        delete stateResources[logicalId];
+        if (counts) counts.deleted++;
+        if (progress) progress.current++;
+        const deletePrefix = progress ? `[${progress.current}/${progress.total}] ` : '  ';
+        renderer.removeTask(logicalId);
+        this.logger.info(`${deletePrefix}✅ ${logicalId} (${resourceType}) deleted`);
+        break;
+      }
     }
   }
 
