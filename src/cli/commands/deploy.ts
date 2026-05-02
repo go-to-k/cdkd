@@ -23,6 +23,7 @@ import { registerAllProviders } from '../../provisioning/register-providers.js';
 import { DeployEngine } from '../../deployment/deploy-engine.js';
 import { WorkGraph } from '../../deployment/work-graph.js';
 import { setAwsClients, AwsClients } from '../../utils/aws-clients.js';
+import { runStackBuffered } from '../../utils/stack-context.js';
 import { resolveApp, resolveStateBucketWithDefault } from '../config-loader.js';
 import { matchStacks, describeStack } from '../stack-matcher.js';
 
@@ -270,6 +271,84 @@ async function deployCommand(
     const summary = workGraph.summary();
     logger.debug(`Work graph: ${summary['asset-publish']} asset(s), ${summary['stack']} stack(s)`);
 
+    // Buffer per-stack log output when more than one stack will deploy
+    // concurrently. Without this, two stacks' `logger.info(...)` lines
+    // interleave: stack A's "Changes: 4 to create" / "Deploying 4
+    // resource(s)" lands between stack B's `[N/N] ✅ ...` rows, and
+    // stack B's "Deployment completed" prints after stack A's late
+    // progress. The buffer captures everything for the duration of one
+    // stack and flushes it as one block — clean per-stack groups.
+    const bufferStackOutput = targetStacks.length > 1;
+
+    const runStack = async (stackInfo: (typeof targetStacks)[0]): Promise<void> => {
+      const stackRegion = stackInfo.region || baseRegion;
+
+      logger.info(
+        `\nDeploying stack: ${stackInfo.stackName}${stackRegion !== baseRegion ? ` (region: ${stackRegion})` : ''}`
+      );
+
+      switchRegion(stackRegion);
+
+      const stackAwsClients = new AwsClients({
+        region: stackRegion,
+        ...(options.profile && { profile: options.profile }),
+      });
+      setAwsClients(stackAwsClients);
+
+      const stateS3Client = new AwsClients({
+        region: baseRegion,
+        ...(options.profile && { profile: options.profile }),
+      });
+      const stackStateBackend = new S3StateBackend(stateS3Client.s3, stateConfig, {
+        region: baseRegion,
+        ...(options.profile && { profile: options.profile }),
+      });
+      const stackLockManager = new LockManager(stateS3Client.s3, stateConfig);
+      const stackProviderRegistry = new ProviderRegistry();
+      registerAllProviders(stackProviderRegistry);
+      stackProviderRegistry.setCustomResourceResponseBucket(stateBucket, baseRegion);
+
+      const stackDeployEngine = new DeployEngine(
+        stackStateBackend,
+        stackLockManager,
+        dagBuilder,
+        diffCalculator,
+        stackProviderRegistry,
+        {
+          concurrency: options.concurrency,
+          dryRun: options.dryRun,
+          noRollback: !options.rollback,
+        },
+        stackRegion
+      );
+
+      try {
+        const deployResult = await stackDeployEngine.deploy(
+          stackInfo.stackName,
+          stackInfo.template
+        );
+
+        logger.info('\nDeployment Summary:');
+        logger.info(`  Stack: ${deployResult.stackName}`);
+        logger.info(`  Created: ${deployResult.created}`);
+        logger.info(`  Updated: ${deployResult.updated}`);
+        logger.info(`  Deleted: ${deployResult.deleted}`);
+        logger.info(`  Unchanged: ${deployResult.unchanged}`);
+        logger.info(`  Duration: ${(deployResult.durationMs / 1000).toFixed(2)}s`);
+
+        if (options.dryRun) {
+          logger.info('\n✓ Dry run completed - no actual changes made');
+        } else {
+          logger.info('\n✓ Deployment completed successfully');
+        }
+      } finally {
+        stackAwsClients.destroy();
+        stateS3Client.destroy();
+        switchRegion(baseRegion);
+        setAwsClients(awsClients);
+      }
+    };
+
     // Execute work graph
     await workGraph.execute(
       {
@@ -282,72 +361,19 @@ async function deployCommand(
           await assetPublisher.executeNode(node);
         } else {
           const { stack: stackInfo } = node.data as { stack: (typeof targetStacks)[0] };
-          const stackRegion = stackInfo.region || baseRegion;
 
-          logger.info(
-            `\nDeploying stack: ${stackInfo.stackName}${stackRegion !== baseRegion ? ` (region: ${stackRegion})` : ''}`
-          );
-
-          switchRegion(stackRegion);
-
-          const stackAwsClients = new AwsClients({
-            region: stackRegion,
-            ...(options.profile && { profile: options.profile }),
-          });
-          setAwsClients(stackAwsClients);
-
-          const stateS3Client = new AwsClients({
-            region: baseRegion,
-            ...(options.profile && { profile: options.profile }),
-          });
-          const stackStateBackend = new S3StateBackend(stateS3Client.s3, stateConfig, {
-            region: baseRegion,
-            ...(options.profile && { profile: options.profile }),
-          });
-          const stackLockManager = new LockManager(stateS3Client.s3, stateConfig);
-          const stackProviderRegistry = new ProviderRegistry();
-          registerAllProviders(stackProviderRegistry);
-          stackProviderRegistry.setCustomResourceResponseBucket(stateBucket, baseRegion);
-
-          const stackDeployEngine = new DeployEngine(
-            stackStateBackend,
-            stackLockManager,
-            dagBuilder,
-            diffCalculator,
-            stackProviderRegistry,
-            {
-              concurrency: options.concurrency,
-              dryRun: options.dryRun,
-              noRollback: !options.rollback,
-            },
-            stackRegion
-          );
-
-          try {
-            const deployResult = await stackDeployEngine.deploy(
-              stackInfo.stackName,
-              stackInfo.template
-            );
-
-            logger.info('\nDeployment Summary:');
-            logger.info(`  Stack: ${deployResult.stackName}`);
-            logger.info(`  Created: ${deployResult.created}`);
-            logger.info(`  Updated: ${deployResult.updated}`);
-            logger.info(`  Deleted: ${deployResult.deleted}`);
-            logger.info(`  Unchanged: ${deployResult.unchanged}`);
-            logger.info(`  Duration: ${(deployResult.durationMs / 1000).toFixed(2)}s`);
-
-            if (options.dryRun) {
-              logger.info('\n✓ Dry run completed - no actual changes made');
-            } else {
-              logger.info('\n✓ Deployment completed successfully');
-            }
-          } finally {
-            stackAwsClients.destroy();
-            stateS3Client.destroy();
-            switchRegion(baseRegion);
-            setAwsClients(awsClients);
+          if (!bufferStackOutput) {
+            await runStack(stackInfo);
+            return;
           }
+
+          // Multi-stack run: buffer this stack's log lines and flush
+          // them as one atomic block when the deploy finishes.
+          const outcome = await runStackBuffered(() => runStack(stackInfo));
+          if (outcome.lines.length > 0) {
+            process.stdout.write(outcome.lines.join('\n') + '\n');
+          }
+          if (!outcome.ok) throw outcome.error;
         }
       }
     );
