@@ -1,3 +1,10 @@
+# [0.23.0](https://github.com/go-to-k/cdkd/compare/v0.22.0...v0.23.0) (2026-05-02)
+
+
+### Features
+
+* **import:** selective-resource semantics for CDK CLI parity + README guide ([#78](https://github.com/go-to-k/cdkd/issues/78)) ([d537c3d](https://github.com/go-to-k/cdkd/commit/d537c3d3e3da708e775ab9510e92d7a6ee0a1506))
+
 # [0.22.0](https://github.com/go-to-k/cdkd/compare/v0.21.0...v0.22.0) (2026-05-02)
 
 
