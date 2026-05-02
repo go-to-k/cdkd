@@ -11,6 +11,7 @@ import {
   parseContextOptions,
   warnIfDeprecatedRegion,
   validateResourceTimeouts,
+  type ResourceTimeoutOption,
 } from '../options.js';
 import { getLogger } from '../../utils/logger.js';
 import { withErrorHandling } from '../../utils/error-handler.js';
@@ -42,8 +43,8 @@ async function destroyCommand(
     force: boolean;
     verbose: boolean;
     context?: string[];
-    resourceWarnAfter: number;
-    resourceTimeout: number;
+    resourceWarnAfter?: ResourceTimeoutOption;
+    resourceTimeout?: ResourceTimeoutOption;
   }
 ): Promise<void> {
   const logger = getLogger();
@@ -62,8 +63,8 @@ async function destroyCommand(
   // Reject mis-ordered --resource-warn-after / --resource-timeout pairs
   // up front so the user sees the error before synth runs.
   validateResourceTimeouts({
-    resourceWarnAfter: options.resourceWarnAfter,
-    resourceTimeout: options.resourceTimeout,
+    ...(options.resourceWarnAfter && { resourceWarnAfter: options.resourceWarnAfter }),
+    ...(options.resourceTimeout && { resourceTimeout: options.resourceTimeout }),
   });
 
   // Resolve --state-bucket from CLI, env, cdk.json, or default
@@ -257,8 +258,18 @@ async function destroyCommand(
         ...(options.profile && { profile: options.profile }),
         stateBucket,
         skipConfirmation: options.yes || options.force,
-        resourceWarnAfterMs: options.resourceWarnAfter,
-        resourceTimeoutMs: options.resourceTimeout,
+        ...(options.resourceWarnAfter?.globalMs !== undefined && {
+          resourceWarnAfterMs: options.resourceWarnAfter.globalMs,
+        }),
+        ...(options.resourceTimeout?.globalMs !== undefined && {
+          resourceTimeoutMs: options.resourceTimeout.globalMs,
+        }),
+        ...(options.resourceWarnAfter?.perTypeMs && {
+          resourceWarnAfterByType: options.resourceWarnAfter.perTypeMs,
+        }),
+        ...(options.resourceTimeout?.perTypeMs && {
+          resourceTimeoutByType: options.resourceTimeout.perTypeMs,
+        }),
       });
     }
   } finally {

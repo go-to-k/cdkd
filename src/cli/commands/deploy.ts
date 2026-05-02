@@ -10,6 +10,7 @@ import {
   parseContextOptions,
   warnIfDeprecatedRegion,
   validateResourceTimeouts,
+  type ResourceTimeoutOption,
 } from '../options.js';
 import { getLogger } from '../../utils/logger.js';
 import { withErrorHandling } from '../../utils/error-handler.js';
@@ -54,8 +55,8 @@ async function deployCommand(
     yes: boolean;
     verbose: boolean;
     context?: string[];
-    resourceWarnAfter: number;
-    resourceTimeout: number;
+    resourceWarnAfter?: ResourceTimeoutOption;
+    resourceTimeout?: ResourceTimeoutOption;
   }
 ): Promise<void> {
   const logger = getLogger();
@@ -74,8 +75,8 @@ async function deployCommand(
   // Reject mis-ordered --resource-warn-after / --resource-timeout pairs
   // up front so the user sees the error before synth / docker builds run.
   validateResourceTimeouts({
-    resourceWarnAfter: options.resourceWarnAfter,
-    resourceTimeout: options.resourceTimeout,
+    ...(options.resourceWarnAfter && { resourceWarnAfter: options.resourceWarnAfter }),
+    ...(options.resourceTimeout && { resourceTimeout: options.resourceTimeout }),
   });
 
   // Skip waiting for async resources (CloudFront, RDS, ElastiCache, etc.)
@@ -328,8 +329,18 @@ async function deployCommand(
           concurrency: options.concurrency,
           dryRun: options.dryRun,
           noRollback: !options.rollback,
-          resourceWarnAfterMs: options.resourceWarnAfter,
-          resourceTimeoutMs: options.resourceTimeout,
+          ...(options.resourceWarnAfter?.globalMs !== undefined && {
+            resourceWarnAfterMs: options.resourceWarnAfter.globalMs,
+          }),
+          ...(options.resourceTimeout?.globalMs !== undefined && {
+            resourceTimeoutMs: options.resourceTimeout.globalMs,
+          }),
+          ...(options.resourceWarnAfter?.perTypeMs && {
+            resourceWarnAfterByType: options.resourceWarnAfter.perTypeMs,
+          }),
+          ...(options.resourceTimeout?.perTypeMs && {
+            resourceTimeoutByType: options.resourceTimeout.perTypeMs,
+          }),
         },
         stackRegion
       );

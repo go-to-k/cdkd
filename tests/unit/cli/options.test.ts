@@ -4,10 +4,13 @@ import { Command } from 'commander';
 import {
   commonOptions,
   deprecatedRegionOption,
+  effectiveResourceTimeoutMs,
   parseContextOptions,
   parseDuration,
+  resourceTimeoutOptions,
   validateResourceTimeouts,
   warnIfDeprecatedRegion,
+  type ResourceTimeoutOption,
 } from '../../../src/cli/options.js';
 import { createBootstrapCommand } from '../../../src/cli/commands/bootstrap.js';
 import { createDeployCommand } from '../../../src/cli/commands/deploy.js';
@@ -190,29 +193,37 @@ describe('cli/options.ts', () => {
   });
 
   describe('validateResourceTimeouts', () => {
-    it('accepts warn < timeout', () => {
+    const opt = (
+      globalMs?: number,
+      perTypeMs: Record<string, number> = {}
+    ): ResourceTimeoutOption => ({
+      ...(globalMs !== undefined && { globalMs }),
+      perTypeMs,
+    });
+
+    it('accepts warn < timeout (globals only)', () => {
       expect(() =>
         validateResourceTimeouts({
-          resourceWarnAfter: 5 * 60_000,
-          resourceTimeout: 30 * 60_000,
+          resourceWarnAfter: opt(5 * 60_000),
+          resourceTimeout: opt(30 * 60_000),
         })
       ).not.toThrow();
     });
 
-    it('rejects warn == timeout', () => {
+    it('rejects global warn == timeout', () => {
       expect(() =>
         validateResourceTimeouts({
-          resourceWarnAfter: 30 * 60_000,
-          resourceTimeout: 30 * 60_000,
+          resourceWarnAfter: opt(30 * 60_000),
+          resourceTimeout: opt(30 * 60_000),
         })
       ).toThrow(/--resource-warn-after .* must be less than --resource-timeout/);
     });
 
-    it('rejects warn > timeout', () => {
+    it('rejects global warn > timeout', () => {
       expect(() =>
         validateResourceTimeouts({
-          resourceWarnAfter: 60 * 60_000,
-          resourceTimeout: 30 * 60_000,
+          resourceWarnAfter: opt(60 * 60_000),
+          resourceTimeout: opt(30 * 60_000),
         })
       ).toThrow(/--resource-warn-after .* must be less than --resource-timeout/);
     });
@@ -220,11 +231,166 @@ describe('cli/options.ts', () => {
     it('is a no-op when either side is undefined (commander default not yet applied)', () => {
       expect(() => validateResourceTimeouts({})).not.toThrow();
       expect(() =>
-        validateResourceTimeouts({ resourceWarnAfter: 5 * 60_000 })
+        validateResourceTimeouts({ resourceWarnAfter: opt(5 * 60_000) })
       ).not.toThrow();
       expect(() =>
-        validateResourceTimeouts({ resourceTimeout: 30 * 60_000 })
+        validateResourceTimeouts({ resourceTimeout: opt(30 * 60_000) })
       ).not.toThrow();
+    });
+
+    it('rejects per-type warn >= per-type timeout', () => {
+      expect(() =>
+        validateResourceTimeouts({
+          resourceWarnAfter: opt(undefined, { 'AWS::S3::Bucket': 10 * 60_000 }),
+          resourceTimeout: opt(undefined, { 'AWS::S3::Bucket': 5 * 60_000 }),
+        })
+      ).toThrow(/AWS::S3::Bucket/);
+    });
+
+    it('rejects per-type warn >= global timeout when per-type timeout is missing', () => {
+      // --resource-warn-after AWS::X=20m without --resource-timeout AWS::X=...
+      // means the per-type warn is compared against the global timeout.
+      expect(() =>
+        validateResourceTimeouts({
+          resourceWarnAfter: opt(undefined, { 'AWS::S3::Bucket': 20 * 60_000 }),
+          resourceTimeout: opt(10 * 60_000),
+        })
+      ).toThrow(/AWS::S3::Bucket/);
+    });
+
+    it('accepts per-type warn < global timeout when per-type timeout is missing', () => {
+      expect(() =>
+        validateResourceTimeouts({
+          resourceWarnAfter: opt(undefined, { 'AWS::S3::Bucket': 5 * 60_000 }),
+          resourceTimeout: opt(30 * 60_000),
+        })
+      ).not.toThrow();
+    });
+
+    it('accepts per-type override raising both sides above the global', () => {
+      expect(() =>
+        validateResourceTimeouts({
+          resourceWarnAfter: opt(5 * 60_000, { 'AWS::CloudFront::Distribution': 10 * 60_000 }),
+          resourceTimeout: opt(30 * 60_000, { 'AWS::CloudFront::Distribution': 60 * 60_000 }),
+        })
+      ).not.toThrow();
+    });
+
+    it('skips comparison when neither global nor per-type sides are resolvable', () => {
+      // Per-type warn for AWS::X but no global warn and no per-type timeout
+      // for AWS::X means we cannot compare without v1 defaults. Defer.
+      expect(() =>
+        validateResourceTimeouts({
+          resourceWarnAfter: opt(undefined, { 'AWS::S3::Bucket': 5 * 60_000 }),
+          resourceTimeout: opt(undefined, {}),
+        })
+      ).not.toThrow();
+    });
+  });
+
+  describe('parseResourceTimeoutToken (via Commander)', () => {
+    /**
+     * Run `--resource-timeout` arguments through a minimal Commander
+     * pipeline so the test exercises the same parser the real CLI does.
+     */
+    function runTimeoutFlag(args: string[]): ResourceTimeoutOption | undefined {
+      const cmd = new Command();
+      cmd.exitOverride();
+      const opt = resourceTimeoutOptions.find((o) => o.flags.startsWith('--resource-timeout'));
+      if (!opt) throw new Error('--resource-timeout option not found');
+      cmd.addOption(opt);
+      cmd.action(() => {
+        // no-op; we read opts off the parsed command below
+      });
+      cmd.parse(['node', 'cdkd', ...args], { from: 'user' });
+      return cmd.opts<{ resourceTimeout?: ResourceTimeoutOption }>().resourceTimeout;
+    }
+
+    it('parses a bare duration into globalMs', () => {
+      const got = runTimeoutFlag(['--resource-timeout', '30m']);
+      expect(got).toEqual({ globalMs: 30 * 60_000, perTypeMs: {} });
+    });
+
+    it('parses TYPE=DURATION into perTypeMs', () => {
+      const got = runTimeoutFlag([
+        '--resource-timeout',
+        'AWS::CloudFront::Distribution=1h',
+      ]);
+      expect(got).toEqual({
+        perTypeMs: { 'AWS::CloudFront::Distribution': 60 * 60_000 },
+      });
+    });
+
+    it('accepts a mix of bare and TYPE=DURATION across repeated flags (last bare wins)', () => {
+      const got = runTimeoutFlag([
+        '--resource-timeout',
+        '30m',
+        '--resource-timeout',
+        'AWS::CloudFront::Distribution=1h',
+        '--resource-timeout',
+        'AWS::RDS::DBCluster=1.5h',
+      ]);
+      expect(got).toEqual({
+        globalMs: 30 * 60_000,
+        perTypeMs: {
+          'AWS::CloudFront::Distribution': 60 * 60_000,
+          'AWS::RDS::DBCluster': 90 * 60_000,
+        },
+      });
+    });
+
+    it('rejects malformed TYPE (missing scope)', () => {
+      expect(() => runTimeoutFlag(['--resource-timeout', 's3:bucket=30m'])).toThrow(
+        /CloudFormation resource type/
+      );
+    });
+
+    it('rejects malformed TYPE (lower-case service)', () => {
+      expect(() =>
+        runTimeoutFlag(['--resource-timeout', 'aws::s3::Bucket=30m'])
+      ).toThrow(/CloudFormation resource type/);
+    });
+
+    it('rejects malformed duration after TYPE=', () => {
+      expect(() =>
+        runTimeoutFlag(['--resource-timeout', 'AWS::S3::Bucket=potato'])
+      ).toThrow(/Invalid/);
+    });
+
+    it('rejects empty duration after TYPE=', () => {
+      expect(() => runTimeoutFlag(['--resource-timeout', 'AWS::S3::Bucket='])).toThrow(
+        /missing duration/
+      );
+    });
+  });
+
+  describe('effectiveResourceTimeoutMs', () => {
+    const fallback = 30 * 60_000;
+
+    it('returns fallback when option is undefined', () => {
+      expect(effectiveResourceTimeoutMs('AWS::S3::Bucket', undefined, fallback)).toBe(fallback);
+    });
+
+    it('returns globalMs when no per-type entry matches', () => {
+      const opt: ResourceTimeoutOption = { globalMs: 10 * 60_000, perTypeMs: {} };
+      expect(effectiveResourceTimeoutMs('AWS::S3::Bucket', opt, fallback)).toBe(10 * 60_000);
+    });
+
+    it('per-type entry supersedes globalMs', () => {
+      const opt: ResourceTimeoutOption = {
+        globalMs: 10 * 60_000,
+        perTypeMs: { 'AWS::CloudFront::Distribution': 60 * 60_000 },
+      };
+      expect(
+        effectiveResourceTimeoutMs('AWS::CloudFront::Distribution', opt, fallback)
+      ).toBe(60 * 60_000);
+      // Non-matching type still falls through to global.
+      expect(effectiveResourceTimeoutMs('AWS::S3::Bucket', opt, fallback)).toBe(10 * 60_000);
+    });
+
+    it('falls back to fallback when neither global nor per-type is set', () => {
+      const opt: ResourceTimeoutOption = { perTypeMs: {} };
+      expect(effectiveResourceTimeoutMs('AWS::S3::Bucket', opt, fallback)).toBe(fallback);
     });
   });
 

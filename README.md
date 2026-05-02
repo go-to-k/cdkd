@@ -526,10 +526,17 @@ Both `cdkd deploy` and `cdkd destroy` (including `cdkd state destroy`) enforce a
 
 | Option | Default | Description |
 | --- | --- | --- |
-| `--resource-warn-after <duration>` | `5m` | Warn when a single resource operation has been running longer than this. The live progress line is suffixed with `[taking longer than expected, Nm+]` and a `WARN` log line is emitted (printed above the live area in TTY mode, plain stderr otherwise). |
-| `--resource-timeout <duration>` | `30m` | Abort a single resource operation that exceeds this. The deploy / destroy fails with `ResourceTimeoutError` (wrapped in `ProvisioningError`) and the existing rollback / state-preservation path runs. |
+| `--resource-warn-after <duration_or_type=duration>` | `5m` | Warn when a single resource operation has been running longer than this. The live progress line is suffixed with `[taking longer than expected, Nm+]` and a `WARN` log line is emitted (printed above the live area in TTY mode, plain stderr otherwise). Repeatable. |
+| `--resource-timeout <duration_or_type=duration>` | `30m` | Abort a single resource operation that exceeds this. The deploy / destroy fails with `ResourceTimeoutError` (wrapped in `ProvisioningError`) and the existing rollback / state-preservation path runs. Repeatable. |
 
 Durations are written as `<number>s`, `<number>m`, or `<number>h` (e.g. `30s`, `90s`, `5m`, `1.5h`). Zero, negative, missing-unit, and unknown-unit values are rejected at parse time.
+
+Both flags accept either form on each invocation:
+
+- **Bare duration** (`30m`) sets the global default. The last bare value wins.
+- **`TYPE=DURATION`** (`AWS::CloudFront::Distribution=1h`) adds a per-resource-type override that supersedes the global default for that type only.
+
+`TYPE` must look like `AWS::Service::Resource`; malformed types are rejected at parse time. `warn < timeout` is enforced both globally and per-type — so `--resource-warn-after AWS::X=10m --resource-timeout AWS::X=5m` is a parse-time error.
 
 ```bash
 # Bump the per-resource budget to one hour (matches the Custom Resource provider's polling cap)
@@ -537,6 +544,12 @@ cdkd deploy --resource-timeout 1h
 
 # Surface "still running" warnings sooner on a fast-feedback dev loop
 cdkd deploy --resource-warn-after 90s --resource-timeout 10m
+
+# Keep the global default tight, raise it only for resources known to take longer
+cdkd deploy \
+  --resource-timeout 30m \
+  --resource-timeout AWS::CloudFront::Distribution=1h \
+  --resource-timeout AWS::RDS::DBCluster=1h30m
 ```
 
 ### Why the default is 30m, not 1h
