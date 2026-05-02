@@ -3,12 +3,11 @@ import { Command } from 'commander';
 import {
   appOptions,
   commonOptions,
-  deprecatedRegionOption,
-  stateOptions,
-  stackOptions,
-  destroyOptions,
   contextOptions,
+  deprecatedRegionOption,
+  destroyOptions,
   parseContextOptions,
+  stateOptions,
   warnIfDeprecatedRegion,
 } from '../options.js';
 import { getLogger } from '../../utils/logger.js';
@@ -18,56 +17,100 @@ import { S3StateBackend } from '../../state/s3-state-backend.js';
 import { LockManager } from '../../state/lock-manager.js';
 import { setAwsClients, AwsClients } from '../../utils/aws-clients.js';
 import { resolveApp, resolveStateBucketWithDefault } from '../config-loader.js';
-import { matchStacks, describeStack, type StackLike } from '../stack-matcher.js';
+import { ProviderRegistry } from '../../provisioning/provider-registry.js';
+import { registerAllProviders } from '../../provisioning/register-providers.js';
+import { buildCdkPathIndex } from '../cdk-path.js';
+import {
+  rewriteResourceReferences,
+  type OrphanRewrite,
+  type UnresolvableReference,
+} from '../../analyzer/orphan-rewriter.js';
+import type { StackInfo } from '../../synthesis/assembly-reader.js';
+
+interface OrphanOptions {
+  app?: string;
+  output?: string;
+  stateBucket?: string;
+  statePrefix: string;
+  stackRegion?: string;
+  region?: string;
+  profile?: string;
+  yes: boolean;
+  force: boolean;
+  dryRun: boolean;
+  verbose: boolean;
+  context?: string[];
+}
 
 /**
- * `cdkd orphan <stack>...` command implementation
+ * `cdkd orphan <constructPath>...` — per-resource orphan, mirrors upstream
+ * `cdk orphan --unstable=orphan`.
  *
- * Synth-driven counterpart to `cdkd state orphan`. Mirrors the new
- * `cdk orphan` command in aws-cdk-cli: removes the cdkd state record for
- * each matched stack while leaving the underlying AWS resources alone.
+ * Removes one or more *resources* from cdkd's state for a single stack,
+ * rewriting every sibling resource that referenced an orphan so the next
+ * deploy doesn't try to re-create the orphan or fail to resolve a stale
+ * Ref/GetAtt. **Does not** delete the underlying AWS resources — they
+ * remain in AWS, just no longer tracked by cdkd.
  *
- * Naming distinction (CDK CLI parity):
- * - `cdkd destroy`         — synth-driven, deletes resources + state.
- * - `cdkd state destroy`   — state-driven (no CDK app), deletes resources + state.
- * - `cdkd orphan`          — synth-driven, deletes ONLY the state record.
- * - `cdkd state orphan`    — state-driven (no CDK app), deletes ONLY the state record.
+ * Migration note (PR #92): the previous "orphan a whole stack's state
+ * record" behavior moved to `cdkd state orphan <stack>`; this command is
+ * now per-resource and takes construct paths (`MyStack/MyTable`).
  *
- * The synth-driven variant is convenient when you have the CDK source: it
- * reuses the same stack-selection / pattern-matching pipeline as `deploy`
- * and `destroy` (display-path patterns like `MyStage/*` work, single-stack
- * auto-detection works, etc.) and only operates on stacks that belong to
- * the current CDK app.
+ * Algorithm (mirrors upstream's 3-step CFn deploy via SDK calls):
+ *
+ *   1. Synth, load state, acquire lock.
+ *   2. For each non-orphan resource, find every reference to an orphan
+ *      in `properties` / `attributes` / `dependencies`:
+ *      - `{Ref: O}` → orphan.physicalId
+ *      - `{Fn::GetAtt: [O, attr]}` (and `"O.attr"` form) → live
+ *        `provider.getAttribute(...)` value (cached per `(O, attr)`).
+ *      - `Fn::Sub` template strings — `${O}` / `${O.attr}` placeholders
+ *        substituted in place; unrelated placeholders preserved.
+ *      - dependency-array entries equal to `O` removed.
+ *   3. Apply rewrites + remove orphans from `state.resources` +
+ *      `saveState` (If-Match) + release lock.
+ *
+ * Failure modes (hard-fail with `--force` escape hatch):
+ *
+ *   - Path doesn't match any resource — error listing available paths.
+ *   - Multiple paths reference different stacks — error.
+ *   - Reference can't be resolved (provider doesn't implement that attr,
+ *     OR the API call fails) — error listing every unresolvable site at
+ *     once. With `--force`: fall back to `state.attributes` cache; if
+ *     the cache also lacks the attr, leave the original intrinsic
+ *     untouched.
  */
-async function orphanCommand(
-  stackArgs: string[],
-  options: {
-    app?: string;
-    output?: string;
-    stateBucket?: string;
-    statePrefix: string;
-    stack?: string;
-    all?: boolean;
-    stackRegion?: string;
-    region?: string;
-    profile?: string;
-    yes: boolean;
-    force: boolean;
-    verbose: boolean;
-    context?: string[];
-  }
-): Promise<void> {
+async function orphanCommand(pathArgs: string[], options: OrphanOptions): Promise<void> {
   const logger = getLogger();
   if (options.verbose) logger.setLevel('debug');
 
-  // --region is deprecated everywhere except bootstrap; warn and ignore.
   warnIfDeprecatedRegion(options);
+
+  if (pathArgs.length === 0) {
+    throw new Error(
+      "'cdkd orphan' requires at least one construct path, e.g. 'cdkd orphan MyStack/MyTable'.\n" +
+        "       To remove a stack's state record (the previous behavior), use:\n" +
+        '         cdkd state orphan MyStack'
+    );
+  }
+
+  // Detect the pre-PR "stack name only" syntax and redirect with an
+  // explicit error rather than silently routing — the new behavior is a
+  // breaking change and we want users to make a conscious choice between
+  // per-resource orphan and the state-orphan route.
+  for (const p of pathArgs) {
+    if (!p.includes('/')) {
+      throw new Error(
+        `'cdkd orphan' now expects a construct path like 'MyStack/MyTable'.\n` +
+          `       Got: '${p}'\n` +
+          `       To remove a stack's state record (the previous behavior), use:\n` +
+          `         cdkd state orphan ${p}`
+      );
+    }
+  }
 
   const region = options.region || process.env['AWS_REGION'] || 'us-east-1';
   const stateBucket = await resolveStateBucketWithDefault(options.stateBucket, region);
-
-  logger.info('Starting stack orphan...');
-  logger.debug('Options:', options);
 
   if (options.region) {
     process.env['AWS_REGION'] = options.region;
@@ -80,12 +123,7 @@ async function orphanCommand(
   setAwsClients(awsClients);
 
   try {
-    const stateConfig = {
-      bucket: stateBucket,
-      prefix: options.statePrefix,
-    };
-    // Pass region/profile so the backend can rebuild its S3 client if the
-    // bucket lives in a region different from the CLI's profile region.
+    const stateConfig = { bucket: stateBucket, prefix: options.statePrefix };
     const stateBackend = new S3StateBackend(awsClients.s3, stateConfig, {
       ...(options.region && { region: options.region }),
       ...(options.profile && { profile: options.profile }),
@@ -93,165 +131,289 @@ async function orphanCommand(
     await stateBackend.verifyBucketExists();
     const lockManager = new LockManager(awsClients.s3, stateConfig);
 
-    // Resolve target stacks via synth (CDK CLI parity with destroy.ts).
+    // Synth — required for orphan: we need the template to resolve construct
+    // paths back to logical IDs.
     const appCmd = options.app || resolveApp();
-    type AppStack = StackLike & { region?: string };
-    let appStacks: AppStack[] = [];
-
-    if (appCmd) {
-      try {
-        const synthesizer = new Synthesizer();
-        const context = parseContextOptions(options.context);
-        const result = await synthesizer.synthesize({
-          app: appCmd,
-          output: options.output || 'cdk.out',
-          ...(Object.keys(context).length > 0 && { context }),
-        });
-        appStacks = result.stacks.map((s) => ({
-          stackName: s.stackName,
-          displayName: s.displayName,
-          ...(s.region && { region: s.region }),
-        }));
-      } catch {
-        logger.debug('Could not synthesize app, falling back to state-based stack list');
-      }
-    }
-
-    const allStateRefs = await stateBackend.listStacks();
-
-    // Build candidate list. Mirrors destroy.ts so display-path patterns and
-    // auto-detection behave identically.
-    let candidateStacks: StackLike[];
-    if (appStacks.length > 0) {
-      const stateNames = new Set(allStateRefs.map((r) => r.stackName));
-      candidateStacks = appStacks.filter((s) => stateNames.has(s.stackName));
-    } else if (stackArgs.length > 0 || options.stack || options.all) {
-      const seen = new Set<string>();
-      candidateStacks = [];
-      for (const ref of allStateRefs) {
-        if (seen.has(ref.stackName)) continue;
-        seen.add(ref.stackName);
-        candidateStacks.push({ stackName: ref.stackName });
-      }
-    } else {
+    if (!appCmd) {
       throw new Error(
-        'Could not determine which stacks belong to this app. ' +
-          'Specify stack names explicitly, use --all, or ensure --app / cdk.json is configured.'
+        "'cdkd orphan' requires a CDK app: pass --app or set it in cdk.json. " +
+          'The template is read to resolve construct paths to logical IDs.'
       );
     }
 
-    const stackPatterns = stackArgs.length > 0 ? stackArgs : options.stack ? [options.stack] : [];
+    logger.info('Synthesizing CDK app to read template...');
+    const synthesizer = new Synthesizer();
+    const context = parseContextOptions(options.context);
+    const result = await synthesizer.synthesize({
+      app: appCmd,
+      output: options.output || 'cdk.out',
+      ...(Object.keys(context).length > 0 && { context }),
+    });
 
-    let stackNames: string[];
-    if (options.all) {
-      stackNames = candidateStacks.map((s) => s.stackName);
-    } else if (stackPatterns.length > 0) {
-      stackNames = matchStacks(candidateStacks, stackPatterns).map((s) => s.stackName);
-    } else if (candidateStacks.length === 1) {
-      stackNames = candidateStacks.map((s) => s.stackName);
-    } else if (candidateStacks.length === 0) {
-      logger.info('No stacks found in state');
-      return;
-    } else {
-      throw new Error(
-        `Multiple stacks found: ${candidateStacks.map(describeStack).join(', ')}. ` +
-          `Specify stack name(s) or use --all`
-      );
+    // Resolve each path to (stack, logicalId). Every path must reference the
+    // same stack — orphan operates on one state file at a time.
+    const resolved = resolveConstructPaths(pathArgs, result.stacks);
+    const stackInfo = resolved.stack;
+    const orphanLogicalIds = resolved.logicalIds;
+
+    const targetRegion = await pickStackRegion(
+      stateBackend,
+      stackInfo.stackName,
+      stackInfo.region,
+      options.stackRegion
+    );
+
+    logger.info(
+      `Target: ${stackInfo.stackName} (${targetRegion}); orphaning ${orphanLogicalIds.length} resource(s): ${orphanLogicalIds.join(', ')}`
+    );
+
+    // Acquire lock so a concurrent deploy can't observe the half-rewritten
+    // state. Skip in --dry-run to keep dry-run a pure read.
+    const owner = `${process.env['USER'] || 'unknown'}@${process.env['HOSTNAME'] || 'host'}:${process.pid}`;
+    if (!options.dryRun) {
+      await lockManager.acquireLock(stackInfo.stackName, targetRegion, owner, 'orphan');
     }
 
-    if (stackNames.length === 0) {
-      logger.info('No matching stacks found in state');
-      return;
-    }
-
-    logger.info(`Found ${stackNames.length} stack(s) to orphan: ${stackNames.join(', ')}`);
-
-    // Index state refs by stack name for the per-stack loop.
-    const stateRefsByName = new Map<string, typeof allStateRefs>();
-    for (const ref of allStateRefs) {
-      const arr = stateRefsByName.get(ref.stackName) ?? [];
-      arr.push(ref);
-      stateRefsByName.set(ref.stackName, arr);
-    }
-
-    const skipConfirmation = options.yes || options.force;
-
-    for (const stackName of stackNames) {
-      const refs = stateRefsByName.get(stackName) ?? [];
-      if (refs.length === 0) {
-        logger.info(`No state found for stack: ${stackName}, skipping`);
-        continue;
-      }
-
-      // Pick which region(s) to orphan. With --stack-region, restrict to one.
-      const targets = options.stackRegion
-        ? refs.filter((r) => r.region === options.stackRegion)
-        : refs;
-
-      if (targets.length === 0) {
-        const seen = refs.map((r) => r.region ?? '(legacy)').join(', ');
+    try {
+      const stateData = await stateBackend.getState(stackInfo.stackName, targetRegion);
+      if (!stateData) {
         throw new Error(
-          `No state found for stack '${stackName}' in region '${options.stackRegion}'. ` +
-            `Available regions: ${seen}.`
+          `No state found for stack '${stackInfo.stackName}' (${targetRegion}). ` +
+            `Nothing to orphan. (Did the stack get deployed?)`
+        );
+      }
+      const { state, etag, migrationPending } = stateData;
+
+      // Validate that every requested orphan exists in state — otherwise we
+      // would silently no-op while the user expected a removal.
+      const missing = orphanLogicalIds.filter((id) => !(id in state.resources));
+      if (missing.length > 0) {
+        const have = Object.keys(state.resources).join(', ');
+        throw new Error(
+          `Resource(s) not in state for stack '${stackInfo.stackName}' (${targetRegion}): ` +
+            `${missing.join(', ')}.\n` +
+            `Available logical IDs: ${have}`
         );
       }
 
-      // Lock check applies per region; --force bypasses it. Same behavior as
-      // `cdkd state orphan` so users get a consistent guard-rail.
-      if (!options.force) {
-        for (const target of targets) {
-          const locked = await lockManager.isLocked(stackName, target.region);
-          if (locked) {
-            const where = target.region ?? '(legacy)';
-            throw new Error(
-              `Stack '${stackName}' (${where}) is locked. ` +
-                `Run 'cdkd force-unlock ${stackName}${target.region ? ` --stack-region ${target.region}` : ''}' first, ` +
-                `or pass --force to orphan anyway.`
-            );
-          }
+      const providerRegistry = new ProviderRegistry();
+      registerAllProviders(providerRegistry);
+
+      const rewriteResult = await rewriteResourceReferences(
+        state,
+        orphanLogicalIds,
+        providerRegistry,
+        { force: options.force }
+      );
+
+      printRewriteSummary(rewriteResult.rewrites, orphanLogicalIds);
+
+      if (rewriteResult.unresolvable.length > 0 && !options.force) {
+        printUnresolvable(rewriteResult.unresolvable);
+        throw new Error(
+          `Orphan aborted: ${rewriteResult.unresolvable.length} reference(s) could not be resolved.\n` +
+            `Re-run with --force to fall back to cached attribute values from state, ` +
+            `or fix the underlying provider/AWS issue and retry.`
+        );
+      }
+      if (rewriteResult.unresolvable.length > 0) {
+        // --force path: print but don't abort.
+        printUnresolvable(rewriteResult.unresolvable);
+        logger.warn(
+          `--force: continuing despite ${rewriteResult.unresolvable.length} unresolved reference(s); ` +
+            `the original intrinsic was left in place where the cache also lacked the value.`
+        );
+      }
+
+      if (options.dryRun) {
+        logger.info('--dry-run: state will NOT be written. Re-run without --dry-run to apply.');
+        return;
+      }
+
+      if (!options.yes && !options.force) {
+        const ok = await confirmPrompt(
+          `Orphan ${orphanLogicalIds.length} resource(s) from cdkd state for ` +
+            `${stackInfo.stackName} (${targetRegion})? AWS resources will NOT be deleted.`
+        );
+        if (!ok) {
+          logger.info('Orphan cancelled.');
+          return;
         }
       }
 
-      // Single confirmation listing all regions being affected.
-      if (!skipConfirmation) {
-        const targetList = targets
-          .map((t) => (t.region ? `${stackName} (${t.region})` : stackName))
-          .join(', ');
-        process.stdout.write(
-          `\nWARNING: This removes cdkd's state record for [${targetList}] only. ` +
-            `AWS resources will NOT be deleted.\n` +
-            `Use 'cdkd destroy ${stackName}' if you want to delete the actual resources.\n\n`
-        );
-        const rl = readline.createInterface({
-          input: process.stdin,
-          output: process.stdout,
+      await stateBackend.saveState(stackInfo.stackName, targetRegion, rewriteResult.state, {
+        expectedEtag: etag,
+        ...(migrationPending && { migrateLegacy: true }),
+      });
+
+      logger.info(
+        `Orphaned ${orphanLogicalIds.length} resource(s) from state: ${stackInfo.stackName} (${targetRegion}). ` +
+          `AWS resources are still in AWS; cdkd will no longer manage them.`
+      );
+    } finally {
+      if (!options.dryRun) {
+        await lockManager.releaseLock(stackInfo.stackName, targetRegion).catch((err) => {
+          logger.warn(
+            `Failed to release lock: ${err instanceof Error ? err.message : String(err)}`
+          );
         });
-        const answer = await rl.question(
-          `Orphan state for ${targetList} from s3://${stateBucket}/${options.statePrefix}/? (y/N): `
-        );
-        rl.close();
-        const trimmed = answer.trim().toLowerCase();
-        if (trimmed !== 'y' && trimmed !== 'yes') {
-          logger.info(`Cancelled orphan of stack: ${stackName}`);
-          continue;
-        }
-      }
-
-      for (const target of targets) {
-        if (target.region) {
-          await stateBackend.deleteState(stackName, target.region);
-          await lockManager.forceReleaseLock(stackName, target.region);
-        } else {
-          // Pure legacy record without a region body field: just sweep the
-          // legacy lock key; deleteState requires a region.
-          await lockManager.forceReleaseLock(stackName, undefined);
-        }
-        const label = target.region ? `${stackName} (${target.region})` : stackName;
-        logger.info(`✓ Orphaned state for stack: ${label}`);
       }
     }
   } finally {
     awsClients.destroy();
+  }
+}
+
+/**
+ * Resolve every user-supplied construct path to a `(stack, logicalId)`
+ * pair, enforcing that all paths reference the same stack.
+ *
+ * The first segment of each path must be a synthesized stack's
+ * `displayName` (or `stackName`); the remainder is the path that CDK
+ * encodes into the `aws:cdk:path` Metadata tag (e.g.
+ * `MyStack/MyTable/Resource`). We index the template by that tag and
+ * look the rest up there.
+ */
+function resolveConstructPaths(
+  paths: string[],
+  stacks: StackInfo[]
+): { stack: StackInfo; logicalIds: string[] } {
+  const byStackName = new Map<string, StackInfo>();
+  const byDisplayName = new Map<string, StackInfo>();
+  for (const s of stacks) {
+    byStackName.set(s.stackName, s);
+    byDisplayName.set(s.displayName, s);
+  }
+
+  let stack: StackInfo | undefined;
+  const logicalIds: string[] = [];
+
+  for (const p of paths) {
+    const slash = p.indexOf('/');
+    if (slash <= 0 || slash === p.length - 1) {
+      throw new Error(`Invalid construct path '${p}'. Expected '<StackName>/<Path/To/Resource>'.`);
+    }
+    const head = p.slice(0, slash);
+    const candidate = byDisplayName.get(head) ?? byStackName.get(head);
+    if (!candidate) {
+      const available = stacks.map((s) => s.displayName ?? s.stackName).join(', ');
+      throw new Error(
+        `Construct path '${p}': stack '${head}' not found in synthesized app. ` +
+          `Available: ${available}`
+      );
+    }
+    if (stack === undefined) {
+      stack = candidate;
+    } else if (stack.stackName !== candidate.stackName) {
+      throw new Error(
+        `All construct paths must reference the same stack. ` +
+          `Got '${stack.stackName}' and '${candidate.stackName}'. ` +
+          `Run 'cdkd orphan' once per stack.`
+      );
+    }
+
+    const cdkPath = p; // The full input is what CDK puts in `aws:cdk:path`.
+    const index = buildCdkPathIndex(candidate.template);
+    const logicalId = index.get(cdkPath);
+    if (!logicalId) {
+      const available = [...index.keys()].sort().join('\n  ');
+      throw new Error(
+        `Construct path '${cdkPath}' not found in template for stack '${candidate.stackName}'.\n` +
+          `Available paths:\n  ${available}`
+      );
+    }
+    if (!logicalIds.includes(logicalId)) {
+      logicalIds.push(logicalId);
+    }
+  }
+
+  if (!stack) {
+    throw new Error('No construct paths supplied.');
+  }
+  return { stack, logicalIds };
+}
+
+/**
+ * Decide which region's state to operate on. Mirrors the disambiguation
+ * logic shared with `state resources` / `state show`: prefer the
+ * synthesized stack's region, then `--stack-region`, then the single
+ * region in state. Errors out with a clear list when ambiguous.
+ */
+async function pickStackRegion(
+  stateBackend: S3StateBackend,
+  stackName: string,
+  synthRegion: string | undefined,
+  flag: string | undefined
+): Promise<string> {
+  const refs = (await stateBackend.listStacks()).filter((r) => r.stackName === stackName);
+  if (refs.length === 0) {
+    if (flag) return flag;
+    if (synthRegion) return synthRegion;
+    throw new Error(
+      `No state found for stack '${stackName}'. Run 'cdkd state list' to see available stacks.`
+    );
+  }
+  if (flag) {
+    const found = refs.find((r) => r.region === flag);
+    if (!found) {
+      const seen = refs.map((r) => r.region ?? '(legacy)').join(', ');
+      throw new Error(
+        `No state found for stack '${stackName}' in region '${flag}'. ` +
+          `Available regions: ${seen}.`
+      );
+    }
+    return flag;
+  }
+  if (synthRegion) {
+    const found = refs.find((r) => r.region === synthRegion);
+    if (found) return synthRegion;
+  }
+  if (refs.length === 1) {
+    return refs[0]!.region ?? synthRegion ?? '';
+  }
+  const regions = refs.map((r) => r.region ?? '(legacy)').join(', ');
+  throw new Error(
+    `Stack '${stackName}' has state in multiple regions: ${regions}. ` +
+      `Re-run with --stack-region <region> to disambiguate.`
+  );
+}
+
+function printRewriteSummary(rewrites: OrphanRewrite[], orphanLogicalIds: string[]): void {
+  const logger = getLogger();
+  logger.info('');
+  logger.info(`Orphaning ${orphanLogicalIds.length} resource(s): ${orphanLogicalIds.join(', ')}`);
+  if (rewrites.length === 0) {
+    logger.info('  No sibling references — every reference was already to a non-orphan resource.');
+    return;
+  }
+  logger.info(`Applied ${rewrites.length} rewrite(s):`);
+  for (const r of rewrites) {
+    const before = stringifyForAudit(r.before);
+    const after = r.kind === 'dependency' ? '(dropped)' : stringifyForAudit(r.after);
+    logger.info(`  [${r.kind}] ${r.logicalId}.${r.path}: ${before} → ${after}`);
+  }
+}
+
+function printUnresolvable(unresolvable: UnresolvableReference[]): void {
+  const logger = getLogger();
+  logger.error(`${unresolvable.length} reference(s) could not be resolved:`);
+  for (const u of unresolvable) {
+    logger.error(`  ${u.logicalId}.${u.path}: ${u.orphanLogicalId}.${u.attribute} — ${u.reason}`);
+  }
+}
+
+function stringifyForAudit(value: unknown): string {
+  if (typeof value === 'string') return JSON.stringify(value);
+  return JSON.stringify(value);
+}
+
+async function confirmPrompt(prompt: string): Promise<boolean> {
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+  try {
+    const ans = await rl.question(`${prompt} [y/N] `);
+    return /^y(es)?$/i.test(ans.trim());
+  } finally {
+    rl.close();
   }
 }
 
@@ -261,17 +423,22 @@ async function orphanCommand(
 export function createOrphanCommand(): Command {
   const cmd = new Command('orphan')
     .description(
-      "Remove cdkd's state record for one or more stacks (does NOT delete AWS resources). " +
-        "Synth-driven; for the CDK-app-free version use 'cdkd state orphan'."
+      'Remove one or more resources from cdkd state by construct path (does NOT delete AWS ' +
+        "resources). Mirrors aws-cdk-cli's 'cdk orphan --unstable=orphan'. Synth-driven; for " +
+        "the previous whole-stack-orphan behavior, use 'cdkd state orphan <stack>'."
     )
     .argument(
-      '[stacks...]',
-      "Stack name(s) to orphan. Accepts physical CloudFormation names (e.g. 'MyStage-Api') or CDK display paths (e.g. 'MyStage/Api'). Supports wildcards (e.g. 'MyStage/*')."
+      '<paths...>',
+      "Construct paths to orphan, e.g. 'MyStack/MyTable'. Multiple paths must reference the same stack."
     )
-    .option('--all', 'Orphan all stacks in the current app', false)
     .option(
       '--stack-region <region>',
       'Region of the stack record to operate on. Required when the same stack name has state in multiple regions.'
+    )
+    .option(
+      '--dry-run',
+      'Compute and print the rewrite audit table without acquiring a lock or saving state.',
+      false
     )
     .action(withErrorHandling(orphanCommand));
 
@@ -279,8 +446,7 @@ export function createOrphanCommand(): Command {
     ...commonOptions,
     ...appOptions,
     ...stateOptions,
-    ...stackOptions,
-    ...destroyOptions,
+    ...destroyOptions, // adds -f / --force (escape hatch for unresolvable references + skip confirm)
     ...contextOptions,
   ].forEach((opt) => cmd.addOption(opt));
 

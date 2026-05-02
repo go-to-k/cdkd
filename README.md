@@ -455,13 +455,19 @@ cdkd state resources MyStack --json   # full JSON array
 cdkd state show MyStack
 cdkd state show MyStack --json        # raw {state, lock} JSON
 
-# Orphan a stack from cdkd's state (does NOT delete AWS resources).
-# Synth-driven — needs --app / cdk.json — same stack-pattern routing as deploy.
-cdkd orphan MyStack                   # confirmation prompt (y/N)
-cdkd orphan MyStack --yes
-cdkd orphan 'MyStage/*' --yes         # display-path wildcard
+# Orphan one or more RESOURCES from cdkd's state (does NOT delete AWS resources).
+# Per-resource, mirrors aws-cdk-cli's `cdk orphan --unstable=orphan`.
+# Synth-driven — needs --app / cdk.json. Construct paths look like the CDK
+# `aws:cdk:path` tag (`<StackName>/<Path/To/Resource>`).
+cdkd orphan MyStack/MyTable                    # confirmation prompt (y/N)
+cdkd orphan MyStack/MyTable --yes
+cdkd orphan MyStack/MyTable MyStack/MyBucket   # multiple resources, same stack
+cdkd orphan MyStack/MyTable --dry-run          # print rewrite audit, no save
+cdkd orphan MyStack/MyTable --force            # also fall back to cached
+                                               # attributes when live fetch fails
 
-# State-driven counterpart (no CDK app needed — works against the bucket).
+# State-driven counterpart that orphans a WHOLE STACK's state record
+# (no CDK app needed — works against the bucket).
 cdkd state orphan MyStack             # confirmation prompt (y/N)
 cdkd state orphan MyStack --yes       # skip confirmation
 cdkd state orphan StackA StackB --force # also bypass the locked-stack refusal
@@ -477,9 +483,21 @@ cdkd state destroy MyStack --region us-east-1
 > **`destroy` vs `orphan`** (matches aws-cdk-cli's new `cdk orphan`):
 > `destroy` deletes the AWS resources AND the state record. `orphan` deletes
 > ONLY the state record — AWS resources remain intact, just no longer
-> tracked by cdkd. Each has a synth-driven form (`cdkd destroy` / `cdkd
-> orphan`, needs the CDK app) and a state-driven form (`cdkd state destroy`
-> / `cdkd state orphan`, works on the bucket alone).
+> tracked by cdkd.
+>
+> The two `orphan` variants now operate at different granularities:
+>
+> - `cdkd orphan <constructPath>...` — synth-driven, **per-resource**.
+>   Removes specific resources from a stack's state file and rewrites every
+>   sibling reference (Ref / Fn::GetAtt / Fn::Sub / dependencies) so the
+>   next deploy doesn't re-create the orphan or fail on a stale reference.
+>   Mirrors `cdk orphan --unstable=orphan`.
+> - `cdkd state orphan <stack>...` — state-driven, **whole-stack**. Removes
+>   the entire state record for a stack from the bucket. Works without the
+>   CDK app.
+>
+> `cdkd destroy` (synth-driven, deletes AWS resources + state) and
+> `cdkd state destroy` (state-driven, same effect) round out the matrix.
 
 ### Concurrency Options
 
