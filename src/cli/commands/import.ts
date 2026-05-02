@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs';
+import { readFileSync, writeFileSync } from 'node:fs';
 import * as readline from 'node:readline/promises';
 import { Command } from 'commander';
 import {
@@ -37,6 +37,14 @@ interface ImportOptions {
   resource?: string[];
   resourceMapping?: string;
   resourceMappingInline?: string;
+  /**
+   * If set, write the resolved `{logicalId: physicalId}` map for every
+   * `imported` outcome to this path before the confirmation prompt.
+   * Mirrors upstream `cdk import --record-resource-mapping <file>`. The
+   * file is written even if the user says "no" to the prompt — the data
+   * was resolved either way and is useful for re-runs.
+   */
+  recordResourceMapping?: string;
   /**
    * When true, resources NOT in `--resource` / `--resource-mapping` still
    * go through tag-based auto-import. Default is `false` for CDK CLI parity:
@@ -256,6 +264,18 @@ async function importCommand(stackArg: string | undefined, options: ImportOption
 
       printSummary(rows);
 
+      // Write the resolved logicalId→physicalId mapping out for re-use in
+      // CI (mirrors upstream `cdk import --record-resource-mapping`).
+      // Done BEFORE any early-return / confirmation: --dry-run, "no" at
+      // the prompt, and zero-imports all still produce the file. Empty
+      // mapping serializes as `{}` rather than being omitted, so callers
+      // can detect "ran but nothing matched" vs "did not run". A write
+      // failure here is logged but does NOT abort: the import already
+      // happened in memory, and the record file is metadata.
+      if (options.recordResourceMapping) {
+        writeRecordedMapping(options.recordResourceMapping, rows);
+      }
+
       if (options.dryRun) {
         logger.info('--dry-run: state will NOT be written. Re-run without --dry-run to apply.');
         return;
@@ -468,6 +488,41 @@ function parseMappingJson(raw: string, source: string): Record<string, string> {
 }
 
 /**
+ * Write the resolved `{logicalId: physicalId}` map to disk for re-use
+ * (mirrors upstream `cdk import --record-resource-mapping <file>`).
+ *
+ * Inclusion rules: only `imported` rows. `skipped-*` and `failed` rows
+ * are excluded — they do not represent a usable physical id.
+ *
+ * Format: pretty-printed JSON with 2-space indent + trailing newline,
+ * so the file is human-reviewable before the user confirms the import.
+ *
+ * Failure: logged via `logger.error` but NOT thrown. The import has
+ * already resolved every physical id in memory; failing to persist the
+ * record file is a metadata problem, not a load-bearing one.
+ */
+function writeRecordedMapping(filePath: string, rows: ImportRow[]): void {
+  const logger = getLogger();
+  const map: Record<string, string> = {};
+  for (const row of rows) {
+    if (row.outcome === 'imported' && row.physicalId) {
+      map[row.logicalId] = row.physicalId;
+    }
+  }
+  const body = JSON.stringify(map, null, 2) + '\n';
+  try {
+    writeFileSync(filePath, body, 'utf-8');
+    logger.info(`Wrote resolved mapping to ${filePath} (${Object.keys(map).length} entry(ies))`);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    logger.error(
+      `Failed to write --record-resource-mapping file '${filePath}': ${msg}. ` +
+        `Continuing — the import already resolved every physical id in memory.`
+    );
+  }
+}
+
+/**
  * Walk the template's `Resources` and return the entries we should attempt
  * to import. Filters out CDK metadata sentinels (`AWS::CDK::Metadata`) which
  * are not real AWS resources.
@@ -640,6 +695,16 @@ export function createImportCommand(): Command {
         'for non-TTY CI scripts that do not want a separate file. ' +
         'Implies selective mode unless --auto is set. ' +
         'Mutually exclusive with --resource-mapping.'
+    )
+    .option(
+      '--record-resource-mapping <file>',
+      'After cdkd resolves every logical ID (via --resource / --resource-mapping / ' +
+        'tag-based auto-lookup), write the resulting {logicalId: physicalId} map ' +
+        'to <file> as JSON. Useful in auto / hybrid mode for capturing the ' +
+        'tag-resolved mapping and feeding it back as --resource-mapping in ' +
+        'non-interactive CI re-runs. Written before the confirmation prompt ' +
+        '(so the user can review the file before saying "yes") and even when the ' +
+        'user says "no". Mirrors `cdk import --record-resource-mapping`.'
     )
     .option(
       '--auto',
