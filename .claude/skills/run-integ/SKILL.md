@@ -23,9 +23,9 @@ Run integration tests against a real AWS account. These tests deploy actual AWS 
 
 3. **Determine state bucket**: Resolve dynamically via `aws sts get-caller-identity --query Account --output text` to get the account ID, then construct `cdkd-state-{accountId}` (region-free, the current default since PR #62 / v0.11.0). If that bucket doesn't exist, fall back to the legacy `cdkd-state-{accountId}-us-east-1` and note the deprecation in the report.
 
-4. **Pre-flight orphan scan** (mandatory — prevents stuck deploys from prior-run leftovers):
+4. **Pre-flight orphan scan** (mandatory — fail fast on prior-run leftovers instead of going through CREATE + rollback):
 
-   Before invoking deploy, scan AWS for resources matching the stack name from this test that have no business existing yet. The scenario this catches: a previous integration run was killed mid-deploy, leaving orphan Event Source Mappings / Lambda functions / ENIs / IAM roles whose names match the stack about to be deployed. cdkd's diff calculation does NOT see these (they're not in state), so the deploy attempts CREATE — which collides with the orphans and triggers a 30+ minute rollback.
+   Before invoking deploy, scan AWS for resources matching the stack name from this test that have no business existing yet. The scenario this catches: a previous integration run was killed mid-deploy, leaving orphan Event Source Mappings / Lambda functions / ENIs / IAM roles whose names match the stack about to be deployed. cdkd's diff calculation does NOT see these (they're not in state), so the deploy attempts CREATE — which collides with the orphans, fails immediately with `ResourceAlreadyExists`, and forces a CREATE-then-rollback cycle. Failing at the start is much cheaper than partway through.
 
    Synth first (without deploy) to learn the stack name and the resource types in the template, then for each scenario in scope run a targeted scan:
 
@@ -37,7 +37,7 @@ Run integration tests against a real AWS account. These tests deploy actual AWS 
      --query 'Functions[?contains(FunctionName, `<StackName>`)].FunctionName' --output text
 
    # Run when the template uses Lambda EventSourceMapping (the orphan ESM
-   # case is the one that bit cdkd in 2026-05-02 with a 30-min stuck deploy):
+   # case bit cdkd in 2026-05-02: AlreadyExists + rollback cycle on a fresh deploy):
    aws lambda list-event-source-mappings --region us-east-1 \
      --query 'EventSourceMappings[?contains(FunctionArn, `<StackName>`)].[UUID,FunctionArn]' --output text
 
