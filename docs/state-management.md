@@ -692,7 +692,8 @@ underlying AWS resources:
 | --- | --- | --- | --- |
 | `cdkd destroy <stack>` | Yes (synth) | Yes | Yes |
 | `cdkd state destroy <stack>` | No | Yes | Yes |
-| `cdkd state rm <stack>` | No | **No** | Yes |
+| `cdkd orphan <stack>` | Yes (synth) | **No** | Yes |
+| `cdkd state orphan <stack>` | No | **No** | Yes |
 
 `cdkd destroy` is the canonical path when you have the CDK source — it synths
 the app, intersects against state, and deletes resources in reverse dependency
@@ -701,10 +702,14 @@ into `src/cli/commands/destroy-runner.ts` and shared by both commands), but
 sourced from the state record instead of synth output, so it works from any
 working directory given access to the state bucket. Use it for cleanup from a
 machine without the CDK source, CI cleanup jobs after the source repo is gone,
-or a forgotten stack referenced only by name. `cdkd state rm` only forgets the
-state record — the AWS resources stay alive — and is the right tool when you
-intentionally want cdkd to stop tracking a stack without touching its
-resources.
+or a forgotten stack referenced only by name. `cdkd orphan` and `cdkd state
+orphan` only forget the state record — the AWS resources stay alive — and are
+the right tools when you intentionally want cdkd to stop tracking a stack
+without touching its resources. The naming mirrors aws-cdk-cli's new `cdk
+orphan` command. Choose the synth-driven `cdkd orphan` when you have the CDK
+source and want the same stack-pattern routing as `deploy` / `destroy`; choose
+`cdkd state orphan` when you don't have the CDK app or want to operate on the
+bucket alone.
 
 ## Security and Best Practices
 

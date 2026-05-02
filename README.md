@@ -458,10 +458,16 @@ cdkd state resources MyStack --json   # full JSON array
 cdkd state show MyStack
 cdkd state show MyStack --json        # raw {state, lock} JSON
 
-# Remove cdkd's state record for a stack (does NOT delete AWS resources)
-cdkd state rm MyStack                 # confirmation prompt (y/N)
-cdkd state rm MyStack --yes           # skip confirmation
-cdkd state rm StackA StackB --force   # also bypass the locked-stack refusal
+# Orphan a stack from cdkd's state (does NOT delete AWS resources).
+# Synth-driven — needs --app / cdk.json — same stack-pattern routing as deploy.
+cdkd orphan MyStack                   # confirmation prompt (y/N)
+cdkd orphan MyStack --yes
+cdkd orphan 'MyStage/*' --yes         # display-path wildcard
+
+# State-driven counterpart (no CDK app needed — works against the bucket).
+cdkd state orphan MyStack             # confirmation prompt (y/N)
+cdkd state orphan MyStack --yes       # skip confirmation
+cdkd state orphan StackA StackB --force # also bypass the locked-stack refusal
 
 # Destroy a stack's AWS resources AND remove its state record, without
 # requiring the CDK app (no synth — works from any working directory).
@@ -471,10 +477,12 @@ cdkd state destroy --all -y           # every stack in the bucket
 cdkd state destroy MyStack --region us-east-1
 ```
 
-> `cdkd state destroy` vs `cdkd state rm`: `state destroy` deletes both the
-> AWS resources and the state record (the equivalent of `cdkd destroy` minus
-> the CDK-app dependency). `state rm` only forgets the state record and
-> leaves the AWS resources intact.
+> **`destroy` vs `orphan`** (matches aws-cdk-cli's new `cdk orphan`):
+> `destroy` deletes the AWS resources AND the state record. `orphan` deletes
+> ONLY the state record — AWS resources remain intact, just no longer
+> tracked by cdkd. Each has a synth-driven form (`cdkd destroy` / `cdkd
+> orphan`, needs the CDK app) and a state-driven form (`cdkd state destroy`
+> / `cdkd state orphan`, works on the bucket alone).
 
 ### Concurrency Options
 
@@ -561,7 +569,7 @@ s3://{state-bucket}/
 > `env.region` between deploys silently overwrote the prior region's state
 > and `cdkd destroy` ran against the wrong region. cdkd now treats the two
 > regions as independent. Use `cdkd state list` to see both, and
-> `cdkd state rm <stack> --stack-region <region>` to prune one without
+> `cdkd state orphan <stack> --stack-region <region>` to prune one without
 > touching the other.
 >
 > **Legacy layout migration:** state files written by cdkd before this

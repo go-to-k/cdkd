@@ -189,7 +189,7 @@ export class S3StateBackend {
    *
    * Returns true for either layout: the new region-scoped key, or the legacy
    * key when its embedded `region` matches the requested region. This lets
-   * `cdkd state rm <stack> --region X` and `cdkd destroy <stack>` see legacy
+   * `cdkd state orphan <stack> --region X` and `cdkd destroy <stack>` see legacy
    * state without forcing a write-through migration first.
    */
   async stateExists(stackName: string, region: string): Promise<boolean> {

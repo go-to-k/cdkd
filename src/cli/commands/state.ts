@@ -623,11 +623,15 @@ function createStateShowCommand(): Command {
 }
 
 /**
- * `cdkd state rm <stacks...>` command implementation
+ * `cdkd state orphan <stacks...>` command implementation
  *
  * Removes the cdkd state record (state.json + any lingering lock.json) for
  * one or more stacks. **Does not** touch the underlying AWS resources —
  * `cdkd destroy` is the command that deletes those.
+ *
+ * The name mirrors the new `cdk orphan` command in aws-cdk-cli: cdkd "orphans"
+ * the stack from its own state without touching the AWS resources it was
+ * tracking.
  *
  * Behavior:
  * - Default: removes all region keys recorded for the stack, with a single
@@ -642,7 +646,7 @@ function createStateShowCommand(): Command {
  * - `--yes` / `--force` skip the prompt.
  * - Skips cleanly when a stack has no state (idempotent).
  */
-async function stateRmCommand(
+async function stateOrphanCommand(
   stackArgs: string[],
   options: {
     force: boolean;
@@ -659,7 +663,7 @@ async function stateRmCommand(
   if (options.verbose) logger.setLevel('debug');
 
   if (stackArgs.length === 0) {
-    throw new Error('Stack name is required. Usage: cdkd state rm <stack> [<stack>...]');
+    throw new Error('Stack name is required. Usage: cdkd state orphan <stack> [<stack>...]');
   }
 
   const setup = await setupStateBackend(options);
@@ -760,15 +764,17 @@ function stackRegionOption(): Option {
 }
 
 /**
- * Create the `state rm` subcommand.
+ * Create the `state orphan` subcommand.
  */
-function createStateRmCommand(): Command {
-  const cmd = new Command('rm')
-    .description('Remove cdkd state for one or more stacks (does NOT delete AWS resources)')
-    .argument('<stacks...>', 'Stack name(s) to remove from state')
+function createStateOrphanCommand(): Command {
+  const cmd = new Command('orphan')
+    .description(
+      'Orphan one or more stacks from cdkd state (removes the state record; does NOT delete AWS resources)'
+    )
+    .argument('<stacks...>', 'Stack name(s) to orphan from state')
     .option('-f, --force', 'Skip confirmation and remove even if the stack is locked', false)
     .addOption(stackRegionOption())
-    .action(withErrorHandling(stateRmCommand));
+    .action(withErrorHandling(stateOrphanCommand));
 
   [...commonOptions, ...stateOptions].forEach((opt) => cmd.addOption(opt));
 
@@ -794,8 +800,10 @@ function createStateRmCommand(): Command {
  *   state.
  * - `cdkd state destroy` — state-driven, no synth needed, deletes resources +
  *   state.
- * - `cdkd state rm` — state-driven, no synth needed, deletes ONLY the state
- *   record. AWS resources are left intact.
+ * - `cdkd orphan` — synth-driven, requires the CDK app, deletes ONLY the
+ *   state record. AWS resources are left intact.
+ * - `cdkd state orphan` — state-driven, no synth needed, deletes ONLY the
+ *   state record. AWS resources are left intact.
  *
  * Region scoping: when a stack name has multiple state records spread across
  * regions (PR 1 territory), `--region` selects one. With the current single-
@@ -965,7 +973,7 @@ function createStateDestroyCommand(): Command {
   const cmd = new Command('destroy')
     .description(
       "Destroy a stack's AWS resources and remove its state record without requiring the CDK app. " +
-        "For removing only the state record (keeping AWS resources intact), use 'cdkd state rm'."
+        "For removing only the state record (keeping AWS resources intact), use 'cdkd state orphan'."
     )
     .argument('[stacks...]', 'Stack name(s) to destroy (physical CloudFormation names)')
     .option('--all', 'Destroy every stack in the state bucket', false)
@@ -981,7 +989,7 @@ function createStateDestroyCommand(): Command {
         '  cdkd state destroy MyStack --state-bucket cdkd-state-test',
         '  cdkd state destroy MyStack --stack-region us-west-2',
         '',
-        "For removing only the state record (keeping AWS resources intact), use 'cdkd state rm'.",
+        "For removing only the state record (keeping AWS resources intact), use 'cdkd state orphan'.",
       ].join('\n')
     )
     .action(withErrorHandling(stateDestroyCommand));
@@ -1216,7 +1224,7 @@ function createStateInfoCommand(): Command {
  * - `state list` (alias `ls`) — list stacks in the state bucket
  * - `state resources <stack>` — list resources of one stack
  * - `state show <stack>` — full state record (metadata, outputs, resources)
- * - `state rm <stack>...` — remove cdkd's state record (NOT AWS resources)
+ * - `state orphan <stack>...` — remove cdkd's state record (NOT AWS resources)
  * - `state destroy <stack>...` — delete AWS resources AND state record
  *   without requiring the CDK app (CDK-app-free version of `cdkd destroy`)
  * - `state migrate` — copy all state from the legacy region-suffixed
@@ -1228,7 +1236,7 @@ export function createStateCommand(): Command {
   cmd.addCommand(createStateListCommand());
   cmd.addCommand(createStateResourcesCommand());
   cmd.addCommand(createStateShowCommand());
-  cmd.addCommand(createStateRmCommand());
+  cmd.addCommand(createStateOrphanCommand());
   cmd.addCommand(createStateDestroyCommand());
   cmd.addCommand(createStateMigrateCommand());
   return cmd;
