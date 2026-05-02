@@ -1,4 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
 
 const errorSpy = vi.hoisted(() => vi.fn());
@@ -653,5 +656,175 @@ describe('cdkd import', () => {
       'us-east-1',
       expect.objectContaining({ stackName: 'OnlyOne', region: 'us-east-1' })
     );
+  });
+
+  describe('--record-resource-mapping', () => {
+    let tmpDir: string;
+
+    beforeEach(() => {
+      tmpDir = mkdtempSync(join(tmpdir(), 'cdkd-record-mapping-'));
+    });
+
+    afterEach(() => {
+      rmSync(tmpDir, { recursive: true, force: true });
+    });
+
+    const tmpl3 = () =>
+      template({
+        MyBucket: {
+          Type: 'AWS::S3::Bucket',
+          Properties: {},
+          Metadata: { 'aws:cdk:path': 'S/MyBucket' },
+        },
+        MyFn: {
+          Type: 'AWS::Lambda::Function',
+          Properties: {},
+          Metadata: { 'aws:cdk:path': 'S/MyFn' },
+        },
+        UntouchedUnsupported: {
+          Type: 'AWS::Foo::Bar',
+          Properties: {},
+        },
+      });
+
+    it('writes the resolved mapping with only `imported` rows (skips not-found / unsupported / failed)', async () => {
+      mockSynthesize.mockResolvedValue({ stacks: [stackInfo('S', tmpl3())] });
+      mockHasProvider.mockImplementation((t: string) => t !== 'AWS::Foo::Bar');
+      mockGetProvider.mockImplementation((t: string) => {
+        if (t === 'AWS::S3::Bucket') {
+          return { import: vi.fn(async () => ({ physicalId: 'my-bucket-name', attributes: {} })) };
+        }
+        if (t === 'AWS::Lambda::Function') {
+          // skipped-not-found
+          return { import: vi.fn(async () => null) };
+        }
+        return {};
+      });
+
+      const file = join(tmpDir, 'mapping.json');
+      await runImport(['import', '--app', 'x', '--record-resource-mapping', file, '--yes']);
+
+      const body = readFileSync(file, 'utf-8');
+      // Pretty-printed (2-space indent) + trailing newline.
+      expect(body.endsWith('\n')).toBe(true);
+      expect(body).toContain('  "MyBucket": "my-bucket-name"');
+      const parsed = JSON.parse(body) as Record<string, string>;
+      expect(parsed).toEqual({ MyBucket: 'my-bucket-name' });
+      // skipped / unsupported rows must NOT appear in the file.
+      expect(parsed).not.toHaveProperty('MyFn');
+      expect(parsed).not.toHaveProperty('UntouchedUnsupported');
+    });
+
+    it('writes `{}` when zero resources were imported (file is still produced)', async () => {
+      const tmpl = template({
+        OnlyUnsupported: { Type: 'AWS::Foo::Bar', Properties: {} },
+      });
+      mockSynthesize.mockResolvedValue({ stacks: [stackInfo('S', tmpl)] });
+      mockHasProvider.mockReturnValue(false);
+
+      const file = join(tmpDir, 'mapping.json');
+      await runImport(['import', '--app', 'x', '--record-resource-mapping', file, '--yes']);
+
+      const body = readFileSync(file, 'utf-8');
+      expect(body).toBe('{}\n');
+    });
+
+    it('writes the mapping even when the user says "no" to the confirmation prompt', async () => {
+      const tmpl = template({
+        MyBucket: {
+          Type: 'AWS::S3::Bucket',
+          Properties: {},
+          Metadata: { 'aws:cdk:path': 'S/MyBucket' },
+        },
+      });
+      mockSynthesize.mockResolvedValue({ stacks: [stackInfo('S', tmpl)] });
+      mockHasProvider.mockReturnValue(true);
+      mockGetProvider.mockReturnValue({
+        import: vi.fn(async () => ({ physicalId: 'declined-but-still-recorded', attributes: {} })),
+      });
+      readlineQuestion.mockResolvedValue('n');
+
+      const file = join(tmpDir, 'mapping.json');
+      await runImport(['import', '--app', 'x', '--record-resource-mapping', file]);
+
+      // State NOT written (user said no), but the record file IS — that's
+      // the whole point: the resolved data should not be thrown away.
+      expect(mockSaveState).not.toHaveBeenCalled();
+      const parsed = JSON.parse(readFileSync(file, 'utf-8')) as Record<string, string>;
+      expect(parsed).toEqual({ MyBucket: 'declined-but-still-recorded' });
+    });
+
+    it('writes the mapping under --dry-run (state save still skipped)', async () => {
+      const tmpl = template({
+        MyBucket: {
+          Type: 'AWS::S3::Bucket',
+          Properties: {},
+          Metadata: { 'aws:cdk:path': 'S/MyBucket' },
+        },
+      });
+      mockSynthesize.mockResolvedValue({ stacks: [stackInfo('S', tmpl)] });
+      mockHasProvider.mockReturnValue(true);
+      mockGetProvider.mockReturnValue({
+        import: vi.fn(async () => ({ physicalId: 'b', attributes: {} })),
+      });
+
+      const file = join(tmpDir, 'mapping.json');
+      await runImport(['import', '--app', 'x', '--record-resource-mapping', file, '--dry-run']);
+
+      expect(mockSaveState).not.toHaveBeenCalled();
+      const parsed = JSON.parse(readFileSync(file, 'utf-8')) as Record<string, string>;
+      expect(parsed).toEqual({ MyBucket: 'b' });
+    });
+
+    it('logs an error but does NOT abort the import when the file path is unwritable', async () => {
+      const tmpl = template({
+        MyBucket: {
+          Type: 'AWS::S3::Bucket',
+          Properties: {},
+          Metadata: { 'aws:cdk:path': 'S/MyBucket' },
+        },
+      });
+      mockSynthesize.mockResolvedValue({ stacks: [stackInfo('S', tmpl)] });
+      mockHasProvider.mockReturnValue(true);
+      mockGetProvider.mockReturnValue({
+        import: vi.fn(async () => ({ physicalId: 'b', attributes: {} })),
+      });
+
+      // Parent directory does not exist — writeFileSync raises ENOENT.
+      const unwritable = join(tmpDir, 'does', 'not', 'exist', 'mapping.json');
+      await runImport(['import', '--app', 'x', '--record-resource-mapping', unwritable, '--yes']);
+
+      // The import itself completed and state was written — only the
+      // record file write failed.
+      expect(mockSaveState).toHaveBeenCalledTimes(1);
+      const errorMessages = errorSpy.mock.calls.map((c) => String(c[0]));
+      expect(errorMessages.some((m) => /Failed to write --record-resource-mapping/.test(m))).toBe(
+        true
+      );
+    });
+
+    it('records resolved physical IDs from --auto tag-based lookup (the typical use case)', async () => {
+      // This is the user-facing scenario the flag exists for: cdkd looked
+      // up the physical IDs via tags, and we want that resolved mapping
+      // to disk so a non-interactive CI re-run can replay it via
+      // --resource-mapping.
+      mockSynthesize.mockResolvedValue({ stacks: [stackInfo('S', tmpl3())] });
+      mockHasProvider.mockImplementation((t: string) => t !== 'AWS::Foo::Bar');
+      mockGetProvider.mockImplementation((t: string) => {
+        if (t === 'AWS::S3::Bucket') {
+          return { import: vi.fn(async () => ({ physicalId: 'auto-bucket', attributes: {} })) };
+        }
+        if (t === 'AWS::Lambda::Function') {
+          return { import: vi.fn(async () => ({ physicalId: 'auto-fn', attributes: {} })) };
+        }
+        return {};
+      });
+
+      const file = join(tmpDir, 'mapping.json');
+      await runImport(['import', '--app', 'x', '--record-resource-mapping', file, '--yes']);
+
+      const parsed = JSON.parse(readFileSync(file, 'utf-8')) as Record<string, string>;
+      expect(parsed).toEqual({ MyBucket: 'auto-bucket', MyFn: 'auto-fn' });
+    });
   });
 });

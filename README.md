@@ -650,6 +650,13 @@ cdkd import MyStack --resource-mapping mapping.json
 
 # CDK CLI compat: inline JSON (handy for non-TTY CI scripts).
 cdkd import MyStack --resource-mapping-inline '{"MyBucket":"my-bucket-name"}'
+
+# Capture cdkd's resolved logicalId→physicalId mapping for re-use.
+# Combine with --auto (or no flags) to record the tag-based lookups.
+cdkd import MyStack --record-resource-mapping ./mapping.json
+# mapping.json after the run: { "MyBucket": "my-bucket-name", ... }
+# Replay non-interactively in CI:
+cdkd import MyStack --resource-mapping ./mapping.json --yes
 ```
 
 When at least one `--resource` flag (or a `--resource-mapping` /
@@ -726,8 +733,8 @@ table to predict behavior when migrating from `cdk import`.
 | Failure mode | Failed import rolls the changeset back; the stack is left unchanged. | Per-resource: `imported` / `skipped-not-found` / `skipped-no-impl` / `skipped-out-of-scope` / `failed` rows are summarized. State is written for whatever succeeded — but only after a confirmation prompt (or `--yes`), so a partial run is opt-in. To roll a partial import back, use `cdkd state orphan <stack>` (drops the state record only). |
 | Selective mode (`--resource-mapping <file>`) | Supported. Listed resources are imported; unlisted resources cause the changeset to fail. | Supported. Listed resources are imported; unlisted resources are reported as `out of scope` and left out of state (next `cdkd deploy` will CREATE them). |
 | Selective mode (`--resource <id>=<physical>` repeatable) | Not supported (upstream uses interactive prompts or a mapping file). | Supported as cdkd's CLI-friendly equivalent. |
-| `--resource-mapping-inline '<json>'` | Supported (use in non-TTY environments). | **Not supported.** Use `--resource <id>=<physical>` (repeatable) or `--resource-mapping <file>` instead. |
-| `--record-resource-mapping <file>` | Supported (writes the mapping the user typed at the prompt to a file for re-use). | **Not supported.** cdkd has no interactive prompt to record. |
+| `--resource-mapping-inline '<json>'` | Supported (use in non-TTY environments). | Supported. Same shape as `--resource-mapping <file>` but supplied as a string — useful for non-TTY CI scripts that do not want a separate file. Mutually exclusive with `--resource-mapping`. |
+| `--record-resource-mapping <file>` | Supported (writes the mapping the user typed at the prompt to a file for re-use). | Supported. Writes the resolved `{logicalId: physicalId}` map (covers explicit overrides AND cdkd's tag-based auto-lookup) to the file before the confirmation prompt. The file is produced even if the user says "no" or under `--dry-run`, so the resolved data is never thrown away. |
 | Interactive prompt for missing IDs | Default in TTY — prompts for every resource not covered by a mapping file. | **Not supported.** cdkd is non-interactive: missing logical IDs are looked up by `aws:cdk:path` tag in `auto` / `hybrid` modes, or skipped as `out of scope` in selective mode. The only prompt is the final "write state?" confirmation, which `--yes` skips. |
 | Typo'd logical ID | Aborts with a clear error before any AWS calls. | Aborts with a clear error before any AWS calls — checked against the synthesized template. |
 | Whole-stack tag-based import | **Not supported.** | **cdkd-specific.** With no flags, cdkd looks every resource up by its `aws:cdk:path` tag — the typical case for adopting a stack previously deployed by `cdk deploy`. |
@@ -743,8 +750,13 @@ table to predict behavior when migrating from `cdk import`.
 
 - If you script around `--resource-mapping <file>`: behavior matches.
   The file format (`{"LogicalId": "physical-id"}`) is the same.
-- If you script around `--resource-mapping-inline`: rewrite as
-  repeated `--resource <id>=<physical>` flags, or write a temp file.
+- If you script around `--resource-mapping-inline`: behavior matches.
+  The JSON shape is the same as `--resource-mapping <file>`.
+- If you script around `--record-resource-mapping <file>`: behavior
+  matches. cdkd writes the resolved `{logicalId: physicalId}` map to
+  the file before the confirmation prompt — and even if the user says
+  "no" or under `--dry-run` — so you can capture cdkd's tag-based
+  auto-lookup result and replay it via `--resource-mapping` in CI.
 - If your workflow relies on the interactive prompt: rewrite as
   `--resource-mapping <file>`. cdkd will not prompt.
 - If you rely on atomic rollback: cdkd cannot offer that — its
