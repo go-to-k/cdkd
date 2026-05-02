@@ -35,6 +35,7 @@ interface ImportOptions {
   profile?: string;
   resource?: string[];
   resourceMapping?: string;
+  resourceMappingInline?: string;
   /**
    * When true, resources NOT in `--resource` / `--resource-mapping` still
    * go through tag-based auto-import. Default is `false` for CDK CLI parity:
@@ -174,7 +175,11 @@ async function importCommand(stackArg: string | undefined, options: ImportOption
 
     // Parse user-supplied physical-id overrides up front so any syntax error
     // surfaces before we make AWS calls.
-    const overrides = parseResourceOverrides(options.resource, options.resourceMapping);
+    const overrides = parseResourceOverrides(
+      options.resource,
+      options.resourceMapping,
+      options.resourceMappingInline
+    );
     if (overrides.size > 0) {
       logger.debug(`User-supplied physical IDs: ${[...overrides.keys()].join(', ')}`);
     }
@@ -372,42 +377,52 @@ async function importOne(task: ImportTask): Promise<ImportRow> {
 }
 
 /**
- * Parse `--resource MyBucket=my-bucket-name` flags (repeatable) and
- * `--resource-mapping <file>` JSON file into a single map.
+ * Parse `--resource MyBucket=my-bucket-name` flags (repeatable),
+ * `--resource-mapping <file>` JSON file, and `--resource-mapping-inline
+ * '<json>'` JSON string into a single override map.
  *
- * The JSON file is `{ "<logicalId>": "<physicalId>", ... }` for CDK CLI
- * `cdk import --resource-mapping` parity.
+ * The JSON shape (file or inline) is `{ "<logicalId>": "<physicalId>", ... }`
+ * for CDK CLI `cdk import --resource-mapping` / `--resource-mapping-inline`
+ * parity.
  *
- * `--resource` flags take precedence over the file when a logicalId appears
- * in both — explicit-on-CLI wins.
+ * `--resource-mapping` and `--resource-mapping-inline` are mutually
+ * exclusive (matches upstream `cdk import`): the user picks one source.
+ *
+ * `--resource` flags take precedence over the JSON source when a logicalId
+ * appears in both — explicit-on-CLI wins.
  */
 function parseResourceOverrides(
   flags: string[] | undefined,
-  mappingFile: string | undefined
+  mappingFile: string | undefined,
+  mappingInline: string | undefined
 ): Map<string, string> {
   const map = new Map<string, string>();
 
+  if (mappingFile && mappingInline) {
+    throw new Error(
+      '--resource-mapping and --resource-mapping-inline are mutually exclusive; pass only one.'
+    );
+  }
+
   if (mappingFile) {
-    let parsed: unknown;
+    let raw: string;
     try {
-      parsed = JSON.parse(readFileSync(mappingFile, 'utf-8'));
+      raw = readFileSync(mappingFile, 'utf-8');
     } catch (err) {
       throw new Error(
         `Failed to read --resource-mapping file '${mappingFile}': ` +
           (err instanceof Error ? err.message : String(err))
       );
     }
-    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-      throw new Error(
-        `--resource-mapping file '${mappingFile}' must be a JSON object {logicalId: physicalId}`
-      );
+    const parsed = parseMappingJson(raw, `--resource-mapping file '${mappingFile}'`);
+    for (const [key, value] of Object.entries(parsed)) {
+      map.set(key, value);
     }
-    for (const [key, value] of Object.entries(parsed as Record<string, unknown>)) {
-      if (typeof value !== 'string') {
-        throw new Error(
-          `--resource-mapping: value for '${key}' must be a string, got ${typeof value}`
-        );
-      }
+  }
+
+  if (mappingInline) {
+    const parsed = parseMappingJson(mappingInline, '--resource-mapping-inline');
+    for (const [key, value] of Object.entries(parsed)) {
       map.set(key, value);
     }
   }
@@ -421,6 +436,34 @@ function parseResourceOverrides(
   }
 
   return map;
+}
+
+/**
+ * Parse a `{logicalId: physicalId}` JSON document — either a file body
+ * (for `--resource-mapping`) or an inline string (for
+ * `--resource-mapping-inline`). The `source` label is woven into error
+ * messages so the user can tell which input failed.
+ */
+function parseMappingJson(raw: string, source: string): Record<string, string> {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (err) {
+    throw new Error(
+      `Failed to parse ${source} as JSON: ` + (err instanceof Error ? err.message : String(err))
+    );
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new Error(`${source} must be a JSON object {logicalId: physicalId}`);
+  }
+  const out: Record<string, string> = {};
+  for (const [key, value] of Object.entries(parsed as Record<string, unknown>)) {
+    if (typeof value !== 'string') {
+      throw new Error(`${source}: value for '${key}' must be a string, got ${typeof value}`);
+    }
+    out[key] = value;
+  }
+  return out;
 }
 
 /**
@@ -562,9 +605,11 @@ async function confirmPrompt(prompt: string): Promise<boolean> {
  *   2. **Selective mode** (CDK CLI parity, default when overrides given):
  *      `cdkd import MyStack --resource MyBucket=my-bucket-name`
  *      `cdkd import MyStack --resource-mapping mapping.json`
+ *      `cdkd import MyStack --resource-mapping-inline '{"MyBucket":"my-bucket-name"}'`
  *      ONLY the listed resources are imported; the rest are skipped
  *      ("out of scope") and will be CREATEd on the next deploy. Matches
- *      `cdk import --resource-mapping` semantics.
+ *      `cdk import --resource-mapping` / `--resource-mapping-inline`
+ *      semantics.
  *
  *   3. **Hybrid mode** (`--auto` with overrides):
  *      `cdkd import MyStack --resource MyBucket=name --auto`
@@ -596,7 +641,17 @@ export function createImportCommand(): Command {
       '--resource-mapping <file>',
       'Path to a JSON file of {logicalId: physicalId} overrides ' +
         '(CDK CLI `cdk import --resource-mapping` compatible). ' +
-        'Implies selective mode unless --auto is set.'
+        'Implies selective mode unless --auto is set. ' +
+        'Mutually exclusive with --resource-mapping-inline.'
+    )
+    .option(
+      '--resource-mapping-inline <json>',
+      'Inline JSON object of {logicalId: physicalId} overrides ' +
+        '(CDK CLI `cdk import --resource-mapping-inline` compatible). ' +
+        'Same shape as --resource-mapping but supplied as a string — useful ' +
+        'for non-TTY CI scripts that do not want a separate file. ' +
+        'Implies selective mode unless --auto is set. ' +
+        'Mutually exclusive with --resource-mapping.'
     )
     .option(
       '--auto',
