@@ -705,6 +705,37 @@ export class IAMRoleProvider implements ResourceProvider {
   }
 
   /**
+   * Resolve a single `Fn::GetAtt` attribute for an existing IAM role.
+   *
+   * CloudFormation's `AWS::IAM::Role` exposes `Arn` and `RoleId`; both are
+   * available from the `GetRole` response. See:
+   * https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-iam-role.html#aws-resource-iam-role-return-values
+   *
+   * Used by `cdkd orphan` to live-fetch attribute values that need to be
+   * substituted into sibling references.
+   */
+  async getAttribute(
+    physicalId: string,
+    _resourceType: string,
+    attributeName: string
+  ): Promise<unknown> {
+    try {
+      const resp = await this.iamClient.send(new GetRoleCommand({ RoleName: physicalId }));
+      switch (attributeName) {
+        case 'Arn':
+          return resp.Role?.Arn;
+        case 'RoleId':
+          return resp.Role?.RoleId;
+        default:
+          return undefined;
+      }
+    } catch (err) {
+      if (err instanceof NoSuchEntityException) return undefined;
+      throw err;
+    }
+  }
+
+  /**
    * Adopt an existing IAM role into cdkd state.
    *
    * Lookup order:

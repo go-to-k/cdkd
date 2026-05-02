@@ -314,4 +314,50 @@ describe('IAMRoleProvider', () => {
       expect(mockSend).toHaveBeenCalledTimes(5);
     });
   });
+
+  describe('getAttribute', () => {
+    it('returns Arn from GetRole', async () => {
+      mockSend.mockResolvedValueOnce({
+        Role: {
+          RoleName: 'my-role',
+          Arn: 'arn:aws:iam::123456789012:role/my-role',
+          RoleId: 'AROAEXAMPLE',
+        },
+      });
+
+      const result = await provider.getAttribute('my-role', 'AWS::IAM::Role', 'Arn');
+      expect(result).toBe('arn:aws:iam::123456789012:role/my-role');
+    });
+
+    it('returns RoleId from GetRole', async () => {
+      mockSend.mockResolvedValueOnce({
+        Role: {
+          RoleName: 'my-role',
+          Arn: 'arn:aws:iam::123456789012:role/my-role',
+          RoleId: 'AROAEXAMPLE',
+        },
+      });
+
+      const result = await provider.getAttribute('my-role', 'AWS::IAM::Role', 'RoleId');
+      expect(result).toBe('AROAEXAMPLE');
+    });
+
+    it('returns undefined for unknown attribute', async () => {
+      mockSend.mockResolvedValueOnce({
+        Role: { RoleName: 'my-role', Arn: 'arn', RoleId: 'AROA' },
+      });
+
+      const result = await provider.getAttribute('my-role', 'AWS::IAM::Role', 'Unknown');
+      expect(result).toBeUndefined();
+    });
+
+    it('returns undefined when role not found', async () => {
+      mockSend.mockRejectedValueOnce(
+        new NoSuchEntityException({ $metadata: {}, message: 'not found' })
+      );
+
+      const result = await provider.getAttribute('missing-role', 'AWS::IAM::Role', 'Arn');
+      expect(result).toBeUndefined();
+    });
+  });
 });

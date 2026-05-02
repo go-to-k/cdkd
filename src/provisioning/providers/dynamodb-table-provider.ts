@@ -326,6 +326,43 @@ export class DynamoDBTableProvider implements ResourceProvider {
   }
 
   /**
+   * Resolve a single `Fn::GetAtt` attribute for an existing DynamoDB table.
+   *
+   * CloudFormation's `AWS::DynamoDB::Table` exposes `Arn` and `StreamArn`
+   * (a.k.a. `LatestStreamArn` in the SDK; CFn returns the latest enabled
+   * stream's ARN, which is what `DescribeTable` reports). See:
+   * https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-dynamodb-table.html#aws-resource-dynamodb-table-return-values
+   *
+   * `LatestStreamLabel` is also documented but rarely used; not implemented
+   * here — see `docs/provider-development.md` for the deferred list.
+   *
+   * Used by `cdkd orphan` to live-fetch attribute values that need to be
+   * substituted into sibling references.
+   */
+  async getAttribute(
+    physicalId: string,
+    _resourceType: string,
+    attributeName: string
+  ): Promise<unknown> {
+    try {
+      const resp = await this.dynamoDBClient.send(
+        new DescribeTableCommand({ TableName: physicalId })
+      );
+      switch (attributeName) {
+        case 'Arn':
+          return resp.Table?.TableArn;
+        case 'StreamArn':
+          return resp.Table?.LatestStreamArn;
+        default:
+          return undefined;
+      }
+    } catch (err) {
+      if (err instanceof ResourceNotFoundException) return undefined;
+      throw err;
+    }
+  }
+
+  /**
    * Adopt an existing DynamoDB table into cdkd state.
    *
    * Lookup order:

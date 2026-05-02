@@ -544,4 +544,30 @@ describe('LambdaFunctionProvider', () => {
       ).resolves.toBeUndefined();
     });
   });
+
+  describe('getAttribute', () => {
+    it('returns Arn from GetFunction', async () => {
+      mockLambdaSend.mockResolvedValueOnce({
+        Configuration: { FunctionArn: 'arn:aws:lambda:us-east-1:123:function:my-fn' },
+      });
+
+      const result = await provider.getAttribute('my-fn', 'AWS::Lambda::Function', 'Arn');
+      expect(result).toBe('arn:aws:lambda:us-east-1:123:function:my-fn');
+    });
+
+    it('returns undefined for unknown attribute without calling AWS', async () => {
+      const result = await provider.getAttribute('my-fn', 'AWS::Lambda::Function', 'Unknown');
+      expect(result).toBeUndefined();
+      expect(mockLambdaSend).not.toHaveBeenCalled();
+    });
+
+    it('returns undefined when function does not exist', async () => {
+      mockLambdaSend.mockRejectedValueOnce(
+        new ResourceNotFoundException({ message: 'not found', $metadata: {} })
+      );
+
+      const result = await provider.getAttribute('missing-fn', 'AWS::Lambda::Function', 'Arn');
+      expect(result).toBeUndefined();
+    });
+  });
 });

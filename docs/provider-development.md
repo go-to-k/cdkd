@@ -907,6 +907,40 @@ return {
 };
 ```
 
+### 3a. `getAttribute()` for live `Fn::GetAtt` resolution
+
+Beyond the initial create/update return value, providers should implement
+`getAttribute(physicalId, resourceType, attributeName)` so that **live**
+attribute reads succeed even when the value is no longer in cdkd state —
+specifically the `cdkd orphan` per-resource flow, which fetches each
+referenced attribute on demand to splice into sibling references.
+
+Conventions:
+
+- Return `undefined` for unknown attribute names. Do not throw.
+- Treat `*NotFound` exceptions as `undefined` rather than re-throwing —
+  the live fetch is best-effort, and `cdkd orphan` falls back to the
+  cached `state.attributes` (and ultimately `--force`) when the live
+  resolution comes back empty.
+- Prefer derivation from `physicalId` when CFn returns derivable values
+  (S3 Bucket DomainName/Arn, SNS Topic name from ARN tail, SQS QueueName
+  from URL tail) so the call is free.
+
+#### Known coverage gaps (deliberate)
+
+The following CloudFormation `Fn::GetAtt` return values are documented but
+not implemented in cdkd's `getAttribute()`. They require a separate AWS
+API call beyond what cdkd already makes, are rarely referenced from CDK
+code, or both. If a real-world stack hits one of these, file an issue —
+the small additional call is reasonable to add.
+
+| Resource | Unsupported attribute | Why deferred |
+| --- | --- | --- |
+| `AWS::Lambda::Function` | `SnapStartResponse.ApplyOn`, `SnapStartResponse.OptimizationStatus` | Rare (SnapStart-specific); requires nested-attribute parsing in the resolver. |
+| `AWS::DynamoDB::Table` | `LatestStreamLabel` | `DescribeTable` exposes the latest stream ARN but not the label; needs `DescribeStream`. Rarely referenced. |
+| `AWS::SQS::Queue` | (none) | All three CFn return values are covered. |
+| `AWS::S3::Bucket` | (none) | All five CFn return values are covered. |
+
 ### 4. Logging
 
 - `info`: Successful operations

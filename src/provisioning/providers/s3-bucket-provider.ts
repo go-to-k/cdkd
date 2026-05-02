@@ -95,16 +95,39 @@ export class S3BucketProvider implements ResourceProvider {
   }
 
   /**
-   * Build attributes for an S3 bucket
+   * Build attributes for an S3 bucket.
+   *
+   * Covers every CloudFormation `Fn::GetAtt` return value for
+   * `AWS::S3::Bucket`. All fields are derivable from `bucketName` + region —
+   * no extra AWS API call is needed. See:
+   * https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-properties-s3-bucket.html#aws-properties-s3-bucket-return-values
    */
   private async buildAttributes(bucketName: string): Promise<Record<string, unknown>> {
     const region = await this.getRegion();
     return {
       Arn: `arn:aws:s3:::${bucketName}`,
       DomainName: `${bucketName}.s3.amazonaws.com`,
+      DualStackDomainName: `${bucketName}.s3.dualstack.${region}.amazonaws.com`,
       RegionalDomainName: `${bucketName}.s3.${region}.amazonaws.com`,
       WebsiteURL: `http://${bucketName}.s3-website-${region}.amazonaws.com`,
     };
+  }
+
+  /**
+   * Resolve a single `Fn::GetAtt` attribute for an existing bucket.
+   *
+   * Used by `cdkd orphan` to live-fetch attribute values that need to be
+   * substituted into sibling references. All S3 Bucket attributes are
+   * derivable from bucket name + region, so this avoids the round trip and
+   * reuses the same templating as `buildAttributes`.
+   */
+  async getAttribute(
+    physicalId: string,
+    _resourceType: string,
+    attributeName: string
+  ): Promise<unknown> {
+    const attrs = await this.buildAttributes(physicalId);
+    return attrs[attributeName];
   }
 
   /**

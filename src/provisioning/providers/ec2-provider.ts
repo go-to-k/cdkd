@@ -542,32 +542,66 @@ export class EC2Provider implements ResourceProvider {
     }
   }
 
+  /**
+   * Resolve a single `Fn::GetAtt` attribute for an `AWS::EC2::VPC`.
+   *
+   * CloudFormation returns `CidrBlock`, `CidrBlockAssociations`,
+   * `DefaultNetworkAcl`, `DefaultSecurityGroup`, and `Ipv6CidrBlocks`. See:
+   * https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-ec2-vpc.html#aws-resource-ec2-vpc-return-values
+   *
+   * `DefaultNetworkAcl` and `DefaultSecurityGroup` previously returned wrong
+   * values (DHCP options id and `undefined` respectively); the AWS console
+   * surfaces these the same way as CFn — by filtering the relevant
+   * `Describe*` API on `vpc-id` + the `default` flag.
+   */
   private async getVpcAttribute(physicalId: string, attributeName: string): Promise<unknown> {
-    if (attributeName === 'VpcId') return physicalId;
-
     try {
-      const response = await this.ec2Client.send(new DescribeVpcsCommand({ VpcIds: [physicalId] }));
-      const vpc = response.Vpcs?.[0];
-      if (!vpc) return undefined;
-
       switch (attributeName) {
-        case 'CidrBlock':
-          return vpc.CidrBlock;
-        case 'Ipv6CidrBlocks':
-          // Return array of IPv6 CIDR blocks associated with this VPC
-          return (
-            vpc.Ipv6CidrBlockAssociationSet?.filter(
-              (a) => a.Ipv6CidrBlockState?.State === 'associated'
-            ).map((a) => a.Ipv6CidrBlock) || []
+        case 'DefaultNetworkAcl': {
+          const resp = await this.ec2Client.send(
+            new DescribeNetworkAclsCommand({
+              Filters: [
+                { Name: 'vpc-id', Values: [physicalId] },
+                { Name: 'default', Values: ['true'] },
+              ],
+            })
           );
-        case 'CidrBlockAssociations':
-          return vpc.CidrBlockAssociationSet?.map((a) => a.AssociationId) || [];
-        case 'DefaultNetworkAcl':
-          return vpc.DhcpOptionsId; // Placeholder - need separate API call for NACL
-        case 'DefaultSecurityGroup':
-          return undefined; // Requires DescribeSecurityGroups filter
-        default:
-          return undefined;
+          return resp.NetworkAcls?.[0]?.NetworkAclId;
+        }
+        case 'DefaultSecurityGroup': {
+          const resp = await this.ec2Client.send(
+            new DescribeSecurityGroupsCommand({
+              Filters: [
+                { Name: 'vpc-id', Values: [physicalId] },
+                { Name: 'group-name', Values: ['default'] },
+              ],
+            })
+          );
+          return resp.SecurityGroups?.[0]?.GroupId;
+        }
+        default: {
+          const response = await this.ec2Client.send(
+            new DescribeVpcsCommand({ VpcIds: [physicalId] })
+          );
+          const vpc = response.Vpcs?.[0];
+          if (!vpc) return undefined;
+
+          switch (attributeName) {
+            case 'CidrBlock':
+              return vpc.CidrBlock;
+            case 'Ipv6CidrBlocks':
+              // Return array of IPv6 CIDR blocks associated with this VPC
+              return (
+                vpc.Ipv6CidrBlockAssociationSet?.filter(
+                  (a) => a.Ipv6CidrBlockState?.State === 'associated'
+                ).map((a) => a.Ipv6CidrBlock) || []
+              );
+            case 'CidrBlockAssociations':
+              return vpc.CidrBlockAssociationSet?.map((a) => a.AssociationId) || [];
+            default:
+              return undefined;
+          }
+        }
       }
     } catch {
       return undefined;
