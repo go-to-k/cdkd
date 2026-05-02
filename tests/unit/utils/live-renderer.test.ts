@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { LiveRenderer } from '../../../src/utils/live-renderer.js';
+import { withStackName } from '../../../src/provisioning/resource-name.js';
 
 class FakeStream {
   isTTY = true;
@@ -217,6 +218,134 @@ describe('LiveRenderer', () => {
     expect(longest).toBeLessThanOrEqual(30);
 
     r.stop();
+  });
+
+  describe('multi-stack scoping (parallel deploy)', () => {
+    it("keeps two stacks' tasks with the same logicalId distinct (no collision)", () => {
+      const stream = new FakeStream();
+      const r = makeRenderer(stream);
+      r.start();
+
+      withStackName('Tokyo', () => r.addTask('SharedQueue', 'Creating SharedQueue (SQS::Queue)'));
+      withStackName('Virginia', () => r.addTask('SharedQueue', 'Creating SharedQueue (SQS::Queue)'));
+
+      // Reset to look only at the next steady-state frame (addTask itself
+      // also draws, so the buffer holds intermediate frames we don't want
+      // to count).
+      stream.reset();
+      vi.advanceTimersByTime(80);
+      const out = stream.output();
+
+      // Both stacks' rows must be present, distinguished by the [stackName]
+      // prefix that kicks in when more than one stack has tasks in flight.
+      expect(out).toContain('[Tokyo]');
+      expect(out).toContain('[Virginia]');
+      expect(out.match(/Creating SharedQueue/g)?.length).toBe(2);
+
+      r.stop();
+    });
+
+    it("removeTask only removes the calling stack's entry", () => {
+      const stream = new FakeStream();
+      const r = makeRenderer(stream);
+      r.start();
+
+      withStackName('Tokyo', () => r.addTask('SharedQueue', 'Creating SharedQueue (SQS)'));
+      withStackName('Virginia', () => r.addTask('SharedQueue', 'Creating SharedQueue (SQS)'));
+
+      // Both stacks visible while both are in flight.
+      vi.advanceTimersByTime(80);
+      expect(stream.output()).toContain('[Tokyo]');
+      expect(stream.output()).toContain('[Virginia]');
+
+      // Tokyo's task completes first.
+      withStackName('Tokyo', () => r.removeTask('SharedQueue'));
+
+      stream.reset();
+      vi.advanceTimersByTime(80);
+      const out = stream.output();
+
+      // Exactly one task row remains (the surviving stack's). Prefix is
+      // dropped because only one stack is now in flight — its identity
+      // is unambiguous so we keep the area visually clean.
+      expect(out.match(/Creating SharedQueue/g)?.length).toBe(1);
+      expect(out).not.toContain('[Tokyo]');
+
+      r.stop();
+    });
+
+    it('omits the stack prefix in single-stack runs', () => {
+      const stream = new FakeStream();
+      const r = makeRenderer(stream);
+      r.start();
+
+      withStackName('SoloStack', () => {
+        r.addTask('A', 'Creating A');
+        r.addTask('B', 'Creating B');
+      });
+
+      vi.advanceTimersByTime(80);
+      const out = stream.output();
+
+      // Only one distinct stack in the task set → prefix off.
+      expect(out).not.toContain('[SoloStack]');
+      expect(out).toContain('Creating A');
+      expect(out).toContain('Creating B');
+
+      r.stop();
+    });
+
+    it('prefix appears as soon as a second stack adds its first task', () => {
+      const stream = new FakeStream();
+      const r = makeRenderer(stream);
+      r.start();
+
+      withStackName('Tokyo', () => r.addTask('A', 'Creating A'));
+      vi.advanceTimersByTime(80);
+      // Single stack → no prefix yet.
+      expect(stream.output()).not.toContain('[Tokyo]');
+
+      stream.reset();
+      withStackName('Virginia', () => r.addTask('B', 'Creating B'));
+      vi.advanceTimersByTime(80);
+      // Two stacks → both rows now carry the prefix.
+      const out = stream.output();
+      expect(out).toContain('[Tokyo]');
+      expect(out).toContain('[Virginia]');
+
+      r.stop();
+    });
+
+    it('isolates concurrent stacks via Promise.all + staggered awaits', async () => {
+      // Defense-in-depth concurrency test, same shape as the resource-name
+      // AsyncLocalStorage test from PR #74. Without per-stack scoping, the
+      // shared `logicalId` would collide on the renderer's task Map.
+      const stream = new FakeStream();
+      const r = makeRenderer(stream);
+      r.start();
+      vi.useRealTimers(); // setTimeout-based interleave needs real timers
+
+      const work = (stackName: string, delay: number) =>
+        withStackName(stackName, async () => {
+          r.addTask('Shared', `Creating Shared in ${stackName}`);
+          await new Promise((res) => setTimeout(res, delay));
+          // Both stacks' tasks must coexist between addTask and removeTask
+          // even though they share the same logicalId.
+          r.removeTask('Shared');
+        });
+
+      await Promise.all([work('A', 30), work('B', 10), work('C', 20)]);
+
+      // After all three complete, no entries should remain — a leaked
+      // entry would mean removeTask deleted the wrong stack's key.
+      vi.useFakeTimers();
+      stream.reset();
+      vi.advanceTimersByTime(80);
+      // No spinner lines drawn => empty render.
+      expect(stream.output()).toBe('');
+
+      r.stop();
+    });
   });
 
   it('addTask / removeTask are idempotent silent no-ops when CDKD_NO_LIVE=1', () => {

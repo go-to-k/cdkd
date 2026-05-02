@@ -30,6 +30,19 @@ export function withStackName<T>(stackName: string, fn: () => T | Promise<T>): T
 }
 
 /**
+ * Read the current async context's stack name, if any.
+ *
+ * Returns `undefined` outside any `withStackName` / `setCurrentStackName`
+ * scope. Used by the live renderer to scope per-stack in-flight task
+ * entries so concurrent deploys don't clobber each other's tasks (same
+ * `logicalId` in two stacks would collide on the singleton renderer's
+ * task Map without this).
+ */
+export function getCurrentStackName(): string | undefined {
+  return stackNameStore.getStore();
+}
+
+/**
  * Set the current async context's stack name.
  *
  * @deprecated Use {@link withStackName} for new code — it makes the scope
