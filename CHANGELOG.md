@@ -1,3 +1,10 @@
+# [0.25.0](https://github.com/go-to-k/cdkd/compare/v0.24.0...v0.25.0) (2026-05-02)
+
+
+### Features
+
+* **deploy,destroy:** per-resource timeout (warn at 5m, abort at 30m) ([#99](https://github.com/go-to-k/cdkd/issues/99)) ([71d2cb9](https://github.com/go-to-k/cdkd/commit/71d2cb9a5af013da36ac8c9cd15b26b62ff4bf22))
+
 # [0.24.0](https://github.com/go-to-k/cdkd/compare/v0.23.2...v0.24.0) (2026-05-02)
 
 
