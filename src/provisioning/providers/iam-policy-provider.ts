@@ -17,6 +17,8 @@ import type {
   ResourceProvider,
   ResourceCreateResult,
   ResourceUpdateResult,
+  ResourceImportInput,
+  ResourceImportResult,
 } from '../../types/resource.js';
 
 /**
@@ -471,5 +473,27 @@ export class IAMPolicyProvider implements ResourceProvider {
         cause
       );
     }
+  }
+
+  /**
+   * Adopt an existing IAM inline policy into cdkd state.
+   *
+   * **Explicit override only.** `AWS::IAM::Policy` in CloudFormation is an
+   * inline policy attached to roles / groups / users — not a standalone
+   * resource. Inline policies are not taggable and have no global identity,
+   * so tag-based auto-lookup via `aws:cdk:path` is not feasible. Users
+   * adopting inline policies must pass `--resource <logicalId>=<policyName>`
+   * (the physical id is the policy name itself).
+   *
+   * For standalone managed policies (`AWS::IAM::ManagedPolicy`), the
+   * Cloud Control API fallback handles import via the same explicit
+   * override mode.
+   */
+  // eslint-disable-next-line @typescript-eslint/require-await -- explicit-override-only intentionally has no AWS calls
+  async import(input: ResourceImportInput): Promise<ResourceImportResult | null> {
+    if (input.knownPhysicalId) {
+      return { physicalId: input.knownPhysicalId, attributes: {} };
+    }
+    return null;
   }
 }

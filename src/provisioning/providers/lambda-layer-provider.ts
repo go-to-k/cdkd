@@ -2,6 +2,9 @@ import {
   LambdaClient,
   PublishLayerVersionCommand,
   DeleteLayerVersionCommand,
+  GetLayerVersionByArnCommand,
+  ListLayersCommand,
+  ListTagsCommand,
   ResourceNotFoundException,
   type LayerVersionContentInput,
   type Runtime,
@@ -12,10 +15,13 @@ import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { generateResourceName } from '../resource-name.js';
+import { CDK_PATH_TAG } from '../import-helpers.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
   ResourceUpdateResult,
+  ResourceImportInput,
+  ResourceImportResult,
 } from '../../types/resource.js';
 
 /**
@@ -197,5 +203,65 @@ export class LambdaLayerVersionProvider implements ResourceProvider {
         cause
       );
     }
+  }
+
+  /**
+   * Adopt an existing Lambda layer version into cdkd state.
+   *
+   * Lookup order:
+   *  1. `--resource <id>=<layerVersionArn>` override → verify with
+   *     `GetLayerVersionByArn`. (Note: there is no `LayerName` field that
+   *     uniquely names a *version*; a layer name resolves to the latest
+   *     version, so an explicit ARN is the only unambiguous override.)
+   *  2. `ListLayers` paginator + `ListTags(Resource: layerArn)` (which
+   *     returns a `Tags: Record<string,string>` map keyed by tag name).
+   *     Match `aws:cdk:path` and adopt `LatestMatchingVersion.LayerVersionArn`.
+   *
+   * **Caveat**: Lambda layer versions are immutable, so auto-lookup adopts
+   * the LATEST version of the named layer that carries the matching CDK
+   * path tag. If the user's CDK app has since published newer versions
+   * outside cdkd's tracking, the adopted physical id may be stale; pass
+   * `--resource <id>=<arn>` to pin a specific version.
+   */
+  async import(input: ResourceImportInput): Promise<ResourceImportResult | null> {
+    if (input.knownPhysicalId) {
+      try {
+        await this.lambdaClient.send(
+          new GetLayerVersionByArnCommand({ Arn: input.knownPhysicalId })
+        );
+        return { physicalId: input.knownPhysicalId, attributes: {} };
+      } catch (err) {
+        if (err instanceof ResourceNotFoundException) return null;
+        throw err;
+      }
+    }
+
+    if (!input.cdkPath) return null;
+
+    let marker: string | undefined;
+    do {
+      const list = await this.lambdaClient.send(
+        new ListLayersCommand({ ...(marker && { Marker: marker }) })
+      );
+      for (const layer of list.Layers ?? []) {
+        if (!layer.LayerArn || !layer.LatestMatchingVersion?.LayerVersionArn) continue;
+        try {
+          const tagsResp = await this.lambdaClient.send(
+            new ListTagsCommand({ Resource: layer.LayerArn })
+          );
+          if (tagsResp.Tags?.[CDK_PATH_TAG] === input.cdkPath) {
+            return {
+              physicalId: layer.LatestMatchingVersion.LayerVersionArn,
+              attributes: {},
+            };
+          }
+        } catch (err) {
+          if (err instanceof ResourceNotFoundException) continue;
+          throw err;
+        }
+      }
+      marker = list.NextMarker;
+    } while (marker);
+    return null;
   }
 }

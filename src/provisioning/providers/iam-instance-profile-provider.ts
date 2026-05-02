@@ -3,6 +3,7 @@ import {
   CreateInstanceProfileCommand,
   DeleteInstanceProfileCommand,
   GetInstanceProfileCommand,
+  ListInstanceProfilesCommand,
   AddRoleToInstanceProfileCommand,
   RemoveRoleFromInstanceProfileCommand,
   NoSuchEntityException,
@@ -12,10 +13,13 @@ import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { generateResourceName } from '../resource-name.js';
+import { matchesCdkPath, resolveExplicitPhysicalId } from '../import-helpers.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
   ResourceUpdateResult,
+  ResourceImportInput,
+  ResourceImportResult,
 } from '../../types/resource.js';
 
 /**
@@ -264,5 +268,47 @@ export class IAMInstanceProfileProvider implements ResourceProvider {
         cause
       );
     }
+  }
+
+  /**
+   * Adopt an existing IAM instance profile into cdkd state.
+   *
+   * Lookup order:
+   *  1. `--resource` override or `Properties.InstanceProfileName` → verify
+   *     via `GetInstanceProfile`.
+   *  2. `ListInstanceProfiles` paginator + match `aws:cdk:path` against the
+   *     `InstanceProfile.Tags` array returned inline (no separate
+   *     `ListInstanceProfileTags` call needed).
+   *
+   * IAM is global; this walks every instance profile in the account once.
+   */
+  async import(input: ResourceImportInput): Promise<ResourceImportResult | null> {
+    const explicit = resolveExplicitPhysicalId(input, 'InstanceProfileName');
+    if (explicit) {
+      try {
+        await this.iamClient.send(new GetInstanceProfileCommand({ InstanceProfileName: explicit }));
+        return { physicalId: explicit, attributes: {} };
+      } catch (err) {
+        if (err instanceof NoSuchEntityException) return null;
+        throw err;
+      }
+    }
+
+    if (!input.cdkPath) return null;
+
+    let marker: string | undefined;
+    do {
+      const list = await this.iamClient.send(
+        new ListInstanceProfilesCommand({ ...(marker && { Marker: marker }) })
+      );
+      for (const profile of list.InstanceProfiles ?? []) {
+        if (!profile.InstanceProfileName) continue;
+        if (matchesCdkPath(profile.Tags, input.cdkPath)) {
+          return { physicalId: profile.InstanceProfileName, attributes: {} };
+        }
+      }
+      marker = list.IsTruncated ? list.Marker : undefined;
+    } while (marker);
+    return null;
   }
 }

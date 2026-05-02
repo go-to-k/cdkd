@@ -194,4 +194,38 @@ describe('S3VectorsProvider', () => {
       expect(mockSend).not.toHaveBeenCalled();
     });
   });
+
+  describe('import', () => {
+    function makeInput(overrides: Record<string, unknown> = {}) {
+      return {
+        logicalId: 'MyVectorBucket',
+        resourceType: 'AWS::S3Vectors::VectorBucket',
+        cdkPath: 'MyStack/MyVectorBucket',
+        stackName: 'MyStack',
+        region: 'us-east-1',
+        properties: {} as Record<string, unknown>,
+        ...overrides,
+      };
+    }
+
+    it('verifies explicit VectorBucketName via GetVectorBucket', async () => {
+      mockSend.mockResolvedValueOnce({ vectorBucket: { vectorBucketName: 'my-bucket' } });
+      const result = await provider.import!(makeInput({ knownPhysicalId: 'my-bucket' }));
+      expect(result).toEqual({ physicalId: 'my-bucket', attributes: {} });
+    });
+
+    it('uses Properties.VectorBucketName when no knownPhysicalId is given', async () => {
+      mockSend.mockResolvedValueOnce({ vectorBucket: { vectorBucketName: 'my-bucket' } });
+      const result = await provider.import!(
+        makeInput({ properties: { VectorBucketName: 'my-bucket' } })
+      );
+      expect(result?.physicalId).toBe('my-bucket');
+    });
+
+    it('returns null without override and without cdkPath', async () => {
+      const result = await provider.import!(makeInput({ cdkPath: '' }));
+      expect(result).toBeNull();
+      expect(mockSend).not.toHaveBeenCalled();
+    });
+  });
 });

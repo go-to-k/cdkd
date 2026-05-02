@@ -230,4 +230,48 @@ describe('S3TablesProvider', () => {
       expect(mockSend).not.toHaveBeenCalled();
     });
   });
+
+  describe('import', () => {
+    function makeInput(overrides: Record<string, unknown> = {}) {
+      return {
+        logicalId: 'MyTableBucket',
+        resourceType: 'AWS::S3Tables::TableBucket',
+        cdkPath: 'MyStack/MyTableBucket',
+        stackName: 'MyStack',
+        region: 'us-east-1',
+        properties: {} as Record<string, unknown>,
+        ...overrides,
+      };
+    }
+
+    it('verifies explicit TableBucket ARN via GetTableBucket', async () => {
+      const arn = 'arn:aws:s3tables:us-east-1:123:bucket/my-bucket';
+      mockSend.mockResolvedValueOnce({ arn });
+      const result = await provider.import!(makeInput({ knownPhysicalId: arn }));
+      expect(result).toEqual({ physicalId: arn, attributes: {} });
+    });
+
+    it('finds TableBucket by TableBucketName property', async () => {
+      const arn = 'arn:aws:s3tables:us-east-1:123:bucket/my-bucket';
+      mockSend.mockResolvedValueOnce({
+        tableBuckets: [
+          // mine first so the Name match short-circuits before cdk:path
+          // tag lookup of 'other' (which would need its own ListTags mock).
+          { arn, name: 'my-bucket' },
+          { arn: 'arn:aws:s3tables:us-east-1:123:bucket/other', name: 'other' },
+        ],
+      });
+      const result = await provider.import!(
+        makeInput({ properties: { TableBucketName: 'my-bucket' } })
+      );
+      expect(result?.physicalId).toBe(arn);
+    });
+
+    it('returns null for unsupported resource types', async () => {
+      const result = await provider.import!(
+        makeInput({ resourceType: 'AWS::S3Tables::Other' })
+      );
+      expect(result).toBeNull();
+    });
+  });
 });

@@ -26,6 +26,8 @@ import {
   DeleteLoginProfileCommand,
   ListAccessKeysCommand,
   DeleteAccessKeyCommand,
+  ListUsersCommand,
+  ListUserTagsCommand,
   NoSuchEntityException,
   TagUserCommand,
   PutUserPermissionsBoundaryCommand,
@@ -36,10 +38,13 @@ import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { generateResourceName } from '../resource-name.js';
+import { matchesCdkPath, resolveExplicitPhysicalId } from '../import-helpers.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
   ResourceUpdateResult,
+  ResourceImportInput,
+  ResourceImportResult,
 } from '../../types/resource.js';
 
 /**
@@ -1290,5 +1295,100 @@ export class IAMUserGroupProvider implements ResourceProvider {
         cause
       );
     }
+  }
+
+  // ─── Import dispatch ──────────────────────────────────────────────
+
+  /**
+   * Adopt an existing IAM user / group / user-to-group addition into cdkd state.
+   *
+   *  - **AWS::IAM::User**: tag-based auto-lookup via `ListUsers` +
+   *    `ListUserTags`. Falls back to `--resource` override or
+   *    `Properties.UserName`.
+   *  - **AWS::IAM::Group**: explicit-override only. IAM groups are not
+   *    taggable (no `ListGroupTags` API), so tag-based auto-lookup is not
+   *    possible. Caller can still pass `Properties.GroupName` or
+   *    `--resource` to verify and adopt by name.
+   *  - **AWS::IAM::UserToGroupAddition**: explicit-override only. Has no
+   *    AWS-side identity beyond the (group, users) attachment itself.
+   */
+  async import(input: ResourceImportInput): Promise<ResourceImportResult | null> {
+    switch (input.resourceType) {
+      case 'AWS::IAM::User':
+        return this.importUser(input);
+      case 'AWS::IAM::Group':
+        return this.importGroup(input);
+      case 'AWS::IAM::UserToGroupAddition':
+        return this.importUserToGroupAddition(input);
+      default:
+        return null;
+    }
+  }
+
+  private async importUser(input: ResourceImportInput): Promise<ResourceImportResult | null> {
+    const explicit = resolveExplicitPhysicalId(input, 'UserName');
+    if (explicit) {
+      try {
+        await this.iamClient.send(new GetUserCommand({ UserName: explicit }));
+        return { physicalId: explicit, attributes: {} };
+      } catch (err) {
+        if (err instanceof NoSuchEntityException) return null;
+        throw err;
+      }
+    }
+
+    if (!input.cdkPath) return null;
+
+    let marker: string | undefined;
+    do {
+      const list = await this.iamClient.send(
+        new ListUsersCommand({ ...(marker && { Marker: marker }) })
+      );
+      for (const user of list.Users ?? []) {
+        if (!user.UserName) continue;
+        try {
+          const tags = await this.iamClient.send(
+            new ListUserTagsCommand({ UserName: user.UserName })
+          );
+          if (matchesCdkPath(tags.Tags, input.cdkPath)) {
+            return { physicalId: user.UserName, attributes: {} };
+          }
+        } catch (err) {
+          if (err instanceof NoSuchEntityException) continue;
+          throw err;
+        }
+      }
+      marker = list.IsTruncated ? list.Marker : undefined;
+    } while (marker);
+    return null;
+  }
+
+  private async importGroup(input: ResourceImportInput): Promise<ResourceImportResult | null> {
+    const explicit = resolveExplicitPhysicalId(input, 'GroupName');
+    if (explicit) {
+      try {
+        await this.iamClient.send(new GetGroupCommand({ GroupName: explicit }));
+        return { physicalId: explicit, attributes: {} };
+      } catch (err) {
+        if (err instanceof NoSuchEntityException) return null;
+        throw err;
+      }
+    }
+
+    // IAM groups are not taggable — there is no ListGroupTags API. Without
+    // an explicit override and no template name, we cannot reliably match
+    // a group to its CDK construct path. Fall back to "not found" so the
+    // import command marks it as skipped.
+    return null;
+  }
+
+  // eslint-disable-next-line @typescript-eslint/require-await -- explicit-override-only intentionally has no AWS calls
+  private async importUserToGroupAddition(
+    input: ResourceImportInput
+  ): Promise<ResourceImportResult | null> {
+    if (input.knownPhysicalId) {
+      return { physicalId: input.knownPhysicalId, attributes: {} };
+    }
+    return null;
   }
 }

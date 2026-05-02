@@ -2,6 +2,9 @@ import {
   S3Client,
   CreateBucketCommand,
   DeleteBucketCommand,
+  HeadBucketCommand,
+  ListDirectoryBucketsCommand,
+  GetBucketTaggingCommand,
   ListObjectsV2Command,
   DeleteObjectsCommand,
 } from '@aws-sdk/client-s3';
@@ -12,10 +15,13 @@ import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { generateResourceName } from '../resource-name.js';
+import { matchesCdkPath, resolveExplicitPhysicalId } from '../import-helpers.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
   ResourceUpdateResult,
+  ResourceImportInput,
+  ResourceImportResult,
 } from '../../types/resource.js';
 
 /**
@@ -273,5 +279,54 @@ export class S3DirectoryBucketProvider implements ResourceProvider {
 
       continuationToken = listResponse.IsTruncated ? listResponse.NextContinuationToken : undefined;
     } while (continuationToken);
+  }
+
+  /**
+   * Adopt an existing S3 Express Directory Bucket into cdkd state.
+   *
+   * Lookup order:
+   *  1. `--resource <id>=<name>` override or `Properties.BucketName` →
+   *     verify via `HeadBucket`.
+   *  2. `ListDirectoryBuckets` paginator + `GetBucketTagging` (TagSet:
+   *     Tag[]) and match `aws:cdk:path`. `GetBucketTagging` may surface
+   *     `NoSuchTagSet` / `AccessDenied` per-bucket — those are skipped
+   *     rather than fatal.
+   */
+  async import(input: ResourceImportInput): Promise<ResourceImportResult | null> {
+    const explicit = resolveExplicitPhysicalId(input, 'BucketName');
+    if (explicit) {
+      try {
+        await this.s3Client.send(new HeadBucketCommand({ Bucket: explicit }));
+        return { physicalId: explicit, attributes: {} };
+      } catch (err) {
+        const e = err as { name?: string };
+        if (e.name === 'NotFound' || e.name === 'NoSuchBucket') return null;
+        throw err;
+      }
+    }
+
+    if (!input.cdkPath) return null;
+
+    let token: string | undefined;
+    do {
+      const list = await this.s3Client.send(
+        new ListDirectoryBucketsCommand({ ...(token && { ContinuationToken: token }) })
+      );
+      for (const b of list.Buckets ?? []) {
+        if (!b.Name) continue;
+        try {
+          const tagging = await this.s3Client.send(new GetBucketTaggingCommand({ Bucket: b.Name }));
+          if (matchesCdkPath(tagging.TagSet, input.cdkPath)) {
+            return { physicalId: b.Name, attributes: {} };
+          }
+        } catch (err) {
+          const e = err as { name?: string };
+          if (e.name === 'NoSuchTagSet' || e.name === 'AccessDenied') continue;
+          throw err;
+        }
+      }
+      token = list.ContinuationToken;
+    } while (token);
+    return null;
   }
 }
