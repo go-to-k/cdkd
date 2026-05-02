@@ -1,3 +1,10 @@
+## [0.23.2](https://github.com/go-to-k/cdkd/compare/v0.23.1...v0.23.2) (2026-05-02)
+
+
+### Bug Fixes
+
+* **custom-resource:** use same S3 key for ResponseURL signing and polling ([#94](https://github.com/go-to-k/cdkd/issues/94)) ([2c1ab7e](https://github.com/go-to-k/cdkd/commit/2c1ab7ea6f27fc30e898ee3a7bb44755e707626c))
+
 ## [0.23.1](https://github.com/go-to-k/cdkd/compare/v0.23.0...v0.23.1) (2026-05-02)
 
 
