@@ -77,6 +77,58 @@ export class ProvisioningError extends CdkdError {
 }
 
 /**
+ * Resource provisioning timeout errors (per-resource wall-clock deadline).
+ *
+ * Thrown by `withResourceDeadline` when a single CREATE / UPDATE / DELETE
+ * operation exceeds the user-configured `--resource-timeout`. The deploy
+ * engine catches this, wraps it in {@link ProvisioningError}, and lets the
+ * existing failure path (interrupt siblings → pre-rollback save → rollback
+ * unless `--no-rollback`) take over.
+ *
+ * The message intentionally names the resource, type, region, elapsed time
+ * and operation, plus how to override the default — Custom-Resource-heavy
+ * stacks frequently need a longer budget than 30m.
+ */
+export class ResourceTimeoutError extends CdkdError {
+  constructor(
+    public readonly logicalId: string,
+    public readonly resourceType: string,
+    public readonly region: string,
+    public readonly elapsedMs: number,
+    public readonly operation: 'CREATE' | 'UPDATE' | 'DELETE',
+    public readonly timeoutMs: number
+  ) {
+    const elapsedLabel = formatDuration(elapsedMs);
+    const timeoutLabel = formatDuration(timeoutMs);
+    super(
+      `Resource ${logicalId} (${resourceType}) in ${region} timed out after ${timeoutLabel} during ${operation} (elapsed ${elapsedLabel}).\n` +
+        'This may indicate a stuck Cloud Control polling loop, hung Custom Resource, or\n' +
+        'slow ENI provisioning. Re-run with --resource-timeout 1h if the resource genuinely\n' +
+        'needs more time, or --verbose to see the underlying provider activity.',
+      'RESOURCE_TIMEOUT'
+    );
+    this.name = 'ResourceTimeoutError';
+    Object.setPrototypeOf(this, ResourceTimeoutError.prototype);
+  }
+}
+
+/**
+ * Format a duration in milliseconds as a short human-readable label
+ * (`30m`, `1h30m`, `45s`). Used by {@link ResourceTimeoutError} so the
+ * error message stays compact.
+ */
+function formatDuration(ms: number): string {
+  if (ms < 60_000) {
+    return `${Math.round(ms / 1000)}s`;
+  }
+  const totalMinutes = Math.round(ms / 60_000);
+  if (totalMinutes < 60) return `${totalMinutes}m`;
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+  return minutes === 0 ? `${hours}h` : `${hours}h${minutes}m`;
+}
+
+/**
  * Dependency resolution errors
  */
 export class DependencyError extends CdkdError {

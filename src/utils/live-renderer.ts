@@ -112,6 +112,21 @@ export class LiveRenderer {
   }
 
   /**
+   * Replace the label of a previously-added task in place. No-op if the
+   * task is not currently tracked (e.g. it already finished). Used by the
+   * per-resource deadline wrapper to surface a "[taking longer than
+   * expected, Nm+]" suffix without disturbing the elapsed-time counter
+   * the renderer tracks via `startedAt`.
+   */
+  updateTaskLabel(id: string, label: string): void {
+    const stackName = getCurrentStackName();
+    const task = this.tasks.get(scopedKey(id, stackName));
+    if (!task) return;
+    task.label = label;
+    if (this.active) this.draw();
+  }
+
+  /**
    * Print content above the live area. Clears the live area, runs the writer,
    * then redraws the live area. When the renderer is inactive, the writer
    * runs directly so callers can use this unconditionally.

@@ -5,6 +5,8 @@ import {
   commonOptions,
   deprecatedRegionOption,
   parseContextOptions,
+  parseDuration,
+  validateResourceTimeouts,
   warnIfDeprecatedRegion,
 } from '../../../src/cli/options.js';
 import { createBootstrapCommand } from '../../../src/cli/commands/bootstrap.js';
@@ -134,6 +136,96 @@ describe('cli/options.ts', () => {
         expect((regionOpt as unknown as { hidden?: boolean }).hidden).toBe(true);
       }
     );
+  });
+
+  describe('parseDuration', () => {
+    it.each([
+      ['5s', 5_000],
+      ['30s', 30_000],
+      ['90s', 90_000],
+      ['1m', 60_000],
+      ['5m', 300_000],
+      ['30m', 1_800_000],
+      ['1h', 3_600_000],
+      ['2h', 7_200_000],
+      ['1.5h', 5_400_000],
+    ])('parses %s into %d ms', (input, expected) => {
+      expect(parseDuration(input)).toBe(expected);
+    });
+
+    it.each([
+      ['', 'empty string'],
+      ['30', 'no unit'],
+      ['30x', 'unknown unit'],
+      ['m', 'no number'],
+      ['abc', 'malformed'],
+      ['  ', 'whitespace only'],
+    ])('rejects %j (%s)', (input) => {
+      expect(() => parseDuration(input)).toThrow();
+    });
+
+    it('rejects zero values', () => {
+      expect(() => parseDuration('0s')).toThrow(/greater than zero/);
+      expect(() => parseDuration('0m')).toThrow(/greater than zero/);
+      expect(() => parseDuration('0h')).toThrow(/greater than zero/);
+    });
+
+    it('rejects negative values', () => {
+      // The regex forbids the leading '-' so the rejection comes from
+      // the format check, not the numeric check — both are valid behaviors.
+      expect(() => parseDuration('-5m')).toThrow();
+      expect(() => parseDuration('-1s')).toThrow();
+    });
+
+    it('trims surrounding whitespace before parsing', () => {
+      expect(parseDuration('  5m  ')).toBe(300_000);
+    });
+
+    it('rejects non-string inputs gracefully', () => {
+      // commander.argParser always passes strings, but defend against
+      // direct callers passing something odd.
+      expect(() => parseDuration(undefined as unknown as string)).toThrow();
+      expect(() => parseDuration(null as unknown as string)).toThrow();
+    });
+  });
+
+  describe('validateResourceTimeouts', () => {
+    it('accepts warn < timeout', () => {
+      expect(() =>
+        validateResourceTimeouts({
+          resourceWarnAfter: 5 * 60_000,
+          resourceTimeout: 30 * 60_000,
+        })
+      ).not.toThrow();
+    });
+
+    it('rejects warn == timeout', () => {
+      expect(() =>
+        validateResourceTimeouts({
+          resourceWarnAfter: 30 * 60_000,
+          resourceTimeout: 30 * 60_000,
+        })
+      ).toThrow(/--resource-warn-after .* must be less than --resource-timeout/);
+    });
+
+    it('rejects warn > timeout', () => {
+      expect(() =>
+        validateResourceTimeouts({
+          resourceWarnAfter: 60 * 60_000,
+          resourceTimeout: 30 * 60_000,
+        })
+      ).toThrow(/--resource-warn-after .* must be less than --resource-timeout/);
+    });
+
+    it('is a no-op when either side is undefined (commander default not yet applied)', () => {
+      expect(() => validateResourceTimeouts({})).not.toThrow();
+      expect(() =>
+        validateResourceTimeouts({ resourceWarnAfter: 5 * 60_000 })
+      ).not.toThrow();
+      expect(() =>
+        validateResourceTimeouts({ resourceTimeout: 30 * 60_000 })
+      ).not.toThrow();
+    });
   });
 
   describe('parseContextOptions', () => {

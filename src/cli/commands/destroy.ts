@@ -6,9 +6,11 @@ import {
   stateOptions,
   stackOptions,
   destroyOptions,
+  resourceTimeoutOptions,
   contextOptions,
   parseContextOptions,
   warnIfDeprecatedRegion,
+  validateResourceTimeouts,
 } from '../options.js';
 import { getLogger } from '../../utils/logger.js';
 import { withErrorHandling } from '../../utils/error-handler.js';
@@ -40,6 +42,8 @@ async function destroyCommand(
     force: boolean;
     verbose: boolean;
     context?: string[];
+    resourceWarnAfter: number;
+    resourceTimeout: number;
   }
 ): Promise<void> {
   const logger = getLogger();
@@ -54,6 +58,13 @@ async function destroyCommand(
   // PR 5: --region is deprecated on non-bootstrap commands. Warn but keep
   // the rest of the pipeline working as before.
   warnIfDeprecatedRegion(options);
+
+  // Reject mis-ordered --resource-warn-after / --resource-timeout pairs
+  // up front so the user sees the error before synth runs.
+  validateResourceTimeouts({
+    resourceWarnAfter: options.resourceWarnAfter,
+    resourceTimeout: options.resourceTimeout,
+  });
 
   // Resolve --state-bucket from CLI, env, cdk.json, or default
   const region = options.region || process.env['AWS_REGION'] || 'us-east-1';
@@ -246,6 +257,8 @@ async function destroyCommand(
         ...(options.profile && { profile: options.profile }),
         stateBucket,
         skipConfirmation: options.yes || options.force,
+        resourceWarnAfterMs: options.resourceWarnAfter,
+        resourceTimeoutMs: options.resourceTimeout,
       });
     }
   } finally {
@@ -274,6 +287,7 @@ export function createDestroyCommand(): Command {
     ...stateOptions,
     ...stackOptions,
     ...destroyOptions,
+    ...resourceTimeoutOptions,
     ...contextOptions,
   ].forEach((opt) => cmd.addOption(opt));
 

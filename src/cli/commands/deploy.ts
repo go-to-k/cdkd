@@ -9,6 +9,7 @@ import {
   contextOptions,
   parseContextOptions,
   warnIfDeprecatedRegion,
+  validateResourceTimeouts,
 } from '../options.js';
 import { getLogger } from '../../utils/logger.js';
 import { withErrorHandling } from '../../utils/error-handler.js';
@@ -53,6 +54,8 @@ async function deployCommand(
     yes: boolean;
     verbose: boolean;
     context?: string[];
+    resourceWarnAfter: number;
+    resourceTimeout: number;
   }
 ): Promise<void> {
   const logger = getLogger();
@@ -67,6 +70,13 @@ async function deployCommand(
   // PR 5: --region is deprecated on non-bootstrap commands. Warn but keep
   // the rest of the pipeline working as before.
   warnIfDeprecatedRegion(options);
+
+  // Reject mis-ordered --resource-warn-after / --resource-timeout pairs
+  // up front so the user sees the error before synth / docker builds run.
+  validateResourceTimeouts({
+    resourceWarnAfter: options.resourceWarnAfter,
+    resourceTimeout: options.resourceTimeout,
+  });
 
   // Skip waiting for async resources (CloudFront, RDS, ElastiCache, etc.)
   if (!options.wait) {
@@ -318,6 +328,8 @@ async function deployCommand(
           concurrency: options.concurrency,
           dryRun: options.dryRun,
           noRollback: !options.rollback,
+          resourceWarnAfterMs: options.resourceWarnAfter,
+          resourceTimeoutMs: options.resourceTimeout,
         },
         stackRegion
       );

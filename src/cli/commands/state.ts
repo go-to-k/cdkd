@@ -9,7 +9,9 @@ import {
   commonOptions,
   deprecatedRegionOption,
   stateOptions,
+  resourceTimeoutOptions,
   warnIfDeprecatedRegion,
+  validateResourceTimeouts,
 } from '../options.js';
 import { getLogger } from '../../utils/logger.js';
 import { withErrorHandling } from '../../utils/error-handler.js';
@@ -821,6 +823,8 @@ async function stateDestroyCommand(
     stackRegion?: string;
     profile?: string;
     verbose: boolean;
+    resourceWarnAfter: number;
+    resourceTimeout: number;
   }
 ): Promise<void> {
   const logger = getLogger();
@@ -830,6 +834,11 @@ async function stateDestroyCommand(
     // interleave too aggressively with the live area's in-flight task lines.
     process.env['CDKD_NO_LIVE'] = '1';
   }
+
+  validateResourceTimeouts({
+    resourceWarnAfter: options.resourceWarnAfter,
+    resourceTimeout: options.resourceTimeout,
+  });
 
   if (!options.all && stackArgs.length === 0) {
     throw new Error(
@@ -950,6 +959,8 @@ async function stateDestroyCommand(
           // skipped when `options.yes` is set OR `--all` was set (the user
           // already accepted the batch prompt).
           skipConfirmation: options.yes || options.all === true,
+          resourceWarnAfterMs: options.resourceWarnAfter,
+          resourceTimeoutMs: options.resourceTimeout,
         });
         totalErrors += result.errorCount;
       }
@@ -994,7 +1005,9 @@ function createStateDestroyCommand(): Command {
     )
     .action(withErrorHandling(stateDestroyCommand));
 
-  [...commonOptions, ...stateOptions].forEach((opt) => cmd.addOption(opt));
+  [...commonOptions, ...stateOptions, ...resourceTimeoutOptions].forEach((opt) =>
+    cmd.addOption(opt)
+  );
 
   // --region is deprecated on every state subcommand (PR 5). Accepted for
   // backward compatibility; warning emitted at runtime.

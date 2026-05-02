@@ -9,6 +9,12 @@ import { IMPLICIT_DELETE_DEPENDENCIES } from '../../analyzer/implicit-delete-dep
 import { ProviderRegistry } from '../../provisioning/provider-registry.js';
 import { registerAllProviders } from '../../provisioning/register-providers.js';
 import type { StackState } from '../../types/state.js';
+import { withResourceDeadline } from '../../deployment/resource-deadline.js';
+import {
+  DEFAULT_RESOURCE_WARN_AFTER_MS,
+  DEFAULT_RESOURCE_TIMEOUT_MS,
+} from '../../deployment/deploy-engine.js';
+import { ProvisioningError, ResourceTimeoutError } from '../../utils/error-handler.js';
 
 /**
  * Execution context passed by the caller (`cdkd destroy` or
@@ -51,6 +57,20 @@ export interface DestroyRunnerContext {
    * and `cdkd state destroy --yes` map to true.
    */
   skipConfirmation: boolean;
+
+  /**
+   * Per-resource warn threshold (ms). Mirrors `DeployEngineOptions` so
+   * `cdkd destroy` exposes the same `--resource-warn-after` UX as
+   * `cdkd deploy`. Defaults to {@link DEFAULT_RESOURCE_WARN_AFTER_MS}.
+   */
+  resourceWarnAfterMs?: number;
+
+  /**
+   * Per-resource hard timeout (ms). Mirrors `DeployEngineOptions` so
+   * `cdkd destroy` exposes the same `--resource-timeout` UX as
+   * `cdkd deploy`. Defaults to {@link DEFAULT_RESOURCE_TIMEOUT_MS}.
+   */
+  resourceTimeoutMs?: number;
 }
 
 /**
@@ -232,6 +252,10 @@ export async function runDestroyForStack(
         `Deletion level ${executionLevels.length - levelIndex}/${executionLevels.length} (${level.length} resources)`
       );
 
+      const warnAfterMs = ctx.resourceWarnAfterMs ?? DEFAULT_RESOURCE_WARN_AFTER_MS;
+      const timeoutMs = ctx.resourceTimeoutMs ?? DEFAULT_RESOURCE_TIMEOUT_MS;
+      const stackRegion = state.region ?? ctx.baseRegion;
+
       const deletePromises = level.map(async (logicalId) => {
         const resource = state.resources[logicalId];
         if (!resource) {
@@ -239,38 +263,73 @@ export async function runDestroyForStack(
           return;
         }
 
-        renderer.addTask(logicalId, `Deleting ${logicalId} (${resource.resourceType})`);
+        const baseLabel = `Deleting ${logicalId} (${resource.resourceType})`;
+        renderer.addTask(logicalId, baseLabel);
         try {
           const provider = destroyProviderRegistry.getProvider(resource.resourceType);
-          // Retry DELETE for transient errors (throttle, dependency race).
-          let lastDeleteError: unknown;
-          for (let attempt = 0; attempt <= 3; attempt++) {
-            try {
-              await provider.delete(
-                logicalId,
-                resource.physicalId,
-                resource.resourceType,
-                resource.properties
-              );
-              lastDeleteError = null;
-              break;
-            } catch (retryError) {
-              lastDeleteError = retryError;
-              const msg = retryError instanceof Error ? retryError.message : String(retryError);
-              const isRetryable =
-                msg.includes('Too Many Requests') ||
-                msg.includes('has dependencies') ||
-                msg.includes("can't be deleted since") ||
-                msg.includes('DependencyViolation');
-              if (!isRetryable || attempt >= 3) break;
-              const delay = 5000 * Math.pow(2, attempt);
-              logger.debug(
-                `  ⏳ Retrying delete ${logicalId} in ${delay / 1000}s (attempt ${attempt + 1}/3)`
-              );
-              await new Promise((resolve) => setTimeout(resolve, delay));
+
+          // Wrap the entire retry loop in the per-resource deadline so a
+          // genuinely-stuck delete (e.g. a hung Custom Resource handler or
+          // a Cloud-Control polling loop that never terminates) aborts
+          // instead of holding the destroy forever.
+          await withResourceDeadline(
+            async () => {
+              // Retry DELETE for transient errors (throttle, dependency race).
+              let lastDeleteError: unknown;
+              for (let attempt = 0; attempt <= 3; attempt++) {
+                try {
+                  await provider.delete(
+                    logicalId,
+                    resource.physicalId,
+                    resource.resourceType,
+                    resource.properties
+                  );
+                  lastDeleteError = null;
+                  break;
+                } catch (retryError) {
+                  lastDeleteError = retryError;
+                  const msg = retryError instanceof Error ? retryError.message : String(retryError);
+                  const isRetryable =
+                    msg.includes('Too Many Requests') ||
+                    msg.includes('has dependencies') ||
+                    msg.includes("can't be deleted since") ||
+                    msg.includes('DependencyViolation');
+                  if (!isRetryable || attempt >= 3) break;
+                  const delay = 5000 * Math.pow(2, attempt);
+                  logger.debug(
+                    `  ⏳ Retrying delete ${logicalId} in ${delay / 1000}s (attempt ${attempt + 1}/3)`
+                  );
+                  await new Promise((resolve) => setTimeout(resolve, delay));
+                }
+              }
+              if (lastDeleteError) throw lastDeleteError;
+            },
+            {
+              warnAfterMs,
+              timeoutMs,
+              onWarn: (elapsedMs) => {
+                const minutes = Math.max(1, Math.round(elapsedMs / 60_000));
+                renderer.updateTaskLabel(
+                  logicalId,
+                  `${baseLabel} [taking longer than expected, ${minutes}m+]`
+                );
+                renderer.printAbove(() => {
+                  logger.warn(
+                    `${logicalId} (${resource.resourceType}) has been deleting for ${minutes}m — still waiting`
+                  );
+                });
+              },
+              onTimeout: (elapsedMs) =>
+                new ResourceTimeoutError(
+                  logicalId,
+                  resource.resourceType,
+                  stackRegion,
+                  elapsedMs,
+                  'DELETE',
+                  timeoutMs
+                ),
             }
-          }
-          if (lastDeleteError) throw lastDeleteError;
+          );
 
           renderer.removeTask(logicalId);
           logger.info(`  ✅ ${logicalId} (${resource.resourceType}) deleted`);
@@ -288,6 +347,19 @@ export async function runDestroyForStack(
           ) {
             logger.debug(`  ${logicalId} already deleted, removing from state`);
             result.deletedCount++;
+          } else if (error instanceof ResourceTimeoutError) {
+            // Surface the actionable timeout message wrapped as a
+            // ProvisioningError (parity with deploy's failure path) and
+            // count it as an error so the state file is preserved.
+            const wrapped = new ProvisioningError(
+              error.message,
+              resource.resourceType,
+              logicalId,
+              resource.physicalId,
+              error
+            );
+            logger.error(`  ✗ Failed to delete ${logicalId}:`, wrapped.message);
+            result.errorCount++;
           } else {
             logger.error(`  ✗ Failed to delete ${logicalId}:`, String(error));
             result.errorCount++;
