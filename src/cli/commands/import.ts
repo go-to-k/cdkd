@@ -18,6 +18,7 @@ import { registerAllProviders } from '../../provisioning/register-providers.js';
 import { setAwsClients, AwsClients } from '../../utils/aws-clients.js';
 import { TemplateParser } from '../../analyzer/template-parser.js';
 import { resolveApp, resolveStateBucketWithDefault } from '../config-loader.js';
+import { readCdkPath } from '../cdk-path.js';
 import type {
   CloudFormationTemplate,
   ResourceImportInput,
@@ -464,19 +465,6 @@ function parseMappingJson(raw: string, source: string): Record<string, string> {
     out[key] = value;
   }
   return out;
-}
-
-/**
- * Pull the `aws:cdk:path` value CDK puts in every resource's Metadata.
- *
- * Returns an empty string when not found — providers fall back to other
- * lookup strategies (explicit name, `--resource` override) in that case.
- */
-function readCdkPath(resource: TemplateResource): string {
-  const meta = resource.Metadata;
-  if (!meta) return '';
-  const v = (meta as { 'aws:cdk:path'?: unknown })['aws:cdk:path'];
-  return typeof v === 'string' ? v : '';
 }
 
 /**
