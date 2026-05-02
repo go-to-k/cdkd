@@ -1,3 +1,11 @@
+## [0.18.1](https://github.com/go-to-k/cdkd/compare/v0.18.0...v0.18.1) (2026-05-02)
+
+
+### Bug Fixes
+
+* **cli:** buffer per-stack log output during parallel deploy ([#77](https://github.com/go-to-k/cdkd/issues/77)) ([0275dd3](https://github.com/go-to-k/cdkd/commit/0275dd3edf091e01b08b76c5ee95ad0f4ac12d8d))
+* **cli:** scope live renderer tasks per stack for parallel deploys ([#83](https://github.com/go-to-k/cdkd/issues/83)) ([40b4997](https://github.com/go-to-k/cdkd/commit/40b4997c2885d68fc353038f4ce62774d2323ce2))
+
 # [0.18.0](https://github.com/go-to-k/cdkd/compare/v0.17.1...v0.18.0) (2026-05-02)
 
 
