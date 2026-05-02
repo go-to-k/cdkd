@@ -572,11 +572,57 @@ s3://{state-bucket}/
 > `cdkd state orphan <stack> --stack-region <region>` to prune one without
 > touching the other.
 >
-> **Legacy layout migration:** state files written by cdkd before this
-> layout (`version: 1`, flat `cdkd/{stackName}/state.json`) are still
-> readable. The next cdkd write auto-migrates to the new key and removes
-> the legacy file. An older cdkd binary reading a `version: 2` file fails
-> with a clear "upgrade cdkd" error rather than silently mishandling it.
+> **Legacy key-layout migration (within the same bucket):** state files
+> written by cdkd before this layout (`version: 1`, flat
+> `cdkd/{stackName}/state.json`) are still readable. The next cdkd write
+> auto-migrates to the new region-prefixed key
+> (`cdkd/{stackName}/{region}/state.json`) and removes the legacy file —
+> no manual action required. An older cdkd binary reading a `version: 2`
+> file fails with a clear "upgrade cdkd" error rather than silently
+> mishandling it.
+>
+> Note: this only covers the **key layout inside an existing state
+> bucket**. The separate **bucket-name migration** (legacy
+> `cdkd-state-{accountId}-{region}` → new `cdkd-state-{accountId}`)
+> is described below and does NOT auto-migrate.
+
+### Bucket migration
+
+The default state-bucket name changed in v0.11.0 from the region-suffixed
+`cdkd-state-{accountId}-{region}` to the region-free
+`cdkd-state-{accountId}`. The bucket name is region-free because S3 names
+are globally unique, so teammates with different profile regions all
+converge on the same bucket; the bucket's actual region is auto-detected
+via `GetBucketLocation`.
+
+Existing users keep working without doing anything: when only the legacy
+bucket exists, cdkd transparently falls back to it and emits a
+deprecation warning. To stop the warning (and consolidate state into the
+new bucket) run:
+
+```bash
+# Per-region: copies all objects from cdkd-state-{accountId}-{region}
+# into cdkd-state-{accountId}. Source bucket is kept by default.
+cdkd state migrate --region us-east-1
+
+# Optional: delete the legacy bucket once the copy is verified.
+cdkd state migrate --region us-east-1 --remove-legacy
+```
+
+This migration is **account-wide / per-region**, not per-stack — running
+it once per region clears the legacy bucket for that region in one shot.
+For multi-region accounts, run it once per region (each invocation copies
+into the same destination bucket).
+
+`cdkd state migrate` refuses to run while any stack has an active
+`lock.json` (an in-flight `cdkd deploy` / `destroy` would race the copy),
+verifies object-count parity between source and destination before any
+source cleanup, and only deletes the legacy bucket when
+`--remove-legacy` is passed.
+
+See the [Configuration](#configuration) table below for the full
+precedence rules of the `--state-bucket` flag and its env-var / cdk.json
+fallbacks.
 
 ### Configuration
 
