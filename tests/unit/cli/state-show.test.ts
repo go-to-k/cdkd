@@ -155,6 +155,10 @@ describe('cdkd state show', () => {
     await expect(runStateShow(['show', 'MyStack'])).rejects.toThrow();
     const message = String(errorSpy.mock.calls[0]?.[0] ?? '');
     expect(message).toMatch(/multiple regions/);
+    // Direct users to --stack-region, not the deprecated top-level
+    // --region (which would emit a deprecation warning and be ignored).
+    expect(message).toMatch(/--stack-region/);
+    expect(message).not.toMatch(/--region\b(?!-)/);
   });
 
   it('renders stack header, lock status, outputs, and resources', async () => {

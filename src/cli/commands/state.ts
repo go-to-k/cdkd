@@ -96,7 +96,7 @@ function resolveSingleRegion(
   const regions = matches.map((r) => r.region ?? '(legacy)').join(', ');
   throw new Error(
     `Stack '${stackName}' has state in multiple regions: ${regions}. ` +
-      `Re-run with --region <region> to disambiguate.`
+      `Re-run with --stack-region <region> to disambiguate.`
   );
 }
 
@@ -317,8 +317,8 @@ function createStateListCommand(): Command {
  * - `--json`: emit a JSON array of full resource detail objects.
  *
  * When the same stack name has state in multiple regions, requires
- * `--region <region>` to disambiguate. The error message lists candidate
- * regions so the next attempt is one keystroke away.
+ * `--stack-region <region>` to disambiguate. The error message lists
+ * candidate regions so the next attempt is one keystroke away.
  *
  * Properties are intentionally omitted from all output modes — `state show`
  * is the right command when properties are needed.
@@ -491,7 +491,7 @@ function createStateResourcesCommand(): Command {
  * lighter inspection.
  *
  * When the same stack name has state in multiple regions, requires
- * `--region <region>` to disambiguate.
+ * `--stack-region <region>` to disambiguate.
  *
  * - Default: human-readable multi-line format.
  * - `--json`: a `{state, lock}` object containing the raw `StackState` plus
@@ -917,7 +917,7 @@ async function stateDestroyCommand(
         const regions = refs.map((r) => r.region ?? '(legacy)').join(', ');
         throw new Error(
           `Stack '${stackName}' has state in multiple regions: ${regions}. ` +
-            `Use --region <region> to pick one.`
+            `Use --stack-region <region> to pick one.`
         );
       }
 
