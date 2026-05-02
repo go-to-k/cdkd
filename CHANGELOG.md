@@ -1,3 +1,10 @@
+## [0.23.1](https://github.com/go-to-k/cdkd/compare/v0.23.0...v0.23.1) (2026-05-02)
+
+
+### Bug Fixes
+
+* **cli:** point multi-region errors at --stack-region (not --region) ([#84](https://github.com/go-to-k/cdkd/issues/84)) ([4414b2b](https://github.com/go-to-k/cdkd/commit/4414b2be3d712072d81c38ece2d05978457ec8ff))
+
 # [0.23.0](https://github.com/go-to-k/cdkd/compare/v0.22.0...v0.23.0) (2026-05-02)
 
 
