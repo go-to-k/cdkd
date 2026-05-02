@@ -71,6 +71,22 @@ export interface DestroyRunnerContext {
    * `cdkd deploy`. Defaults to {@link DEFAULT_RESOURCE_TIMEOUT_MS}.
    */
   resourceTimeoutMs?: number;
+
+  /**
+   * Per-resource-type warn-after override map. Same semantics as
+   * `DeployEngineOptions.resourceWarnAfterByType` — the value for the
+   * resource's `resourceType` (if present) supersedes
+   * `resourceWarnAfterMs` at the per-resource delete site.
+   */
+  resourceWarnAfterByType?: Record<string, number>;
+
+  /**
+   * Per-resource-type hard-timeout override map. Same semantics as
+   * `DeployEngineOptions.resourceTimeoutByType` — the value for the
+   * resource's `resourceType` (if present) supersedes
+   * `resourceTimeoutMs` at the per-resource delete site.
+   */
+  resourceTimeoutByType?: Record<string, number>;
 }
 
 /**
@@ -252,8 +268,6 @@ export async function runDestroyForStack(
         `Deletion level ${executionLevels.length - levelIndex}/${executionLevels.length} (${level.length} resources)`
       );
 
-      const warnAfterMs = ctx.resourceWarnAfterMs ?? DEFAULT_RESOURCE_WARN_AFTER_MS;
-      const timeoutMs = ctx.resourceTimeoutMs ?? DEFAULT_RESOURCE_TIMEOUT_MS;
       const stackRegion = state.region ?? ctx.baseRegion;
 
       const deletePromises = level.map(async (logicalId) => {
@@ -262,6 +276,17 @@ export async function runDestroyForStack(
           logger.warn(`Resource ${logicalId} not found in state, skipping`);
           return;
         }
+
+        // Per-resource-type overrides (v2) win over the global default.
+        // Resolution order: per-type map -> caller global -> compile-time default.
+        const warnAfterMs =
+          ctx.resourceWarnAfterByType?.[resource.resourceType] ??
+          ctx.resourceWarnAfterMs ??
+          DEFAULT_RESOURCE_WARN_AFTER_MS;
+        const timeoutMs =
+          ctx.resourceTimeoutByType?.[resource.resourceType] ??
+          ctx.resourceTimeoutMs ??
+          DEFAULT_RESOURCE_TIMEOUT_MS;
 
         const baseLabel = `Deleting ${logicalId} (${resource.resourceType})`;
         renderer.addTask(logicalId, baseLabel);

@@ -12,6 +12,7 @@ import {
   resourceTimeoutOptions,
   warnIfDeprecatedRegion,
   validateResourceTimeouts,
+  type ResourceTimeoutOption,
 } from '../options.js';
 import { getLogger } from '../../utils/logger.js';
 import { withErrorHandling } from '../../utils/error-handler.js';
@@ -823,8 +824,8 @@ async function stateDestroyCommand(
     stackRegion?: string;
     profile?: string;
     verbose: boolean;
-    resourceWarnAfter: number;
-    resourceTimeout: number;
+    resourceWarnAfter?: ResourceTimeoutOption;
+    resourceTimeout?: ResourceTimeoutOption;
   }
 ): Promise<void> {
   const logger = getLogger();
@@ -836,8 +837,8 @@ async function stateDestroyCommand(
   }
 
   validateResourceTimeouts({
-    resourceWarnAfter: options.resourceWarnAfter,
-    resourceTimeout: options.resourceTimeout,
+    ...(options.resourceWarnAfter && { resourceWarnAfter: options.resourceWarnAfter }),
+    ...(options.resourceTimeout && { resourceTimeout: options.resourceTimeout }),
   });
 
   if (!options.all && stackArgs.length === 0) {
@@ -959,8 +960,18 @@ async function stateDestroyCommand(
           // skipped when `options.yes` is set OR `--all` was set (the user
           // already accepted the batch prompt).
           skipConfirmation: options.yes || options.all === true,
-          resourceWarnAfterMs: options.resourceWarnAfter,
-          resourceTimeoutMs: options.resourceTimeout,
+          ...(options.resourceWarnAfter?.globalMs !== undefined && {
+            resourceWarnAfterMs: options.resourceWarnAfter.globalMs,
+          }),
+          ...(options.resourceTimeout?.globalMs !== undefined && {
+            resourceTimeoutMs: options.resourceTimeout.globalMs,
+          }),
+          ...(options.resourceWarnAfter?.perTypeMs && {
+            resourceWarnAfterByType: options.resourceWarnAfter.perTypeMs,
+          }),
+          ...(options.resourceTimeout?.perTypeMs && {
+            resourceTimeoutByType: options.resourceTimeout.perTypeMs,
+          }),
         });
         totalErrors += result.errorCount;
       }

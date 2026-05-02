@@ -134,6 +134,95 @@ export function parseDuration(value: string): number {
 }
 
 /**
+ * Resolved per-resource timeout / warn-after value, separated into a
+ * single global default and a `resourceType -> ms` override map.
+ *
+ * Both flags are repeatable. Each invocation may take one of two forms:
+ *   - **Bare duration** (e.g. `30m`) — sets the global default. The last
+ *     bare value wins (standard Commander semantics for non-repeatable
+ *     forms applied to a flag we made repeatable).
+ *   - **TYPE=DURATION** (e.g. `AWS::CloudFront::Distribution=1h`) — adds
+ *     a per-resource-type override that supersedes the global default at
+ *     the call site for resources of that type only.
+ *
+ * The global default is `undefined` when the user supplied per-type
+ * entries only (no bare value); the call site falls back to the v1
+ * compile-time defaults (`DEFAULT_RESOURCE_*_MS`).
+ */
+export interface ResourceTimeoutOption {
+  /** Global default in milliseconds (last bare-duration token wins). */
+  globalMs?: number;
+  /** Per-resource-type override map (`AWS::Service::Resource` -> ms). */
+  perTypeMs: Record<string, number>;
+}
+
+/**
+ * Validate that a token's left-hand side looks like a CloudFormation
+ * resource type (e.g. `AWS::S3::Bucket`). The check is intentionally
+ * loose — we don't maintain a closed list of types — but it does reject
+ * obvious typos / missing scopes so users see the error at parse time
+ * rather than silently storing `s3:bucket=30m` and never matching.
+ */
+const RESOURCE_TYPE_REGEX = /^[A-Z][A-Za-z0-9]+::[A-Z][A-Za-z0-9]+::[A-Z][A-Za-z0-9]+$/;
+
+/**
+ * Custom commander `argParser` for the repeatable timeout flags.
+ *
+ * Accepts either form on each invocation:
+ *   - `30m` -> sets / overwrites `globalMs`
+ *   - `AWS::X::Y=30m` -> adds an entry to `perTypeMs`
+ *
+ * `previous` carries the accumulator across repeated invocations. The
+ * first time commander calls us it passes whatever `default(...)` was
+ * set — see `resourceTimeoutOptions` below for why the default is
+ * `undefined` (we pre-seed the default global value at the call site
+ * instead).
+ */
+function parseResourceTimeoutToken(flagName: string) {
+  return (raw: string, previous: ResourceTimeoutOption | undefined): ResourceTimeoutOption => {
+    const acc: ResourceTimeoutOption = previous ?? { perTypeMs: {} };
+    if (!acc.perTypeMs) acc.perTypeMs = {};
+
+    const eqIndex = raw.indexOf('=');
+    if (eqIndex === -1) {
+      // Bare duration: global default. parseDuration validates the unit /
+      // numeric portion and throws on malformed input.
+      acc.globalMs = parseDuration(raw);
+      return acc;
+    }
+
+    const typePart = raw.substring(0, eqIndex).trim();
+    const durationPart = raw.substring(eqIndex + 1).trim();
+
+    if (!RESOURCE_TYPE_REGEX.test(typePart)) {
+      throw new Error(
+        `Invalid ${flagName} value "${raw}": ` +
+          `left-hand side must be a CloudFormation resource type like AWS::Service::Resource ` +
+          `(got "${typePart}")`
+      );
+    }
+    if (durationPart.length === 0) {
+      throw new Error(
+        `Invalid ${flagName} value "${raw}": missing duration after '=' (e.g. ${typePart}=1h)`
+      );
+    }
+
+    // parseDuration throws on malformed durations. Wrap with extra context
+    // so the user knows which TYPE entry triggered the failure.
+    let ms: number;
+    try {
+      ms = parseDuration(durationPart);
+    } catch (err) {
+      const inner = err instanceof Error ? err.message : String(err);
+      throw new Error(`Invalid ${flagName} value "${raw}": ${inner}`);
+    }
+
+    acc.perTypeMs[typePart] = ms;
+    return acc;
+  };
+}
+
+/**
  * Per-resource timeout options shared by `deploy` and `destroy`.
  *
  * - `--resource-warn-after` (default `5m`): when an individual resource has
@@ -146,53 +235,122 @@ export function parseDuration(value: string): number {
  *   `ProvisioningError` at the same site as any other provider failure)
  *   and trigger the existing rollback path.
  *
+ * Both flags are **repeatable** and accept either a bare `<duration>`
+ * (sets the global default) or `<TYPE>=<duration>` (adds a per-type
+ * override). At the call site, the per-type override wins for matching
+ * resources; everything else falls back to the global default. See
+ * {@link ResourceTimeoutOption}.
+ *
  * The default 30m timeout is below the Custom Resource provider's 1-hour
  * polling cap on purpose — Custom-Resource-heavy stacks should pass
  * `--resource-timeout 1h` (or higher) explicitly when they expect handlers
- * to run for longer. The error message names this override.
+ * to run for longer. Per-type overrides like
+ * `--resource-timeout AWS::CloudFront::Distribution=1h` keep the global
+ * cap tight while raising it only where it's needed.
  */
 export const resourceTimeoutOptions = [
-  // Default values are stored as parsed milliseconds (NOT the source
-  // string) because commander's `argParser` only runs on user-supplied
-  // values, never on defaults — without this every command handler
-  // would see `'5m'` (string) when the user did not pass the flag and
-  // `300_000` (number) when they did. The second `defaultValueDescription`
-  // argument keeps `--help` showing the human-readable form.
+  // Default is `undefined` (NOT a pre-seeded ResourceTimeoutOption) — the
+  // command handler resolves missing globalMs to DEFAULT_RESOURCE_*_MS
+  // at the call site. Pre-seeding here would force every accumulator
+  // call to carry a snapshot, and would also surprise unit tests that
+  // expect `opts.resourceTimeout` to be `undefined` when the flag is not
+  // passed.
   new Option(
-    '--resource-warn-after <duration>',
-    'Warn when a single resource operation exceeds this wall-clock duration (e.g. 5m, 90s, 1h)'
+    '--resource-warn-after <duration_or_type=duration>',
+    'Warn when a single resource operation exceeds this wall-clock duration. ' +
+      'Repeatable: pass a bare duration (e.g. 5m) to set the global default, or ' +
+      'TYPE=DURATION (e.g. AWS::CloudFront::Distribution=10m) for a per-type override.'
   )
-    .default(parseDuration('5m'), '5m')
-    .argParser(parseDuration),
+    .default(undefined, '5m')
+    .argParser(parseResourceTimeoutToken('--resource-warn-after')),
   new Option(
-    '--resource-timeout <duration>',
+    '--resource-timeout <duration_or_type=duration>',
     'Abort a single resource operation that exceeds this wall-clock duration. ' +
+      'Repeatable: pass a bare duration (e.g. 30m) to set the global default, or ' +
+      'TYPE=DURATION (e.g. AWS::CloudFront::Distribution=1h) for a per-type override. ' +
       'Custom-Resource-heavy stacks may need to raise this above the default 30m ' +
       "(the Custom Resource provider's polling cap is 1h)."
   )
-    .default(parseDuration('30m'), '30m')
-    .argParser(parseDuration),
+    .default(undefined, '30m')
+    .argParser(parseResourceTimeoutToken('--resource-timeout')),
 ];
 
 /**
- * Validate that `--resource-warn-after` < `--resource-timeout`. Mis-ordered
- * values make the warning useless (it would never fire before the abort).
+ * Validate that warn < timeout, both at the global level and per-type.
  *
- * Receives values that have already been parsed by `parseDuration`, i.e.
- * milliseconds. Throws an `Error` (commander surfaces this to the user
- * without a stack trace).
+ * - Global: `globalMs(warn) < globalMs(timeout)` if both are user-set.
+ * - Per-type: for every type that appears in either map, the resolved
+ *   warn (per-type-or-global) must be less than the resolved timeout
+ *   (per-type-or-global). A `--resource-warn-after AWS::X=10m` without a
+ *   matching `--resource-timeout AWS::X=...` is OK — it's compared
+ *   against the global timeout.
+ *
+ * Receives values that have already been parsed (milliseconds). Throws
+ * an `Error` (commander surfaces this to the user without a stack trace).
  */
 export function validateResourceTimeouts(opts: {
-  resourceWarnAfter?: number;
-  resourceTimeout?: number;
+  resourceWarnAfter?: ResourceTimeoutOption;
+  resourceTimeout?: ResourceTimeoutOption;
 }): void {
   const warn = opts.resourceWarnAfter;
   const timeout = opts.resourceTimeout;
-  if (typeof warn === 'number' && typeof timeout === 'number' && warn >= timeout) {
-    throw new Error(
-      `--resource-warn-after (${warn}ms) must be less than --resource-timeout (${timeout}ms)`
-    );
+
+  // Global-level check (only when both globals are user-set; we don't
+  // know the v1 default here so we can't compare against it).
+  const globalWarn = warn?.globalMs;
+  const globalTimeout = timeout?.globalMs;
+  if (typeof globalWarn === 'number' && typeof globalTimeout === 'number') {
+    if (globalWarn >= globalTimeout) {
+      throw new Error(
+        `--resource-warn-after (${globalWarn}ms) must be less than --resource-timeout (${globalTimeout}ms)`
+      );
+    }
   }
+
+  // Per-type check: union of every type mentioned by either flag. For
+  // each, resolve the effective warn / timeout (per-type ?? global) and
+  // make sure warn < timeout. Skip the check when either side is missing
+  // entirely (no global default + no per-type entry).
+  const warnPerType = warn?.perTypeMs ?? {};
+  const timeoutPerType = timeout?.perTypeMs ?? {};
+  const types = new Set<string>([...Object.keys(warnPerType), ...Object.keys(timeoutPerType)]);
+  for (const t of types) {
+    const effectiveWarn = warnPerType[t] ?? globalWarn;
+    const effectiveTimeout = timeoutPerType[t] ?? globalTimeout;
+    if (typeof effectiveWarn !== 'number' || typeof effectiveTimeout !== 'number') {
+      // Without both sides resolved we can't compare; defer to the v1
+      // compile-time defaults which are known to be ordered correctly.
+      continue;
+    }
+    if (effectiveWarn >= effectiveTimeout) {
+      throw new Error(
+        `--resource-warn-after for ${t} (${effectiveWarn}ms) must be less than ` +
+          `--resource-timeout for ${t} (${effectiveTimeout}ms)`
+      );
+    }
+  }
+}
+
+/**
+ * Resolve the effective wall-clock budget for a single resource operation.
+ *
+ * Resolution order:
+ *   1. Per-resource-type override (`opt.perTypeMs[resourceType]`).
+ *   2. Caller-supplied global (`opt.globalMs`).
+ *   3. Caller-supplied fallback (`fallbackMs`) — typically
+ *      `DEFAULT_RESOURCE_*_MS` from `deploy-engine.ts`.
+ */
+export function effectiveResourceTimeoutMs(
+  resourceType: string,
+  opt: ResourceTimeoutOption | undefined,
+  fallbackMs: number
+): number {
+  if (opt) {
+    const perType = opt.perTypeMs?.[resourceType];
+    if (typeof perType === 'number') return perType;
+    if (typeof opt.globalMs === 'number') return opt.globalMs;
+  }
+  return fallbackMs;
 }
 
 /**

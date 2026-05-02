@@ -74,14 +74,33 @@ export interface DeployEngineOptions {
    * gets a "[taking longer than expected, Nm+]" suffix and a
    * `logger.warn` line is emitted. Defaults to
    * {@link DEFAULT_RESOURCE_WARN_AFTER_MS}.
+   *
+   * Per-type override via {@link resourceWarnAfterByType} wins for
+   * matching resource types.
    */
   resourceWarnAfterMs?: number;
   /**
    * Per-resource hard timeout (ms). When a single resource exceeds this,
    * `ResourceTimeoutError` is thrown and the existing rollback path
    * runs. Defaults to {@link DEFAULT_RESOURCE_TIMEOUT_MS}.
+   *
+   * Per-type override via {@link resourceTimeoutByType} wins for
+   * matching resource types.
    */
   resourceTimeoutMs?: number;
+  /**
+   * Per-resource-type warn-after override map. Keys are
+   * `AWS::Service::Resource` strings; values are milliseconds. When the
+   * resource being provisioned matches a key here, that value supersedes
+   * `resourceWarnAfterMs` at the call site.
+   */
+  resourceWarnAfterByType?: Record<string, number>;
+  /**
+   * Per-resource-type hard-timeout override map. Same shape as
+   * {@link resourceWarnAfterByType}; supersedes `resourceTimeoutMs` at
+   * the call site for matching types.
+   */
+  resourceTimeoutByType?: Record<string, number>;
 }
 
 /**
@@ -977,8 +996,19 @@ export class DeployEngine {
           ? 'DELETE'
           : 'UPDATE';
 
-    const warnAfterMs = this.options.resourceWarnAfterMs ?? DEFAULT_RESOURCE_WARN_AFTER_MS;
-    const timeoutMs = this.options.resourceTimeoutMs ?? DEFAULT_RESOURCE_TIMEOUT_MS;
+    // Per-resource-type overrides (v2) win over the global default.
+    // Resolution order at the call site:
+    //   1. per-type override map for this resourceType
+    //   2. global value passed by the CLI (`--resource-timeout 30m`)
+    //   3. compile-time default (DEFAULT_RESOURCE_*_MS)
+    const warnAfterMs =
+      this.options.resourceWarnAfterByType?.[resourceType] ??
+      this.options.resourceWarnAfterMs ??
+      DEFAULT_RESOURCE_WARN_AFTER_MS;
+    const timeoutMs =
+      this.options.resourceTimeoutByType?.[resourceType] ??
+      this.options.resourceTimeoutMs ??
+      DEFAULT_RESOURCE_TIMEOUT_MS;
 
     try {
       await withResourceDeadline(
