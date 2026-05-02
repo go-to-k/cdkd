@@ -287,6 +287,48 @@ export class SQSQueueProvider implements ResourceProvider {
   }
 
   /**
+   * Resolve a single `Fn::GetAtt` attribute for an existing SQS queue.
+   *
+   * CloudFormation's `AWS::SQS::Queue` exposes `Arn`, `QueueName` and
+   * `QueueUrl`. The cdkd physicalId is the queue URL; `QueueUrl` and
+   * `QueueName` are derivable from it without an AWS call, while `Arn`
+   * requires `GetQueueAttributes`. See:
+   * https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-properties-sqs-queues.html#aws-properties-sqs-queues-return-values
+   *
+   * Used by `cdkd orphan` to live-fetch attribute values that need to be
+   * substituted into sibling references.
+   */
+  async getAttribute(
+    physicalId: string,
+    _resourceType: string,
+    attributeName: string
+  ): Promise<unknown> {
+    switch (attributeName) {
+      case 'QueueUrl':
+        return physicalId;
+      case 'QueueName':
+        // Queue URL tail is the queue name: https://sqs.<region>.amazonaws.com/<account>/<name>
+        return physicalId.substring(physicalId.lastIndexOf('/') + 1);
+      case 'Arn': {
+        try {
+          const resp = await this.sqsClient.send(
+            new GetQueueAttributesCommand({
+              QueueUrl: physicalId,
+              AttributeNames: ['QueueArn'],
+            })
+          );
+          return resp.Attributes?.['QueueArn'];
+        } catch (err) {
+          if (err instanceof QueueDoesNotExist) return undefined;
+          throw err;
+        }
+      }
+      default:
+        return undefined;
+    }
+  }
+
+  /**
    * Adopt an existing SQS queue into cdkd state.
    *
    * SQS physical IDs are queue URLs (`https://sqs.us-east-1.amazonaws.com/<account>/<name>`).

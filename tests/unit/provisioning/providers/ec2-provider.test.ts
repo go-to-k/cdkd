@@ -6,6 +6,9 @@ import {
   RevokeSecurityGroupEgressCommand,
   RevokeSecurityGroupIngressCommand,
   CreateTagsCommand,
+  DescribeVpcsCommand,
+  DescribeNetworkAclsCommand,
+  DescribeSecurityGroupsCommand,
 } from '@aws-sdk/client-ec2';
 
 const mockSend = vi.hoisted(() => vi.fn());
@@ -618,6 +621,113 @@ describe('EC2Provider - SecurityGroup egress handling', () => {
     // set mockSend.mockResolvedValue({}) for any command.
     it('should keep CreateTagsCommand reference reachable', () => {
       expect(CreateTagsCommand).toBeTruthy();
+    });
+  });
+
+  describe('getAttribute for AWS::EC2::VPC', () => {
+    it('returns CidrBlock from DescribeVpcs', async () => {
+      mockSend.mockResolvedValueOnce({
+        Vpcs: [{ VpcId: 'vpc-abc', CidrBlock: '10.0.0.0/16' }],
+      });
+
+      const result = await provider.getAttribute('vpc-abc', 'AWS::EC2::VPC', 'CidrBlock');
+
+      expect(result).toBe('10.0.0.0/16');
+      expect(mockSend.mock.calls[0]?.[0]).toBeInstanceOf(DescribeVpcsCommand);
+    });
+
+    it('returns CidrBlockAssociations as association IDs', async () => {
+      mockSend.mockResolvedValueOnce({
+        Vpcs: [
+          {
+            VpcId: 'vpc-abc',
+            CidrBlockAssociationSet: [
+              { AssociationId: 'vpc-cidr-assoc-1', CidrBlock: '10.0.0.0/16' },
+              { AssociationId: 'vpc-cidr-assoc-2', CidrBlock: '10.1.0.0/16' },
+            ],
+          },
+        ],
+      });
+
+      const result = await provider.getAttribute(
+        'vpc-abc',
+        'AWS::EC2::VPC',
+        'CidrBlockAssociations'
+      );
+
+      expect(result).toEqual(['vpc-cidr-assoc-1', 'vpc-cidr-assoc-2']);
+    });
+
+    it('returns Ipv6CidrBlocks for associated entries only', async () => {
+      mockSend.mockResolvedValueOnce({
+        Vpcs: [
+          {
+            VpcId: 'vpc-abc',
+            Ipv6CidrBlockAssociationSet: [
+              {
+                Ipv6CidrBlock: '2001:db8::/56',
+                Ipv6CidrBlockState: { State: 'associated' },
+              },
+              {
+                Ipv6CidrBlock: '2001:db9::/56',
+                Ipv6CidrBlockState: { State: 'disassociating' },
+              },
+            ],
+          },
+        ],
+      });
+
+      const result = await provider.getAttribute('vpc-abc', 'AWS::EC2::VPC', 'Ipv6CidrBlocks');
+
+      expect(result).toEqual(['2001:db8::/56']);
+    });
+
+    it('returns DefaultNetworkAcl from DescribeNetworkAcls filter', async () => {
+      mockSend.mockResolvedValueOnce({
+        NetworkAcls: [{ NetworkAclId: 'acl-default', VpcId: 'vpc-abc', IsDefault: true }],
+      });
+
+      const result = await provider.getAttribute(
+        'vpc-abc',
+        'AWS::EC2::VPC',
+        'DefaultNetworkAcl'
+      );
+
+      expect(result).toBe('acl-default');
+      const call = mockSend.mock.calls[0]?.[0];
+      expect(call).toBeInstanceOf(DescribeNetworkAclsCommand);
+      expect(call.input.Filters).toEqual([
+        { Name: 'vpc-id', Values: ['vpc-abc'] },
+        { Name: 'default', Values: ['true'] },
+      ]);
+    });
+
+    it('returns DefaultSecurityGroup from DescribeSecurityGroups filter', async () => {
+      mockSend.mockResolvedValueOnce({
+        SecurityGroups: [{ GroupId: 'sg-default', VpcId: 'vpc-abc', GroupName: 'default' }],
+      });
+
+      const result = await provider.getAttribute(
+        'vpc-abc',
+        'AWS::EC2::VPC',
+        'DefaultSecurityGroup'
+      );
+
+      expect(result).toBe('sg-default');
+      const call = mockSend.mock.calls[0]?.[0];
+      expect(call).toBeInstanceOf(DescribeSecurityGroupsCommand);
+      expect(call.input.Filters).toEqual([
+        { Name: 'vpc-id', Values: ['vpc-abc'] },
+        { Name: 'group-name', Values: ['default'] },
+      ]);
+    });
+
+    it('returns undefined for unknown attribute', async () => {
+      mockSend.mockResolvedValueOnce({ Vpcs: [{ VpcId: 'vpc-abc' }] });
+
+      const result = await provider.getAttribute('vpc-abc', 'AWS::EC2::VPC', 'Unknown');
+
+      expect(result).toBeUndefined();
     });
   });
 });

@@ -388,6 +388,33 @@ export class SNSTopicProvider implements ResourceProvider {
   }
 
   /**
+   * Resolve a single `Fn::GetAtt` attribute for an existing SNS topic.
+   *
+   * CloudFormation's `AWS::SNS::Topic` exposes `TopicName` and `TopicArn`.
+   * The cdkd physicalId is the topic ARN, so both are derivable without
+   * an AWS call. See:
+   * https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-properties-sns-topic.html#aws-properties-sns-topic-return-values
+   *
+   * Used by `cdkd orphan` to live-fetch attribute values that need to be
+   * substituted into sibling references.
+   */
+  // eslint-disable-next-line @typescript-eslint/require-await -- consistent async signature with other providers
+  async getAttribute(
+    physicalId: string,
+    _resourceType: string,
+    attributeName: string
+  ): Promise<unknown> {
+    switch (attributeName) {
+      case 'TopicArn':
+        return physicalId;
+      case 'TopicName':
+        return physicalId.split(':').pop();
+      default:
+        return undefined;
+    }
+  }
+
+  /**
    * Adopt an existing SNS topic into cdkd state.
    *
    * SNS physical IDs are full ARNs (`arn:aws:sns:...:TopicName`). The

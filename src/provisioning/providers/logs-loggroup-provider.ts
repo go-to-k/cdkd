@@ -314,6 +314,28 @@ export class LogsLogGroupProvider implements ResourceProvider {
   }
 
   /**
+   * Resolve a single `Fn::GetAtt` attribute for an existing log group.
+   *
+   * CloudFormation's `AWS::Logs::LogGroup` exposes only `Arn`. The ARN is
+   * derivable from the log group name + account + region via the existing
+   * `buildArn` helper. See:
+   * https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-logs-loggroup.html#aws-resource-logs-loggroup-return-values
+   *
+   * Used by `cdkd orphan` to live-fetch attribute values that need to be
+   * substituted into sibling references.
+   */
+  async getAttribute(
+    physicalId: string,
+    _resourceType: string,
+    attributeName: string
+  ): Promise<unknown> {
+    if (attributeName !== 'Arn') {
+      return undefined;
+    }
+    return this.buildArn(physicalId);
+  }
+
+  /**
    * Adopt an existing CloudWatch Logs log group into cdkd state.
    *
    * Lookup order:

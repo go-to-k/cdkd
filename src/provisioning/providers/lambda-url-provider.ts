@@ -2,6 +2,7 @@ import {
   LambdaClient,
   CreateFunctionUrlConfigCommand,
   DeleteFunctionUrlConfigCommand,
+  GetFunctionUrlConfigCommand,
   UpdateFunctionUrlConfigCommand,
   ResourceNotFoundException,
   type FunctionUrlAuthType,
@@ -178,6 +179,40 @@ export class LambdaUrlProvider implements ResourceProvider {
         physicalId,
         cause
       );
+    }
+  }
+
+  /**
+   * Resolve a single `Fn::GetAtt` attribute for an existing Lambda Function
+   * URL.
+   *
+   * CloudFormation's `AWS::Lambda::Url` exposes `FunctionArn` and
+   * `FunctionUrl`. Both come from `GetFunctionUrlConfig`. See:
+   * https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-lambda-url.html#aws-resource-lambda-url-return-values
+   *
+   * Used by `cdkd orphan` to live-fetch attribute values that need to be
+   * substituted into sibling references.
+   */
+  async getAttribute(
+    physicalId: string,
+    _resourceType: string,
+    attributeName: string
+  ): Promise<unknown> {
+    try {
+      const resp = await this.lambdaClient.send(
+        new GetFunctionUrlConfigCommand({ FunctionName: physicalId })
+      );
+      switch (attributeName) {
+        case 'FunctionArn':
+          return resp.FunctionArn;
+        case 'FunctionUrl':
+          return resp.FunctionUrl;
+        default:
+          return undefined;
+      }
+    } catch (err) {
+      if (err instanceof ResourceNotFoundException) return undefined;
+      throw err;
     }
   }
 

@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { ResourceNotFoundException } from '@aws-sdk/client-lambda';
 
 // Mock AWS clients before importing the provider
 const mockSend = vi.fn();
@@ -67,6 +68,47 @@ describe('LambdaUrlProvider', () => {
 
       expect(result).toBeNull();
       expect(mockSend).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('getAttribute', () => {
+    it('returns FunctionUrl from GetFunctionUrlConfig', async () => {
+      mockSend.mockResolvedValueOnce({
+        FunctionArn: 'arn:aws:lambda:us-east-1:123:function:my-fn',
+        FunctionUrl: 'https://abc123.lambda-url.us-east-1.on.aws/',
+      });
+
+      const result = await provider.getAttribute('my-fn', 'AWS::Lambda::Url', 'FunctionUrl');
+      expect(result).toBe('https://abc123.lambda-url.us-east-1.on.aws/');
+    });
+
+    it('returns FunctionArn from GetFunctionUrlConfig', async () => {
+      mockSend.mockResolvedValueOnce({
+        FunctionArn: 'arn:aws:lambda:us-east-1:123:function:my-fn',
+        FunctionUrl: 'https://abc123.lambda-url.us-east-1.on.aws/',
+      });
+
+      const result = await provider.getAttribute('my-fn', 'AWS::Lambda::Url', 'FunctionArn');
+      expect(result).toBe('arn:aws:lambda:us-east-1:123:function:my-fn');
+    });
+
+    it('returns undefined for unknown attribute', async () => {
+      mockSend.mockResolvedValueOnce({
+        FunctionArn: 'arn',
+        FunctionUrl: 'https://x',
+      });
+
+      const result = await provider.getAttribute('my-fn', 'AWS::Lambda::Url', 'Unknown');
+      expect(result).toBeUndefined();
+    });
+
+    it('returns undefined when URL config not found', async () => {
+      mockSend.mockRejectedValueOnce(
+        new ResourceNotFoundException({ message: 'not found', $metadata: {} })
+      );
+
+      const result = await provider.getAttribute('missing-fn', 'AWS::Lambda::Url', 'FunctionUrl');
+      expect(result).toBeUndefined();
     });
   });
 });
