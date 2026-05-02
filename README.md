@@ -641,6 +641,50 @@ services, anything in Cloud Control API), use the explicit
 exactly this case. Resource types whose provider does not implement
 import are reported as `unsupported` and skipped.
 
+### `cdkd import` vs upstream `cdk import`
+
+cdkd's `import` command mirrors the surface of upstream
+[`cdk import`](https://docs.aws.amazon.com/cdk/v2/guide/ref-cli-cmd-import.html)
+where it can, but the underlying mechanism is fundamentally different
+and a handful of upstream-only flags are not implemented. Use this
+table to predict behavior when migrating from `cdk import`.
+
+| Topic | `cdk import` (upstream) | `cdkd import` |
+| --- | --- | --- |
+| Mechanism | CloudFormation `CreateChangeSet` with `ResourcesToImport` — atomic, all-or-nothing. | Per-resource SDK calls (e.g. `s3:HeadBucket`, `lambda:GetFunction`, IAM `ListRoleTags`). **Not atomic.** |
+| Failure mode | Failed import rolls the changeset back; the stack is left unchanged. | Per-resource: `imported` / `skipped-not-found` / `skipped-no-impl` / `skipped-out-of-scope` / `failed` rows are summarized. State is written for whatever succeeded — but only after a confirmation prompt (or `--yes`), so a partial run is opt-in. To roll a partial import back, use `cdkd state orphan <stack>` (drops the state record only). |
+| Selective mode (`--resource-mapping <file>`) | Supported. Listed resources are imported; unlisted resources cause the changeset to fail. | Supported. Listed resources are imported; unlisted resources are reported as `out of scope` and left out of state (next `cdkd deploy` will CREATE them). |
+| Selective mode (`--resource <id>=<physical>` repeatable) | Not supported (upstream uses interactive prompts or a mapping file). | Supported as cdkd's CLI-friendly equivalent. |
+| `--resource-mapping-inline '<json>'` | Supported (use in non-TTY environments). | **Not supported.** Use `--resource <id>=<physical>` (repeatable) or `--resource-mapping <file>` instead. |
+| `--record-resource-mapping <file>` | Supported (writes the mapping the user typed at the prompt to a file for re-use). | **Not supported.** cdkd has no interactive prompt to record. |
+| Interactive prompt for missing IDs | Default in TTY — prompts for every resource not covered by a mapping file. | **Not supported.** cdkd is non-interactive: missing logical IDs are looked up by `aws:cdk:path` tag in `auto` / `hybrid` modes, or skipped as `out of scope` in selective mode. The only prompt is the final "write state?" confirmation, which `--yes` skips. |
+| Typo'd logical ID | Aborts with a clear error before any AWS calls. | Aborts with a clear error before any AWS calls — checked against the synthesized template. |
+| Whole-stack tag-based import | **Not supported.** | **cdkd-specific.** With no flags, cdkd looks every resource up by its `aws:cdk:path` tag — the typical case for adopting a stack previously deployed by `cdk deploy`. |
+| Hybrid mode (overrides + tag fallback) | **Not supported.** | **cdkd-specific.** `--auto` together with `--resource` lets listed resources use the explicit physical id while everything else still goes through tag lookup. |
+| Nested stacks (`AWS::CloudFormation::Stack`) | Explicitly unsupported. | Also unsupported in practice — cdkd does not deploy nested CloudFormation stacks at all (no `AWS::CloudFormation::Stack` provider). The `Stack` resource itself would be reported as `unsupported`. CDK Stages (separate top-level stacks) are fine: pass the stack's display path or physical name as the positional argument. |
+| Bootstrap requirement | Bootstrap v12+ (deploy role needs to read the encrypted staging bucket). | cdkd's own state bucket; no CDK bootstrap version requirement. |
+| Resource-type coverage | Whatever [CloudFormation supports for import](https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/resource-import-supported-resources.html). | The set of cdkd providers that implement `import()` (see [CLAUDE.md](CLAUDE.md) for the current list). For any other CC-API-supported type, use `--resource <id>=<physical>` to drive the Cloud Control API fallback. The two lists overlap heavily but are not identical. |
+| Confirmation prompt before writing state | n/a (CloudFormation operates atomically). | Yes — cdkd asks before writing the state file. Skip with `--yes`. |
+| `--force` | "Continue even if the diff includes updates or deletions" — about diff strictness. | "Overwrite an existing state record" — about state safety. **Same flag name, different meaning.** |
+| `--dry-run` | Implied by `--no-execute` (creates the changeset without executing). | Native: shows the import plan and exits without writing state. |
+
+#### Practical implications when migrating from `cdk import`
+
+- If you script around `--resource-mapping <file>`: behavior matches.
+  The file format (`{"LogicalId": "physical-id"}`) is the same.
+- If you script around `--resource-mapping-inline`: rewrite as
+  repeated `--resource <id>=<physical>` flags, or write a temp file.
+- If your workflow relies on the interactive prompt: rewrite as
+  `--resource-mapping <file>`. cdkd will not prompt.
+- If you rely on atomic rollback: cdkd cannot offer that — its
+  per-resource model writes state only after the full pass completes
+  (and after confirmation), so a partial run is bounded, but if a
+  later resource fails after several earlier ones already returned
+  successfully and you confirm the write, those earlier ones are
+  in cdkd state. Use `cdkd state orphan <stack>` to back out.
+- If you import nested stacks: neither tool supports this. Convert
+  to top-level CDK stacks first.
+
 ## State Management
 
 State is stored in S3. Keys are scoped by `(stackName, region)` so the same
