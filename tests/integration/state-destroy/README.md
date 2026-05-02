@@ -53,8 +53,8 @@ The flow that exercises the new command:
 The destroy must succeed without complaining about missing `--app`, missing
 `cdk.json`, or missing synth output.
 
-## Comparison to `cdkd state rm`
+## Comparison to `cdkd state orphan`
 
-`cdkd state rm CdkdStateDestroyExample` would leave the S3 bucket alive and
-just forget about it from cdkd's view. This test ensures `state destroy`
+`cdkd state orphan CdkdStateDestroyExample` would leave the S3 bucket alive
+and just forget about it from cdkd's view. This test ensures `state destroy`
 deletes the bucket too.
