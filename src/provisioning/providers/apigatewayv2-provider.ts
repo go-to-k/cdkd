@@ -10,6 +10,8 @@ import {
   DeleteRouteCommand,
   CreateAuthorizerCommand,
   DeleteAuthorizerCommand,
+  GetApiCommand,
+  GetApisCommand,
   NotFoundException,
   type ProtocolType,
   type IntegrationType,
@@ -19,10 +21,13 @@ import {
 import { getLogger } from '../../utils/logger.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
+import { CDK_PATH_TAG, resolveExplicitPhysicalId } from '../import-helpers.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
   ResourceUpdateResult,
+  ResourceImportInput,
+  ResourceImportResult,
 } from '../../types/resource.js';
 
 /**
@@ -712,6 +717,59 @@ export class ApiGatewayV2Provider implements ResourceProvider {
         cause
       );
     }
+  }
+
+  // ─── Import ───────────────────────────────────────────────────────
+
+  /**
+   * Adopt an existing API Gateway V2 resource into cdkd state.
+   *
+   * `AWS::ApiGatewayV2::Api` supports full tag-based auto-lookup via
+   * `GetApis` (`Tags` is a `Record<string,string>` map on each item).
+   *
+   * Sub-resources (`Stage`, `Integration`, `Route`, `Authorizer`) are
+   * scoped under a parent `ApiId`, and their physical ids are not
+   * globally unique — auto-lookup would need to walk every Api in the
+   * account and every sub-resource within. Explicit-override only;
+   * users adopt an existing HTTP API by passing
+   * `--resource <logicalId>=<physicalId>` for each sub-resource.
+   */
+  async import(input: ResourceImportInput): Promise<ResourceImportResult | null> {
+    if (input.resourceType !== 'AWS::ApiGatewayV2::Api') {
+      // Sub-resources: explicit override only.
+      if (input.knownPhysicalId) {
+        return { physicalId: input.knownPhysicalId, attributes: {} };
+      }
+      return null;
+    }
+
+    const explicit = resolveExplicitPhysicalId(input, null);
+    if (explicit) {
+      try {
+        await this.getClient().send(new GetApiCommand({ ApiId: explicit }));
+        return { physicalId: explicit, attributes: {} };
+      } catch (err) {
+        if (err instanceof NotFoundException) return null;
+        throw err;
+      }
+    }
+
+    if (!input.cdkPath) return null;
+
+    let nextToken: string | undefined;
+    do {
+      const list = await this.getClient().send(
+        new GetApisCommand({ ...(nextToken && { NextToken: nextToken }) })
+      );
+      for (const api of list.Items ?? []) {
+        if (!api.ApiId) continue;
+        if (api.Tags?.[CDK_PATH_TAG] === input.cdkPath) {
+          return { physicalId: api.ApiId, attributes: {} };
+        }
+      }
+      nextToken = list.NextToken;
+    } while (nextToken);
+    return null;
   }
 
   // ─── Helpers ──────────────────────────────────────────────────────

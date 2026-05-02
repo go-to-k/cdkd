@@ -8,6 +8,7 @@ import {
   PutImageScanningConfigurationCommand,
   PutImageTagMutabilityCommand,
   TagResourceCommand,
+  ListTagsForResourceCommand,
   RepositoryNotFoundException,
   type ImageScanningConfiguration,
   type EncryptionConfiguration,
@@ -18,10 +19,13 @@ import { getLogger } from '../../utils/logger.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { generateResourceName } from '../resource-name.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
+import { matchesCdkPath, resolveExplicitPhysicalId } from '../import-helpers.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
   ResourceUpdateResult,
+  ResourceImportInput,
+  ResourceImportResult,
 } from '../../types/resource.js';
 
 /**
@@ -336,5 +340,56 @@ export class ECRProvider implements ResourceProvider {
         cause
       );
     }
+  }
+
+  /**
+   * Adopt an existing ECR repository into cdkd state.
+   *
+   * Lookup order:
+   *  1. `--resource` override or `Properties.RepositoryName` → verify via
+   *     `DescribeRepositories`.
+   *  2. `DescribeRepositories` paginated, then `ListTagsForResource(arn)`
+   *     per repository to match `aws:cdk:path` (`Tag[]` array shape).
+   */
+  async import(input: ResourceImportInput): Promise<ResourceImportResult | null> {
+    const explicit = resolveExplicitPhysicalId(input, 'RepositoryName');
+    if (explicit) {
+      try {
+        const resp = await this.getClient().send(
+          new DescribeRepositoriesCommand({ repositoryNames: [explicit] })
+        );
+        return resp.repositories?.[0]?.repositoryName
+          ? { physicalId: explicit, attributes: {} }
+          : null;
+      } catch (err) {
+        if (err instanceof RepositoryNotFoundException) return null;
+        throw err;
+      }
+    }
+
+    if (!input.cdkPath) return null;
+
+    let nextToken: string | undefined;
+    do {
+      const list = await this.getClient().send(
+        new DescribeRepositoriesCommand({ ...(nextToken && { nextToken }) })
+      );
+      for (const repo of list.repositories ?? []) {
+        if (!repo.repositoryArn || !repo.repositoryName) continue;
+        try {
+          const tagsResp = await this.getClient().send(
+            new ListTagsForResourceCommand({ resourceArn: repo.repositoryArn })
+          );
+          if (matchesCdkPath(tagsResp.tags, input.cdkPath)) {
+            return { physicalId: repo.repositoryName, attributes: {} };
+          }
+        } catch (err) {
+          if (err instanceof RepositoryNotFoundException) continue;
+          throw err;
+        }
+      }
+      nextToken = list.nextToken;
+    } while (nextToken);
+    return null;
   }
 }

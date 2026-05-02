@@ -3,6 +3,7 @@ import {
   PutMetricAlarmCommand,
   DeleteAlarmsCommand,
   DescribeAlarmsCommand,
+  ListTagsForResourceCommand,
   type Statistic,
   type ComparisonOperator,
   type StandardUnit,
@@ -13,10 +14,13 @@ import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { generateResourceName } from '../resource-name.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
+import { matchesCdkPath, resolveExplicitPhysicalId } from '../import-helpers.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
   ResourceUpdateResult,
+  ResourceImportInput,
+  ResourceImportResult,
 } from '../../types/resource.js';
 
 /**
@@ -286,5 +290,62 @@ export class CloudWatchAlarmProvider implements ResourceProvider {
     }
 
     return params as unknown as PutMetricAlarmCommandInput;
+  }
+
+  /**
+   * Adopt an existing CloudWatch alarm into cdkd state.
+   *
+   * Lookup order:
+   *  1. `--resource` override or `Properties.AlarmName` → verify via `DescribeAlarms`.
+   *  2. `DescribeAlarms` paginated, then `ListTagsForResource(AlarmArn)` per
+   *     alarm to match `aws:cdk:path`.
+   */
+  async import(input: ResourceImportInput): Promise<ResourceImportResult | null> {
+    const explicit = resolveExplicitPhysicalId(input, 'AlarmName');
+    if (explicit) {
+      try {
+        const resp = await this.cloudWatchClient.send(
+          new DescribeAlarmsCommand({ AlarmNames: [explicit] })
+        );
+        return resp.MetricAlarms?.[0] || resp.CompositeAlarms?.[0]
+          ? { physicalId: explicit, attributes: {} }
+          : null;
+      } catch (err) {
+        if (this.isNotFound(err)) return null;
+        throw err;
+      }
+    }
+
+    if (!input.cdkPath) return null;
+
+    let nextToken: string | undefined;
+    do {
+      const list = await this.cloudWatchClient.send(
+        new DescribeAlarmsCommand({ ...(nextToken && { NextToken: nextToken }) })
+      );
+      const all = [...(list.MetricAlarms ?? []), ...(list.CompositeAlarms ?? [])];
+      for (const a of all) {
+        if (!a.AlarmArn || !a.AlarmName) continue;
+        try {
+          const tagsResp = await this.cloudWatchClient.send(
+            new ListTagsForResourceCommand({ ResourceARN: a.AlarmArn })
+          );
+          if (matchesCdkPath(tagsResp.Tags, input.cdkPath)) {
+            return { physicalId: a.AlarmName, attributes: {} };
+          }
+        } catch (err) {
+          if (this.isNotFound(err)) continue;
+          throw err;
+        }
+      }
+      nextToken = list.NextToken;
+    } while (nextToken);
+    return null;
+  }
+
+  private isNotFound(err: unknown): boolean {
+    if (!(err instanceof Error)) return false;
+    const name = (err as { name?: string }).name ?? '';
+    return name === 'ResourceNotFoundException' || name === 'ResourceNotFound';
   }
 }

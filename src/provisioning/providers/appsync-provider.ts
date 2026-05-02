@@ -9,6 +9,9 @@ import {
   CreateApiKeyCommand,
   DeleteApiKeyCommand,
   StartSchemaCreationCommand,
+  GetGraphqlApiCommand,
+  ListGraphqlApisCommand,
+  NotFoundException as AppSyncNotFoundException,
   type AuthenticationType,
   type DataSourceType,
   type CreateGraphqlApiCommandInput,
@@ -19,10 +22,13 @@ import {
 import { getLogger } from '../../utils/logger.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
+import { CDK_PATH_TAG, resolveExplicitPhysicalId } from '../import-helpers.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
   ResourceUpdateResult,
+  ResourceImportInput,
+  ResourceImportResult,
 } from '../../types/resource.js';
 
 /**
@@ -675,5 +681,51 @@ export class AppSyncProvider implements ResourceProvider {
       message.includes('does not exist') ||
       name === 'NotFoundException'
     );
+  }
+
+  /**
+   * Adopt an existing AppSync resource into cdkd state.
+   *
+   * `AWS::AppSync::GraphQLApi` supports full tag-based auto-lookup via
+   * `ListGraphqlApis` (each item carries a `tags` map). AppSync sub-resources
+   * (`GraphQLSchema`, `DataSource`, `Resolver`, `ApiKey`) are scoped under a
+   * parent `apiId` and cannot be discovered by tag at the account level —
+   * explicit-override only.
+   */
+  async import(input: ResourceImportInput): Promise<ResourceImportResult | null> {
+    if (input.resourceType !== 'AWS::AppSync::GraphQLApi') {
+      if (input.knownPhysicalId) {
+        return { physicalId: input.knownPhysicalId, attributes: {} };
+      }
+      return null;
+    }
+
+    const explicit = resolveExplicitPhysicalId(input, null);
+    if (explicit) {
+      try {
+        await this.getClient().send(new GetGraphqlApiCommand({ apiId: explicit }));
+        return { physicalId: explicit, attributes: {} };
+      } catch (err) {
+        if (err instanceof AppSyncNotFoundException) return null;
+        throw err;
+      }
+    }
+
+    if (!input.cdkPath) return null;
+
+    let nextToken: string | undefined;
+    do {
+      const list = await this.getClient().send(
+        new ListGraphqlApisCommand({ ...(nextToken && { nextToken }) })
+      );
+      for (const api of list.graphqlApis ?? []) {
+        if (!api.apiId) continue;
+        if (api.tags?.[CDK_PATH_TAG] === input.cdkPath) {
+          return { physicalId: api.apiId, attributes: {} };
+        }
+      }
+      nextToken = list.nextToken;
+    } while (nextToken);
+    return null;
   }
 }
