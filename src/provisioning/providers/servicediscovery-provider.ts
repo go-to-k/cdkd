@@ -4,7 +4,12 @@ import {
   DeleteNamespaceCommand,
   CreateServiceCommand,
   DeleteServiceCommand,
+  GetNamespaceCommand,
   GetOperationCommand,
+  GetServiceCommand,
+  ListNamespacesCommand,
+  ListServicesCommand,
+  ListTagsForResourceCommand,
   NamespaceNotFound,
   ServiceNotFound,
   type DnsConfig,
@@ -17,10 +22,13 @@ import { STSClient, GetCallerIdentityCommand } from '@aws-sdk/client-sts';
 import { getLogger } from '../../utils/logger.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
+import { matchesCdkPath } from '../import-helpers.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
   ResourceUpdateResult,
+  ResourceImportInput,
+  ResourceImportResult,
 } from '../../types/resource.js';
 
 /**
@@ -434,6 +442,113 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
       resourceType,
       logicalId
     );
+  }
+
+  // ─── Import dispatch ──────────────────────────────────────────────
+
+  /**
+   * Adopt an existing Cloud Map (Service Discovery) resource into cdkd state.
+   *
+   *  - **AWS::ServiceDiscovery::PrivateDnsNamespace**: tag-based auto-lookup
+   *    via `ListNamespaces` + `ListTagsForResource(ResourceARN)` (Tag[]
+   *    array). Falls back to `--resource` override or matching
+   *    `Properties.Name` against the namespace name.
+   *  - **AWS::ServiceDiscovery::Service**: same shape — `ListServices` +
+   *    `ListTagsForResource`. Both use `Tag[]` arrays.
+   */
+  async import(input: ResourceImportInput): Promise<ResourceImportResult | null> {
+    switch (input.resourceType) {
+      case 'AWS::ServiceDiscovery::PrivateDnsNamespace':
+        return this.importNamespaceResource(input);
+      case 'AWS::ServiceDiscovery::Service':
+        return this.importServiceResource(input);
+      default:
+        return null;
+    }
+  }
+
+  private async importNamespaceResource(
+    input: ResourceImportInput
+  ): Promise<ResourceImportResult | null> {
+    if (input.knownPhysicalId) {
+      try {
+        await this.getClient().send(new GetNamespaceCommand({ Id: input.knownPhysicalId }));
+        return { physicalId: input.knownPhysicalId, attributes: {} };
+      } catch (err) {
+        if (err instanceof NamespaceNotFound) return null;
+        throw err;
+      }
+    }
+
+    const desiredName =
+      typeof input.properties?.['Name'] === 'string' ? input.properties['Name'] : undefined;
+
+    let token: string | undefined;
+    do {
+      const list = await this.getClient().send(
+        new ListNamespacesCommand({ ...(token && { NextToken: token }) })
+      );
+      for (const ns of list.Namespaces ?? []) {
+        if (!ns.Id || !ns.Arn) continue;
+        if (desiredName && ns.Name === desiredName) {
+          return { physicalId: ns.Id, attributes: {} };
+        }
+        if (input.cdkPath) {
+          try {
+            const tagsResp = await this.getClient().send(
+              new ListTagsForResourceCommand({ ResourceARN: ns.Arn })
+            );
+            if (matchesCdkPath(tagsResp.Tags, input.cdkPath)) {
+              return { physicalId: ns.Id, attributes: {} };
+            }
+          } catch (err) {
+            if (err instanceof NamespaceNotFound) continue;
+            throw err;
+          }
+        }
+      }
+      token = list.NextToken;
+    } while (token);
+    return null;
+  }
+
+  private async importServiceResource(
+    input: ResourceImportInput
+  ): Promise<ResourceImportResult | null> {
+    if (input.knownPhysicalId) {
+      try {
+        await this.getClient().send(new GetServiceCommand({ Id: input.knownPhysicalId }));
+        return { physicalId: input.knownPhysicalId, attributes: {} };
+      } catch (err) {
+        if (err instanceof ServiceNotFound) return null;
+        throw err;
+      }
+    }
+
+    if (!input.cdkPath) return null;
+
+    let token: string | undefined;
+    do {
+      const list = await this.getClient().send(
+        new ListServicesCommand({ ...(token && { NextToken: token }) })
+      );
+      for (const svc of list.Services ?? []) {
+        if (!svc.Id || !svc.Arn) continue;
+        try {
+          const tagsResp = await this.getClient().send(
+            new ListTagsForResourceCommand({ ResourceARN: svc.Arn })
+          );
+          if (matchesCdkPath(tagsResp.Tags, input.cdkPath)) {
+            return { physicalId: svc.Id, attributes: {} };
+          }
+        } catch (err) {
+          if (err instanceof ServiceNotFound) continue;
+          throw err;
+        }
+      }
+      token = list.NextToken;
+    } while (token);
+    return null;
   }
 
   /**

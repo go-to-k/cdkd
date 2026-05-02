@@ -2,6 +2,9 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import {
   CreateBucketCommand,
   DeleteBucketCommand,
+  HeadBucketCommand,
+  ListDirectoryBucketsCommand,
+  GetBucketTaggingCommand,
   ListObjectsV2Command,
   DeleteObjectsCommand,
 } from '@aws-sdk/client-s3';
@@ -200,6 +203,64 @@ describe('S3DirectoryBucketProvider', () => {
         wasReplaced: false,
       });
       expect(mockSend).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('import', () => {
+    function makeInput(overrides: Record<string, unknown> = {}) {
+      return {
+        logicalId: 'DirectoryBucket',
+        resourceType: 'AWS::S3Express::DirectoryBucket',
+        cdkPath: 'MyStack/DirectoryBucket',
+        stackName: 'MyStack',
+        region: 'us-east-1',
+        properties: {} as Record<string, unknown>,
+        ...overrides,
+      };
+    }
+
+    it('verifies explicit BucketName property via HeadBucket', async () => {
+      mockSend.mockResolvedValueOnce({}); // HeadBucket
+      const result = await provider.import!(
+        makeInput({ properties: { BucketName: 'my-bucket--use1-az4--x-s3' } })
+      );
+      expect(result).toEqual({ physicalId: 'my-bucket--use1-az4--x-s3', attributes: {} });
+      expect(mockSend.mock.calls[0][0]).toBeInstanceOf(HeadBucketCommand);
+    });
+
+    it('returns null when explicit name does not exist', async () => {
+      const err = new Error('NotFound') as Error & { name: string };
+      err.name = 'NotFound';
+      mockSend.mockRejectedValueOnce(err);
+      const result = await provider.import!(makeInput({ knownPhysicalId: 'missing--az--x-s3' }));
+      expect(result).toBeNull();
+    });
+
+    it('finds matching directory bucket by aws:cdk:path tag', async () => {
+      mockSend
+        .mockResolvedValueOnce({
+          Buckets: [
+            { Name: 'other--az--x-s3' },
+            { Name: 'mine--az--x-s3' },
+          ],
+        }) // ListDirectoryBuckets
+        .mockResolvedValueOnce({ TagSet: [{ Key: 'foo', Value: 'bar' }] }) // GetBucketTagging - other
+        .mockResolvedValueOnce({
+          TagSet: [{ Key: 'aws:cdk:path', Value: 'MyStack/DirectoryBucket' }],
+        }); // GetBucketTagging - mine
+
+      const result = await provider.import!(makeInput());
+      expect(result).toEqual({ physicalId: 'mine--az--x-s3', attributes: {} });
+      expect(mockSend.mock.calls[0][0]).toBeInstanceOf(ListDirectoryBucketsCommand);
+      expect(mockSend.mock.calls[1][0]).toBeInstanceOf(GetBucketTaggingCommand);
+    });
+
+    it('returns null when no bucket matches', async () => {
+      mockSend
+        .mockResolvedValueOnce({ Buckets: [{ Name: 'other--az--x-s3' }] })
+        .mockResolvedValueOnce({ TagSet: [{ Key: 'foo', Value: 'bar' }] });
+      const result = await provider.import!(makeInput());
+      expect(result).toBeNull();
     });
   });
 });

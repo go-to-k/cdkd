@@ -2,17 +2,23 @@ import {
   S3VectorsClient,
   CreateVectorBucketCommand,
   DeleteVectorBucketCommand,
+  GetVectorBucketCommand,
   ListIndexesCommand,
+  ListVectorBucketsCommand,
+  ListTagsForResourceCommand,
   DeleteIndexCommand,
   type SseType,
 } from '@aws-sdk/client-s3vectors';
 import { getLogger } from '../../utils/logger.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
+import { CDK_PATH_TAG } from '../import-helpers.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
   ResourceUpdateResult,
+  ResourceImportInput,
+  ResourceImportResult,
 } from '../../types/resource.js';
 
 /**
@@ -231,6 +237,59 @@ export class S3VectorsProvider implements ResourceProvider {
 
       nextToken = listResult.nextToken;
     } while (nextToken);
+  }
+
+  /**
+   * Adopt an existing S3 Vector Bucket into cdkd state.
+   *
+   * Lookup order:
+   *  1. `--resource <id>=<name>` override or `Properties.VectorBucketName`
+   *     → verify via `GetVectorBucket`. The physical id is the bucket name.
+   *  2. `ListVectorBuckets` paginator + `ListTagsForResource(resourceArn)`
+   *     (tags map keyed by tag name) and match `aws:cdk:path`.
+   */
+  async import(input: ResourceImportInput): Promise<ResourceImportResult | null> {
+    const explicit =
+      input.knownPhysicalId ??
+      (typeof input.properties?.['VectorBucketName'] === 'string' &&
+      input.properties['VectorBucketName'].length > 0
+        ? input.properties['VectorBucketName']
+        : undefined);
+
+    if (explicit) {
+      try {
+        await this.getClient().send(new GetVectorBucketCommand({ vectorBucketName: explicit }));
+        return { physicalId: explicit, attributes: {} };
+      } catch (err) {
+        if (this.isNotFoundError(err)) return null;
+        throw err;
+      }
+    }
+
+    if (!input.cdkPath) return null;
+
+    let token: string | undefined;
+    do {
+      const list = await this.getClient().send(
+        new ListVectorBucketsCommand({ ...(token && { nextToken: token }) })
+      );
+      for (const bucket of list.vectorBuckets ?? []) {
+        if (!bucket.vectorBucketName || !bucket.vectorBucketArn) continue;
+        try {
+          const tagsResp = await this.getClient().send(
+            new ListTagsForResourceCommand({ resourceArn: bucket.vectorBucketArn })
+          );
+          if (tagsResp.tags?.[CDK_PATH_TAG] === input.cdkPath) {
+            return { physicalId: bucket.vectorBucketName, attributes: {} };
+          }
+        } catch (err) {
+          if (this.isNotFoundError(err)) continue;
+          throw err;
+        }
+      }
+      token = list.nextToken;
+    } while (token);
+    return null;
   }
 
   private isNotFoundError(error: unknown): boolean {

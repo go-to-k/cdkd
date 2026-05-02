@@ -6,17 +6,24 @@ import {
   DeleteNamespaceCommand,
   CreateTableCommand,
   DeleteTableCommand,
+  GetTableBucketCommand,
+  GetTableCommand,
   ListNamespacesCommand,
   ListTablesCommand,
+  ListTableBucketsCommand,
+  ListTagsForResourceCommand,
   NotFoundException,
 } from '@aws-sdk/client-s3tables';
 import { getLogger } from '../../utils/logger.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
+import { CDK_PATH_TAG } from '../import-helpers.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
   ResourceUpdateResult,
+  ResourceImportInput,
+  ResourceImportResult,
 } from '../../types/resource.js';
 
 /**
@@ -451,6 +458,172 @@ export class S3TablesProvider implements ResourceProvider {
         cause
       );
     }
+  }
+
+  // ─── Import dispatch ──────────────────────────────────────────────
+
+  /**
+   * Adopt an existing S3 Tables resource into cdkd state.
+   *
+   *  - **AWS::S3Tables::TableBucket**: tag-based auto-lookup via
+   *    `ListTableBuckets` + `ListTagsForResource(resourceArn)` (tags map).
+   *    Falls back to `--resource <id>=<arn>` or `Properties.TableBucketName`
+   *    (resolved by ARN suffix match against `ListTableBuckets`).
+   *  - **AWS::S3Tables::Table**: tag-based auto-lookup walks every
+   *    table bucket → namespace → table and calls `ListTagsForResource`
+   *    on each table ARN; matches `aws:cdk:path`.
+   *  - **AWS::S3Tables::Namespace**: explicit-override only. Namespaces
+   *    are not taggable in S3 Tables (`ListTagsForResource` accepts only
+   *    table-bucket or table ARNs), so auto-lookup is impossible.
+   */
+  async import(input: ResourceImportInput): Promise<ResourceImportResult | null> {
+    switch (input.resourceType) {
+      case 'AWS::S3Tables::TableBucket':
+        return this.importTableBucket(input);
+      case 'AWS::S3Tables::Namespace':
+        return this.importNamespace(input);
+      case 'AWS::S3Tables::Table':
+        return this.importTable(input);
+      default:
+        return null;
+    }
+  }
+
+  private async importTableBucket(
+    input: ResourceImportInput
+  ): Promise<ResourceImportResult | null> {
+    if (input.knownPhysicalId) {
+      try {
+        await this.getClient().send(
+          new GetTableBucketCommand({ tableBucketARN: input.knownPhysicalId })
+        );
+        return { physicalId: input.knownPhysicalId, attributes: {} };
+      } catch (err) {
+        if (err instanceof NotFoundException) return null;
+        throw err;
+      }
+    }
+
+    const desiredName =
+      typeof input.properties?.['TableBucketName'] === 'string'
+        ? input.properties['TableBucketName']
+        : undefined;
+
+    let token: string | undefined;
+    do {
+      const list = await this.getClient().send(
+        new ListTableBucketsCommand({ ...(token && { continuationToken: token }) })
+      );
+      for (const bucket of list.tableBuckets ?? []) {
+        if (!bucket.arn) continue;
+        if (desiredName && bucket.name === desiredName) {
+          return { physicalId: bucket.arn, attributes: {} };
+        }
+        if (input.cdkPath) {
+          try {
+            const tagsResp = await this.getClient().send(
+              new ListTagsForResourceCommand({ resourceArn: bucket.arn })
+            );
+            if (tagsResp.tags?.[CDK_PATH_TAG] === input.cdkPath) {
+              return { physicalId: bucket.arn, attributes: {} };
+            }
+          } catch (err) {
+            if (err instanceof NotFoundException) continue;
+            throw err;
+          }
+        }
+      }
+      token = list.continuationToken;
+    } while (token);
+    return null;
+  }
+
+  // eslint-disable-next-line @typescript-eslint/require-await -- explicit-override-only intentionally has no AWS calls
+  private async importNamespace(input: ResourceImportInput): Promise<ResourceImportResult | null> {
+    if (input.knownPhysicalId) {
+      return { physicalId: input.knownPhysicalId, attributes: {} };
+    }
+    return null;
+  }
+
+  private async importTable(input: ResourceImportInput): Promise<ResourceImportResult | null> {
+    if (input.knownPhysicalId) {
+      const parts = input.knownPhysicalId.split('|');
+      if (parts.length >= 3) {
+        try {
+          await this.getClient().send(
+            new GetTableCommand({
+              tableBucketARN: parts[0],
+              namespace: parts[1],
+              name: parts[2],
+            })
+          );
+          return { physicalId: input.knownPhysicalId, attributes: {} };
+        } catch (err) {
+          if (err instanceof NotFoundException) return null;
+          throw err;
+        }
+      }
+      return { physicalId: input.knownPhysicalId, attributes: {} };
+    }
+
+    if (!input.cdkPath) return null;
+
+    let bucketToken: string | undefined;
+    do {
+      const buckets = await this.getClient().send(
+        new ListTableBucketsCommand({ ...(bucketToken && { continuationToken: bucketToken }) })
+      );
+      for (const bucket of buckets.tableBuckets ?? []) {
+        if (!bucket.arn) continue;
+
+        let nsToken: string | undefined;
+        do {
+          const namespaces = await this.getClient().send(
+            new ListNamespacesCommand({
+              tableBucketARN: bucket.arn,
+              ...(nsToken && { continuationToken: nsToken }),
+            })
+          );
+          for (const ns of namespaces.namespaces ?? []) {
+            const namespaceName = ns.namespace?.[0];
+            if (!namespaceName) continue;
+
+            let tableToken: string | undefined;
+            do {
+              const tables = await this.getClient().send(
+                new ListTablesCommand({
+                  tableBucketARN: bucket.arn,
+                  namespace: namespaceName,
+                  ...(tableToken && { continuationToken: tableToken }),
+                })
+              );
+              for (const table of tables.tables ?? []) {
+                if (!table.name || !table.tableARN) continue;
+                try {
+                  const tagsResp = await this.getClient().send(
+                    new ListTagsForResourceCommand({ resourceArn: table.tableARN })
+                  );
+                  if (tagsResp.tags?.[CDK_PATH_TAG] === input.cdkPath) {
+                    return {
+                      physicalId: `${bucket.arn}|${namespaceName}|${table.name}`,
+                      attributes: {},
+                    };
+                  }
+                } catch (err) {
+                  if (err instanceof NotFoundException) continue;
+                  throw err;
+                }
+              }
+              tableToken = tables.continuationToken;
+            } while (tableToken);
+          }
+          nsToken = namespaces.continuationToken;
+        } while (nsToken);
+      }
+      bucketToken = buckets.continuationToken;
+    } while (bucketToken);
+    return null;
   }
 
   private async deleteTable(
