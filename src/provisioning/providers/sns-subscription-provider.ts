@@ -12,6 +12,8 @@ import type {
   ResourceProvider,
   ResourceCreateResult,
   ResourceUpdateResult,
+  ResourceImportInput,
+  ResourceImportResult,
 } from '../../types/resource.js';
 
 /**
@@ -188,5 +190,25 @@ export class SNSSubscriptionProvider implements ResourceProvider {
         cause
       );
     }
+  }
+
+  /**
+   * Adopt an existing SNS subscription into cdkd state.
+   *
+   * **Explicit override only.** SNS subscriptions are attached to a parent
+   * topic and identified by their `SubscriptionArn`, but the SubscribeAPI
+   * does not accept tags and the AWS tag APIs do not cover subscriptions
+   * (only Topics are taggable). There is therefore no `aws:cdk:path` tag
+   * we could use for auto-lookup.
+   *
+   * Users adopting an existing subscription should pass
+   * `--resource <logicalId>=<subscriptionArn>`.
+   */
+  // eslint-disable-next-line @typescript-eslint/require-await -- explicit-override-only intentionally has no AWS calls
+  async import(input: ResourceImportInput): Promise<ResourceImportResult | null> {
+    if (input.knownPhysicalId) {
+      return { physicalId: input.knownPhysicalId, attributes: {} };
+    }
+    return null;
   }
 }

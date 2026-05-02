@@ -7,6 +7,8 @@ import type {
   ResourceProvider,
   ResourceCreateResult,
   ResourceUpdateResult,
+  ResourceImportInput,
+  ResourceImportResult,
 } from '../../types/resource.js';
 
 /**
@@ -215,5 +217,25 @@ export class SQSQueuePolicyProvider implements ResourceProvider {
         cause
       );
     }
+  }
+
+  /**
+   * Adopt an existing SQS queue policy into cdkd state.
+   *
+   * **Explicit override only.** A `QueuePolicy` is an attachment applied to
+   * a queue via `SetQueueAttributes(Policy=...)` — it has no standalone
+   * identity and is not independently taggable. There is no `aws:cdk:path`
+   * tag to look up by; only the queue itself is taggable.
+   *
+   * Users adopting an existing queue policy should pass
+   * `--resource <logicalId>=<queueUrl>` (matching the physical id format
+   * returned by `create()`, which uses the first queue URL).
+   */
+  // eslint-disable-next-line @typescript-eslint/require-await -- explicit-override-only intentionally has no AWS calls
+  async import(input: ResourceImportInput): Promise<ResourceImportResult | null> {
+    if (input.knownPhysicalId) {
+      return { physicalId: input.knownPhysicalId, attributes: {} };
+    }
+    return null;
   }
 }

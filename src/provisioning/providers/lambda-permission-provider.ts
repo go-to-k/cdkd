@@ -13,6 +13,8 @@ import type {
   ResourceProvider,
   ResourceCreateResult,
   ResourceUpdateResult,
+  ResourceImportInput,
+  ResourceImportResult,
 } from '../../types/resource.js';
 
 /**
@@ -250,5 +252,26 @@ export class LambdaPermissionProvider implements ResourceProvider {
         cause
       );
     }
+  }
+
+  /**
+   * Adopt an existing Lambda permission into cdkd state.
+   *
+   * **Explicit override only.** A `Lambda::Permission` is a single statement
+   * within a function's resource-based policy added via `AddPermission`. It
+   * has no independent ARN, no taggable identity, and the only way to find
+   * it is to call `GetPolicy` on the parent function and parse the JSON
+   * statements — which the user knows by `StatementId` already.
+   *
+   * Users adopting an existing permission should pass
+   * `--resource <logicalId>=<statementId>` (matching the physical id
+   * format returned by `create()`).
+   */
+  // eslint-disable-next-line @typescript-eslint/require-await -- explicit-override-only intentionally has no AWS calls
+  async import(input: ResourceImportInput): Promise<ResourceImportResult | null> {
+    if (input.knownPhysicalId) {
+      return { physicalId: input.knownPhysicalId, attributes: { Id: input.knownPhysicalId } };
+    }
+    return null;
   }
 }

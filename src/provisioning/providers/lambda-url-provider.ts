@@ -15,6 +15,8 @@ import type {
   ResourceProvider,
   ResourceCreateResult,
   ResourceUpdateResult,
+  ResourceImportInput,
+  ResourceImportResult,
 } from '../../types/resource.js';
 
 /**
@@ -177,6 +179,27 @@ export class LambdaUrlProvider implements ResourceProvider {
         cause
       );
     }
+  }
+
+  /**
+   * Adopt an existing Lambda Function URL into cdkd state.
+   *
+   * **Explicit override only.** A `Lambda::Url` is a configuration attached
+   * to a Lambda function — it has no standalone identity (the natural
+   * physical id is the parent function's ARN/name) and `FunctionUrlConfig`
+   * is not independently taggable. There is no `aws:cdk:path` tag to look
+   * up by; only the parent function carries the CDK path tag.
+   *
+   * Users adopting an existing function URL should pass
+   * `--resource <logicalId>=<functionArnOrName>` (matching the physical id
+   * format returned by `create()`).
+   */
+  // eslint-disable-next-line @typescript-eslint/require-await -- explicit-override-only intentionally has no AWS calls
+  async import(input: ResourceImportInput): Promise<ResourceImportResult | null> {
+    if (input.knownPhysicalId) {
+      return { physicalId: input.knownPhysicalId, attributes: {} };
+    }
+    return null;
   }
 
   /**

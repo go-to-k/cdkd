@@ -12,6 +12,8 @@ import type {
   ResourceProvider,
   ResourceCreateResult,
   ResourceUpdateResult,
+  ResourceImportInput,
+  ResourceImportResult,
 } from '../../types/resource.js';
 
 /**
@@ -218,5 +220,25 @@ export class S3BucketPolicyProvider implements ResourceProvider {
         cause
       );
     }
+  }
+
+  /**
+   * Adopt an existing S3 bucket policy into cdkd state.
+   *
+   * **Explicit override only.** An `S3::BucketPolicy` is a policy document
+   * attached to a bucket via `PutBucketPolicy` — it has no standalone
+   * identity and is not independently taggable. There is no `aws:cdk:path`
+   * tag to look up by; only the bucket itself is taggable.
+   *
+   * Users adopting an existing bucket policy should pass
+   * `--resource <logicalId>=<bucketName>` (matching the physical id
+   * format returned by `create()`).
+   */
+  // eslint-disable-next-line @typescript-eslint/require-await -- explicit-override-only intentionally has no AWS calls
+  async import(input: ResourceImportInput): Promise<ResourceImportResult | null> {
+    if (input.knownPhysicalId) {
+      return { physicalId: input.knownPhysicalId, attributes: {} };
+    }
+    return null;
   }
 }

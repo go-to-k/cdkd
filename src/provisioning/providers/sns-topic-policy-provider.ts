@@ -7,6 +7,8 @@ import type {
   ResourceProvider,
   ResourceCreateResult,
   ResourceUpdateResult,
+  ResourceImportInput,
+  ResourceImportResult,
 } from '../../types/resource.js';
 
 /**
@@ -201,6 +203,27 @@ export class SNSTopicPolicyProvider implements ResourceProvider {
     }
 
     this.logger.debug(`Successfully deleted SNS topic policy ${logicalId}`);
+  }
+
+  /**
+   * Adopt an existing SNS topic policy into cdkd state.
+   *
+   * **Explicit override only.** A `TopicPolicy` is an attachment to one or
+   * more SNS topics applied via `SetTopicAttributes(AttributeName=Policy)` —
+   * it has no standalone identity and is not independently taggable. There
+   * is no `aws:cdk:path` tag to look up by, and the policy has no name/ARN
+   * of its own.
+   *
+   * Users adopting an existing topic policy should pass
+   * `--resource <logicalId>=<comma-joined-topic-ARNs>` (matching the
+   * physical id format returned by `create()`).
+   */
+  // eslint-disable-next-line @typescript-eslint/require-await -- explicit-override-only intentionally has no AWS calls
+  async import(input: ResourceImportInput): Promise<ResourceImportResult | null> {
+    if (input.knownPhysicalId) {
+      return { physicalId: input.knownPhysicalId, attributes: {} };
+    }
+    return null;
   }
 
   /**
