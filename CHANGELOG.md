@@ -1,3 +1,11 @@
+# [0.26.0](https://github.com/go-to-k/cdkd/compare/v0.25.0...v0.26.0) (2026-05-02)
+
+
+### Features
+
+* **deploy,destroy:** per-resource-type timeout override ([#91](https://github.com/go-to-k/cdkd/issues/91) v2) ([#101](https://github.com/go-to-k/cdkd/issues/101)) ([9d342ac](https://github.com/go-to-k/cdkd/commit/9d342ac380f50d59c71b3a8cd6edd5f56eb3bcbb))
+* **import:** add --record-resource-mapping <file> for cdk import parity ([#102](https://github.com/go-to-k/cdkd/issues/102)) ([31652c8](https://github.com/go-to-k/cdkd/commit/31652c82521ba7a1118ae5b1d5170f3ffc900bc9))
+
 # [0.25.0](https://github.com/go-to-k/cdkd/compare/v0.24.0...v0.25.0) (2026-05-02)
 
 
