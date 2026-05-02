@@ -721,12 +721,14 @@ async import(input: ResourceImportInput): Promise<ResourceImportResult | null> {
 
 Reference implementations to copy from:
 
-- **Tag[] array, name field present**: `s3-bucket-provider.ts`, `iam-role-provider.ts`, `dynamodb-table-provider.ts`
-- **Tag map (`Record<string,string>`)**: `lambda-function-provider.ts`, `sqs-queue-provider.ts`
-- **No name field, ARN required for tag lookup**: `cloudfront-distribution-provider.ts`, `cognito-provider.ts`
+- **Tag[] array, name field present**: `s3-bucket-provider.ts`, `iam-role-provider.ts`, `dynamodb-table-provider.ts`, `kinesis-provider.ts`, `firehose-provider.ts`, `eventbridge-rule-provider.ts`, `wafv2-provider.ts`, `route53-provider.ts`, `elasticache-provider.ts`
+- **Tag map (`Record<string,string>`)**: `lambda-function-provider.ts`, `sqs-queue-provider.ts`, `glue-provider.ts` (via `GetTags(ResourceArn)`)
+- **Tags inline on the list response (no extra `ListTags` round-trip)**: `efs-provider.ts` (`DescribeFileSystems` / `DescribeAccessPoints` return `Tags` on each item)
+- **No name field, ARN required for tag lookup**: `cloudfront-distribution-provider.ts`, `cognito-provider.ts`, `stepfunctions-provider.ts`
+- **Batch tag fetch (single `Describe*` call for many ARNs)**: `elbv2-provider.ts` uses `DescribeTags(ResourceArns: [...])` (up to 20 per call) on top of `DescribeLoadBalancers` / `DescribeTargetGroups`
 - **Filter-based one-shot lookup (no per-item ListTags)**: `ec2-provider.ts` uses `Filters: [{Name: 'tag:aws:cdk:path', Values: [path]}]` directly on `Describe*`
-- **Lowercase key/value tag shape**: `ecs-provider.ts`, `codebuild-provider.ts` (the few services that use `key`/`value` instead of `Key`/`Value`)
-- **Explicit-override only** (auto lookup is impractical): `apigateway-provider.ts`, `apigatewayv2-provider.ts`, `appsync-provider.ts` for sub-resources scoped under a parent RestApi / HttpApi / GraphqlApi
+- **Lowercase `key`/`value` tag shape**: `ecs-provider.ts`, `codebuild-provider.ts`, `stepfunctions-provider.ts` (the few services that use lowercase tag keys — `matchesCdkPath` from `import-helpers.ts` does NOT apply; match the lowercase fields manually)
+- **Explicit-override only** (auto lookup is impractical or the resource is not taggable): `apigateway-provider.ts`, `apigatewayv2-provider.ts`, `appsync-provider.ts` for sub-resources scoped under a parent RestApi / HttpApi / GraphqlApi; `route53-provider.ts` for RecordSets (not taggable); `efs-provider.ts` for MountTargets (not taggable); `elbv2-provider.ts` for Listeners (no taggable identity tying them to a CDK construct)
 
 Notes:
 

@@ -5,7 +5,9 @@ import {
   RemoveTargetsCommand,
   DeleteRuleCommand,
   DescribeRuleCommand,
+  ListRulesCommand,
   ListTargetsByRuleCommand,
+  ListTagsForResourceCommand,
   TagResourceCommand,
   UntagResourceCommand,
   ResourceNotFoundException,
@@ -16,10 +18,13 @@ import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { generateResourceName } from '../resource-name.js';
+import { matchesCdkPath } from '../import-helpers.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
   ResourceUpdateResult,
+  ResourceImportInput,
+  ResourceImportResult,
 } from '../../types/resource.js';
 
 /**
@@ -388,6 +393,85 @@ export class EventBridgeRuleProvider implements ResourceProvider {
     }
 
     throw new Error(`Unsupported attribute: ${attributeName} for AWS::Events::Rule`);
+  }
+
+  /**
+   * Adopt an existing EventBridge rule into cdkd state.
+   *
+   * Lookup order:
+   *  1. `--resource <id>=<arnOrName>` override → verify with
+   *     `DescribeRule` (scoped to the same `EventBusName` declared in
+   *     the template, if any). The override is honored as-is so users
+   *     can pass either the ARN (cdkd's standard physicalId form for
+   *     this provider) or just the rule name.
+   *  2. If the template carries `Properties.Name` use that as the rule
+   *     name lookup, then verify with `DescribeRule` and return the
+   *     rule's ARN as physicalId.
+   *  3. Walk `ListRules(EventBusName?)` and match `aws:cdk:path` via
+   *     `ListTagsForResource(ResourceARN=rule.Arn)`. Returns the rule
+   *     ARN as physicalId — same shape that `create` returns.
+   *
+   * EventBridge tags use the standard `Tag[]` array shape
+   * (`Key`/`Value`).
+   */
+  async import(input: ResourceImportInput): Promise<ResourceImportResult | null> {
+    const eventBusName = input.properties['EventBusName'] as string | undefined;
+    if (input.knownPhysicalId) {
+      try {
+        const ruleName = this.extractRuleNameFromArn(input.knownPhysicalId);
+        const resp = await this.eventBridgeClient.send(
+          new DescribeRuleCommand({
+            Name: ruleName,
+            ...(eventBusName && { EventBusName: eventBusName }),
+          })
+        );
+        // Return the ARN form as physicalId (matches `create`).
+        return { physicalId: resp.Arn ?? input.knownPhysicalId, attributes: {} };
+      } catch (err) {
+        if (err instanceof ResourceNotFoundException) return null;
+        throw err;
+      }
+    }
+
+    const templateName = input.properties['Name'] as string | undefined;
+    if (templateName) {
+      try {
+        const resp = await this.eventBridgeClient.send(
+          new DescribeRuleCommand({
+            Name: templateName,
+            ...(eventBusName && { EventBusName: eventBusName }),
+          })
+        );
+        if (resp.Arn) return { physicalId: resp.Arn, attributes: {} };
+        return null;
+      } catch (err) {
+        if (err instanceof ResourceNotFoundException) return null;
+        throw err;
+      }
+    }
+
+    if (!input.cdkPath) return null;
+
+    let nextToken: string | undefined;
+    do {
+      const list = await this.eventBridgeClient.send(
+        new ListRulesCommand({
+          ...(eventBusName && { EventBusName: eventBusName }),
+          ...(nextToken && { NextToken: nextToken }),
+        })
+      );
+      for (const rule of list.Rules ?? []) {
+        if (!rule.Arn) continue;
+        const tagsResp = await this.eventBridgeClient.send(
+          new ListTagsForResourceCommand({ ResourceARN: rule.Arn })
+        );
+        if (matchesCdkPath(tagsResp.Tags, input.cdkPath)) {
+          return { physicalId: rule.Arn, attributes: {} };
+        }
+      }
+      nextToken = list.NextToken;
+    } while (nextToken);
+    return null;
   }
 
   /**

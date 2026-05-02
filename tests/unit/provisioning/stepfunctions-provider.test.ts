@@ -351,4 +351,69 @@ describe('StepFunctionsProvider', () => {
       ).rejects.toThrow('Failed to delete Step Functions state machine MyStateMachine');
     });
   });
+
+  describe('import', () => {
+    function makeInput(overrides: Record<string, unknown> = {}) {
+      return {
+        logicalId: 'MyStateMachine',
+        resourceType: 'AWS::StepFunctions::StateMachine',
+        cdkPath: 'MyStack/MyStateMachine',
+        stackName: 'MyStack',
+        region: 'us-east-1',
+        properties: {},
+        ...overrides,
+      };
+    }
+
+    it('explicit override: DescribeStateMachine succeeds returns ARN', async () => {
+      const arn = 'arn:aws:states:us-east-1:123456789012:stateMachine:adopted';
+      mockSend.mockResolvedValueOnce({ stateMachineArn: arn, name: 'adopted' });
+
+      const result = await provider.import(makeInput({ knownPhysicalId: arn }));
+
+      expect(result).toEqual({ physicalId: arn, attributes: {} });
+      const call = mockSend.mock.calls[0][0];
+      expect(call.constructor.name).toBe('DescribeStateMachineCommand');
+      expect(call.input.stateMachineArn).toBe(arn);
+    });
+
+    it('tag-based lookup: matches aws:cdk:path on lowercase key/value tags', async () => {
+      const arn1 = 'arn:aws:states:us-east-1:123456789012:stateMachine:other';
+      const arn2 = 'arn:aws:states:us-east-1:123456789012:stateMachine:target';
+
+      // ListStateMachines
+      mockSend.mockResolvedValueOnce({
+        stateMachines: [
+          { stateMachineArn: arn1, name: 'other' },
+          { stateMachineArn: arn2, name: 'target' },
+        ],
+      });
+      // ListTagsForResource for arn1
+      mockSend.mockResolvedValueOnce({
+        tags: [{ key: 'aws:cdk:path', value: 'OtherStack/Other' }],
+      });
+      // ListTagsForResource for arn2
+      mockSend.mockResolvedValueOnce({
+        tags: [{ key: 'aws:cdk:path', value: 'MyStack/MyStateMachine' }],
+      });
+
+      const result = await provider.import(makeInput());
+
+      expect(result).toEqual({ physicalId: arn2, attributes: {} });
+    });
+
+    it('returns null (no throw) when no state machine matches', async () => {
+      mockSend.mockResolvedValueOnce({
+        stateMachines: [
+          { stateMachineArn: 'arn:aws:states:us-east-1:1:stateMachine:a', name: 'a' },
+        ],
+      });
+      mockSend.mockResolvedValueOnce({
+        tags: [{ key: 'aws:cdk:path', value: 'OtherStack/Other' }],
+      });
+
+      const result = await provider.import(makeInput());
+      expect(result).toBeNull();
+    });
+  });
 });

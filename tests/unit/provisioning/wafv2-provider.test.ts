@@ -285,4 +285,71 @@ describe('WAFv2WebACLProvider', () => {
       expect(mockSend).toHaveBeenCalledTimes(1);
     });
   });
+
+  describe('import', () => {
+    function makeInput(overrides: Record<string, unknown> = {}) {
+      return {
+        logicalId: 'MyWebACL',
+        resourceType: 'AWS::WAFv2::WebACL',
+        cdkPath: 'MyStack/MyWebACL',
+        stackName: 'MyStack',
+        region: 'us-east-1',
+        properties: { Scope: 'REGIONAL' },
+        ...overrides,
+      };
+    }
+
+    it('explicit override: GetWebACL parses ARN and returns it as physicalId', async () => {
+      mockSend.mockResolvedValueOnce({ WebACL: { ARN: TEST_ARN }, LockToken: 'lock' });
+
+      const result = await provider.import(makeInput({ knownPhysicalId: TEST_ARN }));
+
+      expect(result).toEqual({ physicalId: TEST_ARN, attributes: {} });
+      const call = mockSend.mock.calls[0][0];
+      expect(call.constructor.name).toBe('GetWebACLCommand');
+      expect(call.input).toEqual({ Id: TEST_ID, Name: 'my-acl', Scope: 'REGIONAL' });
+    });
+
+    it('tag-based lookup: matches aws:cdk:path via ListTagsForResource on TagInfoForResource.TagList', async () => {
+      const otherArn = 'arn:aws:wafv2:us-east-1:123456789012:regional/webacl/other/zzz';
+      // ListWebACLs
+      mockSend.mockResolvedValueOnce({
+        WebACLs: [
+          { Id: 'zzz', Name: 'other', ARN: otherArn },
+          { Id: TEST_ID, Name: 'my-acl', ARN: TEST_ARN },
+        ],
+      });
+      // ListTagsForResource for otherArn
+      mockSend.mockResolvedValueOnce({
+        TagInfoForResource: {
+          ResourceARN: otherArn,
+          TagList: [{ Key: 'aws:cdk:path', Value: 'OtherStack/Other' }],
+        },
+      });
+      // ListTagsForResource for TEST_ARN
+      mockSend.mockResolvedValueOnce({
+        TagInfoForResource: {
+          ResourceARN: TEST_ARN,
+          TagList: [{ Key: 'aws:cdk:path', Value: 'MyStack/MyWebACL' }],
+        },
+      });
+
+      const result = await provider.import(makeInput());
+      expect(result).toEqual({ physicalId: TEST_ARN, attributes: {} });
+    });
+
+    it('returns null when nothing matches', async () => {
+      mockSend.mockResolvedValueOnce({
+        WebACLs: [{ Id: 'a', Name: 'a', ARN: 'arn:aws:wafv2:us-east-1:1:regional/webacl/a/a' }],
+      });
+      mockSend.mockResolvedValueOnce({
+        TagInfoForResource: {
+          TagList: [{ Key: 'aws:cdk:path', Value: 'OtherStack/Other' }],
+        },
+      });
+
+      const result = await provider.import(makeInput());
+      expect(result).toBeNull();
+    });
+  });
 });

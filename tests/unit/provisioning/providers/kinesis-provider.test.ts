@@ -252,4 +252,55 @@ describe('KinesisStreamProvider', () => {
       });
     });
   });
+
+  describe('import', () => {
+    function makeInput(overrides: Record<string, unknown> = {}) {
+      return {
+        logicalId: 'MyStream',
+        resourceType: 'AWS::Kinesis::Stream',
+        cdkPath: 'MyStack/MyStream',
+        stackName: 'MyStack',
+        region: 'us-east-1',
+        properties: {},
+        ...overrides,
+      };
+    }
+
+    it('explicit override: DescribeStream verifies and returns the stream name', async () => {
+      mockSend.mockResolvedValueOnce({ StreamDescription: { StreamName: 'adopted' } });
+
+      const result = await provider.import(makeInput({ knownPhysicalId: 'adopted' }));
+
+      expect(result).toEqual({ physicalId: 'adopted', attributes: {} });
+      const call = mockSend.mock.calls[0][0];
+      expect(call.constructor.name).toBe('DescribeStreamCommand');
+      expect(call.input).toEqual({ StreamName: 'adopted' });
+    });
+
+    it('tag-based lookup: matches aws:cdk:path on Tag[] array', async () => {
+      // ListStreams
+      mockSend.mockResolvedValueOnce({ StreamNames: ['other', 'target'], HasMoreStreams: false });
+      // ListTagsForStream(other)
+      mockSend.mockResolvedValueOnce({
+        Tags: [{ Key: 'aws:cdk:path', Value: 'OtherStack/Other' }],
+      });
+      // ListTagsForStream(target)
+      mockSend.mockResolvedValueOnce({
+        Tags: [{ Key: 'aws:cdk:path', Value: 'MyStack/MyStream' }],
+      });
+
+      const result = await provider.import(makeInput());
+      expect(result).toEqual({ physicalId: 'target', attributes: {} });
+    });
+
+    it('returns null when no stream matches', async () => {
+      mockSend.mockResolvedValueOnce({ StreamNames: ['only'], HasMoreStreams: false });
+      mockSend.mockResolvedValueOnce({
+        Tags: [{ Key: 'aws:cdk:path', Value: 'OtherStack/Other' }],
+      });
+
+      const result = await provider.import(makeInput());
+      expect(result).toBeNull();
+    });
+  });
 });

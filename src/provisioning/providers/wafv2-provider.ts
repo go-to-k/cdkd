@@ -4,6 +4,8 @@ import {
   UpdateWebACLCommand,
   DeleteWebACLCommand,
   GetWebACLCommand,
+  ListWebACLsCommand,
+  ListTagsForResourceCommand,
   WAFNonexistentItemException,
   type Tag,
   type Rule,
@@ -19,10 +21,13 @@ import { getLogger } from '../../utils/logger.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { generateResourceName } from '../resource-name.js';
+import { matchesCdkPath } from '../import-helpers.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
   ResourceUpdateResult,
+  ResourceImportInput,
+  ResourceImportResult,
 } from '../../types/resource.js';
 
 /**
@@ -303,5 +308,54 @@ export class WAFv2WebACLProvider implements ResourceProvider {
         cause
       );
     }
+  }
+
+  /**
+   * Adopt an existing WAFv2 WebACL into cdkd state.
+   *
+   * Lookup order:
+   *  1. `--resource <id>=<arn>` override → verify with `GetWebACL` (parses
+   *     Name/Id/Scope back out of the ARN).
+   *  2. Walk `ListWebACLs(Scope)` → match `aws:cdk:path` via
+   *     `ListTagsForResource(ResourceARN)` (returns
+   *     `TagInfoForResource.TagList`, standard `Key`/`Value` shape).
+   *
+   * `Scope` is required by `ListWebACLs` — read from
+   * `Properties.Scope` (`REGIONAL` is the default).
+   */
+  async import(input: ResourceImportInput): Promise<ResourceImportResult | null> {
+    if (input.knownPhysicalId) {
+      try {
+        const { id, name, scope } = parseWebACLArn(input.knownPhysicalId);
+        await this.getClient().send(new GetWebACLCommand({ Id: id, Name: name, Scope: scope }));
+        return { physicalId: input.knownPhysicalId, attributes: {} };
+      } catch (err) {
+        if (err instanceof WAFNonexistentItemException) return null;
+        throw err;
+      }
+    }
+
+    if (!input.cdkPath) return null;
+
+    const scope = ((input.properties['Scope'] as string | undefined) || 'REGIONAL') as Scope;
+
+    let nextMarker: string | undefined;
+    do {
+      const list = await this.getClient().send(
+        new ListWebACLsCommand({ Scope: scope, ...(nextMarker && { NextMarker: nextMarker }) })
+      );
+      for (const item of list.WebACLs ?? []) {
+        if (!item.ARN) continue;
+        const tagsResp = await this.getClient().send(
+          new ListTagsForResourceCommand({ ResourceARN: item.ARN })
+        );
+        const tagList = tagsResp.TagInfoForResource?.TagList;
+        if (matchesCdkPath(tagList, input.cdkPath)) {
+          return { physicalId: item.ARN, attributes: {} };
+        }
+      }
+      nextMarker = list.NextMarker;
+    } while (nextMarker);
+    return null;
   }
 }

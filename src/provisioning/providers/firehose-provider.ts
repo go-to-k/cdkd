@@ -2,6 +2,9 @@ import {
   FirehoseClient,
   CreateDeliveryStreamCommand,
   DeleteDeliveryStreamCommand,
+  DescribeDeliveryStreamCommand,
+  ListDeliveryStreamsCommand,
+  ListTagsForDeliveryStreamCommand,
   ResourceNotFoundException,
   type CreateDeliveryStreamCommandInput,
   type S3DestinationConfiguration,
@@ -18,10 +21,13 @@ import {
 import { getLogger } from '../../utils/logger.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
+import { matchesCdkPath, resolveExplicitPhysicalId } from '../import-helpers.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
   ResourceUpdateResult,
+  ResourceImportInput,
+  ResourceImportResult,
 } from '../../types/resource.js';
 
 /**
@@ -562,11 +568,65 @@ export class FirehoseProvider implements ResourceProvider {
   }
 
   /**
+   * Adopt an existing Kinesis Firehose delivery stream into cdkd state.
+   *
+   * Lookup order:
+   *  1. `--resource <id>=<name>` override or `Properties.DeliveryStreamName`
+   *     → verify with `DescribeDeliveryStream`.
+   *  2. Walk `ListDeliveryStreams` (paged via `ExclusiveStartDeliveryStreamName`)
+   *     and match the `aws:cdk:path` tag via
+   *     `ListTagsForDeliveryStream(DeliveryStreamName)`.
+   *
+   * Firehose tags use the standard `Tag[]` array shape (`Key`/`Value`).
+   */
+  async import(input: ResourceImportInput): Promise<ResourceImportResult | null> {
+    const explicit = resolveExplicitPhysicalId(input, 'DeliveryStreamName');
+    if (explicit) {
+      try {
+        await this.getClient().send(
+          new DescribeDeliveryStreamCommand({ DeliveryStreamName: explicit })
+        );
+        return { physicalId: explicit, attributes: {} };
+      } catch (err) {
+        if (err instanceof ResourceNotFoundException) return null;
+        throw err;
+      }
+    }
+
+    if (!input.cdkPath) return null;
+
+    let exclusiveStartDeliveryStreamName: string | undefined;
+    // ListDeliveryStreams paginates via `ExclusiveStartDeliveryStreamName`
+    // (last name from previous page) when `HasMoreDeliveryStreams` is true.
+    // eslint-disable-next-line no-constant-condition
+    while (true) {
+      const list = await this.getClient().send(
+        new ListDeliveryStreamsCommand({
+          ...(exclusiveStartDeliveryStreamName && {
+            ExclusiveStartDeliveryStreamName: exclusiveStartDeliveryStreamName,
+          }),
+        })
+      );
+      const names = list.DeliveryStreamNames ?? [];
+      for (const name of names) {
+        const tagsResp = await this.getClient().send(
+          new ListTagsForDeliveryStreamCommand({ DeliveryStreamName: name })
+        );
+        if (matchesCdkPath(tagsResp.Tags, input.cdkPath)) {
+          return { physicalId: name, attributes: {} };
+        }
+      }
+      if (!list.HasMoreDeliveryStreams || names.length === 0) break;
+      exclusiveStartDeliveryStreamName = names[names.length - 1];
+    }
+    return null;
+  }
+
+  /**
    * Wait for a delivery stream to become ACTIVE.
    * Firehose CreateDeliveryStream returns immediately while the stream is still CREATING.
    */
   private async waitForActive(streamName: string, logicalId: string): Promise<void> {
-    const { DescribeDeliveryStreamCommand } = await import('@aws-sdk/client-firehose');
     const maxAttempts = 30;
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       const resp = await this.getClient().send(

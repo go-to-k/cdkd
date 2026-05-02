@@ -220,4 +220,60 @@ describe('FirehoseProvider', () => {
       expect(mockSend).toHaveBeenCalledTimes(1);
     });
   });
+
+  describe('import', () => {
+    function makeInput(overrides: Record<string, unknown> = {}) {
+      return {
+        logicalId: 'MyDeliveryStream',
+        resourceType: 'AWS::KinesisFirehose::DeliveryStream',
+        cdkPath: 'MyStack/MyDeliveryStream',
+        stackName: 'MyStack',
+        region: 'us-east-1',
+        properties: {},
+        ...overrides,
+      };
+    }
+
+    it('explicit override: DescribeDeliveryStream verifies and returns the name', async () => {
+      mockSend.mockResolvedValueOnce({
+        DeliveryStreamDescription: { DeliveryStreamName: 'adopted' },
+      });
+
+      const result = await provider.import(makeInput({ knownPhysicalId: 'adopted' }));
+
+      expect(result).toEqual({ physicalId: 'adopted', attributes: {} });
+      const call = mockSend.mock.calls[0][0];
+      expect(call.constructor.name).toBe('DescribeDeliveryStreamCommand');
+      expect(call.input).toEqual({ DeliveryStreamName: 'adopted' });
+    });
+
+    it('tag-based lookup: matches aws:cdk:path via ListTagsForDeliveryStream', async () => {
+      mockSend.mockResolvedValueOnce({
+        DeliveryStreamNames: ['other', 'target'],
+        HasMoreDeliveryStreams: false,
+      });
+      mockSend.mockResolvedValueOnce({
+        Tags: [{ Key: 'aws:cdk:path', Value: 'OtherStack/Other' }],
+      });
+      mockSend.mockResolvedValueOnce({
+        Tags: [{ Key: 'aws:cdk:path', Value: 'MyStack/MyDeliveryStream' }],
+      });
+
+      const result = await provider.import(makeInput());
+      expect(result).toEqual({ physicalId: 'target', attributes: {} });
+    });
+
+    it('returns null when no delivery stream matches', async () => {
+      mockSend.mockResolvedValueOnce({
+        DeliveryStreamNames: ['only'],
+        HasMoreDeliveryStreams: false,
+      });
+      mockSend.mockResolvedValueOnce({
+        Tags: [{ Key: 'aws:cdk:path', Value: 'OtherStack/Other' }],
+      });
+
+      const result = await provider.import(makeInput());
+      expect(result).toBeNull();
+    });
+  });
 });

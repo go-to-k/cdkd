@@ -430,4 +430,66 @@ describe('EventBridgeRuleProvider', () => {
       ).rejects.toThrow('Unsupported attribute: UnsupportedAttr');
     });
   });
+
+  describe('import', () => {
+    function makeInput(overrides: Record<string, unknown> = {}) {
+      return {
+        logicalId: 'MyRule',
+        resourceType: 'AWS::Events::Rule',
+        cdkPath: 'MyStack/MyRule',
+        stackName: 'MyStack',
+        region: 'us-east-1',
+        properties: {},
+        ...overrides,
+      };
+    }
+
+    it('explicit override (ARN): DescribeRule returns the rule ARN', async () => {
+      const arn = 'arn:aws:events:us-east-1:123456789012:rule/adopted';
+      mockSend.mockResolvedValueOnce({ Arn: arn, Name: 'adopted' });
+
+      const result = await provider.import(makeInput({ knownPhysicalId: arn }));
+
+      expect(result).toEqual({ physicalId: arn, attributes: {} });
+      const call = mockSend.mock.calls[0][0];
+      expect(call.constructor.name).toBe('DescribeRuleCommand');
+      expect(call.input).toEqual({ Name: 'adopted' });
+    });
+
+    it('tag-based lookup: matches aws:cdk:path via ListRules + ListTagsForResource', async () => {
+      const otherArn = 'arn:aws:events:us-east-1:123456789012:rule/other';
+      const targetArn = 'arn:aws:events:us-east-1:123456789012:rule/target';
+      // ListRules
+      mockSend.mockResolvedValueOnce({
+        Rules: [
+          { Name: 'other', Arn: otherArn },
+          { Name: 'target', Arn: targetArn },
+        ],
+      });
+      // ListTagsForResource for otherArn
+      mockSend.mockResolvedValueOnce({
+        Tags: [{ Key: 'aws:cdk:path', Value: 'OtherStack/Other' }],
+      });
+      // ListTagsForResource for targetArn
+      mockSend.mockResolvedValueOnce({
+        Tags: [{ Key: 'aws:cdk:path', Value: 'MyStack/MyRule' }],
+      });
+
+      const result = await provider.import(makeInput());
+      expect(result).toEqual({ physicalId: targetArn, attributes: {} });
+    });
+
+    it('returns null when no rule matches', async () => {
+      // Note: no Properties.Name, so the template-name branch is skipped.
+      mockSend.mockResolvedValueOnce({
+        Rules: [{ Name: 'only', Arn: 'arn:aws:events:us-east-1:1:rule/only' }],
+      });
+      mockSend.mockResolvedValueOnce({
+        Tags: [{ Key: 'aws:cdk:path', Value: 'OtherStack/Other' }],
+      });
+
+      const result = await provider.import(makeInput());
+      expect(result).toBeNull();
+    });
+  });
 });

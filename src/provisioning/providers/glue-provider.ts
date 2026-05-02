@@ -5,6 +5,11 @@ import {
   CreateTableCommand,
   UpdateTableCommand,
   DeleteTableCommand,
+  GetDatabaseCommand,
+  GetDatabasesCommand,
+  GetTableCommand,
+  GetTablesCommand,
+  GetTagsCommand,
   EntityNotFoundException,
   type TableInput,
   type StorageDescriptor,
@@ -12,13 +17,17 @@ import {
   type Order,
   type SerDeInfo,
 } from '@aws-sdk/client-glue';
+import { STSClient, GetCallerIdentityCommand } from '@aws-sdk/client-sts';
 import { getLogger } from '../../utils/logger.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
+import { CDK_PATH_TAG } from '../import-helpers.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
   ResourceUpdateResult,
+  ResourceImportInput,
+  ResourceImportResult,
 } from '../../types/resource.js';
 
 /**
@@ -33,6 +42,8 @@ import type {
  */
 export class GlueProvider implements ResourceProvider {
   private client: GlueClient | undefined;
+  private stsClient: STSClient | undefined;
+  private cachedAccountId: string | undefined;
   private readonly providerRegion = process.env['AWS_REGION'];
   private logger = getLogger().child('GlueProvider');
 
@@ -507,5 +518,181 @@ export class GlueProvider implements ResourceProvider {
     }
 
     return result;
+  }
+
+  /**
+   * Adopt an existing Glue Database or Table into cdkd state.
+   *
+   * Lookup order (per type):
+   *  1. Explicit override / template name → verify with `GetDatabase`
+   *     or `GetTable`.
+   *  2. Walk `GetDatabases` / `GetTables` paginators and match the
+   *     `aws:cdk:path` tag via `GetTags(ResourceArn)`. Glue tags are
+   *     a `Record<string,string>` map (not a `Tag[]` array), so the
+   *     match is `tags?.[CDK_PATH_TAG] === input.cdkPath`.
+   *
+   * Glue list APIs return only names — ARNs are constructed locally
+   * for the per-item GetTags call.
+   */
+  async import(input: ResourceImportInput): Promise<ResourceImportResult | null> {
+    switch (input.resourceType) {
+      case 'AWS::Glue::Database':
+        return this.importDatabase(input);
+      case 'AWS::Glue::Table':
+        return this.importTable(input);
+      default:
+        return null;
+    }
+  }
+
+  private async importDatabase(input: ResourceImportInput): Promise<ResourceImportResult | null> {
+    const explicitName =
+      input.knownPhysicalId ??
+      ((input.properties['DatabaseInput'] as Record<string, unknown> | undefined)?.['Name'] as
+        | string
+        | undefined);
+    const catalogId = input.properties['CatalogId'] as string | undefined;
+
+    if (explicitName) {
+      try {
+        await this.getClient().send(
+          new GetDatabaseCommand({ Name: explicitName, ...(catalogId && { CatalogId: catalogId }) })
+        );
+        return { physicalId: explicitName, attributes: {} };
+      } catch (err) {
+        if (err instanceof EntityNotFoundException) return null;
+        throw err;
+      }
+    }
+
+    if (!input.cdkPath) return null;
+
+    let nextToken: string | undefined;
+    do {
+      const list = await this.getClient().send(
+        new GetDatabasesCommand({
+          ...(nextToken && { NextToken: nextToken }),
+          ...(catalogId && { CatalogId: catalogId }),
+        })
+      );
+      for (const db of list.DatabaseList ?? []) {
+        if (!db.Name) continue;
+        const arn = await this.buildDatabaseArn(db.Name, db.CatalogId);
+        if (await this.tagsMatchCdkPath(arn, input.cdkPath)) {
+          return { physicalId: db.Name, attributes: {} };
+        }
+      }
+      nextToken = list.NextToken;
+    } while (nextToken);
+    return null;
+  }
+
+  private async importTable(input: ResourceImportInput): Promise<ResourceImportResult | null> {
+    const databaseName = input.properties['DatabaseName'] as string | undefined;
+    const tableInput = input.properties['TableInput'] as Record<string, unknown> | undefined;
+    const templateTableName = tableInput?.['Name'] as string | undefined;
+    const catalogId = input.properties['CatalogId'] as string | undefined;
+
+    // Override or template name. Glue Table physicalId in cdkd is
+    // `<databaseName>|<tableName>`.
+    if (input.knownPhysicalId) {
+      const [dbName, tName] = input.knownPhysicalId.split('|');
+      if (!dbName || !tName) return null;
+      try {
+        await this.getClient().send(
+          new GetTableCommand({
+            DatabaseName: dbName,
+            Name: tName,
+            ...(catalogId && { CatalogId: catalogId }),
+          })
+        );
+        return { physicalId: input.knownPhysicalId, attributes: {} };
+      } catch (err) {
+        if (err instanceof EntityNotFoundException) return null;
+        throw err;
+      }
+    }
+
+    if (databaseName && templateTableName) {
+      try {
+        await this.getClient().send(
+          new GetTableCommand({
+            DatabaseName: databaseName,
+            Name: templateTableName,
+            ...(catalogId && { CatalogId: catalogId }),
+          })
+        );
+        return { physicalId: `${databaseName}|${templateTableName}`, attributes: {} };
+      } catch (err) {
+        if (err instanceof EntityNotFoundException) return null;
+        throw err;
+      }
+    }
+
+    if (!input.cdkPath || !databaseName) return null;
+
+    let nextToken: string | undefined;
+    do {
+      const list = await this.getClient().send(
+        new GetTablesCommand({
+          DatabaseName: databaseName,
+          ...(nextToken && { NextToken: nextToken }),
+          ...(catalogId && { CatalogId: catalogId }),
+        })
+      );
+      for (const t of list.TableList ?? []) {
+        if (!t.Name) continue;
+        const arn = await this.buildTableArn(databaseName, t.Name, catalogId);
+        if (await this.tagsMatchCdkPath(arn, input.cdkPath)) {
+          return { physicalId: `${databaseName}|${t.Name}`, attributes: {} };
+        }
+      }
+      nextToken = list.NextToken;
+    } while (nextToken);
+    return null;
+  }
+
+  private async tagsMatchCdkPath(arn: string, cdkPath: string): Promise<boolean> {
+    try {
+      const resp = await this.getClient().send(new GetTagsCommand({ ResourceArn: arn }));
+      return resp.Tags?.[CDK_PATH_TAG] === cdkPath;
+    } catch (err) {
+      if (err instanceof EntityNotFoundException) return false;
+      throw err;
+    }
+  }
+
+  private async buildDatabaseArn(databaseName: string, catalogId?: string): Promise<string> {
+    const region = await this.getRegion();
+    const account = catalogId ?? (await this.getAccountId());
+    return `arn:aws:glue:${region}:${account}:database/${databaseName}`;
+  }
+
+  private async buildTableArn(
+    databaseName: string,
+    tableName: string,
+    catalogId?: string
+  ): Promise<string> {
+    const region = await this.getRegion();
+    const account = catalogId ?? (await this.getAccountId());
+    return `arn:aws:glue:${region}:${account}:table/${databaseName}/${tableName}`;
+  }
+
+  private async getRegion(): Promise<string> {
+    const region = await this.getClient().config.region();
+    return region || this.providerRegion || 'us-east-1';
+  }
+
+  private async getAccountId(): Promise<string> {
+    if (this.cachedAccountId) return this.cachedAccountId;
+    if (!this.stsClient) {
+      this.stsClient = new STSClient(this.providerRegion ? { region: this.providerRegion } : {});
+    }
+    const identity = await this.stsClient.send(new GetCallerIdentityCommand({}));
+    if (!identity.Account) {
+      throw new Error('Failed to resolve AWS account id from STS');
+    }
+    this.cachedAccountId = identity.Account;
+    return this.cachedAccountId;
   }
 }

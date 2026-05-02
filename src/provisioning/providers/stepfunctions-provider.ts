@@ -4,6 +4,8 @@ import {
   UpdateStateMachineCommand,
   DeleteStateMachineCommand,
   DescribeStateMachineCommand,
+  ListStateMachinesCommand,
+  ListTagsForResourceCommand,
   StateMachineDoesNotExist,
   type CreateStateMachineCommandInput,
   type LoggingConfiguration,
@@ -16,10 +18,13 @@ import { getLogger } from '../../utils/logger.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { generateResourceName } from '../resource-name.js';
+import { CDK_PATH_TAG } from '../import-helpers.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
   ResourceUpdateResult,
+  ResourceImportInput,
+  ResourceImportResult,
 } from '../../types/resource.js';
 
 /**
@@ -271,6 +276,66 @@ export class StepFunctionsProvider implements ResourceProvider {
         cause
       );
     }
+  }
+
+  /**
+   * Adopt an existing Step Functions state machine into cdkd state.
+   *
+   * Lookup order:
+   *  1. `--resource <id>=<arn>` override → verify with `DescribeStateMachine`.
+   *  2. Walk `ListStateMachines` paginator → `ListTagsForResource(arn)`,
+   *     match the lowercase `key`/`value` `aws:cdk:path` tag (SFN uses
+   *     lowercase tags, so `matchesCdkPath` from import-helpers does not
+   *     apply directly).
+   *
+   * SFN state machines do not expose a template-supplied name field
+   * usable as a stable physicalId — the physicalId is the ARN — so the
+   * fallback to `Properties.<NameField>` in `resolveExplicitPhysicalId`
+   * is skipped here.
+   */
+  async import(input: ResourceImportInput): Promise<ResourceImportResult | null> {
+    if (input.knownPhysicalId) {
+      try {
+        await this.getClient().send(
+          new DescribeStateMachineCommand({ stateMachineArn: input.knownPhysicalId })
+        );
+        return { physicalId: input.knownPhysicalId, attributes: {} };
+      } catch (err) {
+        if (err instanceof StateMachineDoesNotExist) return null;
+        throw err;
+      }
+    }
+
+    if (!input.cdkPath) return null;
+
+    let nextToken: string | undefined;
+    do {
+      const list = await this.getClient().send(
+        new ListStateMachinesCommand({ ...(nextToken && { nextToken }) })
+      );
+      for (const sm of list.stateMachines ?? []) {
+        if (!sm.stateMachineArn) continue;
+        const tagsResp = await this.getClient().send(
+          new ListTagsForResourceCommand({ resourceArn: sm.stateMachineArn })
+        );
+        if (this.tagsMatchCdkPath(tagsResp.tags, input.cdkPath)) {
+          return { physicalId: sm.stateMachineArn, attributes: {} };
+        }
+      }
+      nextToken = list.nextToken;
+    } while (nextToken);
+    return null;
+  }
+
+  /**
+   * Match SFN's lowercase `key`/`value` tag shape against the CDK path.
+   */
+  private tagsMatchCdkPath(tags: Tag[] | undefined, cdkPath: string): boolean {
+    if (!tags) return false;
+    for (const t of tags) {
+      if (t.key === CDK_PATH_TAG && t.value === cdkPath) return true;
+    }
+    return false;
   }
 
   /**

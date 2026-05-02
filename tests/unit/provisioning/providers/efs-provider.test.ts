@@ -305,4 +305,101 @@ describe('EFSProvider', () => {
       expect(mockSend).not.toHaveBeenCalled();
     });
   });
+
+  describe('import', () => {
+    function makeInput(overrides: Record<string, unknown> = {}) {
+      return {
+        logicalId: 'MyFS',
+        resourceType: 'AWS::EFS::FileSystem',
+        cdkPath: 'MyStack/MyFS',
+        stackName: 'MyStack',
+        region: 'us-east-1',
+        properties: {},
+        ...overrides,
+      };
+    }
+
+    it('FileSystem explicit override: DescribeFileSystems verifies and returns fsId', async () => {
+      mockSend.mockResolvedValueOnce({ FileSystems: [{ FileSystemId: 'fs-abc' }] });
+
+      const result = await provider.import(makeInput({ knownPhysicalId: 'fs-abc' }));
+
+      expect(result).toEqual({ physicalId: 'fs-abc', attributes: {} });
+      const call = mockSend.mock.calls[0][0];
+      expect(call.constructor.name).toBe('DescribeFileSystemsCommand');
+      expect(call.input).toEqual({ FileSystemId: 'fs-abc' });
+    });
+
+    it('FileSystem tag-based lookup: matches aws:cdk:path on inline Tags', async () => {
+      mockSend.mockResolvedValueOnce({
+        FileSystems: [
+          {
+            FileSystemId: 'fs-other',
+            Tags: [{ Key: 'aws:cdk:path', Value: 'OtherStack/Other' }],
+          },
+          {
+            FileSystemId: 'fs-target',
+            Tags: [{ Key: 'aws:cdk:path', Value: 'MyStack/MyFS' }],
+          },
+        ],
+      });
+
+      const result = await provider.import(makeInput());
+      expect(result).toEqual({ physicalId: 'fs-target', attributes: {} });
+    });
+
+    it('FileSystem returns null when no fs matches', async () => {
+      mockSend.mockResolvedValueOnce({
+        FileSystems: [
+          {
+            FileSystemId: 'fs-only',
+            Tags: [{ Key: 'aws:cdk:path', Value: 'OtherStack/Other' }],
+          },
+        ],
+      });
+
+      const result = await provider.import(makeInput());
+      expect(result).toBeNull();
+    });
+
+    it('AccessPoint tag-based lookup: matches via DescribeAccessPoints inline Tags', async () => {
+      mockSend.mockResolvedValueOnce({
+        AccessPoints: [
+          {
+            AccessPointId: 'fsap-target',
+            Tags: [{ Key: 'aws:cdk:path', Value: 'MyStack/MyAP' }],
+          },
+        ],
+      });
+
+      const result = await provider.import(
+        makeInput({
+          logicalId: 'MyAP',
+          resourceType: 'AWS::EFS::AccessPoint',
+          cdkPath: 'MyStack/MyAP',
+        })
+      );
+      expect(result).toEqual({ physicalId: 'fsap-target', attributes: {} });
+    });
+
+    it('MountTarget: explicit override returned as-is, no AWS calls', async () => {
+      const result = await provider.import(
+        makeInput({
+          logicalId: 'MT',
+          resourceType: 'AWS::EFS::MountTarget',
+          knownPhysicalId: 'fsmt-123',
+        })
+      );
+      expect(result).toEqual({ physicalId: 'fsmt-123', attributes: {} });
+      expect(mockSend).not.toHaveBeenCalled();
+    });
+
+    it('MountTarget: returns null without explicit override', async () => {
+      const result = await provider.import(
+        makeInput({ logicalId: 'MT', resourceType: 'AWS::EFS::MountTarget' })
+      );
+      expect(result).toBeNull();
+      expect(mockSend).not.toHaveBeenCalled();
+    });
+  });
 });

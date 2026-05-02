@@ -12,6 +12,8 @@ import {
   DeleteQueryLoggingConfigCommand,
   ListQueryLoggingConfigsCommand,
   ListHostedZonesByNameCommand,
+  ListHostedZonesCommand,
+  ListTagsForResourceCommand,
   type ResourceRecordSet,
   type RRType,
   type VPCRegion,
@@ -19,10 +21,13 @@ import {
 import { getLogger } from '../../utils/logger.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
+import { matchesCdkPath } from '../import-helpers.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
   ResourceUpdateResult,
+  ResourceImportInput,
+  ResourceImportResult,
 } from '../../types/resource.js';
 
 /**
@@ -889,5 +894,69 @@ export class Route53Provider implements ResourceProvider {
       logicalId,
       physicalId
     );
+  }
+
+  /**
+   * Adopt an existing Route 53 resource into cdkd state.
+   *
+   * Supported types: `AWS::Route53::HostedZone` (full tag-based
+   * lookup); `AWS::Route53::RecordSet` (override-only — RecordSets are
+   * not taggable, and the composite child-of-zone identity makes auto
+   * lookup impractical).
+   */
+  async import(input: ResourceImportInput): Promise<ResourceImportResult | null> {
+    switch (input.resourceType) {
+      case 'AWS::Route53::HostedZone':
+        return this.importHostedZone(input);
+      case 'AWS::Route53::RecordSet':
+        // RecordSets aren't taggable; only honor explicit overrides.
+        if (input.knownPhysicalId) {
+          return { physicalId: input.knownPhysicalId, attributes: {} };
+        }
+        return null;
+      default:
+        return null;
+    }
+  }
+
+  private async importHostedZone(input: ResourceImportInput): Promise<ResourceImportResult | null> {
+    if (input.knownPhysicalId) {
+      try {
+        await this.getClient().send(new GetHostedZoneCommand({ Id: input.knownPhysicalId }));
+        return { physicalId: input.knownPhysicalId, attributes: {} };
+      } catch (err) {
+        if (err instanceof Error && err.name === 'NoSuchHostedZone') return null;
+        throw err;
+      }
+    }
+
+    if (!input.cdkPath) return null;
+
+    let marker: string | undefined;
+    do {
+      const list = await this.getClient().send(
+        new ListHostedZonesCommand({ ...(marker && { Marker: marker }) })
+      );
+      for (const zone of list.HostedZones ?? []) {
+        if (!zone.Id) continue;
+        const zoneId = zone.Id.replace('/hostedzone/', '');
+        try {
+          const tagsResp = await this.getClient().send(
+            new ListTagsForResourceCommand({
+              ResourceType: 'hostedzone',
+              ResourceId: zoneId,
+            })
+          );
+          if (matchesCdkPath(tagsResp.ResourceTagSet?.Tags, input.cdkPath)) {
+            return { physicalId: zoneId, attributes: {} };
+          }
+        } catch (err) {
+          if (err instanceof Error && err.name === 'NoSuchHostedZone') continue;
+          throw err;
+        }
+      }
+      marker = list.IsTruncated ? list.NextMarker : undefined;
+    } while (marker);
+    return null;
   }
 }
