@@ -1,3 +1,10 @@
+# [0.22.0](https://github.com/go-to-k/cdkd/compare/v0.21.0...v0.22.0) (2026-05-02)
+
+
+### Features
+
+* **provisioning:** add import to 10 override-only providers (batch 5) ([#85](https://github.com/go-to-k/cdkd/issues/85)) ([f80fcab](https://github.com/go-to-k/cdkd/commit/f80fcab1805017d25a0cb9f588df8411464347ad))
+
 # [0.21.0](https://github.com/go-to-k/cdkd/compare/v0.20.0...v0.21.0) (2026-05-02)
 
 
