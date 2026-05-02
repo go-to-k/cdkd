@@ -494,6 +494,144 @@ describe('cdkd import', () => {
     });
   });
 
+  describe('--resource-mapping-inline', () => {
+    const oneResource = () =>
+      template({
+        MyBucket: {
+          Type: 'AWS::S3::Bucket',
+          Properties: {},
+          Metadata: { 'aws:cdk:path': 'S/MyBucket' },
+        },
+      });
+
+    it('parses inline JSON and applies it as knownPhysicalId (selective mode)', async () => {
+      mockSynthesize.mockResolvedValue({ stacks: [stackInfo('S', oneResource())] });
+      mockHasProvider.mockReturnValue(true);
+      const importSpy = vi.fn(async () => ({ physicalId: 'inline-bucket', attributes: {} }));
+      mockGetProvider.mockReturnValue({ import: importSpy });
+
+      await runImport([
+        'import',
+        '--app',
+        'x',
+        '--resource-mapping-inline',
+        '{"MyBucket":"inline-bucket"}',
+        '--yes',
+      ]);
+
+      expect(importSpy).toHaveBeenCalledWith(
+        expect.objectContaining({ logicalId: 'MyBucket', knownPhysicalId: 'inline-bucket' })
+      );
+    });
+
+    it('accepts an empty JSON object (no overrides) — falls back to auto mode', async () => {
+      mockSynthesize.mockResolvedValue({ stacks: [stackInfo('S', oneResource())] });
+      mockHasProvider.mockReturnValue(true);
+      const importSpy = vi.fn(async () => ({ physicalId: 'tagged-bucket', attributes: {} }));
+      mockGetProvider.mockReturnValue({ import: importSpy });
+
+      await runImport(['import', '--app', 'x', '--resource-mapping-inline', '{}', '--yes']);
+
+      // Empty object -> no overrides -> auto mode dispatches all resources
+      // through tag-based lookup with no knownPhysicalId.
+      expect(importSpy).toHaveBeenCalledTimes(1);
+      expect(importSpy.mock.calls[0]![0]).not.toHaveProperty('knownPhysicalId');
+    });
+
+    it('rejects malformed inline JSON with a clear error', async () => {
+      mockSynthesize.mockResolvedValue({ stacks: [stackInfo('S', oneResource())] });
+      mockHasProvider.mockReturnValue(true);
+
+      await expect(
+        runImport([
+          'import',
+          '--app',
+          'x',
+          '--resource-mapping-inline',
+          '{not valid json}',
+          '--yes',
+        ])
+      ).rejects.toThrow();
+      expect(errorSpy.mock.calls[0]?.[0]).toMatch(
+        /Failed to parse --resource-mapping-inline as JSON/
+      );
+    });
+
+    it('rejects inline JSON that is not an object (e.g. an array)', async () => {
+      mockSynthesize.mockResolvedValue({ stacks: [stackInfo('S', oneResource())] });
+      mockHasProvider.mockReturnValue(true);
+
+      await expect(
+        runImport(['import', '--app', 'x', '--resource-mapping-inline', '["a","b"]', '--yes'])
+      ).rejects.toThrow();
+      expect(errorSpy.mock.calls[0]?.[0]).toMatch(
+        /--resource-mapping-inline must be a JSON object/
+      );
+    });
+
+    it('rejects inline JSON with non-string values', async () => {
+      mockSynthesize.mockResolvedValue({ stacks: [stackInfo('S', oneResource())] });
+      mockHasProvider.mockReturnValue(true);
+
+      await expect(
+        runImport([
+          'import',
+          '--app',
+          'x',
+          '--resource-mapping-inline',
+          '{"MyBucket":123}',
+          '--yes',
+        ])
+      ).rejects.toThrow();
+      expect(errorSpy.mock.calls[0]?.[0]).toMatch(
+        /--resource-mapping-inline: value for 'MyBucket' must be a string/
+      );
+    });
+
+    it('rejects when both --resource-mapping and --resource-mapping-inline are passed', async () => {
+      mockSynthesize.mockResolvedValue({ stacks: [stackInfo('S', oneResource())] });
+      mockHasProvider.mockReturnValue(true);
+
+      await expect(
+        runImport([
+          'import',
+          '--app',
+          'x',
+          '--resource-mapping',
+          'some-file.json',
+          '--resource-mapping-inline',
+          '{"MyBucket":"x"}',
+          '--yes',
+        ])
+      ).rejects.toThrow();
+      expect(errorSpy.mock.calls[0]?.[0]).toMatch(
+        /--resource-mapping and --resource-mapping-inline are mutually exclusive/
+      );
+    });
+
+    it('lets --resource override an entry from --resource-mapping-inline (CLI wins)', async () => {
+      mockSynthesize.mockResolvedValue({ stacks: [stackInfo('S', oneResource())] });
+      mockHasProvider.mockReturnValue(true);
+      const importSpy = vi.fn(async () => ({ physicalId: 'cli-bucket', attributes: {} }));
+      mockGetProvider.mockReturnValue({ import: importSpy });
+
+      await runImport([
+        'import',
+        '--app',
+        'x',
+        '--resource-mapping-inline',
+        '{"MyBucket":"inline-bucket"}',
+        '--resource',
+        'MyBucket=cli-bucket',
+        '--yes',
+      ]);
+
+      expect(importSpy).toHaveBeenCalledWith(
+        expect.objectContaining({ logicalId: 'MyBucket', knownPhysicalId: 'cli-bucket' })
+      );
+    });
+  });
+
   it('auto-selects the single stack when no positional arg is given', async () => {
     const tmpl = template({
       MyBucket: {

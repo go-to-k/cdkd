@@ -582,15 +582,21 @@ cdkd import MyStack \
 # CDK CLI compat: read overrides from a JSON file.
 cdkd import MyStack --resource-mapping mapping.json
 # mapping.json: { "MyBucket": "my-bucket-name", "MyFn": "my-function-name" }
+
+# CDK CLI compat: inline JSON (handy for non-TTY CI scripts).
+cdkd import MyStack --resource-mapping-inline '{"MyBucket":"my-bucket-name"}'
 ```
 
-When at least one `--resource` flag (or a `--resource-mapping` file) is
-supplied, **only the listed resources are imported**. Every other
-resource in the template is reported as `out of scope` and left out of
-state — the next `cdkd deploy` will treat them as new and CREATE them.
-This matches the semantics of `cdk import --resource-mapping`. cdkd
-validates that every override key is a real logical ID in the
-template; a typo aborts the run rather than silently importing nothing.
+When at least one `--resource` flag (or a `--resource-mapping` /
+`--resource-mapping-inline` payload) is supplied, **only the listed
+resources are imported**. Every other resource in the template is
+reported as `out of scope` and left out of state — the next `cdkd
+deploy` will treat them as new and CREATE them. This matches the
+semantics of `cdk import --resource-mapping` /
+`--resource-mapping-inline`. cdkd validates that every override key is
+a real logical ID in the template; a typo aborts the run rather than
+silently importing nothing. `--resource-mapping` and
+`--resource-mapping-inline` are mutually exclusive — pick one source.
 
 Use selective mode when you want to **adopt a few specific resources**
 out of a larger stack — for example, you have one S3 bucket that was
