@@ -9,6 +9,8 @@ import {
   ListFunctionsCommand,
   ListTagsCommand,
   ResourceNotFoundException,
+  waitUntilFunctionActiveV2,
+  waitUntilFunctionUpdatedV2,
   type FunctionCode,
   type CreateFunctionCommandInput,
   type UpdateFunctionConfigurationCommandInput,
@@ -83,6 +85,15 @@ export class LambdaFunctionProvider implements ResourceProvider {
   private readonly eniWaitTimeoutMs: number = 10 * 60 * 1000;
   private readonly eniWaitInitialDelayMs: number = 10_000;
   private readonly eniWaitMaxDelayMs: number = 30_000;
+
+  // Budget for the post-CreateFunction / post-Update wait that blocks until
+  // Configuration.State === 'Active' and LastUpdateStatus === 'Successful'.
+  // Must NOT be skipped by --no-wait: downstream resources (Custom Resource
+  // Invokes, EventSourceMappings, etc.) cannot operate against a function
+  // still in Pending / InProgress, so this is required for correctness, not
+  // a "convenience wait" like CloudFront / RDS readiness.
+  // Seconds (the SDK waiter contract is seconds, not ms).
+  private readonly functionReadyMaxWaitSeconds: number = 10 * 60;
 
   // delstack-style ENI cleanup tunables.
   // - initial sleep: gives AWS time to publish post-detach ENI state via
@@ -170,6 +181,21 @@ export class LambdaFunctionProvider implements ResourceProvider {
 
       const response = await this.lambdaClient.send(new CreateFunctionCommand(createParams));
 
+      // CreateFunction returns synchronously while the function is still in
+      // `Pending` state — the runtime image, VPC ENI attachment, and layer
+      // initialization happen asynchronously. Returning here without waiting
+      // breaks downstream resources that try to invoke the function as soon
+      // as it's marked `created`: a Lambda-backed Custom Resource invoked
+      // mid-Pending fails with "The function is currently in the following
+      // state: Pending". CloudFormation sidesteps this by polling
+      // GetFunction until State=Active before emitting CREATE_COMPLETE; we
+      // mirror that contract via the SDK's built-in waiter.
+      //
+      // Intentionally NOT gated on CDKD_NO_WAIT: --no-wait skips
+      // convenience waits for resources that don't block siblings (e.g.
+      // CloudFront propagation), but a Pending Lambda DOES block siblings.
+      await this.waitForFunctionActive(logicalId, resourceType, functionName);
+
       this.logger.debug(`Successfully created Lambda function ${logicalId}: ${functionName}`);
 
       return {
@@ -180,6 +206,9 @@ export class LambdaFunctionProvider implements ResourceProvider {
         },
       };
     } catch (error) {
+      if (error instanceof ProvisioningError) {
+        throw error;
+      }
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
         `Failed to create Lambda function ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
@@ -250,6 +279,13 @@ export class LambdaFunctionProvider implements ResourceProvider {
 
         await this.lambdaClient.send(new UpdateFunctionConfigurationCommand(configParams));
         this.logger.debug(`Updated configuration for Lambda function ${physicalId}`);
+        // Wait for the configuration update to fully apply before any
+        // follow-up call. UpdateFunctionConfiguration is async; an
+        // immediate UpdateFunctionCode (or any downstream Invoke) against
+        // the in-flight update fails with "The operation cannot be
+        // performed at this time. The function is currently in the
+        // following state: Pending" / "...InProgress".
+        await this.waitForFunctionUpdated(logicalId, resourceType, physicalId);
       }
 
       // Update function code if changed
@@ -269,6 +305,10 @@ export class LambdaFunctionProvider implements ResourceProvider {
 
         await this.lambdaClient.send(new UpdateFunctionCodeCommand(codeParams));
         this.logger.debug(`Updated code for Lambda function ${physicalId}`);
+        // Same reason as above: UpdateFunctionCode is async too, and
+        // downstream resources / a subsequent deploy must not race the
+        // in-flight code swap.
+        await this.waitForFunctionUpdated(logicalId, resourceType, physicalId);
       }
 
       // Get updated function info for attributes
@@ -285,6 +325,9 @@ export class LambdaFunctionProvider implements ResourceProvider {
         },
       };
     } catch (error) {
+      if (error instanceof ProvisioningError) {
+        throw error;
+      }
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
         `Failed to update Lambda function ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
@@ -499,6 +542,72 @@ export class LambdaFunctionProvider implements ResourceProvider {
    * timeout: the subsequent ENI cleanup loop and downstream retries cover
    * the residual edge case.
    */
+  /**
+   * Block until the function's State === 'Active'.
+   *
+   * Used after CreateFunction. Wraps the SDK's built-in
+   * `waitUntilFunctionActiveV2` (acceptors: SUCCESS=Active, FAILURE=Failed,
+   * RETRY=Pending). The waiter throws on FAILURE / TIMEOUT — both surface
+   * as `ProvisioningError` with the function-name as physicalId so the
+   * deploy engine's per-resource error handling treats them identically to
+   * a CreateFunction failure.
+   */
+  private async waitForFunctionActive(
+    logicalId: string,
+    resourceType: string,
+    functionName: string
+  ): Promise<void> {
+    try {
+      await waitUntilFunctionActiveV2(
+        { client: this.lambdaClient, maxWaitTime: this.functionReadyMaxWaitSeconds },
+        { FunctionName: functionName }
+      );
+    } catch (error) {
+      const cause = error instanceof Error ? error : undefined;
+      throw new ProvisioningError(
+        `Lambda function ${logicalId} did not reach Active state: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+        resourceType,
+        logicalId,
+        functionName,
+        cause
+      );
+    }
+  }
+
+  /**
+   * Block until the function's LastUpdateStatus === 'Successful'.
+   *
+   * Used after UpdateFunctionConfiguration / UpdateFunctionCode. Wraps the
+   * SDK's `waitUntilFunctionUpdatedV2` (acceptors: SUCCESS=Successful,
+   * FAILURE=Failed, RETRY=InProgress). Same error-wrapping contract as
+   * `waitForFunctionActive`.
+   */
+  private async waitForFunctionUpdated(
+    logicalId: string,
+    resourceType: string,
+    functionName: string
+  ): Promise<void> {
+    try {
+      await waitUntilFunctionUpdatedV2(
+        { client: this.lambdaClient, maxWaitTime: this.functionReadyMaxWaitSeconds },
+        { FunctionName: functionName }
+      );
+    } catch (error) {
+      const cause = error instanceof Error ? error : undefined;
+      throw new ProvisioningError(
+        `Lambda function ${logicalId} update did not complete: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+        resourceType,
+        logicalId,
+        functionName,
+        cause
+      );
+    }
+  }
+
   private async waitForLambdaUpdateCompleted(functionName: string): Promise<void> {
     const start = Date.now();
     let delay = this.eniWaitInitialDelayMs;
