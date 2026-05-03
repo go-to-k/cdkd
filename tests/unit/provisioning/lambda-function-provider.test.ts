@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import {
   CreateFunctionCommand,
   UpdateFunctionConfigurationCommand,
+  UpdateFunctionCodeCommand,
   DeleteFunctionCommand,
   ResourceNotFoundException,
 } from '@aws-sdk/client-lambda';
@@ -68,10 +69,13 @@ describe('LambdaFunctionProvider', () => {
 
   describe('create', () => {
     it('passes VpcConfig (SubnetIds, SecurityGroupIds, Ipv6AllowedForDualStack) to CreateFunction', async () => {
-      mockLambdaSend.mockResolvedValueOnce({
-        FunctionName: 'fn-vpc',
-        FunctionArn: 'arn:aws:lambda:us-east-1:123456789012:function:fn-vpc',
-      });
+      mockLambdaSend
+        .mockResolvedValueOnce({
+          FunctionName: 'fn-vpc',
+          FunctionArn: 'arn:aws:lambda:us-east-1:123456789012:function:fn-vpc',
+        })
+        // waitUntilFunctionActiveV2 polls GetFunction; Active terminates immediately.
+        .mockResolvedValueOnce({ Configuration: { State: 'Active' } });
 
       const result = await provider.create('VpcFn', 'AWS::Lambda::Function', {
         FunctionName: 'fn-vpc',
@@ -87,7 +91,7 @@ describe('LambdaFunctionProvider', () => {
       });
 
       expect(result.physicalId).toBe('fn-vpc');
-      expect(mockLambdaSend).toHaveBeenCalledTimes(1);
+      expect(mockLambdaSend).toHaveBeenCalledTimes(2);
       const cmd = mockLambdaSend.mock.calls[0][0];
       expect(cmd).toBeInstanceOf(CreateFunctionCommand);
       expect(cmd.input.VpcConfig).toEqual({
@@ -98,10 +102,12 @@ describe('LambdaFunctionProvider', () => {
     });
 
     it('omits VpcConfig from CreateFunction input when not provided', async () => {
-      mockLambdaSend.mockResolvedValueOnce({
-        FunctionName: 'fn-no-vpc',
-        FunctionArn: 'arn:aws:lambda:us-east-1:123456789012:function:fn-no-vpc',
-      });
+      mockLambdaSend
+        .mockResolvedValueOnce({
+          FunctionName: 'fn-no-vpc',
+          FunctionArn: 'arn:aws:lambda:us-east-1:123456789012:function:fn-no-vpc',
+        })
+        .mockResolvedValueOnce({ Configuration: { State: 'Active' } });
 
       await provider.create('NoVpcFn', 'AWS::Lambda::Function', {
         FunctionName: 'fn-no-vpc',
@@ -114,13 +120,71 @@ describe('LambdaFunctionProvider', () => {
       const cmd = mockLambdaSend.mock.calls[0][0];
       expect(cmd.input.VpcConfig).toBeUndefined();
     });
+
+    it('waits for Configuration.State === Active before returning so downstream Custom Resource Invoke does not race', async () => {
+      // Reproduces the original bug: CreateFunction returns synchronously
+      // while State is still `Pending`, but a Lambda-backed Custom
+      // Resource that depends on this function will Invoke immediately
+      // and AWS responds "The function is currently in the following
+      // state: Pending". The fix is to block until State === Active.
+      mockLambdaSend
+        .mockResolvedValueOnce({
+          FunctionName: 'fn-wait',
+          FunctionArn: 'arn:aws:lambda:us-east-1:123456789012:function:fn-wait',
+        })
+        .mockResolvedValueOnce({ Configuration: { State: 'Pending' } })
+        .mockResolvedValueOnce({ Configuration: { State: 'Pending' } })
+        .mockResolvedValueOnce({ Configuration: { State: 'Active' } });
+
+      const promise = provider.create('Fn', 'AWS::Lambda::Function', {
+        FunctionName: 'fn-wait',
+        Role: 'arn:aws:iam::123456789012:role/exec',
+        Handler: 'index.handler',
+        Runtime: 'nodejs20.x',
+        Code: { S3Bucket: 'b', S3Key: 'k' },
+      });
+      // Smithy waiter uses exponential backoff with jitter — first retry
+      // ~1s, second ~2s. Advance generously to clear all sleeps.
+      await vi.advanceTimersByTimeAsync(10_000);
+      await promise;
+
+      // 1 CreateFunction + 3 GetFunction polls.
+      expect(mockLambdaSend).toHaveBeenCalledTimes(4);
+      expect(mockLambdaSend.mock.calls[0][0]).toBeInstanceOf(CreateFunctionCommand);
+      // Subsequent calls are GetFunction (waiter); we don't constrain the
+      // exact class beyond "not CreateFunctionCommand" since it's the SDK
+      // waiter doing them.
+      expect(mockLambdaSend.mock.calls[1][0]).not.toBeInstanceOf(CreateFunctionCommand);
+    });
+
+    it('throws ProvisioningError when the Active waiter sees Configuration.State === Failed', async () => {
+      mockLambdaSend
+        .mockResolvedValueOnce({
+          FunctionName: 'fn-fail',
+          FunctionArn: 'arn:aws:lambda:us-east-1:123456789012:function:fn-fail',
+        })
+        .mockResolvedValueOnce({ Configuration: { State: 'Failed' } });
+
+      await expect(
+        provider.create('Fn', 'AWS::Lambda::Function', {
+          FunctionName: 'fn-fail',
+          Role: 'arn:aws:iam::123456789012:role/exec',
+          Handler: 'index.handler',
+          Runtime: 'nodejs20.x',
+          Code: { S3Bucket: 'b', S3Key: 'k' },
+        })
+      ).rejects.toThrow(/did not reach Active state/);
+    });
   });
 
   describe('update', () => {
     it('sends VpcConfig change via UpdateFunctionConfiguration', async () => {
-      // 1) UpdateFunctionConfiguration  2) GetFunction (for attributes)
+      // 1) UpdateFunctionConfiguration
+      // 2) GetFunction (waitUntilFunctionUpdatedV2 — LastUpdateStatus=Successful)
+      // 3) GetFunction (final attribute fetch)
       mockLambdaSend
         .mockResolvedValueOnce({})
+        .mockResolvedValueOnce({ Configuration: { LastUpdateStatus: 'Successful' } })
         .mockResolvedValueOnce({
           Configuration: {
             FunctionName: 'fn-vpc',
@@ -163,6 +227,7 @@ describe('LambdaFunctionProvider', () => {
       // SecurityGroupIds to detach a function from its VPC.
       mockLambdaSend
         .mockResolvedValueOnce({})
+        .mockResolvedValueOnce({ Configuration: { LastUpdateStatus: 'Successful' } })
         .mockResolvedValueOnce({
           Configuration: {
             FunctionName: 'fn-detach',
@@ -200,6 +265,7 @@ describe('LambdaFunctionProvider', () => {
       // does not include a synthetic empty VpcConfig.
       mockLambdaSend
         .mockResolvedValueOnce({})
+        .mockResolvedValueOnce({ Configuration: { LastUpdateStatus: 'Successful' } })
         .mockResolvedValueOnce({
           Configuration: {
             FunctionName: 'fn-no-vpc',
@@ -224,6 +290,69 @@ describe('LambdaFunctionProvider', () => {
       const cmd = mockLambdaSend.mock.calls[0][0];
       expect(cmd).toBeInstanceOf(UpdateFunctionConfigurationCommand);
       expect(cmd.input.VpcConfig).toBeUndefined();
+    });
+
+    it('waits for LastUpdateStatus === Successful between UpdateFunctionConfiguration and UpdateFunctionCode', async () => {
+      // UpdateFunctionConfiguration is async; calling UpdateFunctionCode
+      // before LastUpdateStatus flips to Successful triggers the same
+      // "function is currently in the following state" rejection that
+      // bites Custom Resource Invokes after CreateFunction. Verify the
+      // ordering: Update -> wait -> Update -> wait -> attribute fetch.
+      mockLambdaSend
+        .mockResolvedValueOnce({}) // UpdateFunctionConfiguration
+        .mockResolvedValueOnce({ Configuration: { LastUpdateStatus: 'Successful' } }) // waiter #1
+        .mockResolvedValueOnce({}) // UpdateFunctionCode
+        .mockResolvedValueOnce({ Configuration: { LastUpdateStatus: 'Successful' } }) // waiter #2
+        .mockResolvedValueOnce({
+          Configuration: {
+            FunctionName: 'fn-both',
+            FunctionArn: 'arn:aws:lambda:us-east-1:123456789012:function:fn-both',
+          },
+        });
+
+      await provider.update(
+        'Fn',
+        'fn-both',
+        'AWS::Lambda::Function',
+        {
+          Role: 'arn:aws:iam::123456789012:role/exec',
+          Timeout: 60,
+          Code: { S3Bucket: 'new-b', S3Key: 'new-k' },
+        },
+        {
+          Role: 'arn:aws:iam::123456789012:role/exec',
+          Timeout: 30,
+          Code: { S3Bucket: 'old-b', S3Key: 'old-k' },
+        }
+      );
+
+      expect(mockLambdaSend).toHaveBeenCalledTimes(5);
+      expect(mockLambdaSend.mock.calls[0][0]).toBeInstanceOf(UpdateFunctionConfigurationCommand);
+      // calls[1] is the waiter's GetFunction.
+      expect(mockLambdaSend.mock.calls[2][0]).toBeInstanceOf(UpdateFunctionCodeCommand);
+      // calls[3] is the second waiter's GetFunction.
+    });
+
+    it('throws ProvisioningError when the post-update waiter sees LastUpdateStatus === Failed', async () => {
+      mockLambdaSend
+        .mockResolvedValueOnce({}) // UpdateFunctionConfiguration
+        .mockResolvedValueOnce({ Configuration: { LastUpdateStatus: 'Failed' } });
+
+      await expect(
+        provider.update(
+          'Fn',
+          'fn-bad',
+          'AWS::Lambda::Function',
+          {
+            Role: 'arn:aws:iam::123456789012:role/exec',
+            Timeout: 60,
+          },
+          {
+            Role: 'arn:aws:iam::123456789012:role/exec',
+            Timeout: 30,
+          }
+        )
+      ).rejects.toThrow(/update did not complete/);
     });
   });
 

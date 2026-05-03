@@ -34,6 +34,16 @@ This can significantly speed up deployments with CloudFront (which
 takes 3-15 minutes to deploy to edge locations). The resource is fully
 functional once AWS finishes the async deployment.
 
+`--no-wait` only skips *convenience* waits for resources that don't
+block siblings within the same deploy. It does NOT skip waits that are
+required for in-stack correctness — for example, `AWS::Lambda::Function`
+CREATE / UPDATE always blocks until `Configuration.State === 'Active'`
+(post-CreateFunction) and `LastUpdateStatus === 'Successful'` (after
+each UpdateFunctionConfiguration / UpdateFunctionCode), because a
+Pending Lambda cannot be invoked by a downstream Custom Resource and a
+mid-update function rejects further Update / Delete calls. CloudFormation
+behaves the same way; cdkd matches the contract regardless of `--no-wait`.
+
 ## Per-resource timeout
 
 Both `cdkd deploy` and `cdkd destroy` (including `cdkd state destroy`)
