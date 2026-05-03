@@ -161,6 +161,7 @@ Reproduce with `./tests/benchmark/run-benchmark.sh all`. See [tests/benchmark/RE
 | `Fn::Or` | ✅ Supported | Logical OR (2-10 conditions) |
 | `Fn::Not` | ✅ Supported | Logical NOT |
 | `Fn::ImportValue` | ✅ Supported | Cross-stack references via S3 state |
+| `Fn::GetStackOutput` | ✅ Supported (same-account) | Cross-stack / cross-region output reference via S3 state. Cross-account `RoleArn` is rejected with a clear error (not yet implemented). |
 | `Fn::FindInMap` | ✅ Supported | Mapping lookup |
 | `Fn::GetAZs` | ✅ Supported | Availability Zone list |
 | `Fn::Base64` | ✅ Supported | Base64 encoding |
@@ -283,6 +284,7 @@ Reproduce with `./tests/benchmark/run-benchmark.sh all`. See [tests/benchmark/RE
 | CloudFormation Parameters | ✅ | Default values, type coercion |
 | Conditions | ✅ | With logical operators |
 | Cross-stack references | ✅ | Via `Fn::ImportValue` + S3 state |
+| Cross-region references | ✅ (same-account) | Via `Fn::GetStackOutput` + S3 state. Cross-account `RoleArn` not yet implemented. |
 | JSON Patch updates | ✅ | RFC 6902, minimal patches |
 | Resource replacement detection | ✅ | 10+ resource types |
 | Dynamic References | ✅ | `{{resolve:secretsmanager:...}}`, `{{resolve:ssm:...}}` |

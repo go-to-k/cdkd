@@ -465,3 +465,364 @@ describe('IntrinsicFunctionResolver - Fn::GetAZs', () => {
     );
   });
 });
+
+describe('IntrinsicFunctionResolver - Fn::GetStackOutput', () => {
+  let resolver: IntrinsicFunctionResolver;
+
+  beforeEach(() => {
+    resolver = new IntrinsicFunctionResolver('us-east-1');
+    resetAccountInfoCache();
+  });
+
+  function makeStateBackend(
+    states: Record<string, Record<string, { outputs: Record<string, unknown> }>>
+  ) {
+    return {
+      getState: vi.fn(async (stackName: string, region: string) => {
+        const byRegion = states[stackName];
+        if (!byRegion) return null;
+        const entry = byRegion[region];
+        if (!entry) return null;
+        return {
+          state: {
+            version: 2 as const,
+            stackName,
+            region,
+            resources: {},
+            outputs: entry.outputs,
+            lastModified: 0,
+          },
+          etag: '"abc"',
+        };
+      }),
+    } as unknown as ResolverContext['stateBackend'];
+  }
+
+  it('resolves a same-account same-region output', async () => {
+    const stateBackend = makeStateBackend({
+      Producer: {
+        'us-east-1': { outputs: { ApiUrl: 'https://example.com' } },
+      },
+    });
+
+    const context: ResolverContext = {
+      template: { Resources: {} },
+      resources: {},
+      stateBackend,
+      stackName: 'Consumer',
+    };
+
+    const result = await resolver.resolve(
+      {
+        'Fn::GetStackOutput': {
+          StackName: 'Producer',
+          OutputName: 'ApiUrl',
+        },
+      },
+      context
+    );
+
+    expect(result).toBe('https://example.com');
+  });
+
+  it('resolves a same-account cross-region output', async () => {
+    const stateBackend = makeStateBackend({
+      Producer: {
+        'us-west-2': { outputs: { Endpoint: 'arn:aws:foo' } },
+      },
+    });
+
+    const context: ResolverContext = {
+      template: { Resources: {} },
+      resources: {},
+      stateBackend,
+      stackName: 'Consumer',
+    };
+
+    const result = await resolver.resolve(
+      {
+        'Fn::GetStackOutput': {
+          StackName: 'Producer',
+          Region: 'us-west-2',
+          OutputName: 'Endpoint',
+        },
+      },
+      context
+    );
+
+    expect(result).toBe('arn:aws:foo');
+    expect(stateBackend!.getState).toHaveBeenCalledWith('Producer', 'us-west-2');
+  });
+
+  it('defaults Region to the consumer deploy region when omitted', async () => {
+    const stateBackend = makeStateBackend({
+      Producer: {
+        'us-east-1': { outputs: { Value: 42 } },
+      },
+    });
+
+    const context: ResolverContext = {
+      template: { Resources: {} },
+      resources: {},
+      stateBackend,
+      stackName: 'Consumer',
+    };
+
+    const result = await resolver.resolve(
+      {
+        'Fn::GetStackOutput': {
+          StackName: 'Producer',
+          OutputName: 'Value',
+        },
+      },
+      context
+    );
+
+    expect(result).toBe(42);
+    expect(stateBackend!.getState).toHaveBeenCalledWith('Producer', 'us-east-1');
+  });
+
+  it('resolves nested intrinsics in StackName / OutputName / Region', async () => {
+    const stateBackend = makeStateBackend({
+      Producer: {
+        'us-west-2': { outputs: { Final: 'ok' } },
+      },
+    });
+
+    const context: ResolverContext = {
+      template: {
+        Resources: {},
+        Parameters: {},
+      },
+      resources: {},
+      parameters: {
+        ProducerStack: 'Producer',
+        ProducerRegion: 'us-west-2',
+        OutputKey: 'Final',
+      },
+      stateBackend,
+      stackName: 'Consumer',
+    };
+
+    const result = await resolver.resolve(
+      {
+        'Fn::GetStackOutput': {
+          StackName: { Ref: 'ProducerStack' },
+          Region: { Ref: 'ProducerRegion' },
+          OutputName: { Ref: 'OutputKey' },
+        },
+      },
+      context
+    );
+
+    expect(result).toBe('ok');
+  });
+
+  it('throws when StackName is missing', async () => {
+    const context: ResolverContext = {
+      template: { Resources: {} },
+      resources: {},
+      stateBackend: makeStateBackend({}),
+      stackName: 'Consumer',
+    };
+
+    await expect(
+      resolver.resolve(
+        { 'Fn::GetStackOutput': { OutputName: 'Foo' } },
+        context
+      )
+    ).rejects.toThrow('Fn::GetStackOutput: StackName is required');
+  });
+
+  it('throws when OutputName is missing', async () => {
+    const context: ResolverContext = {
+      template: { Resources: {} },
+      resources: {},
+      stateBackend: makeStateBackend({}),
+      stackName: 'Consumer',
+    };
+
+    await expect(
+      resolver.resolve(
+        { 'Fn::GetStackOutput': { StackName: 'Producer' } },
+        context
+      )
+    ).rejects.toThrow('Fn::GetStackOutput: OutputName is required');
+  });
+
+  it('throws when state backend is not provided', async () => {
+    const context: ResolverContext = {
+      template: { Resources: {} },
+      resources: {},
+      stackName: 'Consumer',
+    };
+
+    await expect(
+      resolver.resolve(
+        {
+          'Fn::GetStackOutput': {
+            StackName: 'Producer',
+            OutputName: 'Foo',
+          },
+        },
+        context
+      )
+    ).rejects.toThrow(
+      'Fn::GetStackOutput: state backend is required for cross-stack references'
+    );
+  });
+
+  it('throws when producer stack is not in state', async () => {
+    const stateBackend = makeStateBackend({});
+
+    const context: ResolverContext = {
+      template: { Resources: {} },
+      resources: {},
+      stateBackend,
+      stackName: 'Consumer',
+    };
+
+    await expect(
+      resolver.resolve(
+        {
+          'Fn::GetStackOutput': {
+            StackName: 'Producer',
+            Region: 'us-east-1',
+            OutputName: 'Foo',
+          },
+        },
+        context
+      )
+    ).rejects.toThrow(
+      "Fn::GetStackOutput: stack 'Producer' not found in region 'us-east-1'"
+    );
+  });
+
+  it('throws when output is missing from the producer stack', async () => {
+    const stateBackend = makeStateBackend({
+      Producer: {
+        'us-east-1': { outputs: { Other: 'x' } },
+      },
+    });
+
+    const context: ResolverContext = {
+      template: { Resources: {} },
+      resources: {},
+      stateBackend,
+      stackName: 'Consumer',
+    };
+
+    await expect(
+      resolver.resolve(
+        {
+          'Fn::GetStackOutput': {
+            StackName: 'Producer',
+            OutputName: 'Missing',
+          },
+        },
+        context
+      )
+    ).rejects.toThrow(
+      "Fn::GetStackOutput: output 'Missing' not found in stack 'Producer' (us-east-1). Available outputs: Other"
+    );
+  });
+
+  it('rejects RoleArn (cross-account not yet supported)', async () => {
+    const context: ResolverContext = {
+      template: { Resources: {} },
+      resources: {},
+      stateBackend: makeStateBackend({}),
+      stackName: 'Consumer',
+    };
+
+    await expect(
+      resolver.resolve(
+        {
+          'Fn::GetStackOutput': {
+            StackName: 'Producer',
+            Region: 'us-west-2',
+            OutputName: 'Foo',
+            RoleArn: 'arn:aws:iam::222222222222:role/CrossAccount',
+          },
+        },
+        context
+      )
+    ).rejects.toThrow(
+      'Fn::GetStackOutput: cross-account references via RoleArn are not yet supported'
+    );
+  });
+
+  it('rejects self-reference (same stack name AND same region)', async () => {
+    const stateBackend = makeStateBackend({
+      Consumer: {
+        'us-east-1': { outputs: { Foo: 'x' } },
+      },
+    });
+
+    const context: ResolverContext = {
+      template: { Resources: {} },
+      resources: {},
+      stateBackend,
+      stackName: 'Consumer',
+    };
+
+    await expect(
+      resolver.resolve(
+        {
+          'Fn::GetStackOutput': {
+            StackName: 'Consumer',
+            OutputName: 'Foo',
+          },
+        },
+        context
+      )
+    ).rejects.toThrow(
+      "Fn::GetStackOutput: cannot reference own stack 'Consumer' in the same region 'us-east-1'"
+    );
+  });
+
+  it('allows same-stackName cross-region reference', async () => {
+    // Two regions of the same stackName have independent state — referencing
+    // the other region's record is legitimate, not a self-reference.
+    const stateBackend = makeStateBackend({
+      Shared: {
+        'us-west-2': { outputs: { Foo: 'from-west' } },
+      },
+    });
+
+    const context: ResolverContext = {
+      template: { Resources: {} },
+      resources: {},
+      stateBackend,
+      stackName: 'Shared',
+    };
+
+    const result = await resolver.resolve(
+      {
+        'Fn::GetStackOutput': {
+          StackName: 'Shared',
+          Region: 'us-west-2',
+          OutputName: 'Foo',
+        },
+      },
+      context
+    );
+
+    expect(result).toBe('from-west');
+  });
+
+  it('throws on non-object argument shape', async () => {
+    const context: ResolverContext = {
+      template: { Resources: {} },
+      resources: {},
+      stateBackend: makeStateBackend({}),
+      stackName: 'Consumer',
+    };
+
+    await expect(
+      resolver.resolve({ 'Fn::GetStackOutput': 'not-an-object' }, context)
+    ).rejects.toThrow(
+      'Fn::GetStackOutput: argument must be an object with StackName/OutputName/Region/RoleArn'
+    );
+  });
+});
