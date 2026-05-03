@@ -1,0 +1,19 @@
+{
+  "name": "cdkd-integ-vpc-lambda-cr-race",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Regression test for the Pending-Lambda race: a VPC-attached Lambda backs a Custom Resource. Without the post-CreateFunction State=Active wait, the CR Invoke fires while the function is still Pending and deploy fails with 'The function is currently in the following state: Pending'.",
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc -w"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "typescript": "^5.0.0",
+    "ts-node": "^10.0.0"
+  },
+  "dependencies": {
+    "aws-cdk-lib": "^2.169.0",
+    "constructs": "^10.0.0"
+  }
+}
