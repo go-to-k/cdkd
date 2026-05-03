@@ -66,6 +66,52 @@ vi.mock('@aws-sdk/client-cloudformation', () => ({
   waitUntilStackDeleteComplete: waitDeleteMock,
 }));
 
+// S3 mocks for the >51,200-byte TemplateURL fallback path. The
+// `s3SendCalls` array captures every command's `_name` + `input` so each
+// test can assert the upload + delete sequence without re-mocking S3.
+const s3SendCalls = vi.hoisted(
+  () => [] as { name: string; input: Record<string, unknown> }[]
+);
+const s3DestroyMock = vi.hoisted(() => vi.fn());
+const s3SendMock = vi.hoisted(() =>
+  vi.fn(async (cmd: { _name: string; input: Record<string, unknown> }) => {
+    s3SendCalls.push({ name: cmd._name, input: cmd.input });
+    return {};
+  })
+);
+
+const s3Commands = vi.hoisted(() => {
+  class FakeS3Command {
+    constructor(
+      public readonly _name: string,
+      public readonly input: Record<string, unknown>
+    ) {}
+  }
+  return {
+    PutObjectCommand: class extends FakeS3Command {
+      constructor(input: Record<string, unknown>) {
+        super('PutObject', input);
+      }
+    },
+    DeleteObjectCommand: class extends FakeS3Command {
+      constructor(input: Record<string, unknown>) {
+        super('DeleteObject', input);
+      }
+    },
+  };
+});
+
+vi.mock('@aws-sdk/client-s3', () => ({
+  S3Client: vi.fn(() => ({ send: s3SendMock, destroy: s3DestroyMock })),
+  PutObjectCommand: s3Commands.PutObjectCommand,
+  DeleteObjectCommand: s3Commands.DeleteObjectCommand,
+}));
+
+const resolveBucketRegionMock = vi.hoisted(() => vi.fn(async () => 'eu-west-1'));
+vi.mock('../../../src/utils/aws-region-resolver.js', () => ({
+  resolveBucketRegion: resolveBucketRegionMock,
+}));
+
 const readlineQuestion = vi.hoisted(() => vi.fn<(p: string) => Promise<string>>());
 const readlineClose = vi.hoisted(() => vi.fn());
 vi.mock('node:readline/promises', () => ({
@@ -183,6 +229,11 @@ describe('retireCloudFormationStack', () => {
     waitDeleteMock.mockResolvedValue(undefined);
     readlineQuestion.mockReset();
     readlineClose.mockReset();
+    s3SendCalls.length = 0;
+    s3SendMock.mockClear();
+    s3DestroyMock.mockClear();
+    resolveBucketRegionMock.mockClear();
+    resolveBucketRegionMock.mockResolvedValue('eu-west-1');
   });
 
   it('runs the full Describe → GetTemplate → UpdateStack → DeleteStack flow', async () => {
@@ -200,6 +251,7 @@ describe('retireCloudFormationStack', () => {
       // Cast: the helper only uses .send().
       cfnClient: client as never,
       yes: true,
+      stateBucket: 'test-state-bucket',
     });
 
     expect(result).toEqual({ outcome: 'retired' });
@@ -230,6 +282,7 @@ describe('retireCloudFormationStack', () => {
       cfnStackName: 'AllRetainStack',
       cfnClient: client as never,
       yes: true,
+      stateBucket: 'test-state-bucket',
     });
 
     expect(result).toEqual({ outcome: 'no-template-change' });
@@ -252,6 +305,7 @@ describe('retireCloudFormationStack', () => {
       cfnStackName: 'S',
       cfnClient: client as never,
       yes: true,
+      stateBucket: 'test-state-bucket',
     });
 
     expect(result.outcome).toBe('retired');
@@ -274,7 +328,12 @@ describe('retireCloudFormationStack', () => {
     });
 
     await expect(
-      retireCloudFormationStack({ cfnStackName: 'X', cfnClient: client as never, yes: true })
+      retireCloudFormationStack({
+        cfnStackName: 'X',
+        cfnClient: client as never,
+        yes: true,
+        stateBucket: 'test-state-bucket',
+      })
     ).rejects.toThrow(/UPDATE_IN_PROGRESS.*not a stable terminal state/);
   });
 
@@ -284,7 +343,12 @@ describe('retireCloudFormationStack', () => {
     });
 
     await expect(
-      retireCloudFormationStack({ cfnStackName: 'GhostStack', cfnClient: client as never, yes: true })
+      retireCloudFormationStack({
+        cfnStackName: 'GhostStack',
+        cfnClient: client as never,
+        yes: true,
+        stateBucket: 'test-state-bucket',
+      })
     ).rejects.toThrow(/'GhostStack' not found/);
   });
 
@@ -299,10 +363,156 @@ describe('retireCloudFormationStack', () => {
       cfnStackName: 'X',
       cfnClient: client as never,
       yes: false,
+      stateBucket: 'test-state-bucket',
     });
 
     expect(result).toEqual({ outcome: 'cancelled' });
     expect(calls.map((c) => c.name)).toEqual(['DescribeStacks', 'GetTemplate']);
+  });
+
+  it('uploads to the state bucket and uses TemplateURL when the modified template exceeds 51,200 bytes', async () => {
+    // Build a template whose Retain-injected re-serialization is comfortably
+    // above the 51,200-byte inline limit. Padding lives in a non-special
+    // property to avoid tripping any validation.
+    const big = JSON.stringify({
+      Resources: Object.fromEntries(
+        Array.from({ length: 200 }, (_, i) => [
+          `R${i}`,
+          { Type: 'AWS::S3::Bucket', Properties: { Tag: 'x'.repeat(400) } },
+        ])
+      ),
+    });
+    const { client, calls } = buildCfnClient({
+      DescribeStacks: { Stacks: [{ StackStatus: 'CREATE_COMPLETE', Capabilities: [] }] },
+      GetTemplate: { TemplateBody: big },
+      UpdateStack: { StackId: 'arn:...' },
+      DeleteStack: {},
+    });
+
+    const result = await retireCloudFormationStack({
+      cfnStackName: 'BigStack',
+      cfnClient: client as never,
+      yes: true,
+      stateBucket: 'state-bucket',
+    });
+
+    expect(result).toEqual({ outcome: 'retired' });
+
+    // S3: PutObject then DeleteObject — both against the cdkd state bucket
+    // under the canonical migrate-tmp prefix.
+    expect(s3SendCalls.map((c) => c.name)).toEqual(['PutObject', 'DeleteObject']);
+    const put = s3SendCalls[0]!;
+    expect(put.input['Bucket']).toBe('state-bucket');
+    expect(String(put.input['Key'])).toMatch(/^cdkd-migrate-tmp\/BigStack\/\d+\.json$/);
+    expect(put.input['ContentType']).toBe('application/json');
+
+    // UpdateStack should use TemplateURL (NOT TemplateBody) and the URL must
+    // point at the bucket's actual region returned by resolveBucketRegion.
+    const updateCmd = calls.find((c) => c.name === 'UpdateStack')!;
+    expect(updateCmd.input['TemplateBody']).toBeUndefined();
+    const url = String(updateCmd.input['TemplateURL']);
+    expect(url).toMatch(
+      /^https:\/\/state-bucket\.s3\.eu-west-1\.amazonaws\.com\/cdkd-migrate-tmp\/BigStack\/\d+\.json$/
+    );
+    // DeleteObject targets the same key uploaded by PutObject.
+    expect(s3SendCalls[1]!.input['Key']).toBe(put.input['Key']);
+    // Region resolution actually ran (cached or not).
+    expect(resolveBucketRegionMock).toHaveBeenCalledWith('state-bucket', expect.anything());
+  });
+
+  it('still deletes the uploaded template when UpdateStack fails (cleanup is in finally)', async () => {
+    const big = JSON.stringify({
+      Resources: Object.fromEntries(
+        Array.from({ length: 200 }, (_, i) => [
+          `R${i}`,
+          { Type: 'AWS::S3::Bucket', Properties: { Tag: 'x'.repeat(400) } },
+        ])
+      ),
+    });
+    const { client } = buildCfnClient({
+      DescribeStacks: { Stacks: [{ StackStatus: 'CREATE_COMPLETE', Capabilities: [] }] },
+      GetTemplate: { TemplateBody: big },
+      UpdateStack: () => {
+        throw new Error('AccessDenied: nope');
+      },
+    });
+
+    await expect(
+      retireCloudFormationStack({
+        cfnStackName: 'BigFail',
+        cfnClient: client as never,
+        yes: true,
+        stateBucket: 'state-bucket',
+      })
+    ).rejects.toThrow(/AccessDenied/);
+
+    // Even though UpdateStack threw, the upload must have been deleted.
+    expect(s3SendCalls.map((c) => c.name)).toEqual(['PutObject', 'DeleteObject']);
+    expect(s3DestroyMock).toHaveBeenCalled();
+  });
+
+  it('logs a warning instead of throwing when DeleteObject cleanup itself fails', async () => {
+    const big = JSON.stringify({
+      Resources: Object.fromEntries(
+        Array.from({ length: 200 }, (_, i) => [
+          `R${i}`,
+          { Type: 'AWS::S3::Bucket', Properties: { Tag: 'x'.repeat(400) } },
+        ])
+      ),
+    });
+    s3SendMock.mockImplementation(async (cmd) => {
+      s3SendCalls.push({ name: cmd._name, input: cmd.input });
+      if (cmd._name === 'DeleteObject') throw new Error('S3 access denied on delete');
+      return {};
+    });
+    const { client } = buildCfnClient({
+      DescribeStacks: { Stacks: [{ StackStatus: 'CREATE_COMPLETE', Capabilities: [] }] },
+      GetTemplate: { TemplateBody: big },
+      UpdateStack: { StackId: 'arn:...' },
+      DeleteStack: {},
+    });
+
+    // The retire flow should still succeed — cleanup failure is best-effort.
+    const result = await retireCloudFormationStack({
+      cfnStackName: 'BigStack',
+      cfnClient: client as never,
+      yes: true,
+      stateBucket: 'state-bucket',
+    });
+    expect(result.outcome).toBe('retired');
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringMatching(/Failed to delete temporary template upload.*cdkd-migrate-tmp/)
+    );
+  });
+
+  it('rejects templates over the 1 MB CloudFormation TemplateURL limit with a clear error', async () => {
+    // Force injectRetainPolicies to produce a template larger than the
+    // 1,048,576-byte TemplateURL ceiling. The exact size doesn't matter — we
+    // just need the re-serialized output to exceed that.
+    const huge = JSON.stringify({
+      Resources: Object.fromEntries(
+        Array.from({ length: 1500 }, (_, i) => [
+          `R${i}`,
+          { Type: 'AWS::S3::Bucket', Properties: { Tag: 'x'.repeat(800) } },
+        ])
+      ),
+    });
+    const { client } = buildCfnClient({
+      DescribeStacks: { Stacks: [{ StackStatus: 'CREATE_COMPLETE', Capabilities: [] }] },
+      GetTemplate: { TemplateBody: huge },
+    });
+
+    await expect(
+      retireCloudFormationStack({
+        cfnStackName: 'HugeStack',
+        cfnClient: client as never,
+        yes: true,
+        stateBucket: 'state-bucket',
+      })
+    ).rejects.toThrow(/exceeds the CloudFormation UpdateStack TemplateURL limit \(1048576\)/);
+
+    // No S3 round-trips when we reject up front.
+    expect(s3SendCalls).toHaveLength(0);
   });
 });
 

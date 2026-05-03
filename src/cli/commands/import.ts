@@ -490,6 +490,12 @@ async function importCommand(stackArg: string | undefined, options: ImportOption
           cfnStackName: migrationCfnStackName,
           cfnClient: awsClients.cloudFormation,
           yes: options.yes,
+          // Reuse cdkd's state bucket as transient storage for the
+          // Retain-injected template when it exceeds the 51,200-byte
+          // inline UpdateStack limit. Forward `--profile` so the
+          // upload identity matches the one that just wrote cdkd state.
+          stateBucket,
+          ...(options.profile && { s3ClientOpts: { profile: options.profile } }),
         });
       }
     } finally {

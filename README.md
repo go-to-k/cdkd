@@ -780,15 +780,26 @@ cdkd import MyStack --migrate-from-cloudformation LegacyCfnStackName --yes
 
 Limitations:
 
-- **JSON-only.** The Retain-policy injection in step 4 targets the CDK-
-  generated JSON template. Hand-written YAML CFn stacks fail with a
-  clear error; retire them manually.
-- **51,200-byte template limit.** The modified template is submitted
-  inline via `TemplateBody`. Stacks whose modified template exceeds
-  this limit fail in step 4 with a clear error pointing to the manual
-  3-step procedure (S3-backed `TemplateURL` fallback is a planned
-  follow-up). cdkd state has already been written at that point, so
-  re-runs and manual cleanup are both supported.
+- **JSON-only.** The Retain-policy injection in step 4 targets the
+  CDK-generated JSON template. The expected upstream is `cdk migrate`
+  (whose synthesized output is JSON) followed by `cdk deploy` /
+  `cdkd deploy` — also JSON. Adding YAML support would require parsing
+  CloudFormation shorthand intrinsics (`!Ref`, `!Sub`, `!GetAtt`, …)
+  which round-trip incorrectly through generic YAML libraries (a
+  generic unmarshal/remarshal silently strips the custom tags and
+  corrupts the template). Until a CFn-aware YAML codec is in scope,
+  hand-written YAML stacks fail with a clear error and are best
+  retired with the manual 3-step procedure.
+- **1 MB template limit.** Templates up to the inline 51,200-byte
+  `TemplateBody` ceiling are submitted directly. Larger templates are
+  uploaded to the cdkd state bucket under
+  `cdkd-migrate-tmp/<stack>/<timestamp>.json` and submitted via
+  `TemplateURL`; the transient object is deleted in a `finally`
+  immediately after `UpdateStack`. Templates over the 1 MB
+  CloudFormation `TemplateURL` ceiling are structurally
+  unsubmittable — cdkd fails with a clear error. cdkd state has
+  already been written at that point, so re-runs and manual cleanup
+  are both supported.
 - **Not compatible with `--dry-run`.** The post-state-write
   `UpdateStack` + `DeleteStack` are real side-effects and cannot be
   faithfully simulated. Use plain `cdkd import --dry-run` to preview
