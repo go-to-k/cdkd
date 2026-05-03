@@ -332,6 +332,7 @@ registry.register('AWS::IAM::Role', new IAMRoleProvider());
 2. Implement `ResourceProvider` interface
 3. Register in `src/provisioning/register-providers.ts` within the `registerAllProviders()` function
 4. Write tests
+5. Add the resource type to [docs/supported-resources.md](docs/supported-resources.md) (deploy/manage capability table) AND to [docs/import.md](docs/import.md) (import-side coverage: auto-lookup vs override-only vs sub-resource)
 
 See [docs/provider-development.md](docs/provider-development.md) for details.
 
@@ -355,6 +356,7 @@ See [docs/provider-development.md](docs/provider-development.md) for details.
 - **[docs/architecture.md](docs/architecture.md)** - Detailed architecture, deploy flows, design principles, end-to-end pipeline walkthrough
 - **[docs/state-management.md](docs/state-management.md)** - S3 state structure, locking mechanism, troubleshooting
 - **[docs/cli-reference.md](docs/cli-reference.md)** - CLI flag details (concurrency, --no-wait, per-resource timeout)
+- **[docs/supported-resources.md](docs/supported-resources.md)** - Full per-type SDK Provider / Cloud Control coverage table
 - **[docs/import.md](docs/import.md)** - `cdkd import` full guide (modes, flags, CFn migration, provider coverage)
 - **[docs/provider-development.md](docs/provider-development.md)** - Provider implementation guide, best practices
 - **[docs/troubleshooting.md](docs/troubleshooting.md)** - Common issues and solutions
