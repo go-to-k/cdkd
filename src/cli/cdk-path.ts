@@ -23,9 +23,13 @@ export function readCdkPath(resource: TemplateResource): string {
  * logical IDs that the rest of the pipeline (state, dependency analysis,
  * provider lookup) is keyed on.
  *
- * Resources without a `aws:cdk:path` metadata entry are silently skipped:
- * the AWS::CDK::Metadata sentinel never has one, and any other resource
- * without a path can't be addressed by construct path anyway.
+ * `AWS::CDK::Metadata` resources are excluded — the synthesized
+ * `<Stack>/CDKMetadata/Default` sentinel exists in every stack but is
+ * never user-managed, so listing it as an "available path" in the
+ * not-found error is just noise and orphaning it is meaningless.
+ *
+ * Resources without a `aws:cdk:path` metadata entry are silently skipped
+ * for the same reason — they cannot be addressed by construct path.
  *
  * In practice each path maps to a single logical ID. If the same path
  * happens to appear twice (which would itself be a bug in the synthesized
@@ -36,8 +40,38 @@ export function readCdkPath(resource: TemplateResource): string {
 export function buildCdkPathIndex(template: CloudFormationTemplate): Map<string, string> {
   const index = new Map<string, string>();
   for (const [logicalId, resource] of Object.entries(template.Resources)) {
+    if (resource.Type === 'AWS::CDK::Metadata') continue;
     const path = readCdkPath(resource);
     if (path) index.set(path, logicalId);
   }
   return index;
+}
+
+/**
+ * Resolve a user-supplied construct path to every logical ID it covers.
+ *
+ * Mirrors `cdk orphan --unstable=orphan` (`packages/@aws-cdk/toolkit-lib/
+ * lib/api/orphan/orphaner.ts` line 90 in aws-cdk-cli): users typically
+ * pass an L2 path like `MyStack/MyConstruct/MyBucket` rather than the
+ * synthesized L1 path `MyStack/MyConstruct/MyBucket/Resource`, and an L2
+ * with multiple children (e.g. a CDK pattern that wraps several CFn
+ * resources) should orphan all of them in one go.
+ *
+ * Match rule: a resource matches `input` when its `aws:cdk:path` is
+ * exactly `input` OR starts with `${input}/`. The trailing slash matters
+ * — without it `MyStack/MyBucket` would also match
+ * `MyStack/MyBucketBackup/Resource`.
+ */
+export function resolveCdkPathToLogicalIds(
+  input: string,
+  index: Map<string, string>
+): { logicalId: string; cdkPath: string }[] {
+  const seen = new Map<string, string>();
+  const prefix = `${input}/`;
+  for (const [path, logicalId] of index) {
+    if (path === input || path.startsWith(prefix)) {
+      if (!seen.has(logicalId)) seen.set(logicalId, path);
+    }
+  }
+  return [...seen.entries()].map(([logicalId, cdkPath]) => ({ logicalId, cdkPath }));
 }

@@ -19,7 +19,7 @@ import { setAwsClients, AwsClients } from '../../utils/aws-clients.js';
 import { resolveApp, resolveStateBucketWithDefault } from '../config-loader.js';
 import { ProviderRegistry } from '../../provisioning/provider-registry.js';
 import { registerAllProviders } from '../../provisioning/register-providers.js';
-import { buildCdkPathIndex } from '../cdk-path.js';
+import { buildCdkPathIndex, resolveCdkPathToLogicalIds } from '../cdk-path.js';
 import {
   rewriteResourceReferences,
   type OrphanRewrite,
@@ -312,18 +312,23 @@ function resolveConstructPaths(
       );
     }
 
-    const cdkPath = p; // The full input is what CDK puts in `aws:cdk:path`.
+    // Match the input as an L2 path (orphan everything under it) OR an
+    // exact L1 path. Mirrors upstream `cdk orphan --unstable=orphan`'s
+    // prefix-match strategy so users can pass `MyStack/MyConstruct/Bucket`
+    // instead of the synthesized `MyStack/MyConstruct/Bucket/Resource`.
     const index = buildCdkPathIndex(candidate.template);
-    const logicalId = index.get(cdkPath);
-    if (!logicalId) {
+    const matches = resolveCdkPathToLogicalIds(p, index);
+    if (matches.length === 0) {
       const available = [...index.keys()].sort().join('\n  ');
       throw new Error(
-        `Construct path '${cdkPath}' not found in template for stack '${candidate.stackName}'.\n` +
+        `Construct path '${p}' not found in template for stack '${candidate.stackName}'.\n` +
           `Available paths:\n  ${available}`
       );
     }
-    if (!logicalIds.includes(logicalId)) {
-      logicalIds.push(logicalId);
+    for (const { logicalId } of matches) {
+      if (!logicalIds.includes(logicalId)) {
+        logicalIds.push(logicalId);
+      }
     }
   }
 

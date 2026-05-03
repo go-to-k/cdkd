@@ -114,14 +114,23 @@ async function runOrphan(args: string[]): Promise<string> {
   return cap.output.join('');
 }
 
-function templateWith(metadata: Record<string, string>): {
-  Resources: Record<string, { Type: string; Metadata: { 'aws:cdk:path': string } }>;
+function templateWith(
+  metadata: Record<string, string>,
+  extras: Record<string, { Type: string; cdkPath?: string }> = {}
+): {
+  Resources: Record<string, { Type: string; Metadata?: { 'aws:cdk:path': string } }>;
 } {
-  const Resources: Record<string, { Type: string; Metadata: { 'aws:cdk:path': string } }> = {};
+  const Resources: Record<string, { Type: string; Metadata?: { 'aws:cdk:path': string } }> = {};
   for (const [logicalId, path] of Object.entries(metadata)) {
     Resources[logicalId] = {
       Type: 'AWS::S3::Bucket',
       Metadata: { 'aws:cdk:path': path },
+    };
+  }
+  for (const [logicalId, { Type, cdkPath }] of Object.entries(extras)) {
+    Resources[logicalId] = {
+      Type,
+      ...(cdkPath !== undefined && { Metadata: { 'aws:cdk:path': cdkPath } }),
     };
   }
   return { Resources };
@@ -358,6 +367,128 @@ describe('cdkd orphan (per-resource)', () => {
     expect(mockGetState).toHaveBeenLastCalledWith('MyStack', 'us-west-2');
     expect(mockSaveState).toHaveBeenCalledTimes(1);
     expect(mockSaveState.mock.calls[0]?.[1]).toBe('us-west-2');
+  });
+
+  it('resolves an L2 construct path to the synthesized L1 child resource', async () => {
+    // The user passes the L2 path (`MyStack/MyConstruct/MyBucket2`) but the
+    // template's `aws:cdk:path` carries the synthesized L1 form
+    // (`.../MyBucket2/Resource`). Mirrors `cdk orphan --unstable=orphan`.
+    mockSynthesize.mockResolvedValue({
+      stacks: [
+        {
+          stackName: 'MyStack',
+          displayName: 'MyStack',
+          template: templateWith({
+            Bucket1Resource: 'MyStack/MyConstruct/MyBucket1/Resource',
+            Bucket2Resource: 'MyStack/MyConstruct/MyBucket2/Resource',
+          }),
+          region: 'us-east-1',
+        },
+      ],
+    });
+    mockListStacks.mockResolvedValue([{ stackName: 'MyStack', region: 'us-east-1' }]);
+    mockGetState.mockResolvedValue({
+      state: {
+        version: 2,
+        stackName: 'MyStack',
+        region: 'us-east-1',
+        resources: {
+          Bucket1Resource: { physicalId: 'b1', resourceType: 'AWS::S3::Bucket', properties: {} },
+          Bucket2Resource: { physicalId: 'b2', resourceType: 'AWS::S3::Bucket', properties: {} },
+        },
+        outputs: {},
+        lastModified: 0,
+      },
+      etag: '"e"',
+    });
+
+    await runOrphan(['MyStack/MyConstruct/MyBucket2', '--app', 'noop', '--yes']);
+
+    expect(mockSaveState).toHaveBeenCalledTimes(1);
+    const [[, , savedState]] = mockSaveState.mock.calls;
+    expect(savedState.resources.Bucket2Resource).toBeUndefined();
+    expect(savedState.resources.Bucket1Resource).toBeDefined();
+  });
+
+  it('orphans every child under an L2 wrapper construct in one call', async () => {
+    mockSynthesize.mockResolvedValue({
+      stacks: [
+        {
+          stackName: 'MyStack',
+          displayName: 'MyStack',
+          template: templateWith({
+            Bucket1Resource: 'MyStack/MyConstruct/MyBucket1/Resource',
+            Bucket2Resource: 'MyStack/MyConstruct/MyBucket2/Resource',
+            Other: 'MyStack/Other',
+          }),
+          region: 'us-east-1',
+        },
+      ],
+    });
+    mockListStacks.mockResolvedValue([{ stackName: 'MyStack', region: 'us-east-1' }]);
+    mockGetState.mockResolvedValue({
+      state: {
+        version: 2,
+        stackName: 'MyStack',
+        region: 'us-east-1',
+        resources: {
+          Bucket1Resource: { physicalId: 'b1', resourceType: 'AWS::S3::Bucket', properties: {} },
+          Bucket2Resource: { physicalId: 'b2', resourceType: 'AWS::S3::Bucket', properties: {} },
+          Other: { physicalId: 'o', resourceType: 'AWS::S3::Bucket', properties: {} },
+        },
+        outputs: {},
+        lastModified: 0,
+      },
+      etag: '"e"',
+    });
+
+    await runOrphan(['MyStack/MyConstruct', '--app', 'noop', '--yes']);
+
+    const [[, , savedState]] = mockSaveState.mock.calls;
+    expect(savedState.resources.Bucket1Resource).toBeUndefined();
+    expect(savedState.resources.Bucket2Resource).toBeUndefined();
+    expect(savedState.resources.Other).toBeDefined();
+  });
+
+  it('omits AWS::CDK::Metadata from the available-paths error and refuses to orphan it', async () => {
+    mockSynthesize.mockResolvedValue({
+      stacks: [
+        {
+          stackName: 'MyStack',
+          displayName: 'MyStack',
+          template: templateWith(
+            { Bucket: 'MyStack/Bucket' },
+            {
+              CDKMetadata: { Type: 'AWS::CDK::Metadata', cdkPath: 'MyStack/CDKMetadata/Default' },
+            }
+          ),
+          region: 'us-east-1',
+        },
+      ],
+    });
+    mockListStacks.mockResolvedValue([{ stackName: 'MyStack', region: 'us-east-1' }]);
+    mockGetState.mockResolvedValue({
+      state: {
+        version: 2,
+        stackName: 'MyStack',
+        region: 'us-east-1',
+        resources: { Bucket: { physicalId: 'b', resourceType: 'AWS::S3::Bucket', properties: {} } },
+        outputs: {},
+        lastModified: 0,
+      },
+      etag: '"e"',
+    });
+
+    await expect(
+      runOrphan(['MyStack/CDKMetadata/Default', '--app', 'noop', '--yes'])
+    ).rejects.toThrow();
+    const message = String(errorSpy.mock.calls[0]?.[0] ?? '');
+    expect(message).toMatch(/Construct path 'MyStack\/CDKMetadata\/Default' not found/);
+    // Available-paths list must NOT mention the CDKMetadata path.
+    const availableSection = message.split('Available paths:')[1] ?? '';
+    expect(availableSection).not.toMatch(/CDKMetadata/);
+    expect(availableSection).toMatch(/MyStack\/Bucket/);
+    expect(mockSaveState).not.toHaveBeenCalled();
   });
 
   it('cancels when the user answers empty at the confirmation prompt', async () => {
