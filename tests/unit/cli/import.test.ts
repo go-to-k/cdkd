@@ -34,10 +34,24 @@ vi.mock('../../../src/utils/aws-clients.ts', () => ({
     get s3() {
       return {};
     },
+    get cloudFormation() {
+      return {};
+    },
     destroy: vi.fn(),
   })),
   setAwsClients: vi.fn(),
   getAwsClients: vi.fn(),
+}));
+
+const mockRetireCloudFormationStack = vi.hoisted(() =>
+  vi.fn<(...args: unknown[]) => Promise<{ outcome: string }>>()
+);
+const mockGetCfnResourceMapping = vi.hoisted(() =>
+  vi.fn<(...args: unknown[]) => Promise<Map<string, string>>>()
+);
+vi.mock('../../../src/cli/commands/retire-cfn-stack.js', () => ({
+  retireCloudFormationStack: mockRetireCloudFormationStack,
+  getCloudFormationResourceMapping: mockGetCfnResourceMapping,
 }));
 
 const mockVerifyBucketExists = vi.fn<() => Promise<void>>();
@@ -167,6 +181,10 @@ describe('cdkd import', () => {
     mockGetProvider.mockReset();
     readlineQuestion.mockReset();
     readlineClose.mockReset();
+    mockRetireCloudFormationStack.mockReset();
+    mockRetireCloudFormationStack.mockResolvedValue({ outcome: 'retired' });
+    mockGetCfnResourceMapping.mockReset();
+    mockGetCfnResourceMapping.mockResolvedValue(new Map());
     errorSpy.mockReset();
     infoSpy.mockReset();
     warnSpy.mockReset();
@@ -1110,6 +1128,221 @@ describe('cdkd import', () => {
       // Outputs are still inherited (they are never derived from the import flow,
       // so the auto-mode rebuild has no reason to wipe them).
       expect(state.outputs).toEqual({ ExistingOutput: 'preserved' });
+    });
+  });
+
+  describe('--migrate-from-cloudformation', () => {
+    const oneResource = () =>
+      template({
+        MyBucket: {
+          Type: 'AWS::S3::Bucket',
+          Properties: {},
+          Metadata: { 'aws:cdk:path': 'S/MyBucket' },
+        },
+      });
+
+    function setupHappyPath(cfnPhysical = 'cfn-resolved-bucket'): {
+      importSpy: ReturnType<typeof vi.fn>;
+    } {
+      mockSynthesize.mockResolvedValue({ stacks: [stackInfo('S', oneResource())] });
+      mockHasProvider.mockReturnValue(true);
+      const importSpy = vi.fn(async () => ({ physicalId: cfnPhysical, attributes: {} }));
+      mockGetProvider.mockReturnValue({ import: importSpy });
+      mockGetCfnResourceMapping.mockResolvedValue(new Map([['MyBucket', cfnPhysical]]));
+      return { importSpy };
+    }
+
+    it('does not invoke either CFn helper when the flag is omitted', async () => {
+      setupHappyPath();
+      await runImport(['import', '--app', 'x', '--yes']);
+      expect(mockGetCfnResourceMapping).not.toHaveBeenCalled();
+      expect(mockRetireCloudFormationStack).not.toHaveBeenCalled();
+    });
+
+    it('resolves CFn physical IDs and retires using the cdkd stack name by default', async () => {
+      const { importSpy } = setupHappyPath('cfn-bucket-physical');
+      await runImport(['import', '--app', 'x', '--yes', '--migrate-from-cloudformation']);
+
+      // Physical IDs resolved from CFn before the import loop.
+      expect(mockGetCfnResourceMapping).toHaveBeenCalledTimes(1);
+      expect(mockGetCfnResourceMapping.mock.calls[0]![0]).toBe('S');
+      // Each provider import received the CFn-resolved physical id as
+      // `knownPhysicalId` — without --resource on the CLI.
+      expect(importSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          logicalId: 'MyBucket',
+          knownPhysicalId: 'cfn-bucket-physical',
+        })
+      );
+      // Retirement runs with the same stack name.
+      expect(mockRetireCloudFormationStack).toHaveBeenCalledTimes(1);
+      const arg = mockRetireCloudFormationStack.mock.calls[0]![0] as {
+        cfnStackName: string;
+        yes: boolean;
+      };
+      expect(arg.cfnStackName).toBe('S');
+      expect(arg.yes).toBe(true);
+    });
+
+    it('uses the explicit value when --migrate-from-cloudformation <name> is given', async () => {
+      setupHappyPath();
+      await runImport([
+        'import',
+        '--app',
+        'x',
+        '--yes',
+        '--migrate-from-cloudformation',
+        'LegacyCfnName',
+      ]);
+
+      // Both CFn calls target the explicit name.
+      expect(mockGetCfnResourceMapping.mock.calls[0]![0]).toBe('LegacyCfnName');
+      const retireArg = mockRetireCloudFormationStack.mock.calls[0]![0] as {
+        cfnStackName: string;
+      };
+      expect(retireArg.cfnStackName).toBe('LegacyCfnName');
+    });
+
+    it('user --resource overrides take precedence over CFn-derived physical IDs', async () => {
+      const tmpl = oneResource();
+      mockSynthesize.mockResolvedValue({ stacks: [stackInfo('S', tmpl)] });
+      mockHasProvider.mockReturnValue(true);
+      const importSpy = vi.fn(async () => ({ physicalId: 'user-said', attributes: {} }));
+      mockGetProvider.mockReturnValue({ import: importSpy });
+      mockGetCfnResourceMapping.mockResolvedValue(new Map([['MyBucket', 'cfn-said']]));
+
+      await runImport([
+        'import',
+        '--app',
+        'x',
+        '--resource',
+        'MyBucket=user-said',
+        '--migrate-from-cloudformation',
+        '--yes',
+      ]);
+
+      // The provider gets the user-supplied id, not the CFn-derived one.
+      expect(importSpy).toHaveBeenCalledWith(
+        expect.objectContaining({ logicalId: 'MyBucket', knownPhysicalId: 'user-said' })
+      );
+    });
+
+    it('does not flip into selective mode when only --migrate-from-cloudformation is set', async () => {
+      // Two template resources, both resolved by CFn. Without selective-mode
+      // suppression, the populated `overrides` would otherwise force
+      // selective mode and skip everything as out-of-scope.
+      const tmpl = template({
+        MyBucket: {
+          Type: 'AWS::S3::Bucket',
+          Properties: {},
+          Metadata: { 'aws:cdk:path': 'S/MyBucket' },
+        },
+        MyTopic: {
+          Type: 'AWS::SNS::Topic',
+          Properties: {},
+          Metadata: { 'aws:cdk:path': 'S/MyTopic' },
+        },
+      });
+      mockSynthesize.mockResolvedValue({ stacks: [stackInfo('S', tmpl)] });
+      mockHasProvider.mockReturnValue(true);
+      const bucketImport = vi.fn(async () => ({ physicalId: 'b', attributes: {} }));
+      const topicImport = vi.fn(async () => ({ physicalId: 't', attributes: {} }));
+      mockGetProvider.mockImplementation((type: string) => {
+        if (type === 'AWS::S3::Bucket') return { import: bucketImport };
+        if (type === 'AWS::SNS::Topic') return { import: topicImport };
+        return {};
+      });
+      mockGetCfnResourceMapping.mockResolvedValue(
+        new Map([
+          ['MyBucket', 'b-physical'],
+          ['MyTopic', 't-physical'],
+        ])
+      );
+
+      await runImport(['import', '--app', 'x', '--yes', '--migrate-from-cloudformation']);
+
+      // Both providers ran (auto mode), neither resource was reported
+      // out-of-scope.
+      expect(bucketImport).toHaveBeenCalledTimes(1);
+      expect(topicImport).toHaveBeenCalledTimes(1);
+      const summaryCall = infoSpy.mock.calls.find((c) =>
+        String(c[0]).startsWith('Summary:')
+      );
+      expect(String(summaryCall?.[0])).toMatch(/0 out of scope/);
+    });
+
+    it('orders the calls correctly: CFn mapping → import → save → retire', async () => {
+      const { importSpy } = setupHappyPath();
+      await runImport(['import', '--app', 'x', '--yes', '--migrate-from-cloudformation']);
+
+      const mapOrder = mockGetCfnResourceMapping.mock.invocationCallOrder[0]!;
+      const importOrder = importSpy.mock.invocationCallOrder[0]!;
+      const saveOrder = mockSaveState.mock.invocationCallOrder[0]!;
+      const retireOrder = mockRetireCloudFormationStack.mock.invocationCallOrder[0]!;
+
+      expect(mapOrder).toBeLessThan(importOrder);
+      expect(importOrder).toBeLessThan(saveOrder);
+      expect(saveOrder).toBeLessThan(retireOrder);
+    });
+
+    it('does not retire when state write was skipped (zero successful imports)', async () => {
+      // Empty template ⇒ zero imports ⇒ no state write ⇒ no retirement.
+      mockSynthesize.mockResolvedValue({ stacks: [stackInfo('S', template({}))] });
+      mockHasProvider.mockReturnValue(false);
+
+      await runImport(['import', '--app', 'x', '--yes', '--migrate-from-cloudformation']);
+
+      // CFn mapping still resolved (we paid the round-trip), but neither
+      // saveState nor retire ran.
+      expect(mockSaveState).not.toHaveBeenCalled();
+      expect(mockRetireCloudFormationStack).not.toHaveBeenCalled();
+    });
+
+    it('warns when a partial import leaves resources unmanaged after retirement', async () => {
+      // Two-resource template, only one provider; the unimported resource
+      // becomes an AWS orphan once the CFn stack is retired.
+      const tmpl = template({
+        MyBucket: {
+          Type: 'AWS::S3::Bucket',
+          Properties: {},
+          Metadata: { 'aws:cdk:path': 'S/MyBucket' },
+        },
+        Untouched: {
+          Type: 'AWS::Foo::Bar', // no provider
+          Properties: {},
+        },
+      });
+      mockSynthesize.mockResolvedValue({ stacks: [stackInfo('S', tmpl)] });
+      mockHasProvider.mockImplementation((t: string) => t !== 'AWS::Foo::Bar');
+      mockGetProvider.mockReturnValue({
+        import: vi.fn(async () => ({ physicalId: 'b', attributes: {} })),
+      });
+      mockGetCfnResourceMapping.mockResolvedValue(
+        new Map([
+          ['MyBucket', 'b-physical'],
+          ['Untouched', 'u-physical'],
+        ])
+      );
+
+      await runImport(['import', '--app', 'x', '--yes', '--migrate-from-cloudformation']);
+
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.stringMatching(/1 of 2 template resource\(s\) were NOT imported/)
+      );
+      // Retirement still runs (warning is informational, not a refusal).
+      expect(mockRetireCloudFormationStack).toHaveBeenCalledTimes(1);
+    });
+
+    it('rejects --dry-run combined with --migrate-from-cloudformation', async () => {
+      setupHappyPath();
+
+      await expect(
+        runImport(['import', '--app', 'x', '--migrate-from-cloudformation', '--dry-run'])
+      ).rejects.toThrow();
+      expect(errorSpy.mock.calls[0]?.[0]).toMatch(/not compatible with --dry-run/);
+      // Reject at parse time — never hit AWS.
+      expect(mockGetCfnResourceMapping).not.toHaveBeenCalled();
+      expect(mockRetireCloudFormationStack).not.toHaveBeenCalled();
     });
   });
 });

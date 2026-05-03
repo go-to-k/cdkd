@@ -19,6 +19,7 @@ import { setAwsClients, AwsClients } from '../../utils/aws-clients.js';
 import { TemplateParser } from '../../analyzer/template-parser.js';
 import { resolveApp, resolveStateBucketWithDefault } from '../config-loader.js';
 import { readCdkPath } from '../cdk-path.js';
+import { retireCloudFormationStack, getCloudFormationResourceMapping } from './retire-cfn-stack.js';
 import type {
   CloudFormationTemplate,
   ResourceImportInput,
@@ -62,6 +63,15 @@ interface ImportOptions {
   force: boolean;
   verbose: boolean;
   context?: string[];
+  /**
+   * After successfully writing cdkd state, retire the named CloudFormation
+   * stack: inject `DeletionPolicy: Retain` + `UpdateReplacePolicy: Retain`
+   * on every resource via UpdateStack, then DeleteStack. AWS resources are
+   * left intact (now solely managed by cdkd). Pass `true` to use the cdkd
+   * stack name as the CFn stack name (the common case for CDK-deployed
+   * stacks); pass a string to override when the CFn stack name differs.
+   */
+  migrateFromCloudformation?: boolean | string;
 }
 
 /**
@@ -180,6 +190,74 @@ async function importCommand(stackArg: string | undefined, options: ImportOption
       logger.debug(`User-supplied physical IDs: ${[...overrides.keys()].join(', ')}`);
     }
 
+    // Resolve the CloudFormation stack name we're migrating off, when the
+    // user opted in. Done up front so we can populate overrides BEFORE the
+    // selective-mode decision below.
+    const migrationCfnStackName = options.migrateFromCloudformation
+      ? typeof options.migrateFromCloudformation === 'string' &&
+        options.migrateFromCloudformation.length > 0
+        ? options.migrateFromCloudformation
+        : stackInfo.stackName
+      : undefined;
+    if (options.migrateFromCloudformation && options.dryRun) {
+      throw new Error(
+        '--migrate-from-cloudformation is not compatible with --dry-run: ' +
+          'the post-state-write retirement (UpdateStack + DeleteStack) issues real AWS calls. ' +
+          'Use plain `cdkd import --dry-run` to preview the import in isolation.'
+      );
+    }
+    // Compute the importable-template set up front. We need it both for
+    // the existing-state guard's selective-mode decision below AND for
+    // filtering the CFn-derived migration mapping (CFn knows about
+    // sentinel resources like `AWS::CDK::Metadata` that cdkd silently
+    // skips on import — those mustn't be merged into `overrides` or the
+    // typo-validation step would reject them).
+    const template = stackInfo.template;
+    const templateParser = new TemplateParser();
+    const resources = collectImportableResources(template);
+    const templateLogicalIds = new Set(resources.map((r) => r.logicalId));
+    logger.info(`Found ${resources.length} resource(s) in template`);
+
+    if (migrationCfnStackName) {
+      // Pre-populate overrides from the source CFn stack via a single
+      // `DescribeStackResources` call. This is the load-bearing piece that
+      // makes `cdk deploy`-managed stacks importable by cdkd without per-
+      // resource `--resource <id>=<physical>` flags: cdkd's tag-based auto-
+      // lookup can't find those resources (upstream `cdk deploy` doesn't
+      // propagate `aws:cdk:path` as a real AWS tag, and AWS reserves the
+      // `aws:` tag prefix so we can't add it on the way through either),
+      // so we ask CloudFormation directly. User-supplied `--resource` /
+      // `--resource-mapping` entries take precedence — they were inserted
+      // into `overrides` first. Logical IDs CFn knows about but cdkd's
+      // import skips (e.g. `AWS::CDK::Metadata`) are filtered out here.
+      logger.info(`Resolving physical IDs from CloudFormation stack '${migrationCfnStackName}'...`);
+      const cfnMapping = await getCloudFormationResourceMapping(
+        migrationCfnStackName,
+        awsClients.cloudFormation
+      );
+      let derived = 0;
+      let skippedNonImportable = 0;
+      for (const [logicalId, physicalId] of cfnMapping) {
+        if (!templateLogicalIds.has(logicalId)) {
+          skippedNonImportable++;
+          continue;
+        }
+        if (!overrides.has(logicalId)) {
+          overrides.set(logicalId, physicalId);
+          derived++;
+        }
+      }
+      const overriddenByUser = cfnMapping.size - derived - skippedNonImportable;
+      const detail: string[] = [];
+      if (overriddenByUser > 0) detail.push(`${overriddenByUser} already overridden by --resource`);
+      if (skippedNonImportable > 0)
+        detail.push(`${skippedNonImportable} non-importable (e.g. CDKMetadata)`);
+      logger.info(
+        `Resolved ${derived} physical ID(s) from CloudFormation` +
+          (detail.length > 0 ? ` (${detail.join(', ')})` : '')
+      );
+    }
+
     // Selective vs auto mode. CDK CLI parity: when the user passes
     // `--resource X=Y` (or `--resource-mapping`), only those resources are
     // imported; the rest are skipped (and will be CREATEd on the next
@@ -187,7 +265,11 @@ async function importCommand(stackArg: string | undefined, options: ImportOption
     // overrides PLUS tag-based auto-import for everything else — with
     // `--auto`. With no overrides at all, auto mode is implied (the user
     // is asking cdkd to find every resource by tag).
-    const selectiveMode = overrides.size > 0 && !options.auto;
+    //
+    // `--migrate-from-cloudformation` always implies whole-stack auto mode:
+    // every CFn-derived override is part of the same migration intent, so
+    // the user shouldn't need to also pass `--auto` to avoid selective mode.
+    const selectiveMode = overrides.size > 0 && !options.auto && !options.migrateFromCloudformation;
     if (selectiveMode) {
       logger.info(
         `Selective mode: only importing the ${overrides.size} resource(s) you listed ` +
@@ -255,16 +337,12 @@ async function importCommand(stackArg: string | undefined, options: ImportOption
       }
     }
 
-    const template = stackInfo.template;
-    const templateParser = new TemplateParser();
-    const resources = collectImportableResources(template);
-
-    logger.info(`Found ${resources.length} resource(s) in template`);
-
     // Validate that every override key actually exists in the template —
     // a typo'd logical ID would otherwise be silently ignored in selective
     // mode and the user wouldn't know why their import "did nothing".
-    const templateLogicalIds = new Set(resources.map((r) => r.logicalId));
+    // (`template` / `resources` / `templateLogicalIds` are computed
+    // earlier so the migration block can filter out non-importable IDs
+    // before they land in `overrides`.)
     for (const overrideId of overrides.keys()) {
       if (!templateLogicalIds.has(overrideId)) {
         throw new Error(
@@ -385,6 +463,35 @@ async function importCommand(stackArg: string | undefined, options: ImportOption
         `  ${importedRows.length} resource(s) imported. ` +
           `Run 'cdkd diff' to see how the imported state lines up with the template.`
       );
+
+      // Optional: retire the source CloudFormation stack now that cdkd state
+      // is committed. Done AFTER state write so a failure here leaves the
+      // user with a working cdkd state record they can re-run against, or
+      // fall back to retiring the CFn stack manually. Stays inside the
+      // lock-protected `try` block so a concurrent `cdkd deploy` can't race
+      // the post-write CFn calls.
+      if (migrationCfnStackName) {
+        // Partial-import warning: some template resources didn't make it
+        // into cdkd state (AWS-not-found, no provider, or out-of-scope).
+        // After DeleteStack those resources keep existing in AWS but are
+        // unmanaged by both CFn (Retain causes DeleteStack to skip them)
+        // AND cdkd (never written to state). Surface that out loud so the
+        // user can either re-import or accept the orphaning intentionally.
+        const orphaned = resources.length - importedRows.length;
+        if (orphaned > 0) {
+          logger.warn(
+            `--migrate-from-cloudformation: ${orphaned} of ${resources.length} ` +
+              `template resource(s) were NOT imported into cdkd. After the ` +
+              `CloudFormation stack is retired, those resources remain in AWS ` +
+              `but are unmanaged by both CloudFormation and cdkd.`
+          );
+        }
+        await retireCloudFormationStack({
+          cfnStackName: migrationCfnStackName,
+          cfnClient: awsClients.cloudFormation,
+          yes: options.yes,
+        });
+      }
     } finally {
       await lockManager.releaseLock(stackInfo.stackName, targetRegion).catch((err) => {
         logger.warn(`Failed to release lock: ${err instanceof Error ? err.message : String(err)}`);
@@ -804,6 +911,16 @@ export function createImportCommand(): Command {
         'in selective mode if a listed override would overwrite a resource already in state. ' +
         'Not needed for a pure selective merge (adding new resources without touching unlisted entries).',
       false
+    )
+    .option(
+      '--migrate-from-cloudformation [cfn-stack-name]',
+      'After cdkd state is written, retire the named CloudFormation stack ' +
+        '(deletes the CFn stack record; AWS resources are NOT deleted): ' +
+        'inject DeletionPolicy=Retain and UpdateReplacePolicy=Retain on every ' +
+        'resource via UpdateStack, then DeleteStack. cdkd takes over management. ' +
+        'Pass without a value to use the cdkd stack name as the CFn stack name ' +
+        '(the typical case for a CDK app that was previously deployed via ' +
+        '`cdk deploy`); pass an explicit value when the CFn stack name differs.'
     )
     .action(withErrorHandling(importCommand));
 
