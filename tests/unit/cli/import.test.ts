@@ -41,12 +41,17 @@ vi.mock('../../../src/utils/aws-clients.ts', () => ({
 }));
 
 const mockVerifyBucketExists = vi.fn<() => Promise<void>>();
-const mockStateExists = vi.fn<(s: string, r: string) => Promise<boolean>>();
+const mockGetState = vi.fn<
+  (
+    s: string,
+    r: string
+  ) => Promise<{ state: unknown; etag: string; migrationPending?: boolean } | null>
+>();
 const mockSaveState = vi.fn<(...args: unknown[]) => Promise<string>>();
 vi.mock('../../../src/state/s3-state-backend.js', () => ({
   S3StateBackend: vi.fn().mockImplementation(() => ({
     verifyBucketExists: mockVerifyBucketExists,
-    stateExists: mockStateExists,
+    getState: mockGetState,
     saveState: mockSaveState,
   })),
 }));
@@ -149,8 +154,8 @@ describe('cdkd import', () => {
   beforeEach(() => {
     mockVerifyBucketExists.mockReset();
     mockVerifyBucketExists.mockResolvedValue();
-    mockStateExists.mockReset();
-    mockStateExists.mockResolvedValue(false);
+    mockGetState.mockReset();
+    mockGetState.mockResolvedValue(null);
     mockSaveState.mockReset();
     mockSaveState.mockResolvedValue('"new-etag"');
     mockAcquireLock.mockReset();
@@ -184,15 +189,28 @@ describe('cdkd import', () => {
     expect(errorSpy.mock.calls[0]?.[0]).toMatch(/requires a CDK app/);
   });
 
-  it('rejects when state already exists without --force', async () => {
+  it('rejects auto-mode import when state already exists without --force', async () => {
     const tmpl = template({
       MyBucket: { Type: 'AWS::S3::Bucket', Properties: {}, Metadata: { 'aws:cdk:path': 'S/MyBucket' } },
     });
     mockSynthesize.mockResolvedValue({ stacks: [stackInfo('S', tmpl)] });
-    mockStateExists.mockResolvedValueOnce(true);
+    mockGetState.mockResolvedValueOnce({
+      state: {
+        version: 2,
+        stackName: 'S',
+        region: 'us-east-1',
+        resources: {},
+        outputs: {},
+        lastModified: 0,
+      },
+      etag: '"existing-etag"',
+    });
 
+    // No --resource overrides → auto / whole-stack mode → destructive →
+    // --force required.
     await expect(runImport(['import', '--app', 'x'])).rejects.toThrow();
     expect(errorSpy.mock.calls[0]?.[0]).toMatch(/State already exists.*--force/);
+    expect(errorSpy.mock.calls[0]?.[0]).toMatch(/--resource <id>=<physicalId>/);
   });
 
   it('rejects when stack name is unknown', async () => {
@@ -654,7 +672,10 @@ describe('cdkd import', () => {
     expect(mockSaveState).toHaveBeenCalledWith(
       'OnlyOne',
       'us-east-1',
-      expect.objectContaining({ stackName: 'OnlyOne', region: 'us-east-1' })
+      expect.objectContaining({ stackName: 'OnlyOne', region: 'us-east-1' }),
+      // saveState now also receives an options object — empty when no
+      // existing state was found (no etag to forward, no migration pending).
+      {}
     );
   });
 
@@ -825,6 +846,270 @@ describe('cdkd import', () => {
 
       const parsed = JSON.parse(readFileSync(file, 'utf-8')) as Record<string, string>;
       expect(parsed).toEqual({ MyBucket: 'auto-bucket', MyFn: 'auto-fn' });
+    });
+  });
+
+  describe('merge into existing state (selective mode)', () => {
+    // The user reported regression: importing a single bucket into a stack
+    // whose state already contained Queue + Topic dropped the Queue + Topic
+    // entries from state. Selective mode is supposed to be non-destructive
+    // for unlisted resources.
+    function existingState(extra: Record<string, unknown> = {}) {
+      return {
+        version: 2 as const,
+        stackName: 'S',
+        region: 'us-east-1',
+        resources: {
+          MyQueue: {
+            physicalId: 'queue-arn',
+            resourceType: 'AWS::SQS::Queue',
+            properties: { QueueName: 'q' },
+            attributes: { Arn: 'queue-arn' },
+            dependencies: [],
+          },
+          MyTopic: {
+            physicalId: 'topic-arn',
+            resourceType: 'AWS::SNS::Topic',
+            properties: { TopicName: 't' },
+            attributes: { TopicArn: 'topic-arn' },
+            dependencies: [],
+          },
+          ...extra,
+        },
+        outputs: { ExistingOutput: 'preserved' },
+        lastModified: 100,
+      };
+    }
+
+    function templateWithBucket() {
+      return template({
+        MyBucket: {
+          Type: 'AWS::S3::Bucket',
+          Properties: {},
+          Metadata: { 'aws:cdk:path': 'S/MyBucket' },
+        },
+        MyQueue: {
+          Type: 'AWS::SQS::Queue',
+          Properties: { QueueName: 'q' },
+          Metadata: { 'aws:cdk:path': 'S/MyQueue' },
+        },
+        MyTopic: {
+          Type: 'AWS::SNS::Topic',
+          Properties: { TopicName: 't' },
+          Metadata: { 'aws:cdk:path': 'S/MyTopic' },
+        },
+      });
+    }
+
+    it('selective merge preserves unlisted existing resources without --force', async () => {
+      mockSynthesize.mockResolvedValue({ stacks: [stackInfo('S', templateWithBucket())] });
+      mockGetState.mockResolvedValueOnce({
+        state: existingState(),
+        etag: '"existing-etag"',
+      });
+      mockHasProvider.mockReturnValue(true);
+      const bucketImport = vi.fn(async () => ({ physicalId: 'cdkd-test-my-bucket', attributes: {} }));
+      mockGetProvider.mockImplementation((t: string) => {
+        if (t === 'AWS::S3::Bucket') return { import: bucketImport };
+        return { import: vi.fn(async () => null) };
+      });
+
+      // No --force: this is the user's bug-report scenario.
+      await runImport([
+        'import',
+        '--app',
+        'x',
+        '--resource',
+        'MyBucket=cdkd-test-my-bucket',
+        '--yes',
+      ]);
+
+      expect(mockSaveState).toHaveBeenCalledTimes(1);
+      const [, , state, options] = mockSaveState.mock.calls[0] as unknown as [
+        string,
+        string,
+        {
+          resources: Record<string, { physicalId: string; resourceType: string }>;
+          outputs: Record<string, string>;
+        },
+        { expectedEtag?: string; migrateLegacy?: boolean },
+      ];
+
+      // The bug we are fixing: all three logical IDs must be in state.
+      expect(Object.keys(state.resources).sort()).toEqual(['MyBucket', 'MyQueue', 'MyTopic']);
+      expect(state.resources['MyBucket']?.physicalId).toBe('cdkd-test-my-bucket');
+      // Existing entries preserved verbatim — physical IDs still point at AWS.
+      expect(state.resources['MyQueue']?.physicalId).toBe('queue-arn');
+      expect(state.resources['MyTopic']?.physicalId).toBe('topic-arn');
+      // Outputs inherited from existing state (the import flow never derives them).
+      expect(state.outputs).toEqual({ ExistingOutput: 'preserved' });
+      // Optimistic-lock etag is forwarded so a concurrent write loses cleanly.
+      expect(options.expectedEtag).toBe('"existing-etag"');
+    });
+
+    it('logs the merge plan with the preserved-resource count', async () => {
+      mockSynthesize.mockResolvedValue({ stacks: [stackInfo('S', templateWithBucket())] });
+      mockGetState.mockResolvedValueOnce({
+        state: existingState(),
+        etag: '"e"',
+      });
+      mockHasProvider.mockReturnValue(true);
+      mockGetProvider.mockImplementation((t: string) => {
+        if (t === 'AWS::S3::Bucket') {
+          return { import: vi.fn(async () => ({ physicalId: 'b', attributes: {} })) };
+        }
+        return { import: vi.fn(async () => null) };
+      });
+
+      await runImport(['import', '--app', 'x', '--resource', 'MyBucket=b', '--yes']);
+
+      const mergeLog = infoSpy.mock.calls.find((c) => /Merging into existing state/.test(String(c[0])));
+      expect(mergeLog).toBeTruthy();
+      expect(String(mergeLog?.[0])).toMatch(/preserving 2 unlisted resource/);
+      // No "overwriting N listed entry(ies)" suffix when there are no conflicts.
+      expect(String(mergeLog?.[0])).not.toMatch(/overwriting/);
+    });
+
+    it('rejects without --force when a listed override would overwrite an existing entry', async () => {
+      mockSynthesize.mockResolvedValue({ stacks: [stackInfo('S', templateWithBucket())] });
+      mockGetState.mockResolvedValueOnce({
+        state: existingState({
+          MyBucket: {
+            physicalId: 'old-bucket-name',
+            resourceType: 'AWS::S3::Bucket',
+            properties: {},
+            attributes: {},
+            dependencies: [],
+          },
+        }),
+        etag: '"e"',
+      });
+      mockHasProvider.mockReturnValue(true);
+      mockGetProvider.mockReturnValue({
+        import: vi.fn(async () => ({ physicalId: 'new-bucket-name', attributes: {} })),
+      });
+
+      await expect(
+        runImport(['import', '--app', 'x', '--resource', 'MyBucket=new-bucket-name', '--yes'])
+      ).rejects.toThrow();
+      expect(errorSpy.mock.calls[0]?.[0]).toMatch(
+        /would overwrite resource\(s\) already in state: MyBucket/
+      );
+      expect(errorSpy.mock.calls[0]?.[0]).toMatch(/--force/);
+      expect(mockSaveState).not.toHaveBeenCalled();
+    });
+
+    it('overwrites the listed entry and preserves unlisted ones with --force', async () => {
+      mockSynthesize.mockResolvedValue({ stacks: [stackInfo('S', templateWithBucket())] });
+      mockGetState.mockResolvedValueOnce({
+        state: existingState({
+          MyBucket: {
+            physicalId: 'old-bucket-name',
+            resourceType: 'AWS::S3::Bucket',
+            properties: {},
+            attributes: {},
+            dependencies: [],
+          },
+        }),
+        etag: '"e"',
+      });
+      mockHasProvider.mockReturnValue(true);
+      mockGetProvider.mockReturnValue({
+        import: vi.fn(async () => ({ physicalId: 'new-bucket-name', attributes: {} })),
+      });
+
+      await runImport([
+        'import',
+        '--app',
+        'x',
+        '--resource',
+        'MyBucket=new-bucket-name',
+        '--force',
+        '--yes',
+      ]);
+
+      const [, , state] = mockSaveState.mock.calls[0] as unknown as [
+        string,
+        string,
+        { resources: Record<string, { physicalId: string }> },
+      ];
+      // Listed entry overwritten; unlisted preserved.
+      expect(state.resources['MyBucket']?.physicalId).toBe('new-bucket-name');
+      expect(state.resources['MyQueue']?.physicalId).toBe('queue-arn');
+      expect(state.resources['MyTopic']?.physicalId).toBe('topic-arn');
+    });
+
+    it('forwards migrateLegacy when the existing state was loaded from the v1 layout', async () => {
+      mockSynthesize.mockResolvedValue({ stacks: [stackInfo('S', templateWithBucket())] });
+      mockGetState.mockResolvedValueOnce({
+        state: existingState(),
+        etag: '"legacy-etag"',
+        migrationPending: true,
+      });
+      mockHasProvider.mockReturnValue(true);
+      mockGetProvider.mockImplementation((t: string) => {
+        if (t === 'AWS::S3::Bucket') {
+          return { import: vi.fn(async () => ({ physicalId: 'b', attributes: {} })) };
+        }
+        return { import: vi.fn(async () => null) };
+      });
+
+      await runImport(['import', '--app', 'x', '--resource', 'MyBucket=b', '--yes']);
+
+      const [, , , options] = mockSaveState.mock.calls[0] as unknown as [
+        string,
+        string,
+        unknown,
+        { expectedEtag?: string; migrateLegacy?: boolean },
+      ];
+      expect(options.expectedEtag).toBe('"legacy-etag"');
+      expect(options.migrateLegacy).toBe(true);
+    });
+
+    it('auto-mode --force on existing state still wipes unlisted entries (whole-stack semantics)', async () => {
+      // This is the existing destructive-overwrite path; --force is the
+      // user's acknowledgement that they want the state rebuilt from the
+      // template. Selective merge is a separate path (see above).
+      mockSynthesize.mockResolvedValue({ stacks: [stackInfo('S', templateWithBucket())] });
+      mockGetState.mockResolvedValueOnce({
+        state: existingState({
+          DriftedResource: {
+            physicalId: 'orphan',
+            resourceType: 'AWS::Foo::Bar',
+            properties: {},
+            attributes: {},
+            dependencies: [],
+          },
+        }),
+        etag: '"e"',
+      });
+      mockHasProvider.mockReturnValue(true);
+      mockGetProvider.mockImplementation((t: string) => {
+        if (t === 'AWS::S3::Bucket') {
+          return { import: vi.fn(async () => ({ physicalId: 'b', attributes: {} })) };
+        }
+        if (t === 'AWS::SQS::Queue') {
+          return { import: vi.fn(async () => ({ physicalId: 'q', attributes: {} })) };
+        }
+        if (t === 'AWS::SNS::Topic') {
+          return { import: vi.fn(async () => ({ physicalId: 't', attributes: {} })) };
+        }
+        return {};
+      });
+
+      await runImport(['import', '--app', 'x', '--force', '--yes']);
+
+      const [, , state] = mockSaveState.mock.calls[0] as unknown as [
+        string,
+        string,
+        { resources: Record<string, unknown>; outputs: Record<string, string> },
+      ];
+      // DriftedResource is NOT in the template, so auto-mode rebuild drops it.
+      expect(Object.keys(state.resources).sort()).toEqual(['MyBucket', 'MyQueue', 'MyTopic']);
+      expect(state.resources['DriftedResource']).toBeUndefined();
+      // Outputs are still inherited (they are never derived from the import flow,
+      // so the auto-mode rebuild has no reason to wipe them).
+      expect(state.outputs).toEqual({ ExistingOutput: 'preserved' });
     });
   });
 });

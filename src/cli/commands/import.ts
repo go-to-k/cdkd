@@ -169,19 +169,6 @@ async function importCommand(stackArg: string | undefined, options: ImportOption
 
     logger.info(`Target stack: ${stackInfo.stackName} (${targetRegion})`);
 
-    // Existing-state guard. `cdkd state import` is destructive on the state
-    // file (it overwrites the entire resource map), so we refuse unless the
-    // user passes --force. The check is strict on the new region-prefixed key
-    // first, then the legacy key — see S3StateBackend.stateExists.
-    const existing = await stateBackend.stateExists(stackInfo.stackName, targetRegion);
-    if (existing && !options.force) {
-      throw new Error(
-        `State already exists for stack '${stackInfo.stackName}' (${targetRegion}). ` +
-          `Pass --force to overwrite. (cdkd state import rebuilds the resource map from AWS, ` +
-          `so the existing state — including any drift you've manually edited — will be lost.)`
-      );
-    }
-
     // Parse user-supplied physical-id overrides up front so any syntax error
     // surfaces before we make AWS calls.
     const overrides = parseResourceOverrides(
@@ -207,6 +194,65 @@ async function importCommand(stackArg: string | undefined, options: ImportOption
           `(${[...overrides.keys()].join(', ')}). ` +
           `Pass --auto to also tag-import the rest.`
       );
+    }
+
+    // Existing-state guard. The previous implementation refused with
+    // `--force` required for any pre-existing state and then unconditionally
+    // overwrote the entire resource map — which silently dropped unlisted
+    // resources in selective mode. The new policy distinguishes destructive
+    // from non-destructive cases:
+    //
+    //   - Selective mode (overrides without --auto) is **non-destructive**:
+    //     unlisted resources are preserved on merge. `--force` is only
+    //     required when one of the listed resources is already in state
+    //     (the merge would overwrite that entry).
+    //   - Auto / whole-stack mode is **destructive**: it rebuilds the
+    //     resource map from the template, dropping any state entry not
+    //     re-imported. `--force` is required whenever existing state exists.
+    //
+    // We load existing state up front (rather than just checking presence)
+    // so we can both (a) merge in selective mode and (b) forward the etag
+    // to `saveState` for optimistic locking.
+    const existingResult = await stateBackend.getState(stackInfo.stackName, targetRegion);
+    const existingState = existingResult?.state ?? null;
+    const existingEtag = existingResult?.etag;
+    const migrationPending = existingResult?.migrationPending ?? false;
+
+    if (existingState) {
+      if (!selectiveMode) {
+        // Auto / whole-stack: always destructive when state exists.
+        if (!options.force) {
+          throw new Error(
+            `State already exists for stack '${stackInfo.stackName}' (${targetRegion}). ` +
+              `Auto / whole-stack import rebuilds the entire resource map from the template, ` +
+              `which would drop any state entry not re-imported. Pass --force to confirm. ` +
+              `To add specific resources without affecting unlisted ones, use ` +
+              `--resource <id>=<physicalId> (selective merge — no --force needed).`
+          );
+        }
+      } else {
+        // Selective merge: non-destructive for unlisted resources. `--force`
+        // is only needed when a listed override would overwrite an entry
+        // already in state.
+        const conflicts = [...overrides.keys()].filter((id) =>
+          Object.prototype.hasOwnProperty.call(existingState.resources, id)
+        );
+        if (conflicts.length > 0 && !options.force) {
+          throw new Error(
+            `Selective import would overwrite resource(s) already in state: ` +
+              `${conflicts.join(', ')}. ` +
+              `Pass --force to confirm the overwrite, or remove these IDs from --resource / --resource-mapping.`
+          );
+        }
+        const preservedCount = Object.keys(existingState.resources).filter(
+          (id) => !overrides.has(id)
+        ).length;
+        logger.info(
+          `Merging into existing state for ${stackInfo.stackName} (${targetRegion}): ` +
+            `preserving ${preservedCount} unlisted resource(s)` +
+            (conflicts.length > 0 ? `, overwriting ${conflicts.length} listed entry(ies)` : '')
+        );
+      }
     }
 
     const template = stackInfo.template;
@@ -288,9 +334,23 @@ async function importCommand(stackArg: string | undefined, options: ImportOption
       }
 
       if (!options.yes) {
+        // In a selective merge, the resulting state holds the imported rows
+        // PLUS the preserved unlisted entries from existing state. Reflect
+        // that in the prompt so the user sees the full impact, not just
+        // what's being added in this run.
+        const importedCount = importedRows.length;
+        const preservedCount =
+          selectiveMode && existingState
+            ? Object.keys(existingState.resources).filter((id) => !overrides.has(id)).length
+            : 0;
+        const totalAfter = importedCount + preservedCount;
+        const breakdown =
+          preservedCount > 0
+            ? ` (${importedCount} new/overwritten + ${preservedCount} preserved)`
+            : '';
         const ok = await confirmPrompt(
           `Write state for ${stackInfo.stackName} (${targetRegion}) ` +
-            `with ${importedRows.length} resource(s)?`
+            `with ${totalAfter} resource(s)${breakdown}?`
         );
         if (!ok) {
           logger.info('Import cancelled.');
@@ -303,14 +363,23 @@ async function importCommand(stackArg: string | undefined, options: ImportOption
         targetRegion,
         rows,
         templateParser,
-        template
+        template,
+        existingState,
+        selectiveMode
       );
 
-      // No `expectedEtag`: --force bypasses the optimistic-lock check on
-      // purpose (the user has acknowledged they're overwriting). For the
-      // create-from-empty case, the absence of `expectedEtag` is what tells
-      // saveState to use IfNoneMatch.
-      await stateBackend.saveState(stackInfo.stackName, targetRegion, stackState);
+      // Forward the etag for optimistic locking when state already exists,
+      // and trigger legacy-key migration when the existing state was loaded
+      // from the v1 layout. For the create-from-empty case, the absence of
+      // `expectedEtag` is what tells saveState to use IfNoneMatch.
+      const saveOptions: { expectedEtag?: string; migrateLegacy?: boolean } = {};
+      if (existingEtag) {
+        saveOptions.expectedEtag = existingEtag;
+      }
+      if (migrationPending) {
+        saveOptions.migrateLegacy = true;
+      }
+      await stateBackend.saveState(stackInfo.stackName, targetRegion, stackState, saveOptions);
       logger.info(`✓ State written: ${stackInfo.stackName} (${targetRegion})`);
       logger.info(
         `  ${importedRows.length} resource(s) imported. ` +
@@ -543,17 +612,31 @@ function collectImportableResources(
  * dependency info recovered from the template.
  *
  * `failed` and `skipped-*` rows are dropped — they are not part of state.
- * Outputs are intentionally not populated: they're computed at deploy time
- * from each resource's attributes, and `cdkd diff` will surface any drift.
+ *
+ * Resource-map composition depends on the mode:
+ *   - `selectiveMode && existingState`: existing resources are the merge
+ *     base, every entry survives unless explicitly overwritten by an
+ *     `imported` row. Non-destructive for unlisted resources.
+ *   - Auto / whole-stack: the resource map is rebuilt from scratch so any
+ *     state entry not re-imported is dropped (the user opted into this with
+ *     `--force`).
+ *
+ * Outputs are ALWAYS inherited from `existingState` when present — the
+ * import flow never derives outputs (they're computed at deploy time from
+ * each resource's attributes), so even an auto-mode rebuild has no reason
+ * to wipe them.
  */
 function buildStackState(
   stackName: string,
   region: string,
   rows: ImportRow[],
   templateParser: TemplateParser,
-  template: CloudFormationTemplate
+  template: CloudFormationTemplate,
+  existingState: StackState | null,
+  selectiveMode: boolean
 ): StackState {
-  const resources: Record<string, ResourceState> = {};
+  const resources: Record<string, ResourceState> =
+    selectiveMode && existingState ? { ...existingState.resources } : {};
   for (const row of rows) {
     if (row.outcome !== 'imported' || !row.physicalId) continue;
     const tmplResource = template.Resources[row.logicalId];
@@ -572,7 +655,7 @@ function buildStackState(
     stackName,
     region,
     resources,
-    outputs: {},
+    outputs: existingState?.outputs ?? {},
     lastModified: Date.now(),
   };
 }
@@ -716,7 +799,10 @@ export function createImportCommand(): Command {
     .option('--dry-run', 'Show planned imports without writing state', false)
     .option(
       '--force',
-      'Overwrite an existing state record. Without this, an existing state file aborts the import.',
+      'Confirm a destructive write to existing state. Required for auto / whole-stack ' +
+        'import when state already exists (rebuilds the entire resource map). Also required ' +
+        'in selective mode if a listed override would overwrite a resource already in state. ' +
+        'Not needed for a pure selective merge (adding new resources without touching unlisted entries).',
       false
     )
     .action(withErrorHandling(importCommand));
