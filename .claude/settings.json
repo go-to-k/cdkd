@@ -45,6 +45,13 @@
             "if": "Bash(gh pr edit*)",
             "timeout": 10,
             "statusMessage": "Checking gh pr edit usage..."
+          },
+          {
+            "type": "command",
+            "command": ".claude/hooks/gh-label-validity-gate.sh",
+            "if": "Bash(*--label*) or Bash(*--add-label*)",
+            "timeout": 10,
+            "statusMessage": "Checking gh label validity..."
           }
         ]
       }
