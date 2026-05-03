@@ -69,13 +69,10 @@ describe('LambdaFunctionProvider', () => {
 
   describe('create', () => {
     it('passes VpcConfig (SubnetIds, SecurityGroupIds, Ipv6AllowedForDualStack) to CreateFunction', async () => {
-      mockLambdaSend
-        .mockResolvedValueOnce({
-          FunctionName: 'fn-vpc',
-          FunctionArn: 'arn:aws:lambda:us-east-1:123456789012:function:fn-vpc',
-        })
-        // waitUntilFunctionActiveV2 polls GetFunction; Active terminates immediately.
-        .mockResolvedValueOnce({ Configuration: { State: 'Active' } });
+      mockLambdaSend.mockResolvedValueOnce({
+        FunctionName: 'fn-vpc',
+        FunctionArn: 'arn:aws:lambda:us-east-1:123456789012:function:fn-vpc',
+      });
 
       const result = await provider.create('VpcFn', 'AWS::Lambda::Function', {
         FunctionName: 'fn-vpc',
@@ -91,7 +88,10 @@ describe('LambdaFunctionProvider', () => {
       });
 
       expect(result.physicalId).toBe('fn-vpc');
-      expect(mockLambdaSend).toHaveBeenCalledTimes(2);
+      // CreateFunction returns straight away — no post-create Active
+      // wait. The wait moved to CustomResourceProvider so VPC-Lambda
+      // stacks without Custom Resources don't pay the cost.
+      expect(mockLambdaSend).toHaveBeenCalledTimes(1);
       const cmd = mockLambdaSend.mock.calls[0][0];
       expect(cmd).toBeInstanceOf(CreateFunctionCommand);
       expect(cmd.input.VpcConfig).toEqual({
@@ -102,12 +102,10 @@ describe('LambdaFunctionProvider', () => {
     });
 
     it('omits VpcConfig from CreateFunction input when not provided', async () => {
-      mockLambdaSend
-        .mockResolvedValueOnce({
-          FunctionName: 'fn-no-vpc',
-          FunctionArn: 'arn:aws:lambda:us-east-1:123456789012:function:fn-no-vpc',
-        })
-        .mockResolvedValueOnce({ Configuration: { State: 'Active' } });
+      mockLambdaSend.mockResolvedValueOnce({
+        FunctionName: 'fn-no-vpc',
+        FunctionArn: 'arn:aws:lambda:us-east-1:123456789012:function:fn-no-vpc',
+      });
 
       await provider.create('NoVpcFn', 'AWS::Lambda::Function', {
         FunctionName: 'fn-no-vpc',
@@ -121,59 +119,29 @@ describe('LambdaFunctionProvider', () => {
       expect(cmd.input.VpcConfig).toBeUndefined();
     });
 
-    it('waits for Configuration.State === Active before returning so downstream Custom Resource Invoke does not race', async () => {
-      // Reproduces the original bug: CreateFunction returns synchronously
-      // while State is still `Pending`, but a Lambda-backed Custom
-      // Resource that depends on this function will Invoke immediately
-      // and AWS responds "The function is currently in the following
-      // state: Pending". The fix is to block until State === Active.
-      mockLambdaSend
-        .mockResolvedValueOnce({
-          FunctionName: 'fn-wait',
-          FunctionArn: 'arn:aws:lambda:us-east-1:123456789012:function:fn-wait',
-        })
-        .mockResolvedValueOnce({ Configuration: { State: 'Pending' } })
-        .mockResolvedValueOnce({ Configuration: { State: 'Pending' } })
-        .mockResolvedValueOnce({ Configuration: { State: 'Active' } });
+    it('does NOT wait for Active state — wait moved to CustomResourceProvider', async () => {
+      // PR #121 added a post-CreateFunction State=Active wait here. It
+      // doubled deploy time on benchmark stacks because every Lambda
+      // paid the cost regardless of whether anything synchronously
+      // invoked it. The wait now lives in CustomResourceProvider —
+      // gated to the only consumer that breaks against Pending — so
+      // CreateFunction returns immediately again.
+      mockLambdaSend.mockResolvedValueOnce({
+        FunctionName: 'fn-fast',
+        FunctionArn: 'arn:aws:lambda:us-east-1:123456789012:function:fn-fast',
+      });
 
-      const promise = provider.create('Fn', 'AWS::Lambda::Function', {
-        FunctionName: 'fn-wait',
+      await provider.create('Fn', 'AWS::Lambda::Function', {
+        FunctionName: 'fn-fast',
         Role: 'arn:aws:iam::123456789012:role/exec',
         Handler: 'index.handler',
         Runtime: 'nodejs20.x',
         Code: { S3Bucket: 'b', S3Key: 'k' },
       });
-      // Smithy waiter uses exponential backoff with jitter — first retry
-      // ~1s, second ~2s. Advance generously to clear all sleeps.
-      await vi.advanceTimersByTimeAsync(10_000);
-      await promise;
 
-      // 1 CreateFunction + 3 GetFunction polls.
-      expect(mockLambdaSend).toHaveBeenCalledTimes(4);
+      // Exactly ONE call: CreateFunction. No GetFunction polling.
+      expect(mockLambdaSend).toHaveBeenCalledTimes(1);
       expect(mockLambdaSend.mock.calls[0][0]).toBeInstanceOf(CreateFunctionCommand);
-      // Subsequent calls are GetFunction (waiter); we don't constrain the
-      // exact class beyond "not CreateFunctionCommand" since it's the SDK
-      // waiter doing them.
-      expect(mockLambdaSend.mock.calls[1][0]).not.toBeInstanceOf(CreateFunctionCommand);
-    });
-
-    it('throws ProvisioningError when the Active waiter sees Configuration.State === Failed', async () => {
-      mockLambdaSend
-        .mockResolvedValueOnce({
-          FunctionName: 'fn-fail',
-          FunctionArn: 'arn:aws:lambda:us-east-1:123456789012:function:fn-fail',
-        })
-        .mockResolvedValueOnce({ Configuration: { State: 'Failed' } });
-
-      await expect(
-        provider.create('Fn', 'AWS::Lambda::Function', {
-          FunctionName: 'fn-fail',
-          Role: 'arn:aws:iam::123456789012:role/exec',
-          Handler: 'index.handler',
-          Runtime: 'nodejs20.x',
-          Code: { S3Bucket: 'b', S3Key: 'k' },
-        })
-      ).rejects.toThrow(/did not reach Active state/);
     });
   });
 

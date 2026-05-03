@@ -1,4 +1,10 @@
-import { LambdaClient, InvokeCommand, type InvocationResponse } from '@aws-sdk/client-lambda';
+import {
+  LambdaClient,
+  InvokeCommand,
+  waitUntilFunctionActiveV2,
+  waitUntilFunctionUpdatedV2,
+  type InvocationResponse,
+} from '@aws-sdk/client-lambda';
 import { SNSClient, PublishCommand } from '@aws-sdk/client-sns';
 import {
   S3Client,
@@ -453,8 +459,65 @@ export class CustomResourceProvider implements ResourceProvider {
       return await this.pollS3Response(responseKey, logicalId, operation);
     }
 
+    // Block until the backing Lambda is in a ready-to-Invoke state. The
+    // Lambda CREATE / UPDATE returns synchronously while State / LastUpdateStatus
+    // is still `Pending` / `InProgress`; a synchronous Invoke against
+    // either fails with "The function is currently in the following
+    // state: Pending" / "InProgress" (see PR #121). We wait HERE — at the
+    // one consumer that breaks against not-ready Lambdas — instead of
+    // gating every Lambda CREATE on Active, which doubled deploy time on
+    // VPC-Lambda benchmark stacks.
+    await this.waitForBackingLambdaReady(serviceToken, logicalId);
+
     const response = await this.invokeLambda(serviceToken, request);
     return await this.getCustomResourceResponse(response, responseKey, logicalId, operation);
+  }
+
+  /**
+   * Block until the backing Lambda function for a Custom Resource is in a
+   * state that accepts a synchronous Invoke.
+   *
+   * Two sequential waiters:
+   *   1. `waitUntilFunctionActiveV2` — handles the post-CreateFunction
+   *      `Pending` window (image pull, VPC ENI attachment, layer init).
+   *   2. `waitUntilFunctionUpdatedV2` — handles the post-Update
+   *      `InProgress` window (configuration / code swap settling).
+   * Together they cover the only two transient states that reject
+   * synchronous Invokes.
+   *
+   * In the common case (Lambda has been Active for a while, no in-flight
+   * Update), both waiters return on first poll → ~2 GetFunction calls →
+   * ~200ms overhead. That's the price for correctness; the alternative
+   * (whole-stack Active wait at Lambda CREATE) is ~5–10 minutes per
+   * VPC-attached function.
+   *
+   * `serviceToken` is the Lambda function ARN; the Lambda SDK accepts
+   * both name and ARN as `FunctionName`, so we pass the ARN through
+   * unchanged.
+   *
+   * `maxWaitTime` is set generously (10 min) because VPC ENI attachment
+   * has been observed to take 8+ minutes in pathological cases. The
+   * deploy engine's per-resource `--resource-timeout` (default 30 min)
+   * still bounds the outer Custom Resource provisioning attempt, so
+   * this waiter cap is layered defense, not the only timeout.
+   */
+  private async waitForBackingLambdaReady(serviceToken: string, logicalId: string): Promise<void> {
+    try {
+      await waitUntilFunctionActiveV2(
+        { client: this.lambdaClient, maxWaitTime: 600 },
+        { FunctionName: serviceToken }
+      );
+      await waitUntilFunctionUpdatedV2(
+        { client: this.lambdaClient, maxWaitTime: 600 },
+        { FunctionName: serviceToken }
+      );
+    } catch (error) {
+      throw new Error(
+        `Lambda backing custom resource ${logicalId} (${serviceToken}) did not reach a ready state for Invoke: ${
+          error instanceof Error ? error.message : String(error)
+        }`
+      );
+    }
   }
 
   /**

@@ -35,14 +35,17 @@ takes 3-15 minutes to deploy to edge locations). The resource is fully
 functional once AWS finishes the async deployment.
 
 `--no-wait` only skips *convenience* waits for resources that don't
-block siblings within the same deploy. It does NOT skip waits that are
-required for in-stack correctness — for example, `AWS::Lambda::Function`
-CREATE / UPDATE always blocks until `Configuration.State === 'Active'`
-(post-CreateFunction) and `LastUpdateStatus === 'Successful'` (after
-each UpdateFunctionConfiguration / UpdateFunctionCode), because a
-Pending Lambda cannot be invoked by a downstream Custom Resource and a
-mid-update function rejects further Update / Delete calls. CloudFormation
-behaves the same way; cdkd matches the contract regardless of `--no-wait`.
+block siblings within the same deploy. There is one exception that
+runs unconditionally regardless of `--no-wait`: a Lambda-backed
+`AWS::CloudFormation::CustomResource` waits for its **backing Lambda**
+(the ServiceToken Lambda) to reach `Configuration.State === 'Active'`
+and `LastUpdateStatus === 'Successful'` immediately before the
+synchronous Invoke. Without that wait, an Invoke against a still-Pending
+function fails with `The function is currently in the following state:
+Pending` (CFn parity). The wait is scoped to the Custom Resource Invoke
+itself; ordinary Lambda CREATE / UPDATE returns as soon as the SDK call
+returns, so VPC Lambdas with no synchronous downstream consumer don't
+block the deploy DAG on the 5–10 min ENI attach window.
 
 ## Per-resource timeout
 
