@@ -457,8 +457,10 @@ cdkd state show MyStack --json        # raw {state, lock} JSON
 
 # Orphan one or more RESOURCES from cdkd's state (does NOT delete AWS resources).
 # Per-resource, mirrors aws-cdk-cli's `cdk orphan --unstable=orphan`.
-# Synth-driven — needs --app / cdk.json. Construct paths look like the CDK
-# `aws:cdk:path` tag (`<StackName>/<Path/To/Resource>`).
+# Synth-driven — needs --app / cdk.json. Construct paths use CDK's L2-style form
+# (`<StackName>/<Path/To/Construct>`); the synthesized `/Resource` suffix is
+# matched implicitly. Passing an L2 wrapper that contains multiple CFn resources
+# orphans every child under it (matches upstream's prefix-match semantics).
 cdkd orphan MyStack/MyTable                    # confirmation prompt (y/N)
 cdkd orphan MyStack/MyTable --yes
 cdkd orphan MyStack/MyTable MyStack/MyBucket   # multiple resources, same stack
