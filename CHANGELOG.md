@@ -1,3 +1,10 @@
+# [0.28.0](https://github.com/go-to-k/cdkd/compare/v0.27.0...v0.28.0) (2026-05-03)
+
+
+### Features
+
+* **deploy,custom-resource:** close outer-retry hole + CR self-report timeout ([#104](https://github.com/go-to-k/cdkd/issues/104)) ([32fb5db](https://github.com/go-to-k/cdkd/commit/32fb5dbca8a2afb4ab081d587562ecbf04f3003f))
+
 # [0.27.0](https://github.com/go-to-k/cdkd/compare/v0.26.0...v0.27.0) (2026-05-03)
 
 
