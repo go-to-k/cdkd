@@ -936,8 +936,6 @@ the small additional call is reasonable to add.
 
 | Resource | Unsupported attribute | Why deferred |
 | --- | --- | --- |
-| `AWS::Lambda::Function` | `SnapStartResponse.ApplyOn`, `SnapStartResponse.OptimizationStatus` | Rare (SnapStart-specific); requires nested-attribute parsing in the resolver. |
-| `AWS::DynamoDB::Table` | `LatestStreamLabel` | `DescribeTable` exposes the latest stream ARN but not the label; needs `DescribeStream`. Rarely referenced. |
 | `AWS::SQS::Queue` | (none) | All three CFn return values are covered. |
 | `AWS::S3::Bucket` | (none) | All five CFn return values are covered. |
 
