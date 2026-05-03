@@ -1,3 +1,10 @@
+# [0.30.0](https://github.com/go-to-k/cdkd/compare/v0.29.0...v0.30.0) (2026-05-03)
+
+
+### Features
+
+* **import:** support >51,200-byte templates in --migrate-from-cloudformation via TemplateURL ([#113](https://github.com/go-to-k/cdkd/issues/113)) ([26d6762](https://github.com/go-to-k/cdkd/commit/26d676288017fdde5c766d0081ad69e1f1e0ae4b))
+
 # [0.29.0](https://github.com/go-to-k/cdkd/compare/v0.28.2...v0.29.0) (2026-05-03)
 
 
