@@ -86,8 +86,11 @@ export class ProvisioningError extends CdkdError {
  * unless `--no-rollback`) take over.
  *
  * The message intentionally names the resource, type, region, elapsed time
- * and operation, plus how to override the default — Custom-Resource-heavy
- * stacks frequently need a longer budget than 30m.
+ * and operation, plus how to override the default. Long-running providers
+ * (e.g. Custom Resource: 1h polling cap) self-report their needed budget
+ * via `getMinResourceTimeoutMs()`, so the user only needs a per-type
+ * override (`--resource-timeout TYPE=DURATION`) when they want to bump a
+ * specific non-self-reporting type or shorten a self-reported one.
  */
 export class ResourceTimeoutError extends CdkdError {
   constructor(
@@ -103,8 +106,9 @@ export class ResourceTimeoutError extends CdkdError {
     super(
       `Resource ${logicalId} (${resourceType}) in ${region} timed out after ${timeoutLabel} during ${operation} (elapsed ${elapsedLabel}).\n` +
         'This may indicate a stuck Cloud Control polling loop, hung Custom Resource, or\n' +
-        'slow ENI provisioning. Re-run with --resource-timeout 1h if the resource genuinely\n' +
-        'needs more time, or --verbose to see the underlying provider activity.',
+        `slow ENI provisioning. Re-run with --resource-timeout ${resourceType}=<DURATION>\n` +
+        'to bump the budget for this resource type only, or --verbose to see the\n' +
+        'underlying provider activity.',
       'RESOURCE_TIMEOUT'
     );
     this.name = 'ResourceTimeoutError';

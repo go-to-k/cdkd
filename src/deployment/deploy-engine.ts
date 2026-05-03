@@ -998,17 +998,25 @@ export class DeployEngine {
 
     // Per-resource-type overrides (v2) win over the global default.
     // Resolution order at the call site:
-    //   1. per-type override map for this resourceType
-    //   2. global value passed by the CLI (`--resource-timeout 30m`)
-    //   3. compile-time default (DEFAULT_RESOURCE_*_MS)
+    //   1. per-type CLI override map for this resourceType — explicit
+    //      escape hatch, always wins (`--resource-timeout TYPE=DURATION`).
+    //   2. provider self-report (`getMinResourceTimeoutMs()`) raised
+    //      against the global default — long-running providers
+    //      (Custom Resource polls up to 1h) lift the deadline for their
+    //      resources without forcing every user to remember
+    //      `--resource-timeout 1h`.
+    //   3. CLI global default (`--resource-timeout 30m`).
+    //   4. compile-time default (DEFAULT_RESOURCE_*_MS).
+    const provider = this.providerRegistry.getProvider(resourceType);
+    const providerMinTimeoutMs = provider.getMinResourceTimeoutMs?.() ?? 0;
     const warnAfterMs =
       this.options.resourceWarnAfterByType?.[resourceType] ??
       this.options.resourceWarnAfterMs ??
       DEFAULT_RESOURCE_WARN_AFTER_MS;
+    const globalTimeoutMs = this.options.resourceTimeoutMs ?? DEFAULT_RESOURCE_TIMEOUT_MS;
     const timeoutMs =
       this.options.resourceTimeoutByType?.[resourceType] ??
-      this.options.resourceTimeoutMs ??
-      DEFAULT_RESOURCE_TIMEOUT_MS;
+      Math.max(providerMinTimeoutMs, globalTimeoutMs);
 
     try {
       await withResourceDeadline(
@@ -1119,7 +1127,10 @@ export class DeployEngine {
 
         const result = await this.withRetry(
           () => createProvider.create(logicalId, resourceType, createProps),
-          logicalId
+          logicalId,
+          undefined,
+          undefined,
+          provider
         );
 
         // Extract ALL dependencies from template (Ref, Fn::GetAtt, DependsOn)
@@ -1199,7 +1210,10 @@ export class DeployEngine {
             this.selectProviderWithSafetyNet(provider, resourceType, resolvedProps, logicalId);
           const createResult = await this.withRetry(
             () => replaceProvider.create(logicalId, resourceType, replaceProps),
-            logicalId
+            logicalId,
+            undefined,
+            undefined,
+            provider
           );
 
           // 2. Delete old resource (after successful CREATE)
@@ -1259,7 +1273,10 @@ export class DeployEngine {
                   updateProps,
                   currentProps
                 ),
-              logicalId
+              logicalId,
+              undefined,
+              undefined,
+              provider
             );
           } catch (updateError) {
             // If UPDATE is not supported (e.g., CC API UnsupportedActionException),
@@ -1300,7 +1317,10 @@ export class DeployEngine {
                 this.selectProviderWithSafetyNet(provider, resourceType, resolvedProps, logicalId);
               const createResult = await this.withRetry(
                 () => replProvider.create(logicalId, resourceType, replProps),
-                logicalId
+                logicalId,
+                undefined,
+                undefined,
+                provider
               );
               result = {
                 physicalId: createResult.physicalId,
@@ -1362,7 +1382,8 @@ export class DeployEngine {
               ),
             logicalId,
             3, // fewer retries for DELETE
-            5_000
+            5_000,
+            provider
           );
         } catch (deleteError) {
           const msg = deleteError instanceof Error ? deleteError.message : String(deleteError);
@@ -1594,13 +1615,25 @@ export class DeployEngine {
    * Thin wrapper over `withRetry` from ./retry.js that injects this engine's
    * SIGINT-aware interrupt check and logger. The actual backoff schedule
    * lives there.
+   *
+   * When the provider opts out via `disableOuterRetry`, the operation is
+   * invoked exactly once and the retry loop is skipped entirely. The
+   * Custom Resource provider uses this to avoid re-running its `create()`
+   * — each invocation derives a fresh pre-signed S3 URL and RequestId,
+   * so an outer retry leaves the previous attempt's Lambda response
+   * stranded at an S3 key nobody polls.
    */
   private async withRetry<T>(
     operation: () => Promise<T>,
     logicalId: string,
     maxRetries?: number,
-    initialDelayMs?: number
+    initialDelayMs?: number,
+    provider?: ResourceProvider
   ): Promise<T> {
+    if (provider?.disableOuterRetry) {
+      // Single-shot — provider handles transient errors internally.
+      return operation();
+    }
     return withRetry(operation, logicalId, {
       ...(maxRetries !== undefined && { maxRetries }),
       ...(initialDelayMs !== undefined && { initialDelayMs }),

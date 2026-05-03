@@ -48,6 +48,28 @@ describe('CustomResourceProvider', () => {
     });
   });
 
+  describe('engine integration flags', () => {
+    it('exposes disableOuterRetry=true so the deploy engine never re-invokes create()', () => {
+      // CR's create derives a fresh pre-signed S3 URL + RequestId per call.
+      // An outer retry would strand the first attempt's Lambda response at
+      // an S3 key nobody polls. The flag is structural protection.
+      expect(provider.disableOuterRetry).toBe(true);
+    });
+
+    it('self-reports the async polling cap as the per-resource min timeout', () => {
+      // Default polling cap is 1 hour (matches CDK's `totalTimeout`).
+      expect(provider.getMinResourceTimeoutMs()).toBe(3_600_000);
+    });
+
+    it('honours a custom asyncResponseTimeoutMs in the self-report', () => {
+      const custom = new CustomResourceProvider({
+        responseBucket: 'test-bucket',
+        asyncResponseTimeoutMs: 90 * 60_000,
+      });
+      expect(custom.getMinResourceTimeoutMs()).toBe(90 * 60_000);
+    });
+  });
+
   describe('isSnsServiceToken', () => {
     it('should return true for SNS topic ARNs', () => {
       expect(
