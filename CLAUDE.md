@@ -117,7 +117,7 @@ pnpm run typecheck
 
   **`provider.import` support coverage**: see [docs/import.md](docs/import.md) for the full per-resource-type list (auto-lookup vs override-only vs CC-API fallback vs unsupported). Single source of truth — when adding `import()` support to a provider, update that file. Keep entries one-per-line so parallel PRs don't conflict on rebase.
 
-  **`cdkd import` vs upstream `cdk import` — parity notes** (the README has the full matrix; this is a quick checklist when working on the import code path):
+  **`cdkd import` vs upstream `cdk import` — parity notes** (see [docs/import.md](docs/import.md) for the full matrix; this is a quick checklist when working on the import code path):
 
   - **Mechanism is per-resource SDK calls, not a CloudFormation changeset.** `cdkd import` is therefore **not atomic**. `import.ts` collects per-resource outcomes (`imported` / `skipped-not-found` / `skipped-no-impl` / `skipped-out-of-scope` / `failed`) and only writes state after a final confirmation (`--yes` to skip). A partial import can be backed out with `cdkd state orphan <stack>`.
   - **No interactive prompt for missing IDs.** Upstream's TTY default prompts per resource; cdkd looks IDs up by `aws:cdk:path` tag (in `auto` / `hybrid` modes) or treats them as `out of scope` (in selective mode). The only prompt is the final "write state?" gate.
