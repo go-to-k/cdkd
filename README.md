@@ -24,6 +24,7 @@
 - **Diff calculation**: Self-implemented resource/property-level diff between desired template and current state
 - **S3-based state management**: No DynamoDB required, uses S3 conditional writes for locking
 - **DAG-based parallelization**: Analyze `Ref`/`Fn::GetAtt` dependencies and execute in parallel
+- **`--no-wait` for async resources**: Skip the multi-minute wait on CloudFront / RDS / ElastiCache and return as soon as the create call returns (CloudFormation always blocks)
 
 > **Note**: Resource types not covered by either SDK Providers or Cloud Control API cannot be deployed with cdkd. If you encounter an unsupported resource type, deployment will fail with a clear error message.
 
@@ -90,58 +91,9 @@ Reproduce with `./tests/benchmark/run-benchmark.sh all`. See [tests/benchmark/RE
 └────────┘ └────────┘
 ```
 
-### Detailed Processing Flow (`cdkd deploy`)
-
-```
-1. CLI Layer
-   ├── Resolve --app (CLI > CDKD_APP env > cdk.json "app")
-   ├── Resolve --state-bucket (CLI > env > cdk.json > auto: cdkd-state-{accountId}, with legacy fallback to cdkd-state-{accountId}-{region})
-   └── Initialize AWS clients
-
-2. Synthesis (self-implemented, no CDK CLI dependency)
-   ├── Short-circuit: if --app is an existing directory, treat it as a
-   │   pre-synthesized cloud assembly and skip the steps below
-   ├── Load context (merge order, later wins):
-   │   ├── CDK defaults (path-metadata, asset-metadata, version-reporting, bundling-stacks)
-   │   ├── ~/.cdk.json "context" field (user defaults)
-   │   ├── cdk.json "context" field (project settings)
-   │   ├── cdk.context.json (cached lookups, reloaded each iteration)
-   │   └── CLI -c key=value (highest priority)
-   ├── Execute CDK app as subprocess
-   │   ├── child_process.spawn(app command)
-   │   ├── Pass env: CDK_OUTDIR, CDK_CONTEXT_JSON, CDK_DEFAULT_REGION/ACCOUNT
-   │   └── App writes Cloud Assembly to cdk.out/
-   ├── Parse cdk.out/manifest.json
-   │   ├── Extract stacks (type: aws:cloudformation:stack)
-   │   ├── Extract asset manifests (type: cdk:asset-manifest)
-   │   └── Extract stack dependencies
-   └── Context provider loop (if missing context detected):
-       ├── Resolve via AWS SDK (all CDK context provider types supported)
-       ├── Save to cdk.context.json
-       └── Re-execute CDK app with updated context
-
-3. Asset Publishing + Deployment (WorkGraph DAG)
-   ├── Each asset is a node, each stack deploy is a node
-   │   ├── asset-publish nodes: 8 concurrent (file S3 uploads + Docker build+push)
-   │   ├── stack nodes: 4 concurrent deployments
-   │   ├── Dependencies: asset-publish → stack (all assets complete before deploy)
-   │   └── Inter-stack: stack A → stack B (CDK dependency order)
-   ├── Region resolved from asset manifest destination (stack's target region)
-   ├── Skip if already exists (HeadObject for S3, DescribeImages for ECR)
-   ├── Per-stack deploy flow:
-   │   ├── Acquire S3 lock (optimistic locking)
-   │   ├── Load current state from S3
-   │   ├── Build DAG from template (Ref/Fn::GetAtt/DependsOn)
-   │   ├── Calculate diff (CREATE/UPDATE/DELETE)
-   │   ├── Resolve intrinsic functions (Ref, Fn::Sub, Fn::Join, etc.)
-   │   ├── Execute via event-driven DAG dispatch (a resource starts as
-   │   │   soon as ALL of its own deps complete; no level barrier):
-   │   │   ├── SDK Providers (direct API calls, preferred)
-   │   │   └── Cloud Control API (fallback, async polling)
-   │   ├── Save state after each successful resource (partial state save)
-   │   └── Release lock
-   └── synth does NOT publish assets or deploy (deploy only)
-```
+For a step-by-step walkthrough of the full `cdkd deploy` pipeline (CLI
+parsing → synthesis → asset publishing → per-stack deploy), see
+[docs/architecture.md](docs/architecture.md#5-end-to-end-pipeline-walkthrough-cdkd-deploy).
 
 ## Supported Features
 
@@ -181,101 +133,16 @@ Reproduce with `./tests/benchmark/run-benchmark.sh all`. See [tests/benchmark/RE
 
 ### Resource Provisioning
 
-| Category | Resource Type | Provider | Status |
-|----------|--------------|----------|--------|
-| **IAM** | AWS::IAM::Role | SDK Provider | ✅ |
-| **IAM** | AWS::IAM::Policy | SDK Provider | ✅ |
-| **IAM** | AWS::IAM::InstanceProfile | SDK Provider | ✅ |
-| **IAM** | AWS::IAM::User | SDK Provider | ✅ |
-| **IAM** | AWS::IAM::Group | SDK Provider | ✅ |
-| **IAM** | AWS::IAM::UserToGroupAddition | SDK Provider | ✅ |
-| **Storage** | AWS::S3::Bucket | SDK Provider | ✅ |
-| **Storage** | AWS::S3::BucketPolicy | SDK Provider | ✅ |
-| **Messaging** | AWS::SQS::Queue | SDK Provider | ✅ |
-| **Messaging** | AWS::SQS::QueuePolicy | SDK Provider | ✅ |
-| **Messaging** | AWS::SNS::Topic | SDK Provider | ✅ |
-| **Messaging** | AWS::SNS::Subscription | SDK Provider | ✅ |
-| **Messaging** | AWS::SNS::TopicPolicy | SDK Provider | ✅ |
-| **Compute** | AWS::Lambda::Function | SDK Provider | ✅ |
-| **Compute** | AWS::Lambda::Permission | SDK Provider | ✅ |
-| **Compute** | AWS::Lambda::Url | SDK Provider | ✅ |
-| **Compute** | AWS::Lambda::EventSourceMapping | SDK Provider | ✅ |
-| **Compute** | AWS::Lambda::LayerVersion | SDK Provider | ✅ |
-| **Database** | AWS::DynamoDB::Table | SDK Provider | ✅ |
-| **Monitoring** | AWS::Logs::LogGroup | SDK Provider | ✅ |
-| **Monitoring** | AWS::CloudWatch::Alarm | SDK Provider | ✅ |
-| **Secrets** | AWS::SecretsManager::Secret | SDK Provider | ✅ |
-| **Config** | AWS::SSM::Parameter | SDK Provider | ✅ |
-| **Events** | AWS::Events::Rule | SDK Provider | ✅ |
-| **Events** | AWS::Events::EventBus | SDK Provider | ✅ |
-| **Networking** | AWS::EC2::VPC | SDK Provider | ✅ |
-| **Networking** | AWS::EC2::Subnet | SDK Provider | ✅ |
-| **Networking** | AWS::EC2::InternetGateway | SDK Provider | ✅ |
-| **Networking** | AWS::EC2::VPCGatewayAttachment | SDK Provider | ✅ |
-| **Networking** | AWS::EC2::RouteTable | SDK Provider | ✅ |
-| **Networking** | AWS::EC2::Route | SDK Provider | ✅ |
-| **Networking** | AWS::EC2::SubnetRouteTableAssociation | SDK Provider | ✅ |
-| **Networking** | AWS::EC2::SecurityGroup | SDK Provider | ✅ |
-| **Networking** | AWS::EC2::SecurityGroupIngress | SDK Provider | ✅ |
-| **Networking** | AWS::EC2::NetworkAcl | SDK Provider | ✅ |
-| **Networking** | AWS::EC2::NetworkAclEntry | SDK Provider | ✅ |
-| **Networking** | AWS::EC2::SubnetNetworkAclAssociation | SDK Provider | ✅ |
-| **Compute** | AWS::EC2::Instance | SDK Provider | ✅ |
-| **API Gateway** | AWS::ApiGateway::Account | SDK Provider | ✅ |
-| **API Gateway** | AWS::ApiGateway::Resource | SDK Provider | ✅ |
-| **API Gateway** | AWS::ApiGateway::Deployment | SDK Provider | ✅ |
-| **API Gateway** | AWS::ApiGateway::Stage | SDK Provider | ✅ |
-| **API Gateway** | AWS::ApiGateway::Method | SDK Provider | ✅ |
-| **API Gateway** | AWS::ApiGateway::Authorizer | SDK Provider | ✅ |
-| **API Gateway** | AWS::ApiGatewayV2::Api | SDK Provider | ✅ |
-| **API Gateway** | AWS::ApiGatewayV2::Stage | SDK Provider | ✅ |
-| **API Gateway** | AWS::ApiGatewayV2::Integration | SDK Provider | ✅ |
-| **API Gateway** | AWS::ApiGatewayV2::Route | SDK Provider | ✅ |
-| **API Gateway** | AWS::ApiGatewayV2::Authorizer | SDK Provider | ✅ |
-| **CDN** | AWS::CloudFront::CloudFrontOriginAccessIdentity | SDK Provider | ✅ |
-| **CDN** | AWS::CloudFront::Distribution | SDK Provider | ✅ |
-| **Orchestration** | AWS::StepFunctions::StateMachine | SDK Provider | ✅ |
-| **Container** | AWS::ECS::Cluster | SDK Provider | ✅ |
-| **Container** | AWS::ECS::TaskDefinition | SDK Provider | ✅ |
-| **Container** | AWS::ECS::Service | SDK Provider | ✅ |
-| **Load Balancing** | AWS::ElasticLoadBalancingV2::LoadBalancer | SDK Provider | ✅ |
-| **Load Balancing** | AWS::ElasticLoadBalancingV2::TargetGroup | SDK Provider | ✅ |
-| **Load Balancing** | AWS::ElasticLoadBalancingV2::Listener | SDK Provider | ✅ |
-| **Database** | AWS::RDS::DBSubnetGroup | SDK Provider | ✅ |
-| **Database** | AWS::RDS::DBCluster | SDK Provider | ✅ |
-| **Database** | AWS::RDS::DBInstance | SDK Provider | ✅ |
-| **DNS** | AWS::Route53::HostedZone | SDK Provider | ✅ |
-| **DNS** | AWS::Route53::RecordSet | SDK Provider | ✅ |
-| **Security** | AWS::WAFv2::WebACL | SDK Provider | ✅ |
-| **Auth** | AWS::Cognito::UserPool | SDK Provider | ✅ |
-| **Cache** | AWS::ElastiCache::CacheCluster | SDK Provider | ✅ |
-| **Cache** | AWS::ElastiCache::SubnetGroup | SDK Provider | ✅ |
-| **Discovery** | AWS::ServiceDiscovery::PrivateDnsNamespace | SDK Provider | ✅ |
-| **Discovery** | AWS::ServiceDiscovery::Service | SDK Provider | ✅ |
-| **GraphQL** | AWS::AppSync::GraphQLApi | SDK Provider | ✅ |
-| **GraphQL** | AWS::AppSync::GraphQLSchema | SDK Provider | ✅ |
-| **GraphQL** | AWS::AppSync::DataSource | SDK Provider | ✅ |
-| **GraphQL** | AWS::AppSync::Resolver | SDK Provider | ✅ |
-| **GraphQL** | AWS::AppSync::ApiKey | SDK Provider | ✅ |
-| **Analytics** | AWS::Glue::Database | SDK Provider | ✅ |
-| **Analytics** | AWS::Glue::Table | SDK Provider | ✅ |
-| **Encryption** | AWS::KMS::Key | SDK Provider | ✅ |
-| **Encryption** | AWS::KMS::Alias | SDK Provider | ✅ |
-| **Streaming** | AWS::Kinesis::Stream | SDK Provider | ✅ |
-| **Streaming** | AWS::KinesisFirehose::DeliveryStream | SDK Provider | ✅ |
-| **Storage** | AWS::EFS::FileSystem | SDK Provider | ✅ |
-| **Storage** | AWS::EFS::MountTarget | SDK Provider | ✅ |
-| **Storage** | AWS::EFS::AccessPoint | SDK Provider | ✅ |
-| **Storage** | AWS::S3Express::DirectoryBucket | SDK Provider | ✅ |
-| **Storage** | AWS::S3Tables::TableBucket | SDK Provider | ✅ |
-| **Storage** | AWS::S3Tables::Namespace | SDK Provider | ✅ |
-| **Storage** | AWS::S3Tables::Table | SDK Provider | ✅ |
-| **Storage** | AWS::S3Vectors::VectorBucket | SDK Provider | ✅ |
-| **Audit** | AWS::CloudTrail::Trail | SDK Provider | ✅ |
-| **CI/CD** | AWS::CodeBuild::Project | SDK Provider | ✅ |
-| **AI/ML** | AWS::BedrockAgentCore::Runtime | SDK Provider | ✅ |
-| **Custom** | Custom::* (Lambda/SNS-backed) | SDK Provider | ✅ |
-| **Other** | All other resource types | Cloud Control | ✅ |
+cdkd ships **90+ dedicated SDK Providers** (direct AWS SDK calls, no
+polling overhead) covering the most-used services — IAM, Lambda, S3,
+DynamoDB, EC2, RDS, ECS, API Gateway, CloudFront, Step Functions, EFS,
+KMS, Cognito, AppSync, and more. **Any other CloudFormation resource
+type** is handled via the Cloud Control API fallback (async polling).
+Resource types not supported by either path fail at deploy time with a
+clear error.
+
+See **[docs/supported-resources.md](docs/supported-resources.md)** for
+the full per-type table.
 
 ### Other Features
 
@@ -431,8 +298,8 @@ cdkd destroy --all --force
 cdkd force-unlock MyStack
 
 # Adopt already-deployed AWS resources into cdkd state.
-# See "Importing existing resources" below for the full guide (auto / selective /
-# hybrid modes, --resource overrides, --resource-mapping CDK CLI compatibility).
+# See docs/import.md for the full guide (auto / selective / hybrid modes,
+# --resource overrides, --resource-mapping CDK CLI compatibility).
 cdkd import MyStack --dry-run
 cdkd import MyStack --yes
 
@@ -503,76 +370,30 @@ cdkd state destroy MyStack --region us-east-1
 > `cdkd destroy` (synth-driven, deletes AWS resources + state) and
 > `cdkd state destroy` (state-driven, same effect) round out the matrix.
 
-### Concurrency Options
+## `--no-wait`: skip async-resource waits
 
-| Option | Default | Description |
-| --- | --- | --- |
-| `--concurrency` | 10 | Maximum concurrent resource operations per stack |
-| `--stack-concurrency` | 4 | Maximum concurrent stack deployments |
-| `--asset-publish-concurrency` | 8 | Maximum concurrent asset publish operations (S3 + ECR push) |
-| `--image-build-concurrency` | 4 | Maximum concurrent Docker image builds |
-
-## `--no-wait`
-
-By default, cdkd waits for async resources (CloudFront Distribution, RDS Cluster/Instance, ElastiCache) to reach a ready state before completing — the same behavior as CloudFormation.
-
-Use `--no-wait` to skip this and return immediately after resource creation:
+CloudFront Distributions, RDS Clusters/Instances, and ElastiCache
+typically take 3–15 minutes for AWS to fully propagate. By default
+cdkd waits for them to reach a ready state — the same behavior as
+CloudFormation. Pass `--no-wait` to return as soon as the create call
+returns:
 
 ```bash
 cdkd deploy --no-wait
 ```
 
-This can significantly speed up deployments with CloudFront (which takes 3-15 minutes to deploy to edge locations). The resource is fully functional once AWS finishes the async deployment.
+The resource is fully functional once AWS finishes the async
+deployment in the background. CloudFormation has no equivalent — once
+you submit a stack, you wait for everything.
 
-## Per-resource timeout
+## Other CLI flags
 
-Both `cdkd deploy` and `cdkd destroy` (including `cdkd state destroy`) enforce a wall-clock deadline on every individual CREATE / UPDATE / DELETE so a stuck Cloud Control polling loop, hung Custom Resource handler, or slow ENI release cannot block the run forever.
-
-| Option | Default | Description |
-| --- | --- | --- |
-| `--resource-warn-after <duration_or_type=duration>` | `5m` | Warn when a single resource operation has been running longer than this. The live progress line is suffixed with `[taking longer than expected, Nm+]` and a `WARN` log line is emitted (printed above the live area in TTY mode, plain stderr otherwise). Repeatable. |
-| `--resource-timeout <duration_or_type=duration>` | `30m` | Abort a single resource operation that exceeds this. The deploy / destroy fails with `ResourceTimeoutError` (wrapped in `ProvisioningError`) and the existing rollback / state-preservation path runs. Repeatable. |
-
-Durations are written as `<number>s`, `<number>m`, or `<number>h` (e.g. `30s`, `90s`, `5m`, `1.5h`). Zero, negative, missing-unit, and unknown-unit values are rejected at parse time.
-
-Both flags accept either form on each invocation:
-
-- **Bare duration** (`30m`) sets the global default. The last bare value wins.
-- **`TYPE=DURATION`** (`AWS::CloudFront::Distribution=1h`) adds a per-resource-type override that supersedes the global default for that type only.
-
-`TYPE` must look like `AWS::Service::Resource`; malformed types are rejected at parse time. `warn < timeout` is enforced both globally and per-type — so `--resource-warn-after AWS::X=10m --resource-timeout AWS::X=5m` is a parse-time error.
-
-```bash
-# Surface "still running" warnings sooner on a fast-feedback dev loop
-cdkd deploy --resource-warn-after 90s --resource-timeout 10m
-
-# Keep the global default tight, raise it only for resources known to take longer
-cdkd deploy \
-  --resource-timeout 30m \
-  --resource-timeout AWS::CloudFront::Distribution=1h \
-  --resource-timeout AWS::RDS::DBCluster=1h30m
-
-# Force Custom Resources to abort earlier than their 1h self-reported polling cap
-cdkd deploy --resource-timeout AWS::CloudFormation::CustomResource=5m
-```
-
-### Why the default is 30m, not 1h
-
-cdkd's Custom Resource provider polls async handlers (`isCompleteHandler` pattern) for up to one hour before giving up. Setting the per-resource timeout to 1h by default would make a single hung non-CR resource hold the whole stack for an hour even though no other resource type ever needs more than a few minutes. The 30m global default catches stuck operations faster.
-
-For Custom Resources specifically, the provider self-reports its 1h polling cap to the engine via the `getMinResourceTimeoutMs()` interface — the deploy engine resolves the per-resource budget as `max(provider self-report, --resource-timeout global)`, so CR resources get their full hour automatically without the user having to remember `--resource-timeout 1h`. To force CR to abort earlier than its self-reported cap, pass an explicit per-type override (`--resource-timeout AWS::CloudFormation::CustomResource=5m`). Per-type overrides always win over the provider's self-report — they're the documented escape hatch.
-
-The error message on timeout names the resource, type, region, elapsed time, and operation, and reminds you that long-running resources self-report their needed budget — when you see CR time out, the cause is genuinely the handler, not too-tight a default:
-
-```text
-Resource MyBucket (AWS::S3::Bucket) in us-east-1 timed out after 30m during CREATE (elapsed 30m).
-This may indicate a stuck Cloud Control polling loop, hung Custom Resource, or
-slow ENI provisioning. Re-run with --resource-timeout AWS::S3::Bucket=<DURATION>
-to bump the budget for this resource type only, or --verbose to see the
-underlying provider activity.
-```
-
-Note: `--resource-warn-after` must be less than `--resource-timeout`. Reversed values are rejected at parse time.
+For concurrency knobs (`--concurrency`, `--stack-concurrency`,
+`--asset-publish-concurrency`, `--image-build-concurrency`) and
+per-resource timeout flags (`--resource-warn-after`,
+`--resource-timeout` — including the per-resource-type override syntax
+and the rationale for the 30m default), see
+**[docs/cli-reference.md](docs/cli-reference.md)**.
 
 ## Example
 
@@ -602,408 +423,48 @@ LambdaStack
 
 Resources are dispatched as soon as their own dependencies complete (event-driven DAG). ServiceRole and Table run in parallel; DefaultPolicy starts the moment ServiceRole is done — without waiting for Table — and Handler starts the moment DefaultPolicy is done.
 
-## Architecture
-
-Built on modern AWS tooling:
-
-- **Synthesis orchestration** - Executes CDK app as subprocess (synthesis itself is done by aws-cdk-lib), parses Cloud Assembly (manifest.json) directly, context provider loop (missing context → SDK lookup → re-synthesize)
-- **Self-implemented asset publisher** - S3 file upload with ZIP packaging (via `archiver`) and ECR Docker image publishing
-- **AWS SDK v3** - Direct resource provisioning
-- **Cloud Control API** - Fallback resource management for types without SDK Providers
-- **S3 Conditional Writes** - State locking via `If-None-Match`/`If-Match`
-
 ## Importing existing resources
 
-`cdkd import` adopts AWS resources that are already deployed (e.g. via
-`cdk deploy`, manual creation, or another tool) into cdkd state, so the
-next `cdkd deploy` updates them in-place instead of trying to CREATE
-duplicates.
-
-It reads the CDK app to find logical IDs, resource types, and
-dependencies, then matches each logical ID to a real AWS resource in
-one of three modes:
-
-All examples below assume cdkd reads the CDK app command from `cdk.json`
-(the typical case). Pass `--app "<command>"` only if you're running cdkd
-outside the CDK project directory or want to override `cdk.json`.
-
-### Mode 1: auto (default — no flags)
+`cdkd import` adopts AWS resources that are already deployed (via
+`cdk deploy`, manual creation, or another tool) into cdkd state so the
+next `cdkd deploy` updates them in-place instead of CREATEing duplicates.
 
 ```bash
-cdkd import MyStack
-```
+# Adopt a whole stack previously deployed by cdk deploy (tag-based auto-lookup).
+cdkd import MyStack --yes
 
-Imports **every** resource in the synthesized template by tag. cdkd
-looks up each resource using its `aws:cdk:path` tag (which CDK
-automatically writes), so resources deployed by `cdk deploy` are found
-without any manual work. Useful for **adopting a whole stack** that was
-previously deployed by `cdk deploy`. This is cdkd's value-add over
-`cdk import` — CDK CLI does not have a tag-based bulk-import mode.
-
-### Mode 2: selective (CDK CLI parity — when explicit overrides are given)
-
-```bash
-# Import ONLY MyBucket; the other resources in the template are left alone.
+# Adopt only specific resources (CDK CLI parity).
 cdkd import MyStack --resource MyBucket=my-bucket-name
 
-# Several resources at once (--resource is repeatable).
-cdkd import MyStack \
-  --resource MyBucket=my-bucket-name \
-  --resource MyFn=my-function-name
-
-# CDK CLI compat: read overrides from a JSON file.
-cdkd import MyStack --resource-mapping mapping.json
-# mapping.json: { "MyBucket": "my-bucket-name", "MyFn": "my-function-name" }
-
-# CDK CLI compat: inline JSON (handy for non-TTY CI scripts).
-cdkd import MyStack --resource-mapping-inline '{"MyBucket":"my-bucket-name"}'
-
-# Capture cdkd's resolved logicalId→physicalId mapping for re-use.
-# Combine with --auto (or no flags) to record the tag-based lookups.
-cdkd import MyStack --record-resource-mapping ./mapping.json
-# mapping.json after the run: { "MyBucket": "my-bucket-name", ... }
-# Replay non-interactively in CI:
-cdkd import MyStack --resource-mapping ./mapping.json --yes
-```
-
-When at least one `--resource` flag (or a `--resource-mapping` /
-`--resource-mapping-inline` payload) is supplied, **only the listed
-resources are imported**. Every other resource in the template is
-reported as `out of scope` and left out of state — the next `cdkd
-deploy` will treat them as new and CREATE them. This matches the
-semantics of `cdk import --resource-mapping` /
-`--resource-mapping-inline`. cdkd validates that every override key is
-a real logical ID in the template; a typo aborts the run rather than
-silently importing nothing. `--resource-mapping` and
-`--resource-mapping-inline` are mutually exclusive — pick one source.
-
-Use selective mode when you want to **adopt a few specific resources**
-out of a larger stack — for example, you have one S3 bucket that was
-created manually that you want cdkd to manage, while the rest of the
-stack will be deployed fresh.
-
-**Selective mode is non-destructive.** When state already exists for
-the stack, listed resources are **merged** into it: unlisted entries
-already in state are preserved (no `--force` needed). `--force` is
-only required when a listed override would overwrite a resource
-already in state — that's the one case where the merge is destructive.
-This is the right command for "I have a deployed stack and want to
-adopt one more resource into it":
-
-```bash
-# Existing state has Queue + Topic; add Bucket without affecting them.
-cdkd import MyStack --resource MyBucket=my-bucket-name
-# Resulting state: Queue + Topic (preserved) + Bucket (newly imported).
-```
-
-### Mode 3: hybrid (`--auto` with overrides)
-
-```bash
-cdkd import MyStack \
-  --resource MyBucket=my-bucket-name \
-  --auto
-```
-
-Listed resources use the explicit physical ID you supplied; **every
-other resource still goes through tag-based auto-import**. Useful when
-you have one resource whose tag-based lookup is unreliable (e.g. you
-deleted and re-created it without the tag) but you want cdkd to find
-the rest by tag automatically.
-
-### Common flags
-
-| Flag | Purpose |
-| --- | --- |
-| `--dry-run` | Preview what would be imported. State is NOT written. |
-| `--yes` | Skip the confirmation prompt before writing state (and the CloudFormation retirement prompt under `--migrate-from-cloudformation`). |
-| `--force` | Confirm a destructive write to existing state — see below. |
-| `--migrate-from-cloudformation [name]` | After cdkd state is written, retire the source CloudFormation stack: inject `DeletionPolicy: Retain` + `UpdateReplacePolicy: Retain` on every resource via `UpdateStack`, then `DeleteStack`. AWS resources are NOT deleted. See [Migrating from `cdk deploy` (CloudFormation) to cdkd](#migrating-from-cdk-deploy-cloudformation-to-cdkd) below. |
-
-`--force` is only needed when the import would lose data:
-
-- **Auto / whole-stack mode + existing state**: required. The resource
-  map is rebuilt from the template, so any state entry not re-imported
-  is dropped.
-- **Selective mode + listed override already in state**: required.
-  The listed entry is overwritten with the new physical id.
-- **Selective mode without a conflict (pure merge)**: not required.
-  Unlisted state entries are preserved automatically.
-- **No existing state (first-time import)**: not required.
-
-### Migrating from `cdk deploy` (CloudFormation) to cdkd
-
-If a stack was previously deployed via `cdk deploy` (and is therefore
-managed by CloudFormation), `cdkd import --migrate-from-cloudformation` adopts
-the resources into cdkd state AND retires the source CloudFormation
-stack in one go:
-
-```bash
+# Migrate off CloudFormation in one shot — adopt + retire the source CFn stack.
 cdkd import MyStack --migrate-from-cloudformation --yes
 ```
 
-No `--resource <id>=<physical>` flags are needed — cdkd recovers each
-resource's physical id directly from CloudFormation via
-`DescribeStackResources`, so it works for both `cdk deploy`-managed and
-`cdkd deploy`-managed stacks. (cdkd's tag-based auto-lookup can't help
-here: upstream `cdk deploy` doesn't propagate the `aws:cdk:path` template
-metadata as a real AWS tag, and AWS reserves the `aws:` tag prefix so
-neither cdkd nor a CFn `UpdateStack` can add it on the way through.)
-
-The flow:
-
-1. `DescribeStackResources` — ask CloudFormation for every
-   `(LogicalResourceId, PhysicalResourceId)` pair in the source stack.
-   These are merged into the import overrides; user-supplied
-   `--resource <id>=<physical>` flags take precedence over CFn's view.
-2. `cdkd import` runs and adopts every resource into cdkd state via
-   each provider's `import()` method, using the CFn-resolved physical
-   ids as direct lookups.
-3. `cdkd` writes state.
-4. `DescribeStacks` + `GetTemplate` + `UpdateStack` to inject
-   `DeletionPolicy: Retain` and `UpdateReplacePolicy: Retain` on every
-   resource — a metadata-only update.
-5. `DeleteStack` — every resource is now `Retain`, so CloudFormation
-   walks the stack and skips every resource. The stack record disappears;
-   the underlying AWS resources are left intact and are now solely
-   managed by cdkd.
-
-Steps 1–5 all run inside the same lock so a concurrent `cdkd deploy`
-cannot race the in-flight migration.
-
-By default the CloudFormation stack name is taken from the cdkd stack
-name (the typical case — CDK uses the synthesized stack name as the CFn
-stack name). Pass an explicit value when the names differ:
-
-```bash
-cdkd import MyStack --migrate-from-cloudformation LegacyCfnStackName --yes
-```
-
-Limitations:
-
-- **JSON-only.** The Retain-policy injection in step 4 targets the
-  CDK-generated JSON template. The expected upstream is `cdk migrate`
-  (whose synthesized output is JSON) followed by `cdk deploy` /
-  `cdkd deploy` — also JSON. Adding YAML support would require parsing
-  CloudFormation shorthand intrinsics (`!Ref`, `!Sub`, `!GetAtt`, …)
-  which round-trip incorrectly through generic YAML libraries (a
-  generic unmarshal/remarshal silently strips the custom tags and
-  corrupts the template). Until a CFn-aware YAML codec is in scope,
-  hand-written YAML stacks fail with a clear error and are best
-  retired with the manual 3-step procedure.
-- **1 MB template limit.** Templates up to the inline 51,200-byte
-  `TemplateBody` ceiling are submitted directly. Larger templates are
-  uploaded to the cdkd state bucket under
-  `cdkd-migrate-tmp/<stack>/<timestamp>.json` and submitted via
-  `TemplateURL`; the transient object is deleted in a `finally`
-  immediately after `UpdateStack`. Templates over the 1 MB
-  CloudFormation `TemplateURL` ceiling are structurally
-  unsubmittable — cdkd fails with a clear error. cdkd state has
-  already been written at that point, so re-runs and manual cleanup
-  are both supported.
-- **Not compatible with `--dry-run`.** The post-state-write
-  `UpdateStack` + `DeleteStack` are real side-effects and cannot be
-  faithfully simulated. Use plain `cdkd import --dry-run` to preview
-  per-resource import outcomes.
-- **Partial imports leave unmanaged resources.** If a resource cannot
-  be imported (no provider, AWS not-found, etc.), `DeleteStack` skips
-  it (Retain) and cdkd never wrote it into state — so the resource
-  exists in AWS but unmanaged by both CloudFormation and cdkd. cdkd
-  warns loudly when this happens; either re-import the missing
-  resources first or accept the orphaning intentionally.
-
-### After import
-
-Run `cdkd diff` to see how the imported state lines up with the
-template. If the resource's actual properties differ from the template,
-the next `cdkd deploy` will UPDATE them to match. If you imported only
-some resources (selective mode), the remaining template resources
-appear as `to create` in the diff.
-
-### Provider support
-
-Tag-based auto-lookup is implemented for the most-used resource types
-(S3 Bucket, Lambda Function, IAM Role, SNS Topic, SQS Queue, DynamoDB
-Table, Logs LogGroup, EventBridge EventBus, KMS Key/Alias, Secrets
-Manager Secret, SSM Parameter, EC2 VPC/Subnet/SecurityGroup, RDS,
-ECS Cluster/Service/TaskDefinition, CloudFront Distribution, Cognito
-User Pool — the full list is in [CLAUDE.md](CLAUDE.md)). For resource
-types without auto-lookup support (ApiGateway sub-resources, niche
-services, anything in Cloud Control API), use the explicit
-`--resource <id>=<physicalId>` override mode — selective mode handles
-exactly this case. Resource types whose provider does not implement
-import are reported as `unsupported` and skipped.
-
-### `cdkd import` vs upstream `cdk import`
-
-cdkd's `import` command mirrors the surface of upstream
-[`cdk import`](https://docs.aws.amazon.com/cdk/v2/guide/ref-cli-cmd-import.html)
-where it can, but the underlying mechanism is fundamentally different
-and a handful of upstream-only flags are not implemented. Use this
-table to predict behavior when migrating from `cdk import`.
-
-| Topic | `cdk import` (upstream) | `cdkd import` |
-| --- | --- | --- |
-| Mechanism | CloudFormation `CreateChangeSet` with `ResourcesToImport` — atomic, all-or-nothing. | Per-resource SDK calls (e.g. `s3:HeadBucket`, `lambda:GetFunction`, IAM `ListRoleTags`). **Not atomic.** |
-| Failure mode | Failed import rolls the changeset back; the stack is left unchanged. | Per-resource: `imported` / `skipped-not-found` / `skipped-no-impl` / `skipped-out-of-scope` / `failed` rows are summarized. State is written for whatever succeeded — but only after a confirmation prompt (or `--yes`), so a partial run is opt-in. To roll a partial import back, use `cdkd state orphan <stack>` (drops the state record only). |
-| Selective mode (`--resource-mapping <file>`) | Supported. Listed resources are imported; unlisted resources cause the changeset to fail. | Supported. Listed resources are imported; unlisted resources are reported as `out of scope` and left out of state (next `cdkd deploy` will CREATE them). |
-| Selective mode (`--resource <id>=<physical>` repeatable) | Not supported (upstream uses interactive prompts or a mapping file). | Supported as cdkd's CLI-friendly equivalent. |
-| `--resource-mapping-inline '<json>'` | Supported (use in non-TTY environments). | Supported. Same shape as `--resource-mapping <file>` but supplied as a string — useful for non-TTY CI scripts that do not want a separate file. Mutually exclusive with `--resource-mapping`. |
-| `--record-resource-mapping <file>` | Supported (writes the mapping the user typed at the prompt to a file for re-use). | Supported. Writes the resolved `{logicalId: physicalId}` map (covers explicit overrides AND cdkd's tag-based auto-lookup) to the file before the confirmation prompt. The file is produced even if the user says "no" or under `--dry-run`, so the resolved data is never thrown away. |
-| Interactive prompt for missing IDs | Default in TTY — prompts for every resource not covered by a mapping file. | **Not supported.** cdkd is non-interactive: missing logical IDs are looked up by `aws:cdk:path` tag in `auto` / `hybrid` modes, or skipped as `out of scope` in selective mode. The only prompt is the final "write state?" confirmation, which `--yes` skips. |
-| Typo'd logical ID | Aborts with a clear error before any AWS calls. | Aborts with a clear error before any AWS calls — checked against the synthesized template. |
-| Whole-stack tag-based import | **Not supported.** | **cdkd-specific.** With no flags, cdkd looks every resource up by its `aws:cdk:path` tag — the typical case for adopting a stack previously deployed by `cdk deploy`. |
-| Hybrid mode (overrides + tag fallback) | **Not supported.** | **cdkd-specific.** `--auto` together with `--resource` lets listed resources use the explicit physical id while everything else still goes through tag lookup. |
-| Nested stacks (`AWS::CloudFormation::Stack`) | Explicitly unsupported. | Also unsupported in practice — cdkd does not deploy nested CloudFormation stacks at all (no `AWS::CloudFormation::Stack` provider). The `Stack` resource itself would be reported as `unsupported`. CDK Stages (separate top-level stacks) are fine: pass the stack's display path or physical name as the positional argument. |
-| Bootstrap requirement | Bootstrap v12+ (deploy role needs to read the encrypted staging bucket). | cdkd's own state bucket; no CDK bootstrap version requirement. |
-| Resource-type coverage | Whatever [CloudFormation supports for import](https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/resource-import-supported-resources.html). | The set of cdkd providers that implement `import()` (see [CLAUDE.md](CLAUDE.md) for the current list). For any other CC-API-supported type, use `--resource <id>=<physical>` to drive the Cloud Control API fallback. The two lists overlap heavily but are not identical. |
-| Confirmation prompt before writing state | n/a (CloudFormation operates atomically). | Yes — cdkd asks before writing the state file. Skip with `--yes`. |
-| `--force` | "Continue even if the diff includes updates or deletions" — about diff strictness. | "Confirm a destructive write to existing state" — required for auto/whole-stack rebuild and for overwriting a listed entry already in state; not required for a pure selective merge. **Same flag name, different meaning.** |
-| `--dry-run` | Implied by `--no-execute` (creates the changeset without executing). | Native: shows the import plan and exits without writing state. |
-
-#### Practical implications when migrating from `cdk import`
-
-- If you script around `--resource-mapping <file>`: behavior matches.
-  The file format (`{"LogicalId": "physical-id"}`) is the same.
-- If you script around `--resource-mapping-inline`: behavior matches.
-  The JSON shape is the same as `--resource-mapping <file>`.
-- If you script around `--record-resource-mapping <file>`: behavior
-  matches. cdkd writes the resolved `{logicalId: physicalId}` map to
-  the file before the confirmation prompt — and even if the user says
-  "no" or under `--dry-run` — so you can capture cdkd's tag-based
-  auto-lookup result and replay it via `--resource-mapping` in CI.
-- If your workflow relies on the interactive prompt: rewrite as
-  `--resource-mapping <file>`. cdkd will not prompt.
-- If you rely on atomic rollback: cdkd cannot offer that — its
-  per-resource model writes state only after the full pass completes
-  (and after confirmation), so a partial run is bounded, but if a
-  later resource fails after several earlier ones already returned
-  successfully and you confirm the write, those earlier ones are
-  in cdkd state. Use `cdkd state orphan <stack>` to back out.
-- If you import nested stacks: neither tool supports this. Convert
-  to top-level CDK stacks first.
+See **[docs/import.md](docs/import.md)** for the full guide: three import
+modes (auto / selective / hybrid), `--resource-mapping` CDK CLI
+compatibility, CloudFormation migration flow, provider coverage, and the
+parity matrix vs upstream `cdk import`.
 
 ## State Management
 
-State is stored in S3. Keys are scoped by `(stackName, region)` so the same
-stack name deployed to two regions has two independent state files:
-
-```
-s3://{state-bucket}/
-  └── {prefix}/                     # Default: "cdkd" (configurable via --state-prefix)
-      ├── MyStack/
-      │   └── us-east-1/
-      │       ├── state.json        # Resource state (version: 2)
-      │       └── lock.json         # Exclusive deploy lock
-      └── AnotherStack/
-          ├── us-east-1/
-          │   ├── state.json
-          │   └── lock.json
-          └── us-west-2/             # same stackName, different region
-              ├── state.json
-              └── lock.json
-```
-
-> **Caveat: same `stackName` in multiple regions becomes visible after
-> `env.region` changes.** Before this layout shipped, changing a stack's
-> `env.region` between deploys silently overwrote the prior region's state
-> and `cdkd destroy` ran against the wrong region. cdkd now treats the two
-> regions as independent. Use `cdkd state list` to see both, and
-> `cdkd state orphan <stack> --stack-region <region>` to prune one without
-> touching the other.
->
-> **Legacy key-layout migration (within the same bucket):** state files
-> written by cdkd before this layout (`version: 1`, flat
-> `cdkd/{stackName}/state.json`) are still readable. The next cdkd write
-> auto-migrates to the new region-prefixed key
-> (`cdkd/{stackName}/{region}/state.json`) and removes the legacy file —
-> no manual action required. An older cdkd binary reading a `version: 2`
-> file fails with a clear "upgrade cdkd" error rather than silently
-> mishandling it.
->
-> Note: this only covers the **key layout inside an existing state
-> bucket**. The separate **bucket-name migration** (legacy
-> `cdkd-state-{accountId}-{region}` → new `cdkd-state-{accountId}`)
-> is described below and does NOT auto-migrate.
-
-### Bucket migration
-
-The default state-bucket name changed in v0.11.0 from the region-suffixed
-`cdkd-state-{accountId}-{region}` to the region-free
-`cdkd-state-{accountId}`. The bucket name is region-free because S3 names
-are globally unique, so teammates with different profile regions all
-converge on the same bucket; the bucket's actual region is auto-detected
-via `GetBucketLocation`.
-
-Existing users keep working without doing anything: when only the legacy
-bucket exists, cdkd transparently falls back to it and emits a
-deprecation warning. To stop the warning (and consolidate state into the
-new bucket) run:
-
-```bash
-# Per-region: copies all objects from cdkd-state-{accountId}-{region}
-# into cdkd-state-{accountId}. Source bucket is kept by default.
-cdkd state migrate --region us-east-1
-
-# Optional: delete the legacy bucket once the copy is verified.
-cdkd state migrate --region us-east-1 --remove-legacy
-```
-
-This migration is **account-wide / per-region**, not per-stack — running
-it once per region clears the legacy bucket for that region in one shot.
-For multi-region accounts, run it once per region (each invocation copies
-into the same destination bucket).
-
-`cdkd state migrate` refuses to run while any stack has an active
-`lock.json` (an in-flight `cdkd deploy` / `destroy` would race the copy),
-verifies object-count parity between source and destination before any
-source cleanup, and only deletes the legacy bucket when
-`--remove-legacy` is passed.
-
-See the [Configuration](#configuration) table below for the full
-precedence rules of the `--state-bucket` flag and its env-var / cdk.json
-fallbacks.
-
-### Configuration
+State is stored in S3 with optimistic locking via S3 Conditional Writes
+(no DynamoDB required). Keys are scoped by `(stackName, region)` so the
+same stack deployed to two regions has two independent state files.
 
 | Setting | CLI | cdk.json | Env var | Default |
 |---------|-----|----------|---------|---------|
-| Bucket | `--state-bucket` | `context.cdkd.stateBucket` | `CDKD_STATE_BUCKET` | `cdkd-state-{accountId}` (legacy `cdkd-state-{accountId}-{region}` is still read with a deprecation warning) |
+| Bucket | `--state-bucket` | `context.cdkd.stateBucket` | `CDKD_STATE_BUCKET` | `cdkd-state-{accountId}` (legacy `cdkd-state-{accountId}-{region}` is still read with a deprecation warning — run `cdkd state migrate` to consolidate) |
 | Prefix | `--state-prefix` | - | - | `cdkd` |
 
-### Multi-app isolation
+The state bucket is shared across all CDK apps in the same account by
+default. To isolate apps, pass different `--state-prefix` values.
+`cdkd destroy --all` only targets stacks from the current CDK app
+(determined by synthesis), not all stacks in the bucket.
 
-The state bucket is shared across all CDK apps in the same account/region by default. To isolate apps, use different prefixes:
-
-```bash
-# App A
-cdkd deploy --state-prefix app-a
-
-# App B
-cdkd deploy --state-prefix app-b
-```
-
-> **Note**: `cdkd destroy --all` only targets stacks from the current CDK app (determined by synthesis), not all stacks in the bucket.
-
-State schema:
-
-```typescript
-{
-  version: 2,
-  stackName: "MyStack",
-  region: "us-east-1",
-  resources: {
-    "MyFunction": {
-      physicalId: "arn:aws:lambda:...",
-      resourceType: "AWS::Lambda::Function",
-      properties: { ... },
-      attributes: { Arn: "...", ... },  // For Fn::GetAtt
-      dependencies: ["MyBucket"]         // For proper deletion order
-    }
-  },
-  outputs: { ... },
-  lastModified: 1234567890
-}
-```
+See **[docs/state-management.md](docs/state-management.md)** for the full
+spec: S3 key layout, optimistic-locking mechanism (ETag-based), state
+schema, legacy `version: 1` migration, bucket-name migration via
+`cdkd state migrate`, and troubleshooting.
 
 ## Stack Outputs
 
@@ -1032,19 +493,6 @@ After deployment, outputs are resolved and saved to the S3 state file:
 - CloudFormation: Outputs accessible via `aws cloudformation describe-stacks`
 - cdkd: Outputs saved in S3 state file (e.g., `s3://bucket/cdkd/MyStack/us-east-1/state.json`)
 - Both resolve intrinsic functions (Ref, Fn::GetAtt, etc.) to actual values
-
-## Testing
-
-- Unit tests covering all layers
-- Integration examples verified with real AWS deployments (see `tests/integration/`)
-- E2E test script for automated deploy/diff/update/destroy cycles
-
-```bash
-pnpm test                # Run unit tests
-pnpm run test:coverage   # With coverage report
-```
-
-See [docs/testing.md](docs/testing.md) for integration and E2E testing instructions.
 
 ## License
 
