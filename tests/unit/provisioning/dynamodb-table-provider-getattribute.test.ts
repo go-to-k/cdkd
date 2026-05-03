@@ -65,6 +65,24 @@ describe('DynamoDBTableProvider.getAttribute', () => {
     expect(result).toBe('arn:aws:dynamodb:us-east-1:123:table/my-table/stream/2026');
   });
 
+  it('returns LatestStreamLabel from DescribeTable.LatestStreamLabel', async () => {
+    mockSend.mockResolvedValueOnce({
+      Table: {
+        TableName: 'my-table',
+        TableArn: 'arn:aws:dynamodb:us-east-1:123:table/my-table',
+        LatestStreamArn: 'arn:aws:dynamodb:us-east-1:123:table/my-table/stream/2026-05-02T00:00:00.000',
+        LatestStreamLabel: '2026-05-02T00:00:00.000',
+      },
+    });
+
+    const result = await provider.getAttribute(
+      'my-table',
+      'AWS::DynamoDB::Table',
+      'LatestStreamLabel'
+    );
+    expect(result).toBe('2026-05-02T00:00:00.000');
+  });
+
   it('returns undefined for unknown attribute', async () => {
     mockSend.mockResolvedValueOnce({
       Table: { TableName: 'my-table', TableArn: 'arn' },

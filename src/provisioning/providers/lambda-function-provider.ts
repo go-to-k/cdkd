@@ -760,28 +760,42 @@ export class LambdaFunctionProvider implements ResourceProvider {
   /**
    * Resolve a single `Fn::GetAtt` attribute for an existing Lambda function.
    *
-   * CloudFormation's `AWS::Lambda::Function` exposes `Arn` (the only widely
-   * used return value documented at
-   * https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-lambda-function.html#aws-resource-lambda-function-return-values).
+   * CloudFormation's `AWS::Lambda::Function` exposes `Arn`,
+   * `SnapStartResponse.ApplyOn`, and `SnapStartResponse.OptimizationStatus`
+   * as documented at
+   * https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-lambda-function.html#aws-resource-lambda-function-return-values.
    *
-   * `SnapStartResponse.ApplyOn` and `SnapStartResponse.OptimizationStatus` are
-   * not supported here — see `docs/provider-development.md` for the deferred
-   * list. Used by `cdkd orphan` to live-fetch attribute values that need to
-   * be substituted into sibling references.
+   * All three live in the same `GetFunction` response (`Configuration.FunctionArn`
+   * and `Configuration.SnapStart.{ApplyOn,OptimizationStatus}`), so a single API
+   * call covers every supported attr. Used by `cdkd orphan` to live-fetch
+   * attribute values that need to be substituted into sibling references.
    */
   async getAttribute(
     physicalId: string,
     _resourceType: string,
     attributeName: string
   ): Promise<unknown> {
-    if (attributeName !== 'Arn') {
+    if (
+      attributeName !== 'Arn' &&
+      attributeName !== 'SnapStartResponse.ApplyOn' &&
+      attributeName !== 'SnapStartResponse.OptimizationStatus'
+    ) {
       return undefined;
     }
     try {
       const resp = await this.lambdaClient.send(
         new GetFunctionCommand({ FunctionName: physicalId })
       );
-      return resp.Configuration?.FunctionArn;
+      switch (attributeName) {
+        case 'Arn':
+          return resp.Configuration?.FunctionArn;
+        case 'SnapStartResponse.ApplyOn':
+          return resp.Configuration?.SnapStart?.ApplyOn;
+        case 'SnapStartResponse.OptimizationStatus':
+          return resp.Configuration?.SnapStart?.OptimizationStatus;
+        default:
+          return undefined;
+      }
     } catch (err) {
       if (err instanceof ResourceNotFoundException) return undefined;
       throw err;

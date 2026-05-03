@@ -569,5 +569,37 @@ describe('LambdaFunctionProvider', () => {
       const result = await provider.getAttribute('missing-fn', 'AWS::Lambda::Function', 'Arn');
       expect(result).toBeUndefined();
     });
+
+    it('returns SnapStartResponse.ApplyOn from GetFunction.Configuration.SnapStart.ApplyOn', async () => {
+      mockLambdaSend.mockResolvedValueOnce({
+        Configuration: {
+          FunctionArn: 'arn:aws:lambda:us-east-1:123:function:my-fn',
+          SnapStart: { ApplyOn: 'PublishedVersions', OptimizationStatus: 'On' },
+        },
+      });
+
+      const result = await provider.getAttribute(
+        'my-fn',
+        'AWS::Lambda::Function',
+        'SnapStartResponse.ApplyOn'
+      );
+      expect(result).toBe('PublishedVersions');
+    });
+
+    it('returns SnapStartResponse.OptimizationStatus from GetFunction.Configuration.SnapStart.OptimizationStatus', async () => {
+      mockLambdaSend.mockResolvedValueOnce({
+        Configuration: {
+          FunctionArn: 'arn:aws:lambda:us-east-1:123:function:my-fn',
+          SnapStart: { ApplyOn: 'PublishedVersions', OptimizationStatus: 'On' },
+        },
+      });
+
+      const result = await provider.getAttribute(
+        'my-fn',
+        'AWS::Lambda::Function',
+        'SnapStartResponse.OptimizationStatus'
+      );
+      expect(result).toBe('On');
+    });
   });
 });
