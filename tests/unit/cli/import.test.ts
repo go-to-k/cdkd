@@ -1174,14 +1174,19 @@ describe('cdkd import', () => {
           knownPhysicalId: 'cfn-bucket-physical',
         })
       );
-      // Retirement runs with the same stack name.
+      // Retirement runs with the same stack name and is given the
+      // resolved cdkd state bucket so the >51,200-byte TemplateURL
+      // fallback can write its transient template there.
       expect(mockRetireCloudFormationStack).toHaveBeenCalledTimes(1);
       const arg = mockRetireCloudFormationStack.mock.calls[0]![0] as {
         cfnStackName: string;
         yes: boolean;
+        stateBucket: string;
       };
       expect(arg.cfnStackName).toBe('S');
       expect(arg.yes).toBe(true);
+      expect(arg.stateBucket).toBeDefined();
+      expect(arg.stateBucket.length).toBeGreaterThan(0);
     });
 
     it('uses the explicit value when --migrate-from-cloudformation <name> is given', async () => {
