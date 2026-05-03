@@ -24,6 +24,7 @@
 - **Diff calculation**: Self-implemented resource/property-level diff between desired template and current state
 - **S3-based state management**: No DynamoDB required, uses S3 conditional writes for locking
 - **DAG-based parallelization**: Analyze `Ref`/`Fn::GetAtt` dependencies and execute in parallel
+- **`--no-wait` for async resources**: Skip the multi-minute wait on CloudFront / RDS / ElastiCache and return as soon as the create call returns (CloudFormation always blocks)
 
 > **Note**: Resource types not covered by either SDK Providers or Cloud Control API cannot be deployed with cdkd. If you encounter an unsupported resource type, deployment will fail with a clear error message.
 
@@ -454,11 +455,27 @@ cdkd state destroy MyStack --region us-east-1
 > `cdkd destroy` (synth-driven, deletes AWS resources + state) and
 > `cdkd state destroy` (state-driven, same effect) round out the matrix.
 
-## CLI flags
+## `--no-wait`: skip async-resource waits
+
+CloudFront Distributions, RDS Clusters/Instances, and ElastiCache
+typically take 3–15 minutes for AWS to fully propagate. By default
+cdkd waits for them to reach a ready state — the same behavior as
+CloudFormation. Pass `--no-wait` to return as soon as the create call
+returns:
+
+```bash
+cdkd deploy --no-wait
+```
+
+The resource is fully functional once AWS finishes the async
+deployment in the background. CloudFormation has no equivalent — once
+you submit a stack, you wait for everything.
+
+## Other CLI flags
 
 For concurrency knobs (`--concurrency`, `--stack-concurrency`,
-`--asset-publish-concurrency`, `--image-build-concurrency`), `--no-wait`
-behavior, and per-resource timeout flags (`--resource-warn-after`,
+`--asset-publish-concurrency`, `--image-build-concurrency`) and
+per-resource timeout flags (`--resource-warn-after`,
 `--resource-timeout` — including the per-resource-type override syntax
 and the rationale for the 30m default), see
 **[docs/cli-reference.md](docs/cli-reference.md)**.
