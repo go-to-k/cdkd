@@ -1,3 +1,10 @@
+## [0.30.2](https://github.com/go-to-k/cdkd/compare/v0.30.1...v0.30.2) (2026-05-03)
+
+
+### Bug Fixes
+
+* **lambda:** move post-CreateFunction wait to Custom Resource Invoke (was doubling deploy time) ([#122](https://github.com/go-to-k/cdkd/issues/122)) ([4a7fb38](https://github.com/go-to-k/cdkd/commit/4a7fb38b0f7ea1da9565721d8367733202d338dc))
+
 ## [0.30.1](https://github.com/go-to-k/cdkd/compare/v0.30.0...v0.30.1) (2026-05-03)
 
 
