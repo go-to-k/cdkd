@@ -1,3 +1,10 @@
+## [0.30.1](https://github.com/go-to-k/cdkd/compare/v0.30.0...v0.30.1) (2026-05-03)
+
+
+### Bug Fixes
+
+* **lambda:** wait for State=Active after CreateFunction (Custom Resource race) ([#121](https://github.com/go-to-k/cdkd/issues/121)) ([553c623](https://github.com/go-to-k/cdkd/commit/553c6237892126c26b07ad2ddbe807f39fe38284))
+
 # [0.30.0](https://github.com/go-to-k/cdkd/compare/v0.29.0...v0.30.0) (2026-05-03)
 
 
