@@ -90,58 +90,9 @@ Reproduce with `./tests/benchmark/run-benchmark.sh all`. See [tests/benchmark/RE
 └────────┘ └────────┘
 ```
 
-### Detailed Processing Flow (`cdkd deploy`)
-
-```
-1. CLI Layer
-   ├── Resolve --app (CLI > CDKD_APP env > cdk.json "app")
-   ├── Resolve --state-bucket (CLI > env > cdk.json > auto: cdkd-state-{accountId}, with legacy fallback to cdkd-state-{accountId}-{region})
-   └── Initialize AWS clients
-
-2. Synthesis (self-implemented, no CDK CLI dependency)
-   ├── Short-circuit: if --app is an existing directory, treat it as a
-   │   pre-synthesized cloud assembly and skip the steps below
-   ├── Load context (merge order, later wins):
-   │   ├── CDK defaults (path-metadata, asset-metadata, version-reporting, bundling-stacks)
-   │   ├── ~/.cdk.json "context" field (user defaults)
-   │   ├── cdk.json "context" field (project settings)
-   │   ├── cdk.context.json (cached lookups, reloaded each iteration)
-   │   └── CLI -c key=value (highest priority)
-   ├── Execute CDK app as subprocess
-   │   ├── child_process.spawn(app command)
-   │   ├── Pass env: CDK_OUTDIR, CDK_CONTEXT_JSON, CDK_DEFAULT_REGION/ACCOUNT
-   │   └── App writes Cloud Assembly to cdk.out/
-   ├── Parse cdk.out/manifest.json
-   │   ├── Extract stacks (type: aws:cloudformation:stack)
-   │   ├── Extract asset manifests (type: cdk:asset-manifest)
-   │   └── Extract stack dependencies
-   └── Context provider loop (if missing context detected):
-       ├── Resolve via AWS SDK (all CDK context provider types supported)
-       ├── Save to cdk.context.json
-       └── Re-execute CDK app with updated context
-
-3. Asset Publishing + Deployment (WorkGraph DAG)
-   ├── Each asset is a node, each stack deploy is a node
-   │   ├── asset-publish nodes: 8 concurrent (file S3 uploads + Docker build+push)
-   │   ├── stack nodes: 4 concurrent deployments
-   │   ├── Dependencies: asset-publish → stack (all assets complete before deploy)
-   │   └── Inter-stack: stack A → stack B (CDK dependency order)
-   ├── Region resolved from asset manifest destination (stack's target region)
-   ├── Skip if already exists (HeadObject for S3, DescribeImages for ECR)
-   ├── Per-stack deploy flow:
-   │   ├── Acquire S3 lock (optimistic locking)
-   │   ├── Load current state from S3
-   │   ├── Build DAG from template (Ref/Fn::GetAtt/DependsOn)
-   │   ├── Calculate diff (CREATE/UPDATE/DELETE)
-   │   ├── Resolve intrinsic functions (Ref, Fn::Sub, Fn::Join, etc.)
-   │   ├── Execute via event-driven DAG dispatch (a resource starts as
-   │   │   soon as ALL of its own deps complete; no level barrier):
-   │   │   ├── SDK Providers (direct API calls, preferred)
-   │   │   └── Cloud Control API (fallback, async polling)
-   │   ├── Save state after each successful resource (partial state save)
-   │   └── Release lock
-   └── synth does NOT publish assets or deploy (deploy only)
-```
+For a step-by-step walkthrough of the full `cdkd deploy` pipeline (CLI
+parsing → synthesis → asset publishing → per-stack deploy), see
+[docs/architecture.md](docs/architecture.md#5-end-to-end-pipeline-walkthrough-cdkd-deploy).
 
 ## Supported Features
 
@@ -503,76 +454,14 @@ cdkd state destroy MyStack --region us-east-1
 > `cdkd destroy` (synth-driven, deletes AWS resources + state) and
 > `cdkd state destroy` (state-driven, same effect) round out the matrix.
 
-### Concurrency Options
+## CLI flags
 
-| Option | Default | Description |
-| --- | --- | --- |
-| `--concurrency` | 10 | Maximum concurrent resource operations per stack |
-| `--stack-concurrency` | 4 | Maximum concurrent stack deployments |
-| `--asset-publish-concurrency` | 8 | Maximum concurrent asset publish operations (S3 + ECR push) |
-| `--image-build-concurrency` | 4 | Maximum concurrent Docker image builds |
-
-## `--no-wait`
-
-By default, cdkd waits for async resources (CloudFront Distribution, RDS Cluster/Instance, ElastiCache) to reach a ready state before completing — the same behavior as CloudFormation.
-
-Use `--no-wait` to skip this and return immediately after resource creation:
-
-```bash
-cdkd deploy --no-wait
-```
-
-This can significantly speed up deployments with CloudFront (which takes 3-15 minutes to deploy to edge locations). The resource is fully functional once AWS finishes the async deployment.
-
-## Per-resource timeout
-
-Both `cdkd deploy` and `cdkd destroy` (including `cdkd state destroy`) enforce a wall-clock deadline on every individual CREATE / UPDATE / DELETE so a stuck Cloud Control polling loop, hung Custom Resource handler, or slow ENI release cannot block the run forever.
-
-| Option | Default | Description |
-| --- | --- | --- |
-| `--resource-warn-after <duration_or_type=duration>` | `5m` | Warn when a single resource operation has been running longer than this. The live progress line is suffixed with `[taking longer than expected, Nm+]` and a `WARN` log line is emitted (printed above the live area in TTY mode, plain stderr otherwise). Repeatable. |
-| `--resource-timeout <duration_or_type=duration>` | `30m` | Abort a single resource operation that exceeds this. The deploy / destroy fails with `ResourceTimeoutError` (wrapped in `ProvisioningError`) and the existing rollback / state-preservation path runs. Repeatable. |
-
-Durations are written as `<number>s`, `<number>m`, or `<number>h` (e.g. `30s`, `90s`, `5m`, `1.5h`). Zero, negative, missing-unit, and unknown-unit values are rejected at parse time.
-
-Both flags accept either form on each invocation:
-
-- **Bare duration** (`30m`) sets the global default. The last bare value wins.
-- **`TYPE=DURATION`** (`AWS::CloudFront::Distribution=1h`) adds a per-resource-type override that supersedes the global default for that type only.
-
-`TYPE` must look like `AWS::Service::Resource`; malformed types are rejected at parse time. `warn < timeout` is enforced both globally and per-type — so `--resource-warn-after AWS::X=10m --resource-timeout AWS::X=5m` is a parse-time error.
-
-```bash
-# Surface "still running" warnings sooner on a fast-feedback dev loop
-cdkd deploy --resource-warn-after 90s --resource-timeout 10m
-
-# Keep the global default tight, raise it only for resources known to take longer
-cdkd deploy \
-  --resource-timeout 30m \
-  --resource-timeout AWS::CloudFront::Distribution=1h \
-  --resource-timeout AWS::RDS::DBCluster=1h30m
-
-# Force Custom Resources to abort earlier than their 1h self-reported polling cap
-cdkd deploy --resource-timeout AWS::CloudFormation::CustomResource=5m
-```
-
-### Why the default is 30m, not 1h
-
-cdkd's Custom Resource provider polls async handlers (`isCompleteHandler` pattern) for up to one hour before giving up. Setting the per-resource timeout to 1h by default would make a single hung non-CR resource hold the whole stack for an hour even though no other resource type ever needs more than a few minutes. The 30m global default catches stuck operations faster.
-
-For Custom Resources specifically, the provider self-reports its 1h polling cap to the engine via the `getMinResourceTimeoutMs()` interface — the deploy engine resolves the per-resource budget as `max(provider self-report, --resource-timeout global)`, so CR resources get their full hour automatically without the user having to remember `--resource-timeout 1h`. To force CR to abort earlier than its self-reported cap, pass an explicit per-type override (`--resource-timeout AWS::CloudFormation::CustomResource=5m`). Per-type overrides always win over the provider's self-report — they're the documented escape hatch.
-
-The error message on timeout names the resource, type, region, elapsed time, and operation, and reminds you that long-running resources self-report their needed budget — when you see CR time out, the cause is genuinely the handler, not too-tight a default:
-
-```text
-Resource MyBucket (AWS::S3::Bucket) in us-east-1 timed out after 30m during CREATE (elapsed 30m).
-This may indicate a stuck Cloud Control polling loop, hung Custom Resource, or
-slow ENI provisioning. Re-run with --resource-timeout AWS::S3::Bucket=<DURATION>
-to bump the budget for this resource type only, or --verbose to see the
-underlying provider activity.
-```
-
-Note: `--resource-warn-after` must be less than `--resource-timeout`. Reversed values are rejected at parse time.
+For concurrency knobs (`--concurrency`, `--stack-concurrency`,
+`--asset-publish-concurrency`, `--image-build-concurrency`), `--no-wait`
+behavior, and per-resource timeout flags (`--resource-warn-after`,
+`--resource-timeout` — including the per-resource-type override syntax
+and the rationale for the 30m default), see
+**[docs/cli-reference.md](docs/cli-reference.md)**.
 
 ## Example
 
@@ -636,126 +525,24 @@ parity matrix vs upstream `cdk import`.
 
 ## State Management
 
-State is stored in S3. Keys are scoped by `(stackName, region)` so the same
-stack name deployed to two regions has two independent state files:
-
-```
-s3://{state-bucket}/
-  └── {prefix}/                     # Default: "cdkd" (configurable via --state-prefix)
-      ├── MyStack/
-      │   └── us-east-1/
-      │       ├── state.json        # Resource state (version: 2)
-      │       └── lock.json         # Exclusive deploy lock
-      └── AnotherStack/
-          ├── us-east-1/
-          │   ├── state.json
-          │   └── lock.json
-          └── us-west-2/             # same stackName, different region
-              ├── state.json
-              └── lock.json
-```
-
-> **Caveat: same `stackName` in multiple regions becomes visible after
-> `env.region` changes.** Before this layout shipped, changing a stack's
-> `env.region` between deploys silently overwrote the prior region's state
-> and `cdkd destroy` ran against the wrong region. cdkd now treats the two
-> regions as independent. Use `cdkd state list` to see both, and
-> `cdkd state orphan <stack> --stack-region <region>` to prune one without
-> touching the other.
->
-> **Legacy key-layout migration (within the same bucket):** state files
-> written by cdkd before this layout (`version: 1`, flat
-> `cdkd/{stackName}/state.json`) are still readable. The next cdkd write
-> auto-migrates to the new region-prefixed key
-> (`cdkd/{stackName}/{region}/state.json`) and removes the legacy file —
-> no manual action required. An older cdkd binary reading a `version: 2`
-> file fails with a clear "upgrade cdkd" error rather than silently
-> mishandling it.
->
-> Note: this only covers the **key layout inside an existing state
-> bucket**. The separate **bucket-name migration** (legacy
-> `cdkd-state-{accountId}-{region}` → new `cdkd-state-{accountId}`)
-> is described below and does NOT auto-migrate.
-
-### Bucket migration
-
-The default state-bucket name changed in v0.11.0 from the region-suffixed
-`cdkd-state-{accountId}-{region}` to the region-free
-`cdkd-state-{accountId}`. The bucket name is region-free because S3 names
-are globally unique, so teammates with different profile regions all
-converge on the same bucket; the bucket's actual region is auto-detected
-via `GetBucketLocation`.
-
-Existing users keep working without doing anything: when only the legacy
-bucket exists, cdkd transparently falls back to it and emits a
-deprecation warning. To stop the warning (and consolidate state into the
-new bucket) run:
-
-```bash
-# Per-region: copies all objects from cdkd-state-{accountId}-{region}
-# into cdkd-state-{accountId}. Source bucket is kept by default.
-cdkd state migrate --region us-east-1
-
-# Optional: delete the legacy bucket once the copy is verified.
-cdkd state migrate --region us-east-1 --remove-legacy
-```
-
-This migration is **account-wide / per-region**, not per-stack — running
-it once per region clears the legacy bucket for that region in one shot.
-For multi-region accounts, run it once per region (each invocation copies
-into the same destination bucket).
-
-`cdkd state migrate` refuses to run while any stack has an active
-`lock.json` (an in-flight `cdkd deploy` / `destroy` would race the copy),
-verifies object-count parity between source and destination before any
-source cleanup, and only deletes the legacy bucket when
-`--remove-legacy` is passed.
-
-See the [Configuration](#configuration) table below for the full
-precedence rules of the `--state-bucket` flag and its env-var / cdk.json
-fallbacks.
-
-### Configuration
+State is stored in S3 with optimistic locking via S3 Conditional Writes
+(no DynamoDB required). Keys are scoped by `(stackName, region)` so the
+same stack deployed to two regions has two independent state files.
 
 | Setting | CLI | cdk.json | Env var | Default |
 |---------|-----|----------|---------|---------|
-| Bucket | `--state-bucket` | `context.cdkd.stateBucket` | `CDKD_STATE_BUCKET` | `cdkd-state-{accountId}` (legacy `cdkd-state-{accountId}-{region}` is still read with a deprecation warning) |
+| Bucket | `--state-bucket` | `context.cdkd.stateBucket` | `CDKD_STATE_BUCKET` | `cdkd-state-{accountId}` (legacy `cdkd-state-{accountId}-{region}` is still read with a deprecation warning — run `cdkd state migrate` to consolidate) |
 | Prefix | `--state-prefix` | - | - | `cdkd` |
 
-### Multi-app isolation
+The state bucket is shared across all CDK apps in the same account by
+default. To isolate apps, pass different `--state-prefix` values.
+`cdkd destroy --all` only targets stacks from the current CDK app
+(determined by synthesis), not all stacks in the bucket.
 
-The state bucket is shared across all CDK apps in the same account/region by default. To isolate apps, use different prefixes:
-
-```bash
-# App A
-cdkd deploy --state-prefix app-a
-
-# App B
-cdkd deploy --state-prefix app-b
-```
-
-> **Note**: `cdkd destroy --all` only targets stacks from the current CDK app (determined by synthesis), not all stacks in the bucket.
-
-State schema:
-
-```typescript
-{
-  version: 2,
-  stackName: "MyStack",
-  region: "us-east-1",
-  resources: {
-    "MyFunction": {
-      physicalId: "arn:aws:lambda:...",
-      resourceType: "AWS::Lambda::Function",
-      properties: { ... },
-      attributes: { Arn: "...", ... },  // For Fn::GetAtt
-      dependencies: ["MyBucket"]         // For proper deletion order
-    }
-  },
-  outputs: { ... },
-  lastModified: 1234567890
-}
-```
+See **[docs/state-management.md](docs/state-management.md)** for the full
+spec: S3 key layout, optimistic-locking mechanism (ETag-based), state
+schema, legacy `version: 1` migration, bucket-name migration via
+`cdkd state migrate`, and troubleshooting.
 
 ## Stack Outputs
 

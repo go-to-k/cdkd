@@ -727,6 +727,62 @@ getClient<T>(ClientClass: new (...) => T, region: string): T
                                             └───────────────┘
 ```
 
+### 5. End-to-end Pipeline Walkthrough (`cdkd deploy`)
+
+A flat, top-to-bottom view of what happens when you run `cdkd deploy`,
+complementary to the per-flow diagrams above:
+
+```
+1. CLI Layer
+   ├── Resolve --app (CLI > CDKD_APP env > cdk.json "app")
+   ├── Resolve --state-bucket (CLI > env > cdk.json > auto: cdkd-state-{accountId}, with legacy fallback to cdkd-state-{accountId}-{region})
+   └── Initialize AWS clients
+
+2. Synthesis (self-implemented, no CDK CLI dependency)
+   ├── Short-circuit: if --app is an existing directory, treat it as a
+   │   pre-synthesized cloud assembly and skip the steps below
+   ├── Load context (merge order, later wins):
+   │   ├── CDK defaults (path-metadata, asset-metadata, version-reporting, bundling-stacks)
+   │   ├── ~/.cdk.json "context" field (user defaults)
+   │   ├── cdk.json "context" field (project settings)
+   │   ├── cdk.context.json (cached lookups, reloaded each iteration)
+   │   └── CLI -c key=value (highest priority)
+   ├── Execute CDK app as subprocess
+   │   ├── child_process.spawn(app command)
+   │   ├── Pass env: CDK_OUTDIR, CDK_CONTEXT_JSON, CDK_DEFAULT_REGION/ACCOUNT
+   │   └── App writes Cloud Assembly to cdk.out/
+   ├── Parse cdk.out/manifest.json
+   │   ├── Extract stacks (type: aws:cloudformation:stack)
+   │   ├── Extract asset manifests (type: cdk:asset-manifest)
+   │   └── Extract stack dependencies
+   └── Context provider loop (if missing context detected):
+       ├── Resolve via AWS SDK (all CDK context provider types supported)
+       ├── Save to cdk.context.json
+       └── Re-execute CDK app with updated context
+
+3. Asset Publishing + Deployment (WorkGraph DAG)
+   ├── Each asset is a node, each stack deploy is a node
+   │   ├── asset-publish nodes: 8 concurrent (file S3 uploads + Docker build+push)
+   │   ├── stack nodes: 4 concurrent deployments
+   │   ├── Dependencies: asset-publish → stack (all assets complete before deploy)
+   │   └── Inter-stack: stack A → stack B (CDK dependency order)
+   ├── Region resolved from asset manifest destination (stack's target region)
+   ├── Skip if already exists (HeadObject for S3, DescribeImages for ECR)
+   ├── Per-stack deploy flow:
+   │   ├── Acquire S3 lock (optimistic locking)
+   │   ├── Load current state from S3
+   │   ├── Build DAG from template (Ref/Fn::GetAtt/DependsOn)
+   │   ├── Calculate diff (CREATE/UPDATE/DELETE)
+   │   ├── Resolve intrinsic functions (Ref, Fn::Sub, Fn::Join, etc.)
+   │   ├── Execute via event-driven DAG dispatch (a resource starts as
+   │   │   soon as ALL of its own deps complete; no level barrier):
+   │   │   ├── SDK Providers (direct API calls, preferred)
+   │   │   └── Cloud Control API (fallback, async polling)
+   │   ├── Save state after each successful resource (partial state save)
+   │   └── Release lock
+   └── synth does NOT publish assets or deploy (deploy only)
+```
+
 ## Design Principles
 
 ### 1. Single Responsibility Principle (SRP)
