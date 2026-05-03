@@ -815,9 +815,9 @@ Tag-based auto-lookup is implemented for the most-used resource types
 Table, Logs LogGroup, EventBridge EventBus, KMS Key/Alias, Secrets
 Manager Secret, SSM Parameter, EC2 VPC/Subnet/SecurityGroup, RDS,
 ECS Cluster/Service/TaskDefinition, CloudFront Distribution, Cognito
-User Pool — the full list is in [CLAUDE.md](CLAUDE.md)). For resource
-types without auto-lookup support (ApiGateway sub-resources, niche
-services, anything in Cloud Control API), use the explicit
+User Pool — the full list is in [docs/import.md](docs/import.md)).
+For resource types without auto-lookup support (ApiGateway sub-resources,
+niche services, anything in Cloud Control API), use the explicit
 `--resource <id>=<physicalId>` override mode — selective mode handles
 exactly this case. Resource types whose provider does not implement
 import are reported as `unsupported` and skipped.
@@ -844,7 +844,7 @@ table to predict behavior when migrating from `cdk import`.
 | Hybrid mode (overrides + tag fallback) | **Not supported.** | **cdkd-specific.** `--auto` together with `--resource` lets listed resources use the explicit physical id while everything else still goes through tag lookup. |
 | Nested stacks (`AWS::CloudFormation::Stack`) | Explicitly unsupported. | Also unsupported in practice — cdkd does not deploy nested CloudFormation stacks at all (no `AWS::CloudFormation::Stack` provider). The `Stack` resource itself would be reported as `unsupported`. CDK Stages (separate top-level stacks) are fine: pass the stack's display path or physical name as the positional argument. |
 | Bootstrap requirement | Bootstrap v12+ (deploy role needs to read the encrypted staging bucket). | cdkd's own state bucket; no CDK bootstrap version requirement. |
-| Resource-type coverage | Whatever [CloudFormation supports for import](https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/resource-import-supported-resources.html). | The set of cdkd providers that implement `import()` (see [CLAUDE.md](CLAUDE.md) for the current list). For any other CC-API-supported type, use `--resource <id>=<physical>` to drive the Cloud Control API fallback. The two lists overlap heavily but are not identical. |
+| Resource-type coverage | Whatever [CloudFormation supports for import](https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/resource-import-supported-resources.html). | The set of cdkd providers that implement `import()` (see [docs/import.md](docs/import.md) for the current list). For any other CC-API-supported type, use `--resource <id>=<physical>` to drive the Cloud Control API fallback. The two lists overlap heavily but are not identical. |
 | Confirmation prompt before writing state | n/a (CloudFormation operates atomically). | Yes — cdkd asks before writing the state file. Skip with `--yes`. |
 | `--force` | "Continue even if the diff includes updates or deletions" — about diff strictness. | "Confirm a destructive write to existing state" — required for auto/whole-stack rebuild and for overwriting a listed entry already in state; not required for a pure selective merge. **Same flag name, different meaning.** |
 | `--dry-run` | Implied by `--no-execute` (creates the changeset without executing). | Native: shows the import plan and exits without writing state. |
