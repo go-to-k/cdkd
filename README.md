@@ -678,6 +678,20 @@ out of a larger stack — for example, you have one S3 bucket that was
 created manually that you want cdkd to manage, while the rest of the
 stack will be deployed fresh.
 
+**Selective mode is non-destructive.** When state already exists for
+the stack, listed resources are **merged** into it: unlisted entries
+already in state are preserved (no `--force` needed). `--force` is
+only required when a listed override would overwrite a resource
+already in state — that's the one case where the merge is destructive.
+This is the right command for "I have a deployed stack and want to
+adopt one more resource into it":
+
+```bash
+# Existing state has Queue + Topic; add Bucket without affecting them.
+cdkd import MyStack --resource MyBucket=my-bucket-name
+# Resulting state: Queue + Topic (preserved) + Bucket (newly imported).
+```
+
 ### Mode 3: hybrid (`--auto` with overrides)
 
 ```bash
@@ -698,7 +712,18 @@ the rest by tag automatically.
 | ----------- | ----------------------------------------------------------------------------- |
 | `--dry-run` | Preview what would be imported. State is NOT written.                         |
 | `--yes`     | Skip the confirmation prompt before writing state.                            |
-| `--force`   | Overwrite an existing state record. Without this, existing state aborts.      |
+| `--force`   | Confirm a destructive write to existing state — see below.                    |
+
+`--force` is only needed when the import would lose data:
+
+- **Auto / whole-stack mode + existing state**: required. The resource
+  map is rebuilt from the template, so any state entry not re-imported
+  is dropped.
+- **Selective mode + listed override already in state**: required.
+  The listed entry is overwritten with the new physical id.
+- **Selective mode without a conflict (pure merge)**: not required.
+  Unlisted state entries are preserved automatically.
+- **No existing state (first-time import)**: not required.
 
 ### After import
 
@@ -746,7 +771,7 @@ table to predict behavior when migrating from `cdk import`.
 | Bootstrap requirement | Bootstrap v12+ (deploy role needs to read the encrypted staging bucket). | cdkd's own state bucket; no CDK bootstrap version requirement. |
 | Resource-type coverage | Whatever [CloudFormation supports for import](https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/resource-import-supported-resources.html). | The set of cdkd providers that implement `import()` (see [CLAUDE.md](CLAUDE.md) for the current list). For any other CC-API-supported type, use `--resource <id>=<physical>` to drive the Cloud Control API fallback. The two lists overlap heavily but are not identical. |
 | Confirmation prompt before writing state | n/a (CloudFormation operates atomically). | Yes — cdkd asks before writing the state file. Skip with `--yes`. |
-| `--force` | "Continue even if the diff includes updates or deletions" — about diff strictness. | "Overwrite an existing state record" — about state safety. **Same flag name, different meaning.** |
+| `--force` | "Continue even if the diff includes updates or deletions" — about diff strictness. | "Confirm a destructive write to existing state" — required for auto/whole-stack rebuild and for overwriting a listed entry already in state; not required for a pure selective merge. **Same flag name, different meaning.** |
 | `--dry-run` | Implied by `--no-execute` (creates the changeset without executing). | Native: shows the import plan and exits without writing state. |
 
 #### Practical implications when migrating from `cdk import`
