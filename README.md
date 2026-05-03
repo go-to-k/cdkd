@@ -710,11 +710,12 @@ the rest by tag automatically.
 
 ### Common flags
 
-| Flag        | Purpose                                                                       |
-| ----------- | ----------------------------------------------------------------------------- |
-| `--dry-run` | Preview what would be imported. State is NOT written.                         |
-| `--yes`     | Skip the confirmation prompt before writing state.                            |
-| `--force`   | Confirm a destructive write to existing state — see below.                    |
+| Flag | Purpose |
+| --- | --- |
+| `--dry-run` | Preview what would be imported. State is NOT written. |
+| `--yes` | Skip the confirmation prompt before writing state (and the CloudFormation retirement prompt under `--migrate-from-cloudformation`). |
+| `--force` | Confirm a destructive write to existing state — see below. |
+| `--migrate-from-cloudformation [name]` | After cdkd state is written, retire the source CloudFormation stack: inject `DeletionPolicy: Retain` + `UpdateReplacePolicy: Retain` on every resource via `UpdateStack`, then `DeleteStack`. AWS resources are NOT deleted. See [Migrating from `cdk deploy` (CloudFormation) to cdkd](#migrating-from-cdk-deploy-cloudformation-to-cdkd) below. |
 
 `--force` is only needed when the import would lose data:
 
@@ -726,6 +727,76 @@ the rest by tag automatically.
 - **Selective mode without a conflict (pure merge)**: not required.
   Unlisted state entries are preserved automatically.
 - **No existing state (first-time import)**: not required.
+
+### Migrating from `cdk deploy` (CloudFormation) to cdkd
+
+If a stack was previously deployed via `cdk deploy` (and is therefore
+managed by CloudFormation), `cdkd import --migrate-from-cloudformation` adopts
+the resources into cdkd state AND retires the source CloudFormation
+stack in one go:
+
+```bash
+cdkd import MyStack --migrate-from-cloudformation --yes
+```
+
+No `--resource <id>=<physical>` flags are needed — cdkd recovers each
+resource's physical id directly from CloudFormation via
+`DescribeStackResources`, so it works for both `cdk deploy`-managed and
+`cdkd deploy`-managed stacks. (cdkd's tag-based auto-lookup can't help
+here: upstream `cdk deploy` doesn't propagate the `aws:cdk:path` template
+metadata as a real AWS tag, and AWS reserves the `aws:` tag prefix so
+neither cdkd nor a CFn `UpdateStack` can add it on the way through.)
+
+The flow:
+
+1. `DescribeStackResources` — ask CloudFormation for every
+   `(LogicalResourceId, PhysicalResourceId)` pair in the source stack.
+   These are merged into the import overrides; user-supplied
+   `--resource <id>=<physical>` flags take precedence over CFn's view.
+2. `cdkd import` runs and adopts every resource into cdkd state via
+   each provider's `import()` method, using the CFn-resolved physical
+   ids as direct lookups.
+3. `cdkd` writes state.
+4. `DescribeStacks` + `GetTemplate` + `UpdateStack` to inject
+   `DeletionPolicy: Retain` and `UpdateReplacePolicy: Retain` on every
+   resource — a metadata-only update.
+5. `DeleteStack` — every resource is now `Retain`, so CloudFormation
+   walks the stack and skips every resource. The stack record disappears;
+   the underlying AWS resources are left intact and are now solely
+   managed by cdkd.
+
+Steps 1–5 all run inside the same lock so a concurrent `cdkd deploy`
+cannot race the in-flight migration.
+
+By default the CloudFormation stack name is taken from the cdkd stack
+name (the typical case — CDK uses the synthesized stack name as the CFn
+stack name). Pass an explicit value when the names differ:
+
+```bash
+cdkd import MyStack --migrate-from-cloudformation LegacyCfnStackName --yes
+```
+
+Limitations:
+
+- **JSON-only.** The Retain-policy injection in step 4 targets the CDK-
+  generated JSON template. Hand-written YAML CFn stacks fail with a
+  clear error; retire them manually.
+- **51,200-byte template limit.** The modified template is submitted
+  inline via `TemplateBody`. Stacks whose modified template exceeds
+  this limit fail in step 4 with a clear error pointing to the manual
+  3-step procedure (S3-backed `TemplateURL` fallback is a planned
+  follow-up). cdkd state has already been written at that point, so
+  re-runs and manual cleanup are both supported.
+- **Not compatible with `--dry-run`.** The post-state-write
+  `UpdateStack` + `DeleteStack` are real side-effects and cannot be
+  faithfully simulated. Use plain `cdkd import --dry-run` to preview
+  per-resource import outcomes.
+- **Partial imports leave unmanaged resources.** If a resource cannot
+  be imported (no provider, AWS not-found, etc.), `DeleteStack` skips
+  it (Retain) and cdkd never wrote it into state — so the resource
+  exists in AWS but unmanaged by both CloudFormation and cdkd. cdkd
+  warns loudly when this happens; either re-import the missing
+  resources first or accept the orphaning intentionally.
 
 ### After import
 
