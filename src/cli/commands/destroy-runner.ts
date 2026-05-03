@@ -277,21 +277,27 @@ export async function runDestroyForStack(
           return;
         }
 
-        // Per-resource-type overrides (v2) win over the global default.
-        // Resolution order: per-type map -> caller global -> compile-time default.
-        const warnAfterMs =
-          ctx.resourceWarnAfterByType?.[resource.resourceType] ??
-          ctx.resourceWarnAfterMs ??
-          DEFAULT_RESOURCE_WARN_AFTER_MS;
-        const timeoutMs =
-          ctx.resourceTimeoutByType?.[resource.resourceType] ??
-          ctx.resourceTimeoutMs ??
-          DEFAULT_RESOURCE_TIMEOUT_MS;
-
         const baseLabel = `Deleting ${logicalId} (${resource.resourceType})`;
         renderer.addTask(logicalId, baseLabel);
         try {
           const provider = destroyProviderRegistry.getProvider(resource.resourceType);
+
+          // Per-resource-type overrides (v2) win over the global default.
+          // Resolution order:
+          //   1. per-type CLI override (`--resource-timeout TYPE=DURATION`).
+          //   2. provider self-report raised against the global default
+          //      (`max(getMinResourceTimeoutMs(), globalCli)`).
+          //   3. CLI global default (`--resource-timeout 30m`).
+          //   4. compile-time default (DEFAULT_RESOURCE_*_MS).
+          const providerMinTimeoutMs = provider.getMinResourceTimeoutMs?.() ?? 0;
+          const warnAfterMs =
+            ctx.resourceWarnAfterByType?.[resource.resourceType] ??
+            ctx.resourceWarnAfterMs ??
+            DEFAULT_RESOURCE_WARN_AFTER_MS;
+          const globalTimeoutMs = ctx.resourceTimeoutMs ?? DEFAULT_RESOURCE_TIMEOUT_MS;
+          const timeoutMs =
+            ctx.resourceTimeoutByType?.[resource.resourceType] ??
+            Math.max(providerMinTimeoutMs, globalTimeoutMs);
 
           // Wrap the entire retry loop in the per-resource deadline so a
           // genuinely-stuck delete (e.g. a hung Custom Resource handler or
@@ -300,8 +306,12 @@ export async function runDestroyForStack(
           await withResourceDeadline(
             async () => {
               // Retry DELETE for transient errors (throttle, dependency race).
+              // Providers that opt out of outer retry (e.g. Custom Resources,
+              // whose delete generates a fresh pre-signed S3 URL each call)
+              // run exactly once.
+              const maxAttempts = provider.disableOuterRetry ? 0 : 3;
               let lastDeleteError: unknown;
-              for (let attempt = 0; attempt <= 3; attempt++) {
+              for (let attempt = 0; attempt <= maxAttempts; attempt++) {
                 try {
                   await provider.delete(
                     logicalId,
@@ -319,10 +329,10 @@ export async function runDestroyForStack(
                     msg.includes('has dependencies') ||
                     msg.includes("can't be deleted since") ||
                     msg.includes('DependencyViolation');
-                  if (!isRetryable || attempt >= 3) break;
+                  if (!isRetryable || attempt >= maxAttempts) break;
                   const delay = 5000 * Math.pow(2, attempt);
                   logger.debug(
-                    `  ⏳ Retrying delete ${logicalId} in ${delay / 1000}s (attempt ${attempt + 1}/3)`
+                    `  ⏳ Retrying delete ${logicalId} in ${delay / 1000}s (attempt ${attempt + 1}/${maxAttempts})`
                   );
                   await new Promise((resolve) => setTimeout(resolve, delay));
                 }

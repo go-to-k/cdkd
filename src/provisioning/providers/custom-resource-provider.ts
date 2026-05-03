@@ -145,6 +145,24 @@ export class CustomResourceProvider implements ResourceProvider {
   private responseBucket: string | undefined;
   private responsePrefix: string;
 
+  /**
+   * Opt out of the deploy engine's outer transient-error retry loop.
+   *
+   * The loop re-invokes `provider.create()` from the top on a transient
+   * SDK error (IAM propagation, HTTP 429/503, etc.). Each invocation
+   * generates a brand-new RequestId and a brand-new pre-signed S3
+   * response URL via `prepareInvocation()`. If the underlying Lambda has
+   * already started — e.g. an outer retry fired between the placeholder
+   * `PutObject` and the `Invoke`, or after the `Invoke` returned but a
+   * spurious downstream error fired — the first attempt's Lambda
+   * response lands at an S3 key that nobody polls, hanging the deploy
+   * until the polling timeout. The provider already polls with its own
+   * exponential backoff for async patterns (CDK Provider framework with
+   * isCompleteHandler), so an outer retry adds nothing but the multi-
+   * key bug.
+   */
+  readonly disableOuterRetry = true;
+
   /** Max time to wait for synchronous S3 response after Lambda invocation (30 seconds) */
   private readonly SYNC_RESPONSE_TIMEOUT_MS = 30_000;
   /** Max time to wait for async S3 response (CDK Provider framework with isCompleteHandler) */
@@ -165,6 +183,23 @@ export class CustomResourceProvider implements ResourceProvider {
     this.responsePrefix = config?.responsePrefix ?? 'custom-resource-responses';
     this.asyncResponseTimeoutMs =
       config?.asyncResponseTimeoutMs ?? CustomResourceProvider.DEFAULT_ASYNC_RESPONSE_TIMEOUT_MS;
+  }
+
+  /**
+   * Self-reported minimum per-resource timeout.
+   *
+   * Custom Resource async invocations (CDK Provider framework with
+   * `isCompleteHandler`) poll for up to `asyncResponseTimeoutMs`
+   * (default 1 hour, matching CDK's `totalTimeout` default). The deploy
+   * engine's global `--resource-timeout` default is 30 minutes, which
+   * would abort a perfectly healthy CR mid-poll. By self-reporting the
+   * polling cap, the engine lifts the deadline to `max(self-report,
+   * global)` for CR resources only; a user-supplied per-type override
+   * (`--resource-timeout AWS::CloudFormation::CustomResource=5m`) still
+   * wins for explicit escape-hatching.
+   */
+  getMinResourceTimeoutMs(): number {
+    return this.asyncResponseTimeoutMs;
   }
 
   /**

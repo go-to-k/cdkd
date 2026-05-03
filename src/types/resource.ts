@@ -163,6 +163,42 @@ export interface ResourceProvider {
    * resource type (e.g., bugs, incorrect behavior, missing features).
    */
   disableCcApiFallback?: boolean;
+
+  /**
+   * If true, the deploy engine MUST NOT wrap the provider's `create` /
+   * `update` / `delete` calls in its outer transient-error retry loop
+   * (`withRetry` from `src/deployment/retry.ts`).
+   *
+   * The retry loop generates fresh state for each attempt — for the
+   * Custom Resource provider, that means a new pre-signed S3 URL and a
+   * new RequestId. The first attempt's Lambda response then lands at
+   * an S3 key that nobody polls, hanging the deploy until the polling
+   * timeout. Providers that prepare per-call invariant state in a way
+   * that an outer retry would invalidate must opt out via this flag and
+   * implement their own retry strategy internally.
+   *
+   * When unset, the deploy engine retries transient SDK errors (IAM
+   * propagation, HTTP 429/503, etc.) as it always has.
+   */
+  disableOuterRetry?: boolean;
+
+  /**
+   * Self-reported minimum wall-clock timeout (ms) the provider needs in
+   * order to complete `create` / `update` / `delete` against AWS in the
+   * worst case.
+   *
+   * When set, the deploy engine resolves the effective per-resource
+   * timeout as:
+   *   `perTypeCliOverride ?? max(getMinResourceTimeoutMs(), globalCliDefault)`
+   *
+   * This lets long-running providers (Custom Resources poll for up to
+   * 1 hour, mirroring CDK's default `totalTimeout`) lift the timeout
+   * for their resources without forcing every user to remember
+   * `--resource-timeout 1h`. A user-supplied per-type override always
+   * wins over the self-report (`--resource-timeout AWS::CloudFormation::CustomResource=5m`
+   * is the explicit escape hatch).
+   */
+  getMinResourceTimeoutMs?(): number;
   /**
    * Optional: Pre-process properties before CC API fallback.
    * Called when the safety net falls back to CC API for create/update, allowing

@@ -539,9 +539,6 @@ Both flags accept either form on each invocation:
 `TYPE` must look like `AWS::Service::Resource`; malformed types are rejected at parse time. `warn < timeout` is enforced both globally and per-type — so `--resource-warn-after AWS::X=10m --resource-timeout AWS::X=5m` is a parse-time error.
 
 ```bash
-# Bump the per-resource budget to one hour (matches the Custom Resource provider's polling cap)
-cdkd deploy --resource-timeout 1h
-
 # Surface "still running" warnings sooner on a fast-feedback dev loop
 cdkd deploy --resource-warn-after 90s --resource-timeout 10m
 
@@ -550,19 +547,25 @@ cdkd deploy \
   --resource-timeout 30m \
   --resource-timeout AWS::CloudFront::Distribution=1h \
   --resource-timeout AWS::RDS::DBCluster=1h30m
+
+# Force Custom Resources to abort earlier than their 1h self-reported polling cap
+cdkd deploy --resource-timeout AWS::CloudFormation::CustomResource=5m
 ```
 
 ### Why the default is 30m, not 1h
 
-cdkd's Custom Resource provider polls async handlers (`isCompleteHandler` pattern) for up to one hour before giving up. Setting the per-resource timeout to 1h by default would make a single hung Custom Resource hold the whole stack for an hour even though no other resource type ever needs more than a few minutes. A shorter default (`30m`) catches stuck operations faster, and stacks that legitimately rely on long-running Custom Resources opt into the higher budget explicitly with `--resource-timeout 1h`.
+cdkd's Custom Resource provider polls async handlers (`isCompleteHandler` pattern) for up to one hour before giving up. Setting the per-resource timeout to 1h by default would make a single hung non-CR resource hold the whole stack for an hour even though no other resource type ever needs more than a few minutes. The 30m global default catches stuck operations faster.
 
-The error message on timeout names the resource, type, region, elapsed time, and operation, and reminds you to re-run with `--resource-timeout 1h` (or higher) for genuinely-long resources:
+For Custom Resources specifically, the provider self-reports its 1h polling cap to the engine via the `getMinResourceTimeoutMs()` interface — the deploy engine resolves the per-resource budget as `max(provider self-report, --resource-timeout global)`, so CR resources get their full hour automatically without the user having to remember `--resource-timeout 1h`. To force CR to abort earlier than its self-reported cap, pass an explicit per-type override (`--resource-timeout AWS::CloudFormation::CustomResource=5m`). Per-type overrides always win over the provider's self-report — they're the documented escape hatch.
+
+The error message on timeout names the resource, type, region, elapsed time, and operation, and reminds you that long-running resources self-report their needed budget — when you see CR time out, the cause is genuinely the handler, not too-tight a default:
 
 ```text
 Resource MyBucket (AWS::S3::Bucket) in us-east-1 timed out after 30m during CREATE (elapsed 30m).
 This may indicate a stuck Cloud Control polling loop, hung Custom Resource, or
-slow ENI provisioning. Re-run with --resource-timeout 1h if the resource genuinely
-needs more time, or --verbose to see the underlying provider activity.
+slow ENI provisioning. Re-run with --resource-timeout AWS::S3::Bucket=<DURATION>
+to bump the budget for this resource type only, or --verbose to see the
+underlying provider activity.
 ```
 
 Note: `--resource-warn-after` must be less than `--resource-timeout`. Reversed values are rejected at parse time.
