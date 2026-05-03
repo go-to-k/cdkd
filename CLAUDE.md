@@ -352,11 +352,12 @@ See [docs/provider-development.md](docs/provider-development.md) for details.
 
 **Always refer to these documents**:
 
-- **[docs/architecture.md](docs/architecture.md)** - Detailed architecture, deploy flows, design principles
+- **[docs/architecture.md](docs/architecture.md)** - Detailed architecture, deploy flows, design principles, end-to-end pipeline walkthrough
 - **[docs/state-management.md](docs/state-management.md)** - S3 state structure, locking mechanism, troubleshooting
+- **[docs/cli-reference.md](docs/cli-reference.md)** - CLI flag details (concurrency, --no-wait, per-resource timeout)
+- **[docs/import.md](docs/import.md)** - `cdkd import` full guide (modes, flags, CFn migration, provider coverage)
 - **[docs/provider-development.md](docs/provider-development.md)** - Provider implementation guide, best practices
 - **[docs/troubleshooting.md](docs/troubleshooting.md)** - Common issues and solutions
-- **[docs/implementation-plan.md](docs/implementation-plan.md)** - Implementation plan (Japanese)
 - **[docs/testing.md](docs/testing.md)** - Testing guide, integration test examples
 
 ## Known Limitations
