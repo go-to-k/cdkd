@@ -42,11 +42,28 @@ describe('CustomResourceProvider', () => {
   let provider: CustomResourceProvider;
 
   beforeEach(() => {
-    vi.clearAllMocks();
+    // mockReset (not clearAllMocks) so any unconsumed `mockResolvedValueOnce`
+    // queue items from a failing earlier test do not leak into the next test.
+    // (CR sendRequest now does `waitUntilFunctionActiveV2` + `waitUntilFunctionUpdatedV2`
+    // before every Lambda Invoke; tests that forget those mocks would otherwise
+    // pollute later tests with stale queued responses.)
+    mockLambdaSend.mockReset();
+    mockSnsSend.mockReset();
+    mockS3Send.mockReset();
     provider = new CustomResourceProvider({
       responseBucket: 'test-bucket',
     });
   });
+
+  // Helper: prepend the two GetFunction responses the SDK waiters consume
+  // before every Lambda Invoke. Use this at the start of any Lambda-path
+  // test so the post-PR-#121 follow-up `waitForBackingLambdaReady` resolves
+  // immediately on the first poll.
+  const mockLambdaReady = (): void => {
+    mockLambdaSend
+      .mockResolvedValueOnce({ Configuration: { State: 'Active' } })
+      .mockResolvedValueOnce({ Configuration: { LastUpdateStatus: 'Successful' } });
+  };
 
   describe('engine integration flags', () => {
     it('exposes disableOuterRetry=true so the deploy engine never re-invokes create()', () => {
@@ -107,6 +124,13 @@ describe('CustomResourceProvider', () => {
       // S3 PutObject for placeholder
       mockS3Send.mockResolvedValueOnce({});
 
+      // CR's sendRequest waits for the backing Lambda to be Active +
+      // last-update-Successful before Invoke (post-PR-#121 follow-up:
+      // wait moved out of LambdaFunctionProvider.create and gated to the
+      // one consumer that breaks against Pending). Two GetFunction polls
+      // are consumed before the Invoke.
+      mockLambdaReady();
+
       // Lambda invoke returns direct response
       mockLambdaSend.mockResolvedValueOnce({
         Payload: Buffer.from(
@@ -126,8 +150,55 @@ describe('CustomResourceProvider', () => {
 
       expect(result.physicalId).toBe('custom-phys-id-123');
       expect(result.attributes).toEqual({ Attr1: 'value1' });
-      expect(mockLambdaSend).toHaveBeenCalledTimes(1);
+      // 2 GetFunction (waiter) + 1 Invoke = 3 Lambda SDK calls.
+      expect(mockLambdaSend).toHaveBeenCalledTimes(3);
       expect(mockSnsSend).not.toHaveBeenCalled();
+    });
+
+    it('waits for Configuration.State === Active before invoking the backing Lambda', async () => {
+      // Reproduces PR #121's bug at the new layer: when the backing
+      // Lambda is Pending (e.g. just CREATEd, ENI attaching), the SDK
+      // waiter blocks until the GetFunction poll observes Active. Only
+      // THEN does the Invoke fire.
+      mockS3Send.mockResolvedValueOnce({}); // placeholder
+
+      mockLambdaSend
+        .mockResolvedValueOnce({ Configuration: { State: 'Pending' } })
+        .mockResolvedValueOnce({ Configuration: { State: 'Active' } })
+        .mockResolvedValueOnce({ Configuration: { LastUpdateStatus: 'Successful' } })
+        .mockResolvedValueOnce({
+          Payload: Buffer.from(
+            JSON.stringify({ PhysicalResourceId: 'phys-after-wait', Data: {} })
+          ),
+        });
+
+      mockS3Send.mockResolvedValueOnce({}); // cleanup
+
+      const result = await provider.create('MyCustom', 'Custom::MyResource', {
+        ServiceToken: 'arn:aws:lambda:us-east-1:123456789012:function:not-yet-active',
+      });
+
+      expect(result.physicalId).toBe('phys-after-wait');
+      // 2 GetFunction polls for Active waiter (Pending then Active),
+      // 1 GetFunction poll for Updated waiter (Successful), 1 Invoke.
+      expect(mockLambdaSend).toHaveBeenCalledTimes(4);
+    });
+
+    it('throws when the backing Lambda never becomes ready', async () => {
+      mockS3Send.mockResolvedValueOnce({}); // placeholder
+
+      // Active waiter sees Failed → SDK throws → wait helper rewraps as
+      // a clear "Lambda backing custom resource ... did not reach a
+      // ready state for Invoke" message.
+      mockLambdaSend.mockResolvedValueOnce({ Configuration: { State: 'Failed' } });
+
+      mockS3Send.mockResolvedValueOnce({}); // cleanup attempt
+
+      await expect(
+        provider.create('MyCustom', 'Custom::MyResource', {
+          ServiceToken: 'arn:aws:lambda:us-east-1:123456789012:function:doomed',
+        })
+      ).rejects.toThrow(/did not reach a ready state for Invoke/);
     });
   });
 
@@ -290,6 +361,9 @@ describe('CustomResourceProvider', () => {
       // S3 PutObject for placeholder
       mockS3Send.mockResolvedValueOnce({});
 
+      // Backing-Lambda readiness check (post-PR-#121 follow-up).
+      mockLambdaReady();
+
       // Lambda invoke returns null (CDK Provider framework starts Step Functions and returns nothing)
       mockLambdaSend.mockResolvedValueOnce({
         Payload: Buffer.from('null'),
@@ -325,7 +399,8 @@ describe('CustomResourceProvider', () => {
 
       expect(result.physicalId).toBe('async-resource-123');
       expect(result.attributes).toEqual({ AsyncResult: 'completed' });
-      expect(mockLambdaSend).toHaveBeenCalledTimes(1);
+      // 2 GetFunction (waiter readiness) + 1 Invoke = 3 Lambda SDK calls.
+      expect(mockLambdaSend).toHaveBeenCalledTimes(3);
     });
 
     it('should detect async pattern when Lambda returns empty object', async () => {
@@ -336,6 +411,9 @@ describe('CustomResourceProvider', () => {
 
       // S3 PutObject for placeholder
       mockS3Send.mockResolvedValueOnce({});
+
+      // Backing-Lambda readiness check (post-PR-#121 follow-up).
+      mockLambdaReady();
 
       // Lambda invoke returns empty object (no PhysicalResourceId, no Status, no Data)
       mockLambdaSend.mockResolvedValueOnce({
@@ -376,6 +454,9 @@ describe('CustomResourceProvider', () => {
       // S3 PutObject for placeholder
       mockS3Send.mockResolvedValueOnce({});
 
+      // Backing-Lambda readiness check (post-PR-#121 follow-up).
+      mockLambdaReady();
+
       // Lambda invoke returns null (async pattern)
       mockLambdaSend.mockResolvedValueOnce({
         Payload: Buffer.from('null'),
@@ -415,6 +496,9 @@ describe('CustomResourceProvider', () => {
       // S3 PutObject for placeholder
       mockS3Send.mockResolvedValueOnce({});
 
+      // Backing-Lambda readiness check (post-PR-#121 follow-up).
+      mockLambdaReady();
+
       // Lambda invoke returns null (async pattern)
       mockLambdaSend.mockResolvedValueOnce({
         Payload: Buffer.from('null'),
@@ -447,6 +531,9 @@ describe('CustomResourceProvider', () => {
 
       // S3 PutObject for placeholder
       mockS3Send.mockResolvedValueOnce({});
+
+      // Backing-Lambda readiness check (post-PR-#121 follow-up).
+      mockLambdaReady();
 
       // Lambda invoke returns null (async pattern)
       mockLambdaSend.mockResolvedValueOnce({
@@ -564,6 +651,12 @@ describe('CustomResourceProvider', () => {
         }
         return Promise.resolve({});
       });
+
+      // Backing-Lambda readiness check (post-PR-#121 follow-up): the SDK
+      // waiters consume two GetFunction polls before sendRequest reaches
+      // the actual Invoke. mockImplementationOnce is queued — these run
+      // BEFORE the Invoke handler below.
+      mockLambdaReady();
 
       // Capture the Lambda invocation so we can extract the RequestId
       // baked into the payload — the polling key must derive from it.
