@@ -1,3 +1,10 @@
+## [0.28.1](https://github.com/go-to-k/cdkd/compare/v0.28.0...v0.28.1) (2026-05-03)
+
+
+### Bug Fixes
+
+* **import:** preserve unlisted state on selective import + soften --force ([#108](https://github.com/go-to-k/cdkd/issues/108)) ([2920ea7](https://github.com/go-to-k/cdkd/commit/2920ea715ab3920ff7a27e3dba6972074930f927))
+
 # [0.28.0](https://github.com/go-to-k/cdkd/compare/v0.27.0...v0.28.0) (2026-05-03)
 
 

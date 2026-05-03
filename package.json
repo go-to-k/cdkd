@@ -1,6 +1,6 @@
 {
   "name": "@go-to-k/cdkd",
-  "version": "0.28.0",
+  "version": "0.28.1",
   "description": "CDK Direct - Deploy AWS CDK apps directly via SDK/Cloud Control API",
   "main": "dist/index.js",
   "bin": {
