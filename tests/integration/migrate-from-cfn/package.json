@@ -1,0 +1,20 @@
+{
+  "name": "cdkd-integ-migrate-from-cfn",
+  "version": "1.0.0",
+  "private": true,
+  "description": "End-to-end integ for `cdkd import --migrate-from-cloudformation`. Two stacks: small (inline TemplateBody path) and large (>51,200B TemplateURL upload path).",
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc -w"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "aws-cdk": "^2.1112.0",
+    "typescript": "^5.0.0",
+    "ts-node": "^10.0.0"
+  },
+  "dependencies": {
+    "aws-cdk-lib": "^2.169.0",
+    "constructs": "^10.0.0"
+  }
+}

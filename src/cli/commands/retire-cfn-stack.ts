@@ -9,7 +9,9 @@ import {
   waitUntilStackUpdateComplete,
   waitUntilStackDeleteComplete,
 } from '@aws-sdk/client-cloudformation';
+import { S3Client, PutObjectCommand, DeleteObjectCommand } from '@aws-sdk/client-s3';
 import { getLogger } from '../../utils/logger.js';
+import { resolveBucketRegion } from '../../utils/aws-region-resolver.js';
 
 /**
  * Stack states from which an UpdateStack call is safe. Anything else (an
@@ -26,17 +28,59 @@ const STABLE_TERMINAL_STATUSES = new Set([
 
 /**
  * UpdateStack TemplateBody hard limit (51,200 bytes). Templates larger than
- * this can only be submitted via TemplateURL backed by S3 — supporting that
- * is a follow-up; for now we surface a clear error pointing to the manual
- * 3-step procedure so the user is not stuck.
+ * this are uploaded to cdkd's state S3 bucket and submitted via `TemplateURL`
+ * instead — see {@link uploadTemplateForUpdateStack}.
  */
 const TEMPLATE_BODY_LIMIT = 51200;
+
+/**
+ * UpdateStack TemplateURL hard limit (1 MB / 1,048,576 bytes). Templates
+ * larger than this cannot be submitted at all and require manual
+ * intervention.
+ */
+const TEMPLATE_URL_LIMIT = 1048576;
+
+/**
+ * S3 key prefix for the transient Retain-injected template uploaded by the
+ * `--migrate-from-cloudformation` flow when the template exceeds the inline
+ * 51,200-byte limit. Kept distinct from cdkd's `cdkd/` state prefix so
+ * `state list` / `state info` never conflate transient migration artifacts
+ * with persisted state.
+ */
+const MIGRATE_TMP_PREFIX = 'cdkd-migrate-tmp';
 
 export interface RetireCloudFormationStackOptions {
   cfnStackName: string;
   cfnClient: CloudFormationClient;
   /** Skip the interactive confirmation prompt (CDK CLI parity for `-y` / `--yes`). */
   yes: boolean;
+  /**
+   * cdkd state bucket — reused as transient template storage when the
+   * Retain-injected template exceeds the inline `TemplateBody` limit
+   * (51,200 bytes). The object is deleted in a `finally` immediately after
+   * `UpdateStack` completes, success or failure.
+   *
+   * The state bucket is preferred over a dedicated temporary bucket
+   * (delstack-style) because (1) cdkd already manages it, so no
+   * `CreateBucket` / `DeleteBucket` round-trips, no per-account bucket-count
+   * pressure, and (2) the import command's IAM principal already has write
+   * access to it.
+   */
+  stateBucket: string;
+  /**
+   * AWS auth context used to build a region-correct S3 client for the
+   * upload + delete. Pass through the same `{profile, credentials}` the
+   * import command resolved at startup so the upload uses the same identity
+   * that wrote cdkd state.
+   */
+  s3ClientOpts?: {
+    profile?: string;
+    credentials?: {
+      accessKeyId: string;
+      secretAccessKey: string;
+      sessionToken?: string;
+    };
+  };
 }
 
 export type RetireCloudFormationOutcome =
@@ -65,17 +109,21 @@ export type RetireCloudFormationOutcome =
  * Step 3 is skipped when every resource already has both policies (idempotent
  * re-runs after a partial failure don't need to round-trip an UpdateStack).
  *
+ * Templates over the inline 51,200-byte `TemplateBody` limit are uploaded to
+ * the cdkd state bucket and submitted via `TemplateURL`; the transient
+ * object is deleted in a `finally` immediately after `UpdateStack`. Only
+ * templates over the 1 MB CloudFormation `TemplateURL` limit fail outright.
+ *
  * Failure model: this is invoked AFTER cdkd state has been written
  * successfully, so any failure here leaves cdkd state intact and the user
  * can re-run the command — or fall back to the manual 3-step procedure if
- * the failure is structural (e.g. template too large for inline
- * TemplateBody).
+ * the failure is structural (e.g. template over the 1 MB TemplateURL limit).
  */
 export async function retireCloudFormationStack(
   options: RetireCloudFormationStackOptions
 ): Promise<RetireCloudFormationOutcome> {
   const logger = getLogger();
-  const { cfnStackName, cfnClient, yes } = options;
+  const { cfnStackName, cfnClient, yes, stateBucket, s3ClientOpts } = options;
 
   // ---- Step 1: validate state, capture capabilities ----
   logger.info(`[1/4] Inspecting CloudFormation stack '${cfnStackName}'...`);
@@ -120,49 +168,91 @@ export async function retireCloudFormationStack(
   }
 
   // ---- Step 3: UpdateStack (skipped when nothing changed) ----
-  let updateRan = false;
   if (!modified) {
     logger.info(`[2/4] Template already has Retain on every resource — skipping UpdateStack.`);
   } else {
     logger.info(`[2/4] Injected DeletionPolicy=Retain and UpdateReplacePolicy=Retain.`);
-    if (newBody.length > TEMPLATE_BODY_LIMIT) {
+    // Pick the UpdateStack input shape based on the modified template's size.
+    // Inline `TemplateBody` is preferred (no S3 round-trip); for templates
+    // over 51,200 bytes we upload to the cdkd state bucket and submit a
+    // `TemplateURL` instead. Anything over the 1 MB CloudFormation
+    // TemplateURL limit is structurally unsubmittable — surface a clear
+    // error so the user can finish manually (state has already been
+    // written, so no rollback is needed).
+    if (newBody.length > TEMPLATE_URL_LIMIT) {
       throw new Error(
-        `Modified template is ${newBody.length} bytes, exceeds the inline ` +
-          `UpdateStack TemplateBody limit (${TEMPLATE_BODY_LIMIT}). cdkd state has ` +
-          `already been written; retire the stack manually with: (1) edit the ` +
-          `template to add DeletionPolicy: Retain and UpdateReplacePolicy: Retain ` +
-          `to every resource, (2) UpdateStack with the modified template via ` +
-          `S3 TemplateURL, (3) DeleteStack. Inline TemplateURL fallback is a ` +
-          `planned follow-up.`
+        `Modified template is ${newBody.length} bytes, exceeds the ` +
+          `CloudFormation UpdateStack TemplateURL limit (${TEMPLATE_URL_LIMIT}). ` +
+          `cdkd state has already been written; retire the stack manually with ` +
+          `(1) shrink the template, then (2) UpdateStack with Retain policies, ` +
+          `(3) DeleteStack — or split the stack and retry.`
       );
     }
-    logger.info(`[3/4] Updating CloudFormation stack with Retain policies...`);
+    type UpdateInput = { TemplateBody: string } | { TemplateURL: string };
+    let updateInput: UpdateInput;
+    let s3Cleanup: (() => Promise<void>) | undefined;
+    if (newBody.length <= TEMPLATE_BODY_LIMIT) {
+      updateInput = { TemplateBody: newBody };
+    } else {
+      logger.info(
+        `  Template is ${newBody.length} bytes (over ${TEMPLATE_BODY_LIMIT} inline limit) — ` +
+          `uploading to state bucket '${stateBucket}'.`
+      );
+      const uploaded = await uploadTemplateForUpdateStack({
+        bucket: stateBucket,
+        body: newBody,
+        cfnStackName,
+        ...(s3ClientOpts && { s3ClientOpts }),
+      });
+      updateInput = { TemplateURL: uploaded.url };
+      s3Cleanup = uploaded.cleanup;
+    }
     try {
-      await cfnClient.send(
-        new UpdateStackCommand({
-          StackName: cfnStackName,
-          TemplateBody: newBody,
-          Capabilities: capabilities,
-        })
-      );
-      updateRan = true;
-    } catch (err) {
-      // CFn returns ValidationError "No updates are to be performed" when
-      // the diff is empty. That can happen if cdkd's whitespace-canonicalized
-      // re-serialization matches the in-CFn stored template byte-for-byte
-      // even though we believed we modified it.
-      const msg = err instanceof Error ? err.message : String(err);
-      if (/No updates are to be performed/i.test(msg)) {
-        logger.info(`  CloudFormation reports no updates needed — proceeding to delete.`);
-      } else {
-        throw err;
+      logger.info(`[3/4] Updating CloudFormation stack with Retain policies...`);
+      let updateRan = false;
+      try {
+        await cfnClient.send(
+          new UpdateStackCommand({
+            StackName: cfnStackName,
+            ...updateInput,
+            Capabilities: capabilities,
+          })
+        );
+        updateRan = true;
+      } catch (err) {
+        // CFn returns ValidationError "No updates are to be performed" when
+        // the diff is empty. That can happen if cdkd's whitespace-canonicalized
+        // re-serialization matches the in-CFn stored template byte-for-byte
+        // even though we believed we modified it.
+        const msg = err instanceof Error ? err.message : String(err);
+        if (/No updates are to be performed/i.test(msg)) {
+          logger.info(`  CloudFormation reports no updates needed — proceeding to delete.`);
+        } else {
+          throw err;
+        }
       }
-    }
-    if (updateRan) {
-      await waitUntilStackUpdateComplete(
-        { client: cfnClient, maxWaitTime: 1800 },
-        { StackName: cfnStackName }
-      );
+      if (updateRan) {
+        await waitUntilStackUpdateComplete(
+          { client: cfnClient, maxWaitTime: 1800 },
+          { StackName: cfnStackName }
+        );
+      }
+    } finally {
+      if (s3Cleanup) {
+        // Cleanup is best-effort: a leaked transient template object costs
+        // pennies and lives under the explicitly-named `cdkd-migrate-tmp/`
+        // prefix, so a stale object is easy to identify and reap manually.
+        // The retire flow's success/failure is governed by CFn, not by S3.
+        try {
+          await s3Cleanup();
+        } catch (cleanupErr) {
+          const msg = cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr);
+          logger.warn(
+            `Failed to delete temporary template upload from '${stateBucket}'. ` +
+              `Clean up manually under prefix '${MIGRATE_TMP_PREFIX}/'. Cause: ${msg}`
+          );
+        }
+      }
     }
   }
 
@@ -181,13 +271,86 @@ export async function retireCloudFormationStack(
 }
 
 /**
+ * Upload the Retain-injected template body to the cdkd state bucket and
+ * return both a virtual-hosted-style HTTPS URL CloudFormation can fetch via
+ * `UpdateStack TemplateURL` and a `cleanup` callback that deletes the object
+ * (and destroys the S3 client).
+ *
+ * The state bucket's actual region is resolved via `GetBucketLocation`
+ * (cached per-process) so the upload client and the URL match the bucket's
+ * region — the `cdkd import` CLI's profile region is irrelevant here.
+ *
+ * Cleanup is the caller's responsibility: invoke `cleanup` in a `finally`
+ * around the UpdateStack call. CloudFormation copies the template into its
+ * own internal storage during the synchronous UpdateStack API call, so the
+ * S3 object is no longer needed after that call returns (success or
+ * failure).
+ *
+ * Exported for unit testing.
+ */
+export async function uploadTemplateForUpdateStack(args: {
+  bucket: string;
+  body: string;
+  cfnStackName: string;
+  s3ClientOpts?: RetireCloudFormationStackOptions['s3ClientOpts'];
+}): Promise<{ url: string; cleanup: () => Promise<void> }> {
+  const { bucket, body, cfnStackName, s3ClientOpts } = args;
+  const region = await resolveBucketRegion(bucket, {
+    ...(s3ClientOpts?.profile && { profile: s3ClientOpts.profile }),
+    ...(s3ClientOpts?.credentials && { credentials: s3ClientOpts.credentials }),
+  });
+  const s3 = new S3Client({
+    region,
+    ...(s3ClientOpts?.profile && { profile: s3ClientOpts.profile }),
+    ...(s3ClientOpts?.credentials && { credentials: s3ClientOpts.credentials }),
+  });
+  // High-resolution timestamp avoids accidental key collisions when a user
+  // re-runs migrate twice in quick succession against the same CFn stack.
+  // The key shape is intentionally human-grep-able — leftovers (if cleanup
+  // fails) point straight at the offending stack name.
+  const key = `${MIGRATE_TMP_PREFIX}/${cfnStackName}/${Date.now()}.json`;
+  try {
+    await s3.send(
+      new PutObjectCommand({
+        Bucket: bucket,
+        Key: key,
+        Body: body,
+        ContentType: 'application/json',
+      })
+    );
+  } catch (err) {
+    s3.destroy();
+    throw err;
+  }
+  // Virtual-hosted-style URL with explicit region works for every region
+  // (us-east-1 included). CloudFormation fetches the template using the
+  // calling principal's IAM permissions; the same identity that just wrote
+  // to the bucket can read it back.
+  const url = `https://${bucket}.s3.${region}.amazonaws.com/${key}`;
+  const cleanup = async (): Promise<void> => {
+    try {
+      await s3.send(new DeleteObjectCommand({ Bucket: bucket, Key: key }));
+    } finally {
+      s3.destroy();
+    }
+  };
+  return { url, cleanup };
+}
+
+/**
  * Parse a CloudFormation template body (JSON), set `DeletionPolicy: Retain`
  * and `UpdateReplacePolicy: Retain` on every resource that doesn't already
  * have those exact values, and re-serialize.
  *
- * JSON-only by design: cdkd's `--migrate-from-cloudformation` flow targets CDK-
- * managed stacks, and CDK always emits JSON. Hand-written YAML CFn templates
- * can be retired manually with the standard 3-step procedure.
+ * JSON-only by design. The `--migrate-from-cloudformation` flow's primary
+ * upstream is `cdk migrate` (which produces a CDK app whose synthesized
+ * template is always JSON) followed by `cdk deploy` / `cdkd deploy` (also
+ * JSON). Adding YAML support would require parsing CloudFormation
+ * shorthand intrinsics (`!Ref`, `!Sub`, `!GetAtt`, …) which round-trip
+ * incorrectly through generic YAML libraries — a generic YAML
+ * unmarshal/remarshal silently strips the custom tags and corrupts the
+ * template. Until a CFn-aware YAML codec is in scope, hand-written YAML
+ * stacks are best retired with the manual 3-step procedure.
  *
  * Exported for unit testing (the AWS round-trips are mocked, but the
  * mutation logic itself is pure and worth exercising directly).
