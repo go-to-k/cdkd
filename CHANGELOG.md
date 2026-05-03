@@ -1,3 +1,11 @@
+# [0.29.0](https://github.com/go-to-k/cdkd/compare/v0.28.2...v0.29.0) (2026-05-03)
+
+
+### Features
+
+* **import:** add --migrate-from-cloudformation for one-shot CFn-to-cdkd migration ([#110](https://github.com/go-to-k/cdkd/issues/110)) ([ccd54f4](https://github.com/go-to-k/cdkd/commit/ccd54f4ee3a4d09947ca92182342ca9effb01ae5))
+* **intrinsic:** add Fn::GetStackOutput for cross-stack/cross-region refs ([#111](https://github.com/go-to-k/cdkd/issues/111)) ([cd245b0](https://github.com/go-to-k/cdkd/commit/cd245b0e2647e68dc2a091ecff0c7d5462851766))
+
 ## [0.28.2](https://github.com/go-to-k/cdkd/compare/v0.28.1...v0.28.2) (2026-05-03)
 
 
