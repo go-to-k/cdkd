@@ -1,3 +1,10 @@
+# [0.27.0](https://github.com/go-to-k/cdkd/compare/v0.26.0...v0.27.0) (2026-05-03)
+
+
+### Features
+
+* **providers:** close the 3 deferred getAttribute gaps ([#106](https://github.com/go-to-k/cdkd/issues/106)) ([b12009d](https://github.com/go-to-k/cdkd/commit/b12009d6eb14d58390a1e828ff49408ffb300ace))
+
 # [0.26.0](https://github.com/go-to-k/cdkd/compare/v0.25.0...v0.26.0) (2026-05-02)
 
 
