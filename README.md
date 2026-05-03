@@ -423,16 +423,6 @@ LambdaStack
 
 Resources are dispatched as soon as their own dependencies complete (event-driven DAG). ServiceRole and Table run in parallel; DefaultPolicy starts the moment ServiceRole is done — without waiting for Table — and Handler starts the moment DefaultPolicy is done.
 
-## Architecture
-
-Built on modern AWS tooling:
-
-- **Synthesis orchestration** - Executes CDK app as subprocess (synthesis itself is done by aws-cdk-lib), parses Cloud Assembly (manifest.json) directly, context provider loop (missing context → SDK lookup → re-synthesize)
-- **Self-implemented asset publisher** - S3 file upload with ZIP packaging (via `archiver`) and ECR Docker image publishing
-- **AWS SDK v3** - Direct resource provisioning
-- **Cloud Control API** - Fallback resource management for types without SDK Providers
-- **S3 Conditional Writes** - State locking via `If-None-Match`/`If-Match`
-
 ## Importing existing resources
 
 `cdkd import` adopts AWS resources that are already deployed (via
@@ -503,19 +493,6 @@ After deployment, outputs are resolved and saved to the S3 state file:
 - CloudFormation: Outputs accessible via `aws cloudformation describe-stacks`
 - cdkd: Outputs saved in S3 state file (e.g., `s3://bucket/cdkd/MyStack/us-east-1/state.json`)
 - Both resolve intrinsic functions (Ref, Fn::GetAtt, etc.) to actual values
-
-## Testing
-
-- Unit tests covering all layers
-- Integration examples verified with real AWS deployments (see `tests/integration/`)
-- E2E test script for automated deploy/diff/update/destroy cycles
-
-```bash
-pnpm test                # Run unit tests
-pnpm run test:coverage   # With coverage report
-```
-
-See [docs/testing.md](docs/testing.md) for integration and E2E testing instructions.
 
 ## License
 
