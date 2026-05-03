@@ -530,19 +530,6 @@ export class LambdaFunctionProvider implements ResourceProvider {
    * retries.
    */
   /**
-   * Poll GetFunction until LastUpdateStatus is no longer `InProgress`.
-   *
-   * After UpdateFunctionConfiguration the Lambda service processes the
-   * change (including VPC detach + hyperplane ENI release) asynchronously.
-   * Returning early — i.e. calling DeleteFunction while the update is still
-   * `InProgress` — aborts the detach, leaving ENIs attached and blocking
-   * downstream Subnet / SG deletion.
-   *
-   * Bounded by eniWaitTimeoutMs (10min) and treated as a soft warning on
-   * timeout: the subsequent ENI cleanup loop and downstream retries cover
-   * the residual edge case.
-   */
-  /**
    * Block until the function's State === 'Active'.
    *
    * Used after CreateFunction. Wraps the SDK's built-in
@@ -608,6 +595,25 @@ export class LambdaFunctionProvider implements ResourceProvider {
     }
   }
 
+  /**
+   * Poll GetFunction until LastUpdateStatus is no longer `InProgress`.
+   *
+   * After UpdateFunctionConfiguration the Lambda service processes the
+   * change (including VPC detach + hyperplane ENI release) asynchronously.
+   * Returning early — i.e. calling DeleteFunction while the update is still
+   * `InProgress` — aborts the detach, leaving ENIs attached and blocking
+   * downstream Subnet / SG deletion.
+   *
+   * Bounded by eniWaitTimeoutMs (10min) and treated as a soft warning on
+   * timeout: the subsequent ENI cleanup loop and downstream retries cover
+   * the residual edge case.
+   *
+   * NOTE: deliberately separate from `waitForFunctionUpdated` (which uses
+   * the SDK's `waitUntilFunctionUpdatedV2` and throws on FAILURE). The
+   * pre-delete path needs a more lenient acceptor: if a prior update
+   * failed, we still want to proceed with DeleteFunction rather than
+   * abort, because the function is going away anyway.
+   */
   private async waitForLambdaUpdateCompleted(functionName: string): Promise<void> {
     const start = Date.now();
     let delay = this.eniWaitInitialDelayMs;
