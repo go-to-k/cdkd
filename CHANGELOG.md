@@ -1,3 +1,10 @@
+## [0.28.2](https://github.com/go-to-k/cdkd/compare/v0.28.1...v0.28.2) (2026-05-03)
+
+
+### Bug Fixes
+
+* **orphan:** match L2 construct paths and exclude CDKMetadata ([#109](https://github.com/go-to-k/cdkd/issues/109)) ([0846f64](https://github.com/go-to-k/cdkd/commit/0846f6437f960d8d67b475af94e2b6aaf11a6720))
+
 ## [0.28.1](https://github.com/go-to-k/cdkd/compare/v0.28.0...v0.28.1) (2026-05-03)
 
 
