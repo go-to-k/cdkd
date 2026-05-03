@@ -53,6 +53,7 @@ export interface ResolverContext {
  * - Fn::Or (logical OR)
  * - Fn::Not (logical NOT)
  * - Fn::ImportValue (cross-stack references)
+ * - Fn::GetStackOutput (cross-stack/cross-region output reference)
  * - Fn::FindInMap (mapping lookups)
  * - Fn::Base64 (base64 encoding)
  * - Fn::GetAZs (availability zone listing)
@@ -359,6 +360,10 @@ export class IntrinsicFunctionResolver {
 
     if ('Fn::ImportValue' in obj) {
       return await this.resolveImportValue(obj['Fn::ImportValue'], context);
+    }
+
+    if ('Fn::GetStackOutput' in obj) {
+      return await this.resolveGetStackOutput(obj['Fn::GetStackOutput'], context);
     }
 
     if ('Fn::FindInMap' in obj) {
@@ -1097,6 +1102,128 @@ export class IntrinsicFunctionResolver {
         `Searched ${allStacks.length} state record(s). ` +
         `Make sure the exporting stack has been deployed and the Output has an Export.Name property.`
     );
+  }
+
+  /**
+   * Resolve Fn::GetStackOutput (cross-stack / cross-region output reference)
+   *
+   * Shape: { "Fn::GetStackOutput": { "StackName": "...", "OutputName": "...",
+   *                                   "Region": "...", "RoleArn": "..." } }
+   *
+   * Unlike Fn::ImportValue, the producer stack is named explicitly and no
+   * Export is required. cdkd reads the producer's `outputs` from the
+   * region-scoped state record at
+   * `s3://{bucket}/cdkd/{StackName}/{Region}/state.json`. When `Region` is
+   * omitted, the consumer's deploy region is used.
+   *
+   * RoleArn (cross-account) is intentionally rejected — cdkd uses S3 state,
+   * not CloudFormation DescribeStacks, so a cross-account reference would
+   * require assuming the role and reading the producer's separate state
+   * bucket. That path is not yet implemented; we surface a clear error
+   * instead of silently downgrading.
+   */
+  private async resolveGetStackOutput(arg: unknown, context: ResolverContext): Promise<unknown> {
+    if (!arg || typeof arg !== 'object' || Array.isArray(arg)) {
+      throw new Error(
+        `Fn::GetStackOutput: argument must be an object with StackName/OutputName/Region/RoleArn, got ${
+          arg === null ? 'null' : Array.isArray(arg) ? 'array' : typeof arg
+        }`
+      );
+    }
+    const args = arg as Record<string, unknown>;
+
+    if (!('StackName' in args)) {
+      throw new Error('Fn::GetStackOutput: StackName is required');
+    }
+    if (!('OutputName' in args)) {
+      throw new Error('Fn::GetStackOutput: OutputName is required');
+    }
+
+    const stackName = await this.resolveValue(args['StackName'], context);
+    if (typeof stackName !== 'string' || stackName === '') {
+      throw new Error(
+        `Fn::GetStackOutput: StackName must resolve to a non-empty string, got ${typeof stackName}`
+      );
+    }
+
+    const outputName = await this.resolveValue(args['OutputName'], context);
+    if (typeof outputName !== 'string' || outputName === '') {
+      throw new Error(
+        `Fn::GetStackOutput: OutputName must resolve to a non-empty string, got ${typeof outputName}`
+      );
+    }
+
+    let region = this.resolverRegion;
+    if ('Region' in args && args['Region'] !== undefined && args['Region'] !== null) {
+      const resolvedRegion = await this.resolveValue(args['Region'], context);
+      if (typeof resolvedRegion !== 'string' || resolvedRegion === '') {
+        throw new Error(
+          `Fn::GetStackOutput: Region must resolve to a non-empty string, got ${typeof resolvedRegion}`
+        );
+      }
+      region = resolvedRegion;
+    }
+
+    let roleArn: string | undefined;
+    if ('RoleArn' in args && args['RoleArn'] !== undefined && args['RoleArn'] !== null) {
+      const resolvedRoleArn = await this.resolveValue(args['RoleArn'], context);
+      if (typeof resolvedRoleArn !== 'string' || resolvedRoleArn === '') {
+        throw new Error(
+          `Fn::GetStackOutput: RoleArn must resolve to a non-empty string, got ${typeof resolvedRoleArn}`
+        );
+      }
+      roleArn = resolvedRoleArn;
+    }
+
+    if (roleArn) {
+      throw new Error(
+        `Fn::GetStackOutput: cross-account references via RoleArn are not yet supported by cdkd ` +
+          `(StackName=${stackName}, Region=${region}, RoleArn=${roleArn}). ` +
+          `cdkd reads outputs from S3 state instead of CloudFormation DescribeStacks, ` +
+          `so cross-account requires assuming the role and reading the producer account's ` +
+          `state bucket — not yet implemented.`
+      );
+    }
+
+    if (!context.stateBackend) {
+      throw new Error('Fn::GetStackOutput: state backend is required for cross-stack references');
+    }
+
+    // Reject obvious self-reference (same stack AND same region).
+    if (context.stackName && context.stackName === stackName && region === this.resolverRegion) {
+      throw new Error(
+        `Fn::GetStackOutput: cannot reference own stack '${stackName}' in the same region '${region}'`
+      );
+    }
+
+    this.logger.debug(
+      `Resolving Fn::GetStackOutput: StackName=${stackName}, Region=${region}, OutputName=${outputName}`
+    );
+
+    const stateData = await context.stateBackend.getState(stackName, region);
+    if (!stateData) {
+      throw new Error(
+        `Fn::GetStackOutput: stack '${stackName}' not found in region '${region}'. ` +
+          `Make sure the producer stack has been deployed via cdkd.`
+      );
+    }
+
+    const outputs = stateData.state.outputs ?? {};
+    if (!(outputName in outputs)) {
+      const available = Object.keys(outputs).join(', ') || '(none)';
+      throw new Error(
+        `Fn::GetStackOutput: output '${outputName}' not found in stack '${stackName}' (${region}). ` +
+          `Available outputs: ${available}`
+      );
+    }
+
+    const value = outputs[outputName];
+    this.logger.info(
+      `Resolved Fn::GetStackOutput: StackName=${stackName}, Region=${region}, OutputName=${outputName} -> ${JSON.stringify(
+        value
+      )}`
+    );
+    return value;
   }
 
   /**

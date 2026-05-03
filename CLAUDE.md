@@ -78,7 +78,8 @@ cdkd has a 7-layer system architecture:
    - Implemented in `src/deployment/dag-executor.ts`
 
 4. **Intrinsic Function Resolution**
-   - All CloudFormation intrinsic functions supported: `Ref`, `Fn::GetAtt`, `Fn::Join`, `Fn::Sub`, `Fn::Select`, `Fn::Split`, `Fn::If`, `Fn::Equals`, `Fn::And`, `Fn::Or`, `Fn::Not`, `Fn::ImportValue`, `Fn::FindInMap`, `Fn::Base64`, `Fn::GetAZs`, `Fn::Cidr`
+   - All CloudFormation intrinsic functions supported: `Ref`, `Fn::GetAtt`, `Fn::Join`, `Fn::Sub`, `Fn::Select`, `Fn::Split`, `Fn::If`, `Fn::Equals`, `Fn::And`, `Fn::Or`, `Fn::Not`, `Fn::ImportValue`, `Fn::GetStackOutput`, `Fn::FindInMap`, `Fn::Base64`, `Fn::GetAZs`, `Fn::Cidr`
+   - `Fn::GetStackOutput` reads the producer stack's output directly from cdkd's S3 state (`s3://{bucket}/cdkd/{StackName}/{Region}/state.json`) — no Export needed, and `Region` may differ from the consumer's deploy region (same-account cross-region works out of the box because the state bucket name is account-scoped, not region-scoped). `RoleArn` (cross-account) is rejected with a clear error: cdkd uses S3 state instead of `cloudformation:DescribeStacks`, so cross-account would require assuming the role and reading the producer account's separate state bucket — not yet implemented.
 
 ## Build and Test Commands
 
@@ -467,6 +468,7 @@ See [docs/provider-development.md](docs/provider-development.md) for details.
 - ✅ Intrinsic functions: Fn::Select, Fn::Split, Fn::If, Fn::Equals, Fn::And, Fn::Or, Fn::Not, Fn::ImportValue
 - ✅ Conditions evaluation (with logical operators)
 - ✅ Cross-stack references (Fn::ImportValue via S3 state backend)
+- ✅ Cross-stack / cross-region references (Fn::GetStackOutput via S3 state backend) — same-account; cross-account RoleArn rejected with a clear error (not yet implemented)
 - ✅ Cloud Control API JSON Patch for updates (RFC 6902 compliant)
 - ✅ Resource replacement detection (immutable property detection for 10+ AWS resource types)
 - ✅ AWS::NoValue pseudo parameter (for conditional property omission)

@@ -510,6 +510,7 @@ CloudFormation intrinsic function not supported by cdkd is being used.
 | `Fn::Or` | ✅ |
 | `Fn::Not` | ✅ |
 | `Fn::ImportValue` | ✅ |
+| `Fn::GetStackOutput` | ✅ (same-account; cross-account `RoleArn` not yet implemented) |
 | `Fn::FindInMap` | ✅ |
 | `Fn::GetAZs` | ✅ |
 | `Fn::Base64` | ✅ |
