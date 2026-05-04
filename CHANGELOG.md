@@ -1,3 +1,10 @@
+# [0.31.0](https://github.com/go-to-k/cdkd/compare/v0.30.2...v0.31.0) (2026-05-04)
+
+
+### Features
+
+* **ec2:** add AWS::EC2::NatGateway SDK provider with deploy --no-wait support ([#123](https://github.com/go-to-k/cdkd/issues/123)) ([9f8d360](https://github.com/go-to-k/cdkd/commit/9f8d360b840080ebc01aa9b871e21d440686b13e))
+
 ## [0.30.2](https://github.com/go-to-k/cdkd/compare/v0.30.1...v0.30.2) (2026-05-03)
 
 
