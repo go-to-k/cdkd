@@ -51,6 +51,7 @@ async function deployCommand(
     skipAssets: boolean;
     rollback: boolean;
     wait: boolean;
+    aggressiveVpcParallel: boolean;
     exclusively: boolean;
     yes: boolean;
     verbose: boolean;
@@ -227,7 +228,9 @@ async function deployCommand(
       bucket: stateBucket,
       prefix: options.statePrefix,
     };
-    const dagBuilder = new DagBuilder();
+    const dagBuilder = new DagBuilder({
+      relaxCdkVpcDefensiveDeps: !!options.aggressiveVpcParallel,
+    });
     const diffCalculator = new DiffCalculator();
     const baseRegion = options.region || process.env['AWS_REGION'] || 'us-east-1';
 

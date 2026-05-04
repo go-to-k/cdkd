@@ -2,6 +2,7 @@ import graphlib from 'graphlib';
 import type { CloudFormationTemplate, TemplateResource } from '../types/resource.js';
 import { TemplateParser } from './template-parser.js';
 import { extractLambdaVpcDeleteDeps } from './lambda-vpc-deps.js';
+import { defensiveDependsOnToSkip } from './cdk-defensive-deps.js';
 import { getLogger } from '../utils/logger.js';
 import { DependencyError } from '../utils/error-handler.js';
 
@@ -14,6 +15,15 @@ const IAM_ROLE_POLICY_TYPES: ReadonlySet<string> = new Set([
   'AWS::IAM::ManagedPolicy',
 ]);
 
+export interface DagBuilderOptions {
+  /**
+   * When true, drop the CDK-injected defensive DependsOn edges that block
+   * VPC-Lambda deploys behind NAT route stabilization. Off by default — see
+   * `cdk-defensive-deps.ts` for the rationale and the type-pair allowlist.
+   */
+  relaxCdkVpcDefensiveDeps?: boolean;
+}
+
 /**
  * Dependency graph builder for CloudFormation resources
  *
@@ -23,6 +33,11 @@ const IAM_ROLE_POLICY_TYPES: ReadonlySet<string> = new Set([
 export class DagBuilder {
   private logger = getLogger().child('DagBuilder');
   private parser = new TemplateParser();
+  private options: DagBuilderOptions;
+
+  constructor(options: DagBuilderOptions = {}) {
+    this.options = options;
+  }
 
   /**
    * Build dependency graph from CloudFormation template
@@ -48,6 +63,7 @@ export class DagBuilder {
 
     // Add edges for dependencies
     let edgeCount = 0;
+    let relaxedEdgeCount = 0;
     for (const logicalId of resourceIds) {
       const resource = this.parser.getResource(template, logicalId);
       if (!resource) {
@@ -55,8 +71,22 @@ export class DagBuilder {
       }
 
       const dependencies = this.parser.extractDependencies(resource);
+      // When relaxation is enabled, compute the subset of DependsOn entries
+      // (NOT Ref / GetAtt — those are real data dependencies) that the CDK
+      // injected defensively for runtime egress reasons. Skip them at edge
+      // insertion time. See `cdk-defensive-deps.ts` for the type-pair list.
+      const skip = this.options.relaxCdkVpcDefensiveDeps
+        ? defensiveDependsOnToSkip(resource, template)
+        : null;
 
       for (const depId of dependencies) {
+        if (skip?.has(depId)) {
+          relaxedEdgeCount++;
+          this.logger.debug(
+            `Skipped CDK-defensive DependsOn edge: ${depId} -> ${logicalId} (--aggressive-vpc-parallel)`
+          );
+          continue;
+        }
         // Only add edge if the dependency exists in the template
         if (graph.hasNode(depId)) {
           graph.setEdge(depId, logicalId); // depId -> logicalId (logicalId depends on depId)
@@ -68,6 +98,11 @@ export class DagBuilder {
           );
         }
       }
+    }
+    if (relaxedEdgeCount > 0) {
+      this.logger.info(
+        `[DagBuilder] Relaxed ${relaxedEdgeCount} CDK-defensive DependsOn edge(s) (--aggressive-vpc-parallel)`
+      );
     }
 
     this.logger.debug(`Dependency graph built: ${resourceIds.length} nodes, ${edgeCount} edges`);

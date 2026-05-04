@@ -25,6 +25,7 @@
 - **S3-based state management**: No DynamoDB required, uses S3 conditional writes for locking
 - **DAG-based parallelization**: Analyze `Ref`/`Fn::GetAtt` dependencies and execute in parallel
 - **`--no-wait` for async resources**: Skip the multi-minute wait on CloudFront / RDS / ElastiCache / NAT Gateway and return as soon as the create call returns (CloudFormation always blocks)
+- **`--aggressive-vpc-parallel`**: Drop CDK-injected defensive `DependsOn` edges from VPC Lambdas onto private-subnet routes so `CloudFront::Distribution` and `Lambda::Url` start their ~3-min propagation in parallel with NAT Gateway stabilization (~50% faster on VPC + Lambda + CloudFront stacks)
 
 > **Note**: Resource types not covered by either SDK Providers or Cloud Control API cannot be deployed with cdkd. If you encounter an unsupported resource type, deployment will fail with a clear error message.
 
@@ -404,6 +405,51 @@ retry storm. Other `--no-wait` resources (CloudFront / RDS /
 ElastiCache) don't apply to destroy either — their providers are
 already non-blocking on delete because they're leaves in the destroy
 DAG.
+
+## `--aggressive-vpc-parallel`: relax CDK-defensive VPC route DependsOn
+
+CDK synth eagerly injects `DependsOn` from VPC Lambdas (and adjacent
+IAM Role / Policy / Lambda::Url / EventSourceMapping resources) onto
+the private subnet's `DefaultRoute` / `RouteTableAssociation` so that
+nothing tries to invoke the Lambda before its egress path to the
+internet is up. The dependency is real at *runtime* (a Lambda code
+call to a third-party API can't reach the internet without a NAT
+route), but it is NOT required at *deploy time* — `CreateFunction` /
+`CreateFunctionUrlConfig` / `AddPermission` /
+`CreateEventSourceMapping` all accept a function in `Pending` state.
+
+For VPC + Lambda + CloudFront stacks this turns into a serial
+critical path:
+
+```text
+NAT GW (~2-3 min) → DefaultRoute → Lambda → Lambda::Url → Distribution propagation (~3 min)
+```
+
+Pass `--aggressive-vpc-parallel` to drop the route DependsOn so
+Distribution + Lambda::Url dispatch right after IAM Role / Subnet are
+ready and propagate in parallel with NAT stabilization:
+
+```bash
+cdkd deploy --aggressive-vpc-parallel
+```
+
+| Mode | Critical path | Total |
+| --- | --- | --- |
+| Default | NAT → Lambda → CF (serial) | ~6 min |
+| `--aggressive-vpc-parallel` | max(NAT, CF) | ~3 min |
+
+Measured **−45.6%** on `tests/integration/bench-cdk-sample` (387s
+baseline → 211s relaxed).
+
+Off by default for v1: opt-in is the conservative play because
+CloudFront `Create` / `Delete` are each ~5 min, so a Lambda-side
+async failure incurs a high rollback cost. Deploy-only —
+`cdkd destroy` doesn't accept it (the route DependsOn doesn't
+constrain delete-time correctness; Lambda hyperplane ENI release
+is the actual destroy bottleneck).
+
+See [docs/cli-reference.md](docs/cli-reference.md) for the full
+type-pair allowlist, implementation pointers, and trade-off notes.
 
 ## Other CLI flags
 

@@ -843,4 +843,87 @@ describe('DagBuilder', () => {
       expect(graph.hasEdge('Role', 'Fn')).toBe(true);
     });
   });
+
+  describe('relaxCdkVpcDefensiveDeps option', () => {
+    // Same VPC + Lambda + Distribution shape as `bench-cdk-sample`. CDK
+    // synth injects defensive `DependsOn` from the Lambda (and adjacent IAM
+    // Role / Lambda::Url) onto the private subnet's `DefaultRoute`.
+    // Without relaxation, `Distribution -> Lambda::Url -> Lambda -> DefaultRoute -> NAT`
+    // serializes the deploy. Relaxation drops the route DependsOn so
+    // Distribution can dispatch in parallel with NAT stabilization.
+    function vpcLambdaDistributionTemplate(): CloudFormationTemplate {
+      return {
+        Resources: {
+          Role: { Type: 'AWS::IAM::Role', Properties: {}, DependsOn: ['DefaultRoute'] },
+          Subnet: { Type: 'AWS::EC2::Subnet', Properties: {} },
+          NatGw: { Type: 'AWS::EC2::NatGateway', Properties: {} },
+          DefaultRoute: {
+            Type: 'AWS::EC2::Route',
+            Properties: { NatGatewayId: { Ref: 'NatGw' } },
+          },
+          Fn: {
+            Type: 'AWS::Lambda::Function',
+            Properties: {
+              Role: { 'Fn::GetAtt': ['Role', 'Arn'] },
+              VpcConfig: { SubnetIds: [{ Ref: 'Subnet' }] },
+            },
+            DependsOn: ['DefaultRoute'],
+          },
+          Url: {
+            Type: 'AWS::Lambda::Url',
+            Properties: { TargetFunctionArn: { 'Fn::GetAtt': ['Fn', 'Arn'] } },
+            DependsOn: ['DefaultRoute'],
+          },
+          Distribution: {
+            Type: 'AWS::CloudFront::Distribution',
+            Properties: {
+              DistributionConfig: {
+                Origins: [{ DomainName: { 'Fn::GetAtt': ['Url', 'FunctionUrl'] } }],
+              },
+            },
+          },
+        },
+      };
+    }
+
+    it('keeps CDK-defensive route DependsOn edges when option is OFF (default)', () => {
+      const graph = new DagBuilder().buildGraph(vpcLambdaDistributionTemplate());
+      // Without relaxation: Distribution waits on Url, Url waits on Fn AND
+      // DefaultRoute, Fn waits on DefaultRoute (and Role+Subnet), Role waits
+      // on DefaultRoute. NAT stabilization is on the critical path.
+      expect(graph.hasEdge('DefaultRoute', 'Role')).toBe(true);
+      expect(graph.hasEdge('DefaultRoute', 'Fn')).toBe(true);
+      expect(graph.hasEdge('DefaultRoute', 'Url')).toBe(true);
+    });
+
+    it('drops the CDK-defensive route DependsOn edges when option is ON', () => {
+      const graph = new DagBuilder({ relaxCdkVpcDefensiveDeps: true }).buildGraph(
+        vpcLambdaDistributionTemplate(),
+      );
+      // The three defensive DependsOn -> DefaultRoute edges are gone.
+      expect(graph.hasEdge('DefaultRoute', 'Role')).toBe(false);
+      expect(graph.hasEdge('DefaultRoute', 'Fn')).toBe(false);
+      expect(graph.hasEdge('DefaultRoute', 'Url')).toBe(false);
+      // Real data dependencies are preserved (Role/Subnet -> Fn via GetAtt /
+      // VpcConfig.SubnetIds, Fn -> Url via TargetFunctionArn,
+      // Url -> Distribution via Origins.DomainName GetAtt).
+      expect(graph.hasEdge('Role', 'Fn')).toBe(true);
+      expect(graph.hasEdge('Subnet', 'Fn')).toBe(true);
+      expect(graph.hasEdge('Fn', 'Url')).toBe(true);
+      expect(graph.hasEdge('Url', 'Distribution')).toBe(true);
+    });
+
+    it('keeps non-defensive DependsOn edges intact when option is ON', () => {
+      const template: CloudFormationTemplate = {
+        Resources: {
+          // IAM::Role -> S3::Bucket DependsOn is NOT in the defensive
+          // type-pair list, so relaxation must leave it alone.
+          Bucket: { Type: 'AWS::S3::Bucket', Properties: {} },
+          Role: { Type: 'AWS::IAM::Role', Properties: {}, DependsOn: ['Bucket'] },
+        },
+      };
+      const graph = new DagBuilder({ relaxCdkVpcDefensiveDeps: true }).buildGraph(template);
+      expect(graph.hasEdge('Bucket', 'Role')).toBe(true);
+    });
+  });
 });
