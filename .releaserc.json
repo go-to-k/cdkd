@@ -5,7 +5,18 @@
       "@semantic-release/commit-analyzer",
       {
         "preset": "angular",
-        "releaseRules": [{ "breaking": true, "release": "minor" }]
+        "parserOpts": {
+          "headerPattern": "^(\\w*)(?:\\(([^)]+)\\))?(!)?: (.+)$",
+          "headerCorrespondence": ["type", "scope", "breaking", "subject"],
+          "noteKeywords": ["BREAKING CHANGE", "BREAKING CHANGES", "BREAKING"]
+        },
+        "releaseRules": [
+          { "breaking": true, "release": "minor" },
+          { "type": "feat", "release": "minor" },
+          { "type": "fix", "release": "patch" },
+          { "type": "perf", "release": "patch" },
+          { "revert": true, "release": "patch" }
+        ]
       }
     ],
     "@semantic-release/release-notes-generator",
