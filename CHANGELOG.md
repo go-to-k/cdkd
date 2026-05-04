@@ -1,3 +1,10 @@
+## [0.31.2](https://github.com/go-to-k/cdkd/compare/v0.31.1...v0.31.2) (2026-05-04)
+
+
+### Bug Fixes
+
+* **lambda:** derive inline ZipFile filename extension from runtime ([#125](https://github.com/go-to-k/cdkd/issues/125)) ([fed7150](https://github.com/go-to-k/cdkd/commit/fed7150b882f55c08a40a86824c93eef5eabf22d))
+
 ## [0.31.1](https://github.com/go-to-k/cdkd/compare/v0.31.0...v0.31.1) (2026-05-04)
 
 
