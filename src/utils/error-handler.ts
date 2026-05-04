@@ -155,6 +155,35 @@ export class ConfigError extends CdkdError {
 }
 
 /**
+ * Signals a partial-failure outcome that should map to exit code 2 (not 1).
+ *
+ * Used by `cdkd destroy` and `cdkd state destroy` when one or more
+ * per-resource deletes failed but the overall command finished its work
+ * (state.json is preserved, the rest of the stack was deleted, and the
+ * user can re-run to clean up the remaining resources).
+ *
+ * Exit code conventions:
+ *   - 0: command completed successfully, no resources left in error state.
+ *   - 1: command-level failure (auth error, bad arguments, synth crash,
+ *        unhandled exception). Default for any thrown error.
+ *   - 2: partial failure — work completed but some resources are still in
+ *        an error state. Re-running typically resolves it. Documented in
+ *        README's "Exit codes" section.
+ *
+ * `handleError` recognizes this class via `instanceof` and uses its
+ * `exitCode` instead of the default 1.
+ */
+export class PartialFailureError extends CdkdError {
+  readonly exitCode: number = 2;
+
+  constructor(message: string, cause?: Error) {
+    super(message, 'PARTIAL_FAILURE', cause);
+    this.name = 'PartialFailureError';
+    Object.setPrototypeOf(this, PartialFailureError.prototype);
+  }
+}
+
+/**
  * Check if error is a cdkd error
  */
 export function isCdkdError(error: unknown): error is CdkdError {
@@ -182,6 +211,11 @@ export function formatError(error: unknown): string {
 
 /**
  * Global error handler
+ *
+ * Default exit code is 1 (general error). `PartialFailureError`
+ * overrides it to 2 so callers can distinguish "command crashed /
+ * unauthorized / bad arguments" from "command completed but some
+ * resources are still in an error state, re-run to clean up".
  */
 export function handleError(error: unknown): never {
   const logger = getLogger();
@@ -191,7 +225,8 @@ export function handleError(error: unknown): never {
     logger.debug('Stack trace:', error.stack);
   }
 
-  process.exit(1);
+  const exitCode = error instanceof PartialFailureError ? error.exitCode : 1;
+  process.exit(exitCode);
 }
 
 /**

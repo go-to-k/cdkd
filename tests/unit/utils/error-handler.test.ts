@@ -1,5 +1,10 @@
-import { describe, it, expect } from 'vitest';
-import { normalizeAwsError } from '../../../src/utils/error-handler.js';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import {
+  handleError,
+  normalizeAwsError,
+  PartialFailureError,
+  withErrorHandling,
+} from '../../../src/utils/error-handler.js';
 
 /**
  * Build the AWS SDK v3 synthetic Unknown error shape that this helper is
@@ -121,5 +126,61 @@ describe('normalizeAwsError', () => {
     const result = normalizeAwsError(err);
 
     expect(result.message).toMatch(/'<unknown bucket>'/);
+  });
+});
+
+describe('PartialFailureError + handleError exit code mapping', () => {
+  let exitSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    // process.exit is wrapped to throw so handleError's `: never` return
+    // type doesn't actually terminate the test process.
+    exitSpy = vi.spyOn(process, 'exit').mockImplementation((() => {
+      throw new Error('process.exit-mock');
+    }) as never);
+  });
+
+  afterEach(() => {
+    exitSpy.mockRestore();
+    vi.clearAllMocks();
+  });
+
+  it('PartialFailureError carries exitCode === 2 and the right name/code', () => {
+    const err = new PartialFailureError('2 resource error(s). State preserved');
+
+    expect(err).toBeInstanceOf(PartialFailureError);
+    expect(err).toBeInstanceOf(Error);
+    expect(err.name).toBe('PartialFailureError');
+    expect(err.code).toBe('PARTIAL_FAILURE');
+    expect(err.exitCode).toBe(2);
+  });
+
+  it('handleError exits with code 2 when given a PartialFailureError', () => {
+    const err = new PartialFailureError('partial failure');
+
+    expect(() => handleError(err)).toThrow('process.exit-mock');
+    expect(exitSpy).toHaveBeenCalledWith(2);
+  });
+
+  it('handleError exits with code 1 for any other error type (regression guard)', () => {
+    expect(() => handleError(new Error('regular error'))).toThrow('process.exit-mock');
+    expect(exitSpy).toHaveBeenCalledWith(1);
+
+    exitSpy.mockClear();
+
+    expect(() => handleError('non-Error value')).toThrow('process.exit-mock');
+    expect(exitSpy).toHaveBeenCalledWith(1);
+  });
+
+  it('withErrorHandling preserves the PartialFailureError → exit 2 mapping when wrapping a command', async () => {
+    // The CLI commands route through withErrorHandling; verify the
+    // wrapper does not lose the PartialFailureError class on its way
+    // to handleError.
+    const wrapped = withErrorHandling(async () => {
+      throw new PartialFailureError('wrapped partial failure');
+    });
+
+    await expect(wrapped()).rejects.toThrow('process.exit-mock');
+    expect(exitSpy).toHaveBeenCalledWith(2);
   });
 });

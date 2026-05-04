@@ -14,7 +14,7 @@ import {
   type ResourceTimeoutOption,
 } from '../options.js';
 import { getLogger } from '../../utils/logger.js';
-import { withErrorHandling } from '../../utils/error-handler.js';
+import { PartialFailureError, withErrorHandling } from '../../utils/error-handler.js';
 import { Synthesizer } from '../../synthesis/synthesizer.js';
 import { S3StateBackend } from '../../state/s3-state-backend.js';
 import { LockManager } from '../../state/lock-manager.js';
@@ -209,6 +209,13 @@ async function destroyCommand(
     }
 
     // 3. Process each stack via the shared destroy runner.
+    // Aggregate error counts across stacks so a single partial failure
+    // anywhere in the run propagates to a non-zero exit (PartialFailureError
+    // → exit code 2). Without this aggregation, runDestroyForStack would
+    // log "(N deleted, M errors) — State preserved" and the command would
+    // still exit 0, which masks failures from CI / bench scripts. Mirrors
+    // `cdkd state destroy`'s totalErrors handling.
+    let totalErrors = 0;
     for (const stackName of stackNames) {
       logger.info(`\nPreparing to destroy stack: ${stackName}`);
 
@@ -249,7 +256,7 @@ async function destroyCommand(
         continue;
       }
 
-      await runDestroyForStack(stackName, stateResult.state, {
+      const result = await runDestroyForStack(stackName, stateResult.state, {
         stateBackend,
         lockManager,
         providerRegistry,
@@ -271,6 +278,19 @@ async function destroyCommand(
           resourceTimeoutByType: options.resourceTimeout.perTypeMs,
         }),
       });
+      totalErrors += result.errorCount;
+    }
+
+    if (totalErrors > 0) {
+      // Partial failure: per-stack runner already wrote the warning
+      // banner and preserved state.json. Surface this distinctly from
+      // "command crashed" so CI / bench scripts can detect the case
+      // via exit code (PartialFailureError → exit 2, vs general
+      // failures → exit 1).
+      throw new PartialFailureError(
+        `Destroy completed with ${totalErrors} resource error(s). State preserved — ` +
+          `inspect 'cdkd state show <stack>' and re-run 'cdkd destroy' to retry.`
+      );
     }
   } finally {
     // Cleanup AWS clients

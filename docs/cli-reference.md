@@ -144,3 +144,33 @@ underlying provider activity.
 
 Note: `--resource-warn-after` must be less than `--resource-timeout`.
 Reversed values are rejected at parse time.
+
+## Exit codes
+
+cdkd commands distinguish three outcomes via the process exit code so
+CI / bench scripts can react without grepping log output:
+
+| Exit | Meaning | Emitted by |
+| --- | --- | --- |
+| `0` | Success — command completed and no resources are in an error state | All commands |
+| `1` | Command-level failure — auth error, bad arguments, synth crash, unhandled exception | All commands (default for any thrown error) |
+| `2` | **Partial failure** — work completed but one or more resources failed; state.json is preserved and re-running typically resolves it | `cdkd destroy`, `cdkd state destroy` (when one or more per-resource deletes fail) |
+
+The implementation hangs off a `PartialFailureError` class in
+`src/utils/error-handler.ts`. `handleError` reads the error's
+`exitCode` property (defaults to 2 for `PartialFailureError`), so
+callers cannot accidentally collapse the partial-failure case into the
+general `1` bucket by re-throwing through `withErrorHandling`.
+
+When exit `2` is emitted, the per-stack summary line in the run log
+also switches glyphs:
+
+```text
+✓ Stack X destroyed (N deleted, 0 errors)                       # exit 0
+⚠ Stack X partially destroyed (N deleted, M errors). State preserved — re-run 'cdkd destroy' / 'cdkd state destroy' to clean up.   # exit 2
+```
+
+If your bench / CI script previously treated any non-zero from `cdkd
+destroy` as a hard failure (because it never had a non-zero outcome
+before), you may now want to branch on `2` separately to schedule a
+retry instead of paging.

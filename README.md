@@ -414,6 +414,24 @@ per-resource timeout flags (`--resource-warn-after`,
 and the rationale for the 30m default), see
 **[docs/cli-reference.md](docs/cli-reference.md)**.
 
+## Exit codes
+
+cdkd commands distinguish three outcomes via the process exit code so
+CI / bench scripts can react without grepping log output:
+
+| Exit | Meaning |
+|------|---------|
+| `0` | Success — command completed and no resources are in an error state |
+| `1` | Command-level failure — auth error, bad arguments, synth crash, unhandled exception |
+| `2` | **Partial failure** — work completed but one or more resources failed (state.json is preserved, re-running typically resolves it) |
+
+Exit `2` is currently emitted by `cdkd destroy` and `cdkd state
+destroy` when one or more per-resource deletes fail. The summary line
+also switches from `✓ Stack X destroyed` to `⚠ Stack X partially
+destroyed (...). State preserved — re-run 'cdkd destroy' / 'cdkd
+state destroy' to clean up.` so the visual marker matches the exit
+code.
+
 ## Example
 
 ```typescript

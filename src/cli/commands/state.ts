@@ -15,7 +15,7 @@ import {
   type ResourceTimeoutOption,
 } from '../options.js';
 import { getLogger } from '../../utils/logger.js';
-import { withErrorHandling } from '../../utils/error-handler.js';
+import { PartialFailureError, withErrorHandling } from '../../utils/error-handler.js';
 import { S3StateBackend, type StackStateRef } from '../../state/s3-state-backend.js';
 import { LockManager } from '../../state/lock-manager.js';
 import { setAwsClients, AwsClients } from '../../utils/aws-clients.js';
@@ -978,9 +978,12 @@ async function stateDestroyCommand(
     }
 
     if (totalErrors > 0) {
-      throw new Error(
-        `Destroy completed with ${totalErrors} resource error(s). ` +
-          `Inspect 'cdkd state show <stack>' and re-run.`
+      // Partial failure: state.json is preserved by destroy-runner so a
+      // re-run picks up the remaining resources. Surface this distinctly
+      // from "command crashed" via PartialFailureError → exit code 2.
+      throw new PartialFailureError(
+        `Destroy completed with ${totalErrors} resource error(s). State preserved — ` +
+          `inspect 'cdkd state show <stack>' and re-run 'cdkd state destroy' to retry.`
       );
     }
   } finally {
