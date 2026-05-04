@@ -14,6 +14,7 @@ Run integration tests against a real AWS account. These tests deploy actual AWS 
 - `all`: Run all tests
 - `--synth-only`: Only run synthesis, skip deploy/destroy
 - `--no-destroy`: Deploy but don't destroy (for debugging)
+- `--deploy-args "<args>"`: Forward extra arguments to the `cdkd deploy` invocation (e.g. `--deploy-args "--aggressive-vpc-parallel"`). Use when validating an opt-in deploy flag end-to-end against `bench-cdk-sample` etc. — the destroy step is unaffected (opt-in flags so far are deploy-only).
 
 ## Steps
 
@@ -61,7 +62,8 @@ Run integration tests against a real AWS account. These tests deploy actual AWS 
      `cross-stack-references`), pass `--all` to deploy and destroy.
      Without `--all`, deploy/destroy will fail with `Multiple stacks
      found: ... Specify stack name(s) or use --all`.
-   - Run deploy: `node ../../../dist/cli.js deploy [--all] --region us-east-1 --state-bucket <bucket> --verbose`
+   - Run deploy: `node ../../../dist/cli.js deploy [--all] [<extra-deploy-args>] --region us-east-1 --state-bucket <bucket> --verbose`
+     - When `--deploy-args "<args>"` was passed to the skill, splice those args into the deploy invocation verbatim. Don't apply them to destroy.
    - Run destroy: `node ../../../dist/cli.js destroy [--all] --region us-east-1 --state-bucket <bucket> --force`
 
 6. **Verify cleanup**:
