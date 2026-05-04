@@ -40,6 +40,22 @@ import type {
 } from '../../types/resource.js';
 
 /**
+ * Pick the inline-code filename for a Lambda runtime.
+ *
+ * CloudFormation's `Code.ZipFile` auto-zips inline code into a file named
+ * `index.<ext>` where the extension matches the runtime (`index.js` for
+ * `nodejs*`, `index.py` for `python*`). The Lambda SDK's `ZipFile` parameter
+ * accepts a binary zip but does no equivalent runtime-aware naming, so we
+ * have to mirror the CFn behavior here. Defaults to `index.js` since `nodejs`
+ * is the only `Code.fromInline`-supported runtime alongside `python` and is
+ * the more common case in CDK apps.
+ */
+export function inlineCodeFileNameForRuntime(runtime: string | undefined): string {
+  if (runtime?.startsWith('python')) return 'index.py';
+  return 'index.js';
+}
+
+/**
  * AWS Lambda Function Provider
  *
  * Implements resource provisioning for AWS::Lambda::Function using the Lambda SDK.
@@ -166,7 +182,7 @@ export class LambdaFunctionProvider implements ResourceProvider {
       const createParams: CreateFunctionCommandInput = {
         FunctionName: functionName,
         Role: role,
-        Code: this.buildCode(code),
+        Code: this.buildCode(code, properties['Runtime'] as string | undefined),
         Handler: properties['Handler'] as string | undefined,
         Runtime: properties['Runtime'] as Runtime | undefined,
         Timeout: properties['Timeout'] as number | undefined,
@@ -295,7 +311,7 @@ export class LambdaFunctionProvider implements ResourceProvider {
       const oldCode = previousProperties['Code'] as Record<string, unknown> | undefined;
 
       if (newCode && JSON.stringify(newCode) !== JSON.stringify(oldCode)) {
-        const builtCode = this.buildCode(newCode);
+        const builtCode = this.buildCode(newCode, properties['Runtime'] as string | undefined);
         const codeParams: UpdateFunctionCodeCommandInput = {
           FunctionName: physicalId,
           S3Bucket: builtCode.S3Bucket,
@@ -750,7 +766,7 @@ export class LambdaFunctionProvider implements ResourceProvider {
   /**
    * Build Lambda Code parameter from CDK properties
    */
-  private buildCode(code: Record<string, unknown>): FunctionCode {
+  private buildCode(code: Record<string, unknown>, runtime: string | undefined): FunctionCode {
     const result: FunctionCode = {};
 
     if (code['S3Bucket']) {
@@ -766,7 +782,7 @@ export class LambdaFunctionProvider implements ResourceProvider {
       // Lambda SDK expects a zip binary, not raw text.
       // CloudFormation's ZipFile property auto-zips inline code, but SDK does not.
       // Create a minimal zip with the code as index.* file.
-      result.ZipFile = this.createZipFromInlineCode(code['ZipFile'] as string);
+      result.ZipFile = this.createZipFromInlineCode(code['ZipFile'] as string, runtime);
     }
     if (code['ImageUri']) {
       result.ImageUri = code['ImageUri'] as string;
@@ -780,15 +796,15 @@ export class LambdaFunctionProvider implements ResourceProvider {
    *
    * CloudFormation's ZipFile property automatically wraps inline code in a zip,
    * but the Lambda SDK expects actual zip binary. This creates a minimal zip
-   * containing the code as index.* (matching the Handler).
+   * containing the code as index.* (extension derived from runtime — nodejs
+   * runtimes use index.js, python runtimes use index.py; see CFn ZipFile docs).
    */
-  private createZipFromInlineCode(code: string): Uint8Array {
+  private createZipFromInlineCode(code: string, runtime: string | undefined): Uint8Array {
     const fileData = Buffer.from(code, 'utf-8');
     const crc32 = this.crc32(fileData);
     const compressedData = zlib.deflateRawSync(fileData);
 
-    // Determine filename from handler or default to index.py
-    const fileName = Buffer.from('index.py');
+    const fileName = Buffer.from(inlineCodeFileNameForRuntime(runtime));
     const now = new Date();
     const modTime =
       ((now.getHours() << 11) | (now.getMinutes() << 5) | (now.getSeconds() >> 1)) & 0xffff;
