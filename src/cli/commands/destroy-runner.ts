@@ -414,9 +414,21 @@ export async function runDestroyForStack(
       logger.warn(`${result.errorCount} resource(s) failed to delete. State preserved.`);
     }
 
-    logger.info(
-      `\n✓ Stack ${stackName} destroyed (${result.deletedCount} deleted, ${result.errorCount} errors)`
-    );
+    // Summary glyph distinguishes clean destroy (✓) from partial failure
+    // (⚠). The CLI's exit code reflects the same split (0 vs 2) — see
+    // PartialFailureError in src/utils/error-handler.ts. Without the
+    // visual marker, a partial failure scrolls past in the same shape
+    // as a successful destroy and gets missed in CI / bench output.
+    if (result.errorCount === 0) {
+      logger.info(
+        `\n✓ Stack ${stackName} destroyed (${result.deletedCount} deleted, ${result.errorCount} errors)`
+      );
+    } else {
+      logger.warn(
+        `\n⚠ Stack ${stackName} partially destroyed (${result.deletedCount} deleted, ${result.errorCount} errors). ` +
+          `State preserved — re-run 'cdkd destroy' / 'cdkd state destroy' to clean up.`
+      );
+    }
   } finally {
     // Stop live renderer before releasing the lock so any pending in-flight
     // task lines are cleared cleanly.

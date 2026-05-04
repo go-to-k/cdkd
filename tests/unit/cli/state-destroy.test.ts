@@ -274,7 +274,11 @@ describe('cdkd state destroy', () => {
     expect(mockRunDestroyForStack).toHaveBeenCalledTimes(1);
   });
 
-  it('exits non-zero when the runner reports per-resource errors', async () => {
+  it('exits with code 2 (PartialFailureError) when the runner reports per-resource errors', async () => {
+    // Partial failure: state.json was preserved, the user can re-run.
+    // Distinct exit code so CI / bench scripts can tell this apart from
+    // a true command crash (which exits 1). See PartialFailureError in
+    // src/utils/error-handler.ts.
     mockListStacks.mockResolvedValue([{ stackName: 'Bad', region: 'us-east-1' }]);
     mockGetState.mockResolvedValue({ state: makeStackState('Bad', 'us-east-1'), etag: '"x"' });
     mockRunDestroyForStack.mockResolvedValueOnce({
@@ -286,9 +290,9 @@ describe('cdkd state destroy', () => {
     });
 
     await expect(runStateDestroy(['destroy', 'Bad', '--yes'])).rejects.toThrow();
-    expect(exitSpy).toHaveBeenCalledWith(1);
+    expect(exitSpy).toHaveBeenCalledWith(2);
     const message = String(errorSpy.mock.calls[0]?.[0] ?? '');
-    expect(message).toMatch(/2 resource error\(s\)/);
+    expect(message).toMatch(/2 resource error\(s\).*State preserved/);
   });
 
   it('iterates over multiple positional stack names in order', async () => {
