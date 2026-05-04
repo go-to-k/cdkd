@@ -1,3 +1,10 @@
+## [0.31.1](https://github.com/go-to-k/cdkd/compare/v0.31.0...v0.31.1) (2026-05-04)
+
+
+### Bug Fixes
+
+* **cli:** destroy exits with code 2 on partial failure (was silently exiting 0) ([#124](https://github.com/go-to-k/cdkd/issues/124)) ([a279a1b](https://github.com/go-to-k/cdkd/commit/a279a1be9a2f872f8050ddc56da9f10208c88e93))
+
 # [0.31.0](https://github.com/go-to-k/cdkd/compare/v0.30.2...v0.31.0) (2026-05-04)
 
 
