@@ -381,12 +381,17 @@ export const noWaitOption = new Option(
  * all accept a function in `Pending` state — relaxing the edges lets
  * downstream resources (notably `CloudFront::Distribution` whose Origin is
  * a Function URL) start their own ~3-min propagation in parallel with NAT
- * GW stabilization. Measured −45.6% on `bench-cdk-sample` (387s → 211s).
+ * GW stabilization. Measured −54.6% on `bench-cdk-sample` (398.59s → 181.03s).
  *
- * Off by default: relaxation is opt-in for v1 because CloudFront
- * `Create` / `Delete` are each ~5 min and the rollback cost of a
- * Lambda-side async failure is correspondingly high. Will likely flip to
- * default-on after burn-in.
+ * **On by default.** This is the conservative-pessimist trap that PR #126
+ * v1 fell into: shipping the optimization opt-in meant users had to know
+ * about a flag to get the win, which defeats the point. Burn-in via
+ * `/run-integ bench-cdk-sample --deploy-args "--aggressive-vpc-parallel"`
+ * already validated the AWS-side behavior end-to-end. Pass
+ * `--no-aggressive-vpc-parallel` to opt out (escape hatch for stacks where
+ * the user wants the strict CDK-defensive ordering — e.g. a Custom Resource
+ * that synchronously invokes a VPC Lambda outside of cdkd's
+ * Lambda-ServiceToken Active wait).
  *
  * Deploy-only. The relaxation has no effect on destroy ordering (CDK route
  * DependsOn doesn't constrain delete-time correctness — Lambda hyperplane
@@ -396,9 +401,9 @@ export const noWaitOption = new Option(
  * See `src/analyzer/cdk-defensive-deps.ts` for the type-pair allowlist.
  */
 export const aggressiveVpcParallelOption = new Option(
-  '--aggressive-vpc-parallel',
-  'Relax CDK-injected VPC route DependsOn to let CloudFront/Lambda::Url create in parallel with NAT GW stabilization'
-).default(false);
+  '--no-aggressive-vpc-parallel',
+  'Disable the default relaxation of CDK-injected VPC route DependsOn (on by default; opt out to keep the strict CDK ordering)'
+);
 
 /**
  * Deploy options

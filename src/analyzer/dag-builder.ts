@@ -83,7 +83,7 @@ export class DagBuilder {
         if (skip?.has(depId)) {
           relaxedEdgeCount++;
           this.logger.debug(
-            `Skipped CDK-defensive DependsOn edge: ${depId} -> ${logicalId} (--aggressive-vpc-parallel)`
+            `Skipped CDK-defensive DependsOn edge: ${depId} -> ${logicalId} (default; opt out with --no-aggressive-vpc-parallel)`
           );
           continue;
         }
@@ -101,7 +101,7 @@ export class DagBuilder {
     }
     if (relaxedEdgeCount > 0) {
       this.logger.info(
-        `[DagBuilder] Relaxed ${relaxedEdgeCount} CDK-defensive DependsOn edge(s) (--aggressive-vpc-parallel)`
+        `[DagBuilder] Relaxed ${relaxedEdgeCount} CDK-defensive DependsOn edge(s) (default; opt out with --no-aggressive-vpc-parallel)`
       );
     }
 
