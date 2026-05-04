@@ -43,7 +43,11 @@ vi.mock('../../../src/utils/logger.js', () => {
   };
 });
 
-import { LambdaFunctionProvider } from '../../../src/provisioning/providers/lambda-function-provider.js';
+import {
+  LambdaFunctionProvider,
+  inlineCodeFileNameForRuntime,
+} from '../../../src/provisioning/providers/lambda-function-provider.js';
+import * as zlib from 'node:zlib';
 
 describe('LambdaFunctionProvider', () => {
   let provider: LambdaFunctionProvider;
@@ -697,6 +701,148 @@ describe('LambdaFunctionProvider', () => {
         'SnapStartResponse.OptimizationStatus'
       );
       expect(result).toBe('On');
+    });
+  });
+
+  describe('inline Code.ZipFile', () => {
+    // Reads the first entry's filename out of the hand-rolled ZIP that
+    // createZipFromInlineCode emits. Layout: local file header at offset 0,
+    // filename length at byte 26 (uint16 LE), filename at byte 30.
+    function readZipEntryName(buf: Uint8Array): string {
+      const view = Buffer.from(buf.buffer, buf.byteOffset, buf.byteLength);
+      const nameLen = view.readUInt16LE(26);
+      return view.subarray(30, 30 + nameLen).toString('utf-8');
+    }
+
+    function readZipEntryBody(buf: Uint8Array): string {
+      const view = Buffer.from(buf.buffer, buf.byteOffset, buf.byteLength);
+      const compressedSize = view.readUInt32LE(18);
+      const nameLen = view.readUInt16LE(26);
+      const extraLen = view.readUInt16LE(28);
+      const dataStart = 30 + nameLen + extraLen;
+      const compressed = view.subarray(dataStart, dataStart + compressedSize);
+      return zlib.inflateRawSync(compressed).toString('utf-8');
+    }
+
+    describe('inlineCodeFileNameForRuntime helper', () => {
+      it('returns index.py for python runtimes', () => {
+        expect(inlineCodeFileNameForRuntime('python3.12')).toBe('index.py');
+        expect(inlineCodeFileNameForRuntime('python3.9')).toBe('index.py');
+      });
+
+      it('returns index.js for nodejs runtimes', () => {
+        expect(inlineCodeFileNameForRuntime('nodejs20.x')).toBe('index.js');
+        expect(inlineCodeFileNameForRuntime('nodejs22.x')).toBe('index.js');
+      });
+
+      it('defaults to index.js for undefined or unknown runtimes', () => {
+        // Code.fromInline only supports nodejs + python; an unknown runtime
+        // here means a hand-crafted template. Default to nodejs because
+        // it's the most common in CDK apps.
+        expect(inlineCodeFileNameForRuntime(undefined)).toBe('index.js');
+        expect(inlineCodeFileNameForRuntime('ruby3.2')).toBe('index.js');
+      });
+    });
+
+    it('zips inline ZipFile as index.js for nodejs runtime', async () => {
+      // Regression test: previously the file was hardcoded as index.py
+      // regardless of runtime, breaking nodejs Lambdas with
+      // "Runtime.ImportModuleError: Cannot find module 'index'" because
+      // the runtime expects index.js / index.mjs and finds neither.
+      mockLambdaSend.mockResolvedValueOnce({
+        FunctionName: 'fn-inline-node',
+        FunctionArn: 'arn:aws:lambda:us-east-1:123:function:fn-inline-node',
+      });
+
+      const inlineSource = "exports.handler = async () => ({ statusCode: 200 });\n";
+      await provider.create('Fn', 'AWS::Lambda::Function', {
+        FunctionName: 'fn-inline-node',
+        Role: 'arn:aws:iam::123:role/exec',
+        Handler: 'index.handler',
+        Runtime: 'nodejs20.x',
+        Code: { ZipFile: inlineSource },
+      });
+
+      const cmd = mockLambdaSend.mock.calls[0][0];
+      expect(cmd).toBeInstanceOf(CreateFunctionCommand);
+      const zipBuf = cmd.input.Code.ZipFile as Uint8Array;
+      expect(readZipEntryName(zipBuf)).toBe('index.js');
+      expect(readZipEntryBody(zipBuf)).toBe(inlineSource);
+    });
+
+    it('zips inline ZipFile as index.py for python runtime', async () => {
+      mockLambdaSend.mockResolvedValueOnce({
+        FunctionName: 'fn-inline-py',
+        FunctionArn: 'arn:aws:lambda:us-east-1:123:function:fn-inline-py',
+      });
+
+      const inlineSource = "def handler(event, context):\n    return {'statusCode': 200}\n";
+      await provider.create('Fn', 'AWS::Lambda::Function', {
+        FunctionName: 'fn-inline-py',
+        Role: 'arn:aws:iam::123:role/exec',
+        Handler: 'index.handler',
+        Runtime: 'python3.12',
+        Code: { ZipFile: inlineSource },
+      });
+
+      const cmd = mockLambdaSend.mock.calls[0][0];
+      const zipBuf = cmd.input.Code.ZipFile as Uint8Array;
+      expect(readZipEntryName(zipBuf)).toBe('index.py');
+      expect(readZipEntryBody(zipBuf)).toBe(inlineSource);
+    });
+
+    it('zips inline ZipFile as index.js when runtime is omitted (safe default)', async () => {
+      mockLambdaSend.mockResolvedValueOnce({
+        FunctionName: 'fn-no-runtime',
+        FunctionArn: 'arn:aws:lambda:us-east-1:123:function:fn-no-runtime',
+      });
+
+      await provider.create('Fn', 'AWS::Lambda::Function', {
+        FunctionName: 'fn-no-runtime',
+        Role: 'arn:aws:iam::123:role/exec',
+        Handler: 'index.handler',
+        Code: { ZipFile: "exports.handler = async () => ({});\n" },
+      });
+
+      const cmd = mockLambdaSend.mock.calls[0][0];
+      const zipBuf = cmd.input.Code.ZipFile as Uint8Array;
+      expect(readZipEntryName(zipBuf)).toBe('index.js');
+    });
+
+    it('uses python extension on UpdateFunctionCode when runtime is python', async () => {
+      // 1) UpdateFunctionCode (Code changed)
+      // 2) GetFunction (waitUntilFunctionUpdatedV2)
+      // 3) GetFunction (final attribute fetch)
+      mockLambdaSend
+        .mockResolvedValueOnce({})
+        .mockResolvedValueOnce({ Configuration: { LastUpdateStatus: 'Successful' } })
+        .mockResolvedValueOnce({
+          Configuration: {
+            FunctionName: 'fn-py',
+            FunctionArn: 'arn:aws:lambda:us-east-1:123:function:fn-py',
+          },
+        });
+
+      await provider.update(
+        'Fn',
+        'fn-py',
+        'AWS::Lambda::Function',
+        {
+          Role: 'arn:aws:iam::123:role/exec',
+          Runtime: 'python3.12',
+          Code: { ZipFile: "def handler(e, c): return {}\n" },
+        },
+        {
+          Role: 'arn:aws:iam::123:role/exec',
+          Runtime: 'python3.12',
+          Code: { ZipFile: "def handler(e, c): pass\n" },
+        }
+      );
+
+      const updateCmd = mockLambdaSend.mock.calls[0][0];
+      expect(updateCmd).toBeInstanceOf(UpdateFunctionCodeCommand);
+      const zipBuf = updateCmd.input.ZipFile as Uint8Array;
+      expect(readZipEntryName(zipBuf)).toBe('index.py');
     });
   });
 });
