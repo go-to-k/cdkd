@@ -24,7 +24,7 @@
 - **Diff calculation**: Self-implemented resource/property-level diff between desired template and current state
 - **S3-based state management**: No DynamoDB required, uses S3 conditional writes for locking
 - **DAG-based parallelization**: Analyze `Ref`/`Fn::GetAtt` dependencies and execute in parallel
-- **`--no-wait` for async resources**: Skip the multi-minute wait on CloudFront / RDS / ElastiCache and return as soon as the create call returns (CloudFormation always blocks)
+- **`--no-wait` for async resources**: Skip the multi-minute wait on CloudFront / RDS / ElastiCache / NAT Gateway and return as soon as the create call returns (CloudFormation always blocks)
 
 > **Note**: Resource types not covered by either SDK Providers or Cloud Control API cannot be deployed with cdkd. If you encounter an unsupported resource type, deployment will fail with a clear error message.
 
@@ -372,11 +372,11 @@ cdkd state destroy MyStack --region us-east-1
 
 ## `--no-wait`: skip async-resource waits
 
-CloudFront Distributions, RDS Clusters/Instances, and ElastiCache
-typically take 3–15 minutes for AWS to fully propagate. By default
-cdkd waits for them to reach a ready state — the same behavior as
-CloudFormation. Pass `--no-wait` to return as soon as the create call
-returns:
+CloudFront Distributions, RDS Clusters/Instances, ElastiCache, and
+NAT Gateways typically take 1–15 minutes for AWS to fully provision.
+By default cdkd waits for them to reach a ready state — the same
+behavior as CloudFormation. Pass `--no-wait` to return as soon as the
+create call returns:
 
 ```bash
 cdkd deploy --no-wait
@@ -385,6 +385,25 @@ cdkd deploy --no-wait
 The resource is fully functional once AWS finishes the async
 deployment in the background. CloudFormation has no equivalent — once
 you submit a stack, you wait for everything.
+
+NAT Gateway is included as of v0.31. Provisioning typically takes
+1–2 minutes and is the dominant cost in many VPC stacks; with
+`cdkd deploy --no-wait`, `CreateNatGateway` returns the `NatGatewayId`
+immediately and dependent Routes that only reference the ID can
+proceed against a still-`pending` gateway. AWS continues NAT
+provisioning asynchronously after the deploy returns. Use this only
+when nothing in the deploy flow needs actual NAT-routed egress (e.g.
+no Lambda invoked during deploy that hits the internet).
+
+`--no-wait` is **deploy-only**. `cdkd destroy` always waits for NAT
+Gateway to reach `deleted` state — while the gateway is in
+`deleting` AWS keeps the ENI / EIP / route-table associations
+attached, so any concurrent `DeleteSubnet` / `DeleteInternetGateway`
+/ `DeleteVpc` returns `DependencyViolation` and the destroy enters a
+retry storm. Other `--no-wait` resources (CloudFront / RDS /
+ElastiCache) don't apply to destroy either — their providers are
+already non-blocking on delete because they're leaves in the destroy
+DAG.
 
 ## Other CLI flags
 

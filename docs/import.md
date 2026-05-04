@@ -245,6 +245,7 @@ template's logical id, and adopts it. Works under `auto` (default) and
 - AWS::EC2::VPC
 - AWS::EC2::Subnet
 - AWS::EC2::SecurityGroup
+- AWS::EC2::NatGateway
 - AWS::RDS::DBInstance
 - AWS::RDS::DBCluster
 - AWS::RDS::DBSubnetGroup

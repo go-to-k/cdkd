@@ -10,6 +10,11 @@ import {
   DeleteInternetGatewayCommand,
   AttachInternetGatewayCommand,
   DetachInternetGatewayCommand,
+  CreateNatGatewayCommand,
+  DeleteNatGatewayCommand,
+  DescribeNatGatewaysCommand,
+  waitUntilNatGatewayAvailable,
+  waitUntilNatGatewayDeleted,
   CreateRouteTableCommand,
   DeleteRouteTableCommand,
   CreateRouteCommand,
@@ -87,6 +92,20 @@ export class EC2Provider implements ResourceProvider {
     ],
     ['AWS::EC2::InternetGateway', new Set(['Tags'])],
     ['AWS::EC2::VPCGatewayAttachment', new Set(['VpcId', 'InternetGatewayId'])],
+    [
+      'AWS::EC2::NatGateway',
+      new Set([
+        'AllocationId',
+        'SubnetId',
+        'ConnectivityType',
+        'PrivateIpAddress',
+        'SecondaryAllocationIds',
+        'SecondaryPrivateIpAddresses',
+        'SecondaryPrivateIpAddressCount',
+        'MaxDrainDurationSeconds',
+        'Tags',
+      ]),
+    ],
     ['AWS::EC2::RouteTable', new Set(['VpcId', 'Tags'])],
     [
       'AWS::EC2::Route',
@@ -181,6 +200,8 @@ export class EC2Provider implements ResourceProvider {
         return this.createInternetGateway(logicalId, resourceType, properties);
       case 'AWS::EC2::VPCGatewayAttachment':
         return this.createVpcGatewayAttachment(logicalId, resourceType, properties);
+      case 'AWS::EC2::NatGateway':
+        return this.createNatGateway(logicalId, resourceType, properties);
       case 'AWS::EC2::RouteTable':
         return this.createRouteTable(logicalId, resourceType, properties);
       case 'AWS::EC2::Route':
@@ -224,6 +245,8 @@ export class EC2Provider implements ResourceProvider {
         return this.updateInternetGateway(logicalId, physicalId);
       case 'AWS::EC2::VPCGatewayAttachment':
         return this.updateVpcGatewayAttachment(logicalId, physicalId);
+      case 'AWS::EC2::NatGateway':
+        return this.updateNatGateway(logicalId, physicalId);
       case 'AWS::EC2::RouteTable':
         return this.updateRouteTable(logicalId, physicalId);
       case 'AWS::EC2::Route':
@@ -284,6 +307,8 @@ export class EC2Provider implements ResourceProvider {
         return this.deleteInternetGateway(logicalId, physicalId, resourceType, context);
       case 'AWS::EC2::VPCGatewayAttachment':
         return this.deleteVpcGatewayAttachment(logicalId, physicalId, resourceType, context);
+      case 'AWS::EC2::NatGateway':
+        return this.deleteNatGateway(logicalId, physicalId, resourceType, context);
       case 'AWS::EC2::RouteTable':
         return this.deleteRouteTable(logicalId, physicalId, resourceType, context);
       case 'AWS::EC2::Route':
@@ -993,6 +1018,190 @@ export class EC2Provider implements ResourceProvider {
         cause
       );
     }
+  }
+
+  // ─── AWS::EC2::NatGateway ─────────────────────────────────────────
+  //
+  // CloudFormation parity: by default we wait for the new NAT gateway to
+  // reach `available` state before marking the resource created. NAT
+  // provisioning takes ~1–2 minutes (often the longest single step in a
+  // VPC stack). Pass `--no-wait` to skip the wait — `CreateNatGateway`
+  // returns the `NatGatewayId` immediately so dependent Routes /
+  // Subnets that only need the ID can proceed against a still-`pending`
+  // gateway. Anything that requires actual NAT-routed egress (e.g. a
+  // Lambda invocation that hits the internet during deploy) must not
+  // rely on the gateway being live; with `--no-wait`, AWS continues
+  // provisioning asynchronously after the deploy returns.
+
+  private async createNatGateway(
+    logicalId: string,
+    resourceType: string,
+    properties: Record<string, unknown>
+  ): Promise<ResourceCreateResult> {
+    this.logger.debug(`Creating NatGateway ${logicalId}`);
+
+    const subnetId = properties['SubnetId'] as string | undefined;
+    if (!subnetId) {
+      throw new ProvisioningError(
+        `SubnetId is required for NatGateway ${logicalId}`,
+        resourceType,
+        logicalId
+      );
+    }
+
+    try {
+      const response = await this.ec2Client.send(
+        new CreateNatGatewayCommand({
+          SubnetId: subnetId,
+          AllocationId: properties['AllocationId'] as string | undefined,
+          ConnectivityType:
+            (properties['ConnectivityType'] as 'public' | 'private' | undefined) ?? undefined,
+          PrivateIpAddress: properties['PrivateIpAddress'] as string | undefined,
+          SecondaryAllocationIds: properties['SecondaryAllocationIds'] as string[] | undefined,
+          SecondaryPrivateIpAddresses: properties['SecondaryPrivateIpAddresses'] as
+            | string[]
+            | undefined,
+          SecondaryPrivateIpAddressCount: properties['SecondaryPrivateIpAddressCount'] as
+            | number
+            | undefined,
+        })
+      );
+      const natGatewayId = response.NatGateway!.NatGatewayId!;
+
+      // Apply tags via the post-create CreateTags API to match the
+      // pattern used by sibling EC2 helpers (Subnet / IGW / RouteTable).
+      // CreateNatGateway also supports inline TagSpecifications, but
+      // staying consistent with `applyTags` keeps tag handling in one
+      // place — and the extra API call is dwarfed by the optional
+      // available-state wait below.
+      await this.applyTags(natGatewayId, properties, logicalId);
+
+      // Wait for `available` state unless --no-wait is set. Same gating
+      // pattern as CloudFront / RDS / ElastiCache providers (env var
+      // `CDKD_NO_WAIT=true` is set by the CLI when --no-wait is passed).
+      if (process.env['CDKD_NO_WAIT'] !== 'true') {
+        this.logger.debug(`Waiting for NatGateway ${natGatewayId} to reach available state...`);
+        await waitUntilNatGatewayAvailable(
+          // 15-min cap matches AWS's documented worst case for NAT
+          // provisioning. Per-resource `--resource-timeout` (default
+          // 30 min) still bounds the outer call as a backstop.
+          { client: this.ec2Client, maxWaitTime: 15 * 60 },
+          { NatGatewayIds: [natGatewayId] }
+        );
+        this.logger.debug(`NatGateway ${natGatewayId} is available`);
+      } else {
+        this.logger.debug(
+          `NatGateway ${natGatewayId} created (skipping available-state wait per --no-wait)`
+        );
+      }
+
+      this.logger.debug(`Successfully created NatGateway ${logicalId}: ${natGatewayId}`);
+
+      return {
+        physicalId: natGatewayId,
+        attributes: {
+          NatGatewayId: natGatewayId,
+        },
+      };
+    } catch (error) {
+      const cause = error instanceof Error ? error : undefined;
+      throw new ProvisioningError(
+        `Failed to create NatGateway ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        resourceType,
+        logicalId,
+        undefined,
+        cause
+      );
+    }
+  }
+
+  private updateNatGateway(logicalId: string, physicalId: string): Promise<ResourceUpdateResult> {
+    // NAT gateway has no in-place mutable properties (Tags handled
+    // separately if needed). Property changes that map here are
+    // already detected as immutable by the engine and trigger
+    // DELETE + CREATE upstream.
+    this.logger.debug(`Updating NatGateway ${logicalId}: ${physicalId} (no-op)`);
+    return Promise.resolve({ physicalId, wasReplaced: false });
+  }
+
+  private async deleteNatGateway(
+    logicalId: string,
+    physicalId: string,
+    resourceType: string,
+    context?: DeleteContext
+  ): Promise<void> {
+    this.logger.debug(`Deleting NatGateway ${logicalId}: ${physicalId}`);
+
+    try {
+      await this.ec2Client.send(new DeleteNatGatewayCommand({ NatGatewayId: physicalId }));
+    } catch (error) {
+      if (this.isNotFoundError(error)) {
+        const clientRegion = await this.ec2Client.config.region();
+        assertRegionMatch(
+          clientRegion,
+          context?.expectedRegion,
+          resourceType,
+          logicalId,
+          physicalId
+        );
+        this.logger.debug(`NatGateway ${physicalId} does not exist, skipping deletion`);
+        return;
+      }
+      const cause = error instanceof Error ? error : undefined;
+      throw new ProvisioningError(
+        `Failed to delete NatGateway ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        resourceType,
+        logicalId,
+        physicalId,
+        cause
+      );
+    }
+
+    // Wait for the gateway to fully release its ENI / EIP / route
+    // table associations BEFORE returning. This wait is INTENTIONALLY
+    // not gated on `--no-wait`. NAT Gateway is asymmetric:
+    //
+    //   - On CREATE, the SDK call returns the NatGatewayId
+    //     immediately and downstream Routes accept a still-`pending`
+    //     gateway as a target. Skipping the available-state wait is
+    //     safe — AWS finishes provisioning asynchronously and the
+    //     deploy can return early.
+    //   - On DELETE, the same asynchronous teardown blocks every
+    //     OTHER destroy that lands in the same VPC. While the
+    //     gateway is still in `deleting` state, AWS keeps the ENI
+    //     attached to the public subnet and the EIP allocated to
+    //     the gateway, so DeleteSubnet / DeleteInternetGateway /
+    //     DeleteVpc all return `DependencyViolation`. The deploy
+    //     engine then enters a retry storm and the destroy can run
+    //     for 15+ minutes before either succeeding or failing
+    //     partway through (which is what surfaced in the v0.31
+    //     follow-up bench).
+    //
+    // The right answer is to ALWAYS wait on delete, treating
+    // `--no-wait` as a deploy-time-only flag for NAT. CloudFront and
+    // RDS leaf resources can safely skip their delete waits because
+    // nothing in the destroy DAG depends on them being fully gone.
+    this.logger.debug(`Waiting for NatGateway ${physicalId} to reach deleted state...`);
+    try {
+      await waitUntilNatGatewayDeleted(
+        { client: this.ec2Client, maxWaitTime: 15 * 60 },
+        { NatGatewayIds: [physicalId] }
+      );
+    } catch (error) {
+      // The waiter throws on TIMEOUT and on FAILURE (the one
+      // FAILURE acceptor is `failed` state). Treat both as soft
+      // warnings — the EC2 console will show the gateway, the user
+      // can clean it up manually. We do NOT re-throw because doing
+      // so would block downstream Subnet / VPC delete from running,
+      // which is worse.
+      this.logger.warn(
+        `Wait for NatGateway ${physicalId} deletion did not complete cleanly: ${
+          error instanceof Error ? error.message : String(error)
+        } — proceeding with downstream delete steps`
+      );
+    }
+
+    this.logger.debug(`Successfully deleted NatGateway ${logicalId}`);
   }
 
   // ─── AWS::EC2::RouteTable ─────────────────────────────────────────
@@ -2565,6 +2774,17 @@ export class EC2Provider implements ResourceProvider {
           const sg = resp.SecurityGroups?.[0];
           return sg?.GroupId ? { physicalId: sg.GroupId, attributes: {} } : null;
         }
+        case 'AWS::EC2::NatGateway': {
+          const resp = await this.ec2Client.send(
+            new DescribeNatGatewaysCommand({
+              Filter: [{ Name: `tag:${CDK_PATH_TAG}`, Values: [input.cdkPath] }],
+            })
+          );
+          // Skip already-deleted gateways — DescribeNatGateways returns
+          // them for some time after deletion.
+          const gw = resp.NatGateways?.find((g) => g.State !== 'deleted' && g.State !== 'deleting');
+          return gw?.NatGatewayId ? { physicalId: gw.NatGatewayId, attributes: {} } : null;
+        }
         default:
           // Unsupported EC2 sub-type. Caller will report as
           // "skipped — provider does not implement import (yet)".
@@ -2597,6 +2817,13 @@ export class EC2Provider implements ResourceProvider {
             new DescribeSecurityGroupsCommand({ GroupIds: [physicalId] })
           );
           return resp.SecurityGroups?.[0] ? { physicalId, attributes: {} } : null;
+        }
+        case 'AWS::EC2::NatGateway': {
+          const resp = await this.ec2Client.send(
+            new DescribeNatGatewaysCommand({ NatGatewayIds: [physicalId] })
+          );
+          const gw = resp.NatGateways?.find((g) => g.State !== 'deleted' && g.State !== 'deleting');
+          return gw ? { physicalId, attributes: {} } : null;
         }
         default:
           return null;
