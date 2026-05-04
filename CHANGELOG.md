@@ -1,3 +1,10 @@
+# [0.32.0](https://github.com/go-to-k/cdkd/compare/v0.31.2...v0.32.0) (2026-05-04)
+
+
+### Features
+
+* **deploy:** --aggressive-vpc-parallel relaxes CDK VPC route DependsOn (-54.6% on bench-cdk-sample) ([#126](https://github.com/go-to-k/cdkd/issues/126)) ([b3448ea](https://github.com/go-to-k/cdkd/commit/b3448ea57e7a3605e5f700e338f97426b12e5e08))
+
 ## [0.31.2](https://github.com/go-to-k/cdkd/compare/v0.31.1...v0.31.2) (2026-05-04)
 
 
