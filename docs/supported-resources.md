@@ -54,6 +54,7 @@ message naming the unsupported type.
 | **Networking** | AWS::EC2::Subnet | SDK Provider | ✅ |
 | **Networking** | AWS::EC2::InternetGateway | SDK Provider | ✅ |
 | **Networking** | AWS::EC2::VPCGatewayAttachment | SDK Provider | ✅ |
+| **Networking** | AWS::EC2::NatGateway | SDK Provider | ✅ |
 | **Networking** | AWS::EC2::RouteTable | SDK Provider | ✅ |
 | **Networking** | AWS::EC2::Route | SDK Provider | ✅ |
 | **Networking** | AWS::EC2::SubnetRouteTableAssociation | SDK Provider | ✅ |

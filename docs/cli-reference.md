@@ -20,8 +20,8 @@ resource provisioning. Each level has its own concurrency knob.
 ## `--no-wait`
 
 By default, cdkd waits for async resources (CloudFront Distribution,
-RDS Cluster/Instance, ElastiCache) to reach a ready state before
-completing — the same behavior as CloudFormation.
+RDS Cluster/Instance, ElastiCache, NAT Gateway) to reach a ready
+state before completing — the same behavior as CloudFormation.
 
 Use `--no-wait` to skip this and return immediately after resource
 creation:
@@ -30,9 +30,31 @@ creation:
 cdkd deploy --no-wait
 ```
 
-This can significantly speed up deployments with CloudFront (which
-takes 3-15 minutes to deploy to edge locations). The resource is fully
+This can significantly speed up deployments. The resource is fully
 functional once AWS finishes the async deployment.
+
+| Resource type | Default behavior | `--no-wait` behavior |
+| --- | --- | --- |
+| `AWS::CloudFront::Distribution` | Wait for `Deployed` status (3–15 min) | Return after `CreateDistribution` |
+| `AWS::RDS::DBCluster` / `AWS::RDS::DBInstance` | Wait for `available` status (5–10 min) | Return after Create call |
+| `AWS::ElastiCache::CacheCluster` etc. | Wait for `available` status | Return after Create call |
+| `AWS::EC2::NatGateway` | Wait for `available` state (1–2 min) | Return after `CreateNatGateway` (gateway is `pending`; AWS finishes async) |
+
+For NAT Gateway specifically: `CreateNatGateway` returns the
+`NatGatewayId` immediately, so dependent Routes that only need the ID
+proceed against a still-`pending` gateway. `--no-wait` is safe when
+nothing in the deploy flow needs actual NAT-routed egress (no Lambda
+invoked during deploy that hits the internet, etc.).
+
+`--no-wait` is **deploy-only**. `cdkd destroy` does not accept it,
+because no destroy code path benefits — NAT Gateway destroy
+unconditionally waits for `deleted` state to keep teardown ordered
+(a still-`deleting` gateway blocks `DeleteSubnet` /
+`DeleteInternetGateway` / `DeleteVpc` with `DependencyViolation`
+until its ENI / EIP / route associations release), and the other
+`--no-wait`-eligible resources (CloudFront / RDS / ElastiCache) are
+leaves on the destroy DAG so their providers don't wait there to
+begin with.
 
 `--no-wait` only skips *convenience* waits for resources that don't
 block siblings within the same deploy. There is one exception that

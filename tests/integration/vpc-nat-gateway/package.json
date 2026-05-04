@@ -1,0 +1,19 @@
+{
+  "name": "cdkd-integ-vpc-nat-gateway",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Integration test for the AWS::EC2::NatGateway SDK provider: covers default-wait deploy/destroy and the --no-wait fast path.",
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc -w"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "typescript": "^5.0.0",
+    "ts-node": "^10.0.0"
+  },
+  "dependencies": {
+    "aws-cdk-lib": "^2.169.0",
+    "constructs": "^10.0.0"
+  }
+}

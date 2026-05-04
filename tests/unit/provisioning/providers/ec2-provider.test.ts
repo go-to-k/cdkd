@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterAll } from 'vitest';
 import {
   CreateSecurityGroupCommand,
   AuthorizeSecurityGroupIngressCommand,
@@ -15,7 +15,11 @@ const mockSend = vi.hoisted(() => vi.fn());
 
 vi.mock('../../../../src/utils/aws-clients.js', () => ({
   getAwsClients: () => ({
-    ec2: { send: mockSend },
+    ec2: {
+      send: mockSend,
+      // Required by region-check.ts (used in delete idempotency paths).
+      config: { region: () => Promise.resolve('us-east-1') },
+    },
   }),
 }));
 
@@ -728,6 +732,176 @@ describe('EC2Provider - SecurityGroup egress handling', () => {
       const result = await provider.getAttribute('vpc-abc', 'AWS::EC2::VPC', 'Unknown');
 
       expect(result).toBeUndefined();
+    });
+  });
+});
+
+describe('EC2Provider - NatGateway', () => {
+  let provider: EC2Provider;
+  const ORIGINAL_NO_WAIT = process.env['CDKD_NO_WAIT'];
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockSend.mockReset();
+    // Each test sets CDKD_NO_WAIT explicitly; clear here so a leak from
+    // a prior test (or the parent shell) cannot influence the wait
+    // branch under test.
+    delete process.env['CDKD_NO_WAIT'];
+    provider = new EC2Provider();
+  });
+
+  // Restore the env var after the suite so other suites are not affected
+  // by our mutation.
+  afterAll(() => {
+    if (ORIGINAL_NO_WAIT === undefined) {
+      delete process.env['CDKD_NO_WAIT'];
+    } else {
+      process.env['CDKD_NO_WAIT'] = ORIGINAL_NO_WAIT;
+    }
+  });
+
+  describe('handledProperties', () => {
+    it('declares the NAT Gateway property set so the engine routes here instead of CC API', () => {
+      const props = provider.handledProperties.get('AWS::EC2::NatGateway');
+      expect(props).toBeDefined();
+      expect(props?.has('SubnetId')).toBe(true);
+      expect(props?.has('AllocationId')).toBe(true);
+      expect(props?.has('ConnectivityType')).toBe(true);
+      expect(props?.has('Tags')).toBe(true);
+    });
+  });
+
+  describe('createNatGateway', () => {
+    it('throws ProvisioningError if SubnetId is missing', async () => {
+      await expect(
+        provider.create('Nat', 'AWS::EC2::NatGateway', { AllocationId: 'eipalloc-aaa' })
+      ).rejects.toThrow(/SubnetId is required/);
+      expect(mockSend).not.toHaveBeenCalled();
+    });
+
+    it('returns the NatGatewayId immediately when CDKD_NO_WAIT=true (no available-state poll)', async () => {
+      process.env['CDKD_NO_WAIT'] = 'true';
+      mockSend.mockResolvedValueOnce({
+        NatGateway: { NatGatewayId: 'nat-12345', State: 'pending' },
+      });
+      // applyTags would issue CreateTagsCommand only when Tags exist;
+      // we're omitting Tags so just one send call should fire.
+
+      const result = await provider.create('Nat', 'AWS::EC2::NatGateway', {
+        SubnetId: 'subnet-abc',
+        AllocationId: 'eipalloc-aaa',
+      });
+
+      expect(result.physicalId).toBe('nat-12345');
+      expect(result.attributes).toEqual({ NatGatewayId: 'nat-12345' });
+      // Exactly ONE send: CreateNatGateway. NO DescribeNatGateways
+      // polling — the --no-wait branch returned immediately.
+      expect(mockSend).toHaveBeenCalledTimes(1);
+    });
+
+    it('waits for available state via DescribeNatGateways polling when CDKD_NO_WAIT is unset', async () => {
+      // Default behavior (CFN parity): the SDK waiter
+      // `waitUntilNatGatewayAvailable` polls DescribeNatGateways until
+      // State === available. The waiter is mock-friendly because it
+      // routes every call through `client.send`.
+      mockSend
+        .mockResolvedValueOnce({
+          NatGateway: { NatGatewayId: 'nat-67890', State: 'pending' },
+        })
+        // First waiter poll already returns available.
+        .mockResolvedValueOnce({
+          NatGateways: [{ NatGatewayId: 'nat-67890', State: 'available' }],
+        });
+
+      const result = await provider.create('Nat', 'AWS::EC2::NatGateway', {
+        SubnetId: 'subnet-abc',
+        AllocationId: 'eipalloc-aaa',
+      });
+
+      expect(result.physicalId).toBe('nat-67890');
+      expect(mockSend).toHaveBeenCalledTimes(2);
+    });
+
+    it('applies tags via the post-create CreateTags API', async () => {
+      process.env['CDKD_NO_WAIT'] = 'true'; // skip waiter for test focus
+
+      mockSend
+        .mockResolvedValueOnce({
+          NatGateway: { NatGatewayId: 'nat-tagged', State: 'pending' },
+        })
+        .mockResolvedValueOnce({}); // CreateTagsCommand
+
+      await provider.create('Nat', 'AWS::EC2::NatGateway', {
+        SubnetId: 'subnet-abc',
+        AllocationId: 'eipalloc-aaa',
+        Tags: [{ Key: 'Name', Value: 'my-nat' }],
+      });
+
+      expect(mockSend).toHaveBeenCalledTimes(2);
+      expect(mockSend.mock.calls[1][0]).toBeInstanceOf(CreateTagsCommand);
+      const tagInput = (mockSend.mock.calls[1][0] as CreateTagsCommand).input;
+      expect(tagInput.Resources).toEqual(['nat-tagged']);
+      expect(tagInput.Tags).toEqual([{ Key: 'Name', Value: 'my-nat' }]);
+    });
+  });
+
+  describe('updateNatGateway', () => {
+    it('is a no-op (NAT gateway has no in-place mutable properties)', async () => {
+      const result = await provider.update(
+        'Nat',
+        'nat-12345',
+        'AWS::EC2::NatGateway',
+        { SubnetId: 'subnet-abc' },
+        { SubnetId: 'subnet-abc' }
+      );
+
+      expect(result).toEqual({ physicalId: 'nat-12345', wasReplaced: false });
+      expect(mockSend).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('deleteNatGateway', () => {
+    it('always waits for the gateway to reach deleted state, even when CDKD_NO_WAIT=true', async () => {
+      // NAT delete is asymmetric vs create: skipping the deleted-state
+      // wait causes downstream IGW / Subnet / VPC delete to race a
+      // still-`deleting` gateway and fail with `DependencyViolation`.
+      // The wait is therefore unconditional on delete (CFn-parity).
+      process.env['CDKD_NO_WAIT'] = 'true';
+      mockSend
+        .mockResolvedValueOnce({}) // DeleteNatGatewayCommand
+        .mockResolvedValueOnce({
+          NatGateways: [{ NatGatewayId: 'nat-12345', State: 'deleted' }],
+        });
+
+      await provider.delete('Nat', 'nat-12345', 'AWS::EC2::NatGateway');
+
+      // 2 calls confirms the waiter ran even with --no-wait set.
+      expect(mockSend).toHaveBeenCalledTimes(2);
+    });
+
+    it('waits for the gateway to reach deleted state by default (no env var)', async () => {
+      mockSend
+        .mockResolvedValueOnce({}) // DeleteNatGatewayCommand
+        // First waiter poll already shows deleted.
+        .mockResolvedValueOnce({
+          NatGateways: [{ NatGatewayId: 'nat-12345', State: 'deleted' }],
+        });
+
+      await provider.delete('Nat', 'nat-12345', 'AWS::EC2::NatGateway');
+
+      expect(mockSend).toHaveBeenCalledTimes(2);
+    });
+
+    it('treats NotFound as idempotent success when client region matches expected region', async () => {
+      const notFound = new Error('Not found');
+      Object.defineProperty(notFound, 'name', { value: 'NatGatewayNotFound' });
+      mockSend.mockRejectedValueOnce(notFound);
+
+      await expect(
+        provider.delete('Nat', 'nat-gone', 'AWS::EC2::NatGateway', undefined, {
+          expectedRegion: 'us-east-1',
+        })
+      ).resolves.toBeUndefined();
     });
   });
 });

@@ -354,6 +354,25 @@ export function effectiveResourceTimeoutMs(
 }
 
 /**
+ * Skip waiting for async-stabilization resources (CloudFront, RDS,
+ * ElastiCache, NAT Gateway) on deploy. Setting the flag mutates
+ * `process.env.CDKD_NO_WAIT='true'`; provider code checks that env
+ * var, not the parsed CLI option (this lets nested call paths — e.g.
+ * asset publish, lifecycle hooks — see the same setting without
+ * threading the flag through every function signature).
+ *
+ * Deploy-only. NAT Gateway destroy always waits regardless (a
+ * still-`deleting` gateway blocks downstream Subnet / IGW / VPC
+ * delete with DependencyViolation), and CloudFront / RDS / ElastiCache
+ * destroy paths don't wait to begin with — so `destroy --no-wait`
+ * would be a no-op flag.
+ */
+export const noWaitOption = new Option(
+  '--no-wait',
+  'Skip waiting for async resources to stabilize (CloudFront, RDS, ElastiCache, NAT Gateway)'
+);
+
+/**
  * Deploy options
  */
 export const deployOptions = [
@@ -375,7 +394,7 @@ export const deployOptions = [
   new Option('--dry-run', 'Show changes without applying').default(false),
   new Option('--skip-assets', 'Skip asset publishing').default(false),
   new Option('--no-rollback', 'Skip rollback on deployment failure'),
-  new Option('--no-wait', 'Skip waiting for async resources (CloudFront, RDS, etc.)'),
+  noWaitOption,
   new Option(
     '-e, --exclusively',
     'Only deploy requested stacks, do not include dependencies'
