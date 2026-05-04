@@ -373,6 +373,34 @@ export const noWaitOption = new Option(
 );
 
 /**
+ * Drop the CDK-injected defensive `DependsOn` edges from VPC Lambdas (and
+ * adjacent IAM Role / Policy / Lambda::Url / EventSourceMapping resources)
+ * onto the private subnet's `DefaultRoute` / `RouteTableAssociation`. CDK
+ * adds these conservatively for runtime egress, but `CreateFunction` /
+ * `CreateFunctionUrlConfig` / `AddPermission` / `CreateEventSourceMapping`
+ * all accept a function in `Pending` state — relaxing the edges lets
+ * downstream resources (notably `CloudFront::Distribution` whose Origin is
+ * a Function URL) start their own ~3-min propagation in parallel with NAT
+ * GW stabilization. Measured −45.6% on `bench-cdk-sample` (387s → 211s).
+ *
+ * Off by default: relaxation is opt-in for v1 because CloudFront
+ * `Create` / `Delete` are each ~5 min and the rollback cost of a
+ * Lambda-side async failure is correspondingly high. Will likely flip to
+ * default-on after burn-in.
+ *
+ * Deploy-only. The relaxation has no effect on destroy ordering (CDK route
+ * DependsOn doesn't constrain delete-time correctness — Lambda hyperplane
+ * ENI release is the actual destroy bottleneck and is handled separately
+ * by `lambda-vpc-deps.ts`).
+ *
+ * See `src/analyzer/cdk-defensive-deps.ts` for the type-pair allowlist.
+ */
+export const aggressiveVpcParallelOption = new Option(
+  '--aggressive-vpc-parallel',
+  'Relax CDK-injected VPC route DependsOn to let CloudFront/Lambda::Url create in parallel with NAT GW stabilization'
+).default(false);
+
+/**
  * Deploy options
  */
 export const deployOptions = [
@@ -395,6 +423,7 @@ export const deployOptions = [
   new Option('--skip-assets', 'Skip asset publishing').default(false),
   new Option('--no-rollback', 'Skip rollback on deployment failure'),
   noWaitOption,
+  aggressiveVpcParallelOption,
   new Option(
     '-e, --exclusively',
     'Only deploy requested stacks, do not include dependencies'
