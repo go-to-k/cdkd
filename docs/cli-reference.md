@@ -69,35 +69,46 @@ itself; ordinary Lambda CREATE / UPDATE returns as soon as the SDK call
 returns, so VPC Lambdas with no synchronous downstream consumer don't
 block the deploy DAG on the 5–10 min ENI attach window.
 
-## `--aggressive-vpc-parallel`
+## VPC route DependsOn relaxation (default-on)
 
-Drop the CDK-injected defensive `DependsOn` edges from VPC Lambdas (and
-adjacent IAM Role / Policy / Lambda::Url / EventSourceMapping resources)
-onto the private subnet's `DefaultRoute` / `RouteTableAssociation` so
-that downstream consumers — most notably `CloudFront::Distribution`
-whose Origin is a Lambda Function URL — can dispatch in parallel with
-NAT Gateway stabilization.
+`cdkd deploy` drops the CDK-injected defensive `DependsOn` edges from
+VPC Lambdas (and adjacent IAM Role / Policy / Lambda::Url /
+EventSourceMapping resources) onto the private subnet's `DefaultRoute`
+/ `RouteTableAssociation` so that downstream consumers — most notably
+`CloudFront::Distribution` whose Origin is a Lambda Function URL — can
+dispatch in parallel with NAT Gateway stabilization.
 
-```bash
-cdkd deploy --aggressive-vpc-parallel
-```
-
-Off by default (opt-in for v1). The relaxation is safe because all
-deploy-time consumers of a VPC Lambda accept it in `Pending` state:
+This is on by default. The relaxation is safe because all deploy-time
+consumers of a VPC Lambda accept it in `Pending` state:
 `CreateFunctionUrlConfig` / `AddPermission` / `CreateEventSourceMapping`
 all succeed before ENI provisioning finishes, and cdkd's existing
 post-`CreateFunction` `State=Active` wait is already moved to
 `CustomResourceProvider.sendRequest` (the one consumer that synchronously
 invokes the function — see PR #121 follow-up).
 
+To opt out:
+
+```bash
+cdkd deploy --no-aggressive-vpc-parallel
+```
+
+When you'd want to opt out: a stack with a Custom Resource that
+synchronously invokes a VPC Lambda **outside** cdkd's
+Lambda-ServiceToken Active wait (e.g. through SNS or via a Step
+Functions task), where you want the strict CDK ordering to guarantee
+the NAT route is up before the function is hit. Most stacks don't need
+this — cdkd's Custom Resource provider already handles the standard
+Lambda-ServiceToken case.
+
 **Critical-path effect on a VPC + Lambda + CloudFront stack:**
 
 | Mode | Critical path | Total |
 | --- | --- | --- |
-| Default | NAT 2–3 min → Lambda → Lambda::Url → CF 3 min (serial) | ~6 min |
-| `--aggressive-vpc-parallel` | max(NAT, CF) (parallel) | ~3 min |
+| `--no-aggressive-vpc-parallel` | NAT 2–3 min → Lambda → Lambda::Url → CF 3 min (serial) | ~6 min |
+| **default** | max(NAT, CF) (parallel) | **~3 min** |
 
-Measured −45.6% on `tests/integration/bench-cdk-sample` (387s → 211s).
+Measured −54.6% on `tests/integration/bench-cdk-sample`
+(398.59s with `--no-aggressive-vpc-parallel` → 181.03s default).
 
 **Type-pair allowlist** (only DependsOn edges matching one of these
 pairs are dropped — Ref / GetAtt edges and DependsOn outside the list
@@ -113,18 +124,18 @@ are untouched):
 
 Implementation: [src/analyzer/cdk-defensive-deps.ts](../src/analyzer/cdk-defensive-deps.ts) +
 [src/analyzer/dag-builder.ts](../src/analyzer/dag-builder.ts) (gated by the
-`relaxCdkVpcDefensiveDeps` `DagBuilderOptions` flag, set from this CLI flag
-on the deploy code path only — destroy ordering is unaffected).
+`relaxCdkVpcDefensiveDeps` `DagBuilderOptions` flag, set on the deploy
+code path only — destroy ordering is unaffected).
 
 **Trade-off:** if a Lambda's async ENI provisioning fails *after* the
 deploy has already started a CloudFront `CreateDistribution` against
 its Function URL, the rollback has to delete both — and CloudFront
-delete is also ~5 min. The default-off keeps the conservative play in
-the box; flip the flag once a stack's behavior is well-understood.
+delete is also ~5 min. The opt-out exists for stacks where the user
+wants to keep that worst case off the table.
 
-`--aggressive-vpc-parallel` is **deploy-only**. `cdkd destroy` doesn't
-accept it; the route DependsOn doesn't constrain delete-time correctness
-(Lambda hyperplane ENI release is the actual destroy bottleneck and is
+The relaxation is **deploy-only**. `cdkd destroy` is unaffected — the
+route DependsOn doesn't constrain delete-time correctness (Lambda
+hyperplane ENI release is the actual destroy bottleneck and is
 handled separately by `lambda-vpc-deps.ts`).
 
 ## Per-resource timeout
