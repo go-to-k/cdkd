@@ -271,6 +271,46 @@ export class IAMInstanceProfileProvider implements ResourceProvider {
   }
 
   /**
+   * Read the AWS-current IAM instance profile configuration in CFn-property
+   * shape.
+   *
+   * Issues a single `GetInstanceProfile` and surfaces the keys `create()`
+   * accepts (`InstanceProfileName`, `Path`, `Roles`). The Roles list maps
+   * the inline `Role[]` (each carrying `{RoleName, Arn, ...}`) back to the
+   * `string[]` of role names that CFn / cdkd state holds.
+   *
+   * Returns `undefined` when the profile is gone (`NoSuchEntityException`).
+   */
+  async readCurrentState(
+    physicalId: string,
+    _logicalId: string,
+    _resourceType: string
+  ): Promise<Record<string, unknown> | undefined> {
+    let profile;
+    try {
+      const resp = await this.iamClient.send(
+        new GetInstanceProfileCommand({ InstanceProfileName: physicalId })
+      );
+      profile = resp.InstanceProfile;
+    } catch (err) {
+      if (err instanceof NoSuchEntityException) return undefined;
+      throw err;
+    }
+    if (!profile) return undefined;
+
+    const result: Record<string, unknown> = {};
+    if (profile.InstanceProfileName !== undefined) {
+      result['InstanceProfileName'] = profile.InstanceProfileName;
+    }
+    if (profile.Path !== undefined) result['Path'] = profile.Path;
+
+    const roleNames = (profile.Roles ?? []).map((r) => r.RoleName).filter((n): n is string => !!n);
+    if (roleNames.length > 0) result['Roles'] = roleNames;
+
+    return result;
+  }
+
+  /**
    * Adopt an existing IAM instance profile into cdkd state.
    *
    * Lookup order:

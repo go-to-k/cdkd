@@ -2,6 +2,7 @@ import {
   S3Client,
   PutBucketPolicyCommand,
   DeleteBucketPolicyCommand,
+  GetBucketPolicyCommand,
   NoSuchBucket,
 } from '@aws-sdk/client-s3';
 import { getLogger } from '../../utils/logger.js';
@@ -220,6 +221,47 @@ export class S3BucketPolicyProvider implements ResourceProvider {
         cause
       );
     }
+  }
+
+  /**
+   * Read the AWS-current S3 bucket policy in CFn-property shape.
+   *
+   * Issues `GetBucketPolicy` against the bucket (physicalId === bucket
+   * name) and surfaces:
+   *   - `Bucket` — derived directly from `physicalId`.
+   *   - `PolicyDocument` — JSON-parsed back to the object form cdkd state
+   *     typically holds.
+   *
+   * Returns `undefined` when the bucket is gone (`NoSuchBucket`) or when
+   * no policy is currently attached (`NoSuchBucketPolicy`).
+   */
+  async readCurrentState(
+    physicalId: string,
+    _logicalId: string,
+    _resourceType: string
+  ): Promise<Record<string, unknown> | undefined> {
+    let policyJson: string | undefined;
+    try {
+      const resp = await this.s3Client.send(new GetBucketPolicyCommand({ Bucket: physicalId }));
+      policyJson = resp.Policy;
+    } catch (err) {
+      if (err instanceof NoSuchBucket) return undefined;
+      // S3 throws `NoSuchBucketPolicy` (a 404) when no policy is attached.
+      const e = err as { name?: string };
+      if (e.name === 'NoSuchBucketPolicy') return undefined;
+      throw err;
+    }
+    if (!policyJson) return undefined;
+
+    const result: Record<string, unknown> = {
+      Bucket: physicalId,
+    };
+    try {
+      result['PolicyDocument'] = JSON.parse(policyJson) as unknown;
+    } catch {
+      result['PolicyDocument'] = policyJson;
+    }
+    return result;
   }
 
   /**

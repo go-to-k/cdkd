@@ -206,6 +206,67 @@ export class LambdaLayerVersionProvider implements ResourceProvider {
   }
 
   /**
+   * Read the AWS-current Lambda layer version configuration in CFn-property
+   * shape.
+   *
+   * Issues `GetLayerVersionByArn` (the physical id is the version ARN) and
+   * surfaces `LayerName`, `Description`, `CompatibleRuntimes`,
+   * `CompatibleArchitectures`, and `LicenseInfo`. AWS-managed fields
+   * (`Version`, `CreatedDate`, `LayerVersionArn`, `LayerArn`,
+   * `Content.CodeSize`, `Content.CodeSha256`) are filtered at the wire
+   * layer.
+   *
+   * `Content` is intentionally omitted: like Lambda function `Code`, the
+   * `GetLayerVersionByArn` response contains a pre-signed S3 URL for the
+   * deployed content, not the asset hash cdkd state stored. The two could
+   * never match, so excluding it avoids a guaranteed false-positive.
+   *
+   * `LayerName` is derived from the ARN tail when not surfaced directly:
+   * the version ARN format is
+   *   `arn:aws:lambda:<region>:<account>:layer:<name>:<version>`.
+   *
+   * Returns `undefined` when the layer version is gone
+   * (`ResourceNotFoundException`).
+   */
+  async readCurrentState(
+    physicalId: string,
+    _logicalId: string,
+    _resourceType: string
+  ): Promise<Record<string, unknown> | undefined> {
+    let resp;
+    try {
+      resp = await this.lambdaClient.send(new GetLayerVersionByArnCommand({ Arn: physicalId }));
+    } catch (err) {
+      if (err instanceof ResourceNotFoundException) return undefined;
+      throw err;
+    }
+
+    const result: Record<string, unknown> = {};
+
+    // Derive LayerName from ARN if needed. ARN format:
+    //   arn:aws:lambda:<region>:<account>:layer:<name>:<version>
+    const arnParts = physicalId.split(':');
+    if (arnParts.length >= 7 && arnParts[6]) {
+      result['LayerName'] = arnParts[6];
+    }
+
+    if (resp.Description !== undefined && resp.Description !== '') {
+      result['Description'] = resp.Description;
+    }
+    if (resp.CompatibleRuntimes !== undefined && resp.CompatibleRuntimes.length > 0) {
+      result['CompatibleRuntimes'] = [...resp.CompatibleRuntimes];
+    }
+    if (resp.CompatibleArchitectures !== undefined && resp.CompatibleArchitectures.length > 0) {
+      result['CompatibleArchitectures'] = [...resp.CompatibleArchitectures];
+    }
+    if (resp.LicenseInfo !== undefined && resp.LicenseInfo !== '') {
+      result['LicenseInfo'] = resp.LicenseInfo;
+    }
+
+    return result;
+  }
+
+  /**
    * Adopt an existing Lambda layer version into cdkd state.
    *
    * Lookup order:

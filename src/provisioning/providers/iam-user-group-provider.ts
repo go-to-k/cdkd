@@ -1297,6 +1297,133 @@ export class IAMUserGroupProvider implements ResourceProvider {
     }
   }
 
+  // ─── readCurrentState dispatch ───────────────────────────────────
+
+  /**
+   * Read the AWS-current configuration for an IAM user / group /
+   * UserToGroupAddition in CFn-property shape.
+   *
+   *  - **AWS::IAM::User**: `GetUser` for `UserName`, `Path`,
+   *    `PermissionsBoundary` (re-shaped from `PermissionsBoundary.Arn`);
+   *    `ListAttachedUserPolicies` for `ManagedPolicyArns`;
+   *    `ListGroupsForUser` for `Groups`. `Tags`, `LoginProfile`, and
+   *    `Policies` (inline policy bodies) are intentionally omitted —
+   *    same shape decisions as `iam-role-provider` (LoginProfile contains a
+   *    one-time password and inline policy bodies cost N extra round-trips
+   *    that are out of scope for v1).
+   *  - **AWS::IAM::Group**: `GetGroup` for `GroupName`, `Path`;
+   *    `ListAttachedGroupPolicies` for `ManagedPolicyArns`. `Policies`
+   *    (inline policy bodies) is omitted for the same reason as User /
+   *    Role.
+   *  - **AWS::IAM::UserToGroupAddition**: SKIPPED — returns `undefined`
+   *    because the resource is metadata-only (group-membership attachments
+   *    written via `AddUserToGroup`). A meaningful drift check would
+   *    require both the `GroupName` and the source-of-truth `Users` list
+   *    from state, neither of which `readCurrentState` receives. The
+   *    drift comparator falls back to "drift unknown" and the user can
+   *    inspect the membership manually.
+   *
+   * Returns `undefined` when the user / group is gone
+   * (`NoSuchEntityException`).
+   */
+  async readCurrentState(
+    physicalId: string,
+    logicalId: string,
+    resourceType: string
+  ): Promise<Record<string, unknown> | undefined> {
+    switch (resourceType) {
+      case 'AWS::IAM::User':
+        return this.readUserCurrentState(physicalId);
+      case 'AWS::IAM::Group':
+        return this.readGroupCurrentState(physicalId);
+      case 'AWS::IAM::UserToGroupAddition':
+        // Membership-only resource. See JSDoc above.
+        return undefined;
+      default:
+        this.logger.debug(
+          `readCurrentState: unsupported resource type ${resourceType} for ${logicalId}`
+        );
+        return undefined;
+    }
+  }
+
+  private async readUserCurrentState(
+    physicalId: string
+  ): Promise<Record<string, unknown> | undefined> {
+    let user;
+    try {
+      const resp = await this.iamClient.send(new GetUserCommand({ UserName: physicalId }));
+      user = resp.User;
+    } catch (err) {
+      if (err instanceof NoSuchEntityException) return undefined;
+      throw err;
+    }
+    if (!user) return undefined;
+
+    const result: Record<string, unknown> = {};
+    if (user.UserName !== undefined) result['UserName'] = user.UserName;
+    if (user.Path !== undefined) result['Path'] = user.Path;
+    if (user.PermissionsBoundary?.PermissionsBoundaryArn !== undefined) {
+      result['PermissionsBoundary'] = user.PermissionsBoundary.PermissionsBoundaryArn;
+    }
+
+    try {
+      const attached = await this.iamClient.send(
+        new ListAttachedUserPoliciesCommand({ UserName: physicalId })
+      );
+      const arns = (attached.AttachedPolicies ?? [])
+        .map((p) => p.PolicyArn)
+        .filter((arn): arn is string => !!arn);
+      if (arns.length > 0) result['ManagedPolicyArns'] = arns;
+    } catch (err) {
+      if (!(err instanceof NoSuchEntityException)) throw err;
+    }
+
+    try {
+      const groups = await this.iamClient.send(
+        new ListGroupsForUserCommand({ UserName: physicalId })
+      );
+      const names = (groups.Groups ?? []).map((g) => g.GroupName).filter((n): n is string => !!n);
+      if (names.length > 0) result['Groups'] = names;
+    } catch (err) {
+      if (!(err instanceof NoSuchEntityException)) throw err;
+    }
+
+    return result;
+  }
+
+  private async readGroupCurrentState(
+    physicalId: string
+  ): Promise<Record<string, unknown> | undefined> {
+    let group;
+    try {
+      const resp = await this.iamClient.send(new GetGroupCommand({ GroupName: physicalId }));
+      group = resp.Group;
+    } catch (err) {
+      if (err instanceof NoSuchEntityException) return undefined;
+      throw err;
+    }
+    if (!group) return undefined;
+
+    const result: Record<string, unknown> = {};
+    if (group.GroupName !== undefined) result['GroupName'] = group.GroupName;
+    if (group.Path !== undefined) result['Path'] = group.Path;
+
+    try {
+      const attached = await this.iamClient.send(
+        new ListAttachedGroupPoliciesCommand({ GroupName: physicalId })
+      );
+      const arns = (attached.AttachedPolicies ?? [])
+        .map((p) => p.PolicyArn)
+        .filter((arn): arn is string => !!arn);
+      if (arns.length > 0) result['ManagedPolicyArns'] = arns;
+    } catch (err) {
+      if (!(err instanceof NoSuchEntityException)) throw err;
+    }
+
+    return result;
+  }
+
   // ─── Import dispatch ──────────────────────────────────────────────
 
   /**

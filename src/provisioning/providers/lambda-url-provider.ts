@@ -217,6 +217,68 @@ export class LambdaUrlProvider implements ResourceProvider {
   }
 
   /**
+   * Read the AWS-current Lambda Function URL configuration in CFn-property
+   * shape.
+   *
+   * Issues `GetFunctionUrlConfig` with the parent function's ARN/name (the
+   * physical id) and surfaces `AuthType`, `InvokeMode`, and `Cors`.
+   * AWS-managed fields (`FunctionUrl`, `FunctionArn`, `CreationTime`,
+   * `LastModifiedTime`) are filtered at the wire layer.
+   *
+   * `TargetFunctionArn` is surfaced from `physicalId` (the create() flow
+   * stores the parent function's ARN/name there). `Qualifier` is NOT
+   * available from `GetFunctionUrlConfig` (it's only an input on Create);
+   * cdkd state stores it but AWS does not surface it back, so we omit it
+   * from the snapshot — the comparator's "key absent in state never
+   * drifts" rule handles the omission cleanly when state lacks Qualifier
+   * too, and cases where state HAS Qualifier surface as drift only when
+   * the qualifier was changed via Update (which the SDK supports through
+   * `physicalId` rather than the qualifier itself).
+   *
+   * Returns `undefined` when the URL config is gone
+   * (`ResourceNotFoundException`).
+   */
+  async readCurrentState(
+    physicalId: string,
+    _logicalId: string,
+    _resourceType: string
+  ): Promise<Record<string, unknown> | undefined> {
+    let resp;
+    try {
+      resp = await this.lambdaClient.send(
+        new GetFunctionUrlConfigCommand({ FunctionName: physicalId })
+      );
+    } catch (err) {
+      if (err instanceof ResourceNotFoundException) return undefined;
+      throw err;
+    }
+
+    const result: Record<string, unknown> = {
+      TargetFunctionArn: physicalId,
+    };
+
+    if (resp.AuthType !== undefined) result['AuthType'] = resp.AuthType;
+    if (resp.InvokeMode !== undefined) result['InvokeMode'] = resp.InvokeMode;
+    if (resp.Cors !== undefined) {
+      // Only surface the Cors keys cdkd's `create()` accepts; the SDK
+      // returns the same shape but defensively-copy the arrays so the
+      // comparator can do equality cheaply.
+      const cors: Record<string, unknown> = {};
+      if (resp.Cors.AllowOrigins) cors['AllowOrigins'] = [...resp.Cors.AllowOrigins];
+      if (resp.Cors.AllowMethods) cors['AllowMethods'] = [...resp.Cors.AllowMethods];
+      if (resp.Cors.AllowHeaders) cors['AllowHeaders'] = [...resp.Cors.AllowHeaders];
+      if (resp.Cors.ExposeHeaders) cors['ExposeHeaders'] = [...resp.Cors.ExposeHeaders];
+      if (resp.Cors.MaxAge !== undefined) cors['MaxAge'] = resp.Cors.MaxAge;
+      if (resp.Cors.AllowCredentials !== undefined) {
+        cors['AllowCredentials'] = resp.Cors.AllowCredentials;
+      }
+      if (Object.keys(cors).length > 0) result['Cors'] = cors;
+    }
+
+    return result;
+  }
+
+  /**
    * Adopt an existing Lambda Function URL into cdkd state.
    *
    * **Explicit override only.** A `Lambda::Url` is a configuration attached

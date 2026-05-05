@@ -282,6 +282,61 @@ export class S3DirectoryBucketProvider implements ResourceProvider {
   }
 
   /**
+   * Read the AWS-current S3 Express Directory Bucket configuration in
+   * CFn-property shape.
+   *
+   * Issues `HeadBucket` to verify existence and surfaces `BucketName`
+   * (the physicalId). `DataRedundancy` and `LocationName` are not exposed
+   * by any cheap S3 Express API — the only way to inspect them is by
+   * parsing the bucket name's `--<az-id>--x-s3` suffix, which is best
+   * effort. We surface them when they are recoverable from the bucket
+   * name to give the comparator a chance to detect mismatches.
+   *
+   * `--<az-id>--x-s3` suffix parsing: directory bucket names follow the
+   * format `<base>--<az-id>--x-s3`, e.g.
+   * `my-bucket--use1-az1--x-s3`. We don't reverse the AZ-ID -> AZ-name
+   * mapping here (that would require a per-call EC2 `DescribeAvailabilityZones`
+   * round-trip); state's `LocationName` is `us-east-1a--x-s3`-style,
+   * while the bucket name carries the AZ-ID `use1-az1`. Cross-region
+   * mapping is too expensive for v1 — we omit `LocationName` from the
+   * snapshot and rely on the comparator's "key absent in state never
+   * drifts" rule to no-op against state.
+   *
+   * Returns `undefined` when the bucket is gone (`HeadBucket` returns
+   * `NotFound` / `NoSuchBucket`).
+   */
+  async readCurrentState(
+    physicalId: string,
+    _logicalId: string,
+    _resourceType: string
+  ): Promise<Record<string, unknown> | undefined> {
+    try {
+      await this.s3Client.send(new HeadBucketCommand({ Bucket: physicalId }));
+    } catch (err) {
+      const e = err as { name?: string };
+      if (e.name === 'NotFound' || e.name === 'NoSuchBucket' || e.name === 'BucketNotFound') {
+        return undefined;
+      }
+      throw err;
+    }
+
+    const result: Record<string, unknown> = {
+      BucketName: physicalId,
+    };
+
+    // Best-effort: directory bucket names always carry `--x-s3`. Default
+    // redundancy is `SingleAvailabilityZone` for every directory bucket
+    // today (it's the only DataRedundancy AWS supports for S3 Express),
+    // so surfacing it here ensures the comparator does not flag drift
+    // when state holds the same value.
+    if (physicalId.endsWith('--x-s3')) {
+      result['DataRedundancy'] = 'SingleAvailabilityZone';
+    }
+
+    return result;
+  }
+
+  /**
    * Adopt an existing S3 Express Directory Bucket into cdkd state.
    *
    * Lookup order:

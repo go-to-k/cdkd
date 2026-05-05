@@ -47,6 +47,29 @@ function pascalToCamelCaseKeys(value: unknown): unknown {
   }
   return value;
 }
+
+/**
+ * Recursively convert camelCase object keys to PascalCase. Inverse of
+ * `pascalToCamelCaseKeys`. Used by `readCurrentState` to re-shape AWS
+ * SDK responses back into the CFn property names cdkd state stores.
+ */
+function camelToPascalCaseKeys(value: unknown): unknown {
+  if (value === null || value === undefined) {
+    return value;
+  }
+  if (Array.isArray(value)) {
+    return value.map(camelToPascalCaseKeys);
+  }
+  if (typeof value === 'object') {
+    const result: Record<string, unknown> = {};
+    for (const [key, val] of Object.entries(value as Record<string, unknown>)) {
+      const pascalKey = key.charAt(0).toUpperCase() + key.slice(1);
+      result[pascalKey] = camelToPascalCaseKeys(val);
+    }
+    return result;
+  }
+  return value;
+}
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
@@ -360,6 +383,74 @@ export class AgentCoreRuntimeProvider implements ResourceProvider {
     }
 
     throw new Error(`Unsupported attribute: ${attributeName} for AWS::BedrockAgentCore::Runtime`);
+  }
+
+  /**
+   * Read the AWS-current BedrockAgentCore Runtime configuration in
+   * CFn-property shape.
+   *
+   * Issues `GetAgentRuntime` (the physical id is the runtime id) and
+   * surfaces the keys `create()` accepts. The SDK returns camelCase keys
+   * (`agentRuntimeName`, `roleArn`, `agentRuntimeArtifact`, etc.); we
+   * re-shape back to PascalCase via `camelToPascalCaseKeys` so the
+   * comparator matches cdkd state.
+   *
+   * `ProtocolConfiguration` parity: `create()` accepts a CFn-style string
+   * (`"HTTP"`) and converts it to `{serverProtocol: "HTTP"}` for the SDK.
+   * The SDK returns the object form. We surface the object form here; if
+   * cdkd state holds the original string the comparator will report drift
+   * — users can inspect and dismiss this case manually. (A more elaborate
+   * shape negotiation belongs in a follow-up that knows about both forms.)
+   *
+   * `ClientToken` is omitted: AWS does not surface it back via
+   * `GetAgentRuntime` (it's an idempotency token only meaningful at create
+   * time).
+   *
+   * Returns `undefined` when the runtime is gone
+   * (`ResourceNotFoundException`).
+   */
+  async readCurrentState(
+    physicalId: string,
+    _logicalId: string,
+    _resourceType: string
+  ): Promise<Record<string, unknown> | undefined> {
+    let resp;
+    try {
+      resp = await this.client.send(new GetAgentRuntimeCommand({ agentRuntimeId: physicalId }));
+    } catch (err) {
+      if (err instanceof ResourceNotFoundException) return undefined;
+      throw err;
+    }
+
+    const result: Record<string, unknown> = {};
+
+    if (resp.agentRuntimeName !== undefined) {
+      result['AgentRuntimeName'] = resp.agentRuntimeName;
+    }
+    if (resp.roleArn !== undefined) result['RoleArn'] = resp.roleArn;
+    if (resp.agentRuntimeArtifact !== undefined) {
+      result['AgentRuntimeArtifact'] = camelToPascalCaseKeys(resp.agentRuntimeArtifact);
+    }
+    if (resp.networkConfiguration !== undefined) {
+      result['NetworkConfiguration'] = camelToPascalCaseKeys(resp.networkConfiguration);
+    }
+    if (resp.description !== undefined && resp.description !== '') {
+      result['Description'] = resp.description;
+    }
+    if (resp.authorizerConfiguration !== undefined) {
+      result['AuthorizerConfiguration'] = camelToPascalCaseKeys(resp.authorizerConfiguration);
+    }
+    if (resp.protocolConfiguration !== undefined) {
+      result['ProtocolConfiguration'] = camelToPascalCaseKeys(resp.protocolConfiguration);
+    }
+    if (resp.lifecycleConfiguration !== undefined) {
+      result['LifecycleConfiguration'] = camelToPascalCaseKeys(resp.lifecycleConfiguration);
+    }
+    if (resp.environmentVariables !== undefined) {
+      result['EnvironmentVariables'] = resp.environmentVariables;
+    }
+
+    return result;
   }
 
   /**

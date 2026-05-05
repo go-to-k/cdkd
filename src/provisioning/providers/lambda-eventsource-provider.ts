@@ -304,6 +304,105 @@ export class LambdaEventSourceMappingProvider implements ResourceProvider {
   }
 
   /**
+   * Read the AWS-current Lambda event source mapping configuration in
+   * CFn-property shape.
+   *
+   * Issues `GetEventSourceMapping` for the UUID and surfaces the keys
+   * `create()` accepts. AWS-managed fields (`UUID`, `LastModified`,
+   * `LastProcessingResult`, `State`, `StateTransitionReason`,
+   * `EventSourceMappingArn`) are filtered at the wire layer.
+   *
+   * `FunctionName` is surfaced as the AWS `FunctionArn` (which is what
+   * `GetEventSourceMapping` returns) — cdkd state typically holds this
+   * resolved ARN form already after intrinsic resolution. The drift
+   * comparator can match against both forms when state holds a name vs an
+   * ARN; mismatched-shape false positives are out of scope for v1.
+   *
+   * `Tags` is omitted: cdkd `create()` reshapes CFn tag arrays into a
+   * tags map at create time, but `GetEventSourceMapping` does not return
+   * tags (`ListTags(Resource: arn)` does). Same shape-decision rationale
+   * as Lambda function tags drift — out of scope for v1.
+   *
+   * Returns `undefined` when the mapping is gone
+   * (`ResourceNotFoundException`).
+   */
+  async readCurrentState(
+    physicalId: string,
+    _logicalId: string,
+    _resourceType: string
+  ): Promise<Record<string, unknown> | undefined> {
+    let resp;
+    try {
+      resp = await this.lambdaClient.send(new GetEventSourceMappingCommand({ UUID: physicalId }));
+    } catch (err) {
+      if (err instanceof ResourceNotFoundException) return undefined;
+      throw err;
+    }
+
+    const result: Record<string, unknown> = {};
+
+    if (resp.FunctionArn !== undefined) result['FunctionName'] = resp.FunctionArn;
+    if (resp.EventSourceArn !== undefined) result['EventSourceArn'] = resp.EventSourceArn;
+    if (resp.BatchSize !== undefined) result['BatchSize'] = resp.BatchSize;
+    if (resp.StartingPosition !== undefined) result['StartingPosition'] = resp.StartingPosition;
+    if (resp.MaximumBatchingWindowInSeconds !== undefined) {
+      result['MaximumBatchingWindowInSeconds'] = resp.MaximumBatchingWindowInSeconds;
+    }
+    if (resp.MaximumRetryAttempts !== undefined) {
+      result['MaximumRetryAttempts'] = resp.MaximumRetryAttempts;
+    }
+    if (resp.BisectBatchOnFunctionError !== undefined) {
+      result['BisectBatchOnFunctionError'] = resp.BisectBatchOnFunctionError;
+    }
+    if (resp.MaximumRecordAgeInSeconds !== undefined) {
+      result['MaximumRecordAgeInSeconds'] = resp.MaximumRecordAgeInSeconds;
+    }
+    if (resp.ParallelizationFactor !== undefined) {
+      result['ParallelizationFactor'] = resp.ParallelizationFactor;
+    }
+    if (resp.FilterCriteria !== undefined) result['FilterCriteria'] = resp.FilterCriteria;
+    if (resp.DestinationConfig !== undefined) {
+      result['DestinationConfig'] = resp.DestinationConfig;
+    }
+    if (resp.TumblingWindowInSeconds !== undefined) {
+      result['TumblingWindowInSeconds'] = resp.TumblingWindowInSeconds;
+    }
+    if (resp.FunctionResponseTypes !== undefined && resp.FunctionResponseTypes.length > 0) {
+      result['FunctionResponseTypes'] = [...resp.FunctionResponseTypes];
+    }
+    if (
+      resp.SourceAccessConfigurations !== undefined &&
+      resp.SourceAccessConfigurations.length > 0
+    ) {
+      result['SourceAccessConfigurations'] = resp.SourceAccessConfigurations;
+    }
+    if (resp.SelfManagedEventSource !== undefined) {
+      result['SelfManagedEventSource'] = resp.SelfManagedEventSource;
+    }
+    if (resp.SelfManagedKafkaEventSourceConfig !== undefined) {
+      result['SelfManagedKafkaEventSourceConfig'] = resp.SelfManagedKafkaEventSourceConfig;
+    }
+    if (resp.AmazonManagedKafkaEventSourceConfig !== undefined) {
+      result['AmazonManagedKafkaEventSourceConfig'] = resp.AmazonManagedKafkaEventSourceConfig;
+    }
+    if (resp.DocumentDBEventSourceConfig !== undefined) {
+      result['DocumentDBEventSourceConfig'] = resp.DocumentDBEventSourceConfig;
+    }
+    if (resp.ScalingConfig !== undefined) result['ScalingConfig'] = resp.ScalingConfig;
+
+    // `Enabled` derives from `State`: AWS exposes the underlying state
+    // (Enabled / Disabled / Enabling / Disabling / Updating / Creating /
+    // Deleting); cdkd state stores the boolean the user set on create.
+    if (resp.State !== undefined) {
+      const enabled =
+        resp.State === 'Enabled' || resp.State === 'Enabling' || resp.State === 'Updating';
+      result['Enabled'] = enabled;
+    }
+
+    return result;
+  }
+
+  /**
    * Adopt an existing Lambda event source mapping into cdkd state.
    *
    * **Explicit override only.** Event source mappings are identified by a

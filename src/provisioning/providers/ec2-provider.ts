@@ -3,7 +3,10 @@ import {
   CreateVpcCommand,
   DeleteVpcCommand,
   ModifyVpcAttributeCommand,
+  DescribeVpcAttributeCommand,
   DescribeVpcsCommand,
+  DescribeInternetGatewaysCommand,
+  DescribeRouteTablesCommand,
   CreateSubnetCommand,
   DeleteSubnetCommand,
   CreateInternetGatewayCommand,
@@ -2794,6 +2797,252 @@ export class EC2Provider implements ResourceProvider {
       if (this.isNotFoundError(error)) return null;
       throw error;
     }
+  }
+
+  /**
+   * Read the AWS-current EC2 networking resource configuration in
+   * CFn-property shape.
+   *
+   * Supported types (highest-value drift coverage):
+   *  - **AWS::EC2::VPC**: `DescribeVpcs` for `CidrBlock` + `InstanceTenancy`;
+   *    `DescribeVpcAttribute(enableDnsHostnames|enableDnsSupport)` for the
+   *    DNS booleans (CFn defaults: hostnames=false, support=true — we only
+   *    surface them if AWS reports them, so the comparator's "key-absent
+   *    never drifts" rule applies cleanly to state without these keys).
+   *  - **AWS::EC2::Subnet**: `DescribeSubnets` for `VpcId`, `CidrBlock`,
+   *    `AvailabilityZone`, `MapPublicIpOnLaunch`.
+   *  - **AWS::EC2::InternetGateway**: `DescribeInternetGateways` for
+   *    existence verification. The provider only handles `Tags`, which is
+   *    out of scope for v1 drift.
+   *  - **AWS::EC2::NatGateway**: `DescribeNatGateways` for `SubnetId`,
+   *    `AllocationId`, `ConnectivityType`, `PrivateIpAddress`.
+   *  - **AWS::EC2::RouteTable**: `DescribeRouteTables` for `VpcId`.
+   *  - **AWS::EC2::SecurityGroup**: `DescribeSecurityGroups` for
+   *    `GroupName`, `GroupDescription`, `VpcId`. Ingress / egress rules
+   *    are NOT surfaced — the CFn shape is rule-list-style, while AWS
+   *    returns IpPermissions in a different normalized form, and a
+   *    faithful reverse-mapping is out of scope for v1.
+   *  - **AWS::EC2::Instance**: `DescribeInstances` for `ImageId`,
+   *    `InstanceType`, `KeyName`, `SubnetId`. SecurityGroupIds /
+   *    BlockDeviceMappings shape-match is out of scope for v1.
+   *  - **AWS::EC2::NetworkAcl**: `DescribeNetworkAcls` for `VpcId`.
+   *
+   * Skipped (return `undefined`, falls through to the comparator's
+   * "unsupported" outcome):
+   *  - **AWS::EC2::VPCGatewayAttachment**: physical id is
+   *    `IGW|VpcId`. The two ids are immutable inputs to the SDK call;
+   *    drift detection on this resource has no useful signal beyond
+   *    existence verification (which the user can do via the parent IGW
+   *    / VPC drift report).
+   *  - **AWS::EC2::Route**, **AWS::EC2::SubnetRouteTableAssociation**,
+   *    **AWS::EC2::SecurityGroupIngress**, **AWS::EC2::NetworkAclEntry**,
+   *    **AWS::EC2::SubnetNetworkAclAssociation**: rule / association
+   *    sub-resources whose AWS API surfaces them inside the parent's
+   *    list, not as standalone Get* responses. v1 drift coverage focuses
+   *    on top-level resources where the property shape comparison is
+   *    cheap and unambiguous; these sub-resources need a more elaborate
+   *    extraction layer that's out of scope for this PR.
+   *
+   * Returns `undefined` when the resource is gone (any `*NotFound` /
+   * `Invalid*` error from the EC2 SDK matches `isNotFoundError`).
+   */
+  async readCurrentState(
+    physicalId: string,
+    logicalId: string,
+    resourceType: string
+  ): Promise<Record<string, unknown> | undefined> {
+    try {
+      switch (resourceType) {
+        case 'AWS::EC2::VPC':
+          return await this.readVpcCurrentState(physicalId);
+        case 'AWS::EC2::Subnet':
+          return await this.readSubnetCurrentState(physicalId);
+        case 'AWS::EC2::InternetGateway':
+          return await this.readInternetGatewayCurrentState(physicalId);
+        case 'AWS::EC2::NatGateway':
+          return await this.readNatGatewayCurrentState(physicalId);
+        case 'AWS::EC2::RouteTable':
+          return await this.readRouteTableCurrentState(physicalId);
+        case 'AWS::EC2::SecurityGroup':
+          return await this.readSecurityGroupCurrentState(physicalId);
+        case 'AWS::EC2::Instance':
+          return await this.readInstanceCurrentState(physicalId);
+        case 'AWS::EC2::NetworkAcl':
+          return await this.readNetworkAclCurrentState(physicalId);
+        default:
+          this.logger.debug(
+            `readCurrentState: unsupported resource type ${resourceType} for ${logicalId}`
+          );
+          return undefined;
+      }
+    } catch (err) {
+      if (this.isNotFoundError(err)) return undefined;
+      throw err;
+    }
+  }
+
+  private async readVpcCurrentState(
+    physicalId: string
+  ): Promise<Record<string, unknown> | undefined> {
+    const resp = await this.ec2Client.send(new DescribeVpcsCommand({ VpcIds: [physicalId] }));
+    const vpc = resp.Vpcs?.[0];
+    if (!vpc) return undefined;
+
+    const result: Record<string, unknown> = {};
+    if (vpc.CidrBlock !== undefined) result['CidrBlock'] = vpc.CidrBlock;
+    if (vpc.InstanceTenancy !== undefined) result['InstanceTenancy'] = vpc.InstanceTenancy;
+
+    // EnableDnsHostnames / EnableDnsSupport require separate
+    // DescribeVpcAttribute calls.
+    try {
+      const dnsHost = await this.ec2Client.send(
+        new DescribeVpcAttributeCommand({ VpcId: physicalId, Attribute: 'enableDnsHostnames' })
+      );
+      if (dnsHost.EnableDnsHostnames?.Value !== undefined) {
+        result['EnableDnsHostnames'] = dnsHost.EnableDnsHostnames.Value;
+      }
+    } catch (err) {
+      if (!this.isNotFoundError(err)) throw err;
+    }
+    try {
+      const dnsSupp = await this.ec2Client.send(
+        new DescribeVpcAttributeCommand({ VpcId: physicalId, Attribute: 'enableDnsSupport' })
+      );
+      if (dnsSupp.EnableDnsSupport?.Value !== undefined) {
+        result['EnableDnsSupport'] = dnsSupp.EnableDnsSupport.Value;
+      }
+    } catch (err) {
+      if (!this.isNotFoundError(err)) throw err;
+    }
+
+    return result;
+  }
+
+  private async readSubnetCurrentState(
+    physicalId: string
+  ): Promise<Record<string, unknown> | undefined> {
+    const resp = await this.ec2Client.send(new DescribeSubnetsCommand({ SubnetIds: [physicalId] }));
+    const subnet = resp.Subnets?.[0];
+    if (!subnet) return undefined;
+
+    const result: Record<string, unknown> = {};
+    if (subnet.VpcId !== undefined) result['VpcId'] = subnet.VpcId;
+    if (subnet.CidrBlock !== undefined) result['CidrBlock'] = subnet.CidrBlock;
+    if (subnet.AvailabilityZone !== undefined) {
+      result['AvailabilityZone'] = subnet.AvailabilityZone;
+    }
+    if (subnet.MapPublicIpOnLaunch !== undefined) {
+      result['MapPublicIpOnLaunch'] = subnet.MapPublicIpOnLaunch;
+    }
+
+    return result;
+  }
+
+  private async readInternetGatewayCurrentState(
+    physicalId: string
+  ): Promise<Record<string, unknown> | undefined> {
+    const resp = await this.ec2Client.send(
+      new DescribeInternetGatewaysCommand({ InternetGatewayIds: [physicalId] })
+    );
+    const igw = resp.InternetGateways?.[0];
+    if (!igw) return undefined;
+
+    // The provider only handles `Tags`, which is out of scope for v1 drift.
+    // Return an empty object so the comparator marks the resource as
+    // `clean` (existence verified) rather than `unsupported`.
+    return {};
+  }
+
+  private async readNatGatewayCurrentState(
+    physicalId: string
+  ): Promise<Record<string, unknown> | undefined> {
+    const resp = await this.ec2Client.send(
+      new DescribeNatGatewaysCommand({ NatGatewayIds: [physicalId] })
+    );
+    const gw = resp.NatGateways?.find((g) => g.State !== 'deleted' && g.State !== 'deleting');
+    if (!gw) return undefined;
+
+    const result: Record<string, unknown> = {};
+    if (gw.SubnetId !== undefined) result['SubnetId'] = gw.SubnetId;
+    if (gw.ConnectivityType !== undefined) result['ConnectivityType'] = gw.ConnectivityType;
+
+    // AllocationId / PrivateIpAddress live inside NatGatewayAddresses[0]
+    // for single-AZ public NATs.
+    const primary = gw.NatGatewayAddresses?.[0];
+    if (primary?.AllocationId !== undefined) result['AllocationId'] = primary.AllocationId;
+    if (primary?.PrivateIp !== undefined) result['PrivateIpAddress'] = primary.PrivateIp;
+
+    return result;
+  }
+
+  private async readRouteTableCurrentState(
+    physicalId: string
+  ): Promise<Record<string, unknown> | undefined> {
+    const resp = await this.ec2Client.send(
+      new DescribeRouteTablesCommand({ RouteTableIds: [physicalId] })
+    );
+    const rt = resp.RouteTables?.[0];
+    if (!rt) return undefined;
+
+    const result: Record<string, unknown> = {};
+    if (rt.VpcId !== undefined) result['VpcId'] = rt.VpcId;
+    return result;
+  }
+
+  private async readSecurityGroupCurrentState(
+    physicalId: string
+  ): Promise<Record<string, unknown> | undefined> {
+    const resp = await this.ec2Client.send(
+      new DescribeSecurityGroupsCommand({ GroupIds: [physicalId] })
+    );
+    const sg = resp.SecurityGroups?.[0];
+    if (!sg) return undefined;
+
+    const result: Record<string, unknown> = {};
+    if (sg.GroupName !== undefined) result['GroupName'] = sg.GroupName;
+    if (sg.Description !== undefined) result['GroupDescription'] = sg.Description;
+    if (sg.VpcId !== undefined) result['VpcId'] = sg.VpcId;
+    // SecurityGroupIngress / SecurityGroupEgress (rule lists) are not
+    // surfaced — see JSDoc on readCurrentState for the rationale.
+    return result;
+  }
+
+  private async readInstanceCurrentState(
+    physicalId: string
+  ): Promise<Record<string, unknown> | undefined> {
+    const resp = await this.ec2Client.send(
+      new DescribeInstancesCommand({ InstanceIds: [physicalId] })
+    );
+    const instance = resp.Reservations?.[0]?.Instances?.[0];
+    // Treat terminated/shutting-down as "gone" for drift purposes.
+    if (
+      !instance ||
+      instance.State?.Name === 'terminated' ||
+      instance.State?.Name === 'shutting-down'
+    ) {
+      return undefined;
+    }
+
+    const result: Record<string, unknown> = {};
+    if (instance.ImageId !== undefined) result['ImageId'] = instance.ImageId;
+    if (instance.InstanceType !== undefined) result['InstanceType'] = instance.InstanceType;
+    if (instance.KeyName !== undefined) result['KeyName'] = instance.KeyName;
+    if (instance.SubnetId !== undefined) result['SubnetId'] = instance.SubnetId;
+    return result;
+  }
+
+  private async readNetworkAclCurrentState(
+    physicalId: string
+  ): Promise<Record<string, unknown> | undefined> {
+    const resp = await this.ec2Client.send(
+      new DescribeNetworkAclsCommand({ NetworkAclIds: [physicalId] })
+    );
+    const acl = resp.NetworkAcls?.[0];
+    if (!acl) return undefined;
+
+    const result: Record<string, unknown> = {};
+    if (acl.VpcId !== undefined) result['VpcId'] = acl.VpcId;
+    return result;
   }
 
   private async verifyExplicit(

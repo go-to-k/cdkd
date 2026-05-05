@@ -1,4 +1,8 @@
-import { SQSClient, SetQueueAttributesCommand } from '@aws-sdk/client-sqs';
+import {
+  SQSClient,
+  SetQueueAttributesCommand,
+  GetQueueAttributesCommand,
+} from '@aws-sdk/client-sqs';
 import { getLogger } from '../../utils/logger.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
@@ -217,6 +221,60 @@ export class SQSQueuePolicyProvider implements ResourceProvider {
         cause
       );
     }
+  }
+
+  /**
+   * Read the AWS-current SQS queue policy in CFn-property shape.
+   *
+   * The provider's `create()` records `physicalId` as the first queue URL
+   * in the `Queues` array. Drift here surfaces:
+   *   - `Queues` — single-element array containing `physicalId`. The full
+   *     state list of queues isn't recoverable from AWS (no reverse index)
+   *     and the comparator only descends into keys present in state, so a
+   *     state with multiple queues will still surface drift on
+   *     `PolicyDocument` for the first queue (the most common drift case).
+   *   - `PolicyDocument` — fetched via `GetQueueAttributes` for
+   *     `Policy`, JSON-parsed back to the object form cdkd state holds.
+   *
+   * Returns `undefined` when the queue is gone (`QueueDoesNotExist`) or
+   * when no policy is currently attached (the `Policy` attribute is
+   * absent / empty).
+   */
+  async readCurrentState(
+    physicalId: string,
+    _logicalId: string,
+    _resourceType: string
+  ): Promise<Record<string, unknown> | undefined> {
+    let policyAttr: string | undefined;
+    try {
+      const resp = await this.sqsClient.send(
+        new GetQueueAttributesCommand({
+          QueueUrl: physicalId,
+          AttributeNames: ['Policy'],
+        })
+      );
+      policyAttr = resp.Attributes?.['Policy'];
+    } catch (err) {
+      const e = err as { name?: string; message?: string };
+      if (
+        e.name === 'QueueDoesNotExist' ||
+        (typeof e.message === 'string' && e.message.includes('does not exist'))
+      ) {
+        return undefined;
+      }
+      throw err;
+    }
+    if (!policyAttr) return undefined;
+
+    const result: Record<string, unknown> = {
+      Queues: [physicalId],
+    };
+    try {
+      result['PolicyDocument'] = JSON.parse(policyAttr) as unknown;
+    } catch {
+      result['PolicyDocument'] = policyAttr;
+    }
+    return result;
   }
 
   /**

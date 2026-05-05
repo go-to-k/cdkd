@@ -240,6 +240,53 @@ export class S3VectorsProvider implements ResourceProvider {
   }
 
   /**
+   * Read the AWS-current S3 Vector Bucket configuration in CFn-property
+   * shape.
+   *
+   * Issues `GetVectorBucket` for the bucket name (the physical id) and
+   * surfaces `VectorBucketName` and `EncryptionConfiguration` (re-shaping
+   * the camelCase SDK response back to PascalCase CFn property names —
+   * `sseType` → `SSEType`, `kmsKeyArn` → `KMSKeyArn`).
+   *
+   * Returns `undefined` when the bucket is gone (`NotFoundException` /
+   * `NoSuchVectorBucket`).
+   */
+  async readCurrentState(
+    physicalId: string,
+    _logicalId: string,
+    _resourceType: string
+  ): Promise<Record<string, unknown> | undefined> {
+    let resp;
+    try {
+      resp = await this.getClient().send(
+        new GetVectorBucketCommand({ vectorBucketName: physicalId })
+      );
+    } catch (err) {
+      if (this.isNotFoundError(err)) return undefined;
+      throw err;
+    }
+
+    const result: Record<string, unknown> = {};
+    const bucket = resp.vectorBucket;
+    if (bucket?.vectorBucketName !== undefined) {
+      result['VectorBucketName'] = bucket.vectorBucketName;
+    } else {
+      result['VectorBucketName'] = physicalId;
+    }
+    if (bucket?.encryptionConfiguration) {
+      const enc: Record<string, unknown> = {};
+      if (bucket.encryptionConfiguration.sseType !== undefined) {
+        enc['SSEType'] = bucket.encryptionConfiguration.sseType;
+      }
+      if (bucket.encryptionConfiguration.kmsKeyArn !== undefined) {
+        enc['KMSKeyArn'] = bucket.encryptionConfiguration.kmsKeyArn;
+      }
+      if (Object.keys(enc).length > 0) result['EncryptionConfiguration'] = enc;
+    }
+    return result;
+  }
+
+  /**
    * Adopt an existing S3 Vector Bucket into cdkd state.
    *
    * Lookup order:

@@ -1,4 +1,4 @@
-import { SetTopicAttributesCommand } from '@aws-sdk/client-sns';
+import { SetTopicAttributesCommand, GetTopicAttributesCommand } from '@aws-sdk/client-sns';
 import { getLogger } from '../../utils/logger.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
@@ -203,6 +203,67 @@ export class SNSTopicPolicyProvider implements ResourceProvider {
     }
 
     this.logger.debug(`Successfully deleted SNS topic policy ${logicalId}`);
+  }
+
+  /**
+   * Read the AWS-current SNS topic policy in CFn-property shape.
+   *
+   * The provider's `create()` builds `physicalId` as a comma-joined list
+   * of topic ARNs. We:
+   *   1. Split the physical id back into the list of topic ARNs and surface
+   *      them as `Topics` (matching `create()` shape).
+   *   2. Fetch `GetTopicAttributes` on the FIRST topic to retrieve the
+   *      `Policy` attribute and surface it as `PolicyDocument` (JSON-parsed
+   *      to match the object form cdkd state holds).
+   *
+   * Single-topic fetch is intentional: cdkd applies the same policy to
+   * every topic in `Topics`, so the body is the same on each. A future
+   * enhancement could verify per-topic that the policy actually matches
+   * (catches manual divergence between multiple targets), but the bulk of
+   * drift cases involve a single topic and the body content is what users
+   * actually care about.
+   *
+   * Returns `undefined` when no topics are listed in the physical id, or
+   * when the first listed topic is gone (`NotFoundException`).
+   */
+  async readCurrentState(
+    physicalId: string,
+    _logicalId: string,
+    _resourceType: string
+  ): Promise<Record<string, unknown> | undefined> {
+    const topics = physicalId.split(',').filter((t) => t.length > 0);
+    if (topics.length === 0) return undefined;
+
+    const firstTopic = topics[0]!;
+    let policyAttr: string | undefined;
+    try {
+      const resp = await getAwsClients().sns.send(
+        new GetTopicAttributesCommand({ TopicArn: firstTopic })
+      );
+      policyAttr = resp.Attributes?.['Policy'];
+    } catch (err) {
+      const e = err as { name?: string; message?: string };
+      if (
+        e.name === 'NotFoundException' ||
+        e.name === 'NotFound' ||
+        (typeof e.message === 'string' && e.message.includes('does not exist'))
+      ) {
+        return undefined;
+      }
+      throw err;
+    }
+
+    const result: Record<string, unknown> = {
+      Topics: topics,
+    };
+    if (policyAttr) {
+      try {
+        result['PolicyDocument'] = JSON.parse(policyAttr) as unknown;
+      } catch {
+        result['PolicyDocument'] = policyAttr;
+      }
+    }
+    return result;
   }
 
   /**

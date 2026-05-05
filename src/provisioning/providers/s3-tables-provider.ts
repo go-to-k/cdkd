@@ -460,6 +460,109 @@ export class S3TablesProvider implements ResourceProvider {
     }
   }
 
+  // ─── readCurrentState dispatch ───────────────────────────────────
+
+  /**
+   * Read the AWS-current S3 Tables resource configuration in CFn-property
+   * shape.
+   *
+   *  - **AWS::S3Tables::TableBucket**: `GetTableBucket` for the ARN; we
+   *    surface `TableBucketName` (the only mutable cdkd-managed property).
+   *  - **AWS::S3Tables::Namespace**: parses `tableBucketARN|namespace`
+   *    from physical id and surfaces `TableBucketARN` and `Namespace`
+   *    (as a `string[]` with one entry, matching `create()`'s shape).
+   *    No GetNamespace call — the physical id IS the source of truth and
+   *    AWS surfaces no additional managed fields cdkd cares about.
+   *  - **AWS::S3Tables::Table**: parses `tableBucketARN|namespace|name`
+   *    from physical id, calls `GetTable` to verify existence and recover
+   *    `format`, surfaces `TableBucketARN`, `Namespace` (string), `Name`,
+   *    `Format`.
+   *
+   * Returns `undefined` when the resource is gone (`NotFoundException`).
+   */
+  async readCurrentState(
+    physicalId: string,
+    logicalId: string,
+    resourceType: string
+  ): Promise<Record<string, unknown> | undefined> {
+    switch (resourceType) {
+      case 'AWS::S3Tables::TableBucket':
+        return this.readTableBucketCurrentState(physicalId);
+      case 'AWS::S3Tables::Namespace':
+        return this.readNamespaceCurrentState(physicalId);
+      case 'AWS::S3Tables::Table':
+        return this.readTableCurrentState(physicalId);
+      default:
+        this.logger.debug(
+          `readCurrentState: unsupported resource type ${resourceType} for ${logicalId}`
+        );
+        return undefined;
+    }
+  }
+
+  private async readTableBucketCurrentState(
+    physicalId: string
+  ): Promise<Record<string, unknown> | undefined> {
+    let bucket;
+    try {
+      const resp = await this.getClient().send(
+        new GetTableBucketCommand({ tableBucketARN: physicalId })
+      );
+      bucket = resp;
+    } catch (err) {
+      if (err instanceof NotFoundException) return undefined;
+      throw err;
+    }
+
+    const result: Record<string, unknown> = {};
+    if (bucket.name !== undefined) result['TableBucketName'] = bucket.name;
+    return result;
+  }
+
+  // eslint-disable-next-line @typescript-eslint/require-await -- structural; physical id is the source of truth
+  private async readNamespaceCurrentState(
+    physicalId: string
+  ): Promise<Record<string, unknown> | undefined> {
+    const [tableBucketARN, namespaceName] = physicalId.split('|');
+    if (!tableBucketARN || !namespaceName) return undefined;
+
+    return {
+      TableBucketARN: tableBucketARN,
+      Namespace: [namespaceName],
+    };
+  }
+
+  private async readTableCurrentState(
+    physicalId: string
+  ): Promise<Record<string, unknown> | undefined> {
+    const parts = physicalId.split('|');
+    if (parts.length < 3) return undefined;
+    const [tableBucketARN, namespace, name] = parts;
+    if (!tableBucketARN || !namespace || !name) return undefined;
+
+    let resp;
+    try {
+      resp = await this.getClient().send(
+        new GetTableCommand({
+          tableBucketARN,
+          namespace,
+          name,
+        })
+      );
+    } catch (err) {
+      if (err instanceof NotFoundException) return undefined;
+      throw err;
+    }
+
+    const result: Record<string, unknown> = {
+      TableBucketARN: tableBucketARN,
+      Namespace: namespace,
+      Name: resp.name ?? name,
+    };
+    if (resp.format !== undefined) result['Format'] = resp.format;
+    return result;
+  }
+
   // ─── Import dispatch ──────────────────────────────────────────────
 
   /**
