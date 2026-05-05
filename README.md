@@ -376,6 +376,30 @@ cdkd state destroy MyStack --region us-east-1
 > `cdkd destroy` (synth-driven, deletes AWS resources + state) and
 > `cdkd state destroy` (state-driven, same effect) round out the matrix.
 
+## `publish-assets`: synth + build + publish, no deploy
+
+`cdkd publish-assets` runs the asset half of the deploy pipeline only —
+synthesize the CDK app, build any Docker images, upload file assets to
+S3, push images to ECR — and stops. No state writes, no provisioning,
+no lock acquisition. This is the typical CI split where one runner
+builds and uploads assets and a separate runner deploys.
+
+```bash
+cdkd publish-assets                          # synth + publish all stacks (or auto-detect single stack)
+cdkd publish-assets MyStack                  # synth + publish a specific stack
+cdkd publish-assets --all                    # synth + publish every stack in the app
+cdkd publish-assets 'MyStage/*'              # wildcard (CDK display path)
+cdkd publish-assets -a cdk.out               # skip synth — use a pre-synthesized cloud assembly
+```
+
+Stack selection follows the same rules as `deploy` / `diff` / `destroy`
+(positional > `--stack` > `--all` > auto-detect). Concurrency knobs
+are `--asset-publish-concurrency` and `--image-build-concurrency`.
+`-a/--app` accepts either a shell command (`"npx ts-node app.ts"`) or
+a path to an already-synthesized cloud assembly directory; pointing at
+`cdk.out` skips synthesis. See [docs/cli-reference.md](docs/cli-reference.md#publish-assets-synth--build--publish-no-deploy)
+for details.
+
 ## `--no-wait`: skip async-resource waits
 
 CloudFront Distributions, RDS Clusters/Instances, ElastiCache, and

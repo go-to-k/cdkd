@@ -377,7 +377,7 @@ CI / bench scripts can react without grepping log output:
 | --- | --- | --- |
 | `0` | Success — command completed and no resources are in an error state | All commands |
 | `1` | Command-level failure — auth error, bad arguments, synth crash, unhandled exception. **`cdkd drift` also exits `1` when drift is detected** (the operative meaning is "non-zero outcome", not "command crashed") | All commands (default for any thrown error) |
-| `2` | **Partial failure** — work completed but one or more resources failed; state.json is preserved and re-running typically resolves it | `cdkd destroy`, `cdkd state destroy` (when one or more per-resource deletes fail) |
+| `2` | **Partial failure** — work completed but one or more resources failed; state.json is preserved and re-running typically resolves it | `cdkd destroy`, `cdkd state destroy` (per-resource delete failures), `cdkd publish-assets` (per-stack asset publish failures) |
 
 The implementation hangs off a `PartialFailureError` class in
 `src/utils/error-handler.ts`. `handleError` reads the error's
@@ -397,3 +397,48 @@ If your bench / CI script previously treated any non-zero from `cdkd
 destroy` as a hard failure (because it never had a non-zero outcome
 before), you may now want to branch on `2` separately to schedule a
 retry instead of paging.
+
+## `publish-assets` (synth + build + publish, no deploy)
+
+`cdkd publish-assets` runs the asset half of the deploy pipeline —
+synthesize the CDK app, build any Docker images, upload file assets to
+S3, push images to ECR — and then **stops**. No state writes, no
+provisioning, no lock acquisition. This is the "CI builds and uploads
+assets, a separate runner deploys" split that pipelines often want.
+
+```bash
+cdkd publish-assets                          # synth + publish all stacks (or auto-detect single stack)
+cdkd publish-assets <stack> [<stack>...]     # synth + publish specific stack(s)
+cdkd publish-assets --all                    # synth + publish every stack in the app
+cdkd publish-assets 'My*'                    # wildcard
+cdkd publish-assets -a cdk.out               # skip synth — read a pre-synthesized cloud assembly
+```
+
+Synthesizes the CDK app via the standard `--app` / `CDKD_APP` /
+`cdk.json` chain, applies the same stack-name matching as
+`deploy` / `diff` / `destroy` (positional arg routes by `/` to display
+path or physical name; supports `*` wildcards), and feeds each selected
+stack's asset manifest into the same `WorkGraph` pipeline that `deploy`
+uses (with `stack: 0` concurrency so no stack-deploy nodes run).
+
+`-a/--app` accepts either a shell command (`"npx ts-node app.ts"`) or
+a path to an already-synthesized cloud assembly directory (`cdk.out`);
+when a directory is given, synthesis is skipped and the manifest is
+read directly. Same dual semantics as `cdkd deploy`. Re-using a
+pre-synthesized assembly is therefore covered by `-a <dir>` and
+`publish-assets` does NOT have its own `--path <manifest>` flag.
+
+Concurrency knobs (same defaults as `deploy`):
+
+| Option | Default | Description |
+| --- | --- | --- |
+| `--asset-publish-concurrency` | 8 | Maximum concurrent S3 uploads + ECR pushes |
+| `--image-build-concurrency` | 4 | Maximum concurrent Docker image builds |
+
+Exit codes:
+
+- `0` — every selected stack's assets published cleanly.
+- `1` — command-level failure (auth, synth crash, bad arguments).
+- `2` — **partial failure**: one or more stacks failed but the rest
+  published. Re-run to retry the failed stacks. Per-stack outcomes are
+  listed in the run summary.
