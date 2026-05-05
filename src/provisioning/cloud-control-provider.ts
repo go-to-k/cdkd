@@ -813,6 +813,58 @@ export class CloudControlProvider implements ResourceProvider {
   }
 
   /**
+   * Read the AWS-current properties of a resource managed via Cloud Control
+   * API, for `cdkd drift` comparison.
+   *
+   * Strategy: `GetResource(TypeName, Identifier)` returns `ResourceModel` as
+   * a JSON string of every property AWS reports for the resource. Parse and
+   * surface it as the AWS-current snapshot — the drift command intersects
+   * this against the keys present in cdkd state, so AWS-only keys (timestamps,
+   * generated ids, etc.) are filtered out at compare time.
+   *
+   * Returns `undefined` for the unique cases that mean "drift unknown" (the
+   * resource was deleted out from under cdkd, or the response had no
+   * Properties field). Re-throws on any other error so the drift command can
+   * surface throttling / access-denied issues to the user.
+   *
+   * This single CC API implementation gives drift detection coverage to every
+   * resource type that goes through CC API — the majority of cdkd's surface.
+   * SDK Providers add their own `readCurrentState` incrementally (PR D).
+   */
+  async readCurrentState(
+    physicalId: string,
+    _logicalId: string,
+    resourceType: string
+  ): Promise<Record<string, unknown> | undefined> {
+    try {
+      const response = await this.cloudControlClient.send(
+        new GetResourceCommand({
+          TypeName: resourceType,
+          Identifier: physicalId,
+        })
+      );
+
+      const raw = response.ResourceDescription?.Properties;
+      if (typeof raw !== 'string' || raw.length === 0) {
+        return undefined;
+      }
+
+      const parsed = JSON.parse(raw) as unknown;
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+        return undefined;
+      }
+
+      return parsed as Record<string, unknown>;
+    } catch (error) {
+      const err = error as { name?: string };
+      if (err.name === 'ResourceNotFoundException') {
+        return undefined;
+      }
+      throw error;
+    }
+  }
+
+  /**
    * Adopt an already-deployed resource into cdkd state via Cloud Control API.
    *
    * Strategy: explicit-override only.

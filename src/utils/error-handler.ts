@@ -216,10 +216,17 @@ export function formatError(error: unknown): string {
  * overrides it to 2 so callers can distinguish "command crashed /
  * unauthorized / bad arguments" from "command completed but some
  * resources are still in an error state, re-run to clean up".
+ *
+ * A {@link CdkdError} subclass may set `silent = true` to suppress the
+ * default `logger.error` line — used by `cdkd drift` where the command
+ * has already printed a richer report and only needs the exit code.
  */
 export function handleError(error: unknown): never {
   const logger = getLogger();
-  logger.error(formatError(error));
+  const silent = error instanceof CdkdError && (error as CdkdError & { silent?: boolean }).silent;
+  if (!silent) {
+    logger.error(formatError(error));
+  }
 
   if (error instanceof Error && error.stack) {
     logger.debug('Stack trace:', error.stack);

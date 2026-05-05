@@ -201,3 +201,67 @@ describe('CloudControlProvider import (CC API fallback)', () => {
     ).rejects.toThrow(/AccessDenied/);
   });
 });
+
+describe('CloudControlProvider readCurrentState (drift detection)', () => {
+  let provider: CloudControlProvider;
+
+  beforeEach(() => {
+    mockCloudControlSend.mockReset();
+    mockCloudControlConfigRegion.mockReset();
+    provider = new CloudControlProvider();
+  });
+
+  it('returns parsed AWS-current properties on GetResource success', async () => {
+    mockCloudControlSend.mockResolvedValueOnce({
+      ResourceDescription: {
+        Identifier: 'b',
+        Properties: JSON.stringify({
+          BucketName: 'b',
+          VersioningConfiguration: { Status: 'Enabled' },
+          // AWS-managed fields cdkd never set are returned too — drift
+          // calculator filters them out at compare time.
+          CreationDate: '2024-01-01T00:00:00Z',
+        }),
+      },
+    });
+
+    const result = await provider.readCurrentState('b', 'MyBucket', 'AWS::S3::Bucket');
+
+    expect(result).toEqual({
+      BucketName: 'b',
+      VersioningConfiguration: { Status: 'Enabled' },
+      CreationDate: '2024-01-01T00:00:00Z',
+    });
+    expect(mockCloudControlSend).toHaveBeenCalledTimes(1);
+  });
+
+  it('returns undefined when the resource does not exist (drift unknown)', async () => {
+    const err = new Error('not found') as Error & { name: string };
+    err.name = 'ResourceNotFoundException';
+    mockCloudControlSend.mockRejectedValueOnce(err);
+
+    const result = await provider.readCurrentState('missing', 'MyBucket', 'AWS::S3::Bucket');
+
+    expect(result).toBeUndefined();
+  });
+
+  it('returns undefined when ResourceDescription has no Properties payload', async () => {
+    mockCloudControlSend.mockResolvedValueOnce({
+      ResourceDescription: { Identifier: 'b' },
+    });
+
+    const result = await provider.readCurrentState('b', 'MyBucket', 'AWS::S3::Bucket');
+
+    expect(result).toBeUndefined();
+  });
+
+  it('re-throws non-NotFound errors so the caller can surface them', async () => {
+    const err = new Error('throttled') as Error & { name: string };
+    err.name = 'ThrottlingException';
+    mockCloudControlSend.mockRejectedValueOnce(err);
+
+    await expect(
+      provider.readCurrentState('b', 'MyBucket', 'AWS::S3::Bucket')
+    ).rejects.toThrow(/throttled/);
+  });
+});

@@ -8,6 +8,7 @@ import { createSynthCommand } from './commands/synth.js';
 import { createListCommand } from './commands/list.js';
 import { createDeployCommand } from './commands/deploy.js';
 import { createDiffCommand } from './commands/diff.js';
+import { createDriftCommand } from './commands/drift.js';
 import { createDestroyCommand } from './commands/destroy.js';
 import { createOrphanCommand } from './commands/orphan.js';
 import { createPublishAssetsCommand } from './commands/publish-assets.js';
@@ -22,6 +23,7 @@ const SUBCOMMANDS = new Set([
   'ls',
   'deploy',
   'diff',
+  'drift',
   'destroy',
   'orphan',
   'import',
@@ -65,6 +67,7 @@ async function main(): Promise<void> {
   program.addCommand(createListCommand());
   program.addCommand(createDeployCommand());
   program.addCommand(createDiffCommand());
+  program.addCommand(createDriftCommand());
   program.addCommand(createDestroyCommand());
   program.addCommand(createOrphanCommand());
   program.addCommand(createImportCommand());

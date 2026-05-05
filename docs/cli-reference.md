@@ -273,6 +273,101 @@ then assumes a role from those base credentials. Use both together
 when the IAM principal lives in profile A and the deploy role lives
 in account B that profile A trusts.
 
+## `cdkd drift`
+
+`cdkd drift <stack> [<stack>...]` detects drift between cdkd's S3 state
+and the live AWS-side configuration of each managed resource. cdkd does
+not go through CloudFormation, so CFn-style drift detection does not
+apply — instead, the command asks each resource's provider for its
+`readCurrentState` snapshot and compares against the `properties` field
+saved in state.
+
+Detection only — `--accept` / `--revert` are intentionally out of scope
+and will land in a follow-up PR.
+
+```bash
+# Single stack
+cdkd drift MyStack
+
+# Every stack in the bucket
+cdkd drift --all
+
+# Disambiguate when the same stack name has state in multiple regions
+cdkd drift MyStack --stack-region us-east-1
+
+# Machine-readable output for CI gating
+cdkd drift --all --json
+```
+
+Flags:
+
+- `<stacks...>` — one or more positional stack names (physical
+  CloudFormation names). Required unless `--all` is set.
+- `--all` — drift-check every stack in the state bucket.
+- `--stack-region <region>` — region to inspect when a stackName has
+  state in multiple regions (mirrors `cdkd state show`).
+- `--json` — emit a structured per-stack report (see below).
+- `--state-bucket`, `--state-prefix`, `--profile`, `--verbose`, `-y`,
+  `--region` — same as on every other state-driven command. `--region`
+  is deprecated and ignored (PR 5).
+
+Exit codes:
+
+| Exit | Meaning |
+| --- | --- |
+| `0` | Every inspected stack has zero drift. |
+| `1` | Drift detected on at least one resource on at least one stack, OR the command crashed (no state found, AWS error, bad arguments). Both go through the default error handler — drift detection emits the rich human report before throwing, so the report is the only output for the drift case. |
+
+The command produces three terminal states per resource:
+
+- **drifted** — at least one property differs between state and AWS.
+  Reported as `~ <logicalId> (<type>)` with one `+/-` line per
+  property path that diverged.
+- **clean** — every state-recorded property matches AWS. Counted in
+  the per-stack summary but not listed individually.
+- **drift unknown** — the provider does not implement the optional
+  `readCurrentState` method yet. Reported as `? <logicalId> (<type>)`
+  in a separate block at the bottom of each stack's report.
+
+Drift detection works automatically for every resource type that goes
+through Cloud Control API (the majority of cdkd's surface). SDK
+Providers add their own `readCurrentState` incrementally — providers
+without an implementation surface as `drift unknown` rather than `clean`,
+so you can see exactly which types are still uncovered.
+
+`--json` output shape:
+
+```json
+[
+  {
+    "stack": "MyStack",
+    "region": "us-east-1",
+    "drifted": [
+      {
+        "logicalId": "Bucket1",
+        "type": "AWS::S3::Bucket",
+        "changes": [
+          {
+            "path": "VersioningConfiguration.Status",
+            "stateValue": "Enabled",
+            "awsValue": "Suspended"
+          }
+        ]
+      }
+    ],
+    "clean": [],
+    "notSupported": [
+      { "logicalId": "Function1", "type": "AWS::Lambda::Function" }
+    ]
+  }
+]
+```
+
+The comparator only looks at keys present in cdkd state — AWS-managed
+fields (timestamps, generated identifiers, account-wide defaults) that
+cdkd never set are ignored, so they never surface as false-positive
+drift.
+
 ## Exit codes
 
 cdkd commands distinguish three outcomes via the process exit code so
@@ -281,7 +376,7 @@ CI / bench scripts can react without grepping log output:
 | Exit | Meaning | Emitted by |
 | --- | --- | --- |
 | `0` | Success — command completed and no resources are in an error state | All commands |
-| `1` | Command-level failure — auth error, bad arguments, synth crash, unhandled exception | All commands (default for any thrown error) |
+| `1` | Command-level failure — auth error, bad arguments, synth crash, unhandled exception. **`cdkd drift` also exits `1` when drift is detected** (the operative meaning is "non-zero outcome", not "command crashed") | All commands (default for any thrown error) |
 | `2` | **Partial failure** — work completed but one or more resources failed; state.json is preserved and re-running typically resolves it | `cdkd destroy`, `cdkd state destroy` (when one or more per-resource deletes fail) |
 
 The implementation hangs off a `PartialFailureError` class in
