@@ -1,3 +1,10 @@
+# [0.43.0](https://github.com/go-to-k/cdkd/compare/v0.42.0...v0.43.0) (2026-05-05)
+
+
+### Features
+
+* **drift:** readCurrentState(properties) signature ext + close 4 sub-resource skips ([#139](https://github.com/go-to-k/cdkd/issues/139)) ([304aea2](https://github.com/go-to-k/cdkd/commit/304aea28b54aa9576da561280075d99ae5e6e199))
+
 # [0.42.0](https://github.com/go-to-k/cdkd/compare/v0.41.0...v0.42.0) (2026-05-05)
 
 
