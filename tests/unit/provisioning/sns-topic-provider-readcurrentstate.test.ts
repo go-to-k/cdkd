@@ -1,0 +1,84 @@
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { GetTopicAttributesCommand, NotFoundException } from '@aws-sdk/client-sns';
+
+const mockSend = vi.fn();
+
+vi.mock('../../../src/utils/aws-clients.js', () => ({
+  getAwsClients: () => ({
+    sns: { send: mockSend, config: { region: () => Promise.resolve('us-east-1') } },
+  }),
+}));
+
+vi.mock('../../../src/utils/logger.js', () => {
+  const childLogger = {
+    debug: vi.fn(),
+    info: vi.fn(),
+    warn: vi.fn(),
+    error: vi.fn(),
+    child: vi.fn().mockReturnThis(),
+  };
+  return {
+    getLogger: () => ({
+      child: () => childLogger,
+      debug: vi.fn(),
+      info: vi.fn(),
+      warn: vi.fn(),
+      error: vi.fn(),
+    }),
+  };
+});
+
+import { SNSTopicProvider } from '../../../src/provisioning/providers/sns-topic-provider.js';
+
+const TOPIC_ARN = 'arn:aws:sns:us-east-1:123456789012:my-topic';
+
+describe('SNSTopicProvider.readCurrentState', () => {
+  let provider: SNSTopicProvider;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    provider = new SNSTopicProvider();
+  });
+
+  it('returns CFn-shaped properties with parsed booleans and JSON policies', async () => {
+    const archivePolicy = { MessageRetentionPeriod: '7' };
+    mockSend.mockResolvedValueOnce({
+      Attributes: {
+        FifoTopic: 'true',
+        ContentBasedDeduplication: 'false',
+        DisplayName: 'My Topic',
+        KmsMasterKeyId: 'alias/aws/sns',
+        TracingConfig: 'Active',
+        SignatureVersion: '2',
+        FifoThroughputScope: 'Topic',
+        ArchivePolicy: JSON.stringify(archivePolicy),
+        // AWS-managed fields ignored by the comparator:
+        TopicArn: TOPIC_ARN,
+        Owner: '123456789012',
+        SubscriptionsConfirmed: '0',
+      },
+    });
+
+    const result = await provider.readCurrentState(TOPIC_ARN, 'Logical', 'AWS::SNS::Topic');
+
+    expect(mockSend.mock.calls[0]?.[0]).toBeInstanceOf(GetTopicAttributesCommand);
+    expect(result).toEqual({
+      TopicName: 'my-topic',
+      FifoTopic: true,
+      ContentBasedDeduplication: false,
+      DisplayName: 'My Topic',
+      KmsMasterKeyId: 'alias/aws/sns',
+      TracingConfig: 'Active',
+      SignatureVersion: '2',
+      FifoThroughputScope: 'Topic',
+      ArchivePolicy: archivePolicy,
+    });
+  });
+
+  it('returns undefined when topic does not exist', async () => {
+    mockSend.mockRejectedValueOnce(new NotFoundException({ message: 'gone', $metadata: {} }));
+
+    const result = await provider.readCurrentState(TOPIC_ARN, 'Logical', 'AWS::SNS::Topic');
+    expect(result).toBeUndefined();
+  });
+});

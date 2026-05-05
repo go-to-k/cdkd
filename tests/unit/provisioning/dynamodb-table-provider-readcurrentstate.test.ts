@@ -1,0 +1,98 @@
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { DescribeTableCommand, ResourceNotFoundException } from '@aws-sdk/client-dynamodb';
+
+const mockSend = vi.fn();
+
+vi.mock('../../../src/utils/aws-clients.js', () => ({
+  getAwsClients: () => ({
+    dynamoDB: { send: mockSend, config: { region: () => Promise.resolve('us-east-1') } },
+  }),
+}));
+
+vi.mock('../../../src/utils/logger.js', () => {
+  const childLogger = {
+    debug: vi.fn(),
+    info: vi.fn(),
+    warn: vi.fn(),
+    error: vi.fn(),
+    child: vi.fn().mockReturnThis(),
+  };
+  return {
+    getLogger: () => ({
+      child: () => childLogger,
+      debug: vi.fn(),
+      info: vi.fn(),
+      warn: vi.fn(),
+      error: vi.fn(),
+    }),
+  };
+});
+
+import { DynamoDBTableProvider } from '../../../src/provisioning/providers/dynamodb-table-provider.js';
+
+describe('DynamoDBTableProvider.readCurrentState', () => {
+  let provider: DynamoDBTableProvider;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    provider = new DynamoDBTableProvider();
+  });
+
+  it('returns CFn-shaped properties from DescribeTable (happy path)', async () => {
+    mockSend.mockResolvedValueOnce({
+      Table: {
+        TableName: 'my-table',
+        KeySchema: [{ AttributeName: 'id', KeyType: 'HASH' }],
+        AttributeDefinitions: [{ AttributeName: 'id', AttributeType: 'S' }],
+        BillingModeSummary: { BillingMode: 'PAY_PER_REQUEST' },
+        ProvisionedThroughput: {
+          ReadCapacityUnits: 0,
+          WriteCapacityUnits: 0,
+          // AWS adds ephemeral fields the comparator should ignore.
+          NumberOfDecreasesToday: 0,
+          LastIncreaseDateTime: new Date(0),
+        },
+        StreamSpecification: { StreamEnabled: true, StreamViewType: 'NEW_IMAGE' },
+        SSEDescription: {
+          Status: 'ENABLED',
+          KMSMasterKeyArn: 'arn:aws:kms:us-east-1:123:key/abc',
+          SSEType: 'KMS',
+        },
+        DeletionProtectionEnabled: true,
+        TableClassSummary: { TableClass: 'STANDARD' },
+        // AWS-managed fields cdkd never set:
+        TableArn: 'arn:aws:dynamodb:us-east-1:123:table/my-table',
+        TableId: 'guid',
+        CreationDateTime: new Date(0),
+      },
+    });
+
+    const result = await provider.readCurrentState('my-table', 'Logical', 'AWS::DynamoDB::Table');
+
+    expect(mockSend.mock.calls[0]?.[0]).toBeInstanceOf(DescribeTableCommand);
+    expect(result).toEqual({
+      TableName: 'my-table',
+      KeySchema: [{ AttributeName: 'id', KeyType: 'HASH' }],
+      AttributeDefinitions: [{ AttributeName: 'id', AttributeType: 'S' }],
+      BillingMode: 'PAY_PER_REQUEST',
+      ProvisionedThroughput: { ReadCapacityUnits: 0, WriteCapacityUnits: 0 },
+      StreamSpecification: { StreamEnabled: true, StreamViewType: 'NEW_IMAGE' },
+      SSESpecification: {
+        SSEEnabled: true,
+        KMSMasterKeyId: 'arn:aws:kms:us-east-1:123:key/abc',
+        SSEType: 'KMS',
+      },
+      DeletionProtectionEnabled: true,
+      TableClass: 'STANDARD',
+    });
+  });
+
+  it('returns undefined when table is gone', async () => {
+    mockSend.mockRejectedValueOnce(
+      new ResourceNotFoundException({ message: 'gone', $metadata: {} })
+    );
+
+    const result = await provider.readCurrentState('my-table', 'Logical', 'AWS::DynamoDB::Table');
+    expect(result).toBeUndefined();
+  });
+});

@@ -335,6 +335,15 @@ Providers add their own `readCurrentState` incrementally — providers
 without an implementation surface as `drift unknown` rather than `clean`,
 so you can see exactly which types are still uncovered.
 
+The following high-traffic SDK Providers ship with first-class
+`readCurrentState` (no CC API round-trip):
+`AWS::Lambda::Function`, `AWS::S3::Bucket`,
+`AWS::DynamoDB::Table`, `AWS::IAM::Role`, `AWS::SQS::Queue`,
+`AWS::SNS::Topic`, `AWS::Logs::LogGroup`. Tag drift and IAM
+inline-policy bodies are out of scope for v1; see
+[src/types/resource.ts](../src/types/resource.ts) for the per-provider
+shape decisions.
+
 `--json` output shape:
 
 ```json

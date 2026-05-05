@@ -912,6 +912,95 @@ export class LambdaFunctionProvider implements ResourceProvider {
   }
 
   /**
+   * Read the AWS-current Lambda function configuration in CFn-property shape.
+   *
+   * Issues a single `GetFunction` and surfaces the same property keys
+   * `create()` accepts (`Runtime`, `Handler`, `Role`, `Timeout`, `MemorySize`,
+   * `Description`, `Environment`, `Layers`, `Architectures`, `PackageType`,
+   * `TracingConfig`, `EphemeralStorage`, `VpcConfig`, plus the physical
+   * `FunctionName`). The drift comparator only descends into keys present in
+   * cdkd state, so AWS-managed fields (timestamps, FunctionArn, RevisionId,
+   * etc.) are filtered at compare time — we still avoid serializing them on
+   * the wire.
+   *
+   * `Code` is intentionally omitted: `GetFunction` returns a pre-signed S3
+   * URL for the deployed code, not the asset hash cdkd state holds, so they
+   * could never match. Lambda code drift is best detected separately (the
+   * function's `CodeSha256` does live in `GetFunction` but is not what
+   * cdkd's `Code: { S3Bucket, S3Key }` state property carries).
+   *
+   * `Tags` is omitted as well: `GetFunction` returns Tags as an object map,
+   * while CFn / cdkd state holds them as `[{Key, Value}]`. Re-shaping
+   * accurately requires deciding how to handle the auto-injected
+   * `aws:cdk:path` tag, which is out of scope for this PR. Tag drift is
+   * typically less interesting than configuration drift.
+   *
+   * Returns `undefined` when the function is gone (`ResourceNotFoundException`).
+   */
+  async readCurrentState(
+    physicalId: string,
+    _logicalId: string,
+    _resourceType: string
+  ): Promise<Record<string, unknown> | undefined> {
+    try {
+      const resp = await this.lambdaClient.send(
+        new GetFunctionCommand({ FunctionName: physicalId })
+      );
+      const cfg = resp.Configuration;
+      if (!cfg) return undefined;
+
+      const result: Record<string, unknown> = {};
+
+      if (cfg.FunctionName !== undefined) result['FunctionName'] = cfg.FunctionName;
+      if (cfg.Runtime !== undefined) result['Runtime'] = cfg.Runtime;
+      if (cfg.Handler !== undefined) result['Handler'] = cfg.Handler;
+      if (cfg.Role !== undefined) result['Role'] = cfg.Role;
+      if (cfg.Timeout !== undefined) result['Timeout'] = cfg.Timeout;
+      if (cfg.MemorySize !== undefined) result['MemorySize'] = cfg.MemorySize;
+      if (cfg.Description !== undefined && cfg.Description !== '') {
+        result['Description'] = cfg.Description;
+      }
+      if (cfg.Environment?.Variables) {
+        result['Environment'] = { Variables: cfg.Environment.Variables };
+      }
+      if (cfg.Layers && cfg.Layers.length > 0) {
+        // GetFunction returns Layers as [{Arn, CodeSize, ...}]; CFn shape
+        // is a flat string[] of ARNs.
+        result['Layers'] = cfg.Layers.map((l) => l.Arn).filter((arn): arn is string => !!arn);
+      }
+      if (cfg.Architectures && cfg.Architectures.length > 0) {
+        result['Architectures'] = [...cfg.Architectures];
+      }
+      if (cfg.PackageType !== undefined) result['PackageType'] = cfg.PackageType;
+      if (cfg.TracingConfig?.Mode !== undefined) {
+        result['TracingConfig'] = { Mode: cfg.TracingConfig.Mode };
+      }
+      if (cfg.EphemeralStorage?.Size !== undefined) {
+        result['EphemeralStorage'] = { Size: cfg.EphemeralStorage.Size };
+      }
+      if (cfg.VpcConfig) {
+        const vpc: Record<string, unknown> = {};
+        if (cfg.VpcConfig.SubnetIds) vpc['SubnetIds'] = [...cfg.VpcConfig.SubnetIds];
+        if (cfg.VpcConfig.SecurityGroupIds) {
+          vpc['SecurityGroupIds'] = [...cfg.VpcConfig.SecurityGroupIds];
+        }
+        if (cfg.VpcConfig.Ipv6AllowedForDualStack !== undefined) {
+          vpc['Ipv6AllowedForDualStack'] = cfg.VpcConfig.Ipv6AllowedForDualStack;
+        }
+        // Lambda's GetFunction returns VpcConfig with empty arrays even for
+        // non-VPC functions; only surface when there is actually something
+        // to compare against.
+        if (Object.keys(vpc).length > 0) result['VpcConfig'] = vpc;
+      }
+
+      return result;
+    } catch (err) {
+      if (err instanceof ResourceNotFoundException) return undefined;
+      throw err;
+    }
+  }
+
+  /**
    * Adopt an existing Lambda function into cdkd state.
    *
    * Lookup order:
