@@ -334,7 +334,25 @@ async function runDriftForStack(
         continue;
       }
 
-      if (!provider.readCurrentState) {
+      // Resolve the readCurrentState implementation. When the SDK Provider
+      // for this resource type has not implemented its own readCurrentState
+      // yet, fall back to the Cloud Control API provider — CC API's generic
+      // GetResource works for any CC-API-supported type and the response
+      // shape (a JSON Properties string) maps 1:1 to CFn property names. So
+      // the user gets meaningful drift for many SDK-Provider-managed types
+      // out of the box without each provider opting in. The fallback is a
+      // last resort; SDK Providers that DO implement readCurrentState keep
+      // owning the read (their shape is more precise — they filter to keys
+      // they actually manage).
+      let readCurrentState = provider.readCurrentState?.bind(provider);
+      if (!readCurrentState) {
+        const ccApiProvider = providerRegistry.getCloudControlProvider?.();
+        if (ccApiProvider?.readCurrentState) {
+          readCurrentState = ccApiProvider.readCurrentState.bind(ccApiProvider);
+        }
+      }
+
+      if (!readCurrentState) {
         outcomes.push({
           kind: 'unsupported',
           logicalId,
@@ -343,11 +361,7 @@ async function runDriftForStack(
         continue;
       }
 
-      const aws = await provider.readCurrentState(
-        resource.physicalId,
-        logicalId,
-        resource.resourceType
-      );
+      const aws = await readCurrentState(resource.physicalId, logicalId, resource.resourceType);
       if (aws === undefined) {
         outcomes.push({
           kind: 'unsupported',
