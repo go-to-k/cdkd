@@ -350,15 +350,24 @@ The command produces three terminal states per resource:
   property path that diverged.
 - **clean** — every state-recorded property matches AWS. Counted in
   the per-stack summary but not listed individually.
-- **drift unknown** — the provider does not implement the optional
-  `readCurrentState` method yet. Reported as `? <logicalId> (<type>)`
-  in a separate block at the bottom of each stack's report.
+- **drift unknown** — neither the SDK Provider nor the Cloud Control
+  API fallback could read the resource: the SDK Provider has no
+  `readCurrentState` AND CC API does not support the type or returned
+  `undefined` (resource missing / no Properties on the GetResource
+  response). Reported as `? <logicalId> (<type>)` in a separate block
+  at the bottom of each stack's report.
 
 Drift detection works automatically for every resource type that goes
-through Cloud Control API (the majority of cdkd's surface). SDK
-Providers add their own `readCurrentState` incrementally — providers
-without an implementation surface as `drift unknown` rather than `clean`,
-so you can see exactly which types are still uncovered.
+through Cloud Control API (the majority of cdkd's surface). When an
+SDK Provider has not implemented its own `readCurrentState` yet, cdkd
+**automatically falls back to the CC API provider** — so most
+SDK-Provider-managed types still get meaningful drift out of the box,
+even before the dedicated SDK-side implementation lands. SDK Providers
+add their own `readCurrentState` incrementally for shape precision (CC
+API's response is still useful but may include AWS-managed keys that
+the comparator filters out at compare time). Resource types that have
+neither an SDK-side `readCurrentState` nor CC API support surface as
+`drift unknown`, so you can see exactly which types are still uncovered.
 
 The following SDK Providers ship with first-class `readCurrentState`
 (no CC API round-trip):
@@ -431,17 +440,18 @@ Tag drift and IAM inline-policy bodies are out of scope for v1; see
 [src/types/resource.ts](../src/types/resource.ts) for the per-provider
 shape decisions.
 
-Some sub-resources of multi-type providers report `drift unknown`
-because their `physicalId` does not carry the parent identifier needed
-to issue the matching `Get*` call (cdkd's `readCurrentState` interface
-does not pass the `Properties` map). Concretely:
+Some sub-resources of multi-type providers do not have a first-class
+SDK-side `readCurrentState` implementation because their `physicalId`
+does not carry the parent identifier needed to issue the matching
+`Get*` call (cdkd's `readCurrentState` interface does not pass the
+`Properties` map). Concretely:
 `AWS::ApiGateway::Authorizer` / `Resource` / `Deployment` / `Stage`,
 `AWS::ApiGatewayV2::Stage` / `Integration` / `Route` / `Authorizer`.
-The CC API fallback handles these out of the box for accounts that
-work through the SDK provider boundary; first-class drift for them
-needs an interface change and is deferred. `AWS::CloudFront::Distribution`
-also defers to the CC API fallback — its `DistributionConfig` schema
-uses the SDK's `Quantity + Items` shape vs CFn's flat array shape, and
+The automatic CC API fallback covers these out of the box, so they
+report meaningful drift; first-class SDK-side drift for them needs an
+interface change and is deferred. `AWS::CloudFront::Distribution` also
+defers to the CC API fallback — its `DistributionConfig` schema uses
+the SDK's `Quantity + Items` shape vs CFn's flat array shape, and
 mirroring the conversion would balloon the diff for marginal gain over
 the CC API path.
 
