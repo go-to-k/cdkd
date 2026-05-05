@@ -1,3 +1,10 @@
+# [0.42.0](https://github.com/go-to-k/cdkd/compare/v0.41.0...v0.42.0) (2026-05-05)
+
+
+### Features
+
+* **drift:** CC API fallback when SDK Provider has no readCurrentState ([#138](https://github.com/go-to-k/cdkd/issues/138)) ([4a40903](https://github.com/go-to-k/cdkd/commit/4a4090333396027b3c23bb71acbe4a870f219d15))
+
 # [0.41.0](https://github.com/go-to-k/cdkd/compare/v0.40.0...v0.41.0) (2026-05-05)
 
 
