@@ -1,3 +1,10 @@
+# [0.37.0](https://github.com/go-to-k/cdkd/compare/v0.36.0...v0.37.0) (2026-05-05)
+
+
+### Features
+
+* **providers:** add readCurrentState to 7 SDK Providers (drift coverage) ([#133](https://github.com/go-to-k/cdkd/issues/133)) ([2902c94](https://github.com/go-to-k/cdkd/commit/2902c94421506601c15052d9f217033edc283034))
+
 # [0.36.0](https://github.com/go-to-k/cdkd/compare/v0.35.0...v0.36.0) (2026-05-05)
 
 
