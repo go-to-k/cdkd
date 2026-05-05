@@ -282,8 +282,8 @@ apply — instead, the command asks each resource's provider for its
 `readCurrentState` snapshot and compares against the `properties` field
 saved in state.
 
-Detection only — `--accept` / `--revert` are intentionally out of scope
-and will land in a follow-up PR.
+Detection is the default behavior — pass `--accept` or `--revert` to
+also resolve any drift the comparator finds (see "Resolving drift" below).
 
 ```bash
 # Single stack
@@ -297,6 +297,16 @@ cdkd drift MyStack --stack-region us-east-1
 
 # Machine-readable output for CI gating
 cdkd drift --all --json
+
+# Resolve drift: state ← AWS (catch up cdkd state with manual console changes)
+cdkd drift MyStack --accept --yes
+
+# Resolve drift: AWS ← state (push cdkd state values back into AWS)
+cdkd drift MyStack --revert --yes
+
+# Preview either resolution without acquiring a lock or hitting AWS
+cdkd drift MyStack --accept --dry-run
+cdkd drift MyStack --revert --dry-run
 ```
 
 Flags:
@@ -306,17 +316,32 @@ Flags:
 - `--all` — drift-check every stack in the state bucket.
 - `--stack-region <region>` — region to inspect when a stackName has
   state in multiple regions (mirrors `cdkd state show`).
-- `--json` — emit a structured per-stack report (see below).
-- `--state-bucket`, `--state-prefix`, `--profile`, `--verbose`, `-y`,
-  `--region` — same as on every other state-driven command. `--region`
-  is deprecated and ignored (PR 5).
+- `--json` — emit a structured per-stack report (see below). Detection
+  output only — the resolution paths print a plain-text plan + summary.
+- `--accept` — write the AWS-current values back into cdkd state (state
+  ← AWS) for every drifted property. Requires a stack lock. Mutually
+  exclusive with `--revert`. See "Resolving drift" below.
+- `--revert` — call `provider.update` to push cdkd state values back
+  into AWS (AWS ← state) for every drifted resource. Requires a stack
+  lock. Mutually exclusive with `--accept`. See "Resolving drift" below.
+- `--dry-run` — for `--accept` / `--revert`: print the planned mutations
+  and exit without acquiring a lock or hitting AWS / S3.
+- `--concurrency <number>` — maximum concurrent `provider.update` calls
+  during `--revert` (default `4`). No effect on `--accept` (writes are
+  serialized per stack).
+- `-y` / `--yes` — skip the confirmation prompt before writing state
+  (`--accept`) or pushing changes back to AWS (`--revert`).
+- `--state-bucket`, `--state-prefix`, `--profile`, `--verbose`,
+  `--role-arn`, `--region` — same as on every other state-driven
+  command. `--region` is deprecated and ignored (PR 5).
 
 Exit codes:
 
 | Exit | Meaning |
 | --- | --- |
-| `0` | Every inspected stack has zero drift. |
-| `1` | Drift detected on at least one resource on at least one stack, OR the command crashed (no state found, AWS error, bad arguments). Both go through the default error handler — drift detection emits the rich human report before throwing, so the report is the only output for the drift case. |
+| `0` | Every inspected stack has zero drift, OR `--accept` / `--revert` resolved every drift cleanly. |
+| `1` | Drift detected on at least one resource on at least one stack (detection-only mode), OR the command crashed (no state found, AWS error, bad arguments). Both go through the default error handler — drift detection emits the rich human report before throwing, so the report is the only output for the drift case. |
+| `2` | `--revert` finished but one or more `provider.update` calls failed (`PartialFailureError`). The successful resources are now in sync; re-run `cdkd drift <stack>` to see what's left, then `cdkd drift <stack> --revert` to retry. |
 
 The command produces three terminal states per resource:
 
@@ -376,6 +401,41 @@ The comparator only looks at keys present in cdkd state — AWS-managed
 fields (timestamps, generated identifiers, account-wide defaults) that
 cdkd never set are ignored, so they never surface as false-positive
 drift.
+
+### Resolving drift (`--accept` / `--revert`)
+
+Once `cdkd drift` has detected drift, the same command can also resolve
+it. The two flags are mutually exclusive — pick the direction that
+matches the intent:
+
+- **`--accept`** (state ← AWS) — write the AWS-current values back
+  into cdkd's S3 state file. Use this when the AWS-side change is the
+  intentional source of truth (typically a manual console edit you want
+  cdkd to "catch up" to without re-deploying). The cdkd state ETag
+  captured during the read is forwarded to `S3StateBackend.saveState`
+  as `IfMatch` for optimistic locking, so a concurrent `cdkd deploy`
+  cannot race the write. AWS resources are NOT modified.
+
+- **`--revert`** (AWS ← state) — call each drifted resource's
+  `provider.update` with `properties = state-recorded values` and
+  `previousProperties = AWS-current values` (captured during the drift
+  read, no second AWS call). Use this to undo a manual AWS console
+  change. Per-resource failures are collected and surface as
+  `PartialFailureError` (exit 2) at the end of the run; one resource's
+  failure does not abort the rest. cdkd state is NOT modified by
+  `--revert` — once `provider.update` succeeds, AWS values match state
+  by definition, so a subsequent `cdkd drift` reports `clean`.
+
+Both flags acquire the per-stack lock (the same one `cdkd deploy` uses)
+before mutating anything, and prompt for confirmation unless `-y` /
+`--yes` is set. `--dry-run` prints the planned mutations and exits 0
+without acquiring a lock or hitting AWS / S3.
+
+`--accept` is a no-op on a clean stack (no drift, nothing to write).
+`--revert` is likewise a no-op on a clean stack (no drift, nothing to
+push). Resources surfaced as `unsupported` (provider has no
+`readCurrentState` yet) are skipped by both flags — the comparator
+never produced a `PropertyDrift` for them.
 
 ## Exit codes
 

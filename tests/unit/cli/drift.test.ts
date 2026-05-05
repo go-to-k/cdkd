@@ -35,15 +35,39 @@ vi.mock('../../../src/utils/aws-clients.ts', () => ({
 }));
 
 const mockGetState =
-  vi.fn<(stackName: string, region: string) => Promise<{ state: StackState } | null>>();
+  vi.fn<
+    (
+      stackName: string,
+      region: string
+    ) => Promise<{ state: StackState; etag: string; migrationPending?: boolean } | null>
+  >();
 const mockListStacks =
   vi.fn<() => Promise<Array<{ stackName: string; region?: string }>>>();
 const mockVerifyBucketExists = vi.fn<() => Promise<void>>();
+const mockSaveState =
+  vi.fn<
+    (
+      stackName: string,
+      region: string,
+      state: StackState,
+      options?: { expectedEtag?: string; migrateLegacy?: boolean }
+    ) => Promise<string>
+  >();
 vi.mock('../../../src/state/s3-state-backend.js', () => ({
   S3StateBackend: vi.fn().mockImplementation(() => ({
     getState: mockGetState,
     listStacks: mockListStacks,
     verifyBucketExists: mockVerifyBucketExists,
+    saveState: mockSaveState,
+  })),
+}));
+
+const mockAcquireLock = vi.fn<() => Promise<boolean>>();
+const mockReleaseLock = vi.fn<() => Promise<void>>();
+vi.mock('../../../src/state/lock-manager.js', () => ({
+  LockManager: vi.fn().mockImplementation(() => ({
+    acquireLock: mockAcquireLock,
+    releaseLock: mockReleaseLock,
   })),
 }));
 
@@ -114,7 +138,9 @@ function makeResource(overrides: Partial<ResourceState> = {}): ResourceState {
   };
 }
 
-function makeState(resources: Record<string, ResourceState>): { state: StackState } {
+function makeState(
+  resources: Record<string, ResourceState>
+): { state: StackState; etag: string } {
   return {
     state: {
       version: 2,
@@ -124,6 +150,7 @@ function makeState(resources: Record<string, ResourceState>): { state: StackStat
       outputs: {},
       lastModified: 0,
     },
+    etag: '"etag-1"',
   };
 }
 
@@ -135,6 +162,10 @@ describe('cdkd drift', () => {
     mockListStacks.mockReset();
     mockVerifyBucketExists.mockReset();
     mockVerifyBucketExists.mockResolvedValue(undefined);
+    mockSaveState.mockReset();
+    mockSaveState.mockResolvedValue('"etag-2"');
+    mockAcquireLock.mockReset().mockResolvedValue(true);
+    mockReleaseLock.mockReset().mockResolvedValue(undefined);
     mockRegistryGetProvider.mockReset();
     mockRegistryShouldSkip.mockReset().mockReturnValue(false);
     errorSpy.mockReset();
@@ -290,6 +321,290 @@ describe('cdkd drift', () => {
     await runDrift(['TestStack']);
     const messages = errorSpy.mock.calls.map((c) => String(c[0])).join('\n');
     expect(messages).toMatch(/No state found for stack 'TestStack'/);
+  });
+
+  it('rejects --accept and --revert together at parse time', async () => {
+    mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+    mockGetState.mockResolvedValueOnce(
+      makeState({
+        Bucket1: makeResource({
+          physicalId: 'b',
+          resourceType: 'AWS::S3::Bucket',
+          properties: { BucketName: 'b' },
+        }),
+      })
+    );
+    mockRegistryGetProvider.mockReturnValue({
+      readCurrentState: async () => ({ BucketName: 'b' }),
+    });
+
+    await runDrift(['TestStack', '--accept', '--revert', '--yes']);
+    const messages = errorSpy.mock.calls.map((c) => String(c[0])).join('\n');
+    expect(messages).toMatch(/--accept and --revert are mutually exclusive/);
+    // saveState / provider.update never run when the flags collide.
+    expect(mockSaveState).not.toHaveBeenCalled();
+  });
+
+  describe('--accept (state ← AWS)', () => {
+    it('writes the AWS-current values into state', async () => {
+      mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+      mockGetState.mockResolvedValueOnce(
+        makeState({
+          Bucket1: makeResource({
+            physicalId: 'b',
+            resourceType: 'AWS::S3::Bucket',
+            properties: {
+              BucketName: 'b',
+              VersioningConfiguration: { Status: 'Enabled' },
+            },
+          }),
+        })
+      );
+      mockRegistryGetProvider.mockReturnValue({
+        readCurrentState: async () => ({
+          BucketName: 'b',
+          VersioningConfiguration: { Status: 'Suspended' },
+        }),
+      });
+
+      const { error } = await runDrift(['TestStack', '--accept', '--yes']);
+      expect(error).toBeUndefined();
+
+      expect(mockAcquireLock).toHaveBeenCalledWith(
+        'TestStack',
+        'us-east-1',
+        expect.any(String),
+        'drift-accept'
+      );
+      expect(mockReleaseLock).toHaveBeenCalledWith('TestStack', 'us-east-1');
+
+      expect(mockSaveState).toHaveBeenCalledTimes(1);
+      const [stackName, region, savedState, opts] = mockSaveState.mock.calls[0]!;
+      expect(stackName).toBe('TestStack');
+      expect(region).toBe('us-east-1');
+      expect(opts?.expectedEtag).toBe('"etag-1"');
+      expect(savedState.resources['Bucket1']!.properties).toEqual({
+        BucketName: 'b',
+        VersioningConfiguration: { Status: 'Suspended' },
+      });
+    });
+
+    it('--accept with --dry-run does NOT call saveState or acquire a lock', async () => {
+      mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+      mockGetState.mockResolvedValueOnce(
+        makeState({
+          Bucket1: makeResource({
+            physicalId: 'b',
+            resourceType: 'AWS::S3::Bucket',
+            properties: { VersioningConfiguration: { Status: 'Enabled' } },
+          }),
+        })
+      );
+      mockRegistryGetProvider.mockReturnValue({
+        readCurrentState: async () => ({ VersioningConfiguration: { Status: 'Suspended' } }),
+      });
+
+      const { output, error } = await runDrift(['TestStack', '--accept', '--dry-run', '--yes']);
+
+      expect(error).toBeUndefined();
+      expect(mockSaveState).not.toHaveBeenCalled();
+      expect(mockAcquireLock).not.toHaveBeenCalled();
+      expect(output).toContain('Plan (--accept)');
+      expect(output).toContain('VersioningConfiguration.Status: Enabled -> Suspended');
+    });
+
+    it('--accept on a clean stack is a no-op', async () => {
+      mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+      mockGetState.mockResolvedValueOnce(
+        makeState({
+          Bucket1: makeResource({
+            physicalId: 'b',
+            resourceType: 'AWS::S3::Bucket',
+            properties: { BucketName: 'b' },
+          }),
+        })
+      );
+      mockRegistryGetProvider.mockReturnValue({
+        readCurrentState: async () => ({ BucketName: 'b' }),
+      });
+
+      const { error } = await runDrift(['TestStack', '--accept', '--yes']);
+
+      expect(error).toBeUndefined();
+      expect(mockAcquireLock).not.toHaveBeenCalled();
+      expect(mockSaveState).not.toHaveBeenCalled();
+    });
+
+    it('handles nested dotted paths when accepting', async () => {
+      mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+      mockGetState.mockResolvedValueOnce(
+        makeState({
+          Bucket1: makeResource({
+            physicalId: 'b',
+            resourceType: 'AWS::S3::Bucket',
+            properties: {
+              PublicAccessBlockConfiguration: {
+                BlockPublicAcls: true,
+                BlockPublicPolicy: true,
+              },
+            },
+          }),
+        })
+      );
+      mockRegistryGetProvider.mockReturnValue({
+        readCurrentState: async () => ({
+          PublicAccessBlockConfiguration: {
+            BlockPublicAcls: true,
+            BlockPublicPolicy: false,
+          },
+        }),
+      });
+
+      await runDrift(['TestStack', '--accept', '--yes']);
+
+      const [, , savedState] = mockSaveState.mock.calls[0]!;
+      expect(savedState.resources['Bucket1']!.properties).toEqual({
+        PublicAccessBlockConfiguration: {
+          BlockPublicAcls: true,
+          BlockPublicPolicy: false,
+        },
+      });
+    });
+  });
+
+  describe('--revert (AWS ← state)', () => {
+    it('calls provider.update with stateProps as new and AWS-current as previous', async () => {
+      mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+      mockGetState.mockResolvedValueOnce(
+        makeState({
+          Bucket1: makeResource({
+            physicalId: 'phys-b',
+            resourceType: 'AWS::S3::Bucket',
+            properties: { VersioningConfiguration: { Status: 'Enabled' } },
+          }),
+        })
+      );
+      const updateMock = vi.fn(async () => ({ physicalId: 'phys-b', wasReplaced: false }));
+      mockRegistryGetProvider.mockReturnValue({
+        readCurrentState: async () => ({ VersioningConfiguration: { Status: 'Suspended' } }),
+        update: updateMock,
+      });
+
+      const { error } = await runDrift(['TestStack', '--revert', '--yes']);
+
+      expect(error).toBeUndefined();
+      expect(updateMock).toHaveBeenCalledTimes(1);
+      const [logicalId, physicalId, resourceType, newProps, previousProps] =
+        updateMock.mock.calls[0]!;
+      expect(logicalId).toBe('Bucket1');
+      expect(physicalId).toBe('phys-b');
+      expect(resourceType).toBe('AWS::S3::Bucket');
+      expect(newProps).toEqual({ VersioningConfiguration: { Status: 'Enabled' } });
+      expect(previousProps).toEqual({ VersioningConfiguration: { Status: 'Suspended' } });
+
+      // State is NOT updated by --revert.
+      expect(mockSaveState).not.toHaveBeenCalled();
+
+      expect(mockAcquireLock).toHaveBeenCalledWith(
+        'TestStack',
+        'us-east-1',
+        expect.any(String),
+        'drift-revert'
+      );
+      expect(mockReleaseLock).toHaveBeenCalledWith('TestStack', 'us-east-1');
+    });
+
+    it('--revert with --dry-run does NOT call provider.update or acquire a lock', async () => {
+      mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+      mockGetState.mockResolvedValueOnce(
+        makeState({
+          Bucket1: makeResource({
+            physicalId: 'b',
+            resourceType: 'AWS::S3::Bucket',
+            properties: { VersioningConfiguration: { Status: 'Enabled' } },
+          }),
+        })
+      );
+      const updateMock = vi.fn();
+      mockRegistryGetProvider.mockReturnValue({
+        readCurrentState: async () => ({ VersioningConfiguration: { Status: 'Suspended' } }),
+        update: updateMock,
+      });
+
+      const { output, error } = await runDrift([
+        'TestStack',
+        '--revert',
+        '--dry-run',
+        '--yes',
+      ]);
+
+      expect(error).toBeUndefined();
+      expect(updateMock).not.toHaveBeenCalled();
+      expect(mockAcquireLock).not.toHaveBeenCalled();
+      expect(mockSaveState).not.toHaveBeenCalled();
+      expect(output).toContain('Plan (--revert)');
+    });
+
+    it('--revert on a clean stack is a no-op', async () => {
+      mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+      mockGetState.mockResolvedValueOnce(
+        makeState({
+          Bucket1: makeResource({
+            physicalId: 'b',
+            resourceType: 'AWS::S3::Bucket',
+            properties: { BucketName: 'b' },
+          }),
+        })
+      );
+      const updateMock = vi.fn();
+      mockRegistryGetProvider.mockReturnValue({
+        readCurrentState: async () => ({ BucketName: 'b' }),
+        update: updateMock,
+      });
+
+      const { error } = await runDrift(['TestStack', '--revert', '--yes']);
+      expect(error).toBeUndefined();
+      expect(updateMock).not.toHaveBeenCalled();
+      expect(mockAcquireLock).not.toHaveBeenCalled();
+    });
+
+    it('--revert exits 2 (PartialFailureError) when one provider.update fails', async () => {
+      mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+      mockGetState.mockResolvedValueOnce(
+        makeState({
+          Bucket1: makeResource({
+            physicalId: 'phys-1',
+            resourceType: 'AWS::S3::Bucket',
+            properties: { VersioningConfiguration: { Status: 'Enabled' } },
+          }),
+          Bucket2: makeResource({
+            physicalId: 'phys-2',
+            resourceType: 'AWS::S3::Bucket',
+            properties: { VersioningConfiguration: { Status: 'Enabled' } },
+          }),
+        })
+      );
+      const updateMock = vi.fn(async (logicalId: string) => {
+        if (logicalId === 'Bucket1') {
+          throw new Error('AccessDenied');
+        }
+        return { physicalId: 'phys-2', wasReplaced: false };
+      });
+      mockRegistryGetProvider.mockReturnValue({
+        readCurrentState: async () => ({ VersioningConfiguration: { Status: 'Suspended' } }),
+        update: updateMock,
+      });
+
+      const { error } = await runDrift(['TestStack', '--revert', '--yes']);
+
+      // PartialFailureError → handler triggers process.exit(2) which our
+      // stub turns into an "__exit__" sentinel.
+      expect((error as Error).message).toBe('__exit__');
+      expect(exitSpy).toHaveBeenCalledWith(2);
+
+      // Both updates were attempted; the second succeeded.
+      expect(updateMock).toHaveBeenCalledTimes(2);
+    });
   });
 
   it('--all checks every stack in the bucket', async () => {

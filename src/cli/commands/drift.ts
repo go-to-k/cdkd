@@ -1,3 +1,4 @@
+import * as readline from 'node:readline/promises';
 import { Command, Option } from 'commander';
 import {
   commonOptions,
@@ -6,8 +7,9 @@ import {
   warnIfDeprecatedRegion,
 } from '../options.js';
 import { getLogger } from '../../utils/logger.js';
-import { CdkdError, withErrorHandling } from '../../utils/error-handler.js';
+import { CdkdError, PartialFailureError, withErrorHandling } from '../../utils/error-handler.js';
 import { S3StateBackend, type StackStateRef } from '../../state/s3-state-backend.js';
+import { LockManager } from '../../state/lock-manager.js';
 import { setAwsClients, AwsClients } from '../../utils/aws-clients.js';
 import { resolveStateBucketWithDefault } from '../config-loader.js';
 import { ProviderRegistry } from '../../provisioning/provider-registry.js';
@@ -15,7 +17,9 @@ import { registerAllProviders } from '../../provisioning/register-providers.js';
 import { calculateResourceDrift, type PropertyDrift } from '../../analyzer/drift-calculator.js';
 import { withStackName } from '../../provisioning/resource-name.js';
 import { applyRoleArnIfSet } from '../../utils/role-arn.js';
-import type { StackState } from '../../types/state.js';
+import { withRetry } from '../../deployment/retry.js';
+import type { ResourceProvider } from '../../types/resource.js';
+import type { ResourceState, StackState } from '../../types/state.js';
 
 /**
  * Per-resource drift outcome surfaced by the drift command.
@@ -28,7 +32,19 @@ import type { StackState } from '../../types/state.js';
  *     so users see what's still uncovered.
  */
 type DriftOutcome =
-  | { kind: 'drifted'; logicalId: string; resourceType: string; changes: PropertyDrift[] }
+  | {
+      kind: 'drifted';
+      logicalId: string;
+      resourceType: string;
+      changes: PropertyDrift[];
+      /**
+       * Snapshot of AWS-current properties returned by the provider's
+       * `readCurrentState`. Captured here so `--revert` can pass it to
+       * `provider.update` as the `previousProperties` argument without
+       * re-issuing the read.
+       */
+      awsProperties: Record<string, unknown>;
+    }
   | { kind: 'clean'; logicalId: string; resourceType: string }
   | { kind: 'unsupported'; logicalId: string; resourceType: string };
 
@@ -36,11 +52,22 @@ type DriftOutcome =
  * Aggregated drift report for one stack — what gets printed (or emitted as
  * JSON) for that stack. Aggregation across multiple stacks happens in the
  * top-level command driver.
+ *
+ * `state` and `etag` are kept on the report so the resolution paths
+ * (`--accept`, `--revert`) can reuse the already-loaded state without
+ * re-reading from S3 — and `etag` is required for the optimistic-lock
+ * `IfMatch` write on `--accept`.
  */
 interface StackDriftReport {
   stackName: string;
   region: string;
   outcomes: DriftOutcome[];
+  /** State that drift was computed against. Populated on every report. */
+  state: StackState;
+  /** S3 ETag of the state read; needed for `--accept`'s conditional write. */
+  etag: string;
+  /** When the state was loaded from the legacy v1 key — forwarded to saveState. */
+  migrationPending: boolean;
 }
 
 /**
@@ -64,19 +91,29 @@ class DriftDetectedError extends CdkdError {
 /**
  * `cdkd drift <stack> [<stack>...]` command implementation.
  *
- * Reads each named stack's state from S3, asks every resource's provider
- * for its `readCurrentState` snapshot, and compares against the
- * state-recorded `properties`. Outputs a per-stack report and exits with:
+ * Three operating modes (mutually exclusive):
  *
- *   - 0 — every inspected stack has zero drift.
- *   - 1 — at least one resource drifted, OR the command crashed (no state,
- *         AWS error, bad arguments, etc.). Both go through the default
- *         error handler. Drift detection emits the rich human report
- *         before throwing a `silent: true` error so the report is the
- *         only output for the drift case.
+ *   1. **Detection only** (default) — reads each named stack's state from
+ *      S3, asks every resource's provider for its `readCurrentState`
+ *      snapshot, and compares against the state-recorded `properties`.
+ *      Outputs a per-stack report and exits with `0` when no drift, `1`
+ *      when drift is detected (rich human report is the only output).
  *
- * Detection only — `--accept` / `--revert` are out of scope for this PR
- * and will be added in a follow-up.
+ *   2. **`--accept`** — state ← AWS. For each drifted property, write
+ *      the AWS-current value back into cdkd state. Use this when the
+ *      user manually changed something in the AWS console and wants
+ *      cdkd state to "catch up" without re-deploying. Requires a stack
+ *      lock. Confirms with the user unless `-y/--yes`.
+ *
+ *   3. **`--revert`** — AWS ← state. For each drifted resource, call
+ *      `provider.update` with the cdkd-state values to push them back
+ *      into AWS. Use this to undo a manual AWS console change. Requires
+ *      a stack lock. Per-resource failures are collected and surface as
+ *      `PartialFailureError` (exit 2) at the end of the run; one
+ *      resource's failure does not abort the rest.
+ *
+ * `--accept` and `--revert` are mutually exclusive. Both honor `--dry-run`
+ * (print the planned mutations, exit 0 without acquiring a lock).
  */
 async function driftCommand(
   stacks: string[],
@@ -91,6 +128,10 @@ async function driftCommand(
     verbose: boolean;
     yes?: boolean;
     roleArn?: string;
+    accept?: boolean;
+    revert?: boolean;
+    dryRun?: boolean;
+    concurrency?: number;
   }
 ): Promise<void> {
   const logger = getLogger();
@@ -102,6 +143,13 @@ async function driftCommand(
 
   if (!options.all && stacks.length === 0) {
     throw new Error('Stack name is required. Usage: cdkd drift <stack> [<stack>...] | --all');
+  }
+
+  if (options.accept && options.revert) {
+    throw new Error(
+      '--accept and --revert are mutually exclusive. ' +
+        'Use --accept to update cdkd state from AWS, or --revert to push cdkd state values back into AWS.'
+    );
   }
 
   // Resolve --role-arn / CDKD_ROLE_ARN before any AWS call.
@@ -117,15 +165,12 @@ async function driftCommand(
     const region = options.region || process.env['AWS_REGION'] || 'us-east-1';
     const bucket = await resolveStateBucketWithDefault(options.stateBucket, region);
     const prefix = options.statePrefix;
+    const stateConfig = { bucket, prefix };
 
-    const stateBackend = new S3StateBackend(
-      awsClients.s3,
-      { bucket, prefix },
-      {
-        region,
-        ...(options.profile && { profile: options.profile }),
-      }
-    );
+    const stateBackend = new S3StateBackend(awsClients.s3, stateConfig, {
+      region,
+      ...(options.profile && { profile: options.profile }),
+    });
     await stateBackend.verifyBucketExists();
 
     const providerRegistry = new ProviderRegistry();
@@ -161,9 +206,33 @@ async function driftCommand(
       writeHumanReport(reports);
     }
 
+    // Detection-only path: exit 0 / 1 based on whether drift was found,
+    // regardless of subsequent flags. `--accept` / `--revert` take over
+    // below if requested.
     const drifted = reports.some((r) => r.outcomes.some((o) => o.kind === 'drifted'));
-    if (drifted) {
-      throw new DriftDetectedError();
+
+    if (!options.accept && !options.revert) {
+      if (drifted) {
+        throw new DriftDetectedError();
+      }
+      return;
+    }
+
+    // Resolution path. Both flags share the prompt + lock + state-loaded
+    // reports; the per-resource action differs.
+    if (!drifted) {
+      logger.info(
+        options.accept
+          ? 'No drift detected — nothing to accept.'
+          : 'No drift detected — nothing to revert.'
+      );
+      return;
+    }
+
+    if (options.accept) {
+      await runAccept(reports, stateBackend, stateConfig, awsClients, options);
+    } else {
+      await runRevert(reports, providerRegistry, stateConfig, awsClients, options);
     }
   } finally {
     awsClients.destroy();
@@ -226,7 +295,10 @@ function resolveTargetRefs(
 
 /**
  * Run drift detection for one stack and shape the per-resource outcomes
- * into a {@link StackDriftReport}.
+ * into a {@link StackDriftReport}. The state object + etag are stored on
+ * the report so `--accept` can write back without a re-read, and
+ * `--revert` can pass the captured AWS-current snapshot to
+ * `provider.update` as the `previousProperties` argument.
  */
 async function runDriftForStack(
   stackName: string,
@@ -294,12 +366,356 @@ async function runDriftForStack(
           logicalId,
           resourceType: resource.resourceType,
           changes,
+          awsProperties: aws,
         });
       }
     }
 
-    return { stackName, region, outcomes };
+    return {
+      stackName,
+      region,
+      outcomes,
+      state,
+      etag: result.etag,
+      migrationPending: result.migrationPending ?? false,
+    };
   });
+}
+
+/**
+ * Set a value at a dotted path inside a plain object, creating intermediate
+ * objects as needed. Mirrors `lodash.set` for the subset of paths the drift
+ * comparator actually emits — dotted nested keys, no array indices.
+ *
+ * The drift comparator (`src/analyzer/drift-calculator.ts`) only synthesizes
+ * paths through plain objects; arrays and scalars surface as a single drift
+ * entry on the parent path. So we do not need to parse `[i]` segments.
+ */
+function setAtPath(target: Record<string, unknown>, path: string, value: unknown): void {
+  if (path.length === 0) {
+    return;
+  }
+  const segments = path.split('.');
+  let cursor: Record<string, unknown> = target;
+  for (let i = 0; i < segments.length - 1; i++) {
+    const key = segments[i]!;
+    const next = cursor[key];
+    if (next === undefined || next === null || typeof next !== 'object' || Array.isArray(next)) {
+      const fresh: Record<string, unknown> = {};
+      cursor[key] = fresh;
+      cursor = fresh;
+    } else {
+      cursor = next as Record<string, unknown>;
+    }
+  }
+  cursor[segments[segments.length - 1]!] = value;
+}
+
+/**
+ * `--accept`: state ← AWS.
+ *
+ * For each drifted resource, walk every property drift and write the
+ * AWS-current value into the state-side `properties` map. Then, under a
+ * stack lock, persist the updated state via `S3StateBackend.saveState`
+ * with the captured etag (optimistic locking).
+ *
+ * `--dry-run` short-circuits before the lock and the write.
+ */
+async function runAccept(
+  reports: StackDriftReport[],
+  stateBackend: S3StateBackend,
+  stateConfig: { bucket: string; prefix: string },
+  awsClients: AwsClients,
+  options: { yes?: boolean; dryRun?: boolean }
+): Promise<void> {
+  const logger = getLogger();
+
+  // Print a per-resource summary of the planned state mutations BEFORE we
+  // ask for confirmation (or short-circuit on --dry-run). Mirrors `cdkd
+  // import`'s confirm-then-write flow.
+  printAcceptPlan(reports);
+
+  if (options.dryRun) {
+    logger.info('--dry-run: state will NOT be written. Re-run without --dry-run to apply.');
+    return;
+  }
+
+  if (!options.yes) {
+    const ok = await confirmPrompt(`Update cdkd state with the AWS-current values shown above?`);
+    if (!ok) {
+      logger.info('Aborted.');
+      return;
+    }
+  }
+
+  const lockManager = new LockManager(awsClients.s3, stateConfig);
+  const owner = `${process.env['USER'] || 'unknown'}@${process.env['HOSTNAME'] || 'host'}:${process.pid}`;
+
+  for (const report of reports) {
+    const driftedOutcomes = report.outcomes.filter(
+      (o): o is Extract<DriftOutcome, { kind: 'drifted' }> => o.kind === 'drifted'
+    );
+    if (driftedOutcomes.length === 0) {
+      continue;
+    }
+
+    await lockManager.acquireLock(report.stackName, report.region, owner, 'drift-accept');
+    try {
+      // Build the mutated resources map. We deep-copy each touched
+      // resource's properties so we don't mutate the in-memory state
+      // object the caller might still reference.
+      const resources: Record<string, ResourceState> = { ...report.state.resources };
+      for (const outcome of driftedOutcomes) {
+        const existing = resources[outcome.logicalId];
+        if (!existing) continue;
+        const newProperties = JSON.parse(JSON.stringify(existing.properties ?? {})) as Record<
+          string,
+          unknown
+        >;
+        for (const change of outcome.changes) {
+          setAtPath(newProperties, change.path, change.awsValue);
+        }
+        resources[outcome.logicalId] = {
+          ...existing,
+          properties: newProperties,
+        };
+      }
+
+      const newState: StackState = {
+        ...report.state,
+        resources,
+        lastModified: Date.now(),
+      };
+
+      const saveOptions: { expectedEtag?: string; migrateLegacy?: boolean } = {
+        expectedEtag: report.etag,
+      };
+      if (report.migrationPending) {
+        saveOptions.migrateLegacy = true;
+      }
+      await stateBackend.saveState(report.stackName, report.region, newState, saveOptions);
+      logger.info(
+        `✓ State updated for ${report.stackName} (${report.region}): ` +
+          `accepted drift on ${driftedOutcomes.length} resource(s).`
+      );
+    } finally {
+      await lockManager.releaseLock(report.stackName, report.region).catch((err) => {
+        logger.warn(
+          `Failed to release lock for ${report.stackName} (${report.region}): ` +
+            (err instanceof Error ? err.message : String(err))
+        );
+      });
+    }
+  }
+}
+
+/**
+ * `--revert`: AWS ← state.
+ *
+ * For each drifted resource, call `provider.update(logicalId, physicalId,
+ * resourceType, properties /*new*\/, previousProperties /*old*\/)` with:
+ *   - `properties` = state-recorded properties (the desired truth)
+ *   - `previousProperties` = AWS-current properties (the previous-known
+ *     truth, captured during the drift read so we don't re-issue it)
+ *
+ * Per-resource failures are collected and surface as `PartialFailureError`
+ * (exit 2) at the end. State is NOT updated by `--revert` — once the
+ * update succeeds, AWS values match state by definition.
+ *
+ * The per-stack lock is acquired before any update so a concurrent
+ * `cdkd deploy` cannot race the in-flight property changes.
+ */
+async function runRevert(
+  reports: StackDriftReport[],
+  providerRegistry: ProviderRegistry,
+  stateConfig: { bucket: string; prefix: string },
+  awsClients: AwsClients,
+  options: { yes?: boolean; dryRun?: boolean; concurrency?: number }
+): Promise<void> {
+  const logger = getLogger();
+
+  printRevertPlan(reports);
+
+  if (options.dryRun) {
+    logger.info('--dry-run: AWS will NOT be modified. Re-run without --dry-run to apply.');
+    return;
+  }
+
+  if (!options.yes) {
+    const ok = await confirmPrompt(
+      `Push cdkd state values back into AWS for the resources shown above?`
+    );
+    if (!ok) {
+      logger.info('Aborted.');
+      return;
+    }
+  }
+
+  const lockManager = new LockManager(awsClients.s3, stateConfig);
+  const owner = `${process.env['USER'] || 'unknown'}@${process.env['HOSTNAME'] || 'host'}:${process.pid}`;
+  const concurrency = Math.max(1, options.concurrency ?? 4);
+
+  let totalFailed = 0;
+  let totalSucceeded = 0;
+
+  for (const report of reports) {
+    const driftedOutcomes = report.outcomes.filter(
+      (o): o is Extract<DriftOutcome, { kind: 'drifted' }> => o.kind === 'drifted'
+    );
+    if (driftedOutcomes.length === 0) {
+      continue;
+    }
+
+    await lockManager.acquireLock(report.stackName, report.region, owner, 'drift-revert');
+    try {
+      const tasks = driftedOutcomes.map((outcome) => async () => {
+        const stateResource = report.state.resources[outcome.logicalId];
+        if (!stateResource) {
+          // Defensive: drift detection saw the resource in state earlier,
+          // but if something racey happened between read and now treat it
+          // as a per-resource failure rather than aborting the whole run.
+          totalFailed++;
+          logger.error(
+            `  ✗ ${report.stackName}/${outcome.logicalId} (${outcome.resourceType}): ` +
+              `resource missing from state; skipped.`
+          );
+          return;
+        }
+        const provider: ResourceProvider = providerRegistry.getProvider(outcome.resourceType);
+        try {
+          await withRetry(
+            () =>
+              provider.update(
+                outcome.logicalId,
+                stateResource.physicalId,
+                outcome.resourceType,
+                stateResource.properties ?? {},
+                outcome.awsProperties
+              ),
+            outcome.logicalId,
+            { logger: { debug: (msg) => logger.debug(msg) } }
+          );
+          totalSucceeded++;
+          logger.info(
+            `  ✓ ${report.stackName}/${outcome.logicalId} (${outcome.resourceType}): reverted.`
+          );
+        } catch (err) {
+          totalFailed++;
+          const msg = err instanceof Error ? err.message : String(err);
+          logger.error(
+            `  ✗ ${report.stackName}/${outcome.logicalId} (${outcome.resourceType}): ${msg}`
+          );
+        }
+      });
+
+      await runWithConcurrency(tasks, concurrency);
+    } finally {
+      await lockManager.releaseLock(report.stackName, report.region).catch((err) => {
+        logger.warn(
+          `Failed to release lock for ${report.stackName} (${report.region}): ` +
+            (err instanceof Error ? err.message : String(err))
+        );
+      });
+    }
+  }
+
+  logger.info(`\nRevert summary: ${totalSucceeded} reverted, ${totalFailed} failed.`);
+
+  if (totalFailed > 0) {
+    throw new PartialFailureError(
+      `Revert completed with ${totalFailed} resource error(s). ` +
+        `Re-run 'cdkd drift <stack>' to see the remaining drift, then 'cdkd drift <stack> --revert' to retry.`
+    );
+  }
+}
+
+/**
+ * Print the planned state mutations for `--accept` (no AWS calls). One
+ * line per resource per property path, mirroring the human report's
+ * +/- diff format but flipped: the value on disk after this command
+ * runs is the `+` side.
+ */
+function printAcceptPlan(reports: StackDriftReport[]): void {
+  for (const report of reports) {
+    const drifted = report.outcomes.filter(
+      (o): o is Extract<DriftOutcome, { kind: 'drifted' }> => o.kind === 'drifted'
+    );
+    if (drifted.length === 0) continue;
+    process.stdout.write(
+      `\nPlan (--accept): update cdkd state for ${report.stackName} (${report.region}):\n`
+    );
+    for (const o of drifted) {
+      process.stdout.write(`  ~ ${o.logicalId} (${o.resourceType})\n`);
+      for (const change of o.changes) {
+        process.stdout.write(
+          `    ${change.path}: ${formatScalar(change.stateValue)} -> ${formatScalar(change.awsValue)}\n`
+        );
+      }
+    }
+  }
+}
+
+/**
+ * Print the planned `provider.update` calls for `--revert` (no AWS calls).
+ * One line per resource summarising how many property paths will be
+ * overwritten on the AWS side.
+ */
+function printRevertPlan(reports: StackDriftReport[]): void {
+  for (const report of reports) {
+    const drifted = report.outcomes.filter(
+      (o): o is Extract<DriftOutcome, { kind: 'drifted' }> => o.kind === 'drifted'
+    );
+    if (drifted.length === 0) continue;
+    process.stdout.write(
+      `\nPlan (--revert): push cdkd state values back into AWS for ${report.stackName} (${report.region}):\n`
+    );
+    for (const o of drifted) {
+      const word = o.changes.length === 1 ? 'property path' : 'property paths';
+      process.stdout.write(
+        `  → provider.update on ${o.logicalId} (${o.resourceType}): revert ${o.changes.length} ${word}\n`
+      );
+      for (const change of o.changes) {
+        process.stdout.write(
+          `    ${change.path}: ${formatScalar(change.awsValue)} -> ${formatScalar(change.stateValue)}\n`
+        );
+      }
+    }
+  }
+}
+
+/**
+ * Run a list of zero-arg async tasks with a concurrency cap. Tasks are
+ * allowed to throw; failure handling is the caller's responsibility (the
+ * revert path catches per-task errors inside the task body).
+ */
+async function runWithConcurrency(
+  tasks: Array<() => Promise<void>>,
+  concurrency: number
+): Promise<void> {
+  const queue = [...tasks];
+  const workers: Promise<void>[] = [];
+  for (let i = 0; i < Math.min(concurrency, queue.length); i++) {
+    workers.push(
+      (async (): Promise<void> => {
+        while (queue.length > 0) {
+          const task = queue.shift();
+          if (!task) break;
+          await task();
+        }
+      })()
+    );
+  }
+  await Promise.all(workers);
+}
+
+async function confirmPrompt(prompt: string): Promise<boolean> {
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+  try {
+    const ans = await rl.question(`${prompt} [y/N] `);
+    return /^y(es)?$/i.test(ans.trim());
+  } finally {
+    rl.close();
+  }
 }
 
 /**
@@ -406,11 +822,36 @@ function stackRegionOption(): Option {
 export function createDriftCommand(): Command {
   const cmd = new Command('drift')
     .description(
-      'Detect drift between cdkd state and AWS reality. Exits 0 when no drift, 1 when drift is detected.'
+      'Detect drift between cdkd state and AWS reality. Exits 0 when no drift, 1 when drift is detected. ' +
+        'Pass --accept to update cdkd state from AWS, or --revert to push cdkd state values back into AWS.'
     )
     .argument('[stacks...]', 'Stack name(s) to check (physical CloudFormation names)')
     .option('--all', 'Check every stack in the state bucket', false)
     .option('--json', 'Output as JSON', false)
+    .option(
+      '--accept',
+      'Update cdkd state with the AWS-current values for every drifted property (state ← AWS). ' +
+        'Mutually exclusive with --revert.',
+      false
+    )
+    .option(
+      '--revert',
+      'Push cdkd state values back into AWS via provider.update for every drifted resource (AWS ← state). ' +
+        'Mutually exclusive with --accept.',
+      false
+    )
+    .option(
+      '--dry-run',
+      'Print the planned mutations without acquiring a lock or hitting AWS / S3. ' +
+        'Honored by --accept and --revert.',
+      false
+    )
+    .option(
+      '--concurrency <number>',
+      'Maximum concurrent provider.update calls during --revert',
+      (value) => parseInt(value, 10),
+      4
+    )
     .addOption(stackRegionOption())
     .action(withErrorHandling(driftCommand));
 

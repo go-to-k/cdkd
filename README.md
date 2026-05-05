@@ -290,9 +290,15 @@ cdkd deploy MyStack \
 cdkd diff MyStack
 
 # Detect drift between cdkd state and AWS reality (state-only; no synth)
-# Exits 0 with no drift, 1 when drift is detected, 2 on error.
+# Exits 0 with no drift, 1 when drift is detected, 2 on partial revert failure.
 cdkd drift MyStack
 cdkd drift --all --json
+
+# Resolve drift: state ← AWS (catch up state with manual console changes)
+cdkd drift MyStack --accept --yes
+
+# Resolve drift: AWS ← state (push state values back into AWS via provider.update)
+cdkd drift MyStack --revert --yes
 
 # Dry run (plan only, no changes)
 cdkd deploy --dry-run
