@@ -31,6 +31,10 @@ export const commonOptions = [
   new Option('--verbose', 'Enable verbose logging').default(false),
   new Option('--profile <profile>', 'AWS profile'),
   new Option(
+    '--role-arn <arn>',
+    'IAM role ARN to assume for AWS API calls (env: CDKD_ROLE_ARN); the role MUST have admin-equivalent permissions because cdkd issues raw service API calls and does not route through CloudFormation, so CDK CLI deploy-roles will NOT work'
+  ),
+  new Option(
     '-y, --yes',
     'Automatically answer interactive prompts with the recommended response (e.g. confirm destroy)'
   ).default(false),

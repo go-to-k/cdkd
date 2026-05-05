@@ -17,6 +17,7 @@ import { STATE_SCHEMA_VERSION_CURRENT } from '../../types/state.js';
 import { DiffCalculator } from '../../analyzer/diff-calculator.js';
 import { IntrinsicFunctionResolver } from '../../deployment/intrinsic-function-resolver.js';
 import { setAwsClients, AwsClients } from '../../utils/aws-clients.js';
+import { applyRoleArnIfSet } from '../../utils/role-arn.js';
 import { resolveApp, resolveStateBucketWithDefault } from '../config-loader.js';
 import { matchStacks, describeStack } from '../stack-matcher.js';
 
@@ -109,6 +110,7 @@ async function diffCommand(
     all?: boolean;
     region?: string;
     profile?: string;
+    roleArn?: string;
     verbose: boolean;
     context?: string[];
   }
@@ -122,6 +124,9 @@ async function diffCommand(
   // PR 5: --region is deprecated on non-bootstrap commands. Warn but keep
   // the rest of the pipeline working as before.
   warnIfDeprecatedRegion(options);
+
+  // Resolve --role-arn / CDKD_ROLE_ARN before any AWS call.
+  await applyRoleArnIfSet({ roleArn: options.roleArn, region: options.region });
 
   // Resolve --app from CLI, env, or cdk.json
   const app = resolveApp(options.app);

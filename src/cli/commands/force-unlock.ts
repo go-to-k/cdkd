@@ -11,6 +11,7 @@ import { withErrorHandling } from '../../utils/error-handler.js';
 import { LockManager } from '../../state/lock-manager.js';
 import { S3StateBackend } from '../../state/s3-state-backend.js';
 import { setAwsClients, AwsClients } from '../../utils/aws-clients.js';
+import { applyRoleArnIfSet } from '../../utils/role-arn.js';
 import { resolveStateBucketWithDefault } from '../config-loader.js';
 
 /**
@@ -28,6 +29,7 @@ async function forceUnlockCommand(
     stackRegion?: string;
     region?: string;
     profile?: string;
+    roleArn?: string;
     verbose: boolean;
   }
 ): Promise<void> {
@@ -40,6 +42,9 @@ async function forceUnlockCommand(
   // PR 5: --region is deprecated on non-bootstrap commands. Warn but keep
   // the rest of the pipeline working as before.
   warnIfDeprecatedRegion(options);
+
+  // Resolve --role-arn / CDKD_ROLE_ARN before any AWS call.
+  await applyRoleArnIfSet({ roleArn: options.roleArn, region: options.region });
 
   // Resolve stack name
   const stackPatterns = stackArgs.length > 0 ? stackArgs : options.stack ? [options.stack] : [];

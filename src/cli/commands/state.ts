@@ -19,6 +19,7 @@ import { PartialFailureError, withErrorHandling } from '../../utils/error-handle
 import { S3StateBackend, type StackStateRef } from '../../state/s3-state-backend.js';
 import { LockManager } from '../../state/lock-manager.js';
 import { setAwsClients, AwsClients } from '../../utils/aws-clients.js';
+import { applyRoleArnIfSet } from '../../utils/role-arn.js';
 import {
   resolveStateBucketWithDefault,
   resolveStateBucketWithDefaultAndSource,
@@ -119,6 +120,7 @@ async function setupStateBackend(options: {
   statePrefix: string;
   region?: string;
   profile?: string;
+  roleArn?: string;
 }): Promise<{
   stateBackend: S3StateBackend;
   lockManager: LockManager;
@@ -131,6 +133,9 @@ async function setupStateBackend(options: {
   // PR 5: --region is deprecated on every state subcommand. Warn here so
   // the four subcommands inherit the warning via this shared bootstrap.
   warnIfDeprecatedRegion(options);
+
+  // Resolve --role-arn / CDKD_ROLE_ARN before any AWS call.
+  await applyRoleArnIfSet({ roleArn: options.roleArn, region: options.region });
 
   const awsClients = new AwsClients({
     ...(options.region && { region: options.region }),
@@ -203,6 +208,7 @@ async function stateListCommand(options: {
   statePrefix: string;
   region?: string;
   profile?: string;
+  roleArn?: string;
   verbose: boolean;
 }): Promise<void> {
   const logger = getLogger();
@@ -336,6 +342,7 @@ async function stateResourcesCommand(
     region?: string;
     stackRegion?: string;
     profile?: string;
+    roleArn?: string;
     verbose: boolean;
   }
 ): Promise<void> {
@@ -509,6 +516,7 @@ async function stateShowCommand(
     region?: string;
     stackRegion?: string;
     profile?: string;
+    roleArn?: string;
     verbose: boolean;
   }
 ): Promise<void> {
@@ -659,6 +667,7 @@ async function stateOrphanCommand(
     region?: string;
     stackRegion?: string;
     profile?: string;
+    roleArn?: string;
     verbose: boolean;
   }
 ): Promise<void> {
@@ -823,6 +832,7 @@ async function stateDestroyCommand(
     region?: string;
     stackRegion?: string;
     profile?: string;
+    roleArn?: string;
     verbose: boolean;
     resourceWarnAfter?: ResourceTimeoutOption;
     resourceTimeout?: ResourceTimeoutOption;
@@ -1174,10 +1184,14 @@ async function stateInfoCommand(options: {
   statePrefix: string;
   region?: string;
   profile?: string;
+  roleArn?: string;
   verbose: boolean;
 }): Promise<void> {
   const logger = getLogger();
   if (options.verbose) logger.setLevel('debug');
+
+  // Resolve --role-arn / CDKD_ROLE_ARN before any AWS call.
+  await applyRoleArnIfSet({ roleArn: options.roleArn, region: options.region });
 
   const awsClients = new AwsClients({
     ...(options.region && { region: options.region }),

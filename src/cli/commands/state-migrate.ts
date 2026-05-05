@@ -20,12 +20,14 @@ import { commonOptions } from '../options.js';
 import { getLogger } from '../../utils/logger.js';
 import { withErrorHandling } from '../../utils/error-handler.js';
 import { setAwsClients, AwsClients } from '../../utils/aws-clients.js';
+import { applyRoleArnIfSet } from '../../utils/role-arn.js';
 import { resolveBucketRegion } from '../../utils/aws-region-resolver.js';
 import { getDefaultStateBucketName, getLegacyStateBucketName } from '../config-loader.js';
 
 interface MigrateOptions {
   region?: string;
   profile?: string;
+  roleArn?: string;
   legacyBucket?: string;
   newBucket?: string;
   dryRun: boolean;
@@ -57,6 +59,9 @@ type Logger = ReturnType<typeof getLogger>;
 async function stateMigrateCommand(options: MigrateOptions): Promise<void> {
   const logger = getLogger();
   if (options.verbose) logger.setLevel('debug');
+
+  // Resolve --role-arn / CDKD_ROLE_ARN before any AWS call.
+  await applyRoleArnIfSet({ roleArn: options.roleArn, region: options.region });
 
   const region = options.region || process.env['AWS_REGION'] || 'us-east-1';
 

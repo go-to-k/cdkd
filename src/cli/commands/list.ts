@@ -8,6 +8,7 @@ import {
   warnIfDeprecatedRegion,
 } from '../options.js';
 import { getLogger } from '../../utils/logger.js';
+import { applyRoleArnIfSet } from '../../utils/role-arn.js';
 import { withErrorHandling } from '../../utils/error-handler.js';
 import { Synthesizer, type SynthesisOptions } from '../../synthesis/synthesizer.js';
 import type { StackInfo } from '../../synthesis/assembly-reader.js';
@@ -100,6 +101,7 @@ async function listCommand(
     verbose: boolean;
     region?: string;
     profile?: string;
+    roleArn?: string;
     context?: string[];
     long: boolean;
     showDependencies: boolean;
@@ -115,6 +117,9 @@ async function listCommand(
   // PR 5: --region is deprecated on non-bootstrap commands. Warn but keep
   // the rest of the pipeline working as before.
   warnIfDeprecatedRegion(options);
+
+  // Resolve --role-arn / CDKD_ROLE_ARN before any AWS call.
+  await applyRoleArnIfSet({ roleArn: options.roleArn, region: options.region });
 
   // Resolve --app from CLI, env, or cdk.json
   const app = resolveApp(options.app);

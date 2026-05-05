@@ -12,6 +12,7 @@ import { commonOptions } from '../options.js';
 import { getLogger } from '../../utils/logger.js';
 import { withErrorHandling, normalizeAwsError } from '../../utils/error-handler.js';
 import { setAwsClients, AwsClients } from '../../utils/aws-clients.js';
+import { applyRoleArnIfSet } from '../../utils/role-arn.js';
 import { getDefaultStateBucketName } from '../config-loader.js';
 
 /**
@@ -23,6 +24,7 @@ async function bootstrapCommand(options: {
   stateBucket?: string;
   region?: string;
   profile?: string;
+  roleArn?: string;
   force: boolean;
   verbose: boolean;
 }): Promise<void> {
@@ -34,6 +36,9 @@ async function bootstrapCommand(options: {
 
   logger.info('Starting cdkd bootstrap...');
   logger.debug('Options:', options);
+
+  // Resolve --role-arn / CDKD_ROLE_ARN before any AWS call.
+  await applyRoleArnIfSet({ roleArn: options.roleArn, region: options.region });
 
   // Initialize AWS clients with region/profile
   const awsClients = new AwsClients({
