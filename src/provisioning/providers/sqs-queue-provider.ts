@@ -329,6 +329,103 @@ export class SQSQueueProvider implements ResourceProvider {
   }
 
   /**
+   * Read the AWS-current SQS queue configuration in CFn-property shape.
+   *
+   * Issues `GetQueueAttributes` for every attribute that maps back to a
+   * cdkd-managed CFn property. AWS returns ALL attribute values as strings;
+   * we type-coerce numeric attributes back to numbers and parse
+   * `RedrivePolicy` from JSON so the comparator matches cdkd state's
+   * already-typed values.
+   *
+   * `QueueName` is derived from the URL tail (the `physicalId` is the
+   * queue URL), not surfaced by `GetQueueAttributes`.
+   *
+   * `Tags` is omitted: `ListQueueTags` is a separate call and tag drift is
+   * generally less interesting than configuration drift; the `aws:cdk:path`
+   * shape question is also out of scope here.
+   *
+   * Returns `undefined` when the queue is gone (`QueueDoesNotExist`).
+   */
+  async readCurrentState(
+    physicalId: string,
+    _logicalId: string,
+    _resourceType: string
+  ): Promise<Record<string, unknown> | undefined> {
+    let attributes: Record<string, string> | undefined;
+    try {
+      const resp = await this.sqsClient.send(
+        new GetQueueAttributesCommand({
+          QueueUrl: physicalId,
+          AttributeNames: ['All'],
+        })
+      );
+      attributes = resp.Attributes;
+    } catch (err) {
+      if (err instanceof QueueDoesNotExist) return undefined;
+      throw err;
+    }
+    if (!attributes) return undefined;
+
+    const result: Record<string, unknown> = {};
+
+    // Derive QueueName from URL tail.
+    const tail = physicalId.substring(physicalId.lastIndexOf('/') + 1);
+    if (tail) result['QueueName'] = tail;
+
+    // Numeric attributes: cdkd state holds them as numbers; AWS returns
+    // strings.
+    const numeric: Array<keyof typeof CDK_TO_SQS_ATTRIBUTES> = [
+      'VisibilityTimeout',
+      'MaximumMessageSize',
+      'MessageRetentionPeriod',
+      'DelaySeconds',
+      'ReceiveMessageWaitTimeSeconds',
+      'KmsDataKeyReusePeriodSeconds',
+    ];
+    for (const key of numeric) {
+      const v = attributes[key];
+      if (v !== undefined) {
+        const n = Number(v);
+        if (!Number.isNaN(n)) result[key] = n;
+      }
+    }
+
+    // Boolean attributes: AWS returns "true" / "false" strings.
+    const bool: Array<keyof typeof CDK_TO_SQS_ATTRIBUTES> = [
+      'FifoQueue',
+      'ContentBasedDeduplication',
+      'SqsManagedSseEnabled',
+    ];
+    for (const key of bool) {
+      const v = attributes[key];
+      if (v !== undefined) result[key] = v === 'true';
+    }
+
+    // String attributes: pass through.
+    const str: Array<keyof typeof CDK_TO_SQS_ATTRIBUTES> = [
+      'KmsMasterKeyId',
+      'DeduplicationScope',
+      'FifoThroughputLimit',
+    ];
+    for (const key of str) {
+      const v = attributes[key];
+      if (v !== undefined) result[key] = v;
+    }
+
+    // RedrivePolicy: AWS returns as a JSON string; cdkd state typically
+    // holds the parsed object (post intrinsic resolution).
+    if (attributes['RedrivePolicy']) {
+      try {
+        result['RedrivePolicy'] = JSON.parse(attributes['RedrivePolicy']) as unknown;
+      } catch {
+        result['RedrivePolicy'] = attributes['RedrivePolicy'];
+      }
+    }
+
+    return result;
+  }
+
+  /**
    * Adopt an existing SQS queue into cdkd state.
    *
    * SQS physical IDs are queue URLs (`https://sqs.us-east-1.amazonaws.com/<account>/<name>`).

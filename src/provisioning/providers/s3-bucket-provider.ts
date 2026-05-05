@@ -22,7 +22,10 @@ import {
   PutBucketInventoryConfigurationCommand,
   PutBucketReplicationCommand,
   PutObjectLockConfigurationCommand,
+  GetBucketEncryptionCommand,
   GetBucketTaggingCommand,
+  GetBucketVersioningCommand,
+  GetPublicAccessBlockCommand,
   NoSuchBucket,
   ListObjectVersionsCommand,
   DeleteObjectsCommand,
@@ -1177,6 +1180,146 @@ export class S3BucketProvider implements ResourceProvider {
         cause
       );
     }
+  }
+
+  /**
+   * Read the AWS-current S3 bucket configuration in CFn-property shape.
+   *
+   * Issues a small handful of independent S3 GET calls and stitches them
+   * into a single CFn-shaped object. Each call can throw a "feature not
+   * configured" error (`NoSuchBucketConfiguration`,
+   * `ServerSideEncryptionConfigurationNotFoundError`, `NoSuchTagSet`,
+   * `NoSuchPublicAccessBlockConfiguration`) — those are caught individually
+   * and the corresponding key is omitted from the result, NOT treated as
+   * the bucket being absent.
+   *
+   * Only the bucket-gone case (`NoSuchBucket`, HTTP 404 from `HeadBucket`)
+   * returns `undefined`.
+   *
+   * Coverage: `BucketName`, `VersioningConfiguration`, `BucketEncryption`,
+   * `PublicAccessBlockConfiguration`, `Tags`. Other configuration
+   * properties (Lifecycle, CORS, Website, Logging, Notification,
+   * Replication, ObjectLock, Accelerate, Metrics/Analytics/IntelligentTier/
+   * Inventory) are out of scope for v1 — they each need their own GET +
+   * shape mapping; CC API drift detection picks them up via `GetResource`
+   * once a user works through the SDK provider boundary.
+   */
+  async readCurrentState(
+    physicalId: string,
+    _logicalId: string,
+    _resourceType: string
+  ): Promise<Record<string, unknown> | undefined> {
+    // Fast existence check. Treat NotFound / NoSuchBucket as "drift unknown".
+    try {
+      await this.s3Client.send(new HeadBucketCommand({ Bucket: physicalId }));
+    } catch (err) {
+      const e = err as { name?: string; $metadata?: { httpStatusCode?: number } };
+      if (
+        err instanceof NoSuchBucket ||
+        e.name === 'NotFound' ||
+        e.name === 'NoSuchBucket' ||
+        e.$metadata?.httpStatusCode === 404
+      ) {
+        return undefined;
+      }
+      throw err;
+    }
+
+    const result: Record<string, unknown> = {
+      BucketName: physicalId,
+    };
+
+    // VersioningConfiguration { Status }.
+    // No specific "not configured" error type for versioning — propagate
+    // any unexpected errors.
+    {
+      const resp = await this.s3Client.send(new GetBucketVersioningCommand({ Bucket: physicalId }));
+      // GetBucketVersioning omits Status entirely on a never-versioned bucket;
+      // CFn's VersioningConfiguration.Status is required, so omit the whole
+      // key to avoid spurious drift on never-configured buckets.
+      if (resp.Status) {
+        result['VersioningConfiguration'] = { Status: resp.Status };
+      }
+    }
+
+    // BucketEncryption.ServerSideEncryptionConfiguration[]
+    try {
+      const resp = await this.s3Client.send(new GetBucketEncryptionCommand({ Bucket: physicalId }));
+      const rules = resp.ServerSideEncryptionConfiguration?.Rules;
+      if (rules && rules.length > 0) {
+        // Re-shape AWS's `ApplyServerSideEncryptionByDefault` into CFn's
+        // `ServerSideEncryptionByDefault`. Other field names match.
+        result['BucketEncryption'] = {
+          ServerSideEncryptionConfiguration: rules.map((rule) => {
+            const out: Record<string, unknown> = {};
+            const sse = rule.ApplyServerSideEncryptionByDefault;
+            if (sse) {
+              const sseOut: Record<string, unknown> = {};
+              if (sse.SSEAlgorithm !== undefined) sseOut['SSEAlgorithm'] = sse.SSEAlgorithm;
+              if (sse.KMSMasterKeyID !== undefined) sseOut['KMSMasterKeyID'] = sse.KMSMasterKeyID;
+              out['ServerSideEncryptionByDefault'] = sseOut;
+            }
+            if (rule.BucketKeyEnabled !== undefined)
+              out['BucketKeyEnabled'] = rule.BucketKeyEnabled;
+            return out;
+          }),
+        };
+      }
+    } catch (err) {
+      // GetBucketEncryption throws `ServerSideEncryptionConfigurationNotFoundError`
+      // when no SSE has been configured. That's "feature not present", NOT
+      // bucket-gone — silently omit the key.
+      const e = err as { name?: string };
+      if (e.name !== 'ServerSideEncryptionConfigurationNotFoundError') {
+        throw err;
+      }
+    }
+
+    // PublicAccessBlockConfiguration (CFn shape == AWS shape, modulo casing)
+    try {
+      const resp = await this.s3Client.send(
+        new GetPublicAccessBlockCommand({ Bucket: physicalId })
+      );
+      const cfg = resp.PublicAccessBlockConfiguration;
+      if (cfg) {
+        const out: Record<string, unknown> = {};
+        if (cfg.BlockPublicAcls !== undefined) out['BlockPublicAcls'] = cfg.BlockPublicAcls;
+        if (cfg.BlockPublicPolicy !== undefined) out['BlockPublicPolicy'] = cfg.BlockPublicPolicy;
+        if (cfg.IgnorePublicAcls !== undefined) out['IgnorePublicAcls'] = cfg.IgnorePublicAcls;
+        if (cfg.RestrictPublicBuckets !== undefined) {
+          out['RestrictPublicBuckets'] = cfg.RestrictPublicBuckets;
+        }
+        if (Object.keys(out).length > 0) {
+          result['PublicAccessBlockConfiguration'] = out;
+        }
+      }
+    } catch (err) {
+      const e = err as { name?: string };
+      if (e.name !== 'NoSuchPublicAccessBlockConfiguration') {
+        throw err;
+      }
+    }
+
+    // Tags (CFn shape: [{Key, Value}], AWS shape: TagSet[{Key, Value}] — same)
+    try {
+      const resp = await this.s3Client.send(new GetBucketTaggingCommand({ Bucket: physicalId }));
+      if (resp.TagSet && resp.TagSet.length > 0) {
+        // Filter out cdkd / CDK auto-injected tags so they don't surface as
+        // drift against state (cdkd state's `Tags` only has user tags).
+        const tags = resp.TagSet.filter((t) => t.Key && !t.Key.startsWith('aws:')).map((t) => ({
+          Key: t.Key,
+          Value: t.Value,
+        }));
+        if (tags.length > 0) result['Tags'] = tags;
+      }
+    } catch (err) {
+      const e = err as { name?: string };
+      if (e.name !== 'NoSuchTagSet') {
+        throw err;
+      }
+    }
+
+    return result;
   }
 
   /**

@@ -736,6 +736,99 @@ export class IAMRoleProvider implements ResourceProvider {
   }
 
   /**
+   * Read the AWS-current IAM role configuration in CFn-property shape.
+   *
+   * Issues `GetRole` for the top-level role configuration and
+   * `ListRolePolicies` + `ListAttachedRolePolicies` for inline / managed
+   * policy *names*. AWS URL-decodes `AssumeRolePolicyDocument` for us
+   * when it surfaces — we re-parse it as JSON so the comparator can match
+   * against state's already-parsed object.
+   *
+   * Coverage and shape decisions:
+   *  - `RoleName`, `Description`, `MaxSessionDuration`, `Path`,
+   *    `PermissionsBoundary` — straight from `Role.*`.
+   *  - `AssumeRolePolicyDocument` — `Role.AssumeRolePolicyDocument` is a
+   *    URL-encoded JSON string; we URL-decode + JSON-parse so cdkd state's
+   *    object form compares cleanly. (Both shapes — string and object — are
+   *    accepted by `create()`, but state typically stores the parsed object
+   *    after intrinsic resolution.)
+   *  - `ManagedPolicyArns` — array of ARN strings from
+   *    `ListAttachedRolePolicies`.
+   *  - `Policies` (inline policies with `PolicyDocument` bodies) is
+   *    intentionally omitted: surfacing names without bodies guarantees a
+   *    PolicyDocument-shaped drift on every role, and fetching every body
+   *    costs one extra `GetRolePolicy` per inline policy. Out of scope for
+   *    v1 — drift detection on inline IAM policy bodies can ship in a
+   *    follow-up.
+   *  - `Tags` is omitted for the same reason as Lambda's tags handling
+   *    (CDK auto-injects `aws:cdk:path` and the shape decision belongs in a
+   *    dedicated tags PR).
+   *
+   * Returns `undefined` when the role is gone (`NoSuchEntityException`).
+   */
+  async readCurrentState(
+    physicalId: string,
+    _logicalId: string,
+    _resourceType: string
+  ): Promise<Record<string, unknown> | undefined> {
+    let role;
+    try {
+      const resp = await this.iamClient.send(new GetRoleCommand({ RoleName: physicalId }));
+      role = resp.Role;
+    } catch (err) {
+      if (err instanceof NoSuchEntityException) return undefined;
+      throw err;
+    }
+    if (!role) return undefined;
+
+    const result: Record<string, unknown> = {};
+
+    if (role.RoleName !== undefined) result['RoleName'] = role.RoleName;
+    if (role.Description !== undefined && role.Description !== '') {
+      result['Description'] = role.Description;
+    }
+    if (role.MaxSessionDuration !== undefined) {
+      result['MaxSessionDuration'] = role.MaxSessionDuration;
+    }
+    if (role.Path !== undefined) result['Path'] = role.Path;
+    if (role.PermissionsBoundary?.PermissionsBoundaryArn !== undefined) {
+      result['PermissionsBoundary'] = role.PermissionsBoundary.PermissionsBoundaryArn;
+    }
+    if (role.AssumeRolePolicyDocument) {
+      // GetRole returns AssumeRolePolicyDocument URL-encoded. Decode and
+      // parse so the comparator can match cdkd state (which holds the
+      // already-resolved object form).
+      try {
+        result['AssumeRolePolicyDocument'] = JSON.parse(
+          decodeURIComponent(role.AssumeRolePolicyDocument)
+        ) as unknown;
+      } catch {
+        // Fall back to the raw string if decoding / parsing fails. The
+        // comparator handles primitive vs object mismatches correctly.
+        result['AssumeRolePolicyDocument'] = role.AssumeRolePolicyDocument;
+      }
+    }
+
+    // ManagedPolicyArns — string[] of attached managed policy ARNs.
+    try {
+      const attached = await this.iamClient.send(
+        new ListAttachedRolePoliciesCommand({ RoleName: physicalId })
+      );
+      const arns = (attached.AttachedPolicies ?? [])
+        .map((p) => p.PolicyArn)
+        .filter((arn): arn is string => !!arn);
+      // Only surface when there is at least one — preserves comparator's
+      // "key absent in state never drifts" property for roles that don't
+      // declare ManagedPolicyArns.
+      if (arns.length > 0) result['ManagedPolicyArns'] = arns;
+    } catch (err) {
+      if (!(err instanceof NoSuchEntityException)) throw err;
+    }
+
+    return result;
+  }
+
+  /**
    * Adopt an existing IAM role into cdkd state.
    *
    * Lookup order:

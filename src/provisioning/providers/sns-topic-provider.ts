@@ -415,6 +415,87 @@ export class SNSTopicProvider implements ResourceProvider {
   }
 
   /**
+   * Read the AWS-current SNS topic configuration in CFn-property shape.
+   *
+   * Issues `GetTopicAttributes` for the topic-level configuration. AWS
+   * returns ALL attribute values as strings; we type-coerce booleans back
+   * to booleans and parse `ArchivePolicy` / `DataProtectionPolicy` from
+   * JSON strings so the comparator matches cdkd state's typed values.
+   *
+   * `TopicName` is derived from the ARN tail (the `physicalId` is the
+   * topic ARN).
+   *
+   * `Tags` and `DeliveryStatusLogging` are intentionally omitted:
+   * `ListTagsForResource` is a separate call, and `DeliveryStatusLogging`
+   * fans out into per-protocol attributes (`{Protocol}SuccessFeedbackRoleArn`,
+   * etc.) whose round-trip back to the CFn array shape needs more thought
+   * than fits in this PR.
+   *
+   * `Subscription` is omitted because CDK manages it via separate
+   * `AWS::SNS::Subscription` resources, not as a Topic property.
+   *
+   * Returns `undefined` when the topic is gone (`NotFoundException`).
+   */
+  async readCurrentState(
+    physicalId: string,
+    _logicalId: string,
+    _resourceType: string
+  ): Promise<Record<string, unknown> | undefined> {
+    let attrs: Record<string, string> | undefined;
+    try {
+      const resp = await this.snsClient.send(
+        new GetTopicAttributesCommand({ TopicArn: physicalId })
+      );
+      attrs = resp.Attributes;
+    } catch (err) {
+      if (err instanceof NotFoundException) return undefined;
+      throw err;
+    }
+    if (!attrs) return undefined;
+
+    const result: Record<string, unknown> = {};
+
+    // TopicName from ARN tail.
+    const tail = physicalId.substring(physicalId.lastIndexOf(':') + 1);
+    if (tail) result['TopicName'] = tail;
+
+    // Boolean attributes — AWS returns "true" / "false" strings.
+    const bool: string[] = ['FifoTopic', 'ContentBasedDeduplication'];
+    for (const key of bool) {
+      const v = attrs[key];
+      if (v !== undefined) result[key] = v === 'true';
+    }
+
+    // String attributes (pass-through).
+    const str: string[] = [
+      'DisplayName',
+      'KmsMasterKeyId',
+      'TracingConfig',
+      'SignatureVersion',
+      'FifoThroughputScope',
+    ];
+    for (const key of str) {
+      const v = attrs[key];
+      if (v !== undefined && v !== '') result[key] = v;
+    }
+
+    // JSON-document attributes — AWS returns a JSON string; cdkd state
+    // typically holds the parsed object after intrinsic resolution.
+    for (const key of ['ArchivePolicy', 'DataProtectionPolicy']) {
+      const v = attrs[key];
+      if (v) {
+        try {
+          result[key] = JSON.parse(v) as unknown;
+        } catch {
+          result[key] = v;
+        }
+      }
+    }
+
+    return result;
+  }
+
+  /**
    * Adopt an existing SNS topic into cdkd state.
    *
    * SNS physical IDs are full ARNs (`arn:aws:sns:...:TopicName`). The

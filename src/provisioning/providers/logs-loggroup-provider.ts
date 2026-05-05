@@ -336,6 +336,51 @@ export class LogsLogGroupProvider implements ResourceProvider {
   }
 
   /**
+   * Read the AWS-current log group configuration in CFn-property shape.
+   *
+   * Issues `DescribeLogGroups` filtered by exact name and picks the first
+   * (and only) match. AWS uses camelCase field names in the API response
+   * (`logGroupName`, `kmsKeyId`, `retentionInDays`); we map them back to
+   * the CFn-cased keys cdkd state holds (`LogGroupName`, `KmsKeyId`,
+   * `RetentionInDays`).
+   *
+   * Coverage: `LogGroupName`, `KmsKeyId`, `RetentionInDays`,
+   * `LogGroupClass`. Other handledProperties (`DataProtectionPolicy`,
+   * `Tags`, `FieldIndexPolicies`, `ResourcePolicyDocument`,
+   * `DeletionProtectionEnabled`, `BearerTokenAuthenticationEnabled`) need
+   * their own per-property API call and are out of scope for v1.
+   *
+   * Returns `undefined` when the log group is gone.
+   */
+  async readCurrentState(
+    physicalId: string,
+    _logicalId: string,
+    _resourceType: string
+  ): Promise<Record<string, unknown> | undefined> {
+    try {
+      const resp = await this.logsClient.send(
+        new DescribeLogGroupsCommand({ logGroupNamePrefix: physicalId })
+      );
+      // logGroupNamePrefix is a prefix match; pick the exact match if any.
+      const found = resp.logGroups?.find((g) => g.logGroupName === physicalId);
+      if (!found) return undefined;
+
+      const result: Record<string, unknown> = {};
+      if (found.logGroupName !== undefined) result['LogGroupName'] = found.logGroupName;
+      if (found.kmsKeyId !== undefined) result['KmsKeyId'] = found.kmsKeyId;
+      if (found.retentionInDays !== undefined) {
+        result['RetentionInDays'] = found.retentionInDays;
+      }
+      if (found.logGroupClass !== undefined) result['LogGroupClass'] = found.logGroupClass;
+
+      return result;
+    } catch (err) {
+      if (err instanceof ResourceNotFoundException) return undefined;
+      throw err;
+    }
+  }
+
+  /**
    * Adopt an existing CloudWatch Logs log group into cdkd state.
    *
    * Lookup order:

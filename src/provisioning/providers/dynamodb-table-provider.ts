@@ -364,6 +364,95 @@ export class DynamoDBTableProvider implements ResourceProvider {
   }
 
   /**
+   * Read the AWS-current DynamoDB table configuration in CFn-property shape.
+   *
+   * `DescribeTable` returns every field cdkd manages in one call. AWS uses
+   * the same property names CFn does (KeySchema, AttributeDefinitions,
+   * BillingModeSummary.BillingMode, ProvisionedThroughput, etc.) — the only
+   * shape differences are wrapping:
+   *  - BillingMode lives under `BillingModeSummary.BillingMode` in the API
+   *    response, but the CFn property is a flat `BillingMode` string.
+   *  - StreamSpecification's CFn shape includes only `StreamViewType`; the
+   *    API response carries `StreamEnabled` too. We surface both since the
+   *    drift comparator only descends into keys present in state.
+   *  - GSI / LSI in the API response include `IndexStatus`, `ItemCount` and
+   *    sizing fields that cdkd never sets; the comparator filters them.
+   *
+   * Returns `undefined` when the table is gone (`ResourceNotFoundException`).
+   *
+   * Tags are intentionally omitted: `ListTagsOfResource` is a separate call
+   * and tag drift is generally less interesting than table-config drift;
+   * including it would also force a tag-shape decision on the
+   * `aws:cdk:path` auto-tag, which is out of scope here.
+   */
+  async readCurrentState(
+    physicalId: string,
+    _logicalId: string,
+    _resourceType: string
+  ): Promise<Record<string, unknown> | undefined> {
+    try {
+      const resp = await this.dynamoDBClient.send(
+        new DescribeTableCommand({ TableName: physicalId })
+      );
+      const table = resp.Table;
+      if (!table) return undefined;
+
+      const result: Record<string, unknown> = {};
+
+      if (table.TableName !== undefined) result['TableName'] = table.TableName;
+      if (table.KeySchema) result['KeySchema'] = table.KeySchema;
+      if (table.AttributeDefinitions) {
+        result['AttributeDefinitions'] = table.AttributeDefinitions;
+      }
+      if (table.BillingModeSummary?.BillingMode) {
+        result['BillingMode'] = table.BillingModeSummary.BillingMode;
+      }
+      if (table.ProvisionedThroughput) {
+        // AWS returns extra read-only fields (LastIncrease/DecreaseDateTime,
+        // NumberOfDecreasesToday) — drop them to keep the snapshot tight.
+        result['ProvisionedThroughput'] = {
+          ReadCapacityUnits: table.ProvisionedThroughput.ReadCapacityUnits,
+          WriteCapacityUnits: table.ProvisionedThroughput.WriteCapacityUnits,
+        };
+      }
+      if (table.StreamSpecification) {
+        result['StreamSpecification'] = {
+          StreamEnabled: table.StreamSpecification.StreamEnabled,
+          StreamViewType: table.StreamSpecification.StreamViewType,
+        };
+      }
+      if (table.GlobalSecondaryIndexes && table.GlobalSecondaryIndexes.length > 0) {
+        result['GlobalSecondaryIndexes'] = table.GlobalSecondaryIndexes;
+      }
+      if (table.LocalSecondaryIndexes && table.LocalSecondaryIndexes.length > 0) {
+        result['LocalSecondaryIndexes'] = table.LocalSecondaryIndexes;
+      }
+      if (table.SSEDescription) {
+        // CFn's SSESpecification.SSEEnabled / KMSMasterKeyId / SSEType.
+        const sse: Record<string, unknown> = {};
+        if (table.SSEDescription.Status === 'ENABLED') sse['SSEEnabled'] = true;
+        if (table.SSEDescription.KMSMasterKeyArn !== undefined) {
+          sse['KMSMasterKeyId'] = table.SSEDescription.KMSMasterKeyArn;
+        }
+        if (table.SSEDescription.SSEType !== undefined)
+          sse['SSEType'] = table.SSEDescription.SSEType;
+        if (Object.keys(sse).length > 0) result['SSESpecification'] = sse;
+      }
+      if (table.DeletionProtectionEnabled !== undefined) {
+        result['DeletionProtectionEnabled'] = table.DeletionProtectionEnabled;
+      }
+      if (table.TableClassSummary?.TableClass) {
+        result['TableClass'] = table.TableClassSummary.TableClass;
+      }
+
+      return result;
+    } catch (err) {
+      if (err instanceof ResourceNotFoundException) return undefined;
+      throw err;
+    }
+  }
+
+  /**
    * Adopt an existing DynamoDB table into cdkd state.
    *
    * Lookup order:
