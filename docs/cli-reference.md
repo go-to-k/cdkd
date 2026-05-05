@@ -214,6 +214,65 @@ underlying provider activity.
 Note: `--resource-warn-after` must be less than `--resource-timeout`.
 Reversed values are rejected at parse time.
 
+## `--role-arn`
+
+Assume a different IAM role for cdkd's AWS API calls. Equivalent env
+var: `CDKD_ROLE_ARN`. CLI flag takes precedence when both are set.
+
+```bash
+cdkd deploy --role-arn arn:aws:iam::123456789012:role/cdkd-deploy
+# or
+CDKD_ROLE_ARN=arn:aws:iam::123456789012:role/cdkd-deploy cdkd deploy
+```
+
+cdkd does an `STS AssumeRole` once at command start (1-hour session,
+session name `cdkd-<unix-ms>`) and writes the resulting temporary
+credentials into `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` /
+`AWS_SESSION_TOKEN` so every later AWS SDK client picks them up via
+the standard default credentials chain. No re-plumbing of credential
+arguments through cdkd's ~13 `AwsClients` instantiation sites is
+required.
+
+### Why the assumed role MUST have admin-equivalent permissions
+
+Unlike `cdk deploy`, **cdkd does not route through CloudFormation**.
+There is no cfn-exec-role to delegate to. Every IAM / EC2 / Lambda /
+CloudFront / DynamoDB / etc. API call is issued from cdkd directly,
+using whatever identity the SDK default chain resolves to (which, when
+`--role-arn` is set, is the assumed role).
+
+That means **CDK CLI's `cdk-hnb659fds-deploy-role-*` is NOT enough**:
+
+| Role | Trust policy | Permissions | Works for cdkd? |
+| --- | --- | --- | --- |
+| `cdk-hnb659fds-deploy-role-*` | IAM principals | CFn + asset-publish only (no raw EC2 / Lambda / IAM) | **No** — permission-denied during provisioning |
+| `cdk-hnb659fds-cfn-exec-role-*` | `Service: cloudformation.amazonaws.com` | admin-equivalent | **No** — only assumable by CFn service, not by cdkd's IAM identity |
+| Custom admin-equivalent role | IAM principals | admin-equivalent on the resources you deploy | **Yes** |
+
+CDK CLI achieves "no local admin needed" through a two-step delegation
+(IAM principal → deploy-role → CFn change set → cfn-exec-role's admin).
+cdkd has no analogous chain — what you grant the assumed role is what
+runs against AWS, end of story. The `--role-arn` flag exists so CI
+runners with limited base credentials can still drive a cdkd deploy
+against a separate-account or higher-privilege role; it does NOT
+reduce the permissions the eventually-used identity needs.
+
+### When the `--role-arn` session expires
+
+Default session is 1 hour. For deploys that genuinely take longer
+(rare; even `bench-cdk-sample` runs in ~3 min), the user re-runs the
+cdkd command — in-flight credentials remain valid until expiry, but a
+re-run is the simplest recovery path. cdkd does not currently auto-
+refresh the session.
+
+### `--profile` vs `--role-arn`
+
+Independent. `--profile` selects which entry from `~/.aws/credentials`
+or `~/.aws/config` provides the **base** credentials; `--role-arn`
+then assumes a role from those base credentials. Use both together
+when the IAM principal lives in profile A and the deploy role lives
+in account B that profile A trusts.
+
 ## Exit codes
 
 cdkd commands distinguish three outcomes via the process exit code so

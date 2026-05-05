@@ -16,6 +16,7 @@ import { Synthesizer } from '../../synthesis/synthesizer.js';
 import { S3StateBackend } from '../../state/s3-state-backend.js';
 import { LockManager } from '../../state/lock-manager.js';
 import { setAwsClients, AwsClients } from '../../utils/aws-clients.js';
+import { applyRoleArnIfSet } from '../../utils/role-arn.js';
 import { resolveApp, resolveStateBucketWithDefault } from '../config-loader.js';
 import { ProviderRegistry } from '../../provisioning/provider-registry.js';
 import { registerAllProviders } from '../../provisioning/register-providers.js';
@@ -35,6 +36,7 @@ interface OrphanOptions {
   stackRegion?: string;
   region?: string;
   profile?: string;
+  roleArn?: string;
   yes: boolean;
   force: boolean;
   dryRun: boolean;
@@ -85,6 +87,9 @@ async function orphanCommand(pathArgs: string[], options: OrphanOptions): Promis
   if (options.verbose) logger.setLevel('debug');
 
   warnIfDeprecatedRegion(options);
+
+  // Resolve --role-arn / CDKD_ROLE_ARN before any AWS call.
+  await applyRoleArnIfSet({ roleArn: options.roleArn, region: options.region });
 
   if (pathArgs.length === 0) {
     throw new Error(

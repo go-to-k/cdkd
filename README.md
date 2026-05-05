@@ -175,7 +175,7 @@ the full per-type table.
 
 - **Node.js** >= 20.0.0
 - **AWS CDK Bootstrap**: You must run `cdk bootstrap` before using cdkd. cdkd uses CDK's bootstrap bucket (`cdk-hnb659fds-assets-*`) for asset uploads (Lambda code, Docker images). Custom bootstrap qualifiers are supported — CDK embeds the correct bucket/repo names in the asset manifest during synthesis.
-- **AWS Credentials**: Configured via environment variables, `~/.aws/credentials`, or `--profile` option
+- **AWS Credentials**: Configured via environment variables, `~/.aws/credentials`, `--profile`, or `--role-arn` option. **The credentials must have admin-equivalent permissions for the resources being deployed.** Unlike `cdk deploy`, cdkd does NOT route through CloudFormation, so there is no cfn-exec-role to delegate to — every IAM / EC2 / Lambda / etc. API call is issued from cdkd directly. CDK CLI's `cdk-hnb659fds-deploy-role-*` only carries CFn + asset-publish permissions and is therefore NOT sufficient for cdkd. See `--role-arn` in [docs/cli-reference.md](docs/cli-reference.md) for assuming a role with the right permissions.
 
 ## Installation
 

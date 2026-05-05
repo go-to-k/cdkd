@@ -9,6 +9,7 @@ import {
   stateOptions,
 } from '../options.js';
 import { getLogger } from '../../utils/logger.js';
+import { applyRoleArnIfSet } from '../../utils/role-arn.js';
 import { withErrorHandling } from '../../utils/error-handler.js';
 import { Synthesizer } from '../../synthesis/synthesizer.js';
 import { S3StateBackend } from '../../state/s3-state-backend.js';
@@ -35,6 +36,7 @@ interface ImportOptions {
   statePrefix: string;
   region?: string;
   profile?: string;
+  roleArn?: string;
   resource?: string[];
   resourceMapping?: string;
   resourceMappingInline?: string;
@@ -107,6 +109,9 @@ async function importCommand(stackArg: string | undefined, options: ImportOption
     logger.setLevel('debug');
     process.env['CDKD_NO_LIVE'] = '1';
   }
+
+  // Resolve --role-arn / CDKD_ROLE_ARN before any AWS call.
+  await applyRoleArnIfSet({ roleArn: options.roleArn, region: options.region });
 
   // Region falls through CLI flag → env → us-east-1, the same chain as deploy.
   const region = options.region || process.env['AWS_REGION'] || 'us-east-1';

@@ -1,6 +1,7 @@
 import { Option, Command } from 'commander';
 import { commonOptions, deprecatedRegionOption, warnIfDeprecatedRegion } from '../options.js';
 import { getLogger } from '../../utils/logger.js';
+import { applyRoleArnIfSet } from '../../utils/role-arn.js';
 import { withErrorHandling } from '../../utils/error-handler.js';
 import { AssetPublisher } from '../../assets/asset-publisher.js';
 
@@ -12,6 +13,7 @@ async function publishAssetsCommand(options: {
   verbose: boolean;
   region?: string;
   profile?: string;
+  roleArn?: string;
   assetPublishConcurrency: number;
   imageBuildConcurrency: number;
 }): Promise<void> {
@@ -24,6 +26,9 @@ async function publishAssetsCommand(options: {
   // PR 5: --region is deprecated on non-bootstrap commands. Warn but keep
   // the rest of the pipeline working as before.
   warnIfDeprecatedRegion(options);
+
+  // Resolve --role-arn / CDKD_ROLE_ARN before any AWS call.
+  await applyRoleArnIfSet({ roleArn: options.roleArn, region: options.region });
 
   logger.info('Publishing assets...');
   logger.debug('Asset manifest path:', options.path);

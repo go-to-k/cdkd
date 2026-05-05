@@ -25,6 +25,7 @@ import { registerAllProviders } from '../../provisioning/register-providers.js';
 import { DeployEngine } from '../../deployment/deploy-engine.js';
 import { WorkGraph } from '../../deployment/work-graph.js';
 import { setAwsClients, AwsClients } from '../../utils/aws-clients.js';
+import { applyRoleArnIfSet } from '../../utils/role-arn.js';
 import { runStackBuffered } from '../../utils/stack-context.js';
 import { resolveApp, resolveStateBucketWithDefault } from '../config-loader.js';
 import { matchStacks, describeStack } from '../stack-matcher.js';
@@ -43,6 +44,7 @@ async function deployCommand(
     all?: boolean;
     region?: string;
     profile?: string;
+    roleArn?: string;
     concurrency: number;
     stackConcurrency: number;
     assetPublishConcurrency: number;
@@ -79,6 +81,11 @@ async function deployCommand(
     ...(options.resourceWarnAfter && { resourceWarnAfter: options.resourceWarnAfter }),
     ...(options.resourceTimeout && { resourceTimeout: options.resourceTimeout }),
   });
+
+  // Resolve --role-arn / CDKD_ROLE_ARN before any AWS call. Writes the
+  // assumed-role temp credentials into AWS_* env vars so every later
+  // `new AwsClients(...)` picks them up via the SDK default chain.
+  await applyRoleArnIfSet({ roleArn: options.roleArn, region: options.region });
 
   // Skip waiting for async resources (CloudFront, RDS, ElastiCache, etc.)
   if (!options.wait) {
