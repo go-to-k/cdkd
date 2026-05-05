@@ -208,8 +208,15 @@ alias cdkd="node $(pwd)/dist/cli.js"
 
 ## Quick Start
 
+> **First-time setup**: cdkd requires a one-time `cdkd bootstrap` per AWS
+> account before any other command will work — it creates the S3 state
+> bucket (`cdkd-state-{accountId}`) that cdkd uses to track deployed
+> resources. This is separate from `cdk bootstrap` (which sets up the
+> CDK asset bucket / ECR repo and is also required — see
+> [Prerequisites](#prerequisites)).
+
 ```bash
-# Bootstrap (creates S3 state bucket - only needed once per account/region)
+# Bootstrap (creates S3 state bucket — one-time setup, once per AWS account)
 cdkd bootstrap
 
 # List stacks in the CDK app
