@@ -1,6 +1,7 @@
 import {
   APIGatewayClient,
   UpdateAccountCommand,
+  GetAccountCommand,
   CreateResourceCommand,
   DeleteResourceCommand,
   CreateDeploymentCommand,
@@ -10,6 +11,7 @@ import {
   DeleteStageCommand,
   PutMethodCommand,
   DeleteMethodCommand,
+  GetMethodCommand,
   PutIntegrationCommand,
   PutMethodResponseCommand,
   CreateAuthorizerCommand,
@@ -1285,6 +1287,84 @@ export class ApiGatewayProvider implements ResourceProvider {
       result[tag.Key] = tag.Value;
     }
     return result;
+  }
+
+  /**
+   * Read the AWS-current API Gateway resource configuration in CFn-property
+   * shape.
+   *
+   * **Coverage**:
+   *   - `AWS::ApiGateway::Account` → `GetAccount` for `CloudWatchRoleArn`.
+   *   - `AWS::ApiGateway::Method` → `GetMethod`. PhysicalId is the composite
+   *     `restApiId|resourceId|httpMethod`, so we have everything needed
+   *     without `Properties`.
+   *
+   * **Out of scope** (returns `undefined`, falls back to "drift unknown"):
+   *   - `AWS::ApiGateway::Authorizer` / `Resource` / `Deployment` / `Stage`:
+   *     each needs the parent `RestApiId` to issue a `Get*` call, but cdkd's
+   *     `readCurrentState` interface does not pass `Properties` (only the
+   *     physicalId, which for these types is just the sub-resource id).
+   *     CC API drift detection picks up `AWS::ApiGateway::RestApi` itself
+   *     once the user works through the SDK provider boundary; per-sub
+   *     drift detection here would need a contract change.
+   */
+  async readCurrentState(
+    physicalId: string,
+    _logicalId: string,
+    resourceType: string
+  ): Promise<Record<string, unknown> | undefined> {
+    switch (resourceType) {
+      case 'AWS::ApiGateway::Account':
+        return this.readCurrentStateAccount();
+      case 'AWS::ApiGateway::Method':
+        return this.readCurrentStateMethod(physicalId);
+      default:
+        // Sub-resources need parent RestApiId from properties (not exposed
+        // to readCurrentState); skip for now.
+        return undefined;
+    }
+  }
+
+  private async readCurrentStateAccount(): Promise<Record<string, unknown> | undefined> {
+    try {
+      const resp = await this.apiGatewayClient.send(new GetAccountCommand({}));
+      const result: Record<string, unknown> = {};
+      if (resp.cloudwatchRoleArn !== undefined) {
+        result['CloudWatchRoleArn'] = resp.cloudwatchRoleArn;
+      }
+      return result;
+    } catch (err) {
+      if (err instanceof NotFoundException) return undefined;
+      throw err;
+    }
+  }
+
+  private async readCurrentStateMethod(
+    physicalId: string
+  ): Promise<Record<string, unknown> | undefined> {
+    const parts = physicalId.split('|');
+    if (parts.length !== 3) return undefined;
+    const [restApiId, resourceId, httpMethod] = parts;
+
+    try {
+      const resp = await this.apiGatewayClient.send(
+        new GetMethodCommand({ restApiId, resourceId, httpMethod })
+      );
+      const result: Record<string, unknown> = {};
+      if (restApiId !== undefined) result['RestApiId'] = restApiId;
+      if (resourceId !== undefined) result['ResourceId'] = resourceId;
+      if (resp.httpMethod !== undefined) result['HttpMethod'] = resp.httpMethod;
+      if (resp.authorizationType !== undefined) {
+        result['AuthorizationType'] = resp.authorizationType;
+      }
+      if (resp.authorizerId !== undefined) result['AuthorizerId'] = resp.authorizerId;
+      if (resp.methodIntegration) result['Integration'] = resp.methodIntegration;
+      if (resp.methodResponses) result['MethodResponses'] = resp.methodResponses;
+      return result;
+    } catch (err) {
+      if (err instanceof NotFoundException) return undefined;
+      throw err;
+    }
   }
 
   /**

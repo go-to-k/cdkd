@@ -396,6 +396,92 @@ export class EventBridgeRuleProvider implements ResourceProvider {
   }
 
   /**
+   * Read the AWS-current EventBridge rule configuration in CFn-property shape.
+   *
+   * Issues `DescribeRule` for the rule's main config, then a separate
+   * `ListTargetsByRule` for `Targets`.
+   *
+   * Surfaced keys (when present): `Name`, `Description`, `EventBusName`,
+   * `EventPattern` (parsed from JSON string back to object — cdkd state holds
+   * it as the user typed it, typically an object), `ScheduleExpression`,
+   * `State`, `RoleArn`, `Targets` (CFn shape `[{Id, Arn, ...}]`).
+   *
+   * `Tags` is omitted (separate `ListTagsForResource` round-trip; auto-injected
+   * `aws:cdk:path` tag-shape question is out of scope here).
+   *
+   * Returns `undefined` when the rule is gone (`ResourceNotFoundException`).
+   */
+  async readCurrentState(
+    physicalId: string,
+    _logicalId: string,
+    _resourceType: string
+  ): Promise<Record<string, unknown> | undefined> {
+    const ruleName = this.extractRuleNameFromArn(physicalId);
+    const eventBusName = this.extractBusNameFromArn(physicalId);
+
+    let resp: {
+      Name?: string;
+      Description?: string;
+      EventBusName?: string;
+      EventPattern?: string;
+      ScheduleExpression?: string;
+      State?: string;
+      RoleArn?: string;
+    };
+    try {
+      resp = (await this.eventBridgeClient.send(
+        new DescribeRuleCommand({
+          Name: ruleName,
+          ...(eventBusName && eventBusName !== 'default' ? { EventBusName: eventBusName } : {}),
+        })
+      )) as unknown as typeof resp;
+    } catch (err) {
+      if (err instanceof ResourceNotFoundException) return undefined;
+      throw err;
+    }
+
+    const result: Record<string, unknown> = {};
+    if (resp.Name !== undefined) result['Name'] = resp.Name;
+    if (resp.Description !== undefined && resp.Description !== '') {
+      result['Description'] = resp.Description;
+    }
+    if (resp.EventBusName !== undefined && resp.EventBusName !== 'default') {
+      result['EventBusName'] = resp.EventBusName;
+    }
+    if (resp.EventPattern !== undefined) {
+      try {
+        result['EventPattern'] = JSON.parse(resp.EventPattern) as unknown;
+      } catch {
+        result['EventPattern'] = resp.EventPattern;
+      }
+    }
+    if (resp.ScheduleExpression !== undefined) {
+      result['ScheduleExpression'] = resp.ScheduleExpression;
+    }
+    if (resp.State !== undefined) result['State'] = resp.State;
+    if (resp.RoleArn !== undefined) result['RoleArn'] = resp.RoleArn;
+
+    // Targets: separate API call. "Not configured" returns an empty array.
+    try {
+      const targetsResp = await this.eventBridgeClient.send(
+        new ListTargetsByRuleCommand({
+          Rule: ruleName,
+          ...(eventBusName && eventBusName !== 'default' ? { EventBusName: eventBusName } : {}),
+        })
+      );
+      if (targetsResp.Targets && targetsResp.Targets.length > 0) {
+        result['Targets'] = targetsResp.Targets;
+      }
+    } catch (err) {
+      if (!(err instanceof ResourceNotFoundException)) {
+        throw err;
+      }
+    }
+
+    return result;
+  }
+
+  /**
    * Adopt an existing EventBridge rule into cdkd state.
    *
    * Lookup order:
@@ -489,5 +575,22 @@ export class EventBridgeRuleProvider implements ResourceProvider {
     const parts = arn.split('/');
     // Last segment is always the rule name
     return parts[parts.length - 1] ?? arn;
+  }
+
+  /**
+   * Extract the event bus name from a rule ARN.
+   *
+   * ARN format: `arn:aws:events:region:account:rule/rule-name` (default bus, returns 'default')
+   *          or `arn:aws:events:region:account:rule/bus-name/rule-name` (custom bus).
+   *
+   * Returns `undefined` when the input is not an ARN (we can't tell which bus).
+   */
+  private extractBusNameFromArn(arn: string): string | undefined {
+    if (!arn.startsWith('arn:')) return undefined;
+    const parts = arn.split('/');
+    // arn:aws:events:r:a:rule/<rule>           → 2 segments (split by '/')
+    // arn:aws:events:r:a:rule/<bus>/<rule>     → 3 segments
+    if (parts.length === 3) return parts[1];
+    return 'default';
   }
 }

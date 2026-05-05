@@ -279,6 +279,105 @@ export class StepFunctionsProvider implements ResourceProvider {
   }
 
   /**
+   * Read the AWS-current Step Functions state machine config in CFn-property
+   * shape.
+   *
+   * Issues a single `DescribeStateMachine` and surfaces:
+   *   - `StateMachineName` (`name`)
+   *   - `RoleArn` (`roleArn`)
+   *   - `StateMachineType` (`type`)
+   *   - `LoggingConfiguration` / `TracingConfiguration` / `EncryptionConfiguration`
+   *     (re-mapped to CFn PascalCase)
+   *   - `Definition` (parsed from JSON; cdkd state may hold either the
+   *     stringified `DefinitionString` or the object `Definition`, so we
+   *     surface as the object form — the comparator handles either side).
+   *
+   * `DefinitionSubstitutions` is omitted because they are applied at create
+   * time and not surfaced by `DescribeStateMachine` (the response carries
+   * the already-substituted definition).
+   *
+   * `Tags` is omitted (separate `ListTagsForResource` round-trip; auto-injected
+   * `aws:cdk:path` tag-shape question is out of scope here).
+   *
+   * Returns `undefined` when the state machine is gone (`StateMachineDoesNotExist`).
+   */
+  async readCurrentState(
+    physicalId: string,
+    _logicalId: string,
+    _resourceType: string
+  ): Promise<Record<string, unknown> | undefined> {
+    let resp: {
+      name?: string;
+      roleArn?: string;
+      type?: string;
+      definition?: string;
+      loggingConfiguration?: LoggingConfiguration;
+      tracingConfiguration?: TracingConfiguration;
+      encryptionConfiguration?: EncryptionConfiguration;
+    };
+    try {
+      resp = (await this.getClient().send(
+        new DescribeStateMachineCommand({ stateMachineArn: physicalId })
+      )) as unknown as typeof resp;
+    } catch (err) {
+      if (err instanceof StateMachineDoesNotExist) return undefined;
+      throw err;
+    }
+
+    const result: Record<string, unknown> = {};
+    if (resp.name !== undefined) result['StateMachineName'] = resp.name;
+    if (resp.roleArn !== undefined) result['RoleArn'] = resp.roleArn;
+    if (resp.type !== undefined) result['StateMachineType'] = resp.type;
+    if (resp.definition !== undefined) {
+      try {
+        result['Definition'] = JSON.parse(resp.definition) as unknown;
+      } catch {
+        result['Definition'] = resp.definition;
+      }
+    }
+    if (resp.loggingConfiguration) {
+      const lc: Record<string, unknown> = {};
+      if (resp.loggingConfiguration.level !== undefined) {
+        lc['Level'] = resp.loggingConfiguration.level;
+      }
+      if (resp.loggingConfiguration.includeExecutionData !== undefined) {
+        lc['IncludeExecutionData'] = resp.loggingConfiguration.includeExecutionData;
+      }
+      if (resp.loggingConfiguration.destinations) {
+        lc['Destinations'] = resp.loggingConfiguration.destinations.map((d) => {
+          const inner: Record<string, unknown> = {};
+          if (d.cloudWatchLogsLogGroup?.logGroupArn) {
+            inner['CloudWatchLogsLogGroup'] = {
+              LogGroupArn: d.cloudWatchLogsLogGroup.logGroupArn,
+            };
+          }
+          return inner;
+        });
+      }
+      if (Object.keys(lc).length > 0) result['LoggingConfiguration'] = lc;
+    }
+    if (resp.tracingConfiguration?.enabled !== undefined) {
+      result['TracingConfiguration'] = { Enabled: resp.tracingConfiguration.enabled };
+    }
+    if (resp.encryptionConfiguration) {
+      const ec: Record<string, unknown> = {};
+      if (resp.encryptionConfiguration.type !== undefined) {
+        ec['Type'] = resp.encryptionConfiguration.type;
+      }
+      if (resp.encryptionConfiguration.kmsKeyId !== undefined) {
+        ec['KmsKeyId'] = resp.encryptionConfiguration.kmsKeyId;
+      }
+      if (resp.encryptionConfiguration.kmsDataKeyReusePeriodSeconds !== undefined) {
+        ec['KmsDataKeyReusePeriodSeconds'] =
+          resp.encryptionConfiguration.kmsDataKeyReusePeriodSeconds;
+      }
+      if (Object.keys(ec).length > 0) result['EncryptionConfiguration'] = ec;
+    }
+
+    return result;
+  }
+
+  /**
    * Adopt an existing Step Functions state machine into cdkd state.
    *
    * Lookup order:

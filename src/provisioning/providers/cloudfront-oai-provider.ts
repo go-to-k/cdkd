@@ -206,6 +206,38 @@ export class CloudFrontOAIProvider implements ResourceProvider {
   }
 
   /**
+   * Read the AWS-current OAI configuration in CFn-property shape.
+   *
+   * Issues a single `GetCloudFrontOriginAccessIdentity` and surfaces the
+   * `CloudFrontOriginAccessIdentityConfig.Comment` key — the only
+   * cdkd-managed property (CallerReference is set by cdkd itself and is
+   * not part of the user-configurable surface).
+   *
+   * Returns `undefined` when the OAI is gone (`NoSuchCloudFrontOriginAccessIdentity`).
+   */
+  async readCurrentState(
+    physicalId: string,
+    _logicalId: string,
+    _resourceType: string
+  ): Promise<Record<string, unknown> | undefined> {
+    try {
+      const resp = await this.cloudFrontClient.send(
+        new GetCloudFrontOriginAccessIdentityCommand({ Id: physicalId })
+      );
+      const config = resp.CloudFrontOriginAccessIdentity?.CloudFrontOriginAccessIdentityConfig;
+      if (!config) return undefined;
+      const inner: Record<string, unknown> = {};
+      if (config.Comment !== undefined) inner['Comment'] = config.Comment;
+      return {
+        CloudFrontOriginAccessIdentityConfig: inner,
+      };
+    } catch (err) {
+      if (err instanceof NoSuchCloudFrontOriginAccessIdentity) return undefined;
+      throw err;
+    }
+  }
+
+  /**
    * Adopt an existing CloudFront Origin Access Identity into cdkd state.
    *
    * **Explicit override only.** OAIs do not support tags — their identity

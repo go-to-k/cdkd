@@ -998,6 +998,213 @@ export class ECSProvider implements ResourceProvider {
   }
 
   /**
+   * Read the AWS-current ECS resource configuration in CFn-property shape.
+   *
+   * Dispatches by resource type:
+   *   - `AWS::ECS::Cluster` → `DescribeClusters`
+   *   - `AWS::ECS::Service` → `DescribeServices`. Service physicalIds use
+   *     the composite form `<clusterArn>|<serviceName>`; we split on `|`.
+   *   - `AWS::ECS::TaskDefinition` → `DescribeTaskDefinition`
+   *
+   * Each branch surfaces only the keys cdkd's `create()` accepts, mapping
+   * the SDK's camelCase to CFn PascalCase. Tags are intentionally omitted
+   * (separate `ListTagsForResource` round-trip).
+   */
+  async readCurrentState(
+    physicalId: string,
+    _logicalId: string,
+    resourceType: string
+  ): Promise<Record<string, unknown> | undefined> {
+    switch (resourceType) {
+      case 'AWS::ECS::Cluster':
+        return this.readCurrentStateCluster(physicalId);
+      case 'AWS::ECS::Service':
+        return this.readCurrentStateService(physicalId);
+      case 'AWS::ECS::TaskDefinition':
+        return this.readCurrentStateTaskDefinition(physicalId);
+      default:
+        return undefined;
+    }
+  }
+
+  private async readCurrentStateCluster(
+    physicalId: string
+  ): Promise<Record<string, unknown> | undefined> {
+    let resp: {
+      clusters?: Array<{
+        clusterName?: string;
+        capacityProviders?: string[];
+        defaultCapacityProviderStrategy?: CapacityProviderStrategyItem[];
+        configuration?: ClusterConfiguration;
+        settings?: Array<{ name?: string; value?: string }>;
+      }>;
+    };
+    try {
+      resp = (await this.getClient().send(
+        new DescribeClustersCommand({ clusters: [physicalId] })
+      )) as unknown as typeof resp;
+    } catch {
+      return undefined;
+    }
+    const c = resp.clusters?.[0];
+    if (!c || !c.clusterName) return undefined;
+
+    const result: Record<string, unknown> = { ClusterName: c.clusterName };
+    if (c.capacityProviders && c.capacityProviders.length > 0) {
+      result['CapacityProviders'] = [...c.capacityProviders];
+    }
+    if (c.defaultCapacityProviderStrategy && c.defaultCapacityProviderStrategy.length > 0) {
+      result['DefaultCapacityProviderStrategy'] = c.defaultCapacityProviderStrategy;
+    }
+    if (c.configuration) result['Configuration'] = c.configuration;
+    if (c.settings && c.settings.length > 0) {
+      result['ClusterSettings'] = c.settings.map((s) => ({
+        Name: s.name,
+        Value: s.value,
+      }));
+    }
+    return result;
+  }
+
+  private async readCurrentStateService(
+    physicalId: string
+  ): Promise<Record<string, unknown> | undefined> {
+    // Service physicalId is `<clusterArn>|<serviceName>` (composite form).
+    const sep = physicalId.indexOf('|');
+    if (sep < 0) return undefined;
+    const clusterArn = physicalId.substring(0, sep);
+    const serviceName = physicalId.substring(sep + 1);
+
+    let resp: {
+      services?: Array<{
+        serviceName?: string;
+        clusterArn?: string;
+        taskDefinition?: string;
+        desiredCount?: number;
+        launchType?: string;
+        platformVersion?: string;
+        schedulingStrategy?: string;
+        propagateTags?: string;
+        enableECSManagedTags?: boolean;
+        enableExecuteCommand?: boolean;
+        healthCheckGracePeriodSeconds?: number;
+        networkConfiguration?: NetworkConfiguration;
+        loadBalancers?: LoadBalancer[];
+        capacityProviderStrategy?: CapacityProviderStrategyItem[];
+        deploymentConfiguration?: DeploymentConfiguration;
+        placementConstraints?: PlacementConstraint[];
+        placementStrategy?: PlacementStrategy[];
+        serviceRegistries?: ServiceRegistry[];
+      }>;
+    };
+    try {
+      resp = (await this.getClient().send(
+        new DescribeServicesCommand({ cluster: clusterArn, services: [serviceName] })
+      )) as unknown as typeof resp;
+    } catch {
+      return undefined;
+    }
+    const s = resp.services?.[0];
+    if (!s || !s.serviceName) return undefined;
+
+    const result: Record<string, unknown> = {};
+    if (s.serviceName !== undefined) result['ServiceName'] = s.serviceName;
+    if (s.clusterArn !== undefined) result['Cluster'] = s.clusterArn;
+    if (s.taskDefinition !== undefined) result['TaskDefinition'] = s.taskDefinition;
+    if (s.desiredCount !== undefined) result['DesiredCount'] = s.desiredCount;
+    if (s.launchType !== undefined) result['LaunchType'] = s.launchType;
+    if (s.platformVersion !== undefined) result['PlatformVersion'] = s.platformVersion;
+    if (s.schedulingStrategy !== undefined) result['SchedulingStrategy'] = s.schedulingStrategy;
+    if (s.propagateTags !== undefined) result['PropagateTags'] = s.propagateTags;
+    if (s.enableECSManagedTags !== undefined) {
+      result['EnableECSManagedTags'] = s.enableECSManagedTags;
+    }
+    if (s.enableExecuteCommand !== undefined) {
+      result['EnableExecuteCommand'] = s.enableExecuteCommand;
+    }
+    if (s.healthCheckGracePeriodSeconds !== undefined) {
+      result['HealthCheckGracePeriodSeconds'] = s.healthCheckGracePeriodSeconds;
+    }
+    if (s.networkConfiguration) result['NetworkConfiguration'] = s.networkConfiguration;
+    if (s.loadBalancers && s.loadBalancers.length > 0) {
+      result['LoadBalancers'] = s.loadBalancers;
+    }
+    if (s.capacityProviderStrategy && s.capacityProviderStrategy.length > 0) {
+      result['CapacityProviderStrategy'] = s.capacityProviderStrategy;
+    }
+    if (s.deploymentConfiguration) result['DeploymentConfiguration'] = s.deploymentConfiguration;
+    if (s.placementConstraints && s.placementConstraints.length > 0) {
+      result['PlacementConstraints'] = s.placementConstraints;
+    }
+    if (s.placementStrategy && s.placementStrategy.length > 0) {
+      result['PlacementStrategy'] = s.placementStrategy;
+    }
+    if (s.serviceRegistries && s.serviceRegistries.length > 0) {
+      result['ServiceRegistries'] = s.serviceRegistries;
+    }
+    return result;
+  }
+
+  private async readCurrentStateTaskDefinition(
+    physicalId: string
+  ): Promise<Record<string, unknown> | undefined> {
+    let resp: {
+      taskDefinition?: {
+        family?: string;
+        cpu?: string;
+        memory?: string;
+        networkMode?: string;
+        requiresCompatibilities?: string[];
+        executionRoleArn?: string;
+        taskRoleArn?: string;
+        volumes?: Volume[];
+        placementConstraints?: TaskDefinitionPlacementConstraint[];
+        runtimePlatform?: RuntimePlatform;
+        proxyConfiguration?: ProxyConfiguration;
+        pidMode?: string;
+        ipcMode?: string;
+        ephemeralStorage?: { sizeInGiB?: number };
+        containerDefinitions?: ContainerDefinition[];
+      };
+    };
+    try {
+      resp = (await this.getClient().send(
+        new DescribeTaskDefinitionCommand({ taskDefinition: physicalId })
+      )) as unknown as typeof resp;
+    } catch {
+      return undefined;
+    }
+    const td = resp.taskDefinition;
+    if (!td) return undefined;
+
+    const result: Record<string, unknown> = {};
+    if (td.family !== undefined) result['Family'] = td.family;
+    if (td.cpu !== undefined) result['Cpu'] = td.cpu;
+    if (td.memory !== undefined) result['Memory'] = td.memory;
+    if (td.networkMode !== undefined) result['NetworkMode'] = td.networkMode;
+    if (td.requiresCompatibilities && td.requiresCompatibilities.length > 0) {
+      result['RequiresCompatibilities'] = [...td.requiresCompatibilities];
+    }
+    if (td.executionRoleArn !== undefined) result['ExecutionRoleArn'] = td.executionRoleArn;
+    if (td.taskRoleArn !== undefined) result['TaskRoleArn'] = td.taskRoleArn;
+    if (td.volumes && td.volumes.length > 0) result['Volumes'] = td.volumes;
+    if (td.placementConstraints && td.placementConstraints.length > 0) {
+      result['PlacementConstraints'] = td.placementConstraints;
+    }
+    if (td.runtimePlatform) result['RuntimePlatform'] = td.runtimePlatform;
+    if (td.proxyConfiguration) result['ProxyConfiguration'] = td.proxyConfiguration;
+    if (td.pidMode !== undefined) result['PidMode'] = td.pidMode;
+    if (td.ipcMode !== undefined) result['IpcMode'] = td.ipcMode;
+    if (td.ephemeralStorage?.sizeInGiB !== undefined) {
+      result['EphemeralStorage'] = { SizeInGiB: td.ephemeralStorage.sizeInGiB };
+    }
+    if (td.containerDefinitions && td.containerDefinitions.length > 0) {
+      result['ContainerDefinitions'] = td.containerDefinitions;
+    }
+    return result;
+  }
+
+  /**
    * Adopt an existing ECS resource into cdkd state.
    *
    * Supported types: `AWS::ECS::Cluster`, `AWS::ECS::Service`,

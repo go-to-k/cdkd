@@ -283,6 +283,83 @@ export class SSMParameterProvider implements ResourceProvider {
   }
 
   /**
+   * Read the AWS-current SSM parameter configuration in CFn-property shape.
+   *
+   * Issues `GetParameter` (with `WithDecryption: false` so SecureString
+   * values stay encrypted on the wire) for `Type` / `Value` / `DataType`,
+   * then `DescribeParameters` filtered on the parameter name to fetch
+   * metadata (`Description`, `AllowedPattern`, `Tier`) that `GetParameter`
+   * does not return.
+   *
+   * `Name` is set to the physical id. `Tags` and `Policies` are intentionally
+   * out of scope (`Tags` requires a separate `ListTagsForResource` round-trip
+   * and the auto-injected `aws:cdk:path` tag-shape question is unresolved;
+   * `Policies` is returned by `DescribeParameters.Policies` as a structured
+   * array but cdkd state holds the raw JSON string the user typed — comparing
+   * the two accurately needs more work).
+   *
+   * **Note**: For `SecureString` parameters, AWS returns the encrypted
+   * blob in `Value` (we pass `WithDecryption: false`). cdkd state usually
+   * holds the plaintext value the user typed in their CDK app, so a
+   * SecureString parameter will surface as `Value` drift on every run.
+   * That's the correct conservative behavior — surfacing the discrepancy
+   * is more useful than silently masking it.
+   *
+   * Returns `undefined` when the parameter is gone (`ParameterNotFound`).
+   */
+  async readCurrentState(
+    physicalId: string,
+    _logicalId: string,
+    _resourceType: string
+  ): Promise<Record<string, unknown> | undefined> {
+    let getResp: {
+      Parameter?: { Type?: string; Value?: string; DataType?: string };
+    };
+    try {
+      getResp = (await this.ssmClient.send(
+        new GetParameterCommand({ Name: physicalId, WithDecryption: false })
+      )) as unknown as typeof getResp;
+    } catch (err) {
+      if (err instanceof ParameterNotFound) return undefined;
+      throw err;
+    }
+    const param = getResp.Parameter;
+    if (!param) return undefined;
+
+    const result: Record<string, unknown> = { Name: physicalId };
+    if (param.Type !== undefined) result['Type'] = param.Type;
+    if (param.Value !== undefined) result['Value'] = param.Value;
+    if (param.DataType !== undefined) result['DataType'] = param.DataType;
+
+    // Fetch metadata via DescribeParameters filtered on the name. Best-effort:
+    // a missing-permission error here should not fail the snapshot — we just
+    // omit the metadata keys.
+    try {
+      const desc = await this.ssmClient.send(
+        new DescribeParametersCommand({
+          ParameterFilters: [{ Key: 'Name', Values: [physicalId] }],
+        })
+      );
+      const meta = desc.Parameters?.[0];
+      if (meta) {
+        if (meta.Description !== undefined && meta.Description !== '') {
+          result['Description'] = meta.Description;
+        }
+        if (meta.AllowedPattern !== undefined && meta.AllowedPattern !== '') {
+          result['AllowedPattern'] = meta.AllowedPattern;
+        }
+        if (meta.Tier !== undefined) {
+          result['Tier'] = meta.Tier;
+        }
+      }
+    } catch {
+      // Ignore — Type / Value / DataType already captured above.
+    }
+
+    return result;
+  }
+
+  /**
    * Adopt an existing SSM parameter into cdkd state.
    *
    * SSM physical IDs ARE the parameter names (`/foo/bar`). The CDK template

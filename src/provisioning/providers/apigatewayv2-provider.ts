@@ -719,6 +719,47 @@ export class ApiGatewayV2Provider implements ResourceProvider {
     }
   }
 
+  // ─── Drift detection ──────────────────────────────────────────────
+
+  /**
+   * Read the AWS-current API Gateway V2 resource configuration in
+   * CFn-property shape.
+   *
+   * **Coverage**:
+   *   - `AWS::ApiGatewayV2::Api` → `GetApi`. PhysicalId is the apiId,
+   *     self-sufficient.
+   *
+   * **Out of scope** (returns `undefined`, falls back to "drift unknown"):
+   *   - `AWS::ApiGatewayV2::Stage` / `Integration` / `Route` / `Authorizer`:
+   *     each needs the parent `ApiId` to issue a `Get*` call, but cdkd's
+   *     `readCurrentState` interface does not pass `Properties` (only the
+   *     physicalId, which for these types is just the sub-resource id).
+   *     Per-sub drift detection here would need a contract change.
+   */
+  async readCurrentState(
+    physicalId: string,
+    _logicalId: string,
+    resourceType: string
+  ): Promise<Record<string, unknown> | undefined> {
+    if (resourceType !== 'AWS::ApiGatewayV2::Api') {
+      return undefined;
+    }
+    try {
+      const resp = await this.getClient().send(new GetApiCommand({ ApiId: physicalId }));
+      const result: Record<string, unknown> = {};
+      if (resp.Name !== undefined) result['Name'] = resp.Name;
+      if (resp.ProtocolType !== undefined) result['ProtocolType'] = resp.ProtocolType;
+      if (resp.Description !== undefined && resp.Description !== '') {
+        result['Description'] = resp.Description;
+      }
+      if (resp.CorsConfiguration) result['CorsConfiguration'] = resp.CorsConfiguration;
+      return result;
+    } catch (err) {
+      if (err instanceof NotFoundException) return undefined;
+      throw err;
+    }
+  }
+
   // ─── Import ───────────────────────────────────────────────────────
 
   /**

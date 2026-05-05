@@ -838,6 +838,152 @@ export class RDSProvider implements ResourceProvider {
     }
   }
 
+  /**
+   * Read the AWS-current RDS resource configuration in CFn-property shape.
+   *
+   * Dispatches by resource type:
+   *   - `AWS::RDS::DBInstance` → `DescribeDBInstances`
+   *   - `AWS::RDS::DBCluster` → `DescribeDBClusters`
+   *   - `AWS::RDS::DBSubnetGroup` → `DescribeDBSubnetGroups`
+   *
+   * Each branch surfaces only the keys cdkd's `create()` accepts. Sensitive
+   * fields like `MasterUserPassword` are NEVER surfaced (RDS does not return
+   * them in the Describe responses). `Tags` are intentionally omitted
+   * (separate `ListTagsForResource` round-trip).
+   *
+   * Returns `undefined` when the resource is gone (`*NotFoundFault`).
+   */
+  async readCurrentState(
+    physicalId: string,
+    _logicalId: string,
+    resourceType: string
+  ): Promise<Record<string, unknown> | undefined> {
+    switch (resourceType) {
+      case 'AWS::RDS::DBInstance':
+        return this.readCurrentStateDBInstance(physicalId);
+      case 'AWS::RDS::DBCluster':
+        return this.readCurrentStateDBCluster(physicalId);
+      case 'AWS::RDS::DBSubnetGroup':
+        return this.readCurrentStateDBSubnetGroup(physicalId);
+      default:
+        return undefined;
+    }
+  }
+
+  private async readCurrentStateDBInstance(
+    physicalId: string
+  ): Promise<Record<string, unknown> | undefined> {
+    let inst;
+    try {
+      inst = await this.describeDBInstance(physicalId);
+    } catch (err) {
+      if (this.isNotFoundError(err, 'DBInstanceNotFoundFault')) return undefined;
+      throw err;
+    }
+    if (!inst) return undefined;
+
+    const result: Record<string, unknown> = {};
+    if (inst.DBInstanceIdentifier !== undefined) {
+      result['DBInstanceIdentifier'] = inst.DBInstanceIdentifier;
+    }
+    if (inst.DBInstanceClass !== undefined) result['DBInstanceClass'] = inst.DBInstanceClass;
+    if (inst.Engine !== undefined) result['Engine'] = inst.Engine;
+    if (inst.DBClusterIdentifier !== undefined) {
+      result['DBClusterIdentifier'] = inst.DBClusterIdentifier;
+    }
+    if (inst.DBSubnetGroup?.DBSubnetGroupName !== undefined) {
+      result['DBSubnetGroupName'] = inst.DBSubnetGroup.DBSubnetGroupName;
+    }
+    if (inst.PubliclyAccessible !== undefined) {
+      result['PubliclyAccessible'] = inst.PubliclyAccessible;
+    }
+    return result;
+  }
+
+  private async readCurrentStateDBCluster(
+    physicalId: string
+  ): Promise<Record<string, unknown> | undefined> {
+    let cluster;
+    try {
+      cluster = await this.describeDBCluster(physicalId);
+    } catch (err) {
+      if (this.isNotFoundError(err, 'DBClusterNotFoundFault')) return undefined;
+      throw err;
+    }
+    if (!cluster) return undefined;
+
+    const result: Record<string, unknown> = {};
+    if (cluster.DBClusterIdentifier !== undefined) {
+      result['DBClusterIdentifier'] = cluster.DBClusterIdentifier;
+    }
+    if (cluster.Engine !== undefined) result['Engine'] = cluster.Engine;
+    if (cluster.EngineVersion !== undefined) result['EngineVersion'] = cluster.EngineVersion;
+    if (cluster.MasterUsername !== undefined) result['MasterUsername'] = cluster.MasterUsername;
+    if (cluster.DatabaseName !== undefined) result['DatabaseName'] = cluster.DatabaseName;
+    if (cluster.Port !== undefined) result['Port'] = cluster.Port;
+    if (cluster.VpcSecurityGroups && cluster.VpcSecurityGroups.length > 0) {
+      result['VpcSecurityGroupIds'] = cluster.VpcSecurityGroups.map(
+        (sg) => sg.VpcSecurityGroupId
+      ).filter((id): id is string => !!id);
+    }
+    if (cluster.DBSubnetGroup !== undefined) result['DBSubnetGroupName'] = cluster.DBSubnetGroup;
+    if (cluster.StorageEncrypted !== undefined) {
+      result['StorageEncrypted'] = cluster.StorageEncrypted;
+    }
+    if (cluster.KmsKeyId !== undefined) result['KmsKeyId'] = cluster.KmsKeyId;
+    if (cluster.BackupRetentionPeriod !== undefined) {
+      result['BackupRetentionPeriod'] = cluster.BackupRetentionPeriod;
+    }
+    if (cluster.DeletionProtection !== undefined) {
+      result['DeletionProtection'] = cluster.DeletionProtection;
+    }
+    if (cluster.ServerlessV2ScalingConfiguration) {
+      const sc: Record<string, unknown> = {};
+      if (cluster.ServerlessV2ScalingConfiguration.MinCapacity !== undefined) {
+        sc['MinCapacity'] = cluster.ServerlessV2ScalingConfiguration.MinCapacity;
+      }
+      if (cluster.ServerlessV2ScalingConfiguration.MaxCapacity !== undefined) {
+        sc['MaxCapacity'] = cluster.ServerlessV2ScalingConfiguration.MaxCapacity;
+      }
+      if (Object.keys(sc).length > 0) result['ServerlessV2ScalingConfiguration'] = sc;
+    }
+    return result;
+  }
+
+  private async readCurrentStateDBSubnetGroup(
+    physicalId: string
+  ): Promise<Record<string, unknown> | undefined> {
+    let resp: {
+      DBSubnetGroups?: Array<{
+        DBSubnetGroupName?: string;
+        DBSubnetGroupDescription?: string;
+        Subnets?: Array<{ SubnetIdentifier?: string }>;
+      }>;
+    };
+    try {
+      resp = (await this.getClient().send(
+        new DescribeDBSubnetGroupsCommand({ DBSubnetGroupName: physicalId })
+      )) as unknown as typeof resp;
+    } catch (err) {
+      if (this.isNotFoundError(err, 'DBSubnetGroupNotFoundFault')) return undefined;
+      throw err;
+    }
+    const sg = resp.DBSubnetGroups?.[0];
+    if (!sg) return undefined;
+
+    const result: Record<string, unknown> = {};
+    if (sg.DBSubnetGroupName !== undefined) result['DBSubnetGroupName'] = sg.DBSubnetGroupName;
+    if (sg.DBSubnetGroupDescription !== undefined) {
+      result['DBSubnetGroupDescription'] = sg.DBSubnetGroupDescription;
+    }
+    if (sg.Subnets && sg.Subnets.length > 0) {
+      result['SubnetIds'] = sg.Subnets.map((s) => s.SubnetIdentifier).filter(
+        (id): id is string => !!id
+      );
+    }
+    return result;
+  }
+
   private async importDBInstance(input: ResourceImportInput): Promise<ResourceImportResult | null> {
     const explicit = resolveExplicitPhysicalId(input, 'DBInstanceIdentifier');
     if (explicit) {

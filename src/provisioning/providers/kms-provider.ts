@@ -525,6 +525,102 @@ export class KMSProvider implements ResourceProvider {
   }
 
   /**
+   * Read the AWS-current KMS resource configuration in CFn-property shape.
+   *
+   * Dispatches by resource type:
+   *   - `AWS::KMS::Key` → `DescribeKey`. Surfaces `Description`, `KeySpec`,
+   *     `KeyUsage`, `Enabled`, `MultiRegion`, `Origin`. `KeyPolicy` is
+   *     intentionally NOT retrieved — `GetKeyPolicy` is a separate call
+   *     and the policy body needs JSON parsing for comparison; deferred
+   *     to a follow-up. `EnableKeyRotation` / `RotationPeriodInDays`
+   *     would require `GetKeyRotationStatus`; also deferred.
+   *   - `AWS::KMS::Alias` → `ListAliases` filtered to the alias name.
+   *     Surfaces `AliasName`, `TargetKeyId`. `ListAliases` is paginated
+   *     since there's no direct "describe one alias" API.
+   *
+   * `Tags` is intentionally omitted (separate `ListResourceTags` round-trip
+   * for keys; auto-injected `aws:cdk:path` tag-shape question is out of
+   * scope here). `BypassPolicyLockoutSafetyCheck` and `PendingWindowInDays`
+   * are not part of the persisted AWS state visible via `DescribeKey`.
+   *
+   * Returns `undefined` when the resource is gone (`NotFoundException`).
+   */
+  async readCurrentState(
+    physicalId: string,
+    _logicalId: string,
+    resourceType: string
+  ): Promise<Record<string, unknown> | undefined> {
+    switch (resourceType) {
+      case 'AWS::KMS::Key':
+        return this.readCurrentStateKey(physicalId);
+      case 'AWS::KMS::Alias':
+        return this.readCurrentStateAlias(physicalId);
+      default:
+        return undefined;
+    }
+  }
+
+  private async readCurrentStateKey(
+    physicalId: string
+  ): Promise<Record<string, unknown> | undefined> {
+    let resp: {
+      KeyMetadata?: {
+        KeyId?: string;
+        Description?: string;
+        KeySpec?: string;
+        KeyUsage?: string;
+        Enabled?: boolean;
+        MultiRegion?: boolean;
+        Origin?: string;
+      };
+    };
+    try {
+      resp = (await this.getClient().send(
+        new DescribeKeyCommand({ KeyId: physicalId })
+      )) as unknown as typeof resp;
+    } catch (err) {
+      if (err instanceof NotFoundException) return undefined;
+      throw err;
+    }
+    const md = resp.KeyMetadata;
+    if (!md) return undefined;
+
+    const result: Record<string, unknown> = {};
+    if (md.Description !== undefined && md.Description !== '') {
+      result['Description'] = md.Description;
+    }
+    if (md.KeySpec !== undefined) result['KeySpec'] = md.KeySpec;
+    if (md.KeyUsage !== undefined) result['KeyUsage'] = md.KeyUsage;
+    if (md.Enabled !== undefined) result['Enabled'] = md.Enabled;
+    if (md.MultiRegion !== undefined) result['MultiRegion'] = md.MultiRegion;
+    if (md.Origin !== undefined) result['Origin'] = md.Origin;
+    return result;
+  }
+
+  private async readCurrentStateAlias(
+    physicalId: string
+  ): Promise<Record<string, unknown> | undefined> {
+    let marker: string | undefined;
+    do {
+      const list = await this.getClient().send(
+        new ListAliasesCommand({ ...(marker && { Marker: marker }) })
+      );
+      const found = list.Aliases?.find(
+        (a: { AliasName?: string | undefined }) => a.AliasName === physicalId
+      );
+      if (found) {
+        const result: Record<string, unknown> = {};
+        if (found.AliasName) result['AliasName'] = found.AliasName;
+        if (found.TargetKeyId) result['TargetKeyId'] = found.TargetKeyId;
+        return result;
+      }
+      marker = list.NextMarker;
+    } while (marker);
+    // Not found across all pages → drift unknown.
+    return undefined;
+  }
+
+  /**
    * Adopt an existing KMS key or alias into cdkd state.
    *
    * KMS keys have no `Properties.KeyName` field — physical IDs are

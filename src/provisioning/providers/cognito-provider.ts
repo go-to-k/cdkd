@@ -463,6 +463,94 @@ export class CognitoUserPoolProvider implements ResourceProvider {
   }
 
   /**
+   * Read the AWS-current Cognito User Pool configuration in CFn-property shape.
+   *
+   * Issues `DescribeUserPool` and surfaces the keys cdkd's `create()` accepts.
+   * AWS-managed fields (Arn, Id, CreationDate, LastModifiedDate, EstimatedNumberOfUsers,
+   * etc.) are filtered at the wire layer.
+   *
+   * **Note**: Cognito only supports `AWS::Cognito::UserPool` in this provider;
+   * `UserPoolClient`, `UserPoolGroup`, and other Cognito sub-resources go
+   * through the CC API fallback (which has its own `readCurrentState`).
+   *
+   * `UserPoolTags` is intentionally omitted (Cognito returns tags via a
+   * separate `ListTagsForResource` round-trip; auto-injected `aws:cdk:path`
+   * tag-shape question is out of scope here).
+   *
+   * Returns `undefined` when the pool is gone (`ResourceNotFoundException`).
+   */
+  async readCurrentState(
+    physicalId: string,
+    _logicalId: string,
+    resourceType: string
+  ): Promise<Record<string, unknown> | undefined> {
+    if (resourceType !== 'AWS::Cognito::UserPool') return undefined;
+
+    let resp;
+    try {
+      resp = await this.getClient().send(new DescribeUserPoolCommand({ UserPoolId: physicalId }));
+    } catch (err) {
+      if (err instanceof ResourceNotFoundException) return undefined;
+      throw err;
+    }
+    const pool = resp.UserPool;
+    if (!pool) return undefined;
+
+    const result: Record<string, unknown> = {};
+    if (pool.Name !== undefined) result['UserPoolName'] = pool.Name;
+    if (pool.AutoVerifiedAttributes && pool.AutoVerifiedAttributes.length > 0) {
+      result['AutoVerifiedAttributes'] = [...pool.AutoVerifiedAttributes];
+    }
+    if (pool.UsernameAttributes && pool.UsernameAttributes.length > 0) {
+      result['UsernameAttributes'] = [...pool.UsernameAttributes];
+    }
+    if (pool.AliasAttributes && pool.AliasAttributes.length > 0) {
+      result['AliasAttributes'] = [...pool.AliasAttributes];
+    }
+    if (pool.Policies) result['Policies'] = pool.Policies;
+    if (pool.SchemaAttributes && pool.SchemaAttributes.length > 0) {
+      result['Schema'] = pool.SchemaAttributes;
+    }
+    if (pool.LambdaConfig && Object.keys(pool.LambdaConfig).length > 0) {
+      result['LambdaConfig'] = pool.LambdaConfig;
+    }
+    if (pool.MfaConfiguration !== undefined) result['MfaConfiguration'] = pool.MfaConfiguration;
+    if (pool.AdminCreateUserConfig) result['AdminCreateUserConfig'] = pool.AdminCreateUserConfig;
+    if (pool.AccountRecoverySetting) {
+      result['AccountRecoverySetting'] = pool.AccountRecoverySetting;
+    }
+    if (pool.UserAttributeUpdateSettings) {
+      result['UserAttributeUpdateSettings'] = pool.UserAttributeUpdateSettings;
+    }
+    if (pool.DeletionProtection !== undefined) {
+      result['DeletionProtection'] = pool.DeletionProtection;
+    }
+    if (pool.EmailConfiguration) result['EmailConfiguration'] = pool.EmailConfiguration;
+    if (pool.SmsConfiguration) result['SmsConfiguration'] = pool.SmsConfiguration;
+    if (pool.VerificationMessageTemplate) {
+      result['VerificationMessageTemplate'] = pool.VerificationMessageTemplate;
+    }
+    if (pool.UsernameConfiguration) {
+      result['UsernameConfiguration'] = pool.UsernameConfiguration;
+    }
+    if (pool.DeviceConfiguration) result['DeviceConfiguration'] = pool.DeviceConfiguration;
+    if (pool.UserPoolAddOns) result['UserPoolAddOns'] = pool.UserPoolAddOns;
+    if (pool.EmailVerificationMessage !== undefined) {
+      result['EmailVerificationMessage'] = pool.EmailVerificationMessage;
+    }
+    if (pool.EmailVerificationSubject !== undefined) {
+      result['EmailVerificationSubject'] = pool.EmailVerificationSubject;
+    }
+    if (pool.SmsAuthenticationMessage !== undefined) {
+      result['SmsAuthenticationMessage'] = pool.SmsAuthenticationMessage;
+    }
+    if (pool.SmsVerificationMessage !== undefined) {
+      result['SmsVerificationMessage'] = pool.SmsVerificationMessage;
+    }
+    return result;
+  }
+
+  /**
    * Adopt an existing Cognito User Pool into cdkd state.
    *
    * User Pool physical id is the AWS-generated `<region>_<random>` id.

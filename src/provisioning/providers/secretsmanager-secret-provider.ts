@@ -352,6 +352,52 @@ export class SecretsManagerSecretProvider implements ResourceProvider {
   }
 
   /**
+   * Read the AWS-current secret configuration in CFn-property shape.
+   *
+   * Issues `DescribeSecret` and surfaces `Name`, `Description`, `KmsKeyId`,
+   * and `ReplicaRegions` (re-shaping `ReplicationStatus[]` to CFn's
+   * `[{Region, KmsKeyId}]`).
+   *
+   * Intentionally omitted:
+   *   - `SecretString` / `GenerateSecretString`: `DescribeSecret` does not
+   *     return the secret value (that's `GetSecretValue`, which we never
+   *     call to avoid surfacing plaintext through drift). Cdkd state holds
+   *     the user-supplied string verbatim; comparing against AWS would
+   *     require pulling the value, so this is deliberately deferred.
+   *   - `Tags`: `DescribeSecret` returns Tags, but the auto-injected
+   *     `aws:cdk:path` tag-shape question is out of scope here.
+   *
+   * Returns `undefined` when the secret is gone (`ResourceNotFoundException`).
+   */
+  async readCurrentState(
+    physicalId: string,
+    _logicalId: string,
+    _resourceType: string
+  ): Promise<Record<string, unknown> | undefined> {
+    try {
+      const resp = await this.smClient.send(new DescribeSecretCommand({ SecretId: physicalId }));
+      const result: Record<string, unknown> = {};
+      if (resp.Name !== undefined) result['Name'] = resp.Name;
+      if (resp.Description !== undefined && resp.Description !== '') {
+        result['Description'] = resp.Description;
+      }
+      if (resp.KmsKeyId !== undefined) result['KmsKeyId'] = resp.KmsKeyId;
+      if (resp.ReplicationStatus && resp.ReplicationStatus.length > 0) {
+        result['ReplicaRegions'] = resp.ReplicationStatus.map((r) => {
+          const out: Record<string, unknown> = {};
+          if (r.Region) out['Region'] = r.Region;
+          if (r.KmsKeyId) out['KmsKeyId'] = r.KmsKeyId;
+          return out;
+        });
+      }
+      return result;
+    } catch (err) {
+      if (err instanceof ResourceNotFoundException) return undefined;
+      throw err;
+    }
+  }
+
+  /**
    * Adopt an existing Secrets Manager secret into cdkd state.
    *
    * Secrets Manager physical IDs are full secret ARNs. The CDK template's

@@ -360,14 +360,39 @@ Providers add their own `readCurrentState` incrementally — providers
 without an implementation surface as `drift unknown` rather than `clean`,
 so you can see exactly which types are still uncovered.
 
-The following high-traffic SDK Providers ship with first-class
-`readCurrentState` (no CC API round-trip):
-`AWS::Lambda::Function`, `AWS::S3::Bucket`,
-`AWS::DynamoDB::Table`, `AWS::IAM::Role`, `AWS::SQS::Queue`,
-`AWS::SNS::Topic`, `AWS::Logs::LogGroup`. Tag drift and IAM
-inline-policy bodies are out of scope for v1; see
+The following SDK Providers ship with first-class `readCurrentState`
+(no CC API round-trip):
+
+- `AWS::Lambda::Function`, `AWS::S3::Bucket`, `AWS::DynamoDB::Table`,
+  `AWS::IAM::Role`, `AWS::SQS::Queue`, `AWS::SNS::Topic`,
+  `AWS::Logs::LogGroup` (PR D, batch 0)
+- `AWS::CloudFront::CloudFrontOriginAccessIdentity`,
+  `AWS::Events::EventBus`, `AWS::Events::Rule`,
+  `AWS::SSM::Parameter`, `AWS::SecretsManager::Secret`,
+  `AWS::ECR::Repository`, `AWS::StepFunctions::StateMachine`,
+  `AWS::ECS::Cluster`, `AWS::ECS::Service`, `AWS::ECS::TaskDefinition`,
+  `AWS::RDS::DBInstance`, `AWS::RDS::DBCluster`,
+  `AWS::RDS::DBSubnetGroup`, `AWS::KMS::Key`, `AWS::KMS::Alias`,
+  `AWS::ApiGateway::Account`, `AWS::ApiGateway::Method`,
+  `AWS::ApiGatewayV2::Api`, `AWS::Cognito::UserPool` (batch 1)
+
+Tag drift and IAM inline-policy bodies are out of scope for v1; see
 [src/types/resource.ts](../src/types/resource.ts) for the per-provider
 shape decisions.
+
+Some sub-resources of multi-type providers report `drift unknown`
+because their `physicalId` does not carry the parent identifier needed
+to issue the matching `Get*` call (cdkd's `readCurrentState` interface
+does not pass the `Properties` map). Concretely:
+`AWS::ApiGateway::Authorizer` / `Resource` / `Deployment` / `Stage`,
+`AWS::ApiGatewayV2::Stage` / `Integration` / `Route` / `Authorizer`.
+The CC API fallback handles these out of the box for accounts that
+work through the SDK provider boundary; first-class drift for them
+needs an interface change and is deferred. `AWS::CloudFront::Distribution`
+also defers to the CC API fallback — its `DistributionConfig` schema
+uses the SDK's `Quantity + Items` shape vs CFn's flat array shape, and
+mirroring the conversion would balloon the diff for marginal gain over
+the CC API path.
 
 `--json` output shape:
 

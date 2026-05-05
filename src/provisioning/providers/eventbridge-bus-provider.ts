@@ -328,6 +328,56 @@ export class EventBridgeBusProvider implements ResourceProvider {
   }
 
   /**
+   * Read the AWS-current EventBus configuration in CFn-property shape.
+   *
+   * Issues `DescribeEventBus` and surfaces `Name`, `Description`,
+   * `KmsKeyIdentifier`, `DeadLetterConfig`, and `Policy` (the latter is a
+   * JSON string in `DescribeEventBus.Policy`; cdkd state holds it the way
+   * the user typed it, which may be either an object or a string — the
+   * comparator handles either side).
+   *
+   * `Tags` and `EventSourceName` are intentionally omitted: tags require a
+   * separate `ListTagsForResource` round-trip and the auto-injected
+   * `aws:cdk:path` tag-shape question is out of scope; `EventSourceName`
+   * is set at create time only and not surfaced by `DescribeEventBus`.
+   *
+   * Returns `undefined` when the bus is gone (`ResourceNotFoundException`).
+   */
+  async readCurrentState(
+    physicalId: string,
+    _logicalId: string,
+    _resourceType: string
+  ): Promise<Record<string, unknown> | undefined> {
+    try {
+      const resp = await this.eventBridgeClient.send(
+        new DescribeEventBusCommand({ Name: physicalId })
+      );
+      const result: Record<string, unknown> = {};
+      if (resp.Name !== undefined) result['Name'] = resp.Name;
+      if (resp.Description !== undefined && resp.Description !== '') {
+        result['Description'] = resp.Description;
+      }
+      if (resp.KmsKeyIdentifier !== undefined) {
+        result['KmsKeyIdentifier'] = resp.KmsKeyIdentifier;
+      }
+      if (resp.DeadLetterConfig?.Arn) {
+        result['DeadLetterConfig'] = { Arn: resp.DeadLetterConfig.Arn };
+      }
+      if (resp.Policy) {
+        try {
+          result['Policy'] = JSON.parse(resp.Policy) as unknown;
+        } catch {
+          result['Policy'] = resp.Policy;
+        }
+      }
+      return result;
+    } catch (err) {
+      if (err instanceof ResourceNotFoundException) return undefined;
+      throw err;
+    }
+  }
+
+  /**
    * Adopt an existing EventBridge event bus into cdkd state.
    *
    * Lookup order:

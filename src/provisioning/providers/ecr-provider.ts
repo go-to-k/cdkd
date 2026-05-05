@@ -3,12 +3,14 @@ import {
   CreateRepositoryCommand,
   DeleteRepositoryCommand,
   DescribeRepositoriesCommand,
+  GetLifecyclePolicyCommand,
   PutLifecyclePolicyCommand,
   SetRepositoryPolicyCommand,
   PutImageScanningConfigurationCommand,
   PutImageTagMutabilityCommand,
   TagResourceCommand,
   ListTagsForResourceCommand,
+  LifecyclePolicyNotFoundException,
   RepositoryNotFoundException,
   type ImageScanningConfiguration,
   type EncryptionConfiguration,
@@ -340,6 +342,93 @@ export class ECRProvider implements ResourceProvider {
         cause
       );
     }
+  }
+
+  /**
+   * Read the AWS-current ECR repository configuration in CFn-property shape.
+   *
+   * Issues `DescribeRepositories(filtered=[name])` for the repository's
+   * configuration, then a separate `GetLifecyclePolicy` for `LifecyclePolicy`
+   * (which `DescribeRepositories` doesn't return).
+   *
+   * Surfaced keys: `RepositoryName`, `ImageTagMutability`,
+   * `ImageScanningConfiguration`, `EncryptionConfiguration`, `LifecyclePolicy`
+   * (when configured — `LifecyclePolicyNotFoundException` is caught and the
+   * key omitted, NOT propagated as repo-gone).
+   *
+   * Intentionally omitted:
+   *   - `RepositoryPolicyText`: requires a separate `GetRepositoryPolicy`
+   *     round-trip; cdkd state holds the policy as either a string or an
+   *     object (depending on user input), and the comparator round-trip
+   *     is not yet handled here.
+   *   - `Tags`: requires `ListTagsForResource`; auto-injected
+   *     `aws:cdk:path` tag-shape question is out of scope.
+   *   - `EmptyOnDelete` / `ImageTagMutabilityExclusionFilters`: not part
+   *     of the persisted AWS state visible via standard Describe.
+   *
+   * Returns `undefined` when the repository is gone (`RepositoryNotFoundException`).
+   */
+  async readCurrentState(
+    physicalId: string,
+    _logicalId: string,
+    _resourceType: string
+  ): Promise<Record<string, unknown> | undefined> {
+    let repo: {
+      repositories?: Array<{
+        repositoryName?: string;
+        imageTagMutability?: string;
+        imageScanningConfiguration?: { scanOnPush?: boolean };
+        encryptionConfiguration?: { encryptionType?: string; kmsKey?: string };
+      }>;
+    };
+    try {
+      repo = (await this.getClient().send(
+        new DescribeRepositoriesCommand({ repositoryNames: [physicalId] })
+      )) as unknown as typeof repo;
+    } catch (err) {
+      if (err instanceof RepositoryNotFoundException) return undefined;
+      throw err;
+    }
+    const r = repo.repositories?.[0];
+    if (!r) return undefined;
+
+    const result: Record<string, unknown> = {};
+    if (r.repositoryName !== undefined) result['RepositoryName'] = r.repositoryName;
+    if (r.imageTagMutability !== undefined) result['ImageTagMutability'] = r.imageTagMutability;
+    if (r.imageScanningConfiguration) {
+      const inner: Record<string, unknown> = {};
+      if (r.imageScanningConfiguration.scanOnPush !== undefined) {
+        inner['ScanOnPush'] = r.imageScanningConfiguration.scanOnPush;
+      }
+      if (Object.keys(inner).length > 0) result['ImageScanningConfiguration'] = inner;
+    }
+    if (r.encryptionConfiguration) {
+      const inner: Record<string, unknown> = {};
+      if (r.encryptionConfiguration.encryptionType !== undefined) {
+        inner['EncryptionType'] = r.encryptionConfiguration.encryptionType;
+      }
+      if (r.encryptionConfiguration.kmsKey !== undefined) {
+        inner['KmsKey'] = r.encryptionConfiguration.kmsKey;
+      }
+      if (Object.keys(inner).length > 0) result['EncryptionConfiguration'] = inner;
+    }
+
+    // LifecyclePolicy: separate API call. "Not configured" omits the key;
+    // do NOT treat as repo-gone.
+    try {
+      const lp = await this.getClient().send(
+        new GetLifecyclePolicyCommand({ repositoryName: physicalId })
+      );
+      if (lp.lifecyclePolicyText) {
+        result['LifecyclePolicy'] = { LifecyclePolicyText: lp.lifecyclePolicyText };
+      }
+    } catch (err) {
+      if (!(err instanceof LifecyclePolicyNotFoundException)) {
+        throw err;
+      }
+    }
+
+    return result;
   }
 
   /**
