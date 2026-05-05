@@ -1,3 +1,10 @@
+# [0.38.0](https://github.com/go-to-k/cdkd/compare/v0.37.0...v0.38.0) (2026-05-05)
+
+
+### Features
+
+* **cli:** cdkd drift --accept (state ← AWS) / --revert (AWS ← state) ([#134](https://github.com/go-to-k/cdkd/issues/134)) ([c99407b](https://github.com/go-to-k/cdkd/commit/c99407bed6b39db33405d683578aff0aefa36922))
+
 # [0.37.0](https://github.com/go-to-k/cdkd/compare/v0.36.0...v0.37.0) (2026-05-05)
 
 
