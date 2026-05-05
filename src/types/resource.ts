@@ -293,13 +293,20 @@ export interface ResourceProvider {
    * @param logicalId  CloudFormation logical id (helps providers that need
    *                   to disambiguate)
    * @param resourceType  e.g. `AWS::S3::Bucket`
+   * @param properties Optional state-recorded properties for this resource.
+   *                   Sub-resource providers (whose Describe API needs a
+   *                   parent identifier from `Properties` — `RestApiId`,
+   *                   `FunctionName`, `Roles[]`, etc.) use this to issue
+   *                   the right SDK call. Most providers ignore it
+   *                   because the physicalId is self-sufficient.
    * @returns AWS-current properties scoped to the provider's managed set,
    *          or `undefined` when not implemented
    */
   readCurrentState?(
     physicalId: string,
     logicalId: string,
-    resourceType: string
+    resourceType: string,
+    properties?: Record<string, unknown>
   ): Promise<Record<string, unknown> | undefined>;
 
   /**

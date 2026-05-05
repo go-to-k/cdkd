@@ -380,13 +380,19 @@ export class KinesisStreamProvider implements ResourceProvider {
    * mode reports an empty list).
    *
    * Returns `undefined` when the stream is gone (`ResourceNotFoundException`).
-   * Only `AWS::Kinesis::Stream` is supported (the provider does not handle
-   * `AWS::Kinesis::StreamConsumer`).
+   *
+   * `AWS::Kinesis::StreamConsumer` is intentionally not handled here: this
+   * provider only registers `AWS::Kinesis::Stream`, so consumer resources
+   * route to the CC API fallback for drift detection (CC API's `GetResource`
+   * surfaces every Kinesis consumer attribute the user can configure). A
+   * dedicated SDK impl would require building out create/update/delete first;
+   * out of scope for PR G.
    */
   async readCurrentState(
     physicalId: string,
     _logicalId: string,
-    resourceType: string
+    resourceType: string,
+    _properties?: Record<string, unknown>
   ): Promise<Record<string, unknown> | undefined> {
     if (resourceType !== 'AWS::Kinesis::Stream') return undefined;
 

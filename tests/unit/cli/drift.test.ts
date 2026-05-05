@@ -656,7 +656,7 @@ describe('cdkd drift', () => {
       // Drift detected via CC API fallback.
       expect((error as Error).message).toBe('__exit__');
       expect(exitSpy).toHaveBeenCalledWith(1);
-      expect(ccApiRead).toHaveBeenCalledWith('fn-1', 'Func1', 'AWS::Lambda::Function');
+      expect(ccApiRead).toHaveBeenCalledWith('fn-1', 'Func1', 'AWS::Lambda::Function', { MemorySize: 128 });
       expect(output).toContain('⚠ TestStack (us-east-1): drift detected on 1 resource');
       expect(output).toContain('~ Func1 (AWS::Lambda::Function)');
       expect(output).toContain('- MemorySize: 128');
