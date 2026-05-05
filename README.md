@@ -282,6 +282,11 @@ cdkd deploy MyStack \
 # Show diff (what would change)
 cdkd diff MyStack
 
+# Detect drift between cdkd state and AWS reality (state-only; no synth)
+# Exits 0 with no drift, 1 when drift is detected, 2 on error.
+cdkd drift MyStack
+cdkd drift --all --json
+
 # Dry run (plan only, no changes)
 cdkd deploy --dry-run
 

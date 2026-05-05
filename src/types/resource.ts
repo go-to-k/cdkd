@@ -273,6 +273,36 @@ export interface ResourceProvider {
   getAttribute?(physicalId: string, resourceType: string, attributeName: string): Promise<unknown>;
 
   /**
+   * Read the **currently-deployed** properties of an existing resource as
+   * seen by AWS, scoped to the property set this provider manages
+   * (`handledProperties`-equivalent). The returned object is suitable for
+   * direct comparison against the `properties` field in cdkd state.
+   *
+   * Used by `cdkd drift <stack>` to detect divergence between cdkd state and
+   * AWS reality without going through CloudFormation. Implementations should
+   * return only the keys cdkd actually manages — the `cdkd drift` comparator
+   * already ignores keys not present in state, but returning a tighter set
+   * keeps the wire payload smaller.
+   *
+   * Returns `undefined` when the provider does not yet implement drift
+   * detection — the caller falls back to a "drift unknown" outcome for that
+   * resource. This mirrors the optional `import` method: providers add
+   * support incrementally without forcing a sweep across the whole tree.
+   *
+   * @param physicalId AWS physical id (e.g. bucket name, function arn)
+   * @param logicalId  CloudFormation logical id (helps providers that need
+   *                   to disambiguate)
+   * @param resourceType  e.g. `AWS::S3::Bucket`
+   * @returns AWS-current properties scoped to the provider's managed set,
+   *          or `undefined` when not implemented
+   */
+  readCurrentState?(
+    physicalId: string,
+    logicalId: string,
+    resourceType: string
+  ): Promise<Record<string, unknown> | undefined>;
+
+  /**
    * Find an already-deployed AWS resource matching the given logicalId from
    * the CDK template, and return its physical id + attributes so the state
    * file can be reconstructed.
