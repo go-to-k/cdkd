@@ -300,6 +300,79 @@ export class CloudWatchAlarmProvider implements ResourceProvider {
    *  2. `DescribeAlarms` paginated, then `ListTagsForResource(AlarmArn)` per
    *     alarm to match `aws:cdk:path`.
    */
+  /**
+   * Read the AWS-current CloudWatch Alarm configuration in CFn-property shape.
+   *
+   * Issues `DescribeAlarms` filtered by `AlarmNames=[physicalId]` and
+   * surfaces the keys cdkd's `create()` accepts (`AlarmName`,
+   * `AlarmDescription`, `MetricName`, `Namespace`, `Statistic`,
+   * `ComparisonOperator`, `Threshold`, `EvaluationPeriods`, `Period`,
+   * `DatapointsToAlarm`, `ActionsEnabled`, `AlarmActions`,
+   * `OKActions`, `InsufficientDataActions`, `TreatMissingData`, `Unit`,
+   * `Dimensions`, `Metrics`).
+   *
+   * `DescribeAlarms` returns the result via either `MetricAlarms` (single-
+   * metric form) or `CompositeAlarms` (composite form). cdkd's provider
+   * only handles the single-metric form, so we look at `MetricAlarms` only.
+   *
+   * Returns `undefined` when the alarm is gone (no matching `MetricAlarms`).
+   */
+  async readCurrentState(
+    physicalId: string,
+    _logicalId: string,
+    _resourceType: string
+  ): Promise<Record<string, unknown> | undefined> {
+    const resp = await this.cloudWatchClient.send(
+      new DescribeAlarmsCommand({ AlarmNames: [physicalId], AlarmTypes: ['MetricAlarm'] })
+    );
+    const alarm = resp.MetricAlarms?.[0];
+    if (!alarm) return undefined;
+
+    const result: Record<string, unknown> = {};
+    if (alarm.AlarmName !== undefined) result['AlarmName'] = alarm.AlarmName;
+    if (alarm.AlarmDescription !== undefined && alarm.AlarmDescription !== '') {
+      result['AlarmDescription'] = alarm.AlarmDescription;
+    }
+    if (alarm.MetricName !== undefined) result['MetricName'] = alarm.MetricName;
+    if (alarm.Namespace !== undefined) result['Namespace'] = alarm.Namespace;
+    if (alarm.Statistic !== undefined) result['Statistic'] = alarm.Statistic;
+    if (alarm.ComparisonOperator !== undefined) {
+      result['ComparisonOperator'] = alarm.ComparisonOperator;
+    }
+    if (alarm.Threshold !== undefined) result['Threshold'] = alarm.Threshold;
+    if (alarm.EvaluationPeriods !== undefined) {
+      result['EvaluationPeriods'] = alarm.EvaluationPeriods;
+    }
+    if (alarm.Period !== undefined) result['Period'] = alarm.Period;
+    if (alarm.DatapointsToAlarm !== undefined) {
+      result['DatapointsToAlarm'] = alarm.DatapointsToAlarm;
+    }
+    if (alarm.ActionsEnabled !== undefined) result['ActionsEnabled'] = alarm.ActionsEnabled;
+    if (alarm.AlarmActions && alarm.AlarmActions.length > 0) {
+      result['AlarmActions'] = [...alarm.AlarmActions];
+    }
+    if (alarm.OKActions && alarm.OKActions.length > 0) {
+      result['OKActions'] = [...alarm.OKActions];
+    }
+    if (alarm.InsufficientDataActions && alarm.InsufficientDataActions.length > 0) {
+      result['InsufficientDataActions'] = [...alarm.InsufficientDataActions];
+    }
+    if (alarm.TreatMissingData !== undefined) {
+      result['TreatMissingData'] = alarm.TreatMissingData;
+    }
+    if (alarm.Unit !== undefined) result['Unit'] = alarm.Unit;
+    if (alarm.Dimensions && alarm.Dimensions.length > 0) {
+      result['Dimensions'] = alarm.Dimensions.map((d) => ({
+        ...(d.Name !== undefined ? { Name: d.Name } : {}),
+        ...(d.Value !== undefined ? { Value: d.Value } : {}),
+      }));
+    }
+    if (alarm.Metrics && alarm.Metrics.length > 0) {
+      result['Metrics'] = alarm.Metrics.map((m) => m as unknown as Record<string, unknown>);
+    }
+    return result;
+  }
+
   async import(input: ResourceImportInput): Promise<ResourceImportResult | null> {
     const explicit = resolveExplicitPhysicalId(input, 'AlarmName');
     if (explicit) {

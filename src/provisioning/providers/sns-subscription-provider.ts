@@ -2,6 +2,7 @@ import {
   SNSClient,
   SubscribeCommand,
   UnsubscribeCommand,
+  GetSubscriptionAttributesCommand,
   NotFoundException,
 } from '@aws-sdk/client-sns';
 import { getLogger } from '../../utils/logger.js';
@@ -190,6 +191,59 @@ export class SNSSubscriptionProvider implements ResourceProvider {
         cause
       );
     }
+  }
+
+  /**
+   * Read the AWS-current SNS Subscription configuration in CFn-property shape.
+   *
+   * Issues `GetSubscriptionAttributes`. AWS returns ALL attribute values
+   * as strings; we type-coerce `RawMessageDelivery` to a boolean and
+   * JSON-parse `FilterPolicy` so the comparator matches cdkd state's
+   * already-typed values. `TopicArn`, `Protocol`, `Endpoint` pass through
+   * as strings.
+   *
+   * Returns `undefined` when the subscription is gone (`NotFoundException`),
+   * including the special "PendingConfirmation" case where the
+   * `SubscriptionArn` has not yet been confirmed and `Attributes` is null.
+   */
+  async readCurrentState(
+    physicalId: string,
+    _logicalId: string,
+    _resourceType: string
+  ): Promise<Record<string, unknown> | undefined> {
+    let attributes: Record<string, string> | undefined;
+    try {
+      const resp = await this.snsClient.send(
+        new GetSubscriptionAttributesCommand({ SubscriptionArn: physicalId })
+      );
+      attributes = resp.Attributes;
+    } catch (err) {
+      if (err instanceof NotFoundException) return undefined;
+      throw err;
+    }
+    if (!attributes) return undefined;
+
+    const result: Record<string, unknown> = {};
+    if (attributes['TopicArn'] !== undefined) result['TopicArn'] = attributes['TopicArn'];
+    if (attributes['Protocol'] !== undefined) result['Protocol'] = attributes['Protocol'];
+    if (attributes['Endpoint'] !== undefined) result['Endpoint'] = attributes['Endpoint'];
+
+    // RawMessageDelivery is a boolean stored as a string ("true" / "false").
+    if (attributes['RawMessageDelivery'] !== undefined) {
+      result['RawMessageDelivery'] = attributes['RawMessageDelivery'] === 'true';
+    }
+
+    // FilterPolicy: AWS returns as a JSON string; cdkd state typically
+    // holds the parsed object (post intrinsic resolution).
+    if (attributes['FilterPolicy']) {
+      try {
+        result['FilterPolicy'] = JSON.parse(attributes['FilterPolicy']) as unknown;
+      } catch {
+        result['FilterPolicy'] = attributes['FilterPolicy'];
+      }
+    }
+
+    return result;
   }
 
   /**

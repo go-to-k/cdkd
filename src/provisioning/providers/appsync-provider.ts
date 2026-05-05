@@ -10,6 +10,9 @@ import {
   DeleteApiKeyCommand,
   StartSchemaCreationCommand,
   GetGraphqlApiCommand,
+  GetDataSourceCommand,
+  GetResolverCommand,
+  ListApiKeysCommand,
   ListGraphqlApisCommand,
   NotFoundException as AppSyncNotFoundException,
   type AuthenticationType,
@@ -681,6 +684,201 @@ export class AppSyncProvider implements ResourceProvider {
       message.includes('does not exist') ||
       name === 'NotFoundException'
     );
+  }
+
+  /**
+   * Read the AWS-current AppSync resource configuration in CFn-property shape.
+   *
+   * Dispatches per resource type:
+   *  - `GraphQLApi` → `GetGraphqlApi` (Name, AuthenticationType, XrayEnabled,
+   *    LogConfig). Tags are skipped (CDK auto-tag handling deferred).
+   *  - `DataSource` → `GetDataSource` (Name, Type, Description,
+   *    ServiceRoleArn, DynamoDBConfig, LambdaConfig, HttpConfig). The
+   *    `ApiId` cdkd holds is recovered from the `apiId|name` physicalId.
+   *  - `Resolver` → `GetResolver` (TypeName, FieldName, DataSourceName,
+   *    request/response templates, Kind, PipelineConfig, Runtime, Code).
+   *  - `ApiKey` → `ListApiKeys` filtered by id (no `GetApiKey` SDK call;
+   *    AppSync only exposes list-based access). Surfaces Description and
+   *    Expires.
+   *  - `GraphQLSchema` → `GetSchemaCreationStatus` is the closest live
+   *    state, but it returns a status string only (not the full schema
+   *    body). Schema bodies live in cdkd state's `Definition` and would
+   *    need `GetIntrospectionSchema` + reverse-mapping to compare; that's
+   *    a separate task. Returns `undefined` so the comparator marks it
+   *    as "drift unknown" rather than firing a false positive.
+   *
+   * Returns `undefined` when the parent resource is gone (`NotFoundException`).
+   */
+  async readCurrentState(
+    physicalId: string,
+    _logicalId: string,
+    resourceType: string
+  ): Promise<Record<string, unknown> | undefined> {
+    switch (resourceType) {
+      case 'AWS::AppSync::GraphQLApi':
+        return this.readGraphQLApi(physicalId);
+      case 'AWS::AppSync::DataSource':
+        return this.readDataSource(physicalId);
+      case 'AWS::AppSync::Resolver':
+        return this.readResolver(physicalId);
+      case 'AWS::AppSync::ApiKey':
+        return this.readApiKey(physicalId);
+      case 'AWS::AppSync::GraphQLSchema':
+        // Drift detection on schema bodies is out of scope for v1.
+        return undefined;
+      default:
+        return undefined;
+    }
+  }
+
+  private async readGraphQLApi(physicalId: string): Promise<Record<string, unknown> | undefined> {
+    let api;
+    try {
+      const resp = await this.getClient().send(new GetGraphqlApiCommand({ apiId: physicalId }));
+      api = resp.graphqlApi;
+    } catch (err) {
+      if (err instanceof AppSyncNotFoundException) return undefined;
+      throw err;
+    }
+    if (!api) return undefined;
+
+    const result: Record<string, unknown> = {};
+    if (api.name !== undefined) result['Name'] = api.name;
+    if (api.authenticationType !== undefined) {
+      result['AuthenticationType'] = api.authenticationType;
+    }
+    if (api.xrayEnabled !== undefined) result['XrayEnabled'] = api.xrayEnabled;
+    if (api.logConfig) {
+      const log: Record<string, unknown> = {};
+      if (api.logConfig.cloudWatchLogsRoleArn !== undefined) {
+        log['CloudWatchLogsRoleArn'] = api.logConfig.cloudWatchLogsRoleArn;
+      }
+      if (api.logConfig.fieldLogLevel !== undefined) {
+        log['FieldLogLevel'] = api.logConfig.fieldLogLevel;
+      }
+      if (api.logConfig.excludeVerboseContent !== undefined) {
+        log['ExcludeVerboseContent'] = api.logConfig.excludeVerboseContent;
+      }
+      if (Object.keys(log).length > 0) result['LogConfig'] = log;
+    }
+    return result;
+  }
+
+  private async readDataSource(physicalId: string): Promise<Record<string, unknown> | undefined> {
+    const [apiId, name] = physicalId.split('|');
+    if (!apiId || !name) return undefined;
+
+    let ds;
+    try {
+      const resp = await this.getClient().send(new GetDataSourceCommand({ apiId, name }));
+      ds = resp.dataSource;
+    } catch (err) {
+      if (err instanceof AppSyncNotFoundException) return undefined;
+      throw err;
+    }
+    if (!ds) return undefined;
+
+    const result: Record<string, unknown> = { ApiId: apiId };
+    if (ds.name !== undefined) result['Name'] = ds.name;
+    if (ds.type !== undefined) result['Type'] = ds.type;
+    if (ds.description !== undefined && ds.description !== '') {
+      result['Description'] = ds.description;
+    }
+    if (ds.serviceRoleArn !== undefined) result['ServiceRoleArn'] = ds.serviceRoleArn;
+    if (ds.dynamodbConfig) {
+      const dynamo: Record<string, unknown> = {};
+      if (ds.dynamodbConfig.tableName !== undefined)
+        dynamo['TableName'] = ds.dynamodbConfig.tableName;
+      if (ds.dynamodbConfig.awsRegion !== undefined)
+        dynamo['AwsRegion'] = ds.dynamodbConfig.awsRegion;
+      if (ds.dynamodbConfig.useCallerCredentials !== undefined) {
+        dynamo['UseCallerCredentials'] = ds.dynamodbConfig.useCallerCredentials;
+      }
+      if (Object.keys(dynamo).length > 0) result['DynamoDBConfig'] = dynamo;
+    }
+    if (ds.lambdaConfig?.lambdaFunctionArn !== undefined) {
+      result['LambdaConfig'] = { LambdaFunctionArn: ds.lambdaConfig.lambdaFunctionArn };
+    }
+    if (ds.httpConfig?.endpoint !== undefined) {
+      result['HttpConfig'] = { Endpoint: ds.httpConfig.endpoint };
+    }
+    return result;
+  }
+
+  private async readResolver(physicalId: string): Promise<Record<string, unknown> | undefined> {
+    const parts = physicalId.split('|');
+    if (parts.length < 3) return undefined;
+    const [apiId, typeName, fieldName] = parts;
+    if (!apiId || !typeName || !fieldName) return undefined;
+
+    let resolver;
+    try {
+      const resp = await this.getClient().send(
+        new GetResolverCommand({ apiId, typeName, fieldName })
+      );
+      resolver = resp.resolver;
+    } catch (err) {
+      if (err instanceof AppSyncNotFoundException) return undefined;
+      throw err;
+    }
+    if (!resolver) return undefined;
+
+    const result: Record<string, unknown> = { ApiId: apiId };
+    if (resolver.typeName !== undefined) result['TypeName'] = resolver.typeName;
+    if (resolver.fieldName !== undefined) result['FieldName'] = resolver.fieldName;
+    if (resolver.dataSourceName !== undefined) result['DataSourceName'] = resolver.dataSourceName;
+    if (resolver.requestMappingTemplate !== undefined) {
+      result['RequestMappingTemplate'] = resolver.requestMappingTemplate;
+    }
+    if (resolver.responseMappingTemplate !== undefined) {
+      result['ResponseMappingTemplate'] = resolver.responseMappingTemplate;
+    }
+    if (resolver.kind !== undefined) result['Kind'] = resolver.kind;
+    if (resolver.pipelineConfig?.functions && resolver.pipelineConfig.functions.length > 0) {
+      result['PipelineConfig'] = { Functions: [...resolver.pipelineConfig.functions] };
+    }
+    if (resolver.runtime) {
+      const runtime: Record<string, unknown> = {};
+      if (resolver.runtime.name !== undefined) runtime['Name'] = resolver.runtime.name;
+      if (resolver.runtime.runtimeVersion !== undefined) {
+        runtime['RuntimeVersion'] = resolver.runtime.runtimeVersion;
+      }
+      if (Object.keys(runtime).length > 0) result['Runtime'] = runtime;
+    }
+    if (resolver.code !== undefined) result['Code'] = resolver.code;
+    return result;
+  }
+
+  private async readApiKey(physicalId: string): Promise<Record<string, unknown> | undefined> {
+    const [apiId, apiKeyId] = physicalId.split('|');
+    if (!apiId || !apiKeyId) return undefined;
+
+    // AppSync has no `GetApiKey` SDK command; paginate `ListApiKeys` to find
+    // the matching id.
+    let nextToken: string | undefined;
+    do {
+      let resp;
+      try {
+        resp = await this.getClient().send(
+          new ListApiKeysCommand({ apiId, ...(nextToken && { nextToken }) })
+        );
+      } catch (err) {
+        if (err instanceof AppSyncNotFoundException) return undefined;
+        throw err;
+      }
+      for (const key of resp.apiKeys ?? []) {
+        if (key.id === apiKeyId) {
+          const result: Record<string, unknown> = { ApiId: apiId };
+          if (key.description !== undefined && key.description !== '') {
+            result['Description'] = key.description;
+          }
+          if (key.expires !== undefined) result['Expires'] = key.expires;
+          return result;
+        }
+      }
+      nextToken = resp.nextToken;
+    } while (nextToken);
+    return undefined;
   }
 
   /**

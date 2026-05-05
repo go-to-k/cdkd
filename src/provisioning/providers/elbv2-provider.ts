@@ -11,6 +11,7 @@ import {
   CreateListenerCommand,
   DeleteListenerCommand,
   ModifyListenerCommand,
+  DescribeListenersCommand,
   type Tag,
   type Action,
   type Certificate,
@@ -688,6 +689,156 @@ export class ELBv2Provider implements ResourceProvider {
   ): Certificate[] | undefined {
     if (!certificates || certificates.length === 0) return undefined;
     return certificates as unknown as Certificate[];
+  }
+
+  /**
+   * Read the AWS-current ELBv2 resource configuration in CFn-property shape.
+   *
+   * Dispatch per resource type:
+   *  - `LoadBalancer` → `DescribeLoadBalancers` (Name, Subnets via
+   *    `AvailabilityZones[].SubnetId`, SecurityGroups, Scheme, Type,
+   *    IpAddressType). LoadBalancerAttributes is omitted for v1 — it
+   *    requires a separate `DescribeLoadBalancerAttributes` call and the
+   *    drift comparator only descends into keys present in state, so an
+   *    absent key cannot fire false drift.
+   *  - `TargetGroup` → `DescribeTargetGroups` (Protocol, Port, VpcId,
+   *    TargetType, ProtocolVersion, HealthCheck*, Matcher, Name).
+   *  - `Listener` → `DescribeListeners` (LoadBalancerArn, Certificates,
+   *    DefaultActions, Port, Protocol, SslPolicy).
+   *
+   * Tags are skipped (CDK auto-tag handling deferred). Returns `undefined`
+   * when the resource is gone (`*NotFoundException`).
+   */
+  async readCurrentState(
+    physicalId: string,
+    _logicalId: string,
+    resourceType: string
+  ): Promise<Record<string, unknown> | undefined> {
+    switch (resourceType) {
+      case 'AWS::ElasticLoadBalancingV2::LoadBalancer':
+        return this.readLoadBalancer(physicalId);
+      case 'AWS::ElasticLoadBalancingV2::TargetGroup':
+        return this.readTargetGroup(physicalId);
+      case 'AWS::ElasticLoadBalancingV2::Listener':
+        return this.readListener(physicalId);
+      default:
+        return undefined;
+    }
+  }
+
+  private async readLoadBalancer(physicalId: string): Promise<Record<string, unknown> | undefined> {
+    let lb;
+    try {
+      const resp = await this.getClient().send(
+        new DescribeLoadBalancersCommand({ LoadBalancerArns: [physicalId] })
+      );
+      lb = resp.LoadBalancers?.[0];
+    } catch (err) {
+      if (this.isNotFoundError(err)) return undefined;
+      throw err;
+    }
+    if (!lb) return undefined;
+
+    const result: Record<string, unknown> = {};
+    if (lb.LoadBalancerName !== undefined) result['Name'] = lb.LoadBalancerName;
+    if (lb.AvailabilityZones && lb.AvailabilityZones.length > 0) {
+      const subnets = lb.AvailabilityZones.map((az) => az.SubnetId).filter(
+        (id): id is string => !!id
+      );
+      if (subnets.length > 0) result['Subnets'] = subnets;
+    }
+    if (lb.SecurityGroups && lb.SecurityGroups.length > 0) {
+      result['SecurityGroups'] = [...lb.SecurityGroups];
+    }
+    if (lb.Scheme !== undefined) result['Scheme'] = lb.Scheme;
+    if (lb.Type !== undefined) result['Type'] = lb.Type;
+    if (lb.IpAddressType !== undefined) result['IpAddressType'] = lb.IpAddressType;
+    return result;
+  }
+
+  private async readTargetGroup(physicalId: string): Promise<Record<string, unknown> | undefined> {
+    let tg;
+    try {
+      const resp = await this.getClient().send(
+        new DescribeTargetGroupsCommand({ TargetGroupArns: [physicalId] })
+      );
+      tg = resp.TargetGroups?.[0];
+    } catch (err) {
+      if (this.isNotFoundError(err)) return undefined;
+      throw err;
+    }
+    if (!tg) return undefined;
+
+    const result: Record<string, unknown> = {};
+    if (tg.TargetGroupName !== undefined) result['Name'] = tg.TargetGroupName;
+    if (tg.Protocol !== undefined) result['Protocol'] = tg.Protocol;
+    if (tg.Port !== undefined) result['Port'] = tg.Port;
+    if (tg.VpcId !== undefined) result['VpcId'] = tg.VpcId;
+    if (tg.TargetType !== undefined) result['TargetType'] = tg.TargetType;
+    if (tg.ProtocolVersion !== undefined) result['ProtocolVersion'] = tg.ProtocolVersion;
+    if (tg.HealthCheckProtocol !== undefined)
+      result['HealthCheckProtocol'] = tg.HealthCheckProtocol;
+    if (tg.HealthCheckPort !== undefined) result['HealthCheckPort'] = tg.HealthCheckPort;
+    if (tg.HealthCheckPath !== undefined) result['HealthCheckPath'] = tg.HealthCheckPath;
+    if (tg.HealthCheckEnabled !== undefined) result['HealthCheckEnabled'] = tg.HealthCheckEnabled;
+    if (tg.HealthCheckIntervalSeconds !== undefined) {
+      result['HealthCheckIntervalSeconds'] = tg.HealthCheckIntervalSeconds;
+    }
+    if (tg.HealthCheckTimeoutSeconds !== undefined) {
+      result['HealthCheckTimeoutSeconds'] = tg.HealthCheckTimeoutSeconds;
+    }
+    if (tg.HealthyThresholdCount !== undefined) {
+      result['HealthyThresholdCount'] = tg.HealthyThresholdCount;
+    }
+    if (tg.UnhealthyThresholdCount !== undefined) {
+      result['UnhealthyThresholdCount'] = tg.UnhealthyThresholdCount;
+    }
+    if (tg.Matcher) {
+      const matcher: Record<string, unknown> = {};
+      if (tg.Matcher.HttpCode !== undefined) matcher['HttpCode'] = tg.Matcher.HttpCode;
+      if (tg.Matcher.GrpcCode !== undefined) matcher['GrpcCode'] = tg.Matcher.GrpcCode;
+      if (Object.keys(matcher).length > 0) result['Matcher'] = matcher;
+    }
+    return result;
+  }
+
+  private async readListener(physicalId: string): Promise<Record<string, unknown> | undefined> {
+    let listener;
+    try {
+      const resp = await this.getClient().send(
+        new DescribeListenersCommand({ ListenerArns: [physicalId] })
+      );
+      listener = resp.Listeners?.[0];
+    } catch (err) {
+      if (this.isNotFoundError(err)) return undefined;
+      throw err;
+    }
+    if (!listener) return undefined;
+
+    const result: Record<string, unknown> = {};
+    if (listener.LoadBalancerArn !== undefined) {
+      result['LoadBalancerArn'] = listener.LoadBalancerArn;
+    }
+    if (listener.Port !== undefined) result['Port'] = listener.Port;
+    if (listener.Protocol !== undefined) result['Protocol'] = listener.Protocol;
+    if (listener.SslPolicy !== undefined) result['SslPolicy'] = listener.SslPolicy;
+    if (listener.Certificates && listener.Certificates.length > 0) {
+      result['Certificates'] = listener.Certificates.map((c) => {
+        const out: Record<string, unknown> = {};
+        if (c.CertificateArn !== undefined) out['CertificateArn'] = c.CertificateArn;
+        if (c.IsDefault !== undefined) out['IsDefault'] = c.IsDefault;
+        return out;
+      });
+    }
+    if (listener.DefaultActions && listener.DefaultActions.length > 0) {
+      // CDK already uses PascalCase that matches AWS SDK shape; pass through
+      // the keys the SDK returns. Cast to unknown via Record so the
+      // comparator's deep-equal handles the structured comparison.
+      result['DefaultActions'] = listener.DefaultActions.map(
+        (a) => a as unknown as Record<string, unknown>
+      );
+    }
+    return result;
   }
 
   /**

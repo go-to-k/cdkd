@@ -8,6 +8,8 @@ import {
   PutEventSelectorsCommand,
   PutInsightSelectorsCommand,
   GetTrailCommand,
+  GetTrailStatusCommand,
+  GetEventSelectorsCommand,
   ListTrailsCommand,
   ListTagsCommand,
   TrailNotFoundException,
@@ -332,6 +334,94 @@ export class CloudTrailProvider implements ResourceProvider {
    *  2. `ListTrails` + `ListTags` (CloudTrail uses `Tag[]` arrays per ARN),
    *     match `aws:cdk:path` tag.
    */
+  /**
+   * Read the AWS-current CloudTrail Trail configuration in CFn-property shape.
+   *
+   * Issues `GetTrail`, plus best-effort `GetTrailStatus` (for `IsLogging`)
+   * and `GetEventSelectors` (for `EventSelectors`). Each enrichment call is
+   * wrapped in its own try/catch so an "AccessDenied" or other transient
+   * error on the secondary calls omits that key without failing the
+   * whole snapshot — the comparator only descends into keys present in
+   * state.
+   *
+   * Mapping: AWS `GetTrail` returns `KmsKeyId` (lowercase `s`) while CFn
+   * uses `KMSKeyId`; we re-shape the key. SnsTopicARN is the Trail's
+   * derived field; the cdkd state property is `SnsTopicName` so we
+   * surface `SnsTopicName` directly from `GetTrail.SnsTopicName`.
+   *
+   * Tags + InsightSelectors are skipped for v1 (each needs its own
+   * separate call + shape mapping).
+   *
+   * Returns `undefined` when the trail is gone (`TrailNotFoundException`).
+   */
+  async readCurrentState(
+    physicalId: string,
+    _logicalId: string,
+    _resourceType: string
+  ): Promise<Record<string, unknown> | undefined> {
+    let trail;
+    try {
+      const resp = await this.getClient().send(new GetTrailCommand({ Name: physicalId }));
+      trail = resp.Trail;
+    } catch (err) {
+      if (err instanceof TrailNotFoundException) return undefined;
+      throw err;
+    }
+    if (!trail) return undefined;
+
+    const result: Record<string, unknown> = {};
+    if (trail.Name !== undefined) result['TrailName'] = trail.Name;
+    if (trail.S3BucketName !== undefined) result['S3BucketName'] = trail.S3BucketName;
+    if (trail.S3KeyPrefix !== undefined) result['S3KeyPrefix'] = trail.S3KeyPrefix;
+    if (trail.IsMultiRegionTrail !== undefined) {
+      result['IsMultiRegionTrail'] = trail.IsMultiRegionTrail;
+    }
+    if (trail.IncludeGlobalServiceEvents !== undefined) {
+      result['IncludeGlobalServiceEvents'] = trail.IncludeGlobalServiceEvents;
+    }
+    if (trail.LogFileValidationEnabled !== undefined) {
+      result['EnableLogFileValidation'] = trail.LogFileValidationEnabled;
+    }
+    if (trail.CloudWatchLogsLogGroupArn !== undefined) {
+      result['CloudWatchLogsLogGroupArn'] = trail.CloudWatchLogsLogGroupArn;
+    }
+    if (trail.CloudWatchLogsRoleArn !== undefined) {
+      result['CloudWatchLogsRoleArn'] = trail.CloudWatchLogsRoleArn;
+    }
+    if (trail.KmsKeyId !== undefined) result['KMSKeyId'] = trail.KmsKeyId;
+    if (trail.SnsTopicName !== undefined) result['SnsTopicName'] = trail.SnsTopicName;
+    if (trail.IsOrganizationTrail !== undefined) {
+      result['IsOrganizationTrail'] = trail.IsOrganizationTrail;
+    }
+
+    // IsLogging — separate call. Treat any error as "feature not configured"
+    // and omit the key.
+    try {
+      const status = await this.getClient().send(new GetTrailStatusCommand({ Name: physicalId }));
+      if (status.IsLogging !== undefined) result['IsLogging'] = status.IsLogging;
+    } catch {
+      // Best-effort.
+    }
+
+    // EventSelectors — separate call. AWS returns either `EventSelectors`
+    // or `AdvancedEventSelectors` (mutually exclusive). cdkd state's CFn
+    // shape is `EventSelectors` only, so surface only that variant.
+    try {
+      const sel = await this.getClient().send(
+        new GetEventSelectorsCommand({ TrailName: physicalId })
+      );
+      if (sel.EventSelectors && sel.EventSelectors.length > 0) {
+        result['EventSelectors'] = sel.EventSelectors.map(
+          (es) => es as unknown as Record<string, unknown>
+        );
+      }
+    } catch {
+      // Best-effort.
+    }
+
+    return result;
+  }
+
   async import(input: ResourceImportInput): Promise<ResourceImportResult | null> {
     const explicit = resolveExplicitPhysicalId(input, 'TrailName');
     if (explicit) {

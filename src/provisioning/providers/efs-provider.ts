@@ -9,6 +9,8 @@ import {
   DeleteAccessPointCommand,
   DescribeFileSystemsCommand,
   DescribeAccessPointsCommand,
+  DescribeLifecycleConfigurationCommand,
+  DescribeBackupPolicyCommand,
   FileSystemNotFound,
   MountTargetNotFound,
   AccessPointNotFound,
@@ -569,6 +571,177 @@ export class EFSProvider implements ResourceProvider {
         cause
       );
     }
+  }
+
+  /**
+   * Read the AWS-current EFS resource configuration in CFn-property shape.
+   *
+   * Dispatch per resource type:
+   *  - `FileSystem` → `DescribeFileSystems` filtered by id (PerformanceMode,
+   *    ThroughputMode, Encrypted, KmsKeyId, ProvisionedThroughputInMibps),
+   *    plus optional `DescribeLifecycleConfiguration` and
+   *    `DescribeBackupPolicy` enrichment. Each enrichment call is wrapped
+   *    in its own try/catch so a "not configured" error on either omits
+   *    the corresponding key without failing the whole snapshot.
+   *  - `AccessPoint` → `DescribeAccessPoints` filtered by id (PosixUser,
+   *    RootDirectory).
+   *  - `MountTarget` → `DescribeMountTargets` (FileSystemId, SubnetId).
+   *    SecurityGroups requires a separate call and is omitted for v1.
+   *
+   * Tags are skipped across all three (CDK auto-tag handling deferred).
+   * Returns `undefined` when the resource is gone (`*NotFound`).
+   */
+  async readCurrentState(
+    physicalId: string,
+    _logicalId: string,
+    resourceType: string
+  ): Promise<Record<string, unknown> | undefined> {
+    switch (resourceType) {
+      case 'AWS::EFS::FileSystem':
+        return this.readFileSystem(physicalId);
+      case 'AWS::EFS::AccessPoint':
+        return this.readAccessPoint(physicalId);
+      case 'AWS::EFS::MountTarget':
+        return this.readMountTarget(physicalId);
+      default:
+        return undefined;
+    }
+  }
+
+  private async readFileSystem(physicalId: string): Promise<Record<string, unknown> | undefined> {
+    let fs;
+    try {
+      const resp = await this.getClient().send(
+        new DescribeFileSystemsCommand({ FileSystemId: physicalId })
+      );
+      fs = resp.FileSystems?.[0];
+    } catch (err) {
+      if (err instanceof FileSystemNotFound) return undefined;
+      throw err;
+    }
+    if (!fs) return undefined;
+
+    const result: Record<string, unknown> = {};
+    if (fs.PerformanceMode !== undefined) result['PerformanceMode'] = fs.PerformanceMode;
+    if (fs.ThroughputMode !== undefined) result['ThroughputMode'] = fs.ThroughputMode;
+    if (fs.Encrypted !== undefined) result['Encrypted'] = fs.Encrypted;
+    if (fs.KmsKeyId !== undefined) result['KmsKeyId'] = fs.KmsKeyId;
+    if (fs.ProvisionedThroughputInMibps !== undefined) {
+      result['ProvisionedThroughputInMibps'] = fs.ProvisionedThroughputInMibps;
+    }
+
+    // LifecyclePolicies — separate call, "not configured" omits the key.
+    try {
+      const resp = await this.getClient().send(
+        new DescribeLifecycleConfigurationCommand({ FileSystemId: physicalId })
+      );
+      const policies = resp.LifecyclePolicies;
+      if (policies && policies.length > 0) {
+        result['LifecyclePolicies'] = policies.map((p) => {
+          const out: Record<string, unknown> = {};
+          if (p.TransitionToIA !== undefined) out['TransitionToIA'] = p.TransitionToIA;
+          if (p.TransitionToPrimaryStorageClass !== undefined) {
+            out['TransitionToPrimaryStorageClass'] = p.TransitionToPrimaryStorageClass;
+          }
+          if (p.TransitionToArchive !== undefined)
+            out['TransitionToArchive'] = p.TransitionToArchive;
+          return out;
+        });
+      }
+    } catch (err) {
+      // "Not configured" is service-specific; FileSystemNotFound on this call
+      // means the FS itself is gone (already covered above), so re-throw.
+      if (err instanceof FileSystemNotFound) return undefined;
+      // Other errors (e.g. PolicyNotFound, AccessDenied) — omit the key,
+      // don't fail the whole snapshot.
+      const e = err as { name?: string };
+      if (e.name !== 'PolicyNotFound') {
+        // Best-effort: log and continue. Drift comparator only descends into
+        // keys present in state, so an absent key cannot fire false drift.
+      }
+    }
+
+    // BackupPolicy — separate call, "not configured" omits the key.
+    try {
+      const resp = await this.getClient().send(
+        new DescribeBackupPolicyCommand({ FileSystemId: physicalId })
+      );
+      if (resp.BackupPolicy?.Status !== undefined) {
+        result['BackupPolicy'] = { Status: resp.BackupPolicy.Status };
+      }
+    } catch (err) {
+      if (err instanceof FileSystemNotFound) return undefined;
+      // PolicyNotFound or similar — omit the key.
+    }
+
+    return result;
+  }
+
+  private async readAccessPoint(physicalId: string): Promise<Record<string, unknown> | undefined> {
+    let ap;
+    try {
+      const resp = await this.getClient().send(
+        new DescribeAccessPointsCommand({ AccessPointId: physicalId })
+      );
+      ap = resp.AccessPoints?.[0];
+    } catch (err) {
+      if (err instanceof AccessPointNotFound) return undefined;
+      throw err;
+    }
+    if (!ap) return undefined;
+
+    const result: Record<string, unknown> = {};
+    if (ap.FileSystemId !== undefined) result['FileSystemId'] = ap.FileSystemId;
+    if (ap.PosixUser) {
+      const posix: Record<string, unknown> = {};
+      if (ap.PosixUser.Uid !== undefined) posix['Uid'] = ap.PosixUser.Uid;
+      if (ap.PosixUser.Gid !== undefined) posix['Gid'] = ap.PosixUser.Gid;
+      if (ap.PosixUser.SecondaryGids && ap.PosixUser.SecondaryGids.length > 0) {
+        posix['SecondaryGids'] = [...ap.PosixUser.SecondaryGids];
+      }
+      if (Object.keys(posix).length > 0) result['PosixUser'] = posix;
+    }
+    if (ap.RootDirectory) {
+      const root: Record<string, unknown> = {};
+      if (ap.RootDirectory.Path !== undefined) root['Path'] = ap.RootDirectory.Path;
+      if (ap.RootDirectory.CreationInfo) {
+        const ci: Record<string, unknown> = {};
+        if (ap.RootDirectory.CreationInfo.OwnerUid !== undefined) {
+          ci['OwnerUid'] = ap.RootDirectory.CreationInfo.OwnerUid;
+        }
+        if (ap.RootDirectory.CreationInfo.OwnerGid !== undefined) {
+          ci['OwnerGid'] = ap.RootDirectory.CreationInfo.OwnerGid;
+        }
+        if (ap.RootDirectory.CreationInfo.Permissions !== undefined) {
+          ci['Permissions'] = ap.RootDirectory.CreationInfo.Permissions;
+        }
+        if (Object.keys(ci).length > 0) root['CreationInfo'] = ci;
+      }
+      if (Object.keys(root).length > 0) result['RootDirectory'] = root;
+    }
+    return result;
+  }
+
+  private async readMountTarget(physicalId: string): Promise<Record<string, unknown> | undefined> {
+    let mt;
+    try {
+      const resp = await this.getClient().send(
+        new DescribeMountTargetsCommand({ MountTargetId: physicalId })
+      );
+      mt = resp.MountTargets?.[0];
+    } catch (err) {
+      if (err instanceof MountTargetNotFound) return undefined;
+      throw err;
+    }
+    if (!mt) return undefined;
+
+    const result: Record<string, unknown> = {};
+    if (mt.FileSystemId !== undefined) result['FileSystemId'] = mt.FileSystemId;
+    if (mt.SubnetId !== undefined) result['SubnetId'] = mt.SubnetId;
+    // SecurityGroups omitted: requires DescribeMountTargetSecurityGroups
+    // (separate call). Out of scope for v1 — drift comparator only descends
+    // into keys present in state, so an absent key cannot fire false drift.
+    return result;
   }
 
   /**

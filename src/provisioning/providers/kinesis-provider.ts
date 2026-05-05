@@ -368,6 +368,59 @@ export class KinesisStreamProvider implements ResourceProvider {
    * Kinesis tags use the standard `Tag[]` array shape (`Key`/`Value`),
    * so `matchesCdkPath` from import-helpers applies directly.
    */
+  /**
+   * Read the AWS-current Kinesis stream configuration in CFn-property shape.
+   *
+   * Issues `DescribeStream` and surfaces the keys cdkd's `create()`
+   * accepts: `Name`, `StreamModeDetails`, `ShardCount`, `RetentionPeriodHours`,
+   * and `StreamEncryption`. Tags are skipped (CDK auto-tag handling deferred).
+   *
+   * `ShardCount` is reported as the count of `Shards[]` in the stream
+   * description (only present for PROVISIONED-mode streams; ON_DEMAND
+   * mode reports an empty list).
+   *
+   * Returns `undefined` when the stream is gone (`ResourceNotFoundException`).
+   * Only `AWS::Kinesis::Stream` is supported (the provider does not handle
+   * `AWS::Kinesis::StreamConsumer`).
+   */
+  async readCurrentState(
+    physicalId: string,
+    _logicalId: string,
+    resourceType: string
+  ): Promise<Record<string, unknown> | undefined> {
+    if (resourceType !== 'AWS::Kinesis::Stream') return undefined;
+
+    let stream;
+    try {
+      const resp = await this.getClient().send(
+        new DescribeStreamCommand({ StreamName: physicalId })
+      );
+      stream = resp.StreamDescription;
+    } catch (err) {
+      if (err instanceof ResourceNotFoundException) return undefined;
+      throw err;
+    }
+    if (!stream) return undefined;
+
+    const result: Record<string, unknown> = {};
+    if (stream.StreamName !== undefined) result['Name'] = stream.StreamName;
+    if (stream.StreamModeDetails?.StreamMode !== undefined) {
+      result['StreamModeDetails'] = { StreamMode: stream.StreamModeDetails.StreamMode };
+    }
+    if (stream.Shards && stream.Shards.length > 0) {
+      result['ShardCount'] = stream.Shards.length;
+    }
+    if (stream.RetentionPeriodHours !== undefined) {
+      result['RetentionPeriodHours'] = stream.RetentionPeriodHours;
+    }
+    if (stream.EncryptionType !== undefined && stream.EncryptionType !== 'NONE') {
+      const encryption: Record<string, unknown> = { EncryptionType: stream.EncryptionType };
+      if (stream.KeyId !== undefined) encryption['KeyId'] = stream.KeyId;
+      result['StreamEncryption'] = encryption;
+    }
+    return result;
+  }
+
   async import(input: ResourceImportInput): Promise<ResourceImportResult | null> {
     const explicit = resolveExplicitPhysicalId(input, 'Name');
     if (explicit) {

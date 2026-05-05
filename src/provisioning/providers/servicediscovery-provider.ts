@@ -456,6 +456,91 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
    *  - **AWS::ServiceDiscovery::Service**: same shape — `ListServices` +
    *    `ListTagsForResource`. Both use `Tag[]` arrays.
    */
+  /**
+   * Read the AWS-current ServiceDiscovery resource configuration in CFn-property shape.
+   *
+   * Dispatch per resource type:
+   *  - `PrivateDnsNamespace` → `GetNamespace` (Name, Description). `Vpc`
+   *    is NOT returned by `GetNamespace` — Cloud Map exposes the VPC only
+   *    at create time and via `ListNamespaces`-side `Properties.DnsProperties.HostedZoneId`,
+   *    not as a directly comparable VPC ID. We skip it; the comparator
+   *    only descends into keys present in cdkd state, so an absent key
+   *    cannot fire false drift, but a `Vpc` change will not be detected
+   *    via this provider's drift surface (use the CFn-side `aws cloudmap`
+   *    CLI for that edge case).
+   *  - `Service` → `GetService` (Name, NamespaceId, Description, Type,
+   *    DnsConfig, HealthCheckConfig, HealthCheckCustomConfig).
+   *
+   * Tags are skipped (CDK auto-tag handling deferred). Returns `undefined`
+   * when the resource is gone (`NamespaceNotFound` / `ServiceNotFound`).
+   */
+  async readCurrentState(
+    physicalId: string,
+    _logicalId: string,
+    resourceType: string
+  ): Promise<Record<string, unknown> | undefined> {
+    switch (resourceType) {
+      case 'AWS::ServiceDiscovery::PrivateDnsNamespace':
+        return this.readNamespace(physicalId);
+      case 'AWS::ServiceDiscovery::Service':
+        return this.readService(physicalId);
+      default:
+        return undefined;
+    }
+  }
+
+  private async readNamespace(physicalId: string): Promise<Record<string, unknown> | undefined> {
+    let ns;
+    try {
+      const resp = await this.getClient().send(new GetNamespaceCommand({ Id: physicalId }));
+      ns = resp.Namespace;
+    } catch (err) {
+      if (err instanceof NamespaceNotFound) return undefined;
+      throw err;
+    }
+    if (!ns) return undefined;
+
+    const result: Record<string, unknown> = {};
+    if (ns.Name !== undefined) result['Name'] = ns.Name;
+    if (ns.Description !== undefined && ns.Description !== '') {
+      result['Description'] = ns.Description;
+    }
+    return result;
+  }
+
+  private async readService(physicalId: string): Promise<Record<string, unknown> | undefined> {
+    let svc;
+    try {
+      const resp = await this.getClient().send(new GetServiceCommand({ Id: physicalId }));
+      svc = resp.Service;
+    } catch (err) {
+      if (err instanceof ServiceNotFound) return undefined;
+      throw err;
+    }
+    if (!svc) return undefined;
+
+    const result: Record<string, unknown> = {};
+    if (svc.Name !== undefined) result['Name'] = svc.Name;
+    if (svc.NamespaceId !== undefined) result['NamespaceId'] = svc.NamespaceId;
+    if (svc.Description !== undefined && svc.Description !== '') {
+      result['Description'] = svc.Description;
+    }
+    if (svc.Type !== undefined) result['Type'] = svc.Type;
+    if (svc.DnsConfig) {
+      result['DnsConfig'] = svc.DnsConfig as unknown as Record<string, unknown>;
+    }
+    if (svc.HealthCheckConfig) {
+      result['HealthCheckConfig'] = svc.HealthCheckConfig as unknown as Record<string, unknown>;
+    }
+    if (svc.HealthCheckCustomConfig) {
+      result['HealthCheckCustomConfig'] = svc.HealthCheckCustomConfig as unknown as Record<
+        string,
+        unknown
+      >;
+    }
+    return result;
+  }
+
   async import(input: ResourceImportInput): Promise<ResourceImportResult | null> {
     switch (input.resourceType) {
       case 'AWS::ServiceDiscovery::PrivateDnsNamespace':

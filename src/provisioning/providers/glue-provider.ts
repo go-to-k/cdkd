@@ -534,6 +534,119 @@ export class GlueProvider implements ResourceProvider {
    * Glue list APIs return only names — ARNs are constructed locally
    * for the per-item GetTags call.
    */
+  /**
+   * Read the AWS-current Glue resource configuration in CFn-property shape.
+   *
+   * Dispatch per resource type:
+   *  - `Database` → `GetDatabase` returning DatabaseInput-shape
+   *    (`Name`, `Description`, `LocationUri`, `Parameters`).
+   *  - `Table` → `GetTable` returning the same-named TableInput-shape
+   *    fields (`Name`, `Description`, `Owner`, `Retention`, `TableType`,
+   *    `PartitionKeys`, `Parameters`, `StorageDescriptor`, `ViewOriginalText`,
+   *    `ViewExpandedText`, `TargetTable`). The table physicalId is
+   *    `databaseName|tableName`; we recover both from the split.
+   *
+   * `CatalogId` is intentionally not surfaced — `GetDatabase` /
+   * `GetTable` do not echo it back, and cdkd state's `CatalogId` is
+   * usually the AWS account id (defaulted by the API). Comparator only
+   * descends into keys present in state, so an absent surface key cannot
+   * fire false drift here.
+   *
+   * Returns `undefined` when the resource is gone (`EntityNotFoundException`).
+   * Other Glue resource types (`Job`, `Crawler`, `Connection`, `Trigger`,
+   * `Workflow`, `SecurityConfiguration`, etc.) are out of scope for v1 —
+   * the provider's `create()` only handles Database/Table; CC API picks
+   * up drift detection for the rest.
+   */
+  async readCurrentState(
+    physicalId: string,
+    _logicalId: string,
+    resourceType: string
+  ): Promise<Record<string, unknown> | undefined> {
+    switch (resourceType) {
+      case 'AWS::Glue::Database':
+        return this.readDatabase(physicalId);
+      case 'AWS::Glue::Table':
+        return this.readTable(physicalId);
+      default:
+        return undefined;
+    }
+  }
+
+  private async readDatabase(physicalId: string): Promise<Record<string, unknown> | undefined> {
+    let db;
+    try {
+      const resp = await this.getClient().send(new GetDatabaseCommand({ Name: physicalId }));
+      db = resp.Database;
+    } catch (err) {
+      if (err instanceof EntityNotFoundException) return undefined;
+      throw err;
+    }
+    if (!db) return undefined;
+
+    const dbInput: Record<string, unknown> = {};
+    if (db.Name !== undefined) dbInput['Name'] = db.Name;
+    if (db.Description !== undefined && db.Description !== '') {
+      dbInput['Description'] = db.Description;
+    }
+    if (db.LocationUri !== undefined) dbInput['LocationUri'] = db.LocationUri;
+    if (db.Parameters && Object.keys(db.Parameters).length > 0) {
+      dbInput['Parameters'] = db.Parameters;
+    }
+    return { DatabaseInput: dbInput };
+  }
+
+  private async readTable(physicalId: string): Promise<Record<string, unknown> | undefined> {
+    const [databaseName, tableName] = physicalId.split('|');
+    if (!databaseName || !tableName) return undefined;
+
+    let table;
+    try {
+      const resp = await this.getClient().send(
+        new GetTableCommand({ DatabaseName: databaseName, Name: tableName })
+      );
+      table = resp.Table;
+    } catch (err) {
+      if (err instanceof EntityNotFoundException) return undefined;
+      throw err;
+    }
+    if (!table) return undefined;
+
+    const tableInput: Record<string, unknown> = {};
+    if (table.Name !== undefined) tableInput['Name'] = table.Name;
+    if (table.Description !== undefined && table.Description !== '') {
+      tableInput['Description'] = table.Description;
+    }
+    if (table.Owner !== undefined) tableInput['Owner'] = table.Owner;
+    if (table.Retention !== undefined) tableInput['Retention'] = table.Retention;
+    if (table.TableType !== undefined) tableInput['TableType'] = table.TableType;
+    if (table.PartitionKeys && table.PartitionKeys.length > 0) {
+      tableInput['PartitionKeys'] = table.PartitionKeys.map(
+        (k) => k as unknown as Record<string, unknown>
+      );
+    }
+    if (table.Parameters && Object.keys(table.Parameters).length > 0) {
+      tableInput['Parameters'] = table.Parameters;
+    }
+    if (table.StorageDescriptor) {
+      tableInput['StorageDescriptor'] = table.StorageDescriptor as unknown as Record<
+        string,
+        unknown
+      >;
+    }
+    if (table.ViewOriginalText !== undefined) {
+      tableInput['ViewOriginalText'] = table.ViewOriginalText;
+    }
+    if (table.ViewExpandedText !== undefined) {
+      tableInput['ViewExpandedText'] = table.ViewExpandedText;
+    }
+    if (table.TargetTable) {
+      tableInput['TargetTable'] = table.TargetTable as unknown as Record<string, unknown>;
+    }
+
+    return { DatabaseName: databaseName, TableInput: tableInput };
+  }
+
   async import(input: ResourceImportInput): Promise<ResourceImportResult | null> {
     switch (input.resourceType) {
       case 'AWS::Glue::Database':

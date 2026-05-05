@@ -13,6 +13,7 @@ import {
   ListQueryLoggingConfigsCommand,
   ListHostedZonesByNameCommand,
   ListHostedZonesCommand,
+  ListResourceRecordSetsCommand,
   ListTagsForResourceCommand,
   type ResourceRecordSet,
   type RRType,
@@ -894,6 +895,148 @@ export class Route53Provider implements ResourceProvider {
       logicalId,
       physicalId
     );
+  }
+
+  /**
+   * Read the AWS-current Route 53 resource configuration in CFn-property shape.
+   *
+   * Dispatch per resource type:
+   *  - `HostedZone` → `GetHostedZone` (Name, HostedZoneConfig{Comment,
+   *    PrivateZone}, VPCs from `VPCs[]`). Tags are skipped (CDK auto-tag
+   *    handling deferred); QueryLoggingConfig is skipped because it's a
+   *    separate `ListQueryLoggingConfigs` call and the v1 surface does
+   *    not surface it.
+   *  - `RecordSet` → `ListResourceRecordSets` filtered to the exact
+   *    `(name, type)` pair from the composite physicalId
+   *    (`{zoneId}|{name}|{type}`). Surfaces TTL, ResourceRecords (with
+   *    `[{Value}]` -> string[] re-shape to match cdkd state), AliasTarget,
+   *    Weight, Region, Failover, MultiValueAnswer, HealthCheckId,
+   *    GeoLocation, SetIdentifier.
+   *
+   * Returns `undefined` when the parent zone is gone (`NoSuchHostedZone`).
+   */
+  async readCurrentState(
+    physicalId: string,
+    _logicalId: string,
+    resourceType: string
+  ): Promise<Record<string, unknown> | undefined> {
+    switch (resourceType) {
+      case 'AWS::Route53::HostedZone':
+        return this.readHostedZone(physicalId);
+      case 'AWS::Route53::RecordSet':
+        return this.readRecordSet(physicalId);
+      default:
+        return undefined;
+    }
+  }
+
+  private async readHostedZone(physicalId: string): Promise<Record<string, unknown> | undefined> {
+    let resp;
+    try {
+      resp = await this.getClient().send(new GetHostedZoneCommand({ Id: physicalId }));
+    } catch (err) {
+      if (err instanceof Error && err.name === 'NoSuchHostedZone') return undefined;
+      throw err;
+    }
+    if (!resp.HostedZone) return undefined;
+
+    const result: Record<string, unknown> = {};
+    if (resp.HostedZone.Name !== undefined) result['Name'] = resp.HostedZone.Name;
+    if (resp.HostedZone.Config) {
+      const cfg: Record<string, unknown> = {};
+      if (resp.HostedZone.Config.Comment !== undefined) {
+        cfg['Comment'] = resp.HostedZone.Config.Comment;
+      }
+      if (resp.HostedZone.Config.PrivateZone !== undefined) {
+        cfg['PrivateZone'] = resp.HostedZone.Config.PrivateZone;
+      }
+      if (Object.keys(cfg).length > 0) result['HostedZoneConfig'] = cfg;
+    }
+    if (resp.VPCs && resp.VPCs.length > 0) {
+      result['VPCs'] = resp.VPCs.map((v) => {
+        const out: Record<string, unknown> = {};
+        if (v.VPCId !== undefined) out['VPCId'] = v.VPCId;
+        if (v.VPCRegion !== undefined) out['VPCRegion'] = v.VPCRegion;
+        return out;
+      });
+    }
+    return result;
+  }
+
+  private async readRecordSet(physicalId: string): Promise<Record<string, unknown> | undefined> {
+    const parts = physicalId.split('|');
+    if (parts.length < 3) return undefined;
+    const [hostedZoneId, name, type] = parts;
+    if (!hostedZoneId || !name || !type) return undefined;
+
+    let resp;
+    try {
+      resp = await this.getClient().send(
+        new ListResourceRecordSetsCommand({
+          HostedZoneId: hostedZoneId,
+          StartRecordName: name,
+          StartRecordType: type as RRType,
+          MaxItems: 1,
+        })
+      );
+    } catch (err) {
+      if (err instanceof Error && err.name === 'NoSuchHostedZone') return undefined;
+      throw err;
+    }
+
+    // ListResourceRecordSets returns records in lexicographic order starting
+    // at StartRecordName/Type; the first match is exact only when both name
+    // and type match what we asked for.
+    const recordSet = resp.ResourceRecordSets?.find((r) => r.Name === name && r.Type === type);
+    if (!recordSet) return undefined;
+
+    const result: Record<string, unknown> = {
+      HostedZoneId: hostedZoneId,
+      Name: name,
+      Type: type,
+    };
+    if (recordSet.TTL !== undefined) result['TTL'] = recordSet.TTL;
+    if (recordSet.ResourceRecords && recordSet.ResourceRecords.length > 0) {
+      // CFn / cdkd state shape is string[]; SDK is [{Value}].
+      result['ResourceRecords'] = recordSet.ResourceRecords.map((r) => r.Value).filter(
+        (v): v is string => typeof v === 'string'
+      );
+    }
+    if (recordSet.AliasTarget) {
+      const at: Record<string, unknown> = {};
+      if (recordSet.AliasTarget.HostedZoneId !== undefined) {
+        at['HostedZoneId'] = recordSet.AliasTarget.HostedZoneId;
+      }
+      if (recordSet.AliasTarget.DNSName !== undefined) {
+        at['DNSName'] = recordSet.AliasTarget.DNSName;
+      }
+      if (recordSet.AliasTarget.EvaluateTargetHealth !== undefined) {
+        at['EvaluateTargetHealth'] = recordSet.AliasTarget.EvaluateTargetHealth;
+      }
+      result['AliasTarget'] = at;
+    }
+    if (recordSet.SetIdentifier !== undefined) result['SetIdentifier'] = recordSet.SetIdentifier;
+    if (recordSet.Weight !== undefined) result['Weight'] = recordSet.Weight;
+    if (recordSet.Region !== undefined) result['Region'] = recordSet.Region;
+    if (recordSet.Failover !== undefined) result['Failover'] = recordSet.Failover;
+    if (recordSet.MultiValueAnswer !== undefined) {
+      result['MultiValueAnswer'] = recordSet.MultiValueAnswer;
+    }
+    if (recordSet.HealthCheckId !== undefined) result['HealthCheckId'] = recordSet.HealthCheckId;
+    if (recordSet.GeoLocation) {
+      const geo: Record<string, unknown> = {};
+      if (recordSet.GeoLocation.ContinentCode !== undefined) {
+        geo['ContinentCode'] = recordSet.GeoLocation.ContinentCode;
+      }
+      if (recordSet.GeoLocation.CountryCode !== undefined) {
+        geo['CountryCode'] = recordSet.GeoLocation.CountryCode;
+      }
+      if (recordSet.GeoLocation.SubdivisionCode !== undefined) {
+        geo['SubdivisionCode'] = recordSet.GeoLocation.SubdivisionCode;
+      }
+      if (Object.keys(geo).length > 0) result['GeoLocation'] = geo;
+    }
+    return result;
   }
 
   /**

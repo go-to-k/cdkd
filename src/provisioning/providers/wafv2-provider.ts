@@ -311,6 +311,79 @@ export class WAFv2WebACLProvider implements ResourceProvider {
   }
 
   /**
+   * Read the AWS-current WAFv2 WebACL configuration in CFn-property shape.
+   *
+   * The cdkd physicalId is the WebACL ARN; we parse it back to
+   * `(id, name, scope)` and call `GetWebACL`. The response holds Name,
+   * Description, DefaultAction, Rules, VisibilityConfig,
+   * CustomResponseBodies, CaptchaConfig, ChallengeConfig, TokenDomains,
+   * and AssociationConfig — every key cdkd state declares as
+   * `handledProperties`. `Scope` is recovered from the ARN parse.
+   *
+   * Tags are skipped (CDK auto-tag handling deferred). Returns `undefined`
+   * when the ARN can't be parsed or the WebACL is gone
+   * (`WAFNonexistentItemException`).
+   */
+  async readCurrentState(
+    physicalId: string,
+    _logicalId: string,
+    _resourceType: string
+  ): Promise<Record<string, unknown> | undefined> {
+    let id: string;
+    let name: string;
+    let scope: Scope;
+    try {
+      ({ id, name, scope } = parseWebACLArn(physicalId));
+    } catch {
+      return undefined;
+    }
+
+    let webACL;
+    try {
+      const resp = await this.getClient().send(
+        new GetWebACLCommand({ Id: id, Name: name, Scope: scope })
+      );
+      webACL = resp.WebACL;
+    } catch (err) {
+      if (err instanceof WAFNonexistentItemException) return undefined;
+      throw err;
+    }
+    if (!webACL) return undefined;
+
+    const result: Record<string, unknown> = {};
+    if (webACL.Name !== undefined) result['Name'] = webACL.Name;
+    result['Scope'] = scope;
+    if (webACL.Description !== undefined && webACL.Description !== '') {
+      result['Description'] = webACL.Description;
+    }
+    if (webACL.DefaultAction) {
+      result['DefaultAction'] = webACL.DefaultAction as unknown as Record<string, unknown>;
+    }
+    if (webACL.Rules && webACL.Rules.length > 0) {
+      result['Rules'] = webACL.Rules.map((r) => r as unknown as Record<string, unknown>);
+    }
+    if (webACL.VisibilityConfig) {
+      result['VisibilityConfig'] = webACL.VisibilityConfig as unknown as Record<string, unknown>;
+    }
+    if (webACL.CustomResponseBodies && Object.keys(webACL.CustomResponseBodies).length > 0) {
+      result['CustomResponseBodies'] = webACL.CustomResponseBodies as Record<string, unknown>;
+    }
+    if (webACL.CaptchaConfig) {
+      result['CaptchaConfig'] = webACL.CaptchaConfig as unknown as Record<string, unknown>;
+    }
+    if (webACL.ChallengeConfig) {
+      result['ChallengeConfig'] = webACL.ChallengeConfig as unknown as Record<string, unknown>;
+    }
+    if (webACL.TokenDomains && webACL.TokenDomains.length > 0) {
+      result['TokenDomains'] = [...webACL.TokenDomains];
+    }
+    if (webACL.AssociationConfig) {
+      result['AssociationConfig'] = webACL.AssociationConfig as unknown as Record<string, unknown>;
+    }
+    return result;
+  }
+
+  /**
    * Adopt an existing WAFv2 WebACL into cdkd state.
    *
    * Lookup order:

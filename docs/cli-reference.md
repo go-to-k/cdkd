@@ -362,7 +362,6 @@ so you can see exactly which types are still uncovered.
 
 The following SDK Providers ship with first-class `readCurrentState`
 (no CC API round-trip):
-
 - `AWS::Lambda::Function`, `AWS::S3::Bucket`, `AWS::DynamoDB::Table`,
   `AWS::IAM::Role`, `AWS::SQS::Queue`, `AWS::SNS::Topic`,
   `AWS::Logs::LogGroup` (PR D, batch 0)
@@ -375,6 +374,22 @@ The following SDK Providers ship with first-class `readCurrentState`
   `AWS::RDS::DBSubnetGroup`, `AWS::KMS::Key`, `AWS::KMS::Alias`,
   `AWS::ApiGateway::Account`, `AWS::ApiGateway::Method`,
   `AWS::ApiGatewayV2::Api`, `AWS::Cognito::UserPool` (batch 1)
+- `AWS::AppSync::GraphQLApi`, `AWS::AppSync::DataSource`,
+  `AWS::AppSync::Resolver`, `AWS::AppSync::ApiKey`,
+  `AWS::EFS::FileSystem`, `AWS::EFS::AccessPoint`, `AWS::EFS::MountTarget`,
+  `AWS::ElastiCache::CacheCluster`, `AWS::ElastiCache::SubnetGroup`,
+  `AWS::ElasticLoadBalancingV2::LoadBalancer`,
+  `AWS::ElasticLoadBalancingV2::TargetGroup`,
+  `AWS::ElasticLoadBalancingV2::Listener`,
+  `AWS::Route53::HostedZone`, `AWS::Route53::RecordSet`,
+  `AWS::WAFv2::WebACL`,
+  `AWS::KinesisFirehose::DeliveryStream`, `AWS::Kinesis::Stream`,
+  `AWS::Glue::Database`, `AWS::Glue::Table`,
+  `AWS::CloudTrail::Trail`, `AWS::CloudWatch::Alarm`,
+  `AWS::CodeBuild::Project`,
+  `AWS::ServiceDiscovery::PrivateDnsNamespace`,
+  `AWS::ServiceDiscovery::Service`,
+  `AWS::SNS::Subscription` (batch 2, this PR)
 
 Tag drift and IAM inline-policy bodies are out of scope for v1; see
 [src/types/resource.ts](../src/types/resource.ts) for the per-provider

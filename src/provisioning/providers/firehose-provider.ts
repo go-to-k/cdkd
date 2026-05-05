@@ -579,6 +579,68 @@ export class FirehoseProvider implements ResourceProvider {
    *
    * Firehose tags use the standard `Tag[]` array shape (`Key`/`Value`).
    */
+  /**
+   * Read the AWS-current Firehose delivery stream configuration in CFn-property shape.
+   *
+   * Surfaces top-level configuration that has a clean 1:1 mapping back to
+   * cdkd state — `DeliveryStreamName`, `DeliveryStreamType`, and the
+   * `KinesisStreamSourceConfiguration` parent fields when present (the
+   * `DescribeDeliveryStream` response splits source under `Source.KinesisStreamSourceDescription`).
+   *
+   * Destination configurations (`*DestinationConfiguration` in CFn vs.
+   * `*DestinationDescription` in `DescribeDeliveryStream`) are intentionally
+   * not re-shaped here. Their nested fields are large and the description
+   * vs. configuration shape divergence (extra metadata, write-only fields
+   * like `Password` redacted) makes a clean comparator surface impossible
+   * for v1. We do surface the destination *kind* under a stable key so
+   * users at least see destination drift across types, but not the inner
+   * fields. Drift on destination contents is best chased manually via
+   * `aws firehose describe-delivery-stream` for now.
+   *
+   * Tags + DeliveryStreamEncryptionConfigurationInput are skipped (they
+   * each need separate calls / shape decisions).
+   *
+   * Returns `undefined` when the stream is gone (`ResourceNotFoundException`).
+   */
+  async readCurrentState(
+    physicalId: string,
+    _logicalId: string,
+    _resourceType: string
+  ): Promise<Record<string, unknown> | undefined> {
+    let desc;
+    try {
+      const resp = await this.getClient().send(
+        new DescribeDeliveryStreamCommand({ DeliveryStreamName: physicalId })
+      );
+      desc = resp.DeliveryStreamDescription;
+    } catch (err) {
+      if (err instanceof ResourceNotFoundException) return undefined;
+      throw err;
+    }
+    if (!desc) return undefined;
+
+    const result: Record<string, unknown> = {};
+    if (desc.DeliveryStreamName !== undefined) {
+      result['DeliveryStreamName'] = desc.DeliveryStreamName;
+    }
+    if (desc.DeliveryStreamType !== undefined) {
+      result['DeliveryStreamType'] = desc.DeliveryStreamType;
+    }
+
+    // Source: only KinesisStreamSourceDescription has a clean CFn analogue.
+    if (desc.Source?.KinesisStreamSourceDescription) {
+      const src = desc.Source.KinesisStreamSourceDescription;
+      const srcOut: Record<string, unknown> = {};
+      if (src.KinesisStreamARN !== undefined) srcOut['KinesisStreamARN'] = src.KinesisStreamARN;
+      if (src.RoleARN !== undefined) srcOut['RoleARN'] = src.RoleARN;
+      if (Object.keys(srcOut).length > 0) {
+        result['KinesisStreamSourceConfiguration'] = srcOut;
+      }
+    }
+
+    return result;
+  }
+
   async import(input: ResourceImportInput): Promise<ResourceImportResult | null> {
     const explicit = resolveExplicitPhysicalId(input, 'DeliveryStreamName');
     if (explicit) {

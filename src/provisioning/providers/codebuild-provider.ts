@@ -409,6 +409,131 @@ export class CodeBuildProvider implements ResourceProvider {
    *     `key`/`value` tags, not the standard `Key`/`Value`), match
    *     `aws:cdk:path` tag.
    */
+  /**
+   * Read the AWS-current CodeBuild Project configuration in CFn-property shape.
+   *
+   * Issues `BatchGetProjects` and re-shapes the SDK's camelCase response back
+   * to CFn's PascalCase shape (the `mapProperties` helper above goes the
+   * other way at create time). The drift comparator only descends into
+   * keys present in cdkd state, so we focus on the high-value top-level
+   * fields and the most commonly-set `Source` / `Artifacts` /
+   * `Environment` sub-fields. Less common nested config (full
+   * `LogsConfig`, `VpcConfig` rebuild, secondary sources/artifacts, etc.)
+   * is left to a follow-up — surfacing them with a partial shape would
+   * fire false drift on every project that uses them.
+   *
+   * Tags are skipped (CDK auto-tag handling deferred). Returns `undefined`
+   * when the project is gone (`projects` array empty / `projectsNotFound` set).
+   */
+  async readCurrentState(
+    physicalId: string,
+    _logicalId: string,
+    _resourceType: string
+  ): Promise<Record<string, unknown> | undefined> {
+    let project;
+    try {
+      const resp = await this.getClient().send(
+        new BatchGetProjectsCommand({ names: [physicalId] })
+      );
+      project = resp.projects?.[0];
+    } catch (err) {
+      if (err instanceof ResourceNotFoundException) return undefined;
+      throw err;
+    }
+    if (!project) return undefined;
+
+    const result: Record<string, unknown> = {};
+    if (project.name !== undefined) result['Name'] = project.name;
+    if (project.description !== undefined && project.description !== '') {
+      result['Description'] = project.description;
+    }
+    if (project.serviceRole !== undefined) result['ServiceRole'] = project.serviceRole;
+    if (project.timeoutInMinutes !== undefined) {
+      result['TimeoutInMinutes'] = project.timeoutInMinutes;
+    }
+    if (project.queuedTimeoutInMinutes !== undefined) {
+      result['QueuedTimeoutInMinutes'] = project.queuedTimeoutInMinutes;
+    }
+    if (project.encryptionKey !== undefined) result['EncryptionKey'] = project.encryptionKey;
+    if (project.concurrentBuildLimit !== undefined) {
+      result['ConcurrentBuildLimit'] = project.concurrentBuildLimit;
+    }
+    if (project.badge?.badgeEnabled !== undefined) {
+      result['BadgeEnabled'] = project.badge.badgeEnabled;
+    }
+    if (project.sourceVersion !== undefined) result['SourceVersion'] = project.sourceVersion;
+
+    if (project.source) {
+      const src: Record<string, unknown> = {};
+      if (project.source.type !== undefined) src['Type'] = project.source.type;
+      if (project.source.location !== undefined) src['Location'] = project.source.location;
+      if (project.source.buildspec !== undefined) src['BuildSpec'] = project.source.buildspec;
+      if (project.source.gitCloneDepth !== undefined) {
+        src['GitCloneDepth'] = project.source.gitCloneDepth;
+      }
+      if (project.source.insecureSsl !== undefined) src['InsecureSsl'] = project.source.insecureSsl;
+      if (project.source.reportBuildStatus !== undefined) {
+        src['ReportBuildStatus'] = project.source.reportBuildStatus;
+      }
+      if (Object.keys(src).length > 0) result['Source'] = src;
+    }
+
+    if (project.artifacts) {
+      const art: Record<string, unknown> = {};
+      if (project.artifacts.type !== undefined) art['Type'] = project.artifacts.type;
+      if (project.artifacts.location !== undefined) art['Location'] = project.artifacts.location;
+      if (project.artifacts.path !== undefined) art['Path'] = project.artifacts.path;
+      if (project.artifacts.name !== undefined) art['Name'] = project.artifacts.name;
+      if (project.artifacts.namespaceType !== undefined) {
+        art['NamespaceType'] = project.artifacts.namespaceType;
+      }
+      if (project.artifacts.packaging !== undefined) art['Packaging'] = project.artifacts.packaging;
+      if (project.artifacts.encryptionDisabled !== undefined) {
+        art['EncryptionDisabled'] = project.artifacts.encryptionDisabled;
+      }
+      if (project.artifacts.overrideArtifactName !== undefined) {
+        art['OverrideArtifactName'] = project.artifacts.overrideArtifactName;
+      }
+      if (project.artifacts.artifactIdentifier !== undefined) {
+        art['ArtifactIdentifier'] = project.artifacts.artifactIdentifier;
+      }
+      if (Object.keys(art).length > 0) result['Artifacts'] = art;
+    }
+
+    if (project.environment) {
+      const env: Record<string, unknown> = {};
+      if (project.environment.type !== undefined) env['Type'] = project.environment.type;
+      if (project.environment.image !== undefined) env['Image'] = project.environment.image;
+      if (project.environment.computeType !== undefined) {
+        env['ComputeType'] = project.environment.computeType;
+      }
+      if (project.environment.privilegedMode !== undefined) {
+        env['PrivilegedMode'] = project.environment.privilegedMode;
+      }
+      if (project.environment.imagePullCredentialsType !== undefined) {
+        env['ImagePullCredentialsType'] = project.environment.imagePullCredentialsType;
+      }
+      if (project.environment.certificate !== undefined) {
+        env['Certificate'] = project.environment.certificate;
+      }
+      if (
+        project.environment.environmentVariables &&
+        project.environment.environmentVariables.length > 0
+      ) {
+        env['EnvironmentVariables'] = project.environment.environmentVariables.map((ev) => {
+          const out: Record<string, unknown> = {};
+          if (ev.name !== undefined) out['Name'] = ev.name;
+          if (ev.value !== undefined) out['Value'] = ev.value;
+          if (ev.type !== undefined) out['Type'] = ev.type;
+          return out;
+        });
+      }
+      if (Object.keys(env).length > 0) result['Environment'] = env;
+    }
+
+    return result;
+  }
+
   async import(input: ResourceImportInput): Promise<ResourceImportResult | null> {
     const explicit = resolveExplicitPhysicalId(input, 'Name');
     if (explicit) {
