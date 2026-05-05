@@ -712,7 +712,8 @@ export class AppSyncProvider implements ResourceProvider {
   async readCurrentState(
     physicalId: string,
     _logicalId: string,
-    resourceType: string
+    resourceType: string,
+    _properties?: Record<string, unknown>
   ): Promise<Record<string, unknown> | undefined> {
     switch (resourceType) {
       case 'AWS::AppSync::GraphQLApi':
@@ -724,7 +725,13 @@ export class AppSyncProvider implements ResourceProvider {
       case 'AWS::AppSync::ApiKey':
         return this.readApiKey(physicalId);
       case 'AWS::AppSync::GraphQLSchema':
-        // Drift detection on schema bodies is out of scope for v1.
+        // Drift detection on schema bodies is deferred. `GetIntrospectionSchema`
+        // returns the SDL or JSON form, but AWS normalizes the SDL on the way
+        // out (canonical field ordering, comment/whitespace stripping) so a
+        // direct string comparison against the user-authored `Definition` in
+        // cdkd state would fire constantly on cosmetic diffs. A meaningful
+        // comparison would need an SDL parser (graphql-js) to canonicalize
+        // both sides before diff — out of scope for PR G; tracked separately.
         return undefined;
       default:
         return undefined;

@@ -350,24 +350,15 @@ The command produces three terminal states per resource:
   property path that diverged.
 - **clean** — every state-recorded property matches AWS. Counted in
   the per-stack summary but not listed individually.
-- **drift unknown** — neither the SDK Provider nor the Cloud Control
-  API fallback could read the resource: the SDK Provider has no
-  `readCurrentState` AND CC API does not support the type or returned
-  `undefined` (resource missing / no Properties on the GetResource
-  response). Reported as `? <logicalId> (<type>)` in a separate block
-  at the bottom of each stack's report.
+- **drift unknown** — the provider does not implement the optional
+  `readCurrentState` method yet. Reported as `? <logicalId> (<type>)`
+  in a separate block at the bottom of each stack's report.
 
 Drift detection works automatically for every resource type that goes
-through Cloud Control API (the majority of cdkd's surface). When an
-SDK Provider has not implemented its own `readCurrentState` yet, cdkd
-**automatically falls back to the CC API provider** — so most
-SDK-Provider-managed types still get meaningful drift out of the box,
-even before the dedicated SDK-side implementation lands. SDK Providers
-add their own `readCurrentState` incrementally for shape precision (CC
-API's response is still useful but may include AWS-managed keys that
-the comparator filters out at compare time). Resource types that have
-neither an SDK-side `readCurrentState` nor CC API support surface as
-`drift unknown`, so you can see exactly which types are still uncovered.
+through Cloud Control API (the majority of cdkd's surface). SDK
+Providers add their own `readCurrentState` incrementally — providers
+without an implementation surface as `drift unknown` rather than `clean`,
+so you can see exactly which types are still uncovered.
 
 The following SDK Providers ship with first-class `readCurrentState`
 (no CC API round-trip):
@@ -399,61 +390,35 @@ The following SDK Providers ship with first-class `readCurrentState`
   `AWS::ServiceDiscovery::PrivateDnsNamespace`,
   `AWS::ServiceDiscovery::Service`,
   `AWS::SNS::Subscription` (batch 2)
-- `AWS::IAM::InstanceProfile`, `AWS::IAM::User`, `AWS::IAM::Group`,
-  `AWS::Lambda::EventSourceMapping`, `AWS::Lambda::LayerVersion`,
-  `AWS::Lambda::Url`, `AWS::S3::BucketPolicy`, `AWS::SNS::TopicPolicy`,
-  `AWS::SQS::QueuePolicy`, `AWS::S3Express::DirectoryBucket`,
-  `AWS::S3Tables::TableBucket`, `AWS::S3Tables::Namespace`,
-  `AWS::S3Tables::Table`, `AWS::S3Vectors::VectorBucket`,
-  `AWS::BedrockAgentCore::Runtime`, `AWS::EC2::VPC`, `AWS::EC2::Subnet`,
-  `AWS::EC2::InternetGateway`, `AWS::EC2::NatGateway`,
-  `AWS::EC2::RouteTable`, `AWS::EC2::SecurityGroup`,
-  `AWS::EC2::Instance`, `AWS::EC2::NetworkAcl` (batch 3, this PR)
+- `AWS::IAM::Policy`, `AWS::Lambda::Permission`,
+  `AWS::ApiGateway::Authorizer`, `AWS::ApiGateway::Resource`,
+  `AWS::ApiGateway::Deployment`, `AWS::ApiGateway::Stage`,
+  `AWS::ApiGatewayV2::Stage`, `AWS::ApiGatewayV2::Integration`,
+  `AWS::ApiGatewayV2::Route`, `AWS::ApiGatewayV2::Authorizer`
+  (PR G — sub-resource batch; receives `properties` so the parent
+  `RestApiId` / `ApiId` / `FunctionName` / `Roles[]` is available to
+  issue the matching `Get*` call)
 
-Explicitly skipped (return `undefined` and surface as `drift unknown`):
-
-- `AWS::CloudFront::Distribution` — `DistributionConfig` SDK shape
-  (`Quantity + Items` per nested array) vs CFn flat-array shape would
-  balloon the diff for marginal gain over the existing CC API fallback.
-- `AWS::IAM::Policy` — inline-policy attachment with no standalone
-  identity. The `PolicyDocument` body is identical across every target,
-  but `readCurrentState` does not receive the target list (`Roles` /
-  `Groups` / `Users`) so it cannot probe a target to recover the body.
-  Drift here belongs in a follow-up that threads the state's `properties`
-  through to `readCurrentState`.
-- `AWS::Lambda::Permission` — single statement inside a function's
-  resource policy. The physical id is the StatementId only; without
-  `FunctionName` (in state's `properties`, not surfaced to
-  `readCurrentState`) we cannot find the parent function to call
-  `GetPolicy` on.
-- `AWS::IAM::UserToGroupAddition` — group-membership attachment with
-  no AWS-side identity beyond the `(group, users)` pair. `readCurrentState`
-  has no `properties` to compare against and no SDK call surfaces a
-  meaningful drift signal in isolation.
-- `AWS::EC2::Route`, `AWS::EC2::SubnetRouteTableAssociation`,
-  `AWS::EC2::SecurityGroupIngress`, `AWS::EC2::NetworkAclEntry`,
-  `AWS::EC2::SubnetNetworkAclAssociation`, `AWS::EC2::VPCGatewayAttachment` —
-  rule / association sub-resources whose AWS API surfaces them inside
-  the parent's list, not as standalone Get* responses.
-
-Tag drift and IAM inline-policy bodies are out of scope for v1; see
+Tag drift is out of scope for v1; see
 [src/types/resource.ts](../src/types/resource.ts) for the per-provider
 shape decisions.
 
-Some sub-resources of multi-type providers do not have a first-class
-SDK-side `readCurrentState` implementation because their `physicalId`
-does not carry the parent identifier needed to issue the matching
-`Get*` call (cdkd's `readCurrentState` interface does not pass the
-`Properties` map). Concretely:
-`AWS::ApiGateway::Authorizer` / `Resource` / `Deployment` / `Stage`,
-`AWS::ApiGatewayV2::Stage` / `Integration` / `Route` / `Authorizer`.
-The automatic CC API fallback covers these out of the box, so they
-report meaningful drift; first-class SDK-side drift for them needs an
-interface change and is deferred. `AWS::CloudFront::Distribution` also
-defers to the CC API fallback — its `DistributionConfig` schema uses
-the SDK's `Quantity + Items` shape vs CFn's flat array shape, and
-mirroring the conversion would balloon the diff for marginal gain over
-the CC API path.
+Still reporting `drift unknown` (deferred):
+
+- `AWS::CloudFront::Distribution` defers to the CC API fallback — its
+  `DistributionConfig` schema uses the SDK's `Quantity + Items` shape vs
+  CFn's flat array shape, and mirroring the conversion would balloon the
+  diff for marginal gain over the CC API path.
+- `AWS::AppSync::GraphQLSchema` body drift is deferred — AWS's
+  `GetIntrospectionSchema` returns SDL bytes but normalizes the schema
+  on the way out (canonical field ordering, comment / whitespace
+  stripping), so a direct string comparison against the user-authored
+  `Definition` in cdkd state would fire constantly on cosmetic diffs.
+  A meaningful comparison needs an SDL parser to canonicalize both
+  sides before diff, which is out of scope.
+- `AWS::Kinesis::StreamConsumer` falls through to the CC API fallback;
+  the SDK provider only handles `AWS::Kinesis::Stream`. A dedicated
+  SDK impl would require building out create / update / delete first.
 
 `--json` output shape:
 

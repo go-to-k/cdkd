@@ -361,7 +361,12 @@ async function runDriftForStack(
         continue;
       }
 
-      const aws = await readCurrentState(resource.physicalId, logicalId, resource.resourceType);
+      const aws = await readCurrentState(
+        resource.physicalId,
+        logicalId,
+        resource.resourceType,
+        resource.properties ?? {}
+      );
       if (aws === undefined) {
         outcomes.push({
           kind: 'unsupported',

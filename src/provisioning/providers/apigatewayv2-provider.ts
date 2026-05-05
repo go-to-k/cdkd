@@ -4,12 +4,16 @@ import {
   DeleteApiCommand,
   CreateStageCommand,
   DeleteStageCommand,
+  GetStageCommand,
   CreateIntegrationCommand,
   DeleteIntegrationCommand,
+  GetIntegrationCommand,
   CreateRouteCommand,
   DeleteRouteCommand,
+  GetRouteCommand,
   CreateAuthorizerCommand,
   DeleteAuthorizerCommand,
+  GetAuthorizerCommand,
   GetApiCommand,
   GetApisCommand,
   NotFoundException,
@@ -728,22 +732,33 @@ export class ApiGatewayV2Provider implements ResourceProvider {
    * **Coverage**:
    *   - `AWS::ApiGatewayV2::Api` → `GetApi`. PhysicalId is the apiId,
    *     self-sufficient.
-   *
-   * **Out of scope** (returns `undefined`, falls back to "drift unknown"):
    *   - `AWS::ApiGatewayV2::Stage` / `Integration` / `Route` / `Authorizer`:
-   *     each needs the parent `ApiId` to issue a `Get*` call, but cdkd's
-   *     `readCurrentState` interface does not pass `Properties` (only the
-   *     physicalId, which for these types is just the sub-resource id).
-   *     Per-sub drift detection here would need a contract change.
+   *     each uses `properties.ApiId` (passed through PR G's signature
+   *     extension) to issue the appropriate `Get*` call.
    */
   async readCurrentState(
     physicalId: string,
     _logicalId: string,
-    resourceType: string
+    resourceType: string,
+    properties?: Record<string, unknown>
   ): Promise<Record<string, unknown> | undefined> {
-    if (resourceType !== 'AWS::ApiGatewayV2::Api') {
-      return undefined;
+    switch (resourceType) {
+      case 'AWS::ApiGatewayV2::Api':
+        return this.readApi(physicalId);
+      case 'AWS::ApiGatewayV2::Stage':
+        return this.readStage(physicalId, properties);
+      case 'AWS::ApiGatewayV2::Integration':
+        return this.readIntegration(physicalId, properties);
+      case 'AWS::ApiGatewayV2::Route':
+        return this.readRoute(physicalId, properties);
+      case 'AWS::ApiGatewayV2::Authorizer':
+        return this.readAuthorizer(physicalId, properties);
+      default:
+        return undefined;
     }
+  }
+
+  private async readApi(physicalId: string): Promise<Record<string, unknown> | undefined> {
     try {
       const resp = await this.getClient().send(new GetApiCommand({ ApiId: physicalId }));
       const result: Record<string, unknown> = {};
@@ -753,6 +768,109 @@ export class ApiGatewayV2Provider implements ResourceProvider {
         result['Description'] = resp.Description;
       }
       if (resp.CorsConfiguration) result['CorsConfiguration'] = resp.CorsConfiguration;
+      return result;
+    } catch (err) {
+      if (err instanceof NotFoundException) return undefined;
+      throw err;
+    }
+  }
+
+  private async readStage(
+    physicalId: string,
+    properties?: Record<string, unknown>
+  ): Promise<Record<string, unknown> | undefined> {
+    const apiId = properties?.['ApiId'] as string | undefined;
+    if (!apiId) return undefined;
+
+    try {
+      const resp = await this.getClient().send(
+        new GetStageCommand({ ApiId: apiId, StageName: physicalId })
+      );
+      const result: Record<string, unknown> = { ApiId: apiId };
+      if (resp.StageName !== undefined) result['StageName'] = resp.StageName;
+      if (resp.AutoDeploy !== undefined) result['AutoDeploy'] = resp.AutoDeploy;
+      if (resp.Description !== undefined && resp.Description !== '') {
+        result['Description'] = resp.Description;
+      }
+      return result;
+    } catch (err) {
+      if (err instanceof NotFoundException) return undefined;
+      throw err;
+    }
+  }
+
+  private async readIntegration(
+    physicalId: string,
+    properties?: Record<string, unknown>
+  ): Promise<Record<string, unknown> | undefined> {
+    const apiId = properties?.['ApiId'] as string | undefined;
+    if (!apiId) return undefined;
+
+    try {
+      const resp = await this.getClient().send(
+        new GetIntegrationCommand({ ApiId: apiId, IntegrationId: physicalId })
+      );
+      const result: Record<string, unknown> = { ApiId: apiId };
+      if (resp.IntegrationType !== undefined) result['IntegrationType'] = resp.IntegrationType;
+      if (resp.IntegrationUri !== undefined) result['IntegrationUri'] = resp.IntegrationUri;
+      if (resp.IntegrationMethod !== undefined)
+        result['IntegrationMethod'] = resp.IntegrationMethod;
+      if (resp.PayloadFormatVersion !== undefined) {
+        result['PayloadFormatVersion'] = resp.PayloadFormatVersion;
+      }
+      return result;
+    } catch (err) {
+      if (err instanceof NotFoundException) return undefined;
+      throw err;
+    }
+  }
+
+  private async readRoute(
+    physicalId: string,
+    properties?: Record<string, unknown>
+  ): Promise<Record<string, unknown> | undefined> {
+    const apiId = properties?.['ApiId'] as string | undefined;
+    if (!apiId) return undefined;
+
+    try {
+      const resp = await this.getClient().send(
+        new GetRouteCommand({ ApiId: apiId, RouteId: physicalId })
+      );
+      const result: Record<string, unknown> = { ApiId: apiId };
+      if (resp.RouteKey !== undefined) result['RouteKey'] = resp.RouteKey;
+      if (resp.Target !== undefined) result['Target'] = resp.Target;
+      if (resp.AuthorizationType !== undefined)
+        result['AuthorizationType'] = resp.AuthorizationType;
+      if (resp.AuthorizerId !== undefined) result['AuthorizerId'] = resp.AuthorizerId;
+      return result;
+    } catch (err) {
+      if (err instanceof NotFoundException) return undefined;
+      throw err;
+    }
+  }
+
+  private async readAuthorizer(
+    physicalId: string,
+    properties?: Record<string, unknown>
+  ): Promise<Record<string, unknown> | undefined> {
+    const apiId = properties?.['ApiId'] as string | undefined;
+    if (!apiId) return undefined;
+
+    try {
+      const resp = await this.getClient().send(
+        new GetAuthorizerCommand({ ApiId: apiId, AuthorizerId: physicalId })
+      );
+      const result: Record<string, unknown> = { ApiId: apiId };
+      if (resp.AuthorizerType !== undefined) result['AuthorizerType'] = resp.AuthorizerType;
+      if (resp.Name !== undefined) result['Name'] = resp.Name;
+      if (resp.IdentitySource !== undefined && resp.IdentitySource.length > 0) {
+        result['IdentitySource'] = [...resp.IdentitySource];
+      }
+      if (resp.JwtConfiguration) result['JwtConfiguration'] = resp.JwtConfiguration;
+      if (resp.AuthorizerUri !== undefined) result['AuthorizerUri'] = resp.AuthorizerUri;
+      if (resp.AuthorizerPayloadFormatVersion !== undefined) {
+        result['AuthorizerPayloadFormatVersion'] = resp.AuthorizerPayloadFormatVersion;
+      }
       return result;
     } catch (err) {
       if (err instanceof NotFoundException) return undefined;

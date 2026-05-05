@@ -4,11 +4,14 @@ import {
   GetAccountCommand,
   CreateResourceCommand,
   DeleteResourceCommand,
+  GetResourceCommand,
   CreateDeploymentCommand,
   DeleteDeploymentCommand,
+  GetDeploymentCommand,
   CreateStageCommand,
   UpdateStageCommand,
   DeleteStageCommand,
+  GetStageCommand,
   PutMethodCommand,
   DeleteMethodCommand,
   GetMethodCommand,
@@ -16,6 +19,7 @@ import {
   PutMethodResponseCommand,
   CreateAuthorizerCommand,
   DeleteAuthorizerCommand,
+  GetAuthorizerCommand,
   NotFoundException,
 } from '@aws-sdk/client-api-gateway';
 import { getLogger } from '../../utils/logger.js';
@@ -1298,30 +1302,133 @@ export class ApiGatewayProvider implements ResourceProvider {
    *   - `AWS::ApiGateway::Method` → `GetMethod`. PhysicalId is the composite
    *     `restApiId|resourceId|httpMethod`, so we have everything needed
    *     without `Properties`.
-   *
-   * **Out of scope** (returns `undefined`, falls back to "drift unknown"):
    *   - `AWS::ApiGateway::Authorizer` / `Resource` / `Deployment` / `Stage`:
-   *     each needs the parent `RestApiId` to issue a `Get*` call, but cdkd's
-   *     `readCurrentState` interface does not pass `Properties` (only the
-   *     physicalId, which for these types is just the sub-resource id).
-   *     CC API drift detection picks up `AWS::ApiGateway::RestApi` itself
-   *     once the user works through the SDK provider boundary; per-sub
-   *     drift detection here would need a contract change.
+   *     each uses `properties.RestApiId` (passed through PR G's signature
+   *     extension) to issue the appropriate `Get*` call.
    */
   async readCurrentState(
     physicalId: string,
     _logicalId: string,
-    resourceType: string
+    resourceType: string,
+    properties?: Record<string, unknown>
   ): Promise<Record<string, unknown> | undefined> {
     switch (resourceType) {
       case 'AWS::ApiGateway::Account':
         return this.readCurrentStateAccount();
       case 'AWS::ApiGateway::Method':
         return this.readCurrentStateMethod(physicalId);
+      case 'AWS::ApiGateway::Authorizer':
+        return this.readCurrentStateAuthorizer(physicalId, properties);
+      case 'AWS::ApiGateway::Resource':
+        return this.readCurrentStateResource(physicalId, properties);
+      case 'AWS::ApiGateway::Deployment':
+        return this.readCurrentStateDeployment(physicalId, properties);
+      case 'AWS::ApiGateway::Stage':
+        return this.readCurrentStateStage(physicalId, properties);
       default:
-        // Sub-resources need parent RestApiId from properties (not exposed
-        // to readCurrentState); skip for now.
         return undefined;
+    }
+  }
+
+  private async readCurrentStateAuthorizer(
+    physicalId: string,
+    properties?: Record<string, unknown>
+  ): Promise<Record<string, unknown> | undefined> {
+    const restApiId = properties?.['RestApiId'] as string | undefined;
+    if (!restApiId) return undefined;
+
+    try {
+      const resp = await this.apiGatewayClient.send(
+        new GetAuthorizerCommand({ restApiId, authorizerId: physicalId })
+      );
+      const result: Record<string, unknown> = { RestApiId: restApiId };
+      if (resp.name !== undefined) result['Name'] = resp.name;
+      if (resp.type !== undefined) result['Type'] = resp.type;
+      if (resp.providerARNs !== undefined && resp.providerARNs.length > 0) {
+        result['ProviderARNs'] = [...resp.providerARNs];
+      }
+      if (resp.authorizerUri !== undefined) result['AuthorizerUri'] = resp.authorizerUri;
+      if (resp.authorizerCredentials !== undefined) {
+        result['AuthorizerCredentials'] = resp.authorizerCredentials;
+      }
+      if (resp.identitySource !== undefined) result['IdentitySource'] = resp.identitySource;
+      if (resp.identityValidationExpression !== undefined) {
+        result['IdentityValidationExpression'] = resp.identityValidationExpression;
+      }
+      if (resp.authorizerResultTtlInSeconds !== undefined) {
+        result['AuthorizerResultTtlInSeconds'] = resp.authorizerResultTtlInSeconds;
+      }
+      return result;
+    } catch (err) {
+      if (err instanceof NotFoundException) return undefined;
+      throw err;
+    }
+  }
+
+  private async readCurrentStateResource(
+    physicalId: string,
+    properties?: Record<string, unknown>
+  ): Promise<Record<string, unknown> | undefined> {
+    const restApiId = properties?.['RestApiId'] as string | undefined;
+    if (!restApiId) return undefined;
+
+    try {
+      const resp = await this.apiGatewayClient.send(
+        new GetResourceCommand({ restApiId, resourceId: physicalId })
+      );
+      const result: Record<string, unknown> = { RestApiId: restApiId };
+      if (resp.parentId !== undefined) result['ParentId'] = resp.parentId;
+      if (resp.pathPart !== undefined) result['PathPart'] = resp.pathPart;
+      return result;
+    } catch (err) {
+      if (err instanceof NotFoundException) return undefined;
+      throw err;
+    }
+  }
+
+  private async readCurrentStateDeployment(
+    physicalId: string,
+    properties?: Record<string, unknown>
+  ): Promise<Record<string, unknown> | undefined> {
+    const restApiId = properties?.['RestApiId'] as string | undefined;
+    if (!restApiId) return undefined;
+
+    try {
+      const resp = await this.apiGatewayClient.send(
+        new GetDeploymentCommand({ restApiId, deploymentId: physicalId })
+      );
+      const result: Record<string, unknown> = { RestApiId: restApiId };
+      if (resp.description !== undefined && resp.description !== '') {
+        result['Description'] = resp.description;
+      }
+      return result;
+    } catch (err) {
+      if (err instanceof NotFoundException) return undefined;
+      throw err;
+    }
+  }
+
+  private async readCurrentStateStage(
+    physicalId: string,
+    properties?: Record<string, unknown>
+  ): Promise<Record<string, unknown> | undefined> {
+    const restApiId = properties?.['RestApiId'] as string | undefined;
+    if (!restApiId) return undefined;
+
+    try {
+      const resp = await this.apiGatewayClient.send(
+        new GetStageCommand({ restApiId, stageName: physicalId })
+      );
+      const result: Record<string, unknown> = { RestApiId: restApiId };
+      if (resp.stageName !== undefined) result['StageName'] = resp.stageName;
+      if (resp.deploymentId !== undefined) result['DeploymentId'] = resp.deploymentId;
+      if (resp.description !== undefined && resp.description !== '') {
+        result['Description'] = resp.description;
+      }
+      return result;
+    } catch (err) {
+      if (err instanceof NotFoundException) return undefined;
+      throw err;
     }
   }
 

@@ -1,6 +1,7 @@
 import {
   LambdaClient,
   AddPermissionCommand,
+  GetPolicyCommand,
   RemovePermissionCommand,
   ResourceNotFoundException,
   type FunctionUrlAuthType,
@@ -252,6 +253,110 @@ export class LambdaPermissionProvider implements ResourceProvider {
         cause
       );
     }
+  }
+
+  /**
+   * Read the AWS-current Lambda permission in CFn-property shape.
+   *
+   * `AWS::Lambda::Permission` has no per-statement Get API — `GetPolicy` on
+   * the parent function returns the entire resource-based policy as a JSON
+   * string, and we have to scan its `Statement` array for the one with our
+   * `Sid` (cdkd's physicalId).
+   *
+   * Returns `undefined` when:
+   *   - `properties.FunctionName` is missing (sub-resource needs the parent).
+   *   - The function has no policy at all (`ResourceNotFoundException`) or
+   *     the matching `Sid` isn't present.
+   *
+   * The reverse-mapping from policy statement back to CFn shape:
+   *   - `Action` → `Sid`'s `Action` (string or first element if array).
+   *   - `Principal` → `Service` / `AWS` / `*` (CFn flat string form).
+   *   - `Condition.ArnLike.AWS:SourceArn` → `SourceArn`.
+   *   - `Condition.StringEquals.AWS:SourceAccount` → `SourceAccount`.
+   *   - `Condition.StringEquals.aws:PrincipalOrgID` → `PrincipalOrgID`.
+   *   - `Condition.ArnLike.AWS:SourceAccount` is left alone — drift on the
+   *     condition operator key would be confusing here.
+   */
+  async readCurrentState(
+    physicalId: string,
+    _logicalId: string,
+    _resourceType: string,
+    properties?: Record<string, unknown>
+  ): Promise<Record<string, unknown> | undefined> {
+    const functionName = properties?.['FunctionName'] as string | undefined;
+    if (!functionName) return undefined;
+
+    // physicalId may be in legacy "functionArn|statementId" format
+    const statementId = physicalId.includes('|') ? physicalId.split('|').pop()! : physicalId;
+
+    let policyDoc;
+    try {
+      const resp = await this.lambdaClient.send(
+        new GetPolicyCommand({ FunctionName: functionName })
+      );
+      policyDoc = resp.Policy;
+    } catch (err) {
+      if (err instanceof ResourceNotFoundException) return undefined;
+      throw err;
+    }
+
+    if (!policyDoc) return undefined;
+
+    interface PolicyStatement {
+      Sid?: string;
+      Action?: string | string[];
+      Principal?: string | Record<string, string | string[]>;
+      Condition?: Record<string, Record<string, string | string[]>>;
+    }
+    let parsed: { Statement?: PolicyStatement[] };
+    try {
+      parsed = JSON.parse(policyDoc) as { Statement?: PolicyStatement[] };
+    } catch {
+      return undefined;
+    }
+
+    const statement = parsed.Statement?.find((s) => s.Sid === statementId);
+    if (!statement) return undefined;
+
+    const result: Record<string, unknown> = { FunctionName: functionName };
+
+    if (statement.Action !== undefined) {
+      result['Action'] = Array.isArray(statement.Action) ? statement.Action[0] : statement.Action;
+    }
+
+    // Principal: CFn shape is a flat string ("lambda.amazonaws.com",
+    // "123456789012", "*"). IAM normalizes it as { Service: "lambda.amazonaws.com" }
+    // or { AWS: "..." } etc. — flatten for comparability.
+    if (statement.Principal !== undefined) {
+      const p = statement.Principal;
+      if (typeof p === 'string') {
+        result['Principal'] = p;
+      } else if (typeof p === 'object') {
+        const value = p['Service'] ?? p['AWS'] ?? p['Federated'] ?? undefined;
+        if (value !== undefined) {
+          result['Principal'] = Array.isArray(value) ? value[0] : value;
+        }
+      }
+    }
+
+    const condition = statement.Condition;
+    if (condition) {
+      const sourceArn =
+        condition['ArnLike']?.['AWS:SourceArn'] ?? condition['StringEquals']?.['AWS:SourceArn'];
+      if (sourceArn !== undefined) {
+        result['SourceArn'] = Array.isArray(sourceArn) ? sourceArn[0] : sourceArn;
+      }
+      const sourceAccount = condition['StringEquals']?.['AWS:SourceAccount'];
+      if (sourceAccount !== undefined) {
+        result['SourceAccount'] = Array.isArray(sourceAccount) ? sourceAccount[0] : sourceAccount;
+      }
+      const orgId = condition['StringEquals']?.['aws:PrincipalOrgID'];
+      if (orgId !== undefined) {
+        result['PrincipalOrgID'] = Array.isArray(orgId) ? orgId[0] : orgId;
+      }
+    }
+
+    return result;
   }
 
   /**

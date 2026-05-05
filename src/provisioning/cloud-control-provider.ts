@@ -834,7 +834,8 @@ export class CloudControlProvider implements ResourceProvider {
   async readCurrentState(
     physicalId: string,
     _logicalId: string,
-    resourceType: string
+    resourceType: string,
+    _properties?: Record<string, unknown>
   ): Promise<Record<string, unknown> | undefined> {
     try {
       const response = await this.cloudControlClient.send(

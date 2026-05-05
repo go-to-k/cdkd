@@ -1,5 +1,12 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { GetApiCommand, NotFoundException } from '@aws-sdk/client-apigatewayv2';
+import {
+  GetApiCommand,
+  GetAuthorizerCommand,
+  GetIntegrationCommand,
+  GetRouteCommand,
+  GetStageCommand,
+  NotFoundException,
+} from '@aws-sdk/client-apigatewayv2';
 
 const mockSend = vi.fn();
 
@@ -75,7 +82,105 @@ describe('ApiGatewayV2Provider.readCurrentState', () => {
     expect(result).toBeUndefined();
   });
 
-  it('returns undefined for sub-resources (Route)', async () => {
+  it('returns Stage fields via GetStage using properties.ApiId', async () => {
+    mockSend.mockResolvedValueOnce({
+      StageName: '$default',
+      AutoDeploy: true,
+      Description: 'default stage',
+    });
+
+    const result = await provider.readCurrentState(
+      '$default',
+      'StageLogical',
+      'AWS::ApiGatewayV2::Stage',
+      { ApiId: 'abcd1234' }
+    );
+
+    expect(mockSend.mock.calls[0]?.[0]).toBeInstanceOf(GetStageCommand);
+    expect(result).toEqual({
+      ApiId: 'abcd1234',
+      StageName: '$default',
+      AutoDeploy: true,
+      Description: 'default stage',
+    });
+  });
+
+  it('returns Integration fields via GetIntegration using properties.ApiId', async () => {
+    mockSend.mockResolvedValueOnce({
+      IntegrationType: 'AWS_PROXY',
+      IntegrationUri: 'arn:aws:lambda:us-east-1:123:function:my-fn',
+      IntegrationMethod: 'POST',
+      PayloadFormatVersion: '2.0',
+    });
+
+    const result = await provider.readCurrentState(
+      'int-1',
+      'IntegrationLogical',
+      'AWS::ApiGatewayV2::Integration',
+      { ApiId: 'abcd1234' }
+    );
+
+    expect(mockSend.mock.calls[0]?.[0]).toBeInstanceOf(GetIntegrationCommand);
+    expect(result).toEqual({
+      ApiId: 'abcd1234',
+      IntegrationType: 'AWS_PROXY',
+      IntegrationUri: 'arn:aws:lambda:us-east-1:123:function:my-fn',
+      IntegrationMethod: 'POST',
+      PayloadFormatVersion: '2.0',
+    });
+  });
+
+  it('returns Route fields via GetRoute using properties.ApiId', async () => {
+    mockSend.mockResolvedValueOnce({
+      RouteKey: 'GET /pets',
+      Target: 'integrations/int-1',
+      AuthorizationType: 'JWT',
+      AuthorizerId: 'auth-1',
+    });
+
+    const result = await provider.readCurrentState(
+      'route-1',
+      'RouteLogical',
+      'AWS::ApiGatewayV2::Route',
+      { ApiId: 'abcd1234' }
+    );
+
+    expect(mockSend.mock.calls[0]?.[0]).toBeInstanceOf(GetRouteCommand);
+    expect(result).toEqual({
+      ApiId: 'abcd1234',
+      RouteKey: 'GET /pets',
+      Target: 'integrations/int-1',
+      AuthorizationType: 'JWT',
+      AuthorizerId: 'auth-1',
+    });
+  });
+
+  it('returns Authorizer fields via GetAuthorizer using properties.ApiId', async () => {
+    mockSend.mockResolvedValueOnce({
+      AuthorizerType: 'JWT',
+      Name: 'my-jwt-authorizer',
+      IdentitySource: ['$request.header.Authorization'],
+      JwtConfiguration: { Audience: ['client-id'], Issuer: 'https://issuer.example.com' },
+    });
+
+    const result = await provider.readCurrentState(
+      'auth-1',
+      'AuthorizerLogical',
+      'AWS::ApiGatewayV2::Authorizer',
+      { ApiId: 'abcd1234' }
+    );
+
+    expect(mockSend.mock.calls[0]?.[0]).toBeInstanceOf(GetAuthorizerCommand);
+    expect(result).toEqual({
+      ApiId: 'abcd1234',
+      AuthorizerType: 'JWT',
+      Name: 'my-jwt-authorizer',
+      IdentitySource: ['$request.header.Authorization'],
+      JwtConfiguration: { Audience: ['client-id'], Issuer: 'https://issuer.example.com' },
+    });
+  });
+
+  it('returns undefined for sub-resources when properties.ApiId is missing', async () => {
     const result = await provider.readCurrentState(
       'route-id',
       'RouteLogical',
@@ -84,5 +189,18 @@ describe('ApiGatewayV2Provider.readCurrentState', () => {
 
     expect(result).toBeUndefined();
     expect(mockSend).not.toHaveBeenCalled();
+  });
+
+  it('returns undefined for sub-resources when AWS reports NotFound', async () => {
+    mockSend.mockRejectedValueOnce(new NotFoundException({ message: 'gone', $metadata: {} }));
+
+    const result = await provider.readCurrentState(
+      'route-1',
+      'RouteLogical',
+      'AWS::ApiGatewayV2::Route',
+      { ApiId: 'abcd1234' }
+    );
+
+    expect(result).toBeUndefined();
   });
 });
