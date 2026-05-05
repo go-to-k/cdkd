@@ -1,3 +1,10 @@
+# [0.35.0](https://github.com/go-to-k/cdkd/compare/v0.34.0...v0.35.0) (2026-05-05)
+
+
+### Features
+
+* **cli:** add cdkd drift command (state vs AWS comparison, detection only) ([#130](https://github.com/go-to-k/cdkd/issues/130)) ([43fc7ff](https://github.com/go-to-k/cdkd/commit/43fc7ff226c0ed2094c79c51d2baef821915976e))
+
 # [0.34.0](https://github.com/go-to-k/cdkd/compare/v0.33.0...v0.34.0) (2026-05-05)
 
 
