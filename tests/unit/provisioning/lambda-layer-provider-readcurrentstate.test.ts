@@ -72,6 +72,14 @@ describe('LambdaLayerVersionProvider.readCurrentState', () => {
     expect(result).toBeUndefined();
   });
 
+  it('declares Content as a drift-unknown path so the comparator skips it', () => {
+    // GetLayerVersionByArn returns a pre-signed URL for the deployed
+    // content, never the original asset key — the only way to avoid
+    // guaranteed false-positive drift on Content is to hide it from the
+    // comparator entirely.
+    expect(provider.getDriftUnknownPaths()).toEqual(['Content']);
+  });
+
   it('omits empty Description / LicenseInfo / arrays', async () => {
     mockSend.mockResolvedValueOnce({
       LayerVersionArn: 'arn:aws:lambda:us-east-1:123:layer:my-layer:5',

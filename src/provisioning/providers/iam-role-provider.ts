@@ -862,6 +862,19 @@ export class IAMRoleProvider implements ResourceProvider {
   }
 
   /**
+   * `Policies` (inline policy bodies) are intentionally omitted from
+   * `readCurrentState`: surfacing the names without bodies would
+   * guarantee a `PolicyDocument`-shaped drift on every role, and
+   * fetching every body costs one extra `GetRolePolicy` per inline
+   * policy. Tell the drift comparator to skip the whole subtree until a
+   * dedicated PR adds proper inline-policy drift via per-name
+   * `GetRolePolicy`.
+   */
+  getDriftUnknownPaths(): string[] {
+    return ['Policies'];
+  }
+
+  /**
    * Adopt an existing IAM role into cdkd state.
    *
    * Lookup order:

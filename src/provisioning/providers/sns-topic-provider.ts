@@ -517,6 +517,19 @@ export class SNSTopicProvider implements ResourceProvider {
   }
 
   /**
+   * `DeliveryStatusLogging` fans out to per-protocol attributes
+   * (`{Protocol}SuccessFeedbackRoleArn` etc.) whose round-trip back to the
+   * CFn array shape is not yet implemented; `Subscription` is managed via
+   * separate `AWS::SNS::Subscription` resources rather than the Topic
+   * itself. Both are absent from `readCurrentState`, so tell the drift
+   * comparator to skip them and avoid the guaranteed false-positive that
+   * would fire on every clean run when the user did template either.
+   */
+  getDriftUnknownPaths(): string[] {
+    return ['DeliveryStatusLogging', 'Subscription'];
+  }
+
+  /**
    * Adopt an existing SNS topic into cdkd state.
    *
    * SNS physical IDs are full ARNs (`arn:aws:sns:...:TopicName`). The

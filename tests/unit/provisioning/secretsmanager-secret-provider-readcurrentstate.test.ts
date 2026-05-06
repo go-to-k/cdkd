@@ -99,6 +99,14 @@ describe('SecretsManagerSecretProvider.readCurrentState', () => {
     expect(result?.Tags).toEqual([{ Key: 'Foo', Value: 'Bar' }]);
   });
 
+  it('declares SecretString and GenerateSecretString as drift-unknown so the comparator skips them', () => {
+    // DescribeSecret never returns the secret value (lives behind
+    // GetSecretValue, which we deliberately never call). Without this
+    // declaration the comparator would fire false-positive drift on
+    // every secret that has SecretString in cdkd state.
+    expect(provider.getDriftUnknownPaths()).toEqual(['SecretString', 'GenerateSecretString']);
+  });
+
   it('omits Tags when DescribeSecret returns no user tags', async () => {
     mockSend.mockResolvedValueOnce({
       Name: 'my-secret',

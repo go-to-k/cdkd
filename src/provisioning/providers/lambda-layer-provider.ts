@@ -267,6 +267,17 @@ export class LambdaLayerVersionProvider implements ResourceProvider {
   }
 
   /**
+   * `Content: { S3Bucket, S3Key }` is set on create but
+   * `GetLayerVersionByArn` only returns a pre-signed URL for the deployed
+   * content — the original asset key is unrecoverable. Tell the drift
+   * comparator to skip the whole `Content` subtree to avoid the guaranteed
+   * false-positive that would fire on every clean run.
+   */
+  getDriftUnknownPaths(): string[] {
+    return ['Content'];
+  }
+
+  /**
    * Adopt an existing Lambda layer version into cdkd state.
    *
    * Lookup order:

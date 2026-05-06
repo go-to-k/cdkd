@@ -103,6 +103,14 @@ describe('SNSTopicProvider.readCurrentState', () => {
     expect(result?.Tags).toEqual([{ Key: 'Foo', Value: 'Bar' }]);
   });
 
+  it('declares DeliveryStatusLogging and Subscription as drift-unknown so the comparator skips them', () => {
+    // DeliveryStatusLogging fans out to per-protocol attributes that
+    // readCurrentState does not yet round-trip; Subscription is managed
+    // via separate AWS::SNS::Subscription resources, not as a Topic
+    // property — both would fire guaranteed false drift if surfaced.
+    expect(provider.getDriftUnknownPaths()).toEqual(['DeliveryStatusLogging', 'Subscription']);
+  });
+
   it('omits Tags when ListTagsForResource returns no user tags', async () => {
     mockSend.mockResolvedValueOnce({ Attributes: { DisplayName: 'X' } });
     mockSend.mockResolvedValueOnce({

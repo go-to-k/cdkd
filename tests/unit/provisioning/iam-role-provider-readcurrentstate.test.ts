@@ -109,6 +109,14 @@ describe('IAMRoleProvider.readCurrentState', () => {
     expect(result).toBeUndefined();
   });
 
+  it('declares Policies as drift-unknown so the comparator skips inline policy bodies', () => {
+    // Inline policy bodies are intentionally omitted from
+    // readCurrentState (would need one extra GetRolePolicy per
+    // policy). Without this declaration any role with inline Policies
+    // in cdkd state would fire guaranteed false-positive drift.
+    expect(provider.getDriftUnknownPaths()).toEqual(['Policies']);
+  });
+
   it('omits ManagedPolicyArns when there are none attached', async () => {
     mockSend.mockResolvedValueOnce({
       Role: {

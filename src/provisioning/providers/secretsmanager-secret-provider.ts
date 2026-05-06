@@ -403,6 +403,17 @@ export class SecretsManagerSecretProvider implements ResourceProvider {
   }
 
   /**
+   * `SecretString` and `GenerateSecretString` are set on create but
+   * `DescribeSecret` does not return the secret value (that lives behind
+   * `GetSecretValue`, which we deliberately never call to avoid surfacing
+   * plaintext through drift). Tell the drift comparator to skip both keys
+   * so they don't fire guaranteed false-positive drift on every clean run.
+   */
+  getDriftUnknownPaths(): string[] {
+    return ['SecretString', 'GenerateSecretString'];
+  }
+
+  /**
    * Adopt an existing Secrets Manager secret into cdkd state.
    *
    * Secrets Manager physical IDs are full secret ARNs. The CDK template's
