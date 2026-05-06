@@ -14,7 +14,11 @@ import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { generateResourceName } from '../resource-name.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
-import { matchesCdkPath, resolveExplicitPhysicalId } from '../import-helpers.js';
+import {
+  matchesCdkPath,
+  normalizeAwsTagsToCfn,
+  resolveExplicitPhysicalId,
+} from '../import-helpers.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -369,6 +373,21 @@ export class CloudWatchAlarmProvider implements ResourceProvider {
     }
     if (alarm.Metrics && alarm.Metrics.length > 0) {
       result['Metrics'] = alarm.Metrics.map((m) => m as unknown as Record<string, unknown>);
+    }
+
+    // Tags via ListTagsForResource (uses the alarm ARN from DescribeAlarms).
+    if (alarm.AlarmArn) {
+      try {
+        const tagsResp = await this.cloudWatchClient.send(
+          new ListTagsForResourceCommand({ ResourceARN: alarm.AlarmArn })
+        );
+        const tags = normalizeAwsTagsToCfn(tagsResp.Tags);
+        if (tags.length > 0) result['Tags'] = tags;
+      } catch (err) {
+        this.logger.debug(
+          `CloudWatch ListTagsForResource(${alarm.AlarmArn}) failed: ${err instanceof Error ? err.message : String(err)}`
+        );
+      }
     }
     return result;
   }

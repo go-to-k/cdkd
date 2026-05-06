@@ -80,4 +80,37 @@ describe('SecretsManagerSecretProvider.readCurrentState', () => {
 
     expect(result).toBeUndefined();
   });
+
+  it('surfaces Tags from DescribeSecret with aws:* filtered out', async () => {
+    mockSend.mockResolvedValueOnce({
+      Name: 'my-secret',
+      Tags: [
+        { Key: 'Foo', Value: 'Bar' },
+        { Key: 'aws:cdk:path', Value: 'MyStack/MySecret/Resource' },
+      ],
+    });
+
+    const result = await provider.readCurrentState(
+      'arn:aws:secretsmanager:us-east-1:123:secret:my-secret-AbCdEf',
+      'SecretLogical',
+      'AWS::SecretsManager::Secret'
+    );
+
+    expect(result?.Tags).toEqual([{ Key: 'Foo', Value: 'Bar' }]);
+  });
+
+  it('omits Tags when DescribeSecret returns no user tags', async () => {
+    mockSend.mockResolvedValueOnce({
+      Name: 'my-secret',
+      Tags: [{ Key: 'aws:cdk:path', Value: 'MyStack/MySecret/Resource' }],
+    });
+
+    const result = await provider.readCurrentState(
+      'arn:aws:secretsmanager:us-east-1:123:secret:my-secret-AbCdEf',
+      'SecretLogical',
+      'AWS::SecretsManager::Secret'
+    );
+
+    expect(result).not.toHaveProperty('Tags');
+  });
 });

@@ -21,7 +21,11 @@ import {
 import { getLogger } from '../../utils/logger.js';
 import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
-import { matchesCdkPath, resolveExplicitPhysicalId } from '../import-helpers.js';
+import {
+  matchesCdkPath,
+  normalizeAwsTagsToCfn,
+  resolveExplicitPhysicalId,
+} from '../import-helpers.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -603,8 +607,10 @@ export class FirehoseProvider implements ResourceProvider {
    * fields. Drift on destination contents is best chased manually via
    * `aws firehose describe-delivery-stream` for now.
    *
-   * Tags + DeliveryStreamEncryptionConfigurationInput are skipped (they
-   * each need separate calls / shape decisions).
+   * Tags are surfaced via a follow-up `ListTagsForDeliveryStream` call
+   * with `aws:*` filtered out and the result key omitted when empty.
+   * `DeliveryStreamEncryptionConfigurationInput` is still skipped (shape
+   * decision deferred).
    *
    * Returns `undefined` when the stream is gone (`ResourceNotFoundException`).
    */
@@ -642,6 +648,20 @@ export class FirehoseProvider implements ResourceProvider {
       if (Object.keys(srcOut).length > 0) {
         result['KinesisStreamSourceConfiguration'] = srcOut;
       }
+    }
+
+    // Tags via ListTagsForDeliveryStream.
+    try {
+      const tagsResp = await this.getClient().send(
+        new ListTagsForDeliveryStreamCommand({ DeliveryStreamName: physicalId })
+      );
+      const tags = normalizeAwsTagsToCfn(tagsResp.Tags);
+      if (tags.length > 0) result['Tags'] = tags;
+    } catch (err) {
+      if (err instanceof ResourceNotFoundException) return undefined;
+      this.logger.debug(
+        `Firehose ListTagsForDeliveryStream(${physicalId}) failed: ${err instanceof Error ? err.message : String(err)}`
+      );
     }
 
     return result;

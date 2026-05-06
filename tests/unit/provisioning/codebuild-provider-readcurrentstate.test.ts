@@ -94,4 +94,35 @@ describe('CodeBuildProvider.readCurrentState', () => {
     const result = await provider.readCurrentState('myproj', 'L', 'AWS::CodeBuild::Project');
     expect(result).toBeUndefined();
   });
+
+  it('surfaces Tags from BatchGetProjects with aws:* filtered out (CodeBuild lower-case shape)', async () => {
+    mockSend.mockResolvedValueOnce({
+      projects: [
+        {
+          name: 'myproj',
+          tags: [
+            { key: 'Foo', value: 'Bar' },
+            { key: 'aws:cdk:path', value: 'MyStack/MyProj/Resource' },
+          ],
+        },
+      ],
+    });
+
+    const result = await provider.readCurrentState('myproj', 'L', 'AWS::CodeBuild::Project');
+    expect(result?.Tags).toEqual([{ Key: 'Foo', Value: 'Bar' }]);
+  });
+
+  it('omits Tags when BatchGetProjects returns no user tags', async () => {
+    mockSend.mockResolvedValueOnce({
+      projects: [
+        {
+          name: 'myproj',
+          tags: [{ key: 'aws:cdk:path', value: 'MyStack/MyProj/Resource' }],
+        },
+      ],
+    });
+
+    const result = await provider.readCurrentState('myproj', 'L', 'AWS::CodeBuild::Project');
+    expect(result).not.toHaveProperty('Tags');
+  });
 });

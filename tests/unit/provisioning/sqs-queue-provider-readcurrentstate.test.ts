@@ -1,5 +1,9 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { GetQueueAttributesCommand, QueueDoesNotExist } from '@aws-sdk/client-sqs';
+import {
+  GetQueueAttributesCommand,
+  ListQueueTagsCommand,
+  QueueDoesNotExist,
+} from '@aws-sdk/client-sqs';
 
 const mockSend = vi.fn();
 
@@ -68,9 +72,13 @@ describe('SQSQueueProvider.readCurrentState', () => {
       },
     });
 
+    // ListQueueTags — no user tags
+    mockSend.mockResolvedValueOnce({ Tags: {} });
+
     const result = await provider.readCurrentState(QUEUE_URL, 'Logical', 'AWS::SQS::Queue');
 
     expect(mockSend.mock.calls[0]?.[0]).toBeInstanceOf(GetQueueAttributesCommand);
+    expect(mockSend.mock.calls[1]?.[0]).toBeInstanceOf(ListQueueTagsCommand);
     expect(result).toEqual({
       QueueName: 'my-queue',
       VisibilityTimeout: 30,
@@ -96,5 +104,23 @@ describe('SQSQueueProvider.readCurrentState', () => {
 
     const result = await provider.readCurrentState(QUEUE_URL, 'Logical', 'AWS::SQS::Queue');
     expect(result).toBeUndefined();
+  });
+
+  it('surfaces Tags from ListQueueTags with aws:* filtered out', async () => {
+    mockSend.mockResolvedValueOnce({ Attributes: { VisibilityTimeout: '30' } });
+    mockSend.mockResolvedValueOnce({
+      Tags: { Foo: 'Bar', 'aws:cdk:path': 'MyStack/MyQueue/Resource' },
+    });
+
+    const result = await provider.readCurrentState(QUEUE_URL, 'Logical', 'AWS::SQS::Queue');
+    expect(result?.Tags).toEqual([{ Key: 'Foo', Value: 'Bar' }]);
+  });
+
+  it('omits Tags when ListQueueTags returns no user tags', async () => {
+    mockSend.mockResolvedValueOnce({ Attributes: { VisibilityTimeout: '30' } });
+    mockSend.mockResolvedValueOnce({ Tags: { 'aws:cdk:path': 'MyStack/MyQueue/Resource' } });
+
+    const result = await provider.readCurrentState(QUEUE_URL, 'Logical', 'AWS::SQS::Queue');
+    expect(result).not.toHaveProperty('Tags');
   });
 });

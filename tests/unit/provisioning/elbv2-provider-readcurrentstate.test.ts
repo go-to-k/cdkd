@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import {
   DescribeLoadBalancersCommand,
+  DescribeTagsCommand,
   DescribeTargetGroupsCommand,
   DescribeListenersCommand,
 } from '@aws-sdk/client-elastic-load-balancing-v2';
@@ -51,19 +52,21 @@ describe('ELBv2Provider.readCurrentState', () => {
 
   describe('AWS::ElasticLoadBalancingV2::LoadBalancer', () => {
     it('returns CFn-shaped LB properties (happy path)', async () => {
-      mockSend.mockResolvedValueOnce({
-        LoadBalancers: [
-          {
-            LoadBalancerArn: 'arn:lb',
-            LoadBalancerName: 'mylb',
-            Scheme: 'internet-facing',
-            Type: 'application',
-            IpAddressType: 'ipv4',
-            AvailabilityZones: [{ SubnetId: 'subnet-a' }, { SubnetId: 'subnet-b' }],
-            SecurityGroups: ['sg-1'],
-          },
-        ],
-      });
+      mockSend
+        .mockResolvedValueOnce({
+          LoadBalancers: [
+            {
+              LoadBalancerArn: 'arn:lb',
+              LoadBalancerName: 'mylb',
+              Scheme: 'internet-facing',
+              Type: 'application',
+              IpAddressType: 'ipv4',
+              AvailabilityZones: [{ SubnetId: 'subnet-a' }, { SubnetId: 'subnet-b' }],
+              SecurityGroups: ['sg-1'],
+            },
+          ],
+        })
+        .mockResolvedValueOnce({ TagDescriptions: [{ ResourceArn: 'arn:lb', Tags: [] }] });
 
       const result = await provider.readCurrentState(
         'arn:lb',
@@ -72,6 +75,7 @@ describe('ELBv2Provider.readCurrentState', () => {
       );
 
       expect(mockSend.mock.calls[0]?.[0]).toBeInstanceOf(DescribeLoadBalancersCommand);
+      expect(mockSend.mock.calls[1]?.[0]).toBeInstanceOf(DescribeTagsCommand);
       expect(result).toEqual({
         Name: 'mylb',
         Scheme: 'internet-facing',
@@ -97,27 +101,29 @@ describe('ELBv2Provider.readCurrentState', () => {
 
   describe('AWS::ElasticLoadBalancingV2::TargetGroup', () => {
     it('returns CFn-shaped TG properties (happy path)', async () => {
-      mockSend.mockResolvedValueOnce({
-        TargetGroups: [
-          {
-            TargetGroupArn: 'arn:tg',
-            TargetGroupName: 'mytg',
-            Protocol: 'HTTP',
-            Port: 80,
-            VpcId: 'vpc-1',
-            TargetType: 'ip',
-            HealthCheckProtocol: 'HTTP',
-            HealthCheckPort: '80',
-            HealthCheckPath: '/health',
-            HealthCheckEnabled: true,
-            HealthCheckIntervalSeconds: 30,
-            HealthCheckTimeoutSeconds: 5,
-            HealthyThresholdCount: 2,
-            UnhealthyThresholdCount: 3,
-            Matcher: { HttpCode: '200' },
-          },
-        ],
-      });
+      mockSend
+        .mockResolvedValueOnce({
+          TargetGroups: [
+            {
+              TargetGroupArn: 'arn:tg',
+              TargetGroupName: 'mytg',
+              Protocol: 'HTTP',
+              Port: 80,
+              VpcId: 'vpc-1',
+              TargetType: 'ip',
+              HealthCheckProtocol: 'HTTP',
+              HealthCheckPort: '80',
+              HealthCheckPath: '/health',
+              HealthCheckEnabled: true,
+              HealthCheckIntervalSeconds: 30,
+              HealthCheckTimeoutSeconds: 5,
+              HealthyThresholdCount: 2,
+              UnhealthyThresholdCount: 3,
+              Matcher: { HttpCode: '200' },
+            },
+          ],
+        })
+        .mockResolvedValueOnce({ TagDescriptions: [{ ResourceArn: 'arn:tg', Tags: [] }] });
 
       const result = await provider.readCurrentState(
         'arn:tg',
@@ -147,19 +153,21 @@ describe('ELBv2Provider.readCurrentState', () => {
 
   describe('AWS::ElasticLoadBalancingV2::Listener', () => {
     it('returns CFn-shaped Listener properties (happy path)', async () => {
-      mockSend.mockResolvedValueOnce({
-        Listeners: [
-          {
-            ListenerArn: 'arn:listener',
-            LoadBalancerArn: 'arn:lb',
-            Port: 443,
-            Protocol: 'HTTPS',
-            SslPolicy: 'ELBSecurityPolicy-2016-08',
-            Certificates: [{ CertificateArn: 'arn:cert', IsDefault: true }],
-            DefaultActions: [{ Type: 'forward', TargetGroupArn: 'arn:tg' }],
-          },
-        ],
-      });
+      mockSend
+        .mockResolvedValueOnce({
+          Listeners: [
+            {
+              ListenerArn: 'arn:listener',
+              LoadBalancerArn: 'arn:lb',
+              Port: 443,
+              Protocol: 'HTTPS',
+              SslPolicy: 'ELBSecurityPolicy-2016-08',
+              Certificates: [{ CertificateArn: 'arn:cert', IsDefault: true }],
+              DefaultActions: [{ Type: 'forward', TargetGroupArn: 'arn:tg' }],
+            },
+          ],
+        })
+        .mockResolvedValueOnce({ TagDescriptions: [{ ResourceArn: 'arn:listener', Tags: [] }] });
 
       const result = await provider.readCurrentState(
         'arn:listener',
@@ -189,5 +197,52 @@ describe('ELBv2Provider.readCurrentState', () => {
       );
       expect(result).toBeUndefined();
     });
+  });
+
+  it('surfaces LoadBalancer Tags from DescribeTags with aws:* filtered out', async () => {
+    mockSend
+      .mockResolvedValueOnce({
+        LoadBalancers: [{ LoadBalancerArn: 'arn:lb', LoadBalancerName: 'mylb' }],
+      })
+      .mockResolvedValueOnce({
+        TagDescriptions: [
+          {
+            ResourceArn: 'arn:lb',
+            Tags: [
+              { Key: 'Foo', Value: 'Bar' },
+              { Key: 'aws:cdk:path', Value: 'MyStack/MyLB/Resource' },
+            ],
+          },
+        ],
+      });
+
+    const result = await provider.readCurrentState(
+      'arn:lb',
+      'L',
+      'AWS::ElasticLoadBalancingV2::LoadBalancer'
+    );
+    expect(result?.Tags).toEqual([{ Key: 'Foo', Value: 'Bar' }]);
+  });
+
+  it('omits Tags when DescribeTags returns no user tags', async () => {
+    mockSend
+      .mockResolvedValueOnce({
+        LoadBalancers: [{ LoadBalancerArn: 'arn:lb', LoadBalancerName: 'mylb' }],
+      })
+      .mockResolvedValueOnce({
+        TagDescriptions: [
+          {
+            ResourceArn: 'arn:lb',
+            Tags: [{ Key: 'aws:cdk:path', Value: 'MyStack/MyLB/Resource' }],
+          },
+        ],
+      });
+
+    const result = await provider.readCurrentState(
+      'arn:lb',
+      'L',
+      'AWS::ElasticLoadBalancingV2::LoadBalancer'
+    );
+    expect(result).not.toHaveProperty('Tags');
   });
 });

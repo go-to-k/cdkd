@@ -26,7 +26,11 @@ import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { generateResourceName } from '../resource-name.js';
-import { matchesCdkPath, resolveExplicitPhysicalId } from '../import-helpers.js';
+import {
+  matchesCdkPath,
+  normalizeAwsTagsToCfn,
+  resolveExplicitPhysicalId,
+} from '../import-helpers.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -760,9 +764,10 @@ export class IAMRoleProvider implements ResourceProvider {
    *    costs one extra `GetRolePolicy` per inline policy. Out of scope for
    *    v1 — drift detection on inline IAM policy bodies can ship in a
    *    follow-up.
-   *  - `Tags` is omitted for the same reason as Lambda's tags handling
-   *    (CDK auto-injects `aws:cdk:path` and the shape decision belongs in a
-   *    dedicated tags PR).
+   *  - `Tags` is surfaced via `ListRoleTags` (paginated). CDK's `aws:*`
+   *    auto-tags are filtered out by `normalizeAwsTagsToCfn` so they don't
+   *    fire false-positive drift; the result key is omitted entirely when
+   *    AWS reports no user tags (matches `create()`'s behavior).
    *
    * Returns `undefined` when the role is gone (`NoSuchEntityException`).
    */
@@ -821,6 +826,34 @@ export class IAMRoleProvider implements ResourceProvider {
       // "key absent in state never drifts" property for roles that don't
       // declare ManagedPolicyArns.
       if (arns.length > 0) result['ManagedPolicyArns'] = arns;
+    } catch (err) {
+      if (!(err instanceof NoSuchEntityException)) throw err;
+    }
+
+    // Tags via ListRoleTags. Paginated — small page sizes are fine since
+    // IAM enforces a 50-tag-per-role limit, but we still iterate Marker for
+    // forward-compat.
+    try {
+      const collected: Array<{ Key?: string | undefined; Value?: string | undefined }> = [];
+      let marker: string | undefined;
+      // eslint-disable-next-line no-constant-condition
+      while (true) {
+        const tagsResp = await this.iamClient.send(
+          new ListRoleTagsCommand({
+            RoleName: physicalId,
+            ...(marker ? { Marker: marker } : {}),
+          })
+        );
+        if (tagsResp.Tags) {
+          for (const t of tagsResp.Tags) {
+            collected.push({ Key: t.Key, Value: t.Value });
+          }
+        }
+        if (!tagsResp.IsTruncated) break;
+        marker = tagsResp.Marker;
+      }
+      const tags = normalizeAwsTagsToCfn(collected);
+      if (tags.length > 0) result['Tags'] = tags;
     } catch (err) {
       if (!(err instanceof NoSuchEntityException)) throw err;
     }

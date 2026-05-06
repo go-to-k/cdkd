@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import {
   DescribeDeliveryStreamCommand,
+  ListTagsForDeliveryStreamCommand,
   ResourceNotFoundException,
 } from '@aws-sdk/client-firehose';
 
@@ -49,18 +50,20 @@ describe('FirehoseProvider.readCurrentState', () => {
   });
 
   it('returns CFn-shaped properties from DescribeDeliveryStream (happy path)', async () => {
-    mockSend.mockResolvedValueOnce({
-      DeliveryStreamDescription: {
-        DeliveryStreamName: 'mystream',
-        DeliveryStreamType: 'KinesisStreamAsSource',
-        Source: {
-          KinesisStreamSourceDescription: {
-            KinesisStreamARN: 'arn:aws:kinesis:us-east-1:1:stream/src',
-            RoleARN: 'arn:aws:iam::1:role/r',
+    mockSend
+      .mockResolvedValueOnce({
+        DeliveryStreamDescription: {
+          DeliveryStreamName: 'mystream',
+          DeliveryStreamType: 'KinesisStreamAsSource',
+          Source: {
+            KinesisStreamSourceDescription: {
+              KinesisStreamARN: 'arn:aws:kinesis:us-east-1:1:stream/src',
+              RoleARN: 'arn:aws:iam::1:role/r',
+            },
           },
         },
-      },
-    });
+      })
+      .mockResolvedValueOnce({ Tags: [] });
 
     const result = await provider.readCurrentState(
       'mystream',
@@ -69,6 +72,7 @@ describe('FirehoseProvider.readCurrentState', () => {
     );
 
     expect(mockSend.mock.calls[0]?.[0]).toBeInstanceOf(DescribeDeliveryStreamCommand);
+    expect(mockSend.mock.calls[1]?.[0]).toBeInstanceOf(ListTagsForDeliveryStreamCommand);
     expect(result).toEqual({
       DeliveryStreamName: 'mystream',
       DeliveryStreamType: 'KinesisStreamAsSource',
@@ -89,5 +93,38 @@ describe('FirehoseProvider.readCurrentState', () => {
       'AWS::KinesisFirehose::DeliveryStream'
     );
     expect(result).toBeUndefined();
+  });
+
+  it('surfaces Tags from ListTagsForDeliveryStream with aws:* filtered out', async () => {
+    mockSend
+      .mockResolvedValueOnce({ DeliveryStreamDescription: { DeliveryStreamName: 'mystream' } })
+      .mockResolvedValueOnce({
+        Tags: [
+          { Key: 'Foo', Value: 'Bar' },
+          { Key: 'aws:cdk:path', Value: 'MyStack/MyStream/Resource' },
+        ],
+      });
+
+    const result = await provider.readCurrentState(
+      'mystream',
+      'L',
+      'AWS::KinesisFirehose::DeliveryStream'
+    );
+    expect(result?.Tags).toEqual([{ Key: 'Foo', Value: 'Bar' }]);
+  });
+
+  it('omits Tags when ListTagsForDeliveryStream returns no user tags', async () => {
+    mockSend
+      .mockResolvedValueOnce({ DeliveryStreamDescription: { DeliveryStreamName: 'mystream' } })
+      .mockResolvedValueOnce({
+        Tags: [{ Key: 'aws:cdk:path', Value: 'MyStack/MyStream/Resource' }],
+      });
+
+    const result = await provider.readCurrentState(
+      'mystream',
+      'L',
+      'AWS::KinesisFirehose::DeliveryStream'
+    );
+    expect(result).not.toHaveProperty('Tags');
   });
 });

@@ -25,7 +25,7 @@ import {
 import { getLogger } from '../../utils/logger.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
-import { CDK_PATH_TAG } from '../import-helpers.js';
+import { CDK_PATH_TAG, normalizeAwsTagsToCfn } from '../import-helpers.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -538,9 +538,11 @@ export class KMSProvider implements ResourceProvider {
    *     Surfaces `AliasName`, `TargetKeyId`. `ListAliases` is paginated
    *     since there's no direct "describe one alias" API.
    *
-   * `Tags` is intentionally omitted (separate `ListResourceTags` round-trip
-   * for keys; auto-injected `aws:cdk:path` tag-shape question is out of
-   * scope here). `BypassPolicyLockoutSafetyCheck` and `PendingWindowInDays`
+   * `Tags` is surfaced for `AWS::KMS::Key` via a follow-up
+   * `ListResourceTags(KeyId)` call (KMS uses `[{TagKey, TagValue}]` shape).
+   * CDK's `aws:*` auto-tags are filtered out; the result key is omitted
+   * entirely when AWS reports no user tags. `AWS::KMS::Alias` does not
+   * support tags. `BypassPolicyLockoutSafetyCheck` and `PendingWindowInDays`
    * are not part of the persisted AWS state visible via `DescribeKey`.
    *
    * Returns `undefined` when the resource is gone (`NotFoundException`).
@@ -594,6 +596,21 @@ export class KMSProvider implements ResourceProvider {
     if (md.Enabled !== undefined) result['Enabled'] = md.Enabled;
     if (md.MultiRegion !== undefined) result['MultiRegion'] = md.MultiRegion;
     if (md.Origin !== undefined) result['Origin'] = md.Origin;
+
+    // Tags via ListResourceTags. AWS-managed keys (alias/aws/*) reject
+    // ListResourceTags with AccessDenied — omit silently.
+    if (md.KeyId) {
+      try {
+        const tagsResp = await this.getClient().send(
+          new ListResourceTagsCommand({ KeyId: md.KeyId })
+        );
+        const tags = normalizeAwsTagsToCfn(tagsResp.Tags);
+        if (tags.length > 0) result['Tags'] = tags;
+      } catch (err) {
+        if (err instanceof NotFoundException) return undefined;
+        // Permission errors etc — leave key absent.
+      }
+    }
     return result;
   }
 

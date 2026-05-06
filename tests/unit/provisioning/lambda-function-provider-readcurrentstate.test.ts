@@ -126,4 +126,40 @@ describe('LambdaFunctionProvider.readCurrentState', () => {
 
     expect(result).not.toHaveProperty('VpcConfig');
   });
+
+  it('surfaces Tags from GetFunction with aws:* prefixed entries filtered out', async () => {
+    mockSend.mockResolvedValueOnce({
+      Configuration: {
+        FunctionName: 'fn',
+        Runtime: 'nodejs20.x',
+        Handler: 'index.handler',
+        Role: 'arn:aws:iam::123456789012:role/exec',
+      },
+      Tags: {
+        Foo: 'Bar',
+        'aws:cdk:path': 'MyStack/MyFunction/Resource',
+        'aws:cdk:metadata': 'something',
+      },
+    });
+
+    const result = await provider.readCurrentState('fn', 'Logical', 'AWS::Lambda::Function');
+
+    expect(result?.Tags).toEqual([{ Key: 'Foo', Value: 'Bar' }]);
+  });
+
+  it('omits Tags when GetFunction returns no user tags', async () => {
+    mockSend.mockResolvedValueOnce({
+      Configuration: {
+        FunctionName: 'fn',
+        Runtime: 'nodejs20.x',
+        Handler: 'index.handler',
+        Role: 'arn:aws:iam::123456789012:role/exec',
+      },
+      Tags: { 'aws:cdk:path': 'MyStack/MyFunction/Resource' },
+    });
+
+    const result = await provider.readCurrentState('fn', 'Logical', 'AWS::Lambda::Function');
+
+    expect(result).not.toHaveProperty('Tags');
+  });
 });

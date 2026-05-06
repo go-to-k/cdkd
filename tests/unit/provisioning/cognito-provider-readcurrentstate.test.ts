@@ -104,4 +104,40 @@ describe('CognitoUserPoolProvider.readCurrentState', () => {
     expect(result).toBeUndefined();
     expect(mockSend).not.toHaveBeenCalled();
   });
+
+  it('surfaces UserPoolTags as a map with aws:* filtered out', async () => {
+    mockSend.mockResolvedValueOnce({
+      UserPool: {
+        Id: 'us-east-1_abcd',
+        Name: 'my-pool',
+        UserPoolTags: { Foo: 'Bar', 'aws:cdk:path': 'MyStack/MyPool/Resource' },
+      },
+    });
+
+    const result = await provider.readCurrentState(
+      'us-east-1_abcd',
+      'PoolLogical',
+      'AWS::Cognito::UserPool'
+    );
+
+    expect(result?.UserPoolTags).toEqual({ Foo: 'Bar' });
+  });
+
+  it('omits UserPoolTags when DescribeUserPool returns no user tags', async () => {
+    mockSend.mockResolvedValueOnce({
+      UserPool: {
+        Id: 'us-east-1_abcd',
+        Name: 'my-pool',
+        UserPoolTags: { 'aws:cdk:path': 'MyStack/MyPool/Resource' },
+      },
+    });
+
+    const result = await provider.readCurrentState(
+      'us-east-1_abcd',
+      'PoolLogical',
+      'AWS::Cognito::UserPool'
+    );
+
+    expect(result).not.toHaveProperty('UserPoolTags');
+  });
 });

@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import {
   GetParameterCommand,
   DescribeParametersCommand,
+  ListTagsForResourceCommand,
   ParameterNotFound,
 } from '@aws-sdk/client-ssm';
 
@@ -61,12 +62,14 @@ describe('SSMParameterProvider.readCurrentState', () => {
             Tier: 'Standard',
           },
         ],
-      });
+      })
+      .mockResolvedValueOnce({ TagList: [] });
 
     const result = await provider.readCurrentState('/foo', 'ParamLogical', 'AWS::SSM::Parameter');
 
     expect(mockSend.mock.calls[0]?.[0]).toBeInstanceOf(GetParameterCommand);
     expect(mockSend.mock.calls[1]?.[0]).toBeInstanceOf(DescribeParametersCommand);
+    expect(mockSend.mock.calls[2]?.[0]).toBeInstanceOf(ListTagsForResourceCommand);
     expect(result).toEqual({
       Name: '/foo',
       Type: 'String',
@@ -97,7 +100,8 @@ describe('SSMParameterProvider.readCurrentState', () => {
           Value: 'bar',
         },
       })
-      .mockRejectedValueOnce(new Error('access denied'));
+      .mockRejectedValueOnce(new Error('access denied'))
+      .mockResolvedValueOnce({ TagList: [] });
 
     const result = await provider.readCurrentState('/foo', 'ParamLogical', 'AWS::SSM::Parameter');
 
@@ -106,5 +110,36 @@ describe('SSMParameterProvider.readCurrentState', () => {
       Type: 'String',
       Value: 'bar',
     });
+  });
+
+  it('surfaces Tags from ListTagsForResource with aws:* filtered out', async () => {
+    mockSend
+      .mockResolvedValueOnce({
+        Parameter: { Name: '/foo', Type: 'String', Value: 'bar' },
+      })
+      .mockResolvedValueOnce({ Parameters: [] })
+      .mockResolvedValueOnce({
+        TagList: [
+          { Key: 'Foo', Value: 'Bar' },
+          { Key: 'aws:cdk:path', Value: 'MyStack/MyParam/Resource' },
+        ],
+      });
+
+    const result = await provider.readCurrentState('/foo', 'ParamLogical', 'AWS::SSM::Parameter');
+    expect(result?.Tags).toEqual([{ Key: 'Foo', Value: 'Bar' }]);
+  });
+
+  it('omits Tags when ListTagsForResource returns no user tags', async () => {
+    mockSend
+      .mockResolvedValueOnce({
+        Parameter: { Name: '/foo', Type: 'String', Value: 'bar' },
+      })
+      .mockResolvedValueOnce({ Parameters: [] })
+      .mockResolvedValueOnce({
+        TagList: [{ Key: 'aws:cdk:path', Value: 'MyStack/MyParam/Resource' }],
+      });
+
+    const result = await provider.readCurrentState('/foo', 'ParamLogical', 'AWS::SSM::Parameter');
+    expect(result).not.toHaveProperty('Tags');
   });
 });

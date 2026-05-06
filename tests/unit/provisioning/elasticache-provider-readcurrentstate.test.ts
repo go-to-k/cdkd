@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import {
   DescribeCacheClustersCommand,
   DescribeCacheSubnetGroupsCommand,
+  ListTagsForResourceCommand,
 } from '@aws-sdk/client-elasticache';
 
 const mockSend = vi.fn();
@@ -145,5 +146,55 @@ describe('ElastiCacheProvider.readCurrentState', () => {
       );
       expect(result).toBeUndefined();
     });
+  });
+
+  it('surfaces CacheCluster Tags from ListTagsForResource with aws:* filtered out', async () => {
+    mockSend
+      .mockResolvedValueOnce({
+        CacheClusters: [
+          {
+            CacheClusterId: 'mycluster',
+            ARN: 'arn:aws:elasticache:us-east-1:1:cluster:mycluster',
+          },
+        ],
+      })
+      .mockResolvedValueOnce({
+        TagList: [
+          { Key: 'Foo', Value: 'Bar' },
+          { Key: 'aws:cdk:path', Value: 'MyStack/MyCluster/Resource' },
+        ],
+      });
+
+    const result = await provider.readCurrentState(
+      'mycluster',
+      'L',
+      'AWS::ElastiCache::CacheCluster'
+    );
+
+    expect(mockSend.mock.calls[1]?.[0]).toBeInstanceOf(ListTagsForResourceCommand);
+    expect(result?.Tags).toEqual([{ Key: 'Foo', Value: 'Bar' }]);
+  });
+
+  it('omits Tags when ListTagsForResource returns no user tags', async () => {
+    mockSend
+      .mockResolvedValueOnce({
+        CacheClusters: [
+          {
+            CacheClusterId: 'mycluster',
+            ARN: 'arn:aws:elasticache:us-east-1:1:cluster:mycluster',
+          },
+        ],
+      })
+      .mockResolvedValueOnce({
+        TagList: [{ Key: 'aws:cdk:path', Value: 'MyStack/MyCluster/Resource' }],
+      });
+
+    const result = await provider.readCurrentState(
+      'mycluster',
+      'L',
+      'AWS::ElastiCache::CacheCluster'
+    );
+
+    expect(result).not.toHaveProperty('Tags');
   });
 });

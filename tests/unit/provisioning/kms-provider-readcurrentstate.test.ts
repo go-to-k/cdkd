@@ -1,5 +1,10 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { DescribeKeyCommand, ListAliasesCommand, NotFoundException } from '@aws-sdk/client-kms';
+import {
+  DescribeKeyCommand,
+  ListAliasesCommand,
+  ListResourceTagsCommand,
+  NotFoundException,
+} from '@aws-sdk/client-kms';
 
 const mockSend = vi.fn();
 
@@ -56,9 +61,12 @@ describe('KMSProvider.readCurrentState', () => {
       },
     });
 
+    mockSend.mockResolvedValueOnce({ Tags: [] });
+
     const result = await provider.readCurrentState('abcd-1234', 'KeyLogical', 'AWS::KMS::Key');
 
     expect(mockSend.mock.calls[0]?.[0]).toBeInstanceOf(DescribeKeyCommand);
+    expect(mockSend.mock.calls[1]?.[0]).toBeInstanceOf(ListResourceTagsCommand);
     expect(result).toEqual({
       Description: 'my key',
       KeySpec: 'SYMMETRIC_DEFAULT',
@@ -112,5 +120,34 @@ describe('KMSProvider.readCurrentState', () => {
     );
 
     expect(result).toBeUndefined();
+  });
+
+  it('surfaces Key Tags from ListResourceTags with aws:* filtered out (KMS TagKey/TagValue shape)', async () => {
+    mockSend.mockResolvedValueOnce({
+      KeyMetadata: { KeyId: 'abcd-1234', Enabled: true },
+    });
+    mockSend.mockResolvedValueOnce({
+      Tags: [
+        { TagKey: 'Foo', TagValue: 'Bar' },
+        { TagKey: 'aws:cdk:path', TagValue: 'MyStack/MyKey/Resource' },
+      ],
+    });
+
+    const result = await provider.readCurrentState('abcd-1234', 'KeyLogical', 'AWS::KMS::Key');
+
+    expect(result?.Tags).toEqual([{ Key: 'Foo', Value: 'Bar' }]);
+  });
+
+  it('omits Key Tags when ListResourceTags returns no user tags', async () => {
+    mockSend.mockResolvedValueOnce({
+      KeyMetadata: { KeyId: 'abcd-1234', Enabled: true },
+    });
+    mockSend.mockResolvedValueOnce({
+      Tags: [{ TagKey: 'aws:cdk:path', TagValue: 'MyStack/MyKey/Resource' }],
+    });
+
+    const result = await provider.readCurrentState('abcd-1234', 'KeyLogical', 'AWS::KMS::Key');
+
+    expect(result).not.toHaveProperty('Tags');
   });
 });

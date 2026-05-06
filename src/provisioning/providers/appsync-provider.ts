@@ -25,7 +25,11 @@ import {
 import { getLogger } from '../../utils/logger.js';
 import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
-import { CDK_PATH_TAG, resolveExplicitPhysicalId } from '../import-helpers.js';
+import {
+  CDK_PATH_TAG,
+  normalizeAwsTagsToCfn,
+  resolveExplicitPhysicalId,
+} from '../import-helpers.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -704,7 +708,9 @@ export class AppSyncProvider implements ResourceProvider {
    *
    * Dispatches per resource type:
    *  - `GraphQLApi` → `GetGraphqlApi` (Name, AuthenticationType, XrayEnabled,
-   *    LogConfig). Tags are skipped (CDK auto-tag handling deferred).
+   *    LogConfig, Tags). Tags come from the same response (`tags` map);
+   *    CDK's `aws:*` auto-tags are filtered out and the result key is
+   *    omitted when no user tags remain.
    *  - `DataSource` → `GetDataSource` (Name, Type, Description,
    *    ServiceRoleArn, DynamoDBConfig, LambdaConfig, HttpConfig). The
    *    `ApiId` cdkd holds is recovered from the `apiId|name` physicalId.
@@ -781,6 +787,8 @@ export class AppSyncProvider implements ResourceProvider {
       }
       if (Object.keys(log).length > 0) result['LogConfig'] = log;
     }
+    const tags = normalizeAwsTagsToCfn(api.tags);
+    if (tags.length > 0) result['Tags'] = tags;
     return result;
   }
 

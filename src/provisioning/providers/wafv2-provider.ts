@@ -21,7 +21,7 @@ import { getLogger } from '../../utils/logger.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { generateResourceName } from '../resource-name.js';
-import { matchesCdkPath } from '../import-helpers.js';
+import { matchesCdkPath, normalizeAwsTagsToCfn } from '../import-helpers.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -320,7 +320,9 @@ export class WAFv2WebACLProvider implements ResourceProvider {
    * and AssociationConfig — every key cdkd state declares as
    * `handledProperties`. `Scope` is recovered from the ARN parse.
    *
-   * Tags are skipped (CDK auto-tag handling deferred). Returns `undefined`
+   * Tags are surfaced via a follow-up `ListTagsForResource(ResourceARN)`
+   * call. CDK's `aws:*` auto-tags are filtered out and the result key is
+   * omitted when AWS reports no user tags. Returns `undefined`
    * when the ARN can't be parsed or the WebACL is gone
    * (`WAFNonexistentItemException`).
    */
@@ -380,6 +382,20 @@ export class WAFv2WebACLProvider implements ResourceProvider {
     if (webACL.AssociationConfig) {
       result['AssociationConfig'] = webACL.AssociationConfig as unknown as Record<string, unknown>;
     }
+
+    // Tags via ListTagsForResource (the WebACL ARN is the physicalId).
+    try {
+      const tagsResp = await this.getClient().send(
+        new ListTagsForResourceCommand({ ResourceARN: physicalId })
+      );
+      const tags = normalizeAwsTagsToCfn(tagsResp.TagInfoForResource?.TagList);
+      if (tags.length > 0) result['Tags'] = tags;
+    } catch (err) {
+      this.logger.debug(
+        `WAFv2 ListTagsForResource(${physicalId}) failed: ${err instanceof Error ? err.message : String(err)}`
+      );
+    }
+
     return result;
   }
 

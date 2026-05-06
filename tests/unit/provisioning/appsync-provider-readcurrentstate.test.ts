@@ -87,6 +87,34 @@ describe('AppSyncProvider.readCurrentState', () => {
       });
     });
 
+    it('surfaces Tags from GetGraphqlApi with aws:* filtered out', async () => {
+      mockSend.mockResolvedValueOnce({
+        graphqlApi: {
+          apiId: 'api-1',
+          name: 'MyApi',
+          authenticationType: 'API_KEY',
+          tags: { Foo: 'Bar', 'aws:cdk:path': 'MyStack/MyApi/Resource' },
+        },
+      });
+
+      const result = await provider.readCurrentState('api-1', 'L', 'AWS::AppSync::GraphQLApi');
+      expect(result?.Tags).toEqual([{ Key: 'Foo', Value: 'Bar' }]);
+    });
+
+    it('omits Tags when GetGraphqlApi returns no user tags', async () => {
+      mockSend.mockResolvedValueOnce({
+        graphqlApi: {
+          apiId: 'api-1',
+          name: 'MyApi',
+          authenticationType: 'API_KEY',
+          tags: { 'aws:cdk:path': 'MyStack/MyApi/Resource' },
+        },
+      });
+
+      const result = await provider.readCurrentState('api-1', 'L', 'AWS::AppSync::GraphQLApi');
+      expect(result).not.toHaveProperty('Tags');
+    });
+
     it('returns undefined when API is gone', async () => {
       mockSend.mockRejectedValueOnce(
         new AppSyncNotFoundException({ message: 'gone', $metadata: {} })

@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import {
   GetRoleCommand,
   ListAttachedRolePoliciesCommand,
+  ListRoleTagsCommand,
   NoSuchEntityException,
 } from '@aws-sdk/client-iam';
 
@@ -77,11 +78,14 @@ describe('IAMRoleProvider.readCurrentState', () => {
         { PolicyArn: 'arn:aws:iam::aws:policy/AWSLambdaBasicExecutionRole', PolicyName: 'lambda' },
       ],
     });
+    // ListRoleTags — no user tags
+    mockSend.mockResolvedValueOnce({ Tags: [], IsTruncated: false });
 
     const result = await provider.readCurrentState('my-role', 'Logical', 'AWS::IAM::Role');
 
     expect(mockSend.mock.calls[0]?.[0]).toBeInstanceOf(GetRoleCommand);
     expect(mockSend.mock.calls[1]?.[0]).toBeInstanceOf(ListAttachedRolePoliciesCommand);
+    expect(mockSend.mock.calls[2]?.[0]).toBeInstanceOf(ListRoleTagsCommand);
     expect(result).toEqual({
       RoleName: 'my-role',
       Description: 'a role',
@@ -114,8 +118,48 @@ describe('IAMRoleProvider.readCurrentState', () => {
       },
     });
     mockSend.mockResolvedValueOnce({ AttachedPolicies: [] });
+    mockSend.mockResolvedValueOnce({ Tags: [], IsTruncated: false });
 
     const result = await provider.readCurrentState('role', 'Logical', 'AWS::IAM::Role');
     expect(result).not.toHaveProperty('ManagedPolicyArns');
+  });
+
+  it('surfaces Tags from ListRoleTags with aws:* filtered out', async () => {
+    mockSend.mockResolvedValueOnce({
+      Role: {
+        RoleName: 'role',
+        Path: '/',
+        AssumeRolePolicyDocument: encodeURIComponent(JSON.stringify({ V: 1 })),
+      },
+    });
+    mockSend.mockResolvedValueOnce({ AttachedPolicies: [] });
+    mockSend.mockResolvedValueOnce({
+      Tags: [
+        { Key: 'Foo', Value: 'Bar' },
+        { Key: 'aws:cdk:path', Value: 'MyStack/MyRole/Resource' },
+      ],
+      IsTruncated: false,
+    });
+
+    const result = await provider.readCurrentState('role', 'Logical', 'AWS::IAM::Role');
+    expect(result?.Tags).toEqual([{ Key: 'Foo', Value: 'Bar' }]);
+  });
+
+  it('omits Tags when ListRoleTags returns no user tags', async () => {
+    mockSend.mockResolvedValueOnce({
+      Role: {
+        RoleName: 'role',
+        Path: '/',
+        AssumeRolePolicyDocument: encodeURIComponent(JSON.stringify({ V: 1 })),
+      },
+    });
+    mockSend.mockResolvedValueOnce({ AttachedPolicies: [] });
+    mockSend.mockResolvedValueOnce({
+      Tags: [{ Key: 'aws:cdk:path', Value: 'MyStack/MyRole/Resource' }],
+      IsTruncated: false,
+    });
+
+    const result = await provider.readCurrentState('role', 'Logical', 'AWS::IAM::Role');
+    expect(result).not.toHaveProperty('Tags');
   });
 });

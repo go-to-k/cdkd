@@ -3,6 +3,7 @@ import {
   DescribeDBClustersCommand,
   DescribeDBInstancesCommand,
   DescribeDBSubnetGroupsCommand,
+  ListTagsForResourceCommand,
 } from '@aws-sdk/client-rds';
 
 const mockSend = vi.fn();
@@ -151,5 +152,55 @@ describe('RDSProvider.readCurrentState', () => {
 
     const result = await provider.readCurrentState('gone', 'InstanceLogical', 'AWS::RDS::DBInstance');
     expect(result).toBeUndefined();
+  });
+
+  it('surfaces DBInstance Tags from ListTagsForResource with aws:* filtered out', async () => {
+    mockSend
+      .mockResolvedValueOnce({
+        DBInstances: [
+          {
+            DBInstanceIdentifier: 'my-instance',
+            DBInstanceArn: 'arn:aws:rds:us-east-1:123:db:my-instance',
+          },
+        ],
+      })
+      .mockResolvedValueOnce({
+        TagList: [
+          { Key: 'Foo', Value: 'Bar' },
+          { Key: 'aws:cdk:path', Value: 'MyStack/MyDB/Resource' },
+        ],
+      });
+
+    const result = await provider.readCurrentState(
+      'my-instance',
+      'InstanceLogical',
+      'AWS::RDS::DBInstance'
+    );
+
+    expect(mockSend.mock.calls[1]?.[0]).toBeInstanceOf(ListTagsForResourceCommand);
+    expect(result?.Tags).toEqual([{ Key: 'Foo', Value: 'Bar' }]);
+  });
+
+  it('omits Tags when ListTagsForResource returns no user tags', async () => {
+    mockSend
+      .mockResolvedValueOnce({
+        DBInstances: [
+          {
+            DBInstanceIdentifier: 'my-instance',
+            DBInstanceArn: 'arn:aws:rds:us-east-1:123:db:my-instance',
+          },
+        ],
+      })
+      .mockResolvedValueOnce({
+        TagList: [{ Key: 'aws:cdk:path', Value: 'MyStack/MyDB/Resource' }],
+      });
+
+    const result = await provider.readCurrentState(
+      'my-instance',
+      'InstanceLogical',
+      'AWS::RDS::DBInstance'
+    );
+
+    expect(result).not.toHaveProperty('Tags');
   });
 });

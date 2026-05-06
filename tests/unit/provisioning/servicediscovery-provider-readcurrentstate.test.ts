@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import {
   GetNamespaceCommand,
   GetServiceCommand,
+  ListTagsForResourceCommand,
   NamespaceNotFound,
   ServiceNotFound,
 } from '@aws-sdk/client-servicediscovery';
@@ -117,5 +118,52 @@ describe('ServiceDiscoveryProvider.readCurrentState', () => {
       );
       expect(result).toBeUndefined();
     });
+  });
+
+  it('surfaces Namespace Tags from ListTagsForResource with aws:* filtered out', async () => {
+    mockSend
+      .mockResolvedValueOnce({
+        Namespace: {
+          Id: 'ns-1',
+          Name: 'mynamespace.local',
+          Arn: 'arn:aws:servicediscovery:us-east-1:1:namespace/ns-1',
+        },
+      })
+      .mockResolvedValueOnce({
+        Tags: [
+          { Key: 'Foo', Value: 'Bar' },
+          { Key: 'aws:cdk:path', Value: 'MyStack/MyNs/Resource' },
+        ],
+      });
+
+    const result = await provider.readCurrentState(
+      'ns-1',
+      'L',
+      'AWS::ServiceDiscovery::PrivateDnsNamespace'
+    );
+
+    expect(mockSend.mock.calls[1]?.[0]).toBeInstanceOf(ListTagsForResourceCommand);
+    expect(result?.Tags).toEqual([{ Key: 'Foo', Value: 'Bar' }]);
+  });
+
+  it('omits Tags when ListTagsForResource returns no user tags', async () => {
+    mockSend
+      .mockResolvedValueOnce({
+        Namespace: {
+          Id: 'ns-1',
+          Name: 'mynamespace.local',
+          Arn: 'arn:aws:servicediscovery:us-east-1:1:namespace/ns-1',
+        },
+      })
+      .mockResolvedValueOnce({
+        Tags: [{ Key: 'aws:cdk:path', Value: 'MyStack/MyNs/Resource' }],
+      });
+
+    const result = await provider.readCurrentState(
+      'ns-1',
+      'L',
+      'AWS::ServiceDiscovery::PrivateDnsNamespace'
+    );
+    expect(result).not.toHaveProperty('Tags');
   });
 });

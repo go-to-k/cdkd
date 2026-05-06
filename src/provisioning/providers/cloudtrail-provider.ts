@@ -19,7 +19,11 @@ import {
 import { getLogger } from '../../utils/logger.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
-import { matchesCdkPath, resolveExplicitPhysicalId } from '../import-helpers.js';
+import {
+  matchesCdkPath,
+  normalizeAwsTagsToCfn,
+  resolveExplicitPhysicalId,
+} from '../import-helpers.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -349,8 +353,13 @@ export class CloudTrailProvider implements ResourceProvider {
    * derived field; the cdkd state property is `SnsTopicName` so we
    * surface `SnsTopicName` directly from `GetTrail.SnsTopicName`.
    *
-   * Tags + InsightSelectors are skipped for v1 (each needs its own
-   * separate call + shape mapping).
+   * Tags are surfaced via a follow-up `ListTags(ResourceIdList=[arn])` call
+   * (using the trail ARN from the same `GetTrail` response). CDK's `aws:*`
+   * auto-tags are filtered out and the result key is omitted when AWS
+   * reports no user tags.
+   *
+   * `InsightSelectors` is skipped for v1 (separate call + shape mapping
+   * still TBD).
    *
    * Returns `undefined` when the trail is gone (`TrailNotFoundException`).
    */
@@ -417,6 +426,21 @@ export class CloudTrailProvider implements ResourceProvider {
       }
     } catch {
       // Best-effort.
+    }
+
+    // Tags via ListTags. Requires the trail ARN.
+    if (trail.TrailARN) {
+      try {
+        const tagsResp = await this.getClient().send(
+          new ListTagsCommand({ ResourceIdList: [trail.TrailARN] })
+        );
+        const tags = normalizeAwsTagsToCfn(tagsResp.ResourceTagList?.[0]?.TagsList);
+        if (tags.length > 0) result['Tags'] = tags;
+      } catch (err) {
+        this.logger.debug(
+          `CloudTrail ListTags(${trail.TrailARN}) failed: ${err instanceof Error ? err.message : String(err)}`
+        );
+      }
     }
 
     return result;

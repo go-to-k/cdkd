@@ -19,7 +19,11 @@ import { getLogger } from '../../utils/logger.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { generateResourceName } from '../resource-name.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
-import { matchesCdkPath, resolveExplicitPhysicalId } from '../import-helpers.js';
+import {
+  matchesCdkPath,
+  normalizeAwsTagsToCfn,
+  resolveExplicitPhysicalId,
+} from '../import-helpers.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -596,8 +600,11 @@ export class ElastiCacheProvider implements ResourceProvider {
    *    surfacing `CacheSubnetGroupName`, `CacheSubnetGroupDescription`,
    *    and `SubnetIds` derived from `Subnets[].SubnetIdentifier`.
    *
-   * Tags are skipped (CDK auto-tag handling deferred). Returns `undefined`
-   * when the resource is gone (`*NotFoundFault`).
+   * Tags are surfaced via a follow-up `ListTagsForResource(ResourceName=arn)`
+   * for both types (ARN derived from `cluster.ARN` / `group.ARN`). CDK's
+   * `aws:*` auto-tags are filtered out and the result key is omitted when
+   * AWS reports no user tags. Returns `undefined` when the resource is gone
+   * (`*NotFoundFault`).
    */
   async readCurrentState(
     physicalId: string,
@@ -673,6 +680,7 @@ export class ElastiCacheProvider implements ResourceProvider {
       if (ids.length > 0) result['VpcSecurityGroupIds'] = ids;
     }
 
+    if (cluster.ARN) await this.attachTags(result, cluster.ARN);
     return result;
   }
 
@@ -700,7 +708,23 @@ export class ElastiCacheProvider implements ResourceProvider {
       const ids = group.Subnets.map((s) => s.SubnetIdentifier).filter((id): id is string => !!id);
       if (ids.length > 0) result['SubnetIds'] = ids;
     }
+    if (group.ARN) await this.attachTags(result, group.ARN);
     return result;
+  }
+
+  /** Best-effort tag fetch — failures omit the key without breaking the read. */
+  private async attachTags(result: Record<string, unknown>, arn: string): Promise<void> {
+    try {
+      const tagsResp = await this.getClient().send(
+        new ListTagsForResourceCommand({ ResourceName: arn })
+      );
+      const tags = normalizeAwsTagsToCfn(tagsResp.TagList);
+      if (tags.length > 0) result['Tags'] = tags;
+    } catch (err) {
+      this.logger.debug(
+        `ElastiCache ListTagsForResource(${arn}) failed: ${err instanceof Error ? err.message : String(err)}`
+      );
+    }
   }
 
   /**

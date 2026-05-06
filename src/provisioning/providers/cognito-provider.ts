@@ -473,9 +473,10 @@ export class CognitoUserPoolProvider implements ResourceProvider {
    * `UserPoolClient`, `UserPoolGroup`, and other Cognito sub-resources go
    * through the CC API fallback (which has its own `readCurrentState`).
    *
-   * `UserPoolTags` is intentionally omitted (Cognito returns tags via a
-   * separate `ListTagsForResource` round-trip; auto-injected `aws:cdk:path`
-   * tag-shape question is out of scope here).
+   * `UserPoolTags` is surfaced from the same `DescribeUserPool` response —
+   * Cognito's CFn property is a tag-name → value map (NOT an array of
+   * `{Key, Value}`), so we keep the map shape and just filter out CDK's
+   * `aws:*` auto-tags. The result key is omitted when no user tags remain.
    *
    * Returns `undefined` when the pool is gone (`ResourceNotFoundException`).
    */
@@ -546,6 +547,15 @@ export class CognitoUserPoolProvider implements ResourceProvider {
     }
     if (pool.SmsVerificationMessage !== undefined) {
       result['SmsVerificationMessage'] = pool.SmsVerificationMessage;
+    }
+    // UserPoolTags is a map in CFn (NOT an array of {Key, Value}). Filter
+    // aws:* auto-tags but keep the map shape to match what cdkd state holds.
+    if (pool.UserPoolTags) {
+      const userTags: Record<string, string> = {};
+      for (const [k, v] of Object.entries(pool.UserPoolTags)) {
+        if (!k.startsWith('aws:')) userTags[k] = v;
+      }
+      if (Object.keys(userTags).length > 0) result['UserPoolTags'] = userTags;
     }
     return result;
   }

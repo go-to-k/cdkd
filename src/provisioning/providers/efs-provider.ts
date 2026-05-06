@@ -20,7 +20,7 @@ import {
 import { getLogger } from '../../utils/logger.js';
 import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
-import { matchesCdkPath } from '../import-helpers.js';
+import { matchesCdkPath, normalizeAwsTagsToCfn } from '../import-helpers.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -601,7 +601,12 @@ export class EFSProvider implements ResourceProvider {
    *  - `MountTarget` → `DescribeMountTargets` (FileSystemId, SubnetId).
    *    SecurityGroups requires a separate call and is omitted for v1.
    *
-   * Tags are skipped across all three (CDK auto-tag handling deferred).
+   * `FileSystemTags` (the CFn property name on `AWS::EFS::FileSystem`) is
+   * surfaced from the same `DescribeFileSystems` response — `aws:*`
+   * auto-tags filtered, key omitted when empty. `AccessPoint` and
+   * `MountTarget` are not surfaced for tags here (`AccessPointTags` would
+   * mirror this approach but the test scope below covers `FileSystem`
+   * only; further coverage can land in a follow-up).
    * Returns `undefined` when the resource is gone (`*NotFound`).
    */
   async readCurrentState(
@@ -686,6 +691,10 @@ export class EFSProvider implements ResourceProvider {
       if (err instanceof FileSystemNotFound) return undefined;
       // PolicyNotFound or similar — omit the key.
     }
+
+    // FileSystemTags from the same DescribeFileSystems response.
+    const tags = normalizeAwsTagsToCfn(fs.Tags);
+    if (tags.length > 0) result['FileSystemTags'] = tags;
 
     return result;
   }

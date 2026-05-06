@@ -18,7 +18,11 @@ import { getLogger } from '../../utils/logger.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { generateResourceName } from '../resource-name.js';
-import { matchesCdkPath, resolveExplicitPhysicalId } from '../import-helpers.js';
+import {
+  matchesCdkPath,
+  normalizeAwsTagsToCfn,
+  resolveExplicitPhysicalId,
+} from '../import-helpers.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -848,8 +852,10 @@ export class RDSProvider implements ResourceProvider {
    *
    * Each branch surfaces only the keys cdkd's `create()` accepts. Sensitive
    * fields like `MasterUserPassword` are NEVER surfaced (RDS does not return
-   * them in the Describe responses). `Tags` are intentionally omitted
-   * (separate `ListTagsForResource` round-trip).
+   * them in the Describe responses). `Tags` are surfaced via a follow-up
+   * `ListTagsForResource(ResourceName=arn)` call (RDS uses `[{Key, Value}]`
+   * shape). CDK's `aws:*` auto-tags are filtered out; the result key is
+   * omitted entirely when AWS reports no user tags.
    *
    * Returns `undefined` when the resource is gone (`*NotFoundFault`).
    */
@@ -897,6 +903,7 @@ export class RDSProvider implements ResourceProvider {
     if (inst.PubliclyAccessible !== undefined) {
       result['PubliclyAccessible'] = inst.PubliclyAccessible;
     }
+    if (inst.DBInstanceArn) await this.attachTags(result, inst.DBInstanceArn);
     return result;
   }
 
@@ -947,6 +954,7 @@ export class RDSProvider implements ResourceProvider {
       }
       if (Object.keys(sc).length > 0) result['ServerlessV2ScalingConfiguration'] = sc;
     }
+    if (cluster.DBClusterArn) await this.attachTags(result, cluster.DBClusterArn);
     return result;
   }
 
@@ -956,6 +964,7 @@ export class RDSProvider implements ResourceProvider {
     let resp: {
       DBSubnetGroups?: Array<{
         DBSubnetGroupName?: string;
+        DBSubnetGroupArn?: string;
         DBSubnetGroupDescription?: string;
         Subnets?: Array<{ SubnetIdentifier?: string }>;
       }>;
@@ -981,7 +990,29 @@ export class RDSProvider implements ResourceProvider {
         (id): id is string => !!id
       );
     }
+    if (sg.DBSubnetGroupArn) await this.attachTags(result, sg.DBSubnetGroupArn);
     return result;
+  }
+
+  /**
+   * Fetch tags via `ListTagsForResource(ResourceName=arn)` and merge them
+   * into the result under `Tags` (CFn shape, `aws:*` filtered out, omitted
+   * when empty). Best-effort: tag-fetch failures are logged at debug and
+   * the key is simply left out — drift detection on configuration is more
+   * important than fail-closing on a missing tag permission.
+   */
+  private async attachTags(result: Record<string, unknown>, arn: string): Promise<void> {
+    try {
+      const tagsResp = await this.getClient().send(
+        new ListTagsForResourceCommand({ ResourceName: arn })
+      );
+      const tags = normalizeAwsTagsToCfn(tagsResp.TagList);
+      if (tags.length > 0) result['Tags'] = tags;
+    } catch (err) {
+      this.logger.debug(
+        `RDS ListTagsForResource(${arn}) failed: ${err instanceof Error ? err.message : String(err)}`
+      );
+    }
   }
 
   private async importDBInstance(input: ResourceImportInput): Promise<ResourceImportResult | null> {

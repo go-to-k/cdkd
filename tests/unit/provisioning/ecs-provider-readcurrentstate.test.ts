@@ -141,4 +141,45 @@ describe('ECSProvider.readCurrentState', () => {
 
     expect(result).toBeUndefined();
   });
+
+  it('surfaces Cluster Tags from DescribeClusters with aws:* filtered out', async () => {
+    mockSend.mockResolvedValueOnce({
+      clusters: [
+        {
+          clusterName: 'my-cluster',
+          tags: [
+            { key: 'Foo', value: 'Bar' },
+            { key: 'aws:cdk:path', value: 'MyStack/MyCluster/Resource' },
+          ],
+        },
+      ],
+    });
+
+    const result = await provider.readCurrentState(
+      'my-cluster',
+      'ClusterLogical',
+      'AWS::ECS::Cluster'
+    );
+
+    expect(result?.Tags).toEqual([{ Key: 'Foo', Value: 'Bar' }]);
+  });
+
+  it('omits Cluster Tags when DescribeClusters returns no user tags', async () => {
+    mockSend.mockResolvedValueOnce({
+      clusters: [
+        {
+          clusterName: 'my-cluster',
+          tags: [{ key: 'aws:cdk:path', value: 'MyStack/MyCluster/Resource' }],
+        },
+      ],
+    });
+
+    const result = await provider.readCurrentState(
+      'my-cluster',
+      'ClusterLogical',
+      'AWS::ECS::Cluster'
+    );
+
+    expect(result).not.toHaveProperty('Tags');
+  });
 });

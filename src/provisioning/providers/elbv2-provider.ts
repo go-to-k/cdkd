@@ -25,7 +25,7 @@ import { getLogger } from '../../utils/logger.js';
 import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/error-handler.js';
 import { generateResourceName } from '../resource-name.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
-import { matchesCdkPath } from '../import-helpers.js';
+import { matchesCdkPath, normalizeAwsTagsToCfn } from '../import-helpers.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -689,8 +689,11 @@ export class ELBv2Provider implements ResourceProvider {
    *  - `Listener` → `DescribeListeners` (LoadBalancerArn, Certificates,
    *    DefaultActions, Port, Protocol, SslPolicy).
    *
-   * Tags are skipped (CDK auto-tag handling deferred). Returns `undefined`
-   * when the resource is gone (`*NotFoundException`).
+   * Tags are surfaced via a follow-up `DescribeTags(ResourceArns=[arn])`
+   * for all three types (the `physicalId` cdkd state holds is the ARN).
+   * CDK's `aws:*` auto-tags are filtered out and the result key is omitted
+   * when AWS reports no user tags. Returns `undefined` when the resource
+   * is gone (`*NotFoundException`).
    */
   async readCurrentState(
     physicalId: string,
@@ -736,6 +739,7 @@ export class ELBv2Provider implements ResourceProvider {
     if (lb.Scheme !== undefined) result['Scheme'] = lb.Scheme;
     if (lb.Type !== undefined) result['Type'] = lb.Type;
     if (lb.IpAddressType !== undefined) result['IpAddressType'] = lb.IpAddressType;
+    await this.attachTags(result, physicalId);
     return result;
   }
 
@@ -782,6 +786,7 @@ export class ELBv2Provider implements ResourceProvider {
       if (tg.Matcher.GrpcCode !== undefined) matcher['GrpcCode'] = tg.Matcher.GrpcCode;
       if (Object.keys(matcher).length > 0) result['Matcher'] = matcher;
     }
+    await this.attachTags(result, physicalId);
     return result;
   }
 
@@ -821,7 +826,22 @@ export class ELBv2Provider implements ResourceProvider {
         (a) => a as unknown as Record<string, unknown>
       );
     }
+    await this.attachTags(result, physicalId);
     return result;
+  }
+
+  /** Best-effort tag fetch via `DescribeTags(ResourceArns=[arn])`. */
+  private async attachTags(result: Record<string, unknown>, arn: string): Promise<void> {
+    try {
+      const resp = await this.getClient().send(new DescribeTagsCommand({ ResourceArns: [arn] }));
+      const tagDesc = resp.TagDescriptions?.[0];
+      const tags = normalizeAwsTagsToCfn(tagDesc?.Tags);
+      if (tags.length > 0) result['Tags'] = tags;
+    } catch (err) {
+      this.logger.debug(
+        `ELBv2 DescribeTags(${arn}) failed: ${err instanceof Error ? err.message : String(err)}`
+      );
+    }
   }
 
   /**

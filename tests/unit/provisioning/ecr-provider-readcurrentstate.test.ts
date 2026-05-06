@@ -3,6 +3,7 @@ import {
   DescribeRepositoriesCommand,
   GetLifecyclePolicyCommand,
   LifecyclePolicyNotFoundException,
+  ListTagsForResourceCommand,
   RepositoryNotFoundException,
 } from '@aws-sdk/client-ecr';
 
@@ -67,12 +68,14 @@ describe('ECRProvider.readCurrentState', () => {
       })
       .mockResolvedValueOnce({
         lifecyclePolicyText: '{"rules":[]}',
-      });
+      })
+      .mockResolvedValueOnce({ tags: [] });
 
     const result = await provider.readCurrentState('my-repo', 'RepoLogical', 'AWS::ECR::Repository');
 
     expect(mockSend.mock.calls[0]?.[0]).toBeInstanceOf(DescribeRepositoriesCommand);
     expect(mockSend.mock.calls[1]?.[0]).toBeInstanceOf(GetLifecyclePolicyCommand);
+    expect(mockSend.mock.calls[2]?.[0]).toBeInstanceOf(ListTagsForResourceCommand);
     expect(result).toEqual({
       RepositoryName: 'my-repo',
       ImageTagMutability: 'IMMUTABLE',
@@ -92,6 +95,7 @@ describe('ECRProvider.readCurrentState', () => {
           {
             repositoryName: 'my-repo',
             imageTagMutability: 'MUTABLE',
+            // No repositoryArn -> Tag fetch is skipped silently.
           },
         ],
       })
@@ -115,5 +119,50 @@ describe('ECRProvider.readCurrentState', () => {
     const result = await provider.readCurrentState('gone', 'RepoLogical', 'AWS::ECR::Repository');
 
     expect(result).toBeUndefined();
+  });
+
+  it('surfaces Tags from ListTagsForResource with aws:* filtered out', async () => {
+    mockSend
+      .mockResolvedValueOnce({
+        repositories: [
+          {
+            repositoryName: 'my-repo',
+            repositoryArn: 'arn:aws:ecr:us-east-1:123:repository/my-repo',
+          },
+        ],
+      })
+      .mockRejectedValueOnce(
+        new LifecyclePolicyNotFoundException({ message: 'not found', $metadata: {} })
+      )
+      .mockResolvedValueOnce({
+        tags: [
+          { Key: 'Foo', Value: 'Bar' },
+          { Key: 'aws:cdk:path', Value: 'MyStack/MyRepo/Resource' },
+        ],
+      });
+
+    const result = await provider.readCurrentState('my-repo', 'RepoLogical', 'AWS::ECR::Repository');
+    expect(result?.Tags).toEqual([{ Key: 'Foo', Value: 'Bar' }]);
+  });
+
+  it('omits Tags when ListTagsForResource returns no user tags', async () => {
+    mockSend
+      .mockResolvedValueOnce({
+        repositories: [
+          {
+            repositoryName: 'my-repo',
+            repositoryArn: 'arn:aws:ecr:us-east-1:123:repository/my-repo',
+          },
+        ],
+      })
+      .mockRejectedValueOnce(
+        new LifecyclePolicyNotFoundException({ message: 'not found', $metadata: {} })
+      )
+      .mockResolvedValueOnce({
+        tags: [{ Key: 'aws:cdk:path', Value: 'MyStack/MyRepo/Resource' }],
+      });
+
+    const result = await provider.readCurrentState('my-repo', 'RepoLogical', 'AWS::ECR::Repository');
+    expect(result).not.toHaveProperty('Tags');
   });
 });

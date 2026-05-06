@@ -15,7 +15,11 @@ import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { generateResourceName } from '../resource-name.js';
-import { CDK_PATH_TAG, resolveExplicitPhysicalId } from '../import-helpers.js';
+import {
+  CDK_PATH_TAG,
+  normalizeAwsTagsToCfn,
+  resolveExplicitPhysicalId,
+} from '../import-helpers.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -340,9 +344,11 @@ export class SQSQueueProvider implements ResourceProvider {
    * `QueueName` is derived from the URL tail (the `physicalId` is the
    * queue URL), not surfaced by `GetQueueAttributes`.
    *
-   * `Tags` is omitted: `ListQueueTags` is a separate call and tag drift is
-   * generally less interesting than configuration drift; the `aws:cdk:path`
-   * shape question is also out of scope here.
+   * `Tags` is surfaced via `ListQueueTags` (returns a tag-name → value map).
+   * CDK's `aws:*` auto-tags are filtered out by `normalizeAwsTagsToCfn`; the
+   * result key is omitted entirely when AWS reports no user tags (matches
+   * `create()`'s behavior of only sending Tags when the template carries
+   * them).
    *
    * Returns `undefined` when the queue is gone (`QueueDoesNotExist`).
    */
@@ -420,6 +426,18 @@ export class SQSQueueProvider implements ResourceProvider {
       } catch {
         result['RedrivePolicy'] = attributes['RedrivePolicy'];
       }
+    }
+
+    // Tags via ListQueueTags. SQS returns Tags as a tag-name → value map.
+    try {
+      const tagsResp = await this.sqsClient.send(
+        new ListQueueTagsCommand({ QueueUrl: physicalId })
+      );
+      const tags = normalizeAwsTagsToCfn(tagsResp.Tags);
+      if (tags.length > 0) result['Tags'] = tags;
+    } catch (err) {
+      if (err instanceof QueueDoesNotExist) return undefined;
+      throw err;
     }
 
     return result;

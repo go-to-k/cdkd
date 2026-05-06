@@ -115,6 +115,45 @@ describe('EFSProvider.readCurrentState', () => {
       const result = await provider.readCurrentState('fs-1', 'L', 'AWS::EFS::FileSystem');
       expect(result).toBeUndefined();
     });
+
+    it('surfaces FileSystemTags from DescribeFileSystems with aws:* filtered out', async () => {
+      mockSend
+        .mockResolvedValueOnce({
+          FileSystems: [
+            {
+              FileSystemId: 'fs-1',
+              PerformanceMode: 'generalPurpose',
+              Tags: [
+                { Key: 'Foo', Value: 'Bar' },
+                { Key: 'aws:cdk:path', Value: 'MyStack/MyFs/Resource' },
+              ],
+            },
+          ],
+        })
+        .mockRejectedValueOnce(Object.assign(new Error('PolicyNotFound'), { name: 'PolicyNotFound' }))
+        .mockRejectedValueOnce(Object.assign(new Error('PolicyNotFound'), { name: 'PolicyNotFound' }));
+
+      const result = await provider.readCurrentState('fs-1', 'L', 'AWS::EFS::FileSystem');
+      expect(result?.FileSystemTags).toEqual([{ Key: 'Foo', Value: 'Bar' }]);
+    });
+
+    it('omits FileSystemTags when DescribeFileSystems returns no user tags', async () => {
+      mockSend
+        .mockResolvedValueOnce({
+          FileSystems: [
+            {
+              FileSystemId: 'fs-1',
+              PerformanceMode: 'generalPurpose',
+              Tags: [{ Key: 'aws:cdk:path', Value: 'MyStack/MyFs/Resource' }],
+            },
+          ],
+        })
+        .mockRejectedValueOnce(Object.assign(new Error('PolicyNotFound'), { name: 'PolicyNotFound' }))
+        .mockRejectedValueOnce(Object.assign(new Error('PolicyNotFound'), { name: 'PolicyNotFound' }));
+
+      const result = await provider.readCurrentState('fs-1', 'L', 'AWS::EFS::FileSystem');
+      expect(result).not.toHaveProperty('FileSystemTags');
+    });
   });
 
   describe('AWS::EFS::AccessPoint', () => {

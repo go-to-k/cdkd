@@ -22,7 +22,7 @@ import { STSClient, GetCallerIdentityCommand } from '@aws-sdk/client-sts';
 import { getLogger } from '../../utils/logger.js';
 import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
-import { matchesCdkPath } from '../import-helpers.js';
+import { matchesCdkPath, normalizeAwsTagsToCfn } from '../import-helpers.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -475,8 +475,12 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
    *  - `Service` → `GetService` (Name, NamespaceId, Description, Type,
    *    DnsConfig, HealthCheckConfig, HealthCheckCustomConfig).
    *
-   * Tags are skipped (CDK auto-tag handling deferred). Returns `undefined`
-   * when the resource is gone (`NamespaceNotFound` / `ServiceNotFound`).
+   * Tags are surfaced via a follow-up `ListTagsForResource(ResourceARN)`
+   * call (using the resource ARN from `GetNamespace.Arn` or
+   * `GetService.Arn`). CDK's `aws:*` auto-tags are filtered out and the
+   * result key is omitted when AWS reports no user tags. Returns
+   * `undefined` when the resource is gone (`NamespaceNotFound` /
+   * `ServiceNotFound`).
    */
   async readCurrentState(
     physicalId: string,
@@ -509,6 +513,7 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
     if (ns.Description !== undefined && ns.Description !== '') {
       result['Description'] = ns.Description;
     }
+    if (ns.Arn) await this.attachTags(result, ns.Arn);
     return result;
   }
 
@@ -542,7 +547,23 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
         unknown
       >;
     }
+    if (svc.Arn) await this.attachTags(result, svc.Arn);
     return result;
+  }
+
+  /** Best-effort tag fetch via `ListTagsForResource(ResourceARN)`. */
+  private async attachTags(result: Record<string, unknown>, arn: string): Promise<void> {
+    try {
+      const tagsResp = await this.getClient().send(
+        new ListTagsForResourceCommand({ ResourceARN: arn })
+      );
+      const tags = normalizeAwsTagsToCfn(tagsResp.Tags);
+      if (tags.length > 0) result['Tags'] = tags;
+    } catch (err) {
+      this.logger.debug(
+        `ServiceDiscovery ListTagsForResource(${arn}) failed: ${err instanceof Error ? err.message : String(err)}`
+      );
+    }
   }
 
   async import(input: ResourceImportInput): Promise<ResourceImportResult | null> {

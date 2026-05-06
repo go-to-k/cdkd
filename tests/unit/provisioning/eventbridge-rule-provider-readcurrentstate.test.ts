@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import {
   DescribeRuleCommand,
+  ListTagsForResourceCommand,
   ListTargetsByRuleCommand,
   ResourceNotFoundException,
 } from '@aws-sdk/client-eventbridge';
@@ -61,7 +62,8 @@ describe('EventBridgeRuleProvider.readCurrentState', () => {
             Arn: 'arn:aws:lambda:us-east-1:123:function:fn',
           },
         ],
-      });
+      })
+      .mockResolvedValueOnce({ Tags: [] });
 
     const result = await provider.readCurrentState(
       'arn:aws:events:us-east-1:123:rule/my-rule',
@@ -71,6 +73,7 @@ describe('EventBridgeRuleProvider.readCurrentState', () => {
 
     expect(mockSend.mock.calls[0]?.[0]).toBeInstanceOf(DescribeRuleCommand);
     expect(mockSend.mock.calls[1]?.[0]).toBeInstanceOf(ListTargetsByRuleCommand);
+    expect(mockSend.mock.calls[2]?.[0]).toBeInstanceOf(ListTagsForResourceCommand);
     expect(result).toEqual({
       Name: 'my-rule',
       Description: 'a rule',
@@ -94,7 +97,8 @@ describe('EventBridgeRuleProvider.readCurrentState', () => {
         EventBusName: 'my-bus',
         State: 'ENABLED',
       })
-      .mockResolvedValueOnce({ Targets: [] });
+      .mockResolvedValueOnce({ Targets: [] })
+      .mockResolvedValueOnce({ Tags: [] });
 
     const result = await provider.readCurrentState(
       'arn:aws:events:us-east-1:123:rule/my-bus/my-rule',
@@ -121,5 +125,42 @@ describe('EventBridgeRuleProvider.readCurrentState', () => {
     );
 
     expect(result).toBeUndefined();
+  });
+
+  it('surfaces Tags from ListTagsForResource with aws:* filtered out', async () => {
+    mockSend
+      .mockResolvedValueOnce({ Name: 'my-rule', State: 'ENABLED' })
+      .mockResolvedValueOnce({ Targets: [] })
+      .mockResolvedValueOnce({
+        Tags: [
+          { Key: 'Foo', Value: 'Bar' },
+          { Key: 'aws:cdk:path', Value: 'MyStack/MyRule/Resource' },
+        ],
+      });
+
+    const result = await provider.readCurrentState(
+      'arn:aws:events:us-east-1:123:rule/my-rule',
+      'RuleLogical',
+      'AWS::Events::Rule'
+    );
+
+    expect(result?.Tags).toEqual([{ Key: 'Foo', Value: 'Bar' }]);
+  });
+
+  it('omits Tags when ListTagsForResource returns no user tags', async () => {
+    mockSend
+      .mockResolvedValueOnce({ Name: 'my-rule', State: 'ENABLED' })
+      .mockResolvedValueOnce({ Targets: [] })
+      .mockResolvedValueOnce({
+        Tags: [{ Key: 'aws:cdk:path', Value: 'MyStack/MyRule/Resource' }],
+      });
+
+    const result = await provider.readCurrentState(
+      'arn:aws:events:us-east-1:123:rule/my-rule',
+      'RuleLogical',
+      'AWS::Events::Rule'
+    );
+
+    expect(result).not.toHaveProperty('Tags');
   });
 });

@@ -16,7 +16,11 @@ import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { generateResourceName } from '../resource-name.js';
-import { matchesCdkPath, resolveExplicitPhysicalId } from '../import-helpers.js';
+import {
+  matchesCdkPath,
+  normalizeAwsTagsToCfn,
+  resolveExplicitPhysicalId,
+} from '../import-helpers.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -291,12 +295,12 @@ export class SSMParameterProvider implements ResourceProvider {
    * metadata (`Description`, `AllowedPattern`, `Tier`) that `GetParameter`
    * does not return.
    *
-   * `Name` is set to the physical id. `Tags` and `Policies` are intentionally
-   * out of scope (`Tags` requires a separate `ListTagsForResource` round-trip
-   * and the auto-injected `aws:cdk:path` tag-shape question is unresolved;
-   * `Policies` is returned by `DescribeParameters.Policies` as a structured
-   * array but cdkd state holds the raw JSON string the user typed — comparing
-   * the two accurately needs more work).
+   * `Name` is set to the physical id. `Tags` is surfaced via a follow-up
+   * `ListTagsForResource(ResourceType=Parameter)` call, with CDK's `aws:*`
+   * auto-tags filtered out. `Policies` is intentionally out of scope:
+   * `DescribeParameters.Policies` returns a structured array but cdkd state
+   * holds the raw JSON string the user typed — comparing the two accurately
+   * needs more work.
    *
    * **Note**: For `SecureString` parameters, AWS returns the encrypted
    * blob in `Value` (we pass `WithDecryption: false`). cdkd state usually
@@ -354,6 +358,21 @@ export class SSMParameterProvider implements ResourceProvider {
       }
     } catch {
       // Ignore — Type / Value / DataType already captured above.
+    }
+
+    // Tags via ListTagsForResource (best-effort; missing tag permission is
+    // tolerated by simply omitting the key).
+    try {
+      const tagsResp = await this.ssmClient.send(
+        new ListTagsForResourceCommand({
+          ResourceType: 'Parameter',
+          ResourceId: physicalId,
+        })
+      );
+      const tags = normalizeAwsTagsToCfn(tagsResp.TagList);
+      if (tags.length > 0) result['Tags'] = tags;
+    } catch {
+      // Ignore — tag drift is best-effort.
     }
 
     return result;

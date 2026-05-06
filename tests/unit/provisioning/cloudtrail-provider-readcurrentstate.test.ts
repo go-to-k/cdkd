@@ -3,6 +3,7 @@ import {
   GetTrailCommand,
   GetTrailStatusCommand,
   GetEventSelectorsCommand,
+  ListTagsCommand,
   TrailNotFoundException,
 } from '@aws-sdk/client-cloudtrail';
 
@@ -61,18 +62,21 @@ describe('CloudTrailProvider.readCurrentState', () => {
           IncludeGlobalServiceEvents: true,
           LogFileValidationEnabled: true,
           KmsKeyId: 'arn:aws:kms:us-east-1:1:key/abc',
+          TrailARN: 'arn:aws:cloudtrail:us-east-1:1:trail/mytrail',
         },
       })
       .mockResolvedValueOnce({ IsLogging: true })
       .mockResolvedValueOnce({
         EventSelectors: [{ ReadWriteType: 'All', IncludeManagementEvents: true }],
-      });
+      })
+      .mockResolvedValueOnce({ ResourceTagList: [] });
 
     const result = await provider.readCurrentState('mytrail', 'L', 'AWS::CloudTrail::Trail');
 
     expect(mockSend.mock.calls[0]?.[0]).toBeInstanceOf(GetTrailCommand);
     expect(mockSend.mock.calls[1]?.[0]).toBeInstanceOf(GetTrailStatusCommand);
     expect(mockSend.mock.calls[2]?.[0]).toBeInstanceOf(GetEventSelectorsCommand);
+    expect(mockSend.mock.calls[3]?.[0]).toBeInstanceOf(ListTagsCommand);
     expect(result).toEqual({
       TrailName: 'mytrail',
       S3BucketName: 'mybucket',
@@ -108,5 +112,48 @@ describe('CloudTrailProvider.readCurrentState', () => {
     );
     const result = await provider.readCurrentState('mytrail', 'L', 'AWS::CloudTrail::Trail');
     expect(result).toBeUndefined();
+  });
+
+  it('surfaces Tags from ListTags with aws:* filtered out', async () => {
+    mockSend
+      .mockResolvedValueOnce({
+        Trail: { Name: 'mytrail', TrailARN: 'arn:aws:cloudtrail:us-east-1:1:trail/mytrail' },
+      })
+      .mockRejectedValueOnce(new Error('AccessDenied'))
+      .mockRejectedValueOnce(new Error('AccessDenied'))
+      .mockResolvedValueOnce({
+        ResourceTagList: [
+          {
+            ResourceId: 'arn:aws:cloudtrail:us-east-1:1:trail/mytrail',
+            TagsList: [
+              { Key: 'Foo', Value: 'Bar' },
+              { Key: 'aws:cdk:path', Value: 'MyStack/MyTrail/Resource' },
+            ],
+          },
+        ],
+      });
+
+    const result = await provider.readCurrentState('mytrail', 'L', 'AWS::CloudTrail::Trail');
+    expect(result?.Tags).toEqual([{ Key: 'Foo', Value: 'Bar' }]);
+  });
+
+  it('omits Tags when ListTags returns no user tags', async () => {
+    mockSend
+      .mockResolvedValueOnce({
+        Trail: { Name: 'mytrail', TrailARN: 'arn:aws:cloudtrail:us-east-1:1:trail/mytrail' },
+      })
+      .mockRejectedValueOnce(new Error('AccessDenied'))
+      .mockRejectedValueOnce(new Error('AccessDenied'))
+      .mockResolvedValueOnce({
+        ResourceTagList: [
+          {
+            ResourceId: 'arn:aws:cloudtrail:us-east-1:1:trail/mytrail',
+            TagsList: [{ Key: 'aws:cdk:path', Value: 'MyStack/MyTrail/Resource' }],
+          },
+        ],
+      });
+
+    const result = await provider.readCurrentState('mytrail', 'L', 'AWS::CloudTrail::Trail');
+    expect(result).not.toHaveProperty('Tags');
   });
 });
