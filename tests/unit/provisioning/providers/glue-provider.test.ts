@@ -42,6 +42,7 @@ vi.mock('../../../../src/utils/logger.js', () => {
 });
 
 import { GlueProvider } from '../../../../src/provisioning/providers/glue-provider.js';
+import { ResourceUpdateNotSupportedError } from '../../../../src/utils/error-handler.js';
 
 describe('GlueProvider import', () => {
   let provider: GlueProvider;
@@ -121,5 +122,21 @@ describe('GlueProvider import', () => {
     });
 
     expect(result).toEqual({ physicalId: 'mydb|target_table', attributes: {} });
+  });
+});
+
+describe('GlueProvider update', () => {
+  let provider: GlueProvider;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    provider = new GlueProvider();
+  });
+
+  it('rejects Database update with ResourceUpdateNotSupportedError', async () => {
+    await expect(
+      provider.update('MyDb', 'mydb', 'AWS::Glue::Database', {}, {})
+    ).rejects.toThrow(ResourceUpdateNotSupportedError);
+    expect(mockGlueSend).not.toHaveBeenCalled();
   });
 });

@@ -33,6 +33,7 @@ vi.mock('../../../../src/utils/logger.js', () => {
 });
 
 import { ApiGatewayV2Provider } from '../../../../src/provisioning/providers/apigatewayv2-provider.js';
+import { ResourceUpdateNotSupportedError } from '../../../../src/utils/error-handler.js';
 import {
   GetApiCommand,
   GetApisCommand,
@@ -146,4 +147,29 @@ describe('ApiGatewayV2Provider import', () => {
 
     expect(result).toBeNull();
   });
+});
+
+describe('ApiGatewayV2Provider update', () => {
+  let provider: ApiGatewayV2Provider;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    provider = new ApiGatewayV2Provider();
+  });
+
+  it.each([
+    ['AWS::ApiGatewayV2::Api'],
+    ['AWS::ApiGatewayV2::Stage'],
+    ['AWS::ApiGatewayV2::Integration'],
+    ['AWS::ApiGatewayV2::Route'],
+    ['AWS::ApiGatewayV2::Authorizer'],
+  ])(
+    'rejects with ResourceUpdateNotSupportedError for %s (drift --revert surfaces a clear immutable error)',
+    async (resourceType) => {
+      await expect(provider.update('MyId', 'phys-id', resourceType, {}, {})).rejects.toThrow(
+        ResourceUpdateNotSupportedError
+      );
+      expect(mockSend).not.toHaveBeenCalled();
+    }
+  );
 });

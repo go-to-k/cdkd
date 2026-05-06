@@ -184,6 +184,57 @@ export class PartialFailureError extends CdkdError {
 }
 
 /**
+ * Signals that a provider cannot perform an in-place `update` for a
+ * resource type — most commonly because the AWS resource is structurally
+ * immutable (`AWS::Lambda::LayerVersion`, `AWS::S3Tables::TableBucket` once
+ * created, certain `AWS::EC2::*` sub-resources) or because the provider
+ * surfaces a sub-resource attachment whose only mutation pattern is
+ * delete + add (Lambda permission statements, IAM policy attachments).
+ *
+ * Surfaced through `cdkd drift --revert`, which calls
+ * `provider.update(logicalId, physicalId, type, stateProps, awsProps)` to
+ * push cdkd state values back into AWS for every drifted resource. When a
+ * provider throws this error, the drift command collects it as a
+ * per-resource outcome distinct from a generic AWS update failure: the
+ * fix is to re-deploy with `--replace` (or recreate the resource), not to
+ * retry the update.
+ *
+ * Carries the same `exitCode = 2` as {@link PartialFailureError} so a
+ * drift run that hits one immutable resource is reported as partial-
+ * success rather than fatal — the rest of the drifted resources still
+ * had their `update` invoked, and the user has a clear next step printed
+ * for the unsupported one.
+ */
+export class ResourceUpdateNotSupportedError extends CdkdError {
+  readonly exitCode: number = 2;
+
+  constructor(
+    public readonly resourceType: string,
+    public readonly logicalId: string,
+    /**
+     * Human-readable hint printed alongside the error. The default is
+     * "use cdkd deploy with --replace, or change the resource definition
+     * to create a new version" — providers are encouraged to override
+     * with a more specific suggestion when one is available (e.g.
+     * Lambda::Permission's "delete + add a new statement").
+     */
+    public readonly suggestion?: string,
+    cause?: Error
+  ) {
+    const tail = suggestion
+      ? suggestion
+      : 'use cdkd deploy with --replace, or change the resource definition to create a new version';
+    super(
+      `${resourceType} (${logicalId}) cannot be updated in place: ${tail}.`,
+      'RESOURCE_UPDATE_NOT_SUPPORTED',
+      cause
+    );
+    this.name = 'ResourceUpdateNotSupportedError';
+    Object.setPrototypeOf(this, ResourceUpdateNotSupportedError.prototype);
+  }
+}
+
+/**
  * Check if error is a cdkd error
  */
 export function isCdkdError(error: unknown): error is CdkdError {

@@ -19,7 +19,7 @@ import {
   type DeliveryStreamEncryptionConfigurationInput,
 } from '@aws-sdk/client-firehose';
 import { getLogger } from '../../utils/logger.js';
-import { ProvisioningError } from '../../utils/error-handler.js';
+import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { matchesCdkPath, resolveExplicitPhysicalId } from '../import-helpers.js';
 import type {
@@ -377,21 +377,27 @@ export class FirehoseProvider implements ResourceProvider {
   }
 
   /**
-   * Update a Firehose delivery stream
-   *
-   * Most changes require replacement, so this is a no-op.
+   * Firehose delivery streams are treated as immutable by cdkd. Most
+   * destination-config changes require replacement, and AWS's
+   * `UpdateDestination` API surface is deep enough that the deploy engine's
+   * immutable-property replacement path covers the common cases more
+   * reliably. `cdkd drift --revert` therefore surfaces a clear "use
+   * --replace or re-deploy" message instead of silently no-op'ing.
    */
   update(
     logicalId: string,
-    physicalId: string,
+    _physicalId: string,
     resourceType: string,
     _properties: Record<string, unknown>,
     _previousProperties: Record<string, unknown>
   ): Promise<ResourceUpdateResult> {
-    this.logger.debug(
-      `Update for ${resourceType} ${logicalId} (${physicalId}) - no-op, most changes require replacement`
+    return Promise.reject(
+      new ResourceUpdateNotSupportedError(
+        resourceType,
+        logicalId,
+        'Firehose delivery streams are recreated on property changes; re-deploy with cdkd deploy --replace, or destroy + redeploy the stack'
+      )
     );
-    return Promise.resolve({ physicalId, wasReplaced: false });
   }
 
   /**

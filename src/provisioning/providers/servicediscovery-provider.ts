@@ -20,7 +20,7 @@ import {
 } from '@aws-sdk/client-servicediscovery';
 import { STSClient, GetCallerIdentityCommand } from '@aws-sdk/client-sts';
 import { getLogger } from '../../utils/logger.js';
-import { ProvisioningError } from '../../utils/error-handler.js';
+import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { matchesCdkPath } from '../import-helpers.js';
 import type {
@@ -219,16 +219,18 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
     }
   }
 
-  private updateNamespace(logicalId: string, physicalId: string): Promise<ResourceUpdateResult> {
-    this.logger.debug(`Updating private DNS namespace ${logicalId}: ${physicalId} (no-op)`);
-    // Name and Vpc are immutable; updates require replacement (handled by deployment layer)
-    return Promise.resolve({
-      physicalId,
-      wasReplaced: false,
-      attributes: {
-        Id: physicalId,
-      },
-    });
+  private updateNamespace(logicalId: string, _physicalId: string): Promise<ResourceUpdateResult> {
+    // Name and Vpc are immutable; AWS exposes UpdatePrivateDnsNamespace for
+    // Description but cdkd does not yet plumb it through. `cdkd drift
+    // --revert` surfaces a clear immutable-error rather than silently
+    // no-op'ing the revert.
+    return Promise.reject(
+      new ResourceUpdateNotSupportedError(
+        'AWS::ServiceDiscovery::PrivateDnsNamespace',
+        logicalId,
+        'PrivateDnsNamespace updates are not yet implemented in cdkd; re-deploy with cdkd deploy --replace, or destroy + redeploy the stack'
+      )
+    );
   }
 
   private async deleteNamespace(
@@ -347,15 +349,17 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
     }
   }
 
-  private updateService(logicalId: string, physicalId: string): Promise<ResourceUpdateResult> {
-    this.logger.debug(`Updating service discovery service ${logicalId}: ${physicalId} (no-op)`);
-    return Promise.resolve({
-      physicalId,
-      wasReplaced: false,
-      attributes: {
-        Id: physicalId,
-      },
-    });
+  private updateService(logicalId: string, _physicalId: string): Promise<ResourceUpdateResult> {
+    // AWS exposes UpdateService for DnsConfig / HealthCheckConfig changes
+    // but cdkd does not yet plumb it through. `cdkd drift --revert`
+    // surfaces a clear immutable-error rather than silently no-op'ing.
+    return Promise.reject(
+      new ResourceUpdateNotSupportedError(
+        'AWS::ServiceDiscovery::Service',
+        logicalId,
+        'ServiceDiscovery Service updates are not yet implemented in cdkd; re-deploy with cdkd deploy --replace, or destroy + redeploy the stack'
+      )
+    );
   }
 
   private async deleteService(

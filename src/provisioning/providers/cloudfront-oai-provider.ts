@@ -3,6 +3,7 @@ import {
   CreateCloudFrontOriginAccessIdentityCommand,
   DeleteCloudFrontOriginAccessIdentityCommand,
   GetCloudFrontOriginAccessIdentityCommand,
+  UpdateCloudFrontOriginAccessIdentityCommand,
   NoSuchCloudFrontOriginAccessIdentity,
 } from '@aws-sdk/client-cloudfront';
 import { getLogger } from '../../utils/logger.js';
@@ -90,24 +91,76 @@ export class CloudFrontOAIProvider implements ResourceProvider {
   }
 
   /**
-   * Update a CloudFront Origin Access Identity
+   * Update a CloudFront Origin Access Identity.
    *
-   * OAI config is effectively immutable (only Comment can change, which is cosmetic).
-   * No replacement needed for Comment changes.
+   * Only the `Comment` field is mutable on an OAI; `CallerReference` is set
+   * by cdkd at create time and cannot be changed. AWS exposes a single
+   * `UpdateCloudFrontOriginAccessIdentity` call that requires the current
+   * `ETag` (fetched via `GetCloudFrontOriginAccessIdentity`) and overwrites
+   * the entire `CloudFrontOriginAccessIdentityConfig`.
+   *
+   * Used by `cdkd drift --revert` to push the cdkd-state Comment back into
+   * AWS; on the normal deploy path this is also exercised when a user
+   * tweaks the Comment in their CDK code.
    */
-  update(
+  async update(
     logicalId: string,
     physicalId: string,
-    _resourceType: string,
-    _properties: Record<string, unknown>,
+    resourceType: string,
+    properties: Record<string, unknown>,
     _previousProperties: Record<string, unknown>
   ): Promise<ResourceUpdateResult> {
-    this.logger.debug(`Update requested for CloudFront OAI ${logicalId}: ${physicalId} (no-op)`);
+    this.logger.debug(`Updating CloudFront OAI ${logicalId}: ${physicalId}`);
 
-    return Promise.resolve({
-      physicalId,
-      wasReplaced: false,
-    });
+    const config = properties['CloudFrontOriginAccessIdentityConfig'] as
+      | Record<string, unknown>
+      | undefined;
+    const comment = (config?.['Comment'] as string | undefined) ?? '';
+
+    try {
+      const getResponse = await this.cloudFrontClient.send(
+        new GetCloudFrontOriginAccessIdentityCommand({ Id: physicalId })
+      );
+      const etag = getResponse.ETag;
+      if (!etag) {
+        throw new Error('GetCloudFrontOriginAccessIdentity did not return ETag');
+      }
+
+      await this.cloudFrontClient.send(
+        new UpdateCloudFrontOriginAccessIdentityCommand({
+          Id: physicalId,
+          IfMatch: etag,
+          CloudFrontOriginAccessIdentityConfig: {
+            // CallerReference is immutable; preserve whatever the OAI was
+            // created with so AWS does not reject the update.
+            CallerReference:
+              getResponse.CloudFrontOriginAccessIdentity?.CloudFrontOriginAccessIdentityConfig
+                ?.CallerReference ?? logicalId,
+            Comment: comment,
+          },
+        })
+      );
+
+      this.logger.debug(`Successfully updated CloudFront OAI ${logicalId}`);
+
+      return {
+        physicalId,
+        wasReplaced: false,
+        attributes: {
+          Id: physicalId,
+          S3CanonicalUserId: getResponse.CloudFrontOriginAccessIdentity?.S3CanonicalUserId,
+        },
+      };
+    } catch (error) {
+      const cause = error instanceof Error ? error : undefined;
+      throw new ProvisioningError(
+        `Failed to update CloudFront OAI ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        resourceType,
+        logicalId,
+        physicalId,
+        cause
+      );
+    }
   }
 
   /**

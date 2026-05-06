@@ -30,6 +30,7 @@ vi.mock('../../../src/utils/logger.js', () => {
 });
 
 import { ApiGatewayProvider } from '../../../src/provisioning/providers/apigateway-provider.js';
+import { ResourceUpdateNotSupportedError } from '../../../src/utils/error-handler.js';
 
 describe('ApiGatewayProvider', () => {
   let provider: ApiGatewayProvider;
@@ -465,18 +466,16 @@ describe('ApiGatewayProvider', () => {
     });
 
     describe('update', () => {
-      it('should return no-op (deployments are immutable)', async () => {
-        const result = await provider.update(
-          'MyDeployment',
-          'deploy-123',
-          resourceType,
-          { RestApiId: 'api-id' },
-          { RestApiId: 'api-id' }
-        );
-
-        expect(result.physicalId).toBe('deploy-123');
-        expect(result.wasReplaced).toBe(false);
-        expect(result.attributes).toEqual({ DeploymentId: 'deploy-123' });
+      it('should reject with ResourceUpdateNotSupportedError (deployments are immutable)', async () => {
+        await expect(
+          provider.update(
+            'MyDeployment',
+            'deploy-123',
+            resourceType,
+            { RestApiId: 'api-id' },
+            { RestApiId: 'api-id' }
+          )
+        ).rejects.toThrow(ResourceUpdateNotSupportedError);
         expect(mockSend).not.toHaveBeenCalled();
       });
     });
@@ -921,18 +920,16 @@ describe('ApiGatewayProvider', () => {
     });
 
     describe('update', () => {
-      it('should return no-op (methods are replaced via new deployment)', async () => {
-        const result = await provider.update(
-          'MyMethod',
-          'api-id|resource-id|GET',
-          resourceType,
-          { RestApiId: 'api-id', ResourceId: 'resource-id', HttpMethod: 'GET' },
-          { RestApiId: 'api-id', ResourceId: 'resource-id', HttpMethod: 'GET' }
-        );
-
-        expect(result.physicalId).toBe('api-id|resource-id|GET');
-        expect(result.wasReplaced).toBe(false);
-        expect(result.attributes).toEqual({});
+      it('should reject with ResourceUpdateNotSupportedError (methods are replaced via new deployment)', async () => {
+        await expect(
+          provider.update(
+            'MyMethod',
+            'api-id|resource-id|GET',
+            resourceType,
+            { RestApiId: 'api-id', ResourceId: 'resource-id', HttpMethod: 'GET' },
+            { RestApiId: 'api-id', ResourceId: 'resource-id', HttpMethod: 'GET' }
+          )
+        ).rejects.toThrow(ResourceUpdateNotSupportedError);
         expect(mockSend).not.toHaveBeenCalled();
       });
     });

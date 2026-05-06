@@ -33,6 +33,7 @@ vi.mock('../../../../src/utils/logger.js', () => {
 });
 
 import { FirehoseProvider } from '../../../../src/provisioning/providers/firehose-provider.js';
+import { ResourceUpdateNotSupportedError } from '../../../../src/utils/error-handler.js';
 
 describe('FirehoseProvider', () => {
   let provider: FirehoseProvider;
@@ -169,17 +170,16 @@ describe('FirehoseProvider', () => {
   });
 
   describe('update', () => {
-    it('should be a no-op and return wasReplaced: false', async () => {
-      const result = await provider.update(
-        'MyDeliveryStream',
-        'test-stream',
-        'AWS::KinesisFirehose::DeliveryStream',
-        { DeliveryStreamName: 'test-stream' },
-        { DeliveryStreamName: 'test-stream' }
-      );
-
-      expect(result.physicalId).toBe('test-stream');
-      expect(result.wasReplaced).toBe(false);
+    it('should reject with ResourceUpdateNotSupportedError (Firehose is recreated on changes)', async () => {
+      await expect(
+        provider.update(
+          'MyDeliveryStream',
+          'test-stream',
+          'AWS::KinesisFirehose::DeliveryStream',
+          { DeliveryStreamName: 'test-stream' },
+          { DeliveryStreamName: 'test-stream' }
+        )
+      ).rejects.toThrow(ResourceUpdateNotSupportedError);
       expect(mockSend).not.toHaveBeenCalled();
     });
   });

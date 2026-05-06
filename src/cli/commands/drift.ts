@@ -7,7 +7,12 @@ import {
   warnIfDeprecatedRegion,
 } from '../options.js';
 import { getLogger } from '../../utils/logger.js';
-import { CdkdError, PartialFailureError, withErrorHandling } from '../../utils/error-handler.js';
+import {
+  CdkdError,
+  PartialFailureError,
+  ResourceUpdateNotSupportedError,
+  withErrorHandling,
+} from '../../utils/error-handler.js';
 import { S3StateBackend, type StackStateRef } from '../../state/s3-state-backend.js';
 import { LockManager } from '../../state/lock-manager.js';
 import { setAwsClients, AwsClients } from '../../utils/aws-clients.js';
@@ -601,6 +606,7 @@ async function runRevert(
   const concurrency = Math.max(1, options.concurrency ?? 4);
 
   let totalFailed = 0;
+  let totalUnsupported = 0;
   let totalSucceeded = 0;
 
   for (const report of reports) {
@@ -645,10 +651,20 @@ async function runRevert(
             `  ✓ ${report.stackName}/${outcome.logicalId} (${outcome.resourceType}): reverted.`
           );
         } catch (err) {
+          // Distinguish "the AWS update failed" from "this resource type
+          // does not support in-place update at all". The latter cannot be
+          // fixed by retrying; the user has to redeploy with --replace.
+          if (err instanceof ResourceUpdateNotSupportedError) {
+            totalUnsupported++;
+            logger.warn(
+              `  ⊘ ${report.stackName}/${outcome.logicalId} (${outcome.resourceType}): could not revert — ${err.message}`
+            );
+            return;
+          }
           totalFailed++;
           const msg = err instanceof Error ? err.message : String(err);
           logger.error(
-            `  ✗ ${report.stackName}/${outcome.logicalId} (${outcome.resourceType}): ${msg}`
+            `  ✗ ${report.stackName}/${outcome.logicalId} (${outcome.resourceType}): AWS update failed — ${msg}`
           );
         }
       });
@@ -664,11 +680,22 @@ async function runRevert(
     }
   }
 
-  logger.info(`\nRevert summary: ${totalSucceeded} reverted, ${totalFailed} failed.`);
+  const summaryParts = [`${totalSucceeded} reverted`];
+  if (totalUnsupported > 0) summaryParts.push(`${totalUnsupported} update-not-supported`);
+  if (totalFailed > 0) summaryParts.push(`${totalFailed} failed`);
+  logger.info(`\nRevert summary: ${summaryParts.join(', ')}.`);
 
-  if (totalFailed > 0) {
+  if (totalUnsupported > 0) {
+    logger.warn(
+      `${totalUnsupported} resource(s) cannot be reverted in place — re-deploy the stack with cdkd deploy --replace, ` +
+        `or destroy + redeploy to push the cdkd-state values back into AWS.`
+    );
+  }
+
+  if (totalFailed > 0 || totalUnsupported > 0) {
     throw new PartialFailureError(
-      `Revert completed with ${totalFailed} resource error(s). ` +
+      `Revert completed with ${totalFailed + totalUnsupported} resource error(s) ` +
+        `(${totalFailed} AWS update failure(s), ${totalUnsupported} update-not-supported). ` +
         `Re-run 'cdkd drift <stack>' to see the remaining drift, then 'cdkd drift <stack> --revert' to retry.`
     );
   }

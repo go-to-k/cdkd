@@ -31,6 +31,7 @@ vi.mock('../../../src/utils/logger.js', () => {
 });
 
 import { ELBv2Provider } from '../../../src/provisioning/providers/elbv2-provider.js';
+import { ResourceUpdateNotSupportedError } from '../../../src/utils/error-handler.js';
 
 describe('ELBv2Provider', () => {
   let provider: ELBv2Provider;
@@ -139,6 +140,21 @@ describe('ELBv2Provider', () => {
             'AWS::ElasticLoadBalancingV2::LoadBalancer'
           )
         ).rejects.toThrow('Failed to delete LoadBalancer MyALB');
+      });
+    });
+
+    describe('update', () => {
+      it('should reject with ResourceUpdateNotSupportedError (drift --revert surfaces a clear immutable error)', async () => {
+        await expect(
+          provider.update(
+            'MyALB',
+            'arn:aws:elasticloadbalancing:us-east-1:123456789012:loadbalancer/app/my-alb/123',
+            'AWS::ElasticLoadBalancingV2::LoadBalancer',
+            {},
+            {}
+          )
+        ).rejects.toThrow(ResourceUpdateNotSupportedError);
+        expect(mockSend).not.toHaveBeenCalled();
       });
     });
   });

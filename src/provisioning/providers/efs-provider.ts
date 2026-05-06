@@ -18,7 +18,7 @@ import {
   type ThroughputMode,
 } from '@aws-sdk/client-efs';
 import { getLogger } from '../../utils/logger.js';
-import { ProvisioningError } from '../../utils/error-handler.js';
+import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { matchesCdkPath } from '../import-helpers.js';
 import type {
@@ -94,6 +94,14 @@ export class EFSProvider implements ResourceProvider {
     }
   }
 
+  /**
+   * EFS resources are treated as immutable by cdkd's `update()`. The deploy
+   * engine recreates them on property changes via immutable-property
+   * detection. (AWS does expose `UpdateFileSystem` for ThroughputMode and
+   * `ModifyMountTargetSecurityGroups` for mount-target SGs — those are
+   * deferred to a follow-up PR.) `cdkd drift --revert` surfaces a clear
+   * "use --replace or re-deploy" message instead of silently no-op'ing.
+   */
   update(
     logicalId: string,
     physicalId: string,
@@ -101,7 +109,6 @@ export class EFSProvider implements ResourceProvider {
     _properties: Record<string, unknown>,
     _previousProperties: Record<string, unknown>
   ): Promise<ResourceUpdateResult> {
-    this.logger.debug(`Update for ${resourceType} ${logicalId} (${physicalId}) - no-op, immutable`);
     if (
       resourceType !== 'AWS::EFS::FileSystem' &&
       resourceType !== 'AWS::EFS::MountTarget' &&
@@ -114,7 +121,13 @@ export class EFSProvider implements ResourceProvider {
         physicalId
       );
     }
-    return Promise.resolve({ physicalId, wasReplaced: false });
+    return Promise.reject(
+      new ResourceUpdateNotSupportedError(
+        resourceType,
+        logicalId,
+        'EFS resources are recreated on property changes; re-deploy with cdkd deploy --replace, or destroy + redeploy the stack'
+      )
+    );
   }
 
   async delete(

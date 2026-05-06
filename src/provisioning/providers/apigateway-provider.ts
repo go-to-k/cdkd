@@ -24,7 +24,7 @@ import {
 } from '@aws-sdk/client-api-gateway';
 import { getLogger } from '../../utils/logger.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
-import { ProvisioningError } from '../../utils/error-handler.js';
+import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import type {
   ResourceProvider,
@@ -467,25 +467,26 @@ export class ApiGatewayProvider implements ResourceProvider {
   }
 
   /**
-   * Update an API Gateway Authorizer
+   * Update an API Gateway Authorizer.
    *
-   * Authorizer updates are not commonly needed. For now, this is a no-op.
-   * The deployment engine handles replacement for immutable property changes.
+   * AWS exposes `UpdateAuthorizer` (PATCH) but cdkd does not yet plumb the
+   * patch-operations builder through. Authorizers are recreated by the
+   * deploy engine's immutable-property replacement path. `cdkd drift
+   * --revert` surfaces a clear "use --replace or re-deploy" message
+   * instead of silently no-op'ing the revert.
    */
   private updateAuthorizer(
     logicalId: string,
-    physicalId: string,
+    _physicalId: string,
     _resourceType: string
   ): Promise<ResourceUpdateResult> {
-    this.logger.debug(`Updating API Gateway Authorizer ${logicalId}: ${physicalId} (no-op)`);
-
-    return Promise.resolve({
-      physicalId,
-      wasReplaced: false,
-      attributes: {
-        AuthorizerId: physicalId,
-      },
-    });
+    return Promise.reject(
+      new ResourceUpdateNotSupportedError(
+        'AWS::ApiGateway::Authorizer',
+        logicalId,
+        'API Gateway Authorizer updates are not yet implemented in cdkd; re-deploy with cdkd deploy --replace, or destroy + redeploy the stack'
+      )
+    );
   }
 
   /**
@@ -792,25 +793,24 @@ export class ApiGatewayProvider implements ResourceProvider {
   }
 
   /**
-   * Update an API Gateway Deployment
+   * Update an API Gateway Deployment.
    *
-   * Deployments are immutable - updates are not supported.
-   * The deployment engine should handle replacement if needed.
+   * Deployments are immutable — every property change requires a fresh
+   * Deployment. `cdkd drift --revert` therefore throws
+   * `ResourceUpdateNotSupportedError` instead of silently no-op'ing.
    */
   private updateDeployment(
     logicalId: string,
-    physicalId: string,
+    _physicalId: string,
     _resourceType: string
   ): Promise<ResourceUpdateResult> {
-    this.logger.debug(`Updating API Gateway Deployment ${logicalId}: ${physicalId} (no-op)`);
-
-    return Promise.resolve({
-      physicalId,
-      wasReplaced: false,
-      attributes: {
-        DeploymentId: physicalId,
-      },
-    });
+    return Promise.reject(
+      new ResourceUpdateNotSupportedError(
+        'AWS::ApiGateway::Deployment',
+        logicalId,
+        'API Gateway Deployment is immutable; re-deploy with cdkd deploy --replace, or change the resource definition to create a new Deployment'
+      )
+    );
   }
 
   /**
@@ -1185,18 +1185,22 @@ export class ApiGatewayProvider implements ResourceProvider {
   }
 
   /**
-   * Update an API Gateway Method
+   * Update an API Gateway Method.
    *
-   * Methods are typically replaced via new deployment, so this is a no-op.
+   * AWS exposes `UpdateMethod` (PATCH) but cdkd does not yet plumb the
+   * patch-operations builder through. Methods are recreated by the deploy
+   * engine's immutable-property replacement path. `cdkd drift --revert`
+   * surfaces a clear "use --replace or re-deploy" message instead of
+   * silently no-op'ing the revert.
    */
-  private updateMethod(logicalId: string, physicalId: string): Promise<ResourceUpdateResult> {
-    this.logger.debug(`Updating API Gateway Method ${logicalId}: ${physicalId} (no-op)`);
-
-    return Promise.resolve({
-      physicalId,
-      wasReplaced: false,
-      attributes: {},
-    });
+  private updateMethod(logicalId: string, _physicalId: string): Promise<ResourceUpdateResult> {
+    return Promise.reject(
+      new ResourceUpdateNotSupportedError(
+        'AWS::ApiGateway::Method',
+        logicalId,
+        'API Gateway Method updates are not yet implemented in cdkd; re-deploy with cdkd deploy --replace, or destroy + redeploy the stack'
+      )
+    );
   }
 
   /**

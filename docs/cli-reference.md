@@ -341,7 +341,7 @@ Exit codes:
 | --- | --- |
 | `0` | Every inspected stack has zero drift, OR `--accept` / `--revert` resolved every drift cleanly. |
 | `1` | Drift detected on at least one resource on at least one stack (detection-only mode), OR the command crashed (no state found, AWS error, bad arguments). Both go through the default error handler — drift detection emits the rich human report before throwing, so the report is the only output for the drift case. |
-| `2` | `--revert` finished but one or more `provider.update` calls failed (`PartialFailureError`). The successful resources are now in sync; re-run `cdkd drift <stack>` to see what's left, then `cdkd drift <stack> --revert` to retry. |
+| `2` | `--revert` finished but one or more `provider.update` calls failed OR threw `ResourceUpdateNotSupportedError` (`PartialFailureError`). Successful resources are now in sync; re-run `cdkd drift <stack>` to see what's left, then either `cdkd drift <stack> --revert` (for the recoverable failures) or `cdkd deploy <stack> --replace` (for the update-not-supported ones). |
 
 The command produces three terminal states per resource:
 
@@ -509,6 +509,26 @@ matches the intent:
   failure does not abort the rest. cdkd state is NOT modified by
   `--revert` — once `provider.update` succeeds, AWS values match state
   by definition, so a subsequent `cdkd drift` reports `clean`.
+
+  **Update-not-supported resources.** Some resource types are immutable
+  in AWS (e.g. `AWS::Lambda::LayerVersion`, sub-resource attachments
+  like `AWS::Lambda::Permission`, `AWS::ApiGateway::Deployment`) or do
+  not yet have an in-place `update()` implementation in cdkd
+  (`AWS::AppSync::*`, `AWS::EFS::*`, `AWS::KinesisFirehose::DeliveryStream`,
+  `AWS::ApiGatewayV2::*`, `AWS::ApiGateway::Authorizer` /
+  `Deployment` / `Method`, `AWS::Glue::Database`,
+  `AWS::ServiceDiscovery::*`, `AWS::ElasticLoadBalancingV2::LoadBalancer`).
+  For those, `--revert` surfaces a distinct `⊘ <stack>/<id> (<type>):
+  could not revert — ...` line with a `ResourceUpdateNotSupportedError`
+  and an explicit suggestion. The summary then names them separately
+  ("`N reverted, M update-not-supported`") and the run exits `2`. The
+  fix is to **re-deploy the stack with `cdkd deploy --replace`**, or
+  destroy + redeploy — the same recovery path you would use for a
+  CloudFormation immutable-property error. AWS update failures (a
+  successful `provider.update()` call returning a runtime error) are
+  reported separately with a `✗` glyph and counted as `failed`; the
+  fix there is to inspect the AWS error and retry once the underlying
+  cause is resolved.
 
 Both flags acquire the per-stack lock (the same one `cdkd deploy` uses)
 before mutating anything, and prompt for confirmation unless `-y` /

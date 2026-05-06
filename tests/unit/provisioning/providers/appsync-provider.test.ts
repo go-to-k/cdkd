@@ -33,6 +33,7 @@ vi.mock('../../../../src/utils/logger.js', () => {
 });
 
 import { AppSyncProvider } from '../../../../src/provisioning/providers/appsync-provider.js';
+import { ResourceUpdateNotSupportedError } from '../../../../src/utils/error-handler.js';
 import {
   GetGraphqlApiCommand,
   ListGraphqlApisCommand,
@@ -139,4 +140,29 @@ describe('AppSyncProvider import', () => {
 
     expect(result).toBeNull();
   });
+});
+
+describe('AppSyncProvider update', () => {
+  let provider: AppSyncProvider;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    provider = new AppSyncProvider();
+  });
+
+  it.each([
+    ['AWS::AppSync::GraphQLApi'],
+    ['AWS::AppSync::GraphQLSchema'],
+    ['AWS::AppSync::DataSource'],
+    ['AWS::AppSync::Resolver'],
+    ['AWS::AppSync::ApiKey'],
+  ])(
+    'rejects with ResourceUpdateNotSupportedError for %s (drift --revert surfaces a clear immutable error)',
+    async (resourceType) => {
+      await expect(provider.update('MyId', 'phys-id', resourceType, {}, {})).rejects.toThrow(
+        ResourceUpdateNotSupportedError
+      );
+      expect(mockSend).not.toHaveBeenCalled();
+    }
+  );
 });

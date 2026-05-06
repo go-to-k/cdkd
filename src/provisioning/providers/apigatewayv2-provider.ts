@@ -23,7 +23,7 @@ import {
   type AuthorizerType,
 } from '@aws-sdk/client-apigatewayv2';
 import { getLogger } from '../../utils/logger.js';
-import { ProvisioningError } from '../../utils/error-handler.js';
+import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { CDK_PATH_TAG, resolveExplicitPhysicalId } from '../import-helpers.js';
 import type {
@@ -123,23 +123,29 @@ export class ApiGatewayV2Provider implements ResourceProvider {
     }
   }
 
+  /**
+   * HTTP API resources are treated as immutable by cdkd: the deploy engine
+   * recreates them on property changes via the immutable-property
+   * replacement path. AWS does expose `UpdateApi` / `UpdateRoute` /
+   * `UpdateIntegration` / `UpdateStage` / `UpdateAuthorizer`, but cdkd
+   * does not yet plumb them through. `cdkd drift --revert` surfaces a
+   * clear "use --replace or re-deploy" message instead of silently
+   * no-op'ing the revert.
+   */
   update(
     logicalId: string,
-    physicalId: string,
+    _physicalId: string,
     resourceType: string,
     _properties: Record<string, unknown>,
     _previousProperties: Record<string, unknown>
   ): Promise<ResourceUpdateResult> {
-    // HTTP API resources are typically replaced rather than updated in-place.
-    // For now, return no-op. The deployment engine handles replacement via
-    // immutable property detection when needed.
-    this.logger.debug(`Updating ${resourceType} ${logicalId}: ${physicalId} (no-op)`);
-
-    return Promise.resolve({
-      physicalId,
-      wasReplaced: false,
-      attributes: {},
-    });
+    return Promise.reject(
+      new ResourceUpdateNotSupportedError(
+        resourceType,
+        logicalId,
+        'API Gateway V2 (HTTP API) resources are recreated on property changes; re-deploy with cdkd deploy --replace, or destroy + redeploy the stack'
+      )
+    );
   }
 
   async delete(

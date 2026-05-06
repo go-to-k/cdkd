@@ -1,8 +1,10 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import {
+  CdkdError,
   handleError,
   normalizeAwsError,
   PartialFailureError,
+  ResourceUpdateNotSupportedError,
   withErrorHandling,
 } from '../../../src/utils/error-handler.js';
 
@@ -182,5 +184,44 @@ describe('PartialFailureError + handleError exit code mapping', () => {
 
     await expect(wrapped()).rejects.toThrow('process.exit-mock');
     expect(exitSpy).toHaveBeenCalledWith(2);
+  });
+});
+
+describe('ResourceUpdateNotSupportedError', () => {
+  it('carries the same exitCode === 2 as PartialFailureError', () => {
+    const err = new ResourceUpdateNotSupportedError(
+      'AWS::Lambda::LayerVersion',
+      'MyLayer',
+      'use cdkd deploy with --replace'
+    );
+
+    expect(err).toBeInstanceOf(ResourceUpdateNotSupportedError);
+    expect(err).toBeInstanceOf(CdkdError);
+    expect(err).toBeInstanceOf(Error);
+    expect(err.name).toBe('ResourceUpdateNotSupportedError');
+    expect(err.code).toBe('RESOURCE_UPDATE_NOT_SUPPORTED');
+    expect(err.exitCode).toBe(2);
+    expect(err.resourceType).toBe('AWS::Lambda::LayerVersion');
+    expect(err.logicalId).toBe('MyLayer');
+    expect(err.suggestion).toBe('use cdkd deploy with --replace');
+  });
+
+  it('renders a default suggestion when none is provided', () => {
+    const err = new ResourceUpdateNotSupportedError('AWS::Foo::Bar', 'MyResource');
+
+    expect(err.message).toMatch(/AWS::Foo::Bar \(MyResource\) cannot be updated in place/);
+    expect(err.message).toMatch(/cdkd deploy with --replace/);
+    expect(err.suggestion).toBeUndefined();
+  });
+
+  it('renders the caller-supplied suggestion verbatim when provided', () => {
+    const err = new ResourceUpdateNotSupportedError(
+      'AWS::Lambda::Permission',
+      'MyPerm',
+      'remove and re-add the permission statement'
+    );
+
+    expect(err.message).toMatch(/cannot be updated in place/);
+    expect(err.message).toMatch(/remove and re-add the permission statement/);
   });
 });

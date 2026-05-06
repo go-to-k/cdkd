@@ -45,6 +45,7 @@ vi.mock('../../../../src/utils/logger.js', () => {
 });
 
 import { EFSProvider } from '../../../../src/provisioning/providers/efs-provider.js';
+import { ResourceUpdateNotSupportedError } from '../../../../src/utils/error-handler.js';
 
 describe('EFSProvider', () => {
   let provider: EFSProvider;
@@ -281,27 +282,24 @@ describe('EFSProvider', () => {
   // ─── update ─────────────────────────────────────────────────────────
 
   describe('update', () => {
-    it('should return no-op for FileSystem', async () => {
-      const result = await provider.update(
-        'MyFS', 'fs-123', 'AWS::EFS::FileSystem', {}, {}
-      );
-      expect(result).toEqual({ physicalId: 'fs-123', wasReplaced: false });
+    it('should reject FileSystem with ResourceUpdateNotSupportedError', async () => {
+      await expect(
+        provider.update('MyFS', 'fs-123', 'AWS::EFS::FileSystem', {}, {})
+      ).rejects.toThrow(ResourceUpdateNotSupportedError);
       expect(mockSend).not.toHaveBeenCalled();
     });
 
-    it('should return no-op for MountTarget', async () => {
-      const result = await provider.update(
-        'MyMT', 'fsmt-123', 'AWS::EFS::MountTarget', {}, {}
-      );
-      expect(result).toEqual({ physicalId: 'fsmt-123', wasReplaced: false });
+    it('should reject MountTarget with ResourceUpdateNotSupportedError', async () => {
+      await expect(
+        provider.update('MyMT', 'fsmt-123', 'AWS::EFS::MountTarget', {}, {})
+      ).rejects.toThrow(ResourceUpdateNotSupportedError);
       expect(mockSend).not.toHaveBeenCalled();
     });
 
-    it('should return no-op for AccessPoint', async () => {
-      const result = await provider.update(
-        'MyAP', 'fsap-123', 'AWS::EFS::AccessPoint', {}, {}
-      );
-      expect(result).toEqual({ physicalId: 'fsap-123', wasReplaced: false });
+    it('should reject AccessPoint with ResourceUpdateNotSupportedError', async () => {
+      await expect(
+        provider.update('MyAP', 'fsap-123', 'AWS::EFS::AccessPoint', {}, {})
+      ).rejects.toThrow(ResourceUpdateNotSupportedError);
       expect(mockSend).not.toHaveBeenCalled();
     });
   });

@@ -19,7 +19,7 @@ import {
 } from '@aws-sdk/client-glue';
 import { STSClient, GetCallerIdentityCommand } from '@aws-sdk/client-sts';
 import { getLogger } from '../../utils/logger.js';
-import { ProvisioningError } from '../../utils/error-handler.js';
+import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { CDK_PATH_TAG } from '../import-helpers.js';
 import type {
@@ -89,11 +89,14 @@ export class GlueProvider implements ResourceProvider {
   ): Promise<ResourceUpdateResult> {
     switch (resourceType) {
       case 'AWS::Glue::Database':
-        // Database update is mostly no-op for basic properties
-        this.logger.debug(
-          `Update for ${resourceType} ${logicalId} (${physicalId}) - no-op, immutable`
+        // AWS exposes UpdateDatabase but cdkd does not yet plumb the
+        // DatabaseInput delta through. `cdkd drift --revert` surfaces a
+        // clear immutable-error rather than silently no-op'ing.
+        throw new ResourceUpdateNotSupportedError(
+          resourceType,
+          logicalId,
+          'Glue Database updates are not yet implemented in cdkd; re-deploy with cdkd deploy --replace, or destroy + redeploy the stack'
         );
-        return { physicalId, wasReplaced: false };
       case 'AWS::Glue::Table':
         return this.updateTable(logicalId, physicalId, resourceType, properties);
       default:

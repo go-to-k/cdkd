@@ -23,7 +23,7 @@ import {
   type CreateApiKeyCommandInput,
 } from '@aws-sdk/client-appsync';
 import { getLogger } from '../../utils/logger.js';
-import { ProvisioningError } from '../../utils/error-handler.js';
+import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { CDK_PATH_TAG, resolveExplicitPhysicalId } from '../import-helpers.js';
 import type {
@@ -123,15 +123,28 @@ export class AppSyncProvider implements ResourceProvider {
     }
   }
 
+  /**
+   * AppSync resources are treated as immutable by cdkd: every supported
+   * type (`GraphQLApi`, `GraphQLSchema`, `DataSource`, `Resolver`,
+   * `ApiKey`) is recreated on property changes via the deploy engine's
+   * immutable-property replacement path. There is no in-place update,
+   * so `cdkd drift --revert` surfaces a clear "use --replace or
+   * re-deploy" message instead of silently no-op'ing the revert.
+   */
   update(
     logicalId: string,
-    physicalId: string,
+    _physicalId: string,
     resourceType: string,
     _properties: Record<string, unknown>,
     _previousProperties: Record<string, unknown>
   ): Promise<ResourceUpdateResult> {
-    this.logger.debug(`Update for ${resourceType} ${logicalId} (${physicalId}) - no-op, immutable`);
-    return Promise.resolve({ physicalId, wasReplaced: false });
+    return Promise.reject(
+      new ResourceUpdateNotSupportedError(
+        resourceType,
+        logicalId,
+        'AppSync resources are recreated on property changes; re-deploy with cdkd deploy --replace, or destroy + redeploy the stack'
+      )
+    );
   }
 
   async delete(

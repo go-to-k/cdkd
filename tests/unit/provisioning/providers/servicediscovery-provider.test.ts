@@ -19,6 +19,7 @@ import {
   ListNamespacesCommand,
 } from '@aws-sdk/client-servicediscovery';
 import { ServiceDiscoveryProvider } from '../../../../src/provisioning/providers/servicediscovery-provider.js';
+import { ResourceUpdateNotSupportedError } from '../../../../src/utils/error-handler.js';
 
 describe('ServiceDiscoveryProvider — import', () => {
   let provider: ServiceDiscoveryProvider;
@@ -107,4 +108,25 @@ describe('ServiceDiscoveryProvider — import', () => {
     expect(result).toBeNull();
     expect(mockSend).not.toHaveBeenCalled();
   });
+});
+
+describe('ServiceDiscoveryProvider — update', () => {
+  let provider: ServiceDiscoveryProvider;
+  beforeEach(() => {
+    vi.clearAllMocks();
+    provider = new ServiceDiscoveryProvider();
+  });
+
+  it.each([
+    ['AWS::ServiceDiscovery::PrivateDnsNamespace'],
+    ['AWS::ServiceDiscovery::Service'],
+  ])(
+    'rejects with ResourceUpdateNotSupportedError for %s (drift --revert surfaces a clear immutable error)',
+    async (resourceType) => {
+      await expect(
+        provider.update('MyId', 'phys-id', resourceType, {}, {})
+      ).rejects.toThrow(ResourceUpdateNotSupportedError);
+      expect(mockSend).not.toHaveBeenCalled();
+    }
+  );
 });

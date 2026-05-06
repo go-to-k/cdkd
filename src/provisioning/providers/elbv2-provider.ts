@@ -22,7 +22,7 @@ import {
   type TargetTypeEnum,
 } from '@aws-sdk/client-elastic-load-balancing-v2';
 import { getLogger } from '../../utils/logger.js';
-import { ProvisioningError } from '../../utils/error-handler.js';
+import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/error-handler.js';
 import { generateResourceName } from '../resource-name.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { matchesCdkPath } from '../import-helpers.js';
@@ -261,44 +261,27 @@ export class ELBv2Provider implements ResourceProvider {
     }
   }
 
-  private async updateLoadBalancer(
+  private updateLoadBalancer(
     logicalId: string,
-    physicalId: string,
-    resourceType: string,
+    _physicalId: string,
+    _resourceType: string,
     _properties: Record<string, unknown>
   ): Promise<ResourceUpdateResult> {
-    this.logger.debug(`Updating LoadBalancer ${logicalId}: ${physicalId}`);
-
-    try {
-      // LoadBalancer updates are limited; Name is immutable (requires replacement).
-      // For simplicity, describe the current state and return attributes.
-      const describeResponse = await this.getClient().send(
-        new DescribeLoadBalancersCommand({ LoadBalancerArns: [physicalId] })
-      );
-
-      const lb = describeResponse.LoadBalancers?.[0];
-
-      return {
-        physicalId,
-        wasReplaced: false,
-        attributes: {
-          DNSName: lb?.DNSName,
-          CanonicalHostedZoneID: lb?.CanonicalHostedZoneId,
-          LoadBalancerArn: physicalId,
-          LoadBalancerFullName: physicalId.split('/').slice(1).join('/'),
-          LoadBalancerName: lb?.LoadBalancerName,
-        },
-      };
-    } catch (error) {
-      const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to update LoadBalancer ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
-        resourceType,
+    // ELBv2 LoadBalancer Name / Type / Scheme / Subnets are immutable after
+    // creation. AWS exposes SetSecurityGroups / SetSubnets / SetIpAddressType
+    // for the few mutable knobs but cdkd does not yet plumb them through —
+    // the deploy engine recreates the LoadBalancer on property changes via
+    // immutable-property detection. `cdkd drift --revert` surfaces a clear
+    // immutable-error rather than silently no-op'ing the revert (the
+    // previous implementation only described and returned, leaving AWS
+    // untouched).
+    return Promise.reject(
+      new ResourceUpdateNotSupportedError(
+        'AWS::ElasticLoadBalancingV2::LoadBalancer',
         logicalId,
-        physicalId,
-        cause
-      );
-    }
+        'ELBv2 LoadBalancer in-place updates are not yet implemented in cdkd; re-deploy with cdkd deploy --replace, or destroy + redeploy the stack'
+      )
+    );
   }
 
   private async deleteLoadBalancer(

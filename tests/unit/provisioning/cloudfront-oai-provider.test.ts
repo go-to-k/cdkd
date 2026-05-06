@@ -128,7 +128,22 @@ describe('CloudFrontOAIProvider', () => {
   });
 
   describe('update', () => {
-    it('should return wasReplaced: false (no-op)', async () => {
+    it('should call UpdateCloudFrontOriginAccessIdentity with the new Comment', async () => {
+      // First send call: GetCloudFrontOriginAccessIdentity (fetch ETag)
+      mockSend.mockResolvedValueOnce({
+        ETag: 'etag-abc',
+        CloudFrontOriginAccessIdentity: {
+          Id: 'E1ABCDEF123456',
+          S3CanonicalUserId: 'abc123canonical',
+          CloudFrontOriginAccessIdentityConfig: {
+            CallerReference: 'MyOAI',
+            Comment: 'old comment',
+          },
+        },
+      });
+      // Second send call: UpdateCloudFrontOriginAccessIdentity
+      mockSend.mockResolvedValueOnce({});
+
       const result = await provider.update(
         'MyOAI',
         'E1ABCDEF123456',
@@ -147,7 +162,20 @@ describe('CloudFrontOAIProvider', () => {
 
       expect(result.physicalId).toBe('E1ABCDEF123456');
       expect(result.wasReplaced).toBe(false);
-      expect(mockSend).not.toHaveBeenCalled();
+      expect(mockSend).toHaveBeenCalledTimes(2);
+
+      // Verify Update command received the new comment + preserved CallerReference
+      const updateCall = mockSend.mock.calls[1][0] as {
+        input: {
+          Id: string;
+          IfMatch: string;
+          CloudFrontOriginAccessIdentityConfig: { CallerReference: string; Comment: string };
+        };
+      };
+      expect(updateCall.input.Id).toBe('E1ABCDEF123456');
+      expect(updateCall.input.IfMatch).toBe('etag-abc');
+      expect(updateCall.input.CloudFrontOriginAccessIdentityConfig.Comment).toBe('new comment');
+      expect(updateCall.input.CloudFrontOriginAccessIdentityConfig.CallerReference).toBe('MyOAI');
     });
   });
 
