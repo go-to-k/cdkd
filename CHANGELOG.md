@@ -1,3 +1,10 @@
+# [0.44.0](https://github.com/go-to-k/cdkd/compare/v0.43.0...v0.44.0) (2026-05-06)
+
+
+### Features
+
+* **drift:** false-drift prevention for CC API fallback (deny-list + strip) ([#140](https://github.com/go-to-k/cdkd/issues/140)) ([6828d36](https://github.com/go-to-k/cdkd/commit/6828d36ca81bcbf41b33ca173a00f8ce22f50bd5))
+
 # [0.43.0](https://github.com/go-to-k/cdkd/compare/v0.42.0...v0.43.0) (2026-05-05)
 
 
