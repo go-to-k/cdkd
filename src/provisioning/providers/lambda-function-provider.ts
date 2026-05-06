@@ -1015,6 +1015,18 @@ export class LambdaFunctionProvider implements ResourceProvider {
   }
 
   /**
+   * `Code: { S3Bucket, S3Key }` is set on create / update but `GetFunction`
+   * only returns a pre-signed URL for the deployed code, never the original
+   * asset key — so a state-recorded `Code` value can never match an
+   * AWS-current snapshot. Tell the drift comparator to skip the whole
+   * `Code` subtree to avoid the guaranteed false-positive that would fire
+   * on every clean run.
+   */
+  getDriftUnknownPaths(): string[] {
+    return ['Code'];
+  }
+
+  /**
    * Adopt an existing Lambda function into cdkd state.
    *
    * Lookup order:

@@ -275,7 +275,7 @@ in account B that profile A trusts.
 
 ## `cdkd drift`
 
-`cdkd drift <stack> [<stack>...]` detects drift between cdkd's S3 state
+`cdkd drift [<stack>...]` detects drift between cdkd's S3 state
 and the live AWS-side configuration of each managed resource. cdkd does
 not go through CloudFormation, so CFn-style drift detection does not
 apply — instead, the command asks each resource's provider for its
@@ -286,7 +286,10 @@ Detection is the default behavior — pass `--accept` or `--revert` to
 also resolve any drift the comparator finds (see "Resolving drift" below).
 
 ```bash
-# Single stack
+# Single stack — auto-selects when state has exactly one stack
+cdkd drift
+
+# Single stack by name
 cdkd drift MyStack
 
 # Every stack in the bucket
@@ -311,8 +314,11 @@ cdkd drift MyStack --revert --dry-run
 
 Flags:
 
-- `<stacks...>` — one or more positional stack names (physical
-  CloudFormation names). Required unless `--all` is set.
+- `<stacks...>` — zero or more positional stack names (physical
+  CloudFormation names). When omitted and `--all` is not set, the
+  command auto-selects the single stack in state (mirrors `cdkd deploy`
+  / `cdkd destroy`); fails with a listing if state has more than one
+  stack.
 - `--all` — drift-check every stack in the state bucket.
 - `--stack-region <region>` — region to inspect when a stackName has
   state in multiple regions (mirrors `cdkd state show`).

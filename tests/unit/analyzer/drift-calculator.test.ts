@@ -75,4 +75,38 @@ describe('calculateResourceDrift', () => {
       { path: 'LogConfiguration', stateValue: null, awsValue: undefined },
     ]);
   });
+
+  it('skips top-level paths in ignorePaths so unreadable state keys do not fire false drift', () => {
+    // Mirrors Lambda Code: state holds the asset key, AWS-current snapshot
+    // omits it entirely. With ignorePaths the comparator must report no
+    // drift for that subtree.
+    const state = {
+      Code: { S3Bucket: 'b', S3Key: 'k.zip' },
+      MemorySize: 128,
+    };
+    const aws = { MemorySize: 128 };
+    expect(
+      calculateResourceDrift(state, aws, { ignorePaths: ['Code'] })
+    ).toEqual([]);
+  });
+
+  it('skips nested paths in ignorePaths but still reports sibling drift', () => {
+    const state = {
+      VpcConfig: { SubnetIds: ['s-1'], SecurityGroupIds: ['sg-1'] },
+    };
+    const aws = {
+      VpcConfig: { SubnetIds: ['s-2'], SecurityGroupIds: ['sg-1'] },
+    };
+    expect(
+      calculateResourceDrift(state, aws, { ignorePaths: ['VpcConfig.SubnetIds'] })
+    ).toEqual([]);
+  });
+
+  it('still reports drift on sibling keys even when one path is ignored', () => {
+    const state = { Code: { S3Key: 'k1' }, MemorySize: 128 };
+    const aws = { MemorySize: 256 };
+    expect(
+      calculateResourceDrift(state, aws, { ignorePaths: ['Code'] })
+    ).toEqual([{ path: 'MemorySize', stateValue: 128, awsValue: 256 }]);
+  });
 });

@@ -149,10 +149,6 @@ async function driftCommand(
 
   warnIfDeprecatedRegion(options);
 
-  if (!options.all && stacks.length === 0) {
-    throw new Error('Stack name is required. Usage: cdkd drift <stack> [<stack>...] | --all');
-  }
-
   if (options.accept && options.revert) {
     throw new Error(
       '--accept and --revert are mutually exclusive. ' +
@@ -272,6 +268,29 @@ function resolveTargetRefs(
       return stateRefs.filter((r) => r.region === options.stackRegion);
     }
     return stateRefs;
+  }
+
+  // No positional args and no --all: mirror `cdkd deploy` / `cdkd destroy`'s
+  // single-stack auto-detect. Use state as the source of truth (drift is
+  // state-driven, no synth involved).
+  if (stacks.length === 0) {
+    const candidates = options.stackRegion
+      ? stateRefs.filter((r) => r.region === options.stackRegion)
+      : stateRefs;
+    if (candidates.length === 0) {
+      throw new Error(
+        'No stacks found in state bucket. Run `cdkd deploy` first, or pass --all explicitly.'
+      );
+    }
+    if (candidates.length === 1) {
+      return [candidates[0]!];
+    }
+    const listing = candidates
+      .map((r) => `${r.stackName}${r.region ? ` (${r.region})` : ''}`)
+      .join(', ');
+    throw new Error(
+      `Multiple stacks found in state: ${listing}. Specify stack name(s) or use --all.`
+    );
   }
 
   const out: StackStateRef[] = [];
@@ -407,7 +426,14 @@ async function runDriftForStack(
         continue;
       }
 
-      const changes = calculateResourceDrift(resource.properties ?? {}, aws);
+      // Providers can declare state property paths they cannot read back
+      // from AWS (e.g. Lambda `Code`, Secrets Manager `SecretString`). The
+      // CC-API fallback has no provider-specific intuition here — only the
+      // SDK provider's getDriftUnknownPaths is consulted.
+      const ignorePaths = provider.getDriftUnknownPaths
+        ? provider.getDriftUnknownPaths(resource.resourceType)
+        : [];
+      const changes = calculateResourceDrift(resource.properties ?? {}, aws, { ignorePaths });
       if (changes.length === 0) {
         outcomes.push({ kind: 'clean', logicalId, resourceType: resource.resourceType });
       } else {

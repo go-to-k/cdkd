@@ -44,16 +44,34 @@ export interface PropertyDrift {
  * The comparator only descends into keys present in `stateProperties`.
  * Any key in `awsProperties` that does not have a counterpart in state is
  * silently ignored — those are the AWS-managed fields cdkd never set.
+ *
+ * `options.ignorePaths` is supplied by the provider (via
+ * `getDriftUnknownPaths`) for state keys it can never read back from AWS
+ * (e.g. Lambda `Code`, Secrets Manager `SecretString`). A path matches when
+ * it is exactly equal to the entry, or when the entry is a prefix followed
+ * by `.` — so `'Code'` excludes the whole `Code` subtree, and
+ * `'VpcConfig.SubnetIds'` excludes only that leaf.
  */
 export function calculateResourceDrift(
   stateProperties: Record<string, unknown>,
-  awsProperties: Record<string, unknown>
+  awsProperties: Record<string, unknown>,
+  options?: { ignorePaths?: readonly string[] }
 ): PropertyDrift[] {
   const drifts: PropertyDrift[] = [];
+  const ignore = options?.ignorePaths ?? [];
   for (const key of Object.keys(stateProperties)) {
-    diffAt(key, stateProperties[key], awsProperties[key], drifts);
+    if (isIgnoredPath(key, ignore)) continue;
+    diffAt(key, stateProperties[key], awsProperties[key], drifts, ignore);
   }
   return drifts;
+}
+
+function isIgnoredPath(path: string, ignorePaths: readonly string[]): boolean {
+  for (const entry of ignorePaths) {
+    if (path === entry) return true;
+    if (path.startsWith(`${entry}.`)) return true;
+  }
+  return false;
 }
 
 /**
@@ -61,7 +79,13 @@ export function calculateResourceDrift(
  * returning them so nested calls share a single accumulator and the
  * common case of "no drift" allocates nothing.
  */
-function diffAt(path: string, stateValue: unknown, awsValue: unknown, out: PropertyDrift[]): void {
+function diffAt(
+  path: string,
+  stateValue: unknown,
+  awsValue: unknown,
+  out: PropertyDrift[],
+  ignorePaths: readonly string[]
+): void {
   if (deepEqual(stateValue, awsValue)) return;
 
   if (
@@ -73,7 +97,9 @@ function diffAt(path: string, stateValue: unknown, awsValue: unknown, out: Prope
     // Recurse into object: only compare keys that exist in state, so
     // AWS-managed fields outside cdkd's control don't surface as drift.
     for (const key of Object.keys(stateValue)) {
-      diffAt(`${path}.${key}`, stateValue[key], awsValue[key], out);
+      const childPath = `${path}.${key}`;
+      if (isIgnoredPath(childPath, ignorePaths)) continue;
+      diffAt(childPath, stateValue[key], awsValue[key], out, ignorePaths);
     }
     return;
   }

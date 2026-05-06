@@ -310,6 +310,25 @@ export interface ResourceProvider {
   ): Promise<Record<string, unknown> | undefined>;
 
   /**
+   * State property paths this provider deliberately cannot (or chooses
+   * not to) read back from AWS. The drift comparator skips these paths
+   * before comparing, so they don't fire guaranteed false-positive
+   * drift on every run.
+   *
+   * Example: Lambda's `Code: { S3Bucket, S3Key }` is set on create/update
+   * but `GetFunction` only returns a pre-signed URL for the deployed
+   * code, never the original asset key — so the provider declares
+   * `['Code']` and the comparator treats that key as out-of-scope.
+   *
+   * Paths use dot-notation for nested keys (e.g. `'VpcConfig.SubnetIds'`).
+   *
+   * @param resourceType e.g. `AWS::Lambda::Function`
+   * @returns paths to exclude from the drift comparison; defaults to
+   *          empty when not implemented
+   */
+  getDriftUnknownPaths?(resourceType: string): string[];
+
+  /**
    * Find an already-deployed AWS resource matching the given logicalId from
    * the CDK template, and return its physical id + attributes so the state
    * file can be reconstructed.

@@ -245,6 +245,36 @@ describe('cdkd drift', () => {
     expect(exitSpy).toHaveBeenCalledWith(1);
   });
 
+  it('skips state property paths declared by getDriftUnknownPaths so they never fire false drift', async () => {
+    // Mirrors Lambda's `Code` problem: state holds the asset key, but
+    // `GetFunction` returns a pre-signed URL — so without ignore-paths the
+    // resource would always report drift on `Code`.
+    mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+    mockGetState.mockResolvedValueOnce(
+      makeState({
+        Fn1: makeResource({
+          physicalId: 'fn',
+          resourceType: 'AWS::Lambda::Function',
+          properties: {
+            Code: { S3Bucket: 'b', S3Key: 'k.zip' },
+            MemorySize: 128,
+          },
+        }),
+      })
+    );
+    mockRegistryGetProvider.mockReturnValue({
+      // AWS-side snapshot omits `Code` (matches the real Lambda provider).
+      readCurrentState: async () => ({ MemorySize: 128 }),
+      getDriftUnknownPaths: () => ['Code'],
+    });
+
+    const { output, error } = await runDrift(['TestStack']);
+
+    expect(error).toBeUndefined();
+    expect(output).toContain('no drift detected');
+    expect(output).not.toContain('Code');
+  });
+
   it('reports providers without readCurrentState as drift unknown', async () => {
     mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
     mockGetState.mockResolvedValueOnce(
@@ -321,10 +351,46 @@ describe('cdkd drift', () => {
     expect(payload[0]?.notSupported.map((n) => n.logicalId)).toEqual(['Other']);
   });
 
-  it('rejects with a clear error when no stack is named and --all is absent', async () => {
+  it('auto-selects the only stack in state when no name is given (mirrors deploy/destroy)', async () => {
+    mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+    mockGetState.mockResolvedValueOnce(
+      makeState({
+        Bucket1: makeResource({
+          physicalId: 'b',
+          resourceType: 'AWS::S3::Bucket',
+          properties: { BucketName: 'b' },
+        }),
+      })
+    );
+    mockRegistryGetProvider.mockReturnValue({
+      readCurrentState: async () => ({ BucketName: 'b' }),
+    });
+
+    const { output, error } = await runDrift([]);
+    expect(error).toBeUndefined();
+    expect(output).toContain('TestStack');
+    expect(output).toContain('no drift detected');
+  });
+
+  it('rejects with a multi-stack listing when no name is given and state has more than one stack', async () => {
+    mockListStacks.mockResolvedValueOnce([
+      { stackName: 'StackA', region: 'us-east-1' },
+      { stackName: 'StackB', region: 'us-east-1' },
+    ]);
+
     await runDrift([]);
     const messages = errorSpy.mock.calls.map((c) => String(c[0])).join('\n');
-    expect(messages).toMatch(/Stack name is required/);
+    expect(messages).toMatch(/Multiple stacks found in state/);
+    expect(messages).toMatch(/StackA/);
+    expect(messages).toMatch(/StackB/);
+  });
+
+  it('rejects with a clear error when state is empty and no name is given', async () => {
+    mockListStacks.mockResolvedValueOnce([]);
+
+    await runDrift([]);
+    const messages = errorSpy.mock.calls.map((c) => String(c[0])).join('\n');
+    expect(messages).toMatch(/No stacks found in state bucket/);
   });
 
   it('rejects with a clear error when the named stack has no state', async () => {
