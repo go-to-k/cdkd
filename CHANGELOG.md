@@ -1,3 +1,10 @@
+# [0.46.0](https://github.com/go-to-k/cdkd/compare/v0.45.0...v0.46.0) (2026-05-06)
+
+
+### Features
+
+* **drift:** Tags coverage across SDK Providers + aws:* filter ([#142](https://github.com/go-to-k/cdkd/issues/142)) ([bb6c5c8](https://github.com/go-to-k/cdkd/commit/bb6c5c8f32691a40375dbd90f9551be536d32518))
+
 # [0.45.0](https://github.com/go-to-k/cdkd/compare/v0.44.0...v0.45.0) (2026-05-06)
 
 
