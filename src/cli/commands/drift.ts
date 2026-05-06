@@ -97,7 +97,7 @@ class DriftDetectedError extends CdkdError {
 }
 
 /**
- * `cdkd drift <stack> [<stack>...]` command implementation.
+ * `cdkd drift [<stack>...]` command implementation.
  *
  * Three operating modes (mutually exclusive):
  *
