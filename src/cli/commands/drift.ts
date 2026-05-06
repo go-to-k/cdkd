@@ -15,6 +15,9 @@ import { resolveStateBucketWithDefault } from '../config-loader.js';
 import { ProviderRegistry } from '../../provisioning/provider-registry.js';
 import { registerAllProviders } from '../../provisioning/register-providers.js';
 import { calculateResourceDrift, type PropertyDrift } from '../../analyzer/drift-calculator.js';
+import { CC_API_FALLBACK_DENY_LIST } from '../../analyzer/drift-cc-api-deny-list.js';
+import { stripCcApiAwsManagedFields } from '../../analyzer/cc-api-strip.js';
+import { CloudControlProvider } from '../../provisioning/cloud-control-provider.js';
 import { withStackName } from '../../provisioning/resource-name.js';
 import { applyRoleArnIfSet } from '../../utils/role-arn.js';
 import { withRetry } from '../../deployment/retry.js';
@@ -177,6 +180,11 @@ async function driftCommand(
     registerAllProviders(providerRegistry);
     providerRegistry.setCustomResourceResponseBucket(bucket);
 
+    // PR J: shared CC API fallback used when an SDK provider doesn't
+    // implement readCurrentState yet. Constructed once per command so we
+    // don't re-instantiate the underlying CloudControl client per stack.
+    const ccApiFallback = new CloudControlProvider();
+
     const stateRefs = await stateBackend.listStacks();
     const targetRefs = resolveTargetRefs(stacks, stateRefs, options);
 
@@ -195,7 +203,8 @@ async function driftCommand(
         ref.stackName,
         ref.region,
         stateBackend,
-        providerRegistry
+        providerRegistry,
+        ccApiFallback
       );
       reports.push(report);
     }
@@ -304,7 +313,8 @@ async function runDriftForStack(
   stackName: string,
   region: string,
   stateBackend: S3StateBackend,
-  providerRegistry: ProviderRegistry
+  providerRegistry: ProviderRegistry,
+  ccApiFallback: CloudControlProvider
 ): Promise<StackDriftReport> {
   const result = await stateBackend.getState(stackName, region);
   if (!result) {
@@ -334,39 +344,55 @@ async function runDriftForStack(
         continue;
       }
 
-      // Resolve the readCurrentState implementation. When the SDK Provider
-      // for this resource type has not implemented its own readCurrentState
-      // yet, fall back to the Cloud Control API provider — CC API's generic
-      // GetResource works for any CC-API-supported type and the response
-      // shape (a JSON Properties string) maps 1:1 to CFn property names. So
-      // the user gets meaningful drift for many SDK-Provider-managed types
-      // out of the box without each provider opting in. The fallback is a
-      // last resort; SDK Providers that DO implement readCurrentState keep
-      // owning the read (their shape is more precise — they filter to keys
-      // they actually manage).
-      let readCurrentState = provider.readCurrentState?.bind(provider);
-      if (!readCurrentState) {
-        const ccApiProvider = providerRegistry.getCloudControlProvider?.();
-        if (ccApiProvider?.readCurrentState) {
-          readCurrentState = ccApiProvider.readCurrentState.bind(ccApiProvider);
-        }
-      }
-
-      if (!readCurrentState) {
-        outcomes.push({
-          kind: 'unsupported',
+      // First try the SDK provider's first-class readCurrentState (PR G's
+      // 4-arg signature). When the SDK Provider hasn't shipped its own
+      // readCurrentState yet, fall back to the Cloud Control API provider
+      // (PR F). The fallback is gated by two false-drift guards (PR J):
+      //
+      //   1. Deny-list (`CC_API_FALLBACK_DENY_LIST`) — types with verified
+      //      structural divergence between CC API response shape and the
+      //      CFn-template shape cdkd state stores (e.g.
+      //      `AWS::IAM::ManagedPolicy`'s URL-encoded `PolicyDocument`)
+      //      short-circuit to "drift unknown" so they don't fire false
+      //      positives every run.
+      //   2. Strip (`stripCcApiAwsManagedFields`) — generic AWS-managed
+      //      fields (timestamps, generated identifiers, runtime status)
+      //      are removed from CC API responses before the comparator sees
+      //      them.
+      let aws: Record<string, unknown> | undefined;
+      if (provider.readCurrentState) {
+        aws = await provider.readCurrentState(
+          resource.physicalId,
           logicalId,
-          resourceType: resource.resourceType,
-        });
-        continue;
+          resource.resourceType,
+          resource.properties ?? {}
+        );
+      } else {
+        if (CC_API_FALLBACK_DENY_LIST[resource.resourceType]) {
+          outcomes.push({
+            kind: 'unsupported',
+            logicalId,
+            resourceType: resource.resourceType,
+          });
+          continue;
+        }
+        const ccApiAws = await ccApiFallback.readCurrentState(
+          resource.physicalId,
+          logicalId,
+          resource.resourceType,
+          resource.properties ?? {}
+        );
+        if (ccApiAws === undefined) {
+          outcomes.push({
+            kind: 'unsupported',
+            logicalId,
+            resourceType: resource.resourceType,
+          });
+          continue;
+        }
+        aws = stripCcApiAwsManagedFields(resource.resourceType, ccApiAws);
       }
 
-      const aws = await readCurrentState(
-        resource.physicalId,
-        logicalId,
-        resource.resourceType,
-        resource.properties ?? {}
-      );
       if (aws === undefined) {
         outcomes.push({
           kind: 'unsupported',
