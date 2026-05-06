@@ -1,3 +1,10 @@
+## [0.46.1](https://github.com/go-to-k/cdkd/compare/v0.46.0...v0.46.1) (2026-05-06)
+
+
+### Bug Fixes
+
+* **drift:** single-stack auto-detect + getDriftUnknownPaths to suppress unreadable-state-key false drift ([#143](https://github.com/go-to-k/cdkd/issues/143)) ([88bd0bd](https://github.com/go-to-k/cdkd/commit/88bd0bdfcb99595c31d6bc3897947200834f8a9f))
+
 # [0.46.0](https://github.com/go-to-k/cdkd/compare/v0.45.0...v0.46.0) (2026-05-06)
 
 
