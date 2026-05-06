@@ -21,7 +21,11 @@ import { getLogger } from '../../utils/logger.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { generateResourceName } from '../resource-name.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
-import { matchesCdkPath, resolveExplicitPhysicalId } from '../import-helpers.js';
+import {
+  matchesCdkPath,
+  normalizeAwsTagsToCfn,
+  resolveExplicitPhysicalId,
+} from '../import-helpers.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -361,10 +365,13 @@ export class ECRProvider implements ResourceProvider {
    *     round-trip; cdkd state holds the policy as either a string or an
    *     object (depending on user input), and the comparator round-trip
    *     is not yet handled here.
-   *   - `Tags`: requires `ListTagsForResource`; auto-injected
-   *     `aws:cdk:path` tag-shape question is out of scope.
    *   - `EmptyOnDelete` / `ImageTagMutabilityExclusionFilters`: not part
    *     of the persisted AWS state visible via standard Describe.
+   *
+   * `Tags` is surfaced via a follow-up `ListTagsForResource(arn)` call
+   * (using the repository ARN that `DescribeRepositories` returns). CDK's
+   * `aws:*` auto-tags are filtered out; the result key is omitted entirely
+   * when AWS reports no user tags.
    *
    * Returns `undefined` when the repository is gone (`RepositoryNotFoundException`).
    */
@@ -376,6 +383,7 @@ export class ECRProvider implements ResourceProvider {
     let repo: {
       repositories?: Array<{
         repositoryName?: string;
+        repositoryArn?: string;
         imageTagMutability?: string;
         imageScanningConfiguration?: { scanOnPush?: boolean };
         encryptionConfiguration?: { encryptionType?: string; kmsKey?: string };
@@ -425,6 +433,20 @@ export class ECRProvider implements ResourceProvider {
     } catch (err) {
       if (!(err instanceof LifecyclePolicyNotFoundException)) {
         throw err;
+      }
+    }
+
+    // Tags via ListTagsForResource (uses the repository ARN from
+    // DescribeRepositories).
+    if (r.repositoryArn) {
+      try {
+        const tagsResp = await this.getClient().send(
+          new ListTagsForResourceCommand({ resourceArn: r.repositoryArn })
+        );
+        const tags = normalizeAwsTagsToCfn(tagsResp.tags);
+        if (tags.length > 0) result['Tags'] = tags;
+      } catch (err) {
+        if (!(err instanceof RepositoryNotFoundException)) throw err;
       }
     }
 

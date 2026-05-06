@@ -17,7 +17,11 @@ import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { generateResourceName } from '../resource-name.js';
-import { matchesCdkPath, resolveExplicitPhysicalId } from '../import-helpers.js';
+import {
+  matchesCdkPath,
+  normalizeAwsTagsToCfn,
+  resolveExplicitPhysicalId,
+} from '../import-helpers.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -425,11 +429,16 @@ export class SNSTopicProvider implements ResourceProvider {
    * `TopicName` is derived from the ARN tail (the `physicalId` is the
    * topic ARN).
    *
-   * `Tags` and `DeliveryStatusLogging` are intentionally omitted:
-   * `ListTagsForResource` is a separate call, and `DeliveryStatusLogging`
-   * fans out into per-protocol attributes (`{Protocol}SuccessFeedbackRoleArn`,
-   * etc.) whose round-trip back to the CFn array shape needs more thought
-   * than fits in this PR.
+   * `Tags` is surfaced via a follow-up `ListTagsForResource` call. CDK's
+   * `aws:*` auto-tags are filtered out by `normalizeAwsTagsToCfn`; the
+   * result key is omitted entirely when AWS reports no user tags (matches
+   * `create()`'s behavior of only sending Tags when the template carries
+   * them).
+   *
+   * `DeliveryStatusLogging` is intentionally omitted: it fans out into
+   * per-protocol attributes (`{Protocol}SuccessFeedbackRoleArn`, etc.) whose
+   * round-trip back to the CFn array shape needs more thought than fits in
+   * this PR.
    *
    * `Subscription` is omitted because CDK manages it via separate
    * `AWS::SNS::Subscription` resources, not as a Topic property.
@@ -490,6 +499,18 @@ export class SNSTopicProvider implements ResourceProvider {
           result[key] = v;
         }
       }
+    }
+
+    // Tags via ListTagsForResource.
+    try {
+      const tagsResp = await this.snsClient.send(
+        new ListTagsForResourceCommand({ ResourceArn: physicalId })
+      );
+      const tags = normalizeAwsTagsToCfn(tagsResp.Tags);
+      if (tags.length > 0) result['Tags'] = tags;
+    } catch (err) {
+      if (err instanceof NotFoundException) return undefined;
+      throw err;
     }
 
     return result;

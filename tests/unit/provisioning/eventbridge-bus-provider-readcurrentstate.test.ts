@@ -1,5 +1,9 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { DescribeEventBusCommand, ResourceNotFoundException } from '@aws-sdk/client-eventbridge';
+import {
+  DescribeEventBusCommand,
+  ListTagsForResourceCommand,
+  ResourceNotFoundException,
+} from '@aws-sdk/client-eventbridge';
 
 const mockSend = vi.fn();
 
@@ -47,10 +51,12 @@ describe('EventBridgeBusProvider.readCurrentState', () => {
       DeadLetterConfig: { Arn: 'arn:aws:sqs:us-east-1:123:dlq' },
       Policy: '{"Version":"2012-10-17","Statement":[]}',
     });
+    mockSend.mockResolvedValueOnce({ Tags: [] });
 
     const result = await provider.readCurrentState('my-bus', 'BusLogical', 'AWS::Events::EventBus');
 
     expect(mockSend.mock.calls[0]?.[0]).toBeInstanceOf(DescribeEventBusCommand);
+    expect(mockSend.mock.calls[1]?.[0]).toBeInstanceOf(ListTagsForResourceCommand);
     expect(result).toEqual({
       Name: 'my-bus',
       Description: 'a custom bus',
@@ -68,5 +74,34 @@ describe('EventBridgeBusProvider.readCurrentState', () => {
     const result = await provider.readCurrentState('gone', 'BusLogical', 'AWS::Events::EventBus');
 
     expect(result).toBeUndefined();
+  });
+
+  it('surfaces Tags from ListTagsForResource with aws:* filtered out', async () => {
+    mockSend.mockResolvedValueOnce({
+      Name: 'my-bus',
+      Arn: 'arn:aws:events:us-east-1:123:event-bus/my-bus',
+    });
+    mockSend.mockResolvedValueOnce({
+      Tags: [
+        { Key: 'Foo', Value: 'Bar' },
+        { Key: 'aws:cdk:path', Value: 'MyStack/MyBus/Resource' },
+      ],
+    });
+
+    const result = await provider.readCurrentState('my-bus', 'BusLogical', 'AWS::Events::EventBus');
+    expect(result?.Tags).toEqual([{ Key: 'Foo', Value: 'Bar' }]);
+  });
+
+  it('omits Tags when ListTagsForResource returns no user tags', async () => {
+    mockSend.mockResolvedValueOnce({
+      Name: 'my-bus',
+      Arn: 'arn:aws:events:us-east-1:123:event-bus/my-bus',
+    });
+    mockSend.mockResolvedValueOnce({
+      Tags: [{ Key: 'aws:cdk:path', Value: 'MyStack/MyBus/Resource' }],
+    });
+
+    const result = await provider.readCurrentState('my-bus', 'BusLogical', 'AWS::Events::EventBus');
+    expect(result).not.toHaveProperty('Tags');
   });
 });

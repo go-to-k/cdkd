@@ -1,5 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { DescribeAlarmsCommand } from '@aws-sdk/client-cloudwatch';
+import {
+  DescribeAlarmsCommand,
+  ListTagsForResourceCommand,
+} from '@aws-sdk/client-cloudwatch';
 
 const mockSend = vi.fn();
 
@@ -89,5 +92,45 @@ describe('CloudWatchAlarmProvider.readCurrentState', () => {
     mockSend.mockResolvedValueOnce({ MetricAlarms: [] });
     const result = await provider.readCurrentState('myalarm', 'L', 'AWS::CloudWatch::Alarm');
     expect(result).toBeUndefined();
+  });
+
+  it('surfaces Tags from ListTagsForResource with aws:* filtered out', async () => {
+    mockSend
+      .mockResolvedValueOnce({
+        MetricAlarms: [
+          {
+            AlarmName: 'myalarm',
+            AlarmArn: 'arn:aws:cloudwatch:us-east-1:1:alarm:myalarm',
+          },
+        ],
+      })
+      .mockResolvedValueOnce({
+        Tags: [
+          { Key: 'Foo', Value: 'Bar' },
+          { Key: 'aws:cdk:path', Value: 'MyStack/MyAlarm/Resource' },
+        ],
+      });
+
+    const result = await provider.readCurrentState('myalarm', 'L', 'AWS::CloudWatch::Alarm');
+    expect(mockSend.mock.calls[1]?.[0]).toBeInstanceOf(ListTagsForResourceCommand);
+    expect(result?.Tags).toEqual([{ Key: 'Foo', Value: 'Bar' }]);
+  });
+
+  it('omits Tags when ListTagsForResource returns no user tags', async () => {
+    mockSend
+      .mockResolvedValueOnce({
+        MetricAlarms: [
+          {
+            AlarmName: 'myalarm',
+            AlarmArn: 'arn:aws:cloudwatch:us-east-1:1:alarm:myalarm',
+          },
+        ],
+      })
+      .mockResolvedValueOnce({
+        Tags: [{ Key: 'aws:cdk:path', Value: 'MyStack/MyAlarm/Resource' }],
+      });
+
+    const result = await provider.readCurrentState('myalarm', 'L', 'AWS::CloudWatch::Alarm');
+    expect(result).not.toHaveProperty('Tags');
   });
 });

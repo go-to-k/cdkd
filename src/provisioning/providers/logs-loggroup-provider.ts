@@ -19,7 +19,7 @@ import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { generateResourceName } from '../resource-name.js';
-import { resolveExplicitPhysicalId } from '../import-helpers.js';
+import { normalizeAwsTagsToCfn, resolveExplicitPhysicalId } from '../import-helpers.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -345,10 +345,15 @@ export class LogsLogGroupProvider implements ResourceProvider {
    * `RetentionInDays`).
    *
    * Coverage: `LogGroupName`, `KmsKeyId`, `RetentionInDays`,
-   * `LogGroupClass`. Other handledProperties (`DataProtectionPolicy`,
-   * `Tags`, `FieldIndexPolicies`, `ResourcePolicyDocument`,
+   * `LogGroupClass`, `Tags`. Other handledProperties (`DataProtectionPolicy`,
+   * `FieldIndexPolicies`, `ResourcePolicyDocument`,
    * `DeletionProtectionEnabled`, `BearerTokenAuthenticationEnabled`) need
    * their own per-property API call and are out of scope for v1.
+   *
+   * Tags are read via `ListTagsForResource` (using the log-group ARN from
+   * the same `DescribeLogGroups` response). CDK's `aws:*` auto-tags are
+   * filtered out so they don't fire false-positive drift; the result key is
+   * omitted entirely when AWS reports no user tags.
    *
    * Returns `undefined` when the log group is gone.
    */
@@ -372,6 +377,22 @@ export class LogsLogGroupProvider implements ResourceProvider {
         result['RetentionInDays'] = found.retentionInDays;
       }
       if (found.logGroupClass !== undefined) result['LogGroupClass'] = found.logGroupClass;
+
+      // Tags via ListTagsForResource. Logs ARNs include a trailing ":*"
+      // wildcard that ListTagsForResource rejects — strip it.
+      if (found.arn) {
+        const arnForTags = found.arn.replace(/:\*$/, '');
+        try {
+          const tagsResp = await this.logsClient.send(
+            new ListTagsForResourceCommand({ resourceArn: arnForTags })
+          );
+          const tags = normalizeAwsTagsToCfn(tagsResp.tags);
+          if (tags.length > 0) result['Tags'] = tags;
+        } catch (err) {
+          if (err instanceof ResourceNotFoundException) return undefined;
+          throw err;
+        }
+      }
 
       return result;
     } catch (err) {

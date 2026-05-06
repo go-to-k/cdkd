@@ -1,5 +1,9 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { DescribeStreamCommand, ResourceNotFoundException } from '@aws-sdk/client-kinesis';
+import {
+  DescribeStreamCommand,
+  ListTagsForStreamCommand,
+  ResourceNotFoundException,
+} from '@aws-sdk/client-kinesis';
 
 const mockSend = vi.fn();
 
@@ -46,20 +50,23 @@ describe('KinesisStreamProvider.readCurrentState', () => {
   });
 
   it('returns CFn-shaped properties from DescribeStream (happy path)', async () => {
-    mockSend.mockResolvedValueOnce({
-      StreamDescription: {
-        StreamName: 'mystream',
-        StreamModeDetails: { StreamMode: 'PROVISIONED' },
-        Shards: [{ ShardId: 's-1' }, { ShardId: 's-2' }],
-        RetentionPeriodHours: 48,
-        EncryptionType: 'KMS',
-        KeyId: 'arn:aws:kms:us-east-1:1:key/abc',
-      },
-    });
+    mockSend
+      .mockResolvedValueOnce({
+        StreamDescription: {
+          StreamName: 'mystream',
+          StreamModeDetails: { StreamMode: 'PROVISIONED' },
+          Shards: [{ ShardId: 's-1' }, { ShardId: 's-2' }],
+          RetentionPeriodHours: 48,
+          EncryptionType: 'KMS',
+          KeyId: 'arn:aws:kms:us-east-1:1:key/abc',
+        },
+      })
+      .mockResolvedValueOnce({ Tags: [] });
 
     const result = await provider.readCurrentState('mystream', 'L', 'AWS::Kinesis::Stream');
 
     expect(mockSend.mock.calls[0]?.[0]).toBeInstanceOf(DescribeStreamCommand);
+    expect(mockSend.mock.calls[1]?.[0]).toBeInstanceOf(ListTagsForStreamCommand);
     expect(result).toEqual({
       Name: 'mystream',
       StreamModeDetails: { StreamMode: 'PROVISIONED' },
@@ -70,15 +77,17 @@ describe('KinesisStreamProvider.readCurrentState', () => {
   });
 
   it('omits StreamEncryption when EncryptionType=NONE', async () => {
-    mockSend.mockResolvedValueOnce({
-      StreamDescription: {
-        StreamName: 'mystream',
-        StreamModeDetails: { StreamMode: 'ON_DEMAND' },
-        Shards: [],
-        RetentionPeriodHours: 24,
-        EncryptionType: 'NONE',
-      },
-    });
+    mockSend
+      .mockResolvedValueOnce({
+        StreamDescription: {
+          StreamName: 'mystream',
+          StreamModeDetails: { StreamMode: 'ON_DEMAND' },
+          Shards: [],
+          RetentionPeriodHours: 24,
+          EncryptionType: 'NONE',
+        },
+      })
+      .mockResolvedValueOnce({ Tags: [] });
 
     const result = await provider.readCurrentState('mystream', 'L', 'AWS::Kinesis::Stream');
 
@@ -95,5 +104,30 @@ describe('KinesisStreamProvider.readCurrentState', () => {
     );
     const result = await provider.readCurrentState('mystream', 'L', 'AWS::Kinesis::Stream');
     expect(result).toBeUndefined();
+  });
+
+  it('surfaces Tags from ListTagsForStream with aws:* filtered out', async () => {
+    mockSend
+      .mockResolvedValueOnce({ StreamDescription: { StreamName: 'mystream' } })
+      .mockResolvedValueOnce({
+        Tags: [
+          { Key: 'Foo', Value: 'Bar' },
+          { Key: 'aws:cdk:path', Value: 'MyStack/MyStream/Resource' },
+        ],
+      });
+
+    const result = await provider.readCurrentState('mystream', 'L', 'AWS::Kinesis::Stream');
+    expect(result?.Tags).toEqual([{ Key: 'Foo', Value: 'Bar' }]);
+  });
+
+  it('omits Tags when ListTagsForStream returns no user tags', async () => {
+    mockSend
+      .mockResolvedValueOnce({ StreamDescription: { StreamName: 'mystream' } })
+      .mockResolvedValueOnce({
+        Tags: [{ Key: 'aws:cdk:path', Value: 'MyStack/MyStream/Resource' }],
+      });
+
+    const result = await provider.readCurrentState('mystream', 'L', 'AWS::Kinesis::Stream');
+    expect(result).not.toHaveProperty('Tags');
   });
 });

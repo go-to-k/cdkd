@@ -1,5 +1,9 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { GetTopicAttributesCommand, NotFoundException } from '@aws-sdk/client-sns';
+import {
+  GetTopicAttributesCommand,
+  ListTagsForResourceCommand,
+  NotFoundException,
+} from '@aws-sdk/client-sns';
 
 const mockSend = vi.fn();
 
@@ -59,9 +63,13 @@ describe('SNSTopicProvider.readCurrentState', () => {
       },
     });
 
+    // ListTagsForResource — no user tags
+    mockSend.mockResolvedValueOnce({ Tags: [] });
+
     const result = await provider.readCurrentState(TOPIC_ARN, 'Logical', 'AWS::SNS::Topic');
 
     expect(mockSend.mock.calls[0]?.[0]).toBeInstanceOf(GetTopicAttributesCommand);
+    expect(mockSend.mock.calls[1]?.[0]).toBeInstanceOf(ListTagsForResourceCommand);
     expect(result).toEqual({
       TopicName: 'my-topic',
       FifoTopic: true,
@@ -80,5 +88,28 @@ describe('SNSTopicProvider.readCurrentState', () => {
 
     const result = await provider.readCurrentState(TOPIC_ARN, 'Logical', 'AWS::SNS::Topic');
     expect(result).toBeUndefined();
+  });
+
+  it('surfaces Tags from ListTagsForResource with aws:* filtered out', async () => {
+    mockSend.mockResolvedValueOnce({ Attributes: { DisplayName: 'X' } });
+    mockSend.mockResolvedValueOnce({
+      Tags: [
+        { Key: 'Foo', Value: 'Bar' },
+        { Key: 'aws:cdk:path', Value: 'MyStack/MyTopic/Resource' },
+      ],
+    });
+
+    const result = await provider.readCurrentState(TOPIC_ARN, 'Logical', 'AWS::SNS::Topic');
+    expect(result?.Tags).toEqual([{ Key: 'Foo', Value: 'Bar' }]);
+  });
+
+  it('omits Tags when ListTagsForResource returns no user tags', async () => {
+    mockSend.mockResolvedValueOnce({ Attributes: { DisplayName: 'X' } });
+    mockSend.mockResolvedValueOnce({
+      Tags: [{ Key: 'aws:cdk:path', Value: 'MyStack/MyTopic/Resource' }],
+    });
+
+    const result = await provider.readCurrentState(TOPIC_ARN, 'Logical', 'AWS::SNS::Topic');
+    expect(result).not.toHaveProperty('Tags');
   });
 });

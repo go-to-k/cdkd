@@ -33,7 +33,11 @@ import {
   type ObjectOwnership,
   type CORSRule,
 } from '@aws-sdk/client-s3';
-import { matchesCdkPath, resolveExplicitPhysicalId } from '../import-helpers.js';
+import {
+  matchesCdkPath,
+  normalizeAwsTagsToCfn,
+  resolveExplicitPhysicalId,
+} from '../import-helpers.js';
 import { getLogger } from '../../utils/logger.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
@@ -1300,18 +1304,14 @@ export class S3BucketProvider implements ResourceProvider {
       }
     }
 
-    // Tags (CFn shape: [{Key, Value}], AWS shape: TagSet[{Key, Value}] — same)
+    // Tags (CFn shape: [{Key, Value}], AWS shape: TagSet[{Key, Value}] — same).
+    // `normalizeAwsTagsToCfn` filters out aws:* auto-injected tags (notably
+    // CDK's `aws:cdk:path`) and sorts the result by Key for stable
+    // comparison against state.
     try {
       const resp = await this.s3Client.send(new GetBucketTaggingCommand({ Bucket: physicalId }));
-      if (resp.TagSet && resp.TagSet.length > 0) {
-        // Filter out cdkd / CDK auto-injected tags so they don't surface as
-        // drift against state (cdkd state's `Tags` only has user tags).
-        const tags = resp.TagSet.filter((t) => t.Key && !t.Key.startsWith('aws:')).map((t) => ({
-          Key: t.Key,
-          Value: t.Value,
-        }));
-        if (tags.length > 0) result['Tags'] = tags;
-      }
+      const tags = normalizeAwsTagsToCfn(resp.TagSet);
+      if (tags.length > 0) result['Tags'] = tags;
     } catch (err) {
       const e = err as { name?: string };
       if (e.name !== 'NoSuchTagSet') {

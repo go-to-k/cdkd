@@ -399,8 +399,16 @@ The following SDK Providers ship with first-class `readCurrentState`
   `RestApiId` / `ApiId` / `FunctionName` / `Roles[]` is available to
   issue the matching `Get*` call)
 
-Tag drift is out of scope for v1; see
-[src/types/resource.ts](../src/types/resource.ts) for the per-provider
+Tag drift is supported across the SDK Providers listed above (and the CC
+API fallback). cdkd filters out CDK / AWS-internal `aws:`-prefixed entries
+(notably `aws:cdk:path` and `aws:cdk:metadata`) from the AWS-current
+snapshot before comparing — those are injected by CDK as construct
+metadata, not as user-managed `Tags` properties, so leaving them in would
+fire false-positive drift on every CDK-deployed resource. The remaining
+user tags are normalized to CFn's `[{Key, Value}]` shape (sorted by `Key`
+for stable comparison) and the result key is omitted entirely when AWS
+reports no user tags. IAM inline-policy bodies remain out of scope for v1;
+see [src/types/resource.ts](../src/types/resource.ts) for the per-provider
 shape decisions.
 
 Still reporting `drift unknown` (deferred):

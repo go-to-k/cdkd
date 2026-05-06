@@ -1,5 +1,9 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { GetWebACLCommand, WAFNonexistentItemException } from '@aws-sdk/client-wafv2';
+import {
+  GetWebACLCommand,
+  ListTagsForResourceCommand,
+  WAFNonexistentItemException,
+} from '@aws-sdk/client-wafv2';
 
 const mockSend = vi.fn();
 
@@ -48,26 +52,29 @@ describe('WAFv2WebACLProvider.readCurrentState', () => {
   });
 
   it('returns CFn-shaped properties from GetWebACL (happy path)', async () => {
-    mockSend.mockResolvedValueOnce({
-      WebACL: {
-        Id: 'abc-123',
-        Name: 'my-acl',
-        Description: 'a test acl',
-        DefaultAction: { Allow: {} },
-        Rules: [{ Name: 'r1' }],
-        VisibilityConfig: {
-          SampledRequestsEnabled: true,
-          CloudWatchMetricsEnabled: true,
-          MetricName: 'm',
+    mockSend
+      .mockResolvedValueOnce({
+        WebACL: {
+          Id: 'abc-123',
+          Name: 'my-acl',
+          Description: 'a test acl',
+          DefaultAction: { Allow: {} },
+          Rules: [{ Name: 'r1' }],
+          VisibilityConfig: {
+            SampledRequestsEnabled: true,
+            CloudWatchMetricsEnabled: true,
+            MetricName: 'm',
+          },
+          TokenDomains: ['example.com'],
         },
-        TokenDomains: ['example.com'],
-      },
-      LockToken: 'lt',
-    });
+        LockToken: 'lt',
+      })
+      .mockResolvedValueOnce({ TagInfoForResource: { ResourceARN: ARN, TagList: [] } });
 
     const result = await provider.readCurrentState(ARN, 'L', 'AWS::WAFv2::WebACL');
 
     expect(mockSend.mock.calls[0]?.[0]).toBeInstanceOf(GetWebACLCommand);
+    expect(mockSend.mock.calls[1]?.[0]).toBeInstanceOf(ListTagsForResourceCommand);
     expect(result).toEqual({
       Name: 'my-acl',
       Scope: 'REGIONAL',
@@ -85,9 +92,11 @@ describe('WAFv2WebACLProvider.readCurrentState', () => {
 
   it('parses CLOUDFRONT scope from a global ARN', async () => {
     const cfArn = 'arn:aws:wafv2:us-east-1:123:global/webacl/cf-acl/xyz';
-    mockSend.mockResolvedValueOnce({
-      WebACL: { Id: 'xyz', Name: 'cf-acl', DefaultAction: { Block: {} } },
-    });
+    mockSend
+      .mockResolvedValueOnce({
+        WebACL: { Id: 'xyz', Name: 'cf-acl', DefaultAction: { Block: {} } },
+      })
+      .mockResolvedValueOnce({ TagInfoForResource: { ResourceARN: cfArn, TagList: [] } });
 
     const result = await provider.readCurrentState(cfArn, 'L', 'AWS::WAFv2::WebACL');
 
@@ -100,5 +109,40 @@ describe('WAFv2WebACLProvider.readCurrentState', () => {
     );
     const result = await provider.readCurrentState(ARN, 'L', 'AWS::WAFv2::WebACL');
     expect(result).toBeUndefined();
+  });
+
+  it('surfaces Tags from ListTagsForResource with aws:* filtered out', async () => {
+    mockSend
+      .mockResolvedValueOnce({
+        WebACL: { Id: 'abc-123', Name: 'my-acl', DefaultAction: { Allow: {} } },
+      })
+      .mockResolvedValueOnce({
+        TagInfoForResource: {
+          ResourceARN: ARN,
+          TagList: [
+            { Key: 'Foo', Value: 'Bar' },
+            { Key: 'aws:cdk:path', Value: 'MyStack/MyACL/Resource' },
+          ],
+        },
+      });
+
+    const result = await provider.readCurrentState(ARN, 'L', 'AWS::WAFv2::WebACL');
+    expect(result?.Tags).toEqual([{ Key: 'Foo', Value: 'Bar' }]);
+  });
+
+  it('omits Tags when ListTagsForResource returns no user tags', async () => {
+    mockSend
+      .mockResolvedValueOnce({
+        WebACL: { Id: 'abc-123', Name: 'my-acl', DefaultAction: { Allow: {} } },
+      })
+      .mockResolvedValueOnce({
+        TagInfoForResource: {
+          ResourceARN: ARN,
+          TagList: [{ Key: 'aws:cdk:path', Value: 'MyStack/MyACL/Resource' }],
+        },
+      });
+
+    const result = await provider.readCurrentState(ARN, 'L', 'AWS::WAFv2::WebACL');
+    expect(result).not.toHaveProperty('Tags');
   });
 });

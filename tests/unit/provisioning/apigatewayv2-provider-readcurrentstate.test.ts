@@ -203,4 +203,36 @@ describe('ApiGatewayV2Provider.readCurrentState', () => {
 
     expect(result).toBeUndefined();
   });
+
+  it('surfaces Tags from GetApi with aws:* filtered out', async () => {
+    mockSend.mockResolvedValueOnce({
+      Name: 'my-api',
+      ProtocolType: 'HTTP',
+      Tags: { Foo: 'Bar', 'aws:cdk:path': 'MyStack/MyApi/Resource' },
+    });
+
+    const result = await provider.readCurrentState(
+      'abcd1234',
+      'ApiLogical',
+      'AWS::ApiGatewayV2::Api'
+    );
+
+    expect(result?.Tags).toEqual([{ Key: 'Foo', Value: 'Bar' }]);
+  });
+
+  it('omits Tags when GetApi returns no user tags', async () => {
+    mockSend.mockResolvedValueOnce({
+      Name: 'my-api',
+      ProtocolType: 'HTTP',
+      Tags: { 'aws:cdk:path': 'MyStack/MyApi/Resource' },
+    });
+
+    const result = await provider.readCurrentState(
+      'abcd1234',
+      'ApiLogical',
+      'AWS::ApiGatewayV2::Api'
+    );
+
+    expect(result).not.toHaveProperty('Tags');
+  });
 });

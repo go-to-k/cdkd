@@ -1,5 +1,9 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { DescribeStateMachineCommand, StateMachineDoesNotExist } from '@aws-sdk/client-sfn';
+import {
+  DescribeStateMachineCommand,
+  ListTagsForResourceCommand,
+  StateMachineDoesNotExist,
+} from '@aws-sdk/client-sfn';
 
 const mockSend = vi.fn();
 
@@ -60,6 +64,7 @@ describe('StepFunctionsProvider.readCurrentState', () => {
       tracingConfiguration: { enabled: true },
       encryptionConfiguration: { type: 'AWS_OWNED_KEY' },
     });
+    mockSend.mockResolvedValueOnce({ tags: [] });
 
     const result = await provider.readCurrentState(
       'arn:aws:states:us-east-1:123:stateMachine:my-sm',
@@ -68,6 +73,7 @@ describe('StepFunctionsProvider.readCurrentState', () => {
     );
 
     expect(mockSend.mock.calls[0]?.[0]).toBeInstanceOf(DescribeStateMachineCommand);
+    expect(mockSend.mock.calls[1]?.[0]).toBeInstanceOf(ListTagsForResourceCommand);
     expect(result).toEqual({
       StateMachineName: 'my-sm',
       RoleArn: 'arn:aws:iam::123:role/sfn',
@@ -101,5 +107,38 @@ describe('StepFunctionsProvider.readCurrentState', () => {
     );
 
     expect(result).toBeUndefined();
+  });
+
+  it('surfaces Tags from ListTagsForResource with aws:* filtered out (SFN lower-case shape)', async () => {
+    mockSend.mockResolvedValueOnce({ name: 'my-sm', type: 'STANDARD' });
+    mockSend.mockResolvedValueOnce({
+      tags: [
+        { key: 'Foo', value: 'Bar' },
+        { key: 'aws:cdk:path', value: 'MyStack/MyStateMachine/Resource' },
+      ],
+    });
+
+    const result = await provider.readCurrentState(
+      'arn:aws:states:us-east-1:123:stateMachine:my-sm',
+      'SMLogical',
+      'AWS::StepFunctions::StateMachine'
+    );
+
+    expect(result?.Tags).toEqual([{ Key: 'Foo', Value: 'Bar' }]);
+  });
+
+  it('omits Tags when ListTagsForResource returns no user tags', async () => {
+    mockSend.mockResolvedValueOnce({ name: 'my-sm', type: 'STANDARD' });
+    mockSend.mockResolvedValueOnce({
+      tags: [{ key: 'aws:cdk:path', value: 'MyStack/MyStateMachine/Resource' }],
+    });
+
+    const result = await provider.readCurrentState(
+      'arn:aws:states:us-east-1:123:stateMachine:my-sm',
+      'SMLogical',
+      'AWS::StepFunctions::StateMachine'
+    );
+
+    expect(result).not.toHaveProperty('Tags');
   });
 });

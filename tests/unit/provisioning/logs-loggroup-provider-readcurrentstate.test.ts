@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import {
   DescribeLogGroupsCommand,
+  ListTagsForResourceCommand,
   ResourceNotFoundException,
 } from '@aws-sdk/client-cloudwatch-logs';
 
@@ -57,6 +58,8 @@ describe('LogsLogGroupProvider.readCurrentState', () => {
         },
       ],
     });
+    // ListTagsForResource — no user tags
+    mockSend.mockResolvedValueOnce({ tags: {} });
 
     const result = await provider.readCurrentState(
       '/aws/lambda/my-fn',
@@ -65,12 +68,55 @@ describe('LogsLogGroupProvider.readCurrentState', () => {
     );
 
     expect(mockSend.mock.calls[0]?.[0]).toBeInstanceOf(DescribeLogGroupsCommand);
+    expect(mockSend.mock.calls[1]?.[0]).toBeInstanceOf(ListTagsForResourceCommand);
     expect(result).toEqual({
       LogGroupName: '/aws/lambda/my-fn',
       KmsKeyId: 'arn:aws:kms:us-east-1:123:key/abc',
       RetentionInDays: 30,
       LogGroupClass: 'STANDARD',
     });
+  });
+
+  it('surfaces Tags from ListTagsForResource with aws:* filtered out', async () => {
+    mockSend.mockResolvedValueOnce({
+      logGroups: [
+        {
+          logGroupName: '/aws/lambda/my-fn',
+          arn: 'arn:aws:logs:us-east-1:123:log-group:/aws/lambda/my-fn:*',
+        },
+      ],
+    });
+    mockSend.mockResolvedValueOnce({
+      tags: { Foo: 'Bar', 'aws:cdk:path': 'MyStack/MyLogGroup/Resource' },
+    });
+
+    const result = await provider.readCurrentState(
+      '/aws/lambda/my-fn',
+      'Logical',
+      'AWS::Logs::LogGroup'
+    );
+    expect(result?.Tags).toEqual([{ Key: 'Foo', Value: 'Bar' }]);
+  });
+
+  it('omits Tags when ListTagsForResource returns no user tags', async () => {
+    mockSend.mockResolvedValueOnce({
+      logGroups: [
+        {
+          logGroupName: '/aws/lambda/my-fn',
+          arn: 'arn:aws:logs:us-east-1:123:log-group:/aws/lambda/my-fn:*',
+        },
+      ],
+    });
+    mockSend.mockResolvedValueOnce({
+      tags: { 'aws:cdk:path': 'MyStack/MyLogGroup/Resource' },
+    });
+
+    const result = await provider.readCurrentState(
+      '/aws/lambda/my-fn',
+      'Logical',
+      'AWS::Logs::LogGroup'
+    );
+    expect(result).not.toHaveProperty('Tags');
   });
 
   it('returns undefined when log group does not exist (no exact match)', async () => {

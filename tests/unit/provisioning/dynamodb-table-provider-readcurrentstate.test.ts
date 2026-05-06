@@ -1,5 +1,9 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { DescribeTableCommand, ResourceNotFoundException } from '@aws-sdk/client-dynamodb';
+import {
+  DescribeTableCommand,
+  ListTagsOfResourceCommand,
+  ResourceNotFoundException,
+} from '@aws-sdk/client-dynamodb';
 
 const mockSend = vi.fn();
 
@@ -66,10 +70,13 @@ describe('DynamoDBTableProvider.readCurrentState', () => {
         CreationDateTime: new Date(0),
       },
     });
+    // ListTagsOfResource — no user tags
+    mockSend.mockResolvedValueOnce({ Tags: [] });
 
     const result = await provider.readCurrentState('my-table', 'Logical', 'AWS::DynamoDB::Table');
 
     expect(mockSend.mock.calls[0]?.[0]).toBeInstanceOf(DescribeTableCommand);
+    expect(mockSend.mock.calls[1]?.[0]).toBeInstanceOf(ListTagsOfResourceCommand);
     expect(result).toEqual({
       TableName: 'my-table',
       KeySchema: [{ AttributeName: 'id', KeyType: 'HASH' }],
@@ -94,5 +101,40 @@ describe('DynamoDBTableProvider.readCurrentState', () => {
 
     const result = await provider.readCurrentState('my-table', 'Logical', 'AWS::DynamoDB::Table');
     expect(result).toBeUndefined();
+  });
+
+  it('surfaces Tags from ListTagsOfResource with aws:* filtered out', async () => {
+    mockSend.mockResolvedValueOnce({
+      Table: {
+        TableName: 'my-table',
+        TableArn: 'arn:aws:dynamodb:us-east-1:123:table/my-table',
+      },
+    });
+    mockSend.mockResolvedValueOnce({
+      Tags: [
+        { Key: 'Foo', Value: 'Bar' },
+        { Key: 'aws:cdk:path', Value: 'MyStack/MyTable/Resource' },
+      ],
+    });
+
+    const result = await provider.readCurrentState('my-table', 'Logical', 'AWS::DynamoDB::Table');
+
+    expect(result?.Tags).toEqual([{ Key: 'Foo', Value: 'Bar' }]);
+  });
+
+  it('omits Tags when ListTagsOfResource returns no user tags', async () => {
+    mockSend.mockResolvedValueOnce({
+      Table: {
+        TableName: 'my-table',
+        TableArn: 'arn:aws:dynamodb:us-east-1:123:table/my-table',
+      },
+    });
+    mockSend.mockResolvedValueOnce({
+      Tags: [{ Key: 'aws:cdk:path', Value: 'MyStack/MyTable/Resource' }],
+    });
+
+    const result = await provider.readCurrentState('my-table', 'Logical', 'AWS::DynamoDB::Table');
+
+    expect(result).not.toHaveProperty('Tags');
   });
 });

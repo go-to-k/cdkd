@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import {
   GetHostedZoneCommand,
   ListResourceRecordSetsCommand,
+  ListTagsForResourceCommand,
 } from '@aws-sdk/client-route-53';
 
 const mockSend = vi.fn();
@@ -50,18 +51,21 @@ describe('Route53Provider.readCurrentState', () => {
 
   describe('AWS::Route53::HostedZone', () => {
     it('returns CFn-shaped HostedZone properties (happy path)', async () => {
-      mockSend.mockResolvedValueOnce({
-        HostedZone: {
-          Id: '/hostedzone/Z1',
-          Name: 'example.com.',
-          Config: { Comment: 'mine', PrivateZone: true },
-        },
-        VPCs: [{ VPCId: 'vpc-1', VPCRegion: 'us-east-1' }],
-      });
+      mockSend
+        .mockResolvedValueOnce({
+          HostedZone: {
+            Id: '/hostedzone/Z1',
+            Name: 'example.com.',
+            Config: { Comment: 'mine', PrivateZone: true },
+          },
+          VPCs: [{ VPCId: 'vpc-1', VPCRegion: 'us-east-1' }],
+        })
+        .mockResolvedValueOnce({ ResourceTagSet: { ResourceId: 'Z1', Tags: [] } });
 
       const result = await provider.readCurrentState('Z1', 'L', 'AWS::Route53::HostedZone');
 
       expect(mockSend.mock.calls[0]?.[0]).toBeInstanceOf(GetHostedZoneCommand);
+      expect(mockSend.mock.calls[1]?.[0]).toBeInstanceOf(ListTagsForResourceCommand);
       expect(result).toEqual({
         Name: 'example.com.',
         HostedZoneConfig: { Comment: 'mine', PrivateZone: true },
@@ -75,6 +79,41 @@ describe('Route53Provider.readCurrentState', () => {
       );
       const result = await provider.readCurrentState('Z1', 'L', 'AWS::Route53::HostedZone');
       expect(result).toBeUndefined();
+    });
+
+    it('surfaces HostedZoneTags from ListTagsForResource with aws:* filtered out', async () => {
+      mockSend
+        .mockResolvedValueOnce({
+          HostedZone: { Id: '/hostedzone/Z1', Name: 'example.com.' },
+        })
+        .mockResolvedValueOnce({
+          ResourceTagSet: {
+            ResourceId: 'Z1',
+            Tags: [
+              { Key: 'Foo', Value: 'Bar' },
+              { Key: 'aws:cdk:path', Value: 'MyStack/MyZone/Resource' },
+            ],
+          },
+        });
+
+      const result = await provider.readCurrentState('Z1', 'L', 'AWS::Route53::HostedZone');
+      expect(result?.HostedZoneTags).toEqual([{ Key: 'Foo', Value: 'Bar' }]);
+    });
+
+    it('omits HostedZoneTags when ListTagsForResource returns no user tags', async () => {
+      mockSend
+        .mockResolvedValueOnce({
+          HostedZone: { Id: '/hostedzone/Z1', Name: 'example.com.' },
+        })
+        .mockResolvedValueOnce({
+          ResourceTagSet: {
+            ResourceId: 'Z1',
+            Tags: [{ Key: 'aws:cdk:path', Value: 'MyStack/MyZone/Resource' }],
+          },
+        });
+
+      const result = await provider.readCurrentState('Z1', 'L', 'AWS::Route53::HostedZone');
+      expect(result).not.toHaveProperty('HostedZoneTags');
     });
   });
 

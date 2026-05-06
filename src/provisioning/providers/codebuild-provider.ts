@@ -20,7 +20,11 @@ import {
 import { getLogger } from '../../utils/logger.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
-import { CDK_PATH_TAG, resolveExplicitPhysicalId } from '../import-helpers.js';
+import {
+  CDK_PATH_TAG,
+  normalizeAwsTagsToCfn,
+  resolveExplicitPhysicalId,
+} from '../import-helpers.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -422,8 +426,12 @@ export class CodeBuildProvider implements ResourceProvider {
    * is left to a follow-up — surfacing them with a partial shape would
    * fire false drift on every project that uses them.
    *
-   * Tags are skipped (CDK auto-tag handling deferred). Returns `undefined`
-   * when the project is gone (`projects` array empty / `projectsNotFound` set).
+   * Tags are surfaced from the same `BatchGetProjects` response (CodeBuild
+   * uses lower-case `key`/`value` shape; `normalizeAwsTagsToCfn` re-shapes
+   * to CFn `[{Key, Value}]`). CDK's `aws:*` auto-tags are filtered out
+   * and the result key is omitted when AWS reports no user tags. Returns
+   * `undefined` when the project is gone (`projects` array empty /
+   * `projectsNotFound` set).
    */
   async readCurrentState(
     physicalId: string,
@@ -530,6 +538,11 @@ export class CodeBuildProvider implements ResourceProvider {
       }
       if (Object.keys(env).length > 0) result['Environment'] = env;
     }
+
+    // Tags from the same BatchGetProjects response (CodeBuild uses lower-case
+    // {key, value} shape).
+    const tags = normalizeAwsTagsToCfn(project.tags);
+    if (tags.length > 0) result['Tags'] = tags;
 
     return result;
   }

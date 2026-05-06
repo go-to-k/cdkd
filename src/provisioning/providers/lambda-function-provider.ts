@@ -20,7 +20,11 @@ import {
   type EphemeralStorage,
   type VpcConfig,
 } from '@aws-sdk/client-lambda';
-import { CDK_PATH_TAG, resolveExplicitPhysicalId } from '../import-helpers.js';
+import {
+  CDK_PATH_TAG,
+  normalizeAwsTagsToCfn,
+  resolveExplicitPhysicalId,
+} from '../import-helpers.js';
 import {
   EC2Client,
   DescribeNetworkInterfacesCommand,
@@ -929,11 +933,13 @@ export class LambdaFunctionProvider implements ResourceProvider {
    * function's `CodeSha256` does live in `GetFunction` but is not what
    * cdkd's `Code: { S3Bucket, S3Key }` state property carries).
    *
-   * `Tags` is omitted as well: `GetFunction` returns Tags as an object map,
-   * while CFn / cdkd state holds them as `[{Key, Value}]`. Re-shaping
-   * accurately requires deciding how to handle the auto-injected
-   * `aws:cdk:path` tag, which is out of scope for this PR. Tag drift is
-   * typically less interesting than configuration drift.
+   * `Tags` is surfaced from the `Tags` map on the same `GetFunction`
+   * response. CDK's auto-injected `aws:cdk:*` tags (which AWS happily
+   * returns) are filtered out by `normalizeAwsTagsToCfn` so they don't
+   * fire false-positive drift against state. The result key is omitted
+   * entirely when AWS reports no user tags, matching `create()`'s
+   * behavior of only sending `Tags` when the user explicitly passes
+   * them.
    *
    * Returns `undefined` when the function is gone (`ResourceNotFoundException`).
    */
@@ -992,6 +998,14 @@ export class LambdaFunctionProvider implements ResourceProvider {
         // to compare against.
         if (Object.keys(vpc).length > 0) result['VpcConfig'] = vpc;
       }
+
+      // Tags: GetFunction returns a map keyed by tag name. Filter
+      // CDK / aws:* auto-tags, re-shape to CFn's `[{Key, Value}]`, and
+      // omit the key entirely when AWS reports no user tags (matches
+      // `create()`'s behavior of only sending Tags when the template
+      // carries them).
+      const tags = normalizeAwsTagsToCfn(resp.Tags);
+      if (tags.length > 0) result['Tags'] = tags;
 
       return result;
     } catch (err) {

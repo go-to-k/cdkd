@@ -17,7 +17,7 @@ import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { generateResourceName } from '../resource-name.js';
-import { matchesCdkPath } from '../import-helpers.js';
+import { matchesCdkPath, normalizeAwsTagsToCfn } from '../import-helpers.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -364,8 +364,10 @@ export class SecretsManagerSecretProvider implements ResourceProvider {
    *     call to avoid surfacing plaintext through drift). Cdkd state holds
    *     the user-supplied string verbatim; comparing against AWS would
    *     require pulling the value, so this is deliberately deferred.
-   *   - `Tags`: `DescribeSecret` returns Tags, but the auto-injected
-   *     `aws:cdk:path` tag-shape question is out of scope here.
+   *
+   * `Tags` is surfaced from the same `DescribeSecret` response (no extra
+   * round-trip). CDK's `aws:*` auto-tags are filtered out; the result key
+   * is omitted entirely when AWS reports no user tags.
    *
    * Returns `undefined` when the secret is gone (`ResourceNotFoundException`).
    */
@@ -390,6 +392,9 @@ export class SecretsManagerSecretProvider implements ResourceProvider {
           return out;
         });
       }
+      // Tags from the same DescribeSecret response.
+      const tags = normalizeAwsTagsToCfn(resp.Tags);
+      if (tags.length > 0) result['Tags'] = tags;
       return result;
     } catch (err) {
       if (err instanceof ResourceNotFoundException) return undefined;

@@ -25,7 +25,11 @@ import {
 import { getLogger } from '../../utils/logger.js';
 import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
-import { CDK_PATH_TAG, resolveExplicitPhysicalId } from '../import-helpers.js';
+import {
+  CDK_PATH_TAG,
+  normalizeAwsTagsToCfn,
+  resolveExplicitPhysicalId,
+} from '../import-helpers.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -774,6 +778,9 @@ export class ApiGatewayV2Provider implements ResourceProvider {
         result['Description'] = resp.Description;
       }
       if (resp.CorsConfiguration) result['CorsConfiguration'] = resp.CorsConfiguration;
+      // Tags from the same GetApi response (returned as a tag-name → value map).
+      const tags = normalizeAwsTagsToCfn(resp.Tags);
+      if (tags.length > 0) result['Tags'] = tags;
       return result;
     } catch (err) {
       if (err instanceof NotFoundException) return undefined;

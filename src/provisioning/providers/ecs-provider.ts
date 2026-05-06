@@ -55,7 +55,7 @@ import { getLogger } from '../../utils/logger.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { generateResourceName } from '../resource-name.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
-import { resolveExplicitPhysicalId } from '../import-helpers.js';
+import { normalizeAwsTagsToCfn, resolveExplicitPhysicalId } from '../import-helpers.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -1007,8 +1007,11 @@ export class ECSProvider implements ResourceProvider {
    *   - `AWS::ECS::TaskDefinition` → `DescribeTaskDefinition`
    *
    * Each branch surfaces only the keys cdkd's `create()` accepts, mapping
-   * the SDK's camelCase to CFn PascalCase. Tags are intentionally omitted
-   * (separate `ListTagsForResource` round-trip).
+   * the SDK's camelCase to CFn PascalCase. Tags are surfaced via
+   * `DescribeClusters/Services(include=[TAGS])` for cluster / service, and
+   * via `DescribeTaskDefinition(include=[TAGS])` for task definitions —
+   * with CDK's `aws:*` auto-tags filtered out. Tag-result keys are omitted
+   * when AWS reports no user tags.
    */
   async readCurrentState(
     physicalId: string,
@@ -1037,11 +1040,12 @@ export class ECSProvider implements ResourceProvider {
         defaultCapacityProviderStrategy?: CapacityProviderStrategyItem[];
         configuration?: ClusterConfiguration;
         settings?: Array<{ name?: string; value?: string }>;
+        tags?: Array<{ key?: string; value?: string }>;
       }>;
     };
     try {
       resp = (await this.getClient().send(
-        new DescribeClustersCommand({ clusters: [physicalId] })
+        new DescribeClustersCommand({ clusters: [physicalId], include: ['TAGS'] })
       )) as unknown as typeof resp;
     } catch {
       return undefined;
@@ -1063,6 +1067,8 @@ export class ECSProvider implements ResourceProvider {
         Value: s.value,
       }));
     }
+    const tags = normalizeAwsTagsToCfn(c.tags);
+    if (tags.length > 0) result['Tags'] = tags;
     return result;
   }
 
@@ -1095,11 +1101,16 @@ export class ECSProvider implements ResourceProvider {
         placementConstraints?: PlacementConstraint[];
         placementStrategy?: PlacementStrategy[];
         serviceRegistries?: ServiceRegistry[];
+        tags?: Array<{ key?: string; value?: string }>;
       }>;
     };
     try {
       resp = (await this.getClient().send(
-        new DescribeServicesCommand({ cluster: clusterArn, services: [serviceName] })
+        new DescribeServicesCommand({
+          cluster: clusterArn,
+          services: [serviceName],
+          include: ['TAGS'],
+        })
       )) as unknown as typeof resp;
     } catch {
       return undefined;
@@ -1142,6 +1153,8 @@ export class ECSProvider implements ResourceProvider {
     if (s.serviceRegistries && s.serviceRegistries.length > 0) {
       result['ServiceRegistries'] = s.serviceRegistries;
     }
+    const tags = normalizeAwsTagsToCfn(s.tags);
+    if (tags.length > 0) result['Tags'] = tags;
     return result;
   }
 
@@ -1166,10 +1179,11 @@ export class ECSProvider implements ResourceProvider {
         ephemeralStorage?: { sizeInGiB?: number };
         containerDefinitions?: ContainerDefinition[];
       };
+      tags?: Array<{ key?: string; value?: string }>;
     };
     try {
       resp = (await this.getClient().send(
-        new DescribeTaskDefinitionCommand({ taskDefinition: physicalId })
+        new DescribeTaskDefinitionCommand({ taskDefinition: physicalId, include: ['TAGS'] })
       )) as unknown as typeof resp;
     } catch {
       return undefined;
@@ -1201,6 +1215,8 @@ export class ECSProvider implements ResourceProvider {
     if (td.containerDefinitions && td.containerDefinitions.length > 0) {
       result['ContainerDefinitions'] = td.containerDefinitions;
     }
+    const tags = normalizeAwsTagsToCfn(resp.tags);
+    if (tags.length > 0) result['Tags'] = tags;
     return result;
   }
 

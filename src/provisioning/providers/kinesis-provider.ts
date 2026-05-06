@@ -18,7 +18,11 @@ import { getLogger } from '../../utils/logger.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { generateResourceName } from '../resource-name.js';
-import { matchesCdkPath, resolveExplicitPhysicalId } from '../import-helpers.js';
+import {
+  matchesCdkPath,
+  normalizeAwsTagsToCfn,
+  resolveExplicitPhysicalId,
+} from '../import-helpers.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -373,7 +377,8 @@ export class KinesisStreamProvider implements ResourceProvider {
    *
    * Issues `DescribeStream` and surfaces the keys cdkd's `create()`
    * accepts: `Name`, `StreamModeDetails`, `ShardCount`, `RetentionPeriodHours`,
-   * and `StreamEncryption`. Tags are skipped (CDK auto-tag handling deferred).
+   * and `StreamEncryption`. Tags are surfaced via a follow-up
+   * `ListTagsForStream` with `aws:*` filtered out.
    *
    * `ShardCount` is reported as the count of `Shards[]` in the stream
    * description (only present for PROVISIONED-mode streams; ON_DEMAND
@@ -423,6 +428,20 @@ export class KinesisStreamProvider implements ResourceProvider {
       const encryption: Record<string, unknown> = { EncryptionType: stream.EncryptionType };
       if (stream.KeyId !== undefined) encryption['KeyId'] = stream.KeyId;
       result['StreamEncryption'] = encryption;
+    }
+
+    // Tags via ListTagsForStream.
+    try {
+      const tagsResp = await this.getClient().send(
+        new ListTagsForStreamCommand({ StreamName: physicalId })
+      );
+      const tags = normalizeAwsTagsToCfn(tagsResp.Tags);
+      if (tags.length > 0) result['Tags'] = tags;
+    } catch (err) {
+      if (err instanceof ResourceNotFoundException) return undefined;
+      this.logger.debug(
+        `Kinesis ListTagsForStream(${physicalId}) failed: ${err instanceof Error ? err.message : String(err)}`
+      );
     }
     return result;
   }

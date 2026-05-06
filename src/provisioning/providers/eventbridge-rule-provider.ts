@@ -18,7 +18,7 @@ import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { generateResourceName } from '../resource-name.js';
-import { matchesCdkPath } from '../import-helpers.js';
+import { matchesCdkPath, normalizeAwsTagsToCfn } from '../import-helpers.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -406,8 +406,10 @@ export class EventBridgeRuleProvider implements ResourceProvider {
    * it as the user typed it, typically an object), `ScheduleExpression`,
    * `State`, `RoleArn`, `Targets` (CFn shape `[{Id, Arn, ...}]`).
    *
-   * `Tags` is omitted (separate `ListTagsForResource` round-trip; auto-injected
-   * `aws:cdk:path` tag-shape question is out of scope here).
+   * `Tags` is surfaced via a follow-up `ListTagsForResource` call (using the
+   * rule ARN — the same `physicalId` cdkd state holds). CDK's `aws:*`
+   * auto-tags are filtered out; the result key is omitted entirely when AWS
+   * reports no user tags.
    *
    * Returns `undefined` when the rule is gone (`ResourceNotFoundException`).
    */
@@ -472,6 +474,20 @@ export class EventBridgeRuleProvider implements ResourceProvider {
       if (targetsResp.Targets && targetsResp.Targets.length > 0) {
         result['Targets'] = targetsResp.Targets;
       }
+    } catch (err) {
+      if (!(err instanceof ResourceNotFoundException)) {
+        throw err;
+      }
+    }
+
+    // Tags via ListTagsForResource. The rule ARN is the physicalId cdkd
+    // state holds.
+    try {
+      const tagsResp = await this.eventBridgeClient.send(
+        new ListTagsForResourceCommand({ ResourceARN: physicalId })
+      );
+      const tags = normalizeAwsTagsToCfn(tagsResp.Tags);
+      if (tags.length > 0) result['Tags'] = tags;
     } catch (err) {
       if (!(err instanceof ResourceNotFoundException)) {
         throw err;

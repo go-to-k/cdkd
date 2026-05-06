@@ -22,7 +22,7 @@ import {
 import { getLogger } from '../../utils/logger.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
-import { matchesCdkPath } from '../import-helpers.js';
+import { matchesCdkPath, normalizeAwsTagsToCfn } from '../import-helpers.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -902,10 +902,11 @@ export class Route53Provider implements ResourceProvider {
    *
    * Dispatch per resource type:
    *  - `HostedZone` → `GetHostedZone` (Name, HostedZoneConfig{Comment,
-   *    PrivateZone}, VPCs from `VPCs[]`). Tags are skipped (CDK auto-tag
-   *    handling deferred); QueryLoggingConfig is skipped because it's a
-   *    separate `ListQueryLoggingConfigs` call and the v1 surface does
-   *    not surface it.
+   *    PrivateZone}, VPCs from `VPCs[]`, HostedZoneTags via
+   *    `ListTagsForResource(ResourceType=hostedzone, ResourceId=<idTail>)`
+   *    with `aws:*` filtered out and the key omitted when empty).
+   *    QueryLoggingConfig is skipped because it's a separate
+   *    `ListQueryLoggingConfigs` call and the v1 surface does not surface it.
    *  - `RecordSet` → `ListResourceRecordSets` filtered to the exact
    *    `(name, type)` pair from the composite physicalId
    *    (`{zoneId}|{name}|{type}`). Surfaces TTL, ResourceRecords (with
@@ -959,6 +960,21 @@ export class Route53Provider implements ResourceProvider {
         if (v.VPCRegion !== undefined) out['VPCRegion'] = v.VPCRegion;
         return out;
       });
+    }
+
+    // HostedZoneTags via ListTagsForResource. Route 53 ResourceId is the
+    // zone id WITHOUT the "/hostedzone/" prefix.
+    const idTail = physicalId.replace(/^\/hostedzone\//, '');
+    try {
+      const tagsResp = await this.getClient().send(
+        new ListTagsForResourceCommand({ ResourceType: 'hostedzone', ResourceId: idTail })
+      );
+      const tags = normalizeAwsTagsToCfn(tagsResp.ResourceTagSet?.Tags);
+      if (tags.length > 0) result['HostedZoneTags'] = tags;
+    } catch (err) {
+      this.logger.debug(
+        `Route53 ListTagsForResource(${idTail}) failed: ${err instanceof Error ? err.message : String(err)}`
+      );
     }
     return result;
   }

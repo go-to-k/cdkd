@@ -84,3 +84,61 @@ export function matchesCdkPath(tags: readonly AwsTag[] | undefined, cdkPath: str
   }
   return false;
 }
+
+/**
+ * Re-shape an AWS tag list (any of the common shapes — array of `{Key, Value}`,
+ * map keyed by tag name, or v2-style array of `{TagKey, TagValue}`) into the
+ * canonical CFn shape (`Array<{Key, Value}>`) that cdkd state holds, with
+ * `aws:`-prefixed entries filtered out.
+ *
+ * AWS reserves the `aws:` tag prefix; CDK injects `aws:cdk:path` (and
+ * sometimes `aws:cdk:metadata`) on every resource it deploys. Those tags are
+ * NOT in cdkd state's `Tags` (they come from CDK template `Metadata`, not
+ * `Properties.Tags`), so leaving them in the AWS-current snapshot would fire
+ * false-positive drift on every CDK-deployed resource.
+ *
+ * Returns an empty array `[]` when AWS reports no user tags. Callers decide
+ * whether to surface `Tags: []` (most providers — matches the typical
+ * CFn behavior of always emitting Tags in templates) or omit the key
+ * entirely (when the corresponding `create()` only sets Tags when the user
+ * explicitly passes them — see each provider's docstring).
+ */
+export function normalizeAwsTagsToCfn(
+  tags:
+    | readonly AwsTag[]
+    | readonly { TagKey?: string | undefined; TagValue?: string | undefined }[]
+    | readonly { key?: string | undefined; value?: string | undefined }[]
+    | Record<string, string | undefined>
+    | undefined
+    | null
+): Array<{ Key: string; Value: string }> {
+  if (!tags) return [];
+  const out: Array<{ Key: string; Value: string }> = [];
+  if (Array.isArray(tags)) {
+    for (const t of tags) {
+      // Support {Key,Value} (most services), {TagKey,TagValue} (RDS/DocDB),
+      // and {key,value} (Step Functions / Glue / etc., lower-case).
+      const obj = t as Record<string, unknown>;
+      const k =
+        (typeof obj['Key'] === 'string' ? obj['Key'] : undefined) ??
+        (typeof obj['TagKey'] === 'string' ? obj['TagKey'] : undefined) ??
+        (typeof obj['key'] === 'string' ? obj['key'] : undefined);
+      const v =
+        (typeof obj['Value'] === 'string' ? obj['Value'] : undefined) ??
+        (typeof obj['TagValue'] === 'string' ? obj['TagValue'] : undefined) ??
+        (typeof obj['value'] === 'string' ? obj['value'] : undefined);
+      if (typeof k !== 'string' || k.length === 0) continue;
+      if (k.startsWith('aws:')) continue;
+      out.push({ Key: k, Value: typeof v === 'string' ? v : '' });
+    }
+  } else {
+    for (const [k, v] of Object.entries(tags)) {
+      if (!k || k.startsWith('aws:')) continue;
+      out.push({ Key: k, Value: typeof v === 'string' ? v : '' });
+    }
+  }
+  // Sort by Key for stable comparison against state (CDK templates
+  // produce sorted Tags; AWS API responses are unordered).
+  out.sort((a, b) => (a.Key < b.Key ? -1 : a.Key > b.Key ? 1 : 0));
+  return out;
+}

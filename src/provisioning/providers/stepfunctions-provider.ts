@@ -18,7 +18,7 @@ import { getLogger } from '../../utils/logger.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { generateResourceName } from '../resource-name.js';
-import { CDK_PATH_TAG } from '../import-helpers.js';
+import { CDK_PATH_TAG, normalizeAwsTagsToCfn } from '../import-helpers.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -296,8 +296,9 @@ export class StepFunctionsProvider implements ResourceProvider {
    * time and not surfaced by `DescribeStateMachine` (the response carries
    * the already-substituted definition).
    *
-   * `Tags` is omitted (separate `ListTagsForResource` round-trip; auto-injected
-   * `aws:cdk:path` tag-shape question is out of scope here).
+   * `Tags` is surfaced via a follow-up `ListTagsForResource(arn)` call.
+   * CDK's `aws:*` auto-tags are filtered out; the result key is omitted
+   * entirely when AWS reports no user tags.
    *
    * Returns `undefined` when the state machine is gone (`StateMachineDoesNotExist`).
    */
@@ -372,6 +373,17 @@ export class StepFunctionsProvider implements ResourceProvider {
           resp.encryptionConfiguration.kmsDataKeyReusePeriodSeconds;
       }
       if (Object.keys(ec).length > 0) result['EncryptionConfiguration'] = ec;
+    }
+
+    // Tags via ListTagsForResource (state machine ARN is the physicalId).
+    try {
+      const tagsResp = await this.getClient().send(
+        new ListTagsForResourceCommand({ resourceArn: physicalId })
+      );
+      const tags = normalizeAwsTagsToCfn(tagsResp.tags);
+      if (tags.length > 0) result['Tags'] = tags;
+    } catch (err) {
+      if (!(err instanceof StateMachineDoesNotExist)) throw err;
     }
 
     return result;

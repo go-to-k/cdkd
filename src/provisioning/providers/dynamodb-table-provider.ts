@@ -19,7 +19,11 @@ import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { generateResourceName } from '../resource-name.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
-import { matchesCdkPath, resolveExplicitPhysicalId } from '../import-helpers.js';
+import {
+  matchesCdkPath,
+  normalizeAwsTagsToCfn,
+  resolveExplicitPhysicalId,
+} from '../import-helpers.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -380,10 +384,12 @@ export class DynamoDBTableProvider implements ResourceProvider {
    *
    * Returns `undefined` when the table is gone (`ResourceNotFoundException`).
    *
-   * Tags are intentionally omitted: `ListTagsOfResource` is a separate call
-   * and tag drift is generally less interesting than table-config drift;
-   * including it would also force a tag-shape decision on the
-   * `aws:cdk:path` auto-tag, which is out of scope here.
+   * Tags are surfaced via a follow-up `ListTagsOfResource` call (DynamoDB
+   * doesn't include tags in `DescribeTable`). CDK's `aws:*` auto-tags are
+   * filtered out by `normalizeAwsTagsToCfn` so they don't fire false-positive
+   * drift, and the result key is omitted entirely when AWS reports no user
+   * tags (matches `create()`'s behavior of only sending Tags when the
+   * template carries them).
    */
   async readCurrentState(
     physicalId: string,
@@ -443,6 +449,22 @@ export class DynamoDBTableProvider implements ResourceProvider {
       }
       if (table.TableClassSummary?.TableClass) {
         result['TableClass'] = table.TableClassSummary.TableClass;
+      }
+
+      // Tags via ListTagsOfResource — needs the table ARN we just got back.
+      if (table.TableArn) {
+        try {
+          const tagsResp = await this.dynamoDBClient.send(
+            new ListTagsOfResourceCommand({ ResourceArn: table.TableArn })
+          );
+          const tags = normalizeAwsTagsToCfn(tagsResp.Tags);
+          if (tags.length > 0) result['Tags'] = tags;
+        } catch (err) {
+          // Tag fetch failures shouldn't tank the whole drift read; rethrow
+          // only on hard "table gone" semantics.
+          if (err instanceof ResourceNotFoundException) return undefined;
+          throw err;
+        }
       }
 
       return result;

@@ -19,7 +19,11 @@ import { getLogger } from '../../utils/logger.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
-import { matchesCdkPath, resolveExplicitPhysicalId } from '../import-helpers.js';
+import {
+  matchesCdkPath,
+  normalizeAwsTagsToCfn,
+  resolveExplicitPhysicalId,
+} from '../import-helpers.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -336,10 +340,13 @@ export class EventBridgeBusProvider implements ResourceProvider {
    * the user typed it, which may be either an object or a string — the
    * comparator handles either side).
    *
-   * `Tags` and `EventSourceName` are intentionally omitted: tags require a
-   * separate `ListTagsForResource` round-trip and the auto-injected
-   * `aws:cdk:path` tag-shape question is out of scope; `EventSourceName`
-   * is set at create time only and not surfaced by `DescribeEventBus`.
+   * `Tags` is surfaced via a follow-up `ListTagsForResource` call (using the
+   * bus ARN from the same `DescribeEventBus` response). CDK's `aws:*`
+   * auto-tags are filtered out; the result key is omitted when AWS reports
+   * no user tags.
+   *
+   * `EventSourceName` is intentionally omitted: it is set at create time
+   * only and not surfaced by `DescribeEventBus`.
    *
    * Returns `undefined` when the bus is gone (`ResourceNotFoundException`).
    */
@@ -368,6 +375,20 @@ export class EventBridgeBusProvider implements ResourceProvider {
           result['Policy'] = JSON.parse(resp.Policy) as unknown;
         } catch {
           result['Policy'] = resp.Policy;
+        }
+      }
+      // Tags via ListTagsForResource (needs the bus ARN that DescribeEventBus
+      // just returned).
+      if (resp.Arn) {
+        try {
+          const tagsResp = await this.eventBridgeClient.send(
+            new ListTagsForResourceCommand({ ResourceARN: resp.Arn })
+          );
+          const tags = normalizeAwsTagsToCfn(tagsResp.Tags);
+          if (tags.length > 0) result['Tags'] = tags;
+        } catch (err) {
+          if (err instanceof ResourceNotFoundException) return undefined;
+          throw err;
         }
       }
       return result;
