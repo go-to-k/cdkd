@@ -93,6 +93,27 @@ export interface ResolvedStateBucket {
 }
 
 /**
+ * Resolve the `--capture-observed-state` / `--no-capture-observed-state`
+ * option's effective value, falling through to `cdk.json
+ * context.cdkd.captureObservedState` when the CLI flag was not passed.
+ *
+ * Commander reports `--no-X` flags by emitting `x: false` (which the deploy
+ * command's TS type carries as `captureObservedState: boolean`). We can't
+ * tell from that whether the user explicitly opted out vs. accepted the
+ * default `true`, so the cdk.json fallback only fires when the CLI value
+ * is the implicit default (`true`). Pass `--no-capture-observed-state`
+ * to overrule a `cdk.json: { captureObservedState: true }` explicitly.
+ */
+export function resolveCaptureObservedState(cliValue: boolean): boolean {
+  if (cliValue === false) return false;
+  const cdkJson = loadCdkJson();
+  const cdkdContext = cdkJson?.context?.['cdkd'] as Record<string, unknown> | undefined;
+  const v = cdkdContext?.['captureObservedState'];
+  if (typeof v === 'boolean') return v;
+  return true;
+}
+
+/**
  * Resolve the --state-bucket option from CLI, cdk.json context, or environment
  *
  * Priority: CLI option > CDKD_STATE_BUCKET env > cdk.json context.cdkd.stateBucket

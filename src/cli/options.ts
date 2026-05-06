@@ -431,6 +431,15 @@ export const deployOptions = [
   new Option('--dry-run', 'Show changes without applying').default(false),
   new Option('--skip-assets', 'Skip asset publishing').default(false),
   new Option('--no-rollback', 'Skip rollback on deployment failure'),
+  new Option(
+    '--no-capture-observed-state',
+    'Skip capturing AWS-current properties after each create/update ' +
+      '(adds a fire-and-forget readCurrentState per resource so cdkd drift can ' +
+      'compare against the real deploy-time AWS snapshot instead of the ' +
+      'template). On by default. Disable when deploy speed matters more than ' +
+      'rich drift detection — falls back to comparing against template ' +
+      'properties (the pre-v3 behavior).'
+  ),
   noWaitOption,
   aggressiveVpcParallelOption,
   new Option(

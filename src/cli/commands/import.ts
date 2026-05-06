@@ -27,7 +27,11 @@ import type {
   ResourceImportResult,
   TemplateResource,
 } from '../../types/resource.js';
-import type { ResourceState, StackState } from '../../types/state.js';
+import {
+  STATE_SCHEMA_VERSION_CURRENT,
+  type ResourceState,
+  type StackState,
+} from '../../types/state.js';
 
 interface ImportOptions {
   app?: string;
@@ -769,7 +773,7 @@ function buildStackState(
     };
   }
   return {
-    version: 2,
+    version: STATE_SCHEMA_VERSION_CURRENT,
     stackName,
     region,
     resources,

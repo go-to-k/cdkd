@@ -186,9 +186,27 @@ auto-migrates: it writes the new region-scoped key, then deletes the legacy
 key. The legacy read path is temporary and will be removed in a future PR
 (see `docs/plans/99-future-bc-removal.md`).
 
-An older cdkd binary that only knows `version: 1` will **fail with a clear
-error** if it sees a `version: 2` blob (`Unsupported state schema version
-2. Upgrade cdkd.`) instead of silently mishandling unknown fields.
+An older cdkd binary that only knows an earlier version will **fail with
+a clear error** if it sees a higher-versioned blob (e.g. `Unsupported
+state schema version 3. Upgrade cdkd.`) instead of silently mishandling
+unknown fields.
+
+### `version: 3` adds `observedProperties` (current writers)
+
+Schema `version: 3` adds an optional `observedProperties` field to each
+`ResourceState`. Writers always emit `version: 3`. The on-disk key layout
+(`cdkd/{stackName}/{region}/state.json`) is unchanged from `version: 2` —
+only the per-resource shape grew. v2 readers see a `version: 3` blob and
+fail clearly with the same "upgrade cdkd" error as above.
+
+`observedProperties` is the AWS-current snapshot of a resource's
+properties as captured by `provider.readCurrentState` immediately after
+each successful create / update. The `cdkd drift` comparator prefers it
+as the baseline so changes the user did not template (a manual tag added
+in the AWS console, an inline policy attached out-of-band, etc.) surface
+as drift instead of being silently ignored. Resources with
+`observedProperties: undefined` (older state, or providers without
+`readCurrentState`) fall back to comparing against `properties`.
 
 ## State Schema
 
@@ -196,9 +214,9 @@ error** if it sees a `version: 2` blob (`Unsupported state schema version
 
 ```typescript
 interface StackState {
-  version: 1 | 2                           // 1 = legacy, 2 = region-prefixed
+  version: 1 | 2 | 3                       // 1 = legacy, 2 = region-prefixed, 3 = +observedProperties
   stackName: string                        // Stack name
-  region?: string                          // Required on version: 2
+  region?: string                          // Required on version >= 2
   resources: Record<string, ResourceState> // Logical ID → Resource state
   outputs: Record<string, string>          // Output name → Resolved value
   lastModified: number                     // Unix timestamp (milliseconds)
@@ -209,7 +227,7 @@ interface StackState {
 
 ```json
 {
-  "version": 2,
+  "version": 3,
   "stackName": "MyAppStack",
   "region": "us-east-1",
   "resources": {
@@ -261,13 +279,22 @@ interface StackState {
 
 ```typescript
 interface ResourceState {
-  physicalId: string                     // AWS physical ID (ARN, name, etc.)
-  resourceType: string                   // CloudFormation resource type
-  properties: Record<string, any>        // Resource properties
-  attributes: Record<string, any>        // Attributes for Fn::GetAtt
-  dependencies: string[]                 // List of dependent logical IDs
+  physicalId: string                       // AWS physical ID (ARN, name, etc.)
+  resourceType: string                     // CloudFormation resource type
+  properties: Record<string, any>          // Resolved template intent (what cdkd was asked to deploy)
+  observedProperties?: Record<string, any> // AWS-current snapshot at deploy time (drift baseline)
+  attributes: Record<string, any>          // Attributes for Fn::GetAtt
+  dependencies: string[]                   // List of dependent logical IDs
 }
 ```
+
+`properties` records the user's intent (the resolved CloudFormation
+template values cdkd asked AWS to apply). `observedProperties` records
+what AWS actually has — captured by `provider.readCurrentState`
+immediately after each create/update so it includes AWS-side defaults
+the user did not template. The `cdkd drift` comparator prefers
+`observedProperties` as its baseline for richer detection; resources
+without it fall back to `properties` (the pre-`version: 3` behavior).
 
 #### physicalId Format
 

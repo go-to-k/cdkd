@@ -433,7 +433,15 @@ async function runDriftForStack(
       const ignorePaths = provider.getDriftUnknownPaths
         ? provider.getDriftUnknownPaths(resource.resourceType)
         : [];
-      const changes = calculateResourceDrift(resource.properties ?? {}, aws, { ignorePaths });
+      // Prefer the observedProperties baseline (deploy-time AWS snapshot)
+      // when present — this is what makes "console-side change to a key
+      // the user did not template" surface as drift, instead of being
+      // silently ignored because the key is absent from `properties`.
+      // Resources written by an older binary (or by a provider without
+      // readCurrentState) lack observedProperties; falling back to
+      // `properties` preserves the pre-v3 behavior for those.
+      const baseline = resource.observedProperties ?? resource.properties ?? {};
+      const changes = calculateResourceDrift(baseline, aws, { ignorePaths });
       if (changes.length === 0) {
         outcomes.push({ kind: 'clean', logicalId, resourceType: resource.resourceType });
       } else {
@@ -537,24 +545,29 @@ async function runAccept(
 
     await lockManager.acquireLock(report.stackName, report.region, owner, 'drift-accept');
     try {
-      // Build the mutated resources map. We deep-copy each touched
-      // resource's properties so we don't mutate the in-memory state
-      // object the caller might still reference.
+      // Build the mutated resources map. The drift comparator's baseline
+      // is `observedProperties ?? properties` (see runDriftForStack), so
+      // `--accept` mutates `observedProperties` to match AWS-current and
+      // leaves `properties` (= the user's last-deployed template intent)
+      // untouched. For resources that have no observedProperties yet
+      // (older binary's state, or providers without readCurrentState),
+      // `--accept` falls back to mutating `properties` — which matches
+      // the pre-v3 behavior for those resources.
       const resources: Record<string, ResourceState> = { ...report.state.resources };
       for (const outcome of driftedOutcomes) {
         const existing = resources[outcome.logicalId];
         if (!existing) continue;
-        const newProperties = JSON.parse(JSON.stringify(existing.properties ?? {})) as Record<
-          string,
-          unknown
-        >;
+        const hasObserved = existing.observedProperties !== undefined;
+        const baselineSource = hasObserved
+          ? existing.observedProperties
+          : (existing.properties ?? {});
+        const newBaseline = JSON.parse(JSON.stringify(baselineSource)) as Record<string, unknown>;
         for (const change of outcome.changes) {
-          setAtPath(newProperties, change.path, change.awsValue);
+          setAtPath(newBaseline, change.path, change.awsValue);
         }
-        resources[outcome.logicalId] = {
-          ...existing,
-          properties: newProperties,
-        };
+        resources[outcome.logicalId] = hasObserved
+          ? { ...existing, observedProperties: newBaseline }
+          : { ...existing, properties: newBaseline };
       }
 
       const newState: StackState = {
@@ -659,6 +672,13 @@ async function runRevert(
           return;
         }
         const provider: ResourceProvider = providerRegistry.getProvider(outcome.resourceType);
+        // The baseline drift was computed against — `observedProperties`
+        // when present, else `properties` — is the right "desired" value
+        // to push back to AWS. Using `properties` alone would push the
+        // last-deployed template intent and miss any AWS-side defaults
+        // we captured at deploy time but never wrote into the template.
+        const desiredProperties =
+          stateResource.observedProperties ?? stateResource.properties ?? {};
         try {
           await withRetry(
             () =>
@@ -666,7 +686,7 @@ async function runRevert(
                 outcome.logicalId,
                 stateResource.physicalId,
                 outcome.resourceType,
-                stateResource.properties ?? {},
+                desiredProperties,
                 outcome.awsProperties
               ),
             outcome.logicalId,

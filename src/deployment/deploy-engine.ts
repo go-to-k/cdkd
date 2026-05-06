@@ -101,6 +101,19 @@ export interface DeployEngineOptions {
    * the call site for matching types.
    */
   resourceTimeoutByType?: Record<string, number>;
+  /**
+   * When true, kick off `provider.readCurrentState` immediately after
+   * each successful create / update so its result lands in
+   * `ResourceState.observedProperties` for the drift comparator. Calls
+   * are fire-and-forget — the deploy critical path does NOT block on
+   * them — and a final `Promise.all` drains the in-flight set right
+   * before the success state save.
+   *
+   * Defaults to `true`. Pass `--no-capture-observed-state` (or set
+   * `cdk.json context.cdkd.captureObservedState: false`) to disable
+   * when deploy speed is more important than rich drift detection.
+   */
+  captureObservedState?: boolean;
 }
 
 /**
@@ -157,6 +170,20 @@ export class DeployEngine {
   private interrupted = false;
 
   /**
+   * In-flight `provider.readCurrentState` promises kicked off after a
+   * successful CREATE / UPDATE. The deploy critical path does NOT
+   * `await` these; instead they're drained at the end of `doDeploy`
+   * (success path only) and the resolved values are merged into
+   * `ResourceState.observedProperties` before the final state save.
+   *
+   * Each Promise resolves to the AWS-current snapshot, or `undefined`
+   * if the provider does not implement `readCurrentState` or the call
+   * threw — never rejects, so an unhandled-rejection cannot escape.
+   */
+  private observedCaptureTasks: Map<string, Promise<Record<string, unknown> | undefined>> =
+    new Map();
+
+  /**
    * Target region for this stack. Required — load-bearing for the
    * region-prefixed S3 state key and recorded in state.json for
    * cross-region destroy.
@@ -181,6 +208,11 @@ export class DeployEngine {
     this.options.resourceWarnAfterMs =
       options.resourceWarnAfterMs ?? DEFAULT_RESOURCE_WARN_AFTER_MS;
     this.options.resourceTimeoutMs = options.resourceTimeoutMs ?? DEFAULT_RESOURCE_TIMEOUT_MS;
+    // Default ON: drift detection without observedProperties is the
+    // pre-PR behavior and we want the upgrade to be a strict superset.
+    // The opt-out exists for users who care more about deploy speed
+    // than the +0-10% drift-baseline overhead.
+    this.options.captureObservedState = options.captureObservedState ?? true;
   }
 
   /**
@@ -192,6 +224,71 @@ export class DeployEngine {
     // See `src/provisioning/resource-name.ts` for the AsyncLocalStorage
     // background.
     return withStackName(stackName, () => this.doDeploy(stackName, template));
+  }
+
+  /**
+   * Kick off `provider.readCurrentState` for a freshly-created/updated
+   * resource without blocking the deploy critical path. The promise
+   * lands in `observedCaptureTasks` keyed by `logicalId`; the deploy's
+   * success-path drain (`drainObservedCaptures`) awaits the full set
+   * and merges the resolved values into `ResourceState.observedProperties`
+   * before the final state save.
+   *
+   * Errors are swallowed at the Promise level — readCurrentState
+   * failing must not fail the deploy. The map entry resolves to
+   * `undefined` for failures and for providers without
+   * `readCurrentState`; both translate to "no observedProperties" at
+   * the merge step, which is fine: drift falls back to comparing
+   * against `properties`.
+   */
+  private kickOffObservedCapture(
+    provider: ResourceProvider,
+    logicalId: string,
+    physicalId: string,
+    resourceType: string,
+    resolvedProps: Record<string, unknown>
+  ): void {
+    if (this.options.captureObservedState !== true) return;
+    if (!provider.readCurrentState) return;
+
+    const promise = provider
+      .readCurrentState(physicalId, logicalId, resourceType, resolvedProps)
+      .catch((err: unknown) => {
+        this.logger.debug(
+          `observedProperties capture for ${logicalId} (${resourceType}) failed: ${err instanceof Error ? err.message : String(err)} — drift will fall back to template properties for this resource until the next successful deploy.`
+        );
+        return undefined;
+      });
+    this.observedCaptureTasks.set(logicalId, promise);
+  }
+
+  /**
+   * Wait for every in-flight `readCurrentState` promise from the
+   * deploy's success path, then merge each resolved snapshot into the
+   * matching `ResourceState.observedProperties`. After this runs the
+   * map is drained so a subsequent deploy starts fresh.
+   *
+   * Called from `doDeploy` immediately before the final `saveState`.
+   * The rollback / failure paths intentionally do NOT call this — a
+   * failed deploy's partial state is already inconsistent, and waiting
+   * on potentially many in-flight reads would slow down the rollback
+   * itself.
+   */
+  private async drainObservedCaptures(
+    stateResources: Record<string, ResourceState>
+  ): Promise<void> {
+    if (this.observedCaptureTasks.size === 0) return;
+    const entries = Array.from(this.observedCaptureTasks.entries());
+    this.observedCaptureTasks.clear();
+    const resolved = await Promise.all(entries.map(([, p]) => p));
+    for (let i = 0; i < entries.length; i++) {
+      const logicalId = entries[i]![0];
+      const observed = resolved[i];
+      const target = stateResources[logicalId];
+      if (target && observed !== undefined) {
+        target.observedProperties = observed;
+      }
+    }
   }
 
   private async doDeploy(
@@ -358,7 +455,14 @@ export class DeployEngine {
         migrationPending
       );
 
-      // 7. Save final state (ETag may have been updated by partial saves).
+      // 7a. Drain in-flight readCurrentState promises so each resource's
+      // observedProperties lands in newState before we persist it. By
+      // this point the deploy critical path is over, so awaiting the
+      // remaining captures only adds the longest still-pending read
+      // (typically <300ms in practice for medium stacks; see PR notes).
+      await this.drainObservedCaptures(newState.resources);
+
+      // 7b. Save final state (ETag may have been updated by partial saves).
       // The legacy migration delete (when migrationPending) was already done by
       // the first per-resource save inside executeDeployment, so this final
       // save is unconditionally region-scoped.
@@ -383,6 +487,13 @@ export class DeployEngine {
 
       // Remove SIGINT handler
       process.removeListener('SIGINT', sigintHandler);
+
+      // On a rollback / SIGINT exit we may leave in-flight readCurrentState
+      // promises in the map (the success path drains them above). Clear the
+      // map so a re-used engine instance does not accumulate stale entries
+      // across deploys. The underlying promises already have a `.catch` so
+      // dropping the references will not produce an unhandled rejection.
+      this.observedCaptureTasks.clear();
 
       // Always release lock
       try {
@@ -1145,6 +1256,14 @@ export class DeployEngine {
           ...(dependencies && dependencies.length > 0 && { dependencies }),
         };
 
+        this.kickOffObservedCapture(
+          provider,
+          logicalId,
+          result.physicalId,
+          resourceType,
+          resolvedProps
+        );
+
         if (counts) counts.created++;
         if (progress) progress.current++;
         const createPrefix = progress ? `[${progress.current}/${progress.total}] ` : '  ';
@@ -1249,6 +1368,14 @@ export class DeployEngine {
             ...(dependencies && dependencies.length > 0 && { dependencies }),
           };
 
+          this.kickOffObservedCapture(
+            provider,
+            logicalId,
+            createResult.physicalId,
+            resourceType,
+            resolvedProps
+          );
+
           if (counts) counts.updated++;
           if (progress) progress.current++;
           const replacePrefix = progress ? `[${progress.current}/${progress.total}] ` : '  ';
@@ -1345,6 +1472,14 @@ export class DeployEngine {
             ...(result.attributes && { attributes: result.attributes }),
             ...(dependencies && dependencies.length > 0 && { dependencies }),
           };
+
+          this.kickOffObservedCapture(
+            provider,
+            logicalId,
+            result.physicalId,
+            resourceType,
+            resolvedProps
+          );
 
           if (counts) counts.updated++;
           if (progress) progress.current++;

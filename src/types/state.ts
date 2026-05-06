@@ -3,14 +3,27 @@
  *
  * - 1 — legacy layout: `s3://{bucket}/cdkd/{stackName}/state.json` (pre PR 1).
  * - 2 — region-prefixed layout: `s3://{bucket}/cdkd/{stackName}/{region}/state.json`.
+ * - 3 — adds `ResourceState.observedProperties` (AWS-current snapshot
+ *       captured at deploy/import time, used as the drift comparator's
+ *       baseline). Layout is the same as v2; only the resource-level shape
+ *       grew. v2 readers see v3 as `version: 3` and fail clearly.
  *
- * cdkd readers handle both. Writers always emit `version: 2`. An older cdkd
- * binary that only knows `version: 1` will fail with a clear error when it
- * encounters `version: 2`, rather than silently mishandling the new format.
+ * cdkd readers handle every prior version. Writers always emit
+ * `STATE_SCHEMA_VERSION_CURRENT`. An older cdkd binary that only knows an
+ * earlier version will fail with a clear error when it encounters a higher
+ * version, rather than silently mishandling the new format.
  */
-export type StateSchemaVersion = 1 | 2;
+export type StateSchemaVersion = 1 | 2 | 3;
 export const STATE_SCHEMA_VERSION_LEGACY: StateSchemaVersion = 1;
-export const STATE_SCHEMA_VERSION_CURRENT: StateSchemaVersion = 2;
+export const STATE_SCHEMA_VERSION_CURRENT: StateSchemaVersion = 3;
+
+/**
+ * Every schema version this binary can read. Writers always emit
+ * `STATE_SCHEMA_VERSION_CURRENT`; older versions are accepted for
+ * forward-migration, and an unknown / future version triggers an explicit
+ * "upgrade cdkd" error in the parser.
+ */
+export const STATE_SCHEMA_VERSIONS_READABLE: readonly StateSchemaVersion[] = [1, 2, 3];
 
 /**
  * Stack state stored in S3
@@ -53,6 +66,20 @@ export interface ResourceState {
 
   /** Resource properties */
   properties: Record<string, unknown>;
+
+  /**
+   * AWS-current snapshot of this resource's properties as returned by
+   * `provider.readCurrentState` immediately after a successful create /
+   * update / import. Used as the drift comparator's baseline (instead of
+   * `properties`) so console-side changes to keys the user did not
+   * template still surface as drift.
+   *
+   * Optional for backwards compatibility — resources written by an older
+   * cdkd binary (v2 state, or v3 state on a provider that does not
+   * implement `readCurrentState`) keep this field undefined; the drift
+   * command falls back to comparing against `properties` in that case.
+   */
+  observedProperties?: Record<string, unknown>;
 
   /** Resource attributes for Fn::GetAtt resolution */
   attributes?: Record<string, unknown>;

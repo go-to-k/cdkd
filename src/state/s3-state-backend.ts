@@ -10,7 +10,7 @@ import {
 } from '@aws-sdk/client-s3';
 import {
   STATE_SCHEMA_VERSION_CURRENT,
-  STATE_SCHEMA_VERSION_LEGACY,
+  STATE_SCHEMA_VERSIONS_READABLE,
   type StackState,
 } from '../types/state.js';
 import type { StateBackendConfig } from '../types/config.js';
@@ -614,14 +614,10 @@ export class S3StateBackend {
     }
 
     const v = parsed.version;
-    if (
-      v !== STATE_SCHEMA_VERSION_LEGACY &&
-      v !== STATE_SCHEMA_VERSION_CURRENT &&
-      v !== undefined
-    ) {
+    if (v !== undefined && !STATE_SCHEMA_VERSIONS_READABLE.includes(v)) {
       throw new StateError(
         `Unsupported state schema version ${String(v)} for stack '${stackName}'. ` +
-          `This cdkd binary supports versions ${String(STATE_SCHEMA_VERSION_LEGACY)} and ${String(STATE_SCHEMA_VERSION_CURRENT)}. ` +
+          `This cdkd binary supports versions ${STATE_SCHEMA_VERSIONS_READABLE.join(', ')}. ` +
           `Upgrade cdkd to a version that supports schema ${String(v)}.`
       );
     }

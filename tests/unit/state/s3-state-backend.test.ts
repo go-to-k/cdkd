@@ -11,7 +11,7 @@ import {
 } from '@aws-sdk/client-s3';
 import { S3StateBackend } from '../../../src/state/s3-state-backend.js';
 import type { StateBackendConfig } from '../../../src/types/config.js';
-import type { StackState } from '../../../src/types/state.js';
+import { STATE_SCHEMA_VERSION_CURRENT, type StackState } from '../../../src/types/state.js';
 import { StateError } from '../../../src/utils/error-handler.js';
 import { clearBucketRegionCache } from '../../../src/utils/aws-region-resolver.js';
 
@@ -345,10 +345,11 @@ describe('S3StateBackend region-prefixed key layout (PR 1)', () => {
     });
 
     it('rejects an unsupported future schema version with a clear error', async () => {
-      // An old cdkd binary (version 1/2) trying to read a `version: 3` blob
-      // must fail with a clear "upgrade cdkd" error rather than silently
-      // mishandling unknown fields.
-      const future = { version: 3, stackName: 'X', resources: {}, outputs: {}, lastModified: 0 };
+      // An old cdkd binary trying to read a `version: 99` blob must fail
+      // with a clear "upgrade cdkd" error rather than silently mishandling
+      // unknown fields. Use a sentinel version far above what readers
+      // currently recognise so the test stays accurate as the schema grows.
+      const future = { version: 99, stackName: 'X', resources: {}, outputs: {}, lastModified: 0 };
       s3Client.send.mockResolvedValueOnce({
         Body: { transformToString: () => Promise.resolve(JSON.stringify(future)) },
         ETag: '"e"',
@@ -356,13 +357,13 @@ describe('S3StateBackend region-prefixed key layout (PR 1)', () => {
 
       const caught = await backend.getState('X', 'us-east-1').catch((e: unknown) => e);
       expect(caught).toBeInstanceOf(StateError);
-      expect((caught as Error).message).toMatch(/Unsupported state schema version 3/);
+      expect((caught as Error).message).toMatch(/Unsupported state schema version 99/);
       expect((caught as Error).message).toMatch(/Upgrade cdkd/);
     });
   });
 
   describe('saveState', () => {
-    it('writes to the new region-scoped key and forces version: 2 on disk', async () => {
+    it('writes to the new region-scoped key and forces the current schema version on disk', async () => {
       s3Client.send.mockResolvedValueOnce({ ETag: '"new"' });
 
       const etag = await backend.saveState('MyStack', 'us-west-2', v1State('MyStack', 'us-west-2'));
@@ -372,9 +373,10 @@ describe('S3StateBackend region-prefixed key layout (PR 1)', () => {
       expect(put).toBeInstanceOf(PutObjectCommand);
       expect(put.input.Key).toBe('cdkd/MyStack/us-west-2/state.json');
       const persisted = JSON.parse(put.input.Body) as StackState;
-      // Schema version is bumped to 2 even when the caller passed a `version: 1`
-      // body — the on-disk format is always current.
-      expect(persisted.version).toBe(2);
+      // Schema version is bumped to current even when the caller passed a
+      // `version: 1` body — the on-disk format is always current. Compare
+      // against the constant so this stays accurate when the schema grows.
+      expect(persisted.version).toBe(STATE_SCHEMA_VERSION_CURRENT);
       expect(persisted.region).toBe('us-west-2');
       expect(persisted.stackName).toBe('MyStack');
     });

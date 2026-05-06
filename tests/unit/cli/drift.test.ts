@@ -146,6 +146,7 @@ function makeResource(overrides: Partial<ResourceState> = {}): ResourceState {
     physicalId: overrides.physicalId ?? 'phys-id',
     resourceType: overrides.resourceType ?? 'AWS::S3::Bucket',
     properties: overrides.properties ?? {},
+    ...(overrides.observedProperties && { observedProperties: overrides.observedProperties }),
     ...(overrides.attributes && { attributes: overrides.attributes }),
     ...(overrides.dependencies && { dependencies: overrides.dependencies }),
   };
@@ -243,6 +244,68 @@ describe('cdkd drift', () => {
     expect(output).toContain('- VersioningConfiguration.Status: Enabled');
     expect(output).toContain('+ VersioningConfiguration.Status: Suspended');
     expect(exitSpy).toHaveBeenCalledWith(1);
+  });
+
+  it('uses observedProperties as baseline when present (catches console-side changes to keys not in template)', async () => {
+    // Simulates a v3 state record: deploy captured AWS-current
+    // properties into observedProperties, including a `Tags` key the
+    // user did not set in their CDK template. A console-side change
+    // adding a tag must surface as drift even though `properties` has
+    // no Tags key.
+    mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+    mockGetState.mockResolvedValueOnce(
+      makeState({
+        Bucket1: makeResource({
+          physicalId: 'b',
+          resourceType: 'AWS::S3::Bucket',
+          properties: { BucketName: 'b' },
+          observedProperties: { BucketName: 'b', Tags: [] },
+        }),
+      })
+    );
+    mockRegistryGetProvider.mockReturnValue({
+      readCurrentState: async () => ({
+        BucketName: 'b',
+        Tags: [{ Key: 'env', Value: 'prod' }],
+      }),
+    });
+
+    const { output, error } = await runDrift(['TestStack']);
+
+    expect((error as Error | undefined)?.message).toBe('__exit__');
+    expect(output).toContain('drift detected on 1 resource');
+    expect(output).toContain('~ Bucket1 (AWS::S3::Bucket)');
+    expect(output).toContain('Tags');
+  });
+
+  it('falls back to properties baseline when observedProperties is absent (older state files)', async () => {
+    // Pre-v3 state record (or a provider with no readCurrentState
+    // capture): no observedProperties. Drift comparator must keep its
+    // pre-v3 behaviour and only compare keys present in `properties`.
+    mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+    mockGetState.mockResolvedValueOnce(
+      makeState({
+        Bucket1: makeResource({
+          physicalId: 'b',
+          resourceType: 'AWS::S3::Bucket',
+          properties: { BucketName: 'b' },
+          // observedProperties intentionally omitted.
+        }),
+      })
+    );
+    mockRegistryGetProvider.mockReturnValue({
+      // AWS-side has tags now, but cdkd state has no Tags key in
+      // properties — fallback baseline = properties = no Tags = no drift.
+      readCurrentState: async () => ({
+        BucketName: 'b',
+        Tags: [{ Key: 'env', Value: 'prod' }],
+      }),
+    });
+
+    const { output, error } = await runDrift(['TestStack']);
+
+    expect(error).toBeUndefined();
+    expect(output).toContain('no drift detected');
   });
 
   it('skips state property paths declared by getDriftUnknownPaths so they never fire false drift', async () => {

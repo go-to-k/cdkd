@@ -27,7 +27,11 @@ import { WorkGraph } from '../../deployment/work-graph.js';
 import { setAwsClients, AwsClients } from '../../utils/aws-clients.js';
 import { applyRoleArnIfSet } from '../../utils/role-arn.js';
 import { runStackBuffered } from '../../utils/stack-context.js';
-import { resolveApp, resolveStateBucketWithDefault } from '../config-loader.js';
+import {
+  resolveApp,
+  resolveCaptureObservedState,
+  resolveStateBucketWithDefault,
+} from '../config-loader.js';
 import { matchStacks, describeStack } from '../stack-matcher.js';
 
 /**
@@ -53,6 +57,7 @@ async function deployCommand(
     skipAssets: boolean;
     rollback: boolean;
     wait: boolean;
+    captureObservedState: boolean;
     aggressiveVpcParallel: boolean;
     exclusively: boolean;
     yes: boolean;
@@ -339,6 +344,7 @@ async function deployCommand(
           concurrency: options.concurrency,
           dryRun: options.dryRun,
           noRollback: !options.rollback,
+          captureObservedState: resolveCaptureObservedState(options.captureObservedState),
           ...(options.resourceWarnAfter?.globalMs !== undefined && {
             resourceWarnAfterMs: options.resourceWarnAfter.globalMs,
           }),

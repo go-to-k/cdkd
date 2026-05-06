@@ -27,6 +27,7 @@ import {
   loadCdkJson,
   loadUserCdkJson,
   resolveApp,
+  resolveCaptureObservedState,
   resolveStateBucket,
   resolveStateBucketWithSource,
   getDefaultStateBucketName,
@@ -588,6 +589,37 @@ describe('config-loader', () => {
       const result = await fn(undefined, 'us-east-1');
 
       expect(result).toEqual({ bucket: 'cdkd-state-123456789012', source: 'default' });
+    });
+  });
+
+  describe('resolveCaptureObservedState', () => {
+    it('returns false when CLI explicitly opts out, regardless of cdk.json', () => {
+      vi.mocked(existsSync).mockReturnValue(true);
+      vi.mocked(readFileSync).mockReturnValue(
+        JSON.stringify({ context: { cdkd: { captureObservedState: true } } })
+      );
+      expect(resolveCaptureObservedState(false)).toBe(false);
+    });
+
+    it('returns false when cdk.json sets captureObservedState=false and CLI is at default', () => {
+      vi.mocked(existsSync).mockReturnValue(true);
+      vi.mocked(readFileSync).mockReturnValue(
+        JSON.stringify({ context: { cdkd: { captureObservedState: false } } })
+      );
+      expect(resolveCaptureObservedState(true)).toBe(false);
+    });
+
+    it('returns true when nothing is set (the default)', () => {
+      vi.mocked(existsSync).mockReturnValue(false);
+      expect(resolveCaptureObservedState(true)).toBe(true);
+    });
+
+    it('ignores non-boolean cdk.json values and falls through to true', () => {
+      vi.mocked(existsSync).mockReturnValue(true);
+      vi.mocked(readFileSync).mockReturnValue(
+        JSON.stringify({ context: { cdkd: { captureObservedState: 'yes' } } })
+      );
+      expect(resolveCaptureObservedState(true)).toBe(true);
     });
   });
 });

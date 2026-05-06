@@ -138,6 +138,38 @@ route DependsOn doesn't constrain delete-time correctness (Lambda
 hyperplane ENI release is the actual destroy bottleneck and is
 handled separately by `lambda-vpc-deps.ts`).
 
+## `--no-capture-observed-state`
+
+`cdkd deploy` records each resource's AWS-current properties into
+`ResourceState.observedProperties` (state schema `version: 3`)
+immediately after the create/update succeeds, by calling
+`provider.readCurrentState()` fire-and-forget. The deploy critical path
+does NOT block on these — the in-flight set is drained right before the
+final state save, so the cost is roughly `max(per-resource readCurrentState
+latency)`, around 200–300ms in practice. Without
+this, `cdkd drift` can only compare against `properties` (= what the
+user templated), and console-side changes to keys the user did not
+template are silently ignored.
+
+```bash
+# Skip the observedProperties capture (default ON since v0.47.0)
+cdkd deploy --no-capture-observed-state
+
+# Pin in cdk.json so every deploy in the project skips the capture
+# {
+#   "context": {
+#     "cdkd": { "captureObservedState": false }
+#   }
+# }
+```
+
+When the capture is off, drift detection falls back to the pre-`version:
+3` behavior — only state-recorded properties are compared. Use the flag
+when deploy speed is more important than rich drift detection. The
+escape-hatch order is: `--no-capture-observed-state` (CLI) overrides
+`cdk.json context.cdkd.captureObservedState` (project) overrides the
+default `true`.
+
 ## Per-resource timeout
 
 Both `cdkd deploy` and `cdkd destroy` (including `cdkd state destroy`)
@@ -279,8 +311,16 @@ in account B that profile A trusts.
 and the live AWS-side configuration of each managed resource. cdkd does
 not go through CloudFormation, so CFn-style drift detection does not
 apply — instead, the command asks each resource's provider for its
-`readCurrentState` snapshot and compares against the `properties` field
-saved in state.
+`readCurrentState` snapshot and compares it against the **deploy-time
+AWS snapshot** stored in `ResourceState.observedProperties` (state
+schema `version: 3`+). Resources written by an older binary or by a
+provider without `readCurrentState` lack `observedProperties` — for
+those, the comparator falls back to the user-templated `properties`
+field (the pre-v3 behavior). The observed-baseline path is what makes
+console-side changes to keys the user did not template surface as
+drift; the fallback only catches changes to keys the user did template.
+See [docs/state-management.md](state-management.md) for the schema
+details.
 
 Detection is the default behavior — pass `--accept` or `--revert` to
 also resolve any drift the comparator finds (see "Resolving drift" below).
@@ -325,11 +365,20 @@ Flags:
 - `--json` — emit a structured per-stack report (see below). Detection
   output only — the resolution paths print a plain-text plan + summary.
 - `--accept` — write the AWS-current values back into cdkd state (state
-  ← AWS) for every drifted property. Requires a stack lock. Mutually
-  exclusive with `--revert`. See "Resolving drift" below.
+  ← AWS) for every drifted property. By default this updates
+  `observedProperties` (the deploy-time snapshot used as the drift
+  baseline) so the next drift run reports clean, while leaving
+  `properties` (the user's last-deployed template intent) untouched. For
+  resources without `observedProperties` (older state, providers without
+  `readCurrentState`) the mutation falls back to `properties`, matching
+  the pre-v3 behavior. Requires a stack lock. Mutually exclusive with
+  `--revert`. See "Resolving drift" below.
 - `--revert` — call `provider.update` to push cdkd state values back
-  into AWS (AWS ← state) for every drifted resource. Requires a stack
-  lock. Mutually exclusive with `--accept`. See "Resolving drift" below.
+  into AWS (AWS ← state) for every drifted resource. The "desired"
+  values passed to `provider.update` are `observedProperties ?? properties`
+  — same precedence as the comparator, so `--revert` undoes exactly the
+  delta `cdkd drift` reported. Requires a stack lock. Mutually exclusive
+  with `--accept`. See "Resolving drift" below.
 - `--dry-run` — for `--accept` / `--revert`: print the planned mutations
   and exit without acquiring a lock or hitting AWS / S3.
 - `--concurrency <number>` — maximum concurrent `provider.update` calls
