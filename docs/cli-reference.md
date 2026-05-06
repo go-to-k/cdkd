@@ -453,6 +453,39 @@ fields (timestamps, generated identifiers, account-wide defaults) that
 cdkd never set are ignored, so they never surface as false-positive
 drift.
 
+### False-drift prevention for the CC API fallback
+
+When an SDK Provider doesn't yet implement `readCurrentState`, drift
+falls back to Cloud Control API's generic `GetResource`. cdkd state's
+`properties` field is in CFn-template shape (what `provider.create()`
+was passed); CC API's response is usually the same shape, but for some
+resource types it diverges enough to fire false-positive drift on
+every run. Two guards protect the fallback:
+
+1. **Deny-list** (`src/analyzer/drift-cc-api-deny-list.ts`) — types
+   with verified structural divergence (e.g. `AWS::IAM::ManagedPolicy`'s
+   URL-encoded `PolicyDocument`) short-circuit to `drift unknown`
+   before the CC API call ever fires. The fix path for any deny-listed
+   type is a first-class SDK-provider `readCurrentState`, not a
+   per-entry tweak — once the provider implements it, the deny-list
+   entry is unreachable.
+2. **Strip pass** (`src/analyzer/cc-api-strip.ts`) — known AWS-managed
+   timestamp / owner / generated-id fields (`CreationDate`,
+   `LastModifiedTime`, `OwnerId`, `RevisionId`, ...) are removed from
+   CC API responses before the comparator sees them. The strip list is
+   conservative: name-collision-prone fields that some CFn types use
+   as legitimate inputs (`Status`, `State`, `VersionId`, `Arn`, ...)
+   are NOT stripped, so a real `Status` change on
+   `AWS::ECS::CapacityProvider.ManagedScaling` still surfaces as
+   drift.
+
+A breadth-of-coverage shape fixture suite
+(`tests/unit/analyzer/drift-cc-api-shape-fixtures.test.ts`) verifies
+~10 representative CC-API-fallback types produce zero drift on a
+clean stack. When a new shape regression is reported, add the type
+either to the fixture suite (if the strip list catches it) or to the
+deny-list (if the divergence is structural).
+
 ### Resolving drift (`--accept` / `--revert`)
 
 Once `cdkd drift` has detected drift, the same command can also resolve

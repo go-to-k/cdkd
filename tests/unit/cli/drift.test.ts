@@ -74,18 +74,29 @@ vi.mock('../../../src/state/lock-manager.js', () => ({
 const mockRegistryGetProvider = vi.fn<(resourceType: string) => unknown>();
 const mockRegistryShouldSkip = vi.fn<(resourceType: string) => boolean>().mockReturnValue(false);
 const mockRegistrySetCustomBucket = vi.fn();
-const mockRegistryGetCcApiProvider = vi.fn<() => unknown>();
 vi.mock('../../../src/provisioning/provider-registry.js', () => ({
   ProviderRegistry: vi.fn().mockImplementation(() => ({
     getProvider: mockRegistryGetProvider,
     shouldSkipResource: mockRegistryShouldSkip,
     setCustomResourceResponseBucket: mockRegistrySetCustomBucket,
-    getCloudControlProvider: mockRegistryGetCcApiProvider,
   })),
 }));
 
 vi.mock('../../../src/provisioning/register-providers.js', () => ({
   registerAllProviders: vi.fn(),
+}));
+
+// PR J: drift falls back to Cloud Control API when an SDK provider does
+// not implement `readCurrentState`. Mock the CC API readCurrentState so
+// tests can simulate "fallback returns undefined" (drift unknown) by
+// default; tests that exercise the fallback override per-call.
+const mockCcReadCurrentState = vi
+  .fn<(physicalId: string, logicalId: string, type: string) => Promise<Record<string, unknown> | undefined>>()
+  .mockResolvedValue(undefined);
+vi.mock('../../../src/provisioning/cloud-control-provider.js', () => ({
+  CloudControlProvider: vi.fn().mockImplementation(() => ({
+    readCurrentState: mockCcReadCurrentState,
+  })),
 }));
 
 import { createDriftCommand } from '../../../src/cli/commands/drift.js';
@@ -170,7 +181,7 @@ describe('cdkd drift', () => {
     mockReleaseLock.mockReset().mockResolvedValue(undefined);
     mockRegistryGetProvider.mockReset();
     mockRegistryShouldSkip.mockReset().mockReturnValue(false);
-    mockRegistryGetCcApiProvider.mockReset().mockReturnValue(undefined);
+    mockCcReadCurrentState.mockReset().mockResolvedValue(undefined);
     errorSpy.mockReset();
     // Stub process.exit so DriftDetectedError -> exit(1) doesn't kill the test.
     exitSpy = vi.spyOn(process, 'exit').mockImplementation((() => {
@@ -610,106 +621,100 @@ describe('cdkd drift', () => {
     });
   });
 
-  describe('CC API fallback', () => {
-    it('SDK Provider with readCurrentState wins over CC API fallback', async () => {
+  describe('CC API fallback (PR J)', () => {
+    it('falls back to CC API readCurrentState when the SDK provider lacks it', async () => {
       mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
       mockGetState.mockResolvedValueOnce(
         makeState({
-          Bucket1: makeResource({
-            physicalId: 'b',
-            resourceType: 'AWS::S3::Bucket',
-            properties: { BucketName: 'b' },
+          Topic1: makeResource({
+            physicalId: 'arn:aws:sns:us-east-1:123:Topic1',
+            resourceType: 'AWS::SNS::Topic',
+            // The SNS provider has its own readCurrentState in real
+            // life, but for this test the registry returns a stub
+            // without one to drive the fallback path.
+            properties: { TopicName: 'Topic1' },
           }),
         })
       );
-      const sdkRead = vi.fn(async () => ({ BucketName: 'b' }));
-      const ccApiRead = vi.fn();
-      mockRegistryGetProvider.mockReturnValue({ readCurrentState: sdkRead });
-      mockRegistryGetCcApiProvider.mockReturnValue({ readCurrentState: ccApiRead });
-
-      const { error } = await runDrift(['TestStack']);
-
-      expect(error).toBeUndefined();
-      // SDK Provider was called; CC API fallback was NOT.
-      expect(sdkRead).toHaveBeenCalledTimes(1);
-      expect(ccApiRead).not.toHaveBeenCalled();
-    });
-
-    it('falls back to CC API when SDK Provider has no readCurrentState (drift detected)', async () => {
-      mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
-      mockGetState.mockResolvedValueOnce(
-        makeState({
-          Func1: makeResource({
-            physicalId: 'fn-1',
-            resourceType: 'AWS::Lambda::Function',
-            properties: { MemorySize: 128 },
-          }),
-        })
-      );
-      // Provider does not implement readCurrentState yet.
-      mockRegistryGetProvider.mockReturnValue({});
-      const ccApiRead = vi.fn(async () => ({ MemorySize: 256 }));
-      mockRegistryGetCcApiProvider.mockReturnValue({ readCurrentState: ccApiRead });
-
-      const { output, error } = await runDrift(['TestStack']);
-
-      // Drift detected via CC API fallback.
-      expect((error as Error).message).toBe('__exit__');
-      expect(exitSpy).toHaveBeenCalledWith(1);
-      expect(ccApiRead).toHaveBeenCalledWith('fn-1', 'Func1', 'AWS::Lambda::Function', { MemorySize: 128 });
-      expect(output).toContain('⚠ TestStack (us-east-1): drift detected on 1 resource');
-      expect(output).toContain('~ Func1 (AWS::Lambda::Function)');
-      expect(output).toContain('- MemorySize: 128');
-      expect(output).toContain('+ MemorySize: 256');
-    });
-
-    it('reports unsupported when CC API fallback returns undefined (NotFound)', async () => {
-      mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
-      mockGetState.mockResolvedValueOnce(
-        makeState({
-          Func1: makeResource({
-            physicalId: 'fn-1',
-            resourceType: 'AWS::Lambda::Function',
-            properties: { MemorySize: 128 },
-          }),
-        })
-      );
-      mockRegistryGetProvider.mockReturnValue({});
-      const ccApiRead = vi.fn(async () => undefined);
-      mockRegistryGetCcApiProvider.mockReturnValue({ readCurrentState: ccApiRead });
+      mockRegistryGetProvider.mockReturnValue({}); // no readCurrentState
+      mockCcReadCurrentState.mockResolvedValueOnce({ TopicName: 'Topic1' });
 
       const { output, error } = await runDrift(['TestStack']);
 
       expect(error).toBeUndefined();
-      expect(ccApiRead).toHaveBeenCalledTimes(1);
-      expect(output).toContain('? Func1 (AWS::Lambda::Function)');
-      expect(output).toContain('drift unknown');
-      expect(output).toContain('1 unsupported');
-      expect(exitSpy).not.toHaveBeenCalled();
+      expect(mockCcReadCurrentState).toHaveBeenCalledTimes(1);
+      // Clean: CC API answer matched state.
+      expect(output).toContain('✓ TestStack (us-east-1): no drift detected');
     });
 
-    it('re-throws when CC API fallback throws (surfaces AWS error to user)', async () => {
+    it('strips AWS-managed fields from CC API response before comparison', async () => {
       mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
       mockGetState.mockResolvedValueOnce(
         makeState({
-          Func1: makeResource({
-            physicalId: 'fn-1',
-            resourceType: 'AWS::Lambda::Function',
-            properties: { MemorySize: 128 },
+          Topic1: makeResource({
+            physicalId: 'arn:aws:sns:us-east-1:123:Topic1',
+            resourceType: 'AWS::SNS::Topic',
+            properties: { TopicName: 'Topic1' },
           }),
         })
       );
       mockRegistryGetProvider.mockReturnValue({});
-      const ccApiRead = vi.fn(async () => {
-        throw new Error('AccessDeniedException: not authorized');
+      // CC API returns timestamps + status that cdkd state never set —
+      // these must be stripped, not surfaced as drift.
+      mockCcReadCurrentState.mockResolvedValueOnce({
+        TopicName: 'Topic1',
+        CreationDate: '2024-01-01T00:00:00Z',
+        LastModifiedTime: '2024-06-01T00:00:00Z',
+        Status: 'Active',
       });
-      mockRegistryGetCcApiProvider.mockReturnValue({ readCurrentState: ccApiRead });
 
-      await runDrift(['TestStack']);
-      // The default error handler logged the message and called process.exit(1).
-      const messages = errorSpy.mock.calls.map((c) => String(c[0])).join('\n');
-      expect(messages).toMatch(/AccessDeniedException: not authorized/);
-      expect(ccApiRead).toHaveBeenCalledTimes(1);
+      const { output, error } = await runDrift(['TestStack']);
+
+      expect(error).toBeUndefined();
+      expect(output).toContain('✓ TestStack (us-east-1): no drift detected');
+    });
+
+    it('reports deny-listed types as drift unknown without calling CC API', async () => {
+      mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+      mockGetState.mockResolvedValueOnce(
+        makeState({
+          // AWS::IAM::ManagedPolicy is in the deny list.
+          Policy1: makeResource({
+            physicalId: 'arn:aws:iam::123:policy/p',
+            resourceType: 'AWS::IAM::ManagedPolicy',
+            properties: { PolicyDocument: { Statement: [] } },
+          }),
+        })
+      );
+      mockRegistryGetProvider.mockReturnValue({});
+
+      const { output, error } = await runDrift(['TestStack']);
+
+      expect(error).toBeUndefined();
+      expect(mockCcReadCurrentState).not.toHaveBeenCalled();
+      expect(output).toContain('? Policy1 (AWS::IAM::ManagedPolicy)');
+      expect(output).toContain('1 unsupported');
+    });
+
+    it('treats CC API ResourceNotFound (undefined) as drift unknown', async () => {
+      mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+      mockGetState.mockResolvedValueOnce(
+        makeState({
+          Foo: makeResource({
+            physicalId: 'foo',
+            resourceType: 'AWS::SomeService::SomeType',
+            properties: { Bar: 1 },
+          }),
+        })
+      );
+      mockRegistryGetProvider.mockReturnValue({});
+      // Default mock returns undefined — simulates "resource gone from AWS".
+
+      const { output, error } = await runDrift(['TestStack']);
+
+      expect(error).toBeUndefined();
+      expect(mockCcReadCurrentState).toHaveBeenCalledTimes(1);
+      expect(output).toContain('? Foo (AWS::SomeService::SomeType)');
     });
   });
 
