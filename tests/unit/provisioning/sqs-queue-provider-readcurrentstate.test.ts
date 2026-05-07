@@ -124,4 +124,36 @@ describe('SQSQueueProvider.readCurrentState', () => {
     const result = await provider.readCurrentState(QUEUE_URL, 'Logical', 'AWS::SQS::Queue');
     expect(result?.Tags).toEqual([]);
   });
+
+  it('omits FIFO-only attributes (DeduplicationScope / FifoThroughputLimit) on standard queues', async () => {
+    // Standard queue (FifoQueue absent / 'false') — DeduplicationScope and
+    // FifoThroughputLimit are FIFO-only; emitting `''` placeholders would
+    // have `cdkd drift --revert` push them back to AWS, which
+    // SetQueueAttributes rejects with "You can specify the
+    // DeduplicationScope only when FifoQueue is set to true".
+    mockSend.mockResolvedValueOnce({
+      Attributes: { VisibilityTimeout: '30' /* FifoQueue absent */ },
+    });
+    mockSend.mockResolvedValueOnce({ Tags: {} });
+
+    const result = await provider.readCurrentState(QUEUE_URL, 'Logical', 'AWS::SQS::Queue');
+
+    expect(result).not.toHaveProperty('DeduplicationScope');
+    expect(result).not.toHaveProperty('FifoThroughputLimit');
+    // KmsMasterKeyId is valid for any queue type — placeholder still emitted.
+    expect(result).toHaveProperty('KmsMasterKeyId', '');
+  });
+
+  it('emits FIFO-only attributes (DeduplicationScope / FifoThroughputLimit) on FIFO queues', async () => {
+    mockSend.mockResolvedValueOnce({
+      Attributes: { VisibilityTimeout: '30', FifoQueue: 'true' },
+    });
+    mockSend.mockResolvedValueOnce({ Tags: {} });
+
+    const result = await provider.readCurrentState(QUEUE_URL, 'Logical', 'AWS::SQS::Queue');
+
+    expect(result).toHaveProperty('DeduplicationScope', '');
+    expect(result).toHaveProperty('FifoThroughputLimit', '');
+    expect(result).toHaveProperty('FifoQueue', true);
+  });
 });

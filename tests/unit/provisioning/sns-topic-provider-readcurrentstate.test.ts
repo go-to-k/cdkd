@@ -128,21 +128,21 @@ describe('SNSTopicProvider.readCurrentState', () => {
   // the resource with all optional fields undefined / empty. A future
   // refactor that drops a placeholder for any of these keys must update
   // this test consciously — silent regression is structurally prevented.
-  it('emits placeholders for every user-controllable top-level key on AWS minimum response', async () => {
-    // GetTopicAttributes — empty Attributes object (no DisplayName, no
-    // KmsMasterKeyId, no TracingConfig, no SignatureVersion, no
-    // FifoThroughputScope, no FifoTopic / ContentBasedDeduplication, no
-    // ArchivePolicy / DataProtectionPolicy).
+  it('emits placeholders for every user-controllable top-level key on AWS minimum response (standard topic)', async () => {
+    // GetTopicAttributes — empty Attributes object (standard topic, not FIFO).
     mockSend.mockResolvedValueOnce({ Attributes: {} });
     // ListTagsForResource — no user tags.
     mockSend.mockResolvedValueOnce({ Tags: [] });
 
     const result = await provider.readCurrentState(TOPIC_ARN, 'Logical', 'AWS::SNS::Topic');
 
+    // FifoThroughputScope is intentionally absent for standard topics —
+    // it's a FIFO-only attribute and emitting '' would have
+    // `cdkd drift --revert` push the empty value back to AWS, which
+    // SetTopicAttributes rejects.
     expect(Object.keys(result ?? {}).sort()).toEqual(
       [
         'DisplayName',
-        'FifoThroughputScope',
         'KmsMasterKeyId',
         'SignatureVersion',
         'Tags',
@@ -154,7 +154,16 @@ describe('SNSTopicProvider.readCurrentState', () => {
     expect(result?.KmsMasterKeyId).toBe('');
     expect(result?.TracingConfig).toBe('');
     expect(result?.SignatureVersion).toBe('');
-    expect(result?.FifoThroughputScope).toBe('');
     expect(result?.Tags).toEqual([]);
+  });
+
+  it('emits FifoThroughputScope placeholder when topic is FIFO', async () => {
+    mockSend.mockResolvedValueOnce({ Attributes: { FifoTopic: 'true' } });
+    mockSend.mockResolvedValueOnce({ Tags: [] });
+
+    const result = await provider.readCurrentState(TOPIC_ARN, 'Logical', 'AWS::SNS::Topic');
+
+    expect(result).toHaveProperty('FifoThroughputScope', '');
+    expect(result).toHaveProperty('FifoTopic', true);
   });
 });
