@@ -214,13 +214,58 @@ the state bucket; `--dry-run` prints the per-stack refresh count
 without touching state. Resolve any drift the comparator finds with
 `cdkd drift <stack> --accept` (state ← AWS) or `--revert` (AWS ← state).
 
-`cdkd deploy --no-capture-observed-state` (or
-`cdk.json context.cdkd.captureObservedState: false`) opts out of the
-capture entirely if you care more about deploy speed than rich drift
-detection — drift then falls back to comparing against `properties`,
-the pre-v3 behavior. Bench measurements show roughly +0–4% deploy
-time with the capture on (lambda integ within noise; bench-cdk-sample
-+3.4% median).
+#### Opt-out: trade rich drift for raw deploy speed
+
+Capture of `observedProperties` at deploy time is controlled by:
+
+| Surface     | Value                                              |
+|-------------|----------------------------------------------------|
+| CLI flag    | `cdkd deploy --no-capture-observed-state`          |
+| `cdk.json`  | `context.cdkd.captureObservedState: false`         |
+| Env var     | (none)                                             |
+| Default     | `true` (capture on)                                |
+| Precedence  | CLI flag > `cdk.json` > default                    |
+
+The three axes that govern when and how the flag takes effect:
+
+- **Granularity** — per-command (CLI flag) / per-project (`cdk.json`); no
+  per-stack opt-out even under `cdkd deploy --all`. If different stacks
+  need different policies, run them as separate `cdkd deploy <stack>`
+  invocations.
+- **Storage** — NOT stored in `state.json`; only on the CLI invocation
+  or in `cdk.json`. State files carry observed values, not the policy
+  that produced them.
+- **Mid-flight reversibility** — yes; every `cdkd deploy` decides
+  independently. Flipping the flag back on next deploy works with no
+  reset; flipping it off leaves earlier `observedProperties` entries
+  untouched (mixing "rich" and "fallback" baselines per-resource is
+  supported and works correctly).
+
+What changes when capture is off:
+
+- `cdkd deploy` skips the post-create / post-update
+  `provider.readCurrentState` calls, so the deploy critical path is
+  ~3–4% faster on bench-cdk-sample (lambda integ is within noise).
+- New CREATE / UPDATE resources land in state with
+  `observedProperties: undefined` — same shape as a v2-state record.
+- `cdkd drift` for those resources falls back to the
+  user-templated `properties` baseline (= the pre-v3 behavior). CDK-
+  templated property changes are still detected; AWS-side defaults
+  the user did not template (S3 `BlockPublicAcls`, etc.) and
+  console-side **map key adds** (Lambda `Environment.Variables.EXTRA`,
+  etc.) are NOT detected.
+- Already-stored `observedProperties` from earlier deploys is left
+  untouched — flipping the flag mid-stack mixes "rich" and "fallback"
+  baselines on a per-resource basis, which is fine.
+- Run `cdkd state refresh-observed <stack>` at any time to retroactively
+  populate `observedProperties` for every resource without redeploying;
+  see the upgrade flow above. This is the inverse — flip drift back
+  to "rich" without paying the per-deploy cost.
+
+There is **no per-stack opt-out**: when `cdkd deploy --all` runs across
+multiple stacks, the flag is honored uniformly for the whole batch. If
+you need different stacks on different policies, run them as separate
+`cdkd deploy <stack>` invocations.
 
 ## Prerequisites
 
