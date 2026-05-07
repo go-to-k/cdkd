@@ -171,19 +171,26 @@ export class SSMParameterProvider implements ResourceProvider {
         Name: physicalId,
         Type: type as ParameterType,
         Value: value,
-        Description: properties['Description'] as string | undefined,
         Overwrite: true,
       };
-      if (properties['AllowedPattern']) {
+      // `!== undefined` (not truthy) so empty Description / AllowedPattern
+      // ('') from `readCurrentState`'s placeholders reaches `PutParameterCommand`
+      // on the `cdkd drift --revert` round-trip. A truthy gate would silently
+      // drop the empty string and leave the AWS-side value untouched — drift
+      // would report `✓ reverted` but the next run re-detects the same drift.
+      if (properties['Description'] !== undefined) {
+        putParams.Description = properties['Description'] as string;
+      }
+      if (properties['AllowedPattern'] !== undefined) {
         putParams.AllowedPattern = properties['AllowedPattern'] as string;
       }
-      if (properties['Tier']) {
+      if (properties['Tier'] !== undefined) {
         putParams.Tier = properties['Tier'] as import('@aws-sdk/client-ssm').ParameterTier;
       }
-      if (properties['Policies']) {
+      if (properties['Policies'] !== undefined) {
         putParams.Policies = properties['Policies'] as string;
       }
-      if (properties['DataType']) {
+      if (properties['DataType'] !== undefined) {
         putParams.DataType = properties['DataType'] as string;
       }
 

@@ -99,7 +99,7 @@ describe('LogsLogGroupProvider.readCurrentState', () => {
     expect(result?.Tags).toEqual([{ Key: 'Foo', Value: 'Bar' }]);
   });
 
-  it('omits Tags when ListTagsForResource returns no user tags', async () => {
+  it('emits Tags=[] when ListTagsForResource returns no user tags', async () => {
     mockSend.mockResolvedValueOnce({
       logGroups: [
         {
@@ -118,6 +118,41 @@ describe('LogsLogGroupProvider.readCurrentState', () => {
       'AWS::Logs::LogGroup'
     );
     expect(result?.Tags).toEqual([]);
+  });
+
+  it('emits placeholders for every user-controllable top-level key on AWS minimum response', async () => {
+    // Mandatory always-emit test per docs/provider-development.md § 3b.
+    // Required field only (logGroupName + arn) — every optional
+    // undefined. Keys must include the placeholder defaults so a
+    // console-side change to a previously-default field surfaces as
+    // drift on the v3 observedProperties baseline.
+    mockSend.mockResolvedValueOnce({
+      logGroups: [
+        {
+          logGroupName: '/aws/lambda/min',
+          arn: 'arn:aws:logs:us-east-1:123:log-group:/aws/lambda/min:*',
+          // Everything else undefined: kmsKeyId, retentionInDays,
+          // logGroupClass.
+        },
+      ],
+    });
+    mockSend.mockResolvedValueOnce({ tags: {} });
+
+    const result = await provider.readCurrentState(
+      '/aws/lambda/min',
+      'Logical',
+      'AWS::Logs::LogGroup'
+    );
+
+    // LogGroupClass is immutable on create — skip emit is correct
+    // (per the § 3b "immutable on create" rule).
+    expect(Object.keys(result ?? {}).sort()).toEqual(
+      ['LogGroupName', 'KmsKeyId', 'RetentionInDays', 'Tags'].sort()
+    );
+    expect(result?.LogGroupName).toBe('/aws/lambda/min');
+    expect(result?.KmsKeyId).toBe(''); // string placeholder
+    expect(result?.RetentionInDays).toBe(0); // semantic "never expire"
+    expect(result?.Tags).toEqual([]); // array placeholder
   });
 
   it('returns undefined when log group does not exist (no exact match)', async () => {

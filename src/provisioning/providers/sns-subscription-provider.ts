@@ -77,9 +77,17 @@ export class SNSSubscriptionProvider implements ResourceProvider {
     try {
       const attributes: Record<string, string> = {};
 
-      // Set FilterPolicy if provided
+      // Set FilterPolicy if provided.
+      //
+      // `!== undefined` (not truthy) so an explicit empty string / empty
+      // object reaches `Subscribe` — AWS treats an empty `FilterPolicy`
+      // as "no filter, match all messages", which is the documented way
+      // to clear an existing FilterPolicy. A truthy gate would silently
+      // drop the placeholder when `cdkd drift --revert` round-trips an
+      // observedProperties snapshot taken after a console-side filter
+      // removal.
       const filterPolicy = properties['FilterPolicy'];
-      if (filterPolicy) {
+      if (filterPolicy !== undefined) {
         attributes['FilterPolicy'] =
           typeof filterPolicy === 'string' ? filterPolicy : JSON.stringify(filterPolicy);
       }

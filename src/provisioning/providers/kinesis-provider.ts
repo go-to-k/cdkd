@@ -33,6 +33,25 @@ import type {
 } from '../../types/resource.js';
 
 /**
+ * Class 1/2 sanitize for `StreamEncryption` placeholder.
+ *
+ * `readCurrentState` always-emits `StreamEncryption: { EncryptionType:
+ * 'NONE' }` for unencrypted streams so the drift comparator can detect
+ * a console-side KMS attach (state-keys-only top-level walk needs the
+ * key present). On the write side, neither `StartStreamEncryption`
+ * (KMS-only) nor `StopStreamEncryption` accepts `NONE` as input —
+ * pushing the placeholder through `cdkd drift --revert` would trigger
+ * a ValidationException. This helper returns true only when the value
+ * represents real KMS encryption (sibling discriminator `EncryptionType
+ * === 'KMS'`); the create / update code paths gate every encryption-
+ * mutating SDK call on it.
+ */
+function isKmsEncryption(value: Record<string, unknown> | undefined): boolean {
+  if (!value) return false;
+  return value['EncryptionType'] === 'KMS';
+}
+
+/**
  * AWS Kinesis Stream Provider
  *
  * Implements resource provisioning for AWS::Kinesis::Stream using the Kinesis SDK.
@@ -148,18 +167,26 @@ export class KinesisStreamProvider implements ResourceProvider {
         await this.waitForStreamActive(streamName);
       }
 
-      // Apply StreamEncryption if specified
+      // Apply StreamEncryption if specified.
+      //
+      // Class 1/2 sanitize: `readCurrentState` always-emits
+      // `StreamEncryption: { EncryptionType: 'NONE' }` for unencrypted
+      // streams so the comparator can detect a console-side KMS attach.
+      // On the write side, `StartStreamEncryption` only accepts `KMS`;
+      // the AWS API has no "NONE" mode. Skip the call when the desired
+      // EncryptionType is anything but `KMS` so a placeholder round-
+      // trip via `cdkd drift --revert` does not push an AWS-invalid
+      // input.
       const streamEncryption = properties['StreamEncryption'] as
         | Record<string, unknown>
         | undefined;
-      if (streamEncryption) {
-        const encryptionType = (streamEncryption['EncryptionType'] as string) ?? 'KMS';
-        const keyId = streamEncryption['KeyId'] as string;
+      if (isKmsEncryption(streamEncryption)) {
+        const keyId = streamEncryption!['KeyId'] as string;
         this.logger.debug(`Enabling stream encryption for ${streamName}`);
         await this.getClient().send(
           new StartStreamEncryptionCommand({
             StreamName: streamName,
-            EncryptionType: encryptionType as EncryptionType,
+            EncryptionType: 'KMS' as EncryptionType,
             KeyId: keyId,
           })
         );
@@ -269,32 +296,47 @@ export class KinesisStreamProvider implements ResourceProvider {
         properties['Tags'] as Array<{ Key?: string; Value?: string }> | undefined
       );
 
-      // Update StreamEncryption if changed
+      // Update StreamEncryption if changed.
+      //
+      // Class 1/2 sanitize: `readCurrentState` always-emits
+      // `StreamEncryption: { EncryptionType: 'NONE' }` on unencrypted
+      // streams for drift detection. Treat the NONE placeholder as
+      // "no encryption" — it is NOT a valid input to either
+      // `StartStreamEncryption` (KMS-only) or `StopStreamEncryption`
+      // (encryption-removal). Only call:
+      //  - StopStreamEncryption when previous WAS KMS-encrypted.
+      //  - StartStreamEncryption when desired IS KMS-encrypted.
+      //
+      // Without this, a `cdkd drift --revert` round-trip on a stream
+      // that has never been KMS-encrypted would push `EncryptionType=NONE`
+      // back through the API and AWS rejects with a ValidationException.
       const newEncryption = properties['StreamEncryption'] as Record<string, unknown> | undefined;
       const oldEncryption = previousProperties['StreamEncryption'] as
         | Record<string, unknown>
         | undefined;
-      if (JSON.stringify(newEncryption) !== JSON.stringify(oldEncryption)) {
-        // Remove old encryption if it existed
-        if (oldEncryption) {
+      const oldIsKms = isKmsEncryption(oldEncryption);
+      const newIsKms = isKmsEncryption(newEncryption);
+      const oldKeyId = oldIsKms ? (oldEncryption!['KeyId'] as string | undefined) : undefined;
+      const newKeyId = newIsKms ? (newEncryption!['KeyId'] as string | undefined) : undefined;
+      if (oldIsKms !== newIsKms || (oldIsKms && newIsKms && oldKeyId !== newKeyId)) {
+        // Remove old encryption only when it WAS KMS-encrypted.
+        if (oldIsKms) {
           await this.getClient().send(
             new StopStreamEncryptionCommand({
               StreamName: physicalId,
-              EncryptionType: ((oldEncryption['EncryptionType'] as string) ??
-                'KMS') as EncryptionType,
-              KeyId: oldEncryption['KeyId'] as string,
+              EncryptionType: 'KMS' as EncryptionType,
+              KeyId: oldKeyId,
             })
           );
           await this.waitForStreamActive(physicalId);
         }
-        // Apply new encryption
-        if (newEncryption) {
+        // Apply new encryption only when it IS KMS-encrypted.
+        if (newIsKms) {
           await this.getClient().send(
             new StartStreamEncryptionCommand({
               StreamName: physicalId,
-              EncryptionType: ((newEncryption['EncryptionType'] as string) ??
-                'KMS') as EncryptionType,
-              KeyId: newEncryption['KeyId'] as string,
+              EncryptionType: 'KMS' as EncryptionType,
+              KeyId: newKeyId,
             })
           );
           await this.waitForStreamActive(physicalId);
@@ -472,10 +514,17 @@ export class KinesisStreamProvider implements ResourceProvider {
 
     const result: Record<string, unknown> = {};
     if (stream.StreamName !== undefined) result['Name'] = stream.StreamName;
-    if (stream.StreamModeDetails?.StreamMode !== undefined) {
-      result['StreamModeDetails'] = { StreamMode: stream.StreamModeDetails.StreamMode };
+    const streamMode = stream.StreamModeDetails?.StreamMode;
+    if (streamMode !== undefined) {
+      result['StreamModeDetails'] = { StreamMode: streamMode };
     }
-    if (stream.Shards && stream.Shards.length > 0) {
+    // Class 1 — `ShardCount` is PROVISIONED-only. AWS rejects
+    // `UpdateShardCount` on ON_DEMAND streams; emitting a `ShardCount`
+    // placeholder there would surface as a `cdkd drift --revert`
+    // failure on the round-trip. ON_DEMAND streams report shards too
+    // (capacity is managed by AWS), so gating on `Shards.length` is
+    // not enough — the type discriminator is `StreamMode`.
+    if (streamMode === 'PROVISIONED' && stream.Shards && stream.Shards.length > 0) {
       result['ShardCount'] = stream.Shards.length;
     }
     if (stream.RetentionPeriodHours !== undefined) {

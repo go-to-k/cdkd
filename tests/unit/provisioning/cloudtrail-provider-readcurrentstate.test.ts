@@ -85,6 +85,8 @@ describe('CloudTrailProvider.readCurrentState', () => {
       IncludeGlobalServiceEvents: true,
       EnableLogFileValidation: true,
       KMSKeyId: 'arn:aws:kms:us-east-1:1:key/abc',
+      SnsTopicName: '',
+      IsOrganizationTrail: false,
       IsLogging: true,
       EventSelectors: [{ ReadWriteType: 'All', IncludeManagementEvents: true }],
       Tags: [],
@@ -101,9 +103,22 @@ describe('CloudTrailProvider.readCurrentState', () => {
 
     const result = await provider.readCurrentState('mytrail', 'L', 'AWS::CloudTrail::Trail');
 
+    // Always-emit placeholders survive even when secondary calls fail —
+    // only `IsLogging` (GetTrailStatus) and `EventSelectors`
+    // (GetEventSelectors) drop out (no synthetic placeholders for those
+    // since the call may be AccessDenied rather than "feature absent").
+    // Tags falls back to `[]` because TrailARN is missing on this fixture.
     expect(result).toEqual({
       TrailName: 'mytrail',
       S3BucketName: 'mybucket',
+      S3KeyPrefix: '',
+      IsMultiRegionTrail: false,
+      IncludeGlobalServiceEvents: true,
+      EnableLogFileValidation: false,
+      KMSKeyId: '',
+      SnsTopicName: '',
+      IsOrganizationTrail: false,
+      Tags: [],
     });
   });
 

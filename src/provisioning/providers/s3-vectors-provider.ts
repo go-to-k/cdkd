@@ -275,10 +275,18 @@ export class S3VectorsProvider implements ResourceProvider {
     }
     if (bucket?.encryptionConfiguration) {
       const enc: Record<string, unknown> = {};
-      if (bucket.encryptionConfiguration.sseType !== undefined) {
-        enc['SSEType'] = bucket.encryptionConfiguration.sseType;
+      const sseType = bucket.encryptionConfiguration.sseType;
+      if (sseType !== undefined) {
+        enc['SSEType'] = sseType;
       }
-      if (bucket.encryptionConfiguration.kmsKeyArn !== undefined) {
+      // Class 1 guard (docs/provider-development.md § 3b): KMSKeyArn is
+      // KMS-only — only valid when SSEType === 'aws:kms'. AWS will not
+      // return kmsKeyArn for AES256-encrypted buckets, but defend
+      // against a future SDK that surfaces an account-default KMS key
+      // ARN on AES256 responses (which would round-trip back via
+      // `cdkd drift --revert` and AWS would reject as
+      // "KMSKeyArn is only valid when SSEType is aws:kms").
+      if (sseType === 'aws:kms' && bucket.encryptionConfiguration.kmsKeyArn !== undefined) {
         enc['KMSKeyArn'] = bucket.encryptionConfiguration.kmsKeyArn;
       }
       if (Object.keys(enc).length > 0) result['EncryptionConfiguration'] = enc;

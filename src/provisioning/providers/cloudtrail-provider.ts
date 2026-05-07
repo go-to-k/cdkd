@@ -190,6 +190,21 @@ export class CloudTrailProvider implements ResourceProvider {
   ): Promise<ResourceUpdateResult> {
     this.logger.debug(`Updating CloudTrail Trail ${logicalId}: ${physicalId}`);
 
+    // `readCurrentState` always-emits empty-string `''` placeholders for
+    // optional ARN-shaped fields (KMSKeyId, SnsTopicName) so console-side
+    // adds are detectable as drift (per docs/provider-development.md
+    // § 3b "always emit user-controllable top-level keys"). `cdkd drift
+    // --revert` round-trips the placeholder back through this `update()`.
+    // `UpdateTrail` rejects empty strings for ARN-shaped fields with
+    // "KmsKeyId is not in valid ARN format" / "SnsTopicName is not in
+    // valid format", so sanitize empty-string → undefined at the wire
+    // layer. This mirrors the canonical Class 2 pattern in
+    // `sqs-queue-provider.ts` (`serializeRedrivePolicy`).
+    const sanitizeArn = (v: unknown): string | undefined => {
+      if (v === undefined || v === null || v === '') return undefined;
+      return v as string;
+    };
+
     const s3BucketName = properties['S3BucketName'] as string | undefined;
     const s3KeyPrefix = properties['S3KeyPrefix'] as string | undefined;
     const isMultiRegionTrail = properties['IsMultiRegionTrail'] as boolean | undefined;
@@ -198,10 +213,10 @@ export class CloudTrailProvider implements ResourceProvider {
       | undefined;
     const enableLogFileValidation = properties['EnableLogFileValidation'] as boolean | undefined;
     const isLogging = properties['IsLogging'] as boolean | undefined;
-    const cloudWatchLogsLogGroupArn = properties['CloudWatchLogsLogGroupArn'] as string | undefined;
-    const cloudWatchLogsRoleArn = properties['CloudWatchLogsRoleArn'] as string | undefined;
-    const kmsKeyId = properties['KMSKeyId'] as string | undefined;
-    const snsTopicName = properties['SnsTopicName'] as string | undefined;
+    const cloudWatchLogsLogGroupArn = sanitizeArn(properties['CloudWatchLogsLogGroupArn']);
+    const cloudWatchLogsRoleArn = sanitizeArn(properties['CloudWatchLogsRoleArn']);
+    const kmsKeyId = sanitizeArn(properties['KMSKeyId']);
+    const snsTopicName = sanitizeArn(properties['SnsTopicName']);
     const isOrganizationTrail = properties['IsOrganizationTrail'] as boolean | undefined;
 
     try {
@@ -437,68 +452,92 @@ export class CloudTrailProvider implements ResourceProvider {
     }
     if (!trail) return undefined;
 
+    // Always-emit user-controllable top-level keys with placeholders so
+    // console-side adds become visible to drift (the comparator's top-
+    // level walk is state-keys-only, so an omitted key is invisible
+    // forever). See docs/provider-development.md § 3b.
     const result: Record<string, unknown> = {};
     if (trail.Name !== undefined) result['TrailName'] = trail.Name;
+    // S3BucketName is required to create a trail; AWS always returns it.
     if (trail.S3BucketName !== undefined) result['S3BucketName'] = trail.S3BucketName;
-    if (trail.S3KeyPrefix !== undefined) result['S3KeyPrefix'] = trail.S3KeyPrefix;
-    if (trail.IsMultiRegionTrail !== undefined) {
-      result['IsMultiRegionTrail'] = trail.IsMultiRegionTrail;
-    }
-    if (trail.IncludeGlobalServiceEvents !== undefined) {
-      result['IncludeGlobalServiceEvents'] = trail.IncludeGlobalServiceEvents;
-    }
-    if (trail.LogFileValidationEnabled !== undefined) {
-      result['EnableLogFileValidation'] = trail.LogFileValidationEnabled;
-    }
-    if (trail.CloudWatchLogsLogGroupArn !== undefined) {
+    result['S3KeyPrefix'] = trail.S3KeyPrefix ?? '';
+    result['IsMultiRegionTrail'] = trail.IsMultiRegionTrail ?? false;
+    result['IncludeGlobalServiceEvents'] = trail.IncludeGlobalServiceEvents ?? true;
+    result['EnableLogFileValidation'] = trail.LogFileValidationEnabled ?? false;
+
+    // Class 1 — CloudWatchLogsLogGroupArn / CloudWatchLogsRoleArn are a
+    // type-discriminated pair: both required when CW logs are enabled,
+    // neither when disabled. Emitting `''` placeholders on a CW-logs-
+    // disabled trail would round-trip through `update()` and AWS would
+    // reject `Property validation failure: CloudWatchLogsLogGroupArn is
+    // not in valid ARN format`. Only emit both keys when AWS reports
+    // both present (the discriminator is "both fields populated").
+    // Drift is not lost: the disabled state cannot legally have either
+    // field on AWS, so a console-side enable shows up as both fields
+    // appearing at once on the next read. Pattern documented in
+    // `feedback_always_emit_check_type_discriminator.md`.
+    if (trail.CloudWatchLogsLogGroupArn && trail.CloudWatchLogsRoleArn) {
       result['CloudWatchLogsLogGroupArn'] = trail.CloudWatchLogsLogGroupArn;
-    }
-    if (trail.CloudWatchLogsRoleArn !== undefined) {
       result['CloudWatchLogsRoleArn'] = trail.CloudWatchLogsRoleArn;
     }
-    if (trail.KmsKeyId !== undefined) result['KMSKeyId'] = trail.KmsKeyId;
-    if (trail.SnsTopicName !== undefined) result['SnsTopicName'] = trail.SnsTopicName;
-    if (trail.IsOrganizationTrail !== undefined) {
-      result['IsOrganizationTrail'] = trail.IsOrganizationTrail;
-    }
+
+    result['KMSKeyId'] = trail.KmsKeyId ?? '';
+    result['SnsTopicName'] = trail.SnsTopicName ?? '';
+    result['IsOrganizationTrail'] = trail.IsOrganizationTrail ?? false;
 
     // IsLogging — separate call. Treat any error as "feature not configured"
     // and omit the key.
     try {
       const status = await this.getClient().send(new GetTrailStatusCommand({ Name: physicalId }));
-      if (status.IsLogging !== undefined) result['IsLogging'] = status.IsLogging;
+      result['IsLogging'] = status.IsLogging ?? false;
     } catch {
       // Best-effort.
     }
 
     // EventSelectors — separate call. AWS returns either `EventSelectors`
-    // or `AdvancedEventSelectors` (mutually exclusive). cdkd state's CFn
-    // shape is `EventSelectors` only, so surface only that variant.
+    // or `AdvancedEventSelectors` (mutually exclusive — Class 1). cdkd
+    // state's CFn shape is `EventSelectors` only.
+    //
+    // When AWS has AdvancedEventSelectors configured, surfacing
+    // `EventSelectors: []` would round-trip through `update()` and
+    // attempt PutEventSelectors, which AWS rejects when the trail
+    // is using AdvancedEventSelectors. Skip emit in that case — the
+    // discriminator-false state cannot legally have EventSelectors, so
+    // a console-side switch back to basic EventSelectors shows up on
+    // the next read.
     try {
       const sel = await this.getClient().send(
         new GetEventSelectorsCommand({ TrailName: physicalId })
       );
-      result['EventSelectors'] = (sel.EventSelectors ?? []).map(
-        (es) => es as unknown as Record<string, unknown>
-      );
+      const hasAdvanced =
+        Array.isArray(sel.AdvancedEventSelectors) && sel.AdvancedEventSelectors.length > 0;
+      if (!hasAdvanced) {
+        result['EventSelectors'] = (sel.EventSelectors ?? []).map(
+          (es) => es as unknown as Record<string, unknown>
+        );
+      }
     } catch {
       // Best-effort.
     }
 
-    // Tags via ListTags. Requires the trail ARN.
+    // Tags via ListTags. Always emit `Tags: []` so a console-side tag
+    // add on a previously-untagged trail is detectable as drift (per
+    // § 3b). When the trail ARN is missing or ListTags fails, fall back
+    // to the empty placeholder rather than dropping the key.
+    let tags: Array<{ Key: string; Value: string }> = [];
     if (trail.TrailARN) {
       try {
         const tagsResp = await this.getClient().send(
           new ListTagsCommand({ ResourceIdList: [trail.TrailARN] })
         );
-        const tags = normalizeAwsTagsToCfn(tagsResp.ResourceTagList?.[0]?.TagsList);
-        result['Tags'] = tags;
+        tags = normalizeAwsTagsToCfn(tagsResp.ResourceTagList?.[0]?.TagsList);
       } catch (err) {
         this.logger.debug(
           `CloudTrail ListTags(${trail.TrailARN}) failed: ${err instanceof Error ? err.message : String(err)}`
         );
       }
     }
+    result['Tags'] = tags;
 
     return result;
   }

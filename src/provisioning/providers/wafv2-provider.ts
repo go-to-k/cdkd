@@ -33,6 +33,27 @@ import type {
 } from '../../types/resource.js';
 
 /**
+ * Translate the empty-string placeholder `readCurrentState` emits for an
+ * absent `Description` to `undefined` before shipping it to AWS.
+ *
+ * `readCurrentState` always-emits `Description: ''` on a WebACL with no
+ * description (the comparator's top-level walk is state-keys-only, so
+ * the placeholder is required to detect a console-side description add).
+ * AWS WAFv2 `CreateWebACL` / `UpdateWebACL` reject `Description: ''`
+ * with `Member must have length greater than or equal to 1` (min 1 / max
+ * 256). On `cdkd drift --revert` the placeholder would round-trip
+ * through `update()` and surface as a hard AWS rejection, so we sanitize
+ * the wire-layer payload while keeping the read-side placeholder
+ * intact. This is the Class 2 pattern from
+ * `docs/provider-development.md § 3b`.
+ */
+function sanitizeDescription(value: unknown): string | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value === 'string' && value.length === 0) return undefined;
+  return value as string;
+}
+
+/**
  * Parse WAFv2 WebACL ARN to extract Id, Name, and Scope.
  *
  * ARN format:
@@ -127,7 +148,7 @@ export class WAFv2WebACLProvider implements ResourceProvider {
           Name: name,
           Scope: scope,
           DefaultAction: properties['DefaultAction'] as DefaultAction,
-          Description: properties['Description'] as string | undefined,
+          Description: sanitizeDescription(properties['Description']),
           Rules: (properties['Rules'] as Rule[]) || [],
           VisibilityConfig: properties['VisibilityConfig'] as VisibilityConfig,
           ...(tags.length > 0 && { Tags: tags }),
@@ -208,7 +229,7 @@ export class WAFv2WebACLProvider implements ResourceProvider {
           Id: id,
           LockToken: lockToken,
           DefaultAction: properties['DefaultAction'] as DefaultAction,
-          Description: properties['Description'] as string | undefined,
+          Description: sanitizeDescription(properties['Description']),
           Rules: (properties['Rules'] as Rule[]) || [],
           VisibilityConfig: properties['VisibilityConfig'] as VisibilityConfig,
           CustomResponseBodies: properties['CustomResponseBodies'] as

@@ -126,7 +126,21 @@ export class CodeBuildProvider implements ResourceProvider {
     const name = (properties['Name'] as string | undefined) ?? logicalId;
     const source = properties['Source'] as Record<string, unknown> | undefined;
     const environment = properties['Environment'] as Record<string, unknown> | undefined;
-    const serviceRole = properties['ServiceRole'] as string | undefined;
+    // Class 2 sanitize (docs/provider-development.md § 3b): readCurrentState
+    // emits `''` placeholders for ServiceRole / EncryptionKey / SourceVersion
+    // so a console-side ADD on a project deployed without those keys
+    // surfaces as drift. Shipping `''` back through CreateProject /
+    // UpdateProject is structurally invalid — `serviceRole: ''` /
+    // `encryptionKey: ''` get rejected by the AWS API. Drop empty
+    // placeholders here so the wire layer never sees them; non-empty
+    // values pass through unchanged. Symmetric with the placeholder
+    // emit on the read side, mirroring `serializeRedrivePolicy` in
+    // src/provisioning/providers/sqs-queue-provider.ts.
+    const sanitizeOptionalString = (value: unknown): string | undefined => {
+      if (typeof value !== 'string') return value as string | undefined;
+      return value === '' ? undefined : value;
+    };
+    const serviceRole = sanitizeOptionalString(properties['ServiceRole']);
     const artifacts = properties['Artifacts'] as Record<string, unknown> | undefined;
     const tags = properties['Tags'] as Array<{ Key: string; Value: string }> | undefined;
 
@@ -278,7 +292,7 @@ export class CodeBuildProvider implements ResourceProvider {
       description: properties['Description'] as string | undefined,
       timeoutInMinutes: properties['TimeoutInMinutes'] as number | undefined,
       queuedTimeoutInMinutes: properties['QueuedTimeoutInMinutes'] as number | undefined,
-      encryptionKey: properties['EncryptionKey'] as string | undefined,
+      encryptionKey: sanitizeOptionalString(properties['EncryptionKey']),
       cache,
       vpcConfig,
       logsConfig,
@@ -289,7 +303,7 @@ export class CodeBuildProvider implements ResourceProvider {
       fileSystemLocations,
       buildBatchConfig,
       badgeEnabled: properties['BadgeEnabled'] as boolean | undefined,
-      sourceVersion: properties['SourceVersion'] as string | undefined,
+      sourceVersion: sanitizeOptionalString(properties['SourceVersion']),
     };
   }
 

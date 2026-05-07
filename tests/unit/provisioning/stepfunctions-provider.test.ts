@@ -157,31 +157,40 @@ describe('StepFunctionsProvider', () => {
       ).rejects.toThrow('Failed to create Step Functions state machine MyStateMachine');
     });
 
-    it('should pass StateMachineType and other configurations', async () => {
+    it('should pass StateMachineType and translate PascalCase configurations to SDK camelCase', async () => {
       mockSend.mockResolvedValueOnce({
         stateMachineArn:
           'arn:aws:states:us-east-1:123456789012:stateMachine:MyExpress',
       });
 
-      const loggingConfiguration = {
-        level: 'ALL',
-        includeExecutionData: true,
-        destinations: [{ cloudWatchLogsLogGroup: { logGroupArn: 'arn:aws:logs:...' } }],
-      };
-      const tracingConfiguration = { enabled: true };
-
+      // CFn templates ALWAYS use PascalCase property names; the provider
+      // is responsible for translating to the SDK's camelCase shape on
+      // the wire (see mapLoggingConfiguration / mapTracingConfiguration
+      // in stepfunctions-provider.ts).
       await provider.create('MyExpress', 'AWS::StepFunctions::StateMachine', {
         RoleArn: 'arn:aws:iam::123456789012:role/role',
         DefinitionString: '{}',
         StateMachineType: 'EXPRESS',
-        LoggingConfiguration: loggingConfiguration,
-        TracingConfiguration: tracingConfiguration,
+        LoggingConfiguration: {
+          Level: 'ALL',
+          IncludeExecutionData: true,
+          Destinations: [
+            { CloudWatchLogsLogGroup: { LogGroupArn: 'arn:aws:logs:...' } },
+          ],
+        },
+        TracingConfiguration: { Enabled: true },
       });
 
       const createCall = mockSend.mock.calls[0][0];
       expect(createCall.input.type).toBe('EXPRESS');
-      expect(createCall.input.loggingConfiguration).toEqual(loggingConfiguration);
-      expect(createCall.input.tracingConfiguration).toEqual(tracingConfiguration);
+      expect(createCall.input.loggingConfiguration).toEqual({
+        level: 'ALL',
+        includeExecutionData: true,
+        destinations: [
+          { cloudWatchLogsLogGroup: { logGroupArn: 'arn:aws:logs:...' } },
+        ],
+      });
+      expect(createCall.input.tracingConfiguration).toEqual({ enabled: true });
     });
   });
 

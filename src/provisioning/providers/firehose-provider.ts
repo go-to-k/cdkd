@@ -651,17 +651,21 @@ export class FirehoseProvider implements ResourceProvider {
     }
 
     // Tags via ListTagsForDeliveryStream.
+    // Always emit `Tags` (even as `[]`) per docs/provider-development.md
+    // § 3b "always emit user-controllable top-level keys": omitting the
+    // key on the failure path means the comparator's state-keys-only
+    // walk skips Tags forever, hiding console-side tag adds from drift.
     try {
       const tagsResp = await this.getClient().send(
         new ListTagsForDeliveryStreamCommand({ DeliveryStreamName: physicalId })
       );
-      const tags = normalizeAwsTagsToCfn(tagsResp.Tags);
-      result['Tags'] = tags;
+      result['Tags'] = normalizeAwsTagsToCfn(tagsResp.Tags);
     } catch (err) {
       if (err instanceof ResourceNotFoundException) return undefined;
       this.logger.debug(
         `Firehose ListTagsForDeliveryStream(${physicalId}) failed: ${err instanceof Error ? err.message : String(err)}`
       );
+      result['Tags'] = [];
     }
 
     return result;

@@ -41,6 +41,37 @@ import type {
 } from '../../types/resource.js';
 
 /**
+ * Class 2 sanitize: empty `{}` placeholders that `readCurrentState` emits
+ * for sub-objects whose AWS schema requires a sub-field would be rejected
+ * by `UpdateUserPool` if shipped as-is. The known-rejected shapes:
+ *
+ * - `SmsConfiguration: {}`         — `SnsCallerArn` is required
+ * - `UsernameConfiguration: {}`    — `CaseSensitive` is required (also
+ *                                    immutable on update; AWS rejects any
+ *                                    UsernameConfiguration on UpdateUserPool
+ *                                    that differs from create-time, but a
+ *                                    no-drift round-trip should never reach
+ *                                    here in the first place)
+ * - `UserPoolAddOns: {}`           — `AdvancedSecurityMode` is required
+ *
+ * The other sub-objects emitted as `{}` placeholders (LambdaConfig,
+ * AdminCreateUserConfig, AccountRecoverySetting, UserAttributeUpdateSettings,
+ * EmailConfiguration, VerificationMessageTemplate, DeviceConfiguration)
+ * have all-optional sub-fields per the SDK types and AWS accepts the empty
+ * object as "no overrides / clear all".
+ *
+ * Returns `true` when the value is a non-null object with zero keys.
+ */
+function isEmptyObjectPlaceholder(value: unknown): boolean {
+  return (
+    value !== null &&
+    typeof value === 'object' &&
+    !Array.isArray(value) &&
+    Object.keys(value as Record<string, unknown>).length === 0
+  );
+}
+
+/**
  * AWS Cognito User Pool Provider
  *
  * Implements resource provisioning for AWS::Cognito::UserPool using the Cognito SDK.
@@ -307,7 +338,14 @@ export class CognitoUserPoolProvider implements ResourceProvider {
           'EmailConfiguration'
         ] as EmailConfigurationType;
       }
-      if (properties['SmsConfiguration']) {
+      // Class 2 sanitize: `SmsConfiguration: {}` would be rejected by
+      // UpdateUserPool because `SnsCallerArn` is a required sub-field.
+      // Skip the empty-object placeholder so a no-drift round-trip
+      // (state == AWS, both empty) is a logical no-op.
+      if (
+        properties['SmsConfiguration'] &&
+        !isEmptyObjectPlaceholder(properties['SmsConfiguration'])
+      ) {
         updateParams.SmsConfiguration = properties['SmsConfiguration'] as SmsConfigurationType;
       }
       if (properties['VerificationMessageTemplate']) {
@@ -320,19 +358,27 @@ export class CognitoUserPoolProvider implements ResourceProvider {
           'DeviceConfiguration'
         ] as DeviceConfigurationType;
       }
-      if (properties['UserPoolAddOns']) {
+      // Class 2 sanitize: `UserPoolAddOns: {}` would be rejected because
+      // `AdvancedSecurityMode` is a required sub-field.
+      if (properties['UserPoolAddOns'] && !isEmptyObjectPlaceholder(properties['UserPoolAddOns'])) {
         updateParams.UserPoolAddOns = properties['UserPoolAddOns'] as UserPoolAddOnsType;
       }
-      if (properties['EmailVerificationMessage']) {
+      // `!== undefined` (not truthy) so empty-string placeholders that
+      // `readCurrentState` emits for unset message fields reach AWS — a
+      // truthy gate would silently drop `''` and `cdkd drift --revert`
+      // (which round-trips observed → desired) would report `✓ reverted`
+      // while leaving the AWS-side message untouched. The next drift run
+      // re-detects the same drift — silent fail.
+      if (properties['EmailVerificationMessage'] !== undefined) {
         updateParams.EmailVerificationMessage = properties['EmailVerificationMessage'] as string;
       }
-      if (properties['EmailVerificationSubject']) {
+      if (properties['EmailVerificationSubject'] !== undefined) {
         updateParams.EmailVerificationSubject = properties['EmailVerificationSubject'] as string;
       }
-      if (properties['SmsAuthenticationMessage']) {
+      if (properties['SmsAuthenticationMessage'] !== undefined) {
         updateParams.SmsAuthenticationMessage = properties['SmsAuthenticationMessage'] as string;
       }
-      if (properties['SmsVerificationMessage']) {
+      if (properties['SmsVerificationMessage'] !== undefined) {
         updateParams.SmsVerificationMessage = properties['SmsVerificationMessage'] as string;
       }
 
