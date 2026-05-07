@@ -965,7 +965,33 @@ Use these placeholders consistently:
 
 **Wire-layer filtering** — the drift comparator does NOT apply per-type denylists for SDK provider results (those are reserved for the CC-API fallback path). If your provider's SDK response includes AWS-managed fields you don't want to surface, do NOT assign them in the first place.
 
-**Test convention**: each provider's `readCurrentState` test SHOULD have a "AWS returns minimum / empty response" case asserting that every user-controllable top-level key still appears with the expected placeholder. This is the structural defense against the "provider author forgets to emit a key" regression — without it, the bug only surfaces when a user runs drift on a resource configured exactly the way the test missed.
+**Test convention** (mandatory for any provider with `readCurrentState`): every provider test file MUST have an `it('emits placeholders for every user-controllable top-level key on AWS minimum response')` block that:
+
+1. Mocks the SDK to return the resource exists with **all optional fields undefined / empty** (just required fields like Name / ARN).
+2. Calls `readCurrentState(physicalId, logicalId, resourceType)`.
+3. Asserts `Object.keys(result).sort()` matches the **complete expected key list** for that resource type — not a subset.
+4. Spot-checks the placeholder values for the most fragile keys (`?? ''` strings, `?? []` arrays, `?? {}` objects, `?? <semantic-default>` scalars).
+
+Example template:
+
+```typescript
+it('emits placeholders for every user-controllable top-level key on AWS minimum response', async () => {
+  mockSend.mockResolvedValueOnce({
+    /* SDK response: required fields only, all optionals undefined */
+  });
+  const result = await provider.readCurrentState('phys-id', 'L', 'AWS::My::Type');
+  expect(Object.keys(result ?? {}).sort()).toEqual(
+    ['Key1', 'Key2', /* ... complete list ... */ ].sort()
+  );
+  expect(result?.Key1).toBe('');           // string placeholder
+  expect(result?.Key2).toEqual([]);        // array placeholder
+  expect(result?.Key3).toEqual({});        // object placeholder
+});
+```
+
+See [tests/unit/provisioning/lambda-function-provider-readcurrentstate.test.ts](../tests/unit/provisioning/lambda-function-provider-readcurrentstate.test.ts) and [tests/unit/provisioning/cognito-provider-readcurrentstate.test.ts](../tests/unit/provisioning/cognito-provider-readcurrentstate.test.ts) for canonical examples.
+
+This is the **structural defense** against the "provider author forgets to emit a key" regression class. Without it, the bug only surfaces when a user runs drift on a resource configured exactly the way the test missed (and PR review missed). The test makes silent regression mechanically impossible — a refactor that drops a placeholder fails the key-set assertion immediately.
 
 #### `getDriftUnknownPaths()` for unreadable fields
 

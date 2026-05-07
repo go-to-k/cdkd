@@ -156,4 +156,80 @@ describe('CognitoUserPoolProvider.readCurrentState', () => {
 
     expect(result?.UserPoolTags).toEqual({});
   });
+
+  // Structural regression test for the always-emit-placeholder convention
+  // (docs/provider-development.md § 3b). Ensures every user-controllable
+  // top-level CFn key is present in the result even when AWS returns
+  // the resource with all optional fields undefined / empty. A future
+  // refactor that drops a placeholder for any of these keys must update
+  // this test consciously — silent regression is structurally prevented.
+  //
+  // Note: `Schema` is intentionally NOT in the expected key set. The
+  // provider only emits Schema when SchemaAttributes is non-empty
+  // (immutable on create — emitting an empty array here would surface
+  // as a phantom diff on every never-customized pool).
+  it('emits placeholders for every user-controllable top-level key on AWS minimum response', async () => {
+    mockSend.mockResolvedValueOnce({
+      UserPool: {
+        Id: 'us-east-1_x',
+        Name: 'p',
+        // Every other field deliberately undefined.
+      },
+    });
+
+    const result = await provider.readCurrentState(
+      'us-east-1_x',
+      'PoolLogical',
+      'AWS::Cognito::UserPool'
+    );
+
+    expect(Object.keys(result ?? {}).sort()).toEqual(
+      [
+        'AccountRecoverySetting',
+        'AdminCreateUserConfig',
+        'AliasAttributes',
+        'AutoVerifiedAttributes',
+        'DeletionProtection',
+        'DeviceConfiguration',
+        'EmailConfiguration',
+        'EmailVerificationMessage',
+        'EmailVerificationSubject',
+        'LambdaConfig',
+        'MfaConfiguration',
+        'Policies',
+        'SmsAuthenticationMessage',
+        'SmsConfiguration',
+        'SmsVerificationMessage',
+        'UserAttributeUpdateSettings',
+        'UserPoolAddOns',
+        'UserPoolName',
+        'UserPoolTags',
+        'UsernameAttributes',
+        'UsernameConfiguration',
+        'VerificationMessageTemplate',
+      ].sort()
+    );
+    expect(result?.UserPoolName).toBe('p');
+    expect(result?.AutoVerifiedAttributes).toEqual([]);
+    expect(result?.UsernameAttributes).toEqual([]);
+    expect(result?.AliasAttributes).toEqual([]);
+    expect(result?.Policies).toEqual({});
+    expect(result?.LambdaConfig).toEqual({});
+    expect(result?.MfaConfiguration).toBe('OFF');
+    expect(result?.AdminCreateUserConfig).toEqual({});
+    expect(result?.AccountRecoverySetting).toEqual({});
+    expect(result?.UserAttributeUpdateSettings).toEqual({});
+    expect(result?.DeletionProtection).toBe('INACTIVE');
+    expect(result?.EmailConfiguration).toEqual({});
+    expect(result?.SmsConfiguration).toEqual({});
+    expect(result?.VerificationMessageTemplate).toEqual({});
+    expect(result?.UsernameConfiguration).toEqual({});
+    expect(result?.DeviceConfiguration).toEqual({});
+    expect(result?.UserPoolAddOns).toEqual({});
+    expect(result?.EmailVerificationMessage).toBe('');
+    expect(result?.EmailVerificationSubject).toBe('');
+    expect(result?.SmsAuthenticationMessage).toBe('');
+    expect(result?.SmsVerificationMessage).toBe('');
+    expect(result?.UserPoolTags).toEqual({});
+  });
 });

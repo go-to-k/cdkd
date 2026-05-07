@@ -171,4 +171,42 @@ describe('IAMRoleProvider.readCurrentState', () => {
     const result = await provider.readCurrentState('role', 'Logical', 'AWS::IAM::Role');
     expect(result?.Tags).toEqual([]);
   });
+
+  // Structural regression test for the always-emit-placeholder convention
+  // (docs/provider-development.md § 3b). Ensures every user-controllable
+  // top-level CFn key is present in the result even when AWS returns
+  // the resource with all optional fields undefined / empty. A future
+  // refactor that drops a placeholder for any of these keys must update
+  // this test consciously — silent regression is structurally prevented.
+  it('emits placeholders for every user-controllable top-level key on AWS minimum response', async () => {
+    // GetRole — minimum fields only; Description / MaxSessionDuration /
+    // PermissionsBoundary deliberately undefined.
+    mockSend.mockResolvedValueOnce({
+      Role: {
+        RoleName: 'r',
+        Path: '/',
+        AssumeRolePolicyDocument: '%7B%7D',
+      },
+    });
+    // ListAttachedRolePolicies — none attached.
+    mockSend.mockResolvedValueOnce({ AttachedPolicies: [] });
+    // ListRoleTags — no tags.
+    mockSend.mockResolvedValueOnce({ Tags: [], IsTruncated: false });
+
+    const result = await provider.readCurrentState('r', 'Logical', 'AWS::IAM::Role');
+
+    expect(Object.keys(result ?? {}).sort()).toEqual(
+      [
+        'AssumeRolePolicyDocument',
+        'Description',
+        'ManagedPolicyArns',
+        'Path',
+        'RoleName',
+        'Tags',
+      ].sort()
+    );
+    expect(result?.Description).toBe('');
+    expect(result?.ManagedPolicyArns).toEqual([]);
+    expect(result?.Tags).toEqual([]);
+  });
 });

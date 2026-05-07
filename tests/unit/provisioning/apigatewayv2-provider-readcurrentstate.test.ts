@@ -238,4 +238,33 @@ describe('ApiGatewayV2Provider.readCurrentState', () => {
 
     expect(result?.Tags).toEqual([]);
   });
+
+  // Structural regression test for the always-emit-placeholder convention
+  // (docs/provider-development.md § 3b). Ensures every user-controllable
+  // top-level CFn key is present in the result even when AWS returns
+  // the resource with all optional fields undefined / empty. A future
+  // refactor that drops a placeholder for any of these keys must update
+  // this test consciously — silent regression is structurally prevented.
+  it('emits placeholders for every user-controllable top-level key on AWS minimum response (Api)', async () => {
+    mockSend.mockResolvedValueOnce({
+      ApiId: 'a',
+      ProtocolType: 'HTTP',
+      // Name / Description / CorsConfiguration / Tags deliberately undefined.
+    });
+
+    const result = await provider.readCurrentState(
+      'a',
+      'ApiLogical',
+      'AWS::ApiGatewayV2::Api'
+    );
+
+    expect(Object.keys(result ?? {}).sort()).toEqual(
+      ['CorsConfiguration', 'Description', 'Name', 'ProtocolType', 'Tags'].sort()
+    );
+    expect(result?.Name).toBe('');
+    expect(result?.Description).toBe('');
+    expect(result?.CorsConfiguration).toEqual({});
+    expect(result?.ProtocolType).toBe('HTTP');
+    expect(result?.Tags).toEqual([]);
+  });
 });

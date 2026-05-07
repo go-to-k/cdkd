@@ -158,4 +158,47 @@ describe('S3BucketProvider.readCurrentState', () => {
       },
     });
   });
+
+  // Structural regression test for the always-emit-placeholder convention
+  // (docs/provider-development.md § 3b). Ensures every user-controllable
+  // top-level CFn key is present in the result even when AWS returns
+  // the resource with all optional fields undefined / empty. A future
+  // refactor that drops a placeholder for any of these keys must update
+  // this test consciously — silent regression is structurally prevented.
+  //
+  // Note: the S3 provider's `Tags` key is set inside a try-block that
+  // catches `NoSuchTagSet` without writing the key — so the
+  // minimum-response shape deliberately does NOT include `Tags`. This
+  // mirrors the existing not-configured test above.
+  it('emits placeholders for every user-controllable top-level key on AWS minimum response', async () => {
+    // HeadBucket
+    mockSend.mockResolvedValueOnce({});
+    // GetBucketVersioning — never configured
+    mockSend.mockResolvedValueOnce({});
+    // GetBucketEncryption — feature absent
+    mockSend.mockRejectedValueOnce(notConfigured('ServerSideEncryptionConfigurationNotFoundError'));
+    // GetPublicAccessBlock — feature absent
+    mockSend.mockRejectedValueOnce(notConfigured('NoSuchPublicAccessBlockConfiguration'));
+    // GetBucketTagging — no tag set
+    mockSend.mockRejectedValueOnce(notConfigured('NoSuchTagSet'));
+
+    const result = await provider.readCurrentState('my-bucket', 'Logical', 'AWS::S3::Bucket');
+
+    expect(Object.keys(result ?? {}).sort()).toEqual(
+      [
+        'BucketEncryption',
+        'BucketName',
+        'PublicAccessBlockConfiguration',
+        'VersioningConfiguration',
+      ].sort()
+    );
+    expect(result?.VersioningConfiguration).toEqual({ Status: 'Suspended' });
+    expect(result?.BucketEncryption).toEqual({ ServerSideEncryptionConfiguration: [] });
+    expect(result?.PublicAccessBlockConfiguration).toEqual({
+      BlockPublicAcls: false,
+      BlockPublicPolicy: false,
+      IgnorePublicAcls: false,
+      RestrictPublicBuckets: false,
+    });
+  });
 });

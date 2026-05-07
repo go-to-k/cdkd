@@ -127,6 +127,37 @@ describe('AppSyncProvider.readCurrentState', () => {
       );
       expect(result).toBeUndefined();
     });
+
+    // Structural regression test for the always-emit-placeholder convention
+    // (docs/provider-development.md § 3b). Ensures every user-controllable
+    // top-level CFn key is present in the result even when AWS returns
+    // the resource with all optional fields undefined / empty. A future
+    // refactor that drops a placeholder for any of these keys must update
+    // this test consciously — silent regression is structurally prevented.
+    it('emits placeholders for every user-controllable top-level key on AWS minimum response', async () => {
+      mockSend.mockResolvedValueOnce({
+        graphqlApi: {
+          name: 'api',
+          authenticationType: 'API_KEY',
+          // xrayEnabled / logConfig / tags deliberately undefined.
+        },
+      });
+
+      const result = await provider.readCurrentState(
+        'api-1',
+        'L',
+        'AWS::AppSync::GraphQLApi'
+      );
+
+      expect(Object.keys(result ?? {}).sort()).toEqual(
+        ['AuthenticationType', 'LogConfig', 'Name', 'Tags', 'XrayEnabled'].sort()
+      );
+      expect(result?.Name).toBe('api');
+      expect(result?.AuthenticationType).toBe('API_KEY');
+      expect(result?.XrayEnabled).toBe(false);
+      expect(result?.LogConfig).toEqual({});
+      expect(result?.Tags).toEqual([]);
+    });
   });
 
   describe('AWS::AppSync::DataSource', () => {

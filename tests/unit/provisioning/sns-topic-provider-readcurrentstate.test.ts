@@ -121,4 +121,40 @@ describe('SNSTopicProvider.readCurrentState', () => {
     const result = await provider.readCurrentState(TOPIC_ARN, 'Logical', 'AWS::SNS::Topic');
     expect(result?.Tags).toEqual([]);
   });
+
+  // Structural regression test for the always-emit-placeholder convention
+  // (docs/provider-development.md § 3b). Ensures every user-controllable
+  // top-level CFn key is present in the result even when AWS returns
+  // the resource with all optional fields undefined / empty. A future
+  // refactor that drops a placeholder for any of these keys must update
+  // this test consciously — silent regression is structurally prevented.
+  it('emits placeholders for every user-controllable top-level key on AWS minimum response', async () => {
+    // GetTopicAttributes — empty Attributes object (no DisplayName, no
+    // KmsMasterKeyId, no TracingConfig, no SignatureVersion, no
+    // FifoThroughputScope, no FifoTopic / ContentBasedDeduplication, no
+    // ArchivePolicy / DataProtectionPolicy).
+    mockSend.mockResolvedValueOnce({ Attributes: {} });
+    // ListTagsForResource — no user tags.
+    mockSend.mockResolvedValueOnce({ Tags: [] });
+
+    const result = await provider.readCurrentState(TOPIC_ARN, 'Logical', 'AWS::SNS::Topic');
+
+    expect(Object.keys(result ?? {}).sort()).toEqual(
+      [
+        'DisplayName',
+        'FifoThroughputScope',
+        'KmsMasterKeyId',
+        'SignatureVersion',
+        'Tags',
+        'TopicName',
+        'TracingConfig',
+      ].sort()
+    );
+    expect(result?.DisplayName).toBe('');
+    expect(result?.KmsMasterKeyId).toBe('');
+    expect(result?.TracingConfig).toBe('');
+    expect(result?.SignatureVersion).toBe('');
+    expect(result?.FifoThroughputScope).toBe('');
+    expect(result?.Tags).toEqual([]);
+  });
 });

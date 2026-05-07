@@ -163,4 +163,55 @@ describe('LambdaFunctionProvider.readCurrentState', () => {
 
     expect(result?.Tags).toEqual([]);
   });
+
+  // Structural regression test for the always-emit-placeholder convention
+  // (docs/provider-development.md § 3b). Ensures every user-controllable
+  // top-level CFn key is present in the result even when AWS returns
+  // the resource with all optional fields undefined / empty. A future
+  // refactor that drops a placeholder for any of these keys must update
+  // this test consciously — silent regression is structurally prevented.
+  it('emits placeholders for every user-controllable top-level key on AWS minimum response', async () => {
+    mockSend.mockResolvedValueOnce({
+      Configuration: {
+        FunctionName: 'fn',
+        Runtime: 'nodejs20.x',
+        Handler: 'index.handler',
+        Role: 'arn:aws:iam::123456789012:role/exec',
+        Timeout: 3,
+        MemorySize: 128,
+        PackageType: 'Zip',
+        // Description / Environment / Layers / Architectures / TracingConfig
+        // / EphemeralStorage / VpcConfig deliberately omitted.
+      },
+      Tags: undefined,
+    });
+
+    const result = await provider.readCurrentState('fn', 'Logical', 'AWS::Lambda::Function');
+
+    expect(Object.keys(result ?? {}).sort()).toEqual(
+      [
+        'Architectures',
+        'Description',
+        'Environment',
+        'FunctionName',
+        'Handler',
+        'Layers',
+        'MemorySize',
+        'PackageType',
+        'Role',
+        'Runtime',
+        'Tags',
+        'Timeout',
+        'TracingConfig',
+        'VpcConfig',
+      ].sort()
+    );
+    expect(result?.Description).toBe('');
+    expect(result?.Environment).toEqual({ Variables: {} });
+    expect(result?.Layers).toEqual([]);
+    expect(result?.Architectures).toEqual([]);
+    expect(result?.TracingConfig).toEqual({ Mode: 'PassThrough' });
+    expect(result?.VpcConfig).toEqual({ SubnetIds: [], SecurityGroupIds: [] });
+    expect(result?.Tags).toEqual([]);
+  });
 });
