@@ -55,7 +55,7 @@ import {
 } from '@aws-sdk/client-ec2';
 import { getLogger } from '../../utils/logger.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
-import { ProvisioningError } from '../../utils/error-handler.js';
+import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { CDK_PATH_TAG } from '../import-helpers.js';
 import type {
@@ -290,7 +290,14 @@ export class EC2Provider implements ResourceProvider {
       case 'AWS::EC2::NetworkAcl':
       case 'AWS::EC2::NetworkAclEntry':
       case 'AWS::EC2::SubnetNetworkAclAssociation':
-        return { physicalId, wasReplaced: false };
+        // Reject loudly instead of silently no-op'ing on
+        // `cdkd drift --revert`. Same rationale as Subnet / IGW /
+        // NatGateway / RouteTable above. See PR I.
+        throw new ResourceUpdateNotSupportedError(
+          resourceType,
+          logicalId,
+          'destroy + redeploy. The property surface for this resource type is effectively immutable in cdkd today.'
+        );
       default:
         throw new ProvisioningError(
           `Unsupported resource type: ${resourceType}`,
@@ -479,25 +486,37 @@ export class EC2Provider implements ResourceProvider {
     this.logger.debug(`Updating VPC ${logicalId}: ${physicalId}`);
 
     try {
-      // Update DNS settings
-      if (properties['EnableDnsHostnames'] !== undefined) {
-        const value =
-          properties['EnableDnsHostnames'] === true || properties['EnableDnsHostnames'] === 'true';
+      // Coerce CFn-string-or-bool ("true" | true) into a real boolean so the
+      // diff below treats `"true"` and `true` as the same value.
+      const asBool = (v: unknown): boolean | undefined => {
+        if (v === undefined) return undefined;
+        return v === true || v === 'true';
+      };
+
+      // Update DNS settings — diff-based so a no-op round-trip
+      // (`update(state, state)` from `cdkd drift --revert`) produces zero
+      // ModifyVpcAttribute calls. AWS treats ModifyVpcAttribute as
+      // idempotent, but the canonical round-trip guard ("state==AWS
+      // produces zero mutating SDK calls") is the structural check that
+      // catches future regressions in the diff logic.
+      const newDnsHostnames = asBool(properties['EnableDnsHostnames']);
+      const oldDnsHostnames = asBool(previousProperties['EnableDnsHostnames']);
+      if (newDnsHostnames !== undefined && newDnsHostnames !== oldDnsHostnames) {
         await this.ec2Client.send(
           new ModifyVpcAttributeCommand({
             VpcId: physicalId,
-            EnableDnsHostnames: { Value: value },
+            EnableDnsHostnames: { Value: newDnsHostnames },
           })
         );
       }
 
-      if (properties['EnableDnsSupport'] !== undefined) {
-        const value =
-          properties['EnableDnsSupport'] === true || properties['EnableDnsSupport'] === 'true';
+      const newDnsSupport = asBool(properties['EnableDnsSupport']);
+      const oldDnsSupport = asBool(previousProperties['EnableDnsSupport']);
+      if (newDnsSupport !== undefined && newDnsSupport !== oldDnsSupport) {
         await this.ec2Client.send(
           new ModifyVpcAttributeCommand({
             VpcId: physicalId,
-            EnableDnsSupport: { Value: value },
+            EnableDnsSupport: { Value: newDnsSupport },
           })
         );
       }
@@ -716,8 +735,21 @@ export class EC2Provider implements ResourceProvider {
   }
 
   private updateSubnet(logicalId: string, physicalId: string): Promise<ResourceUpdateResult> {
-    this.logger.debug(`Updating Subnet ${logicalId}: ${physicalId} (no-op, immutable properties)`);
-    return Promise.resolve({ physicalId, wasReplaced: false });
+    // Subnet is immutable on every property cdkd's `readCurrentState`
+    // surfaces (VpcId / CidrBlock / AvailabilityZone are CREATE-only;
+    // MapPublicIpOnLaunch is mutable via ModifySubnetAttribute but cdkd
+    // does not yet wire that path through `update()`). Reject loudly
+    // instead of silently no-op'ing — `cdkd drift --revert` would
+    // otherwise report `✓ reverted` and the next drift run would
+    // re-detect the same drift. See PR I in CLAUDE.md.
+    void physicalId;
+    return Promise.reject(
+      new ResourceUpdateNotSupportedError(
+        'AWS::EC2::Subnet',
+        logicalId,
+        'destroy + redeploy the Subnet (and the resources that depend on it). Subnet properties are immutable in AWS.'
+      )
+    );
   }
 
   private async deleteSubnet(
@@ -887,8 +919,17 @@ export class EC2Provider implements ResourceProvider {
     logicalId: string,
     physicalId: string
   ): Promise<ResourceUpdateResult> {
-    this.logger.debug(`Updating InternetGateway ${logicalId}: ${physicalId} (no-op)`);
-    return Promise.resolve({ physicalId, wasReplaced: false });
+    // IGW has no mutable properties cdkd surfaces (Tags would be the
+    // only candidate; not in `readCurrentState`). Reject loudly instead
+    // of silently no-op'ing on `cdkd drift --revert`. See PR I.
+    void physicalId;
+    return Promise.reject(
+      new ResourceUpdateNotSupportedError(
+        'AWS::EC2::InternetGateway',
+        logicalId,
+        'destroy + redeploy the InternetGateway. IGW properties are immutable in AWS.'
+      )
+    );
   }
 
   private async deleteInternetGateway(
@@ -979,8 +1020,14 @@ export class EC2Provider implements ResourceProvider {
     logicalId: string,
     physicalId: string
   ): Promise<ResourceUpdateResult> {
-    this.logger.debug(`Updating VPCGatewayAttachment ${logicalId}: ${physicalId} (no-op)`);
-    return Promise.resolve({ physicalId, wasReplaced: false });
+    void physicalId;
+    return Promise.reject(
+      new ResourceUpdateNotSupportedError(
+        'AWS::EC2::VPCGatewayAttachment',
+        logicalId,
+        'destroy + redeploy the VPCGatewayAttachment. The (VpcId, InternetGatewayId) pair is immutable.'
+      )
+    );
   }
 
   private async deleteVpcGatewayAttachment(
@@ -1131,12 +1178,22 @@ export class EC2Provider implements ResourceProvider {
   }
 
   private updateNatGateway(logicalId: string, physicalId: string): Promise<ResourceUpdateResult> {
-    // NAT gateway has no in-place mutable properties (Tags handled
-    // separately if needed). Property changes that map here are
-    // already detected as immutable by the engine and trigger
-    // DELETE + CREATE upstream.
-    this.logger.debug(`Updating NatGateway ${logicalId}: ${physicalId} (no-op)`);
-    return Promise.resolve({ physicalId, wasReplaced: false });
+    // NAT Gateway is immutable on every property cdkd's
+    // `readCurrentState` surfaces (SubnetId / ConnectivityType /
+    // AllocationId / PrivateIpAddress are all CREATE-only). The deploy
+    // engine's replacement detection already routes property changes to
+    // DELETE + CREATE upstream of this method — `update()` is reached
+    // only via `cdkd drift --revert`, where silently no-op'ing would
+    // make the user think drift was reverted while AWS keeps the
+    // console-side change. Reject loudly instead. See PR I.
+    void physicalId;
+    return Promise.reject(
+      new ResourceUpdateNotSupportedError(
+        'AWS::EC2::NatGateway',
+        logicalId,
+        'destroy + redeploy the NatGateway (and the dependent Routes). NAT Gateway properties are immutable in AWS.'
+      )
+    );
   }
 
   private async deleteNatGateway(
@@ -1266,8 +1323,14 @@ export class EC2Provider implements ResourceProvider {
   }
 
   private updateRouteTable(logicalId: string, physicalId: string): Promise<ResourceUpdateResult> {
-    this.logger.debug(`Updating RouteTable ${logicalId}: ${physicalId} (no-op)`);
-    return Promise.resolve({ physicalId, wasReplaced: false });
+    void physicalId;
+    return Promise.reject(
+      new ResourceUpdateNotSupportedError(
+        'AWS::EC2::RouteTable',
+        logicalId,
+        'destroy + redeploy the RouteTable (and its associated Routes / SubnetRouteTableAssociations). VpcId is immutable.'
+      )
+    );
   }
 
   private async deleteRouteTable(
@@ -1370,9 +1433,17 @@ export class EC2Provider implements ResourceProvider {
     physicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
-    _previousProperties: Record<string, unknown>
+    previousProperties: Record<string, unknown>
   ): Promise<ResourceUpdateResult> {
     this.logger.debug(`Updating Route ${logicalId}: ${physicalId}`);
+
+    // No-op short-circuit: a `cdkd drift --revert` round-trip can call
+    // update() with new == old when only sibling resources drifted.
+    // Without this guard, the delete + recreate path below would
+    // needlessly churn a Route that AWS already has in the right shape.
+    if (JSON.stringify(properties) === JSON.stringify(previousProperties)) {
+      return { physicalId, wasReplaced: false };
+    }
 
     // Route updates require replacement (DestinationCidrBlock and RouteTableId are immutable)
     // For target changes, we delete and recreate
@@ -1505,10 +1576,14 @@ export class EC2Provider implements ResourceProvider {
     logicalId: string,
     physicalId: string
   ): Promise<ResourceUpdateResult> {
-    this.logger.debug(
-      `Updating SubnetRouteTableAssociation ${logicalId}: ${physicalId} (no-op, requires replacement)`
+    void physicalId;
+    return Promise.reject(
+      new ResourceUpdateNotSupportedError(
+        'AWS::EC2::SubnetRouteTableAssociation',
+        logicalId,
+        'destroy + redeploy the association. (SubnetId, RouteTableId) is immutable.'
+      )
     );
-    return Promise.resolve({ physicalId, wasReplaced: false });
   }
 
   private async deleteSubnetRouteTableAssociation(
@@ -1892,6 +1967,13 @@ export class EC2Provider implements ResourceProvider {
     previousProperties: Record<string, unknown>
   ): Promise<ResourceUpdateResult> {
     this.logger.debug(`Updating SecurityGroupIngress ${logicalId}: ${physicalId}`);
+
+    // No-op short-circuit (mirrors `updateRoute`): a `cdkd drift --revert`
+    // round-trip can call update() with new == old, which without this
+    // guard would needlessly revoke + re-authorize the rule.
+    if (JSON.stringify(properties) === JSON.stringify(previousProperties)) {
+      return { physicalId, wasReplaced: false };
+    }
 
     // SecurityGroupIngress updates require replacement: revoke old, authorize new
     try {

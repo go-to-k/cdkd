@@ -423,7 +423,20 @@ export class ELBv2Provider implements ResourceProvider {
     this.logger.debug(`Updating TargetGroup ${logicalId}: ${physicalId}`);
 
     try {
-      const matcher = properties['Matcher'] as { HttpCode?: string; GrpcCode?: string } | undefined;
+      // Class 2 sanitize at the wire layer: `readCurrentState` always-emits
+      // `Matcher: {}` for non-HTTP/HTTPS target groups (TCP / UDP / GENEVE
+      // never carry HttpCode / GrpcCode). Without this guard, `cdkd drift
+      // --revert` round-trips the `{}` placeholder back through
+      // `ModifyTargetGroup`, which AWS rejects: "Matcher must contain
+      // either HttpCode or GrpcCode". Treat the empty object the same as
+      // an absent Matcher — drop the key from the API input.
+      const rawMatcher = properties['Matcher'] as
+        | { HttpCode?: string; GrpcCode?: string }
+        | undefined;
+      const matcher =
+        rawMatcher && (rawMatcher.HttpCode !== undefined || rawMatcher.GrpcCode !== undefined)
+          ? rawMatcher
+          : undefined;
 
       await this.getClient().send(
         new ModifyTargetGroupCommand({

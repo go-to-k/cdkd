@@ -628,9 +628,11 @@ export class Route53Provider implements ResourceProvider {
       }
     }
 
-    // Routing policy properties
+    // Routing policy properties — use `!== undefined` (not truthy) so a
+    // valid falsy value from observedProperties (e.g. weight=0) is not
+    // silently dropped on `cdkd drift --revert` round-trips.
     const setIdentifier = properties['SetIdentifier'] as string | undefined;
-    if (setIdentifier) {
+    if (setIdentifier !== undefined) {
       recordSet.SetIdentifier = setIdentifier;
     }
 
@@ -640,12 +642,12 @@ export class Route53Provider implements ResourceProvider {
     }
 
     const region = properties['Region'] as string | undefined;
-    if (region) {
+    if (region !== undefined) {
       recordSet.Region = region as ResourceRecordSet['Region'];
     }
 
     const failover = properties['Failover'] as string | undefined;
-    if (failover) {
+    if (failover !== undefined) {
       recordSet.Failover = failover as ResourceRecordSet['Failover'];
     }
 
@@ -658,20 +660,20 @@ export class Route53Provider implements ResourceProvider {
     }
 
     const healthCheckId = properties['HealthCheckId'] as string | undefined;
-    if (healthCheckId) {
+    if (healthCheckId !== undefined) {
       recordSet.HealthCheckId = healthCheckId;
     }
 
     const geoLocation = properties['GeoLocation'] as Record<string, unknown> | undefined;
     if (geoLocation) {
       recordSet.GeoLocation = {
-        ...(geoLocation['ContinentCode']
+        ...(geoLocation['ContinentCode'] !== undefined
           ? { ContinentCode: geoLocation['ContinentCode'] as string }
           : {}),
-        ...(geoLocation['CountryCode']
+        ...(geoLocation['CountryCode'] !== undefined
           ? { CountryCode: geoLocation['CountryCode'] as string }
           : {}),
-        ...(geoLocation['SubdivisionCode']
+        ...(geoLocation['SubdivisionCode'] !== undefined
           ? { SubdivisionCode: geoLocation['SubdivisionCode'] as string }
           : {}),
       };
@@ -952,12 +954,19 @@ export class Route53Provider implements ResourceProvider {
       }
       result['HostedZoneConfig'] = cfg;
     }
-    result['VPCs'] = (resp.VPCs ?? []).map((v) => {
-      const out: Record<string, unknown> = {};
-      if (v.VPCId !== undefined) out['VPCId'] = v.VPCId;
-      if (v.VPCRegion !== undefined) out['VPCRegion'] = v.VPCRegion;
-      return out;
-    });
+    // Class 1: VPCs is a private-zone-only field. AWS rejects
+    // AssociateVPCWithHostedZone on public zones, and emitting an empty
+    // [] placeholder on a public zone fires false drift against state
+    // that has no VPCs key. Gate on PrivateZone === true (the
+    // discriminator) so public zones don't carry the placeholder.
+    if (resp.HostedZone.Config?.PrivateZone === true) {
+      result['VPCs'] = (resp.VPCs ?? []).map((v) => {
+        const out: Record<string, unknown> = {};
+        if (v.VPCId !== undefined) out['VPCId'] = v.VPCId;
+        if (v.VPCRegion !== undefined) out['VPCRegion'] = v.VPCRegion;
+        return out;
+      });
+    }
 
     // HostedZoneTags via ListTagsForResource. Route 53 ResourceId is the
     // zone id WITHOUT the "/hostedzone/" prefix.
@@ -1008,11 +1017,21 @@ export class Route53Provider implements ResourceProvider {
       Name: name,
       Type: type,
     };
-    if (recordSet.TTL !== undefined) result['TTL'] = recordSet.TTL;
-    // CFn / cdkd state shape is string[]; SDK is [{Value}].
-    result['ResourceRecords'] = (recordSet.ResourceRecords ?? [])
-      .map((r) => r.Value)
-      .filter((v): v is string => typeof v === 'string');
+    // Class 1: TTL and ResourceRecords are mutually exclusive with
+    // AliasTarget — AWS rejects ChangeResourceRecordSets that carries
+    // both. Gate the standard-record fields on `!AliasTarget` so an
+    // alias record's observed snapshot does NOT carry placeholder
+    // `TTL` / `ResourceRecords: []` that would (a) fire false drift
+    // against state which legitimately lacks those keys and (b) round-
+    // trip into a structurally-invalid ChangeResourceRecordSets input
+    // if buildResourceRecordSet is ever changed to forward both.
+    if (!recordSet.AliasTarget) {
+      if (recordSet.TTL !== undefined) result['TTL'] = recordSet.TTL;
+      // CFn / cdkd state shape is string[]; SDK is [{Value}].
+      result['ResourceRecords'] = (recordSet.ResourceRecords ?? [])
+        .map((r) => r.Value)
+        .filter((v): v is string => typeof v === 'string');
+    }
     if (recordSet.AliasTarget) {
       const at: Record<string, unknown> = {};
       if (recordSet.AliasTarget.HostedZoneId !== undefined) {

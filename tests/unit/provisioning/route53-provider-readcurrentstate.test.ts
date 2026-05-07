@@ -168,11 +168,16 @@ describe('Route53Provider.readCurrentState', () => {
         'AWS::Route53::RecordSet'
       );
 
+      // Class 1 gate: alias records do NOT carry TTL / ResourceRecords
+      // placeholders in the observed snapshot — those fields are
+      // mutually exclusive with AliasTarget per AWS, so emitting `[]`
+      // would (a) fire false drift against state that never had the
+      // key and (b) round-trip into a structurally-invalid
+      // ChangeResourceRecordSets input.
       expect(result).toEqual({
         HostedZoneId: 'Z1',
         Name: 'alias.example.com.',
         Type: 'A',
-        ResourceRecords: [],
         AliasTarget: {
           HostedZoneId: 'Z2',
           DNSName: 'lb-1.us-east-1.elb.amazonaws.com.',
