@@ -282,6 +282,110 @@ describe('cdkd import', () => {
     expect(String(summaryCall?.[0])).toMatch(/1 imported, 1 not found, 1 unsupported/);
   });
 
+  it('populates observedProperties for each imported resource by calling provider.readCurrentState', async () => {
+    // After import, the saved state must carry an observedProperties
+    // baseline for every successfully-imported resource — same shape as
+    // a fresh `cdkd deploy` produces — so the very first
+    // `cdkd drift` run after adoption has a real AWS-current snapshot
+    // and not just the user's template intent.
+    const tmpl = template({
+      MyBucket: {
+        Type: 'AWS::S3::Bucket',
+        Properties: {},
+        Metadata: { 'aws:cdk:path': 'S/MyBucket' },
+      },
+      MyFn: {
+        Type: 'AWS::Lambda::Function',
+        Properties: {},
+        Metadata: { 'aws:cdk:path': 'S/MyFn' },
+      },
+    });
+    mockSynthesize.mockResolvedValue({ stacks: [stackInfo('S', tmpl)] });
+
+    mockHasProvider.mockReturnValue(true);
+    mockGetProvider.mockImplementation((t: string) => {
+      if (t === 'AWS::S3::Bucket') {
+        return {
+          import: vi.fn(async () => ({ physicalId: 'my-bucket-name', attributes: {} })),
+          readCurrentState: vi.fn(async () => ({ BucketName: 'my-bucket-name', Tags: [] })),
+        };
+      }
+      if (t === 'AWS::Lambda::Function') {
+        return {
+          import: vi.fn(async () => ({ physicalId: 'my-fn', attributes: {} })),
+          // No readCurrentState — falls back to undefined observedProperties.
+        };
+      }
+      return {};
+    });
+
+    await runImport(['import', '--app', 'x', '--yes']);
+
+    expect(mockSaveState).toHaveBeenCalledTimes(1);
+    const [, , state] = mockSaveState.mock.calls[0] as unknown as [
+      string,
+      string,
+      { resources: Record<string, { observedProperties?: Record<string, unknown> }> },
+    ];
+    expect(state.resources['MyBucket']?.observedProperties).toEqual({
+      BucketName: 'my-bucket-name',
+      Tags: [],
+    });
+    // Provider without readCurrentState leaves observedProperties unset.
+    expect(state.resources['MyFn']?.observedProperties).toBeUndefined();
+  });
+
+  it('does not abort the import when one resource\'s readCurrentState throws', async () => {
+    // Same defensive shape as deploy: a single readCurrentState
+    // failure must not fail the import. The affected resource just
+    // lands without observedProperties; the next deploy populates it.
+    const tmpl = template({
+      MyBucket: {
+        Type: 'AWS::S3::Bucket',
+        Properties: {},
+        Metadata: { 'aws:cdk:path': 'S/MyBucket' },
+      },
+      MyFn: {
+        Type: 'AWS::Lambda::Function',
+        Properties: {},
+        Metadata: { 'aws:cdk:path': 'S/MyFn' },
+      },
+    });
+    mockSynthesize.mockResolvedValue({ stacks: [stackInfo('S', tmpl)] });
+
+    mockHasProvider.mockReturnValue(true);
+    mockGetProvider.mockImplementation((t: string) => {
+      if (t === 'AWS::S3::Bucket') {
+        return {
+          import: vi.fn(async () => ({ physicalId: 'my-bucket-name', attributes: {} })),
+          readCurrentState: vi.fn(async () => ({ BucketName: 'my-bucket-name' })),
+        };
+      }
+      if (t === 'AWS::Lambda::Function') {
+        return {
+          import: vi.fn(async () => ({ physicalId: 'my-fn', attributes: {} })),
+          readCurrentState: vi.fn(async () => {
+            throw new Error('AccessDenied');
+          }),
+        };
+      }
+      return {};
+    });
+
+    await runImport(['import', '--app', 'x', '--yes']);
+
+    expect(mockSaveState).toHaveBeenCalledTimes(1);
+    const [, , state] = mockSaveState.mock.calls[0] as unknown as [
+      string,
+      string,
+      { resources: Record<string, { observedProperties?: Record<string, unknown> }> },
+    ];
+    expect(state.resources['MyBucket']?.observedProperties).toEqual({
+      BucketName: 'my-bucket-name',
+    });
+    expect(state.resources['MyFn']?.observedProperties).toBeUndefined();
+  });
+
   it('passes --resource overrides through as knownPhysicalId', async () => {
     const tmpl = template({
       MyBucket: {

@@ -193,13 +193,18 @@ interface ResourceState {
 calling `provider.readCurrentState` fire-and-forget after the resource flips
 to its new state. The deploy critical path does NOT block on these — the
 in-flight set is drained right before the final state save so the cost is
-~`max(per-resource readCurrentState latency)` ≈ 200-300ms in practice. The
-field is the drift comparator's preferred baseline; resources written by an
-older binary or by a provider without `readCurrentState` keep
-`observedProperties: undefined` and the comparator falls back to `properties`
-(the pre-v3 behavior). Pass `--no-capture-observed-state` (or set
-`cdk.json context.cdkd.captureObservedState: false`) to disable the capture
-and regain the pre-v3 deploy time at the cost of weaker drift detection.
+~`max(per-resource readCurrentState latency)` ≈ 200-300ms in practice.
+`cdkd import` populates the same field synchronously (parallel
+`Promise.all` over the imported set) right before the state write, so the
+very first `cdkd drift` after adoption has a real AWS-current baseline
+instead of the user's template intent. The field is the drift
+comparator's preferred baseline; resources written by an older binary or
+by a provider without `readCurrentState` keep `observedProperties:
+undefined` and the comparator falls back to `properties` (the pre-v3
+behavior). Pass `--no-capture-observed-state` (or set `cdk.json
+context.cdkd.captureObservedState: false`) to disable the deploy-time
+capture and regain the pre-v3 deploy time at the cost of weaker drift
+detection.
 
 ## Provider Pattern
 
