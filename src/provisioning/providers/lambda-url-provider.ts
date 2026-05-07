@@ -113,9 +113,33 @@ export class LambdaUrlProvider implements ResourceProvider {
     physicalId: string,
     _resourceType: string,
     properties: Record<string, unknown>,
-    _previousProperties: Record<string, unknown>
+    previousProperties: Record<string, unknown>
   ): Promise<ResourceUpdateResult> {
     this.logger.debug(`Updating Lambda URL ${logicalId}: ${physicalId}`);
+
+    // Diff-based no-op: when `cdkd drift --revert` round-trips the
+    // observed snapshot back through `update()` on a no-drift resource,
+    // the new and previous property maps are identical. Skip the AWS
+    // call entirely in that case so the round-trip is a logical no-op
+    // (matches the SNS / SQS provider pattern; mechanical guard
+    // documented in `tests/unit/provisioning/lambda-url-provider-roundtrip.test.ts`).
+    const handled = this.handledProperties.get('AWS::Lambda::Url') ?? new Set<string>();
+    let changed = false;
+    for (const key of handled) {
+      if (
+        JSON.stringify(properties[key] ?? null) !== JSON.stringify(previousProperties[key] ?? null)
+      ) {
+        changed = true;
+        break;
+      }
+    }
+    if (!changed) {
+      return {
+        physicalId,
+        wasReplaced: false,
+        attributes: {},
+      };
+    }
 
     const authType = (properties['AuthType'] as FunctionUrlAuthType) || 'NONE';
     const cors = properties['Cors'] as Record<string, unknown> | undefined;
@@ -124,9 +148,23 @@ export class LambdaUrlProvider implements ResourceProvider {
       FunctionName: physicalId,
       AuthType: authType,
     };
-    if (properties['InvokeMode']) updateParams.InvokeMode = properties['InvokeMode'] as InvokeMode;
+    if (properties['InvokeMode'] !== undefined)
+      updateParams.InvokeMode = properties['InvokeMode'] as InvokeMode;
+    // Class 2 sanitize: `readCurrentState` always-emits a `Cors` placeholder
+    // with empty arrays for `AllowOrigins` / `AllowMethods` / `AllowHeaders`
+    // / `ExposeHeaders` so a console-side CORS toggle on a URL configured
+    // without CORS surfaces as drift. On `cdkd drift --revert` that
+    // placeholder round-trips back through `update()` — sending an
+    // all-empty `Cors` to AWS would needlessly mutate the URL to
+    // "CORS-configured-but-empty" instead of "no CORS". Mirror
+    // `serializeRedrivePolicy` in `sqs-queue-provider.ts` and treat the
+    // empty-shape placeholder as "no CORS" (omit `Cors` from the
+    // UpdateFunctionUrlConfig input entirely).
     if (cors) {
-      updateParams.Cors = this.buildCorsConfig(cors);
+      const builtCors = this.buildCorsConfig(cors);
+      if (Object.keys(builtCors).length > 0) {
+        updateParams.Cors = builtCors;
+      }
     }
 
     const response = await this.lambdaClient.send(new UpdateFunctionUrlConfigCommand(updateParams));
@@ -301,15 +339,36 @@ export class LambdaUrlProvider implements ResourceProvider {
   }
 
   /**
-   * Build CORS configuration from CDK properties
+   * Build CORS configuration from CDK properties.
+   *
+   * Empty arrays from `readCurrentState`'s always-emit placeholder
+   * (`AllowOrigins: []`, `AllowMethods: []`, `AllowHeaders: []`,
+   * `ExposeHeaders: []`) are intentionally dropped here — emitting them
+   * to AWS would configure CORS with empty allowlists instead of
+   * leaving CORS unset. The caller (`update()` / `create()`) treats an
+   * empty `Cors` object as "no CORS configured" and omits it from the
+   * SDK input. `MaxAge` uses `!== undefined` so the valid AWS input
+   * `MaxAge: 0` (= "do not cache preflight responses") is preserved.
    */
   private buildCorsConfig(cors: Record<string, unknown>): import('@aws-sdk/client-lambda').Cors {
     const config: import('@aws-sdk/client-lambda').Cors = {};
-    if (cors['AllowOrigins']) config.AllowOrigins = cors['AllowOrigins'] as string[];
-    if (cors['AllowMethods']) config.AllowMethods = cors['AllowMethods'] as string[];
-    if (cors['AllowHeaders']) config.AllowHeaders = cors['AllowHeaders'] as string[];
-    if (cors['ExposeHeaders']) config.ExposeHeaders = cors['ExposeHeaders'] as string[];
-    if (cors['MaxAge']) config.MaxAge = cors['MaxAge'] as number;
+    const allowOrigins = cors['AllowOrigins'];
+    if (Array.isArray(allowOrigins) && allowOrigins.length > 0) {
+      config.AllowOrigins = allowOrigins as string[];
+    }
+    const allowMethods = cors['AllowMethods'];
+    if (Array.isArray(allowMethods) && allowMethods.length > 0) {
+      config.AllowMethods = allowMethods as string[];
+    }
+    const allowHeaders = cors['AllowHeaders'];
+    if (Array.isArray(allowHeaders) && allowHeaders.length > 0) {
+      config.AllowHeaders = allowHeaders as string[];
+    }
+    const exposeHeaders = cors['ExposeHeaders'];
+    if (Array.isArray(exposeHeaders) && exposeHeaders.length > 0) {
+      config.ExposeHeaders = exposeHeaders as string[];
+    }
+    if (cors['MaxAge'] !== undefined) config.MaxAge = cors['MaxAge'] as number;
     if (cors['AllowCredentials'] !== undefined)
       config.AllowCredentials = cors['AllowCredentials'] as boolean;
     return config;

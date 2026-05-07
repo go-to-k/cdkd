@@ -58,6 +58,10 @@ describe('LambdaEventSourceMappingProvider.readCurrentState', () => {
     );
 
     expect(mockSend.mock.calls[0]?.[0]).toBeInstanceOf(GetEventSourceMappingCommand);
+    // SQS source supports FunctionResponseTypes but not
+    // SourceAccessConfigurations — the placeholder is type-discriminator-
+    // gated so a `cdkd drift --revert` round-trip cannot push a
+    // `SourceAccessConfigurations: []` to AWS (which would be rejected).
     expect(result).toEqual({
       FunctionName: 'arn:aws:lambda:us-east-1:123:function:fn',
       EventSourceArn: 'arn:aws:sqs:us-east-1:123:my-queue',
@@ -66,7 +70,6 @@ describe('LambdaEventSourceMappingProvider.readCurrentState', () => {
       MaximumRetryAttempts: 3,
       Enabled: true,
       FunctionResponseTypes: [],
-      SourceAccessConfigurations: [],
     });
   });
 

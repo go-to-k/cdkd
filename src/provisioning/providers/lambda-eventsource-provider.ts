@@ -22,6 +22,74 @@ import type {
 } from '../../types/resource.js';
 
 /**
+ * Classify an event source mapping by its `EventSourceArn` so that
+ * `readCurrentState` can gate type-discriminator-dependent CFn fields.
+ *
+ * Several `AWS::Lambda::EventSourceMapping` properties are only valid
+ * when the source is a specific service. Always-emitting placeholders
+ * (`[]` / `''`) for the wrong source type causes
+ * `cdkd drift --revert` to round-trip those placeholders back through
+ * `UpdateEventSourceMappingCommand`, where AWS rejects them:
+ *
+ * - `FunctionResponseTypes` is only valid for SQS / DynamoDB Streams /
+ *   Kinesis Streams (where `ReportBatchItemFailures` makes sense).
+ *   Pushing `[]` against a Kafka or MQ source is rejected with
+ *   "FunctionResponseTypes is not allowed for this event source".
+ * - `SourceAccessConfigurations` is only valid for self-managed Kafka /
+ *   MSK / MQ. Pushing `[]` against SQS / Kinesis / DynamoDB is rejected
+ *   similarly.
+ */
+type EventSourceKind =
+  | 'sqs'
+  | 'kinesis'
+  | 'dynamodb'
+  | 'kafka' // both MSK and self-managed Kafka
+  | 'mq'
+  | 'documentdb'
+  | 'unknown';
+
+function classifyEventSource(resp: {
+  EventSourceArn?: string | undefined;
+  SelfManagedEventSource?: unknown;
+  AmazonManagedKafkaEventSourceConfig?: unknown;
+  SelfManagedKafkaEventSourceConfig?: unknown;
+  DocumentDBEventSourceConfig?: unknown;
+}): EventSourceKind {
+  // Self-managed Kafka has no EventSourceArn — it carries
+  // SelfManagedEventSource instead.
+  if (resp.SelfManagedEventSource !== undefined) return 'kafka';
+  if (resp.SelfManagedKafkaEventSourceConfig !== undefined) return 'kafka';
+  if (resp.AmazonManagedKafkaEventSourceConfig !== undefined) return 'kafka';
+  if (resp.DocumentDBEventSourceConfig !== undefined) return 'documentdb';
+  const arn = resp.EventSourceArn;
+  if (!arn) return 'unknown';
+  // arn:aws:<service>:<region>:<account>:<rest>
+  if (arn.startsWith('arn:aws:sqs:') || arn.startsWith('arn:aws-cn:sqs:')) return 'sqs';
+  if (arn.startsWith('arn:aws:kinesis:') || arn.startsWith('arn:aws-cn:kinesis:')) return 'kinesis';
+  if (arn.startsWith('arn:aws:dynamodb:') || arn.startsWith('arn:aws-cn:dynamodb:'))
+    return 'dynamodb';
+  if (arn.startsWith('arn:aws:kafka:') || arn.startsWith('arn:aws-cn:kafka:')) return 'kafka';
+  if (arn.startsWith('arn:aws:mq:') || arn.startsWith('arn:aws-cn:mq:')) return 'mq';
+  if (arn.startsWith('arn:aws:rds:') || arn.startsWith('arn:aws-cn:rds:')) {
+    // DocumentDB cluster ARNs use the `rds` service prefix, but are
+    // disambiguated above by `DocumentDBEventSourceConfig`.
+    return 'documentdb';
+  }
+  return 'unknown';
+}
+
+const KINDS_WITH_FUNCTION_RESPONSE_TYPES: ReadonlySet<EventSourceKind> = new Set([
+  'sqs',
+  'kinesis',
+  'dynamodb',
+]);
+const KINDS_WITH_SOURCE_ACCESS_CONFIGURATIONS: ReadonlySet<EventSourceKind> = new Set([
+  'kafka',
+  'mq',
+  'documentdb',
+]);
+
+/**
  * AWS Lambda Event Source Mapping Provider
  *
  * Implements resource provisioning for AWS::Lambda::EventSourceMapping using the Lambda SDK.
@@ -192,10 +260,15 @@ export class LambdaEventSourceMappingProvider implements ResourceProvider {
       UUID: physicalId,
       FunctionName: properties['FunctionName'] as string,
     };
-    if (properties['BatchSize']) updateParams.BatchSize = properties['BatchSize'] as number;
+    // Use `!== undefined` (not truthy) for any field where a falsy value
+    // is a meaningful AWS input: `0` for the *Window/*Age second-counts
+    // disables / infinite-ifies the feature, and `[]` for the array
+    // properties is the documented way to clear a previously-set list.
+    if (properties['BatchSize'] !== undefined)
+      updateParams.BatchSize = properties['BatchSize'] as number;
     if (properties['Enabled'] !== undefined)
       updateParams.Enabled = properties['Enabled'] as boolean;
-    if (properties['MaximumBatchingWindowInSeconds'])
+    if (properties['MaximumBatchingWindowInSeconds'] !== undefined)
       updateParams.MaximumBatchingWindowInSeconds = properties[
         'MaximumBatchingWindowInSeconds'
       ] as number;
@@ -203,33 +276,33 @@ export class LambdaEventSourceMappingProvider implements ResourceProvider {
       updateParams.MaximumRetryAttempts = properties['MaximumRetryAttempts'] as number;
     if (properties['BisectBatchOnFunctionError'] !== undefined)
       updateParams.BisectBatchOnFunctionError = properties['BisectBatchOnFunctionError'] as boolean;
-    if (properties['MaximumRecordAgeInSeconds'])
+    if (properties['MaximumRecordAgeInSeconds'] !== undefined)
       updateParams.MaximumRecordAgeInSeconds = properties['MaximumRecordAgeInSeconds'] as number;
-    if (properties['ParallelizationFactor'])
+    if (properties['ParallelizationFactor'] !== undefined)
       updateParams.ParallelizationFactor = properties['ParallelizationFactor'] as number;
-    if (properties['FilterCriteria'])
+    if (properties['FilterCriteria'] !== undefined)
       updateParams.FilterCriteria = properties['FilterCriteria'] as {
         Filters?: Array<{ Pattern?: string }>;
       };
-    if (properties['DestinationConfig'])
+    if (properties['DestinationConfig'] !== undefined)
       updateParams.DestinationConfig = properties[
         'DestinationConfig'
       ] as import('@aws-sdk/client-lambda').DestinationConfig;
-    if (properties['TumblingWindowInSeconds'])
+    if (properties['TumblingWindowInSeconds'] !== undefined)
       updateParams.TumblingWindowInSeconds = properties['TumblingWindowInSeconds'] as number;
-    if (properties['FunctionResponseTypes'])
+    if (properties['FunctionResponseTypes'] !== undefined)
       updateParams.FunctionResponseTypes = properties[
         'FunctionResponseTypes'
       ] as import('@aws-sdk/client-lambda').FunctionResponseType[];
-    if (properties['SourceAccessConfigurations'])
+    if (properties['SourceAccessConfigurations'] !== undefined)
       updateParams.SourceAccessConfigurations = properties[
         'SourceAccessConfigurations'
       ] as import('@aws-sdk/client-lambda').SourceAccessConfiguration[];
-    if (properties['ScalingConfig'])
+    if (properties['ScalingConfig'] !== undefined)
       updateParams.ScalingConfig = properties[
         'ScalingConfig'
       ] as import('@aws-sdk/client-lambda').ScalingConfig;
-    if (properties['DocumentDBEventSourceConfig'])
+    if (properties['DocumentDBEventSourceConfig'] !== undefined)
       updateParams.DocumentDBEventSourceConfig = properties[
         'DocumentDBEventSourceConfig'
       ] as import('@aws-sdk/client-lambda').DocumentDBEventSourceConfig;
@@ -429,10 +502,23 @@ export class LambdaEventSourceMappingProvider implements ResourceProvider {
     if (resp.TumblingWindowInSeconds !== undefined) {
       result['TumblingWindowInSeconds'] = resp.TumblingWindowInSeconds;
     }
-    result['FunctionResponseTypes'] = resp.FunctionResponseTypes
-      ? [...resp.FunctionResponseTypes]
-      : [];
-    result['SourceAccessConfigurations'] = resp.SourceAccessConfigurations ?? [];
+    // Class-1 type-discriminator gating: only emit `FunctionResponseTypes`
+    // / `SourceAccessConfigurations` placeholders when the source kind
+    // actually supports them. AWS rejects round-trip writes of empty
+    // arrays for the wrong source kind via `UpdateEventSourceMappingCommand`.
+    const kind = classifyEventSource(resp);
+    if (KINDS_WITH_FUNCTION_RESPONSE_TYPES.has(kind)) {
+      result['FunctionResponseTypes'] = resp.FunctionResponseTypes
+        ? [...resp.FunctionResponseTypes]
+        : [];
+    } else if (resp.FunctionResponseTypes !== undefined) {
+      result['FunctionResponseTypes'] = [...resp.FunctionResponseTypes];
+    }
+    if (KINDS_WITH_SOURCE_ACCESS_CONFIGURATIONS.has(kind)) {
+      result['SourceAccessConfigurations'] = resp.SourceAccessConfigurations ?? [];
+    } else if (resp.SourceAccessConfigurations !== undefined) {
+      result['SourceAccessConfigurations'] = resp.SourceAccessConfigurations;
+    }
     if (resp.SelfManagedEventSource !== undefined) {
       result['SelfManagedEventSource'] = resp.SelfManagedEventSource;
     }

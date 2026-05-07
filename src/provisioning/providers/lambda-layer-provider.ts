@@ -12,7 +12,7 @@ import {
 } from '@aws-sdk/client-lambda';
 import { getLogger } from '../../utils/logger.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
-import { ProvisioningError } from '../../utils/error-handler.js';
+import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { generateResourceName } from '../resource-name.js';
 import { CDK_PATH_TAG } from '../import-helpers.js';
@@ -122,28 +122,41 @@ export class LambdaLayerVersionProvider implements ResourceProvider {
   }
 
   /**
-   * Update a Lambda layer version
+   * Update a Lambda layer version.
    *
-   * Lambda layer versions are immutable. An update publishes a new version.
-   * The new LayerVersionArn becomes the physical ID.
+   * Lambda layer versions are immutable on AWS — there is no API to mutate
+   * `Content` / `CompatibleRuntimes` / `CompatibleArchitectures` /
+   * `Description` / `LicenseInfo` of an existing version. The only path to
+   * a "new value" is publishing a new version (new LayerVersionArn).
+   *
+   * Why this rejects with `ResourceUpdateNotSupportedError` instead of
+   * silently publishing a new version:
+   *
+   *   - `cdkd drift --revert` calls `update(observed, observed)` to push
+   *     state values back into AWS. For an immutable resource that cannot
+   *     have its in-place value changed, the only AWS-side effect of an
+   *     "update" is leaking a duplicate version of the same content,
+   *     which is never what `--revert` should do.
+   *   - On the deploy path, content / runtime / arch changes flow
+   *     through CDK's hash-based logical naming, which produces a fresh
+   *     logical ID and a CREATE+DELETE in cdkd's diff — `update()` is
+   *     not the path taken in practice. Users who hit this on a non-CDK
+   *     template should re-deploy with `--replace`.
    */
   async update(
     logicalId: string,
-    physicalId: string,
+    _physicalId: string,
     resourceType: string,
-    properties: Record<string, unknown>,
+    _properties: Record<string, unknown>,
     _previousProperties: Record<string, unknown>
   ): Promise<ResourceUpdateResult> {
-    this.logger.debug(`Updating Lambda layer version ${logicalId}: ${physicalId}`);
-
-    // Layer versions are immutable - publish a new version
-    const createResult = await this.create(logicalId, resourceType, properties);
-
-    return {
-      physicalId: createResult.physicalId,
-      wasReplaced: true,
-      attributes: createResult.attributes ?? {},
-    };
+    return Promise.reject(
+      new ResourceUpdateNotSupportedError(
+        resourceType,
+        logicalId,
+        'Lambda layer versions are immutable on AWS; re-deploy with cdkd deploy --replace, or change the resource definition to publish a new version'
+      )
+    );
   }
 
   /**
