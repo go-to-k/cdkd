@@ -1,3 +1,10 @@
+# [0.49.0](https://github.com/go-to-k/cdkd/compare/v0.48.0...v0.49.0) (2026-05-07)
+
+
+### Features
+
+* **state:** add cdkd state refresh-observed + fix Custom::* drift crash ([#146](https://github.com/go-to-k/cdkd/issues/146)) ([7e7624c](https://github.com/go-to-k/cdkd/commit/7e7624c294fc6ed3757ce485963492378f273df6))
+
 # [0.48.0](https://github.com/go-to-k/cdkd/compare/v0.47.0...v0.48.0) (2026-05-07)
 
 
