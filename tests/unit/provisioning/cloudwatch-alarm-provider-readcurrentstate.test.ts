@@ -83,8 +83,12 @@ describe('CloudWatchAlarmProvider.readCurrentState', () => {
       DatapointsToAlarm: 1,
       ActionsEnabled: true,
       AlarmActions: ['arn:aws:sns:us-east-1:1:topic'],
+      OKActions: [],
+      InsufficientDataActions: [],
       TreatMissingData: 'notBreaching',
+      Unit: '',
       Dimensions: [{ Name: 'InstanceId', Value: 'i-abc' }],
+      Metrics: [],
     });
   });
 
