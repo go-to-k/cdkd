@@ -278,6 +278,67 @@ describe('cdkd drift', () => {
     expect(output).toContain('Tags');
   });
 
+  it('detects a console-side key add inside a map-shaped property (union-walk via observedProperties baseline)', async () => {
+    // The headline regression case for the union-walk wiring: Lambda
+    // `Environment.Variables` started with `{FOO: 'bar'}` at deploy
+    // (observed records that). User adds `EXTRA` via the console.
+    // observedProperties is present, so drift.ts passes
+    // unionWalkObjects=true to calculateResourceDrift, which walks the
+    // union of state+aws keys when descending into nested objects.
+    mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+    mockGetState.mockResolvedValueOnce(
+      makeState({
+        Fn1: makeResource({
+          physicalId: 'fn',
+          resourceType: 'AWS::Lambda::Function',
+          properties: { Environment: { Variables: { FOO: 'bar' } } },
+          observedProperties: { Environment: { Variables: { FOO: 'bar' } } },
+        }),
+      })
+    );
+    mockRegistryGetProvider.mockReturnValue({
+      readCurrentState: async () => ({
+        Environment: { Variables: { FOO: 'bar', EXTRA: 'hacked' } },
+      }),
+    });
+
+    const { output, error } = await runDrift(['TestStack']);
+
+    expect((error as Error | undefined)?.message).toBe('__exit__');
+    expect(output).toContain('drift detected on 1 resource');
+    expect(output).toContain('Environment.Variables.EXTRA');
+    expect(output).toContain('hacked');
+  });
+
+  it('does NOT detect a console-side key add when falling back to the properties baseline (v2 state semantics preserved)', async () => {
+    // Symmetric guard: when observedProperties is absent (v2 fallback),
+    // drift.ts must NOT pass unionWalkObjects=true — otherwise AWS-side
+    // defaults the user did not template would fire false positives on
+    // every clean run for v2-state stacks. The same map-key add that
+    // surfaces in the previous test must stay invisible here.
+    mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+    mockGetState.mockResolvedValueOnce(
+      makeState({
+        Fn1: makeResource({
+          physicalId: 'fn',
+          resourceType: 'AWS::Lambda::Function',
+          properties: { Environment: { Variables: { FOO: 'bar' } } },
+          // observedProperties intentionally omitted -> properties fallback.
+        }),
+      })
+    );
+    mockRegistryGetProvider.mockReturnValue({
+      readCurrentState: async () => ({
+        Environment: { Variables: { FOO: 'bar', EXTRA: 'hacked' } },
+      }),
+    });
+
+    const { output, error } = await runDrift(['TestStack']);
+
+    expect(error).toBeUndefined();
+    expect(output).toContain('no drift detected');
+  });
+
   it('falls back to properties baseline when observedProperties is absent (older state files)', async () => {
     // Pre-v3 state record (or a provider with no readCurrentState
     // capture): no observedProperties. Drift comparator must keep its

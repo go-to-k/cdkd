@@ -457,8 +457,21 @@ async function runDriftForStack(
       // Resources written by an older binary (or by a provider without
       // readCurrentState) lack observedProperties; falling back to
       // `properties` preserves the pre-v3 behavior for those.
-      const baseline = resource.observedProperties ?? resource.properties ?? {};
-      const changes = calculateResourceDrift(baseline, aws, { ignorePaths });
+      // The observed baseline is "what AWS actually had at deploy time"
+      // (already includes AWS-managed defaults), so it is safe — and
+      // strictly more powerful — to walk the union of baseline+aws keys
+      // when descending into nested objects. This is what lets a
+      // console-side **key add** to a map-shaped property (Lambda
+      // `Environment.Variables.EXTRA`, etc.) surface as drift. The
+      // properties fallback (`observedProperties` undefined) keeps the
+      // state-keys-only walk so AWS-side defaults the user did not
+      // template don't fire false positives on every run.
+      const useObserved = resource.observedProperties !== undefined;
+      const baseline = useObserved ? resource.observedProperties! : (resource.properties ?? {});
+      const changes = calculateResourceDrift(baseline, aws, {
+        ignorePaths,
+        unionWalkObjects: useObserved,
+      });
       if (changes.length === 0) {
         outcomes.push({ kind: 'clean', logicalId, resourceType: resource.resourceType });
       } else {

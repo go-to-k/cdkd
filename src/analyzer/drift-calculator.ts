@@ -41,9 +41,26 @@ export interface PropertyDrift {
  * Compare cdkd state-recorded properties against AWS-current properties
  * and produce a flat list of property-level drifts.
  *
- * The comparator only descends into keys present in `stateProperties`.
- * Any key in `awsProperties` that does not have a counterpart in state is
- * silently ignored — those are the AWS-managed fields cdkd never set.
+ * Default key-walk strategy: only descend into keys present in
+ * `stateProperties`. Any key in `awsProperties` that does not have a
+ * counterpart in state is silently ignored — those are the AWS-managed
+ * fields cdkd never set, and surfacing them would fire false-positive
+ * drift on every clean run (Lambda's `LastUpdateStatus`, S3's
+ * `CreationDate`, etc., even after the wire-layer strip pass).
+ *
+ * `options.unionWalkObjects: true` flips the strategy to walk the union
+ * of `stateValue`'s and `awsValue`'s keys when both sides are plain
+ * objects. This is what lets a console-side **key add** to a map-shaped
+ * property surface as drift — e.g. `Lambda::Function.Environment.Variables`
+ * gaining `EXTRA: 'hacked'` in the AWS console after a deploy that only
+ * templated `FOO`. Safe to enable when `stateProperties` is the
+ * deploy-time AWS snapshot stored in `ResourceState.observedProperties`
+ * (= "what AWS actually had at deploy time", which already includes any
+ * AWS-managed defaults — those will match between baseline and current
+ * unless they genuinely changed). NOT safe to enable when the baseline is
+ * the user-templated `properties` field (the v2 fallback path) — there the
+ * baseline is "user intent only" and AWS-side defaults the user did not
+ * template would be reported as drift on every run.
  *
  * `options.ignorePaths` is supplied by the provider (via
  * `getDriftUnknownPaths`) for state keys it can never read back from AWS
@@ -55,13 +72,20 @@ export interface PropertyDrift {
 export function calculateResourceDrift(
   stateProperties: Record<string, unknown>,
   awsProperties: Record<string, unknown>,
-  options?: { ignorePaths?: readonly string[] }
+  options?: { ignorePaths?: readonly string[]; unionWalkObjects?: boolean }
 ): PropertyDrift[] {
   const drifts: PropertyDrift[] = [];
   const ignore = options?.ignorePaths ?? [];
+  const union = options?.unionWalkObjects ?? false;
+  // Top-level walk is intentionally state-keys-only even with union mode:
+  // the top-level shape is fully described by what `provider.create()`
+  // takes, and AWS surfaces a long tail of read-only top-level fields
+  // (FunctionArn, RevisionId, ...) that the provider's wire-layer strip
+  // doesn't bother filtering. Union-walk only makes sense one level
+  // deeper, on map-shaped values (Environment.Variables, etc.).
   for (const key of Object.keys(stateProperties)) {
     if (isIgnoredPath(key, ignore)) continue;
-    diffAt(key, stateProperties[key], awsProperties[key], drifts, ignore);
+    diffAt(key, stateProperties[key], awsProperties[key], drifts, ignore, union);
   }
   return drifts;
 }
@@ -84,7 +108,8 @@ function diffAt(
   stateValue: unknown,
   awsValue: unknown,
   out: PropertyDrift[],
-  ignorePaths: readonly string[]
+  ignorePaths: readonly string[],
+  unionWalkObjects: boolean
 ): void {
   if (deepEqual(stateValue, awsValue)) return;
 
@@ -94,12 +119,18 @@ function diffAt(
     !Array.isArray(stateValue) &&
     !Array.isArray(awsValue)
   ) {
-    // Recurse into object: only compare keys that exist in state, so
-    // AWS-managed fields outside cdkd's control don't surface as drift.
-    for (const key of Object.keys(stateValue)) {
+    // Recurse into nested object. With unionWalkObjects on, walk the
+    // union of state + aws keys so console-side key additions to a
+    // map-shaped property (e.g. Lambda Environment.Variables) surface as
+    // drift; without it, only state's keys are walked (preserves the
+    // pre-unionWalkObjects behavior for the v2-state-fallback baseline).
+    const keys = unionWalkObjects
+      ? new Set([...Object.keys(stateValue), ...Object.keys(awsValue)])
+      : Object.keys(stateValue);
+    for (const key of keys) {
       const childPath = `${path}.${key}`;
       if (isIgnoredPath(childPath, ignorePaths)) continue;
-      diffAt(childPath, stateValue[key], awsValue[key], out, ignorePaths);
+      diffAt(childPath, stateValue[key], awsValue[key], out, ignorePaths, unionWalkObjects);
     }
     return;
   }
