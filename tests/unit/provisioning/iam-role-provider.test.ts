@@ -458,5 +458,61 @@ describe('IAMRoleProvider', () => {
       const input = updateCall![0].input as { Description?: string };
       expect(input).not.toHaveProperty('Description');
     });
+
+    it('round-trip: empty-string Description placeholder reaches UpdateRoleCommand (truthy-gate guard)', async () => {
+      // Mechanical guard for the truthy-gate regression. See
+      // docs/provider-development.md § 3b "Read-update round-trip test".
+      //
+      // The IAM Role bug class:
+      //   - readCurrentState emits Description: '' as the always-emit
+      //     placeholder when AWS has no description.
+      //   - update() must propagate '' to UpdateRoleCommand so AWS clears
+      //     the description on revert. A truthy gate (`if (props['X'])`)
+      //     would silently drop '' and `cdkd drift --revert` would
+      //     report "reverted" but the next drift re-detects the same
+      //     drift (the original silent fail mode).
+
+      // Build observed snapshot directly (matches what readCurrentState
+      // would produce for a role with no description) — readCurrentState
+      // is exercised by its own dedicated test file.
+      const observed = {
+        RoleName: 'my-role',
+        Path: '/',
+        AssumeRolePolicyDocument: { Version: '2012-10-17', Statement: [] },
+        Description: '',
+        MaxSessionDuration: 3600,
+        ManagedPolicyArns: [] as string[],
+        Tags: [] as Array<{ Key: string; Value: string }>,
+      };
+
+      // Round-trip: pass observed as both new (desired) and old.
+      mockSend.mockResolvedValueOnce({}); // UpdateRoleCommand
+      mockSend.mockResolvedValueOnce({}); // updateManagedPolicies (no-op)
+      mockSend.mockResolvedValueOnce({}); // updateInlinePolicies (no-op)
+      mockSend.mockResolvedValueOnce({}); // updateTags (no-op)
+      mockSend.mockResolvedValueOnce({
+        Role: {
+          RoleName: 'my-role',
+          Arn: 'arn:aws:iam::0:role/my-role',
+          Path: '/',
+          RoleId: 'role-id',
+        },
+      });
+
+      await provider.update('L', 'my-role', 'AWS::IAM::Role', observed, observed);
+
+      // Truthy-gate assertion: UpdateRole MUST receive the empty
+      // Description so AWS clears it. The previous truthy gate would
+      // have dropped this and the test would fail.
+      const updateCall = mockSend.mock.calls.find((c) => c[0] instanceof UpdateRoleCommand);
+      expect(updateCall).toBeDefined();
+      const input = updateCall![0].input as {
+        RoleName: string;
+        Description?: string;
+        MaxSessionDuration?: number;
+      };
+      expect(input.Description).toBe('');
+      expect(input.MaxSessionDuration).toBe(3600);
+    });
   });
 });

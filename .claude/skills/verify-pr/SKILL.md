@@ -61,6 +61,17 @@ Run each check and report pass/fail:
    - Verify all callers of changed functions handle the new behavior
    - Verify type definitions are consistent with implementation
    - **Shared-utility regression check**: if any file under `src/utils/**` (or another widely-imported module) changed, list every importer (`grep -rl "from '\.\./.*utils/<file>'" src tests`) and walk through each one to confirm the new behavior is correct for them. A change to a shared helper is only "done" when every caller has been considered.
+   - **Internal-interface contract change check**: if the diff changes the **semantics** of arguments an interface receives — even if the type signature is unchanged — list every implementer and walk through each one. Examples that count as a contract change: `provider.update`'s `newProperties` shifting from "full desired state" to "partial / overlay / etc."; an intrinsic resolver's input format changing; a state schema field's invariant changing. The risk is implementers that silently treat the old shape's invariants as load-bearing (e.g. `SNSTopicProvider.update` treating `newProps[K] === undefined` as "remove K from AWS"). PR #161 hit this — the first-pass design ("drifted-only partial newProperties") had to be reworked after audit found `SNSTopicProvider` and `IAMRoleProvider.updateManagedPolicies` would silently clear non-drifted attrs. **Audit BEFORE writing tests against the new design**, not after — discovering the breaks via tests-after-design forces a design rework and invalidates the tests already written.
+     ```bash
+     # For provider interface changes:
+     grep -rln "implements ResourceProvider" src/provisioning/providers/
+     # For each implementer, read the body of the affected method and write
+     # down what it assumes about the argument's shape — truthy gates,
+     # diff-based "absent = remove" semantics, JSON.parse on stringly-typed
+     # input, etc. The new contract must preserve every assumption that
+     # is load-bearing, OR every implementer must be updated in the same PR.
+     ```
+     See `feedback_internal_contract_audit_first.md` for the full pattern.
 
 9. **Live-test changed behavior**
    - Unit tests verify code correctness; this step verifies *feature* correctness against the runtime the user actually sees.

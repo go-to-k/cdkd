@@ -114,4 +114,45 @@ describe('SQSQueueProvider.update', () => {
     expect(result.attributes?.['Arn']).toBe('arn:aws:sqs:us-east-1:0:q');
     expect(mockSend.mock.calls.some((c) => c[0] instanceof GetQueueAttributesCommand)).toBe(true);
   });
+
+  it('round-trip: readCurrentState placeholders survive update() without AWS-invalid inputs', async () => {
+    // Mechanical guard for Class 2 placeholder regression. See
+    // docs/provider-development.md § 3b "Read-update round-trip test".
+    //
+    // 1. AWS-minimum response (queue with no DLQ, no KMS, no tags)
+    //    triggers the always-emit placeholders that BIT us in PR #161.
+    mockSend.mockResolvedValueOnce({
+      Attributes: { VisibilityTimeout: '30', DelaySeconds: '0' },
+    });
+    mockSend.mockResolvedValueOnce({ Tags: {} });
+
+    const observed = await provider.readCurrentState(QUEUE_URL, 'L', 'AWS::SQS::Queue');
+    // Spot-check the Class 2 placeholder is present (the always-emit
+    // contract — see § 3b "emits placeholders for every user-controllable
+    // top-level key").
+    expect(observed?.['RedrivePolicy']).toEqual({});
+    expect(observed?.['KmsMasterKeyId']).toBe('');
+
+    // 2. Round-trip the snapshot through update(). No drift → AWS
+    //    state should not change.
+    vi.clearAllMocks();
+    mockSend.mockResolvedValueOnce({}); // SetQueueAttributesCommand
+    mockSend.mockResolvedValueOnce({ Attributes: { QueueArn: 'arn:aws:sqs:us-east-1:0:q' } });
+
+    await provider.update('L', QUEUE_URL, 'AWS::SQS::Queue', observed!, observed!);
+
+    // 3. Assert no AWS-rejection-shaped values reached the SDK.
+    const setAttrsCall = mockSend.mock.calls.find(
+      (c) => c[0] instanceof SetQueueAttributesCommand
+    );
+    expect(setAttrsCall).toBeDefined();
+    const attrs = (setAttrsCall![0].input as { Attributes: Record<string, string> }).Attributes;
+    // Class 2: empty-object RedrivePolicy must NEVER be sent as "{}"
+    // — AWS rejects with "Redrive policy does not contain mandatory
+    // attribute: maxReceiveCount". `serializeRedrivePolicy` translates
+    // {} -> "" (the documented "clear" form).
+    if (attrs['RedrivePolicy'] !== undefined) {
+      expect(attrs['RedrivePolicy']).not.toBe('{}');
+    }
+  });
 });

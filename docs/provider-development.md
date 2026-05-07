@@ -1007,6 +1007,91 @@ getDriftUnknownPaths(): string[] {
 
 The comparator does exact-match + `entry + '.'` prefix-match — listing `'Policies'` skips `Policies`, `Policies.Foo`, `Policies[0].PolicyDocument`, etc. Pair this with a docstring explaining why the field is unreadable so a future PR can lift the gap.
 
+#### Two failure modes when an always-emit placeholder round-trips through `update()`
+
+`cdkd drift --revert` round-trips `observedProperties` (the snapshot `readCurrentState` produced) back through `provider.update`. That code path is what surfaces every shape-mismatch bug between the read side (`readCurrentState` output) and the write side (AWS create/update API input). Two failure classes have been observed; both must be designed around BEFORE adding a new `readCurrentState`.
+
+**Class 1 — type-discriminator-dependent fields.** A field is only valid on AWS when a sibling discriminator says so. Examples: SQS `DeduplicationScope` / `FifoThroughputLimit` (FIFO-only — `FifoQueue=true`), SNS `FifoThroughputScope` (`FifoTopic=true`), AppSync DataSource shape (`DynamoDBConfig` / `LambdaConfig` / `HttpConfig` discriminated by `Type`). Emitting a `''` placeholder for these on a discriminator-false resource means `--revert` pushes it back and AWS rejects with "You can specify X only when Y is set to true". **Fix:** guard the emit on the sibling discriminator — only emit when the discriminator is true. Pattern documented in `feedback_always_emit_check_type_discriminator.md`. Drift detection is not lost: the discriminator-false state cannot legally have the field on AWS, so console-side ADD is impossible.
+
+**Class 2 — structurally-incomplete-when-empty fields.** An empty-object / empty-array placeholder is structurally invalid as AWS input because a sub-field is required. Example: SQS `RedrivePolicy: {}` rejects with "Redrive policy does not contain mandatory attribute: maxReceiveCount" because `deadLetterTargetArn` and `maxReceiveCount` are required. Other Class 2 candidates: Lambda `DeadLetterConfig` (TargetArn required), Lambda `VpcConfig` (SubnetIds + SecurityGroupIds required), EventBridge / SNS `DeadLetterConfig`, ECS `NetworkConfiguration` (awsvpcConfiguration.subnets required), various `LoggingConfiguration` shapes. **Fix:** keep the placeholder on the read side (drift detection requires it), and **sanitize at the wire layer in `create()` / `update()`** by translating the empty placeholder to whatever AWS accepts as "clear this field" — usually empty string. Canonical pattern in `serializeRedrivePolicy` ([src/provisioning/providers/sqs-queue-provider.ts](../src/provisioning/providers/sqs-queue-provider.ts)):
+
+```typescript
+function serializeRedrivePolicy(value: unknown): string {
+  if (value === null || value === undefined) return '';
+  if (typeof value === 'object' && Object.keys(value as Record<string, unknown>).length === 0) {
+    return '';  // AWS-documented way to clear RedrivePolicy
+  }
+  return JSON.stringify(value);
+}
+```
+
+Pattern documented in `feedback_class2_placeholder_round_trip.md`.
+
+#### `update()` must gate optional fields on `!== undefined`, not truthy
+
+Truthy gates (`if (properties['X']) { ... }`) silently drop empty string `''`, numeric `0`, boolean `false`, and empty array `[]` (where the CFn type allows it). For `cdkd deploy` this is mostly invisible. For `cdkd drift --revert` it is a load-bearing bug: when state has no description but AWS does, the desired value to push back is `Description: ''`. A truthy gate drops it, the AWS update succeeds with no actual change, `--revert` reports `✓ reverted`, and the very next `cdkd drift` re-detects the same drift — silent fail mode. **Fix:** use `if (properties['X'] !== undefined)` so explicit-empty values reach AWS:
+
+```typescript
+// IAM Role example (PR #161 fix):
+if (properties['Description'] !== undefined) {
+  updateParams.Description = properties['Description'] as string;
+}
+```
+
+Truthy gates are correct ONLY for fields where the value range excludes the falsy form (e.g. boolean flags where `false` means "use default", or `Path` where empty is invalid). Add a code comment when the truthy form is intentional. Pattern documented in `feedback_update_optional_field_undefined_check.md`.
+
+#### Read-update round-trip test (mandatory for any provider with `readCurrentState`)
+
+The above failure modes (Class 1, Class 2, truthy gate) all surface only on the `cdkd drift --revert` code path, which round-trips `observedProperties` (= a previous `readCurrentState` snapshot) back through `provider.update`. Document review and code grep cannot catch every instance — write a test that exercises the round-trip mechanically:
+
+```typescript
+it('round-trip: readCurrentState placeholders survive update() without AWS-invalid inputs', async () => {
+  // 1. Mock SDK to return the AWS-minimum response (only required
+  //    fields, optionals undefined). readCurrentState should emit
+  //    every always-emit placeholder.
+  mockSend.mockResolvedValueOnce({ /* minimum SDK shape */ });
+  // ...
+
+  const observed = await provider.readCurrentState(physicalId, 'L', RESOURCE_TYPE);
+  // Spot-check the placeholders are present (this is the always-emit
+  // contract, see "Test convention" earlier in this section).
+  expect(observed?.RedrivePolicy).toEqual({});  // Class 2 placeholder
+  // ...
+
+  // 2. Reset mocks and set up update() expectations.
+  vi.clearAllMocks();
+  mockSend.mockResolvedValueOnce({});  // SDK update call
+  // ...
+
+  // 3. Round-trip: pass observed as both new (desired) and old (previous).
+  //    No drift → update should be a logical no-op on AWS.
+  await provider.update('L', physicalId, RESOURCE_TYPE, observed!, observed!);
+
+  // 4. Assert: no SDK call sent a value AWS would reject.
+  //    Per-provider — list the AWS-rejection-shaped values you know of:
+  const setAttrsCall = mockSend.mock.calls.find(
+    (c) => c[0] instanceof SetQueueAttributesCommand
+  );
+  if (setAttrsCall) {
+    const attrs = setAttrsCall[0].input.Attributes;
+    if (attrs.RedrivePolicy !== undefined) {
+      // Class 2: '{}' would fail "Redrive policy does not contain
+      // mandatory attribute: maxReceiveCount"
+      expect(attrs.RedrivePolicy).not.toBe('{}');
+    }
+    // ... other per-provider rejection-shape checks
+  }
+});
+```
+
+The round-trip test catches all three classes mechanically:
+
+- **Class 1** — discriminator-false placeholders that AWS rejects when shipped: assert the relevant `SetXxxAttributes` / `UpdateXxx` call does NOT include the discriminator-only attribute when the discriminator is false in the mock setup.
+- **Class 2** — structurally-incomplete placeholders: assert the AWS API call does NOT contain the empty-object / empty-array shape AWS validates and rejects (e.g. `RedrivePolicy: '{}'`, `VpcConfig: {}`).
+- **Truthy gate** — assert that empty-string / 0 / false placeholder values DO reach the relevant AWS API call (e.g. `UpdateRoleCommand` input must contain `Description: ''` when `observedProperties.Description === ''`).
+
+See [tests/unit/provisioning/sqs-queue-provider-update.test.ts](../tests/unit/provisioning/sqs-queue-provider-update.test.ts) (Class 2 round-trip), [tests/unit/provisioning/iam-role-provider.test.ts](../tests/unit/provisioning/iam-role-provider.test.ts) (truthy-gate round-trip), and [tests/unit/provisioning/sns-topic-provider-roundtrip.test.ts](../tests/unit/provisioning/sns-topic-provider-roundtrip.test.ts) (Class 1 round-trip) for canonical examples.
+
 ### 4. Logging
 
 - `info`: Successful operations
