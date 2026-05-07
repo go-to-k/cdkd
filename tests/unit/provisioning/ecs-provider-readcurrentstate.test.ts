@@ -95,6 +95,11 @@ describe('ECSProvider.readCurrentState', () => {
     );
 
     expect(mockSend.mock.calls[0]?.[0]).toBeInstanceOf(DescribeServicesCommand);
+    // Class 1 gated keys (round-trip safety):
+    //   - PlacementStrategy: omitted on Fargate (EC2-only field; AWS rejects
+    //     `placementStrategy: []` on Fargate UpdateService).
+    //   - CapacityProviderStrategy: omitted when LaunchType is set
+    //     (mutually exclusive with capacityProviderStrategy on UpdateService).
     expect(result).toEqual({
       ServiceName: 'my-svc',
       Cluster: 'arn:aws:ecs:us-east-1:123:cluster/my-cluster',
@@ -103,9 +108,7 @@ describe('ECSProvider.readCurrentState', () => {
       LaunchType: 'FARGATE',
       EnableExecuteCommand: true,
       LoadBalancers: [],
-      CapacityProviderStrategy: [],
       PlacementConstraints: [],
-      PlacementStrategy: [],
       ServiceRegistries: [],
       Tags: [],
     });

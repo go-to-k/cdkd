@@ -77,12 +77,14 @@ describe('ApiGatewayProvider.readCurrentState', () => {
     );
 
     expect(mockSend.mock.calls[0]?.[0]).toBeInstanceOf(GetMethodCommand);
+    // Class 1: AuthorizerId is NOT emitted on AuthorizationType=NONE
+    // because it is only valid on CUSTOM / COGNITO_USER_POOLS. See
+    // docs/provider-development.md § 3b.
     expect(result).toEqual({
       RestApiId: 'api-1',
       ResourceId: 'res-1',
       HttpMethod: 'GET',
       AuthorizationType: 'NONE',
-      AuthorizerId: '',
       Integration: { type: 'AWS_PROXY', uri: 'arn:aws:lambda:...' },
       MethodResponses: {},
     });

@@ -361,15 +361,25 @@ export class ApiGatewayProvider implements ResourceProvider {
     logicalId: string,
     _resourceType: string
   ): Promise<void> {
-    const patchOperations = cloudWatchRoleArn
-      ? [
-          {
-            op: 'replace' as const,
-            path: '/cloudwatchRoleArn',
-            value: cloudWatchRoleArn,
-          },
-        ]
-      : [];
+    // Use `!== undefined` rather than a truthy gate so that an explicit
+    // empty string `''` (the cdkd-state representation of "no
+    // CloudWatchRole configured", produced by readCurrentStateAccount
+    // and by deleteAccount) reaches AWS as a legitimate
+    // `replace /cloudwatchRoleArn ''` patch operation. A truthy gate
+    // would silently drop `''` and produce an empty patchOperations
+    // list, so `cdkd drift --revert` would succeed with no actual
+    // AWS-side change and the very next `cdkd drift` would re-detect
+    // the same drift — a silent fail mode.
+    const patchOperations =
+      cloudWatchRoleArn !== undefined
+        ? [
+            {
+              op: 'replace' as const,
+              path: '/cloudwatchRoleArn',
+              value: cloudWatchRoleArn,
+            },
+          ]
+        : [];
 
     for (let attempt = 1; attempt <= ApiGatewayProvider.MAX_IAM_RETRIES; attempt++) {
       try {
@@ -1525,7 +1535,23 @@ export class ApiGatewayProvider implements ResourceProvider {
       if (resp.authorizationType !== undefined) {
         result['AuthorizationType'] = resp.authorizationType;
       }
-      result['AuthorizerId'] = resp.authorizerId ?? '';
+      // Class 1 (type-discriminator-dependent fields, see
+      // docs/provider-development.md § 3b). AuthorizerId is only valid
+      // when AuthorizationType is CUSTOM or COGNITO_USER_POOLS — AWS
+      // rejects PutMethod with "Invalid authorizer ID specified" or
+      // "Authorizer not found" when sent on AuthorizationType=NONE /
+      // AWS_IAM. Emitting `''` as a placeholder on a NONE method would
+      // make `cdkd drift --revert`'s round-trip push that empty value
+      // back, but Method.update currently throws
+      // ResourceUpdateNotSupportedError so the AWS-rejection path
+      // doesn't fire today; this gate is the structural defense for
+      // when Method.update gains a real implementation. Drift
+      // detection is not lost: a NONE method cannot legally have
+      // AuthorizerId on AWS, so a console-side ADD is impossible.
+      const authType = resp.authorizationType;
+      if (authType === 'CUSTOM' || authType === 'COGNITO_USER_POOLS') {
+        result['AuthorizerId'] = resp.authorizerId ?? '';
+      }
       result['Integration'] = resp.methodIntegration ?? {};
       result['MethodResponses'] = resp.methodResponses ?? {};
       return result;

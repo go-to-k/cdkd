@@ -775,7 +775,25 @@ export class ApiGatewayV2Provider implements ResourceProvider {
       result['Name'] = resp.Name ?? '';
       if (resp.ProtocolType !== undefined) result['ProtocolType'] = resp.ProtocolType;
       result['Description'] = resp.Description ?? '';
-      result['CorsConfiguration'] = resp.CorsConfiguration ?? {};
+
+      // Class 1 — CorsConfiguration is HTTP-only. Emitting `{}` as a
+      // placeholder on a WEBSOCKET API would have `cdkd drift --revert`
+      // push the empty value back to AWS, which `UpdateApi` rejects with
+      // "CORS configuration is only supported for HTTP APIs".
+      // Same pattern as the SNS FifoThroughputScope guard.
+      if (resp.ProtocolType === 'HTTP') {
+        result['CorsConfiguration'] = resp.CorsConfiguration ?? {};
+      }
+
+      // Class 1 — RouteSelectionExpression is required (and meaningful)
+      // only for WEBSOCKET. HTTP APIs default it to `$request.method
+      // $request.path` server-side and the field is not user-controlled,
+      // so emitting it on HTTP APIs would surface AWS-managed defaults
+      // as drift.
+      if (resp.ProtocolType === 'WEBSOCKET' && resp.RouteSelectionExpression !== undefined) {
+        result['RouteSelectionExpression'] = resp.RouteSelectionExpression;
+      }
+
       // Tags from the same GetApi response (returned as a tag-name → value map).
       const tags = normalizeAwsTagsToCfn(resp.Tags);
       result['Tags'] = tags;
@@ -821,7 +839,20 @@ export class ApiGatewayV2Provider implements ResourceProvider {
       );
       const result: Record<string, unknown> = { ApiId: apiId };
       if (resp.IntegrationType !== undefined) result['IntegrationType'] = resp.IntegrationType;
-      result['IntegrationUri'] = resp.IntegrationUri ?? '';
+
+      // Class 1 — IntegrationUri is meaningless on MOCK integrations.
+      // AWS rejects an empty-string placeholder on MOCK with "Integration
+      // URI is not supported for MOCK integrations". Only emit when the
+      // discriminator (IntegrationType) requires a URI.
+      const uriRequired =
+        resp.IntegrationType === 'AWS' ||
+        resp.IntegrationType === 'AWS_PROXY' ||
+        resp.IntegrationType === 'HTTP' ||
+        resp.IntegrationType === 'HTTP_PROXY';
+      if (uriRequired) {
+        result['IntegrationUri'] = resp.IntegrationUri ?? '';
+      }
+
       result['IntegrationMethod'] = resp.IntegrationMethod ?? '';
       result['PayloadFormatVersion'] = resp.PayloadFormatVersion ?? '';
       return result;
@@ -845,8 +876,23 @@ export class ApiGatewayV2Provider implements ResourceProvider {
       const result: Record<string, unknown> = { ApiId: apiId };
       if (resp.RouteKey !== undefined) result['RouteKey'] = resp.RouteKey;
       result['Target'] = resp.Target ?? '';
-      result['AuthorizationType'] = resp.AuthorizationType ?? '';
-      result['AuthorizerId'] = resp.AuthorizerId ?? '';
+
+      // Class 2 — AuthorizationType empty placeholder. AWS uses `'NONE'`
+      // (not `''`) as the no-auth sentinel; emitting `''` would have
+      // `cdkd drift --revert` push an AWS-rejected value back. Map the
+      // missing case to `'NONE'`, matching the AWS-documented default.
+      result['AuthorizationType'] = resp.AuthorizationType ?? 'NONE';
+
+      // Class 1 — AuthorizerId and AuthorizationScopes are meaningful
+      // only when AuthorizationType is not NONE. Emitting empty
+      // placeholders on a no-auth route would push AWS-rejected values
+      // back through `--revert`.
+      if (resp.AuthorizationType && resp.AuthorizationType !== 'NONE') {
+        result['AuthorizerId'] = resp.AuthorizerId ?? '';
+        result['AuthorizationScopes'] = resp.AuthorizationScopes
+          ? [...resp.AuthorizationScopes]
+          : [];
+      }
       return result;
     } catch (err) {
       if (err instanceof NotFoundException) return undefined;
@@ -869,9 +915,22 @@ export class ApiGatewayV2Provider implements ResourceProvider {
       if (resp.AuthorizerType !== undefined) result['AuthorizerType'] = resp.AuthorizerType;
       result['Name'] = resp.Name ?? '';
       result['IdentitySource'] = resp.IdentitySource ? [...resp.IdentitySource] : [];
-      result['JwtConfiguration'] = resp.JwtConfiguration ?? {};
-      result['AuthorizerUri'] = resp.AuthorizerUri ?? '';
-      result['AuthorizerPayloadFormatVersion'] = resp.AuthorizerPayloadFormatVersion ?? '';
+
+      // Class 1 — JwtConfiguration / AuthorizerUri / AuthorizerPayloadFormatVersion
+      // are AuthorizerType-discriminated. JwtConfiguration is JWT-only;
+      // AuthorizerUri / AuthorizerPayloadFormatVersion are REQUEST-only.
+      // Emitting placeholders on the wrong type would have
+      // `cdkd drift --revert` push AWS-rejected values back through
+      // `UpdateAuthorizer` ("JwtConfiguration is only valid for JWT
+      // authorizers" / "AuthorizerUri is only valid for REQUEST
+      // authorizers"). Same pattern as the SNS FifoThroughputScope
+      // guard.
+      if (resp.AuthorizerType === 'JWT') {
+        result['JwtConfiguration'] = resp.JwtConfiguration ?? {};
+      } else if (resp.AuthorizerType === 'REQUEST') {
+        result['AuthorizerUri'] = resp.AuthorizerUri ?? '';
+        result['AuthorizerPayloadFormatVersion'] = resp.AuthorizerPayloadFormatVersion ?? '';
+      }
       return result;
     } catch (err) {
       if (err instanceof NotFoundException) return undefined;

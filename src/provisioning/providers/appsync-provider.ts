@@ -809,8 +809,17 @@ export class AppSyncProvider implements ResourceProvider {
     const result: Record<string, unknown> = { ApiId: apiId };
     if (ds.name !== undefined) result['Name'] = ds.name;
     if (ds.type !== undefined) result['Type'] = ds.type;
+    // Description is optional; emit '' as placeholder so a console-side
+    // Description add surfaces as drift on the v2-fallback path. Empty
+    // string is a valid AWS input for Description.
     result['Description'] = ds.description ?? '';
-    result['ServiceRoleArn'] = ds.serviceRoleArn ?? '';
+    // ServiceRoleArn must be a valid IAM ARN when present. Don't emit a
+    // '' placeholder — the round-trip would try to push an empty string
+    // back to AWS, which fails ARN format validation. Class 2: only
+    // emit when AWS reports a real value.
+    if (ds.serviceRoleArn !== undefined && ds.serviceRoleArn !== '') {
+      result['ServiceRoleArn'] = ds.serviceRoleArn;
+    }
     // DataSource has type-tagged sub-configs (DynamoDBConfig / LambdaConfig /
     // HttpConfig / etc.) that are mutually exclusive based on `Type`. Only
     // emit the matching shape when its discriminator is non-empty so the
@@ -857,22 +866,47 @@ export class AppSyncProvider implements ResourceProvider {
     const result: Record<string, unknown> = { ApiId: apiId };
     if (resolver.typeName !== undefined) result['TypeName'] = resolver.typeName;
     if (resolver.fieldName !== undefined) result['FieldName'] = resolver.fieldName;
-    result['DataSourceName'] = resolver.dataSourceName ?? '';
-    result['RequestMappingTemplate'] = resolver.requestMappingTemplate ?? '';
-    result['ResponseMappingTemplate'] = resolver.responseMappingTemplate ?? '';
     if (resolver.kind !== undefined) result['Kind'] = resolver.kind;
-    result['PipelineConfig'] = {
-      Functions: resolver.pipelineConfig?.functions ? [...resolver.pipelineConfig.functions] : [],
-    };
-    {
-      const runtime: Record<string, unknown> = {};
-      if (resolver.runtime?.name !== undefined) runtime['Name'] = resolver.runtime.name;
-      if (resolver.runtime?.runtimeVersion !== undefined) {
+
+    // Resolver shape is type-discriminator-tagged on `Kind`:
+    //   - Kind=UNIT     → DataSourceName is required, PipelineConfig is N/A
+    //   - Kind=PIPELINE → PipelineConfig.Functions is required, DataSourceName is N/A
+    // AWS rejects `CreateResolver` / `UpdateResolver` when these are
+    // crossed (e.g. PipelineConfig on a UNIT resolver, DataSourceName on
+    // a PIPELINE resolver). Class 1: gate on the discriminator.
+    const kind = resolver.kind ?? 'UNIT';
+    if (kind === 'PIPELINE') {
+      result['PipelineConfig'] = {
+        Functions: resolver.pipelineConfig?.functions ? [...resolver.pipelineConfig.functions] : [],
+      };
+    } else {
+      // UNIT (or unspecified — AWS defaults to UNIT)
+      if (resolver.dataSourceName !== undefined && resolver.dataSourceName !== '') {
+        result['DataSourceName'] = resolver.dataSourceName;
+      }
+    }
+
+    // VTL vs JS resolver shape is discriminated by the presence of `runtime`
+    // on the AWS response:
+    //   - VTL → RequestMappingTemplate / ResponseMappingTemplate (strings)
+    //   - JS  → Code (string) + Runtime ({ Name, RuntimeVersion })
+    // AWS rejects mixing the two. Class 1: gate on whether `runtime` is
+    // returned by AWS.
+    if (resolver.runtime?.name) {
+      // JS resolver — emit Code + Runtime; do NOT emit VTL templates.
+      result['Code'] = resolver.code ?? '';
+      const runtime: Record<string, unknown> = { Name: resolver.runtime.name };
+      if (resolver.runtime.runtimeVersion !== undefined) {
         runtime['RuntimeVersion'] = resolver.runtime.runtimeVersion;
       }
       result['Runtime'] = runtime;
+    } else {
+      // VTL resolver — emit Request/ResponseMappingTemplate placeholders so
+      // a console-side template change surfaces as drift; do NOT emit Code
+      // / Runtime (they'd be rejected as invalid for a VTL resolver).
+      result['RequestMappingTemplate'] = resolver.requestMappingTemplate ?? '';
+      result['ResponseMappingTemplate'] = resolver.responseMappingTemplate ?? '';
     }
-    result['Code'] = resolver.code ?? '';
     return result;
   }
 

@@ -189,53 +189,36 @@ describe('ECSProvider', () => {
     });
 
     describe('update', () => {
-      it('should register new revision and deregister old', async () => {
-        // RegisterTaskDefinition (new revision)
-        mockSend.mockResolvedValueOnce({
-          taskDefinition: {
-            taskDefinitionArn:
-              'arn:aws:ecs:us-east-1:123456789012:task-definition/my-task:2',
-          },
-        });
-        // DeregisterTaskDefinition (old revision)
-        mockSend.mockResolvedValueOnce({});
+      it('rejects with ResourceUpdateNotSupportedError; revisions are immutable', async () => {
+        // TaskDefinition revisions are immutable: every property change
+        // creates a new revision via RegisterTaskDefinition, and the new
+        // ARN diverges from cdkd state's physicalId. Routing through
+        // `cdkd drift --revert` would silently swap state's physicalId
+        // for a freshly-registered revision and deregister the previous
+        // one. The deploy code path uses Replace (CREATE→DELETE) for
+        // property changes; `update()` itself must reject loudly.
+        await expect(
+          provider.update(
+            'MyTask',
+            'arn:aws:ecs:us-east-1:123456789012:task-definition/my-task:1',
+            'AWS::ECS::TaskDefinition',
+            {
+              Family: 'my-task',
+              ContainerDefinitions: [{ Name: 'web', Image: 'nginx:latest' }],
+              Cpu: '512',
+              Memory: '1024',
+            },
+            {
+              Family: 'my-task',
+              ContainerDefinitions: [{ Name: 'web', Image: 'nginx:latest' }],
+              Cpu: '256',
+              Memory: '512',
+            }
+          )
+        ).rejects.toMatchObject({ name: 'ResourceUpdateNotSupportedError' });
 
-        const result = await provider.update(
-          'MyTask',
-          'arn:aws:ecs:us-east-1:123456789012:task-definition/my-task:1',
-          'AWS::ECS::TaskDefinition',
-          {
-            Family: 'my-task',
-            ContainerDefinitions: [{ Name: 'web', Image: 'nginx:latest' }],
-            Cpu: '512',
-            Memory: '1024',
-          },
-          {
-            Family: 'my-task',
-            ContainerDefinitions: [{ Name: 'web', Image: 'nginx:latest' }],
-            Cpu: '256',
-            Memory: '512',
-          }
-        );
-
-        expect(result.physicalId).toBe(
-          'arn:aws:ecs:us-east-1:123456789012:task-definition/my-task:2'
-        );
-        expect(result.wasReplaced).toBe(false);
-        expect(result.attributes).toEqual({
-          TaskDefinitionArn:
-            'arn:aws:ecs:us-east-1:123456789012:task-definition/my-task:2',
-        });
-        expect(mockSend).toHaveBeenCalledTimes(2);
-
-        const registerCall = mockSend.mock.calls[0][0];
-        expect(registerCall.constructor.name).toBe('RegisterTaskDefinitionCommand');
-
-        const deregisterCall = mockSend.mock.calls[1][0];
-        expect(deregisterCall.constructor.name).toBe('DeregisterTaskDefinitionCommand');
-        expect(deregisterCall.input.taskDefinition).toBe(
-          'arn:aws:ecs:us-east-1:123456789012:task-definition/my-task:1'
-        );
+        // No spurious AWS calls — error fires before any send().
+        expect(mockSend).not.toHaveBeenCalled();
       });
     });
 

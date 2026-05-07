@@ -54,7 +54,7 @@ import {
   type AssignPublicIp,
 } from '@aws-sdk/client-ecs';
 import { getLogger } from '../../utils/logger.js';
-import { ProvisioningError } from '../../utils/error-handler.js';
+import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/error-handler.js';
 import { generateResourceName } from '../resource-name.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { normalizeAwsTagsToCfn, resolveExplicitPhysicalId } from '../import-helpers.js';
@@ -500,31 +500,25 @@ export class ECSProvider implements ResourceProvider {
 
   private async updateTaskDefinition(
     logicalId: string,
-    physicalId: string,
-    resourceType: string,
-    properties: Record<string, unknown>
+    _physicalId: string,
+    _resourceType: string,
+    _properties: Record<string, unknown>
   ): Promise<ResourceUpdateResult> {
-    this.logger.debug(`Updating ECS task definition ${logicalId}: ${physicalId}`);
-
-    // TaskDefinition updates create a new revision (RegisterTaskDefinition)
-    const result = await this.createTaskDefinition(logicalId, resourceType, properties);
-
-    // Deregister old revision
-    try {
-      const client = this.getClient();
-      await client.send(new DeregisterTaskDefinitionCommand({ taskDefinition: physicalId }));
-      this.logger.debug(`Deregistered old task definition revision: ${physicalId}`);
-    } catch (error) {
-      this.logger.debug(
-        `Failed to deregister old task definition ${physicalId}: ${error instanceof Error ? error.message : String(error)}`
-      );
-    }
-
-    return {
-      physicalId: result.physicalId,
-      wasReplaced: false,
-      attributes: result.attributes ?? {},
-    };
+    // ECS TaskDefinitions are immutable revisioned resources: every property
+    // change creates a new revision via RegisterTaskDefinition, and the new
+    // revision's `taskDefinitionArn` differs from the cdkd-state physicalId.
+    // Routing this through `cdkd drift --revert` would silently swap state's
+    // physicalId for a freshly-registered revision (and deregister the
+    // previous one) without the user's awareness — surface a clear error
+    // instead. The deploy code path uses Replace (CREATE→DELETE) for property
+    // changes, which is the correct semantics here.
+    return Promise.reject(
+      new ResourceUpdateNotSupportedError(
+        'AWS::ECS::TaskDefinition',
+        logicalId,
+        'TaskDefinition revisions are immutable; re-deploy with cdkd deploy --replace, or destroy + redeploy the stack'
+      )
+    );
   }
 
   private async deleteTaskDefinition(
@@ -1202,10 +1196,33 @@ export class ECSProvider implements ResourceProvider {
     }
     if (s.networkConfiguration) result['NetworkConfiguration'] = s.networkConfiguration;
     result['LoadBalancers'] = s.loadBalancers ?? [];
-    result['CapacityProviderStrategy'] = s.capacityProviderStrategy ?? [];
+    // Class 1: LaunchType vs CapacityProviderStrategy are mutually exclusive
+    // on the AWS API side. UpdateService rejects when both arrive together
+    // (e.g. `launchType=FARGATE` + `capacityProviderStrategy=[]`). Skip the
+    // empty placeholder when LaunchType is set so `cdkd drift --revert`
+    // doesn't push a structurally-invalid input back to AWS. A non-empty
+    // strategy still surfaces (drift detection on the strategy itself).
+    if (s.capacityProviderStrategy && s.capacityProviderStrategy.length > 0) {
+      result['CapacityProviderStrategy'] = s.capacityProviderStrategy;
+    } else if (!s.launchType) {
+      result['CapacityProviderStrategy'] = [];
+    }
     if (s.deploymentConfiguration) result['DeploymentConfiguration'] = s.deploymentConfiguration;
     result['PlacementConstraints'] = s.placementConstraints ?? [];
-    result['PlacementStrategy'] = s.placementStrategy ?? [];
+    // Class 1: PlacementStrategy is EC2-only. Emitting `[]` on a Fargate
+    // service means `cdkd drift --revert` pushes `placementStrategy: []` to
+    // UpdateService, which AWS rejects with "Placement strategies are not
+    // valid for tasks using the Fargate launch type." Discriminator-gated
+    // emit: only surface PlacementStrategy when LaunchType is EC2 (or
+    // EXTERNAL) — Fargate services cannot legally have one, so the emit
+    // would never detect a real console-side change anyway.
+    if (s.launchType === 'EC2' || s.launchType === 'EXTERNAL') {
+      result['PlacementStrategy'] = s.placementStrategy ?? [];
+    } else if (s.placementStrategy && s.placementStrategy.length > 0) {
+      // Defensive: surface a non-empty strategy regardless of launch type
+      // (so drift still flags an out-of-band attach if AWS ever permits it).
+      result['PlacementStrategy'] = s.placementStrategy;
+    }
     result['ServiceRegistries'] = s.serviceRegistries ?? [];
     const tags = normalizeAwsTagsToCfn(s.tags);
     result['Tags'] = tags;

@@ -147,12 +147,16 @@ describe('ApiGatewayV2Provider.readCurrentState', () => {
     );
 
     expect(mockSend.mock.calls[0]?.[0]).toBeInstanceOf(GetRouteCommand);
+    // JWT-auth route: AuthorizerId emitted, AuthorizationScopes default
+    // []. NONE-auth Class 1 guard ensures these are excluded on no-auth
+    // routes (covered by the round-trip test file).
     expect(result).toEqual({
       ApiId: 'abcd1234',
       RouteKey: 'GET /pets',
       Target: 'integrations/int-1',
       AuthorizationType: 'JWT',
       AuthorizerId: 'auth-1',
+      AuthorizationScopes: [],
     });
   });
 
@@ -172,14 +176,15 @@ describe('ApiGatewayV2Provider.readCurrentState', () => {
     );
 
     expect(mockSend.mock.calls[0]?.[0]).toBeInstanceOf(GetAuthorizerCommand);
+    // JWT authorizer: only the JWT-side discriminator fields are emitted.
+    // AuthorizerUri / AuthorizerPayloadFormatVersion are REQUEST-only
+    // and must NOT be present on a JWT result (Class 1 guard).
     expect(result).toEqual({
       ApiId: 'abcd1234',
       AuthorizerType: 'JWT',
       Name: 'my-jwt-authorizer',
       IdentitySource: ['$request.header.Authorization'],
       JwtConfiguration: { Audience: ['client-id'], Issuer: 'https://issuer.example.com' },
-      AuthorizerUri: '',
-      AuthorizerPayloadFormatVersion: '',
     });
   });
 
