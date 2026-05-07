@@ -291,6 +291,25 @@ export class CloudFrontOAIProvider implements ResourceProvider {
   }
 
   /**
+   * State property paths the comparator must skip during drift detection.
+   *
+   * `CloudFrontOriginAccessIdentityConfig.CallerReference` is set by cdkd
+   * to `logicalId` at create time regardless of what the CDK template
+   * specified, so it ends up in `state.properties` (from the resolved
+   * template) but is intentionally not surfaced by `readCurrentState`. A
+   * keys-from-state walk would otherwise compare `state.CallerReference`
+   * against `aws=undefined` and fire a guaranteed false positive on every
+   * clean run for any stack whose template templated CallerReference.
+   *
+   * The field is also immutable in AWS — the OAI's CallerReference cannot
+   * change post-create — so omitting it from drift is also semantically
+   * correct.
+   */
+  getDriftUnknownPaths(): string[] {
+    return ['CloudFrontOriginAccessIdentityConfig.CallerReference'];
+  }
+
+  /**
    * Adopt an existing CloudFront Origin Access Identity into cdkd state.
    *
    * **Explicit override only.** OAIs do not support tags — their identity

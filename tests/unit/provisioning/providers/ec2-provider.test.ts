@@ -846,16 +846,19 @@ describe('EC2Provider - NatGateway', () => {
   });
 
   describe('updateNatGateway', () => {
-    it('is a no-op (NAT gateway has no in-place mutable properties)', async () => {
-      const result = await provider.update(
-        'Nat',
-        'nat-12345',
-        'AWS::EC2::NatGateway',
-        { SubnetId: 'subnet-abc' },
-        { SubnetId: 'subnet-abc' }
-      );
-
-      expect(result).toEqual({ physicalId: 'nat-12345', wasReplaced: false });
+    it('rejects with ResourceUpdateNotSupportedError (every readable property is immutable)', async () => {
+      // Pre-PR (PR I follow-up for EC2): a silent no-op stub. That made
+      // `cdkd drift --revert` report `✓ reverted` on a console-side
+      // change that AWS would actually keep. Reject loudly instead.
+      await expect(
+        provider.update(
+          'Nat',
+          'nat-12345',
+          'AWS::EC2::NatGateway',
+          { SubnetId: 'subnet-abc' },
+          { SubnetId: 'subnet-abc' }
+        )
+      ).rejects.toMatchObject({ code: 'RESOURCE_UPDATE_NOT_SUPPORTED' });
       expect(mockSend).not.toHaveBeenCalled();
     });
   });
