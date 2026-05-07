@@ -392,6 +392,23 @@ async function runDriftForStack(
           resource.properties ?? {}
         );
       } else {
+        // CloudFormation `Custom::*` resource types cannot be read back via
+        // the CC API at all — `cloudformation:GetResource` rejects them
+        // with `ValidationException` because its `typeName` regex demands
+        // `<A>::<B>::<C>` and Custom resources only have two segments.
+        // Mark as drift-unknown so users with Custom resources in a stack
+        // (typical: `aws-cdk-lib`'s S3 auto-delete-objects helper) don't
+        // get a hard crash on `cdkd drift`. Real drift on a Custom
+        // Resource would require re-invoking its handler Lambda, which
+        // is out of scope for the drift command anyway.
+        if (resource.resourceType.startsWith('Custom::')) {
+          outcomes.push({
+            kind: 'unsupported',
+            logicalId,
+            resourceType: resource.resourceType,
+          });
+          continue;
+        }
         if (CC_API_FALLBACK_DENY_LIST[resource.resourceType]) {
           outcomes.push({
             kind: 'unsupported',

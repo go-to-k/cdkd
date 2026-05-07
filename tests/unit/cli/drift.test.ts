@@ -338,6 +338,39 @@ describe('cdkd drift', () => {
     expect(output).not.toContain('Code');
   });
 
+  it('reports `Custom::*` resource types as drift unknown instead of crashing the CC API fallback', async () => {
+    // Reproduces the bug discovered in 0.47.0 compat testing: when a
+    // stack contains a `Custom::*` resource (e.g. CDK's S3
+    // auto-delete-objects helper), the provider has no
+    // readCurrentState so drift falls back to the Cloud Control API,
+    // which rejects the type pattern with `ValidationException`. The
+    // fix short-circuits Custom::* to "drift unknown" before the
+    // fallback fires so the user can still drift the rest of the stack.
+    mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+    mockGetState.mockResolvedValueOnce(
+      makeState({
+        AutoDelete: makeResource({
+          resourceType: 'Custom::S3AutoDeleteObjects',
+          properties: { ServiceToken: 'arn:aws:lambda:...:fn' },
+        }),
+      })
+    );
+    // Provider has no readCurrentState - normally would trigger CC API fallback.
+    mockRegistryGetProvider.mockReturnValue({});
+    // CC API mock would throw the validation error if reached - assert
+    // we don't reach it.
+    mockCcReadCurrentState.mockImplementation(() => {
+      throw new Error('CC API should not be called for Custom::* types');
+    });
+
+    const { output, error } = await runDrift(['TestStack']);
+
+    expect(error).toBeUndefined();
+    expect(output).toContain('? AutoDelete (Custom::S3AutoDeleteObjects)');
+    expect(output).toContain('1 unsupported');
+    expect(mockCcReadCurrentState).not.toHaveBeenCalled();
+  });
+
   it('reports providers without readCurrentState as drift unknown', async () => {
     mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
     mockGetState.mockResolvedValueOnce(

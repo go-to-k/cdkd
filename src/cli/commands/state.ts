@@ -27,6 +27,7 @@ import {
 } from '../config-loader.js';
 import { ProviderRegistry } from '../../provisioning/provider-registry.js';
 import { registerAllProviders } from '../../provisioning/register-providers.js';
+import { withStackName } from '../../provisioning/resource-name.js';
 import { runDestroyForStack } from './destroy-runner.js';
 import { createStateMigrateCommand } from './state-migrate.js';
 import type { LockInfo, StackState } from '../../types/state.js';
@@ -1258,6 +1259,338 @@ function createStateInfoCommand(): Command {
 }
 
 /**
+ * `cdkd state refresh-observed <stack>` command implementation.
+ *
+ * Walks every resource in the given stack(s) and refreshes its
+ * `observedProperties` field by calling the matching provider's
+ * `readCurrentState`. The result is the same baseline that a fresh
+ * `cdkd deploy` would produce — but without re-deploying anything.
+ *
+ * Why this exists: state schema `version: 3` (`observedProperties`)
+ * shipped after many users had already deployed stacks under v2.
+ * `cdkd deploy` only populates `observedProperties` on resources that
+ * actually go through CREATE / UPDATE — `NO_CHANGE`-skipped resources
+ * stay with `observedProperties: undefined` indefinitely after the
+ * upgrade, and `cdkd drift` falls back to `properties` baseline for
+ * those (= the pre-v3 behavior, missing console-side changes to keys
+ * the user did not template). This command lets users opt into the
+ * richer drift baseline for the whole stack in one shot.
+ *
+ * Behavior:
+ *  - Acquires a per-stack lock (scope: `state-refresh-observed`).
+ *  - Calls every resource's `provider.readCurrentState` in parallel
+ *    (Promise.all). Errors are swallowed per-resource and logged at
+ *    debug — drift falls back to `properties` for that resource until
+ *    the next call succeeds.
+ *  - Writes state with optimistic locking (`expectedEtag`).
+ *  - Prints a per-stack summary: `N refreshed, M unsupported, K failed`.
+ *
+ * Flag set mirrors `state destroy`:
+ *  - `--all` — refresh every stack in the state bucket.
+ *  - `--stack-region <region>` — disambiguate when the same stackName
+ *    has state in multiple regions.
+ *  - `--dry-run` — print the planned refresh count per stack and exit
+ *    without acquiring a lock or writing state.
+ *  - `-y` / `--yes` — skip the confirmation prompt.
+ *  - Standard state options + `--profile` / `--role-arn` / `--verbose`.
+ */
+async function stateRefreshObservedCommand(
+  stackArgs: string[],
+  options: {
+    all?: boolean;
+    yes?: boolean;
+    dryRun?: boolean;
+    stateBucket?: string;
+    statePrefix: string;
+    region?: string;
+    stackRegion?: string;
+    profile?: string;
+    roleArn?: string;
+    verbose: boolean;
+  }
+): Promise<void> {
+  const logger = getLogger();
+  if (options.verbose) logger.setLevel('debug');
+
+  if (!options.all && stackArgs.length === 0) {
+    throw new Error(
+      'Stack name is required. Usage: cdkd state refresh-observed <stack> [<stack>...] | --all'
+    );
+  }
+
+  const setup = await setupStateBackend(options);
+  const providerRegistry = new ProviderRegistry();
+  registerAllProviders(providerRegistry);
+  providerRegistry.setCustomResourceResponseBucket(setup.bucket);
+
+  try {
+    const stateRefs = await setup.stateBackend.listStacks();
+    let targets: StackStateRef[];
+
+    if (options.all) {
+      targets = options.stackRegion
+        ? stateRefs.filter((r) => r.region === options.stackRegion)
+        : stateRefs;
+      if (targets.length === 0) {
+        logger.info('No stacks found in state');
+        return;
+      }
+    } else {
+      targets = [];
+      for (const stackName of stackArgs) {
+        const matches = stateRefs.filter((r) => r.stackName === stackName);
+        if (matches.length === 0) {
+          throw new Error(
+            `No state found for stack '${stackName}'. ` +
+              `Run 'cdkd state list' to see available stacks.`
+          );
+        }
+        if (options.stackRegion) {
+          const ref = matches.find((r) => r.region === options.stackRegion);
+          if (!ref) {
+            const seen = matches.map((r) => r.region ?? '(legacy)').join(', ');
+            throw new Error(
+              `No state found for stack '${stackName}' in region '${options.stackRegion}'. ` +
+                `Available regions: ${seen}.`
+            );
+          }
+          targets.push(ref);
+        } else if (matches.length === 1) {
+          targets.push(matches[0]!);
+        } else {
+          const regions = matches.map((r) => r.region ?? '(legacy)').join(', ');
+          throw new Error(
+            `Stack '${stackName}' has state in multiple regions: ${regions}. ` +
+              `Re-run with --stack-region <region> to disambiguate.`
+          );
+        }
+      }
+    }
+
+    if (!options.yes && !options.dryRun) {
+      const targetList = targets.map(formatStackRef).join(', ');
+      const ok = await confirmRefresh(
+        `Refresh observedProperties for ${targets.length} stack(s) (${targetList})?`
+      );
+      if (!ok) {
+        logger.info('Aborted.');
+        return;
+      }
+    }
+
+    let totalRefreshed = 0;
+    let totalUnsupported = 0;
+    let totalFailed = 0;
+
+    for (const target of targets) {
+      if (!target.region) {
+        // Legacy v1 records carry no region in the key; the next write
+        // would migrate them, but state-driven refresh should not push a
+        // rewrite without the user confirming it. Tell them what to do.
+        throw new Error(
+          `Stack '${target.stackName}' has only a legacy state record without a region. ` +
+            `Run 'cdkd deploy ${target.stackName}' (or any cdkd write) first to migrate it ` +
+            `to the region-scoped layout, then re-run refresh-observed.`
+        );
+      }
+      const counts = await refreshObservedForStack(
+        target.stackName,
+        target.region,
+        setup.stateBackend,
+        setup.lockManager,
+        providerRegistry,
+        { dryRun: options.dryRun ?? false, logger }
+      );
+      totalRefreshed += counts.refreshed;
+      totalUnsupported += counts.unsupported;
+      totalFailed += counts.failed;
+    }
+
+    const summary = options.dryRun
+      ? `Plan: ${totalRefreshed} resource(s) would be refreshed, ${totalUnsupported} unsupported, ${totalFailed} would fail (--dry-run, no state was written)`
+      : `Done: ${totalRefreshed} resource(s) refreshed, ${totalUnsupported} unsupported, ${totalFailed} failed`;
+    logger.info(`\n${summary}`);
+
+    if (totalFailed > 0) {
+      throw new PartialFailureError(
+        `Refresh completed with ${totalFailed} per-resource readCurrentState failure(s). ` +
+          `Affected resources keep their previous observedProperties (or no observedProperties at all). ` +
+          `Re-run 'cdkd state refresh-observed' to retry.`
+      );
+    }
+  } finally {
+    setup.dispose();
+  }
+}
+
+/**
+ * Refresh the `observedProperties` of every resource in one stack
+ * record. Returns counts so the caller can aggregate across `--all`.
+ *
+ * `dryRun: true` skips the lock + saveState + provider call entirely
+ * and just reports how many resources would be refreshed; this is a
+ * cheap "preview the scope" mode that doesn't need AWS credentials
+ * for the underlying SDK reads.
+ */
+async function refreshObservedForStack(
+  stackName: string,
+  region: string,
+  stateBackend: S3StateBackend,
+  lockManager: LockManager,
+  providerRegistry: ProviderRegistry,
+  opts: { dryRun: boolean; logger: ReturnType<typeof getLogger> }
+): Promise<{ refreshed: number; unsupported: number; failed: number }> {
+  const { logger } = opts;
+
+  const result = await stateBackend.getState(stackName, region);
+  if (!result) {
+    throw new Error(
+      `No state found for stack '${stackName}' (${region}). ` +
+        `Run 'cdkd state list' to see available stacks.`
+    );
+  }
+  const { state, etag, migrationPending } = result;
+  const entries = Object.entries(state.resources ?? {});
+
+  if (entries.length === 0) {
+    logger.info(`✓ ${stackName} (${region}): no resources in state, skipping`);
+    return { refreshed: 0, unsupported: 0, failed: 0 };
+  }
+
+  if (opts.dryRun) {
+    let wouldRefresh = 0;
+    let wouldUnsupported = 0;
+    for (const [, resource] of entries) {
+      let provider;
+      try {
+        provider = providerRegistry.getProvider(resource.resourceType);
+      } catch {
+        wouldUnsupported++;
+        continue;
+      }
+      if (provider.readCurrentState) wouldRefresh++;
+      else wouldUnsupported++;
+    }
+    logger.info(
+      `Plan ${stackName} (${region}): ${wouldRefresh} resource(s) would be refreshed, ${wouldUnsupported} unsupported`
+    );
+    return { refreshed: wouldRefresh, unsupported: wouldUnsupported, failed: 0 };
+  }
+
+  const owner = `${process.env['USER'] || 'unknown'}@${process.env['HOSTNAME'] || 'host'}:${process.pid}`;
+  await lockManager.acquireLock(stackName, region, owner, 'state-refresh-observed');
+  try {
+    let refreshed = 0;
+    let unsupported = 0;
+    let failed = 0;
+
+    // Refresh in parallel under withStackName so any provider-internal
+    // resource-name resolution sees the right stack (mirrors the deploy
+    // engine's enclosing scope).
+    await withStackName(stackName, async () => {
+      const tasks = entries.map(async ([logicalId, resource]) => {
+        if (providerRegistry.shouldSkipResource(resource.resourceType)) {
+          unsupported++;
+          return;
+        }
+        let provider;
+        try {
+          provider = providerRegistry.getProvider(resource.resourceType);
+        } catch {
+          unsupported++;
+          return;
+        }
+        if (!provider.readCurrentState) {
+          unsupported++;
+          return;
+        }
+        try {
+          const observed = await provider.readCurrentState(
+            resource.physicalId,
+            logicalId,
+            resource.resourceType,
+            resource.properties ?? {}
+          );
+          if (observed === undefined) {
+            // Provider is registered with readCurrentState but the
+            // implementation chose to return undefined — typically
+            // because the AWS resource is gone (NotFound). Treat as
+            // unsupported for the count, leave observed unchanged so
+            // we don't accidentally null it out under a transient
+            // eventual-consistency window.
+            unsupported++;
+            return;
+          }
+          resource.observedProperties = observed;
+          refreshed++;
+        } catch (err) {
+          failed++;
+          logger.warn(
+            `  ✗ ${stackName}/${logicalId} (${resource.resourceType}): ` +
+              `readCurrentState failed — ${err instanceof Error ? err.message : String(err)}`
+          );
+        }
+      });
+      await Promise.all(tasks);
+    });
+
+    state.lastModified = Date.now();
+    const saveOptions: { expectedEtag?: string; migrateLegacy?: boolean } = {
+      expectedEtag: etag,
+    };
+    if (migrationPending) saveOptions.migrateLegacy = true;
+    await stateBackend.saveState(stackName, region, state, saveOptions);
+
+    logger.info(
+      `✓ ${stackName} (${region}): ` +
+        `${refreshed} refreshed, ${unsupported} unsupported, ${failed} failed`
+    );
+
+    return { refreshed, unsupported, failed };
+  } finally {
+    await lockManager.releaseLock(stackName, region).catch((err) => {
+      logger.warn(
+        `Failed to release lock for ${stackName} (${region}): ` +
+          (err instanceof Error ? err.message : String(err))
+      );
+    });
+  }
+}
+
+async function confirmRefresh(prompt: string): Promise<boolean> {
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+  try {
+    const ans = await rl.question(`${prompt} [y/N] `);
+    return /^y(es)?$/i.test(ans.trim());
+  } finally {
+    rl.close();
+  }
+}
+
+/**
+ * Create the `state refresh-observed` subcommand.
+ */
+function createStateRefreshObservedCommand(): Command {
+  const cmd = new Command('refresh-observed')
+    .description(
+      'Refresh observedProperties for every resource in a stack by ' +
+        'calling provider.readCurrentState — populates the drift baseline ' +
+        'for stacks deployed before state schema v3, without redeploying.'
+    )
+    .argument('[stacks...]', 'Stack name(s) to refresh (physical CloudFormation names)')
+    .option('--all', 'Refresh every stack in the state bucket', false)
+    .option('--dry-run', 'Print the per-stack refresh count without writing state', false)
+    .addOption(stackRegionOption())
+    .action(withErrorHandling(stateRefreshObservedCommand));
+
+  [...commonOptions, ...stateOptions].forEach((opt) => cmd.addOption(opt));
+
+  cmd.addOption(deprecatedRegionOption);
+
+  return cmd;
+}
+
+/**
  * Create the `state` parent command.
  *
  * Subcommands:
@@ -1270,6 +1603,8 @@ function createStateInfoCommand(): Command {
  *   without requiring the CDK app (CDK-app-free version of `cdkd destroy`)
  * - `state migrate` — copy all state from the legacy region-suffixed
  *   default bucket to the region-free default; optionally delete the source
+ * - `state refresh-observed <stack>...` — refresh observedProperties on every
+ *   resource without redeploying (closes the gap for state written before v3)
  */
 export function createStateCommand(): Command {
   const cmd = new Command('state').description('Manage cdkd state stored in S3');
@@ -1280,5 +1615,6 @@ export function createStateCommand(): Command {
   cmd.addCommand(createStateOrphanCommand());
   cmd.addCommand(createStateDestroyCommand());
   cmd.addCommand(createStateMigrateCommand());
+  cmd.addCommand(createStateRefreshObservedCommand());
   return cmd;
 }

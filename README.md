@@ -171,6 +171,57 @@ the full per-type table.
 | CC API null value stripping | ✅ | Removes null values before API calls |
 | Retry with HTTP status codes | ✅ | 429/503 + cause chain inspection |
 
+### Drift detection
+
+`cdkd drift <stack>` (state-driven; no synth) compares each resource
+between the AWS-current snapshot returned by `provider.readCurrentState`
+and the **deploy-time AWS snapshot** stored in
+`ResourceState.observedProperties`. The observedProperties baseline is
+populated automatically on every successful `cdkd deploy` /
+`cdkd import`, so console-side changes to keys you did NOT template
+(IAM policies attached out-of-band, S3 public-access-block toggled,
+etc.) surface as drift instead of being silently ignored.
+
+State schema `version: 3` (the layout that carries observedProperties)
+is auto-migrated on the next write — no user action needed for new
+deploys. **For stacks already deployed with an older binary**, the
+upgrade story is:
+
+1. `cdkd 0.46.x` (or earlier) deployed your stack — state.json is
+   `version: 2`, no observedProperties on any resource.
+2. Upgrade cdkd to `0.47.0+`. The new binary reads v2 state cleanly,
+   and `cdkd drift` falls back to comparing against the user-templated
+   `properties` field (= the pre-v3 behavior) for any resource that
+   hasn't been refreshed yet.
+3. **Populate observedProperties** for the existing stack — pick one:
+
+   ```bash
+   # Option A (recommended): explicit refresh, no redeploy.
+   cdkd state refresh-observed MyStack
+
+   # Option B: trigger an UPDATE on each affected resource via the
+   # next `cdkd deploy`. NO_CHANGE-skipped resources are NOT refreshed
+   # by deploy alone — only the ones whose template changed get a
+   # readCurrentState call. Use this only if you're already changing
+   # the template; for an upgrade-and-refresh-only flow prefer A.
+   cdkd deploy MyStack
+   ```
+4. Re-run `cdkd drift MyStack` — now observed-baseline drift detection
+   is fully enabled.
+
+`cdkd state refresh-observed --all` does the same for every stack in
+the state bucket; `--dry-run` prints the per-stack refresh count
+without touching state. Resolve any drift the comparator finds with
+`cdkd drift <stack> --accept` (state ← AWS) or `--revert` (AWS ← state).
+
+`cdkd deploy --no-capture-observed-state` (or
+`cdk.json context.cdkd.captureObservedState: false`) opts out of the
+capture entirely if you care more about deploy speed than rich drift
+detection — drift then falls back to comparing against `properties`,
+the pre-v3 behavior. Bench measurements show roughly +0–4% deploy
+time with the capture on (lambda integ within noise; bench-cdk-sample
++3.4% median).
+
 ## Prerequisites
 
 - **Node.js** >= 20.0.0
@@ -299,6 +350,14 @@ cdkd drift MyStack --accept --yes
 
 # Resolve drift: AWS ← state (push state values back into AWS via provider.update)
 cdkd drift MyStack --revert --yes
+
+# Refresh the deploy-time AWS snapshot used as drift baseline.
+# Run this once after upgrading from a pre-v3 cdkd binary (= state schema
+# `version: 2`) so console-side changes to keys you didn't template can
+# be detected for resources that won't change in any near-future deploy.
+# Same idempotent behavior on the same v3 state — see "Drift detection"
+# below for the full upgrade story.
+cdkd state refresh-observed MyStack
 
 # Dry run (plan only, no changes)
 cdkd deploy --dry-run
