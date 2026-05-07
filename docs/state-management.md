@@ -208,6 +208,20 @@ as drift instead of being silently ignored. Resources with
 `observedProperties: undefined` (older state, or providers without
 `readCurrentState`) fall back to comparing against `properties`.
 
+**v2 → v3 upgrade is automatic on the next `cdkd deploy`.** When the
+deploy engine loads state and finds resources without
+`observedProperties` (typical the first time you deploy after upgrading
+from cdkd <0.49), it kicks off `provider.readCurrentState` for each in
+parallel with the rest of the deploy and drains the result into state at
+the final save. The deploy critical path does NOT wait on these reads —
+the cost is bounded by the longest single `readCurrentState` (~200-300ms
+in practice) once at the end of the deploy. NO_CHANGE-only deploys (no
+diff to apply) still drain and persist the refreshed baseline so the
+next `cdkd drift` run sees a real AWS-current snapshot. Pass
+`--no-capture-observed-state` to disable both regular capture and this
+upgrade refresh; `cdkd state refresh-observed <stack>` remains the
+manual / non-deploy path for refreshing the baseline.
+
 ## State Schema
 
 ### StackState (`state.json`)

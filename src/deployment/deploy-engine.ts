@@ -291,6 +291,73 @@ export class DeployEngine {
     }
   }
 
+  /**
+   * Kick off `provider.readCurrentState` for every resource in the
+   * loaded state that lacks `observedProperties` (e.g. state written
+   * by a pre-v3 binary, or a v3 record where a NO_CHANGE-skipped
+   * resource's baseline never landed). Calls go through
+   * `kickOffObservedCapture`, so they share the same fire-and-forget
+   * pipeline, error swallowing, and final-drain wiring that the
+   * post-CREATE / post-UPDATE captures use.
+   *
+   * The deploy critical path does NOT wait on these; the cost is
+   * bounded by `max(per-resource readCurrentState latency)` (typically
+   * ~200-300ms in practice) once at the end-of-deploy drain. Any
+   * resource that subsequently goes through CREATE / UPDATE in the
+   * same deploy will overwrite this entry via the `Map.set` keyed by
+   * `logicalId` (latest-wins) — so there's no double-write to state,
+   * just a wasted SDK call for the (rare) UPDATE / DELETE intersection.
+   *
+   * Resources whose provider lookup throws (e.g. unsupported type) or
+   * lacks `readCurrentState` are silently skipped — same policy as the
+   * manual `cdkd state refresh-observed` command.
+   */
+  private kickOffAutoRefreshObservedProperties(
+    stateResources: Record<string, ResourceState>
+  ): void {
+    if (this.options.captureObservedState !== true) return;
+    // Dry run must not fire real SDK reads (matches the dry-run
+    // guarantee that no AWS side-effect runs).
+    if (this.options.dryRun === true) return;
+    let toRefresh = 0;
+    const candidates: Array<{
+      logicalId: string;
+      resource: ResourceState;
+    }> = [];
+    for (const [logicalId, resource] of Object.entries(stateResources)) {
+      if (resource.observedProperties !== undefined) continue;
+      candidates.push({ logicalId, resource });
+    }
+    if (candidates.length === 0) return;
+
+    for (const { logicalId, resource } of candidates) {
+      // Skip-list / unsupported types: getProvider throws — silently skip
+      // (mirrors `cdkd state refresh-observed`'s policy: best-effort,
+      // no failure on a state record we cannot resolve).
+      let provider: ResourceProvider;
+      try {
+        provider = this.providerRegistry.getProvider(resource.resourceType);
+      } catch {
+        continue;
+      }
+      if (!provider.readCurrentState) continue;
+      this.kickOffObservedCapture(
+        provider,
+        logicalId,
+        resource.physicalId,
+        resource.resourceType,
+        resource.properties ?? {}
+      );
+      toRefresh++;
+    }
+
+    if (toRefresh > 0) {
+      this.logger.warn(
+        `cdkd state schema upgrade detected — refreshing observed-properties baseline for ${toRefresh} resource(s) (one-time, runs in parallel with deploy)`
+      );
+    }
+  }
+
   private async doDeploy(
     stackName: string,
     template: CloudFormationTemplate
@@ -341,6 +408,20 @@ export class DeployEngine {
       this.logger.debug(
         `Loaded current state: ${Object.keys(currentState.resources).length} resources`
       );
+
+      // 1a. Auto-refresh observedProperties for any state entry that lacks it
+      // (state written by an older binary / direct edit). Fires
+      // `provider.readCurrentState` fire-and-forget through the same
+      // `kickOffObservedCapture` pipeline that successful CREATE / UPDATE
+      // uses, so the in-flight set is drained right before the final
+      // `saveState`. Latest-wins semantics (Map.set keyed by logicalId)
+      // means a CREATE / UPDATE later in the same deploy overwrites
+      // the auto-refresh entry — no double-write to state. CREATEs for
+      // brand-new resources skip this loop because they're not yet in
+      // `currentState.resources`. Closes the upgrade UX gap left by
+      // v3 schema: the manual `cdkd state refresh-observed` command
+      // remains for non-deploy refresh.
+      this.kickOffAutoRefreshObservedProperties(currentState.resources);
 
       // 2. Template parsing is handled by DagBuilder (dependency analysis) and
       // IntrinsicResolver (intrinsic function resolution) in later steps
@@ -405,6 +486,42 @@ export class DeployEngine {
 
       if (!hasChanges) {
         this.logger.info('No changes detected. Stack is up to date.');
+
+        // No-change path: if the auto-refresh kicked off any
+        // readCurrentState calls (e.g. v2 → v3 schema upgrade on a
+        // stack with nothing to deploy), drain them and persist the
+        // refreshed observed-properties baseline so the next `cdkd
+        // drift` run sees a real AWS-current snapshot. Skipped in
+        // dry-run / when nothing was kicked off (drainObservedCaptures
+        // short-circuits on empty map).
+        if (!this.options.dryRun && this.observedCaptureTasks.size > 0) {
+          await this.drainObservedCaptures(currentState.resources);
+          try {
+            const refreshedState: StackState = {
+              version: STATE_SCHEMA_VERSION_CURRENT,
+              region: this.stackRegion,
+              stackName: currentState.stackName,
+              resources: currentState.resources,
+              outputs: currentState.outputs,
+              lastModified: Date.now(),
+            };
+            const saveOptions: { expectedEtag?: string; migrateLegacy?: boolean } = {};
+            if (currentEtag !== undefined) saveOptions.expectedEtag = currentEtag;
+            if (migrationPending) saveOptions.migrateLegacy = true;
+            await this.stateBackend.saveState(
+              stackName,
+              this.stackRegion,
+              refreshedState,
+              saveOptions
+            );
+            this.logger.debug('Persisted refreshed observedProperties (no-change path)');
+          } catch (saveError) {
+            this.logger.warn(
+              `Failed to persist refreshed observedProperties: ${saveError instanceof Error ? saveError.message : String(saveError)} — drift baseline will be re-fetched on next deploy.`
+            );
+          }
+        }
+
         return {
           stackName,
           created: 0,
