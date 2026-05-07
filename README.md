@@ -237,6 +237,18 @@ That's it. cdkd reads `--app` from `cdk.json` and auto-resolves the state bucket
 
 ## Usage
 
+cdkd has two command families:
+
+- **Top-level commands** (`cdkd deploy` / `destroy` / `diff` / `synth` /
+  `list` / `import` / `orphan`) require a CDK app — they synthesize
+  a template to learn what they're operating on.
+- **`cdkd state ...` subcommands** (`state info` / `list` / `resources`
+  / `show` / `orphan` / `destroy` / `migrate` / `refresh-observed`)
+  operate on the S3 state bucket only and do NOT need the CDK app —
+  use them to inspect / clean up state when the source is gone or
+  you don't want to synth. `cdkd state destroy` is the CDK-app-free
+  counterpart of `cdkd destroy`.
+
 Options like `--app`, `--state-bucket`, and `--context` can be omitted if configured via `cdk.json` or environment variables (`CDKD_APP`, `CDKD_STATE_BUCKET`).
 
 ```bash
