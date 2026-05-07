@@ -1,3 +1,10 @@
+## [0.50.9](https://github.com/go-to-k/cdkd/compare/v0.50.8...v0.50.9) (2026-05-07)
+
+
+### Bug Fixes
+
+* **drift:** round-trip audit for data-layer providers (PR 2/5) ([#164](https://github.com/go-to-k/cdkd/issues/164)) ([8e1fbe3](https://github.com/go-to-k/cdkd/commit/8e1fbe348f596a01df5cd332307a44cb1f9e472b))
+
 ## [0.50.8](https://github.com/go-to-k/cdkd/compare/v0.50.7...v0.50.8) (2026-05-07)
 
 
