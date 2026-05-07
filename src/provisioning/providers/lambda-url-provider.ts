@@ -259,21 +259,22 @@ export class LambdaUrlProvider implements ResourceProvider {
 
     if (resp.AuthType !== undefined) result['AuthType'] = resp.AuthType;
     if (resp.InvokeMode !== undefined) result['InvokeMode'] = resp.InvokeMode;
-    if (resp.Cors !== undefined) {
-      // Only surface the Cors keys cdkd's `create()` accepts; the SDK
-      // returns the same shape but defensively-copy the arrays so the
-      // comparator can do equality cheaply.
-      const cors: Record<string, unknown> = {};
-      if (resp.Cors.AllowOrigins) cors['AllowOrigins'] = [...resp.Cors.AllowOrigins];
-      if (resp.Cors.AllowMethods) cors['AllowMethods'] = [...resp.Cors.AllowMethods];
-      if (resp.Cors.AllowHeaders) cors['AllowHeaders'] = [...resp.Cors.AllowHeaders];
-      if (resp.Cors.ExposeHeaders) cors['ExposeHeaders'] = [...resp.Cors.ExposeHeaders];
-      if (resp.Cors.MaxAge !== undefined) cors['MaxAge'] = resp.Cors.MaxAge;
-      if (resp.Cors.AllowCredentials !== undefined) {
-        cors['AllowCredentials'] = resp.Cors.AllowCredentials;
-      }
-      if (Object.keys(cors).length > 0) result['Cors'] = cors;
+    // Only surface the Cors keys cdkd's `create()` accepts; the SDK
+    // returns the same shape but defensively-copy the arrays so the
+    // comparator can do equality cheaply. Always emit so a console-side
+    // CORS toggle on a URL configured without CORS at deploy time
+    // surfaces as drift.
+    const cors: Record<string, unknown> = {
+      AllowOrigins: resp.Cors?.AllowOrigins ? [...resp.Cors.AllowOrigins] : [],
+      AllowMethods: resp.Cors?.AllowMethods ? [...resp.Cors.AllowMethods] : [],
+      AllowHeaders: resp.Cors?.AllowHeaders ? [...resp.Cors.AllowHeaders] : [],
+      ExposeHeaders: resp.Cors?.ExposeHeaders ? [...resp.Cors.ExposeHeaders] : [],
+    };
+    if (resp.Cors?.MaxAge !== undefined) cors['MaxAge'] = resp.Cors.MaxAge;
+    if (resp.Cors?.AllowCredentials !== undefined) {
+      cors['AllowCredentials'] = resp.Cors.AllowCredentials;
     }
+    result['Cors'] = cors;
 
     return result;
   }

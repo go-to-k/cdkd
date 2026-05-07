@@ -963,41 +963,31 @@ export class LambdaFunctionProvider implements ResourceProvider {
       if (cfg.Role !== undefined) result['Role'] = cfg.Role;
       if (cfg.Timeout !== undefined) result['Timeout'] = cfg.Timeout;
       if (cfg.MemorySize !== undefined) result['MemorySize'] = cfg.MemorySize;
-      if (cfg.Description !== undefined && cfg.Description !== '') {
-        result['Description'] = cfg.Description;
-      }
-      if (cfg.Environment?.Variables) {
-        result['Environment'] = { Variables: cfg.Environment.Variables };
-      }
-      if (cfg.Layers && cfg.Layers.length > 0) {
-        // GetFunction returns Layers as [{Arn, CodeSize, ...}]; CFn shape
-        // is a flat string[] of ARNs.
-        result['Layers'] = cfg.Layers.map((l) => l.Arn).filter((arn): arn is string => !!arn);
-      }
-      if (cfg.Architectures && cfg.Architectures.length > 0) {
-        result['Architectures'] = [...cfg.Architectures];
-      }
+      result['Description'] = cfg.Description ?? '';
+      result['Environment'] = { Variables: cfg.Environment?.Variables ?? {} };
+      // GetFunction returns Layers as [{Arn, CodeSize, ...}]; CFn shape
+      // is a flat string[] of ARNs.
+      result['Layers'] = (cfg.Layers ?? []).map((l) => l.Arn).filter((arn): arn is string => !!arn);
+      result['Architectures'] = cfg.Architectures ? [...cfg.Architectures] : [];
       if (cfg.PackageType !== undefined) result['PackageType'] = cfg.PackageType;
-      if (cfg.TracingConfig?.Mode !== undefined) {
-        result['TracingConfig'] = { Mode: cfg.TracingConfig.Mode };
-      }
+      result['TracingConfig'] = { Mode: cfg.TracingConfig?.Mode ?? 'PassThrough' };
       if (cfg.EphemeralStorage?.Size !== undefined) {
         result['EphemeralStorage'] = { Size: cfg.EphemeralStorage.Size };
       }
-      if (cfg.VpcConfig) {
-        const vpc: Record<string, unknown> = {};
-        if (cfg.VpcConfig.SubnetIds) vpc['SubnetIds'] = [...cfg.VpcConfig.SubnetIds];
-        if (cfg.VpcConfig.SecurityGroupIds) {
-          vpc['SecurityGroupIds'] = [...cfg.VpcConfig.SecurityGroupIds];
-        }
-        if (cfg.VpcConfig.Ipv6AllowedForDualStack !== undefined) {
-          vpc['Ipv6AllowedForDualStack'] = cfg.VpcConfig.Ipv6AllowedForDualStack;
-        }
-        // Lambda's GetFunction returns VpcConfig with empty arrays even for
-        // non-VPC functions; only surface when there is actually something
-        // to compare against.
-        if (Object.keys(vpc).length > 0) result['VpcConfig'] = vpc;
+      // Always emit VpcConfig so a console-side VPC attach is detected even
+      // when the function was deployed without VpcConfig (Lambda's
+      // GetFunction returns VpcConfig with empty arrays for non-VPC
+      // functions; that empty shape becomes our placeholder).
+      const vpc: Record<string, unknown> = {
+        SubnetIds: cfg.VpcConfig?.SubnetIds ? [...cfg.VpcConfig.SubnetIds] : [],
+        SecurityGroupIds: cfg.VpcConfig?.SecurityGroupIds
+          ? [...cfg.VpcConfig.SecurityGroupIds]
+          : [],
+      };
+      if (cfg.VpcConfig?.Ipv6AllowedForDualStack !== undefined) {
+        vpc['Ipv6AllowedForDualStack'] = cfg.VpcConfig.Ipv6AllowedForDualStack;
       }
+      result['VpcConfig'] = vpc;
 
       // Tags: GetFunction returns a map keyed by tag name. Filter
       // CDK / aws:* auto-tags, re-shape to CFn's `[{Key, Value}]`, and

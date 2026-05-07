@@ -928,11 +928,9 @@ export class RDSProvider implements ResourceProvider {
     if (cluster.MasterUsername !== undefined) result['MasterUsername'] = cluster.MasterUsername;
     if (cluster.DatabaseName !== undefined) result['DatabaseName'] = cluster.DatabaseName;
     if (cluster.Port !== undefined) result['Port'] = cluster.Port;
-    if (cluster.VpcSecurityGroups && cluster.VpcSecurityGroups.length > 0) {
-      result['VpcSecurityGroupIds'] = cluster.VpcSecurityGroups.map(
-        (sg) => sg.VpcSecurityGroupId
-      ).filter((id): id is string => !!id);
-    }
+    result['VpcSecurityGroupIds'] = (cluster.VpcSecurityGroups ?? [])
+      .map((sg) => sg.VpcSecurityGroupId)
+      .filter((id): id is string => !!id);
     if (cluster.DBSubnetGroup !== undefined) result['DBSubnetGroupName'] = cluster.DBSubnetGroup;
     if (cluster.StorageEncrypted !== undefined) {
       result['StorageEncrypted'] = cluster.StorageEncrypted;
@@ -944,15 +942,15 @@ export class RDSProvider implements ResourceProvider {
     if (cluster.DeletionProtection !== undefined) {
       result['DeletionProtection'] = cluster.DeletionProtection;
     }
-    if (cluster.ServerlessV2ScalingConfiguration) {
+    {
       const sc: Record<string, unknown> = {};
-      if (cluster.ServerlessV2ScalingConfiguration.MinCapacity !== undefined) {
+      if (cluster.ServerlessV2ScalingConfiguration?.MinCapacity !== undefined) {
         sc['MinCapacity'] = cluster.ServerlessV2ScalingConfiguration.MinCapacity;
       }
-      if (cluster.ServerlessV2ScalingConfiguration.MaxCapacity !== undefined) {
+      if (cluster.ServerlessV2ScalingConfiguration?.MaxCapacity !== undefined) {
         sc['MaxCapacity'] = cluster.ServerlessV2ScalingConfiguration.MaxCapacity;
       }
-      if (Object.keys(sc).length > 0) result['ServerlessV2ScalingConfiguration'] = sc;
+      result['ServerlessV2ScalingConfiguration'] = sc;
     }
     if (cluster.DBClusterArn) await this.attachTags(result, cluster.DBClusterArn);
     return result;
@@ -985,11 +983,9 @@ export class RDSProvider implements ResourceProvider {
     if (sg.DBSubnetGroupDescription !== undefined) {
       result['DBSubnetGroupDescription'] = sg.DBSubnetGroupDescription;
     }
-    if (sg.Subnets && sg.Subnets.length > 0) {
-      result['SubnetIds'] = sg.Subnets.map((s) => s.SubnetIdentifier).filter(
-        (id): id is string => !!id
-      );
-    }
+    result['SubnetIds'] = (sg.Subnets ?? [])
+      .map((s) => s.SubnetIdentifier)
+      .filter((id): id is string => !!id);
     if (sg.DBSubnetGroupArn) await this.attachTags(result, sg.DBSubnetGroupArn);
     return result;
   }

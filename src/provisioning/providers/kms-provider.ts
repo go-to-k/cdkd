@@ -588,9 +588,7 @@ export class KMSProvider implements ResourceProvider {
     if (!md) return undefined;
 
     const result: Record<string, unknown> = {};
-    if (md.Description !== undefined && md.Description !== '') {
-      result['Description'] = md.Description;
-    }
+    result['Description'] = md.Description ?? '';
     if (md.KeySpec !== undefined) result['KeySpec'] = md.KeySpec;
     if (md.KeyUsage !== undefined) result['KeyUsage'] = md.KeyUsage;
     if (md.Enabled !== undefined) result['Enabled'] = md.Enabled;

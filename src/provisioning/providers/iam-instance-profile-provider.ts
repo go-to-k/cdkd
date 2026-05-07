@@ -305,7 +305,7 @@ export class IAMInstanceProfileProvider implements ResourceProvider {
     if (profile.Path !== undefined) result['Path'] = profile.Path;
 
     const roleNames = (profile.Roles ?? []).map((r) => r.RoleName).filter((n): n is string => !!n);
-    if (roleNames.length > 0) result['Roles'] = roleNames;
+    result['Roles'] = roleNames;
 
     return result;
   }

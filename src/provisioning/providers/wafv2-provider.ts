@@ -355,30 +355,22 @@ export class WAFv2WebACLProvider implements ResourceProvider {
     const result: Record<string, unknown> = {};
     if (webACL.Name !== undefined) result['Name'] = webACL.Name;
     result['Scope'] = scope;
-    if (webACL.Description !== undefined && webACL.Description !== '') {
-      result['Description'] = webACL.Description;
-    }
+    result['Description'] = webACL.Description ?? '';
     if (webACL.DefaultAction) {
       result['DefaultAction'] = webACL.DefaultAction as unknown as Record<string, unknown>;
     }
-    if (webACL.Rules && webACL.Rules.length > 0) {
-      result['Rules'] = webACL.Rules.map((r) => r as unknown as Record<string, unknown>);
-    }
+    result['Rules'] = (webACL.Rules ?? []).map((r) => r as unknown as Record<string, unknown>);
     if (webACL.VisibilityConfig) {
       result['VisibilityConfig'] = webACL.VisibilityConfig as unknown as Record<string, unknown>;
     }
-    if (webACL.CustomResponseBodies && Object.keys(webACL.CustomResponseBodies).length > 0) {
-      result['CustomResponseBodies'] = webACL.CustomResponseBodies as Record<string, unknown>;
-    }
+    result['CustomResponseBodies'] = (webACL.CustomResponseBodies ?? {}) as Record<string, unknown>;
     if (webACL.CaptchaConfig) {
       result['CaptchaConfig'] = webACL.CaptchaConfig as unknown as Record<string, unknown>;
     }
     if (webACL.ChallengeConfig) {
       result['ChallengeConfig'] = webACL.ChallengeConfig as unknown as Record<string, unknown>;
     }
-    if (webACL.TokenDomains && webACL.TokenDomains.length > 0) {
-      result['TokenDomains'] = [...webACL.TokenDomains];
-    }
+    result['TokenDomains'] = webACL.TokenDomains ? [...webACL.TokenDomains] : [];
     if (webACL.AssociationConfig) {
       result['AssociationConfig'] = webACL.AssociationConfig as unknown as Record<string, unknown>;
     }

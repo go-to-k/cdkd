@@ -407,25 +407,29 @@ export class SQSQueueProvider implements ResourceProvider {
       if (v !== undefined) result[key] = v === 'true';
     }
 
-    // String attributes: pass through.
+    // String attributes: always emit a placeholder so a console-side ADD
+    // on a queue that didn't carry the attribute at deploy time surfaces
+    // as drift.
     const str: Array<keyof typeof CDK_TO_SQS_ATTRIBUTES> = [
       'KmsMasterKeyId',
       'DeduplicationScope',
       'FifoThroughputLimit',
     ];
     for (const key of str) {
-      const v = attributes[key];
-      if (v !== undefined) result[key] = v;
+      result[key] = attributes[key] ?? '';
     }
 
     // RedrivePolicy: AWS returns as a JSON string; cdkd state typically
-    // holds the parsed object (post intrinsic resolution).
+    // holds the parsed object (post intrinsic resolution). Always emit so
+    // a console-side DLQ attach surfaces.
     if (attributes['RedrivePolicy']) {
       try {
         result['RedrivePolicy'] = JSON.parse(attributes['RedrivePolicy']) as unknown;
       } catch {
         result['RedrivePolicy'] = attributes['RedrivePolicy'];
       }
+    } else {
+      result['RedrivePolicy'] = {};
     }
 
     // Tags via ListQueueTags. SQS returns Tags as a tag-name → value map.

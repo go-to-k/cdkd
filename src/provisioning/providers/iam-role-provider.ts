@@ -789,9 +789,7 @@ export class IAMRoleProvider implements ResourceProvider {
     const result: Record<string, unknown> = {};
 
     if (role.RoleName !== undefined) result['RoleName'] = role.RoleName;
-    if (role.Description !== undefined && role.Description !== '') {
-      result['Description'] = role.Description;
-    }
+    result['Description'] = role.Description ?? '';
     if (role.MaxSessionDuration !== undefined) {
       result['MaxSessionDuration'] = role.MaxSessionDuration;
     }
@@ -822,10 +820,7 @@ export class IAMRoleProvider implements ResourceProvider {
       const arns = (attached.AttachedPolicies ?? [])
         .map((p) => p.PolicyArn)
         .filter((arn): arn is string => !!arn);
-      // Only surface when there is at least one — preserves comparator's
-      // "key absent in state never drifts" property for roles that don't
-      // declare ManagedPolicyArns.
-      if (arns.length > 0) result['ManagedPolicyArns'] = arns;
+      result['ManagedPolicyArns'] = arns;
     } catch (err) {
       if (!(err instanceof NoSuchEntityException)) throw err;
     }

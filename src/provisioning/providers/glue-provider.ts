@@ -589,13 +589,9 @@ export class GlueProvider implements ResourceProvider {
 
     const dbInput: Record<string, unknown> = {};
     if (db.Name !== undefined) dbInput['Name'] = db.Name;
-    if (db.Description !== undefined && db.Description !== '') {
-      dbInput['Description'] = db.Description;
-    }
+    dbInput['Description'] = db.Description ?? '';
     if (db.LocationUri !== undefined) dbInput['LocationUri'] = db.LocationUri;
-    if (db.Parameters && Object.keys(db.Parameters).length > 0) {
-      dbInput['Parameters'] = db.Parameters;
-    }
+    dbInput['Parameters'] = db.Parameters ?? {};
     return { DatabaseInput: dbInput };
   }
 
@@ -617,20 +613,14 @@ export class GlueProvider implements ResourceProvider {
 
     const tableInput: Record<string, unknown> = {};
     if (table.Name !== undefined) tableInput['Name'] = table.Name;
-    if (table.Description !== undefined && table.Description !== '') {
-      tableInput['Description'] = table.Description;
-    }
+    tableInput['Description'] = table.Description ?? '';
     if (table.Owner !== undefined) tableInput['Owner'] = table.Owner;
     if (table.Retention !== undefined) tableInput['Retention'] = table.Retention;
     if (table.TableType !== undefined) tableInput['TableType'] = table.TableType;
-    if (table.PartitionKeys && table.PartitionKeys.length > 0) {
-      tableInput['PartitionKeys'] = table.PartitionKeys.map(
-        (k) => k as unknown as Record<string, unknown>
-      );
-    }
-    if (table.Parameters && Object.keys(table.Parameters).length > 0) {
-      tableInput['Parameters'] = table.Parameters;
-    }
+    tableInput['PartitionKeys'] = (table.PartitionKeys ?? []).map(
+      (k) => k as unknown as Record<string, unknown>
+    );
+    tableInput['Parameters'] = table.Parameters ?? {};
     if (table.StorageDescriptor) {
       tableInput['StorageDescriptor'] = table.StorageDescriptor as unknown as Record<
         string,

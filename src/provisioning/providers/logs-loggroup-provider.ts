@@ -372,7 +372,7 @@ export class LogsLogGroupProvider implements ResourceProvider {
 
       const result: Record<string, unknown> = {};
       if (found.logGroupName !== undefined) result['LogGroupName'] = found.logGroupName;
-      if (found.kmsKeyId !== undefined) result['KmsKeyId'] = found.kmsKeyId;
+      result['KmsKeyId'] = found.kmsKeyId ?? '';
       if (found.retentionInDays !== undefined) {
         result['RetentionInDays'] = found.retentionInDays;
       }

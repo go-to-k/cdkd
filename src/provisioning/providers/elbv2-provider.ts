@@ -727,15 +727,11 @@ export class ELBv2Provider implements ResourceProvider {
 
     const result: Record<string, unknown> = {};
     if (lb.LoadBalancerName !== undefined) result['Name'] = lb.LoadBalancerName;
-    if (lb.AvailabilityZones && lb.AvailabilityZones.length > 0) {
-      const subnets = lb.AvailabilityZones.map((az) => az.SubnetId).filter(
-        (id): id is string => !!id
-      );
-      if (subnets.length > 0) result['Subnets'] = subnets;
-    }
-    if (lb.SecurityGroups && lb.SecurityGroups.length > 0) {
-      result['SecurityGroups'] = [...lb.SecurityGroups];
-    }
+    const subnets = (lb.AvailabilityZones ?? [])
+      .map((az) => az.SubnetId)
+      .filter((id): id is string => !!id);
+    result['Subnets'] = subnets;
+    result['SecurityGroups'] = lb.SecurityGroups ? [...lb.SecurityGroups] : [];
     if (lb.Scheme !== undefined) result['Scheme'] = lb.Scheme;
     if (lb.Type !== undefined) result['Type'] = lb.Type;
     if (lb.IpAddressType !== undefined) result['IpAddressType'] = lb.IpAddressType;
@@ -780,12 +776,10 @@ export class ELBv2Provider implements ResourceProvider {
     if (tg.UnhealthyThresholdCount !== undefined) {
       result['UnhealthyThresholdCount'] = tg.UnhealthyThresholdCount;
     }
-    if (tg.Matcher) {
-      const matcher: Record<string, unknown> = {};
-      if (tg.Matcher.HttpCode !== undefined) matcher['HttpCode'] = tg.Matcher.HttpCode;
-      if (tg.Matcher.GrpcCode !== undefined) matcher['GrpcCode'] = tg.Matcher.GrpcCode;
-      if (Object.keys(matcher).length > 0) result['Matcher'] = matcher;
-    }
+    const matcher: Record<string, unknown> = {};
+    if (tg.Matcher?.HttpCode !== undefined) matcher['HttpCode'] = tg.Matcher.HttpCode;
+    if (tg.Matcher?.GrpcCode !== undefined) matcher['GrpcCode'] = tg.Matcher.GrpcCode;
+    result['Matcher'] = matcher;
     await this.attachTags(result, physicalId);
     return result;
   }
@@ -810,22 +804,18 @@ export class ELBv2Provider implements ResourceProvider {
     if (listener.Port !== undefined) result['Port'] = listener.Port;
     if (listener.Protocol !== undefined) result['Protocol'] = listener.Protocol;
     if (listener.SslPolicy !== undefined) result['SslPolicy'] = listener.SslPolicy;
-    if (listener.Certificates && listener.Certificates.length > 0) {
-      result['Certificates'] = listener.Certificates.map((c) => {
-        const out: Record<string, unknown> = {};
-        if (c.CertificateArn !== undefined) out['CertificateArn'] = c.CertificateArn;
-        if (c.IsDefault !== undefined) out['IsDefault'] = c.IsDefault;
-        return out;
-      });
-    }
-    if (listener.DefaultActions && listener.DefaultActions.length > 0) {
-      // CDK already uses PascalCase that matches AWS SDK shape; pass through
-      // the keys the SDK returns. Cast to unknown via Record so the
-      // comparator's deep-equal handles the structured comparison.
-      result['DefaultActions'] = listener.DefaultActions.map(
-        (a) => a as unknown as Record<string, unknown>
-      );
-    }
+    result['Certificates'] = (listener.Certificates ?? []).map((c) => {
+      const out: Record<string, unknown> = {};
+      if (c.CertificateArn !== undefined) out['CertificateArn'] = c.CertificateArn;
+      if (c.IsDefault !== undefined) out['IsDefault'] = c.IsDefault;
+      return out;
+    });
+    // CDK already uses PascalCase that matches AWS SDK shape; pass through
+    // the keys the SDK returns. Cast to unknown via Record so the
+    // comparator's deep-equal handles the structured comparison.
+    result['DefaultActions'] = (listener.DefaultActions ?? []).map(
+      (a) => a as unknown as Record<string, unknown>
+    );
     await this.attachTags(result, physicalId);
     return result;
   }

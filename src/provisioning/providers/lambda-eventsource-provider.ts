@@ -367,15 +367,10 @@ export class LambdaEventSourceMappingProvider implements ResourceProvider {
     if (resp.TumblingWindowInSeconds !== undefined) {
       result['TumblingWindowInSeconds'] = resp.TumblingWindowInSeconds;
     }
-    if (resp.FunctionResponseTypes !== undefined && resp.FunctionResponseTypes.length > 0) {
-      result['FunctionResponseTypes'] = [...resp.FunctionResponseTypes];
-    }
-    if (
-      resp.SourceAccessConfigurations !== undefined &&
-      resp.SourceAccessConfigurations.length > 0
-    ) {
-      result['SourceAccessConfigurations'] = resp.SourceAccessConfigurations;
-    }
+    result['FunctionResponseTypes'] = resp.FunctionResponseTypes
+      ? [...resp.FunctionResponseTypes]
+      : [];
+    result['SourceAccessConfigurations'] = resp.SourceAccessConfigurations ?? [];
     if (resp.SelfManagedEventSource !== undefined) {
       result['SelfManagedEventSource'] = resp.SelfManagedEventSource;
     }

@@ -93,7 +93,7 @@ describe('AgentCoreRuntimeProvider.readCurrentState', () => {
     expect(result).toBeUndefined();
   });
 
-  it('omits empty Description', async () => {
+  it('emits empty Description placeholder when AWS returns empty string', async () => {
     mockSend.mockResolvedValueOnce({
       agentRuntimeId: 'runtime-1',
       agentRuntimeName: 'my-runtime',
@@ -105,6 +105,6 @@ describe('AgentCoreRuntimeProvider.readCurrentState', () => {
       'Logical',
       'AWS::BedrockAgentCore::Runtime'
     );
-    expect(result).not.toHaveProperty('Description');
+    expect(result?.Description).toBe('');
   });
 });

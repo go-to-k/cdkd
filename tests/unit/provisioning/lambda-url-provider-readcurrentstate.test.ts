@@ -67,6 +67,7 @@ describe('LambdaUrlProvider.readCurrentState', () => {
         AllowOrigins: ['*'],
         AllowMethods: ['GET'],
         AllowHeaders: ['Content-Type'],
+        ExposeHeaders: [],
         MaxAge: 86400,
         AllowCredentials: false,
       },
@@ -86,11 +87,11 @@ describe('LambdaUrlProvider.readCurrentState', () => {
     expect(result).toBeUndefined();
   });
 
-  it('omits Cors when AWS returns empty cors object', async () => {
+  it('emits Cors with empty-array placeholders when AWS returns empty cors object', async () => {
     mockSend.mockResolvedValueOnce({
       AuthType: 'AWS_IAM',
       InvokeMode: 'BUFFERED',
-      Cors: {}, // empty — should not surface
+      Cors: {}, // empty — placeholders fill in.
     });
 
     const result = await provider.readCurrentState(
@@ -98,6 +99,11 @@ describe('LambdaUrlProvider.readCurrentState', () => {
       'Logical',
       'AWS::Lambda::Url'
     );
-    expect(result).not.toHaveProperty('Cors');
+    expect(result?.Cors).toEqual({
+      AllowOrigins: [],
+      AllowMethods: [],
+      AllowHeaders: [],
+      ExposeHeaders: [],
+    });
   });
 });

@@ -132,7 +132,7 @@ describe('S3BucketProvider.readCurrentState', () => {
     expect(result).toBeUndefined();
   });
 
-  it('omits per-feature keys when individual GetBucket* calls report "not configured"', async () => {
+  it('emits placeholder per-feature keys when individual GetBucket* calls report "not configured"', async () => {
     // HeadBucket
     mockSend.mockResolvedValueOnce({});
     // GetBucketVersioning — bucket has never had versioning configured
@@ -146,6 +146,16 @@ describe('S3BucketProvider.readCurrentState', () => {
 
     const result = await provider.readCurrentState('my-bucket', 'Logical', 'AWS::S3::Bucket');
 
-    expect(result).toEqual({ BucketName: 'my-bucket' });
+    expect(result).toEqual({
+      BucketName: 'my-bucket',
+      VersioningConfiguration: { Status: 'Suspended' },
+      BucketEncryption: { ServerSideEncryptionConfiguration: [] },
+      PublicAccessBlockConfiguration: {
+        BlockPublicAcls: false,
+        BlockPublicPolicy: false,
+        IgnorePublicAcls: false,
+        RestrictPublicBuckets: false,
+      },
+    });
   });
 });

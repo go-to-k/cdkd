@@ -84,6 +84,8 @@ describe('DynamoDBTableProvider.readCurrentState', () => {
       BillingMode: 'PAY_PER_REQUEST',
       ProvisionedThroughput: { ReadCapacityUnits: 0, WriteCapacityUnits: 0 },
       StreamSpecification: { StreamEnabled: true, StreamViewType: 'NEW_IMAGE' },
+      GlobalSecondaryIndexes: [],
+      LocalSecondaryIndexes: [],
       SSESpecification: {
         SSEEnabled: true,
         KMSMasterKeyId: 'arn:aws:kms:us-east-1:123:key/abc',

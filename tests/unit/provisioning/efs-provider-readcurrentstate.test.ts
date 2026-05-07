@@ -87,10 +87,11 @@ describe('EFSProvider.readCurrentState', () => {
         KmsKeyId: 'arn:aws:kms:us-east-1:1:key/abc',
         LifecyclePolicies: [{ TransitionToIA: 'AFTER_30_DAYS' }],
         BackupPolicy: { Status: 'ENABLED' },
+        FileSystemTags: [],
       });
     });
 
-    it('omits LifecyclePolicies / BackupPolicy when not configured', async () => {
+    it('omits LifecyclePolicies / BackupPolicy when not configured (still emits FileSystemTags placeholder)', async () => {
       mockSend
         .mockResolvedValueOnce({
           FileSystems: [
@@ -105,6 +106,7 @@ describe('EFSProvider.readCurrentState', () => {
       expect(result).toEqual({
         PerformanceMode: 'generalPurpose',
         Encrypted: false,
+        FileSystemTags: [],
       });
     });
 
@@ -137,7 +139,7 @@ describe('EFSProvider.readCurrentState', () => {
       expect(result?.FileSystemTags).toEqual([{ Key: 'Foo', Value: 'Bar' }]);
     });
 
-    it('omits FileSystemTags when DescribeFileSystems returns no user tags', async () => {
+    it('emits empty FileSystemTags placeholder when DescribeFileSystems returns no user tags', async () => {
       mockSend
         .mockResolvedValueOnce({
           FileSystems: [
@@ -152,7 +154,7 @@ describe('EFSProvider.readCurrentState', () => {
         .mockRejectedValueOnce(Object.assign(new Error('PolicyNotFound'), { name: 'PolicyNotFound' }));
 
       const result = await provider.readCurrentState('fs-1', 'L', 'AWS::EFS::FileSystem');
-      expect(result).not.toHaveProperty('FileSystemTags');
+      expect(result?.FileSystemTags).toEqual([]);
     });
   });
 

@@ -475,7 +475,11 @@ export class SNSTopicProvider implements ResourceProvider {
       if (v !== undefined) result[key] = v === 'true';
     }
 
-    // String attributes (pass-through).
+    // String attributes (pass-through). Always emit a placeholder so a
+    // console-side ADD on a topic that didn't carry the attribute at deploy
+    // time surfaces as drift (the comparator's top-level walk is
+    // state-keys-only; a missing key on the deploy-time baseline blinds
+    // detection forever).
     const str: string[] = [
       'DisplayName',
       'KmsMasterKeyId',
@@ -484,8 +488,7 @@ export class SNSTopicProvider implements ResourceProvider {
       'FifoThroughputScope',
     ];
     for (const key of str) {
-      const v = attrs[key];
-      if (v !== undefined && v !== '') result[key] = v;
+      result[key] = attrs[key] ?? '';
     }
 
     // JSON-document attributes — AWS returns a JSON string; cdkd state

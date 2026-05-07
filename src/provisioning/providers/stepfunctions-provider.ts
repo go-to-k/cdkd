@@ -336,15 +336,15 @@ export class StepFunctionsProvider implements ResourceProvider {
         result['Definition'] = resp.definition;
       }
     }
-    if (resp.loggingConfiguration) {
+    {
       const lc: Record<string, unknown> = {};
-      if (resp.loggingConfiguration.level !== undefined) {
+      if (resp.loggingConfiguration?.level !== undefined) {
         lc['Level'] = resp.loggingConfiguration.level;
       }
-      if (resp.loggingConfiguration.includeExecutionData !== undefined) {
+      if (resp.loggingConfiguration?.includeExecutionData !== undefined) {
         lc['IncludeExecutionData'] = resp.loggingConfiguration.includeExecutionData;
       }
-      if (resp.loggingConfiguration.destinations) {
+      if (resp.loggingConfiguration?.destinations) {
         lc['Destinations'] = resp.loggingConfiguration.destinations.map((d) => {
           const inner: Record<string, unknown> = {};
           if (d.cloudWatchLogsLogGroup?.logGroupArn) {
@@ -355,24 +355,22 @@ export class StepFunctionsProvider implements ResourceProvider {
           return inner;
         });
       }
-      if (Object.keys(lc).length > 0) result['LoggingConfiguration'] = lc;
+      result['LoggingConfiguration'] = lc;
     }
-    if (resp.tracingConfiguration?.enabled !== undefined) {
-      result['TracingConfiguration'] = { Enabled: resp.tracingConfiguration.enabled };
-    }
-    if (resp.encryptionConfiguration) {
+    result['TracingConfiguration'] = { Enabled: resp.tracingConfiguration?.enabled ?? false };
+    {
       const ec: Record<string, unknown> = {};
-      if (resp.encryptionConfiguration.type !== undefined) {
+      if (resp.encryptionConfiguration?.type !== undefined) {
         ec['Type'] = resp.encryptionConfiguration.type;
       }
-      if (resp.encryptionConfiguration.kmsKeyId !== undefined) {
+      if (resp.encryptionConfiguration?.kmsKeyId !== undefined) {
         ec['KmsKeyId'] = resp.encryptionConfiguration.kmsKeyId;
       }
-      if (resp.encryptionConfiguration.kmsDataKeyReusePeriodSeconds !== undefined) {
+      if (resp.encryptionConfiguration?.kmsDataKeyReusePeriodSeconds !== undefined) {
         ec['KmsDataKeyReusePeriodSeconds'] =
           resp.encryptionConfiguration.kmsDataKeyReusePeriodSeconds;
       }
-      if (Object.keys(ec).length > 0) result['EncryptionConfiguration'] = ec;
+      result['EncryptionConfiguration'] = ec;
     }
 
     // Tags via ListTagsForResource (state machine ARN is the physicalId).

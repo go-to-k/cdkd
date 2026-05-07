@@ -89,7 +89,7 @@ describe('ECRProvider.readCurrentState', () => {
     });
   });
 
-  it('omits LifecyclePolicy when not configured (LifecyclePolicyNotFoundException)', async () => {
+  it('omits LifecyclePolicy when not configured (LifecyclePolicyNotFoundException) and emits ImageScanning/Encryption placeholders', async () => {
     mockSend
       .mockResolvedValueOnce({
         repositories: [
@@ -109,6 +109,8 @@ describe('ECRProvider.readCurrentState', () => {
     expect(result).toEqual({
       RepositoryName: 'my-repo',
       ImageTagMutability: 'MUTABLE',
+      ImageScanningConfiguration: { ScanOnPush: false },
+      EncryptionConfiguration: { EncryptionType: 'AES256' },
     });
   });
 

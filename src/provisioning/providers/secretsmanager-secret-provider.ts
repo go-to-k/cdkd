@@ -380,18 +380,14 @@ export class SecretsManagerSecretProvider implements ResourceProvider {
       const resp = await this.smClient.send(new DescribeSecretCommand({ SecretId: physicalId }));
       const result: Record<string, unknown> = {};
       if (resp.Name !== undefined) result['Name'] = resp.Name;
-      if (resp.Description !== undefined && resp.Description !== '') {
-        result['Description'] = resp.Description;
-      }
-      if (resp.KmsKeyId !== undefined) result['KmsKeyId'] = resp.KmsKeyId;
-      if (resp.ReplicationStatus && resp.ReplicationStatus.length > 0) {
-        result['ReplicaRegions'] = resp.ReplicationStatus.map((r) => {
-          const out: Record<string, unknown> = {};
-          if (r.Region) out['Region'] = r.Region;
-          if (r.KmsKeyId) out['KmsKeyId'] = r.KmsKeyId;
-          return out;
-        });
-      }
+      result['Description'] = resp.Description ?? '';
+      result['KmsKeyId'] = resp.KmsKeyId ?? '';
+      result['ReplicaRegions'] = (resp.ReplicationStatus ?? []).map((r) => {
+        const out: Record<string, unknown> = {};
+        if (r.Region) out['Region'] = r.Region;
+        if (r.KmsKeyId) out['KmsKeyId'] = r.KmsKeyId;
+        return out;
+      });
       // Tags from the same DescribeSecret response.
       const tags = normalizeAwsTagsToCfn(resp.Tags);
       result['Tags'] = tags;

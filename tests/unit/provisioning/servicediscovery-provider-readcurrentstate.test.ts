@@ -102,6 +102,7 @@ describe('ServiceDiscoveryProvider.readCurrentState', () => {
       expect(result).toEqual({
         Name: 'mysvc',
         NamespaceId: 'ns-1',
+        Description: '',
         Type: 'DNS',
         DnsConfig: { DnsRecords: [{ Type: 'A', TTL: 60 }] },
       });

@@ -65,6 +65,8 @@ describe('LambdaEventSourceMappingProvider.readCurrentState', () => {
       MaximumBatchingWindowInSeconds: 5,
       MaximumRetryAttempts: 3,
       Enabled: true,
+      FunctionResponseTypes: [],
+      SourceAccessConfigurations: [],
     });
   });
 

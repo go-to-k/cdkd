@@ -107,6 +107,7 @@ describe('GlueProvider.readCurrentState', () => {
         DatabaseName: 'mydb',
         TableInput: {
           Name: 'mytbl',
+          Description: '',
           Owner: 'me',
           Retention: 0,
           TableType: 'EXTERNAL_TABLE',
