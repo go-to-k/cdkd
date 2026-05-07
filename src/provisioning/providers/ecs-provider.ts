@@ -1068,7 +1068,7 @@ export class ECSProvider implements ResourceProvider {
       }));
     }
     const tags = normalizeAwsTagsToCfn(c.tags);
-    if (tags.length > 0) result['Tags'] = tags;
+    result['Tags'] = tags;
     return result;
   }
 
@@ -1154,7 +1154,7 @@ export class ECSProvider implements ResourceProvider {
       result['ServiceRegistries'] = s.serviceRegistries;
     }
     const tags = normalizeAwsTagsToCfn(s.tags);
-    if (tags.length > 0) result['Tags'] = tags;
+    result['Tags'] = tags;
     return result;
   }
 
@@ -1216,7 +1216,7 @@ export class ECSProvider implements ResourceProvider {
       result['ContainerDefinitions'] = td.containerDefinitions;
     }
     const tags = normalizeAwsTagsToCfn(resp.tags);
-    if (tags.length > 0) result['Tags'] = tags;
+    result['Tags'] = tags;
     return result;
   }
 

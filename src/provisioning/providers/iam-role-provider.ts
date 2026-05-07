@@ -853,7 +853,7 @@ export class IAMRoleProvider implements ResourceProvider {
         marker = tagsResp.Marker;
       }
       const tags = normalizeAwsTagsToCfn(collected);
-      if (tags.length > 0) result['Tags'] = tags;
+      result['Tags'] = tags;
     } catch (err) {
       if (!(err instanceof NoSuchEntityException)) throw err;
     }

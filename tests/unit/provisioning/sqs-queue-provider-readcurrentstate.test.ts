@@ -94,6 +94,7 @@ describe('SQSQueueProvider.readCurrentState', () => {
       DeduplicationScope: 'messageGroup',
       FifoThroughputLimit: 'perMessageGroupId',
       RedrivePolicy: redrive,
+      Tags: [],
     });
   });
 
@@ -121,6 +122,6 @@ describe('SQSQueueProvider.readCurrentState', () => {
     mockSend.mockResolvedValueOnce({ Tags: { 'aws:cdk:path': 'MyStack/MyQueue/Resource' } });
 
     const result = await provider.readCurrentState(QUEUE_URL, 'Logical', 'AWS::SQS::Queue');
-    expect(result).not.toHaveProperty('Tags');
+    expect(result?.Tags).toEqual([]);
   });
 });

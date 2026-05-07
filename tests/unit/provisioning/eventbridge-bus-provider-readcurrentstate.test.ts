@@ -63,6 +63,7 @@ describe('EventBridgeBusProvider.readCurrentState', () => {
       KmsKeyIdentifier: 'alias/aws/events',
       DeadLetterConfig: { Arn: 'arn:aws:sqs:us-east-1:123:dlq' },
       Policy: { Version: '2012-10-17', Statement: [] },
+      Tags: [],
     });
   });
 
@@ -102,6 +103,6 @@ describe('EventBridgeBusProvider.readCurrentState', () => {
     });
 
     const result = await provider.readCurrentState('my-bus', 'BusLogical', 'AWS::Events::EventBus');
-    expect(result).not.toHaveProperty('Tags');
+    expect(result?.Tags).toEqual([]);
   });
 });

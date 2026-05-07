@@ -73,6 +73,7 @@ describe('KinesisStreamProvider.readCurrentState', () => {
       ShardCount: 2,
       RetentionPeriodHours: 48,
       StreamEncryption: { EncryptionType: 'KMS', KeyId: 'arn:aws:kms:us-east-1:1:key/abc' },
+      Tags: [],
     });
   });
 
@@ -95,6 +96,7 @@ describe('KinesisStreamProvider.readCurrentState', () => {
       Name: 'mystream',
       StreamModeDetails: { StreamMode: 'ON_DEMAND' },
       RetentionPeriodHours: 24,
+      Tags: [],
     });
   });
 
@@ -128,6 +130,6 @@ describe('KinesisStreamProvider.readCurrentState', () => {
       });
 
     const result = await provider.readCurrentState('mystream', 'L', 'AWS::Kinesis::Stream');
-    expect(result).not.toHaveProperty('Tags');
+    expect(result?.Tags).toEqual([]);
   });
 });

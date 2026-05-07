@@ -1005,7 +1005,7 @@ export class LambdaFunctionProvider implements ResourceProvider {
       // `create()`'s behavior of only sending Tags when the template
       // carries them).
       const tags = normalizeAwsTagsToCfn(resp.Tags);
-      if (tags.length > 0) result['Tags'] = tags;
+      result['Tags'] = tags;
 
       return result;
     } catch (err) {

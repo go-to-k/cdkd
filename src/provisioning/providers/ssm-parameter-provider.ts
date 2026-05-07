@@ -370,7 +370,7 @@ export class SSMParameterProvider implements ResourceProvider {
         })
       );
       const tags = normalizeAwsTagsToCfn(tagsResp.TagList);
-      if (tags.length > 0) result['Tags'] = tags;
+      result['Tags'] = tags;
     } catch {
       // Ignore — tag drift is best-effort.
     }

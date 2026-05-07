@@ -394,7 +394,7 @@ export class SecretsManagerSecretProvider implements ResourceProvider {
       }
       // Tags from the same DescribeSecret response.
       const tags = normalizeAwsTagsToCfn(resp.Tags);
-      if (tags.length > 0) result['Tags'] = tags;
+      result['Tags'] = tags;
       return result;
     } catch (err) {
       if (err instanceof ResourceNotFoundException) return undefined;

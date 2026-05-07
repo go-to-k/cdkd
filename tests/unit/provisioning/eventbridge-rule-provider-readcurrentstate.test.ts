@@ -87,6 +87,7 @@ describe('EventBridgeRuleProvider.readCurrentState', () => {
           Arn: 'arn:aws:lambda:us-east-1:123:function:fn',
         },
       ],
+      Tags: [],
     });
   });
 
@@ -110,6 +111,7 @@ describe('EventBridgeRuleProvider.readCurrentState', () => {
       Name: 'my-rule',
       EventBusName: 'my-bus',
       State: 'ENABLED',
+      Tags: [],
     });
   });
 
@@ -161,6 +163,6 @@ describe('EventBridgeRuleProvider.readCurrentState', () => {
       'AWS::Events::Rule'
     );
 
-    expect(result).not.toHaveProperty('Tags');
+    expect(result?.Tags).toEqual([]);
   });
 });

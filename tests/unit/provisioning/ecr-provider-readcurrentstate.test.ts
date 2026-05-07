@@ -85,6 +85,7 @@ describe('ECRProvider.readCurrentState', () => {
         KmsKey: 'arn:aws:kms:us-east-1:123:key/abcd',
       },
       LifecyclePolicy: { LifecyclePolicyText: '{"rules":[]}' },
+      Tags: [],
     });
   });
 
@@ -163,6 +164,6 @@ describe('ECRProvider.readCurrentState', () => {
       });
 
     const result = await provider.readCurrentState('my-repo', 'RepoLogical', 'AWS::ECR::Repository');
-    expect(result).not.toHaveProperty('Tags');
+    expect(result?.Tags).toEqual([]);
   });
 });

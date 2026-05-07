@@ -542,7 +542,7 @@ export class CodeBuildProvider implements ResourceProvider {
     // Tags from the same BatchGetProjects response (CodeBuild uses lower-case
     // {key, value} shape).
     const tags = normalizeAwsTagsToCfn(project.tags);
-    if (tags.length > 0) result['Tags'] = tags;
+    result['Tags'] = tags;
 
     return result;
   }

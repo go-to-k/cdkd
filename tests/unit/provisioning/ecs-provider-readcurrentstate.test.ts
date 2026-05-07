@@ -69,6 +69,7 @@ describe('ECSProvider.readCurrentState', () => {
       ClusterName: 'my-cluster',
       CapacityProviders: ['FARGATE'],
       ClusterSettings: [{ Name: 'containerInsights', Value: 'enabled' }],
+      Tags: [],
     });
   });
 
@@ -100,6 +101,7 @@ describe('ECSProvider.readCurrentState', () => {
       DesiredCount: 2,
       LaunchType: 'FARGATE',
       EnableExecuteCommand: true,
+      Tags: [],
     });
   });
 
@@ -131,6 +133,7 @@ describe('ECSProvider.readCurrentState', () => {
       RequiresCompatibilities: ['FARGATE'],
       ExecutionRoleArn: 'arn:aws:iam::123:role/exec',
       EphemeralStorage: { SizeInGiB: 21 },
+      Tags: [],
     });
   });
 
@@ -180,6 +183,6 @@ describe('ECSProvider.readCurrentState', () => {
       'AWS::ECS::Cluster'
     );
 
-    expect(result).not.toHaveProperty('Tags');
+    expect(result?.Tags).toEqual([]);
   });
 });

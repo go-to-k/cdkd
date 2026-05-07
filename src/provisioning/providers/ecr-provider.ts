@@ -444,7 +444,7 @@ export class ECRProvider implements ResourceProvider {
           new ListTagsForResourceCommand({ resourceArn: r.repositoryArn })
         );
         const tags = normalizeAwsTagsToCfn(tagsResp.tags);
-        if (tags.length > 0) result['Tags'] = tags;
+        result['Tags'] = tags;
       } catch (err) {
         if (!(err instanceof RepositoryNotFoundException)) throw err;
       }

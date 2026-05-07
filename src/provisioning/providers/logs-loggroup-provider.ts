@@ -387,7 +387,7 @@ export class LogsLogGroupProvider implements ResourceProvider {
             new ListTagsForResourceCommand({ resourceArn: arnForTags })
           );
           const tags = normalizeAwsTagsToCfn(tagsResp.tags);
-          if (tags.length > 0) result['Tags'] = tags;
+          result['Tags'] = tags;
         } catch (err) {
           if (err instanceof ResourceNotFoundException) return undefined;
           throw err;

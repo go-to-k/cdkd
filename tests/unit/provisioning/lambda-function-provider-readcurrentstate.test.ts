@@ -98,6 +98,7 @@ describe('LambdaFunctionProvider.readCurrentState', () => {
         SecurityGroupIds: ['sg-1'],
         Ipv6AllowedForDualStack: false,
       },
+      Tags: [],
     });
   });
 
@@ -160,6 +161,6 @@ describe('LambdaFunctionProvider.readCurrentState', () => {
 
     const result = await provider.readCurrentState('fn', 'Logical', 'AWS::Lambda::Function');
 
-    expect(result).not.toHaveProperty('Tags');
+    expect(result?.Tags).toEqual([]);
   });
 });

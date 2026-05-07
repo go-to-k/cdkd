@@ -719,7 +719,7 @@ export class ElastiCacheProvider implements ResourceProvider {
         new ListTagsForResourceCommand({ ResourceName: arn })
       );
       const tags = normalizeAwsTagsToCfn(tagsResp.TagList);
-      if (tags.length > 0) result['Tags'] = tags;
+      result['Tags'] = tags;
     } catch (err) {
       this.logger.debug(
         `ElastiCache ListTagsForResource(${arn}) failed: ${err instanceof Error ? err.message : String(err)}`

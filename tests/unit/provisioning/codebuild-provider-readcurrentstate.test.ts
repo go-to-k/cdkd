@@ -86,6 +86,7 @@ describe('CodeBuildProvider.readCurrentState', () => {
         PrivilegedMode: false,
         EnvironmentVariables: [{ Name: 'FOO', Value: 'BAR', Type: 'PLAINTEXT' }],
       },
+      Tags: [],
     });
   });
 
@@ -123,6 +124,6 @@ describe('CodeBuildProvider.readCurrentState', () => {
     });
 
     const result = await provider.readCurrentState('myproj', 'L', 'AWS::CodeBuild::Project');
-    expect(result).not.toHaveProperty('Tags');
+    expect(result?.Tags).toEqual([]);
   });
 });

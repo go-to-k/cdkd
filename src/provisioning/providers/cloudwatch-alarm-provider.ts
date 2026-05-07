@@ -382,7 +382,7 @@ export class CloudWatchAlarmProvider implements ResourceProvider {
           new ListTagsForResourceCommand({ ResourceARN: alarm.AlarmArn })
         );
         const tags = normalizeAwsTagsToCfn(tagsResp.Tags);
-        if (tags.length > 0) result['Tags'] = tags;
+        result['Tags'] = tags;
       } catch (err) {
         this.logger.debug(
           `CloudWatch ListTagsForResource(${alarm.AlarmArn}) failed: ${err instanceof Error ? err.message : String(err)}`

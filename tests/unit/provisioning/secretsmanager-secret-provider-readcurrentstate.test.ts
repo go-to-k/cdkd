@@ -64,6 +64,7 @@ describe('SecretsManagerSecretProvider.readCurrentState', () => {
       Description: 'a secret',
       KmsKeyId: 'arn:aws:kms:us-east-1:123:key/abcd',
       ReplicaRegions: [{ Region: 'us-west-2', KmsKeyId: 'alias/aws/secretsmanager' }],
+      Tags: [],
     });
   });
 
@@ -119,6 +120,6 @@ describe('SecretsManagerSecretProvider.readCurrentState', () => {
       'AWS::SecretsManager::Secret'
     );
 
-    expect(result).not.toHaveProperty('Tags');
+    expect(result?.Tags).toEqual([]);
   });
 });

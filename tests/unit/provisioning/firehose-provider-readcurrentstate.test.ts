@@ -80,6 +80,7 @@ describe('FirehoseProvider.readCurrentState', () => {
         KinesisStreamARN: 'arn:aws:kinesis:us-east-1:1:stream/src',
         RoleARN: 'arn:aws:iam::1:role/r',
       },
+      Tags: [],
     });
   });
 
@@ -125,6 +126,6 @@ describe('FirehoseProvider.readCurrentState', () => {
       'L',
       'AWS::KinesisFirehose::DeliveryStream'
     );
-    expect(result).not.toHaveProperty('Tags');
+    expect(result?.Tags).toEqual([]);
   });
 });

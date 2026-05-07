@@ -87,6 +87,7 @@ describe('CloudTrailProvider.readCurrentState', () => {
       KMSKeyId: 'arn:aws:kms:us-east-1:1:key/abc',
       IsLogging: true,
       EventSelectors: [{ ReadWriteType: 'All', IncludeManagementEvents: true }],
+      Tags: [],
     });
   });
 
@@ -154,6 +155,6 @@ describe('CloudTrailProvider.readCurrentState', () => {
       });
 
     const result = await provider.readCurrentState('mytrail', 'L', 'AWS::CloudTrail::Trail');
-    expect(result).not.toHaveProperty('Tags');
+    expect(result?.Tags).toEqual([]);
   });
 });

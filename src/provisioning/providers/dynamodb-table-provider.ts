@@ -458,7 +458,7 @@ export class DynamoDBTableProvider implements ResourceProvider {
             new ListTagsOfResourceCommand({ ResourceArn: table.TableArn })
           );
           const tags = normalizeAwsTagsToCfn(tagsResp.Tags);
-          if (tags.length > 0) result['Tags'] = tags;
+          result['Tags'] = tags;
         } catch (err) {
           // Tag fetch failures shouldn't tank the whole drift read; rethrow
           // only on hard "table gone" semantics.

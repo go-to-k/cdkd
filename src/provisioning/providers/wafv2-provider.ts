@@ -389,7 +389,7 @@ export class WAFv2WebACLProvider implements ResourceProvider {
         new ListTagsForResourceCommand({ ResourceARN: physicalId })
       );
       const tags = normalizeAwsTagsToCfn(tagsResp.TagInfoForResource?.TagList);
-      if (tags.length > 0) result['Tags'] = tags;
+      result['Tags'] = tags;
     } catch (err) {
       this.logger.debug(
         `WAFv2 ListTagsForResource(${physicalId}) failed: ${err instanceof Error ? err.message : String(err)}`

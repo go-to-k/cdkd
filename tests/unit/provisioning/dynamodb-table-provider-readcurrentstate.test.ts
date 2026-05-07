@@ -91,6 +91,7 @@ describe('DynamoDBTableProvider.readCurrentState', () => {
       },
       DeletionProtectionEnabled: true,
       TableClass: 'STANDARD',
+      Tags: [],
     });
   });
 
@@ -135,6 +136,6 @@ describe('DynamoDBTableProvider.readCurrentState', () => {
 
     const result = await provider.readCurrentState('my-table', 'Logical', 'AWS::DynamoDB::Table');
 
-    expect(result).not.toHaveProperty('Tags');
+    expect(result?.Tags).toEqual([]);
   });
 });

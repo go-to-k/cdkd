@@ -92,6 +92,7 @@ describe('StepFunctionsProvider.readCurrentState', () => {
       },
       TracingConfiguration: { Enabled: true },
       EncryptionConfiguration: { Type: 'AWS_OWNED_KEY' },
+      Tags: [],
     });
   });
 
@@ -139,6 +140,6 @@ describe('StepFunctionsProvider.readCurrentState', () => {
       'AWS::StepFunctions::StateMachine'
     );
 
-    expect(result).not.toHaveProperty('Tags');
+    expect(result?.Tags).toEqual([]);
   });
 });

@@ -83,6 +83,7 @@ describe('ELBv2Provider.readCurrentState', () => {
         IpAddressType: 'ipv4',
         Subnets: ['subnet-a', 'subnet-b'],
         SecurityGroups: ['sg-1'],
+        Tags: [],
       });
     });
 
@@ -147,6 +148,7 @@ describe('ELBv2Provider.readCurrentState', () => {
         HealthyThresholdCount: 2,
         UnhealthyThresholdCount: 3,
         Matcher: { HttpCode: '200' },
+        Tags: [],
       });
     });
   });
@@ -183,6 +185,7 @@ describe('ELBv2Provider.readCurrentState', () => {
         SslPolicy: 'ELBSecurityPolicy-2016-08',
         Certificates: [{ CertificateArn: 'arn:cert', IsDefault: true }],
         DefaultActions: [{ Type: 'forward', TargetGroupArn: 'arn:tg' }],
+        Tags: [],
       });
     });
 
@@ -243,6 +246,6 @@ describe('ELBv2Provider.readCurrentState', () => {
       'L',
       'AWS::ElasticLoadBalancingV2::LoadBalancer'
     );
-    expect(result).not.toHaveProperty('Tags');
+    expect(result?.Tags).toEqual([]);
   });
 });

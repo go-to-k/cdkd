@@ -80,6 +80,7 @@ describe('SNSTopicProvider.readCurrentState', () => {
       SignatureVersion: '2',
       FifoThroughputScope: 'Topic',
       ArchivePolicy: archivePolicy,
+      Tags: [],
     });
   });
 
@@ -118,6 +119,6 @@ describe('SNSTopicProvider.readCurrentState', () => {
     });
 
     const result = await provider.readCurrentState(TOPIC_ARN, 'Logical', 'AWS::SNS::Topic');
-    expect(result).not.toHaveProperty('Tags');
+    expect(result?.Tags).toEqual([]);
   });
 });

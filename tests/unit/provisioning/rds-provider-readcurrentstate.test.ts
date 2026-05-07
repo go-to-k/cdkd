@@ -201,6 +201,6 @@ describe('RDSProvider.readCurrentState', () => {
       'AWS::RDS::DBInstance'
     );
 
-    expect(result).not.toHaveProperty('Tags');
+    expect(result?.Tags).toEqual([]);
   });
 });

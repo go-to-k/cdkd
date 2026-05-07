@@ -195,6 +195,6 @@ describe('ElastiCacheProvider.readCurrentState', () => {
       'AWS::ElastiCache::CacheCluster'
     );
 
-    expect(result).not.toHaveProperty('Tags');
+    expect(result?.Tags).toEqual([]);
   });
 });

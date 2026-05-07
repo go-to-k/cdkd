@@ -131,6 +131,6 @@ describe('CloudWatchAlarmProvider.readCurrentState', () => {
       });
 
     const result = await provider.readCurrentState('myalarm', 'L', 'AWS::CloudWatch::Alarm');
-    expect(result).not.toHaveProperty('Tags');
+    expect(result?.Tags).toEqual([]);
   });
 });

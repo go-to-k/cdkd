@@ -87,6 +87,7 @@ describe('WAFv2WebACLProvider.readCurrentState', () => {
         MetricName: 'm',
       },
       TokenDomains: ['example.com'],
+      Tags: [],
     });
   });
 
@@ -143,6 +144,6 @@ describe('WAFv2WebACLProvider.readCurrentState', () => {
       });
 
     const result = await provider.readCurrentState(ARN, 'L', 'AWS::WAFv2::WebACL');
-    expect(result).not.toHaveProperty('Tags');
+    expect(result?.Tags).toEqual([]);
   });
 });

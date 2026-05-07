@@ -507,7 +507,7 @@ export class SNSTopicProvider implements ResourceProvider {
         new ListTagsForResourceCommand({ ResourceArn: physicalId })
       );
       const tags = normalizeAwsTagsToCfn(tagsResp.Tags);
-      if (tags.length > 0) result['Tags'] = tags;
+      result['Tags'] = tags;
     } catch (err) {
       if (err instanceof NotFoundException) return undefined;
       throw err;

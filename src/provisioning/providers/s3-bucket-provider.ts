@@ -1311,7 +1311,7 @@ export class S3BucketProvider implements ResourceProvider {
     try {
       const resp = await this.s3Client.send(new GetBucketTaggingCommand({ Bucket: physicalId }));
       const tags = normalizeAwsTagsToCfn(resp.TagSet);
-      if (tags.length > 0) result['Tags'] = tags;
+      result['Tags'] = tags;
     } catch (err) {
       const e = err as { name?: string };
       if (e.name !== 'NoSuchTagSet') {

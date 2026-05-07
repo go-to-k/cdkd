@@ -84,6 +84,7 @@ describe('AppSyncProvider.readCurrentState', () => {
           FieldLogLevel: 'ALL',
           ExcludeVerboseContent: false,
         },
+        Tags: [],
       });
     });
 
@@ -112,7 +113,7 @@ describe('AppSyncProvider.readCurrentState', () => {
       });
 
       const result = await provider.readCurrentState('api-1', 'L', 'AWS::AppSync::GraphQLApi');
-      expect(result).not.toHaveProperty('Tags');
+      expect(result?.Tags).toEqual([]);
     });
 
     it('returns undefined when API is gone', async () => {

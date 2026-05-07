@@ -605,7 +605,7 @@ export class KMSProvider implements ResourceProvider {
           new ListResourceTagsCommand({ KeyId: md.KeyId })
         );
         const tags = normalizeAwsTagsToCfn(tagsResp.Tags);
-        if (tags.length > 0) result['Tags'] = tags;
+        result['Tags'] = tags;
       } catch (err) {
         if (err instanceof NotFoundException) return undefined;
         // Permission errors etc — leave key absent.

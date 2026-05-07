@@ -71,6 +71,7 @@ describe('ApiGatewayV2Provider.readCurrentState', () => {
       ProtocolType: 'HTTP',
       Description: 'a fancy API',
       CorsConfiguration: { AllowOrigins: ['*'] },
+      Tags: [],
     });
   });
 
@@ -233,6 +234,6 @@ describe('ApiGatewayV2Provider.readCurrentState', () => {
       'AWS::ApiGatewayV2::Api'
     );
 
-    expect(result).not.toHaveProperty('Tags');
+    expect(result?.Tags).toEqual([]);
   });
 });

@@ -74,6 +74,7 @@ describe('LogsLogGroupProvider.readCurrentState', () => {
       KmsKeyId: 'arn:aws:kms:us-east-1:123:key/abc',
       RetentionInDays: 30,
       LogGroupClass: 'STANDARD',
+      Tags: [],
     });
   });
 
@@ -116,7 +117,7 @@ describe('LogsLogGroupProvider.readCurrentState', () => {
       'Logical',
       'AWS::Logs::LogGroup'
     );
-    expect(result).not.toHaveProperty('Tags');
+    expect(result?.Tags).toEqual([]);
   });
 
   it('returns undefined when log group does not exist (no exact match)', async () => {

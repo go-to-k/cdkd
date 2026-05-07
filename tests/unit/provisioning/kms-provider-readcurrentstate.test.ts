@@ -74,6 +74,7 @@ describe('KMSProvider.readCurrentState', () => {
       Enabled: true,
       MultiRegion: false,
       Origin: 'AWS_KMS',
+      Tags: [],
     });
   });
 
@@ -148,6 +149,6 @@ describe('KMSProvider.readCurrentState', () => {
 
     const result = await provider.readCurrentState('abcd-1234', 'KeyLogical', 'AWS::KMS::Key');
 
-    expect(result).not.toHaveProperty('Tags');
+    expect(result?.Tags).toEqual([]);
   });
 });

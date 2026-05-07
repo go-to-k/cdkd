@@ -780,7 +780,7 @@ export class ApiGatewayV2Provider implements ResourceProvider {
       if (resp.CorsConfiguration) result['CorsConfiguration'] = resp.CorsConfiguration;
       // Tags from the same GetApi response (returned as a tag-name → value map).
       const tags = normalizeAwsTagsToCfn(resp.Tags);
-      if (tags.length > 0) result['Tags'] = tags;
+      result['Tags'] = tags;
       return result;
     } catch (err) {
       if (err instanceof NotFoundException) return undefined;

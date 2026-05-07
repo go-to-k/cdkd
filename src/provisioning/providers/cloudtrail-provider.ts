@@ -435,7 +435,7 @@ export class CloudTrailProvider implements ResourceProvider {
           new ListTagsCommand({ ResourceIdList: [trail.TrailARN] })
         );
         const tags = normalizeAwsTagsToCfn(tagsResp.ResourceTagList?.[0]?.TagsList);
-        if (tags.length > 0) result['Tags'] = tags;
+        result['Tags'] = tags;
       } catch (err) {
         this.logger.debug(
           `CloudTrail ListTags(${trail.TrailARN}) failed: ${err instanceof Error ? err.message : String(err)}`

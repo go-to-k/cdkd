@@ -78,6 +78,7 @@ describe('SSMParameterProvider.readCurrentState', () => {
       Description: 'a parameter',
       AllowedPattern: '^[a-z]+$',
       Tier: 'Standard',
+      Tags: [],
     });
   });
 
@@ -109,6 +110,7 @@ describe('SSMParameterProvider.readCurrentState', () => {
       Name: '/foo',
       Type: 'String',
       Value: 'bar',
+      Tags: [],
     });
   });
 
@@ -140,6 +142,6 @@ describe('SSMParameterProvider.readCurrentState', () => {
       });
 
     const result = await provider.readCurrentState('/foo', 'ParamLogical', 'AWS::SSM::Parameter');
-    expect(result).not.toHaveProperty('Tags');
+    expect(result?.Tags).toEqual([]);
   });
 });

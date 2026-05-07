@@ -558,7 +558,7 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
         new ListTagsForResourceCommand({ ResourceARN: arn })
       );
       const tags = normalizeAwsTagsToCfn(tagsResp.Tags);
-      if (tags.length > 0) result['Tags'] = tags;
+      result['Tags'] = tags;
     } catch (err) {
       this.logger.debug(
         `ServiceDiscovery ListTagsForResource(${arn}) failed: ${err instanceof Error ? err.message : String(err)}`

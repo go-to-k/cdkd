@@ -436,7 +436,7 @@ export class KinesisStreamProvider implements ResourceProvider {
         new ListTagsForStreamCommand({ StreamName: physicalId })
       );
       const tags = normalizeAwsTagsToCfn(tagsResp.Tags);
-      if (tags.length > 0) result['Tags'] = tags;
+      result['Tags'] = tags;
     } catch (err) {
       if (err instanceof ResourceNotFoundException) return undefined;
       this.logger.debug(

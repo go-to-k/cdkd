@@ -164,6 +164,6 @@ describe('ServiceDiscoveryProvider.readCurrentState', () => {
       'L',
       'AWS::ServiceDiscovery::PrivateDnsNamespace'
     );
-    expect(result).not.toHaveProperty('Tags');
+    expect(result?.Tags).toEqual([]);
   });
 });

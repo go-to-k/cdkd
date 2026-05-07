@@ -836,7 +836,7 @@ export class ELBv2Provider implements ResourceProvider {
       const resp = await this.getClient().send(new DescribeTagsCommand({ ResourceArns: [arn] }));
       const tagDesc = resp.TagDescriptions?.[0];
       const tags = normalizeAwsTagsToCfn(tagDesc?.Tags);
-      if (tags.length > 0) result['Tags'] = tags;
+      result['Tags'] = tags;
     } catch (err) {
       this.logger.debug(
         `ELBv2 DescribeTags(${arn}) failed: ${err instanceof Error ? err.message : String(err)}`

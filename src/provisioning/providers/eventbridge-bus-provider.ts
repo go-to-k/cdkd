@@ -385,7 +385,7 @@ export class EventBridgeBusProvider implements ResourceProvider {
             new ListTagsForResourceCommand({ ResourceARN: resp.Arn })
           );
           const tags = normalizeAwsTagsToCfn(tagsResp.Tags);
-          if (tags.length > 0) result['Tags'] = tags;
+          result['Tags'] = tags;
         } catch (err) {
           if (err instanceof ResourceNotFoundException) return undefined;
           throw err;

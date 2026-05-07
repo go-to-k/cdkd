@@ -788,7 +788,7 @@ export class AppSyncProvider implements ResourceProvider {
       if (Object.keys(log).length > 0) result['LogConfig'] = log;
     }
     const tags = normalizeAwsTagsToCfn(api.tags);
-    if (tags.length > 0) result['Tags'] = tags;
+    result['Tags'] = tags;
     return result;
   }
 

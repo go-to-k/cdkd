@@ -97,6 +97,7 @@ describe('IAMRoleProvider.readCurrentState', () => {
         'arn:aws:iam::aws:policy/AmazonS3ReadOnlyAccess',
         'arn:aws:iam::aws:policy/AWSLambdaBasicExecutionRole',
       ],
+      Tags: [],
     });
   });
 
@@ -168,6 +169,6 @@ describe('IAMRoleProvider.readCurrentState', () => {
     });
 
     const result = await provider.readCurrentState('role', 'Logical', 'AWS::IAM::Role');
-    expect(result).not.toHaveProperty('Tags');
+    expect(result?.Tags).toEqual([]);
   });
 });
