@@ -125,7 +125,11 @@ describe('LambdaFunctionProvider.readCurrentState', () => {
 
     const result = await provider.readCurrentState('fn', 'Logical', 'AWS::Lambda::Function');
 
-    expect(result?.VpcConfig).toEqual({ SubnetIds: [], SecurityGroupIds: [] });
+    expect(result?.VpcConfig).toEqual({
+      SubnetIds: [],
+      SecurityGroupIds: [],
+      Ipv6AllowedForDualStack: false,
+    });
   });
 
   it('surfaces Tags from GetFunction with aws:* prefixed entries filtered out', async () => {
@@ -211,7 +215,11 @@ describe('LambdaFunctionProvider.readCurrentState', () => {
     expect(result?.Layers).toEqual([]);
     expect(result?.Architectures).toEqual([]);
     expect(result?.TracingConfig).toEqual({ Mode: 'PassThrough' });
-    expect(result?.VpcConfig).toEqual({ SubnetIds: [], SecurityGroupIds: [] });
+    expect(result?.VpcConfig).toEqual({
+      SubnetIds: [],
+      SecurityGroupIds: [],
+      Ipv6AllowedForDualStack: false,
+    });
     expect(result?.Tags).toEqual([]);
   });
 });

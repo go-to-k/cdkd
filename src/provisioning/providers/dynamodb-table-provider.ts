@@ -5,6 +5,8 @@ import {
   DescribeTableCommand,
   ListTablesCommand,
   ListTagsOfResourceCommand,
+  TagResourceCommand,
+  UntagResourceCommand,
   ResourceNotFoundException,
   type CreateTableCommandInput,
   type KeySchemaElement,
@@ -214,18 +216,29 @@ export class DynamoDBTableProvider implements ResourceProvider {
     logicalId: string,
     physicalId: string,
     resourceType: string,
-    _properties: Record<string, unknown>,
-    _previousProperties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    previousProperties: Record<string, unknown>
   ): Promise<ResourceUpdateResult> {
     this.logger.debug(`Updating DynamoDB table ${logicalId}: ${physicalId}`);
 
     try {
-      // Get current table description for attributes
+      // Get current table description for attributes (also gives us the
+      // table ARN we need for tag mutations).
       const response = await this.dynamoDBClient.send(
         new DescribeTableCommand({ TableName: physicalId })
       );
 
       const table = response.Table;
+
+      // Apply tag diff if changed. DynamoDB's TagResource takes
+      // [{ Key, Value }] arrays; UntagResource takes a TagKeys list.
+      if (table?.TableArn) {
+        await this.applyTagDiff(
+          table.TableArn,
+          previousProperties['Tags'] as Array<{ Key?: string; Value?: string }> | undefined,
+          properties['Tags'] as Array<{ Key?: string; Value?: string }> | undefined
+        );
+      }
 
       return {
         physicalId,
@@ -285,6 +298,52 @@ export class DynamoDBTableProvider implements ResourceProvider {
         physicalId,
         cause
       );
+    }
+  }
+
+  /**
+   * Apply a diff between old and new CFn-shape Tags arrays via DynamoDB's
+   * `TagResource` / `UntagResource` APIs. Both take the table ARN as
+   * `ResourceArn`.
+   */
+  private async applyTagDiff(
+    tableArn: string,
+    oldTagsRaw: Array<{ Key?: string; Value?: string }> | undefined,
+    newTagsRaw: Array<{ Key?: string; Value?: string }> | undefined
+  ): Promise<void> {
+    const toMap = (
+      tags: Array<{ Key?: string; Value?: string }> | undefined
+    ): Map<string, string> => {
+      const m = new Map<string, string>();
+      for (const t of tags ?? []) {
+        if (t.Key !== undefined && t.Value !== undefined) m.set(t.Key, t.Value);
+      }
+      return m;
+    };
+
+    const oldMap = toMap(oldTagsRaw);
+    const newMap = toMap(newTagsRaw);
+
+    const tagsToAdd: Array<{ Key: string; Value: string }> = [];
+    for (const [k, v] of newMap) {
+      if (oldMap.get(k) !== v) tagsToAdd.push({ Key: k, Value: v });
+    }
+    const tagsToRemove: string[] = [];
+    for (const k of oldMap.keys()) {
+      if (!newMap.has(k)) tagsToRemove.push(k);
+    }
+
+    if (tagsToRemove.length > 0) {
+      await this.dynamoDBClient.send(
+        new UntagResourceCommand({ ResourceArn: tableArn, TagKeys: tagsToRemove })
+      );
+      this.logger.debug(`Removed ${tagsToRemove.length} tag(s) from DynamoDB table ${tableArn}`);
+    }
+    if (tagsToAdd.length > 0) {
+      await this.dynamoDBClient.send(
+        new TagResourceCommand({ ResourceArn: tableArn, Tags: tagsToAdd })
+      );
+      this.logger.debug(`Added/updated ${tagsToAdd.length} tag(s) on DynamoDB table ${tableArn}`);
     }
   }
 

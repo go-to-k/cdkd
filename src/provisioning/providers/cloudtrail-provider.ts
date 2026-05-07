@@ -12,6 +12,8 @@ import {
   GetEventSelectorsCommand,
   ListTrailsCommand,
   ListTagsCommand,
+  AddTagsCommand,
+  RemoveTagsCommand,
   TrailNotFoundException,
   type EventSelector,
   type InsightSelector,
@@ -263,6 +265,16 @@ export class CloudTrailProvider implements ResourceProvider {
         }
       }
 
+      // Apply tag diff. CloudTrail's AddTags / RemoveTags take a `ResourceId`
+      // (the trail ARN) and `TagsList` of full {Key, Value} objects.
+      // RemoveTags requires the full tag objects (not just keys), per the
+      // CloudTrail SDK contract.
+      await this.applyTagDiff(
+        physicalId,
+        previousProperties['Tags'] as Array<{ Key?: string; Value?: string }> | undefined,
+        properties['Tags'] as Array<{ Key?: string; Value?: string }> | undefined
+      );
+
       this.logger.debug(`Successfully updated CloudTrail Trail ${logicalId}`);
 
       return { physicalId, wasReplaced: false };
@@ -328,6 +340,53 @@ export class CloudTrailProvider implements ResourceProvider {
   ): Promise<unknown> {
     // Arn is stored in attributes during create
     return Promise.resolve(attributeName);
+  }
+
+  /**
+   * Apply a diff between old and new CFn-shape Tags arrays via CloudTrail's
+   * `AddTags` / `RemoveTags` APIs. Note: CloudTrail's `RemoveTags` takes
+   * full `{Key, Value}` objects in `TagsList` (NOT just keys), unlike most
+   * other AWS services.
+   */
+  private async applyTagDiff(
+    trailArn: string,
+    oldTagsRaw: Array<{ Key?: string; Value?: string }> | undefined,
+    newTagsRaw: Array<{ Key?: string; Value?: string }> | undefined
+  ): Promise<void> {
+    const toMap = (
+      tags: Array<{ Key?: string; Value?: string }> | undefined
+    ): Map<string, string> => {
+      const m = new Map<string, string>();
+      for (const t of tags ?? []) {
+        if (t.Key !== undefined && t.Value !== undefined) m.set(t.Key, t.Value);
+      }
+      return m;
+    };
+
+    const oldMap = toMap(oldTagsRaw);
+    const newMap = toMap(newTagsRaw);
+
+    const tagsToAdd: Array<{ Key: string; Value: string }> = [];
+    for (const [k, v] of newMap) {
+      if (oldMap.get(k) !== v) tagsToAdd.push({ Key: k, Value: v });
+    }
+    const tagsToRemove: Array<{ Key: string; Value: string }> = [];
+    for (const [k, v] of oldMap) {
+      if (!newMap.has(k)) tagsToRemove.push({ Key: k, Value: v });
+    }
+
+    if (tagsToRemove.length > 0) {
+      await this.getClient().send(
+        new RemoveTagsCommand({ ResourceId: trailArn, TagsList: tagsToRemove })
+      );
+      this.logger.debug(`Removed ${tagsToRemove.length} tag(s) from CloudTrail Trail ${trailArn}`);
+    }
+    if (tagsToAdd.length > 0) {
+      await this.getClient().send(
+        new AddTagsCommand({ ResourceId: trailArn, TagsList: tagsToAdd })
+      );
+      this.logger.debug(`Added/updated ${tagsToAdd.length} tag(s) on CloudTrail Trail ${trailArn}`);
+    }
   }
 
   /**

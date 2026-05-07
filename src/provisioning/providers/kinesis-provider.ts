@@ -5,6 +5,7 @@ import {
   DescribeStreamCommand,
   UpdateShardCountCommand,
   AddTagsToStreamCommand,
+  RemoveTagsFromStreamCommand,
   IncreaseStreamRetentionPeriodCommand,
   DecreaseStreamRetentionPeriodCommand,
   StartStreamEncryptionCommand,
@@ -260,6 +261,14 @@ export class KinesisStreamProvider implements ResourceProvider {
         await this.waitForStreamActive(physicalId);
       }
 
+      // Apply tag diff. Kinesis uses AddTagsToStream (map shape) and
+      // RemoveTagsFromStream (TagKeys list).
+      await this.applyTagDiff(
+        physicalId,
+        previousProperties['Tags'] as Array<{ Key?: string; Value?: string }> | undefined,
+        properties['Tags'] as Array<{ Key?: string; Value?: string }> | undefined
+      );
+
       // Update StreamEncryption if changed
       const newEncryption = properties['StreamEncryption'] as Record<string, unknown> | undefined;
       const oldEncryption = previousProperties['StreamEncryption'] as
@@ -356,6 +365,54 @@ export class KinesisStreamProvider implements ResourceProvider {
         logicalId,
         physicalId,
         cause
+      );
+    }
+  }
+
+  /**
+   * Apply a diff between old and new CFn-shape Tags arrays via Kinesis's
+   * `AddTagsToStream` (map shape) / `RemoveTagsFromStream` (TagKeys list)
+   * APIs.
+   */
+  private async applyTagDiff(
+    streamName: string,
+    oldTagsRaw: Array<{ Key?: string; Value?: string }> | undefined,
+    newTagsRaw: Array<{ Key?: string; Value?: string }> | undefined
+  ): Promise<void> {
+    const toMap = (
+      tags: Array<{ Key?: string; Value?: string }> | undefined
+    ): Map<string, string> => {
+      const m = new Map<string, string>();
+      for (const t of tags ?? []) {
+        if (t.Key !== undefined && t.Value !== undefined) m.set(t.Key, t.Value);
+      }
+      return m;
+    };
+
+    const oldMap = toMap(oldTagsRaw);
+    const newMap = toMap(newTagsRaw);
+
+    const tagsToAdd: Record<string, string> = {};
+    for (const [k, v] of newMap) {
+      if (oldMap.get(k) !== v) tagsToAdd[k] = v;
+    }
+    const tagsToRemove: string[] = [];
+    for (const k of oldMap.keys()) {
+      if (!newMap.has(k)) tagsToRemove.push(k);
+    }
+
+    if (tagsToRemove.length > 0) {
+      await this.getClient().send(
+        new RemoveTagsFromStreamCommand({ StreamName: streamName, TagKeys: tagsToRemove })
+      );
+      this.logger.debug(`Removed ${tagsToRemove.length} tag(s) from Kinesis stream ${streamName}`);
+    }
+    if (Object.keys(tagsToAdd).length > 0) {
+      await this.getClient().send(
+        new AddTagsToStreamCommand({ StreamName: streamName, Tags: tagsToAdd })
+      );
+      this.logger.debug(
+        `Added/updated ${Object.keys(tagsToAdd).length} tag(s) on Kinesis stream ${streamName}`
       );
     }
   }

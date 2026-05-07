@@ -6,6 +6,8 @@ import {
   GetWebACLCommand,
   ListWebACLsCommand,
   ListTagsForResourceCommand,
+  TagResourceCommand,
+  UntagResourceCommand,
   WAFNonexistentItemException,
   type Tag,
   type Rule,
@@ -178,7 +180,7 @@ export class WAFv2WebACLProvider implements ResourceProvider {
     physicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
-    _previousProperties: Record<string, unknown>
+    previousProperties: Record<string, unknown>
   ): Promise<ResourceUpdateResult> {
     this.logger.debug(`Updating WAFv2 WebACL ${logicalId}: ${physicalId}`);
 
@@ -217,6 +219,14 @@ export class WAFv2WebACLProvider implements ResourceProvider {
           TokenDomains: properties['TokenDomains'] as string[] | undefined,
           AssociationConfig: properties['AssociationConfig'] as AssociationConfig | undefined,
         })
+      );
+
+      // Apply tag diff. WAFv2 uses TagResource / UntagResource keyed by
+      // ResourceARN (the physicalId is the WebACL ARN).
+      await this.applyTagDiff(
+        physicalId,
+        previousProperties['Tags'] as Array<{ Key?: string; Value?: string }> | undefined,
+        properties['Tags'] as Array<{ Key?: string; Value?: string }> | undefined
       );
 
       this.logger.debug(`Successfully updated WAFv2 WebACL ${logicalId}`);
@@ -307,6 +317,49 @@ export class WAFv2WebACLProvider implements ResourceProvider {
         physicalId,
         cause
       );
+    }
+  }
+
+  /**
+   * Apply a diff between old and new CFn-shape Tags arrays via WAFv2's
+   * `TagResource` / `UntagResource` APIs (keyed by `ResourceARN`).
+   */
+  private async applyTagDiff(
+    arn: string,
+    oldTagsRaw: Array<{ Key?: string; Value?: string }> | undefined,
+    newTagsRaw: Array<{ Key?: string; Value?: string }> | undefined
+  ): Promise<void> {
+    const toMap = (
+      tags: Array<{ Key?: string; Value?: string }> | undefined
+    ): Map<string, string> => {
+      const m = new Map<string, string>();
+      for (const t of tags ?? []) {
+        if (t.Key !== undefined && t.Value !== undefined) m.set(t.Key, t.Value);
+      }
+      return m;
+    };
+
+    const oldMap = toMap(oldTagsRaw);
+    const newMap = toMap(newTagsRaw);
+
+    const tagsToAdd: Tag[] = [];
+    for (const [k, v] of newMap) {
+      if (oldMap.get(k) !== v) tagsToAdd.push({ Key: k, Value: v });
+    }
+    const tagsToRemove: string[] = [];
+    for (const k of oldMap.keys()) {
+      if (!newMap.has(k)) tagsToRemove.push(k);
+    }
+
+    if (tagsToRemove.length > 0) {
+      await this.getClient().send(
+        new UntagResourceCommand({ ResourceARN: arn, TagKeys: tagsToRemove })
+      );
+      this.logger.debug(`Removed ${tagsToRemove.length} tag(s) from WAFv2 WebACL ${arn}`);
+    }
+    if (tagsToAdd.length > 0) {
+      await this.getClient().send(new TagResourceCommand({ ResourceARN: arn, Tags: tagsToAdd }));
+      this.logger.debug(`Added/updated ${tagsToAdd.length} tag(s) on WAFv2 WebACL ${arn}`);
     }
   }
 

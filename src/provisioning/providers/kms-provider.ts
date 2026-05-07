@@ -283,31 +283,15 @@ export class KMSProvider implements ResourceProvider {
         }
       }
 
-      // Update Tags if changed
-      const newTags = properties['Tags'] as Array<{ Key: string; Value: string }> | undefined;
-      const oldTags = previousProperties['Tags'] as
-        | Array<{ Key: string; Value: string }>
-        | undefined;
-      if (JSON.stringify(newTags) !== JSON.stringify(oldTags)) {
-        // Remove old tags
-        if (oldTags && oldTags.length > 0) {
-          await this.getClient().send(
-            new UntagResourceCommand({
-              KeyId: physicalId,
-              TagKeys: oldTags.map((t) => t.Key),
-            })
-          );
-        }
-        // Add new tags
-        if (newTags && newTags.length > 0) {
-          await this.getClient().send(
-            new TagResourceCommand({
-              KeyId: physicalId,
-              Tags: newTags.map((t) => ({ TagKey: t.Key, TagValue: t.Value })),
-            })
-          );
-        }
-      }
+      // Apply tag diff. KMS's TagResource takes [{TagKey, TagValue}] (NOT
+      // the standard [{Key, Value}] shape) keyed by KeyId; UntagResource
+      // takes a TagKeys list. Use a proper diff so we don't churn unchanged
+      // tags through Untag→Tag on every update.
+      await this.applyTagDiff(
+        physicalId,
+        previousProperties['Tags'] as Array<{ Key?: string; Value?: string }> | undefined,
+        properties['Tags'] as Array<{ Key?: string; Value?: string }> | undefined
+      );
 
       // Update KeyPolicy if changed
       const newKeyPolicy = properties['KeyPolicy'];
@@ -388,6 +372,50 @@ export class KMSProvider implements ResourceProvider {
         physicalId,
         cause
       );
+    }
+  }
+
+  /**
+   * Apply a diff between old and new CFn-shape Tags arrays via KMS's
+   * `TagResource` / `UntagResource` APIs. KMS uses `{TagKey, TagValue}`
+   * (NOT the standard `{Key, Value}` shape) keyed by `KeyId`.
+   */
+  private async applyTagDiff(
+    keyId: string,
+    oldTagsRaw: Array<{ Key?: string; Value?: string }> | undefined,
+    newTagsRaw: Array<{ Key?: string; Value?: string }> | undefined
+  ): Promise<void> {
+    const toMap = (
+      tags: Array<{ Key?: string; Value?: string }> | undefined
+    ): Map<string, string> => {
+      const m = new Map<string, string>();
+      for (const t of tags ?? []) {
+        if (t.Key !== undefined && t.Value !== undefined) m.set(t.Key, t.Value);
+      }
+      return m;
+    };
+
+    const oldMap = toMap(oldTagsRaw);
+    const newMap = toMap(newTagsRaw);
+
+    const tagsToAdd: Array<{ TagKey: string; TagValue: string }> = [];
+    for (const [k, v] of newMap) {
+      if (oldMap.get(k) !== v) tagsToAdd.push({ TagKey: k, TagValue: v });
+    }
+    const tagsToRemove: string[] = [];
+    for (const k of oldMap.keys()) {
+      if (!newMap.has(k)) tagsToRemove.push(k);
+    }
+
+    if (tagsToRemove.length > 0) {
+      await this.getClient().send(
+        new UntagResourceCommand({ KeyId: keyId, TagKeys: tagsToRemove })
+      );
+      this.logger.debug(`Removed ${tagsToRemove.length} tag(s) from KMS Key ${keyId}`);
+    }
+    if (tagsToAdd.length > 0) {
+      await this.getClient().send(new TagResourceCommand({ KeyId: keyId, Tags: tagsToAdd }));
+      this.logger.debug(`Added/updated ${tagsToAdd.length} tag(s) on KMS Key ${keyId}`);
     }
   }
 

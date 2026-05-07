@@ -14,6 +14,8 @@ import {
   ListClustersCommand,
   ListServicesCommand,
   ListTagsForResourceCommand,
+  TagResourceCommand,
+  UntagResourceCommand,
   type Tag,
   type KeyValuePair,
   type PortMapping,
@@ -187,7 +189,13 @@ export class ECSProvider implements ResourceProvider {
   ): Promise<ResourceUpdateResult> {
     switch (resourceType) {
       case 'AWS::ECS::Cluster':
-        return this.updateCluster(logicalId, physicalId, resourceType, properties);
+        return this.updateCluster(
+          logicalId,
+          physicalId,
+          resourceType,
+          properties,
+          previousProperties
+        );
       case 'AWS::ECS::TaskDefinition':
         return this.updateTaskDefinition(logicalId, physicalId, resourceType, properties);
       case 'AWS::ECS::Service':
@@ -313,7 +321,8 @@ export class ECSProvider implements ResourceProvider {
     logicalId: string,
     physicalId: string,
     resourceType: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    previousProperties: Record<string, unknown>
   ): Promise<ResourceUpdateResult> {
     this.logger.debug(`Updating ECS cluster ${logicalId}: ${physicalId}`);
     const client = this.getClient();
@@ -338,6 +347,15 @@ export class ECSProvider implements ResourceProvider {
         new DescribeClustersCommand({ clusters: [physicalId] })
       );
       const cluster = describeResponse.clusters?.[0];
+
+      // Apply tag diff. ECS uses lowercase camelCase tags.
+      if (cluster?.clusterArn) {
+        await this.applyTagDiff(
+          cluster.clusterArn,
+          previousProperties['Tags'] as Array<{ Key?: string; Value?: string }> | undefined,
+          properties['Tags'] as Array<{ Key?: string; Value?: string }> | undefined
+        );
+      }
 
       return {
         physicalId,
@@ -696,6 +714,15 @@ export class ECSProvider implements ResourceProvider {
 
       const service = response.service;
 
+      // Apply tag diff. ECS Service ARN comes from the UpdateService response.
+      if (service?.serviceArn) {
+        await this.applyTagDiff(
+          service.serviceArn,
+          previousProperties['Tags'] as Array<{ Key?: string; Value?: string }> | undefined,
+          properties['Tags'] as Array<{ Key?: string; Value?: string }> | undefined
+        );
+      }
+
       return {
         physicalId,
         wasReplaced: false,
@@ -814,6 +841,49 @@ export class ECSProvider implements ResourceProvider {
   }
 
   // ─── Helpers ────────────────────────────────────────────────────
+
+  /**
+   * Apply a diff between old and new CFn-shape Tags arrays via ECS's
+   * `TagResource` / `UntagResource` APIs. ECS uses lowercase camelCase
+   * (`{ key, value }`) for tags. Resource ARN identifies the cluster /
+   * service / task definition.
+   */
+  private async applyTagDiff(
+    resourceArn: string,
+    oldTagsRaw: Array<{ Key?: string; Value?: string }> | undefined,
+    newTagsRaw: Array<{ Key?: string; Value?: string }> | undefined
+  ): Promise<void> {
+    const toMap = (
+      tags: Array<{ Key?: string; Value?: string }> | undefined
+    ): Map<string, string> => {
+      const m = new Map<string, string>();
+      for (const t of tags ?? []) {
+        if (t.Key !== undefined && t.Value !== undefined) m.set(t.Key, t.Value);
+      }
+      return m;
+    };
+
+    const oldMap = toMap(oldTagsRaw);
+    const newMap = toMap(newTagsRaw);
+
+    const tagsToAdd: Tag[] = [];
+    for (const [k, v] of newMap) {
+      if (oldMap.get(k) !== v) tagsToAdd.push({ key: k, value: v });
+    }
+    const tagsToRemove: string[] = [];
+    for (const k of oldMap.keys()) {
+      if (!newMap.has(k)) tagsToRemove.push(k);
+    }
+
+    if (tagsToRemove.length > 0) {
+      await this.getClient().send(new UntagResourceCommand({ resourceArn, tagKeys: tagsToRemove }));
+      this.logger.debug(`Removed ${tagsToRemove.length} tag(s) from ECS resource ${resourceArn}`);
+    }
+    if (tagsToAdd.length > 0) {
+      await this.getClient().send(new TagResourceCommand({ resourceArn, tags: tagsToAdd }));
+      this.logger.debug(`Added/updated ${tagsToAdd.length} tag(s) on ECS resource ${resourceArn}`);
+    }
+  }
 
   /**
    * Convert CFn ContainerDefinitions to ECS SDK format.

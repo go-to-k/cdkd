@@ -30,6 +30,7 @@ import {
   ListUserTagsCommand,
   NoSuchEntityException,
   TagUserCommand,
+  UntagUserCommand,
   PutUserPermissionsBoundaryCommand,
   DeleteUserPermissionsBoundaryCommand,
 } from '@aws-sdk/client-iam';
@@ -313,17 +314,12 @@ export class IAMUserGroupProvider implements ResourceProvider {
     this.logger.debug(`Updating IAM user ${logicalId}: ${physicalId}`);
 
     try {
-      // Update tags if specified
-      const tags = properties['Tags'] as Array<{ Key: string; Value: string }> | undefined;
-      if (tags && Array.isArray(tags)) {
-        await this.iamClient.send(
-          new TagUserCommand({
-            UserName: physicalId,
-            Tags: tags,
-          })
-        );
-        this.logger.debug(`Tagged user ${physicalId}`);
-      }
+      // Apply tag diff. IAM User uses TagUser/UntagUser keyed by UserName.
+      await this.applyUserTagDiff(
+        physicalId,
+        previousProperties['Tags'] as Array<{ Key?: string; Value?: string }> | undefined,
+        properties['Tags'] as Array<{ Key?: string; Value?: string }> | undefined
+      );
 
       // Update permissions boundary
       const newPermBoundary = properties['PermissionsBoundary'] as string | undefined;
@@ -622,6 +618,49 @@ export class IAMUserGroupProvider implements ResourceProvider {
         return;
       }
       throw error;
+    }
+  }
+
+  /**
+   * Apply a diff between old and new CFn-shape Tags arrays via IAM's
+   * `TagUser` / `UntagUser` APIs.
+   */
+  private async applyUserTagDiff(
+    userName: string,
+    oldTagsRaw: Array<{ Key?: string; Value?: string }> | undefined,
+    newTagsRaw: Array<{ Key?: string; Value?: string }> | undefined
+  ): Promise<void> {
+    const toMap = (
+      tags: Array<{ Key?: string; Value?: string }> | undefined
+    ): Map<string, string> => {
+      const m = new Map<string, string>();
+      for (const t of tags ?? []) {
+        if (t.Key !== undefined && t.Value !== undefined) m.set(t.Key, t.Value);
+      }
+      return m;
+    };
+
+    const oldMap = toMap(oldTagsRaw);
+    const newMap = toMap(newTagsRaw);
+
+    const tagsToAdd: Array<{ Key: string; Value: string }> = [];
+    for (const [k, v] of newMap) {
+      if (oldMap.get(k) !== v) tagsToAdd.push({ Key: k, Value: v });
+    }
+    const tagsToRemove: string[] = [];
+    for (const k of oldMap.keys()) {
+      if (!newMap.has(k)) tagsToRemove.push(k);
+    }
+
+    if (tagsToRemove.length > 0) {
+      await this.iamClient.send(
+        new UntagUserCommand({ UserName: userName, TagKeys: tagsToRemove })
+      );
+      this.logger.debug(`Removed ${tagsToRemove.length} tag(s) from IAM user ${userName}`);
+    }
+    if (tagsToAdd.length > 0) {
+      await this.iamClient.send(new TagUserCommand({ UserName: userName, Tags: tagsToAdd }));
+      this.logger.debug(`Added/updated ${tagsToAdd.length} tag(s) on IAM user ${userName}`);
     }
   }
 

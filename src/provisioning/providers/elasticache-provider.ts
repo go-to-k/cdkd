@@ -9,6 +9,8 @@ import {
   ModifyCacheSubnetGroupCommand,
   ModifyCacheClusterCommand,
   ListTagsForResourceCommand,
+  AddTagsToResourceCommand,
+  RemoveTagsFromResourceCommand,
   type AZMode,
   type LogDeliveryConfigurationRequest,
   type NetworkType,
@@ -119,13 +121,19 @@ export class ElastiCacheProvider implements ResourceProvider {
     physicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
-    _previousProperties: Record<string, unknown>
+    previousProperties: Record<string, unknown>
   ): Promise<ResourceUpdateResult> {
     switch (resourceType) {
       case 'AWS::ElastiCache::SubnetGroup':
         return this.updateSubnetGroup(logicalId, physicalId, resourceType, properties);
       case 'AWS::ElastiCache::CacheCluster':
-        return this.updateCacheCluster(logicalId, physicalId, resourceType, properties);
+        return this.updateCacheCluster(
+          logicalId,
+          physicalId,
+          resourceType,
+          properties,
+          previousProperties
+        );
       default:
         throw new ProvisioningError(
           `Unsupported resource type: ${resourceType}`,
@@ -385,7 +393,8 @@ export class ElastiCacheProvider implements ResourceProvider {
     logicalId: string,
     physicalId: string,
     resourceType: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    previousProperties: Record<string, unknown>
   ): Promise<ResourceUpdateResult> {
     this.logger.debug(`Updating CacheCluster ${logicalId}: ${physicalId}`);
 
@@ -423,6 +432,16 @@ export class ElastiCacheProvider implements ResourceProvider {
 
       // Describe to get updated attributes
       const described = await this.describeCacheCluster(physicalId);
+
+      // Apply tag diff. ElastiCache uses ARN-keyed AddTagsToResource /
+      // RemoveTagsFromResource.
+      if (described?.ARN) {
+        await this.applyTagDiff(
+          described.ARN,
+          previousProperties['Tags'] as Array<{ Key?: string; Value?: string }> | undefined,
+          properties['Tags'] as Array<{ Key?: string; Value?: string }> | undefined
+        );
+      }
 
       const attributes: Record<string, unknown> = {};
 
@@ -501,6 +520,52 @@ export class ElastiCacheProvider implements ResourceProvider {
   }
 
   // ─── Helpers ──────────────────────────────────────────────────────
+
+  /**
+   * Apply a diff between old and new CFn-shape Tags arrays via ElastiCache's
+   * `AddTagsToResource` / `RemoveTagsFromResource` APIs (keyed by
+   * `ResourceName=arn`).
+   */
+  private async applyTagDiff(
+    arn: string,
+    oldTagsRaw: Array<{ Key?: string; Value?: string }> | undefined,
+    newTagsRaw: Array<{ Key?: string; Value?: string }> | undefined
+  ): Promise<void> {
+    const toMap = (
+      tags: Array<{ Key?: string; Value?: string }> | undefined
+    ): Map<string, string> => {
+      const m = new Map<string, string>();
+      for (const t of tags ?? []) {
+        if (t.Key !== undefined && t.Value !== undefined) m.set(t.Key, t.Value);
+      }
+      return m;
+    };
+
+    const oldMap = toMap(oldTagsRaw);
+    const newMap = toMap(newTagsRaw);
+
+    const tagsToAdd: Array<{ Key: string; Value: string }> = [];
+    for (const [k, v] of newMap) {
+      if (oldMap.get(k) !== v) tagsToAdd.push({ Key: k, Value: v });
+    }
+    const tagsToRemove: string[] = [];
+    for (const k of oldMap.keys()) {
+      if (!newMap.has(k)) tagsToRemove.push(k);
+    }
+
+    if (tagsToRemove.length > 0) {
+      await this.getClient().send(
+        new RemoveTagsFromResourceCommand({ ResourceName: arn, TagKeys: tagsToRemove })
+      );
+      this.logger.debug(`Removed ${tagsToRemove.length} tag(s) from ElastiCache resource ${arn}`);
+    }
+    if (tagsToAdd.length > 0) {
+      await this.getClient().send(
+        new AddTagsToResourceCommand({ ResourceName: arn, Tags: tagsToAdd })
+      );
+      this.logger.debug(`Added/updated ${tagsToAdd.length} tag(s) on ElastiCache resource ${arn}`);
+    }
+  }
 
   private buildTags(properties: Record<string, unknown>): Array<{ Key: string; Value: string }> {
     if (!properties['Tags']) return [];

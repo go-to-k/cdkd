@@ -7,6 +7,8 @@ import {
   ListQueuesCommand,
   ListQueueTagsCommand,
   SetQueueAttributesCommand,
+  TagQueueCommand,
+  UntagQueueCommand,
   QueueDoesNotExist,
 } from '@aws-sdk/client-sqs';
 import { STSClient, GetCallerIdentityCommand } from '@aws-sdk/client-sts';
@@ -171,7 +173,7 @@ export class SQSQueueProvider implements ResourceProvider {
     physicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
-    _previousProperties: Record<string, unknown>
+    previousProperties: Record<string, unknown>
   ): Promise<ResourceUpdateResult> {
     this.logger.debug(`Updating SQS queue ${logicalId}: ${physicalId}`);
 
@@ -201,6 +203,14 @@ export class SQSQueueProvider implements ResourceProvider {
         );
         this.logger.debug(`Updated attributes for SQS queue ${physicalId}`);
       }
+
+      // Apply tag diff. SQS uses TagQueueCommand({ QueueUrl, Tags: { key: value } })
+      // and UntagQueueCommand({ QueueUrl, TagKeys: [...] }).
+      await this.applyTagDiff(
+        physicalId,
+        previousProperties['Tags'] as Array<{ Key?: string; Value?: string }> | undefined,
+        properties['Tags'] as Array<{ Key?: string; Value?: string }> | undefined
+      );
 
       // Get queue attributes for Arn
       const getResponse = await this.sqsClient.send(
@@ -270,6 +280,53 @@ export class SQSQueueProvider implements ResourceProvider {
         logicalId,
         physicalId,
         cause
+      );
+    }
+  }
+
+  /**
+   * Apply a diff between old and new CFn-shape Tags arrays via SQS's
+   * `TagQueue` / `UntagQueue` APIs. SQS's `TagQueue` takes a `Tags` map
+   * (`{ key: value }`); `UntagQueue` takes a `TagKeys` array. cdkd state
+   * holds Tags in CFn shape (`[{ Key, Value }]`).
+   */
+  private async applyTagDiff(
+    queueUrl: string,
+    oldTagsRaw: Array<{ Key?: string; Value?: string }> | undefined,
+    newTagsRaw: Array<{ Key?: string; Value?: string }> | undefined
+  ): Promise<void> {
+    const toMap = (
+      tags: Array<{ Key?: string; Value?: string }> | undefined
+    ): Map<string, string> => {
+      const m = new Map<string, string>();
+      for (const t of tags ?? []) {
+        if (t.Key !== undefined && t.Value !== undefined) m.set(t.Key, t.Value);
+      }
+      return m;
+    };
+
+    const oldMap = toMap(oldTagsRaw);
+    const newMap = toMap(newTagsRaw);
+
+    const tagsToAdd: Record<string, string> = {};
+    for (const [k, v] of newMap) {
+      if (oldMap.get(k) !== v) tagsToAdd[k] = v;
+    }
+    const tagsToRemove: string[] = [];
+    for (const k of oldMap.keys()) {
+      if (!newMap.has(k)) tagsToRemove.push(k);
+    }
+
+    if (tagsToRemove.length > 0) {
+      await this.sqsClient.send(
+        new UntagQueueCommand({ QueueUrl: queueUrl, TagKeys: tagsToRemove })
+      );
+      this.logger.debug(`Removed ${tagsToRemove.length} tag(s) from SQS queue ${queueUrl}`);
+    }
+    if (Object.keys(tagsToAdd).length > 0) {
+      await this.sqsClient.send(new TagQueueCommand({ QueueUrl: queueUrl, Tags: tagsToAdd }));
+      this.logger.debug(
+        `Added/updated ${Object.keys(tagsToAdd).length} tag(s) on SQS queue ${queueUrl}`
       );
     }
   }

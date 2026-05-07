@@ -8,6 +8,8 @@ import {
   GetFunctionCommand,
   ListFunctionsCommand,
   ListTagsCommand,
+  TagResourceCommand,
+  UntagResourceCommand,
   ResourceNotFoundException,
   waitUntilFunctionUpdatedV2,
   type FunctionCode,
@@ -333,16 +335,27 @@ export class LambdaFunctionProvider implements ResourceProvider {
         await this.waitForFunctionUpdated(logicalId, resourceType, physicalId);
       }
 
-      // Get updated function info for attributes
+      // Get updated function info for attributes (also gives us the ARN
+      // we need for tag mutations).
       const getResponse = await this.lambdaClient.send(
         new GetFunctionCommand({ FunctionName: physicalId })
+      );
+      const functionArn = getResponse.Configuration?.FunctionArn;
+
+      // Update tags if changed. Lambda's TagResource takes a map shape
+      // (Tags: { key: value }); UntagResource takes a key list. cdkd
+      // state holds Tags in CFn shape ([{ Key, Value }]).
+      await this.applyTagDiff(
+        functionArn,
+        previousProperties['Tags'] as Array<{ Key?: string; Value?: string }> | undefined,
+        properties['Tags'] as Array<{ Key?: string; Value?: string }> | undefined
       );
 
       return {
         physicalId,
         wasReplaced: false,
         attributes: {
-          Arn: getResponse.Configuration?.FunctionArn,
+          Arn: functionArn,
           FunctionName: getResponse.Configuration?.FunctionName,
         },
       };
@@ -569,6 +582,60 @@ export class LambdaFunctionProvider implements ResourceProvider {
    * one resource type that actually needs it preserves the bug fix
    * without paying the whole-stack tax.
    */
+  /**
+   * Apply a diff between old and new CFn-shape Tags arrays via Lambda's
+   * `TagResource` / `UntagResource` APIs. Without this, `cdkd deploy`
+   * and `cdkd drift --revert` silently no-op tag changes — the
+   * `UpdateFunctionConfiguration` command does NOT accept a Tags
+   * parameter (Lambda treats tags as a separate API surface).
+   */
+  private async applyTagDiff(
+    functionArn: string | undefined,
+    oldTagsRaw: Array<{ Key?: string; Value?: string }> | undefined,
+    newTagsRaw: Array<{ Key?: string; Value?: string }> | undefined
+  ): Promise<void> {
+    if (!functionArn) return;
+
+    const toMap = (
+      tags: Array<{ Key?: string; Value?: string }> | undefined
+    ): Map<string, string> => {
+      const m = new Map<string, string>();
+      for (const t of tags ?? []) {
+        if (t.Key !== undefined && t.Value !== undefined) m.set(t.Key, t.Value);
+      }
+      return m;
+    };
+
+    const oldMap = toMap(oldTagsRaw);
+    const newMap = toMap(newTagsRaw);
+
+    const tagsToAdd: Record<string, string> = {};
+    for (const [k, v] of newMap) {
+      if (oldMap.get(k) !== v) tagsToAdd[k] = v;
+    }
+    const tagsToRemove: string[] = [];
+    for (const k of oldMap.keys()) {
+      if (!newMap.has(k)) tagsToRemove.push(k);
+    }
+
+    if (tagsToRemove.length > 0) {
+      await this.lambdaClient.send(
+        new UntagResourceCommand({ Resource: functionArn, TagKeys: tagsToRemove })
+      );
+      this.logger.debug(
+        `Removed ${tagsToRemove.length} tag(s) from Lambda function ${functionArn}`
+      );
+    }
+    if (Object.keys(tagsToAdd).length > 0) {
+      await this.lambdaClient.send(
+        new TagResourceCommand({ Resource: functionArn, Tags: tagsToAdd })
+      );
+      this.logger.debug(
+        `Added/updated ${Object.keys(tagsToAdd).length} tag(s) on Lambda function ${functionArn}`
+      );
+    }
+  }
+
   private async waitForFunctionUpdated(
     logicalId: string,
     resourceType: string,
@@ -978,16 +1045,19 @@ export class LambdaFunctionProvider implements ResourceProvider {
       // when the function was deployed without VpcConfig (Lambda's
       // GetFunction returns VpcConfig with empty arrays for non-VPC
       // functions; that empty shape becomes our placeholder).
-      const vpc: Record<string, unknown> = {
+      // AWS's GetFunction sometimes returns Ipv6AllowedForDualStack=undefined
+      // and sometimes false (the default) for the same non-VPC function —
+      // observed empirically after UpdateFunctionConfiguration. Emit it
+      // unconditionally with `?? false` so the comparator sees a stable
+      // shape and doesn't fire false-positive drift on every other
+      // refresh.
+      result['VpcConfig'] = {
         SubnetIds: cfg.VpcConfig?.SubnetIds ? [...cfg.VpcConfig.SubnetIds] : [],
         SecurityGroupIds: cfg.VpcConfig?.SecurityGroupIds
           ? [...cfg.VpcConfig.SecurityGroupIds]
           : [],
+        Ipv6AllowedForDualStack: cfg.VpcConfig?.Ipv6AllowedForDualStack ?? false,
       };
-      if (cfg.VpcConfig?.Ipv6AllowedForDualStack !== undefined) {
-        vpc['Ipv6AllowedForDualStack'] = cfg.VpcConfig.Ipv6AllowedForDualStack;
-      }
-      result['VpcConfig'] = vpc;
 
       // Tags: GetFunction returns a map keyed by tag name. Filter
       // CDK / aws:* auto-tags, re-shape to CFn's `[{Key, Value}]`, and

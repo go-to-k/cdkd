@@ -4,6 +4,8 @@ import {
   DeleteEventSourceMappingCommand,
   UpdateEventSourceMappingCommand,
   GetEventSourceMappingCommand,
+  TagResourceCommand,
+  UntagResourceCommand,
   ResourceNotFoundException,
   type EventSourcePosition,
 } from '@aws-sdk/client-lambda';
@@ -182,7 +184,7 @@ export class LambdaEventSourceMappingProvider implements ResourceProvider {
     physicalId: string,
     _resourceType: string,
     properties: Record<string, unknown>,
-    _previousProperties: Record<string, unknown>
+    previousProperties: Record<string, unknown>
   ): Promise<ResourceUpdateResult> {
     this.logger.debug(`Updating event source mapping ${logicalId}: ${physicalId}`);
 
@@ -232,7 +234,20 @@ export class LambdaEventSourceMappingProvider implements ResourceProvider {
         'DocumentDBEventSourceConfig'
       ] as import('@aws-sdk/client-lambda').DocumentDBEventSourceConfig;
 
-    await this.lambdaClient.send(new UpdateEventSourceMappingCommand(updateParams));
+    const updateResp = await this.lambdaClient.send(
+      new UpdateEventSourceMappingCommand(updateParams)
+    );
+
+    // Apply tag diff. UpdateEventSourceMapping does not accept Tags; use
+    // TagResource / UntagResource against the EventSourceMapping ARN.
+    const eventSourceMappingArn = updateResp.EventSourceMappingArn;
+    if (eventSourceMappingArn) {
+      await this.applyTagDiff(
+        eventSourceMappingArn,
+        previousProperties['Tags'] as Array<{ Key?: string; Value?: string }> | undefined,
+        properties['Tags'] as Array<{ Key?: string; Value?: string }> | undefined
+      );
+    }
 
     this.logger.debug(`Successfully updated event source mapping ${logicalId}`);
 
@@ -243,6 +258,53 @@ export class LambdaEventSourceMappingProvider implements ResourceProvider {
         Id: physicalId,
       },
     };
+  }
+
+  /**
+   * Apply a diff between old and new CFn-shape Tags arrays via Lambda's
+   * `TagResource` / `UntagResource` APIs against the EventSourceMapping
+   * ARN. Lambda's `TagResource` takes `{ Resource, Tags: { key: value } }`;
+   * `UntagResource` takes `{ Resource, TagKeys: [...] }`.
+   */
+  private async applyTagDiff(
+    arn: string,
+    oldTagsRaw: Array<{ Key?: string; Value?: string }> | undefined,
+    newTagsRaw: Array<{ Key?: string; Value?: string }> | undefined
+  ): Promise<void> {
+    const toMap = (
+      tags: Array<{ Key?: string; Value?: string }> | undefined
+    ): Map<string, string> => {
+      const m = new Map<string, string>();
+      for (const t of tags ?? []) {
+        if (t.Key !== undefined && t.Value !== undefined) m.set(t.Key, t.Value);
+      }
+      return m;
+    };
+
+    const oldMap = toMap(oldTagsRaw);
+    const newMap = toMap(newTagsRaw);
+
+    const tagsToAdd: Record<string, string> = {};
+    for (const [k, v] of newMap) {
+      if (oldMap.get(k) !== v) tagsToAdd[k] = v;
+    }
+    const tagsToRemove: string[] = [];
+    for (const k of oldMap.keys()) {
+      if (!newMap.has(k)) tagsToRemove.push(k);
+    }
+
+    if (tagsToRemove.length > 0) {
+      await this.lambdaClient.send(
+        new UntagResourceCommand({ Resource: arn, TagKeys: tagsToRemove })
+      );
+      this.logger.debug(`Removed ${tagsToRemove.length} tag(s) from EventSourceMapping ${arn}`);
+    }
+    if (Object.keys(tagsToAdd).length > 0) {
+      await this.lambdaClient.send(new TagResourceCommand({ Resource: arn, Tags: tagsToAdd }));
+      this.logger.debug(
+        `Added/updated ${Object.keys(tagsToAdd).length} tag(s) on EventSourceMapping ${arn}`
+      );
+    }
   }
 
   /**

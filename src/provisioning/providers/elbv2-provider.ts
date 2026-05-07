@@ -8,6 +8,8 @@ import {
   ModifyTargetGroupCommand,
   DescribeTargetGroupsCommand,
   DescribeTagsCommand,
+  AddTagsCommand,
+  RemoveTagsCommand,
   CreateListenerCommand,
   DeleteListenerCommand,
   ModifyListenerCommand,
@@ -137,15 +139,27 @@ export class ELBv2Provider implements ResourceProvider {
     physicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
-    _previousProperties: Record<string, unknown>
+    previousProperties: Record<string, unknown>
   ): Promise<ResourceUpdateResult> {
     switch (resourceType) {
       case 'AWS::ElasticLoadBalancingV2::LoadBalancer':
         return this.updateLoadBalancer(logicalId, physicalId, resourceType, properties);
       case 'AWS::ElasticLoadBalancingV2::TargetGroup':
-        return this.updateTargetGroup(logicalId, physicalId, resourceType, properties);
+        return this.updateTargetGroup(
+          logicalId,
+          physicalId,
+          resourceType,
+          properties,
+          previousProperties
+        );
       case 'AWS::ElasticLoadBalancingV2::Listener':
-        return this.updateListener(logicalId, physicalId, resourceType, properties);
+        return this.updateListener(
+          logicalId,
+          physicalId,
+          resourceType,
+          properties,
+          previousProperties
+        );
       default:
         throw new ProvisioningError(
           `Unsupported resource type: ${resourceType}`,
@@ -403,7 +417,8 @@ export class ELBv2Provider implements ResourceProvider {
     logicalId: string,
     physicalId: string,
     resourceType: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    previousProperties: Record<string, unknown>
   ): Promise<ResourceUpdateResult> {
     this.logger.debug(`Updating TargetGroup ${logicalId}: ${physicalId}`);
 
@@ -445,6 +460,13 @@ export class ELBv2Provider implements ResourceProvider {
         new DescribeTargetGroupsCommand({ TargetGroupArns: [physicalId] })
       );
       const tg = describeResponse.TargetGroups?.[0];
+
+      // Apply tag diff. ELBv2 uses AddTags / RemoveTags with [arn].
+      await this.applyTagDiff(
+        physicalId,
+        previousProperties['Tags'] as Array<{ Key?: string; Value?: string }> | undefined,
+        properties['Tags'] as Array<{ Key?: string; Value?: string }> | undefined
+      );
 
       this.logger.debug(`Successfully updated TargetGroup ${logicalId}`);
 
@@ -563,7 +585,8 @@ export class ELBv2Provider implements ResourceProvider {
     logicalId: string,
     physicalId: string,
     resourceType: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    previousProperties: Record<string, unknown>
   ): Promise<ResourceUpdateResult> {
     this.logger.debug(`Updating Listener ${logicalId}: ${physicalId}`);
 
@@ -584,6 +607,16 @@ export class ELBv2Provider implements ResourceProvider {
           ...(defaultActions && { DefaultActions: defaultActions }),
           ...(certificates && { Certificates: certificates }),
         })
+      );
+
+      // Apply tag diff. Listener `handledProperties` doesn't currently
+      // include Tags but AWS allows tags on listeners; previous state may
+      // hold them after import / drift refresh, so handle the diff for
+      // safety.
+      await this.applyTagDiff(
+        physicalId,
+        previousProperties['Tags'] as Array<{ Key?: string; Value?: string }> | undefined,
+        properties['Tags'] as Array<{ Key?: string; Value?: string }> | undefined
       );
 
       this.logger.debug(`Successfully updated Listener ${logicalId}`);
@@ -651,6 +684,51 @@ export class ELBv2Provider implements ResourceProvider {
   private extractTags(properties: Record<string, unknown>): Tag[] {
     if (!properties['Tags']) return [];
     return properties['Tags'] as Tag[];
+  }
+
+  /**
+   * Apply a diff between old and new CFn-shape Tags arrays via ELBv2's
+   * `AddTags` / `RemoveTags` APIs. Both accept `ResourceArns: [arn]`
+   * (single ARN), `Tags: [{Key, Value}]` for AddTags, and
+   * `TagKeys: [...]` for RemoveTags.
+   */
+  private async applyTagDiff(
+    arn: string,
+    oldTagsRaw: Array<{ Key?: string; Value?: string }> | undefined,
+    newTagsRaw: Array<{ Key?: string; Value?: string }> | undefined
+  ): Promise<void> {
+    const toMap = (
+      tags: Array<{ Key?: string; Value?: string }> | undefined
+    ): Map<string, string> => {
+      const m = new Map<string, string>();
+      for (const t of tags ?? []) {
+        if (t.Key !== undefined && t.Value !== undefined) m.set(t.Key, t.Value);
+      }
+      return m;
+    };
+
+    const oldMap = toMap(oldTagsRaw);
+    const newMap = toMap(newTagsRaw);
+
+    const tagsToAdd: Tag[] = [];
+    for (const [k, v] of newMap) {
+      if (oldMap.get(k) !== v) tagsToAdd.push({ Key: k, Value: v });
+    }
+    const tagsToRemove: string[] = [];
+    for (const k of oldMap.keys()) {
+      if (!newMap.has(k)) tagsToRemove.push(k);
+    }
+
+    if (tagsToRemove.length > 0) {
+      await this.getClient().send(
+        new RemoveTagsCommand({ ResourceArns: [arn], TagKeys: tagsToRemove })
+      );
+      this.logger.debug(`Removed ${tagsToRemove.length} tag(s) from ELBv2 resource ${arn}`);
+    }
+    if (tagsToAdd.length > 0) {
+      await this.getClient().send(new AddTagsCommand({ ResourceArns: [arn], Tags: tagsToAdd }));
+      this.logger.debug(`Added/updated ${tagsToAdd.length} tag(s) on ELBv2 resource ${arn}`);
+    }
   }
 
   /**

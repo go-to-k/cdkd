@@ -31,6 +31,7 @@ import {
   AuthorizeSecurityGroupEgressCommand,
   RevokeSecurityGroupEgressCommand,
   CreateTagsCommand,
+  DeleteTagsCommand,
   DescribeSubnetsCommand,
   DescribeSecurityGroupsCommand,
   RunInstancesCommand,
@@ -241,7 +242,7 @@ export class EC2Provider implements ResourceProvider {
   ): Promise<ResourceUpdateResult> {
     switch (resourceType) {
       case 'AWS::EC2::VPC':
-        return this.updateVpc(logicalId, physicalId, resourceType, properties);
+        return this.updateVpc(logicalId, physicalId, resourceType, properties, previousProperties);
       case 'AWS::EC2::Subnet':
         return this.updateSubnet(logicalId, physicalId);
       case 'AWS::EC2::InternetGateway':
@@ -279,7 +280,13 @@ export class EC2Provider implements ResourceProvider {
           previousProperties
         );
       case 'AWS::EC2::Instance':
-        return this.updateInstance(logicalId, physicalId, resourceType, properties);
+        return this.updateInstance(
+          logicalId,
+          physicalId,
+          resourceType,
+          properties,
+          previousProperties
+        );
       case 'AWS::EC2::NetworkAcl':
       case 'AWS::EC2::NetworkAclEntry':
       case 'AWS::EC2::SubnetNetworkAclAssociation':
@@ -466,7 +473,8 @@ export class EC2Provider implements ResourceProvider {
     logicalId: string,
     physicalId: string,
     resourceType: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    previousProperties: Record<string, unknown>
   ): Promise<ResourceUpdateResult> {
     this.logger.debug(`Updating VPC ${logicalId}: ${physicalId}`);
 
@@ -494,8 +502,12 @@ export class EC2Provider implements ResourceProvider {
         );
       }
 
-      // Update tags
-      await this.applyTags(physicalId, properties, logicalId);
+      // Update tags (diff add/remove against previousProperties)
+      await this.applyTagDiff(
+        physicalId,
+        previousProperties['Tags'] as Array<{ Key?: string; Value?: string }> | undefined,
+        properties['Tags'] as Array<{ Key?: string; Value?: string }> | undefined
+      );
 
       this.logger.debug(`Successfully updated VPC ${logicalId}`);
 
@@ -1651,8 +1663,12 @@ export class EC2Provider implements ResourceProvider {
     this.logger.debug(`Updating SecurityGroup ${logicalId}: ${physicalId}`);
 
     try {
-      // Update tags
-      await this.applyTags(physicalId, properties, logicalId);
+      // Update tags (diff add/remove against previousProperties)
+      await this.applyTagDiff(
+        physicalId,
+        previousProperties['Tags'] as Array<{ Key?: string; Value?: string }> | undefined,
+        properties['Tags'] as Array<{ Key?: string; Value?: string }> | undefined
+      );
 
       // Diff and apply ingress rule changes (symmetric with egress below).
       await this.applySecurityGroupRuleDiff(
@@ -2070,7 +2086,8 @@ export class EC2Provider implements ResourceProvider {
     logicalId: string,
     physicalId: string,
     resourceType: string,
-    _properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    previousProperties: Record<string, unknown>
   ): Promise<ResourceUpdateResult> {
     // Most EC2 Instance property changes require replacement.
     // Immutable properties (ImageId, SubnetId, KeyName) are handled by
@@ -2079,7 +2096,11 @@ export class EC2Provider implements ResourceProvider {
     this.logger.debug(`Updating EC2 Instance ${logicalId}: ${physicalId}`);
 
     try {
-      await this.applyTags(physicalId, _properties, logicalId);
+      await this.applyTagDiff(
+        physicalId,
+        previousProperties['Tags'] as Array<{ Key?: string; Value?: string }> | undefined,
+        properties['Tags'] as Array<{ Key?: string; Value?: string }> | undefined
+      );
 
       // Refresh attributes
       const describeResponse = await this.ec2Client.send(
@@ -2683,7 +2704,10 @@ export class EC2Provider implements ResourceProvider {
   }
 
   /**
-   * Apply tags to an EC2 resource
+   * Apply tags to an EC2 resource (create-time, no removal).
+   *
+   * Used by `create*` paths. Update paths should use `applyTagDiff` instead
+   * to handle tag removal too.
    */
   private async applyTags(
     resourceId: string,
@@ -2703,6 +2727,71 @@ export class EC2Provider implements ResourceProvider {
       } catch (error) {
         this.logger.warn(
           `Failed to apply tags to ${logicalId}: ${error instanceof Error ? error.message : String(error)}`
+        );
+      }
+    }
+  }
+
+  /**
+   * Apply a diff between old and new CFn-shape Tags arrays via EC2's
+   * `CreateTags` / `DeleteTags` APIs. Used by `update*` paths so that
+   * tag removals reach AWS too. EC2 keys both APIs by a list of resource
+   * ids.
+   */
+  private async applyTagDiff(
+    resourceId: string,
+    oldTagsRaw: Array<{ Key?: string; Value?: string }> | undefined,
+    newTagsRaw: Array<{ Key?: string; Value?: string }> | undefined
+  ): Promise<void> {
+    const toMap = (
+      tags: Array<{ Key?: string; Value?: string }> | undefined
+    ): Map<string, string> => {
+      const m = new Map<string, string>();
+      for (const t of tags ?? []) {
+        if (t.Key !== undefined && t.Value !== undefined) m.set(t.Key, t.Value);
+      }
+      return m;
+    };
+
+    const oldMap = toMap(oldTagsRaw);
+    const newMap = toMap(newTagsRaw);
+
+    const tagsToAdd: Array<{ Key: string; Value: string }> = [];
+    for (const [k, v] of newMap) {
+      if (oldMap.get(k) !== v) tagsToAdd.push({ Key: k, Value: v });
+    }
+    const tagsToRemove: Array<{ Key: string }> = [];
+    for (const k of oldMap.keys()) {
+      if (!newMap.has(k)) tagsToRemove.push({ Key: k });
+    }
+
+    if (tagsToRemove.length > 0) {
+      try {
+        await this.ec2Client.send(
+          new DeleteTagsCommand({
+            Resources: [resourceId],
+            Tags: tagsToRemove,
+          })
+        );
+        this.logger.debug(`Removed ${tagsToRemove.length} tag(s) from ${resourceId}`);
+      } catch (error) {
+        this.logger.warn(
+          `Failed to remove tags from ${resourceId}: ${error instanceof Error ? error.message : String(error)}`
+        );
+      }
+    }
+    if (tagsToAdd.length > 0) {
+      try {
+        await this.ec2Client.send(
+          new CreateTagsCommand({
+            Resources: [resourceId],
+            Tags: tagsToAdd,
+          })
+        );
+        this.logger.debug(`Added/updated ${tagsToAdd.length} tag(s) on ${resourceId}`);
+      } catch (error) {
+        this.logger.warn(
+          `Failed to add tags on ${resourceId}: ${error instanceof Error ? error.message : String(error)}`
         );
       }
     }

@@ -13,6 +13,8 @@ import {
   DescribeDBSubnetGroupsCommand,
   ModifyDBSubnetGroupCommand,
   ListTagsForResourceCommand,
+  AddTagsToResourceCommand,
+  RemoveTagsFromResourceCommand,
 } from '@aws-sdk/client-rds';
 import { getLogger } from '../../utils/logger.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
@@ -122,15 +124,33 @@ export class RDSProvider implements ResourceProvider {
     physicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
-    _previousProperties: Record<string, unknown>
+    previousProperties: Record<string, unknown>
   ): Promise<ResourceUpdateResult> {
     switch (resourceType) {
       case 'AWS::RDS::DBSubnetGroup':
-        return this.updateDBSubnetGroup(logicalId, physicalId, resourceType, properties);
+        return this.updateDBSubnetGroup(
+          logicalId,
+          physicalId,
+          resourceType,
+          properties,
+          previousProperties
+        );
       case 'AWS::RDS::DBCluster':
-        return this.updateDBCluster(logicalId, physicalId, resourceType, properties);
+        return this.updateDBCluster(
+          logicalId,
+          physicalId,
+          resourceType,
+          properties,
+          previousProperties
+        );
       case 'AWS::RDS::DBInstance':
-        return this.updateDBInstance(logicalId, physicalId, resourceType, properties);
+        return this.updateDBInstance(
+          logicalId,
+          physicalId,
+          resourceType,
+          properties,
+          previousProperties
+        );
       default:
         throw new ProvisioningError(
           `Unsupported resource type: ${resourceType}`,
@@ -215,7 +235,8 @@ export class RDSProvider implements ResourceProvider {
     logicalId: string,
     physicalId: string,
     resourceType: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    previousProperties: Record<string, unknown>
   ): Promise<ResourceUpdateResult> {
     this.logger.debug(`Updating DBSubnetGroup ${logicalId}: ${physicalId}`);
 
@@ -227,6 +248,20 @@ export class RDSProvider implements ResourceProvider {
           SubnetIds: properties['SubnetIds'] as string[],
         })
       );
+
+      // Apply tag diff. RDS uses ARN-keyed AddTagsToResource /
+      // RemoveTagsFromResource. DescribeDBSubnetGroups returns the ARN.
+      const desc = await this.getClient().send(
+        new DescribeDBSubnetGroupsCommand({ DBSubnetGroupName: physicalId })
+      );
+      const arn = desc.DBSubnetGroups?.[0]?.DBSubnetGroupArn;
+      if (arn) {
+        await this.applyTagDiff(
+          arn,
+          previousProperties['Tags'] as Array<{ Key?: string; Value?: string }> | undefined,
+          properties['Tags'] as Array<{ Key?: string; Value?: string }> | undefined
+        );
+      }
 
       this.logger.debug(`Successfully updated DBSubnetGroup ${logicalId}`);
 
@@ -378,7 +413,8 @@ export class RDSProvider implements ResourceProvider {
     logicalId: string,
     physicalId: string,
     resourceType: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    previousProperties: Record<string, unknown>
   ): Promise<ResourceUpdateResult> {
     this.logger.debug(`Updating DBCluster ${logicalId}: ${physicalId}`);
 
@@ -413,6 +449,15 @@ export class RDSProvider implements ResourceProvider {
 
       // Describe to get updated attributes
       const described = await this.describeDBCluster(physicalId);
+
+      // Apply tag diff using the cluster ARN.
+      if (described?.DBClusterArn) {
+        await this.applyTagDiff(
+          described.DBClusterArn,
+          previousProperties['Tags'] as Array<{ Key?: string; Value?: string }> | undefined,
+          properties['Tags'] as Array<{ Key?: string; Value?: string }> | undefined
+        );
+      }
 
       return {
         physicalId,
@@ -566,7 +611,8 @@ export class RDSProvider implements ResourceProvider {
     logicalId: string,
     physicalId: string,
     resourceType: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    previousProperties: Record<string, unknown>
   ): Promise<ResourceUpdateResult> {
     this.logger.debug(`Updating DBInstance ${logicalId}: ${physicalId}`);
 
@@ -584,6 +630,15 @@ export class RDSProvider implements ResourceProvider {
 
       // Describe to get updated attributes
       const described = await this.describeDBInstance(physicalId);
+
+      // Apply tag diff using the instance ARN.
+      if (described?.DBInstanceArn) {
+        await this.applyTagDiff(
+          described.DBInstanceArn,
+          previousProperties['Tags'] as Array<{ Key?: string; Value?: string }> | undefined,
+          properties['Tags'] as Array<{ Key?: string; Value?: string }> | undefined
+        );
+      }
 
       return {
         physicalId,
@@ -668,6 +723,52 @@ export class RDSProvider implements ResourceProvider {
   }
 
   // ─── Helpers ──────────────────────────────────────────────────────
+
+  /**
+   * Apply a diff between old and new CFn-shape Tags arrays via RDS's
+   * `AddTagsToResource` / `RemoveTagsFromResource` APIs (keyed by
+   * `ResourceName=arn`).
+   */
+  private async applyTagDiff(
+    arn: string,
+    oldTagsRaw: Array<{ Key?: string; Value?: string }> | undefined,
+    newTagsRaw: Array<{ Key?: string; Value?: string }> | undefined
+  ): Promise<void> {
+    const toMap = (
+      tags: Array<{ Key?: string; Value?: string }> | undefined
+    ): Map<string, string> => {
+      const m = new Map<string, string>();
+      for (const t of tags ?? []) {
+        if (t.Key !== undefined && t.Value !== undefined) m.set(t.Key, t.Value);
+      }
+      return m;
+    };
+
+    const oldMap = toMap(oldTagsRaw);
+    const newMap = toMap(newTagsRaw);
+
+    const tagsToAdd: Array<{ Key: string; Value: string }> = [];
+    for (const [k, v] of newMap) {
+      if (oldMap.get(k) !== v) tagsToAdd.push({ Key: k, Value: v });
+    }
+    const tagsToRemove: string[] = [];
+    for (const k of oldMap.keys()) {
+      if (!newMap.has(k)) tagsToRemove.push(k);
+    }
+
+    if (tagsToRemove.length > 0) {
+      await this.getClient().send(
+        new RemoveTagsFromResourceCommand({ ResourceName: arn, TagKeys: tagsToRemove })
+      );
+      this.logger.debug(`Removed ${tagsToRemove.length} tag(s) from RDS resource ${arn}`);
+    }
+    if (tagsToAdd.length > 0) {
+      await this.getClient().send(
+        new AddTagsToResourceCommand({ ResourceName: arn, Tags: tagsToAdd })
+      );
+      this.logger.debug(`Added/updated ${tagsToAdd.length} tag(s) on RDS resource ${arn}`);
+    }
+  }
 
   private buildTags(properties: Record<string, unknown>): Array<{ Key: string; Value: string }> {
     if (!properties['Tags']) return [];

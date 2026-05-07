@@ -7,6 +7,7 @@ import {
   ListBucketsCommand,
   PutBucketVersioningCommand,
   PutBucketTaggingCommand,
+  DeleteBucketTaggingCommand,
   PutBucketOwnershipControlsCommand,
   PutBucketNotificationConfigurationCommand,
   PutBucketCorsCommand,
@@ -172,6 +173,63 @@ export class S3BucketProvider implements ResourceProvider {
       })
     );
     this.logger.debug(`Applied ${tags.length} tags to bucket ${bucketName}`);
+  }
+
+  /**
+   * Apply a diff between old and new CFn-shape Tags arrays via S3's
+   * `PutBucketTagging` (full-replace) / `DeleteBucketTagging` APIs.
+   *
+   * S3's `PutBucketTagging` replaces the entire tag set in one call, so we
+   * don't need separate add/remove API operations. When the new set is
+   * empty, we issue `DeleteBucketTagging` to clear it. When old and new
+   * are equal, we skip the call entirely.
+   */
+  private async applyTagDiff(
+    bucketName: string,
+    oldTagsRaw: Array<{ Key?: string; Value?: string }> | undefined,
+    newTagsRaw: Array<{ Key?: string; Value?: string }> | undefined
+  ): Promise<void> {
+    const normalize = (
+      tags: Array<{ Key?: string; Value?: string }> | undefined
+    ): Array<{ Key: string; Value: string }> => {
+      const out: Array<{ Key: string; Value: string }> = [];
+      for (const t of tags ?? []) {
+        if (t.Key !== undefined && t.Value !== undefined) out.push({ Key: t.Key, Value: t.Value });
+      }
+      return out;
+    };
+
+    const oldNorm = normalize(oldTagsRaw);
+    const newNorm = normalize(newTagsRaw);
+    if (JSON.stringify(oldNorm) === JSON.stringify(newNorm)) return;
+
+    if (newNorm.length === 0) {
+      // Clear tags. Use PutBucketTaggingCommand with empty TagSet — S3
+      // does not have a public `DeleteBucketTagging` parity for the SDK
+      // we use, so emit an empty Tagging set instead.
+      try {
+        await this.s3Client.send(
+          new DeleteBucketTaggingCommand({
+            Bucket: bucketName,
+          })
+        );
+        this.logger.debug(`Cleared tags from bucket ${bucketName}`);
+      } catch (err) {
+        // Some S3 API versions reject empty TagSet on Put; fall back to
+        // re-Put. The `NoSuchTagSet` (already-empty) response is fine.
+        const e = err as { name?: string };
+        if (e.name === 'NoSuchTagSet') return;
+        throw err;
+      }
+      return;
+    }
+    await this.s3Client.send(
+      new PutBucketTaggingCommand({
+        Bucket: bucketName,
+        Tagging: { TagSet: newNorm },
+      })
+    );
+    this.logger.debug(`Replaced tag set on bucket ${bucketName} (${newNorm.length} tags)`);
   }
 
   /**
@@ -862,7 +920,8 @@ export class S3BucketProvider implements ResourceProvider {
    */
   private async applyConfiguration(
     bucketName: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    skipTags = false
   ): Promise<void> {
     // Versioning
     const versioningConfig = properties['VersioningConfiguration'] as
@@ -872,9 +931,11 @@ export class S3BucketProvider implements ResourceProvider {
       await this.applyVersioning(bucketName, versioningConfig);
     }
 
-    // Tags
+    // Tags. Only applied at create time here (`applyTags` is full-replace, no
+    // removal). For update, the caller passes `skipTags=true` and uses the
+    // diff-aware `applyTagDiff` helper instead.
     const tags = properties['Tags'] as Array<{ Key: string; Value: string }> | undefined;
-    if (tags && Array.isArray(tags) && tags.length > 0) {
+    if (!skipTags && tags && Array.isArray(tags) && tags.length > 0) {
       await this.applyTags(bucketName, tags);
     }
 
@@ -1104,7 +1165,7 @@ export class S3BucketProvider implements ResourceProvider {
     physicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
-    _previousProperties: Record<string, unknown>
+    previousProperties: Record<string, unknown>
   ): Promise<ResourceUpdateResult> {
     this.logger.debug(`Updating S3 bucket ${logicalId}: ${physicalId}`);
 
@@ -1122,8 +1183,17 @@ export class S3BucketProvider implements ResourceProvider {
     }
 
     try {
-      // Apply configuration changes
-      await this.applyConfiguration(physicalId, properties);
+      // Apply configuration changes (skip Tags - applyConfiguration only adds,
+      // doesn't remove; we handle tags below to support removal too).
+      await this.applyConfiguration(physicalId, properties, /* skipTags */ true);
+
+      // Apply tag diff. S3 uses PutBucketTagging (full-replace) and
+      // DeleteBucketTagging when the new tag set is empty.
+      await this.applyTagDiff(
+        physicalId,
+        previousProperties['Tags'] as Array<{ Key?: string; Value?: string }> | undefined,
+        properties['Tags'] as Array<{ Key?: string; Value?: string }> | undefined
+      );
 
       const attributes = await this.buildAttributes(physicalId);
 

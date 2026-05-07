@@ -4,6 +4,8 @@ import {
   DeleteAlarmsCommand,
   DescribeAlarmsCommand,
   ListTagsForResourceCommand,
+  TagResourceCommand,
+  UntagResourceCommand,
   type Statistic,
   type ComparisonOperator,
   type StandardUnit,
@@ -120,7 +122,7 @@ export class CloudWatchAlarmProvider implements ResourceProvider {
     physicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
-    _previousProperties: Record<string, unknown>
+    previousProperties: Record<string, unknown>
   ): Promise<ResourceUpdateResult> {
     this.logger.debug(`Updating CloudWatch alarm ${logicalId}: ${physicalId}`);
 
@@ -133,6 +135,14 @@ export class CloudWatchAlarmProvider implements ResourceProvider {
 
       // Fetch the actual ARN from AWS (includes correct region and account)
       const alarmArn = await this.getAlarmArn(physicalId);
+
+      // Apply tag diff. CloudWatch's TagResource takes [{Key, Value}] arrays
+      // keyed by ResourceARN.
+      await this.applyTagDiff(
+        alarmArn,
+        previousProperties['Tags'] as Array<{ Key?: string; Value?: string }> | undefined,
+        properties['Tags'] as Array<{ Key?: string; Value?: string }> | undefined
+      );
 
       return {
         physicalId,
@@ -230,6 +240,51 @@ export class CloudWatchAlarmProvider implements ResourceProvider {
       return `arn:aws:cloudwatch:${region}:*:alarm:${alarmName}`;
     } catch {
       return `arn:aws:cloudwatch:*:*:alarm:${alarmName}`;
+    }
+  }
+
+  /**
+   * Apply a diff between old and new CFn-shape Tags arrays via CloudWatch's
+   * `TagResource` / `UntagResource` APIs (keyed by `ResourceARN`).
+   */
+  private async applyTagDiff(
+    resourceArn: string,
+    oldTagsRaw: Array<{ Key?: string; Value?: string }> | undefined,
+    newTagsRaw: Array<{ Key?: string; Value?: string }> | undefined
+  ): Promise<void> {
+    const toMap = (
+      tags: Array<{ Key?: string; Value?: string }> | undefined
+    ): Map<string, string> => {
+      const m = new Map<string, string>();
+      for (const t of tags ?? []) {
+        if (t.Key !== undefined && t.Value !== undefined) m.set(t.Key, t.Value);
+      }
+      return m;
+    };
+
+    const oldMap = toMap(oldTagsRaw);
+    const newMap = toMap(newTagsRaw);
+
+    const tagsToAdd: Array<{ Key: string; Value: string }> = [];
+    for (const [k, v] of newMap) {
+      if (oldMap.get(k) !== v) tagsToAdd.push({ Key: k, Value: v });
+    }
+    const tagsToRemove: string[] = [];
+    for (const k of oldMap.keys()) {
+      if (!newMap.has(k)) tagsToRemove.push(k);
+    }
+
+    if (tagsToRemove.length > 0) {
+      await this.cloudWatchClient.send(
+        new UntagResourceCommand({ ResourceARN: resourceArn, TagKeys: tagsToRemove })
+      );
+      this.logger.debug(`Removed ${tagsToRemove.length} tag(s) from alarm ${resourceArn}`);
+    }
+    if (tagsToAdd.length > 0) {
+      await this.cloudWatchClient.send(
+        new TagResourceCommand({ ResourceARN: resourceArn, Tags: tagsToAdd })
+      );
+      this.logger.debug(`Added/updated ${tagsToAdd.length} tag(s) on alarm ${resourceArn}`);
     }
   }
 

@@ -20,6 +20,8 @@ import {
   CreateAuthorizerCommand,
   DeleteAuthorizerCommand,
   GetAuthorizerCommand,
+  TagResourceCommand,
+  UntagResourceCommand,
   NotFoundException,
 } from '@aws-sdk/client-api-gateway';
 import { getLogger } from '../../utils/logger.js';
@@ -980,25 +982,27 @@ export class ApiGatewayProvider implements ResourceProvider {
       });
     }
 
-    if (patchOperations.length === 0) {
-      this.logger.debug(`No changes detected for API Gateway Stage ${logicalId}`);
-      return {
-        physicalId,
-        wasReplaced: false,
-        attributes: {
-          StageName: physicalId,
-        },
-      };
-    }
-
     try {
-      await this.apiGatewayClient.send(
-        new UpdateStageCommand({
-          restApiId,
-          stageName: physicalId,
-          patchOperations,
-        })
-      );
+      if (patchOperations.length > 0) {
+        await this.apiGatewayClient.send(
+          new UpdateStageCommand({
+            restApiId,
+            stageName: physicalId,
+            patchOperations,
+          })
+        );
+      }
+
+      // Apply tag diff. API Gateway Stage tags require a constructed ARN:
+      // arn:aws:apigateway:{region}::/restapis/{restApiId}/stages/{stageName}
+      const stageArn = await this.buildStageArn(restApiId, physicalId);
+      if (stageArn) {
+        await this.applyTagDiff(
+          stageArn,
+          previousProperties['Tags'] as Array<{ Key?: string; Value?: string }> | undefined,
+          properties['Tags'] as Array<{ Key?: string; Value?: string }> | undefined
+        );
+      }
 
       this.logger.debug(`Successfully updated API Gateway Stage ${logicalId}`);
 
@@ -1276,6 +1280,71 @@ export class ApiGatewayProvider implements ResourceProvider {
     }
 
     return Promise.resolve(undefined);
+  }
+
+  /**
+   * Build the ARN for an API Gateway Stage, used for tag mutations.
+   *
+   * Format: `arn:aws:apigateway:{region}::/restapis/{restApiId}/stages/{stageName}`.
+   * The double colon (`::`) is intentional: API Gateway tagging uses an
+   * account-id-less ARN.
+   */
+  private async buildStageArn(restApiId: string, stageName: string): Promise<string | undefined> {
+    try {
+      const region = await this.apiGatewayClient.config.region();
+      return `arn:aws:apigateway:${region}::/restapis/${restApiId}/stages/${stageName}`;
+    } catch {
+      return undefined;
+    }
+  }
+
+  /**
+   * Apply a diff between old and new CFn-shape Tags arrays via API Gateway's
+   * `TagResource` / `UntagResource` APIs. API Gateway's `TagResource` takes
+   * lowercase camelCase fields plus a tag-map (`{ resourceArn, tags: {key: value} }`);
+   * `UntagResource` takes `{ resourceArn, tagKeys: [...] }`.
+   */
+  private async applyTagDiff(
+    resourceArn: string,
+    oldTagsRaw: Array<{ Key?: string; Value?: string }> | undefined,
+    newTagsRaw: Array<{ Key?: string; Value?: string }> | undefined
+  ): Promise<void> {
+    const toMap = (
+      tags: Array<{ Key?: string; Value?: string }> | undefined
+    ): Map<string, string> => {
+      const m = new Map<string, string>();
+      for (const t of tags ?? []) {
+        if (t.Key !== undefined && t.Value !== undefined) m.set(t.Key, t.Value);
+      }
+      return m;
+    };
+
+    const oldMap = toMap(oldTagsRaw);
+    const newMap = toMap(newTagsRaw);
+
+    const tagsToAdd: Record<string, string> = {};
+    for (const [k, v] of newMap) {
+      if (oldMap.get(k) !== v) tagsToAdd[k] = v;
+    }
+    const tagsToRemove: string[] = [];
+    for (const k of oldMap.keys()) {
+      if (!newMap.has(k)) tagsToRemove.push(k);
+    }
+
+    if (tagsToRemove.length > 0) {
+      await this.apiGatewayClient.send(
+        new UntagResourceCommand({ resourceArn, tagKeys: tagsToRemove })
+      );
+      this.logger.debug(
+        `Removed ${tagsToRemove.length} tag(s) from API Gateway resource ${resourceArn}`
+      );
+    }
+    if (Object.keys(tagsToAdd).length > 0) {
+      await this.apiGatewayClient.send(new TagResourceCommand({ resourceArn, tags: tagsToAdd }));
+      this.logger.debug(
+        `Added/updated ${Object.keys(tagsToAdd).length} tag(s) on API Gateway resource ${resourceArn}`
+      );
+    }
   }
 
   /**
