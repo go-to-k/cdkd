@@ -52,6 +52,13 @@
             "if": "Bash(*--label*) or Bash(*--add-label*)",
             "timeout": 10,
             "statusMessage": "Checking gh label validity..."
+          },
+          {
+            "type": "command",
+            "command": ".claude/hooks/roundtrip-test-gate.sh",
+            "if": "Bash(git commit*)",
+            "timeout": 10,
+            "statusMessage": "Checking new SDK provider has round-trip test..."
           }
         ]
       }
