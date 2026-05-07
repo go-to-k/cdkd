@@ -54,17 +54,26 @@ Run integration tests against a real AWS account. These tests deploy actual AWS 
    **If nothing is found**, the deploy can proceed cleanly.
 
 5. **Run the test(s)**:
+
+   **Dispatch**: a `verify.sh` in `tests/integration/<test-name>/` is for tests with non-standard flows (drift-injection, multi-stage validation, etc.) — the script owns its own deploy + verify + destroy cycle. The standard flow below is for plain "deploy this stack and destroy it" smoke tests. Pre-flight (step 4) and the post-run verification (steps 6 + 7) apply to BOTH paths — they are the safety net that catches a buggy `verify.sh` leaking resources.
+
    - Navigate to `tests/integration/<test-name>/`
    - Ensure dependencies: `npm install` if node_modules doesn't exist
-   - Run synth: `node ../../../dist/cli.js synth --region us-east-1`
-   - **Detect multi-stack apps**: read the synth output. If it lists more
-     than one stack (e.g. `multi-stack-deps`, `composite-stack`,
-     `cross-stack-references`), pass `--all` to deploy and destroy.
-     Without `--all`, deploy/destroy will fail with `Multiple stacks
-     found: ... Specify stack name(s) or use --all`.
-   - Run deploy: `node ../../../dist/cli.js deploy [--all] [<extra-deploy-args>] --region us-east-1 --state-bucket <bucket> --verbose`
-     - When `--deploy-args "<args>"` was passed to the skill, splice those args into the deploy invocation verbatim. Don't apply them to destroy.
-   - Run destroy: `node ../../../dist/cli.js destroy [--all] --region us-east-1 --state-bucket <bucket> --force`
+   - **If `tests/integration/<test-name>/verify.sh` exists**, run it instead of the standard flow:
+     - `AWS_REGION=us-east-1 STATE_BUCKET=<bucket> bash verify.sh`
+     - The script is responsible for its own deploy + destroy cycle. Steps 6 (verify cleanup) and 7 (auto-cleanup orphans) STILL run after — do not skip them.
+     - Propagate the script's exit code: a non-zero exit must drive the skill into the failure path so step 7's auto-cleanup fires. Do NOT swallow `verify.sh` failures.
+     - Skip the synth / deploy / destroy commands below (the script does its own).
+   - **Otherwise (no `verify.sh`)**, run the standard flow (synth → deploy → destroy):
+     - Run synth: `node ../../../dist/cli.js synth --region us-east-1`
+     - **Detect multi-stack apps**: read the synth output. If it lists more
+       than one stack (e.g. `multi-stack-deps`, `composite-stack`,
+       `cross-stack-references`), pass `--all` to deploy and destroy.
+       Without `--all`, deploy/destroy will fail with `Multiple stacks
+       found: ... Specify stack name(s) or use --all`.
+     - Run deploy: `node ../../../dist/cli.js deploy [--all] [<extra-deploy-args>] --region us-east-1 --state-bucket <bucket> --verbose`
+       - When `--deploy-args "<args>"` was passed to the skill, splice those args into the deploy invocation verbatim. Don't apply them to destroy.
+     - Run destroy: `node ../../../dist/cli.js destroy [--all] --region us-east-1 --state-bucket <bucket> --force`
 
 6. **Verify cleanup**:
    - Check `aws s3 ls s3://<bucket>/cdkd/ --region us-east-1` to confirm no leftover state
