@@ -1,3 +1,10 @@
+## [0.50.12](https://github.com/go-to-k/cdkd/compare/v0.50.11...v0.50.12) (2026-05-07)
+
+
+### Bug Fixes
+
+* **drift:** round-trip audit for tail providers (PR 5/5 — final) ([#167](https://github.com/go-to-k/cdkd/issues/167)) ([ac21101](https://github.com/go-to-k/cdkd/commit/ac21101e0876e84f738043eb649a878b4aad80b8))
+
 ## [0.50.11](https://github.com/go-to-k/cdkd/compare/v0.50.10...v0.50.11) (2026-05-07)
 
 
