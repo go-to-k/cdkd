@@ -101,32 +101,24 @@ export class StepFunctionsProvider implements ResourceProvider {
         tags = tagList.map((tag) => ({ key: tag.Key, value: tag.Value }));
       }
 
-      // Map EncryptionConfiguration (CFn PascalCase -> SDK camelCase)
-      const cfnEncConfig = properties['EncryptionConfiguration'] as
-        | Record<string, unknown>
-        | undefined;
-      let encryptionConfiguration: EncryptionConfiguration | undefined;
-      if (cfnEncConfig) {
-        encryptionConfiguration = {
-          type: cfnEncConfig['Type'] as EncryptionConfiguration['type'],
-          kmsKeyId: cfnEncConfig['KmsKeyId'] as string | undefined,
-          kmsDataKeyReusePeriodSeconds: cfnEncConfig['KmsDataKeyReusePeriodSeconds'] as
-            | number
-            | undefined,
-        };
-      }
+      // Translate every CFn-PascalCase nested object to the SDK's
+      // camelCase shape (see helpers at file scope). All three mappers
+      // also fold the Class 2 empty-placeholder case to `undefined` so
+      // `cdkd drift --revert` round-trips through `update()` without AWS
+      // rejecting a structurally incomplete payload.
+      const encryptionConfiguration = mapEncryptionConfiguration(
+        properties['EncryptionConfiguration']
+      );
+      const loggingConfiguration = mapLoggingConfiguration(properties['LoggingConfiguration']);
+      const tracingConfiguration = mapTracingConfiguration(properties['TracingConfiguration']);
 
       const createParams: CreateStateMachineCommandInput = {
         name: stateMachineName,
         definition: definitionString,
         roleArn: roleArn,
         type: properties['StateMachineType'] as StateMachineType | undefined,
-        loggingConfiguration: properties['LoggingConfiguration'] as
-          | LoggingConfiguration
-          | undefined,
-        tracingConfiguration: properties['TracingConfiguration'] as
-          | TracingConfiguration
-          | undefined,
+        loggingConfiguration,
+        tracingConfiguration,
         tags: tags,
         encryptionConfiguration,
       };
@@ -181,32 +173,33 @@ export class StepFunctionsProvider implements ResourceProvider {
     try {
       const definitionString = this.buildDefinitionString(properties);
 
-      // Map EncryptionConfiguration for update
-      const cfnEncConfig = properties['EncryptionConfiguration'] as
-        | Record<string, unknown>
-        | undefined;
-      let encryptionConfiguration: EncryptionConfiguration | undefined;
-      if (cfnEncConfig) {
-        encryptionConfiguration = {
-          type: cfnEncConfig['Type'] as EncryptionConfiguration['type'],
-          kmsKeyId: cfnEncConfig['KmsKeyId'] as string | undefined,
-          kmsDataKeyReusePeriodSeconds: cfnEncConfig['KmsDataKeyReusePeriodSeconds'] as
-            | number
-            | undefined,
-        };
-      }
+      // Translate every CFn-PascalCase nested object to the SDK's
+      // camelCase shape (see helpers below). All three mappers also fold
+      // the Class 2 empty-placeholder case to `undefined` so `cdkd drift
+      // --revert` round-trips through `update()` without AWS rejecting a
+      // structurally incomplete payload (`encryptionConfiguration` requires
+      // `type`; `loggingConfiguration` without `level` would silently
+      // disable logging).
+      //
+      // BEFORE THIS FIX `properties['LoggingConfiguration']` (CFn PascalCase
+      // from cdkd state) was cast straight to the SDK camelCase type — the
+      // cast is a no-op at runtime, so AWS received the wrong shape and
+      // silently ignored Level / IncludeExecutionData / Destinations, which
+      // surfaced as `cdkd drift --revert` reporting `✓ reverted` while the
+      // very next `cdkd drift` re-detected the same drift.
+      const encryptionConfiguration = mapEncryptionConfiguration(
+        properties['EncryptionConfiguration']
+      );
+      const loggingConfiguration = mapLoggingConfiguration(properties['LoggingConfiguration']);
+      const tracingConfiguration = mapTracingConfiguration(properties['TracingConfiguration']);
 
       await this.getClient().send(
         new UpdateStateMachineCommand({
           stateMachineArn: physicalId,
           definition: definitionString,
           roleArn: properties['RoleArn'] as string | undefined,
-          loggingConfiguration: properties['LoggingConfiguration'] as
-            | LoggingConfiguration
-            | undefined,
-          tracingConfiguration: properties['TracingConfiguration'] as
-            | TracingConfiguration
-            | undefined,
+          loggingConfiguration,
+          tracingConfiguration,
           encryptionConfiguration,
         })
       );
@@ -535,4 +528,81 @@ export class StepFunctionsProvider implements ResourceProvider {
     // for consistent error reporting from the API
     return '{}';
   }
+}
+
+/**
+ * Translate a CFn-shape `EncryptionConfiguration` (PascalCase) into the SDK's
+ * camelCase shape, or `undefined` if the value is absent / a Class 2
+ * empty-object placeholder.
+ *
+ * `readCurrentState` always-emits `EncryptionConfiguration: {}` on state
+ * machines with no encryption — the comparator's top-level walk is
+ * state-keys-only, so the placeholder is required to detect a console-side
+ * encryption attach.  `cdkd drift --revert` later round-trips that
+ * placeholder back through `update()`. AWS rejects an `encryptionConfiguration`
+ * whose required `type` field is missing ("Member must not be null"), so an
+ * empty placeholder is folded to `undefined` here (no-op on the wire).
+ */
+function mapEncryptionConfiguration(value: unknown): EncryptionConfiguration | undefined {
+  if (value === null || value === undefined) return undefined;
+  if (typeof value !== 'object') return undefined;
+  const cfg = value as Record<string, unknown>;
+  // Class 2 sanitize: empty placeholder => no-op
+  if (cfg['Type'] === undefined) return undefined;
+  return {
+    type: cfg['Type'] as EncryptionConfiguration['type'],
+    kmsKeyId: cfg['KmsKeyId'] as string | undefined,
+    kmsDataKeyReusePeriodSeconds: cfg['KmsDataKeyReusePeriodSeconds'] as number | undefined,
+  };
+}
+
+/**
+ * Translate a CFn-shape `LoggingConfiguration` (PascalCase) into the SDK's
+ * camelCase shape, or `undefined` for the empty placeholder case (no `Level`).
+ *
+ * `readCurrentState` always-emits `LoggingConfiguration: {}` (no `Level`) on
+ * state machines that never configured logging.  Forwarding that placeholder
+ * to `UpdateStateMachine` would inadvertently set `level=OFF` and disable
+ * logging on a state machine that has logging configured outside cdkd's
+ * managed view — fold to `undefined` here so the placeholder round-trip is
+ * a no-op.
+ */
+function mapLoggingConfiguration(value: unknown): LoggingConfiguration | undefined {
+  if (value === null || value === undefined) return undefined;
+  if (typeof value !== 'object') return undefined;
+  const cfg = value as Record<string, unknown>;
+  // Class 2 sanitize: empty placeholder (no Level) => no-op
+  if (cfg['Level'] === undefined) return undefined;
+  const result: LoggingConfiguration = {
+    level: cfg['Level'] as LoggingConfiguration['level'],
+  };
+  if (cfg['IncludeExecutionData'] !== undefined) {
+    result.includeExecutionData = cfg['IncludeExecutionData'] as boolean;
+  }
+  if (Array.isArray(cfg['Destinations'])) {
+    result.destinations = (cfg['Destinations'] as Array<Record<string, unknown>>).map((d) => {
+      const cwLogs = d['CloudWatchLogsLogGroup'] as Record<string, unknown> | undefined;
+      if (cwLogs?.['LogGroupArn'] !== undefined) {
+        return {
+          cloudWatchLogsLogGroup: { logGroupArn: cwLogs['LogGroupArn'] as string },
+        };
+      }
+      return {};
+    });
+  }
+  return result;
+}
+
+/**
+ * Translate a CFn-shape `TracingConfiguration` (PascalCase) into the SDK's
+ * camelCase shape.  `readCurrentState` always-emits `{ Enabled: false }` (the
+ * AWS default), so no Class 2 sanitize is needed — the round-trip simply
+ * reaffirms the existing tracing setting.
+ */
+function mapTracingConfiguration(value: unknown): TracingConfiguration | undefined {
+  if (value === null || value === undefined) return undefined;
+  if (typeof value !== 'object') return undefined;
+  const cfg = value as Record<string, unknown>;
+  if (cfg['Enabled'] === undefined) return undefined;
+  return { enabled: cfg['Enabled'] as boolean };
 }

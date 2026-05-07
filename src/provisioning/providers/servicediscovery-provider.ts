@@ -497,6 +497,25 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
     }
   }
 
+  /**
+   * Declare drift-unreadable property paths.
+   *
+   * - `AWS::ServiceDiscovery::PrivateDnsNamespace.Vpc`: Cloud Map's
+   *   `GetNamespace` does NOT return the VPC ID — it is only consumed at
+   *   create time and surfaced in opaque form via
+   *   `Properties.DnsProperties.HostedZoneId`. Without this declaration
+   *   the comparator would walk into `Vpc` (state has it because cdkd
+   *   stored the user-supplied template value) and report a guaranteed
+   *   false-positive on every clean drift run, since `readCurrentState`
+   *   deliberately omits the key.
+   */
+  getDriftUnknownPaths(resourceType: string): string[] {
+    if (resourceType === 'AWS::ServiceDiscovery::PrivateDnsNamespace') {
+      return ['Vpc'];
+    }
+    return [];
+  }
+
   private async readNamespace(physicalId: string): Promise<Record<string, unknown> | undefined> {
     let ns;
     try {

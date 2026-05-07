@@ -295,6 +295,33 @@ export class CloudWatchAlarmProvider implements ResourceProvider {
     alarmName: string,
     properties: Record<string, unknown>
   ): PutMetricAlarmCommandInput {
+    // `readCurrentState` always-emits placeholder values for every
+    // user-controllable top-level key so the drift comparator can detect
+    // a console-side ADD on a key the alarm wasn't templated with. That
+    // makes `cdkd drift --revert` round-trip those placeholders back
+    // through this method (Class 1 / Class 2 in
+    // docs/provider-development.md § 3b):
+    //
+    //   - Class 1 (type-discriminator): `Metrics: []` is the metric-math
+    //     discriminator. An empty array IS truthy in JS, so a naive
+    //     `if (properties['Metrics'])` would route a metric-style alarm
+    //     into the metric-math branch and ship `Metrics: []` to AWS —
+    //     which rejects (mixed-form / "Insufficient metrics"). The
+    //     correct gate is "non-empty array".
+    //
+    //   - Class 2 (structurally-incomplete-when-empty): `MetricName: ''`,
+    //     `Namespace: ''`, `Statistic: ''`, `Unit: ''`,
+    //     `TreatMissingData: ''` are the always-emit string placeholders.
+    //     Shipping them verbatim to `PutMetricAlarm` rejects ("MetricName
+    //     must be at least 1 character", invalid Statistic / Unit enum).
+    //     `AlarmDescription: ''` is also coerced for consistency: AWS
+    //     accepts an empty `AlarmDescription` but the placeholder reaching
+    //     AWS would silently CLEAR an existing description on a no-drift
+    //     round-trip — silent fail mode. Translate '' → undefined so the
+    //     field is omitted from the AWS call.
+    const emptyToUndefined = (v: unknown): string | undefined =>
+      typeof v === 'string' && v === '' ? undefined : (v as string | undefined);
+
     const params: Record<string, unknown> = {
       AlarmName: alarmName,
       ComparisonOperator: properties['ComparisonOperator'] as ComparisonOperator | undefined,
@@ -302,17 +329,19 @@ export class CloudWatchAlarmProvider implements ResourceProvider {
       Threshold: properties['Threshold'] as number | undefined,
       ActionsEnabled: properties['ActionsEnabled'] as boolean | undefined,
       AlarmActions: properties['AlarmActions'] as string[] | undefined,
-      AlarmDescription: properties['AlarmDescription'] as string | undefined,
+      AlarmDescription: emptyToUndefined(properties['AlarmDescription']),
       DatapointsToAlarm: properties['DatapointsToAlarm'] as number | undefined,
       InsufficientDataActions: properties['InsufficientDataActions'] as string[] | undefined,
       OKActions: properties['OKActions'] as string[] | undefined,
-      TreatMissingData: properties['TreatMissingData'] as string | undefined,
-      Unit: properties['Unit'] as StandardUnit | undefined,
+      TreatMissingData: emptyToUndefined(properties['TreatMissingData']),
+      Unit: emptyToUndefined(properties['Unit']) as StandardUnit | undefined,
     };
 
-    // Metrics array (math expressions / composite metrics)
-    if (properties['Metrics']) {
-      const metrics = properties['Metrics'] as Array<Record<string, unknown>>;
+    // Metrics array (math expressions / composite metrics).
+    // Truthy-gate fix: `[]` is truthy in JS — gate on non-empty array.
+    const metricsValue = properties['Metrics'];
+    if (Array.isArray(metricsValue) && metricsValue.length > 0) {
+      const metrics = metricsValue as Array<Record<string, unknown>>;
       params['Metrics'] = metrics.map((m) => {
         const entry: Record<string, unknown> = {
           Id: m['Id'] as string,
@@ -338,11 +367,12 @@ export class CloudWatchAlarmProvider implements ResourceProvider {
         return entry;
       });
     } else {
-      // Simple metric alarm (MetricName / Namespace / Dimensions)
-      params['MetricName'] = properties['MetricName'] as string | undefined;
-      params['Namespace'] = properties['Namespace'] as string | undefined;
+      // Simple metric alarm (MetricName / Namespace / Dimensions). Empty
+      // string placeholders → undefined so they never reach AWS.
+      params['MetricName'] = emptyToUndefined(properties['MetricName']);
+      params['Namespace'] = emptyToUndefined(properties['Namespace']);
       params['Period'] = properties['Period'] as number | undefined;
-      params['Statistic'] = properties['Statistic'] as Statistic | undefined;
+      params['Statistic'] = emptyToUndefined(properties['Statistic']) as Statistic | undefined;
       params['Dimensions'] = properties['Dimensions'] as
         | Array<{ Name: string; Value: string }>
         | undefined;

@@ -336,6 +336,20 @@ export class LogsLogGroupProvider implements ResourceProvider {
   }
 
   /**
+   * Drift comparator skip-list: properties readCurrentState deliberately
+   * cannot round-trip from AWS yet. `DataProtectionPolicy` lives behind
+   * its own `GetDataProtectionPolicy` API call (not in
+   * `DescribeLogGroups` output) — declaring it here prevents
+   * guaranteed false-positive drift on every clean run for log groups
+   * deployed with a data-protection policy. Lifting this guard requires
+   * a per-group `GetDataProtectionPolicy` round-trip in
+   * `readCurrentState`.
+   */
+  getDriftUnknownPaths(): string[] {
+    return ['DataProtectionPolicy'];
+  }
+
+  /**
    * Read the AWS-current log group configuration in CFn-property shape.
    *
    * Issues `DescribeLogGroups` filtered by exact name and picks the first
@@ -373,26 +387,33 @@ export class LogsLogGroupProvider implements ResourceProvider {
       const result: Record<string, unknown> = {};
       if (found.logGroupName !== undefined) result['LogGroupName'] = found.logGroupName;
       result['KmsKeyId'] = found.kmsKeyId ?? '';
-      if (found.retentionInDays !== undefined) {
-        result['RetentionInDays'] = found.retentionInDays;
-      }
+      // Always-emit per docs/provider-development.md § 3b: a console-side
+      // attach of a retention policy on a previously-unbounded log group
+      // must surface as drift. `0` is the semantic "never expire"
+      // placeholder — it maps to `DeleteRetentionPolicyCommand` in
+      // update()'s truthy gate, so the round-trip is a no-op when state
+      // and AWS both have no retention.
+      result['RetentionInDays'] = found.retentionInDays ?? 0;
       if (found.logGroupClass !== undefined) result['LogGroupClass'] = found.logGroupClass;
 
       // Tags via ListTagsForResource. Logs ARNs include a trailing ":*"
       // wildcard that ListTagsForResource rejects — strip it.
+      let tags: Array<{ Key: string; Value: string }> = [];
       if (found.arn) {
         const arnForTags = found.arn.replace(/:\*$/, '');
         try {
           const tagsResp = await this.logsClient.send(
             new ListTagsForResourceCommand({ resourceArn: arnForTags })
           );
-          const tags = normalizeAwsTagsToCfn(tagsResp.tags);
-          result['Tags'] = tags;
+          tags = normalizeAwsTagsToCfn(tagsResp.tags);
         } catch (err) {
           if (err instanceof ResourceNotFoundException) return undefined;
           throw err;
         }
       }
+      // Always-emit: a console-side tag add on an initially-untagged log
+      // group must surface as drift (state=[] vs AWS=[{...}]).
+      result['Tags'] = tags;
 
       return result;
     } catch (err) {

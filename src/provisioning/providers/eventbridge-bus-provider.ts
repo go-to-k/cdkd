@@ -33,6 +33,30 @@ import type {
 } from '../../types/resource.js';
 
 /**
+ * Sanitise a CFn-shape `DeadLetterConfig` (object with optional `Arn`) for
+ * the EventBridge `CreateEventBus` / `UpdateEventBus` API.
+ *
+ * `readCurrentState` always-emits `DeadLetterConfig: { Arn: '' }` on buses
+ * without a DLQ — the comparator's top-level walk is state-keys-only, so
+ * the placeholder is required to detect a console-side DLQ attach (state
+ * `{Arn:''}` vs AWS `{Arn:'real-arn'}`).
+ *
+ * `cdkd drift --revert` later round-trips that placeholder back through
+ * `update()`. AWS rejects `DeadLetterConfig: { Arn: '' }` as an invalid
+ * ARN, so this Class 2 sanitiser drops the placeholder before it reaches
+ * the API: empty-string / null / undefined `Arn` returns `undefined`
+ * (caller treats this as "do not send the DeadLetterConfig field"); a
+ * real ARN passes through unchanged.
+ */
+function sanitizeDeadLetterConfig(value: unknown): { Arn: string } | undefined {
+  if (value === null || value === undefined) return undefined;
+  if (typeof value !== 'object') return undefined;
+  const arn = (value as Record<string, unknown>)['Arn'];
+  if (typeof arn !== 'string' || arn.length === 0) return undefined;
+  return { Arn: arn };
+}
+
+/**
  * SDK Provider for AWS::Events::EventBus
  *
  * Uses direct SDK calls instead of Cloud Control API because:
@@ -95,11 +119,9 @@ export class EventBridgeBusProvider implements ResourceProvider {
       if (properties['Tags']) {
         createParams.Tags = properties['Tags'] as Tag[];
       }
-      if (properties['DeadLetterConfig']) {
-        const dlcConfig = properties['DeadLetterConfig'] as Record<string, unknown>;
-        createParams.DeadLetterConfig = {
-          Arn: dlcConfig['Arn'] as string | undefined,
-        };
+      const dlcCreate = sanitizeDeadLetterConfig(properties['DeadLetterConfig']);
+      if (dlcCreate) {
+        createParams.DeadLetterConfig = dlcCreate;
       }
 
       const response = await this.eventBridgeClient.send(new CreateEventBusCommand(createParams));
@@ -157,11 +179,11 @@ export class EventBridgeBusProvider implements ResourceProvider {
       if (properties['KmsKeyIdentifier'] !== undefined) {
         updateParams.KmsKeyIdentifier = properties['KmsKeyIdentifier'] as string;
       }
-      if (properties['DeadLetterConfig']) {
-        const dlcConfig = properties['DeadLetterConfig'] as Record<string, unknown>;
-        updateParams.DeadLetterConfig = {
-          Arn: dlcConfig['Arn'] as string | undefined,
-        };
+      if (properties['DeadLetterConfig'] !== undefined) {
+        const dlcUpdate = sanitizeDeadLetterConfig(properties['DeadLetterConfig']);
+        if (dlcUpdate) {
+          updateParams.DeadLetterConfig = dlcUpdate;
+        }
       }
       await this.eventBridgeClient.send(new UpdateEventBusCommand(updateParams));
     }
