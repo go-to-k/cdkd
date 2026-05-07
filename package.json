@@ -127,9 +127,5 @@
       "optional": false
     }
   },
-  "pnpm": {
-    "onlyBuiltDependencies": [
-      "esbuild"
-    ]
-  }
+  "packageManager": "pnpm@11.0.8"
 }
