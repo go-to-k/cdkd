@@ -1,3 +1,10 @@
+## [0.50.5](https://github.com/go-to-k/cdkd/compare/v0.50.4...v0.50.5) (2026-05-07)
+
+
+### Bug Fixes
+
+* **drift:** guard FIFO-only SQS / SNS attributes from always-emit-placeholder ([#157](https://github.com/go-to-k/cdkd/issues/157)) ([22112be](https://github.com/go-to-k/cdkd/commit/22112be60855d6218534200e75bcc45a34f8315c))
+
 ## [0.50.4](https://github.com/go-to-k/cdkd/compare/v0.50.3...v0.50.4) (2026-05-07)
 
 
