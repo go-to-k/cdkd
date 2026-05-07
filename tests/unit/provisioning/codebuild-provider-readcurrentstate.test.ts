@@ -77,6 +77,9 @@ describe('CodeBuildProvider.readCurrentState', () => {
       Description: 'mine',
       ServiceRole: 'arn:aws:iam::1:role/r',
       TimeoutInMinutes: 60,
+      EncryptionKey: '',
+      BadgeEnabled: false,
+      SourceVersion: '',
       Source: { Type: 'GITHUB', Location: 'https://x', BuildSpec: 'buildspec.yml' },
       Artifacts: { Type: 'S3', Location: 'mybucket', Name: 'art' },
       Environment: {

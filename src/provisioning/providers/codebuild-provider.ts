@@ -450,93 +450,89 @@ export class CodeBuildProvider implements ResourceProvider {
     }
     if (!project) return undefined;
 
+    // CodeBuild projects are mutable via UpdateProject; emit user-controllable
+    // top-level keys with placeholders so a console-side ADD on a property
+    // not templated at deploy time surfaces as drift.
     const result: Record<string, unknown> = {};
     if (project.name !== undefined) result['Name'] = project.name;
-    if (project.description !== undefined && project.description !== '') {
-      result['Description'] = project.description;
-    }
-    if (project.serviceRole !== undefined) result['ServiceRole'] = project.serviceRole;
+    result['Description'] = project.description ?? '';
+    result['ServiceRole'] = project.serviceRole ?? '';
     if (project.timeoutInMinutes !== undefined) {
       result['TimeoutInMinutes'] = project.timeoutInMinutes;
     }
     if (project.queuedTimeoutInMinutes !== undefined) {
       result['QueuedTimeoutInMinutes'] = project.queuedTimeoutInMinutes;
     }
-    if (project.encryptionKey !== undefined) result['EncryptionKey'] = project.encryptionKey;
+    result['EncryptionKey'] = project.encryptionKey ?? '';
     if (project.concurrentBuildLimit !== undefined) {
       result['ConcurrentBuildLimit'] = project.concurrentBuildLimit;
     }
-    if (project.badge?.badgeEnabled !== undefined) {
-      result['BadgeEnabled'] = project.badge.badgeEnabled;
-    }
-    if (project.sourceVersion !== undefined) result['SourceVersion'] = project.sourceVersion;
+    result['BadgeEnabled'] = project.badge?.badgeEnabled ?? false;
+    result['SourceVersion'] = project.sourceVersion ?? '';
 
-    if (project.source) {
+    {
       const src: Record<string, unknown> = {};
-      if (project.source.type !== undefined) src['Type'] = project.source.type;
-      if (project.source.location !== undefined) src['Location'] = project.source.location;
-      if (project.source.buildspec !== undefined) src['BuildSpec'] = project.source.buildspec;
-      if (project.source.gitCloneDepth !== undefined) {
+      if (project.source?.type !== undefined) src['Type'] = project.source.type;
+      if (project.source?.location !== undefined) src['Location'] = project.source.location;
+      if (project.source?.buildspec !== undefined) src['BuildSpec'] = project.source.buildspec;
+      if (project.source?.gitCloneDepth !== undefined) {
         src['GitCloneDepth'] = project.source.gitCloneDepth;
       }
-      if (project.source.insecureSsl !== undefined) src['InsecureSsl'] = project.source.insecureSsl;
-      if (project.source.reportBuildStatus !== undefined) {
+      if (project.source?.insecureSsl !== undefined)
+        src['InsecureSsl'] = project.source.insecureSsl;
+      if (project.source?.reportBuildStatus !== undefined) {
         src['ReportBuildStatus'] = project.source.reportBuildStatus;
       }
-      if (Object.keys(src).length > 0) result['Source'] = src;
+      result['Source'] = src;
     }
 
-    if (project.artifacts) {
+    {
       const art: Record<string, unknown> = {};
-      if (project.artifacts.type !== undefined) art['Type'] = project.artifacts.type;
-      if (project.artifacts.location !== undefined) art['Location'] = project.artifacts.location;
-      if (project.artifacts.path !== undefined) art['Path'] = project.artifacts.path;
-      if (project.artifacts.name !== undefined) art['Name'] = project.artifacts.name;
-      if (project.artifacts.namespaceType !== undefined) {
+      if (project.artifacts?.type !== undefined) art['Type'] = project.artifacts.type;
+      if (project.artifacts?.location !== undefined) art['Location'] = project.artifacts.location;
+      if (project.artifacts?.path !== undefined) art['Path'] = project.artifacts.path;
+      if (project.artifacts?.name !== undefined) art['Name'] = project.artifacts.name;
+      if (project.artifacts?.namespaceType !== undefined) {
         art['NamespaceType'] = project.artifacts.namespaceType;
       }
-      if (project.artifacts.packaging !== undefined) art['Packaging'] = project.artifacts.packaging;
-      if (project.artifacts.encryptionDisabled !== undefined) {
+      if (project.artifacts?.packaging !== undefined)
+        art['Packaging'] = project.artifacts.packaging;
+      if (project.artifacts?.encryptionDisabled !== undefined) {
         art['EncryptionDisabled'] = project.artifacts.encryptionDisabled;
       }
-      if (project.artifacts.overrideArtifactName !== undefined) {
+      if (project.artifacts?.overrideArtifactName !== undefined) {
         art['OverrideArtifactName'] = project.artifacts.overrideArtifactName;
       }
-      if (project.artifacts.artifactIdentifier !== undefined) {
+      if (project.artifacts?.artifactIdentifier !== undefined) {
         art['ArtifactIdentifier'] = project.artifacts.artifactIdentifier;
       }
-      if (Object.keys(art).length > 0) result['Artifacts'] = art;
+      result['Artifacts'] = art;
     }
 
-    if (project.environment) {
+    {
       const env: Record<string, unknown> = {};
-      if (project.environment.type !== undefined) env['Type'] = project.environment.type;
-      if (project.environment.image !== undefined) env['Image'] = project.environment.image;
-      if (project.environment.computeType !== undefined) {
+      if (project.environment?.type !== undefined) env['Type'] = project.environment.type;
+      if (project.environment?.image !== undefined) env['Image'] = project.environment.image;
+      if (project.environment?.computeType !== undefined) {
         env['ComputeType'] = project.environment.computeType;
       }
-      if (project.environment.privilegedMode !== undefined) {
+      if (project.environment?.privilegedMode !== undefined) {
         env['PrivilegedMode'] = project.environment.privilegedMode;
       }
-      if (project.environment.imagePullCredentialsType !== undefined) {
+      if (project.environment?.imagePullCredentialsType !== undefined) {
         env['ImagePullCredentialsType'] = project.environment.imagePullCredentialsType;
       }
-      if (project.environment.certificate !== undefined) {
+      if (project.environment?.certificate !== undefined) {
         env['Certificate'] = project.environment.certificate;
       }
-      if (
-        project.environment.environmentVariables &&
-        project.environment.environmentVariables.length > 0
-      ) {
-        env['EnvironmentVariables'] = project.environment.environmentVariables.map((ev) => {
-          const out: Record<string, unknown> = {};
-          if (ev.name !== undefined) out['Name'] = ev.name;
-          if (ev.value !== undefined) out['Value'] = ev.value;
-          if (ev.type !== undefined) out['Type'] = ev.type;
-          return out;
-        });
-      }
-      if (Object.keys(env).length > 0) result['Environment'] = env;
+      env['EnvironmentVariables'] = (project.environment?.environmentVariables ?? []).map((ev) => {
+        const out: Record<string, unknown> = {};
+        if (ev.name !== undefined) out['Name'] = ev.name;
+        if (ev.value !== undefined) out['Value'] = ev.value;
+        if (ev.type !== undefined) out['Type'] = ev.type;
+        return out;
+      });
+      result['Environment'] = env;
     }
 
     // Tags from the same BatchGetProjects response (CodeBuild uses lower-case

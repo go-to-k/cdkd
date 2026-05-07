@@ -332,14 +332,20 @@ export class CloudWatchAlarmProvider implements ResourceProvider {
     const alarm = resp.MetricAlarms?.[0];
     if (!alarm) return undefined;
 
+    // CloudWatch alarms are fully replaced by PutMetricAlarm on update,
+    // so almost every field is mutable. Always emit placeholders so a
+    // console-side ADD on a property the alarm wasn't templated with at
+    // deploy time surfaces as drift. The single-metric form
+    // (MetricName / Namespace / Statistic / Period / Dimensions) and the
+    // metric-math form (Metrics array) are mutually exclusive — both
+    // sets get placeholders so a user switching from one form to the
+    // other on the same alarm is detected.
     const result: Record<string, unknown> = {};
     if (alarm.AlarmName !== undefined) result['AlarmName'] = alarm.AlarmName;
-    if (alarm.AlarmDescription !== undefined && alarm.AlarmDescription !== '') {
-      result['AlarmDescription'] = alarm.AlarmDescription;
-    }
-    if (alarm.MetricName !== undefined) result['MetricName'] = alarm.MetricName;
-    if (alarm.Namespace !== undefined) result['Namespace'] = alarm.Namespace;
-    if (alarm.Statistic !== undefined) result['Statistic'] = alarm.Statistic;
+    result['AlarmDescription'] = alarm.AlarmDescription ?? '';
+    result['MetricName'] = alarm.MetricName ?? '';
+    result['Namespace'] = alarm.Namespace ?? '';
+    result['Statistic'] = alarm.Statistic ?? '';
     if (alarm.ComparisonOperator !== undefined) {
       result['ComparisonOperator'] = alarm.ComparisonOperator;
     }
@@ -351,29 +357,19 @@ export class CloudWatchAlarmProvider implements ResourceProvider {
     if (alarm.DatapointsToAlarm !== undefined) {
       result['DatapointsToAlarm'] = alarm.DatapointsToAlarm;
     }
-    if (alarm.ActionsEnabled !== undefined) result['ActionsEnabled'] = alarm.ActionsEnabled;
-    if (alarm.AlarmActions && alarm.AlarmActions.length > 0) {
-      result['AlarmActions'] = [...alarm.AlarmActions];
-    }
-    if (alarm.OKActions && alarm.OKActions.length > 0) {
-      result['OKActions'] = [...alarm.OKActions];
-    }
-    if (alarm.InsufficientDataActions && alarm.InsufficientDataActions.length > 0) {
-      result['InsufficientDataActions'] = [...alarm.InsufficientDataActions];
-    }
-    if (alarm.TreatMissingData !== undefined) {
-      result['TreatMissingData'] = alarm.TreatMissingData;
-    }
-    if (alarm.Unit !== undefined) result['Unit'] = alarm.Unit;
-    if (alarm.Dimensions && alarm.Dimensions.length > 0) {
-      result['Dimensions'] = alarm.Dimensions.map((d) => ({
-        ...(d.Name !== undefined ? { Name: d.Name } : {}),
-        ...(d.Value !== undefined ? { Value: d.Value } : {}),
-      }));
-    }
-    if (alarm.Metrics && alarm.Metrics.length > 0) {
-      result['Metrics'] = alarm.Metrics.map((m) => m as unknown as Record<string, unknown>);
-    }
+    result['ActionsEnabled'] = alarm.ActionsEnabled ?? true;
+    result['AlarmActions'] = alarm.AlarmActions ? [...alarm.AlarmActions] : [];
+    result['OKActions'] = alarm.OKActions ? [...alarm.OKActions] : [];
+    result['InsufficientDataActions'] = alarm.InsufficientDataActions
+      ? [...alarm.InsufficientDataActions]
+      : [];
+    result['TreatMissingData'] = alarm.TreatMissingData ?? '';
+    result['Unit'] = alarm.Unit ?? '';
+    result['Dimensions'] = (alarm.Dimensions ?? []).map((d) => ({
+      ...(d.Name !== undefined ? { Name: d.Name } : {}),
+      ...(d.Value !== undefined ? { Value: d.Value } : {}),
+    }));
+    result['Metrics'] = (alarm.Metrics ?? []).map((m) => m as unknown as Record<string, unknown>);
 
     // Tags via ListTagsForResource (uses the alarm ARN from DescribeAlarms).
     if (alarm.AlarmArn) {
