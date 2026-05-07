@@ -475,20 +475,21 @@ export class SNSTopicProvider implements ResourceProvider {
       if (v !== undefined) result[key] = v === 'true';
     }
 
-    // String attributes (pass-through). Always emit a placeholder so a
-    // console-side ADD on a topic that didn't carry the attribute at deploy
-    // time surfaces as drift (the comparator's top-level walk is
-    // state-keys-only; a missing key on the deploy-time baseline blinds
-    // detection forever).
-    const str: string[] = [
-      'DisplayName',
-      'KmsMasterKeyId',
-      'TracingConfig',
-      'SignatureVersion',
-      'FifoThroughputScope',
-    ];
+    // String attributes valid for any topic type — emit unconditionally so a
+    // console-side ADD surfaces as drift.
+    const str: string[] = ['DisplayName', 'KmsMasterKeyId', 'TracingConfig', 'SignatureVersion'];
     for (const key of str) {
       result[key] = attrs[key] ?? '';
+    }
+
+    // FifoThroughputScope is FIFO-only — emitting `''` as a placeholder on
+    // a standard topic would have `cdkd drift --revert` push the empty
+    // value back to AWS, which `SetTopicAttributes` rejects. Same
+    // type-discriminator-tagged pattern as the SQS DeduplicationScope /
+    // FifoThroughputLimit guards.
+    const isFifo = attrs['FifoTopic'] === 'true';
+    if (isFifo) {
+      result['FifoThroughputScope'] = attrs['FifoThroughputScope'] ?? '';
     }
 
     // JSON-document attributes — AWS returns a JSON string; cdkd state

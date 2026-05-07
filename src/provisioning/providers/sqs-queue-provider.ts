@@ -407,16 +407,21 @@ export class SQSQueueProvider implements ResourceProvider {
       if (v !== undefined) result[key] = v === 'true';
     }
 
-    // String attributes: always emit a placeholder so a console-side ADD
-    // on a queue that didn't carry the attribute at deploy time surfaces
-    // as drift.
-    const str: Array<keyof typeof CDK_TO_SQS_ATTRIBUTES> = [
-      'KmsMasterKeyId',
-      'DeduplicationScope',
-      'FifoThroughputLimit',
-    ];
-    for (const key of str) {
-      result[key] = attributes[key] ?? '';
+    // KmsMasterKeyId is valid for any queue type — emit unconditionally so a
+    // console-side KMS attach surfaces as drift.
+    result['KmsMasterKeyId'] = attributes['KmsMasterKeyId'] ?? '';
+
+    // DeduplicationScope and FifoThroughputLimit are FIFO-only attributes.
+    // AWS rejects `SetQueueAttributes(DeduplicationScope=...)` with
+    // "You can specify the DeduplicationScope only when FifoQueue is set
+    // to true" on standard queues. If we emit '' as a placeholder for
+    // standard queues, `cdkd drift --revert` would push it back to AWS
+    // and trigger that rejection. Type-discriminator-tagged: only emit
+    // when the queue is actually FIFO.
+    const isFifo = attributes['FifoQueue'] === 'true';
+    if (isFifo) {
+      result['DeduplicationScope'] = attributes['DeduplicationScope'] ?? '';
+      result['FifoThroughputLimit'] = attributes['FifoThroughputLimit'] ?? '';
     }
 
     // RedrivePolicy: AWS returns as a JSON string; cdkd state typically
