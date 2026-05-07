@@ -170,102 +170,7 @@ the full per-type table.
 | Attribute enrichment | ✅ | CloudFront OAI, DynamoDB StreamArn, API Gateway RootResourceId, Lambda FunctionUrl, Route53 HealthCheckId, ECR Repository Arn |
 | CC API null value stripping | ✅ | Removes null values before API calls |
 | Retry with HTTP status codes | ✅ | 429/503 + cause chain inspection |
-
-### Drift detection
-
-`cdkd drift <stack>` (state-driven; no synth) compares each resource
-between the AWS-current snapshot returned by `provider.readCurrentState`
-and the **deploy-time AWS snapshot** stored in
-`ResourceState.observedProperties`. The observedProperties baseline is
-populated automatically on every successful `cdkd deploy` /
-`cdkd import`, so console-side changes to keys you did NOT template
-(IAM policies attached out-of-band, S3 public-access-block toggled,
-etc.) surface as drift instead of being silently ignored.
-
-State schema `version: 3` (the layout that carries observedProperties)
-is auto-migrated on the next write — no user action needed for new
-deploys. **For stacks already deployed with an older binary**, the
-upgrade story is:
-
-1. `cdkd 0.46.x` (or earlier) deployed your stack — state.json is
-   `version: 2`, no observedProperties on any resource.
-2. Upgrade cdkd to `0.47.0+`. The new binary reads v2 state cleanly,
-   and `cdkd drift` falls back to comparing against the user-templated
-   `properties` field (= the pre-v3 behavior) for any resource that
-   hasn't been refreshed yet.
-3. **Populate observedProperties** for the existing stack — pick one:
-
-   ```bash
-   # Option A (recommended): explicit refresh, no redeploy.
-   cdkd state refresh-observed MyStack
-
-   # Option B: trigger an UPDATE on each affected resource via the
-   # next `cdkd deploy`. NO_CHANGE-skipped resources are NOT refreshed
-   # by deploy alone — only the ones whose template changed get a
-   # readCurrentState call. Use this only if you're already changing
-   # the template; for an upgrade-and-refresh-only flow prefer A.
-   cdkd deploy MyStack
-   ```
-4. Re-run `cdkd drift MyStack` — now observed-baseline drift detection
-   is fully enabled.
-
-`cdkd state refresh-observed --all` does the same for every stack in
-the state bucket; `--dry-run` prints the per-stack refresh count
-without touching state. Resolve any drift the comparator finds with
-`cdkd drift <stack> --accept` (state ← AWS) or `--revert` (AWS ← state).
-
-#### Opt-out: trade rich drift for raw deploy speed
-
-Capture of `observedProperties` at deploy time is controlled by:
-
-| Surface     | Value                                              |
-|-------------|----------------------------------------------------|
-| CLI flag    | `cdkd deploy --no-capture-observed-state`          |
-| `cdk.json`  | `context.cdkd.captureObservedState: false`         |
-| Env var     | (none)                                             |
-| Default     | `true` (capture on)                                |
-| Precedence  | CLI flag > `cdk.json` > default                    |
-
-The three axes that govern when and how the flag takes effect:
-
-- **Granularity** — per-command (CLI flag) / per-project (`cdk.json`); no
-  per-stack opt-out even under `cdkd deploy --all`. If different stacks
-  need different policies, run them as separate `cdkd deploy <stack>`
-  invocations.
-- **Storage** — NOT stored in `state.json`; only on the CLI invocation
-  or in `cdk.json`. State files carry observed values, not the policy
-  that produced them.
-- **Mid-flight reversibility** — yes; every `cdkd deploy` decides
-  independently. Flipping the flag back on next deploy works with no
-  reset; flipping it off leaves earlier `observedProperties` entries
-  untouched (mixing "rich" and "fallback" baselines per-resource is
-  supported and works correctly).
-
-What changes when capture is off:
-
-- `cdkd deploy` skips the post-create / post-update
-  `provider.readCurrentState` calls, so the deploy critical path is
-  ~3–4% faster on bench-cdk-sample (lambda integ is within noise).
-- New CREATE / UPDATE resources land in state with
-  `observedProperties: undefined` — same shape as a v2-state record.
-- `cdkd drift` for those resources falls back to the
-  user-templated `properties` baseline (= the pre-v3 behavior). CDK-
-  templated property changes are still detected; AWS-side defaults
-  the user did not template (S3 `BlockPublicAcls`, etc.) and
-  console-side **map key adds** (Lambda `Environment.Variables.EXTRA`,
-  etc.) are NOT detected.
-- Already-stored `observedProperties` from earlier deploys is left
-  untouched — flipping the flag mid-stack mixes "rich" and "fallback"
-  baselines on a per-resource basis, which is fine.
-- Run `cdkd state refresh-observed <stack>` at any time to retroactively
-  populate `observedProperties` for every resource without redeploying;
-  see the upgrade flow above. This is the inverse — flip drift back
-  to "rich" without paying the per-deploy cost.
-
-There is **no per-stack opt-out**: when `cdkd deploy --all` runs across
-multiple stacks, the flag is honored uniformly for the whole batch. If
-you need different stacks on different policies, run them as separate
-`cdkd deploy <stack>` invocations.
+| Drift detection | ✅ | `cdkd drift` — state vs AWS reality, including console-side changes to keys you didn't template. See [Drift detection](#drift-detection) below. |
 
 ## Prerequisites
 
@@ -413,6 +318,12 @@ cdkd deploy --no-rollback
 # Deploy only the specified stack (skip dependency auto-inclusion)
 cdkd deploy -e MyStack
 
+# Skip the multi-minute wait on async resources (CloudFront, RDS, NAT GW, etc.)
+cdkd deploy --no-wait
+
+# Synth + build + publish assets only (no deploy) — typical CI split
+cdkd publish-assets
+
 # Destroy resources
 cdkd destroy MyStack
 cdkd destroy --all --force
@@ -473,129 +384,6 @@ cdkd state destroy MyStack OtherStack --yes
 cdkd state destroy --all -y           # every stack in the bucket
 cdkd state destroy MyStack --region us-east-1
 ```
-
-> **`destroy` vs `orphan`** (matches aws-cdk-cli's new `cdk orphan`):
-> `destroy` deletes the AWS resources AND the state record. `orphan` deletes
-> ONLY the state record — AWS resources remain intact, just no longer
-> tracked by cdkd.
->
-> The two `orphan` variants now operate at different granularities:
->
-> - `cdkd orphan <constructPath>...` — synth-driven, **per-resource**.
->   Removes specific resources from a stack's state file and rewrites every
->   sibling reference (Ref / Fn::GetAtt / Fn::Sub / dependencies) so the
->   next deploy doesn't re-create the orphan or fail on a stale reference.
->   Mirrors `cdk orphan --unstable=orphan`.
-> - `cdkd state orphan <stack>...` — state-driven, **whole-stack**. Removes
->   the entire state record for a stack from the bucket. Works without the
->   CDK app.
->
-> `cdkd destroy` (synth-driven, deletes AWS resources + state) and
-> `cdkd state destroy` (state-driven, same effect) round out the matrix.
-
-## `publish-assets`: synth + build + publish, no deploy
-
-`cdkd publish-assets` runs the asset half of the deploy pipeline only —
-synthesize the CDK app, build any Docker images, upload file assets to
-S3, push images to ECR — and stops. No state writes, no provisioning,
-no lock acquisition. This is the typical CI split where one runner
-builds and uploads assets and a separate runner deploys.
-
-```bash
-cdkd publish-assets                          # synth + publish all stacks (or auto-detect single stack)
-cdkd publish-assets MyStack                  # synth + publish a specific stack
-cdkd publish-assets --all                    # synth + publish every stack in the app
-cdkd publish-assets 'MyStage/*'              # wildcard (CDK display path)
-cdkd publish-assets -a cdk.out               # skip synth — use a pre-synthesized cloud assembly
-```
-
-Stack selection follows the same rules as `deploy` / `diff` / `destroy`
-(positional > `--stack` > `--all` > auto-detect). Concurrency knobs
-are `--asset-publish-concurrency` and `--image-build-concurrency`.
-`-a/--app` accepts either a shell command (`"npx ts-node app.ts"`) or
-a path to an already-synthesized cloud assembly directory; pointing at
-`cdk.out` skips synthesis. See [docs/cli-reference.md](docs/cli-reference.md#publish-assets-synth--build--publish-no-deploy)
-for details.
-
-## `--no-wait`: skip async-resource waits
-
-CloudFront Distributions, RDS Clusters/Instances, ElastiCache, and
-NAT Gateways typically take 1–15 minutes for AWS to fully provision.
-By default cdkd waits for them to reach a ready state — the same
-behavior as CloudFormation. Pass `--no-wait` to return as soon as the
-create call returns:
-
-```bash
-cdkd deploy --no-wait
-```
-
-The resource is fully functional once AWS finishes the async
-deployment in the background. CloudFormation has no equivalent — once
-you submit a stack, you wait for everything.
-
-NAT Gateway is included as of v0.31. Provisioning typically takes
-1–2 minutes and is the dominant cost in many VPC stacks; with
-`cdkd deploy --no-wait`, `CreateNatGateway` returns the `NatGatewayId`
-immediately and dependent Routes that only reference the ID can
-proceed against a still-`pending` gateway. AWS continues NAT
-provisioning asynchronously after the deploy returns. Use this only
-when nothing in the deploy flow needs actual NAT-routed egress (e.g.
-no Lambda invoked during deploy that hits the internet).
-
-`--no-wait` is **deploy-only**. `cdkd destroy` always waits for NAT
-Gateway to reach `deleted` state — while the gateway is in
-`deleting` AWS keeps the ENI / EIP / route-table associations
-attached, so any concurrent `DeleteSubnet` / `DeleteInternetGateway`
-/ `DeleteVpc` returns `DependencyViolation` and the destroy enters a
-retry storm. Other `--no-wait` resources (CloudFront / RDS /
-ElastiCache) don't apply to destroy either — their providers are
-already non-blocking on delete because they're leaves in the destroy
-DAG.
-
-## VPC route DependsOn relaxation (on by default)
-
-CDK synth eagerly injects `DependsOn` from VPC Lambdas (and adjacent
-IAM Role / Policy / Lambda::Url / EventSourceMapping resources) onto
-the private subnet's `DefaultRoute` / `RouteTableAssociation` so that
-nothing tries to invoke the Lambda before its egress path to the
-internet is up. The dependency is real at *runtime* (a Lambda code
-call to a third-party API can't reach the internet without a NAT
-route), but it is NOT required at *deploy time* — `CreateFunction` /
-`CreateFunctionUrlConfig` / `AddPermission` /
-`CreateEventSourceMapping` all accept a function in `Pending` state.
-
-For VPC + Lambda + CloudFront stacks the strict-CDK-ordering chain is serial:
-
-```text
-NAT GW (~2-3 min) → DefaultRoute → Lambda → Lambda::Url → Distribution propagation (~3 min)
-```
-
-cdkd drops the route DependsOn by default so Distribution + Lambda::Url
-dispatch right after IAM Role / Subnet are ready and propagate in
-parallel with NAT stabilization:
-
-| Mode | Critical path | Total |
-| --- | --- | --- |
-| `--no-aggressive-vpc-parallel` (opt-out) | NAT → Lambda → CF (serial) | ~6 min |
-| **default** | max(NAT, CF) | **~3 min** |
-
-Measured **−54.6%** on `tests/integration/bench-cdk-sample` (398.59s
-with `--no-aggressive-vpc-parallel` → 181.03s default).
-
-To opt out (e.g. for a stack with a Custom Resource that synchronously
-invokes a VPC Lambda outside cdkd's Lambda-ServiceToken Active wait):
-
-```bash
-cdkd deploy --no-aggressive-vpc-parallel
-```
-
-Deploy-only — the relaxation has no effect on destroy ordering (the
-route DependsOn doesn't constrain delete-time correctness; Lambda
-hyperplane ENI release is the actual destroy bottleneck and is handled
-separately by `lambda-vpc-deps.ts`).
-
-See [docs/cli-reference.md](docs/cli-reference.md) for the full
-type-pair allowlist, implementation pointers, and trade-off notes.
 
 ## Other CLI flags
 
@@ -673,6 +461,89 @@ See **[docs/import.md](docs/import.md)** for the full guide: three import
 modes (auto / selective / hybrid), `--resource-mapping` CDK CLI
 compatibility, CloudFormation migration flow, provider coverage, and the
 parity matrix vs upstream `cdk import`.
+
+## Drift detection
+
+`cdkd drift` (state-driven; no synth) compares each managed resource
+against AWS reality and reports divergence — including console-side
+changes to keys you did NOT template (S3 public-access-block, IAM Role
+tags, Lambda env keys, etc.).
+
+```bash
+cdkd drift                       # auto-detect single stack, exit 1 if drift
+cdkd drift MyStack --json        # machine-readable, for CI gating
+cdkd drift MyStack --accept --yes   # state ← AWS (catch up after a console edit)
+cdkd drift MyStack --revert --yes   # AWS ← state (undo a console edit)
+cdkd state refresh-observed MyStack # populate the drift baseline without redeploying
+```
+
+See **[docs/cli-reference.md `cdkd drift`](docs/cli-reference.md#cdkd-drift)**
+for the full reference: `--no-capture-observed-state` deploy opt-out
+(per-command vs per-project, mid-flight reversibility), v2→v3 state
+upgrade flow, exit codes, and what changes when capture is off.
+
+## Orphan vs destroy
+
+`destroy` deletes the AWS resources **and** the state record;
+`orphan` deletes **only** the state record (AWS resources stay
+intact, just no longer tracked by cdkd). Mirrors aws-cdk-cli's
+`cdk orphan`.
+
+Two `orphan` variants at different granularities:
+
+- `cdkd orphan <constructPath>...` — synth-driven, **per-resource**.
+  Rewrites every sibling reference (Ref / Fn::GetAtt / Fn::Sub /
+  dependencies) so the next deploy doesn't re-create the orphan.
+- `cdkd state orphan <stack>...` — state-driven, **whole-stack**.
+  Removes the entire state record. Works without the CDK app.
+
+Both `cdkd destroy` (synth-driven) and `cdkd state destroy`
+(state-driven, no synth) delete AWS resources + state.
+
+## `publish-assets`: synth + build + publish, no deploy
+
+`cdkd publish-assets` runs the asset half of the deploy pipeline
+only — synthesize, build Docker images, upload file assets to S3,
+push images to ECR — and stops. No state writes, no provisioning.
+Typical CI split where one runner builds + uploads assets and a
+separate runner deploys.
+
+```bash
+cdkd publish-assets                  # all stacks (or auto-detect single stack)
+cdkd publish-assets MyStack          # specific stack
+cdkd publish-assets -a cdk.out       # skip synth, use pre-synthesized assembly
+```
+
+See [docs/cli-reference.md](docs/cli-reference.md#publish-assets-synth--build--publish-no-deploy)
+for stack-selection rules and concurrency knobs.
+
+## `--no-wait`: skip async-resource waits
+
+CloudFront / RDS / ElastiCache / NAT Gateway typically take 1–15
+minutes to fully provision. By default cdkd waits (matching CFn).
+`cdkd deploy --no-wait` returns as soon as the create call returns
+and lets AWS finish in the background — handy for CI where nothing
+in the deploy flow needs the resource fully active. **Deploy-only**:
+`cdkd destroy` always waits (NAT in `deleting` state holds ENIs and
+would `DependencyViolation` sibling deletes).
+
+See [docs/cli-reference.md](docs/cli-reference.md#--no-wait-skip-async-resource-waits)
+for per-resource caveats (NAT egress, RDS final-snapshot timing,
+etc.).
+
+## VPC route DependsOn relaxation (on by default)
+
+CDK injects defensive `DependsOn` from VPC Lambdas onto private-subnet
+routes. The dependency is real at runtime but NOT required at deploy
+time. cdkd drops it by default so CloudFront + Lambda::Url propagation
+runs in parallel with NAT stabilization (~50% faster on VPC+Lambda+CloudFront
+stacks; bench-cdk-sample 398s → 181s). Pass
+`cdkd deploy --no-aggressive-vpc-parallel` to opt out (e.g. when a
+Custom Resource synchronously invokes a VPC Lambda outside cdkd's
+Lambda-ServiceToken Active wait).
+
+See [docs/cli-reference.md](docs/cli-reference.md) for the full
+type-pair allowlist and trade-off notes.
 
 ## State Management
 
