@@ -109,4 +109,81 @@ describe('calculateResourceDrift', () => {
       calculateResourceDrift(state, aws, { ignorePaths: ['Code'] })
     ).toEqual([{ path: 'MemorySize', stateValue: 128, awsValue: 256 }]);
   });
+
+  describe('unionWalkObjects', () => {
+    it('default (off) ignores keys present only in AWS-current — preserves the v2 fallback baseline behavior', () => {
+      // The default (state-keys-only walk) protects the v2-state
+      // fallback path: when the baseline is the user-templated
+      // `properties` field, AWS-managed defaults the user did not
+      // template would otherwise fire false positives every run.
+      const state = { Environment: { Variables: { FOO: 'bar' } } };
+      const aws = { Environment: { Variables: { FOO: 'bar', AWS_INTERNAL: 'x' } } };
+      expect(calculateResourceDrift(state, aws)).toEqual([]);
+    });
+
+    it('on: detects a console-side key add inside a map-shaped property', () => {
+      // The headline case for the observed-baseline path: Lambda's
+      // `Environment.Variables` started with `{FOO: 'bar'}` at deploy
+      // time; the user added `EXTRA: 'hacked'` via the console; drift
+      // must surface that add.
+      const state = { Environment: { Variables: { FOO: 'bar' } } };
+      const aws = { Environment: { Variables: { FOO: 'bar', EXTRA: 'hacked' } } };
+      const drifts = calculateResourceDrift(state, aws, { unionWalkObjects: true });
+      expect(drifts).toHaveLength(1);
+      expect(drifts[0]).toEqual({
+        path: 'Environment.Variables.EXTRA',
+        stateValue: undefined,
+        awsValue: 'hacked',
+      });
+    });
+
+    it('on: detects a console-side key remove inside a map-shaped property', () => {
+      // Symmetric: AWS no longer has a key the baseline did. With
+      // state-keys-only walk this would have been picked up at the
+      // value comparison (baseline=value vs aws=undefined); union
+      // walk preserves that semantic.
+      const state = { Environment: { Variables: { FOO: 'bar', KEEP: 'k' } } };
+      const aws = { Environment: { Variables: { KEEP: 'k' } } };
+      const drifts = calculateResourceDrift(state, aws, { unionWalkObjects: true });
+      expect(drifts).toEqual([
+        { path: 'Environment.Variables.FOO', stateValue: 'bar', awsValue: undefined },
+      ]);
+    });
+
+    it('on: still skips top-level keys not present in state', () => {
+      // Union-walk only kicks in one level deeper. The top-level walk
+      // stays state-keys-only so AWS top-level fields cdkd never set
+      // (FunctionArn, RevisionId, ...) don't fire false drift even on
+      // the observed-baseline path.
+      const state = { MemorySize: 128 };
+      const aws = { MemorySize: 128, RevisionId: 'rev-1', FunctionArn: 'arn:...' };
+      expect(calculateResourceDrift(state, aws, { unionWalkObjects: true })).toEqual([]);
+    });
+
+    it('on: ignorePaths still wins for nested map keys', () => {
+      // ignorePaths is provider-declared "drift unknown" — must keep
+      // its short-circuit even when union-walk would otherwise descend.
+      const state = { Environment: { Variables: { FOO: 'bar' } } };
+      const aws = { Environment: { Variables: { FOO: 'bar', SECRET: 'leaked' } } };
+      expect(
+        calculateResourceDrift(state, aws, {
+          unionWalkObjects: true,
+          ignorePaths: ['Environment.Variables'],
+        })
+      ).toEqual([]);
+    });
+
+    it('on: arrays inside the descended object are still compared by structural equality', () => {
+      // Union-walk affects only object-vs-object descent. Arrays and
+      // scalars take the same diff path as before; this test guards
+      // against a regression where union-walk accidentally mishandles
+      // arrays nested inside maps.
+      const state = { Mapped: { Subnets: ['s-1', 's-2'] } };
+      const aws = { Mapped: { Subnets: ['s-1'] } };
+      const drifts = calculateResourceDrift(state, aws, { unionWalkObjects: true });
+      expect(drifts).toEqual([
+        { path: 'Mapped.Subnets', stateValue: ['s-1', 's-2'], awsValue: ['s-1'] },
+      ]);
+    });
+  });
 });
