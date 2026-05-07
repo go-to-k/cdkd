@@ -1,3 +1,10 @@
+## [0.50.1](https://github.com/go-to-k/cdkd/compare/v0.50.0...v0.50.1) (2026-05-07)
+
+
+### Bug Fixes
+
+* **drift:** always emit user-controllable top-level keys in readCurrentState (Phase 1) ([#152](https://github.com/go-to-k/cdkd/issues/152)) ([8cc79e8](https://github.com/go-to-k/cdkd/commit/8cc79e8a29a45d30846d1cd092559abefa23805a))
+
 # [0.50.0](https://github.com/go-to-k/cdkd/compare/v0.49.0...v0.50.0) (2026-05-07)
 
 
