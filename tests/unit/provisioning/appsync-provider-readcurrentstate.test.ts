@@ -151,6 +151,7 @@ describe('AppSyncProvider.readCurrentState', () => {
         ApiId: 'api-1',
         Name: 'ds1',
         Type: 'AWS_LAMBDA',
+        Description: '',
         ServiceRoleArn: 'arn:aws:iam::1:role/x',
         LambdaConfig: {
           LambdaFunctionArn: 'arn:aws:lambda:us-east-1:1:function:fn',
@@ -187,6 +188,9 @@ describe('AppSyncProvider.readCurrentState', () => {
         Kind: 'UNIT',
         RequestMappingTemplate: '$ctx',
         ResponseMappingTemplate: '$result',
+        PipelineConfig: { Functions: [] },
+        Runtime: {},
+        Code: '',
       });
     });
   });

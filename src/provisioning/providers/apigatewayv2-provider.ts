@@ -772,12 +772,10 @@ export class ApiGatewayV2Provider implements ResourceProvider {
     try {
       const resp = await this.getClient().send(new GetApiCommand({ ApiId: physicalId }));
       const result: Record<string, unknown> = {};
-      if (resp.Name !== undefined) result['Name'] = resp.Name;
+      result['Name'] = resp.Name ?? '';
       if (resp.ProtocolType !== undefined) result['ProtocolType'] = resp.ProtocolType;
-      if (resp.Description !== undefined && resp.Description !== '') {
-        result['Description'] = resp.Description;
-      }
-      if (resp.CorsConfiguration) result['CorsConfiguration'] = resp.CorsConfiguration;
+      result['Description'] = resp.Description ?? '';
+      result['CorsConfiguration'] = resp.CorsConfiguration ?? {};
       // Tags from the same GetApi response (returned as a tag-name → value map).
       const tags = normalizeAwsTagsToCfn(resp.Tags);
       result['Tags'] = tags;
@@ -801,10 +799,8 @@ export class ApiGatewayV2Provider implements ResourceProvider {
       );
       const result: Record<string, unknown> = { ApiId: apiId };
       if (resp.StageName !== undefined) result['StageName'] = resp.StageName;
-      if (resp.AutoDeploy !== undefined) result['AutoDeploy'] = resp.AutoDeploy;
-      if (resp.Description !== undefined && resp.Description !== '') {
-        result['Description'] = resp.Description;
-      }
+      result['AutoDeploy'] = resp.AutoDeploy ?? false;
+      result['Description'] = resp.Description ?? '';
       return result;
     } catch (err) {
       if (err instanceof NotFoundException) return undefined;
@@ -825,12 +821,9 @@ export class ApiGatewayV2Provider implements ResourceProvider {
       );
       const result: Record<string, unknown> = { ApiId: apiId };
       if (resp.IntegrationType !== undefined) result['IntegrationType'] = resp.IntegrationType;
-      if (resp.IntegrationUri !== undefined) result['IntegrationUri'] = resp.IntegrationUri;
-      if (resp.IntegrationMethod !== undefined)
-        result['IntegrationMethod'] = resp.IntegrationMethod;
-      if (resp.PayloadFormatVersion !== undefined) {
-        result['PayloadFormatVersion'] = resp.PayloadFormatVersion;
-      }
+      result['IntegrationUri'] = resp.IntegrationUri ?? '';
+      result['IntegrationMethod'] = resp.IntegrationMethod ?? '';
+      result['PayloadFormatVersion'] = resp.PayloadFormatVersion ?? '';
       return result;
     } catch (err) {
       if (err instanceof NotFoundException) return undefined;
@@ -851,10 +844,9 @@ export class ApiGatewayV2Provider implements ResourceProvider {
       );
       const result: Record<string, unknown> = { ApiId: apiId };
       if (resp.RouteKey !== undefined) result['RouteKey'] = resp.RouteKey;
-      if (resp.Target !== undefined) result['Target'] = resp.Target;
-      if (resp.AuthorizationType !== undefined)
-        result['AuthorizationType'] = resp.AuthorizationType;
-      if (resp.AuthorizerId !== undefined) result['AuthorizerId'] = resp.AuthorizerId;
+      result['Target'] = resp.Target ?? '';
+      result['AuthorizationType'] = resp.AuthorizationType ?? '';
+      result['AuthorizerId'] = resp.AuthorizerId ?? '';
       return result;
     } catch (err) {
       if (err instanceof NotFoundException) return undefined;
@@ -875,15 +867,11 @@ export class ApiGatewayV2Provider implements ResourceProvider {
       );
       const result: Record<string, unknown> = { ApiId: apiId };
       if (resp.AuthorizerType !== undefined) result['AuthorizerType'] = resp.AuthorizerType;
-      if (resp.Name !== undefined) result['Name'] = resp.Name;
-      if (resp.IdentitySource !== undefined && resp.IdentitySource.length > 0) {
-        result['IdentitySource'] = [...resp.IdentitySource];
-      }
-      if (resp.JwtConfiguration) result['JwtConfiguration'] = resp.JwtConfiguration;
-      if (resp.AuthorizerUri !== undefined) result['AuthorizerUri'] = resp.AuthorizerUri;
-      if (resp.AuthorizerPayloadFormatVersion !== undefined) {
-        result['AuthorizerPayloadFormatVersion'] = resp.AuthorizerPayloadFormatVersion;
-      }
+      result['Name'] = resp.Name ?? '';
+      result['IdentitySource'] = resp.IdentitySource ? [...resp.IdentitySource] : [];
+      result['JwtConfiguration'] = resp.JwtConfiguration ?? {};
+      result['AuthorizerUri'] = resp.AuthorizerUri ?? '';
+      result['AuthorizerPayloadFormatVersion'] = resp.AuthorizerPayloadFormatVersion ?? '';
       return result;
     } catch (err) {
       if (err instanceof NotFoundException) return undefined;

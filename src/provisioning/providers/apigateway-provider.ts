@@ -1346,19 +1346,13 @@ export class ApiGatewayProvider implements ResourceProvider {
         new GetAuthorizerCommand({ restApiId, authorizerId: physicalId })
       );
       const result: Record<string, unknown> = { RestApiId: restApiId };
-      if (resp.name !== undefined) result['Name'] = resp.name;
+      result['Name'] = resp.name ?? '';
       if (resp.type !== undefined) result['Type'] = resp.type;
-      if (resp.providerARNs !== undefined && resp.providerARNs.length > 0) {
-        result['ProviderARNs'] = [...resp.providerARNs];
-      }
-      if (resp.authorizerUri !== undefined) result['AuthorizerUri'] = resp.authorizerUri;
-      if (resp.authorizerCredentials !== undefined) {
-        result['AuthorizerCredentials'] = resp.authorizerCredentials;
-      }
-      if (resp.identitySource !== undefined) result['IdentitySource'] = resp.identitySource;
-      if (resp.identityValidationExpression !== undefined) {
-        result['IdentityValidationExpression'] = resp.identityValidationExpression;
-      }
+      result['ProviderARNs'] = resp.providerARNs ? [...resp.providerARNs] : [];
+      result['AuthorizerUri'] = resp.authorizerUri ?? '';
+      result['AuthorizerCredentials'] = resp.authorizerCredentials ?? '';
+      result['IdentitySource'] = resp.identitySource ?? '';
+      result['IdentityValidationExpression'] = resp.identityValidationExpression ?? '';
       if (resp.authorizerResultTtlInSeconds !== undefined) {
         result['AuthorizerResultTtlInSeconds'] = resp.authorizerResultTtlInSeconds;
       }
@@ -1381,7 +1375,7 @@ export class ApiGatewayProvider implements ResourceProvider {
         new GetResourceCommand({ restApiId, resourceId: physicalId })
       );
       const result: Record<string, unknown> = { RestApiId: restApiId };
-      if (resp.parentId !== undefined) result['ParentId'] = resp.parentId;
+      result['ParentId'] = resp.parentId ?? '';
       if (resp.pathPart !== undefined) result['PathPart'] = resp.pathPart;
       return result;
     } catch (err) {
@@ -1402,9 +1396,7 @@ export class ApiGatewayProvider implements ResourceProvider {
         new GetDeploymentCommand({ restApiId, deploymentId: physicalId })
       );
       const result: Record<string, unknown> = { RestApiId: restApiId };
-      if (resp.description !== undefined && resp.description !== '') {
-        result['Description'] = resp.description;
-      }
+      result['Description'] = resp.description ?? '';
       return result;
     } catch (err) {
       if (err instanceof NotFoundException) return undefined;
@@ -1425,10 +1417,8 @@ export class ApiGatewayProvider implements ResourceProvider {
       );
       const result: Record<string, unknown> = { RestApiId: restApiId };
       if (resp.stageName !== undefined) result['StageName'] = resp.stageName;
-      if (resp.deploymentId !== undefined) result['DeploymentId'] = resp.deploymentId;
-      if (resp.description !== undefined && resp.description !== '') {
-        result['Description'] = resp.description;
-      }
+      result['DeploymentId'] = resp.deploymentId ?? '';
+      result['Description'] = resp.description ?? '';
       return result;
     } catch (err) {
       if (err instanceof NotFoundException) return undefined;
@@ -1440,9 +1430,7 @@ export class ApiGatewayProvider implements ResourceProvider {
     try {
       const resp = await this.apiGatewayClient.send(new GetAccountCommand({}));
       const result: Record<string, unknown> = {};
-      if (resp.cloudwatchRoleArn !== undefined) {
-        result['CloudWatchRoleArn'] = resp.cloudwatchRoleArn;
-      }
+      result['CloudWatchRoleArn'] = resp.cloudwatchRoleArn ?? '';
       return result;
     } catch (err) {
       if (err instanceof NotFoundException) return undefined;
@@ -1468,9 +1456,9 @@ export class ApiGatewayProvider implements ResourceProvider {
       if (resp.authorizationType !== undefined) {
         result['AuthorizationType'] = resp.authorizationType;
       }
-      if (resp.authorizerId !== undefined) result['AuthorizerId'] = resp.authorizerId;
-      if (resp.methodIntegration) result['Integration'] = resp.methodIntegration;
-      if (resp.methodResponses) result['MethodResponses'] = resp.methodResponses;
+      result['AuthorizerId'] = resp.authorizerId ?? '';
+      result['Integration'] = resp.methodIntegration ?? {};
+      result['MethodResponses'] = resp.methodResponses ?? {};
       return result;
     } catch (err) {
       if (err instanceof NotFoundException) return undefined;

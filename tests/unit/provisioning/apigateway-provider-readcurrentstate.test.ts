@@ -82,7 +82,9 @@ describe('ApiGatewayProvider.readCurrentState', () => {
       ResourceId: 'res-1',
       HttpMethod: 'GET',
       AuthorizationType: 'NONE',
+      AuthorizerId: '',
       Integration: { type: 'AWS_PROXY', uri: 'arn:aws:lambda:...' },
+      MethodResponses: {},
     });
   });
 
@@ -120,7 +122,10 @@ describe('ApiGatewayProvider.readCurrentState', () => {
       Name: 'my-authorizer',
       Type: 'COGNITO_USER_POOLS',
       ProviderARNs: ['arn:aws:cognito-idp:us-east-1:123:userpool/x'],
+      AuthorizerUri: '',
+      AuthorizerCredentials: '',
       IdentitySource: 'method.request.header.Authorization',
+      IdentityValidationExpression: '',
     });
   });
 

@@ -178,6 +178,8 @@ describe('ApiGatewayV2Provider.readCurrentState', () => {
       Name: 'my-jwt-authorizer',
       IdentitySource: ['$request.header.Authorization'],
       JwtConfiguration: { Audience: ['client-id'], Issuer: 'https://issuer.example.com' },
+      AuthorizerUri: '',
+      AuthorizerPayloadFormatVersion: '',
     });
   });
 

@@ -773,19 +773,19 @@ export class AppSyncProvider implements ResourceProvider {
     if (api.authenticationType !== undefined) {
       result['AuthenticationType'] = api.authenticationType;
     }
-    if (api.xrayEnabled !== undefined) result['XrayEnabled'] = api.xrayEnabled;
-    if (api.logConfig) {
+    result['XrayEnabled'] = api.xrayEnabled ?? false;
+    {
       const log: Record<string, unknown> = {};
-      if (api.logConfig.cloudWatchLogsRoleArn !== undefined) {
+      if (api.logConfig?.cloudWatchLogsRoleArn !== undefined) {
         log['CloudWatchLogsRoleArn'] = api.logConfig.cloudWatchLogsRoleArn;
       }
-      if (api.logConfig.fieldLogLevel !== undefined) {
+      if (api.logConfig?.fieldLogLevel !== undefined) {
         log['FieldLogLevel'] = api.logConfig.fieldLogLevel;
       }
-      if (api.logConfig.excludeVerboseContent !== undefined) {
+      if (api.logConfig?.excludeVerboseContent !== undefined) {
         log['ExcludeVerboseContent'] = api.logConfig.excludeVerboseContent;
       }
-      if (Object.keys(log).length > 0) result['LogConfig'] = log;
+      result['LogConfig'] = log;
     }
     const tags = normalizeAwsTagsToCfn(api.tags);
     result['Tags'] = tags;
@@ -809,10 +809,13 @@ export class AppSyncProvider implements ResourceProvider {
     const result: Record<string, unknown> = { ApiId: apiId };
     if (ds.name !== undefined) result['Name'] = ds.name;
     if (ds.type !== undefined) result['Type'] = ds.type;
-    if (ds.description !== undefined && ds.description !== '') {
-      result['Description'] = ds.description;
-    }
-    if (ds.serviceRoleArn !== undefined) result['ServiceRoleArn'] = ds.serviceRoleArn;
+    result['Description'] = ds.description ?? '';
+    result['ServiceRoleArn'] = ds.serviceRoleArn ?? '';
+    // DataSource has type-tagged sub-configs (DynamoDBConfig / LambdaConfig /
+    // HttpConfig / etc.) that are mutually exclusive based on `Type`. Only
+    // emit the matching shape when its discriminator is non-empty so the
+    // comparator doesn't surface an empty placeholder for a config that
+    // doesn't apply to this data source's type.
     if (ds.dynamodbConfig) {
       const dynamo: Record<string, unknown> = {};
       if (ds.dynamodbConfig.tableName !== undefined)
@@ -854,26 +857,22 @@ export class AppSyncProvider implements ResourceProvider {
     const result: Record<string, unknown> = { ApiId: apiId };
     if (resolver.typeName !== undefined) result['TypeName'] = resolver.typeName;
     if (resolver.fieldName !== undefined) result['FieldName'] = resolver.fieldName;
-    if (resolver.dataSourceName !== undefined) result['DataSourceName'] = resolver.dataSourceName;
-    if (resolver.requestMappingTemplate !== undefined) {
-      result['RequestMappingTemplate'] = resolver.requestMappingTemplate;
-    }
-    if (resolver.responseMappingTemplate !== undefined) {
-      result['ResponseMappingTemplate'] = resolver.responseMappingTemplate;
-    }
+    result['DataSourceName'] = resolver.dataSourceName ?? '';
+    result['RequestMappingTemplate'] = resolver.requestMappingTemplate ?? '';
+    result['ResponseMappingTemplate'] = resolver.responseMappingTemplate ?? '';
     if (resolver.kind !== undefined) result['Kind'] = resolver.kind;
-    if (resolver.pipelineConfig?.functions && resolver.pipelineConfig.functions.length > 0) {
-      result['PipelineConfig'] = { Functions: [...resolver.pipelineConfig.functions] };
-    }
-    if (resolver.runtime) {
+    result['PipelineConfig'] = {
+      Functions: resolver.pipelineConfig?.functions ? [...resolver.pipelineConfig.functions] : [],
+    };
+    {
       const runtime: Record<string, unknown> = {};
-      if (resolver.runtime.name !== undefined) runtime['Name'] = resolver.runtime.name;
-      if (resolver.runtime.runtimeVersion !== undefined) {
+      if (resolver.runtime?.name !== undefined) runtime['Name'] = resolver.runtime.name;
+      if (resolver.runtime?.runtimeVersion !== undefined) {
         runtime['RuntimeVersion'] = resolver.runtime.runtimeVersion;
       }
-      if (Object.keys(runtime).length > 0) result['Runtime'] = runtime;
+      result['Runtime'] = runtime;
     }
-    if (resolver.code !== undefined) result['Code'] = resolver.code;
+    result['Code'] = resolver.code ?? '';
     return result;
   }
 
@@ -897,9 +896,7 @@ export class AppSyncProvider implements ResourceProvider {
       for (const key of resp.apiKeys ?? []) {
         if (key.id === apiKeyId) {
           const result: Record<string, unknown> = { ApiId: apiId };
-          if (key.description !== undefined && key.description !== '') {
-            result['Description'] = key.description;
-          }
+          result['Description'] = key.description ?? '';
           if (key.expires !== undefined) result['Expires'] = key.expires;
           return result;
         }
