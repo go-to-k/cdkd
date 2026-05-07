@@ -1054,19 +1054,13 @@ export class ECSProvider implements ResourceProvider {
     if (!c || !c.clusterName) return undefined;
 
     const result: Record<string, unknown> = { ClusterName: c.clusterName };
-    if (c.capacityProviders && c.capacityProviders.length > 0) {
-      result['CapacityProviders'] = [...c.capacityProviders];
-    }
-    if (c.defaultCapacityProviderStrategy && c.defaultCapacityProviderStrategy.length > 0) {
-      result['DefaultCapacityProviderStrategy'] = c.defaultCapacityProviderStrategy;
-    }
+    result['CapacityProviders'] = c.capacityProviders ? [...c.capacityProviders] : [];
+    result['DefaultCapacityProviderStrategy'] = c.defaultCapacityProviderStrategy ?? [];
     if (c.configuration) result['Configuration'] = c.configuration;
-    if (c.settings && c.settings.length > 0) {
-      result['ClusterSettings'] = c.settings.map((s) => ({
-        Name: s.name,
-        Value: s.value,
-      }));
-    }
+    result['ClusterSettings'] = (c.settings ?? []).map((s) => ({
+      Name: s.name,
+      Value: s.value,
+    }));
     const tags = normalizeAwsTagsToCfn(c.tags);
     result['Tags'] = tags;
     return result;
@@ -1137,22 +1131,12 @@ export class ECSProvider implements ResourceProvider {
       result['HealthCheckGracePeriodSeconds'] = s.healthCheckGracePeriodSeconds;
     }
     if (s.networkConfiguration) result['NetworkConfiguration'] = s.networkConfiguration;
-    if (s.loadBalancers && s.loadBalancers.length > 0) {
-      result['LoadBalancers'] = s.loadBalancers;
-    }
-    if (s.capacityProviderStrategy && s.capacityProviderStrategy.length > 0) {
-      result['CapacityProviderStrategy'] = s.capacityProviderStrategy;
-    }
+    result['LoadBalancers'] = s.loadBalancers ?? [];
+    result['CapacityProviderStrategy'] = s.capacityProviderStrategy ?? [];
     if (s.deploymentConfiguration) result['DeploymentConfiguration'] = s.deploymentConfiguration;
-    if (s.placementConstraints && s.placementConstraints.length > 0) {
-      result['PlacementConstraints'] = s.placementConstraints;
-    }
-    if (s.placementStrategy && s.placementStrategy.length > 0) {
-      result['PlacementStrategy'] = s.placementStrategy;
-    }
-    if (s.serviceRegistries && s.serviceRegistries.length > 0) {
-      result['ServiceRegistries'] = s.serviceRegistries;
-    }
+    result['PlacementConstraints'] = s.placementConstraints ?? [];
+    result['PlacementStrategy'] = s.placementStrategy ?? [];
+    result['ServiceRegistries'] = s.serviceRegistries ?? [];
     const tags = normalizeAwsTagsToCfn(s.tags);
     result['Tags'] = tags;
     return result;
@@ -1196,15 +1180,13 @@ export class ECSProvider implements ResourceProvider {
     if (td.cpu !== undefined) result['Cpu'] = td.cpu;
     if (td.memory !== undefined) result['Memory'] = td.memory;
     if (td.networkMode !== undefined) result['NetworkMode'] = td.networkMode;
-    if (td.requiresCompatibilities && td.requiresCompatibilities.length > 0) {
-      result['RequiresCompatibilities'] = [...td.requiresCompatibilities];
-    }
+    result['RequiresCompatibilities'] = td.requiresCompatibilities
+      ? [...td.requiresCompatibilities]
+      : [];
     if (td.executionRoleArn !== undefined) result['ExecutionRoleArn'] = td.executionRoleArn;
     if (td.taskRoleArn !== undefined) result['TaskRoleArn'] = td.taskRoleArn;
-    if (td.volumes && td.volumes.length > 0) result['Volumes'] = td.volumes;
-    if (td.placementConstraints && td.placementConstraints.length > 0) {
-      result['PlacementConstraints'] = td.placementConstraints;
-    }
+    result['Volumes'] = td.volumes ?? [];
+    result['PlacementConstraints'] = td.placementConstraints ?? [];
     if (td.runtimePlatform) result['RuntimePlatform'] = td.runtimePlatform;
     if (td.proxyConfiguration) result['ProxyConfiguration'] = td.proxyConfiguration;
     if (td.pidMode !== undefined) result['PidMode'] = td.pidMode;
@@ -1212,9 +1194,7 @@ export class ECSProvider implements ResourceProvider {
     if (td.ephemeralStorage?.sizeInGiB !== undefined) {
       result['EphemeralStorage'] = { SizeInGiB: td.ephemeralStorage.sizeInGiB };
     }
-    if (td.containerDefinitions && td.containerDefinitions.length > 0) {
-      result['ContainerDefinitions'] = td.containerDefinitions;
-    }
+    result['ContainerDefinitions'] = td.containerDefinitions ?? [];
     const tags = normalizeAwsTagsToCfn(resp.tags);
     result['Tags'] = tags;
     return result;

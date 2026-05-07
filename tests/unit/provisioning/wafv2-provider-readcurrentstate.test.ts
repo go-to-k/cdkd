@@ -86,6 +86,7 @@ describe('WAFv2WebACLProvider.readCurrentState', () => {
         CloudWatchMetricsEnabled: true,
         MetricName: 'm',
       },
+      CustomResponseBodies: {},
       TokenDomains: ['example.com'],
       Tags: [],
     });

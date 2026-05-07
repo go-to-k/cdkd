@@ -419,11 +419,9 @@ export class CloudTrailProvider implements ResourceProvider {
       const sel = await this.getClient().send(
         new GetEventSelectorsCommand({ TrailName: physicalId })
       );
-      if (sel.EventSelectors && sel.EventSelectors.length > 0) {
-        result['EventSelectors'] = sel.EventSelectors.map(
-          (es) => es as unknown as Record<string, unknown>
-        );
-      }
+      result['EventSelectors'] = (sel.EventSelectors ?? []).map(
+        (es) => es as unknown as Record<string, unknown>
+      );
     } catch {
       // Best-effort.
     }

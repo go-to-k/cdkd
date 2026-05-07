@@ -1374,7 +1374,7 @@ export class IAMUserGroupProvider implements ResourceProvider {
       const arns = (attached.AttachedPolicies ?? [])
         .map((p) => p.PolicyArn)
         .filter((arn): arn is string => !!arn);
-      if (arns.length > 0) result['ManagedPolicyArns'] = arns;
+      result['ManagedPolicyArns'] = arns;
     } catch (err) {
       if (!(err instanceof NoSuchEntityException)) throw err;
     }
@@ -1384,7 +1384,7 @@ export class IAMUserGroupProvider implements ResourceProvider {
         new ListGroupsForUserCommand({ UserName: physicalId })
       );
       const names = (groups.Groups ?? []).map((g) => g.GroupName).filter((n): n is string => !!n);
-      if (names.length > 0) result['Groups'] = names;
+      result['Groups'] = names;
     } catch (err) {
       if (!(err instanceof NoSuchEntityException)) throw err;
     }
@@ -1416,7 +1416,7 @@ export class IAMUserGroupProvider implements ResourceProvider {
       const arns = (attached.AttachedPolicies ?? [])
         .map((p) => p.PolicyArn)
         .filter((arn): arn is string => !!arn);
-      if (arns.length > 0) result['ManagedPolicyArns'] = arns;
+      result['ManagedPolicyArns'] = arns;
     } catch (err) {
       if (!(err instanceof NoSuchEntityException)) throw err;
     }

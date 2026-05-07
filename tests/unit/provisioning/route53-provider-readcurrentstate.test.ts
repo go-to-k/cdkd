@@ -70,6 +70,7 @@ describe('Route53Provider.readCurrentState', () => {
         Name: 'example.com.',
         HostedZoneConfig: { Comment: 'mine', PrivateZone: true },
         VPCs: [{ VPCId: 'vpc-1', VPCRegion: 'us-east-1' }],
+        HostedZoneTags: [],
       });
     });
 
@@ -100,7 +101,7 @@ describe('Route53Provider.readCurrentState', () => {
       expect(result?.HostedZoneTags).toEqual([{ Key: 'Foo', Value: 'Bar' }]);
     });
 
-    it('omits HostedZoneTags when ListTagsForResource returns no user tags', async () => {
+    it('emits empty HostedZoneTags placeholder when ListTagsForResource returns no user tags', async () => {
       mockSend
         .mockResolvedValueOnce({
           HostedZone: { Id: '/hostedzone/Z1', Name: 'example.com.' },
@@ -113,7 +114,7 @@ describe('Route53Provider.readCurrentState', () => {
         });
 
       const result = await provider.readCurrentState('Z1', 'L', 'AWS::Route53::HostedZone');
-      expect(result).not.toHaveProperty('HostedZoneTags');
+      expect(result?.HostedZoneTags).toEqual([]);
     });
   });
 
@@ -171,6 +172,7 @@ describe('Route53Provider.readCurrentState', () => {
         HostedZoneId: 'Z1',
         Name: 'alias.example.com.',
         Type: 'A',
+        ResourceRecords: [],
         AliasTarget: {
           HostedZoneId: 'Z2',
           DNSName: 'lb-1.us-east-1.elb.amazonaws.com.',

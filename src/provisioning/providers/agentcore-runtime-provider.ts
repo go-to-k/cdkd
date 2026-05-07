@@ -434,9 +434,7 @@ export class AgentCoreRuntimeProvider implements ResourceProvider {
     if (resp.networkConfiguration !== undefined) {
       result['NetworkConfiguration'] = camelToPascalCaseKeys(resp.networkConfiguration);
     }
-    if (resp.description !== undefined && resp.description !== '') {
-      result['Description'] = resp.description;
-    }
+    result['Description'] = resp.description ?? '';
     if (resp.authorizerConfiguration !== undefined) {
       result['AuthorizerConfiguration'] = camelToPascalCaseKeys(resp.authorizerConfiguration);
     }

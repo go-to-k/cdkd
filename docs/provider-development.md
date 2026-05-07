@@ -939,6 +939,48 @@ the small additional call is reasonable to add.
 | `AWS::SQS::Queue` | (none) | All three CFn return values are covered. |
 | `AWS::S3::Bucket` | (none) | All five CFn return values are covered. |
 
+### 3b. `readCurrentState()` for drift detection — always emit user-controllable top-level keys
+
+`readCurrentState(physicalId, logicalId, resourceType)` returns the AWS-current snapshot of a resource for `cdkd drift` and `cdkd state refresh-observed`. The drift comparator walks **state's top-level keys only** (intentionally — to avoid surfacing every `FunctionArn` / `RevisionId` / `LastModified` / etc. that AWS auto-attaches to every response). That design has one consequence the provider author MUST account for:
+
+> **Any user-controllable top-level CFn property `update()` can mutate must be emitted with a placeholder when AWS returns the field as undefined / empty.**
+
+If the provider omits the key on the empty path (e.g. `if (cfg.Environment?.Variables) result['Environment'] = ...`), then on a resource that was deployed WITHOUT that key in its template, `state.observedProperties` never carries the key — and the comparator's state-keys-only walk skips the field forever. A user adding the property in the AWS console after deploy is **silently invisible** to drift.
+
+Use these placeholders consistently:
+
+| Type | Placeholder | Example |
+| --- | --- | --- |
+| Array | `?? []` | `result['ManagedPolicyArns'] = arns;` (after building the list) |
+| Map / object (when AWS returns the whole object as undefined) | `?? {}` | `result['Cors'] = cors;` (after building, even if `cors` ended up empty) |
+| Optional string | `?? ''` | `result['Description'] = resp.Description ?? '';` |
+| Boolean / numeric scalar | `?? <semantic-default>` | `Status: resp.Status ?? 'Suspended'`, `BlockPublicAcls: cfg?.BlockPublicAcls ?? false` |
+| Tags map | `?? []` (already covered for Tags by PR #145) | `result['Tags'] = normalizeAwsTagsToCfn(...);` |
+
+**When the guard is justified — keep it**:
+
+- **Immutable on create** — `BucketName`, `Lambda Runtime` (when create-time-only), `IAM RoleName`. The field can't change at all; AWS returning undefined is a wire-layer artifact, not a "user could add this." Skip emit.
+- **AWS-managed read-only** — `FunctionArn`, `RevisionId`, `CodeSha256`, timestamps. These are not in the CFn template; cdkd state never carries them. They should NOT be in `readCurrentState` output at all.
+- **Write-only** — `Code: { S3Bucket, S3Key }`, `SecretString`, `LoginProfile.Password`. AWS does not return these on read. Declare via `getDriftUnknownPaths()` so the comparator skips the entire subtree (see "Known coverage gaps" below).
+
+**Wire-layer filtering** — the drift comparator does NOT apply per-type denylists for SDK provider results (those are reserved for the CC-API fallback path). If your provider's SDK response includes AWS-managed fields you don't want to surface, do NOT assign them in the first place.
+
+**Test convention**: each provider's `readCurrentState` test SHOULD have a "AWS returns minimum / empty response" case asserting that every user-controllable top-level key still appears with the expected placeholder. This is the structural defense against the "provider author forgets to emit a key" regression — without it, the bug only surfaces when a user runs drift on a resource configured exactly the way the test missed.
+
+#### `getDriftUnknownPaths()` for unreadable fields
+
+When AWS does not return a field that cdkd state stores (write-only fields, or a CFn property whose round-trip back to the template shape isn't worth implementing yet), declare the path so the comparator skips it instead of firing guaranteed false-positive drift on every clean run:
+
+```typescript
+getDriftUnknownPaths(): string[] {
+  return ['Code'];                              // Lambda::Function: pre-signed URL only
+  // or ['SecretString', 'GenerateSecretString']
+  // or ['DeliveryStatusLogging', 'Subscription']
+}
+```
+
+The comparator does exact-match + `entry + '.'` prefix-match — listing `'Policies'` skips `Policies`, `Policies.Foo`, `Policies[0].PolicyDocument`, etc. Pair this with a docstring explaining why the field is unreadable so a future PR can lift the gap.
+
 ### 4. Logging
 
 - `info`: Successful operations

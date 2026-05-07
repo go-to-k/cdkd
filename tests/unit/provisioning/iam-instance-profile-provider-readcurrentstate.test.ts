@@ -78,7 +78,7 @@ describe('IAMInstanceProfileProvider.readCurrentState', () => {
     expect(result).toBeUndefined();
   });
 
-  it('omits Roles when none attached', async () => {
+  it('emits empty Roles placeholder when none attached', async () => {
     mockSend.mockResolvedValueOnce({
       InstanceProfile: {
         InstanceProfileName: 'my-profile',
@@ -92,6 +92,6 @@ describe('IAMInstanceProfileProvider.readCurrentState', () => {
       'Logical',
       'AWS::IAM::InstanceProfile'
     );
-    expect(result).not.toHaveProperty('Roles');
+    expect(result?.Roles).toEqual([]);
   });
 });

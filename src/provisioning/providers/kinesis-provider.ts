@@ -424,8 +424,10 @@ export class KinesisStreamProvider implements ResourceProvider {
     if (stream.RetentionPeriodHours !== undefined) {
       result['RetentionPeriodHours'] = stream.RetentionPeriodHours;
     }
-    if (stream.EncryptionType !== undefined && stream.EncryptionType !== 'NONE') {
-      const encryption: Record<string, unknown> = { EncryptionType: stream.EncryptionType };
+    {
+      const encryption: Record<string, unknown> = {
+        EncryptionType: stream.EncryptionType ?? 'NONE',
+      };
       if (stream.KeyId !== undefined) encryption['KeyId'] = stream.KeyId;
       result['StreamEncryption'] = encryption;
     }

@@ -1233,73 +1233,75 @@ export class S3BucketProvider implements ResourceProvider {
       BucketName: physicalId,
     };
 
-    // VersioningConfiguration { Status }.
-    // No specific "not configured" error type for versioning — propagate
-    // any unexpected errors.
+    // VersioningConfiguration { Status }. Always emit a placeholder so a
+    // console-side enable on a never-versioned bucket surfaces as drift.
+    // 'Suspended' is the semantic "off" value in CFn (`Suspended` and
+    // never-configured are equivalent — both mean "not currently versioning").
     {
       const resp = await this.s3Client.send(new GetBucketVersioningCommand({ Bucket: physicalId }));
-      // GetBucketVersioning omits Status entirely on a never-versioned bucket;
-      // CFn's VersioningConfiguration.Status is required, so omit the whole
-      // key to avoid spurious drift on never-configured buckets.
-      if (resp.Status) {
-        result['VersioningConfiguration'] = { Status: resp.Status };
-      }
+      result['VersioningConfiguration'] = { Status: resp.Status ?? 'Suspended' };
     }
 
-    // BucketEncryption.ServerSideEncryptionConfiguration[]
+    // BucketEncryption.ServerSideEncryptionConfiguration[]. Always emit so a
+    // console-side enable surfaces; AWS auto-applies SSE-S3 to all new
+    // buckets in 2023+, so the "no SSE configured" branch is rare in
+    // practice but still worth covering with an empty array placeholder.
     try {
       const resp = await this.s3Client.send(new GetBucketEncryptionCommand({ Bucket: physicalId }));
-      const rules = resp.ServerSideEncryptionConfiguration?.Rules;
-      if (rules && rules.length > 0) {
-        // Re-shape AWS's `ApplyServerSideEncryptionByDefault` into CFn's
-        // `ServerSideEncryptionByDefault`. Other field names match.
-        result['BucketEncryption'] = {
-          ServerSideEncryptionConfiguration: rules.map((rule) => {
-            const out: Record<string, unknown> = {};
-            const sse = rule.ApplyServerSideEncryptionByDefault;
-            if (sse) {
-              const sseOut: Record<string, unknown> = {};
-              if (sse.SSEAlgorithm !== undefined) sseOut['SSEAlgorithm'] = sse.SSEAlgorithm;
-              if (sse.KMSMasterKeyID !== undefined) sseOut['KMSMasterKeyID'] = sse.KMSMasterKeyID;
-              out['ServerSideEncryptionByDefault'] = sseOut;
-            }
-            if (rule.BucketKeyEnabled !== undefined)
-              out['BucketKeyEnabled'] = rule.BucketKeyEnabled;
-            return out;
-          }),
-        };
-      }
+      const rules = resp.ServerSideEncryptionConfiguration?.Rules ?? [];
+      // Re-shape AWS's `ApplyServerSideEncryptionByDefault` into CFn's
+      // `ServerSideEncryptionByDefault`. Other field names match.
+      result['BucketEncryption'] = {
+        ServerSideEncryptionConfiguration: rules.map((rule) => {
+          const out: Record<string, unknown> = {};
+          const sse = rule.ApplyServerSideEncryptionByDefault;
+          if (sse) {
+            const sseOut: Record<string, unknown> = {};
+            if (sse.SSEAlgorithm !== undefined) sseOut['SSEAlgorithm'] = sse.SSEAlgorithm;
+            if (sse.KMSMasterKeyID !== undefined) sseOut['KMSMasterKeyID'] = sse.KMSMasterKeyID;
+            out['ServerSideEncryptionByDefault'] = sseOut;
+          }
+          if (rule.BucketKeyEnabled !== undefined) out['BucketKeyEnabled'] = rule.BucketKeyEnabled;
+          return out;
+        }),
+      };
     } catch (err) {
       // GetBucketEncryption throws `ServerSideEncryptionConfigurationNotFoundError`
-      // when no SSE has been configured. That's "feature not present", NOT
-      // bucket-gone — silently omit the key.
+      // when no SSE has been configured. Emit the empty-rules placeholder
+      // instead of omitting the key entirely.
       const e = err as { name?: string };
-      if (e.name !== 'ServerSideEncryptionConfigurationNotFoundError') {
+      if (e.name === 'ServerSideEncryptionConfigurationNotFoundError') {
+        result['BucketEncryption'] = { ServerSideEncryptionConfiguration: [] };
+      } else {
         throw err;
       }
     }
 
-    // PublicAccessBlockConfiguration (CFn shape == AWS shape, modulo casing)
+    // PublicAccessBlockConfiguration (CFn shape == AWS shape, modulo casing).
+    // Always emit so a console-side toggle surfaces as drift. AWS defaults
+    // to all-false ("public access NOT blocked") when no PAB is configured;
+    // emit that as the placeholder.
     try {
       const resp = await this.s3Client.send(
         new GetPublicAccessBlockCommand({ Bucket: physicalId })
       );
       const cfg = resp.PublicAccessBlockConfiguration;
-      if (cfg) {
-        const out: Record<string, unknown> = {};
-        if (cfg.BlockPublicAcls !== undefined) out['BlockPublicAcls'] = cfg.BlockPublicAcls;
-        if (cfg.BlockPublicPolicy !== undefined) out['BlockPublicPolicy'] = cfg.BlockPublicPolicy;
-        if (cfg.IgnorePublicAcls !== undefined) out['IgnorePublicAcls'] = cfg.IgnorePublicAcls;
-        if (cfg.RestrictPublicBuckets !== undefined) {
-          out['RestrictPublicBuckets'] = cfg.RestrictPublicBuckets;
-        }
-        if (Object.keys(out).length > 0) {
-          result['PublicAccessBlockConfiguration'] = out;
-        }
-      }
+      result['PublicAccessBlockConfiguration'] = {
+        BlockPublicAcls: cfg?.BlockPublicAcls ?? false,
+        BlockPublicPolicy: cfg?.BlockPublicPolicy ?? false,
+        IgnorePublicAcls: cfg?.IgnorePublicAcls ?? false,
+        RestrictPublicBuckets: cfg?.RestrictPublicBuckets ?? false,
+      };
     } catch (err) {
       const e = err as { name?: string };
-      if (e.name !== 'NoSuchPublicAccessBlockConfiguration') {
+      if (e.name === 'NoSuchPublicAccessBlockConfiguration') {
+        result['PublicAccessBlockConfiguration'] = {
+          BlockPublicAcls: false,
+          BlockPublicPolicy: false,
+          IgnorePublicAcls: false,
+          RestrictPublicBuckets: false,
+        };
+      } else {
         throw err;
       }
     }

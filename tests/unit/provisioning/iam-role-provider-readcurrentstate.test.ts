@@ -118,7 +118,7 @@ describe('IAMRoleProvider.readCurrentState', () => {
     expect(provider.getDriftUnknownPaths()).toEqual(['Policies']);
   });
 
-  it('omits ManagedPolicyArns when there are none attached', async () => {
+  it('emits empty ManagedPolicyArns placeholder when there are none attached', async () => {
     mockSend.mockResolvedValueOnce({
       Role: {
         RoleName: 'role',
@@ -130,7 +130,7 @@ describe('IAMRoleProvider.readCurrentState', () => {
     mockSend.mockResolvedValueOnce({ Tags: [], IsTruncated: false });
 
     const result = await provider.readCurrentState('role', 'Logical', 'AWS::IAM::Role');
-    expect(result).not.toHaveProperty('ManagedPolicyArns');
+    expect(result?.ManagedPolicyArns).toEqual([]);
   });
 
   it('surfaces Tags from ListRoleTags with aws:* filtered out', async () => {

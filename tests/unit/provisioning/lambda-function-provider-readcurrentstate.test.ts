@@ -112,20 +112,20 @@ describe('LambdaFunctionProvider.readCurrentState', () => {
     expect(result).toBeUndefined();
   });
 
-  it('omits VpcConfig when GetFunction returns empty arrays (non-VPC function)', async () => {
+  it('emits VpcConfig placeholder with empty arrays when GetFunction returns no VPC (non-VPC function)', async () => {
     mockSend.mockResolvedValueOnce({
       Configuration: {
         FunctionName: 'fn',
         Runtime: 'nodejs20.x',
         Handler: 'index.handler',
         Role: 'arn:aws:iam::123456789012:role/exec',
-        // No VpcConfig at all → must not surface as a key.
+        // No VpcConfig at all → placeholder { SubnetIds: [], SecurityGroupIds: [] }.
       },
     });
 
     const result = await provider.readCurrentState('fn', 'Logical', 'AWS::Lambda::Function');
 
-    expect(result).not.toHaveProperty('VpcConfig');
+    expect(result?.VpcConfig).toEqual({ SubnetIds: [], SecurityGroupIds: [] });
   });
 
   it('surfaces Tags from GetFunction with aws:* prefixed entries filtered out', async () => {

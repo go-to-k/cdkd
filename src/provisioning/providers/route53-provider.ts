@@ -943,24 +943,21 @@ export class Route53Provider implements ResourceProvider {
 
     const result: Record<string, unknown> = {};
     if (resp.HostedZone.Name !== undefined) result['Name'] = resp.HostedZone.Name;
-    if (resp.HostedZone.Config) {
-      const cfg: Record<string, unknown> = {};
-      if (resp.HostedZone.Config.Comment !== undefined) {
-        cfg['Comment'] = resp.HostedZone.Config.Comment;
-      }
-      if (resp.HostedZone.Config.PrivateZone !== undefined) {
+    {
+      const cfg: Record<string, unknown> = {
+        Comment: resp.HostedZone.Config?.Comment ?? '',
+      };
+      if (resp.HostedZone.Config?.PrivateZone !== undefined) {
         cfg['PrivateZone'] = resp.HostedZone.Config.PrivateZone;
       }
-      if (Object.keys(cfg).length > 0) result['HostedZoneConfig'] = cfg;
+      result['HostedZoneConfig'] = cfg;
     }
-    if (resp.VPCs && resp.VPCs.length > 0) {
-      result['VPCs'] = resp.VPCs.map((v) => {
-        const out: Record<string, unknown> = {};
-        if (v.VPCId !== undefined) out['VPCId'] = v.VPCId;
-        if (v.VPCRegion !== undefined) out['VPCRegion'] = v.VPCRegion;
-        return out;
-      });
-    }
+    result['VPCs'] = (resp.VPCs ?? []).map((v) => {
+      const out: Record<string, unknown> = {};
+      if (v.VPCId !== undefined) out['VPCId'] = v.VPCId;
+      if (v.VPCRegion !== undefined) out['VPCRegion'] = v.VPCRegion;
+      return out;
+    });
 
     // HostedZoneTags via ListTagsForResource. Route 53 ResourceId is the
     // zone id WITHOUT the "/hostedzone/" prefix.
@@ -970,7 +967,7 @@ export class Route53Provider implements ResourceProvider {
         new ListTagsForResourceCommand({ ResourceType: 'hostedzone', ResourceId: idTail })
       );
       const tags = normalizeAwsTagsToCfn(tagsResp.ResourceTagSet?.Tags);
-      if (tags.length > 0) result['HostedZoneTags'] = tags;
+      result['HostedZoneTags'] = tags;
     } catch (err) {
       this.logger.debug(
         `Route53 ListTagsForResource(${idTail}) failed: ${err instanceof Error ? err.message : String(err)}`
@@ -1012,12 +1009,10 @@ export class Route53Provider implements ResourceProvider {
       Type: type,
     };
     if (recordSet.TTL !== undefined) result['TTL'] = recordSet.TTL;
-    if (recordSet.ResourceRecords && recordSet.ResourceRecords.length > 0) {
-      // CFn / cdkd state shape is string[]; SDK is [{Value}].
-      result['ResourceRecords'] = recordSet.ResourceRecords.map((r) => r.Value).filter(
-        (v): v is string => typeof v === 'string'
-      );
-    }
+    // CFn / cdkd state shape is string[]; SDK is [{Value}].
+    result['ResourceRecords'] = (recordSet.ResourceRecords ?? [])
+      .map((r) => r.Value)
+      .filter((v): v is string => typeof v === 'string');
     if (recordSet.AliasTarget) {
       const at: Record<string, unknown> = {};
       if (recordSet.AliasTarget.HostedZoneId !== undefined) {
@@ -1050,7 +1045,7 @@ export class Route53Provider implements ResourceProvider {
       if (recordSet.GeoLocation.SubdivisionCode !== undefined) {
         geo['SubdivisionCode'] = recordSet.GeoLocation.SubdivisionCode;
       }
-      if (Object.keys(geo).length > 0) result['GeoLocation'] = geo;
+      result['GeoLocation'] = geo;
     }
     return result;
   }

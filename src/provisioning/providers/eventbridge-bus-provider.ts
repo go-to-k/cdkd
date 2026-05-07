@@ -361,15 +361,9 @@ export class EventBridgeBusProvider implements ResourceProvider {
       );
       const result: Record<string, unknown> = {};
       if (resp.Name !== undefined) result['Name'] = resp.Name;
-      if (resp.Description !== undefined && resp.Description !== '') {
-        result['Description'] = resp.Description;
-      }
-      if (resp.KmsKeyIdentifier !== undefined) {
-        result['KmsKeyIdentifier'] = resp.KmsKeyIdentifier;
-      }
-      if (resp.DeadLetterConfig?.Arn) {
-        result['DeadLetterConfig'] = { Arn: resp.DeadLetterConfig.Arn };
-      }
+      result['Description'] = resp.Description ?? '';
+      result['KmsKeyIdentifier'] = resp.KmsKeyIdentifier ?? '';
+      result['DeadLetterConfig'] = { Arn: resp.DeadLetterConfig?.Arn ?? '' };
       if (resp.Policy) {
         try {
           result['Policy'] = JSON.parse(resp.Policy) as unknown;

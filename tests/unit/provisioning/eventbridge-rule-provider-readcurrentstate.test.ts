@@ -109,8 +109,10 @@ describe('EventBridgeRuleProvider.readCurrentState', () => {
 
     expect(result).toEqual({
       Name: 'my-rule',
+      Description: '',
       EventBusName: 'my-bus',
       State: 'ENABLED',
+      Targets: [],
       Tags: [],
     });
   });

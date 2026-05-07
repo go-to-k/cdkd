@@ -68,6 +68,7 @@ describe('ECSProvider.readCurrentState', () => {
     expect(result).toEqual({
       ClusterName: 'my-cluster',
       CapacityProviders: ['FARGATE'],
+      DefaultCapacityProviderStrategy: [],
       ClusterSettings: [{ Name: 'containerInsights', Value: 'enabled' }],
       Tags: [],
     });
@@ -101,6 +102,11 @@ describe('ECSProvider.readCurrentState', () => {
       DesiredCount: 2,
       LaunchType: 'FARGATE',
       EnableExecuteCommand: true,
+      LoadBalancers: [],
+      CapacityProviderStrategy: [],
+      PlacementConstraints: [],
+      PlacementStrategy: [],
+      ServiceRegistries: [],
       Tags: [],
     });
   });
@@ -132,7 +138,10 @@ describe('ECSProvider.readCurrentState', () => {
       NetworkMode: 'awsvpc',
       RequiresCompatibilities: ['FARGATE'],
       ExecutionRoleArn: 'arn:aws:iam::123:role/exec',
+      Volumes: [],
+      PlacementConstraints: [],
       EphemeralStorage: { SizeInGiB: 21 },
+      ContainerDefinitions: [],
       Tags: [],
     });
   });

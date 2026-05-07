@@ -653,19 +653,16 @@ export class EFSProvider implements ResourceProvider {
       const resp = await this.getClient().send(
         new DescribeLifecycleConfigurationCommand({ FileSystemId: physicalId })
       );
-      const policies = resp.LifecyclePolicies;
-      if (policies && policies.length > 0) {
-        result['LifecyclePolicies'] = policies.map((p) => {
-          const out: Record<string, unknown> = {};
-          if (p.TransitionToIA !== undefined) out['TransitionToIA'] = p.TransitionToIA;
-          if (p.TransitionToPrimaryStorageClass !== undefined) {
-            out['TransitionToPrimaryStorageClass'] = p.TransitionToPrimaryStorageClass;
-          }
-          if (p.TransitionToArchive !== undefined)
-            out['TransitionToArchive'] = p.TransitionToArchive;
-          return out;
-        });
-      }
+      const policies = resp.LifecyclePolicies ?? [];
+      result['LifecyclePolicies'] = policies.map((p) => {
+        const out: Record<string, unknown> = {};
+        if (p.TransitionToIA !== undefined) out['TransitionToIA'] = p.TransitionToIA;
+        if (p.TransitionToPrimaryStorageClass !== undefined) {
+          out['TransitionToPrimaryStorageClass'] = p.TransitionToPrimaryStorageClass;
+        }
+        if (p.TransitionToArchive !== undefined) out['TransitionToArchive'] = p.TransitionToArchive;
+        return out;
+      });
     } catch (err) {
       // "Not configured" is service-specific; FileSystemNotFound on this call
       // means the FS itself is gone (already covered above), so re-throw.
@@ -694,7 +691,7 @@ export class EFSProvider implements ResourceProvider {
 
     // FileSystemTags from the same DescribeFileSystems response.
     const tags = normalizeAwsTagsToCfn(fs.Tags);
-    if (tags.length > 0) result['FileSystemTags'] = tags;
+    result['FileSystemTags'] = tags;
 
     return result;
   }

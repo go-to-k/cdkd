@@ -444,9 +444,7 @@ export class EventBridgeRuleProvider implements ResourceProvider {
 
     const result: Record<string, unknown> = {};
     if (resp.Name !== undefined) result['Name'] = resp.Name;
-    if (resp.Description !== undefined && resp.Description !== '') {
-      result['Description'] = resp.Description;
-    }
+    result['Description'] = resp.Description ?? '';
     if (resp.EventBusName !== undefined && resp.EventBusName !== 'default') {
       result['EventBusName'] = resp.EventBusName;
     }
@@ -471,9 +469,7 @@ export class EventBridgeRuleProvider implements ResourceProvider {
           ...(eventBusName && eventBusName !== 'default' ? { EventBusName: eventBusName } : {}),
         })
       );
-      if (targetsResp.Targets && targetsResp.Targets.length > 0) {
-        result['Targets'] = targetsResp.Targets;
-      }
+      result['Targets'] = targetsResp.Targets ?? [];
     } catch (err) {
       if (!(err instanceof ResourceNotFoundException)) {
         throw err;

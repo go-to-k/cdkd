@@ -345,16 +345,10 @@ export class SSMParameterProvider implements ResourceProvider {
         })
       );
       const meta = desc.Parameters?.[0];
-      if (meta) {
-        if (meta.Description !== undefined && meta.Description !== '') {
-          result['Description'] = meta.Description;
-        }
-        if (meta.AllowedPattern !== undefined && meta.AllowedPattern !== '') {
-          result['AllowedPattern'] = meta.AllowedPattern;
-        }
-        if (meta.Tier !== undefined) {
-          result['Tier'] = meta.Tier;
-        }
+      result['Description'] = meta?.Description ?? '';
+      result['AllowedPattern'] = meta?.AllowedPattern ?? '';
+      if (meta?.Tier !== undefined) {
+        result['Tier'] = meta.Tier;
       }
     } catch {
       // Ignore — Type / Value / DataType already captured above.

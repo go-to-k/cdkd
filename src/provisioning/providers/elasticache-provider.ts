@@ -673,12 +673,10 @@ export class ElastiCacheProvider implements ResourceProvider {
     if (cluster.CacheNodes?.[0]?.Endpoint?.Port !== undefined) {
       result['Port'] = cluster.CacheNodes[0].Endpoint.Port;
     }
-    if (cluster.SecurityGroups && cluster.SecurityGroups.length > 0) {
-      const ids = cluster.SecurityGroups.map((sg) => sg.SecurityGroupId).filter(
-        (id): id is string => !!id
-      );
-      if (ids.length > 0) result['VpcSecurityGroupIds'] = ids;
-    }
+    const sgIds = (cluster.SecurityGroups ?? [])
+      .map((sg) => sg.SecurityGroupId)
+      .filter((id): id is string => !!id);
+    result['VpcSecurityGroupIds'] = sgIds;
 
     if (cluster.ARN) await this.attachTags(result, cluster.ARN);
     return result;
@@ -704,10 +702,10 @@ export class ElastiCacheProvider implements ResourceProvider {
     if (group.CacheSubnetGroupDescription !== undefined) {
       result['CacheSubnetGroupDescription'] = group.CacheSubnetGroupDescription;
     }
-    if (group.Subnets && group.Subnets.length > 0) {
-      const ids = group.Subnets.map((s) => s.SubnetIdentifier).filter((id): id is string => !!id);
-      if (ids.length > 0) result['SubnetIds'] = ids;
-    }
+    const subnetIds = (group.Subnets ?? [])
+      .map((s) => s.SubnetIdentifier)
+      .filter((id): id is string => !!id);
+    result['SubnetIds'] = subnetIds;
     if (group.ARN) await this.attachTags(result, group.ARN);
     return result;
   }

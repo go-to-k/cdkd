@@ -403,22 +403,17 @@ export class ECRProvider implements ResourceProvider {
     const result: Record<string, unknown> = {};
     if (r.repositoryName !== undefined) result['RepositoryName'] = r.repositoryName;
     if (r.imageTagMutability !== undefined) result['ImageTagMutability'] = r.imageTagMutability;
-    if (r.imageScanningConfiguration) {
-      const inner: Record<string, unknown> = {};
-      if (r.imageScanningConfiguration.scanOnPush !== undefined) {
-        inner['ScanOnPush'] = r.imageScanningConfiguration.scanOnPush;
+    result['ImageScanningConfiguration'] = {
+      ScanOnPush: r.imageScanningConfiguration?.scanOnPush ?? false,
+    };
+    {
+      const enc: Record<string, unknown> = {
+        EncryptionType: r.encryptionConfiguration?.encryptionType ?? 'AES256',
+      };
+      if (r.encryptionConfiguration?.kmsKey !== undefined) {
+        enc['KmsKey'] = r.encryptionConfiguration.kmsKey;
       }
-      if (Object.keys(inner).length > 0) result['ImageScanningConfiguration'] = inner;
-    }
-    if (r.encryptionConfiguration) {
-      const inner: Record<string, unknown> = {};
-      if (r.encryptionConfiguration.encryptionType !== undefined) {
-        inner['EncryptionType'] = r.encryptionConfiguration.encryptionType;
-      }
-      if (r.encryptionConfiguration.kmsKey !== undefined) {
-        inner['KmsKey'] = r.encryptionConfiguration.kmsKey;
-      }
-      if (Object.keys(inner).length > 0) result['EncryptionConfiguration'] = inner;
+      result['EncryptionConfiguration'] = enc;
     }
 
     // LifecyclePolicy: separate API call. "Not configured" omits the key;

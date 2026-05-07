@@ -510,9 +510,7 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
 
     const result: Record<string, unknown> = {};
     if (ns.Name !== undefined) result['Name'] = ns.Name;
-    if (ns.Description !== undefined && ns.Description !== '') {
-      result['Description'] = ns.Description;
-    }
+    result['Description'] = ns.Description ?? '';
     if (ns.Arn) await this.attachTags(result, ns.Arn);
     return result;
   }
@@ -531,9 +529,7 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
     const result: Record<string, unknown> = {};
     if (svc.Name !== undefined) result['Name'] = svc.Name;
     if (svc.NamespaceId !== undefined) result['NamespaceId'] = svc.NamespaceId;
-    if (svc.Description !== undefined && svc.Description !== '') {
-      result['Description'] = svc.Description;
-    }
+    result['Description'] = svc.Description ?? '';
     if (svc.Type !== undefined) result['Type'] = svc.Type;
     if (svc.DnsConfig) {
       result['DnsConfig'] = svc.DnsConfig as unknown as Record<string, unknown>;

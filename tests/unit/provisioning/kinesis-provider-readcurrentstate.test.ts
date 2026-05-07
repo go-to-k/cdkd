@@ -77,7 +77,7 @@ describe('KinesisStreamProvider.readCurrentState', () => {
     });
   });
 
-  it('omits StreamEncryption when EncryptionType=NONE', async () => {
+  it('emits StreamEncryption with EncryptionType=NONE placeholder when stream is unencrypted', async () => {
     mockSend
       .mockResolvedValueOnce({
         StreamDescription: {
@@ -96,6 +96,7 @@ describe('KinesisStreamProvider.readCurrentState', () => {
       Name: 'mystream',
       StreamModeDetails: { StreamMode: 'ON_DEMAND' },
       RetentionPeriodHours: 24,
+      StreamEncryption: { EncryptionType: 'NONE' },
       Tags: [],
     });
   });

@@ -427,23 +427,18 @@ export class DynamoDBTableProvider implements ResourceProvider {
           StreamViewType: table.StreamSpecification.StreamViewType,
         };
       }
-      if (table.GlobalSecondaryIndexes && table.GlobalSecondaryIndexes.length > 0) {
-        result['GlobalSecondaryIndexes'] = table.GlobalSecondaryIndexes;
+      result['GlobalSecondaryIndexes'] = table.GlobalSecondaryIndexes ?? [];
+      result['LocalSecondaryIndexes'] = table.LocalSecondaryIndexes ?? [];
+      // CFn's SSESpecification.SSEEnabled / KMSMasterKeyId / SSEType.
+      const sse: Record<string, unknown> = {
+        SSEEnabled: table.SSEDescription?.Status === 'ENABLED',
+      };
+      if (table.SSEDescription?.KMSMasterKeyArn !== undefined) {
+        sse['KMSMasterKeyId'] = table.SSEDescription.KMSMasterKeyArn;
       }
-      if (table.LocalSecondaryIndexes && table.LocalSecondaryIndexes.length > 0) {
-        result['LocalSecondaryIndexes'] = table.LocalSecondaryIndexes;
-      }
-      if (table.SSEDescription) {
-        // CFn's SSESpecification.SSEEnabled / KMSMasterKeyId / SSEType.
-        const sse: Record<string, unknown> = {};
-        if (table.SSEDescription.Status === 'ENABLED') sse['SSEEnabled'] = true;
-        if (table.SSEDescription.KMSMasterKeyArn !== undefined) {
-          sse['KMSMasterKeyId'] = table.SSEDescription.KMSMasterKeyArn;
-        }
-        if (table.SSEDescription.SSEType !== undefined)
-          sse['SSEType'] = table.SSEDescription.SSEType;
-        if (Object.keys(sse).length > 0) result['SSESpecification'] = sse;
-      }
+      if (table.SSEDescription?.SSEType !== undefined)
+        sse['SSEType'] = table.SSEDescription.SSEType;
+      result['SSESpecification'] = sse;
       if (table.DeletionProtectionEnabled !== undefined) {
         result['DeletionProtectionEnabled'] = table.DeletionProtectionEnabled;
       }
