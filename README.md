@@ -385,60 +385,33 @@ cdkd state destroy --all -y           # every stack in the bucket
 cdkd state destroy MyStack --region us-east-1
 ```
 
-## Other CLI flags
+## `--no-wait`: skip async-resource waits
 
-For concurrency knobs (`--concurrency`, `--stack-concurrency`,
-`--asset-publish-concurrency`, `--image-build-concurrency`) and
-per-resource timeout flags (`--resource-warn-after`,
-`--resource-timeout` — including the per-resource-type override syntax
-and the rationale for the 30m default), see
-**[docs/cli-reference.md](docs/cli-reference.md)**.
+CloudFront / RDS / ElastiCache / NAT Gateway typically take 1–15
+minutes to fully provision. By default cdkd waits (matching CFn).
+`cdkd deploy --no-wait` returns as soon as the create call returns
+and lets AWS finish in the background — handy for CI where nothing
+in the deploy flow needs the resource fully active. **Deploy-only**:
+`cdkd destroy` always waits (NAT in `deleting` state holds ENIs and
+would `DependencyViolation` sibling deletes).
 
-## Exit codes
+See [docs/cli-reference.md](docs/cli-reference.md#--no-wait-skip-async-resource-waits)
+for per-resource caveats (NAT egress, RDS final-snapshot timing,
+etc.).
 
-cdkd commands distinguish three outcomes via the process exit code so
-CI / bench scripts can react without grepping log output:
+## VPC route DependsOn relaxation (on by default)
 
-| Exit | Meaning |
-|------|---------|
-| `0` | Success — command completed and no resources are in an error state |
-| `1` | Command-level failure — auth error, bad arguments, synth crash, unhandled exception |
-| `2` | **Partial failure** — work completed but one or more resources failed (state.json is preserved, re-running typically resolves it) |
+CDK injects defensive `DependsOn` from VPC Lambdas onto private-subnet
+routes. The dependency is real at runtime but NOT required at deploy
+time. cdkd drops it by default so CloudFront + Lambda::Url propagation
+runs in parallel with NAT stabilization (~50% faster on VPC+Lambda+CloudFront
+stacks; bench-cdk-sample 398s → 181s). Pass
+`cdkd deploy --no-aggressive-vpc-parallel` to opt out (e.g. when a
+Custom Resource synchronously invokes a VPC Lambda outside cdkd's
+Lambda-ServiceToken Active wait).
 
-Exit `2` is currently emitted by `cdkd destroy` and `cdkd state
-destroy` when one or more per-resource deletes fail. The summary line
-also switches from `✓ Stack X destroyed` to `⚠ Stack X partially
-destroyed (...). State preserved — re-run 'cdkd destroy' / 'cdkd
-state destroy' to clean up.` so the visual marker matches the exit
-code.
-
-## Example
-
-```typescript
-const table = new dynamodb.Table(stack, 'Table', {
-  partitionKey: { name: 'id', type: dynamodb.AttributeType.STRING },
-});
-const fn = new lambda.Function(stack, 'Handler', {
-  runtime: lambda.Runtime.NODEJS_20_X,
-  handler: 'index.handler',
-  code: lambda.Code.fromAsset('lambda'),
-  environment: { TABLE_NAME: table.tableName },
-});
-table.grantReadWriteData(fn);
-```
-
-```bash
-$ cdkd deploy
-LambdaStack
-  ServiceRole     CREATE  AWS::IAM::Role             ✓  (2.1s)
-  Table           CREATE  AWS::DynamoDB::Table        ✓  (1.8s)
-  DefaultPolicy   CREATE  AWS::IAM::Policy            ✓  (1.5s)
-  Handler         CREATE  AWS::Lambda::Function       ✓  (3.4s)
-
-✓ Deployed LambdaStack (4 resources, 7.2s)
-```
-
-Resources are dispatched as soon as their own dependencies complete (event-driven DAG). ServiceRole and Table run in parallel; DefaultPolicy starts the moment ServiceRole is done — without waiting for Table — and Handler starts the moment DefaultPolicy is done.
+See [docs/cli-reference.md](docs/cli-reference.md) for the full
+type-pair allowlist and trade-off notes.
 
 ## Importing existing resources
 
@@ -517,34 +490,6 @@ cdkd publish-assets -a cdk.out       # skip synth, use pre-synthesized assembly
 See [docs/cli-reference.md](docs/cli-reference.md#publish-assets-synth--build--publish-no-deploy)
 for stack-selection rules and concurrency knobs.
 
-## `--no-wait`: skip async-resource waits
-
-CloudFront / RDS / ElastiCache / NAT Gateway typically take 1–15
-minutes to fully provision. By default cdkd waits (matching CFn).
-`cdkd deploy --no-wait` returns as soon as the create call returns
-and lets AWS finish in the background — handy for CI where nothing
-in the deploy flow needs the resource fully active. **Deploy-only**:
-`cdkd destroy` always waits (NAT in `deleting` state holds ENIs and
-would `DependencyViolation` sibling deletes).
-
-See [docs/cli-reference.md](docs/cli-reference.md#--no-wait-skip-async-resource-waits)
-for per-resource caveats (NAT egress, RDS final-snapshot timing,
-etc.).
-
-## VPC route DependsOn relaxation (on by default)
-
-CDK injects defensive `DependsOn` from VPC Lambdas onto private-subnet
-routes. The dependency is real at runtime but NOT required at deploy
-time. cdkd drops it by default so CloudFront + Lambda::Url propagation
-runs in parallel with NAT stabilization (~50% faster on VPC+Lambda+CloudFront
-stacks; bench-cdk-sample 398s → 181s). Pass
-`cdkd deploy --no-aggressive-vpc-parallel` to opt out (e.g. when a
-Custom Resource synchronously invokes a VPC Lambda outside cdkd's
-Lambda-ServiceToken Active wait).
-
-See [docs/cli-reference.md](docs/cli-reference.md) for the full
-type-pair allowlist and trade-off notes.
-
 ## State Management
 
 State is stored in S3 with optimistic locking via S3 Conditional Writes
@@ -593,6 +538,24 @@ After deployment, outputs are resolved and saved to the S3 state file:
 - CloudFormation: Outputs accessible via `aws cloudformation describe-stacks`
 - cdkd: Outputs saved in S3 state file (e.g., `s3://bucket/cdkd/MyStack/us-east-1/state.json`)
 - Both resolve intrinsic functions (Ref, Fn::GetAtt, etc.) to actual values
+
+## Exit codes
+
+cdkd commands distinguish three outcomes via the process exit code so
+CI / bench scripts can react without grepping log output:
+
+| Exit | Meaning |
+|------|---------|
+| `0` | Success — command completed and no resources are in an error state |
+| `1` | Command-level failure — auth error, bad arguments, synth crash, unhandled exception |
+| `2` | **Partial failure** — work completed but one or more resources failed (state.json is preserved, re-running typically resolves it) |
+
+Exit `2` is currently emitted by `cdkd destroy` and `cdkd state
+destroy` when one or more per-resource deletes fail. The summary line
+also switches from `✓ Stack X destroyed` to `⚠ Stack X partially
+destroyed (...). State preserved — re-run 'cdkd destroy' / 'cdkd
+state destroy' to clean up.` so the visual marker matches the exit
+code.
 
 ## License
 
