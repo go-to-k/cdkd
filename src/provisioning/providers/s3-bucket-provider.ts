@@ -976,19 +976,32 @@ export class S3BucketProvider implements ResourceProvider {
       this.logger.debug(`Applied EventBridge notification to bucket ${bucketName}`);
     }
 
-    // CORS Configuration
+    // CORS Configuration. Skip empty-rules placeholder (Class 2): AWS
+    // rejects `PutBucketCors` with zero rules. The empty array can reach
+    // here from a `--revert` round-trip if a future readCurrentState
+    // emits `CorsConfiguration: { CorsRules: [] }` as the always-emit
+    // placeholder.
     const corsConfig = properties['CorsConfiguration'] as
       | { CorsRules: Array<Record<string, unknown>> }
       | undefined;
-    if (corsConfig?.CorsRules) {
+    if (
+      corsConfig?.CorsRules &&
+      Array.isArray(corsConfig.CorsRules) &&
+      corsConfig.CorsRules.length > 0
+    ) {
       await this.applyCorsConfiguration(bucketName, corsConfig);
     }
 
-    // Lifecycle Configuration
+    // Lifecycle Configuration. Skip empty-rules placeholder (Class 2):
+    // AWS rejects `PutBucketLifecycleConfiguration` with zero rules.
     const lifecycleConfig = properties['LifecycleConfiguration'] as
       | { Rules: Array<Record<string, unknown>> }
       | undefined;
-    if (lifecycleConfig?.Rules) {
+    if (
+      lifecycleConfig?.Rules &&
+      Array.isArray(lifecycleConfig.Rules) &&
+      lifecycleConfig.Rules.length > 0
+    ) {
       await this.applyLifecycleConfiguration(bucketName, lifecycleConfig);
     }
 
@@ -1000,11 +1013,21 @@ export class S3BucketProvider implements ResourceProvider {
       await this.applyPublicAccessBlockConfiguration(bucketName, publicAccessBlock);
     }
 
-    // Bucket Encryption
+    // Bucket Encryption. Skip empty-rules placeholder (Class 2): AWS
+    // rejects `PutBucketEncryption` when the rules array is empty
+    // (`ServerSideEncryptionConfiguration must contain at least one
+    // Rule`). `readCurrentState` always-emits
+    // `BucketEncryption: { ServerSideEncryptionConfiguration: [] }` for
+    // buckets without explicit SSE — that placeholder must NOT be pushed
+    // back through `update()` on a `cdkd drift --revert` round-trip.
     const bucketEncryption = properties['BucketEncryption'] as
       | { ServerSideEncryptionConfiguration: Array<Record<string, unknown>> }
       | undefined;
-    if (bucketEncryption?.ServerSideEncryptionConfiguration) {
+    if (
+      bucketEncryption?.ServerSideEncryptionConfiguration &&
+      Array.isArray(bucketEncryption.ServerSideEncryptionConfiguration) &&
+      bucketEncryption.ServerSideEncryptionConfiguration.length > 0
+    ) {
       await this.applyBucketEncryption(bucketName, bucketEncryption);
     }
 
@@ -1380,13 +1403,20 @@ export class S3BucketProvider implements ResourceProvider {
     // `normalizeAwsTagsToCfn` filters out aws:* auto-injected tags (notably
     // CDK's `aws:cdk:path`) and sorts the result by Key for stable
     // comparison against state.
+    //
+    // Always-emit placeholder per docs/provider-development.md § 3b: even
+    // when the bucket has no user tags (NoSuchTagSet, or only filtered
+    // aws:* tags) we MUST emit `Tags: []`, otherwise observedProperties
+    // never carries the key and a console-side tag ADD on a previously
+    // untagged bucket is silently invisible to drift.
     try {
       const resp = await this.s3Client.send(new GetBucketTaggingCommand({ Bucket: physicalId }));
-      const tags = normalizeAwsTagsToCfn(resp.TagSet);
-      result['Tags'] = tags;
+      result['Tags'] = normalizeAwsTagsToCfn(resp.TagSet);
     } catch (err) {
       const e = err as { name?: string };
-      if (e.name !== 'NoSuchTagSet') {
+      if (e.name === 'NoSuchTagSet') {
+        result['Tags'] = [];
+      } else {
         throw err;
       }
     }

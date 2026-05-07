@@ -156,6 +156,7 @@ describe('S3BucketProvider.readCurrentState', () => {
         IgnorePublicAcls: false,
         RestrictPublicBuckets: false,
       },
+      Tags: [],
     });
   });
 
@@ -166,10 +167,11 @@ describe('S3BucketProvider.readCurrentState', () => {
   // refactor that drops a placeholder for any of these keys must update
   // this test consciously — silent regression is structurally prevented.
   //
-  // Note: the S3 provider's `Tags` key is set inside a try-block that
-  // catches `NoSuchTagSet` without writing the key — so the
-  // minimum-response shape deliberately does NOT include `Tags`. This
-  // mirrors the existing not-configured test above.
+  // The `Tags` key MUST be in the minimum-response shape: a bucket with
+  // no user tags must still expose `Tags: []` so a console-side tag ADD
+  // on a previously untagged bucket is detectable as drift (the
+  // comparator's top-level walk is state-keys-only — observed without a
+  // `Tags` key would silently miss the change).
   it('emits placeholders for every user-controllable top-level key on AWS minimum response', async () => {
     // HeadBucket
     mockSend.mockResolvedValueOnce({});
@@ -189,6 +191,7 @@ describe('S3BucketProvider.readCurrentState', () => {
         'BucketEncryption',
         'BucketName',
         'PublicAccessBlockConfiguration',
+        'Tags',
         'VersioningConfiguration',
       ].sort()
     );
@@ -200,5 +203,6 @@ describe('S3BucketProvider.readCurrentState', () => {
       IgnorePublicAcls: false,
       RestrictPublicBuckets: false,
     });
+    expect(result?.Tags).toEqual([]);
   });
 });
