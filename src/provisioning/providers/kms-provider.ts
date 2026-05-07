@@ -293,7 +293,13 @@ export class KMSProvider implements ResourceProvider {
         properties['Tags'] as Array<{ Key?: string; Value?: string }> | undefined
       );
 
-      // Update KeyPolicy if changed
+      // Update KeyPolicy if changed. Truthy gate (`&& newPolicyStr` below)
+      // is intentional: KMS rejects `PutKeyPolicy` with an empty / missing
+      // Policy ("KMS key policy must include the JSON statement..."), so
+      // empty / undefined newKeyPolicy must NOT round-trip to AWS. The
+      // `cdkd drift --revert` path doesn't reach this branch — KeyPolicy
+      // is declared in `getDriftUnknownPaths` (not in `observedProperties`),
+      // so neither side has it on a round-trip and the diff is a no-op.
       const newKeyPolicy = properties['KeyPolicy'];
       const oldKeyPolicy = previousProperties['KeyPolicy'];
       const newPolicyStr = newKeyPolicy
@@ -638,6 +644,37 @@ export class KMSProvider implements ResourceProvider {
       }
     }
     return result;
+  }
+
+  /**
+   * Declare state property paths cdkd cannot round-trip from AWS, so the
+   * drift comparator skips them instead of firing guaranteed false-
+   * positive drift on every clean run.
+   *
+   *  - `KeyPolicy`: cdkd does NOT call `GetKeyPolicy` in `readCurrentState`.
+   *    The policy body needs JSON parsing for comparison and a separate
+   *    SDK call; deferred to a follow-up. Until then, any user who
+   *    templates `KeyPolicy` would see guaranteed drift.
+   *  - `EnableKeyRotation` / `RotationPeriodInDays`: cdkd does NOT call
+   *    `GetKeyRotationStatus`. Same reason — deferred to a follow-up.
+   *    `EnableKeyRotation` is also a Class 1 candidate (only valid for
+   *    `KeySpec=SYMMETRIC_DEFAULT`); when we lift this gap the read side
+   *    must gate the emit on the discriminator.
+   *  - `BypassPolicyLockoutSafetyCheck` / `PendingWindowInDays`: not part
+   *    of the persisted AWS state visible via `DescribeKey` — both are
+   *    create / delete-time-only inputs.
+   */
+  getDriftUnknownPaths(resourceType: string): string[] {
+    if (resourceType === 'AWS::KMS::Key') {
+      return [
+        'KeyPolicy',
+        'EnableKeyRotation',
+        'RotationPeriodInDays',
+        'BypassPolicyLockoutSafetyCheck',
+        'PendingWindowInDays',
+      ];
+    }
+    return [];
   }
 
   private async readCurrentStateAlias(

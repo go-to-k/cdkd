@@ -77,6 +77,12 @@ describe('DynamoDBTableProvider.readCurrentState', () => {
 
     expect(mockSend.mock.calls[0]?.[0]).toBeInstanceOf(DescribeTableCommand);
     expect(mockSend.mock.calls[1]?.[0]).toBeInstanceOf(ListTagsOfResourceCommand);
+    // Class 1/2 placeholder guards (PR — drift --revert round-trip safety):
+    //  - GlobalSecondaryIndexes / LocalSecondaryIndexes are NOT emitted as
+    //    empty-array placeholders — the previous `?? []` round-tripped as
+    //    "remove all GSIs" / a guaranteed AWS rejection on LSI (immutable
+    //    post-create).
+    //  - SSESpecification is gated on Status === 'ENABLED' (it is here).
     expect(result).toEqual({
       TableName: 'my-table',
       KeySchema: [{ AttributeName: 'id', KeyType: 'HASH' }],
@@ -84,8 +90,6 @@ describe('DynamoDBTableProvider.readCurrentState', () => {
       BillingMode: 'PAY_PER_REQUEST',
       ProvisionedThroughput: { ReadCapacityUnits: 0, WriteCapacityUnits: 0 },
       StreamSpecification: { StreamEnabled: true, StreamViewType: 'NEW_IMAGE' },
-      GlobalSecondaryIndexes: [],
-      LocalSecondaryIndexes: [],
       SSESpecification: {
         SSEEnabled: true,
         KMSMasterKeyId: 'arn:aws:kms:us-east-1:123:key/abc',

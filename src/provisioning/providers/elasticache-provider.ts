@@ -399,12 +399,22 @@ export class ElastiCacheProvider implements ResourceProvider {
     this.logger.debug(`Updating CacheCluster ${logicalId}: ${physicalId}`);
 
     try {
+      // Class 2 sanitization: `readCurrentState` always-emits
+      // `VpcSecurityGroupIds: []` for clusters without VPC SGs (legacy
+      // EC2-Classic, or transient state). Round-tripping an empty array
+      // through `ModifyCacheClusterCommand.SecurityGroupIds` makes AWS
+      // reject with "must specify at least one security group" — pass
+      // `undefined` instead so AWS treats the field as "no change".
+      // Drift detection is unaffected: state `[]` vs AWS `[sg-1]` still
+      // surfaces as drift on the read side.
+      const rawSgIds = properties['VpcSecurityGroupIds'] as string[] | undefined;
+      const sgIds = rawSgIds && rawSgIds.length > 0 ? rawSgIds : undefined;
       await this.getClient().send(
         new ModifyCacheClusterCommand({
           CacheClusterId: physicalId,
           NumCacheNodes:
             properties['NumCacheNodes'] != null ? Number(properties['NumCacheNodes']) : undefined,
-          SecurityGroupIds: properties['VpcSecurityGroupIds'] as string[] | undefined,
+          SecurityGroupIds: sgIds,
           CacheParameterGroupName: properties['CacheParameterGroupName'] as string | undefined,
           EngineVersion: properties['EngineVersion'] as string | undefined,
           PreferredMaintenanceWindow: properties['PreferredMaintenanceWindow'] as
@@ -732,7 +742,14 @@ export class ElastiCacheProvider implements ResourceProvider {
     }
     if (cluster.IpDiscovery !== undefined) result['IpDiscovery'] = cluster.IpDiscovery;
     if (cluster.NetworkType !== undefined) result['NetworkType'] = cluster.NetworkType;
-    if (cluster.TransitEncryptionEnabled !== undefined) {
+    // Class 1 gate: `TransitEncryptionEnabled` is redis-only on
+    // CreateCacheClusterCommand. AWS DescribeCacheClusters returns the
+    // field for both engines (false for memcached), but emitting it on
+    // a memcached cluster would, if any future `update()` change ships
+    // it to ModifyCacheClusterCommand, get rejected with "TransitEncryption
+    // is only valid for Redis". Gate the read-side emit on the engine
+    // discriminator so the placeholder cannot leak through round-trip.
+    if (cluster.Engine === 'redis' && cluster.TransitEncryptionEnabled !== undefined) {
       result['TransitEncryptionEnabled'] = cluster.TransitEncryptionEnabled;
     }
     if (cluster.CacheNodes?.[0]?.Endpoint?.Port !== undefined) {

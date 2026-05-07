@@ -156,8 +156,22 @@ export class SecretsManagerSecretProvider implements ResourceProvider {
         SecretId: physicalId,
       };
       if (secretString) updateParams.SecretString = secretString;
-      if (properties['Description']) updateParams.Description = properties['Description'] as string;
-      if (properties['KmsKeyId']) updateParams.KmsKeyId = properties['KmsKeyId'] as string;
+      // `!== undefined` (not truthy): readCurrentState emits `Description: ''`
+      // as a placeholder for "no description set" so the drift comparator can
+      // detect a console-side description add. A truthy gate here would silently
+      // drop a user-intended `Description: ''` (clear-the-description) on
+      // `cdkd drift --revert`. AWS UpdateSecret accepts empty string for
+      // Description (treated as "no description").
+      if (properties['Description'] !== undefined)
+        updateParams.Description = properties['Description'] as string;
+      // `KmsKeyId`: same `!== undefined` semantics, but Class 2 sanitize at the
+      // write layer — readCurrentState emits `KmsKeyId: ''` as a placeholder
+      // when the secret uses the AWS-managed key (no KMS key set). Passing an
+      // empty string to UpdateSecret is rejected by AWS as an invalid ARN, so
+      // the placeholder must NOT reach the wire. Symmetric with the
+      // serializeRedrivePolicy pattern in sqs-queue-provider.ts.
+      if (properties['KmsKeyId'] !== undefined && properties['KmsKeyId'] !== '')
+        updateParams.KmsKeyId = properties['KmsKeyId'] as string;
 
       await this.smClient.send(new UpdateSecretCommand(updateParams));
 

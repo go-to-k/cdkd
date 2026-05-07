@@ -241,13 +241,24 @@ export class RDSProvider implements ResourceProvider {
     this.logger.debug(`Updating DBSubnetGroup ${logicalId}: ${physicalId}`);
 
     try {
-      await this.getClient().send(
-        new ModifyDBSubnetGroupCommand({
-          DBSubnetGroupName: physicalId,
-          DBSubnetGroupDescription: properties['DBSubnetGroupDescription'] as string | undefined,
-          SubnetIds: properties['SubnetIds'] as string[],
-        })
-      );
+      // Class 2 — `SubnetIds: []` would be rejected by AWS as a structurally
+      // invalid input (DBSubnetGroup requires ≥ 2 subnets in distinct AZs).
+      // readCurrentState emits `SubnetIds: []` as a placeholder when AWS
+      // happens to return no subnets; the round-trip must NOT translate
+      // that into a malformed SDK call. Skip the field when empty so the
+      // ModifyDBSubnetGroup call is a no-op for the subnet list.
+      const subnetIds = properties['SubnetIds'] as string[] | undefined;
+      const sendSubnetIds = subnetIds !== undefined && subnetIds.length > 0;
+      // The SDK input type marks `SubnetIds` as required; a description-
+      // only update is a legitimate use case that omits the field on the
+      // wire (AWS supports it). Cast the input shape to bypass the
+      // type-level requirement.
+      const modifyInput = {
+        DBSubnetGroupName: physicalId,
+        DBSubnetGroupDescription: properties['DBSubnetGroupDescription'] as string | undefined,
+        ...(sendSubnetIds && { SubnetIds: subnetIds }),
+      } as ConstructorParameters<typeof ModifyDBSubnetGroupCommand>[0];
+      await this.getClient().send(new ModifyDBSubnetGroupCommand(modifyInput));
 
       // Apply tag diff. RDS uses ARN-keyed AddTagsToResource /
       // RemoveTagsFromResource. DescribeDBSubnetGroups returns the ARN.
@@ -422,6 +433,23 @@ export class RDSProvider implements ResourceProvider {
       const serverlessV2Config = properties['ServerlessV2ScalingConfiguration'] as
         | { MinCapacity?: number; MaxCapacity?: number }
         | undefined;
+      // Class 2 — defence-in-depth on top of the readCurrentState gate.
+      // `{}` (or `{ MinCapacity: undefined, MaxCapacity: undefined }`)
+      // is structurally invalid as ModifyDBCluster input on
+      // non-serverless-v2 clusters; only ship the field when at least
+      // one capacity value is present.
+      const hasServerlessV2 =
+        serverlessV2Config !== undefined &&
+        (serverlessV2Config.MinCapacity !== undefined ||
+          serverlessV2Config.MaxCapacity !== undefined);
+
+      // Class 2 — `VpcSecurityGroupIds: []` would CLEAR all SGs on the
+      // cluster. readCurrentState always-emits `[]` for clusters that
+      // legitimately have no VPC SGs (Aurora-on-default-VPC etc.); the
+      // round-trip must NOT translate that placeholder into a destructive
+      // SDK call. Skip the field when the resolved value is empty.
+      const vpcSgIds = properties['VpcSecurityGroupIds'] as string[] | undefined;
+      const sendVpcSgIds = vpcSgIds !== undefined && vpcSgIds.length > 0;
 
       await this.getClient().send(
         new ModifyDBClusterCommand({
@@ -432,10 +460,10 @@ export class RDSProvider implements ResourceProvider {
             properties['BackupRetentionPeriod'] != null
               ? Number(properties['BackupRetentionPeriod'])
               : undefined,
-          VpcSecurityGroupIds: properties['VpcSecurityGroupIds'] as string[] | undefined,
+          ...(sendVpcSgIds && { VpcSecurityGroupIds: vpcSgIds }),
           MasterUserPassword: properties['MasterUserPassword'] as string | undefined,
           Port: properties['Port'] != null ? Number(properties['Port']) : undefined,
-          ...(serverlessV2Config && {
+          ...(hasServerlessV2 && {
             ServerlessV2ScalingConfiguration: {
               MinCapacity: serverlessV2Config.MinCapacity,
               MaxCapacity: serverlessV2Config.MaxCapacity,
@@ -1043,7 +1071,20 @@ export class RDSProvider implements ResourceProvider {
     if (cluster.DeletionProtection !== undefined) {
       result['DeletionProtection'] = cluster.DeletionProtection;
     }
-    {
+    // Class 1 — ServerlessV2ScalingConfiguration is only valid for Aurora
+    // Serverless v2 clusters. Emit only when AWS actually returns one or
+    // more of the discriminator fields (MinCapacity / MaxCapacity); on a
+    // provisioned-mode cluster AWS leaves the entire field undefined and
+    // emitting `{}` here would (a) round-trip through update() into
+    // `ModifyDBCluster` with `ServerlessV2ScalingConfiguration: { Min: u, Max: u }`
+    // which AWS rejects with "ServerlessV2ScalingConfiguration is only
+    // supported on Aurora Serverless v2 clusters", and (b) fire a
+    // false-positive drift on every non-serverless cluster (state has no
+    // such key). See docs/provider-development.md § 3b.
+    if (
+      cluster.ServerlessV2ScalingConfiguration?.MinCapacity !== undefined ||
+      cluster.ServerlessV2ScalingConfiguration?.MaxCapacity !== undefined
+    ) {
       const sc: Record<string, unknown> = {};
       if (cluster.ServerlessV2ScalingConfiguration?.MinCapacity !== undefined) {
         sc['MinCapacity'] = cluster.ServerlessV2ScalingConfiguration.MinCapacity;

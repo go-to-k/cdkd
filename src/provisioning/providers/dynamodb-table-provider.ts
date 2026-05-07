@@ -480,24 +480,50 @@ export class DynamoDBTableProvider implements ResourceProvider {
           WriteCapacityUnits: table.ProvisionedThroughput.WriteCapacityUnits,
         };
       }
-      if (table.StreamSpecification) {
+      // Class 1 guard: StreamSpecification.StreamViewType is only valid when
+      // a stream is enabled. AWS returns the StreamSpecification block on
+      // tables that USED TO have a stream (StreamEnabled: false, no
+      // StreamViewType) — emitting that placeholder back through a
+      // round-trip drift --revert would push a CFn-invalid shape (a
+      // StreamSpecification without StreamViewType is rejected). Only
+      // surface the block when the stream is actually enabled.
+      if (table.StreamSpecification?.StreamEnabled && table.StreamSpecification.StreamViewType) {
         result['StreamSpecification'] = {
-          StreamEnabled: table.StreamSpecification.StreamEnabled,
+          StreamEnabled: true,
           StreamViewType: table.StreamSpecification.StreamViewType,
         };
       }
-      result['GlobalSecondaryIndexes'] = table.GlobalSecondaryIndexes ?? [];
-      result['LocalSecondaryIndexes'] = table.LocalSecondaryIndexes ?? [];
-      // CFn's SSESpecification.SSEEnabled / KMSMasterKeyId / SSEType.
-      const sse: Record<string, unknown> = {
-        SSEEnabled: table.SSEDescription?.Status === 'ENABLED',
-      };
-      if (table.SSEDescription?.KMSMasterKeyArn !== undefined) {
-        sse['KMSMasterKeyId'] = table.SSEDescription.KMSMasterKeyArn;
+      // Class 2 guard: GSI / LSI placeholders. AWS omits these blocks when
+      // none exist; the previous `?? []` always-emitted an empty array
+      // which round-trips through `update()` as an instruction to "remove
+      // all GSIs", and on the LSI side LSIs are immutable post-create so
+      // the empty-array placeholder is a guaranteed AWS rejection on any
+      // future provider.update() that learns to handle the field. Only
+      // surface when AWS reports indexes.
+      if (table.GlobalSecondaryIndexes && table.GlobalSecondaryIndexes.length > 0) {
+        result['GlobalSecondaryIndexes'] = table.GlobalSecondaryIndexes;
       }
-      if (table.SSEDescription?.SSEType !== undefined)
-        sse['SSEType'] = table.SSEDescription.SSEType;
-      result['SSESpecification'] = sse;
+      if (table.LocalSecondaryIndexes && table.LocalSecondaryIndexes.length > 0) {
+        result['LocalSecondaryIndexes'] = table.LocalSecondaryIndexes;
+      }
+      // Class 1 guard: CFn's SSESpecification.KMSMasterKeyId / SSEType are
+      // only valid when SSEEnabled=true. AWS reports SSEDescription.Status
+      // = 'DISABLED' (or omits SSEDescription entirely) on tables without
+      // SSE; the previous always-emit `{ SSEEnabled: false }` placeholder
+      // round-trips fine when state matches but breaks the moment a
+      // future SSE-aware update() learns to read `SSESpecification` —
+      // `{ SSEEnabled: false, KMSMasterKeyId: '...' }` is rejected by
+      // AWS. Only surface the block when SSE is actually enabled.
+      if (table.SSEDescription?.Status === 'ENABLED') {
+        const sse: Record<string, unknown> = { SSEEnabled: true };
+        if (table.SSEDescription.KMSMasterKeyArn !== undefined) {
+          sse['KMSMasterKeyId'] = table.SSEDescription.KMSMasterKeyArn;
+        }
+        if (table.SSEDescription.SSEType !== undefined) {
+          sse['SSEType'] = table.SSEDescription.SSEType;
+        }
+        result['SSESpecification'] = sse;
+      }
       if (table.DeletionProtectionEnabled !== undefined) {
         result['DeletionProtectionEnabled'] = table.DeletionProtectionEnabled;
       }
