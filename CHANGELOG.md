@@ -1,3 +1,10 @@
+# [0.48.0](https://github.com/go-to-k/cdkd/compare/v0.47.0...v0.48.0) (2026-05-07)
+
+
+### Features
+
+* **drift:** always emit Tags in readCurrentState to detect console-side adds on initially-untagged resources ([#145](https://github.com/go-to-k/cdkd/issues/145)) ([39c73df](https://github.com/go-to-k/cdkd/commit/39c73dfcb5d60e5b088b3fb19c6a4e306cdf22aa))
+
 # [0.47.0](https://github.com/go-to-k/cdkd/compare/v0.46.1...v0.47.0) (2026-05-07)
 
 
