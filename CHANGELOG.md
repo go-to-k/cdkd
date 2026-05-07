@@ -1,3 +1,10 @@
+# [0.47.0](https://github.com/go-to-k/cdkd/compare/v0.46.1...v0.47.0) (2026-05-07)
+
+
+### Features
+
+* **drift:** observedProperties baseline (state schema v3) for richer drift detection ([#144](https://github.com/go-to-k/cdkd/issues/144)) ([338c15c](https://github.com/go-to-k/cdkd/commit/338c15c683bc4cfc1597ad472cfd36073fe5e61d))
+
 ## [0.46.1](https://github.com/go-to-k/cdkd/compare/v0.46.0...v0.46.1) (2026-05-06)
 
 
