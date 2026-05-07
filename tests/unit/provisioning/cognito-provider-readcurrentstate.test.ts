@@ -74,9 +74,25 @@ describe('CognitoUserPoolProvider.readCurrentState', () => {
       UserPoolName: 'my-pool',
       AutoVerifiedAttributes: ['email'],
       UsernameAttributes: ['email'],
+      AliasAttributes: [],
       Policies: { PasswordPolicy: { MinimumLength: 8 } },
+      LambdaConfig: {},
       MfaConfiguration: 'OFF',
+      AdminCreateUserConfig: {},
+      AccountRecoverySetting: {},
+      UserAttributeUpdateSettings: {},
       DeletionProtection: 'ACTIVE',
+      EmailConfiguration: {},
+      SmsConfiguration: {},
+      VerificationMessageTemplate: {},
+      UsernameConfiguration: {},
+      DeviceConfiguration: {},
+      UserPoolAddOns: {},
+      EmailVerificationMessage: '',
+      EmailVerificationSubject: '',
+      SmsAuthenticationMessage: '',
+      SmsVerificationMessage: '',
+      UserPoolTags: {},
     });
   });
 
@@ -123,7 +139,7 @@ describe('CognitoUserPoolProvider.readCurrentState', () => {
     expect(result?.UserPoolTags).toEqual({ Foo: 'Bar' });
   });
 
-  it('omits UserPoolTags when DescribeUserPool returns no user tags', async () => {
+  it('emits empty UserPoolTags placeholder when DescribeUserPool returns no user tags', async () => {
     mockSend.mockResolvedValueOnce({
       UserPool: {
         Id: 'us-east-1_abcd',
@@ -138,6 +154,6 @@ describe('CognitoUserPoolProvider.readCurrentState', () => {
       'AWS::Cognito::UserPool'
     );
 
-    expect(result).not.toHaveProperty('UserPoolTags');
+    expect(result?.UserPoolTags).toEqual({});
   });
 });

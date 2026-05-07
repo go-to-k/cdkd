@@ -497,66 +497,52 @@ export class CognitoUserPoolProvider implements ResourceProvider {
     const pool = resp.UserPool;
     if (!pool) return undefined;
 
+    // Cognito UserPool is mutated via UpdateUserPool which accepts every
+    // field below (except UserPoolName, Schema which are immutable on
+    // create). Always emit user-controllable top-level keys with
+    // placeholders so a console-side ADD on a property the pool wasn't
+    // templated with at deploy time surfaces as drift.
     const result: Record<string, unknown> = {};
     if (pool.Name !== undefined) result['UserPoolName'] = pool.Name;
-    if (pool.AutoVerifiedAttributes && pool.AutoVerifiedAttributes.length > 0) {
-      result['AutoVerifiedAttributes'] = [...pool.AutoVerifiedAttributes];
-    }
-    if (pool.UsernameAttributes && pool.UsernameAttributes.length > 0) {
-      result['UsernameAttributes'] = [...pool.UsernameAttributes];
-    }
-    if (pool.AliasAttributes && pool.AliasAttributes.length > 0) {
-      result['AliasAttributes'] = [...pool.AliasAttributes];
-    }
-    if (pool.Policies) result['Policies'] = pool.Policies;
+    result['AutoVerifiedAttributes'] = pool.AutoVerifiedAttributes
+      ? [...pool.AutoVerifiedAttributes]
+      : [];
+    result['UsernameAttributes'] = pool.UsernameAttributes ? [...pool.UsernameAttributes] : [];
+    result['AliasAttributes'] = pool.AliasAttributes ? [...pool.AliasAttributes] : [];
+    result['Policies'] = pool.Policies ?? {};
     if (pool.SchemaAttributes && pool.SchemaAttributes.length > 0) {
+      // Schema is immutable on create — only emit when present so a pool
+      // without a custom schema doesn't surface an empty Schema array as
+      // a phantom diff.
       result['Schema'] = pool.SchemaAttributes;
     }
-    if (pool.LambdaConfig && Object.keys(pool.LambdaConfig).length > 0) {
-      result['LambdaConfig'] = pool.LambdaConfig;
-    }
-    if (pool.MfaConfiguration !== undefined) result['MfaConfiguration'] = pool.MfaConfiguration;
-    if (pool.AdminCreateUserConfig) result['AdminCreateUserConfig'] = pool.AdminCreateUserConfig;
-    if (pool.AccountRecoverySetting) {
-      result['AccountRecoverySetting'] = pool.AccountRecoverySetting;
-    }
-    if (pool.UserAttributeUpdateSettings) {
-      result['UserAttributeUpdateSettings'] = pool.UserAttributeUpdateSettings;
-    }
-    if (pool.DeletionProtection !== undefined) {
-      result['DeletionProtection'] = pool.DeletionProtection;
-    }
-    if (pool.EmailConfiguration) result['EmailConfiguration'] = pool.EmailConfiguration;
-    if (pool.SmsConfiguration) result['SmsConfiguration'] = pool.SmsConfiguration;
-    if (pool.VerificationMessageTemplate) {
-      result['VerificationMessageTemplate'] = pool.VerificationMessageTemplate;
-    }
-    if (pool.UsernameConfiguration) {
-      result['UsernameConfiguration'] = pool.UsernameConfiguration;
-    }
-    if (pool.DeviceConfiguration) result['DeviceConfiguration'] = pool.DeviceConfiguration;
-    if (pool.UserPoolAddOns) result['UserPoolAddOns'] = pool.UserPoolAddOns;
-    if (pool.EmailVerificationMessage !== undefined) {
-      result['EmailVerificationMessage'] = pool.EmailVerificationMessage;
-    }
-    if (pool.EmailVerificationSubject !== undefined) {
-      result['EmailVerificationSubject'] = pool.EmailVerificationSubject;
-    }
-    if (pool.SmsAuthenticationMessage !== undefined) {
-      result['SmsAuthenticationMessage'] = pool.SmsAuthenticationMessage;
-    }
-    if (pool.SmsVerificationMessage !== undefined) {
-      result['SmsVerificationMessage'] = pool.SmsVerificationMessage;
-    }
+    result['LambdaConfig'] = pool.LambdaConfig ?? {};
+    result['MfaConfiguration'] = pool.MfaConfiguration ?? 'OFF';
+    result['AdminCreateUserConfig'] = pool.AdminCreateUserConfig ?? {};
+    result['AccountRecoverySetting'] = pool.AccountRecoverySetting ?? {};
+    result['UserAttributeUpdateSettings'] = pool.UserAttributeUpdateSettings ?? {};
+    result['DeletionProtection'] = pool.DeletionProtection ?? 'INACTIVE';
+    result['EmailConfiguration'] = pool.EmailConfiguration ?? {};
+    result['SmsConfiguration'] = pool.SmsConfiguration ?? {};
+    result['VerificationMessageTemplate'] = pool.VerificationMessageTemplate ?? {};
+    result['UsernameConfiguration'] = pool.UsernameConfiguration ?? {};
+    result['DeviceConfiguration'] = pool.DeviceConfiguration ?? {};
+    result['UserPoolAddOns'] = pool.UserPoolAddOns ?? {};
+    result['EmailVerificationMessage'] = pool.EmailVerificationMessage ?? '';
+    result['EmailVerificationSubject'] = pool.EmailVerificationSubject ?? '';
+    result['SmsAuthenticationMessage'] = pool.SmsAuthenticationMessage ?? '';
+    result['SmsVerificationMessage'] = pool.SmsVerificationMessage ?? '';
     // UserPoolTags is a map in CFn (NOT an array of {Key, Value}). Filter
     // aws:* auto-tags but keep the map shape to match what cdkd state holds.
+    // Always emit (even when empty) so a console-side tag ADD on an
+    // initially-untagged pool surfaces as drift.
+    const userTags: Record<string, string> = {};
     if (pool.UserPoolTags) {
-      const userTags: Record<string, string> = {};
       for (const [k, v] of Object.entries(pool.UserPoolTags)) {
         if (!k.startsWith('aws:')) userTags[k] = v;
       }
-      if (Object.keys(userTags).length > 0) result['UserPoolTags'] = userTags;
     }
+    result['UserPoolTags'] = userTags;
     return result;
   }
 
