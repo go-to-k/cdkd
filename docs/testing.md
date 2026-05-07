@@ -411,6 +411,25 @@ CDKD_TEST_FAIL=true node ../../../../dist/cli.js deploy CdkdBasicExample \
 
 Use this to sanity-check the dispatcher's rollback path against AWS without writing a separate failing CDK app each time.
 
+### Drift revert E2E (`tests/integration/drift-revert/`)
+
+End-to-end real-AWS test for `cdkd drift` + `cdkd drift --revert`.
+Deploys an S3 Bucket (with tags) + SNS Topic (with DisplayName), mutates
+them out-of-band via direct AWS SDK calls (`PutBucketTagging`,
+`SetTopicAttributes`), and asserts that `cdkd drift` exits with code 1
+(drift detected) and that `cdkd drift --revert -y` exits with code 0
+(revert succeeded). Run via:
+
+```bash
+bash tests/integration/drift-revert/verify.sh
+```
+
+The script auto-resolves the AWS account ID, picks the cdkd state
+bucket as `cdkd-state-${accountId}`, builds cdkd from the repo root,
+and finishes with `cdkd destroy --force`. Catches AWS-shape divergences
+and timing flakiness that the per-provider mocked round-trip unit tests
+miss.
+
 ### Method B: Manual code changes
 
 Alternatively, modify the stack code directly and re-deploy to test updates.

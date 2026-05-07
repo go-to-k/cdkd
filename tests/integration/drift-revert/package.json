@@ -1,0 +1,21 @@
+{
+  "name": "cdkd-example-drift-revert",
+  "version": "1.0.0",
+  "private": true,
+  "description": "End-to-end real-AWS test for cdkd drift + cdkd drift --revert",
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc -w"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "typescript": "^5.0.0",
+    "ts-node": "^10.0.0"
+  },
+  "dependencies": {
+    "@aws-sdk/client-s3": "^3.0.0",
+    "@aws-sdk/client-sns": "^3.1017.0",
+    "aws-cdk-lib": "^2.169.0",
+    "constructs": "^10.0.0"
+  }
+}
