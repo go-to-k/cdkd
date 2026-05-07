@@ -189,10 +189,31 @@ describe('AppSyncProvider.readCurrentState', () => {
         },
       });
     });
+
+    it('Class 2: omits ServiceRoleArn when AWS does not return one', async () => {
+      // ServiceRoleArn must be a valid IAM ARN — '' placeholder would
+      // fail ARN validation if pushed back to AWS. NONE / HTTP type
+      // data sources legitimately have no service role.
+      mockSend.mockResolvedValueOnce({
+        dataSource: {
+          name: 'ds1',
+          type: 'NONE',
+          // serviceRoleArn deliberately undefined.
+        },
+      });
+
+      const result = await provider.readCurrentState(
+        'api-1|ds1',
+        'L',
+        'AWS::AppSync::DataSource'
+      );
+
+      expect(result).not.toHaveProperty('ServiceRoleArn');
+    });
   });
 
   describe('AWS::AppSync::Resolver', () => {
-    it('returns CFn-shaped Resolver properties (happy path)', async () => {
+    it('Kind=UNIT VTL: emits DataSourceName + VTL templates, omits PIPELINE/JS shapes', async () => {
       mockSend.mockResolvedValueOnce({
         resolver: {
           typeName: 'Query',
@@ -211,17 +232,78 @@ describe('AppSyncProvider.readCurrentState', () => {
       );
 
       expect(mockSend.mock.calls[0]?.[0]).toBeInstanceOf(GetResolverCommand);
+      // Class 1: PipelineConfig + Code + Runtime are NOT emitted on a
+      // UNIT VTL resolver (they'd be rejected by CreateResolver /
+      // UpdateResolver if pushed back).
       expect(result).toEqual({
         ApiId: 'api-1',
         TypeName: 'Query',
         FieldName: 'getThing',
-        DataSourceName: 'ds1',
         Kind: 'UNIT',
+        DataSourceName: 'ds1',
         RequestMappingTemplate: '$ctx',
         ResponseMappingTemplate: '$result',
-        PipelineConfig: { Functions: [] },
-        Runtime: {},
-        Code: '',
+      });
+    });
+
+    it('Class 1: Kind=PIPELINE omits DataSourceName + VTL templates', async () => {
+      mockSend.mockResolvedValueOnce({
+        resolver: {
+          typeName: 'Query',
+          fieldName: 'pipe',
+          kind: 'PIPELINE',
+          pipelineConfig: { functions: ['fn-1', 'fn-2'] },
+          requestMappingTemplate: '$ctx',
+          responseMappingTemplate: '$result',
+        },
+      });
+
+      const result = await provider.readCurrentState(
+        'api-1|Query|pipe',
+        'L',
+        'AWS::AppSync::Resolver'
+      );
+
+      // PipelineConfig is the discriminator-tagged required shape;
+      // DataSourceName is N/A on a PIPELINE resolver.
+      expect(result).toMatchObject({
+        ApiId: 'api-1',
+        TypeName: 'Query',
+        FieldName: 'pipe',
+        Kind: 'PIPELINE',
+        PipelineConfig: { Functions: ['fn-1', 'fn-2'] },
+      });
+      expect(result).not.toHaveProperty('DataSourceName');
+    });
+
+    it('Class 1: JS resolver emits Code + Runtime, omits VTL templates', async () => {
+      mockSend.mockResolvedValueOnce({
+        resolver: {
+          typeName: 'Query',
+          fieldName: 'jsThing',
+          dataSourceName: 'ds1',
+          kind: 'UNIT',
+          code: 'export function request() {}',
+          runtime: { name: 'APPSYNC_JS', runtimeVersion: '1.0.0' },
+        },
+      });
+
+      const result = await provider.readCurrentState(
+        'api-1|Query|jsThing',
+        'L',
+        'AWS::AppSync::Resolver'
+      );
+
+      // VTL templates are NOT emitted on a JS resolver (AWS rejects
+      // mixing Code/Runtime with Request/ResponseMappingTemplate).
+      expect(result).toEqual({
+        ApiId: 'api-1',
+        TypeName: 'Query',
+        FieldName: 'jsThing',
+        Kind: 'UNIT',
+        DataSourceName: 'ds1',
+        Code: 'export function request() {}',
+        Runtime: { Name: 'APPSYNC_JS', RuntimeVersion: '1.0.0' },
       });
     });
   });

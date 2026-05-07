@@ -1,7 +1,9 @@
 import {
   ECRClient,
   CreateRepositoryCommand,
+  DeleteLifecyclePolicyCommand,
   DeleteRepositoryCommand,
+  DeleteRepositoryPolicyCommand,
   DescribeRepositoriesCommand,
   GetLifecyclePolicyCommand,
   PutLifecyclePolicyCommand,
@@ -222,7 +224,15 @@ export class ECRProvider implements ResourceProvider {
         this.logger.debug(`Updated image tag mutability for ${physicalId}`);
       }
 
-      // Update LifecyclePolicy if changed
+      // Update LifecyclePolicy if changed.
+      //
+      // The truthy gate `newLifecycle?.LifecyclePolicyText` covers both
+      // (a) the no-policy state (`undefined`) and (b) the placeholder
+      // shape `{}`/`{ LifecyclePolicyText: '' }`. When the diff is
+      // "old=Set / new=Cleared", we explicitly issue
+      // `DeleteLifecyclePolicy` instead of silently dropping the change
+      // — otherwise `cdkd drift --revert` reports `✓ reverted` while AWS
+      // still has the old policy attached.
       const newLifecycle = properties['LifecyclePolicy'] as
         | { LifecyclePolicyText?: string }
         | undefined;
@@ -238,21 +248,48 @@ export class ECRProvider implements ResourceProvider {
             })
           );
           this.logger.debug(`Updated lifecycle policy for ${physicalId}`);
+        } else if (oldLifecycle?.LifecyclePolicyText) {
+          try {
+            await this.getClient().send(
+              new DeleteLifecyclePolicyCommand({ repositoryName: physicalId })
+            );
+            this.logger.debug(`Deleted lifecycle policy for ${physicalId}`);
+          } catch (err) {
+            if (!(err instanceof LifecyclePolicyNotFoundException)) throw err;
+          }
         }
       }
 
-      // Update RepositoryPolicyText if changed
+      // Update RepositoryPolicyText if changed. `!== undefined` (not
+      // truthy) so a deliberate clear (`null` / `''`) reaches the delete
+      // path instead of silently no-oping.
       const newPolicy = properties['RepositoryPolicyText'];
       const oldPolicy = previousProperties['RepositoryPolicyText'];
-      if (JSON.stringify(newPolicy) !== JSON.stringify(oldPolicy) && newPolicy) {
-        const policyText = typeof newPolicy === 'string' ? newPolicy : JSON.stringify(newPolicy);
-        await this.getClient().send(
-          new SetRepositoryPolicyCommand({
-            repositoryName: physicalId,
-            policyText,
-          })
-        );
-        this.logger.debug(`Updated repository policy for ${physicalId}`);
+      if (JSON.stringify(newPolicy) !== JSON.stringify(oldPolicy)) {
+        if (newPolicy !== undefined && newPolicy !== null && newPolicy !== '') {
+          const policyText = typeof newPolicy === 'string' ? newPolicy : JSON.stringify(newPolicy);
+          await this.getClient().send(
+            new SetRepositoryPolicyCommand({
+              repositoryName: physicalId,
+              policyText,
+            })
+          );
+          this.logger.debug(`Updated repository policy for ${physicalId}`);
+        } else if (oldPolicy !== undefined && oldPolicy !== null && oldPolicy !== '') {
+          try {
+            await this.getClient().send(
+              new DeleteRepositoryPolicyCommand({ repositoryName: physicalId })
+            );
+            this.logger.debug(`Deleted repository policy for ${physicalId}`);
+          } catch (err) {
+            // If the policy is already gone, this is idempotent.
+            const code =
+              (err as { name?: string } | undefined)?.name ??
+              (err as { __type?: string } | undefined)?.__type ??
+              '';
+            if (!code.includes('RepositoryPolicyNotFound')) throw err;
+          }
+        }
       }
 
       // Update Tags if changed
@@ -407,10 +444,16 @@ export class ECRProvider implements ResourceProvider {
       ScanOnPush: r.imageScanningConfiguration?.scanOnPush ?? false,
     };
     {
-      const enc: Record<string, unknown> = {
-        EncryptionType: r.encryptionConfiguration?.encryptionType ?? 'AES256',
-      };
-      if (r.encryptionConfiguration?.kmsKey !== undefined) {
+      // Class 1 guard — `KmsKey` is only valid on `EncryptionType=KMS`.
+      // AWS rejects `KmsKey` (including the empty string) on AES256
+      // repositories, and `EncryptionConfiguration` is immutable so the
+      // round-trip path doesn't actually re-submit it; even so, we don't
+      // want to leak `KmsKey: ''` into observedProperties because the
+      // drift comparator would surface a false positive against any
+      // template that omits the field.
+      const encType = r.encryptionConfiguration?.encryptionType ?? 'AES256';
+      const enc: Record<string, unknown> = { EncryptionType: encType };
+      if (encType === 'KMS' && r.encryptionConfiguration?.kmsKey) {
         enc['KmsKey'] = r.encryptionConfiguration.kmsKey;
       }
       result['EncryptionConfiguration'] = enc;
