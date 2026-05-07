@@ -1,3 +1,10 @@
+## [0.50.6](https://github.com/go-to-k/cdkd/compare/v0.50.5...v0.50.6) (2026-05-07)
+
+
+### Bug Fixes
+
+* **drift:** apply Tags diff in update path + Lambda VpcConfig.Ipv6AllowedForDualStack always-emit ([#159](https://github.com/go-to-k/cdkd/issues/159)) ([4dde069](https://github.com/go-to-k/cdkd/commit/4dde069fd10f488fa3dcd8b0f2c3d755006e7e66))
+
 ## [0.50.5](https://github.com/go-to-k/cdkd/compare/v0.50.4...v0.50.5) (2026-05-07)
 
 
