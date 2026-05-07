@@ -267,10 +267,16 @@ export class IAMRoleProvider implements ResourceProvider {
         RoleName: physicalId,
       };
 
-      if (properties['Description']) {
+      // `!== undefined` (not truthy) so an empty Description ('') reaches
+      // `UpdateRoleCommand`, which the AWS API documents as the way to
+      // clear an existing description. A truthy gate would silently drop
+      // the empty string and leave the AWS-side description untouched —
+      // surfaced as a `cdkd drift --revert` that reports `✓ reverted`
+      // but the very next `cdkd drift` re-detects the same drift.
+      if (properties['Description'] !== undefined) {
         updateParams.Description = properties['Description'] as string;
       }
-      if (properties['MaxSessionDuration']) {
+      if (properties['MaxSessionDuration'] !== undefined) {
         updateParams.MaxSessionDuration = properties['MaxSessionDuration'] as number;
       }
 

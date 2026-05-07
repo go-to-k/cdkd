@@ -974,3 +974,197 @@ describe('cdkd drift', () => {
     expect(exitSpy).not.toHaveBeenCalled();
   });
 });
+
+describe('buildRevertNewProperties (pure helper)', () => {
+  it('top-level scalar drift: AWS-current base + desired overlay on drifted key', async () => {
+    const { buildRevertNewProperties } = await import(
+      '../../../src/cli/commands/drift.js'
+    );
+    const desired = {
+      VisibilityTimeout: 30,
+      DelaySeconds: 0,
+      RedrivePolicy: {}, // always-emit placeholder
+    };
+    const aws = {
+      VisibilityTimeout: 130,
+      DelaySeconds: 0,
+      RedrivePolicy: {},
+    };
+    const drifts = [
+      { path: 'VisibilityTimeout', stateValue: 30, awsValue: 130 },
+    ];
+    // Non-drifted keys carry their AWS-current values (so a diff-based
+    // update sees newVal === oldVal and is a no-op for them).
+    expect(buildRevertNewProperties(drifts, desired, aws)).toEqual({
+      VisibilityTimeout: 30,
+      DelaySeconds: 0,
+      RedrivePolicy: {},
+    });
+  });
+
+  it('nested drift path: replaces the full top-level subtree from desired', async () => {
+    const { buildRevertNewProperties } = await import(
+      '../../../src/cli/commands/drift.js'
+    );
+    // S3 PutBucketVersioning takes the full VersioningConfiguration
+    // sub-shape. The top-level key gets replaced by desired's whole
+    // subtree.
+    const desired = {
+      BucketName: 'b',
+      VersioningConfiguration: { Status: 'Enabled', MfaDelete: 'Disabled' },
+      Tags: [{ Key: 'k', Value: 'v' }],
+    };
+    const aws = {
+      BucketName: 'b',
+      VersioningConfiguration: { Status: 'Suspended', MfaDelete: 'Disabled' },
+      Tags: [{ Key: 'k', Value: 'v' }],
+    };
+    const drifts = [
+      {
+        path: 'VersioningConfiguration.Status',
+        stateValue: 'Enabled',
+        awsValue: 'Suspended',
+      },
+    ];
+    expect(buildRevertNewProperties(drifts, desired, aws)).toEqual({
+      BucketName: 'b',
+      VersioningConfiguration: { Status: 'Enabled', MfaDelete: 'Disabled' },
+      Tags: [{ Key: 'k', Value: 'v' }],
+    });
+  });
+
+  it('multiple drifts on the same top-level key: subtree replaced once', async () => {
+    const { buildRevertNewProperties } = await import(
+      '../../../src/cli/commands/drift.js'
+    );
+    const desired = {
+      VersioningConfiguration: { Status: 'Enabled', MfaDelete: 'Enabled' },
+    };
+    const aws = {
+      VersioningConfiguration: { Status: 'Suspended', MfaDelete: 'Disabled' },
+    };
+    const drifts = [
+      {
+        path: 'VersioningConfiguration.Status',
+        stateValue: 'Enabled',
+        awsValue: 'Suspended',
+      },
+      {
+        path: 'VersioningConfiguration.MfaDelete',
+        stateValue: 'Enabled',
+        awsValue: 'Disabled',
+      },
+    ];
+    expect(buildRevertNewProperties(drifts, desired, aws)).toEqual({
+      VersioningConfiguration: { Status: 'Enabled', MfaDelete: 'Enabled' },
+    });
+  });
+
+  it('multiple drifts on different top-level keys: each subtree replaced', async () => {
+    const { buildRevertNewProperties } = await import(
+      '../../../src/cli/commands/drift.js'
+    );
+    const desired = {
+      Description: 'wanted',
+      MaxSessionDuration: 3600,
+      ManagedPolicyArns: ['arn:aws:iam::aws:policy/Foo'],
+      Path: '/',
+    };
+    const aws = {
+      Description: 'hacked',
+      MaxSessionDuration: 7200,
+      ManagedPolicyArns: [],
+      Path: '/',
+    };
+    const drifts = [
+      { path: 'Description', stateValue: 'wanted', awsValue: 'hacked' },
+      { path: 'MaxSessionDuration', stateValue: 3600, awsValue: 7200 },
+      { path: 'ManagedPolicyArns', stateValue: ['arn:aws:iam::aws:policy/Foo'], awsValue: [] },
+    ];
+    expect(buildRevertNewProperties(drifts, desired, aws)).toEqual({
+      Description: 'wanted',
+      MaxSessionDuration: 3600,
+      ManagedPolicyArns: ['arn:aws:iam::aws:policy/Foo'],
+      Path: '/',
+    });
+  });
+
+  it('drifted key absent from desired: AWS-current value retained (defensive)', async () => {
+    const { buildRevertNewProperties } = await import(
+      '../../../src/cli/commands/drift.js'
+    );
+    const desired = { OnlyKey: 1 };
+    const aws = { OnlyKey: 1, GoneKey: 'aws-side' };
+    const drifts = [{ path: 'GoneKey', stateValue: 'x', awsValue: 'aws-side' }];
+    // Defensive — drift was computed against desired, so this case
+    // shouldn't happen. Fall through to AWS-current value (which is
+    // already in `result` from the spread).
+    expect(buildRevertNewProperties(drifts, desired, aws)).toEqual({
+      OnlyKey: 1,
+      GoneKey: 'aws-side',
+    });
+  });
+
+  it('empty drift list: returns the AWS-current snapshot unchanged', async () => {
+    const { buildRevertNewProperties } = await import(
+      '../../../src/cli/commands/drift.js'
+    );
+    const aws = { Anything: 1 };
+    expect(buildRevertNewProperties([], { Anything: 1 }, aws)).toEqual({
+      Anything: 1,
+    });
+  });
+});
+
+describe('cdkd drift --revert (placeholder isolation regression)', () => {
+  it('passes AWS-current values for non-drifted keys (does not silently clear them on diff-based providers)', async () => {
+    // Regression covering the audit finding: SNS / IAM Role / ELBv2
+    // diff `JSON.stringify(newVal) !== JSON.stringify(oldVal)` and
+    // treat `newVal === undefined` as "clear K on AWS". A
+    // drifted-only partial would silently wipe non-drifted attrs.
+    // The "AWS-current base + desired overlay" strategy keeps
+    // newVal === oldVal for non-drifted keys.
+    mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+    mockGetState.mockResolvedValueOnce(
+      makeState({
+        T1: makeResource({
+          physicalId: 'arn:aws:sns:us-east-1:0:t',
+          resourceType: 'AWS::SNS::Topic',
+          properties: { DisplayName: 'wanted' },
+          observedProperties: {
+            DisplayName: 'wanted',
+            KmsMasterKeyId: 'alias/aws/sns',
+            ContentBasedDeduplication: false,
+          },
+        }),
+      })
+    );
+    const updateMock = vi.fn(async () => ({
+      physicalId: 'arn:aws:sns:us-east-1:0:t',
+      wasReplaced: false,
+    }));
+    mockRegistryGetProvider.mockReturnValue({
+      readCurrentState: async () => ({
+        DisplayName: 'hacked',
+        KmsMasterKeyId: 'alias/aws/sns',
+        ContentBasedDeduplication: false,
+      }),
+      update: updateMock,
+    });
+
+    const { error } = await runDrift(['TestStack', '--revert', '--yes']);
+
+    expect(error).toBeUndefined();
+    expect(updateMock).toHaveBeenCalledTimes(1);
+    const newProps = updateMock.mock.calls[0]![3];
+    // Drifted: DisplayName overlaid from desired.
+    expect(newProps).toMatchObject({ DisplayName: 'wanted' });
+    // Non-drifted: AWS-current values preserved (so a diff-based
+    // update sees newVal === oldVal and emits no SetTopicAttributes
+    // call for them).
+    expect(newProps).toMatchObject({
+      KmsMasterKeyId: 'alias/aws/sns',
+      ContentBasedDeduplication: false,
+    });
+  });
+});

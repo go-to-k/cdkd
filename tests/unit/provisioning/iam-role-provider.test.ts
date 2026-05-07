@@ -1,5 +1,9 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { NoSuchEntityException } from '@aws-sdk/client-iam';
+import {
+  GetRoleCommand,
+  NoSuchEntityException,
+  UpdateRoleCommand,
+} from '@aws-sdk/client-iam';
 
 // Mock AWS clients before importing the provider
 const mockSend = vi.fn();
@@ -358,6 +362,101 @@ describe('IAMRoleProvider', () => {
 
       const result = await provider.getAttribute('missing-role', 'AWS::IAM::Role', 'Arn');
       expect(result).toBeUndefined();
+    });
+  });
+
+  describe('update', () => {
+    it('sends UpdateRoleCommand with Description="" so AWS clears the existing description (not silently dropped by truthy gate)', async () => {
+      // Regression for the `cdkd drift --revert` "✓ reverted but next
+      // drift re-detects the same drift" symptom on IAM Role
+      // Description: AWS's `UpdateRole` accepts empty-string as the
+      // documented way to clear the description, but the previous
+      // truthy gate (`if (properties['Description'])`) silently
+      // dropped empty strings and never sent them to AWS. The fix
+      // gates on `!== undefined` so the empty string reaches AWS.
+      mockSend.mockResolvedValueOnce({}); // UpdateRoleCommand
+      mockSend.mockResolvedValueOnce({}); // updateManagedPolicies (no-op)
+      mockSend.mockResolvedValueOnce({}); // updateInlinePolicies (no-op)
+      mockSend.mockResolvedValueOnce({}); // updateTags (no-op)
+      mockSend.mockResolvedValueOnce({
+        Role: {
+          RoleName: 'my-role',
+          Arn: 'arn:aws:iam::0:role/my-role',
+          Path: '/',
+          RoleId: 'role-id',
+        },
+      }); // GetRoleCommand
+
+      await provider.update(
+        'L',
+        'my-role',
+        'AWS::IAM::Role',
+        {
+          RoleName: 'my-role',
+          AssumeRolePolicyDocument: { Version: '2012-10-17', Statement: [] },
+          Description: '',
+          MaxSessionDuration: 3600,
+        },
+        {
+          RoleName: 'my-role',
+          AssumeRolePolicyDocument: { Version: '2012-10-17', Statement: [] },
+          Description: 'old-description',
+          MaxSessionDuration: 7200,
+        }
+      );
+
+      const updateCall = mockSend.mock.calls.find((c) => c[0] instanceof UpdateRoleCommand);
+      expect(updateCall).toBeDefined();
+      const input = updateCall![0].input as {
+        RoleName: string;
+        Description?: string;
+        MaxSessionDuration?: number;
+      };
+      expect(input.RoleName).toBe('my-role');
+      // Empty string MUST reach the API (was dropped by the previous
+      // truthy gate); MaxSessionDuration also flows through.
+      expect(input.Description).toBe('');
+      expect(input.MaxSessionDuration).toBe(3600);
+      expect(mockSend.mock.calls.some((c) => c[0] instanceof GetRoleCommand)).toBe(true);
+    });
+
+    it('omits Description from UpdateRoleCommand when newProperties does not carry the key', async () => {
+      // Confirms the fix did not flip the gate from truthy to "always
+      // send" — `undefined` (key absent) still skips the update field
+      // so a partial newProps does NOT silently clear AWS-side
+      // description.
+      mockSend.mockResolvedValueOnce({}); // UpdateRoleCommand
+      mockSend.mockResolvedValueOnce({}); // updateManagedPolicies (no-op)
+      mockSend.mockResolvedValueOnce({}); // updateInlinePolicies (no-op)
+      mockSend.mockResolvedValueOnce({}); // updateTags (no-op)
+      mockSend.mockResolvedValueOnce({
+        Role: {
+          RoleName: 'my-role',
+          Arn: 'arn:aws:iam::0:role/my-role',
+          Path: '/',
+          RoleId: 'role-id',
+        },
+      });
+
+      await provider.update(
+        'L',
+        'my-role',
+        'AWS::IAM::Role',
+        {
+          RoleName: 'my-role',
+          AssumeRolePolicyDocument: { Version: '2012-10-17', Statement: [] },
+        },
+        {
+          RoleName: 'my-role',
+          AssumeRolePolicyDocument: { Version: '2012-10-17', Statement: [] },
+          Description: 'kept-on-aws',
+        }
+      );
+
+      const updateCall = mockSend.mock.calls.find((c) => c[0] instanceof UpdateRoleCommand);
+      expect(updateCall).toBeDefined();
+      const input = updateCall![0].input as { Description?: string };
+      expect(input).not.toHaveProperty('Description');
     });
   });
 });

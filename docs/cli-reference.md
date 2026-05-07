@@ -374,11 +374,14 @@ Flags:
   the pre-v3 behavior. Requires a stack lock. Mutually exclusive with
   `--revert`. See "Resolving drift" below.
 - `--revert` — call `provider.update` to push cdkd state values back
-  into AWS (AWS ← state) for every drifted resource. The "desired"
-  values passed to `provider.update` are `observedProperties ?? properties`
-  — same precedence as the comparator, so `--revert` undoes exactly the
-  delta `cdkd drift` reported. Requires a stack lock. Mutually exclusive
-  with `--accept`. See "Resolving drift" below.
+  into AWS (AWS ← state) for every drifted resource. The values passed
+  to `provider.update` are constructed as the AWS-current snapshot with
+  the drifted top-level subtrees overlaid from
+  `observedProperties ?? properties` — same precedence as the
+  comparator, so `--revert` undoes exactly the delta `cdkd drift`
+  reported and leaves non-drifted attributes untouched. Requires a
+  stack lock. Mutually exclusive with `--accept`. See "Resolving
+  drift" below.
 - `--dry-run` — for `--accept` / `--revert`: print the planned mutations
   and exit without acquiring a lock or hitting AWS / S3.
 - `--concurrency <number>` — maximum concurrent `provider.update` calls
@@ -564,9 +567,16 @@ matches the intent:
   cannot race the write. AWS resources are NOT modified.
 
 - **`--revert`** (AWS ← state) — call each drifted resource's
-  `provider.update` with `properties = state-recorded values` and
-  `previousProperties = AWS-current values` (captured during the drift
-  read, no second AWS call). Use this to undo a manual AWS console
+  `provider.update` to push state values back into AWS for the
+  drifted properties. `properties` is built as the AWS-current
+  snapshot (captured during the drift read, no second AWS call) with
+  the **drifted top-level subtrees overlaid from cdkd's
+  `observedProperties`**, and `previousProperties` is the AWS-current
+  snapshot itself. Net effect: every drifted property is pushed back
+  to its state-recorded value; non-drifted properties carry their
+  AWS-current values, so a diff-based `update()` (e.g. SNS, IAM Role)
+  sees `newVal === oldVal` for them and does not touch the AWS
+  resource for those keys. Use this to undo a manual AWS console
   change. Per-resource failures are collected and surface as
   `PartialFailureError` (exit 2) at the end of the run; one resource's
   failure does not abort the rest. cdkd state is NOT modified by

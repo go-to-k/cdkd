@@ -629,13 +629,83 @@ async function runAccept(
 }
 
 /**
+ * Build the `newProperties` object passed to `provider.update` during
+ * `--revert`. Strategy:
+ *
+ *   1. Start from `awsProperties` (the AWS-current snapshot returned
+ *      by `readCurrentState`, which `runRevert` already passes as the
+ *      `previousProperties` argument to `provider.update`).
+ *   2. For every top-level key whose subtree contains a drifted path,
+ *      overwrite it with the corresponding sub-shape from
+ *      `desiredProperties` (the state-recorded `observedProperties`).
+ *
+ * Why "AWS-current base + drifted overlay" instead of "drifted-only
+ * partial":
+ *
+ *   Several providers' `update()` implementations diff
+ *   `newProperties[K]` against `previousProperties[K]` and treat
+ *   `newVal === undefined` as "remove K from AWS" (e.g.
+ *   `SNSTopicProvider` calls `SetTopicAttributes(K, '')`,
+ *   `IAMRoleProvider.updateManagedPolicies` detaches every previously
+ *   attached policy when the new arg is undefined). Passing a
+ *   drifted-only partial would silently clear non-drifted attributes
+ *   on those providers. Sending the AWS-current value back as the
+ *   "new" value for non-drifted keys keeps `JSON.stringify(newVal) ===
+ *   JSON.stringify(oldVal)` so the diff is a no-op — no provider
+ *   changes required.
+ *
+ *   For non-diff providers (e.g. `SQSQueueProvider` blindly pushes
+ *   every defined key via `SetQueueAttributes`), the AWS-current
+ *   value still gets serialised back to the same string AWS already
+ *   has, so the round-trip is a no-op for the AWS resource state.
+ *   The one exception is `readCurrentState`'s always-emit
+ *   placeholder values — e.g. SQS `RedrivePolicy: {}` — which AWS
+ *   rejects as invalid input even though they're round-tripped. That
+ *   class of value (Class 2 / structurally-incomplete-when-empty) is
+ *   handled by per-provider sanitize at the wire-layer; see the SQS
+ *   provider's `serializeRedrivePolicy` helper for the canonical
+ *   pattern.
+ *
+ * The drift comparator never produces array-index segments
+ * (`Tags[0].Value`) — array drifts surface as a single entry on the
+ * parent path — so `path.split('.', 1)` is always safe to extract the
+ * top-level key.
+ */
+export function buildRevertNewProperties(
+  drifts: readonly PropertyDrift[],
+  desiredProperties: Record<string, unknown>,
+  awsProperties: Record<string, unknown>
+): Record<string, unknown> {
+  const result: Record<string, unknown> = { ...awsProperties };
+  for (const d of drifts) {
+    const topLevelKey = d.path.split('.', 1)[0];
+    if (!topLevelKey) continue;
+    if (topLevelKey in desiredProperties) {
+      result[topLevelKey] = desiredProperties[topLevelKey];
+    } else {
+      // Drift surfaced on a key that's no longer in `desiredProperties`
+      // (defensive — drift was computed against `desiredProperties`, so
+      // this only happens if state mutated between drift read and now).
+      // Fall through to whatever `awsProperties[topLevelKey]` was.
+    }
+  }
+  return result;
+}
+
+/**
  * `--revert`: AWS ← state.
  *
  * For each drifted resource, call `provider.update(logicalId, physicalId,
  * resourceType, properties /*new*\/, previousProperties /*old*\/)` with:
- *   - `properties` = state-recorded properties (the desired truth)
+ *   - `properties` = `buildRevertNewProperties(...)` — the AWS-current
+ *     snapshot with the drifted top-level subtrees overlaid by the
+ *     state-recorded `observedProperties`. Non-drifted keys carry their
+ *     AWS-current values, so a diff-based provider's update sees
+ *     `newVal === oldVal` and produces no AWS-side mutation for them
+ *     (load-bearing — see helper docstring for why "drifted-only
+ *     partial" is not safe).
  *   - `previousProperties` = AWS-current properties (the previous-known
- *     truth, captured during the drift read so we don't re-issue it)
+ *     truth, captured during the drift read so we don't re-issue it).
  *
  * Per-resource failures are collected and surface as `PartialFailureError`
  * (exit 2) at the end. State is NOT updated by `--revert` — once the
@@ -709,6 +779,15 @@ async function runRevert(
         // we captured at deploy time but never wrote into the template.
         const desiredProperties =
           stateResource.observedProperties ?? stateResource.properties ?? {};
+        // AWS-current values for non-drifted top-level keys + desired
+        // values for drifted top-level subtrees. See
+        // `buildRevertNewProperties` docstring for why we don't pass a
+        // drifted-only partial.
+        const newProperties = buildRevertNewProperties(
+          outcome.changes,
+          desiredProperties,
+          outcome.awsProperties
+        );
         try {
           await withRetry(
             () =>
@@ -716,7 +795,7 @@ async function runRevert(
                 outcome.logicalId,
                 stateResource.physicalId,
                 outcome.resourceType,
-                desiredProperties,
+                newProperties,
                 outcome.awsProperties
               ),
             outcome.logicalId,
