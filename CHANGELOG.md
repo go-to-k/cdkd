@@ -1,3 +1,10 @@
+## [0.50.10](https://github.com/go-to-k/cdkd/compare/v0.50.9...v0.50.10) (2026-05-07)
+
+
+### Bug Fixes
+
+* **drift:** round-trip audit for network providers (PR 3/5) ([#165](https://github.com/go-to-k/cdkd/issues/165)) ([37a42f9](https://github.com/go-to-k/cdkd/commit/37a42f988bf81ed2e5e47645eaca074d2d9ca045))
+
 ## [0.50.9](https://github.com/go-to-k/cdkd/compare/v0.50.8...v0.50.9) (2026-05-07)
 
 
