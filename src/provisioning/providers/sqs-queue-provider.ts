@@ -31,6 +31,37 @@ import type {
 } from '../../types/resource.js';
 
 /**
+ * Serialise a CFn-shape `RedrivePolicy` (object) to the string form
+ * `SetQueueAttributes` / `CreateQueue` expect.
+ *
+ * `readCurrentState` always-emits `RedrivePolicy: {}` (empty object) on
+ * queues without a DLQ — the comparator's top-level walk is
+ * state-keys-only, so the placeholder is required to detect a
+ * console-side DLQ attach (state `{}` vs AWS `{full obj}`).
+ *
+ * `cdkd drift --revert` later round-trips that placeholder back through
+ * `update()` (via `buildRevertNewProperties`'s "AWS-current base" — the
+ * AWS-current value is itself the same `{}` placeholder when no DLQ
+ * exists). `JSON.stringify({})` produces `"{}"`, which AWS rejects:
+ * `Value {} for parameter RedrivePolicy is invalid. Reason: Redrive
+ * policy does not contain mandatory attribute: maxReceiveCount.`
+ *
+ * The SQS API accepts an empty string as the documented way to clear
+ * `RedrivePolicy` on the queue, so empty-object / null / undefined
+ * inputs map to `""` here. Non-empty objects serialise to their
+ * canonical JSON form. This is symmetric with the placeholder
+ * `readCurrentState` emits, so the round-trip is a no-op for queues
+ * without a DLQ.
+ */
+function serializeRedrivePolicy(value: unknown): string {
+  if (value === null || value === undefined) return '';
+  if (typeof value === 'object' && Object.keys(value as Record<string, unknown>).length === 0) {
+    return '';
+  }
+  return JSON.stringify(value);
+}
+
+/**
  * CDK property name to SQS attribute name mapping
  */
 const CDK_TO_SQS_ATTRIBUTES: Record<string, string> = {
@@ -110,9 +141,8 @@ export class SQSQueueProvider implements ResourceProvider {
       for (const [cdkKey, sqsKey] of Object.entries(CDK_TO_SQS_ATTRIBUTES)) {
         if (properties[cdkKey] !== undefined) {
           const value = properties[cdkKey];
-          // RedrivePolicy needs to be JSON string
           if (cdkKey === 'RedrivePolicy' && typeof value === 'object') {
-            attributes[sqsKey] = JSON.stringify(value);
+            attributes[sqsKey] = serializeRedrivePolicy(value);
           } else {
             attributes[sqsKey] = String(value);
           }
@@ -187,7 +217,7 @@ export class SQSQueueProvider implements ResourceProvider {
         if (properties[cdkKey] !== undefined) {
           const value = properties[cdkKey];
           if (cdkKey === 'RedrivePolicy' && typeof value === 'object') {
-            attributes[sqsKey] = JSON.stringify(value);
+            attributes[sqsKey] = serializeRedrivePolicy(value);
           } else {
             attributes[sqsKey] = String(value);
           }
