@@ -4,6 +4,7 @@ import {
   DeleteEventSourceMappingCommand,
   UpdateEventSourceMappingCommand,
   GetEventSourceMappingCommand,
+  ListTagsCommand,
   TagResourceCommand,
   UntagResourceCommand,
   ResourceNotFoundException,
@@ -447,16 +448,19 @@ export class LambdaEventSourceMappingProvider implements ResourceProvider {
    * `LastProcessingResult`, `State`, `StateTransitionReason`,
    * `EventSourceMappingArn`) are filtered at the wire layer.
    *
-   * `FunctionName` is surfaced as the AWS `FunctionArn` (which is what
-   * `GetEventSourceMapping` returns) — cdkd state typically holds this
-   * resolved ARN form already after intrinsic resolution. The drift
-   * comparator can match against both forms when state holds a name vs an
-   * ARN; mismatched-shape false positives are out of scope for v1.
+   * `FunctionName`: AWS's `GetEventSourceMapping` always returns the
+   * resolved ARN. cdkd state typically holds the same ARN after intrinsic
+   * resolution, but a hand-authored state might carry the bare function
+   * name. We surface the form that matches state when possible: if the
+   * `properties?.FunctionName` is the bare name AND the AWS-current
+   * ARN's last segment matches that name, emit the bare name; otherwise
+   * emit the ARN. (The two forms address the same Lambda function — the
+   * shape-mismatch was the only reason a clean run fired drift.)
    *
-   * `Tags` is omitted: cdkd `create()` reshapes CFn tag arrays into a
-   * tags map at create time, but `GetEventSourceMapping` does not return
-   * tags (`ListTags(Resource: arn)` does). Same shape-decision rationale
-   * as Lambda function tags drift — out of scope for v1.
+   * `Tags` are surfaced via a follow-up `ListTags(Resource=<ESM ARN>)`
+   * call. Always-emit `[]` so a console-side tag ADD on a previously-
+   * untagged event source mapping is detectable on the v3
+   * observedProperties baseline.
    *
    * Returns `undefined` when the mapping is gone
    * (`ResourceNotFoundException`).
@@ -464,7 +468,8 @@ export class LambdaEventSourceMappingProvider implements ResourceProvider {
   async readCurrentState(
     physicalId: string,
     _logicalId: string,
-    _resourceType: string
+    _resourceType: string,
+    properties?: Record<string, unknown>
   ): Promise<Record<string, unknown> | undefined> {
     let resp;
     try {
@@ -476,7 +481,18 @@ export class LambdaEventSourceMappingProvider implements ResourceProvider {
 
     const result: Record<string, unknown> = {};
 
-    if (resp.FunctionArn !== undefined) result['FunctionName'] = resp.FunctionArn;
+    if (resp.FunctionArn !== undefined) {
+      // Match state's shape when state holds the bare function name and
+      // the ARN's last segment matches — avoids false drift from
+      // ARN-vs-name mismatch. Otherwise emit the ARN as-is.
+      const stateFn = properties?.['FunctionName'];
+      const arnTail = resp.FunctionArn.split(':').pop();
+      if (typeof stateFn === 'string' && !stateFn.includes(':') && stateFn === arnTail) {
+        result['FunctionName'] = stateFn;
+      } else {
+        result['FunctionName'] = resp.FunctionArn;
+      }
+    }
     if (resp.EventSourceArn !== undefined) result['EventSourceArn'] = resp.EventSourceArn;
     if (resp.BatchSize !== undefined) result['BatchSize'] = resp.BatchSize;
     if (resp.StartingPosition !== undefined) result['StartingPosition'] = resp.StartingPosition;
@@ -541,6 +557,28 @@ export class LambdaEventSourceMappingProvider implements ResourceProvider {
         resp.State === 'Enabled' || resp.State === 'Enabling' || resp.State === 'Updating';
       result['Enabled'] = enabled;
     }
+
+    // Tags via ListTags(Resource: <ESM ARN>). cdkd's create() reshapes
+    // CFn `Tags: [{Key, Value}]` into the SDK's `{Key: Value}` map at
+    // create time; we go the other way here. Always-emit `[]` so a
+    // console-side tag ADD on a previously-untagged ESM is detectable.
+    let tags: Array<{ Key: string; Value: string }> = [];
+    if (resp.EventSourceMappingArn) {
+      try {
+        const tagsResp = await this.lambdaClient.send(
+          new ListTagsCommand({ Resource: resp.EventSourceMappingArn })
+        );
+        const tagMap = tagsResp.Tags ?? {};
+        tags = Object.entries(tagMap)
+          .filter(([k]) => !k.startsWith('aws:'))
+          .map(([Key, Value]) => ({ Key, Value }))
+          .sort((a, b) => a.Key.localeCompare(b.Key));
+      } catch (err) {
+        if (err instanceof ResourceNotFoundException) return undefined;
+        // Permission errors etc — fall through with empty placeholder.
+      }
+    }
+    result['Tags'] = tags;
 
     return result;
   }

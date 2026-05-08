@@ -446,14 +446,14 @@ export class AgentCoreRuntimeProvider implements ResourceProvider {
       // Surface the string form to match CFn's documented shape and the
       // typical post-CDK-synth state. Fall back to the camelToPascal
       // object form for any unexpected shape (defensive).
-      const proto = resp.protocolConfiguration as Record<string, unknown>;
+      const proto = resp.protocolConfiguration as unknown as Record<string, unknown>;
       const keys = Object.keys(proto);
       if (
         keys.length === 1 &&
         keys[0] === 'serverProtocol' &&
-        typeof proto.serverProtocol === 'string'
+        typeof proto['serverProtocol'] === 'string'
       ) {
-        result['ProtocolConfiguration'] = proto.serverProtocol;
+        result['ProtocolConfiguration'] = proto['serverProtocol'];
       } else {
         result['ProtocolConfiguration'] = camelToPascalCaseKeys(resp.protocolConfiguration);
       }
