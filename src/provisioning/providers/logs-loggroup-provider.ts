@@ -462,10 +462,10 @@ export class LogsLogGroupProvider implements ResourceProvider {
         );
         const logGroupLevel = (idxResp.indexPolicies ?? []).filter((p) => p.source !== 'ACCOUNT');
         fieldIndexPolicies = logGroupLevel
-          .map((p) => {
+          .map((p): unknown => {
             if (!p.policyDocument) return undefined;
             try {
-              return JSON.parse(p.policyDocument);
+              return JSON.parse(p.policyDocument) as unknown;
             } catch {
               return p.policyDocument;
             }
