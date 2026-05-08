@@ -3038,10 +3038,13 @@ export class EC2Provider implements ResourceProvider {
    *    **AWS::EC2::SecurityGroupIngress**, **AWS::EC2::NetworkAclEntry**,
    *    **AWS::EC2::SubnetNetworkAclAssociation**: rule / association
    *    sub-resources whose AWS API surfaces them inside the parent's
-   *    list, not as standalone Get* responses. v1 drift coverage focuses
-   *    on top-level resources where the property shape comparison is
-   *    cheap and unambiguous; these sub-resources need a more elaborate
-   *    extraction layer that's out of scope for this PR.
+   *    `Describe*` list response, not as standalone `Get*` calls. cdkd
+   *    parses the physicalId to recover the parent id + entry-key, then
+   *    walks the parent's response to find the matching entry and
+   *    reverse-maps it to CFn property shape. `SecurityGroupIngress` uses
+   *    state's full rule signature (when passed via the optional
+   *    `properties` arg) to disambiguate among multiple AWS rules
+   *    sharing the same `(group, protocol, ports)` tuple.
    *
    * Returns `undefined` when the resource is gone (any `*NotFound` /
    * `Invalid*` error from the EC2 SDK matches `isNotFoundError`).
@@ -3070,6 +3073,18 @@ export class EC2Provider implements ResourceProvider {
           return await this.readInstanceCurrentState(physicalId);
         case 'AWS::EC2::NetworkAcl':
           return await this.readNetworkAclCurrentState(physicalId);
+        case 'AWS::EC2::VPCGatewayAttachment':
+          return await this.readVpcGatewayAttachmentCurrentState(physicalId);
+        case 'AWS::EC2::Route':
+          return await this.readRouteCurrentState(physicalId);
+        case 'AWS::EC2::SubnetRouteTableAssociation':
+          return await this.readSubnetRouteTableAssociationCurrentState(physicalId);
+        case 'AWS::EC2::SecurityGroupIngress':
+          return await this.readSecurityGroupIngressCurrentState(physicalId, properties);
+        case 'AWS::EC2::NetworkAclEntry':
+          return await this.readNetworkAclEntryCurrentState(physicalId);
+        case 'AWS::EC2::SubnetNetworkAclAssociation':
+          return await this.readSubnetNetworkAclAssociationCurrentState(physicalId);
         default:
           this.logger.debug(
             `readCurrentState: unsupported resource type ${resourceType} for ${logicalId}`
@@ -3376,6 +3391,287 @@ export class EC2Provider implements ResourceProvider {
     const result: Record<string, unknown> = {};
     if (acl.VpcId !== undefined) result['VpcId'] = acl.VpcId;
     return result;
+  }
+
+  /**
+   * AWS::EC2::VPCGatewayAttachment readCurrentState.
+   *
+   * physicalId format: `<igwId>|<vpcId>` (cdkd `createVpcGatewayAttachment`).
+   * AWS API: `DescribeInternetGateways(igwId)` → walk `Attachments[]` for
+   * the matching `VpcId`. Returns `undefined` when the IGW is gone OR is no
+   * longer attached to the recorded VPC. Both fields are immutable on this
+   * resource — drift signal is binary (exists / gone) plus VpcId mismatch.
+   */
+  private async readVpcGatewayAttachmentCurrentState(
+    physicalId: string
+  ): Promise<Record<string, unknown> | undefined> {
+    const [igwId, vpcId] = physicalId.split('|');
+    if (!igwId || !vpcId) return undefined;
+
+    const resp = await this.ec2Client.send(
+      new DescribeInternetGatewaysCommand({ InternetGatewayIds: [igwId] })
+    );
+    const igw = resp.InternetGateways?.[0];
+    if (!igw) return undefined;
+    const attached = igw.Attachments?.some((a) => a.VpcId === vpcId);
+    if (!attached) return undefined;
+
+    return { InternetGatewayId: igwId, VpcId: vpcId };
+  }
+
+  /**
+   * AWS::EC2::Route readCurrentState.
+   *
+   * physicalId format: `<routeTableId>|<cidr>` where cidr is either v4 or v6.
+   * AWS API: `DescribeRouteTables(routeTableId)` → walk `Routes[]` for the
+   * entry whose `DestinationCidrBlock` or `DestinationIpv6CidrBlock` matches
+   * the cidr. Returns `undefined` when the route table is gone or the route
+   * has been removed.
+   *
+   * Surfaces the target field (`GatewayId` / `NatGatewayId` / `InstanceId` /
+   * `NetworkInterfaceId` / `VpcPeeringConnectionId` / `EgressOnlyInternetGatewayId` /
+   * `TransitGatewayId` / `VpcEndpointId`) AWS reports for that route. Drift
+   * signal: route target changed.
+   */
+  private async readRouteCurrentState(
+    physicalId: string
+  ): Promise<Record<string, unknown> | undefined> {
+    const [rtbId, cidr] = physicalId.split('|');
+    if (!rtbId || !cidr) return undefined;
+
+    const resp = await this.ec2Client.send(
+      new DescribeRouteTablesCommand({ RouteTableIds: [rtbId] })
+    );
+    const rtb = resp.RouteTables?.[0];
+    if (!rtb) return undefined;
+    const route = rtb.Routes?.find(
+      (r) => r.DestinationCidrBlock === cidr || r.DestinationIpv6CidrBlock === cidr
+    );
+    if (!route) return undefined;
+
+    const result: Record<string, unknown> = { RouteTableId: rtbId };
+    if (route.DestinationCidrBlock !== undefined) {
+      result['DestinationCidrBlock'] = route.DestinationCidrBlock;
+    } else if (route.DestinationIpv6CidrBlock !== undefined) {
+      result['DestinationIpv6CidrBlock'] = route.DestinationIpv6CidrBlock;
+    }
+    // Target fields: only one is set on a given route. Surface whichever
+    // AWS reports so a console-side target swap (NAT GW → IGW etc.)
+    // shows as drift.
+    if (route.GatewayId !== undefined) result['GatewayId'] = route.GatewayId;
+    if (route.NatGatewayId !== undefined) result['NatGatewayId'] = route.NatGatewayId;
+    if (route.InstanceId !== undefined) result['InstanceId'] = route.InstanceId;
+    if (route.NetworkInterfaceId !== undefined) {
+      result['NetworkInterfaceId'] = route.NetworkInterfaceId;
+    }
+    if (route.VpcPeeringConnectionId !== undefined) {
+      result['VpcPeeringConnectionId'] = route.VpcPeeringConnectionId;
+    }
+    if (route.EgressOnlyInternetGatewayId !== undefined) {
+      result['EgressOnlyInternetGatewayId'] = route.EgressOnlyInternetGatewayId;
+    }
+    if (route.TransitGatewayId !== undefined) {
+      result['TransitGatewayId'] = route.TransitGatewayId;
+    }
+    if (route.LocalGatewayId !== undefined) {
+      result['LocalGatewayId'] = route.LocalGatewayId;
+    }
+    if (route.CarrierGatewayId !== undefined) {
+      result['CarrierGatewayId'] = route.CarrierGatewayId;
+    }
+    if (route.CoreNetworkArn !== undefined) {
+      result['CoreNetworkArn'] = route.CoreNetworkArn;
+    }
+    return result;
+  }
+
+  /**
+   * AWS::EC2::SubnetRouteTableAssociation readCurrentState.
+   *
+   * physicalId format: `<rtbassoc-xxx>` (returned by `AssociateRouteTable`).
+   * AWS API: `DescribeRouteTables` filtered by `association.route-table-association-id`,
+   * then walk `Associations[]` for the matching entry. Returns `undefined`
+   * when no route table carries the association id.
+   *
+   * Both `SubnetId` and `RouteTableId` are immutable on this resource —
+   * drift signal is binary (exists / gone).
+   */
+  private async readSubnetRouteTableAssociationCurrentState(
+    physicalId: string
+  ): Promise<Record<string, unknown> | undefined> {
+    const resp = await this.ec2Client.send(
+      new DescribeRouteTablesCommand({
+        Filters: [{ Name: 'association.route-table-association-id', Values: [physicalId] }],
+      })
+    );
+    for (const rtb of resp.RouteTables ?? []) {
+      const assoc = rtb.Associations?.find((a) => a.RouteTableAssociationId === physicalId);
+      if (assoc) {
+        const result: Record<string, unknown> = {};
+        if (assoc.SubnetId !== undefined) result['SubnetId'] = assoc.SubnetId;
+        if (assoc.RouteTableId !== undefined) result['RouteTableId'] = assoc.RouteTableId;
+        return result;
+      }
+    }
+    return undefined;
+  }
+
+  /**
+   * AWS::EC2::SecurityGroupIngress (standalone) readCurrentState.
+   *
+   * physicalId format: `<groupId>|<protocol>|<fromPort>|<toPort>` (cdkd
+   * `createSecurityGroupIngress`). The same tuple can identify multiple
+   * AWS rules (one per `IpRanges` / `Ipv6Ranges` / `UserIdGroupPairs` /
+   * `PrefixListIds` entry). State's full rule signature (passed via the
+   * optional `properties` arg) is used to find the exact matching rule.
+   *
+   * AWS API: `DescribeSecurityGroups(groupId)` → walk `IpPermissions[]`
+   * filtered by protocol+ports → flatten via `flattenIpPermissions` →
+   * find the entry matching state's full signature (CIDR / peer / prefix /
+   * description). Returns `undefined` when the parent SG is gone or no
+   * matching rule exists.
+   */
+  private async readSecurityGroupIngressCurrentState(
+    physicalId: string,
+    properties?: Record<string, unknown>
+  ): Promise<Record<string, unknown> | undefined> {
+    const parts = physicalId.split('|');
+    if (parts.length < 4) return undefined;
+    const groupId = parts[0]!;
+    const protocol = parts[1]!;
+    const fromPort = parts[2] === '-1' ? undefined : parseInt(parts[2]!, 10);
+    const toPort = parts[3] === '-1' ? undefined : parseInt(parts[3]!, 10);
+
+    const resp = await this.ec2Client.send(
+      new DescribeSecurityGroupsCommand({ GroupIds: [groupId] })
+    );
+    const sg = resp.SecurityGroups?.[0];
+    if (!sg) return undefined;
+
+    const candidates = (sg.IpPermissions ?? []).filter(
+      (p) =>
+        (p.IpProtocol ?? '-1') === protocol &&
+        (p.FromPort ?? undefined) === fromPort &&
+        (p.ToPort ?? undefined) === toPort
+    );
+    if (candidates.length === 0) return undefined;
+
+    const flat = flattenIpPermissions(candidates, 'ingress');
+
+    // If state passed full rule properties, disambiguate by the full
+    // identity-key. Otherwise return the first candidate (best effort —
+    // unique tuple → unambiguous).
+    if (properties && Object.keys(properties).length > 0) {
+      const stateKey = sgRuleKey(properties, 'ingress');
+      const match = flat.find((r) => sgRuleKey(r, 'ingress') === stateKey);
+      if (match) {
+        // Re-attach the parent group id so the caller sees the full CFn
+        // shape (the standalone resource type carries GroupId at the top
+        // level, unlike the inline-rule case).
+        return { GroupId: groupId, ...match };
+      }
+      // No exact match — return undefined so the comparator marks the
+      // resource as `gone` rather than fire false drift on a different
+      // rule that happens to share the (protocol, ports) tuple.
+      return undefined;
+    }
+
+    return { GroupId: groupId, ...flat[0]! };
+  }
+
+  /**
+   * AWS::EC2::NetworkAclEntry readCurrentState.
+   *
+   * physicalId format: `<aclId>|<ruleNumber>|<egress>` (cdkd
+   * `createNetworkAclEntry`).
+   *
+   * AWS API: `DescribeNetworkAcls(aclId)` → walk `Entries[]` for the entry
+   * matching `(RuleNumber, Egress)`. Returns `undefined` when the parent
+   * ACL is gone or the rule has been removed.
+   *
+   * Surfaces every user-controllable CFn property (`Protocol`, `RuleAction`,
+   * `CidrBlock`, `Ipv6CidrBlock`, `PortRange`, `IcmpTypeCode`). `Protocol`
+   * is normalized to a number to match CFn input shape (AWS returns it as
+   * a string).
+   */
+  private async readNetworkAclEntryCurrentState(
+    physicalId: string
+  ): Promise<Record<string, unknown> | undefined> {
+    const parts = physicalId.split('|');
+    if (parts.length < 3) return undefined;
+    const aclId = parts[0]!;
+    const ruleNumber = parseInt(parts[1]!, 10);
+    const egress = parts[2] === 'true';
+
+    const resp = await this.ec2Client.send(
+      new DescribeNetworkAclsCommand({ NetworkAclIds: [aclId] })
+    );
+    const acl = resp.NetworkAcls?.[0];
+    if (!acl) return undefined;
+    const entry = acl.Entries?.find(
+      (e) => e.RuleNumber === ruleNumber && (e.Egress ?? false) === egress
+    );
+    if (!entry) return undefined;
+
+    const result: Record<string, unknown> = {
+      NetworkAclId: aclId,
+      RuleNumber: ruleNumber,
+      Egress: egress,
+    };
+    if (entry.Protocol !== undefined) {
+      // CFn input shape uses number; AWS returns string. Normalize.
+      const n = parseInt(entry.Protocol, 10);
+      result['Protocol'] = Number.isNaN(n) ? entry.Protocol : n;
+    }
+    if (entry.RuleAction !== undefined) result['RuleAction'] = entry.RuleAction;
+    if (entry.CidrBlock !== undefined) result['CidrBlock'] = entry.CidrBlock;
+    if (entry.Ipv6CidrBlock !== undefined) result['Ipv6CidrBlock'] = entry.Ipv6CidrBlock;
+    if (entry.PortRange) {
+      const pr: Record<string, unknown> = {};
+      if (entry.PortRange.From !== undefined) pr['From'] = entry.PortRange.From;
+      if (entry.PortRange.To !== undefined) pr['To'] = entry.PortRange.To;
+      if (Object.keys(pr).length > 0) result['PortRange'] = pr;
+    }
+    if (entry.IcmpTypeCode) {
+      const icmp: Record<string, unknown> = {};
+      if (entry.IcmpTypeCode.Type !== undefined) icmp['Type'] = entry.IcmpTypeCode.Type;
+      if (entry.IcmpTypeCode.Code !== undefined) icmp['Code'] = entry.IcmpTypeCode.Code;
+      if (Object.keys(icmp).length > 0) result['IcmpTypeCode'] = icmp;
+    }
+    return result;
+  }
+
+  /**
+   * AWS::EC2::SubnetNetworkAclAssociation readCurrentState.
+   *
+   * physicalId format: `<aclassoc-xxx>` (returned by
+   * `ReplaceNetworkAclAssociation`).
+   *
+   * AWS API: `DescribeNetworkAcls` filtered by `association.association-id`,
+   * then walk `Associations[]` for the matching entry. Returns `undefined`
+   * when no NACL carries the association id.
+   *
+   * Surfaces `NetworkAclId` + `SubnetId`. Drift signal: NetworkAclId
+   * changed (subnet was reassigned to a different NACL via console).
+   */
+  private async readSubnetNetworkAclAssociationCurrentState(
+    physicalId: string
+  ): Promise<Record<string, unknown> | undefined> {
+    const resp = await this.ec2Client.send(
+      new DescribeNetworkAclsCommand({
+        Filters: [{ Name: 'association.association-id', Values: [physicalId] }],
+      })
+    );
+    for (const acl of resp.NetworkAcls ?? []) {
+      const assoc = acl.Associations?.find((a) => a.NetworkAclAssociationId === physicalId);
+      if (assoc) {
+        const result: Record<string, unknown> = {};
+        if (assoc.NetworkAclId !== undefined) result['NetworkAclId'] = assoc.NetworkAclId;
+        if (assoc.SubnetId !== undefined) result['SubnetId'] = assoc.SubnetId;
+        return result;
+      }
+    }
+    return undefined;
   }
 
   private async verifyExplicit(
