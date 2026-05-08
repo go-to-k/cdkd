@@ -1,3 +1,10 @@
+## [0.51.6](https://github.com/go-to-k/cdkd/compare/v0.51.5...v0.51.6) (2026-05-08)
+
+
+### Bug Fixes
+
+* **drift:** cover 6 EC2 sub-resource types via parent-list extraction ([#182](https://github.com/go-to-k/cdkd/issues/182) final close) ([#188](https://github.com/go-to-k/cdkd/issues/188)) ([48600cf](https://github.com/go-to-k/cdkd/commit/48600cf1e972e9242dbcf5365f17eb49d1150983))
+
 ## [0.51.5](https://github.com/go-to-k/cdkd/compare/v0.51.4...v0.51.5) (2026-05-08)
 
 
