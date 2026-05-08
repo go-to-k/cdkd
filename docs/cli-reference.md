@@ -170,6 +170,22 @@ escape-hatch order is: `--no-capture-observed-state` (CLI) overrides
 `cdk.json context.cdkd.captureObservedState` (project) overrides the
 default `true`.
 
+### v2 → v3 schema upgrade flow
+
+When `cdkd deploy` loads state and finds resources without
+`observedProperties` (typical the first time you deploy after upgrading
+from cdkd <0.49 / state schema `version: 2`), it kicks off
+`provider.readCurrentState` for each in parallel with the rest of the
+deploy and drains the result into state at the final save. The deploy
+critical path does NOT wait on these — cost is bounded by the longest
+single `readCurrentState` (~200-300ms in practice), once. Subsequent
+deploys are unaffected. Honors `--no-capture-observed-state` (skips
+both regular capture and this upgrade refresh).
+
+`cdkd state refresh-observed <stack>` remains the manual / non-deploy
+path — useful when you want to refresh the baseline without redeploying
+(e.g. for resources that won't change in any near-future deploy).
+
 ## Per-resource timeout
 
 Both `cdkd deploy` and `cdkd destroy` (including `cdkd state destroy`)
