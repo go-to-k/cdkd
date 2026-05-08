@@ -51,6 +51,8 @@ describe('LogsLogGroupProvider.readCurrentState', () => {
           kmsKeyId: 'arn:aws:kms:us-east-1:123:key/abc',
           retentionInDays: 30,
           logGroupClass: 'STANDARD',
+          deletionProtectionEnabled: true,
+          bearerTokenAuthenticationEnabled: false,
           // AWS-managed fields ignored by the comparator:
           arn: 'arn:aws:logs:us-east-1:123:log-group:/aws/lambda/my-fn:*',
           creationTime: 0,
@@ -64,6 +66,8 @@ describe('LogsLogGroupProvider.readCurrentState', () => {
     mockSend.mockRejectedValueOnce(
       Object.assign(new Error('No policy'), { name: 'ResourceNotFoundException' })
     );
+    // DescribeIndexPolicies — no log-group-level policies.
+    mockSend.mockResolvedValueOnce({ indexPolicies: [] });
 
     const result = await provider.readCurrentState(
       '/aws/lambda/my-fn',
@@ -78,9 +82,49 @@ describe('LogsLogGroupProvider.readCurrentState', () => {
       KmsKeyId: 'arn:aws:kms:us-east-1:123:key/abc',
       RetentionInDays: 30,
       LogGroupClass: 'STANDARD',
+      DeletionProtectionEnabled: true,
+      BearerTokenAuthenticationEnabled: false,
       Tags: [],
       DataProtectionPolicy: '',
+      FieldIndexPolicies: [],
     });
+  });
+
+  it('surfaces FieldIndexPolicies from DescribeIndexPolicies (filtered to log-group-level, JSON-parsed)', async () => {
+    const policyDoc = { Fields: ['eventName', 'requestId'] };
+    mockSend.mockResolvedValueOnce({
+      logGroups: [
+        {
+          logGroupName: '/aws/lambda/my-fn',
+          arn: 'arn:aws:logs:us-east-1:123:log-group:/aws/lambda/my-fn:*',
+        },
+      ],
+    });
+    mockSend.mockResolvedValueOnce({ tags: {} });
+    mockSend.mockRejectedValueOnce(
+      Object.assign(new Error('No policy'), { name: 'ResourceNotFoundException' })
+    );
+    mockSend.mockResolvedValueOnce({
+      indexPolicies: [
+        // Account-level policy — filtered out (inherited, not user-templated on this log group).
+        {
+          source: 'ACCOUNT',
+          policyDocument: JSON.stringify({ Fields: ['ignored'] }),
+        },
+        // Log-group-level — surfaced.
+        {
+          source: 'LOG_GROUP',
+          policyDocument: JSON.stringify(policyDoc),
+        },
+      ],
+    });
+
+    const result = await provider.readCurrentState(
+      '/aws/lambda/my-fn',
+      'Logical',
+      'AWS::Logs::LogGroup'
+    );
+    expect(result?.FieldIndexPolicies).toEqual([policyDoc]);
   });
 
   it('surfaces parsed DataProtectionPolicy when GetDataProtectionPolicy succeeds', async () => {
@@ -106,6 +150,7 @@ describe('LogsLogGroupProvider.readCurrentState', () => {
     });
     mockSend.mockResolvedValueOnce({ tags: {} });
     mockSend.mockResolvedValueOnce({ policyDocument: JSON.stringify(policyDoc) });
+    mockSend.mockResolvedValueOnce({ indexPolicies: [] });
 
     const result = await provider.readCurrentState(
       '/aws/lambda/my-fn',
@@ -131,6 +176,7 @@ describe('LogsLogGroupProvider.readCurrentState', () => {
     mockSend.mockRejectedValueOnce(
       Object.assign(new Error('No policy'), { name: 'ResourceNotFoundException' })
     );
+    mockSend.mockResolvedValueOnce({ indexPolicies: [] });
 
     const result = await provider.readCurrentState(
       '/aws/lambda/my-fn',
@@ -155,6 +201,7 @@ describe('LogsLogGroupProvider.readCurrentState', () => {
     mockSend.mockRejectedValueOnce(
       Object.assign(new Error('No policy'), { name: 'ResourceNotFoundException' })
     );
+    mockSend.mockResolvedValueOnce({ indexPolicies: [] });
 
     const result = await provider.readCurrentState(
       '/aws/lambda/my-fn',
@@ -184,6 +231,7 @@ describe('LogsLogGroupProvider.readCurrentState', () => {
     mockSend.mockRejectedValueOnce(
       Object.assign(new Error('No policy'), { name: 'ResourceNotFoundException' })
     );
+    mockSend.mockResolvedValueOnce({ indexPolicies: [] });
 
     const result = await provider.readCurrentState(
       '/aws/lambda/min',
@@ -194,13 +242,25 @@ describe('LogsLogGroupProvider.readCurrentState', () => {
     // LogGroupClass is immutable on create — skip emit is correct
     // (per the § 3b "immutable on create" rule).
     expect(Object.keys(result ?? {}).sort()).toEqual(
-      ['LogGroupName', 'KmsKeyId', 'RetentionInDays', 'Tags', 'DataProtectionPolicy'].sort()
+      [
+        'LogGroupName',
+        'KmsKeyId',
+        'RetentionInDays',
+        'Tags',
+        'DataProtectionPolicy',
+        'DeletionProtectionEnabled',
+        'BearerTokenAuthenticationEnabled',
+        'FieldIndexPolicies',
+      ].sort()
     );
     expect(result?.LogGroupName).toBe('/aws/lambda/min');
     expect(result?.KmsKeyId).toBe(''); // string placeholder
     expect(result?.RetentionInDays).toBe(0); // semantic "never expire"
     expect(result?.DataProtectionPolicy).toBe(''); // string placeholder
     expect(result?.Tags).toEqual([]); // array placeholder
+    expect(result?.DeletionProtectionEnabled).toBe(false);
+    expect(result?.BearerTokenAuthenticationEnabled).toBe(false);
+    expect(result?.FieldIndexPolicies).toEqual([]);
   });
 
   it('returns undefined when log group does not exist (no exact match)', async () => {

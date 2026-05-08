@@ -397,10 +397,13 @@ export class AgentCoreRuntimeProvider implements ResourceProvider {
    *
    * `ProtocolConfiguration` parity: `create()` accepts a CFn-style string
    * (`"HTTP"`) and converts it to `{serverProtocol: "HTTP"}` for the SDK.
-   * The SDK returns the object form. We surface the object form here; if
-   * cdkd state holds the original string the comparator will report drift
-   * — users can inspect and dismiss this case manually. (A more elaborate
-   * shape negotiation belongs in a follow-up that knows about both forms.)
+   * The SDK returns the object form. We surface the **string form** here
+   * (extract `serverProtocol` from the SDK object) since CFn's
+   * `AWS::BedrockAgentCore::Runtime.ProtocolConfiguration` is documented
+   * as a string and that's what cdkd state typically holds after CDK
+   * synth. If state happens to carry the object form (legacy / hand-
+   * authored), the comparator will report a one-time drift the user can
+   * resolve via `cdkd state refresh-observed`.
    *
    * `ClientToken` is omitted: AWS does not surface it back via
    * `GetAgentRuntime` (it's an idempotency token only meaningful at create
@@ -439,7 +442,21 @@ export class AgentCoreRuntimeProvider implements ResourceProvider {
       result['AuthorizerConfiguration'] = camelToPascalCaseKeys(resp.authorizerConfiguration);
     }
     if (resp.protocolConfiguration !== undefined) {
-      result['ProtocolConfiguration'] = camelToPascalCaseKeys(resp.protocolConfiguration);
+      // SDK returns `{serverProtocol: "HTTP"}` for the single-field case.
+      // Surface the string form to match CFn's documented shape and the
+      // typical post-CDK-synth state. Fall back to the camelToPascal
+      // object form for any unexpected shape (defensive).
+      const proto = resp.protocolConfiguration as unknown as Record<string, unknown>;
+      const keys = Object.keys(proto);
+      if (
+        keys.length === 1 &&
+        keys[0] === 'serverProtocol' &&
+        typeof proto['serverProtocol'] === 'string'
+      ) {
+        result['ProtocolConfiguration'] = proto['serverProtocol'];
+      } else {
+        result['ProtocolConfiguration'] = camelToPascalCaseKeys(resp.protocolConfiguration);
+      }
     }
     if (resp.lifecycleConfiguration !== undefined) {
       result['LifecycleConfiguration'] = camelToPascalCaseKeys(resp.lifecycleConfiguration);
