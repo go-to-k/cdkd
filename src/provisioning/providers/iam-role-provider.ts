@@ -5,6 +5,7 @@ import {
   UpdateAssumeRolePolicyCommand,
   DeleteRoleCommand,
   GetRoleCommand,
+  GetRolePolicyCommand,
   PutRolePolicyCommand,
   DeleteRolePolicyCommand,
   ListRolePoliciesCommand,
@@ -755,8 +756,14 @@ export class IAMRoleProvider implements ResourceProvider {
    * against state's already-parsed object.
    *
    * Coverage and shape decisions:
-   *  - `RoleName`, `Description`, `MaxSessionDuration`, `Path`,
-   *    `PermissionsBoundary` — straight from `Role.*`.
+   *  - `RoleName`, `Description`, `MaxSessionDuration`, `Path` — straight
+   *    from `Role.*`.
+   *  - `PermissionsBoundary` — emitted as `'' ` placeholder when AWS has
+   *    none, so a console-side ADD on a role that was deployed without a
+   *    boundary surfaces as drift. (The drift comparator's top-level walk
+   *    is state-keys-only; without the always-emit placeholder a fresh
+   *    `PermissionsBoundary` on the AWS side would never enter
+   *    `observedProperties` and the comparator would silently ignore it.)
    *  - `AssumeRolePolicyDocument` — `Role.AssumeRolePolicyDocument` is a
    *    URL-encoded JSON string; we URL-decode + JSON-parse so cdkd state's
    *    object form compares cleanly. (Both shapes — string and object — are
@@ -764,23 +771,27 @@ export class IAMRoleProvider implements ResourceProvider {
    *    after intrinsic resolution.)
    *  - `ManagedPolicyArns` — array of ARN strings from
    *    `ListAttachedRolePolicies`.
-   *  - `Policies` (inline policies with `PolicyDocument` bodies) is
-   *    intentionally omitted: surfacing names without bodies guarantees a
-   *    PolicyDocument-shaped drift on every role, and fetching every body
-   *    costs one extra `GetRolePolicy` per inline policy. Out of scope for
-   *    v1 — drift detection on inline IAM policy bodies can ship in a
-   *    follow-up.
+   *  - `Policies` — inline policies surfaced as `[{PolicyName, PolicyDocument}]`.
+   *    `ListRolePolicies` for names + `GetRolePolicy` per name for the
+   *    body (URL-decoded + JSON-parsed). Ordering is reconciled against
+   *    state's `Policies` array (when supplied via the `properties`
+   *    parameter) so a state-vs-AWS positional compare doesn't fire false
+   *    drift purely from `ListRolePolicies` returning lexicographic order;
+   *    AWS-only policies (added via console) are appended at the end so
+   *    they still surface as drift via length / content mismatch.
    *  - `Tags` is surfaced via `ListRoleTags` (paginated). CDK's `aws:*`
    *    auto-tags are filtered out by `normalizeAwsTagsToCfn` so they don't
-   *    fire false-positive drift; the result key is omitted entirely when
-   *    AWS reports no user tags (matches `create()`'s behavior).
+   *    fire false-positive drift; always emitted (even when empty) so a
+   *    console-side tag ADD on an originally-untagged role surfaces as
+   *    drift on the v3 observedProperties baseline.
    *
    * Returns `undefined` when the role is gone (`NoSuchEntityException`).
    */
   async readCurrentState(
     physicalId: string,
     _logicalId: string,
-    _resourceType: string
+    _resourceType: string,
+    properties?: Record<string, unknown>
   ): Promise<Record<string, unknown> | undefined> {
     let role;
     try {
@@ -800,9 +811,11 @@ export class IAMRoleProvider implements ResourceProvider {
       result['MaxSessionDuration'] = role.MaxSessionDuration;
     }
     if (role.Path !== undefined) result['Path'] = role.Path;
-    if (role.PermissionsBoundary?.PermissionsBoundaryArn !== undefined) {
-      result['PermissionsBoundary'] = role.PermissionsBoundary.PermissionsBoundaryArn;
-    }
+    // Always-emit (PR #145 pattern): surfaces console-side ADDs on roles
+    // deployed without a boundary. AWS returns the boundary as a nested
+    // `{ PermissionsBoundaryArn, PermissionsBoundaryType }` shape; cdkd
+    // state stores the bare ARN string (matches CFn input shape).
+    result['PermissionsBoundary'] = role.PermissionsBoundary?.PermissionsBoundaryArn ?? '';
     if (role.AssumeRolePolicyDocument) {
       // GetRole returns AssumeRolePolicyDocument URL-encoded. Decode and
       // parse so the comparator can match cdkd state (which holds the
@@ -827,6 +840,69 @@ export class IAMRoleProvider implements ResourceProvider {
         .map((p) => p.PolicyArn)
         .filter((arn): arn is string => !!arn);
       result['ManagedPolicyArns'] = arns;
+    } catch (err) {
+      if (!(err instanceof NoSuchEntityException)) throw err;
+    }
+
+    // Inline Policies — `[{PolicyName, PolicyDocument}]`. Cap at IAM's
+    // documented 10-inline-policies-per-role limit to bound the API
+    // budget; ListRolePolicies is paginated for forward-compat anyway.
+    try {
+      const policyNames: string[] = [];
+      let policyMarker: string | undefined;
+      // eslint-disable-next-line no-constant-condition
+      while (true) {
+        const listResp = await this.iamClient.send(
+          new ListRolePoliciesCommand({
+            RoleName: physicalId,
+            ...(policyMarker ? { Marker: policyMarker } : {}),
+          })
+        );
+        for (const name of listResp.PolicyNames ?? []) policyNames.push(name);
+        if (!listResp.IsTruncated) break;
+        policyMarker = listResp.Marker;
+      }
+
+      // Fetch every body in parallel (max 10; well under any IAM rate
+      // limit). URL-decode + JSON-parse so the comparator sees the same
+      // object shape state holds after intrinsic resolution.
+      const bodies = new Map<string, unknown>();
+      await Promise.all(
+        policyNames.map(async (name) => {
+          const resp = await this.iamClient.send(
+            new GetRolePolicyCommand({ RoleName: physicalId, PolicyName: name })
+          );
+          if (!resp.PolicyDocument) return;
+          let parsed: unknown;
+          try {
+            parsed = JSON.parse(decodeURIComponent(resp.PolicyDocument));
+          } catch {
+            parsed = resp.PolicyDocument;
+          }
+          bodies.set(name, parsed);
+        })
+      );
+
+      // Reconcile order against state's `Policies` so a positional array
+      // compare doesn't fire purely from `ListRolePolicies` returning
+      // lexicographic order. AWS-only entries (console adds) tail-append
+      // so length / content mismatch still surfaces them as drift.
+      const statePolicies =
+        (properties?.['Policies'] as Array<{ PolicyName?: string }> | undefined) ?? [];
+      const remaining = new Set(bodies.keys());
+      const inline: Array<{ PolicyName: string; PolicyDocument: unknown }> = [];
+      for (const sp of statePolicies) {
+        const name = sp?.PolicyName;
+        if (typeof name !== 'string') continue;
+        if (bodies.has(name)) {
+          inline.push({ PolicyName: name, PolicyDocument: bodies.get(name) });
+          remaining.delete(name);
+        }
+      }
+      for (const name of [...remaining].sort()) {
+        inline.push({ PolicyName: name, PolicyDocument: bodies.get(name) });
+      }
+      result['Policies'] = inline;
     } catch (err) {
       if (!(err instanceof NoSuchEntityException)) throw err;
     }
@@ -860,19 +936,6 @@ export class IAMRoleProvider implements ResourceProvider {
     }
 
     return result;
-  }
-
-  /**
-   * `Policies` (inline policy bodies) are intentionally omitted from
-   * `readCurrentState`: surfacing the names without bodies would
-   * guarantee a `PolicyDocument`-shaped drift on every role, and
-   * fetching every body costs one extra `GetRolePolicy` per inline
-   * policy. Tell the drift comparator to skip the whole subtree until a
-   * dedicated PR adds proper inline-policy drift via per-name
-   * `GetRolePolicy`.
-   */
-  getDriftUnknownPaths(): string[] {
-    return ['Policies'];
   }
 
   /**
