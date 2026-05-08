@@ -815,18 +815,37 @@ describe('EC2Provider.readCurrentState', () => {
     });
   });
 
-  describe('Unsupported sub-resource types', () => {
-    it('returns undefined for AWS::EC2::Route (skipped per JSDoc)', async () => {
+  describe('AWS::EC2::VPCGatewayAttachment', () => {
+    it('returns InternetGatewayId + VpcId when IGW is attached to the recorded VPC', async () => {
+      mockSend.mockResolvedValueOnce({
+        InternetGateways: [
+          {
+            InternetGatewayId: 'igw-1',
+            Attachments: [{ VpcId: 'vpc-1', State: 'available' }],
+          },
+        ],
+      });
+
       const result = await provider.readCurrentState(
-        'rtb-1|10.0.0.0/0',
+        'igw-1|vpc-1',
         'Logical',
-        'AWS::EC2::Route'
+        'AWS::EC2::VPCGatewayAttachment'
       );
-      expect(result).toBeUndefined();
-      expect(mockSend).not.toHaveBeenCalled();
+
+      expect(mockSend.mock.calls[0]?.[0]).toBeInstanceOf(DescribeInternetGatewaysCommand);
+      expect(result).toEqual({ InternetGatewayId: 'igw-1', VpcId: 'vpc-1' });
     });
 
-    it('returns undefined for AWS::EC2::VPCGatewayAttachment', async () => {
+    it('returns undefined when IGW is no longer attached to the recorded VPC', async () => {
+      mockSend.mockResolvedValueOnce({
+        InternetGateways: [
+          {
+            InternetGatewayId: 'igw-1',
+            Attachments: [{ VpcId: 'vpc-other' }],
+          },
+        ],
+      });
+
       const result = await provider.readCurrentState(
         'igw-1|vpc-1',
         'Logical',
@@ -834,12 +853,344 @@ describe('EC2Provider.readCurrentState', () => {
       );
       expect(result).toBeUndefined();
     });
+  });
 
-    it('returns undefined for AWS::EC2::SecurityGroupIngress', async () => {
+  describe('AWS::EC2::Route', () => {
+    it('returns target field AWS reports for the route (NatGatewayId)', async () => {
+      mockSend.mockResolvedValueOnce({
+        RouteTables: [
+          {
+            RouteTableId: 'rtb-1',
+            Routes: [
+              {
+                DestinationCidrBlock: '10.0.0.0/16',
+                GatewayId: 'local',
+                State: 'active',
+              },
+              {
+                DestinationCidrBlock: '0.0.0.0/0',
+                NatGatewayId: 'nat-abc',
+                State: 'active',
+              },
+            ],
+          },
+        ],
+      });
+
       const result = await provider.readCurrentState(
-        'some-id',
+        'rtb-1|0.0.0.0/0',
+        'Logical',
+        'AWS::EC2::Route'
+      );
+      expect(result).toEqual({
+        RouteTableId: 'rtb-1',
+        DestinationCidrBlock: '0.0.0.0/0',
+        NatGatewayId: 'nat-abc',
+      });
+    });
+
+    it('matches IPv6 cidr in physicalId against DestinationIpv6CidrBlock', async () => {
+      mockSend.mockResolvedValueOnce({
+        RouteTables: [
+          {
+            RouteTableId: 'rtb-1',
+            Routes: [
+              {
+                DestinationIpv6CidrBlock: '::/0',
+                EgressOnlyInternetGatewayId: 'eigw-1',
+              },
+            ],
+          },
+        ],
+      });
+
+      const result = await provider.readCurrentState(
+        'rtb-1|::/0',
+        'Logical',
+        'AWS::EC2::Route'
+      );
+      expect(result).toEqual({
+        RouteTableId: 'rtb-1',
+        DestinationIpv6CidrBlock: '::/0',
+        EgressOnlyInternetGatewayId: 'eigw-1',
+      });
+    });
+
+    it('returns undefined when route has been removed', async () => {
+      mockSend.mockResolvedValueOnce({
+        RouteTables: [{ RouteTableId: 'rtb-1', Routes: [] }],
+      });
+      const result = await provider.readCurrentState(
+        'rtb-1|10.0.0.0/0',
+        'Logical',
+        'AWS::EC2::Route'
+      );
+      expect(result).toBeUndefined();
+    });
+  });
+
+  describe('AWS::EC2::SubnetRouteTableAssociation', () => {
+    it('returns SubnetId + RouteTableId when AWS still has the association', async () => {
+      mockSend.mockResolvedValueOnce({
+        RouteTables: [
+          {
+            RouteTableId: 'rtb-1',
+            Associations: [
+              {
+                RouteTableAssociationId: 'rtbassoc-1',
+                SubnetId: 'subnet-1',
+                RouteTableId: 'rtb-1',
+                AssociationState: { State: 'associated' },
+              },
+            ],
+          },
+        ],
+      });
+
+      const result = await provider.readCurrentState(
+        'rtbassoc-1',
+        'Logical',
+        'AWS::EC2::SubnetRouteTableAssociation'
+      );
+      expect(result).toEqual({ SubnetId: 'subnet-1', RouteTableId: 'rtb-1' });
+    });
+
+    it('returns undefined when no route table has the association', async () => {
+      mockSend.mockResolvedValueOnce({ RouteTables: [] });
+      const result = await provider.readCurrentState(
+        'rtbassoc-missing',
+        'Logical',
+        'AWS::EC2::SubnetRouteTableAssociation'
+      );
+      expect(result).toBeUndefined();
+    });
+  });
+
+  describe('AWS::EC2::SecurityGroupIngress (standalone)', () => {
+    it('finds the matching rule by full state signature when multiple AWS rules share the (group, protocol, ports) tuple', async () => {
+      mockSend.mockResolvedValueOnce({
+        SecurityGroups: [
+          {
+            GroupId: 'sg-1',
+            IpPermissions: [
+              {
+                IpProtocol: 'tcp',
+                FromPort: 80,
+                ToPort: 80,
+                IpRanges: [
+                  { CidrIp: '10.0.0.0/8' },
+                  { CidrIp: '192.168.0.0/16' },
+                ],
+              },
+            ],
+          },
+        ],
+      });
+
+      // State has the second rule (192.168.x).
+      const result = await provider.readCurrentState(
+        'sg-1|tcp|80|80',
+        'Logical',
+        'AWS::EC2::SecurityGroupIngress',
+        {
+          GroupId: 'sg-1',
+          IpProtocol: 'tcp',
+          FromPort: 80,
+          ToPort: 80,
+          CidrIp: '192.168.0.0/16',
+        }
+      );
+      expect(result).toEqual({
+        GroupId: 'sg-1',
+        IpProtocol: 'tcp',
+        FromPort: 80,
+        ToPort: 80,
+        CidrIp: '192.168.0.0/16',
+      });
+    });
+
+    it('returns the first candidate when state passes no properties (best-effort, unique tuple)', async () => {
+      mockSend.mockResolvedValueOnce({
+        SecurityGroups: [
+          {
+            GroupId: 'sg-1',
+            IpPermissions: [
+              {
+                IpProtocol: 'tcp',
+                FromPort: 22,
+                ToPort: 22,
+                IpRanges: [{ CidrIp: '0.0.0.0/0' }],
+              },
+            ],
+          },
+        ],
+      });
+
+      const result = await provider.readCurrentState(
+        'sg-1|tcp|22|22',
         'Logical',
         'AWS::EC2::SecurityGroupIngress'
+      );
+      expect(result).toEqual({
+        GroupId: 'sg-1',
+        IpProtocol: 'tcp',
+        FromPort: 22,
+        ToPort: 22,
+        CidrIp: '0.0.0.0/0',
+      });
+    });
+
+    it('returns undefined when state signature does not match any AWS rule (rule was removed)', async () => {
+      mockSend.mockResolvedValueOnce({
+        SecurityGroups: [
+          {
+            GroupId: 'sg-1',
+            IpPermissions: [
+              // tuple matches but cidr is different — comparator should
+              // fail to match and return undefined (gone) rather than
+              // return a different rule that happens to share the tuple.
+              {
+                IpProtocol: 'tcp',
+                FromPort: 80,
+                ToPort: 80,
+                IpRanges: [{ CidrIp: '10.0.0.0/8' }],
+              },
+            ],
+          },
+        ],
+      });
+
+      const result = await provider.readCurrentState(
+        'sg-1|tcp|80|80',
+        'Logical',
+        'AWS::EC2::SecurityGroupIngress',
+        {
+          GroupId: 'sg-1',
+          IpProtocol: 'tcp',
+          FromPort: 80,
+          ToPort: 80,
+          CidrIp: '192.168.0.0/16',
+        }
+      );
+      expect(result).toBeUndefined();
+    });
+  });
+
+  describe('AWS::EC2::NetworkAclEntry', () => {
+    it('returns matching entry by RuleNumber + Egress with Protocol normalized to number', async () => {
+      mockSend.mockResolvedValueOnce({
+        NetworkAcls: [
+          {
+            NetworkAclId: 'acl-1',
+            Entries: [
+              {
+                RuleNumber: 100,
+                Protocol: '6', // tcp
+                RuleAction: 'allow',
+                Egress: false,
+                CidrBlock: '0.0.0.0/0',
+                PortRange: { From: 80, To: 80 },
+              },
+              // Different rule — should not match.
+              {
+                RuleNumber: 200,
+                Protocol: '17',
+                RuleAction: 'allow',
+                Egress: false,
+              },
+            ],
+          },
+        ],
+      });
+
+      const result = await provider.readCurrentState(
+        'acl-1|100|false',
+        'Logical',
+        'AWS::EC2::NetworkAclEntry'
+      );
+      expect(result).toEqual({
+        NetworkAclId: 'acl-1',
+        RuleNumber: 100,
+        Egress: false,
+        Protocol: 6,
+        RuleAction: 'allow',
+        CidrBlock: '0.0.0.0/0',
+        PortRange: { From: 80, To: 80 },
+      });
+    });
+
+    it('handles IcmpTypeCode', async () => {
+      mockSend.mockResolvedValueOnce({
+        NetworkAcls: [
+          {
+            NetworkAclId: 'acl-1',
+            Entries: [
+              {
+                RuleNumber: 110,
+                Protocol: '1', // icmp
+                RuleAction: 'allow',
+                Egress: true,
+                CidrBlock: '0.0.0.0/0',
+                IcmpTypeCode: { Type: 8, Code: -1 },
+              },
+            ],
+          },
+        ],
+      });
+
+      const result = await provider.readCurrentState(
+        'acl-1|110|true',
+        'Logical',
+        'AWS::EC2::NetworkAclEntry'
+      );
+      expect(result?.['IcmpTypeCode']).toEqual({ Type: 8, Code: -1 });
+      expect(result?.['Protocol']).toBe(1);
+    });
+
+    it('returns undefined when entry has been removed', async () => {
+      mockSend.mockResolvedValueOnce({
+        NetworkAcls: [{ NetworkAclId: 'acl-1', Entries: [] }],
+      });
+      const result = await provider.readCurrentState(
+        'acl-1|100|false',
+        'Logical',
+        'AWS::EC2::NetworkAclEntry'
+      );
+      expect(result).toBeUndefined();
+    });
+  });
+
+  describe('AWS::EC2::SubnetNetworkAclAssociation', () => {
+    it('returns NetworkAclId + SubnetId when AWS still has the association', async () => {
+      mockSend.mockResolvedValueOnce({
+        NetworkAcls: [
+          {
+            NetworkAclId: 'acl-2',
+            Associations: [
+              {
+                NetworkAclAssociationId: 'aclassoc-1',
+                NetworkAclId: 'acl-2',
+                SubnetId: 'subnet-1',
+              },
+            ],
+          },
+        ],
+      });
+
+      const result = await provider.readCurrentState(
+        'aclassoc-1',
+        'Logical',
+        'AWS::EC2::SubnetNetworkAclAssociation'
+      );
+      expect(result).toEqual({ NetworkAclId: 'acl-2', SubnetId: 'subnet-1' });
+    });
+
+    it('returns undefined when no NACL has the association id', async () => {
+      mockSend.mockResolvedValueOnce({ NetworkAcls: [] });
+      const result = await provider.readCurrentState(
+        'aclassoc-missing',
+        'Logical',
+        'AWS::EC2::SubnetNetworkAclAssociation'
       );
       expect(result).toBeUndefined();
     });
