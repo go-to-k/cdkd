@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import {
   GetHostedZoneCommand,
+  ListQueryLoggingConfigsCommand,
   ListResourceRecordSetsCommand,
   ListTagsForResourceCommand,
 } from '@aws-sdk/client-route-53';
@@ -60,17 +61,44 @@ describe('Route53Provider.readCurrentState', () => {
           },
           VPCs: [{ VPCId: 'vpc-1', VPCRegion: 'us-east-1' }],
         })
-        .mockResolvedValueOnce({ ResourceTagSet: { ResourceId: 'Z1', Tags: [] } });
+        .mockResolvedValueOnce({ ResourceTagSet: { ResourceId: 'Z1', Tags: [] } })
+        .mockResolvedValueOnce({ QueryLoggingConfigs: [] });
 
       const result = await provider.readCurrentState('Z1', 'L', 'AWS::Route53::HostedZone');
 
       expect(mockSend.mock.calls[0]?.[0]).toBeInstanceOf(GetHostedZoneCommand);
       expect(mockSend.mock.calls[1]?.[0]).toBeInstanceOf(ListTagsForResourceCommand);
+      expect(mockSend.mock.calls[2]?.[0]).toBeInstanceOf(ListQueryLoggingConfigsCommand);
       expect(result).toEqual({
         Name: 'example.com.',
         HostedZoneConfig: { Comment: 'mine', PrivateZone: true },
         VPCs: [{ VPCId: 'vpc-1', VPCRegion: 'us-east-1' }],
         HostedZoneTags: [],
+        QueryLoggingConfig: {},
+      });
+    });
+
+    it('surfaces QueryLoggingConfig.CloudWatchLogsLogGroupArn when AWS has one configured', async () => {
+      mockSend
+        .mockResolvedValueOnce({
+          HostedZone: { Id: '/hostedzone/Z1', Name: 'example.com.' },
+        })
+        .mockResolvedValueOnce({ ResourceTagSet: { ResourceId: 'Z1', Tags: [] } })
+        .mockResolvedValueOnce({
+          QueryLoggingConfigs: [
+            {
+              Id: 'qlc-id',
+              HostedZoneId: 'Z1',
+              CloudWatchLogsLogGroupArn:
+                'arn:aws:logs:us-east-1:123:log-group:/aws/route53/example',
+            },
+          ],
+        });
+
+      const result = await provider.readCurrentState('Z1', 'L', 'AWS::Route53::HostedZone');
+      expect(result?.QueryLoggingConfig).toEqual({
+        CloudWatchLogsLogGroupArn:
+          'arn:aws:logs:us-east-1:123:log-group:/aws/route53/example',
       });
     });
 
@@ -95,7 +123,8 @@ describe('Route53Provider.readCurrentState', () => {
               { Key: 'aws:cdk:path', Value: 'MyStack/MyZone/Resource' },
             ],
           },
-        });
+        })
+        .mockResolvedValueOnce({ QueryLoggingConfigs: [] });
 
       const result = await provider.readCurrentState('Z1', 'L', 'AWS::Route53::HostedZone');
       expect(result?.HostedZoneTags).toEqual([{ Key: 'Foo', Value: 'Bar' }]);
@@ -111,7 +140,8 @@ describe('Route53Provider.readCurrentState', () => {
             ResourceId: 'Z1',
             Tags: [{ Key: 'aws:cdk:path', Value: 'MyStack/MyZone/Resource' }],
           },
-        });
+        })
+        .mockResolvedValueOnce({ QueryLoggingConfigs: [] });
 
       const result = await provider.readCurrentState('Z1', 'L', 'AWS::Route53::HostedZone');
       expect(result?.HostedZoneTags).toEqual([]);
