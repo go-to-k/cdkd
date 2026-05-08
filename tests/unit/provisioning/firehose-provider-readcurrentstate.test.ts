@@ -163,6 +163,11 @@ describe('FirehoseProvider.readCurrentState', () => {
       'AWS::KinesisFirehose::DeliveryStream'
     );
 
+    // ExtendedS3 inner nested complex fields are now reverse-mapped (PR C).
+    // EncryptionConfiguration is surfaced as the AWS-reported value (or
+    // {} placeholder when AWS reports nothing); same for the others.
+    // CloudWatchLoggingOptions in this fixture is `{Enabled: false}`,
+    // so it surfaces verbatim.
     expect(result?.['ExtendedS3DestinationConfiguration']).toEqual({
       BucketARN: 'arn:aws:s3:::my-bucket',
       RoleARN: 'arn:aws:iam::1:role/firehose',
@@ -171,6 +176,12 @@ describe('FirehoseProvider.readCurrentState', () => {
       CompressionFormat: 'GZIP',
       BufferingHints: { SizeInMBs: 5, IntervalInSeconds: 300 },
       S3BackupMode: 'Disabled',
+      EncryptionConfiguration: { NoEncryptionConfig: 'NoEncryption' },
+      CloudWatchLoggingOptions: { Enabled: false },
+      ProcessingConfiguration: {},
+      DataFormatConversionConfiguration: {},
+      DynamicPartitioningConfiguration: {},
+      S3BackupConfiguration: {},
     });
     expect(result?.['S3DestinationConfiguration']).toBeUndefined();
   });
@@ -203,12 +214,17 @@ describe('FirehoseProvider.readCurrentState', () => {
       'AWS::KinesisFirehose::DeliveryStream'
     );
 
+    // EncryptionConfiguration / CloudWatchLoggingOptions placeholders
+    // always emitted (even as {}) so the v3 baseline catches console-side
+    // ADDs to a previously-default sub-shape.
     expect(result?.['S3DestinationConfiguration']).toEqual({
       BucketARN: 'arn:aws:s3:::my-bucket',
       RoleARN: 'arn:aws:iam::1:role/firehose',
       Prefix: 'logs/',
       CompressionFormat: 'UNCOMPRESSED',
       BufferingHints: { SizeInMBs: 1, IntervalInSeconds: 60 },
+      EncryptionConfiguration: {},
+      CloudWatchLoggingOptions: {},
     });
     expect(result?.['ExtendedS3DestinationConfiguration']).toBeUndefined();
   });
@@ -238,6 +254,12 @@ describe('FirehoseProvider.readCurrentState', () => {
 
     expect(result?.['ExtendedS3DestinationConfiguration']).toEqual({
       BucketARN: 'arn:aws:s3:::modern',
+      EncryptionConfiguration: {},
+      CloudWatchLoggingOptions: {},
+      ProcessingConfiguration: {},
+      DataFormatConversionConfiguration: {},
+      DynamicPartitioningConfiguration: {},
+      S3BackupConfiguration: {},
     });
     expect(result?.['S3DestinationConfiguration']).toBeUndefined();
   });
@@ -275,18 +297,234 @@ describe('FirehoseProvider.readCurrentState', () => {
   });
 });
 
+describe('FirehoseProvider.readCurrentState (S3 nested fields)', () => {
+  let provider: FirehoseProvider;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    provider = new FirehoseProvider();
+  });
+
+  it('surfaces ExtendedS3 ProcessingConfiguration with Processors[] structure intact', async () => {
+    mockSend
+      .mockResolvedValueOnce({
+        DeliveryStreamDescription: {
+          DeliveryStreamName: 'mystream',
+          Destinations: [
+            {
+              ExtendedS3DestinationDescription: {
+                BucketARN: 'arn:aws:s3:::my-bucket',
+                RoleARN: 'arn:aws:iam::1:role/firehose',
+                ProcessingConfiguration: {
+                  Enabled: true,
+                  Processors: [
+                    {
+                      Type: 'Lambda',
+                      Parameters: [
+                        {
+                          ParameterName: 'LambdaArn',
+                          ParameterValue: 'arn:aws:lambda:us-east-1:1:function:transform',
+                        },
+                      ],
+                    },
+                  ],
+                },
+              },
+            },
+          ],
+        },
+      })
+      .mockResolvedValueOnce({ Tags: [] });
+
+    const result = await provider.readCurrentState(
+      'mystream',
+      'L',
+      'AWS::KinesisFirehose::DeliveryStream'
+    );
+    const ext = result?.['ExtendedS3DestinationConfiguration'] as Record<string, unknown>;
+    expect(ext['ProcessingConfiguration']).toEqual({
+      Enabled: true,
+      Processors: [
+        {
+          Type: 'Lambda',
+          Parameters: [
+            {
+              ParameterName: 'LambdaArn',
+              ParameterValue: 'arn:aws:lambda:us-east-1:1:function:transform',
+            },
+          ],
+        },
+      ],
+    });
+  });
+
+  it('surfaces S3BackupConfiguration reverse-mapped from S3BackupDescription (always emit placeholder)', async () => {
+    mockSend
+      .mockResolvedValueOnce({
+        DeliveryStreamDescription: {
+          DeliveryStreamName: 'mystream',
+          Destinations: [
+            {
+              ExtendedS3DestinationDescription: {
+                BucketARN: 'arn:aws:s3:::main',
+                RoleARN: 'arn:aws:iam::1:role/firehose',
+                S3BackupMode: 'Enabled',
+                S3BackupDescription: {
+                  BucketARN: 'arn:aws:s3:::backup',
+                  RoleARN: 'arn:aws:iam::1:role/firehose-backup',
+                  Prefix: 'failed/',
+                  CompressionFormat: 'GZIP',
+                },
+              },
+            },
+          ],
+        },
+      })
+      .mockResolvedValueOnce({ Tags: [] });
+
+    const result = await provider.readCurrentState(
+      'mystream',
+      'L',
+      'AWS::KinesisFirehose::DeliveryStream'
+    );
+    const ext = result?.['ExtendedS3DestinationConfiguration'] as Record<string, unknown>;
+    expect(ext['S3BackupConfiguration']).toEqual({
+      BucketARN: 'arn:aws:s3:::backup',
+      RoleARN: 'arn:aws:iam::1:role/firehose-backup',
+      Prefix: 'failed/',
+      CompressionFormat: 'GZIP',
+      // Inner-of-inner placeholders also emitted recursively.
+      EncryptionConfiguration: {},
+      CloudWatchLoggingOptions: {},
+    });
+    expect(ext['S3BackupMode']).toBe('Enabled');
+  });
+
+  it('surfaces DataFormatConversionConfiguration deep pass-through', async () => {
+    mockSend
+      .mockResolvedValueOnce({
+        DeliveryStreamDescription: {
+          DeliveryStreamName: 'mystream',
+          Destinations: [
+            {
+              ExtendedS3DestinationDescription: {
+                BucketARN: 'arn:aws:s3:::my-bucket',
+                DataFormatConversionConfiguration: {
+                  Enabled: true,
+                  SchemaConfiguration: {
+                    DatabaseName: 'analytics',
+                    TableName: 'events',
+                    RoleARN: 'arn:aws:iam::1:role/glue',
+                  },
+                  InputFormatConfiguration: {
+                    Deserializer: { OpenXJsonSerDe: {} },
+                  },
+                  OutputFormatConfiguration: {
+                    Serializer: { ParquetSerDe: { Compression: 'SNAPPY' } },
+                  },
+                },
+              },
+            },
+          ],
+        },
+      })
+      .mockResolvedValueOnce({ Tags: [] });
+
+    const result = await provider.readCurrentState(
+      'mystream',
+      'L',
+      'AWS::KinesisFirehose::DeliveryStream'
+    );
+    const ext = result?.['ExtendedS3DestinationConfiguration'] as Record<string, unknown>;
+    expect(ext['DataFormatConversionConfiguration']).toEqual({
+      Enabled: true,
+      SchemaConfiguration: {
+        DatabaseName: 'analytics',
+        TableName: 'events',
+        RoleARN: 'arn:aws:iam::1:role/glue',
+      },
+      // OpenXJsonSerDe: {} drops to undefined via pickDefinedDeep's
+      // empty-object filter; Deserializer becomes empty too and is
+      // dropped. This is acceptable behavior — state that templated
+      // OpenXJsonSerDe with no fields would match the v2-fallback
+      // baseline post-`cdkd state refresh-observed`.
+      OutputFormatConfiguration: {
+        Serializer: { ParquetSerDe: { Compression: 'SNAPPY' } },
+      },
+    });
+  });
+
+  it('surfaces DynamicPartitioningConfiguration with RetryOptions sub-shape', async () => {
+    mockSend
+      .mockResolvedValueOnce({
+        DeliveryStreamDescription: {
+          DeliveryStreamName: 'mystream',
+          Destinations: [
+            {
+              ExtendedS3DestinationDescription: {
+                BucketARN: 'arn:aws:s3:::my-bucket',
+                DynamicPartitioningConfiguration: {
+                  Enabled: true,
+                  RetryOptions: { DurationInSeconds: 300 },
+                },
+              },
+            },
+          ],
+        },
+      })
+      .mockResolvedValueOnce({ Tags: [] });
+
+    const result = await provider.readCurrentState(
+      'mystream',
+      'L',
+      'AWS::KinesisFirehose::DeliveryStream'
+    );
+    const ext = result?.['ExtendedS3DestinationConfiguration'] as Record<string, unknown>;
+    expect(ext['DynamicPartitioningConfiguration']).toEqual({
+      Enabled: true,
+      RetryOptions: { DurationInSeconds: 300 },
+    });
+  });
+
+  it('surfaces EncryptionConfiguration KMSEncryptionConfig path', async () => {
+    mockSend
+      .mockResolvedValueOnce({
+        DeliveryStreamDescription: {
+          DeliveryStreamName: 'mystream',
+          Destinations: [
+            {
+              ExtendedS3DestinationDescription: {
+                BucketARN: 'arn:aws:s3:::my-bucket',
+                EncryptionConfiguration: {
+                  KMSEncryptionConfig: {
+                    AWSKMSKeyARN: 'arn:aws:kms:us-east-1:1:key/abc',
+                  },
+                },
+              },
+            },
+          ],
+        },
+      })
+      .mockResolvedValueOnce({ Tags: [] });
+
+    const result = await provider.readCurrentState(
+      'mystream',
+      'L',
+      'AWS::KinesisFirehose::DeliveryStream'
+    );
+    const ext = result?.['ExtendedS3DestinationConfiguration'] as Record<string, unknown>;
+    expect(ext['EncryptionConfiguration']).toEqual({
+      KMSEncryptionConfig: {
+        AWSKMSKeyARN: 'arn:aws:kms:us-east-1:1:key/abc',
+      },
+    });
+  });
+});
+
 describe('FirehoseProvider.getDriftUnknownPaths', () => {
-  it('declares non-S3 destinations and S3 nested complex fields as drift-unknown', () => {
+  it('declares non-S3 destinations and DeliveryStreamEncryption as drift-unknown (S3 nested fields are now reverse-mapped)', () => {
     const provider = new FirehoseProvider();
     expect(provider.getDriftUnknownPaths()).toEqual([
-      'S3DestinationConfiguration.EncryptionConfiguration',
-      'S3DestinationConfiguration.CloudWatchLoggingOptions',
-      'ExtendedS3DestinationConfiguration.EncryptionConfiguration',
-      'ExtendedS3DestinationConfiguration.CloudWatchLoggingOptions',
-      'ExtendedS3DestinationConfiguration.ProcessingConfiguration',
-      'ExtendedS3DestinationConfiguration.DataFormatConversionConfiguration',
-      'ExtendedS3DestinationConfiguration.DynamicPartitioningConfiguration',
-      'ExtendedS3DestinationConfiguration.S3BackupConfiguration',
       'RedshiftDestinationConfiguration',
       'ElasticsearchDestinationConfiguration',
       'AmazonopensearchserviceDestinationConfiguration',

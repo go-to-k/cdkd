@@ -597,22 +597,28 @@ export class FirehoseProvider implements ResourceProvider {
    * `KinesisStreamSourceConfiguration` parent fields when present (the
    * `DescribeDeliveryStream` response splits source under `Source.KinesisStreamSourceDescription`).
    *
-   * **Destination configurations**: partial coverage. AWS returns destination
-   * config under `Destinations[0].*DestinationDescription` (note:
-   * `Description`, not `Configuration`). For S3 / ExtendedS3 destinations
-   * the top-level fields with a clean reverse-mapping are surfaced —
-   * `BucketARN`, `RoleARN`, `Prefix`, `ErrorOutputPrefix`, `BufferingHints`,
-   * `CompressionFormat`, plus `S3BackupMode` for Extended. Inner nested
-   * fields (`EncryptionConfiguration`, `CloudWatchLoggingOptions`,
-   * `ProcessingConfiguration`, `DataFormatConversionConfiguration`,
-   * `DynamicPartitioningConfiguration`, `S3BackupConfiguration`) are not
-   * re-shaped — AWS auto-defaults / extra-metadata / write-only redaction
-   * (`Password`) make the round-trip unsafe; they're declared via
-   * `getDriftUnknownPaths()` so the comparator skips them instead of firing
-   * false drift. Non-S3 destination types
+   * **Destination configurations**: full coverage for S3 / ExtendedS3.
+   * AWS returns destination config under `Destinations[0].*DestinationDescription`
+   * (note: `Description`, not `Configuration`); the SDK reuses the same
+   * type as the corresponding `*Configuration` input for the inner
+   * sub-shapes, so reverse-mapping is a `pickDefinedDeep` pass-through.
+   *
+   * Surfaced top-level fields: `BucketARN`, `RoleARN`, `Prefix`,
+   * `ErrorOutputPrefix`, `BufferingHints`, `CompressionFormat`, plus
+   * `S3BackupMode` for Extended. Surfaced inner nested fields:
+   * `EncryptionConfiguration`, `CloudWatchLoggingOptions` (both shapes);
+   * additionally for Extended `ProcessingConfiguration`,
+   * `DataFormatConversionConfiguration`, `DynamicPartitioningConfiguration`,
+   * `S3BackupConfiguration` (reverse-mapped from the AWS-side
+   * `S3BackupDescription`). Each inner subtree is always emitted (even
+   * as `{}` placeholder) so the v3 `observedProperties` baseline catches
+   * console-side ADDs to a previously-default sub-shape.
+   *
+   * Non-S3 destination types
    * (`Redshift`/`Elasticsearch`/`Amazonopensearchservice`/`Splunk`/`HttpEndpoint`/`AmazonOpenSearchServerless`)
-   * stay drift-unknown for v1 — same shape-divergence problem at scale.
-   * `DeliveryStreamEncryptionConfigurationInput` also drift-unknown.
+   * stay drift-unknown — declared via `getDriftUnknownPaths()` until
+   * per-destination reverse-map lands. `DeliveryStreamEncryptionConfigurationInput`
+   * also drift-unknown.
    *
    * Tags are surfaced via a follow-up `ListTagsForDeliveryStream` call
    * with `aws:*` filtered out and always emitted as `[]` placeholder when
@@ -663,44 +669,13 @@ export class FirehoseProvider implements ResourceProvider {
     // The two shapes are mutually exclusive on AWS responses.
     const dest = desc.Destinations?.[0];
     if (dest?.ExtendedS3DestinationDescription) {
-      const ext = dest.ExtendedS3DestinationDescription;
-      const out: Record<string, unknown> = {};
-      if (ext.BucketARN !== undefined) out['BucketARN'] = ext.BucketARN;
-      if (ext.RoleARN !== undefined) out['RoleARN'] = ext.RoleARN;
-      if (ext.Prefix !== undefined) out['Prefix'] = ext.Prefix;
-      if (ext.ErrorOutputPrefix !== undefined) out['ErrorOutputPrefix'] = ext.ErrorOutputPrefix;
-      if (ext.CompressionFormat !== undefined) out['CompressionFormat'] = ext.CompressionFormat;
-      if (ext.BufferingHints) {
-        const hints: Record<string, unknown> = {};
-        if (ext.BufferingHints.SizeInMBs !== undefined)
-          hints['SizeInMBs'] = ext.BufferingHints.SizeInMBs;
-        if (ext.BufferingHints.IntervalInSeconds !== undefined)
-          hints['IntervalInSeconds'] = ext.BufferingHints.IntervalInSeconds;
-        if (Object.keys(hints).length > 0) out['BufferingHints'] = hints;
-      }
-      if (ext.S3BackupMode !== undefined) out['S3BackupMode'] = ext.S3BackupMode;
-      if (Object.keys(out).length > 0) {
-        result['ExtendedS3DestinationConfiguration'] = out;
-      }
+      result['ExtendedS3DestinationConfiguration'] = mapExtendedS3DescriptionToCfn(
+        dest.ExtendedS3DestinationDescription as unknown as Record<string, unknown>
+      );
     } else if (dest?.S3DestinationDescription) {
-      const s3 = dest.S3DestinationDescription;
-      const out: Record<string, unknown> = {};
-      if (s3.BucketARN !== undefined) out['BucketARN'] = s3.BucketARN;
-      if (s3.RoleARN !== undefined) out['RoleARN'] = s3.RoleARN;
-      if (s3.Prefix !== undefined) out['Prefix'] = s3.Prefix;
-      if (s3.ErrorOutputPrefix !== undefined) out['ErrorOutputPrefix'] = s3.ErrorOutputPrefix;
-      if (s3.CompressionFormat !== undefined) out['CompressionFormat'] = s3.CompressionFormat;
-      if (s3.BufferingHints) {
-        const hints: Record<string, unknown> = {};
-        if (s3.BufferingHints.SizeInMBs !== undefined)
-          hints['SizeInMBs'] = s3.BufferingHints.SizeInMBs;
-        if (s3.BufferingHints.IntervalInSeconds !== undefined)
-          hints['IntervalInSeconds'] = s3.BufferingHints.IntervalInSeconds;
-        if (Object.keys(hints).length > 0) out['BufferingHints'] = hints;
-      }
-      if (Object.keys(out).length > 0) {
-        result['S3DestinationConfiguration'] = out;
-      }
+      result['S3DestinationConfiguration'] = mapS3DescriptionToCfn(
+        dest.S3DestinationDescription as unknown as Record<string, unknown>
+      );
     }
 
     // Tags via ListTagsForDeliveryStream.
@@ -732,27 +707,23 @@ export class FirehoseProvider implements ResourceProvider {
    * docstring for the full rationale per category.
    *
    * Categories:
-   *  - Inner nested fields under S3 / ExtendedS3 destinations: shape
-   *    divergence between `Configuration` (CFn input) and `Description`
-   *    (AWS read), AWS auto-defaults, write-only fields.
-   *  - Non-S3 destination types: same shape-divergence problem at scale,
-   *    deferred to a follow-up.
+   *  - Non-S3 destination types: shape divergence at scale (Description
+   *    vs Configuration field naming, write-only redacted fields like
+   *    Redshift `Password`); reverse-mapping is feasible per-destination
+   *    but deferred until per-shape user demand emerges.
    *  - `DeliveryStreamEncryptionConfigurationInput`: input-only shape
    *    (`KeyARN` + `KeyType`) vs. read-side `DeliveryStreamEncryptionConfiguration`
    *    (extra status / failure fields); not yet round-tripped.
+   *
+   * S3 / ExtendedS3 inner nested fields (`EncryptionConfiguration` /
+   * `CloudWatchLoggingOptions` / `ProcessingConfiguration` /
+   * `DataFormatConversionConfiguration` / `DynamicPartitioningConfiguration` /
+   * `S3BackupConfiguration`) are now surfaced via `mapS3DescriptionToCfn`
+   * / `mapExtendedS3DescriptionToCfn` and no longer drift-unknown.
    */
   getDriftUnknownPaths(): string[] {
     return [
-      // S3 / ExtendedS3 nested fields with shape divergence
-      'S3DestinationConfiguration.EncryptionConfiguration',
-      'S3DestinationConfiguration.CloudWatchLoggingOptions',
-      'ExtendedS3DestinationConfiguration.EncryptionConfiguration',
-      'ExtendedS3DestinationConfiguration.CloudWatchLoggingOptions',
-      'ExtendedS3DestinationConfiguration.ProcessingConfiguration',
-      'ExtendedS3DestinationConfiguration.DataFormatConversionConfiguration',
-      'ExtendedS3DestinationConfiguration.DynamicPartitioningConfiguration',
-      'ExtendedS3DestinationConfiguration.S3BackupConfiguration',
-      // Non-S3 destinations (drift-unknown for v1)
+      // Non-S3 destinations (drift-unknown until per-destination reverse-map lands)
       'RedshiftDestinationConfiguration',
       'ElasticsearchDestinationConfiguration',
       'AmazonopensearchserviceDestinationConfiguration',
@@ -829,4 +800,129 @@ export class FirehoseProvider implements ResourceProvider {
     }
     this.logger.warn(`Firehose ${logicalId} did not reach ACTIVE after ${maxAttempts} attempts`);
   }
+}
+
+// ─── Description → CFn nested-shape helpers ──────────────────────────
+//
+// The AWS Firehose SDK returns destination configuration under
+// `*DestinationDescription` types. For most of the inner sub-shapes
+// (`EncryptionConfiguration`, `CloudWatchLoggingOptions`,
+// `ProcessingConfiguration`, `DataFormatConversionConfiguration`,
+// `DynamicPartitioningConfiguration`) the SDK reuses the same type as
+// the corresponding `*Configuration` input — so reverse-mapping is a
+// pass-through that strips `undefined` fields. Per docs/provider-development.md
+// § 3b "always emit user-controllable top-level keys": even though
+// these are nested rather than top-level, surfacing them on every
+// readCurrentState call (as `{}` placeholder when AWS reports nothing)
+// keeps the v3 observedProperties baseline consistent so console-side
+// ADDs to a previously-undefined sub-shape surface as drift.
+
+type Defined<T> = { [K in keyof T]-?: T[K] extends undefined ? never : Exclude<T[K], undefined> };
+
+/**
+ * Strip `undefined` fields (and empty resulting objects) from an AWS-SDK
+ * Description object so it round-trips cleanly through cdkd's drift
+ * comparator. Recursive — descends through nested objects but leaves
+ * arrays as-is (positional compare on AWS-returned order is stable for
+ * Firehose's response shapes).
+ */
+function pickDefinedDeep<T>(input: T | undefined): Partial<Defined<T>> | undefined {
+  if (input === undefined || input === null) return undefined;
+  if (typeof input !== 'object') return input as unknown as Partial<Defined<T>>;
+  if (Array.isArray(input)) {
+    return input.map((v) => pickDefinedDeep(v)) as unknown as Partial<Defined<T>>;
+  }
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(input as Record<string, unknown>)) {
+    if (v === undefined) continue;
+    const cleaned = pickDefinedDeep(v as unknown);
+    if (cleaned === undefined) continue;
+    if (
+      cleaned !== null &&
+      typeof cleaned === 'object' &&
+      !Array.isArray(cleaned) &&
+      Object.keys(cleaned as Record<string, unknown>).length === 0
+    ) {
+      // Drop empty nested objects to avoid `{}` clutter — except at the
+      // top level, the caller decides whether to surface a placeholder.
+      continue;
+    }
+    out[k] = cleaned;
+  }
+  return out as Partial<Defined<T>>;
+}
+
+/**
+ * Map S3DestinationDescription → CFn S3DestinationConfiguration.
+ * Surfaces the top-level subset that has a clean reverse-mapping plus
+ * the inner nested complex fields (EncryptionConfiguration /
+ * CloudWatchLoggingOptions) that the SDK reuses across both shapes.
+ *
+ * Typed as `Record<string, unknown>` to side-step the SDK's strict
+ * required/optional discriminator on `RoleARN` / `BucketARN` that
+ * `exactOptionalPropertyTypes` rejects when passing a sub-object whose
+ * own RoleARN/BucketARN may be undefined (e.g. the deprecated
+ * S3BackupDescription form). Behavior unchanged.
+ */
+function mapS3DescriptionToCfn(desc: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  if (desc['BucketARN'] !== undefined) out['BucketARN'] = desc['BucketARN'];
+  if (desc['RoleARN'] !== undefined) out['RoleARN'] = desc['RoleARN'];
+  if (desc['Prefix'] !== undefined) out['Prefix'] = desc['Prefix'];
+  if (desc['ErrorOutputPrefix'] !== undefined) {
+    out['ErrorOutputPrefix'] = desc['ErrorOutputPrefix'];
+  }
+  if (desc['CompressionFormat'] !== undefined) {
+    out['CompressionFormat'] = desc['CompressionFormat'];
+  }
+  if (desc['BufferingHints']) {
+    const hints = pickDefinedDeep(desc['BufferingHints']);
+    if (hints && typeof hints === 'object' && Object.keys(hints).length > 0) {
+      out['BufferingHints'] = hints;
+    }
+  }
+  // EncryptionConfiguration: surface always so a console-side enable on a
+  // previously-default destination shows as drift on v3 baseline.
+  out['EncryptionConfiguration'] = pickDefinedDeep(desc['EncryptionConfiguration']) ?? {};
+  // CloudWatchLoggingOptions: same pattern.
+  out['CloudWatchLoggingOptions'] = pickDefinedDeep(desc['CloudWatchLoggingOptions']) ?? {};
+  return out;
+}
+
+/**
+ * Map ExtendedS3DestinationDescription → CFn ExtendedS3DestinationConfiguration.
+ * Adds the Extended-only inner fields (`ProcessingConfiguration`,
+ * `DataFormatConversionConfiguration`, `DynamicPartitioningConfiguration`,
+ * `S3BackupConfiguration`) on top of the S3 base set.
+ *
+ * `S3BackupDescription` (note: Description, not Configuration) is
+ * delegated to `mapS3DescriptionToCfn` since AWS uses the deprecated
+ * S3DestinationDescription shape for backup, but CFn input expects
+ * S3DestinationConfiguration — same field names work.
+ */
+function mapExtendedS3DescriptionToCfn(desc: Record<string, unknown>): Record<string, unknown> {
+  const out = mapS3DescriptionToCfn(desc);
+  if (desc['S3BackupMode'] !== undefined) out['S3BackupMode'] = desc['S3BackupMode'];
+  // Inner nested complex fields. SDK reuses the *Configuration types in
+  // *Description responses, so a deep `pickDefinedDeep` produces a CFn-
+  // compatible shape.
+  out['ProcessingConfiguration'] = pickDefinedDeep(desc['ProcessingConfiguration']) ?? {};
+  out['DataFormatConversionConfiguration'] =
+    pickDefinedDeep(desc['DataFormatConversionConfiguration']) ?? {};
+  out['DynamicPartitioningConfiguration'] =
+    pickDefinedDeep(desc['DynamicPartitioningConfiguration']) ?? {};
+  // S3BackupConfiguration: AWS returns S3BackupDescription (deprecated
+  // shape); reverse-map to the modern Configuration shape via the same
+  // top-level helper. Field names align since the deprecated shape and
+  // the modern shape share the BucketARN / RoleARN / Prefix / etc.
+  // surface, just with the EncryptionConfiguration / CloudWatchLoggingOptions
+  // inner placeholders included.
+  if (desc['S3BackupDescription']) {
+    out['S3BackupConfiguration'] = mapS3DescriptionToCfn(
+      desc['S3BackupDescription'] as Record<string, unknown>
+    );
+  } else {
+    out['S3BackupConfiguration'] = {};
+  }
+  return out;
 }
