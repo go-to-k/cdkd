@@ -1,11 +1,15 @@
 import {
   CloudWatchLogsClient,
   CreateLogGroupCommand,
+  DeleteIndexPolicyCommand,
   DeleteLogGroupCommand,
   DescribeIndexPoliciesCommand,
   DescribeLogGroupsCommand,
   GetDataProtectionPolicyCommand,
   ListTagsForResourceCommand,
+  PutBearerTokenAuthenticationCommand,
+  PutIndexPolicyCommand,
+  PutLogGroupDeletionProtectionCommand,
   PutRetentionPolicyCommand,
   DeleteRetentionPolicyCommand,
   TagResourceCommand,
@@ -90,6 +94,12 @@ export class LogsLogGroupProvider implements ResourceProvider {
           'LogGroupClass'
         ] as import('@aws-sdk/client-cloudwatch-logs').LogGroupClass;
       }
+      // DeletionProtectionEnabled is part of CreateLogGroupRequest and can
+      // be applied in the same call. AWS rejects unknown / undefined values,
+      // so only forward when the property is explicitly present.
+      if (properties['DeletionProtectionEnabled'] !== undefined) {
+        createParams.deletionProtectionEnabled = properties['DeletionProtectionEnabled'] as boolean;
+      }
       if (properties['Tags']) {
         const cfnTags = properties['Tags'] as Array<{ Key: string; Value: string }>;
         createParams.tags = Object.fromEntries(cfnTags.map((t) => [t.Key, t.Value]));
@@ -122,10 +132,47 @@ export class LogsLogGroupProvider implements ResourceProvider {
         );
       }
 
-      // Note: FieldIndexPolicies, ResourcePolicyDocument, DeletionProtectionEnabled,
-      // and BearerTokenAuthenticationEnabled are declared in handledProperties
-      // to prevent CC API fallback. These are less common properties that the
-      // CC API can handle if needed via the deployment layer.
+      // Apply FieldIndexPolicies. CloudWatch Logs allows at most one
+      // log-group-level index policy at a time (see PutIndexPolicy /
+      // DeleteIndexPolicy semantics — both key on logGroupIdentifier
+      // alone, no policyName), so the CFn `FieldIndexPolicies` array is
+      // effectively 0-or-1. Apply the first entry; warn if more are
+      // supplied.
+      const fieldIndexPolicies = properties['FieldIndexPolicies'] as unknown[] | undefined;
+      if (fieldIndexPolicies && fieldIndexPolicies.length > 0) {
+        if (fieldIndexPolicies.length > 1) {
+          this.logger.debug(
+            `Log group ${logicalId} declares ${fieldIndexPolicies.length} FieldIndexPolicies; AWS only supports one log-group-level field index policy. Applying the first.`
+          );
+        }
+        const first = fieldIndexPolicies[0];
+        const policyDocument = typeof first === 'string' ? first : JSON.stringify(first);
+        await this.logsClient.send(
+          new PutIndexPolicyCommand({
+            logGroupIdentifier: logGroupName,
+            policyDocument,
+          })
+        );
+      }
+
+      // Apply BearerTokenAuthenticationEnabled. Not part of
+      // CreateLogGroupRequest — needs a separate
+      // PutBearerTokenAuthentication call after the log group exists.
+      if (properties['BearerTokenAuthenticationEnabled'] !== undefined) {
+        await this.logsClient.send(
+          new PutBearerTokenAuthenticationCommand({
+            logGroupIdentifier: logGroupName,
+            bearerTokenAuthenticationEnabled: properties[
+              'BearerTokenAuthenticationEnabled'
+            ] as boolean,
+          })
+        );
+      }
+
+      // Note: ResourcePolicyDocument is declared in handledProperties to
+      // prevent CC API fallback but is not yet wired into create/update —
+      // it maps to the separate AWS::Logs::ResourcePolicy resource type
+      // (account-wide, not per-log-group).
 
       this.logger.debug(`Successfully created log group ${logicalId}: ${logGroupName}`);
 
@@ -163,7 +210,10 @@ export class LogsLogGroupProvider implements ResourceProvider {
   /**
    * Update a CloudWatch Logs log group
    *
-   * Only RetentionInDays can be updated. LogGroupName is immutable (requires replacement).
+   * Mutable: `RetentionInDays`, `DataProtectionPolicy`, `Tags`,
+   * `DeletionProtectionEnabled`, `BearerTokenAuthenticationEnabled`,
+   * `FieldIndexPolicies`. `LogGroupName` / `KmsKeyId` / `LogGroupClass`
+   * are immutable on AWS-side and require replacement.
    */
   async update(
     logicalId: string,
@@ -217,6 +267,93 @@ export class LogsLogGroupProvider implements ResourceProvider {
             logGroupIdentifier: physicalId,
           })
         );
+      }
+    }
+
+    // Update DeletionProtectionEnabled if changed. Use !== undefined so
+    // explicit `false` is honored (drift --revert needs to be able to
+    // clear a console-side enable).
+    if (
+      properties['DeletionProtectionEnabled'] !== previousProperties['DeletionProtectionEnabled']
+    ) {
+      const next = properties['DeletionProtectionEnabled'];
+      if (next !== undefined) {
+        await this.logsClient.send(
+          new PutLogGroupDeletionProtectionCommand({
+            logGroupIdentifier: physicalId,
+            deletionProtectionEnabled: next as boolean,
+          })
+        );
+      } else {
+        // State went from set -> undefined. AWS-side default is false;
+        // disable explicitly so the round-trip lands at the default.
+        await this.logsClient.send(
+          new PutLogGroupDeletionProtectionCommand({
+            logGroupIdentifier: physicalId,
+            deletionProtectionEnabled: false,
+          })
+        );
+      }
+    }
+
+    // Update BearerTokenAuthenticationEnabled if changed. Same pattern
+    // as DeletionProtectionEnabled: use !== undefined so explicit
+    // `false` reaches AWS.
+    if (
+      properties['BearerTokenAuthenticationEnabled'] !==
+      previousProperties['BearerTokenAuthenticationEnabled']
+    ) {
+      const next = properties['BearerTokenAuthenticationEnabled'];
+      if (next !== undefined) {
+        await this.logsClient.send(
+          new PutBearerTokenAuthenticationCommand({
+            logGroupIdentifier: physicalId,
+            bearerTokenAuthenticationEnabled: next as boolean,
+          })
+        );
+      } else {
+        // State went from set -> undefined. AWS-side default is false.
+        await this.logsClient.send(
+          new PutBearerTokenAuthenticationCommand({
+            logGroupIdentifier: physicalId,
+            bearerTokenAuthenticationEnabled: false,
+          })
+        );
+      }
+    }
+
+    // Update FieldIndexPolicies if changed. AWS keys the index policy by
+    // logGroupIdentifier alone (one log-group-level policy max), so the
+    // diff is structurally trivial: same content -> no-op; new content
+    // -> Put (replaces the old one); empty -> Delete.
+    const newFieldIndex = properties['FieldIndexPolicies'] as unknown[] | undefined;
+    const oldFieldIndex = previousProperties['FieldIndexPolicies'] as unknown[] | undefined;
+    if (JSON.stringify(newFieldIndex) !== JSON.stringify(oldFieldIndex)) {
+      if (newFieldIndex && newFieldIndex.length > 0) {
+        if (newFieldIndex.length > 1) {
+          this.logger.debug(
+            `Log group ${physicalId} declares ${newFieldIndex.length} FieldIndexPolicies; AWS only supports one log-group-level field index policy. Applying the first.`
+          );
+        }
+        const first = newFieldIndex[0];
+        const policyDocument = typeof first === 'string' ? first : JSON.stringify(first);
+        await this.logsClient.send(
+          new PutIndexPolicyCommand({
+            logGroupIdentifier: physicalId,
+            policyDocument,
+          })
+        );
+      } else {
+        // Removed -> delete the log-group-level policy. The account-level
+        // policy (if any) takes over.
+        try {
+          await this.logsClient.send(
+            new DeleteIndexPolicyCommand({ logGroupIdentifier: physicalId })
+          );
+        } catch (err) {
+          if (!(err instanceof ResourceNotFoundException)) throw err;
+          // Already absent; treat as success.
+        }
       }
     }
 
@@ -359,14 +496,15 @@ export class LogsLogGroupProvider implements ResourceProvider {
    * `AWS::Logs::ResourcePolicy` resource type — account-wide, not
    * per-log-group).
    *
-   * Known limitation: cdkd's `create()` / `update()` flows do NOT yet
-   * apply `FieldIndexPolicies` / `DeletionProtectionEnabled` /
-   * `BearerTokenAuthenticationEnabled` — they're in `handledProperties`
-   * to prevent CC API fallback but no actual `PutIndexPolicy` /
-   * `PutLogGroupDeletionProtection` / `PutBearerTokenAuthentication`
-   * calls fire. Surfacing these in `readCurrentState` means a user
-   * who templates them will see drift on the first run; a follow-up
-   * needs to wire the create/update flow.
+   * Write-side coverage: `FieldIndexPolicies` is applied via
+   * `PutIndexPolicy` (CloudWatch Logs allows at most one log-group-level
+   * field index policy at a time, so the CFn array is effectively 0-or-1
+   * — the first entry is applied and a debug log notes any additional
+   * entries are ignored). `DeletionProtectionEnabled` is forwarded as
+   * part of `CreateLogGroup` and updated via
+   * `PutLogGroupDeletionProtection`. `BearerTokenAuthenticationEnabled`
+   * is applied via `PutBearerTokenAuthentication` after the log group
+   * exists (it is not part of `CreateLogGroupRequest`).
    *
    * Tags are read via `ListTagsForResource` (using the log-group ARN from
    * the same `DescribeLogGroups` response). CDK's `aws:*` auto-tags are
