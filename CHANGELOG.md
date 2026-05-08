@@ -1,3 +1,10 @@
+## [0.51.8](https://github.com/go-to-k/cdkd/compare/v0.51.7...v0.51.8) (2026-05-08)
+
+
+### Bug Fixes
+
+* **drift:** reverse-map Firehose non-S3 destinations ([#181](https://github.com/go-to-k/cdkd/issues/181) final close) ([#190](https://github.com/go-to-k/cdkd/issues/190)) ([de7e12f](https://github.com/go-to-k/cdkd/commit/de7e12feae74986f5db69db4b06ff0055a4e9a03))
+
 ## [0.51.7](https://github.com/go-to-k/cdkd/compare/v0.51.6...v0.51.7) (2026-05-08)
 
 
