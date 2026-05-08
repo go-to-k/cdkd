@@ -48,17 +48,19 @@ import {
   DescribeNetworkAclsCommand,
   DescribeNetworkInterfacesCommand,
   DeleteNetworkInterfaceCommand,
+  DescribeVolumesCommand,
   type Tenancy,
   type _InstanceType,
   type VolumeType,
   type BlockDeviceMapping,
   type IpPermission,
+  type Volume,
 } from '@aws-sdk/client-ec2';
 import { getLogger } from '../../utils/logger.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
-import { CDK_PATH_TAG } from '../import-helpers.js';
+import { CDK_PATH_TAG, normalizeAwsTagsToCfn } from '../import-helpers.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -3006,8 +3008,23 @@ export class EC2Provider implements ResourceProvider {
    *    always emitted (even as `[]`) so the v3 `observedProperties`
    *    baseline catches console-side rule ADDs to a templated SG.
    *  - **AWS::EC2::Instance**: `DescribeInstances` for `ImageId`,
-   *    `InstanceType`, `KeyName`, `SubnetId`. SecurityGroupIds /
-   *    BlockDeviceMappings shape-match is out of scope for v1.
+   *    `InstanceType`, `KeyName`, `SubnetId`, `SecurityGroupIds` (sorted
+   *    list of `SecurityGroups[].GroupId` for stable positional compare),
+   *    `PrivateIpAddress`, `SourceDestCheck`, `Monitoring` (mapped from
+   *    AWS `Monitoring.State` to CFn boolean), `Tenancy` (from
+   *    `Placement.Tenancy`), `IamInstanceProfile` (ARN form — v2 fallback
+   *    state holding a name will fire one-time drift, resolved via
+   *    `cdkd state refresh-observed`), `Tags` (filtered `aws:*`). For
+   *    `BlockDeviceMappings`, `DescribeInstances` only returns
+   *    `(DeviceName, Ebs.VolumeId, Ebs.DeleteOnTermination)`; cdkd
+   *    additionally calls `DescribeVolumes` on the attached volume ids to
+   *    surface `VolumeType` / `VolumeSize` / `Iops` / `Throughput` /
+   *    `Encrypted` / `KmsKeyId` / `SnapshotId`. The DescribeVolumes call
+   *    is best-effort — a permissions gap or other failure falls back to
+   *    the partial shape (DeleteOnTermination only). All arrays / scalars
+   *    that map to user-controllable CFn properties are always emitted
+   *    (even as `[]` or default scalar) so the v3 `observedProperties`
+   *    baseline catches console-side ADDs.
    *  - **AWS::EC2::NetworkAcl**: `DescribeNetworkAcls` for `VpcId`.
    *
    * Skipped (return `undefined`, falls through to the comparator's
@@ -3238,6 +3255,112 @@ export class EC2Provider implements ResourceProvider {
     if (instance.InstanceType !== undefined) result['InstanceType'] = instance.InstanceType;
     if (instance.KeyName !== undefined) result['KeyName'] = instance.KeyName;
     if (instance.SubnetId !== undefined) result['SubnetId'] = instance.SubnetId;
+
+    // SecurityGroupIds: AWS returns SecurityGroups: [{GroupId, GroupName}].
+    // CFn input is the flat id list — sorted for stable positional compare
+    // (AWS does not preserve template order across DescribeInstances calls).
+    result['SecurityGroupIds'] = (instance.SecurityGroups ?? [])
+      .map((g) => g.GroupId)
+      .filter((id): id is string => typeof id === 'string')
+      .sort();
+
+    // PrivateIpAddress: AWS-assigned for default subnets, user-assigned
+    // when CFn templates the property. Always emit so the v3 baseline
+    // catches console-side reassignment (rare but possible via Stop +
+    // ModifyNetworkInterfaceAttribute).
+    if (instance.PrivateIpAddress !== undefined) {
+      result['PrivateIpAddress'] = instance.PrivateIpAddress;
+    }
+
+    // SourceDestCheck: boolean toggle, returned directly by DescribeInstances.
+    if (instance.SourceDestCheck !== undefined) {
+      result['SourceDestCheck'] = instance.SourceDestCheck;
+    }
+
+    // Monitoring: AWS returns {State: 'enabled' | 'disabled' | 'pending' | 'disabling'}.
+    // CFn input is a boolean. Map enabled-ish → true, disabled-ish → false.
+    // Always emit so a console-side toggle is detectable.
+    const monitoringState = instance.Monitoring?.State;
+    result['Monitoring'] = monitoringState === 'enabled' || monitoringState === 'pending';
+
+    // Tenancy: lives under Placement.Tenancy.
+    if (instance.Placement?.Tenancy !== undefined) {
+      result['Tenancy'] = instance.Placement.Tenancy;
+    }
+
+    // IamInstanceProfile: CFn accepts either a name or an ARN. AWS returns
+    // the ARN; we surface that. State that holds a name will fire one-time
+    // drift on v2 fallback (resolve via cdkd state refresh-observed); v3
+    // observedProperties matches exactly because deploy-time read is the
+    // same wire shape.
+    if (instance.IamInstanceProfile?.Arn !== undefined) {
+      result['IamInstanceProfile'] = instance.IamInstanceProfile.Arn;
+    }
+
+    // BlockDeviceMappings: AWS DescribeInstances returns (DeviceName, Ebs.{VolumeId,
+    // DeleteOnTermination, Status, AttachTime}). VolumeType / Size / Iops /
+    // Throughput / Encrypted / KmsKeyId / SnapshotId live on the volume
+    // itself — fetch via DescribeVolumes for the attached volumes only when
+    // there are EBS-backed mappings.
+    const ebsMappings = (instance.BlockDeviceMappings ?? []).filter(
+      (m) => m.Ebs?.VolumeId !== undefined
+    );
+    const volumeIds = ebsMappings.map((m) => m.Ebs!.VolumeId!);
+    let volumesById: Map<string, Volume> = new Map();
+    if (volumeIds.length > 0) {
+      try {
+        const volResp = await this.ec2Client.send(
+          new DescribeVolumesCommand({ VolumeIds: volumeIds })
+        );
+        for (const v of volResp.Volumes ?? []) {
+          if (v.VolumeId !== undefined) volumesById.set(v.VolumeId, v);
+        }
+      } catch (err) {
+        // Best-effort: if DescribeVolumes fails (rare — maybe a permissions
+        // gap), fall back to the partial shape. The DeleteOnTermination
+        // field is still surfaced from the DescribeInstances response.
+        this.logger.debug(
+          `DescribeVolumes(${volumeIds.join(',')}) failed: ${err instanceof Error ? err.message : String(err)}`
+        );
+        volumesById = new Map();
+      }
+    }
+
+    const blockMappings: Array<Record<string, unknown>> = [];
+    for (const m of instance.BlockDeviceMappings ?? []) {
+      const out: Record<string, unknown> = {};
+      if (m.DeviceName !== undefined) out['DeviceName'] = m.DeviceName;
+      // VirtualName (ephemeral / instance-store) is not returned by
+      // DescribeInstances — AWS only surfaces EBS-backed mappings here.
+      // Templates that set VirtualName fall back to v2 baseline and may
+      // fire one-time drift on the missing key, which `cdkd state
+      // refresh-observed` clears.
+
+      if (m.Ebs?.VolumeId !== undefined) {
+        const ebs: Record<string, unknown> = {};
+        if (m.Ebs.DeleteOnTermination !== undefined) {
+          ebs['DeleteOnTermination'] = m.Ebs.DeleteOnTermination;
+        }
+        const vol = volumesById.get(m.Ebs.VolumeId);
+        if (vol !== undefined) {
+          if (vol.VolumeType !== undefined) ebs['VolumeType'] = vol.VolumeType;
+          if (vol.Size !== undefined) ebs['VolumeSize'] = vol.Size;
+          if (vol.Iops !== undefined) ebs['Iops'] = vol.Iops;
+          if (vol.Throughput !== undefined) ebs['Throughput'] = vol.Throughput;
+          if (vol.Encrypted !== undefined) ebs['Encrypted'] = vol.Encrypted;
+          if (vol.KmsKeyId !== undefined) ebs['KmsKeyId'] = vol.KmsKeyId;
+          if (vol.SnapshotId !== undefined) ebs['SnapshotId'] = vol.SnapshotId;
+        }
+        out['Ebs'] = ebs;
+      }
+      blockMappings.push(out);
+    }
+    result['BlockDeviceMappings'] = blockMappings;
+
+    // Tags: filter aws:* (CDK-internal metadata) and always emit (even as
+    // []). Same pattern as every other tag-aware provider.
+    result['Tags'] = normalizeAwsTagsToCfn(instance.Tags);
+
     return result;
   }
 
