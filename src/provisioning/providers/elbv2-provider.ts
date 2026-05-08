@@ -3,6 +3,7 @@ import {
   CreateLoadBalancerCommand,
   DeleteLoadBalancerCommand,
   DescribeLoadBalancersCommand,
+  DescribeLoadBalancerAttributesCommand,
   CreateTargetGroupCommand,
   DeleteTargetGroupCommand,
   ModifyTargetGroupCommand,
@@ -143,7 +144,13 @@ export class ELBv2Provider implements ResourceProvider {
   ): Promise<ResourceUpdateResult> {
     switch (resourceType) {
       case 'AWS::ElasticLoadBalancingV2::LoadBalancer':
-        return this.updateLoadBalancer(logicalId, physicalId, resourceType, properties);
+        return this.updateLoadBalancer(
+          logicalId,
+          physicalId,
+          resourceType,
+          properties,
+          previousProperties
+        );
       case 'AWS::ElasticLoadBalancingV2::TargetGroup':
         return this.updateTargetGroup(
           logicalId,
@@ -275,27 +282,81 @@ export class ELBv2Provider implements ResourceProvider {
     }
   }
 
-  private updateLoadBalancer(
+  private async updateLoadBalancer(
     logicalId: string,
-    _physicalId: string,
+    physicalId: string,
     _resourceType: string,
-    _properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    previousProperties: Record<string, unknown>
   ): Promise<ResourceUpdateResult> {
     // ELBv2 LoadBalancer Name / Type / Scheme / Subnets are immutable after
-    // creation. AWS exposes SetSecurityGroups / SetSubnets / SetIpAddressType
-    // for the few mutable knobs but cdkd does not yet plumb them through —
-    // the deploy engine recreates the LoadBalancer on property changes via
-    // immutable-property detection. `cdkd drift --revert` surfaces a clear
-    // immutable-error rather than silently no-op'ing the revert (the
-    // previous implementation only described and returned, leaving AWS
-    // untouched).
-    return Promise.reject(
-      new ResourceUpdateNotSupportedError(
+    // creation. The deploy engine detects these via immutable-property
+    // detection and replaces the resource. The remaining surface
+    // (LoadBalancerAttributes, Tags, SecurityGroups, IpAddressType) is
+    // mutable in-place via separate Set*/Modify* calls. cdkd handles
+    // only LoadBalancerAttributes here — that's the single field
+    // `cdkd drift --revert` actually flows through this branch for
+    // (LoadBalancerAttributes is now in `readCurrentState`, so a console-
+    // side Modify is the typical drift case). Other mutable knobs still
+    // surface ResourceUpdateNotSupportedError when they're the source
+    // of the diff.
+
+    const newAttrs =
+      (properties['LoadBalancerAttributes'] as Array<{ Key: string; Value: string }> | undefined) ??
+      [];
+    const oldAttrs =
+      (previousProperties['LoadBalancerAttributes'] as
+        | Array<{ Key: string; Value: string }>
+        | undefined) ?? [];
+
+    // Detect non-LoadBalancerAttributes diffs by stringifying both sides
+    // sans LoadBalancerAttributes. If anything else changed we cannot
+    // handle it in-place and reject with the existing error.
+    const stripAttrs = (p: Record<string, unknown>): Record<string, unknown> => {
+      const { LoadBalancerAttributes: _, ...rest } = p;
+      return rest;
+    };
+    if (JSON.stringify(stripAttrs(properties)) !== JSON.stringify(stripAttrs(previousProperties))) {
+      throw new ResourceUpdateNotSupportedError(
         'AWS::ElasticLoadBalancingV2::LoadBalancer',
         logicalId,
-        'ELBv2 LoadBalancer in-place updates are not yet implemented in cdkd; re-deploy with cdkd deploy --replace, or destroy + redeploy the stack'
-      )
-    );
+        'ELBv2 LoadBalancer in-place updates are only supported for LoadBalancerAttributes; for Name / Type / Scheme / Subnets / SecurityGroups / IpAddressType / Tags, re-deploy with cdkd deploy --replace, or destroy + redeploy the stack'
+      );
+    }
+
+    // Apply LoadBalancerAttributes diff. ELBv2's
+    // ModifyLoadBalancerAttributes replaces ONLY the listed attrs — keys
+    // not in the request are left untouched. Build the diff: changed
+    // values from newAttrs win; keys present only in oldAttrs are
+    // pushed back to AWS's documented default (the empty string),
+    // which clears the override. If no key actually changed we skip
+    // the Modify call entirely (no-op pass-through for the no-drift
+    // round-trip case).
+    const newMap = new Map(newAttrs.map((a) => [a.Key, a.Value]));
+    const oldMap = new Map(oldAttrs.map((a) => [a.Key, a.Value]));
+    const submitted: Array<{ Key: string; Value: string }> = [];
+    for (const [k, v] of newMap) {
+      if (oldMap.get(k) !== v) submitted.push({ Key: k, Value: v });
+    }
+    for (const [k] of oldMap) {
+      if (!newMap.has(k)) submitted.push({ Key: k, Value: '' });
+    }
+
+    if (submitted.length > 0) {
+      const { ModifyLoadBalancerAttributesCommand } =
+        await import('@aws-sdk/client-elastic-load-balancing-v2');
+      await this.getClient().send(
+        new ModifyLoadBalancerAttributesCommand({
+          LoadBalancerArn: physicalId,
+          Attributes: submitted,
+        })
+      );
+      this.logger.debug(
+        `Applied ${submitted.length} LoadBalancerAttributes change(s) for ${logicalId}`
+      );
+    }
+
+    return { physicalId, wasReplaced: false };
   }
 
   private async deleteLoadBalancer(
@@ -771,10 +832,12 @@ export class ELBv2Provider implements ResourceProvider {
    * Dispatch per resource type:
    *  - `LoadBalancer` → `DescribeLoadBalancers` (Name, Subnets via
    *    `AvailabilityZones[].SubnetId`, SecurityGroups, Scheme, Type,
-   *    IpAddressType). LoadBalancerAttributes is omitted for v1 — it
-   *    requires a separate `DescribeLoadBalancerAttributes` call and the
-   *    drift comparator only descends into keys present in state, so an
-   *    absent key cannot fire false drift.
+   *    IpAddressType) plus `DescribeLoadBalancerAttributes` for the full
+   *    `LoadBalancerAttributes` `[{Key, Value}]` array (sorted by Key for
+   *    stable positional compare). AWS returns every attribute valid for
+   *    this LB type including defaults the user did not template; on the
+   *    v3 observedProperties baseline that's load-bearing — a console-side
+   *    change to ANY attribute (templated or not) surfaces as drift.
    *  - `TargetGroup` → `DescribeTargetGroups` (Protocol, Port, VpcId,
    *    TargetType, ProtocolVersion, HealthCheck*, Matcher, Name).
    *  - `Listener` → `DescribeListeners` (LoadBalancerArn, Certificates,
@@ -826,6 +889,36 @@ export class ELBv2Provider implements ResourceProvider {
     if (lb.Scheme !== undefined) result['Scheme'] = lb.Scheme;
     if (lb.Type !== undefined) result['Type'] = lb.Type;
     if (lb.IpAddressType !== undefined) result['IpAddressType'] = lb.IpAddressType;
+
+    // LoadBalancerAttributes via DescribeLoadBalancerAttributes. AWS
+    // returns the FULL attribute set (every key valid for this LB type,
+    // including AWS-defaulted values the user did not template). We sort
+    // by Key for stable positional compare and emit the whole list, so a
+    // console-side change to any attribute (templated or not) surfaces
+    // as drift on the v3 observedProperties baseline (which captures
+    // the same full set at deploy time). On the v2 fallback baseline
+    // (state.properties) users templating only a subset will see drift
+    // on the AWS-defaulted keys — that's the v2 limitation in general
+    // and the documented motivation for upgrading to v3 / running
+    // `cdkd state refresh-observed`.
+    try {
+      const attrsResp = await this.getClient().send(
+        new DescribeLoadBalancerAttributesCommand({ LoadBalancerArn: physicalId })
+      );
+      const attrs = (attrsResp.Attributes ?? [])
+        .filter(
+          (a): a is { Key: string; Value: string } =>
+            typeof a.Key === 'string' && typeof a.Value === 'string'
+        )
+        .map((a) => ({ Key: a.Key, Value: a.Value }))
+        .sort((a, b) => a.Key.localeCompare(b.Key));
+      result['LoadBalancerAttributes'] = attrs;
+    } catch (err) {
+      if (this.isNotFoundError(err)) return undefined;
+      // Permission errors etc — leave key absent rather than firing
+      // false drift on every run.
+    }
+
     await this.attachTags(result, physicalId);
     return result;
   }

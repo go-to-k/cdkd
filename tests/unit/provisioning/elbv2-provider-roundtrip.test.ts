@@ -53,13 +53,13 @@ describe('ELBv2Provider read-update round-trip', () => {
     provider = new ELBv2Provider();
   });
 
-  // ─── LoadBalancer (immutable update) ──────────────────────────────
+  // ─── LoadBalancer (mostly-immutable update) ───────────────────────
 
-  it('LoadBalancer.update rejects with ResourceUpdateNotSupportedError; no spurious AWS calls', async () => {
-    // LB updates are immutable in cdkd — the only safe round-trip
-    // outcome is a clear error, NOT a silent no-op against AWS. The
-    // drift --revert summary surfaces this as "could not revert" (vs
-    // generic "AWS update failed").
+  it('LoadBalancer.update is a clean no-op when only LoadBalancerAttributes match between observed and itself', async () => {
+    // No-drift round-trip: same observed on both sides, no diff, no
+    // AWS call. The previous immutable-only behavior would have thrown
+    // here; with LoadBalancerAttributes now mutable in update() the
+    // no-diff case must be a clean pass-through.
     const observed = {
       Name: 'mylb',
       Subnets: ['subnet-a', 'subnet-b'],
@@ -67,14 +67,37 @@ describe('ELBv2Provider read-update round-trip', () => {
       Scheme: 'internet-facing',
       Type: 'application',
       IpAddressType: 'ipv4',
+      LoadBalancerAttributes: [{ Key: 'idle_timeout.timeout_seconds', Value: '60' }],
       Tags: [],
     };
 
-    await expect(
-      provider.update('L', LB_ARN, 'AWS::ElasticLoadBalancingV2::LoadBalancer', observed, observed)
-    ).rejects.toBeInstanceOf(ResourceUpdateNotSupportedError);
+    const result = await provider.update(
+      'L',
+      LB_ARN,
+      'AWS::ElasticLoadBalancingV2::LoadBalancer',
+      observed,
+      observed
+    );
 
-    // No AWS calls — the error fires before any send().
+    expect(result).toEqual({ physicalId: LB_ARN, wasReplaced: false });
+    // No diff between newAttrs and oldAttrs → no Modify call.
+    expect(mockSend).not.toHaveBeenCalled();
+  });
+
+  it('LoadBalancer.update rejects with ResourceUpdateNotSupportedError when an immutable field changed', async () => {
+    // Scheme is immutable. The deploy engine triggers replacement via
+    // immutable-property detection, but if --revert ever lands here
+    // with such a diff we must surface a clear error rather than
+    // silently no-op'ing.
+    await expect(
+      provider.update(
+        'L',
+        LB_ARN,
+        'AWS::ElasticLoadBalancingV2::LoadBalancer',
+        { Scheme: 'internet-facing' },
+        { Scheme: 'internal' }
+      )
+    ).rejects.toBeInstanceOf(ResourceUpdateNotSupportedError);
     expect(mockSend).not.toHaveBeenCalled();
   });
 

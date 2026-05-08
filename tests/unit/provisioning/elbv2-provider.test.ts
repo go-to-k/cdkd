@@ -144,17 +144,88 @@ describe('ELBv2Provider', () => {
     });
 
     describe('update', () => {
-      it('should reject with ResourceUpdateNotSupportedError (drift --revert surfaces a clear immutable error)', async () => {
+      it('should reject with ResourceUpdateNotSupportedError when an immutable field changed', async () => {
+        // Scheme is immutable — the deploy engine triggers replacement,
+        // but if --revert ever lands here with such a diff we must surface
+        // the error rather than silently no-op.
         await expect(
           provider.update(
             'MyALB',
             'arn:aws:elasticloadbalancing:us-east-1:123456789012:loadbalancer/app/my-alb/123',
             'AWS::ElasticLoadBalancingV2::LoadBalancer',
-            {},
-            {}
+            { Scheme: 'internet-facing' },
+            { Scheme: 'internal' }
           )
         ).rejects.toThrow(ResourceUpdateNotSupportedError);
         expect(mockSend).not.toHaveBeenCalled();
+      });
+
+      it('applies LoadBalancerAttributes diff via ModifyLoadBalancerAttributes (drift --revert path)', async () => {
+        const { ModifyLoadBalancerAttributesCommand } = await import(
+          '@aws-sdk/client-elastic-load-balancing-v2'
+        );
+        mockSend.mockResolvedValueOnce({});
+
+        const result = await provider.update(
+          'MyALB',
+          'arn:aws:elasticloadbalancing:us-east-1:123456789012:loadbalancer/app/my-alb/123',
+          'AWS::ElasticLoadBalancingV2::LoadBalancer',
+          {
+            LoadBalancerAttributes: [{ Key: 'idle_timeout.timeout_seconds', Value: '60' }],
+          },
+          {
+            LoadBalancerAttributes: [{ Key: 'idle_timeout.timeout_seconds', Value: '300' }],
+          }
+        );
+
+        expect(result).toEqual({
+          physicalId:
+            'arn:aws:elasticloadbalancing:us-east-1:123456789012:loadbalancer/app/my-alb/123',
+          wasReplaced: false,
+        });
+        expect(mockSend).toHaveBeenCalledTimes(1);
+        const cmd = mockSend.mock.calls[0]?.[0];
+        expect(cmd).toBeInstanceOf(ModifyLoadBalancerAttributesCommand);
+        expect((cmd as InstanceType<typeof ModifyLoadBalancerAttributesCommand>).input).toEqual({
+          LoadBalancerArn:
+            'arn:aws:elasticloadbalancing:us-east-1:123456789012:loadbalancer/app/my-alb/123',
+          Attributes: [{ Key: 'idle_timeout.timeout_seconds', Value: '60' }],
+        });
+      });
+
+      it('clears removed LoadBalancerAttributes by submitting empty Value (AWS-documented clear)', async () => {
+        const { ModifyLoadBalancerAttributesCommand } = await import(
+          '@aws-sdk/client-elastic-load-balancing-v2'
+        );
+        mockSend.mockResolvedValueOnce({});
+
+        await provider.update(
+          'MyALB',
+          'arn:aws:elasticloadbalancing:us-east-1:123456789012:loadbalancer/app/my-alb/123',
+          'AWS::ElasticLoadBalancingV2::LoadBalancer',
+          // newAttrs has no access_logs.s3.enabled
+          {
+            LoadBalancerAttributes: [{ Key: 'idle_timeout.timeout_seconds', Value: '60' }],
+          },
+          // oldAttrs DID have access_logs.s3.enabled
+          {
+            LoadBalancerAttributes: [
+              { Key: 'idle_timeout.timeout_seconds', Value: '60' },
+              { Key: 'access_logs.s3.enabled', Value: 'true' },
+            ],
+          }
+        );
+
+        const cmd = mockSend.mock.calls[0]?.[0] as InstanceType<
+          typeof ModifyLoadBalancerAttributesCommand
+        >;
+        // Only the changed/removed key is submitted: idle_timeout was
+        // 60 on both sides (no change → not resubmitted);
+        // access_logs.s3.enabled was removed → submitted with Value: ''
+        // (AWS-documented clear).
+        expect(cmd.input.Attributes).toEqual([
+          { Key: 'access_logs.s3.enabled', Value: '' },
+        ]);
       });
     });
   });
