@@ -538,7 +538,7 @@ describe('EC2Provider.readCurrentState', () => {
   });
 
   describe('AWS::EC2::Instance', () => {
-    it('returns ImageId + InstanceType + SubnetId for running instance', async () => {
+    it('returns top-level fields with always-emit placeholders for running instance with no EBS volumes', async () => {
       mockSend.mockResolvedValueOnce({
         Reservations: [
           {
@@ -558,10 +558,17 @@ describe('EC2Provider.readCurrentState', () => {
       const result = await provider.readCurrentState('i-1', 'Logical', 'AWS::EC2::Instance');
 
       expect(mockSend.mock.calls[0]?.[0]).toBeInstanceOf(DescribeInstancesCommand);
+      // SecurityGroupIds / BlockDeviceMappings / Tags / Monitoring always
+      // emitted so the v3 observedProperties baseline catches console-side
+      // ADDs even on minimum-config instances.
       expect(result).toEqual({
         ImageId: 'ami-1',
         InstanceType: 't3.micro',
         SubnetId: 'subnet-1',
+        SecurityGroupIds: [],
+        Monitoring: false,
+        BlockDeviceMappings: [],
+        Tags: [],
       });
     });
 
@@ -578,6 +585,216 @@ describe('EC2Provider.readCurrentState', () => {
 
       const result = await provider.readCurrentState('i-1', 'Logical', 'AWS::EC2::Instance');
       expect(result).toBeUndefined();
+    });
+
+    it('surfaces SecurityGroupIds sorted (stable positional compare against template order)', async () => {
+      mockSend.mockResolvedValueOnce({
+        Reservations: [
+          {
+            Instances: [
+              {
+                InstanceId: 'i-1',
+                State: { Name: 'running' },
+                // AWS does not preserve template order — sort the result so
+                // the comparator's positional array compare is stable.
+                SecurityGroups: [
+                  { GroupId: 'sg-z', GroupName: 'last' },
+                  { GroupId: 'sg-a', GroupName: 'first' },
+                  { GroupId: 'sg-m', GroupName: 'middle' },
+                ],
+              },
+            ],
+          },
+        ],
+      });
+
+      const result = await provider.readCurrentState('i-1', 'Logical', 'AWS::EC2::Instance');
+      expect(result?.['SecurityGroupIds']).toEqual(['sg-a', 'sg-m', 'sg-z']);
+    });
+
+    it('maps Monitoring.State to CFn boolean', async () => {
+      // Cover the two enabled-ish states (enabled, pending) → true,
+      // and a disabled-ish state (disabled, disabling) → false.
+      for (const [state, expected] of [
+        ['enabled', true],
+        ['pending', true],
+        ['disabled', false],
+        ['disabling', false],
+      ] as const) {
+        mockSend.mockResolvedValueOnce({
+          Reservations: [
+            {
+              Instances: [
+                {
+                  InstanceId: 'i-1',
+                  State: { Name: 'running' },
+                  Monitoring: { State: state },
+                },
+              ],
+            },
+          ],
+        });
+
+        const result = await provider.readCurrentState('i-1', 'Logical', 'AWS::EC2::Instance');
+        expect(result?.['Monitoring']).toBe(expected);
+      }
+    });
+
+    it('surfaces SourceDestCheck / Tenancy / IamInstanceProfile / PrivateIpAddress when set', async () => {
+      mockSend.mockResolvedValueOnce({
+        Reservations: [
+          {
+            Instances: [
+              {
+                InstanceId: 'i-1',
+                State: { Name: 'running' },
+                SourceDestCheck: false,
+                PrivateIpAddress: '10.0.1.42',
+                Placement: { Tenancy: 'dedicated' },
+                IamInstanceProfile: { Arn: 'arn:aws:iam::1:instance-profile/web' },
+              },
+            ],
+          },
+        ],
+      });
+
+      const result = await provider.readCurrentState('i-1', 'Logical', 'AWS::EC2::Instance');
+      expect(result?.['SourceDestCheck']).toBe(false);
+      expect(result?.['PrivateIpAddress']).toBe('10.0.1.42');
+      expect(result?.['Tenancy']).toBe('dedicated');
+      expect(result?.['IamInstanceProfile']).toBe('arn:aws:iam::1:instance-profile/web');
+    });
+
+    it('reverse-maps BlockDeviceMappings using DescribeVolumes for full Ebs sub-shape', async () => {
+      // First call: DescribeInstances. Second call: DescribeVolumes for the
+      // attached volumes.
+      mockSend
+        .mockResolvedValueOnce({
+          Reservations: [
+            {
+              Instances: [
+                {
+                  InstanceId: 'i-1',
+                  State: { Name: 'running' },
+                  BlockDeviceMappings: [
+                    {
+                      DeviceName: '/dev/sda1',
+                      Ebs: { VolumeId: 'vol-aaa', DeleteOnTermination: true },
+                    },
+                    {
+                      DeviceName: '/dev/sdb',
+                      Ebs: { VolumeId: 'vol-bbb', DeleteOnTermination: false },
+                    },
+                  ],
+                },
+              ],
+            },
+          ],
+        })
+        .mockResolvedValueOnce({
+          Volumes: [
+            {
+              VolumeId: 'vol-aaa',
+              VolumeType: 'gp3',
+              Size: 8,
+              Iops: 3000,
+              Throughput: 125,
+              Encrypted: true,
+              KmsKeyId: 'arn:aws:kms:us-east-1:1:key/abc',
+            },
+            {
+              VolumeId: 'vol-bbb',
+              VolumeType: 'gp2',
+              Size: 100,
+              Encrypted: false,
+              SnapshotId: 'snap-xyz',
+            },
+          ],
+        });
+
+      const result = await provider.readCurrentState('i-1', 'Logical', 'AWS::EC2::Instance');
+
+      expect(result?.['BlockDeviceMappings']).toEqual([
+        {
+          DeviceName: '/dev/sda1',
+          Ebs: {
+            DeleteOnTermination: true,
+            VolumeType: 'gp3',
+            VolumeSize: 8,
+            Iops: 3000,
+            Throughput: 125,
+            Encrypted: true,
+            KmsKeyId: 'arn:aws:kms:us-east-1:1:key/abc',
+          },
+        },
+        {
+          DeviceName: '/dev/sdb',
+          Ebs: {
+            DeleteOnTermination: false,
+            VolumeType: 'gp2',
+            VolumeSize: 100,
+            Encrypted: false,
+            SnapshotId: 'snap-xyz',
+          },
+        },
+      ]);
+    });
+
+    it('falls back to DeleteOnTermination-only on DescribeVolumes failure (best-effort)', async () => {
+      mockSend
+        .mockResolvedValueOnce({
+          Reservations: [
+            {
+              Instances: [
+                {
+                  InstanceId: 'i-1',
+                  State: { Name: 'running' },
+                  BlockDeviceMappings: [
+                    {
+                      DeviceName: '/dev/sda1',
+                      Ebs: { VolumeId: 'vol-aaa', DeleteOnTermination: true },
+                    },
+                  ],
+                },
+              ],
+            },
+          ],
+        })
+        .mockRejectedValueOnce(new Error('UnauthorizedOperation: ec2:DescribeVolumes'));
+
+      const result = await provider.readCurrentState('i-1', 'Logical', 'AWS::EC2::Instance');
+
+      // Volume-side fields absent — the partial shape (DeleteOnTermination
+      // only) is still surfaced. Better than nothing for users without
+      // ec2:DescribeVolumes permission.
+      expect(result?.['BlockDeviceMappings']).toEqual([
+        {
+          DeviceName: '/dev/sda1',
+          Ebs: { DeleteOnTermination: true },
+        },
+      ]);
+    });
+
+    it('surfaces Tags with aws:* filtered out', async () => {
+      mockSend.mockResolvedValueOnce({
+        Reservations: [
+          {
+            Instances: [
+              {
+                InstanceId: 'i-1',
+                State: { Name: 'running' },
+                Tags: [
+                  { Key: 'Name', Value: 'web-1' },
+                  { Key: 'aws:cdk:path', Value: 'MyStack/web' },
+                ],
+              },
+            ],
+          },
+        ],
+      });
+
+      const result = await provider.readCurrentState('i-1', 'Logical', 'AWS::EC2::Instance');
+      expect(result?.['Tags']).toEqual([{ Key: 'Name', Value: 'web-1' }]);
     });
   });
 
