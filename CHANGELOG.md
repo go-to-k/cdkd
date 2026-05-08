@@ -1,3 +1,10 @@
+## [0.51.1](https://github.com/go-to-k/cdkd/compare/v0.51.0...v0.51.1) (2026-05-08)
+
+
+### Bug Fixes
+
+* **drift:** lift v1-punt drift coverage on 8 SDK providers ([#175](https://github.com/go-to-k/cdkd/issues/175)) ([6c01ca1](https://github.com/go-to-k/cdkd/commit/6c01ca1da35da15789784cf19d166893a418e4d5))
+
 # [0.51.0](https://github.com/go-to-k/cdkd/compare/v0.50.13...v0.51.0) (2026-05-07)
 
 
