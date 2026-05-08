@@ -52,6 +52,7 @@ import {
   type _InstanceType,
   type VolumeType,
   type BlockDeviceMapping,
+  type IpPermission,
 } from '@aws-sdk/client-ec2';
 import { getLogger } from '../../utils/logger.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
@@ -2989,10 +2990,21 @@ export class EC2Provider implements ResourceProvider {
    *    `AllocationId`, `ConnectivityType`, `PrivateIpAddress`.
    *  - **AWS::EC2::RouteTable**: `DescribeRouteTables` for `VpcId`.
    *  - **AWS::EC2::SecurityGroup**: `DescribeSecurityGroups` for
-   *    `GroupName`, `GroupDescription`, `VpcId`. Ingress / egress rules
-   *    are NOT surfaced — the CFn shape is rule-list-style, while AWS
-   *    returns IpPermissions in a different normalized form, and a
-   *    faithful reverse-mapping is out of scope for v1.
+   *    `GroupName`, `GroupDescription`, `VpcId`, plus `SecurityGroupIngress`
+   *    and `SecurityGroupEgress` reverse-mapped from AWS's normalized
+   *    `IpPermissions[]` / `IpPermissionsEgress[]` form. Each AWS
+   *    `IpPermission` is flattened into one CFn rule per `IpRanges` /
+   *    `Ipv6Ranges` / `UserIdGroupPairs` / `PrefixListIds` entry; field
+   *    names follow CFn direction conventions (`Source*` for ingress,
+   *    `Destination*` for egress). When state templates ingress/egress
+   *    rules, AWS's response is reordered to match state's positional
+   *    order via `reconcileSgRules` so the comparator's array compare
+   *    doesn't fire false drift on AWS's normalized ordering. The
+   *    AWS-auto-attached "allow-all 0.0.0.0/0" egress rule is filtered
+   *    out of `SecurityGroupEgress` when state did not template egress
+   *    (the auto-default is invisible to drift). Both arrays are
+   *    always emitted (even as `[]`) so the v3 `observedProperties`
+   *    baseline catches console-side rule ADDs to a templated SG.
    *  - **AWS::EC2::Instance**: `DescribeInstances` for `ImageId`,
    *    `InstanceType`, `KeyName`, `SubnetId`. SecurityGroupIds /
    *    BlockDeviceMappings shape-match is out of scope for v1.
@@ -3020,7 +3032,8 @@ export class EC2Provider implements ResourceProvider {
   async readCurrentState(
     physicalId: string,
     logicalId: string,
-    resourceType: string
+    resourceType: string,
+    properties?: Record<string, unknown>
   ): Promise<Record<string, unknown> | undefined> {
     try {
       switch (resourceType) {
@@ -3035,7 +3048,7 @@ export class EC2Provider implements ResourceProvider {
         case 'AWS::EC2::RouteTable':
           return await this.readRouteTableCurrentState(physicalId);
         case 'AWS::EC2::SecurityGroup':
-          return await this.readSecurityGroupCurrentState(physicalId);
+          return await this.readSecurityGroupCurrentState(physicalId, properties);
         case 'AWS::EC2::Instance':
           return await this.readInstanceCurrentState(physicalId);
         case 'AWS::EC2::NetworkAcl':
@@ -3161,7 +3174,8 @@ export class EC2Provider implements ResourceProvider {
   }
 
   private async readSecurityGroupCurrentState(
-    physicalId: string
+    physicalId: string,
+    properties?: Record<string, unknown>
   ): Promise<Record<string, unknown> | undefined> {
     const resp = await this.ec2Client.send(
       new DescribeSecurityGroupsCommand({ GroupIds: [physicalId] })
@@ -3173,8 +3187,33 @@ export class EC2Provider implements ResourceProvider {
     if (sg.GroupName !== undefined) result['GroupName'] = sg.GroupName;
     if (sg.Description !== undefined) result['GroupDescription'] = sg.Description;
     if (sg.VpcId !== undefined) result['VpcId'] = sg.VpcId;
-    // SecurityGroupIngress / SecurityGroupEgress (rule lists) are not
-    // surfaced — see JSDoc on readCurrentState for the rationale.
+
+    // Reverse-map AWS IpPermissions[] → CFn SecurityGroupIngress[].
+    // Each AWS IpPermission can produce multiple CFn rules (one per
+    // IpRanges / Ipv6Ranges / UserIdGroupPairs / PrefixListIds entry).
+    // Order is reconciled against state's templated rules so the
+    // comparator's positional array compare doesn't fire false drift on
+    // AWS's normalized order.
+    const stateIngress = Array.isArray(properties?.['SecurityGroupIngress'])
+      ? (properties['SecurityGroupIngress'] as Array<Record<string, unknown>>)
+      : undefined;
+    const ingressRules = flattenIpPermissions(sg.IpPermissions ?? [], 'ingress');
+    result['SecurityGroupIngress'] = reconcileSgRules(ingressRules, stateIngress, 'ingress');
+
+    // Egress: AWS auto-attaches an `allow-all 0.0.0.0/0` rule on creation
+    // when the user doesn't template `SecurityGroupEgress`. Filter it out
+    // when state didn't template egress so the auto-default doesn't fire
+    // false drift; surface it as-is when state DID template egress (the
+    // user owns the egress list, AWS-default is just one of the rules).
+    const stateEgress = Array.isArray(properties?.['SecurityGroupEgress'])
+      ? (properties['SecurityGroupEgress'] as Array<Record<string, unknown>>)
+      : undefined;
+    let egressRules = flattenIpPermissions(sg.IpPermissionsEgress ?? [], 'egress');
+    if (stateEgress === undefined) {
+      egressRules = egressRules.filter((r) => !isDefaultEgressRule(r));
+    }
+    result['SecurityGroupEgress'] = reconcileSgRules(egressRules, stateEgress, 'egress');
+
     return result;
   }
 
@@ -3253,4 +3292,174 @@ export class EC2Provider implements ResourceProvider {
       throw error;
     }
   }
+}
+
+// ─── SecurityGroup rule helpers ──────────────────────────────────────
+//
+// `IpPermissions` reverse-mapping: AWS returns SG rules in normalized
+// `IpPermissions[]` form where each permission can carry multiple
+// `IpRanges`, `Ipv6Ranges`, `UserIdGroupPairs`, and `PrefixListIds`
+// entries. The CFn `SecurityGroupIngress` / `SecurityGroupEgress` shape
+// is rule-list-style — one entry per `(protocol, ports, source-or-dest)`
+// tuple. The reverse-map produces one CFn rule per source/dest entry
+// inside each AWS permission, matching the field naming the
+// in-place SG update path (`applySecurityGroupRuleDiff`) expects so
+// `cdkd drift --revert` can round-trip cleanly.
+
+type SgDirection = 'ingress' | 'egress';
+type CfnSgRule = Record<string, unknown>;
+
+/**
+ * Flatten AWS `IpPermission[]` (the `DescribeSecurityGroups` shape) into
+ * a flat list of CFn-shaped rules. Each `IpRanges` / `Ipv6Ranges` /
+ * `UserIdGroupPairs` / `PrefixListIds` entry inside a permission becomes
+ * its own CFn rule, so the resulting list aligns 1:1 with the way users
+ * template `SecurityGroupIngress` / `SecurityGroupEgress`.
+ *
+ * Field names follow CFn direction conventions:
+ *  - ingress: `SourceSecurityGroupId`, `SourceSecurityGroupOwnerId`, `SourcePrefixListId`
+ *  - egress:  `DestinationSecurityGroupId`, `DestinationPrefixListId`
+ *    (AWS does not return a peer-owner id for egress, matching CFn.)
+ *
+ * `Description` is surfaced when AWS returns it on the source/dest entry
+ * (per-rule descriptions are stored on the entry, not the parent
+ * permission).
+ */
+export function flattenIpPermissions(perms: IpPermission[], direction: SgDirection): CfnSgRule[] {
+  const out: CfnSgRule[] = [];
+  for (const p of perms) {
+    const base: CfnSgRule = {};
+    if (p.IpProtocol !== undefined) base['IpProtocol'] = p.IpProtocol;
+    if (p.FromPort !== undefined) base['FromPort'] = p.FromPort;
+    if (p.ToPort !== undefined) base['ToPort'] = p.ToPort;
+
+    for (const ip of p.IpRanges ?? []) {
+      const rule: CfnSgRule = { ...base };
+      if (ip.CidrIp !== undefined) rule['CidrIp'] = ip.CidrIp;
+      if (ip.Description !== undefined) rule['Description'] = ip.Description;
+      out.push(rule);
+    }
+    for (const ipv6 of p.Ipv6Ranges ?? []) {
+      const rule: CfnSgRule = { ...base };
+      if (ipv6.CidrIpv6 !== undefined) rule['CidrIpv6'] = ipv6.CidrIpv6;
+      if (ipv6.Description !== undefined) rule['Description'] = ipv6.Description;
+      out.push(rule);
+    }
+    for (const grp of p.UserIdGroupPairs ?? []) {
+      const rule: CfnSgRule = { ...base };
+      if (direction === 'ingress') {
+        if (grp.GroupId !== undefined) rule['SourceSecurityGroupId'] = grp.GroupId;
+        if (grp.UserId !== undefined) rule['SourceSecurityGroupOwnerId'] = grp.UserId;
+      } else {
+        if (grp.GroupId !== undefined) rule['DestinationSecurityGroupId'] = grp.GroupId;
+      }
+      if (grp.Description !== undefined) rule['Description'] = grp.Description;
+      out.push(rule);
+    }
+    for (const pl of p.PrefixListIds ?? []) {
+      const rule: CfnSgRule = { ...base };
+      if (direction === 'ingress') {
+        if (pl.PrefixListId !== undefined) rule['SourcePrefixListId'] = pl.PrefixListId;
+      } else {
+        if (pl.PrefixListId !== undefined) rule['DestinationPrefixListId'] = pl.PrefixListId;
+      }
+      if (pl.Description !== undefined) rule['Description'] = pl.Description;
+      out.push(rule);
+    }
+
+    // Empty-source permission (rare but legal — e.g. a permission with
+    // only `IpRanges: []`). Emit the bare protocol/port shell so the
+    // shape isn't lost; the comparator may still fire drift, which is
+    // correct because the user templated nothing here.
+    if (
+      (p.IpRanges?.length ?? 0) === 0 &&
+      (p.Ipv6Ranges?.length ?? 0) === 0 &&
+      (p.UserIdGroupPairs?.length ?? 0) === 0 &&
+      (p.PrefixListIds?.length ?? 0) === 0
+    ) {
+      out.push({ ...base });
+    }
+  }
+  return out;
+}
+
+/**
+ * Identity-key for a CFn SG rule. Matches the diff key used by
+ * `applySecurityGroupRuleDiff` so the read-side reverse-mapping and the
+ * write-side rule diff agree on rule identity for `cdkd drift --revert`.
+ *
+ * Direction-sensitive: ingress uses `Source*` fields, egress uses
+ * `Destination*`.
+ */
+function sgRuleKey(rule: CfnSgRule, direction: SgDirection): string {
+  const peerKey =
+    direction === 'egress' ? rule['DestinationSecurityGroupId'] : rule['SourceSecurityGroupId'];
+  const prefixKey =
+    direction === 'egress' ? rule['DestinationPrefixListId'] : rule['SourcePrefixListId'];
+  const peerOwner = direction === 'ingress' ? rule['SourceSecurityGroupOwnerId'] : undefined;
+  return JSON.stringify({
+    p: rule['IpProtocol'] ?? '-1',
+    f: rule['FromPort'] ?? null,
+    t: rule['ToPort'] ?? null,
+    c4: rule['CidrIp'] ?? null,
+    c6: rule['CidrIpv6'] ?? null,
+    peer: peerKey ?? null,
+    peerOwner: peerOwner ?? null,
+    pl: prefixKey ?? null,
+    d: rule['Description'] ?? null,
+  });
+}
+
+/**
+ * Reorder AWS-returned rules to match state's templated order so the
+ * drift comparator's positional array compare doesn't fire false drift
+ * on AWS's normalized order.
+ *
+ * For each state rule, find a matching AWS rule by `sgRuleKey`. Output
+ * matched rules in state's order; any AWS rules without a state match
+ * (console-side adds, or rules state has but AWS doesn't) go at the end
+ * preserving AWS's original order.
+ *
+ * If state didn't template rules at all, returns AWS rules unchanged.
+ */
+export function reconcileSgRules(
+  awsRules: CfnSgRule[],
+  stateRules: Array<Record<string, unknown>> | undefined,
+  direction: SgDirection
+): CfnSgRule[] {
+  if (!stateRules || stateRules.length === 0) return awsRules;
+
+  const remaining = [...awsRules];
+  const reordered: CfnSgRule[] = [];
+  for (const sr of stateRules) {
+    const key = sgRuleKey(sr, direction);
+    const idx = remaining.findIndex((ar) => sgRuleKey(ar, direction) === key);
+    if (idx >= 0) {
+      reordered.push(remaining.splice(idx, 1)[0]!);
+    }
+  }
+  return [...reordered, ...remaining];
+}
+
+/**
+ * Detect AWS's auto-attached "allow-all egress" rule that is created
+ * with the SecurityGroup when the user does not template
+ * `SecurityGroupEgress`. Filter signature is intentionally narrow — only
+ * the exact AWS-default tuple (`-1` protocol, `0.0.0.0/0` CIDR, no
+ * description, no per-rule ports). A user-defined rule that happens to
+ * match the same tuple wouldn't be filtered if state templates egress
+ * (the caller checks `stateEgress === undefined` before invoking).
+ */
+export function isDefaultEgressRule(rule: CfnSgRule): boolean {
+  if (rule['IpProtocol'] !== '-1') return false;
+  if (rule['CidrIp'] !== '0.0.0.0/0') return false;
+  if (rule['CidrIpv6'] !== undefined) return false;
+  if (rule['DestinationSecurityGroupId'] !== undefined) return false;
+  if (rule['DestinationPrefixListId'] !== undefined) return false;
+  if (rule['Description'] !== undefined) return false;
+  // FromPort / ToPort: AWS returns them as -1 for the all-protocols
+  // default, but some legacy responses omit them. Accept both.
+  if (rule['FromPort'] !== undefined && rule['FromPort'] !== -1) return false;
+  if (rule['ToPort'] !== undefined && rule['ToPort'] !== -1) return false;
+  return true;
 }

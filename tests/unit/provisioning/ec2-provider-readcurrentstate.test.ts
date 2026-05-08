@@ -182,7 +182,7 @@ describe('EC2Provider.readCurrentState', () => {
   });
 
   describe('AWS::EC2::SecurityGroup', () => {
-    it('returns GroupName + GroupDescription + VpcId', async () => {
+    it('returns GroupName + GroupDescription + VpcId, with empty rule placeholders when AWS reports no rules', async () => {
       mockSend.mockResolvedValueOnce({
         SecurityGroups: [
           {
@@ -201,11 +201,339 @@ describe('EC2Provider.readCurrentState', () => {
       );
 
       expect(mockSend.mock.calls[0]?.[0]).toBeInstanceOf(DescribeSecurityGroupsCommand);
+      // SecurityGroupIngress / SecurityGroupEgress always emitted (even
+      // as `[]`) so the v3 observedProperties baseline catches a
+      // console-side rule ADD on a templated SG.
       expect(result).toEqual({
         GroupName: 'web',
         GroupDescription: 'web tier',
         VpcId: 'vpc-1',
+        SecurityGroupIngress: [],
+        SecurityGroupEgress: [],
       });
+    });
+
+    it('reverse-maps AWS IpPermissions[] into CFn SecurityGroupIngress[] (one rule per IpRanges entry)', async () => {
+      mockSend.mockResolvedValueOnce({
+        SecurityGroups: [
+          {
+            GroupId: 'sg-1',
+            GroupName: 'web',
+            Description: 'web tier',
+            VpcId: 'vpc-1',
+            IpPermissions: [
+              {
+                IpProtocol: 'tcp',
+                FromPort: 80,
+                ToPort: 80,
+                IpRanges: [
+                  { CidrIp: '10.0.0.0/8', Description: 'office' },
+                  { CidrIp: '192.168.0.0/16' },
+                ],
+                Ipv6Ranges: [],
+                UserIdGroupPairs: [],
+                PrefixListIds: [],
+              },
+              {
+                IpProtocol: 'tcp',
+                FromPort: 443,
+                ToPort: 443,
+                IpRanges: [{ CidrIp: '0.0.0.0/0', Description: 'public-https' }],
+              },
+            ],
+          },
+        ],
+      });
+
+      const result = await provider.readCurrentState(
+        'sg-1',
+        'Logical',
+        'AWS::EC2::SecurityGroup'
+      );
+
+      expect(result?.['SecurityGroupIngress']).toEqual([
+        { IpProtocol: 'tcp', FromPort: 80, ToPort: 80, CidrIp: '10.0.0.0/8', Description: 'office' },
+        { IpProtocol: 'tcp', FromPort: 80, ToPort: 80, CidrIp: '192.168.0.0/16' },
+        {
+          IpProtocol: 'tcp',
+          FromPort: 443,
+          ToPort: 443,
+          CidrIp: '0.0.0.0/0',
+          Description: 'public-https',
+        },
+      ]);
+    });
+
+    it('flattens UserIdGroupPairs and PrefixListIds into separate CFn ingress rules', async () => {
+      mockSend.mockResolvedValueOnce({
+        SecurityGroups: [
+          {
+            GroupId: 'sg-1',
+            VpcId: 'vpc-1',
+            IpPermissions: [
+              {
+                IpProtocol: 'tcp',
+                FromPort: 5432,
+                ToPort: 5432,
+                UserIdGroupPairs: [
+                  { GroupId: 'sg-2', UserId: '111122223333', Description: 'app' },
+                ],
+                PrefixListIds: [{ PrefixListId: 'pl-abc', Description: 's3-vpce' }],
+              },
+            ],
+          },
+        ],
+      });
+
+      const result = await provider.readCurrentState(
+        'sg-1',
+        'Logical',
+        'AWS::EC2::SecurityGroup'
+      );
+
+      expect(result?.['SecurityGroupIngress']).toEqual([
+        {
+          IpProtocol: 'tcp',
+          FromPort: 5432,
+          ToPort: 5432,
+          SourceSecurityGroupId: 'sg-2',
+          SourceSecurityGroupOwnerId: '111122223333',
+          Description: 'app',
+        },
+        {
+          IpProtocol: 'tcp',
+          FromPort: 5432,
+          ToPort: 5432,
+          SourcePrefixListId: 'pl-abc',
+          Description: 's3-vpce',
+        },
+      ]);
+    });
+
+    it('uses Destination* field names for egress (not Source*)', async () => {
+      // Pass state-egress so the AWS-default filter doesn't strip
+      // DestinationSecurityGroupId-only rules; this test focuses on
+      // direction-aware field naming.
+      mockSend.mockResolvedValueOnce({
+        SecurityGroups: [
+          {
+            GroupId: 'sg-1',
+            VpcId: 'vpc-1',
+            IpPermissionsEgress: [
+              {
+                IpProtocol: 'tcp',
+                FromPort: 5432,
+                ToPort: 5432,
+                UserIdGroupPairs: [{ GroupId: 'sg-db' }],
+              },
+              {
+                IpProtocol: 'tcp',
+                FromPort: 443,
+                ToPort: 443,
+                PrefixListIds: [{ PrefixListId: 'pl-xyz' }],
+              },
+            ],
+          },
+        ],
+      });
+
+      const result = await provider.readCurrentState(
+        'sg-1',
+        'Logical',
+        'AWS::EC2::SecurityGroup',
+        // state egress matters for the filter logic — non-empty here.
+        {
+          SecurityGroupEgress: [
+            { IpProtocol: 'tcp', FromPort: 5432, ToPort: 5432, DestinationSecurityGroupId: 'sg-db' },
+          ],
+        }
+      );
+
+      expect(result?.['SecurityGroupEgress']).toEqual([
+        // state-templated rule is reconciled to position 0
+        {
+          IpProtocol: 'tcp',
+          FromPort: 5432,
+          ToPort: 5432,
+          DestinationSecurityGroupId: 'sg-db',
+        },
+        // unmatched AWS rule appended after state-matched rules
+        {
+          IpProtocol: 'tcp',
+          FromPort: 443,
+          ToPort: 443,
+          DestinationPrefixListId: 'pl-xyz',
+        },
+      ]);
+    });
+
+    it('filters AWS auto-default egress when state did not template SecurityGroupEgress', async () => {
+      mockSend.mockResolvedValueOnce({
+        SecurityGroups: [
+          {
+            GroupId: 'sg-1',
+            VpcId: 'vpc-1',
+            IpPermissionsEgress: [
+              // AWS-default rule (allow all)
+              {
+                IpProtocol: '-1',
+                IpRanges: [{ CidrIp: '0.0.0.0/0' }],
+              },
+            ],
+          },
+        ],
+      });
+
+      const result = await provider.readCurrentState(
+        'sg-1',
+        'Logical',
+        'AWS::EC2::SecurityGroup'
+      );
+
+      // Default egress filtered out — emit empty array placeholder so
+      // observedProperties still has the key for future drift detection.
+      expect(result?.['SecurityGroupEgress']).toEqual([]);
+    });
+
+    it('keeps AWS auto-default egress when state DID template egress (state owns the list)', async () => {
+      mockSend.mockResolvedValueOnce({
+        SecurityGroups: [
+          {
+            GroupId: 'sg-1',
+            VpcId: 'vpc-1',
+            IpPermissionsEgress: [
+              {
+                IpProtocol: '-1',
+                IpRanges: [{ CidrIp: '0.0.0.0/0' }],
+              },
+            ],
+          },
+        ],
+      });
+
+      const result = await provider.readCurrentState(
+        'sg-1',
+        'Logical',
+        'AWS::EC2::SecurityGroup',
+        { SecurityGroupEgress: [{ IpProtocol: '-1', CidrIp: '0.0.0.0/0' }] }
+      );
+
+      // State templated egress — even if the rule shape matches the
+      // AWS-default tuple, surface it as-is. The filter only fires on
+      // state-undefined to avoid stripping a user-defined rule that
+      // happens to match the default.
+      expect(result?.['SecurityGroupEgress']).toEqual([{ IpProtocol: '-1', CidrIp: '0.0.0.0/0' }]);
+    });
+
+    it('reorders AWS rules to match state-templated order (state-driven order reconciliation)', async () => {
+      // AWS returns rules in normalized order (typically port-ascending);
+      // state has them in user-templated order. Reconcile so the
+      // comparator's positional array compare doesn't fire on order alone.
+      mockSend.mockResolvedValueOnce({
+        SecurityGroups: [
+          {
+            GroupId: 'sg-1',
+            VpcId: 'vpc-1',
+            IpPermissions: [
+              { IpProtocol: 'tcp', FromPort: 22, ToPort: 22, IpRanges: [{ CidrIp: '0.0.0.0/0' }] },
+              { IpProtocol: 'tcp', FromPort: 443, ToPort: 443, IpRanges: [{ CidrIp: '0.0.0.0/0' }] },
+              { IpProtocol: 'tcp', FromPort: 80, ToPort: 80, IpRanges: [{ CidrIp: '0.0.0.0/0' }] },
+            ],
+          },
+        ],
+      });
+
+      const result = await provider.readCurrentState(
+        'sg-1',
+        'Logical',
+        'AWS::EC2::SecurityGroup',
+        {
+          SecurityGroupIngress: [
+            { IpProtocol: 'tcp', FromPort: 80, ToPort: 80, CidrIp: '0.0.0.0/0' },
+            { IpProtocol: 'tcp', FromPort: 443, ToPort: 443, CidrIp: '0.0.0.0/0' },
+            { IpProtocol: 'tcp', FromPort: 22, ToPort: 22, CidrIp: '0.0.0.0/0' },
+          ],
+        }
+      );
+
+      expect(result?.['SecurityGroupIngress']).toEqual([
+        { IpProtocol: 'tcp', FromPort: 80, ToPort: 80, CidrIp: '0.0.0.0/0' },
+        { IpProtocol: 'tcp', FromPort: 443, ToPort: 443, CidrIp: '0.0.0.0/0' },
+        { IpProtocol: 'tcp', FromPort: 22, ToPort: 22, CidrIp: '0.0.0.0/0' },
+      ]);
+    });
+
+    it('appends unmatched AWS rules after state-matched rules (console-side ADD detection)', async () => {
+      mockSend.mockResolvedValueOnce({
+        SecurityGroups: [
+          {
+            GroupId: 'sg-1',
+            VpcId: 'vpc-1',
+            IpPermissions: [
+              { IpProtocol: 'tcp', FromPort: 80, ToPort: 80, IpRanges: [{ CidrIp: '0.0.0.0/0' }] },
+              // Console-side add: not in state.
+              { IpProtocol: 'tcp', FromPort: 22, ToPort: 22, IpRanges: [{ CidrIp: '1.2.3.4/32' }] },
+            ],
+          },
+        ],
+      });
+
+      const result = await provider.readCurrentState(
+        'sg-1',
+        'Logical',
+        'AWS::EC2::SecurityGroup',
+        {
+          SecurityGroupIngress: [
+            { IpProtocol: 'tcp', FromPort: 80, ToPort: 80, CidrIp: '0.0.0.0/0' },
+          ],
+        }
+      );
+
+      // State has 1 rule (port 80), AWS has 2. Reconciled output: state
+      // rule first (matched), then unmatched AWS rule (port 22). The
+      // comparator sees positional drift on index 1 (state has nothing,
+      // AWS has the SSH rule) — correct console-side ADD detection.
+      expect(result?.['SecurityGroupIngress']).toEqual([
+        { IpProtocol: 'tcp', FromPort: 80, ToPort: 80, CidrIp: '0.0.0.0/0' },
+        { IpProtocol: 'tcp', FromPort: 22, ToPort: 22, CidrIp: '1.2.3.4/32' },
+      ]);
+    });
+
+    it('flattens IPv6 ranges into separate rules with CidrIpv6 field', async () => {
+      mockSend.mockResolvedValueOnce({
+        SecurityGroups: [
+          {
+            GroupId: 'sg-1',
+            VpcId: 'vpc-1',
+            IpPermissions: [
+              {
+                IpProtocol: 'tcp',
+                FromPort: 80,
+                ToPort: 80,
+                IpRanges: [{ CidrIp: '0.0.0.0/0' }],
+                Ipv6Ranges: [{ CidrIpv6: '::/0', Description: 'all-v6' }],
+              },
+            ],
+          },
+        ],
+      });
+
+      const result = await provider.readCurrentState(
+        'sg-1',
+        'Logical',
+        'AWS::EC2::SecurityGroup'
+      );
+
+      expect(result?.['SecurityGroupIngress']).toEqual([
+        { IpProtocol: 'tcp', FromPort: 80, ToPort: 80, CidrIp: '0.0.0.0/0' },
+        {
+          IpProtocol: 'tcp',
+          FromPort: 80,
+          ToPort: 80,
+          CidrIpv6: '::/0',
+          Description: 'all-v6',
+        },
+      ]);
     });
   });
 
