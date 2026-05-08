@@ -81,6 +81,9 @@ describe('FirehoseProvider.readCurrentState', () => {
         RoleARN: 'arn:aws:iam::1:role/r',
       },
       Tags: [],
+      // Always emit encryption placeholder so v3 baseline catches a
+      // console-side enable on a previously-default stream.
+      DeliveryStreamEncryptionConfigurationInput: {},
     });
   });
 
@@ -731,13 +734,66 @@ describe('FirehoseProvider.readCurrentState (non-S3 destinations)', () => {
   });
 });
 
+describe('FirehoseProvider.readCurrentState (DeliveryStreamEncryptionConfigurationInput)', () => {
+  let provider: FirehoseProvider;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    provider = new FirehoseProvider();
+  });
+
+  it('reverse-maps DeliveryStreamEncryptionConfiguration to CFn input shape (KeyARN + KeyType)', async () => {
+    mockSend
+      .mockResolvedValueOnce({
+        DeliveryStreamDescription: {
+          DeliveryStreamName: 'mystream',
+          DeliveryStreamEncryptionConfiguration: {
+            KeyARN: 'arn:aws:kms:us-east-1:1:key/abc',
+            KeyType: 'CUSTOMER_MANAGED_CMK',
+            // AWS-managed read-only fields stripped:
+            Status: 'ENABLED',
+            FailureDescription: undefined,
+          },
+        },
+      })
+      .mockResolvedValueOnce({ Tags: [] });
+
+    const result = await provider.readCurrentState(
+      'mystream',
+      'L',
+      'AWS::KinesisFirehose::DeliveryStream'
+    );
+    expect(result?.['DeliveryStreamEncryptionConfigurationInput']).toEqual({
+      KeyARN: 'arn:aws:kms:us-east-1:1:key/abc',
+      KeyType: 'CUSTOMER_MANAGED_CMK',
+    });
+  });
+
+  it('emits {} placeholder when stream has no encryption configured', async () => {
+    mockSend
+      .mockResolvedValueOnce({
+        DeliveryStreamDescription: {
+          DeliveryStreamName: 'mystream',
+          // DeliveryStreamEncryptionConfiguration absent.
+        },
+      })
+      .mockResolvedValueOnce({ Tags: [] });
+
+    const result = await provider.readCurrentState(
+      'mystream',
+      'L',
+      'AWS::KinesisFirehose::DeliveryStream'
+    );
+    expect(result?.['DeliveryStreamEncryptionConfigurationInput']).toEqual({});
+  });
+});
+
 describe('FirehoseProvider.getDriftUnknownPaths', () => {
-  it('declares only write-only fields and DeliveryStreamEncryptionConfigurationInput as drift-unknown (non-S3 destinations now reverse-mapped)', () => {
+  it('declares only write-only redacted fields as drift-unknown (encryption + non-S3 destinations now reverse-mapped)', () => {
     const provider = new FirehoseProvider();
     expect(provider.getDriftUnknownPaths()).toEqual([
       'RedshiftDestinationConfiguration.Password',
       'HttpEndpointDestinationConfiguration.EndpointConfiguration.AccessKey',
-      'DeliveryStreamEncryptionConfigurationInput',
     ]);
   });
 });

@@ -49,6 +49,7 @@ import {
   DescribeNetworkInterfacesCommand,
   DeleteNetworkInterfaceCommand,
   DescribeVolumesCommand,
+  DescribeInstanceAttributeCommand,
   type Tenancy,
   type _InstanceType,
   type VolumeType,
@@ -3019,12 +3020,14 @@ export class EC2Provider implements ResourceProvider {
    *    `(DeviceName, Ebs.VolumeId, Ebs.DeleteOnTermination)`; cdkd
    *    additionally calls `DescribeVolumes` on the attached volume ids to
    *    surface `VolumeType` / `VolumeSize` / `Iops` / `Throughput` /
-   *    `Encrypted` / `KmsKeyId` / `SnapshotId`. The DescribeVolumes call
-   *    is best-effort — a permissions gap or other failure falls back to
-   *    the partial shape (DeleteOnTermination only). All arrays / scalars
-   *    that map to user-controllable CFn properties are always emitted
-   *    (even as `[]` or default scalar) so the v3 `observedProperties`
-   *    baseline catches console-side ADDs.
+   *    `Encrypted` / `KmsKeyId` / `SnapshotId`. `DisableApiTermination`
+   *    is recovered via a separate `DescribeInstanceAttribute` call (the
+   *    `DescribeInstances` response does not include it). Both extra
+   *    calls are best-effort — a permissions gap or other failure falls
+   *    back to omitting the key. All arrays / scalars that map to
+   *    user-controllable CFn properties are always emitted (even as `[]`
+   *    or default scalar) so the v3 `observedProperties` baseline
+   *    catches console-side ADDs.
    *  - **AWS::EC2::NetworkAcl**: `DescribeNetworkAcls` for `VpcId`.
    *
    * Skipped (return `undefined`, falls through to the comparator's
@@ -3375,6 +3378,29 @@ export class EC2Provider implements ResourceProvider {
     // Tags: filter aws:* (CDK-internal metadata) and always emit (even as
     // []). Same pattern as every other tag-aware provider.
     result['Tags'] = normalizeAwsTagsToCfn(instance.Tags);
+
+    // DisableApiTermination: not returned by DescribeInstances; needs a
+    // separate DescribeInstanceAttribute call. Best-effort — a permissions
+    // gap or other failure falls back to omitting the key (state-keys-only
+    // walk skips silently). Always emit when AWS reports a value so the v3
+    // baseline catches a console-side toggle.
+    try {
+      const attrResp = await this.ec2Client.send(
+        new DescribeInstanceAttributeCommand({
+          InstanceId: physicalId,
+          Attribute: 'disableApiTermination',
+        })
+      );
+      if (attrResp.DisableApiTermination?.Value !== undefined) {
+        result['DisableApiTermination'] = attrResp.DisableApiTermination.Value;
+      }
+    } catch (err) {
+      this.logger.debug(
+        `DescribeInstanceAttribute(disableApiTermination, ${physicalId}) failed: ${
+          err instanceof Error ? err.message : String(err)
+        }`
+      );
+    }
 
     return result;
   }

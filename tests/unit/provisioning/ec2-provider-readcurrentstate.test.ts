@@ -796,6 +796,48 @@ describe('EC2Provider.readCurrentState', () => {
       const result = await provider.readCurrentState('i-1', 'Logical', 'AWS::EC2::Instance');
       expect(result?.['Tags']).toEqual([{ Key: 'Name', Value: 'web-1' }]);
     });
+
+    it('surfaces DisableApiTermination via DescribeInstanceAttribute', async () => {
+      // First call: DescribeInstances. Second: DescribeInstanceAttribute
+      // (DisableApiTermination=true).
+      mockSend
+        .mockResolvedValueOnce({
+          Reservations: [
+            {
+              Instances: [
+                {
+                  InstanceId: 'i-1',
+                  State: { Name: 'running' },
+                },
+              ],
+            },
+          ],
+        })
+        .mockResolvedValueOnce({ DisableApiTermination: { Value: true } });
+
+      const result = await provider.readCurrentState('i-1', 'Logical', 'AWS::EC2::Instance');
+      expect(result?.['DisableApiTermination']).toBe(true);
+    });
+
+    it('omits DisableApiTermination when DescribeInstanceAttribute fails (best-effort)', async () => {
+      mockSend
+        .mockResolvedValueOnce({
+          Reservations: [
+            {
+              Instances: [
+                {
+                  InstanceId: 'i-1',
+                  State: { Name: 'running' },
+                },
+              ],
+            },
+          ],
+        })
+        .mockRejectedValueOnce(new Error('UnauthorizedOperation: ec2:DescribeInstanceAttribute'));
+
+      const result = await provider.readCurrentState('i-1', 'Logical', 'AWS::EC2::Instance');
+      expect(result?.['DisableApiTermination']).toBeUndefined();
+    });
   });
 
   describe('AWS::EC2::NetworkAcl', () => {
