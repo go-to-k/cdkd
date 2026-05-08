@@ -624,10 +624,14 @@ export class FirehoseProvider implements ResourceProvider {
    * from `VpcConfigurationDescription`. Write-only fields AWS strips
    * from descriptions (`RedshiftDestinationConfiguration.Password`,
    * `HttpEndpointDestinationConfiguration.EndpointConfiguration.AccessKey`)
-   * stay drift-unknown via `getDriftUnknownPaths`.
-   * `DeliveryStreamEncryptionConfigurationInput` is also still
-   * drift-unknown (separate `Get*` call needed for the read-side
-   * `DeliveryStreamEncryptionConfiguration`).
+   * stay drift-unknown via `getDriftUnknownPaths` — no AWS API recovers them.
+   *
+   * `DeliveryStreamEncryptionConfigurationInput` is also surfaced. AWS
+   * returns the read-side shape `DeliveryStreamEncryptionConfiguration`
+   * (with extra `Status` / `FailureDescription` fields); we reverse-map
+   * to the CFn input shape (`KeyARN` + `KeyType`) and always emit a
+   * `{}` placeholder so the v3 baseline catches console-side encryption
+   * enables on a previously-default stream.
    *
    * Tags are surfaced via a follow-up `ListTagsForDeliveryStream` call
    * with `aws:*` filtered out and always emitted as `[]` placeholder when
@@ -711,6 +715,18 @@ export class FirehoseProvider implements ResourceProvider {
       );
     }
 
+    // DeliveryStreamEncryptionConfigurationInput: AWS returns the read-side
+    // shape `DeliveryStreamEncryptionConfiguration` with extra status /
+    // failure fields. CFn input shape carries `KeyARN` + `KeyType` only.
+    // Surface those when AWS reports them; emit `{}` placeholder always so
+    // the v3 baseline catches a console-side enable on a previously-default
+    // stream (PR #145 always-emit pattern).
+    const enc = desc.DeliveryStreamEncryptionConfiguration;
+    const encOut: Record<string, unknown> = {};
+    if (enc?.KeyARN !== undefined) encOut['KeyARN'] = enc.KeyARN;
+    if (enc?.KeyType !== undefined) encOut['KeyType'] = enc.KeyType;
+    result['DeliveryStreamEncryptionConfigurationInput'] = encOut;
+
     // Tags via ListTagsForDeliveryStream.
     // Always emit `Tags` (even as `[]`) per docs/provider-development.md
     // § 3b "always emit user-controllable top-level keys": omitting the
@@ -739,30 +755,23 @@ export class FirehoseProvider implements ResourceProvider {
    * fire false-positive drift on every run. See the `readCurrentState`
    * docstring for the full rationale per category.
    *
-   * Categories:
-   *  - Write-only fields AWS strips from descriptions: Redshift
-   *    `Password`, HttpEndpoint `EndpointConfiguration.AccessKey`. State
-   *    that carries these fires drift on every run otherwise; declaring
-   *    them as drift-unknown is the cleanest fix.
-   *  - `DeliveryStreamEncryptionConfigurationInput`: input-only shape
-   *    (`KeyARN` + `KeyType`) vs. read-side `DeliveryStreamEncryptionConfiguration`
-   *    (extra status / failure fields); not yet round-tripped.
+   * Only write-only fields AWS strips from descriptions remain:
+   * Redshift `Password`, HttpEndpoint `EndpointConfiguration.AccessKey`.
+   * State that carries these would otherwise fire drift on every run —
+   * declaring them as drift-unknown is the cleanest fix because there
+   * is no AWS read API to recover their values.
    *
-   * S3 / ExtendedS3 inner nested fields and non-S3 destination types
+   * S3 / ExtendedS3 inner nested fields, non-S3 destination types
    * (Redshift / Elasticsearch / Amazonopensearchservice / Splunk /
-   * HttpEndpoint / AmazonOpenSearchServerless) are now reverse-mapped
-   * via `mapS3DescriptionToCfn` / `mapExtendedS3DescriptionToCfn` /
-   * `mapNonS3DestinationToCfn` / `mapRedshiftDescriptionToCfn` /
-   * `mapHttpEndpointDescriptionToCfn` and no longer drift-unknown at the
-   * top level.
+   * HttpEndpoint / AmazonOpenSearchServerless), and
+   * `DeliveryStreamEncryptionConfigurationInput` are all reverse-mapped
+   * by `readCurrentState` and no longer drift-unknown.
    */
   getDriftUnknownPaths(): string[] {
     return [
-      // Write-only fields AWS does not return on read.
+      // Write-only fields AWS does not return on read — no API workaround.
       'RedshiftDestinationConfiguration.Password',
       'HttpEndpointDestinationConfiguration.EndpointConfiguration.AccessKey',
-      // Encryption input shape (deferred — separate Get* call needed).
-      'DeliveryStreamEncryptionConfigurationInput',
     ];
   }
 
