@@ -1,5 +1,10 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import {
+  CreateLogGroupCommand,
+  DeleteIndexPolicyCommand,
+  PutBearerTokenAuthenticationCommand,
+  PutIndexPolicyCommand,
+  PutLogGroupDeletionProtectionCommand,
   PutRetentionPolicyCommand,
   DeleteRetentionPolicyCommand,
   PutDataProtectionPolicyCommand,
@@ -161,6 +166,213 @@ describe('LogsLogGroupProvider read-update round-trip', () => {
       (c) => c[0] instanceof PutRetentionPolicyCommand
     );
     expect(putRetentionCall).toBeUndefined();
+  });
+
+  // ---------------------------------------------------------------
+  // DeletionProtectionEnabled round-trip
+  // ---------------------------------------------------------------
+
+  it('create() forwards DeletionProtectionEnabled=true on CreateLogGroup', async () => {
+    mockSend.mockResolvedValue({});
+    await provider.create('L', RESOURCE_TYPE, {
+      LogGroupName: PHYSICAL_ID,
+      DeletionProtectionEnabled: true,
+    });
+    const createCall = mockSend.mock.calls.find((c) => c[0] instanceof CreateLogGroupCommand);
+    expect(createCall).toBeDefined();
+    const input = createCall?.[0].input as { deletionProtectionEnabled?: boolean };
+    expect(input.deletionProtectionEnabled).toBe(true);
+  });
+
+  it('update from undefined -> true routes to PutLogGroupDeletionProtection(true)', async () => {
+    const oldProps = { LogGroupName: PHYSICAL_ID };
+    const newProps = { LogGroupName: PHYSICAL_ID, DeletionProtectionEnabled: true };
+    await provider.update('L', PHYSICAL_ID, RESOURCE_TYPE, newProps, oldProps);
+    const call = mockSend.mock.calls.find(
+      (c) => c[0] instanceof PutLogGroupDeletionProtectionCommand
+    );
+    expect(call).toBeDefined();
+    const input = call?.[0].input as { deletionProtectionEnabled: boolean };
+    expect(input.deletionProtectionEnabled).toBe(true);
+  });
+
+  it('update from true -> false routes to PutLogGroupDeletionProtection(false)', async () => {
+    const oldProps = { LogGroupName: PHYSICAL_ID, DeletionProtectionEnabled: true };
+    const newProps = { LogGroupName: PHYSICAL_ID, DeletionProtectionEnabled: false };
+    await provider.update('L', PHYSICAL_ID, RESOURCE_TYPE, newProps, oldProps);
+    const call = mockSend.mock.calls.find(
+      (c) => c[0] instanceof PutLogGroupDeletionProtectionCommand
+    );
+    expect(call).toBeDefined();
+    const input = call?.[0].input as { deletionProtectionEnabled: boolean };
+    expect(input.deletionProtectionEnabled).toBe(false);
+  });
+
+  it('update from true -> undefined disables (round-trip lands at AWS-side default false)', async () => {
+    const oldProps = { LogGroupName: PHYSICAL_ID, DeletionProtectionEnabled: true };
+    const newProps = { LogGroupName: PHYSICAL_ID };
+    await provider.update('L', PHYSICAL_ID, RESOURCE_TYPE, newProps, oldProps);
+    const call = mockSend.mock.calls.find(
+      (c) => c[0] instanceof PutLogGroupDeletionProtectionCommand
+    );
+    expect(call).toBeDefined();
+    const input = call?.[0].input as { deletionProtectionEnabled: boolean };
+    expect(input.deletionProtectionEnabled).toBe(false);
+  });
+
+  it('update with unchanged DeletionProtectionEnabled value is a no-op', async () => {
+    const same = { LogGroupName: PHYSICAL_ID, DeletionProtectionEnabled: true };
+    await provider.update('L', PHYSICAL_ID, RESOURCE_TYPE, same, same);
+    const call = mockSend.mock.calls.find(
+      (c) => c[0] instanceof PutLogGroupDeletionProtectionCommand
+    );
+    expect(call).toBeUndefined();
+  });
+
+  // ---------------------------------------------------------------
+  // BearerTokenAuthenticationEnabled round-trip
+  // ---------------------------------------------------------------
+
+  it('create() with BearerTokenAuthenticationEnabled=true issues a separate PutBearerTokenAuthentication call', async () => {
+    // BearerTokenAuthenticationEnabled is NOT part of CreateLogGroupRequest;
+    // it must be applied via a separate PutBearerTokenAuthentication call
+    // after the log group exists.
+    mockSend.mockResolvedValue({});
+    await provider.create('L', RESOURCE_TYPE, {
+      LogGroupName: PHYSICAL_ID,
+      BearerTokenAuthenticationEnabled: true,
+    });
+    const createCall = mockSend.mock.calls.find((c) => c[0] instanceof CreateLogGroupCommand);
+    expect(createCall).toBeDefined();
+    const createInput = createCall?.[0].input as {
+      bearerTokenAuthenticationEnabled?: boolean;
+    };
+    // CreateLogGroupRequest has no such field — input must NOT include it.
+    expect(createInput.bearerTokenAuthenticationEnabled).toBeUndefined();
+
+    const putCall = mockSend.mock.calls.find(
+      (c) => c[0] instanceof PutBearerTokenAuthenticationCommand
+    );
+    expect(putCall).toBeDefined();
+    const putInput = putCall?.[0].input as {
+      logGroupIdentifier: string;
+      bearerTokenAuthenticationEnabled: boolean;
+    };
+    expect(putInput.logGroupIdentifier).toBe(PHYSICAL_ID);
+    expect(putInput.bearerTokenAuthenticationEnabled).toBe(true);
+  });
+
+  it('update from undefined -> true on BearerTokenAuthenticationEnabled fires PutBearerTokenAuthentication', async () => {
+    const oldProps = { LogGroupName: PHYSICAL_ID };
+    const newProps = { LogGroupName: PHYSICAL_ID, BearerTokenAuthenticationEnabled: true };
+    await provider.update('L', PHYSICAL_ID, RESOURCE_TYPE, newProps, oldProps);
+    const call = mockSend.mock.calls.find(
+      (c) => c[0] instanceof PutBearerTokenAuthenticationCommand
+    );
+    expect(call).toBeDefined();
+    const input = call?.[0].input as { bearerTokenAuthenticationEnabled: boolean };
+    expect(input.bearerTokenAuthenticationEnabled).toBe(true);
+  });
+
+  it('update from true -> false on BearerTokenAuthenticationEnabled fires PutBearerTokenAuthentication(false)', async () => {
+    const oldProps = { LogGroupName: PHYSICAL_ID, BearerTokenAuthenticationEnabled: true };
+    const newProps = { LogGroupName: PHYSICAL_ID, BearerTokenAuthenticationEnabled: false };
+    await provider.update('L', PHYSICAL_ID, RESOURCE_TYPE, newProps, oldProps);
+    const call = mockSend.mock.calls.find(
+      (c) => c[0] instanceof PutBearerTokenAuthenticationCommand
+    );
+    expect(call).toBeDefined();
+    const input = call?.[0].input as { bearerTokenAuthenticationEnabled: boolean };
+    expect(input.bearerTokenAuthenticationEnabled).toBe(false);
+  });
+
+  it('update from true -> undefined on BearerTokenAuthenticationEnabled disables (lands at default false)', async () => {
+    const oldProps = { LogGroupName: PHYSICAL_ID, BearerTokenAuthenticationEnabled: true };
+    const newProps = { LogGroupName: PHYSICAL_ID };
+    await provider.update('L', PHYSICAL_ID, RESOURCE_TYPE, newProps, oldProps);
+    const call = mockSend.mock.calls.find(
+      (c) => c[0] instanceof PutBearerTokenAuthenticationCommand
+    );
+    expect(call).toBeDefined();
+    const input = call?.[0].input as { bearerTokenAuthenticationEnabled: boolean };
+    expect(input.bearerTokenAuthenticationEnabled).toBe(false);
+  });
+
+  it('update with unchanged BearerTokenAuthenticationEnabled value is a no-op', async () => {
+    const same = { LogGroupName: PHYSICAL_ID, BearerTokenAuthenticationEnabled: true };
+    await provider.update('L', PHYSICAL_ID, RESOURCE_TYPE, same, same);
+    const call = mockSend.mock.calls.find(
+      (c) => c[0] instanceof PutBearerTokenAuthenticationCommand
+    );
+    expect(call).toBeUndefined();
+  });
+
+  // ---------------------------------------------------------------
+  // FieldIndexPolicies round-trip
+  // ---------------------------------------------------------------
+
+  it('create() with a single FieldIndexPolicies entry issues PutIndexPolicy with the JSON-stringified document', async () => {
+    mockSend.mockResolvedValue({});
+    const policy = { Fields: ['requestId'] };
+    await provider.create('L', RESOURCE_TYPE, {
+      LogGroupName: PHYSICAL_ID,
+      FieldIndexPolicies: [policy],
+    });
+    const call = mockSend.mock.calls.find((c) => c[0] instanceof PutIndexPolicyCommand);
+    expect(call).toBeDefined();
+    const input = call?.[0].input as { logGroupIdentifier: string; policyDocument: string };
+    expect(input.logGroupIdentifier).toBe(PHYSICAL_ID);
+    expect(JSON.parse(input.policyDocument)).toEqual(policy);
+  });
+
+  it('update from undefined -> [policy] fires PutIndexPolicy', async () => {
+    const policy = { Fields: ['requestId'] };
+    const oldProps = { LogGroupName: PHYSICAL_ID };
+    const newProps = { LogGroupName: PHYSICAL_ID, FieldIndexPolicies: [policy] };
+    await provider.update('L', PHYSICAL_ID, RESOURCE_TYPE, newProps, oldProps);
+    const call = mockSend.mock.calls.find((c) => c[0] instanceof PutIndexPolicyCommand);
+    expect(call).toBeDefined();
+    const input = call?.[0].input as { policyDocument: string };
+    expect(JSON.parse(input.policyDocument)).toEqual(policy);
+  });
+
+  it('update from [policyA] -> [policyB] fires PutIndexPolicy with the new document (replaces)', async () => {
+    const policyA = { Fields: ['requestId'] };
+    const policyB = { Fields: ['sessionId', 'userId'] };
+    const oldProps = { LogGroupName: PHYSICAL_ID, FieldIndexPolicies: [policyA] };
+    const newProps = { LogGroupName: PHYSICAL_ID, FieldIndexPolicies: [policyB] };
+    await provider.update('L', PHYSICAL_ID, RESOURCE_TYPE, newProps, oldProps);
+    const putCalls = mockSend.mock.calls.filter((c) => c[0] instanceof PutIndexPolicyCommand);
+    const deleteCalls = mockSend.mock.calls.filter(
+      (c) => c[0] instanceof DeleteIndexPolicyCommand
+    );
+    expect(putCalls).toHaveLength(1);
+    expect(deleteCalls).toHaveLength(0);
+    const input = putCalls[0]?.[0].input as { policyDocument: string };
+    expect(JSON.parse(input.policyDocument)).toEqual(policyB);
+  });
+
+  it('update from [policy] -> [] fires DeleteIndexPolicy', async () => {
+    const policy = { Fields: ['requestId'] };
+    const oldProps = { LogGroupName: PHYSICAL_ID, FieldIndexPolicies: [policy] };
+    const newProps = { LogGroupName: PHYSICAL_ID, FieldIndexPolicies: [] };
+    await provider.update('L', PHYSICAL_ID, RESOURCE_TYPE, newProps, oldProps);
+    const deleteCall = mockSend.mock.calls.find((c) => c[0] instanceof DeleteIndexPolicyCommand);
+    expect(deleteCall).toBeDefined();
+    const input = deleteCall?.[0].input as { logGroupIdentifier: string };
+    expect(input.logGroupIdentifier).toBe(PHYSICAL_ID);
+  });
+
+  it('update with unchanged FieldIndexPolicies is a no-op (no PutIndexPolicy / DeleteIndexPolicy)', async () => {
+    const policy = { Fields: ['requestId'] };
+    const same = { LogGroupName: PHYSICAL_ID, FieldIndexPolicies: [policy] };
+    await provider.update('L', PHYSICAL_ID, RESOURCE_TYPE, same, same);
+    const putCalls = mockSend.mock.calls.filter((c) => c[0] instanceof PutIndexPolicyCommand);
+    const deleteCalls = mockSend.mock.calls.filter(
+      (c) => c[0] instanceof DeleteIndexPolicyCommand
+    );
+    expect(putCalls).toHaveLength(0);
+    expect(deleteCalls).toHaveLength(0);
   });
 
   it('Tags=[] round-trip on initially-untagged group does NOT call Tag/UntagResource', async () => {
