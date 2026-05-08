@@ -597,20 +597,26 @@ export class FirehoseProvider implements ResourceProvider {
    * `KinesisStreamSourceConfiguration` parent fields when present (the
    * `DescribeDeliveryStream` response splits source under `Source.KinesisStreamSourceDescription`).
    *
-   * Destination configurations (`*DestinationConfiguration` in CFn vs.
-   * `*DestinationDescription` in `DescribeDeliveryStream`) are intentionally
-   * not re-shaped here. Their nested fields are large and the description
-   * vs. configuration shape divergence (extra metadata, write-only fields
-   * like `Password` redacted) makes a clean comparator surface impossible
-   * for v1. We do surface the destination *kind* under a stable key so
-   * users at least see destination drift across types, but not the inner
-   * fields. Drift on destination contents is best chased manually via
-   * `aws firehose describe-delivery-stream` for now.
+   * **Destination configurations**: partial coverage. AWS returns destination
+   * config under `Destinations[0].*DestinationDescription` (note:
+   * `Description`, not `Configuration`). For S3 / ExtendedS3 destinations
+   * the top-level fields with a clean reverse-mapping are surfaced —
+   * `BucketARN`, `RoleARN`, `Prefix`, `ErrorOutputPrefix`, `BufferingHints`,
+   * `CompressionFormat`, plus `S3BackupMode` for Extended. Inner nested
+   * fields (`EncryptionConfiguration`, `CloudWatchLoggingOptions`,
+   * `ProcessingConfiguration`, `DataFormatConversionConfiguration`,
+   * `DynamicPartitioningConfiguration`, `S3BackupConfiguration`) are not
+   * re-shaped — AWS auto-defaults / extra-metadata / write-only redaction
+   * (`Password`) make the round-trip unsafe; they're declared via
+   * `getDriftUnknownPaths()` so the comparator skips them instead of firing
+   * false drift. Non-S3 destination types
+   * (`Redshift`/`Elasticsearch`/`Amazonopensearchservice`/`Splunk`/`HttpEndpoint`/`AmazonOpenSearchServerless`)
+   * stay drift-unknown for v1 — same shape-divergence problem at scale.
+   * `DeliveryStreamEncryptionConfigurationInput` also drift-unknown.
    *
    * Tags are surfaced via a follow-up `ListTagsForDeliveryStream` call
-   * with `aws:*` filtered out and the result key omitted when empty.
-   * `DeliveryStreamEncryptionConfigurationInput` is still skipped (shape
-   * decision deferred).
+   * with `aws:*` filtered out and always emitted as `[]` placeholder when
+   * no user tags remain.
    *
    * Returns `undefined` when the stream is gone (`ResourceNotFoundException`).
    */
@@ -650,6 +656,53 @@ export class FirehoseProvider implements ResourceProvider {
       }
     }
 
+    // Destinations: Firehose holds at most one destination on a delivery
+    // stream. CDK constructs typically emit ExtendedS3 (the modern shape)
+    // even for plain S3 use cases; legacy `S3DestinationDescription` is
+    // still surfaced separately for templates that pin the legacy shape.
+    // The two shapes are mutually exclusive on AWS responses.
+    const dest = desc.Destinations?.[0];
+    if (dest?.ExtendedS3DestinationDescription) {
+      const ext = dest.ExtendedS3DestinationDescription;
+      const out: Record<string, unknown> = {};
+      if (ext.BucketARN !== undefined) out['BucketARN'] = ext.BucketARN;
+      if (ext.RoleARN !== undefined) out['RoleARN'] = ext.RoleARN;
+      if (ext.Prefix !== undefined) out['Prefix'] = ext.Prefix;
+      if (ext.ErrorOutputPrefix !== undefined) out['ErrorOutputPrefix'] = ext.ErrorOutputPrefix;
+      if (ext.CompressionFormat !== undefined) out['CompressionFormat'] = ext.CompressionFormat;
+      if (ext.BufferingHints) {
+        const hints: Record<string, unknown> = {};
+        if (ext.BufferingHints.SizeInMBs !== undefined)
+          hints['SizeInMBs'] = ext.BufferingHints.SizeInMBs;
+        if (ext.BufferingHints.IntervalInSeconds !== undefined)
+          hints['IntervalInSeconds'] = ext.BufferingHints.IntervalInSeconds;
+        if (Object.keys(hints).length > 0) out['BufferingHints'] = hints;
+      }
+      if (ext.S3BackupMode !== undefined) out['S3BackupMode'] = ext.S3BackupMode;
+      if (Object.keys(out).length > 0) {
+        result['ExtendedS3DestinationConfiguration'] = out;
+      }
+    } else if (dest?.S3DestinationDescription) {
+      const s3 = dest.S3DestinationDescription;
+      const out: Record<string, unknown> = {};
+      if (s3.BucketARN !== undefined) out['BucketARN'] = s3.BucketARN;
+      if (s3.RoleARN !== undefined) out['RoleARN'] = s3.RoleARN;
+      if (s3.Prefix !== undefined) out['Prefix'] = s3.Prefix;
+      if (s3.ErrorOutputPrefix !== undefined) out['ErrorOutputPrefix'] = s3.ErrorOutputPrefix;
+      if (s3.CompressionFormat !== undefined) out['CompressionFormat'] = s3.CompressionFormat;
+      if (s3.BufferingHints) {
+        const hints: Record<string, unknown> = {};
+        if (s3.BufferingHints.SizeInMBs !== undefined)
+          hints['SizeInMBs'] = s3.BufferingHints.SizeInMBs;
+        if (s3.BufferingHints.IntervalInSeconds !== undefined)
+          hints['IntervalInSeconds'] = s3.BufferingHints.IntervalInSeconds;
+        if (Object.keys(hints).length > 0) out['BufferingHints'] = hints;
+      }
+      if (Object.keys(out).length > 0) {
+        result['S3DestinationConfiguration'] = out;
+      }
+    }
+
     // Tags via ListTagsForDeliveryStream.
     // Always emit `Tags` (even as `[]`) per docs/provider-development.md
     // § 3b "always emit user-controllable top-level keys": omitting the
@@ -669,6 +722,46 @@ export class FirehoseProvider implements ResourceProvider {
     }
 
     return result;
+  }
+
+  /**
+   * Drift-unknown paths for `AWS::KinesisFirehose::DeliveryStream`.
+   *
+   * The drift comparator skips these state property paths so they never
+   * fire false-positive drift on every run. See the `readCurrentState`
+   * docstring for the full rationale per category.
+   *
+   * Categories:
+   *  - Inner nested fields under S3 / ExtendedS3 destinations: shape
+   *    divergence between `Configuration` (CFn input) and `Description`
+   *    (AWS read), AWS auto-defaults, write-only fields.
+   *  - Non-S3 destination types: same shape-divergence problem at scale,
+   *    deferred to a follow-up.
+   *  - `DeliveryStreamEncryptionConfigurationInput`: input-only shape
+   *    (`KeyARN` + `KeyType`) vs. read-side `DeliveryStreamEncryptionConfiguration`
+   *    (extra status / failure fields); not yet round-tripped.
+   */
+  getDriftUnknownPaths(): string[] {
+    return [
+      // S3 / ExtendedS3 nested fields with shape divergence
+      'S3DestinationConfiguration.EncryptionConfiguration',
+      'S3DestinationConfiguration.CloudWatchLoggingOptions',
+      'ExtendedS3DestinationConfiguration.EncryptionConfiguration',
+      'ExtendedS3DestinationConfiguration.CloudWatchLoggingOptions',
+      'ExtendedS3DestinationConfiguration.ProcessingConfiguration',
+      'ExtendedS3DestinationConfiguration.DataFormatConversionConfiguration',
+      'ExtendedS3DestinationConfiguration.DynamicPartitioningConfiguration',
+      'ExtendedS3DestinationConfiguration.S3BackupConfiguration',
+      // Non-S3 destinations (drift-unknown for v1)
+      'RedshiftDestinationConfiguration',
+      'ElasticsearchDestinationConfiguration',
+      'AmazonopensearchserviceDestinationConfiguration',
+      'SplunkDestinationConfiguration',
+      'HttpEndpointDestinationConfiguration',
+      'AmazonOpenSearchServerlessDestinationConfiguration',
+      // Encryption input shape (deferred)
+      'DeliveryStreamEncryptionConfigurationInput',
+    ];
   }
 
   async import(input: ResourceImportInput): Promise<ResourceImportResult | null> {

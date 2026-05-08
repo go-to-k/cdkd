@@ -128,4 +128,172 @@ describe('FirehoseProvider.readCurrentState', () => {
     );
     expect(result?.Tags).toEqual([]);
   });
+
+  it('surfaces ExtendedS3DestinationConfiguration top-level fields when AWS reports an Extended S3 destination', async () => {
+    mockSend
+      .mockResolvedValueOnce({
+        DeliveryStreamDescription: {
+          DeliveryStreamName: 'mystream',
+          DeliveryStreamType: 'DirectPut',
+          Destinations: [
+            {
+              DestinationId: 'destinationId-000000000001',
+              ExtendedS3DestinationDescription: {
+                BucketARN: 'arn:aws:s3:::my-bucket',
+                RoleARN: 'arn:aws:iam::1:role/firehose',
+                Prefix: 'logs/',
+                ErrorOutputPrefix: 'errors/',
+                CompressionFormat: 'GZIP',
+                BufferingHints: { SizeInMBs: 5, IntervalInSeconds: 300 },
+                S3BackupMode: 'Disabled',
+                // Inner nested fields AWS auto-fills — comparator will
+                // skip these via getDriftUnknownPaths, NOT surfaced here.
+                EncryptionConfiguration: { NoEncryptionConfig: 'NoEncryption' },
+                CloudWatchLoggingOptions: { Enabled: false },
+              },
+            },
+          ],
+        },
+      })
+      .mockResolvedValueOnce({ Tags: [] });
+
+    const result = await provider.readCurrentState(
+      'mystream',
+      'L',
+      'AWS::KinesisFirehose::DeliveryStream'
+    );
+
+    expect(result?.['ExtendedS3DestinationConfiguration']).toEqual({
+      BucketARN: 'arn:aws:s3:::my-bucket',
+      RoleARN: 'arn:aws:iam::1:role/firehose',
+      Prefix: 'logs/',
+      ErrorOutputPrefix: 'errors/',
+      CompressionFormat: 'GZIP',
+      BufferingHints: { SizeInMBs: 5, IntervalInSeconds: 300 },
+      S3BackupMode: 'Disabled',
+    });
+    expect(result?.['S3DestinationConfiguration']).toBeUndefined();
+  });
+
+  it('surfaces S3DestinationConfiguration top-level fields when AWS reports a legacy S3 destination', async () => {
+    mockSend
+      .mockResolvedValueOnce({
+        DeliveryStreamDescription: {
+          DeliveryStreamName: 'mystream',
+          DeliveryStreamType: 'DirectPut',
+          Destinations: [
+            {
+              DestinationId: 'destinationId-000000000001',
+              S3DestinationDescription: {
+                BucketARN: 'arn:aws:s3:::my-bucket',
+                RoleARN: 'arn:aws:iam::1:role/firehose',
+                Prefix: 'logs/',
+                CompressionFormat: 'UNCOMPRESSED',
+                BufferingHints: { SizeInMBs: 1, IntervalInSeconds: 60 },
+              },
+            },
+          ],
+        },
+      })
+      .mockResolvedValueOnce({ Tags: [] });
+
+    const result = await provider.readCurrentState(
+      'mystream',
+      'L',
+      'AWS::KinesisFirehose::DeliveryStream'
+    );
+
+    expect(result?.['S3DestinationConfiguration']).toEqual({
+      BucketARN: 'arn:aws:s3:::my-bucket',
+      RoleARN: 'arn:aws:iam::1:role/firehose',
+      Prefix: 'logs/',
+      CompressionFormat: 'UNCOMPRESSED',
+      BufferingHints: { SizeInMBs: 1, IntervalInSeconds: 60 },
+    });
+    expect(result?.['ExtendedS3DestinationConfiguration']).toBeUndefined();
+  });
+
+  it('prefers ExtendedS3 over legacy S3 when both shapes are present (defensive)', async () => {
+    // AWS docs say the two shapes are mutually exclusive, but defensively
+    // guard against both being set: ExtendedS3 is the modern shape, take it.
+    mockSend
+      .mockResolvedValueOnce({
+        DeliveryStreamDescription: {
+          DeliveryStreamName: 'mystream',
+          Destinations: [
+            {
+              S3DestinationDescription: { BucketARN: 'arn:aws:s3:::legacy' },
+              ExtendedS3DestinationDescription: { BucketARN: 'arn:aws:s3:::modern' },
+            },
+          ],
+        },
+      })
+      .mockResolvedValueOnce({ Tags: [] });
+
+    const result = await provider.readCurrentState(
+      'mystream',
+      'L',
+      'AWS::KinesisFirehose::DeliveryStream'
+    );
+
+    expect(result?.['ExtendedS3DestinationConfiguration']).toEqual({
+      BucketARN: 'arn:aws:s3:::modern',
+    });
+    expect(result?.['S3DestinationConfiguration']).toBeUndefined();
+  });
+
+  it('omits destination key entirely for non-S3 destination types (drift-unknown)', async () => {
+    // Non-S3 destinations stay drift-unknown for v1 — the comparator
+    // skips them via getDriftUnknownPaths so a templated
+    // RedshiftDestinationConfiguration in state does not fire false drift.
+    mockSend
+      .mockResolvedValueOnce({
+        DeliveryStreamDescription: {
+          DeliveryStreamName: 'mystream',
+          Destinations: [
+            {
+              DestinationId: 'destinationId-000000000001',
+              RedshiftDestinationDescription: {
+                ClusterJDBCURL: 'jdbc:redshift://...',
+                RoleARN: 'arn:aws:iam::1:role/redshift',
+              },
+            },
+          ],
+        },
+      })
+      .mockResolvedValueOnce({ Tags: [] });
+
+    const result = await provider.readCurrentState(
+      'mystream',
+      'L',
+      'AWS::KinesisFirehose::DeliveryStream'
+    );
+
+    expect(result?.['ExtendedS3DestinationConfiguration']).toBeUndefined();
+    expect(result?.['S3DestinationConfiguration']).toBeUndefined();
+    expect(result?.['RedshiftDestinationConfiguration']).toBeUndefined();
+  });
+});
+
+describe('FirehoseProvider.getDriftUnknownPaths', () => {
+  it('declares non-S3 destinations and S3 nested complex fields as drift-unknown', () => {
+    const provider = new FirehoseProvider();
+    expect(provider.getDriftUnknownPaths()).toEqual([
+      'S3DestinationConfiguration.EncryptionConfiguration',
+      'S3DestinationConfiguration.CloudWatchLoggingOptions',
+      'ExtendedS3DestinationConfiguration.EncryptionConfiguration',
+      'ExtendedS3DestinationConfiguration.CloudWatchLoggingOptions',
+      'ExtendedS3DestinationConfiguration.ProcessingConfiguration',
+      'ExtendedS3DestinationConfiguration.DataFormatConversionConfiguration',
+      'ExtendedS3DestinationConfiguration.DynamicPartitioningConfiguration',
+      'ExtendedS3DestinationConfiguration.S3BackupConfiguration',
+      'RedshiftDestinationConfiguration',
+      'ElasticsearchDestinationConfiguration',
+      'AmazonopensearchserviceDestinationConfiguration',
+      'SplunkDestinationConfiguration',
+      'HttpEndpointDestinationConfiguration',
+      'AmazonOpenSearchServerlessDestinationConfiguration',
+      'DeliveryStreamEncryptionConfigurationInput',
+    ]);
+  });
 });
