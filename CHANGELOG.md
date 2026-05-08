@@ -1,3 +1,10 @@
+## [0.51.5](https://github.com/go-to-k/cdkd/compare/v0.51.4...v0.51.5) (2026-05-08)
+
+
+### Bug Fixes
+
+* **drift:** expand EC2::Instance drift coverage ([#182](https://github.com/go-to-k/cdkd/issues/182) partial close, instance-level) ([#187](https://github.com/go-to-k/cdkd/issues/187)) ([e8cab95](https://github.com/go-to-k/cdkd/commit/e8cab95c38b51f36918d0dbe26beb8638709833f))
+
 ## [0.51.4](https://github.com/go-to-k/cdkd/compare/v0.51.3...v0.51.4) (2026-05-08)
 
 
