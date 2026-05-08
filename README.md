@@ -314,11 +314,13 @@ cdkd drift MyStack --accept --yes
 cdkd drift MyStack --revert --yes
 
 # Refresh the deploy-time AWS snapshot used as drift baseline.
-# Run this once after upgrading from a pre-v3 cdkd binary (= state schema
-# `version: 2`) so console-side changes to keys you didn't template can
-# be detected for resources that won't change in any near-future deploy.
-# Same idempotent behavior on the same v3 state — see "Drift detection"
-# below for the full upgrade story.
+# Optional — `cdkd deploy` itself auto-refreshes on the first deploy after
+# upgrading from a pre-v3 cdkd binary (= state schema `version: 2`), in
+# parallel with the deploy at no critical-path cost. This command is the
+# manual / non-deploy path: run it when you want the baseline refreshed
+# without redeploying (e.g. for resources that won't change in any
+# near-future deploy). Idempotent on the same v3 state — see "Drift
+# detection" below for the full upgrade story.
 cdkd state refresh-observed MyStack
 
 # Dry run (plan only, no changes)
