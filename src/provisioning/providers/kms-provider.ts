@@ -568,10 +568,10 @@ export class KMSProvider implements ResourceProvider {
    * Dispatches by resource type:
    *   - `AWS::KMS::Key` → `DescribeKey`. Surfaces `Description`, `KeySpec`,
    *     `KeyUsage`, `Enabled`, `MultiRegion`, `Origin`. `KeyPolicy` is
-   *     intentionally NOT retrieved — `GetKeyPolicy` is a separate call
-   *     and the policy body needs JSON parsing for comparison; deferred
-   *     to a follow-up. `EnableKeyRotation` / `RotationPeriodInDays`
-   *     would require `GetKeyRotationStatus`; also deferred.
+   *     additionally retrieved via `GetKeyPolicy` (URL-decoded JSON-parsed)
+   *     and `EnableKeyRotation` / `RotationPeriodInDays` via
+   *     `GetKeyRotationStatus` (Class 1 discriminator-gated on `KeySpec`
+   *     since asymmetric keys reject the call).
    *   - `AWS::KMS::Alias` → `ListAliases` filtered to the alias name.
    *     Surfaces `AliasName`, `TargetKeyId`. `ListAliases` is paginated
    *     since there's no direct "describe one alias" API.
