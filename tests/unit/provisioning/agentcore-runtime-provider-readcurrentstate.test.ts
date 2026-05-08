@@ -75,7 +75,10 @@ describe('AgentCoreRuntimeProvider.readCurrentState', () => {
         },
       },
       NetworkConfiguration: { NetworkMode: 'PUBLIC' },
-      ProtocolConfiguration: { ServerProtocol: 'HTTP' },
+      // SDK returns `{serverProtocol: 'HTTP'}`; we surface the bare
+      // string form to match CFn's documented shape and the typical
+      // post-CDK-synth state.
+      ProtocolConfiguration: 'HTTP',
       EnvironmentVariables: { LOG_LEVEL: 'debug' },
     });
   });
