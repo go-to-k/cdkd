@@ -435,10 +435,15 @@ export class SNSTopicProvider implements ResourceProvider {
    * `create()`'s behavior of only sending Tags when the template carries
    * them).
    *
-   * `DeliveryStatusLogging` is intentionally omitted: it fans out into
-   * per-protocol attributes (`{Protocol}SuccessFeedbackRoleArn`, etc.) whose
-   * round-trip back to the CFn array shape needs more thought than fits in
-   * this PR.
+   * `DeliveryStatusLogging` is reverse-mapped from per-protocol flat
+   * attributes (`{Protocol}SuccessFeedbackRoleArn` etc.) back to the CFn
+   * array shape `[{Protocol, SuccessFeedbackRoleArn?, SuccessFeedbackSampleRate?,
+   * FailureFeedbackRoleArn?}]`. Walks the known protocol prefix list
+   * (`HTTP` / `HTTPS` / `SQS` / `Lambda` / `Firehose` / `Application`); a
+   * protocol is included in the result iff at least one of its three
+   * sub-attributes is set on the topic. Entries are sorted by `Protocol`
+   * for stable positional compare (AWS does not preserve template order
+   * across `GetTopicAttributes` calls).
    *
    * `Subscription` is omitted because CDK manages it via separate
    * `AWS::SNS::Subscription` resources, not as a Topic property.
@@ -505,6 +510,12 @@ export class SNSTopicProvider implements ResourceProvider {
       }
     }
 
+    // DeliveryStatusLogging: reverse-map from per-protocol flat attributes
+    // back to the CFn array shape. Walks the known protocol prefix list
+    // (HTTP / HTTPS / SQS / Lambda / Firehose / Application) and emits a
+    // CFn entry whenever any of the three sub-attributes is set.
+    result['DeliveryStatusLogging'] = mapDeliveryStatusLogging(attrs);
+
     // Tags via ListTagsForResource.
     try {
       const tagsResp = await this.snsClient.send(
@@ -521,16 +532,13 @@ export class SNSTopicProvider implements ResourceProvider {
   }
 
   /**
-   * `DeliveryStatusLogging` fans out to per-protocol attributes
-   * (`{Protocol}SuccessFeedbackRoleArn` etc.) whose round-trip back to the
-   * CFn array shape is not yet implemented; `Subscription` is managed via
-   * separate `AWS::SNS::Subscription` resources rather than the Topic
-   * itself. Both are absent from `readCurrentState`, so tell the drift
-   * comparator to skip them and avoid the guaranteed false-positive that
-   * would fire on every clean run when the user did template either.
+   * Only `Subscription` remains drift-unknown — CDK manages topic
+   * subscriptions via separate `AWS::SNS::Subscription` resources, so the
+   * inline `Topic.Subscription` property is intentionally not surfaced.
+   * `DeliveryStatusLogging` is now reverse-mapped (see `readCurrentState`).
    */
   getDriftUnknownPaths(): string[] {
-    return ['DeliveryStatusLogging', 'Subscription'];
+    return ['Subscription'];
   }
 
   /**
@@ -597,4 +605,57 @@ export class SNSTopicProvider implements ResourceProvider {
     void resolveExplicitPhysicalId;
     return null;
   }
+}
+
+// ─── DeliveryStatusLogging reverse-mapping ─────────────────────────────
+//
+// CFn input shape:
+//   DeliveryStatusLogging: [
+//     { Protocol: 'HTTP'|'HTTPS'|'SQS'|'Lambda'|'Firehose'|'Application',
+//       SuccessFeedbackRoleArn?, SuccessFeedbackSampleRate?, FailureFeedbackRoleArn? }
+//   ]
+// AWS GetTopicAttributes flat attribute shape (one per protocol):
+//   <Protocol>SuccessFeedbackRoleArn  (e.g. HTTPSuccessFeedbackRoleArn)
+//   <Protocol>SuccessFeedbackSampleRate
+//   <Protocol>FailureFeedbackRoleArn
+// where <Protocol> matches cdkd's create-side `${protocol}<Suffix>` concatenation.
+
+const SNS_DELIVERY_STATUS_PROTOCOLS = [
+  'Application',
+  'Firehose',
+  'HTTP',
+  'HTTPS',
+  'Lambda',
+  'SQS',
+] as const;
+
+/**
+ * Reverse-map per-protocol flat attributes returned by GetTopicAttributes
+ * back to the CFn `DeliveryStatusLogging` array shape. Always emits an
+ * array (even `[]`) so the v3 `observedProperties` baseline catches a
+ * console-side enable on a previously-default topic (PR #145 always-emit
+ * pattern).
+ *
+ * Entries are sorted by `Protocol` (alphabetical) for stable positional
+ * compare since AWS does not preserve template order. State-driven order
+ * reconciliation is unnecessary here — every entry's identity is fully
+ * determined by `Protocol` (no two entries share a protocol).
+ *
+ * `SuccessFeedbackSampleRate` is surfaced as the AWS-returned string
+ * (`'0'`-`'100'`) to match the CFn shape (`String` per the docs).
+ */
+function mapDeliveryStatusLogging(attrs: Record<string, string>): Array<Record<string, unknown>> {
+  const result: Array<Record<string, unknown>> = [];
+  for (const protocol of SNS_DELIVERY_STATUS_PROTOCOLS) {
+    const success = attrs[`${protocol}SuccessFeedbackRoleArn`];
+    const sample = attrs[`${protocol}SuccessFeedbackSampleRate`];
+    const failure = attrs[`${protocol}FailureFeedbackRoleArn`];
+    if (success === undefined && sample === undefined && failure === undefined) continue;
+    const entry: Record<string, unknown> = { Protocol: protocol };
+    if (success !== undefined) entry['SuccessFeedbackRoleArn'] = success;
+    if (sample !== undefined) entry['SuccessFeedbackSampleRate'] = sample;
+    if (failure !== undefined) entry['FailureFeedbackRoleArn'] = failure;
+    result.push(entry);
+  }
+  return result;
 }

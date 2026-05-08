@@ -80,6 +80,10 @@ describe('SNSTopicProvider.readCurrentState', () => {
       SignatureVersion: '2',
       FifoThroughputScope: 'Topic',
       ArchivePolicy: archivePolicy,
+      // DeliveryStatusLogging always-emit (PR for #181/#182 follow-up).
+      // Empty array placeholder when no per-protocol feedback attributes
+      // are set on the topic.
+      DeliveryStatusLogging: [],
       Tags: [],
     });
   });
@@ -104,12 +108,60 @@ describe('SNSTopicProvider.readCurrentState', () => {
     expect(result?.Tags).toEqual([{ Key: 'Foo', Value: 'Bar' }]);
   });
 
-  it('declares DeliveryStatusLogging and Subscription as drift-unknown so the comparator skips them', () => {
-    // DeliveryStatusLogging fans out to per-protocol attributes that
-    // readCurrentState does not yet round-trip; Subscription is managed
-    // via separate AWS::SNS::Subscription resources, not as a Topic
-    // property — both would fire guaranteed false drift if surfaced.
-    expect(provider.getDriftUnknownPaths()).toEqual(['DeliveryStatusLogging', 'Subscription']);
+  it('declares only Subscription as drift-unknown (DeliveryStatusLogging is now reverse-mapped)', () => {
+    // CDK manages topic subscriptions via separate AWS::SNS::Subscription
+    // resources, so the inline Topic.Subscription property is intentionally
+    // not surfaced. DeliveryStatusLogging is now reverse-mapped from per-
+    // protocol flat attributes to the CFn array shape — see readCurrentState.
+    expect(provider.getDriftUnknownPaths()).toEqual(['Subscription']);
+  });
+
+  it('reverse-maps DeliveryStatusLogging from per-protocol flat attributes to CFn array shape', async () => {
+    mockSend.mockResolvedValueOnce({
+      Attributes: {
+        TopicArn: TOPIC_ARN,
+        // Lambda: success only.
+        LambdaSuccessFeedbackRoleArn: 'arn:aws:iam::1:role/lambda-success',
+        LambdaSuccessFeedbackSampleRate: '100',
+        // SQS: success + failure with sample rate.
+        SQSSuccessFeedbackRoleArn: 'arn:aws:iam::1:role/sqs-success',
+        SQSSuccessFeedbackSampleRate: '50',
+        SQSFailureFeedbackRoleArn: 'arn:aws:iam::1:role/sqs-failure',
+        // HTTPS: failure only.
+        HTTPSFailureFeedbackRoleArn: 'arn:aws:iam::1:role/https-failure',
+      },
+    });
+    mockSend.mockResolvedValueOnce({ Tags: [] });
+
+    const result = await provider.readCurrentState(TOPIC_ARN, 'Logical', 'AWS::SNS::Topic');
+
+    // Entries sorted alphabetically by Protocol for stable positional
+    // compare (HTTPS before Lambda before SQS).
+    expect(result?.['DeliveryStatusLogging']).toEqual([
+      {
+        Protocol: 'HTTPS',
+        FailureFeedbackRoleArn: 'arn:aws:iam::1:role/https-failure',
+      },
+      {
+        Protocol: 'Lambda',
+        SuccessFeedbackRoleArn: 'arn:aws:iam::1:role/lambda-success',
+        SuccessFeedbackSampleRate: '100',
+      },
+      {
+        Protocol: 'SQS',
+        SuccessFeedbackRoleArn: 'arn:aws:iam::1:role/sqs-success',
+        SuccessFeedbackSampleRate: '50',
+        FailureFeedbackRoleArn: 'arn:aws:iam::1:role/sqs-failure',
+      },
+    ]);
+  });
+
+  it('emits DeliveryStatusLogging=[] when no per-protocol feedback attributes are set', async () => {
+    mockSend.mockResolvedValueOnce({ Attributes: { TopicArn: TOPIC_ARN } });
+    mockSend.mockResolvedValueOnce({ Tags: [] });
+
+    const result = await provider.readCurrentState(TOPIC_ARN, 'Logical', 'AWS::SNS::Topic');
+    expect(result?.['DeliveryStatusLogging']).toEqual([]);
   });
 
   it('omits Tags when ListTagsForResource returns no user tags', async () => {
@@ -142,6 +194,7 @@ describe('SNSTopicProvider.readCurrentState', () => {
     // SetTopicAttributes rejects.
     expect(Object.keys(result ?? {}).sort()).toEqual(
       [
+        'DeliveryStatusLogging',
         'DisplayName',
         'KmsMasterKeyId',
         'SignatureVersion',
@@ -155,6 +208,7 @@ describe('SNSTopicProvider.readCurrentState', () => {
     expect(result?.TracingConfig).toBe('');
     expect(result?.SignatureVersion).toBe('');
     expect(result?.Tags).toEqual([]);
+    expect(result?.DeliveryStatusLogging).toEqual([]);
   });
 
   it('emits FifoThroughputScope placeholder when topic is FIFO', async () => {
