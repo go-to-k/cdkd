@@ -1,3 +1,10 @@
+## [0.51.7](https://github.com/go-to-k/cdkd/compare/v0.51.6...v0.51.7) (2026-05-08)
+
+
+### Bug Fixes
+
+* **drift:** reverse-map Firehose S3/ExtendedS3 inner nested fields ([#181](https://github.com/go-to-k/cdkd/issues/181) follow-up) ([#189](https://github.com/go-to-k/cdkd/issues/189)) ([0b2a7f4](https://github.com/go-to-k/cdkd/commit/0b2a7f4ed0311e2f960996377b7eaaed3dc33ca4))
+
 ## [0.51.6](https://github.com/go-to-k/cdkd/compare/v0.51.5...v0.51.6) (2026-05-08)
 
 
