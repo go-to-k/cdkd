@@ -616,6 +616,89 @@ export class CodeBuildProvider implements ResourceProvider {
       result['Cache'] = cache;
     }
 
+    // SecondarySources / SecondaryArtifacts — same shape as Source /
+    // Artifacts above; reshape camelCase to PascalCase. Always-emit []
+    // for console-side ADD detection.
+    result['SecondarySources'] = (project.secondarySources ?? []).map((s) => {
+      const out: Record<string, unknown> = {};
+      if (s.type !== undefined) out['Type'] = s.type;
+      if (s.location !== undefined) out['Location'] = s.location;
+      if (s.buildspec !== undefined) out['BuildSpec'] = s.buildspec;
+      if (s.gitCloneDepth !== undefined) out['GitCloneDepth'] = s.gitCloneDepth;
+      if (s.insecureSsl !== undefined) out['InsecureSsl'] = s.insecureSsl;
+      if (s.reportBuildStatus !== undefined) out['ReportBuildStatus'] = s.reportBuildStatus;
+      if (s.sourceIdentifier !== undefined) out['SourceIdentifier'] = s.sourceIdentifier;
+      return out;
+    });
+
+    result['SecondaryArtifacts'] = (project.secondaryArtifacts ?? []).map((a) => {
+      const out: Record<string, unknown> = {};
+      if (a.type !== undefined) out['Type'] = a.type;
+      if (a.location !== undefined) out['Location'] = a.location;
+      if (a.path !== undefined) out['Path'] = a.path;
+      if (a.name !== undefined) out['Name'] = a.name;
+      if (a.namespaceType !== undefined) out['NamespaceType'] = a.namespaceType;
+      if (a.packaging !== undefined) out['Packaging'] = a.packaging;
+      if (a.encryptionDisabled !== undefined) out['EncryptionDisabled'] = a.encryptionDisabled;
+      if (a.overrideArtifactName !== undefined) {
+        out['OverrideArtifactName'] = a.overrideArtifactName;
+      }
+      if (a.artifactIdentifier !== undefined) out['ArtifactIdentifier'] = a.artifactIdentifier;
+      return out;
+    });
+
+    // SecondarySourceVersions — simple {sourceIdentifier, sourceVersion} array.
+    result['SecondarySourceVersions'] = (project.secondarySourceVersions ?? []).map((v) => {
+      const out: Record<string, unknown> = {};
+      if (v.sourceIdentifier !== undefined) out['SourceIdentifier'] = v.sourceIdentifier;
+      if (v.sourceVersion !== undefined) out['SourceVersion'] = v.sourceVersion;
+      return out;
+    });
+
+    // FileSystemLocations — array of EFS mount config.
+    result['FileSystemLocations'] = (project.fileSystemLocations ?? []).map((f) => {
+      const out: Record<string, unknown> = {};
+      if (f.type !== undefined) out['Type'] = f.type;
+      if (f.location !== undefined) out['Location'] = f.location;
+      if (f.mountPoint !== undefined) out['MountPoint'] = f.mountPoint;
+      if (f.identifier !== undefined) out['Identifier'] = f.identifier;
+      if (f.mountOptions !== undefined) out['MountOptions'] = f.mountOptions;
+      return out;
+    });
+
+    // BuildBatchConfig — `{}` placeholder when no batch config exists.
+    if (project.buildBatchConfig) {
+      const bbc: Record<string, unknown> = {};
+      if (project.buildBatchConfig.serviceRole !== undefined) {
+        bbc['ServiceRole'] = project.buildBatchConfig.serviceRole;
+      }
+      if (project.buildBatchConfig.restrictions !== undefined) {
+        const r: Record<string, unknown> = {};
+        if (project.buildBatchConfig.restrictions.maximumBuildsAllowed !== undefined) {
+          r['MaximumBuildsAllowed'] = project.buildBatchConfig.restrictions.maximumBuildsAllowed;
+        }
+        if (project.buildBatchConfig.restrictions.computeTypesAllowed !== undefined) {
+          r['ComputeTypesAllowed'] = project.buildBatchConfig.restrictions.computeTypesAllowed;
+        }
+        bbc['Restrictions'] = r;
+      }
+      if (project.buildBatchConfig.timeoutInMins !== undefined) {
+        bbc['TimeoutInMins'] = project.buildBatchConfig.timeoutInMins;
+      }
+      if (project.buildBatchConfig.batchReportMode !== undefined) {
+        bbc['BatchReportMode'] = project.buildBatchConfig.batchReportMode;
+      }
+      if (project.buildBatchConfig.combineArtifacts !== undefined) {
+        bbc['CombineArtifacts'] = project.buildBatchConfig.combineArtifacts;
+      }
+      result['BuildBatchConfig'] = bbc;
+    } else {
+      result['BuildBatchConfig'] = {};
+    }
+
+    // ResourceAccessRole — simple string. Always-emit '' for ADD detection.
+    result['ResourceAccessRole'] = project.resourceAccessRole ?? '';
+
     // Tags from the same BatchGetProjects response (CodeBuild uses lower-case
     // {key, value} shape).
     const tags = normalizeAwsTagsToCfn(project.tags);

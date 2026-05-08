@@ -98,8 +98,88 @@ describe('CodeBuildProvider.readCurrentState', () => {
       },
       VpcConfig: {},
       Cache: { Type: 'NO_CACHE' },
+      // Always-emit placeholders for the rarely-set surfaces too.
+      SecondarySources: [],
+      SecondaryArtifacts: [],
+      SecondarySourceVersions: [],
+      FileSystemLocations: [],
+      BuildBatchConfig: {},
+      ResourceAccessRole: '',
       Tags: [],
     });
+  });
+
+  it('surfaces SecondarySources / SecondaryArtifacts / FileSystemLocations / BuildBatchConfig / ResourceAccessRole when configured', async () => {
+    mockSend.mockResolvedValueOnce({
+      projects: [
+        {
+          name: 'myproj',
+          secondarySources: [
+            {
+              type: 'GITHUB',
+              location: 'https://example/repo2',
+              sourceIdentifier: 'sec1',
+            },
+          ],
+          secondaryArtifacts: [
+            {
+              type: 'S3',
+              location: 'sec-bucket',
+              artifactIdentifier: 'sec-art',
+            },
+          ],
+          secondarySourceVersions: [
+            { sourceIdentifier: 'sec1', sourceVersion: 'main' },
+          ],
+          fileSystemLocations: [
+            {
+              type: 'EFS',
+              location: 'fs-1.efs.us-east-1.amazonaws.com:/',
+              mountPoint: '/mnt/data',
+              identifier: 'data',
+              mountOptions: 'nfsvers=4.1',
+            },
+          ],
+          buildBatchConfig: {
+            serviceRole: 'arn:aws:iam::1:role/batch',
+            timeoutInMins: 60,
+            batchReportMode: 'REPORT_INDIVIDUAL_BUILDS',
+            combineArtifacts: false,
+            restrictions: { maximumBuildsAllowed: 5 },
+          },
+          resourceAccessRole: 'arn:aws:iam::1:role/access',
+        },
+      ],
+    });
+
+    const result = await provider.readCurrentState('myproj', 'L', 'AWS::CodeBuild::Project');
+
+    expect(result?.SecondarySources).toEqual([
+      { Type: 'GITHUB', Location: 'https://example/repo2', SourceIdentifier: 'sec1' },
+    ]);
+    expect(result?.SecondaryArtifacts).toEqual([
+      { Type: 'S3', Location: 'sec-bucket', ArtifactIdentifier: 'sec-art' },
+    ]);
+    expect(result?.SecondarySourceVersions).toEqual([
+      { SourceIdentifier: 'sec1', SourceVersion: 'main' },
+    ]);
+    expect(result?.FileSystemLocations).toEqual([
+      {
+        Type: 'EFS',
+        Location: 'fs-1.efs.us-east-1.amazonaws.com:/',
+        MountPoint: '/mnt/data',
+        Identifier: 'data',
+        MountOptions: 'nfsvers=4.1',
+      },
+    ]);
+    expect(result?.BuildBatchConfig).toEqual({
+      ServiceRole: 'arn:aws:iam::1:role/batch',
+      TimeoutInMins: 60,
+      BatchReportMode: 'REPORT_INDIVIDUAL_BUILDS',
+      CombineArtifacts: false,
+      Restrictions: { MaximumBuildsAllowed: 5 },
+    });
+    expect(result?.ResourceAccessRole).toBe('arn:aws:iam::1:role/access');
   });
 
   it('emits VpcConfig with VpcId/Subnets/SecurityGroupIds when AWS reports a VPC config', async () => {
