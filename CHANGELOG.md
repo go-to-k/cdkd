@@ -1,3 +1,10 @@
+## [0.51.10](https://github.com/go-to-k/cdkd/compare/v0.51.9...v0.51.10) (2026-05-08)
+
+
+### Bug Fixes
+
+* **drift:** reverse-map SNS Topic DeliveryStatusLogging from per-protocol attributes ([#192](https://github.com/go-to-k/cdkd/issues/192)) ([8612775](https://github.com/go-to-k/cdkd/commit/86127755bc0c8dd81b9985e0433eec03a38f1d08))
+
 ## [0.51.9](https://github.com/go-to-k/cdkd/compare/v0.51.8...v0.51.9) (2026-05-08)
 
 
