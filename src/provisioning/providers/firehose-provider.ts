@@ -616,9 +616,18 @@ export class FirehoseProvider implements ResourceProvider {
    *
    * Non-S3 destination types
    * (`Redshift`/`Elasticsearch`/`Amazonopensearchservice`/`Splunk`/`HttpEndpoint`/`AmazonOpenSearchServerless`)
-   * stay drift-unknown — declared via `getDriftUnknownPaths()` until
-   * per-destination reverse-map lands. `DeliveryStreamEncryptionConfigurationInput`
-   * also drift-unknown.
+   * are reverse-mapped via `mapRedshiftDescriptionToCfn` /
+   * `mapHttpEndpointDescriptionToCfn` / `mapNonS3DestinationToCfn`. The
+   * SDK reuses field names between Description and Configuration for
+   * these destinations, so a `pickDefinedDeep` pass-through produces a
+   * CFn-compatible shape. AWS-managed read-only `VpcId` is stripped
+   * from `VpcConfigurationDescription`. Write-only fields AWS strips
+   * from descriptions (`RedshiftDestinationConfiguration.Password`,
+   * `HttpEndpointDestinationConfiguration.EndpointConfiguration.AccessKey`)
+   * stay drift-unknown via `getDriftUnknownPaths`.
+   * `DeliveryStreamEncryptionConfigurationInput` is also still
+   * drift-unknown (separate `Get*` call needed for the read-side
+   * `DeliveryStreamEncryptionConfiguration`).
    *
    * Tags are surfaced via a follow-up `ListTagsForDeliveryStream` call
    * with `aws:*` filtered out and always emitted as `[]` placeholder when
@@ -676,6 +685,30 @@ export class FirehoseProvider implements ResourceProvider {
       result['S3DestinationConfiguration'] = mapS3DescriptionToCfn(
         dest.S3DestinationDescription as unknown as Record<string, unknown>
       );
+    } else if (dest?.RedshiftDestinationDescription) {
+      result['RedshiftDestinationConfiguration'] = mapRedshiftDescriptionToCfn(
+        dest.RedshiftDestinationDescription as unknown as Record<string, unknown>
+      );
+    } else if (dest?.ElasticsearchDestinationDescription) {
+      result['ElasticsearchDestinationConfiguration'] = mapNonS3DestinationToCfn(
+        dest.ElasticsearchDestinationDescription as unknown as Record<string, unknown>
+      );
+    } else if (dest?.AmazonopensearchserviceDestinationDescription) {
+      result['AmazonopensearchserviceDestinationConfiguration'] = mapNonS3DestinationToCfn(
+        dest.AmazonopensearchserviceDestinationDescription as unknown as Record<string, unknown>
+      );
+    } else if (dest?.AmazonOpenSearchServerlessDestinationDescription) {
+      result['AmazonOpenSearchServerlessDestinationConfiguration'] = mapNonS3DestinationToCfn(
+        dest.AmazonOpenSearchServerlessDestinationDescription as unknown as Record<string, unknown>
+      );
+    } else if (dest?.SplunkDestinationDescription) {
+      result['SplunkDestinationConfiguration'] = mapNonS3DestinationToCfn(
+        dest.SplunkDestinationDescription as unknown as Record<string, unknown>
+      );
+    } else if (dest?.HttpEndpointDestinationDescription) {
+      result['HttpEndpointDestinationConfiguration'] = mapHttpEndpointDescriptionToCfn(
+        dest.HttpEndpointDestinationDescription as unknown as Record<string, unknown>
+      );
     }
 
     // Tags via ListTagsForDeliveryStream.
@@ -707,30 +740,28 @@ export class FirehoseProvider implements ResourceProvider {
    * docstring for the full rationale per category.
    *
    * Categories:
-   *  - Non-S3 destination types: shape divergence at scale (Description
-   *    vs Configuration field naming, write-only redacted fields like
-   *    Redshift `Password`); reverse-mapping is feasible per-destination
-   *    but deferred until per-shape user demand emerges.
+   *  - Write-only fields AWS strips from descriptions: Redshift
+   *    `Password`, HttpEndpoint `EndpointConfiguration.AccessKey`. State
+   *    that carries these fires drift on every run otherwise; declaring
+   *    them as drift-unknown is the cleanest fix.
    *  - `DeliveryStreamEncryptionConfigurationInput`: input-only shape
    *    (`KeyARN` + `KeyType`) vs. read-side `DeliveryStreamEncryptionConfiguration`
    *    (extra status / failure fields); not yet round-tripped.
    *
-   * S3 / ExtendedS3 inner nested fields (`EncryptionConfiguration` /
-   * `CloudWatchLoggingOptions` / `ProcessingConfiguration` /
-   * `DataFormatConversionConfiguration` / `DynamicPartitioningConfiguration` /
-   * `S3BackupConfiguration`) are now surfaced via `mapS3DescriptionToCfn`
-   * / `mapExtendedS3DescriptionToCfn` and no longer drift-unknown.
+   * S3 / ExtendedS3 inner nested fields and non-S3 destination types
+   * (Redshift / Elasticsearch / Amazonopensearchservice / Splunk /
+   * HttpEndpoint / AmazonOpenSearchServerless) are now reverse-mapped
+   * via `mapS3DescriptionToCfn` / `mapExtendedS3DescriptionToCfn` /
+   * `mapNonS3DestinationToCfn` / `mapRedshiftDescriptionToCfn` /
+   * `mapHttpEndpointDescriptionToCfn` and no longer drift-unknown at the
+   * top level.
    */
   getDriftUnknownPaths(): string[] {
     return [
-      // Non-S3 destinations (drift-unknown until per-destination reverse-map lands)
-      'RedshiftDestinationConfiguration',
-      'ElasticsearchDestinationConfiguration',
-      'AmazonopensearchserviceDestinationConfiguration',
-      'SplunkDestinationConfiguration',
-      'HttpEndpointDestinationConfiguration',
-      'AmazonOpenSearchServerlessDestinationConfiguration',
-      // Encryption input shape (deferred)
+      // Write-only fields AWS does not return on read.
+      'RedshiftDestinationConfiguration.Password',
+      'HttpEndpointDestinationConfiguration.EndpointConfiguration.AccessKey',
+      // Encryption input shape (deferred — separate Get* call needed).
       'DeliveryStreamEncryptionConfigurationInput',
     ];
   }
@@ -923,6 +954,117 @@ function mapExtendedS3DescriptionToCfn(desc: Record<string, unknown>): Record<st
     );
   } else {
     out['S3BackupConfiguration'] = {};
+  }
+  return out;
+}
+
+/**
+ * Map a non-S3 destination description (Elasticsearch /
+ * Amazonopensearchservice / AmazonOpenSearchServerless / Splunk) to
+ * its CFn `*Configuration` shape.
+ *
+ * AWS reuses field names between Description and Configuration for
+ * these destinations, so a `pickDefinedDeep` pass-through produces a
+ * CFn-compatible shape. The exception is `VpcConfigurationDescription`
+ * which carries an AWS-managed read-only `VpcId` not present in the
+ * CFn `VpcConfiguration` input shape — strip it so the comparator
+ * doesn't fire false drift on the read-only field.
+ *
+ * Always-emit pattern: every nested complex sub-shape AWS reports
+ * (BufferingHints / RetryOptions / ProcessingConfiguration /
+ * CloudWatchLoggingOptions / VpcConfiguration / DocumentIdOptions /
+ * SecretsManagerConfiguration) that the SDK reuses across both shapes
+ * is surfaced via `pickDefinedDeep`. Non-templated sub-shapes are
+ * dropped to avoid `{}` clutter; the v3 baseline catches console-side
+ * ADDs at the top-level destination key, not at every leaf.
+ */
+function mapNonS3DestinationToCfn(desc: Record<string, unknown>): Record<string, unknown> {
+  const cleaned = pickDefinedDeep(desc) as Record<string, unknown> | undefined;
+  if (!cleaned) return {};
+  // AWS returns VpcConfigurationDescription with a read-only VpcId; the
+  // CFn VpcConfiguration shape does not include it. Strip if present.
+  if (cleaned['VpcConfigurationDescription']) {
+    const vpc = { ...(cleaned['VpcConfigurationDescription'] as Record<string, unknown>) };
+    delete vpc['VpcId'];
+    // Rename to the CFn key (`VpcConfiguration`).
+    delete cleaned['VpcConfigurationDescription'];
+    if (Object.keys(vpc).length > 0) cleaned['VpcConfiguration'] = vpc;
+  }
+  return cleaned;
+}
+
+/**
+ * Map RedshiftDestinationDescription → CFn RedshiftDestinationConfiguration.
+ *
+ * Redshift carries a nested S3DestinationDescription (deprecated shape)
+ * that's required as `S3Configuration` in the CFn input. Reverse-map via
+ * the shared `mapS3DescriptionToCfn` helper. `S3BackupDescription` is
+ * mapped to `S3BackupConfiguration` the same way.
+ *
+ * `Password` is write-only — AWS never returns it on read. State that
+ * carries `Password` falls back to v2 baseline; declared in
+ * `getDriftUnknownPaths`.
+ */
+function mapRedshiftDescriptionToCfn(desc: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const k of [
+    'RoleARN',
+    'ClusterJDBCURL',
+    'CopyCommand',
+    'Username',
+    'RetryOptions',
+    'ProcessingConfiguration',
+    'S3BackupMode',
+    'CloudWatchLoggingOptions',
+    'SecretsManagerConfiguration',
+  ]) {
+    const v = pickDefinedDeep(desc[k]);
+    if (v !== undefined) out[k] = v;
+  }
+  // Required nested S3 destination — reverse-map via the S3 helper.
+  if (desc['S3DestinationDescription']) {
+    out['S3Configuration'] = mapS3DescriptionToCfn(
+      desc['S3DestinationDescription'] as Record<string, unknown>
+    );
+  }
+  if (desc['S3BackupDescription']) {
+    out['S3BackupConfiguration'] = mapS3DescriptionToCfn(
+      desc['S3BackupDescription'] as Record<string, unknown>
+    );
+  }
+  return out;
+}
+
+/**
+ * Map HttpEndpointDestinationDescription → CFn HttpEndpointDestinationConfiguration.
+ *
+ * AWS returns `EndpointConfiguration: HttpEndpointDescription` (Url +
+ * Name only). The CFn input `HttpEndpointConfiguration` additionally
+ * accepts `AccessKey` (write-only — redacted from the Description).
+ * State that carries `AccessKey` falls back to v2 baseline; declared in
+ * `getDriftUnknownPaths`.
+ *
+ * `RequestConfiguration` and `SecretsManagerConfiguration` are pass-
+ * through (SDK reuses the same shapes between Configuration and
+ * Description).
+ */
+function mapHttpEndpointDescriptionToCfn(desc: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const k of [
+    'BufferingHints',
+    'CloudWatchLoggingOptions',
+    'RequestConfiguration',
+    'ProcessingConfiguration',
+    'RoleARN',
+    'RetryOptions',
+    'SecretsManagerConfiguration',
+  ]) {
+    const v = pickDefinedDeep(desc[k]);
+    if (v !== undefined) out[k] = v;
+  }
+  if (desc['EndpointConfiguration']) {
+    const endpoint = pickDefinedDeep(desc['EndpointConfiguration']);
+    if (endpoint !== undefined) out['EndpointConfiguration'] = endpoint;
   }
   return out;
 }

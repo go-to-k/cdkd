@@ -264,10 +264,7 @@ describe('FirehoseProvider.readCurrentState', () => {
     expect(result?.['S3DestinationConfiguration']).toBeUndefined();
   });
 
-  it('omits destination key entirely for non-S3 destination types (drift-unknown)', async () => {
-    // Non-S3 destinations stay drift-unknown for v1 — the comparator
-    // skips them via getDriftUnknownPaths so a templated
-    // RedshiftDestinationConfiguration in state does not fire false drift.
+  it('reverse-maps RedshiftDestinationDescription with nested S3Configuration via shared S3 mapper', async () => {
     mockSend
       .mockResolvedValueOnce({
         DeliveryStreamDescription: {
@@ -276,8 +273,15 @@ describe('FirehoseProvider.readCurrentState', () => {
             {
               DestinationId: 'destinationId-000000000001',
               RedshiftDestinationDescription: {
-                ClusterJDBCURL: 'jdbc:redshift://...',
+                ClusterJDBCURL: 'jdbc:redshift://cluster.example/db',
                 RoleARN: 'arn:aws:iam::1:role/redshift',
+                CopyCommand: { DataTableName: 'events' },
+                Username: 'firehose-user',
+                S3DestinationDescription: {
+                  BucketARN: 'arn:aws:s3:::staging',
+                  RoleARN: 'arn:aws:iam::1:role/redshift',
+                  Prefix: 'redshift-staging/',
+                },
               },
             },
           ],
@@ -293,7 +297,21 @@ describe('FirehoseProvider.readCurrentState', () => {
 
     expect(result?.['ExtendedS3DestinationConfiguration']).toBeUndefined();
     expect(result?.['S3DestinationConfiguration']).toBeUndefined();
-    expect(result?.['RedshiftDestinationConfiguration']).toBeUndefined();
+    // Top-level RedshiftDestinationConfiguration with nested S3Configuration
+    // shape (CFn input naming).
+    expect(result?.['RedshiftDestinationConfiguration']).toEqual({
+      ClusterJDBCURL: 'jdbc:redshift://cluster.example/db',
+      RoleARN: 'arn:aws:iam::1:role/redshift',
+      CopyCommand: { DataTableName: 'events' },
+      Username: 'firehose-user',
+      S3Configuration: {
+        BucketARN: 'arn:aws:s3:::staging',
+        RoleARN: 'arn:aws:iam::1:role/redshift',
+        Prefix: 'redshift-staging/',
+        EncryptionConfiguration: {},
+        CloudWatchLoggingOptions: {},
+      },
+    });
   });
 });
 
@@ -521,16 +539,204 @@ describe('FirehoseProvider.readCurrentState (S3 nested fields)', () => {
   });
 });
 
+describe('FirehoseProvider.readCurrentState (non-S3 destinations)', () => {
+  let provider: FirehoseProvider;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    provider = new FirehoseProvider();
+  });
+
+  it('reverse-maps ElasticsearchDestinationDescription via pickDefinedDeep pass-through', async () => {
+    mockSend
+      .mockResolvedValueOnce({
+        DeliveryStreamDescription: {
+          DeliveryStreamName: 'mystream',
+          Destinations: [
+            {
+              ElasticsearchDestinationDescription: {
+                RoleARN: 'arn:aws:iam::1:role/firehose',
+                DomainARN: 'arn:aws:es:us-east-1:1:domain/mydomain',
+                IndexName: 'logs',
+                IndexRotationPeriod: 'OneDay',
+                BufferingHints: { IntervalInSeconds: 60, SizeInMBs: 5 },
+                RetryOptions: { DurationInSeconds: 300 },
+              },
+            },
+          ],
+        },
+      })
+      .mockResolvedValueOnce({ Tags: [] });
+
+    const result = await provider.readCurrentState(
+      'mystream',
+      'L',
+      'AWS::KinesisFirehose::DeliveryStream'
+    );
+    expect(result?.['ElasticsearchDestinationConfiguration']).toEqual({
+      RoleARN: 'arn:aws:iam::1:role/firehose',
+      DomainARN: 'arn:aws:es:us-east-1:1:domain/mydomain',
+      IndexName: 'logs',
+      IndexRotationPeriod: 'OneDay',
+      BufferingHints: { IntervalInSeconds: 60, SizeInMBs: 5 },
+      RetryOptions: { DurationInSeconds: 300 },
+    });
+  });
+
+  it('strips AWS-managed VpcId from VpcConfigurationDescription and renames to VpcConfiguration', async () => {
+    mockSend
+      .mockResolvedValueOnce({
+        DeliveryStreamDescription: {
+          DeliveryStreamName: 'mystream',
+          Destinations: [
+            {
+              AmazonopensearchserviceDestinationDescription: {
+                RoleARN: 'arn:aws:iam::1:role/firehose',
+                DomainARN: 'arn:aws:es:us-east-1:1:domain/mydomain',
+                IndexName: 'logs',
+                VpcConfigurationDescription: {
+                  RoleARN: 'arn:aws:iam::1:role/vpc-firehose',
+                  SubnetIds: ['subnet-1', 'subnet-2'],
+                  SecurityGroupIds: ['sg-1'],
+                  // AWS-managed read-only — must be stripped.
+                  VpcId: 'vpc-abc123',
+                },
+              },
+            },
+          ],
+        },
+      })
+      .mockResolvedValueOnce({ Tags: [] });
+
+    const result = await provider.readCurrentState(
+      'mystream',
+      'L',
+      'AWS::KinesisFirehose::DeliveryStream'
+    );
+    const aoss = result?.['AmazonopensearchserviceDestinationConfiguration'] as Record<
+      string,
+      unknown
+    >;
+    expect(aoss['VpcConfiguration']).toEqual({
+      RoleARN: 'arn:aws:iam::1:role/vpc-firehose',
+      SubnetIds: ['subnet-1', 'subnet-2'],
+      SecurityGroupIds: ['sg-1'],
+      // VpcId stripped.
+    });
+    expect(aoss['VpcConfigurationDescription']).toBeUndefined();
+  });
+
+  it('reverse-maps SplunkDestinationDescription', async () => {
+    mockSend
+      .mockResolvedValueOnce({
+        DeliveryStreamDescription: {
+          DeliveryStreamName: 'mystream',
+          Destinations: [
+            {
+              SplunkDestinationDescription: {
+                HECEndpoint: 'https://splunk.example.com:8088',
+                HECEndpointType: 'Raw',
+                HECToken: 'token-redacted',
+                HECAcknowledgmentTimeoutInSeconds: 180,
+                BufferingHints: { IntervalInSeconds: 60, SizeInMBs: 5 },
+              },
+            },
+          ],
+        },
+      })
+      .mockResolvedValueOnce({ Tags: [] });
+
+    const result = await provider.readCurrentState(
+      'mystream',
+      'L',
+      'AWS::KinesisFirehose::DeliveryStream'
+    );
+    expect(result?.['SplunkDestinationConfiguration']).toEqual({
+      HECEndpoint: 'https://splunk.example.com:8088',
+      HECEndpointType: 'Raw',
+      HECToken: 'token-redacted',
+      HECAcknowledgmentTimeoutInSeconds: 180,
+      BufferingHints: { IntervalInSeconds: 60, SizeInMBs: 5 },
+    });
+  });
+
+  it('reverse-maps HttpEndpointDestinationDescription with EndpointConfiguration (AccessKey absent — write-only)', async () => {
+    // AWS strips AccessKey from HttpEndpointDescription. State that
+    // carries AccessKey falls back to v2 baseline; declared in
+    // getDriftUnknownPaths.
+    mockSend
+      .mockResolvedValueOnce({
+        DeliveryStreamDescription: {
+          DeliveryStreamName: 'mystream',
+          Destinations: [
+            {
+              HttpEndpointDestinationDescription: {
+                RoleARN: 'arn:aws:iam::1:role/firehose',
+                EndpointConfiguration: {
+                  Url: 'https://endpoint.example.com/',
+                  Name: 'partner-endpoint',
+                  // AccessKey absent — AWS strips it.
+                },
+                BufferingHints: { IntervalInSeconds: 60, SizeInMBs: 1 },
+              },
+            },
+          ],
+        },
+      })
+      .mockResolvedValueOnce({ Tags: [] });
+
+    const result = await provider.readCurrentState(
+      'mystream',
+      'L',
+      'AWS::KinesisFirehose::DeliveryStream'
+    );
+    expect(result?.['HttpEndpointDestinationConfiguration']).toEqual({
+      RoleARN: 'arn:aws:iam::1:role/firehose',
+      EndpointConfiguration: {
+        Url: 'https://endpoint.example.com/',
+        Name: 'partner-endpoint',
+      },
+      BufferingHints: { IntervalInSeconds: 60, SizeInMBs: 1 },
+    });
+  });
+
+  it('reverse-maps AmazonOpenSearchServerlessDestinationDescription', async () => {
+    mockSend
+      .mockResolvedValueOnce({
+        DeliveryStreamDescription: {
+          DeliveryStreamName: 'mystream',
+          Destinations: [
+            {
+              AmazonOpenSearchServerlessDestinationDescription: {
+                RoleARN: 'arn:aws:iam::1:role/firehose',
+                CollectionEndpoint: 'https://collection.endpoint',
+                IndexName: 'logs',
+              },
+            },
+          ],
+        },
+      })
+      .mockResolvedValueOnce({ Tags: [] });
+
+    const result = await provider.readCurrentState(
+      'mystream',
+      'L',
+      'AWS::KinesisFirehose::DeliveryStream'
+    );
+    expect(result?.['AmazonOpenSearchServerlessDestinationConfiguration']).toEqual({
+      RoleARN: 'arn:aws:iam::1:role/firehose',
+      CollectionEndpoint: 'https://collection.endpoint',
+      IndexName: 'logs',
+    });
+  });
+});
+
 describe('FirehoseProvider.getDriftUnknownPaths', () => {
-  it('declares non-S3 destinations and DeliveryStreamEncryption as drift-unknown (S3 nested fields are now reverse-mapped)', () => {
+  it('declares only write-only fields and DeliveryStreamEncryptionConfigurationInput as drift-unknown (non-S3 destinations now reverse-mapped)', () => {
     const provider = new FirehoseProvider();
     expect(provider.getDriftUnknownPaths()).toEqual([
-      'RedshiftDestinationConfiguration',
-      'ElasticsearchDestinationConfiguration',
-      'AmazonopensearchserviceDestinationConfiguration',
-      'SplunkDestinationConfiguration',
-      'HttpEndpointDestinationConfiguration',
-      'AmazonOpenSearchServerlessDestinationConfiguration',
+      'RedshiftDestinationConfiguration.Password',
+      'HttpEndpointDestinationConfiguration.EndpointConfiguration.AccessKey',
       'DeliveryStreamEncryptionConfigurationInput',
     ]);
   });
