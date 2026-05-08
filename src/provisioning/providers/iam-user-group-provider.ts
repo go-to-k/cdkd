@@ -15,9 +15,11 @@ import {
   PutUserPolicyCommand,
   DeleteUserPolicyCommand,
   ListUserPoliciesCommand,
+  GetUserPolicyCommand,
   PutGroupPolicyCommand,
   DeleteGroupPolicyCommand,
   ListGroupPoliciesCommand,
+  GetGroupPolicyCommand,
   CreateLoginProfileCommand,
   UpdateLoginProfileCommand,
   AddUserToGroupCommand,
@@ -1343,17 +1345,21 @@ export class IAMUserGroupProvider implements ResourceProvider {
    * UserToGroupAddition in CFn-property shape.
    *
    *  - **AWS::IAM::User**: `GetUser` for `UserName`, `Path`,
-   *    `PermissionsBoundary` (re-shaped from `PermissionsBoundary.Arn`);
+   *    `PermissionsBoundary` (re-shaped from `PermissionsBoundary.Arn`,
+   *    always-emit `''` placeholder so console-side ADD on a user
+   *    deployed without a boundary surfaces as drift);
    *    `ListAttachedUserPolicies` for `ManagedPolicyArns`;
-   *    `ListGroupsForUser` for `Groups`. `Tags`, `LoginProfile`, and
-   *    `Policies` (inline policy bodies) are intentionally omitted —
-   *    same shape decisions as `iam-role-provider` (LoginProfile contains a
-   *    one-time password and inline policy bodies cost N extra round-trips
-   *    that are out of scope for v1).
+   *    `ListGroupsForUser` for `Groups`; `ListUserPolicies` +
+   *    `GetUserPolicy` per name for inline `Policies` (URL-decoded +
+   *    JSON-parsed, capped at IAM's documented 10-per-user limit, order
+   *    reconciled against state's `Policies` array). `Tags` and
+   *    `LoginProfile` remain omitted — Tags will land in a follow-up,
+   *    LoginProfile contains a one-time password we never want to surface
+   *    through drift.
    *  - **AWS::IAM::Group**: `GetGroup` for `GroupName`, `Path`;
-   *    `ListAttachedGroupPolicies` for `ManagedPolicyArns`. `Policies`
-   *    (inline policy bodies) is omitted for the same reason as User /
-   *    Role.
+   *    `ListAttachedGroupPolicies` for `ManagedPolicyArns`;
+   *    `ListGroupPolicies` + `GetGroupPolicy` per name for inline
+   *    `Policies`.
    *  - **AWS::IAM::UserToGroupAddition**: SKIPPED — returns `undefined`
    *    because the resource is metadata-only (group-membership attachments
    *    written via `AddUserToGroup`). A meaningful drift check would
@@ -1368,13 +1374,14 @@ export class IAMUserGroupProvider implements ResourceProvider {
   async readCurrentState(
     physicalId: string,
     logicalId: string,
-    resourceType: string
+    resourceType: string,
+    properties?: Record<string, unknown>
   ): Promise<Record<string, unknown> | undefined> {
     switch (resourceType) {
       case 'AWS::IAM::User':
-        return this.readUserCurrentState(physicalId);
+        return this.readUserCurrentState(physicalId, properties);
       case 'AWS::IAM::Group':
-        return this.readGroupCurrentState(physicalId);
+        return this.readGroupCurrentState(physicalId, properties);
       case 'AWS::IAM::UserToGroupAddition':
         // Membership-only resource. See JSDoc above.
         return undefined;
@@ -1387,7 +1394,8 @@ export class IAMUserGroupProvider implements ResourceProvider {
   }
 
   private async readUserCurrentState(
-    physicalId: string
+    physicalId: string,
+    properties?: Record<string, unknown>
   ): Promise<Record<string, unknown> | undefined> {
     let user;
     try {
@@ -1402,9 +1410,9 @@ export class IAMUserGroupProvider implements ResourceProvider {
     const result: Record<string, unknown> = {};
     if (user.UserName !== undefined) result['UserName'] = user.UserName;
     if (user.Path !== undefined) result['Path'] = user.Path;
-    if (user.PermissionsBoundary?.PermissionsBoundaryArn !== undefined) {
-      result['PermissionsBoundary'] = user.PermissionsBoundary.PermissionsBoundaryArn;
-    }
+    // Always-emit so a console-side ADD on a user deployed without a
+    // boundary surfaces as drift (top-level walk is state-keys-only).
+    result['PermissionsBoundary'] = user.PermissionsBoundary?.PermissionsBoundaryArn ?? '';
 
     try {
       const attached = await this.iamClient.send(
@@ -1428,11 +1436,26 @@ export class IAMUserGroupProvider implements ResourceProvider {
       if (!(err instanceof NoSuchEntityException)) throw err;
     }
 
+    // Inline Policies — same pattern as IAMRoleProvider.readCurrentState.
+    // Capped at IAM's 10-per-user limit; ListUserPolicies is paginated for
+    // forward-compat.
+    try {
+      const inline = await this.collectInlinePolicies(
+        'user',
+        physicalId,
+        (properties?.['Policies'] as Array<{ PolicyName?: string }> | undefined) ?? []
+      );
+      result['Policies'] = inline;
+    } catch (err) {
+      if (!(err instanceof NoSuchEntityException)) throw err;
+    }
+
     return result;
   }
 
   private async readGroupCurrentState(
-    physicalId: string
+    physicalId: string,
+    properties?: Record<string, unknown>
   ): Promise<Record<string, unknown> | undefined> {
     let group;
     try {
@@ -1460,7 +1483,92 @@ export class IAMUserGroupProvider implements ResourceProvider {
       if (!(err instanceof NoSuchEntityException)) throw err;
     }
 
+    try {
+      const inline = await this.collectInlinePolicies(
+        'group',
+        physicalId,
+        (properties?.['Policies'] as Array<{ PolicyName?: string }> | undefined) ?? []
+      );
+      result['Policies'] = inline;
+    } catch (err) {
+      if (!(err instanceof NoSuchEntityException)) throw err;
+    }
+
     return result;
+  }
+
+  /**
+   * Shared inline-policy fetcher for User / Group readCurrentState.
+   * Mirrors `IAMRoleProvider.readCurrentState`'s inline-policy handling:
+   * paginated `List*Policies` for names → parallel `Get*Policy` per name
+   * for bodies (URL-decoded + JSON-parsed) → reconcile order against
+   * `statePolicies` so a positional compare doesn't fire false drift on
+   * the lexicographic order returned by AWS.
+   */
+  private async collectInlinePolicies(
+    kind: 'user' | 'group',
+    physicalId: string,
+    statePolicies: Array<{ PolicyName?: string }>
+  ): Promise<Array<{ PolicyName: string; PolicyDocument: unknown }>> {
+    const policyNames: string[] = [];
+    let marker: string | undefined;
+    // eslint-disable-next-line no-constant-condition
+    while (true) {
+      const listResp =
+        kind === 'user'
+          ? await this.iamClient.send(
+              new ListUserPoliciesCommand({
+                UserName: physicalId,
+                ...(marker ? { Marker: marker } : {}),
+              })
+            )
+          : await this.iamClient.send(
+              new ListGroupPoliciesCommand({
+                GroupName: physicalId,
+                ...(marker ? { Marker: marker } : {}),
+              })
+            );
+      for (const name of listResp.PolicyNames ?? []) policyNames.push(name);
+      if (!listResp.IsTruncated) break;
+      marker = listResp.Marker;
+    }
+
+    const bodies = new Map<string, unknown>();
+    await Promise.all(
+      policyNames.map(async (name) => {
+        const resp =
+          kind === 'user'
+            ? await this.iamClient.send(
+                new GetUserPolicyCommand({ UserName: physicalId, PolicyName: name })
+              )
+            : await this.iamClient.send(
+                new GetGroupPolicyCommand({ GroupName: physicalId, PolicyName: name })
+              );
+        if (!resp.PolicyDocument) return;
+        let parsed: unknown;
+        try {
+          parsed = JSON.parse(decodeURIComponent(resp.PolicyDocument));
+        } catch {
+          parsed = resp.PolicyDocument;
+        }
+        bodies.set(name, parsed);
+      })
+    );
+
+    const remaining = new Set(bodies.keys());
+    const inline: Array<{ PolicyName: string; PolicyDocument: unknown }> = [];
+    for (const sp of statePolicies) {
+      const name = sp?.PolicyName;
+      if (typeof name !== 'string') continue;
+      if (bodies.has(name)) {
+        inline.push({ PolicyName: name, PolicyDocument: bodies.get(name) });
+        remaining.delete(name);
+      }
+    }
+    for (const name of [...remaining].sort()) {
+      inline.push({ PolicyName: name, PolicyDocument: bodies.get(name) });
+    }
+    return inline;
   }
 
   // ─── Import dispatch ──────────────────────────────────────────────

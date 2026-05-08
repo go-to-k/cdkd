@@ -3,6 +3,7 @@ import {
   CreateLogGroupCommand,
   DeleteLogGroupCommand,
   DescribeLogGroupsCommand,
+  GetDataProtectionPolicyCommand,
   ListTagsForResourceCommand,
   PutRetentionPolicyCommand,
   DeleteRetentionPolicyCommand,
@@ -336,20 +337,6 @@ export class LogsLogGroupProvider implements ResourceProvider {
   }
 
   /**
-   * Drift comparator skip-list: properties readCurrentState deliberately
-   * cannot round-trip from AWS yet. `DataProtectionPolicy` lives behind
-   * its own `GetDataProtectionPolicy` API call (not in
-   * `DescribeLogGroups` output) — declaring it here prevents
-   * guaranteed false-positive drift on every clean run for log groups
-   * deployed with a data-protection policy. Lifting this guard requires
-   * a per-group `GetDataProtectionPolicy` round-trip in
-   * `readCurrentState`.
-   */
-  getDriftUnknownPaths(): string[] {
-    return ['DataProtectionPolicy'];
-  }
-
-  /**
    * Read the AWS-current log group configuration in CFn-property shape.
    *
    * Issues `DescribeLogGroups` filtered by exact name and picks the first
@@ -359,10 +346,16 @@ export class LogsLogGroupProvider implements ResourceProvider {
    * `RetentionInDays`).
    *
    * Coverage: `LogGroupName`, `KmsKeyId`, `RetentionInDays`,
-   * `LogGroupClass`, `Tags`. Other handledProperties (`DataProtectionPolicy`,
-   * `FieldIndexPolicies`, `ResourcePolicyDocument`,
-   * `DeletionProtectionEnabled`, `BearerTokenAuthenticationEnabled`) need
-   * their own per-property API call and are out of scope for v1.
+   * `LogGroupClass`, `Tags`, plus `DataProtectionPolicy` (via
+   * `GetDataProtectionPolicy`, JSON-parsed back to the object form
+   * cdkd state holds). Still out of scope: `FieldIndexPolicies`
+   * (separate `DescribeFieldIndexPolicies` call, follow-up),
+   * `ResourcePolicyDocument` (managed by the separate
+   * `AWS::Logs::ResourcePolicy` resource type — account-wide, not
+   * per-log-group), `DeletionProtectionEnabled` (not surfaced by
+   * `DescribeLogGroups`; would need a yet-undocumented separate API),
+   * `BearerTokenAuthenticationEnabled` (specialized X-Ray / service-log
+   * endpoint feature, also not in `DescribeLogGroups`).
    *
    * Tags are read via `ListTagsForResource` (using the log-group ARN from
    * the same `DescribeLogGroups` response). CDK's `aws:*` auto-tags are
@@ -414,6 +407,29 @@ export class LogsLogGroupProvider implements ResourceProvider {
       // Always-emit: a console-side tag add on an initially-untagged log
       // group must surface as drift (state=[] vs AWS=[{...}]).
       result['Tags'] = tags;
+
+      // DataProtectionPolicy via GetDataProtectionPolicy. AWS returns the
+      // policy as a JSON string; we re-parse so the comparator matches
+      // cdkd state's already-resolved object form. Always-emit `''` when
+      // no policy is configured so a console-side ADD is detectable on
+      // the v3 observedProperties baseline. (The empty string round-trips
+      // through update()'s truthy gate as DeleteDataProtectionPolicy.)
+      let dpp: unknown = '';
+      try {
+        const dppResp = await this.logsClient.send(
+          new GetDataProtectionPolicyCommand({ logGroupIdentifier: physicalId })
+        );
+        if (dppResp.policyDocument) {
+          try {
+            dpp = JSON.parse(dppResp.policyDocument);
+          } catch {
+            dpp = dppResp.policyDocument;
+          }
+        }
+      } catch {
+        // Best-effort — leave the empty placeholder.
+      }
+      result['DataProtectionPolicy'] = dpp;
 
       return result;
     } catch (err) {

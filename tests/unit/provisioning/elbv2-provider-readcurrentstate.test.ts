@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import {
   DescribeLoadBalancersCommand,
+  DescribeLoadBalancerAttributesCommand,
   DescribeTagsCommand,
   DescribeTargetGroupsCommand,
   DescribeListenersCommand,
@@ -66,6 +67,14 @@ describe('ELBv2Provider.readCurrentState', () => {
             },
           ],
         })
+        // DescribeLoadBalancerAttributes returns lex-unsorted; the
+        // provider re-sorts.
+        .mockResolvedValueOnce({
+          Attributes: [
+            { Key: 'idle_timeout.timeout_seconds', Value: '60' },
+            { Key: 'access_logs.s3.enabled', Value: 'false' },
+          ],
+        })
         .mockResolvedValueOnce({ TagDescriptions: [{ ResourceArn: 'arn:lb', Tags: [] }] });
 
       const result = await provider.readCurrentState(
@@ -75,7 +84,8 @@ describe('ELBv2Provider.readCurrentState', () => {
       );
 
       expect(mockSend.mock.calls[0]?.[0]).toBeInstanceOf(DescribeLoadBalancersCommand);
-      expect(mockSend.mock.calls[1]?.[0]).toBeInstanceOf(DescribeTagsCommand);
+      expect(mockSend.mock.calls[1]?.[0]).toBeInstanceOf(DescribeLoadBalancerAttributesCommand);
+      expect(mockSend.mock.calls[2]?.[0]).toBeInstanceOf(DescribeTagsCommand);
       expect(result).toEqual({
         Name: 'mylb',
         Scheme: 'internet-facing',
@@ -83,6 +93,11 @@ describe('ELBv2Provider.readCurrentState', () => {
         IpAddressType: 'ipv4',
         Subnets: ['subnet-a', 'subnet-b'],
         SecurityGroups: ['sg-1'],
+        // Sorted by Key.
+        LoadBalancerAttributes: [
+          { Key: 'access_logs.s3.enabled', Value: 'false' },
+          { Key: 'idle_timeout.timeout_seconds', Value: '60' },
+        ],
         Tags: [],
       });
     });
@@ -207,6 +222,7 @@ describe('ELBv2Provider.readCurrentState', () => {
       .mockResolvedValueOnce({
         LoadBalancers: [{ LoadBalancerArn: 'arn:lb', LoadBalancerName: 'mylb' }],
       })
+      .mockResolvedValueOnce({ Attributes: [] })
       .mockResolvedValueOnce({
         TagDescriptions: [
           {
@@ -227,11 +243,12 @@ describe('ELBv2Provider.readCurrentState', () => {
     expect(result?.Tags).toEqual([{ Key: 'Foo', Value: 'Bar' }]);
   });
 
-  it('omits Tags when DescribeTags returns no user tags', async () => {
+  it('emits empty Tags array when DescribeTags returns no user tags', async () => {
     mockSend
       .mockResolvedValueOnce({
         LoadBalancers: [{ LoadBalancerArn: 'arn:lb', LoadBalancerName: 'mylb' }],
       })
+      .mockResolvedValueOnce({ Attributes: [] })
       .mockResolvedValueOnce({
         TagDescriptions: [
           {
@@ -247,5 +264,21 @@ describe('ELBv2Provider.readCurrentState', () => {
       'AWS::ElasticLoadBalancingV2::LoadBalancer'
     );
     expect(result?.Tags).toEqual([]);
+  });
+
+  it('emits empty LoadBalancerAttributes array when DescribeLoadBalancerAttributes returns none', async () => {
+    mockSend
+      .mockResolvedValueOnce({
+        LoadBalancers: [{ LoadBalancerArn: 'arn:lb', LoadBalancerName: 'mylb' }],
+      })
+      .mockResolvedValueOnce({ Attributes: [] })
+      .mockResolvedValueOnce({ TagDescriptions: [{ ResourceArn: 'arn:lb', Tags: [] }] });
+
+    const result = await provider.readCurrentState(
+      'arn:lb',
+      'L',
+      'AWS::ElasticLoadBalancingV2::LoadBalancer'
+    );
+    expect(result?.LoadBalancerAttributes).toEqual([]);
   });
 });

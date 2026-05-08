@@ -907,8 +907,10 @@ export class Route53Provider implements ResourceProvider {
    *    PrivateZone}, VPCs from `VPCs[]`, HostedZoneTags via
    *    `ListTagsForResource(ResourceType=hostedzone, ResourceId=<idTail>)`
    *    with `aws:*` filtered out and the key omitted when empty).
-   *    QueryLoggingConfig is skipped because it's a separate
-   *    `ListQueryLoggingConfigs` call and the v1 surface does not surface it.
+   *    QueryLoggingConfig is surfaced via a follow-up
+   *    `ListQueryLoggingConfigs(HostedZoneId)` (filter to the one
+   *    config per zone — CFn enforces 0 or 1 — and reshape
+   *    `CloudWatchLogsLogGroupArn` to match cdkd state).
    *  - `RecordSet` → `ListResourceRecordSets` filtered to the exact
    *    `(name, type)` pair from the composite physicalId
    *    (`{zoneId}|{name}|{type}`). Surfaces TTL, ResourceRecords (with
@@ -982,6 +984,31 @@ export class Route53Provider implements ResourceProvider {
         `Route53 ListTagsForResource(${idTail}) failed: ${err instanceof Error ? err.message : String(err)}`
       );
     }
+
+    // QueryLoggingConfig via ListQueryLoggingConfigs filtered to this
+    // zone. CFn enforces 0 or 1 config per zone. Always-emit `{}`
+    // placeholder when AWS has none — the union-walk on the v3
+    // observedProperties baseline catches a console-side ADD of a
+    // CloudWatchLogsLogGroupArn against the empty placeholder.
+    try {
+      const qlcResp = await this.getClient().send(
+        new ListQueryLoggingConfigsCommand({ HostedZoneId: idTail })
+      );
+      const qlc = qlcResp.QueryLoggingConfigs?.[0];
+      if (qlc?.CloudWatchLogsLogGroupArn) {
+        result['QueryLoggingConfig'] = {
+          CloudWatchLogsLogGroupArn: qlc.CloudWatchLogsLogGroupArn,
+        };
+      } else {
+        result['QueryLoggingConfig'] = {};
+      }
+    } catch (err) {
+      this.logger.debug(
+        `Route53 ListQueryLoggingConfigs(${idTail}) failed: ${err instanceof Error ? err.message : String(err)}`
+      );
+      result['QueryLoggingConfig'] = {};
+    }
+
     return result;
   }
 

@@ -60,6 +60,10 @@ describe('LogsLogGroupProvider.readCurrentState', () => {
     });
     // ListTagsForResource — no user tags
     mockSend.mockResolvedValueOnce({ tags: {} });
+    // GetDataProtectionPolicy — no policy.
+    mockSend.mockRejectedValueOnce(
+      Object.assign(new Error('No policy'), { name: 'ResourceNotFoundException' })
+    );
 
     const result = await provider.readCurrentState(
       '/aws/lambda/my-fn',
@@ -75,7 +79,41 @@ describe('LogsLogGroupProvider.readCurrentState', () => {
       RetentionInDays: 30,
       LogGroupClass: 'STANDARD',
       Tags: [],
+      DataProtectionPolicy: '',
     });
+  });
+
+  it('surfaces parsed DataProtectionPolicy when GetDataProtectionPolicy succeeds', async () => {
+    const policyDoc = {
+      Name: 'pii-policy',
+      Description: 'Mask PII',
+      Version: '2021-06-01',
+      Statement: [
+        {
+          Sid: 'audit',
+          DataIdentifier: ['arn:aws:dataprotection::aws:data-identifier/EmailAddress'],
+          Operation: { Audit: { FindingsDestination: {} } },
+        },
+      ],
+    };
+    mockSend.mockResolvedValueOnce({
+      logGroups: [
+        {
+          logGroupName: '/aws/lambda/my-fn',
+          arn: 'arn:aws:logs:us-east-1:123:log-group:/aws/lambda/my-fn:*',
+        },
+      ],
+    });
+    mockSend.mockResolvedValueOnce({ tags: {} });
+    mockSend.mockResolvedValueOnce({ policyDocument: JSON.stringify(policyDoc) });
+
+    const result = await provider.readCurrentState(
+      '/aws/lambda/my-fn',
+      'Logical',
+      'AWS::Logs::LogGroup'
+    );
+
+    expect(result?.DataProtectionPolicy).toEqual(policyDoc);
   });
 
   it('surfaces Tags from ListTagsForResource with aws:* filtered out', async () => {
@@ -90,6 +128,9 @@ describe('LogsLogGroupProvider.readCurrentState', () => {
     mockSend.mockResolvedValueOnce({
       tags: { Foo: 'Bar', 'aws:cdk:path': 'MyStack/MyLogGroup/Resource' },
     });
+    mockSend.mockRejectedValueOnce(
+      Object.assign(new Error('No policy'), { name: 'ResourceNotFoundException' })
+    );
 
     const result = await provider.readCurrentState(
       '/aws/lambda/my-fn',
@@ -111,6 +152,9 @@ describe('LogsLogGroupProvider.readCurrentState', () => {
     mockSend.mockResolvedValueOnce({
       tags: { 'aws:cdk:path': 'MyStack/MyLogGroup/Resource' },
     });
+    mockSend.mockRejectedValueOnce(
+      Object.assign(new Error('No policy'), { name: 'ResourceNotFoundException' })
+    );
 
     const result = await provider.readCurrentState(
       '/aws/lambda/my-fn',
@@ -137,6 +181,9 @@ describe('LogsLogGroupProvider.readCurrentState', () => {
       ],
     });
     mockSend.mockResolvedValueOnce({ tags: {} });
+    mockSend.mockRejectedValueOnce(
+      Object.assign(new Error('No policy'), { name: 'ResourceNotFoundException' })
+    );
 
     const result = await provider.readCurrentState(
       '/aws/lambda/min',
@@ -147,11 +194,12 @@ describe('LogsLogGroupProvider.readCurrentState', () => {
     // LogGroupClass is immutable on create — skip emit is correct
     // (per the § 3b "immutable on create" rule).
     expect(Object.keys(result ?? {}).sort()).toEqual(
-      ['LogGroupName', 'KmsKeyId', 'RetentionInDays', 'Tags'].sort()
+      ['LogGroupName', 'KmsKeyId', 'RetentionInDays', 'Tags', 'DataProtectionPolicy'].sort()
     );
     expect(result?.LogGroupName).toBe('/aws/lambda/min');
     expect(result?.KmsKeyId).toBe(''); // string placeholder
     expect(result?.RetentionInDays).toBe(0); // semantic "never expire"
+    expect(result?.DataProtectionPolicy).toBe(''); // string placeholder
     expect(result?.Tags).toEqual([]); // array placeholder
   });
 

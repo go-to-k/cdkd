@@ -432,12 +432,21 @@ export class CodeBuildProvider implements ResourceProvider {
    *
    * Issues `BatchGetProjects` and re-shapes the SDK's camelCase response back
    * to CFn's PascalCase shape (the `mapProperties` helper above goes the
-   * other way at create time). The drift comparator only descends into
-   * keys present in cdkd state, so we focus on the high-value top-level
-   * fields and the most commonly-set `Source` / `Artifacts` /
-   * `Environment` sub-fields. Less common nested config (full
-   * `LogsConfig`, `VpcConfig` rebuild, secondary sources/artifacts, etc.)
-   * is left to a follow-up — surfacing them with a partial shape would
+   * other way at create time). Coverage targets every user-controllable
+   * top-level field via the always-emit pattern (PR #145):
+   *  - `Source` / `Artifacts` / `Environment` (with `EnvironmentVariables`
+   *    sub-array): full reshape to CFn shape.
+   *  - `LogsConfig` (`CloudWatchLogs` + `S3Logs` sub-shapes): always-emit
+   *    placeholder so a console-side enable on a previously-default
+   *    project surfaces as drift.
+   *  - `VpcConfig` (VpcId / Subnets / SecurityGroupIds): always-emit
+   *    placeholder.
+   *  - `Cache` (Type / Location / Modes): always-emit placeholder.
+   *
+   * Still v1-omitted (known gaps, follow-up): `SecondarySources` /
+   * `SecondaryArtifacts` / `SecondarySourceVersions` / `FileSystemLocations` /
+   * `Triggers` / `BuildBatchConfig` / `ResourceAccessRole`. These are
+   * rarely set in practice and surfacing them with partial shape would
    * fire false drift on every project that uses them.
    *
    * Tags are surfaced from the same `BatchGetProjects` response (CodeBuild
@@ -547,6 +556,64 @@ export class CodeBuildProvider implements ResourceProvider {
         return out;
       });
       result['Environment'] = env;
+    }
+
+    // LogsConfig — both sub-shapes (cloudWatchLogs / s3Logs) are user-
+    // controllable. Always-emit nested placeholders so a console-side
+    // enable on either is detectable; AWS's CFn shape uses Status to
+    // toggle each, so a console-side enable shows up as
+    // Status: 'ENABLED' against the always-emit Status: 'DISABLED'.
+    {
+      const logs: Record<string, unknown> = {};
+      const cw: Record<string, unknown> = {
+        Status: project.logsConfig?.cloudWatchLogs?.status ?? 'ENABLED',
+      };
+      if (project.logsConfig?.cloudWatchLogs?.groupName !== undefined) {
+        cw['GroupName'] = project.logsConfig.cloudWatchLogs.groupName;
+      }
+      if (project.logsConfig?.cloudWatchLogs?.streamName !== undefined) {
+        cw['StreamName'] = project.logsConfig.cloudWatchLogs.streamName;
+      }
+      logs['CloudWatchLogs'] = cw;
+      const s3: Record<string, unknown> = {
+        Status: project.logsConfig?.s3Logs?.status ?? 'DISABLED',
+      };
+      if (project.logsConfig?.s3Logs?.location !== undefined) {
+        s3['Location'] = project.logsConfig.s3Logs.location;
+      }
+      if (project.logsConfig?.s3Logs?.encryptionDisabled !== undefined) {
+        s3['EncryptionDisabled'] = project.logsConfig.s3Logs.encryptionDisabled;
+      }
+      if (project.logsConfig?.s3Logs?.bucketOwnerAccess !== undefined) {
+        s3['BucketOwnerAccess'] = project.logsConfig.s3Logs.bucketOwnerAccess;
+      }
+      logs['S3Logs'] = s3;
+      result['LogsConfig'] = logs;
+    }
+
+    // VpcConfig — Class 1: AWS only returns vpcId / subnets / securityGroupIds
+    // when the project actually has a VPC config (not all projects do).
+    // Emit `{}` placeholder when AWS reports no VPC config so a console-
+    // side ADD against the empty placeholder shows up via the comparator's
+    // union-walk on the v3 observedProperties baseline.
+    if (project.vpcConfig?.vpcId !== undefined) {
+      const vpc: Record<string, unknown> = { VpcId: project.vpcConfig.vpcId };
+      vpc['Subnets'] = project.vpcConfig.subnets ?? [];
+      vpc['SecurityGroupIds'] = project.vpcConfig.securityGroupIds ?? [];
+      result['VpcConfig'] = vpc;
+    } else {
+      result['VpcConfig'] = {};
+    }
+
+    // Cache — always-emit `{Type: 'NO_CACHE'}` placeholder (AWS-default
+    // when not configured) so a console-side enable surfaces as drift.
+    {
+      const cache: Record<string, unknown> = {
+        Type: project.cache?.type ?? 'NO_CACHE',
+      };
+      if (project.cache?.location !== undefined) cache['Location'] = project.cache.location;
+      if (project.cache?.modes !== undefined) cache['Modes'] = project.cache.modes;
+      result['Cache'] = cache;
     }
 
     // Tags from the same BatchGetProjects response (CodeBuild uses lower-case

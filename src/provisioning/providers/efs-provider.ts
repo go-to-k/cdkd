@@ -11,6 +11,7 @@ import {
   DescribeAccessPointsCommand,
   DescribeLifecycleConfigurationCommand,
   DescribeBackupPolicyCommand,
+  DescribeMountTargetSecurityGroupsCommand,
   FileSystemNotFound,
   MountTargetNotFound,
   AccessPointNotFound,
@@ -598,8 +599,10 @@ export class EFSProvider implements ResourceProvider {
    *    the corresponding key without failing the whole snapshot.
    *  - `AccessPoint` → `DescribeAccessPoints` filtered by id (PosixUser,
    *    RootDirectory).
-   *  - `MountTarget` → `DescribeMountTargets` (FileSystemId, SubnetId).
-   *    SecurityGroups requires a separate call and is omitted for v1.
+   *  - `MountTarget` → `DescribeMountTargets` (FileSystemId, SubnetId)
+   *    plus `DescribeMountTargetSecurityGroups` for the SG list (always-
+   *    emit `[]` when AWS reports none so a console-side ADD on a
+   *    previously-unconfigured mount target is detectable).
    *
    * `FileSystemTags` (the CFn property name on `AWS::EFS::FileSystem`) is
    * surfaced from the same `DescribeFileSystems` response — `aws:*`
@@ -757,9 +760,24 @@ export class EFSProvider implements ResourceProvider {
     const result: Record<string, unknown> = {};
     if (mt.FileSystemId !== undefined) result['FileSystemId'] = mt.FileSystemId;
     if (mt.SubnetId !== undefined) result['SubnetId'] = mt.SubnetId;
-    // SecurityGroups omitted: requires DescribeMountTargetSecurityGroups
-    // (separate call). Out of scope for v1 — drift comparator only descends
-    // into keys present in state, so an absent key cannot fire false drift.
+
+    // SecurityGroups via DescribeMountTargetSecurityGroups. Always-emit
+    // `[]` placeholder when AWS reports none so a console-side ADD on a
+    // previously-unconfigured mount target is detectable on the v3
+    // observedProperties baseline.
+    let securityGroups: string[] = [];
+    try {
+      const sgResp = await this.getClient().send(
+        new DescribeMountTargetSecurityGroupsCommand({ MountTargetId: physicalId })
+      );
+      securityGroups = (sgResp.SecurityGroups ?? []).filter(
+        (s): s is string => typeof s === 'string'
+      );
+    } catch {
+      // Best-effort.
+    }
+    result['SecurityGroups'] = securityGroups;
+
     return result;
   }
 

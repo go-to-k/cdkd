@@ -1,7 +1,9 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import {
   GetRoleCommand,
+  GetRolePolicyCommand,
   ListAttachedRolePoliciesCommand,
+  ListRolePoliciesCommand,
   ListRoleTagsCommand,
   NoSuchEntityException,
 } from '@aws-sdk/client-iam';
@@ -78,6 +80,8 @@ describe('IAMRoleProvider.readCurrentState', () => {
         { PolicyArn: 'arn:aws:iam::aws:policy/AWSLambdaBasicExecutionRole', PolicyName: 'lambda' },
       ],
     });
+    // ListRolePolicies — no inline policies
+    mockSend.mockResolvedValueOnce({ PolicyNames: [], IsTruncated: false });
     // ListRoleTags — no user tags
     mockSend.mockResolvedValueOnce({ Tags: [], IsTruncated: false });
 
@@ -85,7 +89,8 @@ describe('IAMRoleProvider.readCurrentState', () => {
 
     expect(mockSend.mock.calls[0]?.[0]).toBeInstanceOf(GetRoleCommand);
     expect(mockSend.mock.calls[1]?.[0]).toBeInstanceOf(ListAttachedRolePoliciesCommand);
-    expect(mockSend.mock.calls[2]?.[0]).toBeInstanceOf(ListRoleTagsCommand);
+    expect(mockSend.mock.calls[2]?.[0]).toBeInstanceOf(ListRolePoliciesCommand);
+    expect(mockSend.mock.calls[3]?.[0]).toBeInstanceOf(ListRoleTagsCommand);
     expect(result).toEqual({
       RoleName: 'my-role',
       Description: 'a role',
@@ -97,6 +102,7 @@ describe('IAMRoleProvider.readCurrentState', () => {
         'arn:aws:iam::aws:policy/AmazonS3ReadOnlyAccess',
         'arn:aws:iam::aws:policy/AWSLambdaBasicExecutionRole',
       ],
+      Policies: [],
       Tags: [],
     });
   });
@@ -110,12 +116,15 @@ describe('IAMRoleProvider.readCurrentState', () => {
     expect(result).toBeUndefined();
   });
 
-  it('declares Policies as drift-unknown so the comparator skips inline policy bodies', () => {
-    // Inline policy bodies are intentionally omitted from
-    // readCurrentState (would need one extra GetRolePolicy per
-    // policy). Without this declaration any role with inline Policies
-    // in cdkd state would fire guaranteed false-positive drift.
-    expect(provider.getDriftUnknownPaths()).toEqual(['Policies']);
+  it('does not declare any drift-unknown paths (inline Policies are now read back via GetRolePolicy)', () => {
+    // The previous behavior was `getDriftUnknownPaths() => ['Policies']`
+    // because surfacing inline policy names without bodies would have
+    // fired guaranteed false-positive drift. Inline bodies are now read
+    // by readCurrentState (one GetRolePolicy per policy, capped at IAM's
+    // 10-per-role limit) so the unknown-path declaration is no longer
+    // needed. If a future change re-introduces an unreadable subtree
+    // here, this test must be updated consciously.
+    expect(provider.getDriftUnknownPaths?.() ?? []).toEqual([]);
   });
 
   it('emits empty ManagedPolicyArns placeholder when there are none attached', async () => {
@@ -127,6 +136,7 @@ describe('IAMRoleProvider.readCurrentState', () => {
       },
     });
     mockSend.mockResolvedValueOnce({ AttachedPolicies: [] });
+    mockSend.mockResolvedValueOnce({ PolicyNames: [], IsTruncated: false });
     mockSend.mockResolvedValueOnce({ Tags: [], IsTruncated: false });
 
     const result = await provider.readCurrentState('role', 'Logical', 'AWS::IAM::Role');
@@ -142,6 +152,7 @@ describe('IAMRoleProvider.readCurrentState', () => {
       },
     });
     mockSend.mockResolvedValueOnce({ AttachedPolicies: [] });
+    mockSend.mockResolvedValueOnce({ PolicyNames: [], IsTruncated: false });
     mockSend.mockResolvedValueOnce({
       Tags: [
         { Key: 'Foo', Value: 'Bar' },
@@ -154,7 +165,7 @@ describe('IAMRoleProvider.readCurrentState', () => {
     expect(result?.Tags).toEqual([{ Key: 'Foo', Value: 'Bar' }]);
   });
 
-  it('omits Tags when ListRoleTags returns no user tags', async () => {
+  it('emits empty Tags array when ListRoleTags returns no user tags', async () => {
     mockSend.mockResolvedValueOnce({
       Role: {
         RoleName: 'role',
@@ -163,6 +174,7 @@ describe('IAMRoleProvider.readCurrentState', () => {
       },
     });
     mockSend.mockResolvedValueOnce({ AttachedPolicies: [] });
+    mockSend.mockResolvedValueOnce({ PolicyNames: [], IsTruncated: false });
     mockSend.mockResolvedValueOnce({
       Tags: [{ Key: 'aws:cdk:path', Value: 'MyStack/MyRole/Resource' }],
       IsTruncated: false,
@@ -170,6 +182,175 @@ describe('IAMRoleProvider.readCurrentState', () => {
 
     const result = await provider.readCurrentState('role', 'Logical', 'AWS::IAM::Role');
     expect(result?.Tags).toEqual([]);
+  });
+
+  it('emits PermissionsBoundary placeholder when AWS reports none', async () => {
+    // Always-emit guard (PR #145 pattern): without the placeholder a
+    // console-side ADD on a role that was deployed without a boundary
+    // would never enter observedProperties and the drift comparator
+    // (state-keys-only top-level walk) would silently ignore it.
+    mockSend.mockResolvedValueOnce({
+      Role: {
+        RoleName: 'role',
+        Path: '/',
+        AssumeRolePolicyDocument: encodeURIComponent(JSON.stringify({ V: 1 })),
+        // PermissionsBoundary deliberately undefined.
+      },
+    });
+    mockSend.mockResolvedValueOnce({ AttachedPolicies: [] });
+    mockSend.mockResolvedValueOnce({ PolicyNames: [], IsTruncated: false });
+    mockSend.mockResolvedValueOnce({ Tags: [], IsTruncated: false });
+
+    const result = await provider.readCurrentState('role', 'Logical', 'AWS::IAM::Role');
+    expect(result?.PermissionsBoundary).toBe('');
+  });
+
+  it('surfaces inline Policies with URL-decoded + parsed PolicyDocument bodies', async () => {
+    const docA = {
+      Version: '2012-10-17',
+      Statement: [{ Effect: 'Allow', Action: 's3:GetObject', Resource: '*' }],
+    };
+    const docB = {
+      Version: '2012-10-17',
+      Statement: [{ Effect: 'Allow', Action: 'logs:PutLogEvents', Resource: '*' }],
+    };
+    mockSend.mockResolvedValueOnce({
+      Role: {
+        RoleName: 'role',
+        Path: '/',
+        AssumeRolePolicyDocument: encodeURIComponent(JSON.stringify({ V: 1 })),
+      },
+    });
+    mockSend.mockResolvedValueOnce({ AttachedPolicies: [] });
+    // ListRolePolicies returns names in some order; we sort AWS-only
+    // names lexicographically when state has none, so 'A' before 'B'.
+    mockSend.mockResolvedValueOnce({
+      PolicyNames: ['B', 'A'],
+      IsTruncated: false,
+    });
+    // GetRolePolicy is fired in parallel — we use a name → response map
+    // so order of sequential mocks doesn't matter.
+    mockSend.mockImplementation((cmd: unknown) => {
+      if (cmd instanceof GetRolePolicyCommand) {
+        const input = (cmd as GetRolePolicyCommand).input;
+        if (input.PolicyName === 'A') {
+          return Promise.resolve({
+            RoleName: 'role',
+            PolicyName: 'A',
+            PolicyDocument: encodeURIComponent(JSON.stringify(docA)),
+          });
+        }
+        if (input.PolicyName === 'B') {
+          return Promise.resolve({
+            RoleName: 'role',
+            PolicyName: 'B',
+            PolicyDocument: encodeURIComponent(JSON.stringify(docB)),
+          });
+        }
+      }
+      // Default: ListRoleTags (the trailing call after the parallel GetRolePolicy fan-out).
+      return Promise.resolve({ Tags: [], IsTruncated: false });
+    });
+
+    const result = await provider.readCurrentState('role', 'Logical', 'AWS::IAM::Role');
+
+    expect(result?.Policies).toEqual([
+      { PolicyName: 'A', PolicyDocument: docA },
+      { PolicyName: 'B', PolicyDocument: docB },
+    ]);
+  });
+
+  it('reconciles inline Policies order against state.Policies so positional compare does not fire false drift', async () => {
+    const docA = { V: 'a' };
+    const docB = { V: 'b' };
+    mockSend.mockResolvedValueOnce({
+      Role: {
+        RoleName: 'role',
+        Path: '/',
+        AssumeRolePolicyDocument: encodeURIComponent(JSON.stringify({ V: 1 })),
+      },
+    });
+    mockSend.mockResolvedValueOnce({ AttachedPolicies: [] });
+    // AWS returns the names in lexicographic order (A, B), but state
+    // has them in (B, A). The reconciliation logic should emit (B, A)
+    // matching state's order so the deepEqual positional compare
+    // passes.
+    mockSend.mockResolvedValueOnce({
+      PolicyNames: ['A', 'B'],
+      IsTruncated: false,
+    });
+    mockSend.mockImplementation((cmd: unknown) => {
+      if (cmd instanceof GetRolePolicyCommand) {
+        const input = (cmd as GetRolePolicyCommand).input;
+        return Promise.resolve({
+          RoleName: 'role',
+          PolicyName: input.PolicyName,
+          PolicyDocument: encodeURIComponent(
+            JSON.stringify(input.PolicyName === 'A' ? docA : docB)
+          ),
+        });
+      }
+      return Promise.resolve({ Tags: [], IsTruncated: false });
+    });
+
+    const result = await provider.readCurrentState(
+      'role',
+      'Logical',
+      'AWS::IAM::Role',
+      // State's Policies array — order is (B, A).
+      {
+        Policies: [
+          { PolicyName: 'B', PolicyDocument: docB },
+          { PolicyName: 'A', PolicyDocument: docA },
+        ],
+      }
+    );
+
+    expect(result?.Policies).toEqual([
+      { PolicyName: 'B', PolicyDocument: docB },
+      { PolicyName: 'A', PolicyDocument: docA },
+    ]);
+  });
+
+  it('appends AWS-only inline Policies (added via console) at the end so length / content mismatch surfaces as drift', async () => {
+    const docA = { V: 'a' };
+    const docX = { V: 'x' };
+    mockSend.mockResolvedValueOnce({
+      Role: {
+        RoleName: 'role',
+        Path: '/',
+        AssumeRolePolicyDocument: encodeURIComponent(JSON.stringify({ V: 1 })),
+      },
+    });
+    mockSend.mockResolvedValueOnce({ AttachedPolicies: [] });
+    // State has only A; AWS has A + Xtra (Xtra was added via console).
+    mockSend.mockResolvedValueOnce({
+      PolicyNames: ['A', 'Xtra'],
+      IsTruncated: false,
+    });
+    mockSend.mockImplementation((cmd: unknown) => {
+      if (cmd instanceof GetRolePolicyCommand) {
+        const input = (cmd as GetRolePolicyCommand).input;
+        return Promise.resolve({
+          RoleName: 'role',
+          PolicyName: input.PolicyName,
+          PolicyDocument: encodeURIComponent(
+            JSON.stringify(input.PolicyName === 'A' ? docA : docX)
+          ),
+        });
+      }
+      return Promise.resolve({ Tags: [], IsTruncated: false });
+    });
+
+    const result = await provider.readCurrentState('role', 'Logical', 'AWS::IAM::Role', {
+      Policies: [{ PolicyName: 'A', PolicyDocument: docA }],
+    });
+
+    // State has length 1; result has length 2 → drift fires on Policies.
+    expect(result?.Policies).toEqual([
+      { PolicyName: 'A', PolicyDocument: docA },
+      { PolicyName: 'Xtra', PolicyDocument: docX },
+    ]);
   });
 
   // Structural regression test for the always-emit-placeholder convention
@@ -190,6 +371,8 @@ describe('IAMRoleProvider.readCurrentState', () => {
     });
     // ListAttachedRolePolicies — none attached.
     mockSend.mockResolvedValueOnce({ AttachedPolicies: [] });
+    // ListRolePolicies — no inline.
+    mockSend.mockResolvedValueOnce({ PolicyNames: [], IsTruncated: false });
     // ListRoleTags — no tags.
     mockSend.mockResolvedValueOnce({ Tags: [], IsTruncated: false });
 
@@ -201,12 +384,16 @@ describe('IAMRoleProvider.readCurrentState', () => {
         'Description',
         'ManagedPolicyArns',
         'Path',
+        'PermissionsBoundary',
+        'Policies',
         'RoleName',
         'Tags',
       ].sort()
     );
     expect(result?.Description).toBe('');
+    expect(result?.PermissionsBoundary).toBe('');
     expect(result?.ManagedPolicyArns).toEqual([]);
+    expect(result?.Policies).toEqual([]);
     expect(result?.Tags).toEqual([]);
   });
 });

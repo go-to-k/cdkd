@@ -2,6 +2,8 @@ import {
   KMSClient,
   CreateKeyCommand,
   DescribeKeyCommand,
+  GetKeyPolicyCommand,
+  GetKeyRotationStatusCommand,
   ListAliasesCommand,
   ListKeysCommand,
   ListResourceTagsCommand,
@@ -296,10 +298,12 @@ export class KMSProvider implements ResourceProvider {
       // Update KeyPolicy if changed. Truthy gate (`&& newPolicyStr` below)
       // is intentional: KMS rejects `PutKeyPolicy` with an empty / missing
       // Policy ("KMS key policy must include the JSON statement..."), so
-      // empty / undefined newKeyPolicy must NOT round-trip to AWS. The
-      // `cdkd drift --revert` path doesn't reach this branch — KeyPolicy
-      // is declared in `getDriftUnknownPaths` (not in `observedProperties`),
-      // so neither side has it on a round-trip and the diff is a no-op.
+      // empty / undefined newKeyPolicy must NOT round-trip to AWS. With
+      // `cdkd drift --revert` now flowing through this branch (KeyPolicy
+      // is no longer in `getDriftUnknownPaths`), the gate also guards
+      // against a transient `readCurrentState` permission blip producing
+      // an undefined `newKeyPolicy` on the revert side and clobbering
+      // the existing AWS-side policy.
       const newKeyPolicy = properties['KeyPolicy'];
       const oldKeyPolicy = previousProperties['KeyPolicy'];
       const newPolicyStr = newKeyPolicy
@@ -629,9 +633,59 @@ export class KMSProvider implements ResourceProvider {
     if (md.MultiRegion !== undefined) result['MultiRegion'] = md.MultiRegion;
     if (md.Origin !== undefined) result['Origin'] = md.Origin;
 
-    // Tags via ListResourceTags. AWS-managed keys (alias/aws/*) reject
-    // ListResourceTags with AccessDenied — omit silently.
     if (md.KeyId) {
+      // KeyPolicy via GetKeyPolicy. AWS returns the policy as a JSON
+      // string; we re-parse so the comparator can match cdkd state's
+      // already-resolved object form. KMS keys always have a policy
+      // (minimum is the implicit root statement KMS injects on
+      // CreateKey), so the empty-response branch is unreachable in
+      // practice — we omit the key on a permission error rather than
+      // emit `{}`, which would round-trip through update() as `'{}'`
+      // and KMS would reject ("KMS key policy must include the JSON
+      // statement..."), turning a transient permission blip into a
+      // drift-detection false-positive cycle.
+      try {
+        const policyResp = await this.getClient().send(
+          new GetKeyPolicyCommand({ KeyId: md.KeyId, PolicyName: 'default' })
+        );
+        if (policyResp.Policy) {
+          try {
+            result['KeyPolicy'] = JSON.parse(policyResp.Policy) as unknown;
+          } catch {
+            result['KeyPolicy'] = policyResp.Policy;
+          }
+        }
+      } catch (err) {
+        if (err instanceof NotFoundException) return undefined;
+        // Permission errors etc — leave key absent rather than firing
+        // false drift on every run.
+      }
+
+      // EnableKeyRotation / RotationPeriodInDays via GetKeyRotationStatus.
+      // Class 1 discriminator: only valid for SYMMETRIC_DEFAULT keys —
+      // asymmetric keys reject GetKeyRotationStatus with
+      // UnsupportedOperationException, so we gate the emit on KeySpec.
+      // (CFn defaults KeySpec to SYMMETRIC_DEFAULT when omitted, so
+      // undefined is treated as symmetric.)
+      const isSymmetric = md.KeySpec === undefined || md.KeySpec === 'SYMMETRIC_DEFAULT';
+      if (isSymmetric) {
+        try {
+          const rotationResp = await this.getClient().send(
+            new GetKeyRotationStatusCommand({ KeyId: md.KeyId })
+          );
+          result['EnableKeyRotation'] = rotationResp.KeyRotationEnabled ?? false;
+          if (rotationResp.RotationPeriodInDays !== undefined) {
+            result['RotationPeriodInDays'] = rotationResp.RotationPeriodInDays;
+          }
+        } catch (err) {
+          if (err instanceof NotFoundException) return undefined;
+          // UnsupportedOperationException (asymmetric edge cases AWS
+          // changes over time) / AccessDenied — leave key absent.
+        }
+      }
+
+      // Tags via ListResourceTags. AWS-managed keys (alias/aws/*) reject
+      // ListResourceTags with AccessDenied — omit silently.
       try {
         const tagsResp = await this.getClient().send(
           new ListResourceTagsCommand({ KeyId: md.KeyId })
@@ -651,28 +705,17 @@ export class KMSProvider implements ResourceProvider {
    * drift comparator skips them instead of firing guaranteed false-
    * positive drift on every clean run.
    *
-   *  - `KeyPolicy`: cdkd does NOT call `GetKeyPolicy` in `readCurrentState`.
-   *    The policy body needs JSON parsing for comparison and a separate
-   *    SDK call; deferred to a follow-up. Until then, any user who
-   *    templates `KeyPolicy` would see guaranteed drift.
-   *  - `EnableKeyRotation` / `RotationPeriodInDays`: cdkd does NOT call
-   *    `GetKeyRotationStatus`. Same reason — deferred to a follow-up.
-   *    `EnableKeyRotation` is also a Class 1 candidate (only valid for
-   *    `KeySpec=SYMMETRIC_DEFAULT`); when we lift this gap the read side
-   *    must gate the emit on the discriminator.
    *  - `BypassPolicyLockoutSafetyCheck` / `PendingWindowInDays`: not part
    *    of the persisted AWS state visible via `DescribeKey` — both are
    *    create / delete-time-only inputs.
+   *
+   * `KeyPolicy`, `EnableKeyRotation`, and `RotationPeriodInDays` are now
+   * read by `readCurrentState` (`GetKeyPolicy` and `GetKeyRotationStatus`
+   * respectively), so they no longer need to be declared here.
    */
   getDriftUnknownPaths(resourceType: string): string[] {
     if (resourceType === 'AWS::KMS::Key') {
-      return [
-        'KeyPolicy',
-        'EnableKeyRotation',
-        'RotationPeriodInDays',
-        'BypassPolicyLockoutSafetyCheck',
-        'PendingWindowInDays',
-      ];
+      return ['BypassPolicyLockoutSafetyCheck', 'PendingWindowInDays'];
     }
     return [];
   }

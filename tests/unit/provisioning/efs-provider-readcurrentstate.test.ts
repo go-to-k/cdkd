@@ -201,17 +201,36 @@ describe('EFSProvider.readCurrentState', () => {
   });
 
   describe('AWS::EFS::MountTarget', () => {
-    it('returns FileSystemId + SubnetId from DescribeMountTargets', async () => {
-      mockSend.mockResolvedValueOnce({
-        MountTargets: [
-          { MountTargetId: 'fsmt-1', FileSystemId: 'fs-1', SubnetId: 'subnet-1' },
-        ],
-      });
+    it('returns FileSystemId + SubnetId + SecurityGroups from DescribeMountTargets + DescribeMountTargetSecurityGroups', async () => {
+      mockSend
+        .mockResolvedValueOnce({
+          MountTargets: [
+            { MountTargetId: 'fsmt-1', FileSystemId: 'fs-1', SubnetId: 'subnet-1' },
+          ],
+        })
+        .mockResolvedValueOnce({ SecurityGroups: ['sg-1', 'sg-2'] });
 
       const result = await provider.readCurrentState('fsmt-1', 'L', 'AWS::EFS::MountTarget');
 
       expect(mockSend.mock.calls[0]?.[0]).toBeInstanceOf(DescribeMountTargetsCommand);
-      expect(result).toEqual({ FileSystemId: 'fs-1', SubnetId: 'subnet-1' });
+      expect(result).toEqual({
+        FileSystemId: 'fs-1',
+        SubnetId: 'subnet-1',
+        SecurityGroups: ['sg-1', 'sg-2'],
+      });
+    });
+
+    it('emits empty SecurityGroups placeholder when AWS reports none', async () => {
+      mockSend
+        .mockResolvedValueOnce({
+          MountTargets: [
+            { MountTargetId: 'fsmt-1', FileSystemId: 'fs-1', SubnetId: 'subnet-1' },
+          ],
+        })
+        .mockResolvedValueOnce({ SecurityGroups: [] });
+
+      const result = await provider.readCurrentState('fsmt-1', 'L', 'AWS::EFS::MountTarget');
+      expect(result?.SecurityGroups).toEqual([]);
     });
 
     it('returns undefined when MT is gone', async () => {

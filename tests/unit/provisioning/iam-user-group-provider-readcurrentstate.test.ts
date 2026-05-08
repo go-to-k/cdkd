@@ -1,10 +1,14 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import {
   GetUserCommand,
+  GetUserPolicyCommand,
   GetGroupCommand,
+  GetGroupPolicyCommand,
   ListAttachedUserPoliciesCommand,
   ListGroupsForUserCommand,
+  ListUserPoliciesCommand,
   ListAttachedGroupPoliciesCommand,
+  ListGroupPoliciesCommand,
   NoSuchEntityException,
 } from '@aws-sdk/client-iam';
 
@@ -63,19 +67,80 @@ describe('IAMUserGroupProvider.readCurrentState', () => {
       mockSend.mockResolvedValueOnce({
         Groups: [{ GroupName: 'engineers' }, { GroupName: 'admins' }],
       });
+      // ListUserPolicies — no inline.
+      mockSend.mockResolvedValueOnce({ PolicyNames: [], IsTruncated: false });
 
       const result = await provider.readCurrentState('alice', 'Logical', 'AWS::IAM::User');
 
       expect(mockSend.mock.calls[0]?.[0]).toBeInstanceOf(GetUserCommand);
       expect(mockSend.mock.calls[1]?.[0]).toBeInstanceOf(ListAttachedUserPoliciesCommand);
       expect(mockSend.mock.calls[2]?.[0]).toBeInstanceOf(ListGroupsForUserCommand);
+      expect(mockSend.mock.calls[3]?.[0]).toBeInstanceOf(ListUserPoliciesCommand);
       expect(result).toEqual({
         UserName: 'alice',
         Path: '/team/',
         PermissionsBoundary: 'arn:aws:iam::aws:policy/Boundary',
         ManagedPolicyArns: ['arn:aws:iam::aws:policy/ReadOnlyAccess'],
         Groups: ['engineers', 'admins'],
+        Policies: [],
       });
+    });
+
+    it('emits PermissionsBoundary placeholder when AWS reports none', async () => {
+      // Always-emit guard (PR #145 pattern): without the placeholder a
+      // console-side ADD on a user deployed without a boundary would
+      // never enter observedProperties and the drift comparator would
+      // silently ignore it.
+      mockSend.mockResolvedValueOnce({
+        User: { UserName: 'alice', Path: '/' },
+      });
+      mockSend.mockResolvedValueOnce({ AttachedPolicies: [] });
+      mockSend.mockResolvedValueOnce({ Groups: [] });
+      mockSend.mockResolvedValueOnce({ PolicyNames: [], IsTruncated: false });
+
+      const result = await provider.readCurrentState('alice', 'Logical', 'AWS::IAM::User');
+      expect(result?.PermissionsBoundary).toBe('');
+    });
+
+    it('surfaces inline Policies with parsed PolicyDocument bodies and reconciles order against state', async () => {
+      const docA = { V: 'a' };
+      const docB = { V: 'b' };
+      mockSend.mockResolvedValueOnce({
+        User: { UserName: 'alice', Path: '/' },
+      });
+      mockSend.mockResolvedValueOnce({ AttachedPolicies: [] });
+      mockSend.mockResolvedValueOnce({ Groups: [] });
+      // AWS returns lex order ['A', 'B']; state has order (B, A).
+      mockSend.mockResolvedValueOnce({
+        PolicyNames: ['A', 'B'],
+        IsTruncated: false,
+      });
+      mockSend.mockImplementation((cmd: unknown) => {
+        if (cmd instanceof GetUserPolicyCommand) {
+          const input = (cmd as GetUserPolicyCommand).input;
+          return Promise.resolve({
+            UserName: 'alice',
+            PolicyName: input.PolicyName,
+            PolicyDocument: encodeURIComponent(
+              JSON.stringify(input.PolicyName === 'A' ? docA : docB)
+            ),
+          });
+        }
+        return Promise.resolve({});
+      });
+
+      const result = await provider.readCurrentState('alice', 'Logical', 'AWS::IAM::User', {
+        Policies: [
+          { PolicyName: 'B', PolicyDocument: docB },
+          { PolicyName: 'A', PolicyDocument: docA },
+        ],
+      });
+
+      // Order should match state's (B, A) so positional compare passes.
+      expect(result?.Policies).toEqual([
+        { PolicyName: 'B', PolicyDocument: docB },
+        { PolicyName: 'A', PolicyDocument: docA },
+      ]);
     });
 
     it('returns undefined when user gone', async () => {
@@ -98,6 +163,8 @@ describe('IAMUserGroupProvider.readCurrentState', () => {
           { PolicyArn: 'arn:aws:iam::aws:policy/AmazonS3FullAccess', PolicyName: 's3' },
         ],
       });
+      // ListGroupPolicies — no inline.
+      mockSend.mockResolvedValueOnce({ PolicyNames: [], IsTruncated: false });
 
       const result = await provider.readCurrentState(
         'engineers',
@@ -107,11 +174,38 @@ describe('IAMUserGroupProvider.readCurrentState', () => {
 
       expect(mockSend.mock.calls[0]?.[0]).toBeInstanceOf(GetGroupCommand);
       expect(mockSend.mock.calls[1]?.[0]).toBeInstanceOf(ListAttachedGroupPoliciesCommand);
+      expect(mockSend.mock.calls[2]?.[0]).toBeInstanceOf(ListGroupPoliciesCommand);
       expect(result).toEqual({
         GroupName: 'engineers',
         Path: '/',
         ManagedPolicyArns: ['arn:aws:iam::aws:policy/AmazonS3FullAccess'],
+        Policies: [],
       });
+    });
+
+    it('surfaces inline Policies for groups via GetGroupPolicy', async () => {
+      const doc = { V: 1 };
+      mockSend.mockResolvedValueOnce({
+        Group: { GroupName: 'engineers', Path: '/' },
+      });
+      mockSend.mockResolvedValueOnce({ AttachedPolicies: [] });
+      mockSend.mockResolvedValueOnce({
+        PolicyNames: ['Inline1'],
+        IsTruncated: false,
+      });
+      mockSend.mockImplementation((cmd: unknown) => {
+        if (cmd instanceof GetGroupPolicyCommand) {
+          return Promise.resolve({
+            GroupName: 'engineers',
+            PolicyName: 'Inline1',
+            PolicyDocument: encodeURIComponent(JSON.stringify(doc)),
+          });
+        }
+        return Promise.resolve({});
+      });
+
+      const result = await provider.readCurrentState('engineers', 'Logical', 'AWS::IAM::Group');
+      expect(result?.Policies).toEqual([{ PolicyName: 'Inline1', PolicyDocument: doc }]);
     });
 
     it('returns undefined when group gone', async () => {

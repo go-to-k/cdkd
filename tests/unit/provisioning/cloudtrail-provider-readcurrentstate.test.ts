@@ -3,6 +3,7 @@ import {
   GetTrailCommand,
   GetTrailStatusCommand,
   GetEventSelectorsCommand,
+  GetInsightSelectorsCommand,
   ListTagsCommand,
   TrailNotFoundException,
 } from '@aws-sdk/client-cloudtrail';
@@ -51,7 +52,7 @@ describe('CloudTrailProvider.readCurrentState', () => {
     provider = new CloudTrailProvider();
   });
 
-  it('returns CFn-shaped properties from GetTrail + Status + Selectors (happy path)', async () => {
+  it('returns CFn-shaped properties from GetTrail + Status + EventSelectors + InsightSelectors + Tags (happy path)', async () => {
     mockSend
       .mockResolvedValueOnce({
         Trail: {
@@ -69,6 +70,9 @@ describe('CloudTrailProvider.readCurrentState', () => {
       .mockResolvedValueOnce({
         EventSelectors: [{ ReadWriteType: 'All', IncludeManagementEvents: true }],
       })
+      .mockResolvedValueOnce({
+        InsightSelectors: [{ InsightType: 'ApiCallRateInsight' }],
+      })
       .mockResolvedValueOnce({ ResourceTagList: [] });
 
     const result = await provider.readCurrentState('mytrail', 'L', 'AWS::CloudTrail::Trail');
@@ -76,7 +80,8 @@ describe('CloudTrailProvider.readCurrentState', () => {
     expect(mockSend.mock.calls[0]?.[0]).toBeInstanceOf(GetTrailCommand);
     expect(mockSend.mock.calls[1]?.[0]).toBeInstanceOf(GetTrailStatusCommand);
     expect(mockSend.mock.calls[2]?.[0]).toBeInstanceOf(GetEventSelectorsCommand);
-    expect(mockSend.mock.calls[3]?.[0]).toBeInstanceOf(ListTagsCommand);
+    expect(mockSend.mock.calls[3]?.[0]).toBeInstanceOf(GetInsightSelectorsCommand);
+    expect(mockSend.mock.calls[4]?.[0]).toBeInstanceOf(ListTagsCommand);
     expect(result).toEqual({
       TrailName: 'mytrail',
       S3BucketName: 'mybucket',
@@ -89,25 +94,50 @@ describe('CloudTrailProvider.readCurrentState', () => {
       IsOrganizationTrail: false,
       IsLogging: true,
       EventSelectors: [{ ReadWriteType: 'All', IncludeManagementEvents: true }],
+      InsightSelectors: [{ InsightType: 'ApiCallRateInsight' }],
       Tags: [],
     });
   });
 
-  it('omits IsLogging / EventSelectors on transient secondary errors', async () => {
+  it('emits empty InsightSelectors placeholder when AWS reports none (always-emit)', async () => {
+    mockSend
+      .mockResolvedValueOnce({
+        Trail: {
+          Name: 'mytrail',
+          S3BucketName: 'mybucket',
+          TrailARN: 'arn:aws:cloudtrail:us-east-1:1:trail/mytrail',
+        },
+      })
+      .mockResolvedValueOnce({ IsLogging: false })
+      .mockResolvedValueOnce({ EventSelectors: [] })
+      .mockResolvedValueOnce({ InsightSelectors: [] })
+      .mockResolvedValueOnce({ ResourceTagList: [] });
+
+    const result = await provider.readCurrentState('mytrail', 'L', 'AWS::CloudTrail::Trail');
+    expect(result?.InsightSelectors).toEqual([]);
+  });
+
+  it('omits IsLogging / EventSelectors on transient secondary errors but always-emits InsightSelectors and Tags placeholders', async () => {
     mockSend
       .mockResolvedValueOnce({
         Trail: { Name: 'mytrail', S3BucketName: 'mybucket' },
       })
+      // GetTrailStatus failure — IsLogging key drops out
       .mockRejectedValueOnce(new Error('AccessDenied'))
+      // GetEventSelectors failure — EventSelectors key drops out
+      .mockRejectedValueOnce(new Error('AccessDenied'))
+      // GetInsightSelectors failure — InsightSelectors falls back to []
       .mockRejectedValueOnce(new Error('AccessDenied'));
 
     const result = await provider.readCurrentState('mytrail', 'L', 'AWS::CloudTrail::Trail');
 
     // Always-emit placeholders survive even when secondary calls fail —
-    // only `IsLogging` (GetTrailStatus) and `EventSelectors`
+    // `IsLogging` (GetTrailStatus) and `EventSelectors`
     // (GetEventSelectors) drop out (no synthetic placeholders for those
     // since the call may be AccessDenied rather than "feature absent").
-    // Tags falls back to `[]` because TrailARN is missing on this fixture.
+    // `InsightSelectors` falls back to `[]` (the AWS-default state when
+    // not configured). Tags falls back to `[]` because TrailARN is
+    // missing on this fixture.
     expect(result).toEqual({
       TrailName: 'mytrail',
       S3BucketName: 'mybucket',
@@ -118,6 +148,7 @@ describe('CloudTrailProvider.readCurrentState', () => {
       KMSKeyId: '',
       SnsTopicName: '',
       IsOrganizationTrail: false,
+      InsightSelectors: [],
       Tags: [],
     });
   });
@@ -137,6 +168,7 @@ describe('CloudTrailProvider.readCurrentState', () => {
       })
       .mockRejectedValueOnce(new Error('AccessDenied'))
       .mockRejectedValueOnce(new Error('AccessDenied'))
+      .mockResolvedValueOnce({ InsightSelectors: [] })
       .mockResolvedValueOnce({
         ResourceTagList: [
           {
@@ -153,13 +185,14 @@ describe('CloudTrailProvider.readCurrentState', () => {
     expect(result?.Tags).toEqual([{ Key: 'Foo', Value: 'Bar' }]);
   });
 
-  it('omits Tags when ListTags returns no user tags', async () => {
+  it('emits empty Tags array when ListTags returns no user tags', async () => {
     mockSend
       .mockResolvedValueOnce({
         Trail: { Name: 'mytrail', TrailARN: 'arn:aws:cloudtrail:us-east-1:1:trail/mytrail' },
       })
       .mockRejectedValueOnce(new Error('AccessDenied'))
       .mockRejectedValueOnce(new Error('AccessDenied'))
+      .mockResolvedValueOnce({ InsightSelectors: [] })
       .mockResolvedValueOnce({
         ResourceTagList: [
           {

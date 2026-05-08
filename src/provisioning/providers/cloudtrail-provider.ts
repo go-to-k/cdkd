@@ -10,6 +10,7 @@ import {
   GetTrailCommand,
   GetTrailStatusCommand,
   GetEventSelectorsCommand,
+  GetInsightSelectorsCommand,
   ListTrailsCommand,
   ListTagsCommand,
   AddTagsCommand,
@@ -251,21 +252,23 @@ export class CloudTrailProvider implements ResourceProvider {
         }
       }
 
-      // Update InsightSelectors if changed
+      // Update InsightSelectors if changed. AWS-documented way to
+      // remove InsightSelectors is `PutInsightSelectors` with an empty
+      // array, so we always issue the Put when the diff fires (load-
+      // bearing for `cdkd drift --revert` clearing console-added
+      // InsightSelectors back to their templated absence).
       const newInsightSelectors = properties['InsightSelectors'] as InsightSelector[] | undefined;
       const oldInsightSelectors = previousProperties['InsightSelectors'] as
         | InsightSelector[]
         | undefined;
       if (JSON.stringify(newInsightSelectors) !== JSON.stringify(oldInsightSelectors)) {
-        if (newInsightSelectors && newInsightSelectors.length > 0) {
-          this.logger.debug(`Updating insight selectors for CloudTrail Trail ${logicalId}`);
-          await this.getClient().send(
-            new PutInsightSelectorsCommand({
-              TrailName: physicalId,
-              InsightSelectors: newInsightSelectors,
-            })
-          );
-        }
+        this.logger.debug(`Updating insight selectors for CloudTrail Trail ${logicalId}`);
+        await this.getClient().send(
+          new PutInsightSelectorsCommand({
+            TrailName: physicalId,
+            InsightSelectors: newInsightSelectors ?? [],
+          })
+        );
       }
 
       // Handle IsLogging changes
@@ -432,8 +435,10 @@ export class CloudTrailProvider implements ResourceProvider {
    * auto-tags are filtered out and the result key is omitted when AWS
    * reports no user tags.
    *
-   * `InsightSelectors` is skipped for v1 (separate call + shape mapping
-   * still TBD).
+   * `InsightSelectors` is surfaced via a follow-up `GetInsightSelectors`
+   * call — same shape on both sides (`[{InsightType}]`). The key is
+   * always emitted (`[]` when AWS reports none) so a console-side ADD
+   * is detectable on the v3 observedProperties baseline.
    *
    * Returns `undefined` when the trail is gone (`TrailNotFoundException`).
    */
@@ -519,6 +524,23 @@ export class CloudTrailProvider implements ResourceProvider {
     } catch {
       // Best-effort.
     }
+
+    // InsightSelectors — separate call. Same shape on both sides
+    // (CFn `[{InsightType}]` matches SDK), so we emit verbatim and
+    // always-emit `[]` on no result so a console-side ADD is visible
+    // to drift on the v3 observedProperties baseline.
+    let insightSelectors: Array<{ InsightType?: string }> = [];
+    try {
+      const insight = await this.getClient().send(
+        new GetInsightSelectorsCommand({ TrailName: physicalId })
+      );
+      insightSelectors = (insight.InsightSelectors ?? []).map((s) => ({
+        ...(s.InsightType !== undefined && { InsightType: s.InsightType }),
+      }));
+    } catch {
+      // InsightNotEnabledException / permissions / etc — best-effort.
+    }
+    result['InsightSelectors'] = insightSelectors;
 
     // Tags via ListTags. Always emit `Tags: []` so a console-side tag
     // add on a previously-untagged trail is detectable as drift (per

@@ -186,19 +186,15 @@ describe('KMSProvider read-update round-trip', () => {
 });
 
 describe('KMSProvider.getDriftUnknownPaths', () => {
-  it('declares unreadable AWS::KMS::Key paths so the drift comparator skips them', () => {
-    // KeyPolicy / EnableKeyRotation / RotationPeriodInDays are NOT
-    // round-trippable from AWS because cdkd does not call
-    // GetKeyPolicy / GetKeyRotationStatus in readCurrentState.
-    // BypassPolicyLockoutSafetyCheck / PendingWindowInDays are
-    // create / delete-time-only inputs not visible via DescribeKey.
-    // Without this declaration any user who templates these would see
+  it('declares only create/delete-time-only AWS::KMS::Key paths as drift-unknown', () => {
+    // KeyPolicy / EnableKeyRotation / RotationPeriodInDays are now read
+    // by readCurrentState (GetKeyPolicy / GetKeyRotationStatus). Only
+    // BypassPolicyLockoutSafetyCheck / PendingWindowInDays remain — both
+    // are create / delete-time-only inputs not visible via DescribeKey,
+    // so without this declaration any user who templates them would see
     // guaranteed false drift on every clean run.
     const provider = new KMSProvider();
     expect(provider.getDriftUnknownPaths('AWS::KMS::Key')).toEqual([
-      'KeyPolicy',
-      'EnableKeyRotation',
-      'RotationPeriodInDays',
       'BypassPolicyLockoutSafetyCheck',
       'PendingWindowInDays',
     ]);
