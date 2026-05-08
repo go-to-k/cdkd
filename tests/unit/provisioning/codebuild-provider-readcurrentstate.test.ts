@@ -89,7 +89,38 @@ describe('CodeBuildProvider.readCurrentState', () => {
         PrivilegedMode: false,
         EnvironmentVariables: [{ Name: 'FOO', Value: 'BAR', Type: 'PLAINTEXT' }],
       },
+      // Always-emit placeholders for LogsConfig / VpcConfig / Cache so
+      // a console-side enable on a previously-default project surfaces
+      // as drift on the v3 observedProperties baseline.
+      LogsConfig: {
+        CloudWatchLogs: { Status: 'ENABLED' },
+        S3Logs: { Status: 'DISABLED' },
+      },
+      VpcConfig: {},
+      Cache: { Type: 'NO_CACHE' },
       Tags: [],
+    });
+  });
+
+  it('emits VpcConfig with VpcId/Subnets/SecurityGroupIds when AWS reports a VPC config', async () => {
+    mockSend.mockResolvedValueOnce({
+      projects: [
+        {
+          name: 'myproj',
+          vpcConfig: {
+            vpcId: 'vpc-abc',
+            subnets: ['subnet-1', 'subnet-2'],
+            securityGroupIds: ['sg-1'],
+          },
+        },
+      ],
+    });
+
+    const result = await provider.readCurrentState('myproj', 'L', 'AWS::CodeBuild::Project');
+    expect(result?.VpcConfig).toEqual({
+      VpcId: 'vpc-abc',
+      Subnets: ['subnet-1', 'subnet-2'],
+      SecurityGroupIds: ['sg-1'],
     });
   });
 
