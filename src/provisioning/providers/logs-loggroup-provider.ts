@@ -2,6 +2,7 @@ import {
   CloudWatchLogsClient,
   CreateLogGroupCommand,
   DeleteLogGroupCommand,
+  DescribeIndexPoliciesCommand,
   DescribeLogGroupsCommand,
   GetDataProtectionPolicyCommand,
   ListTagsForResourceCommand,
@@ -346,16 +347,26 @@ export class LogsLogGroupProvider implements ResourceProvider {
    * `RetentionInDays`).
    *
    * Coverage: `LogGroupName`, `KmsKeyId`, `RetentionInDays`,
-   * `LogGroupClass`, `Tags`, plus `DataProtectionPolicy` (via
+   * `LogGroupClass`, `Tags`, `DataProtectionPolicy` (via
    * `GetDataProtectionPolicy`, JSON-parsed back to the object form
-   * cdkd state holds). Still out of scope: `FieldIndexPolicies`
-   * (separate `DescribeFieldIndexPolicies` call, follow-up),
+   * cdkd state holds), `DeletionProtectionEnabled` and
+   * `BearerTokenAuthenticationEnabled` (both surfaced directly from
+   * `DescribeLogGroups` — the SDK's LogGroup type carries them as
+   * `deletionProtectionEnabled` / `bearerTokenAuthenticationEnabled`),
+   * and `FieldIndexPolicies` (via `DescribeIndexPolicies`, filtered to
+   * log-group-level policies and JSON-parsed). Still out of scope:
    * `ResourcePolicyDocument` (managed by the separate
    * `AWS::Logs::ResourcePolicy` resource type — account-wide, not
-   * per-log-group), `DeletionProtectionEnabled` (not surfaced by
-   * `DescribeLogGroups`; would need a yet-undocumented separate API),
-   * `BearerTokenAuthenticationEnabled` (specialized X-Ray / service-log
-   * endpoint feature, also not in `DescribeLogGroups`).
+   * per-log-group).
+   *
+   * Known limitation: cdkd's `create()` / `update()` flows do NOT yet
+   * apply `FieldIndexPolicies` / `DeletionProtectionEnabled` /
+   * `BearerTokenAuthenticationEnabled` — they're in `handledProperties`
+   * to prevent CC API fallback but no actual `PutIndexPolicy` /
+   * `PutLogGroupDeletionProtection` / `PutBearerTokenAuthentication`
+   * calls fire. Surfacing these in `readCurrentState` means a user
+   * who templates them will see drift on the first run; a follow-up
+   * needs to wire the create/update flow.
    *
    * Tags are read via `ListTagsForResource` (using the log-group ARN from
    * the same `DescribeLogGroups` response). CDK's `aws:*` auto-tags are
@@ -388,6 +399,11 @@ export class LogsLogGroupProvider implements ResourceProvider {
       // and AWS both have no retention.
       result['RetentionInDays'] = found.retentionInDays ?? 0;
       if (found.logGroupClass !== undefined) result['LogGroupClass'] = found.logGroupClass;
+      // DeletionProtectionEnabled / BearerTokenAuthenticationEnabled —
+      // both are returned directly by DescribeLogGroups. Always-emit
+      // false placeholder for console-side toggle detection.
+      result['DeletionProtectionEnabled'] = found.deletionProtectionEnabled ?? false;
+      result['BearerTokenAuthenticationEnabled'] = found.bearerTokenAuthenticationEnabled ?? false;
 
       // Tags via ListTagsForResource. Logs ARNs include a trailing ":*"
       // wildcard that ListTagsForResource rejects — strip it.
@@ -430,6 +446,35 @@ export class LogsLogGroupProvider implements ResourceProvider {
         // Best-effort — leave the empty placeholder.
       }
       result['DataProtectionPolicy'] = dpp;
+
+      // FieldIndexPolicies via DescribeIndexPolicies. AWS returns
+      // IndexPolicy[] where each entry has policyDocument (JSON string)
+      // + source ('LOG_GROUP' / 'ACCOUNT'). We filter to log-group-level
+      // policies (excluding inherited account-level policies) and parse
+      // the JSON document so the comparator matches cdkd state's
+      // already-resolved object form. CFn shape is an array of policy
+      // documents (strings or objects). Always-emit [] for console-
+      // side ADD detection.
+      let fieldIndexPolicies: unknown[] = [];
+      try {
+        const idxResp = await this.logsClient.send(
+          new DescribeIndexPoliciesCommand({ logGroupIdentifiers: [physicalId] })
+        );
+        const logGroupLevel = (idxResp.indexPolicies ?? []).filter((p) => p.source !== 'ACCOUNT');
+        fieldIndexPolicies = logGroupLevel
+          .map((p) => {
+            if (!p.policyDocument) return undefined;
+            try {
+              return JSON.parse(p.policyDocument);
+            } catch {
+              return p.policyDocument;
+            }
+          })
+          .filter((p): p is unknown => p !== undefined);
+      } catch {
+        // Best-effort.
+      }
+      result['FieldIndexPolicies'] = fieldIndexPolicies;
 
       return result;
     } catch (err) {
