@@ -79,7 +79,38 @@ describe('SSMParameterProvider.readCurrentState', () => {
       AllowedPattern: '^[a-z]+$',
       Tier: 'Standard',
       Tags: [],
+      Policies: [],
     });
+  });
+
+  it('surfaces parsed Policies (PolicyText JSON-parsed, PolicyStatus filtered)', async () => {
+    const expirationPolicy = {
+      Type: 'Expiration',
+      Version: '1.0',
+      Attributes: { Timestamp: '2024-01-01T00:00:00Z' },
+    };
+    mockSend
+      .mockResolvedValueOnce({
+        Parameter: { Name: '/foo', Type: 'String', Value: 'bar' },
+      })
+      .mockResolvedValueOnce({
+        Parameters: [
+          {
+            Name: '/foo',
+            Policies: [
+              {
+                PolicyText: JSON.stringify(expirationPolicy),
+                PolicyType: 'Expiration',
+                PolicyStatus: 'Pending', // AWS-managed, must NOT appear in result
+              },
+            ],
+          },
+        ],
+      })
+      .mockResolvedValueOnce({ TagList: [] });
+
+    const result = await provider.readCurrentState('/foo', 'ParamLogical', 'AWS::SSM::Parameter');
+    expect(result?.Policies).toEqual([expirationPolicy]);
   });
 
   it('returns undefined when parameter is gone', async () => {
@@ -92,7 +123,7 @@ describe('SSMParameterProvider.readCurrentState', () => {
     expect(result).toBeUndefined();
   });
 
-  it('omits metadata fields when DescribeParameters fails (best-effort)', async () => {
+  it('emits Policies=[] placeholder when DescribeParameters fails (best-effort)', async () => {
     mockSend
       .mockResolvedValueOnce({
         Parameter: {
@@ -111,6 +142,10 @@ describe('SSMParameterProvider.readCurrentState', () => {
       Type: 'String',
       Value: 'bar',
       Tags: [],
+      // Always-emit fallback so console-side ADD on a previously-
+      // un-policy'd parameter surfaces as drift even when
+      // DescribeParameters errored.
+      Policies: [],
     });
   });
 

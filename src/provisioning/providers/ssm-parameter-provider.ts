@@ -304,10 +304,21 @@ export class SSMParameterProvider implements ResourceProvider {
    *
    * `Name` is set to the physical id. `Tags` is surfaced via a follow-up
    * `ListTagsForResource(ResourceType=Parameter)` call, with CDK's `aws:*`
-   * auto-tags filtered out. `Policies` is intentionally out of scope:
-   * `DescribeParameters.Policies` returns a structured array but cdkd state
-   * holds the raw JSON string the user typed — comparing the two accurately
-   * needs more work.
+   * auto-tags filtered out.
+   *
+   * `Policies` is surfaced from the same `DescribeParameters` response.
+   * AWS returns `Parameters[0].Policies` as
+   * `[{PolicyText, PolicyType, PolicyStatus}]`; cdkd state holds a JSON
+   * string of the user-templated policy array (CFn's documented shape).
+   * To compare cleanly we parse each `PolicyText` (itself JSON) into
+   * objects, drop the AWS-managed `PolicyStatus` (Pending / InSync /
+   * Expired), and emit the parsed object array. On the v3
+   * `observedProperties` baseline this matches `observedProperties` (which
+   * stored our parsed output at deploy time) exactly. On the v2 fallback
+   * baseline (state.properties = JSON string) the comparator reports a
+   * one-time drift on first run; users resolve via
+   * `cdkd state refresh-observed`. Always-emit `[]` placeholder for
+   * console-side ADD detection.
    *
    * **Note**: For `SecureString` parameters, AWS returns the encrypted
    * blob in `Value` (we pass `WithDecryption: false`). cdkd state usually
@@ -345,6 +356,7 @@ export class SSMParameterProvider implements ResourceProvider {
     // Fetch metadata via DescribeParameters filtered on the name. Best-effort:
     // a missing-permission error here should not fail the snapshot — we just
     // omit the metadata keys.
+    let policiesEmitted = false;
     try {
       const desc = await this.ssmClient.send(
         new DescribeParametersCommand({
@@ -357,9 +369,30 @@ export class SSMParameterProvider implements ResourceProvider {
       if (meta?.Tier !== undefined) {
         result['Tier'] = meta.Tier;
       }
+
+      // Policies — AWS returns [{PolicyText, PolicyType, PolicyStatus}];
+      // we parse PolicyText (JSON) and emit the parsed objects. PolicyStatus
+      // is AWS-managed (Pending / InSync / Expired) and intentionally
+      // dropped — it's not part of the user's templated input.
+      const parsedPolicies: unknown[] = [];
+      for (const p of meta?.Policies ?? []) {
+        if (!p.PolicyText) continue;
+        try {
+          parsedPolicies.push(JSON.parse(p.PolicyText));
+        } catch {
+          parsedPolicies.push(p.PolicyText);
+        }
+      }
+      result['Policies'] = parsedPolicies;
+      policiesEmitted = true;
     } catch {
       // Ignore — Type / Value / DataType already captured above.
     }
+    // Always-emit guard: if DescribeParameters failed entirely, surface
+    // an empty Policies placeholder so a console-side ADD on a previously-
+    // un-policy'd parameter still surfaces as drift on the v3
+    // observedProperties baseline.
+    if (!policiesEmitted) result['Policies'] = [];
 
     // Tags via ListTagsForResource (best-effort; missing tag permission is
     // tolerated by simply omitting the key).
