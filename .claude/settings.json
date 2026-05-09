@@ -59,6 +59,13 @@
             "if": "Bash(git commit*)",
             "timeout": 10,
             "statusMessage": "Checking new SDK provider has round-trip test..."
+          },
+          {
+            "type": "command",
+            "command": ".claude/hooks/provider-docs-gate.sh",
+            "if": "Bash(git commit*)",
+            "timeout": 10,
+            "statusMessage": "Checking new provider registration has docs entries..."
           }
         ]
       }
