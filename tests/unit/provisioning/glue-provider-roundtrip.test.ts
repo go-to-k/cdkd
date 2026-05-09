@@ -1,6 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { UpdateTableCommand } from '@aws-sdk/client-glue';
-import { ResourceUpdateNotSupportedError } from '../../../src/utils/error-handler.js';
+import { UpdateDatabaseCommand, UpdateTableCommand } from '@aws-sdk/client-glue';
 
 const mockSend = vi.fn();
 
@@ -47,11 +46,50 @@ describe('GlueProvider read-update round-trip', () => {
     provider = new GlueProvider();
   });
 
-  it('AWS::Glue::Database — update() rejects with ResourceUpdateNotSupportedError (immutable)', async () => {
-    // Per CLAUDE.md PR I, Glue Database update is intentionally not wired
-    // up. `cdkd drift --revert` must surface the immutable error rather
-    // than silently no-op. This locks in the contract so a future PR that
-    // adds UpdateDatabase plumbing also revisits the round-trip story.
+  it('AWS::Glue::Database — update() round-trips full DatabaseInput via UpdateDatabaseCommand', async () => {
+    // Round-trip path for `cdkd drift --revert`: AWS-current snapshot
+    // is supplied as `properties`, the same shape `createDatabase`
+    // would build from `DatabaseInput`. Full DatabaseInput is replayed
+    // (Description / LocationUri / Parameters reach AWS via UpdateDatabase).
+    mockSend.mockResolvedValueOnce({});
+
+    const observed = {
+      DatabaseInput: {
+        Name: 'mydb',
+        Description: 'updated desc',
+        LocationUri: 's3://example/path',
+        Parameters: { foo: 'bar' },
+      },
+    };
+
+    const result = await provider.update('L', 'mydb', 'AWS::Glue::Database', observed, observed);
+
+    expect(result).toEqual({ physicalId: 'mydb', wasReplaced: false });
+
+    const updateCall = mockSend.mock.calls.find((c) => c[0] instanceof UpdateDatabaseCommand);
+    expect(updateCall).toBeDefined();
+    const input = updateCall![0].input as {
+      Name: string;
+      DatabaseInput: Record<string, unknown>;
+      CatalogId?: string;
+    };
+    expect(input.Name).toBe('mydb');
+    expect(input.CatalogId).toBeUndefined();
+    expect(input.DatabaseInput).toEqual({
+      Name: 'mydb',
+      Description: 'updated desc',
+      LocationUri: 's3://example/path',
+      Parameters: { foo: 'bar' },
+    });
+  });
+
+  it('AWS::Glue::Database — empty-string Description and empty Parameters reach AWS (truthy-gate guard)', async () => {
+    // `cdkd drift --revert` must clear console-side ADDs to optional
+    // fields. An empty-string Description revert should reach
+    // UpdateDatabase, not be dropped by a truthy gate. Same for an
+    // empty Parameters map.
+    mockSend.mockResolvedValueOnce({});
+
     const observed = {
       DatabaseInput: {
         Name: 'mydb',
@@ -59,11 +97,36 @@ describe('GlueProvider read-update round-trip', () => {
         Parameters: {},
       },
     };
-    await expect(
-      provider.update('L', 'mydb', 'AWS::Glue::Database', observed, observed)
-    ).rejects.toBeInstanceOf(ResourceUpdateNotSupportedError);
-    // No AWS calls fired.
-    expect(mockSend).not.toHaveBeenCalled();
+
+    await provider.update('L', 'mydb', 'AWS::Glue::Database', observed, observed);
+
+    const updateCall = mockSend.mock.calls.find((c) => c[0] instanceof UpdateDatabaseCommand);
+    expect(updateCall).toBeDefined();
+    const input = updateCall![0].input as { DatabaseInput: Record<string, unknown> };
+    expect(input.DatabaseInput.Description).toBe('');
+    expect(input.DatabaseInput.Parameters).toEqual({});
+    // LocationUri was not in the snapshot — must not appear in the
+    // update payload (would be a Class 1 leak otherwise).
+    expect(input.DatabaseInput.LocationUri).toBeUndefined();
+  });
+
+  it('AWS::Glue::Database — CatalogId is forwarded when present in properties', async () => {
+    mockSend.mockResolvedValueOnce({});
+
+    const observed = {
+      CatalogId: '123456789012',
+      DatabaseInput: {
+        Name: 'mydb',
+        Description: '',
+      },
+    };
+
+    await provider.update('L', 'mydb', 'AWS::Glue::Database', observed, observed);
+
+    const updateCall = mockSend.mock.calls.find((c) => c[0] instanceof UpdateDatabaseCommand);
+    expect(updateCall).toBeDefined();
+    const input = updateCall![0].input as { CatalogId?: string };
+    expect(input.CatalogId).toBe('123456789012');
   });
 
   it('AWS::Glue::Table — Class 2: empty placeholders (Parameters {}, PartitionKeys []) round-trip without AWS-rejection shape', async () => {

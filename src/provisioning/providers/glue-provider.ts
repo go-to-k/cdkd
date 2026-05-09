@@ -1,6 +1,7 @@
 import {
   GlueClient,
   CreateDatabaseCommand,
+  UpdateDatabaseCommand,
   DeleteDatabaseCommand,
   CreateTableCommand,
   UpdateTableCommand,
@@ -11,6 +12,7 @@ import {
   GetTablesCommand,
   GetTagsCommand,
   EntityNotFoundException,
+  type DatabaseInput,
   type TableInput,
   type StorageDescriptor,
   type Column,
@@ -19,7 +21,7 @@ import {
 } from '@aws-sdk/client-glue';
 import { STSClient, GetCallerIdentityCommand } from '@aws-sdk/client-sts';
 import { getLogger } from '../../utils/logger.js';
-import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/error-handler.js';
+import { ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { CDK_PATH_TAG } from '../import-helpers.js';
 import type {
@@ -89,14 +91,7 @@ export class GlueProvider implements ResourceProvider {
   ): Promise<ResourceUpdateResult> {
     switch (resourceType) {
       case 'AWS::Glue::Database':
-        // AWS exposes UpdateDatabase but cdkd does not yet plumb the
-        // DatabaseInput delta through. `cdkd drift --revert` surfaces a
-        // clear immutable-error rather than silently no-op'ing.
-        throw new ResourceUpdateNotSupportedError(
-          resourceType,
-          logicalId,
-          'Glue Database updates are not yet implemented in cdkd; re-deploy with cdkd deploy --replace, or destroy + redeploy the stack'
-        );
+        return this.updateDatabase(logicalId, physicalId, resourceType, properties);
       case 'AWS::Glue::Table':
         return this.updateTable(logicalId, physicalId, resourceType, properties);
       default:
@@ -164,12 +159,7 @@ export class GlueProvider implements ResourceProvider {
       await this.getClient().send(
         new CreateDatabaseCommand({
           CatalogId: catalogId,
-          DatabaseInput: {
-            Name: databaseName,
-            Description: databaseInput['Description'] as string | undefined,
-            LocationUri: databaseInput['LocationUri'] as string | undefined,
-            Parameters: databaseInput['Parameters'] as Record<string, string> | undefined,
-          },
+          DatabaseInput: this.buildDatabaseInput(databaseInput, databaseName),
         })
       );
 
@@ -186,6 +176,53 @@ export class GlueProvider implements ResourceProvider {
         resourceType,
         logicalId,
         undefined,
+        cause
+      );
+    }
+  }
+
+  private async updateDatabase(
+    logicalId: string,
+    physicalId: string,
+    resourceType: string,
+    properties: Record<string, unknown>
+  ): Promise<ResourceUpdateResult> {
+    this.logger.debug(`Updating Glue Database ${logicalId}: ${physicalId}`);
+
+    const databaseInput = properties['DatabaseInput'] as Record<string, unknown> | undefined;
+    if (!databaseInput) {
+      throw new ProvisioningError(
+        `DatabaseInput is required for Glue Database update ${logicalId}`,
+        resourceType,
+        logicalId,
+        physicalId
+      );
+    }
+
+    const catalogId = properties['CatalogId'] as string | undefined;
+
+    try {
+      await this.getClient().send(
+        new UpdateDatabaseCommand({
+          ...(catalogId !== undefined && { CatalogId: catalogId }),
+          Name: physicalId,
+          DatabaseInput: this.buildDatabaseInput(databaseInput, physicalId),
+        })
+      );
+
+      this.logger.debug(`Successfully updated Glue Database ${logicalId}`);
+
+      return {
+        physicalId,
+        wasReplaced: false,
+      };
+    } catch (error) {
+      const cause = error instanceof Error ? error : undefined;
+      throw new ProvisioningError(
+        `Failed to update Glue Database ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        resourceType,
+        logicalId,
+        physicalId,
         cause
       );
     }
@@ -404,6 +441,37 @@ export class GlueProvider implements ResourceProvider {
   }
 
   // ─── Helpers ───────────────────────────────────────────────────────
+
+  /**
+   * Build DatabaseInput for Glue API from CFn template properties.
+   *
+   * Used by both `createDatabase` and `updateDatabase` so the same
+   * field-by-field shape is sent on both paths. Optional fields use
+   * `!== undefined` gates (per `feedback_update_optional_field_undefined_check.md`)
+   * so empty-string Description, empty Parameters map, etc. reach AWS
+   * intact — `cdkd drift --revert` relies on this to clear console-side
+   * additions.
+   */
+  private buildDatabaseInput(
+    databaseInput: Record<string, unknown>,
+    fallbackName: string
+  ): DatabaseInput {
+    const result: DatabaseInput = {
+      Name: (databaseInput['Name'] as string | undefined) ?? fallbackName,
+    };
+
+    if (databaseInput['Description'] !== undefined) {
+      result.Description = databaseInput['Description'] as string;
+    }
+    if (databaseInput['LocationUri'] !== undefined) {
+      result.LocationUri = databaseInput['LocationUri'] as string;
+    }
+    if (databaseInput['Parameters'] !== undefined) {
+      result.Parameters = databaseInput['Parameters'] as Record<string, string>;
+    }
+
+    return result;
+  }
 
   /**
    * Build TableInput for Glue API from CFn template properties

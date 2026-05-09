@@ -1,10 +1,12 @@
 import {
   EFSClient,
   CreateFileSystemCommand,
+  UpdateFileSystemCommand,
   DeleteFileSystemCommand,
   CreateMountTargetCommand,
   DeleteMountTargetCommand,
   DescribeMountTargetsCommand,
+  ModifyMountTargetSecurityGroupsCommand,
   CreateAccessPointCommand,
   DeleteAccessPointCommand,
   DescribeFileSystemsCommand,
@@ -96,39 +98,171 @@ export class EFSProvider implements ResourceProvider {
   }
 
   /**
-   * EFS resources are treated as immutable by cdkd's `update()`. The deploy
-   * engine recreates them on property changes via immutable-property
-   * detection. (AWS does expose `UpdateFileSystem` for ThroughputMode and
-   * `ModifyMountTargetSecurityGroups` for mount-target SGs — those are
-   * deferred to a follow-up PR.) `cdkd drift --revert` surfaces a clear
-   * "use --replace or re-deploy" message instead of silently no-op'ing.
+   * Mutable surfaces by resource type:
+   *  - `AWS::EFS::FileSystem` → `UpdateFileSystem` (ThroughputMode,
+   *    ProvisionedThroughputInMibps). Other property changes
+   *    (Encrypted / KmsKeyId / PerformanceMode / etc.) are routed
+   *    through DELETE+CREATE by the replacement-detection layer; if a
+   *    diff somehow includes them, defensively reject.
+   *  - `AWS::EFS::MountTarget` → `ModifyMountTargetSecurityGroups`
+   *    (SecurityGroups only). IpAddress / SubnetId / FileSystemId are
+   *    immutable.
+   *  - `AWS::EFS::AccessPoint` → no mutable surface; AWS recreates on
+   *    every change. Reject so `cdkd drift --revert` surfaces a clear
+   *    "use --replace" hint.
    */
   update(
     logicalId: string,
     physicalId: string,
     resourceType: string,
-    _properties: Record<string, unknown>,
-    _previousProperties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    previousProperties: Record<string, unknown>
   ): Promise<ResourceUpdateResult> {
-    if (
-      resourceType !== 'AWS::EFS::FileSystem' &&
-      resourceType !== 'AWS::EFS::MountTarget' &&
-      resourceType !== 'AWS::EFS::AccessPoint'
-    ) {
+    switch (resourceType) {
+      case 'AWS::EFS::FileSystem':
+        return this.updateFileSystem(
+          logicalId,
+          physicalId,
+          resourceType,
+          properties,
+          previousProperties
+        );
+      case 'AWS::EFS::MountTarget':
+        return this.updateMountTarget(logicalId, physicalId, resourceType, properties);
+      case 'AWS::EFS::AccessPoint':
+        return Promise.reject(
+          new ResourceUpdateNotSupportedError(
+            resourceType,
+            logicalId,
+            'EFS AccessPoint is recreated on property changes; re-deploy with cdkd deploy --replace, or destroy + redeploy the stack'
+          )
+        );
+      default:
+        throw new ProvisioningError(
+          `Unsupported resource type: ${resourceType}`,
+          resourceType,
+          logicalId,
+          physicalId
+        );
+    }
+  }
+
+  private async updateFileSystem(
+    logicalId: string,
+    physicalId: string,
+    resourceType: string,
+    properties: Record<string, unknown>,
+    previousProperties: Record<string, unknown>
+  ): Promise<ResourceUpdateResult> {
+    // Defensive guard: any non-mutable diff means the replacement-detection
+    // layer should have routed this through DELETE+CREATE — if we reach
+    // here with an Encrypted / KmsKeyId / PerformanceMode change, refuse
+    // to silently apply a partial update.
+    const immutableKeys = ['Encrypted', 'KmsKeyId', 'PerformanceMode'] as const;
+    for (const key of immutableKeys) {
+      const next = properties[key];
+      const prev = previousProperties[key];
+      if (
+        next !== undefined &&
+        prev !== undefined &&
+        JSON.stringify(next) !== JSON.stringify(prev)
+      ) {
+        throw new ResourceUpdateNotSupportedError(
+          resourceType,
+          logicalId,
+          `EFS FileSystem ${key} is immutable; re-deploy with cdkd deploy --replace, or destroy + redeploy the stack`
+        );
+      }
+    }
+
+    const newThroughputMode = properties['ThroughputMode'] as ThroughputMode | undefined;
+    const newProvisioned = properties['ProvisionedThroughputInMibps'] as number | undefined;
+    const oldThroughputMode = previousProperties['ThroughputMode'] as ThroughputMode | undefined;
+    const oldProvisioned = previousProperties['ProvisionedThroughputInMibps'] as number | undefined;
+
+    const throughputModeChanged =
+      newThroughputMode !== undefined && newThroughputMode !== oldThroughputMode;
+    const provisionedChanged = newProvisioned !== undefined && newProvisioned !== oldProvisioned;
+
+    if (!throughputModeChanged && !provisionedChanged) {
+      // No mutable diff — nothing to do (silent success, matching the
+      // wider provider convention). Drift comparator wouldn't have
+      // surfaced this resource if there was no diff to start with.
+      this.logger.debug(`No mutable diff for EFS FileSystem ${logicalId}, skipping update`);
+      return { physicalId, wasReplaced: false };
+    }
+
+    this.logger.debug(`Updating EFS FileSystem ${logicalId}: ${physicalId}`);
+
+    try {
+      await this.getClient().send(
+        new UpdateFileSystemCommand({
+          FileSystemId: physicalId,
+          ...(throughputModeChanged && { ThroughputMode: newThroughputMode }),
+          ...(provisionedChanged && { ProvisionedThroughputInMibps: newProvisioned }),
+        })
+      );
+
+      // EFS UpdateFileSystem is async; wait until the FileSystem state
+      // returns to `available` so the comparator's next read sees the
+      // final values rather than `updating`.
+      await this.waitForFileSystemAvailable(physicalId, logicalId, resourceType);
+
+      this.logger.debug(`Successfully updated EFS FileSystem ${logicalId}`);
+
+      return { physicalId, wasReplaced: false };
+    } catch (error) {
+      if (error instanceof ProvisioningError) throw error;
+      const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
-        `Unsupported resource type: ${resourceType}`,
+        `Failed to update EFS FileSystem ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
         resourceType,
         logicalId,
-        physicalId
+        physicalId,
+        cause
       );
     }
-    return Promise.reject(
-      new ResourceUpdateNotSupportedError(
+  }
+
+  private async updateMountTarget(
+    logicalId: string,
+    physicalId: string,
+    resourceType: string,
+    properties: Record<string, unknown>
+  ): Promise<ResourceUpdateResult> {
+    this.logger.debug(`Updating EFS MountTarget ${logicalId}: ${physicalId}`);
+
+    const securityGroups = properties['SecurityGroups'] as string[] | undefined;
+    if (securityGroups === undefined) {
+      // Nothing mutable to apply (IpAddress / SubnetId / FileSystemId are
+      // immutable on MountTarget). Silent success keeps `cdkd drift
+      // --revert` consistent with the wider provider convention when
+      // only immutable fields differ.
+      this.logger.debug(`No mutable diff for EFS MountTarget ${logicalId}, skipping update`);
+      return { physicalId, wasReplaced: false };
+    }
+
+    try {
+      await this.getClient().send(
+        new ModifyMountTargetSecurityGroupsCommand({
+          MountTargetId: physicalId,
+          SecurityGroups: securityGroups,
+        })
+      );
+
+      this.logger.debug(`Successfully updated EFS MountTarget ${logicalId}`);
+
+      return { physicalId, wasReplaced: false };
+    } catch (error) {
+      const cause = error instanceof Error ? error : undefined;
+      throw new ProvisioningError(
+        `Failed to update EFS MountTarget ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
         resourceType,
         logicalId,
-        'EFS resources are recreated on property changes; re-deploy with cdkd deploy --replace, or destroy + redeploy the stack'
-      )
-    );
+        physicalId,
+        cause
+      );
+    }
   }
 
   async delete(

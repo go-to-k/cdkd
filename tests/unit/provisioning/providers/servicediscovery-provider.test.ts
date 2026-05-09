@@ -19,7 +19,6 @@ import {
   ListNamespacesCommand,
 } from '@aws-sdk/client-servicediscovery';
 import { ServiceDiscoveryProvider } from '../../../../src/provisioning/providers/servicediscovery-provider.js';
-import { ResourceUpdateNotSupportedError } from '../../../../src/utils/error-handler.js';
 
 describe('ServiceDiscoveryProvider — import', () => {
   let provider: ServiceDiscoveryProvider;
@@ -121,11 +120,15 @@ describe('ServiceDiscoveryProvider — update', () => {
     ['AWS::ServiceDiscovery::PrivateDnsNamespace'],
     ['AWS::ServiceDiscovery::Service'],
   ])(
-    'rejects with ResourceUpdateNotSupportedError for %s (drift --revert surfaces a clear immutable error)',
+    'no-op silent success for %s when properties carry no mutable fields',
     async (resourceType) => {
-      await expect(
-        provider.update('MyId', 'phys-id', resourceType, {}, {})
-      ).rejects.toThrow(ResourceUpdateNotSupportedError);
+      // When the diff is purely on immutable fields, the
+      // replacement-detection layer routes through DELETE+CREATE.
+      // If `update()` is somehow called with no mutable fields, it
+      // returns silently rather than firing a destructive empty
+      // UpdateService (which AWS interprets as "delete this config").
+      const result = await provider.update('MyId', 'phys-id', resourceType, {}, {});
+      expect(result).toEqual({ physicalId: 'phys-id', wasReplaced: false });
       expect(mockSend).not.toHaveBeenCalled();
     }
   );
