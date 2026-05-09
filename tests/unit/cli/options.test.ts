@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { Command } from 'commander';
 
 import {
@@ -21,6 +21,7 @@ import { createListCommand } from '../../../src/cli/commands/list.js';
 import { createForceUnlockCommand } from '../../../src/cli/commands/force-unlock.js';
 import { createPublishAssetsCommand } from '../../../src/cli/commands/publish-assets.js';
 import { createStateCommand } from '../../../src/cli/commands/state.js';
+import { getLogger } from '../../../src/utils/logger.js';
 
 /**
  * Collect every option flag string registered on a command (incl. hidden
@@ -278,13 +279,129 @@ describe('cli/options.ts', () => {
 
     it('skips comparison when neither global nor per-type sides are resolvable', () => {
       // Per-type warn for AWS::X but no global warn and no per-type timeout
-      // for AWS::X means we cannot compare without v1 defaults. Defer.
+      // for AWS::X means we fall back to the v1 compile-time defaults
+      // (warn 5m, timeout 30m), which are ordered correctly.
       expect(() =>
         validateResourceTimeouts({
           resourceWarnAfter: opt(undefined, { 'AWS::S3::Bucket': 5 * 60_000 }),
           resourceTimeout: opt(undefined, {}),
         })
       ).not.toThrow();
+    });
+
+    describe('auto-lowering inherited warn-after when timeout is shortened', () => {
+      let logger: ReturnType<typeof getLogger>;
+      let warnSpy: ReturnType<typeof vi.spyOn>;
+
+      beforeEach(() => {
+        logger = getLogger();
+        warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => {
+          /* swallow log output during the test */
+        });
+      });
+
+      afterEach(() => {
+        warnSpy.mockRestore();
+      });
+
+      it('auto-lowers global warn when --resource-timeout < 5m default and warn is not set', () => {
+        // The exact scenario from the negative-test in
+        // tests/integration/remove-protection/verify.sh: --resource-timeout 2m
+        // with no --resource-warn-after. Pre-fix this exploded at runtime
+        // every time a resource provisioning call started.
+        const opts: {
+          resourceWarnAfter?: ResourceTimeoutOption;
+          resourceTimeout?: ResourceTimeoutOption;
+        } = {
+          resourceTimeout: opt(2 * 60_000),
+        };
+        expect(() => validateResourceTimeouts(opts)).not.toThrow();
+        expect(opts.resourceWarnAfter?.globalMs).toBeDefined();
+        expect(opts.resourceWarnAfter!.globalMs).toBeLessThan(2 * 60_000);
+        expect(opts.resourceWarnAfter!.globalMs).toBeLessThanOrEqual(60_000); // 0.5 * 2m
+        expect(warnSpy).toHaveBeenCalledTimes(1);
+        const message = String(warnSpy.mock.calls[0]![0]);
+        expect(message).toMatch(/--resource-warn-after defaulted to/);
+        expect(message).toMatch(/--resource-timeout/);
+      });
+
+      it('does not auto-lower or warn when --resource-timeout matches the 30m default', () => {
+        const opts: {
+          resourceWarnAfter?: ResourceTimeoutOption;
+          resourceTimeout?: ResourceTimeoutOption;
+        } = {
+          resourceTimeout: opt(30 * 60_000),
+        };
+        expect(() => validateResourceTimeouts(opts)).not.toThrow();
+        expect(opts.resourceWarnAfter).toBeUndefined();
+        expect(warnSpy).not.toHaveBeenCalled();
+      });
+
+      it('does not auto-lower or warn when --resource-timeout is set above 5m default', () => {
+        const opts: {
+          resourceWarnAfter?: ResourceTimeoutOption;
+          resourceTimeout?: ResourceTimeoutOption;
+        } = {
+          resourceTimeout: opt(10 * 60_000),
+        };
+        expect(() => validateResourceTimeouts(opts)).not.toThrow();
+        expect(opts.resourceWarnAfter).toBeUndefined();
+        expect(warnSpy).not.toHaveBeenCalled();
+      });
+
+      it('auto-lowers per-type warn when --resource-timeout TYPE=<2m> and warn for that type is inherited', () => {
+        const opts: {
+          resourceWarnAfter?: ResourceTimeoutOption;
+          resourceTimeout?: ResourceTimeoutOption;
+        } = {
+          resourceTimeout: opt(undefined, { 'AWS::EC2::Instance': 2 * 60_000 }),
+        };
+        expect(() => validateResourceTimeouts(opts)).not.toThrow();
+        expect(opts.resourceWarnAfter?.perTypeMs?.['AWS::EC2::Instance']).toBeDefined();
+        expect(opts.resourceWarnAfter!.perTypeMs!['AWS::EC2::Instance']).toBeLessThan(
+          2 * 60_000
+        );
+        expect(opts.resourceWarnAfter!.perTypeMs!['AWS::EC2::Instance']).toBeLessThanOrEqual(
+          60_000
+        );
+        // Other types stay at the inherited 5m default — no entry written.
+        expect(opts.resourceWarnAfter?.perTypeMs?.['AWS::S3::Bucket']).toBeUndefined();
+        expect(opts.resourceWarnAfter?.globalMs).toBeUndefined();
+        expect(warnSpy).toHaveBeenCalledTimes(1);
+        const message = String(warnSpy.mock.calls[0]![0]);
+        expect(message).toMatch(/AWS::EC2::Instance/);
+        expect(message).toMatch(/defaulted/);
+      });
+
+      it('hard-rejects when both --resource-timeout and --resource-warn-after are explicitly reversed (global)', () => {
+        // Explicit user values must NEVER be silently rewritten — the
+        // auto-lower path is for the inherited-default case only.
+        expect(() =>
+          validateResourceTimeouts({
+            resourceWarnAfter: opt(3 * 60_000),
+            resourceTimeout: opt(2 * 60_000),
+          })
+        ).toThrow(/--resource-warn-after .* must be less than --resource-timeout/);
+      });
+
+      it('hard-rejects when both per-type values are explicitly reversed', () => {
+        expect(() =>
+          validateResourceTimeouts({
+            resourceWarnAfter: opt(undefined, { 'AWS::EC2::Instance': 3 * 60_000 }),
+            resourceTimeout: opt(undefined, { 'AWS::EC2::Instance': 2 * 60_000 }),
+          })
+        ).toThrow(/AWS::EC2::Instance/);
+      });
+
+      it('hard-rejects when --resource-warn-after is set above the 30m default timeout with no --resource-timeout', () => {
+        // Auto-raising the timeout would silently grant the user more
+        // budget than they asked for; reject instead.
+        expect(() =>
+          validateResourceTimeouts({
+            resourceWarnAfter: opt(45 * 60_000),
+          })
+        ).toThrow(/must be less than --resource-timeout/);
+      });
     });
   });
 

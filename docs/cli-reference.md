@@ -212,6 +212,16 @@ rejected at parse time. `warn < timeout` is enforced both globally and
 per-type — so `--resource-warn-after AWS::X=10m --resource-timeout AWS::X=5m`
 is a parse-time error.
 
+When the user passes `--resource-timeout` (global or per-type) shorter
+than the inherited 5m `--resource-warn-after` default and does NOT pass
+a matching `--resource-warn-after`, cdkd auto-lowers the warn-after to
+`min(5m, 0.5 * timeout)` and emits a `WARN` log line naming the lowered
+value. This closes the UX gap where a `--resource-timeout 2m` invocation
+would otherwise fail every resource at runtime with
+`InvalidResourceDeadlineError: warnAfterMs must be less than timeoutMs`.
+Passing both flags explicitly disables the auto-lowering — a reversed
+explicit pair is a hard parse-time error.
+
 ```bash
 # Surface "still running" warnings sooner on a fast-feedback dev loop
 cdkd deploy --resource-warn-after 90s --resource-timeout 10m

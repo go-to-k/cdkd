@@ -82,10 +82,10 @@ async function deployCommand(
 
   // Reject mis-ordered --resource-warn-after / --resource-timeout pairs
   // up front so the user sees the error before synth / docker builds run.
-  validateResourceTimeouts({
-    ...(options.resourceWarnAfter && { resourceWarnAfter: options.resourceWarnAfter }),
-    ...(options.resourceTimeout && { resourceTimeout: options.resourceTimeout }),
-  });
+  // Mutates `options.resourceWarnAfter` in place when auto-lowering the
+  // inherited warn against a shortened --resource-timeout (so the
+  // DeployEngine constructor below reads the lowered value).
+  validateResourceTimeouts(options);
 
   // Resolve --role-arn / CDKD_ROLE_ARN before any AWS call. Writes the
   // assumed-role temp credentials into AWS_* env vars so every later

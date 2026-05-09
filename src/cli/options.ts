@@ -1,4 +1,9 @@
 import { Option } from 'commander';
+import {
+  DEFAULT_RESOURCE_WARN_AFTER_MS,
+  DEFAULT_RESOURCE_TIMEOUT_MS,
+} from '../deployment/deploy-engine.js';
+import { getLogger } from '../utils/logger.js';
 
 /**
  * Parse context key=value pairs from CLI arguments into a Record
@@ -273,66 +278,180 @@ export const resourceTimeoutOptions = [
       'Repeatable: pass a bare duration (e.g. 30m) to set the global default, or ' +
       'TYPE=DURATION (e.g. AWS::CloudFront::Distribution=1h) for a per-type override. ' +
       'Custom-Resource-heavy stacks may need to raise this above the default 30m ' +
-      "(the Custom Resource provider's polling cap is 1h)."
+      "(the Custom Resource provider's polling cap is 1h). " +
+      'When this is shorter than the 5m --resource-warn-after default, ' +
+      '--resource-warn-after is auto-lowered to min(5m, 0.5*timeout) and a ' +
+      'warning is logged so the user can override explicitly.'
   )
     .default(undefined, '30m')
     .argParser(parseResourceTimeoutToken('--resource-timeout')),
 ];
 
 /**
- * Validate that warn < timeout, both at the global level and per-type.
+ * Format a millisecond duration as a human-readable string for log output
+ * (`120000` -> `120s`). Mirrors the input grammar of `parseDuration` so the
+ * suggestion in the warning matches what a user would type.
+ */
+function formatMs(ms: number): string {
+  if (ms % 3_600_000 === 0) return `${ms / 3_600_000}h`;
+  if (ms % 60_000 === 0) return `${ms / 60_000}m`;
+  return `${Math.round(ms / 1_000)}s`;
+}
+
+/**
+ * Pick a safe auto-lowered warn value for a given timeout: half the
+ * timeout, but never above the compile-time default warn. This keeps the
+ * "still running" warning fire well before the deadline without quietly
+ * raising it past what the user would normally see.
  *
- * - Global: `globalMs(warn) < globalMs(timeout)` if both are user-set.
- * - Per-type: for every type that appears in either map, the resolved
- *   warn (per-type-or-global) must be less than the resolved timeout
- *   (per-type-or-global). A `--resource-warn-after AWS::X=10m` without a
- *   matching `--resource-timeout AWS::X=...` is OK — it's compared
- *   against the global timeout.
+ * `Math.max(1, ...)` guarantees the result is positive (so the runtime
+ * `withResourceDeadline` validator still accepts it) even for absurdly
+ * short timeouts. The runtime check enforces `warn < timeout` strictly,
+ * so a 1ms warn against a 1ms timeout would still fail — that case is
+ * physically meaningless and rejected one layer below.
+ */
+function autoLoweredWarnMs(timeoutMs: number): number {
+  return Math.max(1, Math.min(DEFAULT_RESOURCE_WARN_AFTER_MS, Math.floor(timeoutMs / 2)));
+}
+
+/**
+ * Validate `--resource-warn-after` / `--resource-timeout` pairs and
+ * auto-lower the inherited warn-after when the user shortened only the
+ * timeout side.
+ *
+ * Resolution rules at every check site (global and per-type):
+ *
+ *   - **Both sides explicit** (user set warn AND timeout, either at the
+ *     global or per-type level): require `warn < timeout`. A reversed
+ *     pair is a hard user error and rejected at parse time — cdkd does
+ *     not silently rewrite a value the user typed.
+ *   - **Only timeout explicit, warn inherited** (the `--resource-timeout 2m`
+ *     UX gap this helper closes): if the inherited warn would violate
+ *     `warn < timeout`, auto-lower the warn to
+ *     `min(DEFAULT_RESOURCE_WARN_AFTER_MS, 0.5 * timeout)` and emit a
+ *     `logger.warn(...)` line so the user understands what cdkd did.
+ *     Per-type timeout overrides write a per-type warn entry; the global
+ *     timeout writes the global warn.
+ *   - **Only warn explicit, timeout inherited**: rare but possible
+ *     (`--resource-warn-after 45m` with no `--resource-timeout`). This is
+ *     a hard user error — auto-raising the timeout would silently grant
+ *     the user more budget than they asked for, which is the wrong
+ *     direction (see `feedback_no_remove_features.md`-style reasoning).
+ *
+ * Mutates `opts.resourceWarnAfter` in place when auto-lowering: callers
+ * are expected to pass the live `options.resourceWarnAfter` reference so
+ * the downstream `DeployEngine` constructor sees the lowered value.
  *
  * Receives values that have already been parsed (milliseconds). Throws
- * an `Error` (commander surfaces this to the user without a stack trace).
+ * an `Error` on hard rejection (commander surfaces this without a stack
+ * trace).
  */
 export function validateResourceTimeouts(opts: {
   resourceWarnAfter?: ResourceTimeoutOption;
   resourceTimeout?: ResourceTimeoutOption;
 }): void {
-  const warn = opts.resourceWarnAfter;
   const timeout = opts.resourceTimeout;
 
-  // Global-level check (only when both globals are user-set; we don't
-  // know the v1 default here so we can't compare against it).
-  const globalWarn = warn?.globalMs;
+  // Global-level check.
+  const globalWarn = opts.resourceWarnAfter?.globalMs;
   const globalTimeout = timeout?.globalMs;
+
   if (typeof globalWarn === 'number' && typeof globalTimeout === 'number') {
+    // Both sides explicit: hard-reject reversed pair.
     if (globalWarn >= globalTimeout) {
       throw new Error(
         `--resource-warn-after (${globalWarn}ms) must be less than --resource-timeout (${globalTimeout}ms)`
       );
     }
-  }
-
-  // Per-type check: union of every type mentioned by either flag. For
-  // each, resolve the effective warn / timeout (per-type ?? global) and
-  // make sure warn < timeout. Skip the check when either side is missing
-  // entirely (no global default + no per-type entry).
-  const warnPerType = warn?.perTypeMs ?? {};
-  const timeoutPerType = timeout?.perTypeMs ?? {};
-  const types = new Set<string>([...Object.keys(warnPerType), ...Object.keys(timeoutPerType)]);
-  for (const t of types) {
-    const effectiveWarn = warnPerType[t] ?? globalWarn;
-    const effectiveTimeout = timeoutPerType[t] ?? globalTimeout;
-    if (typeof effectiveWarn !== 'number' || typeof effectiveTimeout !== 'number') {
-      // Without both sides resolved we can't compare; defer to the v1
-      // compile-time defaults which are known to be ordered correctly.
-      continue;
-    }
-    if (effectiveWarn >= effectiveTimeout) {
-      throw new Error(
-        `--resource-warn-after for ${t} (${effectiveWarn}ms) must be less than ` +
-          `--resource-timeout for ${t} (${effectiveTimeout}ms)`
+  } else if (typeof globalTimeout === 'number') {
+    // Only timeout explicit: check the inherited warn (default 5m) and
+    // auto-lower if it would violate.
+    if (DEFAULT_RESOURCE_WARN_AFTER_MS >= globalTimeout) {
+      const lowered = autoLoweredWarnMs(globalTimeout);
+      ensureWarnAfter(opts).globalMs = lowered;
+      getLogger().warn(
+        `--resource-warn-after defaulted to ${formatMs(lowered)} because --resource-timeout ` +
+          `${formatMs(globalTimeout)} is shorter than the ${formatMs(DEFAULT_RESOURCE_WARN_AFTER_MS)} default. ` +
+          `Pass --resource-warn-after <duration> explicitly to override.`
       );
     }
+  } else if (typeof globalWarn === 'number' && globalWarn >= DEFAULT_RESOURCE_TIMEOUT_MS) {
+    // Only warn explicit, set above the default timeout. Hard-reject —
+    // we will not silently raise the timeout side.
+    throw new Error(
+      `--resource-warn-after (${formatMs(globalWarn)}) must be less than --resource-timeout ` +
+        `(default ${formatMs(DEFAULT_RESOURCE_TIMEOUT_MS)}). ` +
+        `Pass --resource-timeout <duration> alongside it to raise the deadline.`
+    );
   }
+
+  // Per-type check: union of every type mentioned by either flag.
+  const warnPerType = opts.resourceWarnAfter?.perTypeMs ?? {};
+  const timeoutPerType = timeout?.perTypeMs ?? {};
+  const types = new Set<string>([...Object.keys(warnPerType), ...Object.keys(timeoutPerType)]);
+
+  for (const t of types) {
+    const explicitPerTypeWarn = warnPerType[t]; // undefined => not user-set
+    const explicitPerTypeTimeout = timeoutPerType[t];
+
+    // Re-read the (possibly auto-lowered) global warn so per-type
+    // resolution uses the post-mutation value.
+    const effectiveGlobalWarn = opts.resourceWarnAfter?.globalMs;
+
+    const effectiveWarn =
+      explicitPerTypeWarn ?? effectiveGlobalWarn ?? DEFAULT_RESOURCE_WARN_AFTER_MS;
+    const effectiveTimeout = explicitPerTypeTimeout ?? globalTimeout ?? DEFAULT_RESOURCE_TIMEOUT_MS;
+
+    if (effectiveWarn < effectiveTimeout) continue;
+
+    if (explicitPerTypeWarn !== undefined && explicitPerTypeTimeout !== undefined) {
+      // Both per-type sides explicit and reversed — hard-reject.
+      throw new Error(
+        `--resource-warn-after for ${t} (${formatMs(explicitPerTypeWarn)}) must be less than ` +
+          `--resource-timeout for ${t} (${formatMs(explicitPerTypeTimeout)})`
+      );
+    }
+    if (explicitPerTypeWarn !== undefined) {
+      // Per-type warn explicit, but the resolved timeout (global or default)
+      // is too low. Hard-reject — same direction as the global rule.
+      throw new Error(
+        `--resource-warn-after for ${t} (${formatMs(explicitPerTypeWarn)}) must be less than ` +
+          `--resource-timeout for ${t} (${formatMs(effectiveTimeout)}). ` +
+          `Pass --resource-timeout ${t}=<duration> alongside it to raise the deadline.`
+      );
+    }
+    // Per-type timeout explicit (or both implicit but the inherited warn
+    // exceeds the inherited timeout — only possible if the global pair
+    // somehow passed the earlier check, which it cannot). Auto-lower the
+    // per-type warn to a safe value so this type's deadline is usable.
+    const lowered = autoLoweredWarnMs(effectiveTimeout);
+    ensureWarnAfter(opts).perTypeMs[t] = lowered;
+    getLogger().warn(
+      `--resource-warn-after for ${t} defaulted to ${formatMs(lowered)} because ` +
+        `--resource-timeout for ${t} (${formatMs(effectiveTimeout)}) is shorter than ` +
+        `the inherited ${formatMs(effectiveWarn)} warn. ` +
+        `Pass --resource-warn-after ${t}=<duration> explicitly to override.`
+    );
+  }
+}
+
+/**
+ * Lazily initialize `opts.resourceWarnAfter` so the auto-lowering branch
+ * can write into it even when the user did not pass the flag at all.
+ * Mutates the caller's options object so the downstream call site (which
+ * reads `options.resourceWarnAfter.globalMs` / `.perTypeMs`) sees the
+ * lowered value.
+ */
+function ensureWarnAfter(opts: {
+  resourceWarnAfter?: ResourceTimeoutOption;
+}): ResourceTimeoutOption {
+  if (!opts.resourceWarnAfter) {
+    opts.resourceWarnAfter = { perTypeMs: {} };
+  }
+  if (!opts.resourceWarnAfter.perTypeMs) {
+    opts.resourceWarnAfter.perTypeMs = {};
+  }
+  return opts.resourceWarnAfter;
 }
 
 /**
