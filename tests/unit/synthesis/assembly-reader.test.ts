@@ -419,6 +419,46 @@ describe('AssemblyReader', () => {
 
       expect(stacks[0].stackName).toBe('MyArtifactId');
     });
+
+    it('propagates terminationProtection from manifest properties', () => {
+      const manifest: AssemblyManifest = {
+        version: '38.0.0',
+        artifacts: {
+          Protected: {
+            type: 'aws:cloudformation:stack',
+            properties: {
+              templateFile: 'Protected.template.json',
+              stackName: 'Protected',
+              terminationProtection: true,
+            },
+          },
+          Unguarded: {
+            type: 'aws:cloudformation:stack',
+            properties: {
+              templateFile: 'Unguarded.template.json',
+              stackName: 'Unguarded',
+              terminationProtection: false,
+            },
+          },
+          Plain: {
+            type: 'aws:cloudformation:stack',
+            properties: {
+              templateFile: 'Plain.template.json',
+              stackName: 'Plain',
+            },
+          },
+        },
+      };
+      vi.mocked(readFileSync).mockReturnValue(JSON.stringify(sampleTemplate));
+
+      const stacks = reader.getAllStacks('/tmp/cdk.out', manifest);
+      const byName = new Map(stacks.map((s) => [s.stackName, s]));
+
+      // Explicit true / false propagate through; absent stays undefined.
+      expect(byName.get('Protected')?.terminationProtection).toBe(true);
+      expect(byName.get('Unguarded')?.terminationProtection).toBe(false);
+      expect(byName.get('Plain')?.terminationProtection).toBeUndefined();
+    });
   });
 
   describe('getStack', () => {

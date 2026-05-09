@@ -235,6 +235,41 @@ export class ResourceUpdateNotSupportedError extends CdkdError {
 }
 
 /**
+ * Signals a refusal to destroy a stack whose CDK manifest has
+ * `terminationProtection: true`.
+ *
+ * Surfaced from `cdkd destroy <stack>` / `cdkd destroy --all` BEFORE
+ * any lock acquisition or per-resource delete. In multi-stack runs
+ * (e.g. `--all`) this counts as a per-stack failure and the rest of
+ * the targets continue — the aggregated count is wrapped in
+ * {@link PartialFailureError} so the command exits with code 2.
+ *
+ * The bypass workflow is documented in the message: edit the CDK code
+ * (`new Stack(app, '...', { terminationProtection: false })`),
+ * redeploy, then retry the destroy. A future `--remove-protection`
+ * flag (separate scope) will provide an explicit one-shot bypass.
+ *
+ * Note: `cdkd state destroy` (state-only, no synth) does NOT honor
+ * `terminationProtection` — the flag is a CDK property not persisted
+ * in cdkd's state.json. Use `cdkd destroy` when synth is available.
+ */
+export class StackTerminationProtectionError extends CdkdError {
+  constructor(
+    public readonly stackName: string,
+    cause?: Error
+  ) {
+    super(
+      `Stack '${stackName}' has terminationProtection: true and cannot be destroyed. ` +
+        `Set terminationProtection: false in the CDK code, redeploy, then retry 'cdkd destroy ${stackName}'.`,
+      'STACK_TERMINATION_PROTECTION',
+      cause
+    );
+    this.name = 'StackTerminationProtectionError';
+    Object.setPrototypeOf(this, StackTerminationProtectionError.prototype);
+  }
+}
+
+/**
  * Check if error is a cdkd error
  */
 export function isCdkdError(error: unknown): error is CdkdError {
