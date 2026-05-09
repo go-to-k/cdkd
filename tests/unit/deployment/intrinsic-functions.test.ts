@@ -22,7 +22,9 @@ vi.mock('../../../src/utils/logger.js', () => ({
   }),
 }));
 
-// Mock EC2 DescribeAvailabilityZones response
+// Mock EC2 DescribeAvailabilityZones response (default for backward compat
+// — tests that need a different response can call `mockEc2Send.mockImplementation(...)`
+// in their own setup).
 const mockEc2Send = vi.fn().mockResolvedValue({
   AvailabilityZones: [
     { ZoneName: 'us-east-1a', State: 'available' },
@@ -824,5 +826,125 @@ describe('IntrinsicFunctionResolver - Fn::GetStackOutput', () => {
     ).rejects.toThrow(
       'Fn::GetStackOutput: argument must be an object with StackName/OutputName/Region/RoleArn'
     );
+  });
+});
+
+describe('IntrinsicFunctionResolver - Fn::GetAtt LaunchTemplate.LatestVersionNumber', () => {
+  let resolver: IntrinsicFunctionResolver;
+
+  beforeEach(() => {
+    resolver = new IntrinsicFunctionResolver();
+    resetAccountInfoCache();
+    mockEc2Send.mockReset();
+  });
+
+  it('resolves to the actual version number from DescribeLaunchTemplates', async () => {
+    // AWS::EC2::LaunchTemplate falls through to CC API in cdkd; the
+    // intrinsic resolver must call DescribeLaunchTemplates to recover
+    // LatestVersionNumber. Without this path, the resolver fell back
+    // to the physicalId — `Create*AutoScalingGroup` then rejected
+    // with "Invalid launch template version: either '$Default',
+    // '$Latest', or a numeric version are allowed." (PR fix
+    // discovered via the remove-protection integ).
+    mockEc2Send.mockResolvedValue({
+      LaunchTemplates: [
+        {
+          LaunchTemplateId: 'lt-0322d9ae11506ebfe',
+          LatestVersionNumber: 1,
+          DefaultVersionNumber: 1,
+        },
+      ],
+    });
+
+    const template: CloudFormationTemplate = {
+      Resources: {
+        MyLt: { Type: 'AWS::EC2::LaunchTemplate', Properties: {} },
+      },
+    };
+    const context: ResolverContext = {
+      template,
+      resources: {
+        MyLt: {
+          physicalId: 'lt-0322d9ae11506ebfe',
+          resourceType: 'AWS::EC2::LaunchTemplate',
+          properties: {},
+          attributes: {},
+          dependencies: [],
+        },
+      },
+    };
+
+    const result = await resolver.resolve(
+      { 'Fn::GetAtt': ['MyLt', 'LatestVersionNumber'] },
+      context
+    );
+    expect(result).toBe('1');
+  });
+
+  it('falls back to "$Latest" when DescribeLaunchTemplates fails', async () => {
+    // Defense-in-depth — `$Latest` is AWS-accepted as a special string
+    // for "use the latest version at API call time", and is far
+    // safer than the previous resource-id fallback which AWS rejects.
+    mockEc2Send.mockRejectedValue(new Error('AccessDenied'));
+
+    const template: CloudFormationTemplate = {
+      Resources: {
+        MyLt: { Type: 'AWS::EC2::LaunchTemplate', Properties: {} },
+      },
+    };
+    const context: ResolverContext = {
+      template,
+      resources: {
+        MyLt: {
+          physicalId: 'lt-0322d9ae11506ebfe',
+          resourceType: 'AWS::EC2::LaunchTemplate',
+          properties: {},
+          attributes: {},
+          dependencies: [],
+        },
+      },
+    };
+
+    const result = await resolver.resolve(
+      { 'Fn::GetAtt': ['MyLt', 'LatestVersionNumber'] },
+      context
+    );
+    expect(result).toBe('$Latest');
+  });
+
+  it('resolves DefaultVersionNumber separately', async () => {
+    mockEc2Send.mockResolvedValue({
+      LaunchTemplates: [
+        {
+          LaunchTemplateId: 'lt-0322d9ae11506ebfe',
+          LatestVersionNumber: 3,
+          DefaultVersionNumber: 2,
+        },
+      ],
+    });
+
+    const template: CloudFormationTemplate = {
+      Resources: {
+        MyLt: { Type: 'AWS::EC2::LaunchTemplate', Properties: {} },
+      },
+    };
+    const context: ResolverContext = {
+      template,
+      resources: {
+        MyLt: {
+          physicalId: 'lt-0322d9ae11506ebfe',
+          resourceType: 'AWS::EC2::LaunchTemplate',
+          properties: {},
+          attributes: {},
+          dependencies: [],
+        },
+      },
+    };
+
+    const result = await resolver.resolve(
+      { 'Fn::GetAtt': ['MyLt', 'DefaultVersionNumber'] },
+      context
+    );
+    expect(result).toBe('2');
   });
 });

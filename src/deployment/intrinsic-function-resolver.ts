@@ -1,5 +1,8 @@
 import { GetCallerIdentityCommand } from '@aws-sdk/client-sts';
-import { DescribeAvailabilityZonesCommand } from '@aws-sdk/client-ec2';
+import {
+  DescribeAvailabilityZonesCommand,
+  DescribeLaunchTemplatesCommand,
+} from '@aws-sdk/client-ec2';
 import { GetSecretValueCommand } from '@aws-sdk/client-secrets-manager';
 import { GetParameterCommand } from '@aws-sdk/client-ssm';
 import { getLogger } from '../utils/logger.js';
@@ -707,6 +710,43 @@ export class IntrinsicFunctionResolver {
         default:
           return physicalId;
       }
+    }
+
+    // EC2 LaunchTemplate — `LatestVersionNumber` / `DefaultVersionNumber`
+    // are AWS-derived integers that cdkd does not capture in state.
+    // Resolve via `DescribeLaunchTemplates`. Return as a string so
+    // downstream consumers (`AWS::AutoScaling::AutoScalingGroup`'s
+    // `LaunchTemplate.Version`) get the form AWS accepts. Falling back
+    // to the physical ID — as the previous default did — produced
+    // `Invalid launch template version: either '$Default', '$Latest',
+    // or a numeric version are allowed.` on `CreateAutoScalingGroup`.
+    if (resourceType === 'AWS::EC2::LaunchTemplate') {
+      if (attributeName === 'LatestVersionNumber' || attributeName === 'DefaultVersionNumber') {
+        try {
+          const clients = getAwsClients();
+          const response = await clients.ec2.send(
+            new DescribeLaunchTemplatesCommand({ LaunchTemplateIds: [physicalId] })
+          );
+          const lt = response.LaunchTemplates?.[0];
+          const value =
+            attributeName === 'LatestVersionNumber'
+              ? lt?.LatestVersionNumber
+              : lt?.DefaultVersionNumber;
+          if (value !== undefined && value !== null) {
+            return String(value);
+          }
+        } catch (err) {
+          this.logger.warn(
+            `DescribeLaunchTemplates(${physicalId}) failed for ${attributeName}: ${err instanceof Error ? err.message : String(err)}`
+          );
+        }
+        // Fallback to "$Latest" / "$Default" — both are AWS-accepted
+        // strings for the corresponding semantic, and let AWS pick the
+        // version at API call time. Better than the resource-id
+        // physicalId fallback which AWS rejects.
+        return attributeName === 'LatestVersionNumber' ? '$Latest' : '$Default';
+      }
+      return physicalId;
     }
 
     // Default: return physical ID
