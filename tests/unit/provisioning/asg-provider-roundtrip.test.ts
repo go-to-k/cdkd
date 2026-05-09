@@ -123,6 +123,32 @@ describe('ASGProvider create', () => {
     expect(result.physicalId).toBeTruthy();
     expect(result.physicalId).not.toBe('');
   });
+
+  it('coerces numeric LaunchTemplate.Version to a string before sending to AWS', async () => {
+    // AWS rejects `CreateAutoScalingGroup` when `Version` is a JSON number
+    // ("Invalid launch template version: either '$Default', '$Latest', or
+    // a numeric version are allowed."). CDK templates emit `Version` from
+    // `Fn::GetAtt <LaunchTemplate>.LatestVersionNumber`, which cdkd's
+    // intrinsic resolver can return as a JS number — guard at the wire
+    // layer with `String(...)`.
+    mockSend.mockResolvedValue({});
+    const provider = new ASGProvider();
+    await provider.create('MyAsg', RESOURCE_TYPE, {
+      AutoScalingGroupName: 'my-asg',
+      MinSize: 0,
+      MaxSize: 1,
+      LaunchTemplate: { LaunchTemplateId: 'lt-aaaa1111', Version: 1 as unknown as string },
+    });
+    const createCalls = mockSend.mock.calls
+      .map((c) => c[0])
+      .filter((c) => c instanceof CreateAutoScalingGroupCommand);
+    expect(createCalls).toHaveLength(1);
+    const input = (createCalls[0] as unknown as { input: Record<string, unknown> }).input;
+    expect(input['LaunchTemplate']).toEqual({
+      LaunchTemplateId: 'lt-aaaa1111',
+      Version: '1',
+    });
+  });
 });
 
 describe('ASGProvider update', () => {

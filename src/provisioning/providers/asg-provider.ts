@@ -681,13 +681,22 @@ export class ASGProvider implements ResourceProvider {
     properties: Record<string, unknown>
   ): LaunchTemplateSpecification | undefined {
     const lt = properties['LaunchTemplate'] as
-      | { LaunchTemplateId?: string; LaunchTemplateName?: string; Version?: string }
+      | { LaunchTemplateId?: string; LaunchTemplateName?: string; Version?: string | number }
       | undefined;
     if (!lt) return undefined;
     const out: LaunchTemplateSpecification = {};
     if (lt.LaunchTemplateId !== undefined) out.LaunchTemplateId = lt.LaunchTemplateId;
     if (lt.LaunchTemplateName !== undefined) out.LaunchTemplateName = lt.LaunchTemplateName;
-    if (lt.Version !== undefined) out.Version = lt.Version;
+    if (lt.Version !== undefined) {
+      // Defensive coercion: AWS SDK `LaunchTemplateSpecification.Version`
+      // is `string` and AWS rejects non-string forms with `Invalid
+      // launch template version: either '$Default', '$Latest', or a
+      // numeric version are allowed.`. cdkd's `IntrinsicResolver`
+      // resolves `Fn::GetAtt <LaunchTemplate>.LatestVersionNumber`
+      // through a per-type lookup; intermediate cases could surface
+      // numeric values, so we coerce defensively.
+      out.Version = String(lt.Version);
+    }
     if (out.LaunchTemplateId === undefined && out.LaunchTemplateName === undefined) {
       return undefined;
     }
