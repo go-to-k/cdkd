@@ -526,6 +526,8 @@ types:
 | `AWS::DynamoDB::Table` | `DeletionProtectionEnabled` |
 | `AWS::EC2::Instance` | `DisableApiTermination` |
 | `AWS::ElasticLoadBalancingV2::LoadBalancer` | attribute `deletion_protection.enabled` |
+| `AWS::Cognito::UserPool` | `DeletionProtection` (`ACTIVE` / `INACTIVE`) |
+| `AWS::AutoScaling::AutoScalingGroup` | `DeletionProtection` (`none` / `prevent-force-deletion` / `prevent-all-deletion`) — flag also sets `ForceDelete: true` so AWS terminates running instances as part of the delete |
 
 The flip-off call is idempotent — providers always issue it when
 the flag is set, regardless of whether the resource currently has

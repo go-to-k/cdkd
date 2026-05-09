@@ -49,6 +49,7 @@ import { S3VectorsProvider } from './providers/s3-vectors-provider.js';
 import { S3DirectoryBucketProvider } from './providers/s3-directory-bucket-provider.js';
 import { S3TablesProvider } from './providers/s3-tables-provider.js';
 import { ECRProvider } from './providers/ecr-provider.js';
+import { ASGProvider } from './providers/asg-provider.js';
 
 /**
  * Register all SDK providers with the given registry.
@@ -224,6 +225,9 @@ export function registerAllProviders(registry: ProviderRegistry): void {
 
   // ECR
   registry.register('AWS::ECR::Repository', new ECRProvider());
+
+  // Auto Scaling
+  registry.register('AWS::AutoScaling::AutoScalingGroup', new ASGProvider());
 
   // S3 Tables
   const s3TablesProvider = new S3TablesProvider();

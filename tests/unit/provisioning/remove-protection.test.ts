@@ -1,14 +1,17 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 // Per-SDK send spies. EC2 and CloudWatch Logs go through getAwsClients(),
-// so they're wired via the aws-clients mock below. RDS and ELBv2 lazily
-// `new` their own clients with `providerRegion`, so their SDK module
-// exports are mocked directly via vi.mock to intercept the constructor.
+// so they're wired via the aws-clients mock below. RDS, ELBv2, ASG,
+// and Cognito lazily `new` their own clients with `providerRegion`, so
+// their SDK module exports are mocked directly via vi.mock to intercept
+// the constructor.
 const mockLogsSend = vi.fn();
 const mockDdbSend = vi.fn();
 const mockEc2Send = vi.fn();
 const mockElbv2Send = vi.fn();
 const mockRdsSend = vi.fn();
+const mockAsgSend = vi.fn();
+const mockCognitoSend = vi.fn();
 
 vi.mock('../../../src/utils/aws-clients.js', () => ({
   getAwsClients: () => ({
@@ -89,6 +92,36 @@ vi.mock('@aws-sdk/client-elastic-load-balancing-v2', async () => {
   };
 });
 
+// AutoScaling client is `new`d lazily — same pattern as RDS / ELBv2.
+vi.mock('@aws-sdk/client-auto-scaling', async () => {
+  const actual =
+    await vi.importActual<typeof import('@aws-sdk/client-auto-scaling')>(
+      '@aws-sdk/client-auto-scaling'
+    );
+  return {
+    ...actual,
+    AutoScalingClient: vi.fn().mockImplementation(() => ({
+      send: mockAsgSend,
+      config: { region: () => Promise.resolve('us-east-1') },
+    })),
+  };
+});
+
+// Cognito client — `new`d lazily through createSdkClient inside the provider.
+vi.mock('@aws-sdk/client-cognito-identity-provider', async () => {
+  const actual =
+    await vi.importActual<typeof import('@aws-sdk/client-cognito-identity-provider')>(
+      '@aws-sdk/client-cognito-identity-provider'
+    );
+  return {
+    ...actual,
+    CognitoIdentityProviderClient: vi.fn().mockImplementation(() => ({
+      send: mockCognitoSend,
+      config: { region: () => Promise.resolve('us-east-1') },
+    })),
+  };
+});
+
 import {
   PutLogGroupDeletionProtectionCommand,
   DeleteLogGroupCommand,
@@ -109,12 +142,25 @@ import {
   DeleteDBInstanceCommand,
   DeleteDBClusterCommand,
 } from '@aws-sdk/client-rds';
+import {
+  CreateAutoScalingGroupCommand,
+  UpdateAutoScalingGroupCommand,
+  DeleteAutoScalingGroupCommand,
+  DescribeAutoScalingGroupsCommand,
+} from '@aws-sdk/client-auto-scaling';
+import {
+  UpdateUserPoolCommand,
+  DescribeUserPoolCommand,
+  DeleteUserPoolCommand,
+} from '@aws-sdk/client-cognito-identity-provider';
 
 import { LogsLogGroupProvider } from '../../../src/provisioning/providers/logs-loggroup-provider.js';
 import { DynamoDBTableProvider } from '../../../src/provisioning/providers/dynamodb-table-provider.js';
 import { EC2Provider } from '../../../src/provisioning/providers/ec2-provider.js';
 import { ELBv2Provider } from '../../../src/provisioning/providers/elbv2-provider.js';
 import { RDSProvider } from '../../../src/provisioning/providers/rds-provider.js';
+import { ASGProvider } from '../../../src/provisioning/providers/asg-provider.js';
+import { CognitoUserPoolProvider } from '../../../src/provisioning/providers/cognito-provider.js';
 
 beforeEach(() => {
   mockLogsSend.mockReset().mockResolvedValue({});
@@ -122,6 +168,8 @@ beforeEach(() => {
   mockEc2Send.mockReset().mockResolvedValue({});
   mockElbv2Send.mockReset().mockResolvedValue({});
   mockRdsSend.mockReset().mockResolvedValue({});
+  mockAsgSend.mockReset().mockResolvedValue({});
+  mockCognitoSend.mockReset().mockResolvedValue({});
 });
 
 describe('LogsLogGroupProvider --remove-protection', () => {
@@ -416,5 +464,148 @@ describe('RDS DBCluster --remove-protection', () => {
     });
     const cmds = mockRdsSend.mock.calls.map((c) => c[0]);
     expect(cmds.some((c) => c instanceof ModifyDBClusterCommand)).toBe(true);
+  });
+});
+
+describe('ASGProvider --remove-protection', () => {
+  // Helper: stub the post-delete waitForGroupDeleted polling so it
+  // exits immediately by reporting "group not found".
+  const stubWaiter = (command: unknown): Promise<unknown> | undefined => {
+    if (command instanceof DescribeAutoScalingGroupsCommand) {
+      const err = new Error('AutoScalingGroup name not found') as Error & { name: string };
+      err.name = 'ValidationError';
+      return Promise.reject(err);
+    }
+    return undefined;
+  };
+
+  it('issues UpdateAutoScalingGroup(DeletionProtection=none) before DeleteAutoScalingGroup with ForceDelete=true', async () => {
+    mockAsgSend.mockImplementation((command: unknown) => {
+      const stub = stubWaiter(command);
+      if (stub) return stub;
+      return Promise.resolve({});
+    });
+    const provider = new ASGProvider();
+    await provider.delete('A', 'my-asg', 'AWS::AutoScaling::AutoScalingGroup', undefined, {
+      removeProtection: true,
+    });
+    const cmds = mockAsgSend.mock.calls.map((c) => c[0]);
+    const flipIdx = cmds.findIndex((c) => c instanceof UpdateAutoScalingGroupCommand);
+    const delIdx = cmds.findIndex((c) => c instanceof DeleteAutoScalingGroupCommand);
+    expect(flipIdx).toBeGreaterThanOrEqual(0);
+    expect(delIdx).toBeGreaterThan(flipIdx);
+    const flipInput = (
+      cmds[flipIdx] as unknown as {
+        input: { AutoScalingGroupName: string; DeletionProtection: string };
+      }
+    ).input;
+    expect(flipInput.AutoScalingGroupName).toBe('my-asg');
+    expect(flipInput.DeletionProtection).toBe('none');
+    const delInput = (
+      cmds[delIdx] as unknown as {
+        input: { AutoScalingGroupName: string; ForceDelete: boolean };
+      }
+    ).input;
+    expect(delInput.AutoScalingGroupName).toBe('my-asg');
+    expect(delInput.ForceDelete).toBe(true);
+    // No CreateAutoScalingGroup should ever be issued by delete.
+    expect(cmds.some((c) => c instanceof CreateAutoScalingGroupCommand)).toBe(false);
+  });
+
+  it('does NOT issue UpdateAutoScalingGroup when removeProtection is unset; ForceDelete is false', async () => {
+    mockAsgSend.mockImplementation((command: unknown) => {
+      const stub = stubWaiter(command);
+      if (stub) return stub;
+      return Promise.resolve({});
+    });
+    const provider = new ASGProvider();
+    await provider.delete('A', 'my-asg', 'AWS::AutoScaling::AutoScalingGroup');
+    const cmds = mockAsgSend.mock.calls.map((c) => c[0]);
+    expect(cmds.some((c) => c instanceof UpdateAutoScalingGroupCommand)).toBe(false);
+    const delIdx = cmds.findIndex((c) => c instanceof DeleteAutoScalingGroupCommand);
+    expect(delIdx).toBeGreaterThanOrEqual(0);
+    const delInput = (
+      cmds[delIdx] as unknown as { input: { ForceDelete: boolean } }
+    ).input;
+    expect(delInput.ForceDelete).toBe(false);
+  });
+
+  it('idempotent — UpdateAutoScalingGroup is issued even when AWS already has DeletionProtection=none', async () => {
+    mockAsgSend.mockImplementation((command: unknown) => {
+      const stub = stubWaiter(command);
+      if (stub) return stub;
+      return Promise.resolve({});
+    });
+    const provider = new ASGProvider();
+    await provider.delete('A', 'my-asg', 'AWS::AutoScaling::AutoScalingGroup', undefined, {
+      removeProtection: true,
+    });
+    const cmds = mockAsgSend.mock.calls.map((c) => c[0]);
+    expect(cmds.some((c) => c instanceof UpdateAutoScalingGroupCommand)).toBe(true);
+  });
+});
+
+describe('Cognito UserPool --remove-protection', () => {
+  it('with removeProtection=true and templated DeletionProtection=ACTIVE, issues UpdateUserPool flip-off before DeleteUserPool (no Describe needed)', async () => {
+    mockCognitoSend.mockResolvedValue({});
+    const provider = new CognitoUserPoolProvider();
+    await provider.delete(
+      'P',
+      'us-east-1_abc',
+      'AWS::Cognito::UserPool',
+      { DeletionProtection: 'ACTIVE' },
+      { removeProtection: true }
+    );
+    const cmds = mockCognitoSend.mock.calls.map((c) => c[0]);
+    const flipIdx = cmds.findIndex((c) => c instanceof UpdateUserPoolCommand);
+    const delIdx = cmds.findIndex((c) => c instanceof DeleteUserPoolCommand);
+    expect(flipIdx).toBeGreaterThanOrEqual(0);
+    expect(delIdx).toBeGreaterThan(flipIdx);
+    const flipInput = (
+      cmds[flipIdx] as unknown as {
+        input: { UserPoolId: string; DeletionProtection: string };
+      }
+    ).input;
+    expect(flipInput.UserPoolId).toBe('us-east-1_abc');
+    expect(flipInput.DeletionProtection).toBe('INACTIVE');
+    // Templated ACTIVE short-circuits the Describe round-trip.
+    expect(cmds.some((c) => c instanceof DescribeUserPoolCommand)).toBe(false);
+  });
+
+  it('with removeProtection=true and template lacking DeletionProtection, falls back to DescribeUserPool to check AWS-side flag', async () => {
+    mockCognitoSend.mockImplementation((command: unknown) => {
+      if (command instanceof DescribeUserPoolCommand) {
+        return Promise.resolve({ UserPool: { DeletionProtection: 'ACTIVE' } });
+      }
+      return Promise.resolve({});
+    });
+    const provider = new CognitoUserPoolProvider();
+    await provider.delete(
+      'P',
+      'us-east-1_abc',
+      'AWS::Cognito::UserPool',
+      undefined,
+      { removeProtection: true }
+    );
+    const cmds = mockCognitoSend.mock.calls.map((c) => c[0]);
+    const descIdx = cmds.findIndex((c) => c instanceof DescribeUserPoolCommand);
+    const flipIdx = cmds.findIndex((c) => c instanceof UpdateUserPoolCommand);
+    const delIdx = cmds.findIndex((c) => c instanceof DeleteUserPoolCommand);
+    expect(descIdx).toBeGreaterThanOrEqual(0);
+    expect(flipIdx).toBeGreaterThan(descIdx);
+    expect(delIdx).toBeGreaterThan(flipIdx);
+  });
+
+  it('does NOT issue Describe / Update flip-off when removeProtection is unset (gating change vs pre-PR)', async () => {
+    // Pre-PR: bare delete unconditionally issued Describe + (if ACTIVE)
+    // Update before Delete. Now: bare delete goes straight to DeleteUserPool
+    // and AWS rejects on protected pools instead of silently bypassing.
+    mockCognitoSend.mockResolvedValue({});
+    const provider = new CognitoUserPoolProvider();
+    await provider.delete('P', 'us-east-1_abc', 'AWS::Cognito::UserPool');
+    const cmds = mockCognitoSend.mock.calls.map((c) => c[0]);
+    expect(cmds.some((c) => c instanceof DescribeUserPoolCommand)).toBe(false);
+    expect(cmds.some((c) => c instanceof UpdateUserPoolCommand)).toBe(false);
+    expect(cmds.some((c) => c instanceof DeleteUserPoolCommand)).toBe(true);
   });
 });

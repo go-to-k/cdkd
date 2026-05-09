@@ -419,9 +419,19 @@ export class CognitoUserPoolProvider implements ResourceProvider {
   }
 
   /**
-   * Delete a Cognito User Pool
+   * Delete a Cognito User Pool.
    *
-   * If DeletionProtection is ACTIVE, it is automatically disabled before deletion.
+   * When `context.removeProtection === true`, `DeletionProtection` is flipped
+   * from `ACTIVE` to `INACTIVE` via `UpdateUserPool` before deletion. The
+   * call is idempotent — AWS accepts the no-op already-disabled case
+   * without error. Without `removeProtection`, AWS rejects the delete on a
+   * protected pool with `InvalidParameterException` and the destroy fails;
+   * the user is expected to set `--remove-protection` explicitly.
+   *
+   * Pre-PR behavior was an unconditional flip-off; that silent bypass has
+   * been gated on `--remove-protection` to match the rest of the
+   * deletion-protection-bearing types and CDK CLI's refuse-on-protected
+   * semantics. See PR body for migration notes.
    */
   async delete(
     logicalId: string,
@@ -433,52 +443,62 @@ export class CognitoUserPoolProvider implements ResourceProvider {
     this.logger.debug(`Deleting Cognito User Pool ${logicalId}: ${physicalId}`);
 
     try {
-      // Check if DeletionProtection is ACTIVE and disable it before deletion
-      const deletionProtection = properties?.['DeletionProtection'] as string | undefined;
-      if (deletionProtection === 'ACTIVE') {
-        this.logger.debug(
-          `Disabling DeletionProtection on Cognito User Pool ${physicalId} before deletion`
-        );
-        await this.getClient().send(
-          new UpdateUserPoolCommand({
-            UserPoolId: physicalId,
-            DeletionProtection: 'INACTIVE',
-          })
-        );
-      } else {
-        // Properties may not reflect current state; describe to check
-        try {
-          const describeResponse = await this.getClient().send(
-            new DescribeUserPoolCommand({ UserPoolId: physicalId })
-          );
-          if (describeResponse.UserPool?.DeletionProtection === 'ACTIVE') {
-            this.logger.debug(
-              `Disabling DeletionProtection on Cognito User Pool ${physicalId} before deletion`
+      if (context?.removeProtection === true) {
+        // Templated state may not reflect the current AWS-side flag (the
+        // user could have flipped it via console); describe to check
+        // before issuing the flip-off, and skip the call when already
+        // INACTIVE so we don't waste an API request.
+        const templatedActive =
+          (properties?.['DeletionProtection'] as string | undefined) === 'ACTIVE';
+        let needsFlip = templatedActive;
+        if (!templatedActive) {
+          try {
+            const describeResponse = await this.getClient().send(
+              new DescribeUserPoolCommand({ UserPoolId: physicalId })
             );
+            needsFlip = describeResponse.UserPool?.DeletionProtection === 'ACTIVE';
+          } catch (descError) {
+            if (descError instanceof ResourceNotFoundException) {
+              const clientRegion = await this.getClient().config.region();
+              assertRegionMatch(
+                clientRegion,
+                context?.expectedRegion,
+                resourceType,
+                logicalId,
+                physicalId
+              );
+              this.logger.debug(
+                `Cognito User Pool ${physicalId} does not exist, skipping deletion`
+              );
+              return;
+            }
+            // If describe fails for another reason, attempt the flip
+            // anyway — UpdateUserPool against an already-INACTIVE pool
+            // is a harmless no-op.
+            this.logger.debug(
+              `Failed to describe Cognito User Pool ${physicalId}, attempting flip-off anyway`
+            );
+            needsFlip = true;
+          }
+        }
+        if (needsFlip) {
+          this.logger.debug(
+            `Disabling DeletionProtection on Cognito User Pool ${physicalId} before deletion (--remove-protection)`
+          );
+          try {
             await this.getClient().send(
               new UpdateUserPoolCommand({
                 UserPoolId: physicalId,
                 DeletionProtection: 'INACTIVE',
               })
             );
-          }
-        } catch (descError) {
-          if (descError instanceof ResourceNotFoundException) {
-            const clientRegion = await this.getClient().config.region();
-            assertRegionMatch(
-              clientRegion,
-              context?.expectedRegion,
-              resourceType,
-              logicalId,
-              physicalId
+          } catch (flipError) {
+            // Idempotent — log and proceed. The actual delete below will
+            // surface any real authorization / state error.
+            this.logger.debug(
+              `Could not disable DeletionProtection for ${physicalId}: ${flipError instanceof Error ? flipError.message : String(flipError)}`
             );
-            this.logger.debug(`Cognito User Pool ${physicalId} does not exist, skipping deletion`);
-            return;
           }
-          // If describe fails for another reason, proceed with delete attempt anyway
-          this.logger.debug(
-            `Failed to describe Cognito User Pool ${physicalId}, proceeding with delete`
-          );
         }
       }
 

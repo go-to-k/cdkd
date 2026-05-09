@@ -122,6 +122,13 @@ export interface DestroyRunnerResult {
  * `delete()` (idempotent — safe when AWS already has protection off),
  * so the count is informational only.
  *
+ * Most types use a boolean flag — the value `true` is what we count.
+ * Two types use a string-valued enum (Cognito UserPool's
+ * `DeletionProtection` is `'ACTIVE' | 'INACTIVE'`, AutoScalingGroup's
+ * `DeletionProtection` is `'none' | 'prevent-force-deletion' |
+ * 'prevent-all-deletion'`). For those, the helper checks against a
+ * per-type set of "active" values via `PROTECTION_ACTIVE_VALUES_BY_TYPE`.
+ *
  * Exported for unit-test coverage of `countProtectedResources`.
  */
 export const PROTECTION_PROPERTY_BY_TYPE: Record<string, string> = {
@@ -130,6 +137,18 @@ export const PROTECTION_PROPERTY_BY_TYPE: Record<string, string> = {
   'AWS::RDS::DBCluster': 'DeletionProtection',
   'AWS::DynamoDB::Table': 'DeletionProtectionEnabled',
   'AWS::EC2::Instance': 'DisableApiTermination',
+  'AWS::Cognito::UserPool': 'DeletionProtection',
+  'AWS::AutoScaling::AutoScalingGroup': 'DeletionProtection',
+};
+
+/**
+ * For string-valued protection enums, the set of values that count as
+ * "currently protected". Types absent from this map use the default
+ * (boolean `true`).
+ */
+export const PROTECTION_ACTIVE_VALUES_BY_TYPE: Record<string, ReadonlySet<unknown>> = {
+  'AWS::Cognito::UserPool': new Set(['ACTIVE']),
+  'AWS::AutoScaling::AutoScalingGroup': new Set(['prevent-force-deletion', 'prevent-all-deletion']),
 };
 
 /**
@@ -146,7 +165,12 @@ export function countProtectedResources(state: StackState): number {
     const propName = PROTECTION_PROPERTY_BY_TYPE[resource.resourceType];
     if (propName) {
       const recorded = resource.properties?.[propName] ?? resource.observedProperties?.[propName];
-      if (recorded === true) count++;
+      const activeValues = PROTECTION_ACTIVE_VALUES_BY_TYPE[resource.resourceType];
+      if (activeValues) {
+        if (activeValues.has(recorded)) count++;
+      } else if (recorded === true) {
+        count++;
+      }
       continue;
     }
     if (resource.resourceType === 'AWS::ElasticLoadBalancingV2::LoadBalancer') {

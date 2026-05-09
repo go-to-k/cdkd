@@ -117,4 +117,69 @@ describe('countProtectedResources', () => {
     });
     expect(countProtectedResources(state)).toBe(1);
   });
+
+  it('counts a Cognito UserPool with DeletionProtection=ACTIVE (string-valued enum)', () => {
+    const state = makeState({
+      P: {
+        physicalId: 'us-east-1_abc',
+        resourceType: 'AWS::Cognito::UserPool',
+        properties: { DeletionProtection: 'ACTIVE' },
+        attributes: {},
+        dependencies: [],
+      },
+    });
+    expect(countProtectedResources(state)).toBe(1);
+  });
+
+  it('does NOT count a Cognito UserPool with DeletionProtection=INACTIVE', () => {
+    const state = makeState({
+      P: {
+        physicalId: 'us-east-1_abc',
+        resourceType: 'AWS::Cognito::UserPool',
+        properties: { DeletionProtection: 'INACTIVE' },
+        attributes: {},
+        dependencies: [],
+      },
+    });
+    expect(countProtectedResources(state)).toBe(0);
+  });
+
+  it('counts an AutoScalingGroup with DeletionProtection=prevent-force-deletion', () => {
+    const state = makeState({
+      A: {
+        physicalId: 'my-asg',
+        resourceType: 'AWS::AutoScaling::AutoScalingGroup',
+        properties: { DeletionProtection: 'prevent-force-deletion' },
+        attributes: {},
+        dependencies: [],
+      },
+    });
+    expect(countProtectedResources(state)).toBe(1);
+  });
+
+  it('counts an AutoScalingGroup with DeletionProtection=prevent-all-deletion', () => {
+    const state = makeState({
+      A: {
+        physicalId: 'my-asg',
+        resourceType: 'AWS::AutoScaling::AutoScalingGroup',
+        properties: { DeletionProtection: 'prevent-all-deletion' },
+        attributes: {},
+        dependencies: [],
+      },
+    });
+    expect(countProtectedResources(state)).toBe(1);
+  });
+
+  it('does NOT count an AutoScalingGroup with DeletionProtection=none', () => {
+    const state = makeState({
+      A: {
+        physicalId: 'my-asg',
+        resourceType: 'AWS::AutoScaling::AutoScalingGroup',
+        properties: { DeletionProtection: 'none' },
+        attributes: {},
+        dependencies: [],
+      },
+    });
+    expect(countProtectedResources(state)).toBe(0);
+  });
 });

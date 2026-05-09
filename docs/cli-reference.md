@@ -653,6 +653,8 @@ types:
 | `AWS::DynamoDB::Table` | `DeletionProtectionEnabled` | `UpdateTable(DeletionProtectionEnabled=false)` then `DescribeTable` poll until `ACTIVE` |
 | `AWS::EC2::Instance` | `DisableApiTermination` | `ModifyInstanceAttribute(DisableApiTermination={Value:false})` |
 | `AWS::ElasticLoadBalancingV2::LoadBalancer` | attribute `deletion_protection.enabled` | `ModifyLoadBalancerAttributes([{Key: 'deletion_protection.enabled', Value: 'false'}])` |
+| `AWS::Cognito::UserPool` | `DeletionProtection` (`ACTIVE` / `INACTIVE`) | `UpdateUserPool(DeletionProtection='INACTIVE')` |
+| `AWS::AutoScaling::AutoScalingGroup` | `DeletionProtection` (`none` / `prevent-force-deletion` / `prevent-all-deletion`) | `UpdateAutoScalingGroup(DeletionProtection='none')` followed by `DeleteAutoScalingGroup(ForceDelete=true)` so AWS terminates running instances as part of the delete |
 
 Behavior:
 
@@ -672,15 +674,18 @@ Behavior:
   DELETION PROTECTION on K of them. Continue? (y/N)`. The
   default flips from `Y/n` to `y/N`. `--yes` / `-y` / `-f`
   skips the prompt.
-- **RDS gating change**: prior to this flag, the RDS DBInstance /
-  DBCluster providers always issued `ModifyDB{Instance,Cluster}`
-  with `DeletionProtection: false` before destroy. That implicit
-  behavior is now gated on `--remove-protection` to match the
-  other types — destroying an RDS resource whose deletion
-  protection was set externally (console / AWS CLI) without
-  `--remove-protection` will surface AWS's
-  `InvalidParameterCombination` error rather than silently
-  succeed.
+- **RDS / Cognito gating change**: prior to this flag, the RDS
+  DBInstance / DBCluster providers always issued
+  `ModifyDB{Instance,Cluster}` with `DeletionProtection: false`
+  before destroy, and the Cognito UserPool provider always issued
+  `DescribeUserPool` + (if `ACTIVE`) `UpdateUserPool
+  (DeletionProtection='INACTIVE')` before destroy. Both implicit
+  behaviors are now gated on `--remove-protection` to match the
+  other types — destroying an RDS or Cognito UserPool resource
+  whose deletion protection was set externally (console / AWS CLI)
+  without `--remove-protection` will surface AWS's
+  `InvalidParameterCombination` / `InvalidParameterException`
+  error rather than silently succeed.
 - Protection types not in the table above (CloudFront
   Distributions, S3 bucket retention, etc.) are out of scope —
   the list is curated to the cases where AWS exposes a

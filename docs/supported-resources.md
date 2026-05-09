@@ -117,6 +117,7 @@ message naming the unsupported type.
 | **Audit** | AWS::CloudTrail::Trail | SDK Provider | ✅ |
 | **CI/CD** | AWS::CodeBuild::Project | SDK Provider | ✅ |
 | **AI/ML** | AWS::BedrockAgentCore::Runtime | SDK Provider | ✅ |
+| **Compute** | AWS::AutoScaling::AutoScalingGroup | SDK Provider | ✅ |
 | **Custom** | Custom::* (Lambda/SNS-backed) | SDK Provider | ✅ |
 | **Other** | All other resource types | Cloud Control | ✅ |
 
