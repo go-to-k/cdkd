@@ -1,3 +1,10 @@
+## [0.59.1](https://github.com/go-to-k/cdkd/compare/v0.59.0...v0.59.1) (2026-05-09)
+
+
+### Bug Fixes
+
+* **intrinsic:** resolve LaunchTemplate.LatestVersionNumber + add real-AWS integ for --remove-protection ([#206](https://github.com/go-to-k/cdkd/issues/206)) ([840ae3d](https://github.com/go-to-k/cdkd/commit/840ae3dd9fb532725dafb067a7aa908f7cad30b0))
+
 # [0.59.0](https://github.com/go-to-k/cdkd/compare/v0.58.0...v0.59.0) (2026-05-09)
 
 # [0.58.0](https://github.com/go-to-k/cdkd/compare/v0.57.1...v0.58.0) (2026-05-09)
