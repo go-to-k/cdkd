@@ -52,7 +52,7 @@ describe('ServiceDiscoveryProvider.readCurrentState', () => {
   });
 
   describe('AWS::ServiceDiscovery::PrivateDnsNamespace', () => {
-    it('returns Name + Description (happy path)', async () => {
+    it('returns Name + Description + Properties placeholder (happy path)', async () => {
       mockSend.mockResolvedValueOnce({
         Namespace: { Id: 'ns-1', Name: 'mynamespace.local', Description: 'mine' },
       });
@@ -64,7 +64,37 @@ describe('ServiceDiscoveryProvider.readCurrentState', () => {
       );
 
       expect(mockSend.mock.calls[0]?.[0]).toBeInstanceOf(GetNamespaceCommand);
-      expect(result).toEqual({ Name: 'mynamespace.local', Description: 'mine' });
+      // Properties always emitted as `{}` placeholder when AWS doesn't
+      // return SOA.TTL — PR #145 always-emit pattern, so a console-side
+      // TTL change surfaces as drift on the v3 baseline.
+      expect(result).toEqual({
+        Name: 'mynamespace.local',
+        Description: 'mine',
+        Properties: {},
+      });
+    });
+
+    it('surfaces Properties.DnsProperties.SOA.TTL when AWS returns it', async () => {
+      mockSend.mockResolvedValueOnce({
+        Namespace: {
+          Id: 'ns-1',
+          Name: 'mynamespace.local',
+          Description: 'mine',
+          Properties: { DnsProperties: { SOA: { TTL: 60 } } },
+        },
+      });
+
+      const result = await provider.readCurrentState(
+        'ns-1',
+        'L',
+        'AWS::ServiceDiscovery::PrivateDnsNamespace'
+      );
+
+      expect(result).toEqual({
+        Name: 'mynamespace.local',
+        Description: 'mine',
+        Properties: { DnsProperties: { SOA: { TTL: 60 } } },
+      });
     });
 
     it('returns undefined when namespace is gone', async () => {
