@@ -12,10 +12,33 @@ Heavy pre-merge gate. Run this before creating or merging a pull request — NOT
 
 Run each check and report pass/fail:
 
+0. **Worktree pre-flight**: confirm `node_modules/` exists in the cwd:
+   ```bash
+   [ -d node_modules ] || pnpm install
+   ```
+   `git worktree add` does NOT copy `node_modules`, so a fresh worktree's
+   `pnpm run typecheck` / `lint` / `build` and `npx vitest --run` all fail
+   with `tsc: command not found` / `Cannot find package 'vitest'` etc. —
+   but the failure is easy to miss when the output is piped to `tail` (the
+   exit code reflects `tail`, not `pnpm`, and the `ELIFECYCLE` line gets
+   buried). If the pre-flight skips by way of an existing `node_modules`,
+   confirm it is not stale by spot-checking `pnpm-lock.yaml` mtime ≤
+   `node_modules/.modules.yaml` mtime. **Do not start step 1 until this
+   passes**, or every quality check below silently no-ops while looking
+   green.
+
 1. **Code quality**
    - `pnpm run typecheck` passes
    - `pnpm run lint` passes (run `lint:fix` first if needed)
    - `pnpm run build` succeeds
+   - When piping any of the above to `tail` / `head` / `grep` for log
+     truncation, **check the actual output content** for `ELIFECYCLE` /
+     `Command failed` / `Error` markers — `$?` after a pipeline reflects
+     the LAST stage (usually 0), NOT the build tool's exit. The same
+     applies to background-task completion notifications: the
+     framework's `exit code 0` is the chained command's exit, not the
+     pipeline head. When in doubt, capture the result without piping:
+     `pnpm run X > /tmp/out 2>&1; rc=$?; tail -3 /tmp/out; echo "[rc=$rc]"`.
 
 2. **Tests**
    - `npx vitest --run` - all unit tests pass
