@@ -481,7 +481,9 @@ metadata, not as user-managed `Tags` properties, so leaving them in would
 fire false-positive drift on every CDK-deployed resource. The remaining
 user tags are normalized to CFn's `[{Key, Value}]` shape (sorted by `Key`
 for stable comparison) and the result key is omitted entirely when AWS
-reports no user tags. IAM inline-policy bodies remain out of scope for v1;
+reports no user tags. IAM Role / User / Group inline-policy bodies are
+covered (paginated `List*Policies` + parallel `Get*Policy` round-trips
+with state-driven order reconciliation) since PR #175;
 see [src/types/resource.ts](../src/types/resource.ts) for the per-provider
 shape decisions.
 
