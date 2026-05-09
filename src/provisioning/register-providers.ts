@@ -40,7 +40,11 @@ import { CognitoUserPoolProvider } from './providers/cognito-provider.js';
 import { ElastiCacheProvider } from './providers/elasticache-provider.js';
 import { ServiceDiscoveryProvider } from './providers/servicediscovery-provider.js';
 import { AppSyncProvider } from './providers/appsync-provider.js';
-import { GlueProvider } from './providers/glue-provider.js';
+import {
+  GlueProvider,
+  GlueWorkflowProvider,
+  GlueSecurityConfigurationProvider,
+} from './providers/glue-provider.js';
 import { KMSProvider } from './providers/kms-provider.js';
 import { KinesisStreamProvider } from './providers/kinesis-provider.js';
 import { KinesisStreamConsumerProvider } from './providers/kinesis-streamconsumer-provider.js';
@@ -211,6 +215,8 @@ export function registerAllProviders(registry: ProviderRegistry): void {
   const glueProvider = new GlueProvider();
   registry.register('AWS::Glue::Database', glueProvider);
   registry.register('AWS::Glue::Table', glueProvider);
+  registry.register('AWS::Glue::Workflow', new GlueWorkflowProvider());
+  registry.register('AWS::Glue::SecurityConfiguration', new GlueSecurityConfigurationProvider());
 
   // KMS
   const kmsProvider = new KMSProvider();
