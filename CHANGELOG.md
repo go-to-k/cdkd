@@ -1,3 +1,10 @@
+## [0.60.1](https://github.com/go-to-k/cdkd/compare/v0.60.0...v0.60.1) (2026-05-09)
+
+
+### Bug Fixes
+
+* **cli:** auto-lower --resource-warn-after when --resource-timeout is set below 5m default ([#208](https://github.com/go-to-k/cdkd/issues/208)) ([55773a5](https://github.com/go-to-k/cdkd/commit/55773a50587ae8b14e6727fc0ebb73ce61970c9e))
+
 # [0.60.0](https://github.com/go-to-k/cdkd/compare/v0.59.1...v0.60.0) (2026-05-09)
 
 
