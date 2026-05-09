@@ -272,7 +272,14 @@ template's logical id, and adopts it. Works under `auto` (default) and
 - AWS::StepFunctions::StateMachine
 - AWS::Glue::Database
 - AWS::Glue::Table
+- AWS::Glue::Job
+- AWS::Glue::Crawler
+- AWS::Glue::Connection
+- AWS::Glue::Trigger
+- AWS::Glue::Workflow
+- AWS::Glue::SecurityConfiguration
 - AWS::Kinesis::Stream
+- AWS::Kinesis::StreamConsumer
 - AWS::KinesisFirehose::DeliveryStream
 - AWS::WAFv2::WebACL
 - AWS::EFS::FileSystem
