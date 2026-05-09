@@ -157,19 +157,17 @@ describe('ApiGatewayV2Provider update', () => {
     provider = new ApiGatewayV2Provider();
   });
 
-  it.each([
-    ['AWS::ApiGatewayV2::Api'],
-    ['AWS::ApiGatewayV2::Stage'],
-    ['AWS::ApiGatewayV2::Integration'],
-    ['AWS::ApiGatewayV2::Route'],
-    ['AWS::ApiGatewayV2::Authorizer'],
-  ])(
-    'rejects with ResourceUpdateNotSupportedError for %s (drift --revert surfaces a clear immutable error)',
-    async (resourceType) => {
-      await expect(provider.update('MyId', 'phys-id', resourceType, {}, {})).rejects.toThrow(
-        ResourceUpdateNotSupportedError
-      );
-      expect(mockSend).not.toHaveBeenCalled();
-    }
-  );
+  // Each AWS::ApiGatewayV2::* type now has an in-place update path via
+  // its matching `Update*Command`. Per-type positive coverage (primitive
+  // replace, no-op, immutable-only-diff) lives in
+  // `tests/unit/provisioning/apigatewayv2-provider-roundtrip.test.ts`.
+  // This block keeps a single guard that an unsupported sub-type still
+  // surfaces the immutable-only error so `cdkd drift --revert` does not
+  // silently no-op on a future-added type the dispatch hasn't learned yet.
+  it('unsupported sub-type rejects update() with ResourceUpdateNotSupportedError', async () => {
+    await expect(
+      provider.update('MyId', 'phys-id', 'AWS::ApiGatewayV2::DomainName', {}, {})
+    ).rejects.toThrow(ResourceUpdateNotSupportedError);
+    expect(mockSend).not.toHaveBeenCalled();
+  });
 });

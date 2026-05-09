@@ -2,18 +2,23 @@ import {
   ApiGatewayV2Client,
   CreateApiCommand,
   DeleteApiCommand,
+  UpdateApiCommand,
   CreateStageCommand,
   DeleteStageCommand,
   GetStageCommand,
+  UpdateStageCommand,
   CreateIntegrationCommand,
   DeleteIntegrationCommand,
   GetIntegrationCommand,
+  UpdateIntegrationCommand,
   CreateRouteCommand,
   DeleteRouteCommand,
   GetRouteCommand,
+  UpdateRouteCommand,
   CreateAuthorizerCommand,
   DeleteAuthorizerCommand,
   GetAuthorizerCommand,
+  UpdateAuthorizerCommand,
   GetApiCommand,
   GetApisCommand,
   NotFoundException,
@@ -21,6 +26,11 @@ import {
   type IntegrationType,
   type AuthorizationType,
   type AuthorizerType,
+  type UpdateApiCommandInput,
+  type UpdateStageCommandInput,
+  type UpdateIntegrationCommandInput,
+  type UpdateRouteCommandInput,
+  type UpdateAuthorizerCommandInput,
 } from '@aws-sdk/client-apigatewayv2';
 import { getLogger } from '../../utils/logger.js';
 import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/error-handler.js';
@@ -128,28 +138,65 @@ export class ApiGatewayV2Provider implements ResourceProvider {
   }
 
   /**
-   * HTTP API resources are treated as immutable by cdkd: the deploy engine
-   * recreates them on property changes via the immutable-property
-   * replacement path. AWS does expose `UpdateApi` / `UpdateRoute` /
-   * `UpdateIntegration` / `UpdateStage` / `UpdateAuthorizer`, but cdkd
-   * does not yet plumb them through. `cdkd drift --revert` surfaces a
-   * clear "use --replace or re-deploy" message instead of silently
-   * no-op'ing the revert.
+   * AWS API Gateway V2 supports in-place updates for every type cdkd
+   * provisions via the matching `Update*Command`. Each command takes the
+   * full Update input shape (NOT JSON Patch — that's the v1 surface);
+   * cdkd builds the input by selecting only the fields that differ
+   * between `previousProperties` and `properties`, so unchanged fields
+   * are not echoed back. The few immutable identifiers (`ProtocolType`
+   * on Api; `StageName` on Stage) are not part of the Update input shape
+   * and are handled by the deploy engine's immutable-property
+   * replacement path.
    */
-  update(
+  async update(
     logicalId: string,
-    _physicalId: string,
+    physicalId: string,
     resourceType: string,
-    _properties: Record<string, unknown>,
-    _previousProperties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    previousProperties: Record<string, unknown>
   ): Promise<ResourceUpdateResult> {
-    return Promise.reject(
-      new ResourceUpdateNotSupportedError(
-        resourceType,
-        logicalId,
-        'API Gateway V2 (HTTP API) resources are recreated on property changes; re-deploy with cdkd deploy --replace, or destroy + redeploy the stack'
-      )
-    );
+    switch (resourceType) {
+      case 'AWS::ApiGatewayV2::Api':
+        return this.updateApi(logicalId, physicalId, resourceType, properties, previousProperties);
+      case 'AWS::ApiGatewayV2::Stage':
+        return this.updateStage(
+          logicalId,
+          physicalId,
+          resourceType,
+          properties,
+          previousProperties
+        );
+      case 'AWS::ApiGatewayV2::Integration':
+        return this.updateIntegration(
+          logicalId,
+          physicalId,
+          resourceType,
+          properties,
+          previousProperties
+        );
+      case 'AWS::ApiGatewayV2::Route':
+        return this.updateRoute(
+          logicalId,
+          physicalId,
+          resourceType,
+          properties,
+          previousProperties
+        );
+      case 'AWS::ApiGatewayV2::Authorizer':
+        return this.updateAuthorizer(
+          logicalId,
+          physicalId,
+          resourceType,
+          properties,
+          previousProperties
+        );
+      default:
+        throw new ResourceUpdateNotSupportedError(
+          resourceType,
+          logicalId,
+          'unsupported API Gateway V2 resource type for in-place update; re-deploy with cdkd deploy --replace, or destroy + redeploy the stack'
+        );
+    }
   }
 
   async delete(
@@ -991,6 +1038,463 @@ export class ApiGatewayV2Provider implements ResourceProvider {
     return null;
   }
 
+  // ─── Update implementations ───────────────────────────────────────
+
+  /**
+   * `UpdateApi` accepts the full Update input shape (not JSON Patch).
+   * Mutable fields cdkd manages: `Name` / `Description` /
+   * `CorsConfiguration`. `ProtocolType` is immutable — the deploy
+   * engine handles changes via the replacement path; we surface a
+   * `ResourceUpdateNotSupportedError` if it ever reaches us anyway.
+   */
+  private async updateApi(
+    logicalId: string,
+    physicalId: string,
+    resourceType: string,
+    properties: Record<string, unknown>,
+    previousProperties: Record<string, unknown>
+  ): Promise<ResourceUpdateResult> {
+    if (
+      properties['ProtocolType'] !== undefined &&
+      previousProperties['ProtocolType'] !== undefined &&
+      properties['ProtocolType'] !== previousProperties['ProtocolType']
+    ) {
+      throw new ResourceUpdateNotSupportedError(
+        resourceType,
+        logicalId,
+        'ProtocolType is immutable on AWS::ApiGatewayV2::Api; re-deploy with cdkd deploy --replace'
+      );
+    }
+
+    const input: UpdateApiCommandInput = { ApiId: physicalId };
+    let changed = false;
+
+    if (properties['Name'] !== undefined && properties['Name'] !== previousProperties['Name']) {
+      input.Name = properties['Name'] as string;
+      changed = true;
+    }
+    if (
+      properties['Description'] !== undefined &&
+      properties['Description'] !== previousProperties['Description']
+    ) {
+      input.Description = properties['Description'] as string;
+      changed = true;
+    }
+    if (
+      properties['CorsConfiguration'] !== undefined &&
+      !this.deepEqual(properties['CorsConfiguration'], previousProperties['CorsConfiguration'])
+    ) {
+      input.CorsConfiguration = properties[
+        'CorsConfiguration'
+      ] as UpdateApiCommandInput['CorsConfiguration'];
+      changed = true;
+    }
+
+    if (!changed) {
+      this.logger.debug(`No mutable Api fields changed for ${logicalId}; skipping UpdateApi`);
+      return { physicalId, wasReplaced: false };
+    }
+
+    this.logger.debug(`Updating API Gateway V2 Api ${logicalId}: ${physicalId}`);
+
+    try {
+      await this.getClient().send(new UpdateApiCommand(input));
+      return { physicalId, wasReplaced: false };
+    } catch (error) {
+      const cause = error instanceof Error ? error : undefined;
+      throw new ProvisioningError(
+        `Failed to update API Gateway V2 Api ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        resourceType,
+        logicalId,
+        physicalId,
+        cause
+      );
+    }
+  }
+
+  /**
+   * `UpdateStage` keys on `(ApiId, StageName)` — `StageName` is the
+   * physicalId and immutable. Mutable fields cdkd manages:
+   * `AutoDeploy` / `Description`. `ApiId` is also immutable (a stage
+   * cannot be moved between APIs).
+   */
+  private async updateStage(
+    logicalId: string,
+    physicalId: string,
+    resourceType: string,
+    properties: Record<string, unknown>,
+    previousProperties: Record<string, unknown>
+  ): Promise<ResourceUpdateResult> {
+    const apiId = (properties['ApiId'] ?? previousProperties['ApiId']) as string | undefined;
+    if (!apiId) {
+      throw new ProvisioningError(
+        `ApiId is required to update Stage ${logicalId}`,
+        resourceType,
+        logicalId,
+        physicalId
+      );
+    }
+
+    if (
+      properties['ApiId'] !== undefined &&
+      previousProperties['ApiId'] !== undefined &&
+      properties['ApiId'] !== previousProperties['ApiId']
+    ) {
+      throw new ResourceUpdateNotSupportedError(
+        resourceType,
+        logicalId,
+        'ApiId is immutable on AWS::ApiGatewayV2::Stage; re-deploy with cdkd deploy --replace'
+      );
+    }
+    if (
+      properties['StageName'] !== undefined &&
+      previousProperties['StageName'] !== undefined &&
+      properties['StageName'] !== previousProperties['StageName']
+    ) {
+      throw new ResourceUpdateNotSupportedError(
+        resourceType,
+        logicalId,
+        'StageName is immutable on AWS::ApiGatewayV2::Stage; re-deploy with cdkd deploy --replace'
+      );
+    }
+
+    const input: UpdateStageCommandInput = { ApiId: apiId, StageName: physicalId };
+    let changed = false;
+
+    if (
+      properties['AutoDeploy'] !== undefined &&
+      properties['AutoDeploy'] !== previousProperties['AutoDeploy']
+    ) {
+      input.AutoDeploy = properties['AutoDeploy'] as boolean;
+      changed = true;
+    }
+    if (
+      properties['Description'] !== undefined &&
+      properties['Description'] !== previousProperties['Description']
+    ) {
+      input.Description = properties['Description'] as string;
+      changed = true;
+    }
+
+    if (!changed) {
+      this.logger.debug(`No mutable Stage fields changed for ${logicalId}; skipping UpdateStage`);
+      return { physicalId, wasReplaced: false };
+    }
+
+    this.logger.debug(`Updating API Gateway V2 Stage ${logicalId}: ${physicalId}`);
+
+    try {
+      await this.getClient().send(new UpdateStageCommand(input));
+      return { physicalId, wasReplaced: false };
+    } catch (error) {
+      const cause = error instanceof Error ? error : undefined;
+      throw new ProvisioningError(
+        `Failed to update API Gateway V2 Stage ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        resourceType,
+        logicalId,
+        physicalId,
+        cause
+      );
+    }
+  }
+
+  /**
+   * `UpdateIntegration` keys on `(ApiId, IntegrationId)`. Mutable
+   * fields cdkd manages: `IntegrationType` / `IntegrationUri` /
+   * `IntegrationMethod` / `PayloadFormatVersion`.
+   */
+  private async updateIntegration(
+    logicalId: string,
+    physicalId: string,
+    resourceType: string,
+    properties: Record<string, unknown>,
+    previousProperties: Record<string, unknown>
+  ): Promise<ResourceUpdateResult> {
+    const apiId = (properties['ApiId'] ?? previousProperties['ApiId']) as string | undefined;
+    if (!apiId) {
+      throw new ProvisioningError(
+        `ApiId is required to update Integration ${logicalId}`,
+        resourceType,
+        logicalId,
+        physicalId
+      );
+    }
+
+    if (
+      properties['ApiId'] !== undefined &&
+      previousProperties['ApiId'] !== undefined &&
+      properties['ApiId'] !== previousProperties['ApiId']
+    ) {
+      throw new ResourceUpdateNotSupportedError(
+        resourceType,
+        logicalId,
+        'ApiId is immutable on AWS::ApiGatewayV2::Integration; re-deploy with cdkd deploy --replace'
+      );
+    }
+
+    const input: UpdateIntegrationCommandInput = { ApiId: apiId, IntegrationId: physicalId };
+    let changed = false;
+
+    if (
+      properties['IntegrationType'] !== undefined &&
+      properties['IntegrationType'] !== previousProperties['IntegrationType']
+    ) {
+      input.IntegrationType = properties['IntegrationType'] as IntegrationType;
+      changed = true;
+    }
+    if (
+      properties['IntegrationUri'] !== undefined &&
+      properties['IntegrationUri'] !== previousProperties['IntegrationUri']
+    ) {
+      input.IntegrationUri = properties['IntegrationUri'] as string;
+      changed = true;
+    }
+    if (
+      properties['IntegrationMethod'] !== undefined &&
+      properties['IntegrationMethod'] !== previousProperties['IntegrationMethod']
+    ) {
+      input.IntegrationMethod = properties['IntegrationMethod'] as string;
+      changed = true;
+    }
+    if (
+      properties['PayloadFormatVersion'] !== undefined &&
+      properties['PayloadFormatVersion'] !== previousProperties['PayloadFormatVersion']
+    ) {
+      input.PayloadFormatVersion = properties['PayloadFormatVersion'] as string;
+      changed = true;
+    }
+
+    if (!changed) {
+      this.logger.debug(
+        `No mutable Integration fields changed for ${logicalId}; skipping UpdateIntegration`
+      );
+      return { physicalId, wasReplaced: false };
+    }
+
+    this.logger.debug(`Updating API Gateway V2 Integration ${logicalId}: ${physicalId}`);
+
+    try {
+      await this.getClient().send(new UpdateIntegrationCommand(input));
+      return { physicalId, wasReplaced: false };
+    } catch (error) {
+      const cause = error instanceof Error ? error : undefined;
+      throw new ProvisioningError(
+        `Failed to update API Gateway V2 Integration ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        resourceType,
+        logicalId,
+        physicalId,
+        cause
+      );
+    }
+  }
+
+  /**
+   * `UpdateRoute` keys on `(ApiId, RouteId)`. Mutable fields cdkd
+   * manages: `RouteKey` / `Target` / `AuthorizationType` /
+   * `AuthorizerId` / `AuthorizationScopes`.
+   */
+  private async updateRoute(
+    logicalId: string,
+    physicalId: string,
+    resourceType: string,
+    properties: Record<string, unknown>,
+    previousProperties: Record<string, unknown>
+  ): Promise<ResourceUpdateResult> {
+    const apiId = (properties['ApiId'] ?? previousProperties['ApiId']) as string | undefined;
+    if (!apiId) {
+      throw new ProvisioningError(
+        `ApiId is required to update Route ${logicalId}`,
+        resourceType,
+        logicalId,
+        physicalId
+      );
+    }
+
+    if (
+      properties['ApiId'] !== undefined &&
+      previousProperties['ApiId'] !== undefined &&
+      properties['ApiId'] !== previousProperties['ApiId']
+    ) {
+      throw new ResourceUpdateNotSupportedError(
+        resourceType,
+        logicalId,
+        'ApiId is immutable on AWS::ApiGatewayV2::Route; re-deploy with cdkd deploy --replace'
+      );
+    }
+
+    const input: UpdateRouteCommandInput = { ApiId: apiId, RouteId: physicalId };
+    let changed = false;
+
+    if (
+      properties['RouteKey'] !== undefined &&
+      properties['RouteKey'] !== previousProperties['RouteKey']
+    ) {
+      input.RouteKey = properties['RouteKey'] as string;
+      changed = true;
+    }
+    if (
+      properties['Target'] !== undefined &&
+      properties['Target'] !== previousProperties['Target']
+    ) {
+      input.Target = properties['Target'] as string;
+      changed = true;
+    }
+    if (
+      properties['AuthorizationType'] !== undefined &&
+      properties['AuthorizationType'] !== previousProperties['AuthorizationType']
+    ) {
+      input.AuthorizationType = properties['AuthorizationType'] as AuthorizationType;
+      changed = true;
+    }
+    if (
+      properties['AuthorizerId'] !== undefined &&
+      properties['AuthorizerId'] !== previousProperties['AuthorizerId']
+    ) {
+      input.AuthorizerId = properties['AuthorizerId'] as string;
+      changed = true;
+    }
+    if (
+      properties['AuthorizationScopes'] !== undefined &&
+      !this.deepEqual(properties['AuthorizationScopes'], previousProperties['AuthorizationScopes'])
+    ) {
+      input.AuthorizationScopes = properties['AuthorizationScopes'] as string[];
+      changed = true;
+    }
+
+    if (!changed) {
+      this.logger.debug(`No mutable Route fields changed for ${logicalId}; skipping UpdateRoute`);
+      return { physicalId, wasReplaced: false };
+    }
+
+    this.logger.debug(`Updating API Gateway V2 Route ${logicalId}: ${physicalId}`);
+
+    try {
+      await this.getClient().send(new UpdateRouteCommand(input));
+      return { physicalId, wasReplaced: false };
+    } catch (error) {
+      const cause = error instanceof Error ? error : undefined;
+      throw new ProvisioningError(
+        `Failed to update API Gateway V2 Route ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        resourceType,
+        logicalId,
+        physicalId,
+        cause
+      );
+    }
+  }
+
+  /**
+   * `UpdateAuthorizer` keys on `(ApiId, AuthorizerId)`. Mutable fields
+   * cdkd manages: `AuthorizerType` / `Name` / `IdentitySource` /
+   * `JwtConfiguration` / `AuthorizerUri` /
+   * `AuthorizerPayloadFormatVersion`.
+   */
+  private async updateAuthorizer(
+    logicalId: string,
+    physicalId: string,
+    resourceType: string,
+    properties: Record<string, unknown>,
+    previousProperties: Record<string, unknown>
+  ): Promise<ResourceUpdateResult> {
+    const apiId = (properties['ApiId'] ?? previousProperties['ApiId']) as string | undefined;
+    if (!apiId) {
+      throw new ProvisioningError(
+        `ApiId is required to update Authorizer ${logicalId}`,
+        resourceType,
+        logicalId,
+        physicalId
+      );
+    }
+
+    if (
+      properties['ApiId'] !== undefined &&
+      previousProperties['ApiId'] !== undefined &&
+      properties['ApiId'] !== previousProperties['ApiId']
+    ) {
+      throw new ResourceUpdateNotSupportedError(
+        resourceType,
+        logicalId,
+        'ApiId is immutable on AWS::ApiGatewayV2::Authorizer; re-deploy with cdkd deploy --replace'
+      );
+    }
+
+    const input: UpdateAuthorizerCommandInput = { ApiId: apiId, AuthorizerId: physicalId };
+    let changed = false;
+
+    if (
+      properties['AuthorizerType'] !== undefined &&
+      properties['AuthorizerType'] !== previousProperties['AuthorizerType']
+    ) {
+      input.AuthorizerType = properties['AuthorizerType'] as AuthorizerType;
+      changed = true;
+    }
+    if (properties['Name'] !== undefined && properties['Name'] !== previousProperties['Name']) {
+      input.Name = properties['Name'] as string;
+      changed = true;
+    }
+    if (properties['IdentitySource'] !== undefined) {
+      const next = Array.isArray(properties['IdentitySource'])
+        ? (properties['IdentitySource'] as string[])
+        : [properties['IdentitySource'] as string];
+      const prev = Array.isArray(previousProperties['IdentitySource'])
+        ? (previousProperties['IdentitySource'] as string[])
+        : previousProperties['IdentitySource'] !== undefined
+          ? [previousProperties['IdentitySource'] as string]
+          : undefined;
+      if (!this.deepEqual(next, prev)) {
+        input.IdentitySource = next;
+        changed = true;
+      }
+    }
+    if (
+      properties['JwtConfiguration'] !== undefined &&
+      !this.deepEqual(properties['JwtConfiguration'], previousProperties['JwtConfiguration'])
+    ) {
+      input.JwtConfiguration = properties[
+        'JwtConfiguration'
+      ] as UpdateAuthorizerCommandInput['JwtConfiguration'];
+      changed = true;
+    }
+    if (
+      properties['AuthorizerUri'] !== undefined &&
+      properties['AuthorizerUri'] !== previousProperties['AuthorizerUri']
+    ) {
+      input.AuthorizerUri = properties['AuthorizerUri'] as string;
+      changed = true;
+    }
+    if (
+      properties['AuthorizerPayloadFormatVersion'] !== undefined &&
+      properties['AuthorizerPayloadFormatVersion'] !==
+        previousProperties['AuthorizerPayloadFormatVersion']
+    ) {
+      input.AuthorizerPayloadFormatVersion = properties['AuthorizerPayloadFormatVersion'] as string;
+      changed = true;
+    }
+
+    if (!changed) {
+      this.logger.debug(
+        `No mutable Authorizer fields changed for ${logicalId}; skipping UpdateAuthorizer`
+      );
+      return { physicalId, wasReplaced: false };
+    }
+
+    this.logger.debug(`Updating API Gateway V2 Authorizer ${logicalId}: ${physicalId}`);
+
+    try {
+      await this.getClient().send(new UpdateAuthorizerCommand(input));
+      return { physicalId, wasReplaced: false };
+    } catch (error) {
+      const cause = error instanceof Error ? error : undefined;
+      throw new ProvisioningError(
+        `Failed to update API Gateway V2 Authorizer ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        resourceType,
+        logicalId,
+        physicalId,
+        cause
+      );
+    }
+  }
+
   // ─── Helpers ──────────────────────────────────────────────────────
 
   /**
@@ -1003,5 +1507,22 @@ export class ApiGatewayV2Provider implements ResourceProvider {
       result[tag.Key] = tag.Value;
     }
     return result;
+  }
+
+  /**
+   * Structural equality used to skip Update calls when an object /
+   * array property is unchanged. Stable JSON serialization is fine
+   * here because the API Gateway V2 sub-shapes (`CorsConfiguration`,
+   * `JwtConfiguration`, scope arrays, identity-source arrays) are
+   * small primitive maps with no key-order semantics on the AWS side.
+   */
+  private deepEqual(a: unknown, b: unknown): boolean {
+    if (a === b) return true;
+    if (a === undefined || b === undefined) return false;
+    try {
+      return JSON.stringify(a) === JSON.stringify(b);
+    } catch {
+      return false;
+    }
   }
 }

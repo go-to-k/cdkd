@@ -1,4 +1,11 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import {
+  UpdateApiCommand,
+  UpdateStageCommand,
+  UpdateIntegrationCommand,
+  UpdateRouteCommand,
+  UpdateAuthorizerCommand,
+} from '@aws-sdk/client-apigatewayv2';
 
 const mockSend = vi.fn();
 
@@ -40,20 +47,14 @@ const API_ID = 'abcd1234';
 /**
  * Read-update round-trip test (docs/provider-development.md § 3b).
  *
- * `cdkd drift --revert` round-trips `observedProperties` (= a
- * `readCurrentState` snapshot) through `provider.update`. ApiGatewayV2's
- * `update()` rejects every type with `ResourceUpdateNotSupportedError`
- * (see PR I), so the structural guard for this provider is two-fold:
- *
- * 1. `readCurrentState` must NOT emit Class 1 placeholders that the
- *    AWS-side Update API would reject (e.g. `JwtConfiguration` on a
- *    REQUEST authorizer, `CorsConfiguration` on a WEBSOCKET API,
- *    `IntegrationUri` on a MOCK integration). The drift comparator
- *    consumes `observedProperties`, so leaving an invalid placeholder
- *    in there would also fire false-positive drift on every clean run.
- * 2. `update()` must reject cleanly with `ResourceUpdateNotSupportedError`
- *    for every resource type — no spurious SDK calls should fire on the
- *    revert path.
+ * Every AWS::ApiGatewayV2::* type now has an in-place update path via
+ * its matching `Update*Command`. The tests below cover, per type:
+ *   - primitive field replace (only diffed fields surface in input)
+ *   - no-diff no-op (zero SDK calls when state == AWS-current)
+ *   - immutable-only-diff (ProtocolType / StageName / ApiId) still
+ *     rejects with `ResourceUpdateNotSupportedError`
+ *   - existing Class 1 / Class 2 readCurrentState shape guards (kept
+ *     from the pre-PR test file).
  */
 describe('ApiGatewayV2Provider read-update round-trip', () => {
   let provider: ApiGatewayV2Provider;
@@ -63,6 +64,8 @@ describe('ApiGatewayV2Provider read-update round-trip', () => {
     provider = new ApiGatewayV2Provider();
   });
 
+  // ─── readCurrentState shape guards (Class 1 / Class 2) ────────────
+
   it('Class 1 — Api HTTP no-drift snapshot includes CorsConfiguration but excludes WEBSOCKET-only fields', async () => {
     mockSend.mockResolvedValueOnce({
       ApiId: API_ID,
@@ -70,8 +73,6 @@ describe('ApiGatewayV2Provider read-update round-trip', () => {
       ProtocolType: 'HTTP',
       Description: 'an http api',
       CorsConfiguration: { AllowOrigins: ['*'] },
-      // RouteSelectionExpression: AWS DOES return one for HTTP APIs as a
-      // server-managed default, but it must NOT show up in observed.
       RouteSelectionExpression: '$request.method $request.path',
       Tags: { Foo: 'Bar' },
     });
@@ -85,14 +86,6 @@ describe('ApiGatewayV2Provider read-update round-trip', () => {
     expect(observed).toBeDefined();
     expect(observed!['CorsConfiguration']).toEqual({ AllowOrigins: ['*'] });
     expect(observed!).not.toHaveProperty('RouteSelectionExpression');
-
-    // Round-trip: update must reject cleanly without sending any SDK
-    // commands.
-    vi.clearAllMocks();
-    await expect(
-      provider.update('L', API_ID, 'AWS::ApiGatewayV2::Api', observed!, observed!)
-    ).rejects.toBeInstanceOf(ResourceUpdateNotSupportedError);
-    expect(mockSend).not.toHaveBeenCalled();
   });
 
   it('Class 1 — Api WEBSOCKET no-drift snapshot preserves RouteSelectionExpression but excludes CorsConfiguration', async () => {
@@ -101,10 +94,6 @@ describe('ApiGatewayV2Provider read-update round-trip', () => {
       Name: 'my-ws-api',
       ProtocolType: 'WEBSOCKET',
       Description: 'a websocket api',
-      // CorsConfiguration: AWS would not return one on a WEBSOCKET API,
-      // and the readCurrentState placeholder MUST NOT push `{}` here —
-      // CORS is HTTP-only and `UpdateApi` rejects a CORS payload on a
-      // WEBSOCKET API.
       RouteSelectionExpression: '$request.body.action',
     });
 
@@ -117,12 +106,6 @@ describe('ApiGatewayV2Provider read-update round-trip', () => {
     expect(observed).toBeDefined();
     expect(observed!).not.toHaveProperty('CorsConfiguration');
     expect(observed!['RouteSelectionExpression']).toBe('$request.body.action');
-
-    vi.clearAllMocks();
-    await expect(
-      provider.update('L', API_ID, 'AWS::ApiGatewayV2::Api', observed!, observed!)
-    ).rejects.toBeInstanceOf(ResourceUpdateNotSupportedError);
-    expect(mockSend).not.toHaveBeenCalled();
   });
 
   it('Class 1 — Authorizer JWT no-drift snapshot preserves JwtConfiguration and excludes REQUEST-only fields', async () => {
@@ -146,16 +129,8 @@ describe('ApiGatewayV2Provider read-update round-trip', () => {
       Audience: ['client-id'],
       Issuer: 'https://issuer.example.com',
     });
-    // REQUEST-only fields MUST be absent on a JWT authorizer (would
-    // trigger AWS rejection on revert).
     expect(observed!).not.toHaveProperty('AuthorizerUri');
     expect(observed!).not.toHaveProperty('AuthorizerPayloadFormatVersion');
-
-    vi.clearAllMocks();
-    await expect(
-      provider.update('L', 'auth-jwt', 'AWS::ApiGatewayV2::Authorizer', observed!, observed!)
-    ).rejects.toBeInstanceOf(ResourceUpdateNotSupportedError);
-    expect(mockSend).not.toHaveBeenCalled();
   });
 
   it('Class 1 — Authorizer REQUEST no-drift snapshot preserves AuthorizerUri and excludes JwtConfiguration', async () => {
@@ -180,23 +155,13 @@ describe('ApiGatewayV2Provider read-update round-trip', () => {
       'arn:aws:apigateway:us-east-1:lambda:path/2015-03-31/functions/...'
     );
     expect(observed!['AuthorizerPayloadFormatVersion']).toBe('2.0');
-    // JWT-only fields MUST be absent on a REQUEST authorizer.
     expect(observed!).not.toHaveProperty('JwtConfiguration');
-
-    vi.clearAllMocks();
-    await expect(
-      provider.update('L', 'auth-req', 'AWS::ApiGatewayV2::Authorizer', observed!, observed!)
-    ).rejects.toBeInstanceOf(ResourceUpdateNotSupportedError);
-    expect(mockSend).not.toHaveBeenCalled();
   });
 
   it('Class 1 — Integration MOCK no-drift snapshot excludes IntegrationUri', async () => {
     mockSend.mockResolvedValueOnce({
       IntegrationId: 'int-mock',
       IntegrationType: 'MOCK',
-      // AWS does not return IntegrationUri for MOCK; the readCurrentState
-      // placeholder MUST NOT push `''` here — AWS rejects an empty
-      // IntegrationUri on MOCK integrations.
     });
 
     const observed = await provider.readCurrentState(
@@ -229,18 +194,6 @@ describe('ApiGatewayV2Provider read-update round-trip', () => {
 
     expect(observed).toBeDefined();
     expect(observed!['IntegrationUri']).toBe('arn:aws:lambda:us-east-1:123:function:my-fn');
-
-    vi.clearAllMocks();
-    await expect(
-      provider.update(
-        'L',
-        'int-lambda',
-        'AWS::ApiGatewayV2::Integration',
-        observed!,
-        observed!
-      )
-    ).rejects.toBeInstanceOf(ResourceUpdateNotSupportedError);
-    expect(mockSend).not.toHaveBeenCalled();
   });
 
   it('Class 2 — Route NONE-auth no-drift snapshot uses AuthorizationType=NONE and excludes AuthorizerId/AuthorizationScopes', async () => {
@@ -248,7 +201,6 @@ describe('ApiGatewayV2Provider read-update round-trip', () => {
       RouteId: 'route-none',
       RouteKey: 'GET /pets',
       Target: 'integrations/int-1',
-      // AuthorizationType undefined / AWS returns 'NONE' default.
     });
 
     const observed = await provider.readCurrentState(
@@ -259,7 +211,6 @@ describe('ApiGatewayV2Provider read-update round-trip', () => {
     );
 
     expect(observed).toBeDefined();
-    // Class 2 fix: must be 'NONE' (AWS-valid sentinel), not '' (rejected).
     expect(observed!['AuthorizationType']).toBe('NONE');
     expect(observed!).not.toHaveProperty('AuthorizerId');
     expect(observed!).not.toHaveProperty('AuthorizationScopes');
@@ -288,51 +239,376 @@ describe('ApiGatewayV2Provider read-update round-trip', () => {
     expect(observed!['AuthorizationScopes']).toEqual(['scope-a', 'scope-b']);
   });
 
-  it('every resource type rejects update() cleanly with ResourceUpdateNotSupportedError and no SDK calls', async () => {
-    // Mechanical guard: ApiGatewayV2 update() is an immutable-only
-    // wrapper (PR I). state == AWS round-trip MUST produce zero
-    // mutating SDK calls.
-    const cases: Array<{ type: string; observed: Record<string, unknown> }> = [
-      {
-        type: 'AWS::ApiGatewayV2::Api',
-        observed: { Name: 'a', ProtocolType: 'HTTP', Description: '', CorsConfiguration: {}, Tags: [] },
-      },
-      {
-        type: 'AWS::ApiGatewayV2::Stage',
-        observed: { ApiId: API_ID, StageName: '$default', AutoDeploy: true, Description: '' },
-      },
-      {
-        type: 'AWS::ApiGatewayV2::Integration',
-        observed: {
-          ApiId: API_ID,
-          IntegrationType: 'AWS_PROXY',
-          IntegrationUri: 'arn:aws:lambda:us-east-1:1:function:f',
-          IntegrationMethod: 'POST',
-          PayloadFormatVersion: '2.0',
-        },
-      },
-      {
-        type: 'AWS::ApiGatewayV2::Route',
-        observed: { ApiId: API_ID, RouteKey: 'GET /', Target: 'integrations/i-1', AuthorizationType: 'NONE' },
-      },
-      {
-        type: 'AWS::ApiGatewayV2::Authorizer',
-        observed: {
-          ApiId: API_ID,
-          AuthorizerType: 'JWT',
-          Name: 'auth',
-          IdentitySource: ['$request.header.Authorization'],
-          JwtConfiguration: { Audience: ['c'], Issuer: 'https://i' },
-        },
-      },
-    ];
+  // ─── Api update ───────────────────────────────────────────────────
 
-    for (const { type, observed } of cases) {
-      vi.clearAllMocks();
-      await expect(provider.update('L', 'phys', type, observed, observed)).rejects.toBeInstanceOf(
-        ResourceUpdateNotSupportedError
-      );
-      expect(mockSend).not.toHaveBeenCalled();
-    }
+  it('Api update(): primitive Name/Description change emits UpdateApi with only diffed fields', async () => {
+    mockSend.mockResolvedValueOnce({});
+
+    const result = await provider.update(
+      'ApiLogical',
+      API_ID,
+      'AWS::ApiGatewayV2::Api',
+      { Name: 'new-name', Description: 'new-desc', ProtocolType: 'HTTP' },
+      { Name: 'old-name', Description: 'old-desc', ProtocolType: 'HTTP' }
+    );
+
+    expect(result).toEqual({ physicalId: API_ID, wasReplaced: false });
+    const call = mockSend.mock.calls.find((c) => c[0] instanceof UpdateApiCommand);
+    expect(call).toBeDefined();
+    const input = call![0].input as Record<string, unknown>;
+    expect(input).toEqual({
+      ApiId: API_ID,
+      Name: 'new-name',
+      Description: 'new-desc',
+    });
+  });
+
+  it('Api update(): CorsConfiguration object change is sent via UpdateApi', async () => {
+    mockSend.mockResolvedValueOnce({});
+
+    await provider.update(
+      'ApiLogical',
+      API_ID,
+      'AWS::ApiGatewayV2::Api',
+      { CorsConfiguration: { AllowOrigins: ['*'] }, ProtocolType: 'HTTP' },
+      { CorsConfiguration: { AllowOrigins: ['https://x'] }, ProtocolType: 'HTTP' }
+    );
+
+    const call = mockSend.mock.calls.find((c) => c[0] instanceof UpdateApiCommand);
+    expect(call).toBeDefined();
+    const input = call![0].input as Record<string, unknown>;
+    expect(input['CorsConfiguration']).toEqual({ AllowOrigins: ['*'] });
+  });
+
+  it('Api update(): no diff produces zero SDK calls', async () => {
+    const same = {
+      Name: 'same',
+      Description: 'same-desc',
+      ProtocolType: 'HTTP',
+      CorsConfiguration: { AllowOrigins: ['*'] },
+    };
+
+    const result = await provider.update(
+      'ApiLogical',
+      API_ID,
+      'AWS::ApiGatewayV2::Api',
+      same,
+      same
+    );
+
+    expect(result).toEqual({ physicalId: API_ID, wasReplaced: false });
+    expect(mockSend).not.toHaveBeenCalled();
+  });
+
+  it('Api update(): ProtocolType-only diff rejects with ResourceUpdateNotSupportedError (immutable)', async () => {
+    await expect(
+      provider.update(
+        'ApiLogical',
+        API_ID,
+        'AWS::ApiGatewayV2::Api',
+        { Name: 'same', ProtocolType: 'WEBSOCKET' },
+        { Name: 'same', ProtocolType: 'HTTP' }
+      )
+    ).rejects.toBeInstanceOf(ResourceUpdateNotSupportedError);
+    expect(mockSend).not.toHaveBeenCalled();
+  });
+
+  // ─── Stage update ─────────────────────────────────────────────────
+
+  it('Stage update(): AutoDeploy/Description change emits UpdateStage', async () => {
+    mockSend.mockResolvedValueOnce({});
+
+    await provider.update(
+      'StageLogical',
+      '$default',
+      'AWS::ApiGatewayV2::Stage',
+      { ApiId: API_ID, StageName: '$default', AutoDeploy: true, Description: 'new' },
+      { ApiId: API_ID, StageName: '$default', AutoDeploy: false, Description: 'old' }
+    );
+
+    const call = mockSend.mock.calls.find((c) => c[0] instanceof UpdateStageCommand);
+    expect(call).toBeDefined();
+    const input = call![0].input as Record<string, unknown>;
+    expect(input).toEqual({
+      ApiId: API_ID,
+      StageName: '$default',
+      AutoDeploy: true,
+      Description: 'new',
+    });
+  });
+
+  it('Stage update(): AutoDeploy=false change reaches AWS as a real replace (not-truthy gate)', async () => {
+    mockSend.mockResolvedValueOnce({});
+
+    await provider.update(
+      'StageLogical',
+      '$default',
+      'AWS::ApiGatewayV2::Stage',
+      { ApiId: API_ID, StageName: '$default', AutoDeploy: false },
+      { ApiId: API_ID, StageName: '$default', AutoDeploy: true }
+    );
+
+    const call = mockSend.mock.calls.find((c) => c[0] instanceof UpdateStageCommand);
+    const input = call![0].input as Record<string, unknown>;
+    expect(input['AutoDeploy']).toBe(false);
+  });
+
+  it('Stage update(): no diff produces zero SDK calls', async () => {
+    const same = { ApiId: API_ID, StageName: '$default', AutoDeploy: true, Description: 'd' };
+    await provider.update('StageLogical', '$default', 'AWS::ApiGatewayV2::Stage', same, same);
+    expect(mockSend).not.toHaveBeenCalled();
+  });
+
+  it('Stage update(): StageName-only diff rejects with ResourceUpdateNotSupportedError (immutable)', async () => {
+    await expect(
+      provider.update(
+        'StageLogical',
+        '$default',
+        'AWS::ApiGatewayV2::Stage',
+        { ApiId: API_ID, StageName: 'prod', AutoDeploy: true },
+        { ApiId: API_ID, StageName: '$default', AutoDeploy: true }
+      )
+    ).rejects.toBeInstanceOf(ResourceUpdateNotSupportedError);
+    expect(mockSend).not.toHaveBeenCalled();
+  });
+
+  // ─── Integration update ───────────────────────────────────────────
+
+  it('Integration update(): IntegrationUri/Method/PayloadFormatVersion change emits UpdateIntegration', async () => {
+    mockSend.mockResolvedValueOnce({});
+
+    await provider.update(
+      'IntLogical',
+      'int-1',
+      'AWS::ApiGatewayV2::Integration',
+      {
+        ApiId: API_ID,
+        IntegrationType: 'AWS_PROXY',
+        IntegrationUri: 'arn:aws:lambda:::function:new',
+        IntegrationMethod: 'POST',
+        PayloadFormatVersion: '2.0',
+      },
+      {
+        ApiId: API_ID,
+        IntegrationType: 'AWS_PROXY',
+        IntegrationUri: 'arn:aws:lambda:::function:old',
+        IntegrationMethod: 'GET',
+        PayloadFormatVersion: '1.0',
+      }
+    );
+
+    const call = mockSend.mock.calls.find((c) => c[0] instanceof UpdateIntegrationCommand);
+    expect(call).toBeDefined();
+    const input = call![0].input as Record<string, unknown>;
+    expect(input).toEqual({
+      ApiId: API_ID,
+      IntegrationId: 'int-1',
+      IntegrationUri: 'arn:aws:lambda:::function:new',
+      IntegrationMethod: 'POST',
+      PayloadFormatVersion: '2.0',
+    });
+  });
+
+  it('Integration update(): no diff produces zero SDK calls', async () => {
+    const same = {
+      ApiId: API_ID,
+      IntegrationType: 'AWS_PROXY',
+      IntegrationUri: 'arn:aws:lambda:::function:f',
+      IntegrationMethod: 'POST',
+      PayloadFormatVersion: '2.0',
+    };
+    await provider.update(
+      'IntLogical',
+      'int-1',
+      'AWS::ApiGatewayV2::Integration',
+      same,
+      same
+    );
+    expect(mockSend).not.toHaveBeenCalled();
+  });
+
+  it('Integration update(): ApiId-only diff rejects with ResourceUpdateNotSupportedError (immutable)', async () => {
+    await expect(
+      provider.update(
+        'IntLogical',
+        'int-1',
+        'AWS::ApiGatewayV2::Integration',
+        { ApiId: 'other-api', IntegrationType: 'AWS_PROXY' },
+        { ApiId: API_ID, IntegrationType: 'AWS_PROXY' }
+      )
+    ).rejects.toBeInstanceOf(ResourceUpdateNotSupportedError);
+    expect(mockSend).not.toHaveBeenCalled();
+  });
+
+  // ─── Route update ─────────────────────────────────────────────────
+
+  it('Route update(): Target/RouteKey/AuthorizationType/AuthorizerId/Scopes change emits UpdateRoute', async () => {
+    mockSend.mockResolvedValueOnce({});
+
+    await provider.update(
+      'RouteLogical',
+      'route-1',
+      'AWS::ApiGatewayV2::Route',
+      {
+        ApiId: API_ID,
+        RouteKey: 'POST /things',
+        Target: 'integrations/new',
+        AuthorizationType: 'JWT',
+        AuthorizerId: 'auth-new',
+        AuthorizationScopes: ['scope-a'],
+      },
+      {
+        ApiId: API_ID,
+        RouteKey: 'GET /things',
+        Target: 'integrations/old',
+        AuthorizationType: 'NONE',
+        AuthorizerId: undefined,
+        AuthorizationScopes: undefined,
+      }
+    );
+
+    const call = mockSend.mock.calls.find((c) => c[0] instanceof UpdateRouteCommand);
+    expect(call).toBeDefined();
+    const input = call![0].input as Record<string, unknown>;
+    expect(input).toEqual({
+      ApiId: API_ID,
+      RouteId: 'route-1',
+      RouteKey: 'POST /things',
+      Target: 'integrations/new',
+      AuthorizationType: 'JWT',
+      AuthorizerId: 'auth-new',
+      AuthorizationScopes: ['scope-a'],
+    });
+  });
+
+  it('Route update(): no diff produces zero SDK calls', async () => {
+    const same = {
+      ApiId: API_ID,
+      RouteKey: 'GET /pets',
+      Target: 'integrations/i-1',
+      AuthorizationType: 'NONE',
+    };
+    await provider.update('RouteLogical', 'route-1', 'AWS::ApiGatewayV2::Route', same, same);
+    expect(mockSend).not.toHaveBeenCalled();
+  });
+
+  it('Route update(): ApiId-only diff rejects with ResourceUpdateNotSupportedError (immutable)', async () => {
+    await expect(
+      provider.update(
+        'RouteLogical',
+        'route-1',
+        'AWS::ApiGatewayV2::Route',
+        { ApiId: 'other', RouteKey: 'GET /' },
+        { ApiId: API_ID, RouteKey: 'GET /' }
+      )
+    ).rejects.toBeInstanceOf(ResourceUpdateNotSupportedError);
+    expect(mockSend).not.toHaveBeenCalled();
+  });
+
+  // ─── Authorizer update ────────────────────────────────────────────
+
+  it('Authorizer update(): primitive + JwtConfiguration change emits UpdateAuthorizer', async () => {
+    mockSend.mockResolvedValueOnce({});
+
+    await provider.update(
+      'AuthLogical',
+      'auth-1',
+      'AWS::ApiGatewayV2::Authorizer',
+      {
+        ApiId: API_ID,
+        AuthorizerType: 'JWT',
+        Name: 'new-name',
+        IdentitySource: ['$request.header.Auth'],
+        JwtConfiguration: { Audience: ['c'], Issuer: 'https://i' },
+      },
+      {
+        ApiId: API_ID,
+        AuthorizerType: 'JWT',
+        Name: 'old-name',
+        IdentitySource: ['$request.header.Old'],
+        JwtConfiguration: { Audience: ['c'], Issuer: 'https://old' },
+      }
+    );
+
+    const call = mockSend.mock.calls.find((c) => c[0] instanceof UpdateAuthorizerCommand);
+    expect(call).toBeDefined();
+    const input = call![0].input as Record<string, unknown>;
+    expect(input).toEqual({
+      ApiId: API_ID,
+      AuthorizerId: 'auth-1',
+      Name: 'new-name',
+      IdentitySource: ['$request.header.Auth'],
+      JwtConfiguration: { Audience: ['c'], Issuer: 'https://i' },
+    });
+  });
+
+  it('Authorizer update(): IdentitySource accepts string and array forms (CFn legacy parity)', async () => {
+    mockSend.mockResolvedValueOnce({});
+
+    await provider.update(
+      'AuthLogical',
+      'auth-1',
+      'AWS::ApiGatewayV2::Authorizer',
+      {
+        ApiId: API_ID,
+        AuthorizerType: 'REQUEST',
+        Name: 'a',
+        IdentitySource: '$request.header.A', // string-form
+        AuthorizerUri: 'arn:aws:apigateway:::lambda:path/...',
+        AuthorizerPayloadFormatVersion: '2.0',
+      },
+      {
+        ApiId: API_ID,
+        AuthorizerType: 'REQUEST',
+        Name: 'a',
+        IdentitySource: ['$request.header.B'],
+        AuthorizerUri: 'arn:aws:apigateway:::lambda:path/...',
+        AuthorizerPayloadFormatVersion: '2.0',
+      }
+    );
+
+    const call = mockSend.mock.calls.find((c) => c[0] instanceof UpdateAuthorizerCommand);
+    const input = call![0].input as Record<string, unknown>;
+    expect(input['IdentitySource']).toEqual(['$request.header.A']);
+  });
+
+  it('Authorizer update(): no diff produces zero SDK calls', async () => {
+    const same = {
+      ApiId: API_ID,
+      AuthorizerType: 'JWT',
+      Name: 'a',
+      IdentitySource: ['$request.header.Authorization'],
+      JwtConfiguration: { Audience: ['c'], Issuer: 'https://i' },
+    };
+    await provider.update(
+      'AuthLogical',
+      'auth-1',
+      'AWS::ApiGatewayV2::Authorizer',
+      same,
+      same
+    );
+    expect(mockSend).not.toHaveBeenCalled();
+  });
+
+  it('Authorizer update(): ApiId-only diff rejects with ResourceUpdateNotSupportedError (immutable)', async () => {
+    await expect(
+      provider.update(
+        'AuthLogical',
+        'auth-1',
+        'AWS::ApiGatewayV2::Authorizer',
+        { ApiId: 'other', AuthorizerType: 'JWT', Name: 'a' },
+        { ApiId: API_ID, AuthorizerType: 'JWT', Name: 'a' }
+      )
+    ).rejects.toBeInstanceOf(ResourceUpdateNotSupportedError);
+    expect(mockSend).not.toHaveBeenCalled();
+  });
+
+  // ─── Unsupported sub-types still reject ───────────────────────────
+
+  it('Unsupported resource type rejects update() with ResourceUpdateNotSupportedError', async () => {
+    await expect(
+      provider.update('L', 'phys', 'AWS::ApiGatewayV2::DomainName', {}, {})
+    ).rejects.toBeInstanceOf(ResourceUpdateNotSupportedError);
+    expect(mockSend).not.toHaveBeenCalled();
   });
 });
