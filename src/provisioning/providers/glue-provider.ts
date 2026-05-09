@@ -20,6 +20,26 @@ import {
   DeleteSecurityConfigurationCommand,
   GetSecurityConfigurationCommand,
   GetSecurityConfigurationsCommand,
+  CreateJobCommand,
+  UpdateJobCommand,
+  DeleteJobCommand,
+  GetJobCommand,
+  CreateCrawlerCommand,
+  UpdateCrawlerCommand,
+  DeleteCrawlerCommand,
+  GetCrawlerCommand,
+  StartCrawlerScheduleCommand,
+  StopCrawlerScheduleCommand,
+  CreateConnectionCommand,
+  UpdateConnectionCommand,
+  DeleteConnectionCommand,
+  GetConnectionCommand,
+  CreateTriggerCommand,
+  UpdateTriggerCommand,
+  DeleteTriggerCommand,
+  GetTriggerCommand,
+  StartTriggerCommand,
+  StopTriggerCommand,
   EntityNotFoundException,
   type DatabaseInput,
   type TableInput,
@@ -31,6 +51,22 @@ import {
   type S3Encryption,
   type CloudWatchEncryption,
   type JobBookmarksEncryption,
+  type JobUpdate,
+  type JobCommand as JobCommandShape,
+  type ExecutionProperty,
+  type NotificationProperty,
+  type SourceControlDetails,
+  type CrawlerTargets,
+  type SchemaChangePolicy,
+  type RecrawlPolicy,
+  type LineageConfiguration,
+  type LakeFormationConfiguration,
+  type ConnectionInput,
+  type TriggerUpdate,
+  type Action as TriggerAction,
+  type Predicate,
+  type Condition as TriggerCondition,
+  type EventBatchingCondition,
 } from '@aws-sdk/client-glue';
 import { STSClient, GetCallerIdentityCommand } from '@aws-sdk/client-sts';
 import { getLogger } from '../../utils/logger.js';
@@ -1548,4 +1584,1397 @@ function cleanCfnObject(obj: Record<string, unknown>): Record<string, unknown> {
     if (v !== undefined) out[k] = v;
   }
   return out;
+}
+
+// ─── Shared helpers for sibling Glue providers ──────────────────────────
+
+/**
+ * Build the ARN for a Glue resource. Used by tag-fetch via
+ * `GetTagsCommand` which only accepts an ARN. Account id falls back
+ * to STS when not provided.
+ */
+async function buildGlueResourceArn(
+  client: GlueClient,
+  stsClient: STSClient,
+  resource: 'job' | 'crawler' | 'connection' | 'trigger',
+  name: string,
+  accountId: string | undefined
+): Promise<string> {
+  const region = (await client.config.region()) || process.env['AWS_REGION'] || 'us-east-1';
+  const account = accountId ?? (await resolveAccountId(stsClient));
+  return `arn:aws:glue:${region}:${account}:${resource}/${name}`;
+}
+
+async function resolveAccountId(stsClient: STSClient): Promise<string> {
+  const identity = await stsClient.send(new GetCallerIdentityCommand({}));
+  if (!identity.Account) {
+    throw new Error('Failed to resolve AWS account id from STS');
+  }
+  return identity.Account;
+}
+
+/**
+ * Best-effort fetch of CFn-shape `Tags: [{Key, Value}]` for a Glue resource.
+ * Returns `[]` when no tags or on error (tags are non-critical for drift —
+ * a permission failure should not abort the whole drift read).
+ */
+async function fetchGlueTags(
+  client: GlueClient,
+  stsClient: STSClient,
+  resource: 'job' | 'crawler' | 'connection' | 'trigger',
+  name: string,
+  accountId: string | undefined,
+  logger: ReturnType<typeof getLogger>
+): Promise<Array<{ Key: string; Value: string }>> {
+  try {
+    const arn = await buildGlueResourceArn(client, stsClient, resource, name, accountId);
+    const resp = await client.send(new GetTagsCommand({ ResourceArn: arn }));
+    return normalizeAwsTagsToCfn(resp.Tags);
+  } catch (err) {
+    logger.debug(
+      `GetTags failed for ${resource}/${name}: ${err instanceof Error ? err.message : String(err)}`
+    );
+    return [];
+  }
+}
+
+/**
+ * SDK Provider for `AWS::Glue::Job`.
+ *
+ * CFn properties (subset cdkd manages on create/update):
+ *   Name, Role, Command, Description, MaxCapacity, MaxRetries, Timeout,
+ *   ExecutionProperty, GlueVersion, NumberOfWorkers, WorkerType,
+ *   DefaultArguments, NonOverridableArguments, Connections, LogUri,
+ *   SecurityConfiguration, NotificationProperty, ExecutionClass,
+ *   JobMode, JobRunQueuingEnabled, MaintenanceWindow, AllocatedCapacity,
+ *   SourceControlDetails, Tags.
+ *
+ * `physicalId` is the Glue job name. Tags on a Job are managed via the
+ * separate `GetTags` / `TagResource` / `UntagResource` API since
+ * `UpdateJob` / `JobUpdate` does not carry tags.
+ */
+export class GlueJobProvider implements ResourceProvider {
+  private client: GlueClient | undefined;
+  private stsClient: STSClient | undefined;
+  private cachedAccountId: string | undefined;
+  private readonly providerRegion = process.env['AWS_REGION'];
+  private logger = getLogger().child('GlueJobProvider');
+
+  handledProperties = new Map<string, ReadonlySet<string>>([
+    [
+      'AWS::Glue::Job',
+      new Set([
+        'Name',
+        'Role',
+        'Command',
+        'Description',
+        'MaxCapacity',
+        'MaxRetries',
+        'Timeout',
+        'ExecutionProperty',
+        'GlueVersion',
+        'NumberOfWorkers',
+        'WorkerType',
+        'DefaultArguments',
+        'NonOverridableArguments',
+        'Connections',
+        'LogUri',
+        'SecurityConfiguration',
+        'NotificationProperty',
+        'ExecutionClass',
+        'JobMode',
+        'JobRunQueuingEnabled',
+        'MaintenanceWindow',
+        'AllocatedCapacity',
+        'SourceControlDetails',
+        'Tags',
+      ]),
+    ],
+  ]);
+
+  private getClient(): GlueClient {
+    if (!this.client) {
+      this.client = new GlueClient(this.providerRegion ? { region: this.providerRegion } : {});
+    }
+    return this.client;
+  }
+
+  private getStsClient(): STSClient {
+    if (!this.stsClient) {
+      this.stsClient = new STSClient(this.providerRegion ? { region: this.providerRegion } : {});
+    }
+    return this.stsClient;
+  }
+
+  async create(
+    logicalId: string,
+    resourceType: string,
+    properties: Record<string, unknown>
+  ): Promise<ResourceCreateResult> {
+    this.logger.debug(`Creating Glue Job ${logicalId}`);
+    const name = (properties['Name'] as string | undefined) ?? logicalId;
+    const role = properties['Role'] as string | undefined;
+    const command = properties['Command'] as Record<string, unknown> | undefined;
+    if (!role) {
+      throw new ProvisioningError(
+        `Role is required for Glue Job ${logicalId}`,
+        resourceType,
+        logicalId
+      );
+    }
+    if (!command) {
+      throw new ProvisioningError(
+        `Command is required for Glue Job ${logicalId}`,
+        resourceType,
+        logicalId
+      );
+    }
+    try {
+      const tags = cfnTagsToMap(properties['Tags']);
+      await this.getClient().send(
+        new CreateJobCommand({
+          Name: name,
+          Role: role,
+          Command: buildJobCommand(command),
+          ...buildJobCommonFields(properties),
+          ...(tags && { Tags: tags }),
+        })
+      );
+      this.logger.debug(`Successfully created Glue Job ${logicalId}: ${name}`);
+      return { physicalId: name, attributes: {} };
+    } catch (error) {
+      const cause = error instanceof Error ? error : undefined;
+      throw new ProvisioningError(
+        `Failed to create Glue Job ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        resourceType,
+        logicalId,
+        undefined,
+        cause
+      );
+    }
+  }
+
+  async update(
+    logicalId: string,
+    physicalId: string,
+    resourceType: string,
+    properties: Record<string, unknown>,
+    previousProperties: Record<string, unknown>
+  ): Promise<ResourceUpdateResult> {
+    this.logger.debug(`Updating Glue Job ${logicalId}: ${physicalId}`);
+    try {
+      const command = properties['Command'] as Record<string, unknown> | undefined;
+      const update: JobUpdate = {
+        ...(command !== undefined && { Command: buildJobCommand(command) }),
+        ...buildJobCommonFields(properties),
+        // Role is required at create but mutable on update; include only when defined
+        ...(properties['Role'] !== undefined && { Role: properties['Role'] as string }),
+      };
+      await this.getClient().send(new UpdateJobCommand({ JobName: physicalId, JobUpdate: update }));
+
+      // Tags are not part of JobUpdate; reconcile via TagResource diff if tags changed.
+      const oldTags = cfnTagsToMap(previousProperties['Tags']) ?? {};
+      const newTags = cfnTagsToMap(properties['Tags']) ?? {};
+      await this.applyTagDiff(physicalId, oldTags, newTags);
+
+      return { physicalId, wasReplaced: false };
+    } catch (error) {
+      const cause = error instanceof Error ? error : undefined;
+      throw new ProvisioningError(
+        `Failed to update Glue Job ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        resourceType,
+        logicalId,
+        physicalId,
+        cause
+      );
+    }
+  }
+
+  async delete(
+    logicalId: string,
+    physicalId: string,
+    resourceType: string,
+    _properties?: Record<string, unknown>,
+    context?: DeleteContext
+  ): Promise<void> {
+    this.logger.debug(`Deleting Glue Job ${logicalId}: ${physicalId}`);
+    try {
+      await this.getClient().send(new DeleteJobCommand({ JobName: physicalId }));
+    } catch (error) {
+      if (error instanceof EntityNotFoundException) {
+        const clientRegion = await this.getClient().config.region();
+        assertRegionMatch(
+          clientRegion,
+          context?.expectedRegion,
+          resourceType,
+          logicalId,
+          physicalId
+        );
+        this.logger.debug(`Glue Job ${physicalId} does not exist, skipping deletion`);
+        return;
+      }
+      const cause = error instanceof Error ? error : undefined;
+      throw new ProvisioningError(
+        `Failed to delete Glue Job ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        resourceType,
+        logicalId,
+        physicalId,
+        cause
+      );
+    }
+  }
+
+  // eslint-disable-next-line @typescript-eslint/require-await -- explicit-override-only intentionally has no AWS calls
+  async getAttribute(
+    physicalId: string,
+    _resourceType: string,
+    attributeName: string
+  ): Promise<unknown> {
+    if (attributeName === 'Id' || attributeName === 'Ref' || attributeName === 'Name') {
+      return physicalId;
+    }
+    return undefined;
+  }
+
+  /**
+   * Read the AWS-current Glue Job in CFn-property shape.
+   *
+   * Always-emit placeholders for user-controllable top-level keys per
+   * PR #145 (`?? '' | [] | {}`) so the v3 `observedProperties` baseline
+   * detects console-side ADDs to fields that weren't templated. Tags
+   * always emit `[]` (PR H pattern).
+   */
+  async readCurrentState(
+    physicalId: string,
+    _logicalId: string,
+    _resourceType: string
+  ): Promise<Record<string, unknown> | undefined> {
+    let job;
+    try {
+      const resp = await this.getClient().send(new GetJobCommand({ JobName: physicalId }));
+      job = resp.Job;
+    } catch (err) {
+      if (err instanceof EntityNotFoundException) return undefined;
+      throw err;
+    }
+    if (!job) return undefined;
+
+    const result: Record<string, unknown> = {
+      Name: job.Name ?? physicalId,
+      Role: job.Role ?? '',
+      Command: pickDefined({
+        Name: job.Command?.Name,
+        ScriptLocation: job.Command?.ScriptLocation,
+        PythonVersion: job.Command?.PythonVersion,
+        Runtime: job.Command?.Runtime,
+      }),
+      Description: job.Description ?? '',
+      LogUri: job.LogUri ?? '',
+      DefaultArguments: job.DefaultArguments ?? {},
+      NonOverridableArguments: job.NonOverridableArguments ?? {},
+      Connections: { Connections: job.Connections?.Connections ?? [] },
+      MaxRetries: job.MaxRetries ?? 0,
+      Timeout: job.Timeout ?? 0,
+      ExecutionProperty: { MaxConcurrentRuns: job.ExecutionProperty?.MaxConcurrentRuns ?? 1 },
+      NotificationProperty: { NotifyDelayAfter: job.NotificationProperty?.NotifyDelayAfter ?? 0 },
+      GlueVersion: job.GlueVersion ?? '',
+      NumberOfWorkers: job.NumberOfWorkers ?? 0,
+      WorkerType: job.WorkerType ?? '',
+      MaxCapacity: job.MaxCapacity ?? 0,
+      AllocatedCapacity: job.AllocatedCapacity ?? 0,
+      SecurityConfiguration: job.SecurityConfiguration ?? '',
+      ExecutionClass: job.ExecutionClass ?? '',
+      JobMode: job.JobMode ?? '',
+      JobRunQueuingEnabled: job.JobRunQueuingEnabled ?? false,
+      MaintenanceWindow: job.MaintenanceWindow ?? '',
+      SourceControlDetails: job.SourceControlDetails
+        ? pickDefined(job.SourceControlDetails as Record<string, unknown>)
+        : {},
+    };
+    result['Tags'] = await fetchGlueTags(
+      this.getClient(),
+      this.getStsClient(),
+      'job',
+      job.Name ?? physicalId,
+      this.cachedAccountId,
+      this.logger
+    );
+    return result;
+  }
+
+  private async applyTagDiff(
+    physicalId: string,
+    oldTags: Record<string, string>,
+    newTags: Record<string, string>
+  ): Promise<void> {
+    const arn = await buildGlueResourceArn(
+      this.getClient(),
+      this.getStsClient(),
+      'job',
+      physicalId,
+      this.cachedAccountId
+    );
+    const toAdd: Record<string, string> = {};
+    const toRemove: string[] = [];
+    for (const [k, v] of Object.entries(newTags)) {
+      if (oldTags[k] !== v) toAdd[k] = v;
+    }
+    for (const k of Object.keys(oldTags)) {
+      if (!(k in newTags)) toRemove.push(k);
+    }
+    // TagResource / UntagResource use the same Glue API (TagResource for add).
+    if (Object.keys(toAdd).length > 0 || toRemove.length > 0) {
+      // Lazy-import to avoid bundle bloat in delete-only paths.
+      const { TagResourceCommand, UntagResourceCommand } = await import('@aws-sdk/client-glue');
+      if (Object.keys(toAdd).length > 0) {
+        await this.getClient().send(new TagResourceCommand({ ResourceArn: arn, TagsToAdd: toAdd }));
+      }
+      if (toRemove.length > 0) {
+        await this.getClient().send(
+          new UntagResourceCommand({ ResourceArn: arn, TagsToRemove: toRemove })
+        );
+      }
+    }
+  }
+
+  async import(input: ResourceImportInput): Promise<ResourceImportResult | null> {
+    const explicitName = input.knownPhysicalId ?? (input.properties['Name'] as string | undefined);
+    if (!explicitName) return null;
+    try {
+      await this.getClient().send(new GetJobCommand({ JobName: explicitName }));
+      return { physicalId: explicitName, attributes: {} };
+    } catch (err) {
+      if (err instanceof EntityNotFoundException) return null;
+      throw err;
+    }
+  }
+}
+
+// ─── helpers shared by GlueJobProvider ──────────────────────────────────
+
+function buildJobCommand(c: Record<string, unknown>): JobCommandShape {
+  const result: JobCommandShape = {};
+  if (c['Name'] !== undefined) result.Name = c['Name'] as string;
+  if (c['ScriptLocation'] !== undefined) result.ScriptLocation = c['ScriptLocation'] as string;
+  if (c['PythonVersion'] !== undefined) result.PythonVersion = c['PythonVersion'] as string;
+  if (c['Runtime'] !== undefined) result.Runtime = c['Runtime'] as string;
+  return result;
+}
+
+/**
+ * Fields shared by `CreateJob` and `UpdateJob.JobUpdate` (everything except
+ * `Name` / `Role` / `Command`). Each is gated on `!== undefined` so empty
+ * strings / `false` / `0` round-trip cleanly via `cdkd drift --revert`.
+ */
+function buildJobCommonFields(p: Record<string, unknown>): Partial<JobUpdate> {
+  const r: Partial<JobUpdate> = {};
+  const passThrough: Array<keyof JobUpdate> = [
+    'JobMode',
+    'JobRunQueuingEnabled',
+    'Description',
+    'LogUri',
+    'DefaultArguments',
+    'NonOverridableArguments',
+    'MaxRetries',
+    'AllocatedCapacity',
+    'Timeout',
+    'MaxCapacity',
+    'WorkerType',
+    'NumberOfWorkers',
+    'SecurityConfiguration',
+    'GlueVersion',
+    'ExecutionClass',
+    'MaintenanceWindow',
+  ];
+  for (const k of passThrough) {
+    if (p[k as string] !== undefined) {
+      // Cast to any: union of multiple field types, type-gated by AWS SDK at the wire layer.
+      (r as Record<string, unknown>)[k as string] = p[k as string];
+    }
+  }
+  if (p['ExecutionProperty'] !== undefined) {
+    r.ExecutionProperty = p['ExecutionProperty'] as ExecutionProperty;
+  }
+  if (p['Connections'] !== undefined) {
+    const conn = p['Connections'] as Record<string, unknown>;
+    r.Connections = { Connections: (conn['Connections'] as string[] | undefined) ?? [] };
+  }
+  if (p['NotificationProperty'] !== undefined) {
+    r.NotificationProperty = p['NotificationProperty'] as NotificationProperty;
+  }
+  if (p['SourceControlDetails'] !== undefined) {
+    r.SourceControlDetails = p['SourceControlDetails'] as SourceControlDetails;
+  }
+  return r;
+}
+
+/**
+ * Convert CFn `Tags: [{Key,Value}]` (or a tag map) to AWS Glue's
+ * `Record<string,string>` shape used by Create commands and TagResource. Returns
+ * `undefined` when the input is undefined so callers can elide the key.
+ */
+function cfnTagsToMap(tagsInput: unknown): Record<string, string> | undefined {
+  if (tagsInput === undefined) return undefined;
+  const out: Record<string, string> = {};
+  if (Array.isArray(tagsInput)) {
+    for (const entry of tagsInput) {
+      const e = entry as Record<string, unknown>;
+      const k = e['Key'];
+      const v = e['Value'];
+      if (typeof k === 'string') out[k] = typeof v === 'string' ? v : '';
+    }
+    return out;
+  }
+  if (typeof tagsInput === 'object' && tagsInput !== null) {
+    for (const [k, v] of Object.entries(tagsInput as Record<string, unknown>)) {
+      out[k] = typeof v === 'string' ? v : '';
+    }
+    return out;
+  }
+  return out;
+}
+
+/**
+ * Recursively strip undefined / null values and empty objects from a plain
+ * record, returning the cleaned shape. Used by `readCurrentState` to emit
+ * tight CFn-shape sub-objects without leaking SDK-injected `undefined` keys.
+ */
+function pickDefined(obj: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(obj)) {
+    if (v === undefined || v === null) continue;
+    if (typeof v === 'object' && !Array.isArray(v)) {
+      const inner = pickDefined(v as Record<string, unknown>);
+      out[k] = inner;
+    } else {
+      out[k] = v;
+    }
+  }
+  return out;
+}
+
+/**
+ * SDK Provider for `AWS::Glue::Crawler`.
+ *
+ * CFn `Schedule` is the structured `{ScheduleExpression: 'cron(...)'}`
+ * object; SDK `CreateCrawler.Schedule` is a bare cron string. cdkd
+ * unwraps the CFn shape on create / update and re-wraps on
+ * readCurrentState. Schedule START / STOP is exposed via separate
+ * `StartCrawlerSchedule` / `StopCrawlerSchedule` calls (not part of
+ * Update).
+ *
+ * `physicalId` is the crawler name.
+ */
+export class GlueCrawlerProvider implements ResourceProvider {
+  private client: GlueClient | undefined;
+  private stsClient: STSClient | undefined;
+  private cachedAccountId: string | undefined;
+  private readonly providerRegion = process.env['AWS_REGION'];
+  private logger = getLogger().child('GlueCrawlerProvider');
+
+  handledProperties = new Map<string, ReadonlySet<string>>([
+    [
+      'AWS::Glue::Crawler',
+      new Set([
+        'Name',
+        'Role',
+        'Targets',
+        'DatabaseName',
+        'Description',
+        'Schedule',
+        'Classifiers',
+        'TablePrefix',
+        'SchemaChangePolicy',
+        'RecrawlPolicy',
+        'LineageConfiguration',
+        'LakeFormationConfiguration',
+        'Configuration',
+        'CrawlerSecurityConfiguration',
+        'Tags',
+      ]),
+    ],
+  ]);
+
+  private getClient(): GlueClient {
+    if (!this.client) {
+      this.client = new GlueClient(this.providerRegion ? { region: this.providerRegion } : {});
+    }
+    return this.client;
+  }
+
+  private getStsClient(): STSClient {
+    if (!this.stsClient) {
+      this.stsClient = new STSClient(this.providerRegion ? { region: this.providerRegion } : {});
+    }
+    return this.stsClient;
+  }
+
+  async create(
+    logicalId: string,
+    resourceType: string,
+    properties: Record<string, unknown>
+  ): Promise<ResourceCreateResult> {
+    this.logger.debug(`Creating Glue Crawler ${logicalId}`);
+    const name = (properties['Name'] as string | undefined) ?? logicalId;
+    const role = properties['Role'] as string | undefined;
+    const targets = properties['Targets'] as Record<string, unknown> | undefined;
+    if (!role) {
+      throw new ProvisioningError(
+        `Role is required for Glue Crawler ${logicalId}`,
+        resourceType,
+        logicalId
+      );
+    }
+    if (!targets) {
+      throw new ProvisioningError(
+        `Targets is required for Glue Crawler ${logicalId}`,
+        resourceType,
+        logicalId
+      );
+    }
+    try {
+      const tags = cfnTagsToMap(properties['Tags']);
+      await this.getClient().send(
+        new CreateCrawlerCommand({
+          Name: name,
+          Role: role,
+          Targets: targets as CrawlerTargets,
+          ...buildCrawlerCommonFields(properties),
+          ...(tags && { Tags: tags }),
+        })
+      );
+      this.logger.debug(`Successfully created Glue Crawler ${logicalId}: ${name}`);
+      return { physicalId: name, attributes: {} };
+    } catch (error) {
+      const cause = error instanceof Error ? error : undefined;
+      throw new ProvisioningError(
+        `Failed to create Glue Crawler ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        resourceType,
+        logicalId,
+        undefined,
+        cause
+      );
+    }
+  }
+
+  async update(
+    logicalId: string,
+    physicalId: string,
+    resourceType: string,
+    properties: Record<string, unknown>,
+    previousProperties: Record<string, unknown>
+  ): Promise<ResourceUpdateResult> {
+    this.logger.debug(`Updating Glue Crawler ${logicalId}: ${physicalId}`);
+    try {
+      await this.getClient().send(
+        new UpdateCrawlerCommand({
+          Name: physicalId,
+          ...(properties['Role'] !== undefined && { Role: properties['Role'] as string }),
+          ...(properties['Targets'] !== undefined && {
+            Targets: properties['Targets'] as CrawlerTargets,
+          }),
+          ...buildCrawlerCommonFields(properties),
+        })
+      );
+
+      const oldTags = cfnTagsToMap(previousProperties['Tags']) ?? {};
+      const newTags = cfnTagsToMap(properties['Tags']) ?? {};
+      await this.applyTagDiff(physicalId, oldTags, newTags);
+
+      return { physicalId, wasReplaced: false };
+    } catch (error) {
+      const cause = error instanceof Error ? error : undefined;
+      throw new ProvisioningError(
+        `Failed to update Glue Crawler ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        resourceType,
+        logicalId,
+        physicalId,
+        cause
+      );
+    }
+  }
+
+  async delete(
+    logicalId: string,
+    physicalId: string,
+    resourceType: string,
+    _properties?: Record<string, unknown>,
+    context?: DeleteContext
+  ): Promise<void> {
+    this.logger.debug(`Deleting Glue Crawler ${logicalId}: ${physicalId}`);
+    try {
+      await this.getClient().send(new DeleteCrawlerCommand({ Name: physicalId }));
+    } catch (error) {
+      if (error instanceof EntityNotFoundException) {
+        const clientRegion = await this.getClient().config.region();
+        assertRegionMatch(
+          clientRegion,
+          context?.expectedRegion,
+          resourceType,
+          logicalId,
+          physicalId
+        );
+        this.logger.debug(`Glue Crawler ${physicalId} does not exist, skipping deletion`);
+        return;
+      }
+      const cause = error instanceof Error ? error : undefined;
+      throw new ProvisioningError(
+        `Failed to delete Glue Crawler ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        resourceType,
+        logicalId,
+        physicalId,
+        cause
+      );
+    }
+  }
+
+  // eslint-disable-next-line @typescript-eslint/require-await -- explicit-override-only intentionally has no AWS calls
+  async getAttribute(
+    physicalId: string,
+    _resourceType: string,
+    attributeName: string
+  ): Promise<unknown> {
+    if (attributeName === 'Id' || attributeName === 'Ref' || attributeName === 'Name') {
+      return physicalId;
+    }
+    return undefined;
+  }
+
+  async readCurrentState(
+    physicalId: string,
+    _logicalId: string,
+    _resourceType: string
+  ): Promise<Record<string, unknown> | undefined> {
+    let crawler;
+    try {
+      const resp = await this.getClient().send(new GetCrawlerCommand({ Name: physicalId }));
+      crawler = resp.Crawler;
+    } catch (err) {
+      if (err instanceof EntityNotFoundException) return undefined;
+      throw err;
+    }
+    if (!crawler) return undefined;
+
+    const result: Record<string, unknown> = {
+      Name: crawler.Name ?? physicalId,
+      Role: crawler.Role ?? '',
+      Targets: crawler.Targets ? pickDefined(crawler.Targets as Record<string, unknown>) : {},
+      DatabaseName: crawler.DatabaseName ?? '',
+      Description: crawler.Description ?? '',
+      // CFn `Schedule` is the structured wrapper; reverse-map from the
+      // SDK's `Schedule { ScheduleExpression, State }` Description shape.
+      Schedule: crawler.Schedule?.ScheduleExpression
+        ? { ScheduleExpression: crawler.Schedule.ScheduleExpression }
+        : {},
+      Classifiers: crawler.Classifiers ?? [],
+      TablePrefix: crawler.TablePrefix ?? '',
+      SchemaChangePolicy: crawler.SchemaChangePolicy
+        ? pickDefined(crawler.SchemaChangePolicy as Record<string, unknown>)
+        : {},
+      RecrawlPolicy: crawler.RecrawlPolicy
+        ? pickDefined(crawler.RecrawlPolicy as Record<string, unknown>)
+        : {},
+      LineageConfiguration: crawler.LineageConfiguration
+        ? pickDefined(crawler.LineageConfiguration as Record<string, unknown>)
+        : {},
+      LakeFormationConfiguration: crawler.LakeFormationConfiguration
+        ? pickDefined(crawler.LakeFormationConfiguration as Record<string, unknown>)
+        : {},
+      Configuration: crawler.Configuration ?? '',
+      CrawlerSecurityConfiguration: crawler.CrawlerSecurityConfiguration ?? '',
+    };
+    result['Tags'] = await fetchGlueTags(
+      this.getClient(),
+      this.getStsClient(),
+      'crawler',
+      crawler.Name ?? physicalId,
+      this.cachedAccountId,
+      this.logger
+    );
+    return result;
+  }
+
+  /**
+   * Start (or stop) a crawler's schedule. Exposed for downstream tooling
+   * — not part of `update()` because AWS treats schedule activation as a
+   * separate side-effect from crawler config update.
+   */
+  async startSchedule(physicalId: string): Promise<void> {
+    await this.getClient().send(new StartCrawlerScheduleCommand({ CrawlerName: physicalId }));
+  }
+  async stopSchedule(physicalId: string): Promise<void> {
+    await this.getClient().send(new StopCrawlerScheduleCommand({ CrawlerName: physicalId }));
+  }
+
+  private async applyTagDiff(
+    physicalId: string,
+    oldTags: Record<string, string>,
+    newTags: Record<string, string>
+  ): Promise<void> {
+    const arn = await buildGlueResourceArn(
+      this.getClient(),
+      this.getStsClient(),
+      'crawler',
+      physicalId,
+      this.cachedAccountId
+    );
+    const toAdd: Record<string, string> = {};
+    const toRemove: string[] = [];
+    for (const [k, v] of Object.entries(newTags)) {
+      if (oldTags[k] !== v) toAdd[k] = v;
+    }
+    for (const k of Object.keys(oldTags)) {
+      if (!(k in newTags)) toRemove.push(k);
+    }
+    if (Object.keys(toAdd).length > 0 || toRemove.length > 0) {
+      const { TagResourceCommand, UntagResourceCommand } = await import('@aws-sdk/client-glue');
+      if (Object.keys(toAdd).length > 0) {
+        await this.getClient().send(new TagResourceCommand({ ResourceArn: arn, TagsToAdd: toAdd }));
+      }
+      if (toRemove.length > 0) {
+        await this.getClient().send(
+          new UntagResourceCommand({ ResourceArn: arn, TagsToRemove: toRemove })
+        );
+      }
+    }
+  }
+
+  async import(input: ResourceImportInput): Promise<ResourceImportResult | null> {
+    const explicitName = input.knownPhysicalId ?? (input.properties['Name'] as string | undefined);
+    if (!explicitName) return null;
+    try {
+      await this.getClient().send(new GetCrawlerCommand({ Name: explicitName }));
+      return { physicalId: explicitName, attributes: {} };
+    } catch (err) {
+      if (err instanceof EntityNotFoundException) return null;
+      throw err;
+    }
+  }
+}
+
+// ─── helpers shared by GlueCrawlerProvider ──────────────────────────────
+
+/**
+ * Crawler optional fields shared by `CreateCrawler` and `UpdateCrawler`.
+ * `Schedule` is the bare cron string at the SDK layer, but CFn wraps it
+ * in `{ ScheduleExpression: '...' }`. cdkd unwraps here.
+ */
+function buildCrawlerCommonFields(p: Record<string, unknown>): Record<string, unknown> {
+  const r: Record<string, unknown> = {};
+  if (p['DatabaseName'] !== undefined) r['DatabaseName'] = p['DatabaseName'] as string;
+  if (p['Description'] !== undefined) r['Description'] = p['Description'] as string;
+  if (p['Classifiers'] !== undefined) r['Classifiers'] = p['Classifiers'] as string[];
+  if (p['TablePrefix'] !== undefined) r['TablePrefix'] = p['TablePrefix'] as string;
+  if (p['Schedule'] !== undefined) {
+    // Accept both the CFn structured shape and a bare string for forward-compat.
+    const sched = p['Schedule'];
+    if (typeof sched === 'string') {
+      r['Schedule'] = sched;
+    } else if (typeof sched === 'object' && sched !== null) {
+      const wrap = sched as Record<string, unknown>;
+      if (wrap['ScheduleExpression'] !== undefined) {
+        r['Schedule'] = wrap['ScheduleExpression'] as string;
+      }
+    }
+  }
+  if (p['SchemaChangePolicy'] !== undefined) {
+    r['SchemaChangePolicy'] = p['SchemaChangePolicy'] as SchemaChangePolicy;
+  }
+  if (p['RecrawlPolicy'] !== undefined) {
+    r['RecrawlPolicy'] = p['RecrawlPolicy'] as RecrawlPolicy;
+  }
+  if (p['LineageConfiguration'] !== undefined) {
+    r['LineageConfiguration'] = p['LineageConfiguration'] as LineageConfiguration;
+  }
+  if (p['LakeFormationConfiguration'] !== undefined) {
+    r['LakeFormationConfiguration'] = p['LakeFormationConfiguration'] as LakeFormationConfiguration;
+  }
+  if (p['Configuration'] !== undefined) r['Configuration'] = p['Configuration'] as string;
+  if (p['CrawlerSecurityConfiguration'] !== undefined) {
+    r['CrawlerSecurityConfiguration'] = p['CrawlerSecurityConfiguration'] as string;
+  }
+  return r;
+}
+
+/**
+ * SDK Provider for `AWS::Glue::Connection`.
+ *
+ * `physicalId` is the connection name. `ConnectionInput.ConnectionProperties`
+ * is a free-form `Record<string, string>` (e.g. `JDBC_CONNECTION_URL`,
+ * `USERNAME` for JDBC), surfaced as-is on read for state-shape parity.
+ */
+export class GlueConnectionProvider implements ResourceProvider {
+  private client: GlueClient | undefined;
+  private readonly providerRegion = process.env['AWS_REGION'];
+  private logger = getLogger().child('GlueConnectionProvider');
+
+  handledProperties = new Map<string, ReadonlySet<string>>([
+    ['AWS::Glue::Connection', new Set(['ConnectionInput', 'CatalogId'])],
+  ]);
+
+  private getClient(): GlueClient {
+    if (!this.client) {
+      this.client = new GlueClient(this.providerRegion ? { region: this.providerRegion } : {});
+    }
+    return this.client;
+  }
+
+  async create(
+    logicalId: string,
+    resourceType: string,
+    properties: Record<string, unknown>
+  ): Promise<ResourceCreateResult> {
+    this.logger.debug(`Creating Glue Connection ${logicalId}`);
+    const connectionInput = properties['ConnectionInput'] as Record<string, unknown> | undefined;
+    if (!connectionInput) {
+      throw new ProvisioningError(
+        `ConnectionInput is required for Glue Connection ${logicalId}`,
+        resourceType,
+        logicalId
+      );
+    }
+    const name = (connectionInput['Name'] as string | undefined) ?? logicalId;
+    const catalogId = properties['CatalogId'] as string | undefined;
+    try {
+      await this.getClient().send(
+        new CreateConnectionCommand({
+          ...(catalogId && { CatalogId: catalogId }),
+          ConnectionInput: buildConnectionInput(connectionInput, name),
+        })
+      );
+      this.logger.debug(`Successfully created Glue Connection ${logicalId}: ${name}`);
+      return { physicalId: name, attributes: {} };
+    } catch (error) {
+      const cause = error instanceof Error ? error : undefined;
+      throw new ProvisioningError(
+        `Failed to create Glue Connection ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        resourceType,
+        logicalId,
+        undefined,
+        cause
+      );
+    }
+  }
+
+  async update(
+    logicalId: string,
+    physicalId: string,
+    resourceType: string,
+    properties: Record<string, unknown>,
+    _previousProperties: Record<string, unknown>
+  ): Promise<ResourceUpdateResult> {
+    this.logger.debug(`Updating Glue Connection ${logicalId}: ${physicalId}`);
+    const connectionInput = properties['ConnectionInput'] as Record<string, unknown> | undefined;
+    if (!connectionInput) {
+      throw new ProvisioningError(
+        `ConnectionInput is required for Glue Connection update ${logicalId}`,
+        resourceType,
+        logicalId,
+        physicalId
+      );
+    }
+    const catalogId = properties['CatalogId'] as string | undefined;
+    try {
+      await this.getClient().send(
+        new UpdateConnectionCommand({
+          ...(catalogId && { CatalogId: catalogId }),
+          Name: physicalId,
+          ConnectionInput: buildConnectionInput(connectionInput, physicalId),
+        })
+      );
+      return { physicalId, wasReplaced: false };
+    } catch (error) {
+      const cause = error instanceof Error ? error : undefined;
+      throw new ProvisioningError(
+        `Failed to update Glue Connection ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        resourceType,
+        logicalId,
+        physicalId,
+        cause
+      );
+    }
+  }
+
+  async delete(
+    logicalId: string,
+    physicalId: string,
+    resourceType: string,
+    properties?: Record<string, unknown>,
+    context?: DeleteContext
+  ): Promise<void> {
+    this.logger.debug(`Deleting Glue Connection ${logicalId}: ${physicalId}`);
+    const catalogId = properties?.['CatalogId'] as string | undefined;
+    try {
+      await this.getClient().send(
+        new DeleteConnectionCommand({
+          ConnectionName: physicalId,
+          ...(catalogId && { CatalogId: catalogId }),
+        })
+      );
+    } catch (error) {
+      if (error instanceof EntityNotFoundException) {
+        const clientRegion = await this.getClient().config.region();
+        assertRegionMatch(
+          clientRegion,
+          context?.expectedRegion,
+          resourceType,
+          logicalId,
+          physicalId
+        );
+        this.logger.debug(`Glue Connection ${physicalId} does not exist, skipping deletion`);
+        return;
+      }
+      const cause = error instanceof Error ? error : undefined;
+      throw new ProvisioningError(
+        `Failed to delete Glue Connection ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        resourceType,
+        logicalId,
+        physicalId,
+        cause
+      );
+    }
+  }
+
+  // eslint-disable-next-line @typescript-eslint/require-await -- explicit-override-only intentionally has no AWS calls
+  async getAttribute(
+    physicalId: string,
+    _resourceType: string,
+    attributeName: string
+  ): Promise<unknown> {
+    if (attributeName === 'Id' || attributeName === 'Ref' || attributeName === 'Name') {
+      return physicalId;
+    }
+    return undefined;
+  }
+
+  async readCurrentState(
+    physicalId: string,
+    _logicalId: string,
+    _resourceType: string,
+    properties?: Record<string, unknown>
+  ): Promise<Record<string, unknown> | undefined> {
+    const catalogId = properties?.['CatalogId'] as string | undefined;
+    let conn;
+    try {
+      const resp = await this.getClient().send(
+        new GetConnectionCommand({ Name: physicalId, ...(catalogId && { CatalogId: catalogId }) })
+      );
+      conn = resp.Connection;
+    } catch (err) {
+      if (err instanceof EntityNotFoundException) return undefined;
+      throw err;
+    }
+    if (!conn) return undefined;
+
+    const ci: Record<string, unknown> = {
+      Name: conn.Name ?? physicalId,
+      ConnectionType: conn.ConnectionType ?? '',
+      Description: conn.Description ?? '',
+      MatchCriteria: conn.MatchCriteria ?? [],
+      ConnectionProperties: conn.ConnectionProperties ?? {},
+      SparkProperties: conn.SparkProperties ?? {},
+      AthenaProperties: conn.AthenaProperties ?? {},
+      PythonProperties: conn.PythonProperties ?? {},
+      PhysicalConnectionRequirements: conn.PhysicalConnectionRequirements
+        ? pickDefined(conn.PhysicalConnectionRequirements as Record<string, unknown>)
+        : {},
+    };
+    return { ConnectionInput: ci };
+  }
+
+  async import(input: ResourceImportInput): Promise<ResourceImportResult | null> {
+    const explicitName =
+      input.knownPhysicalId ??
+      ((input.properties['ConnectionInput'] as Record<string, unknown> | undefined)?.['Name'] as
+        | string
+        | undefined);
+    if (!explicitName) return null;
+    const catalogId = input.properties['CatalogId'] as string | undefined;
+    try {
+      await this.getClient().send(
+        new GetConnectionCommand({
+          Name: explicitName,
+          ...(catalogId && { CatalogId: catalogId }),
+        })
+      );
+      return { physicalId: explicitName, attributes: {} };
+    } catch (err) {
+      if (err instanceof EntityNotFoundException) return null;
+      throw err;
+    }
+  }
+}
+
+// ─── helpers shared by GlueConnectionProvider ───────────────────────────
+
+function buildConnectionInput(ci: Record<string, unknown>, fallbackName: string): ConnectionInput {
+  const result: ConnectionInput = {
+    Name: (ci['Name'] as string | undefined) ?? fallbackName,
+    ConnectionType: ci['ConnectionType'] as ConnectionInput['ConnectionType'],
+    ConnectionProperties:
+      (ci['ConnectionProperties'] as ConnectionInput['ConnectionProperties'] | undefined) ?? {},
+  };
+  if (ci['Description'] !== undefined) result.Description = ci['Description'] as string;
+  if (ci['MatchCriteria'] !== undefined) result.MatchCriteria = ci['MatchCriteria'] as string[];
+  if (ci['SparkProperties'] !== undefined) {
+    result.SparkProperties = ci['SparkProperties'] as Record<string, string>;
+  }
+  if (ci['AthenaProperties'] !== undefined) {
+    result.AthenaProperties = ci['AthenaProperties'] as Record<string, string>;
+  }
+  if (ci['PythonProperties'] !== undefined) {
+    result.PythonProperties = ci['PythonProperties'] as Record<string, string>;
+  }
+  if (ci['PhysicalConnectionRequirements'] !== undefined) {
+    result.PhysicalConnectionRequirements = ci[
+      'PhysicalConnectionRequirements'
+    ] as ConnectionInput['PhysicalConnectionRequirements'];
+  }
+  if (ci['AuthenticationConfiguration'] !== undefined) {
+    result.AuthenticationConfiguration = ci[
+      'AuthenticationConfiguration'
+    ] as ConnectionInput['AuthenticationConfiguration'];
+  }
+  if (ci['ValidateCredentials'] !== undefined) {
+    result.ValidateCredentials = ci['ValidateCredentials'] as boolean;
+  }
+  if (ci['ValidateForComputeEnvironments'] !== undefined) {
+    result.ValidateForComputeEnvironments = ci[
+      'ValidateForComputeEnvironments'
+    ] as ConnectionInput['ValidateForComputeEnvironments'];
+  }
+  return result;
+}
+
+/**
+ * SDK Provider for `AWS::Glue::Trigger`.
+ *
+ * Trigger has a state machine: `ACTIVATED` (running) ↔ `DEACTIVATED`
+ * (paused). `UpdateTrigger` requires the trigger to be DEACTIVATED. If
+ * the AWS-current state is ACTIVATED when an update is requested, this
+ * provider:
+ *   1. `StopTrigger` (DEACTIVATED).
+ *   2. `UpdateTrigger`.
+ *   3. `StartTrigger` (re-ACTIVATED) so the user-visible state is
+ *      preserved across the update.
+ *
+ * `physicalId` is the trigger name. Tags are managed via the Glue
+ * `GetTags` / `TagResource` / `UntagResource` API (not in
+ * `TriggerUpdate`).
+ */
+export class GlueTriggerProvider implements ResourceProvider {
+  private client: GlueClient | undefined;
+  private stsClient: STSClient | undefined;
+  private cachedAccountId: string | undefined;
+  private readonly providerRegion = process.env['AWS_REGION'];
+  private logger = getLogger().child('GlueTriggerProvider');
+
+  handledProperties = new Map<string, ReadonlySet<string>>([
+    [
+      'AWS::Glue::Trigger',
+      new Set([
+        'Name',
+        'Type',
+        'Schedule',
+        'Actions',
+        'Predicate',
+        'Description',
+        'StartOnCreation',
+        'EventBatchingCondition',
+        'WorkflowName',
+        'Tags',
+      ]),
+    ],
+  ]);
+
+  private getClient(): GlueClient {
+    if (!this.client) {
+      this.client = new GlueClient(this.providerRegion ? { region: this.providerRegion } : {});
+    }
+    return this.client;
+  }
+
+  private getStsClient(): STSClient {
+    if (!this.stsClient) {
+      this.stsClient = new STSClient(this.providerRegion ? { region: this.providerRegion } : {});
+    }
+    return this.stsClient;
+  }
+
+  async create(
+    logicalId: string,
+    resourceType: string,
+    properties: Record<string, unknown>
+  ): Promise<ResourceCreateResult> {
+    this.logger.debug(`Creating Glue Trigger ${logicalId}`);
+    const name = (properties['Name'] as string | undefined) ?? logicalId;
+    const type = properties['Type'] as string | undefined;
+    const actions = properties['Actions'] as TriggerAction[] | undefined;
+    if (!type) {
+      throw new ProvisioningError(
+        `Type is required for Glue Trigger ${logicalId}`,
+        resourceType,
+        logicalId
+      );
+    }
+    if (!actions) {
+      throw new ProvisioningError(
+        `Actions is required for Glue Trigger ${logicalId}`,
+        resourceType,
+        logicalId
+      );
+    }
+    try {
+      const tags = cfnTagsToMap(properties['Tags']);
+      await this.getClient().send(
+        new CreateTriggerCommand({
+          Name: name,
+          Type: type as 'SCHEDULED' | 'CONDITIONAL' | 'ON_DEMAND' | 'EVENT',
+          Actions: actions,
+          ...(properties['Schedule'] !== undefined && {
+            Schedule: properties['Schedule'] as string,
+          }),
+          ...(properties['Predicate'] !== undefined && {
+            Predicate: properties['Predicate'] as Predicate,
+          }),
+          ...(properties['Description'] !== undefined && {
+            Description: properties['Description'] as string,
+          }),
+          ...(properties['StartOnCreation'] !== undefined && {
+            StartOnCreation: properties['StartOnCreation'] as boolean,
+          }),
+          ...(properties['WorkflowName'] !== undefined && {
+            WorkflowName: properties['WorkflowName'] as string,
+          }),
+          ...(properties['EventBatchingCondition'] !== undefined && {
+            EventBatchingCondition: properties['EventBatchingCondition'] as EventBatchingCondition,
+          }),
+          ...(tags && { Tags: tags }),
+        })
+      );
+      this.logger.debug(`Successfully created Glue Trigger ${logicalId}: ${name}`);
+      return { physicalId: name, attributes: {} };
+    } catch (error) {
+      const cause = error instanceof Error ? error : undefined;
+      throw new ProvisioningError(
+        `Failed to create Glue Trigger ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        resourceType,
+        logicalId,
+        undefined,
+        cause
+      );
+    }
+  }
+
+  async update(
+    logicalId: string,
+    physicalId: string,
+    resourceType: string,
+    properties: Record<string, unknown>,
+    previousProperties: Record<string, unknown>
+  ): Promise<ResourceUpdateResult> {
+    this.logger.debug(`Updating Glue Trigger ${logicalId}: ${physicalId}`);
+    try {
+      // Glue requires the trigger be DEACTIVATED before UpdateTrigger.
+      // Read the current state to decide whether we need to stop+restart.
+      let restart = false;
+      try {
+        const cur = await this.getClient().send(new GetTriggerCommand({ Name: physicalId }));
+        if (cur.Trigger?.State === 'ACTIVATED') {
+          restart = true;
+          await this.getClient().send(new StopTriggerCommand({ Name: physicalId }));
+        }
+      } catch (err) {
+        // If GetTrigger fails for any reason other than NotFound, fall
+        // through and let UpdateTrigger surface a clear AWS error.
+        if (!(err instanceof EntityNotFoundException)) {
+          this.logger.debug(
+            `GetTrigger pre-check failed for ${physicalId}; continuing anyway: ${
+              err instanceof Error ? err.message : String(err)
+            }`
+          );
+        }
+      }
+
+      const update: TriggerUpdate = {
+        ...(properties['Description'] !== undefined && {
+          Description: properties['Description'] as string,
+        }),
+        ...(properties['Schedule'] !== undefined && {
+          Schedule: properties['Schedule'] as string,
+        }),
+        ...(properties['Actions'] !== undefined && {
+          Actions: properties['Actions'] as TriggerAction[],
+        }),
+        ...(properties['Predicate'] !== undefined && {
+          Predicate: properties['Predicate'] as Predicate,
+        }),
+        ...(properties['EventBatchingCondition'] !== undefined && {
+          EventBatchingCondition: properties['EventBatchingCondition'] as EventBatchingCondition,
+        }),
+      };
+      await this.getClient().send(
+        new UpdateTriggerCommand({ Name: physicalId, TriggerUpdate: update })
+      );
+
+      if (restart) {
+        await this.getClient().send(new StartTriggerCommand({ Name: physicalId }));
+      }
+
+      const oldTags = cfnTagsToMap(previousProperties['Tags']) ?? {};
+      const newTags = cfnTagsToMap(properties['Tags']) ?? {};
+      await this.applyTagDiff(physicalId, oldTags, newTags);
+
+      return { physicalId, wasReplaced: false };
+    } catch (error) {
+      const cause = error instanceof Error ? error : undefined;
+      throw new ProvisioningError(
+        `Failed to update Glue Trigger ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        resourceType,
+        logicalId,
+        physicalId,
+        cause
+      );
+    }
+  }
+
+  async delete(
+    logicalId: string,
+    physicalId: string,
+    resourceType: string,
+    _properties?: Record<string, unknown>,
+    context?: DeleteContext
+  ): Promise<void> {
+    this.logger.debug(`Deleting Glue Trigger ${logicalId}: ${physicalId}`);
+    try {
+      await this.getClient().send(new DeleteTriggerCommand({ Name: physicalId }));
+    } catch (error) {
+      if (error instanceof EntityNotFoundException) {
+        const clientRegion = await this.getClient().config.region();
+        assertRegionMatch(
+          clientRegion,
+          context?.expectedRegion,
+          resourceType,
+          logicalId,
+          physicalId
+        );
+        this.logger.debug(`Glue Trigger ${physicalId} does not exist, skipping deletion`);
+        return;
+      }
+      const cause = error instanceof Error ? error : undefined;
+      throw new ProvisioningError(
+        `Failed to delete Glue Trigger ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        resourceType,
+        logicalId,
+        physicalId,
+        cause
+      );
+    }
+  }
+
+  // eslint-disable-next-line @typescript-eslint/require-await -- explicit-override-only intentionally has no AWS calls
+  async getAttribute(
+    physicalId: string,
+    _resourceType: string,
+    attributeName: string
+  ): Promise<unknown> {
+    if (attributeName === 'Id' || attributeName === 'Ref' || attributeName === 'Name') {
+      return physicalId;
+    }
+    return undefined;
+  }
+
+  async readCurrentState(
+    physicalId: string,
+    _logicalId: string,
+    _resourceType: string
+  ): Promise<Record<string, unknown> | undefined> {
+    let trig;
+    try {
+      const resp = await this.getClient().send(new GetTriggerCommand({ Name: physicalId }));
+      trig = resp.Trigger;
+    } catch (err) {
+      if (err instanceof EntityNotFoundException) return undefined;
+      throw err;
+    }
+    if (!trig) return undefined;
+
+    // Predicate.Conditions[]: AWS preserves the array order on read; we
+    // surface entries as-is since cdkd state holds the same shape.
+    const result: Record<string, unknown> = {
+      Name: trig.Name ?? physicalId,
+      Type: trig.Type ?? '',
+      Schedule: trig.Schedule ?? '',
+      Description: trig.Description ?? '',
+      WorkflowName: trig.WorkflowName ?? '',
+      Actions: (trig.Actions ?? []).map((a) =>
+        pickDefined(a as unknown as Record<string, unknown>)
+      ),
+      Predicate: trig.Predicate
+        ? {
+            Logical: trig.Predicate.Logical ?? '',
+            Conditions: (trig.Predicate.Conditions ?? []).map((c: TriggerCondition) =>
+              pickDefined(c as unknown as Record<string, unknown>)
+            ),
+          }
+        : {},
+      EventBatchingCondition: trig.EventBatchingCondition
+        ? pickDefined(trig.EventBatchingCondition as unknown as Record<string, unknown>)
+        : {},
+    };
+    result['Tags'] = await fetchGlueTags(
+      this.getClient(),
+      this.getStsClient(),
+      'trigger',
+      trig.Name ?? physicalId,
+      this.cachedAccountId,
+      this.logger
+    );
+    return result;
+  }
+
+  private async applyTagDiff(
+    physicalId: string,
+    oldTags: Record<string, string>,
+    newTags: Record<string, string>
+  ): Promise<void> {
+    const arn = await buildGlueResourceArn(
+      this.getClient(),
+      this.getStsClient(),
+      'trigger',
+      physicalId,
+      this.cachedAccountId
+    );
+    const toAdd: Record<string, string> = {};
+    const toRemove: string[] = [];
+    for (const [k, v] of Object.entries(newTags)) {
+      if (oldTags[k] !== v) toAdd[k] = v;
+    }
+    for (const k of Object.keys(oldTags)) {
+      if (!(k in newTags)) toRemove.push(k);
+    }
+    if (Object.keys(toAdd).length > 0 || toRemove.length > 0) {
+      const { TagResourceCommand, UntagResourceCommand } = await import('@aws-sdk/client-glue');
+      if (Object.keys(toAdd).length > 0) {
+        await this.getClient().send(new TagResourceCommand({ ResourceArn: arn, TagsToAdd: toAdd }));
+      }
+      if (toRemove.length > 0) {
+        await this.getClient().send(
+          new UntagResourceCommand({ ResourceArn: arn, TagsToRemove: toRemove })
+        );
+      }
+    }
+  }
+
+  async import(input: ResourceImportInput): Promise<ResourceImportResult | null> {
+    const explicitName = input.knownPhysicalId ?? (input.properties['Name'] as string | undefined);
+    if (!explicitName) return null;
+    try {
+      await this.getClient().send(new GetTriggerCommand({ Name: explicitName }));
+      return { physicalId: explicitName, attributes: {} };
+    } catch (err) {
+      if (err instanceof EntityNotFoundException) return null;
+      throw err;
+    }
+  }
 }

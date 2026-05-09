@@ -44,6 +44,10 @@ import {
   GlueProvider,
   GlueWorkflowProvider,
   GlueSecurityConfigurationProvider,
+  GlueJobProvider,
+  GlueCrawlerProvider,
+  GlueConnectionProvider,
+  GlueTriggerProvider,
 } from './providers/glue-provider.js';
 import { KMSProvider } from './providers/kms-provider.js';
 import { KinesisStreamProvider } from './providers/kinesis-provider.js';
@@ -217,6 +221,10 @@ export function registerAllProviders(registry: ProviderRegistry): void {
   registry.register('AWS::Glue::Table', glueProvider);
   registry.register('AWS::Glue::Workflow', new GlueWorkflowProvider());
   registry.register('AWS::Glue::SecurityConfiguration', new GlueSecurityConfigurationProvider());
+  registry.register('AWS::Glue::Job', new GlueJobProvider());
+  registry.register('AWS::Glue::Crawler', new GlueCrawlerProvider());
+  registry.register('AWS::Glue::Connection', new GlueConnectionProvider());
+  registry.register('AWS::Glue::Trigger', new GlueTriggerProvider());
 
   // KMS
   const kmsProvider = new KMSProvider();
