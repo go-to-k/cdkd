@@ -32,12 +32,13 @@ fi
 
 cd "$REPO" 2>/dev/null || exit 0
 
-# Prefer direct `markgate`; fall back to `mise exec --` for users who
-# installed via `mise install` but don't have shims on PATH.
-if command -v markgate >/dev/null 2>&1; then
-  markgate=(markgate)
-elif command -v mise >/dev/null 2>&1; then
+# Prefer the `.mise.toml`-pinned version via `mise exec --` so the repo's
+# canonical markgate wins over an older PATH binary; see check-gate.sh for
+# the schema-bump rationale (0.3.0 markers are silently invisible to 0.3.1).
+if command -v mise >/dev/null 2>&1; then
   markgate=(mise exec -- markgate)
+elif command -v markgate >/dev/null 2>&1; then
+  markgate=(markgate)
 else
   echo "Blocked by verify-pr-gate: markgate is not installed. Run 'mise install' at the repo root (see CONTRIBUTING.md)." >&2
   exit 2
@@ -50,9 +51,23 @@ if [ "$status" -eq 0 ]; then
   exit 0
 fi
 
-cat >&2 <<'EOF'
-Blocked by verify-pr-gate: the `verify-pr` marker is stale (or missing).
+# Extract the parenthesized reason from `markgate status verify-pr` so the
+# error message tells the user *why* the gate is stale. With markgate 0.3+
+# `requires: [check, docs]` the reason often names the failing child
+# (e.g. "(child docs is stale)"), pointing the user straight at /check or
+# /check-docs without forcing them to re-run /verify-pr blindly. Fails open
+# to the static heredoc body when extraction fails.
+reason=$("${markgate[@]}" status verify-pr 2>/dev/null \
+  | awk '/^state:/ { if (match($0, /\([^)]+\)/)) print substr($0, RSTART, RLENGTH); exit }')
 
+if [ -n "$reason" ]; then
+  printf "Blocked by verify-pr-gate: the \`verify-pr\` marker is stale %s.\n\n" "$reason" >&2
+else
+  echo "Blocked by verify-pr-gate: the \`verify-pr\` marker is stale (or missing)." >&2
+  echo >&2
+fi
+
+cat >&2 <<'EOF'
 Required action — no exceptions:
   /verify-pr [PR-number]
 
