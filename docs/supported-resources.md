@@ -108,9 +108,16 @@ message naming the unsupported type.
 | **GraphQL** | AWS::AppSync::ApiKey | SDK Provider | ✅ |
 | **Analytics** | AWS::Glue::Database | SDK Provider | ✅ |
 | **Analytics** | AWS::Glue::Table | SDK Provider | ✅ |
+| **Analytics** | AWS::Glue::Job | SDK Provider | ✅ |
+| **Analytics** | AWS::Glue::Crawler | SDK Provider | ✅ |
+| **Analytics** | AWS::Glue::Connection | SDK Provider | ✅ |
+| **Analytics** | AWS::Glue::Trigger | SDK Provider | ✅ |
+| **Analytics** | AWS::Glue::Workflow | SDK Provider | ✅ |
+| **Analytics** | AWS::Glue::SecurityConfiguration | SDK Provider | ✅ |
 | **Encryption** | AWS::KMS::Key | SDK Provider | ✅ |
 | **Encryption** | AWS::KMS::Alias | SDK Provider | ✅ |
 | **Streaming** | AWS::Kinesis::Stream | SDK Provider | ✅ |
+| **Streaming** | AWS::Kinesis::StreamConsumer | SDK Provider | ✅ |
 | **Streaming** | AWS::KinesisFirehose::DeliveryStream | SDK Provider | ✅ |
 | **Storage** | AWS::EFS::FileSystem | SDK Provider | ✅ |
 | **Storage** | AWS::EFS::MountTarget | SDK Provider | ✅ |
