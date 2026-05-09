@@ -1,3 +1,10 @@
+# [0.60.0](https://github.com/go-to-k/cdkd/compare/v0.59.1...v0.60.0) (2026-05-09)
+
+
+### Features
+
+* **providers:** SDK providers for DocDB and Neptune (with --remove-protection support) ([#207](https://github.com/go-to-k/cdkd/issues/207)) ([86d42c8](https://github.com/go-to-k/cdkd/commit/86d42c893f0f6bd52dbfb3d5ad559951b9c42573))
+
 ## [0.59.1](https://github.com/go-to-k/cdkd/compare/v0.59.0...v0.59.1) (2026-05-09)
 
 
