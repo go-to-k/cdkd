@@ -1,3 +1,10 @@
+# [0.64.0](https://github.com/go-to-k/cdkd/compare/v0.63.0...v0.64.0) (2026-05-09)
+
+
+### Features
+
+* **glue:** SDK providers for Workflow/SecurityConfiguration with drift coverage ([#213](https://github.com/go-to-k/cdkd/issues/213)) ([cad7d9d](https://github.com/go-to-k/cdkd/commit/cad7d9dd54ef6817334305278ca68085d3069035))
+
 # [0.63.0](https://github.com/go-to-k/cdkd/compare/v0.62.0...v0.63.0) (2026-05-09)
 
 
