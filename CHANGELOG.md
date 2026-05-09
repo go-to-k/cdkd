@@ -1,3 +1,10 @@
+# [0.54.0](https://github.com/go-to-k/cdkd/compare/v0.53.0...v0.54.0) (2026-05-09)
+
+
+### Features
+
+* **apigateway:** in-place update for Authorizer + Method via RFC 6902 PATCH ops ([#196](https://github.com/go-to-k/cdkd/issues/196)) ([40df3e6](https://github.com/go-to-k/cdkd/commit/40df3e6ffa13cf80a85cce6cac0341977c3e839c))
+
 # [0.53.0](https://github.com/go-to-k/cdkd/compare/v0.52.0...v0.53.0) (2026-05-09)
 
 
