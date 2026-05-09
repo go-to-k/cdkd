@@ -1151,7 +1151,18 @@ export class ECSProvider implements ResourceProvider {
     };
     try {
       resp = (await this.getClient().send(
-        new DescribeClustersCommand({ clusters: [physicalId], include: ['TAGS'] })
+        // AWS DescribeClusters omits `settings` / `configuration` from the
+        // response unless they are explicitly requested via `include`. Without
+        // SETTINGS / CONFIGURATIONS the readCurrentState round-trip silently
+        // surfaces empty `ClusterSettings: []` even when the cluster has
+        // containerInsights enabled — a console-side toggle then can't be
+        // detected as drift because both the deploy-time observedProperties
+        // baseline AND the drift-time AWS read would identically miss the
+        // field. Discovered by the drift-revert integ test (PR #201).
+        new DescribeClustersCommand({
+          clusters: [physicalId],
+          include: ['TAGS', 'SETTINGS', 'CONFIGURATIONS'],
+        })
       )) as unknown as typeof resp;
     } catch {
       return undefined;

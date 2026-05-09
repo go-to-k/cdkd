@@ -13,6 +13,10 @@
     "ts-node": "^10.0.0"
   },
   "dependencies": {
+    "@aws-sdk/client-apigatewayv2": "^3.0.0",
+    "@aws-sdk/client-cloudwatch-logs": "^3.0.0",
+    "@aws-sdk/client-ecs": "^3.0.0",
+    "@aws-sdk/client-glue": "^3.0.0",
     "@aws-sdk/client-iam": "^3.0.0",
     "@aws-sdk/client-kms": "^3.0.0",
     "@aws-sdk/client-s3": "^3.0.0",
