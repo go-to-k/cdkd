@@ -3,10 +3,28 @@ import {
   GetBucketTaggingCommand,
   PutBucketEncryptionCommand,
   PutBucketCorsCommand,
+  DeleteBucketCorsCommand,
   PutBucketLifecycleConfigurationCommand,
+  DeleteBucketLifecycleCommand,
   PutBucketVersioningCommand,
   PutBucketTaggingCommand,
   DeleteBucketTaggingCommand,
+  PutBucketWebsiteCommand,
+  DeleteBucketWebsiteCommand,
+  PutBucketLoggingCommand,
+  PutBucketNotificationConfigurationCommand,
+  PutBucketReplicationCommand,
+  DeleteBucketReplicationCommand,
+  PutObjectLockConfigurationCommand,
+  PutBucketAccelerateConfigurationCommand,
+  PutBucketMetricsConfigurationCommand,
+  DeleteBucketMetricsConfigurationCommand,
+  PutBucketAnalyticsConfigurationCommand,
+  DeleteBucketAnalyticsConfigurationCommand,
+  PutBucketIntelligentTieringConfigurationCommand,
+  DeleteBucketIntelligentTieringConfigurationCommand,
+  PutBucketInventoryConfigurationCommand,
+  DeleteBucketInventoryConfigurationCommand,
 } from '@aws-sdk/client-s3';
 
 const mockSend = vi.fn();
@@ -299,5 +317,1013 @@ describe('S3BucketProvider read-update round-trip', () => {
 
     expect(mockSend.mock.calls[4]?.[0]).toBeInstanceOf(GetBucketTaggingCommand);
     expect(result?.Tags).toEqual([{ Key: 'Owner', Value: 'platform' }]);
+  });
+});
+
+// =====================================================================
+// PR #215 sub-config update / delete round-trips
+// =====================================================================
+//
+// applySubConfigDiffs() walks each of the 12 sub-configs and issues:
+//   - undefined -> defined: Put*Command
+//   - defined -> undefined: Delete*Command (or Put-with-cleared-body for
+//     APIs that have no Delete counterpart — Logging / Notification /
+//     ObjectLock / Accelerate)
+//   - defined -> defined (different): Put*Command
+//   - unchanged: no SDK call
+//
+// The 4 array-shaped configs (Metrics / Analytics / IntelligentTiering /
+// Inventory) diff per `Id` so add / remove / change are fired
+// independently for each id.
+// =====================================================================
+
+describe('S3BucketProvider sub-config diff (PR #215)', () => {
+  let provider: S3BucketProvider;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    provider = new S3BucketProvider();
+    mockSend.mockResolvedValue({});
+  });
+
+  /**
+   * Filter the SDK mock calls to a single command class — used as the
+   * primary assertion point so unrelated commands (PutBucketVersioning
+   * etc. fired by applyConfiguration) don't pollute the assertion.
+   */
+  function callsOf(cmdClass: new (...args: never[]) => unknown): unknown[] {
+    return mockSend.mock.calls.filter((c) => c[0] instanceof cmdClass).map((c) => c[0]);
+  }
+
+  // -------------------------------------------------------------------
+  // LifecycleConfiguration (Put + Delete)
+  // -------------------------------------------------------------------
+
+  it('LifecycleConfiguration: absent -> present fires PutBucketLifecycleConfiguration', async () => {
+    await provider.update(
+      'L',
+      BUCKET_NAME,
+      'AWS::S3::Bucket',
+      {
+        BucketName: BUCKET_NAME,
+        LifecycleConfiguration: {
+          Rules: [{ Id: 'r1', Status: 'Enabled', ExpirationInDays: 30 }],
+        },
+      },
+      { BucketName: BUCKET_NAME }
+    );
+    expect(callsOf(PutBucketLifecycleConfigurationCommand)).toHaveLength(1);
+    expect(callsOf(DeleteBucketLifecycleCommand)).toHaveLength(0);
+  });
+
+  it('LifecycleConfiguration: present -> absent fires DeleteBucketLifecycle', async () => {
+    await provider.update(
+      'L',
+      BUCKET_NAME,
+      'AWS::S3::Bucket',
+      { BucketName: BUCKET_NAME },
+      {
+        BucketName: BUCKET_NAME,
+        LifecycleConfiguration: {
+          Rules: [{ Id: 'r1', Status: 'Enabled', ExpirationInDays: 30 }],
+        },
+      }
+    );
+    expect(callsOf(DeleteBucketLifecycleCommand)).toHaveLength(1);
+    expect(callsOf(PutBucketLifecycleConfigurationCommand)).toHaveLength(0);
+  });
+
+  it('LifecycleConfiguration: unchanged fires neither Put nor Delete', async () => {
+    const cfg = { Rules: [{ Id: 'r1', Status: 'Enabled', ExpirationInDays: 30 }] };
+    await provider.update(
+      'L',
+      BUCKET_NAME,
+      'AWS::S3::Bucket',
+      { BucketName: BUCKET_NAME, LifecycleConfiguration: cfg },
+      { BucketName: BUCKET_NAME, LifecycleConfiguration: cfg }
+    );
+    expect(callsOf(PutBucketLifecycleConfigurationCommand)).toHaveLength(0);
+    expect(callsOf(DeleteBucketLifecycleCommand)).toHaveLength(0);
+  });
+
+  it('LifecycleConfiguration: present -> present (different) fires Put', async () => {
+    await provider.update(
+      'L',
+      BUCKET_NAME,
+      'AWS::S3::Bucket',
+      {
+        BucketName: BUCKET_NAME,
+        LifecycleConfiguration: {
+          Rules: [{ Id: 'r1', Status: 'Enabled', ExpirationInDays: 60 }],
+        },
+      },
+      {
+        BucketName: BUCKET_NAME,
+        LifecycleConfiguration: {
+          Rules: [{ Id: 'r1', Status: 'Enabled', ExpirationInDays: 30 }],
+        },
+      }
+    );
+    expect(callsOf(PutBucketLifecycleConfigurationCommand)).toHaveLength(1);
+    expect(callsOf(DeleteBucketLifecycleCommand)).toHaveLength(0);
+  });
+
+  // -------------------------------------------------------------------
+  // CorsConfiguration (Put + Delete)
+  // -------------------------------------------------------------------
+
+  it('CorsConfiguration: absent -> present fires PutBucketCors', async () => {
+    await provider.update(
+      'L',
+      BUCKET_NAME,
+      'AWS::S3::Bucket',
+      {
+        BucketName: BUCKET_NAME,
+        CorsConfiguration: {
+          CorsRules: [{ AllowedOrigins: ['*'], AllowedMethods: ['GET'] }],
+        },
+      },
+      { BucketName: BUCKET_NAME }
+    );
+    expect(callsOf(PutBucketCorsCommand)).toHaveLength(1);
+    expect(callsOf(DeleteBucketCorsCommand)).toHaveLength(0);
+  });
+
+  it('CorsConfiguration: present -> absent fires DeleteBucketCors', async () => {
+    await provider.update(
+      'L',
+      BUCKET_NAME,
+      'AWS::S3::Bucket',
+      { BucketName: BUCKET_NAME },
+      {
+        BucketName: BUCKET_NAME,
+        CorsConfiguration: {
+          CorsRules: [{ AllowedOrigins: ['*'], AllowedMethods: ['GET'] }],
+        },
+      }
+    );
+    expect(callsOf(DeleteBucketCorsCommand)).toHaveLength(1);
+    expect(callsOf(PutBucketCorsCommand)).toHaveLength(0);
+  });
+
+  it('CorsConfiguration: unchanged fires neither Put nor Delete', async () => {
+    const cfg = { CorsRules: [{ AllowedOrigins: ['*'], AllowedMethods: ['GET'] }] };
+    await provider.update(
+      'L',
+      BUCKET_NAME,
+      'AWS::S3::Bucket',
+      { BucketName: BUCKET_NAME, CorsConfiguration: cfg },
+      { BucketName: BUCKET_NAME, CorsConfiguration: cfg }
+    );
+    expect(callsOf(PutBucketCorsCommand)).toHaveLength(0);
+    expect(callsOf(DeleteBucketCorsCommand)).toHaveLength(0);
+  });
+
+  it('CorsConfiguration: present -> present (different) fires Put', async () => {
+    await provider.update(
+      'L',
+      BUCKET_NAME,
+      'AWS::S3::Bucket',
+      {
+        BucketName: BUCKET_NAME,
+        CorsConfiguration: {
+          CorsRules: [{ AllowedOrigins: ['https://example.com'], AllowedMethods: ['GET'] }],
+        },
+      },
+      {
+        BucketName: BUCKET_NAME,
+        CorsConfiguration: {
+          CorsRules: [{ AllowedOrigins: ['*'], AllowedMethods: ['GET'] }],
+        },
+      }
+    );
+    expect(callsOf(PutBucketCorsCommand)).toHaveLength(1);
+  });
+
+  // -------------------------------------------------------------------
+  // WebsiteConfiguration (Put + Delete)
+  // -------------------------------------------------------------------
+
+  it('WebsiteConfiguration: absent -> present fires PutBucketWebsite', async () => {
+    await provider.update(
+      'L',
+      BUCKET_NAME,
+      'AWS::S3::Bucket',
+      {
+        BucketName: BUCKET_NAME,
+        WebsiteConfiguration: { IndexDocument: 'index.html' },
+      },
+      { BucketName: BUCKET_NAME }
+    );
+    expect(callsOf(PutBucketWebsiteCommand)).toHaveLength(1);
+    expect(callsOf(DeleteBucketWebsiteCommand)).toHaveLength(0);
+  });
+
+  it('WebsiteConfiguration: present -> absent fires DeleteBucketWebsite', async () => {
+    await provider.update(
+      'L',
+      BUCKET_NAME,
+      'AWS::S3::Bucket',
+      { BucketName: BUCKET_NAME },
+      {
+        BucketName: BUCKET_NAME,
+        WebsiteConfiguration: { IndexDocument: 'index.html' },
+      }
+    );
+    expect(callsOf(DeleteBucketWebsiteCommand)).toHaveLength(1);
+    expect(callsOf(PutBucketWebsiteCommand)).toHaveLength(0);
+  });
+
+  it('WebsiteConfiguration: unchanged fires no SDK call', async () => {
+    const cfg = { IndexDocument: 'index.html' };
+    await provider.update(
+      'L',
+      BUCKET_NAME,
+      'AWS::S3::Bucket',
+      { BucketName: BUCKET_NAME, WebsiteConfiguration: cfg },
+      { BucketName: BUCKET_NAME, WebsiteConfiguration: cfg }
+    );
+    expect(callsOf(PutBucketWebsiteCommand)).toHaveLength(0);
+    expect(callsOf(DeleteBucketWebsiteCommand)).toHaveLength(0);
+  });
+
+  it('WebsiteConfiguration: present -> present (different) fires Put', async () => {
+    await provider.update(
+      'L',
+      BUCKET_NAME,
+      'AWS::S3::Bucket',
+      {
+        BucketName: BUCKET_NAME,
+        WebsiteConfiguration: { IndexDocument: 'main.html' },
+      },
+      {
+        BucketName: BUCKET_NAME,
+        WebsiteConfiguration: { IndexDocument: 'index.html' },
+      }
+    );
+    expect(callsOf(PutBucketWebsiteCommand)).toHaveLength(1);
+  });
+
+  // -------------------------------------------------------------------
+  // LoggingConfiguration (Put-only — no Delete API; clear via empty Put)
+  // -------------------------------------------------------------------
+
+  it('LoggingConfiguration: absent -> present fires PutBucketLogging', async () => {
+    await provider.update(
+      'L',
+      BUCKET_NAME,
+      'AWS::S3::Bucket',
+      {
+        BucketName: BUCKET_NAME,
+        LoggingConfiguration: { DestinationBucketName: 'log-bucket', LogFilePrefix: 'logs/' },
+      },
+      { BucketName: BUCKET_NAME }
+    );
+    const calls = callsOf(PutBucketLoggingCommand);
+    expect(calls).toHaveLength(1);
+    expect((calls[0] as { input: { BucketLoggingStatus: { LoggingEnabled: object } } }).input)
+      .toMatchObject({
+        Bucket: BUCKET_NAME,
+        BucketLoggingStatus: {
+          LoggingEnabled: { TargetBucket: 'log-bucket', TargetPrefix: 'logs/' },
+        },
+      });
+  });
+
+  it('LoggingConfiguration: present -> absent fires PutBucketLogging with empty BucketLoggingStatus', async () => {
+    await provider.update(
+      'L',
+      BUCKET_NAME,
+      'AWS::S3::Bucket',
+      { BucketName: BUCKET_NAME },
+      {
+        BucketName: BUCKET_NAME,
+        LoggingConfiguration: { DestinationBucketName: 'log-bucket' },
+      }
+    );
+    const calls = callsOf(PutBucketLoggingCommand);
+    expect(calls).toHaveLength(1);
+    expect((calls[0] as { input: { BucketLoggingStatus: object } }).input.BucketLoggingStatus)
+      .toEqual({});
+  });
+
+  it('LoggingConfiguration: unchanged fires no SDK call', async () => {
+    const cfg = { DestinationBucketName: 'log-bucket', LogFilePrefix: 'logs/' };
+    await provider.update(
+      'L',
+      BUCKET_NAME,
+      'AWS::S3::Bucket',
+      { BucketName: BUCKET_NAME, LoggingConfiguration: cfg },
+      { BucketName: BUCKET_NAME, LoggingConfiguration: cfg }
+    );
+    expect(callsOf(PutBucketLoggingCommand)).toHaveLength(0);
+  });
+
+  it('LoggingConfiguration: present -> present (different prefix) fires Put', async () => {
+    await provider.update(
+      'L',
+      BUCKET_NAME,
+      'AWS::S3::Bucket',
+      {
+        BucketName: BUCKET_NAME,
+        LoggingConfiguration: { DestinationBucketName: 'log-bucket', LogFilePrefix: 'new/' },
+      },
+      {
+        BucketName: BUCKET_NAME,
+        LoggingConfiguration: { DestinationBucketName: 'log-bucket', LogFilePrefix: 'old/' },
+      }
+    );
+    expect(callsOf(PutBucketLoggingCommand)).toHaveLength(1);
+  });
+
+  // -------------------------------------------------------------------
+  // NotificationConfiguration (Put-only — empty NotificationConfiguration clears)
+  // -------------------------------------------------------------------
+
+  it('NotificationConfiguration: absent -> present fires PutBucketNotificationConfiguration', async () => {
+    await provider.update(
+      'L',
+      BUCKET_NAME,
+      'AWS::S3::Bucket',
+      {
+        BucketName: BUCKET_NAME,
+        NotificationConfiguration: {
+          TopicConfigurations: [
+            { Topic: 'arn:aws:sns:us-east-1:1:my-topic', Event: 's3:ObjectCreated:*' },
+          ],
+        },
+      },
+      { BucketName: BUCKET_NAME }
+    );
+    expect(callsOf(PutBucketNotificationConfigurationCommand)).toHaveLength(1);
+  });
+
+  it('NotificationConfiguration: present -> absent fires Put with empty NotificationConfiguration', async () => {
+    await provider.update(
+      'L',
+      BUCKET_NAME,
+      'AWS::S3::Bucket',
+      { BucketName: BUCKET_NAME },
+      {
+        BucketName: BUCKET_NAME,
+        NotificationConfiguration: {
+          TopicConfigurations: [
+            { Topic: 'arn:aws:sns:us-east-1:1:my-topic', Event: 's3:ObjectCreated:*' },
+          ],
+        },
+      }
+    );
+    const calls = callsOf(PutBucketNotificationConfigurationCommand);
+    expect(calls).toHaveLength(1);
+    expect((calls[0] as { input: { NotificationConfiguration: object } }).input
+      .NotificationConfiguration).toEqual({});
+  });
+
+  it('NotificationConfiguration: unchanged fires no SDK call', async () => {
+    const cfg = {
+      TopicConfigurations: [
+        { Topic: 'arn:aws:sns:us-east-1:1:my-topic', Event: 's3:ObjectCreated:*' },
+      ],
+    };
+    await provider.update(
+      'L',
+      BUCKET_NAME,
+      'AWS::S3::Bucket',
+      { BucketName: BUCKET_NAME, NotificationConfiguration: cfg },
+      { BucketName: BUCKET_NAME, NotificationConfiguration: cfg }
+    );
+    expect(callsOf(PutBucketNotificationConfigurationCommand)).toHaveLength(0);
+  });
+
+  it('NotificationConfiguration: present -> present (different) fires Put', async () => {
+    await provider.update(
+      'L',
+      BUCKET_NAME,
+      'AWS::S3::Bucket',
+      {
+        BucketName: BUCKET_NAME,
+        NotificationConfiguration: {
+          TopicConfigurations: [
+            { Topic: 'arn:aws:sns:us-east-1:1:other', Event: 's3:ObjectCreated:*' },
+          ],
+        },
+      },
+      {
+        BucketName: BUCKET_NAME,
+        NotificationConfiguration: {
+          TopicConfigurations: [
+            { Topic: 'arn:aws:sns:us-east-1:1:my-topic', Event: 's3:ObjectCreated:*' },
+          ],
+        },
+      }
+    );
+    expect(callsOf(PutBucketNotificationConfigurationCommand)).toHaveLength(1);
+  });
+
+  // -------------------------------------------------------------------
+  // ReplicationConfiguration (Put + Delete)
+  // -------------------------------------------------------------------
+
+  it('ReplicationConfiguration: absent -> present fires PutBucketReplication', async () => {
+    await provider.update(
+      'L',
+      BUCKET_NAME,
+      'AWS::S3::Bucket',
+      {
+        BucketName: BUCKET_NAME,
+        ReplicationConfiguration: {
+          Role: 'arn:aws:iam::1:role/repl',
+          Rules: [
+            {
+              Id: 'r1',
+              Status: 'Enabled',
+              Destination: { Bucket: 'arn:aws:s3:::dest-bucket' },
+            },
+          ],
+        },
+      },
+      { BucketName: BUCKET_NAME }
+    );
+    expect(callsOf(PutBucketReplicationCommand)).toHaveLength(1);
+    expect(callsOf(DeleteBucketReplicationCommand)).toHaveLength(0);
+  });
+
+  it('ReplicationConfiguration: present -> absent fires DeleteBucketReplication', async () => {
+    await provider.update(
+      'L',
+      BUCKET_NAME,
+      'AWS::S3::Bucket',
+      { BucketName: BUCKET_NAME },
+      {
+        BucketName: BUCKET_NAME,
+        ReplicationConfiguration: {
+          Role: 'arn:aws:iam::1:role/repl',
+          Rules: [
+            {
+              Id: 'r1',
+              Status: 'Enabled',
+              Destination: { Bucket: 'arn:aws:s3:::dest-bucket' },
+            },
+          ],
+        },
+      }
+    );
+    expect(callsOf(DeleteBucketReplicationCommand)).toHaveLength(1);
+    expect(callsOf(PutBucketReplicationCommand)).toHaveLength(0);
+  });
+
+  it('ReplicationConfiguration: unchanged fires no SDK call', async () => {
+    const cfg = {
+      Role: 'arn:aws:iam::1:role/repl',
+      Rules: [
+        {
+          Id: 'r1',
+          Status: 'Enabled',
+          Destination: { Bucket: 'arn:aws:s3:::dest-bucket' },
+        },
+      ],
+    };
+    await provider.update(
+      'L',
+      BUCKET_NAME,
+      'AWS::S3::Bucket',
+      { BucketName: BUCKET_NAME, ReplicationConfiguration: cfg },
+      { BucketName: BUCKET_NAME, ReplicationConfiguration: cfg }
+    );
+    expect(callsOf(PutBucketReplicationCommand)).toHaveLength(0);
+    expect(callsOf(DeleteBucketReplicationCommand)).toHaveLength(0);
+  });
+
+  it('ReplicationConfiguration: present -> present (different role) fires Put', async () => {
+    await provider.update(
+      'L',
+      BUCKET_NAME,
+      'AWS::S3::Bucket',
+      {
+        BucketName: BUCKET_NAME,
+        ReplicationConfiguration: {
+          Role: 'arn:aws:iam::1:role/repl-v2',
+          Rules: [
+            {
+              Id: 'r1',
+              Status: 'Enabled',
+              Destination: { Bucket: 'arn:aws:s3:::dest-bucket' },
+            },
+          ],
+        },
+      },
+      {
+        BucketName: BUCKET_NAME,
+        ReplicationConfiguration: {
+          Role: 'arn:aws:iam::1:role/repl',
+          Rules: [
+            {
+              Id: 'r1',
+              Status: 'Enabled',
+              Destination: { Bucket: 'arn:aws:s3:::dest-bucket' },
+            },
+          ],
+        },
+      }
+    );
+    expect(callsOf(PutBucketReplicationCommand)).toHaveLength(1);
+  });
+
+  // -------------------------------------------------------------------
+  // ObjectLockConfiguration (Put-only — clearing fires Put with empty Rule)
+  // -------------------------------------------------------------------
+
+  it('ObjectLockConfiguration: absent -> present fires PutObjectLockConfiguration', async () => {
+    await provider.update(
+      'L',
+      BUCKET_NAME,
+      'AWS::S3::Bucket',
+      {
+        BucketName: BUCKET_NAME,
+        ObjectLockConfiguration: {
+          ObjectLockEnabled: 'Enabled',
+          Rule: { DefaultRetention: { Mode: 'GOVERNANCE', Days: 30 } },
+        },
+      },
+      { BucketName: BUCKET_NAME }
+    );
+    expect(callsOf(PutObjectLockConfigurationCommand)).toHaveLength(1);
+  });
+
+  it('ObjectLockConfiguration: present -> absent fires Put with bucket-level enable only (clears Rule)', async () => {
+    await provider.update(
+      'L',
+      BUCKET_NAME,
+      'AWS::S3::Bucket',
+      { BucketName: BUCKET_NAME },
+      {
+        BucketName: BUCKET_NAME,
+        ObjectLockConfiguration: {
+          ObjectLockEnabled: 'Enabled',
+          Rule: { DefaultRetention: { Mode: 'GOVERNANCE', Days: 30 } },
+        },
+      }
+    );
+    const calls = callsOf(PutObjectLockConfigurationCommand);
+    expect(calls).toHaveLength(1);
+    expect((calls[0] as { input: { ObjectLockConfiguration: object } }).input
+      .ObjectLockConfiguration).toEqual({ ObjectLockEnabled: 'Enabled' });
+  });
+
+  it('ObjectLockConfiguration: unchanged fires no SDK call', async () => {
+    const cfg = {
+      ObjectLockEnabled: 'Enabled',
+      Rule: { DefaultRetention: { Mode: 'GOVERNANCE', Days: 30 } },
+    };
+    await provider.update(
+      'L',
+      BUCKET_NAME,
+      'AWS::S3::Bucket',
+      { BucketName: BUCKET_NAME, ObjectLockConfiguration: cfg },
+      { BucketName: BUCKET_NAME, ObjectLockConfiguration: cfg }
+    );
+    expect(callsOf(PutObjectLockConfigurationCommand)).toHaveLength(0);
+  });
+
+  it('ObjectLockConfiguration: present -> present (different days) fires Put', async () => {
+    await provider.update(
+      'L',
+      BUCKET_NAME,
+      'AWS::S3::Bucket',
+      {
+        BucketName: BUCKET_NAME,
+        ObjectLockConfiguration: {
+          ObjectLockEnabled: 'Enabled',
+          Rule: { DefaultRetention: { Mode: 'GOVERNANCE', Days: 60 } },
+        },
+      },
+      {
+        BucketName: BUCKET_NAME,
+        ObjectLockConfiguration: {
+          ObjectLockEnabled: 'Enabled',
+          Rule: { DefaultRetention: { Mode: 'GOVERNANCE', Days: 30 } },
+        },
+      }
+    );
+    expect(callsOf(PutObjectLockConfigurationCommand)).toHaveLength(1);
+  });
+
+  // -------------------------------------------------------------------
+  // AccelerateConfiguration (Put-only — Suspended clears)
+  // -------------------------------------------------------------------
+
+  it('AccelerateConfiguration: absent -> Enabled fires PutBucketAccelerateConfiguration', async () => {
+    await provider.update(
+      'L',
+      BUCKET_NAME,
+      'AWS::S3::Bucket',
+      {
+        BucketName: BUCKET_NAME,
+        AccelerateConfiguration: { AccelerationStatus: 'Enabled' },
+      },
+      { BucketName: BUCKET_NAME }
+    );
+    expect(callsOf(PutBucketAccelerateConfigurationCommand)).toHaveLength(1);
+  });
+
+  it('AccelerateConfiguration: present -> absent fires Put with Status=Suspended', async () => {
+    await provider.update(
+      'L',
+      BUCKET_NAME,
+      'AWS::S3::Bucket',
+      { BucketName: BUCKET_NAME },
+      {
+        BucketName: BUCKET_NAME,
+        AccelerateConfiguration: { AccelerationStatus: 'Enabled' },
+      }
+    );
+    const calls = callsOf(PutBucketAccelerateConfigurationCommand);
+    expect(calls).toHaveLength(1);
+    expect(
+      (calls[0] as { input: { AccelerateConfiguration: { Status: string } } }).input
+        .AccelerateConfiguration.Status
+    ).toBe('Suspended');
+  });
+
+  it('AccelerateConfiguration: unchanged fires no SDK call', async () => {
+    const cfg = { AccelerationStatus: 'Enabled' };
+    await provider.update(
+      'L',
+      BUCKET_NAME,
+      'AWS::S3::Bucket',
+      { BucketName: BUCKET_NAME, AccelerateConfiguration: cfg },
+      { BucketName: BUCKET_NAME, AccelerateConfiguration: cfg }
+    );
+    expect(callsOf(PutBucketAccelerateConfigurationCommand)).toHaveLength(0);
+  });
+
+  it('AccelerateConfiguration: Enabled -> Suspended fires Put', async () => {
+    await provider.update(
+      'L',
+      BUCKET_NAME,
+      'AWS::S3::Bucket',
+      {
+        BucketName: BUCKET_NAME,
+        AccelerateConfiguration: { AccelerationStatus: 'Suspended' },
+      },
+      {
+        BucketName: BUCKET_NAME,
+        AccelerateConfiguration: { AccelerationStatus: 'Enabled' },
+      }
+    );
+    expect(callsOf(PutBucketAccelerateConfigurationCommand)).toHaveLength(1);
+  });
+
+  // -------------------------------------------------------------------
+  // MetricsConfigurations[] — per-id diff
+  // -------------------------------------------------------------------
+
+  it('MetricsConfigurations: new id fires Put for that id', async () => {
+    await provider.update(
+      'L',
+      BUCKET_NAME,
+      'AWS::S3::Bucket',
+      {
+        BucketName: BUCKET_NAME,
+        MetricsConfigurations: [{ Id: 'm1' }],
+      },
+      { BucketName: BUCKET_NAME }
+    );
+    const calls = callsOf(PutBucketMetricsConfigurationCommand);
+    expect(calls).toHaveLength(1);
+    expect((calls[0] as { input: { Id: string } }).input.Id).toBe('m1');
+    expect(callsOf(DeleteBucketMetricsConfigurationCommand)).toHaveLength(0);
+  });
+
+  it('MetricsConfigurations: removed id fires Delete for that id', async () => {
+    await provider.update(
+      'L',
+      BUCKET_NAME,
+      'AWS::S3::Bucket',
+      { BucketName: BUCKET_NAME },
+      {
+        BucketName: BUCKET_NAME,
+        MetricsConfigurations: [{ Id: 'm1' }],
+      }
+    );
+    const calls = callsOf(DeleteBucketMetricsConfigurationCommand);
+    expect(calls).toHaveLength(1);
+    expect((calls[0] as { input: { Id: string } }).input.Id).toBe('m1');
+    expect(callsOf(PutBucketMetricsConfigurationCommand)).toHaveLength(0);
+  });
+
+  it('MetricsConfigurations: changed body for same id fires Put (overwrites)', async () => {
+    await provider.update(
+      'L',
+      BUCKET_NAME,
+      'AWS::S3::Bucket',
+      {
+        BucketName: BUCKET_NAME,
+        MetricsConfigurations: [{ Id: 'm1', Prefix: 'docs/' }],
+      },
+      {
+        BucketName: BUCKET_NAME,
+        MetricsConfigurations: [{ Id: 'm1', Prefix: 'images/' }],
+      }
+    );
+    expect(callsOf(PutBucketMetricsConfigurationCommand)).toHaveLength(1);
+    expect(callsOf(DeleteBucketMetricsConfigurationCommand)).toHaveLength(0);
+  });
+
+  it('MetricsConfigurations: mixed add/remove/unchanged fires expected calls', async () => {
+    await provider.update(
+      'L',
+      BUCKET_NAME,
+      'AWS::S3::Bucket',
+      {
+        BucketName: BUCKET_NAME,
+        MetricsConfigurations: [
+          { Id: 'kept', Prefix: 'a/' },
+          { Id: 'added', Prefix: 'b/' },
+        ],
+      },
+      {
+        BucketName: BUCKET_NAME,
+        MetricsConfigurations: [
+          { Id: 'kept', Prefix: 'a/' },
+          { Id: 'removed', Prefix: 'c/' },
+        ],
+      }
+    );
+
+    const puts = callsOf(PutBucketMetricsConfigurationCommand);
+    const deletes = callsOf(DeleteBucketMetricsConfigurationCommand);
+    expect(puts).toHaveLength(1);
+    expect(deletes).toHaveLength(1);
+    expect((puts[0] as { input: { Id: string } }).input.Id).toBe('added');
+    expect((deletes[0] as { input: { Id: string } }).input.Id).toBe('removed');
+  });
+
+  // -------------------------------------------------------------------
+  // AnalyticsConfigurations[] — per-id diff
+  // -------------------------------------------------------------------
+
+  it('AnalyticsConfigurations: new id fires Put for that id', async () => {
+    await provider.update(
+      'L',
+      BUCKET_NAME,
+      'AWS::S3::Bucket',
+      {
+        BucketName: BUCKET_NAME,
+        AnalyticsConfigurations: [{ Id: 'a1' }],
+      },
+      { BucketName: BUCKET_NAME }
+    );
+    expect(callsOf(PutBucketAnalyticsConfigurationCommand)).toHaveLength(1);
+    expect(callsOf(DeleteBucketAnalyticsConfigurationCommand)).toHaveLength(0);
+  });
+
+  it('AnalyticsConfigurations: removed id fires Delete', async () => {
+    await provider.update(
+      'L',
+      BUCKET_NAME,
+      'AWS::S3::Bucket',
+      { BucketName: BUCKET_NAME },
+      {
+        BucketName: BUCKET_NAME,
+        AnalyticsConfigurations: [{ Id: 'a1' }],
+      }
+    );
+    expect(callsOf(DeleteBucketAnalyticsConfigurationCommand)).toHaveLength(1);
+  });
+
+  it('AnalyticsConfigurations: changed body for same id fires Put', async () => {
+    await provider.update(
+      'L',
+      BUCKET_NAME,
+      'AWS::S3::Bucket',
+      {
+        BucketName: BUCKET_NAME,
+        AnalyticsConfigurations: [{ Id: 'a1', Prefix: 'after/' }],
+      },
+      {
+        BucketName: BUCKET_NAME,
+        AnalyticsConfigurations: [{ Id: 'a1', Prefix: 'before/' }],
+      }
+    );
+    expect(callsOf(PutBucketAnalyticsConfigurationCommand)).toHaveLength(1);
+  });
+
+  it('AnalyticsConfigurations: mixed add/remove/unchanged fires expected calls', async () => {
+    await provider.update(
+      'L',
+      BUCKET_NAME,
+      'AWS::S3::Bucket',
+      {
+        BucketName: BUCKET_NAME,
+        AnalyticsConfigurations: [
+          { Id: 'kept' },
+          { Id: 'added' },
+        ],
+      },
+      {
+        BucketName: BUCKET_NAME,
+        AnalyticsConfigurations: [
+          { Id: 'kept' },
+          { Id: 'removed' },
+        ],
+      }
+    );
+    expect(callsOf(PutBucketAnalyticsConfigurationCommand)).toHaveLength(1);
+    expect(callsOf(DeleteBucketAnalyticsConfigurationCommand)).toHaveLength(1);
+  });
+
+  // -------------------------------------------------------------------
+  // IntelligentTieringConfigurations[] — per-id diff
+  // -------------------------------------------------------------------
+
+  it('IntelligentTieringConfigurations: new id fires Put', async () => {
+    await provider.update(
+      'L',
+      BUCKET_NAME,
+      'AWS::S3::Bucket',
+      {
+        BucketName: BUCKET_NAME,
+        IntelligentTieringConfigurations: [
+          { Id: 'it1', Tierings: [{ AccessTier: 'ARCHIVE_ACCESS', Days: 90 }] },
+        ],
+      },
+      { BucketName: BUCKET_NAME }
+    );
+    expect(callsOf(PutBucketIntelligentTieringConfigurationCommand)).toHaveLength(1);
+  });
+
+  it('IntelligentTieringConfigurations: removed id fires Delete', async () => {
+    await provider.update(
+      'L',
+      BUCKET_NAME,
+      'AWS::S3::Bucket',
+      { BucketName: BUCKET_NAME },
+      {
+        BucketName: BUCKET_NAME,
+        IntelligentTieringConfigurations: [
+          { Id: 'it1', Tierings: [{ AccessTier: 'ARCHIVE_ACCESS', Days: 90 }] },
+        ],
+      }
+    );
+    expect(callsOf(DeleteBucketIntelligentTieringConfigurationCommand)).toHaveLength(1);
+  });
+
+  it('IntelligentTieringConfigurations: changed Tierings.Days for same id fires Put', async () => {
+    await provider.update(
+      'L',
+      BUCKET_NAME,
+      'AWS::S3::Bucket',
+      {
+        BucketName: BUCKET_NAME,
+        IntelligentTieringConfigurations: [
+          { Id: 'it1', Tierings: [{ AccessTier: 'ARCHIVE_ACCESS', Days: 180 }] },
+        ],
+      },
+      {
+        BucketName: BUCKET_NAME,
+        IntelligentTieringConfigurations: [
+          { Id: 'it1', Tierings: [{ AccessTier: 'ARCHIVE_ACCESS', Days: 90 }] },
+        ],
+      }
+    );
+    expect(callsOf(PutBucketIntelligentTieringConfigurationCommand)).toHaveLength(1);
+  });
+
+  it('IntelligentTieringConfigurations: mixed add/remove/unchanged fires expected calls', async () => {
+    await provider.update(
+      'L',
+      BUCKET_NAME,
+      'AWS::S3::Bucket',
+      {
+        BucketName: BUCKET_NAME,
+        IntelligentTieringConfigurations: [
+          { Id: 'kept', Tierings: [{ AccessTier: 'ARCHIVE_ACCESS', Days: 90 }] },
+          { Id: 'added', Tierings: [{ AccessTier: 'DEEP_ARCHIVE_ACCESS', Days: 180 }] },
+        ],
+      },
+      {
+        BucketName: BUCKET_NAME,
+        IntelligentTieringConfigurations: [
+          { Id: 'kept', Tierings: [{ AccessTier: 'ARCHIVE_ACCESS', Days: 90 }] },
+          { Id: 'removed', Tierings: [{ AccessTier: 'ARCHIVE_ACCESS', Days: 90 }] },
+        ],
+      }
+    );
+    expect(callsOf(PutBucketIntelligentTieringConfigurationCommand)).toHaveLength(1);
+    expect(callsOf(DeleteBucketIntelligentTieringConfigurationCommand)).toHaveLength(1);
+  });
+
+  // -------------------------------------------------------------------
+  // InventoryConfigurations[] — per-id diff
+  // -------------------------------------------------------------------
+
+  it('InventoryConfigurations: new id fires Put', async () => {
+    await provider.update(
+      'L',
+      BUCKET_NAME,
+      'AWS::S3::Bucket',
+      {
+        BucketName: BUCKET_NAME,
+        InventoryConfigurations: [
+          {
+            Id: 'inv1',
+            Destination: { BucketArn: 'arn:aws:s3:::inv-bucket', Format: 'CSV' },
+            ScheduleFrequency: 'Weekly',
+          },
+        ],
+      },
+      { BucketName: BUCKET_NAME }
+    );
+    expect(callsOf(PutBucketInventoryConfigurationCommand)).toHaveLength(1);
+  });
+
+  it('InventoryConfigurations: removed id fires Delete', async () => {
+    await provider.update(
+      'L',
+      BUCKET_NAME,
+      'AWS::S3::Bucket',
+      { BucketName: BUCKET_NAME },
+      {
+        BucketName: BUCKET_NAME,
+        InventoryConfigurations: [
+          {
+            Id: 'inv1',
+            Destination: { BucketArn: 'arn:aws:s3:::inv-bucket', Format: 'CSV' },
+            ScheduleFrequency: 'Weekly',
+          },
+        ],
+      }
+    );
+    expect(callsOf(DeleteBucketInventoryConfigurationCommand)).toHaveLength(1);
+  });
+
+  it('InventoryConfigurations: changed body for same id fires Put', async () => {
+    await provider.update(
+      'L',
+      BUCKET_NAME,
+      'AWS::S3::Bucket',
+      {
+        BucketName: BUCKET_NAME,
+        InventoryConfigurations: [
+          {
+            Id: 'inv1',
+            Destination: { BucketArn: 'arn:aws:s3:::inv-bucket', Format: 'CSV' },
+            ScheduleFrequency: 'Daily',
+          },
+        ],
+      },
+      {
+        BucketName: BUCKET_NAME,
+        InventoryConfigurations: [
+          {
+            Id: 'inv1',
+            Destination: { BucketArn: 'arn:aws:s3:::inv-bucket', Format: 'CSV' },
+            ScheduleFrequency: 'Weekly',
+          },
+        ],
+      }
+    );
+    expect(callsOf(PutBucketInventoryConfigurationCommand)).toHaveLength(1);
+  });
+
+  it('InventoryConfigurations: mixed add/remove/unchanged fires expected calls', async () => {
+    await provider.update(
+      'L',
+      BUCKET_NAME,
+      'AWS::S3::Bucket',
+      {
+        BucketName: BUCKET_NAME,
+        InventoryConfigurations: [
+          {
+            Id: 'kept',
+            Destination: { BucketArn: 'arn:aws:s3:::inv-bucket', Format: 'CSV' },
+            ScheduleFrequency: 'Weekly',
+          },
+          {
+            Id: 'added',
+            Destination: { BucketArn: 'arn:aws:s3:::inv-bucket', Format: 'Parquet' },
+            ScheduleFrequency: 'Daily',
+          },
+        ],
+      },
+      {
+        BucketName: BUCKET_NAME,
+        InventoryConfigurations: [
+          {
+            Id: 'kept',
+            Destination: { BucketArn: 'arn:aws:s3:::inv-bucket', Format: 'CSV' },
+            ScheduleFrequency: 'Weekly',
+          },
+          {
+            Id: 'removed',
+            Destination: { BucketArn: 'arn:aws:s3:::inv-bucket', Format: 'CSV' },
+            ScheduleFrequency: 'Weekly',
+          },
+        ],
+      }
+    );
+    expect(callsOf(PutBucketInventoryConfigurationCommand)).toHaveLength(1);
+    expect(callsOf(DeleteBucketInventoryConfigurationCommand)).toHaveLength(1);
   });
 });
