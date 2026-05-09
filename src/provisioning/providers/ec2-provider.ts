@@ -3238,6 +3238,43 @@ export class EC2Provider implements ResourceProvider {
     }
   }
 
+  /**
+   * Drift-unknown paths per resource type.
+   *
+   * The 6 EC2 sub-resource types (`AWS::EC2::Route` /
+   * `VPCGatewayAttachment` / `SubnetRouteTableAssociation` /
+   * `SecurityGroupIngress` / `NetworkAclEntry` /
+   * `SubnetNetworkAclAssociation`) have NO AWS-side `Tags` API — the
+   * underlying AWS objects (route entries, NACL entries, route-table
+   * associations, NACL associations, IGW attachments) are not
+   * tag-bearing on AWS, and the corresponding CFn schemas do not model
+   * `Tags` either. Declaring `'Tags'` here is defense-in-depth: if a
+   * future CFn schema revision adds `Tags` to one of these types, or
+   * cdkd state somehow carries `Tags` for one of them via a custom
+   * property override, the drift comparator will skip the path
+   * instead of firing guaranteed false-positive drift on every clean
+   * run.
+   *
+   * Other EC2 types (`VPC` / `Subnet` / `InternetGateway` /
+   * `NatGateway` / `RouteTable` / `SecurityGroup` / `Instance` /
+   * `NetworkAcl`) have first-class Tags support via
+   * `DescribeTags` — they surface `Tags` directly in
+   * `readCurrentState` and don't need this declaration.
+   */
+  getDriftUnknownPaths(resourceType: string): string[] {
+    switch (resourceType) {
+      case 'AWS::EC2::Route':
+      case 'AWS::EC2::VPCGatewayAttachment':
+      case 'AWS::EC2::SubnetRouteTableAssociation':
+      case 'AWS::EC2::SecurityGroupIngress':
+      case 'AWS::EC2::NetworkAclEntry':
+      case 'AWS::EC2::SubnetNetworkAclAssociation':
+        return ['Tags'];
+      default:
+        return [];
+    }
+  }
+
   private async readVpcCurrentState(
     physicalId: string
   ): Promise<Record<string, unknown> | undefined> {

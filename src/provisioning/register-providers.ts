@@ -43,6 +43,7 @@ import { AppSyncProvider } from './providers/appsync-provider.js';
 import { GlueProvider } from './providers/glue-provider.js';
 import { KMSProvider } from './providers/kms-provider.js';
 import { KinesisStreamProvider } from './providers/kinesis-provider.js';
+import { KinesisStreamConsumerProvider } from './providers/kinesis-streamconsumer-provider.js';
 import { EFSProvider } from './providers/efs-provider.js';
 import { FirehoseProvider } from './providers/firehose-provider.js';
 import { CloudTrailProvider } from './providers/cloudtrail-provider.js';
@@ -218,6 +219,7 @@ export function registerAllProviders(registry: ProviderRegistry): void {
 
   // Kinesis
   registry.register('AWS::Kinesis::Stream', new KinesisStreamProvider());
+  registry.register('AWS::Kinesis::StreamConsumer', new KinesisStreamConsumerProvider());
 
   // EFS
   const efsProvider = new EFSProvider();

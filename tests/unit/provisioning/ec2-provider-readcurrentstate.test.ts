@@ -1237,4 +1237,43 @@ describe('EC2Provider.readCurrentState', () => {
       expect(result).toBeUndefined();
     });
   });
+
+  describe('getDriftUnknownPaths', () => {
+    // Sub-resource types whose AWS objects do NOT carry tags (route
+    // entries, NACL entries, route-table associations, NACL
+    // associations, IGW attachments). The CFn schemas for these types
+    // also do not model `Tags`. Declaring `'Tags'` as drift-unknown is
+    // defense-in-depth for future schema changes / custom property
+    // overrides.
+    const SUB_RESOURCE_TYPES = [
+      'AWS::EC2::Route',
+      'AWS::EC2::VPCGatewayAttachment',
+      'AWS::EC2::SubnetRouteTableAssociation',
+      'AWS::EC2::SecurityGroupIngress',
+      'AWS::EC2::NetworkAclEntry',
+      'AWS::EC2::SubnetNetworkAclAssociation',
+    ] as const;
+
+    for (const t of SUB_RESOURCE_TYPES) {
+      it(`returns ['Tags'] for ${t}`, () => {
+        expect(provider.getDriftUnknownPaths(t)).toEqual(['Tags']);
+      });
+    }
+
+    it('returns [] for tag-bearing parent resource types (VPC / Subnet / SG / Instance / etc.)', () => {
+      const TAG_BEARING_TYPES = [
+        'AWS::EC2::VPC',
+        'AWS::EC2::Subnet',
+        'AWS::EC2::InternetGateway',
+        'AWS::EC2::NatGateway',
+        'AWS::EC2::RouteTable',
+        'AWS::EC2::SecurityGroup',
+        'AWS::EC2::Instance',
+        'AWS::EC2::NetworkAcl',
+      ];
+      for (const t of TAG_BEARING_TYPES) {
+        expect(provider.getDriftUnknownPaths(t)).toEqual([]);
+      }
+    });
+  });
 });
