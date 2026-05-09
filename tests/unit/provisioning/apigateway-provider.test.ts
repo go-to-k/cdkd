@@ -920,16 +920,18 @@ describe('ApiGatewayProvider', () => {
     });
 
     describe('update', () => {
-      it('should reject with ResourceUpdateNotSupportedError (methods are replaced via new deployment)', async () => {
-        await expect(
-          provider.update(
-            'MyMethod',
-            'api-id|resource-id|GET',
-            resourceType,
-            { RestApiId: 'api-id', ResourceId: 'resource-id', HttpMethod: 'GET' },
-            { RestApiId: 'api-id', ResourceId: 'resource-id', HttpMethod: 'GET' }
-          )
-        ).rejects.toThrow(ResourceUpdateNotSupportedError);
+      it('should be a no-op when state matches AWS (no patch ops emitted)', async () => {
+        // Method.update is now plumbed (UpdateMethodCommand patch ops).
+        // With no diff between new and previous properties, no SDK call
+        // should fire — the round-trip "drift --revert with no real
+        // change" case.
+        await provider.update(
+          'MyMethod',
+          'api-id|resource-id|GET',
+          resourceType,
+          { RestApiId: 'api-id', ResourceId: 'resource-id', HttpMethod: 'GET' },
+          { RestApiId: 'api-id', ResourceId: 'resource-id', HttpMethod: 'GET' }
+        );
         expect(mockSend).not.toHaveBeenCalled();
       });
     });

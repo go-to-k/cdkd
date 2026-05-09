@@ -4,6 +4,8 @@ import {
   GetAccountCommand,
   UpdateAccountCommand,
   PutMethodCommand,
+  UpdateAuthorizerCommand,
+  UpdateMethodCommand,
 } from '@aws-sdk/client-api-gateway';
 
 const mockSend = vi.fn();
@@ -179,17 +181,158 @@ describe('ApiGatewayProvider read-update round-trip', () => {
     });
   });
 
-  it('Method update() throws ResourceUpdateNotSupportedError cleanly (immutable type)', async () => {
-    // Per CLAUDE.md (PR I): Method.update is intentionally
-    // ResourceUpdateNotSupportedError — UpdateMethod's patch-operation
-    // builder is not yet plumbed through. This test fails CI if a
-    // future refactor accidentally turns it into a silent no-op
-    // again. It also documents the round-trip safety guarantee for
-    // Class 2 placeholders on Method (Integration: {} /
-    // MethodResponses: {}): drift --revert never reaches AWS for this
-    // type, so the structurally-invalid empty-object placeholders
-    // can't surface as AWS rejections.
-    const observed = {
+  it('Method update() emits replace patches for changed primitive fields', async () => {
+    // AuthorizationType / AuthorizerId / ApiKeyRequired / OperationName /
+    // RequestValidatorId all change → one `replace` op each, only for
+    // changed fields (no patch op for unchanged fields).
+    mockSend.mockResolvedValueOnce({});
+
+    await provider.update(
+      'MethodLogical',
+      'api-1|res-1|GET',
+      'AWS::ApiGateway::Method',
+      {
+        RestApiId: 'api-1',
+        ResourceId: 'res-1',
+        HttpMethod: 'GET',
+        AuthorizationType: 'COGNITO_USER_POOLS',
+        AuthorizerId: 'auth-new',
+        ApiKeyRequired: true,
+        OperationName: 'getThing',
+        RequestValidatorId: 'val-1',
+      },
+      {
+        RestApiId: 'api-1',
+        ResourceId: 'res-1',
+        HttpMethod: 'GET',
+        AuthorizationType: 'NONE',
+        AuthorizerId: undefined,
+        ApiKeyRequired: false,
+        OperationName: undefined,
+        RequestValidatorId: undefined,
+      }
+    );
+
+    const updateCall = mockSend.mock.calls.find((c) => c[0] instanceof UpdateMethodCommand);
+    expect(updateCall).toBeDefined();
+    const input = updateCall![0].input as {
+      restApiId: string;
+      resourceId: string;
+      httpMethod: string;
+      patchOperations: Array<{ op: string; path: string; value?: string }>;
+    };
+    expect(input.restApiId).toBe('api-1');
+    expect(input.resourceId).toBe('res-1');
+    expect(input.httpMethod).toBe('GET');
+    expect(input.patchOperations).toEqual(
+      expect.arrayContaining([
+        { op: 'replace', path: '/authorizationType', value: 'COGNITO_USER_POOLS' },
+        { op: 'replace', path: '/authorizerId', value: 'auth-new' },
+        { op: 'replace', path: '/apiKeyRequired', value: 'true' },
+        { op: 'replace', path: '/operationName', value: 'getThing' },
+        { op: 'replace', path: '/requestValidatorId', value: 'val-1' },
+      ])
+    );
+    expect(input.patchOperations).toHaveLength(5);
+  });
+
+  it('Method update() ApiKeyRequired=false reaches AWS as a real replace (not-truthy gate)', async () => {
+    // The `!== undefined` gate is load-bearing: a console-side toggle
+    // from `ApiKeyRequired: true` back to `false` MUST surface as
+    // `replace /apiKeyRequired false` on revert, otherwise the
+    // round-trip is a silent no-op and the next drift run re-detects
+    // the same divergence forever.
+    mockSend.mockResolvedValueOnce({});
+
+    await provider.update(
+      'MethodLogical',
+      'api-1|res-1|GET',
+      'AWS::ApiGateway::Method',
+      { ApiKeyRequired: false },
+      { ApiKeyRequired: true }
+    );
+
+    const updateCall = mockSend.mock.calls.find((c) => c[0] instanceof UpdateMethodCommand);
+    const input = updateCall![0].input as {
+      patchOperations: Array<{ op: string; path: string; value?: string }>;
+    };
+    expect(input.patchOperations).toEqual([
+      { op: 'replace', path: '/apiKeyRequired', value: 'false' },
+    ]);
+  });
+
+  it('Method update() emits per-key add / remove / replace ops on RequestParameters', async () => {
+    // Map-shaped property: each diffed key gets its own JSON Pointer
+    // patch op. Unchanged keys produce no op.
+    mockSend.mockResolvedValueOnce({});
+
+    await provider.update(
+      'MethodLogical',
+      'api-1|res-1|GET',
+      'AWS::ApiGateway::Method',
+      {
+        RequestParameters: {
+          'method.request.querystring.foo': true, // added
+          'method.request.querystring.bar': false, // changed (was true)
+          'method.request.header.keep': true, // unchanged
+        },
+      },
+      {
+        RequestParameters: {
+          'method.request.querystring.bar': true,
+          'method.request.header.keep': true,
+          'method.request.querystring.gone': true, // removed
+        },
+      }
+    );
+
+    const updateCall = mockSend.mock.calls.find((c) => c[0] instanceof UpdateMethodCommand);
+    const input = updateCall![0].input as {
+      patchOperations: Array<{ op: string; path: string; value?: string }>;
+    };
+    expect(input.patchOperations).toEqual(
+      expect.arrayContaining([
+        { op: 'add', path: '/requestParameters/method.request.querystring.foo', value: 'true' },
+        {
+          op: 'replace',
+          path: '/requestParameters/method.request.querystring.bar',
+          value: 'false',
+        },
+        { op: 'remove', path: '/requestParameters/method.request.querystring.gone' },
+      ])
+    );
+    expect(input.patchOperations).toHaveLength(3);
+  });
+
+  it('Method update() escapes "/" in RequestModels content-type keys per RFC 6901', async () => {
+    // The `application/json` content-type key MUST be escaped to
+    // `application~1json` in the JSON Pointer path or AWS rejects the
+    // patch op as a malformed path.
+    mockSend.mockResolvedValueOnce({});
+
+    await provider.update(
+      'MethodLogical',
+      'api-1|res-1|POST',
+      'AWS::ApiGateway::Method',
+      { RequestModels: { 'application/json': 'MyModel' } },
+      {}
+    );
+
+    const updateCall = mockSend.mock.calls.find((c) => c[0] instanceof UpdateMethodCommand);
+    const input = updateCall![0].input as {
+      patchOperations: Array<{ op: string; path: string; value?: string }>;
+    };
+    expect(input.patchOperations).toEqual([
+      { op: 'add', path: '/requestModels/application~1json', value: 'MyModel' },
+    ]);
+  });
+
+  it('Method update() with no diff sends no UpdateMethodCommand', async () => {
+    // The drift --revert "no real change" round-trip case: if state
+    // already matches AWS (or the only diffs are on Integration /
+    // MethodResponses, which updateMethod intentionally ignores), no
+    // SDK call should fire.
+    const same = {
       RestApiId: 'api-1',
       ResourceId: 'res-1',
       HttpMethod: 'GET',
@@ -198,26 +341,164 @@ describe('ApiGatewayProvider read-update round-trip', () => {
       MethodResponses: {} as Record<string, unknown>,
     };
 
-    await expect(
-      provider.update('MethodLogical', 'api-1|res-1|GET', 'AWS::ApiGateway::Method', observed, observed)
-    ).rejects.toBeInstanceOf(ResourceUpdateNotSupportedError);
+    await provider.update(
+      'MethodLogical',
+      'api-1|res-1|GET',
+      'AWS::ApiGateway::Method',
+      same,
+      same
+    );
 
-    // No PutMethod / UpdateMethod / Get* call should have happened.
     expect(mockSend).not.toHaveBeenCalled();
     const putMethodCalls = mockSend.mock.calls.filter((c) => c[0] instanceof PutMethodCommand);
     expect(putMethodCalls).toHaveLength(0);
   });
 
+  // ─── AWS::ApiGateway::Authorizer ─────────────────────────────────────
+
+  it('Authorizer update() emits replace patches for changed primitive fields', async () => {
+    mockSend.mockResolvedValueOnce({});
+
+    await provider.update(
+      'AuthLogical',
+      'auth-1',
+      'AWS::ApiGateway::Authorizer',
+      {
+        RestApiId: 'api-1',
+        Name: 'AuthV2',
+        AuthorizerUri: 'arn:aws:apigateway:us-east-1:lambda:path/v2',
+        AuthorizerCredentials: 'arn:aws:iam::123:role/v2',
+        IdentitySource: 'method.request.header.AuthorizationV2',
+        IdentityValidationExpression: '^Bearer ',
+        AuthorizerResultTtlInSeconds: 600,
+      },
+      {
+        RestApiId: 'api-1',
+        Name: 'AuthV1',
+        AuthorizerUri: 'arn:aws:apigateway:us-east-1:lambda:path/v1',
+        AuthorizerCredentials: 'arn:aws:iam::123:role/v1',
+        IdentitySource: 'method.request.header.Authorization',
+        IdentityValidationExpression: '',
+        AuthorizerResultTtlInSeconds: 300,
+      }
+    );
+
+    const updateCall = mockSend.mock.calls.find((c) => c[0] instanceof UpdateAuthorizerCommand);
+    expect(updateCall).toBeDefined();
+    const input = updateCall![0].input as {
+      restApiId: string;
+      authorizerId: string;
+      patchOperations: Array<{ op: string; path: string; value?: string }>;
+    };
+    expect(input.restApiId).toBe('api-1');
+    expect(input.authorizerId).toBe('auth-1');
+    expect(input.patchOperations).toEqual(
+      expect.arrayContaining([
+        { op: 'replace', path: '/name', value: 'AuthV2' },
+        { op: 'replace', path: '/authorizerUri', value: 'arn:aws:apigateway:us-east-1:lambda:path/v2' },
+        { op: 'replace', path: '/authorizerCredentials', value: 'arn:aws:iam::123:role/v2' },
+        { op: 'replace', path: '/identitySource', value: 'method.request.header.AuthorizationV2' },
+        { op: 'replace', path: '/identityValidationExpression', value: '^Bearer ' },
+        { op: 'replace', path: '/authorizerResultTtlInSeconds', value: '600' },
+      ])
+    );
+    expect(input.patchOperations).toHaveLength(6);
+  });
+
+  it('Authorizer update() empty IdentitySource placeholder reaches AWS as real clear-patch (not-truthy gate)', async () => {
+    // Same not-truthy gate guarantee as Account.CloudWatchRoleArn: an
+    // empty placeholder coming from readCurrentStateAuthorizer must
+    // round-trip as `replace /identitySource ''`, otherwise drift
+    // --revert silently fails to clear a console-side change.
+    mockSend.mockResolvedValueOnce({});
+
+    await provider.update(
+      'AuthLogical',
+      'auth-1',
+      'AWS::ApiGateway::Authorizer',
+      { RestApiId: 'api-1', IdentitySource: '' },
+      { RestApiId: 'api-1', IdentitySource: 'method.request.header.Authorization' }
+    );
+
+    const updateCall = mockSend.mock.calls.find((c) => c[0] instanceof UpdateAuthorizerCommand);
+    const input = updateCall![0].input as {
+      patchOperations: Array<{ op: string; path: string; value?: string }>;
+    };
+    expect(input.patchOperations).toEqual([
+      { op: 'replace', path: '/identitySource', value: '' },
+    ]);
+  });
+
+  it('Authorizer update() ProviderARNs diff emits comma-joined replace patch', async () => {
+    // AWS PATCH wire format for /providerARNs is a single comma-joined
+    // string. cdkd state holds the array form; the update() path joins
+    // before emitting the op.
+    mockSend.mockResolvedValueOnce({});
+
+    await provider.update(
+      'AuthLogical',
+      'auth-1',
+      'AWS::ApiGateway::Authorizer',
+      {
+        RestApiId: 'api-1',
+        ProviderARNs: [
+          'arn:aws:cognito-idp:us-east-1:123:userpool/pool-A',
+          'arn:aws:cognito-idp:us-east-1:123:userpool/pool-B',
+        ],
+      },
+      {
+        RestApiId: 'api-1',
+        ProviderARNs: ['arn:aws:cognito-idp:us-east-1:123:userpool/pool-A'],
+      }
+    );
+
+    const updateCall = mockSend.mock.calls.find((c) => c[0] instanceof UpdateAuthorizerCommand);
+    const input = updateCall![0].input as {
+      patchOperations: Array<{ op: string; path: string; value?: string }>;
+    };
+    expect(input.patchOperations).toEqual([
+      {
+        op: 'replace',
+        path: '/providerARNs',
+        value:
+          'arn:aws:cognito-idp:us-east-1:123:userpool/pool-A,arn:aws:cognito-idp:us-east-1:123:userpool/pool-B',
+      },
+    ]);
+  });
+
+  it('Authorizer update() with no diff sends no UpdateAuthorizerCommand', async () => {
+    const same = {
+      RestApiId: 'api-1',
+      Name: 'Auth',
+      Type: 'COGNITO_USER_POOLS',
+      ProviderARNs: ['arn:aws:cognito-idp:us-east-1:123:userpool/pool-A'],
+      IdentitySource: 'method.request.header.Authorization',
+    };
+
+    await provider.update('AuthLogical', 'auth-1', 'AWS::ApiGateway::Authorizer', same, same);
+
+    expect(mockSend).not.toHaveBeenCalled();
+  });
+
+  it('Authorizer update() throws ProvisioningError when RestApiId is missing', async () => {
+    await expect(
+      provider.update(
+        'AuthLogical',
+        'auth-1',
+        'AWS::ApiGateway::Authorizer',
+        { Name: 'Auth' },
+        { Name: 'OldAuth' }
+      )
+    ).rejects.toThrow(/RestApiId is required/);
+    expect(mockSend).not.toHaveBeenCalled();
+  });
+
   // ─── Other immutable-update sub-resources (parity with Method) ──────
 
-  it('Authorizer / Deployment update() throw ResourceUpdateNotSupportedError', async () => {
-    // Same structural guarantee: drift --revert can never reach AWS
-    // with a malformed input for these types because update() rejects
-    // before any SDK call.
-    await expect(
-      provider.update('A', 'auth-1', 'AWS::ApiGateway::Authorizer', {}, {})
-    ).rejects.toBeInstanceOf(ResourceUpdateNotSupportedError);
-
+  it('Deployment update() throws ResourceUpdateNotSupportedError', async () => {
+    // Deployment.update is still intentionally
+    // ResourceUpdateNotSupportedError — UpdateDeployment's patch-op
+    // surface is narrow and not yet plumbed.
     await expect(
       provider.update('D', 'dep-1', 'AWS::ApiGateway::Deployment', {}, {})
     ).rejects.toBeInstanceOf(ResourceUpdateNotSupportedError);

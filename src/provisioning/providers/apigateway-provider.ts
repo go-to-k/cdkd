@@ -13,11 +13,13 @@ import {
   DeleteStageCommand,
   GetStageCommand,
   PutMethodCommand,
+  UpdateMethodCommand,
   DeleteMethodCommand,
   GetMethodCommand,
   PutIntegrationCommand,
   PutMethodResponseCommand,
   CreateAuthorizerCommand,
+  UpdateAuthorizerCommand,
   DeleteAuthorizerCommand,
   GetAuthorizerCommand,
   TagResourceCommand,
@@ -147,7 +149,13 @@ export class ApiGatewayProvider implements ResourceProvider {
       case 'AWS::ApiGateway::Account':
         return this.updateAccount(logicalId, physicalId, resourceType, properties);
       case 'AWS::ApiGateway::Authorizer':
-        return this.updateAuthorizer(logicalId, physicalId, resourceType);
+        return this.updateAuthorizer(
+          logicalId,
+          physicalId,
+          resourceType,
+          properties,
+          previousProperties
+        );
       case 'AWS::ApiGateway::Resource':
         return this.updateResource(
           logicalId,
@@ -167,7 +175,13 @@ export class ApiGatewayProvider implements ResourceProvider {
           previousProperties
         );
       case 'AWS::ApiGateway::Method':
-        return this.updateMethod(logicalId, physicalId);
+        return this.updateMethod(
+          logicalId,
+          physicalId,
+          resourceType,
+          properties,
+          previousProperties
+        );
       default:
         throw new ProvisioningError(
           `Unsupported resource type: ${resourceType}`,
@@ -479,26 +493,119 @@ export class ApiGatewayProvider implements ResourceProvider {
   }
 
   /**
-   * Update an API Gateway Authorizer.
+   * Update an API Gateway Authorizer via `UpdateAuthorizerCommand` (RFC 6902
+   * JSON Patch operations).
    *
-   * AWS exposes `UpdateAuthorizer` (PATCH) but cdkd does not yet plumb the
-   * patch-operations builder through. Authorizers are recreated by the
-   * deploy engine's immutable-property replacement path. `cdkd drift
-   * --revert` surfaces a clear "use --replace or re-deploy" message
-   * instead of silently no-op'ing the revert.
+   * Mutable fields (per AWS API Gateway PATCH operations docs):
+   *   `/name`, `/authType`, `/authorizerUri`, `/authorizerCredentials`,
+   *   `/identitySource`, `/identityValidationExpression`,
+   *   `/authorizerResultTtlInSeconds`, `/providerARNs`.
+   *
+   * `Type` and `RestApiId` are immutable (the deploy engine's replacement
+   * path handles those changes via DELETE + CREATE before this method is
+   * called).
+   *
+   * The `gate on !== undefined` pattern (NOT truthy) is load-bearing for
+   * `cdkd drift --revert`: an empty placeholder coming from
+   * `readCurrentStateAuthorizer` (e.g. `IdentitySource: ''` on a Cognito
+   * authorizer) MUST reach AWS as `replace /<field> ''` so a console-side
+   * change away from "" is actually cleared on revert. A truthy gate would
+   * silently drop the empty placeholder and the next drift run would
+   * re-detect the same divergence forever.
    */
-  private updateAuthorizer(
+  private async updateAuthorizer(
     logicalId: string,
-    _physicalId: string,
-    _resourceType: string
+    physicalId: string,
+    resourceType: string,
+    properties: Record<string, unknown>,
+    previousProperties: Record<string, unknown>
   ): Promise<ResourceUpdateResult> {
-    return Promise.reject(
-      new ResourceUpdateNotSupportedError(
-        'AWS::ApiGateway::Authorizer',
+    this.logger.debug(`Updating API Gateway Authorizer ${logicalId}: ${physicalId}`);
+
+    const restApiId = properties['RestApiId'] as string | undefined;
+    if (!restApiId) {
+      throw new ProvisioningError(
+        `RestApiId is required to update API Gateway Authorizer ${logicalId}`,
+        resourceType,
         logicalId,
-        'API Gateway Authorizer updates are not yet implemented in cdkd; re-deploy with cdkd deploy --replace, or destroy + redeploy the stack'
-      )
-    );
+        physicalId
+      );
+    }
+
+    const patchOperations: Array<{ op: 'replace'; path: string; value: string }> = [];
+
+    // Simple `replace` ops for primitive / single-value string fields.
+    // ProviderARNs and IdentitySource are passed as-is (AWS accepts them
+    // as comma-separated strings; CDK templates already produce the
+    // joined form when they are arrays). For ProviderARNs cdkd state
+    // holds an array, so we join with `,` to match the PATCH wire format.
+    const primitiveFields: Array<{ key: string; path: string }> = [
+      { key: 'Name', path: '/name' },
+      { key: 'AuthType', path: '/authType' },
+      { key: 'AuthorizerUri', path: '/authorizerUri' },
+      { key: 'AuthorizerCredentials', path: '/authorizerCredentials' },
+      { key: 'IdentitySource', path: '/identitySource' },
+      { key: 'IdentityValidationExpression', path: '/identityValidationExpression' },
+      { key: 'AuthorizerResultTtlInSeconds', path: '/authorizerResultTtlInSeconds' },
+    ];
+
+    for (const { key, path } of primitiveFields) {
+      const newVal = properties[key];
+      const prevVal = previousProperties[key];
+      if (newVal !== prevVal) {
+        // `!== undefined` gate (not truthy) — see method docstring.
+        patchOperations.push({
+          op: 'replace',
+          path,
+          value: newVal !== undefined ? String(newVal) : '',
+        });
+      }
+    }
+
+    // ProviderARNs is an array on the cdkd-state side. AWS accepts a
+    // comma-separated string for the `replace /providerARNs` op; an
+    // empty string clears the list (the same pattern Account / Stage
+    // use to clear a configured field).
+    const newArns = properties['ProviderARNs'] as string[] | undefined;
+    const prevArns = previousProperties['ProviderARNs'] as string[] | undefined;
+    const arnsChanged =
+      (newArns?.length ?? 0) !== (prevArns?.length ?? 0) ||
+      (newArns ?? []).some((a, i) => a !== prevArns?.[i]);
+    if (arnsChanged) {
+      patchOperations.push({
+        op: 'replace',
+        path: '/providerARNs',
+        value: (newArns ?? []).join(','),
+      });
+    }
+
+    if (patchOperations.length === 0) {
+      this.logger.debug(`No changes detected for API Gateway Authorizer ${logicalId}`);
+      return { physicalId, wasReplaced: false };
+    }
+
+    try {
+      await this.apiGatewayClient.send(
+        new UpdateAuthorizerCommand({
+          restApiId,
+          authorizerId: physicalId,
+          patchOperations,
+        })
+      );
+      this.logger.debug(
+        `Successfully updated API Gateway Authorizer ${logicalId} (${patchOperations.length} patch ops)`
+      );
+      return { physicalId, wasReplaced: false };
+    } catch (error) {
+      const cause = error instanceof Error ? error : undefined;
+      throw new ProvisioningError(
+        `Failed to update API Gateway Authorizer ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        resourceType,
+        logicalId,
+        physicalId,
+        cause
+      );
+    }
   }
 
   /**
@@ -1199,22 +1306,124 @@ export class ApiGatewayProvider implements ResourceProvider {
   }
 
   /**
-   * Update an API Gateway Method.
+   * Update an API Gateway Method via `UpdateMethodCommand` (RFC 6902 JSON
+   * Patch operations).
    *
-   * AWS exposes `UpdateMethod` (PATCH) but cdkd does not yet plumb the
-   * patch-operations builder through. Methods are recreated by the deploy
-   * engine's immutable-property replacement path. `cdkd drift --revert`
-   * surfaces a clear "use --replace or re-deploy" message instead of
-   * silently no-op'ing the revert.
+   * Mutable top-level fields:
+   *   `/authorizationType`, `/authorizerId`, `/apiKeyRequired`,
+   *   `/operationName`, `/requestValidatorId`.
+   *
+   * Map fields (`RequestParameters`, `RequestModels`) emit per-key
+   * `add` / `remove` / `replace` ops with paths like
+   *   `/requestParameters/method.request.querystring.foo`
+   *   `/requestModels/application~1json` (slashes escaped per RFC 6901).
+   *
+   * `HttpMethod`, `ResourceId`, `RestApiId` are immutable (replacement
+   * layer handles them via DELETE + CREATE).
+   *
+   * `Integration` and `MethodResponses` are NOT touched here — they are
+   * separate API Gateway sub-resources (`UpdateIntegration` /
+   * `UpdateMethodResponse`) and the cdkd `create()` path treats them as
+   * inline children of the Method. Round-tripping their structurally-
+   * incomplete `{}` placeholders through `updateMethod` would require
+   * destroying / recreating the integration; that work is deferred and
+   * the empty placeholders are blocked from reaching AWS by the
+   * `!== undefined` gate plus the explicit "ignore Integration /
+   * MethodResponses" comment in this method body.
+   *
+   * The `gate on !== undefined` pattern (NOT truthy) is load-bearing for
+   * `cdkd drift --revert`: `ApiKeyRequired: false` and empty-string
+   * placeholders must reach AWS as a real `replace` op so a console-
+   * side toggle is actually cleared on revert.
    */
-  private updateMethod(logicalId: string, _physicalId: string): Promise<ResourceUpdateResult> {
-    return Promise.reject(
-      new ResourceUpdateNotSupportedError(
-        'AWS::ApiGateway::Method',
+  private async updateMethod(
+    logicalId: string,
+    physicalId: string,
+    resourceType: string,
+    properties: Record<string, unknown>,
+    previousProperties: Record<string, unknown>
+  ): Promise<ResourceUpdateResult> {
+    this.logger.debug(`Updating API Gateway Method ${logicalId}: ${physicalId}`);
+
+    const parts = physicalId.split('|');
+    if (parts.length !== 3) {
+      throw new ProvisioningError(
+        `Invalid physicalId format for API Gateway Method ${logicalId}: expected "restApiId|resourceId|httpMethod", got "${physicalId}"`,
+        resourceType,
         logicalId,
-        'API Gateway Method updates are not yet implemented in cdkd; re-deploy with cdkd deploy --replace, or destroy + redeploy the stack'
-      )
+        physicalId
+      );
+    }
+    const [restApiId, resourceId, httpMethod] = parts;
+
+    const patchOperations: Array<{
+      op: 'replace' | 'add' | 'remove';
+      path: string;
+      value?: string;
+    }> = [];
+
+    const primitiveFields: Array<{ key: string; path: string }> = [
+      { key: 'AuthorizationType', path: '/authorizationType' },
+      { key: 'AuthorizerId', path: '/authorizerId' },
+      { key: 'ApiKeyRequired', path: '/apiKeyRequired' },
+      { key: 'OperationName', path: '/operationName' },
+      { key: 'RequestValidatorId', path: '/requestValidatorId' },
+    ];
+
+    for (const { key, path } of primitiveFields) {
+      const newVal = properties[key];
+      const prevVal = previousProperties[key];
+      if (newVal !== prevVal) {
+        patchOperations.push({
+          op: 'replace',
+          path,
+          value: newVal !== undefined ? String(newVal) : '',
+        });
+      }
+    }
+
+    // Map fields: per-key add / remove / replace.
+    appendMapPatchOps(
+      patchOperations,
+      '/requestParameters',
+      (properties['RequestParameters'] as Record<string, unknown> | undefined) ?? {},
+      (previousProperties['RequestParameters'] as Record<string, unknown> | undefined) ?? {}
     );
+    appendMapPatchOps(
+      patchOperations,
+      '/requestModels',
+      (properties['RequestModels'] as Record<string, unknown> | undefined) ?? {},
+      (previousProperties['RequestModels'] as Record<string, unknown> | undefined) ?? {}
+    );
+
+    if (patchOperations.length === 0) {
+      this.logger.debug(`No changes detected for API Gateway Method ${logicalId}`);
+      return { physicalId, wasReplaced: false };
+    }
+
+    try {
+      await this.apiGatewayClient.send(
+        new UpdateMethodCommand({
+          restApiId,
+          resourceId,
+          httpMethod,
+          patchOperations,
+        })
+      );
+      this.logger.debug(
+        `Successfully updated API Gateway Method ${logicalId} (${patchOperations.length} patch ops)`
+      );
+      return { physicalId, wasReplaced: false };
+    } catch (error) {
+      const cause = error instanceof Error ? error : undefined;
+      throw new ProvisioningError(
+        `Failed to update API Gateway Method ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        resourceType,
+        logicalId,
+        physicalId,
+        cause
+      );
+    }
   }
 
   /**
@@ -1586,5 +1795,44 @@ export class ApiGatewayProvider implements ResourceProvider {
       return { physicalId: input.knownPhysicalId, attributes: {} };
     }
     return null;
+  }
+}
+
+/**
+ * Append RFC 6902 patch operations describing the diff between two map-shaped
+ * properties (e.g. API Gateway Method `RequestParameters` /
+ * `RequestModels`). For each key:
+ *   - present in `next`, absent in `prev`         → `add`     `<basePath>/<key>` `value`
+ *   - absent in `next`, present in `prev`         → `remove`  `<basePath>/<key>`
+ *   - present in both with different values       → `replace` `<basePath>/<key>` `value`
+ *
+ * Slashes inside individual keys are escaped per RFC 6901
+ * (`/` → `~1`, `~` → `~0`) so paths like
+ *   `/requestModels/application~1json` are well-formed JSON Pointers.
+ */
+function appendMapPatchOps(
+  ops: Array<{ op: 'replace' | 'add' | 'remove'; path: string; value?: string }>,
+  basePath: string,
+  next: Record<string, unknown>,
+  prev: Record<string, unknown>
+): void {
+  const escape = (k: string): string => k.replace(/~/g, '~0').replace(/\//g, '~1');
+
+  // add / replace
+  for (const [key, val] of Object.entries(next)) {
+    const path = `${basePath}/${escape(key)}`;
+    const stringValue = String(val);
+    if (!(key in prev)) {
+      ops.push({ op: 'add', path, value: stringValue });
+    } else if (String(prev[key]) !== stringValue) {
+      ops.push({ op: 'replace', path, value: stringValue });
+    }
+  }
+
+  // remove keys present in prev but not in next
+  for (const key of Object.keys(prev)) {
+    if (!(key in next)) {
+      ops.push({ op: 'remove', path: `${basePath}/${escape(key)}` });
+    }
   }
 }
