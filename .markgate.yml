@@ -15,14 +15,20 @@
 #                    title + body freshness, and a retrospective that
 #                    proposes new rules/hooks/skills for any pattern
 #                    that surfaced in the session). Set ONLY by
-#                    /verify-pr. The PreToolUse hook in
-#                    .claude/hooks/verify-pr-gate.sh blocks
+#                    /verify-pr. Declared as `requires: [check, docs]`
+#                    so freshness is the AND of those children plus
+#                    the skill's own work; `/verify-pr` cannot mark it
+#                    fresh while either child is stale. The PreToolUse
+#                    hook in .claude/hooks/verify-pr-gate.sh blocks
 #                    `gh pr create` and `gh pr merge` (incl. --auto)
 #                    when this gate is stale.
 #   integ-destroy  — real-AWS deploy + destroy with zero orphan
 #                    resources. Set ONLY by /run-integ when the destroy
 #                    step finishes with 0 errors and the post-destroy
-#                    AWS state is empty. The PreToolUse hook in
+#                    AWS state is empty. Carries a 14d TTL on top of
+#                    the file-scope check, so a marker stays valid only
+#                    as long as the AWS-side behavior it verified is
+#                    plausibly current. The PreToolUse hook in
 #                    .claude/hooks/integ-destroy-gate.sh blocks
 #                    `gh pr merge` (and `gh pr merge --auto`) when this
 #                    gate is stale, so deletion-touching code never
@@ -54,26 +60,30 @@ gates:
       - "CLAUDE.md"
 
   verify-pr:
-    hash: files
-    # Scope: anything that could plausibly invalidate the live-test /
-    # shared-utility / docs / scope-match / retrospective checks
-    # walked by /verify-pr. Union of `check` + `docs` plus any other
-    # source the skill inspects. If any of these change after
-    # /verify-pr is set, the marker goes stale and the
-    # `gh pr create` / `gh pr merge` gate refuses until /verify-pr is
-    # re-run end-to-end.
-    include:
-      - "src/**"
-      - "tests/**"
-      - "docs/**"
-      - "README.md"
-      - "CLAUDE.md"
-      - "package.json"
-      - "pnpm-lock.yaml"
-      - "tsconfig*.json"
+    # `requires` (markgate 0.3+) declares verify-pr's freshness as the
+    # AND of `check` and `docs` instead of duplicating their include
+    # globs. The pre-0.3 layout listed src/** + tests/** + docs/** etc.
+    # explicitly here, drifting from check/docs over time. Now: edit
+    # any check-scope file -> check stale -> verify-pr stale (and same
+    # for docs). Set-time enforcement is also strict — `/verify-pr`
+    # cannot mark this gate fresh while either child is stale, which
+    # mirrors the skill's actual workflow (it runs /check + /check-docs
+    # first). No own `include:` — freshness is purely the AND of
+    # children, avoiding the git-tree default.
+    requires: [check, docs]
 
   integ-destroy:
     hash: files
+    # Wall-clock TTL on top of the file-scope check (markgate 0.3+).
+    # Real-AWS behavior drifts even when the repo doesn't (AWS SDK
+    # updates, API behavior changes, eventual-consistency tweaks); a
+    # marker that's been clean for two weeks no longer proves the
+    # destroy path actually works against today's AWS. `/run-integ`
+    # resets the countdown on every successful set. 14d picked over
+    # 7d (too aggressive — would force /run-integ on most PRs touching
+    # destroy logic) and 30d (too lax — AWS SDK minors land roughly
+    # weekly).
+    ttl: 14d
     # Scope: every code path that participates in real-AWS resource
     # destruction. Editing any of these REQUIRES a fresh `/run-integ`
     # destroy verification before the PR can be merged. The list is
