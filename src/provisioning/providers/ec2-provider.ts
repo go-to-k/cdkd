@@ -946,8 +946,10 @@ export class EC2Provider implements ResourceProvider {
     this.logger.debug(`Deleting InternetGateway ${logicalId}: ${physicalId}`);
 
     try {
-      await this.ec2Client.send(
-        new DeleteInternetGatewayCommand({ InternetGatewayId: physicalId })
+      await this.withDependencyViolationRetry(
+        () =>
+          this.ec2Client.send(new DeleteInternetGatewayCommand({ InternetGatewayId: physicalId })),
+        { description: `DeleteInternetGateway ${logicalId} (${physicalId})` }
       );
       this.logger.debug(`Successfully deleted InternetGateway ${logicalId}`);
     } catch (error) {
@@ -1056,11 +1058,15 @@ export class EC2Provider implements ResourceProvider {
     const [internetGatewayId, vpcId] = parts;
 
     try {
-      await this.ec2Client.send(
-        new DetachInternetGatewayCommand({
-          InternetGatewayId: internetGatewayId,
-          VpcId: vpcId,
-        })
+      await this.withDependencyViolationRetry(
+        () =>
+          this.ec2Client.send(
+            new DetachInternetGatewayCommand({
+              InternetGatewayId: internetGatewayId,
+              VpcId: vpcId,
+            })
+          ),
+        { description: `DetachInternetGateway ${logicalId} (${internetGatewayId} from ${vpcId})` }
       );
       this.logger.debug(`Successfully deleted VPCGatewayAttachment ${logicalId}`);
     } catch (error) {
@@ -2906,6 +2912,113 @@ export class EC2Provider implements ResourceProvider {
         );
       }
     }
+  }
+
+  /**
+   * Retry an operation that AWS may reject with `DependencyViolation`
+   * for an extended window — specifically `DeleteInternetGateway` and
+   * `DetachInternetGateway` after a sibling EC2 Instance with an
+   * auto-assigned public IP was terminated. AWS releases the public-IP
+   * → IGW mapping asynchronously (5–10 min lag observed in practice);
+   * during that window AWS rejects IGW-detach / -delete with
+   * `DependencyViolation: Network has some mapped public address(es).
+   * Please unmap those public address(es) before detaching the gateway.`
+   * (or similar `has dependencies and cannot be deleted`).
+   *
+   * cdkd's deploy-engine `withRetry` wrapper caps at ~1 min total
+   * (1s/2s/4s/8s × 10 attempts capped at 8s), and the destroy-runner's
+   * inner 3-attempt loop adds ~35s on top — neither is enough for
+   * AWS's 5–10 min release window. This helper extends the budget to
+   * 10 min for the IGW-specific case so `cdkd destroy
+   * --remove-protection` is self-healing on the public-IP release lag
+   * without operator intervention.
+   *
+   * Modeled on the Lambda hyperplane ENI cleanup pattern (~30 min
+   * budget) and the EC2 Subnet/SG side-channel ENI retry — both wait
+   * on AWS-side eventual-consistency that the standard `withRetry`
+   * budget cannot cover.
+   *
+   * Only `DependencyViolation` errors are retried; other errors
+   * (NotFound, AccessDenied, throttle, etc.) propagate immediately so
+   * the caller's existing error handling is unchanged.
+   *
+   * Note on retry layering: `DependencyViolation` is also in
+   * `RETRYABLE_ERROR_MESSAGE_PATTERNS` (consumed by `withRetry`) and
+   * the destroy-runner's inner 3-attempt loop also matches it. After
+   * this helper's budget exhausts and re-throws, those outer retry
+   * loops will see the error and try a few more times — adding at
+   * most ~1 min on top of the 10 min budget, still bounded by the
+   * per-resource `--resource-timeout` deadline (default 30 min).
+   * That extra is harmless (worst case slightly later failure surface)
+   * and avoids threading a per-error-class "already exhausted" flag
+   * through every retry layer.
+   */
+  private async withDependencyViolationRetry<T>(
+    operation: () => Promise<T>,
+    opts: { description: string; totalBudgetMs?: number }
+  ): Promise<T> {
+    const totalBudgetMs = opts.totalBudgetMs ?? 600_000; // 10 min default
+    const initialDelayMs = 5_000;
+    const maxDelayMs = 60_000;
+    const startedAt = Date.now();
+
+    let attempt = 0;
+    let delay = initialDelayMs;
+    // Loop forever — exit conditions are (a) operation succeeds (return),
+    // (b) operation throws non-DependencyViolation (re-throw immediately),
+    // (c) elapsed >= budget AND operation still throws DependencyViolation
+    // (re-throw the last DependencyViolation error).
+    // eslint-disable-next-line no-constant-condition
+    while (true) {
+      try {
+        return await operation();
+      } catch (error) {
+        if (!this.isDependencyViolationError(error)) {
+          throw error;
+        }
+        const elapsed = Date.now() - startedAt;
+        if (elapsed >= totalBudgetMs) {
+          throw error;
+        }
+        attempt += 1;
+        const sleepMs = Math.min(delay, totalBudgetMs - elapsed);
+        const message = error instanceof Error ? error.message : String(error);
+        this.logger.debug(
+          `${opts.description}: dependency still mapped (attempt ${attempt}, retrying in ${sleepMs}ms): ${message}`
+        );
+        await this.sleep(sleepMs);
+        delay = Math.min(delay * 2, maxDelayMs);
+      }
+    }
+  }
+
+  /**
+   * Match an AWS `DependencyViolation` error by error code or message.
+   * AWS surfaces this as `Code: 'DependencyViolation'` in the parsed SDK
+   * error, with a human message like `The internetGateway 'igw-xxx' has
+   * dependencies and cannot be deleted.` or `Network has some mapped
+   * public address(es). Please unmap those public address(es)`.
+   */
+  private isDependencyViolationError(error: unknown): boolean {
+    if (!(error instanceof Error)) return false;
+    const code = (error as { Code?: string; name?: string }).Code ?? '';
+    const name = (error as { name?: string }).name ?? '';
+    if (code === 'DependencyViolation' || name === 'DependencyViolation') return true;
+    const message = error.message ?? '';
+    return (
+      message.includes('DependencyViolation') ||
+      message.includes('has dependencies and cannot be deleted') ||
+      message.includes('Network has some mapped public address')
+    );
+  }
+
+  /**
+   * Indirect sleep so unit tests can swap in a fake-timer-aware
+   * implementation via `vi.useFakeTimers()` without monkey-patching
+   * `setTimeout` globally.
+   */
+  private sleep(ms: number): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, ms));
   }
 
   /**
