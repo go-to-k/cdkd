@@ -1,3 +1,10 @@
+# [0.62.0](https://github.com/go-to-k/cdkd/compare/v0.61.0...v0.62.0) (2026-05-09)
+
+
+### Features
+
+* **s3:** cover 12 sub-configs in readCurrentState + update ([#215](https://github.com/go-to-k/cdkd/issues/215)) ([18e225f](https://github.com/go-to-k/cdkd/commit/18e225fe1c4797d5459542352781f59564801fb4))
+
 # [0.61.0](https://github.com/go-to-k/cdkd/compare/v0.60.2...v0.61.0) (2026-05-09)
 
 
