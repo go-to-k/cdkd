@@ -1,4 +1,9 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import {
+  GetOperationCommand,
+  UpdatePrivateDnsNamespaceCommand,
+  UpdateServiceCommand,
+} from '@aws-sdk/client-servicediscovery';
 
 const mockSend = vi.fn();
 
@@ -35,7 +40,22 @@ vi.mock('../../../src/utils/logger.js', () => {
 });
 
 import { ServiceDiscoveryProvider } from '../../../src/provisioning/providers/servicediscovery-provider.js';
-import { ResourceUpdateNotSupportedError } from '../../../src/utils/error-handler.js';
+
+/**
+ * `pollOperation` calls `GetOperation` until SUCCESS. Set up the mock
+ * to return the operation handle for the Update* call, then a SUCCESS
+ * GetOperation response on the very next send().
+ */
+function mockUpdateAndOperationSuccess(targetKey: 'NAMESPACE' | 'SERVICE') {
+  mockSend
+    .mockResolvedValueOnce({ OperationId: 'op-1' })
+    .mockResolvedValueOnce({
+      Operation: {
+        Status: 'SUCCESS',
+        Targets: { [targetKey]: targetKey === 'NAMESPACE' ? 'ns-1' : 'srv-1' },
+      },
+    });
+}
 
 describe('ServiceDiscoveryProvider read-update round-trip', () => {
   let provider: ServiceDiscoveryProvider;
@@ -45,122 +65,179 @@ describe('ServiceDiscoveryProvider read-update round-trip', () => {
     provider = new ServiceDiscoveryProvider();
   });
 
-  // ─── Class 1 / Class 2 / truthy-gate immunity ────────────────────
-  // Both PrivateDnsNamespace.update and Service.update reject with
-  // ResourceUpdateNotSupportedError. That uniformly precludes all
-  // three failure modes:
-  //   - Class 1 (discriminator-dependent placeholder pushed back)
-  //   - Class 2 (structurally-incomplete empty placeholder pushed back)
-  //   - Truthy-gate dropping `''` / `false` / `0`
-  // The round-trip surface here is the rejection, not the wire layer.
+  // ─── AWS::ServiceDiscovery::PrivateDnsNamespace ──────────────────
 
-  describe('Class 1: discriminator-dependent fields cannot leak via update()', () => {
-    it('PrivateDnsNamespace update rejects with ResourceUpdateNotSupportedError', async () => {
-      // Even if a future readCurrentState emitted Class 1 placeholders
-      // (e.g. SOA.TTL only valid on certain DNS types), update() never
-      // touches AWS — the rejection happens before any SDK call.
-      const observed = {
-        Name: 'mynamespace.local',
-        Description: '',
-        Tags: [] as Array<{ Key: string; Value: string }>,
+  it('PrivateDnsNamespace — Description-only diff sends Namespace.Description via UpdatePrivateDnsNamespace', async () => {
+    mockUpdateAndOperationSuccess('NAMESPACE');
+
+    const observed = {
+      Name: 'mynamespace.local',
+      Description: 'updated description',
+    };
+
+    const result = await provider.update(
+      'L',
+      'ns-1',
+      'AWS::ServiceDiscovery::PrivateDnsNamespace',
+      observed,
+      observed
+    );
+    expect(result).toEqual({ physicalId: 'ns-1', wasReplaced: false });
+
+    const call = mockSend.mock.calls.find(
+      (c) => c[0] instanceof UpdatePrivateDnsNamespaceCommand
+    );
+    expect(call).toBeDefined();
+    const input = call![0].input as {
+      Id: string;
+      Namespace: { Description?: string; Properties?: unknown };
+    };
+    expect(input.Id).toBe('ns-1');
+    expect(input.Namespace.Description).toBe('updated description');
+    // SOA.TTL not set in the snapshot — Properties must NOT appear.
+    expect(input.Namespace.Properties).toBeUndefined();
+
+    // pollOperation fired GetOperation once after UpdatePrivateDnsNamespace.
+    expect(mockSend.mock.calls.some((c) => c[0] instanceof GetOperationCommand)).toBe(true);
+  });
+
+  it('PrivateDnsNamespace — empty-string Description reaches AWS (truthy-gate guard)', async () => {
+    // `cdkd drift --revert` must clear a console-added Description.
+    // An `!== undefined` gate (NOT truthy) is required — an empty
+    // string MUST land in the request body.
+    mockUpdateAndOperationSuccess('NAMESPACE');
+
+    const observed = {
+      Name: 'mynamespace.local',
+      Description: '',
+    };
+
+    await provider.update(
+      'L',
+      'ns-1',
+      'AWS::ServiceDiscovery::PrivateDnsNamespace',
+      observed,
+      observed
+    );
+
+    const call = mockSend.mock.calls.find(
+      (c) => c[0] instanceof UpdatePrivateDnsNamespaceCommand
+    );
+    const input = call![0].input as { Namespace: { Description?: string } };
+    expect(input.Namespace.Description).toBe('');
+  });
+
+  it('PrivateDnsNamespace — SOA.TTL update sends Properties.DnsProperties.SOA.TTL', async () => {
+    mockUpdateAndOperationSuccess('NAMESPACE');
+
+    const observed = {
+      Name: 'mynamespace.local',
+      Description: '',
+      Properties: {
+        DnsProperties: {
+          SOA: { TTL: 600 },
+        },
+      },
+    };
+
+    await provider.update(
+      'L',
+      'ns-1',
+      'AWS::ServiceDiscovery::PrivateDnsNamespace',
+      observed,
+      observed
+    );
+
+    const call = mockSend.mock.calls.find(
+      (c) => c[0] instanceof UpdatePrivateDnsNamespaceCommand
+    );
+    const input = call![0].input as {
+      Namespace: { Properties?: { DnsProperties?: { SOA?: { TTL?: number } } } };
+    };
+    expect(input.Namespace.Properties?.DnsProperties?.SOA?.TTL).toBe(600);
+  });
+
+  // ─── AWS::ServiceDiscovery::Service ───────────────────────────────
+
+  it('Service — Description + DnsConfig.DnsRecords TTL change sends ServiceChange via UpdateService', async () => {
+    mockUpdateAndOperationSuccess('SERVICE');
+
+    const observed = {
+      Name: 'mysvc',
+      NamespaceId: 'ns-1',
+      Description: 'updated svc desc',
+      DnsConfig: {
+        DnsRecords: [{ Type: 'A', TTL: 30 }],
+        // RoutingPolicy is not part of UpdateService's DnsConfigChange shape
+        // and must NOT appear in the request — verified below.
+        RoutingPolicy: 'MULTIVALUE',
+      },
+      HealthCheckConfig: { Type: 'HTTP', ResourcePath: '/healthz', FailureThreshold: 3 },
+    };
+
+    const result = await provider.update(
+      'L',
+      'srv-1',
+      'AWS::ServiceDiscovery::Service',
+      observed,
+      observed
+    );
+    expect(result).toEqual({ physicalId: 'srv-1', wasReplaced: false });
+
+    const call = mockSend.mock.calls.find((c) => c[0] instanceof UpdateServiceCommand);
+    expect(call).toBeDefined();
+    const input = call![0].input as {
+      Id: string;
+      Service: {
+        Description?: string;
+        DnsConfig?: { DnsRecords?: unknown; RoutingPolicy?: string };
+        HealthCheckConfig?: unknown;
       };
-
-      await expect(
-        provider.update(
-          'L',
-          'ns-1',
-          'AWS::ServiceDiscovery::PrivateDnsNamespace',
-          observed,
-          observed
-        )
-      ).rejects.toThrow(ResourceUpdateNotSupportedError);
-
-      // No AWS calls were made (the rejection is synchronous).
-      expect(mockSend).not.toHaveBeenCalled();
-    });
-
-    it('Service update rejects with ResourceUpdateNotSupportedError on TCP-typed service', async () => {
-      // HealthCheckConfig.ResourcePath is HTTP/HTTPS-only (Class 1
-      // candidate). Service is created with Type=TCP and no
-      // ResourcePath — round-tripping must not somehow push
-      // ResourcePath: '' to AWS and trigger "ResourcePath is only
-      // valid when Type is HTTP/HTTPS". The rejection guarantees this.
-      const observed = {
-        Name: 'mysvc',
-        NamespaceId: 'ns-1',
-        Description: '',
-        Type: 'DNS',
-        DnsConfig: { DnsRecords: [{ Type: 'A', TTL: 60 }] },
-        HealthCheckConfig: { Type: 'TCP', FailureThreshold: 3 },
-        Tags: [] as Array<{ Key: string; Value: string }>,
-      };
-
-      await expect(
-        provider.update('L', 'srv-1', 'AWS::ServiceDiscovery::Service', observed, observed)
-      ).rejects.toThrow(ResourceUpdateNotSupportedError);
-
-      expect(mockSend).not.toHaveBeenCalled();
+    };
+    expect(input.Id).toBe('srv-1');
+    expect(input.Service.Description).toBe('updated svc desc');
+    expect(input.Service.DnsConfig?.DnsRecords).toEqual([{ Type: 'A', TTL: 30 }]);
+    // RoutingPolicy is NOT in DnsConfigChange — must be stripped.
+    expect(input.Service.DnsConfig?.RoutingPolicy).toBeUndefined();
+    expect(input.Service.HealthCheckConfig).toEqual({
+      Type: 'HTTP',
+      ResourcePath: '/healthz',
+      FailureThreshold: 3,
     });
   });
 
-  describe('Class 2: structurally-incomplete placeholders cannot reach AWS', () => {
-    it('Service update rejects rather than shipping {} / [] placeholders', async () => {
-      // If a hypothetical update() were implemented naively it could
-      // round-trip empty-object placeholders (e.g. an empty
-      // HealthCheckCustomConfig: {}) which AWS rejects as missing
-      // mandatory fields. The hard-rejection in update() is the
-      // structural guard.
-      const observed = {
-        Name: 'mysvc',
-        NamespaceId: 'ns-1',
-        Description: '',
-        DnsConfig: {},
-        HealthCheckConfig: {},
-        HealthCheckCustomConfig: {},
-        Tags: [] as Array<{ Key: string; Value: string }>,
-      };
+  it('Service — empty-string Description reaches AWS (truthy-gate guard)', async () => {
+    mockUpdateAndOperationSuccess('SERVICE');
 
-      await expect(
-        provider.update('L', 'srv-1', 'AWS::ServiceDiscovery::Service', observed, observed)
-      ).rejects.toThrow(ResourceUpdateNotSupportedError);
-    });
+    const observed = {
+      Name: 'mysvc',
+      Description: '',
+    };
+
+    await provider.update('L', 'srv-1', 'AWS::ServiceDiscovery::Service', observed, observed);
+
+    const call = mockSend.mock.calls.find((c) => c[0] instanceof UpdateServiceCommand);
+    const input = call![0].input as { Service: { Description?: string } };
+    expect(input.Service.Description).toBe('');
   });
 
-  describe('Truthy-gate immunity: empty-string Description cannot be silently dropped', () => {
-    it('PrivateDnsNamespace update rejects rather than silently no-op a Description: "" revert', async () => {
-      // If a future update() forgot the `!== undefined` gate, an
-      // empty-string Description revert would silently no-op and
-      // `cdkd drift --revert` would falsely report success. The
-      // rejection makes the silent-no-op state physically unreachable.
-      const observed = {
-        Name: 'mynamespace.local',
-        Description: '',
-        Tags: [] as Array<{ Key: string; Value: string }>,
-      };
+  it('Service — when only DnsConfig is supplied, HealthCheckConfig is NOT echoed (would delete the config per AWS docs)', async () => {
+    mockUpdateAndOperationSuccess('SERVICE');
 
-      const error = await provider
-        .update(
-          'L',
-          'ns-1',
-          'AWS::ServiceDiscovery::PrivateDnsNamespace',
-          observed,
-          observed
-        )
-        .catch((e) => e);
+    const observed = {
+      Name: 'mysvc',
+      DnsConfig: { DnsRecords: [{ Type: 'A', TTL: 60 }] },
+    };
 
-      expect(error).toBeInstanceOf(ResourceUpdateNotSupportedError);
-      // The rejection message points the user to deploy --replace /
-      // destroy + redeploy — not a misleading "succeeded".
-      expect((error as Error).message).toMatch(/cdkd deploy --replace|destroy \+ redeploy/i);
-    });
+    await provider.update('L', 'srv-1', 'AWS::ServiceDiscovery::Service', observed, observed);
+
+    const call = mockSend.mock.calls.find((c) => c[0] instanceof UpdateServiceCommand);
+    const input = call![0].input as { Service: Record<string, unknown> };
+    expect(input.Service.HealthCheckConfig).toBeUndefined();
   });
 
   describe('getDriftUnknownPaths', () => {
     it('declares Vpc as unreadable for PrivateDnsNamespace (GetNamespace does not return it)', () => {
-      // Without this declaration the drift comparator would walk
-      // state.Vpc (which cdkd stores from the template) against
-      // observed.Vpc (which readCurrentState deliberately omits) and
-      // report guaranteed false-positive drift on every clean run.
       expect(
         provider.getDriftUnknownPaths('AWS::ServiceDiscovery::PrivateDnsNamespace')
       ).toEqual(['Vpc']);

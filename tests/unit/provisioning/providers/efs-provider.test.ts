@@ -282,21 +282,32 @@ describe('EFSProvider', () => {
   // ─── update ─────────────────────────────────────────────────────────
 
   describe('update', () => {
-    it('should reject FileSystem with ResourceUpdateNotSupportedError', async () => {
-      await expect(
-        provider.update('MyFS', 'fs-123', 'AWS::EFS::FileSystem', {}, {})
-      ).rejects.toThrow(ResourceUpdateNotSupportedError);
+    it('FileSystem with no mutable diff is a silent no-op', async () => {
+      const observed = { ThroughputMode: 'bursting', Encrypted: false };
+      const result = await provider.update(
+        'MyFS',
+        'fs-123',
+        'AWS::EFS::FileSystem',
+        observed,
+        observed
+      );
+      expect(result).toEqual({ physicalId: 'fs-123', wasReplaced: false });
       expect(mockSend).not.toHaveBeenCalled();
     });
 
-    it('should reject MountTarget with ResourceUpdateNotSupportedError', async () => {
-      await expect(
-        provider.update('MyMT', 'fsmt-123', 'AWS::EFS::MountTarget', {}, {})
-      ).rejects.toThrow(ResourceUpdateNotSupportedError);
+    it('MountTarget with no SecurityGroups in properties is a silent no-op', async () => {
+      const result = await provider.update(
+        'MyMT',
+        'fsmt-123',
+        'AWS::EFS::MountTarget',
+        { FileSystemId: 'fs-1' },
+        { FileSystemId: 'fs-1' }
+      );
+      expect(result).toEqual({ physicalId: 'fsmt-123', wasReplaced: false });
       expect(mockSend).not.toHaveBeenCalled();
     });
 
-    it('should reject AccessPoint with ResourceUpdateNotSupportedError', async () => {
+    it('AccessPoint always rejects with ResourceUpdateNotSupportedError (no mutable surface)', async () => {
       await expect(
         provider.update('MyAP', 'fsap-123', 'AWS::EFS::AccessPoint', {}, {})
       ).rejects.toThrow(ResourceUpdateNotSupportedError);

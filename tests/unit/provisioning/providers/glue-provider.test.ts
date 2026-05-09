@@ -41,8 +41,8 @@ vi.mock('../../../../src/utils/logger.js', () => {
   };
 });
 
+import { UpdateDatabaseCommand } from '@aws-sdk/client-glue';
 import { GlueProvider } from '../../../../src/provisioning/providers/glue-provider.js';
-import { ResourceUpdateNotSupportedError } from '../../../../src/utils/error-handler.js';
 
 describe('GlueProvider import', () => {
   let provider: GlueProvider;
@@ -133,10 +133,23 @@ describe('GlueProvider update', () => {
     provider = new GlueProvider();
   });
 
-  it('rejects Database update with ResourceUpdateNotSupportedError', async () => {
-    await expect(
-      provider.update('MyDb', 'mydb', 'AWS::Glue::Database', {}, {})
-    ).rejects.toThrow(ResourceUpdateNotSupportedError);
-    expect(mockGlueSend).not.toHaveBeenCalled();
+  it('updates Database via UpdateDatabaseCommand with full DatabaseInput', async () => {
+    mockGlueSend.mockResolvedValueOnce({});
+
+    const properties = {
+      DatabaseInput: {
+        Name: 'mydb',
+        Description: 'updated',
+        Parameters: { foo: 'bar' },
+      },
+    };
+
+    await provider.update('MyDb', 'mydb', 'AWS::Glue::Database', properties, properties);
+
+    const call = mockGlueSend.mock.calls.find((c) => c[0] instanceof UpdateDatabaseCommand);
+    expect(call).toBeDefined();
+    const input = call![0].input as { Name: string; DatabaseInput: { Description?: string } };
+    expect(input.Name).toBe('mydb');
+    expect(input.DatabaseInput.Description).toBe('updated');
   });
 });

@@ -1,8 +1,10 @@
 import {
   ServiceDiscoveryClient,
   CreatePrivateDnsNamespaceCommand,
+  UpdatePrivateDnsNamespaceCommand,
   DeleteNamespaceCommand,
   CreateServiceCommand,
+  UpdateServiceCommand,
   DeleteServiceCommand,
   GetNamespaceCommand,
   GetOperationCommand,
@@ -13,14 +15,17 @@ import {
   NamespaceNotFound,
   ServiceNotFound,
   type DnsConfig,
+  type DnsConfigChange,
   type HealthCheckCustomConfig,
   type HealthCheckConfig,
+  type PrivateDnsNamespaceChange,
+  type ServiceChange,
   type Tag,
   type ServiceTypeOption,
 } from '@aws-sdk/client-servicediscovery';
 import { STSClient, GetCallerIdentityCommand } from '@aws-sdk/client-sts';
 import { getLogger } from '../../utils/logger.js';
-import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/error-handler.js';
+import { ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { matchesCdkPath, normalizeAwsTagsToCfn } from '../import-helpers.js';
 import type {
@@ -106,14 +111,20 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
     logicalId: string,
     physicalId: string,
     resourceType: string,
-    _properties: Record<string, unknown>,
-    _previousProperties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    previousProperties: Record<string, unknown>
   ): Promise<ResourceUpdateResult> {
     switch (resourceType) {
       case 'AWS::ServiceDiscovery::PrivateDnsNamespace':
-        return this.updateNamespace(logicalId, physicalId);
+        return this.updateNamespace(logicalId, physicalId, resourceType, properties);
       case 'AWS::ServiceDiscovery::Service':
-        return this.updateService(logicalId, physicalId);
+        return this.updateService(
+          logicalId,
+          physicalId,
+          resourceType,
+          properties,
+          previousProperties
+        );
       default:
         throw new ProvisioningError(
           `Unsupported resource type: ${resourceType}`,
@@ -219,18 +230,78 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
     }
   }
 
-  private updateNamespace(logicalId: string, _physicalId: string): Promise<ResourceUpdateResult> {
-    // Name and Vpc are immutable; AWS exposes UpdatePrivateDnsNamespace for
-    // Description but cdkd does not yet plumb it through. `cdkd drift
-    // --revert` surfaces a clear immutable-error rather than silently
-    // no-op'ing the revert.
-    return Promise.reject(
-      new ResourceUpdateNotSupportedError(
-        'AWS::ServiceDiscovery::PrivateDnsNamespace',
+  /**
+   * Update a private DNS namespace.
+   *
+   * AWS exposes `UpdatePrivateDnsNamespace` for two mutable surfaces:
+   *  - `Description`
+   *  - `Properties.DnsProperties.SOA.TTL`
+   *
+   * `Name` and `Vpc` are immutable; the deploy engine's
+   * replacement-detection layer routes those through DELETE+CREATE
+   * before this method is ever called, so we do not validate them here.
+   *
+   * Empty-string Description is intentionally allowed through (`!== undefined`
+   * gate, not truthy) so `cdkd drift --revert` can clear a console-side ADD.
+   */
+  private async updateNamespace(
+    logicalId: string,
+    physicalId: string,
+    resourceType: string,
+    properties: Record<string, unknown>
+  ): Promise<ResourceUpdateResult> {
+    this.logger.debug(`Updating private DNS namespace ${logicalId}: ${physicalId}`);
+    const client = this.getClient();
+
+    const namespaceChange: PrivateDnsNamespaceChange = {};
+
+    if (properties['Description'] !== undefined) {
+      namespaceChange.Description = properties['Description'] as string;
+    }
+
+    const propsBag = properties['Properties'] as Record<string, unknown> | undefined;
+    const dnsProps = propsBag?.['DnsProperties'] as Record<string, unknown> | undefined;
+    const soa = dnsProps?.['SOA'] as { TTL?: number } | undefined;
+    if (soa?.TTL !== undefined) {
+      namespaceChange.Properties = {
+        DnsProperties: {
+          SOA: { TTL: Number(soa.TTL) },
+        },
+      };
+    }
+
+    if (Object.keys(namespaceChange).length === 0) {
+      this.logger.debug(`No mutable diff for PrivateDnsNamespace ${logicalId}, skipping update`);
+      return { physicalId, wasReplaced: false };
+    }
+
+    try {
+      const response = await client.send(
+        new UpdatePrivateDnsNamespaceCommand({
+          Id: physicalId,
+          Namespace: namespaceChange,
+        })
+      );
+
+      const operationId = response.OperationId;
+      if (operationId) {
+        await this.pollOperation(operationId, logicalId, resourceType);
+      }
+
+      this.logger.debug(`Successfully updated private DNS namespace ${logicalId}`);
+
+      return { physicalId, wasReplaced: false };
+    } catch (error) {
+      if (error instanceof ProvisioningError) throw error;
+      const cause = error instanceof Error ? error : undefined;
+      throw new ProvisioningError(
+        `Failed to update private DNS namespace ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        resourceType,
         logicalId,
-        'PrivateDnsNamespace updates are not yet implemented in cdkd; re-deploy with cdkd deploy --replace, or destroy + redeploy the stack'
-      )
-    );
+        physicalId,
+        cause
+      );
+    }
   }
 
   private async deleteNamespace(
@@ -349,17 +420,83 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
     }
   }
 
-  private updateService(logicalId: string, _physicalId: string): Promise<ResourceUpdateResult> {
-    // AWS exposes UpdateService for DnsConfig / HealthCheckConfig changes
-    // but cdkd does not yet plumb it through. `cdkd drift --revert`
-    // surfaces a clear immutable-error rather than silently no-op'ing.
-    return Promise.reject(
-      new ResourceUpdateNotSupportedError(
-        'AWS::ServiceDiscovery::Service',
+  /**
+   * Update a service discovery service.
+   *
+   * Per AWS docs, `UpdateService` accepts a `ServiceChange` body with
+   * `Description`, `DnsConfig.DnsRecords` (TTLs etc. — `NamespaceId` /
+   * `RoutingPolicy` are not part of the change shape and are immutable
+   * here), and `HealthCheckConfig`. `Name` / `NamespaceId` /
+   * `HealthCheckCustomConfig` are immutable on UpdateService — the
+   * replacement-detection layer routes those through DELETE+CREATE.
+   *
+   * Per AWS docs, omitting `DnsRecords` / `HealthCheckConfig` from the
+   * request DELETES that configuration. To preserve fields cdkd is not
+   * actively reverting, we always echo the AWS-current value when the
+   * caller did not supply a change. `cdkd drift --revert` passes the
+   * full AWS-current snapshot as `properties`, so the round-trip is
+   * value-preserving.
+   */
+  private async updateService(
+    logicalId: string,
+    physicalId: string,
+    resourceType: string,
+    properties: Record<string, unknown>,
+    _previousProperties: Record<string, unknown>
+  ): Promise<ResourceUpdateResult> {
+    this.logger.debug(`Updating service discovery service ${logicalId}: ${physicalId}`);
+    const client = this.getClient();
+
+    const serviceChange: ServiceChange = {};
+
+    if (properties['Description'] !== undefined) {
+      serviceChange.Description = properties['Description'] as string;
+    }
+
+    const dnsConfig = properties['DnsConfig'] as DnsConfig | undefined;
+    if (dnsConfig?.DnsRecords !== undefined) {
+      const change: DnsConfigChange = { DnsRecords: dnsConfig.DnsRecords };
+      serviceChange.DnsConfig = change;
+    }
+
+    if (properties['HealthCheckConfig'] !== undefined) {
+      serviceChange.HealthCheckConfig = properties['HealthCheckConfig'] as HealthCheckConfig;
+    }
+
+    if (Object.keys(serviceChange).length === 0) {
+      this.logger.debug(
+        `No mutable diff for ServiceDiscovery Service ${logicalId}, skipping update`
+      );
+      return { physicalId, wasReplaced: false };
+    }
+
+    try {
+      const response = await client.send(
+        new UpdateServiceCommand({
+          Id: physicalId,
+          Service: serviceChange,
+        })
+      );
+
+      const operationId = response.OperationId;
+      if (operationId) {
+        await this.pollOperation(operationId, logicalId, resourceType);
+      }
+
+      this.logger.debug(`Successfully updated service discovery service ${logicalId}`);
+
+      return { physicalId, wasReplaced: false };
+    } catch (error) {
+      if (error instanceof ProvisioningError) throw error;
+      const cause = error instanceof Error ? error : undefined;
+      throw new ProvisioningError(
+        `Failed to update service discovery service ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        resourceType,
         logicalId,
-        'ServiceDiscovery Service updates are not yet implemented in cdkd; re-deploy with cdkd deploy --replace, or destroy + redeploy the stack'
-      )
-    );
+        physicalId,
+        cause
+      );
+    }
   }
 
   private async deleteService(
