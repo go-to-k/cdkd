@@ -828,6 +828,7 @@ async function stateDestroyCommand(
   options: {
     all?: boolean;
     yes: boolean;
+    removeProtection?: boolean;
     stateBucket?: string;
     statePrefix: string;
     region?: string;
@@ -971,6 +972,7 @@ async function stateDestroyCommand(
           // skipped when `options.yes` is set OR `--all` was set (the user
           // already accepted the batch prompt).
           skipConfirmation: options.yes || options.all === true,
+          removeProtection: options.removeProtection === true,
           ...(options.resourceWarnAfter?.globalMs !== undefined && {
             resourceWarnAfterMs: options.resourceWarnAfter.globalMs,
           }),
@@ -1013,6 +1015,14 @@ function createStateDestroyCommand(): Command {
     )
     .argument('[stacks...]', 'Stack name(s) to destroy (physical CloudFormation names)')
     .option('--all', 'Destroy every stack in the state bucket', false)
+    .option(
+      '--remove-protection',
+      'Bypass deletion protection on protected resources by flipping the per-resource ' +
+        'protection flag off in-place before delete. Covers AWS::Logs::LogGroup, ' +
+        'AWS::RDS::DBInstance, AWS::RDS::DBCluster, AWS::DynamoDB::Table, AWS::EC2::Instance, ' +
+        'and AWS::ElasticLoadBalancingV2::LoadBalancer.',
+      false
+    )
     .addOption(stackRegionOption())
     .addHelpText(
       'after',

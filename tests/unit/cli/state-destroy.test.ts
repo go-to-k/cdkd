@@ -197,6 +197,34 @@ describe('cdkd state destroy', () => {
     expect(callArgs?.[2].skipConfirmation).toBe(true);
   });
 
+  it('passes --remove-protection through to the runner', async () => {
+    mockListStacks.mockResolvedValue([{ stackName: 'MyStack', region: 'us-east-1' }]);
+    mockGetState.mockResolvedValue({
+      state: makeStackState('MyStack', 'us-east-1'),
+      etag: '"abc"',
+    });
+
+    await runStateDestroy(['destroy', 'MyStack', '--yes', '--remove-protection']);
+
+    expect(mockRunDestroyForStack).toHaveBeenCalledTimes(1);
+    const callArgs = mockRunDestroyForStack.mock.calls[0];
+    expect(callArgs?.[2].removeProtection).toBe(true);
+  });
+
+  it('omits removeProtection (defaults to false) when the flag is not set', async () => {
+    mockListStacks.mockResolvedValue([{ stackName: 'MyStack', region: 'us-east-1' }]);
+    mockGetState.mockResolvedValue({
+      state: makeStackState('MyStack', 'us-east-1'),
+      etag: '"abc"',
+    });
+
+    await runStateDestroy(['destroy', 'MyStack', '--yes']);
+
+    expect(mockRunDestroyForStack).toHaveBeenCalledTimes(1);
+    const callArgs = mockRunDestroyForStack.mock.calls[0];
+    expect(callArgs?.[2].removeProtection).toBe(false);
+  });
+
   it('--all prompts once for the batch and dispatches every stack', async () => {
     mockListStacks.mockResolvedValue([
       { stackName: 'B', region: 'us-east-1' },

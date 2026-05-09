@@ -7,6 +7,7 @@ import {
   ListTagsOfResourceCommand,
   TagResourceCommand,
   UntagResourceCommand,
+  UpdateTableCommand,
   ResourceNotFoundException,
   type CreateTableCommandInput,
   type KeySchemaElement,
@@ -274,6 +275,39 @@ export class DynamoDBTableProvider implements ResourceProvider {
   ): Promise<void> {
     this.logger.debug(`Deleting DynamoDB table ${logicalId}: ${physicalId}`);
 
+    // `--remove-protection`: flip DeletionProtectionEnabled off before
+    // delete. UpdateTable is async — wait for ACTIVE before issuing
+    // DeleteTable so the delete doesn't race the still-UPDATING table.
+    // Idempotent — DynamoDB accepts the call when protection is already
+    // disabled. Non-fatal: log at debug if the flip-off itself errors
+    // (NotFound / similar) so the delete still proceeds.
+    if (context?.removeProtection === true) {
+      try {
+        await this.dynamoDBClient.send(
+          new UpdateTableCommand({
+            TableName: physicalId,
+            DeletionProtectionEnabled: false,
+          })
+        );
+        this.logger.debug(
+          `Disabled DeletionProtectionEnabled on DynamoDB table ${logicalId}, waiting for ACTIVE`
+        );
+        try {
+          await this.waitForTableActiveAfterUpdate(physicalId);
+        } catch (waitErr) {
+          this.logger.debug(
+            `Could not wait for table ${physicalId} ACTIVE after disabling protection: ${waitErr instanceof Error ? waitErr.message : String(waitErr)}`
+          );
+        }
+      } catch (flipError) {
+        if (!(flipError instanceof ResourceNotFoundException)) {
+          this.logger.debug(
+            `Could not disable DeletionProtectionEnabled on ${physicalId}: ${flipError instanceof Error ? flipError.message : String(flipError)}`
+          );
+        }
+      }
+    }
+
     try {
       await this.dynamoDBClient.send(new DeleteTableCommand({ TableName: physicalId }));
       this.logger.debug(`Successfully deleted DynamoDB table ${logicalId}`);
@@ -386,6 +420,31 @@ export class DynamoDBTableProvider implements ResourceProvider {
     }
 
     throw new Error(`Table ${tableName} did not reach ACTIVE status within ${maxAttempts} seconds`);
+  }
+
+  /**
+   * Poll DescribeTable until the table reaches ACTIVE after an UpdateTable
+   * call. Distinct from `waitForTableActive` because `UpdateTable`
+   * transitions the table to `UPDATING` (not `CREATING`); a status
+   * mismatch should not throw — just keep polling — and the call may
+   * also return immediately ACTIVE on the no-op path (already disabled).
+   */
+  private async waitForTableActiveAfterUpdate(tableName: string, maxAttempts = 60): Promise<void> {
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      const response = await this.dynamoDBClient.send(
+        new DescribeTableCommand({ TableName: tableName })
+      );
+      const status = response.Table?.TableStatus;
+      if (status === 'ACTIVE') {
+        return;
+      }
+      // Sleep between polls; tolerate any non-terminal status (UPDATING,
+      // and defensively CREATING / others) — we just wait for ACTIVE.
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+    }
+    throw new Error(
+      `Table ${tableName} did not reach ACTIVE status within ${maxAttempts} seconds after UpdateTable`
+    );
   }
 
   /**

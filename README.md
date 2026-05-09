@@ -508,8 +508,41 @@ synth and is not stored in cdkd's state.json. Use `cdkd destroy`
 when synth is available, or accept that `state destroy` is the
 explicit "I know what I'm doing, ignore CDK guards" escape hatch.
 
-A future `--remove-protection` flag (separate scope) will provide
-an explicit one-shot bypass without editing CDK code.
+### `--remove-protection`: one-shot bypass for protected resources
+
+`cdkd destroy --remove-protection` and `cdkd state destroy
+--remove-protection` flip every protection flag off in-place
+before each provider's delete API call so the destroy proceeds
+without an intermediate edit / redeploy. The flag covers both
+stack-level `terminationProtection` (the bypass logs a WARN line
+naming the stack) and resource-level protection on the following
+types:
+
+| Resource type | Protection field |
+| --- | --- |
+| `AWS::Logs::LogGroup` | `DeletionProtectionEnabled` |
+| `AWS::RDS::DBInstance` | `DeletionProtection` |
+| `AWS::RDS::DBCluster` | `DeletionProtection` |
+| `AWS::DynamoDB::Table` | `DeletionProtectionEnabled` |
+| `AWS::EC2::Instance` | `DisableApiTermination` |
+| `AWS::ElasticLoadBalancingV2::LoadBalancer` | attribute `deletion_protection.enabled` |
+
+The flip-off call is idempotent — providers always issue it when
+the flag is set, regardless of whether the resource currently has
+protection on. This is per-PR-level: a single `--remove-protection`
+covers every protection-bearing type listed above; there is no
+per-type variant.
+
+The interactive confirmation prompt is updated when the flag is
+set: `About to destroy N resources from stack "X", REMOVING
+DELETION PROTECTION on K of them. Continue? (y/N)`. The default
+flips from `Y/n` to `y/N` so the destructive bypass requires an
+explicit `y` / `yes`. `--yes` / `-y` / `-f` skips the prompt.
+
+Other protected resource types (CloudFront Distributions, Lambda
+function reserved concurrency, S3 bucket retention, etc.) are
+out of scope — the flag list is curated to the cases where AWS
+exposes a synchronous "flip protection off" API call.
 
 `cdkd diff` (read-only) and `cdkd deploy` (forward-only) are
 unaffected — only destroy is gated.
