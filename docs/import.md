@@ -249,6 +249,12 @@ template's logical id, and adopts it. Works under `auto` (default) and
 - AWS::RDS::DBInstance
 - AWS::RDS::DBCluster
 - AWS::RDS::DBSubnetGroup
+- AWS::DocDB::DBInstance
+- AWS::DocDB::DBCluster
+- AWS::DocDB::DBSubnetGroup
+- AWS::Neptune::DBInstance
+- AWS::Neptune::DBCluster
+- AWS::Neptune::DBSubnetGroup
 - AWS::ECS::Cluster
 - AWS::ECS::Service
 - AWS::ECS::TaskDefinition

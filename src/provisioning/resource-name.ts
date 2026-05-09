@@ -176,6 +176,32 @@ const FALLBACK_NAME_RULES: Record<
     nameProperty: 'DBInstanceIdentifier',
     options: { maxLength: 63, lowercase: true },
   },
+  // DocumentDB — RDS-shaped API; same name constraints.
+  'AWS::DocDB::DBSubnetGroup': {
+    nameProperty: 'DBSubnetGroupName',
+    options: { maxLength: 255, lowercase: true },
+  },
+  'AWS::DocDB::DBCluster': {
+    nameProperty: 'DBClusterIdentifier',
+    options: { maxLength: 63, lowercase: true },
+  },
+  'AWS::DocDB::DBInstance': {
+    nameProperty: 'DBInstanceIdentifier',
+    options: { maxLength: 63, lowercase: true },
+  },
+  // Neptune — RDS-shaped API; same name constraints.
+  'AWS::Neptune::DBSubnetGroup': {
+    nameProperty: 'DBSubnetGroupName',
+    options: { maxLength: 255, lowercase: true },
+  },
+  'AWS::Neptune::DBCluster': {
+    nameProperty: 'DBClusterIdentifier',
+    options: { maxLength: 63, lowercase: true },
+  },
+  'AWS::Neptune::DBInstance': {
+    nameProperty: 'DBInstanceIdentifier',
+    options: { maxLength: 63, lowercase: true },
+  },
   'AWS::ElasticLoadBalancingV2::LoadBalancer': {
     nameProperty: 'Name',
     options: { maxLength: 32 },
