@@ -11,6 +11,7 @@ import {
   StartSchemaCreationCommand,
   GetGraphqlApiCommand,
   GetDataSourceCommand,
+  GetIntrospectionSchemaCommand,
   GetResolverCommand,
   ListApiKeysCommand,
   ListGraphqlApisCommand,
@@ -22,6 +23,7 @@ import {
   type CreateResolverCommandInput,
   type CreateApiKeyCommandInput,
 } from '@aws-sdk/client-appsync';
+import { parse as graphqlParse, print as graphqlPrint } from 'graphql';
 import { getLogger } from '../../utils/logger.js';
 import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
@@ -184,6 +186,26 @@ export class AppSyncProvider implements ResourceProvider {
   getAttribute(physicalId: string, resourceType: string, attributeName: string): Promise<unknown> {
     this.logger.debug(`getAttribute for ${resourceType} ${physicalId}: ${attributeName}`);
     return Promise.resolve(undefined);
+  }
+
+  /**
+   * Per-type drift-unknown paths for AppSync resources.
+   *
+   * `AWS::AppSync::GraphQLSchema.DefinitionS3Location` is a write-only
+   * input — at create time AppSync downloads the S3 object and stores
+   * the SDL body internally; `GetIntrospectionSchema` returns only the
+   * SDL bytes, never the original S3 URL. State templates that pin
+   * `DefinitionS3Location` would otherwise fire false drift on every
+   * run since `readCurrentState` returns `Definition` (the canonical
+   * SDL) instead. This is the same pattern as Lambda `Code` /
+   * SecretsManager `SecretString` (write-only via S3 / unrecoverable
+   * via the read API).
+   */
+  getDriftUnknownPaths(resourceType: string): string[] {
+    if (resourceType === 'AWS::AppSync::GraphQLSchema') {
+      return ['DefinitionS3Location'];
+    }
+    return [];
   }
 
   // ─── AWS::AppSync::GraphQLApi ──────────────────────────────────────
@@ -719,12 +741,21 @@ export class AppSyncProvider implements ResourceProvider {
    *  - `ApiKey` → `ListApiKeys` filtered by id (no `GetApiKey` SDK call;
    *    AppSync only exposes list-based access). Surfaces Description and
    *    Expires.
-   *  - `GraphQLSchema` → `GetSchemaCreationStatus` is the closest live
-   *    state, but it returns a status string only (not the full schema
-   *    body). Schema bodies live in cdkd state's `Definition` and would
-   *    need `GetIntrospectionSchema` + reverse-mapping to compare; that's
-   *    a separate task. Returns `undefined` so the comparator marks it
-   *    as "drift unknown" rather than firing a false positive.
+   *  - `GraphQLSchema` → `GetIntrospectionSchema(format=SDL)` for the
+   *    AWS-current SDL. Both the state-templated `Definition` and the
+   *    AWS-returned SDL are run through `graphql-js` `parse(...)` →
+   *    `print(...)` to produce a canonical, comment-stripped, whitespace-
+   *    stable form so cosmetic diffs (whitespace, comments, blank lines)
+   *    do not fire false drift. Field-order differences are intentionally
+   *    NOT normalized — `print` preserves the source AST order, so a
+   *    user-side reordering of fields surfaces as drift (which is the
+   *    desired behavior, since AWS retains the schema in submission
+   *    order). On parse failure on either side (rare but possible —
+   *    AWS could return an SDL that the local graphql-js version
+   *    rejects, or state could carry pre-canonicalization input), the
+   *    raw AWS SDL is returned and the comparator falls back to
+   *    string-level diff (which may report whitespace drift). Logged at
+   *    debug.
    *
    * Returns `undefined` when the parent resource is gone (`NotFoundException`).
    */
@@ -732,7 +763,7 @@ export class AppSyncProvider implements ResourceProvider {
     physicalId: string,
     _logicalId: string,
     resourceType: string,
-    _properties?: Record<string, unknown>
+    properties?: Record<string, unknown>
   ): Promise<Record<string, unknown> | undefined> {
     switch (resourceType) {
       case 'AWS::AppSync::GraphQLApi':
@@ -744,17 +775,85 @@ export class AppSyncProvider implements ResourceProvider {
       case 'AWS::AppSync::ApiKey':
         return this.readApiKey(physicalId);
       case 'AWS::AppSync::GraphQLSchema':
-        // Drift detection on schema bodies is deferred. `GetIntrospectionSchema`
-        // returns the SDL or JSON form, but AWS normalizes the SDL on the way
-        // out (canonical field ordering, comment/whitespace stripping) so a
-        // direct string comparison against the user-authored `Definition` in
-        // cdkd state would fire constantly on cosmetic diffs. A meaningful
-        // comparison would need an SDL parser (graphql-js) to canonicalize
-        // both sides before diff — out of scope for PR G; tracked separately.
-        return undefined;
+        return this.readGraphQLSchema(physicalId, properties);
       default:
         return undefined;
     }
+  }
+
+  /**
+   * Canonicalize an SDL string via `graphql-js` `parse` → `print`.
+   *
+   * Strips comments and normalizes whitespace; preserves source AST
+   * ordering of types and fields. Returns the raw input on parse
+   * failure (logged at debug) so the caller can still produce SOMETHING
+   * to diff against.
+   */
+  private canonicalizeSdl(sdl: string, source: 'state' | 'aws'): string {
+    try {
+      return graphqlPrint(graphqlParse(sdl));
+    } catch (err) {
+      this.logger.debug(
+        `Failed to parse ${source} SDL via graphql-js (falling back to raw): ${
+          err instanceof Error ? err.message : String(err)
+        }`
+      );
+      return sdl;
+    }
+  }
+
+  private async readGraphQLSchema(
+    physicalId: string,
+    properties?: Record<string, unknown>
+  ): Promise<Record<string, unknown> | undefined> {
+    let resp;
+    try {
+      resp = await this.getClient().send(
+        new GetIntrospectionSchemaCommand({ apiId: physicalId, format: 'SDL' })
+      );
+    } catch (err) {
+      if (err instanceof AppSyncNotFoundException) return undefined;
+      throw err;
+    }
+
+    const schemaBytes = resp.schema;
+    if (!schemaBytes) return undefined;
+
+    // AWS returns SDL as Uint8Array (UTF-8). Decode and canonicalize via
+    // graphql-js parse → print so cosmetic differences (whitespace,
+    // comments, blank lines) do not fire false drift.
+    const awsSdl = new TextDecoder().decode(schemaBytes);
+    const canonicalAws = this.canonicalizeSdl(awsSdl, 'aws');
+
+    // The drift comparator descends into keys present in state and
+    // diffs leaf values byte-for-byte. To produce a no-drift result on
+    // semantically-equal SDLs (state has comments / extra whitespace
+    // the user authored, AWS returned the canonicalized form), we run
+    // state's Definition through the SAME canonicalizer and — when the
+    // two canonical forms are equal — return state's exact recorded
+    // bytes as the AWS-current value. This makes the comparator see
+    // `state === aws` byte-for-byte on a clean run regardless of which
+    // form state happens to hold (raw user SDL on v2 fallback, or the
+    // canonical form on v3 observedProperties baseline). When the
+    // canonical forms genuinely differ, the canonical AWS SDL is
+    // returned so the drift surfaces.
+    //
+    // `ApiId` is preserved from physicalId since cdkd state holds it
+    // as a top-level CFn property; without it the comparator would
+    // surface a false drift on every clean run.
+    const stateDefinition = properties?.['Definition'];
+    let definitionToReturn = canonicalAws;
+    if (typeof stateDefinition === 'string' && stateDefinition.length > 0) {
+      const canonicalState = this.canonicalizeSdl(stateDefinition, 'state');
+      if (canonicalState === canonicalAws) {
+        definitionToReturn = stateDefinition;
+      }
+    }
+
+    return {
+      ApiId: physicalId,
+      Definition: definitionToReturn,
+    };
   }
 
   private async readGraphQLApi(physicalId: string): Promise<Record<string, unknown> | undefined> {
