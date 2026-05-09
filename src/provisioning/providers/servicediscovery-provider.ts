@@ -54,7 +54,10 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
   private logger = getLogger().child('ServiceDiscoveryProvider');
 
   handledProperties = new Map<string, ReadonlySet<string>>([
-    ['AWS::ServiceDiscovery::PrivateDnsNamespace', new Set(['Name', 'Vpc', 'Description', 'Tags'])],
+    [
+      'AWS::ServiceDiscovery::PrivateDnsNamespace',
+      new Set(['Name', 'Vpc', 'Description', 'Tags', 'Properties']),
+    ],
     [
       'AWS::ServiceDiscovery::Service',
       new Set([
@@ -187,6 +190,19 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
       );
     }
 
+    // CFn `Properties.DnsProperties.SOA.TTL` is mutable. Pass it through to
+    // CreatePrivateDnsNamespace so a templated TTL is actually applied
+    // (without this, cdkd silently dropped the property and AWS used its
+    // default 15 — readCurrentState would then surface the AWS default,
+    // detected as drift on the very first run after deploy). PR #201
+    // follow-up: also added `Properties` to the handledProperties set so
+    // the deploy engine doesn't fall back to CC API on this resource type.
+    const propsBag = properties['Properties'] as Record<string, unknown> | undefined;
+    const dnsProps = propsBag?.['DnsProperties'] as Record<string, unknown> | undefined;
+    const soa = dnsProps?.['SOA'] as { TTL?: number } | undefined;
+    const inputProperties =
+      soa?.TTL !== undefined ? { DnsProperties: { SOA: { TTL: Number(soa.TTL) } } } : undefined;
+
     try {
       const response = await client.send(
         new CreatePrivateDnsNamespaceCommand({
@@ -194,6 +210,7 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
           Vpc: vpc,
           ...(description && { Description: description }),
           ...(tags && tags.length > 0 && { Tags: tags }),
+          ...(inputProperties && { Properties: inputProperties }),
         })
       );
 
@@ -667,6 +684,16 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
     const result: Record<string, unknown> = {};
     if (ns.Name !== undefined) result['Name'] = ns.Name;
     result['Description'] = ns.Description ?? '';
+    // Properties.DnsProperties.SOA.TTL is the only mutable nested field
+    // (PR #195's update path round-trips it). Surface it on read too so
+    // the comparator can detect a console-side TTL change. Always emit
+    // the Properties placeholder for v3 baseline parity.
+    const soa = ns.Properties?.DnsProperties?.SOA;
+    if (soa?.TTL !== undefined) {
+      result['Properties'] = { DnsProperties: { SOA: { TTL: soa.TTL } } };
+    } else {
+      result['Properties'] = {};
+    }
     if (ns.Arn) await this.attachTags(result, ns.Arn);
     return result;
   }
