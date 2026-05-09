@@ -1,15 +1,17 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 // Per-SDK send spies. EC2 and CloudWatch Logs go through getAwsClients(),
-// so they're wired via the aws-clients mock below. RDS, ELBv2, ASG,
-// and Cognito lazily `new` their own clients with `providerRegion`, so
-// their SDK module exports are mocked directly via vi.mock to intercept
-// the constructor.
+// so they're wired via the aws-clients mock below. RDS, DocDB, Neptune,
+// ELBv2, ASG, and Cognito lazily `new` their own clients with
+// `providerRegion`, so their SDK module exports are mocked directly via
+// vi.mock to intercept the constructor.
 const mockLogsSend = vi.fn();
 const mockDdbSend = vi.fn();
 const mockEc2Send = vi.fn();
 const mockElbv2Send = vi.fn();
 const mockRdsSend = vi.fn();
+const mockDocdbSend = vi.fn();
+const mockNeptuneSend = vi.fn();
 const mockAsgSend = vi.fn();
 const mockCognitoSend = vi.fn();
 
@@ -92,6 +94,32 @@ vi.mock('@aws-sdk/client-elastic-load-balancing-v2', async () => {
   };
 });
 
+// DocDB client — `new`d lazily through the provider; same pattern as RDS.
+vi.mock('@aws-sdk/client-docdb', async () => {
+  const actual =
+    await vi.importActual<typeof import('@aws-sdk/client-docdb')>('@aws-sdk/client-docdb');
+  return {
+    ...actual,
+    DocDBClient: vi.fn().mockImplementation(() => ({
+      send: mockDocdbSend,
+      config: { region: () => Promise.resolve('us-east-1') },
+    })),
+  };
+});
+
+// Neptune client — `new`d lazily through the provider; same pattern as RDS.
+vi.mock('@aws-sdk/client-neptune', async () => {
+  const actual =
+    await vi.importActual<typeof import('@aws-sdk/client-neptune')>('@aws-sdk/client-neptune');
+  return {
+    ...actual,
+    NeptuneClient: vi.fn().mockImplementation(() => ({
+      send: mockNeptuneSend,
+      config: { region: () => Promise.resolve('us-east-1') },
+    })),
+  };
+});
+
 // AutoScaling client is `new`d lazily — same pattern as RDS / ELBv2.
 vi.mock('@aws-sdk/client-auto-scaling', async () => {
   const actual =
@@ -143,6 +171,18 @@ import {
   DeleteDBClusterCommand,
 } from '@aws-sdk/client-rds';
 import {
+  ModifyDBClusterCommand as DocdbModifyDBClusterCommand,
+  DeleteDBClusterCommand as DocdbDeleteDBClusterCommand,
+  ModifyDBInstanceCommand as DocdbModifyDBInstanceCommand,
+  DeleteDBInstanceCommand as DocdbDeleteDBInstanceCommand,
+} from '@aws-sdk/client-docdb';
+import {
+  ModifyDBClusterCommand as NeptuneModifyDBClusterCommand,
+  DeleteDBClusterCommand as NeptuneDeleteDBClusterCommand,
+  ModifyDBInstanceCommand as NeptuneModifyDBInstanceCommand,
+  DeleteDBInstanceCommand as NeptuneDeleteDBInstanceCommand,
+} from '@aws-sdk/client-neptune';
+import {
   CreateAutoScalingGroupCommand,
   UpdateAutoScalingGroupCommand,
   DeleteAutoScalingGroupCommand,
@@ -159,6 +199,8 @@ import { DynamoDBTableProvider } from '../../../src/provisioning/providers/dynam
 import { EC2Provider } from '../../../src/provisioning/providers/ec2-provider.js';
 import { ELBv2Provider } from '../../../src/provisioning/providers/elbv2-provider.js';
 import { RDSProvider } from '../../../src/provisioning/providers/rds-provider.js';
+import { DocDBProvider } from '../../../src/provisioning/providers/docdb-provider.js';
+import { NeptuneProvider } from '../../../src/provisioning/providers/neptune-provider.js';
 import { ASGProvider } from '../../../src/provisioning/providers/asg-provider.js';
 import { CognitoUserPoolProvider } from '../../../src/provisioning/providers/cognito-provider.js';
 
@@ -168,8 +210,12 @@ beforeEach(() => {
   mockEc2Send.mockReset().mockResolvedValue({});
   mockElbv2Send.mockReset().mockResolvedValue({});
   mockRdsSend.mockReset().mockResolvedValue({});
+  mockDocdbSend.mockReset().mockResolvedValue({});
+  mockNeptuneSend.mockReset().mockResolvedValue({});
   mockAsgSend.mockReset().mockResolvedValue({});
   mockCognitoSend.mockReset().mockResolvedValue({});
+  // Skip waiter polling in DocDB / Neptune tests.
+  process.env['CDKD_NO_WAIT'] = 'true';
 });
 
 describe('LogsLogGroupProvider --remove-protection', () => {
@@ -607,5 +653,178 @@ describe('Cognito UserPool --remove-protection', () => {
     expect(cmds.some((c) => c instanceof DescribeUserPoolCommand)).toBe(false);
     expect(cmds.some((c) => c instanceof UpdateUserPoolCommand)).toBe(false);
     expect(cmds.some((c) => c instanceof DeleteUserPoolCommand)).toBe(true);
+  });
+});
+
+describe('DocDB DBCluster --remove-protection', () => {
+  // The waiter loop polls DescribeDBClusters until NotFound; reject every
+  // describe with that fault so the loop exits immediately.
+  const stubWaiter = (command: unknown): Promise<unknown> | undefined => {
+    if (command instanceof DocdbModifyDBClusterCommand) return Promise.resolve({});
+    if (command instanceof DocdbDeleteDBClusterCommand) return Promise.resolve({});
+    const err = new Error('not found') as Error & { name: string };
+    err.name = 'DBClusterNotFoundFault';
+    return Promise.reject(err);
+  };
+
+  it('issues ModifyDBCluster(DeletionProtection=false) before DeleteDBCluster', async () => {
+    mockDocdbSend.mockImplementation(stubWaiter);
+    const provider = new DocDBProvider();
+    await provider.delete('CL', 'my-cl', 'AWS::DocDB::DBCluster', undefined, {
+      removeProtection: true,
+    });
+    const cmds = mockDocdbSend.mock.calls.map((c) => c[0]);
+    const flipIdx = cmds.findIndex((c) => c instanceof DocdbModifyDBClusterCommand);
+    const delIdx = cmds.findIndex((c) => c instanceof DocdbDeleteDBClusterCommand);
+    expect(flipIdx).toBeGreaterThanOrEqual(0);
+    expect(delIdx).toBeGreaterThan(flipIdx);
+    const flipInput = (
+      cmds[flipIdx] as unknown as {
+        input: { DBClusterIdentifier: string; DeletionProtection: boolean; ApplyImmediately: boolean };
+      }
+    ).input;
+    expect(flipInput.DBClusterIdentifier).toBe('my-cl');
+    expect(flipInput.DeletionProtection).toBe(false);
+    expect(flipInput.ApplyImmediately).toBe(true);
+  });
+
+  it('does NOT issue ModifyDBCluster when removeProtection is unset', async () => {
+    mockDocdbSend.mockImplementation(stubWaiter);
+    const provider = new DocDBProvider();
+    await provider.delete('CL', 'my-cl', 'AWS::DocDB::DBCluster');
+    const cmds = mockDocdbSend.mock.calls.map((c) => c[0]);
+    expect(cmds.some((c) => c instanceof DocdbModifyDBClusterCommand)).toBe(false);
+    expect(cmds.some((c) => c instanceof DocdbDeleteDBClusterCommand)).toBe(true);
+  });
+
+  it('idempotent — ModifyDBCluster is issued even when already disabled', async () => {
+    mockDocdbSend.mockImplementation(stubWaiter);
+    const provider = new DocDBProvider();
+    await provider.delete('CL', 'my-cl', 'AWS::DocDB::DBCluster', undefined, {
+      removeProtection: true,
+    });
+    const cmds = mockDocdbSend.mock.calls.map((c) => c[0]);
+    expect(cmds.some((c) => c instanceof DocdbModifyDBClusterCommand)).toBe(true);
+  });
+});
+
+describe('DocDB DBInstance --remove-protection (no-op — DocDB DBInstance has no DeletionProtection field)', () => {
+  const stubWaiter = (command: unknown): Promise<unknown> | undefined => {
+    if (command instanceof DocdbDeleteDBInstanceCommand) return Promise.resolve({});
+    const err = new Error('not found') as Error & { name: string };
+    err.name = 'DBInstanceNotFoundFault';
+    return Promise.reject(err);
+  };
+
+  it('with removeProtection=true, still does NOT issue ModifyDBInstance (architectural — field is absent)', async () => {
+    mockDocdbSend.mockImplementation(stubWaiter);
+    const provider = new DocDBProvider();
+    await provider.delete('I', 'my-instance', 'AWS::DocDB::DBInstance', undefined, {
+      removeProtection: true,
+    });
+    const cmds = mockDocdbSend.mock.calls.map((c) => c[0]);
+    // DocDB DBInstance does not expose DeletionProtection; flip-off is a no-op.
+    expect(cmds.some((c) => c instanceof DocdbModifyDBInstanceCommand)).toBe(false);
+    expect(cmds.some((c) => c instanceof DocdbDeleteDBInstanceCommand)).toBe(true);
+  });
+});
+
+describe('Neptune DBCluster --remove-protection', () => {
+  const stubWaiter = (command: unknown): Promise<unknown> | undefined => {
+    if (command instanceof NeptuneModifyDBClusterCommand) return Promise.resolve({});
+    if (command instanceof NeptuneDeleteDBClusterCommand) return Promise.resolve({});
+    const err = new Error('not found') as Error & { name: string };
+    err.name = 'DBClusterNotFoundFault';
+    return Promise.reject(err);
+  };
+
+  it('issues ModifyDBCluster(DeletionProtection=false) before DeleteDBCluster', async () => {
+    mockNeptuneSend.mockImplementation(stubWaiter);
+    const provider = new NeptuneProvider();
+    await provider.delete('CL', 'my-cl', 'AWS::Neptune::DBCluster', undefined, {
+      removeProtection: true,
+    });
+    const cmds = mockNeptuneSend.mock.calls.map((c) => c[0]);
+    const flipIdx = cmds.findIndex((c) => c instanceof NeptuneModifyDBClusterCommand);
+    const delIdx = cmds.findIndex((c) => c instanceof NeptuneDeleteDBClusterCommand);
+    expect(flipIdx).toBeGreaterThanOrEqual(0);
+    expect(delIdx).toBeGreaterThan(flipIdx);
+    const flipInput = (
+      cmds[flipIdx] as unknown as {
+        input: { DBClusterIdentifier: string; DeletionProtection: boolean; ApplyImmediately: boolean };
+      }
+    ).input;
+    expect(flipInput.DBClusterIdentifier).toBe('my-cl');
+    expect(flipInput.DeletionProtection).toBe(false);
+    expect(flipInput.ApplyImmediately).toBe(true);
+  });
+
+  it('does NOT issue ModifyDBCluster when removeProtection is unset', async () => {
+    mockNeptuneSend.mockImplementation(stubWaiter);
+    const provider = new NeptuneProvider();
+    await provider.delete('CL', 'my-cl', 'AWS::Neptune::DBCluster');
+    const cmds = mockNeptuneSend.mock.calls.map((c) => c[0]);
+    expect(cmds.some((c) => c instanceof NeptuneModifyDBClusterCommand)).toBe(false);
+    expect(cmds.some((c) => c instanceof NeptuneDeleteDBClusterCommand)).toBe(true);
+  });
+
+  it('idempotent — ModifyDBCluster is issued even when already disabled', async () => {
+    mockNeptuneSend.mockImplementation(stubWaiter);
+    const provider = new NeptuneProvider();
+    await provider.delete('CL', 'my-cl', 'AWS::Neptune::DBCluster', undefined, {
+      removeProtection: true,
+    });
+    const cmds = mockNeptuneSend.mock.calls.map((c) => c[0]);
+    expect(cmds.some((c) => c instanceof NeptuneModifyDBClusterCommand)).toBe(true);
+  });
+});
+
+describe('Neptune DBInstance --remove-protection', () => {
+  const stubWaiter = (command: unknown): Promise<unknown> | undefined => {
+    if (command instanceof NeptuneModifyDBInstanceCommand) return Promise.resolve({});
+    if (command instanceof NeptuneDeleteDBInstanceCommand) return Promise.resolve({});
+    const err = new Error('not found') as Error & { name: string };
+    err.name = 'DBInstanceNotFoundFault';
+    return Promise.reject(err);
+  };
+
+  it('issues ModifyDBInstance(DeletionProtection=false) before DeleteDBInstance', async () => {
+    mockNeptuneSend.mockImplementation(stubWaiter);
+    const provider = new NeptuneProvider();
+    await provider.delete('I', 'my-instance', 'AWS::Neptune::DBInstance', undefined, {
+      removeProtection: true,
+    });
+    const cmds = mockNeptuneSend.mock.calls.map((c) => c[0]);
+    const flipIdx = cmds.findIndex((c) => c instanceof NeptuneModifyDBInstanceCommand);
+    const delIdx = cmds.findIndex((c) => c instanceof NeptuneDeleteDBInstanceCommand);
+    expect(flipIdx).toBeGreaterThanOrEqual(0);
+    expect(delIdx).toBeGreaterThan(flipIdx);
+    const flipInput = (
+      cmds[flipIdx] as unknown as {
+        input: { DBInstanceIdentifier: string; DeletionProtection: boolean; ApplyImmediately: boolean };
+      }
+    ).input;
+    expect(flipInput.DBInstanceIdentifier).toBe('my-instance');
+    expect(flipInput.DeletionProtection).toBe(false);
+    expect(flipInput.ApplyImmediately).toBe(true);
+  });
+
+  it('does NOT issue ModifyDBInstance when removeProtection is unset', async () => {
+    mockNeptuneSend.mockImplementation(stubWaiter);
+    const provider = new NeptuneProvider();
+    await provider.delete('I', 'my-instance', 'AWS::Neptune::DBInstance');
+    const cmds = mockNeptuneSend.mock.calls.map((c) => c[0]);
+    expect(cmds.some((c) => c instanceof NeptuneModifyDBInstanceCommand)).toBe(false);
+    expect(cmds.some((c) => c instanceof NeptuneDeleteDBInstanceCommand)).toBe(true);
+  });
+
+  it('idempotent — ModifyDBInstance is issued even when already disabled', async () => {
+    mockNeptuneSend.mockImplementation(stubWaiter);
+    const provider = new NeptuneProvider();
+    await provider.delete('I', 'my-instance', 'AWS::Neptune::DBInstance', undefined, {
+      removeProtection: true,
+    });
+    const cmds = mockNeptuneSend.mock.calls.map((c) => c[0]);
+    expect(cmds.some((c) => c instanceof NeptuneModifyDBInstanceCommand)).toBe(true);
   });
 });

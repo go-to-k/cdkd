@@ -1019,7 +1019,9 @@ function createStateDestroyCommand(): Command {
       '--remove-protection',
       'Bypass deletion protection on protected resources by flipping the per-resource ' +
         'protection flag off in-place before delete. Covers AWS::Logs::LogGroup, ' +
-        'AWS::RDS::DBInstance, AWS::RDS::DBCluster, AWS::DynamoDB::Table, AWS::EC2::Instance, ' +
+        'AWS::RDS::DBInstance, AWS::RDS::DBCluster, AWS::DocDB::DBCluster, ' +
+        'AWS::Neptune::DBCluster, AWS::Neptune::DBInstance, AWS::DynamoDB::Table, ' +
+        'AWS::EC2::Instance, AWS::Cognito::UserPool, AWS::AutoScaling::AutoScalingGroup, ' +
         'and AWS::ElasticLoadBalancingV2::LoadBalancer.',
       false
     )

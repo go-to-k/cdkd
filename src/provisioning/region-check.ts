@@ -28,6 +28,9 @@ export interface DeleteContext {
    * Providers handle the in-place flip-off only for protection-bearing
    * resource types (e.g. `AWS::Logs::LogGroup` `DeletionProtectionEnabled`,
    * `AWS::RDS::DBInstance` / `DBCluster` `DeletionProtection`,
+   * `AWS::DocDB::DBCluster` `DeletionProtection` (DocDB DBInstance has
+   * no protection field), `AWS::Neptune::DBCluster` /
+   * `AWS::Neptune::DBInstance` `DeletionProtection`,
    * `AWS::DynamoDB::Table` `DeletionProtectionEnabled`,
    * `AWS::EC2::Instance` `DisableApiTermination`,
    * `AWS::ElasticLoadBalancingV2::LoadBalancer`

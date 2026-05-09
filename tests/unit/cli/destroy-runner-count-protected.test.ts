@@ -182,4 +182,59 @@ describe('countProtectedResources', () => {
     });
     expect(countProtectedResources(state)).toBe(0);
   });
+
+  it('counts a DocDB DBCluster with DeletionProtection=true', () => {
+    const state = makeState({
+      DC: {
+        physicalId: 'my-docdb-cluster',
+        resourceType: 'AWS::DocDB::DBCluster',
+        properties: { DeletionProtection: true },
+        attributes: {},
+        dependencies: [],
+      },
+    });
+    expect(countProtectedResources(state)).toBe(1);
+  });
+
+  it('does NOT track a DocDB DBInstance — the SDK shape lacks DeletionProtection', () => {
+    // Architectural: DocDB CreateDBInstanceMessage has no DeletionProtection
+    // field, so even a property carrying `true` (e.g. set by a confused
+    // template) must not count toward the protected resources prompt.
+    const state = makeState({
+      DI: {
+        physicalId: 'my-docdb-instance',
+        resourceType: 'AWS::DocDB::DBInstance',
+        properties: { DeletionProtection: true },
+        attributes: {},
+        dependencies: [],
+      },
+    });
+    expect(countProtectedResources(state)).toBe(0);
+  });
+
+  it('counts a Neptune DBCluster with DeletionProtection=true', () => {
+    const state = makeState({
+      NC: {
+        physicalId: 'my-neptune-cluster',
+        resourceType: 'AWS::Neptune::DBCluster',
+        properties: { DeletionProtection: true },
+        attributes: {},
+        dependencies: [],
+      },
+    });
+    expect(countProtectedResources(state)).toBe(1);
+  });
+
+  it('counts a Neptune DBInstance with DeletionProtection=true', () => {
+    const state = makeState({
+      NI: {
+        physicalId: 'my-neptune-instance',
+        resourceType: 'AWS::Neptune::DBInstance',
+        properties: { DeletionProtection: true },
+        attributes: {},
+        dependencies: [],
+      },
+    });
+    expect(countProtectedResources(state)).toBe(1);
+  });
 });

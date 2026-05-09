@@ -135,6 +135,14 @@ export const PROTECTION_PROPERTY_BY_TYPE: Record<string, string> = {
   'AWS::Logs::LogGroup': 'DeletionProtectionEnabled',
   'AWS::RDS::DBInstance': 'DeletionProtection',
   'AWS::RDS::DBCluster': 'DeletionProtection',
+  // DocDB: cluster-level only. The DocDB DBInstance shape does NOT
+  // expose a DeletionProtection field (verified against the
+  // @aws-sdk/client-docdb CreateDBInstanceMessage type — the field is
+  // absent), so there is nothing to flip on destroy of an instance.
+  'AWS::DocDB::DBCluster': 'DeletionProtection',
+  // Neptune: both cluster and instance expose DeletionProtection.
+  'AWS::Neptune::DBCluster': 'DeletionProtection',
+  'AWS::Neptune::DBInstance': 'DeletionProtection',
   'AWS::DynamoDB::Table': 'DeletionProtectionEnabled',
   'AWS::EC2::Instance': 'DisableApiTermination',
   'AWS::Cognito::UserPool': 'DeletionProtection',

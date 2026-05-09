@@ -523,6 +523,9 @@ types:
 | `AWS::Logs::LogGroup` | `DeletionProtectionEnabled` |
 | `AWS::RDS::DBInstance` | `DeletionProtection` |
 | `AWS::RDS::DBCluster` | `DeletionProtection` |
+| `AWS::DocDB::DBCluster` | `DeletionProtection` (DocDB DBInstance has no `DeletionProtection` field, so per-instance bypass is a no-op) |
+| `AWS::Neptune::DBCluster` | `DeletionProtection` |
+| `AWS::Neptune::DBInstance` | `DeletionProtection` |
 | `AWS::DynamoDB::Table` | `DeletionProtectionEnabled` |
 | `AWS::EC2::Instance` | `DisableApiTermination` |
 | `AWS::ElasticLoadBalancingV2::LoadBalancer` | attribute `deletion_protection.enabled` |

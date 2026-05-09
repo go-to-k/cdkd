@@ -87,6 +87,12 @@ message naming the unsupported type.
 | **Database** | AWS::RDS::DBSubnetGroup | SDK Provider | ✅ |
 | **Database** | AWS::RDS::DBCluster | SDK Provider | ✅ |
 | **Database** | AWS::RDS::DBInstance | SDK Provider | ✅ |
+| **Database** | AWS::DocDB::DBSubnetGroup | SDK Provider | ✅ |
+| **Database** | AWS::DocDB::DBCluster | SDK Provider | ✅ |
+| **Database** | AWS::DocDB::DBInstance | SDK Provider | ✅ |
+| **Database** | AWS::Neptune::DBSubnetGroup | SDK Provider | ✅ |
+| **Database** | AWS::Neptune::DBCluster | SDK Provider | ✅ |
+| **Database** | AWS::Neptune::DBInstance | SDK Provider | ✅ |
 | **DNS** | AWS::Route53::HostedZone | SDK Provider | ✅ |
 | **DNS** | AWS::Route53::RecordSet | SDK Provider | ✅ |
 | **Security** | AWS::WAFv2::WebACL | SDK Provider | ✅ |

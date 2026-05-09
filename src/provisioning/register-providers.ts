@@ -32,6 +32,8 @@ import { StepFunctionsProvider } from './providers/stepfunctions-provider.js';
 import { ECSProvider } from './providers/ecs-provider.js';
 import { ELBv2Provider } from './providers/elbv2-provider.js';
 import { RDSProvider } from './providers/rds-provider.js';
+import { DocDBProvider } from './providers/docdb-provider.js';
+import { NeptuneProvider } from './providers/neptune-provider.js';
 import { Route53Provider } from './providers/route53-provider.js';
 import { WAFv2WebACLProvider } from './providers/wafv2-provider.js';
 import { CognitoUserPoolProvider } from './providers/cognito-provider.js';
@@ -159,6 +161,18 @@ export function registerAllProviders(registry: ProviderRegistry): void {
   registry.register('AWS::RDS::DBSubnetGroup', rdsProvider);
   registry.register('AWS::RDS::DBCluster', rdsProvider);
   registry.register('AWS::RDS::DBInstance', rdsProvider);
+
+  // DocumentDB (RDS-shaped API)
+  const docdbProvider = new DocDBProvider();
+  registry.register('AWS::DocDB::DBSubnetGroup', docdbProvider);
+  registry.register('AWS::DocDB::DBCluster', docdbProvider);
+  registry.register('AWS::DocDB::DBInstance', docdbProvider);
+
+  // Neptune (RDS-shaped API)
+  const neptuneProvider = new NeptuneProvider();
+  registry.register('AWS::Neptune::DBSubnetGroup', neptuneProvider);
+  registry.register('AWS::Neptune::DBCluster', neptuneProvider);
+  registry.register('AWS::Neptune::DBInstance', neptuneProvider);
 
   // Route53
   const route53Provider = new Route53Provider();
