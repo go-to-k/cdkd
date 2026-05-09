@@ -10,10 +10,16 @@ Run all quality checks and create a GitHub PR if everything passes.
 
 ## Steps
 
-1. **Ensure on a feature branch**:
+1. **Ensure on a feature branch with the right cwd**:
    - `git branch --show-current` — check current branch
-   - If on `main`, ask the user for a branch name and create it: `git checkout -b <branch-name>`
-   - Branch naming convention: `feat/`, `fix/`, `refactor/`, `docs/` prefix
+   - **Multi-worktree pre-flight**: if the current branch is `main` (or `master`), also run `git worktree list --porcelain` and check whether any other worktree is on a non-main branch. If yes, surface that explicitly:
+     ```
+     git worktree list --porcelain | awk '/^worktree /{wt=$2} /^branch refs\/heads\//{b=substr($0,index($0,"refs/heads/")+11); if (b!="main" && b!="master") print wt " on branch " b}'
+     ```
+     The user almost certainly intended to run `/create-pr` from that worktree's path — every subsequent `git` / `gh pr view` call defaults to cwd, so running from the parent worktree on `main` produces "no PR found for branch 'main'" even when a feature branch with commits is sitting in another worktree. **Stop and ask** the user whether to proceed in the listed worktree (offering `cd <path>` as the next step) before falling through to "create a new branch".
+   - If on `main` and no other worktrees have non-main branches, ask the user for a branch name and create it: `git checkout -b <branch-name>`.
+   - Branch naming convention: `feat/`, `fix/`, `refactor/`, `docs/`, `chore/` prefix.
+   - Subsequent steps assume cwd is the worktree of the feature branch being PR'd. If the user defers the cd, abort instead of guessing.
 
 2. **Run `/verify-pr`** — typecheck, lint, build, tests, CI, docs consistency, leftover resources. If any check fails, stop and report.
 
