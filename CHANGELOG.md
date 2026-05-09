@@ -1,3 +1,10 @@
+# [0.57.0](https://github.com/go-to-k/cdkd/compare/v0.56.0...v0.57.0) (2026-05-09)
+
+
+### Features
+
+* **elbv2:** in-place update for LoadBalancer Subnets/SGs/IpAddressType + Listener AlpnPolicy/MutualAuthentication ([#199](https://github.com/go-to-k/cdkd/issues/199)) ([57aa9c9](https://github.com/go-to-k/cdkd/commit/57aa9c9ddf6f2524b45e7f03597af83ec180a3a5))
+
 # [0.56.0](https://github.com/go-to-k/cdkd/compare/v0.55.0...v0.56.0) (2026-05-09)
 
 
