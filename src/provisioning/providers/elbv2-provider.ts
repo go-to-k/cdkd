@@ -4,6 +4,10 @@ import {
   DeleteLoadBalancerCommand,
   DescribeLoadBalancersCommand,
   DescribeLoadBalancerAttributesCommand,
+  ModifyLoadBalancerAttributesCommand,
+  SetSubnetsCommand,
+  SetSecurityGroupsCommand,
+  SetIpAddressTypeCommand,
   CreateTargetGroupCommand,
   DeleteTargetGroupCommand,
   ModifyTargetGroupCommand,
@@ -18,11 +22,13 @@ import {
   type Tag,
   type Action,
   type Certificate,
+  type SubnetMapping,
   type LoadBalancerSchemeEnum,
   type LoadBalancerTypeEnum,
   type IpAddressType,
   type ProtocolEnum,
   type TargetTypeEnum,
+  type MutualAuthenticationAttributes,
 } from '@aws-sdk/client-elastic-load-balancing-v2';
 import { getLogger } from '../../utils/logger.js';
 import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/error-handler.js';
@@ -99,6 +105,8 @@ export class ELBv2Provider implements ResourceProvider {
         'Port',
         'Protocol',
         'SslPolicy',
+        'AlpnPolicy',
+        'MutualAuthentication',
       ]),
     ],
   ]);
@@ -244,8 +252,6 @@ export class ELBv2Provider implements ResourceProvider {
         | Array<{ Key: string; Value: string }>
         | undefined;
       if (lbAttributes && lbAttributes.length > 0) {
-        const { ModifyLoadBalancerAttributesCommand } =
-          await import('@aws-sdk/client-elastic-load-balancing-v2');
         await this.getClient().send(
           new ModifyLoadBalancerAttributesCommand({
             LoadBalancerArn: lb.LoadBalancerArn,
@@ -289,18 +295,50 @@ export class ELBv2Provider implements ResourceProvider {
     properties: Record<string, unknown>,
     previousProperties: Record<string, unknown>
   ): Promise<ResourceUpdateResult> {
-    // ELBv2 LoadBalancer Name / Type / Scheme / Subnets are immutable after
+    // ELBv2 LoadBalancer Name / Type / Scheme are immutable after
     // creation. The deploy engine detects these via immutable-property
-    // detection and replaces the resource. The remaining surface
-    // (LoadBalancerAttributes, Tags, SecurityGroups, IpAddressType) is
-    // mutable in-place via separate Set*/Modify* calls. cdkd handles
-    // only LoadBalancerAttributes here — that's the single field
-    // `cdkd drift --revert` actually flows through this branch for
-    // (LoadBalancerAttributes is now in `readCurrentState`, so a console-
-    // side Modify is the typical drift case). Other mutable knobs still
-    // surface ResourceUpdateNotSupportedError when they're the source
-    // of the diff.
+    // detection and replaces the resource. The remaining surface is
+    // mutable in-place via separate Set*/Modify* calls:
+    //   - LoadBalancerAttributes → ModifyLoadBalancerAttributes (key diff)
+    //   - Subnets / SubnetMappings → SetSubnets (full replace)
+    //   - SecurityGroups → SetSecurityGroups (full replace)
+    //   - IpAddressType → SetIpAddressType
+    //   - Tags → AddTags / RemoveTags (key diff)
+    // Any other diff (Name / Type / Scheme) rejects with
+    // ResourceUpdateNotSupportedError so `cdkd drift --revert` surfaces
+    // the limitation instead of silently no-op'ing.
+    const handledKeys = new Set([
+      'LoadBalancerAttributes',
+      'Subnets',
+      'SubnetMappings',
+      'SecurityGroups',
+      'IpAddressType',
+      'Tags',
+    ]);
+    const stripHandled = (p: Record<string, unknown>): Record<string, unknown> => {
+      const out: Record<string, unknown> = {};
+      for (const [k, v] of Object.entries(p)) {
+        if (!handledKeys.has(k)) out[k] = v;
+      }
+      return out;
+    };
+    if (
+      JSON.stringify(stripHandled(properties)) !== JSON.stringify(stripHandled(previousProperties))
+    ) {
+      throw new ResourceUpdateNotSupportedError(
+        'AWS::ElasticLoadBalancingV2::LoadBalancer',
+        logicalId,
+        'ELBv2 LoadBalancer in-place updates are supported for LoadBalancerAttributes / Subnets / SubnetMappings / SecurityGroups / IpAddressType / Tags only; for Name / Type / Scheme, re-deploy with cdkd deploy --replace, or destroy + redeploy the stack'
+      );
+    }
 
+    // ─── LoadBalancerAttributes ──────────────────────────────────────
+    // ModifyLoadBalancerAttributes replaces ONLY the listed attrs — keys
+    // not in the request are left untouched. Build the diff: changed
+    // values from newAttrs win; keys present only in oldAttrs are
+    // pushed back to AWS's documented default (the empty string),
+    // which clears the override. Skip the call entirely when nothing
+    // changed so the no-drift round-trip is a clean no-op.
     const newAttrs =
       (properties['LoadBalancerAttributes'] as Array<{ Key: string; Value: string }> | undefined) ??
       [];
@@ -308,53 +346,88 @@ export class ELBv2Provider implements ResourceProvider {
       (previousProperties['LoadBalancerAttributes'] as
         | Array<{ Key: string; Value: string }>
         | undefined) ?? [];
-
-    // Detect non-LoadBalancerAttributes diffs by stringifying both sides
-    // sans LoadBalancerAttributes. If anything else changed we cannot
-    // handle it in-place and reject with the existing error.
-    const stripAttrs = (p: Record<string, unknown>): Record<string, unknown> => {
-      const { LoadBalancerAttributes: _, ...rest } = p;
-      return rest;
-    };
-    if (JSON.stringify(stripAttrs(properties)) !== JSON.stringify(stripAttrs(previousProperties))) {
-      throw new ResourceUpdateNotSupportedError(
-        'AWS::ElasticLoadBalancingV2::LoadBalancer',
-        logicalId,
-        'ELBv2 LoadBalancer in-place updates are only supported for LoadBalancerAttributes; for Name / Type / Scheme / Subnets / SecurityGroups / IpAddressType / Tags, re-deploy with cdkd deploy --replace, or destroy + redeploy the stack'
-      );
+    const newAttrMap = new Map(newAttrs.map((a) => [a.Key, a.Value]));
+    const oldAttrMap = new Map(oldAttrs.map((a) => [a.Key, a.Value]));
+    const submittedAttrs: Array<{ Key: string; Value: string }> = [];
+    for (const [k, v] of newAttrMap) {
+      if (oldAttrMap.get(k) !== v) submittedAttrs.push({ Key: k, Value: v });
     }
-
-    // Apply LoadBalancerAttributes diff. ELBv2's
-    // ModifyLoadBalancerAttributes replaces ONLY the listed attrs — keys
-    // not in the request are left untouched. Build the diff: changed
-    // values from newAttrs win; keys present only in oldAttrs are
-    // pushed back to AWS's documented default (the empty string),
-    // which clears the override. If no key actually changed we skip
-    // the Modify call entirely (no-op pass-through for the no-drift
-    // round-trip case).
-    const newMap = new Map(newAttrs.map((a) => [a.Key, a.Value]));
-    const oldMap = new Map(oldAttrs.map((a) => [a.Key, a.Value]));
-    const submitted: Array<{ Key: string; Value: string }> = [];
-    for (const [k, v] of newMap) {
-      if (oldMap.get(k) !== v) submitted.push({ Key: k, Value: v });
+    for (const [k] of oldAttrMap) {
+      if (!newAttrMap.has(k)) submittedAttrs.push({ Key: k, Value: '' });
     }
-    for (const [k] of oldMap) {
-      if (!newMap.has(k)) submitted.push({ Key: k, Value: '' });
-    }
-
-    if (submitted.length > 0) {
-      const { ModifyLoadBalancerAttributesCommand } =
-        await import('@aws-sdk/client-elastic-load-balancing-v2');
+    if (submittedAttrs.length > 0) {
       await this.getClient().send(
         new ModifyLoadBalancerAttributesCommand({
           LoadBalancerArn: physicalId,
-          Attributes: submitted,
+          Attributes: submittedAttrs,
         })
       );
       this.logger.debug(
-        `Applied ${submitted.length} LoadBalancerAttributes change(s) for ${logicalId}`
+        `Applied ${submittedAttrs.length} LoadBalancerAttributes change(s) for ${logicalId}`
       );
     }
+
+    // ─── Subnets / SubnetMappings ────────────────────────────────────
+    // SetSubnets is a full-replace API: the request payload is the
+    // complete desired set; AWS swaps in / out as needed. SubnetMappings
+    // wins when both are present (matches CFn semantics — they're a
+    // strict superset of Subnets). Skip the call when neither value
+    // actually changed.
+    const newSubnets = properties['Subnets'] as string[] | undefined;
+    const oldSubnets = previousProperties['Subnets'] as string[] | undefined;
+    const newMappings = properties['SubnetMappings'] as SubnetMapping[] | undefined;
+    const oldMappings = previousProperties['SubnetMappings'] as SubnetMapping[] | undefined;
+    const subnetsChanged = JSON.stringify(newSubnets) !== JSON.stringify(oldSubnets);
+    const mappingsChanged = JSON.stringify(newMappings) !== JSON.stringify(oldMappings);
+    if (subnetsChanged || mappingsChanged) {
+      await this.getClient().send(
+        new SetSubnetsCommand({
+          LoadBalancerArn: physicalId,
+          ...(newMappings && newMappings.length > 0
+            ? { SubnetMappings: newMappings }
+            : { Subnets: newSubnets }),
+        })
+      );
+      this.logger.debug(`Updated Subnets / SubnetMappings for ${logicalId}`);
+    }
+
+    // ─── SecurityGroups ──────────────────────────────────────────────
+    // SetSecurityGroups requires the full desired set (overrides the
+    // previous association). Note: NLBs without a SG at create time
+    // cannot have one added later — AWS will reject the call. That's
+    // the deploy engine's replacement layer's problem; here we just
+    // surface the AWS error if it fires.
+    const newSGs = properties['SecurityGroups'] as string[] | undefined;
+    const oldSGs = previousProperties['SecurityGroups'] as string[] | undefined;
+    if (JSON.stringify(newSGs) !== JSON.stringify(oldSGs)) {
+      await this.getClient().send(
+        new SetSecurityGroupsCommand({
+          LoadBalancerArn: physicalId,
+          SecurityGroups: newSGs ?? [],
+        })
+      );
+      this.logger.debug(`Updated SecurityGroups for ${logicalId}`);
+    }
+
+    // ─── IpAddressType ───────────────────────────────────────────────
+    const newIpType = properties['IpAddressType'] as IpAddressType | undefined;
+    const oldIpType = previousProperties['IpAddressType'] as IpAddressType | undefined;
+    if (newIpType !== undefined && newIpType !== oldIpType) {
+      await this.getClient().send(
+        new SetIpAddressTypeCommand({
+          LoadBalancerArn: physicalId,
+          IpAddressType: newIpType,
+        })
+      );
+      this.logger.debug(`Updated IpAddressType for ${logicalId}`);
+    }
+
+    // ─── Tags ────────────────────────────────────────────────────────
+    await this.applyTagDiff(
+      physicalId,
+      previousProperties['Tags'] as Array<{ Key?: string; Value?: string }> | undefined,
+      properties['Tags'] as Array<{ Key?: string; Value?: string }> | undefined
+    );
 
     return { physicalId, wasReplaced: false };
   }
@@ -618,6 +691,11 @@ export class ELBv2Provider implements ResourceProvider {
         properties['Certificates'] as Array<Record<string, unknown>> | undefined
       );
 
+      const alpnPolicy = properties['AlpnPolicy'] as string[] | undefined;
+      const mutualAuth = properties['MutualAuthentication'] as
+        | MutualAuthenticationAttributes
+        | undefined;
+
       const response = await this.getClient().send(
         new CreateListenerCommand({
           LoadBalancerArn: properties['LoadBalancerArn'] as string,
@@ -626,6 +704,8 @@ export class ELBv2Provider implements ResourceProvider {
           SslPolicy: properties['SslPolicy'] as string | undefined,
           DefaultActions: defaultActions ?? [],
           ...(certificates && { Certificates: certificates }),
+          ...(alpnPolicy && alpnPolicy.length > 0 && { AlpnPolicy: alpnPolicy }),
+          ...(mutualAuth !== undefined && { MutualAuthentication: mutualAuth }),
           ...(tags.length > 0 && { Tags: tags }),
         })
       );
@@ -672,6 +752,11 @@ export class ELBv2Provider implements ResourceProvider {
         properties['Certificates'] as Array<Record<string, unknown>> | undefined
       );
 
+      const alpnPolicy = properties['AlpnPolicy'] as string[] | undefined;
+      const mutualAuth = properties['MutualAuthentication'] as
+        | MutualAuthenticationAttributes
+        | undefined;
+
       await this.getClient().send(
         new ModifyListenerCommand({
           ListenerArn: physicalId,
@@ -680,6 +765,14 @@ export class ELBv2Provider implements ResourceProvider {
           SslPolicy: properties['SslPolicy'] as string | undefined,
           ...(defaultActions && { DefaultActions: defaultActions }),
           ...(certificates && { Certificates: certificates }),
+          // AlpnPolicy is a TLS-listener-only field; only forward it
+          // when the diff actually carries values (CFn template-side it
+          // is an array of one entry). An empty array would be rejected
+          // by AWS on non-TLS listeners.
+          ...(alpnPolicy && alpnPolicy.length > 0 && { AlpnPolicy: alpnPolicy }),
+          // MutualAuthentication is HTTPS-listener-only. Forward when
+          // the user templated it; AWS will reject on non-HTTPS.
+          ...(mutualAuth !== undefined && { MutualAuthentication: mutualAuth }),
         })
       );
 
@@ -1000,6 +1093,14 @@ export class ELBv2Provider implements ResourceProvider {
     result['DefaultActions'] = (listener.DefaultActions ?? []).map(
       (a) => a as unknown as Record<string, unknown>
     );
+    // AlpnPolicy / MutualAuthentication are conditional on listener
+    // protocol but always-emitted as user-controllable knobs so the v3
+    // observedProperties baseline catches console-side ADDs (PR #145
+    // pattern). AlpnPolicy is `[]` for non-TLS listeners; the
+    // `MutualAuthentication` placeholder mirrors the `{}` shape AWS
+    // returns when a user toggles it on.
+    result['AlpnPolicy'] = listener.AlpnPolicy ?? [];
+    result['MutualAuthentication'] = listener.MutualAuthentication ?? {};
     await this.attachTags(result, physicalId);
     return result;
   }

@@ -200,7 +200,37 @@ describe('ELBv2Provider.readCurrentState', () => {
         SslPolicy: 'ELBSecurityPolicy-2016-08',
         Certificates: [{ CertificateArn: 'arn:cert', IsDefault: true }],
         DefaultActions: [{ Type: 'forward', TargetGroupArn: 'arn:tg' }],
+        AlpnPolicy: [],
+        MutualAuthentication: {},
         Tags: [],
+      });
+    });
+
+    it('surfaces AlpnPolicy + MutualAuthentication when AWS returns them (TLS listener)', async () => {
+      mockSend
+        .mockResolvedValueOnce({
+          Listeners: [
+            {
+              ListenerArn: 'arn:listener',
+              LoadBalancerArn: 'arn:lb',
+              Port: 443,
+              Protocol: 'TLS',
+              AlpnPolicy: ['HTTP2Preferred'],
+              MutualAuthentication: { Mode: 'verify', TrustStoreArn: 'arn:ts' },
+              DefaultActions: [{ Type: 'forward', TargetGroupArn: 'arn:tg' }],
+            },
+          ],
+        })
+        .mockResolvedValueOnce({ TagDescriptions: [{ ResourceArn: 'arn:listener', Tags: [] }] });
+
+      const result = await provider.readCurrentState(
+        'arn:listener',
+        'L',
+        'AWS::ElasticLoadBalancingV2::Listener'
+      );
+      expect(result).toMatchObject({
+        AlpnPolicy: ['HTTP2Preferred'],
+        MutualAuthentication: { Mode: 'verify', TrustStoreArn: 'arn:ts' },
       });
     });
 

@@ -2,6 +2,12 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import {
   ModifyTargetGroupCommand,
   ModifyListenerCommand,
+  ModifyLoadBalancerAttributesCommand,
+  SetSubnetsCommand,
+  SetSecurityGroupsCommand,
+  SetIpAddressTypeCommand,
+  AddTagsCommand,
+  RemoveTagsCommand,
 } from '@aws-sdk/client-elastic-load-balancing-v2';
 import { ResourceUpdateNotSupportedError } from '../../../src/utils/error-handler.js';
 
@@ -99,6 +105,145 @@ describe('ELBv2Provider read-update round-trip', () => {
       )
     ).rejects.toBeInstanceOf(ResourceUpdateNotSupportedError);
     expect(mockSend).not.toHaveBeenCalled();
+  });
+
+  it('LoadBalancer.update wires SetSubnets when Subnets change', async () => {
+    mockSend.mockResolvedValueOnce({});
+    await provider.update(
+      'L',
+      LB_ARN,
+      'AWS::ElasticLoadBalancingV2::LoadBalancer',
+      { Subnets: ['subnet-a', 'subnet-c'] },
+      { Subnets: ['subnet-a', 'subnet-b'] }
+    );
+    const call = mockSend.mock.calls.find((c) => c[0] instanceof SetSubnetsCommand);
+    expect(call).toBeDefined();
+    expect(call?.[0].input).toMatchObject({
+      LoadBalancerArn: LB_ARN,
+      Subnets: ['subnet-a', 'subnet-c'],
+    });
+  });
+
+  it('LoadBalancer.update prefers SubnetMappings over Subnets when both present', async () => {
+    mockSend.mockResolvedValueOnce({});
+    const newMappings = [
+      { SubnetId: 'subnet-a', AllocationId: 'eipalloc-1' },
+      { SubnetId: 'subnet-b' },
+    ];
+    await provider.update(
+      'L',
+      LB_ARN,
+      'AWS::ElasticLoadBalancingV2::LoadBalancer',
+      { Subnets: ['subnet-a', 'subnet-b'], SubnetMappings: newMappings },
+      { Subnets: ['subnet-a', 'subnet-b'], SubnetMappings: [{ SubnetId: 'subnet-a' }] }
+    );
+    const call = mockSend.mock.calls.find((c) => c[0] instanceof SetSubnetsCommand);
+    expect(call).toBeDefined();
+    const input = call?.[0].input as { Subnets?: unknown; SubnetMappings?: unknown };
+    expect(input.SubnetMappings).toEqual(newMappings);
+    // Subnets must NOT be sent alongside SubnetMappings (full-replace).
+    expect(input.Subnets).toBeUndefined();
+  });
+
+  it('LoadBalancer.update no-ops Subnets/SubnetMappings when unchanged', async () => {
+    const same = {
+      Subnets: ['subnet-a', 'subnet-b'],
+    };
+    await provider.update('L', LB_ARN, 'AWS::ElasticLoadBalancingV2::LoadBalancer', same, same);
+    expect(mockSend.mock.calls.find((c) => c[0] instanceof SetSubnetsCommand)).toBeUndefined();
+  });
+
+  it('LoadBalancer.update wires SetSecurityGroups when SecurityGroups change', async () => {
+    mockSend.mockResolvedValueOnce({});
+    await provider.update(
+      'L',
+      LB_ARN,
+      'AWS::ElasticLoadBalancingV2::LoadBalancer',
+      { SecurityGroups: ['sg-1', 'sg-2'] },
+      { SecurityGroups: ['sg-1'] }
+    );
+    const call = mockSend.mock.calls.find((c) => c[0] instanceof SetSecurityGroupsCommand);
+    expect(call).toBeDefined();
+    expect(call?.[0].input).toMatchObject({
+      LoadBalancerArn: LB_ARN,
+      SecurityGroups: ['sg-1', 'sg-2'],
+    });
+  });
+
+  it('LoadBalancer.update no-ops SecurityGroups when unchanged', async () => {
+    const same = { SecurityGroups: ['sg-1'] };
+    await provider.update('L', LB_ARN, 'AWS::ElasticLoadBalancingV2::LoadBalancer', same, same);
+    expect(
+      mockSend.mock.calls.find((c) => c[0] instanceof SetSecurityGroupsCommand)
+    ).toBeUndefined();
+  });
+
+  it('LoadBalancer.update wires SetIpAddressType when IpAddressType changes', async () => {
+    mockSend.mockResolvedValueOnce({});
+    await provider.update(
+      'L',
+      LB_ARN,
+      'AWS::ElasticLoadBalancingV2::LoadBalancer',
+      { IpAddressType: 'dualstack' },
+      { IpAddressType: 'ipv4' }
+    );
+    const call = mockSend.mock.calls.find((c) => c[0] instanceof SetIpAddressTypeCommand);
+    expect(call).toBeDefined();
+    expect(call?.[0].input).toMatchObject({
+      LoadBalancerArn: LB_ARN,
+      IpAddressType: 'dualstack',
+    });
+  });
+
+  it('LoadBalancer.update no-ops IpAddressType when unchanged', async () => {
+    const same = { IpAddressType: 'ipv4' };
+    await provider.update('L', LB_ARN, 'AWS::ElasticLoadBalancingV2::LoadBalancer', same, same);
+    expect(
+      mockSend.mock.calls.find((c) => c[0] instanceof SetIpAddressTypeCommand)
+    ).toBeUndefined();
+  });
+
+  it('LoadBalancer.update wires AddTags / RemoveTags on tag diff', async () => {
+    // Add Foo=Bar, remove Old. Wire shape mirrors applyTagDiff.
+    mockSend
+      .mockResolvedValueOnce({}) // RemoveTags
+      .mockResolvedValueOnce({}); // AddTags
+    await provider.update(
+      'L',
+      LB_ARN,
+      'AWS::ElasticLoadBalancingV2::LoadBalancer',
+      { Tags: [{ Key: 'Foo', Value: 'Bar' }] },
+      { Tags: [{ Key: 'Old', Value: 'Gone' }] }
+    );
+    const remove = mockSend.mock.calls.find((c) => c[0] instanceof RemoveTagsCommand);
+    const add = mockSend.mock.calls.find((c) => c[0] instanceof AddTagsCommand);
+    expect(remove?.[0].input).toMatchObject({ ResourceArns: [LB_ARN], TagKeys: ['Old'] });
+    expect(add?.[0].input).toMatchObject({
+      ResourceArns: [LB_ARN],
+      Tags: [{ Key: 'Foo', Value: 'Bar' }],
+    });
+  });
+
+  it('LoadBalancer.update wires only LoadBalancerAttributes when only that field changed', async () => {
+    // Regression guard for the PR #175 path: nothing else fires.
+    mockSend.mockResolvedValueOnce({});
+    await provider.update(
+      'L',
+      LB_ARN,
+      'AWS::ElasticLoadBalancingV2::LoadBalancer',
+      { LoadBalancerAttributes: [{ Key: 'idle_timeout.timeout_seconds', Value: '120' }] },
+      { LoadBalancerAttributes: [{ Key: 'idle_timeout.timeout_seconds', Value: '60' }] }
+    );
+    expect(
+      mockSend.mock.calls.find((c) => c[0] instanceof ModifyLoadBalancerAttributesCommand)
+    ).toBeDefined();
+    expect(mockSend.mock.calls.find((c) => c[0] instanceof SetSubnetsCommand)).toBeUndefined();
+    expect(
+      mockSend.mock.calls.find((c) => c[0] instanceof SetSecurityGroupsCommand)
+    ).toBeUndefined();
+    expect(
+      mockSend.mock.calls.find((c) => c[0] instanceof SetIpAddressTypeCommand)
+    ).toBeUndefined();
   });
 
   // ─── TargetGroup ──────────────────────────────────────────────────
@@ -273,6 +418,84 @@ describe('ELBv2Provider read-update round-trip', () => {
     ]);
     expect(input.Protocol).toBe('HTTPS');
     expect(input.SslPolicy).toBe('ELBSecurityPolicy-2016-08');
+  });
+
+  it('Listener.update forwards AlpnPolicy on diff', async () => {
+    mockSend.mockResolvedValueOnce({});
+    await provider.update(
+      'L',
+      LISTENER_ARN,
+      'AWS::ElasticLoadBalancingV2::Listener',
+      {
+        LoadBalancerArn: LB_ARN,
+        Port: 443,
+        Protocol: 'TLS',
+        AlpnPolicy: ['HTTP2Only'],
+        DefaultActions: [{ Type: 'forward', TargetGroupArn: TG_ARN }],
+      },
+      {
+        LoadBalancerArn: LB_ARN,
+        Port: 443,
+        Protocol: 'TLS',
+        AlpnPolicy: ['HTTP1Only'],
+        DefaultActions: [{ Type: 'forward', TargetGroupArn: TG_ARN }],
+      }
+    );
+    const call = mockSend.mock.calls.find((c) => c[0] instanceof ModifyListenerCommand);
+    expect(call).toBeDefined();
+    expect(call?.[0].input).toMatchObject({ AlpnPolicy: ['HTTP2Only'] });
+  });
+
+  it('Listener.update forwards MutualAuthentication on diff', async () => {
+    mockSend.mockResolvedValueOnce({});
+    const newMutual = { Mode: 'verify', TrustStoreArn: 'arn:ts' };
+    await provider.update(
+      'L',
+      LISTENER_ARN,
+      'AWS::ElasticLoadBalancingV2::Listener',
+      {
+        LoadBalancerArn: LB_ARN,
+        Port: 443,
+        Protocol: 'HTTPS',
+        MutualAuthentication: newMutual,
+        DefaultActions: [{ Type: 'forward', TargetGroupArn: TG_ARN }],
+      },
+      {
+        LoadBalancerArn: LB_ARN,
+        Port: 443,
+        Protocol: 'HTTPS',
+        MutualAuthentication: { Mode: 'off' },
+        DefaultActions: [{ Type: 'forward', TargetGroupArn: TG_ARN }],
+      }
+    );
+    const call = mockSend.mock.calls.find((c) => c[0] instanceof ModifyListenerCommand);
+    expect(call).toBeDefined();
+    expect(call?.[0].input).toMatchObject({ MutualAuthentication: newMutual });
+  });
+
+  it('Listener.update drops empty AlpnPolicy [] placeholder', async () => {
+    // Round-trip from readListener emits AlpnPolicy: [] for non-TLS
+    // listeners. ModifyListener rejects an empty AlpnPolicy on non-TLS,
+    // so the wire layer must drop the placeholder.
+    const observed = {
+      LoadBalancerArn: LB_ARN,
+      Port: 80,
+      Protocol: 'HTTP',
+      AlpnPolicy: [] as string[],
+      DefaultActions: [{ Type: 'forward', TargetGroupArn: TG_ARN }],
+    };
+    mockSend.mockResolvedValueOnce({});
+    await provider.update(
+      'L',
+      LISTENER_ARN,
+      'AWS::ElasticLoadBalancingV2::Listener',
+      observed,
+      observed
+    );
+    const call = mockSend.mock.calls.find((c) => c[0] instanceof ModifyListenerCommand);
+    expect(call).toBeDefined();
+    const input = call?.[0].input as { AlpnPolicy?: unknown };
+    expect(input.AlpnPolicy).toBeUndefined();
   });
 
   it('Class 1 — Listener HTTP no-drift round-trip does NOT include Certificates in ModifyListener', async () => {
