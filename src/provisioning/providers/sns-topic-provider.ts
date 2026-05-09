@@ -158,13 +158,22 @@ export class SNSTopicProvider implements ResourceProvider {
         );
       }
 
-      // Apply DeliveryStatusLogging
+      // Apply DeliveryStatusLogging — every per-protocol attribute name AWS
+      // accepts is PascalCase-prefixed (`LambdaSuccessFeedbackRoleArn`,
+      // `SQSSuccessFeedbackRoleArn`, ...). CDK templates emit the
+      // `Protocol` value lowercase (`'lambda'` / `'sqs'` / `'http'`), so
+      // the raw `${protocol}<Suffix>` concatenation produces invalid
+      // attribute names that AWS rejects with `InvalidParameter: Invalid
+      // parameter: AttributeName`. Normalize every entry's protocol via
+      // `normalizeDeliveryStatusProtocol` before building the SDK input;
+      // an unknown / unsupported protocol throws a clear error rather
+      // than letting AWS produce the cryptic generic rejection.
       if (properties['DeliveryStatusLogging']) {
         const loggingConfigs = properties['DeliveryStatusLogging'] as Array<
           Record<string, unknown>
         >;
         for (const config of loggingConfigs) {
-          const protocol = config['Protocol'] as string;
+          const protocol = normalizeDeliveryStatusProtocolOrThrow(config['Protocol'], logicalId);
           if (config['SuccessFeedbackRoleArn']) {
             await this.snsClient.send(
               new SetTopicAttributesCommand({
@@ -273,7 +282,9 @@ export class SNSTopicProvider implements ResourceProvider {
       }
     }
 
-    // Update DeliveryStatusLogging if changed
+    // Update DeliveryStatusLogging if changed — same lowercase-rejection
+    // pitfall as create(). Normalize every entry's `Protocol` before
+    // building attribute names. See `normalizeDeliveryStatusProtocol`.
     if (
       JSON.stringify(properties['DeliveryStatusLogging']) !==
       JSON.stringify(previousProperties['DeliveryStatusLogging'])
@@ -281,7 +292,7 @@ export class SNSTopicProvider implements ResourceProvider {
       const loggingConfigs =
         (properties['DeliveryStatusLogging'] as Array<Record<string, unknown>>) || [];
       for (const config of loggingConfigs) {
-        const protocol = config['Protocol'] as string;
+        const protocol = normalizeDeliveryStatusProtocolOrThrow(config['Protocol'], logicalId);
         if (config['SuccessFeedbackRoleArn']) {
           await this.snsClient.send(
             new SetTopicAttributesCommand({
@@ -441,9 +452,15 @@ export class SNSTopicProvider implements ResourceProvider {
    * FailureFeedbackRoleArn?}]`. Walks the known protocol prefix list
    * (`HTTP` / `HTTPS` / `SQS` / `Lambda` / `Firehose` / `Application`); a
    * protocol is included in the result iff at least one of its three
-   * sub-attributes is set on the topic. Entries are sorted by `Protocol`
-   * for stable positional compare (AWS does not preserve template order
-   * across `GetTopicAttributes` calls).
+   * sub-attributes is set on the topic. Entries are sorted by canonical
+   * PascalCase `Protocol` for stable positional compare (AWS does not
+   * preserve template order across `GetTopicAttributes` calls).
+   *
+   * The emitted `Protocol` value preserves state's case when known
+   * (CDK templates emit lowercase `'lambda'` / `'sqs'` / ...; AWS's
+   * attribute prefix is PascalCase). Without case preservation the
+   * comparator would fire false drift on every clean run for any
+   * lowercase-`Protocol` template.
    *
    * `Subscription` is omitted because CDK manages it via separate
    * `AWS::SNS::Subscription` resources, not as a Topic property.
@@ -453,7 +470,8 @@ export class SNSTopicProvider implements ResourceProvider {
   async readCurrentState(
     physicalId: string,
     _logicalId: string,
-    _resourceType: string
+    _resourceType: string,
+    properties?: Record<string, unknown>
   ): Promise<Record<string, unknown> | undefined> {
     let attrs: Record<string, string> | undefined;
     try {
@@ -514,7 +532,17 @@ export class SNSTopicProvider implements ResourceProvider {
     // back to the CFn array shape. Walks the known protocol prefix list
     // (HTTP / HTTPS / SQS / Lambda / Firehose / Application) and emits a
     // CFn entry whenever any of the three sub-attributes is set.
-    result['DeliveryStatusLogging'] = mapDeliveryStatusLogging(attrs);
+    //
+    // CDK templates emit `Protocol` lowercase (`'lambda'` / `'sqs'` / ...),
+    // but AWS's per-protocol attribute prefix is PascalCase. To keep the
+    // positional comparator from firing false drift on case alone, surface
+    // each AWS-current entry using the SAME case the state holds for that
+    // protocol — `stateProtocolCaseMap` extracts state's casing per
+    // canonical PascalCase prefix.
+    result['DeliveryStatusLogging'] = mapDeliveryStatusLogging(
+      attrs,
+      stateProtocolCaseMap(properties?.['DeliveryStatusLogging'])
+    );
 
     // Tags via ListTagsForResource.
     try {
@@ -618,7 +646,16 @@ export class SNSTopicProvider implements ResourceProvider {
 //   <Protocol>SuccessFeedbackRoleArn  (e.g. HTTPSuccessFeedbackRoleArn)
 //   <Protocol>SuccessFeedbackSampleRate
 //   <Protocol>FailureFeedbackRoleArn
-// where <Protocol> matches cdkd's create-side `${protocol}<Suffix>` concatenation.
+// where <Protocol> is the canonical PascalCase prefix.
+//
+// Wire-format note: AWS's attribute prefix is always PascalCase
+// (`Lambda`, `SQS`, `HTTPS`, ...) regardless of how `Protocol` was
+// spelled in the template. CDK emits lowercase (`'lambda'` / `'sqs'`
+// / `'http'`) — passing those through directly to
+// `${protocol}SuccessFeedbackRoleArn` produces invalid attribute names
+// AWS rejects with `InvalidParameter: Invalid parameter:
+// AttributeName`. `normalizeDeliveryStatusProtocol` is the single
+// chokepoint mapping any-case input to the canonical PascalCase prefix.
 
 const SNS_DELIVERY_STATUS_PROTOCOLS = [
   'Application',
@@ -629,6 +666,98 @@ const SNS_DELIVERY_STATUS_PROTOCOLS = [
   'SQS',
 ] as const;
 
+type SnsDeliveryStatusProtocol = (typeof SNS_DELIVERY_STATUS_PROTOCOLS)[number];
+
+/**
+ * Map a (possibly-mixed-case) protocol string from a CFn template to the
+ * canonical PascalCase prefix AWS expects on `${Protocol}<Suffix>`
+ * attribute names.
+ *
+ * Returns `undefined` for unknown / unsupported protocols — callers must
+ * handle this case explicitly. Accepting an arbitrary string would
+ * defer the failure to AWS, which produces the unhelpful generic
+ * `InvalidParameter: Invalid parameter: AttributeName` message; failing
+ * fast in cdkd lets us name the offending value.
+ *
+ * Case map (lowercase canonical → PascalCase prefix):
+ *   application → Application
+ *   firehose    → Firehose
+ *   http        → HTTP
+ *   https       → HTTPS
+ *   lambda      → Lambda
+ *   sqs        → SQS
+ */
+export function normalizeDeliveryStatusProtocol(
+  input: unknown
+): SnsDeliveryStatusProtocol | undefined {
+  if (typeof input !== 'string') return undefined;
+  const lower = input.toLowerCase();
+  switch (lower) {
+    case 'application':
+      return 'Application';
+    case 'firehose':
+      return 'Firehose';
+    case 'http':
+      return 'HTTP';
+    case 'https':
+      return 'HTTPS';
+    case 'lambda':
+      return 'Lambda';
+    case 'sqs':
+      return 'SQS';
+    default:
+      return undefined;
+  }
+}
+
+/**
+ * Variant used by `create()` / `update()` to fail fast when a template
+ * carries an unknown protocol. Throws a clear error naming the offending
+ * value so the user sees what to fix instead of AWS's generic
+ * `InvalidParameter` rejection.
+ */
+function normalizeDeliveryStatusProtocolOrThrow(
+  input: unknown,
+  logicalId: string
+): SnsDeliveryStatusProtocol {
+  const normalized = normalizeDeliveryStatusProtocol(input);
+  if (normalized === undefined) {
+    throw new Error(
+      `SNS topic ${logicalId}: unsupported DeliveryStatusLogging protocol ${JSON.stringify(input)}. ` +
+        `Expected one of ${SNS_DELIVERY_STATUS_PROTOCOLS.join(', ')} (case-insensitive).`
+    );
+  }
+  return normalized;
+}
+
+/**
+ * Build a `{canonicalPascalCase: stateRecordedCase}` lookup from state's
+ * recorded `DeliveryStatusLogging[]`. Used by `mapDeliveryStatusLogging`
+ * to surface AWS-current entries in the same case the state holds, so
+ * the positional comparator does not fire false drift on case alone.
+ *
+ * Unrecognized state-side protocols are silently dropped; the
+ * comparator falls back to the canonical PascalCase prefix for those
+ * (worst case: a one-time drift entry that disappears once the user
+ * re-records the state).
+ */
+function stateProtocolCaseMap(stateLogging: unknown): Map<SnsDeliveryStatusProtocol, string> {
+  const map = new Map<SnsDeliveryStatusProtocol, string>();
+  if (!Array.isArray(stateLogging)) return map;
+  for (const entry of stateLogging) {
+    if (!entry || typeof entry !== 'object') continue;
+    const raw = (entry as Record<string, unknown>)['Protocol'];
+    if (typeof raw !== 'string') continue;
+    const normalized = normalizeDeliveryStatusProtocol(raw);
+    if (!normalized) continue;
+    // First state entry per canonical protocol wins; duplicates would
+    // already be a state error and the map's last-write semantics is
+    // immaterial in practice.
+    if (!map.has(normalized)) map.set(normalized, raw);
+  }
+  return map;
+}
+
 /**
  * Reverse-map per-protocol flat attributes returned by GetTopicAttributes
  * back to the CFn `DeliveryStatusLogging` array shape. Always emits an
@@ -636,22 +765,34 @@ const SNS_DELIVERY_STATUS_PROTOCOLS = [
  * console-side enable on a previously-default topic (PR #145 always-emit
  * pattern).
  *
- * Entries are sorted by `Protocol` (alphabetical) for stable positional
- * compare since AWS does not preserve template order. State-driven order
- * reconciliation is unnecessary here — every entry's identity is fully
- * determined by `Protocol` (no two entries share a protocol).
+ * Entries are sorted by canonical PascalCase `Protocol` (alphabetical) for
+ * stable positional compare since AWS does not preserve template order.
+ * State-driven order reconciliation is unnecessary here — every entry's
+ * identity is fully determined by `Protocol` (no two entries share a
+ * protocol).
+ *
+ * The `Protocol` value emitted in each entry uses the case the state
+ * recorded for that protocol (when known via `stateCaseMap`); falls back
+ * to the canonical PascalCase prefix otherwise. This keeps the comparator
+ * from firing false drift when state holds CDK's `'lambda'` and AWS's
+ * attribute prefix is `Lambda`.
  *
  * `SuccessFeedbackSampleRate` is surfaced as the AWS-returned string
  * (`'0'`-`'100'`) to match the CFn shape (`String` per the docs).
  */
-function mapDeliveryStatusLogging(attrs: Record<string, string>): Array<Record<string, unknown>> {
+function mapDeliveryStatusLogging(
+  attrs: Record<string, string>,
+  stateCaseMap: Map<SnsDeliveryStatusProtocol, string> = new Map()
+): Array<Record<string, unknown>> {
   const result: Array<Record<string, unknown>> = [];
   for (const protocol of SNS_DELIVERY_STATUS_PROTOCOLS) {
     const success = attrs[`${protocol}SuccessFeedbackRoleArn`];
     const sample = attrs[`${protocol}SuccessFeedbackSampleRate`];
     const failure = attrs[`${protocol}FailureFeedbackRoleArn`];
     if (success === undefined && sample === undefined && failure === undefined) continue;
-    const entry: Record<string, unknown> = { Protocol: protocol };
+    const entry: Record<string, unknown> = {
+      Protocol: stateCaseMap.get(protocol) ?? protocol,
+    };
     if (success !== undefined) entry['SuccessFeedbackRoleArn'] = success;
     if (sample !== undefined) entry['SuccessFeedbackSampleRate'] = sample;
     if (failure !== undefined) entry['FailureFeedbackRoleArn'] = failure;

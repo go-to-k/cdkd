@@ -156,6 +156,78 @@ describe('SNSTopicProvider.readCurrentState', () => {
     ]);
   });
 
+  it('preserves state-recorded lowercase Protocol case when reverse-mapping (CDK lowercase template)', async () => {
+    // CDK templates emit `Protocol: 'lambda'` (lowercase). AWS's
+    // attribute prefix is PascalCase. Without case preservation the
+    // comparator fires false drift on every clean run because state
+    // holds `'lambda'` and AWS-current would emit `'Lambda'`.
+    mockSend.mockResolvedValueOnce({
+      Attributes: {
+        TopicArn: TOPIC_ARN,
+        LambdaSuccessFeedbackRoleArn: 'arn:aws:iam::1:role/lambda-success',
+        SQSSuccessFeedbackRoleArn: 'arn:aws:iam::1:role/sqs-success',
+      },
+    });
+    mockSend.mockResolvedValueOnce({ Tags: [] });
+
+    const result = await provider.readCurrentState(TOPIC_ARN, 'Logical', 'AWS::SNS::Topic', {
+      DeliveryStatusLogging: [
+        { Protocol: 'lambda', SuccessFeedbackRoleArn: 'arn:aws:iam::1:role/lambda-success' },
+        { Protocol: 'sqs', SuccessFeedbackRoleArn: 'arn:aws:iam::1:role/sqs-success' },
+      ],
+    });
+
+    // Entries sorted by canonical PascalCase prefix (Lambda before SQS),
+    // but each entry's `Protocol` field uses state's recorded case.
+    expect(result?.['DeliveryStatusLogging']).toEqual([
+      { Protocol: 'lambda', SuccessFeedbackRoleArn: 'arn:aws:iam::1:role/lambda-success' },
+      { Protocol: 'sqs', SuccessFeedbackRoleArn: 'arn:aws:iam::1:role/sqs-success' },
+    ]);
+  });
+
+  it('preserves state-recorded PascalCase Protocol when state holds the canonical case', async () => {
+    // The complement of the lowercase case: when state holds
+    // `'Lambda'` the result must also emit `'Lambda'` — state's case
+    // wins, regardless of which case canonicalizes to it.
+    mockSend.mockResolvedValueOnce({
+      Attributes: {
+        TopicArn: TOPIC_ARN,
+        LambdaSuccessFeedbackRoleArn: 'arn:aws:iam::1:role/lambda-success',
+      },
+    });
+    mockSend.mockResolvedValueOnce({ Tags: [] });
+
+    const result = await provider.readCurrentState(TOPIC_ARN, 'Logical', 'AWS::SNS::Topic', {
+      DeliveryStatusLogging: [
+        { Protocol: 'Lambda', SuccessFeedbackRoleArn: 'arn:aws:iam::1:role/lambda-success' },
+      ],
+    });
+
+    expect(result?.['DeliveryStatusLogging']).toEqual([
+      { Protocol: 'Lambda', SuccessFeedbackRoleArn: 'arn:aws:iam::1:role/lambda-success' },
+    ]);
+  });
+
+  it('falls back to canonical PascalCase Protocol when state has no case hint', async () => {
+    // Pre-existing behavior: when readCurrentState is called without
+    // state's properties (e.g. early observed-property capture before
+    // state has been written), the result emits the canonical
+    // PascalCase prefix.
+    mockSend.mockResolvedValueOnce({
+      Attributes: {
+        TopicArn: TOPIC_ARN,
+        LambdaSuccessFeedbackRoleArn: 'arn:aws:iam::1:role/lambda-success',
+      },
+    });
+    mockSend.mockResolvedValueOnce({ Tags: [] });
+
+    const result = await provider.readCurrentState(TOPIC_ARN, 'Logical', 'AWS::SNS::Topic');
+
+    expect(result?.['DeliveryStatusLogging']).toEqual([
+      { Protocol: 'Lambda', SuccessFeedbackRoleArn: 'arn:aws:iam::1:role/lambda-success' },
+    ]);
+  });
+
   it('emits DeliveryStatusLogging=[] when no per-protocol feedback attributes are set', async () => {
     mockSend.mockResolvedValueOnce({ Attributes: { TopicArn: TOPIC_ARN } });
     mockSend.mockResolvedValueOnce({ Tags: [] });
