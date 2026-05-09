@@ -11,22 +11,42 @@ import {
   PutBucketOwnershipControlsCommand,
   PutBucketNotificationConfigurationCommand,
   PutBucketCorsCommand,
+  DeleteBucketCorsCommand,
   PutBucketLifecycleConfigurationCommand,
+  DeleteBucketLifecycleCommand,
   PutPublicAccessBlockCommand,
   PutBucketEncryptionCommand,
   PutBucketLoggingCommand,
   PutBucketWebsiteCommand,
+  DeleteBucketWebsiteCommand,
   PutBucketAccelerateConfigurationCommand,
   PutBucketMetricsConfigurationCommand,
+  DeleteBucketMetricsConfigurationCommand,
   PutBucketAnalyticsConfigurationCommand,
+  DeleteBucketAnalyticsConfigurationCommand,
   PutBucketIntelligentTieringConfigurationCommand,
+  DeleteBucketIntelligentTieringConfigurationCommand,
   PutBucketInventoryConfigurationCommand,
+  DeleteBucketInventoryConfigurationCommand,
   PutBucketReplicationCommand,
+  DeleteBucketReplicationCommand,
   PutObjectLockConfigurationCommand,
   GetBucketEncryptionCommand,
   GetBucketTaggingCommand,
   GetBucketVersioningCommand,
   GetPublicAccessBlockCommand,
+  GetBucketLifecycleConfigurationCommand,
+  GetBucketCorsCommand,
+  GetBucketWebsiteCommand,
+  GetBucketLoggingCommand,
+  GetBucketNotificationConfigurationCommand,
+  GetBucketReplicationCommand,
+  GetObjectLockConfigurationCommand,
+  GetBucketAccelerateConfigurationCommand,
+  ListBucketMetricsConfigurationsCommand,
+  ListBucketAnalyticsConfigurationsCommand,
+  ListBucketIntelligentTieringConfigurationsCommand,
+  ListBucketInventoryConfigurationsCommand,
   NoSuchBucket,
   ListObjectVersionsCommand,
   DeleteObjectsCommand,
@@ -475,8 +495,21 @@ export class S3BucketProvider implements ResourceProvider {
    */
   private async applyLoggingConfiguration(
     bucketName: string,
-    loggingConfig: Record<string, unknown>
+    loggingConfig: Record<string, unknown> | undefined
   ): Promise<void> {
+    // S3 supports clearing logging by sending an empty BucketLoggingStatus
+    // (no LoggingEnabled field). When loggingConfig is undefined or has no
+    // DestinationBucketName, we issue the clearing call.
+    if (!loggingConfig || !loggingConfig['DestinationBucketName']) {
+      await this.s3Client.send(
+        new PutBucketLoggingCommand({
+          Bucket: bucketName,
+          BucketLoggingStatus: {},
+        })
+      );
+      this.logger.debug(`Cleared logging configuration on bucket ${bucketName}`);
+      return;
+    }
     await this.s3Client.send(
       new PutBucketLoggingCommand({
         Bucket: bucketName,
@@ -585,6 +618,96 @@ export class S3BucketProvider implements ResourceProvider {
       })
     );
     this.logger.debug(`Applied accelerate configuration to bucket ${bucketName}`);
+  }
+
+  /**
+   * Apply notification configuration (full-replace via PutBucketNotificationConfiguration)
+   *
+   * CFn property: NotificationConfiguration with TopicConfigurations,
+   *   QueueConfigurations, LambdaConfigurations, EventBridgeConfiguration.
+   * SDK uses the same structure (PutBucketNotificationConfiguration replaces
+   * the entire notification configuration in one call).
+   */
+  private async applyNotificationConfiguration(
+    bucketName: string,
+    notifConfig: Record<string, unknown> | undefined
+  ): Promise<void> {
+    // PutBucketNotificationConfiguration is a full-replace API; sending an
+    // empty NotificationConfiguration clears all notifications.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const cfg: any = {};
+
+    if (notifConfig) {
+      const topics = notifConfig['TopicConfigurations'] as
+        | Array<Record<string, unknown>>
+        | undefined;
+      if (topics && Array.isArray(topics) && topics.length > 0) {
+        cfg.TopicConfigurations = topics.map((t) => ({
+          Id: t['Id'] as string | undefined,
+          TopicArn: (t['Topic'] ?? t['TopicArn']) as string,
+          Events: t['Event'] !== undefined ? [t['Event'] as string] : (t['Events'] as string[]),
+          Filter: this.cfnNotifFilterToSdk(t['Filter']),
+        }));
+      }
+      const queues = notifConfig['QueueConfigurations'] as
+        | Array<Record<string, unknown>>
+        | undefined;
+      if (queues && Array.isArray(queues) && queues.length > 0) {
+        cfg.QueueConfigurations = queues.map((q) => ({
+          Id: q['Id'] as string | undefined,
+          QueueArn: (q['Queue'] ?? q['QueueArn']) as string,
+          Events: q['Event'] !== undefined ? [q['Event'] as string] : (q['Events'] as string[]),
+          Filter: this.cfnNotifFilterToSdk(q['Filter']),
+        }));
+      }
+      const lambdas = notifConfig['LambdaConfigurations'] as
+        | Array<Record<string, unknown>>
+        | undefined;
+      if (lambdas && Array.isArray(lambdas) && lambdas.length > 0) {
+        cfg.LambdaFunctionConfigurations = lambdas.map((l) => ({
+          Id: l['Id'] as string | undefined,
+          LambdaFunctionArn: (l['Function'] ?? l['LambdaFunctionArn']) as string,
+          Events: l['Event'] !== undefined ? [l['Event'] as string] : (l['Events'] as string[]),
+          Filter: this.cfnNotifFilterToSdk(l['Filter']),
+        }));
+      }
+      const eb = notifConfig['EventBridgeConfiguration'] as Record<string, unknown> | undefined;
+      if (eb !== undefined) {
+        // CFn EventBridgeConfiguration is `{}` (empty object means enabled)
+        // SDK expects the same empty object to enable.
+        cfg.EventBridgeConfiguration = {};
+      }
+    }
+
+    await this.s3Client.send(
+      new PutBucketNotificationConfigurationCommand({
+        Bucket: bucketName,
+        NotificationConfiguration: cfg,
+      })
+    );
+    this.logger.debug(`Applied notification configuration to bucket ${bucketName}`);
+  }
+
+  /**
+   * Convert CFn notification Filter ({ S3Key: { Rules: [{ Name, Value }] } })
+   * to SDK NotificationConfigurationFilter.Key.FilterRules.
+   */
+  private cfnNotifFilterToSdk(
+    filter: unknown
+  ): { Key: { FilterRules: Array<{ Name: string; Value: string }> } } | undefined {
+    if (!filter || typeof filter !== 'object') return undefined;
+    const f = filter as Record<string, unknown>;
+    const s3Key = f['S3Key'] as Record<string, unknown> | undefined;
+    if (!s3Key) return undefined;
+    const rules = s3Key['Rules'] as Array<{ Name?: string; Value?: string }> | undefined;
+    if (!rules || !Array.isArray(rules) || rules.length === 0) return undefined;
+    return {
+      Key: {
+        FilterRules: rules
+          .filter((r) => r.Name !== undefined && r.Value !== undefined)
+          .map((r) => ({ Name: r.Name as string, Value: r.Value as string })),
+      },
+    };
   }
 
   /**
@@ -957,54 +1080,6 @@ export class S3BucketProvider implements ResourceProvider {
       this.logger.debug(`Applied ownership controls to bucket ${bucketName}`);
     }
 
-    // Notification Configuration (EventBridge)
-    const notifConfig = properties['NotificationConfiguration'] as
-      | Record<string, unknown>
-      | undefined;
-    if (notifConfig?.['EventBridgeConfiguration']) {
-      const ebConfig = notifConfig['EventBridgeConfiguration'] as { EventBridgeEnabled?: boolean };
-      await this.s3Client.send(
-        new PutBucketNotificationConfigurationCommand({
-          Bucket: bucketName,
-          NotificationConfiguration: {
-            EventBridgeConfiguration: {
-              EventBridgeEnabled: ebConfig.EventBridgeEnabled ?? true,
-            },
-          },
-        })
-      );
-      this.logger.debug(`Applied EventBridge notification to bucket ${bucketName}`);
-    }
-
-    // CORS Configuration. Skip empty-rules placeholder (Class 2): AWS
-    // rejects `PutBucketCors` with zero rules. The empty array can reach
-    // here from a `--revert` round-trip if a future readCurrentState
-    // emits `CorsConfiguration: { CorsRules: [] }` as the always-emit
-    // placeholder.
-    const corsConfig = properties['CorsConfiguration'] as
-      | { CorsRules: Array<Record<string, unknown>> }
-      | undefined;
-    if (
-      corsConfig?.CorsRules &&
-      Array.isArray(corsConfig.CorsRules) &&
-      corsConfig.CorsRules.length > 0
-    ) {
-      await this.applyCorsConfiguration(bucketName, corsConfig);
-    }
-
-    // Lifecycle Configuration. Skip empty-rules placeholder (Class 2):
-    // AWS rejects `PutBucketLifecycleConfiguration` with zero rules.
-    const lifecycleConfig = properties['LifecycleConfiguration'] as
-      | { Rules: Array<Record<string, unknown>> }
-      | undefined;
-    if (
-      lifecycleConfig?.Rules &&
-      Array.isArray(lifecycleConfig.Rules) &&
-      lifecycleConfig.Rules.length > 0
-    ) {
-      await this.applyLifecycleConfiguration(bucketName, lifecycleConfig);
-    }
-
     // Public Access Block Configuration
     const publicAccessBlock = properties['PublicAccessBlockConfiguration'] as
       | Record<string, unknown>
@@ -1030,20 +1105,321 @@ export class S3BucketProvider implements ResourceProvider {
     ) {
       await this.applyBucketEncryption(bucketName, bucketEncryption);
     }
+  }
 
-    // Logging Configuration
+  /**
+   * Diff CFn-shape sub-config values between previous and new state.
+   *
+   * Three transitions:
+   * - undefined -> defined  (value differs from previous, OR previous undefined): Put
+   * - defined -> undefined: Delete
+   * - defined -> defined (different): Put
+   * - unchanged: skip
+   *
+   * For the array-shaped configs (Metrics / Analytics / IntelligentTier /
+   * Inventory) this is per-id rather than per-config — see the dedicated
+   * helpers below.
+   */
+  private async diffSubConfig<T>(
+    _bucketName: string,
+    oldVal: T | undefined,
+    newVal: T | undefined,
+    onPut: (newVal: T) => Promise<void>,
+    onDelete: () => Promise<void>
+  ): Promise<void> {
+    const same = JSON.stringify(oldVal ?? null) === JSON.stringify(newVal ?? null);
+    if (same) return;
+    if (newVal === undefined || newVal === null) {
+      await onDelete();
+      return;
+    }
+    await onPut(newVal);
+  }
+
+  /**
+   * Per-id diff for the four array-shaped configs (MetricsConfigurations,
+   * AnalyticsConfigurations, IntelligentTieringConfigurations,
+   * InventoryConfigurations). Each AWS API operates on one config per
+   * (bucket, id) pair: Put-on-add or Put-on-change, Delete-on-removed.
+   */
+  private async diffArrayConfigById(
+    _bucketName: string,
+    oldArr: Array<Record<string, unknown>> | undefined,
+    newArr: Array<Record<string, unknown>> | undefined,
+    onPut: (id: string, config: Record<string, unknown>) => Promise<void>,
+    onDelete: (id: string) => Promise<void>
+  ): Promise<void> {
+    const oldById = new Map<string, Record<string, unknown>>();
+    for (const c of oldArr ?? []) {
+      const id = c['Id'] as string | undefined;
+      if (id) oldById.set(id, c);
+    }
+    const newById = new Map<string, Record<string, unknown>>();
+    for (const c of newArr ?? []) {
+      const id = c['Id'] as string | undefined;
+      if (id) newById.set(id, c);
+    }
+
+    // Adds + changes
+    for (const [id, cfg] of newById) {
+      const old = oldById.get(id);
+      if (!old || JSON.stringify(old) !== JSON.stringify(cfg)) {
+        await onPut(id, cfg);
+      }
+    }
+    // Deletes
+    for (const id of oldById.keys()) {
+      if (!newById.has(id)) {
+        await onDelete(id);
+      }
+    }
+  }
+
+  /**
+   * Apply the diff between previous and new sub-configs, issuing Put / Delete
+   * SDK calls only for differing keys. Called from `update()`.
+   *
+   * Versioning / PublicAccessBlock / Tags / OwnershipControls / BucketEncryption
+   * stay on `applyConfiguration` (the unconditional always-PUT path) because
+   * their AWS APIs don't have a clean "delete" counterpart and they
+   * round-trip safely as no-ops when state == AWS-current. The 12 sub-configs
+   * below DO have proper Put/Delete pairs so the diff path is preferable.
+   */
+  private async applySubConfigDiffs(
+    bucketName: string,
+    properties: Record<string, unknown>,
+    previousProperties: Record<string, unknown>
+  ): Promise<void> {
+    // Lifecycle
+    await this.diffSubConfig(
+      bucketName,
+      previousProperties['LifecycleConfiguration'] as
+        | { Rules: Array<Record<string, unknown>> }
+        | undefined,
+      properties['LifecycleConfiguration'] as { Rules: Array<Record<string, unknown>> } | undefined,
+      async (cfg) => {
+        // Skip empty-rules placeholder (Class 2)
+        if (!cfg.Rules || !Array.isArray(cfg.Rules) || cfg.Rules.length === 0) return;
+        await this.applyLifecycleConfiguration(bucketName, cfg);
+      },
+      async () => {
+        await this.s3Client.send(new DeleteBucketLifecycleCommand({ Bucket: bucketName }));
+        this.logger.debug(`Deleted lifecycle configuration on bucket ${bucketName}`);
+      }
+    );
+
+    // CORS
+    await this.diffSubConfig(
+      bucketName,
+      previousProperties['CorsConfiguration'] as
+        | { CorsRules: Array<Record<string, unknown>> }
+        | undefined,
+      properties['CorsConfiguration'] as { CorsRules: Array<Record<string, unknown>> } | undefined,
+      async (cfg) => {
+        // Skip empty-rules placeholder (Class 2)
+        if (!cfg.CorsRules || !Array.isArray(cfg.CorsRules) || cfg.CorsRules.length === 0) return;
+        await this.applyCorsConfiguration(bucketName, cfg);
+      },
+      async () => {
+        await this.s3Client.send(new DeleteBucketCorsCommand({ Bucket: bucketName }));
+        this.logger.debug(`Deleted CORS configuration on bucket ${bucketName}`);
+      }
+    );
+
+    // Website
+    await this.diffSubConfig(
+      bucketName,
+      previousProperties['WebsiteConfiguration'] as Record<string, unknown> | undefined,
+      properties['WebsiteConfiguration'] as Record<string, unknown> | undefined,
+      async (cfg) => this.applyWebsiteConfiguration(bucketName, cfg),
+      async () => {
+        await this.s3Client.send(new DeleteBucketWebsiteCommand({ Bucket: bucketName }));
+        this.logger.debug(`Deleted website configuration on bucket ${bucketName}`);
+      }
+    );
+
+    // Logging — no DeleteBucketLogging API; clearing is via PutBucketLogging
+    // with empty BucketLoggingStatus.
+    await this.diffSubConfig(
+      bucketName,
+      previousProperties['LoggingConfiguration'] as Record<string, unknown> | undefined,
+      properties['LoggingConfiguration'] as Record<string, unknown> | undefined,
+      async (cfg) => this.applyLoggingConfiguration(bucketName, cfg),
+      async () => this.applyLoggingConfiguration(bucketName, undefined)
+    );
+
+    // Notification — no DeleteBucketNotification API; clearing is via
+    // PutBucketNotificationConfiguration with empty NotificationConfiguration.
+    await this.diffSubConfig(
+      bucketName,
+      previousProperties['NotificationConfiguration'] as Record<string, unknown> | undefined,
+      properties['NotificationConfiguration'] as Record<string, unknown> | undefined,
+      async (cfg) => this.applyNotificationConfiguration(bucketName, cfg),
+      async () => this.applyNotificationConfiguration(bucketName, undefined)
+    );
+
+    // Replication
+    await this.diffSubConfig(
+      bucketName,
+      previousProperties['ReplicationConfiguration'] as Record<string, unknown> | undefined,
+      properties['ReplicationConfiguration'] as Record<string, unknown> | undefined,
+      async (cfg) => this.applyReplicationConfiguration(bucketName, cfg),
+      async () => {
+        await this.s3Client.send(new DeleteBucketReplicationCommand({ Bucket: bucketName }));
+        this.logger.debug(`Deleted replication configuration on bucket ${bucketName}`);
+      }
+    );
+
+    // Object Lock — no DeleteObjectLockConfiguration API; the bucket-level
+    // ObjectLockEnabled flag is set at creation time and cannot be cleared
+    // via Put. The Rule (default retention) can be reset via Put with no
+    // Rule, so a transition from "configured" -> undefined just sends an
+    // empty-Rule Put. AWS accepts this for buckets that already have
+    // ObjectLockEnabled.
+    await this.diffSubConfig(
+      bucketName,
+      previousProperties['ObjectLockConfiguration'] as Record<string, unknown> | undefined,
+      properties['ObjectLockConfiguration'] as Record<string, unknown> | undefined,
+      async (cfg) => this.applyObjectLockConfiguration(bucketName, cfg),
+      async () => {
+        await this.s3Client.send(
+          new PutObjectLockConfigurationCommand({
+            Bucket: bucketName,
+            ObjectLockConfiguration: { ObjectLockEnabled: 'Enabled' },
+          })
+        );
+        this.logger.debug(`Cleared object lock rule on bucket ${bucketName}`);
+      }
+    );
+
+    // Accelerate — no DeleteBucketAccelerate API; clearing is via
+    // PutBucketAccelerateConfiguration with Status='Suspended'.
+    await this.diffSubConfig(
+      bucketName,
+      previousProperties['AccelerateConfiguration'] as Record<string, unknown> | undefined,
+      properties['AccelerateConfiguration'] as Record<string, unknown> | undefined,
+      async (cfg) => this.applyAccelerateConfiguration(bucketName, cfg),
+      async () => this.applyAccelerateConfiguration(bucketName, { AccelerationStatus: 'Suspended' })
+    );
+
+    // Metrics (per-id diff)
+    await this.diffArrayConfigById(
+      bucketName,
+      previousProperties['MetricsConfigurations'] as Array<Record<string, unknown>> | undefined,
+      properties['MetricsConfigurations'] as Array<Record<string, unknown>> | undefined,
+      async (_id, cfg) => this.applyMetricsConfigurations(bucketName, [cfg]),
+      async (id) => {
+        await this.s3Client.send(
+          new DeleteBucketMetricsConfigurationCommand({ Bucket: bucketName, Id: id })
+        );
+        this.logger.debug(`Deleted metrics configuration ${id} on bucket ${bucketName}`);
+      }
+    );
+
+    // Analytics (per-id diff)
+    await this.diffArrayConfigById(
+      bucketName,
+      previousProperties['AnalyticsConfigurations'] as Array<Record<string, unknown>> | undefined,
+      properties['AnalyticsConfigurations'] as Array<Record<string, unknown>> | undefined,
+      async (_id, cfg) => this.applyAnalyticsConfigurations(bucketName, [cfg]),
+      async (id) => {
+        await this.s3Client.send(
+          new DeleteBucketAnalyticsConfigurationCommand({ Bucket: bucketName, Id: id })
+        );
+        this.logger.debug(`Deleted analytics configuration ${id} on bucket ${bucketName}`);
+      }
+    );
+
+    // IntelligentTiering (per-id diff)
+    await this.diffArrayConfigById(
+      bucketName,
+      previousProperties['IntelligentTieringConfigurations'] as
+        | Array<Record<string, unknown>>
+        | undefined,
+      properties['IntelligentTieringConfigurations'] as Array<Record<string, unknown>> | undefined,
+      async (_id, cfg) => this.applyIntelligentTieringConfigurations(bucketName, [cfg]),
+      async (id) => {
+        await this.s3Client.send(
+          new DeleteBucketIntelligentTieringConfigurationCommand({
+            Bucket: bucketName,
+            Id: id,
+          })
+        );
+        this.logger.debug(
+          `Deleted intelligent tiering configuration ${id} on bucket ${bucketName}`
+        );
+      }
+    );
+
+    // Inventory (per-id diff)
+    await this.diffArrayConfigById(
+      bucketName,
+      previousProperties['InventoryConfigurations'] as Array<Record<string, unknown>> | undefined,
+      properties['InventoryConfigurations'] as Array<Record<string, unknown>> | undefined,
+      async (_id, cfg) => this.applyInventoryConfigurations(bucketName, [cfg]),
+      async (id) => {
+        await this.s3Client.send(
+          new DeleteBucketInventoryConfigurationCommand({ Bucket: bucketName, Id: id })
+        );
+        this.logger.debug(`Deleted inventory configuration ${id} on bucket ${bucketName}`);
+      }
+    );
+  }
+
+  /**
+   * Apply ALL sub-configs unconditionally on initial create. Used by
+   * `create()` so the bucket starts out matching the template.
+   */
+  private async applyAllSubConfigsForCreate(
+    bucketName: string,
+    properties: Record<string, unknown>
+  ): Promise<void> {
+    // Notification (with EventBridge gate kept for backwards-compat with the
+    // pre-existing single-EventBridge create path)
+    const notifConfig = properties['NotificationConfiguration'] as
+      | Record<string, unknown>
+      | undefined;
+    if (notifConfig) {
+      await this.applyNotificationConfiguration(bucketName, notifConfig);
+    }
+
+    // CORS — skip empty-rules placeholder
+    const corsConfig = properties['CorsConfiguration'] as
+      | { CorsRules: Array<Record<string, unknown>> }
+      | undefined;
+    if (
+      corsConfig?.CorsRules &&
+      Array.isArray(corsConfig.CorsRules) &&
+      corsConfig.CorsRules.length > 0
+    ) {
+      await this.applyCorsConfiguration(bucketName, corsConfig);
+    }
+
+    // Lifecycle — skip empty-rules placeholder
+    const lifecycleConfig = properties['LifecycleConfiguration'] as
+      | { Rules: Array<Record<string, unknown>> }
+      | undefined;
+    if (
+      lifecycleConfig?.Rules &&
+      Array.isArray(lifecycleConfig.Rules) &&
+      lifecycleConfig.Rules.length > 0
+    ) {
+      await this.applyLifecycleConfiguration(bucketName, lifecycleConfig);
+    }
+
+    // Logging
     const loggingConfig = properties['LoggingConfiguration'] as Record<string, unknown> | undefined;
-    if (loggingConfig) {
+    if (loggingConfig?.['DestinationBucketName']) {
       await this.applyLoggingConfiguration(bucketName, loggingConfig);
     }
 
-    // Website Configuration
+    // Website
     const websiteConfig = properties['WebsiteConfiguration'] as Record<string, unknown> | undefined;
     if (websiteConfig) {
       await this.applyWebsiteConfiguration(bucketName, websiteConfig);
     }
 
-    // Accelerate Configuration
+    // Accelerate
     const accelerateConfig = properties['AccelerateConfiguration'] as
       | Record<string, unknown>
       | undefined;
@@ -1159,6 +1535,7 @@ export class S3BucketProvider implements ResourceProvider {
 
       // Apply additional configuration
       await this.applyConfiguration(bucketName, properties);
+      await this.applyAllSubConfigsForCreate(bucketName, properties);
 
       const attributes = await this.buildAttributes(bucketName);
 
@@ -1208,7 +1585,13 @@ export class S3BucketProvider implements ResourceProvider {
     try {
       // Apply configuration changes (skip Tags - applyConfiguration only adds,
       // doesn't remove; we handle tags below to support removal too).
+      // applyConfiguration is the always-PUT path for sub-configs that
+      // don't have a clean Delete API counterpart (Versioning / PAB / SSE).
       await this.applyConfiguration(physicalId, properties, /* skipTags */ true);
+
+      // Apply diff-aware Put/Delete for the 12 sub-configs that have proper
+      // Put/Delete API pairs.
+      await this.applySubConfigDiffs(physicalId, properties, previousProperties);
 
       // Apply tag diff. S3 uses PutBucketTagging (full-replace) and
       // DeleteBucketTagging when the new tag set is empty.
@@ -1286,20 +1669,23 @@ export class S3BucketProvider implements ResourceProvider {
    * into a single CFn-shaped object. Each call can throw a "feature not
    * configured" error (`NoSuchBucketConfiguration`,
    * `ServerSideEncryptionConfigurationNotFoundError`, `NoSuchTagSet`,
-   * `NoSuchPublicAccessBlockConfiguration`) — those are caught individually
-   * and the corresponding key is omitted from the result, NOT treated as
-   * the bucket being absent.
+   * `NoSuchPublicAccessBlockConfiguration`, etc.) — those are caught
+   * individually and the corresponding key is emitted as a CFn-shape
+   * placeholder (per docs/provider-development.md § 3b: always-emit
+   * user-controllable top-level keys), NOT treated as the bucket being
+   * absent.
    *
    * Only the bucket-gone case (`NoSuchBucket`, HTTP 404 from `HeadBucket`)
    * returns `undefined`.
    *
    * Coverage: `BucketName`, `VersioningConfiguration`, `BucketEncryption`,
-   * `PublicAccessBlockConfiguration`, `Tags`. Other configuration
-   * properties (Lifecycle, CORS, Website, Logging, Notification,
-   * Replication, ObjectLock, Accelerate, Metrics/Analytics/IntelligentTier/
-   * Inventory) are out of scope for v1 — they each need their own GET +
-   * shape mapping; CC API drift detection picks them up via `GetResource`
-   * once a user works through the SDK provider boundary.
+   * `PublicAccessBlockConfiguration`, `Tags`, plus all 12 sub-configs:
+   * `LifecycleConfiguration`, `CorsConfiguration`, `WebsiteConfiguration`,
+   * `LoggingConfiguration`, `NotificationConfiguration`,
+   * `ReplicationConfiguration`, `ObjectLockConfiguration`,
+   * `AccelerateConfiguration`, `MetricsConfigurations`,
+   * `AnalyticsConfigurations`, `IntelligentTieringConfigurations`,
+   * `InventoryConfigurations`.
    */
   async readCurrentState(
     physicalId: string,
@@ -1322,29 +1708,84 @@ export class S3BucketProvider implements ResourceProvider {
       throw err;
     }
 
-    const result: Record<string, unknown> = {
-      BucketName: physicalId,
-    };
+    // Fire all 15 GET / List calls in parallel. Each helper handles its own
+    // "feature not configured" → placeholder fallback.
+    const [
+      versioning,
+      encryption,
+      pab,
+      tags,
+      lifecycle,
+      cors,
+      website,
+      logging,
+      notification,
+      replication,
+      objectLock,
+      accelerate,
+      metrics,
+      analytics,
+      intelligentTier,
+      inventory,
+    ] = await Promise.all([
+      this.readVersioning(physicalId),
+      this.readEncryption(physicalId),
+      this.readPublicAccessBlock(physicalId),
+      this.readTags(physicalId),
+      this.readLifecycle(physicalId),
+      this.readCors(physicalId),
+      this.readWebsite(physicalId),
+      this.readLogging(physicalId),
+      this.readNotification(physicalId),
+      this.readReplication(physicalId),
+      this.readObjectLock(physicalId),
+      this.readAccelerate(physicalId),
+      this.readMetricsList(physicalId),
+      this.readAnalyticsList(physicalId),
+      this.readIntelligentTieringList(physicalId),
+      this.readInventoryList(physicalId),
+    ]);
 
+    return {
+      BucketName: physicalId,
+      VersioningConfiguration: versioning,
+      BucketEncryption: encryption,
+      PublicAccessBlockConfiguration: pab,
+      Tags: tags,
+      LifecycleConfiguration: lifecycle,
+      CorsConfiguration: cors,
+      WebsiteConfiguration: website,
+      LoggingConfiguration: logging,
+      NotificationConfiguration: notification,
+      ReplicationConfiguration: replication,
+      ObjectLockConfiguration: objectLock,
+      AccelerateConfiguration: accelerate,
+      MetricsConfigurations: metrics,
+      AnalyticsConfigurations: analytics,
+      IntelligentTieringConfigurations: intelligentTier,
+      InventoryConfigurations: inventory,
+    };
+  }
+
+  // -------------------------------------------------------------------
+  // readCurrentState helpers — one per sub-config. Each catches the
+  // "feature not configured" error and returns the always-emit
+  // placeholder shape per docs/provider-development.md § 3b.
+  // -------------------------------------------------------------------
+
+  private async readVersioning(bucket: string): Promise<Record<string, unknown>> {
     // VersioningConfiguration { Status }. Always emit a placeholder so a
     // console-side enable on a never-versioned bucket surfaces as drift.
-    // 'Suspended' is the semantic "off" value in CFn (`Suspended` and
-    // never-configured are equivalent — both mean "not currently versioning").
-    {
-      const resp = await this.s3Client.send(new GetBucketVersioningCommand({ Bucket: physicalId }));
-      result['VersioningConfiguration'] = { Status: resp.Status ?? 'Suspended' };
-    }
+    // 'Suspended' is the semantic "off" value in CFn.
+    const resp = await this.s3Client.send(new GetBucketVersioningCommand({ Bucket: bucket }));
+    return { Status: resp.Status ?? 'Suspended' };
+  }
 
-    // BucketEncryption.ServerSideEncryptionConfiguration[]. Always emit so a
-    // console-side enable surfaces; AWS auto-applies SSE-S3 to all new
-    // buckets in 2023+, so the "no SSE configured" branch is rare in
-    // practice but still worth covering with an empty array placeholder.
+  private async readEncryption(bucket: string): Promise<Record<string, unknown>> {
     try {
-      const resp = await this.s3Client.send(new GetBucketEncryptionCommand({ Bucket: physicalId }));
+      const resp = await this.s3Client.send(new GetBucketEncryptionCommand({ Bucket: bucket }));
       const rules = resp.ServerSideEncryptionConfiguration?.Rules ?? [];
-      // Re-shape AWS's `ApplyServerSideEncryptionByDefault` into CFn's
-      // `ServerSideEncryptionByDefault`. Other field names match.
-      result['BucketEncryption'] = {
+      return {
         ServerSideEncryptionConfiguration: rules.map((rule) => {
           const out: Record<string, unknown> = {};
           const sse = rule.ApplyServerSideEncryptionByDefault;
@@ -1359,27 +1800,19 @@ export class S3BucketProvider implements ResourceProvider {
         }),
       };
     } catch (err) {
-      // GetBucketEncryption throws `ServerSideEncryptionConfigurationNotFoundError`
-      // when no SSE has been configured. Emit the empty-rules placeholder
-      // instead of omitting the key entirely.
       const e = err as { name?: string };
       if (e.name === 'ServerSideEncryptionConfigurationNotFoundError') {
-        result['BucketEncryption'] = { ServerSideEncryptionConfiguration: [] };
-      } else {
-        throw err;
+        return { ServerSideEncryptionConfiguration: [] };
       }
+      throw err;
     }
+  }
 
-    // PublicAccessBlockConfiguration (CFn shape == AWS shape, modulo casing).
-    // Always emit so a console-side toggle surfaces as drift. AWS defaults
-    // to all-false ("public access NOT blocked") when no PAB is configured;
-    // emit that as the placeholder.
+  private async readPublicAccessBlock(bucket: string): Promise<Record<string, unknown>> {
     try {
-      const resp = await this.s3Client.send(
-        new GetPublicAccessBlockCommand({ Bucket: physicalId })
-      );
+      const resp = await this.s3Client.send(new GetPublicAccessBlockCommand({ Bucket: bucket }));
       const cfg = resp.PublicAccessBlockConfiguration;
-      result['PublicAccessBlockConfiguration'] = {
+      return {
         BlockPublicAcls: cfg?.BlockPublicAcls ?? false,
         BlockPublicPolicy: cfg?.BlockPublicPolicy ?? false,
         IgnorePublicAcls: cfg?.IgnorePublicAcls ?? false,
@@ -1388,40 +1821,555 @@ export class S3BucketProvider implements ResourceProvider {
     } catch (err) {
       const e = err as { name?: string };
       if (e.name === 'NoSuchPublicAccessBlockConfiguration') {
-        result['PublicAccessBlockConfiguration'] = {
+        return {
           BlockPublicAcls: false,
           BlockPublicPolicy: false,
           IgnorePublicAcls: false,
           RestrictPublicBuckets: false,
         };
-      } else {
-        throw err;
       }
+      throw err;
     }
+  }
 
-    // Tags (CFn shape: [{Key, Value}], AWS shape: TagSet[{Key, Value}] — same).
-    // `normalizeAwsTagsToCfn` filters out aws:* auto-injected tags (notably
-    // CDK's `aws:cdk:path`) and sorts the result by Key for stable
-    // comparison against state.
-    //
-    // Always-emit placeholder per docs/provider-development.md § 3b: even
-    // when the bucket has no user tags (NoSuchTagSet, or only filtered
-    // aws:* tags) we MUST emit `Tags: []`, otherwise observedProperties
-    // never carries the key and a console-side tag ADD on a previously
-    // untagged bucket is silently invisible to drift.
+  private async readTags(bucket: string): Promise<Array<{ Key: string; Value: string }>> {
     try {
-      const resp = await this.s3Client.send(new GetBucketTaggingCommand({ Bucket: physicalId }));
-      result['Tags'] = normalizeAwsTagsToCfn(resp.TagSet);
+      const resp = await this.s3Client.send(new GetBucketTaggingCommand({ Bucket: bucket }));
+      return normalizeAwsTagsToCfn(resp.TagSet);
     } catch (err) {
       const e = err as { name?: string };
-      if (e.name === 'NoSuchTagSet') {
-        result['Tags'] = [];
+      if (e.name === 'NoSuchTagSet') return [];
+      throw err;
+    }
+  }
+
+  private async readLifecycle(bucket: string): Promise<Record<string, unknown>> {
+    try {
+      const resp = await this.s3Client.send(
+        new GetBucketLifecycleConfigurationCommand({ Bucket: bucket })
+      );
+      const rules = resp.Rules ?? [];
+      return {
+        Rules: rules.map((r) => {
+          const out: Record<string, unknown> = {};
+          if (r.ID !== undefined) out['Id'] = r.ID;
+          if (r.Status !== undefined) out['Status'] = r.Status;
+          if (r.Prefix !== undefined) out['Prefix'] = r.Prefix;
+
+          // Expiration
+          if (r.Expiration) {
+            const exp: Record<string, unknown> = {};
+            if (r.Expiration.Days !== undefined) exp['Days'] = r.Expiration.Days;
+            if (r.Expiration.Date !== undefined) exp['Date'] = r.Expiration.Date.toISOString();
+            if (r.Expiration.ExpiredObjectDeleteMarker !== undefined)
+              exp['ExpiredObjectDeleteMarker'] = r.Expiration.ExpiredObjectDeleteMarker;
+            out['Expiration'] = exp;
+          }
+
+          // Transitions
+          if (r.Transitions && r.Transitions.length > 0) {
+            out['Transitions'] = r.Transitions.map((t) => {
+              const item: Record<string, unknown> = {};
+              if (t.Days !== undefined) item['TransitionInDays'] = t.Days;
+              if (t.Date !== undefined) item['TransitionDate'] = t.Date.toISOString();
+              if (t.StorageClass !== undefined) item['StorageClass'] = t.StorageClass;
+              return item;
+            });
+          }
+
+          // NoncurrentVersionExpiration
+          if (r.NoncurrentVersionExpiration) {
+            const nve: Record<string, unknown> = {};
+            if (r.NoncurrentVersionExpiration.NoncurrentDays !== undefined)
+              nve['NoncurrentDays'] = r.NoncurrentVersionExpiration.NoncurrentDays;
+            if (r.NoncurrentVersionExpiration.NewerNoncurrentVersions !== undefined)
+              nve['NewerNoncurrentVersions'] =
+                r.NoncurrentVersionExpiration.NewerNoncurrentVersions;
+            out['NoncurrentVersionExpiration'] = nve;
+          }
+
+          // NoncurrentVersionTransitions
+          if (r.NoncurrentVersionTransitions && r.NoncurrentVersionTransitions.length > 0) {
+            out['NoncurrentVersionTransitions'] = r.NoncurrentVersionTransitions.map((nvt) => {
+              const item: Record<string, unknown> = {};
+              if (nvt.NoncurrentDays !== undefined) item['NoncurrentDays'] = nvt.NoncurrentDays;
+              if (nvt.StorageClass !== undefined) item['StorageClass'] = nvt.StorageClass;
+              if (nvt.NewerNoncurrentVersions !== undefined)
+                item['NewerNoncurrentVersions'] = nvt.NewerNoncurrentVersions;
+              return item;
+            });
+          }
+
+          // AbortIncompleteMultipartUpload
+          if (r.AbortIncompleteMultipartUpload) {
+            out['AbortIncompleteMultipartUpload'] = {
+              DaysAfterInitiation: r.AbortIncompleteMultipartUpload.DaysAfterInitiation,
+            };
+          }
+
+          // Filter — reverse-map SDK Filter shape (Tag / Prefix / And / etc)
+          // back to CFn TagFilters / Prefix / ObjectSize* form.
+          if (r.Filter) {
+            const f = r.Filter as Record<string, unknown>;
+            const cfnFilter: Record<string, unknown> = {};
+            const and = f['And'] as Record<string, unknown> | undefined;
+            const tagOnly = f['Tag'] as { Key?: string; Value?: string } | undefined;
+            if (and) {
+              if (and['Prefix'] !== undefined) cfnFilter['Prefix'] = and['Prefix'];
+              if (and['Tags']) cfnFilter['TagFilters'] = and['Tags'];
+              if (and['ObjectSizeGreaterThan'] !== undefined)
+                cfnFilter['ObjectSizeGreaterThan'] = and['ObjectSizeGreaterThan'];
+              if (and['ObjectSizeLessThan'] !== undefined)
+                cfnFilter['ObjectSizeLessThan'] = and['ObjectSizeLessThan'];
+            } else if (tagOnly) {
+              cfnFilter['TagFilters'] = [tagOnly];
+            } else {
+              if (f['Prefix'] !== undefined) cfnFilter['Prefix'] = f['Prefix'];
+              if (f['ObjectSizeGreaterThan'] !== undefined)
+                cfnFilter['ObjectSizeGreaterThan'] = f['ObjectSizeGreaterThan'];
+              if (f['ObjectSizeLessThan'] !== undefined)
+                cfnFilter['ObjectSizeLessThan'] = f['ObjectSizeLessThan'];
+            }
+            if (Object.keys(cfnFilter).length > 0) out['Filter'] = cfnFilter;
+          }
+
+          return out;
+        }),
+      };
+    } catch (err) {
+      const e = err as { name?: string };
+      if (e.name === 'NoSuchLifecycleConfiguration') return { Rules: [] };
+      throw err;
+    }
+  }
+
+  private async readCors(bucket: string): Promise<Record<string, unknown>> {
+    try {
+      const resp = await this.s3Client.send(new GetBucketCorsCommand({ Bucket: bucket }));
+      const rules = resp.CORSRules ?? [];
+      return {
+        CorsRules: rules.map((r) => {
+          const out: Record<string, unknown> = {};
+          if (r.ID !== undefined) out['Id'] = r.ID;
+          if (r.AllowedHeaders !== undefined) out['AllowedHeaders'] = r.AllowedHeaders;
+          if (r.AllowedMethods !== undefined) out['AllowedMethods'] = r.AllowedMethods;
+          if (r.AllowedOrigins !== undefined) out['AllowedOrigins'] = r.AllowedOrigins;
+          if (r.ExposeHeaders !== undefined) out['ExposedHeaders'] = r.ExposeHeaders;
+          if (r.MaxAgeSeconds !== undefined) out['MaxAge'] = r.MaxAgeSeconds;
+          return out;
+        }),
+      };
+    } catch (err) {
+      const e = err as { name?: string };
+      if (e.name === 'NoSuchCORSConfiguration') return { CorsRules: [] };
+      throw err;
+    }
+  }
+
+  private async readWebsite(bucket: string): Promise<Record<string, unknown>> {
+    try {
+      const resp = await this.s3Client.send(new GetBucketWebsiteCommand({ Bucket: bucket }));
+      const out: Record<string, unknown> = {};
+      if (resp.IndexDocument?.Suffix !== undefined) {
+        out['IndexDocument'] = resp.IndexDocument.Suffix;
+      }
+      if (resp.ErrorDocument?.Key !== undefined) {
+        out['ErrorDocument'] = resp.ErrorDocument.Key;
+      }
+      if (resp.RedirectAllRequestsTo) {
+        const redirect: Record<string, unknown> = {};
+        if (resp.RedirectAllRequestsTo.HostName !== undefined)
+          redirect['HostName'] = resp.RedirectAllRequestsTo.HostName;
+        if (resp.RedirectAllRequestsTo.Protocol !== undefined)
+          redirect['Protocol'] = resp.RedirectAllRequestsTo.Protocol;
+        out['RedirectAllRequestsTo'] = redirect;
+      }
+      if (resp.RoutingRules && resp.RoutingRules.length > 0) {
+        out['RoutingRules'] = resp.RoutingRules.map((rr) => {
+          const ruleOut: Record<string, unknown> = {};
+          if (rr.Condition) {
+            const c: Record<string, unknown> = {};
+            if (rr.Condition.HttpErrorCodeReturnedEquals !== undefined)
+              c['HttpErrorCodeReturnedEquals'] = rr.Condition.HttpErrorCodeReturnedEquals;
+            if (rr.Condition.KeyPrefixEquals !== undefined)
+              c['KeyPrefixEquals'] = rr.Condition.KeyPrefixEquals;
+            ruleOut['RoutingRuleCondition'] = c;
+          }
+          if (rr.Redirect) {
+            const r: Record<string, unknown> = {};
+            if (rr.Redirect.HostName !== undefined) r['HostName'] = rr.Redirect.HostName;
+            if (rr.Redirect.HttpRedirectCode !== undefined)
+              r['HttpRedirectCode'] = rr.Redirect.HttpRedirectCode;
+            if (rr.Redirect.Protocol !== undefined) r['Protocol'] = rr.Redirect.Protocol;
+            if (rr.Redirect.ReplaceKeyPrefixWith !== undefined)
+              r['ReplaceKeyPrefixWith'] = rr.Redirect.ReplaceKeyPrefixWith;
+            if (rr.Redirect.ReplaceKeyWith !== undefined)
+              r['ReplaceKeyWith'] = rr.Redirect.ReplaceKeyWith;
+            ruleOut['RedirectRule'] = r;
+          }
+          return ruleOut;
+        });
+      }
+      return out;
+    } catch (err) {
+      const e = err as { name?: string };
+      if (e.name === 'NoSuchWebsiteConfiguration') return {};
+      throw err;
+    }
+  }
+
+  private async readLogging(bucket: string): Promise<Record<string, unknown>> {
+    const resp = await this.s3Client.send(new GetBucketLoggingCommand({ Bucket: bucket }));
+    if (!resp.LoggingEnabled) return {};
+    const out: Record<string, unknown> = {};
+    if (resp.LoggingEnabled.TargetBucket !== undefined)
+      out['DestinationBucketName'] = resp.LoggingEnabled.TargetBucket;
+    if (resp.LoggingEnabled.TargetPrefix !== undefined)
+      out['LogFilePrefix'] = resp.LoggingEnabled.TargetPrefix;
+    return out;
+  }
+
+  private async readNotification(bucket: string): Promise<Record<string, unknown>> {
+    const resp = await this.s3Client.send(
+      new GetBucketNotificationConfigurationCommand({ Bucket: bucket })
+    );
+    const out: Record<string, unknown> = {};
+    if (resp.TopicConfigurations && resp.TopicConfigurations.length > 0) {
+      out['TopicConfigurations'] = resp.TopicConfigurations.map((t) => {
+        const e: Record<string, unknown> = {};
+        if (t.Id !== undefined) e['Id'] = t.Id;
+        if (t.TopicArn !== undefined) e['Topic'] = t.TopicArn;
+        if (t.Events !== undefined) e['Events'] = t.Events;
+        if (t.Filter) e['Filter'] = this.sdkNotifFilterToCfn(t.Filter);
+        return e;
+      });
+    }
+    if (resp.QueueConfigurations && resp.QueueConfigurations.length > 0) {
+      out['QueueConfigurations'] = resp.QueueConfigurations.map((q) => {
+        const e: Record<string, unknown> = {};
+        if (q.Id !== undefined) e['Id'] = q.Id;
+        if (q.QueueArn !== undefined) e['Queue'] = q.QueueArn;
+        if (q.Events !== undefined) e['Events'] = q.Events;
+        if (q.Filter) e['Filter'] = this.sdkNotifFilterToCfn(q.Filter);
+        return e;
+      });
+    }
+    if (resp.LambdaFunctionConfigurations && resp.LambdaFunctionConfigurations.length > 0) {
+      out['LambdaConfigurations'] = resp.LambdaFunctionConfigurations.map((l) => {
+        const e: Record<string, unknown> = {};
+        if (l.Id !== undefined) e['Id'] = l.Id;
+        if (l.LambdaFunctionArn !== undefined) e['Function'] = l.LambdaFunctionArn;
+        if (l.Events !== undefined) e['Events'] = l.Events;
+        if (l.Filter) e['Filter'] = this.sdkNotifFilterToCfn(l.Filter);
+        return e;
+      });
+    }
+    if (resp.EventBridgeConfiguration) {
+      out['EventBridgeConfiguration'] = {};
+    }
+    return out;
+  }
+
+  private sdkNotifFilterToCfn(filter: unknown): Record<string, unknown> {
+    if (!filter || typeof filter !== 'object') return {};
+    const f = filter as Record<string, unknown>;
+    const key = f['Key'] as Record<string, unknown> | undefined;
+    if (!key) return {};
+    const filterRules = key['FilterRules'] as Array<{ Name?: string; Value?: string }> | undefined;
+    if (!filterRules) return {};
+    return {
+      S3Key: {
+        Rules: filterRules.map((r) => ({ Name: r.Name, Value: r.Value })),
+      },
+    };
+  }
+
+  private async readReplication(bucket: string): Promise<Record<string, unknown>> {
+    try {
+      const resp = await this.s3Client.send(new GetBucketReplicationCommand({ Bucket: bucket }));
+      const cfg = resp.ReplicationConfiguration;
+      if (!cfg) return {};
+      const out: Record<string, unknown> = {};
+      if (cfg.Role !== undefined) out['Role'] = cfg.Role;
+      if (cfg.Rules) {
+        out['Rules'] = cfg.Rules.map((r) => {
+          const ruleOut: Record<string, unknown> = {};
+          if (r.ID !== undefined) ruleOut['Id'] = r.ID;
+          if (r.Status !== undefined) ruleOut['Status'] = r.Status;
+          if (r.Priority !== undefined) ruleOut['Priority'] = r.Priority;
+          if (r.Prefix !== undefined) ruleOut['Prefix'] = r.Prefix;
+          if (r.Destination) {
+            const d: Record<string, unknown> = {};
+            if (r.Destination.Bucket !== undefined) d['Bucket'] = r.Destination.Bucket;
+            if (r.Destination.Account !== undefined) d['Account'] = r.Destination.Account;
+            if (r.Destination.StorageClass !== undefined)
+              d['StorageClass'] = r.Destination.StorageClass;
+            ruleOut['Destination'] = d;
+          }
+          if (r.Filter) {
+            const f = r.Filter as Record<string, unknown>;
+            const cfnFilter: Record<string, unknown> = {};
+            const and = f['And'] as Record<string, unknown> | undefined;
+            const tagOnly = f['Tag'] as { Key?: string; Value?: string } | undefined;
+            if (and) {
+              if (and['Prefix'] !== undefined) cfnFilter['Prefix'] = and['Prefix'];
+              const tags = and['Tags'] as Array<{ Key?: string; Value?: string }> | undefined;
+              if (tags && tags.length > 0) cfnFilter['TagFilter'] = tags[0];
+            } else if (tagOnly) {
+              cfnFilter['TagFilter'] = tagOnly;
+            } else if (f['Prefix'] !== undefined) {
+              cfnFilter['Prefix'] = f['Prefix'];
+            }
+            if (Object.keys(cfnFilter).length > 0) ruleOut['Filter'] = cfnFilter;
+          }
+          if (r.DeleteMarkerReplication) {
+            ruleOut['DeleteMarkerReplication'] = {
+              Status: r.DeleteMarkerReplication.Status,
+            };
+          }
+          return ruleOut;
+        });
+      }
+      return out;
+    } catch (err) {
+      const e = err as { name?: string };
+      if (e.name === 'ReplicationConfigurationNotFoundError') return {};
+      throw err;
+    }
+  }
+
+  private async readObjectLock(bucket: string): Promise<Record<string, unknown>> {
+    try {
+      const resp = await this.s3Client.send(
+        new GetObjectLockConfigurationCommand({ Bucket: bucket })
+      );
+      const cfg = resp.ObjectLockConfiguration;
+      if (!cfg) return {};
+      const out: Record<string, unknown> = {};
+      if (cfg.ObjectLockEnabled !== undefined) out['ObjectLockEnabled'] = cfg.ObjectLockEnabled;
+      if (cfg.Rule?.DefaultRetention) {
+        const r = cfg.Rule.DefaultRetention;
+        const retention: Record<string, unknown> = {};
+        if (r.Mode !== undefined) retention['Mode'] = r.Mode;
+        if (r.Days !== undefined) retention['Days'] = r.Days;
+        if (r.Years !== undefined) retention['Years'] = r.Years;
+        out['Rule'] = { DefaultRetention: retention };
+      }
+      return out;
+    } catch (err) {
+      const e = err as { name?: string };
+      if (
+        e.name === 'ObjectLockConfigurationNotFoundError' ||
+        e.name === 'NoSuchBucketConfiguration'
+      ) {
+        return {};
+      }
+      throw err;
+    }
+  }
+
+  private async readAccelerate(bucket: string): Promise<Record<string, unknown>> {
+    const resp = await this.s3Client.send(
+      new GetBucketAccelerateConfigurationCommand({ Bucket: bucket })
+    );
+    // Always-emit placeholder. AWS-side default is "no acceleration" which
+    // surfaces as Status=undefined. We emit `Suspended` (the semantic "off"
+    // that AWS accepts on Put) so a console-side enable surfaces.
+    return { AccelerationStatus: resp.Status ?? 'Suspended' };
+  }
+
+  private async readMetricsList(bucket: string): Promise<Array<Record<string, unknown>>> {
+    const out: Array<Record<string, unknown>> = [];
+    let continuationToken: string | undefined;
+    // eslint-disable-next-line no-constant-condition
+    while (true) {
+      const resp = await this.s3Client.send(
+        new ListBucketMetricsConfigurationsCommand({
+          Bucket: bucket,
+          ContinuationToken: continuationToken,
+        })
+      );
+      for (const c of resp.MetricsConfigurationList ?? []) {
+        out.push(this.metricsSdkToCfn(c as unknown as Record<string, unknown>));
+      }
+      if (!resp.IsTruncated) break;
+      continuationToken = resp.NextContinuationToken;
+    }
+    return out;
+  }
+
+  private metricsSdkToCfn(c: Record<string, unknown>): Record<string, unknown> {
+    const out: Record<string, unknown> = {};
+    if (c['Id'] !== undefined) out['Id'] = c['Id'];
+    const f = c['Filter'] as Record<string, unknown> | undefined;
+    if (f) {
+      const and = f['And'] as Record<string, unknown> | undefined;
+      const tagOnly = f['Tag'] as { Key?: string; Value?: string } | undefined;
+      if (and) {
+        if (and['Prefix'] !== undefined) out['Prefix'] = and['Prefix'];
+        if (and['Tags']) out['TagFilters'] = and['Tags'];
+        if (and['AccessPointArn'] !== undefined) out['AccessPointArn'] = and['AccessPointArn'];
+      } else if (tagOnly) {
+        out['TagFilters'] = [tagOnly];
       } else {
-        throw err;
+        if (f['Prefix'] !== undefined) out['Prefix'] = f['Prefix'];
+        if (f['AccessPointArn'] !== undefined) out['AccessPointArn'] = f['AccessPointArn'];
       }
     }
+    return out;
+  }
 
-    return result;
+  private async readAnalyticsList(bucket: string): Promise<Array<Record<string, unknown>>> {
+    const out: Array<Record<string, unknown>> = [];
+    let continuationToken: string | undefined;
+    // eslint-disable-next-line no-constant-condition
+    while (true) {
+      const resp = await this.s3Client.send(
+        new ListBucketAnalyticsConfigurationsCommand({
+          Bucket: bucket,
+          ContinuationToken: continuationToken,
+        })
+      );
+      for (const c of resp.AnalyticsConfigurationList ?? []) {
+        out.push(this.analyticsSdkToCfn(c as unknown as Record<string, unknown>));
+      }
+      if (!resp.IsTruncated) break;
+      continuationToken = resp.NextContinuationToken;
+    }
+    return out;
+  }
+
+  private analyticsSdkToCfn(c: Record<string, unknown>): Record<string, unknown> {
+    const out: Record<string, unknown> = {};
+    if (c['Id'] !== undefined) out['Id'] = c['Id'];
+    const f = c['Filter'] as Record<string, unknown> | undefined;
+    if (f) {
+      const and = f['And'] as Record<string, unknown> | undefined;
+      const tagOnly = f['Tag'] as { Key?: string; Value?: string } | undefined;
+      if (and) {
+        if (and['Prefix'] !== undefined) out['Prefix'] = and['Prefix'];
+        if (and['Tags']) out['TagFilters'] = and['Tags'];
+      } else if (tagOnly) {
+        out['TagFilters'] = [tagOnly];
+      } else if (f['Prefix'] !== undefined) {
+        out['Prefix'] = f['Prefix'];
+      }
+    }
+    const sca = c['StorageClassAnalysis'] as Record<string, unknown> | undefined;
+    if (sca?.['DataExport']) {
+      const dataExport = sca['DataExport'] as Record<string, unknown>;
+      const dest = dataExport['Destination'] as Record<string, unknown> | undefined;
+      const s3Dest = dest?.['S3BucketDestination'] as Record<string, unknown> | undefined;
+      out['StorageClassAnalysis'] = {
+        DataExport: {
+          OutputSchemaVersion: dataExport['OutputSchemaVersion'],
+          Destination: s3Dest
+            ? {
+                S3BucketDestination: {
+                  BucketArn: s3Dest['Bucket'],
+                  BucketAccountId: s3Dest['BucketAccountId'],
+                  Format: s3Dest['Format'],
+                  Prefix: s3Dest['Prefix'],
+                },
+              }
+            : undefined,
+        },
+      };
+    }
+    return out;
+  }
+
+  private async readIntelligentTieringList(
+    bucket: string
+  ): Promise<Array<Record<string, unknown>>> {
+    const out: Array<Record<string, unknown>> = [];
+    let continuationToken: string | undefined;
+    // eslint-disable-next-line no-constant-condition
+    while (true) {
+      const resp = await this.s3Client.send(
+        new ListBucketIntelligentTieringConfigurationsCommand({
+          Bucket: bucket,
+          ContinuationToken: continuationToken,
+        })
+      );
+      for (const c of resp.IntelligentTieringConfigurationList ?? []) {
+        out.push(this.intelligentTieringSdkToCfn(c as unknown as Record<string, unknown>));
+      }
+      if (!resp.IsTruncated) break;
+      continuationToken = resp.NextContinuationToken;
+    }
+    return out;
+  }
+
+  private intelligentTieringSdkToCfn(c: Record<string, unknown>): Record<string, unknown> {
+    const out: Record<string, unknown> = {};
+    if (c['Id'] !== undefined) out['Id'] = c['Id'];
+    if (c['Status'] !== undefined) out['Status'] = c['Status'];
+    if (c['Tierings']) {
+      const tierings = c['Tierings'] as Array<Record<string, unknown>>;
+      out['Tierings'] = tierings.map((t) => ({
+        AccessTier: t['AccessTier'],
+        Days: t['Days'],
+      }));
+    }
+    const f = c['Filter'] as Record<string, unknown> | undefined;
+    if (f) {
+      const and = f['And'] as Record<string, unknown> | undefined;
+      const tagOnly = f['Tag'] as { Key?: string; Value?: string } | undefined;
+      if (and) {
+        if (and['Prefix'] !== undefined) out['Prefix'] = and['Prefix'];
+        if (and['Tags']) out['TagFilters'] = and['Tags'];
+      } else if (tagOnly) {
+        out['TagFilters'] = [tagOnly];
+      } else if (f['Prefix'] !== undefined) {
+        out['Prefix'] = f['Prefix'];
+      }
+    }
+    return out;
+  }
+
+  private async readInventoryList(bucket: string): Promise<Array<Record<string, unknown>>> {
+    const out: Array<Record<string, unknown>> = [];
+    let continuationToken: string | undefined;
+    // eslint-disable-next-line no-constant-condition
+    while (true) {
+      const resp = await this.s3Client.send(
+        new ListBucketInventoryConfigurationsCommand({
+          Bucket: bucket,
+          ContinuationToken: continuationToken,
+        })
+      );
+      for (const c of resp.InventoryConfigurationList ?? []) {
+        out.push(this.inventorySdkToCfn(c as unknown as Record<string, unknown>));
+      }
+      if (!resp.IsTruncated) break;
+      continuationToken = resp.NextContinuationToken;
+    }
+    return out;
+  }
+
+  private inventorySdkToCfn(c: Record<string, unknown>): Record<string, unknown> {
+    const out: Record<string, unknown> = {};
+    if (c['Id'] !== undefined) out['Id'] = c['Id'];
+    if (c['IsEnabled'] !== undefined) out['Enabled'] = c['IsEnabled'];
+    if (c['IncludedObjectVersions'] !== undefined)
+      out['IncludedObjectVersions'] = c['IncludedObjectVersions'];
+    const schedule = c['Schedule'] as Record<string, unknown> | undefined;
+    if (schedule?.['Frequency'] !== undefined) out['ScheduleFrequency'] = schedule['Frequency'];
+    if (c['OptionalFields'] !== undefined) out['OptionalFields'] = c['OptionalFields'];
+    const dest = c['Destination'] as Record<string, unknown> | undefined;
+    const s3Dest = dest?.['S3BucketDestination'] as Record<string, unknown> | undefined;
+    if (s3Dest) {
+      const cfnDest: Record<string, unknown> = {};
+      if (s3Dest['Bucket'] !== undefined) cfnDest['BucketArn'] = s3Dest['Bucket'];
+      if (s3Dest['AccountId'] !== undefined) cfnDest['BucketAccountId'] = s3Dest['AccountId'];
+      if (s3Dest['Format'] !== undefined) cfnDest['Format'] = s3Dest['Format'];
+      if (s3Dest['Prefix'] !== undefined) cfnDest['Prefix'] = s3Dest['Prefix'];
+      out['Destination'] = cfnDest;
+    }
+    const filter = c['Filter'] as Record<string, unknown> | undefined;
+    if (filter?.['Prefix'] !== undefined) out['Prefix'] = filter['Prefix'];
+    return out;
   }
 
   /**

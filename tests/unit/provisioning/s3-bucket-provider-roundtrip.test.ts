@@ -56,6 +56,7 @@ describe('S3BucketProvider read-update round-trip', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     provider = new S3BucketProvider();
+    mockSend.mockResolvedValue({});
   });
 
   // -------------------------------------------------------------------
