@@ -7,15 +7,19 @@
 # cryptic "unexpected EOF while looking for matching '" errors that
 # burn time to diagnose.
 #
-# Triggers when a `git commit` invocation contains a heredoc (`<<`)
-# anywhere in the same command string. The recommended replacement is
-# `git commit -F <file>` — write the message to a file (which is read
-# verbatim by git, no shell parsing) and pass the path. This is the
-# same pattern the `/verify-pr` skill uses for `gh api PATCH --field
-# body=@/tmp/pr-body.md`.
+# The unsafe shape is specifically `git commit -m "$(cat <<EOF...)"`
+# (or `--message`) — a heredoc body being interpolated into the -m
+# argument of the same git commit invocation. The hook detects this
+# shape by looking for `<<` AFTER `-m` / `--message` within the same
+# pipeline segment (no `;` / `&&` / `||` / `|` between them).
 #
-# Note: a plain single-line `git commit -m "..."` still passes — only
-# the heredoc combination is blocked.
+# Recommended replacement: `git commit -F <file>` — write the message
+# to a file (which is read verbatim by git, no shell parsing) and
+# pass the path. The `cat > /tmp/file <<EOF...EOF && git commit -F
+# /tmp/file` pattern is SAFE and explicitly allowed even though
+# `<<` appears in the same Bash call: the heredoc writes the file,
+# the `-F` reads it back, and there is no shell parsing of the body
+# in between.
 
 set -u
 
@@ -26,8 +30,14 @@ if ! printf '%s' "$cmd" | grep -qE '\bgit[[:space:]]+commit\b'; then
   exit 0
 fi
 
-# Allow if no heredoc in the command.
-if ! printf '%s' "$cmd" | grep -q '<<'; then
+# Block only when `git commit ... (-m|--message) ... <<` appears in
+# the same pipeline segment (no `;` / `&&` / `||` / `|` between them).
+# The character class `[^|;&]` constrains the match to a single
+# segment, so `cat > file <<EOF; git commit -F file` (heredoc and
+# commit in different segments, file-based commit) is allowed, but
+# `git commit -m "$(cat <<EOF)"` (heredoc inside -m on one segment)
+# is caught.
+if ! printf '%s' "$cmd" | grep -qE '\bgit[[:space:]]+commit\b[^|;&]*(-m|--message)[^|;&]*<<'; then
   exit 0
 fi
 
