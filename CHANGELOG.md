@@ -1,3 +1,10 @@
+# [0.55.0](https://github.com/go-to-k/cdkd/compare/v0.54.0...v0.55.0) (2026-05-09)
+
+
+### Features
+
+* **ecs:** in-place update for AWS::ECS::Cluster ClusterSettings + Configuration ([#197](https://github.com/go-to-k/cdkd/issues/197)) ([d9034d4](https://github.com/go-to-k/cdkd/commit/d9034d4cc82e2fd7a2ac55ee021e2b08fa4895a1))
+
 # [0.54.0](https://github.com/go-to-k/cdkd/compare/v0.53.0...v0.54.0) (2026-05-09)
 
 
