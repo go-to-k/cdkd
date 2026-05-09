@@ -4,6 +4,7 @@ import {
   DeleteClusterCommand,
   DescribeClustersCommand,
   PutClusterCapacityProvidersCommand,
+  UpdateClusterCommand,
   RegisterTaskDefinitionCommand,
   DeregisterTaskDefinitionCommand,
   DescribeTaskDefinitionCommand,
@@ -340,6 +341,47 @@ export class ECSProvider implements ResourceProvider {
           })
         );
         this.logger.debug(`Updated capacity providers for ECS cluster ${physicalId}`);
+      }
+
+      // Apply ClusterSettings / Configuration via UpdateClusterCommand when
+      // either changed. Issue a single call so AWS evaluates the new shape
+      // atomically (avoids partial-apply on a per-field call). Skipped
+      // entirely when nothing differs so a no-drift round-trip stays
+      // mutation-free against AWS. ServiceConnectDefaults is also accepted
+      // by UpdateClusterCommand but is intentionally NOT applied here —
+      // create() and readCurrentState() do not surface it either, so
+      // adding update support without the matching create/read coverage
+      // would only fire for users who set it via console (a separate
+      // follow-up extends all three).
+      const settingsChanged =
+        JSON.stringify(previousProperties['ClusterSettings'] ?? null) !==
+        JSON.stringify(properties['ClusterSettings'] ?? null);
+      const configChanged =
+        JSON.stringify(previousProperties['Configuration'] ?? null) !==
+        JSON.stringify(properties['Configuration'] ?? null);
+
+      if (settingsChanged || configChanged) {
+        const settingsInput = settingsChanged
+          ? (
+              (properties['ClusterSettings'] as Array<Record<string, unknown>> | undefined) ?? []
+            ).map((s) => ({
+              name: (s['Name'] || s['name']) as 'containerInsights',
+              value: ((s['Value'] || s['value']) as string) ?? undefined,
+            }))
+          : undefined;
+
+        await client.send(
+          new UpdateClusterCommand({
+            cluster: physicalId,
+            ...(settingsChanged && { settings: settingsInput }),
+            ...(configChanged && {
+              configuration: properties['Configuration'] as ClusterConfiguration | undefined,
+            }),
+          })
+        );
+        this.logger.debug(
+          `Updated ECS cluster ${physicalId} (settings=${settingsChanged}, config=${configChanged})`
+        );
       }
 
       // Describe cluster to get current ARN

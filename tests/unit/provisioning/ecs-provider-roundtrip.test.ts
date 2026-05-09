@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import {
   PutClusterCapacityProvidersCommand,
+  UpdateClusterCommand,
   UpdateServiceCommand,
   RegisterTaskDefinitionCommand,
   DeregisterTaskDefinitionCommand,
@@ -58,6 +59,7 @@ function mutatingSends(): unknown[] {
     .filter(
       (cmd) =>
         cmd instanceof PutClusterCapacityProvidersCommand ||
+        cmd instanceof UpdateClusterCommand ||
         cmd instanceof UpdateServiceCommand ||
         cmd instanceof RegisterTaskDefinitionCommand ||
         cmd instanceof DeregisterTaskDefinitionCommand ||
@@ -106,6 +108,124 @@ describe('ECSProvider read-update round-trip', () => {
       (c) => c[0] instanceof TagResourceCommand || c[0] instanceof UntagResourceCommand
     );
     expect(tagSends).toHaveLength(0);
+  });
+
+  it('Cluster: ClusterSettings change fires UpdateClusterCommand with new settings', async () => {
+    // Console-side enable of containerInsights → cdkd drift --revert
+    // must round-trip via UpdateClusterCommand. Pre-PR the update path
+    // ignored ClusterSettings entirely.
+    const prev = {
+      ClusterName: CLUSTER_NAME,
+      CapacityProviders: ['FARGATE'],
+      DefaultCapacityProviderStrategy: [
+        { capacityProvider: 'FARGATE', weight: 1, base: 0 },
+      ] as Array<Record<string, unknown>>,
+      ClusterSettings: [{ Name: 'containerInsights', Value: 'disabled' }],
+      Tags: [],
+    };
+    const next = {
+      ...prev,
+      ClusterSettings: [{ Name: 'containerInsights', Value: 'enhanced' }],
+    };
+
+    // Mock: PutClusterCapacityProviders → UpdateCluster → DescribeClusters.
+    mockSend.mockResolvedValueOnce({});
+    mockSend.mockResolvedValueOnce({});
+    mockSend.mockResolvedValueOnce({
+      clusters: [{ clusterArn: CLUSTER_ARN, clusterName: CLUSTER_NAME }],
+    });
+
+    await provider.update('L', CLUSTER_NAME, 'AWS::ECS::Cluster', next, prev);
+
+    const updates = mockSend.mock.calls.filter(
+      (c) => c[0] instanceof UpdateClusterCommand
+    );
+    expect(updates).toHaveLength(1);
+    const input = updates[0]![0].input as {
+      cluster?: string;
+      settings?: Array<{ name: string; value?: string }>;
+      configuration?: unknown;
+    };
+    expect(input.cluster).toBe(CLUSTER_NAME);
+    expect(input.settings).toEqual([{ name: 'containerInsights', value: 'enhanced' }]);
+    // configuration is omitted (unchanged) — must NOT appear in input.
+    expect(input.configuration).toBeUndefined();
+  });
+
+  it('Cluster: Configuration change fires UpdateClusterCommand with new configuration', async () => {
+    // Nested config change (e.g. ExecuteCommandConfiguration.Logging) on
+    // an otherwise unchanged cluster. Mirrors how a console-side enable
+    // of execute-command logging round-trips.
+    const prev = {
+      ClusterName: CLUSTER_NAME,
+      CapacityProviders: [],
+      DefaultCapacityProviderStrategy: [],
+      ClusterSettings: [],
+      Tags: [],
+    };
+    const next = {
+      ...prev,
+      Configuration: {
+        executeCommandConfiguration: {
+          logging: 'OVERRIDE',
+          logConfiguration: {
+            cloudWatchLogGroupName: '/aws/ecs/cluster',
+            cloudWatchEncryptionEnabled: true,
+          },
+        },
+      },
+    };
+
+    mockSend.mockResolvedValueOnce({}); // PutClusterCapacityProviders (truthy-gated, fires on empty arrays)
+    mockSend.mockResolvedValueOnce({}); // UpdateClusterCommand
+    mockSend.mockResolvedValueOnce({
+      clusters: [{ clusterArn: CLUSTER_ARN, clusterName: CLUSTER_NAME }],
+    });
+
+    await provider.update('L', CLUSTER_NAME, 'AWS::ECS::Cluster', next, prev);
+
+    const updates = mockSend.mock.calls.filter(
+      (c) => c[0] instanceof UpdateClusterCommand
+    );
+    expect(updates).toHaveLength(1);
+    const input = updates[0]![0].input as {
+      configuration?: { executeCommandConfiguration?: { logging?: string } };
+      settings?: unknown;
+    };
+    expect(input.configuration?.executeCommandConfiguration?.logging).toBe('OVERRIDE');
+    // settings is omitted (unchanged) — must NOT appear in input.
+    expect(input.settings).toBeUndefined();
+  });
+
+  it('Cluster: no Settings/Configuration diff → no UpdateClusterCommand', async () => {
+    // No-diff no-op guard for the new code path. State == AWS for
+    // ClusterSettings + Configuration must NOT issue UpdateClusterCommand
+    // even when CapacityProviders is truthy-gated (which still does fire
+    // PutClusterCapacityProviders — separate concern).
+    const observed = {
+      ClusterName: CLUSTER_NAME,
+      CapacityProviders: ['FARGATE'],
+      DefaultCapacityProviderStrategy: [
+        { capacityProvider: 'FARGATE', weight: 1, base: 0 },
+      ] as Array<Record<string, unknown>>,
+      ClusterSettings: [{ Name: 'containerInsights', Value: 'enabled' }],
+      Configuration: {
+        executeCommandConfiguration: { logging: 'DEFAULT' },
+      },
+      Tags: [],
+    };
+
+    mockSend.mockResolvedValueOnce({}); // Put
+    mockSend.mockResolvedValueOnce({
+      clusters: [{ clusterArn: CLUSTER_ARN, clusterName: CLUSTER_NAME }],
+    });
+
+    await provider.update('L', CLUSTER_NAME, 'AWS::ECS::Cluster', observed, observed);
+
+    const updates = mockSend.mock.calls.filter(
+      (c) => c[0] instanceof UpdateClusterCommand
+    );
+    expect(updates).toHaveLength(0);
   });
 
   // ─── AWS::ECS::Service (Fargate) ───────────────────────────────
