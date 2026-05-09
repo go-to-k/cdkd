@@ -43,6 +43,21 @@ export interface StackInfo {
 
   /** Target account from CDK environment */
   account?: string | undefined;
+
+  /**
+   * Stack-level termination protection (CDK `Stack.terminationProtection`).
+   *
+   * When `true`, `cdkd destroy <stack>` and `cdkd destroy --all` refuse to
+   * destroy this stack and surface a `StackTerminationProtectionError` so
+   * the CLI exits via the partial-failure path (exit 2) without invoking
+   * the per-resource delete loop. The bypass workflow is to set
+   * `terminationProtection: false` in the CDK code, redeploy, then retry.
+   *
+   * Read-only `cdkd diff` and forward-only `cdkd deploy` are unaffected.
+   * `cdkd state destroy` (state-only, no synth) cannot honor this — the
+   * flag is a CDK property not stored in cdkd state.json.
+   */
+  terminationProtection?: boolean | undefined;
 }
 
 /**
@@ -247,6 +262,9 @@ export class AssemblyReader {
       dependencyNames,
       region: env?.region !== 'unknown-region' ? env?.region : undefined,
       account: env?.account !== 'unknown-account' ? env?.account : undefined,
+      ...(props?.terminationProtection !== undefined && {
+        terminationProtection: props.terminationProtection,
+      }),
     };
   }
 

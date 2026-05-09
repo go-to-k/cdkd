@@ -487,6 +487,33 @@ Two `orphan` variants at different granularities:
 Both `cdkd destroy` (synth-driven) and `cdkd state destroy`
 (state-driven, no synth) delete AWS resources + state.
 
+## Stack termination protection
+
+CDK's `new Stack(app, 'X', { terminationProtection: true })` is
+honored by `cdkd destroy` and `cdkd destroy --all`. A protected
+stack is refused before the lock is acquired and before any
+per-resource delete runs; in `--all` runs sibling unprotected
+stacks still destroy and the protected ones contribute to the
+partial-failure exit code 2.
+
+Bypass workflow:
+
+1. Edit the CDK code to set `terminationProtection: false`.
+2. Redeploy: `cdkd deploy MyStack`.
+3. Retry: `cdkd destroy MyStack`.
+
+`cdkd state destroy` (state-only, no synth) does **not** honor
+`terminationProtection` — the flag is a CDK property surfaced via
+synth and is not stored in cdkd's state.json. Use `cdkd destroy`
+when synth is available, or accept that `state destroy` is the
+explicit "I know what I'm doing, ignore CDK guards" escape hatch.
+
+A future `--remove-protection` flag (separate scope) will provide
+an explicit one-shot bypass without editing CDK code.
+
+`cdkd diff` (read-only) and `cdkd deploy` (forward-only) are
+unaffected — only destroy is gated.
+
 ## `publish-assets`: synth + build + publish, no deploy
 
 `cdkd publish-assets` runs the asset half of the deploy pipeline

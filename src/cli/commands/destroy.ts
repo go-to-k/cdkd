@@ -15,7 +15,11 @@ import {
 } from '../options.js';
 import { getLogger } from '../../utils/logger.js';
 import { applyRoleArnIfSet } from '../../utils/role-arn.js';
-import { PartialFailureError, withErrorHandling } from '../../utils/error-handler.js';
+import {
+  PartialFailureError,
+  StackTerminationProtectionError,
+  withErrorHandling,
+} from '../../utils/error-handler.js';
 import { Synthesizer } from '../../synthesis/synthesizer.js';
 import { S3StateBackend } from '../../state/s3-state-backend.js';
 import { LockManager } from '../../state/lock-manager.js';
@@ -118,9 +122,12 @@ async function destroyCommand(
     // Always synth to determine which stacks belong to this CDK app.
     const appCmd = options.app || resolveApp();
     // Local extension of `StackLike` that also carries the synth-derived
-    // region. Stack-matcher only reads stackName/displayName, so this is
-    // backwards-compatible everywhere matchStacks is used.
-    type AppStack = StackLike & { region?: string };
+    // region and the manifest's `terminationProtection` flag. Stack-matcher
+    // only reads stackName/displayName, so this is backwards-compatible
+    // everywhere matchStacks is used. `terminationProtection` is consulted
+    // in the per-stack loop below to refuse destroying protected stacks
+    // before any lock or per-resource delete fires.
+    type AppStack = StackLike & { region?: string; terminationProtection?: boolean };
     let appStacks: AppStack[] = [];
 
     if (appCmd) {
@@ -136,6 +143,9 @@ async function destroyCommand(
           stackName: s.stackName,
           displayName: s.displayName,
           ...(s.region && { region: s.region }),
+          ...(s.terminationProtection !== undefined && {
+            terminationProtection: s.terminationProtection,
+          }),
         }));
       } catch {
         logger.debug('Could not synthesize app, falling back to state-based stack list');
@@ -231,6 +241,20 @@ async function destroyCommand(
       const refs = stateRefsByName.get(stackName) ?? [];
       const synthStack = appStacks.find((s) => s.stackName === stackName);
       const synthRegion = synthStack?.region;
+
+      // Stack-level terminationProtection guard. Refuse to destroy BEFORE any
+      // lock acquisition or per-resource delete. In multi-stack runs (--all
+      // or wildcard), a protected stack counts as a per-stack failure and
+      // does NOT abort the rest — sibling unprotected stacks still get
+      // destroyed, and the aggregated count surfaces as PartialFailureError
+      // (exit 2) below. Mirrors CDK CLI's `cdk destroy` refusal but framed
+      // through cdkd's partial-failure pipeline.
+      if (synthStack?.terminationProtection === true) {
+        const err = new StackTerminationProtectionError(stackName);
+        logger.error(`  ✗ ${err.message}`);
+        totalErrors++;
+        continue;
+      }
       let stackTargetRegion: string;
       if (refs.length === 0) {
         logger.warn(`No state found for stack ${stackName}, skipping`);
