@@ -1,3 +1,10 @@
+# [0.58.0](https://github.com/go-to-k/cdkd/compare/v0.57.1...v0.58.0) (2026-05-09)
+
+
+### Features
+
+* **destroy:** honor stack-level terminationProtection in cdkd destroy ([#204](https://github.com/go-to-k/cdkd/issues/204)) ([502bcd0](https://github.com/go-to-k/cdkd/commit/502bcd0c48fb1b0874638fff7651b4c016eaa598))
+
 ## [0.57.1](https://github.com/go-to-k/cdkd/compare/v0.57.0...v0.57.1) (2026-05-09)
 
 
