@@ -848,10 +848,9 @@ async function stateDestroyCommand(
     process.env['CDKD_NO_LIVE'] = '1';
   }
 
-  validateResourceTimeouts({
-    ...(options.resourceWarnAfter && { resourceWarnAfter: options.resourceWarnAfter }),
-    ...(options.resourceTimeout && { resourceTimeout: options.resourceTimeout }),
-  });
+  // Mutates `options.resourceWarnAfter` in place when auto-lowering the
+  // inherited warn against a shortened --resource-timeout.
+  validateResourceTimeouts(options);
 
   if (!options.all && stackArgs.length === 0) {
     throw new Error(

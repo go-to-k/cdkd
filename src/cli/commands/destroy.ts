@@ -68,11 +68,11 @@ async function destroyCommand(
   warnIfDeprecatedRegion(options);
 
   // Reject mis-ordered --resource-warn-after / --resource-timeout pairs
-  // up front so the user sees the error before synth runs.
-  validateResourceTimeouts({
-    ...(options.resourceWarnAfter && { resourceWarnAfter: options.resourceWarnAfter }),
-    ...(options.resourceTimeout && { resourceTimeout: options.resourceTimeout }),
-  });
+  // up front so the user sees the error before synth runs. Mutates
+  // `options.resourceWarnAfter` in place when auto-lowering the inherited
+  // warn against a shortened --resource-timeout (so the destroy-runner
+  // call site below reads the lowered value).
+  validateResourceTimeouts(options);
 
   // Resolve --role-arn / CDKD_ROLE_ARN before any AWS call.
   await applyRoleArnIfSet({ roleArn: options.roleArn, region: options.region });
