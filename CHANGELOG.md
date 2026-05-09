@@ -1,3 +1,10 @@
+## [0.60.2](https://github.com/go-to-k/cdkd/compare/v0.60.1...v0.60.2) (2026-05-09)
+
+
+### Bug Fixes
+
+* **ec2:** extend DependencyViolation retry budget for IGW + VPCGw to 10 min ([#209](https://github.com/go-to-k/cdkd/issues/209)) ([890343e](https://github.com/go-to-k/cdkd/commit/890343e4341b13c5297875c5a0bbd40dcd95b60d))
+
 ## [0.60.1](https://github.com/go-to-k/cdkd/compare/v0.60.0...v0.60.1) (2026-05-09)
 
 
