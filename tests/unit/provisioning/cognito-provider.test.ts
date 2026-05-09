@@ -202,21 +202,16 @@ describe('CognitoUserPoolProvider', () => {
   });
 
   describe('delete', () => {
-    it('should delete user pool', async () => {
-      // DescribeUserPool (check deletion protection) + DeleteUserPool
-      mockSend
-        .mockResolvedValueOnce({ UserPool: { DeletionProtection: 'INACTIVE' } })
-        .mockResolvedValueOnce({});
+    it('without removeProtection, goes straight to DeleteUserPool (no Describe / Update)', async () => {
+      // Post-gating: bare delete does NOT pre-check or flip
+      // DeletionProtection. AWS rejects the delete on a protected pool;
+      // the user is expected to set --remove-protection.
+      mockSend.mockResolvedValueOnce({});
 
-      await provider.delete(
-        'MyUserPool',
-        'us-east-1_abc123',
-        'AWS::Cognito::UserPool'
-      );
+      await provider.delete('MyUserPool', 'us-east-1_abc123', 'AWS::Cognito::UserPool');
 
-      expect(mockSend).toHaveBeenCalledTimes(2);
-
-      const deleteCall = mockSend.mock.calls[1][0];
+      expect(mockSend).toHaveBeenCalledTimes(1);
+      const deleteCall = mockSend.mock.calls[0][0];
       expect(deleteCall.constructor.name).toBe('DeleteUserPoolCommand');
       expect(deleteCall.input.UserPoolId).toBe('us-east-1_abc123');
     });
@@ -226,43 +221,39 @@ describe('CognitoUserPoolProvider', () => {
         new ResourceNotFoundException({ $metadata: {}, message: 'not found' })
       );
 
-      await provider.delete(
-        'MyUserPool',
-        'us-east-1_abc123',
-        'AWS::Cognito::UserPool'
-      );
+      await provider.delete('MyUserPool', 'us-east-1_abc123', 'AWS::Cognito::UserPool');
 
       expect(mockSend).toHaveBeenCalledTimes(1);
     });
 
-    it('should disable deletion protection before deleting', async () => {
-      // DescribeUserPool returns ACTIVE + UpdateUserPool + DeleteUserPool
+    it('with removeProtection=true and templated DeletionProtection=ACTIVE, flips before delete', async () => {
+      // Templated ACTIVE short-circuits the Describe call: UpdateUserPool + DeleteUserPool only.
       mockSend
-        .mockResolvedValueOnce({ UserPool: { DeletionProtection: 'ACTIVE' } })
         .mockResolvedValueOnce({}) // UpdateUserPool
         .mockResolvedValueOnce({}); // DeleteUserPool
 
       await provider.delete(
         'MyUserPool',
         'us-east-1_abc123',
-        'AWS::Cognito::UserPool'
+        'AWS::Cognito::UserPool',
+        { DeletionProtection: 'ACTIVE' },
+        { removeProtection: true }
       );
 
-      expect(mockSend).toHaveBeenCalledTimes(3);
+      expect(mockSend).toHaveBeenCalledTimes(2);
+      const updateCall = mockSend.mock.calls[0][0];
+      expect(updateCall.constructor.name).toBe('UpdateUserPoolCommand');
+      expect(updateCall.input.DeletionProtection).toBe('INACTIVE');
+      const deleteCall = mockSend.mock.calls[1][0];
+      expect(deleteCall.constructor.name).toBe('DeleteUserPoolCommand');
     });
 
     it('should throw ProvisioningError on unexpected failure', async () => {
-      // DescribeUserPool succeeds, DeleteUserPool fails
-      mockSend
-        .mockResolvedValueOnce({ UserPool: { DeletionProtection: 'INACTIVE' } })
-        .mockRejectedValueOnce(new Error('Access Denied'));
+      // Bare delete now skips Describe; the unexpected failure happens on DeleteUserPool itself.
+      mockSend.mockRejectedValueOnce(new Error('Access Denied'));
 
       await expect(
-        provider.delete(
-          'MyUserPool',
-          'us-east-1_abc123',
-          'AWS::Cognito::UserPool'
-        )
+        provider.delete('MyUserPool', 'us-east-1_abc123', 'AWS::Cognito::UserPool')
       ).rejects.toThrow('Failed to delete Cognito User Pool MyUserPool');
     });
   });

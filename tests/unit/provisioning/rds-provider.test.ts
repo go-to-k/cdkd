@@ -219,7 +219,7 @@ describe('RDSProvider', () => {
     });
 
     describe('delete', () => {
-      it('should disable deletion protection and delete with SkipFinalSnapshot=true', async () => {
+      it('with removeProtection=true: disables deletion protection then deletes with SkipFinalSnapshot=true', async () => {
         // ModifyDBClusterCommand (disable deletion protection)
         mockSend.mockResolvedValueOnce({});
         // DeleteDBClusterCommand
@@ -229,7 +229,9 @@ describe('RDSProvider', () => {
         (notFoundError as { name: string }).name = 'DBClusterNotFoundFault';
         mockSend.mockRejectedValueOnce(notFoundError);
 
-        await provider.delete('MyCluster', 'my-cluster', 'AWS::RDS::DBCluster');
+        await provider.delete('MyCluster', 'my-cluster', 'AWS::RDS::DBCluster', undefined, {
+          removeProtection: true,
+        });
 
         expect(mockSend).toHaveBeenCalledTimes(3);
 
@@ -243,26 +245,33 @@ describe('RDSProvider', () => {
         expect(deleteCall.input.SkipFinalSnapshot).toBe(true);
       });
 
-      it('should handle DBClusterNotFoundFault gracefully', async () => {
-        // ModifyDBClusterCommand (disable deletion protection) - not found
-        const notFoundError1 = new Error('DBCluster not found');
-        (notFoundError1 as { name: string }).name = 'DBClusterNotFoundFault';
-        mockSend.mockRejectedValueOnce(notFoundError1);
-
-        // DeleteDBClusterCommand - not found
-        const notFoundError2 = new Error('DBCluster not found');
-        (notFoundError2 as { name: string }).name = 'DBClusterNotFoundFault';
-        mockSend.mockRejectedValueOnce(notFoundError2);
+      it('without removeProtection: skips the protection-flip and only issues DeleteDBClusterCommand', async () => {
+        // DeleteDBClusterCommand
+        mockSend.mockResolvedValueOnce({});
+        // DescribeDBClusters (waitForClusterDeleted) - not found
+        const notFoundError = new Error('DBCluster not found');
+        (notFoundError as { name: string }).name = 'DBClusterNotFoundFault';
+        mockSend.mockRejectedValueOnce(notFoundError);
 
         await provider.delete('MyCluster', 'my-cluster', 'AWS::RDS::DBCluster');
 
         expect(mockSend).toHaveBeenCalledTimes(2);
+        expect(mockSend.mock.calls[0][0].constructor.name).toBe('DeleteDBClusterCommand');
+      });
+
+      it('should handle DBClusterNotFoundFault gracefully', async () => {
+        // DeleteDBClusterCommand - not found (no protection flip without removeProtection).
+        const notFoundError = new Error('DBCluster not found');
+        (notFoundError as { name: string }).name = 'DBClusterNotFoundFault';
+        mockSend.mockRejectedValueOnce(notFoundError);
+
+        await provider.delete('MyCluster', 'my-cluster', 'AWS::RDS::DBCluster');
+
+        expect(mockSend).toHaveBeenCalledTimes(1);
       });
 
       it('should throw ProvisioningError on unexpected failure', async () => {
-        // ModifyDBClusterCommand succeeds
-        mockSend.mockResolvedValueOnce({});
-        // DeleteDBClusterCommand fails
+        // DeleteDBClusterCommand fails (no protection flip without removeProtection).
         mockSend.mockRejectedValueOnce(new Error('Access Denied'));
 
         await expect(
@@ -371,7 +380,7 @@ describe('RDSProvider', () => {
     });
 
     describe('delete', () => {
-      it('should disable deletion protection and delete with SkipFinalSnapshot=true', async () => {
+      it('with removeProtection=true: disables deletion protection then deletes with SkipFinalSnapshot=true', async () => {
         // ModifyDBInstanceCommand (disable deletion protection)
         mockSend.mockResolvedValueOnce({});
         // DeleteDBInstanceCommand
@@ -381,7 +390,9 @@ describe('RDSProvider', () => {
         (notFoundError as { name: string }).name = 'DBInstanceNotFoundFault';
         mockSend.mockRejectedValueOnce(notFoundError);
 
-        await provider.delete('MyInstance', 'my-instance', 'AWS::RDS::DBInstance');
+        await provider.delete('MyInstance', 'my-instance', 'AWS::RDS::DBInstance', undefined, {
+          removeProtection: true,
+        });
 
         expect(mockSend).toHaveBeenCalledTimes(3);
 
@@ -396,26 +407,33 @@ describe('RDSProvider', () => {
         expect(deleteCall.input.SkipFinalSnapshot).toBe(true);
       });
 
-      it('should handle DBInstanceNotFoundFault gracefully', async () => {
-        // ModifyDBInstanceCommand (disable deletion protection) - not found
-        const notFoundError1 = new Error('DBInstance not found');
-        (notFoundError1 as { name: string }).name = 'DBInstanceNotFoundFault';
-        mockSend.mockRejectedValueOnce(notFoundError1);
-
-        // DeleteDBInstanceCommand - not found
-        const notFoundError2 = new Error('DBInstance not found');
-        (notFoundError2 as { name: string }).name = 'DBInstanceNotFoundFault';
-        mockSend.mockRejectedValueOnce(notFoundError2);
+      it('without removeProtection: skips the protection-flip and only issues DeleteDBInstanceCommand', async () => {
+        // DeleteDBInstanceCommand
+        mockSend.mockResolvedValueOnce({});
+        // DescribeDBInstances (waitForInstanceDeleted) - not found
+        const notFoundError = new Error('DBInstance not found');
+        (notFoundError as { name: string }).name = 'DBInstanceNotFoundFault';
+        mockSend.mockRejectedValueOnce(notFoundError);
 
         await provider.delete('MyInstance', 'my-instance', 'AWS::RDS::DBInstance');
 
         expect(mockSend).toHaveBeenCalledTimes(2);
+        expect(mockSend.mock.calls[0][0].constructor.name).toBe('DeleteDBInstanceCommand');
+      });
+
+      it('should handle DBInstanceNotFoundFault gracefully', async () => {
+        // DeleteDBInstanceCommand - not found (no protection flip without removeProtection)
+        const notFoundError = new Error('DBInstance not found');
+        (notFoundError as { name: string }).name = 'DBInstanceNotFoundFault';
+        mockSend.mockRejectedValueOnce(notFoundError);
+
+        await provider.delete('MyInstance', 'my-instance', 'AWS::RDS::DBInstance');
+
+        expect(mockSend).toHaveBeenCalledTimes(1);
       });
 
       it('should throw ProvisioningError on unexpected failure', async () => {
-        // ModifyDBInstanceCommand succeeds
-        mockSend.mockResolvedValueOnce({});
-        // DeleteDBInstanceCommand fails
+        // DeleteDBInstanceCommand fails (no protection flip without removeProtection)
         mockSend.mockRejectedValueOnce(new Error('Access Denied'));
 
         await expect(

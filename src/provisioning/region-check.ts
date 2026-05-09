@@ -19,6 +19,44 @@ export interface DeleteContext {
    * directly without first narrowing.
    */
   expectedRegion?: string | undefined;
+
+  /**
+   * If true, providers MUST flip per-resource deletion protection off
+   * in-place before issuing the actual delete API call. Set by `cdkd
+   * destroy --remove-protection` / `cdkd state destroy --remove-protection`.
+   *
+   * Providers handle the in-place flip-off only for protection-bearing
+   * resource types (e.g. `AWS::Logs::LogGroup` `DeletionProtectionEnabled`,
+   * `AWS::RDS::DBInstance` / `DBCluster` `DeletionProtection`,
+   * `AWS::DynamoDB::Table` `DeletionProtectionEnabled`,
+   * `AWS::EC2::Instance` `DisableApiTermination`,
+   * `AWS::ElasticLoadBalancingV2::LoadBalancer`
+   * `deletion_protection.enabled` attribute). Resource types that do not
+   * have a corresponding protection field treat this flag as a no-op —
+   * the existing delete logic runs unchanged.
+   *
+   * The flip-off call is idempotent: it is always issued when this flag
+   * is set (and protection is supported on the type), regardless of
+   * whether the resource actually has protection enabled. AWS APIs
+   * accept the no-op (already-disabled) case without error; "not found"
+   * / similar errors during the flip-off are logged at debug and the
+   * delete proceeds.
+   *
+   * When `false` (the default), providers behave exactly as before —
+   * deletion protection blocks the destroy with whatever error AWS
+   * returns (`OperationNotPermitted` / `InvalidParameterCombination` /
+   * etc.) so the user must opt into the bypass explicitly.
+   *
+   * Note: prior to this flag, the RDS DBInstance / DBCluster providers
+   * unconditionally issued a `ModifyDB{Instance,Cluster}` to clear
+   * `DeletionProtection: false` before every destroy. That implicit
+   * behavior is now gated on `removeProtection === true` to match the
+   * other provider types — destroying an RDS resource whose deletion
+   * protection was set externally (console, AWS CLI) without
+   * `--remove-protection` will surface AWS's `InvalidParameterCombination`
+   * error rather than silently succeed.
+   */
+  removeProtection?: boolean;
 }
 
 /**

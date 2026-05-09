@@ -408,6 +408,29 @@ export class LogsLogGroupProvider implements ResourceProvider {
   ): Promise<void> {
     this.logger.debug(`Deleting log group ${logicalId}: ${physicalId}`);
 
+    // `--remove-protection`: flip DeletionProtectionEnabled off before
+    // delete. Idempotent — AWS accepts the call when protection is
+    // already disabled. Non-fatal: log at debug if the flip-off itself
+    // errors (NotFound / similar) so the actual delete attempt still
+    // runs and surfaces its own error message.
+    if (context?.removeProtection === true) {
+      try {
+        await this.logsClient.send(
+          new PutLogGroupDeletionProtectionCommand({
+            logGroupIdentifier: physicalId,
+            deletionProtectionEnabled: false,
+          })
+        );
+        this.logger.debug(
+          `Disabled DeletionProtectionEnabled on log group ${logicalId} before delete`
+        );
+      } catch (flipError) {
+        this.logger.debug(
+          `Could not disable DeletionProtectionEnabled on ${physicalId}: ${flipError instanceof Error ? flipError.message : String(flipError)}`
+        );
+      }
+    }
+
     try {
       await this.logsClient.send(new DeleteLogGroupCommand({ logGroupName: physicalId }));
       this.logger.debug(`Successfully deleted log group ${logicalId}`);

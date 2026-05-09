@@ -52,10 +52,10 @@
     "node": ">=20.0.0"
   },
   "dependencies": {
-    "archiver": "^7.0.0",
     "@aws-sdk/client-api-gateway": "^3.1017.0",
     "@aws-sdk/client-apigatewayv2": "^3.1018.0",
     "@aws-sdk/client-appsync": "^3.1018.0",
+    "@aws-sdk/client-auto-scaling": "^3.1045.0",
     "@aws-sdk/client-bedrock-agentcore": "^3.1017.0",
     "@aws-sdk/client-bedrock-agentcore-control": "^3.1017.0",
     "@aws-sdk/client-cloudcontrol": "^3.0.0",
@@ -94,6 +94,7 @@
     "@aws-sdk/client-sts": "^3.1016.0",
     "@aws-sdk/client-wafv2": "^3.1017.0",
     "@aws-sdk/s3-request-presigner": "^3.1016.0",
+    "archiver": "^7.0.0",
     "commander": "^12.0.0",
     "graphlib": "^2.1.8",
     "p-limit": "^5.0.0"

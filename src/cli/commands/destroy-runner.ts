@@ -59,6 +59,15 @@ export interface DestroyRunnerContext {
   skipConfirmation: boolean;
 
   /**
+   * If true, providers MUST flip per-resource deletion protection off
+   * in-place before delete. Mirrors `--remove-protection` on
+   * `cdkd destroy` / `cdkd state destroy`. Threaded into each
+   * `provider.delete` call via `DeleteContext.removeProtection`.
+   * Resource types without a protection field treat this as a no-op.
+   */
+  removeProtection?: boolean;
+
+  /**
    * Per-resource warn threshold (ms). Mirrors `DeployEngineOptions` so
    * `cdkd destroy` exposes the same `--resource-warn-after` UX as
    * `cdkd deploy`. Defaults to {@link DEFAULT_RESOURCE_WARN_AFTER_MS}.
@@ -103,6 +112,80 @@ export interface DestroyRunnerResult {
   deletedCount: number;
   /** Number of resources that failed to delete. State is preserved on >0 errors. */
   errorCount: number;
+}
+
+/**
+ * Resource-type → state-property name pairs that gate AWS deletion
+ * protection. Used by the `--remove-protection` confirmation prompt to
+ * report a best-effort count of resources that will have protection
+ * cleared. The actual flip-off is unconditional inside each provider's
+ * `delete()` (idempotent — safe when AWS already has protection off),
+ * so the count is informational only.
+ *
+ * Most types use a boolean flag — the value `true` is what we count.
+ * Two types use a string-valued enum (Cognito UserPool's
+ * `DeletionProtection` is `'ACTIVE' | 'INACTIVE'`, AutoScalingGroup's
+ * `DeletionProtection` is `'none' | 'prevent-force-deletion' |
+ * 'prevent-all-deletion'`). For those, the helper checks against a
+ * per-type set of "active" values via `PROTECTION_ACTIVE_VALUES_BY_TYPE`.
+ *
+ * Exported for unit-test coverage of `countProtectedResources`.
+ */
+export const PROTECTION_PROPERTY_BY_TYPE: Record<string, string> = {
+  'AWS::Logs::LogGroup': 'DeletionProtectionEnabled',
+  'AWS::RDS::DBInstance': 'DeletionProtection',
+  'AWS::RDS::DBCluster': 'DeletionProtection',
+  'AWS::DynamoDB::Table': 'DeletionProtectionEnabled',
+  'AWS::EC2::Instance': 'DisableApiTermination',
+  'AWS::Cognito::UserPool': 'DeletionProtection',
+  'AWS::AutoScaling::AutoScalingGroup': 'DeletionProtection',
+};
+
+/**
+ * For string-valued protection enums, the set of values that count as
+ * "currently protected". Types absent from this map use the default
+ * (boolean `true`).
+ */
+export const PROTECTION_ACTIVE_VALUES_BY_TYPE: Record<string, ReadonlySet<unknown>> = {
+  'AWS::Cognito::UserPool': new Set(['ACTIVE']),
+  'AWS::AutoScaling::AutoScalingGroup': new Set(['prevent-force-deletion', 'prevent-all-deletion']),
+};
+
+/**
+ * Count how many resources in a stack's recorded state appear to have
+ * deletion protection enabled. Walks `properties` and `observedProperties`
+ * for the property name registered against each resource type in
+ * `PROTECTION_PROPERTY_BY_TYPE`. ELBv2 LoadBalancer protection lives in
+ * `LoadBalancerAttributes` (a CFn `Array<{Key, Value}>`), so it's
+ * handled separately via the `deletion_protection.enabled` key.
+ */
+export function countProtectedResources(state: StackState): number {
+  let count = 0;
+  for (const resource of Object.values(state.resources ?? {})) {
+    const propName = PROTECTION_PROPERTY_BY_TYPE[resource.resourceType];
+    if (propName) {
+      const recorded = resource.properties?.[propName] ?? resource.observedProperties?.[propName];
+      const activeValues = PROTECTION_ACTIVE_VALUES_BY_TYPE[resource.resourceType];
+      if (activeValues) {
+        if (activeValues.has(recorded)) count++;
+      } else if (recorded === true) {
+        count++;
+      }
+      continue;
+    }
+    if (resource.resourceType === 'AWS::ElasticLoadBalancingV2::LoadBalancer') {
+      const attrs =
+        (resource.properties?.['LoadBalancerAttributes'] as
+          | Array<{ Key?: string; Value?: string }>
+          | undefined) ??
+        (resource.observedProperties?.['LoadBalancerAttributes'] as
+          | Array<{ Key?: string; Value?: string }>
+          | undefined);
+      const enabled = attrs?.find((a) => a?.Key === 'deletion_protection.enabled');
+      if (enabled?.Value === 'true') count++;
+    }
+  }
+  return count;
 }
 
 /**
@@ -155,17 +238,38 @@ export async function runDestroyForStack(
     logger.info(`  - ${logicalId} (${resource.resourceType})`);
   }
 
+  // When `--remove-protection` is set, surface a count of resources that
+  // appear protected per cdkd state so the prompt names the side effect
+  // explicitly. This is a best-effort signal — the real authority is
+  // AWS's current state, but at confirm time we only have what cdkd
+  // recorded. Resources whose state doesn't carry the protection flag
+  // (or where the recorded value is `false`) are still flipped via the
+  // idempotent flip-off call inside each provider's `delete()`.
+  const protectedCount = ctx.removeProtection ? countProtectedResources(state) : 0;
+
   if (!ctx.skipConfirmation) {
     const rl = readline.createInterface({
       input: process.stdin,
       output: process.stdout,
     });
-    const answer = await rl.question(
-      `\nAre you sure you want to destroy stack "${stackName}" and delete all ${resourceCount} resources? (Y/n): `
-    );
+    const prompt = ctx.removeProtection
+      ? `\nAbout to destroy ${resourceCount} resources from stack "${stackName}", ` +
+        `REMOVING DELETION PROTECTION on ${protectedCount} of them. Continue? (y/N): `
+      : `\nAre you sure you want to destroy stack "${stackName}" and delete all ${resourceCount} resources? (Y/n): `;
+    const answer = await rl.question(prompt);
     rl.close();
     const trimmed = answer.trim().toLowerCase();
-    if (trimmed === 'n' || trimmed === 'no') {
+    // `--remove-protection` flips the default to "no" because the side
+    // effect is destructive beyond the basic destroy — require explicit
+    // 'y' / 'yes'. The bare-destroy prompt keeps its existing default-yes
+    // semantics for back-compat.
+    if (ctx.removeProtection) {
+      if (trimmed !== 'y' && trimmed !== 'yes') {
+        logger.info('Destroy cancelled');
+        result.cancelled = true;
+        return result;
+      }
+    } else if (trimmed === 'n' || trimmed === 'no') {
       logger.info('Destroy cancelled');
       result.cancelled = true;
       return result;
@@ -317,7 +421,11 @@ export async function runDestroyForStack(
                     logicalId,
                     resource.physicalId,
                     resource.resourceType,
-                    resource.properties
+                    resource.properties,
+                    {
+                      ...(state.region !== undefined && { expectedRegion: state.region }),
+                      ...(ctx.removeProtection === true && { removeProtection: true }),
+                    }
                   );
                   lastDeleteError = null;
                   break;

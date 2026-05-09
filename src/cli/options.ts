@@ -474,4 +474,12 @@ export const destroyOptions = [
   new Option('-f, --force', 'Do not ask for confirmation before destroying the stacks').default(
     false
   ),
+  new Option(
+    '--remove-protection',
+    'Bypass deletion protection on protected resources by flipping the per-resource ' +
+      'protection flag off in-place before delete. Covers stack-level terminationProtection ' +
+      '(CDK property) and resource-level protection on AWS::Logs::LogGroup, AWS::RDS::DBInstance, ' +
+      'AWS::RDS::DBCluster, AWS::DynamoDB::Table, AWS::EC2::Instance, and ' +
+      'AWS::ElasticLoadBalancingV2::LoadBalancer.'
+  ).default(false),
 ];

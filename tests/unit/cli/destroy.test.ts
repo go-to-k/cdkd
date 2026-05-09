@@ -233,6 +233,48 @@ describe('cdkd destroy: terminationProtection guard', () => {
     expect(exitSpy).not.toHaveBeenCalled();
   });
 
+  it('--remove-protection bypasses terminationProtection guard with a WARN log and dispatches the runner', async () => {
+    const warnSpy = vi.fn();
+    // The destroy command logs the bypass at WARN level via the shared
+    // logger. Spy on logger.warn for this test.
+    const loggerModule = await import('../../../src/utils/logger.js');
+    vi.spyOn(loggerModule, 'getLogger').mockReturnValue({
+      setLevel: vi.fn(),
+      debug: vi.fn(),
+      info: infoSpy,
+      warn: warnSpy,
+      error: errorSpy,
+      child: () => ({
+        debug: vi.fn(),
+        info: vi.fn(),
+        warn: vi.fn(),
+        error: vi.fn(),
+      }),
+    } as unknown as ReturnType<typeof loggerModule.getLogger>);
+
+    mockSynthesize.mockResolvedValue({
+      manifest: {},
+      assemblyDir: '/tmp/cdk.out',
+      stacks: [makeStackInfo('Protected', 'us-east-1', true)],
+    });
+    mockListStacks.mockResolvedValue([{ stackName: 'Protected', region: 'us-east-1' }]);
+    mockGetState.mockResolvedValue({ state: makeStackState('Protected'), etag: '"x"' });
+
+    await runDestroy(['destroy', 'Protected', '--yes', '--remove-protection']);
+
+    // The runner runs (bypass) and the runner gets removeProtection=true.
+    expect(mockRunDestroyForStack).toHaveBeenCalledTimes(1);
+    expect(mockRunDestroyForStack.mock.calls[0]?.[2].removeProtection).toBe(true);
+
+    // No exit-2 on the bypass path.
+    expect(exitSpy).not.toHaveBeenCalled();
+
+    // The bypass is announced via WARN so it shows in CI logs.
+    const warnMessages = warnSpy.mock.calls.map((c) => String(c[0] ?? '')).join('\n');
+    expect(warnMessages).toMatch(/Protected/);
+    expect(warnMessages).toMatch(/--remove-protection/);
+  });
+
   it('--all with one protected + one unprotected: unprotected destroys, protected counts as failure (exit 2)', async () => {
     mockSynthesize.mockResolvedValue({
       manifest: {},

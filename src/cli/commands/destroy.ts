@@ -47,6 +47,7 @@ async function destroyCommand(
     roleArn?: string;
     yes: boolean;
     force: boolean;
+    removeProtection?: boolean;
     verbose: boolean;
     context?: string[];
     resourceWarnAfter?: ResourceTimeoutOption;
@@ -248,12 +249,20 @@ async function destroyCommand(
       // does NOT abort the rest — sibling unprotected stacks still get
       // destroyed, and the aggregated count surfaces as PartialFailureError
       // (exit 2) below. Mirrors CDK CLI's `cdk destroy` refusal but framed
-      // through cdkd's partial-failure pipeline.
+      // through cdkd's partial-failure pipeline. `--remove-protection` is
+      // the explicit opt-in bypass: log at WARN so the bypass is visible
+      // in CI logs, then proceed with the destroy.
       if (synthStack?.terminationProtection === true) {
-        const err = new StackTerminationProtectionError(stackName);
-        logger.error(`  ✗ ${err.message}`);
-        totalErrors++;
-        continue;
+        if (options.removeProtection) {
+          logger.warn(
+            `Stack ${stackName} has terminationProtection: true — bypassing because --remove-protection set`
+          );
+        } else {
+          const err = new StackTerminationProtectionError(stackName);
+          logger.error(`  ✗ ${err.message}`);
+          totalErrors++;
+          continue;
+        }
       }
       let stackTargetRegion: string;
       if (refs.length === 0) {
@@ -294,6 +303,7 @@ async function destroyCommand(
         ...(options.profile && { profile: options.profile }),
         stateBucket,
         skipConfirmation: options.yes || options.force,
+        removeProtection: options.removeProtection === true,
         ...(options.resourceWarnAfter?.globalMs !== undefined && {
           resourceWarnAfterMs: options.resourceWarnAfter.globalMs,
         }),

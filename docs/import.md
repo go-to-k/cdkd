@@ -352,6 +352,11 @@ nested CloudFormation stacks, so importing one is also unsupported.
 CDK Stages — separate top-level stacks under one app — are fine; pass
 the stack's display path or physical name as the positional argument.
 
+`AWS::AutoScaling::AutoScalingGroup` is also currently unsupported —
+the SDK provider exists for create / update / delete / readCurrentState
+but has not yet been wired for `import()`. Track-able via a follow-up
+that adds tag-based auto-lookup over `DescribeAutoScalingGroups`.
+
 ### Adding a new entry
 
 When adding `import()` support to a provider, add the resource type to

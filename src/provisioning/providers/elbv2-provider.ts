@@ -440,6 +440,30 @@ export class ELBv2Provider implements ResourceProvider {
   ): Promise<void> {
     this.logger.debug(`Deleting LoadBalancer ${logicalId}: ${physicalId}`);
 
+    // `--remove-protection`: clear the `deletion_protection.enabled`
+    // attribute before delete. Idempotent — ELBv2 accepts the call when
+    // protection is already disabled. Non-fatal: log at debug if the
+    // flip-off errors so the actual DeleteLoadBalancer proceeds.
+    if (context?.removeProtection === true) {
+      try {
+        await this.getClient().send(
+          new ModifyLoadBalancerAttributesCommand({
+            LoadBalancerArn: physicalId,
+            Attributes: [{ Key: 'deletion_protection.enabled', Value: 'false' }],
+          })
+        );
+        this.logger.debug(
+          `Disabled deletion_protection.enabled on LoadBalancer ${logicalId} before delete`
+        );
+      } catch (flipError) {
+        if (!this.isNotFoundError(flipError)) {
+          this.logger.debug(
+            `Could not disable deletion_protection.enabled on ${physicalId}: ${flipError instanceof Error ? flipError.message : String(flipError)}`
+          );
+        }
+      }
+    }
+
     try {
       await this.getClient().send(new DeleteLoadBalancerCommand({ LoadBalancerArn: physicalId }));
       this.logger.debug(`Successfully deleted LoadBalancer ${logicalId}`);

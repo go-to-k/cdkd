@@ -632,6 +632,75 @@ push). Resources surfaced as `unsupported` (provider has no
 `readCurrentState` yet) are skipped by both flags — the comparator
 never produced a `PropertyDrift` for them.
 
+## `--remove-protection`: bypass deletion protection on destroy
+
+`cdkd destroy --remove-protection` and `cdkd state destroy
+--remove-protection` flip every protection flag off in-place
+before each provider's delete API call so the destroy proceeds
+without an intermediate edit / redeploy / console click. Covers
+**stack-level** `terminationProtection` (the bypass logs a WARN
+line naming the stack — `cdkd state destroy` already ignores
+`terminationProtection` because the flag is a CDK property
+surfaced via synth, so the flag is effectively a no-op there for
+that part) AND **resource-level** protection on the following
+types:
+
+| Resource type | Protection field | Bypass call |
+| --- | --- | --- |
+| `AWS::Logs::LogGroup` | `DeletionProtectionEnabled` | `PutLogGroupDeletionProtection(deletionProtectionEnabled=false)` |
+| `AWS::RDS::DBInstance` | `DeletionProtection` | `ModifyDBInstance(DeletionProtection=false, ApplyImmediately=true)` |
+| `AWS::RDS::DBCluster` | `DeletionProtection` | `ModifyDBCluster(DeletionProtection=false, ApplyImmediately=true)` |
+| `AWS::DynamoDB::Table` | `DeletionProtectionEnabled` | `UpdateTable(DeletionProtectionEnabled=false)` then `DescribeTable` poll until `ACTIVE` |
+| `AWS::EC2::Instance` | `DisableApiTermination` | `ModifyInstanceAttribute(DisableApiTermination={Value:false})` |
+| `AWS::ElasticLoadBalancingV2::LoadBalancer` | attribute `deletion_protection.enabled` | `ModifyLoadBalancerAttributes([{Key: 'deletion_protection.enabled', Value: 'false'}])` |
+| `AWS::Cognito::UserPool` | `DeletionProtection` (`ACTIVE` / `INACTIVE`) | `UpdateUserPool(DeletionProtection='INACTIVE')` |
+| `AWS::AutoScaling::AutoScalingGroup` | `DeletionProtection` (`none` / `prevent-force-deletion` / `prevent-all-deletion`) | `UpdateAutoScalingGroup(DeletionProtection='none')` followed by `DeleteAutoScalingGroup(ForceDelete=true)` so AWS terminates running instances as part of the delete |
+
+Behavior:
+
+- The flip-off call is **idempotent** — providers always issue it
+  when the flag is set, regardless of whether the resource
+  currently has protection on. AWS accepts the no-op (already-
+  disabled) case without error.
+- A failure of the flip-off itself (NotFound / similar) is logged
+  at debug; the actual delete API call still runs and surfaces
+  its own error message.
+- This is **per-PR-level**: a single `--remove-protection` covers
+  every protection-bearing type listed above. There is no per-
+  type variant. If you need finer control, run a stack-only
+  destroy and clean up the rest manually.
+- The interactive confirmation prompt is updated when the flag is
+  set: `About to destroy N resources from stack "X", REMOVING
+  DELETION PROTECTION on K of them. Continue? (y/N)`. The
+  default flips from `Y/n` to `y/N`. `--yes` / `-y` / `-f`
+  skips the prompt.
+- **RDS / Cognito gating change**: prior to this flag, the RDS
+  DBInstance / DBCluster providers always issued
+  `ModifyDB{Instance,Cluster}` with `DeletionProtection: false`
+  before destroy, and the Cognito UserPool provider always issued
+  `DescribeUserPool` + (if `ACTIVE`) `UpdateUserPool
+  (DeletionProtection='INACTIVE')` before destroy. Both implicit
+  behaviors are now gated on `--remove-protection` to match the
+  other types — destroying an RDS or Cognito UserPool resource
+  whose deletion protection was set externally (console / AWS CLI)
+  without `--remove-protection` will surface AWS's
+  `InvalidParameterCombination` / `InvalidParameterException`
+  error rather than silently succeed.
+- Protection types not in the table above (CloudFront
+  Distributions, S3 bucket retention, etc.) are out of scope —
+  the list is curated to the cases where AWS exposes a
+  synchronous "flip protection off" API call.
+
+```bash
+# Stack with terminationProtection: true OR a protected DynamoDB / RDS / Logs / EC2 / LB
+cdkd destroy MyStack --remove-protection
+cdkd destroy --all --remove-protection -y
+
+# CDK-app-free counterpart — the resource-level flip applies the same way;
+# stack-level terminationProtection is already ignored by `state destroy`.
+cdkd state destroy MyStack --remove-protection -y
+```
+
 ## Exit codes
 
 cdkd commands distinguish three outcomes via the process exit code so

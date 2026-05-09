@@ -50,6 +50,7 @@ import {
   DeleteNetworkInterfaceCommand,
   DescribeVolumesCommand,
   DescribeInstanceAttributeCommand,
+  ModifyInstanceAttributeCommand,
   type Tenancy,
   type _InstanceType,
   type VolumeType,
@@ -2225,6 +2226,30 @@ export class EC2Provider implements ResourceProvider {
     context?: DeleteContext
   ): Promise<void> {
     this.logger.debug(`Terminating EC2 Instance ${logicalId}: ${physicalId}`);
+
+    // `--remove-protection`: flip DisableApiTermination off before
+    // TerminateInstances. Idempotent — EC2 accepts the call when the
+    // attribute is already false. Non-fatal: log at debug if the
+    // flip-off errors so the actual TerminateInstances still proceeds.
+    if (context?.removeProtection === true) {
+      try {
+        await this.ec2Client.send(
+          new ModifyInstanceAttributeCommand({
+            InstanceId: physicalId,
+            DisableApiTermination: { Value: false },
+          })
+        );
+        this.logger.debug(
+          `Disabled DisableApiTermination on EC2 Instance ${logicalId} before termination`
+        );
+      } catch (flipError) {
+        if (!this.isNotFoundError(flipError)) {
+          this.logger.debug(
+            `Could not disable DisableApiTermination on ${physicalId}: ${flipError instanceof Error ? flipError.message : String(flipError)}`
+          );
+        }
+      }
+    }
 
     try {
       await this.ec2Client.send(new TerminateInstancesCommand({ InstanceIds: [physicalId] }));

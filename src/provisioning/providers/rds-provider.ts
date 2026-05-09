@@ -519,20 +519,26 @@ export class RDSProvider implements ResourceProvider {
     this.logger.debug(`Deleting DBCluster ${logicalId}: ${physicalId}`);
 
     try {
-      // Disable deletion protection before deleting if needed
-      try {
-        await this.getClient().send(
-          new ModifyDBClusterCommand({
-            DBClusterIdentifier: physicalId,
-            DeletionProtection: false,
-          })
-        );
-      } catch (disableError) {
-        // Ignore errors from disabling deletion protection (cluster may already be deleted)
-        if (!this.isNotFoundError(disableError, 'DBClusterNotFoundFault')) {
-          this.logger.debug(
-            `Could not disable deletion protection for ${physicalId}: ${disableError instanceof Error ? disableError.message : String(disableError)}`
+      // `--remove-protection`: flip DeletionProtection off in-place
+      // before delete. Idempotent — RDS accepts the call when protection
+      // is already disabled. Non-fatal: log at debug if the flip-off
+      // errors (e.g. NotFound) so the actual delete still proceeds.
+      if (context?.removeProtection === true) {
+        try {
+          await this.getClient().send(
+            new ModifyDBClusterCommand({
+              DBClusterIdentifier: physicalId,
+              DeletionProtection: false,
+              ApplyImmediately: true,
+            })
           );
+          this.logger.debug(`Disabled DeletionProtection on DBCluster ${logicalId} before delete`);
+        } catch (disableError) {
+          if (!this.isNotFoundError(disableError, 'DBClusterNotFoundFault')) {
+            this.logger.debug(
+              `Could not disable deletion protection for ${physicalId}: ${disableError instanceof Error ? disableError.message : String(disableError)}`
+            );
+          }
         }
       }
 
@@ -698,20 +704,26 @@ export class RDSProvider implements ResourceProvider {
     this.logger.debug(`Deleting DBInstance ${logicalId}: ${physicalId}`);
 
     try {
-      // Disable deletion protection before deleting if needed
-      try {
-        await this.getClient().send(
-          new ModifyDBInstanceCommand({
-            DBInstanceIdentifier: physicalId,
-            DeletionProtection: false,
-            ApplyImmediately: true,
-          })
-        );
-      } catch (disableError) {
-        if (!this.isNotFoundError(disableError, 'DBInstanceNotFoundFault')) {
-          this.logger.debug(
-            `Could not disable deletion protection for ${physicalId}: ${disableError instanceof Error ? disableError.message : String(disableError)}`
+      // `--remove-protection`: flip DeletionProtection off in-place
+      // before delete. Idempotent — RDS accepts the call when protection
+      // is already disabled. Non-fatal: log at debug if the flip-off
+      // errors (e.g. NotFound) so the actual delete still proceeds.
+      if (context?.removeProtection === true) {
+        try {
+          await this.getClient().send(
+            new ModifyDBInstanceCommand({
+              DBInstanceIdentifier: physicalId,
+              DeletionProtection: false,
+              ApplyImmediately: true,
+            })
           );
+          this.logger.debug(`Disabled DeletionProtection on DBInstance ${logicalId} before delete`);
+        } catch (disableError) {
+          if (!this.isNotFoundError(disableError, 'DBInstanceNotFoundFault')) {
+            this.logger.debug(
+              `Could not disable deletion protection for ${physicalId}: ${disableError instanceof Error ? disableError.message : String(disableError)}`
+            );
+          }
         }
       }
 
