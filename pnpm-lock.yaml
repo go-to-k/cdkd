@@ -155,6 +155,9 @@ importers:
       graphlib:
         specifier: ^2.1.8
         version: 2.1.8
+      graphql:
+        specifier: ^16.14.0
+        version: 16.14.0
       p-limit:
         specifier: ^5.0.0
         version: 5.0.0
@@ -2472,6 +2475,10 @@ packages:
 
   graphlib@2.1.8:
     resolution: {integrity: sha512-jcLLfkpoVGmH7/InMC/1hIvOPSUh38oJtGhvrOFGzioE1DZ+0YW16RgmOJhHiuWTvGiJQ9Z1Ik43JvkRPRvE+A==, tarball: https://registry.npmjs.org/graphlib/-/graphlib-2.1.8.tgz}
+
+  graphql@16.14.0:
+    resolution: {integrity: sha512-BBvQ/406p+4CZbTpCbVPSxfzrZrbnuWSP1ELYgyS6B+hNeKzgrdB4JczCa5VZUBQrDa9hUngm0KnexY6pJRN5Q==, tarball: https://registry.npmjs.org/graphql/-/graphql-16.14.0.tgz}
+    engines: {node: ^12.22.0 || ^14.16.0 || ^16.0.0 || >=17.0.0}
 
   handlebars@4.7.9:
     resolution: {integrity: sha512-4E71E0rpOaQuJR2A3xDZ+GM1HyWYv1clR58tC8emQNeQe3RH7MAzSbat+V0wG78LQBo6m6bzSG/L4pBuCsgnUQ==, tarball: https://registry.npmjs.org/handlebars/-/handlebars-4.7.9.tgz}
@@ -8504,6 +8511,8 @@ snapshots:
   graphlib@2.1.8:
     dependencies:
       lodash: 4.17.23
+
+  graphql@16.14.0: {}
 
   handlebars@4.7.9:
     dependencies:

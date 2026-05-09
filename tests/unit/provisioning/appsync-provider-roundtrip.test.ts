@@ -166,6 +166,25 @@ describe('AppSyncProvider read-update round-trip', () => {
     expect(mockSend).not.toHaveBeenCalled();
   });
 
+  it('GraphQLSchema: update() rejects cleanly with the canonical-SDL observed shape', async () => {
+    // Snapshot mirrors what readCurrentState produces for a GraphQLSchema:
+    // canonical SDL Definition + ApiId. update() must reject before any
+    // SDK call; cdkd drift --revert on a Definition drift surfaces "could
+    // not revert — AppSync resources are recreated on property changes"
+    // (matches the file-level docstring's "JS handler doesn't ship an
+    // AWS-invalid input on AppSync" guarantee).
+    const observed = {
+      ApiId: 'api-1',
+      Definition: 'type Query {\n  hello: String\n}',
+    };
+
+    await expect(
+      provider.update('L', 'api-1', 'AWS::AppSync::GraphQLSchema', observed, observed)
+    ).rejects.toBeInstanceOf(ResourceUpdateNotSupportedError);
+
+    expect(mockSend).not.toHaveBeenCalled();
+  });
+
   it('ApiKey: update() rejects cleanly without firing any SDK call', async () => {
     const observed = {
       ApiId: 'api-1',
