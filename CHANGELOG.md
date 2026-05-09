@@ -1,3 +1,10 @@
+# [0.63.0](https://github.com/go-to-k/cdkd/compare/v0.62.0...v0.63.0) (2026-05-09)
+
+
+### Features
+
+* **kinesis,ec2:** Kinesis StreamConsumer SDK provider + EC2 sub-resource Tags coverage ([#212](https://github.com/go-to-k/cdkd/issues/212)) ([5906d67](https://github.com/go-to-k/cdkd/commit/5906d676e369fa7f70d0079e27303bde47e6f463))
+
 # [0.62.0](https://github.com/go-to-k/cdkd/compare/v0.61.0...v0.62.0) (2026-05-09)
 
 
