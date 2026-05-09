@@ -1,3 +1,11 @@
+# [0.61.0](https://github.com/go-to-k/cdkd/compare/v0.60.2...v0.61.0) (2026-05-09)
+
+
+### Features
+
+* **appsync:** canonicalize GraphQL Schema.Definition for drift detection ([#210](https://github.com/go-to-k/cdkd/issues/210)) ([a8e354c](https://github.com/go-to-k/cdkd/commit/a8e354cce0c4dfdfa4ccc0c0b0d6eb3d6b832fb3))
+* **asg:** surface 4 complex sub-shapes in readCurrentState + update ([#211](https://github.com/go-to-k/cdkd/issues/211)) ([a911972](https://github.com/go-to-k/cdkd/commit/a911972d450674aa73be73353df72b3c95b5feed))
+
 ## [0.60.2](https://github.com/go-to-k/cdkd/compare/v0.60.1...v0.60.2) (2026-05-09)
 
 
