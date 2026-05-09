@@ -1,3 +1,10 @@
+# [0.53.0](https://github.com/go-to-k/cdkd/compare/v0.52.0...v0.53.0) (2026-05-09)
+
+
+### Features
+
+* **provider:** in-place update for Glue Database / ServiceDiscovery namespace+service / EFS FileSystem+MountTarget ([#195](https://github.com/go-to-k/cdkd/issues/195)) ([e91c991](https://github.com/go-to-k/cdkd/commit/e91c99167523cb299867a4bcde739fcf404f7c88))
+
 # [0.52.0](https://github.com/go-to-k/cdkd/compare/v0.51.10...v0.52.0) (2026-05-08)
 
 
