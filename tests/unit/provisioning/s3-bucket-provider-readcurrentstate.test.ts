@@ -54,6 +54,7 @@ describe('S3BucketProvider.readCurrentState', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     provider = new S3BucketProvider();
+    mockSend.mockResolvedValue({});
   });
 
   it('returns CFn-shaped configuration when every feature is configured', async () => {
@@ -100,7 +101,7 @@ describe('S3BucketProvider.readCurrentState', () => {
     expect(mockSend.mock.calls[3]?.[0]).toBeInstanceOf(GetPublicAccessBlockCommand);
     expect(mockSend.mock.calls[4]?.[0]).toBeInstanceOf(GetBucketTaggingCommand);
 
-    expect(result).toEqual({
+    expect(result).toMatchObject({
       BucketName: 'my-bucket',
       VersioningConfiguration: { Status: 'Enabled' },
       BucketEncryption: {
@@ -146,7 +147,7 @@ describe('S3BucketProvider.readCurrentState', () => {
 
     const result = await provider.readCurrentState('my-bucket', 'Logical', 'AWS::S3::Bucket');
 
-    expect(result).toEqual({
+    expect(result).toMatchObject({
       BucketName: 'my-bucket',
       VersioningConfiguration: { Status: 'Suspended' },
       BucketEncryption: { ServerSideEncryptionConfiguration: [] },
@@ -188,11 +189,23 @@ describe('S3BucketProvider.readCurrentState', () => {
 
     expect(Object.keys(result ?? {}).sort()).toEqual(
       [
+        'AccelerateConfiguration',
+        'AnalyticsConfigurations',
         'BucketEncryption',
         'BucketName',
+        'CorsConfiguration',
+        'IntelligentTieringConfigurations',
+        'InventoryConfigurations',
+        'LifecycleConfiguration',
+        'LoggingConfiguration',
+        'MetricsConfigurations',
+        'NotificationConfiguration',
+        'ObjectLockConfiguration',
         'PublicAccessBlockConfiguration',
+        'ReplicationConfiguration',
         'Tags',
         'VersioningConfiguration',
+        'WebsiteConfiguration',
       ].sort()
     );
     expect(result?.VersioningConfiguration).toEqual({ Status: 'Suspended' });
