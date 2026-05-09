@@ -4,6 +4,17 @@ import {
   UpdateAutoScalingGroupCommand,
   DeleteAutoScalingGroupCommand,
   DescribeAutoScalingGroupsCommand,
+  DescribeLifecycleHooksCommand,
+  DescribeTrafficSourcesCommand,
+  DescribeNotificationConfigurationsCommand,
+  EnableMetricsCollectionCommand,
+  DisableMetricsCollectionCommand,
+  PutLifecycleHookCommand,
+  DeleteLifecycleHookCommand,
+  AttachTrafficSourcesCommand,
+  DetachTrafficSourcesCommand,
+  PutNotificationConfigurationCommand,
+  DeleteNotificationConfigurationCommand,
   type Tag as ASGTag,
   type LaunchTemplateSpecification,
 } from '@aws-sdk/client-auto-scaling';
@@ -36,19 +47,28 @@ import type {
  *      Groups` already provides.
  *
  * Update has narrower coverage than create: AWS does not support modifying
- * `AutoScalingGroupName`, `Tags` (those go through `CreateOrUpdateTags` /
- * `DeleteTags`), or attached LB / target-group references (those go through
- * `Attach*` / `Detach*` calls). For v1 those diffs surface
- * `ResourceUpdateNotSupportedError` so the caller can `cdkd deploy
- * --replace`. The mutable fields handled in-place include MinSize / MaxSize /
- * DesiredCapacity / VPCZoneIdentifier / HealthCheckType / HealthCheckGrace
- * Period / DefaultCooldown / Cooldown / NewInstancesProtectedFromScaleIn /
- * MaxInstanceLifetime / TerminationPolicies / CapacityRebalance / Service
- * LinkedRoleARN / Context / DesiredCapacityType / DefaultInstanceWarmup /
- * AvailabilityZones / AvailabilityZoneDistribution / AvailabilityZone
- * ImpairmentPolicy / SkipZonalShiftValidation / CapacityReservation
- * Specification / InstanceMaintenancePolicy / DeletionProtection /
- * MixedInstancesPolicy / LaunchTemplate.
+ * `AutoScalingGroupName` (immutable), `Tags` (those go through `CreateOrUpdate
+ * Tags` / `DeleteTags`), or attached LB / target-group references (those go
+ * through `Attach*` / `Detach*` calls). Those diffs still surface
+ * `ResourceUpdateNotSupportedError` so the caller can `cdkd deploy --replace`.
+ * The mutable fields handled in-place via `UpdateAutoScalingGroup` include
+ * MinSize / MaxSize / DesiredCapacity / VPCZoneIdentifier / HealthCheckType /
+ * HealthCheckGracePeriod / DefaultCooldown / Cooldown / NewInstancesProtected
+ * FromScaleIn / MaxInstanceLifetime / TerminationPolicies / CapacityRebalance
+ * / ServiceLinkedRoleARN / Context / DesiredCapacityType / DefaultInstance
+ * Warmup / AvailabilityZones / AvailabilityZoneDistribution / Availability
+ * ZoneImpairmentPolicy / SkipZonalShiftValidation / CapacityReservation
+ * Specification / InstanceMaintenancePolicy / DeletionProtection / Mixed
+ * InstancesPolicy / LaunchTemplate.
+ *
+ * Sub-shape diffs are applied via dedicated AWS APIs before the main
+ * `UpdateAutoScalingGroup` call: `MetricsCollection` →
+ * `EnableMetricsCollection` / `DisableMetricsCollection`,
+ * `LifecycleHookSpecificationList` → per-entry `PutLifecycleHook` /
+ * `DeleteLifecycleHook`, `TrafficSources` → `AttachTrafficSources` /
+ * `DetachTrafficSources`, `NotificationConfigurations` → per-topic
+ * `PutNotificationConfiguration` / `DeleteNotificationConfiguration`.
+ * Each helper is a no-op when the before/after JSON is identical.
  */
 export class ASGProvider implements ResourceProvider {
   private asgClient?: AutoScalingClient;
@@ -85,6 +105,7 @@ export class ASGProvider implements ResourceProvider {
         'DesiredCapacityType',
         'DefaultInstanceWarmup',
         'TrafficSources',
+        'NotificationConfigurations',
         'AvailabilityZoneDistribution',
         'AvailabilityZoneImpairmentPolicy',
         'SkipZonalShiftValidation',
@@ -304,39 +325,33 @@ export class ASGProvider implements ResourceProvider {
         'TargetGroupARNs diffs require Attach/Detach calls; use cdkd deploy --replace'
       );
     }
-    if (
-      !stringEq(
-        properties['LifecycleHookSpecificationList'] ?? [],
-        previousProperties['LifecycleHookSpecificationList'] ?? []
-      )
-    ) {
-      throw new ResourceUpdateNotSupportedError(
-        resourceType,
-        logicalId,
-        'LifecycleHookSpecificationList diffs require PutLifecycleHook / DeleteLifecycleHook calls; use cdkd deploy --replace'
-      );
-    }
-    if (
-      !stringEq(
-        properties['MetricsCollection'] ?? [],
-        previousProperties['MetricsCollection'] ?? []
-      )
-    ) {
-      throw new ResourceUpdateNotSupportedError(
-        resourceType,
-        logicalId,
-        'MetricsCollection diffs require EnableMetricsCollection / DisableMetricsCollection calls; use cdkd deploy --replace'
-      );
-    }
-    if (!stringEq(properties['TrafficSources'] ?? [], previousProperties['TrafficSources'] ?? [])) {
-      throw new ResourceUpdateNotSupportedError(
-        resourceType,
-        logicalId,
-        'TrafficSources diffs require AttachTrafficSources / DetachTrafficSources calls; use cdkd deploy --replace'
-      );
-    }
-
     try {
+      // Sub-shape diffs are applied via separate per-shape SDK calls
+      // BEFORE the main UpdateAutoScalingGroup. AWS does not expose these
+      // fields on UpdateAutoScalingGroup, so each one rides its own
+      // dedicated API. Each per-shape helper is a no-op when the
+      // before/after JSON is identical.
+      await this.applyMetricsCollectionDiff(
+        physicalId,
+        properties['MetricsCollection'],
+        previousProperties['MetricsCollection']
+      );
+      await this.applyLifecycleHooksDiff(
+        physicalId,
+        properties['LifecycleHookSpecificationList'],
+        previousProperties['LifecycleHookSpecificationList']
+      );
+      await this.applyTrafficSourcesDiff(
+        physicalId,
+        properties['TrafficSources'],
+        previousProperties['TrafficSources']
+      );
+      await this.applyNotificationConfigurationsDiff(
+        physicalId,
+        properties['NotificationConfigurations'],
+        previousProperties['NotificationConfigurations']
+      );
+
       const launchTemplate = this.buildLaunchTemplate(properties);
       const vpcZoneIdentifier = this.joinVpcZoneIdentifier(properties['VPCZoneIdentifier']);
 
@@ -555,6 +570,18 @@ export class ASGProvider implements ResourceProvider {
    * template (e.g. a console-set `DeletionProtection: 'prevent-force-deletion'`
    * on a group originally created without it).
    *
+   * Sub-shapes (LifecycleHookSpecificationList / TrafficSources /
+   * NotificationConfigurations) are surfaced via three parallel Describe
+   * calls fired alongside the primary `DescribeAutoScalingGroups`. Each is
+   * best-effort: a per-call failure (e.g. permissions gap on
+   * `autoscaling:DescribeLifecycleHooks`) is logged at debug and the
+   * matching key falls back to its always-emit `[]` placeholder rather
+   * than aborting the whole drift read.
+   *
+   * `MetricsCollection` is reverse-mapped from `EnabledMetrics` (already
+   * present on the primary `DescribeAutoScalingGroups` response, so no
+   * extra call is needed).
+   *
    * Returns `undefined` when the group is gone.
    */
   async readCurrentState(
@@ -562,13 +589,54 @@ export class ASGProvider implements ResourceProvider {
     _logicalId: string,
     _resourceType: string
   ): Promise<Record<string, unknown> | undefined> {
-    let group;
-    try {
-      group = await this.describeGroup(physicalId);
-    } catch (err) {
-      if (this.isNotFoundError(err)) return undefined;
-      throw err;
-    }
+    // Fire the four reads in parallel. Sub-shape failures are best-effort
+    // so a single permission gap does not break the whole drift read.
+    const groupPromise = (async () => {
+      try {
+        return await this.describeGroup(physicalId);
+      } catch (err) {
+        if (this.isNotFoundError(err)) return undefined;
+        throw err;
+      }
+    })();
+
+    const lifecycleHooksPromise = this.getClient()
+      .send(new DescribeLifecycleHooksCommand({ AutoScalingGroupName: physicalId }))
+      .then((r) => r.LifecycleHooks ?? [])
+      .catch((err) => {
+        this.logger.debug(
+          `DescribeLifecycleHooks(${physicalId}) failed: ${err instanceof Error ? err.message : String(err)}`
+        );
+        return [];
+      });
+
+    const trafficSourcesPromise = this.getClient()
+      .send(new DescribeTrafficSourcesCommand({ AutoScalingGroupName: physicalId }))
+      .then((r) => r.TrafficSources ?? [])
+      .catch((err) => {
+        this.logger.debug(
+          `DescribeTrafficSources(${physicalId}) failed: ${err instanceof Error ? err.message : String(err)}`
+        );
+        return [];
+      });
+
+    const notificationsPromise = this.getClient()
+      .send(new DescribeNotificationConfigurationsCommand({ AutoScalingGroupNames: [physicalId] }))
+      .then((r) => r.NotificationConfigurations ?? [])
+      .catch((err) => {
+        this.logger.debug(
+          `DescribeNotificationConfigurations(${physicalId}) failed: ${err instanceof Error ? err.message : String(err)}`
+        );
+        return [];
+      });
+
+    const [group, lifecycleHooks, trafficSources, notifications] = await Promise.all([
+      groupPromise,
+      lifecycleHooksPromise,
+      trafficSourcesPromise,
+      notificationsPromise,
+    ]);
+
     if (!group) return undefined;
 
     const result: Record<string, unknown> = {};
@@ -656,23 +724,16 @@ export class ASGProvider implements ResourceProvider {
     // ASG returns Tags inside the AutoScalingGroup record (already populated
     // by DescribeAutoScalingGroups — no separate ListTagsForResource call).
     result['Tags'] = normalizeAwsTagsToCfn(group.Tags);
-    return result;
-  }
 
-  /**
-   * MetricsCollection / LifecycleHookSpecificationList / TrafficSources
-   * are surfaced via separate APIs (`DescribeMetricsCollectionTypes` etc.
-   * + `DescribeLifecycleHooks` + `DescribeTrafficSources`) that this v1
-   * does not yet wire up — declare them as drift-unknown so the comparator
-   * does not fire false-positive drift on every clean run.
-   */
-  getDriftUnknownPaths(_resourceType: string): string[] {
-    return [
-      'MetricsCollection',
-      'LifecycleHookSpecificationList',
-      'TrafficSources',
-      'NotificationConfigurations',
-    ];
+    // Sub-shapes — reverse-map AWS responses to CFn template shape and
+    // always-emit `[]` placeholders so the v3 `observedProperties` baseline
+    // catches console-side ADDs to a previously-empty list.
+    result['MetricsCollection'] = mapEnabledMetricsToCfn(group.EnabledMetrics);
+    result['LifecycleHookSpecificationList'] = mapLifecycleHooksToCfn(lifecycleHooks);
+    result['TrafficSources'] = mapTrafficSourcesToCfn(trafficSources);
+    result['NotificationConfigurations'] = mapNotificationsToCfn(notifications);
+
+    return result;
   }
 
   // ─── Helpers ──────────────────────────────────────────────────────
@@ -800,4 +861,366 @@ export class ASGProvider implements ResourceProvider {
   private sleep(ms: number): Promise<void> {
     return new Promise((resolve) => setTimeout(resolve, ms));
   }
+
+  // ─── Sub-shape diff helpers ───────────────────────────────────────
+  // Each helper is a no-op when before/after JSON is identical (the cheap
+  // structural-equality check happens first; we only build SDK calls for
+  // genuine diffs). Identity is positional within the array per CFn shape:
+  // `MetricsCollection` keyed on `Granularity`, `LifecycleHookSpecification
+  // List` on `LifecycleHookName`, `TrafficSources` on `Identifier`,
+  // `NotificationConfigurations` on `TopicARN`.
+
+  private async applyMetricsCollectionDiff(
+    physicalId: string,
+    next: unknown,
+    prev: unknown
+  ): Promise<void> {
+    if (JSON.stringify(next ?? []) === JSON.stringify(prev ?? [])) return;
+    const nextEntries = (Array.isArray(next) ? next : []) as Array<{
+      Granularity?: string;
+      Metrics?: string[];
+    }>;
+    const prevEntries = (Array.isArray(prev) ? prev : []) as Array<{
+      Granularity?: string;
+      Metrics?: string[];
+    }>;
+    const prevByGranularity = new Map<string, string[] | undefined>();
+    for (const e of prevEntries) {
+      if (e.Granularity) prevByGranularity.set(e.Granularity, e.Metrics);
+    }
+    const nextByGranularity = new Map<string, string[] | undefined>();
+    for (const e of nextEntries) {
+      if (e.Granularity) nextByGranularity.set(e.Granularity, e.Metrics);
+    }
+    // Disable removed granularities first, then issue Enable for the
+    // intended state of every Granularity in `next`. AWS treats Enable as
+    // additive within a Granularity, so a remove-then-add pattern works
+    // even when the Metrics list shrinks.
+    for (const [granularity, metrics] of prevByGranularity) {
+      if (!nextByGranularity.has(granularity)) {
+        await this.getClient().send(
+          new DisableMetricsCollectionCommand({
+            AutoScalingGroupName: physicalId,
+            ...(metrics && metrics.length > 0 ? { Metrics: metrics } : {}),
+          })
+        );
+      }
+    }
+    for (const [granularity, metrics] of nextByGranularity) {
+      const before = prevByGranularity.get(granularity);
+      if (JSON.stringify(before ?? null) === JSON.stringify(metrics ?? null)) continue;
+      // If the Metrics list shrunk, disable the removed metrics first
+      // (AWS Enable is additive). When `metrics` is undefined or empty,
+      // AWS treats that as "all metrics" — disable any prior subset
+      // before re-enabling the full set.
+      if (before && before.length > 0) {
+        const removed = metrics ? before.filter((m) => !metrics.includes(m)) : [];
+        if (removed.length > 0) {
+          await this.getClient().send(
+            new DisableMetricsCollectionCommand({
+              AutoScalingGroupName: physicalId,
+              Metrics: removed,
+            })
+          );
+        }
+      }
+      await this.getClient().send(
+        new EnableMetricsCollectionCommand({
+          AutoScalingGroupName: physicalId,
+          Granularity: granularity,
+          ...(metrics && metrics.length > 0 ? { Metrics: metrics } : {}),
+        })
+      );
+    }
+  }
+
+  private async applyLifecycleHooksDiff(
+    physicalId: string,
+    next: unknown,
+    prev: unknown
+  ): Promise<void> {
+    if (JSON.stringify(next ?? []) === JSON.stringify(prev ?? [])) return;
+    const nextEntries = (Array.isArray(next) ? next : []) as Array<{
+      LifecycleHookName?: string;
+      LifecycleTransition?: string;
+      RoleARN?: string;
+      NotificationTargetARN?: string;
+      NotificationMetadata?: string;
+      HeartbeatTimeout?: number;
+      DefaultResult?: string;
+    }>;
+    const prevEntries = (Array.isArray(prev) ? prev : []) as Array<{
+      LifecycleHookName?: string;
+    }>;
+    const nextNames = new Set(
+      nextEntries.map((e) => e.LifecycleHookName).filter((n): n is string => !!n)
+    );
+    // Delete hooks no longer in `next`.
+    for (const e of prevEntries) {
+      if (e.LifecycleHookName && !nextNames.has(e.LifecycleHookName)) {
+        await this.getClient().send(
+          new DeleteLifecycleHookCommand({
+            AutoScalingGroupName: physicalId,
+            LifecycleHookName: e.LifecycleHookName,
+          })
+        );
+      }
+    }
+    // PutLifecycleHook is upsert — issue for every hook in `next` whose
+    // shape differs from the matching `prev` entry.
+    const prevByName = new Map<string, unknown>();
+    for (const e of prevEntries) {
+      if (e.LifecycleHookName) prevByName.set(e.LifecycleHookName, e);
+    }
+    for (const e of nextEntries) {
+      if (!e.LifecycleHookName) continue;
+      const prevHook = prevByName.get(e.LifecycleHookName);
+      if (JSON.stringify(prevHook) === JSON.stringify(e)) continue;
+      await this.getClient().send(
+        new PutLifecycleHookCommand({
+          AutoScalingGroupName: physicalId,
+          LifecycleHookName: e.LifecycleHookName,
+          ...(e.LifecycleTransition !== undefined && {
+            LifecycleTransition: e.LifecycleTransition,
+          }),
+          ...(e.RoleARN !== undefined && { RoleARN: e.RoleARN }),
+          ...(e.NotificationTargetARN !== undefined && {
+            NotificationTargetARN: e.NotificationTargetARN,
+          }),
+          ...(e.NotificationMetadata !== undefined && {
+            NotificationMetadata: e.NotificationMetadata,
+          }),
+          ...(e.HeartbeatTimeout !== undefined && { HeartbeatTimeout: e.HeartbeatTimeout }),
+          ...(e.DefaultResult !== undefined && { DefaultResult: e.DefaultResult }),
+        })
+      );
+    }
+  }
+
+  private async applyTrafficSourcesDiff(
+    physicalId: string,
+    next: unknown,
+    prev: unknown
+  ): Promise<void> {
+    if (JSON.stringify(next ?? []) === JSON.stringify(prev ?? [])) return;
+    const nextEntries = (Array.isArray(next) ? next : []) as Array<{
+      Identifier?: string;
+      Type?: string;
+    }>;
+    const prevEntries = (Array.isArray(prev) ? prev : []) as Array<{
+      Identifier?: string;
+      Type?: string;
+    }>;
+    const nextIds = new Set(nextEntries.map((e) => e.Identifier).filter((i): i is string => !!i));
+    const prevIds = new Set(prevEntries.map((e) => e.Identifier).filter((i): i is string => !!i));
+    const toDetach = prevEntries.filter((e) => e.Identifier && !nextIds.has(e.Identifier));
+    const toAttach = nextEntries.filter((e) => e.Identifier && !prevIds.has(e.Identifier));
+    if (toDetach.length > 0) {
+      await this.getClient().send(
+        new DetachTrafficSourcesCommand({
+          AutoScalingGroupName: physicalId,
+          TrafficSources: toDetach.map((e) => ({
+            Identifier: e.Identifier as string,
+            ...(e.Type !== undefined && { Type: e.Type }),
+          })),
+        })
+      );
+    }
+    if (toAttach.length > 0) {
+      await this.getClient().send(
+        new AttachTrafficSourcesCommand({
+          AutoScalingGroupName: physicalId,
+          TrafficSources: toAttach.map((e) => ({
+            Identifier: e.Identifier as string,
+            ...(e.Type !== undefined && { Type: e.Type }),
+          })),
+        })
+      );
+    }
+  }
+
+  private async applyNotificationConfigurationsDiff(
+    physicalId: string,
+    next: unknown,
+    prev: unknown
+  ): Promise<void> {
+    if (JSON.stringify(next ?? []) === JSON.stringify(prev ?? [])) return;
+    // CFn `NotificationConfigurations` is an array of `{TopicARN,
+    // NotificationTypes[]}`; AWS `PutNotificationConfiguration` is keyed
+    // by TopicARN — one call per topic. AWS reports each notification
+    // type as a separate response entry (one row per `(asgName, topicArn,
+    // notificationType)` triple), but cdkd state stores the CFn shape, so
+    // both sides of the diff share the per-topic key.
+    const nextEntries = (Array.isArray(next) ? next : []) as Array<{
+      TopicARN?: string;
+      NotificationTypes?: string[];
+    }>;
+    const prevEntries = (Array.isArray(prev) ? prev : []) as Array<{
+      TopicARN?: string;
+      NotificationTypes?: string[];
+    }>;
+    const nextByTopic = new Map<string, string[] | undefined>();
+    for (const e of nextEntries) {
+      if (e.TopicARN) nextByTopic.set(e.TopicARN, e.NotificationTypes);
+    }
+    const prevByTopic = new Map<string, string[] | undefined>();
+    for (const e of prevEntries) {
+      if (e.TopicARN) prevByTopic.set(e.TopicARN, e.NotificationTypes);
+    }
+    for (const topic of prevByTopic.keys()) {
+      if (!nextByTopic.has(topic)) {
+        await this.getClient().send(
+          new DeleteNotificationConfigurationCommand({
+            AutoScalingGroupName: physicalId,
+            TopicARN: topic,
+          })
+        );
+      }
+    }
+    for (const [topic, types] of nextByTopic) {
+      const before = prevByTopic.get(topic);
+      if (JSON.stringify(before ?? null) === JSON.stringify(types ?? null)) continue;
+      await this.getClient().send(
+        new PutNotificationConfigurationCommand({
+          AutoScalingGroupName: physicalId,
+          TopicARN: topic,
+          NotificationTypes: types ?? [],
+        })
+      );
+    }
+  }
+}
+
+// ─── File-level reverse-mappers (CFn template shape) ────────────────
+
+/**
+ * Reverse-map AWS `EnabledMetrics: [{Metric, Granularity}]` (flat list,
+ * one row per enabled metric) back to the CFn array shape
+ * `[{Granularity, Metrics?[]}]`. Metrics with the same Granularity are
+ * grouped together; the resulting Metrics list is sorted alphabetically
+ * for stable positional compare in the drift comparator.
+ *
+ * Always returns a placeholder `[]` per the cdkd PR #145 always-emit
+ * convention so a console-side EnableMetricsCollection on a previously-
+ * empty group surfaces as drift on the v3 `observedProperties` baseline.
+ */
+function mapEnabledMetricsToCfn(
+  enabledMetrics:
+    | Array<{ Metric?: string | undefined; Granularity?: string | undefined }>
+    | undefined
+): Array<{ Granularity: string; Metrics?: string[] }> {
+  if (!enabledMetrics || enabledMetrics.length === 0) return [];
+  const byGranularity = new Map<string, Set<string>>();
+  for (const e of enabledMetrics) {
+    const g = e.Granularity;
+    if (!g) continue;
+    let set = byGranularity.get(g);
+    if (!set) {
+      set = new Set();
+      byGranularity.set(g, set);
+    }
+    if (e.Metric) set.add(e.Metric);
+  }
+  const result: Array<{ Granularity: string; Metrics?: string[] }> = [];
+  // Sort by Granularity for stable positional compare.
+  for (const granularity of Array.from(byGranularity.keys()).sort()) {
+    const metrics = Array.from(byGranularity.get(granularity) ?? []).sort();
+    result.push(
+      metrics.length > 0
+        ? { Granularity: granularity, Metrics: metrics }
+        : { Granularity: granularity }
+    );
+  }
+  return result;
+}
+
+/**
+ * Reverse-map AWS `DescribeLifecycleHooks` response to the CFn
+ * `LifecycleHookSpecificationList` shape. Each hook is surfaced under the
+ * exact CFn property name. AWS-side fields cdkd state never carried
+ * (`AutoScalingGroupName` — duplicated on every hook by AWS,
+ * `GlobalTimeout` — AWS-derived) are filtered out. Sorted by
+ * LifecycleHookName for stable positional compare.
+ */
+function mapLifecycleHooksToCfn(
+  hooks: Array<{
+    LifecycleHookName?: string | undefined;
+    LifecycleTransition?: string | undefined;
+    NotificationTargetARN?: string | undefined;
+    RoleARN?: string | undefined;
+    NotificationMetadata?: string | undefined;
+    HeartbeatTimeout?: number | undefined;
+    DefaultResult?: string | undefined;
+  }>
+): Array<Record<string, unknown>> {
+  if (!hooks || hooks.length === 0) return [];
+  const result: Array<Record<string, unknown>> = [];
+  for (const h of hooks) {
+    if (!h.LifecycleHookName) continue;
+    const entry: Record<string, unknown> = { LifecycleHookName: h.LifecycleHookName };
+    if (h.LifecycleTransition !== undefined) entry['LifecycleTransition'] = h.LifecycleTransition;
+    if (h.RoleARN !== undefined) entry['RoleARN'] = h.RoleARN;
+    if (h.NotificationTargetARN !== undefined) {
+      entry['NotificationTargetARN'] = h.NotificationTargetARN;
+    }
+    if (h.NotificationMetadata !== undefined) {
+      entry['NotificationMetadata'] = h.NotificationMetadata;
+    }
+    if (h.HeartbeatTimeout !== undefined) entry['HeartbeatTimeout'] = h.HeartbeatTimeout;
+    if (h.DefaultResult !== undefined) entry['DefaultResult'] = h.DefaultResult;
+    result.push(entry);
+  }
+  result.sort((a, b) =>
+    String(a['LifecycleHookName']).localeCompare(String(b['LifecycleHookName']))
+  );
+  return result;
+}
+
+/**
+ * Reverse-map AWS `DescribeTrafficSources` response to the CFn
+ * `TrafficSources` shape `[{Identifier, Type?}]`. AWS-side runtime fields
+ * (`State`, the deprecated `TrafficSource` alias) are filtered out.
+ * Sorted by Identifier for stable positional compare.
+ */
+function mapTrafficSourcesToCfn(
+  trafficSources: Array<{ Identifier?: string | undefined; Type?: string | undefined }>
+): Array<Record<string, unknown>> {
+  if (!trafficSources || trafficSources.length === 0) return [];
+  const result: Array<Record<string, unknown>> = [];
+  for (const t of trafficSources) {
+    if (!t.Identifier) continue;
+    const entry: Record<string, unknown> = { Identifier: t.Identifier };
+    if (t.Type !== undefined) entry['Type'] = t.Type;
+    result.push(entry);
+  }
+  result.sort((a, b) => String(a['Identifier']).localeCompare(String(b['Identifier'])));
+  return result;
+}
+
+/**
+ * Reverse-map AWS `DescribeNotificationConfigurations` (a flat list, one
+ * row per `(topicArn, notificationType)`) into the CFn shape
+ * `[{TopicARN, NotificationTypes[]}]`. NotificationTypes are grouped per
+ * TopicARN and sorted alphabetically for stable positional compare.
+ */
+function mapNotificationsToCfn(
+  configurations: Array<{ TopicARN?: string | undefined; NotificationType?: string | undefined }>
+): Array<Record<string, unknown>> {
+  if (!configurations || configurations.length === 0) return [];
+  const byTopic = new Map<string, Set<string>>();
+  for (const c of configurations) {
+    if (!c.TopicARN) continue;
+    let set = byTopic.get(c.TopicARN);
+    if (!set) {
+      set = new Set();
+      byTopic.set(c.TopicARN, set);
+    }
+    if (c.NotificationType) set.add(c.NotificationType);
+  }
+  const result: Array<Record<string, unknown>> = [];
+  for (const topic of Array.from(byTopic.keys()).sort()) {
+    const types = Array.from(byTopic.get(topic) ?? []).sort();
+    result.push({ TopicARN: topic, NotificationTypes: types });
+  }
+  return result;
 }

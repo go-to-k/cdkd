@@ -40,6 +40,17 @@ import {
   UpdateAutoScalingGroupCommand,
   DeleteAutoScalingGroupCommand,
   DescribeAutoScalingGroupsCommand,
+  DescribeLifecycleHooksCommand,
+  DescribeTrafficSourcesCommand,
+  DescribeNotificationConfigurationsCommand,
+  EnableMetricsCollectionCommand,
+  DisableMetricsCollectionCommand,
+  PutLifecycleHookCommand,
+  DeleteLifecycleHookCommand,
+  AttachTrafficSourcesCommand,
+  DetachTrafficSourcesCommand,
+  PutNotificationConfigurationCommand,
+  DeleteNotificationConfigurationCommand,
 } from '@aws-sdk/client-auto-scaling';
 import { ASGProvider } from '../../../src/provisioning/providers/asg-provider.js';
 import { ResourceUpdateNotSupportedError } from '../../../src/utils/error-handler.js';
@@ -167,16 +178,13 @@ describe('ASGProvider update', () => {
     ).rejects.toThrow(ResourceUpdateNotSupportedError);
   });
 
-  it('rejects Tags / LoadBalancerNames / TargetGroupARNs / LifecycleHookSpecificationList / MetricsCollection / TrafficSources diffs', async () => {
+  it('rejects Tags / LoadBalancerNames / TargetGroupARNs diffs (sub-shape diffs covered separately)', async () => {
     mockSend.mockResolvedValue({});
     const provider = new ASGProvider();
     const cases: Array<{ key: string; before: unknown; after: unknown }> = [
       { key: 'Tags', before: [], after: [{ Key: 'env', Value: 'dev' }] },
       { key: 'LoadBalancerNames', before: [], after: ['lb-1'] },
       { key: 'TargetGroupARNs', before: [], after: ['arn:tg:1'] },
-      { key: 'LifecycleHookSpecificationList', before: [], after: [{ LifecycleHookName: 'x' }] },
-      { key: 'MetricsCollection', before: [], after: [{ Granularity: '1Minute' }] },
-      { key: 'TrafficSources', before: [], after: [{ Identifier: 'x' }] },
     ];
     for (const c of cases) {
       const before = { AutoScalingGroupName: 'my-asg', [c.key]: c.before };
@@ -405,14 +413,3 @@ describe('ASGProvider readCurrentState', () => {
   });
 });
 
-describe('ASGProvider getDriftUnknownPaths', () => {
-  it('declares the SDK-side complex paths the v1 readCurrentState does not surface', () => {
-    const provider = new ASGProvider();
-    expect(provider.getDriftUnknownPaths(RESOURCE_TYPE)).toEqual([
-      'MetricsCollection',
-      'LifecycleHookSpecificationList',
-      'TrafficSources',
-      'NotificationConfigurations',
-    ]);
-  });
-});
