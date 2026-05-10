@@ -606,6 +606,14 @@ cdkd local invoke MyStack/Handler --assume-role arn:aws:iam::123456789012:role/M
 
 # Attach a Node debugger
 cdkd local invoke MyStack/Handler --debug-port 9229
+
+# After `cdkd deploy`, recover intrinsic-valued env vars (Ref / Fn::GetAtt
+# / Fn::Sub) from cdkd's S3 state instead of dropping them. Off by default
+# — keeps the local-only / unscoped flow safe; opt in when you want the
+# handler to see the deployed physical IDs (S3 bucket names, DDB table
+# names, IAM role ARNs, ...). Disambiguate with `--stack-region <region>`
+# when the same stack name has state in multiple regions.
+cdkd local invoke MyStack/Handler --from-state
 ```
 
 See [docs/cli-reference.md](docs/cli-reference.md#local-invoke-run-lambda-functions-locally)

@@ -8,15 +8,20 @@ import {
   contextOptions,
   deprecatedRegionOption,
   parseContextOptions,
+  stateOptions,
   warnIfDeprecatedRegion,
 } from '../options.js';
 import { getLogger } from '../../utils/logger.js';
 import { applyRoleArnIfSet } from '../../utils/role-arn.js';
 import { withErrorHandling } from '../../utils/error-handler.js';
 import { Synthesizer, type SynthesisOptions } from '../../synthesis/synthesizer.js';
-import { resolveApp } from '../config-loader.js';
+import { resolveApp, resolveStateBucketWithDefault } from '../config-loader.js';
 import { resolveLambdaTarget } from '../../local-invoke/lambda-resolver.js';
 import { resolveEnvVars, type EnvOverrideFile } from '../../local-invoke/env-resolver.js';
+import {
+  substituteEnvVarsFromState,
+  type StateEnvSubstitutionAudit,
+} from '../../local-invoke/state-resolver.js';
 import { resolveRuntimeImage } from '../../local-invoke/runtime-image.js';
 import {
   ensureDockerAvailable,
@@ -27,6 +32,9 @@ import {
   streamLogs,
 } from '../../local-invoke/docker-runner.js';
 import { invokeRie, waitForRieReady } from '../../local-invoke/rie-client.js';
+import { S3StateBackend } from '../../state/s3-state-backend.js';
+import { setAwsClients, AwsClients } from '../../utils/aws-clients.js';
+import type { StackState } from '../../types/state.js';
 
 interface LocalInvokeOptions {
   app?: string;
@@ -54,10 +62,28 @@ interface LocalInvokeOptions {
    * forwards the resulting temporary credentials into the container so
    * the handler runs under the deployed function's narrow permissions
    * (instead of the developer's typically-admin shell credentials). PR 1
-   * accepts an explicit ARN only — auto-resolution from the template's
-   * `Role` property requires `--from-state` (PR 2). Off by default.
+   * accepts an explicit ARN only — PR 2's `--from-state` adds a hint
+   * pointing at the state-recorded role ARN (auto-assumption is still
+   * out of scope). Off by default.
    */
   assumeRole?: string;
+  /**
+   * PR 2: when set, cdkd reads its S3 state for the target stack and
+   * substitutes intrinsic-valued env vars (`Ref` / `Fn::GetAtt` /
+   * `Fn::Sub`) with the deployed physical IDs / attributes. Closes the
+   * "intrinsic-valued env vars are dropped" gap that PR 1 left
+   * explicit. Off by default — PR 1 behavior is preserved when the
+   * flag is not set.
+   */
+  fromState: boolean;
+  stateBucket?: string;
+  statePrefix: string;
+  /**
+   * Region of the state record to read. Required when the same stack
+   * name has state in multiple regions. Mirrors `cdkd state show
+   * --stack-region`.
+   */
+  stackRegion?: string;
 }
 
 /**
@@ -66,9 +92,11 @@ interface LocalInvokeOptions {
  * Emulator (RIE). Modeled on `sam local invoke` but reusing cdkd's
  * synthesis / asset / construct-path plumbing.
  *
- * v1 scope: Node.js runtimes only, literal env vars only, Docker
- * required. See [docs/cli-reference.md](../../../docs/cli-reference.md)
- * for the full surface and out-of-scope items.
+ * v1 scope: Node.js runtimes only, Docker required. Literal env vars
+ * pass through; intrinsic-valued env vars require `--from-state` to
+ * substitute deployed physical IDs / attributes (PR 2). See
+ * [docs/cli-reference.md](../../../docs/cli-reference.md) for the full
+ * surface and out-of-scope items.
  */
 async function localInvokeCommand(target: string, options: LocalInvokeOptions): Promise<void> {
   const logger = getLogger();
@@ -114,15 +142,65 @@ async function localInvokeCommand(target: string, options: LocalInvokeOptions): 
   // body to a temp dir.
   const codeDir = lambda.codePath ?? materializeInlineCode(lambda.handler, lambda.inlineCode ?? '');
 
-  // Resolve env vars. Intrinsic-valued template entries are warned about
-  // and dropped; the user can override them via --env-vars (SAM-shape).
+  // PR 2 — `--from-state`: load cdkd's S3 state for the target stack and
+  // pre-substitute intrinsic-valued env vars before they hit the regular
+  // env-resolver. State load failures are surfaced as warnings (we keep
+  // PR 1 behavior — drop intrinsic vars and continue) rather than hard
+  // errors, so a missing / corrupt state file doesn't abort an invoke
+  // that the user wanted to run with `--env-vars` overrides anyway.
+  let stateAudit: StateEnvSubstitutionAudit | undefined;
+  let templateEnv = getTemplateEnv(lambda.resource);
+  let stateForRoleHint: StackState | undefined;
+  if (options.fromState) {
+    const loaded = await loadStateForStack(lambda.stack.stackName, lambda.stack.region, {
+      ...(options.stackRegion !== undefined && { stackRegion: options.stackRegion }),
+      ...(options.stateBucket !== undefined && { stateBucket: options.stateBucket }),
+      statePrefix: options.statePrefix,
+      ...(options.region !== undefined && { region: options.region }),
+      ...(options.profile !== undefined && { profile: options.profile }),
+    });
+    if (loaded) {
+      stateForRoleHint = loaded.state;
+      const { env, audit } = substituteEnvVarsFromState(templateEnv, loaded.state.resources);
+      templateEnv = env;
+      stateAudit = audit;
+      for (const key of audit.resolvedKeys) {
+        logger.debug(`--from-state: substituted env var ${key} from cdkd state`);
+      }
+      for (const { key, reason } of audit.unresolved) {
+        logger.warn(
+          `--from-state: could not substitute env var ${key} (${reason}). ` +
+            `Override it via --env-vars or it will be dropped.`
+        );
+      }
+    }
+  }
+
+  // Resolve env vars. Intrinsic-valued template entries (i.e. the ones
+  // `--from-state` could not substitute, plus all of them when the flag
+  // is off) are warned about and dropped; the user can override them via
+  // --env-vars (SAM-shape).
   const overrides = readEnvOverridesFile(options.envVars);
-  const envResult = resolveEnvVars(lambda.logicalId, getTemplateEnv(lambda.resource), overrides);
+  const envResult = resolveEnvVars(lambda.logicalId, templateEnv, overrides);
   for (const key of envResult.unresolved) {
+    // The state-resolver already warned for keys it tried + failed on, so
+    // suppress the per-key duplicate warn here. The `--env-vars` /
+    // wait-for-state hints still fire for the no-flag path, which is the
+    // original PR 1 UX.
+    if (stateAudit && stateAudit.unresolved.some((u) => u.key === key)) continue;
     logger.warn(
       `Environment variable ${key} contains a CloudFormation intrinsic and was dropped. ` +
-        `Override it with --env-vars (e.g. {"${lambda.logicalId}":{"${key}":"<literal>"}}) or wait for --from-state in PR 2.`
+        `Override it with --env-vars (e.g. {"${lambda.logicalId}":{"${key}":"<literal>"}}) or pass --from-state to recover deployed values.`
     );
+  }
+
+  // Q1 follow-up: when `--from-state` is set but `--assume-role` is NOT,
+  // peek at the function's `Role` property in state and surface the
+  // deployed execution role's ARN as a one-line hint. We deliberately
+  // do NOT auto-assume — that's a future PR's scope; v1 keeps the user's
+  // explicit ARN as the only path to scoped credentials.
+  if (options.fromState && !options.assumeRole && stateForRoleHint) {
+    suggestAssumeRoleFromState(stateForRoleHint, lambda.logicalId);
   }
 
   // Read the event payload. Default to {} (matches SAM).
@@ -409,6 +487,172 @@ function materializeInlineCode(handler: string, source: string): string {
 }
 
 /**
+ * Load cdkd state for the target stack so `--from-state` can substitute
+ * intrinsic-valued env vars.
+ *
+ * Failure mode: returns `undefined` and logs at warn for every "expected"
+ * miss (no state file, multi-region ambiguity without `--stack-region`,
+ * bucket-resolution failure). `--from-state` is opt-in and the caller's
+ * fallback is the existing PR 1 warn-and-drop, so a broken state file
+ * shouldn't abort the whole invoke. Genuine errors (auth failures, etc.)
+ * still propagate.
+ *
+ * Mirrors the orphan command's state-loading shape but without the lock
+ * or save path — `cdkd local invoke` is purely read-only against state.
+ */
+async function loadStateForStack(
+  stackName: string,
+  synthRegion: string | undefined,
+  opts: {
+    stackRegion?: string;
+    stateBucket?: string;
+    statePrefix: string;
+    region?: string;
+    profile?: string;
+  }
+): Promise<{ state: StackState; region: string } | undefined> {
+  const logger = getLogger();
+
+  // Region resolution chain: --region > AWS_REGION > AWS_DEFAULT_REGION >
+  // synth-derived stack region > us-east-1. The state-bucket S3 client is
+  // re-targeted to the bucket's actual region inside the backend, but the
+  // initial AWS clients still need a sensible default.
+  const region =
+    opts.region ??
+    process.env['AWS_REGION'] ??
+    process.env['AWS_DEFAULT_REGION'] ??
+    synthRegion ??
+    'us-east-1';
+
+  let stateBucket: string;
+  try {
+    stateBucket = await resolveStateBucketWithDefault(opts.stateBucket, region);
+  } catch (err) {
+    logger.warn(
+      `--from-state: could not resolve state bucket: ${err instanceof Error ? err.message : String(err)}. Falling back to PR 1 warn-and-drop semantics.`
+    );
+    return undefined;
+  }
+
+  const awsClients = new AwsClients({
+    ...(opts.region !== undefined && { region: opts.region }),
+    ...(opts.profile !== undefined && { profile: opts.profile }),
+  });
+  setAwsClients(awsClients);
+
+  try {
+    const stateConfig = { bucket: stateBucket, prefix: opts.statePrefix };
+    const stateBackend = new S3StateBackend(awsClients.s3, stateConfig, {
+      ...(opts.region !== undefined && { region: opts.region }),
+      ...(opts.profile !== undefined && { profile: opts.profile }),
+    });
+    await stateBackend.verifyBucketExists();
+
+    // Disambiguate: if the user passed --stack-region, use it; else if the
+    // synthesized stack carries a region, prefer that; else fall back to
+    // the single state record for this stack name. Multi-region ambiguity
+    // → warn and bail (mirrors `cdkd state show`'s semantics, just without
+    // the hard-error treatment so an opt-in --from-state degrades cleanly).
+    const refs = (await stateBackend.listStacks()).filter((r) => r.stackName === stackName);
+    if (refs.length === 0) {
+      logger.warn(
+        `--from-state: no cdkd state found for stack '${stackName}' in bucket '${stateBucket}'. ` +
+          `Was it deployed via 'cdkd deploy'? Falling back to PR 1 warn-and-drop semantics.`
+      );
+      return undefined;
+    }
+
+    let targetRegion: string;
+    if (opts.stackRegion) {
+      const found = refs.find((r) => r.region === opts.stackRegion);
+      if (!found) {
+        const seen = refs.map((r) => r.region ?? '(legacy)').join(', ');
+        logger.warn(
+          `--from-state: stack '${stackName}' has no state in region '${opts.stackRegion}' (available: ${seen}). Falling back.`
+        );
+        return undefined;
+      }
+      targetRegion = opts.stackRegion;
+    } else if (synthRegion && refs.some((r) => r.region === synthRegion)) {
+      targetRegion = synthRegion;
+    } else if (refs.length === 1) {
+      targetRegion = refs[0]!.region ?? synthRegion ?? region;
+    } else {
+      const seen = refs.map((r) => r.region ?? '(legacy)').join(', ');
+      logger.warn(
+        `--from-state: stack '${stackName}' has state in multiple regions (${seen}). ` +
+          `Re-run with --stack-region <region>. Falling back.`
+      );
+      return undefined;
+    }
+
+    const stateData = await stateBackend.getState(stackName, targetRegion);
+    if (!stateData) {
+      logger.warn(
+        `--from-state: state record for '${stackName}' (${targetRegion}) returned empty. Falling back.`
+      );
+      return undefined;
+    }
+    logger.debug(`--from-state: loaded state for ${stackName} (${targetRegion})`);
+    return { state: stateData.state, region: targetRegion };
+  } finally {
+    awsClients.destroy();
+  }
+}
+
+/**
+ * When `--from-state` is set but `--assume-role` is not, log the function's
+ * deployed execution role ARN once as a hint. Helps users discover the
+ * scoped-credentials path without us silently auto-assuming (auto-assume
+ * is a future PR's scope).
+ */
+function suggestAssumeRoleFromState(state: StackState, logicalId: string): void {
+  const logger = getLogger();
+  const lambda = state.resources[logicalId];
+  if (!lambda) return;
+
+  const roleRef = lambda.properties?.['Role'] ?? lambda.observedProperties?.['Role'];
+  let roleArn: string | undefined;
+  if (typeof roleRef === 'string' && roleRef.startsWith('arn:')) {
+    roleArn = roleRef;
+  } else if (typeof roleRef === 'object' && roleRef !== null) {
+    // The template typically has `Fn::GetAtt: [<RoleId>, Arn]` — we look up
+    // the referenced role's `Arn` attribute in the state's resources map.
+    const refLogicalId = pickReferencedLogicalId(roleRef as Record<string, unknown>);
+    if (refLogicalId) {
+      const roleResource = state.resources[refLogicalId];
+      const cached = roleResource?.attributes?.['Arn'];
+      if (typeof cached === 'string' && cached.startsWith('arn:')) {
+        roleArn = cached;
+      }
+    }
+  }
+
+  if (roleArn) {
+    logger.info(
+      `Hint: the deployed function uses execution role ${roleArn}. ` +
+        `Re-run with --assume-role <that-arn> to invoke under the deployed function's narrow permissions.`
+    );
+  }
+}
+
+/**
+ * Walk a single-key intrinsic and return the referenced logical ID, or
+ * `undefined` for shapes we don't try to resolve in v1 (multi-key
+ * intrinsics, nested intrinsics, etc.). Mirrors the narrow handling used
+ * by `state-resolver.ts`.
+ */
+function pickReferencedLogicalId(intrinsic: Record<string, unknown>): string | undefined {
+  if ('Ref' in intrinsic && typeof intrinsic['Ref'] === 'string') return intrinsic['Ref'];
+  if ('Fn::GetAtt' in intrinsic) {
+    const arg = intrinsic['Fn::GetAtt'];
+    if (Array.isArray(arg) && typeof arg[0] === 'string') return arg[0];
+    if (typeof arg === 'string') return arg.split('.')[0];
+  }
+  return undefined;
+}
+
+/**
  * Top-level `cdkd local` command. Currently has one subcommand
  * (`invoke`); reserves room for `cdkd local start-api` etc. in later
  * PRs (D3).
@@ -447,11 +691,27 @@ export function createLocalCommand(): Command {
           "the developer's shell credentials are forwarded unchanged (SAM-compatible default)."
       )
     )
+    .addOption(
+      new Option(
+        '--from-state',
+        'Read cdkd S3 state for the target stack and substitute Ref / Fn::GetAtt / Fn::Sub ' +
+          'in env vars with the deployed physical IDs / attributes. ' +
+          'Off by default — keep PR 1 warn-and-drop semantics; turn on for stacks already deployed via cdkd deploy.'
+      ).default(false)
+    )
+    .addOption(
+      new Option(
+        '--stack-region <region>',
+        'Region of the cdkd state record to read (used with --from-state when the same stack name has state in multiple regions).'
+      )
+    )
     .action(withErrorHandling(localInvokeCommand));
 
-  // Reuse standard option blocks. Note: state-bucket / deploy options are
-  // intentionally NOT added — local invoke does not touch state in PR 1.
-  [...commonOptions, ...appOptions, ...contextOptions].forEach((opt) => invoke.addOption(opt));
+  // Reuse standard option blocks. State options are added so --from-state
+  // can read the cdkd state bucket (PR 2).
+  [...commonOptions, ...appOptions, ...contextOptions, ...stateOptions].forEach((opt) =>
+    invoke.addOption(opt)
+  );
   invoke.addOption(deprecatedRegionOption);
 
   local.addCommand(invoke);

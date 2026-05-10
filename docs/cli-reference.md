@@ -829,24 +829,87 @@ in the resolved stack so the user can copy/paste a valid one.
 | `--no-pull` | off | Skip `docker pull` (use cached image). |
 | `--debug-port <port>` | off | Set `NODE_OPTIONS=--inspect-brk=0.0.0.0:<port>` and publish the port; attach a Node debugger to step through the handler. |
 | `--container-host <host>` | `127.0.0.1` | Host to bind the RIE port to. |
-| `--assume-role <arn>` | off | STS-assume the deployed function's execution role and forward the resulting temp credentials to the container, so the handler runs under the deployed role's narrow permissions instead of the developer's typically-admin shell credentials. Off by default — when omitted, `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` / `AWS_SESSION_TOKEN` / `AWS_REGION` are passed through unchanged (SAM-compatible default). PR 1 takes an explicit ARN; auto-resolution from the template's `Role` property is deferred to PR 2's `--from-state`. |
+| `--assume-role <arn>` | off | STS-assume the deployed function's execution role and forward the resulting temp credentials to the container, so the handler runs under the deployed role's narrow permissions instead of the developer's typically-admin shell credentials. Off by default — when omitted, `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` / `AWS_SESSION_TOKEN` / `AWS_REGION` are passed through unchanged (SAM-compatible default). Takes an explicit ARN; PR 2's `--from-state` adds a hint pointing at the state-recorded role ARN but does NOT auto-assume. |
 | `-a, --app <cmd-or-dir>` | — | CDK app command or pre-synthesized `cdk.out` directory. Default: synth every time (Q2 recommendation C). Pass `-a cdk.out` to skip synthesis when iterating. |
 | `--output <dir>` | `cdk.out` | Output directory for synthesis. |
+| `--from-state` | off | Read cdkd's S3 state for the target stack and substitute `Ref` / `Fn::GetAtt` / `Fn::Sub` placeholders in env vars with the deployed physical IDs / attributes. Off by default — keeps PR 1's literal-only / warn-and-drop behavior. See [State-driven env recovery (`--from-state`)](#state-driven-env-recovery---from-state) below. |
+| `--state-bucket <bucket>` | auto | S3 bucket containing cdkd state. Falls back to `CDKD_STATE_BUCKET` env or `cdk.json context.cdkd.stateBucket`, then the default `cdkd-state-{accountId}`. Only used with `--from-state`. |
+| `--state-prefix <prefix>` | `cdkd` | S3 key prefix for state files. Only used with `--from-state`. |
+| `--stack-region <region>` | auto | Region of the cdkd state record to read. Required when the same stack name has state in multiple regions. Only used with `--from-state`. |
 
 ### Environment variables
 
 Template `Properties.Environment.Variables` entries:
 
 - **Literal values** (string / number / boolean) are passed through as-is.
-- **Intrinsic-valued entries** (`Ref` / `Fn::GetAtt` / `Fn::Sub`) cannot
-  be resolved without state. v1 emits a warning naming the variable and
-  **drops** it (rather than silently substituting garbage). Override
-  intrinsics via `--env-vars` until PR 2's `--from-state` lands.
+- **Intrinsic-valued entries** (`Ref` / `Fn::GetAtt` / `Fn::Sub`) need
+  state to resolve. Without `--from-state` v1 emits a warning naming the
+  variable and **drops** it (rather than silently substituting garbage);
+  pass `--from-state` (PR 2 — see below) to recover deployed values from
+  cdkd's S3 state, or override intrinsics via `--env-vars`.
 
 Standard Lambda runtime env vars are always set: `AWS_LAMBDA_FUNCTION_NAME`,
 `AWS_LAMBDA_FUNCTION_MEMORY_SIZE`, `AWS_LAMBDA_FUNCTION_TIMEOUT`,
 `AWS_LAMBDA_FUNCTION_VERSION`, `AWS_LAMBDA_LOG_GROUP_NAME`,
 `AWS_LAMBDA_LOG_STREAM_NAME`. The handler's `context.*` fields look real.
+
+### State-driven env recovery (`--from-state`)
+
+When the target stack has been deployed with `cdkd deploy`, the function's
+intrinsic-valued env vars (`Ref` / `Fn::GetAtt` / `Fn::Sub`) reference
+resources whose physical IDs only exist in AWS. PR 1's behavior is to
+drop those entries with a warn — correct when there's no source of
+truth, but unhelpful when cdkd already knows them. `--from-state` opts
+in to reading cdkd's S3 state and substituting the deployed values
+before the env block reaches the container.
+
+**Resolution priority** (highest priority wins):
+
+1. `--env-vars` file function-specific entry (`{LogicalId: {KEY: VALUE}}`).
+2. `--env-vars` file global `Parameters` block.
+3. `--from-state` substituted intrinsic (when the flag is set AND the
+   template entry was a supported intrinsic AND substitution succeeded).
+4. Template literal value.
+
+**Supported intrinsics**: `Ref` (→ `state.resources[id].physicalId`),
+`Fn::GetAtt` (→ `state.resources[id].attributes[attr]`, JSON-stringified
+when the cached value is an object/array), `Fn::Sub` (single-string and
+two-arg forms; `${LogicalId}` / `${LogicalId.attr}` placeholders are
+substituted in place — the two-arg form's bindings map can also carry
+intrinsic values, recursively resolved).
+
+**Failure mode**: per-key best-effort. When a substitution can't be
+produced (state missing for the referenced resource, attribute not
+captured at deploy time, unsupported intrinsic in `Fn::Sub`), the key
+is reported via warn and dropped — same UX as PR 1. State-load
+failures (no state record, multi-region ambiguity without
+`--stack-region`, bucket-resolution error) degrade to warn-and-fall-back
+rather than aborting the whole invoke.
+
+**Q1 follow-up**: when `--from-state` is set without `--assume-role`,
+cdkd peeks at the function's deployed `Role` in state and logs a
+one-line hint surfacing the role's ARN. Auto-assumption is intentionally
+not wired in — v1 keeps `--assume-role` as the single explicit path to
+scoped credentials.
+
+**Out of scope** (deferred): cross-stack `Fn::ImportValue` /
+`Fn::GetStackOutput`, pseudo parameters (`AWS::Region`,
+`AWS::AccountId`, etc.), other intrinsics (`Fn::Join`, `Fn::Select`,
+`Fn::Split`, etc.). Anything beyond the three supported intrinsics is
+treated as unresolved (warn + drop).
+
+```bash
+# Single-region stack: --from-state alone is enough
+cdkd deploy MyStack
+cdkd local invoke MyStack/MyApi/Handler --from-state
+
+# Multi-region: disambiguate the state record
+cdkd local invoke MyStack/MyApi/Handler --from-state --stack-region us-west-2
+
+# Combine with --env-vars to override a single key (override wins)
+cdkd local invoke MyStack/MyApi/Handler --from-state \
+  --env-vars '{"Parameters":{"DEBUG":"1"}}'
+```
 
 ### Asset resolution
 
@@ -873,7 +936,8 @@ materialized to a tmpdir using the file path implied by the function's
 | Python / Java / Go / Ruby / .NET runtimes | Future PRs (Python first) |
 | Container Lambda (`Code.ImageUri`) | Future PR |
 | Lambda Layers (`AWS::Lambda::LayerVersion`) | Future PR |
-| State-driven env recovery (`--from-state`) | Next PR |
+| Cross-stack `Fn::ImportValue` / `Fn::GetStackOutput` in `--from-state` | Future PR |
+| Pseudo parameters / `Fn::Join` / `Fn::Select` etc. in `--from-state` | Future PR (warn + drop in v1) |
 | API Gateway / SQS / S3 event source emulation (`cdkd local start-api`) | Future PR |
 | VPC simulation | Never (local can't replicate VPC) |
 | Custom Resources (`Custom::*`) | Never — these are invoked by the deploy framework, not by users. cdkd surfaces a clear error pointing at the underlying ServiceToken Lambda. |
