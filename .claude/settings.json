@@ -73,6 +73,13 @@
             "if": "Bash(git commit*)",
             "timeout": 10,
             "statusMessage": "Checking new provider registration has docs entries..."
+          },
+          {
+            "type": "command",
+            "command": ".claude/hooks/internal-pr-labels-gate.sh",
+            "if": "Bash(git commit*)",
+            "timeout": 10,
+            "statusMessage": "Checking user-facing docs for internal PR labels..."
           }
         ]
       }
