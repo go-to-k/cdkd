@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
 import { Command, Option } from 'commander';
@@ -126,6 +126,11 @@ async function localStartApiCommand(options: LocalStartApiOptions): Promise<void
   const overrides = readEnvOverridesFile(options.envVars);
   const debugPortBase = options.debugPortBase ? parseDebugPort(options.debugPortBase) : undefined;
   const specs = new Map<string, ContainerSpec>();
+  // Track every tmpdir created by `materializeInlineCode` so the
+  // graceful-shutdown path removes them. Long-running servers (this
+  // command) would otherwise leak one tmpdir per inline-`Code.ZipFile`
+  // Lambda per server invocation.
+  const inlineTmpDirs = new Set<string>();
   for (let i = 0; i < lambdaIds.length; i++) {
     const logicalId = lambdaIds[i]!;
     const spec = await buildContainerSpec({
@@ -136,6 +141,7 @@ async function localStartApiCommand(options: LocalStartApiOptions): Promise<void
       containerHost: options.containerHost,
       ...(debugPortBase !== undefined && { debugPort: debugPortBase + i }),
       stsRegion: options.region ?? process.env['AWS_REGION'] ?? process.env['AWS_DEFAULT_REGION'],
+      inlineTmpDirs,
     });
     specs.set(logicalId, spec);
   }
@@ -228,6 +234,19 @@ async function localStartApiCommand(options: LocalStartApiOptions): Promise<void
     } catch (err) {
       logger.warn(`pool.dispose() failed: ${err instanceof Error ? err.message : String(err)}`);
     }
+    // Remove every tmpdir we materialized inline `Code.ZipFile` Lambdas
+    // into. Each is `mkdtempSync(...)` under the OS tmpdir, so the only
+    // owner of cleanup is this process. Best-effort: log + continue on
+    // any per-dir failure.
+    for (const dir of inlineTmpDirs) {
+      try {
+        rmSync(dir, { recursive: true, force: true });
+      } catch (err) {
+        logger.warn(
+          `Failed to remove inline-code tmpdir ${dir}: ${err instanceof Error ? err.message : String(err)}`
+        );
+      }
+    }
     process.exit(exitCode);
   };
 
@@ -305,8 +324,24 @@ async function buildContainerSpec(args: {
   containerHost: string;
   debugPort?: number;
   stsRegion: string | undefined;
+  /**
+   * The caller's set of materialized inline-code tmpdirs. Every dir
+   * `materializeInlineCode` returns is also pushed here so the graceful
+   * shutdown path can remove it. The set is shared across all calls
+   * within one server boot.
+   */
+  inlineTmpDirs: Set<string>;
 }): Promise<ContainerSpec> {
-  const { logicalId, stacks, overrides, assumeRole, containerHost, debugPort, stsRegion } = args;
+  const {
+    logicalId,
+    stacks,
+    overrides,
+    assumeRole,
+    containerHost,
+    debugPort,
+    stsRegion,
+    inlineTmpDirs,
+  } = args;
   const lambda = resolveLambdaByLogicalId(logicalId, stacks);
 
   // Re-use `cdkd local invoke`'s materialization rules for inline
@@ -317,7 +352,8 @@ async function buildContainerSpec(args: {
     materializeInlineCode(
       lambda.handler,
       lambda.inlineCode ?? '',
-      resolveRuntimeFileExtension(lambda.runtime)
+      resolveRuntimeFileExtension(lambda.runtime),
+      inlineTmpDirs
     );
 
   // Env vars: literal template values + --env-vars overlay. Intrinsic-
@@ -496,17 +532,25 @@ function printRouteTable(routes: readonly DiscoveredRoute[]): void {
 /**
  * Materialize an inline Lambda body (`Code.ZipFile`) to a tmpdir and
  * return the directory the container should mount at /var/task.
- * Mirrors `cdkd local invoke`'s implementation byte-for-byte; lifted
- * here as a sibling so we don't cross the local-invoke / start-api
- * file boundary.
+ * Mirrors `cdkd local invoke`'s implementation; the only divergence is
+ * the long-running-server lifecycle: every tmpdir created here is
+ * recorded in `tmpDirsOut` so the caller's shutdown path can `rmSync`
+ * them. (`cdkd local invoke` runs once and `--rm` is the right model;
+ * `cdkd local start-api` lives across requests, so leaks compound.)
  */
-function materializeInlineCode(handler: string, source: string, fileExtension: string): string {
+function materializeInlineCode(
+  handler: string,
+  source: string,
+  fileExtension: string,
+  tmpDirsOut: Set<string>
+): string {
   const lastDot = handler.lastIndexOf('.');
   if (lastDot <= 0) {
     throw new Error(`Handler '${handler}' is malformed: expected '<modulePath>.<exportName>'.`);
   }
   const modulePath = handler.substring(0, lastDot);
   const dir = mkdtempSync(path.join(tmpdir(), 'cdkd-local-start-api-'));
+  tmpDirsOut.add(dir);
   const filePath = path.join(dir, `${modulePath}${fileExtension}`);
   mkdirSync(path.dirname(filePath), { recursive: true });
   writeFileSync(filePath, source, 'utf-8');

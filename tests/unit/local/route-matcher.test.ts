@@ -101,4 +101,29 @@ describe('matchRoute — greedy proxy', () => {
     const result = matchRoute('GET', '/api/v1', routes);
     expect(result?.route.lambdaLogicalId).toBe('Api');
   });
+
+  it('extracts {name} placeholders in the literal prefix of a {proxy+} pattern', () => {
+    // CDK's `addProxy({path: '/items/{id}'})` synthesizes
+    // `/items/{id}/{proxy+}`. The literal prefix has a placeholder; the
+    // greedy tail captures the rest. Both `id` and `proxy` must surface
+    // in pathParameters.
+    const result = matchRoute('GET', '/items/42/sub/path', [
+      r('GET', '/items/{id}/{proxy+}'),
+    ]);
+    expect(result?.route.pathPattern).toBe('/items/{id}/{proxy+}');
+    expect(result?.pathParameters).toEqual({ id: '42', proxy: 'sub/path' });
+  });
+
+  it('method precedence still beats {proxy+} prefix-placeholder when methods differ', () => {
+    // Sibling pattern with a different method must NOT win for a GET
+    // request. The placeholder-extracting branch still has to honor
+    // the method filter applied in tier 1.
+    const routes = [
+      r('POST', '/items/{id}/{proxy+}', 'Post'),
+      r('GET', '/items/{id}/{proxy+}', 'Get'),
+    ];
+    const result = matchRoute('GET', '/items/42/sub/path', routes);
+    expect(result?.route.lambdaLogicalId).toBe('Get');
+    expect(result?.pathParameters).toEqual({ id: '42', proxy: 'sub/path' });
+  });
 });

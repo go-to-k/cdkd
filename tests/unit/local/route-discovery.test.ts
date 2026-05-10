@@ -168,6 +168,125 @@ describe('discoverRoutes — REST v1', () => {
   });
 });
 
+describe('discoverRoutes — REST v1 buildRestV1Path error branches', () => {
+  // Each test fixtures a malformed template stub and asserts the
+  // specific error message thrown by `buildRestV1Path` so a regression
+  // in the wording / class can't slip through unnoticed.
+
+  it('throws on cycle in ParentId chain', () => {
+    const stack = buildStack('S', {
+      Api: { Type: 'AWS::ApiGateway::RestApi', Properties: {} },
+      A: {
+        Type: 'AWS::ApiGateway::Resource',
+        Properties: {
+          RestApiId: { Ref: 'Api' },
+          ParentId: { Ref: 'B' },
+          PathPart: 'a',
+        },
+      },
+      B: {
+        Type: 'AWS::ApiGateway::Resource',
+        Properties: {
+          RestApiId: { Ref: 'Api' },
+          ParentId: { Ref: 'A' },
+          PathPart: 'b',
+        },
+      },
+      Method: {
+        Type: 'AWS::ApiGateway::Method',
+        Properties: {
+          HttpMethod: 'GET',
+          RestApiId: { Ref: 'Api' },
+          ResourceId: { Ref: 'A' },
+          Integration: { Type: 'AWS_PROXY', Uri: { 'Fn::GetAtt': ['Fn', 'Arn'] } },
+        },
+      },
+    });
+    expect(() => discoverRoutes([stack])).toThrow(/cycle detected in AWS::ApiGateway::Resource ParentId chain/);
+  });
+
+  it('throws on missing parent resource', () => {
+    const stack = buildStack('S', {
+      Api: { Type: 'AWS::ApiGateway::RestApi', Properties: {} },
+      Orphan: {
+        Type: 'AWS::ApiGateway::Resource',
+        Properties: {
+          RestApiId: { Ref: 'Api' },
+          ParentId: { Ref: 'DoesNotExist' },
+          PathPart: 'orphan',
+        },
+      },
+      Method: {
+        Type: 'AWS::ApiGateway::Method',
+        Properties: {
+          HttpMethod: 'GET',
+          RestApiId: { Ref: 'Api' },
+          ResourceId: { Ref: 'Orphan' },
+          Integration: { Type: 'AWS_PROXY', Uri: { 'Fn::GetAtt': ['Fn', 'Arn'] } },
+        },
+      },
+    });
+    expect(() => discoverRoutes([stack])).toThrow(/ParentId chain references missing resource 'DoesNotExist'/);
+  });
+
+  it('throws when ParentId chain hits a non-Resource type', () => {
+    const stack = buildStack('S', {
+      Api: { Type: 'AWS::ApiGateway::RestApi', Properties: {} },
+      Strange: {
+        // Wrong type; pretends to be a parent.
+        Type: 'AWS::S3::Bucket',
+        Properties: {},
+      },
+      Child: {
+        Type: 'AWS::ApiGateway::Resource',
+        Properties: {
+          RestApiId: { Ref: 'Api' },
+          ParentId: { Ref: 'Strange' },
+          PathPart: 'child',
+        },
+      },
+      Method: {
+        Type: 'AWS::ApiGateway::Method',
+        Properties: {
+          HttpMethod: 'GET',
+          RestApiId: { Ref: 'Api' },
+          ResourceId: { Ref: 'Child' },
+          Integration: { Type: 'AWS_PROXY', Uri: { 'Fn::GetAtt': ['Fn', 'Arn'] } },
+        },
+      },
+    });
+    expect(() => discoverRoutes([stack])).toThrow(
+      /ParentId chain hit AWS::S3::Bucket \(expected AWS::ApiGateway::Resource or RestApi root\)/
+    );
+  });
+
+  it('throws on Resource missing PathPart', () => {
+    const stack = buildStack('S', {
+      Api: { Type: 'AWS::ApiGateway::RestApi', Properties: {} },
+      MissingPathPart: {
+        Type: 'AWS::ApiGateway::Resource',
+        Properties: {
+          RestApiId: { Ref: 'Api' },
+          ParentId: { 'Fn::GetAtt': ['Api', 'RootResourceId'] },
+          // PathPart missing.
+        },
+      },
+      Method: {
+        Type: 'AWS::ApiGateway::Method',
+        Properties: {
+          HttpMethod: 'GET',
+          RestApiId: { Ref: 'Api' },
+          ResourceId: { Ref: 'MissingPathPart' },
+          Integration: { Type: 'AWS_PROXY', Uri: { 'Fn::GetAtt': ['Fn', 'Arn'] } },
+        },
+      },
+    });
+    expect(() => discoverRoutes([stack])).toThrow(
+      /AWS::ApiGateway::Resource 'MissingPathPart' missing PathPart/
+    );
+  });
+});
+
 describe('discoverRoutes — HTTP API v2', () => {
   it('parses RouteKey and resolves Target integration', () => {
     const stack = buildStack('S', {

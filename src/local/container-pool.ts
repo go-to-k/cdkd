@@ -128,6 +128,18 @@ export function createContainerPool(
 
   const entries = new Map<string, ContainerPoolEntry>();
 
+  /**
+   * Tracks every in-flight `startOne` promise so `dispose()` can wait
+   * for them (with a short timeout) and tear down the resulting
+   * handles instead of leaking the container. Without this, a SIGINT
+   * during a cold-start lands on an `acquire()` that's still inside
+   * `runDetached` / `waitForRieReady`; when the start eventually
+   * resolves, `entries.get(...)` is undefined and the handle is
+   * dropped on the floor. Populated inside `startOne`'s entry path
+   * (via `trackStart`); drained in `dispose()`.
+   */
+  const inFlightStarts = new Set<Promise<ContainerHandle>>();
+
   // Pre-create empty entries so `acquire()` never has to lazily build
   // the map under contention. Pool starts at size 0 per entry; growth
   // happens inside `acquire()` under the per-entry mutex.
@@ -290,7 +302,17 @@ export function createContainerPool(
 
         if (poolSize(entry) < concurrencyCap) {
           const spec = specs.get(logicalId)!;
-          const handle = await startOne(spec);
+          // Track the start promise so `dispose()` can wait for it (with
+          // a timeout) and tear down the resulting container instead of
+          // leaking it on a SIGINT-during-cold-start race.
+          const startPromise = startOne(spec);
+          inFlightStarts.add(startPromise);
+          let handle: ContainerHandle;
+          try {
+            handle = await startPromise;
+          } finally {
+            inFlightStarts.delete(startPromise);
+          }
           entry.inUse.add(handle);
           return handle;
         }
@@ -343,6 +365,51 @@ export function createContainerPool(
         for (const h of entry.inUse) allHandles.push(h);
         entry.inUse.clear();
       }
+
+      // Wait for any cold-start `startOne` calls that were mid-flight at
+      // dispose time, with a short timeout so a hung docker-run can't
+      // block shutdown forever. Each settled start contributes its
+      // resulting handle to the teardown set so the container does not
+      // leak (the verify.sh `docker rm -f cdkd-local-*` sweep is a
+      // safety net for the timeout case).
+      const startPromises = [...inFlightStarts];
+      if (startPromises.length > 0) {
+        logger.debug(
+          `Waiting for ${startPromises.length} in-flight container start(s) to settle before teardown`
+        );
+        const drainTimeoutMs = 5_000;
+        const wrapped = startPromises.map((p) =>
+          Promise.race([
+            p.then((h): { kind: 'ok'; handle: ContainerHandle } => ({ kind: 'ok', handle: h })),
+            new Promise<{ kind: 'timeout' }>((r) => {
+              const t = setTimeout(() => r({ kind: 'timeout' }), drainTimeoutMs);
+              t.unref?.();
+            }),
+          ]).catch((err: unknown) => {
+            // `startOne` rejected — log and skip; nothing to tear down.
+            logger.debug(
+              `In-flight startOne rejected during dispose: ${err instanceof Error ? err.message : String(err)}`
+            );
+            return { kind: 'rejected' as const };
+          })
+        );
+        const results = await Promise.all(wrapped);
+        let timedOut = 0;
+        for (const r of results) {
+          if (r.kind === 'ok') {
+            allHandles.push(r.handle);
+          } else if (r.kind === 'timeout') {
+            timedOut++;
+          }
+        }
+        if (timedOut > 0) {
+          logger.warn(
+            `Container pool disposed with ${timedOut} in-flight start(s) still pending after ${drainTimeoutMs}ms; relying on docker --rm + the verify.sh sweep to clean up.`
+          );
+        }
+        inFlightStarts.clear();
+      }
+
       // Tear down in parallel; `tearDown` swallows individual failures.
       await Promise.allSettled(allHandles.map((h) => tearDown(h)));
       entries.clear();
