@@ -497,28 +497,16 @@ Two `orphan` variants at different granularities:
 Both `cdkd destroy` (synth-driven) and `cdkd state destroy`
 (state-driven, no synth) delete AWS resources + state.
 
-## Stack termination protection
+## `--remove-protection`: one-shot bypass for protected resources
 
-CDK's `new Stack(app, 'X', { terminationProtection: true })` is
-honored by `cdkd destroy` and `cdkd destroy --all`. A protected
-stack is refused before the lock is acquired and before any
-per-resource delete runs; in `--all` runs sibling unprotected
-stacks still destroy and the protected ones contribute to the
-partial-failure exit code 2.
-
-Bypass workflow:
-
-1. Edit the CDK code to set `terminationProtection: false`.
-2. Redeploy: `cdkd deploy MyStack`.
-3. Retry: `cdkd destroy MyStack`.
-
-`cdkd state destroy` (state-only, no synth) does **not** honor
-`terminationProtection` — the flag is a CDK property surfaced via
-synth and is not stored in cdkd's state.json. Use `cdkd destroy`
-when synth is available, or accept that `state destroy` is the
+CDK's `new Stack(app, 'X', { terminationProtection: true })` is honored
+by `cdkd destroy` (refused before any per-resource delete). The
+state-only path `cdkd state destroy` does NOT honor it — that's the
 explicit "I know what I'm doing, ignore CDK guards" escape hatch.
 
-### `--remove-protection`: one-shot bypass for protected resources
+For resource-level protection (`DeletionProtection` etc.), the standard
+workflow is edit CDK → redeploy → destroy. `--remove-protection` is the
+one-shot bypass:
 
 `cdkd destroy --remove-protection` and `cdkd state destroy
 --remove-protection` flip every protection flag off in-place
@@ -542,25 +530,14 @@ types:
 | `AWS::Cognito::UserPool` | `DeletionProtection` (`ACTIVE` / `INACTIVE`) |
 | `AWS::AutoScaling::AutoScalingGroup` | `DeletionProtection` (`none` / `prevent-force-deletion` / `prevent-all-deletion`) — flag also sets `ForceDelete: true` so AWS terminates running instances as part of the delete |
 
-The flip-off call is idempotent — providers always issue it when
-the flag is set, regardless of whether the resource currently has
-protection on. This is per-PR-level: a single `--remove-protection`
-covers every protection-bearing type listed above; there is no
-per-type variant.
+A single `--remove-protection` covers every type listed above (no
+per-type variant). The interactive confirm prompt switches to
+`y/N` (requiring an explicit `y` for the destructive bypass);
+`--yes` / `-y` / `-f` skips it.
 
-The interactive confirmation prompt is updated when the flag is
-set: `About to destroy N resources from stack "X", REMOVING
-DELETION PROTECTION on K of them. Continue? (y/N)`. The default
-flips from `Y/n` to `y/N` so the destructive bypass requires an
-explicit `y` / `yes`. `--yes` / `-y` / `-f` skips the prompt.
-
-Other protected resource types (CloudFront Distributions, Lambda
-function reserved concurrency, S3 bucket retention, etc.) are
-out of scope — the flag list is curated to the cases where AWS
-exposes a synchronous "flip protection off" API call.
-
-`cdkd diff` (read-only) and `cdkd deploy` (forward-only) are
-unaffected — only destroy is gated.
+Out of scope: types where AWS doesn't expose a synchronous "flip
+protection off" API call (CloudFront Distributions, Lambda function
+reserved concurrency, S3 bucket retention, etc.).
 
 ## `publish-assets`: synth + build + publish, no deploy
 
