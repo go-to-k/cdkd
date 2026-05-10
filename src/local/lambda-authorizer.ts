@@ -412,27 +412,56 @@ function parseHttpV2RequestResponse(
 
 /**
  * Match a Resource value against the methodArn. AWS supports `*` and `?`
- * glob characters in the policy resource; cdkd interprets `*` as "match
- * anything" within a path segment AND across path segments (matches
- * deployed behavior).
+ * glob characters in IAM policy resources; cdkd implements the segmented
+ * semantics AWS documents — `*` matches any sequence of characters
+ * **within** a single segment, where segments are delimited by `:`
+ * (ARN partition / service / region / account) and `/` (path). `**`
+ * matches across segment boundaries for callers that need the looser
+ * behavior (cdkd-specific extension; no AWS equivalent, useful for
+ * stage-wide rules like `arn:.../prod/**`).
  *
- * Note: cdkd's wildcard match is intentionally permissive across `:` /
- * `/` boundaries — slightly broader than the AWS spec, which scopes `*`
- * to within a single path segment. As a local dev tool the surface area
- * is the developer's own template, so the looseness is acceptable; a
- * stricter mode is a follow-up if the gap ever bites.
+ * Examples:
+ *   - `arn:.../prod/GET/*` matches `arn:.../prod/GET/items` (single
+ *     trailing segment) but NOT `arn:.../prod/GET/items/42` (would cross
+ *     a `/`).
+ *   - `arn:.../prod/**` matches every method+path under `prod/`.
+ *   - `arn:.../prod/* / *` (no `**`, spaces inserted for readability)
+ *     matches `prod/GET/items` (two single-segment wildcards).
  *
- * Special case: a Resource ending in `/*` allows any sub-path under the
- * stage — a common pattern in Cognito-issued policies.
+ * Special case: a Resource ending in `/*` therefore allows any single
+ * trailing segment, NOT arbitrarily-deep sub-paths — for the latter,
+ * write `/**`. This is a behavior change vs the pre-fix permissive
+ * implementation; deployed AWS policies that work in production should
+ * not be affected because AWS itself applies the segmented rule.
  */
 export function resourceMatches(pattern: string, methodArn: string): boolean {
   if (pattern === methodArn) return true;
   if (!pattern.includes('*') && !pattern.includes('?')) return false;
-  const escaped = pattern
-    .replace(/[.+^${}()|[\]\\]/g, '\\$&')
-    .replace(/\*/g, '.*')
-    .replace(/\?/g, '.');
-  const re = new RegExp(`^${escaped}$`);
+  // Translate the glob to a regex, taking care to handle `**` before `*`
+  // so the cross-segment alternative is not greedy-consumed by the
+  // single-segment rule.
+  let regex = '';
+  for (let i = 0; i < pattern.length; i++) {
+    const ch = pattern[i]!;
+    if (ch === '*') {
+      if (pattern[i + 1] === '*') {
+        // `**` — cross-segment match (`.*`)
+        regex += '.*';
+        i++;
+      } else {
+        // `*` — single segment (anything except `:` and `/`)
+        regex += '[^:/]*';
+      }
+    } else if (ch === '?') {
+      // `?` — any single character except `:` and `/` (segment-scoped)
+      regex += '[^:/]';
+    } else if ('.+^${}()|[]\\'.includes(ch)) {
+      regex += '\\' + ch;
+    } else {
+      regex += ch;
+    }
+  }
+  const re = new RegExp(`^${regex}$`);
   return re.test(methodArn);
 }
 

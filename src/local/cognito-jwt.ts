@@ -364,15 +364,19 @@ function pickStringClaim(claims: Record<string, unknown>, key: string): string |
 
 /**
  * Parse `Authorization: Bearer <token>` into the bare token. Whitespace
- * around `Bearer` is tolerated; case is matched leniently. Returns
- * `undefined` when the header is missing or doesn't look like a Bearer
- * scheme.
+ * around `Bearer` is tolerated; case is matched leniently. The token
+ * itself is constrained to the JWT character class `[A-Za-z0-9._-]+`
+ * (base64url alphabet plus the JWT `.` separator), so embedded
+ * whitespace / quotes / other garbage in the header rejects rather than
+ * being passed along to the JWT parser as a token containing spaces.
+ * Returns `undefined` when the header is missing, the scheme is wrong,
+ * or the token doesn't look JWT-shaped.
  */
 function extractBearer(header: string | undefined): string | undefined {
   if (!header) return undefined;
-  const m = /^\s*Bearer\s+(.+)\s*$/i.exec(header);
+  const m = /^\s*Bearer\s+([A-Za-z0-9._-]+)\s*$/i.exec(header);
   if (!m) return undefined;
-  return m[1]!.trim();
+  return m[1]!;
 }
 
 interface ParsedJwt {

@@ -78,8 +78,17 @@ export interface CognitoUserPoolAuthorizer {
   region: string;
   /** Pool id parsed from the ARN. */
   userPoolId: string;
-  /** App client id (audience) when declared via `IdentitySource` references; else undefined. */
-  audience?: string;
+  // NOTE: there is intentionally no `audience` field on REST v1 Cognito
+  // authorizers. The audience that JWT verification would check (`aud`
+  // for ID tokens, `client_id` for access tokens) is the User Pool *App
+  // Client ID*. CDK / CFn's `AWS::ApiGateway::Authorizer` only carries
+  // the User Pool ARN(s) via `ProviderARNs`, not the client id, so
+  // there's no template-time data for cdkd to surface here.
+  // `verifyCognitoJwt` therefore passes `expectedAudience: undefined`
+  // and falls back to issuer / signature / expiry checks only — matches
+  // the deployed REST v1 behavior. HTTP v2 JWT authorizers DO carry an
+  // explicit audience allowlist via `JwtConfiguration.Audience`; see
+  // {@link JwtAuthorizer.audience}.
   declaredAt: string;
 }
 

@@ -81,7 +81,7 @@ describe('parseLambdaAuthorizerResponse', () => {
     expect(result.context).toEqual({ foo: 'bar' });
   });
 
-  it('returns allow=true for wildcard Resource', () => {
+  it('returns allow=true for wildcard Resource (** crosses path segments)', () => {
     const result = parseLambdaAuthorizerResponse(
       {
         principalId: 'u',
@@ -89,7 +89,9 @@ describe('parseLambdaAuthorizerResponse', () => {
           Statement: [
             {
               Effect: 'Allow',
-              Resource: 'arn:aws:execute-api:local:123456789012:local/prod/*/*',
+              // ** crosses path segments — needed to match the full
+              // `<METHOD>/<resource>/<id>` tail of the methodArn.
+              Resource: 'arn:aws:execute-api:local:123456789012:local/prod/**',
             },
           ],
         },
@@ -317,13 +319,14 @@ describe('evaluateCachedLambdaPolicy', () => {
     expect(evaluateCachedLambdaPolicy(cached, arnB).allow).toBe(false);
   });
 
-  it('returns allow=true for wildcard Resource regardless of methodArn', () => {
+  it('returns allow=true for wildcard Resource (** crosses path segments) regardless of methodArn', () => {
     const cached = {
       allow: true,
       principalId: 'u',
       policy: {
         Statement: [
-          { Effect: 'Allow', Resource: 'arn:aws:execute-api:local:123456789012:local/prod/*/*' },
+          // ** crosses path segments — covers every method+path under the stage.
+          { Effect: 'Allow', Resource: 'arn:aws:execute-api:local:123456789012:local/prod/**' },
         ],
       },
     };
@@ -478,19 +481,50 @@ describe('resourceMatches', () => {
   it('non-matching literal returns false', () => {
     expect(resourceMatches('arn:other:not:matching', arn)).toBe(false);
   });
-  it('* wildcard segment matches', () => {
-    expect(
-      resourceMatches('arn:aws:execute-api:local:123456789012:local/prod/*/*', arn)
-    ).toBe(true);
-  });
-  it('* wildcard tail matches sub-path', () => {
+  it('* matches a single path segment (tail)', () => {
+    // `*` matches `42` (one path segment).
     expect(
       resourceMatches('arn:aws:execute-api:local:123456789012:local/prod/GET/items/*', arn)
     ).toBe(true);
   });
-  it('? matches a single character', () => {
+  it('* does NOT cross / segment boundaries (matches AWS IAM spec)', () => {
+    // Pattern has 4 trailing path-segments after `prod/`: `*/*/*` is only
+    // three segments, would-match if `*` greedily ate `GET/items/42`,
+    // but does NOT under the segmented rule. Pre-fix this returned true.
+    expect(
+      resourceMatches('arn:aws:execute-api:local:123456789012:local/prod/*/*', arn)
+    ).toBe(false);
+    // Three single-segment wildcards line up — matches.
+    expect(
+      resourceMatches('arn:aws:execute-api:local:123456789012:local/prod/*/*/*', arn)
+    ).toBe(true);
+  });
+  it('* does NOT cross : segment boundaries (matches AWS IAM spec)', () => {
+    // `*` in the region/account slot can NOT eat through `:` into the
+    // account / api segments.
+    expect(
+      resourceMatches('arn:aws:execute-api:*:local/prod/GET/items/42', arn)
+    ).toBe(false);
+    // Single segment between the two : is fine.
+    expect(
+      resourceMatches('arn:aws:execute-api:*:123456789012:local/prod/GET/items/42', arn)
+    ).toBe(true);
+  });
+  it('** crosses / and : boundaries (cdkd extension)', () => {
+    expect(
+      resourceMatches('arn:aws:execute-api:local:123456789012:local/prod/**', arn)
+    ).toBe(true);
+    expect(resourceMatches('arn:**', arn)).toBe(true);
+  });
+  it('? matches a single character within a segment', () => {
     expect(resourceMatches('arn:aws:execute-api:local:123456789012:local/prod/?ET/items/42', arn)).toBe(
       true
+    );
+  });
+  it('? does NOT cross / boundary', () => {
+    // Trying to match `T/i` with `???` — the middle char is `/`, must be rejected.
+    expect(resourceMatches('arn:aws:execute-api:local:123456789012:local/prod/GE???tems/42', arn)).toBe(
+      false
     );
   });
 });
