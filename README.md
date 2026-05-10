@@ -188,8 +188,6 @@ npm i -g @go-to-k/cdkd@0.0.2    # pin to a specific version
 
 The installed binary is `cdkd`.
 
-> cdkd is an experimental / educational project and is not intended for production use — see the warning at the top of this README. Pin to a specific version if you need reproducible installs.
-
 ## Quick Start
 
 > **First-time setup**: cdkd requires a one-time `cdkd bootstrap` per AWS
