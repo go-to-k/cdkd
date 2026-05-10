@@ -63,6 +63,14 @@ export interface JwksCache {
 }
 
 const DEFAULT_JWKS_TTL_MS = 60 * 60 * 1000;
+/**
+ * Failure-mode TTL for JWKS-unreachable entries. Pre-fix the failure
+ * entry inherited the 1hr success TTL, so a single transient blip
+ * locked pass-through mode for a full hour. 60s is short enough that
+ * the next minute's request triggers a real refetch while still
+ * suppressing the per-request fetch storm a 0s TTL would cause.
+ */
+const FAILURE_JWKS_TTL_MS = 60 * 1000;
 
 export function createJwksCache(
   opts: {
@@ -71,11 +79,14 @@ export function createJwksCache(
     ) => Promise<{ ok: boolean; status: number; text: () => Promise<string> }>;
     now?: () => number;
     ttlMs?: number;
+    /** Failure-mode TTL override (defaults to {@link FAILURE_JWKS_TTL_MS}). */
+    failureTtlMs?: number;
   } = {}
 ): JwksCache {
   const fetchImpl = opts.fetchImpl ?? (async (url) => globalThis.fetch(url));
   const now = opts.now ?? ((): number => Date.now());
   const ttlMs = opts.ttlMs ?? DEFAULT_JWKS_TTL_MS;
+  const failureTtlMs = opts.failureTtlMs ?? FAILURE_JWKS_TTL_MS;
   const map = new Map<string, JwksCacheEntry>();
 
   return {
@@ -124,9 +135,12 @@ export function createJwksCache(
             `JWT validation will allow all tokens — local dev fallback. Configure network access to the JWKS URL ` +
             `to enable real signature verification.`
         );
+        // Short-TTL failure entry so a transient blip doesn't lock
+        // pass-through mode for a full hour. The next minute's request
+        // re-attempts the fetch.
         const entry: JwksCacheEntry = {
           byKid: new Map(),
-          expiresAt: now() + ttlMs,
+          expiresAt: now() + failureTtlMs,
           passThrough: true,
         };
         map.set(jwksUrl, entry);
@@ -234,11 +248,13 @@ async function verifyAndShape(
   now: () => number
 ): Promise<CachedAuthorizerResult & { identityHash: string | undefined; ttlSeconds: number }> {
   const identityHash = buildIdentityHash([token]);
-  const parsed = parseJwt(token);
-  if (!parsed) {
-    return { allow: false, identityHash, ttlSeconds: 0 };
-  }
 
+  // Fetch JWKS first so the pass-through mode (JWKS unreachable) can
+  // accept every Bearer token — including malformed / non-JWT garbage —
+  // without needing to first parse the token. Pre-fix the parseJwt
+  // check above the JWKS fetch denied malformed tokens even in
+  // pass-through mode, contradicting the design intent ("every JWT
+  // accepted as if valid" → "every Bearer token accepted").
   const jwks = await jwksCache.fetchAndCache(jwksUrl);
 
   if (jwks.passThrough) {
@@ -250,7 +266,25 @@ async function verifyAndShape(
           `JWKS pass-through mode for ${jwksUrl}: token accepted without signature verification.`
         );
     }
-    return shapeAllowResult(parsed, identityHash, now);
+    // Best-effort parse: a real JWT lets us still surface claims to the
+    // handler. A malformed token gets a synthetic `unknown` principal
+    // and an empty claims map. Either way the request is allowed.
+    const parsed = parseJwt(token);
+    if (parsed) {
+      return shapeAllowResult(parsed, identityHash, now);
+    }
+    return {
+      allow: true,
+      principalId: 'unknown',
+      context: {},
+      identityHash,
+      ttlSeconds: 0,
+    };
+  }
+
+  const parsed = parseJwt(token);
+  if (!parsed) {
+    return { allow: false, identityHash, ttlSeconds: 0 };
   }
 
   const kid = parsed.header['kid'];

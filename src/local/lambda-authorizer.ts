@@ -131,20 +131,13 @@ export async function invokeRequestAuthorizer(
   // Build the cache key from every identity source the authorizer
   // declared. Missing values become empty strings; an authorizer with no
   // declared identity sources caches once globally (`identityHash = ''`).
-  const identityValues = authorizer.identitySources.map((sel) =>
-    extractIdentityValue(sel, request)
-  );
   // REST v1: missing every identity source → 401 (matches deployed
   // behavior). HTTP v2 falls through with empty values; the authorizer
   // is then expected to deny on its own.
-  if (
-    authorizer.apiVersion === 'v1' &&
-    authorizer.identitySources.length > 0 &&
-    identityValues.every((v) => v === undefined || v === '')
-  ) {
+  const { identityHash, missing } = computeRequestIdentityHash(authorizer, request);
+  if (missing) {
     return { allow: false, identityHash: undefined };
   }
-  const identityHash = buildIdentityHash(identityValues);
 
   const event =
     authorizer.apiVersion === 'v1'
@@ -166,8 +159,17 @@ export async function invokeRequestAuthorizer(
  * Pick the value for one identity-source selector out of the request
  * snapshot. Returns `undefined` when the source isn't present in the
  * request (caller decides whether that's a deny or a pass-through).
+ *
+ * REST v1 supports `context.<name>` and `stageVariables.<name>` as
+ * identity sources too. Local server has no realistic `requestContext`
+ * sub-tree to query yet, and stage variables aren't populated in v1
+ * (PR 8c will plumb them through), so both kinds currently return
+ * `undefined`. Add a code comment when wiring stage variables — until
+ * then, an authorizer whose ONLY identity source is a context /
+ * stage-variable selector will still 401 the request on REST v1
+ * (matching the deployed behavior when those sources are absent).
  */
-function extractIdentityValue(
+export function extractIdentityValue(
   sel: IdentitySourceSelector,
   request: RequestSnapshotForAuthorizer
 ): string | undefined {
@@ -177,12 +179,39 @@ function extractIdentityValue(
     case 'query':
       return request.queryStringParameters[sel.name];
     case 'context':
-      // Local server doesn't have realistic context values — surface a
-      // stable placeholder so the cache key is deterministic.
+      // Local server doesn't carry a realistic `requestContext` sub-tree
+      // for v1; once available, look up `request.requestContext[sel.name]`
+      // here. Until then, return undefined and surface the same 401 the
+      // deployed behavior produces when the source is absent.
       return undefined;
     case 'stage-variable':
+      // Stage variables become meaningful once PR 8c plumbs them through
+      // — until then there is no map to look up against.
       return undefined;
   }
+}
+
+/**
+ * Pre-compute the identity hash for a REQUEST authorizer from the request
+ * snapshot, BEFORE invoking the Lambda. Used by the HTTP server's cache
+ * lookup path so a hit can be served without paying for a Lambda invocation.
+ *
+ * Returns `undefined` when REST v1 has no usable identity source (caller
+ * surfaces a 401 without invoking). HTTP v2 falls through with empty values
+ * and the authorizer is expected to deny on its own.
+ */
+export function computeRequestIdentityHash(
+  authorizer: LambdaRequestAuthorizer,
+  request: RequestSnapshotForAuthorizer
+): { identityHash: string; missing: boolean } {
+  const identityValues = authorizer.identitySources.map((sel) =>
+    extractIdentityValue(sel, request)
+  );
+  const missing =
+    authorizer.apiVersion === 'v1' &&
+    authorizer.identitySources.length > 0 &&
+    identityValues.every((v) => v === undefined || v === '');
+  return { identityHash: buildIdentityHash(identityValues), missing };
 }
 
 /**
@@ -387,10 +416,16 @@ function parseHttpV2RequestResponse(
  * anything" within a path segment AND across path segments (matches
  * deployed behavior).
  *
+ * Note: cdkd's wildcard match is intentionally permissive across `:` /
+ * `/` boundaries — slightly broader than the AWS spec, which scopes `*`
+ * to within a single path segment. As a local dev tool the surface area
+ * is the developer's own template, so the looseness is acceptable; a
+ * stricter mode is a follow-up if the gap ever bites.
+ *
  * Special case: a Resource ending in `/*` allows any sub-path under the
  * stage — a common pattern in Cognito-issued policies.
  */
-function resourceMatches(pattern: string, methodArn: string): boolean {
+export function resourceMatches(pattern: string, methodArn: string): boolean {
   if (pattern === methodArn) return true;
   if (!pattern.includes('*') && !pattern.includes('?')) return false;
   const escaped = pattern
@@ -399,4 +434,39 @@ function resourceMatches(pattern: string, methodArn: string): boolean {
     .replace(/\?/g, '.');
   const re = new RegExp(`^${escaped}$`);
   return re.test(methodArn);
+}
+
+/**
+ * Re-evaluate a cached Lambda authorizer's policy document against the
+ * current request's methodArn. Used by the HTTP server's cache hit path:
+ * AWS-deployed API Gateway caches the IAM policy and re-checks `Resource`
+ * against each new request's methodArn, so cdkd mirrors that — caching
+ * the verdict directly would let a narrow-Resource Allow leak across
+ * routes.
+ *
+ * Returns the recomputed `allow` plus the existing `principalId` /
+ * `context` carried on the cached entry. Returns `allow: false` when
+ * the cached entry has no policy (not a Lambda authorizer) — caller
+ * should not have called this in that case.
+ */
+export function evaluateCachedLambdaPolicy(
+  cached: CachedAuthorizerResult,
+  methodArn: string
+): CachedAuthorizerResult {
+  const policy = cached.policy;
+  if (!policy || typeof policy !== 'object') {
+    return { ...cached, allow: false };
+  }
+  const stmts = (policy as Record<string, unknown>)['Statement'];
+  if (!Array.isArray(stmts)) {
+    return { ...cached, allow: false };
+  }
+  const allow = stmts.some((stmt) => {
+    if (!stmt || typeof stmt !== 'object' || Array.isArray(stmt)) return false;
+    const s = stmt as Record<string, unknown>;
+    if (s['Effect'] !== 'Allow') return false;
+    const resources = Array.isArray(s['Resource']) ? s['Resource'] : [s['Resource']];
+    return resources.some((r) => typeof r === 'string' && resourceMatches(r, methodArn));
+  });
+  return { ...cached, allow };
 }

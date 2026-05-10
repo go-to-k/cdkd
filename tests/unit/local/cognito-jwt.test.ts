@@ -330,3 +330,162 @@ describe('verifyCognitoJwt — malformed token', () => {
     expect(result.allow).toBe(false);
   });
 });
+
+/**
+ * Should-fix #5: pass-through must accept every JWT including malformed
+ * tokens (design says "every JWT accepted as if valid" → "every Bearer
+ * token accepted"). Pre-fix the parseJwt check above the JWKS fetch
+ * denied malformed tokens even in pass-through mode.
+ */
+describe('verifyCognitoJwt — pass-through accepts malformed tokens', () => {
+  it('allows a non-JWT garbage token in pass-through mode', async () => {
+    const cache = createJwksCache({
+      fetchImpl: async () => {
+        throw new Error('boom');
+      },
+    });
+    const result = await verifyCognitoJwt(COGNITO_AUTH, 'Bearer not-a-jwt', cache);
+    expect(result.allow).toBe(true);
+    expect(result.principalId).toBe('unknown');
+    expect(result.context).toEqual({});
+  });
+
+  it('allows a 2-part malformed token in pass-through mode', async () => {
+    const cache = createJwksCache({
+      fetchImpl: async () => {
+        throw new Error('boom');
+      },
+    });
+    const result = await verifyCognitoJwt(COGNITO_AUTH, 'Bearer abc.def', cache);
+    expect(result.allow).toBe(true);
+  });
+});
+
+/**
+ * Should-fix #7: a transient JWKS-fetch failure should NOT lock
+ * pass-through for a full 1hr — short failure TTL (~60s default) means
+ * the next minute's request retries the fetch.
+ */
+describe('createJwksCache — failure TTL is shorter than success TTL', () => {
+  it('failure entry expires after the failure TTL, allowing a retry', async () => {
+    let now = 0;
+    let attempts = 0;
+    const cache = createJwksCache({
+      now: () => now,
+      ttlMs: 60 * 60 * 1000, // 1hr success TTL
+      failureTtlMs: 60 * 1000, // 60s failure TTL
+      fetchImpl: async () => {
+        attempts += 1;
+        if (attempts === 1) throw new Error('blip');
+        return {
+          ok: true,
+          status: 200,
+          text: async () =>
+            JSON.stringify({ keys: [{ kid: 'k1', kty: 'RSA', n: 'n', e: 'AQAB' }] }),
+        };
+      },
+    });
+    const e1 = await cache.fetchAndCache('https://issuer/.well-known/jwks.json');
+    expect(e1.passThrough).toBe(true);
+
+    // 30s later: still in pass-through (within failure TTL).
+    now = 30 * 1000;
+    const e2 = await cache.fetchAndCache('https://issuer/.well-known/jwks.json');
+    expect(e2).toBe(e1);
+    expect(attempts).toBe(1);
+
+    // 90s later: failure TTL expired, retry succeeds.
+    now = 90 * 1000;
+    const e3 = await cache.fetchAndCache('https://issuer/.well-known/jwks.json');
+    expect(e3.passThrough).toBe(false);
+    expect(e3.byKid.has('k1')).toBe(true);
+    expect(attempts).toBe(2);
+  });
+
+  it('success TTL refreshes after the configured ttlMs (covers the existing-but-untested branch)', async () => {
+    let now = 0;
+    let fetchCalls = 0;
+    const cache = createJwksCache({
+      now: () => now,
+      ttlMs: 1000, // 1s for fast test
+      fetchImpl: async () => {
+        fetchCalls += 1;
+        return {
+          ok: true,
+          status: 200,
+          text: async () =>
+            JSON.stringify({
+              keys: [{ kid: `k${fetchCalls}`, kty: 'RSA', n: 'n', e: 'AQAB' }],
+            }),
+        };
+      },
+    });
+    await cache.fetchAndCache('https://issuer/.well-known/jwks.json');
+    expect(fetchCalls).toBe(1);
+
+    // Advance now() past TTL — next fetchAndCache must re-fetch.
+    now = 2000;
+    const e2 = await cache.fetchAndCache('https://issuer/.well-known/jwks.json');
+    expect(fetchCalls).toBe(2);
+    expect(e2.byKid.has('k2')).toBe(true);
+  });
+});
+
+/**
+ * The existing test suite covered fetch THROW (network exception). This
+ * pins the OTHER failure-mode branch: the response arrives but is HTTP
+ * non-2xx (e.g. 500 from the JWKS endpoint).
+ */
+describe('createJwksCache — JWKS HTTP-error path', () => {
+  it('falls through to pass-through when response.ok is false', async () => {
+    const cache = createJwksCache({
+      fetchImpl: async () => ({
+        ok: false,
+        status: 500,
+        text: async () => 'Internal Server Error',
+      }),
+    });
+    const entry = await cache.fetchAndCache('https://issuer/.well-known/jwks.json');
+    expect(entry.passThrough).toBe(true);
+    expect(entry.byKid.size).toBe(0);
+  });
+});
+
+/**
+ * Pin extractBearer's whitespace / case tolerance via verifyCognitoJwt:
+ * the helper itself is private but every JWT path goes through it, so
+ * verifying via the public surface is enough.
+ */
+describe('verifyCognitoJwt — extractBearer edge cases', () => {
+  it('accepts a lowercase bearer scheme (case-insensitive)', async () => {
+    const cache = createJwksCache({
+      fetchImpl: async () => {
+        throw new Error('boom');
+      },
+    });
+    // Pass-through mode allows the "valid Bearer token" path; we only
+    // care that extractBearer didn't reject the lowercase scheme.
+    const result = await verifyCognitoJwt(COGNITO_AUTH, 'bearer xyz', cache);
+    expect(result.allow).toBe(true);
+  });
+
+  it('accepts a Bearer scheme with double space before the token', async () => {
+    const cache = createJwksCache({
+      fetchImpl: async () => {
+        throw new Error('boom');
+      },
+    });
+    const result = await verifyCognitoJwt(COGNITO_AUTH, 'Bearer  xyz', cache);
+    expect(result.allow).toBe(true);
+  });
+
+  it('rejects a Bearer scheme with no token (just whitespace)', async () => {
+    const cache = createJwksCache({
+      fetchImpl: async () => {
+        throw new Error('boom');
+      },
+    });
+    const result = await verifyCognitoJwt(COGNITO_AUTH, 'Bearer ', cache);
+    expect(result.allow).toBe(false);
+  });
+});

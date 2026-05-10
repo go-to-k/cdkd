@@ -1073,8 +1073,11 @@ cdkd supports four authorizer kinds in front of any discovered route:
   Lambda as `event.authorizationToken`. The Lambda's response must carry
   a `policyDocument` with at least one `{ Effect: 'Allow', Resource:
   <methodArn> }` statement; cdkd matches `Resource` against the
-  request's methodArn (literal or `*`/`?` wildcard). Allow → context
-  flat under `event.requestContext.authorizer`. Deny → HTTP 403.
+  request's methodArn (literal or `*`/`?` wildcard) on every request —
+  cached verdicts get re-evaluated against the new methodArn so a
+  narrow-Resource Allow doesn't leak across routes. Allow → context
+  flat under `event.requestContext.authorizer`. Policy-deny → HTTP 403,
+  missing identity header → HTTP 401 without invoking the Lambda.
 - **Lambda REQUEST** — REST v1 (`Type: 'REQUEST'`) and HTTP v2
   (`AuthorizerType: 'REQUEST'`). The full request snapshot (headers,
   query string, path parameters) is passed to the authorizer Lambda.
@@ -1097,13 +1100,22 @@ for `min(remaining-exp, 300s)`).
 
 **JWKS-fetch failure → pass-through.** When the JWKS endpoint is
 unreachable at startup, cdkd warns and falls back to a pass-through
-mode where every JWT is accepted as if valid:
+mode where every Bearer token is accepted as if valid (including
+malformed / non-JWT garbage — a real JWT still gets its claims
+surfaced into `event.requestContext.authorizer`, a malformed token
+gets a synthetic `unknown` principal and an empty claims map):
 
 ```text
 [warn] [cognito-jwt] JWKS unreachable at https://cognito-idp.us-east-1.amazonaws.com/us-east-1_xyz/.well-known/jwks.json: ...
         JWT validation will allow all tokens — local dev fallback. Configure
         network access to the JWKS URL to enable real signature verification.
 ```
+
+The failure entry has a short TTL (~60s) so a transient blip doesn't
+lock pass-through for the full 1hr success TTL — the next minute's
+request retries the JWKS fetch. The pass-through warn line itself
+fires at most once per JWKS URL per server lifecycle (the warn-set
+is constructed once at server startup, not per request).
 
 This is a deliberate dev-tool tradeoff: surprising deny is worse than
 warn+allow when the developer is iterating on a function and the JWKS

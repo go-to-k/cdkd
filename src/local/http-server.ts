@@ -17,6 +17,8 @@ import type { AuthorizerInfo, RouteWithAuth } from './authorizer-resolver.js';
 import type { AuthorizerCache, CachedAuthorizerResult } from './authorizer-cache.js';
 import {
   buildMethodArn,
+  computeRequestIdentityHash,
+  evaluateCachedLambdaPolicy,
   invokeRequestAuthorizer,
   invokeTokenAuthorizer,
 } from './lambda-authorizer.js';
@@ -60,6 +62,15 @@ export interface StartApiServerOptions {
   authorizerCache?: AuthorizerCache;
   /** JWKS cache (PR 8b). Required when any route has a Cognito / JWT authorizer. */
   jwksCache?: JwksCache;
+  /**
+   * Per-server-lifecycle Set of JWKS URLs we have already emitted a
+   * pass-through warn line for (PR 8b post-review fix). Constructed once
+   * by the caller (`local-start-api.ts`) and threaded through to every
+   * request so the warn fires at most ONCE per JWKS URL per server.
+   * When omitted, the verifier no-ops the warn (used in tests where the
+   * server is not started through the CLI bootstrap).
+   */
+  jwksWarnedUrls?: Set<string>;
 }
 
 export interface StartedApiServer {
@@ -185,8 +196,9 @@ async function handleRequest(
   // Authorizer pass.
   let authResult: CachedAuthorizerResult | undefined;
   if (authorizer) {
+    let outcome: AuthorizerOutcome;
     try {
-      authResult = await runAuthorizerPass(
+      outcome = await runAuthorizerPass(
         authorizer,
         snapshot,
         matchCtx,
@@ -197,13 +209,17 @@ async function handleRequest(
       logger.error(
         `Authorizer ${authorizer.logicalId} threw for ${match.route.declaredAt}: ${err instanceof Error ? err.message : String(err)}`
       );
-      writeAuthRejection(res, match.route.apiVersion);
+      // Authorizer error is treated as policy-deny (403 on REST v1, 401
+      // on HTTP v2) — matches deployed behavior on Lambda authorizer
+      // exceptions.
+      writeAuthRejection(res, match.route.apiVersion, 'policy-deny');
       return;
     }
-    if (!authResult.allow) {
-      writeAuthRejection(res, match.route.apiVersion);
+    if (!outcome.result.allow) {
+      writeAuthRejection(res, match.route.apiVersion, outcome.denyKind ?? 'policy-deny');
       return;
     }
+    authResult = outcome.result;
     const overlay = buildOverlay(authorizer, authResult);
     if (overlay) {
       baseEvent = applyAuthorizerOverlay(baseEvent, overlay);
@@ -254,9 +270,36 @@ async function handleRequest(
 }
 
 /**
+ * Outcome of an authorizer pass. The HTTP server uses `denyKind` to
+ * differentiate REST v1 missing-identity (401) from policy-deny (403);
+ * HTTP v2 collapses both to 401.
+ */
+interface AuthorizerOutcome {
+  result: CachedAuthorizerResult;
+  /**
+   * `'missing-identity'` when the request lacks the configured identity
+   * source (REST v1 → 401); `'policy-deny'` when the authorizer ran and
+   * denied (REST v1 → 403). Unset on Allow outcomes.
+   */
+  denyKind?: 'missing-identity' | 'policy-deny';
+}
+
+/**
  * Run the authorizer (cache hit or fresh invocation) and return the
- * verdict. Treats `authResult.allow === true` as the only happy path;
- * the http-server gates route forwarding on this.
+ * verdict + denyKind. Treats `result.allow === true` as the only happy
+ * path; the http-server gates route forwarding on this.
+ *
+ * **Cache semantics (PR #237 review fixes)**:
+ *   - The cache is keyed by `(authorizerLogicalId, identityHash)` and
+ *     stores the authorizer's verdict shape (principalId, policyDocument,
+ *     context) NOT the per-request `Resource`-evaluated allow/deny. On
+ *     every Lambda-authorizer cache hit we re-run `resourceMatches`
+ *     against the current request's methodArn so a narrow-Resource
+ *     policy doesn't leak across routes.
+ *   - For REQUEST authorizers we pre-compute the identity hash from
+ *     the request snapshot BEFORE invoking the Lambda and consult the
+ *     cache first; only a cache miss triggers `invokeRequestAuthorizer`.
+ *     (Pre-fix: every request invoked, then checked cache.)
  */
 async function runAuthorizerPass(
   authorizer: AuthorizerInfo,
@@ -264,7 +307,7 @@ async function runAuthorizerPass(
   matchCtx: MatchedRouteContext,
   opts: StartApiServerOptions,
   requestContextV2: Record<string, unknown>
-): Promise<CachedAuthorizerResult> {
+): Promise<AuthorizerOutcome> {
   // Build the snapshot the authorizer-invoker consumes. We use the v2
   // header+query maps for both versions because the local server canon-
   // icalizes those upstream; the route-event builder is the only place
@@ -272,13 +315,7 @@ async function runAuthorizerPass(
   // builders re-derive multiValueHeaders from this single map.
   const headers = lowercaseSingularHeaders(snapshot.headers);
   const queryStringParameters = parseQueryStringSingular(snapshot.rawUrl);
-  const sourceIp =
-    typeof requestContextV2['http'] === 'object' &&
-    requestContextV2['http'] !== null &&
-    !Array.isArray(requestContextV2['http']) &&
-    typeof (requestContextV2['http'] as Record<string, unknown>)['sourceIp'] === 'string'
-      ? ((requestContextV2['http'] as Record<string, unknown>)['sourceIp'] as string)
-      : (snapshot.sourceIp ?? '127.0.0.1');
+  const sourceIp = pickSourceIp(matchCtx.route.apiVersion, requestContextV2, snapshot);
 
   const reqSnap = {
     method: snapshot.method.toUpperCase(),
@@ -298,18 +335,20 @@ async function runAuthorizerPass(
     path: matchCtx.matchedPath,
   });
 
-  // Build identity hash up-front for cache lookup (TOKEN / REQUEST /
-  // JWT all derive a hash from the request).
   const cache = opts.authorizerCache;
 
   if (authorizer.kind === 'lambda-token') {
     const token = headers[authorizer.tokenHeader];
     if (!token) {
-      return { allow: false };
+      return { result: { allow: false }, denyKind: 'missing-identity' };
     }
     if (cache) {
       const cached = cache.get(authorizer.logicalId, hashOne(token));
-      if (cached) return cached;
+      if (cached) {
+        // Re-evaluate Resource against the current methodArn so a
+        // narrow-Resource Allow doesn't leak across routes.
+        return shapeOutcome(evaluateCachedLambdaPolicy(cached, methodArn));
+      }
     }
     const result = await invokeTokenAuthorizer(authorizer, reqSnap, {
       pool: opts.pool,
@@ -319,13 +358,37 @@ async function runAuthorizerPass(
       mockApiId: 'local',
     });
     if (cache && result.identityHash !== undefined) {
-      cache.set(authorizer.logicalId, result.identityHash, authorizer.resultTtlSeconds, result);
+      cache.set(
+        authorizer.logicalId,
+        result.identityHash,
+        authorizer.resultTtlSeconds,
+        stripHash(result)
+      );
     }
-    return stripHash(result);
+    return shapeOutcome(stripHash(result));
   }
 
   if (authorizer.kind === 'lambda-request') {
-    // Pre-cache check: identity-hash needs the resolved values.
+    // Pre-compute identity hash for cache lookup BEFORE invoking. Pre-fix
+    // this code invoked first and consulted the cache only afterwards,
+    // defeating the cache for every request.
+    const { identityHash, missing } = computeRequestIdentityHash(authorizer, reqSnap);
+    if (missing) {
+      return { result: { allow: false }, denyKind: 'missing-identity' };
+    }
+    if (cache && authorizer.resultTtlSeconds > 0) {
+      const cached = cache.get(authorizer.logicalId, identityHash);
+      if (cached) {
+        // For Lambda authorizers we always re-evaluate Resource against
+        // the current methodArn (mirrors AWS-deployed API Gateway). The
+        // HTTP v2 `{isAuthorized}` simple shape has no policy — those
+        // cached entries pass through their own allow flag.
+        if (cached.policy !== undefined) {
+          return shapeOutcome(evaluateCachedLambdaPolicy(cached, methodArn));
+        }
+        return shapeOutcome(cached);
+      }
+    }
     const result = await invokeRequestAuthorizer(authorizer, reqSnap, {
       pool: opts.pool,
       rieTimeoutMs: opts.rieTimeoutMs,
@@ -333,45 +396,109 @@ async function runAuthorizerPass(
       mockAccountId: '123456789012',
       mockApiId: 'local',
     });
-    // Cache lookup re-uses the resolver-built hash; we fold it into a
-    // post-invoke set when the value is fresh and the TTL is positive.
     if (cache && result.identityHash !== undefined && authorizer.resultTtlSeconds > 0) {
-      const cached = cache.get(authorizer.logicalId, result.identityHash);
-      if (cached) return cached;
-      cache.set(authorizer.logicalId, result.identityHash, authorizer.resultTtlSeconds, result);
+      cache.set(
+        authorizer.logicalId,
+        result.identityHash,
+        authorizer.resultTtlSeconds,
+        stripHash(result)
+      );
     }
-    return stripHash(result);
+    return shapeOutcome(stripHash(result));
   }
 
   if (!opts.jwksCache) {
     // Defensive: should never reach here in practice — local-start-api
     // always passes a JWKS cache when any JWT authorizer is configured.
-    return { allow: false };
+    return { result: { allow: false }, denyKind: 'policy-deny' };
   }
 
   const authHeader = headers['authorization'];
+  const jwksOpts = { ...(opts.jwksWarnedUrls && { warned: opts.jwksWarnedUrls }) };
   if (authorizer.kind === 'cognito') {
     if (cache && authHeader !== undefined) {
       const cached = cache.get(authorizer.logicalId, hashOne(authHeader));
-      if (cached) return cached;
+      if (cached) return shapeOutcome(cached);
     }
-    const result = await verifyCognitoJwt(authorizer, authHeader, opts.jwksCache);
+    const result = await verifyCognitoJwt(authorizer, authHeader, opts.jwksCache, jwksOpts);
     if (cache && result.identityHash !== undefined && result.ttlSeconds > 0) {
-      cache.set(authorizer.logicalId, result.identityHash, result.ttlSeconds, result);
+      cache.set(
+        authorizer.logicalId,
+        result.identityHash,
+        result.ttlSeconds,
+        stripHashAndTtl(result)
+      );
     }
-    return stripHashAndTtl(result);
+    if (!result.allow && authHeader === undefined) {
+      return { result: stripHashAndTtl(result), denyKind: 'missing-identity' };
+    }
+    return shapeOutcome(stripHashAndTtl(result));
   }
 
   // jwt
   if (cache && authHeader !== undefined) {
     const cached = cache.get(authorizer.logicalId, hashOne(authHeader));
-    if (cached) return cached;
+    if (cached) return shapeOutcome(cached);
   }
-  const result = await verifyJwtAuthorizer(authorizer, authHeader, opts.jwksCache);
+  const result = await verifyJwtAuthorizer(authorizer, authHeader, opts.jwksCache, jwksOpts);
   if (cache && result.identityHash !== undefined && result.ttlSeconds > 0) {
-    cache.set(authorizer.logicalId, result.identityHash, result.ttlSeconds, result);
+    cache.set(
+      authorizer.logicalId,
+      result.identityHash,
+      result.ttlSeconds,
+      stripHashAndTtl(result)
+    );
   }
-  return stripHashAndTtl(result);
+  if (!result.allow && authHeader === undefined) {
+    return { result: stripHashAndTtl(result), denyKind: 'missing-identity' };
+  }
+  return shapeOutcome(stripHashAndTtl(result));
+}
+
+/**
+ * Wrap a {@link CachedAuthorizerResult} into the {@link AuthorizerOutcome}
+ * shape. Allow → no denyKind; Deny → `'policy-deny'` (the explicit
+ * "authorizer ran and denied" path; missing-identity is set by the
+ * caller before this point).
+ */
+function shapeOutcome(result: CachedAuthorizerResult): AuthorizerOutcome {
+  if (result.allow) return { result };
+  return { result, denyKind: 'policy-deny' };
+}
+
+/**
+ * Pick the source IP for the authorizer event. REST v1 stores it under
+ * `requestContext.identity.sourceIp`; HTTP v2 under `requestContext.http.sourceIp`.
+ * Falls back to the snapshot's `sourceIp` (or `127.0.0.1` for the local
+ * server) when the structured field is absent.
+ */
+function pickSourceIp(
+  apiVersion: 'v1' | 'v2',
+  requestContext: Record<string, unknown>,
+  snapshot: HttpRequestSnapshot
+): string {
+  if (apiVersion === 'v1') {
+    const identity = requestContext['identity'];
+    if (
+      identity &&
+      typeof identity === 'object' &&
+      !Array.isArray(identity) &&
+      typeof (identity as Record<string, unknown>)['sourceIp'] === 'string'
+    ) {
+      return (identity as Record<string, unknown>)['sourceIp'] as string;
+    }
+  } else {
+    const http = requestContext['http'];
+    if (
+      http &&
+      typeof http === 'object' &&
+      !Array.isArray(http) &&
+      typeof (http as Record<string, unknown>)['sourceIp'] === 'string'
+    ) {
+      return (http as Record<string, unknown>)['sourceIp'] as string;
+    }
+  }
+  return snapshot.sourceIp ?? '127.0.0.1';
 }
 
 function buildOverlay(
@@ -400,15 +527,29 @@ function buildOverlay(
 }
 
 /**
- * REST v1 maps authorizer rejections to HTTP 403 (`Forbidden`); HTTP v2
- * uses 401 (`Unauthorized`). Mirrors the deployed behavior.
+ * Map the authorizer rejection to an HTTP status code and body.
+ *   - REST v1, missing identity → 401 `{"message":"Unauthorized"}`
+ *     (matches deployed behavior; the route reaches the Method but no
+ *     identity source is present so the authorizer never runs).
+ *   - REST v1, policy-deny → 403 `{"message":"Forbidden"}` (the
+ *     authorizer ran and denied; status mirrors AWS API Gateway).
+ *   - HTTP v2, both kinds → 401 `{"message":"Unauthorized"}` (HTTP API
+ *     collapses both into the same response).
  */
-function writeAuthRejection(res: ServerResponse, apiVersion: 'v1' | 'v2'): void {
-  if (apiVersion === 'v1') {
-    writeError(res, 403, '{"message":"Forbidden"}');
-  } else {
+export function writeAuthRejection(
+  res: ServerResponse,
+  apiVersion: 'v1' | 'v2',
+  denyKind: 'missing-identity' | 'policy-deny'
+): void {
+  if (apiVersion === 'v2') {
     writeError(res, 401, '{"message":"Unauthorized"}');
+    return;
   }
+  if (denyKind === 'missing-identity') {
+    writeError(res, 401, '{"message":"Unauthorized"}');
+    return;
+  }
+  writeError(res, 403, '{"message":"Forbidden"}');
 }
 
 function hashOne(value: string): string {

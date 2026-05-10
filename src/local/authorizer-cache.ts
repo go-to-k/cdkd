@@ -20,7 +20,19 @@
  */
 
 export interface CachedAuthorizerResult {
-  /** Whether the authorizer Allow'd the request. */
+  /**
+   * Whether the authorizer Allow'd the request.
+   *
+   * **Cache semantics caveat**: for Lambda authorizers the cache stores
+   * the authorizer's verdict shape (`principalId`, `policyDocument`,
+   * `context`) keyed by `(authorizerLogicalId, identityHash)`; each
+   * cache hit re-evaluates `policyDocument.Resource` against the
+   * current request's methodArn so a narrow-Resource policy doesn't
+   * leak across routes. So for Lambda authorizers the cached `allow`
+   * is the verdict at cache-write time and is recomputed by the
+   * caller; for JWT / Cognito (where there is no IAM policy and only
+   * Allow results are ever cached) it is the final verdict.
+   */
   allow: boolean;
   /**
    * The principal id from the policy document (or the JWT `sub` claim).
@@ -34,9 +46,12 @@ export interface CachedAuthorizerResult {
    */
   context?: Record<string, unknown>;
   /**
-   * Original Lambda authorizer policy document (REST v1) — surfaced
-   * verbatim into `event.requestContext.authorizer.policy` for parity
-   * with the deployed behavior. JWT authorizers omit this.
+   * Original Lambda authorizer policy document (REST v1 + HTTP v2 IAM
+   * shape) — surfaced verbatim into
+   * `event.requestContext.authorizer.policy` for parity with the
+   * deployed behavior, AND used to re-evaluate `Resource` against the
+   * current request's methodArn on every cache hit so a narrow-Resource
+   * policy can't leak across routes. JWT authorizers omit this.
    */
   policy?: unknown;
 }

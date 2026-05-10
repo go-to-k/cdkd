@@ -1,9 +1,13 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
   buildMethodArn,
+  computeRequestIdentityHash,
+  evaluateCachedLambdaPolicy,
+  extractIdentityValue,
   invokeRequestAuthorizer,
   invokeTokenAuthorizer,
   parseLambdaAuthorizerResponse,
+  resourceMatches,
 } from '../../../src/local/lambda-authorizer.js';
 import type {
   LambdaRequestAuthorizer,
@@ -273,5 +277,220 @@ describe('invokeRequestAuthorizer (REST v1 missing identity)', () => {
     expect(result.allow).toBe(false);
     expect(acquire).not.toHaveBeenCalled();
     expect(invokeRieMock).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * PR #237 review must-fix #2 + missing-Effect test gap. The drift fix
+ * landed by reshaping `evaluateCachedLambdaPolicy`: every cache hit
+ * re-runs `Resource` matching against the current methodArn so a
+ * narrow-Resource Allow can't leak across routes. The missing-Effect
+ * branch maps to deny per AWS spec ("Effect is required").
+ */
+describe('evaluateCachedLambdaPolicy', () => {
+  const arnA = 'arn:aws:execute-api:local:123456789012:local/prod/GET/items/42';
+  const arnB = 'arn:aws:execute-api:local:123456789012:local/prod/GET/items/999';
+
+  it('returns allow=true for matching narrow Resource', () => {
+    const cached = {
+      allow: true,
+      principalId: 'u',
+      policy: {
+        Version: '2012-10-17',
+        Statement: [{ Effect: 'Allow', Resource: arnA }],
+      },
+    };
+    expect(evaluateCachedLambdaPolicy(cached, arnA).allow).toBe(true);
+  });
+
+  it('returns allow=false when narrow Resource does not match the new methodArn', () => {
+    const cached = {
+      allow: true,
+      principalId: 'u',
+      policy: {
+        Version: '2012-10-17',
+        Statement: [{ Effect: 'Allow', Resource: arnA }],
+      },
+    };
+    // Pre-fix: cache hit returned allow=true even for the second route
+    // (security bypass). Post-fix: Resource is re-evaluated.
+    expect(evaluateCachedLambdaPolicy(cached, arnB).allow).toBe(false);
+  });
+
+  it('returns allow=true for wildcard Resource regardless of methodArn', () => {
+    const cached = {
+      allow: true,
+      principalId: 'u',
+      policy: {
+        Statement: [
+          { Effect: 'Allow', Resource: 'arn:aws:execute-api:local:123456789012:local/prod/*/*' },
+        ],
+      },
+    };
+    expect(evaluateCachedLambdaPolicy(cached, arnA).allow).toBe(true);
+    expect(evaluateCachedLambdaPolicy(cached, arnB).allow).toBe(true);
+  });
+
+  it('preserves principalId / context across cache hits', () => {
+    const cached = {
+      allow: true,
+      principalId: 'u',
+      context: { tier: 'pro' },
+      policy: { Statement: [{ Effect: 'Allow', Resource: arnA }] },
+    };
+    const out = evaluateCachedLambdaPolicy(cached, arnA);
+    expect(out.principalId).toBe('u');
+    expect(out.context).toEqual({ tier: 'pro' });
+  });
+
+  it('returns allow=false when policy is missing', () => {
+    const cached = { allow: true };
+    expect(evaluateCachedLambdaPolicy(cached, arnA).allow).toBe(false);
+  });
+
+  it('treats a Statement without Effect field as deny (AWS spec)', () => {
+    // Test gap: the "missing Effect → deny" branch in evaluatePolicy.
+    const cached = {
+      allow: true,
+      policy: {
+        // No Effect field on the statement; AWS spec requires Effect, so
+        // a statement without one cannot grant Allow.
+        Statement: [{ Resource: arnA }],
+      },
+    };
+    expect(evaluateCachedLambdaPolicy(cached, arnA).allow).toBe(false);
+  });
+});
+
+/**
+ * `parseLambdaAuthorizerResponse` already encodes the missing-Effect →
+ * deny rule. Pin it here so a refactor can't regress the spec compliance.
+ */
+describe('parseLambdaAuthorizerResponse — missing-Effect deny', () => {
+  it('returns allow=false when a statement omits Effect (spec compliance)', () => {
+    const methodArn = 'arn:aws:execute-api:local:123456789012:local/prod/GET/items/42';
+    const result = parseLambdaAuthorizerResponse(
+      {
+        principalId: 'u',
+        policyDocument: {
+          Statement: [{ Resource: methodArn }],
+        },
+      },
+      methodArn,
+      'h'
+    );
+    expect(result.allow).toBe(false);
+  });
+});
+
+describe('computeRequestIdentityHash', () => {
+  const baseRequestNoAuth = {
+    method: 'GET',
+    headers: {},
+    queryStringParameters: {},
+    pathParameters: {},
+    sourceIp: '127.0.0.1',
+    matchedPath: '/items/42',
+    stage: 'prod',
+  };
+
+  it('REST v1 + missing every identity source → missing=true (401 path)', () => {
+    const auth: LambdaRequestAuthorizer = {
+      kind: 'lambda-request',
+      logicalId: 'A',
+      lambdaLogicalId: 'F',
+      identitySources: [{ kind: 'header', name: 'authorization' }],
+      resultTtlSeconds: 60,
+      apiVersion: 'v1',
+      declaredAt: 'S/M',
+    };
+    const out = computeRequestIdentityHash(auth, baseRequestNoAuth);
+    expect(out.missing).toBe(true);
+  });
+
+  it('REST v1 + present identity → missing=false', () => {
+    const auth: LambdaRequestAuthorizer = {
+      kind: 'lambda-request',
+      logicalId: 'A',
+      lambdaLogicalId: 'F',
+      identitySources: [{ kind: 'header', name: 'authorization' }],
+      resultTtlSeconds: 60,
+      apiVersion: 'v1',
+      declaredAt: 'S/M',
+    };
+    const out = computeRequestIdentityHash(auth, {
+      ...baseRequestNoAuth,
+      headers: { authorization: 'Bearer xyz' },
+    });
+    expect(out.missing).toBe(false);
+    expect(out.identityHash).toBe('Bearer xyz');
+  });
+
+  it('HTTP v2 + missing → missing=false (HTTP v2 falls through)', () => {
+    const auth: LambdaRequestAuthorizer = {
+      kind: 'lambda-request',
+      logicalId: 'A',
+      lambdaLogicalId: 'F',
+      identitySources: [{ kind: 'header', name: 'authorization' }],
+      resultTtlSeconds: 60,
+      apiVersion: 'v2',
+      declaredAt: 'S/R',
+    };
+    const out = computeRequestIdentityHash(auth, baseRequestNoAuth);
+    expect(out.missing).toBe(false);
+  });
+});
+
+describe('extractIdentityValue', () => {
+  const req = {
+    method: 'GET',
+    headers: { authorization: 'Bearer xyz', 'x-api-key': 'k1' },
+    queryStringParameters: { token: 't1' },
+    pathParameters: {},
+    sourceIp: '1.2.3.4',
+    matchedPath: '/items/42',
+    stage: 'prod',
+  };
+
+  it('reads header values', () => {
+    expect(extractIdentityValue({ kind: 'header', name: 'authorization' }, req)).toBe('Bearer xyz');
+  });
+
+  it('reads query values', () => {
+    expect(extractIdentityValue({ kind: 'query', name: 'token' }, req)).toBe('t1');
+  });
+
+  it('returns undefined for context (v1 not yet wired)', () => {
+    expect(extractIdentityValue({ kind: 'context', name: 'foo' }, req)).toBeUndefined();
+  });
+
+  it('returns undefined for stage-variable (v1 not yet wired)', () => {
+    expect(extractIdentityValue({ kind: 'stage-variable', name: 'bar' }, req)).toBeUndefined();
+  });
+});
+
+describe('resourceMatches', () => {
+  const arn = 'arn:aws:execute-api:local:123456789012:local/prod/GET/items/42';
+
+  it('exact literal match', () => {
+    expect(resourceMatches(arn, arn)).toBe(true);
+  });
+  it('non-matching literal returns false', () => {
+    expect(resourceMatches('arn:other:not:matching', arn)).toBe(false);
+  });
+  it('* wildcard segment matches', () => {
+    expect(
+      resourceMatches('arn:aws:execute-api:local:123456789012:local/prod/*/*', arn)
+    ).toBe(true);
+  });
+  it('* wildcard tail matches sub-path', () => {
+    expect(
+      resourceMatches('arn:aws:execute-api:local:123456789012:local/prod/GET/items/*', arn)
+    ).toBe(true);
+  });
+  it('? matches a single character', () => {
+    expect(resourceMatches('arn:aws:execute-api:local:123456789012:local/prod/?ET/items/42', arn)).toBe(
+      true
+    );
   });
 });

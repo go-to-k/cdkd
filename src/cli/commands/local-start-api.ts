@@ -210,6 +210,13 @@ async function localStartApiCommand(options: LocalStartApiOptions): Promise<void
   // PR 8b: per-route authorizer pass.
   const authorizerCache = createAuthorizerCache();
   const jwksCache = createJwksCache();
+  // Single Set constructed once at server startup. The verifier inside
+  // cognito-jwt.ts adds each JWKS URL whose fetch failed (pass-through
+  // mode) on the first request that hits it; subsequent requests find
+  // the URL already in the Set and the warn line is suppressed. Pre-fix
+  // the Set was undefined at the call site so the warn fired every
+  // request.
+  const jwksWarnedUrls = new Set<string>();
   // Pre-warm JWKS for Cognito / JWT authorizers so the first request
   // doesn't pay the fetch latency. Failures fall through to pass-through
   // mode with the warn line documented in cognito-jwt.ts.
@@ -228,6 +235,7 @@ async function localStartApiCommand(options: LocalStartApiOptions): Promise<void
     port,
     authorizerCache,
     jwksCache,
+    jwksWarnedUrls,
   });
 
   printRouteTable(routes);
