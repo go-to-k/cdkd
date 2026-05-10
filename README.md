@@ -564,15 +564,15 @@ but reusing cdkd's synthesis / asset / construct-path plumbing — no
 
 Requires Docker. v1 supports Node.js and Python runtimes (`nodejs18.x` /
 `nodejs20.x` / `nodejs22.x` / `nodejs24.x` / `python3.11` / `python3.12` /
-`python3.13` / `python3.14`); other runtimes follow in subsequent PRs.
+`python3.13` / `python3.14`); other runtimes (Java / .NET / Ruby / Go / `provided.*`) are not yet supported.
 
-**Container Lambdas (PR 5 of #224)** — `lambda.DockerImageFunction(...)` /
+**Container Lambdas** — `lambda.DockerImageFunction(...)` /
 `Code.ImageUri` is supported alongside ZIP Lambdas. cdkd reads the
 function's local `Dockerfile` from `cdk.out` and runs `docker build`
 locally before invoking. When no asset matches (typically: invoking a
 stack deployed elsewhere), cdkd falls back to `docker pull` from
 ECR — same-account / same-region only in v1; cross-account /
-cross-region is deferred to a follow-up PR. `Architectures: [x86_64]` /
+cross-region is not yet supported. `Architectures: [x86_64]` /
 `[arm64]` are honored via `--platform` so an arm64 host running an
 x86_64 Lambda doesn't hit emulation.
 
@@ -613,7 +613,7 @@ cdkd local invoke MyStack/Handler --debug-port 9229
 cdkd local invoke MyStack/Handler --from-state
 ```
 
-**Lambda Layers (PR 6 of #224, issue #232)** — same-stack
+**Lambda Layers** — same-stack
 `AWS::Lambda::LayerVersion` references in `Properties.Layers` are
 resolved automatically and bind-mounted at `/opt` (read-only) inside
 the container. Each layer's unzipped asset directory under `cdk.out/`
@@ -661,12 +661,11 @@ cdkd local start-api --stage prod
 ```
 
 Scope: REST v1 + HTTP API + Function URL with AWS_PROXY integrations.
-Authorizers (PR 8b — Lambda TOKEN/REQUEST + Cognito User Pool + HTTP v2
-JWT), VPC-config Lambda warnings (PR 8b), CORS preflight (PR 8c), hot
-reload (PR 8c), and stage variables (PR 8c) are supported. WebSocket
-APIs are deferred to a follow-up PR.
+Authorizers (Lambda TOKEN/REQUEST + Cognito User Pool + HTTP v2 JWT),
+VPC-config Lambda warnings, CORS preflight, hot reload, and stage
+variables are supported. WebSocket APIs are not.
 
-**Authorizers (PR 8b)**: `Authorization: Bearer <token>`-protected
+**Authorizers**: `Authorization: Bearer <token>`-protected
 routes are gated on the authorizer Lambda's response (TOKEN / REQUEST
 authorizers, IAM-policy or HTTP v2 simple shape) or on a JWKS-based JWT
 verification (Cognito User Pool authorizers, HTTP v2 JWT authorizers).
@@ -675,7 +674,7 @@ back to **pass-through mode** (every JWT accepted, with a warn line at
 startup) — local-dev-only fallback so a corporate proxy doesn't block
 iteration. **Do NOT rely on this in any shared environment.**
 
-**VPC-config Lambdas (PR 8b)**: handlers with `Properties.VpcConfig`
+**VPC-config Lambdas**: handlers with `Properties.VpcConfig`
 still run locally, but the local container is NOT attached to the
 deployed VPC's subnets — calls to private RDS / ElastiCache will fail.
 cdkd warns at startup naming each affected Lambda; AWS SDK calls still
