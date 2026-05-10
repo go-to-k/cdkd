@@ -55,7 +55,6 @@ Real-world stack: 1 VPC (2 AZs, NAT Gateway, public + private subnets) + Lambda 
 | | AWS CDK (CFn) | cdkd `--no-wait` | Speedup |
 | --- | ---: | ---: | ---: |
 | Deploy | **599s** | **40s** | **~15x** |
-| Destroy | 370s | 325s | 1.14x |
 
 cdkd's DAG scheduler dispatches `CloudFront::Distribution` / `Lambda::Url` / VPC Lambda in parallel with NAT Gateway stabilization (default behavior — pass `--no-aggressive-vpc-parallel` to opt out). `--no-wait` returns as soon as the create call returns, letting AWS finish async provisioning in the background. Both compound against CloudFormation's serial-leaning waits.
 
