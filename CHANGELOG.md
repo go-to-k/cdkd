@@ -1,3 +1,10 @@
+# [0.76.0](https://github.com/go-to-k/cdkd/compare/v0.75.2...v0.76.0) (2026-05-10)
+
+
+### Features
+
+* **cli:** cdkd local invoke / start-api - Node.js 24 + Python 3.14 runtime support ([#249](https://github.com/go-to-k/cdkd/issues/249)) ([ef81af0](https://github.com/go-to-k/cdkd/commit/ef81af04a1ce2d61917036fa3703aff8c12f7375))
+
 ## [0.75.2](https://github.com/go-to-k/cdkd/compare/v0.75.1...v0.75.2) (2026-05-10)
 
 
