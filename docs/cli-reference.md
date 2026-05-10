@@ -932,6 +932,52 @@ at `/var/task` read-only. `Code.ZipFile` (inline) functions are
 materialized to a tmpdir using the file path implied by the function's
 `Handler` property (`index.handler` → `tmpdir/index.js`).
 
+### Lambda Layers (PR 6 of #224, issue #232)
+
+Same-stack `AWS::Lambda::LayerVersion` references in
+`Properties.Layers` are resolved automatically and bind-mounted at
+`/opt` (read-only) inside the container. The flow:
+
+1. `cdkd local invoke` walks `Properties.Layers` left-to-right.
+2. Each entry must be `{Ref: '<LayerLogicalId>'}` or
+   `{Fn::GetAtt: ['<LayerLogicalId>', 'Ref']}` pointing at an
+   `AWS::Lambda::LayerVersion` resource in the same stack. The layer's
+   `Metadata['aws:asset:path']` is read the same way Lambda code is
+   located — the layer asset is unzipped under `cdk.out/asset.<hash>/`
+   ready to bind-mount.
+3. cdkd produces a single bind mount at `/opt`:
+   - **Single layer**: the layer's asset dir is bind-mounted directly
+     (no copy).
+   - **Multiple layers**: each layer's contents are copied into a
+     freshly-allocated tmpdir IN ORDER (later layers overwrite earlier
+     files via `cpSync({force: true})`); the merged tmpdir is then
+     bind-mounted at `/opt` and removed in the cleanup path.
+   - The merge mirrors AWS Lambda's actual runtime behavior: AWS
+     extracts every layer ZIP into `/opt` in template order so later
+     layers shadow earlier files (**"last layer wins on file
+     collision"**). cdkd cannot rely on multiple `-v ...:/opt:ro`
+     entries — Docker rejects duplicate bind mounts at the same target
+     path with `Error response from daemon: Duplicate mount point: /opt`.
+4. The layer's directory layout (`/opt/python/...`,
+   `/opt/nodejs/...`, `/opt/lib/...`, etc.) is the user's
+   responsibility — cdkd does NOT inspect the contents.
+
+**Out of scope (v1)** — hard-errors with a clear pointer at the
+offending entry:
+
+- Literal-ARN layer entries (`arn:aws:lambda:...`) — these are external
+  / pre-existing layers including cross-account / cross-region. No
+  asset on disk to mount; deferred to a follow-up PR.
+- Same-stack refs that don't point at an `AWS::Lambda::LayerVersion`
+  (typo'd logical ID).
+- Same-stack refs to a `LayerVersion` whose `Metadata['aws:asset:path']`
+  is missing.
+
+**Container Lambdas** (`Code.ImageUri`): the `Layers` property is
+silently ignored — matches AWS behavior, since container images bake
+their layers at build time and AWS rejects `Layers` on container
+Lambdas at deploy time.
+
 **Container Lambdas** (`Code.ImageUri`): cdkd extracts the asset hash
 from the `:<hash>` tail of the image URI (CDK synthesizes the URI as a
 `Fn::Sub` whose body ends in the asset hash) and looks the matching
@@ -963,7 +1009,7 @@ default entrypoint stays in charge — for AWS Lambda base images that's
 | Out of scope | Deferred to |
 | --- | --- |
 | Java / Go / Ruby / .NET runtimes | Future PRs |
-| Lambda Layers (`AWS::Lambda::LayerVersion`) | Future PR |
+| Cross-account / cross-region / pre-existing-ARN Lambda Layers | Future PR (same-stack `AWS::Lambda::LayerVersion` refs are supported in v1; literal ARNs hard-error — see "Lambda Layers" section above) |
 | Cross-account / cross-region ECR pull for container Lambdas | Future PR (same-account / same-region only in v1) |
 | `EphemeralStorage` mapping for container Lambdas | Future PR (Docker `--tmpfs /tmp:size=Nm`) |
 | Cross-stack `Fn::ImportValue` / `Fn::GetStackOutput` in `--from-state` | Future PR |
@@ -1133,6 +1179,17 @@ that case.
 - Containers are named `cdkd-local-<logicalId>-<pid>-<rand>` so an
   external sweep can mop up orphans (`docker ps --filter
   name=cdkd-local-`).
+
+### Lambda Layers in `local start-api` (PR 6 of #224, issue #232)
+
+`cdkd local start-api` resolves same-stack `AWS::Lambda::LayerVersion`
+references the same way `cdkd local invoke` does — see the **Lambda
+Layers** section under `local invoke` above for the full rules
+(supported reference shapes, last-layer-wins on file collision, the
+single merged `/opt` bind mount, hard-error cases). The merge happens
+once per Lambda at server boot (not per request); the merged tmpdir
+is removed by the graceful shutdown path. Single-layer Lambdas skip
+the copy and bind-mount the layer's asset dir directly.
 
 ### Graceful shutdown
 

@@ -33,6 +33,24 @@ export interface DockerRunOptions {
    * `/var/task`, no host bind-mount needed.
    */
   mounts: { hostPath: string; containerPath: string; readOnly?: boolean }[];
+  /**
+   * Additional bind mounts applied AFTER `mounts` (PR 6 of #224, issue
+   * #232 — Lambda Layers). The split is purely organizational: it lets
+   * the call site keep "the function's own code" (`mounts`) separate
+   * from any extra mounts the caller wants to compose. The docker-runner
+   * emits one `-v <hostPath>:<containerPath>:<ro?>` per entry, in
+   * order, with NO target-path coalescing — Docker rejects duplicate
+   * targets (`Error response from daemon: Duplicate mount point: ...`),
+   * so the caller MUST ensure each entry's `containerPath` is unique
+   * across `mounts` + `extraMounts`. For Lambda Layers specifically:
+   * AWS's "last layer wins on file collision" semantic is realized by
+   * the caller (`materializeLambdaLayers` in `local-invoke.ts` /
+   * `local-start-api.ts`) `cpSync`-merging every layer's asset
+   * directory into ONE host tmpdir in template order, then passing a
+   * single `{hostPath: <tmpdir>, containerPath: '/opt'}` entry here —
+   * NOT one mount per layer.
+   */
+  extraMounts?: { hostPath: string; containerPath: string; readOnly?: boolean }[];
   /** Environment variables to forward into the container. */
   env: Record<string, string>;
   /**
@@ -127,6 +145,17 @@ export async function runDetached(opts: DockerRunOptions): Promise<string> {
   for (const mount of opts.mounts) {
     const ro = mount.readOnly ? ':ro' : '';
     args.push('-v', `${mount.hostPath}:${mount.containerPath}${ro}`);
+  }
+  // PR 6 (#232): layer mounts are emitted after the function's own
+  // mounts. Order within `extraMounts` is preserved — the caller (the
+  // CLI's `resolveZipImagePlan`) feeds layers in the same order they
+  // appear in `Properties.Layers`, so AWS's "last layer wins on file
+  // collision" semantics hold.
+  if (opts.extraMounts) {
+    for (const mount of opts.extraMounts) {
+      const ro = mount.readOnly ? ':ro' : '';
+      args.push('-v', `${mount.hostPath}:${mount.containerPath}${ro}`);
+    }
   }
 
   for (const [k, v] of Object.entries(opts.env)) {

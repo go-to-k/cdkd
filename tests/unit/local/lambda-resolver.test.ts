@@ -428,4 +428,258 @@ describe('resolveLambdaTarget', () => {
     if (result.kind !== 'image') return;
     expect(result.imageConfig).toEqual({});
   });
+
+  // PR 6 of #224 — Lambda Layers (issue #232)
+
+  it('returns layers: [] when Properties.Layers is absent (ZIP)', () => {
+    const stack = buildStack(
+      'MyStack',
+      {
+        Plain: {
+          Type: 'AWS::Lambda::Function',
+          Properties: { Runtime: 'nodejs20.x', Handler: 'index.handler' },
+          Metadata: { 'aws:asset:path': 'asset.fn' },
+        },
+      },
+      tmpRoot
+    );
+    const result = resolveLambdaTarget('MyStack:Plain', [stack]);
+    expect(result.kind).toBe('zip');
+    expect(result.layers).toEqual([]);
+  });
+
+  it('returns layers: [] when Properties.Layers is an empty array', () => {
+    const stack = buildStack(
+      'MyStack',
+      {
+        Plain: {
+          Type: 'AWS::Lambda::Function',
+          Properties: { Runtime: 'nodejs20.x', Handler: 'index.handler', Layers: [] },
+          Metadata: { 'aws:asset:path': 'asset.fn' },
+        },
+      },
+      tmpRoot
+    );
+    const result = resolveLambdaTarget('MyStack:Plain', [stack]);
+    expect(result.layers).toEqual([]);
+  });
+
+  it('resolves a same-stack Ref to a LayerVersion via aws:asset:path', () => {
+    const stack = buildStack(
+      'MyStack',
+      {
+        WithLayer: {
+          Type: 'AWS::Lambda::Function',
+          Properties: {
+            Runtime: 'nodejs20.x',
+            Handler: 'index.handler',
+            Layers: [{ Ref: 'MyLayer' }],
+          },
+          Metadata: { 'aws:asset:path': 'asset.fn' },
+        },
+        MyLayer: {
+          Type: 'AWS::Lambda::LayerVersion',
+          Properties: { Content: { S3Bucket: 'b', S3Key: 'k' } },
+          Metadata: { 'aws:asset:path': 'asset.layer1' },
+        },
+      },
+      tmpRoot
+    );
+    const result = resolveLambdaTarget('MyStack:WithLayer', [stack]);
+    expect(result.layers).toHaveLength(1);
+    expect(result.layers[0]?.logicalId).toBe('MyLayer');
+    expect(result.layers[0]?.assetPath).toMatch(/asset\.layer1$/);
+  });
+
+  it('resolves Fn::GetAtt-shaped layer references', () => {
+    const stack = buildStack(
+      'MyStack',
+      {
+        WithLayer: {
+          Type: 'AWS::Lambda::Function',
+          Properties: {
+            Runtime: 'nodejs20.x',
+            Handler: 'index.handler',
+            Layers: [{ 'Fn::GetAtt': ['MyLayer', 'Ref'] }],
+          },
+          Metadata: { 'aws:asset:path': 'asset.fn' },
+        },
+        MyLayer: {
+          Type: 'AWS::Lambda::LayerVersion',
+          Properties: {},
+          Metadata: { 'aws:asset:path': 'asset.layer1' },
+        },
+      },
+      tmpRoot
+    );
+    const result = resolveLambdaTarget('MyStack:WithLayer', [stack]);
+    expect(result.layers).toHaveLength(1);
+    expect(result.layers[0]?.logicalId).toBe('MyLayer');
+  });
+
+  it('preserves Layers array order (last-wins relies on order)', () => {
+    const stack = buildStack(
+      'MyStack',
+      {
+        Multi: {
+          Type: 'AWS::Lambda::Function',
+          Properties: {
+            Runtime: 'nodejs20.x',
+            Handler: 'index.handler',
+            Layers: [{ Ref: 'LayerA' }, { Ref: 'LayerB' }, { Ref: 'LayerC' }],
+          },
+          Metadata: { 'aws:asset:path': 'asset.fn' },
+        },
+        LayerA: {
+          Type: 'AWS::Lambda::LayerVersion',
+          Properties: {},
+          Metadata: { 'aws:asset:path': 'asset.la' },
+        },
+        LayerB: {
+          Type: 'AWS::Lambda::LayerVersion',
+          Properties: {},
+          Metadata: { 'aws:asset:path': 'asset.lb' },
+        },
+        LayerC: {
+          Type: 'AWS::Lambda::LayerVersion',
+          Properties: {},
+          Metadata: { 'aws:asset:path': 'asset.lc' },
+        },
+      },
+      tmpRoot
+    );
+    const result = resolveLambdaTarget('MyStack:Multi', [stack]);
+    expect(result.layers.map((l) => l.logicalId)).toEqual(['LayerA', 'LayerB', 'LayerC']);
+  });
+
+  it('rejects literal-ARN layer entries (cross-account / pre-existing — out of scope)', () => {
+    const stack = buildStack(
+      'MyStack',
+      {
+        Fn: {
+          Type: 'AWS::Lambda::Function',
+          Properties: {
+            Runtime: 'nodejs20.x',
+            Handler: 'index.handler',
+            Layers: ['arn:aws:lambda:us-east-1:123456789012:layer:External:1'],
+          },
+          Metadata: { 'aws:asset:path': 'asset.fn' },
+        },
+      },
+      tmpRoot
+    );
+    expect(() => resolveLambdaTarget('MyStack:Fn', [stack])).toThrow(
+      /literal ARN.*External.*Only same-stack/
+    );
+  });
+
+  it('rejects a layer Ref that points at a non-LayerVersion resource', () => {
+    const stack = buildStack(
+      'MyStack',
+      {
+        Fn: {
+          Type: 'AWS::Lambda::Function',
+          Properties: {
+            Runtime: 'nodejs20.x',
+            Handler: 'index.handler',
+            Layers: [{ Ref: 'MyTable' }],
+          },
+          Metadata: { 'aws:asset:path': 'asset.fn' },
+        },
+        MyTable: { Type: 'AWS::DynamoDB::Table', Properties: {} },
+      },
+      tmpRoot
+    );
+    expect(() => resolveLambdaTarget('MyStack:Fn', [stack])).toThrow(
+      /references 'MyTable'.*AWS::DynamoDB::Table/
+    );
+  });
+
+  it('rejects a layer Ref that points at an unknown logical ID', () => {
+    const stack = buildStack(
+      'MyStack',
+      {
+        Fn: {
+          Type: 'AWS::Lambda::Function',
+          Properties: {
+            Runtime: 'nodejs20.x',
+            Handler: 'index.handler',
+            Layers: [{ Ref: 'Missing' }],
+          },
+          Metadata: { 'aws:asset:path': 'asset.fn' },
+        },
+      },
+      tmpRoot
+    );
+    expect(() => resolveLambdaTarget('MyStack:Fn', [stack])).toThrow(
+      /references 'Missing'.*no resource with that logical ID/
+    );
+  });
+
+  it('rejects a layer with no aws:asset:path Metadata (no local directory to mount)', () => {
+    const stack = buildStack(
+      'MyStack',
+      {
+        Fn: {
+          Type: 'AWS::Lambda::Function',
+          Properties: {
+            Runtime: 'nodejs20.x',
+            Handler: 'index.handler',
+            Layers: [{ Ref: 'MyLayer' }],
+          },
+          Metadata: { 'aws:asset:path': 'asset.fn' },
+        },
+        MyLayer: {
+          Type: 'AWS::Lambda::LayerVersion',
+          Properties: { Content: { S3Bucket: 'b', S3Key: 'k' } },
+          // No aws:asset:path → resolveAssetCodePath rejects.
+        },
+      },
+      tmpRoot
+    );
+    expect(() => resolveLambdaTarget('MyStack:Fn', [stack])).toThrow(
+      /Lambda 'MyLayer' has no Metadata\['aws:asset:path'\]/
+    );
+  });
+
+  it('container Lambdas have layers: [] (silent ignore — AWS rejects layers on container images at deploy time)', () => {
+    const stack = buildStack(
+      'MyStack',
+      {
+        Container: {
+          Type: 'AWS::Lambda::Function',
+          Properties: {
+            PackageType: 'Image',
+            Code: { ImageUri: { 'Fn::Sub': 'r:hash123abc' } },
+            // Even with Layers in the template, the IMAGE branch
+            // silently ignores them (matches AWS behavior).
+            Layers: [{ Ref: 'NonExistent' }],
+          },
+        },
+      },
+      tmpRoot
+    );
+    const result = resolveLambdaTarget('MyStack:Container', [stack]);
+    expect(result.kind).toBe('image');
+    expect(result.layers).toEqual([]);
+  });
+
+  it('rejects a non-array Layers property', () => {
+    const stack = buildStack(
+      'MyStack',
+      {
+        Fn: {
+          Type: 'AWS::Lambda::Function',
+          Properties: {
+            Runtime: 'nodejs20.x',
+            Handler: 'index.handler',
+            Layers: 'not-an-array',
+          },
+          Metadata: { 'aws:asset:path': 'asset.fn' },
+        },
+      },
+      tmpRoot
+    );
+    expect(() => resolveLambdaTarget('MyStack:Fn', [stack])).toThrow(/non-array Layers/);
+  });
 });

@@ -634,6 +634,19 @@ cdkd local invoke MyStack/Handler --debug-port 9229
 cdkd local invoke MyStack/Handler --from-state
 ```
 
+**Lambda Layers (PR 6 of #224, issue #232)** — same-stack
+`AWS::Lambda::LayerVersion` references in `Properties.Layers` are
+resolved automatically and bind-mounted at `/opt` (read-only) inside
+the container. Each layer's unzipped asset directory under `cdk.out/`
+becomes one `-v <layerAssetPath>:/opt:ro` mount; multiple layers
+stack via Docker overlay layering, and AWS's "last layer wins on
+file collision" rule is preserved by keeping the template's input
+order. Cross-stack / cross-account / cross-region layer ARNs (literal
+ARN strings in `Properties.Layers`) are out of scope for v1 — cdkd
+hard-errors with a clear pointer at the offending entry. Container
+Lambdas (`Code.ImageUri`) silently ignore `Layers` (matches AWS:
+container images bake layers at build time).
+
 See [docs/cli-reference.md](docs/cli-reference.md#local-invoke-run-lambda-functions-locally)
 for the full surface, target-resolution rules, and v1 scope notes.
 

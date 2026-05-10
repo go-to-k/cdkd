@@ -33,6 +33,48 @@ interface ResolvedLambdaBase {
   memoryMb: number;
   /** `Timeout` (seconds) from the template, or 3 when omitted (Lambda default). */
   timeoutSec: number;
+  /**
+   * Resolved Lambda layers (PR 6 of #224, issue #232). Each entry points
+   * at an `AWS::Lambda::LayerVersion` resource in the same stack — the
+   * `logicalId` lets the caller emit clearer error messages, `assetPath`
+   * is the absolute directory under `cdk.out` (resolved via the same
+   * `Metadata['aws:asset:path']` hint Lambda code uses) that bind-mounts
+   * at `/opt`. `[]` when the function declares no Layers.
+   *
+   * **Order is load-bearing**: AWS layer semantics are "last layer wins
+   * on file collision", so this array preserves the template's input
+   * order. cdkd implements the last-wins rule by `cpSync`-merging every
+   * layer's asset directory into a single host tmpdir IN TEMPLATE ORDER
+   * (later layers overwrite earlier files via `recursive: true, force:
+   * true`), then bind-mounting the merged tmpdir at `/opt:ro`. Docker
+   * rejects multiple `-v ...:/opt:ro` entries at the same target path
+   * (`Error response from daemon: Duplicate mount point: /opt`) — bind
+   * mounts are NOT layered the way the OCI image stack is — so the
+   * merge happens on the host, not via overlay layering. The single-
+   * layer case skips the copy and bind-mounts the asset dir directly.
+   *
+   * Out of scope for v1 (any of these hard-error at resolution time):
+   *   - Cross-stack / cross-account / cross-region layer ARNs (anything
+   *     that isn't a same-stack `Ref` / `Fn::GetAtt[..., Ref]` pointing
+   *     at an `AWS::Lambda::LayerVersion`).
+   *   - Layers without `Metadata['aws:asset:path']` (i.e. layers whose
+   *     content is `S3Bucket`/`S3Key` from outside cdk.out — there's no
+   *     local directory to bind-mount).
+   */
+  layers: ResolvedLambdaLayer[];
+}
+
+export interface ResolvedLambdaLayer {
+  /** CFn logical ID of the `AWS::Lambda::LayerVersion` resource. */
+  logicalId: string;
+  /**
+   * Absolute path on disk to the layer's unzipped asset directory. Will
+   * be bind-mounted at `/opt` inside the container (read-only). The
+   * directory is laid out per AWS's runtime-specific load-path
+   * conventions (`opt/python/...`, `opt/nodejs/...`, etc.) — cdkd does
+   * NOT inspect the contents, just hands the directory to docker.
+   */
+  assetPath: string;
 }
 
 export interface ResolvedZipLambda extends ResolvedLambdaBase {
@@ -317,6 +359,13 @@ function extractLambdaProperties(
     codePath = resolveAssetCodePath(stack, logicalId, resource);
   }
 
+  // PR 6 (#232): resolve same-stack `Layers` references. Out-of-scope
+  // shapes (literal ARNs, cross-stack refs, layers without an asset
+  // path) hard-error here so the user sees a clear pointer at the
+  // offending entry instead of a silently-missing `/opt/<lib>` at
+  // invoke time.
+  const layers = resolveLambdaLayers(stack, logicalId, props);
+
   return {
     kind: 'zip',
     stack,
@@ -327,6 +376,7 @@ function extractLambdaProperties(
     memoryMb,
     timeoutSec,
     codePath,
+    layers,
     ...(inlineCode !== undefined && { inlineCode }),
   };
 }
@@ -403,6 +453,10 @@ function extractImageLambdaProperties(args: {
     }
   }
 
+  // PR 6 (#232): container Lambdas reject `Layers` at deploy time on
+  // the AWS side — layers are baked into the image at build time, not
+  // overlaid at runtime. We silently ignore any `Layers` property here
+  // (matches AWS behavior at invoke time) by passing an empty list.
   return {
     kind: 'image',
     stack,
@@ -413,6 +467,7 @@ function extractImageLambdaProperties(args: {
     imageUri,
     imageConfig,
     architecture,
+    layers: [],
   };
 }
 
@@ -459,6 +514,122 @@ function resolveAssetCodePath(
     );
   }
   return abs;
+}
+
+/**
+ * Resolve a Lambda's `Properties.Layers` references to local asset
+ * directories (PR 6 of #224, issue #232).
+ *
+ * Each entry in the synthesized template is an intrinsic pointing at an
+ * `AWS::Lambda::LayerVersion` resource in the same stack — most commonly
+ * `{Ref: '<LayerLogicalId>'}` (which CDK uses for `LayerVersion.layerArn`)
+ * or `{Fn::GetAtt: ['<LayerLogicalId>', 'Ref']}`. Once we have the
+ * layer's logical ID we look up its `aws:asset:path` Metadata the same
+ * way function code is located (the layer asset is unzipped under
+ * `cdk.out/asset.<hash>/` ready to bind-mount).
+ *
+ * **Order is preserved**: `Properties.Layers` is iterated left-to-right
+ * and the resulting `ResolvedLambdaLayer[]` carries the same order. The
+ * caller (`local-invoke.ts`'s `materializeLambdaLayers` and
+ * `local-start-api.ts`'s server-boot pre-merge) `cpSync`-merges every
+ * entry into one host tmpdir in template order to honor AWS's
+ * "last-layer-wins" file-collision semantics — Docker rejects multiple
+ * bind mounts at the same target so cdkd cannot rely on overlay
+ * layering.
+ *
+ * **Out of scope (hard-errors)**:
+ *
+ *   - Literal ARN strings (`arn:aws:lambda:...`) — these are external /
+ *     pre-existing layers (no asset on disk to mount) including
+ *     cross-account / cross-region.
+ *   - Same-stack refs that don't point at an `AWS::Lambda::LayerVersion`
+ *     resource — almost always a typo'd logical ID.
+ *   - Same-stack refs to a `LayerVersion` whose `Metadata['aws:asset:path']`
+ *     is missing — the layer's content is `S3Bucket` / `S3Key` from
+ *     outside cdk.out and there's no local directory to bind-mount.
+ */
+export function resolveLambdaLayers(
+  stack: StackInfo,
+  logicalId: string,
+  props: Record<string, unknown>
+): ResolvedLambdaLayer[] {
+  const layers = props['Layers'];
+  if (layers === undefined) return [];
+  if (!Array.isArray(layers)) {
+    throw new LocalInvokeResolutionError(
+      `Lambda '${logicalId}' has a non-array Layers property. Expected an array of LayerVersion references.`
+    );
+  }
+  if (layers.length === 0) return [];
+
+  const resources = stack.template.Resources ?? {};
+  const out: ResolvedLambdaLayer[] = [];
+  for (let i = 0; i < layers.length; i++) {
+    const entry: unknown = layers[i];
+    const layerLogicalId = pickLayerLogicalId(entry);
+    if (!layerLogicalId) {
+      throw new LocalInvokeResolutionError(
+        `Lambda '${logicalId}' has a Layers entry [${i}] cdkd cannot resolve locally: ${describeLayerEntry(entry)}. ` +
+          'Only same-stack Ref / Fn::GetAtt to an AWS::Lambda::LayerVersion are supported in v1; ' +
+          'cross-account / cross-region / pre-existing-ARN layers are deferred to a follow-up PR.'
+      );
+    }
+
+    const layerResource = resources[layerLogicalId];
+    if (!layerResource) {
+      throw new LocalInvokeResolutionError(
+        `Lambda '${logicalId}' Layers entry [${i}] references '${layerLogicalId}', ` +
+          `but no resource with that logical ID exists in stack '${stack.stackName}'.`
+      );
+    }
+    if (layerResource.Type !== 'AWS::Lambda::LayerVersion') {
+      throw new LocalInvokeResolutionError(
+        `Lambda '${logicalId}' Layers entry [${i}] references '${layerLogicalId}' (${layerResource.Type}), ` +
+          'which is not an AWS::Lambda::LayerVersion.'
+      );
+    }
+
+    const assetPath = resolveAssetCodePath(stack, layerLogicalId, layerResource);
+    out.push({ logicalId: layerLogicalId, assetPath });
+  }
+  return out;
+}
+
+/**
+ * Walk a single Layers-array entry and return the referenced layer's
+ * logical ID — or `undefined` for shapes we don't try to resolve in v1.
+ *
+ * Accepted shapes (what CDK actually synthesizes):
+ *   - `{Ref: '<LayerLogicalId>'}`
+ *   - `{Fn::GetAtt: ['<LayerLogicalId>', 'Ref']}` (rare; LayerVersion's
+ *     Ref form is usually emitted as a flat `Ref`)
+ */
+function pickLayerLogicalId(entry: unknown): string | undefined {
+  if (entry === null || typeof entry !== 'object' || Array.isArray(entry)) return undefined;
+  const obj = entry as Record<string, unknown>;
+  if (typeof obj['Ref'] === 'string') return obj['Ref'];
+  if ('Fn::GetAtt' in obj) {
+    const arg = obj['Fn::GetAtt'];
+    if (Array.isArray(arg) && typeof arg[0] === 'string') return arg[0];
+    if (typeof arg === 'string') return arg.split('.')[0];
+  }
+  return undefined;
+}
+
+/**
+ * Stringify a Layers-array entry for use in error messages. Truncates
+ * literal ARNs to a short form so the message stays one-line.
+ */
+function describeLayerEntry(entry: unknown): string {
+  if (typeof entry === 'string') return `literal ARN '${entry}'`;
+  if (entry === null) return 'null';
+  if (typeof entry !== 'object') return String(entry);
+  try {
+    const json = JSON.stringify(entry);
+    return json.length > 120 ? json.substring(0, 117) + '...' : json;
+  } catch {
+    return Object.prototype.toString.call(entry);
+  }
 }
 
 /**

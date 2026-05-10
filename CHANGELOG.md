@@ -1,3 +1,10 @@
+# [0.74.0](https://github.com/go-to-k/cdkd/compare/v0.73.0...v0.74.0) (2026-05-10)
+
+
+### Features
+
+* **cli:** cdkd local invoke -- Lambda Layers support (closes [#232](https://github.com/go-to-k/cdkd/issues/232)) ([#239](https://github.com/go-to-k/cdkd/issues/239)) ([8c570a8](https://github.com/go-to-k/cdkd/commit/8c570a8600326950b7592b5240589569d255fc1b))
+
 # [0.73.0](https://github.com/go-to-k/cdkd/compare/v0.72.0...v0.73.0) (2026-05-10)
 
 
