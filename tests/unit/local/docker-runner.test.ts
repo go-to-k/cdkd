@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { pickFreePort } from '../../../src/local-invoke/docker-runner.js';
+import { pickFreePort } from '../../../src/local/docker-runner.js';
 
 describe('pickFreePort', () => {
   it('returns a positive port number', async () => {

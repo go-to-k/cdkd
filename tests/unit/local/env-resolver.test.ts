@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { resolveEnvVars } from '../../../src/local-invoke/env-resolver.js';
+import { resolveEnvVars } from '../../../src/local/env-resolver.js';
 
 describe('resolveEnvVars', () => {
   it('returns empty result when the function has no Environment.Variables', () => {
