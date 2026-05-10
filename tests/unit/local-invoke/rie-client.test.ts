@@ -1,4 +1,5 @@
 import { createServer, type Server } from 'node:http';
+import { createServer as createTcpServer, type Server as TcpServer } from 'node:net';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { invokeRie, waitForRieReady } from '../../../src/local-invoke/rie-client.js';
 
@@ -44,6 +45,29 @@ describe('waitForRieReady', () => {
     // Port 1 is reserved (tcpmux) and almost always refused. Use a
     // never-listening high port instead so the test is deterministic.
     await expect(waitForRieReady('127.0.0.1', 1, 200)).rejects.toThrow(/did not become ready/);
+  });
+
+  it('does not return until the HTTP listener is up (not just the TCP forwarder)', async () => {
+    // Models the Docker-port-forwarder race: a TCP server that accepts
+    // connections but immediately resets them, never speaking HTTP. The
+    // pre-fix tcp-only readiness check would treat this as ready and
+    // the next invokeRie call would land with "fetch failed" / ECONNRESET.
+    // Post-fix the HTTP probe exercises the same verb as the real invoke,
+    // so we never see a green readiness signal here and the deadline
+    // expires.
+    const tcpServer: TcpServer = createTcpServer((socket) => socket.destroy());
+    await new Promise<void>((resolve) => tcpServer.listen(0, '127.0.0.1', resolve));
+    const address = tcpServer.address();
+    if (!address || typeof address === 'string') throw new Error('tcp server has no address');
+    try {
+      await expect(waitForRieReady('127.0.0.1', address.port, 300)).rejects.toThrow(
+        /did not become ready/
+      );
+    } finally {
+      await new Promise<void>((resolve, reject) =>
+        tcpServer.close((err) => (err ? reject(err) : resolve()))
+      );
+    }
   });
 });
 

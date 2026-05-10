@@ -1,3 +1,17 @@
+# [0.68.0](https://github.com/go-to-k/cdkd/compare/v0.67.0...v0.68.0) (2026-05-10)
+
+
+### Features
+
+* **cli:** cdkd local invoke Python runtimes (PR 4 of [#224](https://github.com/go-to-k/cdkd/issues/224)) ([#226](https://github.com/go-to-k/cdkd/issues/226)) ([402d7fa](https://github.com/go-to-k/cdkd/commit/402d7faf33e2ec2d517909a45b377a4ccab31517))
+
+# [0.67.0](https://github.com/go-to-k/cdkd/compare/v0.66.0...v0.67.0) (2026-05-10)
+
+
+### Features
+
+* **cli:** cdkd local invoke (PR 1 of [#224](https://github.com/go-to-k/cdkd/issues/224)) ([#225](https://github.com/go-to-k/cdkd/issues/225)) ([1d82d24](https://github.com/go-to-k/cdkd/commit/1d82d24a7cfbacb8dde27e45e02d27aa5b6a4791))
+
 # [0.66.0](https://github.com/go-to-k/cdkd/compare/v0.65.0...v0.66.0) (2026-05-09)
 
 

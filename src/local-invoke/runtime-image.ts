@@ -1,6 +1,7 @@
 /**
  * Map a CloudFormation `Runtime` string to the AWS Lambda base image that
- * bundles the matching runtime + the Lambda Runtime Interface Emulator (RIE).
+ * bundles the matching runtime + the Lambda Runtime Interface Emulator (RIE),
+ * plus the source-file extension for inline-code materialization.
  *
  * Per D1 in the issue, cdkd uses the **full** base image
  * (`public.ecr.aws/lambda/<lang>:<version>`, ~600MB) over SAM's lighter
@@ -9,14 +10,27 @@
  * for container Lambdas, so a "works locally, breaks in AWS" mismatch is
  * almost always a config issue rather than an image divergence.
  *
- * v1 supports Node.js only. Other runtimes throw `UnsupportedRuntimeError`
+ * v1 supports Node.js + Python. Other runtimes throw `UnsupportedRuntimeError`
  * with a pointer at the planned PR.
  */
 
-const NODEJS_RUNTIMES: Readonly<Record<string, string>> = {
-  'nodejs18.x': 'public.ecr.aws/lambda/nodejs:18',
-  'nodejs20.x': 'public.ecr.aws/lambda/nodejs:20',
-  'nodejs22.x': 'public.ecr.aws/lambda/nodejs:22',
+interface RuntimeSpec {
+  /** ECR image tag the container should pull. */
+  readonly image: string;
+  /**
+   * Source-file extension (with leading dot) for inline-code
+   * materialization (`Code.ZipFile`). Node.js → `.js`, Python → `.py`.
+   */
+  readonly fileExtension: string;
+}
+
+const SUPPORTED_RUNTIMES: Readonly<Record<string, RuntimeSpec>> = {
+  'nodejs18.x': { image: 'public.ecr.aws/lambda/nodejs:18', fileExtension: '.js' },
+  'nodejs20.x': { image: 'public.ecr.aws/lambda/nodejs:20', fileExtension: '.js' },
+  'nodejs22.x': { image: 'public.ecr.aws/lambda/nodejs:22', fileExtension: '.js' },
+  'python3.11': { image: 'public.ecr.aws/lambda/python:3.11', fileExtension: '.py' },
+  'python3.12': { image: 'public.ecr.aws/lambda/python:3.12', fileExtension: '.py' },
+  'python3.13': { image: 'public.ecr.aws/lambda/python:3.13', fileExtension: '.py' },
 };
 
 export class UnsupportedRuntimeError extends Error {
@@ -38,6 +52,25 @@ export class UnsupportedRuntimeError extends Error {
  * separately and never reach this function in v1.
  */
 export function resolveRuntimeImage(runtime: string): string {
+  return resolveRuntimeSpec(runtime).image;
+}
+
+/**
+ * Resolve a Lambda `Runtime` value to the source-file extension used when
+ * materializing an inline `Code.ZipFile` body to disk. Node.js → `.js`,
+ * Python → `.py`. Throws {@link UnsupportedRuntimeError} on the same
+ * runtime set as {@link resolveRuntimeImage}.
+ */
+export function resolveRuntimeFileExtension(runtime: string): string {
+  return resolveRuntimeSpec(runtime).fileExtension;
+}
+
+/**
+ * Resolve a Lambda `Runtime` value to its full {@link RuntimeSpec}. Public
+ * for callers that need both the image AND the file extension in one step;
+ * the named helpers above wrap this for the common single-field cases.
+ */
+export function resolveRuntimeSpec(runtime: string): RuntimeSpec {
   if (typeof runtime !== 'string' || runtime.length === 0) {
     throw new UnsupportedRuntimeError(
       String(runtime),
@@ -45,11 +78,10 @@ export function resolveRuntimeImage(runtime: string): string {
     );
   }
 
-  const image = NODEJS_RUNTIMES[runtime];
-  if (image) return image;
+  const spec = SUPPORTED_RUNTIMES[runtime];
+  if (spec) return spec;
 
   if (
-    runtime.startsWith('python') ||
     runtime.startsWith('java') ||
     runtime.startsWith('dotnet') ||
     runtime.startsWith('ruby') ||
@@ -59,14 +91,14 @@ export function resolveRuntimeImage(runtime: string): string {
     throw new UnsupportedRuntimeError(
       runtime,
       `Runtime '${runtime}' is not supported in cdkd local invoke v1. ` +
-        'Only Node.js runtimes (nodejs18.x / nodejs20.x / nodejs22.x) are supported. ' +
-        'Python is planned for the next iteration; other runtimes follow.'
+        'Only Node.js (nodejs18.x / nodejs20.x / nodejs22.x) and Python (python3.11 / python3.12 / python3.13) runtimes are supported. ' +
+        'Other runtimes follow in subsequent PRs.'
     );
   }
 
   throw new UnsupportedRuntimeError(
     runtime,
-    `Unknown runtime '${runtime}'. cdkd local invoke v1 supports nodejs18.x / nodejs20.x / nodejs22.x.`
+    `Unknown runtime '${runtime}'. cdkd local invoke v1 supports nodejs18.x / nodejs20.x / nodejs22.x / python3.11 / python3.12 / python3.13.`
   );
 }
 
@@ -75,5 +107,5 @@ export function resolveRuntimeImage(runtime: string): string {
  * want to filter without catching an exception.
  */
 export function isSupportedRuntime(runtime: string): boolean {
-  return runtime in NODEJS_RUNTIMES;
+  return runtime in SUPPORTED_RUNTIMES;
 }

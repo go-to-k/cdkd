@@ -25,19 +25,38 @@ export interface InvokeResult {
 }
 
 /**
- * Wait until RIE accepts connections on `host:port`. Returns once a
- * single TCP connect succeeds; throws after `timeoutMs`.
+ * Wait until RIE is ready to handle invokes on `host:port`. Returns once
+ * a real HTTP probe succeeds; throws after `timeoutMs`.
+ *
+ * **Why HTTP and not TCP**: Docker's userland port forwarder accepts TCP
+ * connections from the host as soon as `docker run -p` binds the port,
+ * which is BEFORE the container's RIE process has actually started its
+ * own HTTP listener. A TCP-only probe declares "ready" prematurely and
+ * the very first `invokeRie` call lands during the gap with
+ * `TypeError: fetch failed` (ECONNRESET on the unfinished HTTP socket).
+ * The race is more pronounced on the Python base image than on the
+ * Node.js one (the rapid layer's bootstrap path is longer for Python),
+ * but it exists for both — see PR 4 of #224 for the failing-Node
+ * reproducer that prompted the upgrade.
+ *
+ * The HTTP probe issues `POST /` with an empty body and treats every
+ * server response (including 4xx — RIE answers 404 to unknown paths) as
+ * "ready". Connect/reset/abort failures are treated as "not ready yet"
+ * and retried; any other class of error (e.g. DNS failure) propagates
+ * immediately — there's nothing to retry past.
  *
  * RIE is fast to start (<1s in practice) but the container's overall
  * boot can be slower on a cold daemon — 5s is the spec's recommended
  * window. We poll cheap (every 100ms) so the typical case is sub-second.
  *
- * After the TCP probe succeeds, sleep a short post-ready settle window
- * before returning. RIE's TCP listener comes up before its HTTP handler
- * is fully wired in some cold-start cases; without the settle, the
- * caller's `fetch(/2015-03-31/...)` races against RIE and hits
- * `TypeError: fetch failed` (intermittent on slow / loaded dockers).
- * 250ms is empirically sufficient and is cheap for the common case.
+ * After the HTTP probe succeeds, sleep a short post-ready settle window
+ * before returning. Even when RIE answered an HTTP status, the very next
+ * `fetch(/2015-03-31/...)` from the caller has been observed to race
+ * against RIE on cold-loaded dockers and hit `TypeError: fetch failed`
+ * (intermittent on slow / loaded daemons). 250ms is empirically
+ * sufficient and is cheap for the common case; the `fetchWithStartupRetry`
+ * helper inside `invokeRie` is the second line of defense for the case
+ * where 250ms isn't enough.
  */
 export async function waitForRieReady(host: string, port: number, timeoutMs = 5000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
@@ -45,9 +64,12 @@ export async function waitForRieReady(host: string, port: number, timeoutMs = 50
 
   while (Date.now() < deadline) {
     try {
-      const ok = await tcpProbe(host, port, 500);
+      const ok = await httpProbe(host, port, 500);
       if (ok) {
-        // Post-ready settle — see docstring above.
+        // Post-ready settle — see docstring above. Defense-in-depth on top
+        // of the HTTP probe: even after a real HTTP response, the very
+        // next `fetch()` against RIE has been observed to race on cold
+        // dockers; a short pause shrinks the window further.
         await delay(250);
         return;
       }
@@ -62,6 +84,58 @@ export async function waitForRieReady(host: string, port: number, timeoutMs = 50
     `RIE did not become ready on ${host}:${port} within ${timeoutMs}ms${tail}. ` +
       `The container may have exited early — check 'docker logs' output.`
   );
+}
+
+/**
+ * Issue a tiny HTTP request to confirm RIE's HTTP listener is up (not
+ * just the TCP forwarder Docker-side). Resolves `true` on any HTTP
+ * response, `false` on connect / reset / abort. Other failure classes
+ * (DNS, etc.) propagate so the caller can decide whether to retry.
+ */
+async function httpProbe(host: string, port: number, timeoutMs: number): Promise<boolean> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    // POST / instead of GET / so we exercise the same verb as the real
+    // invoke; some HTTP stacks have separate readiness for read-only vs
+    // write methods. Body is a tiny empty JSON object so we don't pay
+    // a content-length parse on the way through.
+    const response = await fetch(`http://${host}:${port}/`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: '{}',
+      signal: controller.signal,
+    });
+    // Drain the body so the underlying socket is released back to the
+    // pool. We don't care about the content — any response means RIE
+    // is up.
+    await response.text().catch(() => undefined);
+    return true;
+  } catch (err) {
+    if (isTransientNetworkError(err)) return false;
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * `fetch()` failures during container boot manifest as a generic
+ * `TypeError: fetch failed` whose `.cause` carries the underlying
+ * Node `ECONNRESET` / `ECONNREFUSED` / `UND_ERR_SOCKET`. Treat all of
+ * those as "not ready, try again" so the readiness loop covers the gap
+ * between Docker's port forwarder accepting a TCP connection and the
+ * container's RIE process being ready for HTTP.
+ */
+function isTransientNetworkError(err: unknown): boolean {
+  if (!(err instanceof Error)) return false;
+  if (err.name === 'AbortError') return true;
+  if (err.name === 'TypeError' && err.message === 'fetch failed') return true;
+  const cause = (err as { cause?: { code?: string } }).cause;
+  if (cause?.code === 'ECONNRESET') return true;
+  if (cause?.code === 'ECONNREFUSED') return true;
+  if (cause?.code === 'UND_ERR_SOCKET') return true;
+  return false;
 }
 
 /**
@@ -112,13 +186,13 @@ export async function invokeRie(
 }
 
 /**
- * Wrap a single POST against RIE in a tiny startup-retry loop. RIE's
- * TCP listener can be up (so `waitForRieReady`'s TCP probe returns
- * success) before its HTTP handler is fully wired, especially on cold
- * dockers. The race manifests as Node's `TypeError: fetch failed` (a
- * pre-response, connection-level error with no HTTP status). We retry
- * twice with a 200ms backoff — same total cost as a slightly longer
- * post-ready settle, but only paid when the race actually triggers.
+ * Wrap a single POST against RIE in a tiny startup-retry loop. Even
+ * after `waitForRieReady`'s HTTP probe has succeeded and the post-ready
+ * settle has elapsed, the next `fetch()` has been observed to race
+ * against RIE's HTTP handler on cold dockers. The race manifests as
+ * Node's `TypeError: fetch failed` (a pre-response, connection-level
+ * error with no HTTP status). We retry twice with a 200ms backoff —
+ * cheap when the race doesn't trigger, decisive when it does.
  *
  * Once a real HTTP response (any status) is observed, we return it
  * unchanged: the handler may have legitimately failed, and that's not
@@ -149,38 +223,4 @@ async function fetchWithStartupRetry(
     }
   }
   throw lastError;
-}
-
-/**
- * Best-effort TCP probe. Resolves `true` on connect, `false` on refused.
- * Errors other than ECONNREFUSED propagate so the caller can decide
- * whether to retry.
- */
-async function tcpProbe(host: string, port: number, timeoutMs: number): Promise<boolean> {
-  const { Socket } = await import('node:net');
-  return new Promise<boolean>((resolveProbe, rejectProbe) => {
-    const socket = new Socket();
-    const cleanup = (): void => {
-      socket.removeAllListeners();
-      socket.destroy();
-    };
-    socket.setTimeout(timeoutMs);
-    socket.once('connect', () => {
-      cleanup();
-      resolveProbe(true);
-    });
-    socket.once('timeout', () => {
-      cleanup();
-      resolveProbe(false);
-    });
-    socket.once('error', (err: NodeJS.ErrnoException) => {
-      cleanup();
-      if (err.code === 'ECONNREFUSED' || err.code === 'ECONNRESET') {
-        resolveProbe(false);
-        return;
-      }
-      rejectProbe(err);
-    });
-    socket.connect(port, host);
-  });
 }
