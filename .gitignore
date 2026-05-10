@@ -43,3 +43,4 @@ tests/benchmark/results-*.md
 
 # Claude Code runtime state
 .claude/scheduled_tasks.lock
+.claude/worktrees/
