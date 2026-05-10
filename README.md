@@ -237,17 +237,21 @@ That's it. cdkd reads `--app` from `cdk.json` and auto-resolves the state bucket
 
 ## Usage
 
-cdkd has two command families:
+cdkd has three command families:
 
 - **Top-level commands** (`cdkd deploy` / `destroy` / `diff` / `synth` /
-  `list` / `import` / `orphan`) require a CDK app — they synthesize
-  a template to learn what they're operating on.
+  `list` / `import` / `orphan` / `publish-assets`) require a CDK app —
+  they synthesize a template to learn what they're operating on.
 - **`cdkd state ...` subcommands** (`state info` / `list` / `resources`
   / `show` / `orphan` / `destroy` / `migrate` / `refresh-observed`)
   operate on the S3 state bucket only and do NOT need the CDK app —
   use them to inspect / clean up state when the source is gone or
   you don't want to synth. `cdkd state destroy` is the CDK-app-free
   counterpart of `cdkd destroy`.
+- **`cdkd local ...` subcommands** (`local invoke`) run a synthesized
+  Lambda function locally inside a Docker container that bundles the
+  AWS Lambda Runtime Interface Emulator (RIE). No AWS API calls, no
+  state bucket needed.
 
 Options like `--app`, `--state-bucket`, and `--context` can be omitted if configured via `cdk.json` or environment variables (`CDKD_APP`, `CDKD_STATE_BUCKET`).
 
@@ -568,6 +572,44 @@ cdkd publish-assets -a cdk.out       # skip synth, use pre-synthesized assembly
 
 See [docs/cli-reference.md](docs/cli-reference.md#publish-assets-synth--build--publish-no-deploy)
 for stack-selection rules and concurrency knobs.
+
+## `local invoke`: run Lambda functions locally
+
+`cdkd local invoke <target>` runs a Lambda function from a CDK app on the
+developer's machine, inside a Docker container that bundles the AWS
+Lambda Runtime Interface Emulator (RIE). Modeled on `sam local invoke`
+but reusing cdkd's synthesis / asset / construct-path plumbing — no
+`template.yaml` to maintain, no `cdk synth | sam ...` round-trip.
+
+Requires Docker. v1 supports Node.js runtimes only (`nodejs18.x` /
+`nodejs20.x` / `nodejs22.x`); other runtimes follow in subsequent PRs.
+
+```bash
+# Invoke by CDK display path (single-stack apps may omit the prefix)
+cdkd local invoke MyStack/MyApi/Handler
+cdkd local invoke MyStack:MyApiHandler1234ABCD       # logical-id form
+
+# Pass an event payload
+cdkd local invoke MyStack/Handler --event events/get.json
+echo '{"path":"/"}' | cdkd local invoke MyStack/Handler --event-stdin
+
+# Override env vars (SAM-compatible shape: {"LogicalId":{"KEY":"VALUE"}}
+# plus an optional top-level "Parameters" block applied to every invoke)
+cdkd local invoke MyStack/Handler --env-vars env.json
+
+# Skip docker pull when iterating
+cdkd local invoke MyStack/Handler --no-pull
+
+# Run with the deployed function's narrow execution role (otherwise the
+# developer's shell credentials are forwarded — SAM-compatible default)
+cdkd local invoke MyStack/Handler --assume-role arn:aws:iam::123456789012:role/MyApi-handler-role
+
+# Attach a Node debugger
+cdkd local invoke MyStack/Handler --debug-port 9229
+```
+
+See [docs/cli-reference.md](docs/cli-reference.md#local-invoke-run-lambda-functions-locally)
+for the full surface, target-resolution rules, and v1 scope notes.
 
 ## State Management
 

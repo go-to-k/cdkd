@@ -1,0 +1,216 @@
+import { execFile, spawn } from 'node:child_process';
+import { createServer } from 'node:net';
+import { promisify } from 'node:util';
+import { getLogger } from '../utils/logger.js';
+
+const execFileAsync = promisify(execFile);
+
+/**
+ * Wraps `docker pull` / `docker run` / `docker rm` for `cdkd local invoke`.
+ *
+ * Mirrors the style of `src/assets/docker-asset-publisher.ts` (execFile for
+ * one-shot calls, spawn for long-running ones). Kept as a separate file so
+ * the command layer's wiring stays small; PR 5 (container Lambda) is
+ * expected to add a second non-build call site, at which point the
+ * common surface can be lifted into a shared helper.
+ */
+
+export class DockerRunnerError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'DockerRunnerError';
+    Object.setPrototypeOf(this, DockerRunnerError.prototype);
+  }
+}
+
+export interface DockerRunOptions {
+  /** Image to run (e.g. `public.ecr.aws/lambda/nodejs:20`). */
+  image: string;
+  /**
+   * Bind mounts: `[hostPath, containerPath]` pairs. cdkd uses this to
+   * expose the function's local code at `/var/task` (read-only).
+   */
+  mounts: { hostPath: string; containerPath: string; readOnly?: boolean }[];
+  /** Environment variables to forward into the container. */
+  env: Record<string, string>;
+  /**
+   * Container CMD. For Lambda base images this is the handler string,
+   * e.g. `index.handler`.
+   */
+  cmd: string[];
+  /** Host port to bind the RIE port (8080) to. */
+  hostPort: number;
+  /** Host to bind to (default `127.0.0.1`). */
+  host?: string;
+  /**
+   * Optional Node.js inspector port. When set the container also publishes
+   * `<port>:<port>` and the caller is expected to have set
+   * `NODE_OPTIONS=--inspect-brk=0.0.0.0:<port>` in `env`.
+   */
+  debugPort?: number;
+}
+
+/**
+ * Pull the image. No-op when `skipPull` is true.
+ *
+ * Streams progress to stdout so the user sees the layer pulls; this is the
+ * most common multi-second phase the first time the image is used.
+ */
+export async function pullImage(image: string, skipPull: boolean): Promise<void> {
+  const logger = getLogger().child('docker');
+  if (skipPull) {
+    logger.debug(`Skipping docker pull for ${image} (--no-pull)`);
+    return;
+  }
+  logger.info(`Pulling ${image}...`);
+  await runForeground('docker', ['pull', image]);
+}
+
+/**
+ * Run the container detached. Returns the container ID.
+ *
+ * The caller is responsible for:
+ *   - polling `host:port` for RIE readiness,
+ *   - issuing the invoke,
+ *   - calling `removeContainer` from a `try`/`finally` so the container
+ *     is cleaned up on any error path including SIGINT.
+ */
+export async function runDetached(opts: DockerRunOptions): Promise<string> {
+  const args: string[] = ['run', '-d', '--rm'];
+
+  const host = opts.host ?? '127.0.0.1';
+  args.push('-p', `${host}:${opts.hostPort}:8080`);
+  if (opts.debugPort !== undefined) {
+    args.push('-p', `${host}:${opts.debugPort}:${opts.debugPort}`);
+  }
+
+  for (const mount of opts.mounts) {
+    const ro = mount.readOnly ? ':ro' : '';
+    args.push('-v', `${mount.hostPath}:${mount.containerPath}${ro}`);
+  }
+
+  for (const [k, v] of Object.entries(opts.env)) {
+    args.push('-e', `${k}=${v}`);
+  }
+
+  args.push(opts.image, ...opts.cmd);
+
+  const logger = getLogger().child('docker');
+  logger.debug(`docker ${args.join(' ')}`);
+
+  try {
+    const { stdout } = await execFileAsync('docker', args, {
+      maxBuffer: 10 * 1024 * 1024,
+    });
+    return stdout.trim();
+  } catch (error) {
+    const err = error as { stderr?: string; message?: string };
+    throw new DockerRunnerError(
+      `docker run failed: ${err.stderr?.trim() || err.message || String(error)}`
+    );
+  }
+}
+
+/**
+ * `docker logs -f <id>` plumbed to stdout/stderr. Returns a function that
+ * stops the stream (used by the caller in a `finally` block).
+ */
+export function streamLogs(containerId: string): () => void {
+  const proc = spawn('docker', ['logs', '-f', containerId], {
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  proc.stdout?.on('data', (chunk: Buffer) => process.stdout.write(chunk));
+  proc.stderr?.on('data', (chunk: Buffer) => process.stderr.write(chunk));
+  // Swallow the exit code; this child is just plumbing.
+  proc.on('error', () => {
+    /* the parent flow surfaces docker errors via runDetached / removeContainer */
+  });
+  return () => {
+    if (!proc.killed) proc.kill('SIGTERM');
+  };
+}
+
+/**
+ * Best-effort `docker rm -f <id>`. Errors are swallowed (logged at debug)
+ * because this typically runs from a `finally` and the parent has its own
+ * error to surface.
+ */
+export async function removeContainer(containerId: string): Promise<void> {
+  if (!containerId) return;
+  const logger = getLogger().child('docker');
+  try {
+    await execFileAsync('docker', ['rm', '-f', containerId]);
+    logger.debug(`Removed container ${containerId}`);
+  } catch (error) {
+    const err = error as { stderr?: string; message?: string };
+    logger.debug(
+      `docker rm -f ${containerId} failed: ${err.stderr || err.message || String(error)}`
+    );
+  }
+}
+
+/**
+ * Verify the docker daemon is reachable. Surfaces a friendlier error than
+ * the raw `ENOENT` / "Cannot connect to the Docker daemon" the user would
+ * otherwise see at the first run call. Called once up front.
+ */
+export async function ensureDockerAvailable(): Promise<void> {
+  try {
+    await execFileAsync('docker', ['version', '--format', '{{.Server.Version}}']);
+  } catch (error) {
+    const err = error as { code?: string; stderr?: string; message?: string };
+    if (err.code === 'ENOENT') {
+      throw new DockerRunnerError(
+        'docker is not installed or not on PATH. cdkd local invoke needs Docker — install Docker Desktop or the docker CLI and retry.'
+      );
+    }
+    throw new DockerRunnerError(
+      `docker daemon is not reachable: ${err.stderr?.trim() || err.message || String(error)}. ` +
+        'Start Docker Desktop / the docker daemon and retry.'
+    );
+  }
+}
+
+/**
+ * Allocate a free TCP port on `127.0.0.1`. Used to pick a host port for
+ * publishing the RIE :8080 endpoint without colliding with whatever else
+ * the user has running. The OS assigns a port via `port: 0` and we
+ * close the probe before returning so docker can bind it next.
+ *
+ * There is a tiny race window between close and `docker run -p` — in
+ * practice it's never been observed for local invoke; if it ever
+ * surfaces, the caller can retry with a fresh port.
+ */
+export function pickFreePort(): Promise<number> {
+  return new Promise<number>((resolvePort, rejectPort) => {
+    const server = createServer();
+    server.unref();
+    server.on('error', rejectPort);
+    server.listen(0, '127.0.0.1', () => {
+      const address = server.address();
+      if (!address || typeof address === 'string') {
+        server.close();
+        rejectPort(new Error('Could not allocate a host port'));
+        return;
+      }
+      const port = address.port;
+      server.close(() => resolvePort(port));
+    });
+  });
+}
+
+/**
+ * Run a child process attached to the parent's stdio (so users see
+ * progress lines as they happen). Resolves on exit code 0; rejects with
+ * the captured stderr otherwise. Used for `docker pull`.
+ */
+function runForeground(cmd: string, args: string[]): Promise<void> {
+  return new Promise<void>((resolveProc, rejectProc) => {
+    const proc = spawn(cmd, args, { stdio: 'inherit' });
+    proc.on('error', (err) => rejectProc(new DockerRunnerError(`${cmd} failed: ${err.message}`)));
+    proc.on('close', (code) => {
+      if (code === 0) resolveProc();
+      else rejectProc(new DockerRunnerError(`${cmd} exited with code ${code}`));
+    });
+  });
+}

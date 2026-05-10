@@ -788,3 +788,92 @@ Exit codes:
 - `2` — **partial failure**: one or more stacks failed but the rest
   published. Re-run to retry the failed stacks. Per-stack outcomes are
   listed in the run summary.
+
+## `local invoke` (run Lambda functions locally)
+
+`cdkd local invoke <target>` runs a Lambda function from a CDK app on
+the developer's machine, inside a Docker container that bundles the
+AWS Lambda Runtime Interface Emulator (RIE). Modeled on
+`sam local invoke` but reusing cdkd's synthesis / asset / construct-path
+plumbing.
+
+**Requires Docker.** The first invocation pulls the Lambda base image
+(`public.ecr.aws/lambda/nodejs:<version>`, ~600MB); subsequent
+invocations reuse the cached image. Pass `--no-pull` to skip the
+`docker pull` round-trip altogether.
+
+### Target resolution
+
+The positional `<target>` accepts two forms:
+
+- **CDK display path** — `MyStack/MyApi/Handler`. Matches the same
+  prefix-rule cdkd uses for `cdkd orphan`: an L2 path resolves to the
+  synthesized L1 child (`MyStack/MyApi/Handler/Resource`).
+- **Stack-qualified logical ID** — `MyStack:MyApiHandler1234ABCD`. The
+  colon is unambiguous because logical IDs cannot contain `/` or `:`.
+
+Single-stack apps may omit the stack prefix entirely:
+`cdkd local invoke MyHandler` is valid when the app contains exactly
+one stack (mirrors `cdkd deploy` / `cdkd destroy` auto-detect).
+
+When the target does not match anything, the error lists every Lambda
+in the resolved stack so the user can copy/paste a valid one.
+
+### Options
+
+| Option | Default | Description |
+| --- | --- | --- |
+| `-e, --event <file>` | `{}` | JSON event payload file. |
+| `--event-stdin` | off | Read event JSON from stdin (mutually exclusive with `--event`). |
+| `--env-vars <file>` | — | JSON env-var overrides, SAM-compatible shape: `{"LogicalId":{"KEY":"VALUE"}}` plus an optional top-level `"Parameters"` block applied to every invoke. `null` clears a key. |
+| `--no-pull` | off | Skip `docker pull` (use cached image). |
+| `--debug-port <port>` | off | Set `NODE_OPTIONS=--inspect-brk=0.0.0.0:<port>` and publish the port; attach a Node debugger to step through the handler. |
+| `--container-host <host>` | `127.0.0.1` | Host to bind the RIE port to. |
+| `--assume-role <arn>` | off | STS-assume the deployed function's execution role and forward the resulting temp credentials to the container, so the handler runs under the deployed role's narrow permissions instead of the developer's typically-admin shell credentials. Off by default — when omitted, `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` / `AWS_SESSION_TOKEN` / `AWS_REGION` are passed through unchanged (SAM-compatible default). PR 1 takes an explicit ARN; auto-resolution from the template's `Role` property is deferred to PR 2's `--from-state`. |
+| `-a, --app <cmd-or-dir>` | — | CDK app command or pre-synthesized `cdk.out` directory. Default: synth every time (Q2 recommendation C). Pass `-a cdk.out` to skip synthesis when iterating. |
+| `--output <dir>` | `cdk.out` | Output directory for synthesis. |
+
+### Environment variables
+
+Template `Properties.Environment.Variables` entries:
+
+- **Literal values** (string / number / boolean) are passed through as-is.
+- **Intrinsic-valued entries** (`Ref` / `Fn::GetAtt` / `Fn::Sub`) cannot
+  be resolved without state. v1 emits a warning naming the variable and
+  **drops** it (rather than silently substituting garbage). Override
+  intrinsics via `--env-vars` until PR 2's `--from-state` lands.
+
+Standard Lambda runtime env vars are always set: `AWS_LAMBDA_FUNCTION_NAME`,
+`AWS_LAMBDA_FUNCTION_MEMORY_SIZE`, `AWS_LAMBDA_FUNCTION_TIMEOUT`,
+`AWS_LAMBDA_FUNCTION_VERSION`, `AWS_LAMBDA_LOG_GROUP_NAME`,
+`AWS_LAMBDA_LOG_STREAM_NAME`. The handler's `context.*` fields look real.
+
+### Asset resolution
+
+cdkd uses the CDK-blessed `Metadata['aws:asset:path']` hint on each
+Lambda's CFn resource (the same source SAM uses) to find the local
+unzipped asset directory under `cdk.out`, and bind-mounts it at
+`/var/task` read-only. `Code.ZipFile` (inline) functions are
+materialized to a tmpdir using the file path implied by the function's
+`Handler` property (`index.handler` → `tmpdir/index.js`).
+
+### `local invoke` exit codes
+
+- `0` — RIE answered, regardless of whether the handler returned a
+  success payload OR an error payload. Lambda-style: a thrown handler
+  produces a 200 with an error structure on AWS, and we mirror that.
+- `1` — cdkd-side errors before/after the handler ran: Docker not
+  installed, image pull failed, target not found, RIE port unreachable
+  after the readiness window, container exited before responding.
+
+### v1 scope (out of scope, deferred)
+
+| Out of scope | Deferred to |
+| --- | --- |
+| Python / Java / Go / Ruby / .NET runtimes | Future PRs (Python first) |
+| Container Lambda (`Code.ImageUri`) | Future PR |
+| Lambda Layers (`AWS::Lambda::LayerVersion`) | Future PR |
+| State-driven env recovery (`--from-state`) | Next PR |
+| API Gateway / SQS / S3 event source emulation (`cdkd local start-api`) | Future PR |
+| VPC simulation | Never (local can't replicate VPC) |
+| Custom Resources (`Custom::*`) | Never — these are invoked by the deploy framework, not by users. cdkd surfaces a clear error pointing at the underlying ServiceToken Lambda. |
