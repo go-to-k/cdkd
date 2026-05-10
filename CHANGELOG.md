@@ -1,3 +1,10 @@
+# [0.70.0](https://github.com/go-to-k/cdkd/compare/v0.69.0...v0.70.0) (2026-05-10)
+
+
+### Features
+
+* **cli:** cdkd local invoke container Lambda support (PR 5 of [#224](https://github.com/go-to-k/cdkd/issues/224)) ([#229](https://github.com/go-to-k/cdkd/issues/229)) ([47e73a7](https://github.com/go-to-k/cdkd/commit/47e73a7eea0f60b88e991f45c8cca2cddaf8a265))
+
 # [0.69.0](https://github.com/go-to-k/cdkd/compare/v0.68.0...v0.69.0) (2026-05-10)
 
 

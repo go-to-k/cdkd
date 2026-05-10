@@ -8,6 +8,7 @@ import {
 import type { DockerImageAsset } from '../types/assets.js';
 import { getLogger } from '../utils/logger.js';
 import { AssetError } from '../utils/error-handler.js';
+import { buildDockerImage } from './docker-build.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -145,53 +146,21 @@ export class DockerAssetPublisher {
   }
 
   /**
-   * Build Docker image
+   * Build Docker image — delegates to the shared `buildDockerImage`
+   * helper so this code path stays in sync with `cdkd local invoke`'s
+   * container-Lambda build path. `--platform` is currently not threaded
+   * through here (publish-assets has no Architectures hint to consult);
+   * a follow-up can lift this once the asset manifest carries a
+   * platform field.
    */
   private async buildImage(
     asset: DockerImageAsset,
     cdkOutputDir: string,
     tag: string
   ): Promise<void> {
-    const args: string[] = ['build', '-t', tag];
-
-    // Dockerfile
-    if (asset.source.dockerFile) {
-      args.push('-f', asset.source.dockerFile);
-    }
-
-    // Build args
-    if (asset.source.dockerBuildArgs) {
-      for (const [key, value] of Object.entries(asset.source.dockerBuildArgs)) {
-        args.push('--build-arg', `${key}=${value}`);
-      }
-    }
-
-    // Build target
-    if (asset.source.dockerBuildTarget) {
-      args.push('--target', asset.source.dockerBuildTarget);
-    }
-
-    // Build outputs
-    if (asset.source.dockerOutputs) {
-      for (const output of asset.source.dockerOutputs) {
-        args.push('--output', output);
-      }
-    }
-
-    // Context directory
-    const contextDir = `${cdkOutputDir}/${asset.source.directory}`;
-    args.push(contextDir);
-
-    this.logger.debug(`docker ${args.join(' ')}`);
-
-    try {
-      await execFileAsync('docker', args, {
-        maxBuffer: 50 * 1024 * 1024, // 50MB for build output
-      });
-    } catch (error) {
-      const err = error as { stderr?: string; message?: string };
-      throw new AssetError(`Docker build failed: ${err.stderr || err.message || String(error)}`);
-    }
+    await buildDockerImage(asset, cdkOutputDir, tag, {
+      wrapError: (stderr) => new AssetError(`Docker build failed: ${stderr}`),
+    });
   }
 
   /**

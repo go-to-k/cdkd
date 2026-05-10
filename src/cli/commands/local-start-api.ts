@@ -375,6 +375,16 @@ async function buildContainerSpec(args: {
  * miss here is a synthesis bug worth surfacing.
  */
 interface ResolvedStartApiLambda {
+  /**
+   * `cdkd local start-api` v1 is ZIP-only — PR 5 introduced the
+   * `kind: 'zip' | 'image'` discriminator on `ResolvedLambda` to support
+   * container Lambdas in `cdkd local invoke`, but the start-api server
+   * does not yet handle the per-Lambda image build / ECR pull / platform
+   * threading that container Lambdas require. The discriminator is set
+   * to `'zip'` here so this shape is structurally assignable to
+   * `ResolvedZipLambda` (the type the container pool consumes).
+   */
+  kind: 'zip';
   stack: StackInfo;
   logicalId: string;
   resource: TemplateResource;
@@ -404,12 +414,22 @@ function resolveLambdaByLogicalId(logicalId: string, stacks: StackInfo[]): Resol
       throw new Error(`Lambda '${logicalId}' has no Handler property.`);
     }
     const code = (props['Code'] ?? {}) as Record<string, unknown>;
+    const imageUri = code['ImageUri'];
+    if (
+      typeof imageUri === 'string' ||
+      (typeof imageUri === 'object' && imageUri !== null && 'Fn::Sub' in imageUri)
+    ) {
+      throw new Error(
+        `Lambda '${logicalId}' uses Code.ImageUri (container-image Lambda). 'cdkd local start-api' v1 supports ZIP Lambdas only — container-image support is deferred to a follow-up PR. Use 'cdkd local invoke' to exercise this function locally.`
+      );
+    }
     const inlineCode = typeof code['ZipFile'] === 'string' ? code['ZipFile'] : undefined;
     let codePath: string | null = null;
     if (!inlineCode) {
       codePath = resolveAssetCodePath(stack, logicalId, resource);
     }
     return {
+      kind: 'zip',
       stack,
       logicalId,
       resource,

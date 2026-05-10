@@ -28,14 +28,18 @@ export interface DockerRunOptions {
   image: string;
   /**
    * Bind mounts: `[hostPath, containerPath]` pairs. cdkd uses this to
-   * expose the function's local code at `/var/task` (read-only).
+   * expose the function's local code at `/var/task` (read-only). Empty
+   * for container Lambdas (PR 5) — the image already has the code at
+   * `/var/task`, no host bind-mount needed.
    */
   mounts: { hostPath: string; containerPath: string; readOnly?: boolean }[];
   /** Environment variables to forward into the container. */
   env: Record<string, string>;
   /**
-   * Container CMD. For Lambda base images this is the handler string,
-   * e.g. `index.handler`.
+   * Container CMD. For ZIP Lambda base images this is the handler string,
+   * e.g. `index.handler`. For container Lambdas (PR 5) this is the
+   * `ImageConfig.Command` array — passed verbatim, may be empty when the
+   * image's own CMD is sufficient.
    */
   cmd: string[];
   /** Host port to bind the RIE port (8080) to. */
@@ -49,12 +53,32 @@ export interface DockerRunOptions {
    */
   debugPort?: number;
   /**
+   * `--platform <linux/amd64|linux/arm64>`. PR 5: container Lambdas
+   * declare `Architectures`, and the run-time platform must match the
+   * built image. Without this an arm64 host running an x86_64 Lambda
+   * hits emulation (slow) and an x86_64 host running arm64 fails with
+   * `exec format error`. Omitted when undefined (the ZIP path on the
+   * host's default arch is the original behavior).
+   */
+  platform?: string;
+  /**
+   * `--entrypoint <first>` for container Lambdas (PR 5,
+   * `ImageConfig.EntryPoint`). When set, only the first entry is passed
+   * to docker as `--entrypoint` (docker accepts a single binary there);
+   * the remaining entries are pre-pended to `cmd` as positional args.
+   * Most container Lambdas leave EntryPoint unset so `/lambda-entrypoint.sh`
+   * stays in charge of dispatching to RIE.
+   */
+  entryPoint?: string[];
+  /** `--workdir <dir>` for container Lambdas (PR 5, `ImageConfig.WorkingDirectory`). */
+  workingDir?: string;
+  /**
    * Optional `--name` for the container. `cdkd local start-api` sets a
-   * stable `cdkd-local-<logicalId>-<pid>` name so the verify.sh trap can
-   * sweep orphans (`docker ps --filter name=cdkd-local-`) regardless of
-   * how the server exited. `cdkd local invoke` leaves it unset and lets
-   * docker auto-assign — short-lived containers don't benefit from a
-   * stable name.
+   * stable `cdkd-local-<logicalId>-<pid>-<rand>` name so the verify.sh
+   * trap can sweep orphans (`docker ps --filter name=cdkd-local-`)
+   * regardless of how the server exited. `cdkd local invoke` leaves it
+   * unset and lets docker auto-assign — short-lived containers don't
+   * benefit from a stable name.
    */
   name?: string;
 }
@@ -90,6 +114,9 @@ export async function runDetached(opts: DockerRunOptions): Promise<string> {
   if (opts.name) {
     args.push('--name', opts.name);
   }
+  if (opts.platform) {
+    args.push('--platform', opts.platform);
+  }
 
   const host = opts.host ?? '127.0.0.1';
   args.push('-p', `${host}:${opts.hostPort}:8080`);
@@ -106,10 +133,25 @@ export async function runDetached(opts: DockerRunOptions): Promise<string> {
     args.push('-e', `${k}=${v}`);
   }
 
-  args.push(opts.image, ...opts.cmd);
+  if (opts.workingDir) {
+    args.push('--workdir', opts.workingDir);
+  }
+
+  // ImageConfig.EntryPoint maps to `--entrypoint <first>` plus the rest
+  // as positional args before CMD. Docker only accepts a single value
+  // for `--entrypoint`; multi-arg entrypoints carry their tail through
+  // the positional CMD slot. Most container Lambdas omit EntryPoint
+  // entirely so `/lambda-entrypoint.sh` stays in charge of RIE dispatch.
+  let entryPointTail: string[] = [];
+  if (opts.entryPoint && opts.entryPoint.length > 0) {
+    args.push('--entrypoint', opts.entryPoint[0]!);
+    entryPointTail = opts.entryPoint.slice(1);
+  }
+
+  args.push(opts.image, ...entryPointTail, ...opts.cmd);
 
   const logger = getLogger().child('docker');
-  logger.debug(`docker ${args.join(' ')}`);
+  logger.debug(`docker ${redactAwsCredentialsInArgs(args).join(' ')}`);
 
   try {
     const { stdout } = await execFileAsync('docker', args, {
@@ -210,6 +252,47 @@ export function pickFreePort(): Promise<number> {
       server.close(() => resolvePort(port));
     });
   });
+}
+
+/**
+ * AWS credential keys whose values must NOT be written to the debug log.
+ * `forwardAwsEnv` / `assumeLambdaExecutionRole` (in `local-invoke.ts`)
+ * push these via `-e <KEY>=<value>` flags into `runDetached`'s args
+ * array, and `cdkd local invoke --verbose` would otherwise leak them
+ * into stdout / log files. Only the matching `-e <KEY>=<value>` pair is
+ * redacted; non-credential `-e KEY=val` entries pass through unchanged.
+ */
+const REDACTED_ENV_KEYS = new Set([
+  'AWS_ACCESS_KEY_ID',
+  'AWS_SECRET_ACCESS_KEY',
+  'AWS_SESSION_TOKEN',
+]);
+
+/**
+ * Returns a copy of `args` with any `-e <KEY>=<value>` pair whose KEY is
+ * in {@link REDACTED_ENV_KEYS} replaced with `-e <KEY>=***`. The actual
+ * `args` passed to `spawn` are never mutated — this is for log output
+ * only.
+ */
+export function redactAwsCredentialsInArgs(args: readonly string[]): string[] {
+  const out: string[] = [];
+  for (let i = 0; i < args.length; i++) {
+    const cur = args[i]!;
+    const next = args[i + 1];
+    if (cur === '-e' && typeof next === 'string') {
+      const eqIdx = next.indexOf('=');
+      if (eqIdx > 0) {
+        const key = next.substring(0, eqIdx);
+        if (REDACTED_ENV_KEYS.has(key)) {
+          out.push('-e', `${key}=***`);
+          i++;
+          continue;
+        }
+      }
+    }
+    out.push(cur);
+  }
+  return out;
 }
 
 /**

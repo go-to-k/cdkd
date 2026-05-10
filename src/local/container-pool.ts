@@ -1,6 +1,6 @@
 import { getLogger } from '../utils/logger.js';
 import { pickFreePort, removeContainer, runDetached, streamLogs } from './docker-runner.js';
-import type { ResolvedLambda } from './lambda-resolver.js';
+import type { ResolvedZipLambda } from './lambda-resolver.js';
 import { waitForRieReady } from './rie-client.js';
 import { resolveRuntimeImage } from './runtime-image.js';
 
@@ -68,7 +68,12 @@ interface ContainerPoolEntry {
  * boot — `acquire()` reads these from the pool's per-logical-id record.
  */
 export interface ContainerSpec {
-  lambda: ResolvedLambda;
+  /**
+   * `cdkd local start-api` v1 supports ZIP Lambdas only. Container-image
+   * Lambdas (PR 5 of #224) are rejected at the resolver layer in
+   * `local-start-api.ts` with a clear error pointing at PR 8b/c.
+   */
+  lambda: ResolvedZipLambda;
   /** Bind-mount source for `/var/task` (asset dir or materialized inline). */
   codeDir: string;
   env: Record<string, string>;

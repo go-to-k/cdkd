@@ -286,7 +286,146 @@ describe('resolveLambdaTarget', () => {
       tmpRoot
     );
     const result = resolveLambdaTarget('MyStack:PyHandler', [stack]);
+    expect(result.kind).toBe('zip');
+    if (result.kind !== 'zip') return;
     expect(result.runtime).toBe('python3.11');
     expect(result.codePath).toMatch(/asset\.pyabc$/);
+  });
+
+  // PR 5 — container Lambda support (Code.ImageUri)
+
+  it('resolves a container Lambda from Fn::Sub-shaped Code.ImageUri', () => {
+    const stack = buildStack(
+      'MyStack',
+      {
+        ContainerFn: {
+          Type: 'AWS::Lambda::Function',
+          Properties: {
+            PackageType: 'Image',
+            Code: {
+              ImageUri: {
+                'Fn::Sub':
+                  '${AWS::AccountId}.dkr.ecr.${AWS::Region}.${AWS::URLSuffix}/cdk-hnb659fds-container-assets-${AWS::AccountId}-${AWS::Region}:abcdef1234567890',
+              },
+            },
+            ImageConfig: {
+              Command: ['app.handler'],
+              EntryPoint: ['/lambda-entrypoint.sh'],
+              WorkingDirectory: '/var/task',
+            },
+            Architectures: ['arm64'],
+          },
+        },
+      },
+      tmpRoot
+    );
+    const result = resolveLambdaTarget('MyStack:ContainerFn', [stack]);
+    expect(result.kind).toBe('image');
+    if (result.kind !== 'image') return;
+    expect(result.imageUri).toContain(':abcdef1234567890');
+    expect(result.imageConfig.command).toEqual(['app.handler']);
+    expect(result.imageConfig.entryPoint).toEqual(['/lambda-entrypoint.sh']);
+    expect(result.imageConfig.workingDirectory).toBe('/var/task');
+    expect(result.architecture).toBe('arm64');
+  });
+
+  it('resolves a container Lambda from a flat-string Code.ImageUri', () => {
+    const stack = buildStack(
+      'MyStack',
+      {
+        Plain: {
+          Type: 'AWS::Lambda::Function',
+          Properties: {
+            PackageType: 'Image',
+            Code: { ImageUri: '111111111111.dkr.ecr.us-east-1.amazonaws.com/r:hash123abc' },
+          },
+        },
+      },
+      tmpRoot
+    );
+    const result = resolveLambdaTarget('MyStack:Plain', [stack]);
+    expect(result.kind).toBe('image');
+    if (result.kind !== 'image') return;
+    expect(result.imageUri).toBe(
+      '111111111111.dkr.ecr.us-east-1.amazonaws.com/r:hash123abc'
+    );
+  });
+
+  it('defaults Architectures to x86_64 when omitted', () => {
+    const stack = buildStack(
+      'MyStack',
+      {
+        Default: {
+          Type: 'AWS::Lambda::Function',
+          Properties: {
+            PackageType: 'Image',
+            Code: { ImageUri: { 'Fn::Sub': 'r:abc12345' } },
+          },
+        },
+      },
+      tmpRoot
+    );
+    const result = resolveLambdaTarget('MyStack:Default', [stack]);
+    expect(result.kind).toBe('image');
+    if (result.kind !== 'image') return;
+    expect(result.architecture).toBe('x86_64');
+  });
+
+  it('container Lambda does NOT require Handler/Runtime properties (D5.5)', () => {
+    const stack = buildStack(
+      'MyStack',
+      {
+        NoHandlerNoRuntime: {
+          Type: 'AWS::Lambda::Function',
+          Properties: {
+            PackageType: 'Image',
+            Code: { ImageUri: { 'Fn::Sub': 'r:hash123abc' } },
+          },
+        },
+      },
+      tmpRoot
+    );
+    // Should NOT throw — prior to PR 5 the resolver required Runtime.
+    expect(() => resolveLambdaTarget('MyStack:NoHandlerNoRuntime', [stack])).not.toThrow();
+  });
+
+  it('rejects unsupported Architectures values', () => {
+    const stack = buildStack(
+      'MyStack',
+      {
+        Bad: {
+          Type: 'AWS::Lambda::Function',
+          Properties: {
+            PackageType: 'Image',
+            Code: { ImageUri: { 'Fn::Sub': 'r:hash123' } },
+            Architectures: ['mips64'],
+          },
+        },
+      },
+      tmpRoot
+    );
+    expect(() => resolveLambdaTarget('MyStack:Bad', [stack])).toThrow(
+      /unsupported Architectures/
+    );
+  });
+
+  it('emits an empty imageConfig when ImageConfig is absent', () => {
+    const stack = buildStack(
+      'MyStack',
+      {
+        Bare: {
+          Type: 'AWS::Lambda::Function',
+          Properties: {
+            PackageType: 'Image',
+            Code: { ImageUri: { 'Fn::Sub': 'r:hash9876' } },
+          },
+        },
+      },
+      tmpRoot
+    );
+    const result = resolveLambdaTarget('MyStack:Bare', [stack]);
+    expect(result.kind).toBe('image');
+    if (result.kind !== 'image') return;
+    expect(result.imageConfig).toEqual({});
   });
 });
