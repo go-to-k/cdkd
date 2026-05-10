@@ -1,4 +1,4 @@
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname } from 'node:path';
 import * as path from 'node:path';
@@ -276,10 +276,22 @@ async function localInvokeCommand(target: string, options: LocalInvokeOptions): 
   const hostPort = await pickFreePort();
   const containerHost = options.containerHost;
 
+  // PR 6 (#232): when the function declares any layers, log the count
+  // — multi-layer Lambdas merge into one bind mount on the host (Docker
+  // rejects duplicate `/opt` mounts), but reporting "1 mount" here
+  // would understate what the user templated, so we read the count
+  // off the resolver's per-layer list instead. Image Lambdas always
+  // have `layers: []` so this branch fires only on ZIP Lambdas.
+  if (lambda.layers.length > 0) {
+    logger.info(
+      `Mounting ${lambda.layers.length} Lambda layer${lambda.layers.length === 1 ? '' : 's'} at /opt`
+    );
+  }
   logger.info(`Starting container (image=${imagePlan.image}, port=${hostPort})...`);
   const containerId = await runDetached({
     image: imagePlan.image,
     mounts: imagePlan.mounts,
+    extraMounts: imagePlan.extraMounts,
     env: dockerEnv,
     cmd: imagePlan.cmd,
     hostPort,
@@ -335,6 +347,17 @@ async function localInvokeCommand(target: string, options: LocalInvokeOptions): 
         );
       }
     }
+    if (imagePlan.layersTmpDir) {
+      try {
+        rmSync(imagePlan.layersTmpDir, { recursive: true, force: true });
+      } catch (err) {
+        getLogger().debug(
+          `Failed to remove merged-layers tmpdir ${imagePlan.layersTmpDir}: ${
+            err instanceof Error ? err.message : String(err)
+          }`
+        );
+      }
+    }
   }
 }
 
@@ -355,6 +378,21 @@ async function localInvokeCommand(target: string, options: LocalInvokeOptions): 
 interface ImagePlan {
   image: string;
   mounts: { hostPath: string; containerPath: string; readOnly?: boolean }[];
+  /**
+   * Lambda Layer mounts (PR 6 of #224, issue #232). The function's
+   * `Properties.Layers` references collapse to a single bind mount at
+   * `/opt`. Why one mount, not one-per-layer: Docker rejects multiple
+   * bind mounts at the same target path (`Error response from daemon:
+   * Duplicate mount point: /opt`) — bind mounts are NOT layered the
+   * way the OCI image stack is. AWS Lambda implements layer
+   * stacking by extracting each layer's ZIP into `/opt` IN ORDER so
+   * later layers overwrite earlier files; cdkd mirrors that on the
+   * host by `cpSync`-merging each layer's asset directory into one
+   * tmpdir and bind-mounting THAT at `/opt`. The single-layer case
+   * skips the copy and bind-mounts the layer's asset dir directly.
+   * Empty `[]` for container Lambdas and ZIP Lambdas with no layers.
+   */
+  extraMounts: { hostPath: string; containerPath: string; readOnly?: boolean }[];
   cmd: string[];
   platform?: string;
   entryPoint?: string[];
@@ -367,6 +405,14 @@ interface ImagePlan {
    * the OS tmp root). Asset-backed Lambdas leave this unset.
    */
   inlineTmpDir?: string;
+  /**
+   * Set when multiple `Properties.Layers` were merged into a single
+   * tmpdir (see {@link extraMounts}). The CLI's outer `finally`
+   * removes this dir alongside the docker container so we don't leak
+   * per-invoke layer-merge tmpdirs. Single-layer or no-layer functions
+   * leave this unset.
+   */
+  layersTmpDir?: string;
 }
 
 /**
@@ -413,11 +459,67 @@ async function resolveZipImagePlan(
   // Commander surfaces `--no-pull` as `pull: false` (default `true`).
   await pullImage(image, options.pull === false);
 
+  // PR 6 (#232): merge every same-stack `AWS::Lambda::LayerVersion`
+  // referenced by `Properties.Layers` into a single bind mount at
+  // `/opt`. AWS extracts layer ZIPs into `/opt` IN ORDER (later
+  // layers overwrite earlier files); we mirror that on the host
+  // before bind-mounting because Docker rejects multiple bind mounts
+  // at the same target path.
+  const layerPlan = materializeLambdaLayers(lambda.layers);
+
   return {
     image,
     mounts: [{ hostPath: codeDir, containerPath: '/var/task', readOnly: true }],
+    extraMounts: layerPlan.mount ? [layerPlan.mount] : [],
     cmd: [lambda.handler],
     ...(inlineTmpDir !== undefined && { inlineTmpDir }),
+    ...(layerPlan.tmpDir !== undefined && { layersTmpDir: layerPlan.tmpDir }),
+  };
+}
+
+/**
+ * Build the `/opt` bind mount for a Lambda's resolved layers (PR 6 of
+ * #224, issue #232).
+ *
+ * Three cases:
+ *
+ *   1. **No layers**: returns `{ mount: undefined }`. The caller emits
+ *      no `/opt` mount.
+ *   2. **Single layer**: returns `{ mount: { hostPath, '/opt', ro }, tmpDir: undefined }`.
+ *      The layer's asset directory is bind-mounted directly — faster
+ *      than copying since CDK has already unzipped the asset.
+ *   3. **Multiple layers**: copies each layer's contents into a fresh
+ *      tmpdir IN ORDER (later layers overwrite earlier files via
+ *      `cpSync({force: true})`), then bind-mounts the merged tmpdir at
+ *      `/opt`. Returns `{ mount, tmpDir: <path> }` so the caller can
+ *      `rmSync` the tmpdir on cleanup.
+ *
+ * The merge case is the only way to honor AWS's "last layer wins on
+ * file collision" semantics with bind mounts: Docker rejects multiple
+ * `-v ...:/opt:ro` entries at the same target path, so we can't rely
+ * on overlay layering at the docker-runner layer.
+ */
+function materializeLambdaLayers(layers: { logicalId: string; assetPath: string }[]): {
+  mount?: { hostPath: string; containerPath: string; readOnly: boolean };
+  tmpDir?: string;
+} {
+  if (layers.length === 0) return {};
+  if (layers.length === 1) {
+    return {
+      mount: { hostPath: layers[0]!.assetPath, containerPath: '/opt', readOnly: true },
+    };
+  }
+  const tmpDir = mkdtempSync(path.join(tmpdir(), 'cdkd-local-invoke-layers-'));
+  for (const layer of layers) {
+    // `recursive: true` is required for directory copy. `force: true`
+    // makes later layers overwrite earlier ones — the load-bearing
+    // half of AWS's "last layer wins" semantic. cpSync merges into the
+    // existing target rather than replacing it.
+    cpSync(layer.assetPath, tmpDir, { recursive: true, force: true });
+  }
+  return {
+    mount: { hostPath: tmpDir, containerPath: '/opt', readOnly: true },
+    tmpDir,
   };
 }
 
@@ -462,9 +564,16 @@ export async function resolveContainerImagePlan(
     });
   }
 
+  // PR 6 (#232): container Lambdas reject `Layers` at deploy time on
+  // the AWS side — layers are baked into the image at build time, not
+  // overlaid at runtime. The lambda-resolver normalizes `lambda.layers`
+  // to `[]` for the IMAGE branch, so `extraMounts` is always empty here
+  // (matches AWS's invoke-time behavior of silently ignoring layers on
+  // container Lambdas).
   return {
     image: imageRef,
     mounts: [],
+    extraMounts: [],
     cmd: lambda.imageConfig.command ?? [],
     platform,
     ...(lambda.imageConfig.entryPoint &&

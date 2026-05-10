@@ -255,6 +255,68 @@ describe('runDetached', () => {
     expect(args[args.indexOf('--entrypoint') + 1]).toBe('ep');
   });
 
+  // PR 6 of #224 — Lambda Layers (issue #232)
+
+  it('emits extraMounts after primary mounts in original order', async () => {
+    // Layers in cdkd merge into a single /opt bind-mount at the call
+    // site (Docker rejects duplicates), but the docker-runner itself
+    // is generic — `extraMounts` lets the caller compose any number
+    // of additional mounts at distinct target paths. This test uses
+    // distinct targets to avoid coupling the wire-layer test to the
+    // specific layer-merging strategy in `local-invoke.ts`.
+    await runDetached({
+      image: 'my-image:latest',
+      mounts: [{ hostPath: '/host/code', containerPath: '/var/task', readOnly: true }],
+      extraMounts: [
+        { hostPath: '/host/extra-a', containerPath: '/opt', readOnly: true },
+        { hostPath: '/host/extra-b', containerPath: '/data', readOnly: true },
+      ],
+      env: {},
+      cmd: ['index.handler'],
+      hostPort: 9000,
+    });
+    const args = lastArgs();
+    const codeMountIdx = args.findIndex(
+      (s, i) => args[i - 1] === '-v' && s === '/host/code:/var/task:ro'
+    );
+    const extraAIdx = args.findIndex(
+      (s, i) => args[i - 1] === '-v' && s === '/host/extra-a:/opt:ro'
+    );
+    const extraBIdx = args.findIndex(
+      (s, i) => args[i - 1] === '-v' && s === '/host/extra-b:/data:ro'
+    );
+    expect(codeMountIdx).toBeGreaterThan(0);
+    expect(extraAIdx).toBeGreaterThan(codeMountIdx);
+    expect(extraBIdx).toBeGreaterThan(extraAIdx);
+  });
+
+  it('omits :ro for extraMounts when readOnly is false', async () => {
+    await runDetached({
+      image: 'my-image:latest',
+      mounts: [],
+      extraMounts: [{ hostPath: '/host/x', containerPath: '/opt', readOnly: false }],
+      env: {},
+      cmd: [],
+      hostPort: 9000,
+    });
+    const args = lastArgs();
+    expect(args).toContain('/host/x:/opt');
+  });
+
+  it('emits no -v entries for extraMounts when omitted or empty', async () => {
+    await runDetached({
+      image: 'my-image:latest',
+      mounts: [{ hostPath: '/host/code', containerPath: '/var/task', readOnly: true }],
+      env: {},
+      cmd: [],
+      hostPort: 9000,
+    });
+    const args = lastArgs();
+    const dashVCount = args.filter((s) => s === '-v').length;
+    // Exactly one (the /var/task mount). No extraMounts → no extra -v.
+    expect(dashVCount).toBe(1);
+  });
+
   it('does not write AWS credential values to the spawn args (we do not redact at the wire layer)', async () => {
     // Sanity: redaction is at the LOG layer only — the actual creds must
     // still reach docker (otherwise the handler couldn't authenticate).

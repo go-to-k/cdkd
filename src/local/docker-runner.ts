@@ -33,6 +33,20 @@ export interface DockerRunOptions {
    * `/var/task`, no host bind-mount needed.
    */
   mounts: { hostPath: string; containerPath: string; readOnly?: boolean }[];
+  /**
+   * Additional bind mounts applied AFTER `mounts` (PR 6 of #224, issue
+   * #232 — Lambda Layers). The split is purely organizational: it lets
+   * the call site keep "the function's own code" (`mounts`) separate from
+   * "every Lambda Layer attached to this function" (`extraMounts`). The
+   * docker-runner emits one `-v <hostPath>:<containerPath>:<ro?>` per
+   * entry and the order matters: AWS layer semantics are "last layer
+   * wins on file collision", and Docker's overlay layering realizes the
+   * same when bind-mounts share a target path. Each layer becomes one
+   * `-v <layerAssetPath>:/opt:ro` entry; the caller is responsible for
+   * preserving the template's input order (the LAST template entry wins,
+   * matching AWS).
+   */
+  extraMounts?: { hostPath: string; containerPath: string; readOnly?: boolean }[];
   /** Environment variables to forward into the container. */
   env: Record<string, string>;
   /**
@@ -127,6 +141,17 @@ export async function runDetached(opts: DockerRunOptions): Promise<string> {
   for (const mount of opts.mounts) {
     const ro = mount.readOnly ? ':ro' : '';
     args.push('-v', `${mount.hostPath}:${mount.containerPath}${ro}`);
+  }
+  // PR 6 (#232): layer mounts are emitted after the function's own
+  // mounts. Order within `extraMounts` is preserved — the caller (the
+  // CLI's `resolveZipImagePlan`) feeds layers in the same order they
+  // appear in `Properties.Layers`, so AWS's "last layer wins on file
+  // collision" semantics hold.
+  if (opts.extraMounts) {
+    for (const mount of opts.extraMounts) {
+      const ro = mount.readOnly ? ':ro' : '';
+      args.push('-v', `${mount.hostPath}:${mount.containerPath}${ro}`);
+    }
   }
 
   for (const [k, v] of Object.entries(opts.env)) {

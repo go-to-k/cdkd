@@ -76,6 +76,19 @@ export interface ContainerSpec {
   lambda: ResolvedZipLambda;
   /** Bind-mount source for `/var/task` (asset dir or materialized inline). */
   codeDir: string;
+  /**
+   * Pre-resolved bind-mount source for `/opt` (PR 6 of #224, issue
+   * #232 — Lambda Layers). Resolved ONCE at server boot — for a
+   * single-layer function this is the layer's asset dir; for multi-
+   * layer functions this is a tmpdir that already merged the layers
+   * in template order (later layers overwrite earlier files via
+   * `cpSync({force: true})`). Undefined when the function declares
+   * no layers. Why pre-resolve at the server level instead of per
+   * cold-start: the merge is deterministic (templates are
+   * static for the server's lifetime) and we want exactly ONE merged
+   * dir to clean up at dispose.
+   */
+  optDir?: string;
   env: Record<string, string>;
   containerHost: string;
   /** Optional Node.js `--inspect-brk` port. */
@@ -171,9 +184,20 @@ export function createContainerPool(
     logger.debug(
       `Starting container ${name} for ${spec.lambda.logicalId} on ${spec.containerHost}:${hostPort}`
     );
+    // PR 6 (#232): one pre-resolved bind mount at `/opt` (when the
+    // function declares any layers). Multi-layer merging happens in
+    // `local-start-api.ts`'s `materializeLambdaLayers(...)` once at
+    // server boot — Docker rejects two `-v ...:/opt:ro` entries at
+    // the same target, so cdkd can't rely on overlay layering and
+    // must merge on the host instead (see ImagePlan.layersTmpDir
+    // docstring in `cli/commands/local-invoke.ts`).
+    const optMount = spec.optDir
+      ? [{ hostPath: spec.optDir, containerPath: '/opt', readOnly: true }]
+      : [];
     const containerId = await runDetached({
       image,
       mounts: [{ hostPath: spec.codeDir, containerPath: '/var/task', readOnly: true }],
+      extraMounts: optMount,
       env: spec.env,
       cmd: [spec.lambda.handler],
       hostPort,

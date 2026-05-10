@@ -1,0 +1,13 @@
+# Override the parent integ .gitignore so the Lambda handler source
+# AND the Lambda Layer assets (which must literally live at
+# layers/<name>/nodejs/node_modules/<pkg>/index.js for the Node.js
+# Lambda runtime to load them at /opt/nodejs/node_modules/<pkg>/) are
+# tracked.
+#
+# `node_modules/` in the parent .gitignore would normally win — git
+# does NOT recurse into ignored directories, so we have to un-ignore
+# every parent directory before un-ignoring the leaf .js files.
+!lambda/*.js
+!layers/
+!layers/**/
+!layers/**/*.js
