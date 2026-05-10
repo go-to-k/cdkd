@@ -1,3 +1,10 @@
+## [0.75.1](https://github.com/go-to-k/cdkd/compare/v0.75.0...v0.75.1) (2026-05-10)
+
+
+### Bug Fixes
+
+* **local:** HTTP API v2 --stage override + Layer resolver string-form + cpSync mode-preservation comment (closes 3 items in 241) ([#245](https://github.com/go-to-k/cdkd/issues/245)) ([c40c0c9](https://github.com/go-to-k/cdkd/commit/c40c0c94778713ff226fc2fef7021551bef70194))
+
 # [0.75.0](https://github.com/go-to-k/cdkd/compare/v0.74.0...v0.75.0) (2026-05-10)
 
 
