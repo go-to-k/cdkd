@@ -488,4 +488,48 @@ describe('verifyCognitoJwt — extractBearer edge cases', () => {
     const result = await verifyCognitoJwt(COGNITO_AUTH, 'Bearer ', cache);
     expect(result.allow).toBe(false);
   });
+
+  /**
+   * Bearer regex tightened to `[A-Za-z0-9._\-]+` (JWT character class).
+   * Pre-fix the regex was `(.+)`, so embedded whitespace in the header
+   * (`Bearer foo bar`) captured `foo bar` as the token — the JWT parser
+   * then quietly failed on the embedded space. Reject early at the
+   * extract layer instead, which gives a cleaner 401.
+   */
+  it('rejects a Bearer header with embedded whitespace inside the token', async () => {
+    const cache = createJwksCache({
+      fetchImpl: async () => {
+        throw new Error('boom');
+      },
+    });
+    const result = await verifyCognitoJwt(COGNITO_AUTH, 'Bearer foo bar', cache);
+    expect(result.allow).toBe(false);
+  });
+
+  it('accepts a real-looking JWT token (base64url + dots)', async () => {
+    const cache = createJwksCache({
+      fetchImpl: async () => {
+        throw new Error('boom');
+      },
+    });
+    // JWT character class: A-Z a-z 0-9 . _ -
+    const result = await verifyCognitoJwt(
+      COGNITO_AUTH,
+      'Bearer eyJhbGciOiJSUzI1NiIsImtpZCI6ImtpZC0xIn0.eyJzdWIiOiJ1Iiwib2suaWdub3JlIjp0cnVlfQ.sig-abc_def',
+      cache
+    );
+    expect(result.allow).toBe(true);
+  });
+
+  it('rejects a Bearer header containing non-JWT characters in the token', async () => {
+    const cache = createJwksCache({
+      fetchImpl: async () => {
+        throw new Error('boom');
+      },
+    });
+    // Quote chars / spaces / `=` / `+` / `/` are all outside the JWT class.
+    expect((await verifyCognitoJwt(COGNITO_AUTH, 'Bearer "abc"', cache)).allow).toBe(false);
+    expect((await verifyCognitoJwt(COGNITO_AUTH, 'Bearer abc=def', cache)).allow).toBe(false);
+    expect((await verifyCognitoJwt(COGNITO_AUTH, 'Bearer a+b/c', cache)).allow).toBe(false);
+  });
 });
