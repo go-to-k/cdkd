@@ -1,3 +1,10 @@
+# [0.73.0](https://github.com/go-to-k/cdkd/compare/v0.72.0...v0.73.0) (2026-05-10)
+
+
+### Features
+
+* **cli:** cdkd local start-api - authorizers + VPC simulation (closes [#234](https://github.com/go-to-k/cdkd/issues/234)) ([#237](https://github.com/go-to-k/cdkd/issues/237)) ([84ab835](https://github.com/go-to-k/cdkd/commit/84ab8357ba053072668877bb18693b9621445625))
+
 # [0.72.0](https://github.com/go-to-k/cdkd/compare/v0.71.0...v0.72.0) (2026-05-10)
 
 

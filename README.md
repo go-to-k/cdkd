@@ -669,7 +669,25 @@ cdkd local start-api --stage prod
 ```
 
 Scope: REST v1 + HTTP API + Function URL with AWS_PROXY integrations.
-WebSocket APIs and authorizers are deferred to a follow-up PR.
+Authorizers (PR 8b — Lambda TOKEN/REQUEST + Cognito User Pool + HTTP v2
+JWT), VPC-config Lambda warnings (PR 8b), CORS preflight (PR 8c), hot
+reload (PR 8c), and stage variables (PR 8c) are supported. WebSocket
+APIs are deferred to a follow-up PR.
+
+**Authorizers (PR 8b)**: `Authorization: Bearer <token>`-protected
+routes are gated on the authorizer Lambda's response (TOKEN / REQUEST
+authorizers, IAM-policy or HTTP v2 simple shape) or on a JWKS-based JWT
+verification (Cognito User Pool authorizers, HTTP v2 JWT authorizers).
+When the JWKS endpoint is unreachable from the dev machine, cdkd falls
+back to **pass-through mode** (every JWT accepted, with a warn line at
+startup) — local-dev-only fallback so a corporate proxy doesn't block
+iteration. **Do NOT rely on this in any shared environment.**
+
+**VPC-config Lambdas (PR 8b)**: handlers with `Properties.VpcConfig`
+still run locally, but the local container is NOT attached to the
+deployed VPC's subnets — calls to private RDS / ElastiCache will fail.
+cdkd warns at startup naming each affected Lambda; AWS SDK calls still
+reach public AWS endpoints via the dev's network as usual.
 
 **Hot reload (`--watch`)**: re-runs the synth → discover → spec-build
 pipeline whenever `cdk.out/` or any of the routed Lambdas' asset
@@ -697,8 +715,8 @@ pass `--stage <name>` to pick a Stage by `StageName`. Function URL
 routes don't have a Stage — `event.stageVariables` stays `null`.
 
 See [docs/cli-reference.md](docs/cli-reference.md#local-start-api-long-running-local-api-server)
-for the full route-discovery rules, container-pool semantics, and exit
-codes.
+for the full route-discovery rules, container-pool semantics, exit
+codes, and per-authorizer-kind detection / response-shape details.
 
 ## State Management
 

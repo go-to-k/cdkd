@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  applyAuthorizerOverlay,
   buildHttpApiV2Event,
   buildRestV1Event,
   type HttpRequestSnapshot,
@@ -259,5 +260,64 @@ describe('buildHttpApiV2Event / buildRestV1Event — stage variables (PR 8c)', (
       matchedPath: '/x',
     };
     expect(buildHttpApiV2Event(req, ctx)['stageVariables']).toBeNull();
+  });
+});
+
+describe('applyAuthorizerOverlay', () => {
+  it('lambda-rest-v1: principalId + context flat under requestContext.authorizer', () => {
+    const event = { foo: 1, requestContext: { authorizer: null, stage: 'prod' } };
+    const out = applyAuthorizerOverlay(event, {
+      kind: 'lambda-rest-v1',
+      principalId: 'u',
+      context: { tier: 'pro' },
+    });
+    expect((out['requestContext'] as Record<string, unknown>)['authorizer']).toEqual({
+      principalId: 'u',
+      tier: 'pro',
+    });
+    // does not mutate the input
+    expect((event['requestContext'] as Record<string, unknown>)['authorizer']).toBeNull();
+  });
+
+  it('lambda-http-v2: nests under .authorizer.lambda', () => {
+    const event = { requestContext: { authorizer: null } };
+    const out = applyAuthorizerOverlay(event, {
+      kind: 'lambda-http-v2',
+      principalId: 'u',
+      context: { tier: 'pro' },
+    });
+    const auth = (out['requestContext'] as Record<string, unknown>)['authorizer'] as Record<string, unknown>;
+    expect(auth['lambda']).toEqual({ principalId: 'u', tier: 'pro' });
+  });
+
+  it('cognito-rest-v1: claims under .authorizer.claims', () => {
+    const event = { requestContext: { authorizer: null } };
+    const out = applyAuthorizerOverlay(event, {
+      kind: 'cognito-rest-v1',
+      claims: { sub: 'user-1', 'cognito:username': 'alice' },
+    });
+    const auth = (out['requestContext'] as Record<string, unknown>)['authorizer'] as Record<string, unknown>;
+    expect(auth['claims']).toEqual({ sub: 'user-1', 'cognito:username': 'alice' });
+  });
+
+  it('jwt-http-v2: claims + scopes under .authorizer.jwt', () => {
+    const event = { requestContext: { authorizer: null } };
+    const out = applyAuthorizerOverlay(event, {
+      kind: 'jwt-http-v2',
+      claims: { sub: 'user-1' },
+      scopes: ['read:items'],
+    });
+    const auth = (out['requestContext'] as Record<string, unknown>)['authorizer'] as Record<string, unknown>;
+    expect(auth['jwt']).toEqual({ claims: { sub: 'user-1' }, scopes: ['read:items'] });
+  });
+
+  it('jwt-http-v2: scopes default to []', () => {
+    const event = { requestContext: { authorizer: null } };
+    const out = applyAuthorizerOverlay(event, {
+      kind: 'jwt-http-v2',
+      claims: {},
+    });
+    const auth = (out['requestContext'] as Record<string, unknown>)['authorizer'] as Record<string, unknown>;
+    expect((auth['jwt'] as Record<string, unknown>)['scopes']).toEqual([]);
   });
 });

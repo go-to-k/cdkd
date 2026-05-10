@@ -4,6 +4,7 @@ import { Construct } from 'constructs';
 import * as apigw from 'aws-cdk-lib/aws-apigateway';
 import * as apigwv2 from 'aws-cdk-lib/aws-apigatewayv2';
 import * as apigwv2_integrations from 'aws-cdk-lib/aws-apigatewayv2-integrations';
+import * as apigwv2_authorizers from 'aws-cdk-lib/aws-apigatewayv2-authorizers';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
 
 /**
@@ -17,13 +18,19 @@ import * as lambda from 'aws-cdk-lib/aws-lambda';
  *     (with `CorsConfiguration` enabling `*` origin so verify.sh can
  *     curl an OPTIONS preflight and assert the canonical response —
  *     PR 8c, issue #235)
+ *   - HTTP API:    GET /protected (authorizer-gated, PR 8b)
  *   - REST v1:     ANY /v1/{proxy+} (stage 'prod' with `Variables`
  *     so the integ can assert `event.stageVariables.STAGE === 'prod'`)
  *   - Function URL on a separate Lambda: ANY /{proxy+}
  *
+ * PR 8b extension: a Lambda REQUEST authorizer guards `/protected`. The
+ * authorizer Allow's the request iff `Authorization: Bearer let-me-in`
+ * is present; otherwise it Deny's. verify.sh asserts both directions.
+ *
  * verify.sh boots the server, asserts the route table, curls each
- * route (including an OPTIONS preflight against `/items`), and shuts
- * down cleanly without orphan containers.
+ * route (including an OPTIONS preflight against `/items` and
+ * authorizer-gated `/protected`), and shuts down cleanly without
+ * orphan containers.
  */
 export class LocalStartApiStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
@@ -64,6 +71,39 @@ export class LocalStartApiStack extends cdk.Stack {
       path: '/items/{id}',
       methods: [apigwv2.HttpMethod.GET],
       integration: itemsIntegration,
+    });
+
+    // Authorizer-protected route (PR 8b) — Lambda REQUEST authorizer.
+    const authorizerHandler = new lambda.Function(this, 'AuthorizerHandler', {
+      runtime: lambda.Runtime.NODEJS_20_X,
+      handler: 'index.handler',
+      code: lambda.Code.fromAsset(path.join(__dirname, '../lambda-authorizer')),
+      timeout: cdk.Duration.seconds(10),
+    });
+    const protectedHandler = new lambda.Function(this, 'ProtectedHandler', {
+      runtime: lambda.Runtime.NODEJS_20_X,
+      handler: 'index.handler',
+      code: lambda.Code.fromAsset(path.join(__dirname, '../lambda-protected')),
+      timeout: cdk.Duration.seconds(10),
+    });
+    const authorizer = new apigwv2_authorizers.HttpLambdaAuthorizer(
+      'IntegLambdaAuthorizer',
+      authorizerHandler,
+      {
+        authorizerName: 'IntegAuth',
+        identitySource: ['$request.header.Authorization'],
+        responseTypes: [apigwv2_authorizers.HttpLambdaResponseType.IAM],
+        resultsCacheTtl: cdk.Duration.seconds(0),
+      }
+    );
+    httpApi.addRoutes({
+      path: '/protected',
+      methods: [apigwv2.HttpMethod.GET],
+      integration: new apigwv2_integrations.HttpLambdaIntegration(
+        'ProtectedIntegration',
+        protectedHandler
+      ),
+      authorizer,
     });
 
     // REST v1 with a single greedy proxy route on stage 'prod'. PR 8c

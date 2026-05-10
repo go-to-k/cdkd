@@ -9,6 +9,7 @@ import type {
   ContainerSpec,
 } from '../../../src/local/container-pool.js';
 import type { DiscoveredRoute } from '../../../src/local/route-discovery.js';
+import type { RouteWithAuth } from '../../../src/local/authorizer-resolver.js';
 import type { ServerState } from '../../../src/local/http-server.js';
 
 /** Build a fake ContainerPool that records dispose calls. */
@@ -63,6 +64,17 @@ function fakeRoute(over: Partial<DiscoveredRoute> = {}): DiscoveredRoute {
   };
 }
 
+/**
+ * Wrap a {@link DiscoveredRoute} as a {@link RouteWithAuth} with no
+ * authorizer attached. The reload-orchestrator consumes
+ * `RouteWithAuth[]` (PR 8b moved authorizer info onto every route)
+ * and the tests construct fake routes via {@link fakeRoute}, so this
+ * helper converts at the boundary.
+ */
+function withAuth(route: DiscoveredRoute): RouteWithAuth {
+  return { route };
+}
+
 describe('createReloadOrchestrator', () => {
   it('atomically swaps server state on a successful reload', async () => {
     const oldSpecs = new Map([['L', fakeSpec('L')]]);
@@ -70,14 +82,14 @@ describe('createReloadOrchestrator', () => {
     const newSpecs = new Map([['L2', fakeSpec('L2')]]);
     const newPool = fakePool(newSpecs);
     const initialState: ServerState = {
-      routes: [fakeRoute({ lambdaLogicalId: 'L' })],
+      routes: [withAuth(fakeRoute({ lambdaLogicalId: 'L' }))],
       pool: oldPool,
       corsConfigByApiId: new Map(),
     };
     let currentState: ServerState = initialState;
     const orchestrator = createReloadOrchestrator({
       synthesizeAndBuild: async (): Promise<NextStateMaterial> => ({
-        routes: [fakeRoute({ lambdaLogicalId: 'L2', pathPattern: '/y' })],
+        routes: [withAuth(fakeRoute({ lambdaLogicalId: 'L2', pathPattern: '/y' }))],
         specs: newSpecs,
         corsConfigByApiId: new Map(),
       }),
@@ -91,8 +103,8 @@ describe('createReloadOrchestrator', () => {
     });
     const result = await orchestrator.reload();
     expect(result.ok).toBe(true);
-    expect(result.added.map((r) => r.lambdaLogicalId)).toEqual(['L2']);
-    expect(result.removed.map((r) => r.lambdaLogicalId)).toEqual(['L']);
+    expect(result.added.map((r) => r.route.lambdaLogicalId)).toEqual(['L2']);
+    expect(result.removed.map((r) => r.route.lambdaLogicalId)).toEqual(['L']);
     // New state was swapped in.
     expect(currentState.pool).toBe(newPool);
     // Old pool was disposed (orchestrator runs it in background; await
@@ -109,7 +121,7 @@ describe('createReloadOrchestrator', () => {
     const oldSpecs = new Map([['L', fakeSpec('L')]]);
     const oldPool = fakePool(oldSpecs);
     const initialState: ServerState = {
-      routes: [fakeRoute({ lambdaLogicalId: 'L' })],
+      routes: [withAuth(fakeRoute({ lambdaLogicalId: 'L' }))],
       pool: oldPool,
       corsConfigByApiId: new Map(),
     };
@@ -140,13 +152,13 @@ describe('createReloadOrchestrator', () => {
     const oldPool = fakePool(new Map([['L', oldSpec]]));
     const newPool = fakePool(new Map([['L', newSpec]]));
     let currentState: ServerState = {
-      routes: [fakeRoute({ lambdaLogicalId: 'L' })],
+      routes: [withAuth(fakeRoute({ lambdaLogicalId: 'L' }))],
       pool: oldPool,
       corsConfigByApiId: new Map(),
     };
     const orchestrator = createReloadOrchestrator({
       synthesizeAndBuild: async () => ({
-        routes: [fakeRoute({ lambdaLogicalId: 'L' })],
+        routes: [withAuth(fakeRoute({ lambdaLogicalId: 'L' }))],
         specs: new Map([['L', newSpec]]),
         corsConfigByApiId: new Map(),
       }),
@@ -201,7 +213,7 @@ describe('createReloadOrchestrator', () => {
     const stateAfterFirstReloadSpecs = new Map([['L', fakeSpec('L')], ['L2', fakeSpec('L2')]]);
     const stateAfterSecondReloadSpecs = new Map([['L', fakeSpec('L')]]); // back to baseline
     let currentState: ServerState = {
-      routes: [fakeRoute({ lambdaLogicalId: 'L' })],
+      routes: [withAuth(fakeRoute({ lambdaLogicalId: 'L' }))],
       pool: oldPool,
       corsConfigByApiId: new Map(),
     };
@@ -212,15 +224,15 @@ describe('createReloadOrchestrator', () => {
         if (synthCallCount === 1) {
           return {
             routes: [
-              fakeRoute({ lambdaLogicalId: 'L' }),
-              fakeRoute({ lambdaLogicalId: 'L2', pathPattern: '/y' }),
+              withAuth(fakeRoute({ lambdaLogicalId: 'L' })),
+              withAuth(fakeRoute({ lambdaLogicalId: 'L2', pathPattern: '/y' })),
             ],
             specs: stateAfterFirstReloadSpecs,
             corsConfigByApiId: new Map(),
           };
         }
         return {
-          routes: [fakeRoute({ lambdaLogicalId: 'L' })], // L2 removed
+          routes: [withAuth(fakeRoute({ lambdaLogicalId: 'L' }))], // L2 removed
           specs: stateAfterSecondReloadSpecs,
           corsConfigByApiId: new Map(),
         };
@@ -234,13 +246,13 @@ describe('createReloadOrchestrator', () => {
       getServerState: () => currentState,
     });
     const r1 = await orchestrator.reload();
-    expect(r1.added.map((r) => r.lambdaLogicalId)).toEqual(['L2']);
+    expect(r1.added.map((r) => r.route.lambdaLogicalId)).toEqual(['L2']);
     expect(r1.removed).toEqual([]);
     const r2 = await orchestrator.reload();
     // Reload 2's BASELINE is reload 1's new state (which has L + L2).
     // So reload 2 sees L2 removed (NOT added — would be the bug).
     expect(r2.added).toEqual([]);
-    expect(r2.removed.map((r) => r.lambdaLogicalId)).toEqual(['L2']);
+    expect(r2.removed.map((r) => r.route.lambdaLogicalId)).toEqual(['L2']);
   });
 
   it('handles route-added with no removals', async () => {
@@ -249,15 +261,15 @@ describe('createReloadOrchestrator', () => {
     const newSpecs = new Map([['L', fakeSpec('L')], ['L2', fakeSpec('L2')]]);
     const newPool = fakePool(newSpecs);
     let currentState: ServerState = {
-      routes: [fakeRoute({ lambdaLogicalId: 'L' })],
+      routes: [withAuth(fakeRoute({ lambdaLogicalId: 'L' }))],
       pool: oldPool,
       corsConfigByApiId: new Map(),
     };
     const orchestrator = createReloadOrchestrator({
       synthesizeAndBuild: async () => ({
         routes: [
-          fakeRoute({ lambdaLogicalId: 'L' }),
-          fakeRoute({ lambdaLogicalId: 'L2', pathPattern: '/y' }),
+          withAuth(fakeRoute({ lambdaLogicalId: 'L' })),
+          withAuth(fakeRoute({ lambdaLogicalId: 'L2', pathPattern: '/y' })),
         ],
         specs: newSpecs,
         corsConfigByApiId: new Map(),
@@ -272,7 +284,7 @@ describe('createReloadOrchestrator', () => {
     });
     const r = await orchestrator.reload();
     expect(r.ok).toBe(true);
-    expect(r.added.map((x) => x.lambdaLogicalId)).toEqual(['L2']);
+    expect(r.added.map((x) => x.route.lambdaLogicalId)).toEqual(['L2']);
     expect(r.removed).toEqual([]);
     expect(r.rebuiltLambdas).toEqual([]);
   });
@@ -287,13 +299,13 @@ describe('createReloadOrchestrator', () => {
     const newSpecs = new Map([['LambdaB', fakeSpec('LambdaB')]]);
     const newPool = fakePool(newSpecs);
     let currentState: ServerState = {
-      routes: [fakeRoute({ lambdaLogicalId: 'LambdaA', pathPattern: '/x' })],
+      routes: [withAuth(fakeRoute({ lambdaLogicalId: 'LambdaA', pathPattern: '/x' }))],
       pool: oldPool,
       corsConfigByApiId: new Map(),
     };
     const orchestrator = createReloadOrchestrator({
       synthesizeAndBuild: async () => ({
-        routes: [fakeRoute({ lambdaLogicalId: 'LambdaB', pathPattern: '/x' })],
+        routes: [withAuth(fakeRoute({ lambdaLogicalId: 'LambdaB', pathPattern: '/x' }))],
         specs: newSpecs,
         corsConfigByApiId: new Map(),
       }),
@@ -306,7 +318,7 @@ describe('createReloadOrchestrator', () => {
       getServerState: () => currentState,
     });
     const r = await orchestrator.reload();
-    expect(r.added.map((x) => x.lambdaLogicalId)).toEqual(['LambdaB']);
-    expect(r.removed.map((x) => x.lambdaLogicalId)).toEqual(['LambdaA']);
+    expect(r.added.map((x) => x.route.lambdaLogicalId)).toEqual(['LambdaB']);
+    expect(r.removed.map((x) => x.route.lambdaLogicalId)).toEqual(['LambdaA']);
   });
 });

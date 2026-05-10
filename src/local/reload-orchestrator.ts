@@ -1,4 +1,5 @@
 import { getLogger } from '../utils/logger.js';
+import type { RouteWithAuth } from './authorizer-resolver.js';
 import type { ContainerPool, ContainerSpec } from './container-pool.js';
 import type { CorsConfig } from './cors-handler.js';
 import type { DiscoveredRoute } from './route-discovery.js';
@@ -45,10 +46,10 @@ export interface ReloadResult {
   ok: boolean;
   /** Set when `ok === false`. Human-readable explanation. */
   reason?: string;
-  /** Routes added by this reload. */
-  added: DiscoveredRoute[];
-  /** Routes removed by this reload. */
-  removed: DiscoveredRoute[];
+  /** Routes added by this reload (carry their attached authorizer info). */
+  added: RouteWithAuth[];
+  /** Routes removed by this reload (carry their attached authorizer info). */
+  removed: RouteWithAuth[];
   /** Lambdas torn down by this reload (no more routes OR spec changed). */
   rebuiltLambdas: string[];
   /** New ServerState that was swapped in. */
@@ -61,10 +62,22 @@ export interface ReloadResult {
  * consumed by the diff + swap step.
  */
 export interface NextStateMaterial {
-  routes: DiscoveredRoute[];
+  /**
+   * Discovered routes with attached authorizer info (output of
+   * `attachAuthorizers(discoverRoutes(...))`). Routes without an
+   * authorizer carry `authorizer: undefined`.
+   */
+  routes: RouteWithAuth[];
   /** Full per-Lambda spec map (every Lambda reachable through `routes`). */
   specs: Map<string, ContainerSpec>;
   corsConfigByApiId: Map<string, CorsConfig>;
+  /**
+   * The target StackInfo[] used to build this material. Carried so the
+   * caller (initial boot only) can run startup-only side effects like
+   * `warnVpcConfigLambdas` without re-issuing synth. The orchestrator
+   * does not consume this field.
+   */
+  stacks?: readonly import('../synthesis/assembly-reader.js').StackInfo[];
 }
 
 export interface OrchestratorDeps {
@@ -161,10 +174,10 @@ async function runOneReload(
   // recreated.
   const oldRoutes = previousState.routes;
   const newRoutes = material.routes;
-  const oldKeys = new Set(oldRoutes.map(routeKey));
-  const newKeys = new Set(newRoutes.map(routeKey));
-  const added = newRoutes.filter((r) => !oldKeys.has(routeKey(r)));
-  const removed = oldRoutes.filter((r) => !newKeys.has(routeKey(r)));
+  const oldKeys = new Set(oldRoutes.map((r) => routeKey(r.route)));
+  const newKeys = new Set(newRoutes.map((r) => routeKey(r.route)));
+  const added = newRoutes.filter((r) => !oldKeys.has(routeKey(r.route)));
+  const removed = oldRoutes.filter((r) => !newKeys.has(routeKey(r.route)));
 
   // Lambdas whose spec changed — compared via `JSON.stringify` of the
   // codeDir + env + debugPort fields. We do not compare `lambda` deep

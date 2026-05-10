@@ -43,6 +43,17 @@ import {
   type NextStateMaterial,
   type Orchestrator,
 } from '../../local/reload-orchestrator.js';
+import {
+  attachAuthorizers,
+  type AuthorizerInfo,
+  type RouteWithAuth,
+} from '../../local/authorizer-resolver.js';
+import { createAuthorizerCache } from '../../local/authorizer-cache.js';
+import {
+  buildCognitoJwksUrl,
+  buildJwksUrlFromIssuer,
+  createJwksCache,
+} from '../../local/cognito-jwt.js';
 
 interface LocalStartApiOptions {
   app?: string;
@@ -88,6 +99,15 @@ interface LocalStartApiOptions {
  *     Function URL (AWS::Lambda::Url).
  *   - AWS_PROXY integrations only.
  *
+ * PR 8b additions:
+ *   - Authorizers: REST v1 Lambda TOKEN/REQUEST + Cognito User Pool;
+ *     HTTP v2 Lambda REQUEST + JWT. Allow → claims/context flow into
+ *     `event.requestContext.authorizer`. Deny → 401/403 written without
+ *     invoking the route handler. Cognito / JWT verification falls back
+ *     to pass-through mode when the JWKS endpoint is unreachable.
+ *   - VPC-config Lambdas surface a startup warn line: the local
+ *     container does NOT get attached to the deployed VPC.
+ *
  * PR 8c additions (issue #235):
  *   - `--watch` enables hot reload on `cdk.out/` + asset-dir changes.
  *   - HTTP API v2 OPTIONS preflight is intercepted when the API has a
@@ -97,7 +117,7 @@ interface LocalStartApiOptions {
  *     `Variables` / `StageVariables` map. `--stage <name>` selects a
  *     specific Stage by name; default is the first Stage attached.
  *
- * Still deferred: authorizers, VPC simulation, WebSocket APIs.
+ * Still deferred: WebSocket APIs.
  *
  * See [docs/cli-reference.md](../../../docs/cli-reference.md) for the
  * full surface and out-of-scope items.
@@ -139,12 +159,25 @@ async function localStartApiCommand(options: LocalStartApiOptions): Promise<void
   // with the server's state.
   const lastAssetPaths: { value: string[] } = { value: [] };
 
+  // PR 8b: per-server-lifecycle caches. Constructed once at server
+  // startup; persisted across hot reloads (PR 8c) so authorizer
+  // verdicts and JWKS keys aren't re-fetched on every reload. The
+  // jwksWarnedUrls Set ensures the pass-through warn fires at most
+  // ONCE per JWKS URL per server lifecycle.
+  const authorizerCache = createAuthorizerCache();
+  const jwksCache = createJwksCache();
+  const jwksWarnedUrls = new Set<string>();
+
   /**
    * One synth + discover + build pass. Returns the next-state
    * material. Reused on initial boot AND every hot-reload firing.
    * Failures bubble up — the orchestrator catches them and keeps the
    * old state; the initial boot lets them propagate so the CLI exits
    * with a clear error before "Server listening" is ever printed.
+   *
+   * PR 8b: also runs `attachAuthorizers` after route discovery so the
+   * resulting `RouteWithAuth[]` carries every route's authorizer info.
+   * Hot reload picks up authorizer-config changes via this re-run.
    */
   const synthesizeAndBuild = async (): Promise<NextStateMaterial> => {
     logger.info('Synthesizing CDK app...');
@@ -199,6 +232,11 @@ async function localStartApiCommand(options: LocalStartApiOptions): Promise<void
     }
     attachStageContext(routes, stageMap);
 
+    // PR 8b: attach authorizer info to every route. Routes without an
+    // authorizer pass through as `{route, authorizer: undefined}`.
+    // Routes referencing an unsupported authorizer kind hard-fail here.
+    const routesWithAuth = attachAuthorizers(targetStacks, routes);
+
     // PR 8c: per-API CORS config. HTTP API v2 only (REST v1 OPTIONS
     // Mock integrations are explicitly out of scope).
     const corsConfigByApiId = new Map<string, CorsConfig>();
@@ -211,7 +249,9 @@ async function localStartApiCommand(options: LocalStartApiOptions): Promise<void
     // resolved to its asset / inline code, env vars, optional STS creds
     // (--assume-role), optional --debug-port reservation. The container
     // pool then knows everything it needs to lazy-start a fresh one.
-    const lambdaIds = uniqueLambdaIds(routes);
+    // Authorizer Lambdas are also pooled — they're invoked just like
+    // route handlers (PR 8b).
+    const lambdaIds = uniqueLambdaIds(routes, routesWithAuth);
     const specs = new Map<string, ContainerSpec>();
     for (let i = 0; i < lambdaIds.length; i++) {
       const logicalId = lambdaIds[i]!;
@@ -242,7 +282,7 @@ async function localStartApiCommand(options: LocalStartApiOptions): Promise<void
       await pullImage(image, options.pull === false);
     }
 
-    return { routes, specs, corsConfigByApiId };
+    return { routes: routesWithAuth, specs, corsConfigByApiId, stacks: targetStacks };
   };
 
   /**
@@ -285,6 +325,18 @@ async function localStartApiCommand(options: LocalStartApiOptions): Promise<void
   // server is even listening).
   lastAssetPaths.value = computeAssetPaths(initialMaterial.specs);
 
+  // PR 8b: pre-warm JWKS for Cognito / JWT authorizers so the first
+  // request doesn't pay the fetch latency. Failures fall through to
+  // pass-through mode with the warn line documented in cognito-jwt.ts.
+  await prewarmJwks(initialMaterial.routes, jwksCache);
+
+  // PR 8b: VPC-config Lambdas warn at startup. cdkd does NOT block
+  // these routes, but the developer should know the local container
+  // reaches external services via the host's network rather than
+  // through the deployed VPC's NAT / private subnets. Re-runs on hot
+  // reload would be noisy; we emit this once at initial boot only.
+  warnVpcConfigLambdas(initialMaterial.routes, initialMaterial.stacks ?? []);
+
   // Optional pre-warm: one container per Lambda, in parallel.
   if (options.warm) {
     logger.info(`Pre-warming ${initialMaterial.specs.size} container(s)...`);
@@ -324,6 +376,9 @@ async function localStartApiCommand(options: LocalStartApiOptions): Promise<void
     rieTimeoutMs,
     host: options.host,
     port,
+    authorizerCache,
+    jwksCache,
+    jwksWarnedUrls,
   });
 
   printRouteTable(initialMaterial.routes);
@@ -485,10 +540,15 @@ function pickTargetStacks(stacks: StackInfo[], pattern: string | undefined): Sta
 
 /**
  * Distinct, stable list of Lambda logical IDs reachable through any
- * discovered route. Stable order = first-occurrence order in the
- * `routes` list, which keeps the route-table output deterministic.
+ * discovered route OR referenced by a Lambda authorizer attached to one
+ * of those routes. Stable order = first-occurrence order in the routes
+ * list, then any newly-introduced authorizer Lambdas, which keeps the
+ * route-table output deterministic.
  */
-function uniqueLambdaIds(routes: readonly DiscoveredRoute[]): string[] {
+function uniqueLambdaIds(
+  routes: readonly DiscoveredRoute[],
+  routesWithAuth: readonly RouteWithAuth[]
+): string[] {
   const seen = new Set<string>();
   const out: string[] = [];
   for (const r of routes) {
@@ -497,7 +557,89 @@ function uniqueLambdaIds(routes: readonly DiscoveredRoute[]): string[] {
       out.push(r.lambdaLogicalId);
     }
   }
+  for (const entry of routesWithAuth) {
+    const auth = entry.authorizer;
+    if (!auth) continue;
+    if (auth.kind === 'lambda-token' || auth.kind === 'lambda-request') {
+      if (!seen.has(auth.lambdaLogicalId)) {
+        seen.add(auth.lambdaLogicalId);
+        out.push(auth.lambdaLogicalId);
+      }
+    }
+  }
   return out;
+}
+
+/**
+ * Prefetch the JWKS for every Cognito / JWT authorizer attached to a
+ * discovered route. Failures degrade to pass-through mode (verifier
+ * surfaces a warn line on first hit); we still issue the prefetch so
+ * the warn lands at startup rather than mid-request.
+ */
+async function prewarmJwks(
+  routesWithAuth: readonly RouteWithAuth[],
+  jwksCache: import('../../local/cognito-jwt.js').JwksCache
+): Promise<void> {
+  const urls = new Set<string>();
+  for (const entry of routesWithAuth) {
+    const auth = entry.authorizer;
+    if (!auth) continue;
+    if (auth.kind === 'cognito') {
+      urls.add(buildCognitoJwksUrl(auth.region, auth.userPoolId));
+    } else if (auth.kind === 'jwt') {
+      const url =
+        auth.region && auth.userPoolId
+          ? buildCognitoJwksUrl(auth.region, auth.userPoolId)
+          : buildJwksUrlFromIssuer(auth.issuer);
+      urls.add(url);
+    }
+  }
+  await Promise.all([...urls].map((u) => jwksCache.fetchAndCache(u)));
+}
+
+/**
+ * Emit a one-line warn for every VPC-config Lambda. The handler still
+ * runs locally, but its container does not get attached to the AWS
+ * VPC's subnets — calls to private RDS / ElastiCache will fail. cdkd
+ * surfaces this so the developer can pin the unexpected behavior to
+ * the VPC config rather than chasing a "connection refused" rabbit
+ * hole.
+ */
+function warnVpcConfigLambdas(
+  routesWithAuth: readonly RouteWithAuth[],
+  stacks: readonly StackInfo[]
+): void {
+  const logger = getLogger();
+  // Walk every reachable Lambda (route handler + authorizer) once.
+  const seen = new Set<string>();
+  const reachable: string[] = [];
+  for (const entry of routesWithAuth) {
+    if (!seen.has(entry.route.lambdaLogicalId)) {
+      seen.add(entry.route.lambdaLogicalId);
+      reachable.push(entry.route.lambdaLogicalId);
+    }
+    const auth: AuthorizerInfo | undefined = entry.authorizer;
+    if (auth && (auth.kind === 'lambda-token' || auth.kind === 'lambda-request')) {
+      if (!seen.has(auth.lambdaLogicalId)) {
+        seen.add(auth.lambdaLogicalId);
+        reachable.push(auth.lambdaLogicalId);
+      }
+    }
+  }
+  for (const logicalId of reachable) {
+    for (const stack of stacks) {
+      const resource = stack.template.Resources?.[logicalId];
+      if (!resource || resource.Type !== 'AWS::Lambda::Function') continue;
+      const props = resource.Properties ?? {};
+      const vpcConfig = props['VpcConfig'];
+      if (vpcConfig && typeof vpcConfig === 'object' && Object.keys(vpcConfig).length > 0) {
+        logger.warn(
+          `Lambda ${logicalId} has VpcConfig — local container will reach external services via the host's network, NOT through the deployed VPC's NAT/private subnets. Calls to private RDS/ElastiCache will fail. See docs/cli-reference.md (cdkd local start-api — Limitations) for details.`
+        );
+      }
+      break;
+    }
+  }
 }
 
 /**
@@ -698,8 +840,9 @@ function resolveAssetCodePath(
  * Print the discovered route table to stdout. Format mirrors the spec
  * doc's example so verify.sh / users can read it at a glance.
  */
-function printRouteTable(routes: readonly DiscoveredRoute[]): void {
-  const sorted = [...routes].sort((a, b) => {
+function printRouteTable(routes: readonly RouteWithAuth[]): void {
+  const flat = routes.map((r) => r.route);
+  const sorted = [...flat].sort((a, b) => {
     if (a.pathPattern !== b.pathPattern) return a.pathPattern.localeCompare(b.pathPattern);
     return a.method.localeCompare(b.method);
   });
@@ -871,7 +1014,7 @@ function parseDebugPort(raw: string): number {
 export function createLocalStartApiCommand(): Command {
   const startApi = new Command('start-api')
     .description(
-      'Run a long-running local HTTP server that maps API Gateway routes (REST v1, HTTP API, Function URL) to Lambda invocations against the AWS Lambda Runtime Interface Emulator (Docker required).'
+      'Run a long-running local HTTP server that maps API Gateway routes (REST v1, HTTP API, Function URL) to Lambda invocations against the AWS Lambda Runtime Interface Emulator (Docker required). Supports Lambda TOKEN/REQUEST authorizers and Cognito User Pool / HTTP v2 JWT authorizers; when JWKS is unreachable, JWT authorizers fall back to pass-through (every token accepted) with a warn line — local dev fallback. VPC-config Lambdas run locally and surface a warn line at startup; their containers do NOT get attached to the deployed VPC subnets, so calls to private RDS / ElastiCache will fail.'
     )
     .addOption(
       new Option('--port <port>', 'HTTP server port (default: auto-allocate)').default('0')

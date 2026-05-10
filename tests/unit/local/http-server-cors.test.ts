@@ -7,6 +7,7 @@ import type {
 } from '../../../src/local/container-pool.js';
 import type { CorsConfig } from '../../../src/local/cors-handler.js';
 import type { DiscoveredRoute } from '../../../src/local/route-discovery.js';
+import type { RouteWithAuth } from '../../../src/local/authorizer-resolver.js';
 
 /**
  * End-to-end coverage for the CORS preflight interception path inside
@@ -46,31 +47,35 @@ function stubPool(): StubPool {
   return pool;
 }
 
-function v2Route(over: Partial<DiscoveredRoute> = {}): DiscoveredRoute {
+function v2Route(over: Partial<DiscoveredRoute> = {}): RouteWithAuth {
   return {
-    method: 'POST', // matches the preflight's access-control-request-method
-    pathPattern: '/items',
-    lambdaLogicalId: 'L_v2',
-    source: 'http-api',
-    apiVersion: 'v2',
-    stage: '$default',
-    apiLogicalId: 'ApiV2',
-    declaredAt: 'S/Items',
-    ...over,
+    route: {
+      method: 'POST', // matches the preflight's access-control-request-method
+      pathPattern: '/items',
+      lambdaLogicalId: 'L_v2',
+      source: 'http-api',
+      apiVersion: 'v2',
+      stage: '$default',
+      apiLogicalId: 'ApiV2',
+      declaredAt: 'S/Items',
+      ...over,
+    },
   };
 }
 
-function v1Route(over: Partial<DiscoveredRoute> = {}): DiscoveredRoute {
+function v1Route(over: Partial<DiscoveredRoute> = {}): RouteWithAuth {
   return {
-    method: 'OPTIONS',
-    pathPattern: '/items',
-    lambdaLogicalId: 'L_v1',
-    source: 'rest-v1',
-    apiVersion: 'v1',
-    stage: '$default',
-    apiLogicalId: 'ApiV1',
-    declaredAt: 'S/ItemsV1',
-    ...over,
+    route: {
+      method: 'OPTIONS',
+      pathPattern: '/items',
+      lambdaLogicalId: 'L_v1',
+      source: 'rest-v1',
+      apiVersion: 'v1',
+      stage: '$default',
+      apiLogicalId: 'ApiV1',
+      declaredAt: 'S/ItemsV1',
+      ...over,
+    },
   };
 }
 

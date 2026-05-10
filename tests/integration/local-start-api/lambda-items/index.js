@@ -1,15 +1,22 @@
-// Items handler for the local-start-api integ test.
-// Returns a small JSON body that includes the path id and the
-// request's stage variables (PR 8c — verify.sh asserts the latter
-// when it queries `/items/<id>`).
+// Items handler for the local-start-api integ test fixture.
+//
+// Returns a small JSON shape that verify.sh greps for:
+//   - GET /items/{id} surfaces the captured `{id}` value as `"id"`.
+//   - POST /items echoes the request body under `"body"` (PR 8b's
+//     verify.sh greps for `"body"` literal substring).
+//   - `stageVariables` is included in every response so PR 8c's stage
+//     variable assertions can hit any path on this handler if needed.
 exports.handler = async (event) => {
   const id = (event.pathParameters && event.pathParameters.id) || 'list';
+  const method = event.requestContext && event.requestContext.http
+    ? event.requestContext.http.method
+    : event.httpMethod;
   return {
     statusCode: 200,
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({
       id: String(id),
-      method: event.requestContext.http ? event.requestContext.http.method : event.httpMethod,
+      method,
       stageVariables: event.stageVariables || null,
       body: event.body || null,
     }),

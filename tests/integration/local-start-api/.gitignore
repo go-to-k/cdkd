@@ -4,3 +4,5 @@
 !lambda-items/*.js
 !lambda-rest/*.js
 !lambda-url/*.js
+!lambda-protected/*.js
+!lambda-authorizer/*.js
