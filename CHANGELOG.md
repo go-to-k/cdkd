@@ -1,3 +1,10 @@
+# [0.69.0](https://github.com/go-to-k/cdkd/compare/v0.68.0...v0.69.0) (2026-05-10)
+
+
+### Features
+
+* **cli:** cdkd local invoke --from-state (PR 2 of [#224](https://github.com/go-to-k/cdkd/issues/224)) ([#227](https://github.com/go-to-k/cdkd/issues/227)) ([7b14b68](https://github.com/go-to-k/cdkd/commit/7b14b6851ab04b82debb9812064f5efe1e4d43c8))
+
 # [0.68.0](https://github.com/go-to-k/cdkd/compare/v0.67.0...v0.68.0) (2026-05-10)
 
 
