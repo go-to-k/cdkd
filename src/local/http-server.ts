@@ -346,8 +346,14 @@ async function runAuthorizerPass(
       const cached = cache.get(authorizer.logicalId, hashOne(token));
       if (cached) {
         // Re-evaluate Resource against the current methodArn so a
-        // narrow-Resource Allow doesn't leak across routes.
-        return shapeOutcome(evaluateCachedLambdaPolicy(cached, methodArn));
+        // narrow-Resource Allow doesn't leak across routes. Cached
+        // entries without a policy (only possible on a deny path,
+        // since `parseLambdaAuthorizerResponse` only emits Allow with
+        // a populated policy) skip re-eval.
+        if (cached.policy !== undefined) {
+          return shapeOutcome(evaluateCachedLambdaPolicy(cached, methodArn));
+        }
+        return shapeOutcome(cached);
       }
     }
     const result = await invokeTokenAuthorizer(authorizer, reqSnap, {
