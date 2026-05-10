@@ -67,6 +67,15 @@ interface LocalInvokeOptions {
    * skip-when-false logic stays the right way around.
    */
   pull: boolean;
+  /**
+   * Commander maps `--no-build` to `build: boolean` (default `true`).
+   * When the user passes `--no-build` the value flips to `false` and we
+   * skip `docker build` on the IMAGE local-build path, requiring the
+   * previously-built deterministic tag to already be in the local
+   * registry. No-op for ZIP Lambdas and the IMAGE ECR-pull path
+   * (matches `--no-pull`'s per-path behavior). Closes #233.
+   */
+  build: boolean;
   debugPort?: string;
   containerHost: string;
   /**
@@ -543,6 +552,10 @@ export async function resolveContainerImagePlan(
   if (localBuild) {
     imageRef = await buildContainerImage(localBuild.asset, localBuild.cdkOutDir, {
       architecture: lambda.architecture,
+      // `options.build === false` triggers the no-build path: skip
+      // `docker build` and verify the deterministic tag is already
+      // cached. Default `true` (build as usual). Closes #233.
+      noBuild: options.build === false,
     });
   } else {
     // ECR-pull fallback. Surface a clear error when the URI isn't an
@@ -993,6 +1006,15 @@ export function createLocalCommand(): Command {
         '--no-pull',
         'Skip docker pull (use cached image) — no-op for IMAGE local-build path; ' +
           '`docker build` does not pull base layers by default'
+      )
+    )
+    .addOption(
+      new Option(
+        '--no-build',
+        'Skip docker build on the IMAGE local-build path (use the previously-built tag). ' +
+          'Requires the deterministic tag to already be in the local registry; errors with ' +
+          'an actionable message when missing. No-op for ZIP Lambdas and the IMAGE ECR-pull path. ' +
+          'Compatible with --no-pull.'
       )
     )
     .addOption(new Option('--debug-port <port>', 'Node --inspect-brk port (default: off)'))

@@ -613,6 +613,11 @@ cdkd local invoke MyStack/Handler --env-vars env.json
 # Skip docker pull when iterating
 cdkd local invoke MyStack/Handler --no-pull
 
+# Skip the local docker build for container Lambdas (Code.ImageUri).
+# Reuses the deterministic cdkd-local-invoke-<hash> tag from a prior
+# build. Errors clearly when the tag is missing.
+cdkd local invoke MyStack/ContainerHandler --no-build
+
 # Run with the deployed function's narrow execution role (otherwise the
 # developer's shell credentials are forwarded — SAM-compatible default)
 cdkd local invoke MyStack/Handler --assume-role arn:aws:iam::123456789012:role/MyApi-handler-role
