@@ -657,13 +657,30 @@ cdkd local start-api --env-vars env.json
 cdkd local start-api --assume-role MyApiHandler=arn:aws:iam::123:role/handler-role
 ```
 
-v1 scope (PR 8a): REST v1 + HTTP API + Function URL with AWS_PROXY
-integrations only. Authorizers, CORS preflight, hot reload, stage
-variables, and WebSocket APIs are deferred to follow-up PRs.
+v1 scope: REST v1 + HTTP API + Function URL with AWS_PROXY integrations.
+Authorizers (PR 8b — Lambda TOKEN/REQUEST + Cognito User Pool + HTTP v2
+JWT) and VPC-config Lambda warnings (PR 8b) are supported. CORS
+preflight, hot reload, stage variables, and WebSocket APIs are still
+deferred to follow-up PRs.
+
+**Authorizers (PR 8b)**: `Authorization: Bearer <token>`-protected
+routes are gated on the authorizer Lambda's response (TOKEN / REQUEST
+authorizers, IAM-policy or HTTP v2 simple shape) or on a JWKS-based JWT
+verification (Cognito User Pool authorizers, HTTP v2 JWT authorizers).
+When the JWKS endpoint is unreachable from the dev machine, cdkd falls
+back to **pass-through mode** (every JWT accepted, with a warn line at
+startup) — local-dev-only fallback so a corporate proxy doesn't block
+iteration. **Do NOT rely on this in any shared environment.**
+
+**VPC-config Lambdas (PR 8b)**: handlers with `Properties.VpcConfig`
+still run locally, but the local container is NOT attached to the
+deployed VPC's subnets — calls to private RDS / ElastiCache will fail.
+cdkd warns at startup naming each affected Lambda; AWS SDK calls still
+reach public AWS endpoints via the dev's network as usual.
 
 See [docs/cli-reference.md](docs/cli-reference.md#local-start-api-long-running-local-api-server)
-for the full route-discovery rules, container-pool semantics, and exit
-codes.
+for the full route-discovery rules, container-pool semantics, exit
+codes, and per-authorizer-kind detection / response-shape details.
 
 ## State Management
 
