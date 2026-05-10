@@ -174,4 +174,74 @@ describe('resolveContainerImagePlan', () => {
     expect(plan.entryPoint).toEqual(['custom-ep', 'tail-arg']);
     expect(plan.workingDir).toBe('/var/custom');
   });
+
+  it('--no-build threads through to buildContainerImage as noBuild=true (asset hit)', async () => {
+    // Local-build path with --no-build: buildContainerImage is still
+    // called (it's where the cache verifier lives), but with noBuild=true
+    // so the helper skips `docker build` and just verifies the tag.
+    loadManifestMock.mockResolvedValue({ dockerImages: { abc: { source: {} } } });
+    getDockerImageBySourceHashMock.mockReturnValue({
+      hash: 'abc',
+      asset: { source: {} },
+    });
+    buildContainerImageMock.mockResolvedValue('cdkd-local-invoke-deadbeefcafef00d');
+
+    const plan = await resolveContainerImagePlan(makeImageLambda(), {
+      pull: true,
+      build: false, // Commander's `--no-build` flips this to false.
+    } as Parameters<typeof resolveContainerImagePlan>[1]);
+
+    expect(plan.image).toBe('cdkd-local-invoke-deadbeefcafef00d');
+    expect(buildContainerImageMock).toHaveBeenCalledTimes(1);
+    expect(buildContainerImageMock).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.any(String),
+      expect.objectContaining({ noBuild: true, architecture: 'x86_64' })
+    );
+    expect(pullEcrImageMock).not.toHaveBeenCalled();
+  });
+
+  it('--no-build defaults to false (build=true) when flag is not set', async () => {
+    // Default path: build=true → noBuild: false → real docker build.
+    loadManifestMock.mockResolvedValue({ dockerImages: { abc: { source: {} } } });
+    getDockerImageBySourceHashMock.mockReturnValue({
+      hash: 'abc',
+      asset: { source: {} },
+    });
+    buildContainerImageMock.mockResolvedValue('cdkd-local/MyImageFn:abc');
+
+    await resolveContainerImagePlan(makeImageLambda(), {
+      pull: true,
+      build: true,
+    } as Parameters<typeof resolveContainerImagePlan>[1]);
+
+    expect(buildContainerImageMock).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.any(String),
+      expect.objectContaining({ noBuild: false })
+    );
+  });
+
+  it('--no-build is a no-op on the ECR-pull path (asset miss)', async () => {
+    // ECR-pull path doesn't go through buildContainerImage at all; the
+    // --no-build flag is silently ignored here (matches --no-pull's
+    // per-path documentation).
+    loadManifestMock.mockResolvedValue({ dockerImages: {} });
+    getDockerImageBySourceHashMock.mockReturnValue(undefined);
+    parseEcrUriMock.mockReturnValue({
+      accountId: '111111111111',
+      region: 'us-east-1',
+      repository: 'repo',
+      tag: 'abcdef',
+    });
+    pullEcrImageMock.mockResolvedValue('111111111111.dkr.ecr.us-east-1.amazonaws.com/repo:abcdef');
+
+    await resolveContainerImagePlan(makeImageLambda(), {
+      pull: true,
+      build: false,
+    } as Parameters<typeof resolveContainerImagePlan>[1]);
+
+    expect(buildContainerImageMock).not.toHaveBeenCalled();
+    expect(pullEcrImageMock).toHaveBeenCalledTimes(1);
+  });
 });

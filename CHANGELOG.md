@@ -1,3 +1,10 @@
+# [0.72.0](https://github.com/go-to-k/cdkd/compare/v0.71.0...v0.72.0) (2026-05-10)
+
+
+### Features
+
+* **cli:** cdkd local invoke --no-build for container Lambdas (closes [#233](https://github.com/go-to-k/cdkd/issues/233)) ([#236](https://github.com/go-to-k/cdkd/issues/236)) ([70948f9](https://github.com/go-to-k/cdkd/commit/70948f90bbb9c4b41536fd51249effe3b1b577ea))
+
 # [0.71.0](https://github.com/go-to-k/cdkd/compare/v0.70.0...v0.71.0) (2026-05-10)
 
 
