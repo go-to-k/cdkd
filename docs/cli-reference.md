@@ -838,6 +838,7 @@ in the resolved stack so the user can copy/paste a valid one.
 | `--event-stdin` | off | Read event JSON from stdin (mutually exclusive with `--event`). |
 | `--env-vars <file>` | — | JSON env-var overrides, SAM-compatible shape: `{"LogicalId":{"KEY":"VALUE"}}` plus an optional top-level `"Parameters"` block applied to every invoke. `null` clears a key. |
 | `--no-pull` | off | Skip `docker pull`. Semantics differ by code path: **ZIP Lambdas** — skip pulling the public Lambda base image. **Container Lambdas, local-build path** — no-op (docker build's default does not refresh the FROM cache). **Container Lambdas, ECR-pull fallback** — skip `docker pull` AND error if the image is not in the local cache (re-run without `--no-pull` or pre-pull manually). |
+| `--no-build` | off | Skip `docker build` on the **Container Lambdas, local-build path** (`Code.ImageUri`). Requires the deterministic `cdkd-local-invoke-<hash>` tag to already be in the local docker registry from a prior `cdkd local invoke` (or manual `docker build`); errors clearly when missing. **No-op for ZIP Lambdas** (no docker build runs there) AND for the **Container Lambdas, ECR-pull fallback** (use `--no-pull` to control that path). Compatible with `--no-pull`. |
 | `--debug-port <port>` | off | Set `NODE_OPTIONS=--inspect-brk=0.0.0.0:<port>` and publish the port; attach a Node debugger to step through the handler. |
 | `--container-host <host>` | `127.0.0.1` | Host to bind the RIE port to. |
 | `--assume-role <arn>` | off | STS-assume the deployed function's execution role and forward the resulting temp credentials to the container, so the handler runs under the deployed role's narrow permissions instead of the developer's typically-admin shell credentials. Off by default — when omitted, `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` / `AWS_SESSION_TOKEN` / `AWS_REGION` are passed through unchanged (SAM-compatible default). Takes an explicit ARN; PR 2's `--from-state` adds a hint pointing at the state-recorded role ARN but does NOT auto-assume. |
@@ -965,7 +966,6 @@ default entrypoint stays in charge — for AWS Lambda base images that's
 | Lambda Layers (`AWS::Lambda::LayerVersion`) | Future PR |
 | Cross-account / cross-region ECR pull for container Lambdas | Future PR (same-account / same-region only in v1) |
 | `EphemeralStorage` mapping for container Lambdas | Future PR (Docker `--tmpfs /tmp:size=Nm`) |
-| `--no-build` flag (skip the local docker build, use a pre-built tag) | Future PR |
 | Cross-stack `Fn::ImportValue` / `Fn::GetStackOutput` in `--from-state` | Future PR |
 | Pseudo parameters / `Fn::Join` / `Fn::Select` etc. in `--from-state` | Future PR (warn + drop in v1) |
 | SQS / S3 event source emulation | Future PR |

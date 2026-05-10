@@ -199,6 +199,22 @@ async function verifyImageInLocalCache(imageUri: string): Promise<void> {
 }
 
 /**
+ * Check whether a docker image is in the local registry. Pure boolean —
+ * the caller decides what message to surface on miss. Reused by the
+ * `docker-image-builder` `--no-build` path so both the ECR-pull verifier
+ * (above) and the local-build verifier route through one `docker image
+ * inspect` shape.
+ */
+export async function isImageInLocalCache(imageRef: string): Promise<boolean> {
+  try {
+    await execFileAsync('docker', ['image', 'inspect', imageRef]);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * `docker pull` plumbed to the parent's stdio so the user sees layer
  * pull progress. Mirrors the runtime image's `pullImage` plumbing in
  * `docker-runner.ts` but local to this module to avoid a circular

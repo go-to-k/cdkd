@@ -39,7 +39,7 @@ ${CDKD} synth >/dev/null
 # default; --no-pull on the container-Lambda local-build path is
 # documented as a no-op in CLI help — it still skips the public-base
 # image's `docker pull` from the ZIP path which we did up front).
-echo "==> [1/3] Invoking EchoHandler (container) with default empty event"
+echo "==> [1/4] Invoking EchoHandler (container) with default empty event"
 RESULT_1=$(${CDKD} local invoke CdkdLocalInvokeContainerFixture/EchoHandler --no-pull 2>/dev/null | tail -1)
 echo "    response: ${RESULT_1}"
 echo "${RESULT_1}" | grep -q '"greeting":"hello"' || {
@@ -52,7 +52,7 @@ echo "${RESULT_1}" | grep -q '"fromContainer":true' || {
 }
 
 # Test 2 — event payload via --event
-echo "==> [2/3] Invoking EchoHandler with --event payload"
+echo "==> [2/4] Invoking EchoHandler with --event payload"
 EVENT_FILE=$(mktemp)
 trap 'rm -f "${EVENT_FILE}"' EXIT
 echo '{"key":"value","n":42}' > "${EVENT_FILE}"
@@ -64,7 +64,7 @@ echo "${RESULT_2}" | grep -q '"key":"value"' || {
 }
 
 # Test 3 — --env-vars override
-echo "==> [3/3] Invoking EchoHandler with --env-vars override"
+echo "==> [3/4] Invoking EchoHandler with --env-vars override"
 ENV_FILE=$(mktemp)
 trap 'rm -f "${EVENT_FILE}" "${ENV_FILE}"' EXIT
 echo '{"Parameters":{"GREETING":"overridden"}}' > "${ENV_FILE}"
@@ -75,5 +75,34 @@ echo "${RESULT_3}" | grep -q '"greeting":"overridden"' || {
   exit 1
 }
 
+# Test 4 — --no-build (closes #233): the previous tests already built the
+# image under the deterministic local tag, so a 4th invocation with
+# --no-build should skip the rebuild and reuse the cached tag. cdkd
+# logger output goes to stdout (not stderr), so we capture combined
+# stdout+stderr to inspect the build-vs-skip log lines, and rely on
+# the JSON response always being on the LAST stdout line for the
+# greeting check.
+echo "==> [4/4] Invoking EchoHandler with --no-build (image must already be cached from steps 1-3)"
+COMBINED_4=$(mktemp)
+trap 'rm -f "${EVENT_FILE}" "${ENV_FILE}" "${COMBINED_4}"' EXIT
+${CDKD} local invoke CdkdLocalInvokeContainerFixture/EchoHandler --no-pull --no-build >"${COMBINED_4}" 2>&1
+RESULT_4=$(tail -1 "${COMBINED_4}")
+echo "    response: ${RESULT_4}"
+echo "${RESULT_4}" | grep -q '"greeting":"hello"' || {
+  echo "FAIL: expected greeting=hello (--no-build response), got: ${RESULT_4}"
+  cat "${COMBINED_4}"
+  exit 1
+}
+grep -q "Skipping docker build" "${COMBINED_4}" || {
+  echo "FAIL: --no-build did not log 'Skipping docker build' marker. Combined output was:"
+  cat "${COMBINED_4}"
+  exit 1
+}
+if grep -q "Building container image" "${COMBINED_4}"; then
+  echo "FAIL: --no-build still logged 'Building container image' (rebuild happened despite --no-build). Combined output was:"
+  cat "${COMBINED_4}"
+  exit 1
+fi
+
 echo ""
-echo "==> All 3 local-invoke container-Lambda tests passed"
+echo "==> All 4 local-invoke container-Lambda tests passed"

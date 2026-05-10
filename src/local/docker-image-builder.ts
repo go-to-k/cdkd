@@ -3,6 +3,7 @@ import { buildDockerImage } from '../assets/docker-build.js';
 import type { DockerImageAssetSource } from '../types/assets.js';
 import { LocalInvokeBuildError } from '../utils/error-handler.js';
 import { getLogger } from '../utils/logger.js';
+import { isImageInLocalCache } from './ecr-puller.js';
 
 /**
  * Local-build path for `cdkd local invoke` against container Lambdas
@@ -19,11 +20,31 @@ import { getLogger } from '../utils/logger.js';
 export interface BuildContainerImageOptions {
   /** Architecture from `Architectures: [x86_64|arm64]` (D5.6). Drives `--platform`. */
   architecture: 'x86_64' | 'arm64';
+  /**
+   * When true, skip `docker build` and require the previously-built image
+   * tag to already be in the local docker registry. Surfaces a clear
+   * "image not in local registry and --no-build is set" error when the
+   * tag is missing so the user knows to drop `--no-build` or run
+   * `docker build` manually first. Off by default; opt-in via the CLI's
+   * `cdkd local invoke --no-build` flag (closes #233).
+   *
+   * The local tag is deterministic — derived from the asset source
+   * directory + Dockerfile + build-target + build-args fingerprint via
+   * `computeLocalTag` — so a previous successful build under the same
+   * inputs produces a tag that's still valid on subsequent
+   * `--no-build` runs.
+   */
+  noBuild?: boolean;
 }
 
 /**
  * Build a Lambda container image from a CDK asset entry. Returns the
  * local image tag the caller should pass to `docker run`.
+ *
+ * When `options.noBuild` is set, skips `docker build` entirely and
+ * verifies the deterministic local tag is already in the docker
+ * registry; throws `LocalInvokeBuildError` with an actionable message
+ * when the tag is missing.
  */
 export async function buildContainerImage(
   asset: { source: DockerImageAssetSource },
@@ -33,6 +54,18 @@ export async function buildContainerImage(
   const tag = computeLocalTag(asset.source);
   const platform = architectureToPlatform(options.architecture);
   const logger = getLogger().child('local-invoke-build');
+
+  if (options.noBuild === true) {
+    logger.info(`Skipping docker build (--no-build). Verifying ${tag} is in local registry...`);
+    if (!(await isImageInLocalCache(tag))) {
+      throw new LocalInvokeBuildError(
+        `image '${tag}' not in local registry and --no-build is set; ` +
+          'remove --no-build or run `docker build` manually first.'
+      );
+    }
+    logger.debug(`Local tag ${tag} is cached; skipping build.`);
+    return tag;
+  }
 
   logger.info(`Building container image (platform=${platform})...`);
   logger.debug(`Local tag: ${tag}`);
