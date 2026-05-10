@@ -144,14 +144,51 @@ curl_assert() {
 
 echo "==> Smoke-testing routes via curl"
 curl_assert "GET /items/42" "http://127.0.0.1:${PORT}/items/42" '"id":"42"'
-curl_assert "POST /items" "http://127.0.0.1:${PORT}/items" '"x":1' \
+curl_assert "POST /items" "http://127.0.0.1:${PORT}/items" '"body"' \
   -X POST -H 'Content-Type: application/json' -d '{"x":1}'
-curl_assert "ANY /v1/anything" "http://127.0.0.1:${PORT}/v1/anything" '"routedVia":"rest-v1"'
+# PR 8c: REST v1 stage variables — the prod Stage carries
+# Variables: { STAGE: 'prod', LOG_LEVEL: 'info' }.
+curl_assert "ANY /v1/anything (stage variables)" \
+  "http://127.0.0.1:${PORT}/v1/anything" '"STAGE":"prod"'
 # Function URL is mounted at /{proxy+} so any other path lands there.
 # After the literal /v1 prefix has been claimed by the REST route, the
 # proxy fallback only fires on paths that don't match REST — try a
 # distinct prefix.
 curl_assert "Function URL fallback" "http://127.0.0.1:${PORT}/url-only/ping" '"functionUrl":true'
+
+# PR 8c: CORS preflight interception. The HTTP API has CorsConfiguration
+# with `*` origins; verify.sh asserts the canonical preflight response.
+echo "==> Asserting CORS preflight (OPTIONS /items)"
+PREFLIGHT_HEADERS=$(curl -s -i -o - -X OPTIONS \
+  -H 'Origin: https://example.com' \
+  -H 'Access-Control-Request-Method: POST' \
+  -H 'Access-Control-Request-Headers: Content-Type' \
+  "http://127.0.0.1:${PORT}/items" 2>&1)
+if ! echo "${PREFLIGHT_HEADERS}" | grep -qi '^HTTP/1.1 204'; then
+  echo "FAIL: CORS preflight did not return 204. Response:"
+  echo "${PREFLIGHT_HEADERS}"
+  exit 1
+fi
+if ! echo "${PREFLIGHT_HEADERS}" | grep -qi '^access-control-allow-origin: \*'; then
+  echo "FAIL: CORS preflight missing access-control-allow-origin header. Response:"
+  echo "${PREFLIGHT_HEADERS}"
+  exit 1
+fi
+if ! echo "${PREFLIGHT_HEADERS}" | grep -qi '^access-control-allow-methods: POST'; then
+  echo "FAIL: CORS preflight missing access-control-allow-methods header. Response:"
+  echo "${PREFLIGHT_HEADERS}"
+  exit 1
+fi
+# PR 8c review fix-back: every successful preflight now emits
+# `Vary: Origin` so downstream caches don't share responses across
+# origins. Pre-fix the header was missing on the wildcard / literal-
+# origin / AllowCredentials echo paths.
+if ! echo "${PREFLIGHT_HEADERS}" | grep -qi '^vary: Origin'; then
+  echo "FAIL: CORS preflight missing 'Vary: Origin' header. Response:"
+  echo "${PREFLIGHT_HEADERS}"
+  exit 1
+fi
+echo "    [CORS preflight] OK"
 
 # PR 8b: authorizer-protected route. Without the Bearer token the
 # authorizer Deny's; with the Bearer token the route handler runs and

@@ -93,7 +93,10 @@ export function buildHttpApiV2Event(
     headers,
     queryStringParameters,
     pathParameters: decodePathParameters(ctx.pathParameters),
-    stageVariables: null,
+    // PR 8c: surface the route's resolved Stage Variables (or `null`
+    // for routes without a Stage — Function URLs, plus HTTP API routes
+    // when no Stage with matching variables was attached).
+    stageVariables: ctx.route.stageVariables ?? null,
     requestContext: {
       accountId: MOCK_ACCOUNT_ID,
       apiId: MOCK_API_ID,
@@ -164,7 +167,10 @@ export function buildRestV1Event(
         ? multiValueQueryStringParameters
         : null,
     pathParameters: Object.keys(pathParams).length > 0 ? pathParams : null,
-    stageVariables: null,
+    // PR 8c: surface the route's resolved Stage Variables (or `null`).
+    // REST v1 hardcoded `null` pre-PR; with `attachStageContext` the
+    // route now carries the deployed Stage's `Variables` map.
+    stageVariables: ctx.route.stageVariables ?? null,
     requestContext: {
       accountId: MOCK_ACCOUNT_ID,
       apiId: MOCK_API_ID,

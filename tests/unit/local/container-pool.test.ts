@@ -156,12 +156,16 @@ describe('container-pool — dispose', () => {
     const h1 = await pool.acquire('Fn');
     const waiter = pool.acquire('Fn');
     await new Promise((r) => setImmediate(r));
-    await pool.dispose();
-    expect(removeContainer).toHaveBeenCalled();
+    // Per the PR-review fix, dispose() AWAITS in-flight handles before
+    // tearing down. The waiter is rejected up front (no in-flight
+    // request to wait on); the in-use handle h1 must release before
+    // dispose resolves. We start dispose, observe the waiter's
+    // rejection, then release h1 to complete the drain.
+    const disposePromise = pool.dispose();
     await expect(waiter).rejects.toThrow(/disposed while/);
-    // The acquired handle is still the caller's reference but the pool
-    // is gone — the caller doesn't release it after dispose, just exits.
-    void h1;
+    pool.release(h1);
+    await disposePromise;
+    expect(removeContainer).toHaveBeenCalled();
   });
 
   it('tolerates removeContainer failures during dispose', async () => {

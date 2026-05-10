@@ -34,8 +34,30 @@ export interface DiscoveredRoute {
   /**
    * REST v1: the resolved Stage name (or `'$default'` if none was attached).
    * HTTP API: `'$default'`. Function URL: `'$default'`.
+   *
+   * For HTTP API + REST v1, this is the **default** stage name picked
+   * at discovery time. The CLI's `--stage <name>` override is applied
+   * by `attachStageContext` (PR 8c) which mutates `stage` on each
+   * route — see `src/local/stage-resolver.ts` for the rules.
    */
   stage: string;
+  /**
+   * Logical ID of the parent API resource:
+   *   - REST v1 routes: the `AWS::ApiGateway::RestApi`.
+   *   - HTTP API routes: the `AWS::ApiGatewayV2::Api`.
+   *   - Function URL routes: `undefined` (Function URLs aren't grouped
+   *     under an API).
+   *
+   * Used by the CORS handler + stage-resolver to look up per-API config.
+   */
+  apiLogicalId?: string;
+  /**
+   * Stage variables for the route's selected Stage (PR 8c). `null` when
+   * the route's Stage has no Variables, or for routes without a Stage
+   * (Function URLs). Populated by `attachStageContext` after discovery
+   * — `discoverRoutes` itself does NOT set this field.
+   */
+  stageVariables?: Record<string, string> | null;
   /** Diagnostic only — used in route-table output and error messages. */
   declaredAt: string;
 }
@@ -159,6 +181,7 @@ function discoverRestV1Method(
       source: 'rest-v1',
       apiVersion: 'v1',
       stage,
+      apiLogicalId: restApiLogicalId,
       declaredAt: `${stackName}/${logicalId}`,
     },
   ];
@@ -367,6 +390,7 @@ function discoverHttpApiRoute(
       source: 'http-api',
       apiVersion: 'v2',
       stage: '$default',
+      apiLogicalId,
       declaredAt: `${stackName}/${logicalId}`,
     },
   ];

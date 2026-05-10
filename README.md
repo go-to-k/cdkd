@@ -673,13 +673,19 @@ cdkd local start-api --env-vars env.json
 
 # Pin the deployed execution role per Lambda (or globally with a bare ARN)
 cdkd local start-api --assume-role MyApiHandler=arn:aws:iam::123:role/handler-role
+
+# Hot reload — re-synth + re-discover routes when cdk.out/ or asset dirs change
+cdkd local start-api --watch
+
+# Select a specific API Gateway Stage (default: the first attached)
+cdkd local start-api --stage prod
 ```
 
-v1 scope: REST v1 + HTTP API + Function URL with AWS_PROXY integrations.
+Scope: REST v1 + HTTP API + Function URL with AWS_PROXY integrations.
 Authorizers (PR 8b — Lambda TOKEN/REQUEST + Cognito User Pool + HTTP v2
-JWT) and VPC-config Lambda warnings (PR 8b) are supported. CORS
-preflight, hot reload, stage variables, and WebSocket APIs are still
-deferred to follow-up PRs.
+JWT), VPC-config Lambda warnings (PR 8b), CORS preflight (PR 8c), hot
+reload (PR 8c), and stage variables (PR 8c) are supported. WebSocket
+APIs are deferred to a follow-up PR.
 
 **Authorizers (PR 8b)**: `Authorization: Bearer <token>`-protected
 routes are gated on the authorizer Lambda's response (TOKEN / REQUEST
@@ -695,6 +701,31 @@ still run locally, but the local container is NOT attached to the
 deployed VPC's subnets — calls to private RDS / ElastiCache will fail.
 cdkd warns at startup naming each affected Lambda; AWS SDK calls still
 reach public AWS endpoints via the dev's network as usual.
+
+**Hot reload (`--watch`)**: re-runs the synth → discover → spec-build
+pipeline whenever `cdk.out/` or any of the routed Lambdas' asset
+directories change. Routes added / removed / changed swap in
+atomically without restarting the HTTP server; in-flight requests
+complete against the old container pool while the new pool warms.
+Synth failures are non-fatal — the previous version keeps serving and
+a warn line names the failure. Off by default; pass `--watch` to
+enable.
+
+**CORS preflight**: HTTP API v2 OPTIONS preflight requests are
+intercepted when the API has a `CorsConfiguration` block. The server
+matches the request's `Origin` / `Access-Control-Request-Method` /
+`Access-Control-Request-Headers` against the configured allowlist and
+returns a `204 No Content` with the canonical `Access-Control-Allow-*`
+headers. Preflight handling is skipped when the user has registered
+an explicit OPTIONS method (their Lambda owns it). REST v1 CORS (Mock
+OPTIONS method) is not auto-handled and stays out of scope; use the
+deployed API for that case.
+
+**Stage variables**: `event.stageVariables` is populated from the
+selected Stage's `Variables` (REST v1) / `StageVariables` (HTTP API
+v2) map. Default selection is the first Stage attached to each API;
+pass `--stage <name>` to pick a Stage by `StageName`. Function URL
+routes don't have a Stage — `event.stageVariables` stays `null`.
 
 See [docs/cli-reference.md](docs/cli-reference.md#local-start-api-long-running-local-api-server)
 for the full route-discovery rules, container-pool semantics, exit

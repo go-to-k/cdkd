@@ -146,6 +146,9 @@ importers:
       aws-cdk-lib:
         specifier: ^2.0.0
         version: 2.244.0(constructs@10.6.0)
+      chokidar:
+        specifier: ^5.0.0
+        version: 5.0.0
       commander:
         specifier: ^12.0.0
         version: 12.1.0
@@ -2007,6 +2010,10 @@ packages:
   check-error@1.0.3:
     resolution: {integrity: sha512-iKEoDYaRmd1mxM90a2OEfWhjsjPpYPuQ+lMYsoxB126+t8fw7ySEO48nmDg5COTjxDI65/Y2OWpeEHk3ZOe8zg==, tarball: https://registry.npmjs.org/check-error/-/check-error-1.0.3.tgz}
 
+  chokidar@5.0.0:
+    resolution: {integrity: sha512-TQMmc3w+5AxjpL8iIiwebF73dRDF4fBIieAqGn9RGCWaEVwQ6Fb2cGe31Yns0RRIzii5goJ1Y7xbMwo1TxMplw==, tarball: https://registry.npmjs.org/chokidar/-/chokidar-5.0.0.tgz}
+    engines: {node: '>= 20.19.0'}
+
   clean-stack@2.2.0:
     resolution: {integrity: sha512-4diC9HaTE+KRAMWhDhrGOECgWZxoevMc5TlkObMqNSsVU62PYzXZ/SMTjzyGAFF1YusgxGcSWTEXBhp0CPwQ1A==, tarball: https://registry.npmjs.org/clean-stack/-/clean-stack-2.2.0.tgz}
     engines: {node: '>=6'}
@@ -3183,6 +3190,10 @@ packages:
 
   readdir-glob@1.1.3:
     resolution: {integrity: sha512-v05I2k7xN8zXvPD9N+z/uhXPaj0sUFCe2rcWZIpBsqxfP7xXFQ0tipAd/wjj1YxWyWtUS5IDJpOG82JKt2EAVA==, tarball: https://registry.npmjs.org/readdir-glob/-/readdir-glob-1.1.3.tgz}
+
+  readdirp@5.0.0:
+    resolution: {integrity: sha512-9u/XQ1pvrQtYyMpZe7DXKv2p5CNvyVwzUB6uhLAnQwHMSgKMBR62lc7AHljaeteeHXn11XTAaLLUVZYVZyuRBQ==, tarball: https://registry.npmjs.org/readdirp/-/readdirp-5.0.0.tgz}
+    engines: {node: '>= 20.19.0'}
 
   registry-auth-token@5.1.1:
     resolution: {integrity: sha512-P7B4+jq8DeD2nMsAcdfaqHbssgHtZ7Z5+++a5ask90fvmJ8p5je4mOa+wzu+DB4vQ5tdJV/xywY+UnVFeQLV5Q==, tarball: https://registry.npmjs.org/registry-auth-token/-/registry-auth-token-5.1.1.tgz}
@@ -7953,6 +7964,10 @@ snapshots:
     dependencies:
       get-func-name: 2.0.2
 
+  chokidar@5.0.0:
+    dependencies:
+      readdirp: 5.0.0
+
   clean-stack@2.2.0: {}
 
   clean-stack@5.3.0:
@@ -9093,6 +9108,8 @@ snapshots:
   readdir-glob@1.1.3:
     dependencies:
       minimatch: 5.1.9
+
+  readdirp@5.0.0: {}
 
   registry-auth-token@5.1.1:
     dependencies:

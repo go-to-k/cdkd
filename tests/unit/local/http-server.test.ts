@@ -156,8 +156,7 @@ describe('startApiServer — REQUEST authorizer cache (must-fix #1)', () => {
 
     const cache = createAuthorizerCache();
     const server = await startApiServer({
-      routes: [route],
-      pool: makePool(),
+      state: { routes: [route], pool: makePool(), corsConfigByApiId: new Map() },
       rieTimeoutMs: 1000,
       host: '127.0.0.1',
       port: 0,
@@ -207,8 +206,7 @@ describe('startApiServer — REQUEST authorizer cache (must-fix #1)', () => {
 
     const cache = createAuthorizerCache();
     const server = await startApiServer({
-      routes: [route],
-      pool: makePool(),
+      state: { routes: [route], pool: makePool(), corsConfigByApiId: new Map() },
       rieTimeoutMs: 1000,
       host: '127.0.0.1',
       port: 0,
@@ -259,8 +257,7 @@ describe('startApiServer — REQUEST authorizer cache (must-fix #1)', () => {
 
     const cache = createAuthorizerCache();
     const server = await startApiServer({
-      routes: [route],
-      pool: makePool(),
+      state: { routes: [route], pool: makePool(), corsConfigByApiId: new Map() },
       rieTimeoutMs: 1000,
       host: '127.0.0.1',
       port: 0,
@@ -314,8 +311,7 @@ describe('startApiServer — narrow-Resource cache leak (must-fix #2)', () => {
 
     const cache = createAuthorizerCache();
     const server = await startApiServer({
-      routes: [route],
-      pool: makePool(),
+      state: { routes: [route], pool: makePool(), corsConfigByApiId: new Map() },
       rieTimeoutMs: 1000,
       host: '127.0.0.1',
       port: 0,
@@ -399,8 +395,7 @@ describe('startApiServer — JWKS pass-through warn fires once per server (must-
     });
     const jwksWarnedUrls = new Set<string>();
     const server = await startApiServer({
-      routes: [route],
-      pool: makePool(),
+      state: { routes: [route], pool: makePool(), corsConfigByApiId: new Map() },
       rieTimeoutMs: 1000,
       host: '127.0.0.1',
       port: 0,

@@ -1,4 +1,6 @@
-// REST v1 handler for the local-start-api integ test fixture.
+// REST v1 greedy-proxy handler for the local-start-api integ test
+// fixture. Echoes the path + stageVariables so verify.sh can assert
+// PR 8c's `event.stageVariables.STAGE === 'prod'`.
 exports.handler = async (event) => {
   return {
     statusCode: 200,
@@ -8,6 +10,7 @@ exports.handler = async (event) => {
       path: event.path,
       method: event.httpMethod,
       pathParameters: event.pathParameters || {},
+      stageVariables: event.stageVariables || null,
     }),
   };
 };

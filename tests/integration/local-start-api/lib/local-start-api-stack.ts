@@ -15,13 +15,22 @@ import * as lambda from 'aws-cdk-lib/aws-lambda';
  *
  * Routes (asserted by verify.sh):
  *   - HTTP API:    GET /items, GET /items/{id}, POST /items
+ *     (with `CorsConfiguration` enabling `*` origin so verify.sh can
+ *     curl an OPTIONS preflight and assert the canonical response —
+ *     PR 8c, issue #235)
  *   - HTTP API:    GET /protected (authorizer-gated, PR 8b)
- *   - REST v1:     ANY /v1/{proxy+} (stage 'prod')
+ *   - REST v1:     ANY /v1/{proxy+} (stage 'prod' with `Variables`
+ *     so the integ can assert `event.stageVariables.STAGE === 'prod'`)
  *   - Function URL on a separate Lambda: ANY /{proxy+}
  *
  * PR 8b extension: a Lambda REQUEST authorizer guards `/protected`. The
  * authorizer Allow's the request iff `Authorization: Bearer let-me-in`
  * is present; otherwise it Deny's. verify.sh asserts both directions.
+ *
+ * verify.sh boots the server, asserts the route table, curls each
+ * route (including an OPTIONS preflight against `/items` and
+ * authorizer-gated `/protected`), and shuts down cleanly without
+ * orphan containers.
  */
 export class LocalStartApiStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
@@ -34,8 +43,21 @@ export class LocalStartApiStack extends cdk.Stack {
       timeout: cdk.Duration.seconds(10),
     });
 
-    // HTTP API v2 with three routes against ItemsHandler.
-    const httpApi = new apigwv2.HttpApi(this, 'MyHttpApi');
+    // HTTP API v2 with three routes against ItemsHandler. PR 8c adds
+    // CorsConfiguration so the integ can exercise OPTIONS preflight
+    // interception.
+    const httpApi = new apigwv2.HttpApi(this, 'MyHttpApi', {
+      corsPreflight: {
+        allowOrigins: ['*'],
+        allowMethods: [
+          apigwv2.CorsHttpMethod.GET,
+          apigwv2.CorsHttpMethod.POST,
+          apigwv2.CorsHttpMethod.OPTIONS,
+        ],
+        allowHeaders: ['Content-Type', 'X-Demo-Header'],
+        maxAge: cdk.Duration.seconds(300),
+      },
+    });
     const itemsIntegration = new apigwv2_integrations.HttpLambdaIntegration(
       'ItemsIntegration',
       itemsHandler
@@ -84,7 +106,9 @@ export class LocalStartApiStack extends cdk.Stack {
       authorizer,
     });
 
-    // REST v1 with a single greedy proxy route on stage 'prod'.
+    // REST v1 with a single greedy proxy route on stage 'prod'. PR 8c
+    // attaches Variables to the Stage so the integ can assert
+    // `event.stageVariables.STAGE === 'prod'`.
     const restHandler = new lambda.Function(this, 'RestHandler', {
       runtime: lambda.Runtime.NODEJS_20_X,
       handler: 'index.handler',
@@ -92,7 +116,10 @@ export class LocalStartApiStack extends cdk.Stack {
       timeout: cdk.Duration.seconds(10),
     });
     const restApi = new apigw.RestApi(this, 'MyRestApi', {
-      deployOptions: { stageName: 'prod' },
+      deployOptions: {
+        stageName: 'prod',
+        variables: { STAGE: 'prod', LOG_LEVEL: 'info' },
+      },
     });
     const v1 = restApi.root.addResource('v1');
     const proxy = v1.addResource('{proxy+}');
