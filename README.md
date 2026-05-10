@@ -24,6 +24,7 @@
 - **Diff calculation**: Self-implemented resource/property-level diff between desired template and current state
 - **S3-based state management**: No DynamoDB required, uses S3 conditional writes for locking
 - **DAG-based parallelization**: Analyze `Ref`/`Fn::GetAtt` dependencies and execute in parallel
+- **Rollback on failure**: When a deploy errors mid-stack, cdkd rolls back the resources it just created so the stack state stays consistent (CloudFormation parity — but cdkd does this without round-tripping through CFn). Pass `cdkd deploy --no-rollback` to skip rollback and keep the partial state for Terraform-style inspection / repair. See [Rollback behavior](#rollback-behavior).
 - **`--no-wait` for async resources**: Skip the multi-minute wait on CloudFront / RDS / ElastiCache / NAT Gateway and return as soon as the create call returns (CloudFormation always blocks)
 - **VPC route DependsOn relaxation (on by default)**: Drop CDK-injected defensive `DependsOn` edges from VPC Lambdas onto private-subnet routes so `CloudFront::Distribution` and `Lambda::Url` start their ~3-min propagation in parallel with NAT Gateway stabilization (~50% faster on VPC + Lambda + CloudFront stacks). Pass `--no-aggressive-vpc-parallel` to opt out.
 
@@ -161,7 +162,7 @@ the full per-type table.
 | Asset publishing (ECR) | ✅ | Self-implemented Docker image publishing |
 | Custom Resources (SNS-backed) | ✅ | SNS Topic ServiceToken + S3 response |
 | Custom Resources (CDK Provider) | ✅ | isCompleteHandler/onEventHandler async pattern detection |
-| Rollback | ✅ | --no-rollback flag to skip |
+| Rollback | ✅ | Auto-rollback on mid-deploy failure (deletes already-completed resources to keep state consistent); `--no-rollback` skips for Terraform-style failed-state inspection. See [Rollback behavior](#rollback-behavior) below. |
 | DeletionPolicy: Retain | ✅ | Skip deletion for retained resources |
 | UpdateReplacePolicy: Retain | ✅ | Keep old resource on replacement |
 | Implicit delete dependencies | ✅ | VPC/IGW/EventBus/Subnet/RouteTable ordering |
@@ -180,32 +181,14 @@ the full per-type table.
 
 ## Installation
 
-### From npm
-
 ```bash
 npm i -g @go-to-k/cdkd          # latest release
 npm i -g @go-to-k/cdkd@0.0.2    # pin to a specific version
 ```
 
-The installed binary is `cdkd` — run it the same way in either install path.
+The installed binary is `cdkd`.
 
 > cdkd is an experimental / educational project and is not intended for production use — see the warning at the top of this README. Pin to a specific version if you need reproducible installs.
-
-### From source
-
-```bash
-git clone https://github.com/go-to-k/cdkd.git
-cd cdkd
-pnpm install
-pnpm run build
-npm link
-```
-
-If `cdkd` is not found after `npm link`, set an alias in the current shell:
-
-```bash
-alias cdkd="node $(pwd)/dist/cli.js"
-```
 
 ## Quick Start
 
@@ -404,6 +387,27 @@ cdkd state destroy MyStack OtherStack --yes
 cdkd state destroy --all -y           # every stack in the bucket
 cdkd state destroy MyStack --region us-east-1
 ```
+
+## Rollback behavior
+
+When a deploy fails mid-stack (e.g. a resource hits a validation error
+or AWS rejects the request), cdkd by default **rolls back the
+already-completed resources in the same deploy** so the stack state
+stays consistent — every resource cdkd just created in this run is
+deleted in reverse dependency order, the state record is updated to
+match, and the CLI exits non-zero. Resources that existed before this
+deploy are NOT touched.
+
+Pass `cdkd deploy --no-rollback` to skip the rollback (Terraform-style:
+the partial state is preserved so you can `cdkd state show <stack>`,
+inspect what landed, fix the underlying issue, and re-run `cdkd deploy`
+to continue from the half-deployed state). Recommended only when you
+plan to manually inspect / repair; the default is safer for CI.
+
+Mid-deploy state is also saved per-resource as work completes, so even
+if cdkd itself crashes between the failure and the rollback, the state
+file accurately reflects what's on AWS and a follow-up `cdkd destroy`
+won't orphan anything.
 
 ## `--no-wait`: skip async-resource waits
 
