@@ -16,16 +16,13 @@ import { applyRoleArnIfSet } from '../../utils/role-arn.js';
 import { withErrorHandling } from '../../utils/error-handler.js';
 import { Synthesizer, type SynthesisOptions } from '../../synthesis/synthesizer.js';
 import { resolveApp, resolveStateBucketWithDefault } from '../config-loader.js';
-import { resolveLambdaTarget } from '../../local-invoke/lambda-resolver.js';
-import { resolveEnvVars, type EnvOverrideFile } from '../../local-invoke/env-resolver.js';
+import { resolveLambdaTarget } from '../../local/lambda-resolver.js';
+import { resolveEnvVars, type EnvOverrideFile } from '../../local/env-resolver.js';
 import {
   substituteEnvVarsFromState,
   type StateEnvSubstitutionAudit,
-} from '../../local-invoke/state-resolver.js';
-import {
-  resolveRuntimeFileExtension,
-  resolveRuntimeImage,
-} from '../../local-invoke/runtime-image.js';
+} from '../../local/state-resolver.js';
+import { resolveRuntimeFileExtension, resolveRuntimeImage } from '../../local/runtime-image.js';
 import {
   ensureDockerAvailable,
   pickFreePort,
@@ -33,8 +30,8 @@ import {
   removeContainer,
   runDetached,
   streamLogs,
-} from '../../local-invoke/docker-runner.js';
-import { invokeRie, waitForRieReady } from '../../local-invoke/rie-client.js';
+} from '../../local/docker-runner.js';
+import { invokeRie, waitForRieReady } from '../../local/rie-client.js';
 import { S3StateBackend } from '../../state/s3-state-backend.js';
 import { setAwsClients, AwsClients } from '../../utils/aws-clients.js';
 import type { StackState } from '../../types/state.js';

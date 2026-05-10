@@ -1,7 +1,7 @@
 import { createServer, type Server } from 'node:http';
 import { createServer as createTcpServer, type Server as TcpServer } from 'node:net';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { invokeRie, waitForRieReady } from '../../../src/local-invoke/rie-client.js';
+import { invokeRie, waitForRieReady } from '../../../src/local/rie-client.js';
 
 let server: Server;
 let port: number;

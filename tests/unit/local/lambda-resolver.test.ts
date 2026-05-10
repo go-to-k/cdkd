@@ -6,7 +6,7 @@ import {
   LocalInvokeResolutionError,
   parseTarget,
   resolveLambdaTarget,
-} from '../../../src/local-invoke/lambda-resolver.js';
+} from '../../../src/local/lambda-resolver.js';
 import type { StackInfo } from '../../../src/synthesis/assembly-reader.js';
 import type { CloudFormationTemplate, TemplateResource } from '../../../src/types/resource.js';
 

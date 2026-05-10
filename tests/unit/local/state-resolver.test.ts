@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   substituteAgainstState,
   substituteEnvVarsFromState,
-} from '../../../src/local-invoke/state-resolver.js';
+} from '../../../src/local/state-resolver.js';
 import type { ResourceState } from '../../../src/types/state.js';
 
 /**

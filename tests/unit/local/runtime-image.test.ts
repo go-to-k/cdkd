@@ -5,7 +5,7 @@ import {
   resolveRuntimeImage,
   resolveRuntimeSpec,
   UnsupportedRuntimeError,
-} from '../../../src/local-invoke/runtime-image.js';
+} from '../../../src/local/runtime-image.js';
 
 describe('resolveRuntimeImage', () => {
   it.each([
