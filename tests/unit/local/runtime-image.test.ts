@@ -12,9 +12,11 @@ describe('resolveRuntimeImage', () => {
     ['nodejs18.x', 'public.ecr.aws/lambda/nodejs:18'],
     ['nodejs20.x', 'public.ecr.aws/lambda/nodejs:20'],
     ['nodejs22.x', 'public.ecr.aws/lambda/nodejs:22'],
+    ['nodejs24.x', 'public.ecr.aws/lambda/nodejs:24'],
     ['python3.11', 'public.ecr.aws/lambda/python:3.11'],
     ['python3.12', 'public.ecr.aws/lambda/python:3.12'],
     ['python3.13', 'public.ecr.aws/lambda/python:3.13'],
+    ['python3.14', 'public.ecr.aws/lambda/python:3.14'],
   ])('maps %s to %s', (runtime, expected) => {
     expect(resolveRuntimeImage(runtime)).toBe(expected);
   });
@@ -54,7 +56,9 @@ describe('resolveRuntimeImage', () => {
       const msg = (err as Error).message;
       // The "supported runtimes" line should now mention both Node and Python.
       expect(msg).toMatch(/nodejs20\.x/);
+      expect(msg).toMatch(/nodejs24\.x/);
       expect(msg).toMatch(/python3\.12/);
+      expect(msg).toMatch(/python3\.14/);
     }
   });
 });
@@ -64,9 +68,11 @@ describe('resolveRuntimeFileExtension', () => {
     ['nodejs18.x', '.js'],
     ['nodejs20.x', '.js'],
     ['nodejs22.x', '.js'],
+    ['nodejs24.x', '.js'],
     ['python3.11', '.py'],
     ['python3.12', '.py'],
     ['python3.13', '.py'],
+    ['python3.14', '.py'],
   ])('maps %s to %s', (runtime, expected) => {
     expect(resolveRuntimeFileExtension(runtime)).toBe(expected);
   });
@@ -93,9 +99,11 @@ describe('resolveRuntimeSpec', () => {
 describe('isSupportedRuntime', () => {
   it('returns true for Node.js and Python supported sets, false otherwise', () => {
     expect(isSupportedRuntime('nodejs20.x')).toBe(true);
+    expect(isSupportedRuntime('nodejs24.x')).toBe(true);
     expect(isSupportedRuntime('python3.12')).toBe(true);
     expect(isSupportedRuntime('python3.11')).toBe(true);
     expect(isSupportedRuntime('python3.13')).toBe(true);
+    expect(isSupportedRuntime('python3.14')).toBe(true);
     expect(isSupportedRuntime('python3.10')).toBe(false);
     expect(isSupportedRuntime('java17')).toBe(false);
     expect(isSupportedRuntime('')).toBe(false);

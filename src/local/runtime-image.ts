@@ -28,9 +28,11 @@ const SUPPORTED_RUNTIMES: Readonly<Record<string, RuntimeSpec>> = {
   'nodejs18.x': { image: 'public.ecr.aws/lambda/nodejs:18', fileExtension: '.js' },
   'nodejs20.x': { image: 'public.ecr.aws/lambda/nodejs:20', fileExtension: '.js' },
   'nodejs22.x': { image: 'public.ecr.aws/lambda/nodejs:22', fileExtension: '.js' },
+  'nodejs24.x': { image: 'public.ecr.aws/lambda/nodejs:24', fileExtension: '.js' },
   'python3.11': { image: 'public.ecr.aws/lambda/python:3.11', fileExtension: '.py' },
   'python3.12': { image: 'public.ecr.aws/lambda/python:3.12', fileExtension: '.py' },
   'python3.13': { image: 'public.ecr.aws/lambda/python:3.13', fileExtension: '.py' },
+  'python3.14': { image: 'public.ecr.aws/lambda/python:3.14', fileExtension: '.py' },
 };
 
 export class UnsupportedRuntimeError extends Error {
@@ -91,14 +93,14 @@ export function resolveRuntimeSpec(runtime: string): RuntimeSpec {
     throw new UnsupportedRuntimeError(
       runtime,
       `Runtime '${runtime}' is not supported in cdkd local invoke v1. ` +
-        'Only Node.js (nodejs18.x / nodejs20.x / nodejs22.x) and Python (python3.11 / python3.12 / python3.13) runtimes are supported. ' +
+        'Only Node.js (nodejs18.x / nodejs20.x / nodejs22.x / nodejs24.x) and Python (python3.11 / python3.12 / python3.13 / python3.14) runtimes are supported. ' +
         'Other runtimes follow in subsequent PRs.'
     );
   }
 
   throw new UnsupportedRuntimeError(
     runtime,
-    `Unknown runtime '${runtime}'. cdkd local invoke v1 supports nodejs18.x / nodejs20.x / nodejs22.x / python3.11 / python3.12 / python3.13.`
+    `Unknown runtime '${runtime}'. cdkd local invoke v1 supports nodejs18.x / nodejs20.x / nodejs22.x / nodejs24.x / python3.11 / python3.12 / python3.13 / python3.14.`
   );
 }
 

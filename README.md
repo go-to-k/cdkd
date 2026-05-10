@@ -584,8 +584,8 @@ but reusing cdkd's synthesis / asset / construct-path plumbing — no
 `template.yaml` to maintain, no `cdk synth | sam ...` round-trip.
 
 Requires Docker. v1 supports Node.js and Python runtimes (`nodejs18.x` /
-`nodejs20.x` / `nodejs22.x` / `python3.11` / `python3.12` / `python3.13`);
-other runtimes follow in subsequent PRs.
+`nodejs20.x` / `nodejs22.x` / `nodejs24.x` / `python3.11` / `python3.12` /
+`python3.13` / `python3.14`); other runtimes follow in subsequent PRs.
 
 **Container Lambdas (PR 5 of #224)** — `lambda.DockerImageFunction(...)` /
 `Code.ImageUri` is supported alongside ZIP Lambdas. cdkd reads the
