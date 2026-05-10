@@ -1029,6 +1029,77 @@ the same tier; cdkd uses literal-segment count as a heuristic).
 | `--debug-port-base <port>` | unset | Allocate a contiguous `--inspect-brk` port range across Lambdas (one per Lambda). |
 | `--env-vars <file>` | unset | SAM-shape JSON: `{"LogicalId":{"KEY":"VALUE"}, "Parameters":{...}}`. Same format as `cdkd local invoke`. |
 | `--assume-role <arn-or-pair>` | unset | Repeatable. Bare `<arn>` = global default; `<LogicalId>=<arn>` = per-Lambda override. Per-Lambda > global > unset (developer creds passed through). |
+| `--watch` | off | Hot reload: re-synth + re-discover routes when `cdk.out/` or any routed Lambda's asset directory changes. 500ms debounce. Synth failures keep the previous version serving (warn-and-continue, never crashes the server). |
+| `--stage <name>` | first attached | Select an API Gateway Stage by `StageName`. Drives `event.stageVariables` (REST v1 + HTTP API v2). When the override doesn't match any Stage on a given API, that API's routes get `stageVariables: null` and the CLI emits a warn line up front. |
+
+### Hot reload (`--watch`)
+
+When `--watch` is set, cdkd installs a [chokidar](https://github.com/paulmillr/chokidar)-backed
+file watcher over `cdk.out/` plus every routed Lambda's asset
+directory. A change in any watched path triggers a debounced (500ms
+window) reload:
+
+1. Re-run `cdk synth` (skipped when `-a <dir>` was passed at server
+   boot — the directory is treated as already-synthesized).
+2. Re-run route discovery, stage resolution, and CORS-config
+   extraction.
+3. Build per-Lambda specs + a fresh container pool.
+4. Atomically swap the server state. Routes added / removed / changed
+   take effect on the next request.
+5. Dispose the previous pool in the background — in-flight requests
+   complete against the old containers; new requests hit the new
+   pool.
+
+Synth failures during reload do NOT crash the server. The previous
+version keeps serving and the CLI emits a `[warn]` line naming the
+failure. Reloads serialize, so a burst of file changes coalesces to
+one synth.
+
+### CORS preflight
+
+cdkd's HTTP server intercepts OPTIONS preflight requests for HTTP API
+v2 routes whose `AWS::ApiGatewayV2::Api` has a `CorsConfiguration`:
+
+- Match `Origin` against `AllowOrigins` (literal entries or `*`).
+- Match `Access-Control-Request-Method` against `AllowMethods`.
+- Match each `Access-Control-Request-Headers` entry against
+  `AllowHeaders` (case-insensitive).
+- Respond `204 No Content` with the canonical `Access-Control-Allow-*`
+  headers, plus `Access-Control-Max-Age` / `Access-Control-Expose-Headers`
+  / `Access-Control-Allow-Credentials` when configured.
+
+When `AllowCredentials: true` AND the origin matched via `*`, the
+response echoes the request's literal `Origin` (browser fetch spec
+disallows `*` + credentials).
+
+When the user has registered an explicit OPTIONS method on a path
+(an `AWS::ApiGatewayV2::Route` whose `RouteKey` is `OPTIONS /...`),
+preflight interception is skipped — the user's Lambda owns the
+OPTIONS surface.
+
+REST v1 (`AWS::ApiGateway::*`) CORS via Mock OPTIONS methods is NOT
+intercepted: cdkd's discovery layer rejects Mock integrations
+(`Integration.Type === 'MOCK'`) at server boot, so REST v1 CORS
+emulation is intentionally out of scope. Use the deployed API for
+that case.
+
+### Stage variables
+
+`event.stageVariables` is populated from the selected Stage's
+`Variables` (REST v1) / `StageVariables` (HTTP API v2) map.
+
+- **Default**: the first Stage attached to each API in template
+  order.
+- **`--stage <name>`**: select a Stage by `StageName`. Applied per-API
+  — a `--stage prod` override against an app with three APIs picks
+  the matching Stage on each. APIs without a matching Stage get
+  `stageVariables: null` and surface a warn line at startup.
+- **Function URL** routes don't have a Stage — `stageVariables` stays
+  `null` regardless of the flag.
+- **Intrinsic-valued entries** (`Ref`, `Fn::GetAtt`, `Fn::Sub`) in
+  the Stage's `Variables` map are dropped with a warn (mirrors
+  PR 1's env-var policy — the local server has no deploy state to
+  resolve them against).
 
 ### Container lifecycle
 
@@ -1069,10 +1140,8 @@ the `docker ps` cleanup command in the warning.
 | --- | --- |
 | Authorizers (Lambda TOKEN/REQUEST, Cognito) | PR 8b |
 | VPC simulation | PR 8b |
-| CORS preflight handling (server passes through OPTIONS) | PR 8c |
-| Hot reload (file watcher over `cdk.out`) | PR 8c |
-| Stage variables (hardcoded `null` in v1) | PR 8c |
-| `--from-state`-style env-var substitution | PR 8c |
+| `--from-state`-style env-var substitution | Future PR |
+| REST v1 CORS via Mock OPTIONS integration | Out of scope (use the deployed API) |
 | Custom integration mapping templates | Never (not testable locally) |
 | WebSocket APIs | Never (different protocol) |
 | Throttling / quotas / usage plans / API keys | Never |

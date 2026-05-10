@@ -61,6 +61,7 @@ describe('discoverRoutes — REST v1', () => {
         source: 'rest-v1',
         apiVersion: 'v1',
         stage: 'prod',
+        apiLogicalId: 'Api',
         declaredAt: 'S/Method',
       },
     ]);
@@ -315,6 +316,7 @@ describe('discoverRoutes — HTTP API v2', () => {
       source: 'http-api',
       apiVersion: 'v2',
       stage: '$default',
+      apiLogicalId: 'Api',
       declaredAt: 'S/Route',
     });
   });

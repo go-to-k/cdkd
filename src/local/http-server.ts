@@ -11,6 +11,7 @@ import { translateLambdaResponse } from './api-gateway-response.js';
 import { matchRoute } from './route-matcher.js';
 import type { DiscoveredRoute } from './route-discovery.js';
 import type { ContainerPool } from './container-pool.js';
+import { matchPreflight, type CorsConfig } from './cors-handler.js';
 
 /**
  * The user-facing HTTP server for `cdkd local start-api`.
@@ -28,9 +29,33 @@ import type { ContainerPool } from './container-pool.js';
  * drain on graceful shutdown so `process.exit(0)` works.
  */
 
-export interface StartApiServerOptions {
+/**
+ * Mutable server state read on every incoming request. Hot reload (PR
+ * 8c) swaps the entire `ServerState` atomically via the
+ * `setServerState` callback returned from `startApiServer`, so the
+ * server keeps serving against the new template without restarting the
+ * `node:http` listener (and without dropping in-flight requests — they
+ * run against the old state until `pool.dispose()` returns).
+ *
+ * Each field corresponds to one piece of "what the server is serving":
+ *
+ *   - `routes` — the discovered routes (output of `discoverRoutes`).
+ *   - `pool` — the per-Lambda container pool. Hot reload may swap pools
+ *     when the set of reachable Lambdas changes; the old pool's
+ *     `dispose()` runs in the orchestrator after the swap.
+ *   - `corsConfigByApiId` — `apiLogicalId → CorsConfig` map. Routes
+ *     whose `apiLogicalId` is in this map participate in OPTIONS
+ *     preflight interception.
+ */
+export interface ServerState {
   routes: readonly DiscoveredRoute[];
   pool: ContainerPool;
+  corsConfigByApiId: Map<string, CorsConfig>;
+}
+
+export interface StartApiServerOptions {
+  /** Initial state. The server reads this on the first request. */
+  state: ServerState;
   /** RIE invoke timeout in ms. Default `2 * max(timeoutSec) * 1000`, floor 30s. */
   rieTimeoutMs: number;
   /** Bind host (default `127.0.0.1`). */
@@ -51,6 +76,16 @@ export interface StartedApiServer {
    * server has flushed every connection. Safe to call multiple times.
    */
   close: () => Promise<void>;
+  /**
+   * Atomically swap the server's state. Hot reload (PR 8c) calls this
+   * with the new `routes` / `pool` / `corsConfigByApiId` after re-synth
+   * + re-discovery completes. Returns the previous state so the caller
+   * can `pool.dispose()` it in the background once in-flight requests
+   * drain.
+   */
+  setServerState: (next: ServerState) => ServerState;
+  /** Read the current state (for tests / orchestrator diagnostics). */
+  getServerState: () => ServerState;
 }
 
 /**
@@ -60,8 +95,13 @@ export interface StartedApiServer {
  */
 export async function startApiServer(opts: StartApiServerOptions): Promise<StartedApiServer> {
   const logger = getLogger().child('start-api');
+  // The state is held in a closure cell so request handlers always read
+  // the latest value. Hot reload mutates `currentState` via
+  // `setServerState`; the server itself is never reconstructed.
+  // eslint-disable-next-line prefer-const
+  let currentState: ServerState = opts.state;
   const server = createServer((req, res) => {
-    handleRequest(req, res, opts).catch((err) => {
+    handleRequest(req, res, currentState, opts.rieTimeoutMs).catch((err) => {
       logger.error(
         `Unhandled request error: ${err instanceof Error ? (err.stack ?? err.message) : String(err)}`
       );
@@ -105,6 +145,12 @@ export async function startApiServer(opts: StartApiServerOptions): Promise<Start
         server.closeAllConnections?.();
       });
     },
+    setServerState: (next: ServerState): ServerState => {
+      const prev = currentState;
+      currentState = next;
+      return prev;
+    },
+    getServerState: (): ServerState => currentState,
   };
 }
 
@@ -112,11 +158,19 @@ export async function startApiServer(opts: StartApiServerOptions): Promise<Start
  * Handle a single incoming HTTP request: read body, match route, build
  * event, acquire container, invoke RIE, release container, translate
  * response, write response. Errors at any stage become a 502 response.
+ *
+ * PR 8c additions: CORS preflight interception runs BEFORE route
+ * dispatch — when the request is OPTIONS and matches a route on an
+ * HTTP API v2 with a `CorsConfiguration`, return the canonical
+ * preflight response without invoking the Lambda. The interception is
+ * skipped when the user has registered an explicit OPTIONS method for
+ * the request path (their Lambda owns it).
  */
 async function handleRequest(
   req: IncomingMessage,
   res: ServerResponse,
-  opts: StartApiServerOptions
+  state: ServerState,
+  rieTimeoutMs: number
 ): Promise<void> {
   const logger = getLogger().child('start-api');
 
@@ -128,7 +182,17 @@ async function handleRequest(
   const method = (req.method ?? 'GET').toUpperCase();
 
   const requestPath = rawUrl.split('?')[0] ?? '/';
-  const match = matchRoute(method, requestPath, opts.routes);
+
+  // PR 8c: CORS preflight interception. We attempt to find a route the
+  // OPTIONS request matches as if it were the actual method (we look at
+  // `Access-Control-Request-Method` per the CORS spec); when found AND
+  // the API has a CORS config AND no explicit OPTIONS route is
+  // registered, we respond with the canonical preflight headers.
+  const preflightHandled =
+    method === 'OPTIONS' ? maybeHandleCorsPreflight(req, res, requestPath, state) : false;
+  if (preflightHandled) return;
+
+  const match = matchRoute(method, requestPath, state.routes);
   if (!match) {
     writeError(res, 404, '{"message":"Not Found"}');
     return;
@@ -154,7 +218,7 @@ async function handleRequest(
 
   let handle;
   try {
-    handle = await opts.pool.acquire(match.route.lambdaLogicalId);
+    handle = await state.pool.acquire(match.route.lambdaLogicalId);
   } catch (err) {
     logger.error(
       `Failed to acquire container for ${match.route.lambdaLogicalId}: ${err instanceof Error ? err.message : String(err)}`
@@ -168,7 +232,7 @@ async function handleRequest(
       handle.containerHost,
       handle.hostPort,
       event,
-      opts.rieTimeoutMs
+      rieTimeoutMs
     );
 
     const translated = translateLambdaResponse(invokeResult.payload, match.route.apiVersion);
@@ -191,8 +255,123 @@ async function handleRequest(
       res.end();
     }
   } finally {
-    opts.pool.release(handle);
+    state.pool.release(handle);
   }
+}
+
+/**
+ * Attempt CORS preflight interception. Returns `true` when the
+ * preflight response was written (caller must NOT continue to route
+ * dispatch); `false` when no preflight match (caller falls through to
+ * normal request dispatch — typically a 404 / user OPTIONS handler).
+ *
+ * Match conditions (all must hold):
+ *   1. The request's `Access-Control-Request-Method` header points at a
+ *      route on an HTTP API v2 (`apiLogicalId` set, route's
+ *      `apiVersion === 'v2'`).
+ *   2. That API has a CORS config in `state.corsConfigByApiId`.
+ *   3. There is NO explicit OPTIONS route registered for `requestPath`
+ *      — the user's Lambda owns the OPTIONS surface in that case.
+ *   4. The request's Origin / Method / Headers all satisfy the CORS
+ *      config (delegated to {@link matchPreflight}).
+ */
+function maybeHandleCorsPreflight(
+  req: IncomingMessage,
+  res: ServerResponse,
+  requestPath: string,
+  state: ServerState
+): boolean {
+  if (state.corsConfigByApiId.size === 0) return false;
+
+  // Skip when the user has an explicit OPTIONS method registered (their
+  // Lambda owns it). `methodMatches` for `'ANY'` is intentionally NOT
+  // counted as "explicit" — `ANY` is a catch-all that doesn't represent
+  // user intent to handle CORS. Only routes with `method === 'OPTIONS'`
+  // suppress preflight interception.
+  const explicitOptionsRoute = state.routes.find(
+    (r) =>
+      r.method.toUpperCase() === 'OPTIONS' && pathPatternMatchesPath(r.pathPattern, requestPath)
+  );
+  if (explicitOptionsRoute) return false;
+
+  const headers = collectHeaders(req);
+  const requestedMethodHeader = pickFirstHeaderValue(headers, 'access-control-request-method');
+  if (!requestedMethodHeader) return false;
+
+  // Find the route the requested method would have hit. We DON'T need
+  // to be perfectly precise here — the existence of a matching route on
+  // the HTTP API v2 is enough to know "this is a route we own; emit
+  // preflight". If no route matches, we let the request fall through to
+  // 404.
+  const surrogateMatch = matchRoute(requestedMethodHeader, requestPath, state.routes);
+  if (!surrogateMatch) return false;
+  const route = surrogateMatch.route;
+  if (route.apiVersion !== 'v2' || !route.apiLogicalId) return false;
+
+  const cors = state.corsConfigByApiId.get(route.apiLogicalId);
+  if (!cors) return false;
+
+  const preflight = matchPreflight({ method: 'OPTIONS', headers }, cors);
+  if (!preflight) return false;
+
+  res.statusCode = preflight.statusCode;
+  for (const [name, value] of Object.entries(preflight.headers)) {
+    res.setHeader(name, value);
+  }
+  res.end();
+  return true;
+}
+
+/**
+ * Compatibility helper: AWS API Gateway path patterns use `{name}` /
+ * `{name+}` placeholders. We need a binary "does this pattern match
+ * the request path" check (used to detect explicit OPTIONS routes).
+ *
+ * Reuses the same segment-walk logic as the route matcher, but
+ * collapsed to a boolean — copying the rules avoids a circular import
+ * back into `route-matcher.ts`'s richer `matchRoute` API.
+ */
+function pathPatternMatchesPath(pattern: string, requestPath: string): boolean {
+  if (pattern === '$default') return true;
+  const requestSegments = requestPath.split('/').filter((s) => s.length > 0);
+  const patternSegments = pattern.split('/').filter((s) => s.length > 0);
+  // Greedy `{proxy+}` consumes every remaining segment.
+  if (patternSegments.length > 0) {
+    const tail = patternSegments[patternSegments.length - 1]!;
+    if (/^\{[^/{}]+\+\}$/.test(tail)) {
+      const fixed = patternSegments.length - 1;
+      if (requestSegments.length < fixed) return false;
+      for (let i = 0; i < fixed; i++) {
+        const ps = patternSegments[i]!;
+        const rs = requestSegments[i]!;
+        if (/^\{[^/{}+]+\}$/.test(ps)) continue;
+        if (ps !== rs) return false;
+      }
+      return true;
+    }
+  }
+  if (patternSegments.length !== requestSegments.length) return false;
+  for (let i = 0; i < patternSegments.length; i++) {
+    const ps = patternSegments[i]!;
+    const rs = requestSegments[i]!;
+    if (/^\{[^/{}+]+\}$/.test(ps)) continue;
+    if (ps !== rs) return false;
+  }
+  return true;
+}
+
+/**
+ * Pick the first value for a header (case-insensitive). Returns `null`
+ * when the header isn't present. Used by the CORS preflight matcher
+ * which only cares about `access-control-request-method` /
+ * `access-control-request-headers`.
+ */
+function pickFirstHeaderValue(headers: Record<string, string[]>, name: string): string | null {
+  const lower = name.toLowerCase();
+  for (const [k, v] of Object.entries(headers)) {
+    if (k.toLowerCase() === lower && v.length > 0) return v[0]!;
+  }
+  return null;
 }
 
 /**

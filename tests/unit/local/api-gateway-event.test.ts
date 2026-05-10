@@ -208,3 +208,56 @@ describe('buildRestV1Event — shape', () => {
     expect(event['body']).toBeNull();
   });
 });
+
+describe('buildHttpApiV2Event / buildRestV1Event — stage variables (PR 8c)', () => {
+  it('surfaces stageVariables on v2 events when route carries them', () => {
+    const req: HttpRequestSnapshot = {
+      method: 'GET',
+      rawUrl: '/x',
+      headers: {},
+      body: Buffer.alloc(0),
+    };
+    const route = makeRoute('v2', '/x');
+    route.stageVariables = { theme: 'dark' };
+    const ctx: MatchedRouteContext = {
+      route,
+      pathParameters: {},
+      matchedPath: '/x',
+    };
+    const event = buildHttpApiV2Event(req, ctx);
+    expect(event['stageVariables']).toEqual({ theme: 'dark' });
+  });
+
+  it('surfaces stageVariables on v1 events when route carries them', () => {
+    const req: HttpRequestSnapshot = {
+      method: 'GET',
+      rawUrl: '/x',
+      headers: {},
+      body: Buffer.alloc(0),
+    };
+    const route = makeRoute('v1', '/x');
+    route.stageVariables = { region: 'us-east-1' };
+    const ctx: MatchedRouteContext = {
+      route,
+      pathParameters: {},
+      matchedPath: '/x',
+    };
+    const event = buildRestV1Event(req, ctx);
+    expect(event['stageVariables']).toEqual({ region: 'us-east-1' });
+  });
+
+  it('falls back to null when route has no stageVariables', () => {
+    const req: HttpRequestSnapshot = {
+      method: 'GET',
+      rawUrl: '/x',
+      headers: {},
+      body: Buffer.alloc(0),
+    };
+    const ctx: MatchedRouteContext = {
+      route: makeRoute('v2', '/x'),
+      pathParameters: {},
+      matchedPath: '/x',
+    };
+    expect(buildHttpApiV2Event(req, ctx)['stageVariables']).toBeNull();
+  });
+});

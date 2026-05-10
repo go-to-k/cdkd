@@ -23,10 +23,26 @@ import type { TemplateResource } from '../../types/resource.js';
 import { resolveRuntimeFileExtension, resolveRuntimeImage } from '../../local/runtime-image.js';
 import { ensureDockerAvailable, pullImage } from '../../local/docker-runner.js';
 import { discoverRoutes, type DiscoveredRoute } from '../../local/route-discovery.js';
-import { createContainerPool, type ContainerSpec } from '../../local/container-pool.js';
-import { startApiServer } from '../../local/http-server.js';
+import {
+  createContainerPool,
+  type ContainerSpec,
+  type ContainerPool,
+} from '../../local/container-pool.js';
+import { startApiServer, type ServerState } from '../../local/http-server.js';
 import { resolveEnvVars, type EnvOverrideFile } from '../../local/env-resolver.js';
 import { matchStacks } from '../stack-matcher.js';
+import { buildCorsConfigByApiId, type CorsConfig } from '../../local/cors-handler.js';
+import {
+  attachStageContext,
+  buildStageMap,
+  type ResolvedStage,
+} from '../../local/stage-resolver.js';
+import { createFileWatcher, type FileWatcher } from '../../local/file-watcher.js';
+import {
+  createReloadOrchestrator,
+  type NextStateMaterial,
+  type Orchestrator,
+} from '../../local/reload-orchestrator.js';
 
 interface LocalStartApiOptions {
   app?: string;
@@ -55,6 +71,10 @@ interface LocalStartApiOptions {
   envVars?: string;
   /** D8.2: bare ARN (global) and/or `<LogicalId>=<arn>` (per-Lambda). */
   assumeRole?: AssumeRoleOption;
+  /** PR 8c: enable hot reload on `cdk.out/` + asset-dir changes. */
+  watch: boolean;
+  /** PR 8c: select a Stage by `StageName`; default is the first attached. */
+  stage?: string;
 }
 
 /**
@@ -63,12 +83,21 @@ interface LocalStartApiOptions {
  * Runtime Interface Emulator (Docker required).
  *
  * Modeled on `sam local start-api` but reusing cdkd's synthesis /
- * route-discovery / container plumbing. v1 scope (PR 8a):
+ * route-discovery / container plumbing. PR 8a scope:
  *   - REST v1 (AWS::ApiGateway::*) + HTTP API (AWS::ApiGatewayV2::*) +
  *     Function URL (AWS::Lambda::Url).
  *   - AWS_PROXY integrations only.
- *   - No authorizers, no CORS preflight, no hot reload, no stage
- *     variables, no WebSocket APIs (deferred to PR 8b / 8c).
+ *
+ * PR 8c additions (issue #235):
+ *   - `--watch` enables hot reload on `cdk.out/` + asset-dir changes.
+ *   - HTTP API v2 OPTIONS preflight is intercepted when the API has a
+ *     `CorsConfiguration`; REST v1 CORS (Mock OPTIONS method) stays
+ *     out of scope.
+ *   - `event.stageVariables` is populated from the selected Stage's
+ *     `Variables` / `StageVariables` map. `--stage <name>` selects a
+ *     specific Stage by name; default is the first Stage attached.
+ *
+ * Still deferred: authorizers, VPC simulation, WebSocket APIs.
  *
  * See [docs/cli-reference.md](../../../docs/cli-reference.md) for the
  * full surface and out-of-scope items.
@@ -84,91 +113,169 @@ async function localStartApiCommand(options: LocalStartApiOptions): Promise<void
 
   await ensureDockerAvailable();
 
-  // Synthesize.
   const appCmd = resolveApp(options.app);
   if (!appCmd) {
     throw new Error('No CDK app specified. Pass --app, set CDKD_APP, or add "app" to cdk.json.');
   }
 
-  logger.info('Synthesizing CDK app...');
-  const synthesizer = new Synthesizer();
-  const context = parseContextOptions(options.context);
-  const synthOpts: SynthesisOptions = {
-    app: appCmd,
-    output: options.output,
-    ...(options.region && { region: options.region }),
-    ...(options.profile && { profile: options.profile }),
-    ...(Object.keys(context).length > 0 && { context }),
-  };
-  const { stacks } = await synthesizer.synthesize(synthOpts);
-
-  // Pick the target stack — single-stack auto-detect or `--stack` filter
-  // mirrors `cdkd local invoke`'s behavior (D4 lineage).
-  const targetStacks = pickTargetStacks(stacks, options.stack);
-  if (targetStacks.length === 0) {
-    throw new Error('No stacks matched. Pass --stack <name> or run from a single-stack app.');
-  }
-
-  // Discover routes. Hard-error on any unsupported integration; the
-  // server will not start in a half-working state.
-  const routes = discoverRoutes(targetStacks);
-  if (routes.length === 0) {
-    throw new Error(
-      'No supported API routes were discovered. cdkd local start-api supports AWS::ApiGateway::* (REST v1), AWS::ApiGatewayV2::* (HTTP), and AWS::Lambda::Url (Function URL) with AWS_PROXY integrations only.'
-    );
-  }
-
-  // Build the per-Lambda spec map. Every reachable logical ID is
-  // resolved to its asset / inline code, env vars, optional STS creds
-  // (--assume-role), optional --debug-port reservation. The container
-  // pool then knows everything it needs to lazy-start a fresh one.
-  const lambdaIds = uniqueLambdaIds(routes);
   const overrides = readEnvOverridesFile(options.envVars);
   const debugPortBase = options.debugPortBase ? parseDebugPort(options.debugPortBase) : undefined;
-  const specs = new Map<string, ContainerSpec>();
+  const perLambdaConcurrency = parsePerLambdaConcurrency(options.perLambdaConcurrency);
   // Track every tmpdir created by `materializeInlineCode` so the
   // graceful-shutdown path removes them. Long-running servers (this
   // command) would otherwise leak one tmpdir per inline-`Code.ZipFile`
-  // Lambda per server invocation.
+  // Lambda per server invocation. Hot reload writes new tmpdirs into
+  // the same set so the shutdown path is the single owner of cleanup.
   const inlineTmpDirs = new Set<string>();
-  for (let i = 0; i < lambdaIds.length; i++) {
-    const logicalId = lambdaIds[i]!;
-    const spec = await buildContainerSpec({
-      logicalId,
-      stacks: targetStacks,
-      overrides,
-      assumeRole: options.assumeRole,
-      containerHost: options.containerHost,
-      ...(debugPortBase !== undefined && { debugPort: debugPortBase + i }),
-      stsRegion: options.region ?? process.env['AWS_REGION'] ?? process.env['AWS_DEFAULT_REGION'],
-      inlineTmpDirs,
+  // Track every Lambda asset directory the server is currently
+  // referencing; the file watcher uses this list to know what to
+  // watch beyond `cdk.out/`. Mutated by the reload pipeline through
+  // `lastAssetPaths.value = ...`.
+  const lastAssetPaths: { value: string[] } = { value: [] };
+
+  /**
+   * One synth + discover + build pass. Returns the next-state
+   * material. Reused on initial boot AND every hot-reload firing.
+   * Failures bubble up — the orchestrator catches them and keeps the
+   * old state; the initial boot lets them propagate so the CLI exits
+   * with a clear error before "Server listening" is ever printed.
+   */
+  const synthesizeAndBuild = async (): Promise<NextStateMaterial> => {
+    logger.info('Synthesizing CDK app...');
+    const synthesizer = new Synthesizer();
+    const context = parseContextOptions(options.context);
+    const synthOpts: SynthesisOptions = {
+      app: appCmd,
+      output: options.output,
+      ...(options.region && { region: options.region }),
+      ...(options.profile && { profile: options.profile }),
+      ...(Object.keys(context).length > 0 && { context }),
+    };
+    const { stacks } = await synthesizer.synthesize(synthOpts);
+
+    const targetStacks = pickTargetStacks(stacks, options.stack);
+    if (targetStacks.length === 0) {
+      throw new Error('No stacks matched. Pass --stack <name> or run from a single-stack app.');
+    }
+
+    const routes = discoverRoutes(targetStacks);
+    if (routes.length === 0) {
+      throw new Error(
+        'No supported API routes were discovered. cdkd local start-api supports AWS::ApiGateway::* (REST v1), AWS::ApiGatewayV2::* (HTTP), and AWS::Lambda::Url (Function URL) with AWS_PROXY integrations only.'
+      );
+    }
+
+    // PR 8c: stage selection + variable injection. Build the per-API
+    // Stage map for every target stack and attach it to the routes.
+    // Stage selection is `--stage <name>` global override, otherwise
+    // first-attached default. The CLI surfaces a warn line when
+    // `--stage` was passed and at least one API doesn't have a Stage
+    // with that name.
+    const stageMap = new Map<string, ResolvedStage>();
+    for (const stack of targetStacks) {
+      const m = buildStageMap(stack.template, options.stage);
+      for (const [k, v] of m) stageMap.set(k, v);
+    }
+    if (options.stage) {
+      // Walk the routes looking for HTTP API v2 / REST v1 routes whose
+      // API isn't in `stageMap` (i.e. the API had no Stage with the
+      // override name). One warn per such API, deduplicated.
+      const missingApis = new Set<string>();
+      for (const r of routes) {
+        if (!r.apiLogicalId) continue;
+        if (!stageMap.has(r.apiLogicalId)) missingApis.add(r.apiLogicalId);
+      }
+      for (const apiId of missingApis) {
+        logger.warn(
+          `--stage '${options.stage}' did not match any Stage on API '${apiId}'; routes on that API will get stageVariables: null.`
+        );
+      }
+    }
+    attachStageContext(routes, stageMap);
+
+    // PR 8c: per-API CORS config. HTTP API v2 only (REST v1 OPTIONS
+    // Mock integrations are explicitly out of scope).
+    const corsConfigByApiId = new Map<string, CorsConfig>();
+    for (const stack of targetStacks) {
+      const m = buildCorsConfigByApiId(stack.template);
+      for (const [k, v] of m) corsConfigByApiId.set(k, v);
+    }
+
+    // Build the per-Lambda spec map. Every reachable logical ID is
+    // resolved to its asset / inline code, env vars, optional STS creds
+    // (--assume-role), optional --debug-port reservation. The container
+    // pool then knows everything it needs to lazy-start a fresh one.
+    const lambdaIds = uniqueLambdaIds(routes);
+    const specs = new Map<string, ContainerSpec>();
+    for (let i = 0; i < lambdaIds.length; i++) {
+      const logicalId = lambdaIds[i]!;
+      const spec = await buildContainerSpec({
+        logicalId,
+        stacks: targetStacks,
+        overrides,
+        assumeRole: options.assumeRole,
+        containerHost: options.containerHost,
+        ...(debugPortBase !== undefined && { debugPort: debugPortBase + i }),
+        stsRegion: options.region ?? process.env['AWS_REGION'] ?? process.env['AWS_DEFAULT_REGION'],
+        inlineTmpDirs,
+      });
+      specs.set(logicalId, spec);
+    }
+
+    // Update the watched-asset list so the file watcher's `update()`
+    // call later picks up new asset directories.
+    const assetPaths = new Set<string>();
+    for (const spec of specs.values()) {
+      // `codeDir` is either the unzipped asset directory or the
+      // inline-code tmpdir; both are watch-worthy.
+      assetPaths.add(spec.codeDir);
+    }
+    lastAssetPaths.value = [...assetPaths];
+
+    // Pull every distinct image up front so the first request doesn't
+    // pay the layer-pull cost. Mirrors `cdkd local invoke`'s pull pass.
+    const distinctImages = new Set<string>();
+    for (const spec of specs.values()) {
+      distinctImages.add(resolveRuntimeImage(spec.lambda.runtime));
+    }
+    for (const image of distinctImages) {
+      await pullImage(image, options.pull === false);
+    }
+
+    return { routes, specs, corsConfigByApiId };
+  };
+
+  /**
+   * Helper: build a {@link ContainerPool} from a spec map and tag it
+   * with the spec map (via the non-enumerable `__cdkdSpecs` property)
+   * so the reload orchestrator can compute spec diffs.
+   */
+  const buildPool = (specs: Map<string, ContainerSpec>): ContainerPool => {
+    const pool = createContainerPool(specs, {
+      perLambdaConcurrency,
+      skipPull: options.pull === false,
     });
-    specs.set(logicalId, spec);
-  }
+    Object.defineProperty(pool, '__cdkdSpecs', {
+      value: specs,
+      enumerable: false,
+      configurable: true,
+    });
+    return pool;
+  };
 
-  // Pull every distinct image up front so the first request doesn't
-  // pay the layer-pull cost. Mirrors `cdkd local invoke`'s pull pass.
-  const distinctImages = new Set<string>();
-  for (const spec of specs.values()) {
-    distinctImages.add(resolveRuntimeImage(spec.lambda.runtime));
-  }
-  for (const image of distinctImages) {
-    await pullImage(image, options.pull === false);
-  }
-
-  const perLambdaConcurrency = parsePerLambdaConcurrency(options.perLambdaConcurrency);
-  const pool = createContainerPool(specs, {
-    perLambdaConcurrency,
-    skipPull: options.pull === false,
-  });
+  // Initial boot.
+  const initialMaterial = await synthesizeAndBuild();
+  const initialPool = buildPool(initialMaterial.specs);
 
   // Optional pre-warm: one container per Lambda, in parallel.
   if (options.warm) {
-    logger.info(`Pre-warming ${specs.size} container(s)...`);
-    const handles = await Promise.allSettled([...specs.keys()].map((id) => pool.acquire(id)));
+    logger.info(`Pre-warming ${initialMaterial.specs.size} container(s)...`);
+    const handles = await Promise.allSettled(
+      [...initialMaterial.specs.keys()].map((id) => initialPool.acquire(id))
+    );
     for (const result of handles) {
       if (result.status === 'fulfilled') {
-        pool.release(result.value);
+        initialPool.release(result.value);
       } else {
         logger.warn(
           `Pre-warm failed for one Lambda (cold start cost will apply on first request): ${result.reason instanceof Error ? result.reason.message : String(result.reason)}`
@@ -179,7 +286,7 @@ async function localStartApiCommand(options: LocalStartApiOptions): Promise<void
 
   // RIE invoke timeout: 2x the slowest Lambda's Timeout, floor 30s.
   let maxTimeoutSec = 0;
-  for (const spec of specs.values()) {
+  for (const spec of initialMaterial.specs.values()) {
     if (spec.lambda.timeoutSec > maxTimeoutSec) maxTimeoutSec = spec.lambda.timeoutSec;
   }
   const rieTimeoutMs = Math.max(30_000, maxTimeoutSec * 2 * 1000);
@@ -189,21 +296,62 @@ async function localStartApiCommand(options: LocalStartApiOptions): Promise<void
     throw new Error(`--port must be 0..65535 (got ${options.port}).`);
   }
 
+  const initialState: ServerState = {
+    routes: initialMaterial.routes,
+    pool: initialPool,
+    corsConfigByApiId: initialMaterial.corsConfigByApiId,
+  };
   const server = await startApiServer({
-    routes,
-    pool,
+    state: initialState,
     rieTimeoutMs,
     host: options.host,
     port,
   });
 
-  printRouteTable(routes);
+  printRouteTable(initialMaterial.routes);
   logger.info(
     `Per-Lambda concurrency: ${perLambdaConcurrency} (override with --per-lambda-concurrency)`
   );
   // D8.4 — load-bearing: verify.sh greps for this exact prefix.
   process.stdout.write(`Server listening on http://${server.host}:${server.port}\n`);
   process.stdout.write('^C to stop and clean up containers.\n');
+
+  // PR 8c: hot reload (`--watch`).
+  let watcher: FileWatcher | undefined;
+  let orchestrator: Orchestrator | undefined;
+  if (options.watch) {
+    orchestrator = createReloadOrchestrator({
+      synthesizeAndBuild,
+      buildPool,
+      setServerState: server.setServerState,
+      getServerState: server.getServerState,
+    });
+    const initialWatchPaths = [options.output, ...lastAssetPaths.value];
+    watcher = createFileWatcher({
+      paths: initialWatchPaths,
+      onChange: () => {
+        if (!orchestrator) return;
+        logger.info('Detected file change; reloading...');
+        void orchestrator
+          .reload()
+          .then((result) => {
+            if (result.ok && watcher) {
+              // Update the watch list to follow new asset dirs.
+              watcher.update([options.output, ...lastAssetPaths.value]);
+              if (result.added.length > 0 || result.removed.length > 0) {
+                printRouteTable(result.newState!.routes);
+              }
+            }
+          })
+          .catch((err) => {
+            logger.warn(
+              `Reload failed: ${err instanceof Error ? err.message : String(err)}. Keeping previous version.`
+            );
+          });
+      },
+    });
+    logger.info(`Watching ${options.output} (and ${lastAssetPaths.value.length} asset dir(s))`);
+  }
 
   // Graceful shutdown: SIGINT / SIGTERM / uncaughtException /
   // unhandledRejection all run the same dispose path. Double-^C
@@ -224,13 +372,23 @@ async function localStartApiCommand(options: LocalStartApiOptions): Promise<void
     }
     shuttingDown = true;
     logger.info(`Received ${signal}, shutting down...`);
+    if (watcher) {
+      try {
+        await watcher.close();
+      } catch (err) {
+        logger.warn(`watcher.close() failed: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
     try {
       await server.close();
     } catch (err) {
       logger.warn(`server.close() failed: ${err instanceof Error ? err.message : String(err)}`);
     }
     try {
-      await pool.dispose();
+      // Dispose the pool currently in the server state (which may have
+      // been swapped via hot reload). The previous pool from each
+      // reload was disposed in the background by the orchestrator.
+      await server.getServerState().pool.dispose();
     } catch (err) {
       logger.warn(`pool.dispose() failed: ${err instanceof Error ? err.message : String(err)}`);
     }
@@ -720,6 +878,18 @@ export function createLocalStartApiCommand(): Command {
         '--assume-role <arn-or-pair>',
         "Assume the Lambda's execution role and forward STS-issued temp creds. Bare <arn> = global default; <LogicalId>=<arn> = per-Lambda override (repeatable). Per-Lambda > global > unset (developer creds passed through)."
       ).argParser((raw, prev: AssumeRoleOption | undefined) => parseAssumeRoleToken(raw, prev))
+    )
+    .addOption(
+      new Option(
+        '--watch',
+        'Hot-reload: re-synth + re-discover routes when cdk.out/ or asset directories change. Off by default; the server keeps the previous version serving when synth fails mid-reload.'
+      ).default(false)
+    )
+    .addOption(
+      new Option(
+        '--stage <name>',
+        "Select an API Gateway Stage by its 'StageName'. Default: the first Stage attached to each API. Determines event.stageVariables (REST v1 + HTTP API v2)."
+      )
     )
     .action(withErrorHandling(localStartApiCommand));
 
