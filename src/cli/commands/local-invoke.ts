@@ -17,7 +17,10 @@ import { Synthesizer, type SynthesisOptions } from '../../synthesis/synthesizer.
 import { resolveApp } from '../config-loader.js';
 import { resolveLambdaTarget } from '../../local-invoke/lambda-resolver.js';
 import { resolveEnvVars, type EnvOverrideFile } from '../../local-invoke/env-resolver.js';
-import { resolveRuntimeImage } from '../../local-invoke/runtime-image.js';
+import {
+  resolveRuntimeFileExtension,
+  resolveRuntimeImage,
+} from '../../local-invoke/runtime-image.js';
 import {
   ensureDockerAvailable,
   pickFreePort,
@@ -111,8 +114,15 @@ async function localInvokeCommand(target: string, options: LocalInvokeOptions): 
   // Prepare the local code directory the container will bind-mount at
   // /var/task. Asset-backed Lambdas point at an unzipped CDK directory
   // already; inline (Code.ZipFile) Lambdas need to materialize the
-  // body to a temp dir.
-  const codeDir = lambda.codePath ?? materializeInlineCode(lambda.handler, lambda.inlineCode ?? '');
+  // body to a temp dir using the runtime-appropriate file extension
+  // (`.js` for Node.js, `.py` for Python).
+  const codeDir =
+    lambda.codePath ??
+    materializeInlineCode(
+      lambda.handler,
+      lambda.inlineCode ?? '',
+      resolveRuntimeFileExtension(lambda.runtime)
+    );
 
   // Resolve env vars. Intrinsic-valued template entries are warned about
   // and dropped; the user can override them via --env-vars (SAM-shape).
@@ -384,25 +394,28 @@ function forwardAwsEnv(env: Record<string, string>): void {
 /**
  * Materialize an inline Lambda body (`Code.ZipFile`) to a tmpdir and
  * return the directory the container should mount at /var/task. The
- * filename is derived from the function's Handler property:
+ * filename is derived from the function's Handler property and the
+ * runtime's source-file extension (`.js` for Node.js, `.py` for Python):
  *
- *   Handler "index.handler"     → tmpdir/index.js
- *   Handler "index.myFn"        → tmpdir/index.js
- *   Handler "lib/handler.main"  → tmpdir/lib/handler.js
+ *   Handler "index.handler" + ext ".js"   → tmpdir/index.js
+ *   Handler "index.handler" + ext ".py"   → tmpdir/index.py
+ *   Handler "lib/handler.main" + ext ".js" → tmpdir/lib/handler.js
  *
- * (Drop the last segment, append `.js` to the rest.)
+ * (Drop the last segment, append the extension to the rest.)
  *
- * v1 supports only Node.js (D1), so the `.js` extension is fixed.
- * Python / others extend this in a follow-up PR.
+ * The Handler grammar is `<modulePath>.<funcName>` for both Node.js and
+ * Python (the dot is the same module-vs-function separator), so the
+ * parsing logic is identical across runtimes — only the file extension
+ * varies.
  */
-function materializeInlineCode(handler: string, source: string): string {
+function materializeInlineCode(handler: string, source: string, fileExtension: string): string {
   const lastDot = handler.lastIndexOf('.');
   if (lastDot <= 0) {
     throw new Error(`Handler '${handler}' is malformed: expected '<modulePath>.<exportName>'.`);
   }
   const modulePath = handler.substring(0, lastDot);
   const dir = mkdtempSync(path.join(tmpdir(), 'cdkd-local-invoke-'));
-  const filePath = path.join(dir, `${modulePath}.js`);
+  const filePath = path.join(dir, `${modulePath}${fileExtension}`);
   mkdirSync(path.dirname(filePath), { recursive: true });
   writeFileSync(filePath, source, 'utf-8');
   return dir;

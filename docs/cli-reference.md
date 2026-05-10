@@ -798,7 +798,8 @@ AWS Lambda Runtime Interface Emulator (RIE). Modeled on
 plumbing.
 
 **Requires Docker.** The first invocation pulls the Lambda base image
-(`public.ecr.aws/lambda/nodejs:<version>`, ~600MB); subsequent
+(`public.ecr.aws/lambda/nodejs:<version>` or
+`public.ecr.aws/lambda/python:<version>`, ~600MB); subsequent
 invocations reuse the cached image. Pass `--no-pull` to skip the
 `docker pull` round-trip altogether.
 
@@ -870,7 +871,7 @@ materialized to a tmpdir using the file path implied by the function's
 
 | Out of scope | Deferred to |
 | --- | --- |
-| Python / Java / Go / Ruby / .NET runtimes | Future PRs (Python first) |
+| Java / Go / Ruby / .NET runtimes | Future PRs |
 | Container Lambda (`Code.ImageUri`) | Future PR |
 | Lambda Layers (`AWS::Lambda::LayerVersion`) | Future PR |
 | State-driven env recovery (`--from-state`) | Next PR |

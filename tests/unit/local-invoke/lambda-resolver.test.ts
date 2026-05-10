@@ -243,4 +243,50 @@ describe('resolveLambdaTarget', () => {
     expect(result.codePath).toBeNull();
     expect(result.inlineCode).toMatch(/exports.handler/);
   });
+
+  it('resolves a Python Lambda with Code.ZipFile (runtime+inlineCode propagated)', () => {
+    const stack = buildStack(
+      'MyStack',
+      {
+        PyInline: {
+          Type: 'AWS::Lambda::Function',
+          Properties: {
+            Runtime: 'python3.12',
+            Handler: 'index.handler',
+            Code: { ZipFile: 'def handler(event, context):\n    return {"ok": True}\n' },
+          },
+        },
+      },
+      tmpRoot
+    );
+    const result = resolveLambdaTarget('MyStack:PyInline', [stack]);
+    expect(result.runtime).toBe('python3.12');
+    expect(result.handler).toBe('index.handler');
+    expect(result.codePath).toBeNull();
+    expect(result.inlineCode).toMatch(/def handler/);
+  });
+
+  it('resolves an asset-backed Python Lambda', () => {
+    const stack = buildStack(
+      'MyStack',
+      {
+        PyHandler: {
+          Type: 'AWS::Lambda::Function',
+          Properties: {
+            Runtime: 'python3.11',
+            Handler: 'index.handler',
+            Code: { S3Bucket: 'b', S3Key: 'k' },
+          },
+          Metadata: {
+            'aws:asset:path': 'asset.pyabc',
+            'aws:cdk:path': 'MyStack/PyHandler/Resource',
+          },
+        },
+      },
+      tmpRoot
+    );
+    const result = resolveLambdaTarget('MyStack:PyHandler', [stack]);
+    expect(result.runtime).toBe('python3.11');
+    expect(result.codePath).toMatch(/asset\.pyabc$/);
+  });
 });

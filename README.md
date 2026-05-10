@@ -581,8 +581,9 @@ Lambda Runtime Interface Emulator (RIE). Modeled on `sam local invoke`
 but reusing cdkd's synthesis / asset / construct-path plumbing — no
 `template.yaml` to maintain, no `cdk synth | sam ...` round-trip.
 
-Requires Docker. v1 supports Node.js runtimes only (`nodejs18.x` /
-`nodejs20.x` / `nodejs22.x`); other runtimes follow in subsequent PRs.
+Requires Docker. v1 supports Node.js and Python runtimes (`nodejs18.x` /
+`nodejs20.x` / `nodejs22.x` / `python3.11` / `python3.12` / `python3.13`);
+other runtimes follow in subsequent PRs.
 
 ```bash
 # Invoke by CDK display path (single-stack apps may omit the prefix)
