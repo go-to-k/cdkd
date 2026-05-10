@@ -2,12 +2,33 @@ import { describe, expect, it, vi } from 'vitest';
 
 const mockExecFile = vi.fn();
 let mockExecFileFailure: { stderr?: string; message?: string } | undefined;
+// Per-call selective failure: when the executed command's argv array
+// matches the predicate, swap the success result for a failure on that
+// invocation only. Used by the --no-build tests to fail
+// `docker image inspect` (cache miss) while letting other docker
+// commands succeed.
+let mockExecFileFailureMatch:
+  | { match: (args: string[]) => boolean; err: { stderr?: string; message?: string } }
+  | undefined;
 vi.mock('node:child_process', async () => {
   const actual = await vi.importActual<typeof import('node:child_process')>('node:child_process');
   return {
     ...actual,
-    execFile: (cmd: string, args: string[], opts: unknown, cb: (err: unknown) => void) => {
+    // Two callsites to handle: (a) `buildDockerImage` invokes
+    // `execFile(cmd, args, opts, cb)` (4-arg form); (b) `isImageInLocalCache`
+    // invokes `promisify(execFile)('docker', [...])` which adapts to the
+    // 3-arg form `execFile(cmd, args, cb)`. Distinguish on the type of
+    // the third positional.
+    execFile: (cmd: string, args: string[], optsOrCb: unknown, maybeCb?: (err: unknown) => void) => {
+      const cb =
+        typeof optsOrCb === 'function' ? (optsOrCb as (err: unknown) => void) : maybeCb!;
+      const opts = typeof optsOrCb === 'function' ? undefined : optsOrCb;
       mockExecFile(cmd, args, opts);
+      if (mockExecFileFailureMatch && mockExecFileFailureMatch.match(args)) {
+        const err = mockExecFileFailureMatch.err;
+        cb(err);
+        return;
+      }
       if (mockExecFileFailure) {
         const err = mockExecFileFailure;
         mockExecFileFailure = undefined;
@@ -109,5 +130,65 @@ describe('buildContainerImage', () => {
         { architecture: 'x86_64' }
       )
     ).rejects.toBeInstanceOf(LocalInvokeBuildError);
+  });
+
+  describe('noBuild=true (--no-build)', () => {
+    it('skips docker build and returns the cached tag (happy path)', async () => {
+      mockExecFile.mockClear();
+      mockExecFileFailureMatch = undefined;
+
+      const tag = await buildContainerImage(
+        { source: { directory: 'asset.cached' } },
+        '/cdk.out',
+        { architecture: 'x86_64', noBuild: true }
+      );
+
+      // Tag is returned (deterministic, derived from the source).
+      expect(tag).toMatch(/^cdkd-local-invoke-/);
+      // Exactly one docker call: `docker image inspect <tag>`. NO `docker
+      // build` invocation.
+      expect(mockExecFile).toHaveBeenCalledTimes(1);
+      const calledArgs = mockExecFile.mock.calls[0]![1];
+      expect(calledArgs).toEqual(['image', 'inspect', tag]);
+      expect(calledArgs).not.toContain('build');
+    });
+
+    it('errors clearly when the cached tag is missing', async () => {
+      mockExecFile.mockClear();
+      // Make `docker image inspect` fail on the very next call (cache miss).
+      mockExecFileFailureMatch = {
+        match: (args) => args[0] === 'image' && args[1] === 'inspect',
+        err: { stderr: 'Error: No such image' },
+      };
+
+      await expect(
+        buildContainerImage(
+          { source: { directory: 'asset.missing' } },
+          '/cdk.out',
+          { architecture: 'x86_64', noBuild: true }
+        )
+      ).rejects.toThrow(/not in local registry.*--no-build is set/);
+      mockExecFileFailureMatch = undefined;
+    });
+
+    it('reuses the same tag noBuild produces as a no-noBuild build', async () => {
+      // Tag stability: --no-build's verifier and the actual build path
+      // must agree on the deterministic tag (otherwise the user's prior
+      // `cdkd local invoke` build would not be reachable from --no-build).
+      mockExecFile.mockClear();
+      mockExecFileFailureMatch = undefined;
+
+      const built = await buildContainerImage(
+        { source: { directory: 'asset.match' } },
+        '/cdk.out',
+        { architecture: 'x86_64' }
+      );
+      const verified = await buildContainerImage(
+        { source: { directory: 'asset.match' } },
+        '/cdk.out',
+        { architecture: 'x86_64', noBuild: true }
+      );
+      expect(built).toBe(verified);
+    });
   });
 });
