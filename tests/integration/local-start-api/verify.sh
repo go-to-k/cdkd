@@ -106,6 +106,7 @@ EXPECTED_ROUTES=(
   "GET     /items"
   "POST    /items"
   "GET     /items/{id}"
+  "GET     /protected"
   "ANY     /v1/{proxy+}"
   "ANY     /{proxy+}"
 )
@@ -151,6 +152,23 @@ curl_assert "ANY /v1/anything" "http://127.0.0.1:${PORT}/v1/anything" '"routedVi
 # proxy fallback only fires on paths that don't match REST — try a
 # distinct prefix.
 curl_assert "Function URL fallback" "http://127.0.0.1:${PORT}/url-only/ping" '"functionUrl":true'
+
+# PR 8b: authorizer-protected route. Without the Bearer token the
+# authorizer Deny's; with the Bearer token the route handler runs and
+# echoes the authorizer's context map.
+echo "==> Authorizer pass: GET /protected without token -> 401 (HTTP v2 deny)"
+auth_status=$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:${PORT}/protected")
+if [[ "${auth_status}" != "401" ]]; then
+  echo "FAIL: expected 401 from authorizer deny, got ${auth_status}"
+  cat "${LOG_FILE}"
+  exit 1
+fi
+echo "    [GET /protected (deny)] OK (status=401)"
+
+curl_assert "GET /protected (allow)" \
+  "http://127.0.0.1:${PORT}/protected" \
+  '"protected":true' \
+  -H 'Authorization: Bearer let-me-in'
 
 echo ""
 echo "==> All local-start-api smoke tests passed"
