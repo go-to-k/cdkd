@@ -75,7 +75,14 @@ Run each check and report pass/fail:
    - Check `src/index.ts` exports are consistent
 
 8. **Code review**
-   - `git diff main...HEAD` — review the actual diff
+   - **First, run `/review-pr <N>`** to get a size-appropriate review plan. The skill outputs one of:
+     - **inline spot-check** (small PR, < 300 LOC OR < 5 files, no security-sensitive paths) — read the diff yourself in this step; no sub-agent dispatch.
+     - **1 reviewer** (medium PR, 300-1000 LOC) — dispatch a single `pr-code-reviewer` agent (the skill emits a ready-to-paste Agent call).
+     - **3-axis parallel** (large PR ≥ 1000 LOC OR security-sensitive paths) — dispatch all three of `pr-spec-reviewer` / `pr-code-reviewer` / `pr-test-reviewer` in parallel (single message, three Agent tool calls).
+
+     The skill applies bias factors (security surfaces bump up; pure-infra / docs / tests-only bump down). Trust the recommendation; override only when you have a concrete reason (note the reason here).
+   - Synthesize the reviewer reports (or your inline read) into a pass / issues-found verdict. Any blocker → fix-back loop before continuing.
+   - `git diff main...HEAD` — confirm the diff is what you reviewed (no last-minute commits slipped through).
    - For each change: is it correct? complete? necessary?
    - Check for:
      - Logic errors or unhandled edge cases
