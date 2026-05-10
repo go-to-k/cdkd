@@ -48,6 +48,15 @@ export interface InvokeResult {
  * RIE is fast to start (<1s in practice) but the container's overall
  * boot can be slower on a cold daemon — 5s is the spec's recommended
  * window. We poll cheap (every 100ms) so the typical case is sub-second.
+ *
+ * After the HTTP probe succeeds, sleep a short post-ready settle window
+ * before returning. Even when RIE answered an HTTP status, the very next
+ * `fetch(/2015-03-31/...)` from the caller has been observed to race
+ * against RIE on cold-loaded dockers and hit `TypeError: fetch failed`
+ * (intermittent on slow / loaded daemons). 250ms is empirically
+ * sufficient and is cheap for the common case; the `fetchWithStartupRetry`
+ * helper inside `invokeRie` is the second line of defense for the case
+ * where 250ms isn't enough.
  */
 export async function waitForRieReady(host: string, port: number, timeoutMs = 5000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
@@ -56,7 +65,14 @@ export async function waitForRieReady(host: string, port: number, timeoutMs = 50
   while (Date.now() < deadline) {
     try {
       const ok = await httpProbe(host, port, 500);
-      if (ok) return;
+      if (ok) {
+        // Post-ready settle — see docstring above. Defense-in-depth on top
+        // of the HTTP probe: even after a real HTTP response, the very
+        // next `fetch()` against RIE has been observed to race on cold
+        // dockers; a short pause shrinks the window further.
+        await delay(250);
+        return;
+      }
     } catch (err) {
       lastError = err;
     }
@@ -145,12 +161,7 @@ export async function invokeRie(
 
   let response: Response;
   try {
-    response = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body,
-      signal: controller.signal,
-    });
+    response = await fetchWithStartupRetry(url, body, controller.signal);
   } catch (err) {
     if ((err as { name?: string }).name === 'AbortError') {
       throw new Error(
@@ -172,4 +183,44 @@ export async function invokeRie(
     // container could return plain text and we should not crash.
   }
   return { payload, raw };
+}
+
+/**
+ * Wrap a single POST against RIE in a tiny startup-retry loop. Even
+ * after `waitForRieReady`'s HTTP probe has succeeded and the post-ready
+ * settle has elapsed, the next `fetch()` has been observed to race
+ * against RIE's HTTP handler on cold dockers. The race manifests as
+ * Node's `TypeError: fetch failed` (a pre-response, connection-level
+ * error with no HTTP status). We retry twice with a 200ms backoff —
+ * cheap when the race doesn't trigger, decisive when it does.
+ *
+ * Once a real HTTP response (any status) is observed, we return it
+ * unchanged: the handler may have legitimately failed, and that's not
+ * something we should retry. Abort errors propagate immediately so the
+ * outer timeout still wins.
+ */
+async function fetchWithStartupRetry(
+  url: string,
+  body: string,
+  signal: AbortSignal
+): Promise<Response> {
+  const maxAttempts = 3;
+  let lastError: unknown;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      return await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body,
+        signal,
+      });
+    } catch (err) {
+      const name = (err as { name?: string }).name;
+      if (name === 'AbortError') throw err;
+      lastError = err;
+      if (attempt === maxAttempts) break;
+      await delay(200);
+    }
+  }
+  throw lastError;
 }
