@@ -54,7 +54,7 @@ The skill itself never spawns reviewers. It reads PR stats, applies the heuristi
 
    **Down-bias triggers** (move tier DOWN by one step, never below inline) — only fires when ALL paths fall in the listed buckets:
 
-   - **Pure docs/infra**: every path matches one of `.gitignore`, `CLAUDE.md`, `README.md`, `docs/**`, `.claude/skills/**`, `.claude/agents/**`, `.claude/hooks/**`, `.markgate.yml`, `package.json` (top-level deps only — count as docs-ish for review purposes when the diff is dep bumps)
+   - **Pure docs/infra**: every path matches one of `.gitignore`, `CLAUDE.md`, `README.md`, `docs/**`, `.claude/skills/**`, `.claude/agents/**`, `.claude/hooks/**`, `.claude/settings*.json`, `.markgate.yml`, `package.json` (top-level deps only — count as docs-ish for review purposes when the diff is dep bumps)
    - **Test-only**: every path matches `tests/**`
 
    If both up- and down-bias triggers fire (e.g. a tests-only diff that touches a security-sensitive provider's test file), prefer up-bias — security wins.
