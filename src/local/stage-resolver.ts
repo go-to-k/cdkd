@@ -66,11 +66,14 @@ export interface ResolvedStage {
  *
  *   - **Match found**: API enters the result map with the picked
  *     Stage's `StageName` + variables. `attachStageContext` then sets
- *     `route.stageVariables` from the resolved Stage AND (for REST v1
- *     routes only) overrides `route.stage` with the picked Stage's
- *     `StageName`. HTTP API v2 routes keep `route.stage = '$default'`
- *     even on a matched stage because that's the only stage HTTP API
- *     exposes via `requestContext.stage`.
+ *     `route.stageVariables` from the resolved Stage AND overrides
+ *     `route.stage` with the picked Stage's `StageName` for **both**
+ *     REST v1 and HTTP API v2 routes. HTTP API v2's auto-deploy default
+ *     is `'$default'`, but AWS also supports named stages (the
+ *     `CreateStage` API accepts any name); when the template carries a
+ *     named v2 Stage we surface that name through `requestContext.stage`
+ *     so a handler that reads `event.requestContext.stage` sees the
+ *     same value AWS would surface in the deployed environment.
  */
 export function buildStageMap(
   template: CloudFormationTemplate,
@@ -177,9 +180,9 @@ function toResolvedStage(
 }
 
 /**
- * Mutate every route in `routes` to set `stageVariables` and (for
- * REST v1 / HTTP API routes) override `stage` with the resolved Stage's
- * `StageName`. Function URL routes are left untouched.
+ * Mutate every route in `routes` to set `stageVariables` and (for routes
+ * that map to a resolved Stage) override `stage` with the resolved
+ * Stage's `StageName`. Function URL routes are left untouched.
  *
  * Invariants:
  *
@@ -192,11 +195,12 @@ function toResolvedStage(
  *
  *   - Routes whose `apiLogicalId` IS in the map get `stageVariables` set
  *     to the resolved Stage's variables (`null` when the Stage has none),
- *     and (for REST v1) the route's `stage` is overridden with the
- *     Stage's `StageName`. HTTP API v2 routes keep `stage: '$default'`
- *     because that's the only stage HTTP API exposes to the integration
- *     event — the AWS-side `requestContext.stage` is always `'$default'`
- *     for HTTP API.
+ *     and `route.stage` is overridden with the Stage's `StageName` for
+ *     **both** REST v1 and HTTP API v2 routes. HTTP API v2's default
+ *     auto-deployed stage is `$default`, but AWS supports named stages
+ *     on v2 too (`CreateStage` accepts any name) — when the template
+ *     carries one, surface it through `requestContext.stage` so the
+ *     local event matches what AWS would emit at the deployed endpoint.
  */
 export function attachStageContext(
   routes: DiscoveredRoute[],
@@ -213,9 +217,7 @@ export function attachStageContext(
       continue;
     }
     route.stageVariables = stage.variables;
-    if (route.source === 'rest-v1') {
-      route.stage = stage.stageName;
-    }
+    route.stage = stage.stageName;
   }
 }
 

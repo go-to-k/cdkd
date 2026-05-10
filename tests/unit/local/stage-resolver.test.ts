@@ -208,7 +208,11 @@ describe('attachStageContext', () => {
     expect(routes[0]!.stageVariables).toEqual({ foo: 'bar' });
   });
 
-  it('does NOT override stage name on HTTP API v2 routes (always $default)', () => {
+  it('overrides stage name + sets variables on HTTP API v2 routes too (named v2 stages are surfaced)', () => {
+    // Pre-issue #241 item 4: v2 routes kept `stage: '$default'` even
+    // when the template carried a named v2 Stage. AWS supports named
+    // stages on HTTP API v2 (CreateStage accepts any name), so the
+    // local event should mirror what the deployed endpoint would emit.
     const routes = [route({ apiLogicalId: 'Api', source: 'http-api', apiVersion: 'v2' })];
     const stageMap = new Map<string, ResolvedStage>([
       [
@@ -222,8 +226,26 @@ describe('attachStageContext', () => {
       ],
     ]);
     attachStageContext(routes, stageMap);
-    expect(routes[0]!.stage).toBe('$default');
+    expect(routes[0]!.stage).toBe('prod');
     expect(routes[0]!.stageVariables).toEqual({ foo: 'bar' });
+  });
+
+  it('keeps stage at $default when the resolved v2 Stage is named $default', () => {
+    const routes = [route({ apiLogicalId: 'Api', source: 'http-api', apiVersion: 'v2' })];
+    const stageMap = new Map<string, ResolvedStage>([
+      [
+        'Api',
+        {
+          stageLogicalId: 'Stage',
+          stageName: '$default',
+          apiVersion: 'v2',
+          variables: { theme: 'dark' },
+        },
+      ],
+    ]);
+    attachStageContext(routes, stageMap);
+    expect(routes[0]!.stage).toBe('$default');
+    expect(routes[0]!.stageVariables).toEqual({ theme: 'dark' });
   });
 
   it('sets stageVariables: null on Function URL routes (no apiLogicalId)', () => {
@@ -282,9 +304,12 @@ describe('attachStageContext', () => {
     attachStageContext(routes, m);
     expect(routes[0]!.stageVariables).toEqual({ region: 'us-east-1' });
     expect(routes[1]!.stageVariables).toBeNull();
-    // Both v2 routes keep stage='$default' (HTTP API only exposes
-    // $default to the integration event regardless of matched stage).
-    expect(routes[0]!.stage).toBe('$default');
+    // ApiA matched the `prod` Stage, so its v2 route gets stage='prod'
+    // (issue #241 item 4 — v2 named stages are now surfaced through
+    // requestContext.stage, not silently flattened to $default). ApiB
+    // has no matching Stage in the map, so the discovery-time
+    // placeholder ($default for HTTP API v2) is preserved.
+    expect(routes[0]!.stage).toBe('prod');
     expect(routes[1]!.stage).toBe('$default');
   });
 });

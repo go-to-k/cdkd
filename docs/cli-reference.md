@@ -1153,12 +1153,15 @@ that case.
 - **`--stage <name>`**: select a Stage by `StageName`. Applied per-API
   — a `--stage prod` override against an app with three APIs picks
   the matching Stage on each. APIs without a matching Stage get
-  `stageVariables: null` and surface a warn line at startup. For
-  REST v1 routes, the selected stage name is also threaded into
-  `event.requestContext.stage`. For HTTP API v2 routes, the flag
-  drives `event.stageVariables` only — `event.requestContext.stage`
-  is always `'$default'` (AWS-side limitation: HTTP API only exposes
-  one stage to the integration event).
+  `stageVariables: null` and surface a warn line at startup. The
+  resolved stage name is threaded into `event.requestContext.stage`
+  for **both** REST v1 and HTTP API v2 routes. AWS supports named
+  stages on HTTP API v2 (`CreateStage` accepts any name; `$default`
+  is the auto-deploy default but not the only option), so a v2
+  template that pins a named Stage gets that name surfaced through
+  the integration event — matching what the deployed endpoint would
+  emit. v2 APIs without a templated Stage continue to use
+  `'$default'`.
 - **Function URL** routes don't have a Stage — `stageVariables` stays
   `null` regardless of the flag.
 - **Intrinsic-valued entries** (`Ref`, `Fn::GetAtt`, `Fn::Sub`) in
