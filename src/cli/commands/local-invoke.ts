@@ -128,208 +128,278 @@ async function localInvokeCommand(target: string, options: LocalInvokeOptions): 
 
   warnIfDeprecatedRegion(options);
 
-  // The role-arn helper accepts an optional region for the SDK fallback;
-  // any AWS calls invoked indirectly (e.g. STS during synthesis context
-  // probing) will pick up the assumed credentials.
-  await applyRoleArnIfSet({ roleArn: options.roleArn, region: options.region });
+  // Track tmpdirs that may be materialized below so the outer `finally`
+  // (and the SIGINT handler) can clean them up regardless of where in
+  // the function body a failure unwinds. Hoisted out of the previous
+  // try/finally pair: `resolveImagePlan` runs `mkdtempSync` + `cpSync`
+  // before `runDetached` — if the failure landed between those two
+  // calls (`pickFreePort`, `parseDebugPort`, etc.), unwind raced past
+  // the per-block finally and we leaked the merged-layers tmpdir
+  // (potentially hundreds of MB for node_modules-heavy layers).
+  let imagePlan: ImagePlan | undefined;
+  let containerId: string | undefined;
+  let stopLogs: (() => void) | undefined;
+  let sigintHandler: (() => void) | undefined;
 
-  await ensureDockerAvailable();
-
-  // Synthesize. Default is "synth every time" (Q2 recommendation C):
-  // safe-by-default, with `-a/--app cdk.out` as the explicit opt-out
-  // for the watch / fast-path use case.
-  const appCmd = resolveApp(options.app);
-  if (!appCmd) {
-    throw new Error('No CDK app specified. Pass --app, set CDKD_APP, or add "app" to cdk.json.');
-  }
-
-  logger.info('Synthesizing CDK app...');
-  const synthesizer = new Synthesizer();
-  const context = parseContextOptions(options.context);
-  const synthOpts: SynthesisOptions = {
-    app: appCmd,
-    output: options.output,
-    ...(options.region && { region: options.region }),
-    ...(options.profile && { profile: options.profile }),
-    ...(Object.keys(context).length > 0 && { context }),
-  };
-  const { stacks } = await synthesizer.synthesize(synthOpts);
-
-  const lambda = resolveLambdaTarget(target, stacks);
-  const targetLabel = lambda.kind === 'zip' ? lambda.runtime : 'container image';
-  logger.info(`Target: ${lambda.stack.stackName}/${lambda.logicalId} (${targetLabel})`);
-
-  // Resolve the docker image + bind-mounts + cmd / entrypoint / workdir /
-  // platform that depend on the function's `kind`. ZIP Lambdas use a
-  // public Lambda base image and bind-mount the local code at
-  // /var/task; container Lambdas (PR 5) build a CDK image asset locally
-  // OR pull from ECR (same-acct/region) and have no bind-mount.
-  const imagePlan = await resolveImagePlan(lambda, options);
-
-  // PR 2 — `--from-state`: load cdkd's S3 state for the target stack and
-  // pre-substitute intrinsic-valued env vars before they hit the regular
-  // env-resolver. State load failures are surfaced as warnings (we keep
-  // PR 1 behavior — drop intrinsic vars and continue) rather than hard
-  // errors, so a missing / corrupt state file doesn't abort an invoke
-  // that the user wanted to run with `--env-vars` overrides anyway.
-  let stateAudit: StateEnvSubstitutionAudit | undefined;
-  let templateEnv = getTemplateEnv(lambda.resource);
-  let stateForRoleHint: StackState | undefined;
-  if (options.fromState) {
-    const loaded = await loadStateForStack(lambda.stack.stackName, lambda.stack.region, {
-      ...(options.stackRegion !== undefined && { stackRegion: options.stackRegion }),
-      ...(options.stateBucket !== undefined && { stateBucket: options.stateBucket }),
-      statePrefix: options.statePrefix,
-      ...(options.region !== undefined && { region: options.region }),
-      ...(options.profile !== undefined && { profile: options.profile }),
-    });
-    if (loaded) {
-      stateForRoleHint = loaded.state;
-      const { env, audit } = substituteEnvVarsFromState(templateEnv, loaded.state.resources);
-      templateEnv = env;
-      stateAudit = audit;
-      for (const key of audit.resolvedKeys) {
-        logger.debug(`--from-state: substituted env var ${key} from cdkd state`);
-      }
-      for (const { key, reason } of audit.unresolved) {
-        logger.warn(
-          `--from-state: could not substitute env var ${key} (${reason}). ` +
-            `Override it via --env-vars or it will be dropped.`
+  /**
+   * Unified cleanup for both the success / failure unwind path AND the
+   * SIGINT handler. Idempotent — every step guards on its own undefined
+   * sentinel, so partial-init is safe (e.g. SIGINT during synth, before
+   * the docker container is even created). Errors per step are logged
+   * at debug; we never want cleanup itself to mask a real handler error.
+   */
+  const cleanup = async (): Promise<void> => {
+    if (stopLogs) {
+      try {
+        stopLogs();
+      } catch (err) {
+        getLogger().debug(
+          `streamLogs stop failed: ${err instanceof Error ? err.message : String(err)}`
         );
       }
     }
-  }
-
-  // Resolve env vars. Intrinsic-valued template entries (i.e. the ones
-  // `--from-state` could not substitute, plus all of them when the flag
-  // is off) are warned about and dropped; the user can override them via
-  // --env-vars (SAM-shape).
-  const overrides = readEnvOverridesFile(options.envVars);
-  const envResult = resolveEnvVars(lambda.logicalId, templateEnv, overrides);
-  for (const key of envResult.unresolved) {
-    // The state-resolver already warned for keys it tried + failed on, so
-    // suppress the per-key duplicate warn here. The `--env-vars` /
-    // wait-for-state hints still fire for the no-flag path, which is the
-    // original PR 1 UX.
-    if (stateAudit && stateAudit.unresolved.some((u) => u.key === key)) continue;
-    logger.warn(
-      `Environment variable ${key} contains a CloudFormation intrinsic and was dropped. ` +
-        `Override it with --env-vars (e.g. {"${lambda.logicalId}":{"${key}":"<literal>"}}) or pass --from-state to recover deployed values.`
-    );
-  }
-
-  // Q1 follow-up: when `--from-state` is set but `--assume-role` is NOT,
-  // peek at the function's `Role` property in state and surface the
-  // deployed execution role's ARN as a one-line hint. We deliberately
-  // do NOT auto-assume — that's a future PR's scope; v1 keeps the user's
-  // explicit ARN as the only path to scoped credentials.
-  if (options.fromState && !options.assumeRole && stateForRoleHint) {
-    suggestAssumeRoleFromState(stateForRoleHint, lambda.logicalId);
-  }
-
-  // Read the event payload. Default to {} (matches SAM).
-  const event = await readEvent(options);
-
-  // Build the env that the container sees. Lambda runtime conventions:
-  // we always pass the standard AWS_LAMBDA_* vars so context.* fields
-  // inside the handler look real, and forward AWS credentials so SDK
-  // calls can hit AWS from inside the handler.
-  const dockerEnv: Record<string, string> = {
-    AWS_LAMBDA_FUNCTION_NAME: lambda.logicalId,
-    AWS_LAMBDA_FUNCTION_MEMORY_SIZE: String(lambda.memoryMb),
-    AWS_LAMBDA_FUNCTION_TIMEOUT: String(lambda.timeoutSec),
-    AWS_LAMBDA_FUNCTION_VERSION: '$LATEST',
-    AWS_LAMBDA_LOG_GROUP_NAME: `/aws/lambda/${lambda.logicalId}`,
-    AWS_LAMBDA_LOG_STREAM_NAME: 'local',
-    ...envResult.resolved,
-  };
-  // Q1 recommendation B: if --assume-role is set, swap the developer's
-  // credentials for STS-issued temporary credentials scoped to the
-  // function's deployed execution role. Otherwise pass the developer's
-  // creds through (SAM-compatible default). Region precedence mirrors
-  // the rest of cdkd: --region > AWS_REGION > AWS_DEFAULT_REGION.
-  if (options.assumeRole) {
-    const stsRegion =
-      options.region ?? process.env['AWS_REGION'] ?? process.env['AWS_DEFAULT_REGION'];
-    const creds = await assumeLambdaExecutionRole(options.assumeRole, stsRegion);
-    dockerEnv['AWS_ACCESS_KEY_ID'] = creds.accessKeyId;
-    dockerEnv['AWS_SECRET_ACCESS_KEY'] = creds.secretAccessKey;
-    dockerEnv['AWS_SESSION_TOKEN'] = creds.sessionToken;
-    if (stsRegion) dockerEnv['AWS_REGION'] = stsRegion;
-  } else {
-    forwardAwsEnv(dockerEnv);
-  }
-
-  // Optional inspector: --debug-port enables `node --inspect-brk` inside
-  // the container. The Lambda Node.js base image's RIE entrypoint
-  // forwards NODE_OPTIONS to node, so this is enough on the ZIP path.
-  // On the IMAGE path, the Dockerfile's FROM is user-controlled — the
-  // env-var still propagates but only matters when the runtime is Node;
-  // surface a warn for non-Node container Lambdas so the user knows
-  // why nothing happened.
-  let debugPort: number | undefined;
-  if (options.debugPort) {
-    debugPort = Number(options.debugPort);
-    if (!Number.isInteger(debugPort) || debugPort <= 0 || debugPort > 65535) {
-      throw new Error(`--debug-port must be an integer in 1..65535, got '${options.debugPort}'`);
+    if (containerId) {
+      try {
+        await removeContainer(containerId);
+      } catch (err) {
+        getLogger().debug(
+          `removeContainer(${containerId}) failed: ${err instanceof Error ? err.message : String(err)}`
+        );
+      }
     }
-    dockerEnv['NODE_OPTIONS'] = `--inspect-brk=0.0.0.0:${debugPort}`;
-    if (lambda.kind === 'image') {
-      logger.warn(
-        '--debug-port sets NODE_OPTIONS unconditionally on container Lambdas. ' +
-          "If the image's runtime is not Node.js, this flag is a no-op."
-      );
+    if (imagePlan?.inlineTmpDir) {
+      try {
+        rmSync(imagePlan.inlineTmpDir, { recursive: true, force: true });
+      } catch (err) {
+        getLogger().debug(
+          `Failed to remove inline-code tmpdir ${imagePlan.inlineTmpDir}: ${
+            err instanceof Error ? err.message : String(err)
+          }`
+        );
+      }
     }
-  }
-
-  const hostPort = await pickFreePort();
-  const containerHost = options.containerHost;
-
-  // PR 6 (#232): when the function declares any layers, log the count
-  // — multi-layer Lambdas merge into one bind mount on the host (Docker
-  // rejects duplicate `/opt` mounts), but reporting "1 mount" here
-  // would understate what the user templated, so we read the count
-  // off the resolver's per-layer list instead. Image Lambdas always
-  // have `layers: []` so this branch fires only on ZIP Lambdas.
-  if (lambda.layers.length > 0) {
-    logger.info(
-      `Mounting ${lambda.layers.length} Lambda layer${lambda.layers.length === 1 ? '' : 's'} at /opt`
-    );
-  }
-  logger.info(`Starting container (image=${imagePlan.image}, port=${hostPort})...`);
-  const containerId = await runDetached({
-    image: imagePlan.image,
-    mounts: imagePlan.mounts,
-    extraMounts: imagePlan.extraMounts,
-    env: dockerEnv,
-    cmd: imagePlan.cmd,
-    hostPort,
-    host: containerHost,
-    ...(debugPort !== undefined && { debugPort }),
-    ...(imagePlan.platform !== undefined && { platform: imagePlan.platform }),
-    ...(imagePlan.entryPoint !== undefined && { entryPoint: imagePlan.entryPoint }),
-    ...(imagePlan.workingDir !== undefined && { workingDir: imagePlan.workingDir }),
-  });
-
-  // Stream the container's logs to the user's terminal so they see the
-  // handler's stdout/stderr as it runs. The stop function is called from
-  // the finally to detach before docker rm.
-  const stopLogs = streamLogs(containerId);
-
-  // Make sure SIGINT (^C) cleans up the container — the user expects
-  // ^C to stop both the CLI AND the daemonized container in one shot.
-  // process.on() expects a `void`-returning handler; wrap the async
-  // cleanup in a non-async closure so the lint rule about
-  // misused-promises doesn't fire.
-  const sigintHandler = (): void => {
-    stopLogs();
-    void removeContainer(containerId).then(() => {
-      process.exit(130);
-    });
+    if (imagePlan?.layersTmpDir) {
+      try {
+        rmSync(imagePlan.layersTmpDir, { recursive: true, force: true });
+      } catch (err) {
+        getLogger().debug(
+          `Failed to remove merged-layers tmpdir ${imagePlan.layersTmpDir}: ${
+            err instanceof Error ? err.message : String(err)
+          }`
+        );
+      }
+    }
   };
-  process.on('SIGINT', sigintHandler);
 
   try {
+    // The role-arn helper accepts an optional region for the SDK fallback;
+    // any AWS calls invoked indirectly (e.g. STS during synthesis context
+    // probing) will pick up the assumed credentials.
+    await applyRoleArnIfSet({ roleArn: options.roleArn, region: options.region });
+
+    await ensureDockerAvailable();
+
+    // Synthesize. Default is "synth every time" (Q2 recommendation C):
+    // safe-by-default, with `-a/--app cdk.out` as the explicit opt-out
+    // for the watch / fast-path use case.
+    const appCmd = resolveApp(options.app);
+    if (!appCmd) {
+      throw new Error('No CDK app specified. Pass --app, set CDKD_APP, or add "app" to cdk.json.');
+    }
+
+    logger.info('Synthesizing CDK app...');
+    const synthesizer = new Synthesizer();
+    const context = parseContextOptions(options.context);
+    const synthOpts: SynthesisOptions = {
+      app: appCmd,
+      output: options.output,
+      ...(options.region && { region: options.region }),
+      ...(options.profile && { profile: options.profile }),
+      ...(Object.keys(context).length > 0 && { context }),
+    };
+    const { stacks } = await synthesizer.synthesize(synthOpts);
+
+    const lambda = resolveLambdaTarget(target, stacks);
+    const targetLabel = lambda.kind === 'zip' ? lambda.runtime : 'container image';
+    logger.info(`Target: ${lambda.stack.stackName}/${lambda.logicalId} (${targetLabel})`);
+
+    // Resolve the docker image + bind-mounts + cmd / entrypoint / workdir /
+    // platform that depend on the function's `kind`. ZIP Lambdas use a
+    // public Lambda base image and bind-mount the local code at
+    // /var/task; container Lambdas (PR 5) build a CDK image asset locally
+    // OR pull from ECR (same-acct/region) and have no bind-mount.
+    // From this point on, `imagePlan` may carry tmpdirs (`inlineTmpDir`
+    // / `layersTmpDir`) — the outer `finally` reads them off `imagePlan`
+    // for cleanup.
+    imagePlan = await resolveImagePlan(lambda, options);
+
+    // PR 2 — `--from-state`: load cdkd's S3 state for the target stack and
+    // pre-substitute intrinsic-valued env vars before they hit the regular
+    // env-resolver. State load failures are surfaced as warnings (we keep
+    // PR 1 behavior — drop intrinsic vars and continue) rather than hard
+    // errors, so a missing / corrupt state file doesn't abort an invoke
+    // that the user wanted to run with `--env-vars` overrides anyway.
+    let stateAudit: StateEnvSubstitutionAudit | undefined;
+    let templateEnv = getTemplateEnv(lambda.resource);
+    let stateForRoleHint: StackState | undefined;
+    if (options.fromState) {
+      const loaded = await loadStateForStack(lambda.stack.stackName, lambda.stack.region, {
+        ...(options.stackRegion !== undefined && { stackRegion: options.stackRegion }),
+        ...(options.stateBucket !== undefined && { stateBucket: options.stateBucket }),
+        statePrefix: options.statePrefix,
+        ...(options.region !== undefined && { region: options.region }),
+        ...(options.profile !== undefined && { profile: options.profile }),
+      });
+      if (loaded) {
+        stateForRoleHint = loaded.state;
+        const { env, audit } = substituteEnvVarsFromState(templateEnv, loaded.state.resources);
+        templateEnv = env;
+        stateAudit = audit;
+        for (const key of audit.resolvedKeys) {
+          logger.debug(`--from-state: substituted env var ${key} from cdkd state`);
+        }
+        for (const { key, reason } of audit.unresolved) {
+          logger.warn(
+            `--from-state: could not substitute env var ${key} (${reason}). ` +
+              `Override it via --env-vars or it will be dropped.`
+          );
+        }
+      }
+    }
+
+    // Resolve env vars. Intrinsic-valued template entries (i.e. the ones
+    // `--from-state` could not substitute, plus all of them when the flag
+    // is off) are warned about and dropped; the user can override them via
+    // --env-vars (SAM-shape).
+    const overrides = readEnvOverridesFile(options.envVars);
+    const envResult = resolveEnvVars(lambda.logicalId, templateEnv, overrides);
+    for (const key of envResult.unresolved) {
+      // The state-resolver already warned for keys it tried + failed on, so
+      // suppress the per-key duplicate warn here. The `--env-vars` /
+      // wait-for-state hints still fire for the no-flag path, which is the
+      // original PR 1 UX.
+      if (stateAudit && stateAudit.unresolved.some((u) => u.key === key)) continue;
+      logger.warn(
+        `Environment variable ${key} contains a CloudFormation intrinsic and was dropped. ` +
+          `Override it with --env-vars (e.g. {"${lambda.logicalId}":{"${key}":"<literal>"}}) or pass --from-state to recover deployed values.`
+      );
+    }
+
+    // Q1 follow-up: when `--from-state` is set but `--assume-role` is NOT,
+    // peek at the function's `Role` property in state and surface the
+    // deployed execution role's ARN as a one-line hint. We deliberately
+    // do NOT auto-assume — that's a future PR's scope; v1 keeps the user's
+    // explicit ARN as the only path to scoped credentials.
+    if (options.fromState && !options.assumeRole && stateForRoleHint) {
+      suggestAssumeRoleFromState(stateForRoleHint, lambda.logicalId);
+    }
+
+    // Read the event payload. Default to {} (matches SAM).
+    const event = await readEvent(options);
+
+    // Build the env that the container sees. Lambda runtime conventions:
+    // we always pass the standard AWS_LAMBDA_* vars so context.* fields
+    // inside the handler look real, and forward AWS credentials so SDK
+    // calls can hit AWS from inside the handler.
+    const dockerEnv: Record<string, string> = {
+      AWS_LAMBDA_FUNCTION_NAME: lambda.logicalId,
+      AWS_LAMBDA_FUNCTION_MEMORY_SIZE: String(lambda.memoryMb),
+      AWS_LAMBDA_FUNCTION_TIMEOUT: String(lambda.timeoutSec),
+      AWS_LAMBDA_FUNCTION_VERSION: '$LATEST',
+      AWS_LAMBDA_LOG_GROUP_NAME: `/aws/lambda/${lambda.logicalId}`,
+      AWS_LAMBDA_LOG_STREAM_NAME: 'local',
+      ...envResult.resolved,
+    };
+    // Q1 recommendation B: if --assume-role is set, swap the developer's
+    // credentials for STS-issued temporary credentials scoped to the
+    // function's deployed execution role. Otherwise pass the developer's
+    // creds through (SAM-compatible default). Region precedence mirrors
+    // the rest of cdkd: --region > AWS_REGION > AWS_DEFAULT_REGION.
+    if (options.assumeRole) {
+      const stsRegion =
+        options.region ?? process.env['AWS_REGION'] ?? process.env['AWS_DEFAULT_REGION'];
+      const creds = await assumeLambdaExecutionRole(options.assumeRole, stsRegion);
+      dockerEnv['AWS_ACCESS_KEY_ID'] = creds.accessKeyId;
+      dockerEnv['AWS_SECRET_ACCESS_KEY'] = creds.secretAccessKey;
+      dockerEnv['AWS_SESSION_TOKEN'] = creds.sessionToken;
+      if (stsRegion) dockerEnv['AWS_REGION'] = stsRegion;
+    } else {
+      forwardAwsEnv(dockerEnv);
+    }
+
+    // Optional inspector: --debug-port enables `node --inspect-brk` inside
+    // the container. The Lambda Node.js base image's RIE entrypoint
+    // forwards NODE_OPTIONS to node, so this is enough on the ZIP path.
+    // On the IMAGE path, the Dockerfile's FROM is user-controlled — the
+    // env-var still propagates but only matters when the runtime is Node;
+    // surface a warn for non-Node container Lambdas so the user knows
+    // why nothing happened.
+    let debugPort: number | undefined;
+    if (options.debugPort) {
+      debugPort = Number(options.debugPort);
+      if (!Number.isInteger(debugPort) || debugPort <= 0 || debugPort > 65535) {
+        throw new Error(`--debug-port must be an integer in 1..65535, got '${options.debugPort}'`);
+      }
+      dockerEnv['NODE_OPTIONS'] = `--inspect-brk=0.0.0.0:${debugPort}`;
+      if (lambda.kind === 'image') {
+        logger.warn(
+          '--debug-port sets NODE_OPTIONS unconditionally on container Lambdas. ' +
+            "If the image's runtime is not Node.js, this flag is a no-op."
+        );
+      }
+    }
+
+    const hostPort = await pickFreePort();
+    const containerHost = options.containerHost;
+
+    // PR 6 (#232): when the function declares any layers, log the count
+    // — multi-layer Lambdas merge into one bind mount on the host (Docker
+    // rejects duplicate `/opt` mounts), but reporting "1 mount" here
+    // would understate what the user templated, so we read the count
+    // off the resolver's per-layer list instead. Image Lambdas always
+    // have `layers: []` so this branch fires only on ZIP Lambdas.
+    if (lambda.layers.length > 0) {
+      logger.info(
+        `Mounting ${lambda.layers.length} Lambda layer${lambda.layers.length === 1 ? '' : 's'} at /opt`
+      );
+    }
+    logger.info(`Starting container (image=${imagePlan.image}, port=${hostPort})...`);
+    containerId = await runDetached({
+      image: imagePlan.image,
+      mounts: imagePlan.mounts,
+      extraMounts: imagePlan.extraMounts,
+      env: dockerEnv,
+      cmd: imagePlan.cmd,
+      hostPort,
+      host: containerHost,
+      ...(debugPort !== undefined && { debugPort }),
+      ...(imagePlan.platform !== undefined && { platform: imagePlan.platform }),
+      ...(imagePlan.entryPoint !== undefined && { entryPoint: imagePlan.entryPoint }),
+      ...(imagePlan.workingDir !== undefined && { workingDir: imagePlan.workingDir }),
+    });
+
+    // Stream the container's logs to the user's terminal so they see the
+    // handler's stdout/stderr as it runs. The stop function is called from
+    // the finally to detach before docker rm.
+    stopLogs = streamLogs(containerId);
+
+    // Make sure SIGINT (^C) cleans up the container — the user expects
+    // ^C to stop both the CLI AND the daemonized container in one shot.
+    // The handler runs the same `cleanup()` the outer `finally` does so
+    // tmpdirs (`inlineTmpDir` / `layersTmpDir`) are removed regardless
+    // of how the process exits — pre-fix, the SIGINT path skipped the
+    // outer finally and leaked the merged-layers tmpdir (which can be
+    // hundreds of MB for node_modules-heavy layers). process.on()
+    // expects a `void`-returning handler; wrap the async cleanup in a
+    // non-async closure so the lint rule about misused-promises doesn't
+    // fire.
+    sigintHandler = (): void => {
+      void cleanup().then(() => {
+        process.exit(130);
+      });
+    };
+    process.on('SIGINT', sigintHandler);
+
     await waitForRieReady(containerHost, hostPort, 5000);
 
     // Invoke timeout: 2x the function's Timeout, floor 30s. RIE doesn't
@@ -342,31 +412,8 @@ async function localInvokeCommand(target: string, options: LocalInvokeOptions): 
     await new Promise((resolveDelay) => setTimeout(resolveDelay, 250));
     process.stdout.write(`${result.raw}\n`);
   } finally {
-    process.off('SIGINT', sigintHandler);
-    stopLogs();
-    await removeContainer(containerId);
-    if (imagePlan.inlineTmpDir) {
-      try {
-        rmSync(imagePlan.inlineTmpDir, { recursive: true, force: true });
-      } catch (err) {
-        getLogger().debug(
-          `Failed to remove inline-code tmpdir ${imagePlan.inlineTmpDir}: ${
-            err instanceof Error ? err.message : String(err)
-          }`
-        );
-      }
-    }
-    if (imagePlan.layersTmpDir) {
-      try {
-        rmSync(imagePlan.layersTmpDir, { recursive: true, force: true });
-      } catch (err) {
-        getLogger().debug(
-          `Failed to remove merged-layers tmpdir ${imagePlan.layersTmpDir}: ${
-            err instanceof Error ? err.message : String(err)
-          }`
-        );
-      }
-    }
+    if (sigintHandler) process.off('SIGINT', sigintHandler);
+    await cleanup();
   }
 }
 
@@ -508,7 +555,7 @@ async function resolveZipImagePlan(
  * `-v ...:/opt:ro` entries at the same target path, so we can't rely
  * on overlay layering at the docker-runner layer.
  */
-function materializeLambdaLayers(layers: { logicalId: string; assetPath: string }[]): {
+export function materializeLambdaLayers(layers: { logicalId: string; assetPath: string }[]): {
   mount?: { hostPath: string; containerPath: string; readOnly: boolean };
   tmpDir?: string;
 } {

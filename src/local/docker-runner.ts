@@ -36,15 +36,19 @@ export interface DockerRunOptions {
   /**
    * Additional bind mounts applied AFTER `mounts` (PR 6 of #224, issue
    * #232 — Lambda Layers). The split is purely organizational: it lets
-   * the call site keep "the function's own code" (`mounts`) separate from
-   * "every Lambda Layer attached to this function" (`extraMounts`). The
-   * docker-runner emits one `-v <hostPath>:<containerPath>:<ro?>` per
-   * entry and the order matters: AWS layer semantics are "last layer
-   * wins on file collision", and Docker's overlay layering realizes the
-   * same when bind-mounts share a target path. Each layer becomes one
-   * `-v <layerAssetPath>:/opt:ro` entry; the caller is responsible for
-   * preserving the template's input order (the LAST template entry wins,
-   * matching AWS).
+   * the call site keep "the function's own code" (`mounts`) separate
+   * from any extra mounts the caller wants to compose. The docker-runner
+   * emits one `-v <hostPath>:<containerPath>:<ro?>` per entry, in
+   * order, with NO target-path coalescing — Docker rejects duplicate
+   * targets (`Error response from daemon: Duplicate mount point: ...`),
+   * so the caller MUST ensure each entry's `containerPath` is unique
+   * across `mounts` + `extraMounts`. For Lambda Layers specifically:
+   * AWS's "last layer wins on file collision" semantic is realized by
+   * the caller (`materializeLambdaLayers` in `local-invoke.ts` /
+   * `local-start-api.ts`) `cpSync`-merging every layer's asset
+   * directory into ONE host tmpdir in template order, then passing a
+   * single `{hostPath: <tmpdir>, containerPath: '/opt'}` entry here —
+   * NOT one mount per layer.
    */
   extraMounts?: { hostPath: string; containerPath: string; readOnly?: boolean }[];
   /** Environment variables to forward into the container. */

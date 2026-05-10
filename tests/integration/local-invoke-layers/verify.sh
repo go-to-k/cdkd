@@ -58,7 +58,10 @@ echo "${RESULT_1}" | grep -q '"counter":"count=7"' || {
 # 1b: greetings layer — last-wins. Both GreetingsA and GreetingsB
 # install /opt/nodejs/node_modules/util-greetings/index.js; the
 # template declares Layers in order [A, B, Counters], so B's index.js
-# must shadow A's via Docker overlay.
+# must overwrite A's. cdkd merges the layer asset dirs into a single
+# tmpdir on the host (cpSync recursive+force, in template order) and
+# bind-mounts that at /opt — Docker rejects multiple -v ...:/opt:ro
+# entries, so we cannot rely on overlay layering at the runtime.
 echo "${RESULT_1}" | grep -q '"greetingSource":"greetings-b"' || {
   echo "FAIL: expected greetingSource=greetings-b (last-layer-wins), got: ${RESULT_1}"
   exit 1

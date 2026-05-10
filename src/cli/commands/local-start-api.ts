@@ -137,6 +137,15 @@ async function localStartApiCommand(options: LocalStartApiOptions): Promise<void
   // Lambda whose `Properties.Layers` contains 2+ entries (single-
   // layer Lambdas bind-mount the layer's asset dir directly).
   // Cleaned up alongside `inlineTmpDirs` in `shutdown(...)`.
+  //
+  // FORWARD-LOOK (PR 8c — hot reload): when the watcher re-runs
+  // `materializeLambdaLayers(...)` after a layer asset changes, it
+  // MUST `rmSync` the corresponding old entry in this set BEFORE the
+  // re-merge produces a new tmpdir, then drop the old entry. Without
+  // that, every reload leaks one tmpdir until the server exits.
+  // The watcher implementation is intentionally NOT touched here —
+  // PR 8c owns the watch path; this comment exists so the next
+  // reviewer sees the contract before extending the watcher.
   const layerTmpDirs = new Set<string>();
   for (let i = 0; i < lambdaIds.length; i++) {
     const logicalId = lambdaIds[i]!;

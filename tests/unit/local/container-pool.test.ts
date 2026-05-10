@@ -29,7 +29,13 @@ import { waitForRieReady } from '../../../src/local/rie-client.js';
 function makeSpec(logicalId: string): ContainerSpec {
   const lambda = {
     kind: 'zip',
-    stack: { stackName: 'S', displayName: 'S', artifactId: 'S', template: { Resources: {} }, dependencyNames: [] },
+    stack: {
+      stackName: 'S',
+      displayName: 'S',
+      artifactId: 'S',
+      template: { Resources: {} },
+      dependencyNames: [],
+    },
     logicalId,
     resource: { Type: 'AWS::Lambda::Function', Properties: {} },
     runtime: 'nodejs20.x',
@@ -159,9 +165,7 @@ describe('container-pool — dispose', () => {
   });
 
   it('tolerates removeContainer failures during dispose', async () => {
-    (removeContainer as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
-      new Error('boom')
-    );
+    (removeContainer as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error('boom'));
     const specs = new Map([['Fn', makeSpec('Fn')]]);
     const pool = createContainerPool(specs, { perLambdaConcurrency: 1, streamLogs: false });
     const h = await pool.acquire('Fn');
@@ -253,9 +257,7 @@ describe('container-pool — startOne RIE-readiness failure cleanup', () => {
 
 describe('container-pool — withMutex error propagation', () => {
   it('releases the mutex when startOne throws so a follow-up acquire succeeds', async () => {
-    (runDetached as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
-      new Error('docker run boom')
-    );
+    (runDetached as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error('docker run boom'));
     const specs = new Map([['Fn', makeSpec('Fn')]]);
     const pool = createContainerPool(specs, { perLambdaConcurrency: 1, streamLogs: false });
 
@@ -265,6 +267,52 @@ describe('container-pool — withMutex error propagation', () => {
     // would deadlock waiting for the previous body to settle.
     const h = await pool.acquire('Fn');
     expect(h.containerId).toBeTruthy();
+    pool.release(h);
+    await pool.dispose();
+  });
+});
+
+describe('container-pool — ContainerSpec.optDir propagation (PR 6 of #224, issue #232)', () => {
+  // The Layer-merge / bind-mount path lives in `local-start-api.ts`'s
+  // `materializeLambdaLayers(...)` (resolved once at server boot), and
+  // the resulting host path rides on `ContainerSpec.optDir`. The pool's
+  // `startOne` must thread that path into `runDetached(extraMounts)`
+  // verbatim — this test guards the wire contract so a refactor in
+  // `container-pool.ts` doesn't drop the field on the floor and silently
+  // disable layers for `cdkd local start-api`.
+  it('emits {hostPath: optDir, containerPath: /opt, readOnly: true} as extraMounts when optDir is set', async () => {
+    const spec = makeSpec('LayeredFn');
+    spec.optDir = '/tmp/cdkd-merged-layers-abc';
+    const specs = new Map([['LayeredFn', spec]]);
+    const pool = createContainerPool(specs, { perLambdaConcurrency: 1, streamLogs: false });
+
+    const h = await pool.acquire('LayeredFn');
+
+    expect(runDetached).toHaveBeenCalledTimes(1);
+    const callArg = (runDetached as ReturnType<typeof vi.fn>).mock.calls[0]?.[0] as {
+      extraMounts?: Array<{ hostPath: string; containerPath: string; readOnly?: boolean }>;
+    };
+    expect(callArg.extraMounts).toEqual([
+      { hostPath: '/tmp/cdkd-merged-layers-abc', containerPath: '/opt', readOnly: true },
+    ]);
+
+    pool.release(h);
+    await pool.dispose();
+  });
+
+  it('emits empty extraMounts when optDir is undefined (no layers configured)', async () => {
+    const spec = makeSpec('NoLayerFn');
+    // Spec.optDir intentionally NOT set.
+    const specs = new Map([['NoLayerFn', spec]]);
+    const pool = createContainerPool(specs, { perLambdaConcurrency: 1, streamLogs: false });
+
+    const h = await pool.acquire('NoLayerFn');
+
+    const callArg = (runDetached as ReturnType<typeof vi.fn>).mock.calls[0]?.[0] as {
+      extraMounts?: Array<{ hostPath: string; containerPath: string; readOnly?: boolean }>;
+    };
+    expect(callArg.extraMounts).toEqual([]);
+
     pool.release(h);
     await pool.dispose();
   });

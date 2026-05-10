@@ -15,10 +15,13 @@ import * as lambda from 'aws-cdk-lib/aws-lambda';
  *     lives in BOTH the `GreetingsA` and `GreetingsB` layers under the
  *     same path `/opt/nodejs/node_modules/util-greetings/index.js`. The
  *     function declares `Layers: [GreetingsA, GreetingsB, Counters]`,
- *     so the GreetingsB version wins (the docker-runner emits
- *     `-v <gA>:/opt:ro` first then `-v <gB>:/opt:ro` then
- *     `-v <counters>:/opt:ro`, and Docker's overlay layering shadows
- *     the earlier mounts when later mounts hit the same path).
+ *     so the GreetingsB version wins. cdkd implements this on the
+ *     host: every layer is `cpSync({recursive: true, force: true})`'d
+ *     into a fresh tmpdir IN ORDER — later layers overwrite earlier
+ *     files — and the merged tmpdir is bind-mounted at `/opt:ro`.
+ *     (Docker rejects multiple `-v ...:/opt:ro` entries at the same
+ *     target — bind mounts are NOT layered the way the OCI image
+ *     stack is — so we cannot rely on overlay layering here.)
  *
  * No AWS deploy required — the integ runs against the synthesized
  * cdk.out only.

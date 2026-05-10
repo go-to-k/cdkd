@@ -1,12 +1,18 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 // child_process mock — captures execFile invocations so the runDetached
-// tests can assert on the docker args. Intentionally hoisted via the
-// vi.mock factory so this file's run order matches the ecr-puller.test
-// shape.
-const childProcessMock = {
+// tests can assert on the docker args. Wrap the captures in
+// `vi.hoisted(...)` so the same `vi.fn()` instance is visible to both
+// the `vi.mock(...)` factory below (which is itself hoisted to the top
+// of the file) AND to the test bodies. Plain top-level `const` would
+// rely on lazy factory evaluation and is the borderline pattern called
+// out in `feedback_vi_mock_hoisting.md` — switching to `vi.hoisted`
+// keeps this file consistent with `ecr-puller.test.ts` /
+// `local-invoke-resolve-plan.test.ts`.
+const mocks = vi.hoisted(() => ({
   execFile: vi.fn(),
-};
+}));
+const childProcessMock = mocks;
 vi.mock('node:child_process', async () => {
   const actual = await vi.importActual<typeof import('node:child_process')>('node:child_process');
   return {
@@ -19,7 +25,7 @@ vi.mock('node:child_process', async () => {
       const cmd = allArgs[0] as string;
       const args = allArgs[1] as string[];
       const opts = allArgs.length === 4 ? allArgs[2] : undefined;
-      childProcessMock.execFile(cmd, args, opts);
+      mocks.execFile(cmd, args, opts);
       cb(null, { stdout: 'container-id\n' } as { stdout: string });
     },
   };
