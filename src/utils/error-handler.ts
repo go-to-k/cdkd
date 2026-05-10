@@ -270,6 +270,39 @@ export class StackTerminationProtectionError extends CdkdError {
 }
 
 /**
+ * Signals that `cdkd local start-api`'s route discovery hit an unsupported
+ * shape — non-AWS_PROXY integration, ApiGwV2 service integration
+ * (`IntegrationSubtype` set), WebSocket protocol, Lambda::Url with
+ * `AuthType !== 'NONE'` or `InvokeMode === 'RESPONSE_STREAM'`, or an
+ * unsupported intrinsic function in `IntegrationUri`.
+ *
+ * The message names every offending route and points the user at the
+ * deferred follow-up PR (8b for authorizers, etc.). Hard-error at
+ * discovery so the server never starts in a half-working state.
+ */
+export class RouteDiscoveryError extends CdkdError {
+  constructor(message: string, cause?: Error) {
+    super(message, 'ROUTE_DISCOVERY_ERROR', cause);
+    this.name = 'RouteDiscoveryError';
+    Object.setPrototypeOf(this, RouteDiscoveryError.prototype);
+  }
+}
+
+/**
+ * Signals an unrecoverable failure inside `cdkd local start-api`'s HTTP
+ * server — port-binding failure, RIE returned malformed JSON, container
+ * pool acquire timed out, etc. Distinct from {@link RouteDiscoveryError}
+ * which fires before the server starts.
+ */
+export class StartApiServerError extends CdkdError {
+  constructor(message: string, cause?: Error) {
+    super(message, 'START_API_SERVER_ERROR', cause);
+    this.name = 'StartApiServerError';
+    Object.setPrototypeOf(this, StartApiServerError.prototype);
+  }
+}
+
+/**
  * Check if error is a cdkd error
  */
 export function isCdkdError(error: unknown): error is CdkdError {

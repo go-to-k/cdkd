@@ -939,6 +939,112 @@ materialized to a tmpdir using the file path implied by the function's
 | Lambda Layers (`AWS::Lambda::LayerVersion`) | Future PR |
 | Cross-stack `Fn::ImportValue` / `Fn::GetStackOutput` in `--from-state` | Future PR |
 | Pseudo parameters / `Fn::Join` / `Fn::Select` etc. in `--from-state` | Future PR (warn + drop in v1) |
-| API Gateway / SQS / S3 event source emulation (`cdkd local start-api`) | Future PR |
+| SQS / S3 event source emulation | Future PR |
 | VPC simulation | Never (local can't replicate VPC) |
 | Custom Resources (`Custom::*`) | Never — these are invoked by the deploy framework, not by users. cdkd surfaces a clear error pointing at the underlying ServiceToken Lambda. |
+
+## `local start-api` (long-running local API server)
+
+`cdkd local start-api` stands up a long-running HTTP server that maps
+synthesized API Gateway routes (REST v1, HTTP API, Function URL) to
+local Lambda invocations against the AWS Lambda Runtime Interface
+Emulator. Modeled on `sam local start-api` but reusing cdkd's
+synthesis, asset, and route-discovery plumbing — no `template.yaml`
+round-trip.
+
+**Requires Docker.** As with `cdkd local invoke`, the first run pulls
+the Lambda base image (~600MB once per machine). Pass `--no-pull` on
+subsequent runs to skip the layer check.
+
+```bash
+cdkd local start-api                       # auto-allocate port
+cdkd local start-api --port 3000           # SAM-parity port
+cdkd local start-api --warm                # pre-start one container per Lambda
+```
+
+### Discovered routes
+
+| Source | CFn types |
+| --- | --- |
+| HTTP API | `AWS::ApiGatewayV2::Api` (`ProtocolType: HTTP`), `AWS::ApiGatewayV2::Route`, `AWS::ApiGatewayV2::Integration` |
+| REST v1 | `AWS::ApiGateway::RestApi`, `AWS::ApiGateway::Resource`, `AWS::ApiGateway::Method`, `AWS::ApiGateway::Stage` |
+| Function URL | `AWS::Lambda::Url` |
+
+Only AWS_PROXY (Lambda Proxy) integrations are supported; any other
+integration type — MOCK, AWS, HTTP, HTTP_PROXY, ApiGwV2 service
+integrations (`IntegrationSubtype` set) — is hard-rejected at
+discovery with the offending route's location named in the error.
+WebSocket APIs (`AWS::ApiGatewayV2::Api.ProtocolType: WEBSOCKET`)
+and Function URLs with `AuthType !== 'NONE'` or `InvokeMode ==
+'RESPONSE_STREAM'` are also rejected — these need the deferred 8b /
+8c follow-up PRs.
+
+### Routing precedence
+
+3 tiers per AWS docs: full match → greedy `{proxy+}` → `$default`.
+Within "full match" tier, more literal segments win as a best-effort
+tie-break (AWS does not formally specify multi-route precedence within
+the same tier; cdkd uses literal-segment count as a heuristic).
+
+### Flags
+
+| Flag | Default | Notes |
+| --- | --- | --- |
+| `--port <port>` | auto-allocate | The actual port is printed at startup. Pass an explicit port for SAM parity / curl muscle memory. |
+| `--host <host>` | `127.0.0.1` | Bind address. |
+| `--stack <name>` | single-stack auto-detect | Required when the app has multiple stacks. |
+| `--warm` | off | Pre-start one container per discovered Lambda at server boot. Trades RAM for first-request latency. |
+| `--per-lambda-concurrency <n>` | `2` | Pool size cap per Lambda. Max 4 in v1; above-cap values are clamped with a warn. |
+| `--no-pull` | off | Skip `docker pull`. |
+| `--container-host <host>` | `host.docker.internal` | Host the container reaches the host on. |
+| `--debug-port-base <port>` | unset | Allocate a contiguous `--inspect-brk` port range across Lambdas (one per Lambda). |
+| `--env-vars <file>` | unset | SAM-shape JSON: `{"LogicalId":{"KEY":"VALUE"}, "Parameters":{...}}`. Same format as `cdkd local invoke`. |
+| `--assume-role <arn-or-pair>` | unset | Repeatable. Bare `<arn>` = global default; `<LogicalId>=<arn>` = per-Lambda override. Per-Lambda > global > unset (developer creds passed through). |
+
+### Container lifecycle
+
+- One pool per Lambda. Each container's RIE port is bound to its own
+  free host port (`pickFreePort`); the user-facing HTTP server stays on
+  the single `--port`.
+- `acquire()` returns the first idle container in the pool; lazy-grows
+  up to `--per-lambda-concurrency` under a per-Lambda mutex. Above the
+  cap, requests queue.
+- `release()` returns the container to the pool and starts a 60s idle
+  timer. Idle GC fires after 60s of inactivity per pool.
+- Containers are named `cdkd-local-<logicalId>-<pid>-<rand>` so an
+  external sweep can mop up orphans (`docker ps --filter
+  name=cdkd-local-`).
+
+### Graceful shutdown
+
+`SIGINT` / `SIGTERM` / `uncaughtException` / `unhandledRejection` all
+run the same dispose path: drain in-flight requests, tear down every
+container (tolerating per-container removal failures — logged at warn,
+loop continues). The verify-time `docker ps --filter` sweep is the
+defense-in-depth backstop.
+
+Double-`^C` bypasses dispose and exits immediately so the user can
+escape a hung Docker daemon. The skipped containers are reported with
+the `docker ps` cleanup command in the warning.
+
+### `local start-api` exit codes
+
+- `0` — server started cleanly and shut down on SIGTERM.
+- `1` — startup failure (Docker missing, port bind failed, route
+  discovery rejected) OR uncaught exception during the run.
+- `130` — exited via SIGINT.
+
+### `local start-api` v1 scope (out of scope, deferred)
+
+| Out of scope | Deferred to |
+| --- | --- |
+| Authorizers (Lambda TOKEN/REQUEST, Cognito) | PR 8b |
+| VPC simulation | PR 8b |
+| CORS preflight handling (server passes through OPTIONS) | PR 8c |
+| Hot reload (file watcher over `cdk.out`) | PR 8c |
+| Stage variables (hardcoded `null` in v1) | PR 8c |
+| `--from-state`-style env-var substitution | PR 8c |
+| Custom integration mapping templates | Never (not testable locally) |
+| WebSocket APIs | Never (different protocol) |
+| Throttling / quotas / usage plans / API keys | Never |
+| Per-Lambda concurrency above 4 | Future PR if a real workload needs it |

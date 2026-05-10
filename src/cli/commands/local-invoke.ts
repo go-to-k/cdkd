@@ -35,6 +35,7 @@ import { invokeRie, waitForRieReady } from '../../local/rie-client.js';
 import { S3StateBackend } from '../../state/s3-state-backend.js';
 import { setAwsClients, AwsClients } from '../../utils/aws-clients.js';
 import type { StackState } from '../../types/state.js';
+import { createLocalStartApiCommand } from './local-start-api.js';
 
 interface LocalInvokeOptions {
   app?: string;
@@ -663,9 +664,10 @@ function pickReferencedLogicalId(intrinsic: Record<string, unknown>): string | u
 }
 
 /**
- * Top-level `cdkd local` command. Currently has one subcommand
- * (`invoke`); reserves room for `cdkd local start-api` etc. in later
- * PRs (D3).
+ * Top-level `cdkd local` command. PR 1 added `invoke`; PR 8a adds
+ * `start-api` (long-running HTTP server that maps API Gateway routes
+ * to Lambda invocations). Both share the same Docker / RIE plumbing
+ * under `src/local/`.
  */
 export function createLocalCommand(): Command {
   const local = new Command('local').description(
@@ -725,5 +727,6 @@ export function createLocalCommand(): Command {
   invoke.addOption(deprecatedRegionOption);
 
   local.addCommand(invoke);
+  local.addCommand(createLocalStartApiCommand());
   return local;
 }

@@ -48,6 +48,15 @@ export interface DockerRunOptions {
    * `NODE_OPTIONS=--inspect-brk=0.0.0.0:<port>` in `env`.
    */
   debugPort?: number;
+  /**
+   * Optional `--name` for the container. `cdkd local start-api` sets a
+   * stable `cdkd-local-<logicalId>-<pid>` name so the verify.sh trap can
+   * sweep orphans (`docker ps --filter name=cdkd-local-`) regardless of
+   * how the server exited. `cdkd local invoke` leaves it unset and lets
+   * docker auto-assign — short-lived containers don't benefit from a
+   * stable name.
+   */
+  name?: string;
 }
 
 /**
@@ -77,6 +86,10 @@ export async function pullImage(image: string, skipPull: boolean): Promise<void>
  */
 export async function runDetached(opts: DockerRunOptions): Promise<string> {
   const args: string[] = ['run', '-d', '--rm'];
+
+  if (opts.name) {
+    args.push('--name', opts.name);
+  }
 
   const host = opts.host ?? '127.0.0.1';
   args.push('-p', `${host}:${opts.hostPort}:8080`);

@@ -581,6 +581,79 @@ export const contextOptions = [
 ];
 
 /**
+ * Per-Lambda + global `--assume-role` parser used by `cdkd local
+ * start-api` (D8.2). Mirrors the `--resource-timeout` parser shape:
+ * each invocation is either a bare ARN (sets / overwrites the global
+ * default) or `<LogicalId>=<arn>` (per-Lambda override). Per-Lambda
+ * always wins over global; global is the fallback when no per-Lambda
+ * entry exists.
+ */
+export interface AssumeRoleOption {
+  /** Global ARN — last bare-arn token wins. */
+  globalArn?: string;
+  /** Per-Lambda override map (`LogicalId` -> ARN). */
+  perLambda: Record<string, string>;
+}
+
+const IAM_ROLE_ARN_REGEX = /^arn:[^:]+:iam::\d+:role\//;
+
+/**
+ * Argparse for the repeatable `--assume-role` flag.
+ *
+ * Validates that:
+ *   - bare values look like an IAM role ARN;
+ *   - `<LogicalId>=<arn>` left-hand sides look like a CFn logical ID
+ *     (alphanumeric, no separators);
+ *   - the right-hand side ARN is well-shaped.
+ */
+export function parseAssumeRoleToken(
+  raw: string,
+  previous: AssumeRoleOption | undefined
+): AssumeRoleOption {
+  const acc: AssumeRoleOption = previous ?? { perLambda: {} };
+  if (!acc.perLambda) acc.perLambda = {};
+
+  const eqIndex = raw.indexOf('=');
+  if (eqIndex === -1) {
+    if (!IAM_ROLE_ARN_REGEX.test(raw)) {
+      throw new Error(
+        `Invalid --assume-role value "${raw}": expected an IAM role ARN like arn:aws:iam::123456789012:role/MyRole, or LogicalId=<arn>.`
+      );
+    }
+    acc.globalArn = raw;
+    return acc;
+  }
+
+  const logicalId = raw.substring(0, eqIndex).trim();
+  const arn = raw.substring(eqIndex + 1).trim();
+  if (!/^[A-Za-z][A-Za-z0-9]*$/.test(logicalId)) {
+    throw new Error(
+      `Invalid --assume-role value "${raw}": left-hand side "${logicalId}" must be a CloudFormation logical ID (alphanumeric, leading letter).`
+    );
+  }
+  if (!IAM_ROLE_ARN_REGEX.test(arn)) {
+    throw new Error(
+      `Invalid --assume-role value "${raw}": right-hand side "${arn}" must be an IAM role ARN like arn:aws:iam::123456789012:role/MyRole.`
+    );
+  }
+  acc.perLambda[logicalId] = arn;
+  return acc;
+}
+
+/**
+ * Resolve the effective IAM role ARN for a given Lambda. Per-Lambda
+ * override wins; otherwise the global default; otherwise `undefined`
+ * (no role to assume — pass developer creds through).
+ */
+export function effectiveAssumeRoleArn(
+  logicalId: string,
+  opt: AssumeRoleOption | undefined
+): string | undefined {
+  if (!opt) return undefined;
+  return opt.perLambda?.[logicalId] ?? opt.globalArn;
+}
+
+/**
  * Destroy options
  *
  * Note: `resourceTimeoutOptions` is intentionally NOT spread in here. It is

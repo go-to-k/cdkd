@@ -248,10 +248,12 @@ cdkd has three command families:
   use them to inspect / clean up state when the source is gone or
   you don't want to synth. `cdkd state destroy` is the CDK-app-free
   counterpart of `cdkd destroy`.
-- **`cdkd local ...` subcommands** (`local invoke`) run a synthesized
-  Lambda function locally inside a Docker container that bundles the
-  AWS Lambda Runtime Interface Emulator (RIE). No AWS API calls, no
-  state bucket needed.
+- **`cdkd local ...` subcommands** (`local invoke`, `local start-api`)
+  run synthesized Lambda functions locally inside Docker containers that
+  bundle the AWS Lambda Runtime Interface Emulator (RIE). `local invoke`
+  runs a single Lambda once; `local start-api` stands up a long-running
+  HTTP server that maps API Gateway / HTTP API / Function URL routes to
+  local Lambda invocations. No AWS API calls, no state bucket needed.
 
 Options like `--app`, `--state-bucket`, and `--context` can be omitted if configured via `cdk.json` or environment variables (`CDKD_APP`, `CDKD_STATE_BUCKET`).
 
@@ -619,6 +621,39 @@ cdkd local invoke MyStack/Handler --from-state
 
 See [docs/cli-reference.md](docs/cli-reference.md#local-invoke-run-lambda-functions-locally)
 for the full surface, target-resolution rules, and v1 scope notes.
+
+## `local start-api`: long-running local API server
+
+`cdkd local start-api` stands up a long-running local HTTP server that
+maps the synthesized API Gateway routes (REST v1, HTTP API, Function
+URL) to local Lambda invocations against the same RIE-backed Docker
+containers `cdkd local invoke` uses. Modeled on `sam local start-api`
+but reusing cdkd's synthesis / route-discovery plumbing.
+
+```bash
+# Auto-allocate a port (printed at startup) and serve every discovered route
+cdkd local start-api
+
+# Pin to port 3000 (SAM-parity / curl muscle memory)
+cdkd local start-api --port 3000
+
+# Pre-warm one container per Lambda at server boot — eliminates first-request cold start
+cdkd local start-api --warm
+
+# Override env vars per-Lambda (SAM-shape file)
+cdkd local start-api --env-vars env.json
+
+# Pin the deployed execution role per Lambda (or globally with a bare ARN)
+cdkd local start-api --assume-role MyApiHandler=arn:aws:iam::123:role/handler-role
+```
+
+v1 scope (PR 8a): REST v1 + HTTP API + Function URL with AWS_PROXY
+integrations only. Authorizers, CORS preflight, hot reload, stage
+variables, and WebSocket APIs are deferred to follow-up PRs.
+
+See [docs/cli-reference.md](docs/cli-reference.md#local-start-api-long-running-local-api-server)
+for the full route-discovery rules, container-pool semantics, and exit
+codes.
 
 ## State Management
 
