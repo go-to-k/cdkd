@@ -31,6 +31,13 @@ export interface InvokeResult {
  * RIE is fast to start (<1s in practice) but the container's overall
  * boot can be slower on a cold daemon — 5s is the spec's recommended
  * window. We poll cheap (every 100ms) so the typical case is sub-second.
+ *
+ * After the TCP probe succeeds, sleep a short post-ready settle window
+ * before returning. RIE's TCP listener comes up before its HTTP handler
+ * is fully wired in some cold-start cases; without the settle, the
+ * caller's `fetch(/2015-03-31/...)` races against RIE and hits
+ * `TypeError: fetch failed` (intermittent on slow / loaded dockers).
+ * 250ms is empirically sufficient and is cheap for the common case.
  */
 export async function waitForRieReady(host: string, port: number, timeoutMs = 5000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
@@ -39,7 +46,11 @@ export async function waitForRieReady(host: string, port: number, timeoutMs = 50
   while (Date.now() < deadline) {
     try {
       const ok = await tcpProbe(host, port, 500);
-      if (ok) return;
+      if (ok) {
+        // Post-ready settle — see docstring above.
+        await delay(250);
+        return;
+      }
     } catch (err) {
       lastError = err;
     }
@@ -76,12 +87,7 @@ export async function invokeRie(
 
   let response: Response;
   try {
-    response = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body,
-      signal: controller.signal,
-    });
+    response = await fetchWithStartupRetry(url, body, controller.signal);
   } catch (err) {
     if ((err as { name?: string }).name === 'AbortError') {
       throw new Error(
@@ -103,6 +109,46 @@ export async function invokeRie(
     // container could return plain text and we should not crash.
   }
   return { payload, raw };
+}
+
+/**
+ * Wrap a single POST against RIE in a tiny startup-retry loop. RIE's
+ * TCP listener can be up (so `waitForRieReady`'s TCP probe returns
+ * success) before its HTTP handler is fully wired, especially on cold
+ * dockers. The race manifests as Node's `TypeError: fetch failed` (a
+ * pre-response, connection-level error with no HTTP status). We retry
+ * twice with a 200ms backoff — same total cost as a slightly longer
+ * post-ready settle, but only paid when the race actually triggers.
+ *
+ * Once a real HTTP response (any status) is observed, we return it
+ * unchanged: the handler may have legitimately failed, and that's not
+ * something we should retry. Abort errors propagate immediately so the
+ * outer timeout still wins.
+ */
+async function fetchWithStartupRetry(
+  url: string,
+  body: string,
+  signal: AbortSignal
+): Promise<Response> {
+  const maxAttempts = 3;
+  let lastError: unknown;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      return await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body,
+        signal,
+      });
+    } catch (err) {
+      const name = (err as { name?: string }).name;
+      if (name === 'AbortError') throw err;
+      lastError = err;
+      if (attempt === maxAttempts) break;
+      await delay(200);
+    }
+  }
+  throw lastError;
 }
 
 /**

@@ -79,8 +79,36 @@ DEPLOYED_BUCKET="$(${CLI} state resources "${STACK}" --state-bucket "${STATE_BUC
 echo "[verify]   deployed bucket: ${DEPLOYED_BUCKET}"
 [ -n "${DEPLOYED_BUCKET}" ] || { echo "[verify] FAIL: could not read deployed bucket name"; exit 1; }
 
+# Local invoke is flaky on cold dockers: the rie-client's TCP probe can
+# succeed before RIE has fully wired up its HTTP listener, producing a
+# `TypeError: fetch failed`. Retry up to 3 times so a hot-cache run (the
+# common case) is fast and a cold-cache run is still reliable. When all
+# 3 attempts fail, surface the last attempt's stderr so the user can
+# triage. PR 1's RIE readiness window is the load-bearing fix; this
+# retry is a cheap belt-and-suspenders for the integ.
+invoke_with_retry() {
+  local args=("$@")
+  local attempts=3
+  local i=1
+  while [ $i -le $attempts ]; do
+    if out=$(${CLI} local invoke "${args[@]}" 2>/dev/null | tail -1) && \
+       echo "${out}" | grep -q '"bucketName":'; then
+      printf '%s' "${out}"
+      return 0
+    fi
+    if [ $i -lt $attempts ]; then
+      echo "[verify]   invoke attempt ${i} failed, retrying..." >&2
+      sleep 2
+    fi
+    i=$((i+1))
+  done
+  echo "[verify]   all ${attempts} invoke attempts failed; last stderr below:" >&2
+  ${CLI} local invoke "${args[@]}" 2>&1 | tail -10 >&2
+  return 1
+}
+
 echo "[verify] step 3: cdkd local invoke (no --from-state) — expect BUCKET_NAME=unset"
-RESULT_PR1=$(${CLI} local invoke "${STACK}/EchoBucketHandler" --no-pull --state-bucket "${STATE_BUCKET}" 2>/dev/null | tail -1)
+RESULT_PR1=$(invoke_with_retry "${STACK}/EchoBucketHandler" --no-pull --state-bucket "${STATE_BUCKET}")
 echo "[verify]   response: ${RESULT_PR1}"
 echo "${RESULT_PR1}" | grep -q '"bucketName":"unset"' || {
   echo "[verify] FAIL: expected BUCKET_NAME to be dropped (PR 1 warn-and-drop), got: ${RESULT_PR1}"
@@ -92,7 +120,7 @@ echo "${RESULT_PR1}" | grep -q '"staticValue":"always-the-same"' || {
 }
 
 echo "[verify] step 4: cdkd local invoke --from-state — expect BUCKET_NAME=${DEPLOYED_BUCKET}"
-RESULT_PR2=$(${CLI} local invoke "${STACK}/EchoBucketHandler" --from-state --no-pull --state-bucket "${STATE_BUCKET}" 2>/dev/null | tail -1)
+RESULT_PR2=$(invoke_with_retry "${STACK}/EchoBucketHandler" --from-state --no-pull --state-bucket "${STATE_BUCKET}")
 echo "[verify]   response: ${RESULT_PR2}"
 echo "${RESULT_PR2}" | grep -q "\"bucketName\":\"${DEPLOYED_BUCKET}\"" || {
   echo "[verify] FAIL: expected BUCKET_NAME=${DEPLOYED_BUCKET}, got: ${RESULT_PR2}"
