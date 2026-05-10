@@ -11,9 +11,7 @@
 
 > **⚠️ WARNING: NOT PRODUCTION READY**
 >
-> This project is in early development and is **NOT suitable for production use**. Features are incomplete, APIs may change without notice, and there may be bugs that could affect your AWS infrastructure. Use at your own risk in development/testing environments only.
->
-> This is an experimental project exploring alternative deployment approaches for AWS CDK. It is **not intended to replace** the official AWS CDK CLI, but rather to experiment with direct SDK provisioning as a learning exercise and proof of concept.
+> An experimental project exploring direct SDK provisioning as an alternative to the AWS CDK CLI — **NOT a replacement** and **NOT suitable for production use**. Features are incomplete, APIs may change without notice, and bugs may affect your AWS infrastructure. Use at your own risk in development / testing environments only.
 
 ## Features
 
@@ -99,79 +97,13 @@ parsing → synthesis → asset publishing → per-stack deploy), see
 
 ## Supported Features
 
-### Intrinsic Functions
-
-| Function | Status | Notes |
-|----------|--------|-------|
-| `Ref` | ✅ Supported | Resource physical IDs, Parameters, Pseudo parameters |
-| `Fn::GetAtt` | ✅ Supported | Resource attributes (ARN, DomainName, etc.) |
-| `Fn::Join` | ✅ Supported | String concatenation |
-| `Fn::Sub` | ✅ Supported | Template string substitution |
-| `Fn::Select` | ✅ Supported | Array index selection |
-| `Fn::Split` | ✅ Supported | String splitting |
-| `Fn::If` | ✅ Supported | Conditional values |
-| `Fn::Equals` | ✅ Supported | Equality comparison |
-| `Fn::And` | ✅ Supported | Logical AND (2-10 conditions) |
-| `Fn::Or` | ✅ Supported | Logical OR (2-10 conditions) |
-| `Fn::Not` | ✅ Supported | Logical NOT |
-| `Fn::ImportValue` | ✅ Supported | Cross-stack references via S3 state |
-| `Fn::GetStackOutput` | ✅ Supported (same-account) | Cross-stack / cross-region output reference via S3 state. Cross-account `RoleArn` is rejected with a clear error (not yet implemented). |
-| `Fn::FindInMap` | ✅ Supported | Mapping lookup |
-| `Fn::GetAZs` | ✅ Supported | Availability Zone list |
-| `Fn::Base64` | ✅ Supported | Base64 encoding |
-| `Fn::Cidr` | ✅ Supported | CIDR address block generation |
-
-### Pseudo Parameters
-
-| Parameter | Status |
-|-----------|--------|
-| `AWS::Region` | ✅ |
-| `AWS::AccountId` | ✅ (via STS) |
-| `AWS::Partition` | ✅ |
-| `AWS::URLSuffix` | ✅ |
-| `AWS::NoValue` | ✅ |
-| `AWS::StackName` | ✅ |
-| `AWS::StackId` | ✅ |
-
-### Resource Provisioning
-
-cdkd ships **90+ dedicated SDK Providers** (direct AWS SDK calls, no
-polling overhead) covering the most-used services — IAM, Lambda, S3,
-DynamoDB, EC2, RDS, ECS, API Gateway, CloudFront, Step Functions, EFS,
-KMS, Cognito, AppSync, and more. **Any other CloudFormation resource
-type** is handled via the Cloud Control API fallback (async polling).
-Resource types not supported by either path fail at deploy time with a
-clear error.
-
-See **[docs/supported-resources.md](docs/supported-resources.md)** for
-the full per-type table.
-
-### Other Features
-
-| Feature | Status | Notes |
-|---------|--------|-------|
-| CloudFormation Parameters | ✅ | Default values, type coercion |
-| Conditions | ✅ | With logical operators |
-| Cross-stack references | ✅ | Via `Fn::ImportValue` + S3 state |
-| Cross-region references | ✅ (same-account) | Via `Fn::GetStackOutput` + S3 state. Cross-account `RoleArn` not yet implemented. |
-| JSON Patch updates | ✅ | RFC 6902, minimal patches |
-| Resource replacement detection | ✅ | 10+ resource types |
-| Dynamic References | ✅ | `{{resolve:secretsmanager:...}}`, `{{resolve:ssm:...}}` |
-| DELETE idempotency | ✅ | Not-found errors treated as success |
-| Asset publishing (S3) | ✅ | Lambda code packages |
-| Asset publishing (ECR) | ✅ | Self-implemented Docker image publishing |
-| Custom Resources (SNS-backed) | ✅ | SNS Topic ServiceToken + S3 response |
-| Custom Resources (CDK Provider) | ✅ | isCompleteHandler/onEventHandler async pattern detection |
-| Rollback | ✅ | Auto-rollback on mid-deploy failure (deletes already-completed resources to keep state consistent); `--no-rollback` skips for Terraform-style failed-state inspection. See [Rollback behavior](#rollback-behavior) below. |
-| DeletionPolicy: Retain | ✅ | Skip deletion for retained resources |
-| UpdateReplacePolicy: Retain | ✅ | Keep old resource on replacement |
-| Implicit delete dependencies | ✅ | VPC/IGW/EventBus/Subnet/RouteTable ordering |
-| Stack dependency resolution | ✅ | Auto-deploy dependency stacks, `-e` to skip |
-| Multi-stack parallel deploy | ✅ | Independent stacks deployed in parallel |
-| Attribute enrichment | ✅ | CloudFront OAI, DynamoDB StreamArn, API Gateway RootResourceId, Lambda FunctionUrl, Route53 HealthCheckId, ECR Repository Arn |
-| CC API null value stripping | ✅ | Removes null values before API calls |
-| Retry with HTTP status codes | ✅ | 429/503 + cause chain inspection |
-| Drift detection | ✅ | `cdkd drift` — state vs AWS reality, including console-side changes to keys you didn't template. See [Drift detection](#drift-detection) below. |
+cdkd supports the standard CloudFormation surface — intrinsic functions,
+pseudo parameters, parameters / conditions, cross-stack / cross-region
+references, asset publishing, custom resources, and so on. See
+**[docs/supported-features.md](docs/supported-features.md)** for the
+full reference. For per-resource-type provisioning support (SDK Providers
+vs Cloud Control API fallback), see
+**[docs/supported-resources.md](docs/supported-resources.md)**.
 
 ## Prerequisites
 
