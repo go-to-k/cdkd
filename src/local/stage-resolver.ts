@@ -49,11 +49,28 @@ export interface ResolvedStage {
 /**
  * Build the `apiLogicalId → ResolvedStage` map for a single template.
  *
- * `stageOverride` (the CLI's `--stage`) selects a specific Stage by
- * `StageName` per API. When set, APIs whose Stages don't include that
- * name are intentionally LEFT OUT of the result map — `attachStageContext`
- * then leaves `stageVariables: null` on routes pointing at those APIs,
- * and the CLI surfaces the warn line up front.
+ * Result-map population rules:
+ *
+ *   - **No matching Stage in template** (the API has zero `AWS::ApiGateway::Stage`
+ *     / `AWS::ApiGatewayV2::Stage` resources pointing at it): the API
+ *     never enters the result map. `attachStageContext` then leaves
+ *     `stageVariables: null` AND keeps `route.stage` at the discovery-
+ *     time placeholder (`'$default'` for HTTP API v2 / Function URL,
+ *     or whatever the discovery layer parsed for REST v1).
+ *
+ *   - **`stageOverride` provided but no Stage matches** (e.g. user
+ *     passed `--stage staging`, API only has `prod` / `dev`): same as
+ *     above — API is LEFT OUT of the result map. The CLI surfaces a
+ *     deduplicated warn line for each such API up front so users
+ *     aren't surprised by silent `stageVariables: null` at runtime.
+ *
+ *   - **Match found**: API enters the result map with the picked
+ *     Stage's `StageName` + variables. `attachStageContext` then sets
+ *     `route.stageVariables` from the resolved Stage AND (for REST v1
+ *     routes only) overrides `route.stage` with the picked Stage's
+ *     `StageName`. HTTP API v2 routes keep `route.stage = '$default'`
+ *     even on a matched stage because that's the only stage HTTP API
+ *     exposes via `requestContext.stage`.
  */
 export function buildStageMap(
   template: CloudFormationTemplate,

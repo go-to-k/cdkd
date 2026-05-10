@@ -96,8 +96,12 @@ describe('createReloadOrchestrator', () => {
     // New state was swapped in.
     expect(currentState.pool).toBe(newPool);
     // Old pool was disposed (orchestrator runs it in background; await
-    // a microtask flush so the test isn't racy).
-    await new Promise((r) => setImmediate(r));
+    // the actual dispose Promise so we don't depend on event-loop
+    // scheduling — the pool's `disposed` flag flips synchronously
+    // inside the fakePool's `dispose` mock, but the orchestrator
+    // fires-and-forgets without awaiting so we wait for the mock to
+    // have been called at all).
+    await vi.waitUntil(() => oldPool.disposed === true, { timeout: 1_000, interval: 5 });
     expect(oldPool.disposed).toBe(true);
   });
 
@@ -186,5 +190,123 @@ describe('createReloadOrchestrator', () => {
     await Promise.all([orchestrator.reload(), orchestrator.reload(), orchestrator.reload()]);
     // Each reload's body ran in sequence (no interleaved increments).
     expect(states).toEqual([1, 2, 3]);
+  });
+
+  it("uses the just-swapped state as the second reload's baseline", async () => {
+    // Verifies the diff for reload #2 sees reload #1's NEW state, not
+    // the original initial state. Without serialization + atomic swap,
+    // a back-to-back add-then-remove sequence would mis-classify both.
+    const oldSpecs = new Map([['L', fakeSpec('L')]]);
+    const oldPool = fakePool(oldSpecs);
+    const stateAfterFirstReloadSpecs = new Map([['L', fakeSpec('L')], ['L2', fakeSpec('L2')]]);
+    const stateAfterSecondReloadSpecs = new Map([['L', fakeSpec('L')]]); // back to baseline
+    let currentState: ServerState = {
+      routes: [fakeRoute({ lambdaLogicalId: 'L' })],
+      pool: oldPool,
+      corsConfigByApiId: new Map(),
+    };
+    let synthCallCount = 0;
+    const orchestrator = createReloadOrchestrator({
+      synthesizeAndBuild: async () => {
+        synthCallCount++;
+        if (synthCallCount === 1) {
+          return {
+            routes: [
+              fakeRoute({ lambdaLogicalId: 'L' }),
+              fakeRoute({ lambdaLogicalId: 'L2', pathPattern: '/y' }),
+            ],
+            specs: stateAfterFirstReloadSpecs,
+            corsConfigByApiId: new Map(),
+          };
+        }
+        return {
+          routes: [fakeRoute({ lambdaLogicalId: 'L' })], // L2 removed
+          specs: stateAfterSecondReloadSpecs,
+          corsConfigByApiId: new Map(),
+        };
+      },
+      buildPool: () => fakePool(synthCallCount === 1 ? stateAfterFirstReloadSpecs : stateAfterSecondReloadSpecs),
+      setServerState: (next) => {
+        const prev = currentState;
+        currentState = next;
+        return prev;
+      },
+      getServerState: () => currentState,
+    });
+    const r1 = await orchestrator.reload();
+    expect(r1.added.map((r) => r.lambdaLogicalId)).toEqual(['L2']);
+    expect(r1.removed).toEqual([]);
+    const r2 = await orchestrator.reload();
+    // Reload 2's BASELINE is reload 1's new state (which has L + L2).
+    // So reload 2 sees L2 removed (NOT added — would be the bug).
+    expect(r2.added).toEqual([]);
+    expect(r2.removed.map((r) => r.lambdaLogicalId)).toEqual(['L2']);
+  });
+
+  it('handles route-added with no removals', async () => {
+    const oldSpecs = new Map([['L', fakeSpec('L')]]);
+    const oldPool = fakePool(oldSpecs);
+    const newSpecs = new Map([['L', fakeSpec('L')], ['L2', fakeSpec('L2')]]);
+    const newPool = fakePool(newSpecs);
+    let currentState: ServerState = {
+      routes: [fakeRoute({ lambdaLogicalId: 'L' })],
+      pool: oldPool,
+      corsConfigByApiId: new Map(),
+    };
+    const orchestrator = createReloadOrchestrator({
+      synthesizeAndBuild: async () => ({
+        routes: [
+          fakeRoute({ lambdaLogicalId: 'L' }),
+          fakeRoute({ lambdaLogicalId: 'L2', pathPattern: '/y' }),
+        ],
+        specs: newSpecs,
+        corsConfigByApiId: new Map(),
+      }),
+      buildPool: () => newPool,
+      setServerState: (next) => {
+        const prev = currentState;
+        currentState = next;
+        return prev;
+      },
+      getServerState: () => currentState,
+    });
+    const r = await orchestrator.reload();
+    expect(r.ok).toBe(true);
+    expect(r.added.map((x) => x.lambdaLogicalId)).toEqual(['L2']);
+    expect(r.removed).toEqual([]);
+    expect(r.rebuiltLambdas).toEqual([]);
+  });
+
+  it('treats same-route-different-lambdaLogicalId as add+remove', async () => {
+    // The route's path/method tuple stays the same, but the Lambda
+    // backing it changed (e.g. user re-pointed an HTTP API route at a
+    // different function). Diff key includes lambdaLogicalId so this
+    // shows as one removed + one added.
+    const oldSpecs = new Map([['LambdaA', fakeSpec('LambdaA')]]);
+    const oldPool = fakePool(oldSpecs);
+    const newSpecs = new Map([['LambdaB', fakeSpec('LambdaB')]]);
+    const newPool = fakePool(newSpecs);
+    let currentState: ServerState = {
+      routes: [fakeRoute({ lambdaLogicalId: 'LambdaA', pathPattern: '/x' })],
+      pool: oldPool,
+      corsConfigByApiId: new Map(),
+    };
+    const orchestrator = createReloadOrchestrator({
+      synthesizeAndBuild: async () => ({
+        routes: [fakeRoute({ lambdaLogicalId: 'LambdaB', pathPattern: '/x' })],
+        specs: newSpecs,
+        corsConfigByApiId: new Map(),
+      }),
+      buildPool: () => newPool,
+      setServerState: (next) => {
+        const prev = currentState;
+        currentState = next;
+        return prev;
+      },
+      getServerState: () => currentState,
+    });
+    const r = await orchestrator.reload();
+    expect(r.added.map((x) => x.lambdaLogicalId)).toEqual(['LambdaB']);
+    expect(r.removed.map((x) => x.lambdaLogicalId)).toEqual(['LambdaA']);
   });
 });

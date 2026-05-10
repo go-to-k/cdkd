@@ -1067,15 +1067,29 @@ v2 routes whose `AWS::ApiGatewayV2::Api` has a `CorsConfiguration`:
 - Respond `204 No Content` with the canonical `Access-Control-Allow-*`
   headers, plus `Access-Control-Max-Age` / `Access-Control-Expose-Headers`
   / `Access-Control-Allow-Credentials` when configured.
+- Always set `Vary: Origin` so downstream caches (browser / CDN) do
+  not share the response across origins (load-bearing whenever
+  `Access-Control-Allow-Origin` was derived from the request — the
+  wildcard echo, literal-origin echo, and `AllowCredentials` echo
+  paths all qualify).
 
 When `AllowCredentials: true` AND the origin matched via `*`, the
 response echoes the request's literal `Origin` (browser fetch spec
 disallows `*` + credentials).
 
+`Access-Control-Request-Headers` lists are validated strictly: a
+malformed entry (e.g. `"Content-Type,,Authorization"` — a trailing /
+embedded empty entry) rejects the preflight rather than silently
+skipping the empty entry. This matches AWS's stricter HTTP API
+behavior on preflight headers.
+
 When the user has registered an explicit OPTIONS method on a path
-(an `AWS::ApiGatewayV2::Route` whose `RouteKey` is `OPTIONS /...`),
-preflight interception is skipped — the user's Lambda owns the
-OPTIONS surface.
+(an `AWS::ApiGatewayV2::Route` whose `RouteKey` is `OPTIONS /...`)
+**on the same API as the matched route**, preflight interception is
+skipped — the user's Lambda owns the OPTIONS surface. The same-API
+filter is load-bearing in multi-API stacks: an explicit OPTIONS
+route on Stack B's REST v1 API at the same path no longer suppresses
+preflight on Stack A's HTTP API v2.
 
 REST v1 (`AWS::ApiGateway::*`) CORS via Mock OPTIONS methods is NOT
 intercepted: cdkd's discovery layer rejects Mock integrations
@@ -1093,7 +1107,12 @@ that case.
 - **`--stage <name>`**: select a Stage by `StageName`. Applied per-API
   — a `--stage prod` override against an app with three APIs picks
   the matching Stage on each. APIs without a matching Stage get
-  `stageVariables: null` and surface a warn line at startup.
+  `stageVariables: null` and surface a warn line at startup. For
+  REST v1 routes, the selected stage name is also threaded into
+  `event.requestContext.stage`. For HTTP API v2 routes, the flag
+  drives `event.stageVariables` only — `event.requestContext.stage`
+  is always `'$default'` (AWS-side limitation: HTTP API only exposes
+  one stage to the integration event).
 - **Function URL** routes don't have a Stage — `stageVariables` stays
   `null` regardless of the flag.
 - **Intrinsic-valued entries** (`Ref`, `Fn::GetAtt`, `Fn::Sub`) in

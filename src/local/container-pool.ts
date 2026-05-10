@@ -61,6 +61,16 @@ interface ContainerPoolEntry {
   idleTimer: NodeJS.Timeout | null;
   /** Serializes lazy growth so two concurrent `acquire()`s don't double-start. */
   growthMutex: Promise<void>;
+  /**
+   * Resolvers waiting for `inUse` to fully drain. Populated by
+   * `dispose()` and resolved by `release()` whenever `inUse.size` hits
+   * zero. Allows `dispose()` to await every in-flight handle before
+   * tearing down — without this guard a request mid-`invokeRie` against
+   * the pool would have its container killed (502 leak) AND a stale
+   * `release(handle)` from its `finally` block would corrupt the
+   * post-dispose entries map (the bug described in the PR review).
+   */
+  drainResolvers: Array<() => void>;
 }
 
 /**
@@ -127,6 +137,14 @@ export function createContainerPool(
   const streamingEnabled = options.streamLogs !== false;
 
   const entries = new Map<string, ContainerPoolEntry>();
+  // Set once `dispose()` runs, so a stale `release(handle)` from a
+  // request whose `finally` block raced the dispose teardown becomes a
+  // no-op instead of corrupting the post-dispose entries map (entry
+  // removed → release would push the handle into a freed `warm[]` and
+  // re-arm the idle timer on a torn-down entry). The verify.sh
+  // `docker rm -f cdkd-local-*` sweep is the safety net for the
+  // not-yet-torn-down container itself.
+  let disposed = false;
 
   /**
    * Tracks every in-flight `startOne` promise so `dispose()` can wait
@@ -155,6 +173,7 @@ export function createContainerPool(
       waitQueue: [],
       idleTimer: null,
       growthMutex: Promise.resolve(),
+      drainResolvers: [],
     };
   }
 
@@ -329,6 +348,26 @@ export function createContainerPool(
       if (!entry) return;
       entry.inUse.delete(handle);
 
+      // After dispose() started, never hand the handle off to a new
+      // acquire() (the post-drain teardown is about to run). Push the
+      // handle onto `warm` so dispose()'s post-drain harvest picks it
+      // up for `removeContainer`. The idle GC timer is NOT re-armed
+      // because dispose() has already cleared every entry's idleTimer
+      // up front.
+      if (disposed) {
+        entry.warm.push(handle);
+        if (entry.inUse.size === 0) {
+          for (const resolve of entry.drainResolvers.splice(0, entry.drainResolvers.length)) {
+            try {
+              resolve();
+            } catch {
+              /* swallow */
+            }
+          }
+        }
+        return;
+      }
+
       // Hand off to a waiting `acquire()` if any.
       const waiter = entry.waitQueue.shift();
       if (waiter) {
@@ -340,18 +379,34 @@ export function createContainerPool(
       // Otherwise return to the warm list and (re)arm the idle GC.
       entry.warm.push(handle);
       resetIdleTimer(entry);
+
+      // If dispose() is waiting for this entry to drain, signal now.
+      if (entry.inUse.size === 0 && entry.drainResolvers.length > 0) {
+        for (const resolve of entry.drainResolvers.splice(0, entry.drainResolvers.length)) {
+          try {
+            resolve();
+          } catch {
+            /* swallow */
+          }
+        }
+      }
     },
 
     async dispose(): Promise<void> {
+      if (disposed) {
+        logger.debug('Container pool dispose() called more than once; ignoring');
+        return;
+      }
+      disposed = true;
       logger.debug('Disposing container pool');
-      const allHandles: ContainerHandle[] = [];
+
+      // Cancel idle timers and reject pending acquire-waiters up front;
+      // those don't carry an in-flight request to wait on.
       for (const entry of entries.values()) {
         if (entry.idleTimer) {
           clearTimeout(entry.idleTimer);
           entry.idleTimer = null;
         }
-        // Reject any pending waiters with a clear error. They'll surface
-        // as 502s through the request handler's catch.
         for (const waiter of entry.waitQueue.splice(0, entry.waitQueue.length)) {
           try {
             waiter.reject(
@@ -361,6 +416,53 @@ export function createContainerPool(
             /* swallow */
           }
         }
+      }
+
+      // Wait for every in-flight handle to release before tearing down
+      // the underlying container. A request mid-`invokeRie` that gets
+      // its container killed surfaces as a 502 — exactly the leak the
+      // PR review caught. Bounded by `drainTimeoutMs` so a hung
+      // request can't block shutdown forever; the verify.sh
+      // `docker rm -f cdkd-local-*` sweep is the safety net for the
+      // timeout case.
+      const drainTimeoutMs = 30_000;
+      const drainStart = Date.now();
+      const entryDrains: Array<Promise<{ entry: ContainerPoolEntry; timedOut: boolean }>> = [];
+      for (const entry of entries.values()) {
+        if (entry.inUse.size === 0) continue;
+        entryDrains.push(
+          new Promise<{ entry: ContainerPoolEntry; timedOut: boolean }>((resolveDrain) => {
+            entry.drainResolvers.push(() => resolveDrain({ entry, timedOut: false }));
+            const t = setTimeout(() => {
+              resolveDrain({ entry, timedOut: true });
+            }, drainTimeoutMs);
+            t.unref?.();
+          })
+        );
+      }
+      if (entryDrains.length > 0) {
+        logger.debug(
+          `Waiting for ${entryDrains.length} entry/entries' in-flight handle(s) to drain before teardown`
+        );
+        const drainResults = await Promise.all(entryDrains);
+        let anyTimedOut = false;
+        for (const r of drainResults) {
+          if (r.timedOut) {
+            anyTimedOut = true;
+            logger.warn(
+              `Container pool dispose timed out waiting for ${r.entry.inUse.size} in-flight handle(s) on ${r.entry.logicalId} after ${drainTimeoutMs}ms; tearing down anyway. The verify.sh \`docker rm -f cdkd-local-*\` sweep is the safety net.`
+            );
+          }
+        }
+        if (!anyTimedOut) {
+          logger.debug(`In-flight drain completed in ${Date.now() - drainStart}ms`);
+        }
+      }
+
+      // Now harvest every handle the entry owns (warm + still-in-use
+      // for the timed-out case) for teardown.
+      const allHandles: ContainerHandle[] = [];
+      for (const entry of entries.values()) {
         allHandles.push(...entry.warm.splice(0, entry.warm.length));
         for (const h of entry.inUse) allHandles.push(h);
         entry.inUse.clear();

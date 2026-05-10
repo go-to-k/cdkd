@@ -74,10 +74,21 @@ export function createFileWatcher(options: FileWatcherOptions): FileWatcher {
   });
 
   let timer: NodeJS.Timeout | null = null;
+  // `closed` is checked in BOTH `fire()` (so a chokidar event arriving
+  // mid-`close()` doesn't schedule a fresh debounce timer) AND inside
+  // the timer callback (so a timer already armed before `close()` was
+  // called doesn't invoke `onChange` after the watcher is gone). The
+  // belt-and-braces guard closes the race the PR review caught: pre-fix,
+  // `close()` cleared `timer` and awaited `watcher.close()`, but a
+  // chokidar event arriving DURING that await would arm a fresh timer
+  // whose callback then ran `onChange()` against a now-closed server.
+  let closed = false;
   const fire = (): void => {
+    if (closed) return;
     if (timer) clearTimeout(timer);
     timer = setTimeout(() => {
       timer = null;
+      if (closed) return;
       try {
         options.onChange();
       } catch (err) {
@@ -107,6 +118,7 @@ export function createFileWatcher(options: FileWatcherOptions): FileWatcher {
 
   return {
     update: (paths: readonly string[]): void => {
+      if (closed) return;
       const next = new Set(paths);
       const toAdd: string[] = [];
       const toRemove: string[] = [];
@@ -117,6 +129,7 @@ export function createFileWatcher(options: FileWatcherOptions): FileWatcher {
       currentPaths = next;
     },
     close: async (): Promise<void> => {
+      closed = true;
       if (timer) {
         clearTimeout(timer);
         timer = null;

@@ -283,17 +283,6 @@ function maybeHandleCorsPreflight(
 ): boolean {
   if (state.corsConfigByApiId.size === 0) return false;
 
-  // Skip when the user has an explicit OPTIONS method registered (their
-  // Lambda owns it). `methodMatches` for `'ANY'` is intentionally NOT
-  // counted as "explicit" — `ANY` is a catch-all that doesn't represent
-  // user intent to handle CORS. Only routes with `method === 'OPTIONS'`
-  // suppress preflight interception.
-  const explicitOptionsRoute = state.routes.find(
-    (r) =>
-      r.method.toUpperCase() === 'OPTIONS' && pathPatternMatchesPath(r.pathPattern, requestPath)
-  );
-  if (explicitOptionsRoute) return false;
-
   const headers = collectHeaders(req);
   const requestedMethodHeader = pickFirstHeaderValue(headers, 'access-control-request-method');
   if (!requestedMethodHeader) return false;
@@ -308,7 +297,23 @@ function maybeHandleCorsPreflight(
   const route = surrogateMatch.route;
   if (route.apiVersion !== 'v2' || !route.apiLogicalId) return false;
 
-  const cors = state.corsConfigByApiId.get(route.apiLogicalId);
+  // Skip when the user has an explicit OPTIONS method registered ON THE
+  // SAME API (their Lambda owns it). The `apiLogicalId` filter is
+  // load-bearing — without it, an explicit OPTIONS route on Stack B's
+  // REST v1 API at the same path would suppress preflight on Stack A's
+  // HTTP API v2 (the bug the PR review caught). `method === 'OPTIONS'`
+  // is the only signal of explicit user intent — `ANY` is a catch-all
+  // and doesn't represent CORS-handling intent.
+  const surrogateApiId = route.apiLogicalId;
+  const explicitOptionsRoute = state.routes.find(
+    (r) =>
+      r.apiLogicalId === surrogateApiId &&
+      r.method.toUpperCase() === 'OPTIONS' &&
+      pathPatternMatchesPath(r.pathPattern, requestPath)
+  );
+  if (explicitOptionsRoute) return false;
+
+  const cors = state.corsConfigByApiId.get(surrogateApiId);
   if (!cors) return false;
 
   const preflight = matchPreflight({ method: 'OPTIONS', headers }, cors);

@@ -266,4 +266,98 @@ describe('matchPreflight', () => {
     );
     expect(r).not.toBeNull();
   });
+
+  it('emits Vary: Origin on every successful preflight (literal Origin path)', () => {
+    const r = matchPreflight(
+      {
+        method: 'OPTIONS',
+        headers: {
+          origin: ['https://example.com'],
+          'access-control-request-method': ['POST'],
+        },
+      },
+      config
+    );
+    expect(r).not.toBeNull();
+    expect(r!.headers['vary']).toBe('Origin');
+  });
+
+  it('emits Vary: Origin on the wildcard / no-credentials path', () => {
+    const wildcardConfig: CorsConfig = {
+      AllowOrigins: ['*'],
+      AllowMethods: ['*'],
+      AllowHeaders: ['*'],
+      ExposeHeaders: [],
+    };
+    const r = matchPreflight(
+      {
+        method: 'OPTIONS',
+        headers: {
+          origin: ['https://anywhere.example'],
+          'access-control-request-method': ['GET'],
+        },
+      },
+      wildcardConfig
+    );
+    expect(r).not.toBeNull();
+    expect(r!.headers['access-control-allow-origin']).toBe('*');
+    expect(r!.headers['vary']).toBe('Origin');
+  });
+
+  it('emits Vary: Origin on the AllowCredentials echo path', () => {
+    const credsConfig: CorsConfig = {
+      AllowOrigins: ['*'],
+      AllowMethods: ['*'],
+      AllowHeaders: ['*'],
+      ExposeHeaders: [],
+      AllowCredentials: true,
+    };
+    const r = matchPreflight(
+      {
+        method: 'OPTIONS',
+        headers: {
+          origin: ['https://anywhere.example'],
+          'access-control-request-method': ['POST'],
+        },
+      },
+      credsConfig
+    );
+    expect(r).not.toBeNull();
+    expect(r!.headers['access-control-allow-origin']).toBe('https://anywhere.example');
+    expect(r!.headers['vary']).toBe('Origin');
+  });
+
+  it('rejects access-control-request-headers with an empty entry (e.g. "Content-Type,,Authorization")', () => {
+    const r = matchPreflight(
+      {
+        method: 'OPTIONS',
+        headers: {
+          origin: ['https://example.com'],
+          'access-control-request-method': ['POST'],
+          'access-control-request-headers': ['Content-Type,,Authorization'],
+        },
+      },
+      config
+    );
+    // Pre-fix the empty entry was silently skipped and the request
+    // matched. Post-fix the malformed list rejects.
+    expect(r).toBeNull();
+  });
+
+  it('does NOT include access-control-allow-origin header when origin is rejected (negative-header pin)', () => {
+    const r = matchPreflight(
+      {
+        method: 'OPTIONS',
+        headers: {
+          origin: ['https://other.example'],
+          'access-control-request-method': ['GET'],
+        },
+      },
+      config
+    );
+    // Returning null means the server falls through to route dispatch
+    // (404 / user OPTIONS handler). Pinning the null contract here
+    // because callers depend on "no preflight headers in null result".
+    expect(r).toBeNull();
+  });
 });

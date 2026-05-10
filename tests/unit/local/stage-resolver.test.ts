@@ -22,10 +22,17 @@ describe('buildStageMap', () => {
   });
 
   it('picks the first REST v1 Stage attached to a RestApi by default', () => {
-    const m = buildStageMap(
-      tpl({
-        Api: { Type: 'AWS::ApiGateway::RestApi', Properties: {} },
-        ProdStage: {
+    // Build the resources record explicitly via an entries array so the
+    // test does not depend on the implementation reading object-literal
+    // insertion order — though ES2015+ guarantees that string keys
+    // iterate in insertion order, the dependence used to be implicit.
+    // ProdStage appears FIRST in the entries below, so it must be
+    // selected when no `--stage` override is set.
+    const orderedEntries: Array<[string, TemplateResource]> = [
+      ['Api', { Type: 'AWS::ApiGateway::RestApi', Properties: {} }],
+      [
+        'ProdStage',
+        {
           Type: 'AWS::ApiGateway::Stage',
           Properties: {
             RestApiId: { Ref: 'Api' },
@@ -33,7 +40,10 @@ describe('buildStageMap', () => {
             Variables: { region: 'us-east-1', dbHost: 'rds.example' },
           },
         },
-        DevStage: {
+      ],
+      [
+        'DevStage',
+        {
           Type: 'AWS::ApiGateway::Stage',
           Properties: {
             RestApiId: { Ref: 'Api' },
@@ -41,8 +51,9 @@ describe('buildStageMap', () => {
             Variables: { region: 'us-west-2' },
           },
         },
-      })
-    );
+      ],
+    ];
+    const m = buildStageMap(tpl(Object.fromEntries(orderedEntries)));
     const stage = m.get('Api');
     expect(stage).toBeDefined();
     expect(stage!.stageName).toBe('prod');
@@ -227,5 +238,53 @@ describe('attachStageContext', () => {
     expect(routes[0]!.stageVariables).toBeNull();
     // stage stays at the discovery-time default
     expect(routes[0]!.stage).toBe('$default');
+  });
+
+  it('handles a per-API stage override mismatch (--stage prod matches API A only)', () => {
+    // API A has a `prod` Stage; API B only has `dev`. With `--stage
+    // prod`, A enters the stage map, B is left out. attachStageContext
+    // sets variables on A's routes, leaves B's routes with
+    // stageVariables: null + stage at the default placeholder.
+    const m = buildStageMap(
+      tpl({
+        ApiA: { Type: 'AWS::ApiGatewayV2::Api', Properties: { ProtocolType: 'HTTP' } },
+        ApiAStage: {
+          Type: 'AWS::ApiGatewayV2::Stage',
+          Properties: {
+            ApiId: { Ref: 'ApiA' },
+            StageName: 'prod',
+            StageVariables: { region: 'us-east-1' },
+          },
+        },
+        ApiB: { Type: 'AWS::ApiGatewayV2::Api', Properties: { ProtocolType: 'HTTP' } },
+        ApiBStage: {
+          Type: 'AWS::ApiGatewayV2::Stage',
+          Properties: {
+            ApiId: { Ref: 'ApiB' },
+            StageName: 'dev',
+            StageVariables: { region: 'us-west-2' },
+          },
+        },
+      }),
+      'prod'
+    );
+    expect(m.has('ApiA')).toBe(true);
+    expect(m.has('ApiB')).toBe(false);
+    const routes = [
+      route({ apiLogicalId: 'ApiA', source: 'http-api', apiVersion: 'v2' }),
+      route({
+        apiLogicalId: 'ApiB',
+        source: 'http-api',
+        apiVersion: 'v2',
+        pathPattern: '/b',
+      }),
+    ];
+    attachStageContext(routes, m);
+    expect(routes[0]!.stageVariables).toEqual({ region: 'us-east-1' });
+    expect(routes[1]!.stageVariables).toBeNull();
+    // Both v2 routes keep stage='$default' (HTTP API only exposes
+    // $default to the integration event regardless of matched stage).
+    expect(routes[0]!.stage).toBe('$default');
+    expect(routes[1]!.stage).toBe('$default');
   });
 });

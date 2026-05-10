@@ -129,8 +129,14 @@ async function localStartApiCommand(options: LocalStartApiOptions): Promise<void
   const inlineTmpDirs = new Set<string>();
   // Track every Lambda asset directory the server is currently
   // referencing; the file watcher uses this list to know what to
-  // watch beyond `cdk.out/`. Mutated by the reload pipeline through
-  // `lastAssetPaths.value = ...`.
+  // watch beyond `cdk.out/`. The value is updated AFTER the reload
+  // orchestrator's atomic state swap completes (see the `.then(...)`
+  // block on `orchestrator.reload()` below) — pre-fix, the assignment
+  // happened mid-`synthesizeAndBuild`, so a concurrent file event
+  // during a reload would call `watcher.update([...new asset dirs])`
+  // while the server still serves the old state. Now the file
+  // watcher's view of "what asset dirs to watch" stays in lockstep
+  // with the server's state.
   const lastAssetPaths: { value: string[] } = { value: [] };
 
   /**
@@ -222,18 +228,12 @@ async function localStartApiCommand(options: LocalStartApiOptions): Promise<void
       specs.set(logicalId, spec);
     }
 
-    // Update the watched-asset list so the file watcher's `update()`
-    // call later picks up new asset directories.
-    const assetPaths = new Set<string>();
-    for (const spec of specs.values()) {
-      // `codeDir` is either the unzipped asset directory or the
-      // inline-code tmpdir; both are watch-worthy.
-      assetPaths.add(spec.codeDir);
-    }
-    lastAssetPaths.value = [...assetPaths];
-
     // Pull every distinct image up front so the first request doesn't
     // pay the layer-pull cost. Mirrors `cdkd local invoke`'s pull pass.
+    // NOTE: the watched-asset list (`lastAssetPaths.value`) is NOT
+    // mutated here — the assignment happens AFTER the reload
+    // orchestrator's atomic state swap completes. See the `.then(...)`
+    // block on `orchestrator.reload()` below.
     const distinctImages = new Set<string>();
     for (const spec of specs.values()) {
       distinctImages.add(resolveRuntimeImage(spec.lambda.runtime));
@@ -263,9 +263,27 @@ async function localStartApiCommand(options: LocalStartApiOptions): Promise<void
     return pool;
   };
 
+  /**
+   * Compute the watched-asset list from a spec map. Pure helper —
+   * keeps the side-effect (`lastAssetPaths.value = ...`) confined to
+   * the post-swap call sites (initial boot + post-reload). `codeDir`
+   * is either the unzipped asset directory or the inline-code tmpdir;
+   * both are watch-worthy.
+   */
+  const computeAssetPaths = (specs: Map<string, ContainerSpec>): string[] => {
+    const assetPaths = new Set<string>();
+    for (const spec of specs.values()) {
+      assetPaths.add(spec.codeDir);
+    }
+    return [...assetPaths];
+  };
+
   // Initial boot.
   const initialMaterial = await synthesizeAndBuild();
   const initialPool = buildPool(initialMaterial.specs);
+  // Initial assignment is safe (no reload race possible before the
+  // server is even listening).
+  lastAssetPaths.value = computeAssetPaths(initialMaterial.specs);
 
   // Optional pre-warm: one container per Lambda, in parallel.
   if (options.warm) {
@@ -335,11 +353,26 @@ async function localStartApiCommand(options: LocalStartApiOptions): Promise<void
         void orchestrator
           .reload()
           .then((result) => {
-            if (result.ok && watcher) {
+            if (result.ok && watcher && result.newState) {
+              // Pull the new pool's spec map (tagged via __cdkdSpecs by
+              // buildPool) and recompute the watched-asset list AFTER
+              // the orchestrator's atomic state swap. Pre-fix, the
+              // mutation happened mid-`synthesizeAndBuild` — a
+              // concurrent file event during reload would have called
+              // `watcher.update(...)` against the new asset list while
+              // the server still served the old state.
+              const taggedSpecs = (
+                result.newState.pool as unknown as {
+                  __cdkdSpecs?: Map<string, ContainerSpec>;
+                }
+              ).__cdkdSpecs;
+              if (taggedSpecs) {
+                lastAssetPaths.value = computeAssetPaths(taggedSpecs);
+              }
               // Update the watch list to follow new asset dirs.
               watcher.update([options.output, ...lastAssetPaths.value]);
               if (result.added.length > 0 || result.removed.length > 0) {
-                printRouteTable(result.newState!.routes);
+                printRouteTable(result.newState.routes);
               }
             }
           })
@@ -888,7 +921,7 @@ export function createLocalStartApiCommand(): Command {
     .addOption(
       new Option(
         '--stage <name>',
-        "Select an API Gateway Stage by its 'StageName'. Default: the first Stage attached to each API. Determines event.stageVariables (REST v1 + HTTP API v2)."
+        "Select an API Gateway Stage by its 'StageName'. Default: the first Stage attached to each API. Drives event.stageVariables for both REST v1 and HTTP API v2. NOTE: For HTTP API v2 routes, requestContext.stage is always '$default' regardless of this flag (AWS-side limitation — HTTP API only exposes one stage to the integration event); only event.stageVariables is affected for v2 routes. For REST v1 routes the selected StageName is also threaded into requestContext.stage."
       )
     )
     .action(withErrorHandling(localStartApiCommand));

@@ -222,6 +222,16 @@ export function matchPreflight(
     responseHeaders['access-control-allow-credentials'] = 'true';
   }
 
+  // Vary: Origin — set whenever the response's `Access-Control-
+  // Allow-Origin` was DERIVED from the request (wildcard match echoed
+  // as `*`, literal Origin echo, or AllowCredentials echo). Without
+  // this, downstream caches (browsers / CDN) may share a cached
+  // response across origins and serve the wrong CORS headers to a
+  // different origin — silently breaking the security model. Mirrors
+  // `Vary: Origin` semantics from MDN's CORS guide and most server-side
+  // CORS libraries.
+  responseHeaders['vary'] = 'Origin';
+
   return { statusCode: 204, headers: responseHeaders };
 }
 
@@ -262,7 +272,13 @@ function matchToken(token: string, allowed: string[]): string | null {
  * Whether every `,`-separated entry in `headerList` is allowed.
  * Empty `headerList` is always allowed (the request didn't ask for any
  * specific headers — common when the actual request has no custom
- * headers).
+ * headers). An empty entry within a non-empty list (e.g.
+ * `"Content-Type,,,Authorization"`) is treated as a malformed request
+ * and rejected — matches AWS's stricter validation on `Access-Control-
+ * Request-Headers`. Pre-fix the empty entries were silently skipped,
+ * which made `"Content-Type,,,Authorization"` match against an
+ * AllowHeaders list that only contains those two — surprising and
+ * inconsistent with the docstring's "every entry must be allowed".
  */
 function matchHeaderList(headerList: string, allowed: string[]): boolean {
   const trimmed = headerList.trim();
@@ -272,7 +288,7 @@ function matchHeaderList(headerList: string, allowed: string[]): boolean {
   const allowedLower = new Set(allowed.map((s) => s.toLowerCase()));
   for (const entry of trimmed.split(',')) {
     const e = entry.trim().toLowerCase();
-    if (e.length === 0) continue;
+    if (e.length === 0) return false;
     if (!allowedLower.has(e)) return false;
   }
   return true;

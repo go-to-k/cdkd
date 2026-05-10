@@ -24,9 +24,13 @@ import type { ServerState } from './http-server.js';
  *          entry for teardown so the next request gets a fresh container.
  *   4. Atomically swap the server state via
  *      {@link import('./http-server.js').StartedApiServer.setServerState}.
- *   5. Drain the previous pool's affected entries in the background;
- *      in-flight requests against those containers complete, then the
- *      teardown runs.
+ *   5. Dispose the previous pool in the background. `pool.dispose()`
+ *      now AWAITS every in-flight `inUse` handle's release (bounded by
+ *      a per-entry 30s drain timeout) before tearing down the
+ *      underlying container — a request mid-`invokeRie()` against the
+ *      old pool when reload fires runs to completion against its
+ *      original container instead of getting it killed (502 leak). See
+ *      `container-pool.ts:dispose()` for the drain mechanics.
  *
  * Synth failures keep the previous state serving and emit a warn line
  * — the issue brief explicitly rules out crashing the server on a
@@ -114,8 +118,15 @@ export function createReloadOrchestrator(deps: OrchestratorDeps): Orchestrator {
   return {
     reload(): Promise<ReloadResult> {
       const next = chain.then(() => runOneReload(deps, logger));
-      // Swallow rejection on the chain so a thrown error in one reload
-      // doesn't poison every subsequent reload.
+      // Defense-in-depth: `runOneReload` traps every expected failure
+      // (synth error, etc.) and returns `{ ok: false }` — the chain
+      // itself shouldn't reject in the steady state. But `buildPool`
+      // is a synchronous user callback that could throw, and any
+      // future bug in `runOneReload` could leak a rejection. The
+      // `.catch(() => undefined)` swallows such a rejection on the
+      // chain reference only (the original `next` promise still
+      // rejects to the caller) so a single broken reload doesn't
+      // poison every subsequent reload.
       chain = next.catch(() => undefined);
       return next;
     },
