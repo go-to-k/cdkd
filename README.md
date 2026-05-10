@@ -30,29 +30,36 @@
 
 **cdkd deploys up to 15x faster than AWS CDK (CloudFormation)** on SDK-Provider-handled stacks; the per-stack speedup widens with size and parallelism, and drops to ~1.5-3x on stacks dominated by Cloud Control API fallback resources.
 
-The numbers below are a small-stack baseline (5 independent resources, fully parallelized by cdkd's DAG scheduler). On real-world stacks where multiple async CFn waits compound — VPC + CloudFront + Lambda VpcConfig, NAT Gateway + Lambda::Url propagation, RDS + ElastiCache parallel provisioning — cdkd has been measured at **6.7x** and **15x+** under the default scheduler.
+Numbers below are deploy-phase only (CDK app synthesis is identical between cdkd and AWS CDK — both run the same user code through `aws-cdk-lib`'s synthesizer — so synth time is excluded from the speedup calculation).
 
-### SDK Provider path — **4.8x faster** (20.5s vs 98.4s)
+### SDK Provider path — **5.5x faster** (17.0s vs 94.4s)
 
-Stack: S3 Bucket, DynamoDB Table, SQS Queue, SNS Topic, SSM Parameter.
+Stack: S3 Bucket, DynamoDB Table, SQS Queue, SNS Topic, SSM Parameter (5 independent resources, fully parallelized by cdkd's DAG scheduler).
 
-| Phase | cdkd | AWS CDK (CFn) | Speedup |
-| --- | --- | --- | --- |
-| Synthesis | 3.5s | 4.1s | 1.2x |
-| Deploy | 17.0s | 94.4s | **5.5x** |
-| **Total** | **20.5s** | **98.4s** | **4.8x** |
+| | cdkd | AWS CDK (CFn) | Speedup |
+| --- | ---: | ---: | ---: |
+| Deploy | **17.0s** | **94.4s** | **5.5x** |
 
-### Cloud Control API fallback path — **1.5x faster** (44.6s vs 69.1s)
+### Cloud Control API fallback path — **1.6x faster** (40.9s vs 64.9s)
 
 Stack: SSM Document × 3 + Athena WorkGroup × 2 (no SDK provider — CC API fallback).
 
-| Phase | cdkd | AWS CDK (CFn) | Speedup |
-| --- | --- | --- | --- |
-| Synthesis | 3.7s | 4.2s | 1.1x |
-| Deploy | 40.9s | 64.9s | **1.6x** |
-| **Total** | **44.6s** | **69.1s** | **1.5x** |
+| | cdkd | AWS CDK (CFn) | Speedup |
+| --- | ---: | ---: | ---: |
+| Deploy | **40.9s** | **64.9s** | **1.6x** |
 
-Reproduce with `./tests/benchmark/run-benchmark.sh all`. See [tests/benchmark/README.md](tests/benchmark/README.md) for details.
+### VPC + Lambda + SQS stack — **15x faster** (40s vs 599s)
+
+Real-world stack: 1 VPC (2 AZs, NAT Gateway, public + private subnets) + Lambda Function (with `VpcConfig`) + SQS Queue + EventSourceMapping.
+
+| | AWS CDK (CFn) | cdkd `--no-wait` | Speedup |
+| --- | ---: | ---: | ---: |
+| Deploy | **599s** | **40s** | **~15x** |
+| Destroy | 370s | 325s | 1.14x |
+
+cdkd's DAG scheduler dispatches `CloudFront::Distribution` / `Lambda::Url` / VPC Lambda in parallel with NAT Gateway stabilization (default behavior — pass `--no-aggressive-vpc-parallel` to opt out). `--no-wait` returns as soon as the create call returns, letting AWS finish async provisioning in the background. Both compound against CloudFormation's serial-leaning waits.
+
+Reproduce the first two with `./tests/benchmark/run-benchmark.sh all`. See [tests/benchmark/README.md](tests/benchmark/README.md) for details.
 
 ## How it works
 
