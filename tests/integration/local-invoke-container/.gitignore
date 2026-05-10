@@ -1,0 +1,6 @@
+# Override the parent integ .gitignore so the container Lambda's
+# source files are tracked. The Dockerfile builds against
+# ${LAMBDA_TASK_ROOT}/app.js and the AWS Lambda Node.js base image's
+# RIE entrypoint expects the .js extension.
+!docker/*.js
+!docker/Dockerfile

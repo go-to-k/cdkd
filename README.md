@@ -585,6 +585,16 @@ Requires Docker. v1 supports Node.js and Python runtimes (`nodejs18.x` /
 `nodejs20.x` / `nodejs22.x` / `python3.11` / `python3.12` / `python3.13`);
 other runtimes follow in subsequent PRs.
 
+**Container Lambdas (PR 5 of #224)** — `lambda.DockerImageFunction(...)` /
+`Code.ImageUri` is supported alongside ZIP Lambdas. cdkd reads the
+function's local `Dockerfile` from `cdk.out` and runs `docker build`
+locally before invoking. When no asset matches (typically: invoking a
+stack deployed elsewhere), cdkd falls back to `docker pull` from
+ECR — same-account / same-region only in v1; cross-account /
+cross-region is deferred to a follow-up PR. `Architectures: [x86_64]` /
+`[arm64]` are honored via `--platform` so an arm64 host running an
+x86_64 Lambda doesn't hit emulation.
+
 ```bash
 # Invoke by CDK display path (single-stack apps may omit the prefix)
 cdkd local invoke MyStack/MyApi/Handler

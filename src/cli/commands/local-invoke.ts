@@ -1,5 +1,6 @@
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
+import { dirname } from 'node:path';
 import * as path from 'node:path';
 import { Command, Option } from 'commander';
 import {
@@ -16,7 +17,12 @@ import { applyRoleArnIfSet } from '../../utils/role-arn.js';
 import { withErrorHandling } from '../../utils/error-handler.js';
 import { Synthesizer, type SynthesisOptions } from '../../synthesis/synthesizer.js';
 import { resolveApp, resolveStateBucketWithDefault } from '../config-loader.js';
-import { resolveLambdaTarget } from '../../local/lambda-resolver.js';
+import {
+  resolveLambdaTarget,
+  type ResolvedImageLambda,
+  type ResolvedLambda,
+  type ResolvedZipLambda,
+} from '../../local/lambda-resolver.js';
 import { resolveEnvVars, type EnvOverrideFile } from '../../local/env-resolver.js';
 import {
   substituteEnvVarsFromState,
@@ -31,7 +37,13 @@ import {
   runDetached,
   streamLogs,
 } from '../../local/docker-runner.js';
+import { architectureToPlatform, buildContainerImage } from '../../local/docker-image-builder.js';
+import { pullEcrImage, parseEcrUri } from '../../local/ecr-puller.js';
 import { invokeRie, waitForRieReady } from '../../local/rie-client.js';
+import {
+  AssetManifestLoader,
+  getDockerImageBySourceHash,
+} from '../../assets/asset-manifest-loader.js';
 import { S3StateBackend } from '../../state/s3-state-backend.js';
 import { setAwsClients, AwsClients } from '../../utils/aws-clients.js';
 import type { StackState } from '../../types/state.js';
@@ -134,20 +146,15 @@ async function localInvokeCommand(target: string, options: LocalInvokeOptions): 
   const { stacks } = await synthesizer.synthesize(synthOpts);
 
   const lambda = resolveLambdaTarget(target, stacks);
-  logger.info(`Target: ${lambda.stack.stackName}/${lambda.logicalId} (${lambda.runtime})`);
+  const targetLabel = lambda.kind === 'zip' ? lambda.runtime : 'container image';
+  logger.info(`Target: ${lambda.stack.stackName}/${lambda.logicalId} (${targetLabel})`);
 
-  // Prepare the local code directory the container will bind-mount at
-  // /var/task. Asset-backed Lambdas point at an unzipped CDK directory
-  // already; inline (Code.ZipFile) Lambdas need to materialize the
-  // body to a temp dir using the runtime-appropriate file extension
-  // (`.js` for Node.js, `.py` for Python).
-  const codeDir =
-    lambda.codePath ??
-    materializeInlineCode(
-      lambda.handler,
-      lambda.inlineCode ?? '',
-      resolveRuntimeFileExtension(lambda.runtime)
-    );
+  // Resolve the docker image + bind-mounts + cmd / entrypoint / workdir /
+  // platform that depend on the function's `kind`. ZIP Lambdas use a
+  // public Lambda base image and bind-mount the local code at
+  // /var/task; container Lambdas (PR 5) build a CDK image asset locally
+  // OR pull from ECR (same-acct/region) and have no bind-mount.
+  const imagePlan = await resolveImagePlan(lambda, options);
 
   // PR 2 — `--from-state`: load cdkd's S3 state for the target stack and
   // pre-substitute intrinsic-valued env vars before they hit the regular
@@ -213,8 +220,6 @@ async function localInvokeCommand(target: string, options: LocalInvokeOptions): 
   // Read the event payload. Default to {} (matches SAM).
   const event = await readEvent(options);
 
-  const image = resolveRuntimeImage(lambda.runtime);
-
   // Build the env that the container sees. Lambda runtime conventions:
   // we always pass the standard AWS_LAMBDA_* vars so context.* fields
   // inside the handler look real, and forward AWS credentials so SDK
@@ -247,7 +252,11 @@ async function localInvokeCommand(target: string, options: LocalInvokeOptions): 
 
   // Optional inspector: --debug-port enables `node --inspect-brk` inside
   // the container. The Lambda Node.js base image's RIE entrypoint
-  // forwards NODE_OPTIONS to node, so this is enough.
+  // forwards NODE_OPTIONS to node, so this is enough on the ZIP path.
+  // On the IMAGE path, the Dockerfile's FROM is user-controlled — the
+  // env-var still propagates but only matters when the runtime is Node;
+  // surface a warn for non-Node container Lambdas so the user knows
+  // why nothing happened.
   let debugPort: number | undefined;
   if (options.debugPort) {
     debugPort = Number(options.debugPort);
@@ -255,23 +264,29 @@ async function localInvokeCommand(target: string, options: LocalInvokeOptions): 
       throw new Error(`--debug-port must be an integer in 1..65535, got '${options.debugPort}'`);
     }
     dockerEnv['NODE_OPTIONS'] = `--inspect-brk=0.0.0.0:${debugPort}`;
+    if (lambda.kind === 'image') {
+      logger.warn(
+        '--debug-port sets NODE_OPTIONS unconditionally on container Lambdas. ' +
+          "If the image's runtime is not Node.js, this flag is a no-op."
+      );
+    }
   }
-
-  // Commander surfaces `--no-pull` as `pull: false` (default `true`).
-  await pullImage(image, options.pull === false);
 
   const hostPort = await pickFreePort();
   const containerHost = options.containerHost || '127.0.0.1';
 
-  logger.info(`Starting container (image=${image}, port=${hostPort})...`);
+  logger.info(`Starting container (image=${imagePlan.image}, port=${hostPort})...`);
   const containerId = await runDetached({
-    image,
-    mounts: [{ hostPath: codeDir, containerPath: '/var/task', readOnly: true }],
+    image: imagePlan.image,
+    mounts: imagePlan.mounts,
     env: dockerEnv,
-    cmd: [lambda.handler],
+    cmd: imagePlan.cmd,
     hostPort,
     host: containerHost,
     ...(debugPort !== undefined && { debugPort }),
+    ...(imagePlan.platform !== undefined && { platform: imagePlan.platform }),
+    ...(imagePlan.entryPoint !== undefined && { entryPoint: imagePlan.entryPoint }),
+    ...(imagePlan.workingDir !== undefined && { workingDir: imagePlan.workingDir }),
   });
 
   // Stream the container's logs to the user's terminal so they see the
@@ -309,6 +324,155 @@ async function localInvokeCommand(target: string, options: LocalInvokeOptions): 
     stopLogs();
     await removeContainer(containerId);
   }
+}
+
+/**
+ * Result of resolving the docker image, bind-mounts, and CMD / entrypoint /
+ * workdir / platform fields that depend on the function's `kind`. Built by
+ * {@link resolveImagePlan}; consumed by `runDetached`.
+ *
+ * For ZIP Lambdas: `image` is a public Lambda base image, `mounts` carries
+ * one entry that bind-mounts the local code at /var/task, `cmd` is
+ * `[handler]`. `platform` / `entryPoint` / `workingDir` are unset.
+ *
+ * For IMAGE Lambdas (PR 5): `image` is either a locally-built tag (asset
+ * manifest hit) or the deployed ECR URI (fallback). `mounts` is empty (the
+ * code is already in the image). `cmd` / `entryPoint` / `workingDir` come
+ * from `ImageConfig`. `platform` is set per `Architectures` (D5.6).
+ */
+interface ImagePlan {
+  image: string;
+  mounts: { hostPath: string; containerPath: string; readOnly?: boolean }[];
+  cmd: string[];
+  platform?: string;
+  entryPoint?: string[];
+  workingDir?: string;
+}
+
+/**
+ * Resolve the image / bind-mount / CMD layout for the resolved Lambda. ZIP
+ * vs IMAGE branches diverge here; everything downstream consumes a
+ * uniform {@link ImagePlan}. Honors `--no-pull` per-path (PR 5 C3): ZIP
+ * → skip `docker pull` of the public base; IMAGE local-build → no-op
+ * (docker build's default is no-pull); IMAGE ECR-pull → skip the pull
+ * AND error if the image isn't in the local cache.
+ */
+async function resolveImagePlan(
+  lambda: ResolvedLambda,
+  options: LocalInvokeOptions
+): Promise<ImagePlan> {
+  if (lambda.kind === 'zip') {
+    return resolveZipImagePlan(lambda, options);
+  }
+  return resolveContainerImagePlan(lambda, options);
+}
+
+/**
+ * ZIP-Lambda branch: pull the public Lambda base image, bind-mount the
+ * resolved code dir at /var/task, set CMD to `[handler]`. Inline
+ * (Code.ZipFile) Lambdas materialize to a tmpdir using the
+ * runtime-appropriate file extension before bind-mounting.
+ */
+async function resolveZipImagePlan(
+  lambda: ResolvedZipLambda,
+  options: LocalInvokeOptions
+): Promise<ImagePlan> {
+  const codeDir =
+    lambda.codePath ??
+    materializeInlineCode(
+      lambda.handler,
+      lambda.inlineCode ?? '',
+      resolveRuntimeFileExtension(lambda.runtime)
+    );
+
+  const image = resolveRuntimeImage(lambda.runtime);
+
+  // Commander surfaces `--no-pull` as `pull: false` (default `true`).
+  await pullImage(image, options.pull === false);
+
+  return {
+    image,
+    mounts: [{ hostPath: codeDir, containerPath: '/var/task', readOnly: true }],
+    cmd: [lambda.handler],
+  };
+}
+
+/**
+ * Container-Lambda branch (PR 5): try the local-build path first (asset
+ * manifest lookup by hash; single-asset fallback when extraction fails),
+ * then fall back to ECR pull (same-account / same-region only — D5.2).
+ */
+async function resolveContainerImagePlan(
+  lambda: ResolvedImageLambda,
+  options: LocalInvokeOptions
+): Promise<ImagePlan> {
+  const logger = getLogger();
+  const platform = architectureToPlatform(lambda.architecture);
+
+  // Asset manifest lookup. The stack's `assetManifestPath` is at
+  // `<cdk.out>/<stack>.assets.json`; we strip the filename to get the
+  // assembly directory the build context lives under.
+  const localBuild = await resolveLocalBuildPlan(lambda);
+  let imageRef: string;
+  if (localBuild) {
+    imageRef = await buildContainerImage(localBuild.asset, localBuild.cdkOutDir, {
+      architecture: lambda.architecture,
+    });
+  } else {
+    // ECR-pull fallback. Surface a clear error when the URI isn't an
+    // ECR shape we can authenticate against (most commonly: the user
+    // pointed at `public.ecr.aws/...` directly).
+    if (!parseEcrUri(lambda.imageUri)) {
+      throw new Error(
+        `Container Lambda '${lambda.logicalId}' has no matching asset in cdk.out, and Code.ImageUri ` +
+          `'${lambda.imageUri}' is not an ECR URI cdkd can authenticate against. ` +
+          'Re-synthesize the CDK app (so cdk.out includes the build context) or deploy the image to ECR first.'
+      );
+    }
+    logger.info(
+      `No matching cdk.out asset for ${lambda.imageUri}; falling back to ECR pull (same-acct/region only)...`
+    );
+    imageRef = await pullEcrImage(lambda.imageUri, { skipPull: options.pull === false });
+  }
+
+  return {
+    image: imageRef,
+    mounts: [],
+    cmd: lambda.imageConfig.command ?? [],
+    platform,
+    ...(lambda.imageConfig.entryPoint &&
+      lambda.imageConfig.entryPoint.length > 0 && {
+        entryPoint: lambda.imageConfig.entryPoint,
+      }),
+    ...(lambda.imageConfig.workingDirectory !== undefined && {
+      workingDir: lambda.imageConfig.workingDirectory,
+    }),
+  };
+}
+
+/**
+ * Look up the docker image asset that backs a container Lambda. Returns
+ * `undefined` when the asset manifest does not contain a matching entry
+ * (and the single-asset fallback in `getDockerImageBySourceHash` did not
+ * apply either) — the caller falls back to the ECR-pull path.
+ */
+async function resolveLocalBuildPlan(
+  lambda: ResolvedImageLambda
+): Promise<
+  | { asset: { source: import('../../types/assets.js').DockerImageAssetSource }; cdkOutDir: string }
+  | undefined
+> {
+  const manifestPath = lambda.stack.assetManifestPath;
+  if (!manifestPath) return undefined;
+  const cdkOutDir = dirname(manifestPath);
+
+  const loader = new AssetManifestLoader();
+  const manifest = await loader.loadManifest(cdkOutDir, lambda.stack.stackName);
+  if (!manifest) return undefined;
+
+  const entry = getDockerImageBySourceHash(manifest, lambda.imageUri);
+  if (!entry) return undefined;
+  return { asset: entry.asset, cdkOutDir };
 }
 
 /**

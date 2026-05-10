@@ -6,25 +6,41 @@ import { buildCdkPathIndex, resolveCdkPathToLogicalIds } from '../cli/cdk-path.j
 import { matchStacks } from '../cli/stack-matcher.js';
 
 /**
- * Result of resolving an `cdkd local invoke <target>` argument back to a
- * concrete Lambda function in the synthesized assembly. Carries everything
- * the docker-runner needs in one shot.
+ * Result of resolving a `cdkd local invoke <target>` argument back to a
+ * concrete Lambda function in the synthesized assembly.
+ *
+ * Discriminated union (PR 5, D5.3): `kind === 'zip'` for traditional
+ * Node.js / Python ZIP-packaged Lambdas; `kind === 'image'` for container
+ * Lambdas (`Code.ImageUri`). The two variants have meaningfully different
+ * fields — `runtime` / `handler` / `codePath` are zip-only, while
+ * `dockerSource` / `imageConfig` / `architecture` are image-only — so the
+ * compiler can enforce exhaustive handling at the consumer (the
+ * `local-invoke.ts` CLI command branch).
+ *
+ * Orthogonal future fields (e.g. PR 6 layers) live on the base interface
+ * so they apply to both variants without each adding a copy.
  */
-export interface ResolvedLambda {
+export type ResolvedLambda = ResolvedZipLambda | ResolvedImageLambda;
+
+interface ResolvedLambdaBase {
   /** Stack the function belongs to. */
   stack: StackInfo;
   /** CloudFormation logical ID of the function. */
   logicalId: string;
   /** Raw template entry (for property reads beyond what's surfaced here). */
   resource: TemplateResource;
-  /** Lambda runtime string (e.g. `nodejs20.x`). */
-  runtime: string;
-  /** Lambda handler string (e.g. `index.handler`). */
-  handler: string;
   /** `MemorySize` from the template, or 128 when omitted (Lambda default). */
   memoryMb: number;
   /** `Timeout` (seconds) from the template, or 3 when omitted (Lambda default). */
   timeoutSec: number;
+}
+
+export interface ResolvedZipLambda extends ResolvedLambdaBase {
+  kind: 'zip';
+  /** Lambda runtime string (e.g. `nodejs20.x`). */
+  runtime: string;
+  /** Lambda handler string (e.g. `index.handler`). */
+  handler: string;
   /**
    * Resolved local code path. For asset-backed functions, this is the
    * absolute directory under `cdk.out` named by the resource's
@@ -39,6 +55,38 @@ export interface ResolvedLambda {
    * writes this into a temp dir at the path implied by `handler`.
    */
   inlineCode?: string;
+}
+
+export interface ResolvedImageLambda extends ResolvedLambdaBase {
+  kind: 'image';
+  /**
+   * Raw `Code.ImageUri` from the template. Used to extract the asset hash
+   * for the local-build path AND for the ECR-pull fallback path (when the
+   * URI doesn't match any cdk.out asset). Already resolved through
+   * cdk-assets bootstrap-placeholder substitution upstream — `${AWS::*}`
+   * pseudo-parameters are still present (cdkd substitutes them at the
+   * lookup site since it knows the calling account/region).
+   */
+  imageUri: string;
+  /**
+   * `ImageConfig` from the template. All fields are optional — the
+   * common case is just `Command: [<handler>]`. Empty `[]` for
+   * `entryPoint` means "use the image's default entrypoint" (typically
+   * `/lambda-entrypoint.sh` on AWS base images, which routes to RIE).
+   */
+  imageConfig: {
+    command?: string[];
+    entryPoint?: string[];
+    workingDirectory?: string;
+  };
+  /**
+   * `Architectures: [x86_64]` (default) or `[arm64]`. Threaded through to
+   * `--platform linux/amd64` / `linux/arm64` on BOTH `docker build` AND
+   * `docker run`. Without this, an arm64 host running an x86_64 Lambda
+   * hits emulation; an x86_64 host running arm64 fails with
+   * `exec format error`.
+   */
+  architecture: 'x86_64' | 'arm64';
 }
 
 export class LocalInvokeResolutionError extends Error {
@@ -217,6 +265,12 @@ function pickStack(parsed: ParsedTarget, stacks: StackInfo[]): StackInfo {
  * Pull the Lambda properties this command cares about out of the
  * template. Validates required fields up front so the docker-runner can
  * assume a fully-typed `ResolvedLambda`.
+ *
+ * Branches on `Code.ImageUri`: when set the function is a container
+ * Lambda (PR 5, D5.3) and the discriminator flips to `kind: 'image'`;
+ * `Runtime` / `Handler` are NOT required on this path (D5.5 — AWS
+ * contract: container Lambdas don't have `Handler`; invocation is
+ * driven by `ImageConfig.Command` or the image's own CMD).
  */
 function extractLambdaProperties(
   stack: StackInfo,
@@ -224,22 +278,38 @@ function extractLambdaProperties(
   resource: TemplateResource
 ): ResolvedLambda {
   const props = resource.Properties ?? {};
-  const runtime = typeof props['Runtime'] === 'string' ? props['Runtime'] : '';
-  const handler = typeof props['Handler'] === 'string' ? props['Handler'] : '';
   const memoryMb = typeof props['MemorySize'] === 'number' ? props['MemorySize'] : 128;
   const timeoutSec = typeof props['Timeout'] === 'number' ? props['Timeout'] : 3;
 
+  const code = (props['Code'] ?? {}) as Record<string, unknown>;
+  const imageUri = extractImageUri(code['ImageUri']);
+
+  if (imageUri !== undefined) {
+    return extractImageLambdaProperties({
+      stack,
+      logicalId,
+      resource,
+      memoryMb,
+      timeoutSec,
+      props,
+      imageUri,
+    });
+  }
+
+  // ZIP path (D5.5): Runtime + Handler are mandatory.
+  const runtime = typeof props['Runtime'] === 'string' ? props['Runtime'] : '';
+  const handler = typeof props['Handler'] === 'string' ? props['Handler'] : '';
+
   if (!runtime) {
     throw new LocalInvokeResolutionError(
-      `Lambda '${logicalId}' has no Runtime property. ` +
-        'Container-image Lambdas (Code.ImageUri) are not supported in cdkd local invoke v1.'
+      `Lambda '${logicalId}' has no Runtime property and no Code.ImageUri. ` +
+        'cdkd cannot tell if this is a ZIP or a container Lambda.'
     );
   }
   if (!handler) {
     throw new LocalInvokeResolutionError(`Lambda '${logicalId}' has no Handler property.`);
   }
 
-  const code = (props['Code'] ?? {}) as Record<string, unknown>;
   const inlineCode = typeof code['ZipFile'] === 'string' ? code['ZipFile'] : undefined;
 
   let codePath: string | null = null;
@@ -248,6 +318,7 @@ function extractLambdaProperties(
   }
 
   return {
+    kind: 'zip',
     stack,
     logicalId,
     resource,
@@ -257,6 +328,91 @@ function extractLambdaProperties(
     timeoutSec,
     codePath,
     ...(inlineCode !== undefined && { inlineCode }),
+  };
+}
+
+/**
+ * Extract the `Code.ImageUri` value when the template entry is either
+ * a flat string OR a single-key `Fn::Sub` object (the shape CDK actually
+ * synthesizes). Returns `undefined` when the field is absent or some
+ * other intrinsic shape we don't try to resolve in v1.
+ *
+ * Critical bug fix C1 from the design doc: CDK synthesizes
+ * `{Fn::Sub: '${AWS::AccountId}.dkr.ecr.${AWS::Region}.${AWS::URLSuffix}/cdk-hnb659fds-container-assets-${AWS::AccountId}-${AWS::Region}:<hash>'}`,
+ * NOT a flat string. The hash-extraction regex in the asset manifest
+ * loader works against the substituted form (the `${...}` placeholders
+ * are still present but the `:<hash>` tail is unaffected by them).
+ */
+function extractImageUri(value: unknown): string | undefined {
+  if (typeof value === 'string' && value.length > 0) return value;
+  if (value && typeof value === 'object' && !Array.isArray(value)) {
+    const obj = value as Record<string, unknown>;
+    const sub = obj['Fn::Sub'];
+    if (typeof sub === 'string' && sub.length > 0) return sub;
+    // Fn::Sub array form: [template, vars]. The first element is the template.
+    if (Array.isArray(sub) && typeof sub[0] === 'string') return sub[0];
+  }
+  return undefined;
+}
+
+/**
+ * Build the IMAGE-variant `ResolvedLambda` from a Lambda template entry
+ * with `Code.ImageUri`. `ImageConfig` and `Architectures` are both
+ * optional in CFn — the defaults match the AWS-side defaults.
+ */
+function extractImageLambdaProperties(args: {
+  stack: StackInfo;
+  logicalId: string;
+  resource: TemplateResource;
+  memoryMb: number;
+  timeoutSec: number;
+  props: Record<string, unknown>;
+  imageUri: string;
+}): ResolvedImageLambda {
+  const { stack, logicalId, resource, memoryMb, timeoutSec, props, imageUri } = args;
+
+  const rawImageConfig = (props['ImageConfig'] ?? {}) as Record<string, unknown>;
+  const imageConfig: ResolvedImageLambda['imageConfig'] = {};
+  if (Array.isArray(rawImageConfig['Command'])) {
+    imageConfig.command = rawImageConfig['Command'].filter(
+      (s): s is string => typeof s === 'string'
+    );
+  }
+  if (Array.isArray(rawImageConfig['EntryPoint'])) {
+    imageConfig.entryPoint = rawImageConfig['EntryPoint'].filter(
+      (s): s is string => typeof s === 'string'
+    );
+  }
+  if (typeof rawImageConfig['WorkingDirectory'] === 'string') {
+    imageConfig.workingDirectory = rawImageConfig['WorkingDirectory'];
+  }
+
+  // Architectures is an array (CFn). CDK never sets more than one entry.
+  // Default x86_64 matches AWS.
+  const arches = props['Architectures'];
+  let architecture: 'x86_64' | 'arm64' = 'x86_64';
+  if (Array.isArray(arches) && arches.length > 0) {
+    const first: unknown = arches[0];
+    if (first === 'arm64') architecture = 'arm64';
+    else if (first === 'x86_64') architecture = 'x86_64';
+    else {
+      throw new LocalInvokeResolutionError(
+        `Lambda '${logicalId}' has unsupported Architectures value '${String(first)}'. ` +
+          'cdkd local invoke supports x86_64 and arm64.'
+      );
+    }
+  }
+
+  return {
+    kind: 'image',
+    stack,
+    logicalId,
+    resource,
+    memoryMb,
+    timeoutSec,
+    imageUri,
+    imageConfig,
+    architecture,
   };
 }
 

@@ -803,6 +803,16 @@ plumbing.
 invocations reuse the cached image. Pass `--no-pull` to skip the
 `docker pull` round-trip altogether.
 
+**Container Lambdas (PR 5 of #224)** — `lambda.DockerImageFunction(...)` /
+`Code.ImageUri` is supported in addition to ZIP Lambdas. cdkd reads the
+function's local `Dockerfile` from `cdk.out` (via the asset manifest
+keyed off the `:<hash>` suffix on `Code.ImageUri`) and runs `docker build`
+locally, then `docker run` against the resulting image. When no asset
+matches (typically: invoking a stack deployed elsewhere), cdkd falls back
+to `docker pull` from ECR — **same-account / same-region only** in v1.
+`Architectures: [x86_64]` (default) and `[arm64]` are honored via
+`--platform linux/amd64` / `linux/arm64` on both the build and the run.
+
 ### Target resolution
 
 The positional `<target>` accepts two forms:
@@ -827,7 +837,7 @@ in the resolved stack so the user can copy/paste a valid one.
 | `-e, --event <file>` | `{}` | JSON event payload file. |
 | `--event-stdin` | off | Read event JSON from stdin (mutually exclusive with `--event`). |
 | `--env-vars <file>` | — | JSON env-var overrides, SAM-compatible shape: `{"LogicalId":{"KEY":"VALUE"}}` plus an optional top-level `"Parameters"` block applied to every invoke. `null` clears a key. |
-| `--no-pull` | off | Skip `docker pull` (use cached image). |
+| `--no-pull` | off | Skip `docker pull`. Semantics differ by code path: **ZIP Lambdas** — skip pulling the public Lambda base image. **Container Lambdas, local-build path** — no-op (docker build's default does not refresh the FROM cache). **Container Lambdas, ECR-pull fallback** — skip `docker pull` AND error if the image is not in the local cache (re-run without `--no-pull` or pre-pull manually). |
 | `--debug-port <port>` | off | Set `NODE_OPTIONS=--inspect-brk=0.0.0.0:<port>` and publish the port; attach a Node debugger to step through the handler. |
 | `--container-host <host>` | `127.0.0.1` | Host to bind the RIE port to. |
 | `--assume-role <arn>` | off | STS-assume the deployed function's execution role and forward the resulting temp credentials to the container, so the handler runs under the deployed role's narrow permissions instead of the developer's typically-admin shell credentials. Off by default — when omitted, `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` / `AWS_SESSION_TOKEN` / `AWS_REGION` are passed through unchanged (SAM-compatible default). Takes an explicit ARN; PR 2's `--from-state` adds a hint pointing at the state-recorded role ARN but does NOT auto-assume. |
@@ -914,12 +924,29 @@ cdkd local invoke MyStack/MyApi/Handler --from-state \
 
 ### Asset resolution
 
-cdkd uses the CDK-blessed `Metadata['aws:asset:path']` hint on each
-Lambda's CFn resource (the same source SAM uses) to find the local
-unzipped asset directory under `cdk.out`, and bind-mounts it at
-`/var/task` read-only. `Code.ZipFile` (inline) functions are
+**ZIP Lambdas**: cdkd uses the CDK-blessed `Metadata['aws:asset:path']`
+hint on each Lambda's CFn resource (the same source SAM uses) to find
+the local unzipped asset directory under `cdk.out`, and bind-mounts it
+at `/var/task` read-only. `Code.ZipFile` (inline) functions are
 materialized to a tmpdir using the file path implied by the function's
 `Handler` property (`index.handler` → `tmpdir/index.js`).
+
+**Container Lambdas** (`Code.ImageUri`): cdkd extracts the asset hash
+from the `:<hash>` tail of the image URI (CDK synthesizes the URI as a
+`Fn::Sub` whose body ends in the asset hash) and looks the matching
+entry up in the stack's asset manifest (`cdk.out/<stack>.assets.json`,
+`dockerImages[<hash>]`). When the lookup hits, `cdkd local invoke` calls
+`docker build` against the recorded build context. When the lookup
+misses AND the manifest contains exactly one Docker asset, that single
+asset is used (single-asset fallback — covers digest-pinned URIs). When
+both miss, cdkd falls back to **ECR pull** — same-account / same-region
+only; cross-account / cross-region pulls hard-error with a pointer at
+the deferred follow-up PR. `ImageConfig.Command` becomes the docker run
+CMD; `ImageConfig.EntryPoint` (when set) becomes `--entrypoint <first>`
+plus the rest as positional args; `ImageConfig.WorkingDirectory` becomes
+`--workdir`. When `EntryPoint` is unset (the common case), the image's
+default entrypoint stays in charge — for AWS Lambda base images that's
+`/lambda-entrypoint.sh`, which routes to RIE on port 8080.
 
 ### `local invoke` exit codes
 
@@ -935,8 +962,10 @@ materialized to a tmpdir using the file path implied by the function's
 | Out of scope | Deferred to |
 | --- | --- |
 | Java / Go / Ruby / .NET runtimes | Future PRs |
-| Container Lambda (`Code.ImageUri`) | Future PR |
 | Lambda Layers (`AWS::Lambda::LayerVersion`) | Future PR |
+| Cross-account / cross-region ECR pull for container Lambdas | Future PR (same-account / same-region only in v1) |
+| `EphemeralStorage` mapping for container Lambdas | Future PR (Docker `--tmpfs /tmp:size=Nm`) |
+| `--no-build` flag (skip the local docker build, use a pre-built tag) | Future PR |
 | Cross-stack `Fn::ImportValue` / `Fn::GetStackOutput` in `--from-state` | Future PR |
 | Pseudo parameters / `Fn::Join` / `Fn::Select` etc. in `--from-state` | Future PR (warn + drop in v1) |
 | API Gateway / SQS / S3 event source emulation (`cdkd local start-api`) | Future PR |

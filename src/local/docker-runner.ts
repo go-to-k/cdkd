@@ -28,14 +28,18 @@ export interface DockerRunOptions {
   image: string;
   /**
    * Bind mounts: `[hostPath, containerPath]` pairs. cdkd uses this to
-   * expose the function's local code at `/var/task` (read-only).
+   * expose the function's local code at `/var/task` (read-only). Empty
+   * for container Lambdas (PR 5) — the image already has the code at
+   * `/var/task`, no host bind-mount needed.
    */
   mounts: { hostPath: string; containerPath: string; readOnly?: boolean }[];
   /** Environment variables to forward into the container. */
   env: Record<string, string>;
   /**
-   * Container CMD. For Lambda base images this is the handler string,
-   * e.g. `index.handler`.
+   * Container CMD. For ZIP Lambda base images this is the handler string,
+   * e.g. `index.handler`. For container Lambdas (PR 5) this is the
+   * `ImageConfig.Command` array — passed verbatim, may be empty when the
+   * image's own CMD is sufficient.
    */
   cmd: string[];
   /** Host port to bind the RIE port (8080) to. */
@@ -48,6 +52,28 @@ export interface DockerRunOptions {
    * `NODE_OPTIONS=--inspect-brk=0.0.0.0:<port>` in `env`.
    */
   debugPort?: number;
+  /**
+   * `--platform <linux/amd64|linux/arm64>`. PR 5: container Lambdas
+   * declare `Architectures`, and the run-time platform must match the
+   * built image. Without this an arm64 host running an x86_64 Lambda
+   * hits emulation (slow) and an x86_64 host running arm64 fails with
+   * `exec format error`. Omitted when undefined (the ZIP path on the
+   * host's default arch is the original behavior).
+   */
+  platform?: string;
+  /**
+   * `--entrypoint <first>` for container Lambdas (PR 5,
+   * `ImageConfig.EntryPoint`). When set, only the first entry is passed
+   * to docker as `--entrypoint` (docker accepts a single binary there);
+   * the remaining entries are pre-pended to `cmd` as positional args.
+   * Most container Lambdas leave EntryPoint unset so `/lambda-entrypoint.sh`
+   * stays in charge of dispatching to RIE.
+   */
+  entryPoint?: string[];
+  /** `--workdir <dir>` for container Lambdas (PR 5, `ImageConfig.WorkingDirectory`). */
+  workingDir?: string;
+  /** Optional `--name` so the orphan-sweep / debugging path can find the container. */
+  name?: string;
 }
 
 /**
@@ -78,6 +104,13 @@ export async function pullImage(image: string, skipPull: boolean): Promise<void>
 export async function runDetached(opts: DockerRunOptions): Promise<string> {
   const args: string[] = ['run', '-d', '--rm'];
 
+  if (opts.name) {
+    args.push('--name', opts.name);
+  }
+  if (opts.platform) {
+    args.push('--platform', opts.platform);
+  }
+
   const host = opts.host ?? '127.0.0.1';
   args.push('-p', `${host}:${opts.hostPort}:8080`);
   if (opts.debugPort !== undefined) {
@@ -93,7 +126,22 @@ export async function runDetached(opts: DockerRunOptions): Promise<string> {
     args.push('-e', `${k}=${v}`);
   }
 
-  args.push(opts.image, ...opts.cmd);
+  if (opts.workingDir) {
+    args.push('--workdir', opts.workingDir);
+  }
+
+  // ImageConfig.EntryPoint maps to `--entrypoint <first>` plus the rest
+  // as positional args before CMD. Docker only accepts a single value
+  // for `--entrypoint`; multi-arg entrypoints carry their tail through
+  // the positional CMD slot. Most container Lambdas omit EntryPoint
+  // entirely so `/lambda-entrypoint.sh` stays in charge of RIE dispatch.
+  let entryPointTail: string[] = [];
+  if (opts.entryPoint && opts.entryPoint.length > 0) {
+    args.push('--entrypoint', opts.entryPoint[0]!);
+    entryPointTail = opts.entryPoint.slice(1);
+  }
+
+  args.push(opts.image, ...entryPointTail, ...opts.cmd);
 
   const logger = getLogger().child('docker');
   logger.debug(`docker ${args.join(' ')}`);

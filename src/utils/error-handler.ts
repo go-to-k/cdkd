@@ -60,6 +60,25 @@ export class AssetError extends CdkdError {
 }
 
 /**
+ * Local-invoke `docker build` failures.
+ *
+ * Surfaces the stderr captured from `docker build` so the user can
+ * re-run the same command directly to debug Dockerfile syntax errors
+ * or missing build context. Used by `src/local/docker-image-builder.ts`
+ * (PR 5) for container Lambdas; the parallel `AssetError` covers the
+ * `cdkd publish-assets` / `cdkd deploy` build path. Kept distinct from
+ * `AssetError` so `cdkd local invoke` failures don't show up under the
+ * "asset" error class.
+ */
+export class LocalInvokeBuildError extends CdkdError {
+  constructor(message: string, cause?: Error) {
+    super(message, 'LOCAL_INVOKE_BUILD_ERROR', cause);
+    this.name = 'LocalInvokeBuildError';
+    Object.setPrototypeOf(this, LocalInvokeBuildError.prototype);
+  }
+}
+
+/**
  * Resource provisioning errors
  */
 export class ProvisioningError extends CdkdError {
