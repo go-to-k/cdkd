@@ -552,6 +552,38 @@ describe('resolveLambdaTarget', () => {
     expect(result.layers.map((l) => l.logicalId)).toEqual(['LayerA', 'LayerB', 'LayerC']);
   });
 
+  it("rejects the YAML-only Fn::GetAtt string form ('LogicalId.attr') — CFn JSON never emits it", () => {
+    // Issue #241 item 5: CloudFormation YAML accepts the dot-shorthand
+    // `Fn::GetAtt: '<LogicalId>.<attr>'` and converts it to the array
+    // form on the wire, but CDK's `cdk synth` output (CFn JSON, the only
+    // thing cdkd ingests) never emits the string form. Surfacing it as
+    // resolvable would silently accept hand-edited / malformed templates;
+    // we hard-error so the offending shape is called out.
+    const stack = buildStack(
+      'MyStack',
+      {
+        Fn: {
+          Type: 'AWS::Lambda::Function',
+          Properties: {
+            Runtime: 'nodejs20.x',
+            Handler: 'index.handler',
+            Layers: [{ 'Fn::GetAtt': 'MyLayer.Ref' }],
+          },
+          Metadata: { 'aws:asset:path': 'asset.fn' },
+        },
+        MyLayer: {
+          Type: 'AWS::Lambda::LayerVersion',
+          Properties: {},
+          Metadata: { 'aws:asset:path': 'asset.layer1' },
+        },
+      },
+      tmpRoot
+    );
+    expect(() => resolveLambdaTarget('MyStack:Fn', [stack])).toThrow(
+      /cdkd cannot resolve locally.*Only same-stack Ref \/ Fn::GetAtt/
+    );
+  });
+
   it('rejects literal-ARN layer entries (cross-account / pre-existing — out of scope)', () => {
     const stack = buildStack(
       'MyStack',

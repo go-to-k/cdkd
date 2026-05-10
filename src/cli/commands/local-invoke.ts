@@ -571,6 +571,29 @@ export function materializeLambdaLayers(layers: { logicalId: string; assetPath: 
     // makes later layers overwrite earlier ones — the load-bearing
     // half of AWS's "last layer wins" semantic. cpSync merges into the
     // existing target rather than replacing it.
+    //
+    // **Contract pinned (Node 20+)**: cdkd relies on three default
+    // behaviors of `fs.cpSync` that future readers should NOT change
+    // without auditing every Lambda Layer the integ test exercises:
+    //   - `mode` defaults to preserving the source's file-mode bits,
+    //     including the `+x` execute bit. AWS layers commonly ship
+    //     executable scripts under `bin/` (e.g. layer-version shipped
+    //     binaries, the Python `bin/python` shim) and a Lambda handler
+    //     that runs `bin/<script>` from `/opt` would fail with a bare
+    //     "Permission denied" otherwise. Equivalent to `cp -a` semantics
+    //     for the bits Lambda actually cares about.
+    //   - `verbatimSymlinks` defaults to true on Node 20+; symlinks in
+    //     the source are copied as symlinks (not dereferenced), which
+    //     matches how AWS extracts a layer ZIP into `/opt`. Some build
+    //     tools emit symlinks inside the layer asset directory and we
+    //     don't want to silently flatten them.
+    //   - `force: true` (above) makes a later layer's entry overwrite
+    //     the previous layer's same-path entry; mirrors AWS's
+    //     last-layer-wins file-collision rule.
+    // The first two are Node 20+ defaults and require no explicit flag;
+    // we document them here so a future "tighten the cpSync options"
+    // refactor doesn't accidentally drop the `+x` bit or dereference
+    // symlinks and silently break `/opt/bin/...` layers in the field.
     cpSync(layer.assetPath, tmpDir, { recursive: true, force: true });
   }
   return {

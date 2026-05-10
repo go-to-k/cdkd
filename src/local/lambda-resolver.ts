@@ -599,10 +599,20 @@ export function resolveLambdaLayers(
  * Walk a single Layers-array entry and return the referenced layer's
  * logical ID — or `undefined` for shapes we don't try to resolve in v1.
  *
- * Accepted shapes (what CDK actually synthesizes):
+ * Accepted shapes (what CDK actually synthesizes — JSON-only):
  *   - `{Ref: '<LayerLogicalId>'}`
  *   - `{Fn::GetAtt: ['<LayerLogicalId>', 'Ref']}` (rare; LayerVersion's
  *     Ref form is usually emitted as a flat `Ref`)
+ *
+ * Intentionally **rejected**: the YAML-only string form
+ * `{Fn::GetAtt: '<LogicalId>.<attr>'}`. CloudFormation YAML accepts the
+ * dot-shorthand and converts it to the array form on the wire, but
+ * CloudFormation JSON (the output of `cdk synth`, which is the only
+ * thing cdkd ingests) never emits the string form. Treating it as
+ * resolvable here would silently accept hand-edited / malformed templates
+ * that no real CDK flow can produce; instead we fall through to the
+ * standard "cdkd cannot resolve this Layers entry locally" error so the
+ * user sees the offending shape called out.
  */
 function pickLayerLogicalId(entry: unknown): string | undefined {
   if (entry === null || typeof entry !== 'object' || Array.isArray(entry)) return undefined;
@@ -611,7 +621,9 @@ function pickLayerLogicalId(entry: unknown): string | undefined {
   if ('Fn::GetAtt' in obj) {
     const arg = obj['Fn::GetAtt'];
     if (Array.isArray(arg) && typeof arg[0] === 'string') return arg[0];
-    if (typeof arg === 'string') return arg.split('.')[0];
+    // Deliberately not: `if (typeof arg === 'string') return arg.split('.')[0]`.
+    // See docstring above — the string form is YAML-only and CFn JSON
+    // never emits it.
   }
   return undefined;
 }
