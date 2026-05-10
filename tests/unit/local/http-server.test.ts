@@ -1,0 +1,431 @@
+import type { ServerResponse } from 'node:http';
+import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
+import { startApiServer, writeAuthRejection } from '../../../src/local/http-server.js';
+import type { RouteWithAuth } from '../../../src/local/authorizer-resolver.js';
+import type { ContainerPool } from '../../../src/local/container-pool.js';
+import { createAuthorizerCache } from '../../../src/local/authorizer-cache.js';
+import { createJwksCache } from '../../../src/local/cognito-jwt.js';
+
+vi.mock('../../../src/local/rie-client.js', () => ({
+  invokeRie: vi.fn(),
+}));
+import * as rieClient from '../../../src/local/rie-client.js';
+const invokeRieMock = rieClient.invokeRie as unknown as ReturnType<typeof vi.fn>;
+
+/**
+ * Construct a minimal `ServerResponse` stand-in that records `statusCode`
+ * and the final body. We don't need a real `node:http` socket for the
+ * `writeAuthRejection` unit tests.
+ */
+function makeResponse(): ServerResponse & {
+  capturedBody: string;
+  capturedHeaders: Map<string, string>;
+} {
+  const headers = new Map<string, string>();
+  let body = '';
+  const stub = {
+    statusCode: 0,
+    setHeader(name: string, value: string | string[]) {
+      headers.set(String(name).toLowerCase(), Array.isArray(value) ? value.join(',') : String(value));
+    },
+    end(payload?: string | Buffer) {
+      body = payload ? payload.toString() : '';
+    },
+    get capturedBody() {
+      return body;
+    },
+    get capturedHeaders() {
+      return headers;
+    },
+  } as unknown as ServerResponse & { capturedBody: string; capturedHeaders: Map<string, string> };
+  return stub;
+}
+
+describe('writeAuthRejection', () => {
+  it('REST v1 + missing-identity → 401 Unauthorized', () => {
+    const res = makeResponse();
+    writeAuthRejection(res, 'v1', 'missing-identity');
+    expect(res.statusCode).toBe(401);
+    expect(res.capturedBody).toBe('{"message":"Unauthorized"}');
+  });
+
+  it('REST v1 + policy-deny → 403 Forbidden', () => {
+    const res = makeResponse();
+    writeAuthRejection(res, 'v1', 'policy-deny');
+    expect(res.statusCode).toBe(403);
+    expect(res.capturedBody).toBe('{"message":"Forbidden"}');
+  });
+
+  it('HTTP v2 + missing-identity → 401 Unauthorized', () => {
+    const res = makeResponse();
+    writeAuthRejection(res, 'v2', 'missing-identity');
+    expect(res.statusCode).toBe(401);
+    expect(res.capturedBody).toBe('{"message":"Unauthorized"}');
+  });
+
+  it('HTTP v2 + policy-deny → 401 Unauthorized', () => {
+    const res = makeResponse();
+    writeAuthRejection(res, 'v2', 'policy-deny');
+    expect(res.statusCode).toBe(401);
+    expect(res.capturedBody).toBe('{"message":"Unauthorized"}');
+  });
+});
+
+/**
+ * End-to-end tests for the per-request authorizer pass via `startApiServer`.
+ * We boot a real `node:http` server on an ephemeral port and curl-equivalent
+ * `fetch()` it; the route handler + authorizer are mocked via `invokeRie`.
+ */
+function makePool(): ContainerPool {
+  const acquire = vi.fn(async () => ({
+    containerId: 'c1',
+    containerHost: '127.0.0.1',
+    hostPort: 1234,
+    logicalId: 'X',
+    release: vi.fn(),
+  }));
+  const release = vi.fn();
+  return {
+    acquire,
+    release,
+    dispose: vi.fn(async () => undefined),
+  } as unknown as ContainerPool;
+}
+
+function makeRequestRoute(opts: {
+  authorizerLogicalId: string;
+  resultTtlSeconds?: number;
+}): RouteWithAuth {
+  return {
+    route: {
+      method: 'GET',
+      pathPattern: '/items/{id}',
+      lambdaLogicalId: 'HandlerFn',
+      source: 'rest-v1',
+      apiVersion: 'v1',
+      stage: 'prod',
+      declaredAt: 'S/Method-X',
+    },
+    authorizer: {
+      kind: 'lambda-request',
+      logicalId: opts.authorizerLogicalId,
+      lambdaLogicalId: 'AuthFn',
+      identitySources: [{ kind: 'header', name: 'authorization' }],
+      resultTtlSeconds: opts.resultTtlSeconds ?? 300,
+      apiVersion: 'v1',
+      declaredAt: 'S/Method-X',
+    },
+  };
+}
+
+describe('startApiServer — REQUEST authorizer cache (must-fix #1)', () => {
+  beforeEach(() => {
+    invokeRieMock.mockReset();
+  });
+
+  it('caches REQUEST authorizer verdicts: 2 same-identity requests invoke the Lambda exactly once', async () => {
+    const route = makeRequestRoute({ authorizerLogicalId: 'Auth' });
+    // The authorizer Lambda is invoked first per request (when cache
+    // misses); the route handler is invoked after Allow.
+    invokeRieMock.mockImplementation(async (host, port, event) => {
+      // The route handler request has no `type: 'REQUEST'`; the
+      // authorizer event does. Branch on that.
+      const isAuthorizer = (event as { type?: string }).type === 'REQUEST';
+      if (isAuthorizer) {
+        return {
+          raw: '',
+          payload: {
+            principalId: 'u',
+            policyDocument: {
+              Statement: [
+                {
+                  Effect: 'Allow',
+                  Resource: 'arn:aws:execute-api:local:123456789012:local/prod/GET/items/*',
+                },
+              ],
+            },
+            context: { tier: 'pro' },
+          },
+        };
+      }
+      return {
+        raw: '',
+        payload: { statusCode: 200, body: 'ok' },
+      };
+    });
+
+    const cache = createAuthorizerCache();
+    const server = await startApiServer({
+      routes: [route],
+      pool: makePool(),
+      rieTimeoutMs: 1000,
+      host: '127.0.0.1',
+      port: 0,
+      authorizerCache: cache,
+    });
+
+    try {
+      // Two requests with the same identity → authorizer Lambda invoked
+      // exactly once (cache reuses verdict for the second).
+      const url = `http://${server.host}:${server.port}/items/42`;
+      const r1 = await fetch(url, { headers: { authorization: 'Bearer xyz' } });
+      expect(r1.status).toBe(200);
+      const r2 = await fetch(url, { headers: { authorization: 'Bearer xyz' } });
+      expect(r2.status).toBe(200);
+
+      const authorizerInvocations = invokeRieMock.mock.calls.filter(
+        (c) => (c[2] as { type?: string }).type === 'REQUEST'
+      );
+      expect(authorizerInvocations).toHaveLength(1);
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('cache key is per-identity: different headers → 2 authorizer invocations', async () => {
+    const route = makeRequestRoute({ authorizerLogicalId: 'Auth' });
+    invokeRieMock.mockImplementation(async (_h, _p, event) => {
+      const isAuthorizer = (event as { type?: string }).type === 'REQUEST';
+      if (isAuthorizer) {
+        return {
+          raw: '',
+          payload: {
+            principalId: 'u',
+            policyDocument: {
+              Statement: [
+                {
+                  Effect: 'Allow',
+                  Resource: 'arn:aws:execute-api:local:123456789012:local/prod/GET/items/*',
+                },
+              ],
+            },
+          },
+        };
+      }
+      return { raw: '', payload: { statusCode: 200, body: 'ok' } };
+    });
+
+    const cache = createAuthorizerCache();
+    const server = await startApiServer({
+      routes: [route],
+      pool: makePool(),
+      rieTimeoutMs: 1000,
+      host: '127.0.0.1',
+      port: 0,
+      authorizerCache: cache,
+    });
+
+    try {
+      const url = `http://${server.host}:${server.port}/items/42`;
+      await fetch(url, { headers: { authorization: 'Bearer A' } });
+      await fetch(url, { headers: { authorization: 'Bearer B' } });
+      const authorizerInvocations = invokeRieMock.mock.calls.filter(
+        (c) => (c[2] as { type?: string }).type === 'REQUEST'
+      );
+      expect(authorizerInvocations).toHaveLength(2);
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('cache disabled when ttl=0 (HTTP v2 default)', async () => {
+    const route: RouteWithAuth = {
+      route: {
+        method: 'GET',
+        pathPattern: '/items/{id}',
+        lambdaLogicalId: 'HandlerFn',
+        source: 'http-api',
+        apiVersion: 'v2',
+        stage: '$default',
+        declaredAt: 'S/Route-X',
+      },
+      authorizer: {
+        kind: 'lambda-request',
+        logicalId: 'Auth',
+        lambdaLogicalId: 'AuthFn',
+        identitySources: [{ kind: 'header', name: 'authorization' }],
+        resultTtlSeconds: 0, // No caching
+        apiVersion: 'v2',
+        declaredAt: 'S/Route-X',
+      },
+    };
+    invokeRieMock.mockImplementation(async (_h, _p, event) => {
+      const isAuthorizer = (event as { type?: string }).type === 'REQUEST';
+      if (isAuthorizer) {
+        return { raw: '', payload: { isAuthorized: true } };
+      }
+      return { raw: '', payload: { statusCode: 200, body: 'ok' } };
+    });
+
+    const cache = createAuthorizerCache();
+    const server = await startApiServer({
+      routes: [route],
+      pool: makePool(),
+      rieTimeoutMs: 1000,
+      host: '127.0.0.1',
+      port: 0,
+      authorizerCache: cache,
+    });
+
+    try {
+      const url = `http://${server.host}:${server.port}/items/42`;
+      await fetch(url, { headers: { authorization: 'Bearer xyz' } });
+      await fetch(url, { headers: { authorization: 'Bearer xyz' } });
+      const authorizerInvocations = invokeRieMock.mock.calls.filter(
+        (c) => (c[2] as { type?: string }).type === 'REQUEST'
+      );
+      // ttl=0 → no caching → 2 invocations.
+      expect(authorizerInvocations).toHaveLength(2);
+    } finally {
+      await server.close();
+    }
+  });
+});
+
+describe('startApiServer — narrow-Resource cache leak (must-fix #2)', () => {
+  beforeEach(() => {
+    invokeRieMock.mockReset();
+  });
+
+  it('cached Allow with narrow Resource is denied for a different methodArn', async () => {
+    // Route /items/{id} matches both /items/42 and /items/999.
+    const route = makeRequestRoute({ authorizerLogicalId: 'Auth' });
+    invokeRieMock.mockImplementation(async (_h, _p, event) => {
+      const isAuthorizer = (event as { type?: string }).type === 'REQUEST';
+      if (isAuthorizer) {
+        return {
+          raw: '',
+          payload: {
+            principalId: 'u',
+            policyDocument: {
+              Statement: [
+                {
+                  Effect: 'Allow',
+                  // Narrow: only /items/42 is allowed.
+                  Resource: 'arn:aws:execute-api:local:123456789012:local/prod/GET/items/42',
+                },
+              ],
+            },
+          },
+        };
+      }
+      return { raw: '', payload: { statusCode: 200, body: 'ok' } };
+    });
+
+    const cache = createAuthorizerCache();
+    const server = await startApiServer({
+      routes: [route],
+      pool: makePool(),
+      rieTimeoutMs: 1000,
+      host: '127.0.0.1',
+      port: 0,
+      authorizerCache: cache,
+    });
+
+    try {
+      const baseUrl = `http://${server.host}:${server.port}`;
+      // 1st request: hits /items/42 (narrow Resource matches) → 200.
+      const r1 = await fetch(`${baseUrl}/items/42`, {
+        headers: { authorization: 'Bearer xyz' },
+      });
+      expect(r1.status).toBe(200);
+
+      // 2nd request: same identity → cache hit, BUT new methodArn
+      // /items/999 does NOT match the narrow Resource → must deny.
+      // Pre-fix this returned 200 (cache stored the verdict directly,
+      // no per-request Resource re-eval).
+      const r2 = await fetch(`${baseUrl}/items/999`, {
+        headers: { authorization: 'Bearer xyz' },
+      });
+      expect(r2.status).toBe(403);
+
+      // Authorizer Lambda invoked exactly once: cache hit for r2 (we're
+      // NOT re-invoking; Resource re-eval is a CPU-only path off the
+      // cached verdict).
+      const authorizerInvocations = invokeRieMock.mock.calls.filter(
+        (c) => (c[2] as { type?: string }).type === 'REQUEST'
+      );
+      expect(authorizerInvocations).toHaveLength(1);
+    } finally {
+      await server.close();
+    }
+  });
+});
+
+describe('startApiServer — JWKS pass-through warn fires once per server (must-fix #3)', () => {
+  let warnSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    invokeRieMock.mockReset();
+    // Capture warnings via the global console.warn channel — the logger
+    // routes warn lines through console.warn.
+    warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+  });
+
+  afterEach(() => {
+    warnSpy.mockRestore();
+  });
+
+  it('JWKS unreachable + 2 requests → exactly 1 pass-through warn line', async () => {
+    const route: RouteWithAuth = {
+      route: {
+        method: 'GET',
+        pathPattern: '/protected',
+        lambdaLogicalId: 'HandlerFn',
+        source: 'rest-v1',
+        apiVersion: 'v1',
+        stage: 'prod',
+        declaredAt: 'S/Method-Y',
+      },
+      authorizer: {
+        kind: 'cognito',
+        logicalId: 'Auth',
+        userPoolArn: 'arn:aws:cognito-idp:us-east-1:111:userpool/us-east-1_x',
+        region: 'us-east-1',
+        userPoolId: 'us-east-1_x',
+        declaredAt: 'S/Method-Y',
+      },
+    };
+    invokeRieMock.mockImplementation(async () => ({
+      raw: '',
+      payload: { statusCode: 200, body: 'ok' },
+    }));
+
+    // JWKS cache that always fails fetch → pass-through.
+    const jwksCache = createJwksCache({
+      fetchImpl: async () => {
+        throw new Error('unreachable');
+      },
+    });
+    const jwksWarnedUrls = new Set<string>();
+    const server = await startApiServer({
+      routes: [route],
+      pool: makePool(),
+      rieTimeoutMs: 1000,
+      host: '127.0.0.1',
+      port: 0,
+      jwksCache,
+      jwksWarnedUrls,
+    });
+
+    try {
+      const url = `http://${server.host}:${server.port}/protected`;
+      // Use any-old Bearer token; pass-through accepts.
+      await fetch(url, { headers: { authorization: 'Bearer xyz' } });
+      await fetch(url, { headers: { authorization: 'Bearer xyz' } });
+
+      // Count warn lines about pass-through. The logger emits other
+      // warn lines (JWKS unreachable at startup) — only count the
+      // request-time pass-through line.
+      const passThroughWarns = warnSpy.mock.calls.filter((args) => {
+        const msg = args.map((a) => String(a)).join(' ');
+        return msg.includes('JWKS pass-through mode for ');
+      });
+      // Pre-fix: warn fired every request (2 lines). Post-fix: warn
+      // fires at most once per JWKS URL per server lifecycle.
+      expect(passThroughWarns).toHaveLength(1);
+    } finally {
+      await server.close();
+    }
+  });
+});

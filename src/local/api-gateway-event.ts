@@ -195,6 +195,89 @@ export function buildRestV1Event(
 }
 
 /**
+ * Authorizer payload shapes the http-server may set on the event after
+ * the authorizer pass succeeded. The shape is dispatched on `kind`:
+ *
+ *   - `'lambda-rest-v1'` — REST v1 Lambda authorizer. The `context` map
+ *     and (optional) `principalId` go under `event.requestContext.authorizer`.
+ *     Per the deployed shape, the `principalId` field is named `principalId`
+ *     and the context fields land flat alongside it.
+ *
+ *   - `'lambda-http-v2'` — HTTP v2 Lambda authorizer. The same data goes
+ *     under `event.requestContext.authorizer.lambda`.
+ *
+ *   - `'cognito-rest-v1'` — REST v1 Cognito authorizer. Claims land under
+ *     `event.requestContext.authorizer.claims`.
+ *
+ *   - `'jwt-http-v2'` — HTTP v2 JWT authorizer. Claims land under
+ *     `event.requestContext.authorizer.jwt.claims`; the `scopes` array
+ *     mirrors AWS-deployed behavior (always present, may be empty).
+ */
+export type AuthorizerEventOverlay =
+  | { kind: 'lambda-rest-v1'; principalId?: string; context?: Record<string, unknown> }
+  | { kind: 'lambda-http-v2'; principalId?: string; context?: Record<string, unknown> }
+  | { kind: 'cognito-rest-v1'; claims: Record<string, unknown> }
+  | { kind: 'jwt-http-v2'; claims: Record<string, unknown>; scopes?: string[] };
+
+/**
+ * Mutate `event.requestContext.authorizer` (and `.authorizer.lambda` /
+ * `.authorizer.jwt` for v2) per {@link AuthorizerEventOverlay}. The
+ * default `null` value is replaced with an object — user code that
+ * checks `"authorizer" in event.requestContext` continues to see a
+ * truthy value.
+ *
+ * Pure-functional: takes an event, returns a new event with the
+ * overlay applied. Does not mutate the input.
+ */
+export function applyAuthorizerOverlay(
+  event: Record<string, unknown>,
+  overlay: AuthorizerEventOverlay
+): Record<string, unknown> {
+  const requestContext =
+    (event['requestContext'] as Record<string, unknown> | undefined) ??
+    ({} as Record<string, unknown>);
+  let authorizer: Record<string, unknown>;
+  switch (overlay.kind) {
+    case 'lambda-rest-v1': {
+      authorizer = {
+        ...(overlay.principalId !== undefined && { principalId: overlay.principalId }),
+        ...(overlay.context ?? {}),
+      };
+      break;
+    }
+    case 'lambda-http-v2': {
+      authorizer = {
+        lambda: {
+          ...(overlay.principalId !== undefined && { principalId: overlay.principalId }),
+          ...(overlay.context ?? {}),
+        },
+      };
+      break;
+    }
+    case 'cognito-rest-v1': {
+      authorizer = { claims: { ...overlay.claims } };
+      break;
+    }
+    case 'jwt-http-v2': {
+      authorizer = {
+        jwt: {
+          claims: { ...overlay.claims },
+          scopes: overlay.scopes ?? [],
+        },
+      };
+      break;
+    }
+  }
+  return {
+    ...event,
+    requestContext: {
+      ...requestContext,
+      authorizer,
+    },
+  };
+}
+
+/**
  * Split the request URL into `rawPath` (everything before `?`) and
  * `rawQueryString` (everything after, or `''`). Neither component is
  * decoded — that's the whole point of "raw" per the AWS spec.

@@ -1120,16 +1120,98 @@ the `docker ps` cleanup command in the warning.
   discovery rejected) OR uncaught exception during the run.
 - `130` — exited via SIGINT.
 
+### `local start-api` authorizers (PR 8b)
+
+cdkd supports four authorizer kinds in front of any discovered route:
+
+- **Lambda TOKEN** (REST v1) — `AWS::ApiGateway::Authorizer.Type: 'TOKEN'`.
+  The header named in `IdentitySource` (default
+  `method.request.header.Authorization`) is forwarded to the authorizer
+  Lambda as `event.authorizationToken`. The Lambda's response must carry
+  a `policyDocument` with at least one `{ Effect: 'Allow', Resource:
+  <methodArn> }` statement; cdkd matches `Resource` against the
+  request's methodArn (literal or `*`/`?` wildcard) on every request —
+  cached verdicts get re-evaluated against the new methodArn so a
+  narrow-Resource Allow doesn't leak across routes. Allow → context
+  flat under `event.requestContext.authorizer`. Policy-deny → HTTP 403,
+  missing identity header → HTTP 401 without invoking the Lambda.
+- **Lambda REQUEST** — REST v1 (`Type: 'REQUEST'`) and HTTP v2
+  (`AuthorizerType: 'REQUEST'`). The full request snapshot (headers,
+  query string, path parameters) is passed to the authorizer Lambda.
+  HTTP v2 also accepts the simple `{ isAuthorized, context }` response
+  shape in addition to the IAM-policy shape. REST v1 missing-identity →
+  HTTP 401 without invoking the Lambda; HTTP v2 falls through.
+- **Cognito User Pool** (REST v1) — `Type: 'COGNITO_USER_POOLS'`. The
+  Bearer token from `Authorization: Bearer <token>` is verified locally
+  against the user pool's published JWKS. Allow → claims under
+  `event.requestContext.authorizer.claims`. Deny → HTTP 403.
+- **JWT** (HTTP v2) — `AuthorizerType: 'JWT'`. Same JWKS-based
+  verification, with `aud` / `client_id` matched against the
+  `JwtConfiguration.Audience` allowlist. Allow → claims under
+  `event.requestContext.authorizer.jwt.claims`. Deny → HTTP 401.
+
+Authorizer results are cached per `(authorizer, identity)` for the TTL
+declared by the authorizer (REST v1: `AuthorizerResultTtlInSeconds`,
+default 300s, max 3600s; HTTP v2: 0 by default = no cache; JWT: cached
+for `min(remaining-exp, 300s)`).
+
+**JWKS-fetch failure → pass-through.** When the JWKS endpoint is
+unreachable at startup, cdkd warns and falls back to a pass-through
+mode where every Bearer token is accepted as if valid (including
+malformed / non-JWT garbage — a real JWT still gets its claims
+surfaced into `event.requestContext.authorizer`, a malformed token
+gets a synthetic `unknown` principal and an empty claims map):
+
+```text
+[warn] [cognito-jwt] JWKS unreachable at https://cognito-idp.us-east-1.amazonaws.com/us-east-1_xyz/.well-known/jwks.json: ...
+        JWT validation will allow all tokens — local dev fallback. Configure
+        network access to the JWKS URL to enable real signature verification.
+```
+
+The failure entry has a short TTL (~60s) so a transient blip doesn't
+lock pass-through for the full 1hr success TTL — the next minute's
+request retries the JWKS fetch. The pass-through warn line itself
+fires at most once per JWKS URL per server lifecycle (the warn-set
+is constructed once at server startup, not per request).
+
+This is a deliberate dev-tool tradeoff: surprising deny is worse than
+warn+allow when the developer is iterating on a function and the JWKS
+URL is blocked by a corporate proxy. **Do NOT rely on this in any
+shared environment** — the dev's machine accepts every token, including
+forged ones.
+
+Unsupported authorizer kinds (REST v1 `AWS_IAM`, mTLS, and any non-
+TOKEN/REQUEST/COGNITO_USER_POOLS Type / non-REQUEST/JWT AuthorizerType)
+hard-error at discovery with the offending route's location named.
+
+### `local start-api` VPC-config Lambdas (PR 8b)
+
+Lambdas with `Properties.VpcConfig` set still run locally — cdkd does
+NOT block these — but the local container does NOT get attached to the
+deployed VPC's subnets. Calls from the handler to private RDS /
+ElastiCache / VPC-only endpoints will fail. cdkd surfaces a one-line
+warn at startup naming each affected Lambda:
+
+```text
+[warn] Lambda MyVpcLambda has VpcConfig — local container will reach external
+        services via the host's network, NOT through the deployed VPC's
+        NAT/private subnets. Calls to private RDS/ElastiCache will fail.
+```
+
+AWS SDK calls from the container still use the developer's shell
+credentials (or `--assume-role`-issued temp creds) and reach the public
+AWS endpoints; nothing about that path changes.
+
 ### `local start-api` v1 scope (out of scope, deferred)
 
 | Out of scope | Deferred to |
 | --- | --- |
-| Authorizers (Lambda TOKEN/REQUEST, Cognito) | PR 8b |
-| VPC simulation | PR 8b |
 | CORS preflight handling (server passes through OPTIONS) | PR 8c |
 | Hot reload (file watcher over `cdk.out`) | PR 8c |
 | Stage variables (hardcoded `null` in v1) | PR 8c |
 | `--from-state`-style env-var substitution | PR 8c |
+| REST v1 IAM authorizer (`AuthorizationType: 'AWS_IAM'`) | Future PR |
+| mTLS authorizers | Future PR |
 | Custom integration mapping templates | Never (not testable locally) |
 | WebSocket APIs | Never (different protocol) |
 | Throttling / quotas / usage plans / API keys | Never |
