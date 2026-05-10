@@ -932,7 +932,7 @@ at `/var/task` read-only. `Code.ZipFile` (inline) functions are
 materialized to a tmpdir using the file path implied by the function's
 `Handler` property (`index.handler` → `tmpdir/index.js`).
 
-### Lambda Layers (PR 6 of #224, issue #232)
+### Lambda Layers
 
 Same-stack `AWS::Lambda::LayerVersion` references in
 `Properties.Layers` are resolved automatically and bind-mounted at
@@ -1183,7 +1183,7 @@ that case.
   external sweep can mop up orphans (`docker ps --filter
   name=cdkd-local-`).
 
-### Lambda Layers in `local start-api` (PR 6 of #224, issue #232)
+### Lambda Layers in `local start-api`
 
 `cdkd local start-api` resolves same-stack `AWS::Lambda::LayerVersion`
 references the same way `cdkd local invoke` does — see the **Lambda
@@ -1213,7 +1213,7 @@ the `docker ps` cleanup command in the warning.
   discovery rejected) OR uncaught exception during the run.
 - `130` — exited via SIGINT.
 
-### `local start-api` authorizers (PR 8b)
+### `local start-api` authorizers
 
 cdkd supports four authorizer kinds in front of any discovered route:
 
@@ -1277,7 +1277,7 @@ Unsupported authorizer kinds (REST v1 `AWS_IAM`, mTLS, and any non-
 TOKEN/REQUEST/COGNITO_USER_POOLS Type / non-REQUEST/JWT AuthorizerType)
 hard-error at discovery with the offending route's location named.
 
-### `local start-api` VPC-config Lambdas (PR 8b)
+### `local start-api` VPC-config Lambdas
 
 Lambdas with `Properties.VpcConfig` set still run locally — cdkd does
 NOT block these — but the local container does NOT get attached to the
