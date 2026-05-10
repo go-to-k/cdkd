@@ -48,6 +48,13 @@
           },
           {
             "type": "command",
+            "command": ".claude/hooks/pr-body-item-number-gate.sh",
+            "if": "Bash(gh pr create*) or Bash(gh pr edit*) or Bash(gh issue create*) or Bash(gh issue comment*) or Bash(gh api*)",
+            "timeout": 10,
+            "statusMessage": "Checking PR body for #N auto-link traps..."
+          },
+          {
+            "type": "command",
             "command": ".claude/hooks/gh-label-validity-gate.sh",
             "if": "Bash(*--label*) or Bash(*--add-label*)",
             "timeout": 10,
