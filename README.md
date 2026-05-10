@@ -1,19 +1,15 @@
 # cdkd
 
-**cdkd** (CDK Direct) - A from-scratch CDK CLI with its own deployment engine — provisions via AWS SDK instead of CloudFormation.
+**cdkd** (CDK Direct) — a from-scratch CDK CLI that provisions via AWS SDK instead of CloudFormation.
 
-- **Direct provisioning** via AWS SDK instead of CloudFormation
-- **From-scratch CDK CLI** - synthesis orchestration, asset publishing, context resolution (no aws-cdk / toolkit-lib dependency)
-- **CDK compatible** - use your existing CDK app code as-is
-- **Own deployment engine** - diff calculation, dependency graph, parallel execution, state management (what CloudFormation handles internally)
+- **Drop-in CDK compatible** — your existing CDK app code runs as-is.
+- **Up to 15x faster deploys than the AWS CDK CLI (CloudFormation)**
 
 ![cdkd demo](https://github.com/user-attachments/assets/0128730d-186d-4bd3-abea-aabc80ba4dd5)
 
 > **⚠️ WARNING: NOT PRODUCTION READY**
 >
-> This project is in early development and is **NOT suitable for production use**. Features are incomplete, APIs may change without notice, and there may be bugs that could affect your AWS infrastructure. Use at your own risk in development/testing environments only.
-
-> **Note**: This is an experimental/educational project exploring alternative deployment approaches for AWS CDK. It is **not intended to replace** the official AWS CDK CLI, but rather to experiment with direct SDK provisioning as a learning exercise and proof of concept.
+> An experimental project exploring direct SDK provisioning as an alternative to the AWS CDK CLI — **NOT a replacement** and **NOT suitable for production use**. Features are incomplete, APIs may change without notice, and bugs may affect your AWS infrastructure. Use at your own risk in development / testing environments only.
 
 ## Features
 
@@ -32,31 +28,37 @@
 
 ## Benchmark
 
-**cdkd deploys up to ~5x faster than AWS CDK (CloudFormation).**
+**cdkd deploys up to 15x faster than AWS CDK (CloudFormation)** on SDK-Provider-handled stacks; the per-stack speedup widens with size and parallelism, and drops to ~1.5-3x on stacks dominated by Cloud Control API fallback resources.
 
-Measured on `us-east-1` with 5 independent resources per stack (fully parallelized by cdkd's DAG scheduler).
+Numbers below are deploy-phase only (CDK app synthesis is identical between cdkd and AWS CDK — both run the same user code through `aws-cdk-lib`'s synthesizer — so synth time is excluded from the speedup calculation).
 
-### SDK Provider path — **4.8x faster** (20.5s vs 98.4s)
+### SDK Provider path — **5.5x faster** (17.0s vs 94.4s)
 
-Stack: S3 Bucket, DynamoDB Table, SQS Queue, SNS Topic, SSM Parameter.
+Stack: S3 Bucket, DynamoDB Table, SQS Queue, SNS Topic, SSM Parameter (5 independent resources, fully parallelized by cdkd's DAG scheduler).
 
-| Phase | cdkd | AWS CDK (CFn) | Speedup |
-| --- | --- | --- | --- |
-| Synthesis | 3.5s | 4.1s | 1.2x |
-| Deploy | 17.0s | 94.4s | **5.5x** |
-| **Total** | **20.5s** | **98.4s** | **4.8x** |
+| | cdkd | AWS CDK (CFn) | Speedup |
+| --- | ---: | ---: | ---: |
+| Deploy | **17.0s** | **94.4s** | **5.5x** |
 
-### Cloud Control API fallback path — **1.5x faster** (44.6s vs 69.1s)
+### VPC + Lambda + SQS stack — **15x faster** (40s vs 599s)
+
+Real-world stack: 1 VPC (2 AZs, NAT Gateway, public + private subnets) + Lambda Function (with `VpcConfig`) + SQS Queue + EventSourceMapping.
+
+| | AWS CDK (CFn) | cdkd `--no-wait` | Speedup |
+| --- | ---: | ---: | ---: |
+| Deploy | **599s** | **40s** | **~15x** |
+
+cdkd's DAG scheduler dispatches `CloudFront::Distribution` / `Lambda::Url` / VPC Lambda in parallel with NAT Gateway stabilization (default behavior — pass `--no-aggressive-vpc-parallel` to opt out). `--no-wait` returns as soon as the create call returns, letting AWS finish async provisioning in the background. Both compound against CloudFormation's serial-leaning waits.
+
+### Cloud Control API fallback path — **1.6x faster** (40.9s vs 64.9s)
 
 Stack: SSM Document × 3 + Athena WorkGroup × 2 (no SDK provider — CC API fallback).
 
-| Phase | cdkd | AWS CDK (CFn) | Speedup |
-| --- | --- | --- | --- |
-| Synthesis | 3.7s | 4.2s | 1.1x |
-| Deploy | 40.9s | 64.9s | **1.6x** |
-| **Total** | **44.6s** | **69.1s** | **1.5x** |
+| | cdkd | AWS CDK (CFn) | Speedup |
+| --- | ---: | ---: | ---: |
+| Deploy | **40.9s** | **64.9s** | **1.6x** |
 
-Reproduce with `./tests/benchmark/run-benchmark.sh all`. See [tests/benchmark/README.md](tests/benchmark/README.md) for details.
+Reproduce the first two with `./tests/benchmark/run-benchmark.sh all`. See [tests/benchmark/README.md](tests/benchmark/README.md) for details.
 
 ## How it works
 
@@ -99,79 +101,13 @@ parsing → synthesis → asset publishing → per-stack deploy), see
 
 ## Supported Features
 
-### Intrinsic Functions
-
-| Function | Status | Notes |
-|----------|--------|-------|
-| `Ref` | ✅ Supported | Resource physical IDs, Parameters, Pseudo parameters |
-| `Fn::GetAtt` | ✅ Supported | Resource attributes (ARN, DomainName, etc.) |
-| `Fn::Join` | ✅ Supported | String concatenation |
-| `Fn::Sub` | ✅ Supported | Template string substitution |
-| `Fn::Select` | ✅ Supported | Array index selection |
-| `Fn::Split` | ✅ Supported | String splitting |
-| `Fn::If` | ✅ Supported | Conditional values |
-| `Fn::Equals` | ✅ Supported | Equality comparison |
-| `Fn::And` | ✅ Supported | Logical AND (2-10 conditions) |
-| `Fn::Or` | ✅ Supported | Logical OR (2-10 conditions) |
-| `Fn::Not` | ✅ Supported | Logical NOT |
-| `Fn::ImportValue` | ✅ Supported | Cross-stack references via S3 state |
-| `Fn::GetStackOutput` | ✅ Supported (same-account) | Cross-stack / cross-region output reference via S3 state. Cross-account `RoleArn` is rejected with a clear error (not yet implemented). |
-| `Fn::FindInMap` | ✅ Supported | Mapping lookup |
-| `Fn::GetAZs` | ✅ Supported | Availability Zone list |
-| `Fn::Base64` | ✅ Supported | Base64 encoding |
-| `Fn::Cidr` | ✅ Supported | CIDR address block generation |
-
-### Pseudo Parameters
-
-| Parameter | Status |
-|-----------|--------|
-| `AWS::Region` | ✅ |
-| `AWS::AccountId` | ✅ (via STS) |
-| `AWS::Partition` | ✅ |
-| `AWS::URLSuffix` | ✅ |
-| `AWS::NoValue` | ✅ |
-| `AWS::StackName` | ✅ |
-| `AWS::StackId` | ✅ |
-
-### Resource Provisioning
-
-cdkd ships **90+ dedicated SDK Providers** (direct AWS SDK calls, no
-polling overhead) covering the most-used services — IAM, Lambda, S3,
-DynamoDB, EC2, RDS, ECS, API Gateway, CloudFront, Step Functions, EFS,
-KMS, Cognito, AppSync, and more. **Any other CloudFormation resource
-type** is handled via the Cloud Control API fallback (async polling).
-Resource types not supported by either path fail at deploy time with a
-clear error.
-
-See **[docs/supported-resources.md](docs/supported-resources.md)** for
-the full per-type table.
-
-### Other Features
-
-| Feature | Status | Notes |
-|---------|--------|-------|
-| CloudFormation Parameters | ✅ | Default values, type coercion |
-| Conditions | ✅ | With logical operators |
-| Cross-stack references | ✅ | Via `Fn::ImportValue` + S3 state |
-| Cross-region references | ✅ (same-account) | Via `Fn::GetStackOutput` + S3 state. Cross-account `RoleArn` not yet implemented. |
-| JSON Patch updates | ✅ | RFC 6902, minimal patches |
-| Resource replacement detection | ✅ | 10+ resource types |
-| Dynamic References | ✅ | `{{resolve:secretsmanager:...}}`, `{{resolve:ssm:...}}` |
-| DELETE idempotency | ✅ | Not-found errors treated as success |
-| Asset publishing (S3) | ✅ | Lambda code packages |
-| Asset publishing (ECR) | ✅ | Self-implemented Docker image publishing |
-| Custom Resources (SNS-backed) | ✅ | SNS Topic ServiceToken + S3 response |
-| Custom Resources (CDK Provider) | ✅ | isCompleteHandler/onEventHandler async pattern detection |
-| Rollback | ✅ | Auto-rollback on mid-deploy failure (deletes already-completed resources to keep state consistent); `--no-rollback` skips for Terraform-style failed-state inspection. See [Rollback behavior](#rollback-behavior) below. |
-| DeletionPolicy: Retain | ✅ | Skip deletion for retained resources |
-| UpdateReplacePolicy: Retain | ✅ | Keep old resource on replacement |
-| Implicit delete dependencies | ✅ | VPC/IGW/EventBus/Subnet/RouteTable ordering |
-| Stack dependency resolution | ✅ | Auto-deploy dependency stacks, `-e` to skip |
-| Multi-stack parallel deploy | ✅ | Independent stacks deployed in parallel |
-| Attribute enrichment | ✅ | CloudFront OAI, DynamoDB StreamArn, API Gateway RootResourceId, Lambda FunctionUrl, Route53 HealthCheckId, ECR Repository Arn |
-| CC API null value stripping | ✅ | Removes null values before API calls |
-| Retry with HTTP status codes | ✅ | 429/503 + cause chain inspection |
-| Drift detection | ✅ | `cdkd drift` — state vs AWS reality, including console-side changes to keys you didn't template. See [Drift detection](#drift-detection) below. |
+cdkd supports the standard CloudFormation surface — intrinsic functions,
+pseudo parameters, parameters / conditions, cross-stack / cross-region
+references, asset publishing, custom resources, and so on. See
+**[docs/supported-features.md](docs/supported-features.md)** for the
+full reference. For per-resource-type provisioning support (SDK Providers
+vs Cloud Control API fallback), see
+**[docs/supported-resources.md](docs/supported-resources.md)**.
 
 ## Prerequisites
 
@@ -187,8 +123,6 @@ npm i -g @go-to-k/cdkd@0.0.2    # pin to a specific version
 ```
 
 The installed binary is `cdkd`.
-
-> cdkd is an experimental / educational project and is not intended for production use — see the warning at the top of this README. Pin to a specific version if you need reproducible installs.
 
 ## Quick Start
 
@@ -566,15 +500,15 @@ but reusing cdkd's synthesis / asset / construct-path plumbing — no
 
 Requires Docker. v1 supports Node.js and Python runtimes (`nodejs18.x` /
 `nodejs20.x` / `nodejs22.x` / `nodejs24.x` / `python3.11` / `python3.12` /
-`python3.13` / `python3.14`); other runtimes follow in subsequent PRs.
+`python3.13` / `python3.14`); other runtimes (Java / .NET / Ruby / Go / `provided.*`) are not yet supported.
 
-**Container Lambdas (PR 5 of #224)** — `lambda.DockerImageFunction(...)` /
+**Container Lambdas** — `lambda.DockerImageFunction(...)` /
 `Code.ImageUri` is supported alongside ZIP Lambdas. cdkd reads the
 function's local `Dockerfile` from `cdk.out` and runs `docker build`
 locally before invoking. When no asset matches (typically: invoking a
 stack deployed elsewhere), cdkd falls back to `docker pull` from
 ECR — same-account / same-region only in v1; cross-account /
-cross-region is deferred to a follow-up PR. `Architectures: [x86_64]` /
+cross-region is not yet supported. `Architectures: [x86_64]` /
 `[arm64]` are honored via `--platform` so an arm64 host running an
 x86_64 Lambda doesn't hit emulation.
 
@@ -615,7 +549,7 @@ cdkd local invoke MyStack/Handler --debug-port 9229
 cdkd local invoke MyStack/Handler --from-state
 ```
 
-**Lambda Layers (PR 6 of #224, issue #232)** — same-stack
+**Lambda Layers** — same-stack
 `AWS::Lambda::LayerVersion` references in `Properties.Layers` are
 resolved automatically and bind-mounted at `/opt` (read-only) inside
 the container. Each layer's unzipped asset directory under `cdk.out/`
@@ -663,12 +597,11 @@ cdkd local start-api --stage prod
 ```
 
 Scope: REST v1 + HTTP API + Function URL with AWS_PROXY integrations.
-Authorizers (PR 8b — Lambda TOKEN/REQUEST + Cognito User Pool + HTTP v2
-JWT), VPC-config Lambda warnings (PR 8b), CORS preflight (PR 8c), hot
-reload (PR 8c), and stage variables (PR 8c) are supported. WebSocket
-APIs are deferred to a follow-up PR.
+Authorizers (Lambda TOKEN/REQUEST + Cognito User Pool + HTTP v2 JWT),
+VPC-config Lambda warnings, CORS preflight, hot reload, and stage
+variables are supported. WebSocket APIs are not.
 
-**Authorizers (PR 8b)**: `Authorization: Bearer <token>`-protected
+**Authorizers**: `Authorization: Bearer <token>`-protected
 routes are gated on the authorizer Lambda's response (TOKEN / REQUEST
 authorizers, IAM-policy or HTTP v2 simple shape) or on a JWKS-based JWT
 verification (Cognito User Pool authorizers, HTTP v2 JWT authorizers).
@@ -677,7 +610,7 @@ back to **pass-through mode** (every JWT accepted, with a warn line at
 startup) — local-dev-only fallback so a corporate proxy doesn't block
 iteration. **Do NOT rely on this in any shared environment.**
 
-**VPC-config Lambdas (PR 8b)**: handlers with `Properties.VpcConfig`
+**VPC-config Lambdas**: handlers with `Properties.VpcConfig`
 still run locally, but the local container is NOT attached to the
 deployed VPC's subnets — calls to private RDS / ElastiCache will fail.
 cdkd warns at startup naming each affected Lambda; AWS SDK calls still
