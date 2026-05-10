@@ -2,7 +2,7 @@
 
 **cdkd** (CDK Direct) — a from-scratch CDK CLI that provisions via AWS SDK instead of CloudFormation.
 
-- **Drop-in CDK compatible** — your existing CDK app code runs as-is. cdkd reads the same synthesized CloudFormation template the AWS CDK CLI does; the difference is what happens **after** synth (direct SDK calls, not a CloudFormation changeset).
+- **Drop-in CDK compatible** — your existing CDK app code runs as-is.
 - **Up to 15x faster deploys than the AWS CDK CLI (CloudFormation)**
 
 ![cdkd demo](https://github.com/user-attachments/assets/0128730d-186d-4bd3-abea-aabc80ba4dd5)
