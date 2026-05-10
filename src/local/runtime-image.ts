@@ -74,7 +74,7 @@ export function resolveRuntimeSpec(runtime: string): RuntimeSpec {
   if (typeof runtime !== 'string' || runtime.length === 0) {
     throw new UnsupportedRuntimeError(
       String(runtime),
-      'Lambda function has no Runtime property. Container-image Lambdas (Code.ImageUri) are not supported in cdkd local invoke v1.'
+      'Lambda function has no Runtime property. This branch is only reached for ZIP Lambdas; container-image Lambdas (Code.ImageUri) take a different code path that does not consult the Runtime property.'
     );
   }
 

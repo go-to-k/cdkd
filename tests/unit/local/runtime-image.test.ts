@@ -19,12 +19,15 @@ describe('resolveRuntimeImage', () => {
     expect(resolveRuntimeImage(runtime)).toBe(expected);
   });
 
-  it('rejects empty runtime with a hint at container Lambdas', () => {
+  it('rejects empty runtime (this branch is only reached for ZIP Lambdas)', () => {
     expect(() => resolveRuntimeImage('')).toThrow(UnsupportedRuntimeError);
     try {
       resolveRuntimeImage('');
     } catch (err) {
-      expect((err as Error).message).toMatch(/Container-image Lambdas/);
+      // Container Lambdas now take a different code path (PR 5); this
+      // branch is only reached when a ZIP Lambda has no Runtime
+      // property — which is itself a malformed template.
+      expect((err as Error).message).toMatch(/no Runtime property/);
     }
   });
 
