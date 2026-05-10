@@ -69,9 +69,7 @@ import { LocalInvokeBuildError } from '../../../src/utils/error-handler.js';
 
 describe('parseEcrUri', () => {
   it('parses a same-region ECR URI', () => {
-    const parsed = parseEcrUri(
-      '123456789012.dkr.ecr.us-east-1.amazonaws.com/my-repo:abcdef1234'
-    );
+    const parsed = parseEcrUri('123456789012.dkr.ecr.us-east-1.amazonaws.com/my-repo:abcdef1234');
     expect(parsed).toEqual({
       accountId: '123456789012',
       region: 'us-east-1',
@@ -86,9 +84,7 @@ describe('parseEcrUri', () => {
   });
 
   it('parses cn region (.amazonaws.com.cn)', () => {
-    const parsed = parseEcrUri(
-      '123456789012.dkr.ecr.cn-north-1.amazonaws.com.cn/repo:tag'
-    );
+    const parsed = parseEcrUri('123456789012.dkr.ecr.cn-north-1.amazonaws.com.cn/repo:tag');
     expect(parsed?.region).toBe('cn-north-1');
   });
 });
@@ -128,6 +124,33 @@ describe('pullEcrImage', () => {
     ).rejects.toThrow(/Cross-region ECR pull/);
   });
 
+  it('rejects cross-region URIs when --region option is set (env unset)', async () => {
+    // Closes the gap where `--region us-west-2` was silently ignored
+    // because the caller-region check only consulted env vars.
+    stsSendMock.mockResolvedValue({ Account: '111111111111' });
+    delete process.env['AWS_REGION'];
+    delete process.env['AWS_DEFAULT_REGION'];
+    await expect(
+      pullEcrImage('111111111111.dkr.ecr.us-east-1.amazonaws.com/r:t', {
+        skipPull: false,
+        region: 'us-west-2',
+      })
+    ).rejects.toThrow(/Cross-region ECR pull/);
+  });
+
+  it('explicit region option wins over AWS_REGION env var', async () => {
+    // AWS_REGION says same-region (us-east-1) but the caller passed
+    // --region us-west-2 → the option wins and we surface cross-region.
+    stsSendMock.mockResolvedValue({ Account: '111111111111' });
+    process.env['AWS_REGION'] = 'us-east-1';
+    await expect(
+      pullEcrImage('111111111111.dkr.ecr.us-east-1.amazonaws.com/r:t', {
+        skipPull: false,
+        region: 'us-west-2',
+      })
+    ).rejects.toThrow(/Cross-region ECR pull/);
+  });
+
   it('happy path: same-acct/region issues docker login + pull', async () => {
     stsSendMock.mockResolvedValue({ Account: '111111111111' });
     ecrSendMock.mockResolvedValue({
@@ -139,10 +162,9 @@ describe('pullEcrImage', () => {
       ],
     });
     process.env['AWS_REGION'] = 'us-east-1';
-    const result = await pullEcrImage(
-      '111111111111.dkr.ecr.us-east-1.amazonaws.com/r:t',
-      { skipPull: false }
-    );
+    const result = await pullEcrImage('111111111111.dkr.ecr.us-east-1.amazonaws.com/r:t', {
+      skipPull: false,
+    });
     expect(result).toBe('111111111111.dkr.ecr.us-east-1.amazonaws.com/r:t');
     expect(stsSendMock).toHaveBeenCalled();
     expect(ecrSendMock).toHaveBeenCalled();
@@ -153,10 +175,9 @@ describe('pullEcrImage', () => {
   it('skipPull: verifies image is in local cache via docker image inspect', async () => {
     stsSendMock.mockResolvedValue({ Account: '111111111111' });
     process.env['AWS_REGION'] = 'us-east-1';
-    const result = await pullEcrImage(
-      '111111111111.dkr.ecr.us-east-1.amazonaws.com/r:t',
-      { skipPull: true }
-    );
+    const result = await pullEcrImage('111111111111.dkr.ecr.us-east-1.amazonaws.com/r:t', {
+      skipPull: true,
+    });
     expect(result).toBe('111111111111.dkr.ecr.us-east-1.amazonaws.com/r:t');
     expect(childProcessMock.execFile).toHaveBeenCalledWith(
       'docker',
@@ -167,4 +188,3 @@ describe('pullEcrImage', () => {
     expect(childProcessMock.spawn).not.toHaveBeenCalled();
   });
 });
-

@@ -1,4 +1,4 @@
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname } from 'node:path';
 import * as path from 'node:path';
@@ -273,7 +273,7 @@ async function localInvokeCommand(target: string, options: LocalInvokeOptions): 
   }
 
   const hostPort = await pickFreePort();
-  const containerHost = options.containerHost || '127.0.0.1';
+  const containerHost = options.containerHost;
 
   logger.info(`Starting container (image=${imagePlan.image}, port=${hostPort})...`);
   const containerId = await runDetached({
@@ -323,6 +323,17 @@ async function localInvokeCommand(target: string, options: LocalInvokeOptions): 
     process.off('SIGINT', sigintHandler);
     stopLogs();
     await removeContainer(containerId);
+    if (imagePlan.inlineTmpDir) {
+      try {
+        rmSync(imagePlan.inlineTmpDir, { recursive: true, force: true });
+      } catch (err) {
+        getLogger().debug(
+          `Failed to remove inline-code tmpdir ${imagePlan.inlineTmpDir}: ${
+            err instanceof Error ? err.message : String(err)
+          }`
+        );
+      }
+    }
   }
 }
 
@@ -347,6 +358,14 @@ interface ImagePlan {
   platform?: string;
   entryPoint?: string[];
   workingDir?: string;
+  /**
+   * Set when the ZIP-Lambda branch materialized inline `Code.ZipFile`
+   * source to a tmpdir. The CLI's outer `finally` removes this dir
+   * alongside the docker container so we don't leak per-invoke tmpdirs
+   * (each invoke creates a fresh `cdkd-local-invoke-*` directory under
+   * the OS tmp root). Asset-backed Lambdas leave this unset.
+   */
+  inlineTmpDir?: string;
 }
 
 /**
@@ -377,13 +396,16 @@ async function resolveZipImagePlan(
   lambda: ResolvedZipLambda,
   options: LocalInvokeOptions
 ): Promise<ImagePlan> {
-  const codeDir =
-    lambda.codePath ??
-    materializeInlineCode(
+  let inlineTmpDir: string | undefined;
+  let codeDir = lambda.codePath;
+  if (codeDir === null) {
+    inlineTmpDir = materializeInlineCode(
       lambda.handler,
       lambda.inlineCode ?? '',
       resolveRuntimeFileExtension(lambda.runtime)
     );
+    codeDir = inlineTmpDir;
+  }
 
   const image = resolveRuntimeImage(lambda.runtime);
 
@@ -394,6 +416,7 @@ async function resolveZipImagePlan(
     image,
     mounts: [{ hostPath: codeDir, containerPath: '/var/task', readOnly: true }],
     cmd: [lambda.handler],
+    ...(inlineTmpDir !== undefined && { inlineTmpDir }),
   };
 }
 
@@ -402,7 +425,7 @@ async function resolveZipImagePlan(
  * manifest lookup by hash; single-asset fallback when extraction fails),
  * then fall back to ECR pull (same-account / same-region only — D5.2).
  */
-async function resolveContainerImagePlan(
+export async function resolveContainerImagePlan(
   lambda: ResolvedImageLambda,
   options: LocalInvokeOptions
 ): Promise<ImagePlan> {
@@ -432,7 +455,10 @@ async function resolveContainerImagePlan(
     logger.info(
       `No matching cdk.out asset for ${lambda.imageUri}; falling back to ECR pull (same-acct/region only)...`
     );
-    imageRef = await pullEcrImage(lambda.imageUri, { skipPull: options.pull === false });
+    imageRef = await pullEcrImage(lambda.imageUri, {
+      skipPull: options.pull === false,
+      ...(options.region !== undefined && { region: options.region }),
+    });
   }
 
   return {
@@ -851,7 +877,13 @@ export function createLocalCommand(): Command {
         'JSON env-var overrides (SAM-compatible: {"LogicalId":{"KEY":"VALUE"}})'
       )
     )
-    .addOption(new Option('--no-pull', 'Skip docker pull (use cached image)'))
+    .addOption(
+      new Option(
+        '--no-pull',
+        'Skip docker pull (use cached image) — no-op for IMAGE local-build path; ' +
+          '`docker build` does not pull base layers by default'
+      )
+    )
     .addOption(new Option('--debug-port <port>', 'Node --inspect-brk port (default: off)'))
     .addOption(
       new Option('--container-host <host>', 'Host to bind the RIE port to').default('127.0.0.1')

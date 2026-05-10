@@ -56,6 +56,14 @@ export function parseEcrUri(imageUri: string): ParsedEcrUri | undefined {
 export interface EcrPullOptions {
   /** When true, skip `docker pull` and require the image be in the local cache. */
   skipPull: boolean;
+  /**
+   * Caller's region for the same-region check. When set (typical: the
+   * CLI plumbs `--region` through here), this wins over `AWS_REGION` /
+   * `AWS_DEFAULT_REGION` env vars; when unset, env-var fallback applies.
+   * Closes the gap where a user-supplied `--region` was silently ignored
+   * by the cross-region guard.
+   */
+  region?: string;
 }
 
 /**
@@ -101,7 +109,8 @@ export async function pullEcrImage(imageUri: string, options: EcrPullOptions): P
     );
   }
 
-  const callerRegion = process.env['AWS_REGION'] ?? process.env['AWS_DEFAULT_REGION'];
+  const callerRegion =
+    options.region ?? process.env['AWS_REGION'] ?? process.env['AWS_DEFAULT_REGION'];
   if (callerRegion && callerRegion !== parsed.region) {
     throw new LocalInvokeBuildError(
       `Image URI '${imageUri}' is in region ${parsed.region}, but the caller's region is ${callerRegion}. ` +

@@ -144,7 +144,7 @@ export async function runDetached(opts: DockerRunOptions): Promise<string> {
   args.push(opts.image, ...entryPointTail, ...opts.cmd);
 
   const logger = getLogger().child('docker');
-  logger.debug(`docker ${args.join(' ')}`);
+  logger.debug(`docker ${redactAwsCredentialsInArgs(args).join(' ')}`);
 
   try {
     const { stdout } = await execFileAsync('docker', args, {
@@ -245,6 +245,47 @@ export function pickFreePort(): Promise<number> {
       server.close(() => resolvePort(port));
     });
   });
+}
+
+/**
+ * AWS credential keys whose values must NOT be written to the debug log.
+ * `forwardAwsEnv` / `assumeLambdaExecutionRole` (in `local-invoke.ts`)
+ * push these via `-e <KEY>=<value>` flags into `runDetached`'s args
+ * array, and `cdkd local invoke --verbose` would otherwise leak them
+ * into stdout / log files. Only the matching `-e <KEY>=<value>` pair is
+ * redacted; non-credential `-e KEY=val` entries pass through unchanged.
+ */
+const REDACTED_ENV_KEYS = new Set([
+  'AWS_ACCESS_KEY_ID',
+  'AWS_SECRET_ACCESS_KEY',
+  'AWS_SESSION_TOKEN',
+]);
+
+/**
+ * Returns a copy of `args` with any `-e <KEY>=<value>` pair whose KEY is
+ * in {@link REDACTED_ENV_KEYS} replaced with `-e <KEY>=***`. The actual
+ * `args` passed to `spawn` are never mutated — this is for log output
+ * only.
+ */
+export function redactAwsCredentialsInArgs(args: readonly string[]): string[] {
+  const out: string[] = [];
+  for (let i = 0; i < args.length; i++) {
+    const cur = args[i]!;
+    const next = args[i + 1];
+    if (cur === '-e' && typeof next === 'string') {
+      const eqIdx = next.indexOf('=');
+      if (eqIdx > 0) {
+        const key = next.substring(0, eqIdx);
+        if (REDACTED_ENV_KEYS.has(key)) {
+          out.push('-e', `${key}=***`);
+          i++;
+          continue;
+        }
+      }
+    }
+    out.push(cur);
+  }
+  return out;
 }
 
 /**
