@@ -178,6 +178,15 @@ if ! echo "${PREFLIGHT_HEADERS}" | grep -qi '^access-control-allow-methods: POST
   echo "${PREFLIGHT_HEADERS}"
   exit 1
 fi
+# PR 8c review fix-back: every successful preflight now emits
+# `Vary: Origin` so downstream caches don't share responses across
+# origins. Pre-fix the header was missing on the wildcard / literal-
+# origin / AllowCredentials echo paths.
+if ! echo "${PREFLIGHT_HEADERS}" | grep -qi '^vary: Origin'; then
+  echo "FAIL: CORS preflight missing 'Vary: Origin' header. Response:"
+  echo "${PREFLIGHT_HEADERS}"
+  exit 1
+fi
 echo "    [CORS preflight] OK"
 
 echo ""
