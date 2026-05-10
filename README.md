@@ -3,7 +3,7 @@
 **cdkd** (CDK Direct) — a from-scratch CDK CLI that provisions via AWS SDK instead of CloudFormation.
 
 - **Drop-in CDK compatible** — your existing CDK app code runs as-is. cdkd reads the same synthesized CloudFormation template the AWS CDK CLI does; the difference is what happens **after** synth (direct SDK calls, not a CloudFormation changeset).
-- **Up to ~5x faster deploys** — direct SDK calls skip the CloudFormation polling overhead. **4.8x** measured on the SDK Provider path (20.5s vs 98.4s for a 5-resource stack), **1.5x** on the Cloud Control API fallback. See [Benchmark](#benchmark) below.
+- **5-10x faster deploys** — direct SDK calls skip CloudFormation's polling overhead. **4.8x** measured on a small 5-resource stack (20.5s vs 98.4s); the gap widens to **6-10x+** on larger / more-parallel stacks where multiple async CFn waits compound. See [Benchmark](#benchmark) below.
 
 ![cdkd demo](https://github.com/user-attachments/assets/0128730d-186d-4bd3-abea-aabc80ba4dd5)
 
@@ -28,9 +28,9 @@
 
 ## Benchmark
 
-**cdkd deploys up to ~5x faster than AWS CDK (CloudFormation).**
+**cdkd deploys 5-10x faster than AWS CDK (CloudFormation)** on SDK-Provider-handled stacks; the per-stack speedup widens with size and parallelism.
 
-Measured on `us-east-1` with 5 independent resources per stack (fully parallelized by cdkd's DAG scheduler).
+The numbers below are a small-stack baseline (5 independent resources, fully parallelized by cdkd's DAG scheduler). On real-world stacks where multiple async CFn waits compound — VPC + CloudFront + Lambda VpcConfig, NAT Gateway + Lambda::Url propagation, RDS + ElastiCache parallel provisioning — cdkd has been measured at **6.7x** and **10x+** under the default scheduler.
 
 ### SDK Provider path — **4.8x faster** (20.5s vs 98.4s)
 
