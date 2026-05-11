@@ -2,7 +2,52 @@ import { describe, it, expect } from 'vitest';
 import {
   filterTemplateForImport,
   isNeverImportableType,
+  refuseTransientContextIfUnsafe,
 } from '../../../src/cli/commands/export.js';
+
+describe('refuseTransientContextIfUnsafe', () => {
+  it('passes through when no context overrides are supplied', () => {
+    expect(() =>
+      refuseTransientContextIfUnsafe({ acceptTransientContext: false })
+    ).not.toThrow();
+    expect(() =>
+      refuseTransientContextIfUnsafe({ context: [], acceptTransientContext: false })
+    ).not.toThrow();
+  });
+
+  it('refuses when CLI -c overrides are supplied without the escape hatch', () => {
+    expect(() =>
+      refuseTransientContextIfUnsafe({
+        context: ['env=prod'],
+        acceptTransientContext: false,
+      })
+    ).toThrow(/Refusing to export/);
+  });
+
+  it('includes every override in the refusal message', () => {
+    let thrown: Error | undefined;
+    try {
+      refuseTransientContextIfUnsafe({
+        context: ['env=prod', 'region=us-east-1'],
+        acceptTransientContext: false,
+      });
+    } catch (err) {
+      thrown = err as Error;
+    }
+    expect(thrown).toBeDefined();
+    expect(thrown!.message).toContain('-c env=prod');
+    expect(thrown!.message).toContain('-c region=us-east-1');
+  });
+
+  it('proceeds with --accept-transient-context (does not throw)', () => {
+    expect(() =>
+      refuseTransientContextIfUnsafe({
+        context: ['env=prod'],
+        acceptTransientContext: true,
+      })
+    ).not.toThrow();
+  });
+});
 
 describe('isNeverImportableType', () => {
   it('flags AWS::CDK::Metadata', () => {

@@ -796,6 +796,27 @@ cdkd export                                       # auto-detect single-stack app
   the next `cdk deploy` after migration will update the resource. Run
   `cdkd drift` before exporting if drift matters.
 
+**Context preservation (CLI `-c` is refused by default)**:
+
+CDK reads context from `cdk.json` and `cdk.context.json` on every
+synth. CLI `-c key=value` overrides are NOT persisted to either file
+— they apply only to the current invocation. If you run `cdkd export
+-c env=prod` and later run `cdk deploy` without the same `-c env=prod`,
+CDK synthesizes a different template, which CFn sees as drift / a
+replacement on the first post-migration deploy.
+
+`cdkd export` refuses by default when CLI `-c` overrides are present.
+Two ways forward:
+
+- **Recommended**: move the overrides into `cdk.json`'s `"context": { ... }`
+  field, then re-run `cdkd export` without `-c`. Subsequent `cdk deploy`
+  invocations read `cdk.json` automatically.
+- **Escape**: pass `--accept-transient-context`. cdkd proceeds and emits
+  a warn that names every override. You are then responsible for passing
+  the SAME `-c` flags to every future `cdk deploy` for this stack (or
+  moving them to `cdk.json` before then). On success, cdkd prints the
+  exact `cdk diff` / `cdk deploy` command including the captured flags.
+
 **Caveats**:
 
 - **Replacement risk on next deploy**: if the CDK code does NOT specify

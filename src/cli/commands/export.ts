@@ -46,6 +46,15 @@ interface ExportOptions {
   yes: boolean;
   verbose: boolean;
   context?: string[];
+  /**
+   * Allow proceeding when the user passed CLI `-c key=value` overrides
+   * that are not persisted to cdk.json / cdk.context.json. The default
+   * is to refuse, because those CLI values are visible to cdkd's synth
+   * but invisible to subsequent `cdk deploy` invocations — a different
+   * template gets synthesized post-migration, which causes spurious
+   * drift or replacement on the first `cdk deploy`.
+   */
+  acceptTransientContext: boolean;
 }
 
 /**
@@ -137,6 +146,16 @@ async function exportCommand(stackArg: string | undefined, options: ExportOption
   }
 
   warnIfDeprecatedRegion(options);
+
+  // Gate transient context overrides. CLI `-c key=value` flags are
+  // visible to cdkd's synth but NOT persisted to cdk.json /
+  // cdk.context.json, so a subsequent `cdk deploy` would synthesize a
+  // different template and CFn would replace or update resources.
+  // Default-refuse forces the user to either move the overrides into
+  // cdk.json (durable) or explicitly accept the risk with
+  // `--accept-transient-context`. Done up front, before synth, so the
+  // error message is the very first thing the user sees.
+  refuseTransientContextIfUnsafe(options);
 
   await applyRoleArnIfSet({ roleArn: options.roleArn, region: options.region });
 
@@ -315,6 +334,15 @@ async function exportCommand(stackArg: string | undefined, options: ExportOption
         `cdkd state for '${resolvedStackName}' (${targetRegion}) removed. ` +
           `Manage the stack with 'cdk deploy' or 'aws cloudformation' from here on.`
       );
+
+      // Print the load-bearing handoff message: the exact cdk diff / cdk
+      // deploy commands the user should run next, including any -c
+      // overrides captured from this export run.
+      printNextSteps({
+        cfnStackName,
+        cdkStackName: resolvedStackName,
+        contextOverrides: options.context ?? [],
+      });
 
       // observedProperties / etag / legacy migration are no longer
       // relevant since the state record is gone. The local references
@@ -751,6 +779,89 @@ async function executeImportChangeSet(
   );
 }
 
+/**
+ * Refuse to proceed when the user passed CLI `-c key=value` overrides
+ * without `--accept-transient-context`. The CLI form is not persisted
+ * to `cdk.json` / `cdk.context.json`, so a subsequent `cdk deploy`
+ * invoked without the same `-c` flags will synthesize a different
+ * template — and CFn will see drift / replace resources on first
+ * post-migration deploy.
+ *
+ * The escape hatch (`--accept-transient-context`) is intentionally
+ * loud at runtime: a warn is emitted that names every override and
+ * tells the user to keep them around for future `cdk deploy` runs.
+ *
+ * Exported for unit testing.
+ */
+export function refuseTransientContextIfUnsafe(options: {
+  context?: string[];
+  acceptTransientContext: boolean;
+}): void {
+  const overrides = options.context ?? [];
+  if (overrides.length === 0) return;
+
+  if (!options.acceptTransientContext) {
+    const indented = overrides.map((v) => `    -c ${v}`).join('\n');
+    throw new Error(
+      `Refusing to export: ${overrides.length} CLI context override(s) supplied via -c are ` +
+        `not persisted to cdk.json / cdk.context.json, so subsequent \`cdk deploy\` ` +
+        `invocations will synthesize a different template and CFn will see drift or ` +
+        `replace resources.\n\n` +
+        `Supplied:\n${indented}\n\n` +
+        `Choose one:\n` +
+        `  (recommended) Move these values into cdk.json's "context": { ... } field, then re-run\n` +
+        `                cdkd export without -c. CDK CLI reads cdk.json on every synth, so they\n` +
+        `                will be picked up automatically.\n` +
+        `  (escape)      Pass --accept-transient-context to proceed. You will then need to\n` +
+        `                pass the SAME -c flags to every future \`cdk deploy\` for this stack.`
+    );
+  }
+
+  const logger = getLogger();
+  logger.warn(
+    `--accept-transient-context: ${overrides.length} CLI context override(s) will not be ` +
+      `persisted to cdk.json / cdk.context.json. Remember to pass the same -c flags to every ` +
+      `future \`cdk deploy\` for this stack, or move them to cdk.json before then.`
+  );
+  for (const v of overrides) {
+    logger.warn(`  -c ${v}`);
+  }
+}
+
+/**
+ * Print a final "next steps" block listing the exact `cdk deploy` /
+ * `cdk diff` commands the user should run to verify the migration and
+ * to manage the stack going forward. Always emitted on successful
+ * export — this is the load-bearing "handoff" message that lets a user
+ * who runs `cdkd export` once a year find their way without consulting
+ * the docs.
+ *
+ * When CLI `-c` overrides were used (with `--accept-transient-context`),
+ * the printed `cdk deploy` and `cdk diff` commands include them, so a
+ * copy-paste keeps the synth deterministic.
+ */
+function printNextSteps(args: {
+  cfnStackName: string;
+  cdkStackName: string;
+  contextOverrides: string[];
+}): void {
+  const logger = getLogger();
+  const ctxArgs = args.contextOverrides.map((v) => ` -c ${v}`).join('');
+  const stackId = args.cdkStackName;
+  logger.info('');
+  logger.info('Next steps — manage the stack with CDK CLI from now on:');
+  logger.info(`  cdk diff ${stackId}${ctxArgs}    # verify synth matches what CFn now holds`);
+  logger.info(`  cdk deploy ${stackId}${ctxArgs}  # subsequent updates`);
+  if (args.contextOverrides.length > 0) {
+    logger.info('');
+    logger.info(
+      '  NOTE: the -c flags above were captured from this export run. They MUST be ' +
+        'passed on every future cdk invocation, or moved into cdk.json\'s "context" field.'
+    );
+  }
+  logger.info('');
+}
+
 async function confirmPrompt(prompt: string): Promise<boolean> {
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
   try {
@@ -783,6 +894,13 @@ export function createExportCommand(): Command {
       'Region of the cdkd state record to operate on. Required when the same stack name has state in multiple regions.'
     )
     .option('--dry-run', 'Print the import plan without creating a changeset.', false)
+    .option(
+      '--accept-transient-context',
+      'Allow CLI -c key=value overrides at export time even though they are not ' +
+        'persisted to cdk.json / cdk.context.json (default: refuse). When set, the ' +
+        'user is responsible for passing the same -c flags to every future cdk deploy.',
+      false
+    )
     .action(withErrorHandling(exportCommand));
 
   [...commonOptions, ...appOptions, ...stateOptions, ...contextOptions].forEach((opt) =>
