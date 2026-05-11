@@ -4,7 +4,9 @@ import {
   hasCompositeIdSplitter,
   isNeverImportableType,
   isPhase2CreatableType,
+  parseParameterOverrides,
   refuseTransientContextIfUnsafe,
+  resolveTemplateParameters,
   splitCompositePhysicalId,
 } from '../../../src/cli/commands/export.js';
 
@@ -281,5 +283,97 @@ describe('isPhase2CreatableType', () => {
 
   it('does NOT match AWS::CDK::Metadata (silent-drop, not phase 2)', () => {
     expect(isPhase2CreatableType('AWS::CDK::Metadata')).toBe(false);
+  });
+});
+
+describe('parseParameterOverrides', () => {
+  it('returns empty map for undefined / empty input', () => {
+    expect(parseParameterOverrides(undefined)).toEqual({});
+    expect(parseParameterOverrides([])).toEqual({});
+  });
+
+  it('parses Key=Value tokens', () => {
+    expect(parseParameterOverrides(['Env=prod', 'Region=us-east-1'])).toEqual({
+      Env: 'prod',
+      Region: 'us-east-1',
+    });
+  });
+
+  it('preserves Value content including embedded "="', () => {
+    expect(parseParameterOverrides(['Equation=x=y+z'])).toEqual({ Equation: 'x=y+z' });
+  });
+
+  it('rejects tokens without "="', () => {
+    expect(() => parseParameterOverrides(['Bare'])).toThrow(/expected 'Key=Value'/);
+  });
+
+  it('rejects tokens with empty key', () => {
+    expect(() => parseParameterOverrides(['=value'])).toThrow(/expected 'Key=Value'/);
+  });
+});
+
+describe('resolveTemplateParameters', () => {
+  it('returns empty array when template has no Parameters section', () => {
+    const result = resolveTemplateParameters({ Resources: {} }, {});
+    expect(result).toEqual({ parameters: [], missing: [] });
+  });
+
+  it('uses defaults when no overrides supplied', () => {
+    const tpl = {
+      Parameters: {
+        Env: { Type: 'String', Default: 'dev' },
+        BootstrapVersion: { Type: 'String', Default: '12' },
+      },
+    };
+    const result = resolveTemplateParameters(tpl, {});
+    expect(result.missing).toEqual([]);
+    expect(result.parameters).toEqual([
+      { ParameterKey: 'Env', ParameterValue: 'dev' },
+      { ParameterKey: 'BootstrapVersion', ParameterValue: '12' },
+    ]);
+  });
+
+  it('user override beats template Default', () => {
+    const tpl = { Parameters: { Env: { Type: 'String', Default: 'dev' } } };
+    const result = resolveTemplateParameters(tpl, { Env: 'prod' });
+    expect(result.parameters).toEqual([{ ParameterKey: 'Env', ParameterValue: 'prod' }]);
+  });
+
+  it('coerces non-string defaults to string', () => {
+    const tpl = { Parameters: { Count: { Type: 'Number', Default: 5 } } };
+    const result = resolveTemplateParameters(tpl, {});
+    expect(result.parameters).toEqual([{ ParameterKey: 'Count', ParameterValue: '5' }]);
+  });
+
+  it('reports parameters without defaults as missing when no override', () => {
+    const tpl = {
+      Parameters: {
+        Required: { Type: 'String' },
+        Optional: { Type: 'String', Default: 'x' },
+      },
+    };
+    const result = resolveTemplateParameters(tpl, {});
+    expect(result.missing).toEqual(['Required']);
+    expect(result.parameters).toEqual([{ ParameterKey: 'Optional', ParameterValue: 'x' }]);
+  });
+
+  it('user override satisfies a parameter without Default', () => {
+    const tpl = { Parameters: { Required: { Type: 'String' } } };
+    const result = resolveTemplateParameters(tpl, { Required: 'set' });
+    expect(result.missing).toEqual([]);
+    expect(result.parameters).toEqual([{ ParameterKey: 'Required', ParameterValue: 'set' }]);
+  });
+
+  it('throws when an override targets a parameter not in the template', () => {
+    const tpl = { Parameters: { Env: { Type: 'String', Default: 'dev' } } };
+    expect(() => resolveTemplateParameters(tpl, { Typo: 'oops' })).toThrow(
+      /does not match any parameter/
+    );
+  });
+
+  it('throws when overrides supplied but template has no Parameters section', () => {
+    expect(() => resolveTemplateParameters({ Resources: {} }, { Env: 'prod' })).toThrow(
+      /template has no Parameters section/
+    );
   });
 });

@@ -793,6 +793,15 @@ cdkd export                                       # auto-detect single-stack app
   rationale: generic YAML libraries silently corrupt CFn shorthand intrinsics
   (`!Ref`, `!Sub`, `!GetAtt`) on round-trip. Hand-written YAML stacks must
   be converted manually.
+- **Template Parameters** in the synthesized template are forwarded to
+  both phase-1 and phase-2 changesets. Each parameter is resolved in
+  order: (1) `--parameter Key=Value` CLI override (repeatable), then
+  (2) the template's `Default`. A parameter with neither override nor
+  default aborts with a clear error listing which keys are missing.
+  A `--parameter` override for a key the template does not declare is
+  also rejected (catches typos). CDK-generated templates typically only
+  carry `BootstrapVersion` with a default; `cdkd export` works without
+  any `--parameter` for those.
 - **`Custom::*` resources** require `--include-non-importable` to opt
   into the 2-phase flow: phase 1 IMPORT changeset for the importable
   resources, then phase 2 UPDATE changeset for the full template — CFn

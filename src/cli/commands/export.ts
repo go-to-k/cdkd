@@ -12,6 +12,7 @@ import {
   waitUntilStackImportComplete,
   waitUntilStackUpdateComplete,
   type ResourceToImport,
+  type Parameter,
 } from '@aws-sdk/client-cloudformation';
 import {
   appOptions,
@@ -70,6 +71,13 @@ interface ExportOptions {
    * idempotent).
    */
   includeNonImportable: boolean;
+  /**
+   * `Key=Value` overrides for CFn template Parameters, repeatable. Used
+   * when the synthesized template's Parameters section has entries
+   * without `Default` values, or when the user wants to override a
+   * default for the export.
+   */
+  parameter?: string[];
 }
 
 /**
@@ -476,13 +484,29 @@ async function exportCommand(stackArg: string | undefined, options: ExportOption
         }
       }
 
+      // Resolve template Parameters once (used by both phase 1 and phase 2).
+      // Aborts here if the template has required parameters without
+      // defaults that the user did not supply via --parameter.
+      const userParameters = parseParameterOverrides(options.parameter);
+      const { parameters: cfnParameters, missing } = resolveTemplateParameters(
+        template,
+        userParameters
+      );
+      if (missing.length > 0) {
+        throw new Error(
+          `Template requires parameter(s) without defaults: ${missing.join(', ')}. ` +
+            `Pass each one as --parameter Key=Value (or set a Default in the CDK code).`
+        );
+      }
+
       // Phase 1: IMPORT changeset.
       const phase1Template = filterTemplateForImport(template, phase1Imports);
       await executeImportChangeSet(
         awsClients.cloudFormation,
         cfnStackName,
         phase1Template,
-        phase1Imports
+        phase1Imports,
+        cfnParameters
       );
 
       logger.info(
@@ -497,7 +521,12 @@ async function exportCommand(stackArg: string | undefined, options: ExportOption
       // via `aws cloudformation update-stack` + `cdkd state orphan`.
       if (phase2Creates.length > 0) {
         try {
-          await executeUpdateChangeSet(awsClients.cloudFormation, cfnStackName, template);
+          await executeUpdateChangeSet(
+            awsClients.cloudFormation,
+            cfnStackName,
+            template,
+            cfnParameters
+          );
           logger.info(`✓ Phase 2: ${phase2Creates.length} non-importable resource(s) CREATEd.`);
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
@@ -914,6 +943,96 @@ async function fetchPrimaryIdentifier(
  * changeset to fail. Outputs that reference a removed resource are also
  * stripped to avoid Ref-to-nonexistent errors.
  */
+/**
+ * Parse `--parameter Key=Value` CLI tokens into a `{Key: Value}` map.
+ * Exported for unit testing.
+ */
+export function parseParameterOverrides(tokens: string[] | undefined): Record<string, string> {
+  const map: Record<string, string> = {};
+  if (!tokens) return map;
+  for (const t of tokens) {
+    const eq = t.indexOf('=');
+    if (eq < 1) {
+      throw new Error(
+        `Invalid --parameter '${t}': expected 'Key=Value' (e.g. --parameter Env=prod)`
+      );
+    }
+    const key = t.slice(0, eq).trim();
+    const value = t.slice(eq + 1);
+    if (!key) {
+      throw new Error(`Invalid --parameter '${t}': key is empty`);
+    }
+    map[key] = value;
+  }
+  return map;
+}
+
+/**
+ * Build the `Parameters` array CFn `CreateChangeSetCommand` expects from
+ * the synthesized template's `Parameters` section, applying user
+ * `--parameter Key=Value` overrides.
+ *
+ * Resolution order per parameter:
+ *   1. User-supplied override (`--parameter Key=Value`)
+ *   2. Template `Default`
+ *   3. Abort: missing required parameter
+ *
+ * SSM-typed parameters (`AWS::SSM::Parameter::Value<...>`) are passed
+ * through verbatim — CFn resolves the SSM path at changeset execution
+ * time, so cdkd does not need to make an extra SSM API call.
+ *
+ * Exported for unit testing.
+ */
+export function resolveTemplateParameters(
+  template: Record<string, unknown>,
+  userOverrides: Record<string, string>
+): { parameters: Parameter[]; missing: string[] } {
+  const tplParams = template['Parameters'];
+  if (!tplParams || typeof tplParams !== 'object' || Array.isArray(tplParams)) {
+    // Template has no Parameters section — nothing to forward.
+    const stray = Object.keys(userOverrides);
+    if (stray.length > 0) {
+      throw new Error(
+        `--parameter override(s) supplied (${stray.join(', ')}) but template has no Parameters section.`
+      );
+    }
+    return { parameters: [], missing: [] };
+  }
+
+  const parameters: Parameter[] = [];
+  const missing: string[] = [];
+  const known = new Set<string>();
+
+  for (const [name, raw] of Object.entries(tplParams as Record<string, unknown>)) {
+    known.add(name);
+    const def = (raw ?? {}) as { Default?: unknown };
+    const override = userOverrides[name];
+    if (override !== undefined) {
+      parameters.push({ ParameterKey: name, ParameterValue: override });
+      continue;
+    }
+    if ('Default' in def) {
+      // Coerce non-string defaults (numbers, lists) to the string form CFn expects.
+      const value = typeof def.Default === 'string' ? def.Default : String(def.Default);
+      parameters.push({ ParameterKey: name, ParameterValue: value });
+      continue;
+    }
+    missing.push(name);
+  }
+
+  // Catch typos: a --parameter override for a parameter the template does NOT declare.
+  for (const name of Object.keys(userOverrides)) {
+    if (!known.has(name)) {
+      throw new Error(
+        `--parameter override '${name}' does not match any parameter in the synthesized template ` +
+          `(template declares: ${[...known].join(', ') || '(none)'})`
+      );
+    }
+  }
+
+  return { parameters, missing };
+}
+
 export function filterTemplateForImport(
   template: Record<string, unknown>,
   plan: ImportPlanEntry[]
@@ -995,7 +1114,8 @@ async function executeImportChangeSet(
   cfnClient: AwsClients['cloudFormation'],
   stackName: string,
   template: Record<string, unknown>,
-  plan: ImportPlanEntry[]
+  plan: ImportPlanEntry[],
+  parameters: Parameter[]
 ): Promise<void> {
   const logger = getLogger();
   const changeSetName = `cdkd-migrate-${Date.now()}`;
@@ -1031,6 +1151,7 @@ async function executeImportChangeSet(
         ChangeSetType: 'IMPORT',
         TemplateBody: templateBody,
         ResourcesToImport: resourcesToImport,
+        ...(parameters.length > 0 && { Parameters: parameters }),
         // CDK templates routinely require CAPABILITY_IAM /
         // CAPABILITY_NAMED_IAM. Forward both so the user does not have to
         // re-discover and re-pass them.
@@ -1107,7 +1228,8 @@ async function executeImportChangeSet(
 async function executeUpdateChangeSet(
   cfnClient: AwsClients['cloudFormation'],
   stackName: string,
-  template: Record<string, unknown>
+  template: Record<string, unknown>,
+  parameters: Parameter[]
 ): Promise<void> {
   const logger = getLogger();
   const changeSetName = `cdkd-phase2-${Date.now()}`;
@@ -1132,6 +1254,7 @@ async function executeUpdateChangeSet(
         ChangeSetName: changeSetName,
         ChangeSetType: 'UPDATE',
         TemplateBody: templateBody,
+        ...(parameters.length > 0 && { Parameters: parameters }),
         Capabilities: ['CAPABILITY_IAM', 'CAPABILITY_NAMED_IAM', 'CAPABILITY_AUTO_EXPAND'],
       })
     );
@@ -1309,6 +1432,12 @@ export function createExportCommand(): Command {
         "the non-importable ones, which re-invokes each Custom Resource's onCreate " +
         'handler. Make sure onCreate is idempotent before enabling.',
       false
+    )
+    .option(
+      '--parameter <key=value...>',
+      'CFn template Parameter override, repeatable. Required when the synthesized ' +
+        'template has Parameters without Default values; otherwise overrides the ' +
+        "template's default value. Format: --parameter Key=Value."
     )
     .action(withErrorHandling(exportCommand));
 
