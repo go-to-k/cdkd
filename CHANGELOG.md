@@ -1,3 +1,10 @@
+## [0.83.1](https://github.com/go-to-k/cdkd/compare/v0.83.0...v0.83.1) (2026-05-11)
+
+
+### Bug Fixes
+
+* **analyzer:** Fn::Sub 1-arg body produces no DAG edge to same-stack resource ([#275](https://github.com/go-to-k/cdkd/issues/275)) ([#276](https://github.com/go-to-k/cdkd/issues/276)) ([422c265](https://github.com/go-to-k/cdkd/commit/422c2658ab54efe5c05d839615d4fa051f77458c))
+
 # [0.83.0](https://github.com/go-to-k/cdkd/compare/v0.82.1...v0.83.0) (2026-05-11)
 
 
