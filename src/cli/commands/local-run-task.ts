@@ -6,6 +6,7 @@ import {
   contextOptions,
   deprecatedRegionOption,
   parseContextOptions,
+  stateOptions,
   warnIfDeprecatedRegion,
 } from '../options.js';
 import { getLogger } from '../../utils/logger.js';
@@ -15,9 +16,14 @@ import { Synthesizer, type SynthesisOptions } from '../../synthesis/synthesizer.
 import { resolveApp } from '../config-loader.js';
 import { ensureDockerAvailable } from '../../local/docker-runner.js';
 import {
+  derivePartitionAndUrlSuffix,
+  detectEcsImageResolutionNeeds,
+  parseEcsTarget,
   resolveEcsTaskTarget,
   TASK_ROLE_ACCOUNT_PLACEHOLDER,
+  type EcsImageResolutionContext,
 } from '../../local/ecs-task-resolver.js';
+import type { StackInfo } from '../../synthesis/assembly-reader.js';
 import {
   cleanupEcsRun,
   createEcsRunState,
@@ -25,6 +31,8 @@ import {
   type EcsRunState,
   type RunEcsTaskOptions,
 } from '../../local/ecs-task-runner.js';
+import { matchStacks } from '../stack-matcher.js';
+import { loadStateForStack } from './local-state-loader.js';
 
 interface LocalRunTaskOptions {
   app?: string;
@@ -49,6 +57,22 @@ interface LocalRunTaskOptions {
   platform?: string;
   keepRunning: boolean;
   detach: boolean;
+  /**
+   * Issue #264: read cdkd's S3 state for the target stack so the resolver
+   * can substitute `Fn::Sub` placeholders that reference a same-stack
+   * `AWS::ECR::Repository`. Tier 1 (pseudo parameters only) does NOT need
+   * this flag — STS GetCallerIdentity + the resolved region cover those.
+   * Off by default.
+   */
+  fromState: boolean;
+  stateBucket?: string;
+  statePrefix: string;
+  /**
+   * Region of the cdkd state record to read. Required only when the
+   * same stack name has state in multiple regions. Mirrors
+   * `cdkd local invoke --stack-region`.
+   */
+  stackRegion?: string;
 }
 
 /**
@@ -113,7 +137,13 @@ async function localRunTaskCommand(target: string, options: LocalRunTaskOptions)
     };
     const { stacks } = await synthesizer.synthesize(synthOpts);
 
-    const task = resolveEcsTaskTarget(target, stacks);
+    // Issue #264: build the optional substitution context BEFORE resolving
+    // the target, so `Fn::Sub`-shaped ECR image URIs (pseudo parameters +
+    // same-stack ECR Repository refs) get rewritten in-place during
+    // `parseContainerImage`. STS / state-load are lazy — we only fire them
+    // when at least one stack's template references the placeholders.
+    const imageContext = await buildEcsImageResolutionContext(target, stacks, options);
+    const task = resolveEcsTaskTarget(target, stacks, imageContext);
     logger.info(
       `Target: ${task.stack.stackName}/${task.taskDefinitionLogicalId} (family=${task.family}, containers=${task.containers.length})`
     );
@@ -255,6 +285,110 @@ async function assumeTaskRole(
 }
 
 /**
+ * Build the substitution context the ECS task resolver consumes (issue
+ * #264). Returns `undefined` when no container's `Image` field needs
+ * substitution — the resolver behaves as before in that case.
+ *
+ * Tier 1 (pseudo parameters) fires `sts:GetCallerIdentity` once for
+ * `${AWS::AccountId}`; region / partition / URL suffix come from the CLI
+ * (`--region` → env vars → synth-derived stack region). Tier 2
+ * (`--from-state`) reuses the shared state-loader to pull cdkd's S3 state
+ * for the candidate stack — same warn-and-fall-back error policy as
+ * `cdkd local invoke --from-state`.
+ */
+async function buildEcsImageResolutionContext(
+  target: string,
+  stacks: StackInfo[],
+  options: LocalRunTaskOptions
+): Promise<EcsImageResolutionContext | undefined> {
+  const logger = getLogger();
+  const parsed = parseEcsTarget(target);
+  const candidate = pickCandidateStack(parsed.stackPattern, stacks);
+  if (!candidate) return undefined;
+
+  const needs = detectEcsImageResolutionNeeds(candidate);
+  if (!needs.needsPseudoParameters && !needs.needsStateResources) return undefined;
+
+  const ctx: EcsImageResolutionContext = {};
+
+  if (needs.needsPseudoParameters) {
+    const region =
+      options.region ??
+      process.env['AWS_REGION'] ??
+      process.env['AWS_DEFAULT_REGION'] ??
+      candidate.region;
+    if (!region) {
+      logger.warn(
+        'Container Image references ${AWS::Region} but cdkd could not determine the target region. ' +
+          'Pass --region, set AWS_REGION, or declare env.region on the CDK stack.'
+      );
+    }
+    let accountId: string | undefined;
+    try {
+      accountId = await resolveCallerAccountId(region);
+    } catch (err) {
+      logger.warn(
+        `Container Image references \${AWS::AccountId} but STS GetCallerIdentity failed: ${err instanceof Error ? err.message : String(err)}. ` +
+          'Substitution will be skipped; the resolver will surface its existing error.'
+      );
+    }
+    const partitionAndSuffix = region ? derivePartitionAndUrlSuffix(region) : undefined;
+    ctx.pseudoParameters = {
+      ...(accountId !== undefined && { accountId }),
+      ...(region !== undefined && { region }),
+      ...(partitionAndSuffix && {
+        partition: partitionAndSuffix.partition,
+        urlSuffix: partitionAndSuffix.urlSuffix,
+      }),
+    };
+  }
+
+  if (options.fromState && needs.needsStateResources) {
+    const loaded = await loadStateForStack(candidate.stackName, candidate.region, {
+      ...(options.stackRegion !== undefined && { stackRegion: options.stackRegion }),
+      ...(options.stateBucket !== undefined && { stateBucket: options.stateBucket }),
+      statePrefix: options.statePrefix,
+      ...(options.region !== undefined && { region: options.region }),
+      ...(options.profile !== undefined && { profile: options.profile }),
+    });
+    if (loaded) {
+      ctx.stateResources = loaded.state.resources;
+    }
+  } else if (!options.fromState && needs.needsStateResources) {
+    logger.warn(
+      'Container Image references a same-stack AWS::ECR::Repository. Pass --from-state to substitute the deployed repository URI ' +
+        '(requires the stack to have been deployed via cdkd deploy). Otherwise the resolver will surface its existing error.'
+    );
+  }
+
+  return ctx;
+}
+
+function pickCandidateStack(
+  stackPattern: string | null,
+  stacks: StackInfo[]
+): StackInfo | undefined {
+  if (stackPattern === null) {
+    if (stacks.length === 1) return stacks[0];
+    return undefined;
+  }
+  const matched = matchStacks(stacks, [stackPattern]);
+  if (matched.length === 1) return matched[0];
+  return undefined;
+}
+
+async function resolveCallerAccountId(region: string | undefined): Promise<string | undefined> {
+  const { STSClient, GetCallerIdentityCommand } = await import('@aws-sdk/client-sts');
+  const sts = new STSClient({ ...(region && { region }) });
+  try {
+    const identity = await sts.send(new GetCallerIdentityCommand({}));
+    return identity.Account;
+  } finally {
+    sts.destroy();
+  }
+}
+
+/**
  * Read the `--env-vars` JSON file using the same SAM-style shape as
  * `cdkd local invoke --env-vars`: top-level keys are container names, with
  * `Parameters` reserved for global entries.
@@ -346,9 +480,26 @@ export function createLocalRunTaskCommand(): Command {
           'Useful in CI smoke tests; caller manages container lifecycle.'
       ).default(false)
     )
+    .addOption(
+      new Option(
+        '--from-state',
+        'Read cdkd S3 state for the target stack and substitute Fn::Sub / Fn::GetAtt references to ' +
+          'same-stack AWS::ECR::Repository resources with the deployed URI. ' +
+          'Off by default — only the AWS pseudo-parameter tier (${AWS::AccountId} / ${AWS::Region}) ' +
+          'is resolved without this flag.'
+      ).default(false)
+    )
+    .addOption(
+      new Option(
+        '--stack-region <region>',
+        'Region of the cdkd state record to read (used with --from-state when the same stack name has state in multiple regions).'
+      )
+    )
     .action(withErrorHandling(localRunTaskCommand));
 
-  [...commonOptions, ...appOptions, ...contextOptions].forEach((opt) => cmd.addOption(opt));
+  [...commonOptions, ...appOptions, ...contextOptions, ...stateOptions].forEach((opt) =>
+    cmd.addOption(opt)
+  );
   cmd.addOption(deprecatedRegionOption);
   return cmd;
 }

@@ -63,4 +63,32 @@ describe('createLocalRunTaskCommand', () => {
     const parsed = cmd.parse(['node', 'cdkd', 'TD', '--no-pull'], { from: 'user' });
     expect(parsed.opts().pull).toBe(false);
   });
+
+  it('declares the --from-state and --stack-region options (issue #264)', () => {
+    const longs = cmd.options.map((o) => o.long);
+    expect(longs).toContain('--from-state');
+    expect(longs).toContain('--stack-region');
+    expect(longs).toContain('--state-bucket');
+    expect(longs).toContain('--state-prefix');
+  });
+
+  it('parses --from-state as fromState=true', () => {
+    const fresh = createLocalRunTaskCommand();
+    const parsed = fresh.parse(['node', 'cdkd', 'TD', '--from-state'], { from: 'user' });
+    expect(parsed.opts().fromState).toBe(true);
+  });
+
+  it('defaults --from-state to false', () => {
+    const fresh = createLocalRunTaskCommand();
+    const parsed = fresh.parse(['node', 'cdkd', 'TD'], { from: 'user' });
+    expect(parsed.opts().fromState).toBe(false);
+  });
+
+  it('parses --stack-region <region> as stackRegion=<region>', () => {
+    const fresh = createLocalRunTaskCommand();
+    const parsed = fresh.parse(['node', 'cdkd', 'TD', '--stack-region', 'us-west-2'], {
+      from: 'user',
+    });
+    expect(parsed.opts().stackRegion).toBe('us-west-2');
+  });
 });

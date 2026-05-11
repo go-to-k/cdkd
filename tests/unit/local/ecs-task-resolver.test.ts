@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
+  derivePartitionAndUrlSuffix,
+  detectEcsImageResolutionNeeds,
   EcsTaskResolutionError,
   parseEcsTarget,
   resolveEcsTaskTarget,
@@ -7,6 +9,7 @@ import {
 } from '../../../src/local/ecs-task-resolver.js';
 import type { StackInfo } from '../../../src/synthesis/assembly-reader.js';
 import type { CloudFormationTemplate, TemplateResource } from '../../../src/types/resource.js';
+import type { ResourceState } from '../../../src/types/state.js';
 
 function buildStack(name: string, resources: Record<string, TemplateResource>): StackInfo {
   const template: CloudFormationTemplate = { Resources: resources };
@@ -99,7 +102,10 @@ describe('resolveEcsTaskTarget', () => {
 
   it('falls back to logical id when no family', () => {
     const stack = buildStack('S1', {
-      TD: { Type: 'AWS::ECS::TaskDefinition', Properties: { ContainerDefinitions: [{ Name: 'a', Image: 'nginx' }] } },
+      TD: {
+        Type: 'AWS::ECS::TaskDefinition',
+        Properties: { ContainerDefinitions: [{ Name: 'a', Image: 'nginx' }] },
+      },
     });
     const r = resolveEcsTaskTarget('TD', [stack]);
     expect(r.family).toBe('TD');
@@ -157,7 +163,9 @@ describe('resolveEcsTaskTarget', () => {
     expect(app.secrets).toEqual([
       { name: 'API_KEY', valueFrom: 'arn:aws:secretsmanager:us-east-1:123456789012:secret:k' },
     ]);
-    expect(app.mountPoints).toEqual([{ sourceVolume: 'shared', containerPath: '/data', readOnly: true }]);
+    expect(app.mountPoints).toEqual([
+      { sourceVolume: 'shared', containerPath: '/data', readOnly: true },
+    ]);
     expect(app.dependsOn).toEqual([{ containerName: 'sidecar', condition: 'START' }]);
     expect(app.healthCheck?.command).toEqual(['CMD', 'true']);
     expect(app.essential).toBe(false);
@@ -166,7 +174,9 @@ describe('resolveEcsTaskTarget', () => {
 
   it('extracts RuntimePlatform when X86_64/LINUX', () => {
     const stack = buildStack('S1', {
-      TD: makeTaskDef({ runtimePlatform: { CpuArchitecture: 'ARM64', OperatingSystemFamily: 'LINUX' } }),
+      TD: makeTaskDef({
+        runtimePlatform: { CpuArchitecture: 'ARM64', OperatingSystemFamily: 'LINUX' },
+      }),
     });
     const r = resolveEcsTaskTarget('TD', [stack]);
     expect(r.runtimePlatform).toEqual({ cpuArchitecture: 'ARM64', operatingSystemFamily: 'LINUX' });
@@ -231,7 +241,9 @@ describe('resolveEcsTaskTarget', () => {
   it('rejects an unresolved AccountId pseudo-parameter image', () => {
     const stack = buildStack('S1', {
       TD: makeTaskDef({
-        image: { 'Fn::Sub': '${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/myrepo:latest' },
+        image: {
+          'Fn::Sub': '${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/myrepo:latest',
+        },
       }),
     });
     expect(() => resolveEcsTaskTarget('TD', [stack])).toThrow(/pseudo parameters/);
@@ -317,5 +329,220 @@ describe('resolveEcsTaskTarget', () => {
       const r = resolveEcsTaskTarget('TD', [stack]);
       expect(r.taskRoleArn).toBeUndefined();
     });
+  });
+
+  it('resolves Fn::Sub pseudo-parameter ECR image via Tier 1 context', () => {
+    const stack = buildStack('S1', {
+      TD: makeTaskDef({
+        image: {
+          'Fn::Sub': '${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/myrepo:latest',
+        },
+      }),
+    });
+    const r = resolveEcsTaskTarget('TD', [stack], {
+      pseudoParameters: {
+        accountId: '123456789012',
+        region: 'us-east-1',
+        partition: 'aws',
+        urlSuffix: 'amazonaws.com',
+      },
+    });
+    const img = r.containers[0]!.image;
+    expect(img.kind).toBe('ecr');
+    if (img.kind === 'ecr') {
+      expect(img.uri).toBe('123456789012.dkr.ecr.us-east-1.amazonaws.com/myrepo:latest');
+      expect(img.account).toBe('123456789012');
+      expect(img.region).toBe('us-east-1');
+    }
+  });
+
+  it('resolves Fn::Sub with cn-north-1 partition into amazonaws.com.cn URI', () => {
+    const stack = buildStack('S1', {
+      TD: makeTaskDef({
+        image: {
+          'Fn::Sub': '${AWS::AccountId}.dkr.ecr.${AWS::Region}.${AWS::URLSuffix}/myrepo:latest',
+        },
+      }),
+    });
+    const r = resolveEcsTaskTarget('TD', [stack], {
+      pseudoParameters: {
+        accountId: '210987654321',
+        region: 'cn-north-1',
+        partition: 'aws-cn',
+        urlSuffix: 'amazonaws.com.cn',
+      },
+    });
+    const img = r.containers[0]!.image;
+    expect(img.kind).toBe('ecr');
+    if (img.kind === 'ecr') {
+      expect(img.uri).toBe('210987654321.dkr.ecr.cn-north-1.amazonaws.com.cn/myrepo:latest');
+    }
+  });
+
+  it('hard-errors with --from-state hint when Fn::Sub references a same-stack ECR Repo and no state was provided', () => {
+    const stack = buildStack('S1', {
+      MyRepo: { Type: 'AWS::ECR::Repository', Properties: {} },
+      TD: makeTaskDef({
+        image: {
+          'Fn::Sub': '${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/${MyRepo}:tag',
+        },
+      }),
+    });
+    // Tier 1 only — substitutes pseudo parameters but leaves `${MyRepo}` for state.
+    expect(() =>
+      resolveEcsTaskTarget('TD', [stack], {
+        pseudoParameters: {
+          accountId: '123456789012',
+          region: 'us-east-1',
+          partition: 'aws',
+          urlSuffix: 'amazonaws.com',
+        },
+      })
+    ).toThrow(/--from-state/);
+  });
+
+  it('resolves Fn::Sub with same-stack ECR Repo Ref via Tier 2 state', () => {
+    const stack = buildStack('S1', {
+      MyRepo: { Type: 'AWS::ECR::Repository', Properties: {} },
+      TD: makeTaskDef({
+        image: {
+          'Fn::Sub': '${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/${MyRepo}:tag',
+        },
+      }),
+    });
+    const stateResources: Record<string, ResourceState> = {
+      MyRepo: {
+        physicalId: 'deployed-repo-name',
+        resourceType: 'AWS::ECR::Repository',
+        properties: {},
+        attributes: {
+          RepositoryUri: '123456789012.dkr.ecr.us-east-1.amazonaws.com/deployed-repo-name',
+        },
+        dependencies: [],
+      },
+    };
+    const r = resolveEcsTaskTarget('TD', [stack], {
+      pseudoParameters: {
+        accountId: '123456789012',
+        region: 'us-east-1',
+        partition: 'aws',
+        urlSuffix: 'amazonaws.com',
+      },
+      stateResources,
+    });
+    const img = r.containers[0]!.image;
+    expect(img.kind).toBe('ecr');
+    if (img.kind === 'ecr') {
+      expect(img.uri).toBe('123456789012.dkr.ecr.us-east-1.amazonaws.com/deployed-repo-name:tag');
+    }
+  });
+
+  it('resolves Fn::GetAtt [Repo, RepositoryUri] via Tier 2 state', () => {
+    const stack = buildStack('S1', {
+      MyRepo: { Type: 'AWS::ECR::Repository', Properties: {} },
+      TD: makeTaskDef({
+        image: { 'Fn::GetAtt': ['MyRepo', 'RepositoryUri'] },
+      }),
+    });
+    const stateResources: Record<string, ResourceState> = {
+      MyRepo: {
+        physicalId: 'deployed-repo-name',
+        resourceType: 'AWS::ECR::Repository',
+        properties: {},
+        attributes: {
+          RepositoryUri: '123456789012.dkr.ecr.us-east-1.amazonaws.com/deployed-repo-name',
+        },
+        dependencies: [],
+      },
+    };
+    const r = resolveEcsTaskTarget('TD', [stack], { stateResources });
+    const img = r.containers[0]!.image;
+    expect(img.kind).toBe('ecr');
+    if (img.kind === 'ecr') {
+      expect(img.uri).toBe('123456789012.dkr.ecr.us-east-1.amazonaws.com/deployed-repo-name');
+    }
+  });
+
+  it('plain string image stays a public pass-through regardless of context', () => {
+    const stack = buildStack('S1', { TD: makeTaskDef({ image: 'nginx:alpine' }) });
+    const r = resolveEcsTaskTarget('TD', [stack], {
+      pseudoParameters: { accountId: '123', region: 'us-east-1' },
+    });
+    expect(r.containers[0]!.image.kind).toBe('public');
+  });
+});
+
+describe('derivePartitionAndUrlSuffix', () => {
+  it('returns aws / amazonaws.com for commercial regions', () => {
+    expect(derivePartitionAndUrlSuffix('us-east-1')).toEqual({
+      partition: 'aws',
+      urlSuffix: 'amazonaws.com',
+    });
+    expect(derivePartitionAndUrlSuffix('eu-west-1')).toEqual({
+      partition: 'aws',
+      urlSuffix: 'amazonaws.com',
+    });
+  });
+  it('returns aws-cn / amazonaws.com.cn for cn-* regions', () => {
+    expect(derivePartitionAndUrlSuffix('cn-north-1')).toEqual({
+      partition: 'aws-cn',
+      urlSuffix: 'amazonaws.com.cn',
+    });
+  });
+  it('returns aws-us-gov / amazonaws.com for us-gov-* regions', () => {
+    expect(derivePartitionAndUrlSuffix('us-gov-west-1')).toEqual({
+      partition: 'aws-us-gov',
+      urlSuffix: 'amazonaws.com',
+    });
+  });
+});
+
+describe('detectEcsImageResolutionNeeds', () => {
+  it('returns false/false for plain string + cdk-asset images', () => {
+    const stack = buildStack('S1', {
+      A: makeTaskDef({ image: 'nginx:alpine' }),
+      B: makeTaskDef({
+        image: {
+          'Fn::Sub':
+            '${AWS::AccountId}.dkr.ecr.${AWS::Region}.${AWS::URLSuffix}/cdk-hnb659fds-container-assets-${AWS::AccountId}-${AWS::Region}:deadbeefcafef00d',
+        },
+      }),
+    });
+    // cdk-asset shape DOES include pseudo placeholders — we still report
+    // needsPseudoParameters=true so the CLI can supply them; the
+    // resolver's cdk-asset branch wins downstream regardless.
+    const needs = detectEcsImageResolutionNeeds(stack);
+    expect(needs.needsPseudoParameters).toBe(true);
+    expect(needs.needsStateResources).toBe(false);
+  });
+  it('flags pseudo-parameter-only Fn::Sub as Tier 1 only', () => {
+    const stack = buildStack('S1', {
+      TD: makeTaskDef({
+        image: { 'Fn::Sub': '${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/r:t' },
+      }),
+    });
+    const needs = detectEcsImageResolutionNeeds(stack);
+    expect(needs.needsPseudoParameters).toBe(true);
+    expect(needs.needsStateResources).toBe(false);
+  });
+  it('flags Fn::Sub with same-stack ECR Repo as Tier 1 + Tier 2', () => {
+    const stack = buildStack('S1', {
+      MyRepo: { Type: 'AWS::ECR::Repository', Properties: {} },
+      TD: makeTaskDef({
+        image: { 'Fn::Sub': '${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/${MyRepo}:t' },
+      }),
+    });
+    const needs = detectEcsImageResolutionNeeds(stack);
+    expect(needs.needsPseudoParameters).toBe(true);
+    expect(needs.needsStateResources).toBe(true);
+  });
+  it('flags Fn::GetAtt against an ECR Repository as Tier 2 only', () => {
+    const stack = buildStack('S1', {
+      MyRepo: { Type: 'AWS::ECR::Repository', Properties: {} },
+      TD: makeTaskDef({ image: { 'Fn::GetAtt': ['MyRepo', 'RepositoryUri'] } }),
+    });
+    const needs = detectEcsImageResolutionNeeds(stack);
+    expect(needs.needsPseudoParameters).toBe(false);
+    expect(needs.needsStateResources).toBe(true);
   });
 });

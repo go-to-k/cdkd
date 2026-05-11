@@ -16,7 +16,8 @@ import { getLogger } from '../../utils/logger.js';
 import { applyRoleArnIfSet } from '../../utils/role-arn.js';
 import { withErrorHandling } from '../../utils/error-handler.js';
 import { Synthesizer, type SynthesisOptions } from '../../synthesis/synthesizer.js';
-import { resolveApp, resolveStateBucketWithDefault } from '../config-loader.js';
+import { resolveApp } from '../config-loader.js';
+import { loadStateForStack } from './local-state-loader.js';
 import {
   resolveLambdaTarget,
   type ResolvedImageLambda,
@@ -48,8 +49,6 @@ import {
   AssetManifestLoader,
   getDockerImageBySourceHash,
 } from '../../assets/asset-manifest-loader.js';
-import { S3StateBackend } from '../../state/s3-state-backend.js';
-import { setAwsClients, AwsClients } from '../../utils/aws-clients.js';
 import { singleFlight } from '../../utils/single-flight.js';
 import type { StackState } from '../../types/state.js';
 import { createLocalStartApiCommand } from './local-start-api.js';
@@ -901,120 +900,6 @@ function materializeInlineCode(handler: string, source: string, fileExtension: s
   mkdirSync(path.dirname(filePath), { recursive: true });
   writeFileSync(filePath, source, 'utf-8');
   return dir;
-}
-
-/**
- * Load cdkd state for the target stack so `--from-state` can substitute
- * intrinsic-valued env vars.
- *
- * Failure mode: returns `undefined` and logs at warn for every "expected"
- * miss (no state file, multi-region ambiguity without `--stack-region`,
- * bucket-resolution failure). `--from-state` is opt-in and the caller's
- * fallback is the existing PR 1 warn-and-drop, so a broken state file
- * shouldn't abort the whole invoke. Genuine errors (auth failures, etc.)
- * still propagate.
- *
- * Mirrors the orphan command's state-loading shape but without the lock
- * or save path — `cdkd local invoke` is purely read-only against state.
- */
-async function loadStateForStack(
-  stackName: string,
-  synthRegion: string | undefined,
-  opts: {
-    stackRegion?: string;
-    stateBucket?: string;
-    statePrefix: string;
-    region?: string;
-    profile?: string;
-  }
-): Promise<{ state: StackState; region: string } | undefined> {
-  const logger = getLogger();
-
-  // Region resolution chain: --region > AWS_REGION > AWS_DEFAULT_REGION >
-  // synth-derived stack region > us-east-1. The state-bucket S3 client is
-  // re-targeted to the bucket's actual region inside the backend, but the
-  // initial AWS clients still need a sensible default.
-  const region =
-    opts.region ??
-    process.env['AWS_REGION'] ??
-    process.env['AWS_DEFAULT_REGION'] ??
-    synthRegion ??
-    'us-east-1';
-
-  let stateBucket: string;
-  try {
-    stateBucket = await resolveStateBucketWithDefault(opts.stateBucket, region);
-  } catch (err) {
-    logger.warn(
-      `--from-state: could not resolve state bucket: ${err instanceof Error ? err.message : String(err)}. Falling back to PR 1 warn-and-drop semantics.`
-    );
-    return undefined;
-  }
-
-  const awsClients = new AwsClients({
-    ...(opts.region !== undefined && { region: opts.region }),
-    ...(opts.profile !== undefined && { profile: opts.profile }),
-  });
-  setAwsClients(awsClients);
-
-  try {
-    const stateConfig = { bucket: stateBucket, prefix: opts.statePrefix };
-    const stateBackend = new S3StateBackend(awsClients.s3, stateConfig, {
-      ...(opts.region !== undefined && { region: opts.region }),
-      ...(opts.profile !== undefined && { profile: opts.profile }),
-    });
-    await stateBackend.verifyBucketExists();
-
-    // Disambiguate: if the user passed --stack-region, use it; else if the
-    // synthesized stack carries a region, prefer that; else fall back to
-    // the single state record for this stack name. Multi-region ambiguity
-    // → warn and bail (mirrors `cdkd state show`'s semantics, just without
-    // the hard-error treatment so an opt-in --from-state degrades cleanly).
-    const refs = (await stateBackend.listStacks()).filter((r) => r.stackName === stackName);
-    if (refs.length === 0) {
-      logger.warn(
-        `--from-state: no cdkd state found for stack '${stackName}' in bucket '${stateBucket}'. ` +
-          `Was it deployed via 'cdkd deploy'? Falling back to PR 1 warn-and-drop semantics.`
-      );
-      return undefined;
-    }
-
-    let targetRegion: string;
-    if (opts.stackRegion) {
-      const found = refs.find((r) => r.region === opts.stackRegion);
-      if (!found) {
-        const seen = refs.map((r) => r.region ?? '(legacy)').join(', ');
-        logger.warn(
-          `--from-state: stack '${stackName}' has no state in region '${opts.stackRegion}' (available: ${seen}). Falling back.`
-        );
-        return undefined;
-      }
-      targetRegion = opts.stackRegion;
-    } else if (synthRegion && refs.some((r) => r.region === synthRegion)) {
-      targetRegion = synthRegion;
-    } else if (refs.length === 1) {
-      targetRegion = refs[0]!.region ?? synthRegion ?? region;
-    } else {
-      const seen = refs.map((r) => r.region ?? '(legacy)').join(', ');
-      logger.warn(
-        `--from-state: stack '${stackName}' has state in multiple regions (${seen}). ` +
-          `Re-run with --stack-region <region>. Falling back.`
-      );
-      return undefined;
-    }
-
-    const stateData = await stateBackend.getState(stackName, targetRegion);
-    if (!stateData) {
-      logger.warn(
-        `--from-state: state record for '${stackName}' (${targetRegion}) returned empty. Falling back.`
-      );
-      return undefined;
-    }
-    logger.debug(`--from-state: loaded state for ${stackName} (${targetRegion})`);
-    return { state: stateData.state, region: targetRegion };
-  } finally {
-    awsClients.destroy();
-  }
 }
 
 /**

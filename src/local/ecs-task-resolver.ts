@@ -4,6 +4,7 @@ import type { StackInfo } from '../synthesis/assembly-reader.js';
 import type { TemplateResource } from '../types/resource.js';
 import { buildCdkPathIndex, resolveCdkPathToLogicalIds } from '../cli/cdk-path.js';
 import { matchStacks } from '../cli/stack-matcher.js';
+import type { ResourceState } from '../types/state.js';
 
 /**
  * Result of resolving a `cdkd local run-task <target>` argument back to a
@@ -129,6 +130,61 @@ export class EcsTaskResolutionError extends Error {
 }
 
 /**
+ * Derive the AWS partition / URL suffix for an AWS region. Same mapping
+ * CloudFormation applies to `${AWS::Partition}` / `${AWS::URLSuffix}`.
+ * Exported so the CLI can keep the STS hop minimal — caller passes the
+ * region in once, this returns the matching partition + suffix.
+ */
+export function derivePartitionAndUrlSuffix(region: string): {
+  partition: string;
+  urlSuffix: string;
+} {
+  if (region.startsWith('cn-')) return { partition: 'aws-cn', urlSuffix: 'amazonaws.com.cn' };
+  if (region.startsWith('us-gov-')) return { partition: 'aws-us-gov', urlSuffix: 'amazonaws.com' };
+  if (region.startsWith('us-iso-')) return { partition: 'aws-iso', urlSuffix: 'c2s.ic.gov' };
+  if (region.startsWith('us-isob-')) return { partition: 'aws-iso-b', urlSuffix: 'sc2s.sgov.gov' };
+  return { partition: 'aws', urlSuffix: 'amazonaws.com' };
+}
+
+/**
+ * Optional substitution data fed into `parseContainerImage`. Closes issue
+ * #264 — container `Image` fields shaped as `Fn::Sub` against AWS pseudo
+ * parameters (`${AWS::AccountId}` / `${AWS::Region}` / `${AWS::Partition}` /
+ * `${AWS::URLSuffix}`) and / or same-stack `AWS::ECR::Repository` refs are
+ * resolvable at runtime when the caller can supply the account ID + region
+ * (Tier 1, no state needed) and optionally the cdkd state-recorded
+ * `physicalId` map (Tier 2, `--from-state`).
+ *
+ * The CLI command resolves both blocks lazily — STS is only invoked when
+ * at least one container's `Image` references the pseudo parameters — and
+ * passes the resolved shape here. The resolver itself stays pure and
+ * synchronous.
+ */
+export interface EcsImageResolutionContext {
+  /**
+   * Resolved AWS pseudo parameters. When undefined for a given key, the
+   * substitution is treated as missing and the value passes through to
+   * the existing error path. Caller is expected to populate every key
+   * when it populates any (we derive partition / URL suffix from region
+   * in the CLI layer).
+   */
+  pseudoParameters?: {
+    accountId?: string;
+    region?: string;
+    partition?: string;
+    urlSuffix?: string;
+  };
+  /**
+   * `state.resources` from cdkd's S3 state record for the target stack,
+   * loaded by the CLI command before resolution when `--from-state` is
+   * passed. Used to substitute `${<LogicalId>}` against an
+   * `AWS::ECR::Repository` and the `Fn::GetAtt` `RepositoryUri` shape.
+   * Undefined when `--from-state` is not in effect.
+   */
+  stateResources?: Record<string, ResourceState>;
+}
+
+/**
  * Parse a `target` argument into (optional stack pattern, path-or-id).
  * Mirrors `lambda-resolver.parseTarget` exactly — same accepted forms,
  * same single-stack auto-detect rule.
@@ -137,6 +193,93 @@ export interface ParsedEcsTarget {
   stackPattern: string | null;
   pathOrId: string;
   isPath: boolean;
+}
+
+/**
+ * Walk the matched stack's template and report whether any container's
+ * `Image` field needs Tier 1 (pseudo-parameter) or Tier 2 (state-recorded
+ * ECR Repository) substitution. The CLI uses this to make the STS /
+ * state-load calls lazy — flat strings / cdk-asset shapes / Fn::Sub bodies
+ * with no recognized placeholders skip both calls entirely.
+ *
+ * The probe is per-stack rather than per-target because we don't run the
+ * full target resolver until the substitution context is built; cheap
+ * O(resources) scan over the template's task definitions is sufficient.
+ */
+export interface EcsImageResolutionNeeds {
+  /** Any `Fn::Sub` body references an `AWS::*` pseudo parameter. */
+  needsPseudoParameters: boolean;
+  /**
+   * Any `Fn::Sub` body references an `AWS::ECR::Repository` logical ID,
+   * OR any `Fn::GetAtt: [<Repo>, 'RepositoryUri' | 'Arn']` is present.
+   */
+  needsStateResources: boolean;
+}
+
+export function detectEcsImageResolutionNeeds(stack: StackInfo): EcsImageResolutionNeeds {
+  const resources = stack.template.Resources ?? {};
+  let needsPseudoParameters = false;
+  let needsStateResources = false;
+
+  for (const res of Object.values(resources)) {
+    if (res.Type !== 'AWS::ECS::TaskDefinition') continue;
+    const props = res.Properties ?? {};
+    const containers = Array.isArray(props['ContainerDefinitions'])
+      ? props['ContainerDefinitions']
+      : [];
+    for (const c of containers) {
+      if (!c || typeof c !== 'object') continue;
+      const image = (c as Record<string, unknown>)['Image'];
+      const need = inspectImageForSubstitutions(image, resources);
+      if (need.pseudo) needsPseudoParameters = true;
+      if (need.state) needsStateResources = true;
+      if (needsPseudoParameters && needsStateResources) break;
+    }
+    if (needsPseudoParameters && needsStateResources) break;
+  }
+  return { needsPseudoParameters, needsStateResources };
+}
+
+function inspectImageForSubstitutions(
+  image: unknown,
+  resources: Record<string, TemplateResource>
+): { pseudo: boolean; state: boolean } {
+  if (!image || typeof image !== 'object') return { pseudo: false, state: false };
+  const obj = image as Record<string, unknown>;
+
+  // Fn::GetAtt direct shape against an ECR::Repository — Tier 2 only.
+  const getAtt = obj['Fn::GetAtt'];
+  if (getAtt !== undefined) {
+    let lid: string | undefined;
+    if (Array.isArray(getAtt) && typeof getAtt[0] === 'string') lid = getAtt[0];
+    else if (typeof getAtt === 'string') lid = getAtt.split('.')[0];
+    if (lid && resources[lid]?.Type === 'AWS::ECR::Repository') {
+      return { pseudo: false, state: true };
+    }
+  }
+
+  // Fn::Sub body: scan every `${...}` placeholder.
+  let sub: string | undefined;
+  const subRaw = obj['Fn::Sub'];
+  if (typeof subRaw === 'string') sub = subRaw;
+  else if (Array.isArray(subRaw) && typeof subRaw[0] === 'string') sub = subRaw[0];
+  if (!sub) return { pseudo: false, state: false };
+
+  let pseudo = false;
+  let state = false;
+  const placeholderRegex = /\$\{([^}]+)\}/g;
+  let m: RegExpExecArray | null;
+  while ((m = placeholderRegex.exec(sub)) !== null) {
+    const key = m[1]!;
+    if (key.startsWith('AWS::')) {
+      pseudo = true;
+      continue;
+    }
+    const dot = key.indexOf('.');
+    const lid = dot === -1 ? key : key.slice(0, dot);
+    if (resources[lid]?.Type === 'AWS::ECR::Repository') state = true;
+  }
+  return { pseudo, state };
 }
 
 export function parseEcsTarget(target: string): ParsedEcsTarget {
@@ -165,8 +308,18 @@ export function parseEcsTarget(target: string): ParsedEcsTarget {
  * Resolve a parsed target against the synthesized stacks. Throws
  * `EcsTaskResolutionError` with an actionable message (listing every
  * available task definition in the matched stack) on any miss.
+ *
+ * Optional `context` (issue #264): when the caller can supply AWS
+ * pseudo-parameter values (Tier 1) and / or cdkd state-recorded resources
+ * (Tier 2), `Fn::Sub`-shaped ECR image URIs that reference
+ * `${AWS::AccountId}` / `${AWS::Region}` / a same-stack
+ * `AWS::ECR::Repository` are substituted before classification.
  */
-export function resolveEcsTaskTarget(target: string, stacks: StackInfo[]): ResolvedEcsTask {
+export function resolveEcsTaskTarget(
+  target: string,
+  stacks: StackInfo[],
+  context?: EcsImageResolutionContext
+): ResolvedEcsTask {
   if (stacks.length === 0) {
     throw new EcsTaskResolutionError('No stacks found in the synthesized assembly.');
   }
@@ -215,7 +368,7 @@ export function resolveEcsTaskTarget(target: string, stacks: StackInfo[]): Resol
     );
   }
 
-  return extractTaskDefinitionProperties(stack, logicalId, resource);
+  return extractTaskDefinitionProperties(stack, logicalId, resource, context);
 }
 
 function pickStack(parsed: ParsedEcsTarget, stacks: StackInfo[]): StackInfo {
@@ -247,7 +400,8 @@ function pickStack(parsed: ParsedEcsTarget, stacks: StackInfo[]): StackInfo {
 function extractTaskDefinitionProperties(
   stack: StackInfo,
   logicalId: string,
-  resource: TemplateResource
+  resource: TemplateResource,
+  context?: EcsImageResolutionContext
 ): ResolvedEcsTask {
   const props = resource.Properties ?? {};
   const warnings: string[] = [];
@@ -288,7 +442,7 @@ function extractTaskDefinitionProperties(
     throw new EcsTaskResolutionError(`Task definition '${logicalId}' has no ContainerDefinitions.`);
   }
   const containers = rawContainers.map((c, idx) =>
-    parseContainerDefinition(c, idx, logicalId, resources, stack)
+    parseContainerDefinition(c, idx, logicalId, resources, stack, context)
   );
 
   const rawVolumes = props['Volumes'];
@@ -340,7 +494,8 @@ function parseContainerDefinition(
   idx: number,
   taskLogicalId: string,
   resources: Record<string, TemplateResource>,
-  stack: StackInfo
+  stack: StackInfo,
+  context?: EcsImageResolutionContext
 ): ResolvedEcsContainer {
   if (!raw || typeof raw !== 'object') {
     throw new EcsTaskResolutionError(
@@ -355,7 +510,7 @@ function parseContainerDefinition(
     );
   }
 
-  const image = parseContainerImage(c['Image'], name, taskLogicalId, resources, stack);
+  const image = parseContainerImage(c['Image'], name, taskLogicalId, resources, stack, context);
 
   const command = pickStringArray(c['Command']);
   const entryPoint = pickStringArray(c['EntryPoint']);
@@ -509,14 +664,40 @@ function parseContainerDefinition(
  *     asset hash so the runner can route through `docker-build.ts`.
  *   - Any other public URI (`public.ecr.aws/...`, `docker.io/...`,
  *     `nginx:latest`, etc.) — `kind: 'public'`, runner does a `docker pull`.
+ *
+ * Two-tier substitution (issue #264):
+ *   - **Tier 1** — when `context.pseudoParameters` is populated, AWS pseudo
+ *     parameters in `Fn::Sub` bodies (`${AWS::AccountId}` / `${AWS::Region}` /
+ *     `${AWS::Partition}` / `${AWS::URLSuffix}`) are substituted before
+ *     regex matching. The CLI resolves these via STS + region env once
+ *     per invocation.
+ *   - **Tier 2** — when `context.stateResources` is populated
+ *     (`--from-state`), `${<LogicalId>}` placeholders that resolve to an
+ *     `AWS::ECR::Repository` are substituted with the state-recorded
+ *     `physicalId`, and `Fn::GetAtt: [<Repo>, 'RepositoryUri']` shapes
+ *     are resolved via the same state record.
+ *
+ * Tier 3 (cross-account / cross-region pull) is deferred — `pullEcrImage`
+ * surfaces the same workaround pointer it already does.
  */
 function parseContainerImage(
   raw: unknown,
   containerName: string,
   taskLogicalId: string,
   resources: Record<string, TemplateResource>,
-  _stack: StackInfo
+  _stack: StackInfo,
+  context?: EcsImageResolutionContext
 ): ResolvedEcsImage {
+  // Tier 2: handle `Fn::GetAtt: [<Repo>, 'RepositoryUri']` directly — it
+  // produces a complete `<acct>.dkr.ecr.<region>.amazonaws.com/<name>` URI
+  // we can match against the ECR regex below. The tag is whatever the
+  // template provides; for the bare GetAtt shape there is none, which is
+  // unusual but we surface the resulting tagless URI rather than guess.
+  const getAttImage = tryResolveImageGetAtt(raw, resources, context);
+  if (getAttImage) {
+    return classifyResolvedImage(getAttImage);
+  }
+
   const flat = extractImageString(raw);
   if (!flat) {
     throw new EcsTaskResolutionError(
@@ -535,34 +716,185 @@ function parseContainerImage(
     return out;
   }
 
-  // Account-scoped ECR repo.
-  const ecrMatch = /^(\d{12})\.dkr\.ecr\.([^.]+)\.amazonaws\.com(?:\.cn)?\//.exec(flat);
-  if (ecrMatch) {
-    return { kind: 'ecr', uri: flat, account: ecrMatch[1]!, region: ecrMatch[2]! };
-  }
+  // Substitute pseudo parameters + same-stack ECR Ref placeholders into
+  // the flat string when context is supplied. Pure string-rewrite —
+  // unresolved placeholders pass through verbatim so the post-walk
+  // diagnostics below can route to the precise error message.
+  const substituted = substituteImagePlaceholders(flat, resources, context);
 
-  // A ref to a same-stack ECR repository (Fn::Sub embeds it). We can't
-  // resolve the repo URI without state; surface a clearer error than
-  // letting the runner try to `docker pull` a placeholder.
-  if (flat.includes('${') && flat.includes('AWS::AccountId')) {
-    throw new EcsTaskResolutionError(
-      `Container '${containerName}' in task '${taskLogicalId}' has an Image that references AWS pseudo parameters (${flat}). ` +
-        'cdkd local run-task v1 cannot resolve account-scoped ECR repos at synth time. ' +
-        'Build the image locally (CDK ContainerImage.fromAsset) or pin to a public image to test locally.'
-    );
-  }
-  // A Ref / GetAtt to a same-stack ECR::Repository that we cannot resolve
-  // statically. Match against the resources map to surface a precise hint.
-  for (const [refLogicalId, res] of Object.entries(resources)) {
-    if (res.Type === 'AWS::ECR::Repository' && flat.includes(refLogicalId)) {
+  // Unresolved `${...}` placeholders survived substitution. Surface a
+  // precise hint BEFORE the ECR regex match — otherwise a leftover
+  // `${MyRepo}` in the path portion would still match the host-portion
+  // regex and silently produce a broken URI for `docker pull` to fail on.
+  if (substituted.includes('${')) {
+    const unresolvedRepoRef = findUnresolvedEcrRepositoryRef(substituted, resources);
+    if (unresolvedRepoRef) {
       throw new EcsTaskResolutionError(
-        `Container '${containerName}' in task '${taskLogicalId}' references same-stack ECR repository '${refLogicalId}'. ` +
-          'cdkd local run-task v1 cannot resolve the repository URI without state — build via ContainerImage.fromAsset or pin a public image.'
+        `Container '${containerName}' in task '${taskLogicalId}' references same-stack ECR repository '${unresolvedRepoRef}'. ` +
+          'cdkd local run-task v1 cannot resolve the repository URI without state — ' +
+          'pass --from-state (the stack must have been deployed via cdkd deploy), ' +
+          'build via ContainerImage.fromAsset, or pin a public image.'
       );
     }
+    if (substituted.includes('AWS::')) {
+      throw new EcsTaskResolutionError(
+        `Container '${containerName}' in task '${taskLogicalId}' has an Image that references AWS pseudo parameters (${substituted}). ` +
+          'cdkd could not resolve them: confirm AWS credentials are configured so STS GetCallerIdentity succeeds, ' +
+          'and that --region / AWS_REGION names the target region. ' +
+          'Workaround: build the image locally (ContainerImage.fromAsset) or pin a public image.'
+      );
+    }
+    // Some other placeholder survived (e.g. a Parameter ref). Surface as
+    // a generic resolver failure rather than letting it slip through as
+    // a "public" image.
+    throw new EcsTaskResolutionError(
+      `Container '${containerName}' in task '${taskLogicalId}' has an Image with unresolved \${...} placeholders (${substituted}). ` +
+        'cdkd local run-task v1 only resolves AWS pseudo parameters and same-stack AWS::ECR::Repository refs.'
+    );
   }
 
-  return { kind: 'public', uri: flat };
+  // Account-scoped ECR repo.
+  const ecrMatch = /^(\d{12})\.dkr\.ecr\.([^.]+)\.amazonaws\.com(?:\.cn)?\//.exec(substituted);
+  if (ecrMatch) {
+    return { kind: 'ecr', uri: substituted, account: ecrMatch[1]!, region: ecrMatch[2]! };
+  }
+
+  return { kind: 'public', uri: substituted };
+}
+
+/**
+ * When the flat string still contains `${X}` after substitution, check
+ * whether `X` (or `X.<attr>`) names a same-stack `AWS::ECR::Repository`.
+ * Returns the logical ID of the offending repo for a precise error
+ * message; `undefined` otherwise.
+ */
+function findUnresolvedEcrRepositoryRef(
+  substituted: string,
+  resources: Record<string, TemplateResource>
+): string | undefined {
+  const placeholderRegex = /\$\{([^}]+)\}/g;
+  let m: RegExpExecArray | null;
+  while ((m = placeholderRegex.exec(substituted)) !== null) {
+    const key = m[1]!;
+    if (key.startsWith('AWS::')) continue;
+    const dot = key.indexOf('.');
+    const lid = dot === -1 ? key : key.slice(0, dot);
+    if (resources[lid]?.Type === 'AWS::ECR::Repository') return lid;
+  }
+  return undefined;
+}
+
+/**
+ * Classify a fully-substituted image URI (Tier 1 / Tier 2 produced a
+ * concrete string) into the `ResolvedEcsImage` shape. Splits out so the
+ * `Fn::GetAtt` path can share the regex-match branches.
+ */
+function classifyResolvedImage(uri: string): ResolvedEcsImage {
+  if (uri.includes('cdk-hnb659fds-container-assets-')) {
+    const hashMatch = /:([a-f0-9]{8,})$/.exec(uri);
+    const out: ResolvedEcsImage = { kind: 'cdk-asset' };
+    if (hashMatch) out.assetHash = hashMatch[1]!;
+    return out;
+  }
+  const ecrMatch = /^(\d{12})\.dkr\.ecr\.([^.]+)\.amazonaws\.com(?:\.cn)?\//.exec(uri);
+  if (ecrMatch) {
+    return { kind: 'ecr', uri, account: ecrMatch[1]!, region: ecrMatch[2]! };
+  }
+  return { kind: 'public', uri };
+}
+
+/**
+ * Substitute Tier 1 (pseudo-parameter) and Tier 2 (state-recorded ECR
+ * Repository physical id) placeholders inside a `Fn::Sub`-derived flat
+ * string. Substitutions are best-effort per placeholder: every `${...}`
+ * we recognize is replaced; unknown placeholders (or recognized ones for
+ * which we have no value) pass through untouched so the caller's error
+ * path can name them.
+ */
+function substituteImagePlaceholders(
+  flat: string,
+  resources: Record<string, TemplateResource>,
+  context: EcsImageResolutionContext | undefined
+): string {
+  if (!flat.includes('${')) return flat;
+  return flat.replace(/\$\{([^}]+)\}/g, (full, key: string) => {
+    if (context?.pseudoParameters) {
+      if (key === 'AWS::AccountId' && context.pseudoParameters.accountId) {
+        return context.pseudoParameters.accountId;
+      }
+      if (key === 'AWS::Region' && context.pseudoParameters.region) {
+        return context.pseudoParameters.region;
+      }
+      if (key === 'AWS::Partition' && context.pseudoParameters.partition) {
+        return context.pseudoParameters.partition;
+      }
+      if (key === 'AWS::URLSuffix' && context.pseudoParameters.urlSuffix) {
+        return context.pseudoParameters.urlSuffix;
+      }
+    }
+    if (context?.stateResources) {
+      const dot = key.indexOf('.');
+      const logicalId = dot === -1 ? key : key.slice(0, dot);
+      const refResource = resources[logicalId];
+      const stateEntry = context.stateResources[logicalId];
+      if (refResource?.Type === 'AWS::ECR::Repository' && stateEntry) {
+        if (dot === -1) {
+          // `${<Repo>}` → the repository's physical id (its Name).
+          return stateEntry.physicalId;
+        }
+        const attr = key.slice(dot + 1);
+        const cached = stateEntry.attributes?.[attr];
+        if (typeof cached === 'string') return cached;
+      }
+    }
+    return full;
+  });
+}
+
+/**
+ * Handle the discrete `Fn::GetAtt: [<Repo>, 'RepositoryUri']` /
+ * `'<Repo>.RepositoryUri'` shape against state-recorded resources. CDK
+ * occasionally emits this instead of `Fn::Sub` when the user writes
+ * `ContainerImage.fromEcrRepository(repo, tag)` and the tag is a literal.
+ * Returns the resolved URI string on hit, `undefined` on miss (the caller
+ * falls through to `extractImageString` for `Fn::Sub` / `Fn::Join` / `Ref`).
+ */
+function tryResolveImageGetAtt(
+  raw: unknown,
+  resources: Record<string, TemplateResource>,
+  context: EcsImageResolutionContext | undefined
+): string | undefined {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const obj = raw as Record<string, unknown>;
+  const arg = obj['Fn::GetAtt'];
+  if (arg === undefined) return undefined;
+
+  let logicalId: string | undefined;
+  let attr: string | undefined;
+  if (
+    Array.isArray(arg) &&
+    arg.length === 2 &&
+    typeof arg[0] === 'string' &&
+    typeof arg[1] === 'string'
+  ) {
+    logicalId = arg[0];
+    attr = arg[1];
+  } else if (typeof arg === 'string') {
+    const dot = arg.indexOf('.');
+    if (dot > 0 && dot < arg.length - 1) {
+      logicalId = arg.slice(0, dot);
+      attr = arg.slice(dot + 1);
+    }
+  }
+  if (!logicalId || !attr) return undefined;
+
+  const refResource = resources[logicalId];
+  if (refResource?.Type !== 'AWS::ECR::Repository') return undefined;
+  if (attr !== 'RepositoryUri' && attr !== 'Arn') return undefined;
+
+  const cached = context?.stateResources?.[logicalId]?.attributes?.[attr];
+  if (typeof cached === 'string' && cached.length > 0) return cached;
+  return undefined;
 }
 
 function extractImageString(value: unknown): string | undefined {
