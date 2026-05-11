@@ -170,6 +170,123 @@ describe('DagBuilder', () => {
       expect(graph.hasEdge('BucketB', 'BucketC')).toBe(true);
     });
 
+    it('extracts implicit Ref dependency from Fn::Sub 1-arg form ${X}', () => {
+      // #275: Fn::Sub: "...${MyRepo}..." with no variable map is an
+      // implicit Ref to a same-stack resource. Without a DAG edge the
+      // resolver races and falls back to the literal placeholder.
+      const template: CloudFormationTemplate = {
+        Resources: {
+          MyRepo: {
+            Type: 'AWS::ECR::Repository',
+            Properties: {},
+          },
+          NginxTaskDef: {
+            Type: 'AWS::ECS::TaskDefinition',
+            Properties: {
+              ContainerDefinitions: [
+                {
+                  Name: 'web',
+                  Image: {
+                    'Fn::Sub':
+                      '${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/${MyRepo}:latest',
+                  },
+                },
+              ],
+            },
+          },
+        },
+      };
+
+      const graph = dagBuilder.buildGraph(template);
+
+      expect(graph.nodeCount()).toBe(2);
+      expect(graph.hasEdge('MyRepo', 'NginxTaskDef')).toBe(true);
+    });
+
+    it('extracts implicit GetAtt dependency from Fn::Sub ${X.Attr} dotted form', () => {
+      const template: CloudFormationTemplate = {
+        Resources: {
+          MyRepo: {
+            Type: 'AWS::ECR::Repository',
+            Properties: {},
+          },
+          MyParam: {
+            Type: 'AWS::SSM::Parameter',
+            Properties: {
+              Type: 'String',
+              Value: { 'Fn::Sub': 'arn=${MyRepo.Arn}' },
+            },
+          },
+        },
+      };
+
+      const graph = dagBuilder.buildGraph(template);
+
+      expect(graph.hasEdge('MyRepo', 'MyParam')).toBe(true);
+    });
+
+    it('does NOT extract pseudo parameters from Fn::Sub bodies as dependencies', () => {
+      const template: CloudFormationTemplate = {
+        Resources: {
+          MyParam: {
+            Type: 'AWS::SSM::Parameter',
+            Properties: {
+              Type: 'String',
+              Value: {
+                'Fn::Sub': 'acct=${AWS::AccountId};region=${AWS::Region}',
+              },
+            },
+          },
+        },
+      };
+
+      const graph = dagBuilder.buildGraph(template);
+
+      expect(graph.nodeCount()).toBe(1);
+      expect(graph.edgeCount()).toBe(0);
+    });
+
+    it('skips names provided by Fn::Sub 2-arg variable map (but recurses into map values)', () => {
+      // The 2-arg form's variable map shadows same-stack lookups; names in
+      // the map MUST NOT produce a same-stack dependency edge. But the
+      // values inside the map can carry their own Ref / GetAtt intrinsics
+      // that should produce edges.
+      const template: CloudFormationTemplate = {
+        Resources: {
+          Bucket: {
+            Type: 'AWS::S3::Bucket',
+            Properties: {},
+          },
+          // "MyRepo" — there is no resource named that; the map shadows
+          // would not surface a missing-dep warning if the parser handled
+          // it correctly.
+          MyParam: {
+            Type: 'AWS::SSM::Parameter',
+            Properties: {
+              Type: 'String',
+              Value: {
+                'Fn::Sub': [
+                  'name=${MyRepo}/bucket=${BucketArn}',
+                  {
+                    MyRepo: 'literal-from-map',
+                    BucketArn: { 'Fn::GetAtt': ['Bucket', 'Arn'] },
+                  },
+                ],
+              },
+            },
+          },
+        },
+      };
+
+      const graph = dagBuilder.buildGraph(template);
+
+      // Only Bucket → MyParam (via the map's GetAtt value); the bare
+      // ${MyRepo} placeholder is shadowed by the map and does not
+      // produce an edge to a non-existent resource.
+      expect(graph.nodeCount()).toBe(2);
+      expect(graph.hasEdge('Bucket', 'MyParam')).toBe(true);
+    });
+
     it('should detect circular dependencies', () => {
       const template: CloudFormationTemplate = {
         Resources: {
