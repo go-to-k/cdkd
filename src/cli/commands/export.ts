@@ -131,11 +131,99 @@ const PRIMARY_IDENTIFIER_FALLBACK: Record<string, string> = {
   'AWS::ECR::Repository': 'RepositoryName',
 };
 
+/**
+ * Per-type splitter for composite primary identifiers — CloudFormation
+ * resource types whose `primaryIdentifier` has more than one field.
+ *
+ * Input: cdkd state's `physicalId` for the resource (the value
+ * `provider.create()` returned and cdkd persisted).
+ *
+ * Output: the `ResourceIdentifier` object CFn IMPORT expects, keyed by
+ * the field names CFn defines in the schema.
+ *
+ * cdkd's own per-type physicalId format is provider-defined (see
+ * `src/provisioning/providers/*.ts` — most composites use `|` as the
+ * separator). When the per-type format does NOT match the order CFn
+ * expects (e.g. `AWS::EC2::VPCGatewayAttachment` stores `IGW|VpcId` but
+ * CFn primaryIdentifier is `[VpcId, InternetGatewayId]`), the splitter
+ * reorders explicitly.
+ *
+ * Adding a new composite type: identify cdkd's physicalId format in the
+ * matching `src/provisioning/providers/*.ts`, look up the CFn primary
+ * identifier via `aws cloudformation describe-type` or the resource
+ * schema docs, and add an entry below.
+ */
+type CompositeIdSplitter = (physicalId: string) => Record<string, string>;
+
+const COMPOSITE_ID_SPLITTERS: Record<string, CompositeIdSplitter> = {
+  // cdkd stores `restApiId|resourceId|httpMethod` (apigateway-provider.ts);
+  // CFn primary identifier is [RestApiId, ResourceId, HttpMethod] — same order.
+  'AWS::ApiGateway::Method': (id) => {
+    const parts = id.split('|');
+    if (parts.length !== 3) {
+      throw new Error(
+        `expected 3 parts (restApiId|resourceId|httpMethod), got ${parts.length}: '${id}'`
+      );
+    }
+    return { RestApiId: parts[0]!, ResourceId: parts[1]!, HttpMethod: parts[2]! };
+  },
+  // cdkd stores `restApiId|resourceId` (apigateway-provider.ts);
+  // CFn primary identifier is [RestApiId, ResourceId].
+  'AWS::ApiGateway::Resource': (id) => {
+    const parts = id.split('|');
+    if (parts.length !== 2) {
+      throw new Error(`expected 2 parts (restApiId|resourceId), got ${parts.length}: '${id}'`);
+    }
+    return { RestApiId: parts[0]!, ResourceId: parts[1]! };
+  },
+  // cdkd stores `IGW|VpcId` (ec2-provider.ts);
+  // CFn primary identifier is [VpcId, InternetGatewayId] — DIFFERENT order
+  // from cdkd. Splitter reorders explicitly.
+  'AWS::EC2::VPCGatewayAttachment': (id) => {
+    const parts = id.split('|');
+    if (parts.length !== 2) {
+      throw new Error(`expected 2 parts (IGW|VpcId), got ${parts.length}: '${id}'`);
+    }
+    return { VpcId: parts[1]!, InternetGatewayId: parts[0]! };
+  },
+};
+
+/**
+ * Returns true if cdkd has a registered splitter for the given type. Used
+ * by `resolveResourceIdentifier` to decide between the single-key and
+ * composite paths, and by tests to assert coverage.
+ */
+export function hasCompositeIdSplitter(resourceType: string): boolean {
+  return Object.prototype.hasOwnProperty.call(COMPOSITE_ID_SPLITTERS, resourceType);
+}
+
+/**
+ * Exported for unit tests — apply the registered splitter for `resourceType`
+ * to `physicalId` and return the resulting `ResourceIdentifier` object.
+ * Throws when no splitter is registered (same shape as
+ * `resolveResourceIdentifier`'s composite path).
+ */
+export function splitCompositePhysicalId(
+  resourceType: string,
+  physicalId: string
+): Record<string, string> {
+  const splitter = COMPOSITE_ID_SPLITTERS[resourceType];
+  if (!splitter) {
+    throw new Error(`no composite-id splitter registered for ${resourceType}`);
+  }
+  return splitter(physicalId);
+}
+
 interface ImportPlanEntry {
   logicalId: string;
   resourceType: string;
   physicalId: string;
-  identifierKey: string;
+  /**
+   * The `ResourceIdentifier` map CFn IMPORT expects in `ResourcesToImport[].ResourceIdentifier`.
+   * Single-key types have a one-entry object (`{ BucketName: 'my-bucket' }`); composite types
+   * have one entry per `primaryIdentifier` field (`{ RestApiId: '...', ResourceId: '...' }`).
+   */
+  resourceIdentifier: Record<string, string>;
 }
 
 async function exportCommand(stackArg: string | undefined, options: ExportOptions): Promise<void> {
@@ -506,7 +594,7 @@ async function buildImportPlan(
 
   const plan: ImportPlanEntry[] = [];
   const skipped: SkippedResource[] = [];
-  const identifierCache = new Map<string, string>();
+  const identifierCache = new Map<string, PrimaryIdentifierCacheEntry>();
 
   for (const [logicalId, raw] of Object.entries(templateResources as Record<string, unknown>)) {
     if (!raw || typeof raw !== 'object' || Array.isArray(raw)) continue;
@@ -537,15 +625,20 @@ async function buildImportPlan(
       continue;
     }
 
-    let identifierKey: string;
+    let resourceIdentifier: Record<string, string>;
     try {
-      identifierKey = await resolvePrimaryIdentifier(resourceType, cfnClient, identifierCache);
+      resourceIdentifier = await resolveResourceIdentifier(
+        resourceType,
+        stateEntry.physicalId,
+        cfnClient,
+        identifierCache
+      );
     } catch (err) {
       skipped.push({
         logicalId,
         resourceType,
         reason:
-          'could not resolve primary identifier: ' +
+          'could not resolve resource identifier: ' +
           (err instanceof Error ? err.message : String(err)),
       });
       continue;
@@ -555,7 +648,7 @@ async function buildImportPlan(
       logicalId,
       resourceType,
       physicalId: stateEntry.physicalId,
-      identifierKey,
+      resourceIdentifier,
     });
   }
 
@@ -563,27 +656,90 @@ async function buildImportPlan(
 }
 
 /**
- * Resolve the single property name CloudFormation expects in
- * `ResourcesToImport[].ResourceIdentifier` for the given resource type.
- *
- * Prefers `DescribeType` (the authoritative source — the same registry
- * AWS uses internally) and falls back to a hardcoded table for common
- * types when DescribeType fails (insufficient permissions, throttling,
- * obscure type without a registry entry).
- *
- * Composite primary identifiers (length > 1) are not yet supported — the
- * caller surfaces them as skipped. Known affected types are sub-resources
- * like `AWS::ApiGateway::Resource` (RestApiId + ResourceId), which are
- * better created fresh than imported anyway.
+ * Per-type cached `primaryIdentifier` field names from
+ * `cloudformation:DescribeType`. The cache key is the resource type;
+ * the value is the field-name list (length 1 for single-key types,
+ * length > 1 for composites).
  */
-async function resolvePrimaryIdentifier(
-  resourceType: string,
-  cfnClient: AwsClients['cloudFormation'],
-  cache: Map<string, string>
-): Promise<string> {
-  const cached = cache.get(resourceType);
-  if (cached !== undefined) return cached;
+type PrimaryIdentifierCacheEntry = { fields: string[] };
 
+/**
+ * Build the `ResourceIdentifier` map CloudFormation IMPORT expects in
+ * `ResourcesToImport[].ResourceIdentifier` for the given resource type
+ * and cdkd state's physical ID.
+ *
+ * Single-key types: the map has a single entry keyed by the schema's
+ * primaryIdentifier field name (e.g. `{ BucketName: 'my-bucket' }`).
+ *
+ * Composite types (`primaryIdentifier.length > 1`): a per-type splitter
+ * registered in `COMPOSITE_ID_SPLITTERS` parses cdkd's physicalId — whose
+ * format is provider-defined, see `src/provisioning/providers/*.ts` —
+ * into one entry per field. Composite types without a registered
+ * splitter surface a clear error pointing at where to add one.
+ *
+ * Prefers `DescribeType` (the authoritative AWS-internal registry) and
+ * falls back to a hardcoded single-key table when DescribeType fails
+ * (insufficient permissions, throttling, obscure type without a registry
+ * entry).
+ */
+async function resolveResourceIdentifier(
+  resourceType: string,
+  physicalId: string,
+  cfnClient: AwsClients['cloudFormation'],
+  cache: Map<string, PrimaryIdentifierCacheEntry>
+): Promise<Record<string, string>> {
+  let entry = cache.get(resourceType);
+  if (entry === undefined) {
+    entry = await fetchPrimaryIdentifier(resourceType, cfnClient);
+    cache.set(resourceType, entry);
+  }
+
+  if (entry.fields.length === 1) {
+    // Single-key path: the physicalId IS the identifier value.
+    return { [entry.fields[0]!]: physicalId };
+  }
+
+  // Composite path: consult the per-type splitter.
+  const splitter = COMPOSITE_ID_SPLITTERS[resourceType];
+  if (!splitter) {
+    throw new Error(
+      `resource type uses a composite primary identifier ` +
+        `(${entry.fields.length} fields: ${entry.fields.join(', ')}); ` +
+        `add an entry to COMPOSITE_ID_SPLITTERS in src/cli/commands/export.ts ` +
+        `that parses cdkd's physicalId for this type, or destroy the resource ` +
+        `first and let CFn create it fresh`
+    );
+  }
+
+  let split: Record<string, string>;
+  try {
+    split = splitter(physicalId);
+  } catch (err) {
+    throw new Error(
+      `composite-id splitter for ${resourceType} failed: ` +
+        (err instanceof Error ? err.message : String(err))
+    );
+  }
+  // Sanity check: splitter must produce one entry per declared field.
+  for (const f of entry.fields) {
+    if (!(f in split)) {
+      throw new Error(
+        `composite-id splitter for ${resourceType} did not produce field '${f}' ` +
+          `(produced: ${Object.keys(split).join(', ')})`
+      );
+    }
+  }
+  return split;
+}
+
+/**
+ * Fetch the primary identifier field names for a resource type, with a
+ * hardcoded single-key fallback when DescribeType is unavailable.
+ */
+async function fetchPrimaryIdentifier(
+  resourceType: string,
+  cfnClient: AwsClients['cloudFormation']
+): Promise<PrimaryIdentifierCacheEntry> {
   try {
     const resp = await cfnClient.send(
       new DescribeTypeCommand({ Type: 'RESOURCE', TypeName: resourceType })
@@ -591,31 +747,25 @@ async function resolvePrimaryIdentifier(
     if (resp.Schema) {
       const parsed = JSON.parse(resp.Schema) as { primaryIdentifier?: unknown };
       const primary = parsed.primaryIdentifier;
-      if (Array.isArray(primary) && primary.length === 1 && typeof primary[0] === 'string') {
+      if (
+        Array.isArray(primary) &&
+        primary.length > 0 &&
+        primary.every((p) => typeof p === 'string')
+      ) {
         // Schema entries look like "/properties/BucketName" — strip the
         // JSON-pointer prefix to get the property name.
-        const propName = primary[0].replace(/^\/properties\//, '');
-        cache.set(resourceType, propName);
-        return propName;
-      }
-      if (Array.isArray(primary) && primary.length > 1) {
-        throw new Error(
-          `resource type uses a composite primary identifier ` +
-            `(${primary.length} fields); cdkd does not yet support composite ` +
-            `identifiers for cdkd export`
-        );
+        const fields = primary.map((p) => p.replace(/^\/properties\//, ''));
+        return { fields };
       }
     }
   } catch (err) {
-    // Fall through to fallback table.
     const msg = err instanceof Error ? err.message : String(err);
     getLogger().debug(`DescribeType failed for ${resourceType}: ${msg} — using fallback`);
   }
 
   const fallback = PRIMARY_IDENTIFIER_FALLBACK[resourceType];
   if (fallback) {
-    cache.set(resourceType, fallback);
-    return fallback;
+    return { fields: [fallback] };
   }
   throw new Error(
     `primary identifier unknown (DescribeType returned no usable schema and no fallback ` +
@@ -701,9 +851,10 @@ function printPlan(plan: ImportPlanEntry[], cfnStackName: string): void {
   logger.info('');
   logger.info(`Import plan for CloudFormation stack '${cfnStackName}':`);
   for (const entry of plan) {
-    logger.info(
-      `  ${entry.logicalId} (${entry.resourceType}) ← ${entry.identifierKey}=${entry.physicalId}`
-    );
+    const idStr = Object.entries(entry.resourceIdentifier)
+      .map(([k, v]) => `${k}=${v}`)
+      .join(', ');
+    logger.info(`  ${entry.logicalId} (${entry.resourceType}) ← ${idStr}`);
   }
   logger.info('');
 }
@@ -721,7 +872,7 @@ async function executeImportChangeSet(
   const resourcesToImport: ResourceToImport[] = plan.map((entry) => ({
     ResourceType: entry.resourceType,
     LogicalResourceId: entry.logicalId,
-    ResourceIdentifier: { [entry.identifierKey]: entry.physicalId },
+    ResourceIdentifier: entry.resourceIdentifier,
   }));
 
   logger.info(
