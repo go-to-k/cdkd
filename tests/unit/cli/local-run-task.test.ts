@@ -2,7 +2,15 @@ import { describe, expect, it } from 'vitest';
 import { createLocalRunTaskCommand } from '../../../src/cli/commands/local-run-task.js';
 
 describe('createLocalRunTaskCommand', () => {
+  // `cmd.parse([...])` runs the registered `.action(handler)` body. The
+  // handler calls `resolveApp(undefined)` -> throws -> withErrorHandling
+  // catches and calls `process.exit(1)`. The action's rejected promise
+  // becomes an unhandled rejection that Node 24 surfaces to the test
+  // runner (Node 20/22 swallow it silently). Stub the action to a no-op
+  // so parse() exercises only Commander's option parser. Tests assert on
+  // `parsed.opts()` which Commander populates BEFORE invoking the action.
   const cmd = createLocalRunTaskCommand();
+  cmd.action(() => {});
 
   it('registers the run-task subcommand name', () => {
     expect(cmd.name()).toBe('run-task');
