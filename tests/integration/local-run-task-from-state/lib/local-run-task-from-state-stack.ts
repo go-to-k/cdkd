@@ -86,5 +86,32 @@ export class LocalRunTaskFromStateStack extends cdk.Stack {
     });
     // Pin task-def logical id for verify.sh discoverability.
     taskDef.overrideLogicalId('NginxTaskDef');
+
+    // ─── L2 form: ContainerImage.fromEcrRepository synthesizes Fn::Join ───
+    //
+    // CDK 2.x's L2 API for ECR-backed images emits a `Fn::Join` (not
+    // `Fn::Sub`) containing nested `Fn::Select` / `Fn::Split` over the
+    // Repository's `Arn` GetAtt plus a `Ref` to the same Repository and
+    // `Ref: AWS::URLSuffix`. cdkd's Tier 2 resolver was extended in PR
+    // for #271 to recognize this shape; this second TaskDefinition
+    // exercises that path end-to-end so the Fn::Sub fixture above
+    // (NginxTaskDef) and this Fn::Join fixture (NginxTaskDefL2) share
+    // the same deployed ECR repository — one deploy / one image push
+    // covers both resolver paths.
+    //
+    // Port 18083 is distinct from NginxTaskDef's 18082 so both can run
+    // concurrently if desired (verify.sh starts them serially with a
+    // --detach + curl + cleanup cycle per TaskDef).
+    const taskDefL2 = new ecs.TaskDefinition(this, 'NginxTaskDefL2', {
+      compatibility: ecs.Compatibility.EC2,
+      networkMode: ecs.NetworkMode.BRIDGE,
+    });
+    taskDefL2.addContainer('web', {
+      image: ecs.ContainerImage.fromEcrRepository(repo, 'latest'),
+      essential: true,
+      memoryLimitMiB: 256,
+      portMappings: [{ containerPort: 80, hostPort: 18083, protocol: ecs.Protocol.TCP }],
+    });
+    (taskDefL2.node.defaultChild as ecs.CfnTaskDefinition).overrideLogicalId('NginxTaskDefL2');
   }
 }

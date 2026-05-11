@@ -45,8 +45,14 @@ set -euo pipefail
 REGION="${AWS_REGION:-us-east-1}"
 export AWS_REGION="${REGION}"
 STACK="CdkdLocalRunTaskFromStateFixture"
-TASK_PATH="${STACK}/NginxTaskDef"
-HOST_PORT=18082
+# Two TaskDefs share the same ECR repository:
+#   - NginxTaskDef   : Fn::Sub-shape Image (L1 CfnTaskDefinition)        → port 18082
+#   - NginxTaskDefL2 : Fn::Join-shape Image (L2 fromEcrRepository, CDK 2.x synth) → port 18083
+# The single deploy + image push covers BOTH Tier 2 resolver paths.
+TASK_PATH_SUB="${STACK}/NginxTaskDef"
+TASK_PATH_JOIN="${STACK}/NginxTaskDefL2"
+HOST_PORT_SUB=18082
+HOST_PORT_JOIN=18083
 SIDECAR_IMAGE="amazon/amazon-ecs-local-container-endpoints:latest-amd64"
 NGINX_IMAGE="public.ecr.aws/nginx/nginx:alpine"
 
@@ -124,22 +130,46 @@ aws ecr get-login-password --region "${REGION}" \
 docker tag "${NGINX_IMAGE}" "${REPO_URI}:latest"
 docker push "${REPO_URI}:latest"
 
-echo "[verify] step 4: cdkd local run-task --from-state ${TASK_PATH}"
-${CDKD} local run-task "${TASK_PATH}" \
-  --from-state \
-  --detach \
-  --no-pull \
-  --container-host 127.0.0.1 \
-  --state-bucket "${STATE_BUCKET}"
+# Helper: run-task + curl + per-task cleanup for one TaskDef path.
+# Used twice — once for the Fn::Sub fixture (NginxTaskDef:18082), once
+# for the Fn::Join fixture (NginxTaskDefL2:18083). Both share the same
+# deployed ECR repository + pushed `:latest` image — only the resolver
+# path differs.
+run_and_curl_task() {
+  local task_path="$1"
+  local host_port="$2"
+  local shape_label="$3"
 
-echo "[verify] step 4b: curl http://127.0.0.1:${HOST_PORT}/ (allow ~5s for nginx to listen)"
-sleep 5
-HTTP_CODE=$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:${HOST_PORT}/" || true)
-echo "[verify]   HTTP code: ${HTTP_CODE}"
-if [ "${HTTP_CODE}" != "200" ]; then
-  echo "[verify] FAIL: expected 200, got ${HTTP_CODE}"
-  exit 1
-fi
+  echo "[verify] cdkd local run-task --from-state ${task_path} (shape: ${shape_label})"
+  ${CDKD} local run-task "${task_path}" \
+    --from-state \
+    --detach \
+    --no-pull \
+    --container-host 127.0.0.1 \
+    --state-bucket "${STATE_BUCKET}"
+
+  echo "[verify]   curl http://127.0.0.1:${host_port}/ (allow ~5s for nginx to listen)"
+  sleep 5
+  local http_code
+  http_code=$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:${host_port}/" || true)
+  echo "[verify]   HTTP code: ${http_code}"
+  if [ "${http_code}" != "200" ]; then
+    echo "[verify] FAIL (${shape_label}): expected 200, got ${http_code}"
+    exit 1
+  fi
+
+  # Tear down THIS task's containers + network before moving on so the
+  # next task can claim the 169.254.170.0/24 subnet.
+  echo "[verify]   tearing down ${shape_label} task containers + network"
+  docker ps --filter "name=cdkd-local-" --format '{{.ID}}' | xargs -r docker rm -f >/dev/null 2>&1 || true
+  docker network ls --filter "name=cdkd-local-task-" --format '{{.ID}}' | xargs -r docker network rm >/dev/null 2>&1 || true
+}
+
+echo "[verify] step 4a: Tier 2 via Fn::Sub shape (L1 CfnTaskDefinition)"
+run_and_curl_task "${TASK_PATH_SUB}" "${HOST_PORT_SUB}" "Fn::Sub"
+
+echo "[verify] step 4b: Tier 2 via Fn::Join shape (L2 ContainerImage.fromEcrRepository)"
+run_and_curl_task "${TASK_PATH_JOIN}" "${HOST_PORT_JOIN}" "Fn::Join"
 
 echo ""
-echo "[verify] All checks passed: --from-state substituted \${MyRepo} with the deployed ECR repository ${DEPLOYED_REPO}."
+echo "[verify] All checks passed: --from-state substituted ECR Repository ref in BOTH the Fn::Sub and Fn::Join shapes against deployed ECR repository ${DEPLOYED_REPO}."
