@@ -1,30 +1,14 @@
-import { describe, expect, it, vi, beforeAll, afterAll } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import { createLocalRunTaskCommand } from '../../../src/cli/commands/local-run-task.js';
 
 describe('createLocalRunTaskCommand', () => {
   // `cmd.parse([...])` runs the registered `.action(handler)` body. The
   // handler calls `resolveApp(undefined)` -> throws -> withErrorHandling
-  // catches and calls `process.exit(1)`. The action's rejected promise
-  // becomes an unhandled rejection that Node 24 surfaces to the test
-  // runner (Node 20/22 swallow it silently). Two layers of defense:
-  //   1. Stub the action to a no-op so parse() exercises only Commander's
-  //      option parser. Tests assert on `parsed.opts()` which Commander
-  //      populates BEFORE invoking the action.
-  //   2. Spy on `process.exit` so even if anything ELSE in the same
-  //      worker (cross-file leak via vitest's shared module graph) hits
-  //      the withErrorHandling -> handleError -> process.exit path,
-  //      the call is a no-op and Node 24's stricter unhandled-rejection
-  //      reporter does not flag it.
-  let exitSpy: ReturnType<typeof vi.spyOn>;
-  beforeAll(() => {
-    exitSpy = vi.spyOn(process, 'exit').mockImplementation(((_code?: number) => {
-      // no-op; tests do not assert on exit semantics
-    }) as never);
-  });
-  afterAll(() => {
-    exitSpy.mockRestore();
-  });
-
+  // catches and calls `process.exit(1)`. Stub the action to a no-op so
+  // parse() exercises only Commander's option parser. Tests assert on
+  // `parsed.opts()` which Commander populates BEFORE invoking the action.
+  // Global belt-and-braces against the unhandled-rejection -> Node 24
+  // worker leak lives in `tests/setup.ts`.
   const cmd = createLocalRunTaskCommand();
   cmd.action(() => {});
 
