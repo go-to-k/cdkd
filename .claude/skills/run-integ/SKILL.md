@@ -128,6 +128,46 @@ Run integration tests against a real AWS account. These tests deploy actual AWS 
    `integ-destroy.include`) until this marker is fresh, so a
    destroy-untested change physically cannot reach main.
 
+10. **Set the `integ-local` markgate marker (only for `local-*` tests, on full clean success)**:
+
+    When the integ test name starts with `local-` (i.e. `local-invoke`,
+    `local-start-api`, `local-run-task`, `local-invoke-container`,
+    `local-invoke-from-state`, `local-invoke-layers`,
+    `local-invoke-python` / `-ruby` / `-java` / `-dotnet` / `-provided`,
+    `local-start-api-cors`, or any future `local-*` test), ALSO set
+    the `integ-local` marker after a clean Docker run.
+
+    Required cleanup verification BEFORE setting the marker (in
+    addition to the conditions above for `integ-destroy`):
+
+    ```bash
+    # Both queries MUST return empty. If either lists any IDs, the
+    # marker is NOT set and the user is shown the orphan container /
+    # network IDs to clean up via `docker rm -f` / `docker network rm`.
+    docker ps --filter name=cdkd-local- --format '{{.ID}}'
+    docker network ls --filter name=cdkd-local-task- --format '{{.ID}}'
+    ```
+
+    When BOTH return empty AND the integ test exited cleanly:
+
+    ```bash
+    mise exec -- markgate set integ-local
+    ```
+
+    The hook `.claude/hooks/integ-local-gate.sh` blocks `gh pr merge`
+    (and `git merge`) for any PR that touches `cdkd local *` code
+    (see `.markgate.yml` `integ-local.include`) until this marker is
+    fresh, so an unverified local-execution change physically cannot
+    reach main. Same TTL (14d) and same "do NOT call markgate set
+    directly to bypass" rule as `integ-destroy`.
+
+    Note: Non-`local-*` tests (e.g. `bench-cdk-sample`, `lambda`)
+    leave the `integ-local` marker untouched. The two markers are
+    independent — a `lambda` integ run does not refresh `integ-local`,
+    and a `local-invoke` run does not refresh `integ-destroy` unless
+    its `verify.sh` also exercises a real-AWS deploy + destroy (the
+    `local-invoke-from-state` test does, so it can set BOTH).
+
 ## Important
 
 - Always use `--region us-east-1` for integration tests

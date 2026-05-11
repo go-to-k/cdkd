@@ -33,6 +33,22 @@
 #                    `gh pr merge` (and `gh pr merge --auto`) when this
 #                    gate is stale, so deletion-touching code never
 #                    reaches main without a verified destroy.
+#   integ-local    — Docker-based `cdkd local *` family verification
+#                    with zero orphan containers / networks. Set ONLY
+#                    by /run-integ when a `local-*` integ test (e.g.
+#                    `local-invoke`, `local-start-api`, `local-run-task`)
+#                    finishes cleanly AND the post-run `docker ps` /
+#                    `docker network ls` sweep is empty. Carries a 14d
+#                    TTL on top of the file-scope check — Docker base
+#                    images (`public.ecr.aws/lambda/*`, RIE binary),
+#                    chokidar/network behavior, and `dockerd` semantics
+#                    drift over time, so a marker that's been clean for
+#                    two weeks no longer proves today's local code path
+#                    actually works against today's environment. The
+#                    PreToolUse hook in .claude/hooks/integ-local-gate.sh
+#                    blocks `gh pr merge` (and `git merge`) when this
+#                    gate is stale, so local-execution-touching code
+#                    never reaches main without a verified Docker run.
 #
 # The PreToolUse hook in .claude/hooks/check-gate.sh verifies `check`
 # and `docs` on every `git commit`.
@@ -97,3 +113,24 @@ gates:
       - "src/analyzer/dag-builder.ts"
       - "src/analyzer/implicit-delete-deps.ts"
       - "src/analyzer/lambda-vpc-deps.ts"
+
+  integ-local:
+    hash: files
+    # Wall-clock TTL on top of the file-scope check (markgate 0.3+).
+    # Docker base-image behavior (`public.ecr.aws/lambda/*`, RIE
+    # binary), `dockerd` semantics, and chokidar / network plumbing
+    # drift even when the repo doesn't. 14d matches the integ-destroy
+    # gate: aggressive enough to catch environment drift, lax enough
+    # to avoid forcing a Docker run on every local-touching PR.
+    ttl: 14d
+    # Scope: every code path that participates in `cdkd local *`
+    # execution (Lambda RIE containers, ECS task emulation, HTTP
+    # server, container pool, etc.). Editing any of these REQUIRES a
+    # fresh `/run-integ local-*` verification before the PR can be
+    # merged. The list is intentionally broad — false positives
+    # (forced extra integ runs) are far cheaper than false negatives
+    # (a broken local path reaching a release tag).
+    include:
+      - "src/local/**"
+      - "src/cli/commands/local-*.ts"
+      - "tests/integration/local-*/**"
