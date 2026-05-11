@@ -1,3 +1,10 @@
+# [0.80.0](https://github.com/go-to-k/cdkd/compare/v0.79.0...v0.80.0) (2026-05-11)
+
+
+### Features
+
+* **cli:** cdkd local invoke / start-api provided.* runtimes + go1.x deprecation (closes [#248](https://github.com/go-to-k/cdkd/issues/248)) ([#258](https://github.com/go-to-k/cdkd/issues/258)) ([fc88974](https://github.com/go-to-k/cdkd/commit/fc88974268cb9d0748cf91394048c4e4db2a7158))
+
 # [0.79.0](https://github.com/go-to-k/cdkd/compare/v0.78.0...v0.79.0) (2026-05-11)
 
 
