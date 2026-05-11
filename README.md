@@ -498,9 +498,10 @@ Lambda Runtime Interface Emulator (RIE). Modeled on `sam local invoke`
 but reusing cdkd's synthesis / asset / construct-path plumbing — no
 `template.yaml` to maintain, no `cdk synth | sam ...` round-trip.
 
-Requires Docker. v1 supports Node.js and Python runtimes (`nodejs18.x` /
+Requires Docker. Supports Node.js, Python, and Ruby runtimes (`nodejs18.x` /
 `nodejs20.x` / `nodejs22.x` / `nodejs24.x` / `python3.11` / `python3.12` /
-`python3.13` / `python3.14`); other runtimes (Java / .NET / Ruby / Go / `provided.*`) are not yet supported.
+`python3.13` / `python3.14` / `ruby3.2` / `ruby3.3`); other runtimes
+(Java / .NET / Go / `provided.*`) are not yet supported.
 
 **Container Lambdas** — `lambda.DockerImageFunction(...)` /
 `Code.ImageUri` is supported alongside ZIP Lambdas. cdkd reads the

@@ -17,6 +17,8 @@ describe('resolveRuntimeImage', () => {
     ['python3.12', 'public.ecr.aws/lambda/python:3.12'],
     ['python3.13', 'public.ecr.aws/lambda/python:3.13'],
     ['python3.14', 'public.ecr.aws/lambda/python:3.14'],
+    ['ruby3.2', 'public.ecr.aws/lambda/ruby:3.2'],
+    ['ruby3.3', 'public.ecr.aws/lambda/ruby:3.3'],
   ])('maps %s to %s', (runtime, expected) => {
     expect(resolveRuntimeImage(runtime)).toBe(expected);
   });
@@ -33,17 +35,17 @@ describe('resolveRuntimeImage', () => {
     }
   });
 
-  it('rejects java / go / ruby / dotnet / provided runtimes (Python is no longer in the deferred list)', () => {
-    for (const r of ['java17', 'go1.x', 'ruby3.2', 'dotnet8', 'provided.al2']) {
+  it('rejects java / go / dotnet / provided runtimes (Ruby is no longer in the deferred list)', () => {
+    for (const r of ['java17', 'go1.x', 'dotnet8', 'provided.al2', 'provided.al2023']) {
       expect(() => resolveRuntimeImage(r)).toThrow(UnsupportedRuntimeError);
       try {
         resolveRuntimeImage(r);
       } catch (err) {
-        // Python should no longer appear in the rejection message — it's
+        // Ruby should no longer appear in the rejection message — it's
         // now a supported runtime.
         const msg = (err as Error).message;
-        expect(msg).not.toMatch(/Python is planned/);
-        expect(msg).not.toMatch(/Python.*deferred/);
+        expect(msg).not.toMatch(/Ruby is planned/);
+        expect(msg).not.toMatch(/Ruby.*deferred/);
       }
     }
   });
@@ -54,11 +56,13 @@ describe('resolveRuntimeImage', () => {
       resolveRuntimeImage('lolcat1.0');
     } catch (err) {
       const msg = (err as Error).message;
-      // The "supported runtimes" line should now mention both Node and Python.
+      // The "supported runtimes" line should now mention Node, Python, and Ruby.
       expect(msg).toMatch(/nodejs20\.x/);
       expect(msg).toMatch(/nodejs24\.x/);
       expect(msg).toMatch(/python3\.12/);
       expect(msg).toMatch(/python3\.14/);
+      expect(msg).toMatch(/ruby3\.2/);
+      expect(msg).toMatch(/ruby3\.3/);
     }
   });
 });
@@ -73,6 +77,8 @@ describe('resolveRuntimeFileExtension', () => {
     ['python3.12', '.py'],
     ['python3.13', '.py'],
     ['python3.14', '.py'],
+    ['ruby3.2', '.rb'],
+    ['ruby3.3', '.rb'],
   ])('maps %s to %s', (runtime, expected) => {
     expect(resolveRuntimeFileExtension(runtime)).toBe(expected);
   });
@@ -93,17 +99,24 @@ describe('resolveRuntimeSpec', () => {
       image: 'public.ecr.aws/lambda/nodejs:22',
       fileExtension: '.js',
     });
+    expect(resolveRuntimeSpec('ruby3.3')).toEqual({
+      image: 'public.ecr.aws/lambda/ruby:3.3',
+      fileExtension: '.rb',
+    });
   });
 });
 
 describe('isSupportedRuntime', () => {
-  it('returns true for Node.js and Python supported sets, false otherwise', () => {
+  it('returns true for Node.js, Python, and Ruby supported sets, false otherwise', () => {
     expect(isSupportedRuntime('nodejs20.x')).toBe(true);
     expect(isSupportedRuntime('nodejs24.x')).toBe(true);
     expect(isSupportedRuntime('python3.12')).toBe(true);
     expect(isSupportedRuntime('python3.11')).toBe(true);
     expect(isSupportedRuntime('python3.13')).toBe(true);
     expect(isSupportedRuntime('python3.14')).toBe(true);
+    expect(isSupportedRuntime('ruby3.2')).toBe(true);
+    expect(isSupportedRuntime('ruby3.3')).toBe(true);
+    expect(isSupportedRuntime('ruby3.1')).toBe(false);
     expect(isSupportedRuntime('python3.10')).toBe(false);
     expect(isSupportedRuntime('java17')).toBe(false);
     expect(isSupportedRuntime('')).toBe(false);
