@@ -70,6 +70,39 @@ The skill itself never spawns reviewers. It reads PR stats, applies the heuristi
 
 5. **Render the recommendation** in the format below.
 
+6. **Dispatch reviewers + set the marker** (only when `final_tier` is `1-reviewer` or `3-axis`):
+
+   The recommendation tells the orchestrator what to do. The orchestrator
+   then dispatches the recommended reviewers (1 or 3) via the Agent tool,
+   waits for all of them to complete, and synthesizes the findings:
+
+   - If **any blocker** surfaces (correctness bugs, security issues,
+     test gaps that justify rejecting the PR), the marker is NOT set
+     — the orchestrator addresses the blockers (or asks the
+     implementing agent to fix them) and re-runs `/review-pr <N>`.
+   - If every finding is **minor / nit / clean**, the orchestrator
+     sets the marker bound to the PR's current HEAD sha:
+
+     ```bash
+     # The pr-review markgate gate's scope is the sentinel file at
+     # repo root, so writing the PR HEAD sha into it before `markgate
+     # set` implicitly binds the marker to that sha. A subsequent push
+     # to the PR will invalidate the marker (the next /review-pr run
+     # rewrites the sentinel and markgate's digest reports stale).
+     gh pr view <N> --json headRefOid -q .headRefOid > .markgate-pr-review-sha
+     mise exec -- markgate set pr-review
+     ```
+
+   For the `inline` tier, the marker is NOT set — the gate's heuristic
+   also outputs `inline` for the same PR, so no enforcement fires and
+   the merge proceeds without a marker.
+
+   **NEVER set the marker without dispatching the reviewers first.**
+   The whole point of the gate is that an un-reviewed large PR cannot
+   reach main; bypassing dispatch defeats it. The gate's hook
+   (`.claude/hooks/pr-review-gate.sh`) blocks `gh pr merge` until the
+   marker is fresh AND the recorded sha matches the PR's current HEAD.
+
 ## Output template
 
 ```

@@ -41,6 +41,13 @@
           },
           {
             "type": "command",
+            "command": ".claude/hooks/pr-review-gate.sh",
+            "if": "Bash(gh pr merge*)",
+            "timeout": 15,
+            "statusMessage": "Checking pr-review marker..."
+          },
+          {
+            "type": "command",
             "command": ".claude/hooks/verify-pr-gate.sh",
             "if": "Bash(gh pr create*) or Bash(gh pr merge*)",
             "timeout": 10,

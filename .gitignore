@@ -44,3 +44,8 @@ tests/benchmark/results-*.md
 # Claude Code runtime state
 .claude/scheduled_tasks.lock
 .claude/worktrees/
+
+# markgate pr-review sentinel (records the PR HEAD sha that /review-pr last
+# verified; bound to the `pr-review` markgate gate's include scope so a
+# new push to the PR invalidates the marker automatically)
+.markgate-pr-review-sha
