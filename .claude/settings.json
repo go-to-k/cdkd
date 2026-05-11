@@ -27,6 +27,13 @@
           },
           {
             "type": "command",
+            "command": ".claude/hooks/integ-local-gate.sh",
+            "if": "Bash(gh pr merge*) or Bash(git merge*)",
+            "timeout": 10,
+            "statusMessage": "Checking integ-local marker..."
+          },
+          {
+            "type": "command",
             "command": ".claude/hooks/verify-pr-gate.sh",
             "if": "Bash(gh pr create*) or Bash(gh pr merge*)",
             "timeout": 10,
@@ -80,6 +87,13 @@
             "if": "Bash(git commit*)",
             "timeout": 10,
             "statusMessage": "Checking user-facing docs for internal PR labels..."
+          },
+          {
+            "type": "command",
+            "command": ".claude/hooks/cmd-parse-stub-gate.sh",
+            "if": "Bash(git commit*)",
+            "timeout": 10,
+            "statusMessage": "Checking test files for cmd.parse without action stub..."
           }
         ]
       }
