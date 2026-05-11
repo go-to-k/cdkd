@@ -283,6 +283,18 @@ function counterByLeadArg(): Record<string, number> {
   return out;
 }
 
+// Neutralize any latent `process.exit` call so Node 24's stricter
+// unhandled-rejection handler doesn't surface vitest's monkey-patched
+// `process.exit unexpectedly called` as a worker error.
+// Vitest's runtime wraps `process.exit` and throws on call; that throw
+// propagates as an unhandled Promise rejection on Node 24 (Node 20/22
+// swallow). The same trap was already fixed for the Commander-test
+// shape (`feedback_cmd_parse_action_stub.md`); this is the non-Commander
+// shape — any async path that ends up at handleError → process.exit
+// gets neutralized here. Mirrors the pattern used by every
+// tests/unit/cli/*.test.ts that exercises `withErrorHandling`.
+let exitSpy: ReturnType<typeof vi.spyOn>;
+
 beforeEach(() => {
   captured.calls = [];
   captured.responder = undefined;
@@ -294,10 +306,12 @@ beforeEach(() => {
   networkStubs.destroyTaskNetwork.mockClear();
   secretsStubs.resolveEcsSecrets.mockClear();
   manifestStubs.loadManifest.mockClear();
+  exitSpy = vi.spyOn(process, 'exit').mockImplementation((() => undefined) as never);
 });
 
 afterEach(() => {
   captured.responder = undefined;
+  exitSpy.mockRestore();
 });
 
 // =====================================================================
