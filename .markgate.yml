@@ -33,6 +33,27 @@
 #                    `gh pr merge` (and `gh pr merge --auto`) when this
 #                    gate is stale, so deletion-touching code never
 #                    reaches main without a verified destroy.
+#   pr-review      — `/review-pr` reviewer-dispatch verification on
+#                    size-flagged PRs. Set ONLY by the `/review-pr`
+#                    skill when its size + bias heuristic recommends
+#                    1-reviewer or 3-axis review AND the dispatched
+#                    reviewers complete with no blockers. Bound to
+#                    the PR's HEAD sha via the `.markgate-pr-review-sha`
+#                    sentinel file (the skill writes the current PR's
+#                    HEAD sha there before `markgate set`, and the
+#                    gate's `include:` scope is just that file — so
+#                    a new push to the PR invalidates the marker
+#                    automatically without any extra plumbing). The
+#                    PreToolUse hook in .claude/hooks/pr-review-gate.sh
+#                    blocks `gh pr merge` (NOT `gh pr create` — small
+#                    PRs should be openable freely) when the marker
+#                    is stale AND the target PR's tier from the
+#                    `/review-pr` heuristic is `1-reviewer` or
+#                    `3-axis`. `inline`-tier PRs always pass through.
+#                    Closes the "sub-agent self-review ≠ independent
+#                    review" gap surfaced by PR #267 / issue #270 (see
+#                    memory rule feedback_subagent_review_not_self_review.md).
+#
 #   integ-local    — Docker-based `cdkd local *` family verification
 #                    with zero orphan containers / networks. Set ONLY
 #                    by /run-integ when a `local-*` integ test (e.g.
@@ -113,6 +134,20 @@ gates:
       - "src/analyzer/dag-builder.ts"
       - "src/analyzer/implicit-delete-deps.ts"
       - "src/analyzer/lambda-vpc-deps.ts"
+
+  pr-review:
+    hash: files
+    # Scope: a single sentinel file at repo root holding the PR HEAD sha
+    # that /review-pr last verified. The skill writes the sha into the
+    # file right before `markgate set pr-review`, so the marker's digest
+    # is implicitly bound to the PR sha — a new push to the PR will
+    # rewrite the file (via the next /review-pr run) and a stale marker
+    # with the wrong sha is naturally caught by markgate's digest check.
+    # The file is gitignored (see .gitignore) — it's per-checkout
+    # bookkeeping, not a tracked artifact. No TTL: PR-sha binding is
+    # enough; the skill should re-run when the PR changes anyway.
+    include:
+      - ".markgate-pr-review-sha"
 
   integ-local:
     hash: files
