@@ -1389,7 +1389,9 @@ resolves to the synthesized L1 child (`MyStack/MyService/TaskDef/Resource`).
 | `--cluster <name>` | `cdkd-local` | Surfaced as `ECS_CONTAINER_METADATA_URI_V4`'s `Cluster` field and used as the docker network prefix (`<name>-task-<rand>`). |
 | `--env-vars <file>` | unset | SAM-shape JSON overlay. Top-level keys are container names; `Parameters` is a global overlay. Same shape as `cdkd local invoke --env-vars`. |
 | `--container-host <ip>` | `127.0.0.1` | Bind IP for `PortMappings` published ports. Must be a numeric IP — Docker rejects hostnames in `-p <ip>:<port>:<port>`. |
-| `--assume-task-role [<arn>]` | unset (host creds pass through) | Bare flag uses the task definition's `TaskRoleArn` (when statically resolvable). Pass an explicit ARN to override. Either way, `sts:AssumeRole` runs once at startup; the resulting creds are exposed via the local metadata sidecar at `AWS_CONTAINER_CREDENTIALS_RELATIVE_URI`. |
+| `--assume-task-role [<arn>]` | unset (host creds pass through) | Bare flag uses the task definition's `TaskRoleArn`. Resolves a flat-string ARN directly; for `{Ref: <Role>}` / `{Fn::GetAtt: [<Role>, 'Arn']}` against a same-stack `AWS::IAM::Role`, cdkd substitutes the caller's account id (via STS `GetCallerIdentity`) into `arn:aws:iam::<account>:role/<RoleLogicalId>`. Pass an explicit ARN to override. Either way, `sts:AssumeRole` runs once at startup; the resulting creds are exposed via the local metadata sidecar at `AWS_CONTAINER_CREDENTIALS_RELATIVE_URI`. |
+| `--from-state` | off | Load cdkd S3 state for the target stack to resolve `Fn::Sub` ECR image URIs that reference a same-stack `AWS::ECR::Repository` (`${MyRepo}`) or `Fn::GetAtt: [<Repo>, 'RepositoryUri']`. See "ECR image resolution" below for the tier breakdown. Off by default. The stack must have been deployed via `cdkd deploy` first. |
+| `--stack-region <region>` | unset | Region of the cdkd state record to read (used with `--from-state` when the same stack name has state in multiple regions). |
 | `--no-pull` | off | Skip `docker pull` for every container image and the metadata sidecar. |
 | `--platform <platform>` | inferred from `RuntimePlatform.CpuArchitecture` | `linux/amd64` or `linux/arm64`. Threaded into every container's `docker run --platform`. |
 | `--keep-running` | off | Don't `docker rm -f` user containers on task exit (network + sidecar are still torn down). Use when you want to `docker exec` into a stopped container for post-mortems. |
@@ -1416,6 +1418,19 @@ For every task invocation cdkd:
 `awsvpc` network mode is mapped to `bridge` locally with a warn line —
 docker cannot emulate ENI-per-task. AWS SDK calls from inside the
 container still reach public AWS endpoints via the developer network.
+
+### ECR image resolution
+
+`ContainerDefinitions[].Image` is parsed in three tiers:
+
+1. **Public images** — `public.ecr.aws/...`, `docker.io/...`, `nginx:latest`, etc. → plain `docker pull` (subject to `--no-pull`).
+2. **Direct ECR URIs** — `<account>.dkr.ecr.<region>.amazonaws.com/<repo>:<tag>` (flat string, no intrinsics) → `pullEcrImage` (STS check + ECR auth + `docker pull`). Same-account / same-region only; cross-account / cross-region hard-errors with a `--role-arn` / `AWS_REGION` workaround pointer.
+3. **CDK-asset images** (`ContainerImage.fromAsset` / `DockerImageAsset`) → `cdk.out/<stack>.assets.json` lookup → `docker build` via the shared `src/assets/docker-build.ts` helper, tagged `cdkd-local-run-task-<asset-hash>`.
+
+For `Fn::Sub` / `Fn::GetAtt` shapes pointing at AWS pseudo parameters or a same-stack ECR repository (the typical `ContainerImage.fromEcrRepository(repo)` synthesis), two additional resolution tiers fire **before** the URI is fed to tier 2:
+
+- **Tier 1 — AWS pseudo-parameter substitution (no state needed)**: `${AWS::AccountId}` → STS `GetCallerIdentity` (lazy, cached for the run); `${AWS::Region}` → `--region` / `AWS_REGION` / `AWS_DEFAULT_REGION`; `${AWS::Partition}` → derived from region (`cn-*` → `aws-cn`, `us-gov-*` → `aws-us-gov`, else `aws`); `${AWS::URLSuffix}` → matches partition. Substituted URI then routes through tier 2.
+- **Tier 2 — same-stack ECR Repository reference (state needed)**: when the `Fn::Sub` body contains `${<LogicalId>}` against an `AWS::ECR::Repository`, or when the template uses `Fn::GetAtt: [<Repo>, 'RepositoryUri']`, cdkd needs the deployed physical repo name. Pass `--from-state` (the stack must have been deployed via `cdkd deploy`); cdkd loads state, substitutes the physical name, then routes through tier 2. Without `--from-state` the error message points back at this flag as the resolution path.
 
 ### Secrets / SSM parameter resolution
 
