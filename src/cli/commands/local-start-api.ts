@@ -28,7 +28,17 @@ import {
   type ContainerSpec,
   type ContainerPool,
 } from '../../local/container-pool.js';
-import { startApiServer, type ServerState } from '../../local/http-server.js';
+import {
+  startApiServer,
+  type ServerState,
+  type StartedApiServer,
+} from '../../local/http-server.js';
+import {
+  availableApiIdentifiers,
+  filterRoutesByApiIdentifier,
+  groupRoutesByServer,
+  type ApiServerGroup,
+} from '../../local/api-server-grouping.js';
 import { resolveEnvVars, type EnvOverrideFile } from '../../local/env-resolver.js';
 import { resolveLambdaLayers, type ResolvedLambdaLayer } from '../../local/lambda-resolver.js';
 import { matchStacks } from '../stack-matcher.js';
@@ -39,11 +49,7 @@ import {
   type ResolvedStage,
 } from '../../local/stage-resolver.js';
 import { createFileWatcher, type FileWatcher } from '../../local/file-watcher.js';
-import {
-  createReloadOrchestrator,
-  type NextStateMaterial,
-  type Orchestrator,
-} from '../../local/reload-orchestrator.js';
+import { type NextStateMaterial } from '../../local/reload-orchestrator.js';
 import {
   attachAuthorizers,
   type AuthorizerInfo,
@@ -76,7 +82,7 @@ interface LocalStartApiOptions {
   perLambdaConcurrency: string;
   /** Skip docker pull for images. */
   pull: boolean;
-  /** Hostname/IP the container reaches the host on (default host.docker.internal). */
+  /** IP the host uses to bind/probe the RIE port (default 127.0.0.1). */
   containerHost: string;
   /** First Node.js inspector port; allocated contiguously per Lambda when set. */
   debugPortBase?: string;
@@ -87,6 +93,12 @@ interface LocalStartApiOptions {
   watch: boolean;
   /** PR 8c: select a Stage by `StageName`; default is the first attached. */
   stage?: string;
+  /**
+   * Issue #260: filter the discovered API surface to a single API by its
+   * logical id (or, for Function URLs, the backing Lambda's logical id).
+   * When unset, every discovered API gets its own server / port.
+   */
+  api?: string;
 }
 
 /**
@@ -248,7 +260,21 @@ async function localStartApiCommand(options: LocalStartApiOptions): Promise<void
     // PR 8b: attach authorizer info to every route. Routes without an
     // authorizer pass through as `{route, authorizer: undefined}`.
     // Routes referencing an unsupported authorizer kind hard-fail here.
-    const routesWithAuth = attachAuthorizers(targetStacks, routes);
+    let routesWithAuth = attachAuthorizers(targetStacks, routes);
+
+    // Issue #260: `--api <id>` filter — restrict the discovered surface
+    // to a single API. Useful when the user wants exactly one server
+    // (e.g. to free other ports, or to focus testing on one API).
+    if (options.api) {
+      const filtered = filterRoutesByApiIdentifier(routesWithAuth, options.api);
+      if (filtered.length === 0) {
+        const available = availableApiIdentifiers(routesWithAuth).join(', ') || '(none)';
+        throw new Error(
+          `--api '${options.api}' did not match any discovered API. Available identifiers: ${available}.`
+        );
+      }
+      routesWithAuth = filtered;
+    }
 
     // PR 8c: per-API CORS config. HTTP API v2 only (REST v1 OPTIONS
     // Mock integrations are explicitly out of scope).
@@ -334,8 +360,7 @@ async function localStartApiCommand(options: LocalStartApiOptions): Promise<void
 
   // Initial boot.
   const initialMaterial = await synthesizeAndBuild();
-  const initialPool = buildPool(initialMaterial.specs);
-  // Initial assignment is safe (no reload race possible before the
+  // Initial assignment is safe (no reload race possible before any
   // server is even listening).
   lastAssetPaths.value = computeAssetPaths(initialMaterial.specs);
 
@@ -351,23 +376,6 @@ async function localStartApiCommand(options: LocalStartApiOptions): Promise<void
   // reload would be noisy; we emit this once at initial boot only.
   warnVpcConfigLambdas(initialMaterial.routes, initialMaterial.stacks ?? []);
 
-  // Optional pre-warm: one container per Lambda, in parallel.
-  if (options.warm) {
-    logger.info(`Pre-warming ${initialMaterial.specs.size} container(s)...`);
-    const handles = await Promise.allSettled(
-      [...initialMaterial.specs.keys()].map((id) => initialPool.acquire(id))
-    );
-    for (const result of handles) {
-      if (result.status === 'fulfilled') {
-        initialPool.release(result.value);
-      } else {
-        logger.warn(
-          `Pre-warm failed for one Lambda (cold start cost will apply on first request): ${result.reason instanceof Error ? result.reason.message : String(result.reason)}`
-        );
-      }
-    }
-  }
-
   // RIE invoke timeout: 2x the slowest Lambda's Timeout, floor 30s.
   let maxTimeoutSec = 0;
   for (const spec of initialMaterial.specs.values()) {
@@ -375,81 +383,102 @@ async function localStartApiCommand(options: LocalStartApiOptions): Promise<void
   }
   const rieTimeoutMs = Math.max(30_000, maxTimeoutSec * 2 * 1000);
 
-  const port = parseInt(options.port, 10);
-  if (!Number.isFinite(port) || port < 0 || port > 65535) {
+  const basePort = parseInt(options.port, 10);
+  if (!Number.isFinite(basePort) || basePort < 0 || basePort > 65535) {
     throw new Error(`--port must be 0..65535 (got ${options.port}).`);
   }
 
-  const initialState: ServerState = {
-    routes: initialMaterial.routes,
-    pool: initialPool,
-    corsConfigByApiId: initialMaterial.corsConfigByApiId,
-  };
-  const server = await startApiServer({
-    state: initialState,
-    rieTimeoutMs,
-    host: options.host,
-    port,
-    authorizerCache,
-    jwksCache,
-    jwksWarnedUrls,
-  });
+  // Issue #260: one HTTP server per API. Group the routes by API surface
+  // (HTTP API logical id / REST API logical id / Function URL backing
+  // Lambda) and launch one `startApiServer` per group. Each server gets
+  // its own ContainerPool (filtered to the Lambdas reachable from that
+  // group's routes) so authorizers, CORS configs, and stage variables
+  // are scoped to the correct API and never bleed across them.
+  const initialGroups = groupRoutesByServer(initialMaterial.routes);
+  // basePort is the FIRST server's port; subsequent servers get
+  // basePort+1, basePort+2, ... When basePort is 0 every server
+  // auto-allocates. Auto-allocation is fine even across multiple
+  // servers because the OS picks distinct ports.
+  const servers: BootedApiServer[] = [];
+  let nextPort = basePort;
+  for (const group of initialGroups) {
+    const groupSpecs = filterSpecsForGroup(group, initialMaterial.specs);
+    const groupPool = buildPool(groupSpecs);
+    const groupState: ServerState = {
+      routes: group.routes,
+      pool: groupPool,
+      corsConfigByApiId: initialMaterial.corsConfigByApiId,
+    };
+    // Optional pre-warm: one container per Lambda, in parallel.
+    if (options.warm) {
+      logger.info(`Pre-warming ${groupSpecs.size} container(s) for ${group.displayName}...`);
+      const handles = await Promise.allSettled(
+        [...groupSpecs.keys()].map((id) => groupPool.acquire(id))
+      );
+      for (const result of handles) {
+        if (result.status === 'fulfilled') {
+          groupPool.release(result.value);
+        } else {
+          logger.warn(
+            `Pre-warm failed for one Lambda in ${group.displayName} (cold start cost will apply on first request): ${result.reason instanceof Error ? result.reason.message : String(result.reason)}`
+          );
+        }
+      }
+    }
+    const started = await startApiServer({
+      state: groupState,
+      rieTimeoutMs,
+      host: options.host,
+      // Increment per server; basePort=0 leaves every server on auto-alloc.
+      port: basePort === 0 ? 0 : nextPort,
+      authorizerCache,
+      jwksCache,
+      jwksWarnedUrls,
+    });
+    servers.push({ group, server: started });
+    if (basePort !== 0) nextPort += 1;
+  }
 
-  printRouteTable(initialMaterial.routes);
+  printPerServerRouteTables(servers);
   logger.info(
     `Per-Lambda concurrency: ${perLambdaConcurrency} (override with --per-lambda-concurrency)`
   );
   // D8.4 — load-bearing: verify.sh greps for this exact prefix.
-  process.stdout.write(`Server listening on http://${server.host}:${server.port}\n`);
+  // Emit one line per server so verify.sh / users can match each API to
+  // its port.
+  for (const { group, server } of servers) {
+    process.stdout.write(
+      `Server listening on http://${server.host}:${server.port}  (${group.displayName})\n`
+    );
+  }
   process.stdout.write('^C to stop and clean up containers.\n');
 
-  // PR 8c: hot reload (`--watch`).
+  // PR 8c (extended for issue #260 to span N servers): hot reload
+  // (`--watch`). For N-server topology we serialize re-synth ONCE per
+  // watcher event, then per-server filter the material + swap state.
+  // Adding/removing an entire API across a reload is not supported —
+  // the user is warned and the server set stays static until restart.
   let watcher: FileWatcher | undefined;
-  let orchestrator: Orchestrator | undefined;
+  let reloadChain: Promise<unknown> = Promise.resolve();
   if (options.watch) {
-    orchestrator = createReloadOrchestrator({
-      synthesizeAndBuild,
-      buildPool,
-      setServerState: server.setServerState,
-      getServerState: server.getServerState,
-    });
     const initialWatchPaths = [options.output, ...lastAssetPaths.value];
     watcher = createFileWatcher({
       paths: initialWatchPaths,
       onChange: () => {
-        if (!orchestrator) return;
         logger.info('Detected file change; reloading...');
-        void orchestrator
-          .reload()
-          .then((result) => {
-            if (result.ok && watcher && result.newState) {
-              // Pull the new pool's spec map (tagged via __cdkdSpecs by
-              // buildPool) and recompute the watched-asset list AFTER
-              // the orchestrator's atomic state swap. Pre-fix, the
-              // mutation happened mid-`synthesizeAndBuild` — a
-              // concurrent file event during reload would have called
-              // `watcher.update(...)` against the new asset list while
-              // the server still served the old state.
-              const taggedSpecs = (
-                result.newState.pool as unknown as {
-                  __cdkdSpecs?: Map<string, ContainerSpec>;
-                }
-              ).__cdkdSpecs;
-              if (taggedSpecs) {
-                lastAssetPaths.value = computeAssetPaths(taggedSpecs);
-              }
-              // Update the watch list to follow new asset dirs.
-              watcher.update([options.output, ...lastAssetPaths.value]);
-              if (result.added.length > 0 || result.removed.length > 0) {
-                printRouteTable(result.newState.routes);
-              }
-            }
+        const next = reloadChain.then(() =>
+          reloadAllServers({
+            synthesizeAndBuild,
+            servers,
+            buildPool,
+            computeAssetPaths,
+            lastAssetPaths,
+            watcher,
+            output: options.output,
+            logger,
           })
-          .catch((err) => {
-            logger.warn(
-              `Reload failed: ${err instanceof Error ? err.message : String(err)}. Keeping previous version.`
-            );
-          });
+        );
+        reloadChain = next.catch(() => undefined);
       },
     });
     logger.info(`Watching ${options.output} (and ${lastAssetPaths.value.length} asset dir(s))`);
@@ -481,19 +510,32 @@ async function localStartApiCommand(options: LocalStartApiOptions): Promise<void
         logger.warn(`watcher.close() failed: ${err instanceof Error ? err.message : String(err)}`);
       }
     }
-    try {
-      await server.close();
-    } catch (err) {
-      logger.warn(`server.close() failed: ${err instanceof Error ? err.message : String(err)}`);
-    }
-    try {
-      // Dispose the pool currently in the server state (which may have
-      // been swapped via hot reload). The previous pool from each
-      // reload was disposed in the background by the orchestrator.
-      await server.getServerState().pool.dispose();
-    } catch (err) {
-      logger.warn(`pool.dispose() failed: ${err instanceof Error ? err.message : String(err)}`);
-    }
+    // Close every server in parallel, then dispose every (possibly hot-
+    // reload-swapped) pool. Each pool's dispose() waits for in-flight
+    // requests to drain; running them in parallel is the right shape
+    // even for N servers because shutdown is signalled to all at once.
+    await Promise.allSettled(
+      servers.map(async ({ server, group }) => {
+        try {
+          await server.close();
+        } catch (err) {
+          logger.warn(
+            `server.close() failed for ${group.displayName}: ${err instanceof Error ? err.message : String(err)}`
+          );
+        }
+      })
+    );
+    await Promise.allSettled(
+      servers.map(async ({ server, group }) => {
+        try {
+          await server.getServerState().pool.dispose();
+        } catch (err) {
+          logger.warn(
+            `pool.dispose() failed for ${group.displayName}: ${err instanceof Error ? err.message : String(err)}`
+          );
+        }
+      })
+    );
     // Remove every tmpdir we materialized inline `Code.ZipFile` Lambdas
     // into. Each is `mkdtempSync(...)` under the OS tmpdir, so the only
     // owner of cleanup is this process. Best-effort: log + continue on
@@ -1106,6 +1148,155 @@ function parsePerLambdaConcurrency(raw: string): number {
   return parsed;
 }
 
+/**
+ * One booted HTTP server tied to a single API surface (issue #260).
+ * The CLI keeps an array of these to drive per-server route tables,
+ * shutdown, and hot-reload state swaps.
+ */
+interface BootedApiServer {
+  readonly group: ApiServerGroup;
+  readonly server: StartedApiServer;
+}
+
+/**
+ * Filter the global Lambda spec map to just the Lambdas reachable from
+ * one API server group. The container pool for that server is built
+ * from this filtered map so per-API authorizer Lambdas + route
+ * handlers stay scoped to their owning server — disposing one server's
+ * pool on shutdown does NOT touch another server's still-warm
+ * containers.
+ *
+ * Also includes any authorizer Lambdas attached to the group's routes
+ * (a Lambda authorizer is a Lambda the pool needs to know about, even
+ * though no route directly handles `lambdaLogicalId === auth.lambdaLogicalId`).
+ */
+function filterSpecsForGroup(
+  group: ApiServerGroup,
+  allSpecs: Map<string, ContainerSpec>
+): Map<string, ContainerSpec> {
+  const ids = new Set<string>();
+  for (const rwa of group.routes) {
+    ids.add(rwa.route.lambdaLogicalId);
+    const auth = rwa.authorizer;
+    if (auth && (auth.kind === 'lambda-token' || auth.kind === 'lambda-request')) {
+      ids.add(auth.lambdaLogicalId);
+    }
+  }
+  const out = new Map<string, ContainerSpec>();
+  for (const id of ids) {
+    const spec = allSpecs.get(id);
+    if (spec) out.set(id, spec);
+  }
+  return out;
+}
+
+/**
+ * Print one route table per server, with the server's display name as
+ * the section header. Replaces the pre-issue #260 single flat table —
+ * users now see exactly which routes belong to which API + port.
+ */
+function printPerServerRouteTables(servers: readonly BootedApiServer[]): void {
+  for (const { group, server } of servers) {
+    process.stdout.write(`\n${group.displayName}  (http://${server.host}:${server.port})\n`);
+    printRouteTable(group.routes);
+  }
+}
+
+/**
+ * One reload cycle for the multi-server topology (issue #260). The
+ * watcher serializes calls via a chain promise; this function:
+ *
+ *   1. Re-runs `synthesizeAndBuild()` once (failure → warn + keep
+ *      previous version serving on every server).
+ *   2. Re-groups the new routes by API server key.
+ *   3. For each existing server, swaps state to the new group's
+ *      routes + a freshly-built pool filtered to that group's
+ *      Lambdas. Disposes the previous pool in the background.
+ *   4. Warns about new groups (= an API was added in CDK code) and
+ *      vanished groups (= an API was removed) — those require a
+ *      server restart in v1.
+ */
+async function reloadAllServers(args: {
+  synthesizeAndBuild: () => Promise<NextStateMaterial>;
+  servers: readonly BootedApiServer[];
+  buildPool: (specs: Map<string, ContainerSpec>) => ContainerPool;
+  computeAssetPaths: (specs: Map<string, ContainerSpec>) => string[];
+  lastAssetPaths: { value: string[] };
+  watcher: FileWatcher | undefined;
+  output: string;
+  logger: ReturnType<typeof getLogger>;
+}): Promise<void> {
+  const {
+    synthesizeAndBuild,
+    servers,
+    buildPool,
+    computeAssetPaths,
+    lastAssetPaths,
+    watcher,
+    output,
+    logger,
+  } = args;
+  let material: NextStateMaterial;
+  try {
+    material = await synthesizeAndBuild();
+  } catch (err) {
+    logger.warn(
+      `cdk synth failed during reload; keeping previous version. (${err instanceof Error ? err.message : String(err)})`
+    );
+    return;
+  }
+  const newGroups = groupRoutesByServer(material.routes);
+  const newByKey = new Map(newGroups.map((g) => [g.serverKey, g] as const));
+  const oldKeys = new Set(servers.map((s) => s.group.serverKey));
+  const newKeys = new Set(newByKey.keys());
+
+  // Warn on add/remove — v1 requires restart for topology changes.
+  const added = [...newKeys].filter((k) => !oldKeys.has(k));
+  const removed = [...oldKeys].filter((k) => !newKeys.has(k));
+  if (added.length > 0) {
+    logger.warn(
+      `Reload detected new API surface(s): ${added.join(', ')}. Restart 'cdkd local start-api' to serve them.`
+    );
+  }
+  if (removed.length > 0) {
+    logger.warn(
+      `Reload detected removed API surface(s): ${removed.join(', ')}. Their servers will keep serving stale routes until restart.`
+    );
+  }
+
+  // Per-server: filter material → build pool → swap state → dispose old.
+  for (const booted of servers) {
+    const group = newByKey.get(booted.group.serverKey);
+    if (!group) continue; // removed — skip swap, server keeps stale state until restart
+    const groupSpecs = filterSpecsForGroup(group, material.specs);
+    const newPool = buildPool(groupSpecs);
+    const newState: ServerState = {
+      routes: group.routes,
+      pool: newPool,
+      corsConfigByApiId: material.corsConfigByApiId,
+    };
+    const previousState = booted.server.setServerState(newState);
+    // Dispose the previous pool in the background. `pool.dispose()`
+    // waits for in-flight requests to drain (30s per-entry cap).
+    void previousState.pool.dispose().catch((err) => {
+      logger.debug(
+        `Previous pool dispose() failed for ${group.displayName}: ${err instanceof Error ? err.message : String(err)}`
+      );
+    });
+  }
+
+  // Update the watcher's asset-path list AFTER all swaps complete.
+  lastAssetPaths.value = computeAssetPaths(material.specs);
+  if (watcher) {
+    watcher.update([output, ...lastAssetPaths.value]);
+  }
+  // Re-print the per-server route table when any routes changed.
+  // Cheap heuristic: always re-print after a successful reload — the
+  // user is watching for the diff and a stable table reassures them
+  // that the swap landed.
+  printPerServerRouteTables(servers);
+}
+
 /** Validate `--debug-port-base`. */
 function parseDebugPort(raw: string): number {
   const parsed = parseInt(raw, 10);
@@ -1141,8 +1332,8 @@ export function createLocalStartApiCommand(): Command {
     .addOption(
       new Option(
         '--container-host <host>',
-        'Hostname/IP the container reaches the host on'
-      ).default('host.docker.internal')
+        'IP the host uses to bind/probe the RIE port (must be a numeric IP — `docker run -p <ip>:<port>:8080` rejects hostnames). Defaults to 127.0.0.1.'
+      ).default('127.0.0.1')
     )
     .addOption(
       new Option(
@@ -1172,6 +1363,12 @@ export function createLocalStartApiCommand(): Command {
       new Option(
         '--stage <name>',
         "Select an API Gateway Stage by its 'StageName'. Default: the first Stage attached to each API. Drives event.stageVariables for both REST v1 and HTTP API v2. NOTE: For HTTP API v2 routes, requestContext.stage is always '$default' regardless of this flag (AWS-side limitation — HTTP API only exposes one stage to the integration event); only event.stageVariables is affected for v2 routes. For REST v1 routes the selected StageName is also threaded into requestContext.stage."
+      )
+    )
+    .addOption(
+      new Option(
+        '--api <id>',
+        "Restrict to a single API surface by its logical id (HTTP API / REST API logical id, or the backing Lambda's logical id for Function URLs). When unset, every discovered API gets its own server on its own port (basePort, basePort+1, ... when --port is set; auto-allocated otherwise)."
       )
     )
     .action(withErrorHandling(localStartApiCommand));

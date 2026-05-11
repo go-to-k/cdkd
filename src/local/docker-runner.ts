@@ -104,8 +104,12 @@ export interface DockerRunOptions {
 /**
  * Pull the image. No-op when `skipPull` is true.
  *
- * Streams progress to stdout so the user sees the layer pulls; this is the
- * most common multi-second phase the first time the image is used.
+ * In verbose mode (`--verbose` / global log level `debug`), streams the
+ * full `docker pull` progress to stdout so the user sees per-layer
+ * downloads. In the default compact mode the call is silent (cached
+ * images are the common case; a fresh pull still shows progress only
+ * via `--verbose`). Errors are always surfaced: the captured stderr is
+ * folded into the thrown `DockerRunnerError` message.
  */
 export async function pullImage(image: string, skipPull: boolean): Promise<void> {
   const logger = getLogger().child('docker');
@@ -113,8 +117,45 @@ export async function pullImage(image: string, skipPull: boolean): Promise<void>
     logger.debug(`Skipping docker pull for ${image} (--no-pull)`);
     return;
   }
-  logger.info(`Pulling ${image}...`);
-  await runForeground('docker', ['pull', image]);
+  if (getLogger().getLevel() === 'debug') {
+    logger.info(`Pulling ${image}...`);
+    await runForeground('docker', ['pull', image]);
+    return;
+  }
+  logger.debug(`Pulling ${image} (silent — pass --verbose to stream progress)`);
+  await runCaptured('docker', ['pull', image], image);
+}
+
+/**
+ * Run a child process with stdout / stderr captured (not inherited).
+ * On success: discard the captured output (silent). On failure: fold
+ * the captured stderr (or stdout as a fallback) into the rejection so
+ * the error message names what actually went wrong instead of a bare
+ * "exit code N".
+ */
+function runCaptured(cmd: string, args: string[], image: string): Promise<void> {
+  return new Promise<void>((resolveProc, rejectProc) => {
+    const proc = spawn(cmd, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+    let stdout = '';
+    let stderr = '';
+    proc.stdout?.on('data', (chunk: Buffer) => {
+      stdout += chunk.toString('utf-8');
+    });
+    proc.stderr?.on('data', (chunk: Buffer) => {
+      stderr += chunk.toString('utf-8');
+    });
+    proc.on('error', (err) =>
+      rejectProc(new DockerRunnerError(`${cmd} pull ${image} failed: ${err.message}`))
+    );
+    proc.on('close', (code) => {
+      if (code === 0) {
+        resolveProc();
+        return;
+      }
+      const detail = stderr.trim() || stdout.trim() || '(no output)';
+      rejectProc(new DockerRunnerError(`docker pull ${image} exited with code ${code}: ${detail}`));
+    });
+  });
 }
 
 /**

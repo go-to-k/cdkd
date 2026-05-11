@@ -584,11 +584,15 @@ containers `cdkd local invoke` uses. Modeled on `sam local start-api`
 but reusing cdkd's synthesis / route-discovery plumbing.
 
 ```bash
-# Auto-allocate a port (printed at startup) and serve every discovered route
+# Auto-allocate one port PER discovered API (printed at startup)
 cdkd local start-api
 
-# Pin to port 3000 (SAM-parity / curl muscle memory)
+# Pin the FIRST server to port 3000; subsequent APIs get 3001, 3002, ...
 cdkd local start-api --port 3000
+
+# Restrict to a single API by its CDK logical id (HTTP API / REST API logical
+# id, or the backing Lambda's logical id for Function URLs)
+cdkd local start-api --api MyAdminApi
 
 # Pre-warm one container per Lambda at server boot — eliminates first-request cold start
 cdkd local start-api --warm
@@ -605,6 +609,13 @@ cdkd local start-api --watch
 # Select a specific API Gateway Stage (default: the first attached)
 cdkd local start-api --stage prod
 ```
+
+**One server per API** (since v0.81): every discovered API surface gets its
+own HTTP server on its own port, so authorizers, CORS configs, and stage
+variables stay scoped to the owning API and never bleed across APIs that
+happen to share a path. `cdkd local start-api` prints one
+`Server listening on http://<host>:<port>  (<API> (<kind>))` line per
+server at startup; pass `--api <id>` to launch only one of them.
 
 Scope: REST v1 + HTTP API + Function URL with AWS_PROXY integrations.
 Authorizers (Lambda TOKEN/REQUEST + Cognito User Pool + HTTP v2 JWT),

@@ -1048,10 +1048,39 @@ the Lambda base image (~600MB once per machine). Pass `--no-pull` on
 subsequent runs to skip the layer check.
 
 ```bash
-cdkd local start-api                       # auto-allocate port
-cdkd local start-api --port 3000           # SAM-parity port
+cdkd local start-api                       # auto-allocate one port PER discovered API
+cdkd local start-api --port 3000           # first API → 3000, second API → 3001, ...
+cdkd local start-api --api MyAdminApi      # serve only the named API
 cdkd local start-api --warm                # pre-start one container per Lambda
 ```
+
+### One server per API (v0.81+)
+
+Every discovered API surface (`AWS::ApiGatewayV2::Api`,
+`AWS::ApiGateway::RestApi`, `AWS::Lambda::Url`) gets its own HTTP
+server on its own port. cdkd prints one `Server listening on
+http://<host>:<port>  (<API> (<kind>))` line per server at startup,
+and one route table per server underneath.
+
+This is a deliberate departure from `sam local start-api`'s
+single-server-per-template model: realistic CDK apps usually define
+multiple APIs (admin + public, internal + external) with different
+authorizer setups, different CORS configs, and overlapping paths.
+Lumping them into one server forced an awkward "first-match-wins"
+semantic that didn't mirror AWS Lambda's actual routing. Pre-v0.81
+versions did this — see [issue #260](https://github.com/go-to-k/cdkd/issues/260)
+for the background.
+
+Port assignment:
+
+| `--port` value | Per-API port allocation |
+| --- | --- |
+| `0` (default) | Every server auto-allocates its own port. |
+| `3000` | First API → `3000`, second API → `3001`, third → `3002`, ... |
+
+Pass `--api <id>` to launch exactly one server for the named API; the
+identifier matches the HTTP API / REST API logical id, or (for
+Function URLs) the backing Lambda's logical id.
 
 ### Discovered routes
 
@@ -1081,13 +1110,14 @@ the same tier; cdkd uses literal-segment count as a heuristic).
 
 | Flag | Default | Notes |
 | --- | --- | --- |
-| `--port <port>` | auto-allocate | The actual port is printed at startup. Pass an explicit port for SAM parity / curl muscle memory. |
+| `--port <port>` | auto-allocate | First API server's port (subsequent APIs get `port+1`, `port+2`, ...). Pass `0` (default) to auto-allocate each. The actual port assignment is printed at startup. |
 | `--host <host>` | `127.0.0.1` | Bind address. |
+| `--api <id>` | unset | Restrict to a single API surface by its CDK logical id (HTTP API / REST API logical id; for Function URLs, the backing Lambda's logical id). When unset, every discovered API gets its own server. |
 | `--stack <name>` | single-stack auto-detect | Required when the app has multiple stacks. |
 | `--warm` | off | Pre-start one container per discovered Lambda at server boot. Trades RAM for first-request latency. |
 | `--per-lambda-concurrency <n>` | `2` | Pool size cap per Lambda. Max 4 in v1; above-cap values are clamped with a warn. |
 | `--no-pull` | off | Skip `docker pull`. |
-| `--container-host <host>` | `host.docker.internal` | Host the container reaches the host on. |
+| `--container-host <host>` | `127.0.0.1` | IP the host uses to bind/probe the RIE port. Must be a numeric IP — `docker run -p <ip>:<port>:8080` rejects hostnames like `host.docker.internal`. |
 | `--debug-port-base <port>` | unset | Allocate a contiguous `--inspect-brk` port range across Lambdas (one per Lambda). |
 | `--env-vars <file>` | unset | SAM-shape JSON: `{"LogicalId":{"KEY":"VALUE"}, "Parameters":{...}}`. Same format as `cdkd local invoke`. |
 | `--assume-role <arn-or-pair>` | unset | Repeatable. Bare `<arn>` = global default; `<LogicalId>=<arn>` = per-Lambda override. Per-Lambda > global > unset (developer creds passed through). |
