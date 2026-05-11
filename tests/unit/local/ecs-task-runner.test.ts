@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest';
 import {
   buildDependencyGraph,
   buildDockerRunArgs,
+  cleanupEcsRun,
+  createEcsRunState,
   EcsTaskRunnerError,
 } from '../../../src/local/ecs-task-runner.js';
 import type {
@@ -274,5 +276,42 @@ describe('buildDockerRunArgs', () => {
     // Trailing args order: image, then '-c', then CMD 'echo hi'
     const imgIdx = args.indexOf('nginx');
     expect(args.slice(imgIdx)).toEqual(['nginx', '-c', 'echo hi']);
+  });
+});
+
+describe('cleanupEcsRun', () => {
+  it('is a no-op on a freshly-created empty state', async () => {
+    const state = createEcsRunState();
+    await expect(cleanupEcsRun(state, { keepRunning: false })).resolves.toBeUndefined();
+    expect(state.startedContainers).toEqual([]);
+    expect(state.dockerVolumeNames).toEqual([]);
+    expect(state.logStoppers).toEqual([]);
+    expect(state.network).toBeUndefined();
+  });
+
+  it('is idempotent — second call after empty-state cleanup is also a no-op', async () => {
+    const state = createEcsRunState();
+    await cleanupEcsRun(state, { keepRunning: false });
+    await expect(cleanupEcsRun(state, { keepRunning: false })).resolves.toBeUndefined();
+  });
+
+  it('clears logStoppers even when keepRunning is true', async () => {
+    const state = createEcsRunState();
+    let stoppedCount = 0;
+    state.logStoppers.push(() => {
+      stoppedCount += 1;
+    });
+    await cleanupEcsRun(state, { keepRunning: true });
+    expect(stoppedCount).toBe(1);
+    expect(state.logStoppers).toEqual([]);
+  });
+
+  it('swallows log-stopper throws so cleanup completes regardless', async () => {
+    const state = createEcsRunState();
+    state.logStoppers.push(() => {
+      throw new Error('stop failed');
+    });
+    await expect(cleanupEcsRun(state, { keepRunning: false })).resolves.toBeUndefined();
+    expect(state.logStoppers).toEqual([]);
   });
 });

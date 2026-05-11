@@ -66,16 +66,27 @@ async function localRunTaskCommand(target: string, options: LocalRunTaskOptions)
 
   warnIfDeprecatedRegion(options);
 
-  let state: EcsRunState = createEcsRunState();
+  const state: EcsRunState = createEcsRunState();
   let sigintHandler: (() => void) | undefined;
   let sigintCount = 0;
 
+  // Single-flight cleanup: the SIGINT handler AND the outer `finally` both
+  // call this, so we await the first invocation's promise on every later
+  // call rather than running concurrently against the shared mutable
+  // `state` arrays (which would otherwise double-`docker rm -f` containers
+  // and corrupt the entries map mid-iteration).
+  let cleanupPromise: Promise<void> | undefined;
   const cleanup = async (): Promise<void> => {
-    try {
-      await cleanupEcsRun(state, { keepRunning: options.keepRunning });
-    } catch (err) {
-      getLogger().debug(`cleanup failed: ${err instanceof Error ? err.message : String(err)}`);
+    if (!cleanupPromise) {
+      cleanupPromise = (async () => {
+        try {
+          await cleanupEcsRun(state, { keepRunning: options.keepRunning });
+        } catch (err) {
+          getLogger().debug(`cleanup failed: ${err instanceof Error ? err.message : String(err)}`);
+        }
+      })();
     }
+    await cleanupPromise;
   };
 
   try {
@@ -153,7 +164,6 @@ async function localRunTaskCommand(target: string, options: LocalRunTaskOptions)
     if (options.region) runOpts.region = options.region;
 
     const result = await runEcsTask(task, runOpts, state);
-    state = result.state;
 
     if (options.detach) {
       logger.info('Task containers started in detached mode; cdkd is exiting.');
