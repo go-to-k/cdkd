@@ -1,3 +1,10 @@
+# [0.88.0](https://github.com/go-to-k/cdkd/compare/v0.87.0...v0.88.0) (2026-05-11)
+
+
+### Features
+
+* **cli:** cdkd export — template Parameters transfer (PR4) ([#283](https://github.com/go-to-k/cdkd/issues/283)) ([b400af1](https://github.com/go-to-k/cdkd/commit/b400af14475d5099a0892ef094eca2bcf1714f31))
+
 # [0.87.0](https://github.com/go-to-k/cdkd/compare/v0.86.0...v0.87.0) (2026-05-11)
 
 
