@@ -19,6 +19,10 @@ describe('resolveRuntimeImage', () => {
     ['python3.14', 'public.ecr.aws/lambda/python:3.14'],
     ['ruby3.2', 'public.ecr.aws/lambda/ruby:3.2'],
     ['ruby3.3', 'public.ecr.aws/lambda/ruby:3.3'],
+    ['java8.al2', 'public.ecr.aws/lambda/java:8.al2'],
+    ['java11', 'public.ecr.aws/lambda/java:11'],
+    ['java17', 'public.ecr.aws/lambda/java:17'],
+    ['java21', 'public.ecr.aws/lambda/java:21'],
   ])('maps %s to %s', (runtime, expected) => {
     expect(resolveRuntimeImage(runtime)).toBe(expected);
   });
@@ -35,18 +39,33 @@ describe('resolveRuntimeImage', () => {
     }
   });
 
-  it('rejects java / go / dotnet / provided runtimes (Ruby is no longer in the deferred list)', () => {
-    for (const r of ['java17', 'go1.x', 'dotnet8', 'provided.al2', 'provided.al2023']) {
+  it('rejects go / dotnet / provided runtimes (Java is no longer in the deferred list)', () => {
+    for (const r of ['go1.x', 'dotnet8', 'provided.al2', 'provided.al2023']) {
       expect(() => resolveRuntimeImage(r)).toThrow(UnsupportedRuntimeError);
       try {
         resolveRuntimeImage(r);
       } catch (err) {
-        // Ruby should no longer appear in the rejection message — it's
+        // Java should no longer appear in the rejection message — it's
         // now a supported runtime.
         const msg = (err as Error).message;
-        expect(msg).not.toMatch(/Ruby is planned/);
-        expect(msg).not.toMatch(/Ruby.*deferred/);
+        expect(msg).not.toMatch(/Java is planned/);
+        expect(msg).not.toMatch(/Java.*deferred/);
       }
+    }
+  });
+
+  it('rejects unrecognized java versions through the unknown-runtime branch (java is no longer in the prefix-deferred list)', () => {
+    // java19 has no AWS Lambda base image. With Java now supported, this
+    // should land in the unknown-runtime branch (not the deferred-prefix
+    // branch), so the message lists all supported runtimes — including
+    // the supported Java versions — to route the user to a real version.
+    expect(() => resolveRuntimeImage('java19')).toThrow(/Unknown runtime/);
+    try {
+      resolveRuntimeImage('java19');
+    } catch (err) {
+      const msg = (err as Error).message;
+      expect(msg).toMatch(/java17/);
+      expect(msg).toMatch(/java21/);
     }
   });
 
@@ -56,13 +75,17 @@ describe('resolveRuntimeImage', () => {
       resolveRuntimeImage('lolcat1.0');
     } catch (err) {
       const msg = (err as Error).message;
-      // The "supported runtimes" line should now mention Node, Python, and Ruby.
+      // The "supported runtimes" line should mention Node, Python, Ruby, and Java.
       expect(msg).toMatch(/nodejs20\.x/);
       expect(msg).toMatch(/nodejs24\.x/);
       expect(msg).toMatch(/python3\.12/);
       expect(msg).toMatch(/python3\.14/);
       expect(msg).toMatch(/ruby3\.2/);
       expect(msg).toMatch(/ruby3\.3/);
+      expect(msg).toMatch(/java11/);
+      expect(msg).toMatch(/java8\.al2/);
+      expect(msg).toMatch(/java17/);
+      expect(msg).toMatch(/java21/);
     }
   });
 });
@@ -84,9 +107,24 @@ describe('resolveRuntimeFileExtension', () => {
   });
 
   it('rejects unsupported runtimes the same way resolveRuntimeImage does', () => {
-    expect(() => resolveRuntimeFileExtension('java17')).toThrow(UnsupportedRuntimeError);
+    expect(() => resolveRuntimeFileExtension('dotnet8')).toThrow(UnsupportedRuntimeError);
     expect(() => resolveRuntimeFileExtension('')).toThrow(UnsupportedRuntimeError);
   });
+
+  it.each(['java8.al2', 'java11', 'java17', 'java21'])(
+    'rejects inline Code.ZipFile for Java runtime %s with a message routing to Code.fromAsset',
+    (runtime) => {
+      expect(() => resolveRuntimeFileExtension(runtime)).toThrow(UnsupportedRuntimeError);
+      try {
+        resolveRuntimeFileExtension(runtime);
+      } catch (err) {
+        const msg = (err as Error).message;
+        expect(msg).toMatch(/Inline 'Code\.ZipFile' is not supported/);
+        expect(msg).toMatch(/lambda\.Code\.fromAsset/);
+        expect(msg).toContain(runtime);
+      }
+    }
+  );
 });
 
 describe('resolveRuntimeSpec', () => {
@@ -104,10 +142,21 @@ describe('resolveRuntimeSpec', () => {
       fileExtension: '.rb',
     });
   });
+
+  it('returns fileExtension: null for Java entries — inline materialization is unsupported (use Code.fromAsset)', () => {
+    expect(resolveRuntimeSpec('java17')).toEqual({
+      image: 'public.ecr.aws/lambda/java:17',
+      fileExtension: null,
+    });
+    expect(resolveRuntimeSpec('java8.al2')).toEqual({
+      image: 'public.ecr.aws/lambda/java:8.al2',
+      fileExtension: null,
+    });
+  });
 });
 
 describe('isSupportedRuntime', () => {
-  it('returns true for Node.js, Python, and Ruby supported sets, false otherwise', () => {
+  it('returns true for Node.js, Python, Ruby, and Java supported sets, false otherwise', () => {
     expect(isSupportedRuntime('nodejs20.x')).toBe(true);
     expect(isSupportedRuntime('nodejs24.x')).toBe(true);
     expect(isSupportedRuntime('python3.12')).toBe(true);
@@ -116,9 +165,14 @@ describe('isSupportedRuntime', () => {
     expect(isSupportedRuntime('python3.14')).toBe(true);
     expect(isSupportedRuntime('ruby3.2')).toBe(true);
     expect(isSupportedRuntime('ruby3.3')).toBe(true);
+    expect(isSupportedRuntime('java8.al2')).toBe(true);
+    expect(isSupportedRuntime('java11')).toBe(true);
+    expect(isSupportedRuntime('java17')).toBe(true);
+    expect(isSupportedRuntime('java21')).toBe(true);
     expect(isSupportedRuntime('ruby3.1')).toBe(false);
     expect(isSupportedRuntime('python3.10')).toBe(false);
-    expect(isSupportedRuntime('java17')).toBe(false);
+    expect(isSupportedRuntime('java19')).toBe(false);
+    expect(isSupportedRuntime('java8')).toBe(false);
     expect(isSupportedRuntime('')).toBe(false);
   });
 });

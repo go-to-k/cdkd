@@ -1,0 +1,3 @@
+# javac build artifacts produced by verify.sh (compiled inside a docker
+# container; not checked in).
+*.class

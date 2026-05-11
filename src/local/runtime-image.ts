@@ -10,12 +10,19 @@
  * for container Lambdas, so a "works locally, breaks in AWS" mismatch is
  * almost always a config issue rather than an image divergence.
  *
- * Supports Node.js + Python + Ruby. Other runtimes throw
+ * Supports Node.js + Python + Ruby + Java. Other runtimes throw
  * `UnsupportedRuntimeError` with a pointer at the planned PR.
  *
  * Ruby uses the same `<file>.<func>` handler grammar as Node.js and Python,
  * so the inline-code materializer's `lastIndexOf('.')` parse works
  * unchanged; only the file extension (`.rb`) differs.
+ *
+ * Java is **asset-backed only** — the `Handler` value (`package.Class::method`)
+ * names a compiled class on the classpath, which can only be supplied as a
+ * compiled `.class` hierarchy or `.jar` packaged via `lambda.Code.fromAsset(...)`.
+ * Inline `Code.ZipFile` has no meaning for the JVM, so `fileExtension` is
+ * `null` for every Java entry and `resolveRuntimeFileExtension` throws a
+ * runtime-specific message routing the user to `Code.fromAsset(...)`.
  */
 
 interface RuntimeSpec {
@@ -24,9 +31,12 @@ interface RuntimeSpec {
   /**
    * Source-file extension (with leading dot) for inline-code
    * materialization (`Code.ZipFile`). Node.js → `.js`, Python → `.py`,
-   * Ruby → `.rb`.
+   * Ruby → `.rb`. `null` for runtimes whose Handler shape cannot be
+   * satisfied by a single inline source file (Java needs a compiled
+   * class hierarchy / JAR) — `resolveRuntimeFileExtension` rejects with
+   * a routing message when callers hit this case.
    */
-  readonly fileExtension: string;
+  readonly fileExtension: string | null;
 }
 
 const SUPPORTED_RUNTIMES: Readonly<Record<string, RuntimeSpec>> = {
@@ -40,6 +50,10 @@ const SUPPORTED_RUNTIMES: Readonly<Record<string, RuntimeSpec>> = {
   'python3.14': { image: 'public.ecr.aws/lambda/python:3.14', fileExtension: '.py' },
   'ruby3.2': { image: 'public.ecr.aws/lambda/ruby:3.2', fileExtension: '.rb' },
   'ruby3.3': { image: 'public.ecr.aws/lambda/ruby:3.3', fileExtension: '.rb' },
+  'java8.al2': { image: 'public.ecr.aws/lambda/java:8.al2', fileExtension: null },
+  java11: { image: 'public.ecr.aws/lambda/java:11', fileExtension: null },
+  java17: { image: 'public.ecr.aws/lambda/java:17', fileExtension: null },
+  java21: { image: 'public.ecr.aws/lambda/java:21', fileExtension: null },
 };
 
 export class UnsupportedRuntimeError extends Error {
@@ -69,9 +83,24 @@ export function resolveRuntimeImage(runtime: string): string {
  * materializing an inline `Code.ZipFile` body to disk. Node.js → `.js`,
  * Python → `.py`, Ruby → `.rb`. Throws {@link UnsupportedRuntimeError} on
  * the same runtime set as {@link resolveRuntimeImage}.
+ *
+ * Additionally throws when the resolved runtime has `fileExtension: null`
+ * — this is the canonical entry point for the inline-`Code.ZipFile` branch
+ * in both `cdkd local invoke` and `cdkd local start-api`, so rejecting
+ * here surfaces a user-friendly "use Code.fromAsset" message before the
+ * callers reach the materializer. Asset-backed Lambdas never call this.
  */
 export function resolveRuntimeFileExtension(runtime: string): string {
-  return resolveRuntimeSpec(runtime).fileExtension;
+  const spec = resolveRuntimeSpec(runtime);
+  if (spec.fileExtension === null) {
+    throw new UnsupportedRuntimeError(
+      runtime,
+      `Inline 'Code.ZipFile' is not supported for runtime '${runtime}'. ` +
+        'The Lambda Handler shape for this runtime names a compiled artifact (a JVM class, a .NET assembly, or a native binary) that cannot be expressed as a single inline source file. ' +
+        'Use `lambda.Code.fromAsset(<dir>)` with a directory containing the compiled output (.class hierarchy / JAR / DLL / binary).'
+    );
+  }
+  return spec.fileExtension;
 }
 
 /**
@@ -90,23 +119,18 @@ export function resolveRuntimeSpec(runtime: string): RuntimeSpec {
   const spec = SUPPORTED_RUNTIMES[runtime];
   if (spec) return spec;
 
-  if (
-    runtime.startsWith('java') ||
-    runtime.startsWith('dotnet') ||
-    runtime.startsWith('go') ||
-    runtime.startsWith('provided')
-  ) {
+  if (runtime.startsWith('dotnet') || runtime.startsWith('go') || runtime.startsWith('provided')) {
     throw new UnsupportedRuntimeError(
       runtime,
       `Runtime '${runtime}' is not yet supported in cdkd local invoke. ` +
-        'Supported runtimes: Node.js (nodejs18.x / nodejs20.x / nodejs22.x / nodejs24.x), Python (python3.11 / python3.12 / python3.13 / python3.14), Ruby (ruby3.2 / ruby3.3). ' +
+        'Supported runtimes: Node.js (nodejs18.x / nodejs20.x / nodejs22.x / nodejs24.x), Python (python3.11 / python3.12 / python3.13 / python3.14), Ruby (ruby3.2 / ruby3.3), Java (java8.al2 / java11 / java17 / java21). ' +
         'Other runtimes follow in subsequent PRs.'
     );
   }
 
   throw new UnsupportedRuntimeError(
     runtime,
-    `Unknown runtime '${runtime}'. cdkd local invoke supports nodejs18.x / nodejs20.x / nodejs22.x / nodejs24.x / python3.11 / python3.12 / python3.13 / python3.14 / ruby3.2 / ruby3.3.`
+    `Unknown runtime '${runtime}'. cdkd local invoke supports nodejs18.x / nodejs20.x / nodejs22.x / nodejs24.x / python3.11 / python3.12 / python3.13 / python3.14 / ruby3.2 / ruby3.3 / java8.al2 / java11 / java17 / java21.`
   );
 }
 
