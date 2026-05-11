@@ -43,24 +43,27 @@
 
 const originalExit = process.exit;
 
-// Suppress noisy test-only behavior of process.exit. Throw-on-call so any
-// caller that depended on stopping execution still stops (the surrounding
-// try/catch in withErrorHandling will catch it and the action's async
-// wrapper's Promise rejects). Tests that genuinely want exit semantics
-// install their own spy on top.
-(process as unknown as { exit: (code?: number) => never }).exit = ((code?: number): never => {
-  throw new Error(`__test_process_exit__:${String(code ?? 0)}`);
+// Replace `process.exit` with a NO-OP. The action's async wrapper that
+// calls `handleError(...)` then resumes after the supposed-fatal call,
+// the wrapper's Promise resolves cleanly, and no unhandled rejection
+// leaks into vitest's reporter.
+//
+// Why no-op instead of throw: throwing turns the exit into a rejected
+// Promise (because withErrorHandling's action body is async), which
+// becomes an `unhandledRejection`. We cannot reliably suppress that —
+// `process.on('unhandledRejection', ...)` only ADDS a listener;
+// vitest's own listener still surfaces the rejection alongside ours.
+// A no-op produces no rejection at all.
+//
+// Tests that genuinely want exit semantics install their own per-test
+// `vi.spyOn(process, 'exit').mockImplementation(() => { throw new Error(...) })`,
+// which atomically replaces this wrapper for the scope of that test.
+// On `mockRestore`, vi reverts to whatever was current — i.e. this
+// wrapper — so cleanup is clean.
+(process as unknown as { exit: (code?: number) => never }).exit = ((_code?: number): never => {
+  // no-op; original is on globalThis if anything truly needs it
+  return undefined as never;
 }) as never;
-
-// Swallow stray unhandled rejections from Commander.parse() async actions
-// that vitest doesn't await. We ONLY filter the cdkd-specific signature
-// (the synthetic __test_process_exit__ marker) so genuine bugs still surface.
-process.on('unhandledRejection', (reason) => {
-  const msg = reason instanceof Error ? reason.message : String(reason);
-  if (msg.startsWith('__test_process_exit__:')) return;
-  // Re-throw anything else so tests see real bugs.
-  throw reason;
-});
 
 // Keep a reference to the real exit in case anything downstream wants it.
 (globalThis as Record<string, unknown>).__cdkd_test_original_exit__ = originalExit;
