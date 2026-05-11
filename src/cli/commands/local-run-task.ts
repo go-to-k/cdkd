@@ -307,11 +307,23 @@ async function buildEcsImageResolutionContext(
   if (!candidate) return undefined;
 
   const needs = detectEcsImageResolutionNeeds(candidate);
-  if (!needs.needsPseudoParameters && !needs.needsStateResources) return undefined;
+  if (
+    !needs.needsPseudoParameters &&
+    !needs.needsStateResources &&
+    !needs.needsEnvOrSecretSubstitution
+  ) {
+    return undefined;
+  }
 
   const ctx: EcsImageResolutionContext = {};
 
-  if (needs.needsPseudoParameters) {
+  // Pseudo parameters are needed (a) by image Fn::Sub references to AWS::*,
+  // and (b) by env / secret Fn::Join / Fn::Sub bodies when `--from-state`
+  // is set — `ecs.Secret.fromSsmParameter` synthesizes a Fn::Join that
+  // splices ${AWS::Partition} / ${AWS::Region} / ${AWS::AccountId} around
+  // a Ref to the parameter. Issue #291.
+  const wantsPseudoForEnvOrSecret = options.fromState && needs.needsEnvOrSecretSubstitution;
+  if (needs.needsPseudoParameters || wantsPseudoForEnvOrSecret) {
     const region =
       options.region ??
       process.env['AWS_REGION'] ??
@@ -319,7 +331,7 @@ async function buildEcsImageResolutionContext(
       candidate.region;
     if (!region) {
       logger.warn(
-        'Container Image references ${AWS::Region} but cdkd could not determine the target region. ' +
+        'Resolver references ${AWS::Region} but cdkd could not determine the target region. ' +
           'Pass --region, set AWS_REGION, or declare env.region on the CDK stack.'
       );
     }
@@ -328,8 +340,8 @@ async function buildEcsImageResolutionContext(
       accountId = await resolveCallerAccountId(region);
     } catch (err) {
       logger.warn(
-        `Container Image references \${AWS::AccountId} but STS GetCallerIdentity failed: ${err instanceof Error ? err.message : String(err)}. ` +
-          'Substitution will be skipped; the resolver will surface its existing error.'
+        `Resolver needs \${AWS::AccountId} but STS GetCallerIdentity failed: ${err instanceof Error ? err.message : String(err)}. ` +
+          'Substitution will be skipped; affected env / secret entries will be dropped with per-key warnings.'
       );
     }
     const partitionAndSuffix = region ? derivePartitionAndUrlSuffix(region) : undefined;
@@ -343,7 +355,8 @@ async function buildEcsImageResolutionContext(
     };
   }
 
-  if (options.fromState && needs.needsStateResources) {
+  const wantsState = needs.needsStateResources || needs.needsEnvOrSecretSubstitution;
+  if (options.fromState && wantsState) {
     const loaded = await loadStateForStack(candidate.stackName, candidate.region, {
       ...(options.stackRegion !== undefined && { stackRegion: options.stackRegion }),
       ...(options.stateBucket !== undefined && { stateBucket: options.stateBucket }),
@@ -358,6 +371,11 @@ async function buildEcsImageResolutionContext(
     logger.warn(
       'Container Image references a same-stack AWS::ECR::Repository. Pass --from-state to substitute the deployed repository URI ' +
         '(requires the stack to have been deployed via cdkd deploy). Otherwise the resolver will surface its existing error.'
+    );
+  } else if (!options.fromState && needs.needsEnvOrSecretSubstitution) {
+    logger.warn(
+      'Container Environment / Secrets entries contain CloudFormation intrinsics (Ref / Fn::GetAtt / Fn::Sub / Fn::Join). ' +
+        'Pass --from-state to substitute them against the deployed cdkd state. Without --from-state these entries are dropped (per-key warnings will follow).'
     );
   }
 

@@ -45,16 +45,20 @@ set -euo pipefail
 REGION="${AWS_REGION:-us-east-1}"
 export AWS_REGION="${REGION}"
 STACK="CdkdLocalRunTaskFromStateFixture"
-# Two TaskDefs share the same ECR repository:
+# Three TaskDefs:
 #   - NginxTaskDef   : Fn::Sub-shape Image (L1 CfnTaskDefinition)        → port 18082
-#   - NginxTaskDefL2 : Fn::Join-shape Image (L2 fromEcrRepository, CDK 2.x synth) → port 18083
-# The single deploy + image push covers BOTH Tier 2 resolver paths.
+#   - NginxTaskDefL2 : Fn::Join-shape Image (L2 fromEcrRepository)       → port 18083
+#   - EnvTaskDef     : intrinsic env vars + Ref secret (busybox printer) → no port (echoes)
+# The first two share the deployed ECR repository (single deploy + push);
+# EnvTaskDef uses busybox to focus on the env/secret resolver path (#291).
 TASK_PATH_SUB="${STACK}/NginxTaskDef"
 TASK_PATH_JOIN="${STACK}/NginxTaskDefL2"
+TASK_PATH_ENV="${STACK}/EnvTaskDef"
 HOST_PORT_SUB=18082
 HOST_PORT_JOIN=18083
 SIDECAR_IMAGE="amazon/amazon-ecs-local-container-endpoints:latest-amd64"
 NGINX_IMAGE="public.ecr.aws/nginx/nginx:alpine"
+BUSYBOX_IMAGE="public.ecr.aws/docker/library/busybox:1.36"
 
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 TEST_DIR="${REPO_ROOT}/tests/integration/local-run-task-from-state"
@@ -79,6 +83,7 @@ docker version --format '{{.Server.Version}}' >/dev/null
 echo "[verify] step 1c: pulling fixture images"
 docker pull "${SIDECAR_IMAGE}"
 docker pull "${NGINX_IMAGE}"
+docker pull "${BUSYBOX_IMAGE}"
 
 # Cleanup trap: empty ECR repo (cdkd destroy fails if it has images),
 # cdkd destroy, then docker rm orphan containers + networks. Runs on
@@ -171,5 +176,76 @@ run_and_curl_task "${TASK_PATH_SUB}" "${HOST_PORT_SUB}" "Fn::Sub"
 echo "[verify] step 4b: Tier 2 via Fn::Join shape (L2 ContainerImage.fromEcrRepository)"
 run_and_curl_task "${TASK_PATH_JOIN}" "${HOST_PORT_JOIN}" "Fn::Join"
 
+# ─── Issue #291: env vars + secret substitution via state ─────────────
+#
+# The EnvTaskDef container echoes 4 env vars + the length of the
+# secret-derived DB_SECRET to stdout. cdkd's `--from-state` should:
+#   - Substitute TABLE_NAME from the deployed DDB table's physicalId
+#     (Ref against AWS::DynamoDB::Table = the table name).
+#   - Substitute TABLE_ARN from state.attributes.Arn (Fn::GetAtt).
+#   - Substitute ENDPOINT's Fn::Sub interpolation against the table name
+#     and AWS::Region (pseudo parameter from sts:GetCallerIdentity).
+#   - Substitute JOINED's Fn::Join over a Ref(MyTable) + literal.
+#   - Resolve Secrets[].ValueFrom = `Ref: MySecret` to the deployed
+#     secret ARN, then fetch the JSON value via SecretsManager and
+#     inject the JSON blob as DB_SECRET (length > 0).
+#
+# We capture container output via `docker logs` (the EnvTaskDef
+# container has no port; it prints + exits naturally). cdkd's local
+# run-task waits for the essential container's exit, so a non-detach
+# invocation blocks until the printer finishes.
+echo "[verify] step 4c: Issue #291 — env vars + Ref secret via --from-state"
+echo "[verify]   reading deployed DDB table name from cdkd state"
+DEPLOYED_TABLE="$(${CDKD} state resources "${STACK}" --state-bucket "${STATE_BUCKET}" --json \
+  | node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>{const j=JSON.parse(d);for(const r of j){if(r.resourceType==="AWS::DynamoDB::Table"){console.log(r.physicalId);process.exit(0)}}process.exit(1)})')"
+echo "[verify]   deployed table: ${DEPLOYED_TABLE}"
+[ -n "${DEPLOYED_TABLE}" ] || { echo "[verify] FAIL: could not read deployed table name from state"; exit 1; }
+
+# Run the env task in detached mode so the container ID is recorded for
+# `docker logs` lookup; the printer exits within ~1s, then we read its
+# captured stdout.
+ENV_RUN_OUT="$(${CDKD} local run-task "${TASK_PATH_ENV}" \
+  --from-state \
+  --detach \
+  --no-pull \
+  --container-host 127.0.0.1 \
+  --state-bucket "${STATE_BUCKET}" 2>&1)"
+echo "${ENV_RUN_OUT}"
+
+# Give the container time to print and exit (busybox echo + exit is
+# basically instant, but the metadata sidecar may delay a beat).
+sleep 3
+
+ENV_CONTAINER_ID="$(docker ps -a --filter "name=cdkd-local-printer" --format '{{.ID}}' | head -n 1)"
+[ -n "${ENV_CONTAINER_ID}" ] || { echo "[verify] FAIL: env-task container not found"; exit 1; }
+
+ENV_LOGS="$(docker logs "${ENV_CONTAINER_ID}" 2>&1)"
+echo "[verify]   env task container output:"
+echo "${ENV_LOGS}" | sed 's/^/[verify]     /'
+
+assert_in_logs() {
+  local needle="$1"
+  if ! echo "${ENV_LOGS}" | grep -qF "${needle}"; then
+    echo "[verify] FAIL: expected '${needle}' in env-task container output"
+    exit 1
+  fi
+}
+
+assert_in_logs "TABLE_NAME=${DEPLOYED_TABLE}"
+assert_in_logs "TABLE_ARN=arn:aws:dynamodb:${REGION}:${ACCOUNT_ID}:table/${DEPLOYED_TABLE}"
+assert_in_logs "ENDPOINT=local-${REGION}-${DEPLOYED_TABLE}"
+assert_in_logs "JOINED=${DEPLOYED_TABLE}|literal"
+# The generated secret is JSON like {"user":"cdkd","password":"<16char>"}
+# (~38-42 chars); assert a non-trivial DB_SECRET_LEN was injected. Cheap
+# regex: at least two digits, i.e. >= 10 chars resolved.
+if ! echo "${ENV_LOGS}" | grep -qE 'DB_SECRET_LEN=[0-9]{2,}'; then
+  echo "[verify] FAIL: DB_SECRET was not resolved to a non-empty value"
+  exit 1
+fi
+
+# Teardown the env task before moving on.
+docker ps --filter "name=cdkd-local-" --format '{{.ID}}' | xargs -r docker rm -f >/dev/null 2>&1 || true
+docker network ls --filter "name=cdkd-local-task-" --format '{{.ID}}' | xargs -r docker network rm >/dev/null 2>&1 || true
+
 echo ""
-echo "[verify] All checks passed: --from-state substituted ECR Repository ref in BOTH the Fn::Sub and Fn::Join shapes against deployed ECR repository ${DEPLOYED_REPO}."
+echo "[verify] All checks passed: --from-state substituted ECR Repository ref (Fn::Sub + Fn::Join) AND env-var / Ref-secret intrinsics (issue #291) against deployed cdkd state."

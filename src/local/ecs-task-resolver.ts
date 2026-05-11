@@ -9,6 +9,7 @@ import {
   tryResolveImageFnJoin,
   type ImageResolutionContext,
 } from './intrinsic-image.js';
+import { substituteAgainstState, type SubstitutionContext } from './state-resolver.js';
 
 /**
  * Result of resolving a `cdkd local run-task <target>` argument back to a
@@ -100,6 +101,13 @@ export interface ResolvedEcsContainer {
   privileged?: boolean;
   readonlyRootFilesystem?: boolean;
   ulimits: { name: string; softLimit: number; hardLimit: number }[];
+  /**
+   * Non-fatal warnings produced while parsing this container — typically
+   * intrinsic-valued env vars or secret ValueFrom entries that could not
+   * be substituted against state. The CLI prints these so the user
+   * understands why an expected env / secret is missing.
+   */
+  warnings: string[];
 }
 
 export type ResolvedEcsImage =
@@ -165,12 +173,19 @@ export function derivePartitionAndUrlSuffix(region: string): {
  * synchronous.
  */
 /**
- * Substitution context for ECS image-URI resolution. Re-exported alias
- * for the shared `ImageResolutionContext` in `intrinsic-image.ts`
- * (extracted in issue #286 Gap 2 when `lambda-resolver.ts` needed the
- * same resolver). Existing consumers (`src/cli/commands/local-run-task.ts`)
- * import the alias; new code should reach for `ImageResolutionContext`
- * directly.
+ * Substitution context for ECS resolution. Re-exported alias for the
+ * shared `ImageResolutionContext` in `intrinsic-image.ts` (extracted
+ * in issue #286 Gap 2 when `lambda-resolver.ts` needed the same
+ * resolver). The shared type carries `pseudoParameters` (Tier 1) +
+ * `stateResources` (Tier 2). `stateResources` is consumed by:
+ *   - Image (PR #267): `${<LogicalId>}` against an `AWS::ECR::Repository`
+ *     and the `Fn::GetAtt: [<Repo>, 'RepositoryUri']` shape.
+ *   - Environment / Secrets (issue #291): intrinsic-valued
+ *     `Environment[].Value` and `Secrets[].ValueFrom` entries
+ *     (`Ref` / `Fn::GetAtt` / `Fn::Sub` / `Fn::Join`) are substituted
+ *     via `state-resolver.ts`'s `substituteAgainstState`.
+ * Existing consumers (`src/cli/commands/local-run-task.ts`) import the
+ * alias; new code should reach for `ImageResolutionContext` directly.
  */
 export type EcsImageResolutionContext = ImageResolutionContext;
 
@@ -204,12 +219,21 @@ export interface EcsImageResolutionNeeds {
    * OR any `Fn::GetAtt: [<Repo>, 'RepositoryUri' | 'Arn']` is present.
    */
   needsStateResources: boolean;
+  /**
+   * Any container's `Environment[].Value` OR `Secrets[].ValueFrom` is
+   * an intrinsic (`Ref` / `Fn::GetAtt` / `Fn::Sub` / `Fn::Join`). Issue
+   * #291: without `--from-state` these are silently dropped; with the
+   * flag set, cdkd loads state and substitutes them via
+   * `state-resolver.ts`.
+   */
+  needsEnvOrSecretSubstitution: boolean;
 }
 
 export function detectEcsImageResolutionNeeds(stack: StackInfo): EcsImageResolutionNeeds {
   const resources = stack.template.Resources ?? {};
   let needsPseudoParameters = false;
   let needsStateResources = false;
+  let needsEnvOrSecretSubstitution = false;
 
   for (const res of Object.values(resources)) {
     if (res.Type !== 'AWS::ECS::TaskDefinition') continue;
@@ -219,15 +243,47 @@ export function detectEcsImageResolutionNeeds(stack: StackInfo): EcsImageResolut
       : [];
     for (const c of containers) {
       if (!c || typeof c !== 'object') continue;
-      const image = (c as Record<string, unknown>)['Image'];
+      const co = c as Record<string, unknown>;
+      const image = co['Image'];
       const need = inspectImageForSubstitutions(image, resources);
       if (need.pseudo) needsPseudoParameters = true;
       if (need.state) needsStateResources = true;
-      if (needsPseudoParameters && needsStateResources) break;
+      if (containerHasIntrinsicEnvOrSecret(co)) needsEnvOrSecretSubstitution = true;
     }
-    if (needsPseudoParameters && needsStateResources) break;
   }
-  return { needsPseudoParameters, needsStateResources };
+  return { needsPseudoParameters, needsStateResources, needsEnvOrSecretSubstitution };
+}
+
+/**
+ * Returns true when any `Environment[].Value` or `Secrets[].ValueFrom`
+ * is an intrinsic (non-literal). Used to gate `--from-state` state
+ * loading at the CLI layer — issue #291.
+ */
+function containerHasIntrinsicEnvOrSecret(c: Record<string, unknown>): boolean {
+  const env = c['Environment'];
+  if (Array.isArray(env)) {
+    for (const entry of env) {
+      if (!entry || typeof entry !== 'object') continue;
+      const v = (entry as Record<string, unknown>)['Value'];
+      if (
+        v !== undefined &&
+        typeof v !== 'string' &&
+        typeof v !== 'number' &&
+        typeof v !== 'boolean'
+      ) {
+        return true;
+      }
+    }
+  }
+  const secrets = c['Secrets'];
+  if (Array.isArray(secrets)) {
+    for (const entry of secrets) {
+      if (!entry || typeof entry !== 'object') continue;
+      const v = (entry as Record<string, unknown>)['ValueFrom'];
+      if (v !== undefined && typeof v !== 'string') return true;
+    }
+  }
+  return false;
 }
 
 function inspectImageForSubstitutions(
@@ -492,6 +548,14 @@ function extractTaskDefinitionProperties(
     parseContainerDefinition(c, idx, logicalId, resources, stack, context)
   );
 
+  // Surface per-container warnings (e.g. dropped intrinsic env vars /
+  // secrets) on the task-level `warnings` array so the CLI prints them.
+  for (const ctr of containers) {
+    for (const w of ctr.warnings) {
+      warnings.push(`Container '${ctr.name}': ${w}`);
+    }
+  }
+
   const rawVolumes = props['Volumes'];
   const volumes = Array.isArray(rawVolumes)
     ? rawVolumes.map((v, idx) => parseVolume(v, idx, logicalId))
@@ -563,7 +627,9 @@ function parseContainerDefinition(
   const entryPoint = pickStringArray(c['EntryPoint']);
   const workingDirectory = pickString(c['WorkingDirectory']);
 
+  const subContext = buildSubstitutionContextFromImageContext(context);
   const environment: Record<string, string> = {};
+  const droppedEnvKeys: { key: string; reason: string }[] = [];
   if (Array.isArray(c['Environment'])) {
     for (const entry of c['Environment'] as unknown[]) {
       if (!entry || typeof entry !== 'object') continue;
@@ -573,20 +639,62 @@ function parseContainerDefinition(
       if (!key) continue;
       if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
         environment[key] = String(value);
+        continue;
       }
-      // Intrinsic-valued entries are silently dropped here; the runner's
-      // logger warns. Matches `cdkd local invoke` v1 semantics.
+      // Intrinsic-valued entry. With `--from-state` we try to substitute
+      // against state + pseudo parameters (closes #291); without it the
+      // value is dropped and a warn is surfaced via the task's
+      // `warnings` array (matches PR 1 `cdkd local invoke` semantics).
+      if (subContext) {
+        const sub = substituteAgainstState(value, subContext);
+        if (sub.kind === 'literal') {
+          environment[key] = String(sub.value);
+          continue;
+        }
+        droppedEnvKeys.push({ key, reason: sub.reason });
+      } else {
+        droppedEnvKeys.push({
+          key,
+          reason: 'intrinsic-valued; pass --from-state to substitute against deployed state',
+        });
+      }
     }
   }
 
   const secrets: ResolvedEcsContainer['secrets'] = [];
+  const droppedSecretKeys: { key: string; reason: string }[] = [];
   if (Array.isArray(c['Secrets'])) {
     for (const entry of c['Secrets'] as unknown[]) {
       if (!entry || typeof entry !== 'object') continue;
       const e = entry as Record<string, unknown>;
       const sName = pickString(e['Name']);
-      const valueFrom = pickString(e['ValueFrom']);
-      if (sName && valueFrom) secrets.push({ name: sName, valueFrom });
+      const valueFromRaw = e['ValueFrom'];
+      if (!sName) continue;
+      // Literal string ValueFrom (pre-resolved, or fromSecretCompleteArn).
+      if (typeof valueFromRaw === 'string' && valueFromRaw.length > 0) {
+        secrets.push({ name: sName, valueFrom: valueFromRaw });
+        continue;
+      }
+      // Intrinsic-valued (`Ref` / `Fn::GetAtt` / `Fn::Join` / `Fn::Sub`).
+      // With `--from-state` substitute against deployed state + pseudo
+      // parameters; without it, drop the secret and warn — the user's
+      // workaround is `fromSecretCompleteArn` (literal ARN at synth time).
+      if (subContext) {
+        const sub = substituteAgainstState(valueFromRaw, subContext);
+        if (sub.kind === 'literal' && typeof sub.value === 'string' && sub.value.length > 0) {
+          secrets.push({ name: sName, valueFrom: sub.value });
+          continue;
+        }
+        droppedSecretKeys.push({
+          key: sName,
+          reason: sub.kind === 'literal' ? 'resolved to non-string / empty value' : sub.reason,
+        });
+      } else {
+        droppedSecretKeys.push({
+          key: sName,
+          reason: 'intrinsic-valued ValueFrom; pass --from-state to resolve the deployed ARN',
+        });
+      }
     }
   }
 
@@ -677,6 +785,14 @@ function parseContainerDefinition(
     }
   }
 
+  const warnings: string[] = [];
+  for (const d of droppedEnvKeys) {
+    warnings.push(`Environment '${d.key}' dropped: ${d.reason}`);
+  }
+  for (const d of droppedSecretKeys) {
+    warnings.push(`Secret '${d.key}' dropped: ${d.reason}`);
+  }
+
   const out: ResolvedEcsContainer = {
     name,
     image,
@@ -688,6 +804,7 @@ function parseContainerDefinition(
     links,
     essential,
     ulimits,
+    warnings,
   };
   if (command !== undefined) out.command = command;
   if (entryPoint !== undefined) out.entryPoint = entryPoint;
@@ -697,6 +814,23 @@ function parseContainerDefinition(
   if (privileged !== undefined) out.privileged = privileged;
   if (readonlyRootFilesystem !== undefined) out.readonlyRootFilesystem = readonlyRootFilesystem;
   return out;
+}
+
+/**
+ * Map the ECS image-resolution context's `stateResources` +
+ * `pseudoParameters` into the shape `substituteAgainstState` expects
+ * (closes #291). Returns `undefined` when state has not been loaded —
+ * the caller falls back to the pre-PR literal-only path.
+ */
+function buildSubstitutionContextFromImageContext(
+  context: EcsImageResolutionContext | undefined
+): SubstitutionContext | undefined {
+  if (!context?.stateResources) return undefined;
+  const subContext: SubstitutionContext = { resources: context.stateResources };
+  if (context.pseudoParameters) {
+    subContext.pseudoParameters = { ...context.pseudoParameters };
+  }
+  return subContext;
 }
 
 /**

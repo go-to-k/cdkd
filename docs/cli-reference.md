@@ -1035,9 +1035,12 @@ before the env block reaches the container.
 **Supported intrinsics**: `Ref` (→ `state.resources[id].physicalId`),
 `Fn::GetAtt` (→ `state.resources[id].attributes[attr]`, JSON-stringified
 when the cached value is an object/array), `Fn::Sub` (single-string and
-two-arg forms; `${LogicalId}` / `${LogicalId.attr}` placeholders are
-substituted in place — the two-arg form's bindings map can also carry
-intrinsic values, recursively resolved).
+two-arg forms; `${LogicalId}` / `${LogicalId.attr}` / `${AWS::*}`
+placeholders are substituted in place — the two-arg form's bindings map
+can also carry intrinsic values, recursively resolved), `Fn::Join`
+(every element recursively resolved, then joined), and `Ref: AWS::*`
+pseudo parameters (`AccountId` / `Region` / `Partition` / `URLSuffix`)
+resolved against STS `GetCallerIdentity` + the configured region.
 
 **Failure mode**: per-key best-effort. When a substitution can't be
 produced (state missing for the referenced resource, attribute not
@@ -1054,10 +1057,14 @@ not wired in — v1 keeps `--assume-role` as the single explicit path to
 scoped credentials.
 
 **Out of scope** (deferred): cross-stack `Fn::ImportValue` /
-`Fn::GetStackOutput`, pseudo parameters (`AWS::Region`,
-`AWS::AccountId`, etc.), other intrinsics (`Fn::Join`, `Fn::Select`,
-`Fn::Split`, etc.). Anything beyond the three supported intrinsics is
-treated as unresolved (warn + drop).
+`Fn::GetStackOutput`, other intrinsics (`Fn::Select`, `Fn::Split`,
+`Fn::If`, etc.). Anything beyond the listed supported intrinsics is
+treated as unresolved (warn + drop). Note: `cdkd local invoke`'s
+env-resolver loads state only — `${AWS::AccountId}` substitution still
+requires the same STS `GetCallerIdentity` round-trip that `cdkd local
+run-task` performs at startup; if the local-invoke CLI does not yet
+populate the pseudo-parameter bag, those placeholders fall back to
+warn + drop until the wiring lands.
 
 ```bash
 # Single-region stack: --from-state alone is enough
@@ -1162,7 +1169,7 @@ default entrypoint stays in charge — for AWS Lambda base images that's
 | Cross-account / cross-region ECR pull for container Lambdas | Future PR (same-account / same-region only in v1) |
 | `EphemeralStorage` mapping for container Lambdas | Future PR (Docker `--tmpfs /tmp:size=Nm`) |
 | Cross-stack `Fn::ImportValue` / `Fn::GetStackOutput` in `--from-state` | Future PR |
-| Pseudo parameters / `Fn::Join` / `Fn::Select` etc. in `--from-state` | Future PR (warn + drop in v1) |
+| `Fn::Select` / `Fn::Split` / `Fn::If` etc. in `--from-state` | Future PR (warn + drop today) |
 | SQS / S3 event source emulation | Future PR |
 | VPC simulation | Never (local can't replicate VPC) |
 | Custom Resources (`Custom::*`) | Never — these are invoked by the deploy framework, not by users. cdkd surfaces a clear error pointing at the underlying ServiceToken Lambda. |
@@ -1523,7 +1530,7 @@ resolves to the synthesized L1 child (`MyStack/MyService/TaskDef/Resource`).
 | `--env-vars <file>` | unset | SAM-shape JSON overlay. Top-level keys are container names; `Parameters` is a global overlay. Same shape as `cdkd local invoke --env-vars`. |
 | `--container-host <ip>` | `127.0.0.1` | Bind IP for `PortMappings` published ports. Must be a numeric IP — Docker rejects hostnames in `-p <ip>:<port>:<port>`. |
 | `--assume-task-role [<arn>]` | unset (host creds pass through) | Bare flag uses the task definition's `TaskRoleArn`. Resolves a flat-string ARN directly; for `{Ref: <Role>}` / `{Fn::GetAtt: [<Role>, 'Arn']}` against a same-stack `AWS::IAM::Role`, cdkd substitutes the caller's account id (via STS `GetCallerIdentity`) into `arn:aws:iam::<account>:role/<RoleLogicalId>`. Pass an explicit ARN to override. Either way, `sts:AssumeRole` runs once at startup; the resulting creds are exposed via the local metadata sidecar at `AWS_CONTAINER_CREDENTIALS_RELATIVE_URI`. |
-| `--from-state` | off | Load cdkd S3 state for the target stack to resolve `Fn::Sub` ECR image URIs that reference a same-stack `AWS::ECR::Repository` (`${MyRepo}`) or `Fn::GetAtt: [<Repo>, 'RepositoryUri']`. See "ECR image resolution" below for the tier breakdown. Off by default. The stack must have been deployed via `cdkd deploy` first. |
+| `--from-state` | off | Load cdkd S3 state for the target stack and substitute deployed values into (a) `Fn::Sub` / `Fn::GetAtt` ECR image URIs that reference a same-stack `AWS::ECR::Repository`, AND (b) intrinsic-valued `ContainerDefinitions[].Environment[].Value` + `Secrets[].ValueFrom` entries (`Ref` / `Fn::GetAtt` / `Fn::Sub` / `Fn::Join`). Without this flag, env / secret intrinsics are dropped with a per-key warning (matching `cdkd local invoke --from-state` semantics). See "ECR image resolution" and "Env / Secrets substitution" below. Off by default. The stack must have been deployed via `cdkd deploy` first. |
 | `--stack-region <region>` | unset | Region of the cdkd state record to read (used with `--from-state` when the same stack name has state in multiple regions). |
 | `--no-pull` | off | Skip `docker pull` for every container image and the metadata sidecar. |
 | `--platform <platform>` | inferred from `RuntimePlatform.CpuArchitecture` | `linux/amd64` or `linux/arm64`. Threaded into every container's `docker run --platform`. |
@@ -1565,10 +1572,45 @@ For `Fn::Sub` / `Fn::GetAtt` shapes pointing at AWS pseudo parameters or a same-
 - **Tier 1 — AWS pseudo-parameter substitution (no state needed)**: `${AWS::AccountId}` → STS `GetCallerIdentity` (lazy, cached for the run); `${AWS::Region}` → `--region` / `AWS_REGION` / `AWS_DEFAULT_REGION`; `${AWS::Partition}` → derived from region (`cn-*` → `aws-cn`, `us-gov-*` → `aws-us-gov`, else `aws`); `${AWS::URLSuffix}` → matches partition. Substituted URI then routes through tier 2.
 - **Tier 2 — same-stack ECR Repository reference (state needed)**: when the `Fn::Sub` body contains `${<LogicalId>}` against an `AWS::ECR::Repository`, or when the template uses `Fn::GetAtt: [<Repo>, 'RepositoryUri']`, cdkd needs the deployed physical repo name. Pass `--from-state` (the stack must have been deployed via `cdkd deploy`); cdkd loads state, substitutes the physical name, then routes through tier 2. Without `--from-state` the error message points back at this flag as the resolution path.
 
+### Env / Secrets substitution (`--from-state`)
+
+`ContainerDefinitions[].Environment[].Value` and `Secrets[].ValueFrom`
+entries are commonly intrinsic-valued in real-world CDK ECS apps —
+`table.tableName` synthesizes as `Ref`, `table.tableArn` as
+`Fn::GetAtt`, `ecs.Secret.fromSecretsManager(secret)` as `Ref` against
+the secret (returns the deployed ARN), `ecs.Secret.fromSsmParameter(p)`
+as `Fn::Join` over pseudo parameters + a `Ref` to the parameter, etc.
+Without `--from-state` these intrinsics are silently dropped (matching
+`cdkd local invoke` v1 semantics) and the developer sees an empty env
+var or a missing secret.
+
+`cdkd local run-task --from-state` substitutes every intrinsic-valued
+entry against cdkd's deployed S3 state plus AWS pseudo parameters:
+
+| Intrinsic | Source |
+| --- | --- |
+| `Ref: <LogicalId>` | `state.resources[<LogicalId>].physicalId` |
+| `Fn::GetAtt: [<LogicalId>, <Attr>]` | `state.resources[<LogicalId>].attributes[<Attr>]` |
+| `Fn::Sub: '...${X}...${AWS::Region}...'` | recursive substitution against state + pseudo parameters |
+| `Fn::Join: [<delim>, [<elements>]]` | recursive substitution of every element, then `Array.join` |
+| `Ref: AWS::AccountId` / `AWS::Region` / `AWS::Partition` / `AWS::URLSuffix` | STS `GetCallerIdentity` (lazy, cached) + the resolved region + region-derived partition / URL suffix |
+
+Per-key best-effort: when a substitution can't be produced (state
+missing for a referenced logical ID, attribute not captured at deploy
+time, unsupported intrinsic), the env / secret entry is dropped and a
+per-key warning surfaces on the task's warnings line — the run-task
+invocation never aborts. State-load failures (no record, multi-region
+ambiguity without `--stack-region`, bucket resolution error) also
+degrade to warn-and-fall-back rather than hard-fail.
+
+Resolved `Secrets[].ValueFrom` strings then flow into the standard
+SecretsManager / SSM resolver below.
+
 ### Secrets / SSM parameter resolution
 
 `ContainerDefinitions[].Secrets[].ValueFrom` entries are resolved once at
-startup via the AWS SDK. Three accepted shapes:
+startup via the AWS SDK (after any `--from-state` intrinsic substitution
+above). Three accepted shapes:
 
 | `valueFrom` | API |
 | --- | --- |

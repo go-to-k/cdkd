@@ -232,6 +232,7 @@ function makeContainer(over: Partial<ResolvedEcsContainer> = {}): ResolvedEcsCon
     links: [],
     essential: true,
     ulimits: [],
+    warnings: [],
     ...over,
   };
 }

@@ -158,8 +158,9 @@ describe('resolveEcsTaskTarget', () => {
     const r = resolveEcsTaskTarget('TD', [stack]);
     const app = r.containers.find((c) => c.name === 'app')!;
     expect(app.portMappings).toEqual([{ containerPort: 8080, hostPort: 9090, protocol: 'tcp' }]);
-    // Intrinsic-valued env vars are silently dropped here; the literal stays.
+    // Intrinsic-valued env vars are dropped without --from-state; the literal stays.
     expect(app.environment).toEqual({ LOG_LEVEL: 'debug' });
+    expect(app.warnings.some((w) => /WITH_INTRINSIC.*dropped/.test(w))).toBe(true);
     expect(app.secrets).toEqual([
       { name: 'API_KEY', valueFrom: 'arn:aws:secretsmanager:us-east-1:123456789012:secret:k' },
     ]);
@@ -800,5 +801,279 @@ describe('detectEcsImageResolutionNeeds', () => {
     const needs = detectEcsImageResolutionNeeds(stack);
     expect(needs.needsPseudoParameters).toBe(false);
     expect(needs.needsStateResources).toBe(true);
+    expect(needs.needsEnvOrSecretSubstitution).toBe(false);
+  });
+
+  // Issue #291: env-var + secret intrinsic detection.
+  it('flags needsEnvOrSecretSubstitution when an Environment Value is a Ref intrinsic', () => {
+    const stack = buildStack('S1', {
+      TD: makeTaskDef({
+        containers: [
+          {
+            Name: 'app',
+            Image: 'nginx:alpine',
+            Environment: [
+              { Name: 'LITERAL', Value: 'plain' },
+              { Name: 'INT', Value: { Ref: 'X' } },
+            ],
+          },
+        ],
+      }),
+    });
+    const needs = detectEcsImageResolutionNeeds(stack);
+    expect(needs.needsEnvOrSecretSubstitution).toBe(true);
+    expect(needs.needsStateResources).toBe(false);
+  });
+
+  it('flags needsEnvOrSecretSubstitution when a Secret ValueFrom is intrinsic', () => {
+    const stack = buildStack('S1', {
+      TD: makeTaskDef({
+        containers: [
+          {
+            Name: 'app',
+            Image: 'nginx:alpine',
+            Secrets: [{ Name: 'API_KEY', ValueFrom: { Ref: 'MySecret' } }],
+          },
+        ],
+      }),
+    });
+    const needs = detectEcsImageResolutionNeeds(stack);
+    expect(needs.needsEnvOrSecretSubstitution).toBe(true);
+  });
+
+  it('does NOT flag needsEnvOrSecretSubstitution when every env / secret is literal', () => {
+    const stack = buildStack('S1', {
+      TD: makeTaskDef({
+        containers: [
+          {
+            Name: 'app',
+            Image: 'nginx:alpine',
+            Environment: [{ Name: 'LITERAL', Value: 'plain' }],
+            Secrets: [
+              { Name: 'API_KEY', ValueFrom: 'arn:aws:secretsmanager:us-east-1:123:secret:k' },
+            ],
+          },
+        ],
+      }),
+    });
+    const needs = detectEcsImageResolutionNeeds(stack);
+    expect(needs.needsEnvOrSecretSubstitution).toBe(false);
+  });
+});
+
+// Issue #291: env-var + secret intrinsic substitution via state.
+describe('resolveEcsTaskTarget --from-state env / secret substitution', () => {
+  function buildStateResources(): Record<string, ResourceState> {
+    return {
+      MyTable: {
+        physicalId: 'MyDeployedTable123',
+        resourceType: 'AWS::DynamoDB::Table',
+        properties: {},
+        attributes: { Arn: 'arn:aws:dynamodb:us-east-1:123456789012:table/MyDeployedTable123' },
+        dependencies: [],
+      },
+      MySecret: {
+        physicalId: 'arn:aws:secretsmanager:us-east-1:123456789012:secret:cdkd-MySecret-abc',
+        resourceType: 'AWS::SecretsManager::Secret',
+        properties: {},
+        attributes: {},
+        dependencies: [],
+      },
+      MyParam: {
+        physicalId: '/cdkd/integ/MyParam',
+        resourceType: 'AWS::SSM::Parameter',
+        properties: {},
+        attributes: {},
+        dependencies: [],
+      },
+    };
+  }
+
+  it('substitutes Ref / Fn::GetAtt env vars against state', () => {
+    const stack = buildStack('S1', {
+      MyTable: { Type: 'AWS::DynamoDB::Table', Properties: {} },
+      TD: makeTaskDef({
+        containers: [
+          {
+            Name: 'app',
+            Image: 'nginx:alpine',
+            Environment: [
+              { Name: 'TABLE_NAME', Value: { Ref: 'MyTable' } },
+              { Name: 'TABLE_ARN', Value: { 'Fn::GetAtt': ['MyTable', 'Arn'] } },
+            ],
+          },
+        ],
+      }),
+    });
+    const r = resolveEcsTaskTarget('TD', [stack], { stateResources: buildStateResources() });
+    expect(r.containers[0]!.environment).toEqual({
+      TABLE_NAME: 'MyDeployedTable123',
+      TABLE_ARN: 'arn:aws:dynamodb:us-east-1:123456789012:table/MyDeployedTable123',
+    });
+    expect(r.containers[0]!.warnings).toEqual([]);
+  });
+
+  it('substitutes Fn::Sub env var against state + pseudo parameters', () => {
+    const stack = buildStack('S1', {
+      MyTable: { Type: 'AWS::DynamoDB::Table', Properties: {} },
+      TD: makeTaskDef({
+        containers: [
+          {
+            Name: 'app',
+            Image: 'nginx:alpine',
+            Environment: [
+              { Name: 'ENDPOINT', Value: { 'Fn::Sub': 'https://${MyTable}.${AWS::Region}' } },
+            ],
+          },
+        ],
+      }),
+    });
+    const r = resolveEcsTaskTarget('TD', [stack], {
+      stateResources: buildStateResources(),
+      pseudoParameters: { region: 'us-east-1' },
+    });
+    expect(r.containers[0]!.environment).toEqual({
+      ENDPOINT: 'https://MyDeployedTable123.us-east-1',
+    });
+  });
+
+  it('substitutes Fn::Join env var against state', () => {
+    const stack = buildStack('S1', {
+      MyTable: { Type: 'AWS::DynamoDB::Table', Properties: {} },
+      TD: makeTaskDef({
+        containers: [
+          {
+            Name: 'app',
+            Image: 'nginx:alpine',
+            Environment: [
+              {
+                Name: 'JOINED',
+                Value: { 'Fn::Join': ['|', [{ Ref: 'MyTable' }, 'literal']] },
+              },
+            ],
+          },
+        ],
+      }),
+    });
+    const r = resolveEcsTaskTarget('TD', [stack], { stateResources: buildStateResources() });
+    expect(r.containers[0]!.environment).toEqual({ JOINED: 'MyDeployedTable123|literal' });
+  });
+
+  it('resolves Secrets[].ValueFrom Ref to a SecretsManager ARN via state', () => {
+    const stack = buildStack('S1', {
+      MySecret: { Type: 'AWS::SecretsManager::Secret', Properties: {} },
+      TD: makeTaskDef({
+        containers: [
+          {
+            Name: 'app',
+            Image: 'nginx:alpine',
+            Secrets: [{ Name: 'DB_PASSWORD', ValueFrom: { Ref: 'MySecret' } }],
+          },
+        ],
+      }),
+    });
+    const r = resolveEcsTaskTarget('TD', [stack], { stateResources: buildStateResources() });
+    expect(r.containers[0]!.secrets).toEqual([
+      {
+        name: 'DB_PASSWORD',
+        valueFrom: 'arn:aws:secretsmanager:us-east-1:123456789012:secret:cdkd-MySecret-abc',
+      },
+    ]);
+  });
+
+  it('resolves Secrets[].ValueFrom Fn::Join (SSM parameter shape) via state + pseudo params', () => {
+    // The shape CDK 2.x synthesizes for ecs.Secret.fromSsmParameter(param).
+    const stack = buildStack('S1', {
+      MyParam: { Type: 'AWS::SSM::Parameter', Properties: {} },
+      TD: makeTaskDef({
+        containers: [
+          {
+            Name: 'app',
+            Image: 'nginx:alpine',
+            Secrets: [
+              {
+                Name: 'PARAM_VAL',
+                ValueFrom: {
+                  'Fn::Join': [
+                    '',
+                    [
+                      'arn:',
+                      { Ref: 'AWS::Partition' },
+                      ':ssm:',
+                      { Ref: 'AWS::Region' },
+                      ':',
+                      { Ref: 'AWS::AccountId' },
+                      ':parameter/',
+                      { Ref: 'MyParam' },
+                    ],
+                  ],
+                },
+              },
+            ],
+          },
+        ],
+      }),
+    });
+    const r = resolveEcsTaskTarget('TD', [stack], {
+      stateResources: buildStateResources(),
+      pseudoParameters: {
+        accountId: '123456789012',
+        region: 'us-east-1',
+        partition: 'aws',
+        urlSuffix: 'amazonaws.com',
+      },
+    });
+    expect(r.containers[0]!.secrets).toEqual([
+      {
+        name: 'PARAM_VAL',
+        valueFrom: 'arn:aws:ssm:us-east-1:123456789012:parameter//cdkd/integ/MyParam',
+      },
+    ]);
+  });
+
+  it('drops env / secret intrinsics with per-key warnings when state is missing', () => {
+    const stack = buildStack('S1', {
+      TD: makeTaskDef({
+        containers: [
+          {
+            Name: 'app',
+            Image: 'nginx:alpine',
+            Environment: [{ Name: 'TABLE_NAME', Value: { Ref: 'MyTable' } }],
+            Secrets: [{ Name: 'DB_PASSWORD', ValueFrom: { Ref: 'MySecret' } }],
+          },
+        ],
+      }),
+    });
+    // No context — pre-PR behavior preserved (drop + warn).
+    const r = resolveEcsTaskTarget('TD', [stack]);
+    expect(r.containers[0]!.environment).toEqual({});
+    expect(r.containers[0]!.secrets).toEqual([]);
+    expect(r.containers[0]!.warnings).toContain(
+      "Environment 'TABLE_NAME' dropped: intrinsic-valued; pass --from-state to substitute against deployed state"
+    );
+    expect(r.containers[0]!.warnings).toContain(
+      "Secret 'DB_PASSWORD' dropped: intrinsic-valued ValueFrom; pass --from-state to resolve the deployed ARN"
+    );
+  });
+
+  it('drops env intrinsic with a per-key reason when state lacks the referenced logical ID', () => {
+    const stack = buildStack('S1', {
+      TD: makeTaskDef({
+        containers: [
+          {
+            Name: 'app',
+            Image: 'nginx:alpine',
+            Environment: [{ Name: 'TABLE_NAME', Value: { Ref: 'MyMissingTable' } }],
+          },
+        ],
+      }),
+    });
+    const r = resolveEcsTaskTarget('TD', [stack], { stateResources: buildStateResources() });
+    expect(r.containers[0]!.environment).toEqual({});
+    expect(
+      r.containers[0]!.warnings.some((w) =>
+        /TABLE_NAME.*MyMissingTable.*no record in cdkd state/.test(w)
+      )
+    ).toBe(true);
   });
 });

@@ -158,13 +158,7 @@ describe('substituteAgainstState', () => {
     }
   });
 
-  it('reports unresolved for unsupported intrinsics (Fn::Join, Fn::ImportValue, etc.)', () => {
-    const r1 = substituteAgainstState({ 'Fn::Join': ['', ['a', 'b']] }, {});
-    expect(r1.kind).toBe('unresolved');
-    if (r1.kind === 'unresolved') {
-      expect(r1.reason).toContain("Fn::Join");
-    }
-
+  it('reports unresolved for unsupported intrinsics (Fn::ImportValue, Fn::Select, etc.)', () => {
     const r2 = substituteAgainstState({ 'Fn::ImportValue': 'OtherStackExport' }, {});
     expect(r2.kind).toBe('unresolved');
 
@@ -186,6 +180,141 @@ describe('substituteAgainstState', () => {
     if (result.kind === 'unresolved') {
       expect(result.reason).toContain('unsupported value type');
     }
+  });
+
+  // Fn::Join support (Gap 1 of #286, issue #291).
+  it('substitutes Fn::Join with literal-only parts', () => {
+    expect(substituteAgainstState({ 'Fn::Join': ['|', ['a', 'b', 'c']] }, {})).toEqual({
+      kind: 'literal',
+      value: 'a|b|c',
+    });
+  });
+
+  it('substitutes Fn::Join with nested Ref against state', () => {
+    const resources: Record<string, ResourceState> = {
+      MyTable: {
+        physicalId: 'tbl-deployed',
+        resourceType: 'AWS::DynamoDB::Table',
+        properties: {},
+        attributes: {},
+        dependencies: [],
+      },
+    };
+    expect(
+      substituteAgainstState(
+        { 'Fn::Join': ['-', ['prefix', { Ref: 'MyTable' }, 'suffix']] },
+        resources
+      )
+    ).toEqual({ kind: 'literal', value: 'prefix-tbl-deployed-suffix' });
+  });
+
+  it('substitutes Fn::Join with nested Fn::Sub', () => {
+    const resources: Record<string, ResourceState> = {
+      MyTable: {
+        physicalId: 'tbl',
+        resourceType: 'AWS::DynamoDB::Table',
+        properties: {},
+        attributes: {},
+        dependencies: [],
+      },
+    };
+    expect(
+      substituteAgainstState(
+        { 'Fn::Join': ['', [{ 'Fn::Sub': 'x-${MyTable}' }, 'Y']] },
+        resources
+      )
+    ).toEqual({ kind: 'literal', value: 'x-tblY' });
+  });
+
+  it('reports unresolved when any Fn::Join element is unresolvable', () => {
+    const result = substituteAgainstState(
+      { 'Fn::Join': ['-', ['a', { Ref: 'MissingResource' }]] },
+      {}
+    );
+    expect(result.kind).toBe('unresolved');
+    if (result.kind === 'unresolved') {
+      expect(result.reason).toContain('Fn::Join element [1]');
+      expect(result.reason).toContain('MissingResource');
+    }
+  });
+
+  it('rejects Fn::Join with non-array argument', () => {
+    const r = substituteAgainstState({ 'Fn::Join': 'not-an-array' }, {});
+    expect(r.kind).toBe('unresolved');
+    if (r.kind === 'unresolved') expect(r.reason).toContain('Fn::Join expects');
+  });
+
+  it('rejects Fn::Join with non-string delimiter', () => {
+    const r = substituteAgainstState({ 'Fn::Join': [42, ['a', 'b']] }, {});
+    expect(r.kind).toBe('unresolved');
+    if (r.kind === 'unresolved') expect(r.reason).toContain('delimiter must be a string');
+  });
+
+  // Pseudo parameter support (issue #291 — used by ecs.Secret.fromSsmParameter).
+  it('substitutes Ref pseudo parameters from the context bag', () => {
+    const r = substituteAgainstState(
+      { Ref: 'AWS::Region' },
+      { resources: {}, pseudoParameters: { region: 'eu-west-1' } }
+    );
+    expect(r).toEqual({ kind: 'literal', value: 'eu-west-1' });
+  });
+
+  it('substitutes ${AWS::*} placeholders inside Fn::Sub', () => {
+    const r = substituteAgainstState(
+      { 'Fn::Sub': '${AWS::Partition}/${AWS::AccountId}' },
+      {
+        resources: {},
+        pseudoParameters: { partition: 'aws', accountId: '123456789012' },
+      }
+    );
+    expect(r).toEqual({ kind: 'literal', value: 'aws/123456789012' });
+  });
+
+  it('drops a Ref to an AWS pseudo when pseudoParameters is not supplied', () => {
+    const r = substituteAgainstState({ Ref: 'AWS::Region' }, {});
+    expect(r.kind).toBe('unresolved');
+  });
+
+  it('resolves the canonical ecs.Secret.fromSsmParameter Fn::Join shape', () => {
+    // Exact shape CDK 2.x synthesizes for ecs.Secret.fromSsmParameter(param).
+    const resources: Record<string, ResourceState> = {
+      MyParam: {
+        physicalId: '/app/param',
+        resourceType: 'AWS::SSM::Parameter',
+        properties: {},
+        attributes: {},
+        dependencies: [],
+      },
+    };
+    const r = substituteAgainstState(
+      {
+        'Fn::Join': [
+          '',
+          [
+            'arn:',
+            { Ref: 'AWS::Partition' },
+            ':ssm:',
+            { Ref: 'AWS::Region' },
+            ':',
+            { Ref: 'AWS::AccountId' },
+            ':parameter/',
+            { Ref: 'MyParam' },
+          ],
+        ],
+      },
+      {
+        resources,
+        pseudoParameters: {
+          partition: 'aws',
+          region: 'us-east-1',
+          accountId: '123456789012',
+        },
+      }
+    );
+    expect(r).toEqual({
+      kind: 'literal',
+      value: 'arn:aws:ssm:us-east-1:123456789012:parameter//app/param',
+    });
   });
 });
 
@@ -233,7 +362,7 @@ describe('substituteEnvVarsFromState', () => {
       {
         OK: { Ref: 'MyTable' },
         MISSING: { Ref: 'NotInState' },
-        UNSUPPORTED: { 'Fn::Join': ['', ['a', 'b']] },
+        UNSUPPORTED: { 'Fn::ImportValue': 'OtherStackExport' },
       },
       resources
     );
