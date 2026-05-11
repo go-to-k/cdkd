@@ -769,9 +769,15 @@ cdkd export                                       # auto-detect single-stack app
 3. Refuse if a CFn stack with the destination name already exists, or
    if any template resource is in the never-importable set (`Custom::*`,
    `AWS::CloudFormation::Stack`, or has no entry in cdkd state).
-4. Resolve each resource type's primary identifier property name via
+4. Resolve each resource type's primary identifier property name(s) via
    `cloudformation:DescribeType` (with a hardcoded fallback table for
-   ~30 common types).
+   ~30 single-key types). **Composite primary identifiers**
+   (`primaryIdentifier.length > 1`) are supported for
+   `AWS::ApiGateway::Method`, `AWS::ApiGateway::Resource`, and
+   `AWS::EC2::VPCGatewayAttachment` via a per-type splitter that maps
+   cdkd's `physicalId` to the field map `ResourceIdentifier` expects.
+   Other composite types abort with a clear error pointing at where to
+   register a new splitter.
 5. Acquire the stack lock so concurrent `cdkd deploy` cannot race.
 6. Confirm with the user (skipped with `-y` / `--yes`).
 7. `CreateChangeSet --change-set-type IMPORT` → wait → `ExecuteChangeSet`

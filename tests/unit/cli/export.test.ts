@@ -1,8 +1,10 @@
 import { describe, it, expect } from 'vitest';
 import {
   filterTemplateForImport,
+  hasCompositeIdSplitter,
   isNeverImportableType,
   refuseTransientContextIfUnsafe,
+  splitCompositePhysicalId,
 } from '../../../src/cli/commands/export.js';
 
 describe('refuseTransientContextIfUnsafe', () => {
@@ -81,7 +83,7 @@ describe('filterTemplateForImport', () => {
       },
     };
     const result = filterTemplateForImport(template, [
-      { logicalId: 'KeepMe', resourceType: 'AWS::S3::Bucket', physicalId: 'b', identifierKey: 'BucketName' },
+      { logicalId: 'KeepMe', resourceType: 'AWS::S3::Bucket', physicalId: 'b', resourceIdentifier: { BucketName: 'b' } },
     ]);
     expect(result['Resources']).toEqual({
       KeepMe: { Type: 'AWS::S3::Bucket', Properties: {} },
@@ -98,7 +100,7 @@ describe('filterTemplateForImport', () => {
       },
     };
     const result = filterTemplateForImport(template, [
-      { logicalId: 'A', resourceType: 'AWS::S3::Bucket', physicalId: 'b', identifierKey: 'BucketName' },
+      { logicalId: 'A', resourceType: 'AWS::S3::Bucket', physicalId: 'b', resourceIdentifier: { BucketName: 'b' } },
     ]);
     expect(result['AWSTemplateFormatVersion']).toBe('2010-09-09');
     expect(result['Description']).toBe('test');
@@ -117,7 +119,7 @@ describe('filterTemplateForImport', () => {
       },
     };
     const result = filterTemplateForImport(template, [
-      { logicalId: 'Keep', resourceType: 'AWS::S3::Bucket', physicalId: 'b', identifierKey: 'BucketName' },
+      { logicalId: 'Keep', resourceType: 'AWS::S3::Bucket', physicalId: 'b', resourceIdentifier: { BucketName: 'b' } },
     ]);
     expect(result['Outputs']).toEqual({ KeepOut: { Value: { Ref: 'Keep' } } });
   });
@@ -134,7 +136,7 @@ describe('filterTemplateForImport', () => {
       },
     };
     const result = filterTemplateForImport(template, [
-      { logicalId: 'Keep', resourceType: 'AWS::S3::Bucket', physicalId: 'b', identifierKey: 'BucketName' },
+      { logicalId: 'Keep', resourceType: 'AWS::S3::Bucket', physicalId: 'b', resourceIdentifier: { BucketName: 'b' } },
     ]);
     expect(result['Outputs']).toEqual({
       KeepOut: { Value: { 'Fn::GetAtt': ['Keep', 'Arn'] } },
@@ -151,7 +153,7 @@ describe('filterTemplateForImport', () => {
       },
     };
     const result = filterTemplateForImport(template, [
-      { logicalId: 'Keep', resourceType: 'AWS::S3::Bucket', physicalId: 'b', identifierKey: 'BucketName' },
+      { logicalId: 'Keep', resourceType: 'AWS::S3::Bucket', physicalId: 'b', resourceIdentifier: { BucketName: 'b' } },
     ]);
     expect(result['Outputs']).toBeUndefined();
   });
@@ -162,7 +164,7 @@ describe('filterTemplateForImport', () => {
       Outputs: { DropOut: { Value: { Ref: 'Excluded' } } },
     };
     const result = filterTemplateForImport(template, [
-      { logicalId: 'Keep', resourceType: 'AWS::S3::Bucket', physicalId: 'b', identifierKey: 'BucketName' },
+      { logicalId: 'Keep', resourceType: 'AWS::S3::Bucket', physicalId: 'b', resourceIdentifier: { BucketName: 'b' } },
     ]);
     expect('Outputs' in result).toBe(false);
   });
@@ -182,10 +184,77 @@ describe('filterTemplateForImport', () => {
       },
     };
     const result = filterTemplateForImport(template, [
-      { logicalId: 'Keep', resourceType: 'AWS::S3::Bucket', physicalId: 'b', identifierKey: 'BucketName' },
+      { logicalId: 'Keep', resourceType: 'AWS::S3::Bucket', physicalId: 'b', resourceIdentifier: { BucketName: 'b' } },
     ]);
     expect(result['Outputs']).toEqual({
       KeepOut: { Value: { 'Fn::Join': ['', ['prefix-', { Ref: 'Keep' }]] } },
     });
+  });
+});
+
+describe('hasCompositeIdSplitter', () => {
+  it('reports the registered composite types', () => {
+    expect(hasCompositeIdSplitter('AWS::ApiGateway::Method')).toBe(true);
+    expect(hasCompositeIdSplitter('AWS::ApiGateway::Resource')).toBe(true);
+    expect(hasCompositeIdSplitter('AWS::EC2::VPCGatewayAttachment')).toBe(true);
+  });
+
+  it('returns false for single-key types', () => {
+    expect(hasCompositeIdSplitter('AWS::S3::Bucket')).toBe(false);
+    expect(hasCompositeIdSplitter('AWS::Lambda::Function')).toBe(false);
+  });
+
+  it('returns false for unknown / unregistered types', () => {
+    expect(hasCompositeIdSplitter('AWS::Made::Up::Type')).toBe(false);
+  });
+});
+
+describe('splitCompositePhysicalId', () => {
+  it('parses AWS::ApiGateway::Method (restApiId|resourceId|httpMethod)', () => {
+    expect(splitCompositePhysicalId('AWS::ApiGateway::Method', 'api123|res456|GET')).toEqual({
+      RestApiId: 'api123',
+      ResourceId: 'res456',
+      HttpMethod: 'GET',
+    });
+  });
+
+  it('parses AWS::ApiGateway::Resource (restApiId|resourceId)', () => {
+    expect(splitCompositePhysicalId('AWS::ApiGateway::Resource', 'api123|res456')).toEqual({
+      RestApiId: 'api123',
+      ResourceId: 'res456',
+    });
+  });
+
+  it('reorders AWS::EC2::VPCGatewayAttachment (cdkd: IGW|VpcId → CFn: {VpcId, InternetGatewayId})', () => {
+    expect(
+      splitCompositePhysicalId('AWS::EC2::VPCGatewayAttachment', 'igw-abc|vpc-xyz')
+    ).toEqual({
+      VpcId: 'vpc-xyz',
+      InternetGatewayId: 'igw-abc',
+    });
+  });
+
+  it('throws on wrong part count for ApiGateway::Method', () => {
+    expect(() => splitCompositePhysicalId('AWS::ApiGateway::Method', 'only-two|parts')).toThrow(
+      /expected 3 parts/
+    );
+  });
+
+  it('throws on wrong part count for ApiGateway::Resource', () => {
+    expect(() => splitCompositePhysicalId('AWS::ApiGateway::Resource', 'one-part')).toThrow(
+      /expected 2 parts/
+    );
+  });
+
+  it('throws on wrong part count for VPCGatewayAttachment', () => {
+    expect(() =>
+      splitCompositePhysicalId('AWS::EC2::VPCGatewayAttachment', 'three|parts|here')
+    ).toThrow(/expected 2 parts/);
+  });
+
+  it('throws on unregistered type', () => {
+    expect(() => splitCompositePhysicalId('AWS::Made::Up::Type', 'whatever')).toThrow(
+      /no composite-id splitter registered/
+    );
   });
 });
