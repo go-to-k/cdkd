@@ -23,6 +23,8 @@ describe('resolveRuntimeImage', () => {
     ['java11', 'public.ecr.aws/lambda/java:11'],
     ['java17', 'public.ecr.aws/lambda/java:17'],
     ['java21', 'public.ecr.aws/lambda/java:21'],
+    ['dotnet6', 'public.ecr.aws/lambda/dotnet:6'],
+    ['dotnet8', 'public.ecr.aws/lambda/dotnet:8'],
   ])('maps %s to %s', (runtime, expected) => {
     expect(resolveRuntimeImage(runtime)).toBe(expected);
   });
@@ -39,17 +41,17 @@ describe('resolveRuntimeImage', () => {
     }
   });
 
-  it('rejects go / dotnet / provided runtimes (Java is no longer in the deferred list)', () => {
-    for (const r of ['go1.x', 'dotnet8', 'provided.al2', 'provided.al2023']) {
+  it('rejects go / provided runtimes (.NET is no longer in the deferred list)', () => {
+    for (const r of ['go1.x', 'provided.al2', 'provided.al2023']) {
       expect(() => resolveRuntimeImage(r)).toThrow(UnsupportedRuntimeError);
       try {
         resolveRuntimeImage(r);
       } catch (err) {
-        // Java should no longer appear in the rejection message — it's
+        // .NET should no longer appear in the rejection message — it's
         // now a supported runtime.
         const msg = (err as Error).message;
-        expect(msg).not.toMatch(/Java is planned/);
-        expect(msg).not.toMatch(/Java.*deferred/);
+        expect(msg).not.toMatch(/\.NET is planned/);
+        expect(msg).not.toMatch(/dotnet.*deferred/);
       }
     }
   });
@@ -66,6 +68,20 @@ describe('resolveRuntimeImage', () => {
       const msg = (err as Error).message;
       expect(msg).toMatch(/java17/);
       expect(msg).toMatch(/java21/);
+    }
+  });
+
+  it('rejects unrecognized dotnet versions through the unknown-runtime branch (dotnet is no longer in the prefix-deferred list)', () => {
+    // dotnet9 was added in CDK lib but not yet in cdkd's supported set.
+    // Now that some dotnet versions are supported, this should land in
+    // the unknown-runtime branch (not the prefix-deferred branch).
+    expect(() => resolveRuntimeImage('dotnet9')).toThrow(/Unknown runtime/);
+    try {
+      resolveRuntimeImage('dotnet9');
+    } catch (err) {
+      const msg = (err as Error).message;
+      expect(msg).toMatch(/dotnet6/);
+      expect(msg).toMatch(/dotnet8/);
     }
   });
 
@@ -86,6 +102,8 @@ describe('resolveRuntimeImage', () => {
       expect(msg).toMatch(/java8\.al2/);
       expect(msg).toMatch(/java17/);
       expect(msg).toMatch(/java21/);
+      expect(msg).toMatch(/dotnet6/);
+      expect(msg).toMatch(/dotnet8/);
     }
   });
 });
@@ -107,12 +125,12 @@ describe('resolveRuntimeFileExtension', () => {
   });
 
   it('rejects unsupported runtimes the same way resolveRuntimeImage does', () => {
-    expect(() => resolveRuntimeFileExtension('dotnet8')).toThrow(UnsupportedRuntimeError);
+    expect(() => resolveRuntimeFileExtension('go1.x')).toThrow(UnsupportedRuntimeError);
     expect(() => resolveRuntimeFileExtension('')).toThrow(UnsupportedRuntimeError);
   });
 
-  it.each(['java8.al2', 'java11', 'java17', 'java21'])(
-    'rejects inline Code.ZipFile for Java runtime %s with a message routing to Code.fromAsset',
+  it.each(['java8.al2', 'java11', 'java17', 'java21', 'dotnet6', 'dotnet8'])(
+    'rejects inline Code.ZipFile for compiled-artifact runtime %s with a message routing to Code.fromAsset',
     (runtime) => {
       expect(() => resolveRuntimeFileExtension(runtime)).toThrow(UnsupportedRuntimeError);
       try {
@@ -153,10 +171,21 @@ describe('resolveRuntimeSpec', () => {
       fileExtension: null,
     });
   });
+
+  it('returns fileExtension: null for .NET entries — inline materialization is unsupported (use Code.fromAsset)', () => {
+    expect(resolveRuntimeSpec('dotnet8')).toEqual({
+      image: 'public.ecr.aws/lambda/dotnet:8',
+      fileExtension: null,
+    });
+    expect(resolveRuntimeSpec('dotnet6')).toEqual({
+      image: 'public.ecr.aws/lambda/dotnet:6',
+      fileExtension: null,
+    });
+  });
 });
 
 describe('isSupportedRuntime', () => {
-  it('returns true for Node.js, Python, Ruby, and Java supported sets, false otherwise', () => {
+  it('returns true for Node.js, Python, Ruby, Java, and .NET supported sets, false otherwise', () => {
     expect(isSupportedRuntime('nodejs20.x')).toBe(true);
     expect(isSupportedRuntime('nodejs24.x')).toBe(true);
     expect(isSupportedRuntime('python3.12')).toBe(true);
@@ -169,10 +198,14 @@ describe('isSupportedRuntime', () => {
     expect(isSupportedRuntime('java11')).toBe(true);
     expect(isSupportedRuntime('java17')).toBe(true);
     expect(isSupportedRuntime('java21')).toBe(true);
+    expect(isSupportedRuntime('dotnet6')).toBe(true);
+    expect(isSupportedRuntime('dotnet8')).toBe(true);
     expect(isSupportedRuntime('ruby3.1')).toBe(false);
     expect(isSupportedRuntime('python3.10')).toBe(false);
     expect(isSupportedRuntime('java19')).toBe(false);
     expect(isSupportedRuntime('java8')).toBe(false);
+    expect(isSupportedRuntime('dotnet9')).toBe(false);
+    expect(isSupportedRuntime('dotnetcore3.1')).toBe(false);
     expect(isSupportedRuntime('')).toBe(false);
   });
 });
