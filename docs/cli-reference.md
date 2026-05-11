@@ -767,8 +767,10 @@ cdkd export                                       # auto-detect single-stack app
 2. Load cdkd state for the target stack; build the
    `(logicalId, physicalId, resourceType)` map.
 3. Refuse if a CFn stack with the destination name already exists, or
-   if any template resource is in the never-importable set (`Custom::*`,
-   `AWS::CloudFormation::Stack`, or has no entry in cdkd state).
+   if any template resource is in the **blocked** set (nested stacks
+   `AWS::CloudFormation::Stack` or template resources without a cdkd
+   state entry). `Custom::*` resources are NOT blocked but require
+   `--include-non-importable` to run the 2-phase flow described below.
 4. Resolve each resource type's primary identifier property name(s) via
    `cloudformation:DescribeType` (with a hardcoded fallback table for
    ~30 single-key types). **Composite primary identifiers**
@@ -791,10 +793,18 @@ cdkd export                                       # auto-detect single-stack app
   rationale: generic YAML libraries silently corrupt CFn shorthand intrinsics
   (`!Ref`, `!Sub`, `!GetAtt`) on round-trip. Hand-written YAML stacks must
   be converted manually.
-- **All-or-nothing.** If any resource in the template is not CFn-importable
-  (`Custom::*`, nested stacks), the command aborts. Mixed
-  (import-some / abandon-rest) flows are deferred — destroy the
-  non-importable resources first, or remove them from the CDK app.
+- **`Custom::*` resources** require `--include-non-importable` to opt
+  into the 2-phase flow: phase 1 IMPORT changeset for the importable
+  resources, then phase 2 UPDATE changeset for the full template — CFn
+  CREATEs the Custom Resources, which re-invokes each backing Lambda's
+  onCreate handler. Make sure those handlers are idempotent before
+  enabling. Without the flag, `Custom::*` resources cause the command
+  to abort. `AWS::CloudFormation::Stack` (nested stacks) always blocks
+  (CFn cannot adopt nor recreate them without conflicting with the
+  existing AWS resource). On phase-2 failure, cdkd state is preserved
+  and the error message includes the recovery procedure
+  (`aws cloudformation create-change-set --change-set-type UPDATE ...`
+  followed by `cdkd state orphan`).
 - **Inline `TemplateBody` only** (51,200-byte cap). Templates larger than
   that require S3 upload via `TemplateURL`; not yet implemented.
 - **Synth template used verbatim**: cdkd does NOT substitute `observedProperties`

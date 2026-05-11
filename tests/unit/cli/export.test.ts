@@ -3,6 +3,7 @@ import {
   filterTemplateForImport,
   hasCompositeIdSplitter,
   isNeverImportableType,
+  isPhase2CreatableType,
   refuseTransientContextIfUnsafe,
   splitCompositePhysicalId,
 } from '../../../src/cli/commands/export.js';
@@ -256,5 +257,29 @@ describe('splitCompositePhysicalId', () => {
     expect(() => splitCompositePhysicalId('AWS::Made::Up::Type', 'whatever')).toThrow(
       /no composite-id splitter registered/
     );
+  });
+});
+
+describe('isPhase2CreatableType', () => {
+  it('matches every Custom::* type (CFn CREATEs in phase 2)', () => {
+    expect(isPhase2CreatableType('Custom::MyHandler')).toBe(true);
+    expect(isPhase2CreatableType('Custom::SomethingElse')).toBe(true);
+    expect(isPhase2CreatableType('Custom::AWSCDKOpenIdConnectProvider')).toBe(true);
+  });
+
+  it('does NOT match AWS::CloudFormation::Stack (nested stacks stay blocked)', () => {
+    // Nested stack import would create a duplicate, so it is intentionally
+    // NOT in the phase-2 set. PR3 verifies this stays blocked.
+    expect(isPhase2CreatableType('AWS::CloudFormation::Stack')).toBe(false);
+  });
+
+  it('does NOT match importable resource types', () => {
+    expect(isPhase2CreatableType('AWS::S3::Bucket')).toBe(false);
+    expect(isPhase2CreatableType('AWS::Lambda::Function')).toBe(false);
+    expect(isPhase2CreatableType('AWS::IAM::Role')).toBe(false);
+  });
+
+  it('does NOT match AWS::CDK::Metadata (silent-drop, not phase 2)', () => {
+    expect(isPhase2CreatableType('AWS::CDK::Metadata')).toBe(false);
   });
 });

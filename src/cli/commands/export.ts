@@ -10,6 +10,7 @@ import {
   DeleteChangeSetCommand,
   waitUntilChangeSetCreateComplete,
   waitUntilStackImportComplete,
+  waitUntilStackUpdateComplete,
   type ResourceToImport,
 } from '@aws-sdk/client-cloudformation';
 import {
@@ -55,6 +56,20 @@ interface ExportOptions {
    * drift or replacement on the first `cdk deploy`.
    */
   acceptTransientContext: boolean;
+  /**
+   * When true and the stack contains resources that cannot be CFn-imported
+   * (currently only `Custom::*` qualifies), run a 2-phase migration:
+   *   Phase 1: IMPORT changeset for importable resources.
+   *   Phase 2: UPDATE changeset for the full template — CFn CREATEs the
+   *            non-importable resources fresh, invoking each
+   *            `Custom::*`'s backing Lambda's onCreate handler.
+   *
+   * Default false: the command aborts with a clear error if any
+   * non-importable resource is present, so users opt in to the
+   * potential side effects (CR onCreate is re-run, which may not be
+   * idempotent).
+   */
+  includeNonImportable: boolean;
 }
 
 /**
@@ -382,30 +397,60 @@ async function exportCommand(stackArg: string | undefined, options: ExportOption
     }
 
     try {
-      // Build the import plan: cdkd state × template resources, filtered
-      // by importability.
-      const { plan, skipped } = await buildImportPlan(state, template, awsClients.cloudFormation);
+      // Build the import plan: cdkd state × template resources, classified
+      // into phase1 (importable) / phase2 (Custom::* CFn will CREATE) /
+      // blocked (anything else — aborts the run).
+      const { phase1Imports, phase2Creates, blocked } = await buildImportPlan(
+        state,
+        template,
+        awsClients.cloudFormation
+      );
 
-      if (skipped.length > 0) {
-        logger.error('The following resources cannot be imported into CloudFormation:');
-        for (const s of skipped) {
-          logger.error(`  - ${s.logicalId} (${s.resourceType}): ${s.reason}`);
+      if (blocked.length > 0) {
+        logger.error('The following resources block migration:');
+        for (const b of blocked) {
+          logger.error(`  - ${b.logicalId} (${b.resourceType}): ${b.reason}`);
         }
         throw new Error(
-          `${skipped.length} resource(s) cannot be imported. CloudFormation IMPORT ` +
-            `requires every template resource to map to an importable AWS resource. ` +
-            `Either destroy these resources first (cdkd destroy / cdkd state destroy ` +
-            `cherry-picked), or accept abandoning them by removing them from the CDK app ` +
-            `and re-synthesizing.`
+          `${blocked.length} resource(s) block migration. Either destroy them first ` +
+            `(cdkd destroy / cdkd state destroy cherry-picked), or remove them from the ` +
+            `CDK app and re-synthesize.`
         );
       }
 
-      if (plan.length === 0) {
-        logger.warn('No resources to import — cdkd state is empty.');
-        return;
+      if (phase2Creates.length > 0 && !options.includeNonImportable) {
+        logger.error('The following resources cannot be imported into CloudFormation:');
+        for (const p of phase2Creates) {
+          logger.error(`  - ${p.logicalId} (${p.resourceType}): CFn cannot import this type`);
+        }
+        throw new Error(
+          `${phase2Creates.length} non-importable resource(s) detected (Custom::*). ` +
+            `Pass --include-non-importable to run a 2-phase migration: phase 1 imports ` +
+            `the importable resources; phase 2 CFn-CREATEs the non-importable ones ` +
+            `(re-invoking each Custom Resource's backing Lambda onCreate handler — ` +
+            `make sure those are idempotent). Or destroy these resources first.`
+        );
       }
 
-      printPlan(plan, cfnStackName);
+      if (phase1Imports.length === 0 && phase2Creates.length === 0) {
+        logger.warn('No resources to migrate — cdkd state is empty.');
+        return;
+      }
+      if (phase1Imports.length === 0) {
+        throw new Error(
+          'No importable resources in the template. CloudFormation IMPORT changeset ' +
+            'requires at least one importable resource for phase 1.'
+        );
+      }
+
+      printPlan(phase1Imports, cfnStackName);
+      if (phase2Creates.length > 0) {
+        logger.info(`Phase 2 will CREATE ${phase2Creates.length} non-importable resource(s):`);
+        for (const p of phase2Creates) {
+          logger.info(`  ${p.logicalId} (${p.resourceType})`);
+        }
+        logger.info('');
+      }
 
       if (options.dryRun) {
         logger.info('--dry-run: no CloudFormation changeset will be created.');
@@ -413,10 +458,16 @@ async function exportCommand(stackArg: string | undefined, options: ExportOption
       }
 
       if (!options.yes) {
+        const phase2Note =
+          phase2Creates.length > 0
+            ? ` Phase 2 will then CREATE ${phase2Creates.length} non-importable resource(s) ` +
+              `(invoking each Custom Resource's onCreate handler).`
+            : '';
         const ok = await confirmPrompt(
-          `Create CloudFormation stack '${cfnStackName}' by importing ${plan.length} ` +
-            `resource(s) from cdkd state '${resolvedStackName}' (${targetRegion})? ` +
-            `AWS resources are unchanged. cdkd state for '${resolvedStackName}' ` +
+          `Create CloudFormation stack '${cfnStackName}' by importing ${phase1Imports.length} ` +
+            `resource(s) from cdkd state '${resolvedStackName}' (${targetRegion})?` +
+            phase2Note +
+            ` AWS resources are unchanged on import. cdkd state for '${resolvedStackName}' ` +
             `will be deleted on success.`
         );
         if (!ok) {
@@ -425,17 +476,52 @@ async function exportCommand(stackArg: string | undefined, options: ExportOption
         }
       }
 
-      // Build and execute the IMPORT changeset.
-      const filteredTemplate = filterTemplateForImport(template, plan);
-      await executeImportChangeSet(awsClients.cloudFormation, cfnStackName, filteredTemplate, plan);
-
-      logger.info(
-        `✓ CloudFormation stack '${cfnStackName}' created via IMPORT. ` +
-          `${plan.length} resource(s) are now managed by CloudFormation.`
+      // Phase 1: IMPORT changeset.
+      const phase1Template = filterTemplateForImport(template, phase1Imports);
+      await executeImportChangeSet(
+        awsClients.cloudFormation,
+        cfnStackName,
+        phase1Template,
+        phase1Imports
       );
 
-      // Delete cdkd state for the migrated stack. The lock is still held;
-      // we release it inside the outer `finally`.
+      logger.info(
+        `✓ Phase 1: CloudFormation stack '${cfnStackName}' created via IMPORT. ` +
+          `${phase1Imports.length} resource(s) imported.`
+      );
+
+      // Phase 2: UPDATE changeset to add the non-importable resources via
+      // CREATE. Skipped when there are none. A phase-2 failure leaves the
+      // CFn stack in a partial state (phase 1 resources imported, phase 2
+      // missing) and cdkd state intact so the user can recover manually
+      // via `aws cloudformation update-stack` + `cdkd state orphan`.
+      if (phase2Creates.length > 0) {
+        try {
+          await executeUpdateChangeSet(awsClients.cloudFormation, cfnStackName, template);
+          logger.info(`✓ Phase 2: ${phase2Creates.length} non-importable resource(s) CREATEd.`);
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          throw new Error(
+            `Phase 1 (IMPORT) succeeded; phase 2 (UPDATE) failed: ${msg}\n\n` +
+              `The CloudFormation stack '${cfnStackName}' now contains the imported ` +
+              `resources but is missing the ${phase2Creates.length} non-importable ` +
+              `resource(s). cdkd state is UNCHANGED so you can inspect what's in it, ` +
+              `but DO NOT run \`cdkd deploy\` against this stack (the imported resources ` +
+              `are now CFn-managed). To recover:\n` +
+              `  1. Fix the failure cause (typically an onCreate Lambda error).\n` +
+              `  2. Re-run the phase 2 UPDATE manually with the full synth template:\n` +
+              `       aws cloudformation create-change-set --stack-name ${cfnStackName} \\\n` +
+              `         --change-set-name cdkd-phase2-retry --change-set-type UPDATE \\\n` +
+              `         --template-body file://<full-template.json>\n` +
+              `  3. Once phase 2 succeeds, run: cdkd state orphan ${resolvedStackName}\n` +
+              `     to clean up cdkd's stale state record.`
+          );
+        }
+      }
+
+      // Delete cdkd state for the migrated stack. Done AFTER phase 2 so a
+      // phase-2 failure leaves state intact for recovery (see catch above).
+      // The lock is still held; we release it inside the outer `finally`.
       await stateBackend.deleteState(resolvedStackName, targetRegion);
       logger.info(
         `cdkd state for '${resolvedStackName}' (${targetRegion}) removed. ` +
@@ -565,24 +651,62 @@ async function assertCfnStackAbsent(
   }
 }
 
-interface SkippedResource {
+interface BlockedResource {
   logicalId: string;
   resourceType: string;
   reason: string;
 }
 
 /**
+ * A resource that the 2-phase flow will CREATE in phase 2 (not import in
+ * phase 1). Currently only `Custom::*` qualifies — CFn cannot adopt
+ * custom-resource state, so the only way to make CFn aware of them is to
+ * have it CREATE the resource fresh (which re-invokes the backing Lambda's
+ * onCreate handler).
+ */
+interface Phase2CreateEntry {
+  logicalId: string;
+  resourceType: string;
+}
+
+/**
+ * Returns true when a resource type is non-importable BUT can be handled
+ * by the phase-2 CREATE path. Today this is exactly `Custom::*` (Lambda-
+ * backed Custom Resources whose backing Lambda is itself in the same
+ * stack and gets imported in phase 1).
+ *
+ * `AWS::CloudFormation::Stack` (nested stacks) is intentionally NOT in
+ * this set: CFn would CREATE a duplicate nested stack rather than adopt
+ * the existing one, which would conflict with whatever the cdkd state
+ * thought it owned. cdkd doesn't deploy nested stacks anyway.
+ *
+ * Exported for unit testing.
+ */
+export function isPhase2CreatableType(resourceType: string): boolean {
+  return resourceType.startsWith('Custom::');
+}
+
+/**
  * Build the import plan from cdkd state + the synthesized template.
  *
- * Both sources must agree: every logical ID in the template (except
- * `NEVER_IMPORTABLE_TYPES`) must have a matching entry in cdkd state with
- * a non-empty `physicalId`. Mismatches abort the migration via `skipped`.
+ * Classifies every template resource into one of:
+ *   - `phase1Imports`: importable into the new CFn stack via the IMPORT
+ *     changeset. Must have an entry in cdkd state with a non-empty
+ *     `physicalId` and a resolvable primary identifier.
+ *   - `phase2Creates`: non-importable but `isPhase2CreatableType` — CFn
+ *     will CREATE these in the phase-2 UPDATE changeset. Currently only
+ *     `Custom::*`.
+ *   - `blocked`: anything else. A non-empty `blocked` aborts the run.
  */
 async function buildImportPlan(
   state: StackState,
   template: Record<string, unknown>,
   cfnClient: AwsClients['cloudFormation']
-): Promise<{ plan: ImportPlanEntry[]; skipped: SkippedResource[] }> {
+): Promise<{
+  phase1Imports: ImportPlanEntry[];
+  phase2Creates: Phase2CreateEntry[];
+  blocked: BlockedResource[];
+}> {
   const templateResources = template['Resources'];
   if (
     !templateResources ||
@@ -592,8 +716,9 @@ async function buildImportPlan(
     throw new Error('Template has no Resources section.');
   }
 
-  const plan: ImportPlanEntry[] = [];
-  const skipped: SkippedResource[] = [];
+  const phase1Imports: ImportPlanEntry[] = [];
+  const phase2Creates: Phase2CreateEntry[] = [];
+  const blocked: BlockedResource[] = [];
   const identifierCache = new Map<string, PrimaryIdentifierCacheEntry>();
 
   for (const [logicalId, raw] of Object.entries(templateResources as Record<string, unknown>)) {
@@ -602,22 +727,29 @@ async function buildImportPlan(
     const resourceType = resource.Type ?? '';
     if (!resourceType) continue;
 
+    if (resourceType === 'AWS::CDK::Metadata') {
+      // CDK sentinel — silently dropped. Not a real AWS resource.
+      continue;
+    }
+
     if (isNeverImportableType(resourceType)) {
-      // CDK sentinels are silently dropped; user-facing Custom::* / nested
-      // stacks are reported as skipped so the user makes a conscious
-      // decision before migrating.
-      if (resourceType === 'AWS::CDK::Metadata') continue;
-      skipped.push({
-        logicalId,
-        resourceType,
-        reason: 'CloudFormation IMPORT does not support this resource type',
-      });
+      if (isPhase2CreatableType(resourceType)) {
+        // Custom::* — CFn will CREATE fresh in phase 2.
+        phase2Creates.push({ logicalId, resourceType });
+      } else {
+        // Nested stacks etc. — hard block.
+        blocked.push({
+          logicalId,
+          resourceType,
+          reason: 'CloudFormation cannot import or recreate this resource type',
+        });
+      }
       continue;
     }
 
     const stateEntry: ResourceState | undefined = state.resources[logicalId];
     if (!stateEntry || !stateEntry.physicalId) {
-      skipped.push({
+      blocked.push({
         logicalId,
         resourceType,
         reason: 'no entry in cdkd state (resource is in template but was not deployed by cdkd)',
@@ -634,7 +766,7 @@ async function buildImportPlan(
         identifierCache
       );
     } catch (err) {
-      skipped.push({
+      blocked.push({
         logicalId,
         resourceType,
         reason:
@@ -644,7 +776,7 @@ async function buildImportPlan(
       continue;
     }
 
-    plan.push({
+    phase1Imports.push({
       logicalId,
       resourceType,
       physicalId: stateEntry.physicalId,
@@ -652,7 +784,7 @@ async function buildImportPlan(
     });
   }
 
-  return { plan, skipped };
+  return { phase1Imports, phase2Creates, blocked };
 }
 
 /**
@@ -962,6 +1094,93 @@ async function executeImportChangeSet(
 }
 
 /**
+ * Phase 2 of the 2-phase migration: a CFn UPDATE changeset that ADDs the
+ * non-importable resources (`Custom::*`) to the just-created stack. CFn
+ * diffs against the phase-1 stack state, sees the new resources, and
+ * CREATEs them — which invokes each Custom Resource's backing Lambda
+ * onCreate handler.
+ *
+ * Failure semantics: caller catches and surfaces a clear recovery path
+ * (cdkd state is intentionally NOT deleted between phases, so a phase-2
+ * failure leaves a recoverable state).
+ */
+async function executeUpdateChangeSet(
+  cfnClient: AwsClients['cloudFormation'],
+  stackName: string,
+  template: Record<string, unknown>
+): Promise<void> {
+  const logger = getLogger();
+  const changeSetName = `cdkd-phase2-${Date.now()}`;
+  const templateBody = JSON.stringify(template, null, 2);
+
+  if (templateBody.length > 51200) {
+    throw new Error(
+      `Full template is ${templateBody.length} bytes, over the 51,200-byte inline ` +
+        `TemplateBody limit for phase-2 UPDATE. TemplateURL upload is not yet implemented.`
+    );
+  }
+
+  logger.info(
+    `Creating UPDATE changeset '${changeSetName}' for phase 2 ` +
+      `(${templateBody.length} bytes)...`
+  );
+
+  try {
+    await cfnClient.send(
+      new CreateChangeSetCommand({
+        StackName: stackName,
+        ChangeSetName: changeSetName,
+        ChangeSetType: 'UPDATE',
+        TemplateBody: templateBody,
+        Capabilities: ['CAPABILITY_IAM', 'CAPABILITY_NAMED_IAM', 'CAPABILITY_AUTO_EXPAND'],
+      })
+    );
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    throw new Error(`Failed to create UPDATE changeset: ${msg}`);
+  }
+
+  try {
+    await waitUntilChangeSetCreateComplete(
+      { client: cfnClient, maxWaitTime: 600 },
+      { StackName: stackName, ChangeSetName: changeSetName }
+    );
+  } catch (err) {
+    try {
+      const desc = await cfnClient.send(
+        new DescribeChangeSetCommand({ StackName: stackName, ChangeSetName: changeSetName })
+      );
+      const reason = desc.StatusReason ?? 'unknown';
+      await cfnClient
+        .send(new DeleteChangeSetCommand({ StackName: stackName, ChangeSetName: changeSetName }))
+        .catch(() => {});
+      throw new Error(`UPDATE changeset FAILED: ${reason}`);
+    } catch (innerErr) {
+      if (innerErr instanceof Error && innerErr.message.startsWith('UPDATE changeset FAILED')) {
+        throw innerErr;
+      }
+      throw err;
+    }
+  }
+
+  logger.info(`Executing UPDATE changeset...`);
+  try {
+    await cfnClient.send(
+      new ExecuteChangeSetCommand({ StackName: stackName, ChangeSetName: changeSetName })
+    );
+    await waitUntilStackUpdateComplete(
+      { client: cfnClient, maxWaitTime: 3600 },
+      { StackName: stackName }
+    );
+  } catch (err) {
+    await cfnClient
+      .send(new DeleteChangeSetCommand({ StackName: stackName, ChangeSetName: changeSetName }))
+      .catch(() => {});
+    throw err;
+  }
+}
+
+/**
  * Refuse to proceed when the user passed CLI `-c key=value` overrides
  * without `--accept-transient-context`. The CLI form is not persisted
  * to `cdk.json` / `cdk.context.json`, so a subsequent `cdk deploy`
@@ -1081,6 +1300,14 @@ export function createExportCommand(): Command {
       'Allow CLI -c key=value overrides at export time even though they are not ' +
         'persisted to cdk.json / cdk.context.json (default: refuse). When set, the ' +
         'user is responsible for passing the same -c flags to every future cdk deploy.',
+      false
+    )
+    .option(
+      '--include-non-importable',
+      'Run a 2-phase migration when the stack contains non-importable resources ' +
+        '(Custom::*). Phase 1 imports the importable resources; phase 2 CFn-CREATEs ' +
+        "the non-importable ones, which re-invokes each Custom Resource's onCreate " +
+        'handler. Make sure onCreate is idempotent before enabling.',
       false
     )
     .action(withErrorHandling(exportCommand));
