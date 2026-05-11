@@ -61,6 +61,7 @@ import {
   buildJwksUrlFromIssuer,
   createJwksCache,
 } from '../../local/cognito-jwt.js';
+import { singleFlight } from '../../utils/single-flight.js';
 
 interface LocalStartApiOptions {
   app?: string;
@@ -488,21 +489,24 @@ async function localStartApiCommand(options: LocalStartApiOptions): Promise<void
   // unhandledRejection all run the same dispose path. Double-^C
   // bypasses dispose and exits immediately so the user can escape a
   // hung Docker daemon.
-  let shuttingDown = false;
+  //
+  // Single-flight contract (closes the SIGINT-during-SIGTERM /
+  // double-signal race): the actual cleanup body is wrapped in
+  // `singleFlight(...)` so a second signal that lands while the first
+  // shutdown is still draining `pool.dispose()` awaits the same
+  // promise instead of starting a parallel run against the shared
+  // `servers` / `inlineTmpDirs` / `layerTmpDirs` cells (which would
+  // otherwise double-`server.close()` and corrupt the
+  // mid-iteration tmpdir set). The first signal's `signal` + `exitCode`
+  // win — subsequent signals' arguments are intentionally dropped.
+  // The double-^C force-exit feature is preserved by tracking the
+  // started + completed state separately from the in-flight cleanup.
+  let shutdownStarted = false;
+  let firstSignal: string | undefined;
+  let firstExitCode = 0;
   let forceExitArmed = false;
-  const shutdown = async (signal: string, exitCode: number): Promise<void> => {
-    if (shuttingDown) {
-      if (!forceExitArmed) {
-        forceExitArmed = true;
-        logger.warn(
-          `Received second ${signal}; force-exiting. Orphan containers may remain — run 'docker ps --filter name=cdkd-local-' and 'docker rm -f' to clean up.`
-        );
-        process.exit(130);
-      }
-      return;
-    }
-    shuttingDown = true;
-    logger.info(`Received ${signal}, shutting down...`);
+  const runCleanup = singleFlight(async (): Promise<void> => {
+    logger.info(`Received ${firstSignal}, shutting down...`);
     if (watcher) {
       try {
         await watcher.close();
@@ -558,7 +562,23 @@ async function localStartApiCommand(options: LocalStartApiOptions): Promise<void
         );
       }
     }
-    process.exit(exitCode);
+  });
+  const shutdown = async (signal: string, exitCode: number): Promise<void> => {
+    if (shutdownStarted) {
+      if (!forceExitArmed) {
+        forceExitArmed = true;
+        logger.warn(
+          `Received second ${signal}; force-exiting. Orphan containers may remain — run 'docker ps --filter name=cdkd-local-' and 'docker rm -f' to clean up.`
+        );
+        process.exit(130);
+      }
+      return;
+    }
+    shutdownStarted = true;
+    firstSignal = signal;
+    firstExitCode = exitCode;
+    await runCleanup();
+    process.exit(firstExitCode);
   };
 
   process.on('SIGINT', () => {

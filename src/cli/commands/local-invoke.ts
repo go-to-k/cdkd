@@ -50,6 +50,7 @@ import {
 } from '../../assets/asset-manifest-loader.js';
 import { S3StateBackend } from '../../state/s3-state-backend.js';
 import { setAwsClients, AwsClients } from '../../utils/aws-clients.js';
+import { singleFlight } from '../../utils/single-flight.js';
 import type { StackState } from '../../types/state.js';
 import { createLocalStartApiCommand } from './local-start-api.js';
 import { createLocalRunTaskCommand } from './local-run-task.js';
@@ -154,49 +155,60 @@ async function localInvokeCommand(target: string, options: LocalInvokeOptions): 
    * sentinel, so partial-init is safe (e.g. SIGINT during synth, before
    * the docker container is even created). Errors per step are logged
    * at debug; we never want cleanup itself to mask a real handler error.
+   *
+   * Wrapped in `singleFlight(...)` so a ^C that lands during the outer
+   * `finally`'s normal unwind awaits the in-flight cleanup instead of
+   * launching a parallel run against the shared `containerId` /
+   * `stopLogs` / `imagePlan` cells (which would risk double
+   * `docker rm -f` and corrupt mid-iteration mutation of `imagePlan`).
    */
-  const cleanup = async (): Promise<void> => {
-    if (stopLogs) {
-      try {
-        stopLogs();
-      } catch (err) {
-        getLogger().debug(
-          `streamLogs stop failed: ${err instanceof Error ? err.message : String(err)}`
-        );
+  const cleanup = singleFlight(
+    async (): Promise<void> => {
+      if (stopLogs) {
+        try {
+          stopLogs();
+        } catch (err) {
+          getLogger().debug(
+            `streamLogs stop failed: ${err instanceof Error ? err.message : String(err)}`
+          );
+        }
       }
-    }
-    if (containerId) {
-      try {
-        await removeContainer(containerId);
-      } catch (err) {
-        getLogger().debug(
-          `removeContainer(${containerId}) failed: ${err instanceof Error ? err.message : String(err)}`
-        );
+      if (containerId) {
+        try {
+          await removeContainer(containerId);
+        } catch (err) {
+          getLogger().debug(
+            `removeContainer(${containerId}) failed: ${err instanceof Error ? err.message : String(err)}`
+          );
+        }
       }
-    }
-    if (imagePlan?.inlineTmpDir) {
-      try {
-        rmSync(imagePlan.inlineTmpDir, { recursive: true, force: true });
-      } catch (err) {
-        getLogger().debug(
-          `Failed to remove inline-code tmpdir ${imagePlan.inlineTmpDir}: ${
-            err instanceof Error ? err.message : String(err)
-          }`
-        );
+      if (imagePlan?.inlineTmpDir) {
+        try {
+          rmSync(imagePlan.inlineTmpDir, { recursive: true, force: true });
+        } catch (err) {
+          getLogger().debug(
+            `Failed to remove inline-code tmpdir ${imagePlan.inlineTmpDir}: ${
+              err instanceof Error ? err.message : String(err)
+            }`
+          );
+        }
       }
-    }
-    if (imagePlan?.layersTmpDir) {
-      try {
-        rmSync(imagePlan.layersTmpDir, { recursive: true, force: true });
-      } catch (err) {
-        getLogger().debug(
-          `Failed to remove merged-layers tmpdir ${imagePlan.layersTmpDir}: ${
-            err instanceof Error ? err.message : String(err)
-          }`
-        );
+      if (imagePlan?.layersTmpDir) {
+        try {
+          rmSync(imagePlan.layersTmpDir, { recursive: true, force: true });
+        } catch (err) {
+          getLogger().debug(
+            `Failed to remove merged-layers tmpdir ${imagePlan.layersTmpDir}: ${
+              err instanceof Error ? err.message : String(err)
+            }`
+          );
+        }
       }
+    },
+    (err) => {
+      getLogger().debug(`cleanup failed: ${err instanceof Error ? err.message : String(err)}`);
     }
-  };
+  );
 
   try {
     // The role-arn helper accepts an optional region for the SDK fallback;
