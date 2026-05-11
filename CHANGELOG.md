@@ -1,3 +1,10 @@
+## [0.91.2](https://github.com/go-to-k/cdkd/compare/v0.91.1...v0.91.2) (2026-05-11)
+
+
+### Bug Fixes
+
+* **local:** resolve Fn::Join Code.ImageUri for lambda.DockerImageCode.fromEcr (Gap 2 of [#286](https://github.com/go-to-k/cdkd/issues/286)) ([#293](https://github.com/go-to-k/cdkd/issues/293)) ([5e0af3c](https://github.com/go-to-k/cdkd/commit/5e0af3c71e8dfd5d385be0ba4d684e3d6a31fa44))
+
 ## [0.91.1](https://github.com/go-to-k/cdkd/compare/v0.91.0...v0.91.1) (2026-05-11)
 
 
