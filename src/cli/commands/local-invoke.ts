@@ -118,11 +118,13 @@ interface LocalInvokeOptions {
  * Emulator (RIE). Modeled on `sam local invoke` but reusing cdkd's
  * synthesis / asset / construct-path plumbing.
  *
- * v1 scope: Node.js runtimes only, Docker required. Literal env vars
- * pass through; intrinsic-valued env vars require `--from-state` to
- * substitute deployed physical IDs / attributes (PR 2). See
- * [docs/cli-reference.md](../../../docs/cli-reference.md) for the full
- * surface and out-of-scope items.
+ * Supports every current AWS Lambda runtime (Node.js, Python, Ruby,
+ * Java, .NET, and the OS-only `provided.al2` / `provided.al2023`) — see
+ * `src/local/runtime-image.ts` for the canonical supported set. Docker
+ * is required. Literal env vars pass through; intrinsic-valued env vars
+ * require `--from-state` to substitute deployed physical IDs /
+ * attributes. See [docs/cli-reference.md](../../../docs/cli-reference.md)
+ * for the full surface and out-of-scope items.
  */
 async function localInvokeCommand(target: string, options: LocalInvokeOptions): Promise<void> {
   const logger = getLogger();
