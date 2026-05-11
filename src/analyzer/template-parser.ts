@@ -150,6 +150,51 @@ export class TemplateParser {
       return;
     }
 
+    // Check for Fn::Join / Fn::Select / Fn::Split
+    //   Fn::Join:   [<delimiter: string>, [<item1>, <item2>, ...]]
+    //   Fn::Select: [<index: number-or-Ref>, <array-or-intrinsic>]
+    //   Fn::Split:  [<delimiter: string>, <source-string-or-intrinsic>]
+    // CDK emits these (especially Fn::Join) to construct ARNs that embed
+    // sibling-resource Refs / Fn::GetAtt inside the array arguments — e.g.
+    // DynamoDB `Table.tableArn` synthesizes as
+    //   Fn::Join: [':', ['arn', 'aws', 'dynamodb', {Ref:'AWS::Region'},
+    //                    {Ref:'AWS::AccountId'}, {Fn::Join:['/',['table',{Ref:'MyTable'}]]}]]
+    // and Fn::Select+Fn::Split is the canonical "extract substring from ARN"
+    // pattern (Fn::Select: [5, Fn::Split: [':', Fn::GetAtt: [..., 'Arn']]]).
+    // The buried Ref / Fn::GetAtt MUST contribute a DAG edge so the consumer
+    // is ordered after its dependency; otherwise the deploy races. Explicit
+    // recursion through each intrinsic's array argument keeps that support
+    // load-bearing instead of relying on the generic fall-through below to
+    // accidentally find them (see issue #286 — same class as #275/#276).
+    // We do NOT add edges for the intrinsic wrapper itself, only for inner
+    // refs the recursion uncovers (Ref / Fn::GetAtt / Fn::Sub, plus any
+    // further-nested Fn::Join / Fn::Select / Fn::Split chain).
+    if ('Fn::Join' in obj) {
+      const joinValue = obj['Fn::Join'];
+      if (Array.isArray(joinValue) && joinValue.length >= 2) {
+        // Skip the delimiter (joinValue[0]); recurse into the items array.
+        this.extractRefsFromValue(joinValue[1], dependencies);
+      }
+      return;
+    }
+    if ('Fn::Select' in obj) {
+      const selectValue = obj['Fn::Select'];
+      if (Array.isArray(selectValue) && selectValue.length >= 2) {
+        // Index may itself be an intrinsic (rare but valid); recurse into both.
+        this.extractRefsFromValue(selectValue[0], dependencies);
+        this.extractRefsFromValue(selectValue[1], dependencies);
+      }
+      return;
+    }
+    if ('Fn::Split' in obj) {
+      const splitValue = obj['Fn::Split'];
+      if (Array.isArray(splitValue) && splitValue.length >= 2) {
+        // Skip the delimiter (splitValue[0]); recurse into the source value.
+        this.extractRefsFromValue(splitValue[1], dependencies);
+      }
+      return;
+    }
+
     // Recursively process all values
     Object.values(obj).forEach((v) => this.extractRefsFromValue(v, dependencies));
   }
