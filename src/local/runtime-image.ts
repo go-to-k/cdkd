@@ -10,8 +10,12 @@
  * for container Lambdas, so a "works locally, breaks in AWS" mismatch is
  * almost always a config issue rather than an image divergence.
  *
- * v1 supports Node.js + Python. Other runtimes throw `UnsupportedRuntimeError`
- * with a pointer at the planned PR.
+ * Supports Node.js + Python + Ruby. Other runtimes throw
+ * `UnsupportedRuntimeError` with a pointer at the planned PR.
+ *
+ * Ruby uses the same `<file>.<func>` handler grammar as Node.js and Python,
+ * so the inline-code materializer's `lastIndexOf('.')` parse works
+ * unchanged; only the file extension (`.rb`) differs.
  */
 
 interface RuntimeSpec {
@@ -19,7 +23,8 @@ interface RuntimeSpec {
   readonly image: string;
   /**
    * Source-file extension (with leading dot) for inline-code
-   * materialization (`Code.ZipFile`). Node.js → `.js`, Python → `.py`.
+   * materialization (`Code.ZipFile`). Node.js → `.js`, Python → `.py`,
+   * Ruby → `.rb`.
    */
   readonly fileExtension: string;
 }
@@ -33,6 +38,8 @@ const SUPPORTED_RUNTIMES: Readonly<Record<string, RuntimeSpec>> = {
   'python3.12': { image: 'public.ecr.aws/lambda/python:3.12', fileExtension: '.py' },
   'python3.13': { image: 'public.ecr.aws/lambda/python:3.13', fileExtension: '.py' },
   'python3.14': { image: 'public.ecr.aws/lambda/python:3.14', fileExtension: '.py' },
+  'ruby3.2': { image: 'public.ecr.aws/lambda/ruby:3.2', fileExtension: '.rb' },
+  'ruby3.3': { image: 'public.ecr.aws/lambda/ruby:3.3', fileExtension: '.rb' },
 };
 
 export class UnsupportedRuntimeError extends Error {
@@ -60,8 +67,8 @@ export function resolveRuntimeImage(runtime: string): string {
 /**
  * Resolve a Lambda `Runtime` value to the source-file extension used when
  * materializing an inline `Code.ZipFile` body to disk. Node.js → `.js`,
- * Python → `.py`. Throws {@link UnsupportedRuntimeError} on the same
- * runtime set as {@link resolveRuntimeImage}.
+ * Python → `.py`, Ruby → `.rb`. Throws {@link UnsupportedRuntimeError} on
+ * the same runtime set as {@link resolveRuntimeImage}.
  */
 export function resolveRuntimeFileExtension(runtime: string): string {
   return resolveRuntimeSpec(runtime).fileExtension;
@@ -86,21 +93,20 @@ export function resolveRuntimeSpec(runtime: string): RuntimeSpec {
   if (
     runtime.startsWith('java') ||
     runtime.startsWith('dotnet') ||
-    runtime.startsWith('ruby') ||
     runtime.startsWith('go') ||
     runtime.startsWith('provided')
   ) {
     throw new UnsupportedRuntimeError(
       runtime,
-      `Runtime '${runtime}' is not supported in cdkd local invoke v1. ` +
-        'Only Node.js (nodejs18.x / nodejs20.x / nodejs22.x / nodejs24.x) and Python (python3.11 / python3.12 / python3.13 / python3.14) runtimes are supported. ' +
+      `Runtime '${runtime}' is not yet supported in cdkd local invoke. ` +
+        'Supported runtimes: Node.js (nodejs18.x / nodejs20.x / nodejs22.x / nodejs24.x), Python (python3.11 / python3.12 / python3.13 / python3.14), Ruby (ruby3.2 / ruby3.3). ' +
         'Other runtimes follow in subsequent PRs.'
     );
   }
 
   throw new UnsupportedRuntimeError(
     runtime,
-    `Unknown runtime '${runtime}'. cdkd local invoke v1 supports nodejs18.x / nodejs20.x / nodejs22.x / nodejs24.x / python3.11 / python3.12 / python3.13 / python3.14.`
+    `Unknown runtime '${runtime}'. cdkd local invoke supports nodejs18.x / nodejs20.x / nodejs22.x / nodejs24.x / python3.11 / python3.12 / python3.13 / python3.14 / ruby3.2 / ruby3.3.`
   );
 }
 
