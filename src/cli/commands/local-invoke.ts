@@ -28,7 +28,11 @@ import {
   substituteEnvVarsFromState,
   type StateEnvSubstitutionAudit,
 } from '../../local/state-resolver.js';
-import { resolveRuntimeFileExtension, resolveRuntimeImage } from '../../local/runtime-image.js';
+import {
+  resolveRuntimeCodeMountPath,
+  resolveRuntimeFileExtension,
+  resolveRuntimeImage,
+} from '../../local/runtime-image.js';
 import {
   ensureDockerAvailable,
   pickFreePort,
@@ -523,9 +527,14 @@ async function resolveZipImagePlan(
   // at the same target path.
   const layerPlan = materializeLambdaLayers(lambda.layers);
 
+  // provided.al2 / provided.al2023 require the deployment package at
+  // /var/runtime (where the base image's hardcoded entrypoint exec's
+  // /var/runtime/bootstrap); every other runtime expects /var/task.
+  const containerCodePath = resolveRuntimeCodeMountPath(lambda.runtime);
+
   return {
     image,
-    mounts: [{ hostPath: codeDir, containerPath: '/var/task', readOnly: true }],
+    mounts: [{ hostPath: codeDir, containerPath: containerCodePath, readOnly: true }],
     extraMounts: layerPlan.mount ? [layerPlan.mount] : [],
     cmd: [lambda.handler],
     ...(inlineTmpDir !== undefined && { inlineTmpDir }),

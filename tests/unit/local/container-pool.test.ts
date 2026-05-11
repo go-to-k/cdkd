@@ -21,6 +21,7 @@ vi.mock('../../../src/local/rie-client.js', () => ({
 
 vi.mock('../../../src/local/runtime-image.js', () => ({
   resolveRuntimeImage: vi.fn(() => 'public.ecr.aws/lambda/nodejs:20'),
+  resolveRuntimeCodeMountPath: vi.fn(() => '/var/task'),
 }));
 
 import { removeContainer, runDetached, streamLogs } from '../../../src/local/docker-runner.js';

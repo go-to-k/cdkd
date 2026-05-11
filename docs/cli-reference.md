@@ -801,18 +801,23 @@ plumbing.
 (`public.ecr.aws/lambda/nodejs:<version>`,
 `public.ecr.aws/lambda/python:<version>`,
 `public.ecr.aws/lambda/ruby:<version>`,
-`public.ecr.aws/lambda/java:<version>`, or
-`public.ecr.aws/lambda/dotnet:<version>`, ~600MB); subsequent
-invocations reuse the cached image. Pass `--no-pull` to skip the
-`docker pull` round-trip altogether. Supported runtimes: `nodejs18.x`
-/ `nodejs20.x` / `nodejs22.x` / `nodejs24.x` / `python3.11` /
-`python3.12` / `python3.13` / `python3.14` / `ruby3.2` / `ruby3.3` /
-`java8.al2` / `java11` / `java17` / `java21` / `dotnet6` / `dotnet8`.
-Java and .NET are **asset-backed only** — inline `Code.ZipFile` is
-rejected with a routing message ("use `lambda.Code.fromAsset(...)`")
-because the Handler shape names a compiled artifact
-(`package.Class::method` for Java's JVM class;
-`Assembly::Namespace.Class::Method` for .NET's CLR assembly).
+`public.ecr.aws/lambda/java:<version>`,
+`public.ecr.aws/lambda/dotnet:<version>`, or
+`public.ecr.aws/lambda/provided:<al2|al2023>` — ~600MB for the
+language-specific images, ~50MB for the OS-only `provided.*`);
+subsequent invocations reuse the cached image. Pass `--no-pull` to
+skip the `docker pull` round-trip altogether. Supported runtimes:
+`nodejs18.x` / `nodejs20.x` / `nodejs22.x` / `nodejs24.x` /
+`python3.11` / `python3.12` / `python3.13` / `python3.14` /
+`ruby3.2` / `ruby3.3` / `java8.al2` / `java11` / `java17` / `java21` /
+`dotnet6` / `dotnet8` / `provided.al2` / `provided.al2023`. The
+deprecated `go1.x` runtime is rejected with a migration pointer to
+`provided.al2023`. Java, .NET, and `provided.*` are **asset-backed
+only** — inline `Code.ZipFile` is rejected with a routing message
+("use `lambda.Code.fromAsset(...)`") because the Handler shape names
+a compiled artifact (`package.Class::method` for Java's JVM class;
+`Assembly::Namespace.Class::Method` for .NET's CLR assembly; an
+arbitrary `bootstrap` binary for `provided.*`).
 
 **Container Lambdas (PR 5 of #224)** — `lambda.DockerImageFunction(...)` /
 `Code.ImageUri` is supported in addition to ZIP Lambdas. cdkd reads the
