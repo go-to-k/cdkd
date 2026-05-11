@@ -10,18 +10,20 @@
  * for container Lambdas, so a "works locally, breaks in AWS" mismatch is
  * almost always a config issue rather than an image divergence.
  *
- * Supports Node.js + Python + Ruby + Java. Other runtimes throw
+ * Supports Node.js + Python + Ruby + Java + .NET. Other runtimes throw
  * `UnsupportedRuntimeError` with a pointer at the planned PR.
  *
  * Ruby uses the same `<file>.<func>` handler grammar as Node.js and Python,
  * so the inline-code materializer's `lastIndexOf('.')` parse works
  * unchanged; only the file extension (`.rb`) differs.
  *
- * Java is **asset-backed only** — the `Handler` value (`package.Class::method`)
- * names a compiled class on the classpath, which can only be supplied as a
- * compiled `.class` hierarchy or `.jar` packaged via `lambda.Code.fromAsset(...)`.
- * Inline `Code.ZipFile` has no meaning for the JVM, so `fileExtension` is
- * `null` for every Java entry and `resolveRuntimeFileExtension` throws a
+ * Java and .NET are **asset-backed only** — the Handler value names a
+ * compiled artifact (`package.Class::method` for Java's JVM class on the
+ * classpath; `Assembly::Namespace.Class::Method` for .NET's CLR assembly /
+ * DLL), which can only be supplied as a compiled artifact directory
+ * packaged via `lambda.Code.fromAsset(...)`. Inline `Code.ZipFile` has no
+ * meaning for either runtime, so `fileExtension` is `null` for every
+ * Java / .NET entry and `resolveRuntimeFileExtension` throws a
  * runtime-specific message routing the user to `Code.fromAsset(...)`.
  */
 
@@ -54,6 +56,8 @@ const SUPPORTED_RUNTIMES: Readonly<Record<string, RuntimeSpec>> = {
   java11: { image: 'public.ecr.aws/lambda/java:11', fileExtension: null },
   java17: { image: 'public.ecr.aws/lambda/java:17', fileExtension: null },
   java21: { image: 'public.ecr.aws/lambda/java:21', fileExtension: null },
+  dotnet6: { image: 'public.ecr.aws/lambda/dotnet:6', fileExtension: null },
+  dotnet8: { image: 'public.ecr.aws/lambda/dotnet:8', fileExtension: null },
 };
 
 export class UnsupportedRuntimeError extends Error {
@@ -119,18 +123,18 @@ export function resolveRuntimeSpec(runtime: string): RuntimeSpec {
   const spec = SUPPORTED_RUNTIMES[runtime];
   if (spec) return spec;
 
-  if (runtime.startsWith('dotnet') || runtime.startsWith('go') || runtime.startsWith('provided')) {
+  if (runtime.startsWith('go') || runtime.startsWith('provided')) {
     throw new UnsupportedRuntimeError(
       runtime,
       `Runtime '${runtime}' is not yet supported in cdkd local invoke. ` +
-        'Supported runtimes: Node.js (nodejs18.x / nodejs20.x / nodejs22.x / nodejs24.x), Python (python3.11 / python3.12 / python3.13 / python3.14), Ruby (ruby3.2 / ruby3.3), Java (java8.al2 / java11 / java17 / java21). ' +
+        'Supported runtimes: Node.js (nodejs18.x / nodejs20.x / nodejs22.x / nodejs24.x), Python (python3.11 / python3.12 / python3.13 / python3.14), Ruby (ruby3.2 / ruby3.3), Java (java8.al2 / java11 / java17 / java21), .NET (dotnet6 / dotnet8). ' +
         'Other runtimes follow in subsequent PRs.'
     );
   }
 
   throw new UnsupportedRuntimeError(
     runtime,
-    `Unknown runtime '${runtime}'. cdkd local invoke supports nodejs18.x / nodejs20.x / nodejs22.x / nodejs24.x / python3.11 / python3.12 / python3.13 / python3.14 / ruby3.2 / ruby3.3 / java8.al2 / java11 / java17 / java21.`
+    `Unknown runtime '${runtime}'. cdkd local invoke supports nodejs18.x / nodejs20.x / nodejs22.x / nodejs24.x / python3.11 / python3.12 / python3.13 / python3.14 / ruby3.2 / ruby3.3 / java8.al2 / java11 / java17 / java21 / dotnet6 / dotnet8.`
   );
 }
 

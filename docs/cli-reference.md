@@ -800,16 +800,19 @@ plumbing.
 **Requires Docker.** The first invocation pulls the Lambda base image
 (`public.ecr.aws/lambda/nodejs:<version>`,
 `public.ecr.aws/lambda/python:<version>`,
-`public.ecr.aws/lambda/ruby:<version>`, or
-`public.ecr.aws/lambda/java:<version>`, ~600MB); subsequent
+`public.ecr.aws/lambda/ruby:<version>`,
+`public.ecr.aws/lambda/java:<version>`, or
+`public.ecr.aws/lambda/dotnet:<version>`, ~600MB); subsequent
 invocations reuse the cached image. Pass `--no-pull` to skip the
 `docker pull` round-trip altogether. Supported runtimes: `nodejs18.x`
 / `nodejs20.x` / `nodejs22.x` / `nodejs24.x` / `python3.11` /
 `python3.12` / `python3.13` / `python3.14` / `ruby3.2` / `ruby3.3` /
-`java8.al2` / `java11` / `java17` / `java21`. Java is **asset-backed
-only** — inline `Code.ZipFile` is rejected with a routing message
-("use `lambda.Code.fromAsset(...)`") because the Handler shape
-`package.Class::method` names a compiled JVM class.
+`java8.al2` / `java11` / `java17` / `java21` / `dotnet6` / `dotnet8`.
+Java and .NET are **asset-backed only** — inline `Code.ZipFile` is
+rejected with a routing message ("use `lambda.Code.fromAsset(...)`")
+because the Handler shape names a compiled artifact
+(`package.Class::method` for Java's JVM class;
+`Assembly::Namespace.Class::Method` for .NET's CLR assembly).
 
 **Container Lambdas (PR 5 of #224)** — `lambda.DockerImageFunction(...)` /
 `Code.ImageUri` is supported in addition to ZIP Lambdas. cdkd reads the
