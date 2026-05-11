@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import {
   filterTemplateForImport,
   hasCompositeIdSplitter,
@@ -6,7 +6,9 @@ import {
   isPhase2CreatableType,
   parseParameterOverrides,
   refuseTransientContextIfUnsafe,
+  reportDriftBaselineGaps,
   resolveTemplateParameters,
+  scanCrossStackReferences,
   splitCompositePhysicalId,
 } from '../../../src/cli/commands/export.js';
 
@@ -375,5 +377,193 @@ describe('resolveTemplateParameters', () => {
     expect(() => resolveTemplateParameters({ Resources: {} }, { Env: 'prod' })).toThrow(
       /template has no Parameters section/
     );
+  });
+});
+
+describe('scanCrossStackReferences', () => {
+  it('returns empty when no other stacks reference the target', () => {
+    const stacks = [
+      { stackName: 'Exporting', template: { Resources: {} } },
+      { stackName: 'Other', template: { Resources: { R: { Type: 'AWS::S3::Bucket' } } } },
+    ];
+    expect(scanCrossStackReferences(stacks, 'Exporting')).toEqual([]);
+  });
+
+  it('finds object-form Fn::GetStackOutput in another stack', () => {
+    const stacks = [
+      { stackName: 'Exporting', template: { Resources: {} } },
+      {
+        stackName: 'Consumer',
+        template: {
+          Resources: {
+            Lambda: {
+              Type: 'AWS::Lambda::Function',
+              Properties: {
+                Environment: {
+                  Variables: {
+                    PROD_URL: {
+                      'Fn::GetStackOutput': { StackName: 'Exporting', OutputName: 'ApiUrl' },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+    ];
+    const result = scanCrossStackReferences(stacks, 'Exporting');
+    expect(result).toHaveLength(1);
+    expect(result[0]!.consumerStackName).toBe('Consumer');
+    expect(result[0]!.outputName).toBe('ApiUrl');
+  });
+
+  it('finds legacy array-form Fn::GetStackOutput', () => {
+    const stacks = [
+      { stackName: 'Exporting', template: {} },
+      {
+        stackName: 'Consumer',
+        template: { Outputs: { X: { Value: { 'Fn::GetStackOutput': ['Exporting', 'Out'] } } } },
+      },
+    ];
+    const result = scanCrossStackReferences(stacks, 'Exporting');
+    expect(result).toHaveLength(1);
+    expect(result[0]!.outputName).toBe('Out');
+  });
+
+  it('does NOT flag references to OTHER stacks', () => {
+    const stacks = [
+      { stackName: 'Exporting', template: {} },
+      {
+        stackName: 'Consumer',
+        template: {
+          Resources: {
+            R: {
+              Properties: {
+                X: { 'Fn::GetStackOutput': { StackName: 'NotMe', OutputName: 'Y' } },
+              },
+            },
+          },
+        },
+      },
+    ];
+    expect(scanCrossStackReferences(stacks, 'Exporting')).toEqual([]);
+  });
+
+  it('ignores the exporting stack itself', () => {
+    const stacks = [
+      {
+        stackName: 'Exporting',
+        template: {
+          Resources: {
+            R: {
+              Properties: {
+                X: { 'Fn::GetStackOutput': { StackName: 'Exporting', OutputName: 'Y' } },
+              },
+            },
+          },
+        },
+      },
+    ];
+    expect(scanCrossStackReferences(stacks, 'Exporting')).toEqual([]);
+  });
+
+  it('captures all references when multiple consumers exist', () => {
+    const stacks = [
+      { stackName: 'Exporting', template: {} },
+      {
+        stackName: 'C1',
+        template: {
+          Resources: {
+            R: {
+              Properties: { X: { 'Fn::GetStackOutput': { StackName: 'Exporting', OutputName: 'A' } } },
+            },
+          },
+        },
+      },
+      {
+        stackName: 'C2',
+        template: {
+          Outputs: { O: { Value: { 'Fn::GetStackOutput': { StackName: 'Exporting', OutputName: 'B' } } } },
+        },
+      },
+    ];
+    const result = scanCrossStackReferences(stacks, 'Exporting');
+    expect(result).toHaveLength(2);
+    const summary = result.map((r) => `${r.consumerStackName}.${r.outputName}`).sort();
+    expect(summary).toEqual(['C1.A', 'C2.B']);
+  });
+});
+
+describe('reportDriftBaselineGaps', () => {
+  function makeLogger() {
+    return { warn: vi.fn(), info: vi.fn(), debug: vi.fn(), error: vi.fn(), setLevel: vi.fn() };
+  }
+
+  it('warns nothing when every resource has observedProperties', () => {
+    const logger = makeLogger();
+    reportDriftBaselineGaps(
+      {
+        version: 3,
+        stackName: 'S',
+        region: 'us-east-1',
+        resources: {
+          R1: { physicalId: 'p1', resourceType: 'AWS::S3::Bucket', properties: {}, observedProperties: {} },
+        },
+        outputs: {},
+        lastModified: 0,
+      },
+      logger as unknown as ReturnType<typeof import('../../../src/utils/logger.js').getLogger>
+    );
+    expect(logger.warn).not.toHaveBeenCalled();
+  });
+
+  it('warns nothing for an empty state', () => {
+    const logger = makeLogger();
+    reportDriftBaselineGaps(
+      { version: 3, stackName: 'S', region: 'r', resources: {}, outputs: {}, lastModified: 0 },
+      logger as unknown as ReturnType<typeof import('../../../src/utils/logger.js').getLogger>
+    );
+    expect(logger.warn).not.toHaveBeenCalled();
+  });
+
+  it('warns about schema version 1/2 (pre-observedProperties)', () => {
+    const logger = makeLogger();
+    reportDriftBaselineGaps(
+      {
+        version: 2,
+        stackName: 'S',
+        region: 'r',
+        resources: { R1: { physicalId: 'p', resourceType: 'AWS::S3::Bucket', properties: {} } },
+        outputs: {},
+        lastModified: 0,
+      },
+      logger as unknown as ReturnType<typeof import('../../../src/utils/logger.js').getLogger>
+    );
+    expect(logger.warn).toHaveBeenCalledTimes(1);
+    expect(logger.warn.mock.calls[0]![0]).toMatch(/schema is v2/);
+  });
+
+  it('warns about per-resource missing observedProperties at v3', () => {
+    const logger = makeLogger();
+    reportDriftBaselineGaps(
+      {
+        version: 3,
+        stackName: 'S',
+        region: 'r',
+        resources: {
+          R1: { physicalId: 'p1', resourceType: 'AWS::S3::Bucket', properties: {}, observedProperties: {} },
+          R2: { physicalId: 'p2', resourceType: 'Custom::X', properties: {} }, // no observedProperties
+        },
+        outputs: {},
+        lastModified: 0,
+      },
+      logger as unknown as ReturnType<typeof import('../../../src/utils/logger.js').getLogger>
+    );
+    // 1 summary warn + 1 per-resource warn
+    expect(logger.warn).toHaveBeenCalled();
+    const calls = logger.warn.mock.calls.map((c) => c[0]).join('\n');
+    expect(calls).toMatch(/1 of 2 resource\(s\)/);
+    expect(calls).toMatch(/R2/);
   });
 });

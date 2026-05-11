@@ -793,6 +793,21 @@ cdkd export                                       # auto-detect single-stack app
   rationale: generic YAML libraries silently corrupt CFn shorthand intrinsics
   (`!Ref`, `!Sub`, `!GetAtt`) on round-trip. Hand-written YAML stacks must
   be converted manually.
+- **Cross-stack consumer scan** runs at synth time when other stacks in
+  the same CDK app reference the exporting stack via
+  `Fn::GetStackOutput`. By default cdkd warns (the user is expected to
+  migrate consumer stacks in a follow-up); `--strict-cross-stack`
+  refuses. Without `Fn::GetStackOutput` (or with consumer stacks
+  outside the CDK app), no scan can run and the user is responsible for
+  the check.
+- **Drift baseline pre-flight** surfaces a warning when cdkd state lacks
+  `observedProperties` for one or more resources. Without that baseline
+  `cdkd drift` cannot reliably compare against AWS, so the next
+  `cdk deploy` post-migration may surface unexpected changes if AWS has
+  drifted from the synth template. Resolve by running
+  `cdkd state refresh-observed <stack>` (or any redeploy) before
+  exporting, then `cdkd drift <stack>` to verify. Non-blocking by
+  design — the user decides whether to proceed.
 - **Template Parameters** in the synthesized template are forwarded to
   both phase-1 and phase-2 changesets. Each parameter is resolved in
   order: (1) `--parameter Key=Value` CLI override (repeatable), then

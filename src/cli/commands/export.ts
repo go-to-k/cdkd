@@ -78,6 +78,13 @@ interface ExportOptions {
    * default for the export.
    */
   parameter?: string[];
+  /**
+   * Refuse to export when another cdkd stack in the same CDK app
+   * references the exporting stack via `Fn::GetStackOutput`. The default
+   * is to warn but proceed (the user might be migrating consumer stacks
+   * in a follow-up). With this flag set, any such reference aborts.
+   */
+  strictCrossStack: boolean;
 }
 
 /**
@@ -299,6 +306,11 @@ async function exportCommand(stackArg: string | undefined, options: ExportOption
     let template: Record<string, unknown>;
     let resolvedStackName: string;
     let synthedRegion: string | undefined;
+    // Set when synth runs (not when --template is used). Captures all
+    // stacks in the user's CDK app, used by the cross-stack consumer
+    // scan to detect Fn::GetStackOutput references to the exporting
+    // stack from sibling stacks.
+    let allSynthStacks: Array<{ stackName: string; template: unknown }> = [];
 
     if (options.template) {
       // User-supplied template path: still need a stack name to load state.
@@ -348,6 +360,10 @@ async function exportCommand(stackArg: string | undefined, options: ExportOption
       template = stackInfo.template as unknown as Record<string, unknown>;
       resolvedStackName = stackInfo.stackName;
       synthedRegion = stackInfo.region;
+      allSynthStacks = result.stacks.map((s) => ({
+        stackName: s.stackName,
+        template: s.template,
+      }));
     }
 
     const cfnStackName = options.cfnStackName ?? resolvedStackName;
@@ -481,6 +497,51 @@ async function exportCommand(stackArg: string | undefined, options: ExportOption
         if (!ok) {
           logger.info('Migration cancelled. cdkd state and CloudFormation are unchanged.');
           return;
+        }
+      }
+
+      // Drift baseline pre-flight. cdkd state schema v3 carries
+      // `observedProperties` (the AWS-current snapshot at last
+      // deploy / import), which is the baseline `cdkd drift` compares
+      // against. If the baseline is missing — older state schemas or
+      // resources written by providers without `readCurrentState` —
+      // the user has no reliable way to verify the CDK template matches
+      // AWS reality before the migration. Surface that as a warning so
+      // they can re-run `cdkd state refresh-observed` first if drift
+      // matters.
+      reportDriftBaselineGaps(state, logger);
+
+      // Cross-stack consumer scan. After this stack moves to CFn, its
+      // outputs live in CFn (not cdkd state), so cdkd's
+      // `Fn::GetStackOutput` resolver — which reads cdkd state — can no
+      // longer find them. Warn (or refuse with --strict-cross-stack) when
+      // any sibling stack in the same CDK app references this one. The
+      // scan only sees stacks in `allSynthStacks` — when the user passes
+      // --template, we skip the scan because we have no sibling templates.
+      if (allSynthStacks.length > 0) {
+        const crossRefs = scanCrossStackReferences(allSynthStacks, resolvedStackName);
+        if (crossRefs.length > 0) {
+          const lines = crossRefs.map(
+            (r) =>
+              `  ${r.consumerStackName} → ${resolvedStackName}.${r.outputName} at ${r.location}`
+          );
+          if (options.strictCrossStack) {
+            throw new Error(
+              `Refusing to export: ${crossRefs.length} cross-stack reference(s) to ` +
+                `${resolvedStackName} found in sibling stacks. After migration, those ` +
+                `references will break (cdkd's Fn::GetStackOutput reads cdkd state; the ` +
+                `migrated stack's outputs live in CFn). Migrate consumers first, or remove ` +
+                `the references, or drop --strict-cross-stack to proceed with a warning:\n` +
+                lines.join('\n')
+            );
+          }
+          logger.warn(
+            `${crossRefs.length} cross-stack reference(s) to '${resolvedStackName}' from ` +
+              `sibling stacks. These will break the next time those stacks deploy via cdkd ` +
+              `(cdkd's Fn::GetStackOutput resolver reads cdkd state; the migrated stack's ` +
+              `outputs are now in CFn). Plan multi-stack migrations from the leaves up.`
+          );
+          for (const line of lines) logger.warn(line);
         }
       }
 
@@ -1072,6 +1133,144 @@ export function filterTemplateForImport(
  * logical ID in `allow`. Used to keep Outputs entries that only reference
  * imported resources and drop the ones that referenced excluded ones.
  */
+/**
+ * Pre-flight check for missing drift baselines (`observedProperties`)
+ * in the exporting stack's state. cdkd state schema v3 captures
+ * `observedProperties` on every successful create / update / import so
+ * `cdkd drift` has a reliable AWS-current baseline. Resources written
+ * by an older binary OR by providers that do not implement
+ * `readCurrentState` lack the field, and `cdkd drift` falls back to
+ * comparing against the user's template intent (weaker signal).
+ *
+ * If we are about to migrate to CFn, the user has no way to roll back
+ * post-migration — any drift between cdkd state and AWS reality would
+ * surface as spurious changes on the first post-export `cdk deploy`.
+ * Warn loudly so the user can run `cdkd state refresh-observed` and
+ * `cdkd drift` first if they care. Non-blocking by design — exit is the
+ * user's call, not the tool's.
+ *
+ * Exported for unit testing.
+ */
+export function reportDriftBaselineGaps(
+  state: StackState,
+  logger: ReturnType<typeof getLogger>
+): void {
+  const entries = Object.entries(state.resources ?? {});
+  if (entries.length === 0) return;
+  const missing = entries.filter(([, r]) => r.observedProperties === undefined);
+  if (missing.length === 0) return;
+  if (state.version !== undefined && state.version < 3) {
+    logger.warn(
+      `cdkd state schema is v${state.version} (pre-observedProperties). cdkd drift ` +
+        `cannot reliably compare against AWS for this stack; the next \`cdk deploy\` ` +
+        `after migration may surface spurious changes if AWS has drifted from the ` +
+        `template. Run \`cdkd state refresh-observed ${state.stackName}\` (or any ` +
+        `redeploy) before export to capture an AWS-current baseline.`
+    );
+    return;
+  }
+  logger.warn(
+    `${missing.length} of ${entries.length} resource(s) in cdkd state lack an ` +
+      `AWS-current baseline (observedProperties). cdkd drift may produce false positives ` +
+      `for them; the next \`cdk deploy\` after migration may surface unexpected changes. ` +
+      `Run \`cdkd state refresh-observed ${state.stackName}\` to capture a baseline before ` +
+      `export, then \`cdkd drift\` to verify the stack matches AWS.`
+  );
+  for (const [logicalId] of missing.slice(0, 10)) {
+    logger.warn(`  ${logicalId}`);
+  }
+  if (missing.length > 10) {
+    logger.warn(`  ... and ${missing.length - 10} more`);
+  }
+}
+
+/**
+ * A `Fn::GetStackOutput` reference found in another stack's template,
+ * pointing at the stack being exported. Produced by `scanCrossStackReferences`.
+ */
+export interface CrossStackReference {
+  /** Logical ID of the stack that contains the reference. */
+  consumerStackName: string;
+  /** OutputName from the `Fn::GetStackOutput` call. */
+  outputName: string;
+  /** Where in the consumer template the reference appears (Resources / Outputs path). */
+  location: string;
+}
+
+/**
+ * Walk every stack other than `exportingStackName` looking for
+ * `Fn::GetStackOutput` calls that target the exporting stack. Used as a
+ * safety pre-flight before `cdkd export`: after the exporting stack
+ * moves to CloudFormation, its outputs live in CFn (not cdkd state), so
+ * cdkd's `Fn::GetStackOutput` resolver — which reads cdkd state — can
+ * no longer find them.
+ *
+ * Implementation: recursive walk of each non-exporting stack's template,
+ * collecting every `{"Fn::GetStackOutput": {StackName: <exporting>, OutputName: <name>}}`
+ * entry. The intrinsic accepts either an object form
+ * (`{StackName: ..., OutputName: ...}`) or — historically — an array
+ * form (`[stackName, outputName]`); we accept both.
+ *
+ * Exported for unit testing.
+ */
+export function scanCrossStackReferences(
+  stacks: Array<{ stackName: string; template: unknown }>,
+  exportingStackName: string
+): CrossStackReference[] {
+  const refs: CrossStackReference[] = [];
+  for (const stack of stacks) {
+    if (stack.stackName === exportingStackName) continue;
+    walkForGetStackOutput(stack.template, '', (ref) => {
+      if (ref.stackName === exportingStackName) {
+        refs.push({
+          consumerStackName: stack.stackName,
+          outputName: ref.outputName,
+          location: ref.location,
+        });
+      }
+    });
+  }
+  return refs;
+}
+
+function walkForGetStackOutput(
+  node: unknown,
+  path: string,
+  emit: (ref: { stackName: string; outputName: string; location: string }) => void
+): void {
+  if (!node || typeof node !== 'object') return;
+  if (Array.isArray(node)) {
+    node.forEach((item, i) => walkForGetStackOutput(item, `${path}[${i}]`, emit));
+    return;
+  }
+  const obj = node as Record<string, unknown>;
+  const intrinsic = obj['Fn::GetStackOutput'];
+  if (intrinsic !== undefined) {
+    // Object form (current, documented): { StackName: "...", OutputName: "..." }.
+    if (intrinsic && typeof intrinsic === 'object' && !Array.isArray(intrinsic)) {
+      const i = intrinsic as Record<string, unknown>;
+      const stackName = typeof i['StackName'] === 'string' ? i['StackName'] : undefined;
+      const outputName = typeof i['OutputName'] === 'string' ? i['OutputName'] : undefined;
+      if (stackName && outputName) {
+        emit({ stackName, outputName, location: path });
+      }
+    } else if (Array.isArray(intrinsic) && intrinsic.length === 2) {
+      // Defensive: legacy array form [stackName, outputName].
+      const arr = intrinsic as unknown[];
+      const stackName = arr[0];
+      const outputName = arr[1];
+      if (typeof stackName === 'string' && typeof outputName === 'string') {
+        emit({ stackName, outputName, location: path });
+      }
+    }
+    // Fall through: the intrinsic's value may contain other intrinsics
+    // (e.g. Fn::Sub'd StackName). Walk into it so nested calls still surface.
+  }
+  for (const [key, value] of Object.entries(obj)) {
+    walkForGetStackOutput(value, path ? `${path}.${key}` : key, emit);
+  }
+}
+
 function referencesOnly(node: unknown, allow: Set<string>): boolean {
   if (!node || typeof node !== 'object') return true;
   if (Array.isArray(node)) {
@@ -1438,6 +1637,13 @@ export function createExportCommand(): Command {
       'CFn template Parameter override, repeatable. Required when the synthesized ' +
         'template has Parameters without Default values; otherwise overrides the ' +
         "template's default value. Format: --parameter Key=Value."
+    )
+    .option(
+      '--strict-cross-stack',
+      'Refuse to export when sibling cdkd stacks in the same CDK app reference the ' +
+        'exporting stack via Fn::GetStackOutput. Without the flag, cdkd warns but ' +
+        'proceeds — the user is expected to migrate the consumer stacks in a follow-up.',
+      false
     )
     .action(withErrorHandling(exportCommand));
 
