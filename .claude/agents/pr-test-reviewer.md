@@ -11,7 +11,7 @@ You verify the test suite actually covers the new behavior. The caller provides 
 ## Inputs you read
 
 1. **PR test files** — `gh pr view <N> --json files -q '.files[].path' | grep -E "^tests/"`.
-2. **Test contents** — `git -C /Users/goto/pc/github/cdkd fetch origin <branch>` then `git -C /Users/goto/pc/github/cdkd show origin/<branch>:tests/<path>`.
+2. **Test contents** — `git fetch origin <branch>` then `git show origin/<branch>:tests/<path>`. (Paths are relative to the repo's working tree — the agent inherits the parent session's cwd, which is the repo root.)
 3. **Implementation files** to identify untested branches.
 
 ## Review focus
