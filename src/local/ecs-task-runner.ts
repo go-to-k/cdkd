@@ -332,19 +332,47 @@ export function buildDependencyGraph(containers: ResolvedEcsContainer[]): graphl
 }
 
 export function topoSort(g: graphlib.Graph, containers: ResolvedEcsContainer[]): string[] {
-  // graphlib.alg.topsort returns roots LAST given our edge direction; we
-  // need dependencies (B) first, so we reverse. Fall back to template
-  // order on a tie (preserves the user's intent for siblings with no
-  // dependsOn relation).
-  const sorted = graphlib.alg.topsort(g);
+  // Layered topological sort with template-order tiebreak. Each node's
+  // depth = max(depth of nodes it depends on) + 1; nodes with no
+  // dependencies are at depth 0. Sorting by (depth, templateIndex)
+  // guarantees dependencies are listed before dependents (valid topo
+  // order) AND that siblings at the same depth follow the user's
+  // template order. The pre-fix double-sort (`topsort.reverse().sort()`)
+  // re-ranked globally by template index and could violate topo order
+  // when an adversarial template listed a dependent BEFORE its
+  // dependency.
+  //
+  // Edges point dependent -> dependency; a node's depth is one more
+  // than the max depth of any node it points to. Cycles are rejected up
+  // front in `buildDependencyGraph`, so memoized recursion terminates.
+  const depth = new Map<string, number>();
+  const computeDepth = (name: string): number => {
+    const cached = depth.get(name);
+    if (cached !== undefined) return cached;
+    let max = -1;
+    const successors = g.successors(name) ?? [];
+    for (const s of successors) {
+      const d = computeDepth(s);
+      if (d > max) max = d;
+    }
+    const result = max + 1;
+    depth.set(name, result);
+    return result;
+  };
+  for (const node of g.nodes()) computeDepth(node);
+
   const byPosition = new Map<string, number>();
   containers.forEach((c, idx) => byPosition.set(c.name, idx));
-  return [...sorted].reverse().sort((a, b) => {
-    // Sort within the topological order is deliberately stable; we use
-    // template position as the secondary key. graphlib's algorithm
-    // already produced a valid topological order; we only re-rank ties.
-    return (byPosition.get(a) ?? 0) - (byPosition.get(b) ?? 0);
-  });
+
+  return containers
+    .map((c) => c.name)
+    .filter((n) => depth.has(n))
+    .sort((a, b) => {
+      const da = depth.get(a)!;
+      const db = depth.get(b)!;
+      if (da !== db) return da - db;
+      return (byPosition.get(a) ?? 0) - (byPosition.get(b) ?? 0);
+    });
 }
 
 /**

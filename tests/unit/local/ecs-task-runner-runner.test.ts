@@ -623,7 +623,7 @@ describe('runEcsTask — exit propagation + essential selection (G1)', () => {
     expect(r.essentialContainerName).toBe('svc');
   });
 
-  it('when no container is explicitly essential, the first container is used as essential', async () => {
+  it('when every container has essential: false, the first container drives the result (find ?? fallback)', async () => {
     let seq = 0;
     captured.responder = (_cmd: string, args: string[]) => {
       if (args[0] === 'run') return { stdout: `c${++seq}\n` };

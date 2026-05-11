@@ -400,4 +400,25 @@ describe('topoSort (G3)', () => {
     });
     expect(() => buildDependencyGraph([a, b])).toThrow(EcsTaskRunnerError);
   });
+
+  it('adversarial template order [C, B, A] with C->B->A still yields a valid topo order', () => {
+    // Template lists dependent BEFORE its dependency. CDK-synthesized
+    // output never does this, but hand-written CFn or future CDK
+    // customizations could. The pre-fix double-sort re-ranked globally
+    // by template index and produced [C, B, A] — violating the
+    // dependsOn contract (C would start before A had even launched).
+    const A = makeContainer({ name: 'A' });
+    const B = makeContainer({
+      name: 'B',
+      dependsOn: [{ containerName: 'A', condition: 'START' }],
+    });
+    const C = makeContainer({
+      name: 'C',
+      dependsOn: [{ containerName: 'B', condition: 'START' }],
+    });
+    const containers = [C, B, A];
+    const g = buildDependencyGraph(containers);
+    const order = topoSort(g, containers);
+    expect(order).toEqual(['A', 'B', 'C']);
+  });
 });

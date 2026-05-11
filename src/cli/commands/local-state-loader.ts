@@ -13,7 +13,7 @@
  */
 
 import { getLogger } from '../../utils/logger.js';
-import { AwsClients, setAwsClients } from '../../utils/aws-clients.js';
+import { AwsClients, resetAwsClients, setAwsClients } from '../../utils/aws-clients.js';
 import { S3StateBackend } from '../../state/s3-state-backend.js';
 import { resolveStateBucketWithDefault } from '../config-loader.js';
 import type { StackState } from '../../types/state.js';
@@ -114,6 +114,10 @@ export async function loadStateForStack(
     logger.debug(`${prefix}: loaded state for ${stackName} (${targetRegion})`);
     return { state: stateData.state, region: targetRegion };
   } finally {
-    awsClients.destroy();
+    // `resetAwsClients()` destroys the underlying clients AND clears the
+    // module-global `globalClients` reference. Bare `awsClients.destroy()`
+    // would leave a destroyed instance pointed at by the global, which a
+    // later caller of `getAwsClients()` would silently reuse.
+    resetAwsClients();
   }
 }
