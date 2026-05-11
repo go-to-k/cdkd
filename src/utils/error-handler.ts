@@ -322,6 +322,22 @@ export class StartApiServerError extends CdkdError {
 }
 
 /**
+ * Signals a `cdkd local run-task` orchestration failure that did not
+ * originate from a lower-level module (those throw their own narrower
+ * errors — `EcsTaskResolutionError`, `EcsSecretsResolutionError`,
+ * `DockerRunnerError`, `LocalInvokeBuildError`). Used by the runner /
+ * CLI when the failure is meaningful only at the task-orchestrator
+ * layer (e.g. cyclic dependsOn, essential container did not start).
+ */
+export class LocalRunTaskError extends CdkdError {
+  constructor(message: string, cause?: Error) {
+    super(message, 'LOCAL_RUN_TASK_ERROR', cause);
+    this.name = 'LocalRunTaskError';
+    Object.setPrototypeOf(this, LocalRunTaskError.prototype);
+  }
+}
+
+/**
  * Check if error is a cdkd error
  */
 export function isCdkdError(error: unknown): error is CdkdError {

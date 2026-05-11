@@ -52,6 +52,7 @@ import { S3StateBackend } from '../../state/s3-state-backend.js';
 import { setAwsClients, AwsClients } from '../../utils/aws-clients.js';
 import type { StackState } from '../../types/state.js';
 import { createLocalStartApiCommand } from './local-start-api.js';
+import { createLocalRunTaskCommand } from './local-run-task.js';
 
 interface LocalInvokeOptions {
   app?: string;
@@ -1064,7 +1065,7 @@ function pickReferencedLogicalId(intrinsic: Record<string, unknown>): string | u
  */
 export function createLocalCommand(): Command {
   const local = new Command('local').description(
-    'Local Lambda execution against the AWS Lambda Runtime Interface Emulator (Docker required)'
+    'Local execution of Lambda functions (RIE) and ECS task definitions (Docker required)'
   );
 
   const invoke = new Command('invoke')
@@ -1136,5 +1137,6 @@ export function createLocalCommand(): Command {
 
   local.addCommand(invoke);
   local.addCommand(createLocalStartApiCommand());
+  local.addCommand(createLocalRunTaskCommand());
   return local;
 }

@@ -99,6 +99,14 @@ export interface DockerRunOptions {
    * benefit from a stable name.
    */
   name?: string;
+  /**
+   * Optional `--network <name>` for the container. `cdkd local run-task`
+   * uses this so every container in a task lands on the same per-task
+   * docker network and can reach the metadata-endpoints sidecar at
+   * `169.254.170.2`. Unset → docker's default bridge network (current
+   * behavior for `cdkd local invoke` / `cdkd local start-api`).
+   */
+  network?: string;
 }
 
 /**
@@ -172,6 +180,9 @@ export async function runDetached(opts: DockerRunOptions): Promise<string> {
 
   if (opts.name) {
     args.push('--name', opts.name);
+  }
+  if (opts.network) {
+    args.push('--network', opts.network);
   }
   if (opts.platform) {
     args.push('--platform', opts.platform);

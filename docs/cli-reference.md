@@ -1353,3 +1353,150 @@ AWS endpoints; nothing about that path changes.
 | WebSocket APIs | Never (different protocol) |
 | Throttling / quotas / usage plans / API keys | Never |
 | Per-Lambda concurrency above 4 | Future PR if a real workload needs it |
+
+## `local run-task` (run an ECS task definition locally)
+
+`cdkd local run-task <Stack/TaskDefinitionPath>` is the ECS counterpart
+of `cdkd local invoke`. It takes an `AWS::ECS::TaskDefinition` defined
+in a CDK app and starts every container on the developer's Docker host
+— no AWS deploy needed.
+
+Implementation Phase 1: synchronous run of one task, stream every
+container's stdout/stderr with a `[<name>]` prefix, propagate the
+essential container's exit code. Phase 2 (`cdkd local start-service` —
+ECS Service + ALB-emulated path/host-based routing) and Phase 3
+(Service Connect / Cloud Map degraded mode) are tracked separately.
+
+**Requires Docker.** The first run pulls the AWS-published
+`amazon/amazon-ecs-local-container-endpoints:latest-amd64` sidecar (a
+small Go binary maintained by awslabs) plus each container's image.
+
+### `local run-task` target resolution
+
+Same target-syntax rules as `cdkd local invoke`:
+
+- CDK display path (`MyStack/MyService/TaskDef`) — preferred
+- Stack-qualified logical id (`MyStack:MyServiceTaskDefXYZ1234`)
+- Single-stack apps may omit the stack prefix (`MyTaskDef`)
+
+Path matching is prefix-based: an L2 path like `MyStack/MyService/TaskDef`
+resolves to the synthesized L1 child (`MyStack/MyService/TaskDef/Resource`).
+
+### `local run-task` options
+
+| Flag | Default | Behavior |
+| --- | --- | --- |
+| `--cluster <name>` | `cdkd-local` | Surfaced as `ECS_CONTAINER_METADATA_URI_V4`'s `Cluster` field and used as the docker network prefix (`<name>-task-<rand>`). |
+| `--env-vars <file>` | unset | SAM-shape JSON overlay. Top-level keys are container names; `Parameters` is a global overlay. Same shape as `cdkd local invoke --env-vars`. |
+| `--container-host <ip>` | `127.0.0.1` | Bind IP for `PortMappings` published ports. Must be a numeric IP — Docker rejects hostnames in `-p <ip>:<port>:<port>`. |
+| `--assume-task-role [<arn>]` | unset (host creds pass through) | Bare flag uses the task definition's `TaskRoleArn` (when statically resolvable). Pass an explicit ARN to override. Either way, `sts:AssumeRole` runs once at startup; the resulting creds are exposed via the local metadata sidecar at `AWS_CONTAINER_CREDENTIALS_RELATIVE_URI`. |
+| `--no-pull` | off | Skip `docker pull` for every container image and the metadata sidecar. |
+| `--platform <platform>` | inferred from `RuntimePlatform.CpuArchitecture` | `linux/amd64` or `linux/arm64`. Threaded into every container's `docker run --platform`. |
+| `--keep-running` | off | Don't `docker rm -f` user containers on task exit (network + sidecar are still torn down). Use when you want to `docker exec` into a stopped container for post-mortems. |
+| `--detach` | off | Start the containers and return without streaming logs or auto-tearing them down. Useful in CI smoke tests; caller manages container lifecycle. |
+
+Plus the standard shared options: `-a/--app`, `-c/--context`, `--profile`,
+`--role-arn`, `--region`, `--verbose`, `--output`.
+
+### Networking model
+
+For every task invocation cdkd:
+
+1. Creates a fresh docker network `cdkd-local-task-<random>` (or
+   `--cluster <name>-task-<random>`) with subnet `169.254.170.0/24`.
+2. Starts the AWS-published
+   `amazon/amazon-ecs-local-container-endpoints:latest-amd64` sidecar
+   on the network at the well-known IP `169.254.170.2`.
+3. Starts every user container on the same network with
+   `--network-alias <container-name>` so siblings resolve each other by
+   their CFn `ContainerDefinitions[].Name`.
+4. Injects per-container env vars: `ECS_CONTAINER_METADATA_URI_V4=http://169.254.170.2/v4/<container-name>`
+   and (when `--assume-task-role` is set) `AWS_CONTAINER_CREDENTIALS_RELATIVE_URI=/role/<task-role-arn>`.
+
+`awsvpc` network mode is mapped to `bridge` locally with a warn line —
+docker cannot emulate ENI-per-task. AWS SDK calls from inside the
+container still reach public AWS endpoints via the developer network.
+
+### Secrets / SSM parameter resolution
+
+`ContainerDefinitions[].Secrets[].ValueFrom` entries are resolved once at
+startup via the AWS SDK. Three accepted shapes:
+
+| `valueFrom` | API |
+| --- | --- |
+| `arn:aws:secretsmanager:<region>:<account>:secret:<name>` | `SecretsManagerClient.GetSecretValue` |
+| `arn:aws:secretsmanager:<region>:<account>:secret:<name>:<json-key>::` | `GetSecretValue`, then JSON.parse + extract `json-key` |
+| `arn:aws:ssm:<region>:<account>:parameter/<name>` | `SSMClient.GetParameter({ WithDecryption: true })` |
+
+Resolution failures (NotFound / AccessDenied / network error / invalid
+ARN) hard-fail with the offending container + secret name. The user
+fixes their AWS creds / IAM policy and re-runs. (Mirrors the
+`cdkd local invoke --from-state` philosophy: explicit failure beats
+silently-empty.)
+
+### Container start ordering — `DependsOn`
+
+| Condition | What cdkd waits for |
+| --- | --- |
+| `START` | Dependency's `docker run` has returned. |
+| `COMPLETE` | Dependency's container has exited (any code). |
+| `SUCCESS` | Dependency's container has exited with exit code 0. |
+| `HEALTHY` | Dependency's `HEALTHCHECK` reports `healthy` (polled every 1s, capped at 5 min). |
+
+Cyclic dependencies → hard-error at discovery with the offending cycle
+named. Topological sort decides the start order; siblings with no
+dependsOn relation start in template order.
+
+### Volumes
+
+| `Volumes[]` shape | Local realization |
+| --- | --- |
+| `Host: { SourcePath: '/some/path' }` | `docker run -v /some/path:<containerPath>` bind mount (caller's responsibility that the host path exists; a missing path emits a warn) |
+| `Host` (no `SourcePath`) | Docker anonymous volume — empty per-task scratch |
+| `DockerVolumeConfiguration: { Scope: 'task' \| 'shared', Driver, DriverOpts }` | `docker volume create --driver <driver> --opt ...` per task; per-task scope is torn down at exit |
+| `EFSVolumeConfiguration` | **Hard-error**. Bind-mount a local directory at the same `containerPath` instead. |
+| `FSxWindowsFileServerVolumeConfiguration` | **Hard-error**. |
+
+### Lifecycle + teardown
+
+1. The first `essential: true` container (defaults to `containers[0]`
+   when no container declares `essential: false`) drives the task.
+2. When the essential container exits, cdkd `docker stop`s every other
+   container with a 10s grace then `docker rm -f`.
+3. The metadata sidecar is `docker rm -f`'d and the docker network is
+   removed.
+4. cdkd exits with the essential container's exit code.
+
+`^C` triggers the same teardown. Double-`^C` exits 130 immediately
+(skipping container cleanup — same pattern as `cdkd local start-api`).
+
+`--detach` skips steps 1, 2, and 4. The sidecar and user containers
+stay running for the caller to manage. cdkd prints the network name on
+exit so you can `docker ps --filter network=<name>` to inspect.
+
+`--keep-running` skips step 2 only. The network + sidecar are still
+torn down. Use to `docker exec` into a stopped container post-mortem.
+
+### `local run-task` exit codes
+
+- `0` — essential container exited 0.
+- N (non-zero) — essential container exited N (cdkd propagates the code).
+- Various cdkd-side error codes (Docker missing, target not found,
+  network creation failed, secret resolution failed, ...) follow the
+  global handler's defaults (typically 1).
+
+### `local run-task` Phase 1 scope (out of scope, deferred)
+
+| Out of scope | Why |
+| --- | --- |
+| `AWS::ECS::Service` / `DesiredCount` / `LaunchType` | Phase 2 (`cdkd local start-service`) |
+| ALB / NLB target group registration / listener rules | Phase 2 — needs an HTTP proxy emulator |
+| Service Connect / Cloud Map | Phase 3 — `docker network` alias gives 80% of the value |
+| Auto Scaling / Deployment Strategy | Not meaningful locally |
+| Fargate vs EC2 launch-type differences (PID namespace, `awsvpc`-only, ephemeral storage cap) | Local Docker can't enforce these |
+| EFS / FSx volumes | Need real AWS NFS / SMB; hard-error with a routing hint |
+| ECS Exec | Use `docker exec` directly |
+| CloudWatch Logs auto-shipping (`logConfiguration.LogDriver: 'awslogs'`) | stdout/stderr already streamed; skip the driver |
+| X-Ray sidecar's AWS-API mocking | Run the daemon explicitly if you need it |
+| AWS App Mesh / Envoy fidelity | Not meaningful locally |
+| awsvpc / ENI complete fidelity | Map to docker bridge with a warn |
