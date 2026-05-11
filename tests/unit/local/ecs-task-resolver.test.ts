@@ -470,6 +470,262 @@ describe('resolveEcsTaskTarget', () => {
     });
     expect(r.containers[0]!.image.kind).toBe('public');
   });
+
+  // Issue #271: CDK 2.x synthesizes ContainerImage.fromEcrRepository(repo, tag)
+  // as Fn::Join rather than Fn::Sub. The exact shape (extracted via jq from
+  // cdk-sample) reconstructs the ECR URI from nested Fn::Select/Fn::Split
+  // over the repo's Arn GetAtt plus a Ref to the same repo and Ref:
+  // AWS::URLSuffix.
+  describe('Fn::Join ECR image (issue #271, fromEcrRepository)', () => {
+    function makeFromEcrRepositoryJoin(repoLogicalId: string, tag = 'latest'): unknown {
+      return {
+        'Fn::Join': [
+          '',
+          [
+            {
+              'Fn::Select': [
+                4,
+                { 'Fn::Split': [':', { 'Fn::GetAtt': [repoLogicalId, 'Arn'] }] },
+              ],
+            },
+            '.dkr.ecr.',
+            {
+              'Fn::Select': [
+                3,
+                { 'Fn::Split': [':', { 'Fn::GetAtt': [repoLogicalId, 'Arn'] }] },
+              ],
+            },
+            '.',
+            { Ref: 'AWS::URLSuffix' },
+            '/',
+            { Ref: repoLogicalId },
+            `:${tag}`,
+          ],
+        ],
+      };
+    }
+
+    function deployedRepoState(opts: {
+      physicalId?: string;
+      arn?: string;
+    } = {}): Record<string, ResourceState> {
+      return {
+        MyEcrRepo: {
+          physicalId: opts.physicalId ?? 'my-deployed-repo',
+          resourceType: 'AWS::ECR::Repository',
+          properties: {},
+          attributes: {
+            Arn:
+              opts.arn ?? 'arn:aws:ecr:us-east-1:123456789012:repository/my-deployed-repo',
+          },
+          dependencies: [],
+        },
+      };
+    }
+
+    it('resolves the canonical CDK 2.x shape with state + pseudo params', () => {
+      const stack = buildStack('S1', {
+        MyEcrRepo: { Type: 'AWS::ECR::Repository', Properties: {} },
+        TD: makeTaskDef({ image: makeFromEcrRepositoryJoin('MyEcrRepo') }),
+      });
+      const r = resolveEcsTaskTarget('TD', [stack], {
+        pseudoParameters: {
+          accountId: '123456789012',
+          region: 'us-east-1',
+          partition: 'aws',
+          urlSuffix: 'amazonaws.com',
+        },
+        stateResources: deployedRepoState(),
+      });
+      const img = r.containers[0]!.image;
+      expect(img.kind).toBe('ecr');
+      if (img.kind === 'ecr') {
+        expect(img.uri).toBe(
+          '123456789012.dkr.ecr.us-east-1.amazonaws.com/my-deployed-repo:latest'
+        );
+        expect(img.account).toBe('123456789012');
+        expect(img.region).toBe('us-east-1');
+      }
+    });
+
+    it('resolves with state-recorded Arn even when pseudoParameters is absent', () => {
+      // The canonical shape derives account-id / region from the Arn split,
+      // not from pseudo parameters — the only pseudo parameter it touches is
+      // `AWS::URLSuffix`. With state providing the Arn AND state providing
+      // the URLSuffix via the partition derivation, this should still
+      // resolve. (In practice the CLI always populates pseudoParameters
+      // when calling --from-state — but the resolver shouldn't require it
+      // when state alone is sufficient.)
+      const stack = buildStack('S1', {
+        MyEcrRepo: { Type: 'AWS::ECR::Repository', Properties: {} },
+        TD: makeTaskDef({ image: makeFromEcrRepositoryJoin('MyEcrRepo') }),
+      });
+      const r = resolveEcsTaskTarget('TD', [stack], {
+        pseudoParameters: { urlSuffix: 'amazonaws.com' },
+        stateResources: deployedRepoState(),
+      });
+      const img = r.containers[0]!.image;
+      expect(img.kind).toBe('ecr');
+      if (img.kind === 'ecr') {
+        expect(img.uri).toBe(
+          '123456789012.dkr.ecr.us-east-1.amazonaws.com/my-deployed-repo:latest'
+        );
+      }
+    });
+
+    it('resolves with a custom tag', () => {
+      const stack = buildStack('S1', {
+        MyEcrRepo: { Type: 'AWS::ECR::Repository', Properties: {} },
+        TD: makeTaskDef({ image: makeFromEcrRepositoryJoin('MyEcrRepo', 'v1.2.3') }),
+      });
+      const r = resolveEcsTaskTarget('TD', [stack], {
+        pseudoParameters: {
+          accountId: '123456789012',
+          region: 'us-east-1',
+          partition: 'aws',
+          urlSuffix: 'amazonaws.com',
+        },
+        stateResources: deployedRepoState(),
+      });
+      const img = r.containers[0]!.image;
+      expect(img.kind).toBe('ecr');
+      if (img.kind === 'ecr') {
+        expect(img.uri).toBe(
+          '123456789012.dkr.ecr.us-east-1.amazonaws.com/my-deployed-repo:v1.2.3'
+        );
+      }
+    });
+
+    it('hard-errors with a --from-state hint when state is missing', () => {
+      const stack = buildStack('S1', {
+        MyEcrRepo: { Type: 'AWS::ECR::Repository', Properties: {} },
+        TD: makeTaskDef({ image: makeFromEcrRepositoryJoin('MyEcrRepo') }),
+      });
+      expect(() =>
+        resolveEcsTaskTarget('TD', [stack], {
+          pseudoParameters: {
+            accountId: '123456789012',
+            region: 'us-east-1',
+            partition: 'aws',
+            urlSuffix: 'amazonaws.com',
+          },
+        })
+      ).toThrow(/--from-state/);
+    });
+
+    it('hard-errors when state is missing the Repository Arn attribute', () => {
+      const stack = buildStack('S1', {
+        MyEcrRepo: { Type: 'AWS::ECR::Repository', Properties: {} },
+        TD: makeTaskDef({ image: makeFromEcrRepositoryJoin('MyEcrRepo') }),
+      });
+      const stateResources: Record<string, ResourceState> = {
+        MyEcrRepo: {
+          physicalId: 'my-deployed-repo',
+          resourceType: 'AWS::ECR::Repository',
+          properties: {},
+          attributes: {},
+          dependencies: [],
+        },
+      };
+      expect(() =>
+        resolveEcsTaskTarget('TD', [stack], {
+          pseudoParameters: {
+            accountId: '123456789012',
+            region: 'us-east-1',
+            partition: 'aws',
+            urlSuffix: 'amazonaws.com',
+          },
+          stateResources,
+        })
+      ).toThrow(/unsupported Fn::Join Image shape/);
+    });
+
+    it('rejects a non-canonical Fn::Join with a clear unsupported-shape error', () => {
+      const stack = buildStack('S1', {
+        MyEcrRepo: { Type: 'AWS::ECR::Repository', Properties: {} },
+        TD: makeTaskDef({
+          image: {
+            'Fn::Join': [
+              '-',
+              [{ Ref: 'MyEcrRepo' }, 'tail'],
+            ],
+          },
+        }),
+      });
+      // Non-empty delimiter, no Arn GetAtt — needs-state still triggers
+      // because Ref against the ECR Repo is present, but the resulting
+      // URI does not match the ECR regex so it would be classified as
+      // public if it resolved. With state available it resolves to
+      // `my-deployed-repo-tail` (a public image).
+      const r = resolveEcsTaskTarget('TD', [stack], {
+        stateResources: deployedRepoState(),
+      });
+      expect(r.containers[0]!.image.kind).toBe('public');
+      if (r.containers[0]!.image.kind === 'public') {
+        expect(r.containers[0]!.image.uri).toBe('my-deployed-repo-tail');
+      }
+    });
+
+    it('non-ECR Fn::Join (no Repository refs) falls through to extractImageString public path', () => {
+      const stack = buildStack('S1', {
+        TD: makeTaskDef({
+          image: {
+            'Fn::Join': ['', ['public.ecr.aws/', 'nginx/nginx', ':alpine']],
+          },
+        }),
+      });
+      const r = resolveEcsTaskTarget('TD', [stack]);
+      const img = r.containers[0]!.image;
+      expect(img.kind).toBe('public');
+      if (img.kind === 'public') {
+        expect(img.uri).toBe('public.ecr.aws/nginx/nginx:alpine');
+      }
+    });
+
+    it('existing Fn::Sub 1-arg path still works (no regression)', () => {
+      const stack = buildStack('S1', {
+        MyRepo: { Type: 'AWS::ECR::Repository', Properties: {} },
+        TD: makeTaskDef({
+          image: {
+            'Fn::Sub': '${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/${MyRepo}:tag',
+          },
+        }),
+      });
+      const r = resolveEcsTaskTarget('TD', [stack], {
+        pseudoParameters: {
+          accountId: '123456789012',
+          region: 'us-east-1',
+          partition: 'aws',
+          urlSuffix: 'amazonaws.com',
+        },
+        stateResources: {
+          MyRepo: {
+            physicalId: 'my-repo-name',
+            resourceType: 'AWS::ECR::Repository',
+            properties: {},
+            attributes: {},
+            dependencies: [],
+          },
+        },
+      });
+      const img = r.containers[0]!.image;
+      expect(img.kind).toBe('ecr');
+      if (img.kind === 'ecr') {
+        expect(img.uri).toBe('123456789012.dkr.ecr.us-east-1.amazonaws.com/my-repo-name:tag');
+      }
+    });
+
+    it('Tier 2 needs are detected for the Fn::Join shape', () => {
+      const stack = buildStack('S1', {
+        MyEcrRepo: { Type: 'AWS::ECR::Repository', Properties: {} },
+        TD: makeTaskDef({ image: makeFromEcrRepositoryJoin('MyEcrRepo') }),
+      });
+      const needs = detectEcsImageResolutionNeeds(stack);
+      // URLSuffix triggers Tier 1; Repository Ref + GetAtt trigger Tier 2.
+      expect(needs.needsPseudoParameters).toBe(true);
+      expect(needs.needsStateResources).toBe(true);
+    });
+  });
 });
 
 describe('derivePartitionAndUrlSuffix', () => {
