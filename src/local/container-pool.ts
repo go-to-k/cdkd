@@ -2,7 +2,7 @@ import { getLogger } from '../utils/logger.js';
 import { pickFreePort, removeContainer, runDetached, streamLogs } from './docker-runner.js';
 import type { ResolvedZipLambda } from './lambda-resolver.js';
 import { waitForRieReady } from './rie-client.js';
-import { resolveRuntimeImage } from './runtime-image.js';
+import { resolveRuntimeCodeMountPath, resolveRuntimeImage } from './runtime-image.js';
 
 /**
  * Per-Lambda warm container pool for `cdkd local start-api` (D8.3).
@@ -84,7 +84,13 @@ export interface ContainerSpec {
    * `local-start-api.ts` with a clear error pointing at PR 8b/c.
    */
   lambda: ResolvedZipLambda;
-  /** Bind-mount source for `/var/task` (asset dir or materialized inline). */
+  /**
+   * Bind-mount source for the in-container deployment path. The target
+   * path is `/var/task` for most runtimes and `/var/runtime` for the
+   * `provided.al2` / `provided.al2023` OS-only runtimes — chosen by
+   * `resolveRuntimeCodeMountPath(spec.lambda.runtime)` at acquire time.
+   * Source is the asset dir or materialized inline tmpdir.
+   */
   codeDir: string;
   /**
    * Pre-resolved bind-mount source for `/opt` (PR 6 of #224, issue
@@ -213,9 +219,13 @@ export function createContainerPool(
     const optMount = spec.optDir
       ? [{ hostPath: spec.optDir, containerPath: '/opt', readOnly: true }]
       : [];
+    // provided.al2 / provided.al2023 require the deployment package at
+    // /var/runtime (where the base image's hardcoded entrypoint exec's
+    // /var/runtime/bootstrap); every other runtime expects /var/task.
+    const containerCodePath = resolveRuntimeCodeMountPath(spec.lambda.runtime);
     const containerId = await runDetached({
       image,
-      mounts: [{ hostPath: spec.codeDir, containerPath: '/var/task', readOnly: true }],
+      mounts: [{ hostPath: spec.codeDir, containerPath: containerCodePath, readOnly: true }],
       extraMounts: optMount,
       env: spec.env,
       cmd: [spec.lambda.handler],

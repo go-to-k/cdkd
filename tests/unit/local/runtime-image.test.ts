@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   isSupportedRuntime,
+  resolveRuntimeCodeMountPath,
   resolveRuntimeFileExtension,
   resolveRuntimeImage,
   resolveRuntimeSpec,
@@ -25,6 +26,8 @@ describe('resolveRuntimeImage', () => {
     ['java21', 'public.ecr.aws/lambda/java:21'],
     ['dotnet6', 'public.ecr.aws/lambda/dotnet:6'],
     ['dotnet8', 'public.ecr.aws/lambda/dotnet:8'],
+    ['provided.al2', 'public.ecr.aws/lambda/provided:al2'],
+    ['provided.al2023', 'public.ecr.aws/lambda/provided:al2023'],
   ])('maps %s to %s', (runtime, expected) => {
     expect(resolveRuntimeImage(runtime)).toBe(expected);
   });
@@ -41,17 +44,30 @@ describe('resolveRuntimeImage', () => {
     }
   });
 
-  it('rejects go / provided runtimes (.NET is no longer in the deferred list)', () => {
-    for (const r of ['go1.x', 'provided.al2', 'provided.al2023']) {
-      expect(() => resolveRuntimeImage(r)).toThrow(UnsupportedRuntimeError);
+  it('rejects deprecated go1.x with a migration pointer to provided.al2023', () => {
+    expect(() => resolveRuntimeImage('go1.x')).toThrow(UnsupportedRuntimeError);
+    try {
+      resolveRuntimeImage('go1.x');
+    } catch (err) {
+      const msg = (err as Error).message;
+      expect(msg).toMatch(/deprecated/);
+      expect(msg).toMatch(/2024-01-08/);
+      expect(msg).toMatch(/PROVIDED_AL2023/);
+      expect(msg).toMatch(/bootstrap/);
+    }
+  });
+
+  it('no longer has a "follow in subsequent PRs" deferred branch (every AWS runtime is now either supported or deprecated)', () => {
+    // Pre-#248 the unsupported-runtime path printed "Other runtimes
+    // follow in subsequent PRs". With every Lambda runtime now either
+    // resolved by SUPPORTED_RUNTIMES, special-cased as deprecated
+    // (go1.x), or rejected as unknown, that wording is gone.
+    for (const r of ['nodejs10.x', 'python2.7', 'dotnetcore3.1', 'lolcat1.0']) {
       try {
         resolveRuntimeImage(r);
       } catch (err) {
-        // .NET should no longer appear in the rejection message — it's
-        // now a supported runtime.
         const msg = (err as Error).message;
-        expect(msg).not.toMatch(/\.NET is planned/);
-        expect(msg).not.toMatch(/dotnet.*deferred/);
+        expect(msg).not.toMatch(/follow in subsequent PRs/);
       }
     }
   });
@@ -104,6 +120,8 @@ describe('resolveRuntimeImage', () => {
       expect(msg).toMatch(/java21/);
       expect(msg).toMatch(/dotnet6/);
       expect(msg).toMatch(/dotnet8/);
+      expect(msg).toMatch(/provided\.al2/);
+      expect(msg).toMatch(/provided\.al2023/);
     }
   });
 });
@@ -129,7 +147,16 @@ describe('resolveRuntimeFileExtension', () => {
     expect(() => resolveRuntimeFileExtension('')).toThrow(UnsupportedRuntimeError);
   });
 
-  it.each(['java8.al2', 'java11', 'java17', 'java21', 'dotnet6', 'dotnet8'])(
+  it.each([
+    'java8.al2',
+    'java11',
+    'java17',
+    'java21',
+    'dotnet6',
+    'dotnet8',
+    'provided.al2',
+    'provided.al2023',
+  ])(
     'rejects inline Code.ZipFile for compiled-artifact runtime %s with a message routing to Code.fromAsset',
     (runtime) => {
       expect(() => resolveRuntimeFileExtension(runtime)).toThrow(UnsupportedRuntimeError);
@@ -182,10 +209,50 @@ describe('resolveRuntimeSpec', () => {
       fileExtension: null,
     });
   });
+
+  it('returns fileExtension: null for OS-only provided.* entries — host an arbitrary bootstrap binary via Code.fromAsset', () => {
+    expect(resolveRuntimeSpec('provided.al2023')).toEqual({
+      image: 'public.ecr.aws/lambda/provided:al2023',
+      fileExtension: null,
+    });
+    expect(resolveRuntimeSpec('provided.al2')).toEqual({
+      image: 'public.ecr.aws/lambda/provided:al2',
+      fileExtension: null,
+    });
+  });
+});
+
+describe('resolveRuntimeCodeMountPath', () => {
+  it.each([
+    'nodejs20.x',
+    'nodejs24.x',
+    'python3.12',
+    'python3.14',
+    'ruby3.3',
+    'java17',
+    'java8.al2',
+    'dotnet8',
+    'dotnet6',
+  ])('returns /var/task for non-provided runtime %s', (runtime) => {
+    expect(resolveRuntimeCodeMountPath(runtime)).toBe('/var/task');
+  });
+
+  it.each(['provided.al2', 'provided.al2023'])(
+    'returns /var/runtime for provided.* runtime %s (Lambda base image hardcodes the bootstrap path)',
+    (runtime) => {
+      expect(resolveRuntimeCodeMountPath(runtime)).toBe('/var/runtime');
+    }
+  );
+
+  it('throws for unsupported runtimes — validation matches resolveRuntimeImage', () => {
+    expect(() => resolveRuntimeCodeMountPath('go1.x')).toThrow(UnsupportedRuntimeError);
+    expect(() => resolveRuntimeCodeMountPath('lolcat1.0')).toThrow(UnsupportedRuntimeError);
+    expect(() => resolveRuntimeCodeMountPath('')).toThrow(UnsupportedRuntimeError);
+  });
 });
 
 describe('isSupportedRuntime', () => {
-  it('returns true for Node.js, Python, Ruby, Java, and .NET supported sets, false otherwise', () => {
+  it('returns true for every current AWS Lambda runtime, false otherwise', () => {
     expect(isSupportedRuntime('nodejs20.x')).toBe(true);
     expect(isSupportedRuntime('nodejs24.x')).toBe(true);
     expect(isSupportedRuntime('python3.12')).toBe(true);
@@ -200,12 +267,18 @@ describe('isSupportedRuntime', () => {
     expect(isSupportedRuntime('java21')).toBe(true);
     expect(isSupportedRuntime('dotnet6')).toBe(true);
     expect(isSupportedRuntime('dotnet8')).toBe(true);
+    expect(isSupportedRuntime('provided.al2')).toBe(true);
+    expect(isSupportedRuntime('provided.al2023')).toBe(true);
+    // Deprecated / unknown runtimes don't count as supported (they go
+    // through the rejection / unknown-runtime branches in resolveRuntimeSpec).
+    expect(isSupportedRuntime('go1.x')).toBe(false);
     expect(isSupportedRuntime('ruby3.1')).toBe(false);
     expect(isSupportedRuntime('python3.10')).toBe(false);
     expect(isSupportedRuntime('java19')).toBe(false);
     expect(isSupportedRuntime('java8')).toBe(false);
     expect(isSupportedRuntime('dotnet9')).toBe(false);
     expect(isSupportedRuntime('dotnetcore3.1')).toBe(false);
+    expect(isSupportedRuntime('provided')).toBe(false);
     expect(isSupportedRuntime('')).toBe(false);
   });
 });

@@ -498,17 +498,19 @@ Lambda Runtime Interface Emulator (RIE). Modeled on `sam local invoke`
 but reusing cdkd's synthesis / asset / construct-path plumbing — no
 `template.yaml` to maintain, no `cdk synth | sam ...` round-trip.
 
-Requires Docker. Supports Node.js, Python, Ruby, Java, and .NET runtimes
+Requires Docker. Supports every current AWS Lambda runtime
 (`nodejs18.x` / `nodejs20.x` / `nodejs22.x` / `nodejs24.x` / `python3.11` /
 `python3.12` / `python3.13` / `python3.14` / `ruby3.2` / `ruby3.3` /
-`java8.al2` / `java11` / `java17` / `java21` / `dotnet6` / `dotnet8`);
-other runtimes (Go / `provided.*`) are not yet supported. Java and .NET
-Lambdas are **asset-backed only** — the Handler shape names a compiled
-artifact (`package.Class::method` for Java's JVM class;
-`Assembly::Namespace.Class::Method` for .NET's CLR assembly), so use
-`lambda.Code.fromAsset(<dir>)` with a directory containing the compiled
-output (`.class` hierarchy / `.jar` / `.dll`); inline `Code.ZipFile` is
-rejected with a clear routing message.
+`java8.al2` / `java11` / `java17` / `java21` / `dotnet6` / `dotnet8` /
+`provided.al2` / `provided.al2023`). The deprecated `go1.x` runtime is
+rejected with a migration pointer to `provided.al2023`. Java, .NET, and
+`provided.*` Lambdas are **asset-backed only** — the Handler shape names
+a compiled artifact (`package.Class::method` for Java's JVM class;
+`Assembly::Namespace.Class::Method` for .NET's CLR assembly; an
+arbitrary `bootstrap` binary for the OS-only `provided.*` runtimes), so
+use `lambda.Code.fromAsset(<dir>)` with a directory containing the
+compiled output (`.class` hierarchy / `.jar` / `.dll` / native binary);
+inline `Code.ZipFile` is rejected with a clear routing message.
 
 **Container Lambdas** — `lambda.DockerImageFunction(...)` /
 `Code.ImageUri` is supported alongside ZIP Lambdas. cdkd reads the

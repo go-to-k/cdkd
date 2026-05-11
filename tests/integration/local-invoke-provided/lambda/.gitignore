@@ -1,0 +1,4 @@
+# Compiled bootstrap binary + downloaded modules + go.sum produced by
+# verify.sh's `go build` inside Docker — not checked in.
+build/
+go.sum
