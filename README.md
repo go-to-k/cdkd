@@ -395,6 +395,26 @@ modes (auto / selective / hybrid), `--resource-mapping` CDK CLI
 compatibility, CloudFormation migration flow, provider coverage, and the
 parity matrix vs upstream `cdk import`.
 
+## Exporting a stack back to CloudFormation
+
+`cdkd export` is the mirror of `cdkd import`: it hands a cdkd-managed
+stack over to CloudFormation via a CFn `ChangeSetType=IMPORT` changeset.
+AWS resources are unchanged across the migration; cdkd state for the
+exported stack is deleted on success. From then on the stack is managed
+by `cdk deploy` / `aws cloudformation`.
+
+```bash
+cdkd export MyStack                           # confirmation prompt; CFn stack name = cdkd stack name
+cdkd export MyStack --cfn-stack-name MyStack-CFn
+cdkd export MyStack --dry-run                 # print the import plan, do not call CFn
+cdkd export MyStack --template path.json      # skip synth, use a pre-rendered JSON template
+```
+
+MVP scope: JSON templates only (CDK-generated). The command refuses to
+proceed if any resource is not CFn-importable (Lambda-backed Custom
+Resources, nested `AWS::CloudFormation::Stack` references); destroy or
+accept abandoning those resources first.
+
 ## Drift detection
 
 `cdkd drift` (state-driven; no synth) compares each managed resource

@@ -16,6 +16,7 @@ import { createForceUnlockCommand } from './commands/force-unlock.js';
 import { createStateCommand } from './commands/state.js';
 import { createImportCommand } from './commands/import.js';
 import { createLocalCommand } from './commands/local-invoke.js';
+import { createExportCommand } from './commands/export.js';
 
 const SUBCOMMANDS = new Set([
   'bootstrap',
@@ -28,6 +29,7 @@ const SUBCOMMANDS = new Set([
   'destroy',
   'orphan',
   'import',
+  'export',
   'publish-assets',
   'force-unlock',
   'state',
@@ -77,6 +79,7 @@ async function main(): Promise<void> {
   program.addCommand(createForceUnlockCommand());
   program.addCommand(createStateCommand());
   program.addCommand(createLocalCommand());
+  program.addCommand(createExportCommand());
 
   // Reorder args: move options before subcommand to after it
   // This allows `cdkd -c key=value deploy` like CDK CLI

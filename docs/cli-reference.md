@@ -744,6 +744,99 @@ destroy` as a hard failure (because it never had a non-zero outcome
 before), you may now want to branch on `2` separately to schedule a
 retry instead of paging.
 
+## `cdkd export` (hand a stack over to CloudFormation)
+
+`cdkd export <stack>` is the mirror of `cdkd import` (AWS → cdkd) in
+the reverse direction (cdkd → CloudFormation). It builds a CFn
+`ChangeSetType=IMPORT` changeset from cdkd state + the synthesized
+template, executes it, and deletes cdkd state on success. AWS resources
+are unchanged across the migration.
+
+```bash
+cdkd export MyStack                              # confirmation prompt; CFn stack name = cdkd stack name
+cdkd export MyStack --cfn-stack-name MyStack-CFn
+cdkd export MyStack --dry-run                    # print the import plan, no CFn calls
+cdkd export MyStack --template path.json         # pre-rendered JSON template (skip synth)
+cdkd export                                       # auto-detect single-stack apps
+```
+
+**Flow**:
+
+1. Synthesize the CDK app (or read `--template <path>`) to get the
+   CloudFormation template.
+2. Load cdkd state for the target stack; build the
+   `(logicalId, physicalId, resourceType)` map.
+3. Refuse if a CFn stack with the destination name already exists, or
+   if any template resource is in the never-importable set (`Custom::*`,
+   `AWS::CloudFormation::Stack`, or has no entry in cdkd state).
+4. Resolve each resource type's primary identifier property name via
+   `cloudformation:DescribeType` (with a hardcoded fallback table for
+   ~30 common types).
+5. Acquire the stack lock so concurrent `cdkd deploy` cannot race.
+6. Confirm with the user (skipped with `-y` / `--yes`).
+7. `CreateChangeSet --change-set-type IMPORT` → wait → `ExecuteChangeSet`
+   → `waitUntilStackImportComplete`.
+8. Delete cdkd state for the migrated stack.
+9. Release lock.
+
+**MVP scope** (intentional cuts; lift in follow-up PRs):
+
+- **JSON templates only.** Mirrors `cdkd import --migrate-from-cloudformation`'s
+  rationale: generic YAML libraries silently corrupt CFn shorthand intrinsics
+  (`!Ref`, `!Sub`, `!GetAtt`) on round-trip. Hand-written YAML stacks must
+  be converted manually.
+- **All-or-nothing.** If any resource in the template is not CFn-importable
+  (`Custom::*`, nested stacks), the command aborts. Mixed
+  (import-some / abandon-rest) flows are deferred — destroy the
+  non-importable resources first, or remove them from the CDK app.
+- **Inline `TemplateBody` only** (51,200-byte cap). Templates larger than
+  that require S3 upload via `TemplateURL`; not yet implemented.
+- **Synth template used verbatim**: cdkd does NOT substitute `observedProperties`
+  into the template. If the CDK code has drifted from the AWS-current state,
+  the next `cdk deploy` after migration will update the resource. Run
+  `cdkd drift` before exporting if drift matters.
+
+**Context preservation (CLI `-c` is refused by default)**:
+
+CDK reads context from `cdk.json` and `cdk.context.json` on every
+synth. CLI `-c key=value` overrides are NOT persisted to either file
+— they apply only to the current invocation. If you run `cdkd export
+-c env=prod` and later run `cdk deploy` without the same `-c env=prod`,
+CDK synthesizes a different template, which CFn sees as drift / a
+replacement on the first post-migration deploy.
+
+`cdkd export` refuses by default when CLI `-c` overrides are present.
+Two ways forward:
+
+- **Recommended**: move the overrides into `cdk.json`'s `"context": { ... }`
+  field, then re-run `cdkd export` without `-c`. Subsequent `cdk deploy`
+  invocations read `cdk.json` automatically.
+- **Escape**: pass `--accept-transient-context`. cdkd proceeds and emits
+  a warn that names every override. You are then responsible for passing
+  the SAME `-c` flags to every future `cdk deploy` for this stack (or
+  moving them to `cdk.json` before then). On success, cdkd prints the
+  exact `cdk diff` / `cdk deploy` command including the captured flags.
+
+**Caveats**:
+
+- **Replacement risk on next deploy**: if the CDK code does NOT specify
+  an explicit physical name (e.g. `bucketName: 'my-bucket-12345'`), the
+  next `cdk deploy` will see "auto-generated name" vs "actual name" as a
+  property change and may replace the resource. Mirror's `cdk import`'s
+  long-standing UX. Update the CDK code with explicit names before
+  exporting, or check the post-import changeset (`aws cloudformation
+  create-change-set --change-set-type UPDATE`) for surprises before
+  executing your first post-export `cdk deploy`.
+- **Cross-stack `Fn::GetStackOutput` consumers** in other cdkd stacks
+  cannot read the exported stack's outputs anymore (CFn outputs live in
+  CloudFormation, cdkd's resolver reads cdkd state). Plan multi-stack
+  migrations from the leaves up.
+
+Exits `0` on success, `1` on any failure (changeset rejection, AWS
+auth, lock contention, etc.). cdkd state is deleted only after the
+import changeset completes successfully; a mid-flow failure leaves
+cdkd state intact and the user can re-run the command.
+
 ## `publish-assets` (synth + build + publish, no deploy)
 
 `cdkd publish-assets` runs the asset half of the deploy pipeline —

@@ -4,11 +4,11 @@ import { createLocalRunTaskCommand } from '../../../src/cli/commands/local-run-t
 describe('createLocalRunTaskCommand', () => {
   // `cmd.parse([...])` runs the registered `.action(handler)` body. The
   // handler calls `resolveApp(undefined)` -> throws -> withErrorHandling
-  // catches and calls `process.exit(1)`. The action's rejected promise
-  // becomes an unhandled rejection that Node 24 surfaces to the test
-  // runner (Node 20/22 swallow it silently). Stub the action to a no-op
-  // so parse() exercises only Commander's option parser. Tests assert on
+  // catches and calls `process.exit(1)`. Stub the action to a no-op so
+  // parse() exercises only Commander's option parser. Tests assert on
   // `parsed.opts()` which Commander populates BEFORE invoking the action.
+  // Global belt-and-braces against the unhandled-rejection -> Node 24
+  // worker leak lives in `tests/setup.ts`.
   const cmd = createLocalRunTaskCommand();
   cmd.action(() => {});
 
