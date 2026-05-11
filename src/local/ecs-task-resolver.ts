@@ -36,9 +36,22 @@ export interface ResolvedEcsTask {
    * through unchanged.
    */
   networkMode: 'bridge' | 'awsvpc' | 'host' | 'none';
-  /** Resolved task role ARN, or the raw intrinsic when unresolvable at synth time. */
+  /**
+   * Resolved task role ARN. Surfaced as either:
+   *   - a flat string ARN passed through verbatim from the template, OR
+   *   - a synth-time placeholder of the shape
+   *     `arn:aws:iam::${AWS::AccountId}:role/<RoleLogicalId>` when the
+   *     `TaskRoleArn` is a `Ref` / `Fn::GetAtt` against an `AWS::IAM::Role`
+   *     in the same stack. The CLI substitutes the placeholder account
+   *     segment lazily via STS `GetCallerIdentity` when (and only when)
+   *     `--assume-task-role` is used in its bare form.
+   *   - `undefined` when the template's `TaskRoleArn` is missing OR is an
+   *     intrinsic that doesn't reference a same-stack IAM Role (e.g.
+   *     points at a non-IAM-Role resource type or is an unsupported
+   *     intrinsic shape — see `resolveRoleArn`).
+   */
   taskRoleArn?: string;
-  /** Resolved execution role ARN. cdkd only consults this when surfacing config. */
+  /** Resolved execution role ARN. Follows the same shape as `taskRoleArn`. */
   executionRoleArn?: string;
   containers: ResolvedEcsContainer[];
   volumes: ResolvedEcsVolume[];
@@ -631,11 +644,25 @@ function parseVolume(raw: unknown, idx: number, taskLogicalId: string): Resolved
 }
 
 /**
+ * Synth-time placeholder marker used in the account-id segment of an ARN
+ * when the role's account cannot be known statically (the role is defined
+ * inline as an `AWS::IAM::Role` in the same stack). The CLI replaces this
+ * with the live account via STS `GetCallerIdentity` lazily — only when
+ * `--assume-task-role` is used in its bare form and the resolved ARN
+ * still contains this marker.
+ */
+export const TASK_ROLE_ACCOUNT_PLACEHOLDER = '${AWS::AccountId}';
+
+/**
  * Resolve a Task / Execution role ARN reference. Accepts a flat string ARN,
  * a `Ref` / `Fn::GetAtt[..., 'Arn']` against an `AWS::IAM::Role` in the
- * same stack (no state load needed — we surface the synth-time placeholder
- * when the value is intrinsic, so `--assume-task-role` can later route off
- * the explicit ARN the user passes).
+ * same stack. Returns a synth-time placeholder ARN of the shape
+ * `arn:aws:iam::${AWS::AccountId}:role/<RoleLogicalId>` when the
+ * referenced resource is an inline IAM Role (the account segment is filled
+ * in by the CLI lazily via STS). Returns `undefined` when the reference
+ * cannot be resolved to an IAM Role (e.g. the logical id is missing,
+ * points at some other resource type, or the value is some unsupported
+ * intrinsic shape).
  */
 function resolveRoleArn(
   value: unknown,
@@ -646,27 +673,24 @@ function resolveRoleArn(
   if (typeof value !== 'object') return undefined;
   const obj = value as Record<string, unknown>;
 
+  let refLogicalId: string | undefined;
   if ('Ref' in obj && typeof obj['Ref'] === 'string') {
-    const refLogicalId = obj['Ref'];
-    const role = resources[refLogicalId];
-    if (role?.Type === 'AWS::IAM::Role') {
-      // No state to resolve against — return undefined so caller surfaces
-      // a clear "no resolvable task role" message. The user passes the
-      // ARN explicitly via `--assume-task-role <arn>`.
-      return undefined;
-    }
-  }
-  if ('Fn::GetAtt' in obj) {
+    refLogicalId = obj['Ref'];
+  } else if ('Fn::GetAtt' in obj) {
     const arg = obj['Fn::GetAtt'];
     if (Array.isArray(arg) && typeof arg[0] === 'string') {
-      const refLogicalId = arg[0];
-      const role = resources[refLogicalId];
-      if (role?.Type === 'AWS::IAM::Role') {
-        return undefined;
-      }
+      // Accept `[<LogicalId>, 'Arn']`; other attribute names (rare on IAM
+      // Role refs) fall through to undefined since the placeholder we emit
+      // is always the role ARN shape.
+      const attr = typeof arg[1] === 'string' ? arg[1] : '';
+      if (attr === '' || attr === 'Arn') refLogicalId = arg[0];
     }
   }
-  return undefined;
+  if (refLogicalId === undefined) return undefined;
+
+  const role = resources[refLogicalId];
+  if (role?.Type !== 'AWS::IAM::Role') return undefined;
+  return `arn:aws:iam::${TASK_ROLE_ACCOUNT_PLACEHOLDER}:role/${refLogicalId}`;
 }
 
 function pickString(value: unknown): string | undefined {

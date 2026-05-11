@@ -3,6 +3,7 @@ import {
   EcsTaskResolutionError,
   parseEcsTarget,
   resolveEcsTaskTarget,
+  TASK_ROLE_ACCOUNT_PLACEHOLDER,
 } from '../../../src/local/ecs-task-resolver.js';
 import type { StackInfo } from '../../../src/synthesis/assembly-reader.js';
 import type { CloudFormationTemplate, TemplateResource } from '../../../src/types/resource.js';
@@ -250,5 +251,71 @@ describe('resolveEcsTaskTarget', () => {
       TD: makeTaskDef({ cdkPath: 'S1/Foo/TaskDef' }),
     });
     expect(() => resolveEcsTaskTarget('S1:NotThere', [stack])).toThrow(/did not match/);
+  });
+
+  describe('TaskRoleArn resolution', () => {
+    function makeRole(): TemplateResource {
+      return {
+        Type: 'AWS::IAM::Role',
+        Properties: { AssumeRolePolicyDocument: { Version: '2012-10-17', Statement: [] } },
+      };
+    }
+
+    it('passes through a flat string ARN unchanged', () => {
+      const stack = buildStack('S1', {
+        TD: makeTaskDef({ taskRoleArn: 'arn:aws:iam::111111111111:role/MyRole' }),
+      });
+      const r = resolveEcsTaskTarget('TD', [stack]);
+      expect(r.taskRoleArn).toBe('arn:aws:iam::111111111111:role/MyRole');
+    });
+
+    it('surfaces a placeholder ARN when TaskRoleArn is {Ref: <IAM::Role>}', () => {
+      const stack = buildStack('S1', {
+        MyRole: makeRole(),
+        TD: makeTaskDef({ taskRoleArn: { Ref: 'MyRole' } }),
+      });
+      const r = resolveEcsTaskTarget('TD', [stack]);
+      expect(r.taskRoleArn).toBe(`arn:aws:iam::${TASK_ROLE_ACCOUNT_PLACEHOLDER}:role/MyRole`);
+    });
+
+    it('surfaces a placeholder ARN when TaskRoleArn is {Fn::GetAtt: [<IAM::Role>, "Arn"]}', () => {
+      const stack = buildStack('S1', {
+        MyRole: makeRole(),
+        TD: makeTaskDef({ taskRoleArn: { 'Fn::GetAtt': ['MyRole', 'Arn'] } }),
+      });
+      const r = resolveEcsTaskTarget('TD', [stack]);
+      expect(r.taskRoleArn).toBe(`arn:aws:iam::${TASK_ROLE_ACCOUNT_PLACEHOLDER}:role/MyRole`);
+    });
+
+    it('returns undefined when TaskRoleArn references a non-IAM-Role resource type', () => {
+      const stack = buildStack('S1', {
+        Bucket: { Type: 'AWS::S3::Bucket', Properties: {} },
+        TD: makeTaskDef({ taskRoleArn: { Ref: 'Bucket' } }),
+      });
+      const r = resolveEcsTaskTarget('TD', [stack]);
+      expect(r.taskRoleArn).toBeUndefined();
+    });
+
+    it('returns undefined when TaskRoleArn references a missing logical id', () => {
+      const stack = buildStack('S1', {
+        TD: makeTaskDef({ taskRoleArn: { Ref: 'DoesNotExist' } }),
+      });
+      const r = resolveEcsTaskTarget('TD', [stack]);
+      expect(r.taskRoleArn).toBeUndefined();
+    });
+
+    it('returns undefined when TaskRoleArn is an unsupported intrinsic shape', () => {
+      const stack = buildStack('S1', {
+        TD: makeTaskDef({ taskRoleArn: { 'Fn::Sub': '${SomeParam}' } }),
+      });
+      const r = resolveEcsTaskTarget('TD', [stack]);
+      expect(r.taskRoleArn).toBeUndefined();
+    });
+
+    it('returns undefined when TaskRoleArn is absent', () => {
+      const stack = buildStack('S1', { TD: makeTaskDef({}) });
+      const r = resolveEcsTaskTarget('TD', [stack]);
+      expect(r.taskRoleArn).toBeUndefined();
+    });
   });
 });

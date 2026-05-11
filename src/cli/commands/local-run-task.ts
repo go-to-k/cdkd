@@ -14,7 +14,10 @@ import { withErrorHandling } from '../../utils/error-handler.js';
 import { Synthesizer, type SynthesisOptions } from '../../synthesis/synthesizer.js';
 import { resolveApp } from '../config-loader.js';
 import { ensureDockerAvailable } from '../../local/docker-runner.js';
-import { resolveEcsTaskTarget } from '../../local/ecs-task-resolver.js';
+import {
+  resolveEcsTaskTarget,
+  TASK_ROLE_ACCOUNT_PLACEHOLDER,
+} from '../../local/ecs-task-resolver.js';
 import {
   cleanupEcsRun,
   createEcsRunState,
@@ -127,21 +130,24 @@ async function localRunTaskCommand(target: string, options: LocalRunTaskOptions)
     };
     process.on('SIGINT', sigintHandler);
 
-    // `--assume-task-role` branches: bare flag (boolean `true`) needs the
+    // `--assume-task-role` branches: bare flag (boolean `true`) uses the
     // task definition's resolved `TaskRoleArn`; otherwise the user-supplied
-    // ARN is used. When the template only carries an intrinsic-valued
-    // TaskRoleArn, cdkd's static resolver returns `undefined` — we
-    // surface a clear hard error pointing the user at the explicit form.
+    // ARN is used. The resolver emits a synth-time placeholder ARN
+    // (`arn:aws:iam::${AWS::AccountId}:role/<LogicalId>`) when TaskRoleArn
+    // references an inline same-stack IAM Role; we fill in the account
+    // segment lazily via STS only when bare `--assume-task-role` is set,
+    // so the STS round-trip does not fire on the common pass-through path.
     let assumedCredentials: RunEcsTaskOptions['taskCredentials'];
     let resolvedRoleArn: string | undefined;
     if (options.assumeTaskRole === true) {
       if (!task.taskRoleArn) {
         throw new Error(
-          `--assume-task-role passed without an ARN but the task definition's TaskRoleArn could not be resolved statically. ` +
+          `--assume-task-role passed without an ARN but the task definition has no resolvable TaskRoleArn. ` +
+            `Either the task definition does not set TaskRoleArn, or it points at a resource cdkd cannot resolve to an IAM Role at synth time. ` +
             `Pass the ARN explicitly: --assume-task-role <arn>`
         );
       }
-      resolvedRoleArn = task.taskRoleArn;
+      resolvedRoleArn = await resolvePlaceholderAccount(task.taskRoleArn, options.region);
       assumedCredentials = await assumeTaskRole(resolvedRoleArn, options.region);
     } else if (typeof options.assumeTaskRole === 'string') {
       resolvedRoleArn = options.assumeTaskRole;
@@ -187,6 +193,32 @@ async function localRunTaskCommand(target: string, options: LocalRunTaskOptions)
   } finally {
     if (sigintHandler) process.off('SIGINT', sigintHandler);
     if (!options.detach) await cleanup();
+  }
+}
+
+/**
+ * If `arn` contains the `${AWS::AccountId}` placeholder emitted by the
+ * resolver for inline same-stack IAM Roles, substitute the live caller
+ * account via STS `GetCallerIdentity`. Otherwise pass through unchanged.
+ * Lazy: callers should only invoke this when the resolved ARN is actually
+ * going to be used (i.e. on the bare `--assume-task-role` path).
+ */
+async function resolvePlaceholderAccount(arn: string, region: string | undefined): Promise<string> {
+  if (!arn.includes(TASK_ROLE_ACCOUNT_PLACEHOLDER)) return arn;
+  const { STSClient, GetCallerIdentityCommand } = await import('@aws-sdk/client-sts');
+  const sts = new STSClient({ ...(region && { region }) });
+  try {
+    const identity = await sts.send(new GetCallerIdentityCommand({}));
+    const account = identity.Account;
+    if (!account) {
+      throw new Error(
+        `--assume-task-role: GetCallerIdentity returned no Account; cannot resolve placeholder ARN '${arn}'. ` +
+          `Pass the ARN explicitly: --assume-task-role <arn>`
+      );
+    }
+    return arn.split(TASK_ROLE_ACCOUNT_PLACEHOLDER).join(account);
+  } finally {
+    sts.destroy();
   }
 }
 
