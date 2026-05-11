@@ -4,6 +4,7 @@ import type { StackInfo } from '../synthesis/assembly-reader.js';
 import type { TemplateResource } from '../types/resource.js';
 import { buildCdkPathIndex, resolveCdkPathToLogicalIds } from '../cli/cdk-path.js';
 import { matchStacks } from '../cli/stack-matcher.js';
+import { tryResolveImageFnJoin } from './intrinsic-image.js';
 
 /**
  * Result of resolving a `cdkd local invoke <target>` argument back to a
@@ -266,7 +267,7 @@ export function resolveLambdaTarget(target: string, stacks: StackInfo[]): Resolv
     );
   }
 
-  return extractLambdaProperties(stack, logicalId, resource);
+  return extractLambdaProperties(stack, logicalId, resource, resources);
 }
 
 /**
@@ -317,14 +318,15 @@ function pickStack(parsed: ParsedTarget, stacks: StackInfo[]): StackInfo {
 function extractLambdaProperties(
   stack: StackInfo,
   logicalId: string,
-  resource: TemplateResource
+  resource: TemplateResource,
+  resources: Record<string, TemplateResource>
 ): ResolvedLambda {
   const props = resource.Properties ?? {};
   const memoryMb = typeof props['MemorySize'] === 'number' ? props['MemorySize'] : 128;
   const timeoutSec = typeof props['Timeout'] === 'number' ? props['Timeout'] : 3;
 
   const code = (props['Code'] ?? {}) as Record<string, unknown>;
-  const imageUri = extractImageUri(code['ImageUri']);
+  const imageUri = extractImageUri(code['ImageUri'], logicalId, stack.stackName, resources);
 
   if (imageUri !== undefined) {
     return extractImageLambdaProperties({
@@ -382,18 +384,41 @@ function extractLambdaProperties(
 }
 
 /**
- * Extract the `Code.ImageUri` value when the template entry is either
- * a flat string OR a single-key `Fn::Sub` object (the shape CDK actually
- * synthesizes). Returns `undefined` when the field is absent or some
- * other intrinsic shape we don't try to resolve in v1.
+ * Extract the `Code.ImageUri` value across the shapes CDK actually synthesizes.
  *
- * Critical bug fix C1 from the design doc: CDK synthesizes
- * `{Fn::Sub: '${AWS::AccountId}.dkr.ecr.${AWS::Region}.${AWS::URLSuffix}/cdk-hnb659fds-container-assets-${AWS::AccountId}-${AWS::Region}:<hash>'}`,
- * NOT a flat string. The hash-extraction regex in the asset manifest
- * loader works against the substituted form (the `${...}` placeholders
- * are still present but the `:<hash>` tail is unaffected by them).
+ * Supported shapes:
+ *
+ *   1. Flat string — pass through.
+ *   2. `Fn::Sub` (string or `[template, vars]`) — the canonical asset
+ *      shape for `lambda.DockerImageCode.fromImageAsset(...)`. The
+ *      `${AWS::*}` placeholders survive and are substituted at the
+ *      cdk-assets lookup site. Critical bug fix C1 from the PR 5 design
+ *      doc: CDK synthesizes
+ *      `{Fn::Sub: '${AWS::AccountId}.dkr.ecr.${AWS::Region}.${AWS::URLSuffix}/cdk-hnb659fds-container-assets-${AWS::AccountId}-${AWS::Region}:<hash>'}`,
+ *      NOT a flat string. The hash-extraction regex in the asset
+ *      manifest loader works against the substituted form.
+ *   3. `Fn::Join` (canonical CDK 2.x shape for
+ *      `lambda.DockerImageCode.fromEcr(repo, { tagOrDigest })`) — see
+ *      [src/local/intrinsic-image.ts](./intrinsic-image.ts), `tryResolveImageFnJoin`.
+ *      For IMPORTED repositories (literal acct-id / region + `Ref:
+ *      AWS::URLSuffix` + literal repo path) the resolver returns a
+ *      complete ECR URI here without state. For SAME-STACK references
+ *      the resolver needs cdkd state (`--from-state`) to recover the
+ *      repository's account-id / region; without state we surface a
+ *      clear error pointing the user at `cdkd local invoke --from-state`
+ *      / `ContainerImage.fromAsset` / a public-image alternative.
+ *
+ * Throws `LocalInvokeResolutionError` for `Fn::Join` shapes the resolver
+ * recognizes as ECR-shape-needing-state OR malformed; returns `undefined`
+ * for genuinely unrecognized shapes so the caller's downstream ZIP-vs-
+ * IMAGE branching can route to its existing error path.
  */
-function extractImageUri(value: unknown): string | undefined {
+function extractImageUri(
+  value: unknown,
+  logicalId: string,
+  stackName: string,
+  resources: Record<string, TemplateResource>
+): string | undefined {
   if (typeof value === 'string' && value.length > 0) return value;
   if (value && typeof value === 'object' && !Array.isArray(value)) {
     const obj = value as Record<string, unknown>;
@@ -401,6 +426,47 @@ function extractImageUri(value: unknown): string | undefined {
     if (typeof sub === 'string' && sub.length > 0) return sub;
     // Fn::Sub array form: [template, vars]. The first element is the template.
     if (Array.isArray(sub) && typeof sub[0] === 'string') return sub[0];
+
+    // `Fn::Join` — try the shared ECR-URI resolver. We deliberately pass
+    // no `ImageResolutionContext` here; `cdkd local invoke` doesn't load
+    // cdkd state up front (issue #286, v1 scope), so only `Fn::Join`
+    // shapes with no AWS pseudo-parameter refs AND no same-stack ECR
+    // Repository refs resolve cleanly. SAME-STACK shapes return
+    // `needs-state` and we surface a clear hint. Imported-repo shapes
+    // that reference `Ref: AWS::URLSuffix` return `not-applicable` (no
+    // ECR Repository ref in the tree); see the explicit `Fn::Join`
+    // detection below.
+    if ('Fn::Join' in obj) {
+      const joinResolved = tryResolveImageFnJoin(value, resources, undefined);
+      if (joinResolved.kind === 'resolved') return joinResolved.uri;
+      if (joinResolved.kind === 'needs-state') {
+        throw new LocalInvokeResolutionError(
+          `Lambda '${logicalId}' in ${stackName} references same-stack ECR repository '${joinResolved.repoLogicalId}' via Fn::Join. ` +
+            'cdkd local invoke cannot resolve the repository URI without state — ' +
+            'deploy the stack first (so cdkd records the repository physical id), ' +
+            'rebuild via lambda.DockerImageCode.fromImageAsset, or pin a public image.'
+        );
+      }
+      if (joinResolved.kind === 'unsupported-join') {
+        throw new LocalInvokeResolutionError(
+          `Lambda '${logicalId}' in ${stackName} has an unsupported Fn::Join Code.ImageUri shape: ${joinResolved.reason}. ` +
+            'cdkd local invoke recognizes the canonical CDK 2.x lambda.DockerImageCode.fromEcr Fn::Join shape ' +
+            '(delimiter "" with nested Fn::Select/Fn::Split over an ECR Repository Arn GetAtt + Ref to the repo).'
+        );
+      }
+      // `not-applicable` — the shape is `Fn::Join` but the resolver
+      // couldn't reduce every element and there's no same-stack ECR
+      // Repository ref. The most common cause is a `Ref: AWS::URLSuffix`
+      // / other pseudo-parameter that needs `pseudoParameters` context
+      // (not yet plumbed through `cdkd local invoke`). Surface a clear
+      // error instead of falling through to ZIP-branch validation,
+      // which would error with the unrelated "no Runtime" message.
+      throw new LocalInvokeResolutionError(
+        `Lambda '${logicalId}' in ${stackName} has an Fn::Join Code.ImageUri that cdkd local invoke cannot resolve. ` +
+          'The shape likely references AWS pseudo parameters (e.g. ${AWS::URLSuffix}) for an imported ECR repository. ' +
+          'Workarounds: rebuild via lambda.DockerImageCode.fromImageAsset, or pin a fully-literal public image URI.'
+      );
+    }
   }
   return undefined;
 }

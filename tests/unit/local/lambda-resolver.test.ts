@@ -429,6 +429,147 @@ describe('resolveLambdaTarget', () => {
     expect(result.imageConfig).toEqual({});
   });
 
+  // Issue #286 Gap 2 — Fn::Join Code.ImageUri shape (lambda.DockerImageCode.fromEcr)
+  //
+  // CDK 2.x synthesizes `lambda.DockerImageCode.fromEcr(repo, { tagOrDigest })`
+  // as a Fn::Join over nested Fn::Select / Fn::Split / Fn::GetAtt against
+  // the same-stack `AWS::ECR::Repository`. Captured via `cdk synth` + `jq`
+  // from a real CDK app. The same canonical shape covers Lambda container
+  // and ECS `ContainerImage.fromEcrRepository(...)`; the resolver is
+  // shared via `src/local/intrinsic-image.ts`.
+
+  it('rejects a same-stack fromEcr Fn::Join Code.ImageUri with a clear --from-state hint', () => {
+    const stack = buildStack(
+      'MyStack',
+      {
+        Repo1: {
+          Type: 'AWS::ECR::Repository',
+          Properties: {},
+        },
+        ContainerFn: {
+          Type: 'AWS::Lambda::Function',
+          Properties: {
+            PackageType: 'Image',
+            Code: {
+              ImageUri: {
+                'Fn::Join': [
+                  '',
+                  [
+                    {
+                      'Fn::Select': [
+                        4,
+                        { 'Fn::Split': [':', { 'Fn::GetAtt': ['Repo1', 'Arn'] }] },
+                      ],
+                    },
+                    '.dkr.ecr.',
+                    {
+                      'Fn::Select': [
+                        3,
+                        { 'Fn::Split': [':', { 'Fn::GetAtt': ['Repo1', 'Arn'] }] },
+                      ],
+                    },
+                    '.',
+                    { Ref: 'AWS::URLSuffix' },
+                    '/',
+                    { Ref: 'Repo1' },
+                    ':latest',
+                  ],
+                ],
+              },
+            },
+          },
+        },
+      },
+      tmpRoot
+    );
+    expect(() => resolveLambdaTarget('MyStack:ContainerFn', [stack])).toThrow(
+      /references same-stack ECR repository 'Repo1' via Fn::Join/
+    );
+  });
+
+  it('rejects a malformed Fn::Join Code.ImageUri with an unsupported-shape error', () => {
+    const stack = buildStack(
+      'MyStack',
+      {
+        Bad: {
+          Type: 'AWS::Lambda::Function',
+          Properties: {
+            PackageType: 'Image',
+            Code: {
+              ImageUri: {
+                'Fn::Join': [42, ['a', 'b']],
+              },
+            },
+          },
+        },
+      },
+      tmpRoot
+    );
+    expect(() => resolveLambdaTarget('MyStack:Bad', [stack])).toThrow(
+      /unsupported Fn::Join Code\.ImageUri shape.*delimiter must be a string/s
+    );
+  });
+
+  it('rejects an imported-repo Fn::Join Code.ImageUri (no ECR ref + AWS::URLSuffix) with a clear hint', () => {
+    // Imported-repo shape: literal acct-id + region + `Ref: AWS::URLSuffix`
+    // + literal repo path. No same-stack `AWS::ECR::Repository`, so the
+    // resolver's needs-state branch doesn't fire. Without pseudo-
+    // parameter context the URLSuffix Ref can't be resolved, so the
+    // helper returns not-applicable; the lambda-resolver layer then
+    // surfaces a specific error rather than falling through to the ZIP
+    // branch's misleading "no Runtime" message.
+    const stack = buildStack(
+      'MyStack',
+      {
+        ImportedRepoFn: {
+          Type: 'AWS::Lambda::Function',
+          Properties: {
+            PackageType: 'Image',
+            Code: {
+              ImageUri: {
+                'Fn::Join': [
+                  '',
+                  ['123456789012.dkr.ecr.us-east-1.', { Ref: 'AWS::URLSuffix' }, '/external:v1'],
+                ],
+              },
+            },
+          },
+        },
+      },
+      tmpRoot
+    );
+    expect(() => resolveLambdaTarget('MyStack:ImportedRepoFn', [stack])).toThrow(
+      /Fn::Join Code\.ImageUri that cdkd local invoke cannot resolve/
+    );
+  });
+
+  it('resolves a literal-only Fn::Join Code.ImageUri without state (public image)', () => {
+    // Edge case: a Fn::Join with no intrinsic refs is just a string
+    // concat. The shared resolver handles this so a hand-crafted
+    // template (or a future CDK that flattens to Fn::Join) works.
+    const stack = buildStack(
+      'MyStack',
+      {
+        PublicJoinFn: {
+          Type: 'AWS::Lambda::Function',
+          Properties: {
+            PackageType: 'Image',
+            Code: {
+              ImageUri: {
+                'Fn::Join': ['', ['public.ecr.aws/', 'lambda/nodejs:20']],
+              },
+            },
+          },
+        },
+      },
+      tmpRoot
+    );
+    const result = resolveLambdaTarget('MyStack:PublicJoinFn', [stack]);
+    expect(result.kind).toBe('image');
+    if (result.kind !== 'image') return;
+    expect(result.imageUri).toBe('public.ecr.aws/lambda/nodejs:20');
+  });
+
   // PR 6 of #224 — Lambda Layers (issue #232)
 
   it('returns layers: [] when Properties.Layers is absent (ZIP)', () => {
