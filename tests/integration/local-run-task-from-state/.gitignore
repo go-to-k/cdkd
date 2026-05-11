@@ -1,0 +1,2 @@
+# Nothing to override here — the fixture has no JS leaf files. The parent
+# integ .gitignore traps *.js / *.d.ts / node_modules etc. as usual.
