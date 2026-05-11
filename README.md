@@ -4,6 +4,7 @@
 
 - **Drop-in CDK compatible** — your existing CDK app code runs as-is.
 - **Up to 15x faster deploys than the AWS CDK CLI (CloudFormation)**
+- **Run AWS resources locally without deploying** — invoke Lambdas, serve API Gateway routes, and run ECS task definitions against Docker. SAM-compatible mental model, no `template.yaml` round-trip.
 
 ![cdkd demo](https://github.com/user-attachments/assets/0128730d-186d-4bd3-abea-aabc80ba4dd5)
 
