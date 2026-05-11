@@ -1,3 +1,10 @@
+# [0.79.0](https://github.com/go-to-k/cdkd/compare/v0.78.0...v0.79.0) (2026-05-11)
+
+
+### Features
+
+* **cli:** cdkd local invoke / start-api .NET runtime support ([#257](https://github.com/go-to-k/cdkd/issues/257)) ([aa01e2e](https://github.com/go-to-k/cdkd/commit/aa01e2ed6ae9ac57992e00e2a21932deef65f3d6))
+
 # [0.78.0](https://github.com/go-to-k/cdkd/compare/v0.77.0...v0.78.0) (2026-05-11)
 
 
