@@ -14,8 +14,9 @@ cdkd uses an S3 bucket for state management. You can easily create one using the
 ### Method A: Using bootstrap command (Recommended)
 
 ```bash
-# Set cdkd path (from cdkd root directory)
-CDKD_PATH="/Users/goto/github/cdkd"
+# Set cdkd path (auto-resolves to the cdkd repo root when run from inside it;
+# otherwise replace with an absolute path to your local cdkd checkout)
+CDKD_PATH="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 
 # Bucket name must be globally unique
 export STATE_BUCKET="cdkd-state-$(whoami)-$(date +%s)"
@@ -54,14 +55,14 @@ The cdkd repository includes several examples:
 #### Basic Example (Simple S3 Bucket)
 
 ```bash
-cd /Users/goto/github/cdkd/tests/integration/basic
+cd "${CDKD_PATH}/tests/integration/basic"
 npm install
 ```
 
 #### Intrinsic Functions Example (Testing Built-in Functions)
 
 ```bash
-cd /Users/goto/github/cdkd/tests/integration/intrinsic-functions
+cd "${CDKD_PATH}/tests/integration/intrinsic-functions"
 npm install
 ```
 
@@ -70,7 +71,7 @@ npm install
 A practical integration example with Lambda functions and DynamoDB tables:
 
 ```bash
-cd /Users/goto/github/cdkd/tests/integration/lambda
+cd "${CDKD_PATH}/tests/integration/lambda"
 npm install
 ```
 
@@ -86,14 +87,14 @@ npm install
 Event-driven architecture with S3 + Lambda + DynamoDB + SQS + IAM:
 
 ```bash
-cd /Users/goto/github/cdkd/tests/integration/multi-resource
+cd "${CDKD_PATH}/tests/integration/multi-resource"
 npm install
 ```
 
 #### Parameters Example (CloudFormation Parameters) ✅ Implemented
 
 ```bash
-cd /Users/goto/github/cdkd/tests/integration/parameters
+cd "${CDKD_PATH}/tests/integration/parameters"
 npm install
 ```
 
@@ -106,7 +107,7 @@ npm install
 #### Conditions Example (CloudFormation Conditions) ✅ Implemented
 
 ```bash
-cd /Users/goto/github/cdkd/tests/integration/conditions
+cd "${CDKD_PATH}/tests/integration/conditions"
 npm install
 ```
 
@@ -119,7 +120,7 @@ npm install
 #### Cross-Stack References Example (Fn::ImportValue) ✅ Implemented
 
 ```bash
-cd /Users/goto/github/cdkd/tests/integration/cross-stack-references
+cd "${CDKD_PATH}/tests/integration/cross-stack-references"
 npm install
 ```
 
@@ -132,7 +133,7 @@ npm install
 #### ECR Example (Docker Image Lambda with ECR)
 
 ```bash
-cd /Users/goto/github/cdkd/tests/integration/ecr
+cd "${CDKD_PATH}/tests/integration/ecr"
 npm install
 ```
 
@@ -144,7 +145,7 @@ npm install
 #### API Gateway Example (REST API + Lambda)
 
 ```bash
-cd /Users/goto/github/cdkd/tests/integration/apigateway
+cd "${CDKD_PATH}/tests/integration/apigateway"
 npm install
 ```
 
@@ -156,77 +157,77 @@ npm install
 #### ECS Fargate Example
 
 ```bash
-cd /Users/goto/github/cdkd/tests/integration/ecs-fargate
+cd "${CDKD_PATH}/tests/integration/ecs-fargate"
 npm install
 ```
 
 #### EventBridge Example
 
 ```bash
-cd /Users/goto/github/cdkd/tests/integration/eventbridge
+cd "${CDKD_PATH}/tests/integration/eventbridge"
 npm install
 ```
 
 #### SNS + SQS Event Example
 
 ```bash
-cd /Users/goto/github/cdkd/tests/integration/sns-sqs-event
+cd "${CDKD_PATH}/tests/integration/sns-sqs-event"
 npm install
 ```
 
 #### DynamoDB Streams Example
 
 ```bash
-cd /Users/goto/github/cdkd/tests/integration/dynamodb-streams
+cd "${CDKD_PATH}/tests/integration/dynamodb-streams"
 npm install
 ```
 
 #### Step Functions Example
 
 ```bash
-cd /Users/goto/github/cdkd/tests/integration/stepfunctions
+cd "${CDKD_PATH}/tests/integration/stepfunctions"
 npm install
 ```
 
 #### EC2 VPC Example
 
 ```bash
-cd /Users/goto/github/cdkd/tests/integration/ec2-vpc
+cd "${CDKD_PATH}/tests/integration/ec2-vpc"
 npm install
 ```
 
 #### S3 + CloudFront Example
 
 ```bash
-cd /Users/goto/github/cdkd/tests/integration/s3-cloudfront
+cd "${CDKD_PATH}/tests/integration/s3-cloudfront"
 npm install
 ```
 
 #### CloudWatch Example
 
 ```bash
-cd /Users/goto/github/cdkd/tests/integration/cloudwatch
+cd "${CDKD_PATH}/tests/integration/cloudwatch"
 npm install
 ```
 
 #### RDS Aurora Example
 
 ```bash
-cd /Users/goto/github/cdkd/tests/integration/rds-aurora
+cd "${CDKD_PATH}/tests/integration/rds-aurora"
 npm install
 ```
 
 #### Bedrock AgentCore Example
 
 ```bash
-cd /Users/goto/github/cdkd/tests/integration/bedrock-agentcore
+cd "${CDKD_PATH}/tests/integration/bedrock-agentcore"
 npm install
 ```
 
 #### CloudFront + Lambda Function URL Example
 
 ```bash
-cd /Users/goto/github/cdkd/tests/integration/cloudfront-function-url
+cd "${CDKD_PATH}/tests/integration/cloudfront-function-url"
 npm install
 ```
 
@@ -239,7 +240,7 @@ npm install
 #### VPC Lookup Example (Context Provider Loop)
 
 ```bash
-cd /Users/goto/github/cdkd/tests/integration/vpc-lookup
+cd "${CDKD_PATH}/tests/integration/vpc-lookup"
 npm install
 ```
 
@@ -267,7 +268,7 @@ node ../../../dist/cli.js destroy --region us-east-1 --state-bucket <your-state-
 #### CDK Provider Framework Example (isCompleteHandler/onEventHandler)
 
 ```bash
-cd /Users/goto/github/cdkd/tests/integration/custom-resource-provider
+cd "${CDKD_PATH}/tests/integration/custom-resource-provider"
 npm install
 ```
 
@@ -329,8 +330,9 @@ npm run build
 ## 3. Deploy Using cdkd
 
 ```bash
-# Set cdkd path (from cdkd root directory)
-CDKD_PATH="/Users/goto/github/cdkd"
+# Set cdkd path (auto-resolves to the cdkd repo root when run from inside it;
+# otherwise replace with an absolute path to your local cdkd checkout)
+CDKD_PATH="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 
 # First, check changes with diff
 # --app and --state-bucket can be omitted if set via env vars or cdk.json
@@ -370,7 +372,7 @@ cdkd supports resource updates via Cloud Control API JSON Patch (RFC 6902). Test
 ### Method A: Using the basic example with environment variable
 
 ```bash
-cd /Users/goto/github/cdkd/tests/integration/basic
+cd "${CDKD_PATH}/tests/integration/basic"
 
 # First deployment (CREATE)
 # Stack name is positional; auto-detected if single stack

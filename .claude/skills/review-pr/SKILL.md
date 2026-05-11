@@ -98,7 +98,7 @@ Dispatch this single reviewer (run via Agent tool in the main session):
     subagent_type: "general-purpose",
     description: "PR <N> code review",
     prompt: |
-      Read your role definition at `/Users/goto/pc/github/cdkd/.claude/agents/pr-code-reviewer.md` and follow it.
+      Read your role definition at `.claude/agents/pr-code-reviewer.md` (relative to the repo root) and follow it.
       Inputs:
       - PR number: <N>
       - Branch: <branch>
@@ -114,7 +114,7 @@ Dispatch these three reviewers IN PARALLEL (single message, three Agent tool cal
     subagent_type: "general-purpose",
     description: "PR <N> spec compliance review",
     prompt: |
-      Read your role definition at `/Users/goto/pc/github/cdkd/.claude/agents/pr-spec-reviewer.md` and follow it.
+      Read your role definition at `.claude/agents/pr-spec-reviewer.md` (relative to the repo root) and follow it.
       Inputs:
       - PR number: <N>
       - Branch: <branch>
@@ -125,7 +125,7 @@ Dispatch these three reviewers IN PARALLEL (single message, three Agent tool cal
     subagent_type: "general-purpose",
     description: "PR <N> code review",
     prompt: |
-      Read your role definition at `/Users/goto/pc/github/cdkd/.claude/agents/pr-code-reviewer.md` and follow it.
+      Read your role definition at `.claude/agents/pr-code-reviewer.md` (relative to the repo root) and follow it.
       Inputs:
       - PR number: <N>
       - Branch: <branch>
@@ -135,7 +135,7 @@ Dispatch these three reviewers IN PARALLEL (single message, three Agent tool cal
     subagent_type: "general-purpose",
     description: "PR <N> test adequacy review",
     prompt: |
-      Read your role definition at `/Users/goto/pc/github/cdkd/.claude/agents/pr-test-reviewer.md` and follow it.
+      Read your role definition at `.claude/agents/pr-test-reviewer.md` (relative to the repo root) and follow it.
       Inputs:
       - PR number: <N>
       - Branch: <branch>

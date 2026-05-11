@@ -32,7 +32,7 @@ npm install
 First, deploy the exporter stack that creates resources and exports values:
 
 ```bash
-cd /Users/goto/github/cdkd
+cd "$(git rev-parse --show-toplevel)"
 export STATE_BUCKET="your-state-bucket"
 export AWS_REGION="us-east-1"
 
