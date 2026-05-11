@@ -331,7 +331,7 @@ export function buildDependencyGraph(containers: ResolvedEcsContainer[]): graphl
   return g;
 }
 
-function topoSort(g: graphlib.Graph, containers: ResolvedEcsContainer[]): string[] {
+export function topoSort(g: graphlib.Graph, containers: ResolvedEcsContainer[]): string[] {
   // graphlib.alg.topsort returns roots LAST given our edge direction; we
   // need dependencies (B) first, so we reverse. Fall back to template
   // order on a tie (preserves the user's intent for siblings with no

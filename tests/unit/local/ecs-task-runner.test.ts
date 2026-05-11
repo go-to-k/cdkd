@@ -5,6 +5,7 @@ import {
   cleanupEcsRun,
   createEcsRunState,
   EcsTaskRunnerError,
+  topoSort,
 } from '../../../src/local/ecs-task-runner.js';
 import type {
   ResolvedEcsContainer,
@@ -313,5 +314,90 @@ describe('cleanupEcsRun', () => {
     });
     await expect(cleanupEcsRun(state, { keepRunning: false })).resolves.toBeUndefined();
     expect(state.logStoppers).toEqual([]);
+  });
+});
+
+describe('topoSort (G3)', () => {
+  it('preserves template order for two independent containers', () => {
+    const a = makeContainer({ name: 'a' });
+    const b = makeContainer({ name: 'b' });
+    const g = buildDependencyGraph([a, b]);
+    expect(topoSort(g, [a, b])).toEqual(['a', 'b']);
+    // Reversed input still respects template order in the input array
+    // — the tiebreak key is the array index of `containers`, not name.
+    const g2 = buildDependencyGraph([b, a]);
+    expect(topoSort(g2, [b, a])).toEqual(['b', 'a']);
+  });
+
+  it('diamond: D depends on B+C, both depend on A → A first, B/C in template order, D last', () => {
+    const A = makeContainer({ name: 'A' });
+    const B = makeContainer({
+      name: 'B',
+      dependsOn: [{ containerName: 'A', condition: 'START' }],
+    });
+    const C = makeContainer({
+      name: 'C',
+      dependsOn: [{ containerName: 'A', condition: 'START' }],
+    });
+    const D = makeContainer({
+      name: 'D',
+      dependsOn: [
+        { containerName: 'B', condition: 'START' },
+        { containerName: 'C', condition: 'START' },
+      ],
+    });
+    const containers = [A, B, C, D];
+    const g = buildDependencyGraph(containers);
+    const order = topoSort(g, containers);
+    // A must be before B / C; B / C must be before D.
+    expect(order.indexOf('A')).toBeLessThan(order.indexOf('B'));
+    expect(order.indexOf('A')).toBeLessThan(order.indexOf('C'));
+    expect(order.indexOf('B')).toBeLessThan(order.indexOf('D'));
+    expect(order.indexOf('C')).toBeLessThan(order.indexOf('D'));
+    expect(order.indexOf('A')).toBe(0);
+    expect(order.indexOf('D')).toBe(3);
+    // Template-order tiebreak: B (index 1) comes before C (index 2).
+    expect(order.indexOf('B')).toBeLessThan(order.indexOf('C'));
+  });
+
+  it('multiple independent roots come out in template order', () => {
+    const r1 = makeContainer({ name: 'r1' });
+    const r2 = makeContainer({ name: 'r2' });
+    const r3 = makeContainer({ name: 'r3' });
+    const containers = [r1, r2, r3];
+    const g = buildDependencyGraph(containers);
+    expect(topoSort(g, containers)).toEqual(['r1', 'r2', 'r3']);
+  });
+
+  it('chain A->B->C in template order keeps deps before dependents', () => {
+    const A = makeContainer({ name: 'A' });
+    const B = makeContainer({
+      name: 'B',
+      dependsOn: [{ containerName: 'A', condition: 'START' }],
+    });
+    const C = makeContainer({
+      name: 'C',
+      dependsOn: [{ containerName: 'B', condition: 'START' }],
+    });
+    const containers = [A, B, C];
+    const g = buildDependencyGraph(containers);
+    const order = topoSort(g, containers);
+    expect(order.indexOf('A')).toBeLessThan(order.indexOf('B'));
+    expect(order.indexOf('B')).toBeLessThan(order.indexOf('C'));
+  });
+
+  it('cyclic graph rejection lives in buildDependencyGraph (not topoSort)', () => {
+    // Sanity check: cycle rejection happens BEFORE topoSort is ever
+    // called, so cyclic graphs never reach this function. This documents
+    // the contract — a defensive test inside topoSort would never fire.
+    const a = makeContainer({
+      name: 'a',
+      dependsOn: [{ containerName: 'b', condition: 'START' }],
+    });
+    const b = makeContainer({
+      name: 'b',
+      dependsOn: [{ containerName: 'a', condition: 'START' }],
+    });
+    expect(() => buildDependencyGraph([a, b])).toThrow(EcsTaskRunnerError);
   });
 });
