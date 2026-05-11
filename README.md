@@ -36,9 +36,9 @@ Numbers below are deploy-phase only (CDK app synthesis is identical between cdkd
 
 Stack: S3 Bucket, DynamoDB Table, SQS Queue, SNS Topic, SSM Parameter (5 independent resources, fully parallelized by cdkd's DAG scheduler).
 
-| | cdkd | AWS CDK (CFn) | Speedup |
+| | AWS CDK (CFn) | cdkd | Speedup |
 | --- | ---: | ---: | ---: |
-| Deploy | **17.0s** | **94.4s** | **5.5x** |
+| Deploy | **94.4s** | **17.0s** | **5.5x** |
 
 ### VPC + CloudFront + Lambda stack — **15x faster with `--no-wait`** (40s vs 599s)
 
@@ -54,9 +54,9 @@ The 15x figure requires `cdkd deploy --no-wait`, which returns as soon as each C
 
 Stack: SSM Document × 3 + Athena WorkGroup × 2 (no SDK provider — CC API fallback).
 
-| | cdkd | AWS CDK (CFn) | Speedup |
+| | AWS CDK (CFn) | cdkd | Speedup |
 | --- | ---: | ---: | ---: |
-| Deploy | **40.9s** | **64.9s** | **1.6x** |
+| Deploy | **64.9s** | **40.9s** | **1.6x** |
 
 Reproduce the first two with `./tests/benchmark/run-benchmark.sh all`. See [tests/benchmark/README.md](tests/benchmark/README.md) for details.
 
@@ -99,21 +99,11 @@ For a step-by-step walkthrough of the full `cdkd deploy` pipeline (CLI
 parsing → synthesis → asset publishing → per-stack deploy), see
 [docs/architecture.md](docs/architecture.md#5-end-to-end-pipeline-walkthrough-cdkd-deploy).
 
-## Supported Features
-
-cdkd supports the standard CloudFormation surface — intrinsic functions,
-pseudo parameters, parameters / conditions, cross-stack / cross-region
-references, asset publishing, custom resources, and so on. See
-**[docs/supported-features.md](docs/supported-features.md)** for the
-full reference. For per-resource-type provisioning support (SDK Providers
-vs Cloud Control API fallback), see
-**[docs/supported-resources.md](docs/supported-resources.md)**.
-
 ## Prerequisites
 
 - **Node.js** >= 20.0.0
 - **AWS CDK Bootstrap**: You must run `cdk bootstrap` before using cdkd. cdkd uses CDK's bootstrap bucket (`cdk-hnb659fds-assets-*`) for asset uploads (Lambda code, Docker images). Custom bootstrap qualifiers are supported — CDK embeds the correct bucket/repo names in the asset manifest during synthesis.
-- **AWS Credentials**: Configured via environment variables, `~/.aws/credentials`, `--profile`, or `--role-arn` option. **The credentials must have admin-equivalent permissions for the resources being deployed.** Unlike `cdk deploy`, cdkd does NOT route through CloudFormation, so there is no cfn-exec-role to delegate to — every IAM / EC2 / Lambda / etc. API call is issued from cdkd directly. CDK CLI's `cdk-hnb659fds-deploy-role-*` only carries CFn + asset-publish permissions and is therefore NOT sufficient for cdkd. See `--role-arn` in [docs/cli-reference.md](docs/cli-reference.md) for assuming a role with the right permissions.
+- **AWS credentials with admin-equivalent permissions** for the resources being deployed. cdkd does NOT route through CloudFormation, so CDK CLI's `cdk-hnb659fds-deploy-role-*` is NOT sufficient — see [`--role-arn`](docs/cli-reference.md).
 
 ## Installation
 
@@ -321,6 +311,16 @@ cdkd state destroy MyStack OtherStack --yes
 cdkd state destroy --all -y           # every stack in the bucket
 cdkd state destroy MyStack --region us-east-1
 ```
+
+## Compatibility
+
+cdkd supports the standard CloudFormation surface — intrinsic functions,
+pseudo parameters, parameters / conditions, cross-stack / cross-region
+references, asset publishing, custom resources, and so on. See
+**[docs/supported-features.md](docs/supported-features.md)** for the
+full reference. For per-resource-type provisioning support (SDK Providers
+vs Cloud Control API fallback), see
+**[docs/supported-resources.md](docs/supported-resources.md)**.
 
 ## Rollback behavior
 
