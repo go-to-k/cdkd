@@ -87,6 +87,13 @@
             "if": "Bash(git commit*)",
             "timeout": 10,
             "statusMessage": "Checking user-facing docs for internal PR labels..."
+          },
+          {
+            "type": "command",
+            "command": ".claude/hooks/cmd-parse-stub-gate.sh",
+            "if": "Bash(git commit*)",
+            "timeout": 10,
+            "statusMessage": "Checking test files for cmd.parse without action stub..."
           }
         ]
       }
