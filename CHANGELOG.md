@@ -1,3 +1,10 @@
+# [0.77.0](https://github.com/go-to-k/cdkd/compare/v0.76.0...v0.77.0) (2026-05-11)
+
+
+### Features
+
+* **cli:** cdkd local invoke / start-api Ruby runtime support ([#254](https://github.com/go-to-k/cdkd/issues/254)) ([44a5c40](https://github.com/go-to-k/cdkd/commit/44a5c407ca21b63b7a3116374814d097ba4c130c))
+
 # [0.76.0](https://github.com/go-to-k/cdkd/compare/v0.75.2...v0.76.0) (2026-05-10)
 
 
