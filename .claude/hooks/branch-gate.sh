@@ -33,11 +33,35 @@ cmd=$(printf '%s' "$input" | jq -r '.tool_input.command // ""' 2>/dev/null || ec
 hook_cwd=$(printf '%s' "$input" | jq -r '.cwd // ""' 2>/dev/null || echo "")
 
 # Only gate git commit / git push — any other command passes through.
-# `[^|;&]*` matches any flag/value pairs between `git` and the
-# subcommand (e.g. `git -C <path> commit`) WITHOUT crossing pipeline
-# separators. `git status; git commit` therefore still matches the
-# second segment via re-positioning.
-if ! printf '%s' "$cmd" | grep -qE '\bgit[^|;&]*\b(commit|push)\b'; then
+# The regex matches `git` + optional global flags (e.g. `-C <path>`,
+# `-c <key>=<value>`, `--no-pager`, `--git-dir=<path>`) + the literal
+# subcommand `commit` or `push`, anchored so that `commit` / `push`
+# must appear in the GIT SUBCOMMAND POSITION — not as a substring of
+# a refspec (`<sha>^{commit}`), a pathspec (`-- '*push*.md'`), or a
+# `--grep=push` query.
+#
+# Anchors:
+#   `\bgit`                   — `git` as a whole word, so `gitlab` /
+#                               `mygit` don't trip the gate. The leading
+#                               `\b` also makes `$(git commit)` and
+#                               `` `git commit` `` match because the
+#                               opening `(` / backtick is a non-word
+#                               boundary.
+#   `([[:space:]]+(-[^[:space:]]+([[:space:]]+[^[:space:]-][^[:space:]]*)?))*`
+#                             — zero or more "flag tokens": each flag
+#                               (`-X` or `--foo[=val]`) optionally
+#                               followed by a separate non-flag value
+#                               token (covers `-C <path>` /
+#                               `-c <key>=<val>`).
+#   `[[:space:]]+(commit|push)` — the subcommand position.
+#   `([[:space:]]|$|[|;&`)])` — must end at a token boundary so
+#                               `commit.gpgSign=false` (a `-c` value)
+#                               is NOT counted as the subcommand;
+#                               also recognizes pipeline / subshell
+#                               separators so `$(git commit)`,
+#                               `git status; git commit`,
+#                               `` `git push` `` all match.
+if ! printf '%s' "$cmd" | grep -qE '\bgit([[:space:]]+(-[^[:space:]]+([[:space:]]+[^[:space:]-][^[:space:]]*)?))*[[:space:]]+(commit|push)([[:space:]]|$|[|;&`)])'; then
   exit 0
 fi
 

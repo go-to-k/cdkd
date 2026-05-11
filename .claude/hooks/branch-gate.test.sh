@@ -80,6 +80,51 @@ run_case "cd <feature> && git commit from main-cwd allowed" 0 \
 run_case "non-git target dir allowed (silent pass)" 0 \
   "$(printf '{"cwd":"%s","tool_input":{"command":"git commit -m wip"}}' "$TMPDIR")"
 
+# --- ALLOW cases for read-only `git` commands that contain the literal
+# words `commit` / `push` in args or refspecs (issue #281).
+#
+# Pre-fix the regex `\bgit[^|;&]*\b(commit|push)\b` matched any git
+# invocation that mentioned `commit` / `push` anywhere on the line —
+# blocking legitimate read-only ops like `git rev-parse <sha>^{commit}`
+# even on `main`. The tightened regex requires `commit` / `push` to
+# appear in the GIT SUBCOMMAND POSITION.
+
+# 7a. `git rev-parse <sha>^{commit}` — `^{commit}` is git's peel-to-commit
+#     syntax, NOT the commit subcommand. Must pass-through even on main.
+run_case "git rev-parse <sha>^{commit} on main allowed" 0 \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"git rev-parse abc123^{commit}"}}' "$main_repo")"
+
+# 7b. `git cat-file -e <sha>^{commit}` — same peel-to-commit; this is the
+#     exact repro from the issue body.
+run_case "git cat-file -e <sha>^{commit} on main allowed" 0 \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"git cat-file -e abc^{commit}"}}' "$main_repo")"
+
+# 7c. `git log --grep=commit` — `commit` is a literal in a search query,
+#     not the subcommand.
+run_case "git log --grep=commit on main allowed" 0 \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"git log --grep=commit"}}' "$main_repo")"
+
+# 7d. `git log --grep=push` — same shape for the `push` keyword.
+run_case "git log --grep=push on main allowed" 0 \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"git log --grep=push"}}' "$main_repo")"
+
+# 7e. `git diff <range> -- '*push*.md'` — `push` is part of a pathspec.
+run_case "git diff with push pathspec on main allowed" 0 \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"git diff abc def -- '\''*push*.md'\''"}}' "$main_repo")"
+
+# 7f. `git diff <range> -- '*commit*.md'` — same shape for `commit`.
+run_case "git diff with commit pathspec on main allowed" 0 \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"git diff abc def -- '\''*commit*.md'\''"}}' "$main_repo")"
+
+# 7g. `git rev-list HEAD..main --oneline | head -5` — read-only revlist
+#     that pipes into another command; no commit/push subcommand.
+run_case "git rev-list piped on main allowed" 0 \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"git rev-list HEAD..main --oneline | head -5"}}' "$main_repo")"
+
+# 7h. `git symbolic-ref HEAD` — pure read; trivially shouldn't trigger.
+run_case "git symbolic-ref HEAD on main allowed" 0 \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"git symbolic-ref HEAD"}}' "$main_repo")"
+
 # --- BLOCK cases ---
 
 # 7. Plain git commit when cwd is on main.
@@ -103,6 +148,17 @@ run_case "git -C <main> commit blocked" 2 \
 # 11. Last `git -C` wins: -C feature first, -C main second.
 run_case "last git -C wins (main last → blocked)" 2 \
   "$(printf '{"cwd":"%s","tool_input":{"command":"git -C %s status; git -C %s commit -m oops"}}' "$feature_repo" "$feature_repo" "$main_repo")"
+
+# 11b. `git -c <key>=<val> commit` — global `-c` flag before commit
+#      subcommand. The tightened regex must not get confused by the
+#      `<key>=<val>` token (which can contain the literal substring
+#      `commit`, e.g. `commit.gpgSign=false`).
+run_case "git -c commit.gpgSign=false commit on main blocked" 2 \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"git -c commit.gpgSign=false commit -m oops"}}' "$main_repo")"
+
+# 11c. `git push --force` on main — `--force` after the subcommand.
+run_case "git push --force on main blocked" 2 \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"git push origin --force"}}' "$main_repo")"
 
 # --- Edge cases ---
 
