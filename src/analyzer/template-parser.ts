@@ -101,6 +101,55 @@ export class TemplateParser {
       return;
     }
 
+    // Check for Fn::Sub
+    // 1-arg form: "Fn::Sub": "string with ${X} or ${X.Attr}"
+    // 2-arg form: "Fn::Sub": ["string with ${X}", { X: <value> }]
+    // Per the CloudFormation spec, when ${X} appears in the body and X is NOT
+    // in the explicit variable map (2-arg form), X resolves to Ref X — which
+    // can point at a same-stack resource. The DAG must treat that as a real
+    // dependency edge so the referenced resource is created first; otherwise
+    // the resolver races and falls back to the literal placeholder, which AWS
+    // rejects (see #275).
+    if ('Fn::Sub' in obj) {
+      const subValue = obj['Fn::Sub'];
+      let body: string | undefined;
+      let mapKeys: Set<string> | undefined;
+      if (typeof subValue === 'string') {
+        body = subValue;
+      } else if (
+        Array.isArray(subValue) &&
+        subValue.length >= 1 &&
+        typeof subValue[0] === 'string'
+      ) {
+        body = subValue[0];
+        const variables: unknown = subValue[1];
+        if (variables && typeof variables === 'object' && !Array.isArray(variables)) {
+          const varMap = variables as Record<string, unknown>;
+          mapKeys = new Set(Object.keys(varMap));
+          // Recurse into the variable-map values — they may contain Ref / GetAtt
+          // intrinsics that produce their own dependencies.
+          Object.values(varMap).forEach((v) => this.extractRefsFromValue(v, dependencies));
+        }
+      }
+      if (body !== undefined) {
+        for (const match of body.matchAll(/\$\{([^}]+)\}/g)) {
+          const placeholder = match[1];
+          if (!placeholder) continue;
+          // ${X.AttrName} is an implicit Fn::GetAtt — depend on X (the prefix).
+          // ${X} is an implicit Ref to X.
+          const dot = placeholder.indexOf('.');
+          const name = dot >= 0 ? placeholder.slice(0, dot) : placeholder;
+          if (!name) continue;
+          // Skip pseudo parameters (AWS::Region, AWS::AccountId, etc.).
+          if (name.startsWith('AWS::')) continue;
+          // Skip names provided by the 2-arg variable map.
+          if (mapKeys?.has(name)) continue;
+          dependencies.add(name);
+        }
+      }
+      return;
+    }
+
     // Recursively process all values
     Object.values(obj).forEach((v) => this.extractRefsFromValue(v, dependencies));
   }

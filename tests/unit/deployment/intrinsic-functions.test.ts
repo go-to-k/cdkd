@@ -948,3 +948,85 @@ describe('IntrinsicFunctionResolver - Fn::GetAtt LaunchTemplate.LatestVersionNum
     expect(result).toBe('2');
   });
 });
+
+describe('IntrinsicFunctionResolver - Fn::Sub same-stack implicit Ref', () => {
+  // Per the CloudFormation spec, when ${X} appears in a 1-arg Fn::Sub body
+  // and X is not in the explicit variable map (the 2-arg form's second
+  // element), then if X is a resource logical id in the same stack it
+  // resolves as Ref X. See #275 — cdkd's resolver already routes through
+  // resolveRef, so once the DAG fix makes the same-stack resource deploy
+  // first, ${MyRepo} substitutes correctly.
+  let resolver: IntrinsicFunctionResolver;
+
+  beforeEach(() => {
+    resolver = new IntrinsicFunctionResolver();
+    resetAccountInfoCache();
+  });
+
+  const makeContext = (
+    extra: Partial<ResolverContext> = {}
+  ): ResolverContext => ({
+    template: { Resources: {} },
+    resources: {
+      MyRepo: {
+        physicalId: 'cdkmyrepo123-abcdef',
+        resourceType: 'AWS::ECR::Repository',
+        properties: {},
+        attributes: { Arn: 'arn:aws:ecr:us-east-1:123456789012:repository/cdkmyrepo123-abcdef' },
+        dependencies: [],
+      },
+    },
+    ...extra,
+  });
+
+  it('resolves bare ${X} to the same-stack resource physical id', async () => {
+    const result = await resolver.resolve({ 'Fn::Sub': '${MyRepo}' }, makeContext());
+    expect(result).toBe('cdkmyrepo123-abcdef');
+  });
+
+  it('substitutes ${X} embedded in a surrounding template string', async () => {
+    const result = await resolver.resolve(
+      { 'Fn::Sub': 'prefix/${MyRepo}:tag' },
+      makeContext()
+    );
+    expect(result).toBe('prefix/cdkmyrepo123-abcdef:tag');
+  });
+
+  it('resolves a real ECR image URI shape combining pseudo parameters + same-stack ref', async () => {
+    // The exact body shape from #275's integ fixture.
+    const result = await resolver.resolve(
+      {
+        'Fn::Sub':
+          '${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/${MyRepo}:latest',
+      },
+      makeContext()
+    );
+    expect(result).toBe(
+      '123456789012.dkr.ecr.us-east-1.amazonaws.com/cdkmyrepo123-abcdef:latest'
+    );
+  });
+
+  it('resolves ${X.Attr} dotted form as implicit Fn::GetAtt', async () => {
+    const result = await resolver.resolve({ 'Fn::Sub': '${MyRepo.Arn}' }, makeContext());
+    expect(result).toBe('arn:aws:ecr:us-east-1:123456789012:repository/cdkmyrepo123-abcdef');
+  });
+
+  it('two-arg form variable map takes precedence over same-stack lookup', async () => {
+    // When X appears in the 2-arg variable map, that wins regardless of
+    // whether a same-stack resource named X exists.
+    const result = await resolver.resolve(
+      { 'Fn::Sub': ['${MyRepo}', { MyRepo: 'literal-from-map' }] },
+      makeContext()
+    );
+    expect(result).toBe('literal-from-map');
+  });
+
+  it('keeps the placeholder literal when ${X} is not a resource / parameter / pseudo', async () => {
+    const result = await resolver.resolve(
+      { 'Fn::Sub': 'value=${NotARealResource}' },
+      makeContext()
+    );
+    // Existing behavior: warn + keep ${NotARealResource} as-is.
+    expect(result).toBe('value=${NotARealResource}');
+  });
+});
