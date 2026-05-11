@@ -269,9 +269,28 @@ async function exportCommand(stackArg: string | undefined, options: ExportOption
 
     // Acquire the lock before any AWS write. Dry-run skips the lock so it
     // is a pure read.
+    //
+    // `acquireLock` returns `false` (rather than throwing) when another
+    // live, non-expired lock holder exists. Most cdkd commands discard
+    // this return value, but export is uniquely irreversible — once the
+    // CFn IMPORT changeset executes and cdkd state is deleted, we cannot
+    // back out — so we refuse the operation rather than racing a
+    // concurrent `cdkd deploy` / `cdkd destroy` on the same stack.
     const owner = `${process.env['USER'] || 'unknown'}@${process.env['HOSTNAME'] || 'host'}:${process.pid}`;
     if (!options.dryRun) {
-      await lockManager.acquireLock(resolvedStackName, targetRegion, owner, 'export');
+      const acquired = await lockManager.acquireLock(
+        resolvedStackName,
+        targetRegion,
+        owner,
+        'export'
+      );
+      if (!acquired) {
+        throw new Error(
+          `Could not acquire lock for stack '${resolvedStackName}' (${targetRegion}) — ` +
+            `another cdkd process holds it. Wait for it to finish, or run ` +
+            `'cdkd force-unlock ${resolvedStackName}' if you are certain no other process is active.`
+        );
+      }
     }
 
     try {
@@ -768,15 +787,27 @@ async function executeImportChangeSet(
     }
   }
 
+  // Execute + wait must clean up the changeset on failure too: if the
+  // import errors after CreateChangeSet succeeded, the changeset sticks
+  // around and a subsequent run hits `assertCfnStackAbsent`'s "stack
+  // already exists" path (CFn parks the stack in REVIEW_IN_PROGRESS).
+  // We delete the changeset best-effort and let the original error
+  // propagate.
   logger.info(`Executing IMPORT changeset...`);
-  await cfnClient.send(
-    new ExecuteChangeSetCommand({ StackName: stackName, ChangeSetName: changeSetName })
-  );
-
-  await waitUntilStackImportComplete(
-    { client: cfnClient, maxWaitTime: 3600 },
-    { StackName: stackName }
-  );
+  try {
+    await cfnClient.send(
+      new ExecuteChangeSetCommand({ StackName: stackName, ChangeSetName: changeSetName })
+    );
+    await waitUntilStackImportComplete(
+      { client: cfnClient, maxWaitTime: 3600 },
+      { StackName: stackName }
+    );
+  } catch (err) {
+    await cfnClient
+      .send(new DeleteChangeSetCommand({ StackName: stackName, ChangeSetName: changeSetName }))
+      .catch(() => {});
+    throw err;
+  }
 }
 
 /**
