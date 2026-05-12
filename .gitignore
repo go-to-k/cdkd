@@ -49,3 +49,18 @@ tests/benchmark/results-*.md
 # verified; bound to the `pr-review` markgate gate's include scope so a
 # new push to the PR invalidates the marker automatically)
 .markgate-pr-review-sha
+
+# Worktree-local scratch files used by sub-agents for `git commit -F` /
+# `gh --body-file` / `gh api --field body=@<file>` payloads. The
+# `feedback_parallel_agent_tmp_paths.md` memory rule directs sub-agents
+# to use worktree-local files (NOT /tmp/...) to avoid collisions with
+# parallel sub-agents sharing /tmp. Without these patterns the files
+# stay untracked — but a sub-agent's `git add -A` / `git add .` in its
+# commit workflow stages them too, leading to follow-up "remove scratch
+# files" commits (surfaced across PRs #297 / #304 / #305).
+.commit-msg*.txt
+.commit-msg*.md
+.pr-body*.md
+.pr-body*.txt
+.gh-body*.md
+.gh-body*.txt
