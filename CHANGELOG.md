@@ -1,3 +1,17 @@
+## [0.94.13](https://github.com/go-to-k/cdkd/compare/v0.94.12...v0.94.13) (2026-05-12)
+
+
+### Bug Fixes
+
+* **import:** resolve CFn intrinsics in state.properties so destroy can read sub-resource refs ([#332](https://github.com/go-to-k/cdkd/issues/332)) ([b04cfa4](https://github.com/go-to-k/cdkd/commit/b04cfa4fab83166c21fed918c8c545c00e4b8b48))
+
+## [0.94.12](https://github.com/go-to-k/cdkd/compare/v0.94.11...v0.94.12) (2026-05-12)
+
+
+### Bug Fixes
+
+* **intrinsic-resolver:** add AWS::ECR::Repository Arn / RepositoryUri handlers ([#331](https://github.com/go-to-k/cdkd/issues/331)) ([5a1aa38](https://github.com/go-to-k/cdkd/commit/5a1aa38ede215df029e0350f09ad2b2821d391c7))
+
 ## [0.94.11](https://github.com/go-to-k/cdkd/compare/v0.94.10...v0.94.11) (2026-05-12)
 
 
