@@ -1065,10 +1065,19 @@ async function exportCommand(stackArg: string | undefined, options: ExportOption
       const phase2Count = phase2Creates.length + recreateBeforePhase2.length;
       if (phase2Count > 0) {
         try {
+          // Apply the phase-1 overlay onto each imported resource in the
+          // phase-2 template — without this, CFn sees "Name property
+          // removal" between phase-1 (overlayed) and phase-2 (raw synth)
+          // and silently REPLACES every imported resource whose Name is
+          // an immutable property (IAM Role, S3 Bucket, etc.). See
+          // applyImportOverlayForPhase2's docstring for the empirical
+          // motivation (cdk-sample 2026-05-12 incident: 24 resources
+          // silently REPLACED during phase-2 cleanup).
+          const phase2Template = applyImportOverlayForPhase2(template, phase1Imports);
           await executeUpdateChangeSet(
             awsClients.cloudFormation,
             cfnStackName,
-            template,
+            phase2Template,
             cfnParameters
           );
           const parts: string[] = [];
@@ -1752,6 +1761,60 @@ function overlayResourceIdentifierOnProperties(resource: unknown, entry: ImportP
     properties[field] = value;
   }
   return { ...r, Properties: properties };
+}
+
+/**
+ * Build the phase-2 UPDATE template: full synth template with cdkd's
+ * `ResourceIdentifier` overlay applied to every phase-1 import. This keeps
+ * the CFn-managed template's `Properties` consistent with what cdkd
+ * imported in phase 1 — preventing CFn from seeing a "Name property
+ * removed / changed" diff between the phase-1 IMPORT'd state (overlay
+ * applied) and a raw phase-2 synth template (overlay absent), which would
+ * trigger silent REPLACEMENT of every imported resource whose Name is an
+ * immutable property (IAM Role, S3 Bucket, ECR Repository, Lambda
+ * Function, etc.).
+ *
+ * **Why this matters** — discovered via real-AWS dogfooding 2026-05-12:
+ * pre-fix `cdkd export` against cdk-sample's CdkSampleStack silently
+ * REPLACED 24 resources during phase-2 `UPDATE_COMPLETE_CLEANUP_IN_PROGRESS`,
+ * including the S3 Bucket and ECR Repository. cdk-sample's
+ * `autoDeleteObjects: true` happened to mask the data-loss visibility,
+ * but on a production stack this would have wiped the S3 contents and
+ * ECR images.
+ *
+ * The overlay then persists into the final CFn-managed template. When
+ * the user runs `cdk deploy` after the migration, CDK synth produces
+ * the raw unprefixed Name → CFn proposes REPLACEMENT → the user decides
+ * (accept the replace, update CDK code to use the cdkd-prefixed name,
+ * or migrate data first). That deferred-to-cdk-deploy REPLACE is the
+ * documented post-export caveat — same as upstream `cdk import` — and
+ * it now happens with explicit user consent instead of silently during
+ * the cdkd export operation itself.
+ *
+ * Resources outside `phase1Imports` (phase-2 CREATE Custom Resources,
+ * pre-delete + recreate targets like Stage / IAM::Policy) are passed
+ * through unchanged — they get CREATEd from synth and don't have any
+ * pre-existing Properties state to preserve.
+ *
+ * Exported for unit testing.
+ */
+export function applyImportOverlayForPhase2(
+  template: Record<string, unknown>,
+  phase1Imports: ImportPlanEntry[]
+): Record<string, unknown> {
+  const result = JSON.parse(JSON.stringify(template)) as Record<string, unknown>;
+  const resources = result['Resources'];
+  if (!resources || typeof resources !== 'object' || Array.isArray(resources)) {
+    return result;
+  }
+  const resourcesMap = resources as Record<string, unknown>;
+  for (const entry of phase1Imports) {
+    const r = resourcesMap[entry.logicalId];
+    if (r !== undefined) {
+      resourcesMap[entry.logicalId] = overlayResourceIdentifierOnProperties(r, entry);
+    }
+  }
+  return result;
 }
 
 /**

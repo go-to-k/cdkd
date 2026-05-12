@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import {
+  applyImportOverlayForPhase2,
   filterTemplateForImport,
   hasCompositeIdSplitter,
   injectDeletionPolicyForImport,
@@ -269,6 +270,199 @@ describe('filterTemplateForImport', () => {
       { logicalId: 'Keep', resourceType: 'AWS::S3::Bucket', physicalId: 'b', resourceIdentifier: { BucketName: 'b' } },
     ]);
     expect('Outputs' in result).toBe(false);
+  });
+});
+
+describe('applyImportOverlayForPhase2', () => {
+  // Closes the silent-REPLACE bug discovered via cdk-sample dogfooding
+  // 2026-05-12: cdkd export's phase-2 UPDATE used the raw synth template
+  // (no overlay), so CFn saw `Properties.RoleName: 'CdkSampleStack-X'`
+  // (from phase-1 overlay) → `Properties.RoleName: (absent)` (raw synth)
+  // and replaced every imported resource whose Name is immutable.
+
+  it('overlays Name properties on phase-1 imports (mirrors filterTemplateForImport)', () => {
+    // The CDK code did not set RoleName; synth template has no RoleName
+    // on the resource. cdkd state has the auto-generated prefixed name
+    // as physicalId. Phase-2 template must surface that name in
+    // Properties.RoleName so CFn doesn't see "Name removal" vs the
+    // phase-1 IMPORT'd state.
+    const synth = {
+      Resources: {
+        Role: {
+          Type: 'AWS::IAM::Role',
+          Properties: {
+            AssumeRolePolicyDocument: { Version: '2012-10-17', Statement: [] },
+          },
+        },
+      },
+    };
+    const result = applyImportOverlayForPhase2(synth, [
+      {
+        logicalId: 'Role',
+        resourceType: 'AWS::IAM::Role',
+        physicalId: 'CdkSampleStack-Role',
+        resourceIdentifier: { RoleName: 'CdkSampleStack-Role' },
+      },
+    ]);
+    const role = (result['Resources'] as Record<string, Record<string, unknown>>)['Role']!;
+    const properties = role['Properties'] as Record<string, unknown>;
+    expect(properties['RoleName']).toBe('CdkSampleStack-Role');
+    // Existing Properties preserved
+    expect(properties['AssumeRolePolicyDocument']).toEqual({
+      Version: '2012-10-17',
+      Statement: [],
+    });
+  });
+
+  it('does NOT touch resources outside phase1Imports (phase-2 CREATE / recreate stay raw)', () => {
+    // Custom Resources go through phase-2 CREATE from raw synth; recreate-
+    // before-phase-2 entries (Stage / IAM::Policy) are deleted from AWS
+    // and CFn re-CREATEs from raw synth. Neither should have overlay
+    // applied — they have no "phase-1 import'd state" to keep consistent.
+    const synth = {
+      Resources: {
+        Role: { Type: 'AWS::IAM::Role', Properties: {} },
+        CR: {
+          Type: 'Custom::S3AutoDeleteObjects',
+          Properties: { ServiceToken: 'arn:...' },
+        },
+        Stage: {
+          Type: 'AWS::ApiGatewayV2::Stage',
+          Properties: { StageName: '$default', ApiId: { Ref: 'Api' } },
+        },
+      },
+    };
+    const result = applyImportOverlayForPhase2(synth, [
+      {
+        logicalId: 'Role',
+        resourceType: 'AWS::IAM::Role',
+        physicalId: 'CdkSampleStack-Role',
+        resourceIdentifier: { RoleName: 'CdkSampleStack-Role' },
+      },
+      // CR and Stage are NOT in phase1Imports
+    ]);
+    const resources = result['Resources'] as Record<string, Record<string, unknown>>;
+    expect((resources['Role']!['Properties'] as Record<string, unknown>)['RoleName']).toBe(
+      'CdkSampleStack-Role'
+    );
+    expect(resources['CR']!['Properties']).toEqual({ ServiceToken: 'arn:...' });
+    expect(resources['Stage']!['Properties']).toEqual({
+      StageName: '$default',
+      ApiId: { Ref: 'Api' },
+    });
+  });
+
+  it('honors propertiesOverlay narrowing (sub-resources do NOT get IntegrationId etc. written)', () => {
+    // The phase-1 overlay narrows for sub-resource types whose
+    // primaryIdentifier includes a read-only Property (IntegrationId,
+    // RouteId, Lambda::Permission's Id). Phase-2 overlay must respect
+    // the same narrowing — writing those into Properties would have CFn
+    // reject the changeset with "Encountered unsupported property".
+    const synth = {
+      Resources: {
+        Integ: {
+          Type: 'AWS::ApiGatewayV2::Integration',
+          Properties: { ApiId: { Ref: 'Api' }, IntegrationType: 'AWS_PROXY' },
+        },
+      },
+    };
+    const result = applyImportOverlayForPhase2(synth, [
+      {
+        logicalId: 'Integ',
+        resourceType: 'AWS::ApiGatewayV2::Integration',
+        physicalId: 'integ-abc',
+        resourceIdentifier: { ApiId: 'api-xyz', IntegrationId: 'integ-abc' },
+        propertiesOverlay: { ApiId: 'api-xyz' },
+      },
+    ]);
+    const integ = (result['Resources'] as Record<string, Record<string, unknown>>)['Integ']!;
+    const properties = integ['Properties'] as Record<string, unknown>;
+    expect(properties['ApiId']).toBe('api-xyz');
+    // IntegrationId is read-only and must NOT be in Properties
+    expect(properties).not.toHaveProperty('IntegrationId');
+    expect(properties['IntegrationType']).toBe('AWS_PROXY');
+  });
+
+  it('deep-clones the input so the caller can still use the raw synth template', () => {
+    // The phase-1 code path also reads from the same synth template
+    // (filterTemplateForImport runs separately). Mutating the input
+    // here would cross-contaminate.
+    const synth = {
+      Resources: {
+        Role: { Type: 'AWS::IAM::Role', Properties: {} },
+      },
+    };
+    applyImportOverlayForPhase2(synth, [
+      {
+        logicalId: 'Role',
+        resourceType: 'AWS::IAM::Role',
+        physicalId: 'CdkSampleStack-Role',
+        resourceIdentifier: { RoleName: 'CdkSampleStack-Role' },
+      },
+    ]);
+    // Original input untouched
+    expect((synth.Resources.Role as { Properties: Record<string, unknown> }).Properties).toEqual(
+      {}
+    );
+  });
+
+  it('preserves Outputs (unlike filterTemplateForImport which strips them)', () => {
+    // Phase-2 UPDATE template restores Outputs that phase-1 had to strip
+    // (CFn IMPORT rejects Outputs). The overlay function must leave them
+    // alone.
+    const synth = {
+      Resources: {
+        Role: { Type: 'AWS::IAM::Role', Properties: {} },
+      },
+      Outputs: {
+        RoleArn: { Value: { 'Fn::GetAtt': ['Role', 'Arn'] } },
+      },
+    };
+    const result = applyImportOverlayForPhase2(synth, [
+      {
+        logicalId: 'Role',
+        resourceType: 'AWS::IAM::Role',
+        physicalId: 'CdkSampleStack-Role',
+        resourceIdentifier: { RoleName: 'CdkSampleStack-Role' },
+      },
+    ]);
+    expect(result['Outputs']).toEqual({
+      RoleArn: { Value: { 'Fn::GetAtt': ['Role', 'Arn'] } },
+    });
+  });
+
+  it('handles template without Resources section gracefully', () => {
+    // Defensive: cdkd's executeUpdateChangeSet call site already ensures
+    // a Resources section exists, but tolerate the empty case to keep
+    // the helper composable.
+    const result = applyImportOverlayForPhase2({}, []);
+    expect(result).toEqual({});
+  });
+
+  it('skips imports whose logicalId is missing from the template (defensive)', () => {
+    // Edge case: cdkd state has a resource not in the current synth
+    // (e.g. user removed it from CDK code). buildImportPlan would have
+    // flagged this earlier, but the overlay helper itself must not crash.
+    const synth = {
+      Resources: { Role: { Type: 'AWS::IAM::Role', Properties: {} } },
+    };
+    const result = applyImportOverlayForPhase2(synth, [
+      {
+        logicalId: 'Role',
+        resourceType: 'AWS::IAM::Role',
+        physicalId: 'r',
+        resourceIdentifier: { RoleName: 'r' },
+      },
+      {
+        logicalId: 'MissingFromTemplate',
+        resourceType: 'AWS::SNS::Topic',
+        physicalId: 't',
+        resourceIdentifier: { TopicArn: 't' },
+      },
+    ]);
+    const resources = result['Resources'] as Record<string, Record<string, unknown>>;
+    expect(resources).toHaveProperty('Role');
+    expect(resources).not.toHaveProperty('MissingFromTemplate');
   });
 });
 

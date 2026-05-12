@@ -310,6 +310,47 @@ case "${VARIANT}" in
     fi
     echo "[verify] step 4b ok"
 
+    # Regression guard: phase-2 UPDATE must NOT have caused silent
+    # REPLACEMENT of any phase-1-imported resource. The bug discovered
+    # via cdk-sample dogfooding 2026-05-12: cdkd export's phase-2 used
+    # the raw synth template (no overlay) → CFn saw "Name property
+    # removed" between phase-1 (overlayed) and phase-2 (raw) → silently
+    # REPLACEd 24 imported resources during UPDATE_COMPLETE_CLEANUP_IN_PROGRESS.
+    # Fix: applyImportOverlayForPhase2 keeps the overlay in phase-2's
+    # template. To assert the fix held, walk stack events and confirm
+    # no DELETE_COMPLETE events occurred during the phase-2 cleanup window
+    # for any resource that was supposed to be imported (= NOT phase2Creates
+    # and NOT recreateBeforePhase2).
+    echo "[verify] step 4c: assert no silent REPLACE during phase-2 cleanup"
+    REPLACE_VICTIMS=$(aws cloudformation describe-stack-events \
+      --stack-name "${CFN_STACK}" --region "${REGION}" --max-items 200 --output json 2>&1 |
+      python3 -c "
+import json, sys
+events = json.load(sys.stdin).get('StackEvents', [])
+# Resources that legitimately get phase-2 DELETE: only the
+# recreate-before-phase-2 targets (Stage, IAM::Policy). They're
+# pre-deleted by cdkd BEFORE the UPDATE changeset runs, so they
+# do NOT appear as DELETE_COMPLETE in stack events (cdkd deleted
+# them via SDK, not via CFn changeset).
+#
+# Any phase-1-imported resource appearing as DELETE_COMPLETE
+# in the UPDATE_COMPLETE_CLEANUP_IN_PROGRESS window is a REPLACE
+# victim (the silent-replace bug).
+deleted = set()
+for ev in events:
+    if ev.get('ResourceStatus') == 'DELETE_COMPLETE' and ev['LogicalResourceId'] != '${CFN_STACK}':
+        deleted.add(ev['LogicalResourceId'])
+for lid in sorted(deleted):
+    print(lid)
+")
+    if [ -n "${REPLACE_VICTIMS}" ]; then
+      echo "[verify] FAIL: phase-2 UPDATE silently REPLACED imported resources:"
+      echo "${REPLACE_VICTIMS}" | sed 's/^/  - /'
+      echo "[verify] (the applyImportOverlayForPhase2 fix regressed — phase-2 sees Name property removal)"
+      exit 1
+    fi
+    echo "[verify] step 4c ok: no silent REPLACE happened"
+
     echo "[verify] step 5: verify cdkd state is GONE"
     STATE_KEY="cdkd/${STACK}/${REGION}/state.json"
     if aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}" --region "${REGION}" >/dev/null 2>&1; then
