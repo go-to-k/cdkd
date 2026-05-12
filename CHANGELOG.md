@@ -1,3 +1,10 @@
+## [0.94.11](https://github.com/go-to-k/cdkd/compare/v0.94.10...v0.94.11) (2026-05-12)
+
+
+### Bug Fixes
+
+* **drift:** IAM Role inline policies managed by sibling resource no longer fire false drift; Custom::* silent ([#323](https://github.com/go-to-k/cdkd/issues/323)) ([#324](https://github.com/go-to-k/cdkd/issues/324)) ([94e615b](https://github.com/go-to-k/cdkd/commit/94e615bceb567b9841b986d18e3593ec83dcc6ae))
+
 ## [0.94.10](https://github.com/go-to-k/cdkd/compare/v0.94.9...v0.94.10) (2026-05-12)
 
 
