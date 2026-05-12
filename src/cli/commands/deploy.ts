@@ -35,6 +35,7 @@ import {
   resolveStateBucketWithDefault,
 } from '../config-loader.js';
 import { matchStacks, describeStack } from '../stack-matcher.js';
+import { findPendingPrefixRenames, promptMigrationConfirm } from './prefix-migration-check.js';
 
 /**
  * Deploy command implementation
@@ -362,34 +363,58 @@ async function deployCommand(
       registerAllProviders(stackProviderRegistry);
       stackProviderRegistry.setCustomResourceResponseBucket(stateBucket, baseRegion);
 
-      const stackDeployEngine = new DeployEngine(
-        stackStateBackend,
-        stackLockManager,
-        dagBuilder,
-        diffCalculator,
-        stackProviderRegistry,
-        {
-          concurrency: options.concurrency,
-          dryRun: options.dryRun,
-          noRollback: !options.rollback,
-          captureObservedState: resolveCaptureObservedState(options.captureObservedState),
-          ...(options.resourceWarnAfter?.globalMs !== undefined && {
-            resourceWarnAfterMs: options.resourceWarnAfter.globalMs,
-          }),
-          ...(options.resourceTimeout?.globalMs !== undefined && {
-            resourceTimeoutMs: options.resourceTimeout.globalMs,
-          }),
-          ...(options.resourceWarnAfter?.perTypeMs && {
-            resourceWarnAfterByType: options.resourceWarnAfter.perTypeMs,
-          }),
-          ...(options.resourceTimeout?.perTypeMs && {
-            resourceTimeoutByType: options.resourceTimeout.perTypeMs,
-          }),
-        },
-        stackRegion
-      );
-
       try {
+        // Pre-flight migration check for --no-prefix-user-supplied-names.
+        // When the flag is on AND the stack has existing state with
+        // Pattern B resources whose physical id is still prefixed with
+        // the stack name, cdkd's diff path will silently propose
+        // REPLACEMENT on each of them. Surface this up front so the
+        // user sees the side effect before any provider call runs.
+        // Honors --yes / --force (the CLI is single-flagged via
+        // `options.yes`). No-op when:
+        //   - skipPrefix is false (the flag is not active)
+        //   - state is empty (first-time deploy — nothing to migrate)
+        //   - no Pattern B resource is still prefixed
+        if (skipPrefix) {
+          const existing = await stackStateBackend.getState(stackInfo.stackName, stackRegion);
+          const pending = findPendingPrefixRenames(stackInfo.stackName, existing?.state);
+          if (pending.length > 0) {
+            const proceed = await promptMigrationConfirm(pending, { yes: options.yes });
+            if (!proceed) {
+              // Clean exit — nothing was modified. The outer finally
+              // below tears down per-stack AWS clients.
+              return;
+            }
+          }
+        }
+
+        const stackDeployEngine = new DeployEngine(
+          stackStateBackend,
+          stackLockManager,
+          dagBuilder,
+          diffCalculator,
+          stackProviderRegistry,
+          {
+            concurrency: options.concurrency,
+            dryRun: options.dryRun,
+            noRollback: !options.rollback,
+            captureObservedState: resolveCaptureObservedState(options.captureObservedState),
+            ...(options.resourceWarnAfter?.globalMs !== undefined && {
+              resourceWarnAfterMs: options.resourceWarnAfter.globalMs,
+            }),
+            ...(options.resourceTimeout?.globalMs !== undefined && {
+              resourceTimeoutMs: options.resourceTimeout.globalMs,
+            }),
+            ...(options.resourceWarnAfter?.perTypeMs && {
+              resourceWarnAfterByType: options.resourceWarnAfter.perTypeMs,
+            }),
+            ...(options.resourceTimeout?.perTypeMs && {
+              resourceTimeoutByType: options.resourceTimeout.perTypeMs,
+            }),
+          },
+          stackRegion
+        );
+
         const deployResult = await stackDeployEngine.deploy(
           stackInfo.stackName,
           stackInfo.template

@@ -264,6 +264,41 @@ At that point, migration tooling
 the transition for existing stacks; that's tracked separately and is
 out of scope here.
 
+### Migration: deploy-time warning when the flag flips an existing stack
+
+Flipping `--no-prefix-user-supplied-names` on against a stack already
+deployed under the legacy prefix convention causes cdkd's diff path to
+silently propose REPLACEMENT on every affected Pattern B resource —
+the AWS-deployed name is `MyStack-my-role` and the new template intent
+is `my-role`, so the diff classifies the name as an immutable property
+change and the resource is destroyed and re-created. To make this side
+effect visible up front, `cdkd deploy` runs a pre-flight migration
+check: when the flag is on AND the existing state contains one or
+more Pattern B resources whose `physicalId` still starts with
+`${stackName}-`, the command lists them and prompts for confirmation
+before any provider call runs. The prompt defaults to **no** because
+the side effect is destructive; pass `-y` / `--yes` (the global CDK
+CLI parity flag) to skip the prompt in CI / non-interactive runs. If
+the user declines, the deploy exits cleanly with `no resources
+modified` — nothing has been touched yet.
+
+Example output:
+
+```text
+WARNING: --no-prefix-user-supplied-names will REPLACE 2 resource(s) whose
+AWS physical name is still prefixed with the stack name:
+  - MyRole (AWS::IAM::Role): MyStack-my-role -> my-role
+  - MyLb (AWS::ElasticLoadBalancingV2::LoadBalancer): MyStack-my-lb -> my-lb
+These resources will be REPLACED because the new naming convention drops
+the stack-name prefix.
+
+Continue? (y/N):
+```
+
+The check is a no-op on a first-time deploy (no state to migrate),
+when no Pattern B resource is still prefixed (e.g. the stack was
+originally deployed with the flag on), or when the flag is off.
+
 ## Per-resource timeout
 
 Both `cdkd deploy` and `cdkd destroy` (including `cdkd state destroy`)
