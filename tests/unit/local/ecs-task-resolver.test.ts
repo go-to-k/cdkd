@@ -32,6 +32,7 @@ function makeTaskDef(opts: {
   cdkPath?: string;
   runtimePlatform?: unknown;
   taskRoleArn?: unknown;
+  executionRoleArn?: unknown;
 }): TemplateResource {
   const containers = opts.containers ?? [
     {
@@ -48,6 +49,7 @@ function makeTaskDef(opts: {
   if (opts.volumes !== undefined) props['Volumes'] = opts.volumes;
   if (opts.runtimePlatform !== undefined) props['RuntimePlatform'] = opts.runtimePlatform;
   if (opts.taskRoleArn !== undefined) props['TaskRoleArn'] = opts.taskRoleArn;
+  if (opts.executionRoleArn !== undefined) props['ExecutionRoleArn'] = opts.executionRoleArn;
   const r: TemplateResource = {
     Type: 'AWS::ECS::TaskDefinition',
     Properties: props,
@@ -1075,5 +1077,260 @@ describe('resolveEcsTaskTarget --from-state env / secret substitution', () => {
         /TABLE_NAME.*MyMissingTable.*no record in cdkd state/.test(w)
       )
     ).toBe(true);
+  });
+});
+
+// Gap 5 of #286: TaskRoleArn / ExecutionRoleArn as Fn::Join / Fn::Sub
+// intrinsics. Verified via real `cdk synth` on 2026-05-12: the typical
+// `iam.Role` usage emits `Fn::GetAtt: [..., 'Arn']` (already supported),
+// but `iam.Role.fromRoleArn(stack, id, cdk.Fn.join(...))` synthesizes the
+// `Fn::Join` shape this PR adds support for.
+describe('resolveRoleArn Fn::Join / Fn::Sub intrinsics (Gap 5 of #286)', () => {
+  it('resolves Fn::Join TaskRoleArn against state + pseudo parameters', () => {
+    const stack = buildStack('S1', {
+      TD: makeTaskDef({
+        taskRoleArn: {
+          'Fn::Join': [
+            ':',
+            [
+              'arn:aws:iam:',
+              { Ref: 'AWS::AccountId' },
+              'role/SomeImportedRoleName',
+            ],
+          ],
+        },
+      }),
+    });
+    const r = resolveEcsTaskTarget('TD', [stack], {
+      stateResources: {},
+      pseudoParameters: { accountId: '123456789012' },
+    });
+    expect(r.taskRoleArn).toBe('arn:aws:iam::123456789012:role/SomeImportedRoleName');
+  });
+
+  it('resolves Fn::Sub ExecutionRoleArn against pseudo parameters', () => {
+    const stack = buildStack('S1', {
+      TD: makeTaskDef({
+        executionRoleArn: {
+          'Fn::Sub': 'arn:aws:iam::${AWS::AccountId}:role/ExecRoleByName',
+        },
+      }),
+    });
+    const r = resolveEcsTaskTarget('TD', [stack], {
+      stateResources: {},
+      pseudoParameters: { accountId: '123456789012' },
+    });
+    expect(r.executionRoleArn).toBe('arn:aws:iam::123456789012:role/ExecRoleByName');
+  });
+
+  it('returns undefined for Fn::Join TaskRoleArn when no --from-state context is supplied (preserves pre-PR silent-drop)', () => {
+    const stack = buildStack('S1', {
+      TD: makeTaskDef({
+        taskRoleArn: {
+          'Fn::Join': [
+            ':',
+            ['arn:aws:iam:', { Ref: 'AWS::AccountId' }, 'role/SomeImportedRoleName'],
+          ],
+        },
+      }),
+    });
+    const r = resolveEcsTaskTarget('TD', [stack]);
+    expect(r.taskRoleArn).toBeUndefined();
+  });
+
+  it('returns undefined for Fn::Join TaskRoleArn when context cannot resolve every nested ref', () => {
+    const stack = buildStack('S1', {
+      TD: makeTaskDef({
+        taskRoleArn: {
+          'Fn::Join': [
+            ':',
+            ['arn:aws:iam:', { Ref: 'AWS::AccountId' }, 'role/Name'],
+          ],
+        },
+      }),
+    });
+    // pseudoParameters bag is empty — AccountId cannot resolve.
+    const r = resolveEcsTaskTarget('TD', [stack], {
+      stateResources: {},
+      pseudoParameters: {},
+    });
+    expect(r.taskRoleArn).toBeUndefined();
+  });
+
+  it('flags TaskRoleArn Fn::Join in detectEcsImageResolutionNeeds.needsEnvOrSecretSubstitution', () => {
+    const stack = buildStack('S1', {
+      TD: makeTaskDef({
+        taskRoleArn: {
+          'Fn::Join': [':', ['arn:aws:iam:', { Ref: 'AWS::AccountId' }, 'role/Name']],
+        },
+      }),
+    });
+    const needs = detectEcsImageResolutionNeeds(stack);
+    expect(needs.needsEnvOrSecretSubstitution).toBe(true);
+  });
+
+  it('does NOT flag a Ref/Fn::GetAtt TaskRoleArn (resolves via placeholder shape, no state needed)', () => {
+    const stack = buildStack('S1', {
+      MyRole: {
+        Type: 'AWS::IAM::Role',
+        Properties: { AssumeRolePolicyDocument: { Version: '2012-10-17', Statement: [] } },
+      },
+      TD: makeTaskDef({
+        taskRoleArn: { 'Fn::GetAtt': ['MyRole', 'Arn'] },
+      }),
+    });
+    const needs = detectEcsImageResolutionNeeds(stack);
+    expect(needs.needsEnvOrSecretSubstitution).toBe(false);
+  });
+});
+
+// Gap 6 of #286: Volumes[].Host.SourcePath as a CFn intrinsic. Verified
+// via real `cdk synth` on 2026-05-12 against `new ecs.Ec2TaskDefinition({
+// volumes: [{ name, host: { sourcePath: cdk.Fn.sub('...') } }] })`.
+describe('parseVolume intrinsic Host.SourcePath (Gap 6 of #286)', () => {
+  it('flat-string SourcePath still resolves to an absolute hostPath', () => {
+    const stack = buildStack('S1', {
+      TD: makeTaskDef({
+        volumes: [{ Name: 'plain', Host: { SourcePath: '/data' } }],
+      }),
+    });
+    const r = resolveEcsTaskTarget('TD', [stack]);
+    expect(r.volumes[0]?.kind).toBe('host');
+    expect((r.volumes[0] as { hostPath?: string }).hostPath).toBe('/data');
+  });
+
+  it('substitutes Fn::Sub Host.SourcePath against pseudo parameters', () => {
+    const stack = buildStack('S1', {
+      TD: makeTaskDef({
+        volumes: [
+          {
+            Name: 'subbed',
+            Host: { SourcePath: { 'Fn::Sub': '/data/${AWS::Region}/shared' } },
+          },
+        ],
+      }),
+    });
+    const r = resolveEcsTaskTarget('TD', [stack], {
+      stateResources: {},
+      pseudoParameters: { region: 'us-east-1' },
+    });
+    expect((r.volumes[0] as { hostPath?: string }).hostPath).toBe('/data/us-east-1/shared');
+  });
+
+  it('substitutes Fn::Join Host.SourcePath against pseudo parameters', () => {
+    const stack = buildStack('S1', {
+      TD: makeTaskDef({
+        volumes: [
+          {
+            Name: 'joined',
+            Host: {
+              SourcePath: {
+                'Fn::Join': ['/', ['/data', { Ref: 'AWS::Region' }, 'shared']],
+              },
+            },
+          },
+        ],
+      }),
+    });
+    const r = resolveEcsTaskTarget('TD', [stack], {
+      stateResources: {},
+      pseudoParameters: { region: 'us-east-1' },
+    });
+    expect((r.volumes[0] as { hostPath?: string }).hostPath).toBe('/data/us-east-1/shared');
+  });
+
+  it('substitutes Ref Host.SourcePath against state', () => {
+    const stack = buildStack('S1', {
+      MyParam: { Type: 'AWS::SSM::Parameter', Properties: {} },
+      TD: makeTaskDef({
+        volumes: [
+          {
+            Name: 'parambacked',
+            Host: { SourcePath: { Ref: 'MyParam' } },
+          },
+        ],
+      }),
+    });
+    const r = resolveEcsTaskTarget('TD', [stack], {
+      stateResources: {
+        MyParam: {
+          physicalId: '/host/shared/path',
+          resourceType: 'AWS::SSM::Parameter',
+          properties: {},
+          attributes: {},
+          dependencies: [],
+        },
+      },
+    });
+    expect((r.volumes[0] as { hostPath?: string }).hostPath).toBe('/host/shared/path');
+  });
+
+  it('hard-errors when Host.SourcePath is an intrinsic but no --from-state context is supplied', () => {
+    const stack = buildStack('S1', {
+      TD: makeTaskDef({
+        volumes: [
+          {
+            Name: 'subbed',
+            Host: { SourcePath: { 'Fn::Sub': '/data/${AWS::Region}' } },
+          },
+        ],
+      }),
+    });
+    expect(() => resolveEcsTaskTarget('TD', [stack])).toThrow(
+      /Host\.SourcePath is a CFn intrinsic.*Pass --from-state/
+    );
+  });
+
+  it('hard-errors when an intrinsic Host.SourcePath cannot be resolved against the supplied context', () => {
+    const stack = buildStack('S1', {
+      TD: makeTaskDef({
+        volumes: [
+          {
+            Name: 'subbed',
+            Host: { SourcePath: { 'Fn::Sub': '/data/${AWS::Region}' } },
+          },
+        ],
+      }),
+    });
+    // pseudoParameters.region missing — substitution fails.
+    expect(() =>
+      resolveEcsTaskTarget('TD', [stack], { stateResources: {}, pseudoParameters: {} })
+    ).toThrow(/Host\.SourcePath could not be resolved/);
+  });
+
+  it('hard-errors when Host.SourcePath is a non-string non-object value', () => {
+    const stack = buildStack('S1', {
+      TD: makeTaskDef({
+        volumes: [{ Name: 'badtype', Host: { SourcePath: 12345 } }],
+      }),
+    });
+    expect(() => resolveEcsTaskTarget('TD', [stack])).toThrow(
+      /Host\.SourcePath must be a string or a CFn intrinsic/
+    );
+  });
+
+  it('flags intrinsic Host.SourcePath in detectEcsImageResolutionNeeds.needsEnvOrSecretSubstitution', () => {
+    const stack = buildStack('S1', {
+      TD: makeTaskDef({
+        volumes: [
+          {
+            Name: 'subbed',
+            Host: { SourcePath: { 'Fn::Sub': '/data/${AWS::Region}' } },
+          },
+        ],
+      }),
+    });
+    const needs = detectEcsImageResolutionNeeds(stack);
+    expect(needs.needsEnvOrSecretSubstitution).toBe(true);
+  });
+
+  it('does NOT flag a flat-string Host.SourcePath', () => {
+    const stack = buildStack('S1', {
+      TD: makeTaskDef({
+        volumes: [{ Name: 'plain', Host: { SourcePath: '/data' } }],
+      }),
+    });
+    const needs = detectEcsImageResolutionNeeds(stack);
+    expect(needs.needsEnvOrSecretSubstitution).toBe(false);
   });
 });
