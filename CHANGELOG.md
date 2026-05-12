@@ -1,3 +1,10 @@
+## [0.94.6](https://github.com/go-to-k/cdkd/compare/v0.94.5...v0.94.6) (2026-05-12)
+
+
+### Bug Fixes
+
+* **export:** auto pre-delete + phase-2 CREATE for AWS::IAM::Policy ([#315](https://github.com/go-to-k/cdkd/issues/315)) ([88e76fd](https://github.com/go-to-k/cdkd/commit/88e76fd0caaf51d78f94f0597d1280ef8d2c140b))
+
 ## [0.94.5](https://github.com/go-to-k/cdkd/compare/v0.94.4...v0.94.5) (2026-05-12)
 
 
