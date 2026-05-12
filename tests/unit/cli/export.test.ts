@@ -1089,7 +1089,13 @@ describe('invokePreDeleteHandler', () => {
 });
 
 describe('injectDeletionPolicyForImport', () => {
-  it('adds DeletionPolicy: Retain on resources lacking the attribute', () => {
+  it('adds DeletionPolicy: Delete on resources lacking the attribute', () => {
+    // v0.94.8 switched the injection default from Retain to Delete: matches
+    // the CFn type-default behavior for resources without explicit
+    // RemovalPolicy, so post-export `cdk diff` sees no Retain→absent diff
+    // and the user's mental model stays "= CDK convention". See
+    // injectDeletionPolicyForImport's docstring for the Retain-vs-Delete
+    // rationale.
     const template: Record<string, unknown> = {
       Resources: {
         Role: { Type: 'AWS::IAM::Role', Properties: {} },
@@ -1098,8 +1104,8 @@ describe('injectDeletionPolicyForImport', () => {
     };
     const injected = injectDeletionPolicyForImport(template);
     expect(injected).toBe(2);
-    expect((template['Resources'] as Record<string, Record<string, unknown>>)['Role']!['DeletionPolicy']).toBe('Retain');
-    expect((template['Resources'] as Record<string, Record<string, unknown>>)['Topic']!['DeletionPolicy']).toBe('Retain');
+    expect((template['Resources'] as Record<string, Record<string, unknown>>)['Role']!['DeletionPolicy']).toBe('Delete');
+    expect((template['Resources'] as Record<string, Record<string, unknown>>)['Topic']!['DeletionPolicy']).toBe('Delete');
   });
 
   it('preserves resources that already declare DeletionPolicy (any value)', () => {
@@ -1142,8 +1148,8 @@ describe('injectDeletionPolicyForImport', () => {
     expect(injected).toBe(2);
     const resources = template['Resources'] as Record<string, Record<string, unknown>>;
     expect(resources['Bucket']!['DeletionPolicy']).toBe('Delete');
-    expect(resources['Role']!['DeletionPolicy']).toBe('Retain');
-    expect(resources['Topic']!['DeletionPolicy']).toBe('Retain');
+    expect(resources['Role']!['DeletionPolicy']).toBe('Delete');
+    expect(resources['Topic']!['DeletionPolicy']).toBe('Delete');
   });
 
   it('returns 0 for a template with no Resources section', () => {

@@ -973,19 +973,18 @@ async function exportCommand(stackArg: string | undefined, options: ExportOption
       // Phase 1: IMPORT changeset. CFn IMPORT requires DeletionPolicy on
       // every resource (AWS hard requirement). CDK-synth templates only
       // emit DeletionPolicy when the user sets RemovalPolicy explicitly,
-      // so we inject DeletionPolicy: Retain on resources that lack the
-      // attribute. Retain is the safest default — if the user runs
-      // `aws cloudformation delete-stack` BEFORE the post-export `cdk
-      // deploy`, no AWS resource is destroyed. The first subsequent
-      // `cdk deploy` resets DeletionPolicy to the user's CDK-declared
-      // value (or absent), so the injection is transient.
+      // so we inject DeletionPolicy: Delete on resources that lack the
+      // attribute — matches what CFn would have applied as the type's
+      // default if the user had deployed via plain CFn. See
+      // injectDeletionPolicyForImport's docstring for the Retain-vs-Delete
+      // rationale.
       const phase1Template = filterTemplateForImport(template, phase1Imports);
       const injectedCount = injectDeletionPolicyForImport(phase1Template);
       if (injectedCount > 0) {
         logger.info(
-          `Injected DeletionPolicy: Retain on ${injectedCount} resource(s) without an ` +
-            `explicit DeletionPolicy (required by CFn IMPORT). The first \`cdk deploy\` ` +
-            `after export will reset each to your CDK-declared value.`
+          `Injected DeletionPolicy: Delete on ${injectedCount} resource(s) without an ` +
+            `explicit DeletionPolicy (required by CFn IMPORT — matches the CDK/CFn ` +
+            `default for resources without RemovalPolicy).`
         );
       }
       await executeImportChangeSet(
@@ -1645,21 +1644,31 @@ export function resolveTemplateParameters(
  * Mutates `template['Resources']` so every entry has a `DeletionPolicy`
  * attribute. Resources already carrying any `DeletionPolicy` value
  * (Delete / Retain / Snapshot) are untouched; resources missing the
- * attribute get `DeletionPolicy: Retain` injected.
+ * attribute get `DeletionPolicy: Delete` injected.
  *
  * Required by CloudFormation `ChangeSetType=IMPORT`, which rejects the
  * changeset if any resource in the template lacks `DeletionPolicy`.
  * CDK-synth templates only emit the attribute when the user sets
- * `RemovalPolicy` explicitly, so most resources are missing it. We
- * inject `Retain` (rather than `Delete`) so an accidental
- * `aws cloudformation delete-stack` between export and the first
- * post-export `cdk deploy` cannot drop AWS resources. The first
- * `cdk deploy` resets each `DeletionPolicy` to the user's
- * CDK-declared value (or absent), so the injection is transient.
+ * `RemovalPolicy` explicitly, so most resources are missing it.
+ *
+ * **Why `Delete` (not `Retain`)**: a CDK resource without explicit
+ * `RemovalPolicy` defaults to `Delete` at CFn level (the type-default
+ * delete behavior). Injecting `Delete` matches that intent verbatim —
+ * the user is saying "treat this like the AWS default" and cdkd does
+ * exactly that. Injecting `Retain` would be an opinionated override
+ * that surprises users (their CFn template suddenly has a `Retain` they
+ * never asked for) and adds a "transient injection" concept to the
+ * mental model.
+ *
+ * The narrow scenario where `Retain` would help (cdkd export's phase-2
+ * fails AND the user picks `delete-stack` as the recovery path) is not
+ * unique to cdkd export and is not the documented recovery path (the
+ * phase-2-failure error message walks the user through a manual
+ * UpdateStack retry instead). The asymmetric-risk argument doesn't
+ * justify the UX cost of the "transient Retain" mental model.
  *
  * `UpdateReplacePolicy` is intentionally NOT injected — only
- * `DeletionPolicy` is required for IMPORT, and minimizing the injected
- * surface keeps the post-export `cdk diff` as small as possible.
+ * `DeletionPolicy` is required for IMPORT.
  *
  * Returns the number of resources that received an injection.
  *
@@ -1675,7 +1684,7 @@ export function injectDeletionPolicyForImport(template: Record<string, unknown>)
     if (!resource || typeof resource !== 'object' || Array.isArray(resource)) continue;
     const r = resource as Record<string, unknown>;
     if (r['DeletionPolicy'] === undefined) {
-      r['DeletionPolicy'] = 'Retain';
+      r['DeletionPolicy'] = 'Delete';
       injected++;
     }
   }

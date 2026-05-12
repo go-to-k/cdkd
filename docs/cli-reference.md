@@ -942,15 +942,16 @@ cdkd export                                       # auto-detect single-stack app
      declare ANY Outputs with "you cannot modify or add [Outputs]".
      Phase 2 UPDATE re-submits the full synth template and restores
      Outputs along with the non-importable resources.
-   - **Inject `DeletionPolicy: Retain`** on resources that lack the
+   - **Inject `DeletionPolicy: Delete`** on resources that lack the
      attribute. CFn IMPORT requires `DeletionPolicy` on every imported
      resource, and CDK synth only emits it when `RemovalPolicy` is
-     explicitly set. Retain is the safest default — an accidental
-     `aws cloudformation delete-stack` before the first post-export
-     `cdk deploy` won't destroy data. The first `cdk deploy` resets
-     each policy to the CDK-declared value, so the injection is
-     transient. `UpdateReplacePolicy` is intentionally NOT injected
-     (only `DeletionPolicy` is required for IMPORT).
+     explicitly set. cdkd injects `Delete` (not `Retain`) so the
+     post-export CFn template matches the CFn type-default — same as
+     what plain CFn would have applied for a resource without explicit
+     `RemovalPolicy`. The user sees no surprising `Retain` attribute
+     and the post-export `cdk diff` has no DeletionPolicy noise.
+     `UpdateReplacePolicy` is intentionally NOT injected (only
+     `DeletionPolicy` is required for IMPORT).
    - **Overlay `ResourceIdentifier` onto `Properties`.** cdkd's deploy
      path prefixes user-declared physical names with the stack name
      (`<StackName>-<UserDeclaredName>`) for cross-stack uniqueness, so
