@@ -220,17 +220,37 @@ describe('DeployEngine - auto-refresh observed-properties on v2 state load', () 
 
     // readCurrentState fired for both resources.
     expect(mockProvider.readCurrentState).toHaveBeenCalledTimes(2);
+    // Issue #323: auto-refresh on v2→v3 upgrade now passes the
+    // cross-resource context as the 5th arg so IAM providers can filter
+    // sibling-managed inline policies. The siblings map excludes the
+    // resource being read.
     expect(mockProvider.readCurrentState).toHaveBeenCalledWith(
       'phys-bucket-a',
       'BucketA',
       'AWS::S3::Bucket',
-      { BucketName: 'bucket-a' }
+      { BucketName: 'bucket-a' },
+      {
+        siblings: {
+          QueueB: {
+            resourceType: 'AWS::SQS::Queue',
+            properties: { QueueName: 'queue-b' },
+          },
+        },
+      }
     );
     expect(mockProvider.readCurrentState).toHaveBeenCalledWith(
       'phys-queue-b',
       'QueueB',
       'AWS::SQS::Queue',
-      { QueueName: 'queue-b' }
+      { QueueName: 'queue-b' },
+      {
+        siblings: {
+          BucketA: {
+            resourceType: 'AWS::S3::Bucket',
+            properties: { BucketName: 'bucket-a' },
+          },
+        },
+      }
     );
 
     // No-change branch persisted state with refreshed baselines.

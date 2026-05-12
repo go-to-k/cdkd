@@ -372,8 +372,14 @@ async function runDriftForStack(
       // CC API path which would short-circuit them to 'unsupported'
       // (= "drift unknown" noise in the human report). Custom Resource
       // drift would require re-invoking the handler Lambda, which is
-      // out of scope for `cdkd drift`.
-      if (resource.resourceType.startsWith('Custom::')) {
+      // out of scope for `cdkd drift`. Both Lambda-backed CR types are
+      // covered: `Custom::*` (the user-named form) AND
+      // `AWS::CloudFormation::CustomResource` (what CDK emits for
+      // `new cdk.CustomResource(...)` without an explicit `resourceType`).
+      if (
+        resource.resourceType.startsWith('Custom::') ||
+        resource.resourceType === 'AWS::CloudFormation::CustomResource'
+      ) {
         outcomes.push({
           kind: 'skipped',
           logicalId,
@@ -1024,15 +1030,19 @@ function writeHumanReport(reports: StackDriftReport[]): void {
     const unsupported = report.outcomes.filter(
       (o): o is Extract<DriftOutcome, { kind: 'unsupported' }> => o.kind === 'unsupported'
     );
-    // Issue #323: `skipped` (currently only `Custom::*`) is counted in
-    // `total` but does not appear in the report — drift on Custom
-    // Resources is not actionable from `cdkd drift`.
-    const total = report.outcomes.length;
+    // Issue #323: `skipped` (currently only `Custom::*`) is intentionally
+    // NOT counted as "checked" — drift on Custom Resources is not
+    // actionable from `cdkd drift` (no read happens). Excluded from the
+    // human-report count so "N resources checked" matches the user's
+    // mental model. Skipped entries are still present in the outcomes
+    // array and surface in `--json` output (as `skipped: [...]`).
+    const skippedCount = report.outcomes.filter((o) => o.kind === 'skipped').length;
+    const checked = report.outcomes.length - skippedCount;
 
     if (drifted.length === 0) {
       process.stdout.write(
         `✓ ${report.stackName} (${report.region}): no drift detected ` +
-          `(${total} resource${total === 1 ? '' : 's'} checked, ${unsupported.length} unsupported)\n`
+          `(${checked} resource${checked === 1 ? '' : 's'} checked, ${unsupported.length} unsupported)\n`
       );
     } else {
       const word = drifted.length === 1 ? 'resource' : 'resources';
