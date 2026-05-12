@@ -51,11 +51,17 @@ export function findPendingPrefixRenames(
     if (typeof resource.physicalId !== 'string') continue;
     if (!resource.physicalId.startsWith(prefix)) continue;
 
+    const newPhysicalId = resource.physicalId.slice(prefix.length);
+    // Edge case: physicalId is exactly `${stackName}-` (= empty
+    // resource-name suffix). Skip rather than report a `→ ""` rename
+    // entry that the user would not be able to act on.
+    if (newPhysicalId.length === 0) continue;
+
     out.push({
       logicalId,
       resourceType: resource.resourceType,
       oldPhysicalId: resource.physicalId,
-      newPhysicalId: resource.physicalId.slice(prefix.length),
+      newPhysicalId,
     });
   }
 
@@ -96,6 +102,18 @@ export async function promptMigrationConfirm(
   );
 
   if (opts.yes) return true;
+
+  // Non-TTY guard: reject explicitly rather than hanging on a closed
+  // stdin or silently treating EOF as decline. CI runs without `--yes`
+  // would otherwise look like a successful skipped-deploy; surface the
+  // misconfiguration with an actionable error instead.
+  if (process.stdin.isTTY !== true) {
+    throw new Error(
+      '--no-prefix-user-supplied-names migration confirm prompt cannot run in a ' +
+        'non-interactive environment. Pass --yes / -y to confirm the REPLACEMENT, ' +
+        'or run the deploy from a real terminal.'
+    );
+  }
 
   const rl = readline.createInterface({
     input: process.stdin,

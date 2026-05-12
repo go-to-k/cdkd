@@ -41,6 +41,15 @@ describe('findPendingPrefixRenames', () => {
     expect(findPendingPrefixRenames('MyStack', undefined)).toEqual([]);
   });
 
+  it('skips a Pattern B resource whose physicalId equals exactly `${stackName}-` (empty suffix)', () => {
+    // Edge case: `physicalId.slice('MyStack-'.length) === ''`. Reporting
+    // a `→ ""` rename would surface a non-actionable line.
+    const state = makeState({
+      Role: makeResource('MyStack-', 'AWS::IAM::Role'),
+    });
+    expect(findPendingPrefixRenames('MyStack', state)).toEqual([]);
+  });
+
   it('returns an empty list when state has no Pattern B resources', () => {
     const state = makeState({
       Bucket: makeResource('MyStack-my-bucket', 'AWS::S3::Bucket'),
@@ -130,13 +139,37 @@ describe('promptMigrationConfirm', () => {
     },
   ];
 
+  // Save + restore stdin.isTTY so the non-TTY guard tests don't bleed
+  // into the interactive-path tests below (vitest runs in non-TTY by
+  // default; the interactive tests need to pretend they're in a TTY).
+  const originalIsTTY = process.stdin.isTTY;
+
   beforeEach(() => {
     vi.mocked(readline.createInterface).mockReset();
   });
 
   afterEach(() => {
     vi.restoreAllMocks();
+    // Restore the original TTY state so per-test overrides don't leak.
+    Object.defineProperty(process.stdin, 'isTTY', {
+      value: originalIsTTY,
+      configurable: true,
+    });
   });
+
+  function pretendTTY(): void {
+    Object.defineProperty(process.stdin, 'isTTY', {
+      value: true,
+      configurable: true,
+    });
+  }
+
+  function pretendNonTTY(): void {
+    Object.defineProperty(process.stdin, 'isTTY', {
+      value: false,
+      configurable: true,
+    });
+  }
 
   it('returns true and skips the prompt when there are no renames', async () => {
     const ci = vi.mocked(readline.createInterface);
@@ -153,6 +186,7 @@ describe('promptMigrationConfirm', () => {
   });
 
   it('returns true when the user types "y"', async () => {
+    pretendTTY();
     vi.mocked(readline.createInterface).mockReturnValue({
       question: vi.fn().mockResolvedValue('y'),
       close: vi.fn(),
@@ -162,6 +196,7 @@ describe('promptMigrationConfirm', () => {
   });
 
   it('returns true when the user types "yes" with mixed case', async () => {
+    pretendTTY();
     vi.mocked(readline.createInterface).mockReturnValue({
       question: vi.fn().mockResolvedValue('YES'),
       close: vi.fn(),
@@ -171,6 +206,7 @@ describe('promptMigrationConfirm', () => {
   });
 
   it('returns false when the user accepts the default (empty input → N)', async () => {
+    pretendTTY();
     vi.mocked(readline.createInterface).mockReturnValue({
       question: vi.fn().mockResolvedValue(''),
       close: vi.fn(),
@@ -180,6 +216,7 @@ describe('promptMigrationConfirm', () => {
   });
 
   it('returns false when the user types "n"', async () => {
+    pretendTTY();
     vi.mocked(readline.createInterface).mockReturnValue({
       question: vi.fn().mockResolvedValue('n'),
       close: vi.fn(),
@@ -189,6 +226,7 @@ describe('promptMigrationConfirm', () => {
   });
 
   it('closes the readline interface even when the user confirms', async () => {
+    pretendTTY();
     const close = vi.fn();
     vi.mocked(readline.createInterface).mockReturnValue({
       question: vi.fn().mockResolvedValue('y'),
@@ -196,5 +234,22 @@ describe('promptMigrationConfirm', () => {
     } as unknown as ReturnType<typeof readline.createInterface>);
     await promptMigrationConfirm(fakeRenames, { yes: false });
     expect(close).toHaveBeenCalled();
+  });
+
+  it('rejects with an actionable error in a non-TTY environment when --yes is not set', async () => {
+    pretendNonTTY();
+    await expect(
+      promptMigrationConfirm(fakeRenames, { yes: false })
+    ).rejects.toThrow(/non-interactive environment.*Pass --yes/);
+    // readline.createInterface must NOT be called — we error before
+    // opening stdin.
+    expect(vi.mocked(readline.createInterface)).not.toHaveBeenCalled();
+  });
+
+  it('non-TTY environment still passes through opts.yes (CI happy path)', async () => {
+    pretendNonTTY();
+    const proceed = await promptMigrationConfirm(fakeRenames, { yes: true });
+    expect(proceed).toBe(true);
+    expect(vi.mocked(readline.createInterface)).not.toHaveBeenCalled();
   });
 });
