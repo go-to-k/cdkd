@@ -1,3 +1,10 @@
+## [0.94.12](https://github.com/go-to-k/cdkd/compare/v0.94.11...v0.94.12) (2026-05-12)
+
+
+### Bug Fixes
+
+* **intrinsic-resolver:** add AWS::ECR::Repository Arn / RepositoryUri handlers ([#331](https://github.com/go-to-k/cdkd/issues/331)) ([5a1aa38](https://github.com/go-to-k/cdkd/commit/5a1aa38ede215df029e0350f09ad2b2821d391c7))
+
 ## [0.94.11](https://github.com/go-to-k/cdkd/compare/v0.94.10...v0.94.11) (2026-05-12)
 
 

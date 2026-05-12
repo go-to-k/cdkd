@@ -949,6 +949,94 @@ describe('IntrinsicFunctionResolver - Fn::GetAtt LaunchTemplate.LatestVersionNum
   });
 });
 
+describe('IntrinsicFunctionResolver - AWS::ECR::Repository Fn::GetAtt', () => {
+  let resolver: IntrinsicFunctionResolver;
+
+  beforeEach(() => {
+    resolver = new IntrinsicFunctionResolver();
+    resetAccountInfoCache();
+    mockEc2Send.mockReset();
+  });
+
+  it('resolves Arn to the correct ECR ARN', async () => {
+    const template: CloudFormationTemplate = {
+      Resources: {
+        MyRepo: { Type: 'AWS::ECR::Repository', Properties: {} },
+      },
+    };
+    const context: ResolverContext = {
+      template,
+      resources: {
+        MyRepo: {
+          physicalId: 'my-repo',
+          resourceType: 'AWS::ECR::Repository',
+          properties: {},
+          attributes: {},
+          dependencies: [],
+        },
+      },
+    };
+
+    const result = await resolver.resolve(
+      { 'Fn::GetAtt': ['MyRepo', 'Arn'] },
+      context
+    );
+    expect(result).toBe('arn:aws:ecr:us-east-1:123456789012:repository/my-repo');
+  });
+
+  it('resolves RepositoryUri to the correct ECR URI', async () => {
+    const template: CloudFormationTemplate = {
+      Resources: {
+        MyRepo: { Type: 'AWS::ECR::Repository', Properties: {} },
+      },
+    };
+    const context: ResolverContext = {
+      template,
+      resources: {
+        MyRepo: {
+          physicalId: 'my-repo',
+          resourceType: 'AWS::ECR::Repository',
+          properties: {},
+          attributes: {},
+          dependencies: [],
+        },
+      },
+    };
+
+    const result = await resolver.resolve(
+      { 'Fn::GetAtt': ['MyRepo', 'RepositoryUri'] },
+      context
+    );
+    expect(result).toBe('123456789012.dkr.ecr.us-east-1.amazonaws.com/my-repo');
+  });
+
+  it('falls back to physicalId for unknown ECR attributes', async () => {
+    const template: CloudFormationTemplate = {
+      Resources: {
+        MyRepo: { Type: 'AWS::ECR::Repository', Properties: {} },
+      },
+    };
+    const context: ResolverContext = {
+      template,
+      resources: {
+        MyRepo: {
+          physicalId: 'my-repo',
+          resourceType: 'AWS::ECR::Repository',
+          properties: {},
+          attributes: {},
+          dependencies: [],
+        },
+      },
+    };
+
+    const result = await resolver.resolve(
+      { 'Fn::GetAtt': ['MyRepo', 'NotAField'] },
+      context
+    );
+    expect(result).toBe('my-repo');
+  });
+});
+
 describe('IntrinsicFunctionResolver - Fn::Sub same-stack implicit Ref', () => {
   // Per the CloudFormation spec, when ${X} appears in a 1-arg Fn::Sub body
   // and X is not in the explicit variable map (the 2-arg form's second

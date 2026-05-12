@@ -669,6 +669,18 @@ export class IntrinsicFunctionResolver {
       }
     }
 
+    // ECR Repository
+    if (resourceType === 'AWS::ECR::Repository') {
+      switch (attributeName) {
+        case 'Arn':
+          return `arn:${partition}:ecr:${region}:${accountId}:repository/${physicalId}`;
+        case 'RepositoryUri':
+          return `${accountId}.dkr.ecr.${region}.amazonaws.com/${physicalId}`;
+        default:
+          return physicalId;
+      }
+    }
+
     // ECS Cluster
     if (resourceType === 'AWS::ECS::Cluster') {
       switch (attributeName) {
