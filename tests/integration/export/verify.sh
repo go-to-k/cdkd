@@ -370,7 +370,19 @@ for lid in sorted(deleted):
     # Runs from TEST_DIR (already cd'd at line 54) which has aws-cdk
     # installed via `vp install`.
     echo "[verify] step 5b: post-export 'cdk diff' must show no REPLACEMENT (issue #319 guard)"
-    CDK_DIFF_OUT=$(npx cdk diff "${STACK}" --region "${REGION}" 2>&1 || true)
+    set +e
+    CDK_DIFF_OUT=$(npx cdk diff "${STACK}" --region "${REGION}" 2>&1)
+    CDK_DIFF_RC=$?
+    set -e
+    # Sanity check: cdk diff itself must have produced output naming the
+    # target stack — otherwise an unrelated failure (missing creds /
+    # region mismatch / stack not found) would yield an empty stdout and
+    # the regression greps below would silently pass on nothing.
+    if ! echo "${CDK_DIFF_OUT}" | grep -q "Stack ${STACK}"; then
+      echo "[verify] FAIL: 'cdk diff' did not produce a 'Stack ${STACK}' header (rc=${CDK_DIFF_RC})"
+      echo "${CDK_DIFF_OUT}" | sed 's/^/  /'
+      exit 1
+    fi
     # Search for "requires replacement" — CDK CLI emits this marker on
     # every property change that would force a REPLACE. Pre-#319 every
     # auto-named resource showed `(requires replacement)` lines.

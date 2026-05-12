@@ -1064,14 +1064,12 @@ async function exportCommand(stackArg: string | undefined, options: ExportOption
       const phase2Count = phase2Creates.length + recreateBeforePhase2.length;
       if (phase2Count > 0) {
         try {
-          // Apply the phase-1 overlay onto each imported resource in the
-          // phase-2 template — without this, CFn sees "Name property
-          // removal" between phase-1 (overlayed) and phase-2 (raw synth)
-          // and silently REPLACES every imported resource whose Name is
-          // an immutable property (IAM Role, S3 Bucket, etc.). See
-          // applyImportOverlayForPhase2's docstring for the empirical
-          // motivation (cdk-sample 2026-05-12 incident: 24 resources
-          // silently REPLACED during phase-2 cleanup).
+          // Apply the same conditional overlay to phase-2 that phase-1
+          // applied, preserving symmetry — see
+          // applyImportOverlayForPhase2's docstring for the rule (only
+          // fires on literal-string mismatch, no-op for absent / intrinsic)
+          // and PR #316 for the silent-REPLACE incident that surfaced the
+          // symmetry requirement.
           const phase2Template = applyImportOverlayForPhase2(template, phase1Imports);
           await executeUpdateChangeSet(
             awsClients.cloudFormation,
