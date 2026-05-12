@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect } from 'vite-plus/test';
 import { TemplateParser } from '../../../src/analyzer/template-parser.js';
 import { DagBuilder } from '../../../src/analyzer/dag-builder.js';
 import type { CloudFormationTemplate, TemplateResource } from '../../../src/types/resource.js';

@@ -1,7 +1,6 @@
 #!/usr/bin/env node
-import 'source-map-support/register';
 import * as cdk from 'aws-cdk-lib';
-import { S3VectorsStack } from '../lib/s3-vectors-stack';
+import { S3VectorsStack } from '../lib/s3-vectors-stack.ts';
 
 const app = new cdk.App();
 

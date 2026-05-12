@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it } from 'vite-plus/test';
 import { createAuthorizerCache } from '../../../src/local/authorizer-cache.js';
 
 describe('authorizer-cache', () => {

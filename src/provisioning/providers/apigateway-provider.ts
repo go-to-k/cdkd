@@ -29,6 +29,7 @@ import {
 import { getLogger } from '../../utils/logger.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/error-handler.js';
+import { stringifyValue } from '../../utils/stringify.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import type {
   ResourceProvider,
@@ -557,7 +558,7 @@ export class ApiGatewayProvider implements ResourceProvider {
         patchOperations.push({
           op: 'replace',
           path,
-          value: newVal !== undefined ? String(newVal) : '',
+          value: newVal !== undefined ? stringifyValue(newVal) : '',
         });
       }
     }
@@ -1377,7 +1378,7 @@ export class ApiGatewayProvider implements ResourceProvider {
         patchOperations.push({
           op: 'replace',
           path,
-          value: newVal !== undefined ? String(newVal) : '',
+          value: newVal !== undefined ? stringifyValue(newVal) : '',
         });
       }
     }

@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import { UpdateUserPoolCommand } from '@aws-sdk/client-cognito-identity-provider';
 
 const mockSend = vi.fn();

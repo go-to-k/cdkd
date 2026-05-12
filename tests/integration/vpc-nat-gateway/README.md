@@ -38,7 +38,7 @@ race conditions.
 # deploy; NAT continues provisioning asynchronously after cdkd returns).
 # `--no-wait` is deploy-only — `cdkd destroy` does not accept it.
 cd tests/integration/vpc-nat-gateway
-pnpm install
+vp install
 node ../../../dist/cli.js deploy -y --no-wait
 node ../../../dist/cli.js destroy -y
 ```

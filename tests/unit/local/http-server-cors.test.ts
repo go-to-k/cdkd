@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vite-plus/test';
 import { startApiServer, type ServerState } from '../../../src/local/http-server.js';
 import type {
   ContainerPool,

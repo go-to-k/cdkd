@@ -1,8 +1,10 @@
 {
   "compilerOptions": {
-    "target": "ES2020",
-    "module": "commonjs",
-    "lib": ["ES2020"],
+    "target": "ESNext",
+    "module": "NodeNext",
+    "lib": [
+      "ES2023"
+    ],
     "declaration": true,
     "strict": true,
     "noImplicitAny": true,
@@ -12,7 +14,14 @@
     "esModuleInterop": true,
     "outDir": "./dist",
     "skipLibCheck": true,
-    "forceConsistentCasingInFileNames": true
+    "forceConsistentCasingInFileNames": true,
+    "moduleResolution": "NodeNext",
+    "rewriteRelativeImportExtensions": true,
+    "erasableSyntaxOnly": true,
+    "verbatimModuleSyntax": true
   },
-  "include": ["bin/**/*", "lib/**/*"]
+  "include": [
+    "bin/**/*",
+    "lib/**/*"
+  ]
 }

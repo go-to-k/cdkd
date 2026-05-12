@@ -26,8 +26,8 @@ Tests a combined event-driven architecture with multiple event sources and patte
 ## Deploy
 
 ```bash
-npm install
-cdkd deploy --app "npx ts-node --prefer-ts-exts bin/app.ts"
+vp install
+cdkd deploy --app "node bin/app.ts"
 ```
 
 ## Cleanup

@@ -137,10 +137,10 @@ behavioral change to providers; external provider implementations (none
 exist today) would need to accept the new context parameter. The check
 runs after build and lint as usual.
 
-- [ ] `pnpm run build`
-- [ ] `pnpm test` — all existing provider tests still pass.
-- [ ] `pnpm run typecheck`
-- [ ] `pnpm run lint`
+- [ ] `vp run build`
+- [ ] `vp run test` — all existing provider tests still pass.
+- [ ] `vp run typecheck`
+- [ ] `vp run lint`
 - [ ] Manually grep for any provider implementation that has not been
       updated — every `ResourceProvider` in
       `src/provisioning/providers/` should accept `context`.

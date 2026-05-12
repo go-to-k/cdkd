@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import { EventEmitter } from 'node:events';
 import type { ChildProcess } from 'node:child_process';
 
@@ -69,7 +69,7 @@ describe('AppExecutor', () => {
       vi.mocked(spawn).mockReturnValue(mockProc);
 
       const promise = executor.execute({
-        app: 'npx ts-node bin/app.ts',
+        app: 'node bin/app.ts',
         outputDir: '/tmp/cdk.out',
         context: { foo: 'bar' },
       });
@@ -80,7 +80,7 @@ describe('AppExecutor', () => {
       await promise;
 
       expect(spawn).toHaveBeenCalledWith(
-        'npx ts-node bin/app.ts',
+        'node bin/app.ts',
         expect.objectContaining({
           stdio: ['ignore', 'pipe', 'pipe'],
           shell: true,
@@ -93,7 +93,7 @@ describe('AppExecutor', () => {
       vi.mocked(spawn).mockReturnValue(mockProc);
 
       const promise = executor.execute({
-        app: 'npx ts-node bin/app.ts',
+        app: 'node bin/app.ts',
         outputDir: '/tmp/cdk.out',
         context: { key: 'value' },
         region: 'us-east-1',
@@ -126,7 +126,7 @@ describe('AppExecutor', () => {
       }
 
       const promise = executor.execute({
-        app: 'npx ts-node bin/app.ts',
+        app: 'node bin/app.ts',
         outputDir: '/tmp/cdk.out',
         context: largeContext,
       });
@@ -178,7 +178,7 @@ describe('AppExecutor', () => {
       vi.mocked(spawn).mockReturnValue(mockProc);
 
       const promise = executor.execute({
-        app: 'npx ts-node bin/app.ts',
+        app: 'node bin/app.ts',
         outputDir: '/tmp/cdk.out',
         context: {},
       });
@@ -194,7 +194,7 @@ describe('AppExecutor', () => {
       vi.mocked(spawn).mockReturnValue(mockProc);
 
       const promise = executor.execute({
-        app: 'npx ts-node bin/app.ts',
+        app: 'node bin/app.ts',
         outputDir: '/tmp/cdk.out',
         context: {},
       });
@@ -227,7 +227,7 @@ describe('AppExecutor', () => {
       vi.mocked(spawn).mockReturnValue(mockProc);
 
       const promise = executor.execute({
-        app: 'npx ts-node bin/app.ts',
+        app: 'node bin/app.ts',
         outputDir: '/tmp/cdk.out',
         context: {},
       });

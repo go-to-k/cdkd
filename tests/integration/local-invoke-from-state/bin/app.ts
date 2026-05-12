@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import * as cdk from 'aws-cdk-lib';
-import { LocalInvokeFromStateStack } from '../lib/local-invoke-from-state-stack';
+import { LocalInvokeFromStateStack } from '../lib/local-invoke-from-state-stack.ts';
 
 const app = new cdk.App();
 

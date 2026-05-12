@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import * as cdk from 'aws-cdk-lib';
-import { LocalRunTaskFromStateStack } from '../lib/local-run-task-from-state-stack';
+import { LocalRunTaskFromStateStack } from '../lib/local-run-task-from-state-stack.ts';
 
 const app = new cdk.App();
 

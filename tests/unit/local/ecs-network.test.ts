@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vite-plus/test';
 import {
   METADATA_ENDPOINT_IMAGE,
   METADATA_ENDPOINT_IP,

@@ -1105,7 +1105,7 @@ path or physical name; supports `*` wildcards), and feeds each selected
 stack's asset manifest into the same `WorkGraph` pipeline that `deploy`
 uses (with `stack: 0` concurrency so no stack-deploy nodes run).
 
-`-a/--app` accepts either a shell command (`"npx ts-node app.ts"`) or
+`-a/--app` accepts either a shell command (`"node app.ts"`) or
 a path to an already-synthesized cloud assembly directory (`cdk.out`);
 when a directory is given, synthesis is skipped and the manifest is
 read directly. Same dual semantics as `cdkd deploy`. Re-using a

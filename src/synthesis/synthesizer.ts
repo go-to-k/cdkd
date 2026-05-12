@@ -14,7 +14,7 @@ import { SynthesisError } from '../utils/error-handler.js';
  * Synthesis options
  */
 export interface SynthesisOptions {
-  /** CDK app command (e.g., "npx ts-node app.ts") */
+  /** CDK app command (e.g., "node app.ts") */
   app: string;
 
   /** Output directory for synthesis (default: "cdk.out") */

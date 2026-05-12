@@ -47,7 +47,7 @@ test -f lambda/publish/Function.dll || {
 
 echo "==> Installing fixture deps"
 if [[ ! -d node_modules ]]; then
-  npm install --no-audit --no-fund --prefer-offline
+  vp install --prefer-offline
 fi
 
 echo "==> Synthesizing fixture CDK app"

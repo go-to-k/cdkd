@@ -3,6 +3,7 @@
   "version": "0.94.2",
   "description": "CDK Direct - Deploy AWS CDK apps directly via SDK/Cloud Control API",
   "main": "dist/index.js",
+  "types": "dist/index.d.ts",
   "bin": {
     "cdkd": "./dist/cli.js"
   },
@@ -20,20 +21,7 @@
     "url": "https://github.com/go-to-k/cdkd/issues"
   },
   "type": "module",
-  "scripts": {
-    "build": "node build.mjs",
-    "dev": "node build.mjs --watch",
-    "test": "vitest run",
-    "test:watch": "vitest",
-    "test:ui": "vitest --ui",
-    "test:coverage": "vitest --coverage",
-    "lint": "eslint src --ext .ts",
-    "lint:fix": "eslint src --ext .ts --fix",
-    "format": "prettier --write \"src/**/*.ts\"",
-    "format:check": "prettier --check \"src/**/*.ts\"",
-    "typecheck": "tsc --noEmit",
-    "prepublishOnly": "pnpm run build"
-  },
+  "packageManager": "pnpm@11.1.0",
   "keywords": [
     "aws",
     "cdk",
@@ -108,20 +96,14 @@
     "@semantic-release/git": "^10.0.1",
     "@semantic-release/github": "^12.0.0",
     "@semantic-release/npm": "^13.0.0",
+    "@typescript/native-preview": "7.0.0-dev.20260511.1",
     "@types/archiver": "^6.0.0",
     "@types/graphlib": "^2.1.12",
-    "@types/node": "^20.0.0",
-    "@typescript-eslint/eslint-plugin": "^7.0.0",
-    "@typescript-eslint/parser": "^7.0.0",
-    "@vitest/ui": "^1.0.0",
-    "esbuild": "^0.20.0",
-    "eslint": "^8.57.0",
-    "eslint-config-prettier": "^9.0.0",
-    "eslint-plugin-prettier": "^5.0.0",
-    "prettier": "^3.0.0",
+    "@types/node": "^20.19.0",
     "semantic-release": "^25.0.0",
-    "typescript": "^5.4.0",
-    "vitest": "^1.0.0"
+    "tsdown": "^0.22.0",
+    "typescript": "^6.0.3",
+    "vite-plus": "^0.1.20"
   },
   "peerDependencies": {
     "aws-cdk-lib": "^2.0.0",

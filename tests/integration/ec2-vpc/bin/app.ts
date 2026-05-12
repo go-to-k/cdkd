@@ -1,7 +1,6 @@
 #!/usr/bin/env node
-import 'source-map-support/register';
 import * as cdk from 'aws-cdk-lib';
-import { Ec2VpcStack } from '../lib/ec2-vpc-stack';
+import { Ec2VpcStack } from '../lib/ec2-vpc-stack.ts';
 
 const app = new cdk.App();
 new Ec2VpcStack(app, 'Ec2VpcStack', {

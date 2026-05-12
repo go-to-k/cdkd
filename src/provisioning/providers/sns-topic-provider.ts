@@ -15,6 +15,7 @@ import {
 import { getLogger } from '../../utils/logger.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
+import { stringifyValue } from '../../utils/stringify.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { generateResourceName } from '../resource-name.js';
 import {
@@ -86,10 +87,10 @@ export class SNSTopicProvider implements ResourceProvider {
       const topicAttributes: Record<string, string> = {};
 
       if (properties['FifoTopic']) {
-        topicAttributes['FifoTopic'] = String(properties['FifoTopic']);
+        topicAttributes['FifoTopic'] = stringifyValue(properties['FifoTopic']);
       }
       if (properties['ContentBasedDeduplication']) {
-        topicAttributes['ContentBasedDeduplication'] = String(
+        topicAttributes['ContentBasedDeduplication'] = stringifyValue(
           properties['ContentBasedDeduplication']
         );
       }
@@ -103,7 +104,7 @@ export class SNSTopicProvider implements ResourceProvider {
         topicAttributes['TracingConfig'] = properties['TracingConfig'] as string;
       }
       if (properties['SignatureVersion']) {
-        topicAttributes['SignatureVersion'] = String(properties['SignatureVersion']);
+        topicAttributes['SignatureVersion'] = stringifyValue(properties['SignatureVersion']);
       }
       if (properties['FifoThroughputScope']) {
         topicAttributes['FifoThroughputScope'] = properties['FifoThroughputScope'] as string;
@@ -188,7 +189,7 @@ export class SNSTopicProvider implements ResourceProvider {
               new SetTopicAttributesCommand({
                 TopicArn: topicArn,
                 AttributeName: `${protocol}SuccessFeedbackSampleRate`,
-                AttributeValue: String(config['SuccessFeedbackSampleRate']),
+                AttributeValue: stringifyValue(config['SuccessFeedbackSampleRate']),
               })
             );
           }
@@ -269,7 +270,7 @@ export class SNSTopicProvider implements ResourceProvider {
         } else if (attr.serialize && typeof newVal !== 'string') {
           value = JSON.stringify(newVal);
         } else {
-          value = String(newVal);
+          value = stringifyValue(newVal);
         }
         await this.snsClient.send(
           new SetTopicAttributesCommand({
@@ -307,7 +308,7 @@ export class SNSTopicProvider implements ResourceProvider {
             new SetTopicAttributesCommand({
               TopicArn: physicalId,
               AttributeName: `${protocol}SuccessFeedbackSampleRate`,
-              AttributeValue: String(config['SuccessFeedbackSampleRate']),
+              AttributeValue: stringifyValue(config['SuccessFeedbackSampleRate']),
             })
           );
         }

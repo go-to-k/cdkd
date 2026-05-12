@@ -21,7 +21,7 @@ The flow that exercises the new command:
    node ../../../dist/cli.js bootstrap --region "${AWS_REGION}"
 
    node ../../../dist/cli.js deploy \
-     --app "npx ts-node --prefer-ts-exts bin/app.ts" \
+     --app "node bin/app.ts" \
      --region "${AWS_REGION}"
    ```
 

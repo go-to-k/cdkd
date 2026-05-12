@@ -1,7 +1,6 @@
 #!/usr/bin/env node
-import 'source-map-support/register';
 import * as cdk from 'aws-cdk-lib';
-import { StateInfoStack } from '../lib/state-info-stack';
+import { StateInfoStack } from '../lib/state-info-stack.ts';
 
 const app = new cdk.App();
 

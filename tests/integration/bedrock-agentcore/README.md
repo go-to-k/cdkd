@@ -15,7 +15,7 @@ This example demonstrates deploying an Amazon Bedrock AgentCore Runtime using cd
 
 ```bash
 # Install dependencies
-npm install
+vp install
 
 # Deploy with cdkd
 cdkd deploy BedrockAgentcoreStack

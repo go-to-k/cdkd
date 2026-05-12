@@ -10,8 +10,11 @@ import { getLogger } from '../../utils/logger.js';
  */
 export class AmiContextProvider implements ContextProvider {
   private logger = getLogger().child('AmiContextProvider');
+  private awsConfig: ContextProviderAwsConfig | undefined;
 
-  constructor(private awsConfig?: ContextProviderAwsConfig) {}
+  constructor(awsConfig?: ContextProviderAwsConfig) {
+    this.awsConfig = awsConfig;
+  }
 
   async resolve(props: Record<string, unknown>): Promise<string> {
     const region = (props['region'] as string) || this.awsConfig?.region;

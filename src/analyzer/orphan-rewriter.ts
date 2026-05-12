@@ -99,12 +99,19 @@ export interface OrphanRewriteOptions {
 class AttributeFetcher {
   private cache = new Map<string, unknown>();
   private logger = getLogger().child('OrphanRewriter');
+  private orphans: Record<string, ResourceState>;
+  private providerRegistry: ProviderRegistry;
+  private options: OrphanRewriteOptions;
 
   constructor(
-    private orphans: Record<string, ResourceState>,
-    private providerRegistry: ProviderRegistry,
-    private options: OrphanRewriteOptions
-  ) {}
+    orphans: Record<string, ResourceState>,
+    providerRegistry: ProviderRegistry,
+    options: OrphanRewriteOptions
+  ) {
+    this.orphans = orphans;
+    this.providerRegistry = providerRegistry;
+    this.options = options;
+  }
 
   /**
    * Return the orphan's resolved value for `Ref` (its physicalId) — never

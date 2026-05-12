@@ -5,7 +5,7 @@
 1. AWS Account
 2. AWS CLI configured (`aws configure`)
 3. Node.js 20 or higher
-4. cdkd built (`npm run build`)
+4. cdkd built (`vp run build`)
 
 ## 1. Create Test S3 Bucket
 
@@ -56,14 +56,14 @@ The cdkd repository includes several examples:
 
 ```bash
 cd "${CDKD_PATH}/tests/integration/basic"
-npm install
+vp install
 ```
 
 #### Intrinsic Functions Example (Testing Built-in Functions)
 
 ```bash
 cd "${CDKD_PATH}/tests/integration/intrinsic-functions"
-npm install
+vp install
 ```
 
 #### Lambda Example (Lambda + DynamoDB + IAM) ✅ Recommended
@@ -72,7 +72,7 @@ A practical integration example with Lambda functions and DynamoDB tables:
 
 ```bash
 cd "${CDKD_PATH}/tests/integration/lambda"
-npm install
+vp install
 ```
 
 **Tested features**:
@@ -88,14 +88,14 @@ Event-driven architecture with S3 + Lambda + DynamoDB + SQS + IAM:
 
 ```bash
 cd "${CDKD_PATH}/tests/integration/multi-resource"
-npm install
+vp install
 ```
 
 #### Parameters Example (CloudFormation Parameters) ✅ Implemented
 
 ```bash
 cd "${CDKD_PATH}/tests/integration/parameters"
-npm install
+vp install
 ```
 
 **Tested features**:
@@ -108,7 +108,7 @@ npm install
 
 ```bash
 cd "${CDKD_PATH}/tests/integration/conditions"
-npm install
+vp install
 ```
 
 **Tested features**:
@@ -121,7 +121,7 @@ npm install
 
 ```bash
 cd "${CDKD_PATH}/tests/integration/cross-stack-references"
-npm install
+vp install
 ```
 
 **Tested features**:
@@ -134,7 +134,7 @@ npm install
 
 ```bash
 cd "${CDKD_PATH}/tests/integration/ecr"
-npm install
+vp install
 ```
 
 **Tested features**:
@@ -146,7 +146,7 @@ npm install
 
 ```bash
 cd "${CDKD_PATH}/tests/integration/apigateway"
-npm install
+vp install
 ```
 
 **Tested features**:
@@ -158,77 +158,77 @@ npm install
 
 ```bash
 cd "${CDKD_PATH}/tests/integration/ecs-fargate"
-npm install
+vp install
 ```
 
 #### EventBridge Example
 
 ```bash
 cd "${CDKD_PATH}/tests/integration/eventbridge"
-npm install
+vp install
 ```
 
 #### SNS + SQS Event Example
 
 ```bash
 cd "${CDKD_PATH}/tests/integration/sns-sqs-event"
-npm install
+vp install
 ```
 
 #### DynamoDB Streams Example
 
 ```bash
 cd "${CDKD_PATH}/tests/integration/dynamodb-streams"
-npm install
+vp install
 ```
 
 #### Step Functions Example
 
 ```bash
 cd "${CDKD_PATH}/tests/integration/stepfunctions"
-npm install
+vp install
 ```
 
 #### EC2 VPC Example
 
 ```bash
 cd "${CDKD_PATH}/tests/integration/ec2-vpc"
-npm install
+vp install
 ```
 
 #### S3 + CloudFront Example
 
 ```bash
 cd "${CDKD_PATH}/tests/integration/s3-cloudfront"
-npm install
+vp install
 ```
 
 #### CloudWatch Example
 
 ```bash
 cd "${CDKD_PATH}/tests/integration/cloudwatch"
-npm install
+vp install
 ```
 
 #### RDS Aurora Example
 
 ```bash
 cd "${CDKD_PATH}/tests/integration/rds-aurora"
-npm install
+vp install
 ```
 
 #### Bedrock AgentCore Example
 
 ```bash
 cd "${CDKD_PATH}/tests/integration/bedrock-agentcore"
-npm install
+vp install
 ```
 
 #### CloudFront + Lambda Function URL Example
 
 ```bash
 cd "${CDKD_PATH}/tests/integration/cloudfront-function-url"
-npm install
+vp install
 ```
 
 **Tested features**:
@@ -241,7 +241,7 @@ npm install
 
 ```bash
 cd "${CDKD_PATH}/tests/integration/vpc-lookup"
-npm install
+vp install
 ```
 
 **Tested features**:
@@ -269,7 +269,7 @@ node ../../../dist/cli.js destroy --region us-east-1 --state-bucket <your-state-
 
 ```bash
 cd "${CDKD_PATH}/tests/integration/custom-resource-provider"
-npm install
+vp install
 ```
 
 **Tested features**:
@@ -324,7 +324,7 @@ export class CdkdTestStack extends cdk.Stack {
 EOF
 
 # Build
-npm run build
+vp run build
 ```
 
 ## 3. Deploy Using cdkd
@@ -337,7 +337,7 @@ CDKD_PATH="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 # First, check changes with diff
 # --app and --state-bucket can be omitted if set via env vars or cdk.json
 node ${CDKD_PATH}/dist/cli.js diff \
-  --app "npx ts-node --prefer-ts-exts bin/cdkd-test.ts" \
+  --app "node bin/cdkd-test.ts" \
   --output cdk.out \
   --state-bucket ${STATE_BUCKET} \
   --state-prefix "stacks" \
@@ -347,7 +347,7 @@ node ${CDKD_PATH}/dist/cli.js diff \
 # Execute deployment (first time will create all resources)
 # Stack name is a positional argument (auto-detected if single stack)
 node ${CDKD_PATH}/dist/cli.js deploy \
-  --app "npx ts-node --prefer-ts-exts bin/cdkd-test.ts" \
+  --app "node bin/cdkd-test.ts" \
   --output cdk.out \
   --state-bucket ${STATE_BUCKET} \
   --state-prefix "stacks" \
@@ -377,13 +377,13 @@ cd "${CDKD_PATH}/tests/integration/basic"
 # First deployment (CREATE)
 # Stack name is positional; auto-detected if single stack
 node ../../../../dist/cli.js deploy CdkdBasicExample \
-  --app "npx ts-node --prefer-ts-exts bin/app.ts" \
+  --app "node bin/app.ts" \
   --state-bucket ${STATE_BUCKET} \
   --region ${AWS_REGION}
 
 # Second deployment with UPDATE test tag (UPDATE)
 CDKD_TEST_UPDATE=true node ../../../../dist/cli.js deploy CdkdBasicExample \
-  --app "npx ts-node --prefer-ts-exts bin/app.ts" \
+  --app "node bin/app.ts" \
   --state-bucket ${STATE_BUCKET} \
   --region ${AWS_REGION}
 
@@ -403,7 +403,7 @@ To verify rollback against real AWS, the `basic` stack supports a third toggle:
 # the SQS Queue's invalid MessageRetentionPeriod is rejected by AWS,
 # triggering rollback that deletes the already-completed siblings.
 CDKD_TEST_FAIL=true node ../../../../dist/cli.js deploy CdkdBasicExample \
-  --app "npx ts-node --prefer-ts-exts bin/app.ts" \
+  --app "node bin/app.ts" \
   --state-bucket ${STATE_BUCKET} \
   --region ${AWS_REGION}
 
@@ -492,18 +492,18 @@ export class CdkdTestStack extends cdk.Stack {
 }
 EOF
 
-npm run build
+vp run build
 
 # Check changes with diff
 node ${CDKD_PATH}/dist/cli.js diff \
-  --app "npx ts-node --prefer-ts-exts bin/cdkd-test.ts" \
+  --app "node bin/cdkd-test.ts" \
   --state-bucket ${STATE_BUCKET} \
   --region ${AWS_REGION} \
   --verbose
 
 # Deploy updates
 node ${CDKD_PATH}/dist/cli.js deploy \
-  --app "npx ts-node --prefer-ts-exts bin/cdkd-test.ts" \
+  --app "node bin/cdkd-test.ts" \
   --state-bucket ${STATE_BUCKET} \
   --region ${AWS_REGION} \
   --verbose
@@ -515,7 +515,7 @@ Display execution plan only without making actual changes:
 
 ```bash
 node ${CDKD_PATH}/dist/cli.js deploy \
-  --app "npx ts-node --prefer-ts-exts bin/cdkd-test.ts" \
+  --app "node bin/cdkd-test.ts" \
   --state-bucket ${STATE_BUCKET} \
   --region ${AWS_REGION} \
   --dry-run \
@@ -527,7 +527,7 @@ node ${CDKD_PATH}/dist/cli.js deploy \
 ```bash
 # Delete resources with destroy command (stack name is positional)
 node ${CDKD_PATH}/dist/cli.js destroy CdkdTestStack \
-  --app "npx ts-node --prefer-ts-exts bin/cdkd-test.ts" \
+  --app "node bin/cdkd-test.ts" \
   --state-bucket ${STATE_BUCKET} \
   --state-prefix "stacks" \
   --region ${AWS_REGION} \
@@ -535,7 +535,7 @@ node ${CDKD_PATH}/dist/cli.js destroy CdkdTestStack \
 
 # To skip confirmation prompt
 node ${CDKD_PATH}/dist/cli.js destroy CdkdTestStack \
-  --app "npx ts-node --prefer-ts-exts bin/cdkd-test.ts" \
+  --app "node bin/cdkd-test.ts" \
   --state-bucket ${STATE_BUCKET} \
   --state-prefix "stacks" \
   --region ${AWS_REGION} \

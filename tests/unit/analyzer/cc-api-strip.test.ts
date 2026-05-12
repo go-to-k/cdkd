@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect } from 'vite-plus/test';
 import {
   stripCcApiAwsManagedFields,
   STRIPPED_FIELDS_FOR_TEST,

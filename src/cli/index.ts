@@ -1,6 +1,8 @@
+#!/usr/bin/env node
+
 import { Command } from 'commander';
 
-// Injected at build time by esbuild `define` from package.json
+// Injected at build time by tsdown `define` from package.json.
 declare const __CDKD_VERSION__: string;
 
 import { createBootstrapCommand } from './commands/bootstrap.js';

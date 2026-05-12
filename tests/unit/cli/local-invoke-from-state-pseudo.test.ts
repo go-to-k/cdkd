@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it } from 'vite-plus/test';
 import { envHasIntrinsicValue } from '../../../src/cli/commands/local-invoke.js';
 import {
   substituteEnvVarsFromState,

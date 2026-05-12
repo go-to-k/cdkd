@@ -4,35 +4,46 @@ Thank you for your interest in contributing to cdkd!
 
 ## Development Setup
 
-This repo pins developer tooling via [mise](https://mise.jdx.dev/). `mise install` fetches [markgate](https://github.com/go-to-k/markgate), which the commit-gate hook depends on. If you prefer not to use mise, install markgate by any means (Homebrew, `go install`, release binary) and skip that step.
+This repo uses Vite+ for the JavaScript toolchain and runtime/package-manager
+workflows. Developer tasks run on Node.js 24, pinned by `.node-version` and
+managed by Vite+, while the package continues to support users on Node.js 20
+and later. Dependencies are installed with pnpm 11 through Vite+.
+
+The global `vp` CLI itself is pinned by `.mise.toml` via mise's HTTP backend
+against Vite+'s platform CLI tarball. `mise install` also installs
+[markgate](https://github.com/go-to-k/markgate), which the commit-gate hook
+depends on.
 
 ```bash
 # Clone the repository
 git clone https://github.com/go-to-k/cdkd.git
 cd cdkd
 
-# Trust the mise config, then install pinned developer tools (markgate, etc.)
+# Trust the mise config, then install pinned developer tools (vp, markgate, etc.)
 # (mise requires explicit trust on first checkout or whenever .mise.toml changes)
 mise trust
 mise install
 
-# Install dependencies
-npm install
+# Install the project Node.js version from .node-version with Vite+
+vp env install
+
+# Install dependencies with the pinned pnpm version
+vp install
 
 # Build
-npm run build
+vp run build
 
 # Run tests
-npm test
+vp run test
 
 # Type check
-npm run typecheck
+vp run typecheck
 
 # Lint
-npm run lint:fix
+vp run lint:fix
 
 # Format
-npm run format
+vp run format
 ```
 
 ## Project Structure
@@ -43,7 +54,7 @@ See [CLAUDE.md](CLAUDE.md) for detailed architecture documentation.
 
 1. Create a feature branch from `main`
 2. Make your changes
-3. Run `npm run typecheck && npm run lint && npm run build && npm test`
+3. Run `vp run check && vp run test && vp run build`
 4. Commit with a descriptive message
 5. Open a Pull Request
 
@@ -57,10 +68,12 @@ Add new examples under `tests/integration/`. See existing examples for patterns.
 
 ## Code Style
 
-- TypeScript with strict mode
+- TypeScript with strict mode and the native preview checker (`tsgo`)
 - ESM modules (`.js` extension in imports)
-- Prettier for formatting
-- ESLint for linting
+- Node native type stripping for TypeScript runners (`node app.ts`)
+- Vite+ tasks in `vite.config.ts`
+- Oxfmt for formatting
+- Oxlint for linting, including type-aware checks
 
 ## License
 

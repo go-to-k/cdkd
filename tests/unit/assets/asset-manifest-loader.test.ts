@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it } from 'vite-plus/test';
 import { getDockerImageBySourceHash } from '../../../src/assets/asset-manifest-loader.js';
 import type { AssetManifest, DockerImageAsset } from '../../../src/types/assets.js';
 

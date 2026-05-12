@@ -22,7 +22,7 @@ All resources are independent within each scenario, so cdkd's DAG scheduler can 
 
 - AWS credentials configured
 - Node.js >= 20.0.0
-- cdkd built (`pnpm run build`)
+- cdkd built (`vp run build`)
 - `cdk` CLI installed for the CloudFormation side (`npm install -g aws-cdk`)
 
 ## Usage

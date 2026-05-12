@@ -74,7 +74,7 @@ pnpm --dir "${REPO_ROOT}" run build
 
 cd "${TEST_DIR}"
 if [ ! -d node_modules ]; then
-  npm install --no-audit --no-fund --prefer-offline
+  vp install --prefer-offline
 fi
 
 echo "[verify] step 1b: verifying Docker is available"

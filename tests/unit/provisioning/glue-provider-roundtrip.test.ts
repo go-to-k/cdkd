@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import { UpdateDatabaseCommand, UpdateTableCommand } from '@aws-sdk/client-glue';
 
 const mockSend = vi.fn();

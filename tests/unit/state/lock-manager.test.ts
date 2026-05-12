@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vite-plus/test';
 import { S3Client, S3ServiceException, NoSuchKey } from '@aws-sdk/client-s3';
 import { LockManager } from '../../../src/state/lock-manager.js';
 import type { LockInfo } from '../../../src/types/state.js';

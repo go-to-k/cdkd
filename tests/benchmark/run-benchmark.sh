@@ -81,7 +81,7 @@ configure_scenario() {
       exit 1
       ;;
   esac
-  CDK_APP="npx ts-node --prefer-ts-exts bin/app.ts"
+  CDK_APP="node bin/app.ts"
 }
 
 # ─── Utility functions ───────────────────────────────────────────────────────
@@ -126,7 +126,7 @@ check_prerequisites() {
 
   if [[ ! -f "$CDKD_BIN" ]]; then
     warn "cdkd binary not found at $CDKD_BIN. Building..."
-    (cd "$PROJECT_ROOT" && pnpm run build)
+    (cd "$PROJECT_ROOT" && vp run build)
   fi
   ok "cdkd binary available"
 
@@ -148,7 +148,7 @@ check_prerequisites() {
 
   if [[ ! -d "$EXAMPLE_DIR/node_modules" ]]; then
     info "Installing example dependencies..."
-    (cd "$EXAMPLE_DIR" && npm install)
+    (cd "$EXAMPLE_DIR" && vp install)
   fi
   ok "Example dependencies installed"
 

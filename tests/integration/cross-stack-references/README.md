@@ -22,7 +22,7 @@ This example consists of two stacks:
 Install dependencies:
 
 ```bash
-npm install
+vp install
 ```
 
 ## Deployment
@@ -38,7 +38,7 @@ export AWS_REGION="us-east-1"
 
 # Deploy exporter stack
 node dist/cli.js deploy \
-  --app "npx ts-node tests/integration/cross-stack-references/bin/app.ts" \
+  --app "node tests/integration/cross-stack-references/bin/app.ts" \
   --stack CdkdExporterStack \
   --state-bucket $STATE_BUCKET \
   --region $AWS_REGION \
@@ -52,7 +52,7 @@ After the exporter stack is deployed, deploy the consumer stack that imports the
 ```bash
 # Deploy consumer stack
 node dist/cli.js deploy \
-  --app "npx ts-node tests/integration/cross-stack-references/bin/app.ts" \
+  --app "node tests/integration/cross-stack-references/bin/app.ts" \
   --stack CdkdConsumerStack \
   --state-bucket $STATE_BUCKET \
   --region $AWS_REGION \

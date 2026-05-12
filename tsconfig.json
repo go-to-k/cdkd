@@ -1,15 +1,16 @@
 {
   "compilerOptions": {
     // Language and Environment
-    "target": "ES2022",
-    "lib": ["ES2022"],
-    "module": "ESNext",
-    "moduleResolution": "bundler",
+    "target": "ESNext",
+    "lib": ["ES2023"],
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
 
     // Emit
     "declaration": true,
     "declarationMap": true,
     "sourceMap": true,
+    "rootDir": "./src",
     "outDir": "./dist",
     "removeComments": true,
     "importHelpers": false,
@@ -20,6 +21,8 @@
     "forceConsistentCasingInFileNames": true,
     "isolatedModules": true,
     "verbatimModuleSyntax": true,
+    "rewriteRelativeImportExtensions": true,
+    "erasableSyntaxOnly": true,
 
     // Type Checking
     "strict": true,
@@ -34,11 +37,8 @@
     // Completeness
     "skipLibCheck": true,
 
-    // Path Mapping
-    "baseUrl": ".",
-    "paths": {
-      "@/*": ["src/*"]
-    },
+    // Type Roots
+    "types": ["node"],
     "typeRoots": ["./types", "./node_modules/@types"]
   },
   "include": ["src/**/*", "types/**/*"],

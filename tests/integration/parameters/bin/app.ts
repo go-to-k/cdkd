@@ -1,7 +1,6 @@
 #!/usr/bin/env node
-import 'source-map-support/register';
 import * as cdk from 'aws-cdk-lib';
-import { ParametersStack } from '../lib/parameters-stack';
+import { ParametersStack } from '../lib/parameters-stack.ts';
 
 const app = new cdk.App();
 new ParametersStack(app, 'ParametersStack', {

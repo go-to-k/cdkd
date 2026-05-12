@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test';
 import type { ResourceState, StackState } from '../../../src/types/state.js';
 
 // Logger / config-loader / aws-clients mocks: same pattern as the

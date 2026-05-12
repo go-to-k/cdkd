@@ -5,6 +5,7 @@ import type { TemplateResource } from '../types/resource.js';
 import { buildCdkPathIndex, resolveCdkPathToLogicalIds } from '../cli/cdk-path.js';
 import { matchStacks } from '../cli/stack-matcher.js';
 import { tryResolveImageFnJoin } from './intrinsic-image.js';
+import { stringifyValue } from '../utils/stringify.js';
 
 /**
  * Result of resolving a `cdkd local invoke <target>` argument back to a
@@ -701,7 +702,7 @@ function pickLayerLogicalId(entry: unknown): string | undefined {
 function describeLayerEntry(entry: unknown): string {
   if (typeof entry === 'string') return `literal ARN '${entry}'`;
   if (entry === null) return 'null';
-  if (typeof entry !== 'object') return String(entry);
+  if (typeof entry !== 'object') return stringifyValue(entry);
   try {
     const json = JSON.stringify(entry);
     return json.length > 120 ? json.substring(0, 117) + '...' : json;

@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import type { StackInfo } from '../../../src/synthesis/assembly-reader.js';
 
 // --- Mocks --------------------------------------------------------------
@@ -135,7 +135,7 @@ describe('cdkd publish-assets', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockResolveApp.mockReset();
-    mockResolveApp.mockReturnValue('npx ts-node app.ts');
+    mockResolveApp.mockReturnValue('node app.ts');
     mockStsSend.mockResolvedValue({ Account: '111111111111' });
     mockExecuteNode.mockResolvedValue(undefined);
 

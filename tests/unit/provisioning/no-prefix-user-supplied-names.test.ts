@@ -30,7 +30,7 @@
  * for them by construction.
  */
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import {
   CreateRoleCommand,
   CreateUserCommand,

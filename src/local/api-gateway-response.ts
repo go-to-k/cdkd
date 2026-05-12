@@ -20,6 +20,8 @@
  * (NOT comma-joined into one).
  */
 
+import { stringifyValue } from '../utils/stringify.js';
+
 export interface TranslatedHttpResponse {
   statusCode: number;
   /**
@@ -218,6 +220,6 @@ function autoFormatResponse(payload: unknown): TranslatedHttpResponse {
  */
 function stringifyHeaderValue(value: unknown): string {
   if (value === null || value === undefined) return '';
-  if (Array.isArray(value)) return value.map((v) => String(v)).join(',');
-  return String(value);
+  if (Array.isArray(value)) return value.map((v) => stringifyValue(v)).join(',');
+  return stringifyValue(value);
 }

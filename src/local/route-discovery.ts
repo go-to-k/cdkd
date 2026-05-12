@@ -1,6 +1,7 @@
 import type { StackInfo } from '../synthesis/assembly-reader.js';
 import type { CloudFormationTemplate, TemplateResource } from '../types/resource.js';
 import { RouteDiscoveryError } from '../utils/error-handler.js';
+import { stringifyValue } from '../utils/stringify.js';
 import { resolveLambdaArnIntrinsic as resolveLambdaArnShared } from './intrinsic-lambda-arn.js';
 
 /**
@@ -171,7 +172,7 @@ function discoverRestV1Method(
   const resourceId = props['ResourceId'];
   const path = buildRestV1Path(resourceId, restApiLogicalId, template, stackName, logicalId);
 
-  const httpMethod = String(props['HttpMethod'] ?? 'ANY');
+  const httpMethod = stringifyValue(props['HttpMethod'] ?? 'ANY');
   const stage = pickRestV1Stage(restApiLogicalId, template);
 
   return [
@@ -369,7 +370,7 @@ function discoverHttpApiRoute(
   }
   if (integrationProps['IntegrationSubtype'] !== undefined) {
     throw new Error(
-      `${stackName}/${logicalId} (AWS::ApiGatewayV2::Route): IntegrationSubtype '${String(
+      `${stackName}/${logicalId} (AWS::ApiGatewayV2::Route): IntegrationSubtype '${stringifyValue(
         integrationProps['IntegrationSubtype']
       )}' is not supported (ApiGatewayV2 service integrations like SQS/EventBridge cannot run locally).`
     );
@@ -563,6 +564,6 @@ function shortJson(value: unknown): string {
     const s = JSON.stringify(value);
     return s.length > 200 ? `${s.slice(0, 200)}…` : s;
   } catch {
-    return String(value);
+    return stringifyValue(value);
   }
 }

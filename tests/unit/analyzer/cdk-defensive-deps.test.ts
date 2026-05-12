@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect } from 'vite-plus/test';
 import { defensiveDependsOnToSkip } from '../../../src/analyzer/cdk-defensive-deps.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
 

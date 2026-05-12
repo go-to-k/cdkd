@@ -28,7 +28,7 @@ aws s3 cp /tmp/legacy.json "s3://$STATE_BUCKET/cdkd/$STACK/state.json" \
 
 # 2. Deploy the fixture (will read the legacy state and write the new key).
 node ../../../dist/cli.js deploy \
-  --app "npx ts-node --prefer-ts-exts bin/app.ts" \
+  --app "node bin/app.ts" \
   --state-bucket "$STATE_BUCKET" --region "$AWS_REGION"
 
 # 3. Confirm the migration happened:

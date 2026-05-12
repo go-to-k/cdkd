@@ -84,25 +84,25 @@ cdkd has a 7-layer system architecture:
 ## Build and Test Commands
 
 ```bash
-# Build (using esbuild)
-pnpm run build
+# Build (using Vite+ / tsdown)
+vp run build
 
 # Watch mode (for development)
-pnpm run dev
+vp run dev
 
 # Test (using Vitest)
-pnpm test
-pnpm run test:ui         # UI mode
-pnpm run test:coverage   # Coverage
+vp run test
+vp test --ui             # UI mode
+vp run test:coverage     # Coverage
 
 # Lint/Format
-pnpm run lint
-pnpm run lint:fix
-pnpm run format
-pnpm run format:check
+vp run lint
+vp run lint:fix
+vp run format
+vp run format:check
 
 # Type check
-pnpm run typecheck
+vp run typecheck
 ```
 
 ## Key Files and Directories
@@ -162,8 +162,7 @@ pnpm run typecheck
 - **src/provisioning/register-providers.ts** - Shared provider registration (called from deploy.ts and destroy.ts)
 - **src/types/** - Type definitions (config, state, resources, assembly, etc.)
 - **src/utils/** - Logger, live progress renderer (multi-line in-flight task display), error handler (incl. `normalizeAwsError` for AWS SDK v3 synthetic UnknownError → actionable HTTP-status-keyed messages), AWS client factory, AWS region resolver (`aws-region-resolver.ts` — caches bucket-region lookups via `GetBucketLocation` so the state-bucket S3 client can be rebuilt for the bucket's actual region), stack output buffer (`stack-context.ts` — `AsyncLocalStorage`-backed per-stack log buffer used by `cdkd deploy` when more than one stack is running concurrently; the logger pushes into the active buffer instead of writing to stdout, and the deploy CLI flushes each buffer atomically when its stack finishes so per-stack output blocks don't interleave), single-flight cleanup memoizer (`single-flight.ts` — wraps an async cleanup function so concurrent / repeated callers await the SAME underlying invocation; used by `cdkd local invoke` / `local start-api` to close the SIGINT-during-outer-finally race against shared mutable state like `containerId` / `servers[]` / tmpdir sets)
-- **build.mjs** - esbuild build script (ESM modules)
-- **vitest.config.ts** - Vitest configuration
+- **vite.config.ts** - Vite+ configuration for build, test, lint, format, and tasks
 
 ### SDK Providers
 
@@ -247,14 +246,15 @@ registry.register('AWS::IAM::Role', new IAMRoleProvider());
   import { foo } from './bar';     // ❌ Wrong
   ```
 
-### 2. Build System (esbuild)
+### 2. Build System (Vite+)
 
-- Uses esbuild in `build.mjs`
-- graphlib has special handling for ESM compatibility
+- Uses Vite+ tasks in `vite.config.ts`
+- `vp pack` builds the ESM package through tsdown with a Node 20 runtime target
+- The global `vp` CLI is pinned by `.mise.toml`; project Node.js is managed by Vite+ from `.node-version`
 
 ### 3. CLI Configuration Resolution
 
-- `--app` (`-a`) is optional: falls back to `CDKD_APP` env var, then `cdk.json` `"app"` field. Accepts either a shell command (`"npx ts-node app.ts"`) or a path to a pre-synthesized cloud assembly directory (`cdk.out`); when a directory is given, synthesis is skipped and the manifest is read directly.
+- `--app` (`-a`) is optional: falls back to `CDKD_APP` env var, then `cdk.json` `"app"` field. Accepts either a shell command (`"node app.ts"`) or a path to a pre-synthesized cloud assembly directory (`cdk.out`); when a directory is given, synthesis is skipped and the manifest is read directly.
 - `--state-bucket` is optional: falls back to `CDKD_STATE_BUCKET` env var, then `cdk.json` `context.cdkd.stateBucket`
 - `--region` is **bootstrap-only** as of PR 5 (`docs/plans/05-region-flag-cleanup.md`). `cdkd bootstrap` uses it to pick the region of the new state bucket; every other command (`deploy`, `destroy`, `diff`, `synth`, `list`, `state`, `force-unlock`, `publish-assets`) accepts `--region` for backward compatibility but emits a deprecation warning and ignores the value — provisioning clients pick up the region from `AWS_REGION` / the AWS profile, and the state-bucket client auto-detects the bucket's region via `GetBucketLocation` (PR 3).
 - `--context` / `-c` is optional: accepts `key=value` pairs (repeatable), merged with cdk.json context (CLI takes precedence)
@@ -546,7 +546,7 @@ See [docs/provider-development.md](docs/provider-development.md) for details.
 ## Workflow Rules
 
 - **When adding new functionality or fixing bugs**: Always add corresponding unit tests. Do not wait to be asked.
-- **After modifying source code**: Always run `pnpm run build` before telling the user to test. The user runs cdkd via `node dist/cli.js`, so source changes without a build have no effect.
+- **After modifying source code**: Always run `vp run build` before telling the user to test. The user runs cdkd via `node dist/cli.js`, so source changes without a build have no effect.
 - **Self-review before commit (4 axes)**: Once the implementation feels complete, walk these four axes BEFORE running `/check` and committing — the markgate hook checks that tests pass, not that the work is *good*:
   1. **Implementation gaps** — anything in the agreed scope still missing? (e.g. updated `deploy.ts` but forgot the parallel change in `destroy.ts` / `diff.ts`; tests not added; docs not updated)
   2. **Oddities** — anything in the diff strange or inconsistent? (dead code, leftover names from the old shape, error messages that no longer make sense, half-applied refactors)
@@ -558,7 +558,7 @@ See [docs/provider-development.md](docs/provider-development.md) for details.
   - `check` — recorded by `/check` (typecheck, lint, build, tests). Scope: `src/**`, `tests/**`, build/test configs (see `.markgate.yml`). Only invalidated by changes in that scope.
   - `docs` — recorded by `/check-docs` (README.md / CLAUDE.md / docs/ consistency with src). Scope: `src/**`, `docs/**`, `README.md`, `CLAUDE.md`. Only invalidated by changes in that scope.
 
-  **Run the required skills proactively** before attempting the commit — look at `git status` / `git diff --cached --name-only` and match it against each gate's scope: a tests-only commit only needs `/check`; a docs-only commit only needs `/check-docs`; a src edit needs both; changes that fall outside both scopes (e.g. `.claude/**`, `.markgate.yml`) need neither. The hook is a safety net, not the primary trigger — if you see "Blocked by check-gate", the message names exactly which skill to re-run, but getting there means you skipped the proactive step. `/verify-pr` refreshes both markers in one shot. Install markgate via `mise install` at the repo root (see CONTRIBUTING.md).
+  **Run the required skills proactively** before attempting the commit — look at `git status` / `git diff --cached --name-only` and match it against each gate's scope: a tests-only commit only needs `/check`; a docs-only commit only needs `/check-docs`; a src edit needs both; changes that fall outside both scopes (e.g. `.claude/**`, `.markgate.yml`) need neither. The hook is a safety net, not the primary trigger — if you see "Blocked by check-gate", the message names exactly which skill to re-run, but getting there means you skipped the proactive step. `/verify-pr` refreshes both markers in one shot. Install `vp` and markgate via `mise install` at the repo root (see CONTRIBUTING.md).
 - **Before opening or merging any PR**: A third markgate gate, `verify-pr`, guards `gh pr create` and `gh pr merge` via `.claude/hooks/verify-pr-gate.sh`. Declared as `requires: [check, docs]` in `.markgate.yml` (markgate 0.3+ feature) so the gate is fresh **only when both children are fresh AND `/verify-pr` itself has set the parent marker** — `requires` is strict, set-time refusal of the parent when either child is stale, mirroring the skill's own workflow which runs `/check` + `/check-docs` first. Pre-0.3 the scope was a hand-duplicated `include` glob union of `check` + `docs`; the AND-of-children mechanism is the same in spirit but harder to drift from. The skill walks the full checklist — typecheck/lint/build/tests, CI status, working tree, docs consistency, leftover AWS resources, code review (incl. shared-utility caller verification), **live-test of the changed behavior against real or fixture input**, **session retrospective + proposals for new rules / hooks / skills**, and PR title + body freshness vs the diff. So opening or merging a PR whose live behavior was never exercised, or whose retrospective produced no rule proposals for surprises in the session, is **physically blocked** — the hook refuses `gh pr create` / `gh pr merge` until `/verify-pr` is re-run end-to-end. This is the structural enforcement of the "tests passing is not the same as the feature working" + "every recurring surprise should leave a rule behind" lessons.
 
 - **Before merging any PR that touches deletion logic**: A fourth markgate gate, `integ-destroy`, guards `gh pr merge` via `.claude/hooks/integ-destroy-gate.sh`. Scope: `src/provisioning/providers/**`, `src/cli/commands/destroy.ts`, `src/deployment/deploy-engine.ts`, `src/analyzer/dag-builder.ts`, `src/analyzer/implicit-delete-deps.ts`, `src/analyzer/lambda-vpc-deps.ts`, plus a **14-day wall-clock TTL** (markgate 0.3+ `ttl` field) — real-AWS behavior drifts even when the repo doesn't (AWS SDK updates, API behavior changes, eventual-consistency tweaks), so a marker that's been clean for two weeks no longer proves the destroy path actually works against today's AWS. Only `/run-integ` sets it (resetting the TTL countdown), and only when the destroy step finished with 0 errors AND the post-destroy AWS state was empty. So a PR whose destroy path has not been verified against real AWS recently is **physically unmergeable** — the hook blocks `gh pr merge` until you run `/run-integ <test>` and it succeeds end-to-end. This is the structural enforcement of the "never merge a PR whose destroy path is unverified" rule below.

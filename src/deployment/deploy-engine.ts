@@ -182,6 +182,12 @@ export class DeployEngine {
    */
   private observedCaptureTasks: Map<string, Promise<Record<string, unknown> | undefined>> =
     new Map();
+  private stateBackend: S3StateBackend;
+  private lockManager: LockManager;
+  private dagBuilder: DagBuilder;
+  private diffCalculator: DiffCalculator;
+  private providerRegistry: ProviderRegistry;
+  private options: DeployEngineOptions;
 
   /**
    * Target region for this stack. Required — load-bearing for the
@@ -191,14 +197,20 @@ export class DeployEngine {
   private stackRegion: string;
 
   constructor(
-    private stateBackend: S3StateBackend,
-    private lockManager: LockManager,
-    private dagBuilder: DagBuilder,
-    private diffCalculator: DiffCalculator,
-    private providerRegistry: ProviderRegistry,
-    private options: DeployEngineOptions = {},
+    stateBackend: S3StateBackend,
+    lockManager: LockManager,
+    dagBuilder: DagBuilder,
+    diffCalculator: DiffCalculator,
+    providerRegistry: ProviderRegistry,
+    options: DeployEngineOptions = {},
     stackRegion: string
   ) {
+    this.stateBackend = stateBackend;
+    this.lockManager = lockManager;
+    this.dagBuilder = dagBuilder;
+    this.diffCalculator = diffCalculator;
+    this.providerRegistry = providerRegistry;
+    this.options = options;
     this.stackRegion = stackRegion;
     this.resolver = new IntrinsicFunctionResolver(stackRegion);
     this.options.concurrency = options.concurrency ?? 10;

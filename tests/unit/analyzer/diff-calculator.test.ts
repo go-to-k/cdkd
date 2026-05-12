@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect } from 'vite-plus/test';
 import { DiffCalculator } from '../../../src/analyzer/diff-calculator.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
 import type { StackState } from '../../../src/types/state.js';

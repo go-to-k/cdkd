@@ -61,8 +61,8 @@ This example tests the following cdkd features:
 ### Prerequisites
 ```bash
 cd tests/integration/conditions
-npm install
-npm run build
+vp install
+vp run build
 ```
 
 ### Deploy in Development Environment

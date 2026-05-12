@@ -115,12 +115,12 @@ run_one() {
 # Build cdkd before each run so the test always exercises the worktree's
 # current code (matches /run-integ's invariant).
 log "build cdkd"
-(cd "${REPO_ROOT}" && pnpm run build >/dev/null)
+(cd "${REPO_ROOT}" && vp run build >/dev/null)
 
 # Ensure CDK app deps are installed (idempotent).
 if [[ ! -d "${TEST_DIR}/node_modules" ]]; then
   log "install integ deps"
-  (cd "${TEST_DIR}" && npm install --silent)
+  (cd "${TEST_DIR}" && vp install --silent)
 fi
 
 case "${WHICH}" in

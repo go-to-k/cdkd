@@ -15,6 +15,7 @@ import { STSClient, GetCallerIdentityCommand } from '@aws-sdk/client-sts';
 import { getLogger } from '../../utils/logger.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
+import { stringifyValue } from '../../utils/stringify.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { generateResourceName } from '../resource-name.js';
 import {
@@ -144,7 +145,7 @@ export class SQSQueueProvider implements ResourceProvider {
           if (cdkKey === 'RedrivePolicy' && typeof value === 'object') {
             attributes[sqsKey] = serializeRedrivePolicy(value);
           } else {
-            attributes[sqsKey] = String(value);
+            attributes[sqsKey] = stringifyValue(value);
           }
         }
       }
@@ -219,7 +220,7 @@ export class SQSQueueProvider implements ResourceProvider {
           if (cdkKey === 'RedrivePolicy' && typeof value === 'object') {
             attributes[sqsKey] = serializeRedrivePolicy(value);
           } else {
-            attributes[sqsKey] = String(value);
+            attributes[sqsKey] = stringifyValue(value);
           }
         }
       }

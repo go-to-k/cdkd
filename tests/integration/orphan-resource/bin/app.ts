@@ -1,7 +1,6 @@
 #!/usr/bin/env node
-import 'source-map-support/register';
 import * as cdk from 'aws-cdk-lib';
-import { OrphanResourceStack } from '../lib/orphan-resource-stack';
+import { OrphanResourceStack } from '../lib/orphan-resource-stack.ts';
 
 const app = new cdk.App();
 

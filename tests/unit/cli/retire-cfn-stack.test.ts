@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 
 const infoSpy = vi.hoisted(() => vi.fn());
 const warnSpy = vi.hoisted(() => vi.fn());

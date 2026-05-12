@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it } from 'vite-plus/test';
 import type { RouteWithAuth } from '../../../src/local/authorizer-resolver.js';
 import type { DiscoveredRoute } from '../../../src/local/route-discovery.js';
 import {

@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 
 // Mock all provider constructors to avoid real AWS SDK usage
 vi.mock('../../../../src/synthesis/context-providers/az-provider.js', () => ({

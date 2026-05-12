@@ -1,7 +1,6 @@
 #!/usr/bin/env node
-import 'source-map-support/register';
 import * as cdk from 'aws-cdk-lib';
-import { BedrockAgentcoreStack } from '../lib/bedrock-agentcore-stack';
+import { BedrockAgentcoreStack } from '../lib/bedrock-agentcore-stack.ts';
 
 const app = new cdk.App();
 new BedrockAgentcoreStack(app, 'BedrockAgentcoreStack', {

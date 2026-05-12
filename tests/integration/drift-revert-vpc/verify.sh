@@ -38,7 +38,7 @@ pnpm --dir "${REPO_ROOT}" run build
 
 cd "${TEST_DIR}"
 if [ ! -d node_modules ]; then
-  npm install
+  vp install
 fi
 
 cleanup() {
@@ -55,7 +55,7 @@ echo "[verify] step 2: cdkd deploy"
 ${CLI} deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --verbose
 
 echo "[verify] step 3: inject drift"
-npx ts-node inject-drift.ts
+node inject-drift.ts
 
 echo "[verify] step 4: cdkd drift (expect exit 1)"
 set +e

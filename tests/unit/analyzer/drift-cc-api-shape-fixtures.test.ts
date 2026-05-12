@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect } from 'vite-plus/test';
 import { calculateResourceDrift } from '../../../src/analyzer/drift-calculator.js';
 import { stripCcApiAwsManagedFields } from '../../../src/analyzer/cc-api-strip.js';
 import { CC_API_FALLBACK_DENY_LIST } from '../../../src/analyzer/drift-cc-api-deny-list.js';

@@ -27,7 +27,7 @@ This example demonstrates cdkd deployment of a realistic serverless API pattern.
 
 ```bash
 cd tests/integration/serverless-api
-npm install
+vp install
 cdkd deploy ServerlessApiStack
 ```
 

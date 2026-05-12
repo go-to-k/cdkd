@@ -1,7 +1,6 @@
 #!/usr/bin/env node
-import 'source-map-support/register';
 import * as cdk from 'aws-cdk-lib';
-import { CompositeStack } from '../lib/composite-stack';
+import { CompositeStack } from '../lib/composite-stack.ts';
 
 const app = new cdk.App();
 new CompositeStack(app, 'CdkdCompositeStackExample', {

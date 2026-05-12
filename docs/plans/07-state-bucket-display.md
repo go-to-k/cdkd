@@ -150,8 +150,8 @@ After PR 1 lands, also includes legacy-layout files.
 
 ## Compatibility verification (Pre-merge checklist)
 
-- [ ] `pnpm run build`
-- [ ] `pnpm test`
+- [ ] `vp run build`
+- [ ] `vp run test`
 - [ ] `cdkd deploy MyStack` — no `State bucket:` line in stdout.
 - [ ] `cdkd deploy MyStack --verbose` — `State bucket:` appears in debug
       logs.

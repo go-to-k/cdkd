@@ -105,8 +105,8 @@ For each affected command (`deploy`, `destroy`, `diff`, `synth`, `list`,
 
 This PR is non-breaking (deprecation only), but worth manually verifying:
 
-- [ ] `pnpm run build`
-- [ ] `pnpm test`
+- [ ] `vp run build`
+- [ ] `vp run test`
 - [ ] `cdkd deploy --region us-east-1 ...` — works, prints deprecation
       warning to stderr.
 - [ ] `cdkd state list --region us-west-2` — works, prints warning.

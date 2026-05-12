@@ -1,7 +1,6 @@
 #!/usr/bin/env node
-import 'source-map-support/register';
 import * as cdk from 'aws-cdk-lib';
-import { LogPipelineStack } from '../lib/log-pipeline-stack';
+import { LogPipelineStack } from '../lib/log-pipeline-stack.ts';
 
 const app = new cdk.App();
 new LogPipelineStack(app, 'LogPipelineStack', {

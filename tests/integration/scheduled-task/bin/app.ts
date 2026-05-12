@@ -1,7 +1,6 @@
 #!/usr/bin/env node
-import 'source-map-support/register';
 import * as cdk from 'aws-cdk-lib';
-import { ScheduledTaskStack } from '../lib/scheduled-task-stack';
+import { ScheduledTaskStack } from '../lib/scheduled-task-stack.ts';
 
 const app = new cdk.App();
 new ScheduledTaskStack(app, 'ScheduledTaskStack', {

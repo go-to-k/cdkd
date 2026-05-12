@@ -173,7 +173,7 @@ cdkd bootstrap \
   --region us-east-1
 
 # Synthesize only
-cdkd synth --app "npx ts-node app.ts"
+cdkd synth --app "node app.ts"
 
 # List all stacks in the CDK app (alias: ls)
 cdkd list
@@ -210,7 +210,7 @@ cdkd deploy -c env=staging -c featureFlag=true
 
 # Deploy with explicit options
 cdkd deploy MyStack \
-  --app "npx ts-node app.ts" \
+  --app "node app.ts" \
   --state-bucket my-cdkd-state \
   --verbose
 

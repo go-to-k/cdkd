@@ -72,11 +72,11 @@ const SUPPORTED_RUNTIMES: Readonly<Record<string, RuntimeSpec>> = {
 };
 
 export class UnsupportedRuntimeError extends Error {
-  constructor(
-    public readonly runtime: string,
-    message: string
-  ) {
+  public readonly runtime: string;
+
+  constructor(runtime: string, message: string) {
     super(message);
+    this.runtime = runtime;
     this.name = 'UnsupportedRuntimeError';
     Object.setPrototypeOf(this, UnsupportedRuntimeError.prototype);
   }

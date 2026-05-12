@@ -4,12 +4,13 @@ import { getLogger } from './logger.js';
  * Base error class for cdkd
  */
 export class CdkdError extends Error {
-  constructor(
-    message: string,
-    public readonly code: string,
-    public readonly cause?: Error
-  ) {
+  public readonly code: string;
+  public readonly cause: Error | undefined;
+
+  constructor(message: string, code: string, cause?: Error) {
     super(message);
+    this.code = code;
+    this.cause = cause;
     this.name = 'CdkdError';
     Object.setPrototypeOf(this, CdkdError.prototype);
   }
@@ -82,14 +83,21 @@ export class LocalInvokeBuildError extends CdkdError {
  * Resource provisioning errors
  */
 export class ProvisioningError extends CdkdError {
+  public readonly resourceType: string;
+  public readonly logicalId: string;
+  public readonly physicalId: string | undefined;
+
   constructor(
     message: string,
-    public readonly resourceType: string,
-    public readonly logicalId: string,
-    public readonly physicalId?: string,
+    resourceType: string,
+    logicalId: string,
+    physicalId?: string,
     cause?: Error
   ) {
     super(message, 'PROVISIONING_ERROR', cause);
+    this.resourceType = resourceType;
+    this.logicalId = logicalId;
+    this.physicalId = physicalId;
     this.name = 'ProvisioningError';
     Object.setPrototypeOf(this, ProvisioningError.prototype);
   }
@@ -112,13 +120,20 @@ export class ProvisioningError extends CdkdError {
  * specific non-self-reporting type or shorten a self-reported one.
  */
 export class ResourceTimeoutError extends CdkdError {
+  public readonly logicalId: string;
+  public readonly resourceType: string;
+  public readonly region: string;
+  public readonly elapsedMs: number;
+  public readonly operation: 'CREATE' | 'UPDATE' | 'DELETE';
+  public readonly timeoutMs: number;
+
   constructor(
-    public readonly logicalId: string,
-    public readonly resourceType: string,
-    public readonly region: string,
-    public readonly elapsedMs: number,
-    public readonly operation: 'CREATE' | 'UPDATE' | 'DELETE',
-    public readonly timeoutMs: number
+    logicalId: string,
+    resourceType: string,
+    region: string,
+    elapsedMs: number,
+    operation: 'CREATE' | 'UPDATE' | 'DELETE',
+    timeoutMs: number
   ) {
     const elapsedLabel = formatDuration(elapsedMs);
     const timeoutLabel = formatDuration(timeoutMs);
@@ -130,6 +145,12 @@ export class ResourceTimeoutError extends CdkdError {
         'underlying provider activity.',
       'RESOURCE_TIMEOUT'
     );
+    this.logicalId = logicalId;
+    this.resourceType = resourceType;
+    this.region = region;
+    this.elapsedMs = elapsedMs;
+    this.operation = operation;
+    this.timeoutMs = timeoutMs;
     this.name = 'ResourceTimeoutError';
     Object.setPrototypeOf(this, ResourceTimeoutError.prototype);
   }
@@ -226,20 +247,18 @@ export class PartialFailureError extends CdkdError {
  */
 export class ResourceUpdateNotSupportedError extends CdkdError {
   readonly exitCode: number = 2;
+  public readonly resourceType: string;
+  public readonly logicalId: string;
+  /**
+   * Human-readable hint printed alongside the error. The default is
+   * "use cdkd deploy with --replace, or change the resource definition
+   * to create a new version" — providers are encouraged to override
+   * with a more specific suggestion when one is available (e.g.
+   * Lambda::Permission's "delete + add a new statement").
+   */
+  public readonly suggestion: string | undefined;
 
-  constructor(
-    public readonly resourceType: string,
-    public readonly logicalId: string,
-    /**
-     * Human-readable hint printed alongside the error. The default is
-     * "use cdkd deploy with --replace, or change the resource definition
-     * to create a new version" — providers are encouraged to override
-     * with a more specific suggestion when one is available (e.g.
-     * Lambda::Permission's "delete + add a new statement").
-     */
-    public readonly suggestion?: string,
-    cause?: Error
-  ) {
+  constructor(resourceType: string, logicalId: string, suggestion?: string, cause?: Error) {
     const tail = suggestion
       ? suggestion
       : 'use cdkd deploy with --replace, or change the resource definition to create a new version';
@@ -248,6 +267,9 @@ export class ResourceUpdateNotSupportedError extends CdkdError {
       'RESOURCE_UPDATE_NOT_SUPPORTED',
       cause
     );
+    this.resourceType = resourceType;
+    this.logicalId = logicalId;
+    this.suggestion = suggestion;
     this.name = 'ResourceUpdateNotSupportedError';
     Object.setPrototypeOf(this, ResourceUpdateNotSupportedError.prototype);
   }
@@ -273,16 +295,16 @@ export class ResourceUpdateNotSupportedError extends CdkdError {
  * in cdkd's state.json. Use `cdkd destroy` when synth is available.
  */
 export class StackTerminationProtectionError extends CdkdError {
-  constructor(
-    public readonly stackName: string,
-    cause?: Error
-  ) {
+  public readonly stackName: string;
+
+  constructor(stackName: string, cause?: Error) {
     super(
       `Stack '${stackName}' has terminationProtection: true and cannot be destroyed. ` +
         `Set terminationProtection: false in the CDK code, redeploy, then retry 'cdkd destroy ${stackName}'.`,
       'STACK_TERMINATION_PROTECTION',
       cause
     );
+    this.stackName = stackName;
     this.name = 'StackTerminationProtectionError';
     Object.setPrototypeOf(this, StackTerminationProtectionError.prototype);
   }

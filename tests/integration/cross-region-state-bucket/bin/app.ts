@@ -1,7 +1,6 @@
 #!/usr/bin/env node
-import 'source-map-support/register';
 import * as cdk from 'aws-cdk-lib';
-import { CrossRegionStateBucketStack } from '../lib/cross-region-state-bucket-stack';
+import { CrossRegionStateBucketStack } from '../lib/cross-region-state-bucket-stack.ts';
 
 const app = new cdk.App();
 

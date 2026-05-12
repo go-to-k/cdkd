@@ -30,7 +30,7 @@ This example demonstrates cdkd deployment of a caching and streaming pattern.
 
 ```bash
 cd tests/integration/cache-streaming
-npm install
+vp install
 cdkd deploy CacheStreamingStack
 ```
 

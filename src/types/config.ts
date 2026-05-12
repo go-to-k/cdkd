@@ -2,7 +2,7 @@
  * Global configuration for cdkd
  */
 export interface CdkdConfig {
-  /** CDK app command (e.g., "npx ts-node app.ts") */
+  /** CDK app command (e.g., "node app.ts") */
   app: string;
 
   /** S3 bucket for state storage */

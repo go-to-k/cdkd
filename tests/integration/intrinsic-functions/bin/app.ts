@@ -1,7 +1,6 @@
 #!/usr/bin/env node
-import 'source-map-support/register';
 import * as cdk from 'aws-cdk-lib';
-import { IntrinsicFunctionsStack } from '../lib/intrinsic-functions-stack';
+import { IntrinsicFunctionsStack } from '../lib/intrinsic-functions-stack.ts';
 
 const app = new cdk.App();
 

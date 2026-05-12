@@ -1,7 +1,6 @@
 #!/usr/bin/env node
-import 'source-map-support/register';
 import * as cdk from 'aws-cdk-lib';
-import { LegacyMigrationStack } from '../lib/legacy-migration-stack';
+import { LegacyMigrationStack } from '../lib/legacy-migration-stack.ts';
 
 const app = new cdk.App();
 

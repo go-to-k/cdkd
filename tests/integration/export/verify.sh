@@ -53,7 +53,7 @@ pnpm --dir "${REPO_ROOT}" run build
 
 cd "${TEST_DIR}"
 if [ ! -d node_modules ]; then
-  npm install
+  vp install
 fi
 
 cleanup() {

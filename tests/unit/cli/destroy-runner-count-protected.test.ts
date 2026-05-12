@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect } from 'vite-plus/test';
 import { countProtectedResources } from '../../../src/cli/commands/destroy-runner.js';
 import type { StackState } from '../../../src/types/state.js';
 

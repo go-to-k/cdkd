@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import { UpdateAgentRuntimeCommand } from '@aws-sdk/client-bedrock-agentcore-control';
 
 const mockSend = vi.fn();

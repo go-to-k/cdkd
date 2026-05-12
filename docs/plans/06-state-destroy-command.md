@@ -155,8 +155,8 @@ Examples:
 
 ## Compatibility verification (Pre-merge checklist)
 
-- [ ] `pnpm run build`
-- [ ] `pnpm test`
+- [ ] `vp run build`
+- [ ] `vp run test`
 - [ ] `cdkd state destroy MyStack -y` end-to-end on real AWS.
 - [ ] `cdkd state destroy --help` text is clear and references
       `cdkd state rm`.

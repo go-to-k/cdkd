@@ -142,7 +142,7 @@ If a user explicitly passes the legacy name, that still works.
 
 Run `scripts/verify-bc.sh PR-4` or follow these steps manually:
 
-- [ ] `pnpm run build`
+- [ ] `vp run build`
 - [ ] Fresh AWS account / no existing buckets:
       `cdkd bootstrap` → creates `cdkd-state-{acc}`.
       `cdkd state list` → reads `cdkd-state-{acc}`.
