@@ -1,8 +1,7 @@
 #!/usr/bin/env node
-import 'source-map-support/register';
 import * as cdk from 'aws-cdk-lib';
-import { MigrateSmallStack } from '../lib/migrate-small-stack';
-import { MigrateLargeStack } from '../lib/migrate-large-stack';
+import { MigrateSmallStack } from '../lib/migrate-small-stack.ts';
+import { MigrateLargeStack } from '../lib/migrate-large-stack.ts';
 
 const app = new cdk.App();
 

@@ -1,7 +1,6 @@
 #!/usr/bin/env node
-import 'source-map-support/register';
 import * as cdk from 'aws-cdk-lib';
-import { EventBridgeStack } from '../lib/eventbridge-stack';
+import { EventBridgeStack } from '../lib/eventbridge-stack.ts';
 
 const app = new cdk.App();
 new EventBridgeStack(app, 'EventBridgeStack', {

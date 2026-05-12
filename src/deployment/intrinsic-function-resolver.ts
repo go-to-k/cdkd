@@ -7,6 +7,7 @@ import { GetSecretValueCommand } from '@aws-sdk/client-secrets-manager';
 import { GetParameterCommand } from '@aws-sdk/client-ssm';
 import { getLogger } from '../utils/logger.js';
 import { getAwsClients } from '../utils/aws-clients.js';
+import { stringifyValue } from '../utils/stringify.js';
 import type { CloudFormationTemplate } from '../types/resource.js';
 import type { ResourceState } from '../types/state.js';
 import type { S3StateBackend } from '../state/s3-state-backend.js';
@@ -214,7 +215,7 @@ export class IntrinsicFunctionResolver {
 
         parameters[name] = paramDef.Default;
         this.logger.debug(
-          `Parameter ${name}: using default value ${typeof paramDef.Default === 'object' ? JSON.stringify(paramDef.Default) : String(paramDef.Default)}`
+          `Parameter ${name}: using default value ${stringifyValue(paramDef.Default)}`
         );
         continue;
       }
@@ -421,9 +422,7 @@ export class IntrinsicFunctionResolver {
     // Check if it's a parameter
     if (context.parameters && logicalId in context.parameters) {
       const value = context.parameters[logicalId];
-      this.logger.debug(
-        `Resolved Ref to parameter: ${logicalId} -> ${typeof value === 'object' ? JSON.stringify(value) : String(value)}`
-      );
+      this.logger.debug(`Resolved Ref to parameter: ${logicalId} -> ${stringifyValue(value)}`);
       return value;
     }
 
@@ -476,7 +475,7 @@ export class IntrinsicFunctionResolver {
     if (!skipCachedAttribute && resource.attributes?.[attributeName] !== undefined) {
       const value = resource.attributes[attributeName];
       this.logger.debug(
-        `Resolved Fn::GetAtt from attributes: ${logicalId}.${attributeName} -> ${typeof value === 'object' ? JSON.stringify(value) : String(value)}`
+        `Resolved Fn::GetAtt from attributes: ${logicalId}.${attributeName} -> ${stringifyValue(value)}`
       );
       return value;
     }
@@ -484,7 +483,7 @@ export class IntrinsicFunctionResolver {
     // Construct attribute value based on resource type
     const value = await this.constructAttribute(resource, attributeName, context);
     this.logger.debug(
-      `Resolved Fn::GetAtt: ${logicalId}.${attributeName} -> ${typeof value === 'object' ? JSON.stringify(value) : String(value)}`
+      `Resolved Fn::GetAtt: ${logicalId}.${attributeName} -> ${stringifyValue(value)}`
     );
     return value;
   }
@@ -1578,7 +1577,7 @@ export class IntrinsicFunctionResolver {
         if (keyValue === undefined) {
           throw new Error(`Dynamic reference: key '${jsonKey}' not found in secret '${secretId}'`);
         }
-        return String(keyValue);
+        return stringifyValue(keyValue);
       } catch (error) {
         if (error instanceof SyntaxError) {
           throw new Error(

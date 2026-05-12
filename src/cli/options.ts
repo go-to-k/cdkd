@@ -77,13 +77,13 @@ export function warnIfDeprecatedRegion(options: { region?: string }): void {
  * App options
  *
  * --app is optional: falls back to CDKD_APP env var, then cdk.json "app" field.
- * Accepts either a shell command (e.g. "npx ts-node app.ts") or a path to a
+ * Accepts either a shell command (e.g. "node app.ts") or a path to a
  * pre-synthesized cloud assembly directory (e.g. "cdk.out").
  */
 export const appOptions = [
   new Option(
     '-a, --app <command>',
-    'CDK app command (e.g., "npx ts-node app.ts") or path to a pre-synthesized cloud assembly directory. Falls back to cdk.json or CDKD_APP env'
+    'CDK app command (e.g., "node app.ts") or path to a pre-synthesized cloud assembly directory. Falls back to cdk.json or CDKD_APP env'
   ),
   new Option('--output <path>', 'Output directory for synthesis').default('cdk.out'),
 ];

@@ -1,7 +1,6 @@
 #!/usr/bin/env node
-import 'source-map-support/register';
 import * as cdk from 'aws-cdk-lib';
-import { S3TablesStack } from '../lib/s3-tables-stack';
+import { S3TablesStack } from '../lib/s3-tables-stack.ts';
 
 const app = new cdk.App();
 

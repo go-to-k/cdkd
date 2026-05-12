@@ -51,12 +51,12 @@ CDKD_BIN="$(cd "${SCRIPT_DIR}" && node -e "const p = require('path'); console.lo
 
 if [[ ! -f "${CDKD_BIN}" ]]; then
   fail "cdkd CLI not found at: ${CDKD_BIN}"
-  echo "  Hint: Run 'pnpm run build' in the project root first."
+  echo "  Hint: Run 'vp run build' in the project root first."
   exit 1
 fi
 
 CDKD_ARGS=(
-  --app "npx ts-node --prefer-ts-exts bin/app.ts"
+  --app "node bin/app.ts"
   --state-bucket "${STATE_BUCKET}"
   --region "${AWS_REGION}"
 )
@@ -81,7 +81,7 @@ info "AWS region:   ${AWS_REGION}"
 
 if [[ ! -d "${EXAMPLE_DIR}/node_modules" ]]; then
   info "Installing dependencies..."
-  (cd "${EXAMPLE_DIR}" && npm install --silent)
+  (cd "${EXAMPLE_DIR}" && vp install --silent)
 fi
 
 # Make sure no leftover from a previous run.
@@ -95,7 +95,7 @@ header "Step 1: Deploy with CDKD_TEST_FAIL=true (expect failure)"
 
 DEPLOY_LOG=$(mktemp)
 if (cd "${EXAMPLE_DIR}" && CDKD_TEST_FAIL=true node "${CDKD_BIN}" deploy \
-      --app "npx ts-node --prefer-ts-exts bin/app.ts" \
+      --app "node bin/app.ts" \
       --state-bucket "${STATE_BUCKET}" \
       --region "${AWS_REGION}" "${STACK_NAME}" 2>&1) > "${DEPLOY_LOG}"; then
   fail "Deploy unexpectedly SUCCEEDED — failure injection did not work"

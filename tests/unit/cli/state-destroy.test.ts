@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test';
 import type { StackState } from '../../../src/types/state.js';
 
 const errorSpy = vi.hoisted(() => vi.fn());

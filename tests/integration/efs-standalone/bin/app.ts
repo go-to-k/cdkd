@@ -1,7 +1,6 @@
 #!/usr/bin/env node
-import 'source-map-support/register';
 import * as cdk from 'aws-cdk-lib';
-import { EfsStandaloneStack } from '../lib/efs-standalone-stack';
+import { EfsStandaloneStack } from '../lib/efs-standalone-stack.ts';
 
 const app = new cdk.App();
 new EfsStandaloneStack(app, 'EfsStandaloneStack', {

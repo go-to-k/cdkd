@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test';
 import {
   applyImportOverlayForPhase2,
   filterTemplateForImport,
@@ -706,7 +706,10 @@ describe('invokePreDeleteHandler', () => {
         }
       },
       DeleteStageCommand: class {
-        constructor(public input: unknown) {}
+        input: unknown;
+        constructor(input: unknown) {
+          this.input = input;
+        }
       },
       NotFoundException: class extends Error {
         readonly name = 'NotFoundException';
@@ -738,7 +741,10 @@ describe('invokePreDeleteHandler', () => {
         }
       },
       DeleteStageCommand: class {
-        constructor(public input: unknown) {}
+        input: unknown;
+        constructor(input: unknown) {
+          this.input = input;
+        }
       },
       NotFoundException: class extends Error {
         readonly name = 'NotFoundException';
@@ -766,7 +772,10 @@ describe('invokePreDeleteHandler', () => {
         }
       },
       DeleteStageCommand: class {
-        constructor(public input: unknown) {}
+        input: unknown;
+        constructor(input: unknown) {
+          this.input = input;
+        }
       },
       NotFoundException: class extends Error {
         readonly name = 'NotFoundException';
@@ -815,7 +824,10 @@ describe('invokePreDeleteHandler', () => {
         }
       },
       DeleteStageCommand: class {
-        constructor(public input: unknown) {}
+        input: unknown;
+        constructor(input: unknown) {
+          this.input = input;
+        }
       },
       NotFoundException: FakeNotFoundException,
     }));
@@ -850,7 +862,10 @@ describe('invokePreDeleteHandler', () => {
         }
       },
       DeleteStageCommand: class {
-        constructor(public input: unknown) {}
+        input: unknown;
+        constructor(input: unknown) {
+          this.input = input;
+        }
       },
       NotFoundException: FakeNotFoundException,
     }));

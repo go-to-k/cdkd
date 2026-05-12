@@ -1,7 +1,6 @@
 #!/usr/bin/env node
-import 'source-map-support/register';
 import * as cdk from 'aws-cdk-lib';
-import { VpcLambdaCrRaceStack } from '../lib/vpc-lambda-cr-race-stack';
+import { VpcLambdaCrRaceStack } from '../lib/vpc-lambda-cr-race-stack.ts';
 
 const app = new cdk.App();
 new VpcLambdaCrRaceStack(app, 'CdkdVpcLambdaCrRace', {

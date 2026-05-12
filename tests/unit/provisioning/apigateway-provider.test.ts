@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test';
 import { NotFoundException } from '@aws-sdk/client-api-gateway';
 
 // Mock AWS clients before importing the provider

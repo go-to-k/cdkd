@@ -1,7 +1,6 @@
 #!/usr/bin/env node
-import 'source-map-support/register';
 import * as cdk from 'aws-cdk-lib';
-import { MonitoringStack } from '../lib/monitoring-stack';
+import { MonitoringStack } from '../lib/monitoring-stack.ts';
 
 const app = new cdk.App();
 new MonitoringStack(app, 'MonitoringStack', {

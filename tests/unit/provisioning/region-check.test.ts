@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect } from 'vite-plus/test';
 import { assertRegionMatch } from '../../../src/provisioning/region-check.js';
 import { ProvisioningError } from '../../../src/utils/error-handler.js';
 

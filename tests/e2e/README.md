@@ -5,7 +5,7 @@ End-to-end test scripts that run a full deploy/diff/update/destroy lifecycle aga
 ## Prerequisites
 
 - AWS credentials configured (via environment variables, profile, or IAM role)
-- cdkd built (`npm run build` from project root)
+- cdkd built (`vp run build` from project root)
 - `cdkd bootstrap` run at least once for the target region
 
 ## Scripts
@@ -78,7 +78,7 @@ Tests with special configuration are defined in `test-matrix.sh`:
 ### "cdkd CLI not found"
 
 ```bash
-npm run build
+vp run build
 ```
 
 ### "Diff unexpectedly shows changes"

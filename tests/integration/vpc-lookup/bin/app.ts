@@ -1,7 +1,6 @@
 #!/usr/bin/env node
-import 'source-map-support/register';
 import * as cdk from 'aws-cdk-lib';
-import { VpcLookupStack } from '../lib/vpc-lookup-stack';
+import { VpcLookupStack } from '../lib/vpc-lookup-stack.ts';
 
 const app = new cdk.App();
 

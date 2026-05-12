@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import * as cdk from 'aws-cdk-lib';
-import { LocalStartApiStack } from '../lib/local-start-api-stack';
+import { LocalStartApiStack } from '../lib/local-start-api-stack.ts';
 
 const app = new cdk.App();
 

@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import { PutParameterCommand } from '@aws-sdk/client-ssm';
 
 const mockSend = vi.fn();

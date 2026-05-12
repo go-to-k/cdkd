@@ -1,3 +1,7 @@
+/// <reference types="node" />
+
+import { vi } from 'vite-plus/test';
+
 /**
  * Global vitest setup — defenses against Node 24 + vitest 1.6.1 surfacing
  * stray unhandled rejections from `withErrorHandling`-wrapped CLI actions.
@@ -40,6 +44,62 @@
  *   value was current — i.e. our wrapper — so the per-test spies still
  *   work as before.
  */
+
+const originalViFn = vi.fn.bind(vi);
+type MockableImplementation =
+  | ((this: unknown, ...args: any[]) => any)
+  | (new (...args: any[]) => any);
+
+const isConstructable = (
+  fn: MockableImplementation
+): fn is new (...args: any[]) => any => {
+  try {
+    Reflect.construct(function () {}, [], fn);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+const wrapConstructableImplementation = (
+  implementation: MockableImplementation
+): MockableImplementation => {
+  if (isConstructable(implementation)) {
+    return implementation;
+  }
+
+  return function (this: unknown, ...args: unknown[]) {
+    return implementation.apply(this, args);
+  };
+};
+
+const wrapMockImplementationSetters = <T extends ReturnType<typeof originalViFn>>(mock: T): T => {
+  const mockImplementation = mock.mockImplementation.bind(mock);
+  type MockImplementationArg = Parameters<typeof mockImplementation>[0];
+  mock.mockImplementation = ((implementation: MockImplementationArg) =>
+    mockImplementation(
+      wrapConstructableImplementation(implementation) as MockImplementationArg
+    )) as T['mockImplementation'];
+
+  const mockImplementationOnce = mock.mockImplementationOnce.bind(mock);
+  type MockImplementationOnceArg = Parameters<typeof mockImplementationOnce>[0];
+  mock.mockImplementationOnce = ((implementation: MockImplementationOnceArg) =>
+    mockImplementationOnce(
+      wrapConstructableImplementation(implementation) as MockImplementationOnceArg
+    )) as T['mockImplementationOnce'];
+
+  return mock;
+};
+
+vi.fn = ((implementation?: MockableImplementation) => {
+  if (typeof implementation === 'function' && !isConstructable(implementation)) {
+    return wrapMockImplementationSetters(
+      originalViFn(wrapConstructableImplementation(implementation) as never)
+    );
+  }
+
+  return wrapMockImplementationSetters(originalViFn(implementation as never));
+}) as typeof vi.fn;
 
 const originalExit = process.exit;
 

@@ -73,14 +73,17 @@ export interface S3ClientOptions {
  */
 export class S3StateBackend {
   private logger = getLogger().child('S3StateBackend');
+  private s3Client: S3Client;
+  private config: StateBackendConfig;
+  private clientOpts: S3ClientOptions;
   private clientResolved = false;
   private resolveInFlight: Promise<void> | null = null;
 
-  constructor(
-    private s3Client: S3Client,
-    private config: StateBackendConfig,
-    private clientOpts: S3ClientOptions = {}
-  ) {}
+  constructor(s3Client: S3Client, config: StateBackendConfig, clientOpts: S3ClientOptions = {}) {
+    this.s3Client = s3Client;
+    this.config = config;
+    this.clientOpts = clientOpts;
+  }
 
   /**
    * Get the new (region-scoped) S3 key for a stack's state file.

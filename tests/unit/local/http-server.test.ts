@@ -1,5 +1,5 @@
 import type { ServerResponse } from 'node:http';
-import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
+import { describe, expect, it, vi, beforeEach, afterEach } from 'vite-plus/test';
 import { startApiServer, writeAuthRejection } from '../../../src/local/http-server.js';
 import type { RouteWithAuth } from '../../../src/local/authorizer-resolver.js';
 import type { ContainerPool } from '../../../src/local/container-pool.js';

@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, vi } from 'vite-plus/test';
 
 const mockExecFile = vi.fn();
 let mockExecFileFailure: { stderr?: string; message?: string } | undefined;

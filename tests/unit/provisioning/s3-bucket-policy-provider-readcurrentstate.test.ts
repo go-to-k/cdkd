@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import { GetBucketPolicyCommand, NoSuchBucket } from '@aws-sdk/client-s3';
 
 const mockSend = vi.fn();

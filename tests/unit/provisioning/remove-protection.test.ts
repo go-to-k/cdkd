@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 
 // Per-SDK send spies. EC2 and CloudWatch Logs go through getAwsClients(),
 // so they're wired via the aws-clients mock below. RDS, DocDB, Neptune,

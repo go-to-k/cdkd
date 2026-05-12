@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, vi } from 'vite-plus/test';
 
 // Capture every execFile invocation + let individual tests opt into a
 // failing-cb mode. The top-level closure variable is read INSIDE the

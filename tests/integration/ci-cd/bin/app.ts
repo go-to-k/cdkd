@@ -1,7 +1,6 @@
 #!/usr/bin/env node
-import 'source-map-support/register';
 import * as cdk from 'aws-cdk-lib';
-import { CiCdStack } from '../lib/ci-cd-stack';
+import { CiCdStack } from '../lib/ci-cd-stack.ts';
 
 const app = new cdk.App();
 

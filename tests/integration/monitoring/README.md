@@ -26,7 +26,7 @@ This example demonstrates cdkd deployment of a monitoring pattern combining mult
 
 ```bash
 cd tests/integration/monitoring
-npm install
+vp install
 cdkd deploy MonitoringStack
 ```
 

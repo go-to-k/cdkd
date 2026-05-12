@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vite-plus/test';
 import {
   EcsSecretsResolutionError,
   classifySecretArn,
@@ -18,7 +18,10 @@ vi.mock('@aws-sdk/client-secrets-manager', () => ({
     destroy(): void {}
   },
   GetSecretValueCommand: class {
-    constructor(public input: unknown) {}
+    input: unknown;
+    constructor(input: unknown) {
+      this.input = input;
+    }
   },
 }));
 vi.mock('@aws-sdk/client-ssm', () => ({
@@ -27,7 +30,10 @@ vi.mock('@aws-sdk/client-ssm', () => ({
     destroy(): void {}
   },
   GetParameterCommand: class {
-    constructor(public input: unknown) {}
+    input: unknown;
+    constructor(input: unknown) {
+      this.input = input;
+    }
   },
 }));
 

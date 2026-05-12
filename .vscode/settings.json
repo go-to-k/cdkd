@@ -1,34 +1,29 @@
 {
-  // Format on save
   "editor.formatOnSave": true,
+  "editor.formatOnSaveMode": "file",
   "editor.codeActionsOnSave": {
-    "source.fixAll.eslint": "explicit"
+    "source.fixAll.oxc": "explicit"
   },
 
-  // Default formatters
-  "editor.defaultFormatter": "esbenp.prettier-vscode",
+  // Vite+ / Oxc
+  "editor.defaultFormatter": "oxc.oxc-vscode",
   "[typescript]": {
-    "editor.defaultFormatter": "esbenp.prettier-vscode"
+    "editor.defaultFormatter": "oxc.oxc-vscode"
   },
   "[javascript]": {
-    "editor.defaultFormatter": "esbenp.prettier-vscode"
+    "editor.defaultFormatter": "oxc.oxc-vscode"
   },
   "[json]": {
-    "editor.defaultFormatter": "esbenp.prettier-vscode"
+    "editor.defaultFormatter": "oxc.oxc-vscode"
   },
   "[markdown]": {
     "editor.defaultFormatter": "DavidAnson.vscode-markdownlint"
   },
-
-  // ESLint
-  "eslint.validate": [
-    "javascript",
-    "typescript"
-  ],
+  "oxc.fmt.configPath": "./vite.config.ts",
+  "npm.scriptRunner": "vp",
 
   // TypeScript
-  "js/ts.tsdk.path": "node_modules/typescript/lib",
-  "js/ts.tsdk.promptToUseWorkspaceVersion": true,
+  "typescript.experimental.useTsgo": true,
 
   // cSpell
   "cSpell.words": ["cdkd"]

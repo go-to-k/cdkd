@@ -1,7 +1,6 @@
 #!/usr/bin/env node
-import 'source-map-support/register';
 import * as cdk from 'aws-cdk-lib';
-import { EfsLambdaStack } from '../lib/efs-lambda-stack';
+import { EfsLambdaStack } from '../lib/efs-lambda-stack.ts';
 
 const app = new cdk.App();
 new EfsLambdaStack(app, 'EfsLambdaStack', {

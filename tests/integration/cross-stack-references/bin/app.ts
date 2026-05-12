@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import * as cdk from 'aws-cdk-lib';
-import { ExporterStack } from '../lib/exporter-stack';
-import { ConsumerStack } from '../lib/consumer-stack';
+import { ExporterStack } from '../lib/exporter-stack.ts';
+import { ConsumerStack } from '../lib/consumer-stack.ts';
 
 const app = new cdk.App();
 

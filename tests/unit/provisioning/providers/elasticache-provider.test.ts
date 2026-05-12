@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 
 const mockEcSend = vi.hoisted(() => vi.fn());
 const mockStsSend = vi.hoisted(() => vi.fn());

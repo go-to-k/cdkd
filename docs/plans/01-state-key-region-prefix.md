@@ -172,7 +172,7 @@ the following manually:
 
 ### A. Legacy → New (auto-migration)
 
-- [ ] `pnpm run build`
+- [ ] `vp run build`
 - [ ] Seed a state bucket with a `version: 1` state at
       `s3://{bucket}/cdkd/MyStack/state.json` (region: us-west-2).
 - [ ] `cdkd state list --state-bucket {bucket}`

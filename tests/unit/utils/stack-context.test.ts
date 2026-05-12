@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect } from 'vite-plus/test';
 import { runStackBuffered, getCurrentStackOutputBuffer } from '../../../src/utils/stack-context.js';
 import { ConsoleLogger } from '../../../src/utils/logger.js';
 

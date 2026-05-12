@@ -41,7 +41,7 @@ Manual run:
 
 ```bash
 cd tests/integration/bench-cdk-sample
-pnpm install   # or npm install
+vp install   # or vp install
 node ../../../dist/cli.js deploy --region us-east-1 --verbose
 node ../../../dist/cli.js destroy --region us-east-1 --force
 ```

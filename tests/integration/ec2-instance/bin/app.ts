@@ -1,7 +1,6 @@
 #!/usr/bin/env node
-import 'source-map-support/register';
 import * as cdk from 'aws-cdk-lib';
-import { Ec2InstanceStack } from '../lib/ec2-instance-stack';
+import { Ec2InstanceStack } from '../lib/ec2-instance-stack.ts';
 
 const app = new cdk.App();
 new Ec2InstanceStack(app, 'Ec2InstanceStack', {

@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vite-plus/test';
 
 // child_process mock — captures execFile invocations so the runDetached
 // tests can assert on the docker args. Wrap the captures in

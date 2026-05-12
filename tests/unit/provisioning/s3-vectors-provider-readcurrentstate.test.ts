@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import { GetVectorBucketCommand } from '@aws-sdk/client-s3vectors';
 
 const mockSend = vi.fn();

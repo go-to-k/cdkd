@@ -1,7 +1,6 @@
 #!/usr/bin/env node
-import 'source-map-support/register';
 import * as cdk from 'aws-cdk-lib';
-import { BenchSdkStack } from '../lib/bench-sdk-stack';
+import { BenchSdkStack } from '../lib/bench-sdk-stack.ts';
 
 const app = new cdk.App();
 

@@ -783,7 +783,7 @@ registry.register('AWS::Xxx::Resource', new XxxResourceProvider());
 `tests/unit/provisioning/providers/xxx-resource-provider.test.ts`:
 
 ```typescript
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vite-plus/test';
 import { XxxResourceProvider } from '../../../../src/provisioning/providers/xxx-resource-provider.js';
 
 describe('XxxResourceProvider', () => {

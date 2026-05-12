@@ -1,7 +1,6 @@
 #!/usr/bin/env node
-import 'source-map-support/register';
 import * as cdk from 'aws-cdk-lib';
-import { CloudFrontFunctionUrlStack } from '../lib/cloudfront-function-url-stack';
+import { CloudFrontFunctionUrlStack } from '../lib/cloudfront-function-url-stack.ts';
 
 const app = new cdk.App();
 new CloudFrontFunctionUrlStack(app, 'CloudFrontFunctionUrlStack', {

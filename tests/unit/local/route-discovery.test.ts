@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it } from 'vite-plus/test';
 import { discoverRoutes } from '../../../src/local/route-discovery.js';
 import { RouteDiscoveryError } from '../../../src/utils/error-handler.js';
 import type { StackInfo } from '../../../src/synthesis/assembly-reader.js';

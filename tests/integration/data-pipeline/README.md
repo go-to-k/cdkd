@@ -26,7 +26,7 @@ This example demonstrates cdkd deployment of a data processing pipeline.
 
 ```bash
 cd tests/integration/data-pipeline
-npm install
+vp install
 cdkd deploy DataPipelineStack
 ```
 

@@ -1,2 +1,14 @@
 [tools]
 "ubi:go-to-k/markgate" = "0.3.3"
+
+[tools."http:vp"]
+version = "0.1.20"
+strip_components = 1
+
+[tools."http:vp".platforms]
+macos-arm64 = { url = "https://registry.npmjs.org/@voidzero-dev/vite-plus-cli-darwin-arm64/-/vite-plus-cli-darwin-arm64-{{version}}.tgz" }
+macos-x64 = { url = "https://registry.npmjs.org/@voidzero-dev/vite-plus-cli-darwin-x64/-/vite-plus-cli-darwin-x64-{{version}}.tgz" }
+linux-arm64 = { url = "https://registry.npmjs.org/@voidzero-dev/vite-plus-cli-linux-arm64-gnu/-/vite-plus-cli-linux-arm64-gnu-{{version}}.tgz" }
+linux-x64 = { url = "https://registry.npmjs.org/@voidzero-dev/vite-plus-cli-linux-x64-gnu/-/vite-plus-cli-linux-x64-gnu-{{version}}.tgz" }
+windows-arm64 = { url = "https://registry.npmjs.org/@voidzero-dev/vite-plus-cli-win32-arm64-msvc/-/vite-plus-cli-win32-arm64-msvc-{{version}}.tgz" }
+windows-x64 = { url = "https://registry.npmjs.org/@voidzero-dev/vite-plus-cli-win32-x64-msvc/-/vite-plus-cli-win32-x64-msvc-{{version}}.tgz" }

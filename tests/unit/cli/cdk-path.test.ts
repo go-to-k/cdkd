@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it } from 'vite-plus/test';
 import { buildCdkPathIndex, resolveCdkPathToLogicalIds } from '../../../src/cli/cdk-path.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
 

@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect } from 'vite-plus/test';
 import { IMPLICIT_DELETE_DEPENDENCIES } from '../../../src/analyzer/implicit-delete-deps.js';
 
 describe('IMPLICIT_DELETE_DEPENDENCIES', () => {

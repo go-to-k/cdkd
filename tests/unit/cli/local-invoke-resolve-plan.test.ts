@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vite-plus/test';
 import type { ResolvedImageLambda } from '../../../src/local/lambda-resolver.js';
 
 // vi.mock factories are hoisted to the top of the file BEFORE top-level

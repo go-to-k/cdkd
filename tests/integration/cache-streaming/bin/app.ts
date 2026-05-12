@@ -1,7 +1,6 @@
 #!/usr/bin/env node
-import 'source-map-support/register';
 import * as cdk from 'aws-cdk-lib';
-import { CacheStreamingStack } from '../lib/cache-streaming-stack';
+import { CacheStreamingStack } from '../lib/cache-streaming-stack.ts';
 
 const app = new cdk.App();
 new CacheStreamingStack(app, 'CacheStreamingStack', {

@@ -9,7 +9,7 @@ import { SynthesisError } from '../utils/error-handler.js';
  * Options for CDK app execution
  */
 export interface AppExecutorOptions {
-  /** CDK app command (e.g., "npx ts-node app.ts") */
+  /** CDK app command (e.g., "node app.ts") */
   app: string;
 
   /** Output directory for cloud assembly (default: "cdk.out") */

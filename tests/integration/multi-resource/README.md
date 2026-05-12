@@ -104,8 +104,8 @@ This example tests the following cdkd features:
 ### Prerequisites
 ```bash
 cd tests/integration/multi-resource
-npm install
-npm run build
+vp install
+vp run build
 ```
 
 ### Initial Deployment

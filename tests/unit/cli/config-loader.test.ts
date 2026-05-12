@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test';
 
 // Mock node:fs before importing the module under test
 vi.mock('node:fs', () => ({
@@ -66,7 +66,7 @@ describe('config-loader', () => {
       vi.mocked(existsSync).mockReturnValue(true);
       vi.mocked(readFileSync).mockReturnValue(
         JSON.stringify({
-          app: 'npx ts-node bin/app.ts',
+          app: 'node bin/app.ts',
           output: 'cdk.out',
           context: { foo: 'bar' },
         })
@@ -75,7 +75,7 @@ describe('config-loader', () => {
       const result = loadCdkJson('/project');
 
       expect(result).toEqual({
-        app: 'npx ts-node bin/app.ts',
+        app: 'node bin/app.ts',
         output: 'cdk.out',
         context: { foo: 'bar' },
       });
@@ -104,28 +104,28 @@ describe('config-loader', () => {
 
   describe('resolveApp', () => {
     it('should return CLI value when provided', () => {
-      const result = resolveApp('npx ts-node bin/app.ts');
+      const result = resolveApp('node bin/app.ts');
 
-      expect(result).toBe('npx ts-node bin/app.ts');
+      expect(result).toBe('node bin/app.ts');
     });
 
     it('should fall back to CDKD_APP env var when CLI value is not provided', () => {
-      process.env['CDKD_APP'] = 'npx ts-node bin/env-app.ts';
+      process.env['CDKD_APP'] = 'node bin/env-app.ts';
 
       const result = resolveApp();
 
-      expect(result).toBe('npx ts-node bin/env-app.ts');
+      expect(result).toBe('node bin/env-app.ts');
     });
 
     it('should fall back to cdk.json app field when CLI and env are not set', () => {
       vi.mocked(existsSync).mockReturnValue(true);
       vi.mocked(readFileSync).mockReturnValue(
-        JSON.stringify({ app: 'npx ts-node bin/cdk-app.ts' })
+        JSON.stringify({ app: 'node bin/cdk-app.ts' })
       );
 
       const result = resolveApp();
 
-      expect(result).toBe('npx ts-node bin/cdk-app.ts');
+      expect(result).toBe('node bin/cdk-app.ts');
     });
 
     it('should return undefined when no source provides a value', () => {
@@ -174,7 +174,7 @@ describe('config-loader', () => {
       vi.mocked(existsSync).mockReturnValue(true);
       vi.mocked(readFileSync).mockReturnValue(
         JSON.stringify({
-          app: 'npx ts-node bin/app.ts',
+          app: 'node bin/app.ts',
           context: {
             cdkd: {
               stateBucket: 'my-cdk-json-bucket',
@@ -235,7 +235,7 @@ describe('config-loader', () => {
       vi.mocked(existsSync).mockReturnValue(true);
       vi.mocked(readFileSync).mockReturnValue(
         JSON.stringify({
-          app: 'npx ts-node bin/app.ts',
+          app: 'node bin/app.ts',
           context: { someOtherKey: 'value' },
         })
       );
@@ -371,11 +371,17 @@ describe('config-loader', () => {
         },
         HeadBucketCommand: class HeadBucketCommand {
           static __cmd = 'HeadBucket' as const;
-          constructor(public input: { Bucket: string }) {}
+          input: { Bucket: string };
+          constructor(input: { Bucket: string }) {
+            this.input = input;
+          }
         },
         ListObjectsV2Command: class ListObjectsV2Command {
           static __cmd = 'ListObjectsV2' as const;
-          constructor(public input: { Bucket: string; Prefix?: string; MaxKeys?: number }) {}
+          input: { Bucket: string; Prefix?: string; MaxKeys?: number };
+          constructor(input: { Bucket: string; Prefix?: string; MaxKeys?: number }) {
+            this.input = input;
+          }
         },
       }));
       vi.doMock('../../../src/utils/aws-clients.js', () => ({

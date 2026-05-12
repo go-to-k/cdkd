@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vite-plus/test';
 
 // Hoisted mocks so vi.mock factories can reference them safely.
 // (See feedback_vi_mock_hoisting.md.)

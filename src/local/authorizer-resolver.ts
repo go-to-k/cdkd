@@ -1,6 +1,7 @@
 import type { StackInfo } from '../synthesis/assembly-reader.js';
 import type { CloudFormationTemplate, TemplateResource } from '../types/resource.js';
 import { RouteDiscoveryError } from '../utils/error-handler.js';
+import { stringifyValue } from '../utils/stringify.js';
 import { resolveLambdaArnIntrinsic as resolveLambdaArnShared } from './intrinsic-lambda-arn.js';
 
 /**
@@ -588,7 +589,7 @@ function detectRestV1Authorizer(
   // CUSTOM / COGNITO_USER_POOLS / etc. all need an AuthorizerId Ref.
   if (!refLogicalId) {
     throw new RouteDiscoveryError(
-      `${stack.stackName}/${methodLogicalId}: AuthorizationType='${String(authType)}' but AuthorizerId is missing or not a {Ref:...}.`
+      `${stack.stackName}/${methodLogicalId}: AuthorizationType='${stringifyValue(authType)}' but AuthorizerId is missing or not a {Ref:...}.`
     );
   }
 
@@ -613,7 +614,7 @@ function detectHttpApiAuthorizer(
   const refLogicalId = pickRefLogicalId(authorizerId);
   if (!refLogicalId) {
     throw new RouteDiscoveryError(
-      `${stack.stackName}/${routeLogicalId}: AuthorizationType='${String(authType)}' but AuthorizerId is missing or not a {Ref:...}.`
+      `${stack.stackName}/${routeLogicalId}: AuthorizationType='${stringifyValue(authType)}' but AuthorizerId is missing or not a {Ref:...}.`
     );
   }
   const scopesRaw = props['AuthorizationScopes'];
@@ -643,6 +644,6 @@ function shortJson(value: unknown): string {
     const s = JSON.stringify(value);
     return s.length > 200 ? `${s.slice(0, 200)}…` : s;
   } catch {
-    return String(value);
+    return stringifyValue(value);
   }
 }

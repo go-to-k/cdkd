@@ -86,14 +86,14 @@ fi
 
 if [[ ! -f "${CDKD_BIN}" ]]; then
   fail "cdkd CLI not found at: ${CDKD_BIN}"
-  echo "  Hint: Run 'pnpm run build' in the project root first."
+  echo "  Hint: Run 'vp run build' in the project root first."
   exit 1
 fi
 
 # --------------------------------------------------------------------------
 # Common cdkd arguments
 # --------------------------------------------------------------------------
-APP_CMD="npx ts-node --prefer-ts-exts bin/app.ts"
+APP_CMD="node bin/app.ts"
 CDKD_COMMON_ARGS=(
   --app "${APP_CMD}"
   --state-bucket "${STATE_BUCKET}"
@@ -150,7 +150,7 @@ info "AWS region:   ${AWS_REGION}"
 
 if [[ ! -d "${EXAMPLE_DIR}/node_modules" ]]; then
   info "Installing dependencies for ${EXAMPLE_NAME} example..."
-  (cd "${EXAMPLE_DIR}" && npm install --silent)
+  (cd "${EXAMPLE_DIR}" && vp install --silent)
   pass "Dependencies installed"
 else
   pass "Dependencies already installed"

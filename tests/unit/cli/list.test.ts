@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import type { StackInfo } from '../../../src/synthesis/assembly-reader.js';
 
 // Mock Synthesizer — list.ts only uses Synthesizer.synthesize().
@@ -92,7 +92,7 @@ describe('cdkd list', () => {
   beforeEach(() => {
     mockSynthesize.mockReset();
     mockResolveApp.mockReset();
-    mockResolveApp.mockReturnValue('npx ts-node app.ts');
+    mockResolveApp.mockReturnValue('node app.ts');
   });
 
   it('prints CDK display id per line by default, with physical name in parens when it differs', async () => {

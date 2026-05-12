@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import * as cdk from 'aws-cdk-lib';
-import { LocalInvokePythonStack } from '../lib/local-invoke-python-stack';
+import { LocalInvokePythonStack } from '../lib/local-invoke-python-stack.ts';
 
 const app = new cdk.App();
 

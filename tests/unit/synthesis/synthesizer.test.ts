@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test';
 
 // Capture what AppExecutor.execute receives
 const mockExecute = vi.fn();
@@ -102,7 +102,7 @@ describe('Synthesizer', () => {
 
   describe('context merge order', () => {
     it('should include CDK default context values (bundling-stacks, metadata flags)', async () => {
-      await synthesizer.synthesize({ app: 'npx ts-node app.ts' });
+      await synthesizer.synthesize({ app: 'node app.ts' });
 
       const passedContext = mockExecute.mock.calls[0]![0].context as Record<string, unknown>;
       expect(passedContext['aws:cdk:enable-path-metadata']).toBe(true);
@@ -116,7 +116,7 @@ describe('Synthesizer', () => {
         context: { 'user-default': 'from-home' },
       });
 
-      await synthesizer.synthesize({ app: 'npx ts-node app.ts' });
+      await synthesizer.synthesize({ app: 'node app.ts' });
 
       const passedContext = mockExecute.mock.calls[0]![0].context as Record<string, unknown>;
       expect(passedContext['user-default']).toBe('from-home');
@@ -130,7 +130,7 @@ describe('Synthesizer', () => {
         context: { shared: 'from-project', 'project-only': 'value' },
       });
 
-      await synthesizer.synthesize({ app: 'npx ts-node app.ts' });
+      await synthesizer.synthesize({ app: 'node app.ts' });
 
       const passedContext = mockExecute.mock.calls[0]![0].context as Record<string, unknown>;
       expect(passedContext['shared']).toBe('from-project');
@@ -146,7 +146,7 @@ describe('Synthesizer', () => {
         key: 'from-cdk-context-json',
       });
 
-      await synthesizer.synthesize({ app: 'npx ts-node app.ts' });
+      await synthesizer.synthesize({ app: 'node app.ts' });
 
       const passedContext = mockExecute.mock.calls[0]![0].context as Record<string, unknown>;
       expect(passedContext['key']).toBe('from-cdk-context-json');
@@ -158,7 +158,7 @@ describe('Synthesizer', () => {
       mockContextStoreLoad.mockReturnValue({ key: 'cached' });
 
       await synthesizer.synthesize({
-        app: 'npx ts-node app.ts',
+        app: 'node app.ts',
         context: { key: 'cli' },
       });
 
@@ -179,7 +179,7 @@ describe('Synthesizer', () => {
       });
 
       await synthesizer.synthesize({
-        app: 'npx ts-node app.ts',
+        app: 'node app.ts',
         context: { d: 'cli' },
       });
 
@@ -197,7 +197,7 @@ describe('Synthesizer', () => {
         context: { 'aws:cdk:enable-path-metadata': false },
       });
 
-      await synthesizer.synthesize({ app: 'npx ts-node app.ts' });
+      await synthesizer.synthesize({ app: 'node app.ts' });
 
       const passedContext = mockExecute.mock.calls[0]![0].context as Record<string, unknown>;
       expect(passedContext['aws:cdk:enable-path-metadata']).toBe(false);
@@ -239,7 +239,7 @@ describe('Synthesizer', () => {
         },
       });
 
-      await synthesizer.synthesize({ app: 'npx ts-node app.ts' });
+      await synthesizer.synthesize({ app: 'node app.ts' });
 
       const passedContext = mockExecute.mock.calls[0]![0].context as Record<string, unknown>;
       expect(passedContext['@aws-cdk/aws-lambda:recognizeLayerVersion']).toBe(true);

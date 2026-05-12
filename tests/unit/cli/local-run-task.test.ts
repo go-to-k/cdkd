@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it } from 'vite-plus/test';
 import { createLocalRunTaskCommand } from '../../../src/cli/commands/local-run-task.js';
 
 describe('createLocalRunTaskCommand', () => {

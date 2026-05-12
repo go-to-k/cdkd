@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it } from 'vite-plus/test';
 import { matchRoute } from '../../../src/local/route-matcher.js';
 import type { DiscoveredRoute } from '../../../src/local/route-discovery.js';
 

@@ -41,7 +41,7 @@ succeeds.
 
 # Or manually:
 cd tests/integration/vpc-lambda-cr-race
-pnpm install
+vp install
 node ../../../dist/cli.js deploy -y
 node ../../../dist/cli.js destroy -y
 ```

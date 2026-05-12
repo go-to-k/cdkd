@@ -33,10 +33,13 @@ function formatTimestamp(): string {
  * - compact (info level): clean output without timestamps or prefixes
  */
 export class ConsoleLogger implements Logger {
-  constructor(
-    private level: LogLevel = 'info',
-    private useColors: boolean = true
-  ) {}
+  private level: LogLevel;
+  private useColors: boolean;
+
+  constructor(level: LogLevel = 'info', useColors: boolean = true) {
+    this.level = level;
+    this.useColors = useColors;
+  }
 
   private shouldLog(level: LogLevel): boolean {
     const levels: LogLevel[] = ['debug', 'info', 'warn', 'error'];
@@ -151,11 +154,11 @@ export class ConsoleLogger implements Logger {
  * Child logger that always syncs level from global logger
  */
 class ChildLogger extends ConsoleLogger {
-  constructor(
-    private readonly prefix: string,
-    useColors: boolean
-  ) {
+  private readonly prefix: string;
+
+  constructor(prefix: string, useColors: boolean) {
     super('info', useColors);
+    this.prefix = prefix;
   }
 
   private syncLevel(): void {

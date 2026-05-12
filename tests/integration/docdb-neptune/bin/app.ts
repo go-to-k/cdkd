@@ -1,7 +1,6 @@
 #!/usr/bin/env node
-import 'source-map-support/register';
 import * as cdk from 'aws-cdk-lib';
-import { DocdbNeptuneStack } from '../lib/docdb-neptune-stack';
+import { DocdbNeptuneStack } from '../lib/docdb-neptune-stack.ts';
 
 const app = new cdk.App();
 

@@ -1,7 +1,6 @@
 #!/usr/bin/env node
-import 'source-map-support/register';
 import * as cdk from 'aws-cdk-lib';
-import { ExportStack } from '../lib/export-stack';
+import { ExportStack } from '../lib/export-stack.ts';
 
 const app = new cdk.App();
 

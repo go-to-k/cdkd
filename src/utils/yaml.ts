@@ -6,6 +6,8 @@
  * single-quote JSON-like / multi-line strings, double-quote strings whose
  * literal content collides with YAML scalar keywords.
  */
+import { stringifyValue } from './stringify.js';
+
 export function toYaml(obj: unknown, indent = 0): string {
   const prefix = '  '.repeat(indent);
 
@@ -64,5 +66,5 @@ export function toYaml(obj: unknown, indent = 0): string {
     return result;
   }
 
-  return `${String(obj)}\n`;
+  return `${stringifyValue(obj)}\n`;
 }

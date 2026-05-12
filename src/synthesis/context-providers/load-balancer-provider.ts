@@ -14,8 +14,11 @@ import { getLogger } from '../../utils/logger.js';
  */
 export class LoadBalancerContextProvider implements ContextProvider {
   private logger = getLogger().child('LoadBalancerContextProvider');
+  private awsConfig: ContextProviderAwsConfig | undefined;
 
-  constructor(private awsConfig?: ContextProviderAwsConfig) {}
+  constructor(awsConfig?: ContextProviderAwsConfig) {
+    this.awsConfig = awsConfig;
+  }
 
   async resolve(props: Record<string, unknown>): Promise<unknown> {
     const region = (props['region'] as string) || this.awsConfig?.region;
@@ -70,8 +73,11 @@ export class LoadBalancerContextProvider implements ContextProvider {
  */
 export class LoadBalancerListenerContextProvider implements ContextProvider {
   private logger = getLogger().child('LoadBalancerListenerContextProvider');
+  private awsConfig: ContextProviderAwsConfig | undefined;
 
-  constructor(private awsConfig?: ContextProviderAwsConfig) {}
+  constructor(awsConfig?: ContextProviderAwsConfig) {
+    this.awsConfig = awsConfig;
+  }
 
   async resolve(props: Record<string, unknown>): Promise<unknown> {
     const region = (props['region'] as string) || this.awsConfig?.region;

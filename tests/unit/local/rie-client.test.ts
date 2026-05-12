@@ -1,6 +1,6 @@
 import { createServer, type Server } from 'node:http';
 import { createServer as createTcpServer, type Server as TcpServer } from 'node:net';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it } from 'vite-plus/test';
 import { invokeRie, waitForRieReady } from '../../../src/local/rie-client.js';
 
 let server: Server;

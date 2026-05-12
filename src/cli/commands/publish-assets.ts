@@ -38,7 +38,7 @@ interface PublishAssetsOptions {
  * `WorkGraph` with `stack: 0` concurrency so only `asset-build` /
  * `asset-publish` nodes run. No state writes, no provisioning.
  *
- * `--app` accepts either a shell command (`"npx ts-node app.ts"`) or a path
+ * `--app` accepts either a shell command (`"node app.ts"`) or a path
  * to an already-synthesized cloud assembly directory (`cdk.out`). When a
  * directory is given, `Synthesizer.synthesize` skips the subprocess and
  * reads the manifest directly — same dual semantics as `cdkd deploy`. So a

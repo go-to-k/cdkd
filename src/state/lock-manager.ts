@@ -31,13 +31,13 @@ export interface LockManagerOptions {
  */
 export class LockManager {
   private logger = getLogger().child('LockManager');
+  private s3Client: S3Client;
+  private config: StateBackendConfig;
   private readonly ttlMs: number;
 
-  constructor(
-    private s3Client: S3Client,
-    private config: StateBackendConfig,
-    options?: LockManagerOptions
-  ) {
+  constructor(s3Client: S3Client, config: StateBackendConfig, options?: LockManagerOptions) {
+    this.s3Client = s3Client;
+    this.config = config;
     const ttlMinutes = options?.ttlMinutes ?? 30;
     this.ttlMs = ttlMinutes * 60 * 1000;
   }

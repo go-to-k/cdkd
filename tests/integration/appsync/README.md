@@ -21,7 +21,7 @@ export AWS_REGION="us-east-1"
 
 # Deploy
 node ../../../dist/cli.js deploy \
-  --app "npx ts-node --prefer-ts-exts bin/app.ts" \
+  --app "node bin/app.ts" \
   --state-bucket ${STATE_BUCKET} \
   --region ${AWS_REGION} \
   --verbose
@@ -31,7 +31,7 @@ node ../../../dist/cli.js deploy \
 
 ```bash
 node ../../../dist/cli.js destroy \
-  --app "npx ts-node --prefer-ts-exts bin/app.ts" \
+  --app "node bin/app.ts" \
   --state-bucket ${STATE_BUCKET} \
   --region ${AWS_REGION} \
   --force

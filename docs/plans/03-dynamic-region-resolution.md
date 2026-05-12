@@ -216,10 +216,10 @@ This client is *only* used for state operations. The provisioning clients
 
 This PR does not change on-disk formats. It only fixes runtime behavior.
 
-- [ ] `pnpm run build`
-- [ ] `pnpm test` — full suite, no regressions.
-- [ ] `pnpm run typecheck`
-- [ ] `pnpm run lint`
+- [ ] `vp run build`
+- [ ] `vp run test` — full suite, no regressions.
+- [ ] `vp run typecheck`
+- [ ] `vp run lint`
 - [ ] Manual: with profile `us-east-1`, run `cdkd state list
       --state-bucket {bucket-in-us-west-2}`. Expected: no
       `UnknownError`; output succeeds.

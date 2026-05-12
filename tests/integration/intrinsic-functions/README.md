@@ -41,7 +41,7 @@ node ../../../../dist/cli.js bootstrap \
 
 # Deploy
 node ../../../../dist/cli.js deploy \
-  --app "npx ts-node --prefer-ts-exts bin/app.ts" \
+  --app "node bin/app.ts" \
   --state-bucket ${STATE_BUCKET} \
   --region ${AWS_REGION} \
   --verbose

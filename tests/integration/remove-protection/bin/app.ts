@@ -1,7 +1,6 @@
 #!/usr/bin/env node
-import 'source-map-support/register';
 import * as cdk from 'aws-cdk-lib';
-import { RemoveProtectionStack } from '../lib/remove-protection-stack';
+import { RemoveProtectionStack } from '../lib/remove-protection-stack.ts';
 
 const app = new cdk.App();
 

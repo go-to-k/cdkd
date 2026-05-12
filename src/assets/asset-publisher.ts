@@ -5,6 +5,7 @@ import type { AssetManifest, FileAsset, DockerImageAsset } from '../types/assets
 import { WorkGraph, type WorkNode } from '../deployment/work-graph.js';
 import { getLogger } from '../utils/logger.js';
 import { AssetError } from '../utils/error-handler.js';
+import { stringifyValue } from '../utils/stringify.js';
 
 /**
  * Data attached to a file asset-publish node
@@ -232,8 +233,8 @@ export class AssetPublisher {
         throw error;
       }
       const err = error as Record<string, unknown>;
-      const message = String(err['message'] || err['name'] || error);
-      const code = String(err['Code'] || err['code'] || err['name'] || '');
+      const message = stringifyValue(err['message'] || err['name'] || error);
+      const code = stringifyValue(err['Code'] || err['code'] || err['name'] || '');
       const detail = code ? `${code}: ${message}` : message;
       throw new AssetError(
         `Asset publishing failed: ${detail}`,

@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import { UpdateStateMachineCommand } from '@aws-sdk/client-sfn';
 
 const mockSend = vi.fn();

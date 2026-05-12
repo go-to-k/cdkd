@@ -53,8 +53,11 @@ export class LiveRenderer {
   private linesDrawn = 0;
   private cursorHidden = false;
   private exitListener: (() => void) | null = null;
+  private readonly stream: NodeJS.WriteStream;
 
-  constructor(private readonly stream: NodeJS.WriteStream = process.stdout) {}
+  constructor(stream: NodeJS.WriteStream = process.stdout) {
+    this.stream = stream;
+  }
 
   isActive(): boolean {
     return this.active;

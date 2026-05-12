@@ -1,7 +1,6 @@
 #!/usr/bin/env node
-import 'source-map-support/register';
 import * as cdk from 'aws-cdk-lib';
-import { StateDestroyStack } from '../lib/state-destroy-stack';
+import { StateDestroyStack } from '../lib/state-destroy-stack.ts';
 
 const app = new cdk.App();
 

@@ -1,7 +1,6 @@
 #!/usr/bin/env node
-import 'source-map-support/register';
 import * as cdk from 'aws-cdk-lib';
-import { VpcNatGatewayStack } from '../lib/vpc-nat-gateway-stack';
+import { VpcNatGatewayStack } from '../lib/vpc-nat-gateway-stack.ts';
 
 const app = new cdk.App();
 new VpcNatGatewayStack(app, 'CdkdVpcNatGateway', {

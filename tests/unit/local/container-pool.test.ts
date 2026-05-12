@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vite-plus/test';
 import { createContainerPool, type ContainerSpec } from '../../../src/local/container-pool.js';
 import type { ResolvedZipLambda } from '../../../src/local/lambda-resolver.js';
 

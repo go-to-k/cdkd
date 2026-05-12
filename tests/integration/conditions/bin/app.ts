@@ -1,7 +1,6 @@
 #!/usr/bin/env node
-import 'source-map-support/register';
 import * as cdk from 'aws-cdk-lib';
-import { ConditionsStack } from '../lib/conditions-stack';
+import { ConditionsStack } from '../lib/conditions-stack.ts';
 
 const app = new cdk.App();
 

@@ -23,7 +23,7 @@ This example tests EventBridge resource deployment with cdkd.
 
 ```bash
 cd tests/integration/eventbridge
-npm install
+vp install
 cdkd deploy EventBridgeStack
 ```
 

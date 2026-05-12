@@ -1,7 +1,6 @@
 #!/usr/bin/env node
-import 'source-map-support/register';
 import * as cdk from 'aws-cdk-lib';
-import { AlbAdvancedStack } from '../lib/alb-advanced-stack';
+import { AlbAdvancedStack } from '../lib/alb-advanced-stack.ts';
 
 const app = new cdk.App();
 

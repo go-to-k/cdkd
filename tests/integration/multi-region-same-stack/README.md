@@ -15,13 +15,13 @@ STACK="CdkdMultiRegionExample"
 # 1. Deploy to us-west-2.
 CDKD_INTEG_REGION=us-west-2 \
   node ../../../dist/cli.js deploy "$STACK" \
-  --app "npx ts-node --prefer-ts-exts bin/app.ts" \
+  --app "node bin/app.ts" \
   --state-bucket "$STATE_BUCKET" --region us-west-2
 
 # 2. Deploy to us-east-1 (same stack name).
 CDKD_INTEG_REGION=us-east-1 \
   node ../../../dist/cli.js deploy "$STACK" \
-  --app "npx ts-node --prefer-ts-exts bin/app.ts" \
+  --app "node bin/app.ts" \
   --state-bucket "$STATE_BUCKET" --region us-east-1
 
 # 3. Confirm both state files coexist.
@@ -36,11 +36,11 @@ node ../../../dist/cli.js state list --state-bucket "$STATE_BUCKET"
 # 4. Clean up both regions.
 CDKD_INTEG_REGION=us-west-2 \
   node ../../../dist/cli.js destroy "$STACK" --yes \
-  --app "npx ts-node --prefer-ts-exts bin/app.ts" \
+  --app "node bin/app.ts" \
   --state-bucket "$STATE_BUCKET" --region us-west-2
 
 CDKD_INTEG_REGION=us-east-1 \
   node ../../../dist/cli.js destroy "$STACK" --yes \
-  --app "npx ts-node --prefer-ts-exts bin/app.ts" \
+  --app "node bin/app.ts" \
   --state-bucket "$STATE_BUCKET" --region us-east-1
 ```

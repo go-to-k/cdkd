@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import { GetTopicAttributesCommand } from '@aws-sdk/client-sns';
 
 const mockSend = vi.fn();

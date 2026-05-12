@@ -28,11 +28,11 @@ This stack includes the following resources:
 
 ```bash
 # Install packages
-npm install
+vp install
 
 # Deploy with cdkd
 node ../../../dist/cli.js deploy \
-  --app "npx ts-node --prefer-ts-exts bin/app.ts" \
+  --app "node bin/app.ts" \
   --state-bucket <your-state-bucket> \
   --region us-east-1 \
   --verbose

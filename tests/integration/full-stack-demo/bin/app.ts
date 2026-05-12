@@ -1,7 +1,6 @@
 #!/usr/bin/env node
-import 'source-map-support/register';
 import * as cdk from 'aws-cdk-lib';
-import { FullStackDemoStack } from '../lib/full-stack-demo-stack';
+import { FullStackDemoStack } from '../lib/full-stack-demo-stack.ts';
 
 const app = new cdk.App();
 new FullStackDemoStack(app, 'FullStackDemoStack', {

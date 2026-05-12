@@ -1,7 +1,6 @@
 #!/usr/bin/env node
-import 'source-map-support/register';
 import * as cdk from 'aws-cdk-lib';
-import { InfraSecurityStack } from '../lib/infra-security-stack';
+import { InfraSecurityStack } from '../lib/infra-security-stack.ts';
 
 const app = new cdk.App();
 new InfraSecurityStack(app, 'InfraSecurityStack', {
