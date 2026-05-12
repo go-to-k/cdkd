@@ -696,4 +696,54 @@ describe('CustomResourceProvider', () => {
       expect(getKey).toContain(invokedRequestId!);
     });
   });
+
+  describe('ServiceToken type guard (defensive against unresolved intrinsics)', () => {
+    // Companion to the cdkd-import intrinsic-resolution fix (separate PR).
+    // Even if a raw {Fn::GetAtt: [...]} object ever leaks into state.properties
+    // (corrupted state, partial migration, pre-fix import), each entrypoint
+    // must surface a typed ProvisioningError naming the problem, NOT the
+    // unhelpful "TypeError: serviceToken.startsWith is not a function".
+    const rawIntrinsic = { 'Fn::GetAtt': ['MyHandlerFn', 'Arn'] };
+
+    it('create() rejects an object-shaped ServiceToken with a typed error', async () => {
+      await expect(
+        provider.create('MyCustomResource', 'Custom::MyType', {
+          ServiceToken: rawIntrinsic,
+        })
+      ).rejects.toThrow(/Custom Resource MyCustomResource: ServiceToken is not a resolved string ARN \(got object\)/);
+    });
+
+    it('update() rejects an object-shaped ServiceToken with a typed error', async () => {
+      await expect(
+        provider.update(
+          'MyCustomResource',
+          'existing-physical-id',
+          'Custom::MyType',
+          { ServiceToken: rawIntrinsic },
+          { ServiceToken: 'arn:aws:lambda:us-east-1:123456789012:function:old' }
+        )
+      ).rejects.toThrow(/Custom Resource MyCustomResource: ServiceToken is not a resolved string ARN \(got object\)/);
+    });
+
+    it('delete() rejects an object-shaped ServiceToken with a typed error', async () => {
+      await expect(
+        provider.delete(
+          'MyCustomResource',
+          'existing-physical-id',
+          'Custom::MyType',
+          { ServiceToken: rawIntrinsic }
+        )
+      ).rejects.toThrow(/Custom Resource MyCustomResource: ServiceToken is not a resolved string ARN \(got object\)/);
+    });
+
+    it('error message mentions the recovery path so users know the fix', async () => {
+      // The whole point of the typed error is to make the bug class
+      // actionable. Verify the suggested-action sentence is there.
+      await expect(
+        provider.delete('MyCustomResource', 'physical-id', 'Custom::MyType', {
+          ServiceToken: rawIntrinsic,
+        })
+      ).rejects.toThrow(/re-run.*cdkd import.*cdkd state orphan/s);
+    });
+  });
 });
