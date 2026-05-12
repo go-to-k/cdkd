@@ -1,6 +1,6 @@
-# cdkd
+# cdkd (CDK Direct)
 
-**cdkd** (CDK Direct) — a from-scratch CDK CLI that provisions via AWS SDK instead of CloudFormation.
+Drop-in CDK CLI for existing CDK apps — faster deploys via AWS SDK instead of CloudFormation, with local emulation for Lambda, API Gateway, and ECS.
 
 - **Drop-in CDK compatible** — your existing CDK app code runs as-is.
 - **Up to 15x faster deploys than the AWS CDK CLI (CloudFormation)**
