@@ -26,12 +26,27 @@ import { Construct } from 'constructs';
  *
  * Notable design choices:
  *
- *   - Explicit physical names (`bucketName`, `roleName`, `topicName`,
- *     `functionName`) so the post-export `cdk deploy` does NOT propose
- *     a replacement on the auto-generated-name-vs-stored-name diff
- *     (the replacement-risk caveat documented in `docs/cli-reference.md`).
- *     The 8-char hash suffix uses `node.addr` so multiple integ runs
- *     against the same account don't collide.
+ *   - Most resources use explicit physical names (`bucketName`,
+ *     `roleName`, `functionName`, `apiName`) so the post-export `cdk
+ *     deploy` does NOT propose a replacement on the
+ *     auto-generated-name-vs-stored-name diff. The 8-char hash suffix
+ *     uses `node.addr` so multiple integ runs against the same account
+ *     don't collide.
+ *
+ *   - **`Topic` has NO explicit `topicName`** — exercises the auto-gen
+ *     name path that issue [#319] fixed. Pre-#319 cdkd's overlay baked
+ *     the cdkd-prefixed auto-gen name into the post-export CFn template
+ *     (`Properties.TopicName: 'CdkdExportExample-...'`), while CDK
+ *     synth produced `Properties.TopicName: <absent>` → post-export
+ *     `cdk diff` proposed REPLACE on the Topic (and every other
+ *     auto-named resource in a real-world stack). Post-#319 the overlay
+ *     is conditional and skipped when synth's Properties value is
+ *     absent → diff is clean. The HttpApi sub-resources (Integration /
+ *     Route / Permission) similarly exercise the composite-id intrinsic
+ *     path: pre-#319 their `Properties.ApiId: {Ref: 'HttpApi...'}`
+ *     intrinsic was overwritten with the resolved literal `'u0phtuyyde'`
+ *     → cdk diff saw literal vs intrinsic shape mismatch → REPLACE.
+ *     Post-#319 the intrinsic is preserved → diff is clean.
  *
  *   - RemovalPolicy.DESTROY everywhere so the CFn DeleteStack at the
  *     end of `verify.sh` tears down every AWS resource. Without this,
@@ -64,9 +79,12 @@ export class ExportStack extends cdk.Stack {
       versioned: false,
     });
 
-    const topic = new sns.Topic(this, 'Topic', {
-      topicName: `cdkd-export-test-${suffix}`,
-    });
+    // No `topicName` — tests the auto-gen-name path that #319 fixed.
+    // cdkd's deploy generates a prefixed name like
+    // `cdkdexportexample-topic12345` on AWS; without the #319 fix, the
+    // post-export cdk diff would propose REPLACE on `TopicName`
+    // (cdkd-prefixed literal in CFn template vs absent in CDK synth).
+    const topic = new sns.Topic(this, 'Topic');
 
     // ── Custom Resource backing Lambda (phase 1 import) ─────────────
     // The Provider framework generates an additional CR Lambda; we

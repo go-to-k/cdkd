@@ -48,8 +48,8 @@ STATE_BUCKET="${STATE_BUCKET:-cdkd-state-${ACCOUNT_ID}}"
 echo "[verify] variant=${VARIANT} region=${REGION} stack=${STACK} cfn-stack=${CFN_STACK} state-bucket=${STATE_BUCKET}"
 
 echo "[verify] step 1: install + build cdkd"
-pnpm --dir "${REPO_ROOT}" install
-pnpm --dir "${REPO_ROOT}" run build
+(cd "${REPO_ROOT}" && pnpm install)
+(cd "${REPO_ROOT}" && vp run build)
 
 cd "${TEST_DIR}"
 if [ ! -d node_modules ]; then
@@ -358,6 +358,50 @@ for lid in sorted(deleted):
       exit 1
     fi
     echo "[verify] step 5 ok: cdkd state cleared"
+
+    # Issue #319: post-export `cdk diff` must be clean against the
+    # CFn-managed stack. Pre-#319 the overlay baked cdkd-prefixed
+    # auto-gen names into the CFn template (Topic's TopicName) AND
+    # overwrote composite-id intrinsics with their resolved literal
+    # (Integration / Route / Permission's ApiId / FunctionName) → cdk
+    # diff proposed REPLACE on every auto-named resource AND every
+    # composite-id sub-resource. Post-#319 the overlay is conditional
+    # (only fires on literal-string mismatch) → diff is clean.
+    # Runs from TEST_DIR (already cd'd at line 54) which has aws-cdk
+    # installed via `vp install`.
+    echo "[verify] step 5b: post-export 'cdk diff' must show no REPLACEMENT (issue #319 guard)"
+    set +e
+    CDK_DIFF_OUT=$(npx cdk diff "${STACK}" --region "${REGION}" 2>&1)
+    CDK_DIFF_RC=$?
+    set -e
+    # Sanity check: cdk diff itself must have produced output naming the
+    # target stack — otherwise an unrelated failure (missing creds /
+    # region mismatch / stack not found) would yield an empty stdout and
+    # the regression greps below would silently pass on nothing.
+    if ! echo "${CDK_DIFF_OUT}" | grep -q "Stack ${STACK}"; then
+      echo "[verify] FAIL: 'cdk diff' did not produce a 'Stack ${STACK}' header (rc=${CDK_DIFF_RC})"
+      echo "${CDK_DIFF_OUT}" | sed 's/^/  /'
+      exit 1
+    fi
+    # Search for "requires replacement" — CDK CLI emits this marker on
+    # every property change that would force a REPLACE. Pre-#319 every
+    # auto-named resource showed `(requires replacement)` lines.
+    if echo "${CDK_DIFF_OUT}" | grep -q 'requires replacement'; then
+      echo "[verify] FAIL: post-export 'cdk diff' proposes REPLACEMENT (issue #319 regression):"
+      echo "${CDK_DIFF_OUT}" | grep -B1 'requires replacement' | sed 's/^/  /'
+      exit 1
+    fi
+    # Also check for "may be replaced" (Lambda::Permission marker for
+    # intrinsic-vs-literal FunctionName mismatch) — pre-#319 composite
+    # sub-resources surfaced as `may be replaced` because CDK's diff
+    # cannot resolve `Fn::GetAtt` confidently across the literal vs
+    # intrinsic shape mismatch.
+    if echo "${CDK_DIFF_OUT}" | grep -q 'may be replaced'; then
+      echo "[verify] FAIL: post-export 'cdk diff' proposes possible REPLACEMENT (issue #319 regression):"
+      echo "${CDK_DIFF_OUT}" | grep -B1 'may be replaced' | sed 's/^/  /'
+      exit 1
+    fi
+    echo "[verify] step 5b ok: post-export cdk diff is clean (no replacement proposed)"
 
     echo "[verify] step 6: aws cloudformation delete-stack (clean up CFn-managed resources)"
     aws cloudformation delete-stack --stack-name "${CFN_STACK}" --region "${REGION}"
