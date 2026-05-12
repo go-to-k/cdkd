@@ -231,11 +231,21 @@ export class CustomResourceProvider implements ResourceProvider {
   ): Promise<ResourceCreateResult> {
     this.logger.debug(`Creating custom resource ${logicalId} (${resourceType})`);
 
-    const serviceToken = properties['ServiceToken'] as string | undefined;
+    const serviceToken = properties['ServiceToken'];
 
     if (!serviceToken) {
       throw new ProvisioningError(
         `ServiceToken is required for custom resource ${logicalId}`,
+        resourceType,
+        logicalId
+      );
+    }
+
+    if (typeof serviceToken !== 'string') {
+      throw new ProvisioningError(
+        `Custom Resource ${logicalId}: ServiceToken is not a resolved string ARN (got ${typeof serviceToken}). ` +
+          `This usually indicates state was written by a pre-fix cdkd import; ` +
+          `re-run \`cdkd import\` or \`cdkd state orphan <stack>\` to recover.`,
         resourceType,
         logicalId
       );
@@ -300,11 +310,22 @@ export class CustomResourceProvider implements ResourceProvider {
   ): Promise<ResourceUpdateResult> {
     this.logger.debug(`Updating custom resource ${logicalId}: ${physicalId} (${resourceType})`);
 
-    const serviceToken = properties['ServiceToken'] as string | undefined;
+    const serviceToken = properties['ServiceToken'];
 
     if (!serviceToken) {
       throw new ProvisioningError(
         `ServiceToken is required for custom resource ${logicalId}`,
+        resourceType,
+        logicalId,
+        physicalId
+      );
+    }
+
+    if (typeof serviceToken !== 'string') {
+      throw new ProvisioningError(
+        `Custom Resource ${logicalId}: ServiceToken is not a resolved string ARN (got ${typeof serviceToken}). ` +
+          `This usually indicates state was written by a pre-fix cdkd import; ` +
+          `re-run \`cdkd import\` or \`cdkd state orphan <stack>\` to recover.`,
         resourceType,
         logicalId,
         physicalId
@@ -388,11 +409,22 @@ export class CustomResourceProvider implements ResourceProvider {
       return;
     }
 
-    const serviceToken = properties['ServiceToken'] as string | undefined;
+    const serviceToken = properties['ServiceToken'];
 
     if (!serviceToken) {
       this.logger.warn(`No ServiceToken found for custom resource ${logicalId}, skipping deletion`);
       return;
+    }
+
+    if (typeof serviceToken !== 'string') {
+      throw new ProvisioningError(
+        `Custom Resource ${logicalId}: ServiceToken is not a resolved string ARN (got ${typeof serviceToken}). ` +
+          `This usually indicates state was written by a pre-fix cdkd import; ` +
+          `re-run \`cdkd import\` or \`cdkd state orphan <stack>\` to recover.`,
+        resourceType,
+        logicalId,
+        physicalId
+      );
     }
 
     try {
