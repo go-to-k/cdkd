@@ -31,7 +31,13 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { CreateRoleCommand, CreateUserCommand, CreateGroupCommand, CreateInstanceProfileCommand } from '@aws-sdk/client-iam';
+import {
+  CreateRoleCommand,
+  CreateUserCommand,
+  CreateGroupCommand,
+  CreateInstanceProfileCommand,
+  UpdateRoleCommand,
+} from '@aws-sdk/client-iam';
 import {
   CreateLoadBalancerCommand,
   CreateTargetGroupCommand,
@@ -157,6 +163,97 @@ describe('--no-prefix-user-supplied-names per-provider verification', () => {
       );
       const create = iamSend.mock.calls.find((c) => c[0] instanceof CreateRoleCommand);
       expect((create![0] as CreateRoleCommand).input.RoleName).toBe('MyStack-CRRole');
+    });
+  });
+
+  describe('IAMRoleProvider.update', () => {
+    // Update path also runs `generateResourceNameWithFallback` to compute
+    // newRoleName and compare against the state-recorded physicalId.
+    // Mismatches trigger REPLACEMENT (create new + delete old). The skip-
+    // prefix flag affects which name shape `update()` computes, so these
+    // tests guard against (a) regressions where a no-op deploy under the
+    // same flag value as the original deploy unexpectedly triggers
+    // replacement, and (b) the documented mid-flight flag-flip caveat
+    // where toggling the flag against an existing stack DOES trigger
+    // replacement (this is intended behavior, not a bug — but it should
+    // be asserted so a future refactor doesn't silently break it).
+    const provider = new IAMRoleProvider();
+
+    it('no-op under withSkipPrefix(true) when physicalId already matches the un-prefixed name', async () => {
+      // The "user re-deploys with the flag still on" scenario.
+      // physicalId = 'my-role' (from a prior flag-on deploy).
+      // New computed name with flag still on = 'my-role'.
+      // → no replacement, in-place UpdateRoleCommand fires.
+      iamSend.mockResolvedValue({}); // UpdateRoleCommand + sibling no-op responses
+      await withStackName('MyStack', () =>
+        withSkipPrefix(true, () =>
+          provider.update(
+            'CRRole',
+            'my-role',
+            'AWS::IAM::Role',
+            { RoleName: 'my-role', AssumeRolePolicyDocument: ASSUME_ROLE },
+            { RoleName: 'my-role', AssumeRolePolicyDocument: ASSUME_ROLE }
+          )
+        )
+      );
+      const update = iamSend.mock.calls.find((c) => c[0] instanceof UpdateRoleCommand);
+      expect(update).toBeDefined();
+      expect((update![0] as UpdateRoleCommand).input.RoleName).toBe('my-role');
+      // No CreateRoleCommand (replacement would issue one).
+      const create = iamSend.mock.calls.find((c) => c[0] instanceof CreateRoleCommand);
+      expect(create).toBeUndefined();
+    });
+
+    it('no-op without withSkipPrefix when physicalId already matches the prefixed name', async () => {
+      // The pre-PR pre-existing "user re-deploys without the flag" scenario.
+      // physicalId = 'MyStack-my-role' (from a prior flag-off deploy).
+      // New computed name with flag still off = 'MyStack-my-role'.
+      // → no replacement.
+      iamSend.mockResolvedValue({});
+      await withStackName('MyStack', () =>
+        provider.update(
+          'CRRole',
+          'MyStack-my-role',
+          'AWS::IAM::Role',
+          { RoleName: 'my-role', AssumeRolePolicyDocument: ASSUME_ROLE },
+          { RoleName: 'my-role', AssumeRolePolicyDocument: ASSUME_ROLE }
+        )
+      );
+      const update = iamSend.mock.calls.find((c) => c[0] instanceof UpdateRoleCommand);
+      expect(update).toBeDefined();
+      expect((update![0] as UpdateRoleCommand).input.RoleName).toBe('MyStack-my-role');
+      const create = iamSend.mock.calls.find((c) => c[0] instanceof CreateRoleCommand);
+      expect(create).toBeUndefined();
+    });
+
+    it('triggers REPLACEMENT when the flag is flipped on against a previously prefixed deployment (documented caveat)', async () => {
+      // The "user toggles the flag mid-flight" scenario.
+      // physicalId = 'MyStack-my-role' (state from prior flag-off deploy).
+      // New computed name under flag-on = 'my-role'.
+      // → replacement fires: create('my-role') then delete('MyStack-my-role').
+      //
+      // This is the documented caveat in README / docs/cli-reference.md
+      // ("Mid-flight reversibility"). Asserting it here guards a future
+      // refactor from silently breaking the caveat — e.g. by short-
+      // circuiting the comparison when only the prefix differs.
+      iamSend.mockResolvedValue({
+        Role: { Arn: 'arn:aws:iam::123:role/new', RoleId: 'AIDANEW' },
+      });
+      const result = await withStackName('MyStack', () =>
+        withSkipPrefix(true, () =>
+          provider.update(
+            'CRRole',
+            'MyStack-my-role',
+            'AWS::IAM::Role',
+            { RoleName: 'my-role', AssumeRolePolicyDocument: ASSUME_ROLE },
+            { RoleName: 'my-role', AssumeRolePolicyDocument: ASSUME_ROLE }
+          )
+        )
+      );
+      expect(result.wasReplaced).toBe(true);
+      const create = iamSend.mock.calls.find((c) => c[0] instanceof CreateRoleCommand);
+      expect(create).toBeDefined();
+      expect((create![0] as CreateRoleCommand).input.RoleName).toBe('my-role');
     });
   });
 
