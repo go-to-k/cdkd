@@ -910,11 +910,26 @@ cdkd export                                       # auto-detect single-stack app
    `cloudformation:DescribeType` (with a hardcoded fallback table for
    ~30 single-key types). **Composite primary identifiers**
    (`primaryIdentifier.length > 1`) are supported for
-   `AWS::ApiGateway::Method`, `AWS::ApiGateway::Resource`, and
-   `AWS::EC2::VPCGatewayAttachment` via a per-type splitter that maps
-   cdkd's `physicalId` to the field map `ResourceIdentifier` expects.
-   Other composite types abort with a clear error pointing at where to
-   register a new splitter.
+   `AWS::ApiGateway::Method`, `AWS::ApiGateway::Resource`,
+   `AWS::EC2::VPCGatewayAttachment`, `AWS::ApiGatewayV2::Integration`,
+   `AWS::ApiGatewayV2::Route`, and `AWS::Lambda::Permission` via a
+   per-type splitter that maps cdkd's `physicalId` (plus the resource's
+   recorded `properties` for sub-resource types where the parent
+   identifier — `ApiId` / `FunctionName` — lives in `properties`, not
+   in `physicalId`) to the field map `ResourceIdentifier` expects.
+   Sub-resource types whose primaryIdentifier includes an AWS-generated
+   id (`IntegrationId` / `RouteId` / Lambda::Permission's `Id`) narrow
+   the `Properties` overlay to the writable subset so CFn doesn't reject
+   the changeset with "Encountered unsupported property". Other composite
+   types abort with a clear error pointing at where to register a new
+   splitter in `src/cli/commands/export.ts`. **Known limitation**:
+   `AWS::ApiGatewayV2::Stage` (auto-emitted by CDK's `HttpApi` construct
+   as `$default`) is reported by AWS as single-key, so the splitter
+   table is not the blocker — but AWS CloudFormation itself does NOT
+   support `AWS::ApiGatewayV2::Stage` in IMPORT changesets
+   (`CreateChangeSet` rejects with "ResourceTypes [...] are not
+   supported for Import"). Stacks containing an HttpApi therefore
+   cannot be exported via `cdkd export` until a workaround lands.
 5. Acquire the stack lock so concurrent `cdkd deploy` cannot race.
 6. Confirm with the user (skipped with `-y` / `--yes`).
 7. **Preprocess the phase-1 template** (automatic; required by CFn IMPORT

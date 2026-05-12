@@ -160,6 +160,41 @@ describe('filterTemplateForImport', () => {
     });
   });
 
+  it('uses propertiesOverlay (narrow subset) when set, NOT the full resourceIdentifier', () => {
+    // AWS::ApiGatewayV2::Integration's primaryIdentifier is [ApiId, IntegrationId],
+    // but IntegrationId is tagged readOnlyProperties in the CFn schema (it's
+    // AWS-generated, not user-writable). CFn rejects writing read-only
+    // properties at changeset-create time. So the splitter narrows
+    // propertiesOverlay to just { ApiId }. resourceIdentifier sent to CFn's
+    // ResourcesToImport[].ResourceIdentifier still contains both fields.
+    const template = {
+      Resources: {
+        Integration: {
+          Type: 'AWS::ApiGatewayV2::Integration',
+          Properties: { ApiId: { Ref: 'MyApi' }, IntegrationType: 'AWS_PROXY' },
+        },
+      },
+    };
+    const result = filterTemplateForImport(template, [
+      {
+        logicalId: 'Integration',
+        resourceType: 'AWS::ApiGatewayV2::Integration',
+        physicalId: 'integ-abc',
+        resourceIdentifier: { ApiId: 'api-xyz', IntegrationId: 'integ-abc' },
+        propertiesOverlay: { ApiId: 'api-xyz' },
+      },
+    ]);
+    const integration = (result['Resources'] as Record<string, Record<string, unknown>>)[
+      'Integration'
+    ]!;
+    const properties = integration['Properties'] as Record<string, unknown>;
+    expect(properties['ApiId']).toBe('api-xyz');
+    // IntegrationId MUST NOT leak into Properties (would cause CFn rejection).
+    expect(properties).not.toHaveProperty('IntegrationId');
+    // Other Properties preserved.
+    expect(properties['IntegrationType']).toBe('AWS_PROXY');
+  });
+
   it('creates a Properties object on resources that had none', () => {
     const template = {
       Resources: { Bare: { Type: 'AWS::S3::Bucket' } },
@@ -240,6 +275,13 @@ describe('hasCompositeIdSplitter', () => {
     expect(hasCompositeIdSplitter('AWS::ApiGateway::Method')).toBe(true);
     expect(hasCompositeIdSplitter('AWS::ApiGateway::Resource')).toBe(true);
     expect(hasCompositeIdSplitter('AWS::EC2::VPCGatewayAttachment')).toBe(true);
+    expect(hasCompositeIdSplitter('AWS::ApiGatewayV2::Integration')).toBe(true);
+    expect(hasCompositeIdSplitter('AWS::ApiGatewayV2::Route')).toBe(true);
+    expect(hasCompositeIdSplitter('AWS::Lambda::Permission')).toBe(true);
+    // AWS::ApiGatewayV2::Stage: AWS reports single-key (`Id`), so no splitter
+    // is needed AND AWS doesn't support Stage in IMPORT anyway (see export.ts
+    // COMPOSITE_ID_SPLITTERS comment block for the follow-up tracking).
+    expect(hasCompositeIdSplitter('AWS::ApiGatewayV2::Stage')).toBe(false);
   });
 
   it('returns false for single-key types', () => {
@@ -255,16 +297,13 @@ describe('hasCompositeIdSplitter', () => {
 describe('splitCompositePhysicalId', () => {
   it('parses AWS::ApiGateway::Method (restApiId|resourceId|httpMethod)', () => {
     expect(splitCompositePhysicalId('AWS::ApiGateway::Method', 'api123|res456|GET')).toEqual({
-      RestApiId: 'api123',
-      ResourceId: 'res456',
-      HttpMethod: 'GET',
+      resourceIdentifier: { RestApiId: 'api123', ResourceId: 'res456', HttpMethod: 'GET' },
     });
   });
 
   it('parses AWS::ApiGateway::Resource (restApiId|resourceId)', () => {
     expect(splitCompositePhysicalId('AWS::ApiGateway::Resource', 'api123|res456')).toEqual({
-      RestApiId: 'api123',
-      ResourceId: 'res456',
+      resourceIdentifier: { RestApiId: 'api123', ResourceId: 'res456' },
     });
   });
 
@@ -272,8 +311,65 @@ describe('splitCompositePhysicalId', () => {
     expect(
       splitCompositePhysicalId('AWS::EC2::VPCGatewayAttachment', 'igw-abc|vpc-xyz')
     ).toEqual({
-      VpcId: 'vpc-xyz',
-      InternetGatewayId: 'igw-abc',
+      resourceIdentifier: { VpcId: 'vpc-xyz', InternetGatewayId: 'igw-abc' },
+    });
+  });
+
+  it('parses AWS::ApiGatewayV2::Integration with ApiId from properties (narrow overlay)', () => {
+    // cdkd stores only the secondary id (IntegrationId) in physicalId; ApiId
+    // comes from state.properties. Overlay excludes IntegrationId (not a
+    // Property of the type — AWS-generated).
+    expect(
+      splitCompositePhysicalId('AWS::ApiGatewayV2::Integration', 'integ-abc123', {
+        ApiId: 'api-xyz',
+      })
+    ).toEqual({
+      resourceIdentifier: { ApiId: 'api-xyz', IntegrationId: 'integ-abc123' },
+      propertiesOverlay: { ApiId: 'api-xyz' },
+    });
+  });
+
+  it('parses AWS::ApiGatewayV2::Route with ApiId from properties (narrow overlay)', () => {
+    expect(
+      splitCompositePhysicalId('AWS::ApiGatewayV2::Route', 'route-def456', {
+        ApiId: 'api-xyz',
+      })
+    ).toEqual({
+      resourceIdentifier: { ApiId: 'api-xyz', RouteId: 'route-def456' },
+      propertiesOverlay: { ApiId: 'api-xyz' },
+    });
+  });
+
+  it('parses AWS::Lambda::Permission with FunctionName from properties (narrow overlay)', () => {
+    // CFn schema calls the secondary key `Id` (NOT StatementId). cdkd's
+    // physicalId IS the StatementId, which becomes `Id` in CFn's
+    // ResourceIdentifier. `Id` is NOT a Property of AWS::Lambda::Permission,
+    // so overlay narrows to FunctionName.
+    expect(
+      splitCompositePhysicalId('AWS::Lambda::Permission', 'MyStatement123', {
+        FunctionName: 'my-stack-fn',
+      })
+    ).toEqual({
+      resourceIdentifier: { FunctionName: 'my-stack-fn', Id: 'MyStatement123' },
+      propertiesOverlay: { FunctionName: 'my-stack-fn' },
+    });
+  });
+
+  it('normalizes legacy `<functionArn>|<statementId>` physicalId for AWS::Lambda::Permission', () => {
+    // State entries written by the older CC-API path (pre-SDK-provider)
+    // store physicalId as `<functionArn>|<statementId>`. The splitter
+    // must surface the bare statementId as `Id` so CFn IMPORT's
+    // identifier-match compares the correct value against the AWS-current
+    // Sid. Mirrors lambda-permission-provider.ts's own normalization.
+    expect(
+      splitCompositePhysicalId(
+        'AWS::Lambda::Permission',
+        'arn:aws:lambda:us-east-1:123456789012:function:my-fn|MyStatement123',
+        { FunctionName: 'my-stack-fn' }
+      )
+    ).toEqual({
+      resourceIdentifier: { FunctionName: 'my-stack-fn', Id: 'MyStatement123' },
+      propertiesOverlay: { FunctionName: 'my-stack-fn' },
     });
   });
 
@@ -293,6 +389,24 @@ describe('splitCompositePhysicalId', () => {
     expect(() =>
       splitCompositePhysicalId('AWS::EC2::VPCGatewayAttachment', 'three|parts|here')
     ).toThrow(/expected 2 parts/);
+  });
+
+  it('throws when ApiGwV2 Integration properties lack ApiId (state corruption)', () => {
+    expect(() =>
+      splitCompositePhysicalId('AWS::ApiGatewayV2::Integration', 'integ-abc', {})
+    ).toThrow(/missing 'ApiId'/);
+  });
+
+  it('throws when ApiGwV2 Route properties lack ApiId (state corruption)', () => {
+    expect(() =>
+      splitCompositePhysicalId('AWS::ApiGatewayV2::Route', 'route-abc', {})
+    ).toThrow(/missing 'ApiId'/);
+  });
+
+  it('throws when Lambda::Permission properties lack FunctionName (state corruption)', () => {
+    expect(() =>
+      splitCompositePhysicalId('AWS::Lambda::Permission', 'sid', {})
+    ).toThrow(/missing 'FunctionName'/);
   });
 
   it('throws on unregistered type', () => {

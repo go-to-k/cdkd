@@ -97,6 +97,18 @@ case "${VARIANT}" in
       echo "[verify] FAIL: dry-run output does not mention any imported resource type"
       exit 1
     fi
+    # Regression guard for the splitter-coverage class of bugs: this
+    # fixture does not (yet) contain composite-id resources because of
+    # the AWS::ApiGatewayV2::Stage IMPORT limitation (tracked separately),
+    # but if a future fixture extension adds one, the existing
+    # COMPOSITE_ID_SPLITTERS table must cover it. Failing fast here on
+    # any "composite primary identifier" / "block migration" message is
+    # cheaper than waiting for CFn changeset creation to reject.
+    if grep -qE 'block migration|composite primary identifier' /tmp/verify-dry-run.log; then
+      echo "[verify] FAIL: dry-run reports unresolved composite-id resources"
+      echo "[verify] (composite-id splitters in src/cli/commands/export.ts are missing entries)"
+      exit 1
+    fi
     echo "[verify] step 4: verify CFn stack does NOT exist (dry-run)"
     if aws cloudformation describe-stacks --stack-name "${CFN_STACK}" --region "${REGION}" >/dev/null 2>&1; then
       echo "[verify] FAIL: dry-run created a CFn stack — should not happen"

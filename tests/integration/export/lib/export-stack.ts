@@ -1,5 +1,4 @@
 import * as cdk from 'aws-cdk-lib';
-import * as cr from 'aws-cdk-lib/custom-resources';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
 import * as s3 from 'aws-cdk-lib/aws-s3';
@@ -7,8 +6,8 @@ import * as sns from 'aws-cdk-lib/aws-sns';
 import { Construct } from 'constructs';
 
 /**
- * Integ-test stack for `cdkd export`. Covers the four code paths the
- * 5-PR series exercises:
+ * Integ-test stack for `cdkd export`. Covers the code paths the export
+ * series exercises:
  *
  *   - Single-key importable resources (`AWS::S3::Bucket`,
  *     `AWS::IAM::Role`, `AWS::SNS::Topic`, `AWS::Lambda::Function`).
@@ -16,6 +15,12 @@ import { Construct } from 'constructs';
  *     CREATE path when --include-non-importable is set. The backing
  *     Lambda is itself imported in phase 1; the CR's onCreate / onUpdate
  *     handler is idempotent (just returns a fixed PhysicalResourceId).
+ *
+ * Composite-id splitters (AWS::ApiGatewayV2::Integration / Route,
+ * AWS::Lambda::Permission) are unit-tested in `tests/unit/cli/export.test.ts`
+ * because adding HttpApi here would block on AWS not supporting
+ * `AWS::ApiGatewayV2::Stage` in IMPORT changesets — a separate, broader
+ * problem tracked in a follow-up issue.
  *
  * Notable design choices:
  *
