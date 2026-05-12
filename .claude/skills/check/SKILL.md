@@ -11,10 +11,10 @@ Run all local quality checks. Use during development to verify the current state
 
 Run these sequentially and report results:
 
-1. `pnpm run typecheck`
-2. `pnpm run lint:fix`
-3. `pnpm run build`
-4. `npx vitest --run`
+1. `vp run typecheck`
+2. `vp run lint:fix`
+3. `vp run build`
+4. `vp run test`
 
 ## Output
 
