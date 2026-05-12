@@ -1,8 +1,10 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import {
   filterTemplateForImport,
   hasCompositeIdSplitter,
   injectDeletionPolicyForImport,
+  invokePreDeleteHandler,
+  isImportUnsupportedRecreatableType,
   isNeverImportableType,
   isPhase2CreatableType,
   parseParameterOverrides,
@@ -444,6 +446,144 @@ describe('isPhase2CreatableType', () => {
 
   it('does NOT match AWS::CDK::Metadata (silent-drop, not phase 2)', () => {
     expect(isPhase2CreatableType('AWS::CDK::Metadata')).toBe(false);
+  });
+});
+
+describe('isImportUnsupportedRecreatableType', () => {
+  // Types in IMPORT_UNSUPPORTED_RECREATABLE_TYPES: cdkd skips them from
+  // phase-1 IMPORT, deletes the AWS-side resource between phases, and
+  // lets CFn re-CREATE in phase 2 (closes cdkd issue #307). Currently
+  // only AWS::ApiGatewayV2::Stage qualifies (handlers: [] in the CFn
+  // schema). Verified via `aws cloudformation describe-type --type
+  // RESOURCE --type-name <T> | jq .handlers`.
+  it('matches AWS::ApiGatewayV2::Stage (no IMPORT handler in CFn schema)', () => {
+    expect(isImportUnsupportedRecreatableType('AWS::ApiGatewayV2::Stage')).toBe(true);
+  });
+
+  it('does NOT match sibling ApiGwV2 types (they have IMPORT handlers)', () => {
+    expect(isImportUnsupportedRecreatableType('AWS::ApiGatewayV2::Api')).toBe(false);
+    expect(isImportUnsupportedRecreatableType('AWS::ApiGatewayV2::Integration')).toBe(false);
+    expect(isImportUnsupportedRecreatableType('AWS::ApiGatewayV2::Route')).toBe(false);
+    expect(isImportUnsupportedRecreatableType('AWS::ApiGatewayV2::Deployment')).toBe(false);
+    expect(isImportUnsupportedRecreatableType('AWS::ApiGatewayV2::Authorizer')).toBe(false);
+  });
+
+  it('does NOT match AWS::ApiGateway::Stage (v1 Stage has IMPORT handler)', () => {
+    expect(isImportUnsupportedRecreatableType('AWS::ApiGateway::Stage')).toBe(false);
+  });
+
+  it('does NOT match Custom Resources (those go to phase2Creates, not recreate-before-phase2)', () => {
+    expect(isImportUnsupportedRecreatableType('Custom::MyHandler')).toBe(false);
+    expect(isImportUnsupportedRecreatableType('AWS::CloudFormation::CustomResource')).toBe(false);
+  });
+
+  it('does NOT match standard importable types', () => {
+    expect(isImportUnsupportedRecreatableType('AWS::S3::Bucket')).toBe(false);
+    expect(isImportUnsupportedRecreatableType('AWS::Lambda::Function')).toBe(false);
+  });
+});
+
+describe('invokePreDeleteHandler', () => {
+  // Each test re-mocks @aws-sdk/client-apigatewayv2 because the handler
+  // does a dynamic `import()` inside its body (lazy-init pattern shared
+  // with ApiGatewayV2Provider.getClient). vi.doMock + vi.resetModules
+  // applied per-test isolates each scenario from the others.
+  beforeEach(() => {
+    vi.resetModules();
+  });
+  afterEach(() => {
+    vi.doUnmock('@aws-sdk/client-apigatewayv2');
+  });
+
+  it('AWS::ApiGatewayV2::Stage handler calls DeleteStage with ApiId + StageName', async () => {
+    const sendCalls: unknown[] = [];
+    vi.doMock('@aws-sdk/client-apigatewayv2', () => ({
+      ApiGatewayV2Client: class {
+        async send(cmd: unknown) {
+          sendCalls.push(cmd);
+        }
+      },
+      DeleteStageCommand: class {
+        constructor(public input: unknown) {}
+      },
+    }));
+    // Re-import the module so it picks up the mock.
+    const { invokePreDeleteHandler: handler } = await import(
+      '../../../src/cli/commands/export.js'
+    );
+
+    await handler('AWS::ApiGatewayV2::Stage', {
+      logicalId: 'HttpApiDefaultStage',
+      resourceType: 'AWS::ApiGatewayV2::Stage',
+      physicalId: '$default',
+      properties: { ApiId: 'doptkc8n2i', StageName: '$default' },
+    });
+
+    expect(sendCalls).toHaveLength(1);
+    const cmd = sendCalls[0] as { input: { ApiId: string; StageName: string } };
+    expect(cmd.input.ApiId).toBe('doptkc8n2i');
+    expect(cmd.input.StageName).toBe('$default');
+  });
+
+  it('throws when ApiId is missing from properties (state corruption)', async () => {
+    vi.doMock('@aws-sdk/client-apigatewayv2', () => ({
+      ApiGatewayV2Client: class {
+        async send() {
+          throw new Error('should not reach AWS');
+        }
+      },
+      DeleteStageCommand: class {
+        constructor(public input: unknown) {}
+      },
+    }));
+    const { invokePreDeleteHandler: handler } = await import(
+      '../../../src/cli/commands/export.js'
+    );
+
+    await expect(
+      handler('AWS::ApiGatewayV2::Stage', {
+        logicalId: 'HttpApiDefaultStage',
+        resourceType: 'AWS::ApiGatewayV2::Stage',
+        physicalId: '$default',
+        properties: {}, // no ApiId
+      })
+    ).rejects.toThrow(/missing 'ApiId'/);
+  });
+
+  it('throws when ApiId is non-string (state corruption)', async () => {
+    vi.doMock('@aws-sdk/client-apigatewayv2', () => ({
+      ApiGatewayV2Client: class {
+        async send() {
+          throw new Error('should not reach AWS');
+        }
+      },
+      DeleteStageCommand: class {
+        constructor(public input: unknown) {}
+      },
+    }));
+    const { invokePreDeleteHandler: handler } = await import(
+      '../../../src/cli/commands/export.js'
+    );
+
+    await expect(
+      handler('AWS::ApiGatewayV2::Stage', {
+        logicalId: 'X',
+        resourceType: 'AWS::ApiGatewayV2::Stage',
+        physicalId: '$default',
+        properties: { ApiId: { Ref: 'SomeApi' } }, // unresolved intrinsic
+      })
+    ).rejects.toThrow(/missing 'ApiId'/);
+  });
+
+  it('throws when no handler is registered for the type', async () => {
+    await expect(
+      invokePreDeleteHandler('AWS::Made::Up::Type', {
+        logicalId: 'X',
+        resourceType: 'AWS::Made::Up::Type',
+        physicalId: 'x',
+        properties: {},
+      })
+    ).rejects.toThrow(/no pre-delete handler registered/);
   });
 });
 

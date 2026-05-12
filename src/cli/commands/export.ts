@@ -86,6 +86,21 @@ interface ExportOptions {
    * in a follow-up). With this flag set, any such reference aborts.
    */
   strictCrossStack: boolean;
+  /**
+   * Auto-handle `AWS::ApiGatewayV2::Stage` and other resource types AWS
+   * does NOT support in IMPORT changesets (`handlers: []` in the CFn
+   * schema) but DOES support normal CREATE for. Default true: cdkd
+   * skips these from phase 1, deletes the AWS-side resource between
+   * phases, and lets CFn re-CREATE in phase 2 — brief unavailability
+   * window (~10s for Stage; HttpApi endpoint URL is unchanged across
+   * the migration because it embeds ApiId not StageName). When false,
+   * cdkd blocks the export with a clear error instead.
+   *
+   * Commander parses `--no-recreate-import-unsupported` into
+   * `recreateImportUnsupported: false`; the default (no flag) leaves
+   * it `true`. See cdkd issue #307 for the design discussion.
+   */
+  recreateImportUnsupported: boolean;
 }
 
 /**
@@ -395,6 +410,105 @@ interface ImportPlanEntry {
   propertiesOverlay?: Record<string, string>;
 }
 
+/**
+ * Entry in the "delete from AWS before phase-2 UPDATE so CFn can re-CREATE
+ * fresh" list. Used for resource types AWS does NOT support in IMPORT
+ * changesets but DOES support normal CREATE for — currently just
+ * `AWS::ApiGatewayV2::Stage` (handlers: []), which is auto-emitted by
+ * CDK's `HttpApi` construct as `$default`.
+ *
+ * The flow: phase-1 IMPORT skips these resources entirely. Between
+ * phase 1 and phase 2, cdkd issues a per-type SDK delete call against
+ * the AWS-side resource. Phase 2 then sees the resource in the full
+ * synth template and CFn CREATEs it fresh. There IS a brief
+ * unavailability window between the SDK delete and CFn's CREATE
+ * (typically ~10s for Stage); for `$default` HttpApi Stage this is
+ * fine because the API URL embeds ApiId + region, not StageName, so
+ * the endpoint URL is unchanged across the migration.
+ *
+ * Tracked design discussion: cdkd issue #307.
+ */
+export interface RecreateBeforePhase2Entry {
+  logicalId: string;
+  resourceType: string;
+  physicalId: string;
+  /** cdkd state's recorded properties — supplies parent identifiers (ApiId, etc.) to the SDK delete call. */
+  properties: Record<string, unknown>;
+}
+
+/**
+ * Resource types AWS does NOT support in IMPORT changesets but DOES
+ * support normal CREATE for. cdkd handles these via a pre-delete + phase-2
+ * CREATE dance (see {@link RecreateBeforePhase2Entry}). When the user
+ * passes `--no-recreate-import-unsupported`, resources of these types
+ * are hard-blocked instead with a clear error message.
+ *
+ * Verified via `aws cloudformation describe-type --type RESOURCE
+ * --type-name <T> | jq .handlers` — types with `handlers: []` are
+ * candidates. Currently only `AWS::ApiGatewayV2::Stage` qualifies (every
+ * sibling ApiGwV2 type has `[create, delete, list, read, update]`).
+ */
+const IMPORT_UNSUPPORTED_RECREATABLE_TYPES: ReadonlySet<string> = new Set([
+  'AWS::ApiGatewayV2::Stage',
+]);
+
+/**
+ * Returns true if cdkd treats the resource type as "AWS doesn't support
+ * IMPORT but does support CREATE" — handled via pre-delete + phase-2-CREATE
+ * (see {@link IMPORT_UNSUPPORTED_RECREATABLE_TYPES}). Exported for unit tests
+ * and for ad-hoc inspection.
+ */
+export function isImportUnsupportedRecreatableType(resourceType: string): boolean {
+  return IMPORT_UNSUPPORTED_RECREATABLE_TYPES.has(resourceType);
+}
+
+/**
+ * Per-type AWS SDK delete handler invoked between phase-1 IMPORT and
+ * phase-2 UPDATE so CFn's phase-2 CREATE doesn't collide with the
+ * already-existing AWS-side resource. Each handler reads the parent
+ * identifier (`ApiId` etc.) from `properties` and the secondary id
+ * from `physicalId`, then issues the appropriate Delete API call.
+ *
+ * Errors propagate to the caller — a failed pre-delete is fatal
+ * because phase 2 would then collide with the still-present AWS
+ * resource. cdkd state and the post-phase-1 CFn stack are preserved
+ * so the user can fix the underlying cause (typically permissions)
+ * and re-run.
+ */
+type PreDeleteHandler = (entry: RecreateBeforePhase2Entry) => Promise<void>;
+
+const PRE_DELETE_HANDLERS: Record<string, PreDeleteHandler> = {
+  'AWS::ApiGatewayV2::Stage': async (entry) => {
+    // ApiGatewayV2Client isn't in src/utils/aws-clients.ts — lazy-init
+    // inline (same pattern as ApiGatewayV2Provider.getClient).
+    const { ApiGatewayV2Client, DeleteStageCommand } = await import('@aws-sdk/client-apigatewayv2');
+    const apiId = entry.properties['ApiId'];
+    if (typeof apiId !== 'string' || !apiId) {
+      throw new Error(
+        `cdkd state's properties for ${entry.logicalId} (${entry.resourceType}) is missing 'ApiId'`
+      );
+    }
+    const client = new ApiGatewayV2Client({});
+    await client.send(new DeleteStageCommand({ ApiId: apiId, StageName: entry.physicalId }));
+  },
+};
+
+/**
+ * Exported for unit testing — look up the pre-delete handler for
+ * `resourceType` and invoke it against `entry`. Throws when no handler
+ * is registered (same shape as the inline call site).
+ */
+export async function invokePreDeleteHandler(
+  resourceType: string,
+  entry: RecreateBeforePhase2Entry
+): Promise<void> {
+  const handler = PRE_DELETE_HANDLERS[resourceType];
+  if (!handler) {
+    throw new Error(`no pre-delete handler registered for ${resourceType}`);
+  }
+  await handler(entry);
+}
+
 async function exportCommand(stackArg: string | undefined, options: ExportOptions): Promise<void> {
   const logger = getLogger();
   if (options.verbose) {
@@ -562,11 +676,15 @@ async function exportCommand(stackArg: string | undefined, options: ExportOption
     try {
       // Build the import plan: cdkd state × template resources, classified
       // into phase1 (importable) / phase2 (Custom::* CFn will CREATE) /
-      // blocked (anything else — aborts the run).
-      const { phase1Imports, phase2Creates, blocked } = await buildImportPlan(
+      // recreateBeforePhase2 (Stage — IMPORT-unsupported, pre-delete + CFn
+      // CREATE in phase 2) / blocked (anything else — aborts the run).
+      const { phase1Imports, phase2Creates, recreateBeforePhase2, blocked } = await buildImportPlan(
         state,
         template,
-        awsClients.cloudFormation
+        awsClients.cloudFormation,
+        {
+          recreateImportUnsupported: options.recreateImportUnsupported,
+        }
       );
 
       if (blocked.length > 0) {
@@ -595,7 +713,11 @@ async function exportCommand(stackArg: string | undefined, options: ExportOption
         );
       }
 
-      if (phase1Imports.length === 0 && phase2Creates.length === 0) {
+      if (
+        phase1Imports.length === 0 &&
+        phase2Creates.length === 0 &&
+        recreateBeforePhase2.length === 0
+      ) {
         logger.warn('No resources to migrate — cdkd state is empty.');
         return;
       }
@@ -614,6 +736,21 @@ async function exportCommand(stackArg: string | undefined, options: ExportOption
         }
         logger.info('');
       }
+      if (recreateBeforePhase2.length > 0) {
+        logger.info(
+          `Phase 2 will also re-CREATE ${recreateBeforePhase2.length} ` +
+            `IMPORT-unsupported resource(s) after cdkd deletes the AWS-side resource:`
+        );
+        for (const r of recreateBeforePhase2) {
+          logger.info(`  ${r.logicalId} (${r.resourceType}) — physicalId: ${r.physicalId}`);
+        }
+        logger.info(
+          '  Brief unavailability window (~10s for Stage; HttpApi endpoint URL is ' +
+            'unchanged because it embeds ApiId, not StageName). Pass ' +
+            '--no-recreate-import-unsupported to block instead.'
+        );
+        logger.info('');
+      }
 
       if (options.dryRun) {
         logger.info('--dry-run: no CloudFormation changeset will be created.');
@@ -626,10 +763,17 @@ async function exportCommand(stackArg: string | undefined, options: ExportOption
             ? ` Phase 2 will then CREATE ${phase2Creates.length} non-importable resource(s) ` +
               `(invoking each Custom Resource's onCreate handler).`
             : '';
+        const recreateNote =
+          recreateBeforePhase2.length > 0
+            ? ` cdkd will also DELETE ${recreateBeforePhase2.length} AWS resource(s) ` +
+              `between phases so CFn can re-CREATE them in phase 2 (brief unavailability ` +
+              `window — see plan above for the affected resources).`
+            : '';
         const ok = await confirmPrompt(
           `Create CloudFormation stack '${cfnStackName}' by importing ${phase1Imports.length} ` +
             `resource(s) from cdkd state '${resolvedStackName}' (${targetRegion})?` +
             phase2Note +
+            recreateNote +
             ` AWS resources are unchanged on import. cdkd state for '${resolvedStackName}' ` +
             `will be deleted on success.`
         );
@@ -730,12 +874,60 @@ async function exportCommand(stackArg: string | undefined, options: ExportOption
           `${phase1Imports.length} resource(s) imported.`
       );
 
+      // Pre-delete IMPORT-unsupported resources (currently just
+      // AWS::ApiGatewayV2::Stage). These were skipped from phase 1
+      // because AWS rejects them in IMPORT changesets. The synth template
+      // still includes them, so phase-2 UPDATE will see them as new and
+      // CFn will issue CREATE — but only AFTER we delete the AWS-side
+      // resource here, or CFn's CreateStage would collide with the
+      // already-existing one. Failure here is fatal: cdkd state is intact
+      // (release happens in outer finally) but a partial pre-delete may
+      // leave AWS in a half-state — the recovery path is to fix the
+      // underlying issue (permissions, AWS API throttling) and re-run
+      // the export command. The lock prevents concurrent cdkd activity.
+      if (recreateBeforePhase2.length > 0) {
+        for (const entry of recreateBeforePhase2) {
+          const handler = PRE_DELETE_HANDLERS[entry.resourceType];
+          if (!handler) {
+            throw new Error(
+              `No pre-delete handler registered for ${entry.resourceType} ` +
+                `(${entry.logicalId}). This is a cdkd bug — the resource is in ` +
+                `IMPORT_UNSUPPORTED_RECREATABLE_TYPES but lacks a PRE_DELETE_HANDLERS entry. ` +
+                `Phase 1 IMPORT already succeeded; cdkd state is intact. To recover, ` +
+                `delete the AWS resource manually and run the phase 2 UPDATE.`
+            );
+          }
+          logger.info(
+            `Pre-deleting AWS resource for ${entry.logicalId} (${entry.resourceType}) ` +
+              `so CFn can re-CREATE in phase 2...`
+          );
+          try {
+            await handler(entry);
+            logger.info(`  ✓ deleted ${entry.physicalId}`);
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            throw new Error(
+              `Phase 1 (IMPORT) succeeded; pre-delete of ${entry.logicalId} ` +
+                `(${entry.resourceType}, physicalId: ${entry.physicalId}) failed: ${msg}\n\n` +
+                `The CloudFormation stack '${cfnStackName}' contains the phase-1 imports ` +
+                `but the IMPORT-unsupported resources (${recreateBeforePhase2.length} total) ` +
+                `still exist in AWS unmanaged. cdkd state is UNCHANGED. To recover:\n` +
+                `  1. Fix the failure cause (typically IAM permissions for the underlying ` +
+                `     AWS API — e.g. apigateway:DELETE on the Stage's ApiId).\n` +
+                `  2. Re-run \`cdkd export ${resolvedStackName}\` — phase 1 IMPORT detects ` +
+                `     the existing CFn stack and re-attempts the pre-delete + phase 2.`
+            );
+          }
+        }
+      }
+
       // Phase 2: UPDATE changeset to add the non-importable resources via
       // CREATE. Skipped when there are none. A phase-2 failure leaves the
       // CFn stack in a partial state (phase 1 resources imported, phase 2
       // missing) and cdkd state intact so the user can recover manually
       // via `aws cloudformation update-stack` + `cdkd state orphan`.
-      if (phase2Creates.length > 0) {
+      const phase2Count = phase2Creates.length + recreateBeforePhase2.length;
+      if (phase2Count > 0) {
         try {
           await executeUpdateChangeSet(
             awsClients.cloudFormation,
@@ -743,16 +935,31 @@ async function exportCommand(stackArg: string | undefined, options: ExportOption
             template,
             cfnParameters
           );
-          logger.info(`✓ Phase 2: ${phase2Creates.length} non-importable resource(s) CREATEd.`);
+          const parts: string[] = [];
+          if (phase2Creates.length > 0) {
+            parts.push(`${phase2Creates.length} non-importable resource(s) CREATEd`);
+          }
+          if (recreateBeforePhase2.length > 0) {
+            parts.push(`${recreateBeforePhase2.length} IMPORT-unsupported resource(s) re-CREATEd`);
+          }
+          logger.info(`✓ Phase 2: ${parts.join('; ')}.`);
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
+          const recreateNote =
+            recreateBeforePhase2.length > 0
+              ? `  - cdkd deleted ${recreateBeforePhase2.length} AWS resource(s) before ` +
+                `phase 2 (Stage etc.). They are gone in AWS but absent from the CFn stack. ` +
+                `Running phase 2 UPDATE manually will CFn-CREATE them fresh.\n`
+              : '';
           throw new Error(
             `Phase 1 (IMPORT) succeeded; phase 2 (UPDATE) failed: ${msg}\n\n` +
               `The CloudFormation stack '${cfnStackName}' now contains the imported ` +
-              `resources but is missing the ${phase2Creates.length} non-importable ` +
-              `resource(s). cdkd state is UNCHANGED so you can inspect what's in it, ` +
-              `but DO NOT run \`cdkd deploy\` against this stack (the imported resources ` +
-              `are now CFn-managed). To recover:\n` +
+              `resources but is missing ${phase2Count} resource(s) (${phase2Creates.length} ` +
+              `Custom Resource(s) + ${recreateBeforePhase2.length} IMPORT-unsupported). ` +
+              `cdkd state is UNCHANGED so you can inspect what's in it, but DO NOT run ` +
+              `\`cdkd deploy\` against this stack (the imported resources are now ` +
+              `CFn-managed). To recover:\n` +
+              recreateNote +
               `  1. Fix the failure cause (typically an onCreate Lambda error).\n` +
               `  2. Re-run the phase 2 UPDATE manually with the full synth template:\n` +
               `       aws cloudformation create-change-set --stack-name ${cfnStackName} \\\n` +
@@ -942,15 +1149,23 @@ export function isPhase2CreatableType(resourceType: string): boolean {
  *   - `phase2Creates`: non-importable but `isPhase2CreatableType` — CFn
  *     will CREATE these in the phase-2 UPDATE changeset. Currently only
  *     `Custom::*`.
+ *   - `recreateBeforePhase2`: AWS does NOT support IMPORT for these types
+ *     (`handlers: []` in the CFn schema) but DOES support normal CREATE.
+ *     Skipped from phase 1; the AWS-side resource is deleted between
+ *     phases so CFn's phase-2 CREATE doesn't collide. When the user
+ *     passes `--no-recreate-import-unsupported`, these are moved to
+ *     `blocked` instead.
  *   - `blocked`: anything else. A non-empty `blocked` aborts the run.
  */
 async function buildImportPlan(
   state: StackState,
   template: Record<string, unknown>,
-  cfnClient: AwsClients['cloudFormation']
+  cfnClient: AwsClients['cloudFormation'],
+  options: { recreateImportUnsupported: boolean } = { recreateImportUnsupported: true }
 ): Promise<{
   phase1Imports: ImportPlanEntry[];
   phase2Creates: Phase2CreateEntry[];
+  recreateBeforePhase2: RecreateBeforePhase2Entry[];
   blocked: BlockedResource[];
 }> {
   const templateResources = template['Resources'];
@@ -964,6 +1179,7 @@ async function buildImportPlan(
 
   const phase1Imports: ImportPlanEntry[] = [];
   const phase2Creates: Phase2CreateEntry[] = [];
+  const recreateBeforePhase2: RecreateBeforePhase2Entry[] = [];
   const blocked: BlockedResource[] = [];
   const identifierCache = new Map<string, PrimaryIdentifierCacheEntry>();
 
@@ -1003,6 +1219,32 @@ async function buildImportPlan(
       continue;
     }
 
+    // IMPORT-unsupported but CFn-createable types (`AWS::ApiGatewayV2::Stage`).
+    // Skip phase-1 IMPORT entirely; cdkd will delete the AWS-side resource
+    // between phases so CFn's phase-2 CREATE doesn't collide. The opt-out
+    // flag `--no-recreate-import-unsupported` blocks them instead.
+    if (IMPORT_UNSUPPORTED_RECREATABLE_TYPES.has(resourceType)) {
+      if (options.recreateImportUnsupported) {
+        recreateBeforePhase2.push({
+          logicalId,
+          resourceType,
+          physicalId: stateEntry.physicalId,
+          properties: stateEntry.properties ?? {},
+        });
+      } else {
+        blocked.push({
+          logicalId,
+          resourceType,
+          reason:
+            `AWS CloudFormation does not support ${resourceType} in IMPORT changesets ` +
+            `(${resourceType} has no IMPORT handler). Re-run without ` +
+            `--no-recreate-import-unsupported to let cdkd delete the AWS-side resource ` +
+            `before phase 2 (CFn will then CREATE it fresh; brief unavailability window).`,
+        });
+      }
+      continue;
+    }
+
     let resolved: CompositeIdResult;
     try {
       resolved = await resolveResourceIdentifier(
@@ -1032,7 +1274,7 @@ async function buildImportPlan(
     });
   }
 
-  return { phase1Imports, phase2Creates, blocked };
+  return { phase1Imports, phase2Creates, recreateBeforePhase2, blocked };
 }
 
 /**
@@ -1911,6 +2153,14 @@ export function createExportCommand(): Command {
         'exporting stack via Fn::GetStackOutput. Without the flag, cdkd warns but ' +
         'proceeds — the user is expected to migrate the consumer stacks in a follow-up.',
       false
+    )
+    .option(
+      '--no-recreate-import-unsupported',
+      'Block instead of auto-handling resource types AWS does NOT support in IMPORT ' +
+        'changesets (currently only AWS::ApiGatewayV2::Stage, emitted by CDK HttpApi). ' +
+        'Default behavior: cdkd skips these from phase 1, deletes the AWS-side resource ' +
+        'between phases, and lets CFn re-CREATE in phase 2 (brief unavailability window). ' +
+        'With this flag, the export aborts with a clear error instead.'
     )
     .action(withErrorHandling(exportCommand));
 

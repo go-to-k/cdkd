@@ -922,14 +922,18 @@ cdkd export                                       # auto-detect single-stack app
    the `Properties` overlay to the writable subset so CFn doesn't reject
    the changeset with "Encountered unsupported property". Other composite
    types abort with a clear error pointing at where to register a new
-   splitter in `src/cli/commands/export.ts`. **Known limitation**:
+   splitter in `src/cli/commands/export.ts`. **IMPORT-unsupported
+   types** (`handlers: []` in the CFn schema) — currently only
    `AWS::ApiGatewayV2::Stage` (auto-emitted by CDK's `HttpApi` construct
-   as `$default`) is reported by AWS as single-key, so the splitter
-   table is not the blocker — but AWS CloudFormation itself does NOT
-   support `AWS::ApiGatewayV2::Stage` in IMPORT changesets
-   (`CreateChangeSet` rejects with "ResourceTypes [...] are not
-   supported for Import"). Stacks containing an HttpApi therefore
-   cannot be exported via `cdkd export` until a workaround lands.
+   as `$default`) — are auto-handled via a pre-delete + phase-2-CREATE
+   dance: cdkd skips the resource from phase 1, deletes the AWS-side
+   resource between phases via the appropriate SDK call
+   (`apigatewayv2:DeleteStage` for Stage), and lets CFn re-CREATE in
+   phase 2. Brief unavailability window (~10s for Stage; HttpApi
+   endpoint URL is unchanged because it embeds ApiId, not StageName).
+   Pass `--no-recreate-import-unsupported` to block instead of
+   auto-handling. Per-type config lives in `IMPORT_UNSUPPORTED_RECREATABLE_TYPES`
+   and `PRE_DELETE_HANDLERS` in `src/cli/commands/export.ts`.
 5. Acquire the stack lock so concurrent `cdkd deploy` cannot race.
 6. Confirm with the user (skipped with `-y` / `--yes`).
 7. **Preprocess the phase-1 template** (automatic; required by CFn IMPORT

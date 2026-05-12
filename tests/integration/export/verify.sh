@@ -97,16 +97,26 @@ case "${VARIANT}" in
       echo "[verify] FAIL: dry-run output does not mention any imported resource type"
       exit 1
     fi
-    # Regression guard for the splitter-coverage class of bugs: this
-    # fixture does not (yet) contain composite-id resources because of
-    # the AWS::ApiGatewayV2::Stage IMPORT limitation (tracked separately),
-    # but if a future fixture extension adds one, the existing
-    # COMPOSITE_ID_SPLITTERS table must cover it. Failing fast here on
-    # any "composite primary identifier" / "block migration" message is
-    # cheaper than waiting for CFn changeset creation to reject.
+    # Regression guard for the splitter-coverage class of bugs. The fixture
+    # now contains composite-id resources (HttpApi: Integration / Route /
+    # Lambda::Permission) and an IMPORT-unsupported resource (Stage), so the
+    # dry-run plan output should NOT contain any "blocks migration" or
+    # "composite primary identifier" message.
     if grep -qE 'block migration|composite primary identifier' /tmp/verify-dry-run.log; then
       echo "[verify] FAIL: dry-run reports unresolved composite-id resources"
       echo "[verify] (composite-id splitters in src/cli/commands/export.ts are missing entries)"
+      exit 1
+    fi
+    # Assert the dry-run plan announces the Stage pre-delete + re-CREATE
+    # path. Without this output, the plan-printer integration for
+    # recreateBeforePhase2 silently regressed.
+    if ! grep -q 'IMPORT-unsupported resource' /tmp/verify-dry-run.log; then
+      echo "[verify] FAIL: dry-run plan does not mention IMPORT-unsupported resources"
+      echo "[verify] (Stage pre-delete + re-CREATE announcement missed)"
+      exit 1
+    fi
+    if ! grep -q 'AWS::ApiGatewayV2::Stage' /tmp/verify-dry-run.log; then
+      echo "[verify] FAIL: dry-run plan does not list AWS::ApiGatewayV2::Stage as recreate target"
       exit 1
     fi
     echo "[verify] step 4: verify CFn stack does NOT exist (dry-run)"
@@ -210,12 +220,28 @@ case "${VARIANT}" in
     RESOURCES="$(aws cloudformation list-stack-resources --stack-name "${CFN_STACK}" --region "${REGION}" \
       --query 'StackResourceSummaries[].ResourceType' --output text)"
     echo "[verify] CFn resources: ${RESOURCES}"
+    # Single-key imports (phase 1)
     for needed in 'AWS::S3::Bucket' 'AWS::SNS::Topic' 'AWS::Lambda::Function' 'AWS::IAM::Role'; do
       if ! echo "${RESOURCES}" | grep -q "${needed}"; then
         echo "[verify] FAIL: ${needed} not found in CFn stack"
         exit 1
       fi
     done
+    # Composite-id imports (phase 1) — covers ApiGwV2 Api + Integration + Route
+    # + Lambda::Permission, exercising COMPOSITE_ID_SPLITTERS end-to-end.
+    for needed in 'AWS::ApiGatewayV2::Api' 'AWS::ApiGatewayV2::Integration' 'AWS::ApiGatewayV2::Route' 'AWS::Lambda::Permission'; do
+      if ! echo "${RESOURCES}" | grep -q "${needed}"; then
+        echo "[verify] FAIL: ${needed} not found in CFn stack (composite-id splitter regression)"
+        exit 1
+      fi
+    done
+    # IMPORT-unsupported re-CREATE (phase 2): AWS::ApiGatewayV2::Stage was
+    # pre-deleted between phases, then CFn UPDATE re-CREATEd it fresh.
+    # Closes cdkd issue #307.
+    if ! echo "${RESOURCES}" | grep -q 'AWS::ApiGatewayV2::Stage'; then
+      echo "[verify] FAIL: AWS::ApiGatewayV2::Stage not found in CFn stack (pre-delete + phase-2 CREATE missed)"
+      exit 1
+    fi
     # Phase-2 Custom Resources arrive in the second changeset. CDK emits two
     # distinct CFn resource types depending on whether the user passed
     # `resourceType: 'Custom::Foo'` to `new CustomResource(...)`: the typed
