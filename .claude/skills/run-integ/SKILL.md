@@ -18,7 +18,7 @@ Run integration tests against a real AWS account. These tests deploy actual AWS 
 
 ## Steps
 
-1. **Build first**: Run `pnpm run build` to ensure dist/ is up to date.
+1. **Build first**: Run `vp run build` to ensure dist/ is up to date.
 
 2. **List available tests**: Run `ls tests/integration/` to discover all test directories dynamically. Do NOT rely on a hardcoded list.
 

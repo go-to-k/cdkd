@@ -17,10 +17,10 @@ Run each check and report pass/fail:
    [ -d node_modules ] || pnpm install
    ```
    `git worktree add` does NOT copy `node_modules`, so a fresh worktree's
-   `pnpm run typecheck` / `lint` / `build` and `npx vitest --run` all fail
-   with `tsc: command not found` / `Cannot find package 'vitest'` etc. —
+   `vp run typecheck` / `lint` / `build` and `vp run test` all fail
+   with `tsgo: command not found` / `Cannot find package 'vitest'` etc. —
    but the failure is easy to miss when the output is piped to `tail` (the
-   exit code reflects `tail`, not `pnpm`, and the `ELIFECYCLE` line gets
+   exit code reflects `tail`, not `vp`, and the failure line gets
    buried). If the pre-flight skips by way of an existing `node_modules`,
    confirm it is not stale by spot-checking `pnpm-lock.yaml` mtime ≤
    `node_modules/.modules.yaml` mtime. **Do not start step 1 until this
@@ -28,20 +28,20 @@ Run each check and report pass/fail:
    green.
 
 1. **Code quality**
-   - `pnpm run typecheck` passes
-   - `pnpm run lint` passes (run `lint:fix` first if needed)
-   - `pnpm run build` succeeds
+   - `vp run typecheck` passes
+   - `vp run lint` passes (run `lint:fix` first if needed)
+   - `vp run build` succeeds
    - When piping any of the above to `tail` / `head` / `grep` for log
-     truncation, **check the actual output content** for `ELIFECYCLE` /
-     `Command failed` / `Error` markers — `$?` after a pipeline reflects
+     truncation, **check the actual output content** for `Error` /
+     `Command failed` markers — `$?` after a pipeline reflects
      the LAST stage (usually 0), NOT the build tool's exit. The same
      applies to background-task completion notifications: the
      framework's `exit code 0` is the chained command's exit, not the
      pipeline head. When in doubt, capture the result without piping:
-     `pnpm run X > /tmp/out 2>&1; rc=$?; tail -3 /tmp/out; echo "[rc=$rc]"`.
+     `vp run X > /tmp/out 2>&1; rc=$?; tail -3 /tmp/out; echo "[rc=$rc]"`.
 
 2. **Tests**
-   - `npx vitest --run` - all unit tests pass
+   - `vp run test` - all unit tests pass
    - Report test count (files and tests)
    - **Test coverage check**: compare `git diff main...HEAD` for `src/` changes vs `tests/` changes. If new logic was added or modified in `src/` but no corresponding test files were added or updated, flag as **fail** and add the missing tests before proceeding
 
@@ -105,7 +105,7 @@ Run each check and report pass/fail:
 
 9. **Live-test changed behavior**
    - Unit tests verify code correctness; this step verifies *feature* correctness against the runtime the user actually sees.
-   - Build the latest source: `pnpm run build`
+   - Build the latest source: `vp run build`
    - For each user-visible change in the diff (CLI command, output format, flag, error message), run the actual command path against a real or fixture input and confirm the output matches the spec / CDK CLI parity claim:
      - CLI surface change → run `node dist/cli.js <subcommand> <args>` against `tests/integration/<example>/cdk.out` or a real state bucket; verify each output mode (`--long` / `--json` / patterns / etc.).
      - State-touching change → exercise it against a real / test state bucket (e.g. `cdkd-state-test`).

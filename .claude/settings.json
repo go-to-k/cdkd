@@ -118,7 +118,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "jq -r '.tool_input.file_path // .tool_response.filePath' | { read -r f; echo \"$f\" | grep -qE '\\.(ts|tsx)$' && pnpm run lint:fix; } 2>/dev/null || true",
+            "command": "jq -r '.tool_input.file_path // .tool_response.filePath' | { read -r f; echo \"$f\" | grep -qE '\\.(ts|tsx)$' && vp run lint:fix; } 2>/dev/null || true",
             "timeout": 30,
             "statusMessage": "Running lint:fix..."
           }
