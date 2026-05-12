@@ -192,9 +192,9 @@ cdkd creates AWS resources with the **exact name you declared** in
 CDK code by default. `new iam.Role(this, 'CRRole', { roleName:
 'my-role' })` in stack `MyStack` produces an AWS resource named
 `my-role`, consistent across every resource type. This is the
-default since **v0.93.0** ([#299](https://github.com/go-to-k/cdkd/issues/299)).
+default since **v0.94.0** ([#299](https://github.com/go-to-k/cdkd/issues/299)).
 
-Pre-v0.93.0 cdkd prepended the stack name to user-declared physical
+Pre-v0.94.0 cdkd prepended the stack name to user-declared physical
 names on a subset of types only (Pattern B providers: IAM Role /
 User / Group / InstanceProfile / ELBv2 LoadBalancer / TargetGroup),
 while Pattern A providers (Lambda, S3, SNS, SQS, DynamoDB, etc.)
@@ -205,7 +205,7 @@ didn't match the AWS-deployed `MyStack-my-role`. Flipping the default
 brings every resource type into line out of the box.
 
 `--prefix-user-supplied-names` opts BACK in to legacy prefixing on
-Pattern B providers (matching pre-v0.93.0 cdkd). Auto-generated names
+Pattern B providers (matching pre-v0.94.0 cdkd). Auto-generated names
 (where the user did NOT declare a physical name) keep the prefix
 regardless of the flag: those names rely on the prefix for cross-stack
 uniqueness.
@@ -229,20 +229,20 @@ cdkd deploy
 Resolution chain (highest wins): `--prefix-user-supplied-names` CLI
 flag → `CDKD_PREFIX_USER_SUPPLIED_NAMES=true` env var → `cdk.json`
 `context.cdkd.prefixUserSuppliedNames: true` → default `false`
-(= skip prefix, the v0.93.0 default).
+(= skip prefix, the v0.94.0 default).
 
 ### Deprecated: `--no-prefix-user-supplied-names`
 
 The `--no-prefix-user-supplied-names` CLI flag (plus the
 `CDKD_NO_PREFIX_USER_SUPPLIED_NAMES` env var and `cdk.json
 context.cdkd.noPrefixUserSuppliedNames`) is still accepted but now
-matches the default since v0.93.0. Setting any of them emits a
-deprecation warning and has no effect on the resolved name. Pre-v0.93.0
+matches the default since v0.94.0. Setting any of them emits a
+deprecation warning and has no effect on the resolved name. Pre-v0.94.0
 this was how you opted in to skipping the prefix; that opt-in is now
 the default.
 
 Remove the flag / env var / cdk.json entry from your config. If you
-need to RESTORE pre-v0.93.0 legacy prefixing (e.g. migrating an
+need to RESTORE pre-v0.94.0 legacy prefixing (e.g. migrating an
 existing stack without replacement), use the new
 `--prefix-user-supplied-names` opposite-direction flag instead.
 
@@ -259,29 +259,64 @@ existing stack without replacement), use the new
   causes the next deploy to propose REPLACEMENT on every Pattern B
   resource (IAM Role / User / Group / InstanceProfile / ELBv2 LB / TG)
   that uses a user-declared name — the existing AWS resource has one
-  name; the new template intent has the other. The v0.93.0 default
-  flip is a one-time instance of this: upgrading from a pre-v0.93.0
+  name; the new template intent has the other. The v0.94.0 default
+  flip is a one-time instance of this: upgrading from a pre-v0.94.0
   cdkd against an existing stack will propose replacement unless you
   pin `--prefix-user-supplied-names`.
 
 ### Affected resource types
 
-The flag only changes behavior for resource types whose pre-v0.93.0
+The flag only changes behavior for resource types whose pre-v0.94.0
 code path prefixed user-supplied names (Pattern B providers). Pattern A
 providers were always unprefixed and are unchanged by the flag.
 
-| Pattern | New default (v0.93.0+) | `--prefix-user-supplied-names` (legacy opt-in) |
+| Pattern | New default (v0.94.0+) | `--prefix-user-supplied-names` (legacy opt-in) |
 | --- | --- | --- |
 | **Pattern B**: IAM Role, IAM User, IAM Group, IAM InstanceProfile, ELBv2 LoadBalancer, ELBv2 TargetGroup | Unprefixed (`my-role`) | Prefixed (`MyStack-my-role`) |
 | **Pattern A**: Lambda Function, S3 Bucket, SNS Topic, SQS Queue, DynamoDB Table, Logs LogGroup, Events Rule, etc. | Unprefixed (`my-bucket`) | No effect (already unprefixed) |
 | Auto-generated names (any type, no user-supplied physical name) | Prefixed (`MyStack-LogicalId-<hash>`) | No effect — prefix kept for uniqueness |
 
-### Migration from pre-v0.93.0
+### Migration from pre-v0.94.0
 
 See [README.md](../README.md) "Stack-name prefix on physical names →
-Migration from pre-v0.93.0" for the migration matrix and the link to
+Migration from pre-v0.94.0" for the migration matrix and the link to
 [#300](https://github.com/go-to-k/cdkd/issues/300) (state-side
 rename helper).
+
+### Migration: deploy-time warning when the flag flips an existing stack
+
+Flipping `--no-prefix-user-supplied-names` on against a stack already
+deployed under the legacy prefix convention causes cdkd's diff path to
+silently propose REPLACEMENT on every affected Pattern B resource —
+the AWS-deployed name is `MyStack-my-role` and the new template intent
+is `my-role`, so the diff classifies the name as an immutable property
+change and the resource is destroyed and re-created. To make this side
+effect visible up front, `cdkd deploy` runs a pre-flight migration
+check: when the flag is on AND the existing state contains one or
+more Pattern B resources whose `physicalId` still starts with
+`${stackName}-`, the command lists them and prompts for confirmation
+before any provider call runs. The prompt defaults to **no** because
+the side effect is destructive; pass `-y` / `--yes` (the global CDK
+CLI parity flag) to skip the prompt in CI / non-interactive runs. If
+the user declines, the deploy exits cleanly with `no resources
+modified` — nothing has been touched yet.
+
+Example output:
+
+```text
+WARNING: --no-prefix-user-supplied-names will REPLACE 2 resource(s) whose
+AWS physical name is still prefixed with the stack name:
+  - MyRole (AWS::IAM::Role): MyStack-my-role -> my-role
+  - MyLb (AWS::ElasticLoadBalancingV2::LoadBalancer): MyStack-my-lb -> my-lb
+These resources will be REPLACED because the new naming convention drops
+the stack-name prefix.
+
+Continue? (y/N):
+```
+
+The check is a no-op on a first-time deploy (no state to migrate),
+when no Pattern B resource is still prefixed (e.g. the stack was
+originally deployed with the flag on), or when the flag is off.
 
 ## Per-resource timeout
 

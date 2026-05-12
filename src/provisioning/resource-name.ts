@@ -99,6 +99,33 @@ export function getCurrentSkipPrefix(): boolean {
 }
 
 /**
+ * Resource types whose pre-PR #297 code path ran user-supplied
+ * physical names through `generateResourceName` (= got the stack-name
+ * prefix). These are the only types affected by
+ * `--no-prefix-user-supplied-names`; flipping the flag against an
+ * existing stack proposes REPLACEMENT on every state resource of
+ * one of these types whose `physicalId` is still prefixed.
+ *
+ * Pattern A providers (Lambda, S3, SNS, SQS, DynamoDB, Logs LogGroup,
+ * Events Rule, etc.) historically short-circuited user-supplied names
+ * **out** of `generateResourceName` entirely — those types never got
+ * the prefix regardless of the flag, so they are NOT included here.
+ *
+ * Used by the deploy-time pre-flight migration check in
+ * `src/cli/commands/prefix-migration-check.ts`. Keep in sync with the
+ * Pattern B provider call sites that consume
+ * `generateResourceNameWithFallback(...)`.
+ */
+export const PATTERN_B_RESOURCE_TYPES: readonly string[] = [
+  'AWS::IAM::Role',
+  'AWS::IAM::User',
+  'AWS::IAM::Group',
+  'AWS::IAM::InstanceProfile',
+  'AWS::ElasticLoadBalancingV2::LoadBalancer',
+  'AWS::ElasticLoadBalancingV2::TargetGroup',
+] as const;
+
+/**
  * Options for generating a resource name.
  */
 export interface ResourceNameOptions {

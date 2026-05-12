@@ -630,9 +630,9 @@ describe('config-loader', () => {
       loggerMock.warn.mockClear();
     });
 
-    // ---- New default since v0.93.0: skip prefix unless opted back in. ----
+    // ---- New default since v0.94.0: skip prefix unless opted back in. ----
 
-    it('returns true (skip prefix) when nothing is set — new v0.93.0 default', () => {
+    it('returns true (skip prefix) when nothing is set — new v0.94.0 default', () => {
       vi.mocked(existsSync).mockReturnValue(false);
       expect(resolveSkipPrefix({})).toBe(true);
       // Empty Commander shape (no Option keys defined) behaves like default.

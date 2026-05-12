@@ -564,8 +564,8 @@ export const deployOptions = [
     'Opt in to LEGACY behavior: prepend the stack name to physical names the ' +
       'user explicitly supplied in their CDK code (e.g. `new iam.Role(this, ' +
       '"X", { roleName: "my-role" })` → AWS resource named `MyStack-my-role` ' +
-      'instead of `my-role`). Since v0.93.0 the default is to NOT prefix ' +
-      'user-supplied names — this flag restores the pre-v0.93.0 behavior on ' +
+      'instead of `my-role`). Since v0.94.0 the default is to NOT prefix ' +
+      'user-supplied names — this flag restores the pre-v0.94.0 behavior on ' +
       'Pattern B providers (IAM Role / User / Group / InstanceProfile / ELBv2 ' +
       'LoadBalancer / TargetGroup). Enable via this flag, ' +
       'CDKD_PREFIX_USER_SUPPLIED_NAMES=true, or ' +
@@ -576,7 +576,7 @@ export const deployOptions = [
   // declared as a separate Option. Commander's automatic `--no-X`
   // negation lets users still pass it without error — it negates the
   // new `--prefix-user-supplied-names` flag, leaving its default
-  // `false` (= skip prefix) unchanged, which matches the v0.93.0
+  // `false` (= skip prefix) unchanged, which matches the v0.94.0
   // default. Detection of the literal `--no-prefix-user-supplied-names`
   // flag for the deprecation warning happens via the pre-parse argv
   // walk in `warnDeprecatedNoPrefixCliFlag` (src/cli/config-loader.ts) —

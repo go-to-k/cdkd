@@ -1,6 +1,6 @@
-# cdkd
+# cdkd (CDK Direct)
 
-**cdkd** (CDK Direct) — a from-scratch CDK CLI that provisions via AWS SDK instead of CloudFormation.
+Drop-in CDK CLI for existing CDK apps — faster deploys via AWS SDK instead of CloudFormation, with local emulation for Lambda, API Gateway, and ECS.
 
 - **Drop-in CDK compatible** — your existing CDK app code runs as-is.
 - **Up to 15x faster deploys than the AWS CDK CLI (CloudFormation)**
@@ -459,9 +459,9 @@ By default cdkd creates AWS resources with the **exact name you
 declared** in CDK code: `new iam.Role(this, 'CRRole', { roleName:
 'my-role' })` in stack `MyStack` produces an AWS resource named
 `my-role`. Consistent across every resource type. This is the
-default since **v0.93.0** (closes [#299](https://github.com/go-to-k/cdkd/issues/299)).
+default since **v0.94.0** (closes [#299](https://github.com/go-to-k/cdkd/issues/299)).
 
-Pre-v0.93.0 cdkd prepended the stack name to user-declared physical
+Pre-v0.94.0 cdkd prepended the stack name to user-declared physical
 names on a subset of types only (Pattern B providers: IAM Role /
 User / Group / InstanceProfile / ELBv2 LoadBalancer / TargetGroup),
 while Pattern A providers (Lambda, S3, SNS, SQS, DynamoDB, etc.) used
@@ -471,7 +471,7 @@ mismatch). Flipping the default brings every resource type into line
 out of the box.
 
 `cdkd deploy --prefix-user-supplied-names` opts BACK in to the
-legacy prefixing on Pattern B providers (matching pre-v0.93.0 cdkd).
+legacy prefixing on Pattern B providers (matching pre-v0.94.0 cdkd).
 Useful when migrating an existing stack that was originally deployed
 under the legacy default and you don't want to take a one-time
 replacement on every Pattern B resource.
@@ -493,10 +493,10 @@ context.cdkd.noPrefixUserSuppliedNames`) is still accepted but now
 matches the default; setting it emits a deprecation warning and is a
 no-op. Remove it from your CLI invocations and config.
 
-### Migration from pre-v0.93.0
+### Migration from pre-v0.94.0
 
-This is a **breaking change**: upgrading from a pre-v0.93.0 cdkd to
-v0.93.0+ flips the AWS-resource name cdkd produces on Pattern B
+This is a **breaking change**: upgrading from a pre-v0.94.0 cdkd to
+v0.94.0+ flips the AWS-resource name cdkd produces on Pattern B
 providers (IAM Role / User / Group / InstanceProfile / ELBv2 LB / TG)
 with user-supplied physical names. The next `cdkd deploy` against an
 existing stack will propose REPLACEMENT on every such resource —
@@ -523,13 +523,13 @@ is tracked separately in [#300](https://github.com/go-to-k/cdkd/issues/300).
 ### Effect on `cdkd export`
 
 [PR #285 `cdkd export`](https://github.com/go-to-k/cdkd/pull/285)
-surfaced the pre-v0.93.0 inconsistency: the CFn IMPORT changeset's
+surfaced the pre-v0.94.0 inconsistency: the CFn IMPORT changeset's
 identifier check would fail on a synth `RoleName: 'my-role'` vs the
 AWS-deployed `MyStack-my-role`, so the export command overlays
 `ResourceIdentifier` onto `Properties` to bridge the gap. The
 overlay is still needed for stacks deployed under the legacy default
 (or with `--prefix-user-supplied-names`); a fresh stack deployed
-under the v0.93.0 default has matching names and the overlay is a
+under the v0.94.0 default has matching names and the overlay is a
 no-op for it.
 
 ## `--remove-protection`: one-shot bypass for protected resources
