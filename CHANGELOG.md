@@ -1,3 +1,10 @@
+## [0.94.3](https://github.com/go-to-k/cdkd/compare/v0.94.2...v0.94.3) (2026-05-12)
+
+
+### Bug Fixes
+
+* **deploy:** prefix-migration check false-positive on auto-generated names ([#310](https://github.com/go-to-k/cdkd/issues/310)) ([07aeb74](https://github.com/go-to-k/cdkd/commit/07aeb74d5fc085e18033673094fa2fcb6eb9eec0))
+
 ## [0.94.2](https://github.com/go-to-k/cdkd/compare/v0.94.1...v0.94.2) (2026-05-12)
 
 
