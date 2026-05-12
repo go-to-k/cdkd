@@ -923,14 +923,29 @@ cdkd export                                       # auto-detect single-stack app
    the changeset with "Encountered unsupported property". Other composite
    types abort with a clear error pointing at where to register a new
    splitter in `src/cli/commands/export.ts`. **IMPORT-unsupported
-   types** (`handlers: []` in the CFn schema) — currently only
-   `AWS::ApiGatewayV2::Stage` (auto-emitted by CDK's `HttpApi` construct
-   as `$default`) — are auto-handled via a pre-delete + phase-2-CREATE
-   dance: cdkd skips the resource from phase 1, deletes the AWS-side
-   resource between phases via the appropriate SDK call
-   (`apigatewayv2:DeleteStage` for Stage), and lets CFn re-CREATE in
-   phase 2. Brief unavailability window (~10s for Stage; HttpApi
-   endpoint URL is unchanged because it embeds ApiId, not StageName).
+   types** (CFn schema lacks the handlers needed for IMPORT lookup —
+   either `handlers: []` outright, or no `read` / `list` handler so CFn
+   can't look the resource up by identifier) are auto-handled via a
+   pre-delete + phase-2-CREATE dance: cdkd skips the resource from
+   phase 1, deletes the AWS-side resource between phases via the
+   appropriate SDK call, and lets CFn re-CREATE in phase 2.
+   Currently registered:
+   - `AWS::ApiGatewayV2::Stage` (`handlers: []`; auto-emitted by CDK's
+     `HttpApi` construct as `$default`; pre-delete via
+     `apigatewayv2:DeleteStage`). Brief unavailability window ~10s;
+     HttpApi endpoint URL is unchanged because it embeds ApiId, not
+     StageName.
+   - `AWS::IAM::Policy` (`handlers: ['create', 'delete', 'update']` — no
+     `read` / `list` because inline policy attachments have no
+     first-class AWS resource id; auto-emitted by CDK L2 grants such as
+     ECS Task Execution Role ECR pull policy and Lambda execution role
+     inline policies; pre-delete via `iam:DeleteRolePolicy` /
+     `DeleteUserPolicy` / `DeleteGroupPolicy` per attachment target).
+     The inline policy attachment is dropped from each Role / User /
+     Group between phases — any in-flight AWS API call that depends on
+     the granted permission will fail with `AccessDenied` until CFn
+     re-CREATEs in phase 2.
+
    Pass `--no-recreate-import-unsupported` to block instead of
    auto-handling. Per-type config lives in `IMPORT_UNSUPPORTED_RECREATABLE_TYPES`
    and `PRE_DELETE_HANDLERS` in `src/cli/commands/export.ts`.
