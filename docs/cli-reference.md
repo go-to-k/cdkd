@@ -1047,7 +1047,7 @@ in the resolved stack so the user can copy/paste a valid one.
 | `--assume-role <arn>` | off | STS-assume the deployed function's execution role and forward the resulting temp credentials to the container, so the handler runs under the deployed role's narrow permissions instead of the developer's typically-admin shell credentials. Off by default — when omitted, `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` / `AWS_SESSION_TOKEN` / `AWS_REGION` are passed through unchanged (SAM-compatible default). Takes an explicit ARN; PR 2's `--from-state` adds a hint pointing at the state-recorded role ARN but does NOT auto-assume. |
 | `-a, --app <cmd-or-dir>` | — | CDK app command or pre-synthesized `cdk.out` directory. Default: synth every time (Q2 recommendation C). Pass `-a cdk.out` to skip synthesis when iterating. |
 | `--output <dir>` | `cdk.out` | Output directory for synthesis. |
-| `--from-state` | off | Read cdkd's S3 state for the target stack and substitute `Ref` / `Fn::GetAtt` / `Fn::Sub` placeholders in env vars with the deployed physical IDs / attributes. Off by default — keeps PR 1's literal-only / warn-and-drop behavior. See [State-driven env recovery (`--from-state`)](#state-driven-env-recovery---from-state) below. |
+| `--from-state` | off | Read cdkd's S3 state for the target stack and substitute `Ref` / `Fn::GetAtt` / `Fn::Sub` / `Fn::Join` placeholders + AWS pseudo parameters (`${AWS::AccountId}` / `${AWS::Region}` / `${AWS::Partition}` / `${AWS::URLSuffix}`) in env vars with the deployed physical IDs / attributes. Off by default — keeps PR 1's literal-only / warn-and-drop behavior. See [State-driven env recovery (`--from-state`)](#state-driven-env-recovery---from-state) below. |
 | `--state-bucket <bucket>` | auto | S3 bucket containing cdkd state. Falls back to `CDKD_STATE_BUCKET` env or `cdk.json context.cdkd.stateBucket`, then the default `cdkd-state-{accountId}`. Only used with `--from-state`. |
 | `--state-prefix <prefix>` | `cdkd` | S3 key prefix for state files. Only used with `--from-state`. |
 | `--stack-region <region>` | auto | Region of the cdkd state record to read. Required when the same stack name has state in multiple regions. Only used with `--from-state`. |
@@ -1057,11 +1057,14 @@ in the resolved stack so the user can copy/paste a valid one.
 Template `Properties.Environment.Variables` entries:
 
 - **Literal values** (string / number / boolean) are passed through as-is.
-- **Intrinsic-valued entries** (`Ref` / `Fn::GetAtt` / `Fn::Sub`) need
-  state to resolve. Without `--from-state` v1 emits a warning naming the
-  variable and **drops** it (rather than silently substituting garbage);
-  pass `--from-state` (PR 2 — see below) to recover deployed values from
-  cdkd's S3 state, or override intrinsics via `--env-vars`.
+- **Intrinsic-valued entries** (`Ref` / `Fn::GetAtt` / `Fn::Sub` /
+  `Fn::Join`, plus the `${AWS::AccountId}` / `${AWS::Region}` /
+  `${AWS::Partition}` / `${AWS::URLSuffix}` pseudo parameters) need state
+  (and a single `sts:GetCallerIdentity` for `${AWS::AccountId}`) to
+  resolve. Without `--from-state` v1 emits a warning naming the variable
+  and **drops** it (rather than silently substituting garbage); pass
+  `--from-state` (see below) to recover deployed values from cdkd's S3
+  state, or override intrinsics via `--env-vars`.
 
 Standard Lambda runtime env vars are always set: `AWS_LAMBDA_FUNCTION_NAME`,
 `AWS_LAMBDA_FUNCTION_MEMORY_SIZE`, `AWS_LAMBDA_FUNCTION_TIMEOUT`,
@@ -1110,15 +1113,19 @@ one-line hint surfacing the role's ARN. Auto-assumption is intentionally
 not wired in — v1 keeps `--assume-role` as the single explicit path to
 scoped credentials.
 
+**Pseudo parameters**: when the function's template env contains any
+intrinsic value, `cdkd local invoke --from-state` issues a single
+`sts:GetCallerIdentity` (for `${AWS::AccountId}`) and derives
+`partition` / `urlSuffix` from the resolved region (`--region` >
+`AWS_REGION` > `AWS_DEFAULT_REGION` > the synth-derived stack region).
+STS failures degrade to warn — substitution still runs for non-`AWS::*`
+refs; affected `${AWS::*}` placeholders fall back to warn + drop.
+Literal-only env maps skip the STS hop.
+
 **Out of scope** (deferred): cross-stack `Fn::ImportValue` /
 `Fn::GetStackOutput`, other intrinsics (`Fn::Select`, `Fn::Split`,
 `Fn::If`, etc.). Anything beyond the listed supported intrinsics is
-treated as unresolved (warn + drop). Note: `cdkd local invoke`'s
-env-resolver loads state only — `${AWS::AccountId}` substitution still
-requires the same STS `GetCallerIdentity` round-trip that `cdkd local
-run-task` performs at startup; if the local-invoke CLI does not yet
-populate the pseudo-parameter bag, those placeholders fall back to
-warn + drop until the wiring lands.
+treated as unresolved (warn + drop).
 
 ```bash
 # Single-region stack: --from-state alone is enough

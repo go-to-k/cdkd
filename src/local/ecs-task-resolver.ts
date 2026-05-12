@@ -221,10 +221,14 @@ export interface EcsImageResolutionNeeds {
   needsStateResources: boolean;
   /**
    * Any container's `Environment[].Value` OR `Secrets[].ValueFrom` is
-   * an intrinsic (`Ref` / `Fn::GetAtt` / `Fn::Sub` / `Fn::Join`). Issue
-   * #291: without `--from-state` these are silently dropped; with the
-   * flag set, cdkd loads state and substitutes them via
-   * `state-resolver.ts`.
+   * an intrinsic (`Ref` / `Fn::GetAtt` / `Fn::Sub` / `Fn::Join`); OR
+   * any task's `Volumes[].Host.SourcePath` is an intrinsic (Gap 6 of
+   * #286); OR any task's `TaskRoleArn` / `ExecutionRoleArn` is a
+   * `Fn::Sub` / `Fn::Join` intrinsic (Gap 5 of #286). The CLI uses
+   * this flag to gate `--from-state` state loading + pseudo-parameter
+   * resolution. Without `--from-state` these entries either drop with
+   * warnings (env / secret / role ARN) or hard-error (volume source
+   * path — silent drop would mount an empty anonymous volume).
    */
   needsEnvOrSecretSubstitution: boolean;
 }
@@ -250,8 +254,57 @@ export function detectEcsImageResolutionNeeds(stack: StackInfo): EcsImageResolut
       if (need.state) needsStateResources = true;
       if (containerHasIntrinsicEnvOrSecret(co)) needsEnvOrSecretSubstitution = true;
     }
+    // Volumes[].Host.SourcePath as a CFn intrinsic (Gap 6 of #286).
+    const rawVolumes = props['Volumes'];
+    if (Array.isArray(rawVolumes)) {
+      for (const v of rawVolumes) {
+        if (volumeHasIntrinsicSourcePath(v)) {
+          needsEnvOrSecretSubstitution = true;
+          break;
+        }
+      }
+    }
+    // TaskRoleArn / ExecutionRoleArn as a Fn::Sub / Fn::Join intrinsic
+    // (Gap 5 of #286). Ref / Fn::GetAtt shapes against AWS::IAM::Role
+    // resolve to a placeholder ARN without state, so they don't trigger
+    // state loading.
+    if (
+      isFnJoinOrSubIntrinsic(props['TaskRoleArn']) ||
+      isFnJoinOrSubIntrinsic(props['ExecutionRoleArn'])
+    ) {
+      needsEnvOrSecretSubstitution = true;
+    }
   }
   return { needsPseudoParameters, needsStateResources, needsEnvOrSecretSubstitution };
+}
+
+/**
+ * Detect whether a Volume entry has an intrinsic-valued `Host.SourcePath`.
+ * Used by `detectEcsImageResolutionNeeds` (Gap 6 of #286) to trigger
+ * state-load + pseudo-parameter resolution under `--from-state` when the
+ * SourcePath is built via `cdk.Fn.sub(...)` / `cdk.Fn.join(...)`.
+ */
+function volumeHasIntrinsicSourcePath(v: unknown): boolean {
+  if (!v || typeof v !== 'object') return false;
+  const host = (v as Record<string, unknown>)['Host'];
+  if (!host || typeof host !== 'object') return false;
+  const sp = (host as Record<string, unknown>)['SourcePath'];
+  if (sp === undefined || sp === null) return false;
+  if (typeof sp === 'string') return false;
+  return typeof sp === 'object';
+}
+
+/**
+ * Detect whether a value is an `Fn::Sub` / `Fn::Join` intrinsic. Used by
+ * `detectEcsImageResolutionNeeds` to flag role-ARN intrinsic shapes
+ * (Gap 5 of #286) that need `--from-state` + pseudo-parameter
+ * substitution. `Ref` / `Fn::GetAtt` shapes resolve to a placeholder
+ * ARN without state and are intentionally excluded here.
+ */
+function isFnJoinOrSubIntrinsic(value: unknown): boolean {
+  if (!value || typeof value !== 'object') return false;
+  const obj = value as Record<string, unknown>;
+  return 'Fn::Join' in obj || 'Fn::Sub' in obj;
 }
 
 /**
@@ -535,8 +588,9 @@ function extractTaskDefinitionProperties(
 
   const resources = stack.template.Resources ?? {};
 
-  const taskRoleArn = resolveRoleArn(props['TaskRoleArn'], resources);
-  const executionRoleArn = resolveRoleArn(props['ExecutionRoleArn'], resources);
+  const subContext = buildSubstitutionContextFromImageContext(context);
+  const taskRoleArn = resolveRoleArn(props['TaskRoleArn'], resources, subContext);
+  const executionRoleArn = resolveRoleArn(props['ExecutionRoleArn'], resources, subContext);
 
   const runtimePlatform = parseRuntimePlatform(props['RuntimePlatform']);
 
@@ -558,7 +612,7 @@ function extractTaskDefinitionProperties(
 
   const rawVolumes = props['Volumes'];
   const volumes = Array.isArray(rawVolumes)
-    ? rawVolumes.map((v, idx) => parseVolume(v, idx, logicalId))
+    ? rawVolumes.map((v, idx) => parseVolume(v, idx, logicalId, subContext))
     : [];
 
   // dependsOn must reference an existing container name.
@@ -1082,7 +1136,12 @@ function extractImageString(value: unknown): string | undefined {
 // Both call sites import the shared helper at the top of their respective
 // resolver. See issue #286 Gap 2 and PR #280 for the original ECS shape.
 
-function parseVolume(raw: unknown, idx: number, taskLogicalId: string): ResolvedEcsVolume {
+function parseVolume(
+  raw: unknown,
+  idx: number,
+  taskLogicalId: string,
+  subContext?: SubstitutionContext
+): ResolvedEcsVolume {
   if (!raw || typeof raw !== 'object') {
     throw new EcsTaskResolutionError(`Task '${taskLogicalId}' Volumes[${idx}] is not an object.`);
   }
@@ -1130,15 +1189,72 @@ function parseVolume(raw: unknown, idx: number, taskLogicalId: string): Resolved
   }
 
   // Host bind mount (or anonymous when SourcePath unset).
+  // SourcePath may be a flat string OR a CFn intrinsic (`Fn::Sub` /
+  // `Fn::Join` / `Ref`) — CDK emits the intrinsic shape when the user
+  // builds the path via `cdk.Fn.sub(...)` / `cdk.Fn.join(...)` (verified
+  // via real `cdk synth` against `new ecs.Ec2TaskDefinition({ volumes:
+  // [{ name, host: { sourcePath: cdk.Fn.sub('...') } }] })`). When state
+  // + pseudo parameters are available (`--from-state` flow on
+  // `cdkd local run-task` already populates the context for env / secret
+  // / image resolution), we substitute the intrinsic in place via the
+  // same `substituteAgainstState` helper. Unresolvable intrinsics
+  // hard-error — a Host bind mount with a missing path is not safe to
+  // proxy as an anonymous volume (the container would silently see an
+  // empty mount instead of the data it expects). Closes Gap 6 of #286.
   const host = v['Host'];
   if (host && typeof host === 'object') {
-    const sourcePath = pickString((host as Record<string, unknown>)['SourcePath']);
-    if (sourcePath) {
+    const rawSourcePath = (host as Record<string, unknown>)['SourcePath'];
+    const sourcePath = resolveVolumeSourcePath(rawSourcePath, name, idx, taskLogicalId, subContext);
+    if (sourcePath !== undefined) {
       const abs = isAbsolute(sourcePath) ? sourcePath : resolve(process.cwd(), sourcePath);
       return { name, kind: 'host', hostPath: abs };
     }
   }
   return { name, kind: 'host' };
+}
+
+/**
+ * Resolve a volume `Host.SourcePath` value to a flat host-path string.
+ * Handles flat strings (pre-PR behavior) and the CFn intrinsic shapes
+ * (`Fn::Sub` / `Fn::Join` / `Ref` / `Fn::GetAtt`) that CDK emits when
+ * the user builds the path via `cdk.Fn.sub(...)` / `cdk.Fn.join(...)`.
+ * Returns `undefined` when the field is absent or empty (anonymous
+ * volume — the legacy path); throws `EcsTaskResolutionError` when the
+ * intrinsic cannot be resolved against the supplied context.
+ *
+ * The hard-error on unresolvable intrinsics matches the upstream
+ * pre-Gap-6 behavior (which silently dropped the SourcePath and produced
+ * an anonymous volume) only on the failure mode — but now with a precise
+ * actionable message instead of mysteriously empty mounts at runtime.
+ */
+function resolveVolumeSourcePath(
+  raw: unknown,
+  volumeName: string,
+  idx: number,
+  taskLogicalId: string,
+  subContext: SubstitutionContext | undefined
+): string | undefined {
+  if (raw === undefined || raw === null) return undefined;
+  if (typeof raw === 'string') return raw.length > 0 ? raw : undefined;
+  if (typeof raw !== 'object') {
+    throw new EcsTaskResolutionError(
+      `Task '${taskLogicalId}' Volumes[${idx}] '${volumeName}' Host.SourcePath must be a string or a CFn intrinsic, got ${typeof raw}.`
+    );
+  }
+  if (!subContext) {
+    throw new EcsTaskResolutionError(
+      `Task '${taskLogicalId}' Volumes[${idx}] '${volumeName}' Host.SourcePath is a CFn intrinsic (Ref/Fn::Sub/Fn::Join/Fn::GetAtt). ` +
+        `Pass --from-state to substitute it against the deployed state + AWS pseudo parameters.`
+    );
+  }
+  const sub = substituteAgainstState(raw, subContext);
+  if (sub.kind === 'literal' && typeof sub.value === 'string' && sub.value.length > 0) {
+    return sub.value;
+  }
+  throw new EcsTaskResolutionError(
+    `Task '${taskLogicalId}' Volumes[${idx}] '${volumeName}' Host.SourcePath could not be resolved: ` +
+      (sub.kind === 'literal' ? 'resolved to non-string / empty value' : sub.reason)
+  );
 }
 
 /**
@@ -1152,19 +1268,32 @@ function parseVolume(raw: unknown, idx: number, taskLogicalId: string): Resolved
 export const TASK_ROLE_ACCOUNT_PLACEHOLDER = '${AWS::AccountId}';
 
 /**
- * Resolve a Task / Execution role ARN reference. Accepts a flat string ARN,
- * a `Ref` / `Fn::GetAtt[..., 'Arn']` against an `AWS::IAM::Role` in the
- * same stack. Returns a synth-time placeholder ARN of the shape
- * `arn:aws:iam::${AWS::AccountId}:role/<RoleLogicalId>` when the
- * referenced resource is an inline IAM Role (the account segment is filled
- * in by the CLI lazily via STS). Returns `undefined` when the reference
- * cannot be resolved to an IAM Role (e.g. the logical id is missing,
- * points at some other resource type, or the value is some unsupported
- * intrinsic shape).
+ * Resolve a Task / Execution role ARN reference. Accepts:
+ *
+ *   - A flat string ARN — returned verbatim.
+ *   - `Ref` / `Fn::GetAtt[..., 'Arn']` against an `AWS::IAM::Role` in
+ *     the same stack — returns a synth-time placeholder ARN of the shape
+ *     `arn:aws:iam::${AWS::AccountId}:role/<RoleLogicalId>` (the CLI
+ *     fills the account segment in lazily via STS when the bare
+ *     `--assume-task-role` form is used).
+ *   - `Fn::Join` / `Fn::Sub` — when the supplied substitution context
+ *     can resolve every nested intrinsic to a literal (state + pseudo
+ *     parameters via `--from-state` flow), the resulting flat ARN is
+ *     returned. This covers the rare `iam.Role.fromRoleArn(scope, id,
+ *     cdk.Fn.join(...))` pattern verified via real `cdk synth` on
+ *     2026-05-12 against `iam.Role.fromRoleArn(stack, 'X', Fn.join(':',
+ *     ['arn','aws','iam','',cdk.Aws.ACCOUNT_ID,'role/Name']))`.
+ *     Closes Gap 5 of #286.
+ *
+ * Returns `undefined` when the reference cannot be resolved (logical id
+ * missing, non-IAM-Role target, unsupported intrinsic shape, or
+ * intrinsic shape whose nested refs cannot be resolved without
+ * `--from-state`).
  */
 function resolveRoleArn(
   value: unknown,
-  resources: Record<string, TemplateResource>
+  resources: Record<string, TemplateResource>,
+  subContext?: SubstitutionContext
 ): string | undefined {
   if (value === undefined || value === null) return undefined;
   if (typeof value === 'string') return value;
@@ -1184,11 +1313,27 @@ function resolveRoleArn(
       if (attr === '' || attr === 'Arn') refLogicalId = arg[0];
     }
   }
-  if (refLogicalId === undefined) return undefined;
+  if (refLogicalId !== undefined) {
+    const role = resources[refLogicalId];
+    if (role?.Type !== 'AWS::IAM::Role') return undefined;
+    return `arn:aws:iam::${TASK_ROLE_ACCOUNT_PLACEHOLDER}:role/${refLogicalId}`;
+  }
 
-  const role = resources[refLogicalId];
-  if (role?.Type !== 'AWS::IAM::Role') return undefined;
-  return `arn:aws:iam::${TASK_ROLE_ACCOUNT_PLACEHOLDER}:role/${refLogicalId}`;
+  // `Fn::Join` / `Fn::Sub` — `iam.Role.fromRoleArn(stack, id,
+  // cdk.Fn.join(...))` shape. Resolve via state + pseudo parameters if
+  // available; fall back to undefined (silent-drop, pre-PR behavior)
+  // when the context can't fully resolve the intrinsic — same posture
+  // as the existing Ref-to-missing-resource path.
+  if ('Fn::Join' in obj || 'Fn::Sub' in obj) {
+    if (!subContext) return undefined;
+    const sub = substituteAgainstState(value, subContext);
+    if (sub.kind === 'literal' && typeof sub.value === 'string' && sub.value.length > 0) {
+      return sub.value;
+    }
+    return undefined;
+  }
+
+  return undefined;
 }
 
 function pickString(value: unknown): string | undefined {
