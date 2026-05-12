@@ -444,9 +444,12 @@ export interface RecreateBeforePhase2Entry {
  * are hard-blocked instead with a clear error message.
  *
  * Verified via `aws cloudformation describe-type --type RESOURCE
- * --type-name <T> | jq .handlers` — types with `handlers: []` are
- * candidates. Currently only `AWS::ApiGatewayV2::Stage` qualifies (every
- * sibling ApiGwV2 type has `[create, delete, list, read, update]`).
+ * --type-name <T> | jq .handlers` — types with `handlers: []` (or a
+ * missing `read` / `list` handler that prevents CFn from looking the
+ * resource up by identifier) are candidates. Currently registered:
+ * `AWS::ApiGatewayV2::Stage` (no handlers at all) and `AWS::IAM::Policy`
+ * (no `read` / `list` — inline policy attachments have no first-class
+ * AWS resource id). See the per-entry comment for each addition.
  */
 const IMPORT_UNSUPPORTED_RECREATABLE_TYPES: ReadonlySet<string> = new Set([
   // AWS::ApiGatewayV2::Stage — `handlers: []`. HttpApi auto-emits `$default`.
