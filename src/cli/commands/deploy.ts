@@ -33,6 +33,7 @@ import {
   resolveCaptureObservedState,
   resolveSkipPrefix,
   resolveStateBucketWithDefault,
+  warnDeprecatedNoPrefixCliFlag,
 } from '../config-loader.js';
 import { matchStacks, describeStack } from '../stack-matcher.js';
 
@@ -61,7 +62,6 @@ async function deployCommand(
     wait: boolean;
     captureObservedState: boolean;
     prefixUserSuppliedNames: boolean;
-    noPrefixUserSuppliedNames: boolean;
     aggressiveVpcParallel: boolean;
     exclusively: boolean;
     yes: boolean;
@@ -114,9 +114,12 @@ async function deployCommand(
   // context.cdkd.prefixUserSuppliedNames=true) to opt back in to
   // legacy prefixing. The deprecated `--no-prefix-user-supplied-names`
   // flag is still accepted (matches the new default; emits a warning).
+  // Detect the literal `--no-prefix-user-supplied-names` flag (Commander
+  // collapses it onto `prefixUserSuppliedNames` via auto-negation, so the
+  // deprecation warning needs a pre-parse argv walk).
+  warnDeprecatedNoPrefixCliFlag();
   const skipPrefix = resolveSkipPrefix({
     prefixUserSuppliedNames: options.prefixUserSuppliedNames,
-    noPrefixUserSuppliedNames: options.noPrefixUserSuppliedNames,
   });
   if (skipPrefix) {
     logger.debug(

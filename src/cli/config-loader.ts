@@ -158,29 +158,50 @@ export function resolveCaptureObservedState(cliValue: boolean): boolean {
  *   6. Default `true` (skip prefix — new default in v0.93.0).
  *
  * Mirrors {@link resolveCaptureObservedState}'s pattern. The cliValue
- * argument carries BOTH Commander-emitted booleans for the
- * `--prefix-user-supplied-names` / `--no-prefix-user-supplied-names`
- * pair (Commander emits them as separate `prefixUserSuppliedNames` and
- * `noPrefixUserSuppliedNames` keys on the options object); pass them
- * as `{ prefixUserSuppliedNames, noPrefixUserSuppliedNames }`.
+ * argument carries the Commander-emitted boolean for
+ * `--prefix-user-supplied-names`. The deprecated
+ * `--no-prefix-user-supplied-names` flag is detected via the pre-parse
+ * argv walk in {@link warnDeprecatedNoPrefixCliFlag} — NOT here, because
+ * declaring both flag forms as separate Commander Options collapses
+ * them onto a single key (`noPrefixUserSuppliedNames` would be
+ * permanently `undefined` at runtime). Commander's automatic `--no-X`
+ * negation still parses the deprecated form without error; it just
+ * negates `prefixUserSuppliedNames` to its default `false` (= skip
+ * prefix), which matches the new v0.93.0 default semantically.
  */
 export interface ResolveSkipPrefixOptions {
   /**
    * Commander-emitted value of `--prefix-user-supplied-names` (the new
-   * opt-in flag). `true` when the user passed the flag; `false`
-   * (= default) when they did not. When `true`, cdkd KEEPS legacy
-   * prefixing and {@link resolveSkipPrefix} returns `false`.
+   * opt-in to legacy prefixing). `true` when the user passed the flag;
+   * `false` (= default) when they did not. When `true`, cdkd KEEPS
+   * legacy prefixing and {@link resolveSkipPrefix} returns `false`.
    */
   prefixUserSuppliedNames?: boolean;
-  /**
-   * Commander-emitted value of the deprecated
-   * `--no-prefix-user-supplied-names` flag (Commander emits this as
-   * `noPrefixUserSuppliedNames: false` when the flag is passed,
-   * `noPrefixUserSuppliedNames: true` (= default) when it is not).
-   * Kept for backward compat with pre-v0.93.0 invocations; emits a
-   * deprecation warning when explicitly passed.
-   */
-  noPrefixUserSuppliedNames?: boolean;
+}
+
+/**
+ * Pre-parse argv walk that surfaces the deprecation warning when the
+ * user explicitly passes the legacy `--no-prefix-user-supplied-names`
+ * flag. Commander's auto-negation of `--prefix-user-supplied-names`
+ * accepts the flag without surfacing it as a distinct option key, so
+ * this walk is the only way to catch it for the warning. Call once at
+ * the top of every deploy invocation, before {@link resolveSkipPrefix}.
+ *
+ * Matches the literal `--no-prefix-user-supplied-names` token (and its
+ * `--no-prefix-user-supplied-names=<value>` form) so scripts that pass
+ * the flag with an explicit value still see the warning.
+ */
+export function warnDeprecatedNoPrefixCliFlag(argv: readonly string[] = process.argv): void {
+  const seen = argv.some(
+    (a) =>
+      a === '--no-prefix-user-supplied-names' || a.startsWith('--no-prefix-user-supplied-names=')
+  );
+  if (seen) {
+    getLogger().warn(
+      '--no-prefix-user-supplied-names is deprecated since v0.93.0 — ' +
+        'skipping the prefix is now the default. Remove the flag.'
+    );
+  }
 }
 
 export function resolveSkipPrefix(opts: ResolveSkipPrefixOptions = {}): boolean {
@@ -208,17 +229,11 @@ export function resolveSkipPrefix(opts: ResolveSkipPrefixOptions = {}): boolean 
     return false;
   }
 
-  // Tiers 4 / 5: deprecated --no-prefix-user-supplied-names CLI flag
-  // and CDKD_NO_PREFIX_USER_SUPPLIED_NAMES / noPrefixUserSuppliedNames
-  // cdk.json keys. Emit a deprecation warning when explicitly set;
-  // they now match the default and are no-ops in effect.
-  const deprecatedCliPassed = opts.noPrefixUserSuppliedNames === false;
-  if (deprecatedCliPassed) {
-    logger.warn(
-      '--no-prefix-user-supplied-names is deprecated since v0.93.0 — ' +
-        'skipping the prefix is now the default. Remove the flag.'
-    );
-  }
+  // Deprecated CDKD_NO_PREFIX_USER_SUPPLIED_NAMES env var +
+  // cdk.json context.cdkd.noPrefixUserSuppliedNames: emit a
+  // deprecation warning when set; they now match the default and are
+  // no-ops in effect. (The CLI-flag equivalent is detected via
+  // warnDeprecatedNoPrefixCliFlag — see the docstring above.)
   const deprecatedEnv = process.env['CDKD_NO_PREFIX_USER_SUPPLIED_NAMES'];
   if (deprecatedEnv === 'true') {
     logger.warn(

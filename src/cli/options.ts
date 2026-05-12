@@ -572,13 +572,17 @@ export const deployOptions = [
       'cdk.json context.cdkd.prefixUserSuppliedNames=true. Applies to ' +
       '`cdkd deploy` only.'
   ).default(false),
-  new Option(
-    '--no-prefix-user-supplied-names',
-    '[DEPRECATED since v0.93.0] No-op — skipping the prefix is now the ' +
-      'default. Remove this flag and CDKD_NO_PREFIX_USER_SUPPLIED_NAMES / ' +
-      'cdk.json context.cdkd.noPrefixUserSuppliedNames from your config. ' +
-      'Use --prefix-user-supplied-names to opt BACK in to legacy prefixing.'
-  ).hideHelp(),
+  // Note: the deprecated `--no-prefix-user-supplied-names` flag is NOT
+  // declared as a separate Option. Commander's automatic `--no-X`
+  // negation lets users still pass it without error — it negates the
+  // new `--prefix-user-supplied-names` flag, leaving its default
+  // `false` (= skip prefix) unchanged, which matches the v0.93.0
+  // default. Detection of the literal `--no-prefix-user-supplied-names`
+  // flag for the deprecation warning happens via the pre-parse argv
+  // walk in `warnDeprecatedNoPrefixCliFlag` (src/cli/config-loader.ts) —
+  // declaring both Options together would have collapsed both onto a
+  // single Commander key, making `noPrefixUserSuppliedNames` permanently
+  // `undefined` and silencing the warning.
   noWaitOption,
   aggressiveVpcParallelOption,
   new Option(

@@ -1,0 +1,26 @@
+fix(deploy): correct Commander option-pair collision for --no-prefix-user-supplied-names
+
+PR review (3-axis dispatched by /review-pr 305) caught a BLOCKER:
+declaring `--prefix-user-supplied-names` AND
+`--no-prefix-user-supplied-names` as separate Commander Options
+collapses both onto a single `prefixUserSuppliedNames` key.
+`noPrefixUserSuppliedNames` was permanently `undefined` at runtime,
+so the deprecation warning for the deprecated CLI flag never fired,
+the typed field was a TS lie, and one test asserted against a code
+path that cannot occur via real CLI.
+
+Fix:
+- Drop the deprecated `--no-prefix-user-supplied-names` Option from
+  options.ts. Commander's auto-negation of `--prefix-user-supplied-names`
+  still parses the deprecated form without error.
+- Add `warnDeprecatedNoPrefixCliFlag(argv?)` in config-loader.ts that
+  walks process.argv for the literal token and emits the deprecation
+  warning. deploy.ts calls it once at command start.
+- Drop the broken `noPrefixUserSuppliedNames` field from
+  ResolveSkipPrefixOptions and from deploy.ts's options type.
+- Refactor test logger mock to a stable singleton + add 4 new tests
+  for `warnDeprecatedNoPrefixCliFlag` + add logger.warn assertions on
+  the env / cdk.json deprecation paths (major review finding).
+- Update CLAUDE.md to reflect the new architecture.
+
+Tests: 61 pass in config-loader.test.ts; full suite 3136 pass.
