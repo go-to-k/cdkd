@@ -29,6 +29,16 @@ vi.mock('../../../src/cli/config-loader.js', () => ({
   resolveApp: vi.fn(() => 'cdk-out'),
 }));
 
+// Mock AWS clients. The `sts` field is needed by
+// IntrinsicFunctionResolver.getAccountInfo (run during the
+// post-import property resolution pass for issue #328) — without it
+// the resolver throws on the first `Fn::GetAtt` that needs an ARN
+// constructed from accountId/region/partition (e.g. Lambda Permission's
+// FunctionName). `getAwsClients` returns the same shape `AwsClients`
+// produces.
+const stsSend = vi.hoisted(() =>
+  vi.fn(async () => ({ Account: '123456789012' }))
+);
 vi.mock('../../../src/utils/aws-clients.ts', () => ({
   AwsClients: vi.fn().mockImplementation(() => ({
     get s3() {
@@ -37,10 +47,15 @@ vi.mock('../../../src/utils/aws-clients.ts', () => ({
     get cloudFormation() {
       return {};
     },
+    get sts() {
+      return { send: stsSend };
+    },
     destroy: vi.fn(),
   })),
   setAwsClients: vi.fn(),
-  getAwsClients: vi.fn(),
+  getAwsClients: vi.fn(() => ({
+    sts: { send: stsSend },
+  })),
 }));
 
 const mockRetireCloudFormationStack = vi.hoisted(() =>
@@ -111,6 +126,7 @@ vi.mock('node:readline/promises', () => ({
 }));
 
 import { createImportCommand } from '../../../src/cli/commands/import.js';
+import { resetAccountInfoCache } from '../../../src/deployment/intrinsic-function-resolver.js';
 
 function captureStdout(): { output: string[]; restore: () => void } {
   const output: string[] = [];
@@ -188,6 +204,11 @@ describe('cdkd import', () => {
     errorSpy.mockReset();
     infoSpy.mockReset();
     warnSpy.mockReset();
+    stsSend.mockClear();
+    // Reset the IntrinsicFunctionResolver's cached account info so each
+    // test starts from a clean slate (otherwise the cache survives
+    // across tests and a later test's region override wouldn't reset).
+    resetAccountInfoCache();
     exitSpy = vi.spyOn(process, 'exit').mockImplementation((() => {
       throw new Error('process.exit-mock');
     }) as never);
@@ -1452,6 +1473,188 @@ describe('cdkd import', () => {
       // Reject at parse time — never hit AWS.
       expect(mockGetCfnResourceMapping).not.toHaveBeenCalled();
       expect(mockRetireCloudFormationStack).not.toHaveBeenCalled();
+    });
+  });
+
+  // Closes issue #328: pre-fix, `buildStackState` wrote the synth
+  // template's Properties literal into `state.properties` verbatim —
+  // intrinsics (Ref / Fn::GetAtt / Fn::Sub) and all — which broke
+  // `cdkd destroy` for sub-resource types whose `delete()` reads
+  // properties at delete time (e.g. AWS::Lambda::Permission whose
+  // `FunctionName` is `{Fn::GetAtt: [..., 'Arn']}`). After import,
+  // every resource's `state.properties` must hold resolved values, the
+  // same shape `cdkd deploy` writes.
+  describe('intrinsic resolution in state.properties (issue #328)', () => {
+    it('resolves Fn::GetAtt: [..., "Arn"] in Lambda Permission FunctionName to the function ARN', async () => {
+      // Canonical bug repro: AWS::Lambda::Permission.FunctionName carries
+      // `{Fn::GetAtt: [MyFn, 'Arn']}` in the synth template. After
+      // import, state.properties.FunctionName must be the resolved ARN
+      // string, NOT the intrinsic object — otherwise `cdkd destroy`
+      // passes the raw `{Fn::GetAtt: ...}` to RemovePermission's
+      // FunctionName field and AWS rejects with `1 validation error
+      // detected: ... failed to satisfy constraint`.
+      const tmpl = template({
+        MyFn: {
+          Type: 'AWS::Lambda::Function',
+          Properties: {},
+          Metadata: { 'aws:cdk:path': 'S/MyFn' },
+        },
+        MyPerm: {
+          Type: 'AWS::Lambda::Permission',
+          Properties: {
+            FunctionName: { 'Fn::GetAtt': ['MyFn', 'Arn'] },
+            Action: 'lambda:InvokeFunction',
+            Principal: 'apigateway.amazonaws.com',
+          },
+          Metadata: { 'aws:cdk:path': 'S/MyPerm' },
+        },
+      });
+      mockSynthesize.mockResolvedValue({ stacks: [stackInfo('S', tmpl)] });
+      mockHasProvider.mockReturnValue(true);
+      mockGetProvider.mockImplementation((t: string) => {
+        if (t === 'AWS::Lambda::Function') {
+          return { import: vi.fn(async () => ({ physicalId: 'my-fn-1234ABCD', attributes: {} })) };
+        }
+        if (t === 'AWS::Lambda::Permission') {
+          return { import: vi.fn(async () => ({ physicalId: 'my-fn-1234ABCD/perm-id', attributes: {} })) };
+        }
+        return {};
+      });
+
+      await runImport(['import', '--app', 'x', '--yes']);
+
+      const [, , state] = mockSaveState.mock.calls[0] as unknown as [
+        string,
+        string,
+        { resources: Record<string, { properties: Record<string, unknown> }> },
+      ];
+      // The Lambda function arn is constructed deterministically by
+      // `constructAttribute` from the resolved Lambda physicalId.
+      // Without an STS mock, the resolver's getAccountInfo falls back
+      // to '123456789012' / 'us-east-1' / 'aws'.
+      expect(state.resources['MyPerm']?.properties['FunctionName']).toBe(
+        'arn:aws:lambda:us-east-1:123456789012:function:my-fn-1234ABCD'
+      );
+      // Untouched literal properties survive the resolver pass.
+      expect(state.resources['MyPerm']?.properties['Action']).toBe('lambda:InvokeFunction');
+      expect(state.resources['MyPerm']?.properties['Principal']).toBe('apigateway.amazonaws.com');
+    });
+
+    it('resolves Ref to a sibling resource\'s physical ID', async () => {
+      // IAM Policy on a Role: `Roles: [{Ref: MyRole}]` → resolves to
+      // `Roles: [<physicalId>]` after import. Same shape that `cdkd
+      // deploy` writes.
+      const tmpl = template({
+        MyRole: {
+          Type: 'AWS::IAM::Role',
+          Properties: { AssumeRolePolicyDocument: { Statement: [] } },
+          Metadata: { 'aws:cdk:path': 'S/MyRole' },
+        },
+        MyPolicy: {
+          Type: 'AWS::IAM::Policy',
+          Properties: {
+            PolicyName: 'my-policy',
+            PolicyDocument: { Statement: [] },
+            Roles: [{ Ref: 'MyRole' }],
+          },
+          Metadata: { 'aws:cdk:path': 'S/MyPolicy' },
+        },
+      });
+      mockSynthesize.mockResolvedValue({ stacks: [stackInfo('S', tmpl)] });
+      mockHasProvider.mockReturnValue(true);
+      mockGetProvider.mockImplementation((t: string) => {
+        if (t === 'AWS::IAM::Role') {
+          return { import: vi.fn(async () => ({ physicalId: 'my-role-physical', attributes: {} })) };
+        }
+        if (t === 'AWS::IAM::Policy') {
+          return { import: vi.fn(async () => ({ physicalId: 'my-policy-physical', attributes: {} })) };
+        }
+        return {};
+      });
+
+      await runImport(['import', '--app', 'x', '--yes']);
+
+      const [, , state] = mockSaveState.mock.calls[0] as unknown as [
+        string,
+        string,
+        { resources: Record<string, { properties: Record<string, unknown> }> },
+      ];
+      expect(state.resources['MyPolicy']?.properties['Roles']).toEqual(['my-role-physical']);
+      expect(state.resources['MyPolicy']?.properties['PolicyName']).toBe('my-policy');
+    });
+
+    it('leaves literal properties untouched (no intrinsics is a no-op pass)', async () => {
+      const tmpl = template({
+        MyBucket: {
+          Type: 'AWS::S3::Bucket',
+          Properties: {
+            BucketName: 'my-bucket-12345',
+            VersioningConfiguration: { Status: 'Enabled' },
+          },
+          Metadata: { 'aws:cdk:path': 'S/MyBucket' },
+        },
+      });
+      mockSynthesize.mockResolvedValue({ stacks: [stackInfo('S', tmpl)] });
+      mockHasProvider.mockReturnValue(true);
+      mockGetProvider.mockReturnValue({
+        import: vi.fn(async () => ({ physicalId: 'my-bucket-12345', attributes: {} })),
+      });
+
+      await runImport(['import', '--app', 'x', '--yes']);
+
+      const [, , state] = mockSaveState.mock.calls[0] as unknown as [
+        string,
+        string,
+        { resources: Record<string, { properties: Record<string, unknown> }> },
+      ];
+      expect(state.resources['MyBucket']?.properties).toEqual({
+        BucketName: 'my-bucket-12345',
+        VersioningConfiguration: { Status: 'Enabled' },
+      });
+    });
+
+    it('warns and leaves raw intrinsic in place when reference cannot be resolved', async () => {
+      // Permission references a Lambda that wasn't in the importable
+      // set (e.g. a sibling resource type without an `import()` impl,
+      // or out-of-scope in selective mode). The resolver throws; the
+      // import flow must NOT abort — log + leave the intrinsic shape
+      // intact so the eventual destroy failure is narrowed to this
+      // one resource rather than blowing up the whole adoption flow.
+      const tmpl = template({
+        MyPerm: {
+          Type: 'AWS::Lambda::Permission',
+          Properties: {
+            FunctionName: { 'Fn::GetAtt': ['NotImportedFn', 'Arn'] },
+            Action: 'lambda:InvokeFunction',
+          },
+          Metadata: { 'aws:cdk:path': 'S/MyPerm' },
+        },
+      });
+      mockSynthesize.mockResolvedValue({ stacks: [stackInfo('S', tmpl)] });
+      mockHasProvider.mockReturnValue(true);
+      mockGetProvider.mockReturnValue({
+        import: vi.fn(async () => ({ physicalId: 'fn-arn/perm-id', attributes: {} })),
+      });
+
+      await runImport(['import', '--app', 'x', '--yes']);
+
+      // State write still happens (import succeeded against AWS) but
+      // the unresolvable property carries a warn.
+      expect(mockSaveState).toHaveBeenCalledTimes(1);
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.stringMatching(/Failed to resolve intrinsics in Properties for imported resource 'MyPerm'/)
+      );
+      const [, , state] = mockSaveState.mock.calls[0] as unknown as [
+        string,
+        string,
+        { resources: Record<string, { properties: Record<string, unknown> }> },
+      ];
+      // Raw intrinsic preserved — the resource is on AWS, the user can
+      // re-import after adopting NotImportedFn, or `cdkd state orphan`
+      // to scrub it.
+      expect(state.resources['MyPerm']?.properties['FunctionName']).toEqual({
+        'Fn::GetAtt': ['NotImportedFn', 'Arn'],
+      });
     });
   });
 });
