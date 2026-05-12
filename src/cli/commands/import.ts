@@ -18,6 +18,7 @@ import { ProviderRegistry } from '../../provisioning/provider-registry.js';
 import { registerAllProviders } from '../../provisioning/register-providers.js';
 import { setAwsClients, AwsClients } from '../../utils/aws-clients.js';
 import { TemplateParser } from '../../analyzer/template-parser.js';
+import { IntrinsicFunctionResolver } from '../../deployment/intrinsic-function-resolver.js';
 import { resolveApp, resolveStateBucketWithDefault } from '../config-loader.js';
 import { buildReadCurrentStateContext } from './drift.js';
 import { readCdkPath } from '../cdk-path.js';
@@ -456,6 +457,26 @@ async function importCommand(stackArg: string | undefined, options: ImportOption
         selectiveMode
       );
 
+      // Resolve CFn intrinsics (Ref / Fn::GetAtt / Fn::Sub / ...) in every
+      // freshly-imported resource's `properties` against the assembled
+      // state map, then overwrite `state.properties` with the resolved
+      // shape. Closes issue #328: pre-fix, `buildStackState` wrote the
+      // synth template's Properties verbatim, intrinsics and all, which
+      // broke `cdkd destroy` for sub-resource types whose `delete()` reads
+      // properties at delete time (e.g. `AWS::Lambda::Permission` whose
+      // `FunctionName` is `{Fn::GetAtt: [...]}`). `cdkd deploy` does NOT
+      // have this problem because the deploy engine runs the resolver
+      // against each resource's Properties before calling `provider.create()`
+      // and stores the resolved shape in state — this brings `cdkd import`
+      // in line with the v3 schema's "resolved template intent" semantics.
+      //
+      // Per-resource try/catch: an intrinsic referencing a resource that
+      // wasn't imported (custom resource, out-of-scope sibling) is logged
+      // and left as-is rather than aborting the whole import. The
+      // eventual destroy failure on the un-resolved props is narrower
+      // than blowing up the entire adoption flow.
+      await resolveImportedProperties(stackState, template, targetRegion, stateBackend, logger);
+
       // Populate observedProperties for the freshly-imported resources so
       // the very first `cdkd drift` run after import has a real baseline
       // (matching what `cdkd deploy` does after each create/update). Done
@@ -790,6 +811,117 @@ function buildStackState(
     outputs: existingState?.outputs ?? {},
     lastModified: Date.now(),
   };
+}
+
+/**
+ * Walk every resource in `stackState.resources` and overwrite its
+ * `properties` with the result of running the synth template's raw
+ * Properties through `IntrinsicFunctionResolver` against the assembled
+ * state map.
+ *
+ * Closes issue #328. `cdkd deploy` runs the resolver against each
+ * resource's Properties before calling `provider.create()` and stores
+ * the resolved shape in state — this brings `cdkd import` in line so
+ * the v3 schema's `properties` field consistently holds "resolved
+ * template intent" (post-intrinsic substitution) across both write
+ * paths. Without this, sub-resource types whose `delete()` reads
+ * properties at delete time (e.g. `AWS::Lambda::Permission` whose
+ * `FunctionName` is `{Fn::GetAtt: [..., 'Arn']}`) get raw intrinsic
+ * objects passed to the AWS SDK and fail validation.
+ *
+ * The resolver is run AFTER all `provider.import()` calls finish, so by
+ * the time it walks each resource every logicalId in the importable set
+ * has a known `physicalId` in `stackState.resources` for Ref / GetAtt
+ * to bind against.
+ *
+ * Edge cases:
+ *   - Parameters / Conditions are resolved from the template up front
+ *     (same shape the deploy engine builds for its CREATE / UPDATE
+ *     intrinsic context). Resolution failures here log + leave the
+ *     template's defaults untouched — the resolver itself tolerates
+ *     missing parameter / condition entries.
+ *   - Per-resource try/catch: if a Properties tree references a
+ *     resource not in the importable set (custom resource that wasn't
+ *     adopted, out-of-scope sibling in selective mode), the resolver
+ *     throws `Ref <X> not found` / `Resource <X> not found for
+ *     Fn::GetAtt`. We log the failure and leave the resource's
+ *     original properties intact. The eventual `cdkd destroy` failure
+ *     on the un-resolved props is a narrower problem than aborting the
+ *     whole adoption flow.
+ *
+ * `existingState`'s `resources` survive the walk only when they
+ * weren't re-imported in this run — selective merge preserves them as
+ * already-stored, which on the v3 baseline is already resolved-shape
+ * from a prior import / deploy, so re-resolving is a no-op.
+ */
+async function resolveImportedProperties(
+  stackState: StackState,
+  template: CloudFormationTemplate,
+  region: string,
+  stateBackend: S3StateBackend,
+  logger: ReturnType<typeof getLogger>
+): Promise<void> {
+  const entries = Object.entries(stackState.resources);
+  if (entries.length === 0) return;
+
+  const resolver = new IntrinsicFunctionResolver(region);
+
+  // Build Parameters / Conditions the same way the deploy engine does
+  // (best-effort: a failure here means the template references a
+  // parameter without a default and no user value was supplied, which
+  // would have rejected at deploy time too — log + skip the resolution
+  // pass rather than blow up the import that already succeeded against
+  // AWS).
+  let parameters: Record<string, unknown> = {};
+  let conditions: Record<string, boolean> = {};
+  try {
+    parameters = await resolver.resolveParameters(template);
+  } catch (err) {
+    logger.debug(
+      `Template parameter resolution failed during import-time property resolution: ${err instanceof Error ? err.message : String(err)} — continuing without parameters; resources referencing them will be skipped per-resource.`
+    );
+  }
+  try {
+    conditions = await resolver.evaluateConditions({
+      template,
+      resources: stackState.resources,
+      parameters,
+    });
+  } catch (err) {
+    logger.debug(
+      `Template condition evaluation failed during import-time property resolution: ${err instanceof Error ? err.message : String(err)} — continuing without conditions.`
+    );
+  }
+
+  const baseContext = {
+    template,
+    resources: stackState.resources,
+    ...(Object.keys(parameters).length > 0 && { parameters }),
+    ...(Object.keys(conditions).length > 0 && { conditions }),
+    stateBackend,
+    stackName: stackState.stackName,
+  };
+
+  for (const [logicalId, resource] of entries) {
+    try {
+      const resolved = (await resolver.resolve(resource.properties ?? {}, baseContext)) as Record<
+        string,
+        unknown
+      >;
+      resource.properties = resolved;
+    } catch (err) {
+      // Intrinsic referenced a resource not in the importable set
+      // (e.g. custom resource that wasn't adopted) or a parameter
+      // without a value. Leave the raw intrinsic in place — the
+      // resource is already imported on the AWS side, and the user
+      // can either re-import the missing sibling or surgically fix
+      // state via `cdkd state orphan` + redeploy.
+      logger.warn(
+        `Failed to resolve intrinsics in Properties for imported resource '${logicalId}' (${resource.resourceType}): ${err instanceof Error ? err.message : String(err)}. ` +
+          `State will be written with the raw intrinsic shape, which may cause 'cdkd destroy' to fail on this resource — re-import once every referenced sibling is in state, or remove this resource via 'cdkd state orphan'.`
+      );
+    }
+  }
 }
 
 function printSummary(rows: ImportRow[]): void {
