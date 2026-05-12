@@ -1,3 +1,10 @@
+## [0.94.5](https://github.com/go-to-k/cdkd/compare/v0.94.4...v0.94.5) (2026-05-12)
+
+
+### Bug Fixes
+
+* **export:** document dry-run permissiveness in CLAUDE.md (re-publish v0.94.4) ([#313](https://github.com/go-to-k/cdkd/issues/313)) ([c3d74bd](https://github.com/go-to-k/cdkd/commit/c3d74bd4487f81f827635df447561ccd1e16711e))
+
 ## [0.94.4](https://github.com/go-to-k/cdkd/compare/v0.94.3...v0.94.4) (2026-05-12)
 
 
