@@ -449,7 +449,17 @@ export interface RecreateBeforePhase2Entry {
  * sibling ApiGwV2 type has `[create, delete, list, read, update]`).
  */
 const IMPORT_UNSUPPORTED_RECREATABLE_TYPES: ReadonlySet<string> = new Set([
+  // AWS::ApiGatewayV2::Stage — `handlers: []`. HttpApi auto-emits `$default`.
   'AWS::ApiGatewayV2::Stage',
+  // AWS::IAM::Policy — `handlers: ['create', 'delete', 'update']` (no `read`/
+  // `list`). Inline policies attached to roles / users / groups don't have a
+  // first-class AWS resource id, so CFn IMPORT can't look them up. cdkd's
+  // own IAMPolicyProvider issues `iam:PutRolePolicy` / `PutUserPolicy` /
+  // `PutGroupPolicy` per attachment target; CFn phase-2 CREATE uses the
+  // exact same APIs, so pre-delete + phase-2-CREATE round-trips cleanly.
+  // CDK auto-emits this type for L2 grants (ECS Task Execution Role
+  // ECR pull policy, Lambda execution role inline policies, etc.).
+  'AWS::IAM::Policy',
 ]);
 
 /**
@@ -502,6 +512,78 @@ const PRE_DELETE_HANDLERS: Record<string, PreDeleteHandler> = {
         return;
       }
       throw err;
+    }
+  },
+  'AWS::IAM::Policy': async (entry) => {
+    // Mirrors IAMPolicyProvider.delete (src/provisioning/providers/
+    // iam-policy-provider.ts): inline policy attachments are stored per-
+    // target via PutRolePolicy/PutUserPolicy/PutGroupPolicy, so deletion
+    // is per-target too. State carries Roles/Users/Groups arrays
+    // capturing the attachment set at deploy time.
+    const {
+      IAMClient,
+      DeleteRolePolicyCommand,
+      DeleteUserPolicyCommand,
+      DeleteGroupPolicyCommand,
+      NoSuchEntityException,
+    } = await import('@aws-sdk/client-iam');
+
+    // physicalId is either the bare policy name (SDK provider format) or
+    // legacy `policyName:roleName` (CC API pre-SDK-provider state). The
+    // SDK provider's own delete normalizes via the same split; mirror it
+    // so pre-v0.74-ish state still produces the correct policy name.
+    const policyName = entry.physicalId.includes(':')
+      ? entry.physicalId.split(':')[0]
+      : entry.physicalId;
+    if (!policyName) {
+      throw new Error(
+        `cdkd state's physicalId for ${entry.logicalId} (${entry.resourceType}) is empty / invalid`
+      );
+    }
+
+    const roles = entry.properties['Roles'] as string[] | undefined;
+    const users = entry.properties['Users'] as string[] | undefined;
+    const groups = entry.properties['Groups'] as string[] | undefined;
+    const hasAttachment = (roles?.length ?? 0) + (users?.length ?? 0) + (groups?.length ?? 0) > 0;
+    if (!hasAttachment) {
+      throw new Error(
+        `cdkd state's properties for ${entry.logicalId} (${entry.resourceType}) has no ` +
+          `Roles/Users/Groups attachment recorded — cannot pre-delete the inline policy. ` +
+          `State may be from a pre-v0.74 cdkd binary; re-run \`cdkd state refresh-observed\` ` +
+          `before export.`
+      );
+    }
+
+    const client = new IAMClient({});
+
+    // Each per-target send is idempotent on NoSuchEntityException
+    // (matches IAMPolicyProvider.delete; covers partial-retry safety
+    // after a previous pre-delete attempt succeeded for some targets).
+    // Other errors propagate so phase 2 doesn't proceed against a
+    // policy still attached to AWS.
+    const deleteSafely = async (op: () => Promise<unknown>): Promise<void> => {
+      try {
+        await op();
+      } catch (err) {
+        if (err instanceof NoSuchEntityException) return;
+        throw err;
+      }
+    };
+
+    for (const roleName of roles ?? []) {
+      await deleteSafely(() =>
+        client.send(new DeleteRolePolicyCommand({ RoleName: roleName, PolicyName: policyName }))
+      );
+    }
+    for (const userName of users ?? []) {
+      await deleteSafely(() =>
+        client.send(new DeleteUserPolicyCommand({ UserName: userName, PolicyName: policyName }))
+      );
+    }
+    for (const groupName of groups ?? []) {
+      await deleteSafely(() =>
+        client.send(new DeleteGroupPolicyCommand({ GroupName: groupName, PolicyName: policyName }))
+      );
     }
   },
 };
@@ -700,6 +782,10 @@ async function exportCommand(stackArg: string | undefined, options: ExportOption
         }
       );
 
+      // `blocked` resources are genuinely unfixable (nested stacks, missing
+      // state, etc.) — nothing the user can do at runtime resolves them.
+      // Hard-fail in both dry-run and real-run paths; printing the plan
+      // here is unhelpful because there is no path forward.
       if (blocked.length > 0) {
         logger.error('The following resources block migration:');
         for (const b of blocked) {
@@ -709,20 +795,6 @@ async function exportCommand(stackArg: string | undefined, options: ExportOption
           `${blocked.length} resource(s) block migration. Either destroy them first ` +
             `(cdkd destroy / cdkd state destroy cherry-picked), or remove them from the ` +
             `CDK app and re-synthesize.`
-        );
-      }
-
-      if (phase2Creates.length > 0 && !options.includeNonImportable) {
-        logger.error('The following resources cannot be imported into CloudFormation:');
-        for (const p of phase2Creates) {
-          logger.error(`  - ${p.logicalId} (${p.resourceType}): CFn cannot import this type`);
-        }
-        throw new Error(
-          `${phase2Creates.length} non-importable resource(s) detected (Custom::*). ` +
-            `Pass --include-non-importable to run a 2-phase migration: phase 1 imports ` +
-            `the importable resources; phase 2 CFn-CREATEs the non-importable ones ` +
-            `(re-invoking each Custom Resource's backing Lambda onCreate handler — ` +
-            `make sure those are idempotent). Or destroy these resources first.`
         );
       }
 
@@ -758,16 +830,49 @@ async function exportCommand(stackArg: string | undefined, options: ExportOption
           logger.info(`  ${r.logicalId} (${r.resourceType}) — physicalId: ${r.physicalId}`);
         }
         logger.info(
-          '  Brief unavailability window (~10s for Stage; HttpApi endpoint URL is ' +
-            'unchanged because it embeds ApiId, not StageName). Pass ' +
-            '--no-recreate-import-unsupported to block instead.'
+          '  Brief unavailability window per type (~10s for Stage; HttpApi endpoint URL ' +
+            'is unchanged because it embeds ApiId, not StageName. IAM::Policy: the inline ' +
+            'policy attachment is dropped from each Role/User/Group between phases — any ' +
+            'in-flight AWS API call that depends on the granted permission will fail until ' +
+            'CFn re-CREATEs in phase 2). Pass --no-recreate-import-unsupported to block instead.'
         );
         logger.info('');
       }
 
+      // `--include-non-importable` is a real-run safety gate (Custom Resource
+      // onCreate re-invocation needs to be idempotent — see CLAUDE.md). On
+      // `--dry-run` we WARN instead of hard-erroring so the user sees the
+      // full plan + the gate they'll need to flip for the real run. Erroring
+      // out before printPlan defeats the point of dry-run.
       if (options.dryRun) {
+        if (phase2Creates.length > 0 && !options.includeNonImportable) {
+          logger.warn(
+            `${phase2Creates.length} non-importable resource(s) detected (Custom::*). ` +
+              `A real run (without --dry-run) would require --include-non-importable ` +
+              `to run a 2-phase migration: phase 1 imports the importable resources; ` +
+              `phase 2 CFn-CREATEs the non-importable ones (re-invoking each Custom ` +
+              `Resource's backing Lambda onCreate handler — make sure those are idempotent).`
+          );
+        }
         logger.info('--dry-run: no CloudFormation changeset will be created.');
         return;
+      }
+
+      // Real run: hard error on missing --include-non-importable so the user
+      // explicitly opts into the CR re-invocation semantics before phase 2
+      // touches AWS.
+      if (phase2Creates.length > 0 && !options.includeNonImportable) {
+        logger.error('The following resources cannot be imported into CloudFormation:');
+        for (const p of phase2Creates) {
+          logger.error(`  - ${p.logicalId} (${p.resourceType}): CFn cannot import this type`);
+        }
+        throw new Error(
+          `${phase2Creates.length} non-importable resource(s) detected (Custom::*). ` +
+            `Pass --include-non-importable to run a 2-phase migration: phase 1 imports ` +
+            `the importable resources; phase 2 CFn-CREATEs the non-importable ones ` +
+            `(re-invoking each Custom Resource's backing Lambda onCreate handler — ` +
+            `make sure those are idempotent). Or destroy these resources first.`
+        );
       }
 
       if (!options.yes) {
@@ -868,19 +973,18 @@ async function exportCommand(stackArg: string | undefined, options: ExportOption
       // Phase 1: IMPORT changeset. CFn IMPORT requires DeletionPolicy on
       // every resource (AWS hard requirement). CDK-synth templates only
       // emit DeletionPolicy when the user sets RemovalPolicy explicitly,
-      // so we inject DeletionPolicy: Retain on resources that lack the
-      // attribute. Retain is the safest default — if the user runs
-      // `aws cloudformation delete-stack` BEFORE the post-export `cdk
-      // deploy`, no AWS resource is destroyed. The first subsequent
-      // `cdk deploy` resets DeletionPolicy to the user's CDK-declared
-      // value (or absent), so the injection is transient.
+      // so we inject DeletionPolicy: Delete on resources that lack the
+      // attribute — matches what CFn would have applied as the type's
+      // default if the user had deployed via plain CFn. See
+      // injectDeletionPolicyForImport's docstring for the Retain-vs-Delete
+      // rationale.
       const phase1Template = filterTemplateForImport(template, phase1Imports);
       const injectedCount = injectDeletionPolicyForImport(phase1Template);
       if (injectedCount > 0) {
         logger.info(
-          `Injected DeletionPolicy: Retain on ${injectedCount} resource(s) without an ` +
-            `explicit DeletionPolicy (required by CFn IMPORT). The first \`cdk deploy\` ` +
-            `after export will reset each to your CDK-declared value.`
+          `Injected DeletionPolicy: Delete on ${injectedCount} resource(s) without an ` +
+            `explicit DeletionPolicy (required by CFn IMPORT — matches the CDK/CFn ` +
+            `default for resources without RemovalPolicy).`
         );
       }
       await executeImportChangeSet(
@@ -960,10 +1064,19 @@ async function exportCommand(stackArg: string | undefined, options: ExportOption
       const phase2Count = phase2Creates.length + recreateBeforePhase2.length;
       if (phase2Count > 0) {
         try {
+          // Apply the phase-1 overlay onto each imported resource in the
+          // phase-2 template — without this, CFn sees "Name property
+          // removal" between phase-1 (overlayed) and phase-2 (raw synth)
+          // and silently REPLACES every imported resource whose Name is
+          // an immutable property (IAM Role, S3 Bucket, etc.). See
+          // applyImportOverlayForPhase2's docstring for the empirical
+          // motivation (cdk-sample 2026-05-12 incident: 24 resources
+          // silently REPLACED during phase-2 cleanup).
+          const phase2Template = applyImportOverlayForPhase2(template, phase1Imports);
           await executeUpdateChangeSet(
             awsClients.cloudFormation,
             cfnStackName,
-            template,
+            phase2Template,
             cfnParameters
           );
           const parts: string[] = [];
@@ -1531,21 +1644,31 @@ export function resolveTemplateParameters(
  * Mutates `template['Resources']` so every entry has a `DeletionPolicy`
  * attribute. Resources already carrying any `DeletionPolicy` value
  * (Delete / Retain / Snapshot) are untouched; resources missing the
- * attribute get `DeletionPolicy: Retain` injected.
+ * attribute get `DeletionPolicy: Delete` injected.
  *
  * Required by CloudFormation `ChangeSetType=IMPORT`, which rejects the
  * changeset if any resource in the template lacks `DeletionPolicy`.
  * CDK-synth templates only emit the attribute when the user sets
- * `RemovalPolicy` explicitly, so most resources are missing it. We
- * inject `Retain` (rather than `Delete`) so an accidental
- * `aws cloudformation delete-stack` between export and the first
- * post-export `cdk deploy` cannot drop AWS resources. The first
- * `cdk deploy` resets each `DeletionPolicy` to the user's
- * CDK-declared value (or absent), so the injection is transient.
+ * `RemovalPolicy` explicitly, so most resources are missing it.
+ *
+ * **Why `Delete` (not `Retain`)**: a CDK resource without explicit
+ * `RemovalPolicy` defaults to `Delete` at CFn level (the type-default
+ * delete behavior). Injecting `Delete` matches that intent verbatim —
+ * the user is saying "treat this like the AWS default" and cdkd does
+ * exactly that. Injecting `Retain` would be an opinionated override
+ * that surprises users (their CFn template suddenly has a `Retain` they
+ * never asked for) and adds a "transient injection" concept to the
+ * mental model.
+ *
+ * The narrow scenario where `Retain` would help (cdkd export's phase-2
+ * fails AND the user picks `delete-stack` as the recovery path) is not
+ * unique to cdkd export and is not the documented recovery path (the
+ * phase-2-failure error message walks the user through a manual
+ * UpdateStack retry instead). The asymmetric-risk argument doesn't
+ * justify the UX cost of the "transient Retain" mental model.
  *
  * `UpdateReplacePolicy` is intentionally NOT injected — only
- * `DeletionPolicy` is required for IMPORT, and minimizing the injected
- * surface keeps the post-export `cdk diff` as small as possible.
+ * `DeletionPolicy` is required for IMPORT.
  *
  * Returns the number of resources that received an injection.
  *
@@ -1561,7 +1684,7 @@ export function injectDeletionPolicyForImport(template: Record<string, unknown>)
     if (!resource || typeof resource !== 'object' || Array.isArray(resource)) continue;
     const r = resource as Record<string, unknown>;
     if (r['DeletionPolicy'] === undefined) {
-      r['DeletionPolicy'] = 'Retain';
+      r['DeletionPolicy'] = 'Delete';
       injected++;
     }
   }
@@ -1647,6 +1770,60 @@ function overlayResourceIdentifierOnProperties(resource: unknown, entry: ImportP
     properties[field] = value;
   }
   return { ...r, Properties: properties };
+}
+
+/**
+ * Build the phase-2 UPDATE template: full synth template with cdkd's
+ * `ResourceIdentifier` overlay applied to every phase-1 import. This keeps
+ * the CFn-managed template's `Properties` consistent with what cdkd
+ * imported in phase 1 — preventing CFn from seeing a "Name property
+ * removed / changed" diff between the phase-1 IMPORT'd state (overlay
+ * applied) and a raw phase-2 synth template (overlay absent), which would
+ * trigger silent REPLACEMENT of every imported resource whose Name is an
+ * immutable property (IAM Role, S3 Bucket, ECR Repository, Lambda
+ * Function, etc.).
+ *
+ * **Why this matters** — discovered via real-AWS dogfooding 2026-05-12:
+ * pre-fix `cdkd export` against cdk-sample's CdkSampleStack silently
+ * REPLACED 24 resources during phase-2 `UPDATE_COMPLETE_CLEANUP_IN_PROGRESS`,
+ * including the S3 Bucket and ECR Repository. cdk-sample's
+ * `autoDeleteObjects: true` happened to mask the data-loss visibility,
+ * but on a production stack this would have wiped the S3 contents and
+ * ECR images.
+ *
+ * The overlay then persists into the final CFn-managed template. When
+ * the user runs `cdk deploy` after the migration, CDK synth produces
+ * the raw unprefixed Name → CFn proposes REPLACEMENT → the user decides
+ * (accept the replace, update CDK code to use the cdkd-prefixed name,
+ * or migrate data first). That deferred-to-cdk-deploy REPLACE is the
+ * documented post-export caveat — same as upstream `cdk import` — and
+ * it now happens with explicit user consent instead of silently during
+ * the cdkd export operation itself.
+ *
+ * Resources outside `phase1Imports` (phase-2 CREATE Custom Resources,
+ * pre-delete + recreate targets like Stage / IAM::Policy) are passed
+ * through unchanged — they get CREATEd from synth and don't have any
+ * pre-existing Properties state to preserve.
+ *
+ * Exported for unit testing.
+ */
+export function applyImportOverlayForPhase2(
+  template: Record<string, unknown>,
+  phase1Imports: ImportPlanEntry[]
+): Record<string, unknown> {
+  const result = JSON.parse(JSON.stringify(template)) as Record<string, unknown>;
+  const resources = result['Resources'];
+  if (!resources || typeof resources !== 'object' || Array.isArray(resources)) {
+    return result;
+  }
+  const resourcesMap = resources as Record<string, unknown>;
+  for (const entry of phase1Imports) {
+    const r = resourcesMap[entry.logicalId];
+    if (r !== undefined) {
+      resourcesMap[entry.logicalId] = overlayResourceIdentifierOnProperties(r, entry);
+    }
+  }
+  return result;
 }
 
 /**

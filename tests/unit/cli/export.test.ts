@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test';
 import {
+  applyImportOverlayForPhase2,
   filterTemplateForImport,
   hasCompositeIdSplitter,
   injectDeletionPolicyForImport,
@@ -272,6 +273,199 @@ describe('filterTemplateForImport', () => {
   });
 });
 
+describe('applyImportOverlayForPhase2', () => {
+  // Closes the silent-REPLACE bug discovered via cdk-sample dogfooding
+  // 2026-05-12: cdkd export's phase-2 UPDATE used the raw synth template
+  // (no overlay), so CFn saw `Properties.RoleName: 'CdkSampleStack-X'`
+  // (from phase-1 overlay) → `Properties.RoleName: (absent)` (raw synth)
+  // and replaced every imported resource whose Name is immutable.
+
+  it('overlays Name properties on phase-1 imports (mirrors filterTemplateForImport)', () => {
+    // The CDK code did not set RoleName; synth template has no RoleName
+    // on the resource. cdkd state has the auto-generated prefixed name
+    // as physicalId. Phase-2 template must surface that name in
+    // Properties.RoleName so CFn doesn't see "Name removal" vs the
+    // phase-1 IMPORT'd state.
+    const synth = {
+      Resources: {
+        Role: {
+          Type: 'AWS::IAM::Role',
+          Properties: {
+            AssumeRolePolicyDocument: { Version: '2012-10-17', Statement: [] },
+          },
+        },
+      },
+    };
+    const result = applyImportOverlayForPhase2(synth, [
+      {
+        logicalId: 'Role',
+        resourceType: 'AWS::IAM::Role',
+        physicalId: 'CdkSampleStack-Role',
+        resourceIdentifier: { RoleName: 'CdkSampleStack-Role' },
+      },
+    ]);
+    const role = (result['Resources'] as Record<string, Record<string, unknown>>)['Role']!;
+    const properties = role['Properties'] as Record<string, unknown>;
+    expect(properties['RoleName']).toBe('CdkSampleStack-Role');
+    // Existing Properties preserved
+    expect(properties['AssumeRolePolicyDocument']).toEqual({
+      Version: '2012-10-17',
+      Statement: [],
+    });
+  });
+
+  it('does NOT touch resources outside phase1Imports (phase-2 CREATE / recreate stay raw)', () => {
+    // Custom Resources go through phase-2 CREATE from raw synth; recreate-
+    // before-phase-2 entries (Stage / IAM::Policy) are deleted from AWS
+    // and CFn re-CREATEs from raw synth. Neither should have overlay
+    // applied — they have no "phase-1 import'd state" to keep consistent.
+    const synth = {
+      Resources: {
+        Role: { Type: 'AWS::IAM::Role', Properties: {} },
+        CR: {
+          Type: 'Custom::S3AutoDeleteObjects',
+          Properties: { ServiceToken: 'arn:...' },
+        },
+        Stage: {
+          Type: 'AWS::ApiGatewayV2::Stage',
+          Properties: { StageName: '$default', ApiId: { Ref: 'Api' } },
+        },
+      },
+    };
+    const result = applyImportOverlayForPhase2(synth, [
+      {
+        logicalId: 'Role',
+        resourceType: 'AWS::IAM::Role',
+        physicalId: 'CdkSampleStack-Role',
+        resourceIdentifier: { RoleName: 'CdkSampleStack-Role' },
+      },
+      // CR and Stage are NOT in phase1Imports
+    ]);
+    const resources = result['Resources'] as Record<string, Record<string, unknown>>;
+    expect((resources['Role']!['Properties'] as Record<string, unknown>)['RoleName']).toBe(
+      'CdkSampleStack-Role'
+    );
+    expect(resources['CR']!['Properties']).toEqual({ ServiceToken: 'arn:...' });
+    expect(resources['Stage']!['Properties']).toEqual({
+      StageName: '$default',
+      ApiId: { Ref: 'Api' },
+    });
+  });
+
+  it('honors propertiesOverlay narrowing (sub-resources do NOT get IntegrationId etc. written)', () => {
+    // The phase-1 overlay narrows for sub-resource types whose
+    // primaryIdentifier includes a read-only Property (IntegrationId,
+    // RouteId, Lambda::Permission's Id). Phase-2 overlay must respect
+    // the same narrowing — writing those into Properties would have CFn
+    // reject the changeset with "Encountered unsupported property".
+    const synth = {
+      Resources: {
+        Integ: {
+          Type: 'AWS::ApiGatewayV2::Integration',
+          Properties: { ApiId: { Ref: 'Api' }, IntegrationType: 'AWS_PROXY' },
+        },
+      },
+    };
+    const result = applyImportOverlayForPhase2(synth, [
+      {
+        logicalId: 'Integ',
+        resourceType: 'AWS::ApiGatewayV2::Integration',
+        physicalId: 'integ-abc',
+        resourceIdentifier: { ApiId: 'api-xyz', IntegrationId: 'integ-abc' },
+        propertiesOverlay: { ApiId: 'api-xyz' },
+      },
+    ]);
+    const integ = (result['Resources'] as Record<string, Record<string, unknown>>)['Integ']!;
+    const properties = integ['Properties'] as Record<string, unknown>;
+    expect(properties['ApiId']).toBe('api-xyz');
+    // IntegrationId is read-only and must NOT be in Properties
+    expect(properties).not.toHaveProperty('IntegrationId');
+    expect(properties['IntegrationType']).toBe('AWS_PROXY');
+  });
+
+  it('deep-clones the input so the caller can still use the raw synth template', () => {
+    // The phase-1 code path also reads from the same synth template
+    // (filterTemplateForImport runs separately). Mutating the input
+    // here would cross-contaminate.
+    const synth = {
+      Resources: {
+        Role: { Type: 'AWS::IAM::Role', Properties: {} },
+      },
+    };
+    applyImportOverlayForPhase2(synth, [
+      {
+        logicalId: 'Role',
+        resourceType: 'AWS::IAM::Role',
+        physicalId: 'CdkSampleStack-Role',
+        resourceIdentifier: { RoleName: 'CdkSampleStack-Role' },
+      },
+    ]);
+    // Original input untouched
+    expect((synth.Resources.Role as { Properties: Record<string, unknown> }).Properties).toEqual(
+      {}
+    );
+  });
+
+  it('preserves Outputs (unlike filterTemplateForImport which strips them)', () => {
+    // Phase-2 UPDATE template restores Outputs that phase-1 had to strip
+    // (CFn IMPORT rejects Outputs). The overlay function must leave them
+    // alone.
+    const synth = {
+      Resources: {
+        Role: { Type: 'AWS::IAM::Role', Properties: {} },
+      },
+      Outputs: {
+        RoleArn: { Value: { 'Fn::GetAtt': ['Role', 'Arn'] } },
+      },
+    };
+    const result = applyImportOverlayForPhase2(synth, [
+      {
+        logicalId: 'Role',
+        resourceType: 'AWS::IAM::Role',
+        physicalId: 'CdkSampleStack-Role',
+        resourceIdentifier: { RoleName: 'CdkSampleStack-Role' },
+      },
+    ]);
+    expect(result['Outputs']).toEqual({
+      RoleArn: { Value: { 'Fn::GetAtt': ['Role', 'Arn'] } },
+    });
+  });
+
+  it('handles template without Resources section gracefully', () => {
+    // Defensive: cdkd's executeUpdateChangeSet call site already ensures
+    // a Resources section exists, but tolerate the empty case to keep
+    // the helper composable.
+    const result = applyImportOverlayForPhase2({}, []);
+    expect(result).toEqual({});
+  });
+
+  it('skips imports whose logicalId is missing from the template (defensive)', () => {
+    // Edge case: cdkd state has a resource not in the current synth
+    // (e.g. user removed it from CDK code). buildImportPlan would have
+    // flagged this earlier, but the overlay helper itself must not crash.
+    const synth = {
+      Resources: { Role: { Type: 'AWS::IAM::Role', Properties: {} } },
+    };
+    const result = applyImportOverlayForPhase2(synth, [
+      {
+        logicalId: 'Role',
+        resourceType: 'AWS::IAM::Role',
+        physicalId: 'r',
+        resourceIdentifier: { RoleName: 'r' },
+      },
+      {
+        logicalId: 'MissingFromTemplate',
+        resourceType: 'AWS::SNS::Topic',
+        physicalId: 't',
+        resourceIdentifier: { TopicArn: 't' },
+      },
+    ]);
+    const resources = result['Resources'] as Record<string, Record<string, unknown>>;
+    expect(resources).toHaveProperty('Role');
+    expect(resources).not.toHaveProperty('MissingFromTemplate');
+  });
+});
+
 describe('hasCompositeIdSplitter', () => {
   it('reports the registered composite types', () => {
     expect(hasCompositeIdSplitter('AWS::ApiGateway::Method')).toBe(true);
@@ -458,6 +652,14 @@ describe('isImportUnsupportedRecreatableType', () => {
   // RESOURCE --type-name <T> | jq .handlers`.
   it('matches AWS::ApiGatewayV2::Stage (no IMPORT handler in CFn schema)', () => {
     expect(isImportUnsupportedRecreatableType('AWS::ApiGatewayV2::Stage')).toBe(true);
+  });
+
+  it('matches AWS::IAM::Policy (no read/list handler; inline policy has no AWS-side id)', () => {
+    // CDK auto-emits this type for L2 grants (ECS Task Execution Role ECR-pull
+    // policy, Lambda execution-role inline policies, etc.). Found via real
+    // export against cdk-sample on 2026-05-12 — the dry-run plan put it in
+    // phase-1 imports, real run would fail at CreateChangeSet.
+    expect(isImportUnsupportedRecreatableType('AWS::IAM::Policy')).toBe(true);
   });
 
   it('does NOT match sibling ApiGwV2 types (they have IMPORT handlers)', () => {
@@ -680,10 +882,235 @@ describe('invokePreDeleteHandler', () => {
       })
     ).rejects.toThrow(/AccessDenied/);
   });
+
+  // ─── AWS::IAM::Policy handler tests ──────────────────────────────
+  //
+  // Inline policy attachments are per-target (Roles / Users / Groups).
+  // The handler walks each target list and issues the appropriate Delete
+  // call. NoSuchEntityException is idempotent (matches IAMPolicyProvider.
+  // delete in src/provisioning/providers/iam-policy-provider.ts).
+
+  it('AWS::IAM::Policy handler walks Roles and issues DeleteRolePolicy per role', async () => {
+    const sendCalls: { cmdName: string; input: Record<string, unknown> }[] = [];
+    vi.doMock('@aws-sdk/client-iam', () => ({
+      IAMClient: class {
+        async send(cmd: { __cmdName: string; input: Record<string, unknown> }) {
+          sendCalls.push({ cmdName: cmd.__cmdName, input: cmd.input });
+        }
+      },
+      DeleteRolePolicyCommand: class {
+        readonly __cmdName = 'DeleteRolePolicy';
+        constructor(public input: Record<string, unknown>) {}
+      },
+      DeleteUserPolicyCommand: class {
+        readonly __cmdName = 'DeleteUserPolicy';
+        constructor(public input: Record<string, unknown>) {}
+      },
+      DeleteGroupPolicyCommand: class {
+        readonly __cmdName = 'DeleteGroupPolicy';
+        constructor(public input: Record<string, unknown>) {}
+      },
+      NoSuchEntityException: class extends Error {
+        readonly name = 'NoSuchEntityException';
+      },
+    }));
+    const { invokePreDeleteHandler: handler } = await import(
+      '../../../src/cli/commands/export.js'
+    );
+
+    await handler('AWS::IAM::Policy', {
+      logicalId: 'EcrPullPolicy',
+      resourceType: 'AWS::IAM::Policy',
+      physicalId: 'ecr-pull-policy',
+      properties: { Roles: ['RoleA', 'RoleB'] },
+    });
+
+    expect(sendCalls).toHaveLength(2);
+    expect(sendCalls[0]).toEqual({
+      cmdName: 'DeleteRolePolicy',
+      input: { RoleName: 'RoleA', PolicyName: 'ecr-pull-policy' },
+    });
+    expect(sendCalls[1]).toEqual({
+      cmdName: 'DeleteRolePolicy',
+      input: { RoleName: 'RoleB', PolicyName: 'ecr-pull-policy' },
+    });
+  });
+
+  it('AWS::IAM::Policy handler walks Users + Groups when set', async () => {
+    const sendCalls: { cmdName: string; input: Record<string, unknown> }[] = [];
+    vi.doMock('@aws-sdk/client-iam', () => ({
+      IAMClient: class {
+        async send(cmd: { __cmdName: string; input: Record<string, unknown> }) {
+          sendCalls.push({ cmdName: cmd.__cmdName, input: cmd.input });
+        }
+      },
+      DeleteRolePolicyCommand: class {
+        readonly __cmdName = 'DeleteRolePolicy';
+        constructor(public input: Record<string, unknown>) {}
+      },
+      DeleteUserPolicyCommand: class {
+        readonly __cmdName = 'DeleteUserPolicy';
+        constructor(public input: Record<string, unknown>) {}
+      },
+      DeleteGroupPolicyCommand: class {
+        readonly __cmdName = 'DeleteGroupPolicy';
+        constructor(public input: Record<string, unknown>) {}
+      },
+      NoSuchEntityException: class extends Error {
+        readonly name = 'NoSuchEntityException';
+      },
+    }));
+    const { invokePreDeleteHandler: handler } = await import(
+      '../../../src/cli/commands/export.js'
+    );
+
+    await handler('AWS::IAM::Policy', {
+      logicalId: 'P',
+      resourceType: 'AWS::IAM::Policy',
+      physicalId: 'p',
+      properties: { Users: ['UserA'], Groups: ['GroupA', 'GroupB'] },
+    });
+
+    expect(sendCalls.map((c) => c.cmdName)).toEqual([
+      'DeleteUserPolicy',
+      'DeleteGroupPolicy',
+      'DeleteGroupPolicy',
+    ]);
+  });
+
+  it('AWS::IAM::Policy handler normalizes legacy `policyName:roleName` physicalId', async () => {
+    // Pre-v0.74 state (CC API code path) stored physicalId as
+    // `policyName:roleName`. The provider's own delete strips the suffix;
+    // the pre-delete handler mirrors that so legacy state still produces
+    // the bare policy name as input to DeleteRolePolicy.
+    const sendCalls: Record<string, unknown>[] = [];
+    vi.doMock('@aws-sdk/client-iam', () => ({
+      IAMClient: class {
+        async send(cmd: { input: Record<string, unknown> }) {
+          sendCalls.push(cmd.input);
+        }
+      },
+      DeleteRolePolicyCommand: class {
+        constructor(public input: Record<string, unknown>) {}
+      },
+      DeleteUserPolicyCommand: class {
+        constructor(public input: Record<string, unknown>) {}
+      },
+      DeleteGroupPolicyCommand: class {
+        constructor(public input: Record<string, unknown>) {}
+      },
+      NoSuchEntityException: class extends Error {
+        readonly name = 'NoSuchEntityException';
+      },
+    }));
+    const { invokePreDeleteHandler: handler } = await import(
+      '../../../src/cli/commands/export.js'
+    );
+
+    await handler('AWS::IAM::Policy', {
+      logicalId: 'P',
+      resourceType: 'AWS::IAM::Policy',
+      physicalId: 'my-policy:my-role', // legacy CC-API shape
+      properties: { Roles: ['my-role'] },
+    });
+
+    expect(sendCalls).toEqual([{ RoleName: 'my-role', PolicyName: 'my-policy' }]);
+  });
+
+  it('AWS::IAM::Policy handler treats NoSuchEntityException as idempotent success', async () => {
+    // After a partial pre-delete retry — some targets succeeded last time,
+    // re-running the export hits AWS with "already gone" on those. Must
+    // continue, not abort.
+    class FakeNoSuchEntity extends Error {
+      readonly name = 'NoSuchEntityException';
+    }
+    let callIndex = 0;
+    vi.doMock('@aws-sdk/client-iam', () => ({
+      IAMClient: class {
+        async send() {
+          // Throw on the first send (already-gone Role); second send (live
+          // Role) succeeds. The handler must not abort on the first.
+          if (callIndex++ === 0) {
+            throw new FakeNoSuchEntity('Policy not found on role');
+          }
+          // success — no return value needed
+        }
+      },
+      DeleteRolePolicyCommand: class {
+        constructor(public input: Record<string, unknown>) {}
+      },
+      DeleteUserPolicyCommand: class {
+        constructor(public input: Record<string, unknown>) {}
+      },
+      DeleteGroupPolicyCommand: class {
+        constructor(public input: Record<string, unknown>) {}
+      },
+      NoSuchEntityException: FakeNoSuchEntity,
+    }));
+    const { invokePreDeleteHandler: handler } = await import(
+      '../../../src/cli/commands/export.js'
+    );
+
+    // Two Roles: first one returns NoSuchEntity, second one succeeds.
+    // The handler must complete without throwing.
+    await expect(
+      handler('AWS::IAM::Policy', {
+        logicalId: 'P',
+        resourceType: 'AWS::IAM::Policy',
+        physicalId: 'p',
+        properties: { Roles: ['AlreadyGoneRole', 'LiveRole'] },
+      })
+    ).resolves.toBeUndefined();
+    expect(callIndex).toBe(2);
+  });
+
+  it('AWS::IAM::Policy handler throws when state has no Roles/Users/Groups attachment', async () => {
+    // Defensive: state schema invariant says every IAM::Policy has at least
+    // one attachment. If state is corrupt and all three arrays are
+    // empty/missing, abort with a clear error rather than silently no-op
+    // (which would let phase-2 proceed against a still-attached policy).
+    vi.doMock('@aws-sdk/client-iam', () => ({
+      IAMClient: class {
+        async send() {
+          throw new Error('should not reach AWS');
+        }
+      },
+      DeleteRolePolicyCommand: class {
+        constructor(public input: Record<string, unknown>) {}
+      },
+      DeleteUserPolicyCommand: class {
+        constructor(public input: Record<string, unknown>) {}
+      },
+      DeleteGroupPolicyCommand: class {
+        constructor(public input: Record<string, unknown>) {}
+      },
+      NoSuchEntityException: class extends Error {
+        readonly name = 'NoSuchEntityException';
+      },
+    }));
+    const { invokePreDeleteHandler: handler } = await import(
+      '../../../src/cli/commands/export.js'
+    );
+
+    await expect(
+      handler('AWS::IAM::Policy', {
+        logicalId: 'P',
+        resourceType: 'AWS::IAM::Policy',
+        physicalId: 'p',
+        properties: {}, // no Roles/Users/Groups
+      })
+    ).rejects.toThrow(/no Roles\/Users\/Groups attachment/);
+  });
 });
 
 describe('injectDeletionPolicyForImport', () => {
-  it('adds DeletionPolicy: Retain on resources lacking the attribute', () => {
+  it('adds DeletionPolicy: Delete on resources lacking the attribute', () => {
+    // v0.94.8 switched the injection default from Retain to Delete: matches
+    // the CFn type-default behavior for resources without explicit
+    // RemovalPolicy, so post-export `cdk diff` sees no Retain→absent diff
+    // and the user's mental model stays "= CDK convention". See
+    // injectDeletionPolicyForImport's docstring for the Retain-vs-Delete
+    // rationale.
     const template: Record<string, unknown> = {
       Resources: {
         Role: { Type: 'AWS::IAM::Role', Properties: {} },
@@ -692,8 +1119,8 @@ describe('injectDeletionPolicyForImport', () => {
     };
     const injected = injectDeletionPolicyForImport(template);
     expect(injected).toBe(2);
-    expect((template['Resources'] as Record<string, Record<string, unknown>>)['Role']!['DeletionPolicy']).toBe('Retain');
-    expect((template['Resources'] as Record<string, Record<string, unknown>>)['Topic']!['DeletionPolicy']).toBe('Retain');
+    expect((template['Resources'] as Record<string, Record<string, unknown>>)['Role']!['DeletionPolicy']).toBe('Delete');
+    expect((template['Resources'] as Record<string, Record<string, unknown>>)['Topic']!['DeletionPolicy']).toBe('Delete');
   });
 
   it('preserves resources that already declare DeletionPolicy (any value)', () => {
@@ -736,8 +1163,8 @@ describe('injectDeletionPolicyForImport', () => {
     expect(injected).toBe(2);
     const resources = template['Resources'] as Record<string, Record<string, unknown>>;
     expect(resources['Bucket']!['DeletionPolicy']).toBe('Delete');
-    expect(resources['Role']!['DeletionPolicy']).toBe('Retain');
-    expect(resources['Topic']!['DeletionPolicy']).toBe('Retain');
+    expect(resources['Role']!['DeletionPolicy']).toBe('Delete');
+    expect(resources['Topic']!['DeletionPolicy']).toBe('Delete');
   });
 
   it('returns 0 for a template with no Resources section', () => {

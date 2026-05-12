@@ -119,6 +119,57 @@ case "${VARIANT}" in
       echo "[verify] FAIL: dry-run plan does not list AWS::ApiGatewayV2::Stage as recreate target"
       exit 1
     fi
+    # AWS::IAM::Policy must also surface in recreate (same shape as Stage —
+    # CFn schema reports no read/list handler, so it's IMPORT-unsupported).
+    # Fixture has an inline iam.Policy attached to the CR role. Catches the
+    # bug from real-AWS dogfooding on 2026-05-12 where IAM::Policy was
+    # erroneously sent to phase-1 IMPORT and would have been rejected.
+    if ! grep -q 'AWS::IAM::Policy.*recreate\|AWS::IAM::Policy.*physicalId' /tmp/verify-dry-run.log; then
+      # Fallback regex: the plan output for recreateBeforePhase2 entries
+      # has the shape `  <logicalId> (AWS::IAM::Policy) — physicalId: <id>`.
+      if ! grep -q 'AWS::IAM::Policy' /tmp/verify-dry-run.log; then
+        echo "[verify] FAIL: dry-run plan does not mention AWS::IAM::Policy at all"
+        exit 1
+      fi
+      # AWS::IAM::Policy is in the plan SOMEWHERE — ensure it's in the
+      # recreate-before-phase-2 section, not phase-1 imports.
+      if grep -E 'Import plan for CloudFormation stack' -A 200 /tmp/verify-dry-run.log \
+         | grep -B 1 '(AWS::IAM::Policy)' \
+         | grep -q '←'; then
+        echo "[verify] FAIL: AWS::IAM::Policy is in phase-1 imports — should be in recreate"
+        echo "[verify] (IAM::Policy must be in IMPORT_UNSUPPORTED_RECREATABLE_TYPES)"
+        exit 1
+      fi
+    fi
+
+    # Regression guard for the dry-run permissiveness fix: dry-run without
+    # --include-non-importable should NOT hard-error. The user's first
+    # interaction with cdkd export is typically `cdkd export <stack> --dry-run`
+    # (per the cdk-sample/cdkd-export.md guide) — if cdkd aborts before
+    # printing the plan, the dry-run flag's purpose (preview without side
+    # effects) is defeated. Instead it should print the full plan + WARN
+    # that --include-non-importable is needed for the real run.
+    echo "[verify] step 3b: cdkd export --dry-run WITHOUT --include-non-importable"
+    ${CLI} export "${STACK}" \
+      --state-bucket "${STATE_BUCKET}" \
+      --dry-run \
+      -y \
+      --verbose 2>&1 | tee /tmp/verify-dry-run-no-flag.log
+    if [ "${PIPESTATUS[0]}" -ne 0 ]; then
+      echo "[verify] FAIL: dry-run without --include-non-importable exited non-zero"
+      echo "[verify] (dry-run must be permissive — see fix/export-dry-run-permissive)"
+      exit 1
+    fi
+    if ! grep -qE 'non-importable resource.+detected' /tmp/verify-dry-run-no-flag.log; then
+      echo "[verify] FAIL: dry-run without --include-non-importable did not warn about Custom Resources"
+      exit 1
+    fi
+    if ! grep -q 'A real run (without --dry-run) would require --include-non-importable' /tmp/verify-dry-run-no-flag.log; then
+      echo "[verify] FAIL: dry-run did not surface the real-run hint about --include-non-importable"
+      exit 1
+    fi
+    echo "[verify] step 3b ok: dry-run is permissive + emits the real-run hint"
+
     echo "[verify] step 4: verify CFn stack does NOT exist (dry-run)"
     if aws cloudformation describe-stacks --stack-name "${CFN_STACK}" --region "${REGION}" >/dev/null 2>&1; then
       echo "[verify] FAIL: dry-run created a CFn stack — should not happen"
@@ -235,9 +286,14 @@ case "${VARIANT}" in
         exit 1
       fi
     done
-    # IMPORT-unsupported re-CREATE (phase 2): AWS::ApiGatewayV2::Stage was
-    # pre-deleted between phases, then CFn UPDATE re-CREATEd it fresh.
-    # Closes cdkd issue #307.
+    # IMPORT-unsupported re-CREATE (phase 2): AWS::ApiGatewayV2::Stage AND
+    # AWS::IAM::Policy are pre-deleted between phases, then CFn UPDATE
+    # re-CREATEs them fresh. Closes cdkd issue #307 + the IAM::Policy
+    # case (added 2026-05-12 from real-AWS dogfooding).
+    if ! echo "${RESOURCES}" | grep -q 'AWS::IAM::Policy'; then
+      echo "[verify] FAIL: AWS::IAM::Policy not found in CFn stack (pre-delete + phase-2 CREATE missed)"
+      exit 1
+    fi
     if ! echo "${RESOURCES}" | grep -q 'AWS::ApiGatewayV2::Stage'; then
       echo "[verify] FAIL: AWS::ApiGatewayV2::Stage not found in CFn stack (pre-delete + phase-2 CREATE missed)"
       exit 1
@@ -253,6 +309,47 @@ case "${VARIANT}" in
       exit 1
     fi
     echo "[verify] step 4b ok"
+
+    # Regression guard: phase-2 UPDATE must NOT have caused silent
+    # REPLACEMENT of any phase-1-imported resource. The bug discovered
+    # via cdk-sample dogfooding 2026-05-12: cdkd export's phase-2 used
+    # the raw synth template (no overlay) → CFn saw "Name property
+    # removed" between phase-1 (overlayed) and phase-2 (raw) → silently
+    # REPLACEd 24 imported resources during UPDATE_COMPLETE_CLEANUP_IN_PROGRESS.
+    # Fix: applyImportOverlayForPhase2 keeps the overlay in phase-2's
+    # template. To assert the fix held, walk stack events and confirm
+    # no DELETE_COMPLETE events occurred during the phase-2 cleanup window
+    # for any resource that was supposed to be imported (= NOT phase2Creates
+    # and NOT recreateBeforePhase2).
+    echo "[verify] step 4c: assert no silent REPLACE during phase-2 cleanup"
+    REPLACE_VICTIMS=$(aws cloudformation describe-stack-events \
+      --stack-name "${CFN_STACK}" --region "${REGION}" --max-items 200 --output json 2>&1 |
+      python3 -c "
+import json, sys
+events = json.load(sys.stdin).get('StackEvents', [])
+# Resources that legitimately get phase-2 DELETE: only the
+# recreate-before-phase-2 targets (Stage, IAM::Policy). They're
+# pre-deleted by cdkd BEFORE the UPDATE changeset runs, so they
+# do NOT appear as DELETE_COMPLETE in stack events (cdkd deleted
+# them via SDK, not via CFn changeset).
+#
+# Any phase-1-imported resource appearing as DELETE_COMPLETE
+# in the UPDATE_COMPLETE_CLEANUP_IN_PROGRESS window is a REPLACE
+# victim (the silent-replace bug).
+deleted = set()
+for ev in events:
+    if ev.get('ResourceStatus') == 'DELETE_COMPLETE' and ev['LogicalResourceId'] != '${CFN_STACK}':
+        deleted.add(ev['LogicalResourceId'])
+for lid in sorted(deleted):
+    print(lid)
+")
+    if [ -n "${REPLACE_VICTIMS}" ]; then
+      echo "[verify] FAIL: phase-2 UPDATE silently REPLACED imported resources:"
+      echo "${REPLACE_VICTIMS}" | sed 's/^/  - /'
+      echo "[verify] (the applyImportOverlayForPhase2 fix regressed — phase-2 sees Name property removal)"
+      exit 1
+    fi
+    echo "[verify] step 4c ok: no silent REPLACE happened"
 
     echo "[verify] step 5: verify cdkd state is GONE"
     STATE_KEY="cdkd/${STACK}/${REGION}/state.json"

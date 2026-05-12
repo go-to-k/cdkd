@@ -1,3 +1,40 @@
+## [0.94.8](https://github.com/go-to-k/cdkd/compare/v0.94.7...v0.94.8) (2026-05-12)
+
+## [0.94.7](https://github.com/go-to-k/cdkd/compare/v0.94.6...v0.94.7) (2026-05-12)
+
+
+### Bug Fixes
+
+* **export:** preserve phase-1 overlay in phase-2 UPDATE to prevent silent REPLACE ([#316](https://github.com/go-to-k/cdkd/issues/316)) ([40d9675](https://github.com/go-to-k/cdkd/commit/40d9675ff5098cff4e8008434bbc821464504c33))
+
+## [0.94.6](https://github.com/go-to-k/cdkd/compare/v0.94.5...v0.94.6) (2026-05-12)
+
+
+### Bug Fixes
+
+* **export:** auto pre-delete + phase-2 CREATE for AWS::IAM::Policy ([#315](https://github.com/go-to-k/cdkd/issues/315)) ([88e76fd](https://github.com/go-to-k/cdkd/commit/88e76fd0caaf51d78f94f0597d1280ef8d2c140b))
+
+## [0.94.5](https://github.com/go-to-k/cdkd/compare/v0.94.4...v0.94.5) (2026-05-12)
+
+
+### Bug Fixes
+
+* **export:** document dry-run permissiveness in CLAUDE.md (re-publish v0.94.4) ([#313](https://github.com/go-to-k/cdkd/issues/313)) ([c3d74bd](https://github.com/go-to-k/cdkd/commit/c3d74bd4487f81f827635df447561ccd1e16711e))
+
+## [0.94.4](https://github.com/go-to-k/cdkd/compare/v0.94.3...v0.94.4) (2026-05-12)
+
+
+### Bug Fixes
+
+* **export:** make --dry-run permissive on missing --include-non-importable ([#311](https://github.com/go-to-k/cdkd/issues/311)) ([e5b61d4](https://github.com/go-to-k/cdkd/commit/e5b61d4a04ce35b0d173721b05e64b443fd8c9cd))
+
+## [0.94.3](https://github.com/go-to-k/cdkd/compare/v0.94.2...v0.94.3) (2026-05-12)
+
+
+### Bug Fixes
+
+* **deploy:** prefix-migration check false-positive on auto-generated names ([#310](https://github.com/go-to-k/cdkd/issues/310)) ([07aeb74](https://github.com/go-to-k/cdkd/commit/07aeb74d5fc085e18033673094fa2fcb6eb9eec0))
+
 ## [0.94.2](https://github.com/go-to-k/cdkd/compare/v0.94.1...v0.94.2) (2026-05-12)
 
 
