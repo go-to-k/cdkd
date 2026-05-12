@@ -126,6 +126,33 @@ export const PATTERN_B_RESOURCE_TYPES: readonly string[] = [
 ] as const;
 
 /**
+ * For each Pattern B resource type, the CFn template `Properties` field
+ * the user sets to supply a physical name (`new iam.Role(this, 'X',
+ * { roleName: 'my-role' })` → `Properties.RoleName: 'my-role'`).
+ *
+ * Used by the prefix-migration check to distinguish user-supplied
+ * physical names (which the v0.94.0 default flip would actually
+ * REPLACE on next deploy) from auto-generated logical-id-fallback
+ * names (which keep the prefix in BOTH old and new default — no
+ * REPLACE pending). Without this discriminator, the migration
+ * check naively flags every prefix-style physicalId regardless of
+ * its origin, surfacing a false-positive WARNING on auto-generated
+ * names that won't actually be touched.
+ *
+ * Keep in sync with `PATTERN_B_RESOURCE_TYPES` and with each
+ * provider's `Properties[<NameField>]` lookup in
+ * `src/provisioning/providers/`.
+ */
+export const PATTERN_B_NAME_PROPERTIES: Readonly<Record<string, string>> = {
+  'AWS::IAM::Role': 'RoleName',
+  'AWS::IAM::User': 'UserName',
+  'AWS::IAM::Group': 'GroupName',
+  'AWS::IAM::InstanceProfile': 'InstanceProfileName',
+  'AWS::ElasticLoadBalancingV2::LoadBalancer': 'Name',
+  'AWS::ElasticLoadBalancingV2::TargetGroup': 'Name',
+};
+
+/**
  * Options for generating a resource name.
  */
 export interface ResourceNameOptions {

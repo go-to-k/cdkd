@@ -1,6 +1,9 @@
 import * as readline from 'node:readline/promises';
 import { getLogger } from '../../utils/logger.js';
-import { PATTERN_B_RESOURCE_TYPES } from '../../provisioning/resource-name.js';
+import {
+  PATTERN_B_NAME_PROPERTIES,
+  PATTERN_B_RESOURCE_TYPES,
+} from '../../provisioning/resource-name.js';
 import type { StackState } from '../../types/state.js';
 
 /**
@@ -21,11 +24,32 @@ export interface PendingRename {
 
 /**
  * Inspect `state` and return the list of Pattern B resources whose
- * `physicalId` starts with `${stackName}-` (= the legacy prefixed
- * name). These are the resources `cdkd deploy --no-prefix-user-supplied-names`
- * will silently propose for REPLACEMENT, because the new template
- * intent is the unprefixed name. The caller surfaces them to the user
+ * `physicalId` starts with `${stackName}-` AND was originally given a
+ * user-supplied physical name (state's recorded `properties[<NameField>]`
+ * is set). These are the resources whose next deploy under the v0.94.0
+ * default would silently propose REPLACEMENT, because the new template
+ * intent is the unprefixed user-supplied name. The caller surfaces them
  * via {@link promptMigrationConfirm} before any provider call runs.
+ *
+ * **Why the user-supplied gate** (load-bearing): Pattern B types accept
+ * BOTH user-supplied names (`new iam.Role(this, 'X', { roleName: 'foo' })`)
+ * AND auto-generated logical-id-fallback names (`new iam.Role(this, 'X')`).
+ * Pre-v0.94 the prefix was applied to BOTH. Post-v0.94 the prefix is
+ * applied only to the auto-generated path; user-supplied names are taken
+ * verbatim. So:
+ *
+ *   - User-supplied name in pre-v0.94 state (`Properties.RoleName: 'foo'`,
+ *     physicalId `MyStack-foo`) → next deploy computes `foo` →
+ *     REPLACE pending. Flag.
+ *   - Auto-generated name in pre-v0.94 state (no `Properties.RoleName`,
+ *     physicalId `MyStack-MyConstructRoleF44D44CF`) → next deploy
+ *     STILL computes `MyStack-MyConstructRoleF44D44CF` (`userSupplied:
+ *     false` keeps the prefix regardless of the v0.94.0 default flip).
+ *     NO REPLACE pending. Do NOT flag.
+ *
+ * The naive prefix-startsWith check (without the user-supplied gate)
+ * surfaces a false-positive WARNING on every auto-generated name in
+ * every pre-v0.94 stack. Closes that bug.
  *
  * Pattern A resources are intentionally NOT considered — they never got
  * the prefix on a user-supplied name to begin with, so the flag is a
@@ -33,8 +57,10 @@ export interface PendingRename {
  *
  * Returns an empty array when state is `undefined` (first-time deploy
  * with no existing state — nothing to migrate), when no resource is of
- * a Pattern B type, or when every Pattern B resource is already
- * unprefixed (e.g. the stack was originally deployed with the flag on).
+ * a Pattern B type, when every Pattern B resource is already unprefixed
+ * (e.g. the stack was originally deployed with the flag on), OR when
+ * every prefix-style Pattern B resource is auto-generated (the common
+ * case for stacks that never opted into user-supplied names).
  */
 export function findPendingPrefixRenames(
   stackName: string,
@@ -50,6 +76,17 @@ export function findPendingPrefixRenames(
     if (!patternB.has(resource.resourceType)) continue;
     if (typeof resource.physicalId !== 'string') continue;
     if (!resource.physicalId.startsWith(prefix)) continue;
+
+    // Gate on user-supplied. The deploy engine only drops the prefix
+    // for resources whose name property was explicitly set in CDK
+    // code. State records this as `properties[<NameField>]`. Empty
+    // string or undefined means the resource went through the
+    // logical-id fallback path — prefix kept regardless of the
+    // v0.94.0 default flip — no REPLACE pending.
+    const nameProperty = PATTERN_B_NAME_PROPERTIES[resource.resourceType];
+    if (!nameProperty) continue; // defensive: should be set for every Pattern B type
+    const userSuppliedName = resource.properties?.[nameProperty];
+    if (typeof userSuppliedName !== 'string' || userSuppliedName === '') continue;
 
     const newPhysicalId = resource.physicalId.slice(prefix.length);
     // Edge case: physicalId is exactly `${stackName}-` (= empty

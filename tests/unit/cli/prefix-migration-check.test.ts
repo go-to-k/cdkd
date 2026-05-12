@@ -15,11 +15,50 @@ vi.mock('node:readline/promises', () => {
 
 import * as readline from 'node:readline/promises';
 
-function makeResource(physicalId: string, resourceType: string): ResourceState {
+/**
+ * Per-Pattern-B-type CFn property that the user sets to supply a name.
+ * Mirrors `PATTERN_B_NAME_PROPERTIES` in `src/provisioning/resource-name.ts`.
+ * Used by `makeResource` to populate state's `properties[<NameField>]`
+ * when a test scenario wants to simulate a user-supplied name.
+ */
+const NAME_PROPS: Record<string, string> = {
+  'AWS::IAM::Role': 'RoleName',
+  'AWS::IAM::User': 'UserName',
+  'AWS::IAM::Group': 'GroupName',
+  'AWS::IAM::InstanceProfile': 'InstanceProfileName',
+  'AWS::ElasticLoadBalancingV2::LoadBalancer': 'Name',
+  'AWS::ElasticLoadBalancingV2::TargetGroup': 'Name',
+};
+
+function makeResource(
+  physicalId: string,
+  resourceType: string,
+  options: {
+    /**
+     * The user-supplied physical name recorded in state's
+     * `properties[<NameField>]`. Set this when the test scenario
+     * simulates a Pattern B resource the user explicitly named via
+     * `new iam.Role(this, 'X', { roleName: 'foo' })`. Leave undefined
+     * (default) to simulate an auto-generated logical-id-fallback name
+     * — `findPendingPrefixRenames` MUST skip those (no REPLACE pending
+     * even when physicalId carries the legacy prefix, because the
+     * deploy engine's `userSupplied: false` path keeps the prefix
+     * regardless of the v0.94.0 default flip).
+     */
+    userSuppliedName?: string;
+  } = {}
+): ResourceState {
+  const properties: Record<string, unknown> = {};
+  if (options.userSuppliedName !== undefined) {
+    const nameProp = NAME_PROPS[resourceType];
+    if (nameProp) {
+      properties[nameProp] = options.userSuppliedName;
+    }
+  }
   return {
     physicalId,
     resourceType,
-    properties: {},
+    properties,
     attributes: {},
     dependencies: [],
   };
@@ -69,10 +108,12 @@ describe('findPendingPrefixRenames', () => {
 
   it('flags only the prefixed Pattern B resources when mixed with Pattern A and unprefixed Pattern B', () => {
     const state = makeState({
-      // Pattern B, prefixed — should flag
-      RoleA: makeResource('MyStack-role-a', 'AWS::IAM::Role'),
+      // Pattern B, prefixed, user-supplied — should flag
+      RoleA: makeResource('MyStack-role-a', 'AWS::IAM::Role', {
+        userSuppliedName: 'role-a',
+      }),
       // Pattern B, unprefixed — should pass through
-      RoleB: makeResource('role-b', 'AWS::IAM::Role'),
+      RoleB: makeResource('role-b', 'AWS::IAM::Role', { userSuppliedName: 'role-b' }),
       // Pattern A, prefixed (the prefix is real but the flag doesn't affect Pattern A) — must NOT flag
       Bucket: makeResource('MyStack-bucket', 'AWS::S3::Bucket'),
       // Pattern A, unprefixed
@@ -91,12 +132,18 @@ describe('findPendingPrefixRenames', () => {
 
   it('covers every Pattern B type', () => {
     const state = makeState({
-      Role: makeResource('MyStack-r', 'AWS::IAM::Role'),
-      User: makeResource('MyStack-u', 'AWS::IAM::User'),
-      Group: makeResource('MyStack-g', 'AWS::IAM::Group'),
-      Profile: makeResource('MyStack-p', 'AWS::IAM::InstanceProfile'),
-      Lb: makeResource('MyStack-lb', 'AWS::ElasticLoadBalancingV2::LoadBalancer'),
-      Tg: makeResource('MyStack-tg', 'AWS::ElasticLoadBalancingV2::TargetGroup'),
+      Role: makeResource('MyStack-r', 'AWS::IAM::Role', { userSuppliedName: 'r' }),
+      User: makeResource('MyStack-u', 'AWS::IAM::User', { userSuppliedName: 'u' }),
+      Group: makeResource('MyStack-g', 'AWS::IAM::Group', { userSuppliedName: 'g' }),
+      Profile: makeResource('MyStack-p', 'AWS::IAM::InstanceProfile', {
+        userSuppliedName: 'p',
+      }),
+      Lb: makeResource('MyStack-lb', 'AWS::ElasticLoadBalancingV2::LoadBalancer', {
+        userSuppliedName: 'lb',
+      }),
+      Tg: makeResource('MyStack-tg', 'AWS::ElasticLoadBalancingV2::TargetGroup', {
+        userSuppliedName: 'tg',
+      }),
     });
     const pending = findPendingPrefixRenames('MyStack', state);
     expect(pending).toHaveLength(6);
@@ -115,7 +162,9 @@ describe('findPendingPrefixRenames', () => {
     // which should always match state.stackName, but the helper relies
     // on the argument so a mismatch is caught at the source.
     const state = makeState({
-      Role: makeResource('OtherStack-role-a', 'AWS::IAM::Role'),
+      Role: makeResource('OtherStack-role-a', 'AWS::IAM::Role', {
+        userSuppliedName: 'role-a',
+      }),
     });
     expect(findPendingPrefixRenames('MyStack', state)).toEqual([]);
     expect(findPendingPrefixRenames('OtherStack', state)).toEqual([
@@ -126,6 +175,56 @@ describe('findPendingPrefixRenames', () => {
         newPhysicalId: 'role-a',
       },
     ]);
+  });
+
+  it('does NOT flag auto-generated names (false-positive regression for #310-class bug)', () => {
+    // Pre-v0.94 the prefix was applied to BOTH user-supplied AND
+    // auto-generated names (`new iam.Role(this, 'X')` without `roleName`
+    // → state physicalId `MyStack-MyConstructRoleF44D44CF`). Post-v0.94
+    // the prefix is applied ONLY to the auto-generated path; user-
+    // supplied names are taken verbatim. So an auto-generated name
+    // STILL has the same prefix under the new default — no REPLACE
+    // pending. Surfacing a WARNING for these is a false positive that
+    // bit real users on every pre-v0.94 stack.
+    //
+    // The discriminator is `state.properties[<NameField>]`: present →
+    // user-supplied → flag; absent → auto-generated → skip.
+    const state = makeState({
+      // Auto-generated (no RoleName in properties). MUST NOT flag.
+      AutoRole: makeResource(
+        'MyStack-MyConstructRoleF44D44CF',
+        'AWS::IAM::Role'
+        // no userSuppliedName option → properties.RoleName stays unset
+      ),
+      // User-supplied. MUST flag.
+      UserRole: makeResource('MyStack-my-role', 'AWS::IAM::Role', {
+        userSuppliedName: 'my-role',
+      }),
+      // Auto-generated LB. MUST NOT flag.
+      AutoLb: makeResource('MyStack-AutoLb', 'AWS::ElasticLoadBalancingV2::LoadBalancer'),
+    });
+    const pending = findPendingPrefixRenames('MyStack', state);
+    expect(pending).toEqual([
+      {
+        logicalId: 'UserRole',
+        resourceType: 'AWS::IAM::Role',
+        oldPhysicalId: 'MyStack-my-role',
+        newPhysicalId: 'my-role',
+      },
+    ]);
+  });
+
+  it('does NOT flag a Pattern B resource whose name property is the empty string', () => {
+    // Defensive: an empty-string name is functionally equivalent to
+    // unset — the deploy engine's `generateResourceNameWithFallback`
+    // treats `''` as "no user-supplied value" and falls through to
+    // the logical-id path. The migration check must match.
+    const state = makeState({
+      Role: makeResource('MyStack-MyConstructRoleX', 'AWS::IAM::Role', {
+        userSuppliedName: '',
+      }),
+    });
+    expect(findPendingPrefixRenames('MyStack', state)).toEqual([]);
   });
 });
 
