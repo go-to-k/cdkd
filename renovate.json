@@ -1,0 +1,54 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["config:recommended", ":dependencyDashboard"],
+  "timezone": "Asia/Tokyo",
+  "labels": ["dependencies"],
+  "prHourlyLimit": 4,
+  "prConcurrentLimit": 10,
+  "packageRules": [
+    {
+      "matchPackagePatterns": ["^@aws-sdk/"],
+      "matchUpdateTypes": ["minor", "patch"],
+      "groupName": "aws-sdk",
+      "automerge": true
+    },
+    {
+      "matchPackagePatterns": ["^@aws-sdk/"],
+      "matchUpdateTypes": ["major"],
+      "groupName": "aws-sdk (major)",
+      "dependencyDashboardApproval": true
+    },
+    {
+      "matchDepTypes": ["devDependencies"],
+      "matchUpdateTypes": ["minor", "patch"],
+      "excludePackagePatterns": ["^@aws-sdk/"],
+      "groupName": "dev-dependencies",
+      "automerge": true
+    },
+    {
+      "matchDepTypes": ["dependencies"],
+      "matchUpdateTypes": ["minor", "patch"],
+      "excludePackagePatterns": ["^@aws-sdk/"],
+      "groupName": "runtime-dependencies",
+      "automerge": true
+    },
+    {
+      "matchUpdateTypes": ["major"],
+      "excludePackagePatterns": ["^@aws-sdk/"],
+      "dependencyDashboardApproval": true
+    },
+    {
+      "matchPackageNames": ["node"],
+      "enabled": false
+    }
+  ],
+  "lockFileMaintenance": {
+    "enabled": true,
+    "automerge": true,
+    "schedule": ["before 6am on monday"]
+  },
+  "vulnerabilityAlerts": {
+    "labels": ["security"],
+    "automerge": true
+  }
+}
