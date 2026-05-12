@@ -105,6 +105,26 @@ run_one() {
   assert_cfn_gone "${stack}"
   assert_migrate_tmp_empty
 
+  # PR #331 regression guard: cdkd diff must not warn about
+  # `AWS::ECR::Repository.Arn` falling back to physical id, and the
+  # downstream `Fn::Split` / `Fn::Select` chain must resolve cleanly.
+  # The small fixture's ECR Repository + IAM policy referencing
+  # `repo.repositoryArn` is the load-bearing input here.
+  if [[ "${stack}" == "CdkdMigrateSmall" ]]; then
+    log "[${stack}] cdkd diff (PR #331 regression guard for AWS::ECR::Repository.Arn)"
+    diff_output=$(AWS_REGION="${REGION}" ${CDKD} diff "${stack}" 2>&1 || true)
+    echo "${diff_output}"
+    if echo "${diff_output}" | grep -q "Unknown attribute Arn for resource type AWS::ECR::Repository"; then
+      echo "ASSERTION FAILED: PR #331 regression — ECR Repository.Arn handler missing from intrinsic resolver" >&2
+      exit 1
+    fi
+    if echo "${diff_output}" | grep -q "Fn::Select: index .* out of bounds (array length: 1)"; then
+      echo "ASSERTION FAILED: PR #331 regression — Fn::Select OOB on ECR ARN parse" >&2
+      exit 1
+    fi
+    echo "  ok: no ECR Arn fallback / Fn::Select OOB warnings in cdkd diff"
+  fi
+
   log "[${stack}] cdkd destroy"
   AWS_REGION="${REGION}" ${CDKD} destroy "${stack}" --force
 
