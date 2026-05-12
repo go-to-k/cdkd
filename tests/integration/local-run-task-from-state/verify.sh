@@ -69,8 +69,8 @@ STATE_BUCKET="${STATE_BUCKET:-cdkd-state-${ACCOUNT_ID}}"
 echo "[verify] region=${REGION} stack=${STACK} state-bucket=${STATE_BUCKET}"
 
 echo "[verify] step 1a: install + build cdkd"
-pnpm --dir "${REPO_ROOT}" install
-pnpm --dir "${REPO_ROOT}" run build
+(cd "${REPO_ROOT}" && pnpm install)
+(cd "${REPO_ROOT}" && vp run build)
 
 cd "${TEST_DIR}"
 if [ ! -d node_modules ]; then

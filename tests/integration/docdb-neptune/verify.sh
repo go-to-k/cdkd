@@ -46,8 +46,8 @@ TIMEOUT_OVERRIDES=(
 )
 
 echo "[verify] step 1: install + build cdkd"
-pnpm --dir "${REPO_ROOT}" install
-pnpm --dir "${REPO_ROOT}" run build
+(cd "${REPO_ROOT}" && pnpm install)
+(cd "${REPO_ROOT}" && vp run build)
 
 cd "${TEST_DIR}"
 if [ ! -d node_modules ]; then
