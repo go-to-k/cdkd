@@ -1,3 +1,10 @@
+## [0.94.4](https://github.com/go-to-k/cdkd/compare/v0.94.3...v0.94.4) (2026-05-12)
+
+
+### Bug Fixes
+
+* **export:** make --dry-run permissive on missing --include-non-importable ([#311](https://github.com/go-to-k/cdkd/issues/311)) ([e5b61d4](https://github.com/go-to-k/cdkd/commit/e5b61d4a04ce35b0d173721b05e64b443fd8c9cd))
+
 ## [0.94.3](https://github.com/go-to-k/cdkd/compare/v0.94.2...v0.94.3) (2026-05-12)
 
 
