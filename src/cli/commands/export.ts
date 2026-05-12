@@ -200,12 +200,15 @@ const PRIMARY_IDENTIFIER_FALLBACK: Record<string, string> = {
  *   into the synth template's `Properties` block. Defaults to the full
  *   `resourceIdentifier` map (existing behavior for `AWS::ApiGateway::Method`
  *   / `AWS::ApiGateway::Resource` / `AWS::EC2::VPCGatewayAttachment` whose
- *   identifier fields ARE all valid Properties). Sub-resource types whose
+ *   identifier fields ARE all writable Properties). Sub-resource types whose
  *   primaryIdentifier includes a generated-id field (`IntegrationId` /
  *   `RouteId` / Lambda::Permission's `Id`) MUST narrow to just the writable
- *   subset — CFn IMPORT rejects unknown Properties keys, and writing a
- *   generated-id field that isn't in the type's schema would surface as
- *   "Encountered unsupported property" at changeset-create time.
+ *   subset — those generated-id fields ARE listed in the CFn schema's
+ *   `properties` block but tagged `readOnlyProperties`, so writing them
+ *   via Properties at IMPORT changeset creation is rejected by CFn. The
+ *   `resourceIdentifier` map sent to CFn's `ResourcesToImport[]` still
+ *   carries the full set — the narrowing only affects template-Properties
+ *   writing.
  *
  * cdkd's own per-type physicalId format is provider-defined (see
  * `src/provisioning/providers/*.ts` — most composites use `|` as the
@@ -269,9 +272,10 @@ const COMPOSITE_ID_SPLITTERS: Record<string, CompositeIdSplitter> = {
   // cdkd stores just `IntegrationId` (apigatewayv2-provider.ts); the parent
   // `ApiId` lives in cdkd state's properties (`properties.ApiId`). CFn primary
   // identifier is [ApiId, IntegrationId]. ApiId IS a writable Property
-  // (already in synth template via Ref); IntegrationId is AWS-generated and
-  // NOT a Property — exclude it from propertiesOverlay so CFn doesn't reject
-  // an unknown property at changeset-create.
+  // (already in synth template via Ref); IntegrationId is tagged
+  // `readOnlyProperties: ['/properties/IntegrationId']` in the CFn schema —
+  // exclude it from propertiesOverlay so CFn doesn't reject writing a
+  // read-only property at changeset-create.
   'AWS::ApiGatewayV2::Integration': (physicalId, properties) => {
     const apiId = readStringProperty(properties, 'ApiId', 'AWS::ApiGatewayV2::Integration');
     return {
@@ -299,16 +303,26 @@ const COMPOSITE_ID_SPLITTERS: Record<string, CompositeIdSplitter> = {
   //     (CDK auto-creates a `$default` Stage). Tracked in a follow-up issue
   //     (link in PR description); the workaround design is open
   //     (pre-delete + phase-2-CREATE vs hard-block-with-clear-error).
-  // cdkd stores just `StatementId` (lambda-permission-provider.ts); parent
-  // `FunctionName` comes from properties. CFn primary identifier is
-  // [FunctionName, Id] (note: CFn schema calls the field `Id`, not
-  // `StatementId`). FunctionName IS a writable Property; `Id` is NOT a
-  // Property of AWS::Lambda::Permission (it's only returned via GetAtt).
-  // Narrow overlay to FunctionName.
+  // cdkd stores `StatementId` (lambda-permission-provider.ts:124); for state
+  // entries written by the older CC-API path (pre-SDK-provider), physicalId
+  // may instead be the legacy `<functionArn>|<statementId>` shape — the
+  // provider's own delete / update / getAttribute paths normalize via
+  // `physicalId.split('|').pop()` (see lambda-permission-provider.ts:160 /
+  // 222 / 290). Mirror that here so legacy state still produces the
+  // correct CFn Id field; otherwise CFn IMPORT's identifier-match would
+  // compare `Id: '<arn>|<sid>'` against the AWS-current Sid and reject.
+  //
+  // CFn primary identifier is [FunctionName, Id] (note: CFn schema calls
+  // the field `Id`, not `StatementId`). FunctionName IS a writable
+  // Property; `Id` is tagged `readOnlyProperties: ['/properties/Id']` in
+  // the CFn schema (it's set at create time by AWS, not by the user).
+  // Narrow overlay to FunctionName so CFn doesn't reject writing read-only
+  // `Id` at changeset-create.
   'AWS::Lambda::Permission': (physicalId, properties) => {
     const functionName = readStringProperty(properties, 'FunctionName', 'AWS::Lambda::Permission');
+    const statementId = physicalId.includes('|') ? physicalId.split('|').pop()! : physicalId;
     return {
-      resourceIdentifier: { FunctionName: functionName, Id: physicalId },
+      resourceIdentifier: { FunctionName: functionName, Id: statementId },
       propertiesOverlay: { FunctionName: functionName },
     };
   },
@@ -373,10 +387,10 @@ interface ImportPlanEntry {
    * `Properties` block (so CFn IMPORT's identifier-match check passes
    * against the cdkd-prefixed physical id). When omitted, defaults to the
    * full `resourceIdentifier` map at the overlay site. Sub-resource types
-   * whose primaryIdentifier includes an AWS-generated field (e.g.
-   * `AWS::ApiGatewayV2::Integration.IntegrationId` — not a Property of the
-   * type) narrow this to just the writable subset, so CFn IMPORT doesn't
-   * reject the changeset with "Encountered unsupported property".
+   * whose primaryIdentifier includes an AWS-generated, `readOnlyProperties`
+   * field (e.g. `AWS::ApiGatewayV2::Integration.IntegrationId`) narrow
+   * this to just the writable subset, so CFn IMPORT doesn't reject the
+   * changeset on a read-only-property write.
    */
   propertiesOverlay?: Record<string, string>;
 }

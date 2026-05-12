@@ -162,11 +162,11 @@ describe('filterTemplateForImport', () => {
 
   it('uses propertiesOverlay (narrow subset) when set, NOT the full resourceIdentifier', () => {
     // AWS::ApiGatewayV2::Integration's primaryIdentifier is [ApiId, IntegrationId],
-    // but IntegrationId is NOT a Property of the type (it's AWS-generated, only
-    // returned via GetAtt). CFn IMPORT rejects unknown property keys at changeset-
-    // create time. So the splitter narrows propertiesOverlay to just { ApiId }.
-    // resourceIdentifier sent to CFn's ResourcesToImport[].ResourceIdentifier
-    // still contains both fields.
+    // but IntegrationId is tagged readOnlyProperties in the CFn schema (it's
+    // AWS-generated, not user-writable). CFn rejects writing read-only
+    // properties at changeset-create time. So the splitter narrows
+    // propertiesOverlay to just { ApiId }. resourceIdentifier sent to CFn's
+    // ResourcesToImport[].ResourceIdentifier still contains both fields.
     const template = {
       Resources: {
         Integration: {
@@ -349,6 +349,24 @@ describe('splitCompositePhysicalId', () => {
       splitCompositePhysicalId('AWS::Lambda::Permission', 'MyStatement123', {
         FunctionName: 'my-stack-fn',
       })
+    ).toEqual({
+      resourceIdentifier: { FunctionName: 'my-stack-fn', Id: 'MyStatement123' },
+      propertiesOverlay: { FunctionName: 'my-stack-fn' },
+    });
+  });
+
+  it('normalizes legacy `<functionArn>|<statementId>` physicalId for AWS::Lambda::Permission', () => {
+    // State entries written by the older CC-API path (pre-SDK-provider)
+    // store physicalId as `<functionArn>|<statementId>`. The splitter
+    // must surface the bare statementId as `Id` so CFn IMPORT's
+    // identifier-match compares the correct value against the AWS-current
+    // Sid. Mirrors lambda-permission-provider.ts's own normalization.
+    expect(
+      splitCompositePhysicalId(
+        'AWS::Lambda::Permission',
+        'arn:aws:lambda:us-east-1:123456789012:function:my-fn|MyStatement123',
+        { FunctionName: 'my-stack-fn' }
+      )
     ).toEqual({
       resourceIdentifier: { FunctionName: 'my-stack-fn', Id: 'MyStatement123' },
       propertiesOverlay: { FunctionName: 'my-stack-fn' },
