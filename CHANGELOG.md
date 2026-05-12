@@ -1,3 +1,10 @@
+# [0.92.0](https://github.com/go-to-k/cdkd/compare/v0.91.5...v0.92.0) (2026-05-12)
+
+
+### Features
+
+* **deploy:** opt-in --no-prefix-user-supplied-names flag ([#297](https://github.com/go-to-k/cdkd/issues/297)) ([e7d3da7](https://github.com/go-to-k/cdkd/commit/e7d3da71c454ea09712714f49c7009f3b9207ce8))
+
 ## [0.91.5](https://github.com/go-to-k/cdkd/compare/v0.91.4...v0.91.5) (2026-05-12)
 
 
