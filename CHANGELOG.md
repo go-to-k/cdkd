@@ -1,3 +1,10 @@
+## [0.94.9](https://github.com/go-to-k/cdkd/compare/v0.94.8...v0.94.9) (2026-05-12)
+
+
+### Bug Fixes
+
+* **export:** conditional overlay on Properties to mirror upstream `cdk import` ([#319](https://github.com/go-to-k/cdkd/issues/319)) ([#320](https://github.com/go-to-k/cdkd/issues/320)) ([7926d94](https://github.com/go-to-k/cdkd/commit/7926d948cfc65ea1ab9836de204442c5aae2449b))
+
 ## [0.94.8](https://github.com/go-to-k/cdkd/compare/v0.94.7...v0.94.8) (2026-05-12)
 
 ## [0.94.7](https://github.com/go-to-k/cdkd/compare/v0.94.6...v0.94.7) (2026-05-12)
