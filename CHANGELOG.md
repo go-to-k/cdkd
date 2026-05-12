@@ -1,3 +1,10 @@
+## [0.91.3](https://github.com/go-to-k/cdkd/compare/v0.91.2...v0.91.3) (2026-05-12)
+
+
+### Bug Fixes
+
+* **local:** cdkd local run-task --from-state substitutes intrinsic env vars + Secrets ValueFrom (closes [#291](https://github.com/go-to-k/cdkd/issues/291)) ([#294](https://github.com/go-to-k/cdkd/issues/294)) ([f36921a](https://github.com/go-to-k/cdkd/commit/f36921acde7233bb2f186836caff4294d13fd1c4))
+
 ## [0.91.2](https://github.com/go-to-k/cdkd/compare/v0.91.1...v0.91.2) (2026-05-11)
 
 
