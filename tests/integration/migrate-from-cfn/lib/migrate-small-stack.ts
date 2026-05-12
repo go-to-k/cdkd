@@ -1,6 +1,8 @@
 import * as cdk from 'aws-cdk-lib';
 import * as apigwv2 from 'aws-cdk-lib/aws-apigatewayv2';
 import * as apigwv2Integ from 'aws-cdk-lib/aws-apigatewayv2-integrations';
+import * as ecr from 'aws-cdk-lib/aws-ecr';
+import * as iam from 'aws-cdk-lib/aws-iam';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
 import * as s3 from 'aws-cdk-lib/aws-s3';
 import * as ssm from 'aws-cdk-lib/aws-ssm';
@@ -31,6 +33,19 @@ import { Construct } from 'constructs';
  *     (auto-emitted by `autoDeleteObjects: true` on an S3 Bucket)
  * Adding all three to this fixture ensures the migrate-from-cfn path is
  * structurally covered against this regression class going forward.
+ *
+ * Also extended (PR #331 regression guard) with an `AWS::ECR::Repository`
+ * referenced via `repo.repositoryArn` in an IAM policy statement. Pre-#331
+ * the resolver had no per-type Arn handler for `AWS::ECR::Repository`, so
+ * `Fn::GetAtt: [<EcrRepo>, 'Arn']` fell through to the default branch and
+ * returned the bare physicalId (the repo name). `cdkd diff` against
+ * imported state emitted `Unknown attribute Arn for resource type
+ * AWS::ECR::Repository, returning physical ID`, and downstream
+ * `Fn::Split(':', physicalId)` produced a 1-element array that triggered
+ * `Fn::Select(N, ...)` out-of-bounds warnings. Post-#331 the resolver
+ * returns `arn:${partition}:ecr:${region}:${accountId}:repository/${id}`.
+ * The integ's `run.sh` adds a `cdkd diff` step that asserts neither
+ * warning appears in the output.
  */
 export class MigrateSmallStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
@@ -99,5 +114,29 @@ export class MigrateSmallStack extends cdk.Stack {
     // is the third canonical failure shape — and the one most likely to
     // bite any non-trivial CDK app since EVERY L2 grant emits a Policy.
     bucket.grantRead(handler);
+
+    // ECR Repository + IAM grant referencing `repo.repositoryArn` —
+    // CDK synthesizes this as `Fn::GetAtt: [<EcrRepo>, 'Arn']` inside
+    // the IAM policy's `Resource` field. Pre-#331 the resolver had no
+    // per-type handler for `AWS::ECR::Repository.Arn` and fell through
+    // to the default branch (return physicalId = bare repo name),
+    // producing `Unknown attribute Arn for resource type AWS::ECR::Repository`
+    // and downstream `Fn::Select` out-of-bounds errors on any CDK
+    // pattern that parses the ARN. Post-#331 the resolver returns the
+    // real ARN. The integ's `run.sh` runs `cdkd diff` against the
+    // imported state and asserts neither warning appears.
+    const ecrRepo = new ecr.Repository(this, 'EcrRepo', {
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+      emptyOnDelete: true,
+    });
+    const ecrConsumer = new iam.Role(this, 'EcrConsumer', {
+      assumedBy: new iam.ServicePrincipal('lambda.amazonaws.com'),
+    });
+    ecrConsumer.addToPolicy(
+      new iam.PolicyStatement({
+        actions: ['ecr:GetAuthorizationToken', 'ecr:BatchGetImage'],
+        resources: [ecrRepo.repositoryArn],
+      })
+    );
   }
 }
