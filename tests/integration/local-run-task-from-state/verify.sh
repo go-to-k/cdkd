@@ -216,7 +216,7 @@ echo "${ENV_RUN_OUT}"
 # basically instant, but the metadata sidecar may delay a beat).
 sleep 3
 
-ENV_CONTAINER_ID="$(docker ps -a --filter "name=cdkd-local-printer" --format '{{.ID}}' | head -n 1)"
+ENV_CONTAINER_ID="$(docker ps -a --filter "name=cdkd-local-cdkd-local-run-task-from-state-env-fixture-printer-" --format '{{.ID}}' | head -n 1)"
 [ -n "${ENV_CONTAINER_ID}" ] || { echo "[verify] FAIL: env-task container not found"; exit 1; }
 
 ENV_LOGS="$(docker logs "${ENV_CONTAINER_ID}" 2>&1)"
