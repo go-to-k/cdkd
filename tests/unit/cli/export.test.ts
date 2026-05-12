@@ -460,6 +460,14 @@ describe('isImportUnsupportedRecreatableType', () => {
     expect(isImportUnsupportedRecreatableType('AWS::ApiGatewayV2::Stage')).toBe(true);
   });
 
+  it('matches AWS::IAM::Policy (no read/list handler; inline policy has no AWS-side id)', () => {
+    // CDK auto-emits this type for L2 grants (ECS Task Execution Role ECR-pull
+    // policy, Lambda execution-role inline policies, etc.). Found via real
+    // export against cdk-sample on 2026-05-12 — the dry-run plan put it in
+    // phase-1 imports, real run would fail at CreateChangeSet.
+    expect(isImportUnsupportedRecreatableType('AWS::IAM::Policy')).toBe(true);
+  });
+
   it('does NOT match sibling ApiGwV2 types (they have IMPORT handlers)', () => {
     expect(isImportUnsupportedRecreatableType('AWS::ApiGatewayV2::Api')).toBe(false);
     expect(isImportUnsupportedRecreatableType('AWS::ApiGatewayV2::Integration')).toBe(false);
@@ -664,6 +672,225 @@ describe('invokePreDeleteHandler', () => {
         properties: { ApiId: 'doptkc8n2i' },
       })
     ).rejects.toThrow(/AccessDenied/);
+  });
+
+  // ─── AWS::IAM::Policy handler tests ──────────────────────────────
+  //
+  // Inline policy attachments are per-target (Roles / Users / Groups).
+  // The handler walks each target list and issues the appropriate Delete
+  // call. NoSuchEntityException is idempotent (matches IAMPolicyProvider.
+  // delete in src/provisioning/providers/iam-policy-provider.ts).
+
+  it('AWS::IAM::Policy handler walks Roles and issues DeleteRolePolicy per role', async () => {
+    const sendCalls: { cmdName: string; input: Record<string, unknown> }[] = [];
+    vi.doMock('@aws-sdk/client-iam', () => ({
+      IAMClient: class {
+        async send(cmd: { __cmdName: string; input: Record<string, unknown> }) {
+          sendCalls.push({ cmdName: cmd.__cmdName, input: cmd.input });
+        }
+      },
+      DeleteRolePolicyCommand: class {
+        readonly __cmdName = 'DeleteRolePolicy';
+        constructor(public input: Record<string, unknown>) {}
+      },
+      DeleteUserPolicyCommand: class {
+        readonly __cmdName = 'DeleteUserPolicy';
+        constructor(public input: Record<string, unknown>) {}
+      },
+      DeleteGroupPolicyCommand: class {
+        readonly __cmdName = 'DeleteGroupPolicy';
+        constructor(public input: Record<string, unknown>) {}
+      },
+      NoSuchEntityException: class extends Error {
+        readonly name = 'NoSuchEntityException';
+      },
+    }));
+    const { invokePreDeleteHandler: handler } = await import(
+      '../../../src/cli/commands/export.js'
+    );
+
+    await handler('AWS::IAM::Policy', {
+      logicalId: 'EcrPullPolicy',
+      resourceType: 'AWS::IAM::Policy',
+      physicalId: 'ecr-pull-policy',
+      properties: { Roles: ['RoleA', 'RoleB'] },
+    });
+
+    expect(sendCalls).toHaveLength(2);
+    expect(sendCalls[0]).toEqual({
+      cmdName: 'DeleteRolePolicy',
+      input: { RoleName: 'RoleA', PolicyName: 'ecr-pull-policy' },
+    });
+    expect(sendCalls[1]).toEqual({
+      cmdName: 'DeleteRolePolicy',
+      input: { RoleName: 'RoleB', PolicyName: 'ecr-pull-policy' },
+    });
+  });
+
+  it('AWS::IAM::Policy handler walks Users + Groups when set', async () => {
+    const sendCalls: { cmdName: string; input: Record<string, unknown> }[] = [];
+    vi.doMock('@aws-sdk/client-iam', () => ({
+      IAMClient: class {
+        async send(cmd: { __cmdName: string; input: Record<string, unknown> }) {
+          sendCalls.push({ cmdName: cmd.__cmdName, input: cmd.input });
+        }
+      },
+      DeleteRolePolicyCommand: class {
+        readonly __cmdName = 'DeleteRolePolicy';
+        constructor(public input: Record<string, unknown>) {}
+      },
+      DeleteUserPolicyCommand: class {
+        readonly __cmdName = 'DeleteUserPolicy';
+        constructor(public input: Record<string, unknown>) {}
+      },
+      DeleteGroupPolicyCommand: class {
+        readonly __cmdName = 'DeleteGroupPolicy';
+        constructor(public input: Record<string, unknown>) {}
+      },
+      NoSuchEntityException: class extends Error {
+        readonly name = 'NoSuchEntityException';
+      },
+    }));
+    const { invokePreDeleteHandler: handler } = await import(
+      '../../../src/cli/commands/export.js'
+    );
+
+    await handler('AWS::IAM::Policy', {
+      logicalId: 'P',
+      resourceType: 'AWS::IAM::Policy',
+      physicalId: 'p',
+      properties: { Users: ['UserA'], Groups: ['GroupA', 'GroupB'] },
+    });
+
+    expect(sendCalls.map((c) => c.cmdName)).toEqual([
+      'DeleteUserPolicy',
+      'DeleteGroupPolicy',
+      'DeleteGroupPolicy',
+    ]);
+  });
+
+  it('AWS::IAM::Policy handler normalizes legacy `policyName:roleName` physicalId', async () => {
+    // Pre-v0.74 state (CC API code path) stored physicalId as
+    // `policyName:roleName`. The provider's own delete strips the suffix;
+    // the pre-delete handler mirrors that so legacy state still produces
+    // the bare policy name as input to DeleteRolePolicy.
+    const sendCalls: Record<string, unknown>[] = [];
+    vi.doMock('@aws-sdk/client-iam', () => ({
+      IAMClient: class {
+        async send(cmd: { input: Record<string, unknown> }) {
+          sendCalls.push(cmd.input);
+        }
+      },
+      DeleteRolePolicyCommand: class {
+        constructor(public input: Record<string, unknown>) {}
+      },
+      DeleteUserPolicyCommand: class {
+        constructor(public input: Record<string, unknown>) {}
+      },
+      DeleteGroupPolicyCommand: class {
+        constructor(public input: Record<string, unknown>) {}
+      },
+      NoSuchEntityException: class extends Error {
+        readonly name = 'NoSuchEntityException';
+      },
+    }));
+    const { invokePreDeleteHandler: handler } = await import(
+      '../../../src/cli/commands/export.js'
+    );
+
+    await handler('AWS::IAM::Policy', {
+      logicalId: 'P',
+      resourceType: 'AWS::IAM::Policy',
+      physicalId: 'my-policy:my-role', // legacy CC-API shape
+      properties: { Roles: ['my-role'] },
+    });
+
+    expect(sendCalls).toEqual([{ RoleName: 'my-role', PolicyName: 'my-policy' }]);
+  });
+
+  it('AWS::IAM::Policy handler treats NoSuchEntityException as idempotent success', async () => {
+    // After a partial pre-delete retry — some targets succeeded last time,
+    // re-running the export hits AWS with "already gone" on those. Must
+    // continue, not abort.
+    class FakeNoSuchEntity extends Error {
+      readonly name = 'NoSuchEntityException';
+    }
+    let callIndex = 0;
+    vi.doMock('@aws-sdk/client-iam', () => ({
+      IAMClient: class {
+        async send() {
+          // Throw on the first send (already-gone Role); second send (live
+          // Role) succeeds. The handler must not abort on the first.
+          if (callIndex++ === 0) {
+            throw new FakeNoSuchEntity('Policy not found on role');
+          }
+          // success — no return value needed
+        }
+      },
+      DeleteRolePolicyCommand: class {
+        constructor(public input: Record<string, unknown>) {}
+      },
+      DeleteUserPolicyCommand: class {
+        constructor(public input: Record<string, unknown>) {}
+      },
+      DeleteGroupPolicyCommand: class {
+        constructor(public input: Record<string, unknown>) {}
+      },
+      NoSuchEntityException: FakeNoSuchEntity,
+    }));
+    const { invokePreDeleteHandler: handler } = await import(
+      '../../../src/cli/commands/export.js'
+    );
+
+    // Two Roles: first one returns NoSuchEntity, second one succeeds.
+    // The handler must complete without throwing.
+    await expect(
+      handler('AWS::IAM::Policy', {
+        logicalId: 'P',
+        resourceType: 'AWS::IAM::Policy',
+        physicalId: 'p',
+        properties: { Roles: ['AlreadyGoneRole', 'LiveRole'] },
+      })
+    ).resolves.toBeUndefined();
+    expect(callIndex).toBe(2);
+  });
+
+  it('AWS::IAM::Policy handler throws when state has no Roles/Users/Groups attachment', async () => {
+    // Defensive: state schema invariant says every IAM::Policy has at least
+    // one attachment. If state is corrupt and all three arrays are
+    // empty/missing, abort with a clear error rather than silently no-op
+    // (which would let phase-2 proceed against a still-attached policy).
+    vi.doMock('@aws-sdk/client-iam', () => ({
+      IAMClient: class {
+        async send() {
+          throw new Error('should not reach AWS');
+        }
+      },
+      DeleteRolePolicyCommand: class {
+        constructor(public input: Record<string, unknown>) {}
+      },
+      DeleteUserPolicyCommand: class {
+        constructor(public input: Record<string, unknown>) {}
+      },
+      DeleteGroupPolicyCommand: class {
+        constructor(public input: Record<string, unknown>) {}
+      },
+      NoSuchEntityException: class extends Error {
+        readonly name = 'NoSuchEntityException';
+      },
+    }));
+    const { invokePreDeleteHandler: handler } = await import(
+      '../../../src/cli/commands/export.js'
+    );
+
+    await expect(
+      handler('AWS::IAM::Policy', {
+        logicalId: 'P',
+        resourceType: 'AWS::IAM::Policy',
+        physicalId: 'p',
+        properties: {}, // no Roles/Users/Groups
+      })
+    ).rejects.toThrow(/no Roles\/Users\/Groups attachment/);
   });
 });
 

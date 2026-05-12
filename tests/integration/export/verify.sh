@@ -119,6 +119,28 @@ case "${VARIANT}" in
       echo "[verify] FAIL: dry-run plan does not list AWS::ApiGatewayV2::Stage as recreate target"
       exit 1
     fi
+    # AWS::IAM::Policy must also surface in recreate (same shape as Stage —
+    # CFn schema reports no read/list handler, so it's IMPORT-unsupported).
+    # Fixture has an inline iam.Policy attached to the CR role. Catches the
+    # bug from real-AWS dogfooding on 2026-05-12 where IAM::Policy was
+    # erroneously sent to phase-1 IMPORT and would have been rejected.
+    if ! grep -q 'AWS::IAM::Policy.*recreate\|AWS::IAM::Policy.*physicalId' /tmp/verify-dry-run.log; then
+      # Fallback regex: the plan output for recreateBeforePhase2 entries
+      # has the shape `  <logicalId> (AWS::IAM::Policy) — physicalId: <id>`.
+      if ! grep -q 'AWS::IAM::Policy' /tmp/verify-dry-run.log; then
+        echo "[verify] FAIL: dry-run plan does not mention AWS::IAM::Policy at all"
+        exit 1
+      fi
+      # AWS::IAM::Policy is in the plan SOMEWHERE — ensure it's in the
+      # recreate-before-phase-2 section, not phase-1 imports.
+      if grep -E 'Import plan for CloudFormation stack' -A 200 /tmp/verify-dry-run.log \
+         | grep -B 1 '(AWS::IAM::Policy)' \
+         | grep -q '←'; then
+        echo "[verify] FAIL: AWS::IAM::Policy is in phase-1 imports — should be in recreate"
+        echo "[verify] (IAM::Policy must be in IMPORT_UNSUPPORTED_RECREATABLE_TYPES)"
+        exit 1
+      fi
+    fi
 
     # Regression guard for the dry-run permissiveness fix: dry-run without
     # --include-non-importable should NOT hard-error. The user's first
@@ -264,9 +286,14 @@ case "${VARIANT}" in
         exit 1
       fi
     done
-    # IMPORT-unsupported re-CREATE (phase 2): AWS::ApiGatewayV2::Stage was
-    # pre-deleted between phases, then CFn UPDATE re-CREATEd it fresh.
-    # Closes cdkd issue #307.
+    # IMPORT-unsupported re-CREATE (phase 2): AWS::ApiGatewayV2::Stage AND
+    # AWS::IAM::Policy are pre-deleted between phases, then CFn UPDATE
+    # re-CREATEs them fresh. Closes cdkd issue #307 + the IAM::Policy
+    # case (added 2026-05-12 from real-AWS dogfooding).
+    if ! echo "${RESOURCES}" | grep -q 'AWS::IAM::Policy'; then
+      echo "[verify] FAIL: AWS::IAM::Policy not found in CFn stack (pre-delete + phase-2 CREATE missed)"
+      exit 1
+    fi
     if ! echo "${RESOURCES}" | grep -q 'AWS::ApiGatewayV2::Stage'; then
       echo "[verify] FAIL: AWS::ApiGatewayV2::Stage not found in CFn stack (pre-delete + phase-2 CREATE missed)"
       exit 1

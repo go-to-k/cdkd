@@ -80,6 +80,25 @@ export class ExportStack extends cdk.Stack {
       ],
     });
 
+    // ── Inline IAM Policy (IMPORT-unsupported recreate path) ───────
+    // `AWS::IAM::Policy` is the type CDK emits for L2 grants like ECS
+    // Task Execution Role's ECR-pull policy. CFn schema reports it with
+    // `handlers: ['create', 'delete', 'update']` — no read/list, so it's
+    // not IMPORT-able. cdkd auto-handles via pre-delete + phase-2-CREATE
+    // (same mechanism as Stage). Inline `new iam.Policy(...)` with
+    // `roles: [role]` produces this exact CFn type. Brief permission gap
+    // between the SDK DeleteRolePolicy and CFn's phase-2 PutRolePolicy.
+    new iam.Policy(this, 'InlinePolicy', {
+      policyName: `cdkd-export-inline-${suffix}`,
+      statements: [
+        new iam.PolicyStatement({
+          actions: ['logs:PutLogEvents'],
+          resources: ['*'],
+        }),
+      ],
+      roles: [role],
+    });
+
     // Trivial idempotent backing Lambda. Works under BOTH cdkd's
     // Custom Resource invocation (which can use the return value as
     // the response payload) AND real CloudFormation's Custom Resource
