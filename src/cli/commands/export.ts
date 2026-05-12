@@ -481,7 +481,8 @@ const PRE_DELETE_HANDLERS: Record<string, PreDeleteHandler> = {
   'AWS::ApiGatewayV2::Stage': async (entry) => {
     // ApiGatewayV2Client isn't in src/utils/aws-clients.ts — lazy-init
     // inline (same pattern as ApiGatewayV2Provider.getClient).
-    const { ApiGatewayV2Client, DeleteStageCommand } = await import('@aws-sdk/client-apigatewayv2');
+    const { ApiGatewayV2Client, DeleteStageCommand, NotFoundException } =
+      await import('@aws-sdk/client-apigatewayv2');
     const apiId = entry.properties['ApiId'];
     if (typeof apiId !== 'string' || !apiId) {
       throw new Error(
@@ -489,7 +490,19 @@ const PRE_DELETE_HANDLERS: Record<string, PreDeleteHandler> = {
       );
     }
     const client = new ApiGatewayV2Client({});
-    await client.send(new DeleteStageCommand({ ApiId: apiId, StageName: entry.physicalId }));
+    try {
+      await client.send(new DeleteStageCommand({ ApiId: apiId, StageName: entry.physicalId }));
+    } catch (err) {
+      // Idempotent on already-deleted: a retry after a partial pre-delete
+      // failure (or a concurrent operator action) would otherwise abort the
+      // export. AWS returns NotFoundException for both "ApiId not found"
+      // and "Stage not found"; either way the goal state (Stage gone) is
+      // already achieved. Other errors propagate.
+      if (err instanceof NotFoundException) {
+        return;
+      }
+      throw err;
+    }
   },
 };
 
@@ -769,13 +782,22 @@ async function exportCommand(stackArg: string | undefined, options: ExportOption
               `between phases so CFn can re-CREATE them in phase 2 (brief unavailability ` +
               `window — see plan above for the affected resources).`
             : '';
+        // "AWS resources are unchanged on import" is the simple case. When
+        // pre-delete is in play, that claim is false for the recreate-targets
+        // (they're deleted then re-CREATEd; AWS resource ids stay the same
+        // post-CREATE, but there's a brief window where they don't exist).
+        // Use the more specific wording in that case.
+        const unchangedClaim =
+          recreateBeforePhase2.length > 0
+            ? ` All other AWS resources are unchanged on import.`
+            : ` AWS resources are unchanged on import.`;
         const ok = await confirmPrompt(
           `Create CloudFormation stack '${cfnStackName}' by importing ${phase1Imports.length} ` +
             `resource(s) from cdkd state '${resolvedStackName}' (${targetRegion})?` +
             phase2Note +
             recreateNote +
-            ` AWS resources are unchanged on import. cdkd state for '${resolvedStackName}' ` +
-            `will be deleted on success.`
+            unchangedClaim +
+            ` cdkd state for '${resolvedStackName}' will be deleted on success.`
         );
         if (!ok) {
           logger.info('Migration cancelled. cdkd state and CloudFormation are unchanged.');
@@ -911,11 +933,20 @@ async function exportCommand(stackArg: string | undefined, options: ExportOption
                 `(${entry.resourceType}, physicalId: ${entry.physicalId}) failed: ${msg}\n\n` +
                 `The CloudFormation stack '${cfnStackName}' contains the phase-1 imports ` +
                 `but the IMPORT-unsupported resources (${recreateBeforePhase2.length} total) ` +
-                `still exist in AWS unmanaged. cdkd state is UNCHANGED. To recover:\n` +
+                `still exist in AWS unmanaged. cdkd state is UNCHANGED. Re-running ` +
+                `\`cdkd export\` does NOT work — the existing-stack check rejects it. ` +
+                `To recover manually:\n` +
                 `  1. Fix the failure cause (typically IAM permissions for the underlying ` +
-                `     AWS API — e.g. apigateway:DELETE on the Stage's ApiId).\n` +
-                `  2. Re-run \`cdkd export ${resolvedStackName}\` — phase 1 IMPORT detects ` +
-                `     the existing CFn stack and re-attempts the pre-delete + phase 2.`
+                `     AWS API — e.g. apigatewayv2:DeleteStage for AWS::ApiGatewayV2::Stage).\n` +
+                `  2. Delete the remaining AWS-side IMPORT-unsupported resources by hand:\n` +
+                `       aws apigatewayv2 delete-stage --api-id <ApiId> --stage-name <StageName>\n` +
+                `     (one per entry in the pre-delete list logged above).\n` +
+                `  3. Run the phase-2 UPDATE manually with the full synth template:\n` +
+                `       aws cloudformation create-change-set --stack-name ${cfnStackName} \\\n` +
+                `         --change-set-name cdkd-phase2-retry --change-set-type UPDATE \\\n` +
+                `         --template-body file://<full-template.json>\n` +
+                `  4. Once phase 2 succeeds, run: cdkd state orphan ${resolvedStackName}\n` +
+                `     to clean up cdkd's stale state record.`
             );
           }
         }

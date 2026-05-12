@@ -506,6 +506,9 @@ describe('invokePreDeleteHandler', () => {
       DeleteStageCommand: class {
         constructor(public input: unknown) {}
       },
+      NotFoundException: class extends Error {
+        readonly name = 'NotFoundException';
+      },
     }));
     // Re-import the module so it picks up the mock.
     const { invokePreDeleteHandler: handler } = await import(
@@ -535,6 +538,9 @@ describe('invokePreDeleteHandler', () => {
       DeleteStageCommand: class {
         constructor(public input: unknown) {}
       },
+      NotFoundException: class extends Error {
+        readonly name = 'NotFoundException';
+      },
     }));
     const { invokePreDeleteHandler: handler } = await import(
       '../../../src/cli/commands/export.js'
@@ -560,6 +566,9 @@ describe('invokePreDeleteHandler', () => {
       DeleteStageCommand: class {
         constructor(public input: unknown) {}
       },
+      NotFoundException: class extends Error {
+        readonly name = 'NotFoundException';
+      },
     }));
     const { invokePreDeleteHandler: handler } = await import(
       '../../../src/cli/commands/export.js'
@@ -584,6 +593,77 @@ describe('invokePreDeleteHandler', () => {
         properties: {},
       })
     ).rejects.toThrow(/no pre-delete handler registered/);
+  });
+
+  it('Stage handler treats NotFoundException as idempotent success (re-run safety)', async () => {
+    // If a previous pre-delete attempt partially succeeded and the user
+    // re-runs after fixing the underlying failure, the Stage handler MUST
+    // tolerate the AWS-side resource being already gone — otherwise the
+    // partial-retry path is a permanent foot-gun. AWS returns
+    // NotFoundException for both "ApiId not found" and "Stage not found".
+    class FakeNotFoundException extends Error {
+      readonly $fault = 'client';
+      readonly $metadata = {};
+      readonly name = 'NotFoundException';
+    }
+    vi.doMock('@aws-sdk/client-apigatewayv2', () => ({
+      ApiGatewayV2Client: class {
+        async send() {
+          throw new FakeNotFoundException('Stage with name $default does not exist');
+        }
+      },
+      DeleteStageCommand: class {
+        constructor(public input: unknown) {}
+      },
+      NotFoundException: FakeNotFoundException,
+    }));
+    const { invokePreDeleteHandler: handler } = await import(
+      '../../../src/cli/commands/export.js'
+    );
+
+    // Must NOT throw — the goal state (Stage absent) is already achieved.
+    await expect(
+      handler('AWS::ApiGatewayV2::Stage', {
+        logicalId: 'HttpApiDefaultStage',
+        resourceType: 'AWS::ApiGatewayV2::Stage',
+        physicalId: '$default',
+        properties: { ApiId: 'doptkc8n2i' },
+      })
+    ).resolves.toBeUndefined();
+  });
+
+  it('Stage handler propagates non-NotFoundException errors', async () => {
+    class FakeAccessDenied extends Error {
+      readonly $fault = 'client';
+      readonly $metadata = {};
+      readonly name = 'AccessDeniedException';
+    }
+    class FakeNotFoundException extends Error {
+      readonly name = 'NotFoundException';
+    }
+    vi.doMock('@aws-sdk/client-apigatewayv2', () => ({
+      ApiGatewayV2Client: class {
+        async send() {
+          throw new FakeAccessDenied('AccessDenied: not authorized to call DeleteStage');
+        }
+      },
+      DeleteStageCommand: class {
+        constructor(public input: unknown) {}
+      },
+      NotFoundException: FakeNotFoundException,
+    }));
+    const { invokePreDeleteHandler: handler } = await import(
+      '../../../src/cli/commands/export.js'
+    );
+
+    await expect(
+      handler('AWS::ApiGatewayV2::Stage', {
+        logicalId: 'HttpApiDefaultStage',
+        resourceType: 'AWS::ApiGatewayV2::Stage',
+        physicalId: '$default',
+        properties: { ApiId: 'doptkc8n2i' },
+      })
+    ).rejects.toThrow(/AccessDenied/);
   });
 });
 
