@@ -1,3 +1,10 @@
+## [0.94.14](https://github.com/go-to-k/cdkd/compare/v0.94.13...v0.94.14) (2026-05-12)
+
+
+### Bug Fixes
+
+* **custom-resource:** type-guard ServiceToken so unresolved-intrinsic state yields actionable error ([#333](https://github.com/go-to-k/cdkd/issues/333)) ([2b4002a](https://github.com/go-to-k/cdkd/commit/2b4002ae31f2bd2549afb4362c48287b75048d93))
+
 ## [0.94.13](https://github.com/go-to-k/cdkd/compare/v0.94.12...v0.94.13) (2026-05-12)
 
 
