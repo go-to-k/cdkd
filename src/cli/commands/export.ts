@@ -700,6 +700,10 @@ async function exportCommand(stackArg: string | undefined, options: ExportOption
         }
       );
 
+      // `blocked` resources are genuinely unfixable (nested stacks, missing
+      // state, etc.) — nothing the user can do at runtime resolves them.
+      // Hard-fail in both dry-run and real-run paths; printing the plan
+      // here is unhelpful because there is no path forward.
       if (blocked.length > 0) {
         logger.error('The following resources block migration:');
         for (const b of blocked) {
@@ -709,20 +713,6 @@ async function exportCommand(stackArg: string | undefined, options: ExportOption
           `${blocked.length} resource(s) block migration. Either destroy them first ` +
             `(cdkd destroy / cdkd state destroy cherry-picked), or remove them from the ` +
             `CDK app and re-synthesize.`
-        );
-      }
-
-      if (phase2Creates.length > 0 && !options.includeNonImportable) {
-        logger.error('The following resources cannot be imported into CloudFormation:');
-        for (const p of phase2Creates) {
-          logger.error(`  - ${p.logicalId} (${p.resourceType}): CFn cannot import this type`);
-        }
-        throw new Error(
-          `${phase2Creates.length} non-importable resource(s) detected (Custom::*). ` +
-            `Pass --include-non-importable to run a 2-phase migration: phase 1 imports ` +
-            `the importable resources; phase 2 CFn-CREATEs the non-importable ones ` +
-            `(re-invoking each Custom Resource's backing Lambda onCreate handler — ` +
-            `make sure those are idempotent). Or destroy these resources first.`
         );
       }
 
@@ -765,9 +755,40 @@ async function exportCommand(stackArg: string | undefined, options: ExportOption
         logger.info('');
       }
 
+      // `--include-non-importable` is a real-run safety gate (Custom Resource
+      // onCreate re-invocation needs to be idempotent — see CLAUDE.md). On
+      // `--dry-run` we WARN instead of hard-erroring so the user sees the
+      // full plan + the gate they'll need to flip for the real run. Erroring
+      // out before printPlan defeats the point of dry-run.
       if (options.dryRun) {
+        if (phase2Creates.length > 0 && !options.includeNonImportable) {
+          logger.warn(
+            `${phase2Creates.length} non-importable resource(s) detected (Custom::*). ` +
+              `A real run (without --dry-run) would require --include-non-importable ` +
+              `to run a 2-phase migration: phase 1 imports the importable resources; ` +
+              `phase 2 CFn-CREATEs the non-importable ones (re-invoking each Custom ` +
+              `Resource's backing Lambda onCreate handler — make sure those are idempotent).`
+          );
+        }
         logger.info('--dry-run: no CloudFormation changeset will be created.');
         return;
+      }
+
+      // Real run: hard error on missing --include-non-importable so the user
+      // explicitly opts into the CR re-invocation semantics before phase 2
+      // touches AWS.
+      if (phase2Creates.length > 0 && !options.includeNonImportable) {
+        logger.error('The following resources cannot be imported into CloudFormation:');
+        for (const p of phase2Creates) {
+          logger.error(`  - ${p.logicalId} (${p.resourceType}): CFn cannot import this type`);
+        }
+        throw new Error(
+          `${phase2Creates.length} non-importable resource(s) detected (Custom::*). ` +
+            `Pass --include-non-importable to run a 2-phase migration: phase 1 imports ` +
+            `the importable resources; phase 2 CFn-CREATEs the non-importable ones ` +
+            `(re-invoking each Custom Resource's backing Lambda onCreate handler — ` +
+            `make sure those are idempotent). Or destroy these resources first.`
+        );
       }
 
       if (!options.yes) {

@@ -119,6 +119,35 @@ case "${VARIANT}" in
       echo "[verify] FAIL: dry-run plan does not list AWS::ApiGatewayV2::Stage as recreate target"
       exit 1
     fi
+
+    # Regression guard for the dry-run permissiveness fix: dry-run without
+    # --include-non-importable should NOT hard-error. The user's first
+    # interaction with cdkd export is typically `cdkd export <stack> --dry-run`
+    # (per the cdk-sample/cdkd-export.md guide) — if cdkd aborts before
+    # printing the plan, the dry-run flag's purpose (preview without side
+    # effects) is defeated. Instead it should print the full plan + WARN
+    # that --include-non-importable is needed for the real run.
+    echo "[verify] step 3b: cdkd export --dry-run WITHOUT --include-non-importable"
+    ${CLI} export "${STACK}" \
+      --state-bucket "${STATE_BUCKET}" \
+      --dry-run \
+      -y \
+      --verbose 2>&1 | tee /tmp/verify-dry-run-no-flag.log
+    if [ "${PIPESTATUS[0]}" -ne 0 ]; then
+      echo "[verify] FAIL: dry-run without --include-non-importable exited non-zero"
+      echo "[verify] (dry-run must be permissive — see fix/export-dry-run-permissive)"
+      exit 1
+    fi
+    if ! grep -qE 'non-importable resource.+detected' /tmp/verify-dry-run-no-flag.log; then
+      echo "[verify] FAIL: dry-run without --include-non-importable did not warn about Custom Resources"
+      exit 1
+    fi
+    if ! grep -q 'A real run (without --dry-run) would require --include-non-importable' /tmp/verify-dry-run-no-flag.log; then
+      echo "[verify] FAIL: dry-run did not surface the real-run hint about --include-non-importable"
+      exit 1
+    fi
+    echo "[verify] step 3b ok: dry-run is permissive + emits the real-run hint"
+
     echo "[verify] step 4: verify CFn stack does NOT exist (dry-run)"
     if aws cloudformation describe-stacks --stack-name "${CFN_STACK}" --region "${REGION}" >/dev/null 2>&1; then
       echo "[verify] FAIL: dry-run created a CFn stack — should not happen"
