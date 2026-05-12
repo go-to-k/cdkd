@@ -8,6 +8,8 @@ Drop-in CDK CLI for existing CDK apps — faster deploys via AWS SDK instead of 
 
 ![cdkd demo](https://github.com/user-attachments/assets/0128730d-186d-4bd3-abea-aabc80ba4dd5)
 
+**cdkd complements the AWS CDK CLI rather than replacing it.** Use cdkd in dev/test for rapid iteration and SAM-style local execution; use the AWS CDK CLI in production for full CloudFormation tooling. Bidirectional migration is supported — [import an existing CloudFormation stack](#importing-existing-resources) into cdkd for iteration, or [export back to CloudFormation](#exporting-a-stack-back-to-cloudformation) when ready for production.
+
 > **⚠️ WARNING: NOT PRODUCTION READY**
 >
 > An experimental project exploring direct SDK provisioning as an alternative to the AWS CDK CLI — **NOT a replacement** and **NOT suitable for production use**. Features are incomplete, APIs may change without notice, and bugs may affect your AWS infrastructure. Use at your own risk in development / testing environments only.
