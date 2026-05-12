@@ -1,3 +1,10 @@
+## [0.91.5](https://github.com/go-to-k/cdkd/compare/v0.91.4...v0.91.5) (2026-05-12)
+
+
+### Bug Fixes
+
+* **local:** bundle 3 follow-ups for cdkd local invoke/start-api/run-task (closes [#286](https://github.com/go-to-k/cdkd/issues/286) Gaps 3-6 + PR 294 deferred) ([#295](https://github.com/go-to-k/cdkd/issues/295)) ([2c5b819](https://github.com/go-to-k/cdkd/commit/2c5b819b539ee7311bf6702a9c8c592265964488))
+
 ## [0.91.4](https://github.com/go-to-k/cdkd/compare/v0.91.3...v0.91.4) (2026-05-12)
 
 
