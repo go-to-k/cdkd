@@ -1,3 +1,10 @@
+## [0.94.10](https://github.com/go-to-k/cdkd/compare/v0.94.9...v0.94.10) (2026-05-12)
+
+
+### Bug Fixes
+
+* **tests:** use 'vp run build' instead of stale 'pnpm run build' in 6 verify.sh files ([#321](https://github.com/go-to-k/cdkd/issues/321)) ([#322](https://github.com/go-to-k/cdkd/issues/322)) ([d139ee8](https://github.com/go-to-k/cdkd/commit/d139ee8519494d2591958878e5c06fa0eaaf4d9c))
+
 ## [0.94.9](https://github.com/go-to-k/cdkd/compare/v0.94.8...v0.94.9) (2026-05-12)
 
 
