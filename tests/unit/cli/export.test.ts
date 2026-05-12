@@ -106,13 +106,14 @@ describe('filterTemplateForImport', () => {
     });
   });
 
-  it('overlays ResourceIdentifier values onto Properties (CFn IMPORT identifier match)', () => {
-    // cdkd deploy prefixes user-declared names with the stack name, so
-    // the synth template's Properties.RoleName is the unprefixed
-    // value while ResourceIdentifier (built from cdkd state's
-    // physicalId) carries the prefixed value. CFn IMPORT rejects the
-    // changeset when these disagree, so filterTemplateForImport
-    // overlays the prefixed identifier onto Properties.
+  it('overlays ResourceIdentifier only on literal-string mismatch (pre-v0.94.0 prefix-on-user-declared-name legacy)', () => {
+    // The pre-v0.94.0 default prefixed user-declared physical names with
+    // the stack name: user wrote `roleName: 'user-declared-name'` in CDK
+    // code; cdkd deploy created `'MyStack-user-declared-name'` on AWS.
+    // ResourceIdentifier (from cdkd state's physicalId) carries the
+    // prefixed value; Properties.RoleName (from synth) carries the
+    // unprefixed value. CFn IMPORT's identifier-match check rejects the
+    // changeset when these differ — overlay fixes the conflict.
     const template = {
       Resources: {
         Role: {
@@ -138,7 +139,88 @@ describe('filterTemplateForImport', () => {
     expect(properties['Description']).toBe('unchanged');
   });
 
-  it('overlays composite identifiers (every field)', () => {
+  it('skips overlay when Properties.<NameField> is absent (auto-generated names — issue #319 fix)', () => {
+    // The common case for cdkd-deployed stacks: user did NOT declare a
+    // physical name in CDK code, so synth omits `Properties.RoleName`
+    // entirely. Pre-#319, cdkd injected the cdkd-prefixed name into
+    // Properties → post-export `cdk diff` saw `Properties.RoleName:
+    // 'CdkSampleStack-...'` (CFn) vs `Properties.RoleName: <absent>`
+    // (CDK synth) → proposed REPLACE on every auto-named resource,
+    // defeating the "AWS resources unchanged across migration" promise.
+    // Post-#319, the overlay is a no-op when the field is absent:
+    // matches upstream `cdk import` behavior (Properties passed through,
+    // ResourceIdentifier alone identifies the AWS resource).
+    const template = {
+      Resources: {
+        Role: {
+          Type: 'AWS::IAM::Role',
+          Properties: {
+            AssumeRolePolicyDocument: { Version: '2012-10-17', Statement: [] },
+          },
+        },
+      },
+    };
+    const result = filterTemplateForImport(template, [
+      {
+        logicalId: 'Role',
+        resourceType: 'AWS::IAM::Role',
+        physicalId: 'CdkSampleStack-MyRoleF44D44CF',
+        resourceIdentifier: { RoleName: 'CdkSampleStack-MyRoleF44D44CF' },
+      },
+    ]);
+    const role = (result['Resources'] as Record<string, Record<string, unknown>>)['Role']!;
+    const properties = role['Properties'] as Record<string, unknown>;
+    expect(properties).not.toHaveProperty('RoleName');
+    expect(properties['AssumeRolePolicyDocument']).toEqual({
+      Version: '2012-10-17',
+      Statement: [],
+    });
+  });
+
+  it('skips overlay when Properties.<field> is an intrinsic (composite-id sub-resource — issue #319 fix)', () => {
+    // For composite-id sub-resources (Integration / Route / Lambda::Permission /
+    // ApiGateway::Method etc.), the parent's identifier is referenced via
+    // intrinsic (`{Ref: 'ParentLogicalId'}` or `{Fn::GetAtt: [...]}`). Pre-#319,
+    // cdkd overwrote the intrinsic with a literal value from
+    // ResourceIdentifier → post-export `cdk diff` saw literal vs intrinsic
+    // shape mismatch → proposed REPLACE on every composite sub-resource.
+    // Post-#319, intrinsics are preserved (CFn resolves them during
+    // changeset processing against the parent's ResourceIdentifier when
+    // both are in the same IMPORT changeset).
+    const template = {
+      Resources: {
+        Integration: {
+          Type: 'AWS::ApiGatewayV2::Integration',
+          Properties: { ApiId: { Ref: 'MyApi' }, IntegrationType: 'AWS_PROXY' },
+        },
+      },
+    };
+    const result = filterTemplateForImport(template, [
+      {
+        logicalId: 'Integration',
+        resourceType: 'AWS::ApiGatewayV2::Integration',
+        physicalId: 'integ-abc',
+        resourceIdentifier: { ApiId: 'api-xyz', IntegrationId: 'integ-abc' },
+        propertiesOverlay: { ApiId: 'api-xyz' },
+      },
+    ]);
+    const integration = (result['Resources'] as Record<string, Record<string, unknown>>)[
+      'Integration'
+    ]!;
+    const properties = integration['Properties'] as Record<string, unknown>;
+    // Intrinsic preserved (NOT overwritten with literal 'api-xyz')
+    expect(properties['ApiId']).toEqual({ Ref: 'MyApi' });
+    // IntegrationId MUST NOT leak into Properties (would cause CFn rejection).
+    expect(properties).not.toHaveProperty('IntegrationId');
+    // Other Properties preserved.
+    expect(properties['IntegrationType']).toBe('AWS_PROXY');
+  });
+
+  it('overlays composite identifier only on literal-string mismatch', () => {
+    // Composite types where every identifier field happens to be a
+    // literal-string mismatch in the synth template (rare in practice;
+    // CDK normally emits intrinsics for parent-ref fields). All fields
+    // get overwritten via the same literal-mismatch rule.
     const template = {
       Resources: {
         Method: {
@@ -163,51 +245,19 @@ describe('filterTemplateForImport', () => {
     });
   });
 
-  it('uses propertiesOverlay (narrow subset) when set, NOT the full resourceIdentifier', () => {
-    // AWS::ApiGatewayV2::Integration's primaryIdentifier is [ApiId, IntegrationId],
-    // but IntegrationId is tagged readOnlyProperties in the CFn schema (it's
-    // AWS-generated, not user-writable). CFn rejects writing read-only
-    // properties at changeset-create time. So the splitter narrows
-    // propertiesOverlay to just { ApiId }. resourceIdentifier sent to CFn's
-    // ResourcesToImport[].ResourceIdentifier still contains both fields.
-    const template = {
-      Resources: {
-        Integration: {
-          Type: 'AWS::ApiGatewayV2::Integration',
-          Properties: { ApiId: { Ref: 'MyApi' }, IntegrationType: 'AWS_PROXY' },
-        },
-      },
-    };
-    const result = filterTemplateForImport(template, [
-      {
-        logicalId: 'Integration',
-        resourceType: 'AWS::ApiGatewayV2::Integration',
-        physicalId: 'integ-abc',
-        resourceIdentifier: { ApiId: 'api-xyz', IntegrationId: 'integ-abc' },
-        propertiesOverlay: { ApiId: 'api-xyz' },
-      },
-    ]);
-    const integration = (result['Resources'] as Record<string, Record<string, unknown>>)[
-      'Integration'
-    ]!;
-    const properties = integration['Properties'] as Record<string, unknown>;
-    expect(properties['ApiId']).toBe('api-xyz');
-    // IntegrationId MUST NOT leak into Properties (would cause CFn rejection).
-    expect(properties).not.toHaveProperty('IntegrationId');
-    // Other Properties preserved.
-    expect(properties['IntegrationType']).toBe('AWS_PROXY');
-  });
-
-  it('creates a Properties object on resources that had none', () => {
+  it('creates a Properties object on resources that had none (still skips overlay since field is absent)', () => {
+    // Edge case: resource with no Properties section at all. We still
+    // produce an empty Properties object for downstream consistency, but
+    // we do NOT inject the overlay fields — same auto-gen-name case as
+    // the "absent" test above. Pre-#319 this case injected the cdkd
+    // identifier and caused REPLACE on first cdk deploy.
     const template = {
       Resources: { Bare: { Type: 'AWS::S3::Bucket' } },
     };
     const result = filterTemplateForImport(template, [
       { logicalId: 'Bare', resourceType: 'AWS::S3::Bucket', physicalId: 'b', resourceIdentifier: { BucketName: 'b' } },
     ]);
-    expect((result['Resources'] as Record<string, Record<string, unknown>>)['Bare']!['Properties']).toEqual({
-      BucketName: 'b',
-    });
+    expect((result['Resources'] as Record<string, Record<string, unknown>>)['Bare']!['Properties']).toEqual({});
   });
 
   it('preserves top-level keys other than Resources/Outputs', () => {
@@ -274,18 +324,20 @@ describe('filterTemplateForImport', () => {
 });
 
 describe('applyImportOverlayForPhase2', () => {
-  // Closes the silent-REPLACE bug discovered via cdk-sample dogfooding
-  // 2026-05-12: cdkd export's phase-2 UPDATE used the raw synth template
-  // (no overlay), so CFn saw `Properties.RoleName: 'CdkSampleStack-X'`
-  // (from phase-1 overlay) → `Properties.RoleName: (absent)` (raw synth)
-  // and replaced every imported resource whose Name is immutable.
+  // Phase 1 and phase 2 must apply the SAME overlay rule to avoid CFn
+  // seeing a "property changed" diff between the IMPORT'd state and the
+  // phase-2 UPDATE template (which would silently REPLACE every imported
+  // resource whose property is immutable — see PR #316). As of #319 the
+  // overlay is conditional (only fires on literal-string mismatch), and
+  // since both phases call `overlayResourceIdentifierOnProperties`, the
+  // symmetry holds.
 
-  it('overlays Name properties on phase-1 imports (mirrors filterTemplateForImport)', () => {
-    // The CDK code did not set RoleName; synth template has no RoleName
-    // on the resource. cdkd state has the auto-generated prefixed name
-    // as physicalId. Phase-2 template must surface that name in
-    // Properties.RoleName so CFn doesn't see "Name removal" vs the
-    // phase-1 IMPORT'd state.
+  it('skips overlay on auto-gen names (Properties.<field> absent — issue #319 fix)', () => {
+    // CDK did not set RoleName; synth has no RoleName on the resource.
+    // Phase-2 template MUST NOT inject it either, so the post-export
+    // CFn-managed template matches what CDK synth would produce on a
+    // future `cdk deploy` (= no Properties.RoleName) and `cdk diff`
+    // shows no change.
     const synth = {
       Resources: {
         Role: {
@@ -306,12 +358,37 @@ describe('applyImportOverlayForPhase2', () => {
     ]);
     const role = (result['Resources'] as Record<string, Record<string, unknown>>)['Role']!;
     const properties = role['Properties'] as Record<string, unknown>;
-    expect(properties['RoleName']).toBe('CdkSampleStack-Role');
+    expect(properties).not.toHaveProperty('RoleName');
     // Existing Properties preserved
     expect(properties['AssumeRolePolicyDocument']).toEqual({
       Version: '2012-10-17',
       Statement: [],
     });
+  });
+
+  it('overlays on literal-string mismatch (pre-v0.94.0 prefix-on-user-declared-name legacy)', () => {
+    // User declared `roleName: 'foo'` in CDK code; cdkd's pre-v0.94.0
+    // default prefixed it to `'MyStack-foo'` on AWS. Phase-2 needs the
+    // same overlay phase-1 used to keep CFn from seeing a diff between
+    // IMPORT'd state ('MyStack-foo') and phase-2 raw synth ('foo').
+    const synth = {
+      Resources: {
+        Role: {
+          Type: 'AWS::IAM::Role',
+          Properties: { RoleName: 'foo' },
+        },
+      },
+    };
+    const result = applyImportOverlayForPhase2(synth, [
+      {
+        logicalId: 'Role',
+        resourceType: 'AWS::IAM::Role',
+        physicalId: 'MyStack-foo',
+        resourceIdentifier: { RoleName: 'MyStack-foo' },
+      },
+    ]);
+    const role = (result['Resources'] as Record<string, Record<string, unknown>>)['Role']!;
+    expect((role['Properties'] as Record<string, unknown>)['RoleName']).toBe('MyStack-foo');
   });
 
   it('does NOT touch resources outside phase1Imports (phase-2 CREATE / recreate stay raw)', () => {
@@ -321,7 +398,10 @@ describe('applyImportOverlayForPhase2', () => {
     // applied — they have no "phase-1 import'd state" to keep consistent.
     const synth = {
       Resources: {
-        Role: { Type: 'AWS::IAM::Role', Properties: {} },
+        Role: {
+          Type: 'AWS::IAM::Role',
+          Properties: { RoleName: 'foo' },
+        },
         CR: {
           Type: 'Custom::S3AutoDeleteObjects',
           Properties: { ServiceToken: 'arn:...' },
@@ -336,14 +416,14 @@ describe('applyImportOverlayForPhase2', () => {
       {
         logicalId: 'Role',
         resourceType: 'AWS::IAM::Role',
-        physicalId: 'CdkSampleStack-Role',
-        resourceIdentifier: { RoleName: 'CdkSampleStack-Role' },
+        physicalId: 'MyStack-foo',
+        resourceIdentifier: { RoleName: 'MyStack-foo' },
       },
       // CR and Stage are NOT in phase1Imports
     ]);
     const resources = result['Resources'] as Record<string, Record<string, unknown>>;
     expect((resources['Role']!['Properties'] as Record<string, unknown>)['RoleName']).toBe(
-      'CdkSampleStack-Role'
+      'MyStack-foo'
     );
     expect(resources['CR']!['Properties']).toEqual({ ServiceToken: 'arn:...' });
     expect(resources['Stage']!['Properties']).toEqual({
@@ -352,12 +432,11 @@ describe('applyImportOverlayForPhase2', () => {
     });
   });
 
-  it('honors propertiesOverlay narrowing (sub-resources do NOT get IntegrationId etc. written)', () => {
-    // The phase-1 overlay narrows for sub-resource types whose
-    // primaryIdentifier includes a read-only Property (IntegrationId,
-    // RouteId, Lambda::Permission's Id). Phase-2 overlay must respect
-    // the same narrowing — writing those into Properties would have CFn
-    // reject the changeset with "Encountered unsupported property".
+  it('preserves intrinsic Properties.<field> (composite-id sub-resources — issue #319 fix)', () => {
+    // Composite-id sub-resources reference their parent via intrinsic in
+    // synth template. Phase-2 overlay MUST NOT overwrite the intrinsic
+    // with a literal value — that would create a literal-vs-intrinsic
+    // shape mismatch on next `cdk synth` → REPLACE on next `cdk deploy`.
     const synth = {
       Resources: {
         Integ: {
@@ -377,8 +456,8 @@ describe('applyImportOverlayForPhase2', () => {
     ]);
     const integ = (result['Resources'] as Record<string, Record<string, unknown>>)['Integ']!;
     const properties = integ['Properties'] as Record<string, unknown>;
-    expect(properties['ApiId']).toBe('api-xyz');
-    // IntegrationId is read-only and must NOT be in Properties
+    // Intrinsic preserved (NOT overwritten with 'api-xyz')
+    expect(properties['ApiId']).toEqual({ Ref: 'Api' });
     expect(properties).not.toHaveProperty('IntegrationId');
     expect(properties['IntegrationType']).toBe('AWS_PROXY');
   });

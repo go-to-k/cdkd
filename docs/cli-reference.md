@@ -952,17 +952,53 @@ cdkd export                                       # auto-detect single-stack app
      and the post-export `cdk diff` has no DeletionPolicy noise.
      `UpdateReplacePolicy` is intentionally NOT injected (only
      `DeletionPolicy` is required for IMPORT).
-   - **Overlay `ResourceIdentifier` onto `Properties`.** cdkd's deploy
-     path prefixes user-declared physical names with the stack name
-     (`<StackName>-<UserDeclaredName>`) for cross-stack uniqueness, so
-     the synth template's `Properties.RoleName` / `BucketName` /
-     `TopicName` / etc. doesn't match the actual AWS resource id.
-     The overlay rewrites each resource's `Properties[<NameField>]`
-     to the prefixed value cdkd built for the IMPORT identifier,
-     keeping CFn's "identifier in template matches identifier in
-     ResourceToImport" check happy. The overlay persists into the
-     post-import CFn template; see the "Replacement risk on next
-     deploy" caveat below.
+   - **Conditional overlay of `ResourceIdentifier` onto `Properties`.**
+     Mirrors upstream `cdk import` behavior: pass the synth template
+     through and let CFn match resources via
+     `ResourcesToImport[].ResourceIdentifier` (the changeset API
+     parameter) alone, except when the synth template carries a
+     *literal-string* value for the field that *differs* from
+     `ResourceIdentifier`. Three cases:
+     - **Absent** (auto-generated names — user did NOT declare a
+       physical name in CDK code): `Properties[<NameField>]` stays
+       absent. CFn accepts the IMPORT changeset using
+       `ResourceIdentifier` alone (verified against AWS in upstream
+       `cdk import`). Post-export `cdk diff` is clean because both
+       CFn-managed template and CDK synth have the property absent.
+     - **Intrinsic** (composite-id sub-resources whose synth references
+       the parent via `{Ref: ...}` / `{Fn::GetAtt: ...}` — Integration /
+       Route / Lambda::Permission / API Gateway Method etc.): the
+       intrinsic is preserved. CFn resolves it during changeset
+       processing against the parent's own `ResourceIdentifier` (the
+       parent is imported in the same changeset), so the resolved value
+       equals `ResourceIdentifier[<field>]` and CFn accepts. Post-export
+       `cdk diff` stays clean (both sides keep the intrinsic shape).
+     - **Literal-mismatch** (pre-v0.94.0 prefix-on-user-declared-name
+       legacy: user wrote `roleName: 'foo'` in CDK code; cdkd's deploy
+       prefixed it to `'CdkSampleStack-foo'` on AWS): override
+       `Properties.RoleName` from the unprefixed CDK value to the
+       prefixed AWS value. CFn's identifier-match check requires this
+       — otherwise AWS rejects with `The Identifier [<Field>] for
+       resource [...] does not match the identifier value for the
+       resource in the template`. The overlay persists into the
+       post-import CFn template; the next `cdk deploy` proposes
+       REPLACE — same caveat as upstream `cdk import` with
+       mismatched-name CDK code (see the "Replacement risk on next
+       deploy" caveat below). The prefix-migration pre-flight (PR #300)
+       is meant to surface this before export. v0.94.0+ stacks with the
+       default `--no-prefix-user-supplied-names` flip are NOT in this
+       case — `Properties.RoleName` matches the AWS name without
+       override.
+
+     Closes [issue #319]: pre-v0.95 cdkd unconditionally injected
+     `ResourceIdentifier` values into `Properties` even when the synth
+     had no value for that field, baking cdkd-prefixed auto-gen names
+     AND composite-id literals into the post-export CFn template →
+     post-export `cdk diff` proposed REPLACE on every auto-named
+     resource and every composite-id sub-resource (defeating the
+     migration's "AWS resources unchanged" promise). v0.95+ overlay is
+     conditional; only the literal-mismatch legacy case still carries
+     the documented post-export caveat.
 8. `CreateChangeSet --change-set-type IMPORT` → wait → `ExecuteChangeSet`
    → `waitUntilStackImportComplete`. On failure cdkd fetches
    `DescribeStackEvents` and surfaces the per-resource failure reasons
@@ -1050,27 +1086,39 @@ Two ways forward:
 
 **Caveats**:
 
-- **Replacement risk on next deploy** (two related causes):
-  1. **Auto-generated names**: if the CDK code does NOT specify an
-     explicit physical name (e.g. `bucketName: 'my-bucket-12345'`), the
-     next `cdk deploy` will see "auto-generated name" vs "actual name"
-     as a property change and may replace the resource. Mirrors
-     `cdk import`'s long-standing UX. Update the CDK code with explicit
-     names before exporting.
-  2. **cdkd stack-name prefix**: cdkd's deploy prefixes user-declared
-     physical names with the stack name for cross-stack uniqueness
-     (e.g. `roleName: 'my-role'` becomes `MyStack-my-role` on AWS).
-     The phase-1 IMPORT preprocessing rewrites the template's name
-     field to the prefixed value (otherwise CFn IMPORT rejects the
-     identifier mismatch), and this prefixed value persists into the
-     post-import CFn template. The next `cdk deploy` will see
-     `MyStack-my-role` (CFn-recorded) vs `my-role` (CDK-declared) as
-     a property change on an immutable name field → REPLACEMENT.
-     Before the first post-export deploy, either change the CDK code
-     to the prefixed value (`roleName: 'MyStack-my-role'`) or accept
-     the replacement.
+- **Replacement risk on next deploy** (post-v0.95, only one residual
+  case — closes [issue #319]):
+  - **Pre-v0.94.0 prefix legacy** (`--prefix-user-supplied-names` opt-in,
+    or stacks deployed before v0.94.0 flipped the default): cdkd's deploy
+    prefixed user-declared physical names with the stack name for
+    cross-stack uniqueness (e.g. `roleName: 'my-role'` became
+    `MyStack-my-role` on AWS). The phase-1 IMPORT preprocessing rewrites
+    the template's name field to the prefixed value (otherwise CFn
+    IMPORT rejects the identifier mismatch), and this prefixed value
+    persists into the post-import CFn template. The next `cdk deploy`
+    will see `MyStack-my-role` (CFn-recorded) vs `my-role` (CDK-declared)
+    as a property change on an immutable name field → REPLACEMENT.
+    Before the first post-export deploy, either change the CDK code to
+    the prefixed value (`roleName: 'MyStack-my-role'`) or accept the
+    replacement. The prefix-migration pre-flight (PR #300 /
+    `prefix-migration-check.ts`) is meant to surface this before export.
 
-  Either way, check the post-import changeset
+  **No longer in this category as of v0.95** (closes [issue #319]):
+  - Auto-generated names (user did NOT declare `bucketName: '...'` etc.):
+    cdkd's overlay used to bake the cdkd-prefixed name into the
+    post-export CFn template, causing every auto-named resource to be
+    proposed for REPLACE on next `cdk deploy`. Post-v0.95 the overlay is
+    conditional and skipped for this case → post-export `cdk diff` is
+    clean for auto-gen names.
+  - Composite-id sub-resources (`AWS::ApiGateway::Method` /
+    `AWS::ApiGatewayV2::Integration` / `AWS::ApiGatewayV2::Route` /
+    `AWS::Lambda::Permission` etc.): cdkd's overlay used to overwrite
+    `Properties.ApiId` (intrinsic `{Ref: ...}`) with the resolved literal
+    parent id, causing every composite sub-resource to be proposed for
+    REPLACE on next `cdk deploy`. Post-v0.95 intrinsics are preserved →
+    post-export `cdk diff` is clean for composite sub-resources.
+
+  When the legacy prefix case applies, check the post-import changeset
   (`aws cloudformation create-change-set --change-set-type UPDATE`) for
   surprises before executing your first post-export `cdk deploy`.
 - **Cross-stack `Fn::GetStackOutput` consumers** in other cdkd stacks

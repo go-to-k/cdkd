@@ -1718,32 +1718,65 @@ export function filterTemplateForImport(
 }
 
 /**
- * Overlay each `ResourceIdentifier` field onto the resource's
- * `Properties` so that the template's identifier values match the
- * actual AWS physical id. Required by CloudFormation `ChangeSetType=
- * IMPORT`, which compares `ResourcesToImport[].ResourceIdentifier`
- * against the corresponding `Properties[<IdField>]` in the template
- * and rejects the import when they differ — see error: "The
- * Identifier [<Field>] for resource [...] does not match the
- * identifier value for the resource in the template."
+ * Conditionally overlay `ResourceIdentifier` fields onto the resource's
+ * `Properties` to match upstream `cdk import` behavior: pass the synth
+ * template through as-is, and let CFn match resources by
+ * `ResourcesToImport[].ResourceIdentifier` (the changeset API parameter)
+ * regardless of whether `Properties[<IdField>]` is present.
  *
- * cdkd's deploy path prefixes user-declared physical names with the
- * stack name (`<StackName>-<UserDeclaredName>`) for cross-stack
- * uniqueness, so the synthesized template's `Properties.RoleName` /
- * `BucketName` / `TopicName` / etc. (the user-declared value) doesn't
- * match what cdkd stored as the resource's physicalId. The overlay
- * here uses the prefixed value cdkd built for the ResourceIdentifier,
- * keeping the IMPORT changeset internally consistent.
+ * **Pre-v0.95 behavior**: cdkd unconditionally wrote every overlay field
+ * into `Properties[<IdField>]` (even when synth produced no name property
+ * at all). For auto-generated names this baked the cdkd-prefixed value
+ * into the post-export CFn template (`Properties.BucketName:
+ * 'cdksamplestack-...'`) while CDK synth produced `Properties: {}` (name
+ * absent) — so the next `cdk diff` proposed REPLACE on every immutable
+ * Name property and the very next `cdk deploy` recreated everything.
+ * This defeated the "AWS resources are unchanged across the cdkd→CFn
+ * migration" value proposition. Closes [#319].
  *
- * **Replacement risk on next `cdk deploy`**: the overlay persists into
- * the post-import CFn-managed template. When the user later runs
- * `cdk deploy`, CDK synth re-emits the user-declared name (e.g.
- * `cdkd-export-test-…` without prefix). CFn sees `RoleName` change on
- * an immutable property and proposes REPLACEMENT — which destroys the
- * original AWS resource. This is the same caveat documented for
- * upstream `cdk import`; users should set explicit physical names in
- * CDK code that match cdkd's prefixed values before the first
- * post-export deploy, or run `cdk diff` to inspect.
+ * **Post-v0.95 behavior** (this function): override only when synth
+ * already carries a *literal-string* value for the field AND it differs
+ * from `ResourceIdentifier`. Three cases:
+ *
+ * - **Absent** (auto-generated names — user did NOT declare a physical
+ *   name in CDK code): `Properties[field]` stays absent. Matches
+ *   upstream `cdk import`, which submits the synth template untouched
+ *   and CFn accepts the IMPORT changeset using `ResourceIdentifier`
+ *   alone (verified empirically against AWS SQS in upstream's
+ *   `import.test.ts`). Post-export `cdk diff` is clean because both
+ *   CFn-managed template and CDK synth have the property absent.
+ *
+ * - **Intrinsic** (`{Ref: ...}` / `{Fn::GetAtt: ...}` — composite-id
+ *   sub-resources whose synth template references the parent via
+ *   intrinsic): the intrinsic is preserved. CFn resolves it during
+ *   changeset processing — when the referenced parent is in the same
+ *   IMPORT changeset, the parent's `ResourceIdentifier.<id>` value is
+ *   used — so the resolved value equals the child's
+ *   `ResourceIdentifier.<id>` and CFn accepts. Post-export `cdk diff`
+ *   stays clean (both sides keep the intrinsic shape).
+ *
+ * - **Literal-mismatch** (pre-v0.94.0 prefix-on-user-declared-name
+ *   legacy: user wrote `roleName: 'foo'` in CDK code; cdkd's deploy
+ *   prefixed it to `'CdkSampleStack-foo'` on AWS): override
+ *   `Properties.RoleName` from the unprefixed CDK value to the
+ *   prefixed AWS value. CFn's identifier-match check requires this
+ *   (`Properties[<IdField>]` must equal `ResourceIdentifier[<IdField>]`
+ *   when both are literal strings — otherwise AWS rejects with "The
+ *   Identifier [<Field>] for resource [...] does not match the
+ *   identifier value for the resource in the template"). The override
+ *   persists into the CFn-managed template; the next `cdk deploy`
+ *   proposes REPLACE because CDK synth still emits the unprefixed
+ *   name — same caveat as upstream `cdk import` with mismatched-name
+ *   CDK code, and same caveat the prefix-migration pre-flight (PR
+ *   #300 / `prefix-migration-check.ts`) is meant to surface before
+ *   export. v0.94.0+ stacks with the default `--no-prefix-user-supplied-
+ *   names` flip are no longer in this case — Properties.RoleName matches
+ *   the AWS name without override.
+ *
+ * For literal-match (Properties already has the right value), the
+ * override is a no-op, so the check is effectively
+ * `Properties[field] !== overlayValue && typeof Properties[field] ===
+ * 'string'`.
  */
 function overlayResourceIdentifierOnProperties(resource: unknown, entry: ImportPlanEntry): unknown {
   if (!resource || typeof resource !== 'object' || Array.isArray(resource)) {
@@ -1767,38 +1800,36 @@ function overlayResourceIdentifierOnProperties(resource: unknown, entry: ImportP
   // composites whose identifier fields ARE all valid Properties).
   const overlay = entry.propertiesOverlay ?? entry.resourceIdentifier;
   for (const [field, value] of Object.entries(overlay)) {
-    properties[field] = value;
+    const current = properties[field];
+    // Only override on literal-string mismatch. See docstring above for
+    // why absent / intrinsic / matching-literal are all left alone.
+    if (typeof current === 'string' && current !== value) {
+      properties[field] = value;
+    }
   }
   return { ...r, Properties: properties };
 }
 
 /**
- * Build the phase-2 UPDATE template: full synth template with cdkd's
- * `ResourceIdentifier` overlay applied to every phase-1 import. This keeps
- * the CFn-managed template's `Properties` consistent with what cdkd
- * imported in phase 1 — preventing CFn from seeing a "Name property
- * removed / changed" diff between the phase-1 IMPORT'd state (overlay
- * applied) and a raw phase-2 synth template (overlay absent), which would
- * trigger silent REPLACEMENT of every imported resource whose Name is an
- * immutable property (IAM Role, S3 Bucket, ECR Repository, Lambda
- * Function, etc.).
+ * Build the phase-2 UPDATE template: full synth template with the same
+ * conditional overlay applied to every phase-1 import. Phase-1 and
+ * phase-2 must stay symmetric — when `overlayResourceIdentifierOnProperties`
+ * touches a field in phase 1, phase 2 must also have that touch — or
+ * CFn sees a "property removed / changed" diff between the phase-1
+ * IMPORT'd state and a raw phase-2 synth template, triggering silent
+ * REPLACEMENT of every imported resource whose touched property is
+ * immutable (see PR #316 for the silent-REPLACE bug that first
+ * surfaced this asymmetry).
  *
- * **Why this matters** — discovered via real-AWS dogfooding 2026-05-12:
- * pre-fix `cdkd export` against cdk-sample's CdkSampleStack silently
- * REPLACED 24 resources during phase-2 `UPDATE_COMPLETE_CLEANUP_IN_PROGRESS`,
- * including the S3 Bucket and ECR Repository. cdk-sample's
- * `autoDeleteObjects: true` happened to mask the data-loss visibility,
- * but on a production stack this would have wiped the S3 contents and
- * ECR images.
- *
- * The overlay then persists into the final CFn-managed template. When
- * the user runs `cdk deploy` after the migration, CDK synth produces
- * the raw unprefixed Name → CFn proposes REPLACEMENT → the user decides
- * (accept the replace, update CDK code to use the cdkd-prefixed name,
- * or migrate data first). That deferred-to-cdk-deploy REPLACE is the
- * documented post-export caveat — same as upstream `cdk import` — and
- * it now happens with explicit user consent instead of silently during
- * the cdkd export operation itself.
+ * Closes [#319]: as of v0.95 the overlay is **conditional** — it only
+ * fires when synth has a literal-string value for the field that differs
+ * from `ResourceIdentifier` (the pre-v0.94.0 prefix-on-user-declared-name
+ * legacy case). For auto-generated names (Properties absent) and
+ * composite-id intrinsics (`{Ref: ...}`), no overlay is applied — and
+ * since both phase-1 and phase-2 walk the same `overlayResourceIdentifier
+ * OnProperties` logic, the symmetry holds with no extra phase-2 handling
+ * required. Post-export `cdk diff` is clean for the no-overlay cases
+ * (matches upstream `cdk import` behavior).
  *
  * Resources outside `phase1Imports` (phase-2 CREATE Custom Resources,
  * pre-delete + recreate targets like Stage / IAM::Policy) are passed
