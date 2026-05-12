@@ -560,16 +560,25 @@ export const deployOptions = [
       'properties (the pre-v3 behavior).'
   ),
   new Option(
-    '--no-prefix-user-supplied-names',
-    'Do NOT prepend the stack name to physical names the user explicitly ' +
-      'supplied in their CDK code (e.g. `new iam.Role(this, "X", { roleName: ' +
-      '"my-role" })` → AWS resource named `my-role` instead of `MyStack-my-role`). ' +
-      'Auto-generated-name resources (where the user did not declare a physical ' +
-      'name) keep the prefix unchanged. Off by default for backward compatibility; ' +
-      'enable via this flag, CDKD_NO_PREFIX_USER_SUPPLIED_NAMES=true, or ' +
-      'cdk.json context.cdkd.noPrefixUserSuppliedNames=true. Applies to ' +
+    '--prefix-user-supplied-names',
+    'Opt in to LEGACY behavior: prepend the stack name to physical names the ' +
+      'user explicitly supplied in their CDK code (e.g. `new iam.Role(this, ' +
+      '"X", { roleName: "my-role" })` → AWS resource named `MyStack-my-role` ' +
+      'instead of `my-role`). Since v0.93.0 the default is to NOT prefix ' +
+      'user-supplied names — this flag restores the pre-v0.93.0 behavior on ' +
+      'Pattern B providers (IAM Role / User / Group / InstanceProfile / ELBv2 ' +
+      'LoadBalancer / TargetGroup). Enable via this flag, ' +
+      'CDKD_PREFIX_USER_SUPPLIED_NAMES=true, or ' +
+      'cdk.json context.cdkd.prefixUserSuppliedNames=true. Applies to ' +
       '`cdkd deploy` only.'
-  ),
+  ).default(false),
+  new Option(
+    '--no-prefix-user-supplied-names',
+    '[DEPRECATED since v0.93.0] No-op — skipping the prefix is now the ' +
+      'default. Remove this flag and CDKD_NO_PREFIX_USER_SUPPLIED_NAMES / ' +
+      'cdk.json context.cdkd.noPrefixUserSuppliedNames from your config. ' +
+      'Use --prefix-user-supplied-names to opt BACK in to legacy prefixing.'
+  ).hideHelp(),
   noWaitOption,
   aggressiveVpcParallelOption,
   new Option(

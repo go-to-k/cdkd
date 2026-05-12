@@ -455,44 +455,82 @@ Both `cdkd destroy` (synth-driven) and `cdkd state destroy`
 
 ## Stack-name prefix on physical names
 
-cdkd prepends the **stack name** to physical names you declare in CDK
-code: `new iam.Role(this, 'CRRole', { roleName: 'my-role' })` in stack
-`MyStack` is created in AWS as `MyStack-my-role`. The prefix protects
-cross-stack uniqueness (two stacks declaring `roleName: 'my-role'`
-otherwise collide on a single AWS account). Pre-PR this behavior was
-**inconsistent**: only IAM Role / User / Group / InstanceProfile and
-ELBv2 LoadBalancer / TargetGroup actually got the prefix; Lambda, S3,
-SNS, SQS, DynamoDB, etc. used the user's declared name as-is.
+By default cdkd creates AWS resources with the **exact name you
+declared** in CDK code: `new iam.Role(this, 'CRRole', { roleName:
+'my-role' })` in stack `MyStack` produces an AWS resource named
+`my-role`. Consistent across every resource type. This is the
+default since **v0.93.0** (closes [#299](https://github.com/go-to-k/cdkd/issues/299)).
 
-`cdkd deploy --no-prefix-user-supplied-names` opts in to skipping
-the prefix on user-declared physical names, making cdkd consistent
-across all resource types. Off by default for backward compatibility.
+Pre-v0.93.0 cdkd prepended the stack name to user-declared physical
+names on a subset of types only (Pattern B providers: IAM Role /
+User / Group / InstanceProfile / ELBv2 LoadBalancer / TargetGroup),
+while Pattern A providers (Lambda, S3, SNS, SQS, DynamoDB, etc.) used
+the user's name as-is. The inconsistency was opaque to users and
+surfaced as failures in `cdkd export` (CFn IMPORT identifier
+mismatch). Flipping the default brings every resource type into line
+out of the box.
 
-| | Default (no flag) | `--no-prefix-user-supplied-names` |
+`cdkd deploy --prefix-user-supplied-names` opts BACK in to the
+legacy prefixing on Pattern B providers (matching pre-v0.93.0 cdkd).
+Useful when migrating an existing stack that was originally deployed
+under the legacy default and you don't want to take a one-time
+replacement on every Pattern B resource.
+
+| | Default (no flag) | `--prefix-user-supplied-names` |
 | --- | --- | --- |
-| `new iam.Role({ roleName: 'my-role' })` | `MyStack-my-role` | `my-role` |
-| `new s3.Bucket({ bucketName: 'my-bucket' })` | `my-bucket` (already no prefix — Pattern A) | `my-bucket` (unchanged) |
-| `new iam.Role(...)` (no `roleName`) | `MyStack-CRRole-<hash>` (auto-generated, prefix kept for uniqueness) | `MyStack-CRRole-<hash>` (unchanged) |
+| `new iam.Role({ roleName: 'my-role' })` | `my-role` | `MyStack-my-role` (legacy) |
+| `new s3.Bucket({ bucketName: 'my-bucket' })` | `my-bucket` (always — Pattern A) | `my-bucket` (unchanged) |
+| `new iam.Role(...)` (no `roleName`) | `MyStack-CRRole-<hash>` (auto-generated; prefix kept for uniqueness) | `MyStack-CRRole-<hash>` (unchanged) |
 
-Resolution chain (highest wins): `--no-prefix-user-supplied-names`
-CLI flag → `CDKD_NO_PREFIX_USER_SUPPLIED_NAMES=true` env var →
-`cdk.json` `context.cdkd.noPrefixUserSuppliedNames: true` → default
-`false`.
+Resolution chain (highest wins): `--prefix-user-supplied-names`
+CLI flag → `CDKD_PREFIX_USER_SUPPLIED_NAMES=true` env var →
+`cdk.json` `context.cdkd.prefixUserSuppliedNames: true` → default
+`false` (skip prefix).
 
-Affects `cdkd deploy` only. Already-deployed stacks deployed under
-the legacy prefixed-name scheme keep working — the flag only controls
-what AWS resource cdkd creates on **future** deploys. Switching the
-flag mid-flight on an existing stack would propose REPLACEMENT on
-every Pattern B resource (the existing AWS resource has the prefixed
-name; the new template intent has the un-prefixed name).
+The deprecated `--no-prefix-user-supplied-names` flag (plus the
+`CDKD_NO_PREFIX_USER_SUPPLIED_NAMES` env var and `cdk.json
+context.cdkd.noPrefixUserSuppliedNames`) is still accepted but now
+matches the default; setting it emits a deprecation warning and is a
+no-op. Remove it from your CLI invocations and config.
 
-Surfaced by [PR #285 `cdkd export`](https://github.com/go-to-k/cdkd/pull/285)
-where the CFn IMPORT changeset's identifier check would fail on a
-synth `RoleName: 'my-role'` vs the AWS-deployed `MyStack-my-role`;
-the export command currently overlays `ResourceIdentifier` onto
-`Properties` to bridge the gap. A future major-version PR will flip
-the default of `--no-prefix-user-supplied-names` to `true`, after
-which the overlay can be dropped.
+### Migration from pre-v0.93.0
+
+This is a **breaking change**: upgrading from a pre-v0.93.0 cdkd to
+v0.93.0+ flips the AWS-resource name cdkd produces on Pattern B
+providers (IAM Role / User / Group / InstanceProfile / ELBv2 LB / TG)
+with user-supplied physical names. The next `cdkd deploy` against an
+existing stack will propose REPLACEMENT on every such resource —
+the AWS resource has the prefixed name; the new template intent has
+the un-prefixed name.
+
+Pick one of:
+
+1. **Accept the one-time replacement** (simplest; only safe when the
+   types involved tolerate replacement — IAM Roles get fresh ARNs,
+   ELBv2 LBs get fresh DNS names).
+2. **Pin legacy prefixing**: pass `--prefix-user-supplied-names`,
+   set `CDKD_PREFIX_USER_SUPPLIED_NAMES=true`, or add
+   `"prefixUserSuppliedNames": true` under `cdk.json` `context.cdkd`.
+3. **Drop the explicit physical name** in CDK code where you don't
+   actually need a stable name — `new iam.Role(...)` without
+   `roleName` always uses the auto-generated `MyStack-CRRole-<hash>`
+   form regardless of this flag.
+
+A migration helper (`cdkd state rename-strip-prefix <stack>`) that
+would let an existing stack adopt the new default without replacement
+is tracked separately in [#300](https://github.com/go-to-k/cdkd/issues/300).
+
+### Effect on `cdkd export`
+
+[PR #285 `cdkd export`](https://github.com/go-to-k/cdkd/pull/285)
+surfaced the pre-v0.93.0 inconsistency: the CFn IMPORT changeset's
+identifier check would fail on a synth `RoleName: 'my-role'` vs the
+AWS-deployed `MyStack-my-role`, so the export command overlays
+`ResourceIdentifier` onto `Properties` to bridge the gap. The
+overlay is still needed for stacks deployed under the legacy default
+(or with `--prefix-user-supplied-names`); a fresh stack deployed
+under the v0.93.0 default has matching names and the overlay is a
+no-op for it.
 
 ## `--remove-protection`: one-shot bypass for protected resources
 

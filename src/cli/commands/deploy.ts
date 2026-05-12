@@ -61,6 +61,7 @@ async function deployCommand(
     wait: boolean;
     captureObservedState: boolean;
     prefixUserSuppliedNames: boolean;
+    noPrefixUserSuppliedNames: boolean;
     aggressiveVpcParallel: boolean;
     exclusively: boolean;
     yes: boolean;
@@ -100,18 +101,32 @@ async function deployCommand(
     process.env['CDKD_NO_WAIT'] = 'true';
   }
 
-  // Resolve the --no-prefix-user-supplied-names flag once at command
+  // Resolve the prefix-user-supplied-names flag pair once at command
   // start. The resolved boolean is plumbed into a `withSkipPrefix(...)`
   // scope around each stack's deploy so every per-resource
   // `generateResourceName(...)` call inside picks up the flag via
   // AsyncLocalStorage — no need to thread it through the
   // DeployEngine / ProviderRegistry / per-provider call signatures.
-  const skipPrefix = resolveSkipPrefix(options.prefixUserSuppliedNames);
+  //
+  // Since v0.93.0 the default is to SKIP the prefix on user-supplied
+  // physical names. Pass `--prefix-user-supplied-names` (or set
+  // CDKD_PREFIX_USER_SUPPLIED_NAMES=true / cdk.json
+  // context.cdkd.prefixUserSuppliedNames=true) to opt back in to
+  // legacy prefixing. The deprecated `--no-prefix-user-supplied-names`
+  // flag is still accepted (matches the new default; emits a warning).
+  const skipPrefix = resolveSkipPrefix({
+    prefixUserSuppliedNames: options.prefixUserSuppliedNames,
+    noPrefixUserSuppliedNames: options.noPrefixUserSuppliedNames,
+  });
   if (skipPrefix) {
     logger.debug(
-      'Skipping stack-name prefix on user-supplied physical names ' +
-        '(--no-prefix-user-supplied-names / CDKD_NO_PREFIX_USER_SUPPLIED_NAMES / ' +
-        'cdk.json context.cdkd.noPrefixUserSuppliedNames)'
+      'Skipping stack-name prefix on user-supplied physical names (default since v0.93.0)'
+    );
+  } else {
+    logger.debug(
+      'Keeping legacy stack-name prefix on user-supplied physical names ' +
+        '(--prefix-user-supplied-names / CDKD_PREFIX_USER_SUPPLIED_NAMES / ' +
+        'cdk.json context.cdkd.prefixUserSuppliedNames)'
     );
   }
 
