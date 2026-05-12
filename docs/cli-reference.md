@@ -769,8 +769,11 @@ cdkd export                                       # auto-detect single-stack app
 3. Refuse if a CFn stack with the destination name already exists, or
    if any template resource is in the **blocked** set (nested stacks
    `AWS::CloudFormation::Stack` or template resources without a cdkd
-   state entry). `Custom::*` resources are NOT blocked but require
-   `--include-non-importable` to run the 2-phase flow described below.
+   state entry). Lambda-backed Custom Resources (`Custom::*` AND
+   `AWS::CloudFormation::CustomResource` — the latter is what
+   `new cdk.CustomResource(...)` synthesizes when no `resourceType` is
+   passed) are NOT blocked but require `--include-non-importable` to
+   run the 2-phase flow described below.
 4. Resolve each resource type's primary identifier property name(s) via
    `cloudformation:DescribeType` (with a hardcoded fallback table for
    ~30 single-key types). **Composite primary identifiers**
@@ -782,10 +785,38 @@ cdkd export                                       # auto-detect single-stack app
    register a new splitter.
 5. Acquire the stack lock so concurrent `cdkd deploy` cannot race.
 6. Confirm with the user (skipped with `-y` / `--yes`).
-7. `CreateChangeSet --change-set-type IMPORT` → wait → `ExecuteChangeSet`
-   → `waitUntilStackImportComplete`.
-8. Delete cdkd state for the migrated stack.
-9. Release lock.
+7. **Preprocess the phase-1 template** (automatic; required by CFn IMPORT
+   contract):
+   - **Strip Outputs entirely.** CFn rejects IMPORT changesets that
+     declare ANY Outputs with "you cannot modify or add [Outputs]".
+     Phase 2 UPDATE re-submits the full synth template and restores
+     Outputs along with the non-importable resources.
+   - **Inject `DeletionPolicy: Retain`** on resources that lack the
+     attribute. CFn IMPORT requires `DeletionPolicy` on every imported
+     resource, and CDK synth only emits it when `RemovalPolicy` is
+     explicitly set. Retain is the safest default — an accidental
+     `aws cloudformation delete-stack` before the first post-export
+     `cdk deploy` won't destroy data. The first `cdk deploy` resets
+     each policy to the CDK-declared value, so the injection is
+     transient. `UpdateReplacePolicy` is intentionally NOT injected
+     (only `DeletionPolicy` is required for IMPORT).
+   - **Overlay `ResourceIdentifier` onto `Properties`.** cdkd's deploy
+     path prefixes user-declared physical names with the stack name
+     (`<StackName>-<UserDeclaredName>`) for cross-stack uniqueness, so
+     the synth template's `Properties.RoleName` / `BucketName` /
+     `TopicName` / etc. doesn't match the actual AWS resource id.
+     The overlay rewrites each resource's `Properties[<NameField>]`
+     to the prefixed value cdkd built for the IMPORT identifier,
+     keeping CFn's "identifier in template matches identifier in
+     ResourceToImport" check happy. The overlay persists into the
+     post-import CFn template; see the "Replacement risk on next
+     deploy" caveat below.
+8. `CreateChangeSet --change-set-type IMPORT` → wait → `ExecuteChangeSet`
+   → `waitUntilStackImportComplete`. On failure cdkd fetches
+   `DescribeStackEvents` and surfaces the per-resource failure reasons
+   (the waiter alone only reports the high-level rollback state).
+9. Delete cdkd state for the migrated stack.
+10. Release lock.
 
 **MVP scope** (intentional cuts; lift in follow-up PRs):
 
@@ -817,16 +848,24 @@ cdkd export                                       # auto-detect single-stack app
   also rejected (catches typos). CDK-generated templates typically only
   carry `BootstrapVersion` with a default; `cdkd export` works without
   any `--parameter` for those.
-- **`Custom::*` resources** require `--include-non-importable` to opt
-  into the 2-phase flow: phase 1 IMPORT changeset for the importable
-  resources, then phase 2 UPDATE changeset for the full template — CFn
-  CREATEs the Custom Resources, which re-invokes each backing Lambda's
-  onCreate handler. Make sure those handlers are idempotent before
-  enabling. Without the flag, `Custom::*` resources cause the command
-  to abort. `AWS::CloudFormation::Stack` (nested stacks) always blocks
-  (CFn cannot adopt nor recreate them without conflicting with the
-  existing AWS resource). On phase-2 failure, cdkd state is preserved
-  and the error message includes the recovery procedure
+- **Lambda-backed Custom Resources** (`Custom::*` AND
+  `AWS::CloudFormation::CustomResource`) require `--include-non-importable`
+  to opt into the 2-phase flow: phase 1 IMPORT changeset for the
+  importable resources, then phase 2 UPDATE changeset for the full
+  template — CFn CREATEs the Custom Resources, which re-invokes each
+  backing Lambda's onCreate handler. The handler must be (1) idempotent
+  (same `PhysicalResourceId` / `Data` on every event type) AND
+  (2) correctly do the cfn-response protocol (PUT a Status/PhysicalResourceId
+  payload to `event.ResponseURL`). cdkd's deploy path also accepts a
+  return-value fast path for handler responses, but CFn-side phase-2
+  UPDATE / future rollback / future `cdk deploy` against the imported
+  stack all require the actual ResponseURL POST — a CR backed by a
+  return-only Lambda will time out at the CFn 1-hour Custom Resource
+  ceiling. Without the flag, the CR types in the template cause the
+  command to abort. `AWS::CloudFormation::Stack` (nested stacks) always
+  blocks (CFn cannot adopt nor recreate them without conflicting with
+  the existing AWS resource). On phase-2 failure, cdkd state is
+  preserved and the error message includes the recovery procedure
   (`aws cloudformation create-change-set --change-set-type UPDATE ...`
   followed by `cdkd state orphan`).
 - **Inline `TemplateBody` only** (51,200-byte cap). Templates larger than
@@ -859,14 +898,29 @@ Two ways forward:
 
 **Caveats**:
 
-- **Replacement risk on next deploy**: if the CDK code does NOT specify
-  an explicit physical name (e.g. `bucketName: 'my-bucket-12345'`), the
-  next `cdk deploy` will see "auto-generated name" vs "actual name" as a
-  property change and may replace the resource. Mirror's `cdk import`'s
-  long-standing UX. Update the CDK code with explicit names before
-  exporting, or check the post-import changeset (`aws cloudformation
-  create-change-set --change-set-type UPDATE`) for surprises before
-  executing your first post-export `cdk deploy`.
+- **Replacement risk on next deploy** (two related causes):
+  1. **Auto-generated names**: if the CDK code does NOT specify an
+     explicit physical name (e.g. `bucketName: 'my-bucket-12345'`), the
+     next `cdk deploy` will see "auto-generated name" vs "actual name"
+     as a property change and may replace the resource. Mirrors
+     `cdk import`'s long-standing UX. Update the CDK code with explicit
+     names before exporting.
+  2. **cdkd stack-name prefix**: cdkd's deploy prefixes user-declared
+     physical names with the stack name for cross-stack uniqueness
+     (e.g. `roleName: 'my-role'` becomes `MyStack-my-role` on AWS).
+     The phase-1 IMPORT preprocessing rewrites the template's name
+     field to the prefixed value (otherwise CFn IMPORT rejects the
+     identifier mismatch), and this prefixed value persists into the
+     post-import CFn template. The next `cdk deploy` will see
+     `MyStack-my-role` (CFn-recorded) vs `my-role` (CDK-declared) as
+     a property change on an immutable name field → REPLACEMENT.
+     Before the first post-export deploy, either change the CDK code
+     to the prefixed value (`roleName: 'MyStack-my-role'`) or accept
+     the replacement.
+
+  Either way, check the post-import changeset
+  (`aws cloudformation create-change-set --change-set-type UPDATE`) for
+  surprises before executing your first post-export `cdk deploy`.
 - **Cross-stack `Fn::GetStackOutput` consumers** in other cdkd stacks
   cannot read the exported stack's outputs anymore (CFn outputs live in
   CloudFormation, cdkd's resolver reads cdkd state). Plan multi-stack

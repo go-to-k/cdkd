@@ -93,9 +93,14 @@ for needed in 'AWS::S3::Bucket' 'AWS::SNS::Topic' 'AWS::Lambda::Function' 'AWS::
     exit 1
   fi
 done
-# Custom::* arrives in phase 2 — verify by counting Custom:: types.
-if ! echo "${RESOURCES}" | grep -q 'Custom::'; then
-  echo "[verify] FAIL: no Custom::* resource in CFn stack (phase 2 missed)"
+# Phase-2 Custom Resources arrive in the second changeset. CDK emits two
+# distinct CFn resource types depending on whether the user passed
+# `resourceType: 'Custom::Foo'` to `new CustomResource(...)`: the typed
+# form `Custom::*` or the untyped default `AWS::CloudFormation::CustomResource`.
+# The integ fixture uses the untyped form, but accept either so the
+# check is robust to future fixture tweaks.
+if ! echo "${RESOURCES}" | grep -qE '(Custom::|AWS::CloudFormation::CustomResource)'; then
+  echo "[verify] FAIL: no Custom Resource in CFn stack (phase 2 missed)"
   exit 1
 fi
 echo "[verify] step 4b ok"

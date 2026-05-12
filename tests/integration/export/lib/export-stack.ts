@@ -62,22 +62,58 @@ export class ExportStack extends cdk.Stack {
       ],
     });
 
-    // Trivial idempotent backing Lambda. Returns the same shape on
-    // every invocation (Create / Update / Delete), so the phase-2
-    // re-invocation by CFn is a no-op.
+    // Trivial idempotent backing Lambda. Works under BOTH cdkd's
+    // Custom Resource invocation (which can use the return value as
+    // the response payload) AND real CloudFormation's Custom Resource
+    // protocol — the handler PUTs a cfn-response to event.ResponseURL
+    // so the CFn-side phase-2 UPDATE / rollback / future cdk-deploy
+    // can finish without timing out at the 1-hour ceiling.
     const handler = new lambda.Function(this, 'CRHandler', {
       functionName: `cdkd-export-test-${suffix}`,
       runtime: lambda.Runtime.NODEJS_20_X,
       handler: 'index.handler',
       role,
       code: lambda.Code.fromInline(`
+        const https = require('https');
+        const url = require('url');
         exports.handler = async (event) => {
           console.log('CR event:', JSON.stringify(event));
-          // Idempotent: same PhysicalResourceId on every event type.
-          return {
-            PhysicalResourceId: 'cdkd-export-test-cr-${suffix}',
-            Data: { Ack: 'ok' },
-          };
+          const physicalId = 'cdkd-export-test-cr-${suffix}';
+          if (event.ResponseURL) {
+            const responseBody = JSON.stringify({
+              Status: 'SUCCESS',
+              Reason: 'OK',
+              PhysicalResourceId: physicalId,
+              StackId: event.StackId,
+              RequestId: event.RequestId,
+              LogicalResourceId: event.LogicalResourceId,
+              Data: { Ack: 'ok' },
+            });
+            const parsedUrl = url.parse(event.ResponseURL);
+            await new Promise((resolve, reject) => {
+              const req = https.request(
+                {
+                  hostname: parsedUrl.hostname,
+                  port: 443,
+                  path: parsedUrl.path,
+                  method: 'PUT',
+                  headers: {
+                    'content-type': '',
+                    'content-length': responseBody.length,
+                  },
+                },
+                (res) => {
+                  res.on('data', () => {});
+                  res.on('end', () => resolve());
+                }
+              );
+              req.on('error', reject);
+              req.write(responseBody);
+              req.end();
+            });
+          }
+          // Idempotent return value (cdkd's return-value fast path).
+          return { PhysicalResourceId: physicalId, Data: { Ack: 'ok' } };
         };
       `),
       timeout: cdk.Duration.seconds(30),
