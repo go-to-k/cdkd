@@ -38,6 +38,17 @@ export class ExportStack extends cdk.Stack {
     // a single `cdk deploy`, unique across stack renames or branch tests.
     const suffix = cdk.Names.uniqueResourceName(this, { maxLength: 8 }).toLowerCase();
 
+    // Template-declared parameter used by the `parameter-override` variant
+    // of `verify.sh` to exercise `cdkd export --parameter Key=Value`.
+    // The default value covers every other variant (deploy / export uses
+    // the default, no override needed). Emitted as a CfnOutput so the
+    // synth template references the parameter and CDK doesn't prune it.
+    const envParam = new cdk.CfnParameter(this, 'Environment', {
+      type: 'String',
+      default: 'test',
+      description: 'Environment name (used by parameter-override variant).',
+    });
+
     // ── Single-key importable resources ────────────────────────────
     const bucket = new s3.Bucket(this, 'Bucket', {
       bucketName: `cdkd-export-test-${suffix}`,
@@ -141,5 +152,8 @@ export class ExportStack extends cdk.Stack {
     // empty-case path).
     new cdk.CfnOutput(this, 'BucketName', { value: bucket.bucketName });
     new cdk.CfnOutput(this, 'TopicArn', { value: topic.topicArn });
+    // Surfaces the CfnParameter value so the synth template references
+    // the parameter (CDK prunes unreferenced Parameters from the output).
+    new cdk.CfnOutput(this, 'EnvironmentValue', { value: envParam.valueAsString });
   }
 }
