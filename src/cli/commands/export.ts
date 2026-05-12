@@ -4,6 +4,7 @@ import { Command } from 'commander';
 import {
   CreateChangeSetCommand,
   DescribeChangeSetCommand,
+  DescribeStackEventsCommand,
   ExecuteChangeSetCommand,
   DescribeStacksCommand,
   DescribeTypeCommand,
@@ -95,6 +96,11 @@ interface ExportOptions {
  *     CFn refuses to import it.
  *   - `AWS::CloudFormation::Stack` is a nested stack reference; importing
  *     means re-creating the child stack, not adopting AWS resources.
+ *   - `AWS::CloudFormation::CustomResource` is the CFn resource type CDK
+ *     emits for `new cdk.CustomResource(...)` when no `resourceType` is
+ *     passed. Functionally identical to `Custom::*` — Lambda-backed,
+ *     no AWS resource state to adopt — and AWS rejects it from IMPORT
+ *     changesets with the same error.
  *   - `Custom::*` are Lambda-backed Custom Resources. CFn cannot adopt the
  *     custom-resource state — invocation history lives in the provider
  *     Lambda, not in AWS resource state, so there is nothing to import.
@@ -110,8 +116,21 @@ const NEVER_IMPORTABLE_TYPES = new Set<string>([
 
 export function isNeverImportableType(resourceType: string): boolean {
   if (NEVER_IMPORTABLE_TYPES.has(resourceType)) return true;
-  if (resourceType.startsWith('Custom::')) return true;
+  if (isCustomResourceType(resourceType)) return true;
   return false;
+}
+
+/**
+ * Both `Custom::*` and `AWS::CloudFormation::CustomResource` denote
+ * Lambda-backed Custom Resources. CDK emits the latter when
+ * `new cdk.CustomResource(...)` is constructed without a `resourceType`;
+ * users who supply one get `Custom::<Name>`. Both go through the
+ * phase-2 CREATE path in `cdkd export`.
+ */
+function isCustomResourceType(resourceType: string): boolean {
+  return (
+    resourceType === 'AWS::CloudFormation::CustomResource' || resourceType.startsWith('Custom::')
+  );
 }
 
 /**
@@ -560,8 +579,24 @@ async function exportCommand(stackArg: string | undefined, options: ExportOption
         );
       }
 
-      // Phase 1: IMPORT changeset.
+      // Phase 1: IMPORT changeset. CFn IMPORT requires DeletionPolicy on
+      // every resource (AWS hard requirement). CDK-synth templates only
+      // emit DeletionPolicy when the user sets RemovalPolicy explicitly,
+      // so we inject DeletionPolicy: Retain on resources that lack the
+      // attribute. Retain is the safest default — if the user runs
+      // `aws cloudformation delete-stack` BEFORE the post-export `cdk
+      // deploy`, no AWS resource is destroyed. The first subsequent
+      // `cdk deploy` resets DeletionPolicy to the user's CDK-declared
+      // value (or absent), so the injection is transient.
       const phase1Template = filterTemplateForImport(template, phase1Imports);
+      const injectedCount = injectDeletionPolicyForImport(phase1Template);
+      if (injectedCount > 0) {
+        logger.info(
+          `Injected DeletionPolicy: Retain on ${injectedCount} resource(s) without an ` +
+            `explicit DeletionPolicy (required by CFn IMPORT). The first \`cdk deploy\` ` +
+            `after export will reset each to your CDK-declared value.`
+        );
+      }
       await executeImportChangeSet(
         awsClients.cloudFormation,
         cfnStackName,
@@ -761,9 +796,10 @@ interface Phase2CreateEntry {
 
 /**
  * Returns true when a resource type is non-importable BUT can be handled
- * by the phase-2 CREATE path. Today this is exactly `Custom::*` (Lambda-
- * backed Custom Resources whose backing Lambda is itself in the same
- * stack and gets imported in phase 1).
+ * by the phase-2 CREATE path. Today this is exactly `Custom::*` and the
+ * untyped CDK form `AWS::CloudFormation::CustomResource` (both are
+ * Lambda-backed Custom Resources whose backing Lambda is itself in the
+ * same stack and gets imported in phase 1).
  *
  * `AWS::CloudFormation::Stack` (nested stacks) is intentionally NOT in
  * this set: CFn would CREATE a duplicate nested stack rather than adopt
@@ -773,7 +809,7 @@ interface Phase2CreateEntry {
  * Exported for unit testing.
  */
 export function isPhase2CreatableType(resourceType: string): boolean {
-  return resourceType.startsWith('Custom::');
+  return isCustomResourceType(resourceType);
 }
 
 /**
@@ -1094,38 +1130,117 @@ export function resolveTemplateParameters(
   return { parameters, missing };
 }
 
+/**
+ * Mutates `template['Resources']` so every entry has a `DeletionPolicy`
+ * attribute. Resources already carrying any `DeletionPolicy` value
+ * (Delete / Retain / Snapshot) are untouched; resources missing the
+ * attribute get `DeletionPolicy: Retain` injected.
+ *
+ * Required by CloudFormation `ChangeSetType=IMPORT`, which rejects the
+ * changeset if any resource in the template lacks `DeletionPolicy`.
+ * CDK-synth templates only emit the attribute when the user sets
+ * `RemovalPolicy` explicitly, so most resources are missing it. We
+ * inject `Retain` (rather than `Delete`) so an accidental
+ * `aws cloudformation delete-stack` between export and the first
+ * post-export `cdk deploy` cannot drop AWS resources. The first
+ * `cdk deploy` resets each `DeletionPolicy` to the user's
+ * CDK-declared value (or absent), so the injection is transient.
+ *
+ * `UpdateReplacePolicy` is intentionally NOT injected — only
+ * `DeletionPolicy` is required for IMPORT, and minimizing the injected
+ * surface keeps the post-export `cdk diff` as small as possible.
+ *
+ * Returns the number of resources that received an injection.
+ *
+ * Exported for unit testing.
+ */
+export function injectDeletionPolicyForImport(template: Record<string, unknown>): number {
+  const resources = template['Resources'];
+  if (!resources || typeof resources !== 'object' || Array.isArray(resources)) {
+    return 0;
+  }
+  let injected = 0;
+  for (const [, resource] of Object.entries(resources as Record<string, unknown>)) {
+    if (!resource || typeof resource !== 'object' || Array.isArray(resource)) continue;
+    const r = resource as Record<string, unknown>;
+    if (r['DeletionPolicy'] === undefined) {
+      r['DeletionPolicy'] = 'Retain';
+      injected++;
+    }
+  }
+  return injected;
+}
+
 export function filterTemplateForImport(
   template: Record<string, unknown>,
   plan: ImportPlanEntry[]
 ): Record<string, unknown> {
-  const allow = new Set(plan.map((p) => p.logicalId));
+  const allow = new Map(plan.map((p) => [p.logicalId, p] as const));
   const original = template['Resources'] as Record<string, unknown>;
   const filteredResources: Record<string, unknown> = {};
   for (const [logicalId, resource] of Object.entries(original)) {
-    if (allow.has(logicalId)) {
-      filteredResources[logicalId] = resource;
-    }
+    const entry = allow.get(logicalId);
+    if (!entry) continue;
+    filteredResources[logicalId] = overlayResourceIdentifierOnProperties(resource, entry);
   }
 
   const result: Record<string, unknown> = { ...template, Resources: filteredResources };
 
-  // Filter outputs that reference resources we excluded.
-  const outputs = template['Outputs'];
-  if (outputs && typeof outputs === 'object' && !Array.isArray(outputs)) {
-    const filteredOutputs: Record<string, unknown> = {};
-    for (const [name, output] of Object.entries(outputs as Record<string, unknown>)) {
-      if (referencesOnly(output, allow)) {
-        filteredOutputs[name] = output;
-      }
-    }
-    if (Object.keys(filteredOutputs).length > 0) {
-      result['Outputs'] = filteredOutputs;
-    } else {
-      delete result['Outputs'];
-    }
-  }
+  // CloudFormation IMPORT changesets do NOT allow Outputs — AWS rejects
+  // the changeset with "As part of the import operation, you cannot
+  // modify or add [Outputs]". This applies even to Outputs that only
+  // reference imported resources. Strip them entirely here; phase 2
+  // UPDATE re-submits the full synth template and restores Outputs
+  // along with the non-importable resources.
+  delete result['Outputs'];
 
   return result;
+}
+
+/**
+ * Overlay each `ResourceIdentifier` field onto the resource's
+ * `Properties` so that the template's identifier values match the
+ * actual AWS physical id. Required by CloudFormation `ChangeSetType=
+ * IMPORT`, which compares `ResourcesToImport[].ResourceIdentifier`
+ * against the corresponding `Properties[<IdField>]` in the template
+ * and rejects the import when they differ — see error: "The
+ * Identifier [<Field>] for resource [...] does not match the
+ * identifier value for the resource in the template."
+ *
+ * cdkd's deploy path prefixes user-declared physical names with the
+ * stack name (`<StackName>-<UserDeclaredName>`) for cross-stack
+ * uniqueness, so the synthesized template's `Properties.RoleName` /
+ * `BucketName` / `TopicName` / etc. (the user-declared value) doesn't
+ * match what cdkd stored as the resource's physicalId. The overlay
+ * here uses the prefixed value cdkd built for the ResourceIdentifier,
+ * keeping the IMPORT changeset internally consistent.
+ *
+ * **Replacement risk on next `cdk deploy`**: the overlay persists into
+ * the post-import CFn-managed template. When the user later runs
+ * `cdk deploy`, CDK synth re-emits the user-declared name (e.g.
+ * `cdkd-export-test-…` without prefix). CFn sees `RoleName` change on
+ * an immutable property and proposes REPLACEMENT — which destroys the
+ * original AWS resource. This is the same caveat documented for
+ * upstream `cdk import`; users should set explicit physical names in
+ * CDK code that match cdkd's prefixed values before the first
+ * post-export deploy, or run `cdk diff` to inspect.
+ */
+function overlayResourceIdentifierOnProperties(resource: unknown, entry: ImportPlanEntry): unknown {
+  if (!resource || typeof resource !== 'object' || Array.isArray(resource)) {
+    return resource;
+  }
+  const r = resource as Record<string, unknown>;
+  const existingProperties = r['Properties'];
+  const properties: Record<string, unknown> =
+    existingProperties &&
+    typeof existingProperties === 'object' &&
+    !Array.isArray(existingProperties)
+      ? { ...(existingProperties as Record<string, unknown>) }
+      : {};
+  for (const [field, value] of Object.entries(entry.resourceIdentifier)) {
+    properties[field] = value;
+  }
+  return { ...r, Properties: properties };
 }
 
 /**
@@ -1271,31 +1386,6 @@ function walkForGetStackOutput(
   }
 }
 
-function referencesOnly(node: unknown, allow: Set<string>): boolean {
-  if (!node || typeof node !== 'object') return true;
-  if (Array.isArray(node)) {
-    return node.every((item) => referencesOnly(item, allow));
-  }
-  for (const [key, value] of Object.entries(node as Record<string, unknown>)) {
-    if (key === 'Ref' && typeof value === 'string') {
-      if (!allow.has(value)) return false;
-      continue;
-    }
-    if (key === 'Fn::GetAtt') {
-      const target =
-        Array.isArray(value) && typeof value[0] === 'string'
-          ? value[0]
-          : typeof value === 'string'
-            ? value.split('.')[0]
-            : undefined;
-      if (target && !allow.has(target)) return false;
-      continue;
-    }
-    if (!referencesOnly(value, allow)) return false;
-  }
-  return true;
-}
-
 function printPlan(plan: ImportPlanEntry[], cfnStackName: string): void {
   const logger = getLogger();
   logger.info('');
@@ -1406,11 +1496,55 @@ async function executeImportChangeSet(
       { StackName: stackName }
     );
   } catch (err) {
+    // On IMPORT failure, fetch the per-resource failure reasons from
+    // CFn stack events so the user can see WHICH resource failed and
+    // WHY. The waiter only reports the high-level rollback state.
+    const failureSummary = await collectImportFailureSummary(cfnClient, stackName).catch(() => '');
     await cfnClient
       .send(new DeleteChangeSetCommand({ StackName: stackName, ChangeSetName: changeSetName }))
       .catch(() => {});
+    if (failureSummary) {
+      throw new Error(`IMPORT changeset failed:\n${failureSummary}`, { cause: err });
+    }
     throw err;
   }
+}
+
+/**
+ * Fetch the most recent CFn stack events and extract the per-resource
+ * failure reasons. Surfaced when `waitUntilStackImportComplete`'s waiter
+ * reports FAILURE — the waiter itself only reports the high-level
+ * rollback state, so the actionable detail is in the events.
+ *
+ * Returns up to 5 distinct failed resources, formatted as
+ * `<LogicalId> (<Type>): <ResourceStatusReason>` per line. Returns an
+ * empty string when DescribeStackEvents itself fails or no failure
+ * events are found.
+ */
+async function collectImportFailureSummary(
+  cfnClient: AwsClients['cloudFormation'],
+  stackName: string
+): Promise<string> {
+  const resp = await cfnClient.send(new DescribeStackEventsCommand({ StackName: stackName }));
+  const events = resp.StackEvents ?? [];
+  // Walk events newest-first (CFn returns them in reverse chronological
+  // order) and collect distinct per-resource failure entries.
+  const failures: { logicalId: string; type: string; reason: string }[] = [];
+  const seen = new Set<string>();
+  for (const e of events) {
+    if (!e.ResourceStatus || !e.ResourceStatus.endsWith('FAILED')) continue;
+    if (!e.LogicalResourceId) continue;
+    if (seen.has(e.LogicalResourceId)) continue;
+    seen.add(e.LogicalResourceId);
+    failures.push({
+      logicalId: e.LogicalResourceId,
+      type: e.ResourceType ?? '<unknown>',
+      reason: e.ResourceStatusReason ?? '<no reason reported>',
+    });
+    if (failures.length >= 5) break;
+  }
+  if (failures.length === 0) return '';
+  return failures.map((f) => `  - ${f.logicalId} (${f.type}): ${f.reason}`).join('\n');
 }
 
 /**

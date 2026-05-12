@@ -2,6 +2,7 @@ import { describe, it, expect, vi } from 'vitest';
 import {
   filterTemplateForImport,
   hasCompositeIdSplitter,
+  injectDeletionPolicyForImport,
   isNeverImportableType,
   isPhase2CreatableType,
   parseParameterOverrides,
@@ -70,6 +71,13 @@ describe('isNeverImportableType', () => {
     expect(isNeverImportableType('Custom::SomethingElse')).toBe(true);
   });
 
+  it('flags AWS::CloudFormation::CustomResource (untyped cdk.CustomResource)', () => {
+    // CDK emits this type when `new cdk.CustomResource(...)` is constructed
+    // without a `resourceType` property. AWS rejects it from IMPORT changesets
+    // for the same reason it rejects Custom::*.
+    expect(isNeverImportableType('AWS::CloudFormation::CustomResource')).toBe(true);
+  });
+
   it('does NOT flag common importable types', () => {
     expect(isNeverImportableType('AWS::S3::Bucket')).toBe(false);
     expect(isNeverImportableType('AWS::IAM::Role')).toBe(false);
@@ -83,7 +91,7 @@ describe('filterTemplateForImport', () => {
     const template = {
       AWSTemplateFormatVersion: '2010-09-09',
       Resources: {
-        KeepMe: { Type: 'AWS::S3::Bucket', Properties: {} },
+        KeepMe: { Type: 'AWS::S3::Bucket', Properties: { BucketName: 'b' } },
         DropMe: { Type: 'AWS::CDK::Metadata', Properties: {} },
       },
     };
@@ -91,7 +99,76 @@ describe('filterTemplateForImport', () => {
       { logicalId: 'KeepMe', resourceType: 'AWS::S3::Bucket', physicalId: 'b', resourceIdentifier: { BucketName: 'b' } },
     ]);
     expect(result['Resources']).toEqual({
-      KeepMe: { Type: 'AWS::S3::Bucket', Properties: {} },
+      KeepMe: { Type: 'AWS::S3::Bucket', Properties: { BucketName: 'b' } },
+    });
+  });
+
+  it('overlays ResourceIdentifier values onto Properties (CFn IMPORT identifier match)', () => {
+    // cdkd deploy prefixes user-declared names with the stack name, so
+    // the synth template's Properties.RoleName is the unprefixed
+    // value while ResourceIdentifier (built from cdkd state's
+    // physicalId) carries the prefixed value. CFn IMPORT rejects the
+    // changeset when these disagree, so filterTemplateForImport
+    // overlays the prefixed identifier onto Properties.
+    const template = {
+      Resources: {
+        Role: {
+          Type: 'AWS::IAM::Role',
+          Properties: {
+            RoleName: 'user-declared-name',
+            Description: 'unchanged',
+          },
+        },
+      },
+    };
+    const result = filterTemplateForImport(template, [
+      {
+        logicalId: 'Role',
+        resourceType: 'AWS::IAM::Role',
+        physicalId: 'MyStack-user-declared-name',
+        resourceIdentifier: { RoleName: 'MyStack-user-declared-name' },
+      },
+    ]);
+    const role = (result['Resources'] as Record<string, Record<string, unknown>>)['Role']!;
+    const properties = role['Properties'] as Record<string, unknown>;
+    expect(properties['RoleName']).toBe('MyStack-user-declared-name');
+    expect(properties['Description']).toBe('unchanged');
+  });
+
+  it('overlays composite identifiers (every field)', () => {
+    const template = {
+      Resources: {
+        Method: {
+          Type: 'AWS::ApiGateway::Method',
+          Properties: { RestApiId: 'old', ResourceId: 'old', HttpMethod: 'old' },
+        },
+      },
+    };
+    const result = filterTemplateForImport(template, [
+      {
+        logicalId: 'Method',
+        resourceType: 'AWS::ApiGateway::Method',
+        physicalId: 'api123|res456|GET',
+        resourceIdentifier: { RestApiId: 'api123', ResourceId: 'res456', HttpMethod: 'GET' },
+      },
+    ]);
+    const method = (result['Resources'] as Record<string, Record<string, unknown>>)['Method']!;
+    expect(method['Properties']).toEqual({
+      RestApiId: 'api123',
+      ResourceId: 'res456',
+      HttpMethod: 'GET',
+    });
+  });
+
+  it('creates a Properties object on resources that had none', () => {
+    const template = {
+      Resources: { Bare: { Type: 'AWS::S3::Bucket' } },
+    };
+    const result = filterTemplateForImport(template, [
+      { logicalId: 'Bare', resourceType: 'AWS::S3::Bucket', physicalId: 'b', resourceIdentifier: { BucketName: 'b' } },
+    ]);
+    expect((result['Resources'] as Record<string, Record<string, unknown>>)['Bare']!['Properties']).toEqual({
+      BucketName: 'b',
     });
   });
 
@@ -112,13 +189,20 @@ describe('filterTemplateForImport', () => {
     expect(result['Parameters']).toEqual({ P: { Type: 'String' } });
   });
 
-  it('drops Outputs that Ref-reference excluded resources', () => {
+  it('strips Outputs entirely (CFn IMPORT changeset rejects any Outputs)', () => {
+    // CloudFormation IMPORT rejects the changeset with "As part of the
+    // import operation, you cannot modify or add [Outputs]", regardless
+    // of whether the Outputs reference imported or excluded resources.
+    // Phase 2 UPDATE re-submits the full synth template and restores
+    // Outputs along with the non-importable resources.
     const template = {
       Resources: {
         Keep: { Type: 'AWS::S3::Bucket' },
         Drop: { Type: 'Custom::Foo' },
       },
       Outputs: {
+        // Even an Output that only references the imported resource
+        // must be stripped — AWS rejects ANY Outputs on IMPORT.
         KeepOut: { Value: { Ref: 'Keep' } },
         DropOut: { Value: { Ref: 'Drop' } },
       },
@@ -126,47 +210,13 @@ describe('filterTemplateForImport', () => {
     const result = filterTemplateForImport(template, [
       { logicalId: 'Keep', resourceType: 'AWS::S3::Bucket', physicalId: 'b', resourceIdentifier: { BucketName: 'b' } },
     ]);
-    expect(result['Outputs']).toEqual({ KeepOut: { Value: { Ref: 'Keep' } } });
+    expect('Outputs' in result).toBe(false);
   });
 
-  it('drops Outputs that Fn::GetAtt-reference excluded resources', () => {
-    const template = {
-      Resources: {
-        Keep: { Type: 'AWS::S3::Bucket' },
-        Drop: { Type: 'Custom::Foo' },
-      },
-      Outputs: {
-        KeepOut: { Value: { 'Fn::GetAtt': ['Keep', 'Arn'] } },
-        DropOut: { Value: { 'Fn::GetAtt': ['Drop', 'Arn'] } },
-      },
-    };
-    const result = filterTemplateForImport(template, [
-      { logicalId: 'Keep', resourceType: 'AWS::S3::Bucket', physicalId: 'b', resourceIdentifier: { BucketName: 'b' } },
-    ]);
-    expect(result['Outputs']).toEqual({
-      KeepOut: { Value: { 'Fn::GetAtt': ['Keep', 'Arn'] } },
-    });
-  });
-
-  it('handles the string form of Fn::GetAtt ("Logical.Attr")', () => {
-    const template = {
-      Resources: {
-        Keep: { Type: 'AWS::S3::Bucket' },
-      },
-      Outputs: {
-        DropOut: { Value: { 'Fn::GetAtt': 'Excluded.Arn' } },
-      },
-    };
-    const result = filterTemplateForImport(template, [
-      { logicalId: 'Keep', resourceType: 'AWS::S3::Bucket', physicalId: 'b', resourceIdentifier: { BucketName: 'b' } },
-    ]);
-    expect(result['Outputs']).toBeUndefined();
-  });
-
-  it('drops the Outputs key entirely when all outputs are filtered out', () => {
+  it('strips Outputs even when none reference any resource', () => {
     const template = {
       Resources: { Keep: { Type: 'AWS::S3::Bucket' } },
-      Outputs: { DropOut: { Value: { Ref: 'Excluded' } } },
+      Outputs: { StaticOut: { Value: 'plain-string' } },
     };
     const result = filterTemplateForImport(template, [
       { logicalId: 'Keep', resourceType: 'AWS::S3::Bucket', physicalId: 'b', resourceIdentifier: { BucketName: 'b' } },
@@ -174,26 +224,14 @@ describe('filterTemplateForImport', () => {
     expect('Outputs' in result).toBe(false);
   });
 
-  it('handles nested intrinsics inside Outputs', () => {
+  it('leaves the result without an Outputs key when template has none', () => {
     const template = {
-      Resources: {
-        Keep: { Type: 'AWS::S3::Bucket' },
-      },
-      Outputs: {
-        DropOut: {
-          Value: { 'Fn::Join': ['', ['prefix-', { Ref: 'Excluded' }]] },
-        },
-        KeepOut: {
-          Value: { 'Fn::Join': ['', ['prefix-', { Ref: 'Keep' }]] },
-        },
-      },
+      Resources: { Keep: { Type: 'AWS::S3::Bucket' } },
     };
     const result = filterTemplateForImport(template, [
       { logicalId: 'Keep', resourceType: 'AWS::S3::Bucket', physicalId: 'b', resourceIdentifier: { BucketName: 'b' } },
     ]);
-    expect(result['Outputs']).toEqual({
-      KeepOut: { Value: { 'Fn::Join': ['', ['prefix-', { Ref: 'Keep' }]] } },
-    });
+    expect('Outputs' in result).toBe(false);
   });
 });
 
@@ -271,6 +309,13 @@ describe('isPhase2CreatableType', () => {
     expect(isPhase2CreatableType('Custom::AWSCDKOpenIdConnectProvider')).toBe(true);
   });
 
+  it('matches AWS::CloudFormation::CustomResource (untyped cdk.CustomResource)', () => {
+    // `new cdk.CustomResource(...)` without `resourceType` synthesizes to
+    // this CFn resource type. Functionally identical to Custom::* — Lambda-
+    // backed, no AWS resource state — so it also goes through phase 2.
+    expect(isPhase2CreatableType('AWS::CloudFormation::CustomResource')).toBe(true);
+  });
+
   it('does NOT match AWS::CloudFormation::Stack (nested stacks stay blocked)', () => {
     // Nested stack import would create a duplicate, so it is intentionally
     // NOT in the phase-2 set. PR3 verifies this stays blocked.
@@ -285,6 +330,75 @@ describe('isPhase2CreatableType', () => {
 
   it('does NOT match AWS::CDK::Metadata (silent-drop, not phase 2)', () => {
     expect(isPhase2CreatableType('AWS::CDK::Metadata')).toBe(false);
+  });
+});
+
+describe('injectDeletionPolicyForImport', () => {
+  it('adds DeletionPolicy: Retain on resources lacking the attribute', () => {
+    const template: Record<string, unknown> = {
+      Resources: {
+        Role: { Type: 'AWS::IAM::Role', Properties: {} },
+        Topic: { Type: 'AWS::SNS::Topic', Properties: {} },
+      },
+    };
+    const injected = injectDeletionPolicyForImport(template);
+    expect(injected).toBe(2);
+    expect((template['Resources'] as Record<string, Record<string, unknown>>)['Role']!['DeletionPolicy']).toBe('Retain');
+    expect((template['Resources'] as Record<string, Record<string, unknown>>)['Topic']!['DeletionPolicy']).toBe('Retain');
+  });
+
+  it('preserves resources that already declare DeletionPolicy (any value)', () => {
+    const template: Record<string, unknown> = {
+      Resources: {
+        Bucket: { Type: 'AWS::S3::Bucket', Properties: {}, DeletionPolicy: 'Delete' },
+        Snapshot: { Type: 'AWS::RDS::DBInstance', Properties: {}, DeletionPolicy: 'Snapshot' },
+        Existing: { Type: 'AWS::IAM::Role', Properties: {}, DeletionPolicy: 'Retain' },
+      },
+    };
+    const injected = injectDeletionPolicyForImport(template);
+    expect(injected).toBe(0);
+    const resources = template['Resources'] as Record<string, Record<string, unknown>>;
+    expect(resources['Bucket']!['DeletionPolicy']).toBe('Delete');
+    expect(resources['Snapshot']!['DeletionPolicy']).toBe('Snapshot');
+    expect(resources['Existing']!['DeletionPolicy']).toBe('Retain');
+  });
+
+  it('does NOT inject UpdateReplacePolicy (only DeletionPolicy required by IMPORT)', () => {
+    const template: Record<string, unknown> = {
+      Resources: {
+        Role: { Type: 'AWS::IAM::Role', Properties: {} },
+      },
+    };
+    injectDeletionPolicyForImport(template);
+    expect(
+      (template['Resources'] as Record<string, Record<string, unknown>>)['Role']!['UpdateReplacePolicy']
+    ).toBeUndefined();
+  });
+
+  it('handles a mix of missing + present DeletionPolicy entries', () => {
+    const template: Record<string, unknown> = {
+      Resources: {
+        Bucket: { Type: 'AWS::S3::Bucket', Properties: {}, DeletionPolicy: 'Delete' },
+        Role: { Type: 'AWS::IAM::Role', Properties: {} },
+        Topic: { Type: 'AWS::SNS::Topic', Properties: {} },
+      },
+    };
+    const injected = injectDeletionPolicyForImport(template);
+    expect(injected).toBe(2);
+    const resources = template['Resources'] as Record<string, Record<string, unknown>>;
+    expect(resources['Bucket']!['DeletionPolicy']).toBe('Delete');
+    expect(resources['Role']!['DeletionPolicy']).toBe('Retain');
+    expect(resources['Topic']!['DeletionPolicy']).toBe('Retain');
+  });
+
+  it('returns 0 for a template with no Resources section', () => {
+    const template: Record<string, unknown> = { AWSTemplateFormatVersion: '2010-09-09' };
+    expect(injectDeletionPolicyForImport(template)).toBe(0);
+  });
+
+  it('returns 0 for an empty Resources object', () => {
+    const template: Record<string, unknown> = { Resources: {} };
+    expect(injectDeletionPolicyForImport(template)).toBe(0);
   });
 });
 
