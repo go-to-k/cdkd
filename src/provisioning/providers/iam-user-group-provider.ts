@@ -42,6 +42,7 @@ import { ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { generateResourceNameWithFallback } from '../resource-name.js';
 import { matchesCdkPath, resolveExplicitPhysicalId } from '../import-helpers.js';
+import { collectInlinePolicyNamesManagedBySiblings } from './iam-role-provider.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -1377,13 +1378,14 @@ export class IAMUserGroupProvider implements ResourceProvider {
     physicalId: string,
     logicalId: string,
     resourceType: string,
-    properties?: Record<string, unknown>
+    properties?: Record<string, unknown>,
+    context?: import('../../types/resource.js').ReadCurrentStateContext
   ): Promise<Record<string, unknown> | undefined> {
     switch (resourceType) {
       case 'AWS::IAM::User':
-        return this.readUserCurrentState(physicalId, properties);
+        return this.readUserCurrentState(physicalId, properties, context);
       case 'AWS::IAM::Group':
-        return this.readGroupCurrentState(physicalId, properties);
+        return this.readGroupCurrentState(physicalId, properties, context);
       case 'AWS::IAM::UserToGroupAddition':
         // Membership-only resource. See JSDoc above.
         return undefined;
@@ -1397,7 +1399,8 @@ export class IAMUserGroupProvider implements ResourceProvider {
 
   private async readUserCurrentState(
     physicalId: string,
-    properties?: Record<string, unknown>
+    properties?: Record<string, unknown>,
+    context?: import('../../types/resource.js').ReadCurrentStateContext
   ): Promise<Record<string, unknown> | undefined> {
     let user;
     try {
@@ -1445,7 +1448,8 @@ export class IAMUserGroupProvider implements ResourceProvider {
       const inline = await this.collectInlinePolicies(
         'user',
         physicalId,
-        (properties?.['Policies'] as Array<{ PolicyName?: string }> | undefined) ?? []
+        (properties?.['Policies'] as Array<{ PolicyName?: string }> | undefined) ?? [],
+        context
       );
       result['Policies'] = inline;
     } catch (err) {
@@ -1457,7 +1461,8 @@ export class IAMUserGroupProvider implements ResourceProvider {
 
   private async readGroupCurrentState(
     physicalId: string,
-    properties?: Record<string, unknown>
+    properties?: Record<string, unknown>,
+    context?: import('../../types/resource.js').ReadCurrentStateContext
   ): Promise<Record<string, unknown> | undefined> {
     let group;
     try {
@@ -1489,7 +1494,8 @@ export class IAMUserGroupProvider implements ResourceProvider {
       const inline = await this.collectInlinePolicies(
         'group',
         physicalId,
-        (properties?.['Policies'] as Array<{ PolicyName?: string }> | undefined) ?? []
+        (properties?.['Policies'] as Array<{ PolicyName?: string }> | undefined) ?? [],
+        context
       );
       result['Policies'] = inline;
     } catch (err) {
@@ -1506,11 +1512,17 @@ export class IAMUserGroupProvider implements ResourceProvider {
    * for bodies (URL-decoded + JSON-parsed) → reconcile order against
    * `statePolicies` so a positional compare doesn't fire false drift on
    * the lexicographic order returned by AWS.
+   *
+   * Issue #323: filters out policies whose name matches an
+   * `AWS::IAM::Policy` sibling in the same stack (via `Users`/`Groups`
+   * attachment field), so policies attached by `iam.Policy({ users: [u] })` /
+   * `groups: [g]` don't fire false drift on the User / Group itself.
    */
   private async collectInlinePolicies(
     kind: 'user' | 'group',
     physicalId: string,
-    statePolicies: Array<{ PolicyName?: string }>
+    statePolicies: Array<{ PolicyName?: string }>,
+    context: import('../../types/resource.js').ReadCurrentStateContext | undefined
   ): Promise<Array<{ PolicyName: string; PolicyDocument: unknown }>> {
     const policyNames: string[] = [];
     let marker: string | undefined;
@@ -1535,9 +1547,16 @@ export class IAMUserGroupProvider implements ResourceProvider {
       marker = listResp.Marker;
     }
 
+    const managedByOtherResource = collectInlinePolicyNamesManagedBySiblings(
+      physicalId,
+      context,
+      kind === 'user' ? 'Users' : 'Groups'
+    );
+    const filteredNames = policyNames.filter((n) => !managedByOtherResource.has(n));
+
     const bodies = new Map<string, unknown>();
     await Promise.all(
-      policyNames.map(async (name) => {
+      filteredNames.map(async (name) => {
         const resp =
           kind === 'user'
             ? await this.iamClient.send(

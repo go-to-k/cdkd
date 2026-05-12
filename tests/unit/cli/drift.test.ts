@@ -399,14 +399,18 @@ describe('cdkd drift', () => {
     expect(output).not.toContain('Code');
   });
 
-  it('reports `Custom::*` resource types as drift unknown instead of crashing the CC API fallback', async () => {
-    // Reproduces the bug discovered in 0.47.0 compat testing: when a
-    // stack contains a `Custom::*` resource (e.g. CDK's S3
-    // auto-delete-objects helper), the provider has no
+  it('silently skips `Custom::*` resource types (drift not applicable, issue #323)', async () => {
+    // Originally: when a stack contains a `Custom::*` resource (e.g.
+    // CDK's S3 auto-delete-objects helper), the provider has no
     // readCurrentState so drift falls back to the Cloud Control API,
     // which rejects the type pattern with `ValidationException`. The
-    // fix short-circuits Custom::* to "drift unknown" before the
-    // fallback fires so the user can still drift the rest of the stack.
+    // first fix short-circuited Custom::* to "drift unknown" so the
+    // user can still drift the rest of the stack.
+    // Issue #323: "drift unknown" for Custom::* was actionable
+    // noise — drift on a Custom Resource would require re-invoking
+    // its handler Lambda (out of scope for `cdkd drift`), so the
+    // outcome is now silent (`kind: 'skipped'`) and not surfaced in
+    // the human report. CC API fallback is still bypassed.
     mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
     mockGetState.mockResolvedValueOnce(
       makeState({
@@ -416,10 +420,7 @@ describe('cdkd drift', () => {
         }),
       })
     );
-    // Provider has no readCurrentState - normally would trigger CC API fallback.
-    mockRegistryGetProvider.mockReturnValue({});
-    // CC API mock would throw the validation error if reached - assert
-    // we don't reach it.
+    // Provider lookup is bypassed entirely for Custom::* now.
     mockCcReadCurrentState.mockImplementation(() => {
       throw new Error('CC API should not be called for Custom::* types');
     });
@@ -427,8 +428,10 @@ describe('cdkd drift', () => {
     const { output, error } = await runDrift(['TestStack']);
 
     expect(error).toBeUndefined();
-    expect(output).toContain('? AutoDelete (Custom::S3AutoDeleteObjects)');
-    expect(output).toContain('1 unsupported');
+    expect(output).toContain('no drift detected');
+    // Custom::* is silently skipped — does NOT appear in the report.
+    expect(output).not.toContain('? AutoDelete');
+    expect(output).not.toContain('Custom::S3AutoDeleteObjects');
     expect(mockCcReadCurrentState).not.toHaveBeenCalled();
   });
 

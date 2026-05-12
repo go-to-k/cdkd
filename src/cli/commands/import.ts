@@ -19,6 +19,7 @@ import { registerAllProviders } from '../../provisioning/register-providers.js';
 import { setAwsClients, AwsClients } from '../../utils/aws-clients.js';
 import { TemplateParser } from '../../analyzer/template-parser.js';
 import { resolveApp, resolveStateBucketWithDefault } from '../config-loader.js';
+import { buildReadCurrentStateContext } from './drift.js';
 import { readCdkPath } from '../cdk-path.js';
 import { retireCloudFormationStack, getCloudFormationResourceMapping } from './retire-cfn-stack.js';
 import type {
@@ -997,7 +998,13 @@ async function captureObservedForImportedResources(
           resource.physicalId,
           logicalId,
           resource.resourceType,
-          resource.properties ?? {}
+          resource.properties ?? {},
+          // Issue #323: pass cross-resource context so IAM providers
+          // can filter inline policies managed by sibling
+          // AWS::IAM::Policy resources. By the time this runs, every
+          // imported resource is already in stackState.resources, so
+          // the sibling lookup is complete.
+          buildReadCurrentStateContext(stackState, logicalId)
         );
         if (observed !== undefined) {
           resource.observedProperties = observed;

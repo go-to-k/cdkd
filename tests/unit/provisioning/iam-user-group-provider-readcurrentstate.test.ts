@@ -222,6 +222,128 @@ describe('IAMUserGroupProvider.readCurrentState', () => {
     });
   });
 
+  describe('issue #323: filter inline policies managed by sibling AWS::IAM::Policy', () => {
+    it('User: excludes inline policy whose name matches sibling AWS::IAM::Policy.Users', async () => {
+      mockSend.mockResolvedValueOnce({
+        User: { UserName: 'alice', Path: '/' },
+      });
+      mockSend.mockResolvedValueOnce({ AttachedPolicies: [] });
+      mockSend.mockResolvedValueOnce({ Groups: [] });
+      mockSend.mockResolvedValueOnce({
+        PolicyNames: ['SiblingManagedPolicy'],
+        IsTruncated: false,
+      });
+      mockSend.mockImplementation((cmd: unknown) => {
+        if (cmd instanceof GetUserPolicyCommand) {
+          return Promise.resolve({
+            UserName: 'alice',
+            PolicyName: 'SiblingManagedPolicy',
+            PolicyDocument: encodeURIComponent(JSON.stringify({ Doc: 'managed' })),
+          });
+        }
+        return Promise.resolve({ Tags: [], IsTruncated: false });
+      });
+
+      const result = await provider.readCurrentState(
+        'alice',
+        'User',
+        'AWS::IAM::User',
+        { Policies: [] },
+        {
+          siblings: {
+            SiblingPolicy: {
+              resourceType: 'AWS::IAM::Policy',
+              properties: { PolicyName: 'SiblingManagedPolicy', Users: ['alice'] },
+            },
+          },
+        }
+      );
+
+      expect(result?.Policies).toEqual([]);
+    });
+
+    it('Group: excludes inline policy whose name matches sibling AWS::IAM::Policy.Groups', async () => {
+      mockSend.mockResolvedValueOnce({
+        Group: { GroupName: 'engineers', Path: '/' },
+      });
+      mockSend.mockResolvedValueOnce({ AttachedPolicies: [] });
+      mockSend.mockResolvedValueOnce({
+        PolicyNames: ['SiblingGroupPolicy'],
+        IsTruncated: false,
+      });
+      mockSend.mockImplementation((cmd: unknown) => {
+        if (cmd instanceof GetGroupPolicyCommand) {
+          return Promise.resolve({
+            GroupName: 'engineers',
+            PolicyName: 'SiblingGroupPolicy',
+            PolicyDocument: encodeURIComponent(JSON.stringify({ Doc: 'managed' })),
+          });
+        }
+        return Promise.resolve({ Tags: [], IsTruncated: false });
+      });
+
+      const result = await provider.readCurrentState(
+        'engineers',
+        'Group',
+        'AWS::IAM::Group',
+        { Policies: [] },
+        {
+          siblings: {
+            SiblingPolicy: {
+              resourceType: 'AWS::IAM::Policy',
+              properties: { PolicyName: 'SiblingGroupPolicy', Groups: ['engineers'] },
+            },
+          },
+        }
+      );
+
+      expect(result?.Policies).toEqual([]);
+    });
+
+    it('User: cross-target sibling (Users for a different user) is NOT filtered out', async () => {
+      mockSend.mockResolvedValueOnce({
+        User: { UserName: 'alice', Path: '/' },
+      });
+      mockSend.mockResolvedValueOnce({ AttachedPolicies: [] });
+      mockSend.mockResolvedValueOnce({ Groups: [] });
+      mockSend.mockResolvedValueOnce({
+        PolicyNames: ['MyPolicy'],
+        IsTruncated: false,
+      });
+      mockSend.mockImplementation((cmd: unknown) => {
+        if (cmd instanceof GetUserPolicyCommand) {
+          return Promise.resolve({
+            UserName: 'alice',
+            PolicyName: 'MyPolicy',
+            PolicyDocument: encodeURIComponent(JSON.stringify({ Doc: 'mine' })),
+          });
+        }
+        return Promise.resolve({ Tags: [], IsTruncated: false });
+      });
+
+      const result = await provider.readCurrentState(
+        'alice',
+        'User',
+        'AWS::IAM::User',
+        { Policies: [{ PolicyName: 'MyPolicy', PolicyDocument: { Doc: 'mine' } }] },
+        {
+          siblings: {
+            UnrelatedPolicy: {
+              // Same PolicyName but attached to a different user — must NOT
+              // be considered a match for alice.
+              resourceType: 'AWS::IAM::Policy',
+              properties: { PolicyName: 'MyPolicy', Users: ['bob'] },
+            },
+          },
+        }
+      );
+
+      expect(result?.Policies).toEqual([
+        { PolicyName: 'MyPolicy', PolicyDocument: { Doc: 'mine' } },
+      ]);
+    });
+  });
+
   describe('AWS::IAM::UserToGroupAddition', () => {
     it('returns undefined (membership-only resource, see JSDoc)', async () => {
       const result = await provider.readCurrentState(

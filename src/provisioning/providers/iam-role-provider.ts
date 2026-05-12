@@ -793,7 +793,8 @@ export class IAMRoleProvider implements ResourceProvider {
     physicalId: string,
     _logicalId: string,
     _resourceType: string,
-    properties?: Record<string, unknown>
+    properties?: Record<string, unknown>,
+    context?: import('../../types/resource.js').ReadCurrentStateContext
   ): Promise<Record<string, unknown> | undefined> {
     let role;
     try {
@@ -865,12 +866,29 @@ export class IAMRoleProvider implements ResourceProvider {
         policyMarker = listResp.Marker;
       }
 
+      // Issue #323: filter out inline policies that are managed by a
+      // SEPARATE `AWS::IAM::Policy` resource attached via `Roles: [role]`.
+      // CDK's `iam.Policy({ roles: [r] })` (and L2 helpers like
+      // `taskRole.addToPolicy(...)` / `bucket.grantRead(role)` /
+      // `ContainerImage.fromEcrRepository(repo)`'s execution-role grant)
+      // creates a separate `AWS::IAM::Policy` resource — which AWS
+      // implements via `iam:PutRolePolicy`, so those inline policies
+      // appear in `ListRolePolicies` output. Without this filter every
+      // such Role fires false drift (state.Policies = [] vs aws =
+      // [{...DefaultPolicy*}]).
+      const managedByOtherResource = collectInlinePolicyNamesManagedBySiblings(
+        physicalId,
+        context,
+        'Roles'
+      );
+      const filteredNames = policyNames.filter((n) => !managedByOtherResource.has(n));
+
       // Fetch every body in parallel (max 10; well under any IAM rate
       // limit). URL-decode + JSON-parse so the comparator sees the same
       // object shape state holds after intrinsic resolution.
       const bodies = new Map<string, unknown>();
       await Promise.all(
-        policyNames.map(async (name) => {
+        filteredNames.map(async (name) => {
           const resp = await this.iamClient.send(
             new GetRolePolicyCommand({ RoleName: physicalId, PolicyName: name })
           );
@@ -990,4 +1008,52 @@ export class IAMRoleProvider implements ResourceProvider {
     } while (marker);
     return null;
   }
+}
+
+/**
+ * Issue #323: build the set of inline-policy names that are managed by
+ * a sibling `AWS::IAM::Policy` resource in the same stack via the given
+ * attachment field (`Roles` / `Users` / `Groups`). cdkd's IAM Role /
+ * User / Group `readCurrentState` helpers exclude these from
+ * `ListRolePolicies` / `ListUserPolicies` / `ListGroupPolicies` output
+ * to avoid false drift — the inline policy is faithfully managed by
+ * the sibling `AWS::IAM::Policy` resource, not the role/user/group
+ * itself. The CDK patterns that produce this shape are pervasive:
+ * `role.addToPolicy(...)`, `taskRole.addToPolicy(...)`,
+ * `bucket.grantRead(role)`, `ContainerImage.fromEcrRepository(repo)`'s
+ * execution-role grant, every L2-construct's auto-emitted `Default
+ * Policy*`.
+ *
+ * @param targetPhysicalId  The physicalId of the role/user/group being
+ *                          read (matches values in the sibling's
+ *                          `Properties.Roles` / `Users` / `Groups`).
+ * @param context           Cross-resource context (may be `undefined`
+ *                          for callers that don't supply it — e.g.
+ *                          deploy-time observed-capture before state
+ *                          is complete; the filter then no-ops which
+ *                          is safe because the sibling's
+ *                          `PutRolePolicy` hasn't fired yet at that
+ *                          point).
+ * @param attachmentField   Which sibling field to inspect: `'Roles'`,
+ *                          `'Users'`, or `'Groups'`.
+ * @returns Set of `PolicyName` values to exclude. Empty when no
+ *          sibling matches OR when context is undefined.
+ */
+export function collectInlinePolicyNamesManagedBySiblings(
+  targetPhysicalId: string,
+  context: import('../../types/resource.js').ReadCurrentStateContext | undefined,
+  attachmentField: 'Roles' | 'Users' | 'Groups'
+): Set<string> {
+  const result = new Set<string>();
+  const siblings = context?.siblings;
+  if (!siblings) return result;
+  for (const sibling of Object.values(siblings)) {
+    if (sibling.resourceType !== 'AWS::IAM::Policy') continue;
+    const attachments = sibling.properties[attachmentField];
+    if (!Array.isArray(attachments)) continue;
+    if (!attachments.some((a) => a === targetPhysicalId)) continue;
+    const name = sibling.properties['PolicyName'];
+    if (typeof name === 'string') result.add(name);
+  }
+  return result;
 }

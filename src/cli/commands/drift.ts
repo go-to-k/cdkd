@@ -26,7 +26,7 @@ import { CloudControlProvider } from '../../provisioning/cloud-control-provider.
 import { withStackName } from '../../provisioning/resource-name.js';
 import { applyRoleArnIfSet } from '../../utils/role-arn.js';
 import { withRetry } from '../../deployment/retry.js';
-import type { ResourceProvider } from '../../types/resource.js';
+import type { ReadCurrentStateContext, ResourceProvider } from '../../types/resource.js';
 import type { ResourceState, StackState } from '../../types/state.js';
 
 /**
@@ -54,7 +54,17 @@ type DriftOutcome =
       awsProperties: Record<string, unknown>;
     }
   | { kind: 'clean'; logicalId: string; resourceType: string }
-  | { kind: 'unsupported'; logicalId: string; resourceType: string };
+  | { kind: 'unsupported'; logicalId: string; resourceType: string }
+  /**
+   * `skipped` is reserved for resource types where drift detection is not
+   * conceptually applicable (currently: `Custom::*`). Unlike `unsupported`
+   * (= "provider does not YET implement drift detection — user might want
+   * to know"), `skipped` is silent in the human report so it doesn't
+   * generate noise on every drift run for stacks that contain Custom
+   * Resources (the CDK-built-in `Custom::S3AutoDeleteObjects` helper is
+   * by far the most common case).
+   */
+  | { kind: 'skipped'; logicalId: string; resourceType: string };
 
 /**
  * Aggregated drift report for one stack — what gets printed (or emitted as
@@ -356,6 +366,28 @@ async function runDriftForStack(
       if (providerRegistry.shouldSkipResource(resource.resourceType)) {
         continue;
       }
+
+      // Issue #323: route Custom Resources to 'skipped' (silent) BEFORE
+      // looking up the provider, since the lookup falls through to the
+      // CC API path which would short-circuit them to 'unsupported'
+      // (= "drift unknown" noise in the human report). Custom Resource
+      // drift would require re-invoking the handler Lambda, which is
+      // out of scope for `cdkd drift`. Both Lambda-backed CR types are
+      // covered: `Custom::*` (the user-named form) AND
+      // `AWS::CloudFormation::CustomResource` (what CDK emits for
+      // `new cdk.CustomResource(...)` without an explicit `resourceType`).
+      if (
+        resource.resourceType.startsWith('Custom::') ||
+        resource.resourceType === 'AWS::CloudFormation::CustomResource'
+      ) {
+        outcomes.push({
+          kind: 'skipped',
+          logicalId,
+          resourceType: resource.resourceType,
+        });
+        continue;
+      }
+
       let provider;
       try {
         provider = providerRegistry.getProvider(resource.resourceType);
@@ -389,26 +421,10 @@ async function runDriftForStack(
           resource.physicalId,
           logicalId,
           resource.resourceType,
-          resource.properties ?? {}
+          resource.properties ?? {},
+          buildReadCurrentStateContext(state, logicalId)
         );
       } else {
-        // CloudFormation `Custom::*` resource types cannot be read back via
-        // the CC API at all — `cloudformation:GetResource` rejects them
-        // with `ValidationException` because its `typeName` regex demands
-        // `<A>::<B>::<C>` and Custom resources only have two segments.
-        // Mark as drift-unknown so users with Custom resources in a stack
-        // (typical: `aws-cdk-lib`'s S3 auto-delete-objects helper) don't
-        // get a hard crash on `cdkd drift`. Real drift on a Custom
-        // Resource would require re-invoking its handler Lambda, which
-        // is out of scope for the drift command anyway.
-        if (resource.resourceType.startsWith('Custom::')) {
-          outcomes.push({
-            kind: 'unsupported',
-            logicalId,
-            resourceType: resource.resourceType,
-          });
-          continue;
-        }
         if (CC_API_FALLBACK_DENY_LIST[resource.resourceType]) {
           outcomes.push({
             kind: 'unsupported',
@@ -505,6 +521,29 @@ async function runDriftForStack(
  * paths through plain objects; arrays and scalars surface as a single drift
  * entry on the parent path. So we do not need to parse `[i]` segments.
  */
+/**
+ * Issue #323: build the cross-resource context passed to
+ * `provider.readCurrentState` so IAM Role / User / Group readers can
+ * filter out inline policies managed by a sibling `AWS::IAM::Policy`
+ * resource. `excludedLogicalId` is the resource being read — it's
+ * omitted from the siblings map so a self-reference can never collide.
+ */
+export function buildReadCurrentStateContext(
+  state: StackState,
+  excludedLogicalId: string
+): ReadCurrentStateContext {
+  const siblings: Record<string, { resourceType: string; properties: Record<string, unknown> }> =
+    {};
+  for (const [lid, res] of Object.entries(state.resources ?? {})) {
+    if (lid === excludedLogicalId) continue;
+    siblings[lid] = {
+      resourceType: res.resourceType,
+      properties: res.properties ?? {},
+    };
+  }
+  return { siblings };
+}
+
 function setAtPath(target: Record<string, unknown>, path: string, value: unknown): void {
   if (path.length === 0) {
     return;
@@ -960,6 +999,8 @@ interface StackDriftJson {
   }>;
   clean: Array<{ logicalId: string; type: string }>;
   notSupported: Array<{ logicalId: string; type: string }>;
+  /** Issue #323: Custom Resources (drift not applicable). */
+  skipped: Array<{ logicalId: string; type: string }>;
 }
 
 function writeJsonReport(reports: StackDriftReport[]): void {
@@ -973,7 +1014,10 @@ function writeJsonReport(reports: StackDriftReport[]): void {
     const notSupported = r.outcomes
       .filter((o): o is Extract<DriftOutcome, { kind: 'unsupported' }> => o.kind === 'unsupported')
       .map((o) => ({ logicalId: o.logicalId, type: o.resourceType }));
-    return { stack: r.stackName, region: r.region, drifted, clean, notSupported };
+    const skipped = r.outcomes
+      .filter((o): o is Extract<DriftOutcome, { kind: 'skipped' }> => o.kind === 'skipped')
+      .map((o) => ({ logicalId: o.logicalId, type: o.resourceType }));
+    return { stack: r.stackName, region: r.region, drifted, clean, notSupported, skipped };
   });
   process.stdout.write(`${JSON.stringify(payload, null, 2)}\n`);
 }
@@ -986,12 +1030,19 @@ function writeHumanReport(reports: StackDriftReport[]): void {
     const unsupported = report.outcomes.filter(
       (o): o is Extract<DriftOutcome, { kind: 'unsupported' }> => o.kind === 'unsupported'
     );
-    const total = report.outcomes.length;
+    // Issue #323: `skipped` (currently only `Custom::*`) is intentionally
+    // NOT counted as "checked" — drift on Custom Resources is not
+    // actionable from `cdkd drift` (no read happens). Excluded from the
+    // human-report count so "N resources checked" matches the user's
+    // mental model. Skipped entries are still present in the outcomes
+    // array and surface in `--json` output (as `skipped: [...]`).
+    const skippedCount = report.outcomes.filter((o) => o.kind === 'skipped').length;
+    const checked = report.outcomes.length - skippedCount;
 
     if (drifted.length === 0) {
       process.stdout.write(
         `✓ ${report.stackName} (${report.region}): no drift detected ` +
-          `(${total} resource${total === 1 ? '' : 's'} checked, ${unsupported.length} unsupported)\n`
+          `(${checked} resource${checked === 1 ? '' : 's'} checked, ${unsupported.length} unsupported)\n`
       );
     } else {
       const word = drifted.length === 1 ? 'resource' : 'resources';

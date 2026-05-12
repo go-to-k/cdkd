@@ -258,13 +258,14 @@ export class DeployEngine {
     logicalId: string,
     physicalId: string,
     resourceType: string,
-    resolvedProps: Record<string, unknown>
+    resolvedProps: Record<string, unknown>,
+    context?: import('../types/resource.js').ReadCurrentStateContext
   ): void {
     if (this.options.captureObservedState !== true) return;
     if (!provider.readCurrentState) return;
 
     const promise = provider
-      .readCurrentState(physicalId, logicalId, resourceType, resolvedProps)
+      .readCurrentState(physicalId, logicalId, resourceType, resolvedProps, context)
       .catch((err: unknown) => {
         this.logger.debug(
           `observedProperties capture for ${logicalId} (${resourceType}) failed: ${err instanceof Error ? err.message : String(err)} — drift will fall back to template properties for this resource until the next successful deploy.`
@@ -342,6 +343,26 @@ export class DeployEngine {
     }
     if (candidates.length === 0) return;
 
+    // Issue #323: at the v2→v3 schema-upgrade refresh path, state is
+    // fully loaded from the previous deploy — sibling AWS::IAM::Policy
+    // resources are all present. Pass a cross-resource context so IAM
+    // providers can filter inline policies managed via sibling
+    // resources, otherwise observed.Policies would record the
+    // sibling-managed entries and the next `cdkd drift` would fire
+    // false drift (filtered AWS-current = []) until `cdkd drift
+    // --accept` runs. Build the siblings map once and clone-minus-self
+    // per resource to avoid an O(N²) walk.
+    const allSiblings: Record<
+      string,
+      { resourceType: string; properties: Record<string, unknown> }
+    > = {};
+    for (const [lid, res] of Object.entries(stateResources)) {
+      allSiblings[lid] = {
+        resourceType: res.resourceType,
+        properties: res.properties ?? {},
+      };
+    }
+
     for (const { logicalId, resource } of candidates) {
       // Skip-list / unsupported types: getProvider throws — silently skip
       // (mirrors `cdkd state refresh-observed`'s policy: best-effort,
@@ -353,12 +374,15 @@ export class DeployEngine {
         continue;
       }
       if (!provider.readCurrentState) continue;
+      const siblings = { ...allSiblings };
+      delete siblings[logicalId];
       this.kickOffObservedCapture(
         provider,
         logicalId,
         resource.physicalId,
         resource.resourceType,
-        resource.properties ?? {}
+        resource.properties ?? {},
+        { siblings }
       );
       toRefresh++;
     }
