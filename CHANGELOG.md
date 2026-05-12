@@ -1,3 +1,10 @@
+# [0.93.0](https://github.com/go-to-k/cdkd/compare/v0.92.0...v0.93.0) (2026-05-12)
+
+
+### Features
+
+* **deploy:** pre-flight warning when --no-prefix-user-supplied-names triggers REPLACEMENT ([#304](https://github.com/go-to-k/cdkd/issues/304)) ([2ce2815](https://github.com/go-to-k/cdkd/commit/2ce281501908ebeb3d7cee5507a3971b7f56621a))
+
 # [0.92.0](https://github.com/go-to-k/cdkd/compare/v0.91.5...v0.92.0) (2026-05-12)
 
 
