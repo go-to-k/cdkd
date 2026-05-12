@@ -1,6 +1,4 @@
 import * as cdk from 'aws-cdk-lib';
-import * as apigwv2 from 'aws-cdk-lib/aws-apigatewayv2';
-import * as apigwv2_integ from 'aws-cdk-lib/aws-apigatewayv2-integrations';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
 import * as s3 from 'aws-cdk-lib/aws-s3';
@@ -13,20 +11,16 @@ import { Construct } from 'constructs';
  *
  *   - Single-key importable resources (`AWS::S3::Bucket`,
  *     `AWS::IAM::Role`, `AWS::SNS::Topic`, `AWS::Lambda::Function`).
- *   - Composite-id importable resources via an HTTP API:
- *     `AWS::ApiGatewayV2::Api` (single-key), `AWS::ApiGatewayV2::Stage`
- *     (composite [ApiId, StageName]), `AWS::ApiGatewayV2::Integration`
- *     (composite [ApiId, IntegrationId]), `AWS::ApiGatewayV2::Route`
- *     (composite [ApiId, RouteId]), `AWS::Lambda::Permission` (composite
- *     [FunctionName, Id]). Exercises the per-type splitters in
- *     `COMPOSITE_ID_SPLITTERS` (src/cli/commands/export.ts) including
- *     the narrow-`propertiesOverlay` path (the splitter excludes the
- *     AWS-generated secondary id from Properties to avoid CFn rejecting
- *     the changeset on "unsupported property").
  *   - Custom Resource (`Custom::*`) that goes through the phase-2
  *     CREATE path when --include-non-importable is set. The backing
  *     Lambda is itself imported in phase 1; the CR's onCreate / onUpdate
  *     handler is idempotent (just returns a fixed PhysicalResourceId).
+ *
+ * Composite-id splitters (AWS::ApiGatewayV2::Integration / Route,
+ * AWS::Lambda::Permission) are unit-tested in `tests/unit/cli/export.test.ts`
+ * because adding HttpApi here would block on AWS not supporting
+ * `AWS::ApiGatewayV2::Stage` in IMPORT changesets — a separate, broader
+ * problem tracked in a follow-up issue.
  *
  * Notable design choices:
  *
@@ -158,29 +152,11 @@ export class ExportStack extends cdk.Stack {
       },
     });
 
-    // ── HTTP API (composite-identifier splitter coverage) ───────────
-    // Minimal HttpApi → 1 ApiGwV2::Api (single-key), 1 ApiGwV2::Stage
-    // ($default, composite), 1 ApiGwV2::Integration (composite, narrow
-    // overlay), 1 ApiGwV2::Route (composite, narrow overlay),
-    // 1 Lambda::Permission (composite [FunctionName, Id], narrow overlay).
-    // Reuses the CR handler Lambda as the integration target — keeps
-    // the fixture's resource footprint tight without introducing a second
-    // Lambda just for the route.
-    const httpApi = new apigwv2.HttpApi(this, 'HttpApi', {
-      apiName: `cdkd-export-test-${suffix}`,
-    });
-    httpApi.addRoutes({
-      path: '/echo',
-      methods: [apigwv2.HttpMethod.GET],
-      integration: new apigwv2_integ.HttpLambdaIntegration('EchoIntegration', handler),
-    });
-
     // Outputs exercise the cross-stack-consumer scanner in PR5 (no
     // sibling stack here, so the scan returns empty — exercises the
     // empty-case path).
     new cdk.CfnOutput(this, 'BucketName', { value: bucket.bucketName });
     new cdk.CfnOutput(this, 'TopicArn', { value: topic.topicArn });
-    new cdk.CfnOutput(this, 'HttpApiUrl', { value: httpApi.apiEndpoint });
     // Surfaces the CfnParameter value so the synth template references
     // the parameter (CDK prunes unreferenced Parameters from the output).
     new cdk.CfnOutput(this, 'EnvironmentValue', { value: envParam.valueAsString });

@@ -289,16 +289,16 @@ const COMPOSITE_ID_SPLITTERS: Record<string, CompositeIdSplitter> = {
       propertiesOverlay: { ApiId: apiId },
     };
   },
-  // cdkd stores just `StageName` (apigatewayv2-provider.ts); parent `ApiId`
-  // comes from properties. CFn primary identifier is [ApiId, StageName]. Both
-  // ApiId AND StageName are writable Properties of AWS::ApiGatewayV2::Stage,
-  // so propertiesOverlay can default to the full identifier (no narrowing).
-  'AWS::ApiGatewayV2::Stage': (physicalId, properties) => {
-    const apiId = readStringProperty(properties, 'ApiId', 'AWS::ApiGatewayV2::Stage');
-    return {
-      resourceIdentifier: { ApiId: apiId, StageName: physicalId },
-    };
-  },
+  // NOTE: `AWS::ApiGatewayV2::Stage` is intentionally NOT in this map.
+  // (1) AWS reports its primaryIdentifier as `['/properties/Id']` (single-key),
+  //     so cdkd's single-key resolution path handles it without a splitter.
+  // (2) But AWS CloudFormation does NOT support `AWS::ApiGatewayV2::Stage` in
+  //     IMPORT changesets (CreateChangeSet rejects with "ResourceTypes
+  //     [AWS::ApiGatewayV2::Stage] are not supported for Import"). This means
+  //     `cdkd export` cannot complete on any stack that includes an HttpApi
+  //     (CDK auto-creates a `$default` Stage). Tracked in a follow-up issue
+  //     (link in PR description); the workaround design is open
+  //     (pre-delete + phase-2-CREATE vs hard-block-with-clear-error).
   // cdkd stores just `StatementId` (lambda-permission-provider.ts); parent
   // `FunctionName` comes from properties. CFn primary identifier is
   // [FunctionName, Id] (note: CFn schema calls the field `Id`, not

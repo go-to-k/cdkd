@@ -97,11 +97,13 @@ case "${VARIANT}" in
       echo "[verify] FAIL: dry-run output does not mention any imported resource type"
       exit 1
     fi
-    # Assert composite-id splitters didn't block — Integration / Route /
-    # Permission / Stage should all resolve cleanly via COMPOSITE_ID_SPLITTERS.
-    # The "blocks migration" message only appears when a resource has no
-    # registered splitter; its absence on a stack containing ApiGwV2 +
-    # Lambda::Permission is the regression check for this PR's coverage.
+    # Regression guard for the splitter-coverage class of bugs: this
+    # fixture does not (yet) contain composite-id resources because of
+    # the AWS::ApiGatewayV2::Stage IMPORT limitation (tracked separately),
+    # but if a future fixture extension adds one, the existing
+    # COMPOSITE_ID_SPLITTERS table must cover it. Failing fast here on
+    # any "composite primary identifier" / "block migration" message is
+    # cheaper than waiting for CFn changeset creation to reject.
     if grep -qE 'block migration|composite primary identifier' /tmp/verify-dry-run.log; then
       echo "[verify] FAIL: dry-run reports unresolved composite-id resources"
       echo "[verify] (composite-id splitters in src/cli/commands/export.ts are missing entries)"

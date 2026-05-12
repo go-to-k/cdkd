@@ -277,8 +277,11 @@ describe('hasCompositeIdSplitter', () => {
     expect(hasCompositeIdSplitter('AWS::EC2::VPCGatewayAttachment')).toBe(true);
     expect(hasCompositeIdSplitter('AWS::ApiGatewayV2::Integration')).toBe(true);
     expect(hasCompositeIdSplitter('AWS::ApiGatewayV2::Route')).toBe(true);
-    expect(hasCompositeIdSplitter('AWS::ApiGatewayV2::Stage')).toBe(true);
     expect(hasCompositeIdSplitter('AWS::Lambda::Permission')).toBe(true);
+    // AWS::ApiGatewayV2::Stage: AWS reports single-key (`Id`), so no splitter
+    // is needed AND AWS doesn't support Stage in IMPORT anyway (see export.ts
+    // COMPOSITE_ID_SPLITTERS comment block for the follow-up tracking).
+    expect(hasCompositeIdSplitter('AWS::ApiGatewayV2::Stage')).toBe(false);
   });
 
   it('returns false for single-key types', () => {
@@ -334,18 +337,6 @@ describe('splitCompositePhysicalId', () => {
     ).toEqual({
       resourceIdentifier: { ApiId: 'api-xyz', RouteId: 'route-def456' },
       propertiesOverlay: { ApiId: 'api-xyz' },
-    });
-  });
-
-  it('parses AWS::ApiGatewayV2::Stage with ApiId from properties (full overlay)', () => {
-    // Stage's identifier fields ARE both writable Properties (StageName is
-    // user-declared, ApiId is in synth via Ref). No overlay narrowing needed.
-    expect(
-      splitCompositePhysicalId('AWS::ApiGatewayV2::Stage', '$default', {
-        ApiId: 'api-xyz',
-      })
-    ).toEqual({
-      resourceIdentifier: { ApiId: 'api-xyz', StageName: '$default' },
     });
   });
 
