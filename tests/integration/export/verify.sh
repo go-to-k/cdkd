@@ -97,6 +97,16 @@ case "${VARIANT}" in
       echo "[verify] FAIL: dry-run output does not mention any imported resource type"
       exit 1
     fi
+    # Assert composite-id splitters didn't block — Integration / Route /
+    # Permission / Stage should all resolve cleanly via COMPOSITE_ID_SPLITTERS.
+    # The "blocks migration" message only appears when a resource has no
+    # registered splitter; its absence on a stack containing ApiGwV2 +
+    # Lambda::Permission is the regression check for this PR's coverage.
+    if grep -qE 'block migration|composite primary identifier' /tmp/verify-dry-run.log; then
+      echo "[verify] FAIL: dry-run reports unresolved composite-id resources"
+      echo "[verify] (composite-id splitters in src/cli/commands/export.ts are missing entries)"
+      exit 1
+    fi
     echo "[verify] step 4: verify CFn stack does NOT exist (dry-run)"
     if aws cloudformation describe-stacks --stack-name "${CFN_STACK}" --region "${REGION}" >/dev/null 2>&1; then
       echo "[verify] FAIL: dry-run created a CFn stack — should not happen"

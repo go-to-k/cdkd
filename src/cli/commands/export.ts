@@ -184,29 +184,56 @@ const PRIMARY_IDENTIFIER_FALLBACK: Record<string, string> = {
  * Per-type splitter for composite primary identifiers — CloudFormation
  * resource types whose `primaryIdentifier` has more than one field.
  *
- * Input: cdkd state's `physicalId` for the resource (the value
- * `provider.create()` returned and cdkd persisted).
+ * Inputs:
+ * - `physicalId`: the value `provider.create()` returned and cdkd persisted.
+ * - `properties`: cdkd state's recorded properties for the resource. Some
+ *   sub-resource types (ApiGwV2 Integration / Route, Lambda::Permission)
+ *   only carry the secondary id in `physicalId` and rely on
+ *   `properties[<parentField>]` (e.g. `properties.ApiId`) for the parent
+ *   key. Splitters that don't need this can ignore the arg.
  *
- * Output: the `ResourceIdentifier` object CFn IMPORT expects, keyed by
- * the field names CFn defines in the schema.
+ * Output: `CompositeIdResult` with two maps:
+ * - `resourceIdentifier`: every `primaryIdentifier` field CFn schema declares.
+ *   This is the map sent to CFn's `ResourcesToImport[].ResourceIdentifier`
+ *   and MUST be complete (CFn rejects partial identifiers).
+ * - `propertiesOverlay` (optional): subset of `resourceIdentifier` to write
+ *   into the synth template's `Properties` block. Defaults to the full
+ *   `resourceIdentifier` map (existing behavior for `AWS::ApiGateway::Method`
+ *   / `AWS::ApiGateway::Resource` / `AWS::EC2::VPCGatewayAttachment` whose
+ *   identifier fields ARE all valid Properties). Sub-resource types whose
+ *   primaryIdentifier includes a generated-id field (`IntegrationId` /
+ *   `RouteId` / Lambda::Permission's `Id`) MUST narrow to just the writable
+ *   subset — CFn IMPORT rejects unknown Properties keys, and writing a
+ *   generated-id field that isn't in the type's schema would surface as
+ *   "Encountered unsupported property" at changeset-create time.
  *
  * cdkd's own per-type physicalId format is provider-defined (see
  * `src/provisioning/providers/*.ts` — most composites use `|` as the
- * separator). When the per-type format does NOT match the order CFn
- * expects (e.g. `AWS::EC2::VPCGatewayAttachment` stores `IGW|VpcId` but
- * CFn primaryIdentifier is `[VpcId, InternetGatewayId]`), the splitter
- * reorders explicitly.
+ * separator; sub-resource types store only the secondary id). When the
+ * per-type format does NOT match the order CFn expects (e.g.
+ * `AWS::EC2::VPCGatewayAttachment` stores `IGW|VpcId` but CFn
+ * primaryIdentifier is `[VpcId, InternetGatewayId]`), the splitter reorders
+ * explicitly.
  *
  * Adding a new composite type: identify cdkd's physicalId format in the
  * matching `src/provisioning/providers/*.ts`, look up the CFn primary
- * identifier via `aws cloudformation describe-type` or the resource
- * schema docs, and add an entry below.
+ * identifier via `aws cloudformation describe-type` or the resource schema
+ * docs, decide whether each field is a valid Property, and add an entry below.
  */
-type CompositeIdSplitter = (physicalId: string) => Record<string, string>;
+interface CompositeIdResult {
+  resourceIdentifier: Record<string, string>;
+  propertiesOverlay?: Record<string, string>;
+}
+
+type CompositeIdSplitter = (
+  physicalId: string,
+  properties: Record<string, unknown>
+) => CompositeIdResult;
 
 const COMPOSITE_ID_SPLITTERS: Record<string, CompositeIdSplitter> = {
   // cdkd stores `restApiId|resourceId|httpMethod` (apigateway-provider.ts);
-  // CFn primary identifier is [RestApiId, ResourceId, HttpMethod] — same order.
+  // CFn primary identifier is [RestApiId, ResourceId, HttpMethod] — same
+  // order, and all three are writable Properties of AWS::ApiGateway::Method.
   'AWS::ApiGateway::Method': (id) => {
     const parts = id.split('|');
     if (parts.length !== 3) {
@@ -214,28 +241,94 @@ const COMPOSITE_ID_SPLITTERS: Record<string, CompositeIdSplitter> = {
         `expected 3 parts (restApiId|resourceId|httpMethod), got ${parts.length}: '${id}'`
       );
     }
-    return { RestApiId: parts[0]!, ResourceId: parts[1]!, HttpMethod: parts[2]! };
+    const map = { RestApiId: parts[0]!, ResourceId: parts[1]!, HttpMethod: parts[2]! };
+    return { resourceIdentifier: map };
   },
   // cdkd stores `restApiId|resourceId` (apigateway-provider.ts);
-  // CFn primary identifier is [RestApiId, ResourceId].
+  // CFn primary identifier is [RestApiId, ResourceId] — both are writable
+  // Properties of AWS::ApiGateway::Resource.
   'AWS::ApiGateway::Resource': (id) => {
     const parts = id.split('|');
     if (parts.length !== 2) {
       throw new Error(`expected 2 parts (restApiId|resourceId), got ${parts.length}: '${id}'`);
     }
-    return { RestApiId: parts[0]!, ResourceId: parts[1]! };
+    const map = { RestApiId: parts[0]!, ResourceId: parts[1]! };
+    return { resourceIdentifier: map };
   },
   // cdkd stores `IGW|VpcId` (ec2-provider.ts);
   // CFn primary identifier is [VpcId, InternetGatewayId] — DIFFERENT order
-  // from cdkd. Splitter reorders explicitly.
+  // from cdkd. Splitter reorders explicitly. Both are writable Properties.
   'AWS::EC2::VPCGatewayAttachment': (id) => {
     const parts = id.split('|');
     if (parts.length !== 2) {
       throw new Error(`expected 2 parts (IGW|VpcId), got ${parts.length}: '${id}'`);
     }
-    return { VpcId: parts[1]!, InternetGatewayId: parts[0]! };
+    const map = { VpcId: parts[1]!, InternetGatewayId: parts[0]! };
+    return { resourceIdentifier: map };
+  },
+  // cdkd stores just `IntegrationId` (apigatewayv2-provider.ts); the parent
+  // `ApiId` lives in cdkd state's properties (`properties.ApiId`). CFn primary
+  // identifier is [ApiId, IntegrationId]. ApiId IS a writable Property
+  // (already in synth template via Ref); IntegrationId is AWS-generated and
+  // NOT a Property — exclude it from propertiesOverlay so CFn doesn't reject
+  // an unknown property at changeset-create.
+  'AWS::ApiGatewayV2::Integration': (physicalId, properties) => {
+    const apiId = readStringProperty(properties, 'ApiId', 'AWS::ApiGatewayV2::Integration');
+    return {
+      resourceIdentifier: { ApiId: apiId, IntegrationId: physicalId },
+      propertiesOverlay: { ApiId: apiId },
+    };
+  },
+  // cdkd stores just `RouteId` (apigatewayv2-provider.ts); parent `ApiId`
+  // comes from properties. CFn primary identifier is [ApiId, RouteId]. Same
+  // overlay narrowing as Integration above.
+  'AWS::ApiGatewayV2::Route': (physicalId, properties) => {
+    const apiId = readStringProperty(properties, 'ApiId', 'AWS::ApiGatewayV2::Route');
+    return {
+      resourceIdentifier: { ApiId: apiId, RouteId: physicalId },
+      propertiesOverlay: { ApiId: apiId },
+    };
+  },
+  // cdkd stores just `StageName` (apigatewayv2-provider.ts); parent `ApiId`
+  // comes from properties. CFn primary identifier is [ApiId, StageName]. Both
+  // ApiId AND StageName are writable Properties of AWS::ApiGatewayV2::Stage,
+  // so propertiesOverlay can default to the full identifier (no narrowing).
+  'AWS::ApiGatewayV2::Stage': (physicalId, properties) => {
+    const apiId = readStringProperty(properties, 'ApiId', 'AWS::ApiGatewayV2::Stage');
+    return {
+      resourceIdentifier: { ApiId: apiId, StageName: physicalId },
+    };
+  },
+  // cdkd stores just `StatementId` (lambda-permission-provider.ts); parent
+  // `FunctionName` comes from properties. CFn primary identifier is
+  // [FunctionName, Id] (note: CFn schema calls the field `Id`, not
+  // `StatementId`). FunctionName IS a writable Property; `Id` is NOT a
+  // Property of AWS::Lambda::Permission (it's only returned via GetAtt).
+  // Narrow overlay to FunctionName.
+  'AWS::Lambda::Permission': (physicalId, properties) => {
+    const functionName = readStringProperty(properties, 'FunctionName', 'AWS::Lambda::Permission');
+    return {
+      resourceIdentifier: { FunctionName: functionName, Id: physicalId },
+      propertiesOverlay: { FunctionName: functionName },
+    };
   },
 };
+
+function readStringProperty(
+  properties: Record<string, unknown>,
+  key: string,
+  resourceType: string
+): string {
+  const v = properties[key];
+  if (typeof v !== 'string' || !v) {
+    throw new Error(
+      `cdkd state's properties for ${resourceType} is missing '${key}' (the parent identifier ` +
+        `required to build the CFn ResourceIdentifier map). State entry may be corrupt or written ` +
+        `by an older cdkd binary; re-deploy the resource to refresh state.`
+    );
+  }
+  return v;
+}
 
 /**
  * Returns true if cdkd has a registered splitter for the given type. Used
@@ -248,19 +341,21 @@ export function hasCompositeIdSplitter(resourceType: string): boolean {
 
 /**
  * Exported for unit tests — apply the registered splitter for `resourceType`
- * to `physicalId` and return the resulting `ResourceIdentifier` object.
- * Throws when no splitter is registered (same shape as
- * `resolveResourceIdentifier`'s composite path).
+ * to `physicalId` (with the resource's recorded properties for splitters
+ * that need a parent identifier from state) and return the resulting
+ * `CompositeIdResult`. Throws when no splitter is registered (same shape
+ * as `resolveResourceIdentifier`'s composite path).
  */
 export function splitCompositePhysicalId(
   resourceType: string,
-  physicalId: string
-): Record<string, string> {
+  physicalId: string,
+  properties: Record<string, unknown> = {}
+): CompositeIdResult {
   const splitter = COMPOSITE_ID_SPLITTERS[resourceType];
   if (!splitter) {
     throw new Error(`no composite-id splitter registered for ${resourceType}`);
   }
-  return splitter(physicalId);
+  return splitter(physicalId, properties);
 }
 
 interface ImportPlanEntry {
@@ -273,6 +368,17 @@ interface ImportPlanEntry {
    * have one entry per `primaryIdentifier` field (`{ RestApiId: '...', ResourceId: '...' }`).
    */
   resourceIdentifier: Record<string, string>;
+  /**
+   * Subset of `resourceIdentifier` to also write into the synth template's
+   * `Properties` block (so CFn IMPORT's identifier-match check passes
+   * against the cdkd-prefixed physical id). When omitted, defaults to the
+   * full `resourceIdentifier` map at the overlay site. Sub-resource types
+   * whose primaryIdentifier includes an AWS-generated field (e.g.
+   * `AWS::ApiGatewayV2::Integration.IntegrationId` — not a Property of the
+   * type) narrow this to just the writable subset, so CFn IMPORT doesn't
+   * reject the changeset with "Encountered unsupported property".
+   */
+  propertiesOverlay?: Record<string, string>;
 }
 
 async function exportCommand(stackArg: string | undefined, options: ExportOptions): Promise<void> {
@@ -883,11 +989,12 @@ async function buildImportPlan(
       continue;
     }
 
-    let resourceIdentifier: Record<string, string>;
+    let resolved: CompositeIdResult;
     try {
-      resourceIdentifier = await resolveResourceIdentifier(
+      resolved = await resolveResourceIdentifier(
         resourceType,
         stateEntry.physicalId,
+        stateEntry.properties ?? {},
         cfnClient,
         identifierCache
       );
@@ -906,7 +1013,8 @@ async function buildImportPlan(
       logicalId,
       resourceType,
       physicalId: stateEntry.physicalId,
-      resourceIdentifier,
+      resourceIdentifier: resolved.resourceIdentifier,
+      propertiesOverlay: resolved.propertiesOverlay ?? resolved.resourceIdentifier,
     });
   }
 
@@ -943,9 +1051,10 @@ type PrimaryIdentifierCacheEntry = { fields: string[] };
 async function resolveResourceIdentifier(
   resourceType: string,
   physicalId: string,
+  properties: Record<string, unknown>,
   cfnClient: AwsClients['cloudFormation'],
   cache: Map<string, PrimaryIdentifierCacheEntry>
-): Promise<Record<string, string>> {
+): Promise<CompositeIdResult> {
   let entry = cache.get(resourceType);
   if (entry === undefined) {
     entry = await fetchPrimaryIdentifier(resourceType, cfnClient);
@@ -954,7 +1063,8 @@ async function resolveResourceIdentifier(
 
   if (entry.fields.length === 1) {
     // Single-key path: the physicalId IS the identifier value.
-    return { [entry.fields[0]!]: physicalId };
+    const map = { [entry.fields[0]!]: physicalId };
+    return { resourceIdentifier: map };
   }
 
   // Composite path: consult the per-type splitter.
@@ -969,25 +1079,25 @@ async function resolveResourceIdentifier(
     );
   }
 
-  let split: Record<string, string>;
+  let result: CompositeIdResult;
   try {
-    split = splitter(physicalId);
+    result = splitter(physicalId, properties);
   } catch (err) {
     throw new Error(
       `composite-id splitter for ${resourceType} failed: ` +
         (err instanceof Error ? err.message : String(err))
     );
   }
-  // Sanity check: splitter must produce one entry per declared field.
+  // Sanity check: splitter must produce one resourceIdentifier entry per declared field.
   for (const f of entry.fields) {
-    if (!(f in split)) {
+    if (!(f in result.resourceIdentifier)) {
       throw new Error(
         `composite-id splitter for ${resourceType} did not produce field '${f}' ` +
-          `(produced: ${Object.keys(split).join(', ')})`
+          `(produced: ${Object.keys(result.resourceIdentifier).join(', ')})`
       );
     }
   }
-  return split;
+  return result;
 }
 
 /**
@@ -1237,7 +1347,16 @@ function overlayResourceIdentifierOnProperties(resource: unknown, entry: ImportP
     !Array.isArray(existingProperties)
       ? { ...(existingProperties as Record<string, unknown>) }
       : {};
-  for (const [field, value] of Object.entries(entry.resourceIdentifier)) {
+  // Use propertiesOverlay (subset of resourceIdentifier safe to write into
+  // Properties) — not resourceIdentifier itself. Sub-resource types whose
+  // primaryIdentifier includes a generated-id field (e.g.
+  // AWS::ApiGatewayV2::Integration.IntegrationId) narrow overlay to just the
+  // writable subset; CFn rejects unknown property keys at changeset-create.
+  // When the entry has no explicit overlay map, fall back to the full
+  // resourceIdentifier (matches pre-PR behavior for single-key types and
+  // composites whose identifier fields ARE all valid Properties).
+  const overlay = entry.propertiesOverlay ?? entry.resourceIdentifier;
+  for (const [field, value] of Object.entries(overlay)) {
     properties[field] = value;
   }
   return { ...r, Properties: properties };
