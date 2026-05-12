@@ -1,3 +1,10 @@
+## [0.91.4](https://github.com/go-to-k/cdkd/compare/v0.91.3...v0.91.4) (2026-05-12)
+
+
+### Bug Fixes
+
+* **export:** integ-catch 4 export bugs + cfn-response fixture + IMPORT diagnostics ([#285](https://github.com/go-to-k/cdkd/issues/285)) ([787e885](https://github.com/go-to-k/cdkd/commit/787e88507a1ff8ad63626edd513cc89095bbbcdd))
+
 ## [0.91.3](https://github.com/go-to-k/cdkd/compare/v0.91.2...v0.91.3) (2026-05-12)
 
 
