@@ -53,6 +53,9 @@ import {
   type LogDriver,
   type EFSVolumeConfiguration,
   type AssignPublicIp,
+  type ContainerCondition,
+  type EnvironmentFileType,
+  type UlimitName,
 } from '@aws-sdk/client-ecs';
 import { getLogger } from '../../utils/logger.js';
 import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/error-handler.js';
@@ -939,22 +942,32 @@ export class ECSProvider implements ResourceProvider {
       essential: def['Essential'] as boolean | undefined,
       command: def['Command'] as string[] | undefined,
       entryPoint: def['EntryPoint'] as string[] | undefined,
-      environment: def['Environment'] as KeyValuePair[] | undefined,
-      environmentFiles: def['EnvironmentFiles'] as EnvironmentFile[] | undefined,
-      secrets: def['Secrets'] as Secret[] | undefined,
+      environment: this.convertEnvironment(
+        def['Environment'] as Array<Record<string, unknown>> | undefined
+      ),
+      environmentFiles: this.convertEnvironmentFiles(
+        def['EnvironmentFiles'] as Array<Record<string, unknown>> | undefined
+      ),
+      secrets: this.convertSecrets(def['Secrets'] as Array<Record<string, unknown>> | undefined),
       portMappings: this.convertPortMappings(
         def['PortMappings'] as Array<Record<string, unknown>> | undefined
       ),
-      mountPoints: def['MountPoints'] as MountPoint[] | undefined,
-      volumesFrom: def['VolumesFrom'] as VolumeFrom[] | undefined,
-      dependsOn: def['DependsOn'] as ContainerDependency[] | undefined,
+      mountPoints: this.convertMountPoints(
+        def['MountPoints'] as Array<Record<string, unknown>> | undefined
+      ),
+      volumesFrom: this.convertVolumesFrom(
+        def['VolumesFrom'] as Array<Record<string, unknown>> | undefined
+      ),
+      dependsOn: this.convertDependsOn(
+        def['DependsOn'] as Array<Record<string, unknown>> | undefined
+      ),
       links: def['Links'] as string[] | undefined,
       workingDirectory: def['WorkingDirectory'] as string | undefined,
       disableNetworking: def['DisableNetworking'] as boolean | undefined,
       privileged: def['Privileged'] as boolean | undefined,
       readonlyRootFilesystem: def['ReadonlyRootFilesystem'] as boolean | undefined,
       user: def['User'] as string | undefined,
-      ulimits: def['Ulimits'] as Ulimit[] | undefined,
+      ulimits: this.convertUlimits(def['Ulimits'] as Array<Record<string, unknown>> | undefined),
       logConfiguration: this.convertLogConfiguration(
         def['LogConfiguration'] as Record<string, unknown> | undefined
       ),
@@ -984,6 +997,107 @@ export class ECSProvider implements ResourceProvider {
       protocol: m['Protocol'] as TransportProtocol | undefined,
       appProtocol: m['AppProtocol'] as ApplicationProtocol | undefined,
       name: m['Name'] as string | undefined,
+    }));
+  }
+
+  /**
+   * Convert CFn Environment (KeyValuePair) to ECS SDK format.
+   * CFn template emits `{Name, Value}` (PascalCase); ECS SDK requires
+   * `{name, value}` (camelCase). Pre-fix the cast `as KeyValuePair[]`
+   * silently dropped both fields and AWS rejected RegisterTaskDefinition
+   * with a generic null/empty validation error.
+   */
+  private convertEnvironment(entries?: Array<Record<string, unknown>>): KeyValuePair[] | undefined {
+    if (!entries) return undefined;
+    return entries.map((e) => ({
+      name: e['Name'] as string | undefined,
+      value: e['Value'] as string | undefined,
+    }));
+  }
+
+  /**
+   * Convert CFn EnvironmentFiles (S3-backed env-var files) to ECS SDK format.
+   * CFn: `{Type, Value}` → SDK: `{type, value}`.
+   */
+  private convertEnvironmentFiles(
+    entries?: Array<Record<string, unknown>>
+  ): EnvironmentFile[] | undefined {
+    if (!entries) return undefined;
+    return entries.map((e) => ({
+      type: e['Type'] as EnvironmentFileType | undefined,
+      value: e['Value'] as string | undefined,
+    }));
+  }
+
+  /**
+   * Convert CFn Secrets to ECS SDK format.
+   * CFn: `{Name, ValueFrom}` → SDK: `{name, valueFrom}`.
+   * Same PascalCase→camelCase trap as convertEnvironment — discovered
+   * end-to-end via the local-run-task-from-state integ on 2026-05-12
+   * (issue #291 fixture).
+   */
+  private convertSecrets(entries?: Array<Record<string, unknown>>): Secret[] | undefined {
+    if (!entries) return undefined;
+    return entries.map((e) => ({
+      name: e['Name'] as string | undefined,
+      valueFrom: e['ValueFrom'] as string | undefined,
+    }));
+  }
+
+  /**
+   * Convert CFn MountPoints to ECS SDK format.
+   * CFn: `{SourceVolume, ContainerPath, ReadOnly}` → SDK: `{sourceVolume,
+   * containerPath, readOnly}`.
+   */
+  private convertMountPoints(entries?: Array<Record<string, unknown>>): MountPoint[] | undefined {
+    if (!entries) return undefined;
+    return entries.map((e) => ({
+      sourceVolume: e['SourceVolume'] as string | undefined,
+      containerPath: e['ContainerPath'] as string | undefined,
+      readOnly: e['ReadOnly'] as boolean | undefined,
+    }));
+  }
+
+  /**
+   * Convert CFn VolumesFrom to ECS SDK format.
+   * CFn: `{SourceContainer, ReadOnly}` → SDK: `{sourceContainer, readOnly}`.
+   */
+  private convertVolumesFrom(entries?: Array<Record<string, unknown>>): VolumeFrom[] | undefined {
+    if (!entries) return undefined;
+    return entries.map((e) => ({
+      sourceContainer: e['SourceContainer'] as string | undefined,
+      readOnly: e['ReadOnly'] as boolean | undefined,
+    }));
+  }
+
+  /**
+   * Convert CFn DependsOn to ECS SDK format.
+   * CFn: `{ContainerName, Condition}` → SDK: `{containerName, condition}`.
+   * The pre-existing local-run-task-multi-container integ was relying
+   * on ECS SDK being lenient about the dependsOn key casing on input,
+   * but per the SDK type definition the input is camelCase so this
+   * converter brings the actual wire shape in line with the contract.
+   */
+  private convertDependsOn(
+    entries?: Array<Record<string, unknown>>
+  ): ContainerDependency[] | undefined {
+    if (!entries) return undefined;
+    return entries.map((e) => ({
+      containerName: e['ContainerName'] as string | undefined,
+      condition: e['Condition'] as ContainerCondition | undefined,
+    }));
+  }
+
+  /**
+   * Convert CFn Ulimits to ECS SDK format.
+   * CFn: `{Name, SoftLimit, HardLimit}` → SDK: `{name, softLimit, hardLimit}`.
+   */
+  private convertUlimits(entries?: Array<Record<string, unknown>>): Ulimit[] | undefined {
+    if (!entries) return undefined;
+    return entries.map((e) => ({
+      name: e['Name'] as UlimitName | undefined,
+      softLimit: e['SoftLimit'] as number | undefined,
+      hardLimit: e['HardLimit'] as number | undefined,
     }));
   }
 

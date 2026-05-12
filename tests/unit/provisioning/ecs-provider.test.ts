@@ -186,6 +186,81 @@ describe('ECSProvider', () => {
           })
         ).rejects.toThrow('Failed to create ECS task definition MyTask');
       });
+
+      it('converts ContainerDefinition PascalCase array fields to ECS SDK camelCase', async () => {
+        // Regression guard for the deploy-time AWS rejection caught by
+        // the local-run-task-from-state integ on 2026-05-12: the pre-fix
+        // `secrets: def['Secrets'] as Secret[]` cast left the wire shape
+        // in PascalCase and AWS rejected RegisterTaskDefinition with
+        // "secret.name should not be null or empty". This test asserts
+        // every nested-object array field is rebuilt in camelCase.
+        mockSend.mockResolvedValueOnce({
+          taskDefinition: {
+            taskDefinitionArn:
+              'arn:aws:ecs:us-east-1:123456789012:task-definition/my-task:1',
+          },
+        });
+
+        await provider.create('MyTask', 'AWS::ECS::TaskDefinition', {
+          Family: 'my-task',
+          ContainerDefinitions: [
+            {
+              Name: 'web',
+              Image: 'nginx:latest',
+              Environment: [{ Name: 'FOO', Value: 'bar' }],
+              EnvironmentFiles: [{ Type: 's3', Value: 'arn:aws:s3:::my-bucket/env' }],
+              Secrets: [{ Name: 'DB_PASSWORD', ValueFrom: 'arn:aws:secretsmanager:us-east-1:123:secret:s' }],
+              MountPoints: [{ SourceVolume: 'data', ContainerPath: '/data', ReadOnly: true }],
+              VolumesFrom: [{ SourceContainer: 'sidecar', ReadOnly: false }],
+              DependsOn: [{ ContainerName: 'sidecar', Condition: 'START' }],
+              Ulimits: [{ Name: 'nofile', SoftLimit: 1024, HardLimit: 2048 }],
+            },
+          ],
+          Cpu: '256',
+          Memory: '512',
+        });
+
+        const input = mockSend.mock.calls[0][0].input;
+        const c = input.containerDefinitions[0];
+        expect(c.environment).toEqual([{ name: 'FOO', value: 'bar' }]);
+        expect(c.environmentFiles).toEqual([
+          { type: 's3', value: 'arn:aws:s3:::my-bucket/env' },
+        ]);
+        expect(c.secrets).toEqual([
+          { name: 'DB_PASSWORD', valueFrom: 'arn:aws:secretsmanager:us-east-1:123:secret:s' },
+        ]);
+        expect(c.mountPoints).toEqual([
+          { sourceVolume: 'data', containerPath: '/data', readOnly: true },
+        ]);
+        expect(c.volumesFrom).toEqual([{ sourceContainer: 'sidecar', readOnly: false }]);
+        expect(c.dependsOn).toEqual([{ containerName: 'sidecar', condition: 'START' }]);
+        expect(c.ulimits).toEqual([{ name: 'nofile', softLimit: 1024, hardLimit: 2048 }]);
+      });
+
+      it('passes through undefined ContainerDefinition array fields without crashing', async () => {
+        // Defensive — most container definitions don't set most of these
+        // optional fields; the converter must not blow up on undefined.
+        mockSend.mockResolvedValueOnce({
+          taskDefinition: {
+            taskDefinitionArn:
+              'arn:aws:ecs:us-east-1:123456789012:task-definition/minimal:1',
+          },
+        });
+
+        await provider.create('MinimalTask', 'AWS::ECS::TaskDefinition', {
+          Family: 'minimal',
+          ContainerDefinitions: [{ Name: 'web', Image: 'nginx:latest' }],
+        });
+
+        const c = mockSend.mock.calls[0][0].input.containerDefinitions[0];
+        expect(c.environment).toBeUndefined();
+        expect(c.environmentFiles).toBeUndefined();
+        expect(c.secrets).toBeUndefined();
+        expect(c.mountPoints).toBeUndefined();
+        expect(c.volumesFrom).toBeUndefined();
+        expect(c.dependsOn).toBeUndefined();
+        expect(c.ulimits).toBeUndefined();
+      });
     });
 
     describe('update', () => {
