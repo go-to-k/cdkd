@@ -396,4 +396,131 @@ describe('IAMRoleProvider.readCurrentState', () => {
     expect(result?.Policies).toEqual([]);
     expect(result?.Tags).toEqual([]);
   });
+
+  describe('issue #323: filter inline policies managed by sibling AWS::IAM::Policy', () => {
+    function setupRoleReadMocks(roleName: string, listedPolicyNames: string[]): void {
+      mockSend.mockResolvedValueOnce({
+        Role: {
+          RoleName: roleName,
+          Path: '/',
+          AssumeRolePolicyDocument: encodeURIComponent(JSON.stringify({ V: 1 })),
+        },
+      });
+      mockSend.mockResolvedValueOnce({ AttachedPolicies: [] });
+      mockSend.mockResolvedValueOnce({ PolicyNames: listedPolicyNames, IsTruncated: false });
+      mockSend.mockImplementation((cmd: unknown) => {
+        if (cmd instanceof GetRolePolicyCommand) {
+          const input = (cmd as GetRolePolicyCommand).input;
+          return Promise.resolve({
+            RoleName: roleName,
+            PolicyName: input.PolicyName,
+            PolicyDocument: encodeURIComponent(JSON.stringify({ Doc: input.PolicyName })),
+          });
+        }
+        return Promise.resolve({ Tags: [], IsTruncated: false });
+      });
+    }
+
+    it('excludes inline policies whose name matches a sibling AWS::IAM::Policy resource attached via Roles', async () => {
+      // Reproduces the cdk-sample drift: an iam.Role with no inline
+      // Policies in the synth template, but a separate AWS::IAM::Policy
+      // resource (CDK's auto-generated DefaultPolicy*) attached via
+      // Roles: [role]. AWS-side ListRolePolicies returns the policy
+      // because PutRolePolicy was used to attach it. Without filtering,
+      // drift fires (state.Policies = [] vs aws = [{...DefaultPolicy*}]).
+      setupRoleReadMocks('CdkSampleStack-MyRole', [
+        'MyEcrTaskDefinitionExecutionRoleDefaultPolicy36563E38',
+      ]);
+
+      const result = await provider.readCurrentState(
+        'CdkSampleStack-MyRole',
+        'MyRole',
+        'AWS::IAM::Role',
+        { Policies: [] },
+        {
+          siblings: {
+            MyEcrDefaultPolicy: {
+              resourceType: 'AWS::IAM::Policy',
+              properties: {
+                PolicyName: 'MyEcrTaskDefinitionExecutionRoleDefaultPolicy36563E38',
+                Roles: ['CdkSampleStack-MyRole'],
+              },
+            },
+          },
+        }
+      );
+
+      // The sibling-managed policy is filtered out; state.Policies = [] matches.
+      expect(result?.Policies).toEqual([]);
+    });
+
+    it('keeps inline policies whose name does NOT match any sibling', async () => {
+      // A real inline policy on the Role (declared via iam.Role({inlinePolicies}) )
+      // should pass through — it's NOT managed by a sibling.
+      setupRoleReadMocks('MyRole', ['RealInlinePolicy']);
+
+      const result = await provider.readCurrentState(
+        'MyRole',
+        'MyRole',
+        'AWS::IAM::Role',
+        { Policies: [{ PolicyName: 'RealInlinePolicy', PolicyDocument: { Doc: 'RealInlinePolicy' } }] },
+        {
+          siblings: {
+            // Sibling AWS::IAM::Policy for a DIFFERENT role — should not affect us.
+            UnrelatedPolicy: {
+              resourceType: 'AWS::IAM::Policy',
+              properties: { PolicyName: 'UnrelatedPolicy', Roles: ['OtherRole'] },
+            },
+          },
+        }
+      );
+
+      expect(result?.Policies).toEqual([
+        { PolicyName: 'RealInlinePolicy', PolicyDocument: { Doc: 'RealInlinePolicy' } },
+      ]);
+    });
+
+    it('preserves true console-side ADDs (inline policy not in any sibling) — they still surface as drift', async () => {
+      // AWS has 2 inline policies: one managed by a sibling AWS::IAM::Policy,
+      // one added via console. Only the managed one is filtered; the console
+      // add tail-appends so the array length mismatch surfaces drift.
+      setupRoleReadMocks('MyRole', ['ManagedByPolicy', 'ConsoleAdded']);
+
+      const result = await provider.readCurrentState(
+        'MyRole',
+        'MyRole',
+        'AWS::IAM::Role',
+        { Policies: [] },
+        {
+          siblings: {
+            P: {
+              resourceType: 'AWS::IAM::Policy',
+              properties: { PolicyName: 'ManagedByPolicy', Roles: ['MyRole'] },
+            },
+          },
+        }
+      );
+
+      // ConsoleAdded surfaces as the only inline policy → state.Policies = [] vs
+      // aws = [{ConsoleAdded}] → drift fires (intended).
+      expect(result?.Policies).toEqual([
+        { PolicyName: 'ConsoleAdded', PolicyDocument: { Doc: 'ConsoleAdded' } },
+      ]);
+    });
+
+    it('no-op without context (backward-compatible for callers that do not pass it)', async () => {
+      // deploy-engine's kickOffObservedCapture doesn't pass context (the
+      // sibling Policy resource may not be deployed yet at capture time);
+      // the filter must safely no-op. Same shape as the pre-#323 behavior.
+      setupRoleReadMocks('MyRole', ['SomePolicy']);
+
+      const result = await provider.readCurrentState('MyRole', 'MyRole', 'AWS::IAM::Role', {
+        Policies: [],
+      });
+      // No context → no filtering → AWS-only inline policy tail-appends.
+      expect(result?.Policies).toEqual([
+        { PolicyName: 'SomePolicy', PolicyDocument: { Doc: 'SomePolicy' } },
+      ]);
+    });
+  });
 });

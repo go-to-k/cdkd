@@ -28,6 +28,7 @@ import {
 import { ProviderRegistry } from '../../provisioning/provider-registry.js';
 import { registerAllProviders } from '../../provisioning/register-providers.js';
 import { withStackName } from '../../provisioning/resource-name.js';
+import { buildReadCurrentStateContext } from './drift.js';
 import { runDestroyForStack } from './destroy-runner.js';
 import { createStateMigrateCommand } from './state-migrate.js';
 import type { LockInfo, StackState } from '../../types/state.js';
@@ -1520,7 +1521,13 @@ async function refreshObservedForStack(
             resource.physicalId,
             logicalId,
             resource.resourceType,
-            resource.properties ?? {}
+            resource.properties ?? {},
+            // Issue #323: pass cross-resource context so IAM providers
+            // can filter out inline policies managed by sibling
+            // AWS::IAM::Policy resources. The refreshed observed must
+            // match what `cdkd drift` would see (also passes context),
+            // otherwise post-refresh drift would fire on the offset.
+            buildReadCurrentStateContext(state, logicalId)
           );
           if (observed === undefined) {
             // Provider is registered with readCurrentState but the

@@ -139,6 +139,41 @@ export type { DeleteContext } from '../provisioning/region-check.js';
 import type { DeleteContext } from '../provisioning/region-check.js';
 
 /**
+ * Cross-resource context passed to `ResourceProvider.readCurrentState`
+ * for providers that need to inspect sibling resources in the same
+ * stack to decide what counts as drift.
+ *
+ * Issue #323: `IAMRoleProvider` / `IAMUserGroupProvider`'s
+ * `readCurrentState` call `iam:ListRolePolicies` / `ListUserPolicies` /
+ * `ListGroupPolicies` to surface inline policies. CDK's pattern for
+ * `iam.Policy({ roles: [r] })` (or `users` / `groups`) calls
+ * `iam:PutRolePolicy` under the hood, so those policies show up in the
+ * `List*Policies` output — but they are managed by the sibling
+ * `AWS::IAM::Policy` resource, not the role/user/group itself. Without
+ * filtering them out, every Role/User/Group whose CDK code uses
+ * `addToPolicy` / `grantRead` / `ContainerImage.fromEcrRepository`
+ * fires false drift on every `cdkd drift` run.
+ *
+ * The context carries the same-stack siblings (excluding the resource
+ * being read) so the IAM providers can match `ListRolePolicies` output
+ * against `AWS::IAM::Policy.Properties.PolicyName` + the policy's
+ * `Roles` / `Users` / `Groups` list.
+ *
+ * Most providers ignore the context — only IAM cross-attachment cases
+ * require it.
+ */
+export interface ReadCurrentStateContext {
+  /**
+   * All resources in the same stack EXCEPT the one being read.
+   * Keyed by logicalId. `resourceType` and `properties` come from
+   * cdkd state (`ResourceState`); `properties` may carry intrinsics
+   * unresolved for resources written by older binaries — providers
+   * that consume this should match by literal values only.
+   */
+  siblings?: Record<string, { resourceType: string; properties: Record<string, unknown> }>;
+}
+
+/**
  * Resource provider interface
  */
 export interface ResourceProvider {
@@ -299,6 +334,14 @@ export interface ResourceProvider {
    *                   `FunctionName`, `Roles[]`, etc.) use this to issue
    *                   the right SDK call. Most providers ignore it
    *                   because the physicalId is self-sufficient.
+   * @param context Optional cross-resource context for providers that
+   *                   need to inspect sibling resources in the same
+   *                   stack — see `ReadCurrentStateContext`. Used by
+   *                   `IAMRoleProvider` and `IAMUserGroupProvider` to
+   *                   exclude inline policies that are managed by a
+   *                   separate `AWS::IAM::Policy` resource (attached
+   *                   via `Roles: [role]` / `Users: [u]` / `Groups: [g]`).
+   *                   Most providers ignore it.
    * @returns AWS-current properties scoped to the provider's managed set,
    *          or `undefined` when not implemented
    */
@@ -306,7 +349,8 @@ export interface ResourceProvider {
     physicalId: string,
     logicalId: string,
     resourceType: string,
-    properties?: Record<string, unknown>
+    properties?: Record<string, unknown>,
+    context?: ReadCurrentStateContext
   ): Promise<Record<string, unknown> | undefined>;
 
   /**
