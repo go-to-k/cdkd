@@ -152,7 +152,11 @@ describe('discoverRoutes — REST v1', () => {
     }
   });
 
-  it('rejects unsupported intrinsics in IntegrationUri', () => {
+  it('rejects Fn::Sub against an arbitrary (non-invoke-ARN) template', () => {
+    // Pre-#286-Gap-3 this was the bare-`${Handler.Arn}` example; the new
+    // resolver still rejects it because the template lacks the
+    // `:lambda:path/2015-03-31/functions/` marker that distinguishes a
+    // Lambda-invoke ARN from an arbitrary substitution.
     const stack = buildStack('S', {
       Api: { Type: 'AWS::ApiGateway::RestApi', Properties: {} },
       Method: {
@@ -166,6 +170,56 @@ describe('discoverRoutes — REST v1', () => {
       },
     });
     expect(() => discoverRoutes([stack])).toThrow(RouteDiscoveryError);
+  });
+
+  // Issue #286 Gap 3: hand-written / non-canonical CDK constructs may
+  // emit `Fn::Sub` instead of the `Fn::Join` invoke-ARN wrapper. Both
+  // canonical shapes (1-arg + 2-arg) now resolve to the Lambda logical
+  // ID.
+  it("parses CDK Fn.sub(template) 1-arg invoke-ARN shape", () => {
+    const stack = buildStack('S', {
+      Api: { Type: 'AWS::ApiGateway::RestApi', Properties: {} },
+      Method: {
+        Type: 'AWS::ApiGateway::Method',
+        Properties: {
+          HttpMethod: 'GET',
+          RestApiId: { Ref: 'Api' },
+          ResourceId: { 'Fn::GetAtt': ['Api', 'RootResourceId'] },
+          Integration: {
+            Type: 'AWS_PROXY',
+            Uri: {
+              'Fn::Sub':
+                'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${MyHandler.Arn}/invocations',
+            },
+          },
+        },
+      },
+    });
+    expect(discoverRoutes([stack])[0]?.lambdaLogicalId).toBe('MyHandler');
+  });
+
+  it("parses CDK Fn.sub(template, vars) 2-arg invoke-ARN shape", () => {
+    const stack = buildStack('S', {
+      Api: { Type: 'AWS::ApiGateway::RestApi', Properties: {} },
+      Method: {
+        Type: 'AWS::ApiGateway::Method',
+        Properties: {
+          HttpMethod: 'GET',
+          RestApiId: { Ref: 'Api' },
+          ResourceId: { 'Fn::GetAtt': ['Api', 'RootResourceId'] },
+          Integration: {
+            Type: 'AWS_PROXY',
+            Uri: {
+              'Fn::Sub': [
+                'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${MyLambdaArn}/invocations',
+                { MyLambdaArn: { 'Fn::GetAtt': ['MyHandler', 'Arn'] } },
+              ],
+            },
+          },
+        },
+      },
+    });
+    expect(discoverRoutes([stack])[0]?.lambdaLogicalId).toBe('MyHandler');
   });
 });
 

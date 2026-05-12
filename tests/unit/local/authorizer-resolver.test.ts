@@ -199,6 +199,85 @@ describe('resolveHttpApiAuthorizer', () => {
     });
   });
 
+  // Issue #286 Gap 4: CDK 2.x `HttpLambdaAuthorizer` synthesizes the
+  // same REST v1 invoke-ARN Fn::Join wrapper for AuthorizerUri that
+  // route-discovery already accepts for IntegrationUri (verified via
+  // real `cdk synth` 2026-05-12). The shared resolver now handles it.
+  it('parses REQUEST authorizer with the CDK Fn::Join invoke-ARN AuthorizerUri shape', () => {
+    const stack = buildStack('S', {
+      Auth: {
+        Type: 'AWS::ApiGatewayV2::Authorizer',
+        Properties: {
+          AuthorizerType: 'REQUEST',
+          AuthorizerUri: {
+            'Fn::Join': [
+              '',
+              [
+                'arn:',
+                { Ref: 'AWS::Partition' },
+                ':apigateway:',
+                { Ref: 'AWS::Region' },
+                ':lambda:path/2015-03-31/functions/',
+                { 'Fn::GetAtt': ['MyAuthHandler', 'Arn'] },
+                '/invocations',
+              ],
+            ],
+          },
+          IdentitySource: ['$request.header.Authorization'],
+        },
+      },
+    });
+    const info = resolveHttpApiAuthorizer('Auth', undefined, stack.template, 'S', 'S/Route');
+    expect(info).toMatchObject({
+      kind: 'lambda-request',
+      lambdaLogicalId: 'MyAuthHandler',
+      apiVersion: 'v2',
+    });
+  });
+
+  it('parses REQUEST authorizer with Fn::Sub AuthorizerUri (1-arg invoke-ARN)', () => {
+    const stack = buildStack('S', {
+      Auth: {
+        Type: 'AWS::ApiGatewayV2::Authorizer',
+        Properties: {
+          AuthorizerType: 'REQUEST',
+          AuthorizerUri: {
+            'Fn::Sub':
+              'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${MyAuthHandler.Arn}/invocations',
+          },
+          IdentitySource: ['$request.header.Authorization'],
+        },
+      },
+    });
+    const info = resolveHttpApiAuthorizer('Auth', undefined, stack.template, 'S', 'S/Route');
+    expect((info as { lambdaLogicalId: string }).lambdaLogicalId).toBe('MyAuthHandler');
+  });
+
+  it('rejects AuthorizerUri Fn::Join that is not an invoke-ARN wrapper', () => {
+    // Same Fn::Join shape but the parts don't contain the
+    // `:lambda:path/2015-03-31/functions/` marker — the resolver must
+    // not silently pick a random GetAtt out of a structurally similar
+    // but unrelated Fn::Join.
+    const stack = buildStack('S', {
+      Auth: {
+        Type: 'AWS::ApiGatewayV2::Authorizer',
+        Properties: {
+          AuthorizerType: 'REQUEST',
+          AuthorizerUri: {
+            'Fn::Join': [
+              '/',
+              ['prefix', { 'Fn::GetAtt': ['SomeOther', 'Arn'] }, 'suffix'],
+            ],
+          },
+          IdentitySource: ['$request.header.Authorization'],
+        },
+      },
+    });
+    expect(() =>
+      resolveHttpApiAuthorizer('Auth', undefined, stack.template, 'S', 'S/Route')
+    ).toThrow(RouteDiscoveryError);
+  });
+
   it('parses JWT authorizer + extracts Cognito region/userPoolId from issuer', () => {
     const stack = buildStack('S', {
       Auth: {

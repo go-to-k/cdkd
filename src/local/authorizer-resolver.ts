@@ -1,6 +1,7 @@
 import type { StackInfo } from '../synthesis/assembly-reader.js';
 import type { CloudFormationTemplate, TemplateResource } from '../types/resource.js';
 import { RouteDiscoveryError } from '../utils/error-handler.js';
+import { resolveLambdaArnIntrinsic as resolveLambdaArnShared } from './intrinsic-lambda-arn.js';
 
 /**
  * Authorizer detection for `cdkd local start-api` (PR 8b of #224).
@@ -292,51 +293,20 @@ export function resolveHttpApiAuthorizer(
 }
 
 /**
- * Resolve a Lambda ARN intrinsic to its logical ID. Only the shapes CDK
- * actually emits for Lambda-backed authorizers are accepted — anything
- * exotic hard-errors (mirrors the route-discovery resolver).
+ * Resolve a Lambda ARN intrinsic to its logical ID. Delegates to the
+ * shared `resolveLambdaArnIntrinsic` in `intrinsic-lambda-arn.ts`
+ * (extracted in issue #286 Gaps 3 / 4); accepts `Ref` /
+ * `Fn::GetAtt: [..., 'Arn']` / the REST v1 invoke-ARN `Fn::Join` wrapper
+ * (now also used by CDK 2.x's `HttpLambdaAuthorizer` for HTTP API v2 —
+ * verified via real `cdk synth` 2026-05-12) / the `Fn::Sub` invoke-ARN
+ * wrapper (both 1-arg and 2-arg forms). Any other shape hard-errors with
+ * the offending route + raw intrinsic named.
  */
 function resolveLambdaArn(value: unknown, location: string): string {
-  if (value && typeof value === 'object' && !Array.isArray(value)) {
-    const obj = value as Record<string, unknown>;
-    if ('Ref' in obj && typeof obj['Ref'] === 'string') return obj['Ref'];
-    if ('Fn::GetAtt' in obj) {
-      const arg = obj['Fn::GetAtt'];
-      if (
-        Array.isArray(arg) &&
-        arg.length === 2 &&
-        typeof arg[0] === 'string' &&
-        arg[1] === 'Arn'
-      ) {
-        return arg[0];
-      }
-    }
-    if ('Fn::Join' in obj) {
-      const join = obj['Fn::Join'];
-      if (Array.isArray(join) && join.length === 2 && Array.isArray(join[1])) {
-        const parts = join[1] as unknown[];
-        const literal = parts.filter((p): p is string => typeof p === 'string').join('');
-        if (literal.includes(':lambda:path/2015-03-31/functions/')) {
-          for (const p of parts) {
-            if (p && typeof p === 'object' && !Array.isArray(p)) {
-              const inner = p as Record<string, unknown>;
-              const arg = inner['Fn::GetAtt'];
-              if (
-                Array.isArray(arg) &&
-                arg.length === 2 &&
-                typeof arg[0] === 'string' &&
-                arg[1] === 'Arn'
-              ) {
-                return arg[0];
-              }
-            }
-          }
-        }
-      }
-    }
-  }
+  const outcome = resolveLambdaArnShared(value);
+  if (outcome.kind === 'resolved') return outcome.logicalId;
   throw new RouteDiscoveryError(
-    `${location}: only { Ref }, { Fn::GetAtt: [..., 'Arn'] }, or the REST v1 invoke-ARN Fn::Join wrapper are supported (got ${shortJson(value)}).`
+    `${location}: ${outcome.detail} (got ${shortJson(value)}). Only { Ref }, { Fn::GetAtt: [..., 'Arn'] }, the REST v1 invoke-ARN Fn::Join wrapper, and the Fn::Sub invoke-ARN wrapper are supported.`
   );
 }
 

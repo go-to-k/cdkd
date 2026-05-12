@@ -1,6 +1,7 @@
 import type { StackInfo } from '../synthesis/assembly-reader.js';
 import type { CloudFormationTemplate, TemplateResource } from '../types/resource.js';
 import { RouteDiscoveryError } from '../utils/error-handler.js';
+import { resolveLambdaArnIntrinsic as resolveLambdaArnShared } from './intrinsic-lambda-arn.js';
 
 /**
  * One discovered API → Lambda route for `cdkd local start-api`.
@@ -447,20 +448,20 @@ function discoverFunctionUrl(
 
 /**
  * Local intrinsic resolver for `IntegrationUri` (and the equivalent
- * `Uri` field on REST v1 Method.Integration). Handles ONLY the shapes
- * CDK actually emits for AWS_PROXY Lambda integrations:
+ * `Uri` field on REST v1 Method.Integration). Delegates to the shared
+ * `resolveLambdaArnIntrinsic` in `intrinsic-lambda-arn.ts` (extracted in
+ * issue #286 Gaps 3 / 4); see that module's docstring for the full
+ * shape list — `Ref` / `Fn::GetAtt: [..., 'Arn']` / the REST v1
+ * invoke-ARN `Fn::Join` wrapper / the `Fn::Sub` invoke-ARN wrapper (both
+ * 1-arg and 2-arg forms).
  *
- *   1. `{ Ref: <LambdaLogicalId> }` — rare, but accepted.
- *   2. `{ 'Fn::GetAtt': [<LambdaLogicalId>, 'Arn'] }` — common HTTP API
- *      shape.
- *   3. **REST v1 invoke ARN wrap**: `{ 'Fn::Join': ['', ['arn:', { Ref:
- *      'AWS::Partition' }, ':apigateway:', { Ref: 'AWS::Region' },
- *      ':lambda:path/2015-03-31/functions/', { 'Fn::GetAtt':
- *      [<LambdaLogicalId>, 'Arn'] }, '/invocations']] }` — the only
- *      shape `apigateway.LambdaIntegration({proxy: true})` synthesizes.
- *
- * Any other intrinsic (`Fn::Sub` against an arbitrary template, etc.)
- * hard-errors with the offending route + raw intrinsic named.
+ * Any other shape hard-errors with the offending route + raw intrinsic
+ * named, preserving the pre-extraction error message intent ("requires
+ * deploy-state and is not supported in cdkd local start-api"). The
+ * shared helper returns a discriminated union so the caller wraps the
+ * unsupported case with its own error class; this site uses bare `Error`
+ * so the top-level catch in `discoverRoutes` re-wraps it as
+ * `RouteDiscoveryError` along with sibling errors.
  *
  * **Why we don't reuse `src/deployment/intrinsic-function-resolver.ts`**:
  * that resolver is deploy-state-coupled — it pulls in STS / EC2 / Secrets
@@ -469,62 +470,12 @@ function discoverFunctionUrl(
  * and doesn't have any of that.
  */
 function resolveLambdaArnIntrinsic(value: unknown, location: string): string {
-  if (value && typeof value === 'object' && !Array.isArray(value)) {
-    const obj = value as Record<string, unknown>;
-
-    if ('Ref' in obj && typeof obj['Ref'] === 'string') {
-      return obj['Ref'];
-    }
-
-    if ('Fn::GetAtt' in obj) {
-      const arg = obj['Fn::GetAtt'];
-      if (
-        Array.isArray(arg) &&
-        arg.length === 2 &&
-        typeof arg[0] === 'string' &&
-        arg[1] === 'Arn'
-      ) {
-        return arg[0];
-      }
-    }
-
-    // REST v1 invoke-ARN wrapping (case 3 above). CDK's
-    // `LambdaIntegration({ proxy: true })` always emits this exact shape;
-    // we walk the array looking for the embedded `Fn::GetAtt: [..., 'Arn']`
-    // entry and pluck the logical ID out of it.
-    if ('Fn::Join' in obj) {
-      const join = obj['Fn::Join'];
-      if (Array.isArray(join) && join.length === 2 && Array.isArray(join[1])) {
-        // The first element is the separator; the second is the parts list.
-        // `parts.join('')` should look like the invoke-ARN template; we
-        // verify by looking for the literal `:lambda:path/2015-03-31/`
-        // marker in any string entry, then pluck the GetAtt logical ID.
-        const parts = join[1] as unknown[];
-        const literalParts = parts.filter((p): p is string => typeof p === 'string').join('');
-        if (literalParts.includes(':lambda:path/2015-03-31/functions/')) {
-          for (const p of parts) {
-            if (p && typeof p === 'object' && !Array.isArray(p)) {
-              const inner = p as Record<string, unknown>;
-              const arg = inner['Fn::GetAtt'];
-              if (
-                Array.isArray(arg) &&
-                arg.length === 2 &&
-                typeof arg[0] === 'string' &&
-                arg[1] === 'Arn'
-              ) {
-                return arg[0];
-              }
-            }
-          }
-        }
-      }
-    }
-  }
-
+  const outcome = resolveLambdaArnShared(value);
+  if (outcome.kind === 'resolved') return outcome.logicalId;
   throw new Error(
-    `${location}: only { Ref: <LambdaLogicalId> }, { 'Fn::GetAtt': [<LambdaLogicalId>, 'Arn'] }, or the REST v1 invoke-ARN Fn::Join wrapper are supported (got ${shortJson(
+    `${location}: ${outcome.detail} (got ${shortJson(
       value
-    )}). Other intrinsics (Fn::Sub against arbitrary templates, etc.) require deploy-state and are not supported in cdkd local start-api.`
+    )}). Only { Ref: <LambdaLogicalId> }, { 'Fn::GetAtt': [<LambdaLogicalId>, 'Arn'] }, the REST v1 invoke-ARN Fn::Join wrapper, and the Fn::Sub invoke-ARN wrapper are supported. Other intrinsics (Fn::Sub against arbitrary templates, etc.) require deploy-state and are not supported in cdkd local start-api.`
   );
 }
 
