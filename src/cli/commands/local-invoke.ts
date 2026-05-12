@@ -28,7 +28,9 @@ import { resolveEnvVars, type EnvOverrideFile } from '../../local/env-resolver.j
 import {
   substituteEnvVarsFromState,
   type StateEnvSubstitutionAudit,
+  type SubstitutionContext,
 } from '../../local/state-resolver.js';
+import { derivePartitionAndUrlSuffix } from '../../local/ecs-task-resolver.js';
 import {
   resolveRuntimeCodeMountPath,
   resolveRuntimeFileExtension,
@@ -257,6 +259,17 @@ async function localInvokeCommand(target: string, options: LocalInvokeOptions): 
     // PR 1 behavior — drop intrinsic vars and continue) rather than hard
     // errors, so a missing / corrupt state file doesn't abort an invoke
     // that the user wanted to run with `--env-vars` overrides anyway.
+    //
+    // PR #294 follow-up (issue #293): when `--from-state` is set AND the
+    // function's template env contains any intrinsic value, build a
+    // `SubstitutionContext` carrying both the deployed `resources` map
+    // AND a `pseudoParameters` bag so `Fn::Join` / `Fn::Sub` bodies that
+    // splice `${AWS::AccountId}` / `${AWS::Region}` / `${AWS::Partition}` /
+    // `${AWS::URLSuffix}` resolve cleanly. The pseudo bag is sourced from
+    // the resolved region (`--region` > AWS_REGION > AWS_DEFAULT_REGION >
+    // synth-derived stack region) + a single `sts:GetCallerIdentity` call.
+    // Mirrors the ECS run-task implementation so both `cdkd local *
+    // --from-state` paths share semantics.
     let stateAudit: StateEnvSubstitutionAudit | undefined;
     let templateEnv = getTemplateEnv(lambda.resource);
     let stateForRoleHint: StackState | undefined;
@@ -270,7 +283,12 @@ async function localInvokeCommand(target: string, options: LocalInvokeOptions): 
       });
       if (loaded) {
         stateForRoleHint = loaded.state;
-        const { env, audit } = substituteEnvVarsFromState(templateEnv, loaded.state.resources);
+        const subContext: SubstitutionContext = { resources: loaded.state.resources };
+        if (envHasIntrinsicValue(templateEnv)) {
+          const pseudo = await resolvePseudoParametersForInvoke(lambda.stack.region, options);
+          if (pseudo) subContext.pseudoParameters = pseudo;
+        }
+        const { env, audit } = substituteEnvVarsFromState(templateEnv, subContext);
         templateEnv = env;
         stateAudit = audit;
         for (const key of audit.resolvedKeys) {
@@ -715,6 +733,81 @@ async function resolveLocalBuildPlan(
   const entry = getDockerImageBySourceHash(manifest, lambda.imageUri);
   if (!entry) return undefined;
   return { asset: entry.asset, cdkOutDir };
+}
+
+/**
+ * Returns true when any value in the function's template env map is a
+ * CFn intrinsic (non-primitive). Used to gate the `sts:GetCallerIdentity`
+ * call inside the `--from-state` flow: literal-only env maps don't need
+ * the pseudo-parameter bag and shouldn't pay for an STS hop. Mirrors the
+ * ECS `containerHasIntrinsicEnvOrSecret` gating in `ecs-task-resolver.ts`.
+ */
+export function envHasIntrinsicValue(templateEnv: Record<string, unknown> | undefined): boolean {
+  if (!templateEnv) return false;
+  for (const v of Object.values(templateEnv)) {
+    if (v === undefined || v === null) continue;
+    if (typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean') continue;
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Build the AWS pseudo-parameter bag for `--from-state` env-var
+ * substitution. Issues a single `sts:GetCallerIdentity` for the account
+ * id and derives `partition` / `urlSuffix` from the resolved region. Any
+ * failure is reduced to a warn — the bag is best-effort and an empty
+ * bag still works for env vars that only reference real logical IDs.
+ *
+ * Region precedence (mirrors `local-run-task`): `--region` > `AWS_REGION`
+ * > `AWS_DEFAULT_REGION` > the synth-derived stack region.
+ */
+async function resolvePseudoParametersForInvoke(
+  stackRegion: string | undefined,
+  options: LocalInvokeOptions
+): Promise<
+  { accountId?: string; region?: string; partition?: string; urlSuffix?: string } | undefined
+> {
+  const logger = getLogger();
+  const region =
+    options.region ?? process.env['AWS_REGION'] ?? process.env['AWS_DEFAULT_REGION'] ?? stackRegion;
+  if (!region) {
+    logger.warn(
+      '--from-state: resolver references ${AWS::Region} but cdkd could not determine the target region. ' +
+        'Pass --region, set AWS_REGION, or declare env.region on the CDK stack.'
+    );
+  }
+  let accountId: string | undefined;
+  try {
+    const { STSClient, GetCallerIdentityCommand } = await import('@aws-sdk/client-sts');
+    const sts = new STSClient({ ...(region && { region }) });
+    try {
+      const identity = await sts.send(new GetCallerIdentityCommand({}));
+      accountId = identity.Account;
+    } finally {
+      sts.destroy();
+    }
+  } catch (err) {
+    logger.warn(
+      `--from-state: resolver needs \${AWS::AccountId} but STS GetCallerIdentity failed: ${err instanceof Error ? err.message : String(err)}. ` +
+        'Substitution will be skipped; affected env entries will be dropped with per-key warnings.'
+    );
+  }
+  const partitionAndSuffix = region ? derivePartitionAndUrlSuffix(region) : undefined;
+  const bag: {
+    accountId?: string;
+    region?: string;
+    partition?: string;
+    urlSuffix?: string;
+  } = {
+    ...(accountId !== undefined && { accountId }),
+    ...(region !== undefined && { region }),
+    ...(partitionAndSuffix && {
+      partition: partitionAndSuffix.partition,
+      urlSuffix: partitionAndSuffix.urlSuffix,
+    }),
+  };
+  return Object.keys(bag).length === 0 ? undefined : bag;
 }
 
 /**
