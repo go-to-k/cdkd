@@ -475,13 +475,7 @@ async function importCommand(stackArg: string | undefined, options: ImportOption
       // and left as-is rather than aborting the whole import. The
       // eventual destroy failure on the un-resolved props is narrower
       // than blowing up the entire adoption flow.
-      await resolveImportedProperties(
-        stackState,
-        template,
-        targetRegion,
-        stateBackend,
-        logger
-      );
+      await resolveImportedProperties(stackState, template, targetRegion, stateBackend, logger);
 
       // Populate observedProperties for the freshly-imported resources so
       // the very first `cdkd drift` run after import has a real baseline
@@ -910,10 +904,10 @@ async function resolveImportedProperties(
 
   for (const [logicalId, resource] of entries) {
     try {
-      const resolved = (await resolver.resolve(
-        resource.properties ?? {},
-        baseContext
-      )) as Record<string, unknown>;
+      const resolved = (await resolver.resolve(resource.properties ?? {}, baseContext)) as Record<
+        string,
+        unknown
+      >;
       resource.properties = resolved;
     } catch (err) {
       // Intrinsic referenced a resource not in the importable set
