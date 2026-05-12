@@ -449,7 +449,17 @@ export interface RecreateBeforePhase2Entry {
  * sibling ApiGwV2 type has `[create, delete, list, read, update]`).
  */
 const IMPORT_UNSUPPORTED_RECREATABLE_TYPES: ReadonlySet<string> = new Set([
+  // AWS::ApiGatewayV2::Stage — `handlers: []`. HttpApi auto-emits `$default`.
   'AWS::ApiGatewayV2::Stage',
+  // AWS::IAM::Policy — `handlers: ['create', 'delete', 'update']` (no `read`/
+  // `list`). Inline policies attached to roles / users / groups don't have a
+  // first-class AWS resource id, so CFn IMPORT can't look them up. cdkd's
+  // own IAMPolicyProvider issues `iam:PutRolePolicy` / `PutUserPolicy` /
+  // `PutGroupPolicy` per attachment target; CFn phase-2 CREATE uses the
+  // exact same APIs, so pre-delete + phase-2-CREATE round-trips cleanly.
+  // CDK auto-emits this type for L2 grants (ECS Task Execution Role
+  // ECR pull policy, Lambda execution role inline policies, etc.).
+  'AWS::IAM::Policy',
 ]);
 
 /**
@@ -502,6 +512,78 @@ const PRE_DELETE_HANDLERS: Record<string, PreDeleteHandler> = {
         return;
       }
       throw err;
+    }
+  },
+  'AWS::IAM::Policy': async (entry) => {
+    // Mirrors IAMPolicyProvider.delete (src/provisioning/providers/
+    // iam-policy-provider.ts): inline policy attachments are stored per-
+    // target via PutRolePolicy/PutUserPolicy/PutGroupPolicy, so deletion
+    // is per-target too. State carries Roles/Users/Groups arrays
+    // capturing the attachment set at deploy time.
+    const {
+      IAMClient,
+      DeleteRolePolicyCommand,
+      DeleteUserPolicyCommand,
+      DeleteGroupPolicyCommand,
+      NoSuchEntityException,
+    } = await import('@aws-sdk/client-iam');
+
+    // physicalId is either the bare policy name (SDK provider format) or
+    // legacy `policyName:roleName` (CC API pre-SDK-provider state). The
+    // SDK provider's own delete normalizes via the same split; mirror it
+    // so pre-v0.74-ish state still produces the correct policy name.
+    const policyName = entry.physicalId.includes(':')
+      ? entry.physicalId.split(':')[0]
+      : entry.physicalId;
+    if (!policyName) {
+      throw new Error(
+        `cdkd state's physicalId for ${entry.logicalId} (${entry.resourceType}) is empty / invalid`
+      );
+    }
+
+    const roles = entry.properties['Roles'] as string[] | undefined;
+    const users = entry.properties['Users'] as string[] | undefined;
+    const groups = entry.properties['Groups'] as string[] | undefined;
+    const hasAttachment = (roles?.length ?? 0) + (users?.length ?? 0) + (groups?.length ?? 0) > 0;
+    if (!hasAttachment) {
+      throw new Error(
+        `cdkd state's properties for ${entry.logicalId} (${entry.resourceType}) has no ` +
+          `Roles/Users/Groups attachment recorded — cannot pre-delete the inline policy. ` +
+          `State may be from a pre-v0.74 cdkd binary; re-run \`cdkd state refresh-observed\` ` +
+          `before export.`
+      );
+    }
+
+    const client = new IAMClient({});
+
+    // Each per-target send is idempotent on NoSuchEntityException
+    // (matches IAMPolicyProvider.delete; covers partial-retry safety
+    // after a previous pre-delete attempt succeeded for some targets).
+    // Other errors propagate so phase 2 doesn't proceed against a
+    // policy still attached to AWS.
+    const deleteSafely = async (op: () => Promise<unknown>): Promise<void> => {
+      try {
+        await op();
+      } catch (err) {
+        if (err instanceof NoSuchEntityException) return;
+        throw err;
+      }
+    };
+
+    for (const roleName of roles ?? []) {
+      await deleteSafely(() =>
+        client.send(new DeleteRolePolicyCommand({ RoleName: roleName, PolicyName: policyName }))
+      );
+    }
+    for (const userName of users ?? []) {
+      await deleteSafely(() =>
+        client.send(new DeleteUserPolicyCommand({ UserName: userName, PolicyName: policyName }))
+      );
+    }
+    for (const groupName of groups ?? []) {
+      await deleteSafely(() =>
+        client.send(new DeleteGroupPolicyCommand({ GroupName: groupName, PolicyName: policyName }))
+      );
     }
   },
 };
@@ -748,9 +830,11 @@ async function exportCommand(stackArg: string | undefined, options: ExportOption
           logger.info(`  ${r.logicalId} (${r.resourceType}) — physicalId: ${r.physicalId}`);
         }
         logger.info(
-          '  Brief unavailability window (~10s for Stage; HttpApi endpoint URL is ' +
-            'unchanged because it embeds ApiId, not StageName). Pass ' +
-            '--no-recreate-import-unsupported to block instead.'
+          '  Brief unavailability window per type (~10s for Stage; HttpApi endpoint URL ' +
+            'is unchanged because it embeds ApiId, not StageName. IAM::Policy: the inline ' +
+            'policy attachment is dropped from each Role/User/Group between phases — any ' +
+            'in-flight AWS API call that depends on the granted permission will fail until ' +
+            'CFn re-CREATEs in phase 2). Pass --no-recreate-import-unsupported to block instead.'
         );
         logger.info('');
       }
