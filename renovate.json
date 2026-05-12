@@ -7,13 +7,13 @@
   "prConcurrentLimit": 10,
   "packageRules": [
     {
-      "matchPackagePatterns": ["^@aws-sdk/"],
+      "matchPackageNames": ["/^@aws-sdk//"],
       "matchUpdateTypes": ["minor", "patch"],
       "groupName": "aws-sdk",
       "automerge": true
     },
     {
-      "matchPackagePatterns": ["^@aws-sdk/"],
+      "matchPackageNames": ["/^@aws-sdk//"],
       "matchUpdateTypes": ["major"],
       "groupName": "aws-sdk (major)",
       "dependencyDashboardApproval": true
@@ -21,20 +21,20 @@
     {
       "matchDepTypes": ["devDependencies"],
       "matchUpdateTypes": ["minor", "patch"],
-      "excludePackagePatterns": ["^@aws-sdk/"],
+      "matchPackageNames": ["!/^@aws-sdk//"],
       "groupName": "dev-dependencies",
       "automerge": true
     },
     {
       "matchDepTypes": ["dependencies"],
       "matchUpdateTypes": ["minor", "patch"],
-      "excludePackagePatterns": ["^@aws-sdk/"],
+      "matchPackageNames": ["!/^@aws-sdk//"],
       "groupName": "runtime-dependencies",
       "automerge": true
     },
     {
       "matchUpdateTypes": ["major"],
-      "excludePackagePatterns": ["^@aws-sdk/"],
+      "matchPackageNames": ["!/^@aws-sdk//"],
       "dependencyDashboardApproval": true
     },
     {
