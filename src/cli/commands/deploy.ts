@@ -27,9 +27,11 @@ import { WorkGraph } from '../../deployment/work-graph.js';
 import { setAwsClients, AwsClients } from '../../utils/aws-clients.js';
 import { applyRoleArnIfSet } from '../../utils/role-arn.js';
 import { runStackBuffered } from '../../utils/stack-context.js';
+import { withSkipPrefix } from '../../provisioning/resource-name.js';
 import {
   resolveApp,
   resolveCaptureObservedState,
+  resolveSkipPrefix,
   resolveStateBucketWithDefault,
 } from '../config-loader.js';
 import { matchStacks, describeStack } from '../stack-matcher.js';
@@ -58,6 +60,7 @@ async function deployCommand(
     rollback: boolean;
     wait: boolean;
     captureObservedState: boolean;
+    prefixUserSuppliedNames: boolean;
     aggressiveVpcParallel: boolean;
     exclusively: boolean;
     yes: boolean;
@@ -95,6 +98,21 @@ async function deployCommand(
   // Skip waiting for async resources (CloudFront, RDS, ElastiCache, etc.)
   if (!options.wait) {
     process.env['CDKD_NO_WAIT'] = 'true';
+  }
+
+  // Resolve the --no-prefix-user-supplied-names flag once at command
+  // start. The resolved boolean is plumbed into a `withSkipPrefix(...)`
+  // scope around each stack's deploy so every per-resource
+  // `generateResourceName(...)` call inside picks up the flag via
+  // AsyncLocalStorage — no need to thread it through the
+  // DeployEngine / ProviderRegistry / per-provider call signatures.
+  const skipPrefix = resolveSkipPrefix(options.prefixUserSuppliedNames);
+  if (skipPrefix) {
+    logger.debug(
+      'Skipping stack-name prefix on user-supplied physical names ' +
+        '(--no-prefix-user-supplied-names / CDKD_NO_PREFIX_USER_SUPPLIED_NAMES / ' +
+        'cdk.json context.cdkd.noPrefixUserSuppliedNames)'
+    );
   }
 
   // Resolve --app from CLI, env, or cdk.json
@@ -307,6 +325,16 @@ async function deployCommand(
     const bufferStackOutput = targetStacks.length > 1;
 
     const runStack = async (stackInfo: (typeof targetStacks)[0]): Promise<void> => {
+      // Wrap the entire per-stack deploy body in withSkipPrefix so every
+      // `generateResourceName(name, { userSupplied: true })` call inside
+      // the provider chain sees the resolved flag via AsyncLocalStorage.
+      // The inner `withStackName(...)` lives in DeployEngine.deploy; the
+      // two stores are independent so order does not matter, but
+      // outer-skipPrefix / inner-stackName keeps the call-site readable.
+      return withSkipPrefix(skipPrefix, () => runStackInner(stackInfo));
+    };
+
+    const runStackInner = async (stackInfo: (typeof targetStacks)[0]): Promise<void> => {
       const stackRegion = stackInfo.region || baseRegion;
 
       logger.info(

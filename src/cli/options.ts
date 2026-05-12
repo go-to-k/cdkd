@@ -559,6 +559,17 @@ export const deployOptions = [
       'rich drift detection — falls back to comparing against template ' +
       'properties (the pre-v3 behavior).'
   ),
+  new Option(
+    '--no-prefix-user-supplied-names',
+    'Do NOT prepend the stack name to physical names the user explicitly ' +
+      'supplied in their CDK code (e.g. `new iam.Role(this, "X", { roleName: ' +
+      '"my-role" })` → AWS resource named `my-role` instead of `MyStack-my-role`). ' +
+      'Auto-generated-name resources (where the user did not declare a physical ' +
+      'name) keep the prefix unchanged. Off by default for backward compatibility; ' +
+      'enable via this flag, CDKD_NO_PREFIX_USER_SUPPLIED_NAMES=true, or ' +
+      'cdk.json context.cdkd.noPrefixUserSuppliedNames=true. Applies to ' +
+      '`cdkd deploy` only.'
+  ),
   noWaitOption,
   aggressiveVpcParallelOption,
   new Option(

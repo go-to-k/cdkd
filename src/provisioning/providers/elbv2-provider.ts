@@ -32,7 +32,7 @@ import {
 } from '@aws-sdk/client-elastic-load-balancing-v2';
 import { getLogger } from '../../utils/logger.js';
 import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/error-handler.js';
-import { generateResourceName } from '../resource-name.js';
+import { generateResourceNameWithFallback } from '../resource-name.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { matchesCdkPath, normalizeAwsTagsToCfn } from '../import-helpers.js';
 import type {
@@ -221,9 +221,11 @@ export class ELBv2Provider implements ResourceProvider {
     try {
       const tags = this.extractTags(properties);
 
-      const lbName = generateResourceName((properties['Name'] as string | undefined) || logicalId, {
-        maxLength: 32,
-      });
+      const lbName = generateResourceNameWithFallback(
+        properties['Name'] as string | undefined,
+        logicalId,
+        { maxLength: 32 }
+      );
 
       const response = await this.getClient().send(
         new CreateLoadBalancerCommand({
@@ -504,9 +506,11 @@ export class ELBv2Provider implements ResourceProvider {
       const tags = this.extractTags(properties);
       const matcher = properties['Matcher'] as { HttpCode?: string; GrpcCode?: string } | undefined;
 
-      const tgName = generateResourceName((properties['Name'] as string | undefined) || logicalId, {
-        maxLength: 32,
-      });
+      const tgName = generateResourceNameWithFallback(
+        properties['Name'] as string | undefined,
+        logicalId,
+        { maxLength: 32 }
+      );
 
       const response = await this.getClient().send(
         new CreateTargetGroupCommand({

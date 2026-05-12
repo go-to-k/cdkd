@@ -453,6 +453,47 @@ Two `orphan` variants at different granularities:
 Both `cdkd destroy` (synth-driven) and `cdkd state destroy`
 (state-driven, no synth) delete AWS resources + state.
 
+## Stack-name prefix on physical names
+
+cdkd prepends the **stack name** to physical names you declare in CDK
+code: `new iam.Role(this, 'CRRole', { roleName: 'my-role' })` in stack
+`MyStack` is created in AWS as `MyStack-my-role`. The prefix protects
+cross-stack uniqueness (two stacks declaring `roleName: 'my-role'`
+otherwise collide on a single AWS account). Pre-PR this behavior was
+**inconsistent**: only IAM Role / User / Group / InstanceProfile and
+ELBv2 LoadBalancer / TargetGroup actually got the prefix; Lambda, S3,
+SNS, SQS, DynamoDB, etc. used the user's declared name as-is.
+
+`cdkd deploy --no-prefix-user-supplied-names` opts in to skipping
+the prefix on user-declared physical names, making cdkd consistent
+across all resource types. Off by default for backward compatibility.
+
+| | Default (no flag) | `--no-prefix-user-supplied-names` |
+| --- | --- | --- |
+| `new iam.Role({ roleName: 'my-role' })` | `MyStack-my-role` | `my-role` |
+| `new s3.Bucket({ bucketName: 'my-bucket' })` | `my-bucket` (already no prefix — Pattern A) | `my-bucket` (unchanged) |
+| `new iam.Role(...)` (no `roleName`) | `MyStack-CRRole-<hash>` (auto-generated, prefix kept for uniqueness) | `MyStack-CRRole-<hash>` (unchanged) |
+
+Resolution chain (highest wins): `--no-prefix-user-supplied-names`
+CLI flag → `CDKD_NO_PREFIX_USER_SUPPLIED_NAMES=true` env var →
+`cdk.json` `context.cdkd.noPrefixUserSuppliedNames: true` → default
+`false`.
+
+Affects `cdkd deploy` only. Already-deployed stacks deployed under
+the legacy prefixed-name scheme keep working — the flag only controls
+what AWS resource cdkd creates on **future** deploys. Switching the
+flag mid-flight on an existing stack would propose REPLACEMENT on
+every Pattern B resource (the existing AWS resource has the prefixed
+name; the new template intent has the un-prefixed name).
+
+Surfaced by [PR #285 `cdkd export`](https://github.com/go-to-k/cdkd/pull/285)
+where the CFn IMPORT changeset's identifier check would fail on a
+synth `RoleName: 'my-role'` vs the AWS-deployed `MyStack-my-role`;
+the export command currently overlays `ResourceIdentifier` onto
+`Properties` to bridge the gap. A future major-version PR will flip
+the default of `--no-prefix-user-supplied-names` to `true`, after
+which the overlay can be dropped.
+
 ## `--remove-protection`: one-shot bypass for protected resources
 
 CDK's `new Stack(app, 'X', { terminationProtection: true })` is honored

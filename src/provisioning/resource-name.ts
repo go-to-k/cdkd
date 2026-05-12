@@ -57,6 +57,48 @@ export function setCurrentStackName(stackName: string): void {
 }
 
 /**
+ * Per-async-context "skip the stack-name prefix on user-supplied physical
+ * names" flag. Read by `generateResourceName` when its caller passes
+ * `userSupplied: true`; auto-generated-name paths
+ * (`generateResourceName(logicalId, ...)`) ignore this flag.
+ *
+ * Scoped via AsyncLocalStorage so that `--stack-concurrency > 1` runs
+ * cannot cross-contaminate — each deploy's body is wrapped in its own
+ * `withSkipPrefix(...)` scope (the deploy CLI plumbs the resolved
+ * `--no-prefix-user-supplied-names` value through here). Default
+ * `false` preserves pre-PR behavior when the flag is not set.
+ */
+const skipPrefixStore = new AsyncLocalStorage<boolean>();
+
+/**
+ * Run `fn` with the "skip prefix on user-supplied names" flag set to
+ * `skip`. Mirrors {@link withStackName} — concurrent invocations each
+ * get an independent scope so parallel deploys do not fight over a
+ * single shared variable.
+ *
+ * Wrap this around `withStackName(...)` (innermost is `fn`) in the
+ * deploy CLI: `withSkipPrefix(flag, () => withStackName(name, body))`.
+ * Order does not matter — the two stores are independent — but
+ * consistent ordering keeps the call sites readable.
+ */
+export function withSkipPrefix<T>(skip: boolean, fn: () => Promise<T>): Promise<T>;
+export function withSkipPrefix<T>(skip: boolean, fn: () => T): T;
+export function withSkipPrefix<T>(skip: boolean, fn: () => T | Promise<T>): T | Promise<T> {
+  return skipPrefixStore.run(skip, fn);
+}
+
+/**
+ * Read the current async context's skip-prefix flag. Defaults to
+ * `false` when no `withSkipPrefix` scope is active.
+ *
+ * Public for unit tests; `generateResourceName` consumes this
+ * internally.
+ */
+export function getCurrentSkipPrefix(): boolean {
+  return skipPrefixStore.getStore() ?? false;
+}
+
+/**
  * Options for generating a resource name.
  */
 export interface ResourceNameOptions {
@@ -67,6 +109,25 @@ export interface ResourceNameOptions {
   /** Allowed character regex pattern. Characters not matching will be removed.
    *  Default: /[^a-zA-Z0-9-]/ (alphanumeric + hyphen) */
   allowedPattern?: RegExp;
+  /**
+   * `true` when the caller is passing a name the user explicitly
+   * declared in their CDK code (e.g. `new iam.Role(this, 'X', {
+   *   roleName: 'my-role' })`). `false` (default) when the caller is
+   * passing the logical-id fallback or any other cdkd-generated value.
+   *
+   * Combined with the per-deploy `withSkipPrefix(true)` flag, a
+   * `userSupplied: true` call skips the stack-name prefix and returns
+   * the user's declared name verbatim (after the same sanitize /
+   * truncate pipeline). When `userSupplied` is `false` OR
+   * `withSkipPrefix` is unset / `false`, the stack-name prefix is
+   * applied (pre-PR behavior).
+   *
+   * This split is load-bearing: cdkd's stack-scoping concern (prefix
+   * for cross-stack uniqueness on auto-generated names) must stay
+   * coupled to the auto-generated path, NOT to user-declared names —
+   * those belong to the user.
+   */
+  userSupplied?: boolean;
 }
 
 /**
@@ -80,11 +141,23 @@ export interface ResourceNameOptions {
  * @returns A sanitized, truncated name that fits the constraints
  */
 export function generateResourceName(name: string, options: ResourceNameOptions): string {
-  const { maxLength, lowercase = false, allowedPattern = /[^a-zA-Z0-9-]/g } = options;
+  const {
+    maxLength,
+    lowercase = false,
+    allowedPattern = /[^a-zA-Z0-9-]/g,
+    userSupplied = false,
+  } = options;
 
-  // Include stack name for uniqueness (like CloudFormation does)
+  // Include stack name for uniqueness (like CloudFormation does).
+  //
+  // The prefix is suppressed when the caller marked the name as
+  // user-supplied AND the per-deploy `withSkipPrefix(true)` flag is
+  // active — the user owns that name and cdkd should not rewrite it.
+  // Every other path (logical-id fallback, no withSkipPrefix scope,
+  // flag set to false) keeps the prefix for cross-stack uniqueness.
   const currentStackName = stackNameStore.getStore();
-  const fullName = currentStackName ? `${currentStackName}-${name}` : name;
+  const shouldPrefix = currentStackName && !(userSupplied && getCurrentSkipPrefix());
+  const fullName = shouldPrefix ? `${currentStackName}-${name}` : name;
 
   // Apply lowercase BEFORE pattern matching (so A-Z aren't removed by /[^a-z0-9.-]/)
   let sanitized = lowercase ? fullName.toLowerCase() : fullName;
@@ -103,6 +176,39 @@ export function generateResourceName(name: string, options: ResourceNameOptions)
   const prefix = sanitized.substring(0, maxPrefixLength).replace(/-+$/, '');
 
   return `${prefix}-${hash}`;
+}
+
+/**
+ * Generate a resource name from a user-declared physical name OR
+ * fall back to the logical id.
+ *
+ * Wraps {@link generateResourceName} to express the Pattern B call-site
+ * shape (`generateResourceName((properties['Name'] as string | undefined)
+ * || logicalId, opts)`) as a single typed helper. The user-supplied
+ * branch passes `userSupplied: true`, which makes the per-deploy
+ * `withSkipPrefix(true)` flag drop the stack-name prefix on that name.
+ * The fallback (logical-id) branch is `userSupplied: false` and keeps
+ * the prefix regardless of the flag — auto-generated names rely on
+ * the prefix for cross-stack uniqueness.
+ *
+ * Use at every Pattern B provider call site (currently IAM Role, IAM
+ * User, IAM Group, IAM InstanceProfile, ELBv2 LoadBalancer, ELBv2
+ * TargetGroup) so the `--no-prefix-user-supplied-names` flag controls
+ * those types consistently. Pattern A providers (Lambda, S3, SNS,
+ * SQS, DynamoDB, etc.) do NOT need this helper — they already
+ * short-circuit the user-supplied name out of the
+ * `generateResourceName` call entirely, so the prefix is never
+ * applied to user-supplied names regardless of the flag.
+ */
+export function generateResourceNameWithFallback(
+  userSuppliedName: string | undefined,
+  logicalId: string,
+  options: Omit<ResourceNameOptions, 'userSupplied'>
+): string {
+  if (userSuppliedName !== undefined && userSuppliedName !== '') {
+    return generateResourceName(userSuppliedName, { ...options, userSupplied: true });
+  }
+  return generateResourceName(logicalId, { ...options, userSupplied: false });
 }
 
 /**

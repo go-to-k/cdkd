@@ -12,7 +12,7 @@ import { getLogger } from '../../utils/logger.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
-import { generateResourceName } from '../resource-name.js';
+import { generateResourceNameWithFallback } from '../resource-name.js';
 import { matchesCdkPath, resolveExplicitPhysicalId } from '../import-helpers.js';
 import type {
   ResourceProvider,
@@ -50,8 +50,9 @@ export class IAMInstanceProfileProvider implements ResourceProvider {
   ): Promise<ResourceCreateResult> {
     this.logger.debug(`Creating IAM instance profile ${logicalId}`);
 
-    const instanceProfileName = generateResourceName(
-      (properties['InstanceProfileName'] as string | undefined) || logicalId,
+    const instanceProfileName = generateResourceNameWithFallback(
+      properties['InstanceProfileName'] as string | undefined,
+      logicalId,
       { maxLength: 128 }
     );
     const path = (properties['Path'] as string | undefined) || '/';

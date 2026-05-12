@@ -114,6 +114,53 @@ export function resolveCaptureObservedState(cliValue: boolean): boolean {
 }
 
 /**
+ * Resolve the `--no-prefix-user-supplied-names` flag's effective value.
+ *
+ * Returns `true` when cdkd should SKIP prepending the stack name to
+ * user-declared physical names (e.g. an `iam.Role` whose `roleName:
+ * 'my-role'` was set explicitly by the user) on `cdkd deploy`.
+ * Returns `false` when cdkd should keep the legacy behavior of
+ * prepending the stack name (the pre-PR default).
+ *
+ * Auto-generated names (where the user did NOT supply a physical
+ * name) are unaffected — every provider's `generateResourceName`
+ * call sets `userSupplied: false` on the logical-id fallback path,
+ * so the prefix stays for those resources regardless of this flag.
+ *
+ * Resolution chain (highest wins):
+ *
+ *   1. `--no-prefix-user-supplied-names` CLI flag → Commander emits
+ *      `prefixUserSuppliedNames: false` when the flag is passed.
+ *      That explicit opt-in short-circuits the lookup and returns
+ *      `true` regardless of env / cdk.json.
+ *   2. `CDKD_NO_PREFIX_USER_SUPPLIED_NAMES=true` env var.
+ *   3. `cdk.json` `context.cdkd.noPrefixUserSuppliedNames: true`.
+ *   4. Default `false` (preserves pre-PR behavior — auto-generated
+ *      and user-declared names both get the stack-name prefix).
+ *
+ * Mirrors {@link resolveCaptureObservedState}'s pattern; the cliValue
+ * argument is the Commander-emitted `prefixUserSuppliedNames`
+ * boolean (default `true`, `false` when the user passed
+ * `--no-prefix-user-supplied-names`).
+ */
+export function resolveSkipPrefix(cliValue: boolean): boolean {
+  // Commander emits `cliValue === false` only when the user explicitly
+  // passed `--no-prefix-user-supplied-names`. That wins over every
+  // other source.
+  if (cliValue === false) return true;
+
+  const envValue = process.env['CDKD_NO_PREFIX_USER_SUPPLIED_NAMES'];
+  if (envValue === 'true') return true;
+
+  const cdkJson = loadCdkJson();
+  const cdkdContext = cdkJson?.context?.['cdkd'] as Record<string, unknown> | undefined;
+  const v = cdkdContext?.['noPrefixUserSuppliedNames'];
+  if (typeof v === 'boolean' && v === true) return true;
+
+  return false;
+}
+
+/**
  * Resolve the --state-bucket option from CLI, cdk.json context, or environment
  *
  * Priority: CLI option > CDKD_STATE_BUCKET env > cdk.json context.cdkd.stateBucket

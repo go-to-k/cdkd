@@ -40,7 +40,7 @@ import { getLogger } from '../../utils/logger.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
-import { generateResourceName } from '../resource-name.js';
+import { generateResourceNameWithFallback } from '../resource-name.js';
 import { matchesCdkPath, resolveExplicitPhysicalId } from '../import-helpers.js';
 import type {
   ResourceProvider,
@@ -185,8 +185,9 @@ export class IAMUserGroupProvider implements ResourceProvider {
   ): Promise<ResourceCreateResult> {
     this.logger.debug(`Creating IAM user ${logicalId}`);
 
-    const userName = generateResourceName(
-      (properties['UserName'] as string | undefined) || logicalId,
+    const userName = generateResourceNameWithFallback(
+      properties['UserName'] as string | undefined,
+      logicalId,
       { maxLength: 64 }
     );
 
@@ -798,8 +799,9 @@ export class IAMUserGroupProvider implements ResourceProvider {
   ): Promise<ResourceCreateResult> {
     this.logger.debug(`Creating IAM group ${logicalId}`);
 
-    const groupName = generateResourceName(
-      (properties['GroupName'] as string | undefined) || logicalId,
+    const groupName = generateResourceNameWithFallback(
+      properties['GroupName'] as string | undefined,
+      logicalId,
       { maxLength: 128 }
     );
 

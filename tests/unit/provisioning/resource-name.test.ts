@@ -1,7 +1,10 @@
 import { describe, it, expect } from 'vitest';
 import {
   generateResourceName,
+  generateResourceNameWithFallback,
+  getCurrentSkipPrefix,
   setCurrentStackName,
+  withSkipPrefix,
   withStackName,
 } from '../../../src/provisioning/resource-name.js';
 
@@ -78,6 +81,130 @@ describe('resource-name', () => {
       );
 
       expect(result).toBe('mystack-mybucket');
+    });
+  });
+
+  describe('withSkipPrefix + userSupplied flag', () => {
+    it('still prefixes user-supplied names by default (no withSkipPrefix scope)', () => {
+      // Pre-PR behavior preserved: an IAM Role with user-declared
+      // `RoleName: 'my-role'` deployed by cdkd still gets the stack
+      // name prefix unless the user opts in via
+      // --no-prefix-user-supplied-names.
+      const result = withStackName('MyStack', () =>
+        generateResourceName('my-role', { maxLength: 64, userSupplied: true })
+      );
+      expect(result).toBe('MyStack-my-role');
+    });
+
+    it('skips the prefix on user-supplied names when withSkipPrefix(true) is active', () => {
+      const result = withStackName('MyStack', () =>
+        withSkipPrefix(true, () =>
+          generateResourceName('my-role', { maxLength: 64, userSupplied: true })
+        )
+      );
+      expect(result).toBe('my-role');
+    });
+
+    it('still prefixes the logical-id fallback path even with withSkipPrefix(true)', () => {
+      // The flag only affects user-supplied names. Auto-generated names
+      // (where the user did NOT declare a physical name) need the prefix
+      // for cross-stack uniqueness regardless of the flag.
+      const result = withStackName('MyStack', () =>
+        withSkipPrefix(true, () =>
+          generateResourceName('MyLogicalId', { maxLength: 64 /* userSupplied default false */ })
+        )
+      );
+      expect(result).toBe('MyStack-MyLogicalId');
+    });
+
+    it('still prefixes when withSkipPrefix(false) is active (the opt-out / default-off case)', () => {
+      const result = withStackName('MyStack', () =>
+        withSkipPrefix(false, () =>
+          generateResourceName('my-role', { maxLength: 64, userSupplied: true })
+        )
+      );
+      expect(result).toBe('MyStack-my-role');
+    });
+
+    it('flag has no effect outside withStackName scope (the no-stack-name path is unchanged)', () => {
+      const result = withSkipPrefix(true, () =>
+        generateResourceName('my-role', { maxLength: 64, userSupplied: true })
+      );
+      expect(result).toBe('my-role');
+    });
+
+    it('does not leak the skip-prefix flag outside the callback', () => {
+      withSkipPrefix(true, () => generateResourceName('x', { maxLength: 64, userSupplied: true }));
+      const after = withStackName('MyStack', () =>
+        generateResourceName('my-role', { maxLength: 64, userSupplied: true })
+      );
+      expect(after).toBe('MyStack-my-role');
+    });
+
+    it('isolates concurrent withSkipPrefix scopes', async () => {
+      const work = async (stackName: string, skip: boolean, delay: number) =>
+        withStackName(stackName, () =>
+          withSkipPrefix(skip, async () => {
+            await new Promise((resolve) => setTimeout(resolve, delay));
+            return generateResourceName('my-role', { maxLength: 64, userSupplied: true });
+          })
+        );
+
+      const [a, b, c] = await Promise.all([
+        work('StackA', true, 30),
+        work('StackB', false, 10),
+        work('StackC', true, 20),
+      ]);
+
+      expect(a).toBe('my-role');
+      expect(b).toBe('StackB-my-role');
+      expect(c).toBe('my-role');
+    });
+
+    it('getCurrentSkipPrefix reflects the active scope', () => {
+      expect(getCurrentSkipPrefix()).toBe(false);
+      withSkipPrefix(true, () => {
+        expect(getCurrentSkipPrefix()).toBe(true);
+      });
+      withSkipPrefix(false, () => {
+        expect(getCurrentSkipPrefix()).toBe(false);
+      });
+      expect(getCurrentSkipPrefix()).toBe(false);
+    });
+  });
+
+  describe('generateResourceNameWithFallback', () => {
+    it('uses the user-supplied name with userSupplied: true', () => {
+      const result = withStackName('MyStack', () =>
+        withSkipPrefix(true, () =>
+          generateResourceNameWithFallback('my-role', 'CRRole', { maxLength: 64 })
+        )
+      );
+      expect(result).toBe('my-role');
+    });
+
+    it('falls back to the logical id and keeps the prefix', () => {
+      const result = withStackName('MyStack', () =>
+        withSkipPrefix(true, () =>
+          generateResourceNameWithFallback(undefined, 'CRRole', { maxLength: 64 })
+        )
+      );
+      expect(result).toBe('MyStack-CRRole');
+    });
+
+    it('treats empty-string user names as missing and uses the logical id', () => {
+      const result = withStackName('MyStack', () =>
+        generateResourceNameWithFallback('', 'CRRole', { maxLength: 64 })
+      );
+      expect(result).toBe('MyStack-CRRole');
+    });
+
+    it('prefixes the user-supplied name when the flag is off (pre-PR behavior)', () => {
+      const result = withStackName('MyStack', () =>
+        // No withSkipPrefix scope → flag defaults to false → prefix applied.
+        generateResourceNameWithFallback('my-role', 'CRRole', { maxLength: 64 })
+      );
+      expect(result).toBe('MyStack-my-role');
     });
   });
 

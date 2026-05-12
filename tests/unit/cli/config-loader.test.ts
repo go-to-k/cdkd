@@ -28,6 +28,7 @@ import {
   loadUserCdkJson,
   resolveApp,
   resolveCaptureObservedState,
+  resolveSkipPrefix,
   resolveStateBucket,
   resolveStateBucketWithSource,
   getDefaultStateBucketName,
@@ -614,12 +615,67 @@ describe('config-loader', () => {
       expect(resolveCaptureObservedState(true)).toBe(true);
     });
 
-    it('ignores non-boolean cdk.json values and falls through to true', () => {
+    it('ignores non-boolean cdk.json values and falls through to true (captureObservedState)', () => {
       vi.mocked(existsSync).mockReturnValue(true);
       vi.mocked(readFileSync).mockReturnValue(
         JSON.stringify({ context: { cdkd: { captureObservedState: 'yes' } } })
       );
       expect(resolveCaptureObservedState(true)).toBe(true);
+    });
+  });
+
+  describe('resolveSkipPrefix', () => {
+    beforeEach(() => {
+      delete process.env['CDKD_NO_PREFIX_USER_SUPPLIED_NAMES'];
+    });
+
+    it('returns true when CLI explicitly opts in via --no-prefix-user-supplied-names', () => {
+      // Commander emits `prefixUserSuppliedNames: false` on the flag.
+      vi.mocked(existsSync).mockReturnValue(false);
+      expect(resolveSkipPrefix(false)).toBe(true);
+    });
+
+    it('returns true when env var CDKD_NO_PREFIX_USER_SUPPLIED_NAMES=true', () => {
+      vi.mocked(existsSync).mockReturnValue(false);
+      process.env['CDKD_NO_PREFIX_USER_SUPPLIED_NAMES'] = 'true';
+      expect(resolveSkipPrefix(true)).toBe(true);
+    });
+
+    it('returns true when cdk.json sets noPrefixUserSuppliedNames=true and CLI/env unset', () => {
+      vi.mocked(existsSync).mockReturnValue(true);
+      vi.mocked(readFileSync).mockReturnValue(
+        JSON.stringify({ context: { cdkd: { noPrefixUserSuppliedNames: true } } })
+      );
+      expect(resolveSkipPrefix(true)).toBe(true);
+    });
+
+    it('CLI flag wins over cdk.json (CLI false → skip=true regardless of cdk.json=false)', () => {
+      vi.mocked(existsSync).mockReturnValue(true);
+      vi.mocked(readFileSync).mockReturnValue(
+        JSON.stringify({ context: { cdkd: { noPrefixUserSuppliedNames: false } } })
+      );
+      expect(resolveSkipPrefix(false)).toBe(true);
+    });
+
+    it('returns false when nothing is set (preserves pre-PR default behavior)', () => {
+      vi.mocked(existsSync).mockReturnValue(false);
+      expect(resolveSkipPrefix(true)).toBe(false);
+    });
+
+    it('ignores non-true env var values (only the literal "true" string opts in)', () => {
+      vi.mocked(existsSync).mockReturnValue(false);
+      process.env['CDKD_NO_PREFIX_USER_SUPPLIED_NAMES'] = '1';
+      expect(resolveSkipPrefix(true)).toBe(false);
+      process.env['CDKD_NO_PREFIX_USER_SUPPLIED_NAMES'] = 'yes';
+      expect(resolveSkipPrefix(true)).toBe(false);
+    });
+
+    it('ignores non-boolean cdk.json values and falls through to false (noPrefixUserSuppliedNames)', () => {
+      vi.mocked(existsSync).mockReturnValue(true);
+      vi.mocked(readFileSync).mockReturnValue(
+        JSON.stringify({ context: { cdkd: { noPrefixUserSuppliedNames: 'yes' } } })
+      );
+      expect(resolveSkipPrefix(true)).toBe(false);
     });
   });
 });

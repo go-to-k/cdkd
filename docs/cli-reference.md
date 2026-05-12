@@ -186,6 +186,84 @@ both regular capture and this upgrade refresh).
 path — useful when you want to refresh the baseline without redeploying
 (e.g. for resources that won't change in any near-future deploy).
 
+## `--no-prefix-user-supplied-names`
+
+cdkd's default behavior on `cdkd deploy` prepends the stack name to
+physical names the user declared in CDK code. The prefix protects
+cross-stack uniqueness, but **only a subset of resource types actually
+got it pre-PR** — IAM Role / User / Group / InstanceProfile and ELBv2
+LoadBalancer / TargetGroup. Lambda, S3, SNS, SQS, DynamoDB, etc.
+historically used the user's declared name as-is (= no prefix). This
+inconsistency was opaque to users; `cdkd export` (PR #285) surfaced it
+because the CFn IMPORT identifier check would reject a synth template
+whose `RoleName: 'my-role'` didn't match the AWS-deployed
+`MyStack-my-role`.
+
+`--no-prefix-user-supplied-names` opts in to **skipping** the
+stack-name prefix on user-declared physical names — bringing the
+prefixed types into line with the unprefixed types. Auto-generated
+names (where the user did NOT declare a physical name) keep the
+prefix regardless of the flag: those names rely on the prefix for
+cross-stack uniqueness.
+
+```bash
+# Pass per-invocation
+cdkd deploy --no-prefix-user-supplied-names
+
+# Set per-shell
+export CDKD_NO_PREFIX_USER_SUPPLIED_NAMES=true
+cdkd deploy
+
+# Pin per-project in cdk.json
+# {
+#   "context": {
+#     "cdkd": { "noPrefixUserSuppliedNames": true }
+#   }
+# }
+```
+
+Resolution chain (highest wins): CLI flag → `CDKD_NO_PREFIX_USER_SUPPLIED_NAMES=true`
+env var → `cdk.json` `context.cdkd.noPrefixUserSuppliedNames: true` →
+default `false` (= pre-PR prefixed behavior preserved).
+
+### Granularity, storage, mid-flight reversibility
+
+- **Granularity**: per-deploy. The flag is consulted once at command
+  start and applied to every per-resource name generation in that
+  deploy via an `AsyncLocalStorage`-scoped flag.
+- **Storage**: the flag controls **what AWS resource cdkd asks AWS to
+  create**, not what cdkd records in state — once the AWS resource is
+  named, the same name is recorded as `physicalId` in state. Flipping
+  the flag after the fact does NOT rename an already-deployed resource.
+- **Mid-flight reversibility**: flipping the flag on an existing stack
+  causes the next deploy to propose REPLACEMENT on every Pattern B
+  resource (IAM Role / User / Group / InstanceProfile / ELBv2 LB / TG)
+  that uses a user-declared name — the existing AWS resource has the
+  prefixed name; the new template intent has the un-prefixed name. To
+  avoid replacement, either flip on a brand-new stack OR accept a one-
+  time replacement for affected resources.
+
+### Affected resource types
+
+The flag only changes behavior for resource types whose pre-PR code
+path prefixed user-supplied names (Pattern B providers). Pattern A
+providers were always unprefixed and are unchanged by the flag.
+
+| Pattern | Pre-PR behavior on user-supplied name | Flag effect |
+| --- | --- | --- |
+| **Pattern B**: IAM Role, IAM User, IAM Group, IAM InstanceProfile, ELBv2 LoadBalancer, ELBv2 TargetGroup | Prefixed (`MyStack-my-role`) | Flag ON → unprefixed (`my-role`) |
+| **Pattern A**: Lambda Function, S3 Bucket, SNS Topic, SQS Queue, DynamoDB Table, Logs LogGroup, Events Rule, etc. | Unprefixed (`my-bucket`) | No effect (already unprefixed) |
+| Auto-generated names (any type, no user-supplied physical name) | Prefixed (`MyStack-LogicalId-<hash>`) | No effect — prefix kept for uniqueness |
+
+### Future work
+
+A future major-version PR will flip the default of
+`--no-prefix-user-supplied-names` to `true` after a release cycle.
+At that point, migration tooling
+(`cdkd state rename-strip-prefix <stack>`) will be needed to handle
+the transition for existing stacks; that's tracked separately and is
+out of scope here.
+
 ## Per-resource timeout
 
 Both `cdkd deploy` and `cdkd destroy` (including `cdkd state destroy`)

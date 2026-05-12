@@ -26,7 +26,7 @@ import { getLogger } from '../../utils/logger.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
-import { generateResourceName } from '../resource-name.js';
+import { generateResourceNameWithFallback } from '../resource-name.js';
 import {
   matchesCdkPath,
   normalizeAwsTagsToCfn,
@@ -82,8 +82,9 @@ export class IAMRoleProvider implements ResourceProvider {
   ): Promise<ResourceCreateResult> {
     this.logger.debug(`Creating IAM role ${logicalId}`);
 
-    const roleName = generateResourceName(
-      (properties['RoleName'] as string | undefined) || logicalId,
+    const roleName = generateResourceNameWithFallback(
+      properties['RoleName'] as string | undefined,
+      logicalId,
       { maxLength: 64 }
     );
     const assumeRolePolicyDocument = properties['AssumeRolePolicyDocument'];
@@ -216,8 +217,9 @@ export class IAMRoleProvider implements ResourceProvider {
   ): Promise<ResourceUpdateResult> {
     this.logger.debug(`Updating IAM role ${logicalId}: ${physicalId}`);
 
-    const newRoleName = generateResourceName(
-      (properties['RoleName'] as string | undefined) || logicalId,
+    const newRoleName = generateResourceNameWithFallback(
+      properties['RoleName'] as string | undefined,
+      logicalId,
       { maxLength: 64 }
     );
 
