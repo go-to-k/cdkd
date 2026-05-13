@@ -1,3 +1,10 @@
+## [0.99.1](https://github.com/go-to-k/cdkd/compare/v0.99.0...v0.99.1) (2026-05-13)
+
+
+### Bug Fixes
+
+* **import:** SNS TopicPolicy + S3 BucketPolicy use operational id ([#356](https://github.com/go-to-k/cdkd/issues/356)) ([#358](https://github.com/go-to-k/cdkd/issues/358)) ([a08bf06](https://github.com/go-to-k/cdkd/commit/a08bf0632cd0f9700bdc60bb32750c907fc6bb6c))
+
 # [0.99.0](https://github.com/go-to-k/cdkd/compare/v0.98.2...v0.99.0) (2026-05-13)
 
 
