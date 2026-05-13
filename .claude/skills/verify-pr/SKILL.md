@@ -68,6 +68,15 @@ Run each check and report pass/fail:
      ```
      If this exits non-zero, run `/run-integ <relevant-test>` (e.g. `bench-cdk-sample`) and confirm it reports 0 errors / 0 orphans — the skill itself will then call `markgate set integ-destroy`.
      CI is necessary but not sufficient — it does not exercise real-AWS destroy. The gate is the structural enforcement of that fact.
+   - **For local-execution-touching PRs** (any change under `src/local/**`, `src/cli/commands/local-*.ts`, `tests/integration/local-*/**`): the `integ-local` markgate gate physically blocks `gh pr merge` when its marker is stale (see `.claude/hooks/integ-local-gate.sh`). The merge-time gate has a known blind spot: it reads the **local working tree** digest, and when `gh pr merge` runs from a parent worktree still on pre-PR `main`, the digest matches the old content and the gate passes silently — so an unverified local-execution change can reach main via the merge-from-parent path. `/verify-pr` runs in the PR's own worktree (post-PR content), so verifying the marker here closes that gap structurally:
+     ```bash
+     # Only check when the PR diff actually touches the gate scope.
+     # Mirrors how `gh pr merge` is checked, but in the worktree that has the PR's content.
+     if git diff main...HEAD --name-only | grep -qE '^src/local/|^src/cli/commands/local-|^tests/integration/local-'; then
+       mise exec -- markgate verify integ-local
+     fi
+     ```
+     If this exits non-zero (digest differs OR expired by TTL), run `/run-integ local-<test>` against a test that exercises the changed surface — `local-start-api` for HTTP-server / route-discovery / authorizer / container-pool changes, `local-invoke` for Lambda-runtime / ZIP-asset changes, `local-run-task` for ECS changes, `local-invoke-container` for container-Lambda changes, `local-invoke-layers` for Lambda Layers changes. The integ skill calls `markgate set integ-local` itself when the Docker-side check passes. As with `integ-destroy`, CI is necessary but not sufficient — it does not exercise Docker-based local execution.
    - For each region this PR may have created resources in (typically `us-east-1`), spot-check the most failure-prone resource types — VPCs (`describe-vpcs --filters "Name=tag:Name,Values=Cdkd*/Vpc"`), Lambda hyperplane ENIs (`describe-network-interfaces --filters "Name=description,Values=AWS Lambda VPC ENI-*"`), CloudFront Distributions, NAT Gateways. Any match against a stack name in this PR's diff = orphan, must be cleaned up before merge.
 
 7. **No stale references**
@@ -163,6 +172,8 @@ Present results as a table:
 | working tree | clean/dirty |
 | docs consistency | pass/fail |
 | leftover resources | none/found |
+| integ-destroy marker (deletion-touching PRs only) | fresh/stale/n-a |
+| integ-local marker (local-execution-touching PRs only) | fresh/stale/n-a |
 | code review (incl. shared-utility callers) | pass/issues found |
 | live-test changed behavior | pass/skipped/issues found |
 | retrospective + rule proposals | done/skipped |
