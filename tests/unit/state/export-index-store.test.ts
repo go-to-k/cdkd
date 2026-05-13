@@ -378,6 +378,48 @@ describe('ExportIndexStore', () => {
       expect(putCount).toBe(0);
     });
 
+    it('skips the PUT when the resulting map is identical to the loaded one', async () => {
+      // The mapsEqual no-change skip: a deploy whose outputs are
+      // byte-identical to what the index already has should NOT
+      // trigger a PUT. Eliminates wasted writes on incremental
+      // deploys where outputs didn't change (PR #349 perf opt).
+      const indexFile: ExportIndexFile = {
+        indexVersion: 1,
+        region: 'us-east-1',
+        exports: {
+          Foo: { value: 'unchanged', producerStack: 'S', producerRegion: 'us-east-1' },
+        },
+        lastModified: 1,
+      };
+      let putCount = 0;
+      const s3 = mockS3(async (cmd) => {
+        if (cmd.constructor.name === 'GetObjectCommand') {
+          return {
+            Body: { transformToString: async () => JSON.stringify(indexFile) },
+            ETag: '"e1"',
+          };
+        }
+        if (cmd.constructor.name === 'PutObjectCommand') {
+          putCount++;
+          return { ETag: '"e2"' };
+        }
+        throw new Error('unexpected');
+      });
+      const store = new ExportIndexStore(s3, 'b', 'cdkd', 'us-east-1', mockBackend([]));
+
+      // First call: outputs identical to what's in the index → no PUT.
+      await store.updateForStack('S', 'us-east-1', { Foo: 'unchanged' });
+      expect(putCount).toBe(0);
+
+      // Second call with the same value: also no PUT.
+      await store.updateForStack('S', 'us-east-1', { Foo: 'unchanged' });
+      expect(putCount).toBe(0);
+
+      // Now a real change: writes once.
+      await store.updateForStack('S', 'us-east-1', { Foo: 'changed' });
+      expect(putCount).toBe(1);
+    });
+
     it('only drops entries matching BOTH stackName and producerRegion', async () => {
       const indexFile: ExportIndexFile = {
         indexVersion: 1,
