@@ -428,6 +428,10 @@ the same tier; cdkd uses literal-segment count as a heuristic).
 | `--assume-role <arn-or-pair>` | unset | Repeatable. Bare `<arn>` = global default; `<LogicalId>=<arn>` = per-Lambda override. Per-Lambda > global > unset (developer creds passed through). |
 | `--watch` | off | Hot reload: re-synth + re-discover routes when `cdk.out/` or any routed Lambda's asset directory changes. 500ms debounce. Synth failures keep the previous version serving (warn-and-continue, never crashes the server). |
 | `--stage <name>` | first attached | Select an API Gateway Stage by `StageName`. Drives `event.stageVariables` (REST v1 + HTTP API v2). When the override doesn't match any Stage on a given API, that API's routes get `stageVariables: null` and the CLI emits a warn line up front. |
+| `--from-state` | off | Read cdkd S3 state for every routed stack and substitute `Ref` / `Fn::GetAtt` / `Fn::Sub` / `Fn::Join` placeholders + AWS pseudo parameters (`${AWS::AccountId}` / `${AWS::Region}` / `${AWS::Partition}` / `${AWS::URLSuffix}`) in Lambda env vars with the deployed physical IDs / attributes. Off by default — keeps the pre-PR literal-only / warn-and-drop behavior. Mirrors `cdkd local invoke --from-state` and `cdkd local run-task --from-state`. Re-runs against fresh state on every hot-reload firing (`--watch`). State load failures degrade per-stack to warn-and-fall-back so a missing or unreadable state file never aborts the server. |
+| `--state-bucket <bucket>` | auto | S3 bucket containing cdkd state. Falls back to `CDKD_STATE_BUCKET` env or `cdk.json context.cdkd.stateBucket`, then the default `cdkd-state-{accountId}`. Only used with `--from-state`. |
+| `--state-prefix <prefix>` | `cdkd` | S3 key prefix for state files. Only used with `--from-state`. |
+| `--stack-region <region>` | auto | Region of the cdkd state record to read. Required when the same stack name has state in multiple regions. Only used with `--from-state`. |
 
 ### Hot reload (`--watch`)
 
@@ -650,7 +654,6 @@ AWS endpoints; nothing about that path changes.
 
 | Out of scope | Deferred to |
 | --- | --- |
-| `--from-state`-style env-var substitution | Future PR |
 | REST v1 IAM authorizer (`AuthorizationType: 'AWS_IAM'`) | Future PR |
 | mTLS authorizers | Future PR |
 | REST v1 CORS via Mock OPTIONS integration | Out of scope (use the deployed API) |

@@ -10,6 +10,7 @@ import {
   parseContextOptions,
   parseAssumeRoleToken,
   effectiveAssumeRoleArn,
+  stateOptions,
   type AssumeRoleOption,
   warnIfDeprecatedRegion,
 } from '../options.js';
@@ -18,8 +19,16 @@ import { applyRoleArnIfSet } from '../../utils/role-arn.js';
 import { withErrorHandling } from '../../utils/error-handler.js';
 import { Synthesizer, type SynthesisOptions } from '../../synthesis/synthesizer.js';
 import { resolveApp } from '../config-loader.js';
+import { loadStateForStack } from './local-state-loader.js';
 import type { StackInfo } from '../../synthesis/assembly-reader.js';
 import type { TemplateResource } from '../../types/resource.js';
+import type { StackState } from '../../types/state.js';
+import {
+  substituteEnvVarsFromState,
+  type PseudoParameters,
+  type SubstitutionContext,
+} from '../../local/state-resolver.js';
+import { derivePartitionAndUrlSuffix } from '../../local/ecs-task-resolver.js';
 import { resolveRuntimeFileExtension, resolveRuntimeImage } from '../../local/runtime-image.js';
 import { ensureDockerAvailable, pullImage } from '../../local/docker-runner.js';
 import { discoverRoutes, type DiscoveredRoute } from '../../local/route-discovery.js';
@@ -100,6 +109,32 @@ interface LocalStartApiOptions {
    * When unset, every discovered API gets its own server / port.
    */
   api?: string;
+  /**
+   * When set, cdkd reads its S3 state for each routed stack and
+   * substitutes intrinsic-valued env vars (`Ref` / `Fn::GetAtt` /
+   * `Fn::Sub` / `Fn::Join`) — including AWS pseudo parameters
+   * (`${AWS::AccountId}` / `${AWS::Region}` / `${AWS::Partition}` /
+   * `${AWS::URLSuffix}`) — with the deployed physical IDs / attributes
+   * before they reach the regular env-resolver. Mirrors
+   * `cdkd local invoke --from-state` and `cdkd local run-task
+   * --from-state`. Off by default — the pre-PR warn-and-drop behavior
+   * is preserved when the flag is unset.
+   */
+  fromState: boolean;
+  /**
+   * S3 bucket holding cdkd state. Used only when `--from-state` is set.
+   * Falls back to `CDKD_STATE_BUCKET` env / `cdk.json` / the default
+   * `cdkd-state-{accountId}` bucket via `resolveStateBucketWithDefault`.
+   */
+  stateBucket?: string;
+  /** S3 key prefix for state files. Used only when `--from-state` is set. */
+  statePrefix: string;
+  /**
+   * Region of the state record to read. Required when the same stack
+   * name has state in multiple regions. Used only when `--from-state`
+   * is set.
+   */
+  stackRegion?: string;
 }
 
 /**
@@ -322,6 +357,20 @@ async function localStartApiCommand(
       for (const [k, v] of m) corsConfigByApiId.set(k, v);
     }
 
+    // `--from-state`: load cdkd's S3 state for every routed stack once
+    // per synth (= initial boot AND every hot-reload firing). We do this
+    // outside the per-Lambda loop so a stack with N reachable Lambdas
+    // only pays one state-load round-trip. Pseudo parameters are also
+    // resolved once per stack — STS GetCallerIdentity is account-wide
+    // so the bag is identical across same-region stacks, but the
+    // partition / URL suffix can differ if stacks span partitions.
+    // Per-stack failures degrade to warn-and-fall-back (PR 1 behavior is
+    // preserved) so a missing or unreadable state file never aborts the
+    // server boot.
+    const stateByStack = options.fromState
+      ? await loadStateForRoutedStacks(targetStacks, routes, routesWithAuth, options)
+      : new Map<string, StackStateBundle>();
+
     // Build the per-Lambda spec map. Every reachable logical ID is
     // resolved to its asset / inline code, env vars, optional STS creds
     // (--assume-role), optional --debug-port reservation. The container
@@ -342,6 +391,7 @@ async function localStartApiCommand(
         stsRegion: options.region ?? process.env['AWS_REGION'] ?? process.env['AWS_DEFAULT_REGION'],
         inlineTmpDirs,
         layerTmpDirs,
+        stateByStack,
       });
       specs.set(logicalId, spec);
     }
@@ -794,6 +844,13 @@ async function buildContainerSpec(args: {
    * directly and never write into this set.
    */
   layerTmpDirs: Set<string>;
+  /**
+   * `--from-state` substitution input keyed by stack name. Empty when
+   * the flag is unset OR when no routed stack had loadable state. Per-
+   * stack entries supply state.resources + the pseudo-parameter bag
+   * the env-resolver consults for `Ref AWS::*` / `${AWS::*}` placeholders.
+   */
+  stateByStack: Map<string, StackStateBundle>;
 }): Promise<ContainerSpec> {
   const {
     logicalId,
@@ -805,6 +862,7 @@ async function buildContainerSpec(args: {
     stsRegion,
     inlineTmpDirs,
     layerTmpDirs,
+    stateByStack,
   } = args;
   const lambda = resolveLambdaByLogicalId(logicalId, stacks);
 
@@ -827,16 +885,48 @@ async function buildContainerSpec(args: {
   // load-bearing half of AWS's "last layer wins" semantic).
   const optDir = materializeLambdaLayers(lambda.layers, layerTmpDirs);
 
-  // Env vars: literal template values + --env-vars overlay. Intrinsic-
-  // valued template entries are warned + dropped (matches PR 1 / 2
-  // semantics; --from-state remains a `cdkd local invoke`-only flag in
-  // v1, see deferred-features list).
-  const templateEnv = getTemplateEnv(lambda.resource);
+  // Env vars: literal template values + --env-vars overlay. When
+  // `--from-state` was passed (and state for this Lambda's stack
+  // loaded), intrinsic-valued template entries are first substituted
+  // against deployed cdkd state + AWS pseudo parameters via
+  // `substituteEnvVarsFromState`. Per-key failures (state missing for
+  // a referenced logical id, attribute not captured at deploy time,
+  // unsupported intrinsic shape) warn-and-drop with context. Keys the
+  // state-resolver already warned about are suppressed in the downstream
+  // env-resolver's generic warn loop so the user sees one warn per key.
+  let templateEnv = getTemplateEnv(lambda.resource);
+  const stateBundle = stateByStack.get(lambda.stack.stackName);
+  let stateAudit: ReturnType<typeof substituteEnvVarsFromState>['audit'] | undefined;
+  if (stateBundle) {
+    const context: SubstitutionContext = { resources: stateBundle.state.resources };
+    if (stateBundle.pseudoParameters) {
+      context.pseudoParameters = stateBundle.pseudoParameters;
+    }
+    const { env, audit } = substituteEnvVarsFromState(templateEnv, context);
+    templateEnv = env;
+    stateAudit = audit;
+    for (const key of audit.resolvedKeys) {
+      getLogger().debug(`Lambda ${logicalId}: --from-state substituted env var ${key}`);
+    }
+    for (const { key, reason } of audit.unresolved) {
+      getLogger().warn(
+        `Lambda ${logicalId}: --from-state could not substitute env var ${key} (${reason}). ` +
+          `Override it via --env-vars or it will be dropped.`
+      );
+    }
+  }
   const envResult = resolveEnvVars(logicalId, templateEnv, overrides);
   for (const key of envResult.unresolved) {
+    // The state-resolver already warned for keys it tried + failed on
+    // (defensive: substituteEnvVarsFromState drops unresolved keys from
+    // the returned env so the env-resolver never sees them, but mirror
+    // `cdkd local invoke --from-state`'s safety dedupe in case the
+    // state-resolver evolves).
+    if (stateAudit && stateAudit.unresolved.some((u) => u.key === key)) continue;
     getLogger().warn(
       `Lambda ${logicalId}: env var ${key} contains a CloudFormation intrinsic and was dropped. ` +
-        `Override it with --env-vars (e.g. {"${logicalId}":{"${key}":"<literal>"}}) to surface a literal value.`
+        `Override it with --env-vars (e.g. {"${logicalId}":{"${key}":"<literal>"}}) ` +
+        `or pass --from-state to recover deployed values.`
     );
   }
 
@@ -1354,6 +1444,168 @@ async function reloadAllServers(args: {
   printPerServerRouteTables(servers);
 }
 
+/**
+ * Per-stack `--from-state` substitution input consumed by
+ * {@link buildContainerSpec}. Built once per `synthesizeAndBuild` pass
+ * — initial boot AND every hot-reload firing — by
+ * {@link loadStateForRoutedStacks}. Empty (no stack-level entry) when
+ * the stack's state could not be loaded or the user did not pass
+ * `--from-state`.
+ */
+interface StackStateBundle {
+  state: StackState;
+  /**
+   * AWS pseudo parameters (account / region / partition / URL suffix).
+   * `undefined` when none of the stack's reachable Lambdas has a
+   * pseudo-parameter intrinsic in its env map (skips the STS hop) OR
+   * the STS resolution failed (substitution still runs for non-`AWS::*`
+   * refs).
+   */
+  pseudoParameters?: PseudoParameters;
+}
+
+/**
+ * Returns true when any value in the function's template env map is a
+ * CFn intrinsic (non-primitive). Used to gate the pseudo-parameter STS
+ * hop inside the `--from-state` flow: literal-only env maps don't need
+ * the pseudo-parameter bag and shouldn't pay for an STS call. Mirrors
+ * the same gating in `local-invoke.ts` (`envHasIntrinsicValue`) and
+ * `ecs-task-resolver.ts` (`containerHasIntrinsicEnvOrSecret`).
+ */
+export function envHasIntrinsicValue(templateEnv: Record<string, unknown> | undefined): boolean {
+  if (!templateEnv) return false;
+  for (const v of Object.values(templateEnv)) {
+    if (v === undefined || v === null) continue;
+    if (typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean') continue;
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Load cdkd's S3 state for every stack that owns a routed Lambda. Once
+ * per `synthesizeAndBuild` pass (initial boot + every reload), so a
+ * Lambda's per-spec build does not pay one round-trip per Lambda. Per-
+ * stack failures (no state, ambiguous region, bucket resolution error)
+ * degrade to warn-and-fall-back via {@link loadStateForStack} — the
+ * affected stack's reachable Lambdas behave as if `--from-state` were
+ * not set, while sibling stacks with loadable state still substitute.
+ *
+ * Pseudo parameters are resolved per stack and only when at least one
+ * reachable Lambda in that stack has an intrinsic-valued env entry
+ * (gated via {@link envHasIntrinsicValue}). STS failures degrade to
+ * warn and leave `pseudoParameters: undefined` — substitution still
+ * runs for non-`AWS::*` refs.
+ */
+async function loadStateForRoutedStacks(
+  stacks: readonly StackInfo[],
+  routes: readonly DiscoveredRoute[],
+  routesWithAuth: readonly RouteWithAuth[],
+  options: LocalStartApiOptions
+): Promise<Map<string, StackStateBundle>> {
+  const logger = getLogger();
+  const out = new Map<string, StackStateBundle>();
+
+  // Collect the set of (stackName, region) pairs that contain at least
+  // one routed Lambda OR an attached authorizer Lambda. The stack
+  // resolution mirrors `resolveLambdaByLogicalId`'s walk so we never
+  // load state for a stack whose Lambdas are not actually reachable
+  // from the discovered API surface.
+  const lambdaIds = uniqueLambdaIds(routes, routesWithAuth);
+  const reachableStackNames = new Set<string>();
+  for (const logicalId of lambdaIds) {
+    for (const stack of stacks) {
+      const resource = stack.template.Resources?.[logicalId];
+      if (resource && resource.Type === 'AWS::Lambda::Function') {
+        reachableStackNames.add(stack.stackName);
+        break;
+      }
+    }
+  }
+
+  // Pre-compute "does any reachable Lambda in this stack have an
+  // intrinsic-valued env map" — gates the per-stack STS hop.
+  const stackHasIntrinsicEnv = (stackName: string): boolean => {
+    for (const logicalId of lambdaIds) {
+      for (const stack of stacks) {
+        if (stack.stackName !== stackName) continue;
+        const resource = stack.template.Resources?.[logicalId];
+        if (!resource || resource.Type !== 'AWS::Lambda::Function') continue;
+        if (envHasIntrinsicValue(getTemplateEnv(resource))) return true;
+      }
+    }
+    return false;
+  };
+
+  for (const stackName of reachableStackNames) {
+    const stack = stacks.find((s) => s.stackName === stackName);
+    if (!stack) continue;
+    const loaded = await loadStateForStack(stack.stackName, stack.region, {
+      ...(options.stackRegion !== undefined && { stackRegion: options.stackRegion }),
+      ...(options.stateBucket !== undefined && { stateBucket: options.stateBucket }),
+      statePrefix: options.statePrefix,
+      ...(options.region !== undefined && { region: options.region }),
+      ...(options.profile !== undefined && { profile: options.profile }),
+    });
+    if (!loaded) continue;
+
+    const bundle: StackStateBundle = { state: loaded.state };
+    if (stackHasIntrinsicEnv(stackName)) {
+      const pseudo = await resolvePseudoParametersForStartApi(loaded.region, options);
+      if (pseudo) bundle.pseudoParameters = pseudo;
+    }
+    out.set(stackName, bundle);
+    logger.debug(`--from-state: loaded state for ${stackName} (${loaded.region})`);
+  }
+  return out;
+}
+
+/**
+ * Build the AWS pseudo-parameter bag for `--from-state` env-var
+ * substitution. Mirrors `resolvePseudoParametersForInvoke` in
+ * `local-invoke.ts` byte-for-byte — kept inlined here rather than
+ * extracted into a shared helper because the two call sites differ in
+ * region precedence (this one is per-stack so the resolved state
+ * region takes priority).
+ *
+ * Region precedence: `--region` > `AWS_REGION` > `AWS_DEFAULT_REGION` >
+ * the state record's region (returned by `loadStateForStack`).
+ */
+async function resolvePseudoParametersForStartApi(
+  stateRegion: string,
+  options: LocalStartApiOptions
+): Promise<PseudoParameters | undefined> {
+  const logger = getLogger();
+  const region =
+    options.region ?? process.env['AWS_REGION'] ?? process.env['AWS_DEFAULT_REGION'] ?? stateRegion;
+  let accountId: string | undefined;
+  try {
+    const { STSClient, GetCallerIdentityCommand } = await import('@aws-sdk/client-sts');
+    const sts = new STSClient({ ...(region && { region }) });
+    try {
+      const identity = await sts.send(new GetCallerIdentityCommand({}));
+      accountId = identity.Account;
+    } finally {
+      sts.destroy();
+    }
+  } catch (err) {
+    logger.warn(
+      `--from-state: resolver needs \${AWS::AccountId} but STS GetCallerIdentity failed: ${err instanceof Error ? err.message : String(err)}. ` +
+        'Substitution will be skipped for AWS::AccountId; affected env entries will be dropped with per-key warnings.'
+    );
+  }
+  const partitionAndSuffix = region ? derivePartitionAndUrlSuffix(region) : undefined;
+  const bag: PseudoParameters = {
+    ...(accountId !== undefined && { accountId }),
+    ...(region !== undefined && { region }),
+    ...(partitionAndSuffix && {
+      partition: partitionAndSuffix.partition,
+      urlSuffix: partitionAndSuffix.urlSuffix,
+    }),
+  };
+  return Object.keys(bag).length === 0 ? undefined : bag;
+}
+
 /** Validate `--debug-port-base`. */
 function parseDebugPort(raw: string): number {
   const parsed = parseInt(raw, 10);
@@ -1432,9 +1684,27 @@ export function createLocalStartApiCommand(): Command {
         'DEPRECATED — use the positional <target> argument instead. Same accepted forms (bare logical id, stack-qualified, Construct path, ancestor prefix). Will be removed in a future major release.'
       )
     )
+    .addOption(
+      new Option(
+        '--from-state',
+        'Read cdkd S3 state for every routed stack and substitute Ref / Fn::GetAtt / Fn::Sub / Fn::Join ' +
+          '(and AWS pseudo parameters) in Lambda env vars with the deployed physical IDs / attributes. ' +
+          'Off by default — pre-PR warn-and-drop semantics are preserved. Turn on for stacks already deployed via cdkd deploy. ' +
+          'Mirrors `cdkd local invoke --from-state` / `cdkd local run-task --from-state`. ' +
+          'Re-runs against fresh state on every hot-reload firing (--watch).'
+      ).default(false)
+    )
+    .addOption(
+      new Option(
+        '--stack-region <region>',
+        'Region of the cdkd state record to read (used with --from-state when the same stack name has state in multiple regions).'
+      )
+    )
     .action(withErrorHandling(localStartApiCommand));
 
-  [...commonOptions, ...appOptions, ...contextOptions].forEach((opt) => startApi.addOption(opt));
+  [...commonOptions, ...appOptions, ...contextOptions, ...stateOptions].forEach((opt) =>
+    startApi.addOption(opt)
+  );
   startApi.addOption(deprecatedRegionOption);
 
   return startApi;

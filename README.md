@@ -448,13 +448,15 @@ cdkd local start-api --port 3000                  # pin the first server's port
 cdkd local start-api MyHttpApi                    # filter to one API (logical id, single-stack apps)
 cdkd local start-api MyStack/MyHttpApi            # OR: CDK Construct path
 cdkd local start-api --warm --watch               # pre-start + hot reload
+cdkd local start-api --from-state                 # substitute deployed env vars in Lambda Environment
 ```
 
 One server per discovered API — authorizers, CORS configs, and stage
 variables stay scoped to the owning API. Supports REST v1 + HTTP API +
 Function URL with AWS_PROXY integrations; Lambda TOKEN / REQUEST,
 Cognito User Pool, and HTTP v2 JWT authorizers (JWKS-verified); CORS
-preflight; hot reload via `--watch`.
+preflight; hot reload via `--watch`; deploy-state-backed env var
+substitution via `--from-state`.
 
 ### `local run-task`
 
