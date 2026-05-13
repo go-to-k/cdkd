@@ -343,7 +343,7 @@ describe('ExportIndexStore', () => {
       });
       const store = new ExportIndexStore(s3, 'b', 'cdkd', 'us-east-1', mockBackend([]));
 
-      await store.removeStack('S');
+      await store.removeStack('S', 'us-east-1');
 
       expect(put!.exports['Gone']).toBeUndefined();
       expect(put!.exports['Keep']).toBeDefined();
@@ -374,8 +374,42 @@ describe('ExportIndexStore', () => {
       });
       const store = new ExportIndexStore(s3, 'b', 'cdkd', 'us-east-1', mockBackend([]));
 
-      await store.removeStack('NotInIndex');
+      await store.removeStack('NotInIndex', 'us-east-1');
       expect(putCount).toBe(0);
+    });
+
+    it('only drops entries matching BOTH stackName and producerRegion', async () => {
+      const indexFile: ExportIndexFile = {
+        indexVersion: 1,
+        region: 'us-east-1',
+        exports: {
+          // Same stackName, different region — must NOT be dropped.
+          OtherRegion: { value: 'v', producerStack: 'S', producerRegion: 'us-west-2' },
+          // Same name + same region — drop.
+          MatchRegion: { value: 'v', producerStack: 'S', producerRegion: 'us-east-1' },
+        },
+        lastModified: 1,
+      };
+      let put: ExportIndexFile | undefined;
+      const s3 = mockS3(async (cmd) => {
+        if (cmd.constructor.name === 'GetObjectCommand') {
+          return {
+            Body: { transformToString: async () => JSON.stringify(indexFile) },
+            ETag: '"e1"',
+          };
+        }
+        if (cmd.constructor.name === 'PutObjectCommand') {
+          put = JSON.parse(String((cmd.input as { Body: string }).Body)) as ExportIndexFile;
+          return { ETag: '"e2"' };
+        }
+        throw new Error('unexpected');
+      });
+      const store = new ExportIndexStore(s3, 'b', 'cdkd', 'us-east-1', mockBackend([]));
+
+      await store.removeStack('S', 'us-east-1');
+
+      expect(put!.exports['MatchRegion']).toBeUndefined();
+      expect(put!.exports['OtherRegion']).toBeDefined();
     });
   });
 
@@ -482,6 +516,114 @@ describe('ExportIndexStore', () => {
       expect(finalPut!.exports['A']?.value).toBe('a1');
       expect(finalPut!.exports['B']?.value).toBe('b1');
       expect(finalPut!.exports['MyExport']?.value).toBe('mine');
+    });
+
+    it('serializes in-process concurrent writes (no etag pingpong within one cdkd)', async () => {
+      // Reviewer G7: parallel `updateForStack` from --stack-concurrency
+      // > 1 deploys must serialize via the in-process write chain.
+      // Without the chain, both calls read the same loaded snapshot,
+      // both write with the same etag, one fails 412, retries — the
+      // chain collapses both writes into sequential ops with no 412.
+      const indexFile: ExportIndexFile = {
+        indexVersion: 1,
+        region: 'us-east-1',
+        exports: {},
+        lastModified: 1,
+      };
+      let liveBody = JSON.stringify(indexFile);
+      let liveEtag = '"e1"';
+      let putCount = 0;
+      const concurrentInflight: { count: number; max: number } = { count: 0, max: 0 };
+      const s3 = mockS3(async (cmd) => {
+        if (cmd.constructor.name === 'GetObjectCommand') {
+          return {
+            Body: { transformToString: async () => liveBody },
+            ETag: liveEtag,
+          };
+        }
+        if (cmd.constructor.name === 'PutObjectCommand') {
+          concurrentInflight.count++;
+          if (concurrentInflight.count > concurrentInflight.max) {
+            concurrentInflight.max = concurrentInflight.count;
+          }
+          // Simulate a real S3 PUT taking ~10ms; if we're serialized,
+          // only one PUT is ever in flight at once. If we weren't,
+          // both putCount=0 reads would set up matching IfMatch =
+          // '"e1"' and the second PUT would be a 412.
+          await new Promise((r) => setTimeout(r, 10));
+          const input = cmd.input as { Body: string; IfMatch?: string };
+          if (input.IfMatch && input.IfMatch !== liveEtag) {
+            concurrentInflight.count--;
+            const err = new Error('Precondition failed') as Error & { name: string };
+            err.name = 'PreconditionFailed';
+            throw err;
+          }
+          putCount++;
+          liveBody = input.Body;
+          liveEtag = `"e${putCount + 1}"`;
+          concurrentInflight.count--;
+          return { ETag: liveEtag };
+        }
+        throw new Error('unexpected');
+      });
+      const store = new ExportIndexStore(s3, 'b', 'cdkd', 'us-east-1', mockBackend([]), {
+        initialBackoffMs: 1,
+        maxBackoffMs: 1,
+      });
+
+      // Fire 3 concurrent updates. If the chain works, max in-flight
+      // == 1; otherwise > 1 and we'd see at least one 412 retry.
+      await Promise.all([
+        store.updateForStack('A', 'us-east-1', { ExportA: 'a' }),
+        store.updateForStack('B', 'us-east-1', { ExportB: 'b' }),
+        store.updateForStack('C', 'us-east-1', { ExportC: 'c' }),
+      ]);
+
+      expect(concurrentInflight.max).toBe(1);
+      // 3 successful PUTs, no retries fired
+      expect(putCount).toBe(3);
+      // Final state has all three exports
+      const finalFile = JSON.parse(liveBody) as ExportIndexFile;
+      expect(finalFile.exports['ExportA']?.value).toBe('a');
+      expect(finalFile.exports['ExportB']?.value).toBe('b');
+      expect(finalFile.exports['ExportC']?.value).toBe('c');
+    });
+
+    it('logs warn and returns (no throw) on non-retryable error', async () => {
+      // Reviewer G5: the non-PreconditionFailed branch of runWithRetry
+      // is reachable via S3 AccessDenied / NetworkError / throttle. The
+      // index is best-effort, so we MUST NOT propagate this failure to
+      // the deploy (which would abort an otherwise-successful save).
+      const indexFile: ExportIndexFile = {
+        indexVersion: 1,
+        region: 'us-east-1',
+        exports: {},
+        lastModified: 1,
+      };
+      const s3 = mockS3(async (cmd) => {
+        if (cmd.constructor.name === 'GetObjectCommand') {
+          return {
+            Body: { transformToString: async () => JSON.stringify(indexFile) },
+            ETag: '"e1"',
+          };
+        }
+        if (cmd.constructor.name === 'PutObjectCommand') {
+          const err = new Error('Access denied') as Error & { name: string };
+          err.name = 'AccessDenied';
+          throw err;
+        }
+        throw new Error('unexpected');
+      });
+      const store = new ExportIndexStore(s3, 'b', 'cdkd', 'us-east-1', mockBackend([]), {
+        maxWriteRetries: 5,
+        initialBackoffMs: 1,
+        maxBackoffMs: 1,
+      });
+
+      // Must resolve (not throw) — best-effort semantics for the index.
+      await expect(
+        store.updateForStack('Me', 'us-east-1', { X: 'v' })
+      ).resolves.toBeUndefined();
     });
 
     it('gives up after maxWriteRetries and logs warn (no throw)', async () => {

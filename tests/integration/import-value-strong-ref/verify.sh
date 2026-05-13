@@ -170,11 +170,49 @@ print(count)
 fi
 
 echo ""
-echo "==> Step 4: Clean up — destroy Consumer"
+echo "==> Step 3c: Re-deploy consumer (v3 → v4 promotion on redeploy)"
+# Producer was destroyed above, so we need to redeploy producer first
+# (which writes v4 state + populates index), then redeploy consumer
+# (which resolves the new IntegBucketArn and populates v4 imports[]).
+# This proves the gradual-activation story end-to-end: a v3 consumer
+# becomes v4 + imports[]-populated on its next deploy, after which
+# strong-ref enforcement applies on subsequent producer destroys.
+${CDKD} deploy --all --region "${AWS_REGION}" --state-bucket "${STATE_BUCKET}"
+CONSUMER_STATE_V4=$(aws s3 cp "s3://${STATE_BUCKET}/${CONSUMER_STATE_KEY}" - 2>/dev/null)
+V4_VERSION=$(echo "${CONSUMER_STATE_V4}" | python3 -c 'import sys, json; print(json.load(sys.stdin)["version"])')
+if [[ "${V4_VERSION}" != "4" ]]; then
+  echo "FAIL: consumer state version after redeploy is ${V4_VERSION}, expected 4"
+  exit 1
+fi
+V4_IMPORTS=$(echo "${CONSUMER_STATE_V4}" | python3 -c 'import sys, json; print(len(json.load(sys.stdin).get("imports", [])))')
+if [[ "${V4_IMPORTS}" -lt 1 ]]; then
+  echo "FAIL: consumer state.imports[] is empty after redeploy (got ${V4_IMPORTS}), expected at least 1"
+  exit 1
+fi
+echo "    consumer state promoted v3 → v4 with imports[]=${V4_IMPORTS} entries (✓)"
+
+echo ""
+echo "==> Step 3d: Strong-ref enforcement now applies again"
+set +e
+DESTROY_OUTPUT=$(${CDKD} destroy ${PRODUCER} --region "${AWS_REGION}" --state-bucket "${STATE_BUCKET}" --force 2>&1)
+DESTROY_RC=$?
+set -e
+if [[ "${DESTROY_RC}" -eq 0 ]]; then
+  echo "FAIL: producer destroy unexpectedly succeeded after consumer redeploy — strong-ref check did not re-engage"
+  echo "${DESTROY_OUTPUT}"
+  exit 1
+fi
+echo "    producer destroy refused again after consumer redeploy (exit ${DESTROY_RC}) (✓)"
+
+echo ""
+echo "==> Step 4: Clean up — destroy Consumer then Producer"
 ${CDKD} destroy ${CONSUMER} --region "${AWS_REGION}" --state-bucket "${STATE_BUCKET}" --force
+${CDKD} destroy ${PRODUCER} --region "${AWS_REGION}" --state-bucket "${STATE_BUCKET}" --force
 
 echo ""
 echo "==> Step 5: Final cleanup verification"
+# NB: producer state may transiently exist if --force destroy is racing
+# AWS resource teardown; the verify trap handles the leftover case.
 aws s3 ls "s3://${STATE_BUCKET}/${PRODUCER_STATE_KEY}" >/dev/null 2>&1 && {
   echo "FAIL: producer state still exists after destroy"
   exit 1

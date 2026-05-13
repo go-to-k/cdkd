@@ -1206,9 +1206,27 @@ export class IntrinsicFunctionResolver {
 
   /**
    * Push a resolved `Fn::ImportValue` into the consumer's recorded-imports
-   * bag (when supplied by the caller). Skips duplicates within a single
-   * resolution pass so multiple references to the same export emit one
-   * entry.
+   * bag (when supplied by the caller). Skips duplicates within the
+   * SAME bag — multiple references to the same `(exportName,
+   * sourceStack, sourceRegion)` triple emit one entry.
+   *
+   * Concurrency: the check + push pair is purely synchronous (no
+   * `await` between `some()` and `push()`), so the JS event loop
+   * cannot interleave a competing `recordImport` call between the
+   * dedup check and the append. The bag's lifetime is per-deploy
+   * (DeployEngine resets `this.recordedImports = []` at the top of
+   * each `deploy()` call), so the bag identity already serves as
+   * the dedup scope.
+   *
+   * Cross-context dedup: when callers share the same bag instance
+   * across multiple ResolverContext objects (the typical pattern —
+   * DeployEngine passes `this.recordedImports` into every resolver
+   * context it constructs), the dedup naturally extends across
+   * contexts because the `some()` reads the shared bag. Stashing
+   * the dedup Set on `context.recordedImports` directly via a
+   * property would break under `verbatimModuleSyntax`-style strict
+   * typing; the array scan stays O(N) where N is the per-deploy
+   * import count (typically < 20), which is fine.
    */
   private recordImport(
     context: ResolverContext,

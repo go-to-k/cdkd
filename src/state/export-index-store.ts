@@ -97,6 +97,20 @@ export class ExportIndexStore {
   private stateBackend: S3StateBackend;
   private loadState: LoadState = { kind: 'unloaded' };
   private opts: Required<ExportIndexStoreOptions>;
+  /**
+   * In-process serializer for write paths (`updateForStack`,
+   * `patchEntry`, `removeStack`). The S3 `If-Match` etag prevents
+   * cross-process data loss, but within ONE cdkd process the
+   * default `cdkd deploy --all --stack-concurrency > 1` topology
+   * lets multiple per-stack writes race on the same etag — they
+   * would all read the same loaded snapshot, all attempt to write
+   * with that etag, all but one fail with PreconditionFailed, all
+   * retry, and burn through the bounded retry budget for no good
+   * reason. Serializing write paths via this chained promise lets
+   * the etag race only fire across processes (cross-app concurrency)
+   * where it actually matters. Reads (`lookup`) remain unsynchronized.
+   */
+  private writeChain: Promise<void> = Promise.resolve();
 
   constructor(
     s3Client: S3Client,
@@ -135,12 +149,13 @@ export class ExportIndexStore {
   }
 
   /**
-   * Replace all entries for `stackName` with the supplied `outputs`. Used
-   * after a successful deploy save. Writes the updated index to S3 under
-   * an If-Match optimistic lock, retrying on conflict.
+   * Replace all entries for `(stackName, producerRegion)` with the
+   * supplied `outputs`. Used after a successful deploy save. Writes
+   * the updated index to S3 under an If-Match optimistic lock,
+   * retrying on conflict.
    *
-   * If `outputs` is empty, every entry currently owned by this stack is
-   * removed.
+   * If `outputs` is empty, every entry currently owned by this stack
+   * in this region is removed.
    *
    * Best-effort: on persistent retry exhaustion the in-memory map is
    * still updated locally (so this session sees a consistent view) and
@@ -152,7 +167,9 @@ export class ExportIndexStore {
     producerRegion: string,
     outputs: Record<string, unknown>
   ): Promise<void> {
-    await this.runWithRetry('update', () => this.applyStackUpdate(stackName, producerRegion, outputs));
+    await this.enqueueWrite('update', () =>
+      this.applyStackUpdate(stackName, producerRegion, outputs)
+    );
   }
 
   /**
@@ -161,15 +178,39 @@ export class ExportIndexStore {
    * does NOT require a full rebuild.
    */
   async patchEntry(exportName: string, entry: ExportIndexEntry): Promise<void> {
-    await this.runWithRetry('patch', () => this.applyPatch(exportName, entry));
+    await this.enqueueWrite('patch', () => this.applyPatch(exportName, entry));
   }
 
   /**
-   * Drop all entries owned by `stackName`. Used after a successful
-   * destroy. Same retry / best-effort semantics as `updateForStack`.
+   * Drop all entries owned by `(stackName, producerRegion)`. Used after
+   * a successful destroy. Same retry / best-effort semantics as
+   * `updateForStack`. Filtering by both stack AND region is symmetric
+   * with the update path so a stack that was re-deployed to a new
+   * region keeps its old-region entries (the user must destroy in the
+   * old region too to drop them).
    */
-  async removeStack(stackName: string): Promise<void> {
-    await this.runWithRetry('remove', () => this.applyRemoveStack(stackName));
+  async removeStack(stackName: string, producerRegion: string): Promise<void> {
+    await this.enqueueWrite('remove', () =>
+      this.applyRemoveStack(stackName, producerRegion)
+    );
+  }
+
+  /**
+   * Serialize write paths within a single process. Chains every write
+   * onto a tail Promise so two concurrent `updateForStack` calls don't
+   * race on the same etag inside the same cdkd. The S3 If-Match retry
+   * remains as cross-process protection.
+   */
+  private async enqueueWrite(
+    label: string,
+    op: () => Promise<void>
+  ): Promise<void> {
+    const next = this.writeChain.then(() => this.runWithRetry(label, op));
+    // Swallow errors on the shared tail so a single write's failure
+    // doesn't poison the chain for the next write (runWithRetry
+    // already logs warns on bail-out; we don't want a rejected tail).
+    this.writeChain = next.catch(() => {});
+    return next;
   }
 
   /**
@@ -348,13 +389,19 @@ export class ExportIndexStore {
     await this.persist(next);
   }
 
-  private async applyRemoveStack(stackName: string): Promise<void> {
+  private async applyRemoveStack(
+    stackName: string,
+    producerRegion: string
+  ): Promise<void> {
     await this.ensureLoaded();
     if (this.loadState.kind !== 'loaded') return;
     const next = new Map(this.loadState.entries);
     let changed = false;
     for (const [name, entry] of next) {
-      if (entry.producerStack === stackName) {
+      // Match BOTH stack and region — symmetric with `applyStackUpdate`.
+      // A stack re-deployed to a different region keeps its old-region
+      // entries; the user must destroy in each region separately.
+      if (entry.producerStack === stackName && entry.producerRegion === producerRegion) {
         next.delete(name);
         changed = true;
       }

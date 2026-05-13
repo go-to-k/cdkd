@@ -145,6 +145,33 @@ describe('scanActiveConsumers (strong-reference check)', () => {
     expect(consumers).toEqual([]);
   });
 
+  it('does NOT self-skip same-named stack in a different region', async () => {
+    // Reviewer code-minor #4: the v2 layout supports the same stackName
+    // deployed to multiple regions. Destroying the us-east-1 instance
+    // must still see the us-west-2 instance as a regular consumer if
+    // it imports from us-east-1's producer.
+    const backend = mockBackend([
+      // Self: us-east-1 (destroying this one).
+      { stackName: 'Shared', region: 'us-east-1' },
+      // Same name, different region — must be treated as a consumer,
+      // not self-skipped. Its imports[] references the us-east-1 self.
+      {
+        stackName: 'Shared',
+        region: 'us-west-2',
+        imports: [
+          { sourceStack: 'Shared', sourceRegion: 'us-east-1', exportName: 'X' },
+        ],
+      },
+    ]);
+    const consumers = await scanActiveConsumers('Shared', 'us-east-1', {
+      stateBackend: backend,
+      baseRegion: 'us-east-1',
+    });
+    expect(consumers).toEqual([
+      { consumerStack: 'Shared', consumerRegion: 'us-west-2', exportName: 'X' },
+    ]);
+  });
+
   it('does not throw when one state file is unreadable (skips, continues)', async () => {
     const backend: S3StateBackend = {
       listStacks: vi.fn(async () => [
