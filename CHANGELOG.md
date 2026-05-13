@@ -1,3 +1,10 @@
+## [0.99.2](https://github.com/go-to-k/cdkd/compare/v0.99.1...v0.99.2) (2026-05-13)
+
+
+### Bug Fixes
+
+* **import:** pre-resolve {Ref: X} intrinsics against overrides before provider.import ([#361](https://github.com/go-to-k/cdkd/issues/361)) ([#362](https://github.com/go-to-k/cdkd/issues/362)) ([74707d0](https://github.com/go-to-k/cdkd/commit/74707d037989c0b391923dbdaa12d3565c3607af))
+
 ## [0.99.1](https://github.com/go-to-k/cdkd/compare/v0.99.0...v0.99.1) (2026-05-13)
 
 
