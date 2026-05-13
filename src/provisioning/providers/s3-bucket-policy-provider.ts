@@ -351,6 +351,8 @@ export class S3BucketPolicyProvider implements ResourceProvider {
  *   - must start and end with a letter or digit
  *   - no consecutive dots
  *   - no `xn--` prefix (reserved for IDN bucket names)
+ *   - no `-s3alias` suffix (reserved for S3 Access Point aliases)
+ *   - no `--ol-s3` suffix (reserved for S3 on Outposts)
  *
  * A practical pattern that excludes the obvious CFn-generated names like
  * `MyStack-MyBucketPolicy-XXXXXXXXXX` (which contain uppercase letters
@@ -362,5 +364,6 @@ function isS3BucketName(value: string): boolean {
   if (!/^[a-z0-9][a-z0-9.-]*[a-z0-9]$/.test(value)) return false;
   if (value.includes('..')) return false;
   if (value.startsWith('xn--')) return false;
+  if (value.endsWith('-s3alias') || value.endsWith('--ol-s3')) return false;
   return true;
 }

@@ -115,6 +115,27 @@ describe('S3BucketPolicyProvider', () => {
       expect(result).toEqual({ physicalId: BUCKET_NAME, attributes: {} });
     });
 
+    it('rejects knownPhysicalId ending in `-s3alias` (reserved for S3 Access Point aliases)', async () => {
+      // AWS forbids bucket names ending in `-s3alias` — that suffix is
+      // reserved for the alias names of S3 Access Points and would be
+      // rejected by `PutBucketPolicy` at first call. cdkd's validator
+      // catches it up-front so the import falls back to properties.Bucket
+      // rather than baking the unusable value into state.
+      const aliasSuffixed = 'my-bucket-s3alias';
+      const result = await provider.import(makeInput({ knownPhysicalId: aliasSuffixed }));
+
+      expect(result).toEqual({ physicalId: BUCKET_NAME, attributes: {} });
+    });
+
+    it('rejects knownPhysicalId ending in `--ol-s3` (reserved for S3 on Outposts)', async () => {
+      // AWS forbids bucket names ending in `--ol-s3` — that suffix is
+      // reserved for S3 on Outposts and would be rejected downstream.
+      const outpostsSuffixed = 'my-bucket--ol-s3';
+      const result = await provider.import(makeInput({ knownPhysicalId: outpostsSuffixed }));
+
+      expect(result).toEqual({ physicalId: BUCKET_NAME, attributes: {} });
+    });
+
     it('throws actionable error when knownPhysicalId is a non-bucket-name AND properties.Bucket is missing', async () => {
       const cfnGeneratedName = 'MyStack-MyBucketPolicy-1ABCDEFGHIJKL';
       await expect(
