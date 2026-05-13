@@ -17,6 +17,8 @@ function makeRoute(partial: Partial<DiscoveredRoute>): RouteWithAuth {
     stage: partial.stage ?? '$default',
     declaredAt: partial.declaredAt ?? 'Stack/Method',
     ...(partial.apiLogicalId !== undefined && { apiLogicalId: partial.apiLogicalId }),
+    ...(partial.apiStackName !== undefined && { apiStackName: partial.apiStackName }),
+    ...(partial.apiCdkPath !== undefined && { apiCdkPath: partial.apiCdkPath }),
   };
   return { route, authorizer: undefined };
 }
@@ -93,32 +95,133 @@ describe('groupRoutesByServer', () => {
 
 describe('filterRoutesByApiIdentifier', () => {
   const routes = [
-    makeRoute({ source: 'http-api', apiLogicalId: 'PublicApi', pathPattern: '/p' }),
-    makeRoute({ source: 'http-api', apiLogicalId: 'AdminApi', pathPattern: '/a' }),
-    makeRoute({ source: 'function-url', lambdaLogicalId: 'GoHandler', apiLogicalId: undefined }),
+    makeRoute({
+      source: 'http-api',
+      apiLogicalId: 'PublicApi',
+      apiStackName: 'WebStack',
+      apiCdkPath: 'WebStack/PublicApi/Resource',
+      pathPattern: '/p',
+    }),
+    makeRoute({
+      source: 'http-api',
+      apiLogicalId: 'AdminApi',
+      apiStackName: 'AdminStack',
+      apiCdkPath: 'AdminStack/AdminApi/Resource',
+      pathPattern: '/a',
+    }),
+    makeRoute({
+      source: 'function-url',
+      lambdaLogicalId: 'GoHandler',
+      apiLogicalId: undefined,
+      apiStackName: 'BackendStack',
+      apiCdkPath: 'BackendStack/GoHandler',
+    }),
   ];
 
-  it('matches HTTP API by apiLogicalId', () => {
+  it('matches HTTP API by bare logical id (form 1)', () => {
     const result = filterRoutesByApiIdentifier(routes, 'PublicApi');
     expect(result).toHaveLength(1);
     expect(result[0]!.route.apiLogicalId).toBe('PublicApi');
   });
 
-  it('matches Function URLs by backing Lambda logical id', () => {
+  it('matches Function URLs by backing Lambda logical id (form 1)', () => {
     const result = filterRoutesByApiIdentifier(routes, 'GoHandler');
     expect(result).toHaveLength(1);
     expect(result[0]!.route.source).toBe('function-url');
   });
 
+  it('matches HTTP API by stack-qualified logical id (form 2)', () => {
+    const result = filterRoutesByApiIdentifier(routes, 'WebStack:PublicApi');
+    expect(result).toHaveLength(1);
+    expect(result[0]!.route.apiLogicalId).toBe('PublicApi');
+  });
+
+  it('matches Function URL by stack-qualified Lambda logical id (form 2)', () => {
+    const result = filterRoutesByApiIdentifier(routes, 'BackendStack:GoHandler');
+    expect(result).toHaveLength(1);
+    expect(result[0]!.route.source).toBe('function-url');
+  });
+
+  it('matches HTTP API by exact CDK Construct path (form 3)', () => {
+    const result = filterRoutesByApiIdentifier(routes, 'WebStack/PublicApi/Resource');
+    expect(result).toHaveLength(1);
+    expect(result[0]!.route.apiLogicalId).toBe('PublicApi');
+  });
+
+  it('matches Function URL by exact CDK Construct path (form 3)', () => {
+    const result = filterRoutesByApiIdentifier(routes, 'BackendStack/GoHandler');
+    expect(result).toHaveLength(1);
+    expect(result[0]!.route.source).toBe('function-url');
+  });
+
+  it('matches HTTP API by L2 Construct-path prefix → synthesized L1 child (form 4)', () => {
+    // CDK's `new apigatewayv2.HttpApi(stack, 'PublicApi')` emits L1 child
+    // at `WebStack/PublicApi/Resource`; users would type the L2 path
+    // `WebStack/PublicApi` and expect prefix-rule resolution — same UX
+    // as `cdkd orphan`.
+    const result = filterRoutesByApiIdentifier(routes, 'WebStack/PublicApi');
+    expect(result).toHaveLength(1);
+    expect(result[0]!.route.apiLogicalId).toBe('PublicApi');
+  });
+
+  it('does NOT prefix-match on partial path component (boundary check)', () => {
+    // `WebStack/Public` is a partial component of `WebStack/PublicApi/...`,
+    // NOT an ancestor cdk path — must not match. The trailing-`/` rule
+    // protects against this.
+    expect(filterRoutesByApiIdentifier(routes, 'WebStack/Public')).toEqual([]);
+  });
+
   it('returns an empty array on no match (caller surfaces error)', () => {
     expect(filterRoutesByApiIdentifier(routes, 'Nope')).toEqual([]);
+  });
+
+  it('falls back to bare-logical-id-only when apiCdkPath/apiStackName are missing', () => {
+    // Backward compat: routes discovered from a synthesized template
+    // without `aws:cdk:path` metadata (e.g. hand-rolled `cfn.Resource`)
+    // keep the pre-PR behavior — bare logical id matches, but the new
+    // forms don't.
+    const sparse = [
+      makeRoute({ source: 'http-api', apiLogicalId: 'BareApi', pathPattern: '/b' }),
+    ];
+    expect(filterRoutesByApiIdentifier(sparse, 'BareApi')).toHaveLength(1);
+    expect(filterRoutesByApiIdentifier(sparse, 'Stack:BareApi')).toEqual([]);
+    expect(filterRoutesByApiIdentifier(sparse, 'Stack/BareApi')).toEqual([]);
   });
 });
 
 describe('availableApiIdentifiers', () => {
-  it('returns distinct identifiers in first-seen order', () => {
+  it('returns CDK Construct path when present (preferred primary form)', () => {
     const routes = [
-      makeRoute({ source: 'http-api', apiLogicalId: 'PublicApi' }),
+      makeRoute({
+        source: 'http-api',
+        apiLogicalId: 'PublicApi',
+        apiCdkPath: 'WebStack/PublicApi/Resource',
+      }),
+      makeRoute({
+        source: 'http-api',
+        apiLogicalId: 'PublicApi',
+        apiCdkPath: 'WebStack/PublicApi/Resource',
+      }),
+      makeRoute({
+        source: 'http-api',
+        apiLogicalId: 'AdminApi',
+        apiCdkPath: 'AdminStack/AdminApi/Resource',
+      }),
+      makeRoute({
+        source: 'function-url',
+        lambdaLogicalId: 'GoHandler',
+        apiCdkPath: 'BackendStack/GoHandler',
+      }),
+    ];
+    expect(availableApiIdentifiers(routes)).toEqual([
+      'WebStack/PublicApi/Resource',
+      'AdminStack/AdminApi/Resource',
+      'BackendStack/GoHandler',
+    ]);
+  });
+
+  it('falls back to bare logical id when apiCdkPath is missing', () => {
+    const routes = [
       makeRoute({ source: 'http-api', apiLogicalId: 'PublicApi' }),
       makeRoute({ source: 'http-api', apiLogicalId: 'AdminApi' }),
       makeRoute({ source: 'function-url', lambdaLogicalId: 'GoHandler' }),

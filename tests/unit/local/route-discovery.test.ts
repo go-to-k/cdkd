@@ -62,6 +62,7 @@ describe('discoverRoutes — REST v1', () => {
         apiVersion: 'v1',
         stage: 'prod',
         apiLogicalId: 'Api',
+        apiStackName: 'S',
         declaredAt: 'S/Method',
       },
     ]);
@@ -371,6 +372,7 @@ describe('discoverRoutes — HTTP API v2', () => {
       apiVersion: 'v2',
       stage: '$default',
       apiLogicalId: 'Api',
+      apiStackName: 'S',
       declaredAt: 'S/Route',
     });
   });
@@ -485,6 +487,7 @@ describe('discoverRoutes — Function URL', () => {
       source: 'function-url',
       apiVersion: 'v2',
       stage: '$default',
+      apiStackName: 'S',
       declaredAt: 'S/Url',
     });
   });
@@ -511,6 +514,117 @@ describe('discoverRoutes — Function URL', () => {
       },
     });
     expect(() => discoverRoutes([stack])).toThrow(RouteDiscoveryError);
+  });
+});
+
+describe('discoverRoutes — aws:cdk:path propagation', () => {
+  // The discovery layer surfaces the parent API's (or the backing
+  // Lambda's, for Function URLs) `aws:cdk:path` Metadata so the
+  // `--api` filter in `filterRoutesByApiIdentifier` can accept the
+  // CDK Construct path form — same UX rule the rest of `cdkd local *`
+  // family uses.
+
+  it('propagates RestApi aws:cdk:path to REST v1 routes', () => {
+    const stack = buildStack('S', {
+      Api: {
+        Type: 'AWS::ApiGateway::RestApi',
+        Properties: {},
+        Metadata: { 'aws:cdk:path': 'WebStack/MyRestApi/Resource' },
+      },
+      Method: {
+        Type: 'AWS::ApiGateway::Method',
+        Properties: {
+          HttpMethod: 'GET',
+          RestApiId: { Ref: 'Api' },
+          ResourceId: { 'Fn::GetAtt': ['Api', 'RootResourceId'] },
+          Integration: {
+            Type: 'AWS_PROXY',
+            Uri: { 'Fn::GetAtt': ['Handler', 'Arn'] },
+          },
+        },
+      },
+    });
+    const route = discoverRoutes([stack])[0]!;
+    expect(route.apiCdkPath).toBe('WebStack/MyRestApi/Resource');
+    expect(route.apiStackName).toBe('S');
+  });
+
+  it('propagates HTTP API aws:cdk:path to v2 routes', () => {
+    const stack = buildStack('S', {
+      Api: {
+        Type: 'AWS::ApiGatewayV2::Api',
+        Properties: { ProtocolType: 'HTTP' },
+        Metadata: { 'aws:cdk:path': 'WebStack/MyHttpApi/Resource' },
+      },
+      Integ: {
+        Type: 'AWS::ApiGatewayV2::Integration',
+        Properties: {
+          ApiId: { Ref: 'Api' },
+          IntegrationType: 'AWS_PROXY',
+          IntegrationUri: { 'Fn::GetAtt': ['Handler', 'Arn'] },
+        },
+      },
+      Route: {
+        Type: 'AWS::ApiGatewayV2::Route',
+        Properties: {
+          ApiId: { Ref: 'Api' },
+          RouteKey: 'GET /items',
+          Target: { 'Fn::Join': ['/', ['integrations', { Ref: 'Integ' }]] },
+        },
+      },
+    });
+    const route = discoverRoutes([stack])[0]!;
+    expect(route.apiCdkPath).toBe('WebStack/MyHttpApi/Resource');
+    expect(route.apiStackName).toBe('S');
+  });
+
+  it('propagates the BACKING LAMBDA aws:cdk:path to Function URLs (not the URL resource)', () => {
+    // For Function URLs, the natural CDK Construct path is the
+    // Function's path (the URL is an auto-generated child). Users
+    // expect `--api MyStack/MyHandler` to match — so surface the
+    // Lambda's cdk path, not the URL's own.
+    const stack = buildStack('S', {
+      Fn: {
+        Type: 'AWS::Lambda::Function',
+        Properties: {},
+        Metadata: { 'aws:cdk:path': 'BackendStack/GoHandler/Resource' },
+      },
+      Url: {
+        Type: 'AWS::Lambda::Url',
+        Properties: { AuthType: 'NONE', TargetFunctionArn: { 'Fn::GetAtt': ['Fn', 'Arn'] } },
+        Metadata: { 'aws:cdk:path': 'BackendStack/GoHandler/FunctionUrl' },
+      },
+    });
+    const route = discoverRoutes([stack])[0]!;
+    expect(route.source).toBe('function-url');
+    expect(route.apiCdkPath).toBe('BackendStack/GoHandler/Resource');
+    expect(route.apiStackName).toBe('S');
+  });
+
+  it('omits apiCdkPath when the parent resource has no aws:cdk:path metadata', () => {
+    // Backward compat path — hand-rolled CFn resources or templates
+    // without the metadata stay matchable by bare logical id (and
+    // by stack-qualified logical id, since `apiStackName` is always
+    // set from the StackInfo).
+    const stack = buildStack('S', {
+      Api: { Type: 'AWS::ApiGateway::RestApi', Properties: {} },
+      Method: {
+        Type: 'AWS::ApiGateway::Method',
+        Properties: {
+          HttpMethod: 'GET',
+          RestApiId: { Ref: 'Api' },
+          ResourceId: { 'Fn::GetAtt': ['Api', 'RootResourceId'] },
+          Integration: {
+            Type: 'AWS_PROXY',
+            Uri: { 'Fn::GetAtt': ['Handler', 'Arn'] },
+          },
+        },
+      },
+    });
+    const route = discoverRoutes([stack])[0]!;
+    expect(route.apiCdkPath).toBeUndefined();
+    expect(route.apiStackName).toBe('S');
+    expect(route.apiLogicalId).toBe('Api');
   });
 });
 

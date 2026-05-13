@@ -420,6 +420,8 @@ and same-stack Lambda Layers bind-mounted at `/opt`.
 ```bash
 cdkd local start-api                              # one HTTP server per discovered API
 cdkd local start-api --port 3000                  # pin the first server's port
+cdkd local start-api --api MyHttpApi              # filter by logical id
+cdkd local start-api --api MyStack/MyHttpApi      # OR: CDK Construct path
 cdkd local start-api --warm --watch               # pre-start + hot reload
 ```
 

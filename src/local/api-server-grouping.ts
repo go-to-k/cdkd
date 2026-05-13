@@ -127,13 +127,28 @@ export function groupRoutesByServer(routes: readonly RouteWithAuth[]): ApiServer
 /**
  * Filter the route list to a single API by user-supplied identifier.
  *
- * Matches against both the parent API logical id (HTTP API / REST v1)
- * AND the Function URL's backing-Lambda logical id, so users can pass
- * any of:
+ * Accepts four input forms — matches the rest of the `cdkd local *`
+ * target-resolution family (`local invoke <target>` /
+ * `local run-task <target>`) for consistency:
  *
- *   - The HTTP API logical id (e.g. `MyHttpApi`)
- *   - The REST API logical id (e.g. `MyRestApi`)
- *   - The Lambda logical id backing a Function URL (e.g. `GoHandler`)
+ *   1. **Bare logical id** (`MyHttpApi`) — exact match on the parent
+ *      API's logical id, or on the backing Lambda's logical id for
+ *      Function URLs.
+ *   2. **Stack-qualified logical id** (`MyStack:MyHttpApi`) — exact
+ *      match on `<stackName>:<logicalId>`. Useful in multi-stack apps
+ *      where the same bare logical id appears in two stacks.
+ *   3. **CDK Construct path / display path** (`MyStack/MyHttpApi`) —
+ *      exact match on the resource's `aws:cdk:path` metadata.
+ *   4. **CDK Construct path prefix** — when the input is a strict
+ *      ancestor of the resource's `aws:cdk:path` (i.e.
+ *      `cdkPath.startsWith(input + '/')`). Mirrors the prefix rule
+ *      `cdkd orphan` uses so an L2 wrapper path resolves to its L1
+ *      child (`MyStack/MyHttpApi` matches `MyStack/MyHttpApi/Resource`).
+ *
+ * Routes discovered before this field set was added (or routes where
+ * the synthesized template doesn't carry `aws:cdk:path` metadata —
+ * e.g. hand-rolled `cfn.Resource` defs) silently fall through to the
+ * bare-logical-id-only path so the change is non-breaking.
  *
  * Returns an empty array when no route matches — the caller is
  * responsible for surfacing a "no API matched" error with the list of
@@ -143,29 +158,51 @@ export function filterRoutesByApiIdentifier(
   routes: readonly RouteWithAuth[],
   identifier: string
 ): RouteWithAuth[] {
-  return routes.filter((rwa) => {
-    const r = rwa.route;
-    if (r.source === 'function-url') {
-      return r.lambdaLogicalId === identifier;
-    }
-    return r.apiLogicalId === identifier;
-  });
+  return routes.filter((rwa) => routeMatchesIdentifier(rwa.route, identifier));
+}
+
+/**
+ * Predicate behind {@link filterRoutesByApiIdentifier} and
+ * {@link availableApiIdentifiers}'s primary-form selection. Exported
+ * for test coverage only — the production code path goes through
+ * `filterRoutesByApiIdentifier`.
+ */
+export function routeMatchesIdentifier(
+  route: RouteWithAuth['route'],
+  identifier: string
+): boolean {
+  const bareId = route.source === 'function-url' ? route.lambdaLogicalId : route.apiLogicalId;
+  if (bareId && bareId === identifier) return true;
+  if (route.apiStackName) {
+    if (bareId && identifier === `${route.apiStackName}:${bareId}`) return true;
+  }
+  if (route.apiCdkPath) {
+    if (identifier === route.apiCdkPath) return true;
+    if (route.apiCdkPath.startsWith(`${identifier}/`)) return true;
+  }
+  return false;
 }
 
 /**
  * Enumerate every distinct API identifier in the route list, in the
  * order they were discovered. Useful for the "available APIs" error
  * message when `--api <id>` doesn't match.
+ *
+ * Returns the **primary form** per API (CDK Construct path when
+ * available, else bare logical id) — the "available identifiers" hint
+ * stays compact while pointing users at the form most likely to round-
+ * trip across rename refactors.
  */
 export function availableApiIdentifiers(routes: readonly RouteWithAuth[]): string[] {
   const seen = new Set<string>();
   const out: string[] = [];
   for (const rwa of routes) {
     const r = rwa.route;
-    const id = r.source === 'function-url' ? r.lambdaLogicalId : (r.apiLogicalId ?? '<unknown>');
-    if (!seen.has(id)) {
-      seen.add(id);
-      out.push(id);
+    const bareId = r.source === 'function-url' ? r.lambdaLogicalId : (r.apiLogicalId ?? '<unknown>');
+    const primary = r.apiCdkPath ?? bareId;
+    if (!seen.has(primary)) {
+      seen.add(primary);
+      out.push(primary);
     }
   }
   return out;

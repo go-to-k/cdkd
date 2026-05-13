@@ -1,3 +1,4 @@
+import { readCdkPath } from '../cli/cdk-path.js';
 import type { StackInfo } from '../synthesis/assembly-reader.js';
 import type { CloudFormationTemplate, TemplateResource } from '../types/resource.js';
 import { RouteDiscoveryError } from '../utils/error-handler.js';
@@ -54,6 +55,25 @@ export interface DiscoveredRoute {
    */
   apiLogicalId?: string;
   /**
+   * Name of the stack the parent API resource (or backing Lambda for
+   * Function URLs) lives in. Populated for every route so the
+   * `--api` filter can accept the **stack-qualified logical id**
+   * form (`MyStack:MyHttpApi`) — mirrors `cdkd local invoke` /
+   * `cdkd local run-task` target syntax.
+   */
+  apiStackName?: string;
+  /**
+   * CDK Construct path (`aws:cdk:path` metadata) of the parent API
+   * resource (or the backing Lambda for Function URLs). Populated
+   * for every route when the synthesized resource carries the
+   * metadata. Used by `--api` to accept the **CDK display path**
+   * form (`MyStack/MyHttpApi`) with prefix-rule matching (matches
+   * the input exactly OR when the input is the parent L2 path that
+   * resolves down to this resource's L1 child) — mirrors the same
+   * prefix rule `cdkd orphan` uses.
+   */
+  apiCdkPath?: string;
+  /**
    * Stage variables for the route's selected Stage (PR 8c). `null` when
    * the route's Stage has no Variables, or for routes without a Stage
    * (Function URLs). Populated by `attachStageContext` after discovery
@@ -91,7 +111,7 @@ export function discoverRoutes(stacks: readonly StackInfo[]): DiscoveredRoute[] 
             routes.push(...discoverHttpApiRoute(logicalId, resource, template, stack.stackName));
             break;
           case 'AWS::Lambda::Url':
-            routes.push(...discoverFunctionUrl(logicalId, resource, stack.stackName));
+            routes.push(...discoverFunctionUrl(logicalId, resource, template, stack.stackName));
             break;
           default:
             // Filter the known parent types early so we don't log noise.
@@ -174,6 +194,7 @@ function discoverRestV1Method(
 
   const httpMethod = stringifyValue(props['HttpMethod'] ?? 'ANY');
   const stage = pickRestV1Stage(restApiLogicalId, template);
+  const restApiCdkPath = readApiCdkPath(restApiLogicalId, template);
 
   return [
     {
@@ -184,6 +205,8 @@ function discoverRestV1Method(
       apiVersion: 'v1',
       stage,
       apiLogicalId: restApiLogicalId,
+      apiStackName: stackName,
+      ...(restApiCdkPath !== undefined && { apiCdkPath: restApiCdkPath }),
       declaredAt: `${stackName}/${logicalId}`,
     },
   ];
@@ -383,6 +406,7 @@ function discoverHttpApiRoute(
 
   // RouteKey grammar: `<METHOD> <path>` or `$default`.
   const { method, pathPattern } = parseRouteKey(routeKey);
+  const apiCdkPath = readApiCdkPath(apiLogicalId, template);
 
   return [
     {
@@ -393,6 +417,8 @@ function discoverHttpApiRoute(
       apiVersion: 'v2',
       stage: '$default',
       apiLogicalId,
+      apiStackName: stackName,
+      ...(apiCdkPath !== undefined && { apiCdkPath }),
       declaredAt: `${stackName}/${logicalId}`,
     },
   ];
@@ -410,6 +436,7 @@ function discoverHttpApiRoute(
 function discoverFunctionUrl(
   logicalId: string,
   resource: TemplateResource,
+  template: CloudFormationTemplate,
   stackName: string
 ): DiscoveredRoute[] {
   const props = resource.Properties ?? {};
@@ -433,6 +460,10 @@ function discoverFunctionUrl(
     targetArn,
     `${stackName}/${logicalId}.TargetFunctionArn`
   );
+  // Function URLs identify by their backing Lambda — surface the Lambda's
+  // cdk path so `--api MyStack/MyHandler` (the natural CDK Construct path
+  // for the Function, not the auto-generated URL child) matches.
+  const lambdaCdkPath = readApiCdkPath(lambdaLogicalId, template);
 
   return [
     {
@@ -442,9 +473,27 @@ function discoverFunctionUrl(
       source: 'function-url',
       apiVersion: 'v2',
       stage: '$default',
+      apiStackName: stackName,
+      ...(lambdaCdkPath !== undefined && { apiCdkPath: lambdaCdkPath }),
       declaredAt: `${stackName}/${logicalId}`,
     },
   ];
+}
+
+/**
+ * Read the `aws:cdk:path` metadata of the resource at `logicalId`,
+ * returning the empty string when the resource is missing or the
+ * metadata isn't set. Hides the "may be missing for a hand-rolled
+ * `cfn.Resource`" branch from every call site.
+ */
+function readApiCdkPath(
+  logicalId: string,
+  template: CloudFormationTemplate
+): string | undefined {
+  const resource = template.Resources?.[logicalId];
+  if (!resource) return undefined;
+  const path = readCdkPath(resource);
+  return path || undefined;
 }
 
 /**

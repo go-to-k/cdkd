@@ -1388,7 +1388,7 @@ export function createLocalStartApiCommand(): Command {
     .addOption(
       new Option(
         '--api <id>',
-        "Restrict to a single API surface by its logical id (HTTP API / REST API logical id, or the backing Lambda's logical id for Function URLs). When unset, every discovered API gets its own server on its own port (basePort, basePort+1, ... when --port is set; auto-allocated otherwise)."
+        "Restrict to a single API surface. Accepts the bare CDK logical id (e.g. 'MyHttpApi'), the stack-qualified logical id ('MyStack:MyHttpApi'), the full CDK Construct path ('MyStack/MyHttpApi/Resource'), or an ancestor Construct path that prefix-matches ('MyStack/MyHttpApi'). For Function URLs, the path forms reference the backing Lambda's aws:cdk:path. When unset, every discovered API gets its own server on its own port (basePort, basePort+1, ... when --port is set; auto-allocated otherwise)."
       )
     )
     .action(withErrorHandling(localStartApiCommand));
