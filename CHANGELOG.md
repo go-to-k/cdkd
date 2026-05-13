@@ -1,3 +1,10 @@
+## [0.98.1](https://github.com/go-to-k/cdkd/compare/v0.98.0...v0.98.1) (2026-05-13)
+
+
+### Bug Fixes
+
+* **state:** perf opts + integ-broad gate (PR [#348](https://github.com/go-to-k/cdkd/issues/348) incident response) ([#349](https://github.com/go-to-k/cdkd/issues/349)) ([e73e223](https://github.com/go-to-k/cdkd/commit/e73e2232a17022d2ce97f1c93b54e68d7904ffa9))
+
 # [0.98.0](https://github.com/go-to-k/cdkd/compare/v0.97.0...v0.98.0) (2026-05-13)
 
 
