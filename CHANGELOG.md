@@ -1,3 +1,10 @@
+# [0.95.0](https://github.com/go-to-k/cdkd/compare/v0.94.15...v0.95.0) (2026-05-13)
+
+
+### Features
+
+* **local-start-api:** --api accepts CDK Construct path + stack-qualified logical id ([#340](https://github.com/go-to-k/cdkd/issues/340)) ([2ab74b8](https://github.com/go-to-k/cdkd/commit/2ab74b8c60833d911fa5e3c8a2f1258db1f26d24))
+
 ## [0.94.15](https://github.com/go-to-k/cdkd/compare/v0.94.14...v0.94.15) (2026-05-13)
 
 
