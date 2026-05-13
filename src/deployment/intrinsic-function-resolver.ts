@@ -1118,10 +1118,7 @@ export class IntrinsicFunctionResolver {
     if (context.exportIndex) {
       try {
         const entry = await context.exportIndex.lookup(exportName);
-        if (
-          entry &&
-          (!context.stackName || entry.producerStack !== context.stackName)
-        ) {
+        if (entry && (!context.stackName || entry.producerStack !== context.stackName)) {
           this.recordImport(context, exportName, entry.producerStack, entry.producerRegion);
           this.logger.info(
             `Resolved Fn::ImportValue: ${exportName} = ${JSON.stringify(entry.value)} (from index: ${entry.producerStack} / ${entry.producerRegion})`

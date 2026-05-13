@@ -681,9 +681,7 @@ export async function scanActiveConsumers(
         const imports = got?.state.imports;
         if (!imports || imports.length === 0) return null;
         const matches = imports.filter(
-          (entry) =>
-            entry.sourceStack === producerStack &&
-            entry.sourceRegion === producerRegion
+          (entry) => entry.sourceStack === producerStack && entry.sourceRegion === producerRegion
         );
         if (matches.length === 0) return null;
         return matches.map<ActiveImportConsumer>((entry) => ({

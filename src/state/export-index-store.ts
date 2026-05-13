@@ -190,9 +190,7 @@ export class ExportIndexStore {
    * old region too to drop them).
    */
   async removeStack(stackName: string, producerRegion: string): Promise<void> {
-    await this.enqueueWrite('remove', () =>
-      this.applyRemoveStack(stackName, producerRegion)
-    );
+    await this.enqueueWrite('remove', () => this.applyRemoveStack(stackName, producerRegion));
   }
 
   /**
@@ -201,10 +199,7 @@ export class ExportIndexStore {
    * race on the same etag inside the same cdkd. The S3 If-Match retry
    * remains as cross-process protection.
    */
-  private async enqueueWrite(
-    label: string,
-    op: () => Promise<void>
-  ): Promise<void> {
+  private async enqueueWrite(label: string, op: () => Promise<void>): Promise<void> {
     const next = this.writeChain.then(() => this.runWithRetry(label, op));
     // Swallow errors on the shared tail so a single write's failure
     // doesn't poison the chain for the next write (runWithRetry
@@ -261,10 +256,7 @@ export class ExportIndexStore {
         await this.rebuild();
         return;
       }
-      if (
-        typeof parsed.indexVersion !== 'number' ||
-        parsed.indexVersion > EXPORT_INDEX_VERSION
-      ) {
+      if (typeof parsed.indexVersion !== 'number' || parsed.indexVersion > EXPORT_INDEX_VERSION) {
         // Newer index version written by a future cdkd binary. We can't
         // safely interpret unknown fields; surface a clear error so the
         // user upgrades rather than silently mishandling.
@@ -389,10 +381,7 @@ export class ExportIndexStore {
     await this.persist(next);
   }
 
-  private async applyRemoveStack(
-    stackName: string,
-    producerRegion: string
-  ): Promise<void> {
+  private async applyRemoveStack(stackName: string, producerRegion: string): Promise<void> {
     await this.ensureLoaded();
     if (this.loadState.kind !== 'loaded') return;
     const next = new Map(this.loadState.entries);

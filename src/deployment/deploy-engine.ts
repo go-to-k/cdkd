@@ -280,8 +280,10 @@ export class DeployEngine {
     return {
       template: base.template,
       resources: base.resources,
-      ...(base.parameters && Object.keys(base.parameters).length > 0 && { parameters: base.parameters }),
-      ...(base.conditions && Object.keys(base.conditions).length > 0 && { conditions: base.conditions }),
+      ...(base.parameters &&
+        Object.keys(base.parameters).length > 0 && { parameters: base.parameters }),
+      ...(base.conditions &&
+        Object.keys(base.conditions).length > 0 && { conditions: base.conditions }),
       stateBackend: this.stateBackend,
       stackName,
       ...(this.exportIndexStore && { exportIndex: this.exportIndexStore }),
@@ -596,9 +598,10 @@ export class DeployEngine {
               // re-resolved). Otherwise the refresh would silently
               // strip the strong-reference record on every diff-clean
               // deploy.
-              ...(currentState.imports && currentState.imports.length > 0 && {
-                imports: currentState.imports,
-              }),
+              ...(currentState.imports &&
+                currentState.imports.length > 0 && {
+                  imports: currentState.imports,
+                }),
               lastModified: Date.now(),
             };
             const saveOptions: { expectedEtag?: string; migrateLegacy?: boolean } = {};
@@ -781,9 +784,10 @@ export class DeployEngine {
             // Per-resource partial save: imports[] reverts to the
             // pre-deploy snapshot. recordedImports from this session
             // are persisted only on the final success path.
-            ...(currentState.imports && currentState.imports.length > 0 && {
-              imports: currentState.imports,
-            }),
+            ...(currentState.imports &&
+              currentState.imports.length > 0 && {
+                imports: currentState.imports,
+              }),
             lastModified: Date.now(),
           };
           // Migration is a one-shot tail on the first save; subsequent saves
@@ -979,9 +983,10 @@ export class DeployEngine {
           stackName: currentState.stackName,
           resources: newResources,
           outputs: currentState.outputs,
-          ...(currentState.imports && currentState.imports.length > 0 && {
-            imports: currentState.imports,
-          }),
+          ...(currentState.imports &&
+            currentState.imports.length > 0 && {
+              imports: currentState.imports,
+            }),
           lastModified: Date.now(),
         };
         const migrate = pendingMigration;
@@ -1027,9 +1032,10 @@ export class DeployEngine {
           stackName: currentState.stackName,
           resources: newResources,
           outputs: currentState.outputs,
-          ...(currentState.imports && currentState.imports.length > 0 && {
-            imports: currentState.imports,
-          }),
+          ...(currentState.imports &&
+            currentState.imports.length > 0 && {
+              imports: currentState.imports,
+            }),
           lastModified: Date.now(),
         };
         await this.stateBackend.saveState(stackName, this.stackRegion, postRollbackState, {
@@ -1050,9 +1056,10 @@ export class DeployEngine {
             stackName: currentState.stackName,
             resources: newResources,
             outputs: currentState.outputs,
-            ...(currentState.imports && currentState.imports.length > 0 && {
-              imports: currentState.imports,
-            }),
+            ...(currentState.imports &&
+              currentState.imports.length > 0 && {
+                imports: currentState.imports,
+              }),
             lastModified: Date.now(),
           };
           await this.stateBackend.saveState(stackName, this.stackRegion, postRollbackState, {
