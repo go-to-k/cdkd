@@ -269,22 +269,83 @@ export class SNSTopicPolicyProvider implements ResourceProvider {
   /**
    * Adopt an existing SNS topic policy into cdkd state.
    *
-   * **Explicit override only.** A `TopicPolicy` is an attachment to one or
-   * more SNS topics applied via `SetTopicAttributes(AttributeName=Policy)` —
-   * it has no standalone identity and is not independently taggable. There
-   * is no `aws:cdk:path` tag to look up by, and the policy has no name/ARN
-   * of its own.
+   * The operational identifier for a `TopicPolicy` is the **comma-joined
+   * list of SNS topic ARNs** the policy is attached to — every AWS SDK
+   * call (`SetTopicAttributes` / `GetTopicAttributes`) takes a topic ARN
+   * via the `TopicArn` parameter, and cdkd's `create()` records
+   * `topics.join(',')` as the resource's `physicalId` so subsequent
+   * `update()` / `delete()` / `readCurrentState()` calls hit the right
+   * topic(s). A `TopicPolicy` has no standalone identity, no taggable
+   * ARN, and no `aws:cdk:path` lookup — only the parent topics are
+   * taggable.
    *
-   * Users adopting an existing topic policy should pass
-   * `--resource <logicalId>=<comma-joined-topic-ARNs>` (matching the
-   * physical id format returned by `create()`).
+   * Resolution order (closes [#356](https://github.com/go-to-k/cdkd/issues/356)):
+   *
+   * 1. **`knownPhysicalId` if it is a comma-joined list of SNS topic ARNs.**
+   *    Preserves the `cdkd import --resource <logicalId>=<topic-arns>`
+   *    path that has always worked.
+   * 2. **`properties.Topics.join(',')` if every entry is a literal topic
+   *    ARN.** Closes the `--migrate-from-cloudformation` case: AWS
+   *    CloudFormation's `DescribeStackResources` returns the CFn-generated
+   *    policy NAME for `AWS::SNS::TopicPolicy` (e.g.
+   *    `MyStack-MyTopicPolicy-XXXXXXXXXX`), which is NOT a valid topic
+   *    ARN. The first time cdkd touches the imported state with that
+   *    name, `readCurrentState` → `GetTopicAttributes` rejects it.
+   * 3. **Hard error** when neither path resolves a topic-ARN list. This
+   *    covers (a) `--migrate-from-cloudformation` against a CFn stack
+   *    whose template carries `Topics: [{Ref: <MyTopic>}]` (the typical
+   *    CDK shape) when the referenced topic is NOT in the importable
+   *    set (or hasn't been imported yet in the current run), and (b)
+   *    explicit `--resource <logicalId>=<non-arn>` typos. Pointing the
+   *    user at `--resource <logicalId>=<topic-arns>` is the recovery
+   *    path that always works.
+   *
+   * Intrinsic-valued `Topics` entries (e.g. `{Ref: <MyTopic>}`) fall into
+   * branch 3 here even when the referenced sibling has been imported in
+   * the same run — `import()` is called BEFORE
+   * `resolveImportedProperties` runs the synth template's Properties
+   * through the intrinsic resolver, so the raw intrinsic object is what
+   * we see. The recovery message names `--resource` as the explicit
+   * escape hatch.
    */
   // eslint-disable-next-line @typescript-eslint/require-await -- explicit-override-only intentionally has no AWS calls
   async import(input: ResourceImportInput): Promise<ResourceImportResult | null> {
-    if (input.knownPhysicalId) {
+    // 1. knownPhysicalId is a comma-joined list of SNS topic ARNs — use
+    //    it as-is (existing `--resource <logicalId>=<topic-arns>` path).
+    if (input.knownPhysicalId && isSnsTopicArnList(input.knownPhysicalId)) {
       return { physicalId: input.knownPhysicalId, attributes: {} };
     }
-    return null;
+
+    // 2. Properties.Topics is an array of literal topic ARNs — join and
+    //    use (`--migrate-from-cloudformation` happy path when the template
+    //    carries literal Topics entries, plus the no-knownPhysicalId
+    //    auto path when properties is the only signal).
+    const topics = input.properties['Topics'];
+    if (Array.isArray(topics) && topics.length > 0) {
+      const allLiteralArns = topics.every((t) => typeof t === 'string' && isSnsTopicArn(t));
+      if (allLiteralArns) {
+        return { physicalId: (topics as string[]).join(','), attributes: {} };
+      }
+    }
+
+    // 3. No topic-ARN list recoverable — hard error rather than null.
+    //    Returning null would silently mark the resource as
+    //    `skipped-not-found` in the import summary and bake the unusable
+    //    CFn-generated name into cdkd state for any caller passing
+    //    `knownPhysicalId`. Naming the explicit override is the
+    //    load-bearing recovery hint.
+    const knownNote = input.knownPhysicalId
+      ? ` Got knownPhysicalId='${input.knownPhysicalId}' (not a comma-joined list of SNS topic ARNs; CloudFormation returns the policy resource NAME for AWS::SNS::TopicPolicy, which is not the operational identifier).`
+      : '';
+    const topicsNote =
+      Array.isArray(topics) && topics.length > 0
+        ? ` Properties.Topics=${JSON.stringify(topics)} did not resolve to a list of literal topic ARNs (intrinsic-valued entries like {Ref: <Topic>} are not resolved at import time).`
+        : ' Properties.Topics is missing or empty.';
+    throw new Error(
+      `Cannot determine topic ARNs for ${input.resourceType} '${input.logicalId}'.${knownNote}${topicsNote} ` +
+        `Re-run with --resource ${input.logicalId}=<comma-joined-topic-ARNs> ` +
+        `(e.g. arn:aws:sns:${input.region}:<account>:<topic-name>) to point cdkd at the topic(s) this policy is attached to.`
+    );
   }
 
   /**
@@ -300,4 +361,31 @@ export class SNSTopicPolicyProvider implements ResourceProvider {
       })
     );
   }
+}
+
+/**
+ * Recognize a single SNS topic ARN. AWS standard form is
+ * `arn:<partition>:sns:<region>:<account>:<name>`; FIFO topics end in
+ * `.fifo`. Accepts every partition (`aws` / `aws-cn` / `aws-us-gov` /
+ * `aws-iso` / etc.) via the broader `arn:<partition>:sns:` prefix shape.
+ */
+function isSnsTopicArn(value: string): boolean {
+  return /^arn:[a-z0-9-]+:sns:[a-z0-9-]+:\d{12}:[\w.-]+$/.test(value);
+}
+
+/**
+ * Recognize a comma-joined list of SNS topic ARNs. cdkd's `create()`
+ * records `topics.join(',')` as the `physicalId`, so a single ARN
+ * (`arn:aws:sns:us-east-1:123456789012:my-topic`) is also accepted.
+ * Every comma-separated segment must be a valid SNS topic ARN — a CFn
+ * generated name like `MyStack-MyTopicPolicy-XXX` is correctly rejected
+ * because it does not match the ARN prefix, and a partially-valid
+ * mixture (one literal ARN + one CFn name) is also rejected so we fall
+ * back to the properties-based resolution rather than baking a half-bad
+ * list into state.
+ */
+function isSnsTopicArnList(value: string): boolean {
+  const segments = value.split(',');
+  if (segments.length === 0) return false;
+  return segments.every((s) => isSnsTopicArn(s));
 }

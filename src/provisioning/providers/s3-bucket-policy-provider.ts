@@ -267,20 +267,103 @@ export class S3BucketPolicyProvider implements ResourceProvider {
   /**
    * Adopt an existing S3 bucket policy into cdkd state.
    *
-   * **Explicit override only.** An `S3::BucketPolicy` is a policy document
-   * attached to a bucket via `PutBucketPolicy` — it has no standalone
-   * identity and is not independently taggable. There is no `aws:cdk:path`
-   * tag to look up by; only the bucket itself is taggable.
+   * The operational identifier for an `S3::BucketPolicy` is the **bucket
+   * name** — every AWS SDK call (`PutBucketPolicy` / `GetBucketPolicy` /
+   * `DeleteBucketPolicy`) takes the bucket name via the `Bucket`
+   * parameter, and cdkd's `create()` records `properties.Bucket` as the
+   * resource's `physicalId` so subsequent `update()` / `delete()` /
+   * `readCurrentState()` calls hit the right bucket. A `BucketPolicy`
+   * has no standalone identity, no taggable ARN, and no `aws:cdk:path`
+   * lookup — only the bucket itself is taggable.
    *
-   * Users adopting an existing bucket policy should pass
-   * `--resource <logicalId>=<bucketName>` (matching the physical id
-   * format returned by `create()`).
+   * Resolution order (closes [#356](https://github.com/go-to-k/cdkd/issues/356)):
+   *
+   * 1. **`knownPhysicalId` if it matches an S3 bucket name shape.**
+   *    Preserves the `cdkd import --resource <logicalId>=<bucketName>`
+   *    path that has always worked.
+   * 2. **`properties.Bucket` if it is a literal bucket name.** Closes
+   *    the `--migrate-from-cloudformation` case: AWS CloudFormation's
+   *    `DescribeStackResources` returns the CFn-generated policy NAME
+   *    for `AWS::S3::BucketPolicy` (e.g.
+   *    `MyStack-MyBucketPolicy-XXXXXXXXXX`), which is NOT a valid S3
+   *    bucket name. The first time cdkd touches the imported state with
+   *    that name, `readCurrentState` → `GetBucketPolicy` rejects it.
+   * 3. **Hard error** when neither path resolves a bucket name. This
+   *    covers (a) `--migrate-from-cloudformation` against a CFn stack
+   *    whose template carries `Bucket: {Ref: <MyBucket>}` (the typical
+   *    CDK shape) when the referenced bucket is NOT in the importable
+   *    set (or hasn't been imported yet in the current run), and (b)
+   *    explicit `--resource <logicalId>=<non-bucket-name>` typos.
+   *    Pointing the user at `--resource <logicalId>=<bucketName>` is
+   *    the recovery path that always works.
+   *
+   * Intrinsic-valued `Bucket` (e.g. `{Ref: <MyBucket>}`) falls into
+   * branch 3 here even when the referenced sibling has been imported in
+   * the same run — `import()` is called BEFORE
+   * `resolveImportedProperties` runs the synth template's Properties
+   * through the intrinsic resolver, so the raw intrinsic object is what
+   * we see. The recovery message names `--resource` as the explicit
+   * escape hatch.
    */
   // eslint-disable-next-line @typescript-eslint/require-await -- explicit-override-only intentionally has no AWS calls
   async import(input: ResourceImportInput): Promise<ResourceImportResult | null> {
-    if (input.knownPhysicalId) {
+    // 1. knownPhysicalId is a valid S3 bucket name — use it as-is
+    //    (existing `--resource <logicalId>=<bucketName>` path).
+    if (input.knownPhysicalId && isS3BucketName(input.knownPhysicalId)) {
       return { physicalId: input.knownPhysicalId, attributes: {} };
     }
-    return null;
+
+    // 2. Properties.Bucket is a literal bucket name — use it
+    //    (`--migrate-from-cloudformation` happy path when the template
+    //    carries a literal Bucket entry, plus the no-knownPhysicalId
+    //    auto path when properties is the only signal).
+    const bucket = input.properties['Bucket'];
+    if (typeof bucket === 'string' && isS3BucketName(bucket)) {
+      return { physicalId: bucket, attributes: {} };
+    }
+
+    // 3. No bucket name recoverable — hard error rather than null.
+    //    Returning null would silently mark the resource as
+    //    `skipped-not-found` in the import summary and bake the unusable
+    //    CFn-generated name into cdkd state for any caller passing
+    //    `knownPhysicalId`. Naming the explicit override is the
+    //    load-bearing recovery hint.
+    const knownNote = input.knownPhysicalId
+      ? ` Got knownPhysicalId='${input.knownPhysicalId}' (not a valid S3 bucket name; CloudFormation returns the policy resource NAME for AWS::S3::BucketPolicy, which is not the operational identifier).`
+      : '';
+    const bucketNote =
+      bucket !== undefined
+        ? ` Properties.Bucket=${JSON.stringify(bucket)} did not resolve to a literal bucket name (intrinsic-valued entries like {Ref: <Bucket>} are not resolved at import time).`
+        : ' Properties.Bucket is missing.';
+    throw new Error(
+      `Cannot determine bucket name for ${input.resourceType} '${input.logicalId}'.${knownNote}${bucketNote} ` +
+        `Re-run with --resource ${input.logicalId}=<bucketName> ` +
+        `(e.g. my-bucket-12345) to point cdkd at the bucket this policy is attached to.`
+    );
   }
+}
+
+/**
+ * Recognize an S3 bucket name. AWS rules
+ * (https://docs.aws.amazon.com/AmazonS3/latest/userguide/bucketnamingrules.html):
+ *   - 3-63 characters
+ *   - lowercase letters, digits, hyphens, and dots
+ *   - must start and end with a letter or digit
+ *   - no consecutive dots
+ *   - no `xn--` prefix (reserved for IDN bucket names)
+ *   - no `-s3alias` suffix (reserved for S3 Access Point aliases)
+ *   - no `--ol-s3` suffix (reserved for S3 on Outposts)
+ *
+ * A practical pattern that excludes the obvious CFn-generated names like
+ * `MyStack-MyBucketPolicy-XXXXXXXXXX` (which contain uppercase letters
+ * and exceed 63 chars in common cases) while accepting every normal CDK
+ * auto-generated and user-declared bucket name.
+ */
+function isS3BucketName(value: string): boolean {
+  if (value.length < 3 || value.length > 63) return false;
+  if (!/^[a-z0-9][a-z0-9.-]*[a-z0-9]$/.test(value)) return false;
+  if (value.includes('..')) return false;
+  if (value.startsWith('xn--')) return false;
+  if (value.endsWith('-s3alias') || value.endsWith('--ol-s3')) return false;
+  return true;
 }
