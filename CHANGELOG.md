@@ -1,3 +1,10 @@
+# [0.97.0](https://github.com/go-to-k/cdkd/compare/v0.96.1...v0.97.0) (2026-05-13)
+
+
+### Features
+
+* **review-pr:** add **/*.md to pure-docs down-bias bucket ([#346](https://github.com/go-to-k/cdkd/issues/346)) ([35e647f](https://github.com/go-to-k/cdkd/commit/35e647f5cad214673fed611334ab19bae89a4147))
+
 ## [0.96.1](https://github.com/go-to-k/cdkd/compare/v0.96.0...v0.96.1) (2026-05-13)
 
 
