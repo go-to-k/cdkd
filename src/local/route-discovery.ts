@@ -486,10 +486,7 @@ function discoverFunctionUrl(
  * metadata isn't set. Hides the "may be missing for a hand-rolled
  * `cfn.Resource`" branch from every call site.
  */
-function readApiCdkPath(
-  logicalId: string,
-  template: CloudFormationTemplate
-): string | undefined {
+function readApiCdkPath(logicalId: string, template: CloudFormationTemplate): string | undefined {
   const resource = template.Resources?.[logicalId];
   if (!resource) return undefined;
   const path = readCdkPath(resource);

@@ -167,10 +167,7 @@ export function filterRoutesByApiIdentifier(
  * for test coverage only — the production code path goes through
  * `filterRoutesByApiIdentifier`.
  */
-export function routeMatchesIdentifier(
-  route: RouteWithAuth['route'],
-  identifier: string
-): boolean {
+export function routeMatchesIdentifier(route: RouteWithAuth['route'], identifier: string): boolean {
   const bareId = route.source === 'function-url' ? route.lambdaLogicalId : route.apiLogicalId;
   if (bareId && bareId === identifier) return true;
   if (route.apiStackName) {
@@ -198,7 +195,8 @@ export function availableApiIdentifiers(routes: readonly RouteWithAuth[]): strin
   const out: string[] = [];
   for (const rwa of routes) {
     const r = rwa.route;
-    const bareId = r.source === 'function-url' ? r.lambdaLogicalId : (r.apiLogicalId ?? '<unknown>');
+    const bareId =
+      r.source === 'function-url' ? r.lambdaLogicalId : (r.apiLogicalId ?? '<unknown>');
     const primary = r.apiCdkPath ?? bareId;
     if (!seen.has(primary)) {
       seen.add(primary);
