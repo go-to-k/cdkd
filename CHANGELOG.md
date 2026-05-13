@@ -1,3 +1,10 @@
+# [0.98.0](https://github.com/go-to-k/cdkd/compare/v0.97.0...v0.98.0) (2026-05-13)
+
+
+### Features
+
+* **state:** Fn::ImportValue strong reference + persistent exports index ([#343](https://github.com/go-to-k/cdkd/issues/343)) ([#348](https://github.com/go-to-k/cdkd/issues/348)) ([7c4238c](https://github.com/go-to-k/cdkd/commit/7c4238c5045eefd1b26b5645fa139d2c90153aa1))
+
 # [0.97.0](https://github.com/go-to-k/cdkd/compare/v0.96.1...v0.97.0) (2026-05-13)
 
 
