@@ -1,3 +1,10 @@
+# [0.96.0](https://github.com/go-to-k/cdkd/compare/v0.95.0...v0.96.0) (2026-05-13)
+
+
+### Features
+
+* **local-start-api:** positional <target> + --api deprecation + strict multi-stack ([#341](https://github.com/go-to-k/cdkd/issues/341)) ([cf840dd](https://github.com/go-to-k/cdkd/commit/cf840dd017928f30b580088e9bd1d52f7b524d6f))
+
 # [0.95.0](https://github.com/go-to-k/cdkd/compare/v0.94.15...v0.95.0) (2026-05-13)
 
 
