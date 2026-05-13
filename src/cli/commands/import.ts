@@ -393,6 +393,7 @@ async function importCommand(stackArg: string | undefined, options: ImportOption
           region: targetRegion,
           providerRegistry,
           override: overrides.get(logicalId),
+          overrides,
         });
         rows.push(outcome);
       }
@@ -555,11 +556,74 @@ interface ImportTask {
   region: string;
   providerRegistry: ProviderRegistry;
   override: string | undefined;
+  /**
+   * Full overrides map for this import run — used to pre-resolve `{Ref: <X>}`
+   * intrinsics in `resource.Properties` against earlier-imported (or
+   * CFn-pre-populated) physical IDs before the per-resource `provider.import()`
+   * is called. See {@link substituteOverrideRefs} and issue #361 for the
+   * canonical case (`AWS::SQS::QueuePolicy` under
+   * `--migrate-from-cloudformation`).
+   */
+  overrides: Map<string, string>;
+}
+
+/**
+ * Recursively substitute `{Ref: <LogicalId>}` shapes in an arbitrary value
+ * tree with the matching entry from `overrides`. Used to bridge the gap
+ * between CDK synth's template (which carries raw intrinsics) and what a
+ * provider's `import()` needs to see at the time it's called — specifically
+ * for sub-resource providers like `SQSQueuePolicyProvider` whose fallback
+ * path reads `properties.<ParentKey>` as a literal operational identifier
+ * (queue URL / topic ARN / bucket name) rather than the unresolved intrinsic.
+ *
+ * Scope is intentionally narrow:
+ *   - Only `{Ref: <X>}` shapes are substituted. `Fn::GetAtt` is NOT handled
+ *     here — the overrides map carries physical IDs only, not the
+ *     per-resource attributes a GetAtt resolution needs. Full GetAtt /
+ *     Fn::Sub / Fn::Join handling happens later in
+ *     `resolveImportedProperties` against the populated `stackState.resources`.
+ *   - Pseudo-parameter refs (`AWS::Region` / `AWS::AccountId` / etc.) are
+ *     left untouched — those are handled by the full resolver post-import.
+ *   - When the `Ref` target is NOT in the overrides map, the intrinsic is
+ *     left in place (the post-import resolver may resolve it from the
+ *     `stackState.resources` built by other imports).
+ *
+ * Closes issue #361 — `AWS::SQS::QueuePolicy` under
+ * `--migrate-from-cloudformation` previously hard-errored because
+ * `properties.Queues[0]` arrived at `provider.import()` as
+ * `{Ref: <Queue>}` and the queue URL needed for the fallback identification
+ * branch was never substituted in.
+ *
+ * Pure-functional — does not mutate `value`.
+ */
+export function substituteOverrideRefs(value: unknown, overrides: Map<string, string>): unknown {
+  if (value === null || value === undefined) return value;
+  if (typeof value !== 'object') return value;
+  if (Array.isArray(value)) {
+    return value.map((v) => substituteOverrideRefs(v, overrides));
+  }
+  const obj = value as Record<string, unknown>;
+  const keys = Object.keys(obj);
+  if (keys.length === 1 && keys[0] === 'Ref' && typeof obj['Ref'] === 'string') {
+    const refTarget = obj['Ref'] as string;
+    const resolved = overrides.get(refTarget);
+    if (resolved !== undefined) {
+      return resolved;
+    }
+    // Target not in overrides — leave intrinsic untouched for the
+    // post-import resolver to handle.
+    return value;
+  }
+  const result: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(obj)) {
+    result[k] = substituteOverrideRefs(v, overrides);
+  }
+  return result;
 }
 
 async function importOne(task: ImportTask): Promise<ImportRow> {
   const logger = getLogger();
-  const { logicalId, resource, stackName, region, providerRegistry, override } = task;
+  const { logicalId, resource, stackName, region, providerRegistry, override, overrides } = task;
 
   if (!providerRegistry.hasProvider(resource.Type)) {
     return {
@@ -581,13 +645,26 @@ async function importOne(task: ImportTask): Promise<ImportRow> {
   }
 
   const cdkPath = readCdkPath(resource);
+  // Pre-resolve `{Ref: <X>}` intrinsics in Properties against the overrides
+  // map. For `--migrate-from-cloudformation` this map is pre-populated from
+  // CFn's `DescribeStackResources` with every resource's PhysicalResourceId,
+  // so sub-resource providers (e.g. `SQSQueuePolicyProvider`) whose
+  // `Properties` carries `{Ref: <Parent>}` see the parent's operational
+  // identifier here rather than the raw intrinsic. The post-import
+  // `resolveImportedProperties` pass still runs full intrinsic resolution
+  // (incl. `Fn::GetAtt` / `Fn::Sub` / etc.) — this hook is the targeted
+  // pre-pass needed at provider.import() time. Closes issue #361.
+  const properties = substituteOverrideRefs(resource.Properties ?? {}, overrides) as Record<
+    string,
+    unknown
+  >;
   const input: ResourceImportInput = {
     logicalId,
     resourceType: resource.Type,
     cdkPath,
     stackName,
     region,
-    properties: resource.Properties ?? {},
+    properties,
     ...(override !== undefined && { knownPhysicalId: override }),
   };
 
