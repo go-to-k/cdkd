@@ -97,40 +97,19 @@ run_one() {
   log "[${stack}] cdk deploy (real CloudFormation)"
   AWS_REGION="${REGION}" npx cdk deploy "${stack}" --require-approval never
 
-  # AWS::SQS::QueuePolicy needs a `--resource` override in the
-  # --migrate-from-cloudformation flow (issue #359 follow-up): CFn's
-  # DescribeStackResources returns the QueuePolicy's resource NAME as
-  # PhysicalResourceId (NOT the queue URL), so cdkd's
-  # SQSQueuePolicyProvider.import() falls back to properties.Queues[0] —
-  # which at import time is the unresolved `{Ref: <Queue>}` intrinsic
-  # (cdkd resolves intrinsics AFTER provider.import() returns). Passing
-  # `--resource <logicalId>=<queueUrl>` lets the happy path of PR #354's
-  # fix run end-to-end instead of hard-erroring with a recovery hint.
-  # This is the load-bearing assertion: a regression in either the URL
-  # detection branch or the SetQueueAttributes delete call surfaces here.
-  resource_overrides=()
-  if [[ "${stack}" == "CdkdMigrateSmall" ]]; then
-    qp_logical=$(aws cloudformation list-stack-resources \
-      --stack-name "${stack}" \
-      --region "${REGION}" \
-      --query "StackResourceSummaries[?ResourceType=='AWS::SQS::QueuePolicy'].LogicalResourceId" \
-      --output text 2>/dev/null || echo "")
-    queue_url=$(aws sqs list-queues \
-      --queue-name-prefix "${stack}-ExampleQueue" \
-      --region "${REGION}" \
-      --query 'QueueUrls[0]' \
-      --output text 2>/dev/null || echo "")
-    if [[ -n "${qp_logical}" && -n "${queue_url}" && "${queue_url}" != "None" ]]; then
-      resource_overrides+=("--resource" "${qp_logical}=${queue_url}")
-      echo "  resolved QueuePolicy override: ${qp_logical}=${queue_url}"
-    fi
-  fi
+  # AWS::SQS::QueuePolicy used to need a `--resource` override here (issue
+  # #361): CFn's DescribeStackResources returns the QueuePolicy's resource
+  # NAME as PhysicalResourceId, not the queue URL, so
+  # SQSQueuePolicyProvider.import() fell back to properties.Queues[0] —
+  # which at provider.import() time was an unresolved `{Ref: <Queue>}` intrinsic.
+  # The fix in `src/cli/commands/import.ts` (`substituteOverrideRefs`)
+  # pre-resolves `{Ref: <X>}` against the CFn-derived overrides map before
+  # calling provider.import(), so QueuePolicy.import() now sees the literal
+  # queue URL and the fallback branch succeeds. No `--resource` override
+  # needed. This integ is the end-to-end regression guard.
 
   log "[${stack}] cdkd import --migrate-from-cloudformation"
-  AWS_REGION="${REGION}" ${CDKD} import "${stack}" \
-    --migrate-from-cloudformation \
-    "${resource_overrides[@]}" \
-    --yes
+  AWS_REGION="${REGION}" ${CDKD} import "${stack}" --migrate-from-cloudformation --yes
 
   log "[${stack}] post-migrate assertions"
   assert_state_present "${stack}"
