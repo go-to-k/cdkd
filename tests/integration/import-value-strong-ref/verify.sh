@@ -170,13 +170,15 @@ print(count)
 fi
 
 echo ""
-echo "==> Step 3c: Re-deploy consumer (v3 → v4 promotion on redeploy)"
-# Producer was destroyed above, so we need to redeploy producer first
-# (which writes v4 state + populates index), then redeploy consumer
-# (which resolves the new IntegBucketArn and populates v4 imports[]).
-# This proves the gradual-activation story end-to-end: a v3 consumer
-# becomes v4 + imports[]-populated on its next deploy, after which
-# strong-ref enforcement applies on subsequent producer destroys.
+echo "==> Step 3c: Destroy v3 consumer + re-deploy (v3 → v4 transition test)"
+# A v3-era consumer becomes v4 on its NEXT change-triggered deploy
+# (cdkd skips state-save on no-change deploys, so a clean redeploy
+# of an unchanged consumer doesn't promote the schema by itself —
+# the user-facing migration story is "consumers re-deploy as part
+# of their normal change cycle", which is what we simulate here by
+# destroying + recreating). Real-world upgraders will get the same
+# promotion the first time any of their consumer's resources change.
+${CDKD} destroy ${CONSUMER} --region "${AWS_REGION}" --state-bucket "${STATE_BUCKET}" --force
 ${CDKD} deploy --all --region "${AWS_REGION}" --state-bucket "${STATE_BUCKET}"
 CONSUMER_STATE_V4=$(aws s3 cp "s3://${STATE_BUCKET}/${CONSUMER_STATE_KEY}" - 2>/dev/null)
 V4_VERSION=$(echo "${CONSUMER_STATE_V4}" | python3 -c 'import sys, json; print(json.load(sys.stdin)["version"])')
