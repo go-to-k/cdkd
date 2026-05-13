@@ -32,9 +32,21 @@ import type { RouteWithAuth } from './authorizer-resolver.js';
 export interface ApiServerGroup {
   /**
    * Stable identity for cross-reload state matching. Format:
-   *   - `http-api:<apiLogicalId>`
-   *   - `rest-v1:<apiLogicalId>`
-   *   - `function-url:<lambdaLogicalId>`
+   *   - `http-api:<stackName>:<apiLogicalId>` (when route has `apiStackName`)
+   *   - `rest-v1:<stackName>:<apiLogicalId>`
+   *   - `function-url:<stackName>:<lambdaLogicalId>`
+   *
+   * Routes without `apiStackName` (templates lacking `aws:cdk:path`
+   * metadata, hand-rolled `cfn.Resource` defs, or fixtures from
+   * pre-`aws:cdk:path` test code) fall back to the un-prefixed shape:
+   *   - `http-api:<apiLogicalId>` / `rest-v1:<apiLogicalId>` /
+   *     `function-url:<lambdaLogicalId>`
+   *
+   * The stack prefix means cross-stack same-logical-id APIs (a CDK app
+   * with `MyHttpApi` in both `WebStack` and `AdminStack`) get **two
+   * separate servers** rather than silently colliding on one serverKey
+   * — defense-in-depth on top of the upstream multi-stack bare-id
+   * rejection in the CLI command body.
    */
   readonly serverKey: string;
   /** Human-readable name surfaced in logs (e.g. "MyHttpApi (HTTP API v2)"). */
@@ -83,22 +95,33 @@ export function groupRoutesByServer(routes: readonly RouteWithAuth[]): ApiServer
     let identifier: string;
     let displayName: string;
 
+    // Stack-prefix the serverKey so two stacks with the same bare
+    // logical id get **two separate** servers (defense-in-depth — the
+    // upstream filter rejects bare ids in multi-stack apps, but
+    // unfiltered runs (no `--api` / `<target>`) still need this to
+    // disambiguate). Pre-PR the serverKey was just `<kind>:<logicalId>`
+    // and cross-stack collisions silently merged into one server.
+    // Routes without `apiStackName` (template w/o `aws:cdk:path` /
+    // hand-rolled `cfn.Resource`) keep the un-prefixed serverKey
+    // shape so the change is non-breaking for those fixtures.
+    const stackPrefix = r.apiStackName ? `${r.apiStackName}:` : '';
+
     if (r.source === 'function-url') {
       // Function URLs have no parent API resource — each URL is its own
       // surface, scoped by its backing Lambda's logical id.
       identifier = r.lambdaLogicalId;
-      serverKey = `function-url:${identifier}`;
+      serverKey = `function-url:${stackPrefix}${identifier}`;
       kind = 'function-url';
       displayName = `${identifier} (Function URL)`;
     } else if (r.source === 'http-api') {
       identifier = r.apiLogicalId ?? '<unknown>';
-      serverKey = `http-api:${identifier}`;
+      serverKey = `http-api:${stackPrefix}${identifier}`;
       kind = 'http-api';
       displayName = `${identifier} (HTTP API v2)`;
     } else {
       // rest-v1
       identifier = r.apiLogicalId ?? '<unknown>';
-      serverKey = `rest-v1:${identifier}`;
+      serverKey = `rest-v1:${stackPrefix}${identifier}`;
       kind = 'rest-v1';
       displayName = `${identifier} (REST API v1)`;
     }
