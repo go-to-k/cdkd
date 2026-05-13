@@ -75,20 +75,59 @@ cd "$REPO" 2>/dev/null || exit 0
 # feedback_cross_cutting_needs_broad_integ.md.
 CROSS_CUTTING_REGEX='^src/deployment/(deploy-engine|intrinsic-function-resolver)\.ts$|^src/cli/commands/(destroy-runner|destroy|deploy)\.ts$|^src/analyzer/(dag-builder|template-parser)\.ts$|^src/provisioning/register-providers\.ts$'
 
-# Decide whether this PR's diff actually touches cross-cutting code.
-# Skip the gate entirely otherwise — the narrow `integ-destroy` gate
-# is sufficient for non-cross-cutting destroy-related changes.
-diff_base=""
-if git rev-parse --verify --quiet origin/main >/dev/null 2>&1; then
-  diff_base="origin/main"
-fi
-if [ -z "$diff_base" ]; then
-  # No origin/main reference — can't compute the diff. Fail open: let
-  # the narrower `integ-destroy` gate handle whatever it covers.
-  exit 0
+# --- Extract PR number from the `gh pr merge` command and fetch the
+# actual PR diff via `gh pr view --json files`. Same pattern as
+# `pr-review-gate.sh`. Avoids the bug where the hook computes the
+# diff against the local main worktree's HEAD when `gh pr merge`
+# runs from a worktree whose main repo is checked out to a different
+# branch — typical with concurrent agent worktrees.
+#
+# `gh pr merge` argument shapes:
+#   gh pr merge 123                          (positional)
+#   gh pr merge --auto --squash 123          (flags + positional)
+#   gh pr merge                              (no number: gh resolves
+#                                             the PR for the current
+#                                             branch automatically)
+pr_number=""
+args="${cmd#*merge}"
+# shellcheck disable=SC2086
+set -- $args
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --*=*) shift; continue ;;
+    --auto|--admin|--delete-branch|--squash|--merge|--rebase)
+      shift; continue ;;
+    -*)
+      shift
+      [ $# -gt 0 ] && shift
+      continue
+      ;;
+    *)
+      if printf '%s' "$1" | grep -qE '^[0-9]+$'; then
+        pr_number="$1"
+        break
+      fi
+      shift
+      ;;
+  esac
+done
+
+# Pass-through on any gh error so an unrelated infra outage doesn't
+# block merges (mirrors integ-destroy-gate.sh / pr-review-gate.sh).
+if [ -n "$pr_number" ]; then
+  pr_json=$(gh pr view "$pr_number" --json files 2>/dev/null) || {
+    printf 'integ-broad-gate: gh pr view %s failed; allowing merge (infra fail-open)\n' "$pr_number" >&2
+    exit 0
+  }
+else
+  pr_json=$(gh pr view --json files 2>/dev/null) || {
+    echo "integ-broad-gate: gh pr view failed; allowing merge (infra fail-open)" >&2
+    exit 0
+  }
 fi
 
-changed_files=$(git diff --name-only "$diff_base"...HEAD 2>/dev/null)
+paths=$(printf '%s' "$pr_json" | jq -r '.files[].path' 2>/dev/null || echo "")
+
 cross_cutting=0
 while IFS= read -r f; do
   [ -z "$f" ] && continue
@@ -97,7 +136,7 @@ while IFS= read -r f; do
     break
   fi
 done <<EOF_FILES
-$changed_files
+$paths
 EOF_FILES
 
 if [ "$cross_cutting" -eq 0 ]; then
@@ -147,7 +186,10 @@ became required for this scope.
 
 Required action — no exceptions:
   /run-integ bench-cdk-sample      # 39-resource VPC+NAT+CF+Lambda+SQS
-  # or one of:
+  # or one of (the canonical broad-set is duplicated in
+  # .claude/skills/run-integ/SKILL.md step 11 + .markgate.yml
+  # integ-broad gate's docs + CLAUDE.md "integ-broad" entry — keep
+  # all four in sync):
   /run-integ lambda
   /run-integ microservices
   /run-integ drift-revert
@@ -155,6 +197,7 @@ Required action — no exceptions:
   /run-integ multi-stack-deps
   /run-integ multi-resource
   /run-integ remove-protection
+  /run-integ export
 
 The skill is the ONLY legitimate setter of this marker. It will run
 deploy + destroy against real AWS and only call

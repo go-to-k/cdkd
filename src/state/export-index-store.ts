@@ -399,43 +399,23 @@ export class ExportIndexStore {
     await this.ensureLoaded();
     if (this.loadState.kind !== 'loaded') return;
     const next = new Map(this.loadState.entries);
-    let changed = false;
     // Drop existing entries owned by this stack.
     for (const [name, entry] of next) {
       if (entry.producerStack === stackName && entry.producerRegion === producerRegion) {
-        // Only mark `changed` when the entry will actually disappear
-        // (a same-name+value replacement gets re-added in the next loop
-        // and is detected as a no-op via the value-comparison below).
         next.delete(name);
-        changed = true;
       }
     }
     // Insert fresh entries.
     for (const [name, value] of Object.entries(outputs)) {
-      const prev = this.loadState.entries.get(name);
-      const wasSameValue =
-        prev !== undefined &&
-        prev.producerStack === stackName &&
-        prev.producerRegion === producerRegion &&
-        // Strict-equal scalars are common; object comparison falls back
-        // to JSON.stringify (output values are JSON-serializable by
-        // construction).
-        (prev.value === value || JSON.stringify(prev.value) === JSON.stringify(value));
       next.set(name, { value, producerStack: stackName, producerRegion });
-      if (!wasSameValue) {
-        changed = true;
-      } else {
-        // Re-adding the same entry — undo the optimistic `changed` from
-        // the delete loop above if this was the only "change" we'd
-        // recorded. We can't easily distinguish per-entry; rely on the
-        // final-equality check below.
-      }
     }
     // Skip the PUT when the resulting map is byte-identical to the
     // loaded map. Eliminates the no-op writes on deploys where outputs
     // didn't change (the typical incremental-deploy case after the
-    // first one).
-    if (!changed || mapsEqual(this.loadState.entries, next)) {
+    // first one). `mapsEqual` alone is sufficient — any per-entry
+    // change ends up reflected in `next` and the equality check is
+    // strictly more precise than a per-step `changed` flag.
+    if (mapsEqual(this.loadState.entries, next)) {
       return;
     }
     await this.persist(next);

@@ -150,9 +150,19 @@ gates:
       - ".markgate-pr-review-sha"
 
   integ-broad:
-    # Records the last broad real-AWS integ run (bench-cdk-sample,
-    # lambda, microservices, drift-revert, drift-revert-vpc,
-    # multi-stack-deps, multi-resource, remove-protection, etc.).
+    # Records the last broad real-AWS integ run. The canonical
+    # broad-integ set (keep in sync with .claude/hooks/integ-broad-gate.sh
+    # error message + .claude/skills/run-integ/SKILL.md step 11 +
+    # .claude/skills/verify-pr/SKILL.md step 6 + CLAUDE.md):
+    #   bench-cdk-sample
+    #   lambda
+    #   microservices
+    #   drift-revert
+    #   drift-revert-vpc
+    #   multi-stack-deps
+    #   multi-resource
+    #   remove-protection
+    #   export
     # Narrow feature integs like `import-value-strong-ref` flip the
     # `integ-destroy` marker but do not exercise multi-resource VPC /
     # Lambda / Custom-Resource paths, so a cross-cutting code change
