@@ -322,9 +322,7 @@ export class SNSTopicPolicyProvider implements ResourceProvider {
     //    auto path when properties is the only signal).
     const topics = input.properties['Topics'];
     if (Array.isArray(topics) && topics.length > 0) {
-      const allLiteralArns = topics.every(
-        (t) => typeof t === 'string' && isSnsTopicArn(t)
-      );
+      const allLiteralArns = topics.every((t) => typeof t === 'string' && isSnsTopicArn(t));
       if (allLiteralArns) {
         return { physicalId: (topics as string[]).join(','), attributes: {} };
       }
