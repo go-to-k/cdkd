@@ -203,6 +203,7 @@ Present results as a table:
 | docs consistency | pass/fail |
 | leftover resources | none/found |
 | integ-destroy marker (deletion-touching PRs only) | fresh/stale/n-a |
+| integ-broad marker (cross-cutting deploy/destroy PRs only) | fresh/stale/n-a |
 | integ-local marker (local-execution-touching PRs only) | fresh/stale/n-a |
 | code review (incl. shared-utility callers) | pass/issues found |
 | live-test changed behavior | pass/skipped/issues found |
