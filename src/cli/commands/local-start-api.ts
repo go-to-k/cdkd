@@ -136,10 +136,31 @@ interface LocalStartApiOptions {
  * See [docs/cli-reference.md](../../../docs/cli-reference.md) for the
  * full surface and out-of-scope items.
  */
-async function localStartApiCommand(options: LocalStartApiOptions): Promise<void> {
+async function localStartApiCommand(
+  target: string | undefined,
+  options: LocalStartApiOptions
+): Promise<void> {
   const logger = getLogger();
   if (options.verbose) {
     logger.setLevel('debug');
+  }
+
+  // Resolve the API filter: positional `<target>` wins over `--api`.
+  // `--api` is kept as a backward-compat alias for one release cycle —
+  // every invocation that goes through it emits a deprecation warn so
+  // users see the migration path before the next major bump removes it.
+  let apiFilter: string | undefined = target;
+  if (options.api !== undefined) {
+    if (target !== undefined) {
+      throw new Error(
+        `Cannot specify both positional target ('${target}') and --api flag ('${options.api}'). ` +
+          `Use one or the other. The positional form is preferred — '--api' is a deprecated alias.`
+      );
+    }
+    logger.warn(
+      "[deprecated] --api <id> will be removed in a future major release. Use the positional argument instead: 'cdkd local start-api <id>'."
+    );
+    apiFilter = options.api;
   }
 
   warnIfDeprecatedRegion(options);
@@ -263,15 +284,31 @@ async function localStartApiCommand(options: LocalStartApiOptions): Promise<void
     // Routes referencing an unsupported authorizer kind hard-fail here.
     let routesWithAuth = attachAuthorizers(targetStacks, routes);
 
-    // Issue #260: `--api <id>` filter — restrict the discovered surface
-    // to a single API. Useful when the user wants exactly one server
-    // (e.g. to free other ports, or to focus testing on one API).
-    if (options.api) {
-      const filtered = filterRoutesByApiIdentifier(routesWithAuth, options.api);
+    // Issue #260: target filter — restrict the discovered surface to a
+    // single API. Useful when the user wants exactly one server (e.g. to
+    // free other ports, or to focus testing on one API).
+    //
+    // Strict multi-stack rejection for the bare-logical-id form (no `:`,
+    // no `/`): mirrors `cdkd local invoke` / `cdkd local run-task`'s
+    // resolver behavior. A bare id in a multi-stack app is ambiguous,
+    // because two stacks can legitimately have the same logical id —
+    // pre-PR the filter would silently match both and collide in
+    // `groupRoutesByServer`'s serverKey (now disambiguated via PR 8d).
+    // We reject upfront with the same disambiguation hint invoke uses.
+    if (apiFilter !== undefined) {
+      const isBareId = !apiFilter.includes(':') && !apiFilter.includes('/');
+      if (isBareId && targetStacks.length > 1) {
+        throw new Error(
+          `Multiple stacks in app, target '${apiFilter}' is missing a stack prefix. ` +
+            `Use 'StackName:${apiFilter}' or 'StackName/${apiFilter}' (Construct path form). ` +
+            `Available stacks: ${targetStacks.map((s) => s.stackName).join(', ')}.`
+        );
+      }
+      const filtered = filterRoutesByApiIdentifier(routesWithAuth, apiFilter);
       if (filtered.length === 0) {
         const available = availableApiIdentifiers(routesWithAuth).join(', ') || '(none)';
         throw new Error(
-          `--api '${options.api}' did not match any discovered API. Available identifiers: ${available}.`
+          `Target '${apiFilter}' did not match any discovered API. Available identifiers: ${available}.`
         );
       }
       routesWithAuth = filtered;
@@ -1334,6 +1371,10 @@ export function createLocalStartApiCommand(): Command {
     .description(
       'Run a long-running local HTTP server that maps API Gateway routes (REST v1, HTTP API, Function URL) to Lambda invocations against the AWS Lambda Runtime Interface Emulator (Docker required). Supports Lambda TOKEN/REQUEST authorizers and Cognito User Pool / HTTP v2 JWT authorizers; when JWKS is unreachable, JWT authorizers fall back to pass-through (every token accepted) with a warn line — local dev fallback. VPC-config Lambdas run locally and surface a warn line at startup; their containers do NOT get attached to the deployed VPC subnets, so calls to private RDS / ElastiCache will fail.'
     )
+    .argument(
+      '[target]',
+      "Optional API filter. Accepts the bare CDK logical id ('MyHttpApi'; single-stack apps only), stack-qualified logical id ('MyStack:MyHttpApi'), full CDK Construct path ('MyStack/MyHttpApi/Resource'), or an ancestor Construct path that prefix-matches ('MyStack/MyHttpApi'). When omitted, every discovered API gets its own server. Mirrors `cdkd local invoke` / `cdkd local run-task` target syntax."
+    )
     .addOption(
       new Option('--port <port>', 'HTTP server port (default: auto-allocate)').default('0')
     )
@@ -1388,7 +1429,7 @@ export function createLocalStartApiCommand(): Command {
     .addOption(
       new Option(
         '--api <id>',
-        "Restrict to a single API surface. Accepts the bare CDK logical id (e.g. 'MyHttpApi'), the stack-qualified logical id ('MyStack:MyHttpApi'), the full CDK Construct path ('MyStack/MyHttpApi/Resource'), or an ancestor Construct path that prefix-matches ('MyStack/MyHttpApi'). For Function URLs, the path forms reference the backing Lambda's aws:cdk:path. When unset, every discovered API gets its own server on its own port (basePort, basePort+1, ... when --port is set; auto-allocated otherwise)."
+        'DEPRECATED — use the positional <target> argument instead. Same accepted forms (bare logical id, stack-qualified, Construct path, ancestor prefix). Will be removed in a future major release.'
       )
     )
     .action(withErrorHandling(localStartApiCommand));

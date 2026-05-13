@@ -91,6 +91,55 @@ describe('groupRoutesByServer', () => {
     const publicGroup = groups.find((g) => g.identifier === 'PublicApi')!;
     expect(publicGroup.routes).toHaveLength(2);
   });
+
+  it('stack-prefixes serverKey so same-logical-id APIs across stacks get separate servers', () => {
+    // Cross-stack same-logical-id case: `MyHttpApi` in both `WebStack`
+    // and `AdminStack`. Pre-fix the serverKey was `http-api:MyHttpApi`
+    // for both, silently merging routes from two different APIs into
+    // one server. Post-fix the serverKey includes `apiStackName`, so
+    // the two surfaces get two separate servers on different ports.
+    const routes = [
+      makeRoute({
+        source: 'http-api',
+        apiLogicalId: 'MyHttpApi',
+        apiStackName: 'WebStack',
+        pathPattern: '/web',
+      }),
+      makeRoute({
+        source: 'http-api',
+        apiLogicalId: 'MyHttpApi',
+        apiStackName: 'AdminStack',
+        pathPattern: '/admin',
+      }),
+    ];
+    const groups = groupRoutesByServer(routes);
+    expect(groups).toHaveLength(2);
+    expect(groups[0]!.serverKey).toBe('http-api:WebStack:MyHttpApi');
+    expect(groups[1]!.serverKey).toBe('http-api:AdminStack:MyHttpApi');
+    // Routes must NOT cross-pollinate between the two servers.
+    expect(groups[0]!.routes).toHaveLength(1);
+    expect(groups[0]!.routes[0]!.route.pathPattern).toBe('/web');
+    expect(groups[1]!.routes).toHaveLength(1);
+    expect(groups[1]!.routes[0]!.route.pathPattern).toBe('/admin');
+  });
+
+  it('falls back to un-prefixed serverKey when apiStackName is absent (backward compat)', () => {
+    // Templates without `aws:cdk:path` Metadata (or hand-rolled
+    // `cfn.Resource` defs) produce routes with `apiStackName: undefined`.
+    // The serverKey stays in the pre-fix shape so existing fixtures /
+    // synthesized templates without the metadata still group cleanly.
+    const routes = [
+      makeRoute({ source: 'http-api', apiLogicalId: 'BareApi' }),
+      makeRoute({ source: 'rest-v1', apiLogicalId: 'BareRest', apiVersion: 'v1' }),
+      makeRoute({ source: 'function-url', lambdaLogicalId: 'BareHandler' }),
+    ];
+    const groups = groupRoutesByServer(routes);
+    expect(groups.map((g) => g.serverKey)).toEqual([
+      'http-api:BareApi',
+      'rest-v1:BareRest',
+      'function-url:BareHandler',
+    ]);
+  });
 });
 
 describe('filterRoutesByApiIdentifier', () => {
