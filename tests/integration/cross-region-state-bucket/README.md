@@ -5,7 +5,7 @@ lives in a different AWS region from the CLI's profile region.
 
 ## Background
 
-Pre-PR #60 (v0.9.0), running `cdkd state list --state-bucket
+Pre-PR #60 (v0.10.0), running `cdkd state list --state-bucket
 <bucket-in-us-west-2>` from a profile defaulting to `us-east-1`
 would fail with the AWS SDK v3
 synthetic `UnknownError` — the SDK's region-redirect middleware does not
