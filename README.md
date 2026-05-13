@@ -464,27 +464,6 @@ Two `orphan` variants at different granularities:
 Both `cdkd destroy` (synth-driven) and `cdkd state destroy`
 (state-driven, no synth) delete AWS resources + state.
 
-## Stack-name prefix on physical names
-
-cdkd creates AWS resources with the **exact name you declared** in
-CDK code by default (since v0.94.0). `new iam.Role(this, 'CRRole',
-{ roleName: 'my-role' })` produces an AWS resource named `my-role`,
-consistent across every resource type. Pre-v0.94.0 cdkd prepended the
-stack name on a subset of types only — the inconsistency surfaced as
-`cdkd export` CFn-IMPORT identifier mismatches and was flipped in
-[#299](https://github.com/go-to-k/cdkd/issues/299).
-
-`cdkd deploy --prefix-user-supplied-names` opts BACK in to the legacy
-prefixing — useful when migrating an existing stack deployed under the
-pre-v0.94.0 default and you don't want a one-time replacement on every
-IAM Role / User / Group / InstanceProfile / ELBv2 LB / TG.
-
-Full details — affected resource types, env var / `cdk.json` resolution
-chain, deprecated `--no-prefix-user-supplied-names` flag, migration
-guide, interaction with `cdkd export`'s identifier overlay — live in
-[docs/cli-reference.md](docs/cli-reference.md) under
-`--prefix-user-supplied-names`.
-
 ## `--remove-protection`: one-shot bypass for protected resources
 
 CDK's `new Stack(app, 'X', { terminationProtection: true })` is honored
