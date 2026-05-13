@@ -9,8 +9,9 @@ import { getLogger } from '../utils/logger.js';
 import { getAwsClients } from '../utils/aws-clients.js';
 import { stringifyValue } from '../utils/stringify.js';
 import type { CloudFormationTemplate } from '../types/resource.js';
-import type { ResourceState } from '../types/state.js';
+import type { ResourceState, StateImportEntry } from '../types/state.js';
 import type { S3StateBackend } from '../state/s3-state-backend.js';
+import type { ExportIndexStore } from '../state/export-index-store.js';
 
 /**
  * Special symbol to represent AWS::NoValue
@@ -36,6 +37,24 @@ export interface ResolverContext {
   stateBackend?: S3StateBackend;
   /** Current stack name (for Fn::ImportValue to avoid self-reference) */
   stackName?: string;
+  /**
+   * Persistent exports index for fast `Fn::ImportValue` resolution. When
+   * supplied, the resolver tries an O(1) index lookup before falling back
+   * to the per-stack state.json scan. Optional for backwards compat; the
+   * scan-only path is still correct.
+   */
+  exportIndex?: ExportIndexStore;
+  /**
+   * Bag for the resolver to push every successful `Fn::ImportValue`
+   * resolution into. The deploy engine reads this after resource
+   * provisioning and persists it to the consumer's `state.imports`
+   * field (schema v4) so destroy-time strong-reference checks can
+   * refuse to delete a producer with active consumers.
+   *
+   * `Fn::GetStackOutput` does NOT push entries here by design — it is
+   * a weak reference (see CLAUDE.md "Behavior vs CDK").
+   */
+  recordedImports?: StateImportEntry[];
 }
 
 /**
@@ -1093,29 +1112,41 @@ export class IntrinsicFunctionResolver {
 
     this.logger.debug(`Resolving Fn::ImportValue: ${exportName}`);
 
-    // List all stacks. Each entry is a `{stackName, region}` ref so the lookup
-    // hits the right region-scoped key. A legacy entry has `region: undefined`
-    // — we still let it through so cross-stack references keep working during
-    // a partial migration; the state backend's legacy-fallback handles it.
+    // Hot path: consult the persistent exports index for O(1) lookup.
+    // Skip self-references (a stack importing its own export) so the
+    // fallback scan below can apply the same exclusion.
+    if (context.exportIndex) {
+      try {
+        const entry = await context.exportIndex.lookup(exportName);
+        if (entry && (!context.stackName || entry.producerStack !== context.stackName)) {
+          this.recordImport(context, exportName, entry.producerStack, entry.producerRegion);
+          this.logger.info(
+            `Resolved Fn::ImportValue: ${exportName} = ${JSON.stringify(entry.value)} (from index: ${entry.producerStack} / ${entry.producerRegion})`
+          );
+          return entry.value;
+        }
+      } catch (err) {
+        this.logger.warn(
+          `Exports index lookup failed for '${exportName}': ${err instanceof Error ? err.message : String(err)}; falling back to state.json scan`
+        );
+      }
+    }
+
+    // Fallback path (index miss, drift, or no index supplied): scan every
+    // stack's state.json. Same as the pre-index behavior.
     const allStacks = await context.stateBackend.listStacks();
     this.logger.debug(
       `Found ${allStacks.length} state record(s) to search for export: ${exportName}`
     );
 
-    // Search through all stacks for the export
     for (const ref of allStacks) {
       const { stackName: refStack, region: refRegion } = ref;
-      // Skip the current stack (avoid self-reference)
       if (context.stackName && refStack === context.stackName) {
         this.logger.debug(`Skipping current stack: ${refStack}`);
         continue;
       }
 
       try {
-        // Without a region we can't read the new key — fall back to the
-        // current resolver region so legacy and same-region records still
-        // resolve. The legacy read path inside getState matches by embedded
-        // region, so an unrelated legacy record won't collide here.
         const lookupRegion = refRegion ?? this.resolverRegion ?? '';
         if (!lookupRegion) {
           this.logger.debug(
@@ -1131,12 +1162,28 @@ export class IntrinsicFunctionResolver {
 
         const { state } = stateData;
 
-        // Check if this stack has the export in its outputs
         if (state.outputs && exportName in state.outputs) {
           const value = state.outputs[exportName];
           this.logger.info(
             `Resolved Fn::ImportValue: ${exportName} = ${JSON.stringify(value)} (from stack: ${refStack} / ${lookupRegion})`
           );
+          // Patch the index with the just-discovered entry so subsequent
+          // resolves hit the O(1) path. Best-effort — index write failures
+          // are logged and don't fail the resolve.
+          if (context.exportIndex) {
+            context.exportIndex
+              .patchEntry(exportName, {
+                value,
+                producerStack: refStack,
+                producerRegion: lookupRegion,
+              })
+              .catch((err) => {
+                this.logger.debug(
+                  `Failed to patch exports index for '${exportName}': ${err instanceof Error ? err.message : String(err)}`
+                );
+              });
+          }
+          this.recordImport(context, exportName, refStack, lookupRegion);
           return value;
         }
       } catch (error) {
@@ -1147,12 +1194,56 @@ export class IntrinsicFunctionResolver {
       }
     }
 
-    // Export not found in any stack
     throw new Error(
       `Fn::ImportValue: export '${exportName}' not found in any stack. ` +
         `Searched ${allStacks.length} state record(s). ` +
         `Make sure the exporting stack has been deployed and the Output has an Export.Name property.`
     );
+  }
+
+  /**
+   * Push a resolved `Fn::ImportValue` into the consumer's recorded-imports
+   * bag (when supplied by the caller). Skips duplicates within the
+   * SAME bag — multiple references to the same `(exportName,
+   * sourceStack, sourceRegion)` triple emit one entry.
+   *
+   * Concurrency: the check + push pair is purely synchronous (no
+   * `await` between `some()` and `push()`), so the JS event loop
+   * cannot interleave a competing `recordImport` call between the
+   * dedup check and the append. The bag's lifetime is per-deploy
+   * (DeployEngine resets `this.recordedImports = []` at the top of
+   * each `deploy()` call), so the bag identity already serves as
+   * the dedup scope.
+   *
+   * Cross-context dedup: when callers share the same bag instance
+   * across multiple ResolverContext objects (the typical pattern —
+   * DeployEngine passes `this.recordedImports` into every resolver
+   * context it constructs), the dedup naturally extends across
+   * contexts because the `some()` reads the shared bag. Stashing
+   * the dedup Set on `context.recordedImports` directly via a
+   * property would break under `verbatimModuleSyntax`-style strict
+   * typing; the array scan stays O(N) where N is the per-deploy
+   * import count (typically < 20), which is fine.
+   */
+  private recordImport(
+    context: ResolverContext,
+    exportName: string,
+    producerStack: string,
+    producerRegion: string
+  ): void {
+    if (!context.recordedImports) return;
+    const dup = context.recordedImports.some(
+      (e) =>
+        e.exportName === exportName &&
+        e.sourceStack === producerStack &&
+        e.sourceRegion === producerRegion
+    );
+    if (dup) return;
+    context.recordedImports.push({
+      exportName,
+      sourceStack: producerStack,
+      sourceRegion: producerRegion,
+    });
   }
 
   /**

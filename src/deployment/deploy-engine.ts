@@ -8,11 +8,13 @@ import type { CloudFormationTemplate, ResourceProvider } from '../types/resource
 import {
   STATE_SCHEMA_VERSION_CURRENT,
   type StackState,
+  type StateImportEntry,
   type ResourceState,
   type ResourceChange,
 } from '../types/state.js';
 import type { S3StateBackend } from '../state/s3-state-backend.js';
 import type { LockManager } from '../state/lock-manager.js';
+import type { ExportIndexStore } from '../state/export-index-store.js';
 import type { DagBuilder } from '../analyzer/dag-builder.js';
 import type { DiffCalculator } from '../analyzer/diff-calculator.js';
 import { ProviderRegistry } from '../provisioning/provider-registry.js';
@@ -188,6 +190,22 @@ export class DeployEngine {
   private diffCalculator: DiffCalculator;
   private providerRegistry: ProviderRegistry;
   private options: DeployEngineOptions;
+  /**
+   * Optional persistent exports index store. When supplied, all
+   * `Fn::ImportValue` resolutions in this deploy session prefer the
+   * O(1) index lookup over the per-stack state.json scan, and the
+   * consumer's `state.imports` field is populated for destroy-time
+   * strong-reference checks. Shared across DeployEngine instances in
+   * a single `cdkd deploy --all` invocation so the in-memory cache
+   * survives across stacks.
+   */
+  private exportIndexStore: ExportIndexStore | undefined;
+  /**
+   * Per-deploy-session bag the resolver pushes resolved
+   * `Fn::ImportValue` entries into. Reset at the start of each
+   * `deploy()` call and persisted to `newState.imports` at the end.
+   */
+  private recordedImports: StateImportEntry[] = [];
 
   /**
    * Target region for this stack. Required — load-bearing for the
@@ -203,7 +221,8 @@ export class DeployEngine {
     diffCalculator: DiffCalculator,
     providerRegistry: ProviderRegistry,
     options: DeployEngineOptions = {},
-    stackRegion: string
+    stackRegion: string,
+    exportIndexStore?: ExportIndexStore
   ) {
     this.stateBackend = stateBackend;
     this.lockManager = lockManager;
@@ -212,6 +231,7 @@ export class DeployEngine {
     this.providerRegistry = providerRegistry;
     this.options = options;
     this.stackRegion = stackRegion;
+    this.exportIndexStore = exportIndexStore;
     this.resolver = new IntrinsicFunctionResolver(stackRegion);
     this.options.concurrency = options.concurrency ?? 10;
     this.options.dryRun = options.dryRun ?? false;
@@ -231,11 +251,44 @@ export class DeployEngine {
    * Deploy a CloudFormation template
    */
   async deploy(stackName: string, template: CloudFormationTemplate): Promise<DeployResult> {
+    // Reset per-session state. `recordedImports` is the bag the
+    // resolver pushes Fn::ImportValue resolutions into; it lands in
+    // `state.imports` at deploy save time.
+    this.recordedImports = [];
     // Scope `stackName` to this deploy's async chain so concurrent
     // deploys (--stack-concurrency > 1) don't see each other's value.
     // See `src/provisioning/resource-name.ts` for the AsyncLocalStorage
     // background.
     return withStackName(stackName, () => this.doDeploy(stackName, template));
+  }
+
+  /**
+   * Resolver context with the imports-recording and exports-index
+   * fields wired in. Keeps the four+ inline context construction
+   * sites consistent — pass through callable as
+   * `this.buildResolverContext({...}, stackName)`.
+   */
+  private buildResolverContext(
+    base: {
+      template: CloudFormationTemplate;
+      resources: Record<string, ResourceState>;
+      parameters?: Record<string, unknown>;
+      conditions?: Record<string, boolean>;
+    },
+    stackName: string
+  ): import('./intrinsic-function-resolver.js').ResolverContext {
+    return {
+      template: base.template,
+      resources: base.resources,
+      ...(base.parameters &&
+        Object.keys(base.parameters).length > 0 && { parameters: base.parameters }),
+      ...(base.conditions &&
+        Object.keys(base.conditions).length > 0 && { conditions: base.conditions }),
+      stateBackend: this.stateBackend,
+      stackName,
+      ...(this.exportIndexStore && { exportIndex: this.exportIndexStore }),
+      recordedImports: this.recordedImports,
+    };
   }
 
   /**
@@ -473,13 +526,14 @@ export class DeployEngine {
       );
 
       // 2.6. Evaluate conditions from template
-      const context = {
-        template,
-        resources: currentState.resources,
-        ...(Object.keys(parameterValues).length > 0 && { parameters: parameterValues }),
-        stateBackend: this.stateBackend,
-        stackName,
-      };
+      const context = this.buildResolverContext(
+        {
+          template,
+          resources: currentState.resources,
+          parameters: parameterValues,
+        },
+        stackName
+      );
       const conditions = await this.resolver.evaluateConditions(context);
       this.logger.debug(
         `Evaluated ${Object.keys(conditions).length} conditions: ${Object.keys(conditions).join(', ')}`
@@ -504,14 +558,15 @@ export class DeployEngine {
       // Pass a best-effort resolver so that changes hidden inside intrinsics (e.g.
       // `Fn::Join` literal args like "-value" -> "-value2") are detected against
       // the already-resolved values stored in state.
-      const diffResolverContext = {
-        template,
-        resources: currentState.resources,
-        ...(Object.keys(parameterValues).length > 0 && { parameters: parameterValues }),
-        ...(Object.keys(conditions).length > 0 && { conditions }),
-        stateBackend: this.stateBackend,
-        stackName,
-      };
+      const diffResolverContext = this.buildResolverContext(
+        {
+          template,
+          resources: currentState.resources,
+          parameters: parameterValues,
+          conditions,
+        },
+        stackName
+      );
       const diffResolveFn = (value: unknown) => this.resolver.resolve(value, diffResolverContext);
       const changes = await this.diffCalculator.calculateDiff(
         currentState,
@@ -539,6 +594,14 @@ export class DeployEngine {
               stackName: currentState.stackName,
               resources: currentState.resources,
               outputs: currentState.outputs,
+              // Preserve existing imports[] (no-change path: nothing
+              // re-resolved). Otherwise the refresh would silently
+              // strip the strong-reference record on every diff-clean
+              // deploy.
+              ...(currentState.imports &&
+                currentState.imports.length > 0 && {
+                  imports: currentState.imports,
+                }),
               lastModified: Date.now(),
             };
             const saveOptions: { expectedEtag?: string; migrateLegacy?: boolean } = {};
@@ -621,6 +684,19 @@ export class DeployEngine {
       // save is unconditionally region-scoped.
       const newEtag = await this.stateBackend.saveState(stackName, this.stackRegion, newState);
       this.logger.debug(`State saved (ETag: ${newEtag})`);
+
+      // 7c. Update the persistent exports index with this stack's
+      // outputs so subsequent `Fn::ImportValue` resolves hit O(1).
+      // Best-effort: failures are swallowed inside updateForStack and
+      // surfaced as warnings (state.json is canonical; a stale index
+      // self-heals on the next deploy/resolve fallback).
+      if (this.exportIndexStore) {
+        await this.exportIndexStore.updateForStack(
+          stackName,
+          this.stackRegion,
+          (newState.outputs as Record<string, unknown>) ?? {}
+        );
+      }
 
       const durationMs = Date.now() - startTime;
       const unchangedCount =
@@ -705,6 +781,13 @@ export class DeployEngine {
             stackName: currentState.stackName,
             resources: newResources,
             outputs: currentState.outputs,
+            // Per-resource partial save: imports[] reverts to the
+            // pre-deploy snapshot. recordedImports from this session
+            // are persisted only on the final success path.
+            ...(currentState.imports &&
+              currentState.imports.length > 0 && {
+                imports: currentState.imports,
+              }),
             lastModified: Date.now(),
           };
           // Migration is a one-shot tail on the first save; subsequent saves
@@ -900,6 +983,10 @@ export class DeployEngine {
           stackName: currentState.stackName,
           resources: newResources,
           outputs: currentState.outputs,
+          ...(currentState.imports &&
+            currentState.imports.length > 0 && {
+              imports: currentState.imports,
+            }),
           lastModified: Date.now(),
         };
         const migrate = pendingMigration;
@@ -945,6 +1032,10 @@ export class DeployEngine {
           stackName: currentState.stackName,
           resources: newResources,
           outputs: currentState.outputs,
+          ...(currentState.imports &&
+            currentState.imports.length > 0 && {
+              imports: currentState.imports,
+            }),
           lastModified: Date.now(),
         };
         await this.stateBackend.saveState(stackName, this.stackRegion, postRollbackState, {
@@ -965,6 +1056,10 @@ export class DeployEngine {
             stackName: currentState.stackName,
             resources: newResources,
             outputs: currentState.outputs,
+            ...(currentState.imports &&
+              currentState.imports.length > 0 && {
+                imports: currentState.imports,
+              }),
             lastModified: Date.now(),
           };
           await this.stateBackend.saveState(stackName, this.stackRegion, postRollbackState, {
@@ -997,6 +1092,7 @@ export class DeployEngine {
         stackName: currentState.stackName,
         resources: newResources,
         outputs,
+        ...(this.recordedImports.length > 0 && { imports: [...this.recordedImports] }),
         lastModified: Date.now(),
       },
       actualCounts,
@@ -1369,15 +1465,15 @@ export class DeployEngine {
         const desiredProps = change.desiredProperties || {};
 
         // Resolve intrinsic functions in properties
-        const context = {
-          template: template!,
-          resources: stateResources,
-          ...(parameterValues &&
-            Object.keys(parameterValues).length > 0 && { parameters: parameterValues }),
-          ...(conditions && Object.keys(conditions).length > 0 && { conditions }),
-          stateBackend: this.stateBackend,
-          stackName,
-        };
+        const context = this.buildResolverContext(
+          {
+            template: template!,
+            resources: stateResources,
+            ...(parameterValues && { parameters: parameterValues }),
+            ...(conditions && { conditions }),
+          },
+          stackName
+        );
 
         const resolvedProps = (await this.resolver.resolve(desiredProps, context)) as Record<
           string,
@@ -1435,15 +1531,15 @@ export class DeployEngine {
         const currentProps = change.currentProperties || {};
 
         // Resolve intrinsic functions in properties
-        const context = {
-          template: template!,
-          resources: stateResources,
-          ...(parameterValues &&
-            Object.keys(parameterValues).length > 0 && { parameters: parameterValues }),
-          ...(conditions && Object.keys(conditions).length > 0 && { conditions }),
-          stateBackend: this.stateBackend,
-          stackName,
-        };
+        const context = this.buildResolverContext(
+          {
+            template: template!,
+            resources: stateResources,
+            ...(parameterValues && { parameters: parameterValues }),
+            ...(conditions && { conditions }),
+          },
+          stackName
+        );
 
         const resolvedProps = (await this.resolver.resolve(desiredProps, context)) as Record<
           string,
@@ -1948,15 +2044,15 @@ export class DeployEngine {
     }
 
     const outputs: Record<string, unknown> = {};
-    const context = {
-      template: template,
-      resources: resources,
-      ...(parameterValues &&
-        Object.keys(parameterValues).length > 0 && { parameters: parameterValues }),
-      ...(conditions && Object.keys(conditions).length > 0 && { conditions }),
-      stateBackend: this.stateBackend,
-      stackName,
-    };
+    const context = this.buildResolverContext(
+      {
+        template,
+        resources,
+        ...(parameterValues && { parameters: parameterValues }),
+        ...(conditions && { conditions }),
+      },
+      stackName
+    );
 
     for (const [outputKey, output] of Object.entries(template.Outputs)) {
       try {

@@ -18,6 +18,7 @@ import { getLogger } from '../../utils/logger.js';
 import { PartialFailureError, withErrorHandling } from '../../utils/error-handler.js';
 import { S3StateBackend, type StackStateRef } from '../../state/s3-state-backend.js';
 import { LockManager } from '../../state/lock-manager.js';
+import { ExportIndexStore } from '../../state/export-index-store.js';
 import { setAwsClients, AwsClients } from '../../utils/aws-clients.js';
 import { applyRoleArnIfSet } from '../../utils/role-arn.js';
 import {
@@ -130,6 +131,7 @@ async function setupStateBackend(options: {
   region: string;
   bucket: string;
   prefix: string;
+  exportIndexStore: ExportIndexStore;
   dispose: () => void;
 }> {
   // PR 5: --region is deprecated on every state subcommand. Warn here so
@@ -162,6 +164,14 @@ async function setupStateBackend(options: {
   // sees a fully-ready backend.
   await stateBackend.verifyBucketExists();
 
+  const exportIndexStore = new ExportIndexStore(
+    awsClients.s3,
+    bucket,
+    prefix,
+    region,
+    stateBackend
+  );
+
   return {
     stateBackend,
     lockManager,
@@ -169,6 +179,7 @@ async function setupStateBackend(options: {
     region,
     bucket,
     prefix,
+    exportIndexStore,
     dispose: () => awsClients.destroy(),
   };
 }
@@ -973,6 +984,7 @@ async function stateDestroyCommand(
           // already accepted the batch prompt).
           skipConfirmation: options.yes || options.all === true,
           removeProtection: options.removeProtection === true,
+          exportIndexStore: setup.exportIndexStore,
           ...(options.resourceWarnAfter?.globalMs !== undefined && {
             resourceWarnAfterMs: options.resourceWarnAfter.globalMs,
           }),

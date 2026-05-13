@@ -17,6 +17,7 @@ import { withErrorHandling } from '../../utils/error-handler.js';
 import { Synthesizer } from '../../synthesis/synthesizer.js';
 import { AssetPublisher } from '../../assets/asset-publisher.js';
 import { S3StateBackend } from '../../state/s3-state-backend.js';
+import { ExportIndexStore } from '../../state/export-index-store.js';
 import { LockManager } from '../../state/lock-manager.js';
 import { DagBuilder } from '../../analyzer/dag-builder.js';
 import { DiffCalculator } from '../../analyzer/diff-calculator.js';
@@ -178,6 +179,20 @@ async function deployCommand(
     }
   );
   await preflightStateBackend.verifyBucketExists();
+
+  // Shared exports index store for this deploy session. Lifecycle: created
+  // here once and threaded through every per-stack DeployEngine so its
+  // in-memory cache survives across all stacks in a `cdkd deploy --all`
+  // run. Lazy-loaded — the first Fn::ImportValue resolution triggers the
+  // rebuild from state.json (when index file is absent post-upgrade) or
+  // a single GET (when index file already exists).
+  const exportIndexStore = new ExportIndexStore(
+    awsClients.s3,
+    stateBucket,
+    options.statePrefix,
+    region,
+    preflightStateBackend
+  );
 
   let deployInterrupted = false;
   const topLevelSigintHandler = () => {
@@ -430,7 +445,8 @@ async function deployCommand(
               resourceTimeoutByType: options.resourceTimeout.perTypeMs,
             }),
           },
-          stackRegion
+          stackRegion,
+          exportIndexStore
         );
 
         const deployResult = await stackDeployEngine.deploy(

@@ -311,6 +311,79 @@ export class StackTerminationProtectionError extends CdkdError {
 }
 
 /**
+ * One consumer that still references the producer being destroyed via
+ * `Fn::ImportValue`. Surfaced inside {@link StackHasActiveImportsError}.
+ */
+export interface ActiveImportConsumer {
+  consumerStack: string;
+  consumerRegion: string;
+  exportName: string;
+}
+
+/**
+ * `cdkd destroy <producer>` refused because at least one consumer stack
+ * still records an `Fn::ImportValue` reference to one of the producer's
+ * outputs. This matches CloudFormation's strong-reference semantics —
+ * CFn rejects `DeleteStack` for an exporter while an importer exists.
+ *
+ * cdkd has no `--force` escape hatch for this (intentionally, mirroring
+ * CFn). The error message lists every offending consumer and points the
+ * user at the two valid resolution paths:
+ *
+ *  1. Destroy the consumer first: `cdkd destroy <consumer>`
+ *  2. Remove the `Fn::ImportValue` from the consumer's template and
+ *     redeploy, then retry the producer destroy.
+ *
+ * Weak-reference consumers (`Fn::GetStackOutput`, cdkd-specific) never
+ * trigger this error by design — the producer stays deletable
+ * independently of consumers when the user intentionally chose a weak
+ * reference at template-authoring time.
+ *
+ * Exit code 2 (same as `PartialFailureError`) so multi-stack `cdkd
+ * destroy --all` runs that partially succeed still surface as
+ * non-zero without being indistinguishable from a fatal cdkd error.
+ */
+export class StackHasActiveImportsError extends CdkdError {
+  readonly exitCode: number = 2;
+  public readonly producerStack: string;
+  public readonly producerRegion: string;
+  public readonly consumers: ActiveImportConsumer[];
+
+  constructor(
+    producerStack: string,
+    producerRegion: string,
+    consumers: ActiveImportConsumer[],
+    cause?: Error
+  ) {
+    const lines = consumers.map(
+      (c) => `  - ${c.consumerStack} (${c.consumerRegion}): imports export '${c.exportName}'`
+    );
+    super(
+      `Cannot destroy stack '${producerStack}' (${producerRegion}): ` +
+        `the following stacks still import its outputs via Fn::ImportValue:\n` +
+        `${lines.join('\n')}\n\n` +
+        `This matches CloudFormation's strong-reference semantics — exports are\n` +
+        `protected as long as a consumer references them.\n\n` +
+        `To proceed:\n` +
+        `  1. Destroy the consumer first: cdkd destroy <consumer-stack>\n` +
+        `  2. Or remove the Fn::ImportValue from the consumer's template\n` +
+        `     (e.g. inline the value, or refactor) and re-deploy the consumer,\n` +
+        `     then retry this destroy.\n\n` +
+        `Note: cdkd's Fn::GetStackOutput intrinsic is a weak alternative that\n` +
+        `does NOT protect the producer — use it when you intentionally want\n` +
+        `the producer to be deletable independently of consumers.`,
+      'STACK_HAS_ACTIVE_IMPORTS',
+      cause
+    );
+    this.producerStack = producerStack;
+    this.producerRegion = producerRegion;
+    this.consumers = consumers;
+    this.name = 'StackHasActiveImportsError';
+    Object.setPrototypeOf(this, StackHasActiveImportsError.prototype);
+  }
+}
+
+/**
  * Signals that `cdkd local start-api`'s route discovery hit an unsupported
  * shape — non-AWS_PROXY integration, ApiGwV2 service integration
  * (`IntegrationSubtype` set), WebSocket protocol, Lambda::Url with

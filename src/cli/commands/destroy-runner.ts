@@ -14,7 +14,13 @@ import {
   DEFAULT_RESOURCE_WARN_AFTER_MS,
   DEFAULT_RESOURCE_TIMEOUT_MS,
 } from '../../deployment/deploy-engine.js';
-import { ProvisioningError, ResourceTimeoutError } from '../../utils/error-handler.js';
+import {
+  ProvisioningError,
+  ResourceTimeoutError,
+  StackHasActiveImportsError,
+  type ActiveImportConsumer,
+} from '../../utils/error-handler.js';
+import type { ExportIndexStore } from '../../state/export-index-store.js';
 
 /**
  * Execution context passed by the caller (`cdkd destroy` or
@@ -96,6 +102,16 @@ export interface DestroyRunnerContext {
    * `resourceTimeoutMs` at the per-resource delete site.
    */
   resourceTimeoutByType?: Record<string, number>;
+
+  /**
+   * Persistent exports index. When supplied, the runner removes this
+   * stack's entries from the index after a successful destroy so
+   * subsequent `Fn::ImportValue` lookups for those exports correctly
+   * return "not found" (rather than serving stale values from the
+   * derived-view index until the next rebuild). Strong-reference
+   * checks ignore this field and always scan state.json directly.
+   */
+  exportIndexStore?: ExportIndexStore;
 }
 
 /**
@@ -241,6 +257,37 @@ export async function runDestroyForStack(
     return result;
   }
 
+  // Strong-reference check (schema v4): refuse to destroy if any other
+  // stack's `state.imports[]` still references this stack's outputs via
+  // Fn::ImportValue. Matches CloudFormation's behavior of rejecting
+  // DeleteStack for an exporter while an importer exists.
+  //
+  // Scans state.json directly rather than trusting the exports index —
+  // a stale index could miss a freshly-recorded consumer and we MUST
+  // not let strong-ref bypass on perf-only data. The scan only fires
+  // when the stack has at least one output (= might be a producer);
+  // export-less stacks short-circuit at the `outputs` length check.
+  //
+  // This is the PRE-FLIGHT scan — fast-fails before the user is
+  // prompted to confirm a destroy that would only be refused after the
+  // prompt. A second LOCK-PROTECTED scan runs further down (right after
+  // we acquire the producer's lock, see below) to tighten the TOCTOU
+  // window against a consumer that started deploying between the
+  // pre-flight and the actual delete. Even the lock-protected scan has
+  // a small residual race against a brand-new consumer deploy that
+  // starts AND saves its imports[] entirely between the lock-protected
+  // scan and the producer's per-resource delete loop; per-stack locks
+  // can't cover cross-stack reads. This race is documented in
+  // docs/cross-stack-references.md and matches the same inherent
+  // limitation in CloudFormation's own strong-reference enforcement.
+  const needsStrongRefCheck = !!(state.outputs && Object.keys(state.outputs).length > 0);
+  if (needsStrongRefCheck) {
+    const consumers = await scanActiveConsumers(stackName, regionForState, ctx);
+    if (consumers.length > 0) {
+      throw new StackHasActiveImportsError(stackName, regionForState, consumers);
+    }
+  }
+
   logger.info(`\nResources to be deleted (${resourceCount}):`);
   for (const [logicalId, resource] of Object.entries(state.resources)) {
     logger.info(`  - ${logicalId} (${resource.resourceType})`);
@@ -306,6 +353,35 @@ export async function runDestroyForStack(
 
   logger.info(`\nAcquiring lock for stack ${stackName}...`);
   await ctx.lockManager.acquireLock(stackName, regionForState, undefined, 'destroy');
+
+  // Second strong-reference scan, now under the producer's lock. The
+  // pre-flight scan above is a UX optimization (fast-fail before the
+  // prompt); this second scan is the safety boundary. A consumer that
+  // started deploying after the pre-flight may have written its
+  // imports[] in the meantime — refuse before any provider.delete
+  // fires so we don't leave a half-deleted producer + a confused
+  // consumer. There is still a small residual TOCTOU window between
+  // this re-scan and the resource-level deletes below — a brand-new
+  // consumer deploy that runs ENTIRELY between this scan and the
+  // delete-loop start is invisible. Per-stack locks can't cover
+  // cross-stack reads; this matches CloudFormation's own inherent
+  // limitation. Documented in docs/cross-stack-references.md.
+  if (needsStrongRefCheck) {
+    const consumers = await scanActiveConsumers(stackName, regionForState, ctx);
+    if (consumers.length > 0) {
+      // Release the lock manually before throwing — the surrounding
+      // try/finally that releases the lock starts a few lines below,
+      // so a throw here would skip the lock release.
+      try {
+        await ctx.lockManager.releaseLock(stackName, regionForState);
+      } catch (releaseErr) {
+        logger.warn(
+          `Failed to release lock after strong-ref refusal: ${releaseErr instanceof Error ? releaseErr.message : String(releaseErr)}`
+        );
+      }
+      throw new StackHasActiveImportsError(stackName, regionForState, consumers);
+    }
+  }
 
   // Live progress renderer (multi-line in-flight display at bottom of TTY).
   // Self-disables on non-TTY and when CDKD_NO_LIVE=1 is set.
@@ -526,6 +602,13 @@ export async function runDestroyForStack(
     if (result.errorCount === 0) {
       await ctx.stateBackend.deleteState(stackName, regionForState);
       logger.debug('State deleted');
+      // Drop this stack's entries from the exports index so the next
+      // resolver lookup doesn't return stale values. Best-effort —
+      // failures don't fail the destroy (state.json is the canonical
+      // record, and the index self-heals on next deploy / fallback).
+      if (ctx.exportIndexStore) {
+        await ctx.exportIndexStore.removeStack(stackName, regionForState);
+      }
     } else {
       logger.warn(`${result.errorCount} resource(s) failed to delete. State preserved.`);
     }
@@ -563,4 +646,57 @@ export async function runDestroyForStack(
   }
 
   return result;
+}
+
+/**
+ * Strong-reference scan: read every other stack's state.json from the
+ * state bucket and check whether any of its `imports[]` entries names
+ * `producerStack`. Returns the list of offending consumers (possibly
+ * empty).
+ *
+ * NEVER trusts the persistent exports index — a stale index could miss
+ * a freshly-recorded consumer and let a destructive destroy through.
+ * The cost is one `listStacks` + N parallel GETs at destroy time only
+ * (not the deploy hot path), which the user-facing UX rationalizes as
+ * the "destroy is slow OK" trade-off (Issue #343).
+ */
+export async function scanActiveConsumers(
+  producerStack: string,
+  producerRegion: string,
+  ctx: Pick<DestroyRunnerContext, 'stateBackend' | 'baseRegion'>
+): Promise<ActiveImportConsumer[]> {
+  const refs = await ctx.stateBackend.listStacks();
+  const results = await Promise.all(
+    refs.map(async (ref) => {
+      // Region missing on legacy v1 records — fall back to caller's
+      // baseRegion to match the deploy-side resolver's behavior.
+      const region = ref.region ?? ctx.baseRegion;
+      // Skip self (a stack importing its own export is invalid in CFn).
+      // Match on BOTH name AND region — the v2 layout supports the
+      // same stackName deployed to multiple regions, and an unrelated
+      // same-name stack in a different region is NOT self.
+      if (ref.stackName === producerStack && region === producerRegion) return null;
+      try {
+        const got = await ctx.stateBackend.getState(ref.stackName, region);
+        const imports = got?.state.imports;
+        if (!imports || imports.length === 0) return null;
+        const matches = imports.filter(
+          (entry) => entry.sourceStack === producerStack && entry.sourceRegion === producerRegion
+        );
+        if (matches.length === 0) return null;
+        return matches.map<ActiveImportConsumer>((entry) => ({
+          consumerStack: ref.stackName,
+          consumerRegion: region,
+          exportName: entry.exportName,
+        }));
+      } catch {
+        // A single unreadable state shouldn't tank the safety scan —
+        // skip and log nothing here; the destroy is going to refuse
+        // or proceed based on what we CAN read. The caller will see
+        // any persistent listStacks-level issue separately.
+        return null;
+      }
+    })
+  );
+  return results.filter((r) => r !== null).flat();
 }

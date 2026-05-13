@@ -22,6 +22,7 @@ import {
 } from '../../utils/error-handler.js';
 import { Synthesizer } from '../../synthesis/synthesizer.js';
 import { S3StateBackend } from '../../state/s3-state-backend.js';
+import { ExportIndexStore } from '../../state/export-index-store.js';
 import { LockManager } from '../../state/lock-manager.js';
 import { ProviderRegistry } from '../../provisioning/provider-registry.js';
 import { registerAllProviders } from '../../provisioning/register-providers.js';
@@ -111,6 +112,17 @@ async function destroyCommand(
     // Fail fast if the state bucket is missing, before synth or any destructive work.
     await stateBackend.verifyBucketExists();
     const lockManager = new LockManager(awsClients.s3, stateConfig);
+    // Exports index store for post-destroy invalidation of this stack's
+    // entries. Strong-reference safety checks scan state.json directly
+    // (NOT the index), so the index is purely a perf hint for the
+    // resolver on subsequent deploys.
+    const exportIndexStore = new ExportIndexStore(
+      awsClients.s3,
+      stateBucket,
+      options.statePrefix,
+      region,
+      stateBackend
+    );
     const providerRegistry = new ProviderRegistry();
 
     // Register all SDK providers
@@ -304,6 +316,7 @@ async function destroyCommand(
         stateBucket,
         skipConfirmation: options.yes || options.force,
         removeProtection: options.removeProtection === true,
+        exportIndexStore,
         ...(options.resourceWarnAfter?.globalMs !== undefined && {
           resourceWarnAfterMs: options.resourceWarnAfter.globalMs,
         }),
