@@ -50,6 +50,13 @@ tests/benchmark/results-*.md
 # new push to the PR invalidates the marker automatically)
 .markgate-pr-review-sha
 
+# markgate integ-broad sentinel (records the test name + timestamp of the
+# last broad real-AWS integ run, e.g. bench-cdk-sample; updated by
+# /run-integ for tests in the broad set; bound to the `integ-broad`
+# markgate gate's include scope so /verify-pr's cross-cutting check
+# can enforce a broad integ in addition to the feature-specific one)
+.markgate-broad-integ-test
+
 # Worktree-local scratch files used by sub-agents for `git commit -F` /
 # `gh --body-file` / `gh api --field body=@<file>` payloads. The
 # `feedback_parallel_agent_tmp_paths.md` memory rule directs sub-agents

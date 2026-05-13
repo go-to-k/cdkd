@@ -68,6 +68,25 @@ Run each check and report pass/fail:
      ```
      If this exits non-zero, run `/run-integ <relevant-test>` (e.g. `bench-cdk-sample`) and confirm it reports 0 errors / 0 orphans — the skill itself will then call `markgate set integ-destroy`.
      CI is necessary but not sufficient — it does not exercise real-AWS destroy. The gate is the structural enforcement of that fact.
+   - **CROSS-CUTTING CHECK (load-bearing)**: the `integ-destroy` marker accepts ANY clean real-AWS destroy. A narrow feature-specific integ (e.g. `import-value-strong-ref`'s 2-stack S3+SSM fixture) IS sufficient to flip the marker, but it does NOT exercise the broad deploy / destroy code paths a cross-cutting change touches. When the PR diff touches ANY of:
+     - `src/deployment/deploy-engine.ts`
+     - `src/deployment/intrinsic-function-resolver.ts`
+     - `src/cli/commands/destroy-runner.ts`
+     - `src/cli/commands/destroy.ts`
+     - `src/cli/commands/deploy.ts`
+     - `src/analyzer/dag-builder.ts`
+     - `src/analyzer/template-parser.ts`
+     - `src/provisioning/register-providers.ts`
+
+     ...you MUST run a **broad integ** (`bench-cdk-sample` OR `lambda` OR `microservices` OR `drift-revert`) in addition to whatever feature-specific integ the change came with. These exercise multi-resource VPC / Lambda / IAM / CFn-Custom paths that narrow integs leave uncovered. Cross-cutting code paths affect EVERY user's deploy/destroy, not just the feature you added — broad integs are the only structural defense against shipping a regression that only surfaces in production on stacks unlike your fixture. Bypassing this is the PR #348 trap from 2026-05-13 (Issue #343 shipped without bench-cdk-sample validation; user-flagged as an incident).
+     ```bash
+     # Detection: only fires when the diff actually touches cross-cutting code.
+     if git diff main...HEAD --name-only | grep -qE '^src/deployment/(deploy-engine|intrinsic-function-resolver)\.ts$|^src/cli/commands/(destroy-runner|destroy|deploy)\.ts$|^src/analyzer/(dag-builder|template-parser)\.ts$|^src/provisioning/register-providers\.ts$'; then
+       echo "Cross-cutting code touched — broad integ required (bench-cdk-sample / lambda / microservices / drift-revert)."
+       # Then run the broad integ via /run-integ and confirm 0 errors / 0 orphans.
+     fi
+     ```
+     The narrow feature integ stays valuable for testing the FEATURE; the broad integ is the regression backstop. Both must pass; both refresh the same `integ-destroy` marker.
    - **For local-execution-touching PRs** (any change under `src/local/**`, `src/cli/commands/local-*.ts`, `tests/integration/local-*/**`): the `integ-local` markgate gate physically blocks `gh pr merge` when its marker is stale (see `.claude/hooks/integ-local-gate.sh`). The merge-time gate has a known blind spot: it reads the **local working tree** digest, and when `gh pr merge` runs from a parent worktree still on pre-PR `main`, the digest matches the old content and the gate passes silently — so an unverified local-execution change can reach main via the merge-from-parent path. `/verify-pr` runs in the PR's own worktree (post-PR content), so verifying the marker here closes that gap structurally:
      ```bash
      # Only check when the PR diff actually touches the gate scope.

@@ -168,6 +168,58 @@ Run integration tests against a real AWS account. These tests deploy actual AWS 
     its `verify.sh` also exercises a real-AWS deploy + destroy (the
     `local-invoke-from-state` test does, so it can set BOTH).
 
+11. **Set the `integ-broad` markgate marker (only for BROAD integ tests, on full clean success)**:
+
+    The broad-integ set covers tests that exercise multi-resource
+    deploy/destroy paths (VPC + NAT + Lambda hyperplane ENI, Custom
+    Resource, DAG with 5+ types across 2+ levels). A test is "broad"
+    iff its name is one of:
+
+    ```text
+    bench-cdk-sample
+    lambda
+    microservices
+    drift-revert
+    drift-revert-vpc
+    multi-stack-deps
+    multi-resource
+    remove-protection
+    export
+    ```
+
+    (Keep this list in sync with `.claude/hooks/integ-broad-gate.sh`'s
+    error message and the matching memory rule
+    `feedback_cross_cutting_needs_broad_integ.md`.)
+
+    When the integ test name is in the broad set AND the destroy step
+    finished cleanly with 0 errors / 0 orphans (= the same conditions
+    that flip `integ-destroy`), ALSO record the broad-integ sentinel
+    and flip the marker:
+
+    ```bash
+    # Sentinel content is informational (human-readable, helps the
+    # next /verify-pr run know which integ was last run). The
+    # `integ-broad` markgate gate's include scope is just this file,
+    # so writing the test name flips its digest naturally.
+    printf '%s ran at %s\n' "<test-name>" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+      > .markgate-broad-integ-test
+    mise exec -- markgate set integ-broad
+    ```
+
+    The hook `.claude/hooks/integ-broad-gate.sh` blocks `gh pr merge`
+    for any PR that touches cross-cutting deploy/destroy code (see the
+    hook's `CROSS_CUTTING_REGEX` for the canonical list) until this
+    marker is fresh. Same 14d TTL and same "do NOT call markgate set
+    directly to bypass" rule as the other AWS-coupled gates.
+
+    **Narrow feature integs do NOT set this marker** — e.g.
+    `import-value-strong-ref` flips `integ-destroy` but leaves
+    `integ-broad` alone. This is the structural fix for the PR #348
+    incident: a 2-stack S3+SSM feature fixture is sufficient for the
+    feature's correctness, but a cross-cutting change to
+    `src/deployment/deploy-engine.ts` etc. needs the broader VPC /
+    Lambda / multi-resource coverage that only the broad set provides.
+
 ## Important
 
 - Always use `--region us-east-1` for integration tests
