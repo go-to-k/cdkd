@@ -1,3 +1,10 @@
+## [0.98.2](https://github.com/go-to-k/cdkd/compare/v0.98.1...v0.98.2) (2026-05-13)
+
+
+### Bug Fixes
+
+* **import:** SQS QueuePolicy uses queue URL as physicalId ([#351](https://github.com/go-to-k/cdkd/issues/351)) ([#354](https://github.com/go-to-k/cdkd/issues/354)) ([0511b8f](https://github.com/go-to-k/cdkd/commit/0511b8ff3289b2ca4c9e62b19099ddb2279d35ed))
+
 ## [0.98.1](https://github.com/go-to-k/cdkd/compare/v0.98.0...v0.98.1) (2026-05-13)
 
 
