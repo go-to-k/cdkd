@@ -16,10 +16,10 @@
 #   cross-cutting modification (DeployEngine, destroy-runner, intrinsic
 #   resolver, dag-builder) WILL touch indirectly.
 #
-#   PR #348 shipped that way. The user flagged "did you actually
-#   deploy-test? regressions or considerations missed?" — post-merge
-#   bench-cdk-sample + basic runs revealed 3 perf overhead spots the
-#   narrow integ couldn't have shown.
+#   PR #348 shipped that way and was flagged as an incident
+#   post-merge — a follow-up bench-cdk-sample + basic regression
+#   check revealed three perf overhead spots the narrow integ
+#   couldn't have shown.
 #
 # How this gate enforces it:
 #
@@ -181,7 +181,7 @@ Why: the narrow `integ-destroy` gate accepts ANY clean real-AWS
 destroy. A 2-stack feature fixture is enough to flip it, but does
 NOT exercise the multi-resource VPC / Lambda / Custom-Resource paths
 that a cross-cutting code change touches indirectly. PR #348 shipped
-that way and the user had to flag it as an incident — broad integs
+that way and surfaced post-merge as an incident — broad integs
 became required for this scope.
 
 Required action — no exceptions:
