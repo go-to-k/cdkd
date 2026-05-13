@@ -12,7 +12,22 @@
 set -u
 
 HOOK="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/pr-review-gate.sh"
-REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+SCRIPT_REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+
+# Match the hook's worktree-shared sentinel resolution: prefer the main
+# working tree (shared across `git worktree` instances) via
+# `git rev-parse --git-common-dir`. From the main repo this is a no-op;
+# from a worktree this redirects to the parent repo so the test
+# fixture sentinel lands where the hook will actually read it.
+if git_common=$(git -C "$SCRIPT_REPO" rev-parse --git-common-dir 2>/dev/null); then
+  case "$git_common" in
+    /*) abs_common="$git_common" ;;
+    *)  abs_common="$SCRIPT_REPO/$git_common" ;;
+  esac
+  REPO_ROOT="$(cd "$(dirname "$abs_common")" 2>/dev/null && pwd)" || REPO_ROOT="$SCRIPT_REPO"
+else
+  REPO_ROOT="$SCRIPT_REPO"
+fi
 
 # Per-run scratch dir for shim binaries; cleaned on EXIT.
 SHIM_DIR="$(mktemp -d)"

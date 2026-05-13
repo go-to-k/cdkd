@@ -89,8 +89,20 @@ The skill itself never spawns reviewers. It reads PR stats, applies the heuristi
      # set` implicitly binds the marker to that sha. A subsequent push
      # to the PR will invalidate the marker (the next /review-pr run
      # rewrites the sentinel and markgate's digest reports stale).
-     gh pr view <N> --json headRefOid -q .headRefOid > .markgate-pr-review-sha
-     mise exec -- markgate set pr-review
+     #
+     # `git worktree`-aware: cd into the main working tree first so
+     # the sentinel + markgate state land where the gate hook reads
+     # them. The hook resolves its scope via
+     # `git rev-parse --git-common-dir` (the shared `.git` dir, or
+     # the main repo's `.git` from a worktree); markgate's marker
+     # store is per-cwd, so running from a worktree would land in a
+     # different store than the hook checks. `gh pr merge` itself is
+     # working-tree-agnostic — the cwd at merge time may not match
+     # the cwd at marker-set time. cd to the shared main tree to
+     # avoid the divergence.
+     main_tree=$(git rev-parse --path-format=absolute --git-common-dir | xargs dirname)
+     gh pr view <N> --json headRefOid -q .headRefOid > "$main_tree/.markgate-pr-review-sha"
+     ( cd "$main_tree" && mise exec -- markgate set pr-review )
      ```
 
    For the `inline` tier, the marker is NOT set — the gate's heuristic
