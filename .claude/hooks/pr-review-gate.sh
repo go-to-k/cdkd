@@ -25,7 +25,27 @@
 set -u
 
 # Resolve repo root from script location.
-REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+SCRIPT_REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+
+# Prefer the main working tree (shared across `git worktree` instances)
+# so markgate marker state is consistent regardless of which worktree
+# triggered the hook. `gh pr merge` is a working-tree-agnostic remote
+# operation, but markgate's marker is stored per-cwd — so the merge
+# command landing in a different worktree from where `/review-pr` ran
+# would see a stale marker. `git rev-parse --git-common-dir` returns
+# the shared `.git` for worktrees (the main repo's `.git`) and a
+# relative `.git` from the main repo itself; its parent is the main
+# working tree in both cases. Falls back to SCRIPT_REPO on any git
+# error so a non-git checkout (rare, but cheap to support) still works.
+if git_common=$(git -C "$SCRIPT_REPO" rev-parse --git-common-dir 2>/dev/null); then
+  case "$git_common" in
+    /*) abs_common="$git_common" ;;
+    *)  abs_common="$SCRIPT_REPO/$git_common" ;;
+  esac
+  REPO="$(cd "$(dirname "$abs_common")" 2>/dev/null && pwd)" || REPO="$SCRIPT_REPO"
+else
+  REPO="$SCRIPT_REPO"
+fi
 
 # Extract the command from the PreToolUse payload.
 cmd=$(jq -r '.tool_input.command // ""' 2>/dev/null || echo "")
