@@ -335,6 +335,31 @@ full reference. For per-resource-type provisioning support (SDK Providers
 vs Cloud Control API fallback), see
 **[docs/supported-resources.md](docs/supported-resources.md)**.
 
+### Cross-stack references — strong vs weak
+
+`Fn::ImportValue` is a **strong reference**: `cdkd destroy <producer>`
+refuses to delete a stack while any other stack still imports one of
+its exports via `Fn::ImportValue`. Matches CloudFormation's behavior.
+The error message names every offending consumer and points at the
+two valid resolution paths (destroy the consumer first, or remove
+the `Fn::ImportValue` from the consumer's template and redeploy).
+
+`Fn::GetStackOutput` (cdkd-specific) is a **weak reference**: the
+producer stays deletable independently of consumers. Use it when you
+intentionally want decoupled lifecycles (cross-region / cross-stage /
+staging environments).
+
+A persistent per-region exports index at
+`s3://{state-bucket}/cdkd/_index/{region}/exports.json` makes
+`Fn::ImportValue` resolution O(1) at scale (200-stack environments
+resolve in ~100ms vs minutes with the pre-#343 per-resolve scan).
+The index is a derived view rebuilt from `state.json` on demand —
+state.json remains the canonical source of truth, and strong-reference
+safety checks scan it directly rather than trusting the index.
+
+See **[docs/cross-stack-references.md](docs/cross-stack-references.md)**
+for the full design (schema v4, lifecycle, locking, failure modes).
+
 ## Rollback behavior
 
 When a deploy fails mid-stack (e.g. a resource hits a validation error

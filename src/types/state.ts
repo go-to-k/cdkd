@@ -7,15 +7,21 @@
  *       captured at deploy/import time, used as the drift comparator's
  *       baseline). Layout is the same as v2; only the resource-level shape
  *       grew. v2 readers see v3 as `version: 3` and fail clearly.
+ * - 4 — adds `StackState.imports` (the set of `Fn::ImportValue` references
+ *       this stack resolved during its last deploy). Consumed by
+ *       `cdkd destroy` to refuse deleting a producer while a consumer still
+ *       references its outputs (strong reference, matches CloudFormation).
+ *       Layout is the same as v3; only the stack-level shape grew. v3
+ *       readers see v4 as `version: 4` and fail clearly.
  *
  * cdkd readers handle every prior version. Writers always emit
  * `STATE_SCHEMA_VERSION_CURRENT`. An older cdkd binary that only knows an
  * earlier version will fail with a clear error when it encounters a higher
  * version, rather than silently mishandling the new format.
  */
-export type StateSchemaVersion = 1 | 2 | 3;
+export type StateSchemaVersion = 1 | 2 | 3 | 4;
 export const STATE_SCHEMA_VERSION_LEGACY: StateSchemaVersion = 1;
-export const STATE_SCHEMA_VERSION_CURRENT: StateSchemaVersion = 3;
+export const STATE_SCHEMA_VERSION_CURRENT: StateSchemaVersion = 4;
 
 /**
  * Every schema version this binary can read. Writers always emit
@@ -23,7 +29,30 @@ export const STATE_SCHEMA_VERSION_CURRENT: StateSchemaVersion = 3;
  * forward-migration, and an unknown / future version triggers an explicit
  * "upgrade cdkd" error in the parser.
  */
-export const STATE_SCHEMA_VERSIONS_READABLE: readonly StateSchemaVersion[] = [1, 2, 3];
+export const STATE_SCHEMA_VERSIONS_READABLE: readonly StateSchemaVersion[] = [1, 2, 3, 4];
+
+/**
+ * One `Fn::ImportValue` reference recorded during a consumer stack's
+ * deploy. Persisted in `StackState.imports` so `cdkd destroy` can refuse
+ * to delete the producer while the consumer still references its outputs
+ * (strong reference, matches CloudFormation behavior).
+ *
+ * Only `Fn::ImportValue` populates this — `Fn::GetStackOutput` is a weak
+ * reference by design (cdkd-specific) and intentionally does NOT record
+ * an entry here so the producer stays deletable independently of consumers.
+ */
+export interface StateImportEntry {
+  /** The producer stack whose Output `Export.Name` was imported. */
+  sourceStack: string;
+  /**
+   * The producer's region. Required so destroy-time strong-ref checks
+   * can scan the producer's exact `state.json` key (cdkd state is keyed
+   * by `(stackName, region)` since schema v2).
+   */
+  sourceRegion: string;
+  /** The CloudFormation Output `Export.Name` that was imported. */
+  exportName: string;
+}
 
 /**
  * Stack state stored in S3
@@ -49,6 +78,16 @@ export interface StackState {
 
   /** Stack outputs (values can be any type) */
   outputs: Record<string, unknown>;
+
+  /**
+   * `Fn::ImportValue` references this stack resolved during its last
+   * successful deploy. Populated on schema v4+; absent (or undefined)
+   * on state written by an older cdkd binary, in which case the
+   * destroy-time strong-reference check degrades gracefully (no
+   * recorded imports = no consumers known = destroy proceeds). The
+   * next deploy of an upgraded stack repopulates the field.
+   */
+  imports?: StateImportEntry[];
 
   /** Last modification timestamp (Unix milliseconds) */
   lastModified: number;
