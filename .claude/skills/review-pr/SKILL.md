@@ -54,7 +54,7 @@ The skill itself never spawns reviewers. It reads PR stats, applies the heuristi
 
    **Down-bias triggers** (move tier DOWN by one step, never below inline) — only fires when ALL paths fall in the listed buckets:
 
-   - **Pure docs/infra**: every path matches one of `.gitignore`, `CLAUDE.md`, `README.md`, `docs/**`, `.claude/skills/**`, `.claude/agents/**`, `.claude/hooks/**`, `.claude/settings*.json`, `.markgate.yml`, `package.json` (top-level deps only — count as docs-ish for review purposes when the diff is dep bumps)
+   - **Pure docs/infra**: every path matches one of `.gitignore`, `CLAUDE.md`, `README.md`, `**/*.md`, `docs/**`, `.claude/skills/**`, `.claude/agents/**`, `.claude/hooks/**`, `.claude/settings*.json`, `.markgate.yml`, `package.json` (top-level deps only — count as docs-ish for review purposes when the diff is dep bumps). The `**/*.md` entry catches markdown anywhere outside `docs/**` — most commonly integ-test READMEs (`tests/integration/*/README.md`) that are written for human readers but live under `tests/**`. Added after PR #344 surfaced a 13-file markdown-only cleanup that the strict path-bucket rule mis-categorized as mixed-bucket and forced into 3-axis review.
    - **Test-only**: every path matches `tests/**`
 
    If both up- and down-bias triggers fire (e.g. a tests-only diff that touches a security-sensitive provider's test file), prefer up-bias — security wins.
@@ -216,5 +216,6 @@ These three PRs are the calibration set. Running this skill against them should 
 | #240 | 390 LOC, 4 files (`.claude/hooks/*`, `CLAUDE.md`, `.claude/settings.json`) | inline (fc < 5) | down (pure infra) → clamps at inline | **inline** |
 | #237 | 4515 LOC, 24 files (incl. `src/local/cognito-jwt.ts`, `lambda-authorizer.ts`) | 3-axis (loc >= 1000 AND fc >= 10) | up (security surface) → clamps at 3-axis | **3-axis** |
 | #236 | 269 LOC, 9 files (incl. `src/local/docker-image-builder.ts`, `ecr-puller.ts`) | inline (loc < 300) | up (process-launch surface) → 1-reviewer | **1-reviewer** |
+| #344 | 1488 LOC, 13 files (all `.md` — `docs/plans/*.md` deletes + `CLAUDE.md` / `docs/*.md` / `tests/integration/*/README.md` link-fix) | 3-axis (loc >= 1000 AND fc >= 10) | down (every path is `.md`, matches `**/*.md` in pure-docs bucket) → 1-reviewer | **1-reviewer** |
 
 If the skill output diverges from these, the heuristic or the trigger lists have drifted — re-read this file and the linked memory entry before trusting the recommendation.
