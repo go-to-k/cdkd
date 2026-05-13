@@ -5,6 +5,8 @@ import * as ecr from 'aws-cdk-lib/aws-ecr';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
 import * as s3 from 'aws-cdk-lib/aws-s3';
+import * as sns from 'aws-cdk-lib/aws-sns';
+import * as sqs from 'aws-cdk-lib/aws-sqs';
 import * as ssm from 'aws-cdk-lib/aws-ssm';
 import { Construct } from 'constructs';
 
@@ -46,6 +48,28 @@ import { Construct } from 'constructs';
  * returns `arn:${partition}:ecr:${region}:${accountId}:repository/${id}`.
  * The integ's `run.sh` adds a `cdkd diff` step that asserts neither
  * warning appears in the output.
+ *
+ * Also extended (issue #359, regression guard for PRs #354 + #358) with
+ * three sub-resource policy types whose `provider.import()` returns
+ * `knownPhysicalId` verbatim, and `cdkd import --migrate-from-cloudformation`
+ * pre-populates that value from CloudFormation's `DescribeStackResources`
+ * — which returns the policy resource NAME (e.g. `MyStack-MyPolicy-XXX`)
+ * rather than the operational identifier that the per-type `delete()`
+ * expects:
+ *   - `AWS::SQS::QueuePolicy` — operational id is the queue URL (PR #354
+ *     fix; pre-fix the post-migrate destroy crashed with `Invalid URL` from
+ *     `@aws-sdk/middleware-sdk-sqs` queueUrlMiddleware).
+ *   - `AWS::SNS::TopicPolicy` — operational id is the comma-joined topic
+ *     ARN list (PR #358 fix; pre-fix the AWS SDK rejected the CFn-generated
+ *     name as an invalid topic ARN).
+ *   - `AWS::S3::BucketPolicy` — operational id is the bucket name (PR #358
+ *     fix; pre-fix the AWS SDK rejected the CFn-generated name as an invalid
+ *     bucket name).
+ * Each provider's `import()` now detects the CFn-generated name shape and
+ * falls back to `properties.<Queues[0] | Topics | Bucket>`. Adding these
+ * three pairs to the fixture exercises that fallback path end-to-end —
+ * unit tests cover the resolver branch against mocked SDKs, this integ
+ * covers the round-trip against real AWS.
  */
 export class MigrateSmallStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
@@ -136,6 +160,73 @@ export class MigrateSmallStack extends cdk.Stack {
       new iam.PolicyStatement({
         actions: ['ecr:GetAuthorizationToken', 'ecr:BatchGetImage'],
         resources: [ecrRepo.repositoryArn],
+      })
+    );
+
+    // SQS Queue + QueuePolicy (issue #359, PR #354 regression guard) —
+    // CDK's `queue.grantSendMessages(servicePrincipal)` auto-emits an
+    // `AWS::SQS::QueuePolicy` whose `Queues: [{Ref: <Queue>}]` resolves to
+    // the queue URL at deploy time. CloudFormation's `DescribeStackResources`
+    // returns the QueuePolicy's resource NAME as `PhysicalResourceId`, which
+    // `cdkd import --migrate-from-cloudformation` pre-populates as
+    // `knownPhysicalId`. Pre-#354 `provider.import()` returned that name
+    // verbatim; the post-migrate destroy then passed it to `SetQueueAttributes`
+    // which rejected with `Invalid URL` (the SDK's queueUrlMiddleware refuses
+    // any value that does not parse as `https://sqs.<region>.amazonaws.com/...`).
+    // Post-#354 the resolver detects the non-URL shape and falls back to
+    // `properties.Queues[0]` (the deployed queue URL).
+    const exampleQueue = new sqs.Queue(this, 'ExampleQueue', {
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+    });
+    exampleQueue.addToResourcePolicy(
+      new iam.PolicyStatement({
+        actions: ['sqs:SendMessage'],
+        principals: [new iam.ServicePrincipal('sns.amazonaws.com')],
+        resources: [exampleQueue.queueArn],
+      })
+    );
+
+    // SNS Topic + TopicPolicy (issue #359, PR #358 regression guard) —
+    // CDK's `topic.addToResourcePolicy(...)` auto-emits an
+    // `AWS::SNS::TopicPolicy` whose `Topics: [{Ref: <Topic>}]` resolves to
+    // the topic ARN at deploy time. cdkd's `create()` stores `physicalId =
+    // topics.join(',')` (comma-joined topic ARNs); CFn returns the
+    // TopicPolicy's NAME as `PhysicalResourceId`. Pre-#358 the post-migrate
+    // destroy fed the CFn-generated name to `SetTopicAttributes` which
+    // rejected it as an invalid topic ARN. Post-#358 the resolver detects
+    // the non-ARN shape and falls back to `properties.Topics.join(',')`.
+    const exampleTopic = new sns.Topic(this, 'ExampleTopic', {});
+    exampleTopic.addToResourcePolicy(
+      new iam.PolicyStatement({
+        actions: ['sns:Publish'],
+        principals: [new iam.ServicePrincipal('events.amazonaws.com')],
+        resources: [exampleTopic.topicArn],
+      })
+    );
+
+    // S3 Bucket + BucketPolicy (issue #359, PR #358 regression guard) —
+    // `bucket.addToResourcePolicy(...)` auto-emits an `AWS::S3::BucketPolicy`
+    // whose `Bucket: {Ref: <Bucket>}` resolves to the bucket name at deploy
+    // time. cdkd's `create()` stores `physicalId = properties.Bucket` (the
+    // bucket name); CFn returns the BucketPolicy's NAME as
+    // `PhysicalResourceId`. Pre-#358 the post-migrate destroy fed the
+    // CFn-generated name to `DeleteBucketPolicy` which rejected it as an
+    // invalid bucket name. Post-#358 the resolver detects the non-bucket-name
+    // shape (uppercase chars / over 63 chars / reserved suffix) and falls
+    // back to `properties.Bucket`.
+    //
+    // Reuses a NEW bucket (not the existing `ExampleBucket` autoDeleteObjects
+    // one) so the BucketPolicy is the bucket's only policy resource and the
+    // import round-trip is unambiguous.
+    const policyBucket = new s3.Bucket(this, 'PolicyBucket', {
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+      autoDeleteObjects: true,
+    });
+    policyBucket.addToResourcePolicy(
+      new iam.PolicyStatement({
+        actions: ['s3:GetObject'],
+        principals: [new iam.ServicePrincipal('cloudtrail.amazonaws.com')],
+        resources: [policyBucket.arnForObjects('*')],
       })
     );
   }
