@@ -94,9 +94,8 @@ For users who already bootstrapped under that scheme, the lookup chain in
 The legacy fallback is **temporary**. It will be dropped in a future
 release together with the `cdkd-state-{accountId}-{region}` legacy
 bucket name. Users who already bootstrapped under that name should
-migrate via `cdkd state migrate` (see below). See
-[`docs/plans/04-state-bucket-naming.md`](./plans/04-state-bucket-naming.md)
-and [`docs/plans/99-future-bc-removal.md`](./plans/99-future-bc-removal.md).
+migrate via `cdkd state migrate` (see below). The legacy-removal step is
+tracked in [`docs/plans/99-future-bc-removal.md`](./plans/99-future-bc-removal.md).
 
 #### Migration path: `cdkd state migrate`
 
