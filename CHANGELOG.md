@@ -1,3 +1,10 @@
+## [0.96.1](https://github.com/go-to-k/cdkd/compare/v0.96.0...v0.96.1) (2026-05-13)
+
+
+### Bug Fixes
+
+* **integ:** unbreak all local-* integ fixtures on Node 24 ESM + scope-cross check in /verify-pr ([#345](https://github.com/go-to-k/cdkd/issues/345)) ([e821127](https://github.com/go-to-k/cdkd/commit/e8211279fc76bf6d1db69a4184223394931aaebb))
+
 # [0.96.0](https://github.com/go-to-k/cdkd/compare/v0.95.0...v0.96.0) (2026-05-13)
 
 
