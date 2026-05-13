@@ -1,3 +1,10 @@
+## [0.94.15](https://github.com/go-to-k/cdkd/compare/v0.94.14...v0.94.15) (2026-05-13)
+
+
+### Bug Fixes
+
+* **pr-review-gate:** resolve marker scope via git-common-dir for worktree-shared state ([#339](https://github.com/go-to-k/cdkd/issues/339)) ([3c0265b](https://github.com/go-to-k/cdkd/commit/3c0265b0ee1c00e4554176d270b1fa829ad0b5fd))
+
 ## [0.94.14](https://github.com/go-to-k/cdkd/compare/v0.94.13...v0.94.14) (2026-05-12)
 
 
