@@ -80,24 +80,55 @@ ${CDKD} local start-api \
   >"${LOG_FILE}" 2>&1 &
 SERVER_PID=$!
 
-# Wait for the "Server listening" line — D8.4 marker.
-echo "==> Waiting for server to come up"
+# Wait for ALL three "Server listening" lines — PR #341 / issue #260
+# launches one HTTP server per API (HTTP API v2 + REST API v1 +
+# Function URL), each on its own port (--port N → N, N+1, N+2). The
+# pre-#341 single-server marker check would race past readiness if
+# the first server bound before the others.
+echo "==> Waiting for all servers (3 expected) to come up"
+EXPECTED_SERVERS=3
 READY=0
 for i in $(seq 1 60); do
-  if grep -q "Server listening" "${LOG_FILE}"; then
+  # `grep -c` outputs "0" AND exits non-zero on zero matches, so a
+  # naive `|| echo 0` concatenates both into "0\n0" and trips up
+  # the `[[ ... -ge ... ]]` arithmetic. Capture stdout, then default
+  # to 0 only when grep actually failed (file missing etc.).
+  count=$(grep -c "Server listening" "${LOG_FILE}" 2>/dev/null) || count=0
+  if [[ "${count}" -ge "${EXPECTED_SERVERS}" ]]; then
     READY=1
     break
   fi
   sleep 0.5
 done
 if [[ "${READY}" -eq 0 ]]; then
-  echo "FAIL: server did not print 'Server listening' within 30s. Log:"
+  echo "FAIL: only ${count}/${EXPECTED_SERVERS} servers came up within 30s. Log:"
   cat "${LOG_FILE}"
   exit 1
 fi
 
 echo "==> Server log preview:"
-head -30 "${LOG_FILE}" | sed 's/^/    /'
+head -60 "${LOG_FILE}" | sed 's/^/    /'
+
+# Extract per-API ports from "Server listening on http://host:PORT (Kind)"
+# lines. PR #341 launches one server per API, so each route family has
+# its own port — using a single $PORT for every curl would only hit
+# the HTTP API v2 server.
+#
+# Sed regex tightening: anchor the port on the `http://host:` segment
+# (the `[^:]+` host class refuses to cross another `:`) so a future
+# DisplayName containing `:NNN` (e.g. user-defined logical IDs or
+# qualifiers like "v2:edge") can't shadow the real port.
+PORT_HTTP=$(grep -E 'Server listening on http://[^[:space:]]+\s+\(.*HTTP API v2\)' "${LOG_FILE}" | sed -E 's|.*://[^:]+:([0-9]+).*|\1|' | head -1)
+PORT_REST=$(grep -E 'Server listening on http://[^[:space:]]+\s+\(.*REST API v1\)' "${LOG_FILE}" | sed -E 's|.*://[^:]+:([0-9]+).*|\1|' | head -1)
+PORT_FNURL=$(grep -E 'Server listening on http://[^[:space:]]+\s+\(.*Function URL\)' "${LOG_FILE}" | sed -E 's|.*://[^:]+:([0-9]+).*|\1|' | head -1)
+if [[ -z "${PORT_HTTP}" || -z "${PORT_REST}" || -z "${PORT_FNURL}" ]]; then
+  echo "FAIL: could not extract per-API port mappings. Log:"
+  cat "${LOG_FILE}"
+  exit 1
+fi
+echo "    HTTP API v2: ${PORT_HTTP}"
+echo "    REST API v1: ${PORT_REST}"
+echo "    Function URL: ${PORT_FNURL}"
 
 # Verify the route table contains every route. Use plain `grep -F` so
 # the `{proxy+}` curly-braces and slashes don't need to be escaped.
@@ -143,18 +174,17 @@ curl_assert() {
 }
 
 echo "==> Smoke-testing routes via curl"
-curl_assert "GET /items/42" "http://127.0.0.1:${PORT}/items/42" '"id":"42"'
-curl_assert "POST /items" "http://127.0.0.1:${PORT}/items" '"body"' \
+curl_assert "GET /items/42" "http://127.0.0.1:${PORT_HTTP}/items/42" '"id":"42"'
+curl_assert "POST /items" "http://127.0.0.1:${PORT_HTTP}/items" '"body"' \
   -X POST -H 'Content-Type: application/json' -d '{"x":1}'
 # PR 8c: REST v1 stage variables — the prod Stage carries
-# Variables: { STAGE: 'prod', LOG_LEVEL: 'info' }.
+# Variables: { STAGE: 'prod', LOG_LEVEL: 'info' }. Note this lives on
+# the dedicated REST v1 server (own port, per PR #341).
 curl_assert "ANY /v1/anything (stage variables)" \
-  "http://127.0.0.1:${PORT}/v1/anything" '"STAGE":"prod"'
-# Function URL is mounted at /{proxy+} so any other path lands there.
-# After the literal /v1 prefix has been claimed by the REST route, the
-# proxy fallback only fires on paths that don't match REST — try a
-# distinct prefix.
-curl_assert "Function URL fallback" "http://127.0.0.1:${PORT}/url-only/ping" '"functionUrl":true'
+  "http://127.0.0.1:${PORT_REST}/v1/anything" '"STAGE":"prod"'
+# Function URL is a separate server on its own port. The Function URL
+# greedy proxy answers any path on its server.
+curl_assert "Function URL fallback" "http://127.0.0.1:${PORT_FNURL}/url-only/ping" '"functionUrl":true'
 
 # PR 8c: CORS preflight interception. The HTTP API has CorsConfiguration
 # with `*` origins; verify.sh asserts the canonical preflight response.
@@ -163,7 +193,7 @@ PREFLIGHT_HEADERS=$(curl -s -i -o - -X OPTIONS \
   -H 'Origin: https://example.com' \
   -H 'Access-Control-Request-Method: POST' \
   -H 'Access-Control-Request-Headers: Content-Type' \
-  "http://127.0.0.1:${PORT}/items" 2>&1)
+  "http://127.0.0.1:${PORT_HTTP}/items" 2>&1)
 if ! echo "${PREFLIGHT_HEADERS}" | grep -qi '^HTTP/1.1 204'; then
   echo "FAIL: CORS preflight did not return 204. Response:"
   echo "${PREFLIGHT_HEADERS}"
@@ -194,7 +224,7 @@ echo "    [CORS preflight] OK"
 # authorizer Deny's; with the Bearer token the route handler runs and
 # echoes the authorizer's context map.
 echo "==> Authorizer pass: GET /protected without token -> 401 (HTTP v2 deny)"
-auth_status=$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:${PORT}/protected")
+auth_status=$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:${PORT_HTTP}/protected")
 if [[ "${auth_status}" != "401" ]]; then
   echo "FAIL: expected 401 from authorizer deny, got ${auth_status}"
   cat "${LOG_FILE}"
@@ -203,7 +233,7 @@ fi
 echo "    [GET /protected (deny)] OK (status=401)"
 
 curl_assert "GET /protected (allow)" \
-  "http://127.0.0.1:${PORT}/protected" \
+  "http://127.0.0.1:${PORT_HTTP}/protected" \
   '"protected":true' \
   -H 'Authorization: Bearer let-me-in'
 

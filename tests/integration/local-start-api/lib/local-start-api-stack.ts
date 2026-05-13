@@ -1,4 +1,5 @@
 import * as path from 'path';
+import { fileURLToPath } from 'node:url';
 import * as cdk from 'aws-cdk-lib';
 import { Construct } from 'constructs';
 import * as apigw from 'aws-cdk-lib/aws-apigateway';
@@ -6,6 +7,8 @@ import * as apigwv2 from 'aws-cdk-lib/aws-apigatewayv2';
 import * as apigwv2_integrations from 'aws-cdk-lib/aws-apigatewayv2-integrations';
 import * as apigwv2_authorizers from 'aws-cdk-lib/aws-apigatewayv2-authorizers';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 /**
  * Fixture stack for `cdkd local start-api` integ test.

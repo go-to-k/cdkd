@@ -1,8 +1,11 @@
 import * as path from 'path';
+import { fileURLToPath } from 'node:url';
 import * as cdk from 'aws-cdk-lib';
 import { Construct } from 'constructs';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 /**
  * Fixture stack for `cdkd local invoke` .NET integ test (issue #248,
