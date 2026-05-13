@@ -317,10 +317,11 @@ the Lambda base image (~600MB once per machine). Pass `--no-pull` on
 subsequent runs to skip the layer check.
 
 ```bash
-cdkd local start-api                       # auto-allocate one port PER discovered API
-cdkd local start-api --port 3000           # first API → 3000, second API → 3001, ...
-cdkd local start-api --api MyAdminApi      # serve only the named API
-cdkd local start-api --warm                # pre-start one container per Lambda
+cdkd local start-api                              # auto-allocate one port PER discovered API
+cdkd local start-api --port 3000                  # first API → 3000, second API → 3001, ...
+cdkd local start-api --api MyAdminApi             # logical id
+cdkd local start-api --api MyStack/MyAdminApi     # OR: CDK Construct path (prefix-matched)
+cdkd local start-api --warm                       # pre-start one container per Lambda
 ```
 
 ### One server per API (v0.81+)
@@ -347,9 +348,35 @@ Port assignment:
 | `0` (default) | Every server auto-allocates its own port. |
 | `3000` | First API → `3000`, second API → `3001`, third → `3002`, ... |
 
-Pass `--api <id>` to launch exactly one server for the named API; the
-identifier matches the HTTP API / REST API logical id, or (for
-Function URLs) the backing Lambda's logical id.
+Pass `--api <id>` to launch exactly one server for the named API.
+The identifier accepts four forms (mirrors `cdkd local invoke <target>`
+/ `cdkd local run-task <target>` so the whole `local *` family
+addresses resources consistently):
+
+1. **Bare logical id** — `MyHttpApi`. The HTTP API / REST API logical
+   id, or (for Function URLs) the backing Lambda's logical id.
+2. **Stack-qualified logical id** — `MyStack:MyHttpApi`. Useful in
+   multi-stack apps when the same bare logical id appears in more
+   than one stack.
+3. **CDK Construct path / display path** — `MyStack/MyHttpApi/Resource`.
+   Exact match against the resource's `aws:cdk:path` metadata.
+4. **CDK Construct path prefix** — `MyStack/MyHttpApi`. Matches when
+   the input is a strict ancestor of the resource's `aws:cdk:path`
+   (same prefix rule `cdkd orphan` uses): CDK's
+   `new apigw2.HttpApi(stack, 'MyHttpApi')` synthesizes the L1 child
+   at `MyStack/MyHttpApi/Resource`, so `--api MyStack/MyHttpApi`
+   resolves cleanly without having to type the synthesized
+   `/Resource` suffix.
+
+For Function URLs, the path forms reference the **backing Lambda's**
+`aws:cdk:path`, not the auto-generated URL resource — so
+`--api MyStack/MyHandler` matches the Function URL declared by
+`new lambda.Function(this, 'MyHandler').addFunctionUrl()`.
+
+Routes from templates without `aws:cdk:path` metadata (hand-rolled
+`cfn.Resource` defs, or older CDK that didn't emit the metadata)
+still match by bare logical id (form 1) and by stack-qualified logical
+id (form 2) — only the path forms (3, 4) need the metadata.
 
 ### Discovered routes
 
@@ -381,7 +408,7 @@ the same tier; cdkd uses literal-segment count as a heuristic).
 | --- | --- | --- |
 | `--port <port>` | auto-allocate | First API server's port (subsequent APIs get `port+1`, `port+2`, ...). Pass `0` (default) to auto-allocate each. The actual port assignment is printed at startup. |
 | `--host <host>` | `127.0.0.1` | Bind address. |
-| `--api <id>` | unset | Restrict to a single API surface by its CDK logical id (HTTP API / REST API logical id; for Function URLs, the backing Lambda's logical id). When unset, every discovered API gets its own server. |
+| `--api <id>` | unset | Restrict to a single API surface. Accepts the bare CDK logical id (`MyHttpApi`), the stack-qualified logical id (`MyStack:MyHttpApi`), the full CDK Construct path (`MyStack/MyHttpApi/Resource`), or an ancestor Construct path that prefix-matches (`MyStack/MyHttpApi`). For Function URLs, the path forms reference the backing Lambda's `aws:cdk:path`. When unset, every discovered API gets its own server. See the section above for the full resolution rules. |
 | `--stack <name>` | single-stack auto-detect | Required when the app has multiple stacks. |
 | `--warm` | off | Pre-start one container per discovered Lambda at server boot. Trades RAM for first-request latency. |
 | `--per-lambda-concurrency <n>` | `2` | Pool size cap per Lambda. Max 4 in v1; above-cap values are clamped with a warn. |
