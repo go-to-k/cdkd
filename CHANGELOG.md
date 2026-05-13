@@ -1,3 +1,10 @@
+# [0.99.0](https://github.com/go-to-k/cdkd/compare/v0.98.2...v0.99.0) (2026-05-13)
+
+
+### Features
+
+* **local-start-api:** add --from-state for env var substitution ([#355](https://github.com/go-to-k/cdkd/issues/355)) ([b724eba](https://github.com/go-to-k/cdkd/commit/b724ebaa4394f039a3e872e6f778f00e39609193))
+
 ## [0.98.2](https://github.com/go-to-k/cdkd/compare/v0.98.1...v0.98.2) (2026-05-13)
 
 
