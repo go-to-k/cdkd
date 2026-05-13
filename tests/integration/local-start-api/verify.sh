@@ -107,15 +107,20 @@ if [[ "${READY}" -eq 0 ]]; then
 fi
 
 echo "==> Server log preview:"
-head -40 "${LOG_FILE}" | sed 's/^/    /'
+head -60 "${LOG_FILE}" | sed 's/^/    /'
 
 # Extract per-API ports from "Server listening on http://host:PORT (Kind)"
 # lines. PR #341 launches one server per API, so each route family has
 # its own port — using a single $PORT for every curl would only hit
 # the HTTP API v2 server.
-PORT_HTTP=$(grep -E 'Server listening on http://[^[:space:]]+\s+\(.*HTTP API v2\)' "${LOG_FILE}" | sed -E 's|.*:([0-9]+).*|\1|' | head -1)
-PORT_REST=$(grep -E 'Server listening on http://[^[:space:]]+\s+\(.*REST API v1\)' "${LOG_FILE}" | sed -E 's|.*:([0-9]+).*|\1|' | head -1)
-PORT_FNURL=$(grep -E 'Server listening on http://[^[:space:]]+\s+\(.*Function URL\)' "${LOG_FILE}" | sed -E 's|.*:([0-9]+).*|\1|' | head -1)
+#
+# Sed regex tightening: anchor the port on the `http://host:` segment
+# (the `[^:]+` host class refuses to cross another `:`) so a future
+# DisplayName containing `:NNN` (e.g. user-defined logical IDs or
+# qualifiers like "v2:edge") can't shadow the real port.
+PORT_HTTP=$(grep -E 'Server listening on http://[^[:space:]]+\s+\(.*HTTP API v2\)' "${LOG_FILE}" | sed -E 's|.*://[^:]+:([0-9]+).*|\1|' | head -1)
+PORT_REST=$(grep -E 'Server listening on http://[^[:space:]]+\s+\(.*REST API v1\)' "${LOG_FILE}" | sed -E 's|.*://[^:]+:([0-9]+).*|\1|' | head -1)
+PORT_FNURL=$(grep -E 'Server listening on http://[^[:space:]]+\s+\(.*Function URL\)' "${LOG_FILE}" | sed -E 's|.*://[^:]+:([0-9]+).*|\1|' | head -1)
 if [[ -z "${PORT_HTTP}" || -z "${PORT_REST}" || -z "${PORT_FNURL}" ]]; then
   echo "FAIL: could not extract per-API port mappings. Log:"
   cat "${LOG_FILE}"
