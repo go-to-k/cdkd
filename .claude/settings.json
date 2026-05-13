@@ -108,6 +108,13 @@
             "if": "Bash(git commit*)",
             "timeout": 10,
             "statusMessage": "Checking test files for cmd.parse without action stub..."
+          },
+          {
+            "type": "command",
+            "command": ".claude/hooks/commit-prefix-scope-gate.sh",
+            "if": "Bash(git commit*)",
+            "timeout": 10,
+            "statusMessage": "Checking commit prefix matches user-visible scope..."
           }
         ]
       }
