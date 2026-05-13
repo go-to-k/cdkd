@@ -278,10 +278,25 @@ providers were always unprefixed and are unchanged by the flag.
 
 ### Migration from pre-v0.94.0
 
-See [README.md](../README.md) "Stack-name prefix on physical names →
-Migration from pre-v0.94.0" for the migration matrix and the link to
-[#300](https://github.com/go-to-k/cdkd/issues/300) (state-side
-rename helper).
+For a stack already deployed under the pre-v0.94.0 default (Pattern B
+resources have stack-name-prefixed physical names in AWS), the first
+`cdkd deploy` on v0.94.0+ proposes REPLACEMENT on every Pattern B
+resource — the AWS-deployed name `MyStack-my-role` no longer matches
+the new template intent `my-role`. Three options, listed by preference:
+
+1. **Pin `--prefix-user-supplied-names`** to keep the legacy behavior
+   for that stack. Most conservative — no AWS resources touched.
+2. **Accept the one-time REPLACEMENT** — the deploy-time pre-flight
+   prompt (see next subsection) lists every affected resource and
+   defaults to *no*, so the side effect is explicit.
+3. **Drop the explicit `roleName` / `userName` / ...** in CDK code,
+   letting CDK auto-generate the name. Also a one-time REPLACEMENT,
+   but the new name is then stable across future deploys.
+
+A state-side rename helper (`cdkd state rename-strip-prefix <stack>`)
+that would migrate state to match AWS without REPLACEMENT is tracked
+in [#300](https://github.com/go-to-k/cdkd/issues/300) and not yet
+implemented.
 
 ### Migration: deploy-time warning when the flag flips an existing stack
 
