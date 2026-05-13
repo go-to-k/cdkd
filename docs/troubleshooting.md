@@ -238,15 +238,15 @@ cleanly — the protocol parser falls through and produces a synthetic
 
 #### Solution
 
-cdkd resolves this automatically as of PR 3 (`docs/plans/03-dynamic-region-resolution.md`):
-the state backend looks up the bucket region via `GetBucketLocation` (a
+cdkd resolves this automatically (PR #60, shipped v0.10.0): the state
+backend looks up the bucket region via `GetBucketLocation` (a
 GET request, not a HEAD — avoids the SDK glitch) and rebuilds its S3
 client to that region before any state operation. If you still see this
 error, please file a bug with the full stack trace.
 
 You no longer need to set the region to match the bucket region. As of
-PR 5 (`docs/plans/05-region-flag-cleanup.md`), `--region` is reserved for
-`cdkd bootstrap` (where it picks the new bucket's region); on every
+PR #63 (v0.12.0), `--region` is reserved for `cdkd bootstrap` (where it
+picks the new bucket's region); on every
 other command it is deprecated and ignored. Use `AWS_REGION` or your
 AWS profile to control the SDK's default region for provisioning.
 

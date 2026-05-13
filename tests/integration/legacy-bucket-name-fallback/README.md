@@ -4,10 +4,9 @@ Verifies that cdkd falls back to the **legacy** default state bucket name
 (`cdkd-state-{accountId}-{region}`) when the **new** default name
 (`cdkd-state-{accountId}`) does not exist, and emits a deprecation warning.
 
-This guards the backwards-compat read path introduced in PR 4
-(`docs/plans/04-state-bucket-naming.md`). Without it, users who already
-bootstrapped cdkd with the pre-v0.8 default would see a hard "run cdkd
-bootstrap" error after upgrading.
+This guards the backwards-compat read path introduced in PR #62 (v0.11.0).
+Without it, users who already bootstrapped cdkd with the pre-v0.8 default
+would see a hard "run cdkd bootstrap" error after upgrading.
 
 ## Manual run
 
