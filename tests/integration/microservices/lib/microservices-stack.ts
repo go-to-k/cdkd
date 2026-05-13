@@ -7,6 +7,9 @@ import * as lambda from 'aws-cdk-lib/aws-lambda';
 import * as eventsources from 'aws-cdk-lib/aws-lambda-event-sources';
 import * as ssm from 'aws-cdk-lib/aws-ssm';
 import * as path from 'path';
+import { fileURLToPath } from 'node:url';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 /**
  * Microservices communication stack

@@ -149,6 +149,49 @@ gates:
     include:
       - ".markgate-pr-review-sha"
 
+  integ-broad:
+    # Records the last broad real-AWS integ run. The canonical
+    # broad-integ set (keep in sync with .claude/hooks/integ-broad-gate.sh
+    # error message + .claude/skills/run-integ/SKILL.md step 11 +
+    # .claude/skills/verify-pr/SKILL.md step 6 + CLAUDE.md):
+    #   bench-cdk-sample
+    #   lambda
+    #   microservices
+    #   drift-revert
+    #   drift-revert-vpc
+    #   multi-stack-deps
+    #   multi-resource
+    #   remove-protection
+    #   export
+    # Narrow feature integs like `import-value-strong-ref` flip the
+    # `integ-destroy` marker but do not exercise multi-resource VPC /
+    # Lambda / Custom-Resource paths, so a cross-cutting code change
+    # to `src/deployment/deploy-engine.ts` etc. can ship a regression
+    # the narrow integ never sees. This gate's hook blocks `gh pr
+    # merge` when the diff touches cross-cutting paths AND the marker
+    # is stale, forcing a broad integ in addition to whatever feature
+    # integ the change came with.
+    #
+    # Why a separate marker (vs. extending `integ-destroy`): markgate
+    # is content-digest based; `integ-destroy` doesn't distinguish
+    # which integ flipped it. The sentinel below is written ONLY by
+    # /run-integ when a broad-set test name passes — so a narrow
+    # feature integ legitimately flips `integ-destroy` (it WAS a
+    # clean real-AWS destroy) while leaving `integ-broad` stale,
+    # which is exactly the gradient we want.
+    #
+    # Scope: a sentinel file at repo root carrying the last broad
+    # integ's test name + timestamp. Updated ONLY by /run-integ when
+    # the test name is in the broad set AND the run was clean.
+    # Gitignored — per-checkout bookkeeping, not a tracked artifact.
+    # Same 14d TTL as the other AWS-coupled gates so the marker ages
+    # out automatically and the next cross-cutting PR triggers a
+    # fresh broad run regardless of code changes.
+    ttl: 14d
+    hash: files
+    include:
+      - ".markgate-broad-integ-test"
+
   integ-local:
     hash: files
     # Wall-clock TTL on top of the file-scope check (markgate 0.3+).

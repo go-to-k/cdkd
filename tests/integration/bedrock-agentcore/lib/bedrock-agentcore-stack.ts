@@ -1,7 +1,10 @@
 import * as cdk from 'aws-cdk-lib';
 import { Construct } from 'constructs';
 import * as path from 'path';
+import { fileURLToPath } from 'node:url';
 import * as agentcore from '@aws-cdk/aws-bedrock-agentcore-alpha';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 /**
  * Bedrock AgentCore Runtime example stack

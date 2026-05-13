@@ -42,6 +42,32 @@ import type { S3StateBackend } from './s3-state-backend.js';
 export const EXPORT_INDEX_VERSION = 1;
 
 /**
+ * Shallow-deep equality on the two `name → ExportIndexEntry` maps used
+ * to detect no-op writes in `applyStackUpdate`. Values are compared via
+ * JSON.stringify (Output values are always JSON-serializable).
+ */
+function mapsEqual(a: Map<string, ExportIndexEntry>, b: Map<string, ExportIndexEntry>): boolean {
+  if (a.size !== b.size) return false;
+  for (const [name, entry] of a) {
+    const other = b.get(name);
+    if (!other) return false;
+    if (
+      other.producerStack !== entry.producerStack ||
+      other.producerRegion !== entry.producerRegion
+    ) {
+      return false;
+    }
+    if (other.value !== entry.value) {
+      // Fall back to JSON.stringify for non-primitive Output values.
+      if (JSON.stringify(other.value) !== JSON.stringify(entry.value)) {
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
+/**
  * On-disk shape of `_index/{region}/exports.json`.
  *
  * Note: the index intentionally does NOT carry a `consumers[]` list
@@ -167,6 +193,19 @@ export class ExportIndexStore {
     producerRegion: string,
     outputs: Record<string, unknown>
   ): Promise<void> {
+    // No-op short-circuit at the unconditional-skip level is unsafe:
+    // a stack that previously published outputs (and so has entries
+    // in the persisted index) and now publishes none MUST drop its
+    // entries. Without loading the index we can't know whether stale
+    // entries exist. The cheaper-but-still-correct optimization is
+    // the `mapsEqual` check inside `applyStackUpdate` — it skips the
+    // PUT when the resulting in-memory map matches what we already
+    // had, which is the typical no-change deploy case.
+    //
+    // The rebuild on first call IS still a real cost for first-time
+    // v4 users (1 listStacks + N parallel GETs + 1 PUT) but happens
+    // exactly once per bucket lifetime — same trade-off CFn's
+    // internal ListExports index makes.
     await this.enqueueWrite('update', () =>
       this.applyStackUpdate(stackName, producerRegion, outputs)
     );
@@ -369,6 +408,15 @@ export class ExportIndexStore {
     // Insert fresh entries.
     for (const [name, value] of Object.entries(outputs)) {
       next.set(name, { value, producerStack: stackName, producerRegion });
+    }
+    // Skip the PUT when the resulting map is byte-identical to the
+    // loaded map. Eliminates the no-op writes on deploys where outputs
+    // didn't change (the typical incremental-deploy case after the
+    // first one). `mapsEqual` alone is sufficient — any per-entry
+    // change ends up reflected in `next` and the equality check is
+    // strictly more precise than a per-step `changed` flag.
+    if (mapsEqual(this.loadState.entries, next)) {
+      return;
     }
     await this.persist(next);
   }
