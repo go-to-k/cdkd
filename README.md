@@ -160,12 +160,20 @@ cdkd has three command families:
   use them to inspect / clean up state when the source is gone or
   you don't want to synth. `cdkd state destroy` is the CDK-app-free
   counterpart of `cdkd destroy`.
-- **`cdkd local ...` subcommands** (`local invoke`, `local start-api`)
-  run synthesized Lambda functions locally inside Docker containers that
-  bundle the AWS Lambda Runtime Interface Emulator (RIE). `local invoke`
-  runs a single Lambda once; `local start-api` stands up a long-running
-  HTTP server that maps API Gateway / HTTP API / Function URL routes to
-  local Lambda invocations. No AWS API calls, no state bucket needed.
+- **`cdkd local ...` subcommands** (`local invoke`, `local start-api`,
+  `local run-task`) run synthesized workloads locally inside Docker
+  containers. The Lambda variants (`local invoke` / `local start-api`)
+  bundle the AWS Lambda Runtime Interface Emulator (RIE); `local invoke`
+  runs a single Lambda once, and `local start-api` stands up a
+  long-running HTTP server that maps API Gateway / HTTP API / Function
+  URL routes to local Lambda invocations. `local run-task` is the ECS
+  counterpart — it locates an `AWS::ECS::TaskDefinition` from the
+  synthesized template and stands up every container in `dependsOn`
+  order on a per-task docker network with the AWS-published metadata
+  endpoints sidecar, so containers see `ECS_CONTAINER_METADATA_URI_V4`
+  (and optionally task-role creds via `--assume-task-role`) just like
+  they would on Fargate / ECS. No AWS API calls beyond optional STS /
+  Secrets resolution, no state bucket needed.
 
 Options like `--app`, `--state-bucket`, and `--context` can be omitted if configured via `cdk.json` or environment variables (`CDKD_APP`, `CDKD_STATE_BUCKET`).
 
@@ -458,82 +466,24 @@ Both `cdkd destroy` (synth-driven) and `cdkd state destroy`
 
 ## Stack-name prefix on physical names
 
-By default cdkd creates AWS resources with the **exact name you
-declared** in CDK code: `new iam.Role(this, 'CRRole', { roleName:
-'my-role' })` in stack `MyStack` produces an AWS resource named
-`my-role`. Consistent across every resource type. This is the
-default since **v0.94.0** (closes [#299](https://github.com/go-to-k/cdkd/issues/299)).
+cdkd creates AWS resources with the **exact name you declared** in
+CDK code by default (since v0.94.0). `new iam.Role(this, 'CRRole',
+{ roleName: 'my-role' })` produces an AWS resource named `my-role`,
+consistent across every resource type. Pre-v0.94.0 cdkd prepended the
+stack name on a subset of types only — the inconsistency surfaced as
+`cdkd export` CFn-IMPORT identifier mismatches and was flipped in
+[#299](https://github.com/go-to-k/cdkd/issues/299).
 
-Pre-v0.94.0 cdkd prepended the stack name to user-declared physical
-names on a subset of types only (Pattern B providers: IAM Role /
-User / Group / InstanceProfile / ELBv2 LoadBalancer / TargetGroup),
-while Pattern A providers (Lambda, S3, SNS, SQS, DynamoDB, etc.) used
-the user's name as-is. The inconsistency was opaque to users and
-surfaced as failures in `cdkd export` (CFn IMPORT identifier
-mismatch). Flipping the default brings every resource type into line
-out of the box.
+`cdkd deploy --prefix-user-supplied-names` opts BACK in to the legacy
+prefixing — useful when migrating an existing stack deployed under the
+pre-v0.94.0 default and you don't want a one-time replacement on every
+IAM Role / User / Group / InstanceProfile / ELBv2 LB / TG.
 
-`cdkd deploy --prefix-user-supplied-names` opts BACK in to the
-legacy prefixing on Pattern B providers (matching pre-v0.94.0 cdkd).
-Useful when migrating an existing stack that was originally deployed
-under the legacy default and you don't want to take a one-time
-replacement on every Pattern B resource.
-
-| | Default (no flag) | `--prefix-user-supplied-names` |
-| --- | --- | --- |
-| `new iam.Role({ roleName: 'my-role' })` | `my-role` | `MyStack-my-role` (legacy) |
-| `new s3.Bucket({ bucketName: 'my-bucket' })` | `my-bucket` (always — Pattern A) | `my-bucket` (unchanged) |
-| `new iam.Role(...)` (no `roleName`) | `MyStack-CRRole-<hash>` (auto-generated; prefix kept for uniqueness) | `MyStack-CRRole-<hash>` (unchanged) |
-
-Resolution chain (highest wins): `--prefix-user-supplied-names`
-CLI flag → `CDKD_PREFIX_USER_SUPPLIED_NAMES=true` env var →
-`cdk.json` `context.cdkd.prefixUserSuppliedNames: true` → default
-`false` (skip prefix).
-
-The deprecated `--no-prefix-user-supplied-names` flag (plus the
-`CDKD_NO_PREFIX_USER_SUPPLIED_NAMES` env var and `cdk.json
-context.cdkd.noPrefixUserSuppliedNames`) is still accepted but now
-matches the default; setting it emits a deprecation warning and is a
-no-op. Remove it from your CLI invocations and config.
-
-### Migration from pre-v0.94.0
-
-This is a **breaking change**: upgrading from a pre-v0.94.0 cdkd to
-v0.94.0+ flips the AWS-resource name cdkd produces on Pattern B
-providers (IAM Role / User / Group / InstanceProfile / ELBv2 LB / TG)
-with user-supplied physical names. The next `cdkd deploy` against an
-existing stack will propose REPLACEMENT on every such resource —
-the AWS resource has the prefixed name; the new template intent has
-the un-prefixed name.
-
-Pick one of:
-
-1. **Accept the one-time replacement** (simplest; only safe when the
-   types involved tolerate replacement — IAM Roles get fresh ARNs,
-   ELBv2 LBs get fresh DNS names).
-2. **Pin legacy prefixing**: pass `--prefix-user-supplied-names`,
-   set `CDKD_PREFIX_USER_SUPPLIED_NAMES=true`, or add
-   `"prefixUserSuppliedNames": true` under `cdk.json` `context.cdkd`.
-3. **Drop the explicit physical name** in CDK code where you don't
-   actually need a stable name — `new iam.Role(...)` without
-   `roleName` always uses the auto-generated `MyStack-CRRole-<hash>`
-   form regardless of this flag.
-
-A migration helper (`cdkd state rename-strip-prefix <stack>`) that
-would let an existing stack adopt the new default without replacement
-is tracked separately in [#300](https://github.com/go-to-k/cdkd/issues/300).
-
-### Effect on `cdkd export`
-
-[PR #285 `cdkd export`](https://github.com/go-to-k/cdkd/pull/285)
-surfaced the pre-v0.94.0 inconsistency: the CFn IMPORT changeset's
-identifier check would fail on a synth `RoleName: 'my-role'` vs the
-AWS-deployed `MyStack-my-role`, so the export command overlays
-`ResourceIdentifier` onto `Properties` to bridge the gap. The
-overlay is still needed for stacks deployed under the legacy default
-(or with `--prefix-user-supplied-names`); a fresh stack deployed
-under the v0.94.0 default has matching names and the overlay is a
-no-op for it.
+Full details — affected resource types, env var / `cdk.json` resolution
+chain, deprecated `--no-prefix-user-supplied-names` flag, migration
+guide, interaction with `cdkd export`'s identifier overlay — live in
+[docs/cli-reference.md](docs/cli-reference.md) under
+`--prefix-user-supplied-names`.
 
 ## `--remove-protection`: one-shot bypass for protected resources
 
