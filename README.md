@@ -384,6 +384,69 @@ Lambda-ServiceToken Active wait).
 See [docs/cli-reference.md](docs/cli-reference.md) for the full
 type-pair allowlist and trade-off notes.
 
+## Local execution
+
+The `cdkd local` family runs AWS workloads on the developer's machine
+via Docker — Lambda functions, API Gateway routes, and ECS tasks —
+without an AWS deploy. Modeled on `sam local *` but reuses cdkd's
+synthesis / asset / construct-path plumbing — no `template.yaml` to
+maintain, no `cdk synth | sam ...` round-trip.
+
+| Subcommand | Emulates |
+| --- | --- |
+| `cdkd local invoke <target>` | One-shot Lambda invoke via the AWS Lambda Runtime Interface Emulator (RIE) |
+| `cdkd local start-api` | Long-running HTTP server for REST v1 / HTTP API / Function URL routes |
+| `cdkd local run-task <target>` | ECS RunTask — every container in a task definition started on a per-task docker network |
+
+Requires Docker. Pass `--from-state` to substitute deployed physical
+IDs into intrinsic-valued properties; without it, intrinsic values are
+dropped with a per-key warning (matches `sam local *` semantics).
+
+### `local invoke`
+
+```bash
+cdkd local invoke MyStack/MyApi/Handler           # one-shot invoke
+cdkd local invoke MyStack/Handler --event events/get.json
+cdkd local invoke MyStack/Handler --from-state    # recover deployed env vars
+```
+
+Supports every current AWS Lambda runtime (Node.js / Python / Ruby /
+Java / .NET / `provided.al2023`), container Lambdas
+(`DockerImageFunction` / `Code.ImageUri`) via local-build or ECR pull,
+and same-stack Lambda Layers bind-mounted at `/opt`.
+
+### `local start-api`
+
+```bash
+cdkd local start-api                              # one HTTP server per discovered API
+cdkd local start-api --port 3000                  # pin the first server's port
+cdkd local start-api --warm --watch               # pre-start + hot reload
+```
+
+One server per discovered API — authorizers, CORS configs, and stage
+variables stay scoped to the owning API. Supports REST v1 + HTTP API +
+Function URL with AWS_PROXY integrations; Lambda TOKEN / REQUEST,
+Cognito User Pool, and HTTP v2 JWT authorizers (JWKS-verified); CORS
+preflight; hot reload via `--watch`.
+
+### `local run-task`
+
+```bash
+cdkd local run-task MyStack/MyService/TaskDef
+cdkd local run-task MyTaskDef --from-state        # resolve deployed secrets / env intrinsics
+```
+
+Starts every container in the task definition on a per-task docker
+network with the AWS-published ECS metadata sidecar
+(`amazon/amazon-ecs-local-container-endpoints`). `DependsOn` /
+`Secrets` / `Volumes` (Host / Docker) are honored; `Secrets[].ValueFrom`
+is resolved from SecretsManager / SSM at startup.
+
+See [docs/local-emulation.md](docs/local-emulation.md) for the full
+reference — supported runtimes, target resolution, every flag, exit
+codes, route precedence, container-pool semantics, networking model,
+v1 scope notes.
+
 ## Importing existing resources
 
 `cdkd import` adopts AWS resources that are already deployed (via
@@ -522,182 +585,6 @@ cdkd publish-assets -a cdk.out       # skip synth, use pre-synthesized assembly
 
 See [docs/cli-reference.md](docs/cli-reference.md#publish-assets-synth--build--publish-no-deploy)
 for stack-selection rules and concurrency knobs.
-
-## `local invoke`: run Lambda functions locally
-
-`cdkd local invoke <target>` runs a Lambda function from a CDK app on the
-developer's machine, inside a Docker container that bundles the AWS
-Lambda Runtime Interface Emulator (RIE). Modeled on `sam local invoke`
-but reusing cdkd's synthesis / asset / construct-path plumbing — no
-`template.yaml` to maintain, no `cdk synth | sam ...` round-trip.
-
-Requires Docker. Supports every current AWS Lambda runtime
-(`nodejs18.x` / `nodejs20.x` / `nodejs22.x` / `nodejs24.x` / `python3.11` /
-`python3.12` / `python3.13` / `python3.14` / `ruby3.2` / `ruby3.3` /
-`java8.al2` / `java11` / `java17` / `java21` / `dotnet6` / `dotnet8` /
-`provided.al2` / `provided.al2023`). The deprecated `go1.x` runtime is
-rejected with a migration pointer to `provided.al2023`. Java, .NET, and
-`provided.*` Lambdas are **asset-backed only** — the Handler shape names
-a compiled artifact (`package.Class::method` for Java's JVM class;
-`Assembly::Namespace.Class::Method` for .NET's CLR assembly; an
-arbitrary `bootstrap` binary for the OS-only `provided.*` runtimes), so
-use `lambda.Code.fromAsset(<dir>)` with a directory containing the
-compiled output (`.class` hierarchy / `.jar` / `.dll` / native binary);
-inline `Code.ZipFile` is rejected with a clear routing message.
-
-**Container Lambdas** — `lambda.DockerImageFunction(...)` /
-`Code.ImageUri` is supported alongside ZIP Lambdas. cdkd reads the
-function's local `Dockerfile` from `cdk.out` and runs `docker build`
-locally before invoking. When no asset matches (typically: invoking a
-stack deployed elsewhere), cdkd falls back to `docker pull` from
-ECR — same-account / same-region only in v1; cross-account /
-cross-region is not yet supported. `Architectures: [x86_64]` /
-`[arm64]` are honored via `--platform` so an arm64 host running an
-x86_64 Lambda doesn't hit emulation.
-
-```bash
-# Invoke by CDK display path (single-stack apps may omit the prefix)
-cdkd local invoke MyStack/MyApi/Handler
-cdkd local invoke MyStack:MyApiHandler1234ABCD       # logical-id form
-
-# Pass an event payload
-cdkd local invoke MyStack/Handler --event events/get.json
-echo '{"path":"/"}' | cdkd local invoke MyStack/Handler --event-stdin
-
-# Override env vars (SAM-compatible shape: {"LogicalId":{"KEY":"VALUE"}}
-# plus an optional top-level "Parameters" block applied to every invoke)
-cdkd local invoke MyStack/Handler --env-vars env.json
-
-# Skip docker pull when iterating
-cdkd local invoke MyStack/Handler --no-pull
-
-# Skip the local docker build for container Lambdas (Code.ImageUri).
-# Reuses the deterministic cdkd-local-invoke-<hash> tag from a prior
-# build. Errors clearly when the tag is missing.
-cdkd local invoke MyStack/ContainerHandler --no-build
-
-# Run with the deployed function's narrow execution role (otherwise the
-# developer's shell credentials are forwarded — SAM-compatible default)
-cdkd local invoke MyStack/Handler --assume-role arn:aws:iam::123456789012:role/MyApi-handler-role
-
-# Attach a Node debugger
-cdkd local invoke MyStack/Handler --debug-port 9229
-
-# After `cdkd deploy`, recover intrinsic-valued env vars (Ref / Fn::GetAtt
-# / Fn::Sub) from cdkd's S3 state instead of dropping them. Off by default
-# — keeps the local-only / unscoped flow safe; opt in when you want the
-# handler to see the deployed physical IDs (S3 bucket names, DDB table
-# names, IAM role ARNs, ...). Disambiguate with `--stack-region <region>`
-# when the same stack name has state in multiple regions.
-cdkd local invoke MyStack/Handler --from-state
-```
-
-**Lambda Layers** — same-stack
-`AWS::Lambda::LayerVersion` references in `Properties.Layers` are
-resolved automatically and bind-mounted at `/opt` (read-only) inside
-the container. Each layer's unzipped asset directory under `cdk.out/`
-becomes one `-v <layerAssetPath>:/opt:ro` mount; multiple layers
-stack via Docker overlay layering, and AWS's "last layer wins on
-file collision" rule is preserved by keeping the template's input
-order. Cross-stack / cross-account / cross-region layer ARNs (literal
-ARN strings in `Properties.Layers`) are out of scope for v1 — cdkd
-hard-errors with a clear pointer at the offending entry. Container
-Lambdas (`Code.ImageUri`) silently ignore `Layers` (matches AWS:
-container images bake layers at build time).
-
-See [docs/cli-reference.md](docs/cli-reference.md#local-invoke-run-lambda-functions-locally)
-for the full surface, target-resolution rules, and v1 scope notes.
-
-## `local start-api`: long-running local API server
-
-`cdkd local start-api` stands up a long-running local HTTP server that
-maps the synthesized API Gateway routes (REST v1, HTTP API, Function
-URL) to local Lambda invocations against the same RIE-backed Docker
-containers `cdkd local invoke` uses. Modeled on `sam local start-api`
-but reusing cdkd's synthesis / route-discovery plumbing.
-
-```bash
-# Auto-allocate one port PER discovered API (printed at startup)
-cdkd local start-api
-
-# Pin the FIRST server to port 3000; subsequent APIs get 3001, 3002, ...
-cdkd local start-api --port 3000
-
-# Restrict to a single API by its CDK logical id (HTTP API / REST API logical
-# id, or the backing Lambda's logical id for Function URLs)
-cdkd local start-api --api MyAdminApi
-
-# Pre-warm one container per Lambda at server boot — eliminates first-request cold start
-cdkd local start-api --warm
-
-# Override env vars per-Lambda (SAM-shape file)
-cdkd local start-api --env-vars env.json
-
-# Pin the deployed execution role per Lambda (or globally with a bare ARN)
-cdkd local start-api --assume-role MyApiHandler=arn:aws:iam::123:role/handler-role
-
-# Hot reload — re-synth + re-discover routes when cdk.out/ or asset dirs change
-cdkd local start-api --watch
-
-# Select a specific API Gateway Stage (default: the first attached)
-cdkd local start-api --stage prod
-```
-
-**One server per API** (since v0.81): every discovered API surface gets its
-own HTTP server on its own port, so authorizers, CORS configs, and stage
-variables stay scoped to the owning API and never bleed across APIs that
-happen to share a path. `cdkd local start-api` prints one
-`Server listening on http://<host>:<port>  (<API> (<kind>))` line per
-server at startup; pass `--api <id>` to launch only one of them.
-
-Scope: REST v1 + HTTP API + Function URL with AWS_PROXY integrations.
-Authorizers (Lambda TOKEN/REQUEST + Cognito User Pool + HTTP v2 JWT),
-VPC-config Lambda warnings, CORS preflight, hot reload, and stage
-variables are supported. WebSocket APIs are not.
-
-**Authorizers**: `Authorization: Bearer <token>`-protected
-routes are gated on the authorizer Lambda's response (TOKEN / REQUEST
-authorizers, IAM-policy or HTTP v2 simple shape) or on a JWKS-based JWT
-verification (Cognito User Pool authorizers, HTTP v2 JWT authorizers).
-When the JWKS endpoint is unreachable from the dev machine, cdkd falls
-back to **pass-through mode** (every JWT accepted, with a warn line at
-startup) — local-dev-only fallback so a corporate proxy doesn't block
-iteration. **Do NOT rely on this in any shared environment.**
-
-**VPC-config Lambdas**: handlers with `Properties.VpcConfig`
-still run locally, but the local container is NOT attached to the
-deployed VPC's subnets — calls to private RDS / ElastiCache will fail.
-cdkd warns at startup naming each affected Lambda; AWS SDK calls still
-reach public AWS endpoints via the dev's network as usual.
-
-**Hot reload (`--watch`)**: re-runs the synth → discover → spec-build
-pipeline whenever `cdk.out/` or any of the routed Lambdas' asset
-directories change. Routes added / removed / changed swap in
-atomically without restarting the HTTP server; in-flight requests
-complete against the old container pool while the new pool warms.
-Synth failures are non-fatal — the previous version keeps serving and
-a warn line names the failure. Off by default; pass `--watch` to
-enable.
-
-**CORS preflight**: HTTP API v2 OPTIONS preflight requests are
-intercepted when the API has a `CorsConfiguration` block. The server
-matches the request's `Origin` / `Access-Control-Request-Method` /
-`Access-Control-Request-Headers` against the configured allowlist and
-returns a `204 No Content` with the canonical `Access-Control-Allow-*`
-headers. Preflight handling is skipped when the user has registered
-an explicit OPTIONS method (their Lambda owns it). REST v1 CORS (Mock
-OPTIONS method) is not auto-handled and stays out of scope; use the
-deployed API for that case.
-
-**Stage variables**: `event.stageVariables` is populated from the
-selected Stage's `Variables` (REST v1) / `StageVariables` (HTTP API
-v2) map. Default selection is the first Stage attached to each API;
-pass `--stage <name>` to pick a Stage by `StageName`. Function URL
-routes don't have a Stage — `event.stageVariables` stays `null`.
-
-See [docs/cli-reference.md](docs/cli-reference.md#local-start-api-long-running-local-api-server)
-for the full route-discovery rules, container-pool semantics, exit
-codes, and per-authorizer-kind detection / response-shape details.
 
 ## State Management
 
