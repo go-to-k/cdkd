@@ -89,7 +89,7 @@ Run each check and report pass/fail:
      - `remove-protection`
      - `export`
 
-     These exercise multi-resource VPC / Lambda / IAM / CFn-Custom paths that narrow integs leave uncovered. Cross-cutting code paths affect EVERY user's deploy/destroy, not just the feature you added — broad integs are the only structural defense against shipping a regression that only surfaces in production on stacks unlike your fixture. Bypassing this is the PR #348 trap from 2026-05-13 (Issue #343 shipped without bench-cdk-sample validation; user-flagged as an incident).
+     These exercise multi-resource VPC / Lambda / IAM / CFn-Custom paths that narrow integs leave uncovered. Cross-cutting code paths affect EVERY user's deploy/destroy, not just the feature you added — broad integs are the only structural defense against shipping a regression that only surfaces in production on stacks unlike your fixture. Bypassing this is the PR #348 trap from 2026-05-13 (Issue #343 shipped without bench-cdk-sample validation; surfaced post-merge as an incident).
      ```bash
      # Detection: only fires when the diff actually touches cross-cutting code.
      if git diff main...HEAD --name-only | grep -qE '^src/deployment/(deploy-engine|intrinsic-function-resolver)\.ts$|^src/cli/commands/(destroy-runner|destroy|deploy)\.ts$|^src/analyzer/(dag-builder|template-parser)\.ts$|^src/provisioning/register-providers\.ts$'; then
