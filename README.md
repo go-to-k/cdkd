@@ -455,6 +455,16 @@ v1 scope notes.
 `cdk deploy`, manual creation, or another tool) into cdkd state so the
 next `cdkd deploy` updates them in-place instead of CREATEing duplicates.
 
+`cdkd import --migrate-from-cloudformation` extends this to migrate a
+**whole CloudFormation stack** off CFn in a single command: cdkd reads
+the source CFn stack's `(logicalId, physicalId)` mappings, adopts every
+resource into cdkd state, then retires the source CFn stack (injects
+`DeletionPolicy: Retain` + `UpdateReplacePolicy: Retain` on every
+resource → `UpdateStack` → `DeleteStack`) so the AWS resources stay
+intact but are no longer tracked by CFn. After the command finishes,
+the stack is managed by `cdkd deploy`. This is the reverse direction
+of `cdkd export` (see below).
+
 ```bash
 # Adopt a whole stack previously deployed by cdk deploy (tag-based auto-lookup).
 cdkd import MyStack --yes
@@ -479,17 +489,28 @@ AWS resources are unchanged across the migration; cdkd state for the
 exported stack is deleted on success. From then on the stack is managed
 by `cdk deploy` / `aws cloudformation`.
 
+Lambda-backed Custom Resources (`Custom::*` and
+`AWS::CloudFormation::CustomResource`) are NOT directly CFn-importable.
+`cdkd export --include-non-importable` opts into a 2-phase migration
+to handle them: phase 1 IMPORT changeset adopts every importable
+resource, then phase 2 UPDATE changeset re-CREATEs the Custom Resources
+through CFn — which re-invokes each backing Lambda's onCreate handler.
+The Custom Resource Lambda must be idempotent AND must POST to
+`event.ResponseURL` per the cfn-response protocol. Without the flag,
+the command refuses to proceed and the user is expected to destroy
+the offending resources (or accept abandoning them) first. Nested
+`AWS::CloudFormation::Stack` references always block (CFn can neither
+adopt nor recreate them).
+
 ```bash
 cdkd export MyStack                           # confirmation prompt; CFn stack name = cdkd stack name
 cdkd export MyStack --cfn-stack-name MyStack-CFn
 cdkd export MyStack --dry-run                 # print the import plan, do not call CFn
 cdkd export MyStack --template path.json      # skip synth, use a pre-rendered JSON template
+cdkd export MyStack --include-non-importable  # 2-phase: IMPORT importable + CFn-CREATE Custom Resources
 ```
 
-MVP scope: JSON templates only (CDK-generated). The command refuses to
-proceed if any resource is not CFn-importable (Lambda-backed Custom
-Resources, nested `AWS::CloudFormation::Stack` references); destroy or
-accept abandoning those resources first.
+MVP scope: JSON templates only (CDK-generated).
 
 ## Drift detection
 
