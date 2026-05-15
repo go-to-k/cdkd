@@ -1246,9 +1246,17 @@ export class ApiGatewayProvider implements ResourceProvider {
    * when CDK's `LambdaIntegration({ responseTransferMode: STREAM })` was
    * used together with the streaming `response-streaming-invocations` URI.
    *
-   * `IntegrationResponses` (the CFn array shape under `Integration`) is
-   * applied via per-entry `PutIntegrationResponseCommand` calls after the
-   * integration itself is put in place.
+   * `MethodResponses` and `IntegrationResponses` are applied as separate
+   * per-entry calls (`PutMethodResponseCommand` /
+   * `PutIntegrationResponseCommand`). Order matters: every
+   * `MethodResponse` is put BEFORE any `IntegrationResponse`, because AWS
+   * validates that the matching method response already exists when
+   * accepting an integration response (the integration response's
+   * `ResponseParameters` / `ResponseTemplates` map onto headers declared
+   * by the method response). The inverse order surfaces as
+   * `Invalid mapping expression specified: ... [No method response exists
+   * for method.]` — the canonical trigger is a CORS preflight OPTIONS
+   * method emitted by `RestApi({ defaultCorsPreflightOptions: ... })`.
    */
   private async createMethod(
     logicalId: string,
@@ -1339,12 +1347,43 @@ export class ApiGatewayProvider implements ResourceProvider {
             responseTransferMode: integration['ResponseTransferMode'] as any,
           })
         );
+      }
 
+      // MethodResponses must be created BEFORE IntegrationResponses:
+      // `PutIntegrationResponse` validates that the `MethodResponse` for the
+      // same `statusCode` already exists (because IntegrationResponse's
+      // ResponseParameters / ResponseTemplates map onto headers declared by
+      // the MethodResponse). Inverting the order makes AWS reject with
+      // `Invalid mapping expression specified: ... [No method response
+      // exists for method.]` — the canonical failure mode is a CORS
+      // preflight OPTIONS method emitted by
+      // `RestApi({ defaultCorsPreflightOptions: ... })`.
+      const methodResponses = properties['MethodResponses'] as
+        | Array<Record<string, unknown>>
+        | undefined;
+      if (methodResponses) {
+        for (const resp of methodResponses) {
+          const statusCode = String(resp['StatusCode']);
+          await this.apiGatewayClient.send(
+            new PutMethodResponseCommand({
+              restApiId,
+              resourceId,
+              httpMethod,
+              statusCode,
+              responseModels: resp['ResponseModels'] as Record<string, string> | undefined,
+              responseParameters: resp['ResponseParameters'] as Record<string, boolean> | undefined,
+            })
+          );
+        }
+      }
+
+      if (integration) {
         // IntegrationResponses (CFn shape:
         //   [{StatusCode, SelectionPattern?, ResponseParameters?,
         //     ResponseTemplates?, ContentHandling?}, ...])
         // requires per-entry `PutIntegrationResponseCommand` calls after
-        // the integration itself is created.
+        // the integration itself is created AND after the matching
+        // MethodResponses are in place (see comment above).
         const integrationResponses = integration['IntegrationResponses'] as
           | Array<Record<string, unknown>>
           | undefined;
@@ -1365,26 +1404,6 @@ export class ApiGatewayProvider implements ResourceProvider {
               })
             );
           }
-        }
-      }
-
-      // If MethodResponses property exists, set up method responses
-      const methodResponses = properties['MethodResponses'] as
-        | Array<Record<string, unknown>>
-        | undefined;
-      if (methodResponses) {
-        for (const resp of methodResponses) {
-          const statusCode = String(resp['StatusCode']);
-          await this.apiGatewayClient.send(
-            new PutMethodResponseCommand({
-              restApiId,
-              resourceId,
-              httpMethod,
-              statusCode,
-              responseModels: resp['ResponseModels'] as Record<string, string> | undefined,
-              responseParameters: resp['ResponseParameters'] as Record<string, boolean> | undefined,
-            })
-          );
         }
       }
 
