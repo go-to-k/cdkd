@@ -384,29 +384,85 @@ export class RDSProvider implements ResourceProvider {
 
       const cluster = response.DBCluster;
       if (!cluster) {
+        // Theoretical AWS SDK contract violation: CreateDBCluster returned
+        // success but with no DBCluster. Cannot clean up — we have no
+        // identifier to delete. Has never been observed in practice.
         throw new Error('CreateDBCluster did not return DBCluster');
       }
 
       this.logger.debug(`Successfully created DBCluster ${logicalId}: ${dbClusterIdentifier}`);
 
-      // Wait for cluster to become available (skip with --no-wait)
-      if (process.env['CDKD_NO_WAIT'] !== 'true') {
-        await this.waitForClusterAvailable(dbClusterIdentifier);
+      // CreateDBClusterCommand has succeeded — AWS has now committed the
+      // cluster and BILLING HAS STARTED (Aurora minimum ~$0.07/hour idle).
+      // This is the **cost-leak class** (poll-failure case mentioned in
+      // Issue #376): if `waitForClusterAvailable` times out or AWS
+      // reports CREATE_FAILED via the waiter, the cluster keeps running
+      // until manual cleanup. Wrap the post-create wiring in an inner
+      // try/catch that issues a best-effort
+      // `ModifyDBCluster(DeletionProtection: false)` (if template asked
+      // for protection) + `DeleteDBCluster(SkipFinalSnapshot: true)`
+      // before re-throwing the original error. We do NOT wait for the
+      // cluster to fully delete (the deploy is already failing — making
+      // the user wait another 5-30 min on RDS's eventual termination is
+      // bad UX; the same UX choice we made for EC2 Instance in PR #379).
+      // When cleanup itself fails, the WARN escalates to `THE CLUSTER
+      // IS STILL RUNNING AND BILLING` with the exact recovery commands.
+      const wantsDeletionProtection = properties['DeletionProtection'] === true;
+      try {
+        // Wait for cluster to become available (skip with --no-wait)
+        if (process.env['CDKD_NO_WAIT'] !== 'true') {
+          await this.waitForClusterAvailable(dbClusterIdentifier);
+        }
+
+        // Describe to get final attributes
+        const described = await this.describeDBCluster(dbClusterIdentifier);
+
+        return {
+          physicalId: dbClusterIdentifier,
+          attributes: {
+            'Endpoint.Address': described?.Endpoint ?? '',
+            'Endpoint.Port': String(described?.Port ?? ''),
+            'ReadEndpoint.Address': described?.ReaderEndpoint ?? '',
+            Arn: described?.DBClusterArn ?? '',
+            DBClusterResourceId: described?.DbClusterResourceId ?? '',
+          },
+        };
+      } catch (innerError) {
+        try {
+          // Flip DeletionProtection off first when template requested it
+          // — otherwise DeleteDBCluster rejects with `InvalidParameter
+          // Combination: Cannot delete protected DB cluster`.
+          if (wantsDeletionProtection) {
+            try {
+              await this.getClient().send(
+                new ModifyDBClusterCommand({
+                  DBClusterIdentifier: dbClusterIdentifier,
+                  DeletionProtection: false,
+                  ApplyImmediately: true,
+                })
+              );
+            } catch (disableError) {
+              this.logger.debug(
+                `Could not disable DeletionProtection on partially-created DBCluster ${dbClusterIdentifier}: ${disableError instanceof Error ? disableError.message : String(disableError)} (proceeding with DeleteDBCluster anyway)`
+              );
+            }
+          }
+          await this.getClient().send(
+            new DeleteDBClusterCommand({
+              DBClusterIdentifier: dbClusterIdentifier,
+              SkipFinalSnapshot: true,
+            })
+          );
+          this.logger.debug(
+            `Delete requested for partially-created DBCluster ${logicalId} (${dbClusterIdentifier}) after wiring failure (not waiting for deleted state)`
+          );
+        } catch (cleanupError) {
+          this.logger.warn(
+            `Failed to delete partially-created DBCluster ${logicalId} (${dbClusterIdentifier}): ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}. THE CLUSTER IS STILL RUNNING AND BILLING. Manual cleanup required: ${wantsDeletionProtection ? `aws rds modify-db-cluster --db-cluster-identifier ${dbClusterIdentifier} --no-deletion-protection --apply-immediately; ` : ''}aws rds delete-db-cluster --db-cluster-identifier ${dbClusterIdentifier} --skip-final-snapshot`
+          );
+        }
+        throw innerError;
       }
-
-      // Describe to get final attributes
-      const described = await this.describeDBCluster(dbClusterIdentifier);
-
-      return {
-        physicalId: dbClusterIdentifier,
-        attributes: {
-          'Endpoint.Address': described?.Endpoint ?? '',
-          'Endpoint.Port': String(described?.Port ?? ''),
-          'ReadEndpoint.Address': described?.ReaderEndpoint ?? '',
-          Arn: described?.DBClusterArn ?? '',
-          DBClusterResourceId: described?.DbClusterResourceId ?? '',
-        },
-      };
     } catch (error) {
       if (error instanceof ProvisioningError) throw error;
       const cause = error instanceof Error ? error : undefined;
