@@ -1,3 +1,10 @@
+## [0.101.1](https://github.com/go-to-k/cdkd/compare/v0.101.0...v0.101.1) (2026-05-15)
+
+
+### Bug Fixes
+
+* **release:** clear npm publish warnings on bin path + repository url ([#371](https://github.com/go-to-k/cdkd/issues/371)) ([683e885](https://github.com/go-to-k/cdkd/commit/683e88579f090b2e1272ae44b6c5b32a9fc17843))
+
 # [0.101.0](https://github.com/go-to-k/cdkd/compare/v0.100.3...v0.101.0) (2026-05-15)
 
 
