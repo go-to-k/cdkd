@@ -72,6 +72,31 @@ describe('SNSTopicProvider partial-create cleanup (Issue #376)', () => {
     expect(mockSend.mock.calls[0][0].constructor.name).toBe('CreateTopicCommand');
   });
 
+  it('issues DeleteTopicCommand when DeliveryStatusLogging Protocol normalization throws synchronously (inner-catch handles non-mockSend throws)', async () => {
+    // normalizeDeliveryStatusProtocolOrThrow rejects unknown protocols
+    // BEFORE the SetTopicAttributesCommand fires. The throw is
+    // synchronous (not a mockSend rejection). Verifies the inner try
+    // catches both AWS-side rejection AND in-process throws.
+    mockSend.mockResolvedValueOnce({ TopicArn: TOPIC_ARN }); // CreateTopicCommand
+    mockSend.mockResolvedValueOnce({}); // DeleteTopicCommand cleanup
+
+    await expect(
+      provider.create('MyTopic', RESOURCE_TYPE, {
+        TopicName: 'MyTopic',
+        DeliveryStatusLogging: [
+          {
+            Protocol: 'no-such-protocol',
+            SuccessFeedbackRoleArn: 'arn:aws:iam::123:role/X',
+          },
+        ],
+      })
+    ).rejects.toThrow('Failed to create SNS topic');
+
+    const names = mockSend.mock.calls.map((c) => c[0].constructor.name);
+    expect(names).toEqual(['CreateTopicCommand', 'DeleteTopicCommand']);
+    expect(mockSend.mock.calls[1][0].input).toEqual({ TopicArn: TOPIC_ARN });
+  });
+
   it('re-throws the original error even when DeleteTopicCommand cleanup itself fails', async () => {
     mockSend.mockResolvedValueOnce({ TopicArn: TOPIC_ARN }); // CreateTopicCommand
     mockSend.mockRejectedValueOnce(new Error('SetTopicAttributes boom (original)'));

@@ -108,7 +108,7 @@ describe('EventBridgeRuleProvider partial-create cleanup (Issue #376)', () => {
     expect(mockSend.mock.calls[0][0].constructor.name).toBe('PutRuleCommand');
   });
 
-  it('re-throws the original error even when cleanup itself fails', async () => {
+  it('re-throws the original error even when cleanup itself fails (warn includes full 3-command recovery hint)', async () => {
     mockSend.mockResolvedValueOnce({ RuleArn: 'arn:aws:events:us-east-1:123:rule/MyRule' });
     mockSend.mockRejectedValueOnce(new Error('PutTargets boom (original)'));
     mockSend.mockRejectedValueOnce(new Error('ListTargets also failed'));
@@ -122,6 +122,54 @@ describe('EventBridgeRuleProvider partial-create cleanup (Issue #376)', () => {
 
     expect(warnSpy).toHaveBeenCalled();
     const warnMsg = String(warnSpy.mock.calls[0][0]);
+    // Full recovery hint chains list-targets-by-rule -> remove-targets -> delete-rule.
+    // Regression-guard: if the recovery hint loses any of these, drift detection
+    // assistance to the operator degrades silently.
+    expect(warnMsg).toContain('aws events list-targets-by-rule --rule MyRule');
+    expect(warnMsg).toContain('aws events remove-targets --rule MyRule');
     expect(warnMsg).toContain('aws events delete-rule --name MyRule');
+  });
+
+  it('threads EventBusName through every cleanup SDK call AND into the recovery-hint WARN', async () => {
+    mockSend.mockResolvedValueOnce({
+      RuleArn: 'arn:aws:events:us-east-1:123:rule/MyBus/MyRule',
+    }); // PutRuleCommand
+    mockSend.mockRejectedValueOnce(new Error('PutTargets boom'));
+    mockSend.mockResolvedValueOnce({ Targets: [{ Id: 'Target1' }] }); // ListTargetsByRule
+    mockSend.mockResolvedValueOnce({}); // RemoveTargetsCommand
+    mockSend.mockResolvedValueOnce({}); // DeleteRuleCommand
+
+    await expect(
+      provider.create('MyRule', RESOURCE_TYPE, {
+        Name: 'MyRule',
+        EventBusName: 'MyBus',
+        Targets: [{ Id: 'Target1', Arn: 'arn:aws:sqs:us-east-1:123:queue1' }],
+      })
+    ).rejects.toThrow('Failed to create EventBridge rule');
+
+    // Cleanup must thread EventBusName through all three calls. Without
+    // it, AWS would look up the rule on the default bus (miss) and the
+    // orphan would persist on the non-default bus.
+    expect(mockSend.mock.calls[2][0].input.EventBusName).toBe('MyBus'); // ListTargetsByRule
+    expect(mockSend.mock.calls[3][0].input.EventBusName).toBe('MyBus'); // RemoveTargets
+    expect(mockSend.mock.calls[4][0].input.EventBusName).toBe('MyBus'); // DeleteRule
+  });
+
+  it('threads EventBusName into the recovery-hint WARN when cleanup itself fails', async () => {
+    mockSend.mockResolvedValueOnce({ RuleArn: 'arn:aws:events:us-east-1:123:rule/MyBus/MyRule' });
+    mockSend.mockRejectedValueOnce(new Error('PutTargets boom'));
+    mockSend.mockRejectedValueOnce(new Error('ListTargets also failed'));
+
+    await expect(
+      provider.create('MyRule', RESOURCE_TYPE, {
+        Name: 'MyRule',
+        EventBusName: 'MyBus',
+        Targets: [{ Id: 'Target1', Arn: 'arn:aws:sqs:us-east-1:123:queue1' }],
+      })
+    ).rejects.toThrow('PutTargets boom');
+
+    expect(warnSpy).toHaveBeenCalled();
+    const warnMsg = String(warnSpy.mock.calls[0][0]);
+    expect(warnMsg).toContain('--event-bus-name MyBus');
   });
 });
