@@ -105,74 +105,115 @@ export class LogsLogGroupProvider implements ResourceProvider {
         createParams.tags = Object.fromEntries(cfnTags.map((t) => [t.Key, t.Value]));
       }
 
-      await this.logsClient.send(new CreateLogGroupCommand(createParams));
-
-      // Apply retention policy if specified
-      const retentionInDays = properties['RetentionInDays'] as number | undefined;
-      if (retentionInDays) {
-        await this.logsClient.send(
-          new PutRetentionPolicyCommand({
-            logGroupName,
-            retentionInDays,
-          })
-        );
+      // Track whether THIS call actually created the log group (vs hit the
+      // idempotent `ResourceAlreadyExists` fallback). Only the truly-
+      // created case is eligible for partial-failure cleanup — deleting a
+      // pre-existing log group would destroy CloudWatch logs the user
+      // cared about. AlreadyExists handling is INLINE here (rather than
+      // at the outer catch) so the outer catch only ever sees genuine
+      // failures, and the inner-cleanup branch below can rely on the
+      // flag to decide whether to clean up.
+      let createdNewLogGroup = false;
+      try {
+        await this.logsClient.send(new CreateLogGroupCommand(createParams));
+        createdNewLogGroup = true;
+      } catch (createError) {
+        if (createError instanceof ResourceAlreadyExistsException) {
+          this.logger.debug(`Log group ${logGroupName} already exists, using existing`);
+        } else {
+          throw createError;
+        }
       }
 
-      // Apply DataProtectionPolicy if specified
-      if (properties['DataProtectionPolicy']) {
-        const policyDocument =
-          typeof properties['DataProtectionPolicy'] === 'string'
-            ? properties['DataProtectionPolicy']
-            : JSON.stringify(properties['DataProtectionPolicy']);
-        await this.logsClient.send(
-          new PutDataProtectionPolicyCommand({
-            logGroupIdentifier: logGroupName,
-            policyDocument,
-          })
-        );
-      }
-
-      // Apply FieldIndexPolicies. CloudWatch Logs allows at most one
-      // log-group-level index policy at a time (see PutIndexPolicy /
-      // DeleteIndexPolicy semantics — both key on logGroupIdentifier
-      // alone, no policyName), so the CFn `FieldIndexPolicies` array is
-      // effectively 0-or-1. Apply the first entry; warn if more are
-      // supplied.
-      const fieldIndexPolicies = properties['FieldIndexPolicies'] as unknown[] | undefined;
-      if (fieldIndexPolicies && fieldIndexPolicies.length > 0) {
-        if (fieldIndexPolicies.length > 1) {
-          this.logger.debug(
-            `Log group ${logicalId} declares ${fieldIndexPolicies.length} FieldIndexPolicies; AWS only supports one log-group-level field index policy. Applying the first.`
+      // Apply post-create configuration in an inner try so a wiring
+      // failure can be self-healed by issuing a best-effort
+      // `DeleteLogGroupCommand` cleanup. Without this, a post-create
+      // failure leaves an orphan log group that AWS will reject on the
+      // next redeploy. Cleanup is gated on `createdNewLogGroup` so we
+      // never delete a pre-existing log group. See Issue #376 for the
+      // cross-provider sweep.
+      try {
+        // Apply retention policy if specified
+        const retentionInDays = properties['RetentionInDays'] as number | undefined;
+        if (retentionInDays) {
+          await this.logsClient.send(
+            new PutRetentionPolicyCommand({
+              logGroupName,
+              retentionInDays,
+            })
           );
         }
-        const first = fieldIndexPolicies[0];
-        const policyDocument = typeof first === 'string' ? first : JSON.stringify(first);
-        await this.logsClient.send(
-          new PutIndexPolicyCommand({
-            logGroupIdentifier: logGroupName,
-            policyDocument,
-          })
-        );
-      }
 
-      // Apply BearerTokenAuthenticationEnabled. Not part of
-      // CreateLogGroupRequest — needs a separate
-      // PutBearerTokenAuthentication call after the log group exists.
-      if (properties['BearerTokenAuthenticationEnabled'] !== undefined) {
-        await this.logsClient.send(
-          new PutBearerTokenAuthenticationCommand({
-            logGroupIdentifier: logGroupName,
-            bearerTokenAuthenticationEnabled: properties[
-              'BearerTokenAuthenticationEnabled'
-            ] as boolean,
-          })
-        );
-      }
+        // Apply DataProtectionPolicy if specified
+        if (properties['DataProtectionPolicy']) {
+          const policyDocument =
+            typeof properties['DataProtectionPolicy'] === 'string'
+              ? properties['DataProtectionPolicy']
+              : JSON.stringify(properties['DataProtectionPolicy']);
+          await this.logsClient.send(
+            new PutDataProtectionPolicyCommand({
+              logGroupIdentifier: logGroupName,
+              policyDocument,
+            })
+          );
+        }
 
-      // Note: ResourcePolicyDocument is declared in handledProperties to
-      // prevent CC API fallback but is not yet wired into create/update —
-      // it maps to the separate AWS::Logs::ResourcePolicy resource type
-      // (account-wide, not per-log-group).
+        // Apply FieldIndexPolicies. CloudWatch Logs allows at most one
+        // log-group-level index policy at a time (see PutIndexPolicy /
+        // DeleteIndexPolicy semantics — both key on logGroupIdentifier
+        // alone, no policyName), so the CFn `FieldIndexPolicies` array is
+        // effectively 0-or-1. Apply the first entry; warn if more are
+        // supplied.
+        const fieldIndexPolicies = properties['FieldIndexPolicies'] as unknown[] | undefined;
+        if (fieldIndexPolicies && fieldIndexPolicies.length > 0) {
+          if (fieldIndexPolicies.length > 1) {
+            this.logger.debug(
+              `Log group ${logicalId} declares ${fieldIndexPolicies.length} FieldIndexPolicies; AWS only supports one log-group-level field index policy. Applying the first.`
+            );
+          }
+          const first = fieldIndexPolicies[0];
+          const policyDocument = typeof first === 'string' ? first : JSON.stringify(first);
+          await this.logsClient.send(
+            new PutIndexPolicyCommand({
+              logGroupIdentifier: logGroupName,
+              policyDocument,
+            })
+          );
+        }
+
+        // Apply BearerTokenAuthenticationEnabled. Not part of
+        // CreateLogGroupRequest — needs a separate
+        // PutBearerTokenAuthentication call after the log group exists.
+        if (properties['BearerTokenAuthenticationEnabled'] !== undefined) {
+          await this.logsClient.send(
+            new PutBearerTokenAuthenticationCommand({
+              logGroupIdentifier: logGroupName,
+              bearerTokenAuthenticationEnabled: properties[
+                'BearerTokenAuthenticationEnabled'
+              ] as boolean,
+            })
+          );
+        }
+
+        // Note: ResourcePolicyDocument is declared in handledProperties to
+        // prevent CC API fallback but is not yet wired into create/update —
+        // it maps to the separate AWS::Logs::ResourcePolicy resource type
+        // (account-wide, not per-log-group).
+      } catch (innerError) {
+        if (createdNewLogGroup) {
+          try {
+            await this.logsClient.send(new DeleteLogGroupCommand({ logGroupName }));
+            this.logger.debug(
+              `Cleaned up partially-created log group ${logicalId} (${logGroupName}) after wiring failure`
+            );
+          } catch (cleanupError) {
+            this.logger.warn(
+              `Failed to clean up partially-created log group ${logicalId} (${logGroupName}): ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}. Manual deletion may be required before the next deploy: aws logs delete-log-group --log-group-name '${logGroupName}'`
+            );
+          }
+        }
+        throw innerError;
+      }
 
       this.logger.debug(`Successfully created log group ${logicalId}: ${logGroupName}`);
 
@@ -186,16 +227,6 @@ export class LogsLogGroupProvider implements ResourceProvider {
         },
       };
     } catch (error) {
-      if (error instanceof ResourceAlreadyExistsException) {
-        this.logger.debug(`Log group ${logGroupName} already exists, using existing`);
-        const arn = await this.buildArn(logGroupName);
-        return {
-          physicalId: logGroupName,
-          attributes: {
-            Arn: arn,
-          },
-        };
-      }
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
         `Failed to create log group ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,

@@ -108,17 +108,37 @@ export class SSMParameterProvider implements ResourceProvider {
 
       await this.ssmClient.send(new PutParameterCommand(putParams));
 
-      // Apply tags if specified
-      if (properties['Tags']) {
-        const cfnTags = properties['Tags'] as Array<{ Key: string; Value: string }>;
-        const ssmTags: Tag[] = cfnTags.map((t) => ({ Key: t.Key, Value: t.Value }));
-        await this.ssmClient.send(
-          new AddTagsToResourceCommand({
-            ResourceType: 'Parameter',
-            ResourceId: name,
-            Tags: ssmTags,
-          })
-        );
+      // PutParameter has succeeded (Overwrite: false, so AWS has committed
+      // a new parameter — not an idempotent pre-existing-resource path).
+      // Wrap the post-create wiring in an inner try/catch that issues a
+      // best-effort `DeleteParameterCommand` cleanup on failure, so the
+      // next redeploy doesn't hit `ParameterAlreadyExists` from an orphan.
+      // See Issue #376 for the cross-provider sweep.
+      try {
+        // Apply tags if specified
+        if (properties['Tags']) {
+          const cfnTags = properties['Tags'] as Array<{ Key: string; Value: string }>;
+          const ssmTags: Tag[] = cfnTags.map((t) => ({ Key: t.Key, Value: t.Value }));
+          await this.ssmClient.send(
+            new AddTagsToResourceCommand({
+              ResourceType: 'Parameter',
+              ResourceId: name,
+              Tags: ssmTags,
+            })
+          );
+        }
+      } catch (innerError) {
+        try {
+          await this.ssmClient.send(new DeleteParameterCommand({ Name: name }));
+          this.logger.debug(
+            `Cleaned up partially-created SSM parameter ${logicalId} (${name}) after wiring failure`
+          );
+        } catch (cleanupError) {
+          this.logger.warn(
+            `Failed to clean up partially-created SSM parameter ${logicalId} (${name}): ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}. Manual deletion may be required before the next deploy: aws ssm delete-parameter --name '${name}'`
+          );
+        }
+        throw innerError;
       }
 
       this.logger.debug(`Successfully created SSM parameter ${logicalId}: ${name}`);

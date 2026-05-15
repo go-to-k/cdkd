@@ -1517,8 +1517,15 @@ export class S3BucketProvider implements ResourceProvider {
         createParams.ObjectLockEnabledForBucket = true;
       }
 
+      // Track whether THIS call actually created the bucket (vs hit the
+      // idempotent `BucketAlreadyOwnedByYou` fallback). Only the truly-
+      // created case is eligible for partial-failure cleanup — deleting a
+      // pre-existing bucket would destroy a user resource that lived
+      // before this deploy ran.
+      let createdNewBucket = false;
       try {
         await this.s3Client.send(new CreateBucketCommand(createParams));
+        createdNewBucket = true;
         this.logger.debug(`Created S3 bucket: ${bucketName}`);
       } catch (createError) {
         // "BucketAlreadyOwnedByYou" is success (idempotent create)
@@ -1533,9 +1540,30 @@ export class S3BucketProvider implements ResourceProvider {
         }
       }
 
-      // Apply additional configuration
-      await this.applyConfiguration(bucketName, properties);
-      await this.applyAllSubConfigsForCreate(bucketName, properties);
+      // Apply additional configuration in an inner try so a wiring
+      // failure can be self-healed by issuing a best-effort `DeleteBucket`
+      // cleanup. Without this, a sub-config failure leaves an orphan
+      // bucket that AWS will reject on the next redeploy. The cleanup
+      // is gated on `createdNewBucket` so we never delete a pre-existing
+      // bucket. See Issue #376 for the cross-provider sweep.
+      try {
+        await this.applyConfiguration(bucketName, properties);
+        await this.applyAllSubConfigsForCreate(bucketName, properties);
+      } catch (innerError) {
+        if (createdNewBucket) {
+          try {
+            await this.s3Client.send(new DeleteBucketCommand({ Bucket: bucketName }));
+            this.logger.debug(
+              `Cleaned up partially-created S3 bucket ${logicalId} (${bucketName}) after wiring failure`
+            );
+          } catch (cleanupError) {
+            this.logger.warn(
+              `Failed to clean up partially-created S3 bucket ${logicalId} (${bucketName}): ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}. Manual deletion may be required before the next deploy: aws s3api delete-bucket --bucket '${bucketName}'`
+            );
+          }
+        }
+        throw innerError;
+      }
 
       const attributes = await this.buildAttributes(bucketName);
 
