@@ -43,6 +43,21 @@ export class LambdaStack extends cdk.Stack {
       partitionKey: { name: 'gsi1pk', type: dynamodb.AttributeType.STRING },
     });
 
+    // TableV2 (synthesizes as AWS::DynamoDB::GlobalTable) — covers the bug-class
+    // where Fn::GetAtt: [<TableV2>, 'Arn'] used to fall back to physicalId,
+    // breaking IAM policy creation. Granting a Lambda below exercises the path.
+    const tableV2 = new dynamodb.TableV2(this, 'HistoryTable', {
+      partitionKey: {
+        name: 'sessionId',
+        type: dynamodb.AttributeType.STRING,
+      },
+      sortKey: {
+        name: 'timestamp',
+        type: dynamodb.AttributeType.STRING,
+      },
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+    });
+
     // Create Lambda Layer
     const layer = new lambda.LayerVersion(this, 'UtilsLayer', {
       code: lambda.Code.fromAsset(path.join(__dirname, '../layer')),
@@ -70,6 +85,7 @@ export class LambdaStack extends cdk.Stack {
 
     // Grant Lambda permissions to access DynamoDB
     table.grantReadWriteData(fn);
+    tableV2.grantReadWriteData(fn);
 
     // Outputs using Fn::GetAtt
     new cdk.CfnOutput(this, 'FunctionName', {
@@ -82,6 +98,14 @@ export class LambdaStack extends cdk.Stack {
 
     new cdk.CfnOutput(this, 'TableName', {
       value: table.tableName,
+    });
+
+    new cdk.CfnOutput(this, 'HistoryTableName', {
+      value: tableV2.tableName,
+    });
+
+    new cdk.CfnOutput(this, 'HistoryTableArn', {
+      value: tableV2.tableArn,
     });
 
     new cdk.CfnOutput(this, 'AliasArn', {
