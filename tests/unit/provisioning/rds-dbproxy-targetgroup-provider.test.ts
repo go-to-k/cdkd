@@ -166,7 +166,7 @@ describe('RDSDBProxyTargetGroupProvider', () => {
   describe('update', () => {
     it('throws ResourceUpdateNotSupportedError', async () => {
       await expect(
-        provider.update(TARGET_GROUP_ARN, 'TG', RESOURCE_TYPE, {}, {})
+        provider.update('TG', TARGET_GROUP_ARN, RESOURCE_TYPE, {}, {})
       ).rejects.toThrow(ResourceUpdateNotSupportedError);
       expect(mockSend).not.toHaveBeenCalled();
     });

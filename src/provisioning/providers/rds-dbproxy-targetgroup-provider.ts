@@ -116,7 +116,7 @@ export class RDSDBProxyTargetGroupProvider implements ResourceProvider {
           })
         );
       } catch (error) {
-        throw this.wrapError(error, 'CREATE (pool config)', resourceType, logicalId, dbProxyName);
+        throw this.wrapError(error, 'CREATE (pool config)', resourceType, logicalId, undefined);
       }
     }
 
@@ -144,7 +144,7 @@ export class RDSDBProxyTargetGroupProvider implements ResourceProvider {
           'CREATE (register targets)',
           resourceType,
           logicalId,
-          dbProxyName
+          undefined
         );
       }
     }
@@ -159,7 +159,7 @@ export class RDSDBProxyTargetGroupProvider implements ResourceProvider {
       );
       targetGroupArn = describeResponse.TargetGroups?.[0]?.TargetGroupArn;
     } catch (error) {
-      throw this.wrapError(error, 'CREATE (describe)', resourceType, logicalId, dbProxyName);
+      throw this.wrapError(error, 'CREATE (describe)', resourceType, logicalId, undefined);
     }
 
     if (!targetGroupArn) {
@@ -180,8 +180,8 @@ export class RDSDBProxyTargetGroupProvider implements ResourceProvider {
   }
 
   async update(
-    _physicalId: string,
     logicalId: string,
+    _physicalId: string,
     resourceType: string,
     _oldProperties: Record<string, unknown>,
     _newProperties: Record<string, unknown>
@@ -189,8 +189,7 @@ export class RDSDBProxyTargetGroupProvider implements ResourceProvider {
     throw new ResourceUpdateNotSupportedError(
       resourceType,
       logicalId,
-      'redeploy after destroy + redeploy, or manage via cdkd deploy --replace; ' +
-        'in-place updates of registered targets / connection pool config are not yet supported'
+      'destroy + redeploy; in-place updates of registered targets / connection pool config are not yet supported'
     );
   }
 
@@ -322,7 +321,7 @@ export class RDSDBProxyTargetGroupProvider implements ResourceProvider {
     op: string,
     resourceType: string,
     logicalId: string,
-    physicalId: string
+    physicalId: string | undefined
   ): ProvisioningError {
     const message = error instanceof Error ? error.message : String(error);
     const cause = error instanceof Error ? error : undefined;
