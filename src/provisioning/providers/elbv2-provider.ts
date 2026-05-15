@@ -244,37 +244,67 @@ export class ELBv2Provider implements ResourceProvider {
 
       const lb = response.LoadBalancers?.[0];
       if (!lb || !lb.LoadBalancerArn) {
+        // Theoretical AWS SDK contract violation: CreateLoadBalancer
+        // returned success but with no LoadBalancerArn. Cannot clean up
+        // — we have no ARN to delete. Has never been observed in
+        // practice.
         throw new Error('CreateLoadBalancer did not return LoadBalancer ARN');
       }
+      const lbArn = lb.LoadBalancerArn;
 
-      this.logger.debug(`Successfully created LoadBalancer ${logicalId}: ${lb.LoadBalancerArn}`);
+      this.logger.debug(`Successfully created LoadBalancer ${logicalId}: ${lbArn}`);
 
-      // Apply LoadBalancerAttributes if specified
-      const lbAttributes = properties['LoadBalancerAttributes'] as
-        | Array<{ Key: string; Value: string }>
-        | undefined;
-      if (lbAttributes && lbAttributes.length > 0) {
-        await this.getClient().send(
-          new ModifyLoadBalancerAttributesCommand({
-            LoadBalancerArn: lb.LoadBalancerArn,
-            Attributes: lbAttributes.map((attr) => ({
-              Key: attr.Key,
-              Value: attr.Value,
-            })),
-          })
-        );
-        this.logger.debug(
-          `Applied ${lbAttributes.length} LoadBalancer attributes for ${logicalId}`
-        );
+      // CreateLoadBalancerCommand has succeeded — AWS has now committed
+      // the LB. If the subsequent ModifyLoadBalancerAttributesCommand
+      // throws, the LB exists on AWS but cdkd state will NOT (the throw
+      // aborts before the success-return). The next redeploy plans
+      // CREATE again and AWS rejects with `DuplicateLoadBalancerName`
+      // (LB Names are unique per scheme within a region). Wrap the
+      // attributes call in an inner try/catch that issues a best-effort
+      // `DeleteLoadBalancerCommand` before re-throwing the original
+      // error. A freshly-created LB has no listeners / target group
+      // attachments yet, so a single DeleteLoadBalancer suffices (no
+      // need to delete listeners first).
+      try {
+        // Apply LoadBalancerAttributes if specified
+        const lbAttributes = properties['LoadBalancerAttributes'] as
+          | Array<{ Key: string; Value: string }>
+          | undefined;
+        if (lbAttributes && lbAttributes.length > 0) {
+          await this.getClient().send(
+            new ModifyLoadBalancerAttributesCommand({
+              LoadBalancerArn: lbArn,
+              Attributes: lbAttributes.map((attr) => ({
+                Key: attr.Key,
+                Value: attr.Value,
+              })),
+            })
+          );
+          this.logger.debug(
+            `Applied ${lbAttributes.length} LoadBalancer attributes for ${logicalId}`
+          );
+        }
+      } catch (innerError) {
+        try {
+          await this.getClient().send(new DeleteLoadBalancerCommand({ LoadBalancerArn: lbArn }));
+          this.logger.debug(
+            `Cleaned up partially-created LoadBalancer ${logicalId} (${lbArn}) after wiring failure`
+          );
+        } catch (cleanupError) {
+          this.logger.warn(
+            `Failed to clean up partially-created LoadBalancer ${logicalId} (${lbArn}): ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}. Manual deletion may be required before the next deploy: aws elbv2 delete-load-balancer --load-balancer-arn ${lbArn}`
+          );
+        }
+        throw innerError;
       }
 
       return {
-        physicalId: lb.LoadBalancerArn,
+        physicalId: lbArn,
         attributes: {
           DNSName: lb.DNSName,
           CanonicalHostedZoneID: lb.CanonicalHostedZoneId,
-          LoadBalancerArn: lb.LoadBalancerArn,
-          LoadBalancerFullName: lb.LoadBalancerArn?.split('/').slice(1).join('/'),
+          LoadBalancerArn: lbArn,
+          LoadBalancerFullName: lbArn.split('/').slice(1).join('/'),
           LoadBalancerName: lb.LoadBalancerName,
         },
       };
