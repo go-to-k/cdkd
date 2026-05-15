@@ -491,12 +491,47 @@ export class IntrinsicFunctionResolver {
     const skipCachedAttribute =
       resource.resourceType === 'AWS::EC2::VPC' && attributeName === 'Ipv6CidrBlocks';
 
-    if (!skipCachedAttribute && resource.attributes?.[attributeName] !== undefined) {
-      const value = resource.attributes[attributeName];
-      this.logger.debug(
-        `Resolved Fn::GetAtt from attributes: ${logicalId}.${attributeName} -> ${stringifyValue(value)}`
-      );
-      return value;
+    if (!skipCachedAttribute && resource.attributes !== undefined) {
+      // Flat-key lookup first (SDK providers store nested attributes as flat
+      // dot-keys, e.g. `attributes['Endpoint.Port'] = '3306'`).
+      const flatValue = resource.attributes[attributeName];
+      if (flatValue !== undefined) {
+        this.logger.debug(
+          `Resolved Fn::GetAtt from attributes: ${logicalId}.${attributeName} -> ${stringifyValue(flatValue)}`
+        );
+        return flatValue;
+      }
+
+      // Issue #381: nested-path fallback. CC API providers store CFn nested
+      // attributes as actual nested objects (`attributes.Endpoint.Port`),
+      // so a flat-key lookup for `Endpoint.Port` misses and the resolver
+      // would otherwise fall through to `constructAttribute`'s
+      // physicalId default. Walk the dot-separated path against the
+      // attributes object before that fallback. Examples covered:
+      // `AWS::RDS::DBCluster.Endpoint.Port`,
+      // `AWS::RDS::DBCluster.Endpoint.Address`,
+      // `AWS::RDS::DBCluster.ReadEndpoint.Address`,
+      // `AWS::CloudFront::Distribution.DomainName` (no nesting, still
+      // hits flat-key path), `AWS::ApiGateway::Method.MethodResponses`
+      // (also no nesting).
+      if (attributeName.includes('.')) {
+        const parts = attributeName.split('.');
+        let cursor: unknown = resource.attributes;
+        for (const part of parts) {
+          if (cursor && typeof cursor === 'object' && part in (cursor as Record<string, unknown>)) {
+            cursor = (cursor as Record<string, unknown>)[part];
+          } else {
+            cursor = undefined;
+            break;
+          }
+        }
+        if (cursor !== undefined) {
+          this.logger.debug(
+            `Resolved Fn::GetAtt from nested attributes: ${logicalId}.${attributeName} -> ${stringifyValue(cursor)}`
+          );
+          return cursor;
+        }
+      }
     }
 
     // Construct attribute value based on resource type
