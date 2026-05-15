@@ -1,3 +1,10 @@
+# [0.103.0](https://github.com/go-to-k/cdkd/compare/v0.102.7...v0.103.0) (2026-05-15)
+
+
+### Features
+
+* **providers:** add SDK Provider for AWS::DynamoDB::GlobalTable (TableV2) ([#384](https://github.com/go-to-k/cdkd/issues/384)) ([fec9eb9](https://github.com/go-to-k/cdkd/commit/fec9eb9da0c076abb1687e5706ed124c845a69c9))
+
 ## [0.102.7](https://github.com/go-to-k/cdkd/compare/v0.102.6...v0.102.7) (2026-05-15)
 
 
