@@ -16,6 +16,19 @@ import { Synthesizer, type SynthesisOptions } from '../../synthesis/synthesizer.
 import { AssemblyReader } from '../../synthesis/assembly-reader.js';
 import { resolveApp } from '../config-loader.js';
 import { toYaml } from '../../utils/yaml.js';
+import type { CloudFormationTemplate } from '../../types/resource.js';
+
+/**
+ * Count deployable resources in a synth template.
+ *
+ * Excludes `AWS::CDK::Metadata` (CDK-injected construct-tree marker; cdkd deploy
+ * also filters this out, so the two commands stay in sync — see
+ * deploy-engine.ts `validateResourceTypes` call site).
+ */
+export function countDeployableResources(template: CloudFormationTemplate): number {
+  return Object.values(template.Resources ?? {}).filter((r) => r.Type !== 'AWS::CDK::Metadata')
+    .length;
+}
 
 /**
  * Synth command implementation
@@ -81,7 +94,7 @@ async function synthCommand(options: {
   logger.info(`\n✅ Synthesis complete! Found ${stacks.length} stack(s):`);
 
   for (const stack of stacks) {
-    const resourceCount = Object.keys(stack.template.Resources ?? {}).length;
+    const resourceCount = countDeployableResources(stack.template);
     const outputCount = Object.keys(stack.template.Outputs ?? {}).length;
 
     logger.info(`  • ${stack.stackName}`);
