@@ -1257,6 +1257,21 @@ export class ApiGatewayProvider implements ResourceProvider {
    * `Invalid mapping expression specified: ... [No method response exists
    * for method.]` — the canonical trigger is a CORS preflight OPTIONS
    * method emitted by `RestApi({ defaultCorsPreflightOptions: ... })`.
+   *
+   * Partial-failure cleanup: if any AWS call AFTER `PutMethodCommand`
+   * fails, the method has already been created on AWS but cdkd state
+   * does NOT record it (the throw happens before the success return).
+   * A subsequent redeploy would then attempt CREATE again and AWS would
+   * reject with `Method already exists for this resource`. To prevent
+   * this orphan, the post-`PutMethod` block is wrapped in an inner
+   * try/catch that issues a best-effort `DeleteMethodCommand` before
+   * re-throwing the original error. Cleanup failures are logged at warn
+   * (the underlying create failure is what matters; we don't mask it by
+   * promoting a cleanup error). The class of bug — partial AWS-side
+   * commit on `createMethod` failure — was first seen via the
+   * `PutIntegrationResponse`-before-`PutMethodResponse` ordering bug
+   * fixed in PR #373; this cleanup makes any future shape of
+   * post-`PutMethod` failure self-healing on the next redeploy.
    */
   private async createMethod(
     logicalId: string,
@@ -1304,107 +1319,141 @@ export class ApiGatewayProvider implements ResourceProvider {
         })
       );
 
-      // If Integration property exists, set up the integration. All
-      // fields supported by `PutIntegrationRequest` are forwarded — see
-      // the JSDoc on this method for the full list and the
-      // `ResponseTransferMode` regression that motivated the fix.
-      const integration = properties['Integration'] as Record<string, unknown> | undefined;
-      if (integration) {
-        await this.apiGatewayClient.send(
-          new PutIntegrationCommand({
-            restApiId,
-            resourceId,
-            httpMethod,
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any, @typescript-eslint/no-unsafe-assignment
-            type: integration['Type'] as any,
-            integrationHttpMethod: integration['IntegrationHttpMethod'] as string | undefined,
-            uri: integration['Uri'] as string | undefined,
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any, @typescript-eslint/no-unsafe-assignment
-            connectionType: integration['ConnectionType'] as any,
-            connectionId: integration['ConnectionId'] as string | undefined,
-            credentials: integration['Credentials'] as string | undefined,
-            requestParameters: integration['RequestParameters'] as
-              | Record<string, string>
-              | undefined,
-            requestTemplates: integration['RequestTemplates'] as Record<string, string> | undefined,
-            passthroughBehavior: integration['PassthroughBehavior'] as string | undefined,
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any, @typescript-eslint/no-unsafe-assignment
-            contentHandling: integration['ContentHandling'] as any,
-            timeoutInMillis: integration['TimeoutInMillis'] as number | undefined,
-            cacheNamespace: integration['CacheNamespace'] as string | undefined,
-            cacheKeyParameters: integration['CacheKeyParameters'] as string[] | undefined,
-            // CFn emits TlsConfig.InsecureSkipVerification (PascalCase) but the
-            // SDK input shape is { insecureSkipVerification } (camelCase);
-            // passing the CFn object verbatim would silently drop the field.
-            tlsConfig: integration['TlsConfig']
-              ? {
-                  insecureSkipVerification: (integration['TlsConfig'] as Record<string, unknown>)[
-                    'InsecureSkipVerification'
-                  ] as boolean | undefined,
-                }
-              : undefined,
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any, @typescript-eslint/no-unsafe-assignment
-            responseTransferMode: integration['ResponseTransferMode'] as any,
-          })
-        );
-      }
-
-      // MethodResponses must be created BEFORE IntegrationResponses:
-      // `PutIntegrationResponse` validates that the `MethodResponse` for the
-      // same `statusCode` already exists (because IntegrationResponse's
-      // ResponseParameters / ResponseTemplates map onto headers declared by
-      // the MethodResponse). Inverting the order makes AWS reject with
-      // `Invalid mapping expression specified: ... [No method response
-      // exists for method.]` — the canonical failure mode is a CORS
-      // preflight OPTIONS method emitted by
-      // `RestApi({ defaultCorsPreflightOptions: ... })`.
-      const methodResponses = properties['MethodResponses'] as
-        | Array<Record<string, unknown>>
-        | undefined;
-      if (methodResponses) {
-        for (const resp of methodResponses) {
-          const statusCode = String(resp['StatusCode']);
+      // PutMethodCommand has succeeded — AWS has now committed the
+      // Method resource. Every subsequent call wires sub-resources onto
+      // it; if any of them fail, the method exists on AWS but cdkd state
+      // will NOT (the throw aborts before the success-return). The next
+      // redeploy would then re-try CREATE and AWS would reject with
+      // `Method already exists for this resource`. Wrap the rest of the
+      // wiring in an inner try/catch that issues a best-effort
+      // `DeleteMethodCommand` before re-throwing, so the failed attempt
+      // is self-healing on the next redeploy.
+      try {
+        // If Integration property exists, set up the integration. All
+        // fields supported by `PutIntegrationRequest` are forwarded — see
+        // the JSDoc on this method for the full list and the
+        // `ResponseTransferMode` regression that motivated the fix.
+        const integration = properties['Integration'] as Record<string, unknown> | undefined;
+        if (integration) {
           await this.apiGatewayClient.send(
-            new PutMethodResponseCommand({
+            new PutIntegrationCommand({
               restApiId,
               resourceId,
               httpMethod,
-              statusCode,
-              responseModels: resp['ResponseModels'] as Record<string, string> | undefined,
-              responseParameters: resp['ResponseParameters'] as Record<string, boolean> | undefined,
+              // eslint-disable-next-line @typescript-eslint/no-explicit-any, @typescript-eslint/no-unsafe-assignment
+              type: integration['Type'] as any,
+              integrationHttpMethod: integration['IntegrationHttpMethod'] as string | undefined,
+              uri: integration['Uri'] as string | undefined,
+              // eslint-disable-next-line @typescript-eslint/no-explicit-any, @typescript-eslint/no-unsafe-assignment
+              connectionType: integration['ConnectionType'] as any,
+              connectionId: integration['ConnectionId'] as string | undefined,
+              credentials: integration['Credentials'] as string | undefined,
+              requestParameters: integration['RequestParameters'] as
+                | Record<string, string>
+                | undefined,
+              requestTemplates: integration['RequestTemplates'] as
+                | Record<string, string>
+                | undefined,
+              passthroughBehavior: integration['PassthroughBehavior'] as string | undefined,
+              // eslint-disable-next-line @typescript-eslint/no-explicit-any, @typescript-eslint/no-unsafe-assignment
+              contentHandling: integration['ContentHandling'] as any,
+              timeoutInMillis: integration['TimeoutInMillis'] as number | undefined,
+              cacheNamespace: integration['CacheNamespace'] as string | undefined,
+              cacheKeyParameters: integration['CacheKeyParameters'] as string[] | undefined,
+              // CFn emits TlsConfig.InsecureSkipVerification (PascalCase) but the
+              // SDK input shape is { insecureSkipVerification } (camelCase);
+              // passing the CFn object verbatim would silently drop the field.
+              tlsConfig: integration['TlsConfig']
+                ? {
+                    insecureSkipVerification: (integration['TlsConfig'] as Record<string, unknown>)[
+                      'InsecureSkipVerification'
+                    ] as boolean | undefined,
+                  }
+                : undefined,
+              // eslint-disable-next-line @typescript-eslint/no-explicit-any, @typescript-eslint/no-unsafe-assignment
+              responseTransferMode: integration['ResponseTransferMode'] as any,
             })
           );
         }
-      }
 
-      if (integration) {
-        // IntegrationResponses (CFn shape:
-        //   [{StatusCode, SelectionPattern?, ResponseParameters?,
-        //     ResponseTemplates?, ContentHandling?}, ...])
-        // requires per-entry `PutIntegrationResponseCommand` calls after
-        // the integration itself is created AND after the matching
-        // MethodResponses are in place (see comment above).
-        const integrationResponses = integration['IntegrationResponses'] as
+        // MethodResponses must be created BEFORE IntegrationResponses:
+        // `PutIntegrationResponse` validates that the `MethodResponse` for the
+        // same `statusCode` already exists (because IntegrationResponse's
+        // ResponseParameters / ResponseTemplates map onto headers declared by
+        // the MethodResponse). Inverting the order makes AWS reject with
+        // `Invalid mapping expression specified: ... [No method response
+        // exists for method.]` — the canonical failure mode is a CORS
+        // preflight OPTIONS method emitted by
+        // `RestApi({ defaultCorsPreflightOptions: ... })`.
+        const methodResponses = properties['MethodResponses'] as
           | Array<Record<string, unknown>>
           | undefined;
-        if (integrationResponses) {
-          for (const ir of integrationResponses) {
-            const statusCode = String(ir['StatusCode']);
+        if (methodResponses) {
+          for (const resp of methodResponses) {
+            const statusCode = String(resp['StatusCode']);
             await this.apiGatewayClient.send(
-              new PutIntegrationResponseCommand({
+              new PutMethodResponseCommand({
                 restApiId,
                 resourceId,
                 httpMethod,
                 statusCode,
-                selectionPattern: ir['SelectionPattern'] as string | undefined,
-                responseParameters: ir['ResponseParameters'] as Record<string, string> | undefined,
-                responseTemplates: ir['ResponseTemplates'] as Record<string, string> | undefined,
-                // eslint-disable-next-line @typescript-eslint/no-explicit-any, @typescript-eslint/no-unsafe-assignment
-                contentHandling: ir['ContentHandling'] as any,
+                responseModels: resp['ResponseModels'] as Record<string, string> | undefined,
+                responseParameters: resp['ResponseParameters'] as
+                  | Record<string, boolean>
+                  | undefined,
               })
             );
           }
         }
+
+        if (integration) {
+          // IntegrationResponses (CFn shape:
+          //   [{StatusCode, SelectionPattern?, ResponseParameters?,
+          //     ResponseTemplates?, ContentHandling?}, ...])
+          // requires per-entry `PutIntegrationResponseCommand` calls after
+          // the integration itself is created AND after the matching
+          // MethodResponses are in place (see comment above).
+          const integrationResponses = integration['IntegrationResponses'] as
+            | Array<Record<string, unknown>>
+            | undefined;
+          if (integrationResponses) {
+            for (const ir of integrationResponses) {
+              const statusCode = String(ir['StatusCode']);
+              await this.apiGatewayClient.send(
+                new PutIntegrationResponseCommand({
+                  restApiId,
+                  resourceId,
+                  httpMethod,
+                  statusCode,
+                  selectionPattern: ir['SelectionPattern'] as string | undefined,
+                  responseParameters: ir['ResponseParameters'] as
+                    | Record<string, string>
+                    | undefined,
+                  responseTemplates: ir['ResponseTemplates'] as Record<string, string> | undefined,
+                  // eslint-disable-next-line @typescript-eslint/no-explicit-any, @typescript-eslint/no-unsafe-assignment
+                  contentHandling: ir['ContentHandling'] as any,
+                })
+              );
+            }
+          }
+        }
+      } catch (innerError) {
+        // Best-effort cleanup of the AWS-side Method that PutMethodCommand
+        // committed. Failures here are logged at warn but do NOT mask the
+        // original error — the user needs to see what actually broke.
+        try {
+          await this.apiGatewayClient.send(
+            new DeleteMethodCommand({ restApiId, resourceId, httpMethod })
+          );
+          this.logger.debug(
+            `Cleaned up partially-created API Gateway Method ${logicalId} (${restApiId}/${resourceId}/${httpMethod}) after wiring failure`
+          );
+        } catch (cleanupError) {
+          this.logger.warn(
+            `Failed to clean up partially-created API Gateway Method ${logicalId} (${restApiId}/${resourceId}/${httpMethod}): ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}. Manual deletion may be required before the next deploy: aws apigateway delete-method --rest-api-id ${restApiId} --resource-id ${resourceId} --http-method ${httpMethod}`
+          );
+        }
+        throw innerError;
       }
 
       const physicalId = `${restApiId}|${resourceId}|${httpMethod}`;

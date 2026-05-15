@@ -1225,6 +1225,150 @@ describe('ApiGatewayProvider', () => {
           })
         ).rejects.toThrow('Failed to create API Gateway Method');
       });
+
+      it('should DeleteMethodCommand when PutIntegrationCommand fails after PutMethodCommand succeeded', async () => {
+        // Partial-failure cleanup: PutMethod succeeds (AWS commits the
+        // Method) but PutIntegration fails. Without cleanup, the next
+        // redeploy hits "Method already exists for this resource".
+        mockSend.mockResolvedValueOnce({}); // PutMethodCommand
+        mockSend.mockRejectedValueOnce(new Error('PutIntegration boom')); // PutIntegrationCommand
+        mockSend.mockResolvedValueOnce({}); // DeleteMethodCommand cleanup
+
+        await expect(
+          provider.create('MyMethod', resourceType, {
+            RestApiId: 'api-id',
+            ResourceId: 'resource-id',
+            HttpMethod: 'POST',
+            AuthorizationType: 'NONE',
+            Integration: {
+              Type: 'AWS_PROXY',
+              IntegrationHttpMethod: 'POST',
+              Uri: 'arn:aws:apigateway:us-east-1:lambda:path/2015-03-31/functions/arn:aws:lambda:us-east-1:123456789012:function:Fn/invocations',
+            },
+          })
+        ).rejects.toThrow('Failed to create API Gateway Method');
+
+        expect(mockSend).toHaveBeenCalledTimes(3);
+        const names = mockSend.mock.calls.map((c) => c[0].constructor.name);
+        expect(names).toEqual(['PutMethodCommand', 'PutIntegrationCommand', 'DeleteMethodCommand']);
+
+        const deleteCmd = mockSend.mock.calls[2][0];
+        expect(deleteCmd.input).toEqual({
+          restApiId: 'api-id',
+          resourceId: 'resource-id',
+          httpMethod: 'POST',
+        });
+      });
+
+      it('should DeleteMethodCommand when PutMethodResponseCommand fails (CORS preflight regression class)', async () => {
+        // CORS preflight: PutMethod + PutIntegration succeed, then a
+        // PutMethodResponse fails (e.g. on a misconfigured CFn shape).
+        // Cleanup must fire so the next redeploy can re-CREATE.
+        mockSend.mockResolvedValueOnce({}); // PutMethodCommand
+        mockSend.mockResolvedValueOnce({}); // PutIntegrationCommand
+        mockSend.mockRejectedValueOnce(new Error('PutMethodResponse boom'));
+        mockSend.mockResolvedValueOnce({}); // DeleteMethodCommand cleanup
+
+        await expect(
+          provider.create('CorsOptionsMethod', resourceType, {
+            RestApiId: 'api-id',
+            ResourceId: 'resource-id',
+            HttpMethod: 'OPTIONS',
+            AuthorizationType: 'NONE',
+            Integration: {
+              Type: 'MOCK',
+              IntegrationResponses: [{ StatusCode: '204' }],
+            },
+            MethodResponses: [{ StatusCode: '204' }],
+          })
+        ).rejects.toThrow('Failed to create API Gateway Method');
+
+        const names = mockSend.mock.calls.map((c) => c[0].constructor.name);
+        expect(names).toEqual([
+          'PutMethodCommand',
+          'PutIntegrationCommand',
+          'PutMethodResponseCommand',
+          'DeleteMethodCommand',
+        ]);
+      });
+
+      it('should DeleteMethodCommand when PutIntegrationResponseCommand fails (post-fix #373 belt and braces)', async () => {
+        // After PR #373's ordering fix, PutIntegrationResponse can still
+        // fail on unrelated AWS-side issues (validation, throttling, etc.)
+        // — the cleanup must still fire so we never leave an orphan.
+        mockSend.mockResolvedValueOnce({}); // PutMethodCommand
+        mockSend.mockResolvedValueOnce({}); // PutIntegrationCommand
+        mockSend.mockResolvedValueOnce({}); // PutMethodResponseCommand
+        mockSend.mockRejectedValueOnce(new Error('PutIntegrationResponse boom'));
+        mockSend.mockResolvedValueOnce({}); // DeleteMethodCommand cleanup
+
+        await expect(
+          provider.create('CorsOptionsMethod', resourceType, {
+            RestApiId: 'api-id',
+            ResourceId: 'resource-id',
+            HttpMethod: 'OPTIONS',
+            AuthorizationType: 'NONE',
+            Integration: {
+              Type: 'MOCK',
+              IntegrationResponses: [{ StatusCode: '204' }],
+            },
+            MethodResponses: [{ StatusCode: '204' }],
+          })
+        ).rejects.toThrow('Failed to create API Gateway Method');
+
+        const names = mockSend.mock.calls.map((c) => c[0].constructor.name);
+        expect(names).toEqual([
+          'PutMethodCommand',
+          'PutIntegrationCommand',
+          'PutMethodResponseCommand',
+          'PutIntegrationResponseCommand',
+          'DeleteMethodCommand',
+        ]);
+      });
+
+      it('should NOT issue DeleteMethodCommand when PutMethodCommand itself fails', async () => {
+        // PutMethod failure means AWS never committed the resource, so
+        // there's nothing to clean up. Cleanup firing here would issue
+        // an unnecessary DeleteMethod that AWS would reject with
+        // NotFoundException — noise on the wire and in the logs.
+        mockSend.mockRejectedValueOnce(new Error('PutMethod boom'));
+
+        await expect(
+          provider.create('MyMethod', resourceType, {
+            RestApiId: 'api-id',
+            ResourceId: 'resource-id',
+            HttpMethod: 'GET',
+            AuthorizationType: 'NONE',
+          })
+        ).rejects.toThrow('Failed to create API Gateway Method');
+
+        expect(mockSend).toHaveBeenCalledTimes(1);
+        expect(mockSend.mock.calls[0][0].constructor.name).toBe('PutMethodCommand');
+      });
+
+      it('should re-throw the original error even when the cleanup DeleteMethodCommand itself fails', async () => {
+        // Cleanup is best-effort: a DeleteMethod failure must not mask
+        // the original create failure. The user needs to see what
+        // actually broke, plus a warn-level log pointing them at the
+        // manual `aws apigateway delete-method` command.
+        const originalErr = new Error('PutIntegration boom (original)');
+        mockSend.mockResolvedValueOnce({}); // PutMethodCommand
+        mockSend.mockRejectedValueOnce(originalErr); // PutIntegrationCommand
+        mockSend.mockRejectedValueOnce(new Error('DeleteMethod also failed')); // DeleteMethodCommand cleanup
+
+        await expect(
+          provider.create('MyMethod', resourceType, {
+            RestApiId: 'api-id',
+            ResourceId: 'resource-id',
+            HttpMethod: 'POST',
+            AuthorizationType: 'NONE',
+            Integration: { Type: 'AWS_PROXY' },
+          })
+        ).rejects.toThrow('PutIntegration boom (original)');
+
+        const names = mockSend.mock.calls.map((c) => c[0].constructor.name);
+        expect(names).toEqual(['PutMethodCommand', 'PutIntegrationCommand', 'DeleteMethodCommand']);
+      });
     });
 
     describe('update', () => {
