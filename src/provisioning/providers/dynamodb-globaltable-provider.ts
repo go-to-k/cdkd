@@ -2,9 +2,15 @@ import {
   DynamoDBClient,
   CreateTableCommand,
   DeleteTableCommand,
+  DescribeContinuousBackupsCommand,
+  DescribeContributorInsightsCommand,
+  DescribeKinesisStreamingDestinationCommand,
   DescribeTableCommand,
+  DescribeTimeToLiveCommand,
   ListTablesCommand,
   ListTagsOfResourceCommand,
+  TagResourceCommand,
+  UntagResourceCommand,
   UpdateTableCommand,
   UpdateTimeToLiveCommand,
   ResourceNotFoundException,
@@ -12,15 +18,18 @@ import {
   type KeySchemaElement,
   type AttributeDefinition,
   type GlobalSecondaryIndex,
+  type GlobalSecondaryIndexUpdate,
   type LocalSecondaryIndex,
   type StreamSpecification,
   type Tag,
   type ReplicationGroupUpdate,
   type CreateReplicationGroupMemberAction,
+  type UpdateReplicationGroupMemberAction,
+  type UpdateTableCommandInput,
 } from '@aws-sdk/client-dynamodb';
 import { getLogger } from '../../utils/logger.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
-import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/error-handler.js';
+import { ProvisioningError } from '../../utils/error-handler.js';
 import { generateResourceName } from '../resource-name.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import {
@@ -59,23 +68,36 @@ import type {
  * is the 2019.11.21 generation, which uses the regular DynamoDB CRUD API
  * (`CreateTableCommand` + `UpdateTableCommand` with `ReplicaUpdates`).
  *
- * MVP scope:
- *  - `update()` throws `ResourceUpdateNotSupportedError`. In-place GlobalTable
- *    updates (replica add/remove, GSI add/remove, BillingMode flip, throughput
- *    rewrites) are out of scope and a follow-up PR.
- *  - `getDriftUnknownPaths` declares TTL + throughput-settings paths because
- *    cdkd's create/update flows surface them but the read-side reverse
- *    mapping is non-trivial and would fire false drift.
+ * In-place update support (post-PR #384 follow-up):
+ *  - `update()` covers every mutable surface — Tags, DeletionProtection,
+ *    TableClass, SSE, StreamSpec, OnDemand throughput, BillingMode flip,
+ *    Replica add / remove / modify, GSI add / remove / modify, TTL toggle.
+ *  - The serialization is load-bearing: AWS's `UpdateTable` accepts only
+ *    ONE of `{BillingMode, ReplicaUpdates, GlobalSecondaryIndexUpdates}`
+ *    per call, so each category is its own SDK round-trip with a wait-for
+ *    -ACTIVE in between. Immutable property changes (TableName, KeySchema,
+ *    AttributeDefinitions removal, LocalSecondaryIndexes) throw
+ *    `ProvisioningError` naming the offending field — the deploy engine's
+ *    diff classification should catch these as REPLACEMENT before ever
+ *    calling `update()`, but the guard is defense-in-depth.
  *  - Per-replica drift (`ContributorInsightsSpecification` /
- *    `PointInTimeRecoverySpecification` / `KinesisStreamSpecification`) is
- *    out of scope for v1.
+ *    `PointInTimeRecoverySpecification` / `KinesisStreamSpecification`)
+ *    is surfaced for the LOCAL replica only; cross-region replicas
+ *    require per-region SDK clients which are out of scope for v1.
  */
 export class DynamoDBGlobalTableProvider implements ResourceProvider {
   private dynamoDBClient: DynamoDBClient;
   private logger = getLogger().child('DynamoDBGlobalTableProvider');
-  // Cache `getAttribute` calls per (physicalId, attribute) for the duration
-  // of one deploy run. `DescribeTable` is cheap but downstream resolvers
-  // can issue many lookups for the same Arn / StreamArn.
+  /**
+   * Caches `getAttribute(physicalId, attribute)` results for the lifetime
+   * of this provider instance (one deploy run). Safe under the current
+   * `update()` contract because `update()` cannot mid-deploy mutate
+   * StreamArn / Arn / TableId — those are AWS-managed identifiers that
+   * only change on REPLACEMENT (which destroys the provider instance).
+   * If a future PR adds a stream toggle path that flips StreamArn on the
+   * same physicalId, the cache must be invalidated on the matching
+   * UpdateTable success.
+   */
   private attributeCache = new Map<string, unknown>();
 
   handledProperties = new Map<string, ReadonlySet<string>>([
@@ -96,7 +118,9 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
         'WriteProvisionedThroughputSettings',
         'WriteOnDemandThroughputSettings',
         'DeletionProtectionEnabled',
-        'Tags',
+        // Note: `AWS::DynamoDB::GlobalTable` has NO top-level `Tags`
+        // property. Tags live inside `Replicas[].Tags`, which is
+        // already covered by the `Replicas` entry above.
       ]),
     ],
   ]);
@@ -177,28 +201,10 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
     // when present, else default to 5/5. Read capacity is per-replica;
     // we use the deploy-region replica's setting when available.
     if (billingMode === 'PROVISIONED') {
-      const wps = properties['WriteProvisionedThroughputSettings'] as
-        | Record<string, unknown>
-        | undefined;
-      const writeAutoScaling = wps?.['WriteCapacityAutoScalingSettings'] as
-        | Record<string, unknown>
-        | undefined;
-      // We pass the minimum from auto-scaling if set, else fall back to
-      // 5 — this is best-effort; full Application Auto Scaling integration
-      // is out of MVP scope.
-      const writeCapacity = Number(writeAutoScaling?.['MinCapacity'] ?? 5);
-      const localReplica = replicas.find((r) => r['Region'] === currentRegion);
-      const localReadSettings = localReplica?.['ReadProvisionedThroughputSettings'] as
-        | Record<string, unknown>
-        | undefined;
-      const readAutoScaling = localReadSettings?.['ReadCapacityAutoScalingSettings'] as
-        | Record<string, unknown>
-        | undefined;
-      const readCapacity = Number(readAutoScaling?.['MinCapacity'] ?? 5);
-      createParams.ProvisionedThroughput = {
-        ReadCapacityUnits: readCapacity,
-        WriteCapacityUnits: writeCapacity,
-      };
+      createParams.ProvisionedThroughput = derivePerCallProvisionedThroughput(
+        properties,
+        currentRegion
+      );
     }
 
     // Stream specification. GlobalTable cross-region replication requires
@@ -271,10 +277,17 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       };
     }
 
-    // Tags applied via CreateTable input directly (avoids a separate
-    // TagResource round-trip).
-    if (properties['Tags']) {
-      createParams.Tags = properties['Tags'] as Tag[];
+    // Tags are per-replica in the CFn `AWS::DynamoDB::GlobalTable`
+    // schema (there is NO top-level `Properties.Tags` field — CDK's
+    // `cdk.Tags.of(tableV2).add(...)` puts them in
+    // `Replicas[?Region==<deploy region>].Tags`). For the LOCAL replica
+    // we apply them via `CreateTable`'s top-level `Tags` field (avoids
+    // a separate `TagResource` round-trip). Cross-region replicas'
+    // Tags require per-region SDK clients and are deferred.
+    const localReplicaForTags = replicas.find((r) => r['Region'] === currentRegion);
+    const localReplicaTags = localReplicaForTags?.['Tags'] as Tag[] | undefined;
+    if (localReplicaTags && localReplicaTags.length > 0) {
+      createParams.Tags = localReplicaTags;
     }
 
     try {
@@ -298,7 +311,7 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
     // Without this, an aborted deploy leaves a billing AWS-side table
     // with no cdkd state record (PR #374 pattern).
     try {
-      const tableInfo = await this.waitForTableActive(tableName);
+      const tableInfo = await this.waitForTableActive(tableName, logicalId);
 
       // Replica adds: one UpdateTable per region (AWS rejects multiple
       // ReplicaUpdates in a single call). Each call must complete before
@@ -307,7 +320,7 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       for (const replica of replicas) {
         const region = replica['Region'] as string | undefined;
         if (!region || region === currentRegion) continue;
-        await this.addReplica(tableName, replica, region);
+        await this.addReplica(tableName, replica, region, logicalId);
       }
 
       // TTL is a separate API call (UpdateTimeToLive). Applied after
@@ -342,10 +355,45 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       // before re-throwing so the user is not billed for a phantom
       // resource. Cleanup-step failures escalate to WARN with a recovery
       // command; the original error always propagates.
+      //
+      // IMPORTANT: if any non-local replicas were added before the
+      // failure (replica-add loop is serial and partially-progressed
+      // failures DO happen), AWS rejects `DeleteTable` on a
+      // multi-replica table. We must drop the additional replicas
+      // first — mirror the `delete()` shape: DescribeTable → per-region
+      // Delete ReplicaUpdates → DeleteTable. Each step is best-effort
+      // so a single sub-failure does not block the rest of the cleanup.
       this.logger.warn(
         `Wiring failed after CreateTable for ${tableName}; attempting best-effort cleanup`
       );
       try {
+        const describe = await this.dynamoDBClient.send(
+          new DescribeTableCommand({ TableName: tableName })
+        );
+        const replicasForCleanup = describe.Table?.Replicas ?? [];
+        for (const replica of replicasForCleanup) {
+          const region = replica.RegionName;
+          if (!region || region === currentRegion) continue;
+          try {
+            await this.dynamoDBClient.send(
+              new UpdateTableCommand({
+                TableName: tableName,
+                ReplicaUpdates: [{ Delete: { RegionName: region } }],
+              })
+            );
+            await this.waitForReplicaGone(tableName, region, logicalId);
+          } catch (replicaCleanupErr) {
+            const msg =
+              replicaCleanupErr instanceof Error
+                ? replicaCleanupErr.message
+                : String(replicaCleanupErr);
+            this.logger.warn(
+              `Partial-create cleanup: failed to drop replica ${region} on ${tableName}: ${msg}. ` +
+                `Run: aws dynamodb update-table --table-name ${tableName} ` +
+                `--replica-updates 'Delete={RegionName=${region}}' --region ${currentRegion}`
+            );
+          }
+        }
         await this.dynamoDBClient.send(new DeleteTableCommand({ TableName: tableName }));
       } catch (cleanupErr) {
         const cleanupMsg = cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr);
@@ -376,7 +424,8 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
   private async addReplica(
     tableName: string,
     replica: Record<string, unknown>,
-    region: string
+    region: string,
+    logicalId: string
   ): Promise<void> {
     const create: CreateReplicationGroupMemberAction = {
       RegionName: region,
@@ -406,30 +455,469 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       })
     );
 
-    await this.waitForReplicaActive(tableName, region);
+    await this.waitForReplicaActive(tableName, region, logicalId);
   }
 
   /**
-   * Update a DynamoDB Global Table.
+   * Update a DynamoDB Global Table in place.
    *
-   * MVP: in-place updates are out of scope — replica add/remove, GSI
-   * add/remove, BillingMode flip, and throughput rewrites each have
-   * distinct UpdateTable shapes and ordering rules. `cdkd drift --revert`
-   * surfaces this as `ResourceUpdateNotSupportedError` (exit code 2);
-   * the user falls back to `cdkd deploy --replace` or destroy + redeploy.
+   * AWS-side state-machine constraint: `UpdateTable` accepts only ONE of
+   * `{BillingMode, ReplicaUpdates, GlobalSecondaryIndexUpdates}` per call,
+   * so each category must serialize into its own SDK round-trip with a
+   * `waitForTableActiveAfterUpdate` between every step. Order:
+   *   1. Wait for current ACTIVE (defensive).
+   *   2. Tags diff (TagResource / UntagResource — no wait needed).
+   *   3. Non-conflicting flat fields (DeletionProtectionEnabled / TableClass
+   *      / SSESpecification / StreamSpecification / OnDemandThroughput)
+   *      in one combined `UpdateTableCommand`. Wait ACTIVE.
+   *   4. BillingMode flip (separate UpdateTable). Wait ACTIVE.
+   *   5. Replica diff (serial per Create / Update / Delete). Wait ACTIVE
+   *      after each.
+   *   6. GSI diff (serial per Create / Update / Delete; new GSIs may need
+   *      additional AttributeDefinitions). Wait ACTIVE after each.
+   *   7. TimeToLiveSpecification toggle.
+   *
+   * Immutable properties (TableName / KeySchema / AttributeDefinitions
+   * removals / LocalSecondaryIndexes changes) throw `ProvisioningError`
+   * naming the offending field — the deploy engine's diff classifier
+   * should catch these as REPLACEMENT before ever calling `update()`,
+   * but the guard is defense-in-depth.
    */
   async update(
     logicalId: string,
-    _physicalId: string,
+    physicalId: string,
     resourceType: string,
-    _properties: Record<string, unknown>,
-    _previousProperties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    previousProperties: Record<string, unknown>
   ): Promise<ResourceUpdateResult> {
-    throw new ResourceUpdateNotSupportedError(
-      resourceType,
-      logicalId,
-      "GlobalTable in-place updates are not yet supported; use 'cdkd deploy --replace' or destroy + redeploy"
+    this.logger.debug(`Updating DynamoDB GlobalTable ${logicalId}: ${physicalId}`);
+
+    // ─── Immutable property guards (defense-in-depth) ───────────────────
+    if (
+      properties['TableName'] !== undefined &&
+      previousProperties['TableName'] !== undefined &&
+      properties['TableName'] !== previousProperties['TableName']
+    ) {
+      throw new ProvisioningError(
+        `TableName is immutable on AWS::DynamoDB::GlobalTable; replacement required (deploy with --replace, or destroy + redeploy)`,
+        resourceType,
+        logicalId,
+        physicalId
+      );
+    }
+    if (
+      properties['KeySchema'] !== undefined &&
+      previousProperties['KeySchema'] !== undefined &&
+      !deepEqual(properties['KeySchema'], previousProperties['KeySchema'])
+    ) {
+      throw new ProvisioningError(
+        `KeySchema is immutable on AWS::DynamoDB::GlobalTable; replacement required (deploy with --replace, or destroy + redeploy)`,
+        resourceType,
+        logicalId,
+        physicalId
+      );
+    }
+    if (
+      properties['LocalSecondaryIndexes'] !== undefined &&
+      previousProperties['LocalSecondaryIndexes'] !== undefined &&
+      !deepEqual(properties['LocalSecondaryIndexes'], previousProperties['LocalSecondaryIndexes'])
+    ) {
+      throw new ProvisioningError(
+        `LocalSecondaryIndexes is immutable on AWS::DynamoDB::GlobalTable; replacement required (deploy with --replace, or destroy + redeploy)`,
+        resourceType,
+        logicalId,
+        physicalId
+      );
+    }
+    // AttributeDefinitions: additions are allowed (needed for new GSIs)
+    // but removals are not — AWS rejects removing an attr that an index
+    // still references.
+    const oldAttrs = (previousProperties['AttributeDefinitions'] ?? []) as AttributeDefinition[];
+    const newAttrs = (properties['AttributeDefinitions'] ?? []) as AttributeDefinition[];
+    const removedAttrs = oldAttrs.filter(
+      (o) => !newAttrs.some((n) => n.AttributeName === o.AttributeName)
     );
+    if (removedAttrs.length > 0) {
+      throw new ProvisioningError(
+        `AttributeDefinitions removals are immutable on AWS::DynamoDB::GlobalTable (offenders: ${removedAttrs.map((a) => a.AttributeName).join(', ')}); replacement required`,
+        resourceType,
+        logicalId,
+        physicalId
+      );
+    }
+
+    // Resolve the client region ONCE for the whole update — the Tags
+    // diff step, the BillingMode flip's capacity derivation, and the
+    // Replicas diff loop all need it.
+    const currentRegion = (await this.dynamoDBClient.config.region()) ?? '';
+
+    try {
+      // 1. Wait for ACTIVE before any update — defensive against rare
+      // states where a previous deploy left the table mid-transition.
+      await this.waitForTableActiveAfterUpdate(physicalId, logicalId);
+
+      // 2. Tags diff. The CFn `AWS::DynamoDB::GlobalTable` schema has
+      // NO top-level `Tags` — tags live inside each `Replicas[]` entry
+      // as `Replicas[?Region==<region>].Tags`. For the LOCAL replica we
+      // diff and apply via TagResource / UntagResource on the local
+      // table ARN; cross-region replicas' Tags require per-region SDK
+      // clients and are deferred (logged at debug if the diff is non-
+      // empty for a non-local replica).
+      const describeResp = await this.dynamoDBClient.send(
+        new DescribeTableCommand({ TableName: physicalId })
+      );
+      const tableArn = describeResp.Table?.TableArn;
+      const extractLocalTags = (
+        props: Record<string, unknown>
+      ): Array<{ Key?: string; Value?: string }> | undefined => {
+        const replicas = (props['Replicas'] ?? []) as Array<Record<string, unknown>>;
+        const local = replicas.find((r) => r['Region'] === currentRegion);
+        return local?.['Tags'] as Array<{ Key?: string; Value?: string }> | undefined;
+      };
+      if (tableArn) {
+        await this.applyTagDiff(
+          tableArn,
+          extractLocalTags(previousProperties),
+          extractLocalTags(properties)
+        );
+      }
+
+      // 3. Non-conflicting flat fields in one combined UpdateTable.
+      // AWS allows combining these in a single call because they don't
+      // conflict with each other or with each other's modes.
+      const flatUpdate: UpdateTableCommandInput = { TableName: physicalId };
+      let flatChanged = false;
+      if (
+        properties['DeletionProtectionEnabled'] !== previousProperties['DeletionProtectionEnabled']
+      ) {
+        flatUpdate.DeletionProtectionEnabled = Boolean(
+          properties['DeletionProtectionEnabled'] ?? false
+        );
+        flatChanged = true;
+      }
+      if (
+        properties['TableClass'] !== undefined &&
+        properties['TableClass'] !== previousProperties['TableClass']
+      ) {
+        flatUpdate.TableClass = properties['TableClass'] as
+          | 'STANDARD'
+          | 'STANDARD_INFREQUENT_ACCESS';
+        flatChanged = true;
+      }
+      if (
+        properties['SSESpecification'] !== undefined &&
+        !deepEqual(properties['SSESpecification'], previousProperties['SSESpecification'])
+      ) {
+        const sse = properties['SSESpecification'] as Record<string, unknown>;
+        flatUpdate.SSESpecification = {
+          Enabled: sse['SSEEnabled'] !== undefined ? Boolean(sse['SSEEnabled']) : true,
+          ...(sse['SSEType'] !== undefined && { SSEType: sse['SSEType'] as 'KMS' }),
+        };
+        flatChanged = true;
+      }
+      if (
+        properties['StreamSpecification'] !== undefined &&
+        !deepEqual(properties['StreamSpecification'], previousProperties['StreamSpecification'])
+      ) {
+        const ss = properties['StreamSpecification'] as Record<string, unknown>;
+        flatUpdate.StreamSpecification = {
+          StreamEnabled: true,
+          StreamViewType: ss['StreamViewType'] as string,
+        } as StreamSpecification;
+        flatChanged = true;
+      }
+      if (
+        !deepEqual(
+          properties['WriteOnDemandThroughputSettings'],
+          previousProperties['WriteOnDemandThroughputSettings']
+        )
+      ) {
+        const wodts = properties['WriteOnDemandThroughputSettings'] as
+          | Record<string, unknown>
+          | undefined;
+        if (wodts?.['MaxWriteRequestUnits'] !== undefined) {
+          flatUpdate.OnDemandThroughput = {
+            MaxWriteRequestUnits: Number(wodts['MaxWriteRequestUnits']),
+          };
+          flatChanged = true;
+        }
+      }
+      if (flatChanged) {
+        await this.dynamoDBClient.send(new UpdateTableCommand(flatUpdate));
+        await this.waitForTableActiveAfterUpdate(physicalId, logicalId);
+      }
+
+      // 4. BillingMode flip (own UpdateTable per AWS state-machine rule).
+      // Defaults must match `create()` (line 183: `PAY_PER_REQUEST`) so
+      // a template with no explicit `BillingMode` doesn't false-fire
+      // a PROVISIONED → PAY_PER_REQUEST diff on every update of a
+      // PAY_PER_REQUEST table.
+      const oldBilling =
+        (previousProperties['BillingMode'] as string | undefined) ?? 'PAY_PER_REQUEST';
+      const newBilling = (properties['BillingMode'] as string | undefined) ?? 'PAY_PER_REQUEST';
+      if (oldBilling !== newBilling) {
+        const billingUpdate: UpdateTableCommandInput = {
+          TableName: physicalId,
+          BillingMode: newBilling as 'PROVISIONED' | 'PAY_PER_REQUEST',
+        };
+        if (newBilling === 'PROVISIONED') {
+          // Mirror create()'s capacity derivation so a user template
+          // with non-default read/write capacity is preserved across a
+          // PAY_PER_REQUEST → PROVISIONED flip (the previous hardcoded
+          // `ReadCapacityUnits: 5` silently overrode the template).
+          billingUpdate.ProvisionedThroughput = derivePerCallProvisionedThroughput(
+            properties,
+            currentRegion
+          );
+        }
+        await this.dynamoDBClient.send(new UpdateTableCommand(billingUpdate));
+        await this.waitForTableActiveAfterUpdate(physicalId, logicalId);
+      }
+
+      // 5. Replica diff. AWS limits to ONE ReplicaUpdates entry per call,
+      // so serialize Create / Update / Delete and wait between each.
+      // `currentRegion` is already resolved once at the top of update().
+      const replicaDiff = diffReplicas(
+        (previousProperties['Replicas'] ?? []) as Array<Record<string, unknown>>,
+        (properties['Replicas'] ?? []) as Array<Record<string, unknown>>
+      );
+      // Removes first: AWS rejects DeleteTable on a multi-replica table
+      // but tolerates dropping replicas while the rest stay live.
+      for (const replica of replicaDiff.removed) {
+        const region = replica['Region'] as string | undefined;
+        if (!region || region === currentRegion) continue;
+        await this.dynamoDBClient.send(
+          new UpdateTableCommand({
+            TableName: physicalId,
+            ReplicaUpdates: [{ Delete: { RegionName: region } }],
+          })
+        );
+        await this.waitForReplicaGone(physicalId, region, logicalId);
+      }
+      for (const replica of replicaDiff.added) {
+        const region = replica['Region'] as string | undefined;
+        if (!region || region === currentRegion) continue;
+        await this.addReplica(physicalId, replica, region, logicalId);
+      }
+      for (const replica of replicaDiff.modified) {
+        const region = replica['Region'] as string | undefined;
+        if (!region || region === currentRegion) continue;
+        const updateAction: UpdateReplicationGroupMemberAction = { RegionName: region };
+        if (replica['KMSMasterKeyId'] !== undefined) {
+          updateAction.KMSMasterKeyId = replica['KMSMasterKeyId'] as string;
+        }
+        if (replica['GlobalSecondaryIndexes']) {
+          updateAction.GlobalSecondaryIndexes = replica['GlobalSecondaryIndexes'] as Array<{
+            IndexName: string;
+          }>;
+        }
+        if (replica['TableClassOverride']) {
+          updateAction.TableClassOverride = replica['TableClassOverride'] as
+            | 'STANDARD'
+            | 'STANDARD_INFREQUENT_ACCESS';
+        }
+        // AWS rejects an UpdateReplica with no update fields
+        // (ValidationException). When the only change in the modified
+        // replica is `Tags` (which UpdateReplica's SDK action does not
+        // accept — cross-region Tag propagation needs a per-region SDK
+        // client + TagResource on that replica's ARN, deferred), the
+        // updateAction has only `RegionName`. Skip the SDK call in
+        // that case and log at debug so the cross-region tag drift is
+        // visible but does not error the deploy.
+        const hasUpdateField =
+          updateAction.KMSMasterKeyId !== undefined ||
+          updateAction.GlobalSecondaryIndexes !== undefined ||
+          updateAction.TableClassOverride !== undefined;
+        if (!hasUpdateField) {
+          this.logger.debug(
+            `Cross-region replica ${region} of ${physicalId}: only Tags-style ` +
+              `changes detected; skipping UpdateReplica (AWS rejects empty ` +
+              `Update actions). Per-region Tag propagation is deferred.`
+          );
+          continue;
+        }
+        await this.dynamoDBClient.send(
+          new UpdateTableCommand({
+            TableName: physicalId,
+            ReplicaUpdates: [{ Update: updateAction }],
+          })
+        );
+        await this.waitForReplicaActive(physicalId, region, logicalId);
+      }
+
+      // 6. GSI diff. New GSI Create may need additional AttributeDefinitions
+      // — AWS allows combining `AttributeDefinitions` and one GSI
+      // `Create` action in the same UpdateTable call.
+      const gsiDiff = diffGlobalSecondaryIndexes(
+        (previousProperties['GlobalSecondaryIndexes'] ?? []) as GlobalSecondaryIndex[],
+        (properties['GlobalSecondaryIndexes'] ?? []) as GlobalSecondaryIndex[]
+      );
+      for (const gsi of gsiDiff.removed) {
+        if (!gsi.IndexName) continue;
+        const gsiUpdate: GlobalSecondaryIndexUpdate = {
+          Delete: { IndexName: gsi.IndexName },
+        };
+        await this.dynamoDBClient.send(
+          new UpdateTableCommand({
+            TableName: physicalId,
+            GlobalSecondaryIndexUpdates: [gsiUpdate],
+          })
+        );
+        await this.waitForTableActiveAfterUpdate(physicalId, logicalId);
+      }
+      for (const gsi of gsiDiff.added) {
+        if (!gsi.IndexName || !gsi.KeySchema || !gsi.Projection) continue;
+        const gsiUpdate: GlobalSecondaryIndexUpdate = {
+          Create: {
+            IndexName: gsi.IndexName,
+            KeySchema: gsi.KeySchema,
+            Projection: gsi.Projection,
+            ...(gsi.ProvisionedThroughput && {
+              ProvisionedThroughput: gsi.ProvisionedThroughput,
+            }),
+            ...(gsi.OnDemandThroughput && { OnDemandThroughput: gsi.OnDemandThroughput }),
+          },
+        };
+        await this.dynamoDBClient.send(
+          new UpdateTableCommand({
+            TableName: physicalId,
+            AttributeDefinitions: newAttrs,
+            GlobalSecondaryIndexUpdates: [gsiUpdate],
+          })
+        );
+        await this.waitForTableActiveAfterUpdate(physicalId, logicalId);
+      }
+      for (const gsi of gsiDiff.modified) {
+        if (!gsi.IndexName) continue;
+        const gsiUpdate: GlobalSecondaryIndexUpdate = {
+          Update: {
+            IndexName: gsi.IndexName,
+            ...(gsi.ProvisionedThroughput && {
+              ProvisionedThroughput: gsi.ProvisionedThroughput,
+            }),
+            ...(gsi.OnDemandThroughput && { OnDemandThroughput: gsi.OnDemandThroughput }),
+          },
+        };
+        await this.dynamoDBClient.send(
+          new UpdateTableCommand({
+            TableName: physicalId,
+            GlobalSecondaryIndexUpdates: [gsiUpdate],
+          })
+        );
+        await this.waitForTableActiveAfterUpdate(physicalId, logicalId);
+      }
+
+      // 7. TimeToLiveSpecification (separate API).
+      if (
+        !deepEqual(
+          properties['TimeToLiveSpecification'],
+          previousProperties['TimeToLiveSpecification']
+        )
+      ) {
+        const ttl = properties['TimeToLiveSpecification'] as Record<string, unknown> | undefined;
+        if (ttl?.['AttributeName']) {
+          await this.dynamoDBClient.send(
+            new UpdateTimeToLiveCommand({
+              TableName: physicalId,
+              TimeToLiveSpecification: {
+                Enabled: ttl['Enabled'] !== undefined ? Boolean(ttl['Enabled']) : true,
+                AttributeName: ttl['AttributeName'] as string,
+              },
+            })
+          );
+        } else if (previousProperties['TimeToLiveSpecification']) {
+          // TTL removed from template: AWS requires the previous
+          // AttributeName to disable it. Pull from old props.
+          const prevTtl = previousProperties['TimeToLiveSpecification'] as Record<string, unknown>;
+          if (prevTtl['AttributeName']) {
+            await this.dynamoDBClient.send(
+              new UpdateTimeToLiveCommand({
+                TableName: physicalId,
+                TimeToLiveSpecification: {
+                  Enabled: false,
+                  AttributeName: prevTtl['AttributeName'] as string,
+                },
+              })
+            );
+          }
+        }
+      }
+
+      // Resolve attributes for return.
+      const finalDescribe = await this.dynamoDBClient.send(
+        new DescribeTableCommand({ TableName: physicalId })
+      );
+      return {
+        physicalId,
+        wasReplaced: false,
+        attributes: {
+          Arn: finalDescribe.Table?.TableArn,
+          TableId: finalDescribe.Table?.TableId,
+          StreamArn: finalDescribe.Table?.LatestStreamArn,
+          TableName: physicalId,
+        },
+      };
+    } catch (error) {
+      if (error instanceof ProvisioningError) throw error;
+      const cause = error instanceof Error ? error : undefined;
+      throw new ProvisioningError(
+        `Failed to update DynamoDB GlobalTable ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+        resourceType,
+        logicalId,
+        physicalId,
+        cause
+      );
+    }
+  }
+
+  /**
+   * Apply a diff between old and new CFn-shape Tags arrays via DynamoDB's
+   * `TagResource` / `UntagResource` APIs. Both take the table ARN as
+   * `ResourceArn`.
+   */
+  private async applyTagDiff(
+    tableArn: string,
+    oldTagsRaw: Array<{ Key?: string; Value?: string }> | undefined,
+    newTagsRaw: Array<{ Key?: string; Value?: string }> | undefined
+  ): Promise<void> {
+    const toMap = (
+      tags: Array<{ Key?: string; Value?: string }> | undefined
+    ): Map<string, string> => {
+      const m = new Map<string, string>();
+      for (const t of tags ?? []) {
+        if (t.Key !== undefined && t.Value !== undefined) m.set(t.Key, t.Value);
+      }
+      return m;
+    };
+
+    const oldMap = toMap(oldTagsRaw);
+    const newMap = toMap(newTagsRaw);
+
+    const tagsToAdd: Array<{ Key: string; Value: string }> = [];
+    for (const [k, v] of newMap) {
+      if (oldMap.get(k) !== v) tagsToAdd.push({ Key: k, Value: v });
+    }
+    const tagsToRemove: string[] = [];
+    for (const k of oldMap.keys()) {
+      if (!newMap.has(k)) tagsToRemove.push(k);
+    }
+
+    if (tagsToRemove.length > 0) {
+      await this.dynamoDBClient.send(
+        new UntagResourceCommand({ ResourceArn: tableArn, TagKeys: tagsToRemove })
+      );
+      this.logger.debug(
+        `Removed ${tagsToRemove.length} tag(s) from DynamoDB GlobalTable ${tableArn}`
+      );
+    }
+    if (tagsToAdd.length > 0) {
+      await this.dynamoDBClient.send(
+        new TagResourceCommand({ ResourceArn: tableArn, Tags: tagsToAdd })
+      );
+      this.logger.debug(
+        `Added/updated ${tagsToAdd.length} tag(s) on DynamoDB GlobalTable ${tableArn}`
+      );
+    }
   }
 
   /**
@@ -469,7 +957,7 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
         );
         this.logger.debug(`Disabled DeletionProtectionEnabled on ${logicalId}, waiting for ACTIVE`);
         try {
-          await this.waitForTableActiveAfterUpdate(physicalId);
+          await this.waitForTableActiveAfterUpdate(physicalId, logicalId);
         } catch (waitErr) {
           this.logger.debug(
             `Could not wait for table ${physicalId} ACTIVE after protection flip: ${waitErr instanceof Error ? waitErr.message : String(waitErr)}`
@@ -515,17 +1003,17 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
               ReplicaUpdates: [{ Delete: { RegionName: region } }],
             })
           );
-          await this.waitForReplicaGone(physicalId, region);
+          await this.waitForReplicaGone(physicalId, region, logicalId);
         } catch (replicaErr) {
-          // Replica may already be gone; if not, surface the error so
-          // the user can intervene rather than masking a real failure.
+          // Table itself already gone — outer DeleteTable will handle
+          // idempotency (the region check below ensures a mismatched
+          // destroy doesn't silently strip state).
           if (!(replicaErr instanceof ResourceNotFoundException)) {
             throw replicaErr;
           }
         }
       }
     } catch (describeErr) {
-      // Table already gone — region-match check handles idempotency below.
       if (!(describeErr instanceof ResourceNotFoundException)) {
         const cause = describeErr instanceof Error ? describeErr : undefined;
         throw new ProvisioningError(
@@ -536,6 +1024,9 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
           cause
         );
       }
+      // RNF on the pre-delete DescribeTable — table already gone; the
+      // region-match check on the DeleteTable RNF path below handles
+      // idempotency.
     }
 
     try {
@@ -543,7 +1034,7 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       // DeleteTable is async; wait until DescribeTable returns
       // ResourceNotFoundException so siblings / verify steps observing
       // the table after destroy see it actually gone.
-      await this.waitForTableGone(physicalId);
+      await this.waitForTableGone(physicalId, logicalId);
       this.logger.debug(`Successfully deleted DynamoDB GlobalTable ${logicalId}`);
     } catch (error) {
       if (error instanceof ResourceNotFoundException) {
@@ -613,22 +1104,29 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
   /**
    * Read the AWS-current DynamoDB GlobalTable configuration in CFn-property shape.
    *
-   * Reverse-maps `DescribeTable` + `ListTagsOfResource` into the
-   * `AWS::DynamoDB::GlobalTable` property set.
+   * Reverse-maps `DescribeTable` + `ListTagsOfResource` + `DescribeTimeToLive`
+   * + per-replica `DescribeContributorInsights` /
+   * `DescribeContinuousBackups` / `DescribeKinesisStreamingDestination`
+   * into the `AWS::DynamoDB::GlobalTable` property set.
    *
    * Type-discriminator gating (memory rule
    * `feedback_always_emit_check_type_discriminator.md`):
-   *  - `ProvisionedThroughput`-bearing fields are only surfaced when
-   *    `BillingMode === 'PROVISIONED'`. Emitting placeholders on
-   *    PAY_PER_REQUEST tables (or vice versa) would fire false drift on
-   *    every clean run.
    *  - StreamSpecification / SSESpecification follow the existing
    *    DynamoDB::Table provider's Class 1 guard: only surfaced when AWS
    *    reports the feature actually enabled.
+   *  - `ProvisionedThroughput`-bearing fields are declared in
+   *    `getDriftUnknownPaths` and intentionally not emitted in v1 — the
+   *    reverse-mapping from AWS's `ProvisionedThroughput` shape into
+   *    CFn's `WriteProvisionedThroughputSettings` /
+   *    `ReadProvisionedThroughputSettings` wrappers (which carry
+   *    `WriteCapacityAutoScalingSettings` etc.) needs more work to round
+   *    -trip cleanly.
    *
-   * `getDriftUnknownPaths` declares TTL + write-throughput-settings —
-   * those round-trip in the create path but the reverse-mapping is not
-   * yet implemented and would fire guaranteed false drift.
+   * Per-replica sub-specifications (`ContributorInsightsSpecification` /
+   * `PointInTimeRecoverySpecification` / `KinesisStreamSpecification`)
+   * are surfaced only for the LOCAL replica. Cross-region replicas
+   * require per-region SDK clients (`new DynamoDBClient({region})`),
+   * deferred to a follow-up PR.
    */
   async readCurrentState(
     physicalId: string,
@@ -686,19 +1184,6 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
         result['SSESpecification'] = sse;
       }
 
-      // Replicas: always emit `[]` placeholder per PR #145 — a console-side
-      // replica add on a previously single-region table must show as drift.
-      // Map RegionName → Region (CFn's per-replica shape).
-      const replicas = (table.Replicas ?? []).map((r) => ({
-        Region: r.RegionName,
-        // Per-replica KMSMasterKeyId is the only field we round-trip in
-        // v1; ContributorInsightsSpecification /
-        // PointInTimeRecoverySpecification / KinesisStreamSpecification
-        // are deferred to a follow-up PR.
-        ...(r.KMSMasterKeyId !== undefined && { KMSMasterKeyId: r.KMSMasterKeyId }),
-      }));
-      result['Replicas'] = replicas;
-
       if (table.TableClassSummary?.TableClass) {
         result['TableClass'] = table.TableClassSummary.TableClass;
       }
@@ -706,23 +1191,79 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
         result['DeletionProtectionEnabled'] = table.DeletionProtectionEnabled;
       }
 
-      // Tags via ListTagsOfResource. Always-emit `[]` even when AWS
-      // reports zero user tags so a console-side tag ADD on a previously
-      // untagged table shows as drift (PR #145 pattern).
-      if (table.TableArn) {
-        try {
-          const tagsResp = await this.dynamoDBClient.send(
-            new ListTagsOfResourceCommand({ ResourceArn: table.TableArn })
-          );
-          result['Tags'] = normalizeAwsTagsToCfn(tagsResp.Tags);
-        } catch (err) {
-          if (err instanceof ResourceNotFoundException) return undefined;
-          // Tag fetch failures shouldn't tank the whole drift read.
-          result['Tags'] = [];
+      // Replicas: always emit `[]` placeholder per PR #145 — a console-side
+      // replica add on a previously single-region table must show as drift.
+      // Map RegionName → Region (CFn's per-replica shape) and attach the
+      // local replica's per-replica sub-specifications (PITR / Kinesis /
+      // ContributorInsights) when AWS reports them.
+      const currentRegion = (await this.dynamoDBClient.config.region()) ?? '';
+      const tableNameForSubs = table.TableName ?? physicalId;
+      const replicas = await Promise.all(
+        (table.Replicas ?? []).map(async (r) => {
+          const entry: Record<string, unknown> = { Region: r.RegionName };
+          if (r.KMSMasterKeyId !== undefined) entry['KMSMasterKeyId'] = r.KMSMasterKeyId;
+          // Per-replica sub-specs + Tags: only the local replica in v1.
+          // Cross-region calls would need a per-region client, deferred.
+          // Tags live at `Replicas[].Tags` in the CFn `GlobalTable`
+          // schema (there is no top-level `Tags`), so they MUST be
+          // surfaced here — not at the top level of `result`.
+          if (r.RegionName && r.RegionName === currentRegion) {
+            const subs = await this.readLocalReplicaSubSpecs(tableNameForSubs);
+            Object.assign(entry, subs);
+            if (table.TableArn) {
+              try {
+                const tagsResp = await this.dynamoDBClient.send(
+                  new ListTagsOfResourceCommand({ ResourceArn: table.TableArn })
+                );
+                entry['Tags'] = normalizeAwsTagsToCfn(tagsResp.Tags);
+              } catch (tagErr) {
+                if (tagErr instanceof ResourceNotFoundException) throw tagErr;
+                this.logger.warn(
+                  `Could not fetch tags for DynamoDB GlobalTable ${tableNameForSubs}: ${tagErr instanceof Error ? tagErr.message : String(tagErr)}`
+                );
+                entry['Tags'] = [];
+              }
+            } else {
+              entry['Tags'] = [];
+            }
+          }
+          return entry;
+        })
+      );
+      result['Replicas'] = replicas;
+
+      // TimeToLiveSpecification: separate API call. Race-tolerant — when
+      // AWS reports a transient `UPDATING` / `DISABLING` status, omit
+      // the key rather than surface a transient state as drift.
+      try {
+        const ttlResp = await this.dynamoDBClient.send(
+          new DescribeTimeToLiveCommand({ TableName: tableNameForSubs })
+        );
+        const ttlDesc = ttlResp.TimeToLiveDescription;
+        const ttlStatus = ttlDesc?.TimeToLiveStatus;
+        if (ttlStatus === 'ENABLED' && ttlDesc?.AttributeName) {
+          result['TimeToLiveSpecification'] = {
+            AttributeName: ttlDesc.AttributeName,
+            Enabled: true,
+          };
+        } else if (ttlStatus === 'DISABLED') {
+          // Disabled has no AttributeName; only surface if state held one
+          // — the comparator will diff against state. For first-write
+          // observed baselines, omit (matches "no TTL configured").
+          // We intentionally do NOT emit a `{Enabled: false}` placeholder
+          // because CFn rejects TimeToLiveSpecification without an
+          // AttributeName.
         }
-      } else {
-        result['Tags'] = [];
+        // ENABLING / DISABLING: transient — omit so drift doesn't fire
+        // on a momentary state.
+      } catch (ttlErr) {
+        this.logger.debug(
+          `Could not read TimeToLive for ${tableNameForSubs}: ${ttlErr instanceof Error ? ttlErr.message : String(ttlErr)}`
+        );
       }
+
+      // Note: `Tags` are emitted INSIDE the local `Replicas[]` entry
+      // above (the CFn `GlobalTable` schema has no top-level `Tags`).
 
       return result;
     } catch (err) {
@@ -732,25 +1273,103 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
   }
 
   /**
+   * Read per-replica sub-specifications for the LOCAL replica:
+   *  - `ContributorInsightsSpecification` via `DescribeContributorInsights`
+   *    (table-level; GSI overrides are NOT surfaced in v1 — they would
+   *    require one call per GSI and a different CFn nesting under the
+   *    `Replicas[].GlobalSecondaryIndexes[]` shape).
+   *  - `PointInTimeRecoverySpecification` via `DescribeContinuousBackups`.
+   *  - `KinesisStreamSpecification` via
+   *    `DescribeKinesisStreamingDestination` (filtered to the local
+   *    region's destination when AWS reports more than one).
+   *
+   * Each call is best-effort: errors omit the offending key rather than
+   * fail the whole drift read.
+   *
+   * Cross-region replicas would need per-region SDK clients (the calls
+   * are region-scoped to the replica) — deferred to a follow-up PR.
+   */
+  private async readLocalReplicaSubSpecs(tableName: string): Promise<Record<string, unknown>> {
+    const out: Record<string, unknown> = {};
+
+    // ContributorInsights (table-level only in v1).
+    try {
+      const ci = await this.dynamoDBClient.send(
+        new DescribeContributorInsightsCommand({ TableName: tableName })
+      );
+      if (ci.ContributorInsightsStatus) {
+        out['ContributorInsightsSpecification'] = {
+          Enabled: ci.ContributorInsightsStatus === 'ENABLED',
+        };
+      }
+    } catch (err) {
+      this.logger.debug(
+        `Could not read ContributorInsights for ${tableName}: ${err instanceof Error ? err.message : String(err)}`
+      );
+    }
+
+    // PointInTimeRecovery via DescribeContinuousBackups.
+    try {
+      const pitr = await this.dynamoDBClient.send(
+        new DescribeContinuousBackupsCommand({ TableName: tableName })
+      );
+      const pitrStatus =
+        pitr.ContinuousBackupsDescription?.PointInTimeRecoveryDescription
+          ?.PointInTimeRecoveryStatus;
+      if (pitrStatus) {
+        out['PointInTimeRecoverySpecification'] = {
+          PointInTimeRecoveryEnabled: pitrStatus === 'ENABLED',
+        };
+      }
+    } catch (err) {
+      this.logger.debug(
+        `Could not read PointInTimeRecovery for ${tableName}: ${err instanceof Error ? err.message : String(err)}`
+      );
+    }
+
+    // Kinesis streaming destination — pick the first ACTIVE destination
+    // (CFn's per-replica shape only carries one StreamArn).
+    try {
+      const ks = await this.dynamoDBClient.send(
+        new DescribeKinesisStreamingDestinationCommand({ TableName: tableName })
+      );
+      const destinations = ks.KinesisDataStreamDestinations ?? [];
+      const active = destinations.find(
+        (d) => d.DestinationStatus === 'ACTIVE' || d.DestinationStatus === 'ENABLING'
+      );
+      if (active?.StreamArn) {
+        const ksOut: Record<string, unknown> = { StreamArn: active.StreamArn };
+        if (active.ApproximateCreationDateTimePrecision !== undefined) {
+          ksOut['ApproximateCreationDateTimePrecision'] =
+            active.ApproximateCreationDateTimePrecision;
+        }
+        out['KinesisStreamSpecification'] = ksOut;
+      }
+    } catch (err) {
+      this.logger.debug(
+        `Could not read KinesisStreamingDestination for ${tableName}: ${err instanceof Error ? err.message : String(err)}`
+      );
+    }
+
+    return out;
+  }
+
+  /**
    * State property paths cdkd's GlobalTable readCurrentState cannot (yet)
    * reverse-map. The drift comparator skips these so a templated value
    * doesn't fire guaranteed false drift on every clean run.
    *
-   * - `TimeToLiveSpecification`: cdkd's create() applies it via
-   *   UpdateTimeToLive, but the reverse-mapping needs a separate
-   *   DescribeTimeToLive call (not yet implemented).
    * - `WriteProvisionedThroughputSettings` /
    *   `WriteOnDemandThroughputSettings`: CFn's shapes wrap
    *   auto-scaling / on-demand max-RU settings whose reverse-mapping
    *   from `DescribeTable.ProvisionedThroughput` / `OnDemandThroughput`
    *   is non-trivial and would fire false drift in v1.
+   *
+   * `TimeToLiveSpecification` is reverse-mapped via `DescribeTimeToLive`
+   * in `readCurrentState` (no longer in this list).
    */
   getDriftUnknownPaths(_resourceType: string): string[] {
-    return [
-      'TimeToLiveSpecification',
-      'WriteProvisionedThroughputSettings',
-      'WriteOnDemandThroughputSettings',
-    ];
+    return ['WriteProvisionedThroughputSettings', 'WriteOnDemandThroughputSettings'];
   }
 
   /**
@@ -812,6 +1431,7 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
 
   private async waitForTableActive(
     tableName: string,
+    logicalId: string,
     maxAttempts = 120
   ): Promise<{
     tableArn: string | undefined;
@@ -833,11 +1453,21 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
         };
       }
       if (status !== 'CREATING' && status !== 'UPDATING') {
-        throw new Error(`Unexpected table status: ${status}`);
+        throw new ProvisioningError(
+          `Unexpected table status while waiting for ACTIVE on ${tableName}: ${status}`,
+          'AWS::DynamoDB::GlobalTable',
+          logicalId,
+          tableName
+        );
       }
       await new Promise((resolve) => setTimeout(resolve, 1000));
     }
-    throw new Error(`Table ${tableName} did not reach ACTIVE within ${maxAttempts}s`);
+    throw new ProvisioningError(
+      `Table ${tableName} did not reach ACTIVE within ${maxAttempts}s`,
+      'AWS::DynamoDB::GlobalTable',
+      logicalId,
+      tableName
+    );
   }
 
   /**
@@ -846,7 +1476,11 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
    * table may already be ACTIVE on the no-op path (already-disabled
    * protection) or transition through UPDATING.
    */
-  private async waitForTableActiveAfterUpdate(tableName: string, maxAttempts = 120): Promise<void> {
+  private async waitForTableActiveAfterUpdate(
+    tableName: string,
+    logicalId: string,
+    maxAttempts = 600
+  ): Promise<void> {
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       const response = await this.dynamoDBClient.send(
         new DescribeTableCommand({ TableName: tableName })
@@ -854,8 +1488,11 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       if (response.Table?.TableStatus === 'ACTIVE') return;
       await new Promise((resolve) => setTimeout(resolve, 1000));
     }
-    throw new Error(
-      `Table ${tableName} did not reach ACTIVE within ${maxAttempts}s after UpdateTable`
+    throw new ProvisioningError(
+      `Table ${tableName} did not reach ACTIVE within ${maxAttempts}s after UpdateTable`,
+      'AWS::DynamoDB::GlobalTable',
+      logicalId,
+      tableName
     );
   }
 
@@ -866,6 +1503,7 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
   private async waitForReplicaActive(
     tableName: string,
     region: string,
+    logicalId: string,
     maxAttempts = 600
   ): Promise<void> {
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
@@ -879,8 +1517,11 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       );
       await new Promise((resolve) => setTimeout(resolve, 1000));
     }
-    throw new Error(
-      `Replica ${region} for table ${tableName} did not reach ACTIVE within ${maxAttempts}s`
+    throw new ProvisioningError(
+      `Replica ${region} for table ${tableName} did not reach ACTIVE within ${maxAttempts}s`,
+      'AWS::DynamoDB::GlobalTable',
+      logicalId,
+      tableName
     );
   }
 
@@ -892,6 +1533,7 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
   private async waitForReplicaGone(
     tableName: string,
     region: string,
+    logicalId: string,
     maxAttempts = 600
   ): Promise<void> {
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
@@ -907,8 +1549,11 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
         throw err;
       }
     }
-    throw new Error(
-      `Replica ${region} for table ${tableName} did not disappear within ${maxAttempts}s`
+    throw new ProvisioningError(
+      `Replica ${region} for table ${tableName} did not disappear within ${maxAttempts}s`,
+      'AWS::DynamoDB::GlobalTable',
+      logicalId,
+      tableName
     );
   }
 
@@ -923,7 +1568,11 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
    * Typical small-table delete completes in 5–30s; cap at 10 min for
    * worst-case large-table / replica-cascade scenarios.
    */
-  private async waitForTableGone(tableName: string, maxAttempts = 600): Promise<void> {
+  private async waitForTableGone(
+    tableName: string,
+    logicalId: string,
+    maxAttempts = 600
+  ): Promise<void> {
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       try {
         await this.dynamoDBClient.send(new DescribeTableCommand({ TableName: tableName }));
@@ -933,6 +1582,155 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
         throw err;
       }
     }
-    throw new Error(`Table ${tableName} did not disappear within ${maxAttempts}s`);
+    throw new ProvisioningError(
+      `Table ${tableName} did not disappear within ${maxAttempts}s`,
+      'AWS::DynamoDB::GlobalTable',
+      logicalId,
+      tableName
+    );
+  }
+}
+
+// ─── Pure-functional diff helpers (exported for testing) ───────────────
+
+/**
+ * Diff CFn `Replicas[]` arrays. Keyed by `Region`. Returns adds, removes,
+ * and modifies (entries whose other keys — KMSMasterKeyId,
+ * GlobalSecondaryIndexes, TableClassOverride — differ from the old shape).
+ */
+/**
+ * Derive the per-call `ProvisionedThroughput` shape required by
+ * `CreateTableCommand` / `UpdateTableCommand` when BillingMode flips to
+ * PROVISIONED. Shared between create() and the BillingMode-flip path in
+ * update() so a user template's non-default read/write capacity is
+ * preserved consistently across both code paths.
+ *
+ * Source of truth (CFn `AWS::DynamoDB::GlobalTable` shape):
+ *  - WriteCapacityUnits → `properties.WriteProvisionedThroughputSettings`
+ *    (top-level on the table). Literal `WriteCapacityUnits` wins over
+ *    auto-scaling `MinCapacity`; both default to 5 if absent.
+ *  - ReadCapacityUnits → `Replicas[?Region==<region>].ReadProvisionedThroughputSettings`
+ *    (per-replica, the deploy region's setting). Same literal-vs-auto-
+ *    scaling-vs-default-5 precedence.
+ */
+export function derivePerCallProvisionedThroughput(
+  properties: Record<string, unknown>,
+  region: string
+): { ReadCapacityUnits: number; WriteCapacityUnits: number } {
+  const wps = properties['WriteProvisionedThroughputSettings'] as
+    | Record<string, unknown>
+    | undefined;
+  const writeAutoScaling = wps?.['WriteCapacityAutoScalingSettings'] as
+    | Record<string, unknown>
+    | undefined;
+  const writeCapacity = Number(
+    wps?.['WriteCapacityUnits'] ?? writeAutoScaling?.['MinCapacity'] ?? 5
+  );
+  const replicas = (properties['Replicas'] ?? []) as Array<Record<string, unknown>>;
+  const localReplica = replicas.find((r) => r['Region'] === region);
+  const localReadSettings = localReplica?.['ReadProvisionedThroughputSettings'] as
+    | Record<string, unknown>
+    | undefined;
+  const readAutoScaling = localReadSettings?.['ReadCapacityAutoScalingSettings'] as
+    | Record<string, unknown>
+    | undefined;
+  const readCapacity = Number(
+    localReadSettings?.['ReadCapacityUnits'] ?? readAutoScaling?.['MinCapacity'] ?? 5
+  );
+  return {
+    ReadCapacityUnits: readCapacity,
+    WriteCapacityUnits: writeCapacity,
+  };
+}
+
+export function diffReplicas(
+  oldReplicas: Array<Record<string, unknown>>,
+  newReplicas: Array<Record<string, unknown>>
+): {
+  added: Array<Record<string, unknown>>;
+  removed: Array<Record<string, unknown>>;
+  modified: Array<Record<string, unknown>>;
+} {
+  const oldByRegion = new Map<string, Record<string, unknown>>();
+  const newByRegion = new Map<string, Record<string, unknown>>();
+  for (const r of oldReplicas) {
+    const region = r['Region'] as string | undefined;
+    if (region) oldByRegion.set(region, r);
+  }
+  for (const r of newReplicas) {
+    const region = r['Region'] as string | undefined;
+    if (region) newByRegion.set(region, r);
+  }
+
+  const added: Array<Record<string, unknown>> = [];
+  const removed: Array<Record<string, unknown>> = [];
+  const modified: Array<Record<string, unknown>> = [];
+
+  for (const [region, replica] of newByRegion) {
+    if (!oldByRegion.has(region)) {
+      added.push(replica);
+    } else if (!deepEqual(oldByRegion.get(region), replica)) {
+      modified.push(replica);
+    }
+  }
+  for (const [region, replica] of oldByRegion) {
+    if (!newByRegion.has(region)) {
+      removed.push(replica);
+    }
+  }
+  return { added, removed, modified };
+}
+
+/**
+ * Diff CFn `GlobalSecondaryIndexes[]` arrays. Keyed by `IndexName`.
+ * Modified = same IndexName but other fields (ProvisionedThroughput /
+ * OnDemandThroughput) differ. KeySchema / Projection changes count as
+ * "modified" too — AWS rejects those via UpdateGSI, but the diff caller
+ * surfaces the AWS-side error rather than this helper second-guessing.
+ */
+export function diffGlobalSecondaryIndexes(
+  oldGsi: GlobalSecondaryIndex[],
+  newGsi: GlobalSecondaryIndex[]
+): {
+  added: GlobalSecondaryIndex[];
+  removed: GlobalSecondaryIndex[];
+  modified: GlobalSecondaryIndex[];
+} {
+  const oldByName = new Map<string, GlobalSecondaryIndex>();
+  const newByName = new Map<string, GlobalSecondaryIndex>();
+  for (const g of oldGsi) {
+    if (g.IndexName) oldByName.set(g.IndexName, g);
+  }
+  for (const g of newGsi) {
+    if (g.IndexName) newByName.set(g.IndexName, g);
+  }
+  const added: GlobalSecondaryIndex[] = [];
+  const removed: GlobalSecondaryIndex[] = [];
+  const modified: GlobalSecondaryIndex[] = [];
+  for (const [name, gsi] of newByName) {
+    if (!oldByName.has(name)) added.push(gsi);
+    else if (!deepEqual(oldByName.get(name), gsi)) modified.push(gsi);
+  }
+  for (const [name, gsi] of oldByName) {
+    if (!newByName.has(name)) removed.push(gsi);
+  }
+  return { added, removed, modified };
+}
+
+/**
+ * Structural equality via JSON.stringify. Both inputs are CFn-shape
+ * POJOs (no functions, no symbols, no cycles), so JSON round-trip is
+ * sufficient and free of the property-order pitfalls of deeper
+ * comparators. Object property order from `Object.keys` is insertion
+ * order in modern engines; AWS-SDK shapes are constructed by the SDK
+ * in stable order, so this is safe in practice.
+ */
+function deepEqual(a: unknown, b: unknown): boolean {
+  if (a === b) return true;
+  if (a === undefined || b === undefined) return false;
+  try {
+    return JSON.stringify(a) === JSON.stringify(b);
+  } catch {
+    return false;
   }
 }
