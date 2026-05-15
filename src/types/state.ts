@@ -234,6 +234,23 @@ export interface AttributeChange {
 }
 
 /**
+ * Returns true when a recorded `DeletionPolicy` should prevent cdkd from
+ * deleting the underlying AWS resource. `Retain` and `RetainExceptOnCreate`
+ * both keep the resource around; `Delete` / `Snapshot` / undefined all
+ * fall through to the normal delete path. Shared between
+ * `runDestroyForStack` (state-only, no template) and `DeployEngine`'s
+ * DELETE branch (state-preferred, template-fallback) so the two paths
+ * cannot drift on the policy semantics. Lives here (not in
+ * deploy-engine or destroy-runner) because both consumers already
+ * depend on this module — placing it in either would create a cycle.
+ */
+export function shouldRetainResource(
+  deletionPolicy: 'Delete' | 'Retain' | 'Snapshot' | 'RetainExceptOnCreate' | undefined
+): boolean {
+  return deletionPolicy === 'Retain' || deletionPolicy === 'RetainExceptOnCreate';
+}
+
+/**
  * Property-level change
  */
 export interface PropertyChange {

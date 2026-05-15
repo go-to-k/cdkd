@@ -7,6 +7,7 @@ import { DagExecutor } from './dag-executor.js';
 import type { CloudFormationTemplate, ResourceProvider } from '../types/resource.js';
 import {
   STATE_SCHEMA_VERSION_CURRENT,
+  shouldRetainResource,
   type StackState,
   type StateImportEntry,
   type ResourceState,
@@ -1769,10 +1770,21 @@ export class DeployEngine {
           throw new Error(`Cannot delete ${logicalId}: resource not found in state`);
         }
 
-        // Check DeletionPolicy from template
-        const deletionPolicy = template?.Resources?.[logicalId]?.DeletionPolicy;
-        if (deletionPolicy === 'Retain') {
-          this.logger.info(`Retaining ${logicalId} (${resourceType}) - DeletionPolicy: Retain`);
+        // Honor `DeletionPolicy: Retain` / `RetainExceptOnCreate`.
+        // State is source of truth as of schema v5+ (cdkd records the
+        // attribute on every successful create/update). The synth template
+        // is consulted as a fallback for pre-v5 state that has no
+        // `state.deletionPolicy` recorded yet — once that resource is
+        // re-deployed under v5, the state value takes over and stays
+        // authoritative even if the user removes the template attribute
+        // mid-flight (a destroy mid-PR would otherwise silently downgrade
+        // from Retain to Delete on a transient template edit).
+        const deletionPolicy =
+          currentResource.deletionPolicy ?? template?.Resources?.[logicalId]?.DeletionPolicy;
+        if (shouldRetainResource(deletionPolicy)) {
+          this.logger.info(
+            `Retaining ${logicalId} (${resourceType}) - DeletionPolicy: ${deletionPolicy}`
+          );
           delete stateResources[logicalId];
           break;
         }

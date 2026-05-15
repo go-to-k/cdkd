@@ -8,7 +8,7 @@ import { DagBuilder } from '../../analyzer/dag-builder.js';
 import { IMPLICIT_DELETE_DEPENDENCIES } from '../../analyzer/implicit-delete-deps.js';
 import { ProviderRegistry } from '../../provisioning/provider-registry.js';
 import { registerAllProviders } from '../../provisioning/register-providers.js';
-import type { StackState } from '../../types/state.js';
+import { shouldRetainResource, type StackState } from '../../types/state.js';
 import { withResourceDeadline } from '../../deployment/resource-deadline.js';
 import {
   DEFAULT_RESOURCE_WARN_AFTER_MS,
@@ -126,6 +126,26 @@ export interface DestroyRunnerResult {
   skippedEmpty: boolean;
   /** Number of resources successfully deleted (idempotent "already gone" counts). */
   deletedCount: number;
+  /**
+   * Number of resources skipped because they carry `DeletionPolicy: Retain`
+   * (or `RetainExceptOnCreate`) in cdkd state. The AWS resource is kept;
+   * only the cdkd state record for it is dropped (state.json is removed
+   * wholesale at the end of a clean destroy). v5+ records the attribute
+   * on every successful create/update via `state.deletionPolicy`; pre-v5
+   * state has `deletionPolicy: undefined` here, so this branch is a no-op
+   * for legacy state — preserves the pre-PR "delete every resource in
+   * state" behavior until the resource is re-deployed under v5.
+   * `runDestroyForStack` is template-less by design (both `cdkd destroy`
+   * and `cdkd state destroy` route through it after synth/state load), so
+   * the template's `DeletionPolicy` is NOT consulted here — only state
+   * is. The synth-driven `cdkd deploy` DELETE path inside DeployEngine
+   * does consult the template (state preferred, template fallback) for
+   * pre-v5-state mid-flight back-compat.
+   * Counted separately from `deletedCount` so the summary line
+   * distinguishes the user-intent "do not delete" from the AWS-side
+   * "delete succeeded".
+   */
+  retainedCount: number;
   /** Number of resources that failed to delete. State is preserved on >0 errors. */
   errorCount: number;
 }
@@ -241,6 +261,7 @@ export async function runDestroyForStack(
     cancelled: false,
     skippedEmpty: false,
     deletedCount: 0,
+    retainedCount: 0,
     errorCount: 0,
   };
 
@@ -465,6 +486,20 @@ export async function runDestroyForStack(
           return;
         }
 
+        // Schema v5+: honor `state.deletionPolicy: Retain` / `RetainExceptOnCreate`.
+        // The AWS resource is kept; only the cdkd state record is dropped
+        // (state.json is removed wholesale at the end of a clean destroy).
+        // Pre-v5 state has `deletionPolicy: undefined` here, so this branch
+        // is a no-op on legacy state — preserves the pre-PR "delete every
+        // resource in state" behavior for users who haven't redeployed yet.
+        if (shouldRetainResource(resource.deletionPolicy)) {
+          logger.info(
+            `  ⊘ ${logicalId} (${resource.resourceType}) retained — DeletionPolicy: ${resource.deletionPolicy}`
+          );
+          result.retainedCount++;
+          return;
+        }
+
         const baseLabel = `Deleting ${logicalId} (${resource.resourceType})`;
         renderer.addTask(logicalId, baseLabel);
         try {
@@ -618,13 +653,14 @@ export async function runDestroyForStack(
     // PartialFailureError in src/utils/error-handler.ts. Without the
     // visual marker, a partial failure scrolls past in the same shape
     // as a successful destroy and gets missed in CI / bench output.
+    const retainedSuffix = result.retainedCount > 0 ? `, ${result.retainedCount} retained` : '';
     if (result.errorCount === 0) {
       logger.info(
-        `\n✓ Stack ${stackName} destroyed (${result.deletedCount} deleted, ${result.errorCount} errors)`
+        `\n✓ Stack ${stackName} destroyed (${result.deletedCount} deleted${retainedSuffix}, ${result.errorCount} errors)`
       );
     } else {
       logger.warn(
-        `\n⚠ Stack ${stackName} partially destroyed (${result.deletedCount} deleted, ${result.errorCount} errors). ` +
+        `\n⚠ Stack ${stackName} partially destroyed (${result.deletedCount} deleted${retainedSuffix}, ${result.errorCount} errors). ` +
           `State preserved — re-run 'cdkd destroy' / 'cdkd state destroy' to clean up.`
       );
     }

@@ -241,9 +241,16 @@ refreshes the cdkd state record only — no provider call. **v4 → v5
 upgrade is automatic on the next `cdkd deploy`**: state-update sites write
 the current template attributes (or `undefined` when the template does not
 carry the attribute) into the resource record, and the next deploy's
-comparator has a real baseline to diff against. `cdkd destroy`'s existing
-`DeletionPolicy: Retain` skip continues to read the template directly, so
-the v5 fields are not yet load-bearing on the destroy path.
+comparator has a real baseline to diff against. **`cdkd destroy` and
+`cdkd state destroy`** honor `state.deletionPolicy` for the
+`Retain` / `RetainExceptOnCreate` skip (the AWS resource is kept; the
+cdkd state record is dropped). `cdkd destroy` (synth-driven) falls
+back to the synth template's `DeletionPolicy` attribute when state has
+no recorded value, preserving pre-v5 back-compat mid-flight. `cdkd
+state destroy` is template-less by design and reads `state.deletionPolicy`
+only — pre-v5 state therefore behaves as before (every resource is
+deleted, since there is no signal to skip on; redeploy under v5 to
+populate the field).
 
 > **Upgrade note (v4 → v5)** — the **first** `cdkd deploy` after
 > upgrading from a v0.99.x binary will classify every resource whose
