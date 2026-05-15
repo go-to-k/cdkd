@@ -533,6 +533,10 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
 
     try {
       await this.dynamoDBClient.send(new DeleteTableCommand({ TableName: physicalId }));
+      // DeleteTable is async; wait until DescribeTable returns
+      // ResourceNotFoundException so siblings / verify steps observing
+      // the table after destroy see it actually gone.
+      await this.waitForTableGone(physicalId);
       this.logger.debug(`Successfully deleted DynamoDB GlobalTable ${logicalId}`);
     } catch (error) {
       if (error instanceof ResourceNotFoundException) {
@@ -899,5 +903,29 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
     throw new Error(
       `Replica ${region} for table ${tableName} did not disappear within ${maxAttempts}s`
     );
+  }
+
+  /**
+   * Wait for `DescribeTable` to return `ResourceNotFoundException`,
+   * confirming the table has actually been removed. `DeleteTable` is
+   * async — the call returns immediately with `TableStatus: DELETING`
+   * and AWS only removes the table some seconds later. Without this
+   * wait, downstream observers (siblings deleted in the same destroy
+   * run, integ scripts that re-check via `aws dynamodb describe-table`)
+   * see "destroy succeeded" but the table is still listed by AWS.
+   * Typical small-table delete completes in 5–30s; cap at 10 min for
+   * worst-case large-table / replica-cascade scenarios.
+   */
+  private async waitForTableGone(tableName: string, maxAttempts = 600): Promise<void> {
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      try {
+        await this.dynamoDBClient.send(new DescribeTableCommand({ TableName: tableName }));
+        await new Promise((resolve) => setTimeout(resolve, 1000));
+      } catch (err) {
+        if (err instanceof ResourceNotFoundException) return;
+        throw err;
+      }
+    }
+    throw new Error(`Table ${tableName} did not disappear within ${maxAttempts}s`);
   }
 }

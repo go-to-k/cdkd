@@ -244,13 +244,18 @@ describe('DynamoDBGlobalTableProvider round-trip', () => {
         Table: { TableName: TABLE_NAME, Replicas: [{ RegionName: 'us-east-1' }] },
       }); // DescribeTable
       mockSend.mockResolvedValueOnce({}); // DeleteTable
+      mockSend.mockRejectedValueOnce(newRnf()); // waitForTableGone -> RNF
 
       await provider.delete('X', TABLE_NAME, RESOURCE_TYPE, undefined, {
         expectedRegion: 'us-east-1',
       });
 
       const names = mockSend.mock.calls.map((c) => c[0].constructor.name);
-      expect(names).toEqual(['DescribeTableCommand', 'DeleteTableCommand']);
+      expect(names).toEqual([
+        'DescribeTableCommand',
+        'DeleteTableCommand',
+        'DescribeTableCommand',
+      ]);
     });
 
     it('drops non-local replicas via UpdateTable Delete before DeleteTable', async () => {
@@ -269,6 +274,8 @@ describe('DynamoDBGlobalTableProvider round-trip', () => {
       });
       // DeleteTable
       mockSend.mockResolvedValueOnce({});
+      // waitForTableGone — table now gone
+      mockSend.mockRejectedValueOnce(newRnf());
 
       await provider.delete('X', TABLE_NAME, RESOURCE_TYPE, undefined, {
         expectedRegion: 'us-east-1',
@@ -277,8 +284,8 @@ describe('DynamoDBGlobalTableProvider round-trip', () => {
       expect(mockSend.mock.calls[1]?.[0]).toBeInstanceOf(UpdateTableCommand);
       const updateInput = (mockSend.mock.calls[1]?.[0] as UpdateTableCommand).input;
       expect(updateInput.ReplicaUpdates).toEqual([{ Delete: { RegionName: 'eu-west-1' } }]);
-      const last = mockSend.mock.calls[3]?.[0];
-      expect(last).toBeInstanceOf(DeleteTableCommand);
+      const deleteCall = mockSend.mock.calls[3]?.[0];
+      expect(deleteCall).toBeInstanceOf(DeleteTableCommand);
     });
 
     it('treats ResourceNotFoundException as idempotent success when region matches state', async () => {
@@ -314,6 +321,7 @@ describe('DynamoDBGlobalTableProvider round-trip', () => {
         Table: { TableName: TABLE_NAME, Replicas: [{ RegionName: 'us-east-1' }] },
       }); // DescribeTable
       mockSend.mockResolvedValueOnce({}); // DeleteTable
+      mockSend.mockRejectedValueOnce(newRnf()); // waitForTableGone -> RNF
 
       await provider.delete('X', TABLE_NAME, RESOURCE_TYPE, undefined, {
         expectedRegion: 'us-east-1',
