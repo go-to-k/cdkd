@@ -1,3 +1,10 @@
+## [0.102.2](https://github.com/go-to-k/cdkd/compare/v0.102.1...v0.102.2) (2026-05-15)
+
+
+### Bug Fixes
+
+* **apigateway:** clean up partial Method create on wiring failure ([#374](https://github.com/go-to-k/cdkd/issues/374)) ([0c18317](https://github.com/go-to-k/cdkd/commit/0c1831705d6f4536d8ac64ede761aa7b9a948a74))
+
 ## [0.102.1](https://github.com/go-to-k/cdkd/compare/v0.102.0...v0.102.1) (2026-05-15)
 
 
