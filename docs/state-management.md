@@ -245,6 +245,17 @@ comparator has a real baseline to diff against. `cdkd destroy`'s existing
 `DeletionPolicy: Retain` skip continues to read the template directly, so
 the v5 fields are not yet load-bearing on the destroy path.
 
+> **Upgrade note (v4 → v5)** — the **first** `cdkd deploy` after
+> upgrading from a v0.99.x binary will classify every resource whose
+> template carries a `DeletionPolicy` or `UpdateReplacePolicy` as
+> `UPDATE` and print one `↻ <logicalId> attribute update: ...` line +
+> a `Updated: N (metadata)` summary entry. **No AWS API call fires for
+> any of these resources** — cdkd is just recording the attribute value
+> into its own state file so the next diff has a baseline. The deploy
+> finishes in seconds regardless of resource count. Subsequent deploys
+> only surface `UPDATE` for resources whose template attribute actually
+> changed.
+
 ## State Schema
 
 ### StackState (`state.json`)
