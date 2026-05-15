@@ -1,3 +1,10 @@
+## [0.102.1](https://github.com/go-to-k/cdkd/compare/v0.102.0...v0.102.1) (2026-05-15)
+
+
+### Bug Fixes
+
+* **apigateway:** create MethodResponses before IntegrationResponses ([#373](https://github.com/go-to-k/cdkd/issues/373)) ([9182499](https://github.com/go-to-k/cdkd/commit/9182499d858866a56813697fde3241853e8cb992))
+
 # [0.102.0](https://github.com/go-to-k/cdkd/compare/v0.101.2...v0.102.0) (2026-05-15)
 
 
