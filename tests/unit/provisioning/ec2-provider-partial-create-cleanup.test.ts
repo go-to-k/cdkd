@@ -1,10 +1,12 @@
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 
-const { mockSend, warnSpy, waitUntilInstanceRunningMock } = vi.hoisted(() => ({
-  mockSend: vi.fn(),
-  warnSpy: vi.fn(),
-  waitUntilInstanceRunningMock: vi.fn(),
-}));
+const { mockSend, warnSpy, waitUntilInstanceRunningMock, waitUntilInstanceTerminatedMock } =
+  vi.hoisted(() => ({
+    mockSend: vi.fn(),
+    warnSpy: vi.fn(),
+    waitUntilInstanceRunningMock: vi.fn(),
+    waitUntilInstanceTerminatedMock: vi.fn(() => Promise.resolve({})),
+  }));
 
 vi.mock('../../../src/utils/aws-clients.js', () => ({
   getAwsClients: () => ({
@@ -37,7 +39,7 @@ vi.mock('@aws-sdk/client-ec2', async (importOriginal) => {
   return {
     ...actual,
     waitUntilInstanceRunning: waitUntilInstanceRunningMock,
-    waitUntilInstanceTerminated: vi.fn(() => Promise.resolve({})),
+    waitUntilInstanceTerminated: waitUntilInstanceTerminatedMock,
   };
 });
 
@@ -50,6 +52,8 @@ describe('EC2Provider createVpc partial-create cleanup (Issue #376)', () => {
     mockSend.mockReset();
     warnSpy.mockReset();
     waitUntilInstanceRunningMock.mockReset();
+    waitUntilInstanceTerminatedMock.mockReset();
+    waitUntilInstanceTerminatedMock.mockResolvedValue({});
     provider = new EC2Provider();
   });
 
@@ -106,6 +110,9 @@ describe('EC2Provider createSubnet partial-create cleanup (Issue #376)', () => {
   beforeEach(() => {
     mockSend.mockReset();
     warnSpy.mockReset();
+    waitUntilInstanceRunningMock.mockReset();
+    waitUntilInstanceTerminatedMock.mockReset();
+    waitUntilInstanceTerminatedMock.mockResolvedValue({});
     provider = new EC2Provider();
   });
 
@@ -181,6 +188,9 @@ describe('EC2Provider createSecurityGroup partial-create cleanup (Issue #376)', 
   beforeEach(() => {
     mockSend.mockReset();
     warnSpy.mockReset();
+    waitUntilInstanceRunningMock.mockReset();
+    waitUntilInstanceTerminatedMock.mockReset();
+    waitUntilInstanceTerminatedMock.mockResolvedValue({});
     provider = new EC2Provider();
   });
 
@@ -247,6 +257,8 @@ describe('EC2Provider createInstance partial-create cleanup (Issue #376)', () =>
     mockSend.mockReset();
     warnSpy.mockReset();
     waitUntilInstanceRunningMock.mockReset();
+    waitUntilInstanceTerminatedMock.mockReset();
+    waitUntilInstanceTerminatedMock.mockResolvedValue({});
     provider = new EC2Provider();
   });
 
@@ -267,10 +279,10 @@ describe('EC2Provider createInstance partial-create cleanup (Issue #376)', () =>
     const names = mockSend.mock.calls.map((c) => c[0].constructor.name);
     expect(names).toEqual(['RunInstancesCommand', 'TerminateInstancesCommand']);
     expect(mockSend.mock.calls[1][0].input).toEqual({ InstanceIds: ['i-aaa'] });
-    // Verify we do NOT wait for terminated state in the cleanup path.
-    // (waitUntilInstanceTerminated is mocked but should not be called by
-    // the cleanup branch — the deploy is already failing, no need to
-    // block another 30-120s on terminate confirmation.)
+    // Lock in the no-wait contract: the cleanup path must NOT call
+    // waitUntilInstanceTerminated. The deploy is already failing, so
+    // blocking another 30-120s on terminate confirmation is wrong.
+    expect(waitUntilInstanceTerminatedMock).not.toHaveBeenCalled();
   });
 
   it('does NOT issue TerminateInstancesCommand when RunInstances itself fails', async () => {

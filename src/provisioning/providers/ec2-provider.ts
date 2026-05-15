@@ -2206,6 +2206,11 @@ export class EC2Provider implements ResourceProvider {
 
       const instance = response.Instances?.[0];
       if (!instance?.InstanceId) {
+        // Theoretical AWS SDK contract violation: RunInstances returned
+        // success but with no Instance. Cannot clean up — we have no
+        // InstanceId to terminate. This path has never been observed in
+        // practice. If it does happen, the orphan must be tracked down via
+        // billing console.
         throw new Error('No instance ID returned from RunInstances');
       }
 
