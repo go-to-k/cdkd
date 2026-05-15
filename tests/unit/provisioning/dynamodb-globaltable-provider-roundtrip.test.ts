@@ -70,7 +70,7 @@ describe('DynamoDBGlobalTableProvider round-trip', () => {
   });
 
   describe('handledProperties', () => {
-    it('lists the 15 CFn properties cdkd manages', () => {
+    it('lists the 14 CFn properties cdkd manages (Tags is per-replica, not top-level)', () => {
       const set = provider.handledProperties!.get('AWS::DynamoDB::GlobalTable')!;
       expect(set).toBeDefined();
       // Must include the full MVP property surface so the deploy engine
@@ -224,6 +224,56 @@ describe('DynamoDBGlobalTableProvider round-trip', () => {
         Enabled: true,
         AttributeName: 'expiresAt',
       });
+    });
+
+    it('forwards per-replica Tags to CreateTableCommand.Tags for the local region (post-fix regression)', async () => {
+      mockSend.mockResolvedValueOnce({}); // CreateTable
+      mockSend.mockResolvedValueOnce({
+        Table: { TableName: 'X', TableArn: TABLE_ARN, TableStatus: 'ACTIVE' },
+      });
+
+      await provider.create('X', RESOURCE_TYPE, {
+        KeySchema: [{ AttributeName: 'pk', KeyType: 'HASH' }],
+        AttributeDefinitions: [{ AttributeName: 'pk', AttributeType: 'S' }],
+        BillingMode: 'PAY_PER_REQUEST',
+        Replicas: [
+          {
+            Region: 'us-east-1',
+            Tags: [
+              { Key: 'Env', Value: 'Prod' },
+              { Key: 'Owner', Value: 'team-x' },
+            ],
+          },
+        ],
+      });
+
+      const createCall = mockSend.mock.calls[0]?.[0] as CreateTableCommand;
+      expect(createCall).toBeInstanceOf(CreateTableCommand);
+      // CFn `AWS::DynamoDB::GlobalTable` has no top-level Tags — they
+      // live inside the local replica entry. cdkd extracts them and
+      // passes via the SDK's `CreateTableCommand.Tags` field for the
+      // local region (no separate TagResource round-trip).
+      expect(createCall.input.Tags).toEqual([
+        { Key: 'Env', Value: 'Prod' },
+        { Key: 'Owner', Value: 'team-x' },
+      ]);
+    });
+
+    it('skips Tags wire-up when the local replica entry has no Tags', async () => {
+      mockSend.mockResolvedValueOnce({}); // CreateTable
+      mockSend.mockResolvedValueOnce({
+        Table: { TableName: 'X', TableArn: TABLE_ARN, TableStatus: 'ACTIVE' },
+      });
+
+      await provider.create('X', RESOURCE_TYPE, {
+        KeySchema: [{ AttributeName: 'pk', KeyType: 'HASH' }],
+        AttributeDefinitions: [{ AttributeName: 'pk', AttributeType: 'S' }],
+        BillingMode: 'PAY_PER_REQUEST',
+        Replicas: [{ Region: 'us-east-1' }],
+      });
+
+      const createCall = mockSend.mock.calls[0]?.[0] as CreateTableCommand;
+      expect(createCall.input.Tags).toBeUndefined();
     });
 
     it('rejects when KeySchema is missing', async () => {
@@ -528,18 +578,218 @@ describe('DynamoDBGlobalTableProvider round-trip', () => {
       ]);
     });
 
-    it('no-op when nothing differs (wait + describe + describe only)', async () => {
+    it('no-op when nothing differs — strictly no UpdateTable / TagResource / UntagResource / UpdateTimeToLive issued', async () => {
       mockSend.mockResolvedValueOnce({ Table: { TableStatus: 'ACTIVE' } }); // wait
       mockSend.mockResolvedValueOnce({ Table: { TableArn: TABLE_ARN } }); // DescribeTable for ARN (tag diff)
       mockSend.mockResolvedValueOnce({ Table: { TableArn: TABLE_ARN } }); // final describe
 
       await provider.update('X', TABLE_NAME, RESOURCE_TYPE, {}, {});
       const names = mockSend.mock.calls.map((c) => c[0].constructor.name);
+      // Stronger assertion (per PR #388 review): pin down the no-op
+      // contract by asserting no mutating SDK call was issued, not
+      // just that the queued mocks happened to match.
+      expect(names.filter((n) => n === 'UpdateTableCommand')).toEqual([]);
+      expect(names.filter((n) => n === 'TagResourceCommand')).toEqual([]);
+      expect(names.filter((n) => n === 'UntagResourceCommand')).toEqual([]);
+      expect(names.filter((n) => n === 'UpdateTimeToLiveCommand')).toEqual([]);
+      // Sanity: only the 3 DescribeTable reads.
       expect(names).toEqual([
-        'DescribeTableCommand', // wait
-        'DescribeTableCommand', // tag diff
-        'DescribeTableCommand', // final describe
+        'DescribeTableCommand',
+        'DescribeTableCommand',
+        'DescribeTableCommand',
       ]);
+    });
+
+    it('BillingMode default matches create() — no false-fire flip when both sides omit BillingMode (regression for PR #388 blocker)', async () => {
+      // Pre-fix: update() defaulted missing BillingMode to PROVISIONED
+      // while create() defaulted to PAY_PER_REQUEST, so a redeploy of
+      // a table with no explicit BillingMode in the template would
+      // fire a phantom PROVISIONED -> PAY_PER_REQUEST flip every time.
+      // Both sides should now default to PAY_PER_REQUEST and skip the
+      // BillingMode UpdateTable when neither old nor new sets it.
+      mockSend.mockResolvedValueOnce({ Table: { TableStatus: 'ACTIVE' } }); // wait
+      mockSend.mockResolvedValueOnce({ Table: { TableArn: TABLE_ARN } }); // DescribeTable for tag diff
+      mockSend.mockResolvedValueOnce({ Table: { TableArn: TABLE_ARN } }); // final describe
+
+      await provider.update(
+        'X',
+        TABLE_NAME,
+        RESOURCE_TYPE,
+        // No BillingMode on either side -> both default to PAY_PER_REQUEST.
+        { Replicas: [{ Region: 'us-east-1' }] },
+        { Replicas: [{ Region: 'us-east-1' }] }
+      );
+      const names = mockSend.mock.calls.map((c) => c[0].constructor.name);
+      expect(names.filter((n) => n === 'UpdateTableCommand')).toEqual([]);
+    });
+
+    it('issues GSI Delete via GlobalSecondaryIndexUpdates: [{Delete}]', async () => {
+      mockSend.mockResolvedValueOnce({ Table: { TableStatus: 'ACTIVE' } }); // wait
+      mockSend.mockResolvedValueOnce({ Table: { TableArn: TABLE_ARN } }); // DescribeTable for tag diff
+      mockSend.mockResolvedValueOnce({}); // UpdateTable GSI Delete
+      mockSend.mockResolvedValueOnce({ Table: { TableStatus: 'ACTIVE' } }); // waitForTableActiveAfterUpdate
+      mockSend.mockResolvedValueOnce({ Table: { TableArn: TABLE_ARN } }); // final describe
+
+      await provider.update(
+        'X',
+        TABLE_NAME,
+        RESOURCE_TYPE,
+        { GlobalSecondaryIndexes: [] },
+        {
+          GlobalSecondaryIndexes: [
+            {
+              IndexName: 'OldGsi',
+              KeySchema: [{ AttributeName: 'pk', KeyType: 'HASH' }],
+              Projection: { ProjectionType: 'ALL' },
+            },
+          ],
+        }
+      );
+      const updateCalls = mockSend.mock.calls
+        .map((c) => c[0])
+        .filter((c) => c instanceof UpdateTableCommand) as UpdateTableCommand[];
+      expect(updateCalls).toHaveLength(1);
+      expect(updateCalls[0]!.input.GlobalSecondaryIndexUpdates).toEqual([
+        { Delete: { IndexName: 'OldGsi' } },
+      ]);
+    });
+
+    it('issues GSI Update via GlobalSecondaryIndexUpdates: [{Update}] when ProvisionedThroughput differs', async () => {
+      mockSend.mockResolvedValueOnce({ Table: { TableStatus: 'ACTIVE' } }); // wait
+      mockSend.mockResolvedValueOnce({ Table: { TableArn: TABLE_ARN } }); // DescribeTable for tag diff
+      mockSend.mockResolvedValueOnce({}); // UpdateTable GSI Modify
+      mockSend.mockResolvedValueOnce({ Table: { TableStatus: 'ACTIVE' } }); // waitForTableActiveAfterUpdate
+      mockSend.mockResolvedValueOnce({ Table: { TableArn: TABLE_ARN } }); // final describe
+
+      await provider.update(
+        'X',
+        TABLE_NAME,
+        RESOURCE_TYPE,
+        {
+          GlobalSecondaryIndexes: [
+            {
+              IndexName: 'G1',
+              KeySchema: [{ AttributeName: 'pk', KeyType: 'HASH' }],
+              Projection: { ProjectionType: 'ALL' },
+              ProvisionedThroughput: { ReadCapacityUnits: 20, WriteCapacityUnits: 20 },
+            },
+          ],
+        },
+        {
+          GlobalSecondaryIndexes: [
+            {
+              IndexName: 'G1',
+              KeySchema: [{ AttributeName: 'pk', KeyType: 'HASH' }],
+              Projection: { ProjectionType: 'ALL' },
+              ProvisionedThroughput: { ReadCapacityUnits: 5, WriteCapacityUnits: 5 },
+            },
+          ],
+        }
+      );
+      const updateCalls = mockSend.mock.calls
+        .map((c) => c[0])
+        .filter((c) => c instanceof UpdateTableCommand) as UpdateTableCommand[];
+      expect(updateCalls).toHaveLength(1);
+      const gsiUpdate = updateCalls[0]!.input.GlobalSecondaryIndexUpdates?.[0];
+      expect(gsiUpdate?.Update?.IndexName).toBe('G1');
+      expect(gsiUpdate?.Update?.ProvisionedThroughput).toEqual({
+        ReadCapacityUnits: 20,
+        WriteCapacityUnits: 20,
+      });
+    });
+
+    it('issues UpdateReplica for cross-region replica with KMSMasterKeyId change (non-Tags modify path)', async () => {
+      mockSend.mockResolvedValueOnce({ Table: { TableStatus: 'ACTIVE' } }); // wait
+      mockSend.mockResolvedValueOnce({ Table: { TableArn: TABLE_ARN } }); // DescribeTable for tag diff
+      mockSend.mockResolvedValueOnce({}); // UpdateTable Replica Update
+      mockSend.mockResolvedValueOnce({
+        Table: {
+          Replicas: [
+            { RegionName: 'us-east-1', ReplicaStatus: 'ACTIVE' },
+            { RegionName: 'eu-west-1', ReplicaStatus: 'ACTIVE' },
+          ],
+        },
+      }); // waitForReplicaActive
+      mockSend.mockResolvedValueOnce({ Table: { TableArn: TABLE_ARN } }); // final describe
+
+      await provider.update(
+        'X',
+        TABLE_NAME,
+        RESOURCE_TYPE,
+        {
+          Replicas: [
+            { Region: 'us-east-1' },
+            { Region: 'eu-west-1', KMSMasterKeyId: 'alias/new' },
+          ],
+        },
+        {
+          Replicas: [
+            { Region: 'us-east-1' },
+            { Region: 'eu-west-1', KMSMasterKeyId: 'alias/old' },
+          ],
+        }
+      );
+      const updateCalls = mockSend.mock.calls
+        .map((c) => c[0])
+        .filter((c) => c instanceof UpdateTableCommand) as UpdateTableCommand[];
+      expect(updateCalls).toHaveLength(1);
+      const ru = updateCalls[0]!.input.ReplicaUpdates?.[0];
+      expect(ru?.Update?.RegionName).toBe('eu-west-1');
+      expect(ru?.Update?.KMSMasterKeyId).toBe('alias/new');
+    });
+
+    it('skips UpdateReplica when a cross-region replica has only Tags changes (AWS rejects empty Update; documented limitation)', async () => {
+      mockSend.mockResolvedValueOnce({ Table: { TableStatus: 'ACTIVE' } }); // wait
+      mockSend.mockResolvedValueOnce({ Table: { TableArn: TABLE_ARN } }); // DescribeTable for tag diff
+      mockSend.mockResolvedValueOnce({ Table: { TableArn: TABLE_ARN } }); // final describe
+
+      await provider.update(
+        'X',
+        TABLE_NAME,
+        RESOURCE_TYPE,
+        {
+          Replicas: [
+            { Region: 'us-east-1' },
+            { Region: 'eu-west-1', Tags: [{ Key: 'New', Value: 'A' }] },
+          ],
+        },
+        {
+          Replicas: [
+            { Region: 'us-east-1' },
+            { Region: 'eu-west-1', Tags: [{ Key: 'Old', Value: 'B' }] },
+          ],
+        }
+      );
+      // No UpdateTable issued for the cross-region replica — the
+      // modified-replica path detects the empty Update action (only
+      // Tags changed) and skips to avoid AWS's ValidationException.
+      const updateCalls = mockSend.mock.calls
+        .map((c) => c[0])
+        .filter((c) => c instanceof UpdateTableCommand) as UpdateTableCommand[];
+      expect(updateCalls).toHaveLength(0);
+    });
+
+    it('issues UpdateTimeToLive with Enabled=false when template removes TimeToLiveSpecification', async () => {
+      mockSend.mockResolvedValueOnce({ Table: { TableStatus: 'ACTIVE' } }); // wait
+      mockSend.mockResolvedValueOnce({ Table: { TableArn: TABLE_ARN } }); // DescribeTable for tag diff
+      mockSend.mockResolvedValueOnce({}); // UpdateTimeToLive disable
+      mockSend.mockResolvedValueOnce({ Table: { TableArn: TABLE_ARN } }); // final describe
+
+      await provider.update(
+        'X',
+        TABLE_NAME,
+        RESOURCE_TYPE,
+        {},
+        { TimeToLiveSpecification: { AttributeName: 'expiresAt', Enabled: true } }
+      );
+      const ttlCalls = mockSend.mock.calls
+        .map((c) => c[0])
+        .filter((c) => c instanceof UpdateTimeToLiveCommand) as UpdateTimeToLiveCommand[];
+      expect(ttlCalls).toHaveLength(1);
+      expect(ttlCalls[0]!.input.TimeToLiveSpecification).toEqual({
+        Enabled: false,
+        AttributeName: 'expiresAt',
+      });
     });
   });
 

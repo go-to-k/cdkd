@@ -201,32 +201,10 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
     // when present, else default to 5/5. Read capacity is per-replica;
     // we use the deploy-region replica's setting when available.
     if (billingMode === 'PROVISIONED') {
-      const wps = properties['WriteProvisionedThroughputSettings'] as
-        | Record<string, unknown>
-        | undefined;
-      const writeAutoScaling = wps?.['WriteCapacityAutoScalingSettings'] as
-        | Record<string, unknown>
-        | undefined;
-      // CFn's GlobalTable shape allows a literal `WriteCapacityUnits` next
-      // to the auto-scaling block (TableV2 doesn't emit it, but
-      // hand-authored templates may). Honor whichever was supplied.
-      const writeCapacity = Number(
-        wps?.['WriteCapacityUnits'] ?? writeAutoScaling?.['MinCapacity'] ?? 5
+      createParams.ProvisionedThroughput = derivePerCallProvisionedThroughput(
+        properties,
+        currentRegion
       );
-      const localReplica = replicas.find((r) => r['Region'] === currentRegion);
-      const localReadSettings = localReplica?.['ReadProvisionedThroughputSettings'] as
-        | Record<string, unknown>
-        | undefined;
-      const readAutoScaling = localReadSettings?.['ReadCapacityAutoScalingSettings'] as
-        | Record<string, unknown>
-        | undefined;
-      const readCapacity = Number(
-        localReadSettings?.['ReadCapacityUnits'] ?? readAutoScaling?.['MinCapacity'] ?? 5
-      );
-      createParams.ProvisionedThroughput = {
-        ReadCapacityUnits: readCapacity,
-        WriteCapacityUnits: writeCapacity,
-      };
     }
 
     // Stream specification. GlobalTable cross-region replication requires
@@ -306,11 +284,8 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
     // we apply them via `CreateTable`'s top-level `Tags` field (avoids
     // a separate `TagResource` round-trip). Cross-region replicas'
     // Tags require per-region SDK clients and are deferred.
-    const localReplicaTags = (() => {
-      const replicas = (properties['Replicas'] ?? []) as Array<Record<string, unknown>>;
-      const local = replicas.find((r) => r['Region'] === currentRegion);
-      return local?.['Tags'] as Tag[] | undefined;
-    })();
+    const localReplicaForTags = replicas.find((r) => r['Region'] === currentRegion);
+    const localReplicaTags = localReplicaForTags?.['Tags'] as Tag[] | undefined;
     if (localReplicaTags && localReplicaTags.length > 0) {
       createParams.Tags = localReplicaTags;
     }
@@ -380,10 +355,45 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       // before re-throwing so the user is not billed for a phantom
       // resource. Cleanup-step failures escalate to WARN with a recovery
       // command; the original error always propagates.
+      //
+      // IMPORTANT: if any non-local replicas were added before the
+      // failure (replica-add loop is serial and partially-progressed
+      // failures DO happen), AWS rejects `DeleteTable` on a
+      // multi-replica table. We must drop the additional replicas
+      // first — mirror the `delete()` shape: DescribeTable → per-region
+      // Delete ReplicaUpdates → DeleteTable. Each step is best-effort
+      // so a single sub-failure does not block the rest of the cleanup.
       this.logger.warn(
         `Wiring failed after CreateTable for ${tableName}; attempting best-effort cleanup`
       );
       try {
+        const describe = await this.dynamoDBClient.send(
+          new DescribeTableCommand({ TableName: tableName })
+        );
+        const replicasForCleanup = describe.Table?.Replicas ?? [];
+        for (const replica of replicasForCleanup) {
+          const region = replica.RegionName;
+          if (!region || region === currentRegion) continue;
+          try {
+            await this.dynamoDBClient.send(
+              new UpdateTableCommand({
+                TableName: tableName,
+                ReplicaUpdates: [{ Delete: { RegionName: region } }],
+              })
+            );
+            await this.waitForReplicaGone(tableName, region, logicalId);
+          } catch (replicaCleanupErr) {
+            const msg =
+              replicaCleanupErr instanceof Error
+                ? replicaCleanupErr.message
+                : String(replicaCleanupErr);
+            this.logger.warn(
+              `Partial-create cleanup: failed to drop replica ${region} on ${tableName}: ${msg}. ` +
+                `Run: aws dynamodb update-table --table-name ${tableName} ` +
+                `--replica-updates 'Delete={RegionName=${region}}' --region ${currentRegion}`
+            );
+          }
+        }
         await this.dynamoDBClient.send(new DeleteTableCommand({ TableName: tableName }));
       } catch (cleanupErr) {
         const cleanupMsg = cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr);
@@ -536,6 +546,11 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       );
     }
 
+    // Resolve the client region ONCE for the whole update — the Tags
+    // diff step, the BillingMode flip's capacity derivation, and the
+    // Replicas diff loop all need it.
+    const currentRegion = (await this.dynamoDBClient.config.region()) ?? '';
+
     try {
       // 1. Wait for ACTIVE before any update — defensive against rare
       // states where a previous deploy left the table mid-transition.
@@ -552,12 +567,11 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
         new DescribeTableCommand({ TableName: physicalId })
       );
       const tableArn = describeResp.Table?.TableArn;
-      const localRegionForTags = (await this.dynamoDBClient.config.region()) ?? '';
       const extractLocalTags = (
         props: Record<string, unknown>
       ): Array<{ Key?: string; Value?: string }> | undefined => {
         const replicas = (props['Replicas'] ?? []) as Array<Record<string, unknown>>;
-        const local = replicas.find((r) => r['Region'] === localRegionForTags);
+        const local = replicas.find((r) => r['Region'] === currentRegion);
         return local?.['Tags'] as Array<{ Key?: string; Value?: string }> | undefined;
       };
       if (tableArn) {
@@ -634,27 +648,27 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       }
 
       // 4. BillingMode flip (own UpdateTable per AWS state-machine rule).
-      const oldBilling = (previousProperties['BillingMode'] as string | undefined) ?? 'PROVISIONED';
-      const newBilling = (properties['BillingMode'] as string | undefined) ?? 'PROVISIONED';
+      // Defaults must match `create()` (line 183: `PAY_PER_REQUEST`) so
+      // a template with no explicit `BillingMode` doesn't false-fire
+      // a PROVISIONED → PAY_PER_REQUEST diff on every update of a
+      // PAY_PER_REQUEST table.
+      const oldBilling =
+        (previousProperties['BillingMode'] as string | undefined) ?? 'PAY_PER_REQUEST';
+      const newBilling = (properties['BillingMode'] as string | undefined) ?? 'PAY_PER_REQUEST';
       if (oldBilling !== newBilling) {
         const billingUpdate: UpdateTableCommandInput = {
           TableName: physicalId,
           BillingMode: newBilling as 'PROVISIONED' | 'PAY_PER_REQUEST',
         };
         if (newBilling === 'PROVISIONED') {
-          const wps = properties['WriteProvisionedThroughputSettings'] as
-            | Record<string, unknown>
-            | undefined;
-          const writeAutoScaling = wps?.['WriteCapacityAutoScalingSettings'] as
-            | Record<string, unknown>
-            | undefined;
-          const writeCapacity = Number(
-            wps?.['WriteCapacityUnits'] ?? writeAutoScaling?.['MinCapacity'] ?? 5
+          // Mirror create()'s capacity derivation so a user template
+          // with non-default read/write capacity is preserved across a
+          // PAY_PER_REQUEST → PROVISIONED flip (the previous hardcoded
+          // `ReadCapacityUnits: 5` silently overrode the template).
+          billingUpdate.ProvisionedThroughput = derivePerCallProvisionedThroughput(
+            properties,
+            currentRegion
           );
-          billingUpdate.ProvisionedThroughput = {
-            ReadCapacityUnits: 5,
-            WriteCapacityUnits: writeCapacity,
-          };
         }
         await this.dynamoDBClient.send(new UpdateTableCommand(billingUpdate));
         await this.waitForTableActiveAfterUpdate(physicalId, logicalId);
@@ -662,7 +676,7 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
 
       // 5. Replica diff. AWS limits to ONE ReplicaUpdates entry per call,
       // so serialize Create / Update / Delete and wait between each.
-      const currentRegion = (await this.dynamoDBClient.config.region()) ?? '';
+      // `currentRegion` is already resolved once at the top of update().
       const replicaDiff = diffReplicas(
         (previousProperties['Replicas'] ?? []) as Array<Record<string, unknown>>,
         (properties['Replicas'] ?? []) as Array<Record<string, unknown>>
@@ -701,6 +715,26 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
           updateAction.TableClassOverride = replica['TableClassOverride'] as
             | 'STANDARD'
             | 'STANDARD_INFREQUENT_ACCESS';
+        }
+        // AWS rejects an UpdateReplica with no update fields
+        // (ValidationException). When the only change in the modified
+        // replica is `Tags` (which UpdateReplica's SDK action does not
+        // accept — cross-region Tag propagation needs a per-region SDK
+        // client + TagResource on that replica's ARN, deferred), the
+        // updateAction has only `RegionName`. Skip the SDK call in
+        // that case and log at debug so the cross-region tag drift is
+        // visible but does not error the deploy.
+        const hasUpdateField =
+          updateAction.KMSMasterKeyId !== undefined ||
+          updateAction.GlobalSecondaryIndexes !== undefined ||
+          updateAction.TableClassOverride !== undefined;
+        if (!hasUpdateField) {
+          this.logger.debug(
+            `Cross-region replica ${region} of ${physicalId}: only Tags-style ` +
+              `changes detected; skipping UpdateReplica (AWS rejects empty ` +
+              `Update actions). Per-region Tag propagation is deferred.`
+          );
+          continue;
         }
         await this.dynamoDBClient.send(
           new UpdateTableCommand({
@@ -1564,6 +1598,51 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
  * and modifies (entries whose other keys — KMSMasterKeyId,
  * GlobalSecondaryIndexes, TableClassOverride — differ from the old shape).
  */
+/**
+ * Derive the per-call `ProvisionedThroughput` shape required by
+ * `CreateTableCommand` / `UpdateTableCommand` when BillingMode flips to
+ * PROVISIONED. Shared between create() and the BillingMode-flip path in
+ * update() so a user template's non-default read/write capacity is
+ * preserved consistently across both code paths.
+ *
+ * Source of truth (CFn `AWS::DynamoDB::GlobalTable` shape):
+ *  - WriteCapacityUnits → `properties.WriteProvisionedThroughputSettings`
+ *    (top-level on the table). Literal `WriteCapacityUnits` wins over
+ *    auto-scaling `MinCapacity`; both default to 5 if absent.
+ *  - ReadCapacityUnits → `Replicas[?Region==<region>].ReadProvisionedThroughputSettings`
+ *    (per-replica, the deploy region's setting). Same literal-vs-auto-
+ *    scaling-vs-default-5 precedence.
+ */
+export function derivePerCallProvisionedThroughput(
+  properties: Record<string, unknown>,
+  region: string
+): { ReadCapacityUnits: number; WriteCapacityUnits: number } {
+  const wps = properties['WriteProvisionedThroughputSettings'] as
+    | Record<string, unknown>
+    | undefined;
+  const writeAutoScaling = wps?.['WriteCapacityAutoScalingSettings'] as
+    | Record<string, unknown>
+    | undefined;
+  const writeCapacity = Number(
+    wps?.['WriteCapacityUnits'] ?? writeAutoScaling?.['MinCapacity'] ?? 5
+  );
+  const replicas = (properties['Replicas'] ?? []) as Array<Record<string, unknown>>;
+  const localReplica = replicas.find((r) => r['Region'] === region);
+  const localReadSettings = localReplica?.['ReadProvisionedThroughputSettings'] as
+    | Record<string, unknown>
+    | undefined;
+  const readAutoScaling = localReadSettings?.['ReadCapacityAutoScalingSettings'] as
+    | Record<string, unknown>
+    | undefined;
+  const readCapacity = Number(
+    localReadSettings?.['ReadCapacityUnits'] ?? readAutoScaling?.['MinCapacity'] ?? 5
+  );
+  return {
+    ReadCapacityUnits: readCapacity,
+    WriteCapacityUnits: writeCapacity,
+  };
+}
+
 export function diffReplicas(
   oldReplicas: Array<Record<string, unknown>>,
   newReplicas: Array<Record<string, unknown>>
