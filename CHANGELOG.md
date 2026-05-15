@@ -1,3 +1,10 @@
+# [0.101.0](https://github.com/go-to-k/cdkd/compare/v0.100.3...v0.101.0) (2026-05-15)
+
+
+### Features
+
+* **destroy:** honor DeletionPolicy: Retain in cdkd state destroy too ([#369](https://github.com/go-to-k/cdkd/issues/369)) ([17e15a1](https://github.com/go-to-k/cdkd/commit/17e15a1166429efcfd6a83e04f41c39f1f19659b))
+
 ## [0.100.3](https://github.com/go-to-k/cdkd/compare/v0.100.2...v0.100.3) (2026-05-15)
 
 
