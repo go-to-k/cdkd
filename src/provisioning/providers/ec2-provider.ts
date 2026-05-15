@@ -414,48 +414,76 @@ export class EC2Provider implements ResourceProvider {
 
       const vpcId = response.Vpc!.VpcId!;
 
-      // Apply DNS settings
-      if (
-        properties['EnableDnsHostnames'] === true ||
-        properties['EnableDnsHostnames'] === 'true'
-      ) {
-        await this.ec2Client.send(
-          new ModifyVpcAttributeCommand({
-            VpcId: vpcId,
-            EnableDnsHostnames: { Value: true },
-          })
-        );
-      }
-
-      if (properties['EnableDnsSupport'] === false || properties['EnableDnsSupport'] === 'false') {
-        await this.ec2Client.send(
-          new ModifyVpcAttributeCommand({
-            VpcId: vpcId,
-            EnableDnsSupport: { Value: false },
-          })
-        );
-      }
-
-      // Apply tags
-      await this.applyTags(vpcId, properties, logicalId);
-
-      // Fetch VPC details for attributes
-      await this.ec2Client.send(new DescribeVpcsCommand({ VpcIds: [vpcId] }));
-
-      // Fetch default security group for the VPC
+      // CreateVpcCommand has succeeded — AWS has now committed the VPC.
+      // If any subsequent ModifyVpcAttribute / tag / read call throws, the
+      // VPC exists on AWS but cdkd state will NOT (the throw aborts before
+      // the success-return). The next redeploy would then re-try CREATE
+      // and a new VPC would be created, leaving the first orphaned (VPCs
+      // have no `EntityAlreadyExists` semantics — every CreateVpc returns
+      // a fresh VpcId — so the orphan accumulates silently). Wrap the
+      // wiring in an inner try/catch that issues a best-effort
+      // `DeleteVpcCommand` before re-throwing the original error. A
+      // freshly-created VPC has no subnets / SGs (except default which
+      // CASCADE-delete with the VPC), so a single DeleteVpc suffices.
       let defaultSgId = '';
       try {
-        const sgResponse = await this.ec2Client.send(
-          new DescribeSecurityGroupsCommand({
-            Filters: [
-              { Name: 'vpc-id', Values: [vpcId] },
-              { Name: 'group-name', Values: ['default'] },
-            ],
-          })
-        );
-        defaultSgId = sgResponse.SecurityGroups?.[0]?.GroupId || '';
-      } catch {
-        this.logger.debug(`Failed to get default SG for VPC ${vpcId}`);
+        // Apply DNS settings
+        if (
+          properties['EnableDnsHostnames'] === true ||
+          properties['EnableDnsHostnames'] === 'true'
+        ) {
+          await this.ec2Client.send(
+            new ModifyVpcAttributeCommand({
+              VpcId: vpcId,
+              EnableDnsHostnames: { Value: true },
+            })
+          );
+        }
+
+        if (
+          properties['EnableDnsSupport'] === false ||
+          properties['EnableDnsSupport'] === 'false'
+        ) {
+          await this.ec2Client.send(
+            new ModifyVpcAttributeCommand({
+              VpcId: vpcId,
+              EnableDnsSupport: { Value: false },
+            })
+          );
+        }
+
+        // Apply tags
+        await this.applyTags(vpcId, properties, logicalId);
+
+        // Fetch VPC details for attributes
+        await this.ec2Client.send(new DescribeVpcsCommand({ VpcIds: [vpcId] }));
+
+        // Fetch default security group for the VPC
+        try {
+          const sgResponse = await this.ec2Client.send(
+            new DescribeSecurityGroupsCommand({
+              Filters: [
+                { Name: 'vpc-id', Values: [vpcId] },
+                { Name: 'group-name', Values: ['default'] },
+              ],
+            })
+          );
+          defaultSgId = sgResponse.SecurityGroups?.[0]?.GroupId || '';
+        } catch {
+          this.logger.debug(`Failed to get default SG for VPC ${vpcId}`);
+        }
+      } catch (innerError) {
+        try {
+          await this.ec2Client.send(new DeleteVpcCommand({ VpcId: vpcId }));
+          this.logger.debug(
+            `Cleaned up partially-created VPC ${logicalId} (${vpcId}) after wiring failure`
+          );
+        } catch (cleanupError) {
+          this.logger.warn(
+            `Failed to clean up partially-created VPC ${logicalId} (${vpcId}): ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}. Manual deletion may be required before the next deploy: aws ec2 delete-vpc --vpc-id ${vpcId}`
+          );
+        }
+        throw innerError;
       }
 
       this.logger.debug(`Successfully created VPC ${logicalId}: ${vpcId}`);
@@ -704,18 +732,41 @@ export class EC2Provider implements ResourceProvider {
       const subnetId = response.Subnet!.SubnetId!;
       const availabilityZone = response.Subnet!.AvailabilityZone!;
 
-      // Apply tags
-      await this.applyTags(subnetId, properties, logicalId);
+      // CreateSubnetCommand has succeeded — AWS has now committed the
+      // Subnet. If applyTags / ModifySubnetAttribute throws, the subnet
+      // exists on AWS but cdkd state will NOT, and the next redeploy
+      // would create a NEW subnet (subnets have no `EntityAlreadyExists`
+      // semantics — every CreateSubnet returns a fresh SubnetId) leaving
+      // the first orphaned. Wrap wiring in an inner try/catch that issues
+      // a best-effort `DeleteSubnetCommand` before re-throwing the
+      // original error. A freshly-created subnet has no ENIs / route
+      // associations attached, so a single DeleteSubnet suffices.
+      try {
+        // Apply tags
+        await this.applyTags(subnetId, properties, logicalId);
 
-      // Set MapPublicIpOnLaunch if specified
-      const mapPublicIp = properties['MapPublicIpOnLaunch'];
-      if (mapPublicIp === true || mapPublicIp === 'true') {
-        await this.ec2Client.send(
-          new ModifySubnetAttributeCommand({
-            SubnetId: subnetId,
-            MapPublicIpOnLaunch: { Value: true },
-          })
-        );
+        // Set MapPublicIpOnLaunch if specified
+        const mapPublicIp = properties['MapPublicIpOnLaunch'];
+        if (mapPublicIp === true || mapPublicIp === 'true') {
+          await this.ec2Client.send(
+            new ModifySubnetAttributeCommand({
+              SubnetId: subnetId,
+              MapPublicIpOnLaunch: { Value: true },
+            })
+          );
+        }
+      } catch (innerError) {
+        try {
+          await this.ec2Client.send(new DeleteSubnetCommand({ SubnetId: subnetId }));
+          this.logger.debug(
+            `Cleaned up partially-created Subnet ${logicalId} (${subnetId}) after wiring failure`
+          );
+        } catch (cleanupError) {
+          this.logger.warn(
+            `Failed to clean up partially-created Subnet ${logicalId} (${subnetId}): ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}. Manual deletion may be required before the next deploy: aws ec2 delete-subnet --subnet-id ${subnetId}`
+          );
+        }
+        throw innerError;
       }
 
       this.logger.debug(`Successfully created Subnet ${logicalId}: ${subnetId}`);
@@ -1663,59 +1714,85 @@ export class EC2Provider implements ResourceProvider {
 
       const groupId = response.GroupId!;
 
-      // Apply tags
-      await this.applyTags(groupId, properties, logicalId);
+      // CreateSecurityGroupCommand has succeeded — AWS has now committed
+      // the SG. If applyTags / Authorize* / Revoke* throws, the SG exists
+      // on AWS but cdkd state will NOT. The next redeploy plans CREATE
+      // and AWS would reject with `InvalidGroup.Duplicate: The security
+      // group '<name>' already exists for VPC ...` (when VpcId+GroupName
+      // produces a collision) — or worse, when GroupName is auto-generated
+      // from logicalId, a fresh SG would be created leaving the first
+      // orphaned. Wrap wiring in an inner try/catch that issues a
+      // best-effort `DeleteSecurityGroupCommand` before re-throwing the
+      // original error. A freshly-created SG has no ENIs / dependents
+      // attached, so a single DeleteSecurityGroup suffices (its inline
+      // rules CASCADE-delete with the SG).
+      try {
+        // Apply tags
+        await this.applyTags(groupId, properties, logicalId);
 
-      // Add ingress rules if specified inline
-      const ingressRules = properties['SecurityGroupIngress'] as
-        | Array<Record<string, unknown>>
-        | undefined;
-      if (ingressRules && Array.isArray(ingressRules)) {
-        for (const rule of ingressRules) {
-          await this.ec2Client.send(
-            new AuthorizeSecurityGroupIngressCommand({
-              GroupId: groupId,
-              IpPermissions: [this.buildIpPermission(rule)],
-            })
-          );
-        }
-      }
-
-      // Egress rules: when explicit SecurityGroupEgress is provided, CFn replaces
-      // the AWS-default "allow all egress" rule (0.0.0.0/0, -1) with the supplied rules.
-      // We replicate this by revoking the default rule first, then authorizing each.
-      const egressRules = properties['SecurityGroupEgress'] as
-        | Array<Record<string, unknown>>
-        | undefined;
-      if (egressRules && Array.isArray(egressRules)) {
-        // Revoke the AWS-default "allow all egress" rule so it does not coexist
-        // with user-specified rules. Tolerate "not found" if the default is absent.
-        try {
-          await this.ec2Client.send(
-            new RevokeSecurityGroupEgressCommand({
-              GroupId: groupId,
-              IpPermissions: [
-                {
-                  IpProtocol: '-1',
-                  IpRanges: [{ CidrIp: '0.0.0.0/0' }],
-                },
-              ],
-            })
-          );
-        } catch (error) {
-          if (!this.isNotFoundError(error)) {
-            throw error;
+        // Add ingress rules if specified inline
+        const ingressRules = properties['SecurityGroupIngress'] as
+          | Array<Record<string, unknown>>
+          | undefined;
+        if (ingressRules && Array.isArray(ingressRules)) {
+          for (const rule of ingressRules) {
+            await this.ec2Client.send(
+              new AuthorizeSecurityGroupIngressCommand({
+                GroupId: groupId,
+                IpPermissions: [this.buildIpPermission(rule)],
+              })
+            );
           }
         }
 
-        for (const rule of egressRules) {
-          await this.ec2Client.send(
-            new AuthorizeSecurityGroupEgressCommand({
-              GroupId: groupId,
-              IpPermissions: [this.buildIpPermission(rule, 'egress')],
-            })
+        // Egress rules: when explicit SecurityGroupEgress is provided, CFn replaces
+        // the AWS-default "allow all egress" rule (0.0.0.0/0, -1) with the supplied rules.
+        // We replicate this by revoking the default rule first, then authorizing each.
+        const egressRules = properties['SecurityGroupEgress'] as
+          | Array<Record<string, unknown>>
+          | undefined;
+        if (egressRules && Array.isArray(egressRules)) {
+          // Revoke the AWS-default "allow all egress" rule so it does not coexist
+          // with user-specified rules. Tolerate "not found" if the default is absent.
+          try {
+            await this.ec2Client.send(
+              new RevokeSecurityGroupEgressCommand({
+                GroupId: groupId,
+                IpPermissions: [
+                  {
+                    IpProtocol: '-1',
+                    IpRanges: [{ CidrIp: '0.0.0.0/0' }],
+                  },
+                ],
+              })
+            );
+          } catch (error) {
+            if (!this.isNotFoundError(error)) {
+              throw error;
+            }
+          }
+
+          for (const rule of egressRules) {
+            await this.ec2Client.send(
+              new AuthorizeSecurityGroupEgressCommand({
+                GroupId: groupId,
+                IpPermissions: [this.buildIpPermission(rule, 'egress')],
+              })
+            );
+          }
+        }
+      } catch (innerError) {
+        try {
+          await this.ec2Client.send(new DeleteSecurityGroupCommand({ GroupId: groupId }));
+          this.logger.debug(
+            `Cleaned up partially-created SecurityGroup ${logicalId} (${groupId}) after wiring failure`
+          );
+        } catch (cleanupError) {
+          this.logger.warn(
+            `Failed to clean up partially-created SecurityGroup ${logicalId} (${groupId}): ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}. Manual deletion may be required before the next deploy: aws ec2 delete-security-group --group-id ${groupId}`
           );
         }
+        throw innerError;
       }
 
       this.logger.debug(`Successfully created SecurityGroup ${logicalId}: ${groupId}`);
@@ -2134,34 +2211,65 @@ export class EC2Provider implements ResourceProvider {
 
       const instanceId = instance.InstanceId;
 
-      // Apply tags
-      await this.applyTags(instanceId, properties, logicalId);
+      // RunInstancesCommand has succeeded — AWS has now launched the
+      // instance and BILLING HAS STARTED. This is the **cost-leak class**
+      // of partial-create orphan: a system-generated InstanceId means
+      // cdkd's next-deploy diff cannot detect the orphan by name, and
+      // the running instance accrues charges until manual cleanup. If a
+      // subsequent wiring call (tags / waiter / describe) throws — most
+      // commonly the waiter timing out on a slow-boot AMI, or a typo'd
+      // huge InstanceType failing capacity — the instance keeps running.
+      // Wrap the wiring in an inner try/catch that issues a best-effort
+      // `TerminateInstancesCommand` before re-throwing the original
+      // error. We do NOT wait for terminate to complete (the deploy is
+      // already failing; making the user wait another 30-120s for the
+      // error to surface is bad UX, and if the waiter itself was the
+      // wiring failure, waiting again would be ironic). The WARN
+      // message names the exact InstanceId so the user can verify
+      // termination via `aws ec2 describe-instances` if cleanup itself
+      // failed.
+      try {
+        // Apply tags
+        await this.applyTags(instanceId, properties, logicalId);
 
-      // Wait for instance to reach running state
-      this.logger.debug(`Waiting for instance ${instanceId} to be running...`);
-      await waitUntilInstanceRunning(
-        { client: this.ec2Client, maxWaitTime: 300 },
-        { InstanceIds: [instanceId] }
-      );
+        // Wait for instance to reach running state
+        this.logger.debug(`Waiting for instance ${instanceId} to be running...`);
+        await waitUntilInstanceRunning(
+          { client: this.ec2Client, maxWaitTime: 300 },
+          { InstanceIds: [instanceId] }
+        );
 
-      // Describe instance to get attributes after running
-      const describeResponse = await this.ec2Client.send(
-        new DescribeInstancesCommand({ InstanceIds: [instanceId] })
-      );
-      const runningInstance = describeResponse.Reservations?.[0]?.Instances?.[0];
+        // Describe instance to get attributes after running
+        const describeResponse = await this.ec2Client.send(
+          new DescribeInstancesCommand({ InstanceIds: [instanceId] })
+        );
+        const runningInstance = describeResponse.Reservations?.[0]?.Instances?.[0];
 
-      const attributes: Record<string, unknown> = {
-        InstanceId: instanceId,
-        PrivateIp: runningInstance?.PrivateIpAddress ?? '',
-        PublicIp: runningInstance?.PublicIpAddress ?? '',
-        PrivateDnsName: runningInstance?.PrivateDnsName ?? '',
-        PublicDnsName: runningInstance?.PublicDnsName ?? '',
-        AvailabilityZone: runningInstance?.Placement?.AvailabilityZone ?? '',
-      };
+        const attributes: Record<string, unknown> = {
+          InstanceId: instanceId,
+          PrivateIp: runningInstance?.PrivateIpAddress ?? '',
+          PublicIp: runningInstance?.PublicIpAddress ?? '',
+          PrivateDnsName: runningInstance?.PrivateDnsName ?? '',
+          PublicDnsName: runningInstance?.PublicDnsName ?? '',
+          AvailabilityZone: runningInstance?.Placement?.AvailabilityZone ?? '',
+        };
 
-      this.logger.debug(`Successfully created EC2 Instance ${logicalId}: ${instanceId}`);
+        this.logger.debug(`Successfully created EC2 Instance ${logicalId}: ${instanceId}`);
 
-      return { physicalId: instanceId, attributes };
+        return { physicalId: instanceId, attributes };
+      } catch (innerError) {
+        try {
+          await this.ec2Client.send(new TerminateInstancesCommand({ InstanceIds: [instanceId] }));
+          this.logger.debug(
+            `Terminate requested for partially-created EC2 Instance ${logicalId} (${instanceId}) after wiring failure (not waiting for terminated state)`
+          );
+        } catch (cleanupError) {
+          this.logger.warn(
+            `Failed to terminate partially-created EC2 Instance ${logicalId} (${instanceId}): ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}. THE INSTANCE IS STILL RUNNING AND BILLING. Manual termination required: aws ec2 terminate-instances --instance-ids ${instanceId}`
+          );
+        }
+        throw innerError;
+      }
     } catch (error) {
       if (error instanceof ProvisioningError) throw error;
       const cause = error instanceof Error ? error : undefined;
