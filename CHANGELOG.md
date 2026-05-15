@@ -1,3 +1,10 @@
+# [0.104.0](https://github.com/go-to-k/cdkd/compare/v0.103.2...v0.104.0) (2026-05-15)
+
+
+### Features
+
+* **dynamodb-globaltable:** complete provider coverage (follow-up to [#384](https://github.com/go-to-k/cdkd/issues/384)) ([#388](https://github.com/go-to-k/cdkd/issues/388)) ([a15654c](https://github.com/go-to-k/cdkd/commit/a15654cdfb5e8a7291fe830ba128666bf856bed2))
+
 ## [0.103.2](https://github.com/go-to-k/cdkd/compare/v0.103.1...v0.103.2) (2026-05-15)
 
 
