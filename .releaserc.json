@@ -30,6 +30,12 @@
       }
     ],
     [
+      "@semantic-release/exec",
+      {
+        "prepareCmd": "vp run build"
+      }
+    ],
+    [
       "@semantic-release/git",
       {
         "assets": ["package.json", "pnpm-lock.yaml", "CHANGELOG.md"],
