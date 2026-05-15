@@ -1,3 +1,10 @@
+## [0.103.1](https://github.com/go-to-k/cdkd/compare/v0.103.0...v0.103.1) (2026-05-15)
+
+
+### Bug Fixes
+
+* **intrinsic-resolver, cc-api:** resolve nested attribute paths for RDS DBCluster Endpoint.Port ([#386](https://github.com/go-to-k/cdkd/issues/386)) ([3281dc9](https://github.com/go-to-k/cdkd/commit/3281dc9b645dd0bc7f7313943add3749edd7323d))
+
 # [0.103.0](https://github.com/go-to-k/cdkd/compare/v0.102.7...v0.103.0) (2026-05-15)
 
 
