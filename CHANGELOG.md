@@ -1,3 +1,10 @@
+## [0.100.2](https://github.com/go-to-k/cdkd/compare/v0.100.1...v0.100.2) (2026-05-15)
+
+
+### Bug Fixes
+
+* **intrinsics:** add per-type Arn handlers for 18 missing resource types ([#367](https://github.com/go-to-k/cdkd/issues/367)) ([aae6297](https://github.com/go-to-k/cdkd/commit/aae6297497da6f5fe80170e024263c787808787d))
+
 ## [0.100.1](https://github.com/go-to-k/cdkd/compare/v0.100.0...v0.100.1) (2026-05-15)
 
 
