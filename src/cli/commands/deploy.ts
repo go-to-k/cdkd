@@ -462,6 +462,13 @@ async function deployCommand(
         logger.info(`  Unchanged: ${deployResult.unchanged}`);
         logger.info(`  Duration: ${(deployResult.durationMs / 1000).toFixed(2)}s`);
 
+        if (deployResult.outputs && Object.keys(deployResult.outputs).length > 0) {
+          logger.info('\nOutputs:');
+          for (const [key, value] of Object.entries(deployResult.outputs)) {
+            logger.info(`  ${deployResult.stackName}.${key} = ${String(value)}`);
+          }
+        }
+
         if (options.dryRun) {
           logger.info('\n✓ Dry run completed - no actual changes made');
         } else {

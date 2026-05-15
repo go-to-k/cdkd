@@ -135,6 +135,12 @@ export interface DeployResult {
   unchanged: number;
   /** Total deployment time in milliseconds */
   durationMs: number;
+  /**
+   * Resolved stack outputs keyed by the template-declared Output name
+   * (Export.Name duplicates are filtered out). Populated on a real
+   * deploy and on the no-change path; undefined under --dry-run.
+   */
+  outputs?: Record<string, unknown>;
 }
 
 /**
@@ -629,6 +635,7 @@ export class DeployEngine {
           deleted: 0,
           unchanged: Object.keys(currentState.resources).length,
           durationMs: Date.now() - startTime,
+          outputs: this.buildDisplayOutputs(template, currentState.outputs ?? {}),
         };
       }
 
@@ -710,6 +717,7 @@ export class DeployEngine {
         deleted: actualCounts.deleted,
         unchanged: unchangedCount,
         durationMs,
+        outputs: this.buildDisplayOutputs(template, newState.outputs ?? {}),
       };
     } finally {
       // Stop live renderer (clears any remaining in-flight task display)
@@ -2136,5 +2144,18 @@ export class DeployEngine {
     }
 
     return outputs;
+  }
+
+  private buildDisplayOutputs(
+    template: CloudFormationTemplate,
+    resolvedOutputs: Record<string, unknown>
+  ): Record<string, unknown> {
+    const display: Record<string, unknown> = {};
+    if (!template.Outputs) return display;
+    for (const key of Object.keys(template.Outputs)) {
+      const v = resolvedOutputs[key];
+      if (v !== undefined) display[key] = v;
+    }
+    return display;
   }
 }

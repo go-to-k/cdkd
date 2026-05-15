@@ -673,7 +673,19 @@ new cdk.CfnOutput(this, 'BucketArn', {
 });
 ```
 
-After deployment, outputs are resolved and saved to the S3 state file:
+After deployment, outputs are resolved and printed at the end of `cdkd deploy` (matching CDK CLI's format) and saved to the S3 state file:
+
+```text
+Deployment Summary:
+  Stack: MyStack
+  ...
+  Duration: 21.25s
+
+Outputs:
+  MyStack.BucketArn = arn:aws:s3:::actual-bucket-name-xyz
+
+✓ Deployment completed successfully
+```
 
 ```json
 {
@@ -687,6 +699,7 @@ After deployment, outputs are resolved and saved to the S3 state file:
 
 - CloudFormation: Outputs accessible via `aws cloudformation describe-stacks`
 - cdkd: Outputs saved in S3 state file (e.g., `s3://bucket/cdkd/MyStack/us-east-1/state.json`)
+- Both print outputs to stdout after a successful deploy
 - Both resolve intrinsic functions (Ref, Fn::GetAtt, etc.) to actual values
 
 ## Exit codes
