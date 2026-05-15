@@ -118,7 +118,9 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
         'WriteProvisionedThroughputSettings',
         'WriteOnDemandThroughputSettings',
         'DeletionProtectionEnabled',
-        'Tags',
+        // Note: `AWS::DynamoDB::GlobalTable` has NO top-level `Tags`
+        // property. Tags live inside `Replicas[].Tags`, which is
+        // already covered by the `Replicas` entry above.
       ]),
     ],
   ]);
@@ -297,10 +299,20 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       };
     }
 
-    // Tags applied via CreateTable input directly (avoids a separate
-    // TagResource round-trip).
-    if (properties['Tags']) {
-      createParams.Tags = properties['Tags'] as Tag[];
+    // Tags are per-replica in the CFn `AWS::DynamoDB::GlobalTable`
+    // schema (there is NO top-level `Properties.Tags` field — CDK's
+    // `cdk.Tags.of(tableV2).add(...)` puts them in
+    // `Replicas[?Region==<deploy region>].Tags`). For the LOCAL replica
+    // we apply them via `CreateTable`'s top-level `Tags` field (avoids
+    // a separate `TagResource` round-trip). Cross-region replicas'
+    // Tags require per-region SDK clients and are deferred.
+    const localReplicaTags = (() => {
+      const replicas = (properties['Replicas'] ?? []) as Array<Record<string, unknown>>;
+      const local = replicas.find((r) => r['Region'] === currentRegion);
+      return local?.['Tags'] as Tag[] | undefined;
+    })();
+    if (localReplicaTags && localReplicaTags.length > 0) {
+      createParams.Tags = localReplicaTags;
     }
 
     try {
@@ -529,17 +541,30 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       // states where a previous deploy left the table mid-transition.
       await this.waitForTableActiveAfterUpdate(physicalId, logicalId);
 
-      // 2. Tags diff. TagResource / UntagResource on the table's ARN; no
-      // UpdateTable round-trip needed and no wait between tag calls.
+      // 2. Tags diff. The CFn `AWS::DynamoDB::GlobalTable` schema has
+      // NO top-level `Tags` — tags live inside each `Replicas[]` entry
+      // as `Replicas[?Region==<region>].Tags`. For the LOCAL replica we
+      // diff and apply via TagResource / UntagResource on the local
+      // table ARN; cross-region replicas' Tags require per-region SDK
+      // clients and are deferred (logged at debug if the diff is non-
+      // empty for a non-local replica).
       const describeResp = await this.dynamoDBClient.send(
         new DescribeTableCommand({ TableName: physicalId })
       );
       const tableArn = describeResp.Table?.TableArn;
+      const localRegionForTags = (await this.dynamoDBClient.config.region()) ?? '';
+      const extractLocalTags = (
+        props: Record<string, unknown>
+      ): Array<{ Key?: string; Value?: string }> | undefined => {
+        const replicas = (props['Replicas'] ?? []) as Array<Record<string, unknown>>;
+        const local = replicas.find((r) => r['Region'] === localRegionForTags);
+        return local?.['Tags'] as Array<{ Key?: string; Value?: string }> | undefined;
+      };
       if (tableArn) {
         await this.applyTagDiff(
           tableArn,
-          previousProperties['Tags'] as Array<{ Key?: string; Value?: string }> | undefined,
-          properties['Tags'] as Array<{ Key?: string; Value?: string }> | undefined
+          extractLocalTags(previousProperties),
+          extractLocalTags(properties)
         );
       }
 
@@ -1143,11 +1168,30 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
         (table.Replicas ?? []).map(async (r) => {
           const entry: Record<string, unknown> = { Region: r.RegionName };
           if (r.KMSMasterKeyId !== undefined) entry['KMSMasterKeyId'] = r.KMSMasterKeyId;
-          // Per-replica sub-specs: only the local replica in v1.
+          // Per-replica sub-specs + Tags: only the local replica in v1.
           // Cross-region calls would need a per-region client, deferred.
+          // Tags live at `Replicas[].Tags` in the CFn `GlobalTable`
+          // schema (there is no top-level `Tags`), so they MUST be
+          // surfaced here — not at the top level of `result`.
           if (r.RegionName && r.RegionName === currentRegion) {
             const subs = await this.readLocalReplicaSubSpecs(tableNameForSubs);
             Object.assign(entry, subs);
+            if (table.TableArn) {
+              try {
+                const tagsResp = await this.dynamoDBClient.send(
+                  new ListTagsOfResourceCommand({ ResourceArn: table.TableArn })
+                );
+                entry['Tags'] = normalizeAwsTagsToCfn(tagsResp.Tags);
+              } catch (tagErr) {
+                if (tagErr instanceof ResourceNotFoundException) throw tagErr;
+                this.logger.warn(
+                  `Could not fetch tags for DynamoDB GlobalTable ${tableNameForSubs}: ${tagErr instanceof Error ? tagErr.message : String(tagErr)}`
+                );
+                entry['Tags'] = [];
+              }
+            } else {
+              entry['Tags'] = [];
+            }
           }
           return entry;
         })
@@ -1184,28 +1228,8 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
         );
       }
 
-      // Tags via ListTagsOfResource. Always-emit `[]` even when AWS
-      // reports zero user tags so a console-side tag ADD on a previously
-      // untagged table shows as drift (PR #145 pattern).
-      if (table.TableArn) {
-        try {
-          const tagsResp = await this.dynamoDBClient.send(
-            new ListTagsOfResourceCommand({ ResourceArn: table.TableArn })
-          );
-          result['Tags'] = normalizeAwsTagsToCfn(tagsResp.Tags);
-        } catch (err) {
-          if (err instanceof ResourceNotFoundException) return undefined;
-          // Tag fetch failures shouldn't tank the whole drift read —
-          // surface a warn so operators see the gap, then fall back to
-          // the empty placeholder so the comparator can still run.
-          this.logger.warn(
-            `Could not fetch tags for DynamoDB GlobalTable ${tableNameForSubs}: ${err instanceof Error ? err.message : String(err)}`
-          );
-          result['Tags'] = [];
-        }
-      } else {
-        result['Tags'] = [];
-      }
+      // Note: `Tags` are emitted INSIDE the local `Replicas[]` entry
+      // above (the CFn `GlobalTable` schema has no top-level `Tags`).
 
       return result;
     } catch (err) {

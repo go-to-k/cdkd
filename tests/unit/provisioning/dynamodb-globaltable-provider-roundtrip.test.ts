@@ -90,11 +90,14 @@ describe('DynamoDBGlobalTableProvider round-trip', () => {
         'WriteProvisionedThroughputSettings',
         'WriteOnDemandThroughputSettings',
         'DeletionProtectionEnabled',
-        'Tags',
+        // Tags is intentionally NOT a top-level CFn property for
+        // `AWS::DynamoDB::GlobalTable` — it lives inside
+        // `Replicas[].Tags` and is covered by the `Replicas` entry.
       ];
       for (const k of expected) {
         expect(set.has(k)).toBe(true);
       }
+      expect(set.has('Tags')).toBe(false);
     });
   });
 
@@ -241,7 +244,10 @@ describe('DynamoDBGlobalTableProvider round-trip', () => {
   });
 
   describe('update', () => {
-    it('issues TagResource / UntagResource on Tags diff (no UpdateTable round-trip)', async () => {
+    it('issues TagResource / UntagResource on per-replica Tags diff for the local region (no UpdateTable round-trip)', async () => {
+      // CFn `AWS::DynamoDB::GlobalTable` has NO top-level `Tags` field
+      // — tags live inside `Replicas[?Region==<region>].Tags`. The
+      // update path extracts Tags from the local replica entry.
       // Wait-for-ACTIVE -> DescribeTable returns ARN -> Untag + Tag -> final DescribeTable.
       mockSend.mockResolvedValueOnce({ Table: { TableStatus: 'ACTIVE' } }); // waitForTableActiveAfterUpdate
       mockSend.mockResolvedValueOnce({ Table: { TableArn: TABLE_ARN } }); // DescribeTable for ARN
@@ -255,15 +261,30 @@ describe('DynamoDBGlobalTableProvider round-trip', () => {
         'X',
         TABLE_NAME,
         RESOURCE_TYPE,
-        { Tags: [{ Key: 'Env', Value: 'Prod' }] },
-        { Tags: [{ Key: 'Env', Value: 'Dev' }, { Key: 'Old', Value: 'Drop' }] }
+        {
+          Replicas: [
+            { Region: 'us-east-1', Tags: [{ Key: 'Env', Value: 'Prod' }] },
+          ],
+        },
+        {
+          Replicas: [
+            {
+              Region: 'us-east-1',
+              Tags: [
+                { Key: 'Env', Value: 'Dev' },
+                { Key: 'Old', Value: 'Drop' },
+              ],
+            },
+          ],
+        }
       );
       expect(result.physicalId).toBe(TABLE_NAME);
       expect(result.wasReplaced).toBe(false);
       const names = mockSend.mock.calls.map((c) => c[0].constructor.name);
       expect(names).toContain('UntagResourceCommand');
       expect(names).toContain('TagResourceCommand');
-      // No UpdateTable issued — flat fields were all undefined.
+      // No UpdateTable issued — flat fields were all undefined and the
+      // local-replica modify path skips UpdateReplica.
       expect(names.filter((n) => n === 'UpdateTableCommand')).toEqual([]);
       const untag = mockSend.mock.calls.find((c) => c[0] instanceof UntagResourceCommand)![0];
       expect(untag.input.TagKeys).toEqual(['Old']);
@@ -858,15 +879,18 @@ describe('DynamoDBGlobalTableProvider round-trip', () => {
 
       expect(observed).toBeDefined();
       expect(observed!['BillingMode']).toBe('PAY_PER_REQUEST');
-      // Local-region replica now carries default-disabled sub-specs.
+      // Local-region replica now carries default-disabled sub-specs +
+      // Tags placeholder (Tags are per-replica in the CFn schema).
       expect(observed!['Replicas']).toEqual([
         {
           Region: 'us-east-1',
           ContributorInsightsSpecification: { Enabled: false },
           PointInTimeRecoverySpecification: { PointInTimeRecoveryEnabled: false },
+          Tags: [],
         },
       ]);
-      expect(observed!['Tags']).toEqual([]);
+      // No top-level Tags — Tags live inside Replicas[].
+      expect(observed).not.toHaveProperty('Tags');
       // Class 1 / Class 2 guards: never emit empty placeholders for these.
       expect(observed).not.toHaveProperty('GlobalSecondaryIndexes');
       expect(observed).not.toHaveProperty('LocalSecondaryIndexes');
@@ -876,14 +900,23 @@ describe('DynamoDBGlobalTableProvider round-trip', () => {
       expect(observed).not.toHaveProperty('TimeToLiveSpecification');
     });
 
-    it('always-emits Tags placeholder even when AWS reports zero tags', async () => {
+    it('always-emits Tags placeholder inside the local Replicas[] entry even when AWS reports zero tags', async () => {
       mockSend.mockResolvedValueOnce({
-        Table: { TableArn: TABLE_ARN, Replicas: [] },
+        Table: {
+          TableArn: TABLE_ARN,
+          Replicas: [{ RegionName: 'us-east-1' }],
+        },
       });
-      // No replicas → no sub-spec calls; just TTL + Tags.
-      queueReadCurrentStateTail({ localReplica: false });
+      queueReadCurrentStateTail();
       const observed = await provider.readCurrentState(TABLE_NAME, 'X', RESOURCE_TYPE);
-      expect(observed!['Tags']).toEqual([]);
+      // Tags live INSIDE the local replica entry per the CFn
+      // `AWS::DynamoDB::GlobalTable` schema (there is no top-level
+      // `Tags` property on this type).
+      expect(observed).not.toHaveProperty('Tags');
+      const replicas = observed!['Replicas'] as Array<Record<string, unknown>>;
+      const local = replicas.find((r) => r['Region'] === 'us-east-1');
+      expect(local).toBeDefined();
+      expect(local!['Tags']).toEqual([]);
     });
 
     it('always-emits Replicas placeholder even when AWS reports no replicas', async () => {
