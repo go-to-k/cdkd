@@ -1,3 +1,10 @@
+# [0.100.0](https://github.com/go-to-k/cdkd/compare/v0.99.3...v0.100.0) (2026-05-15)
+
+
+### Features
+
+* **diff:** detect DeletionPolicy / UpdateReplacePolicy template-attribute changes ([#364](https://github.com/go-to-k/cdkd/issues/364)) ([5487720](https://github.com/go-to-k/cdkd/commit/548772037cfe65e794391f2cceb8f5a86140c709))
+
 ## [0.99.3](https://github.com/go-to-k/cdkd/compare/v0.99.2...v0.99.3) (2026-05-15)
 
 
