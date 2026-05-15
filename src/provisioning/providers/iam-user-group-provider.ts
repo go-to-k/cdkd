@@ -323,7 +323,7 @@ export class IAMUserGroupProvider implements ResourceProvider {
           );
         } catch (cleanupError) {
           this.logger.warn(
-            `Failed to clean up partially-created IAM user ${logicalId} (${userName}): ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}. Manual deletion may be required before the next deploy: remove from groups, detach managed policies, delete inline policies, then aws iam delete-user --user-name ${userName}`
+            `Failed to clean up partially-created IAM user ${logicalId} (${userName}): ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}. Manual deletion may be required before the next deploy: remove from groups, detach managed policies, delete inline policies, delete login profile (aws iam delete-login-profile --user-name ${userName}), remove permissions boundary (aws iam delete-user-permissions-boundary --user-name ${userName}), then aws iam delete-user --user-name ${userName}`
           );
         }
         throw innerError;
