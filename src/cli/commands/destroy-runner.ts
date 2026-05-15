@@ -180,6 +180,7 @@ export const PROTECTION_PROPERTY_BY_TYPE: Record<string, string> = {
   'AWS::Neptune::DBCluster': 'DeletionProtection',
   'AWS::Neptune::DBInstance': 'DeletionProtection',
   'AWS::DynamoDB::Table': 'DeletionProtectionEnabled',
+  'AWS::DynamoDB::GlobalTable': 'DeletionProtectionEnabled',
   'AWS::EC2::Instance': 'DisableApiTermination',
   'AWS::Cognito::UserPool': 'DeletionProtection',
   'AWS::AutoScaling::AutoScalingGroup': 'DeletionProtection',

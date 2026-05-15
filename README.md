@@ -609,6 +609,7 @@ types:
 | `AWS::Neptune::DBCluster` | `DeletionProtection` |
 | `AWS::Neptune::DBInstance` | `DeletionProtection` |
 | `AWS::DynamoDB::Table` | `DeletionProtectionEnabled` |
+| `AWS::DynamoDB::GlobalTable` | `DeletionProtectionEnabled` (CDK v2 `dynamodb.TableV2`) |
 | `AWS::EC2::Instance` | `DisableApiTermination` |
 | `AWS::ElasticLoadBalancingV2::LoadBalancer` | attribute `deletion_protection.enabled` |
 | `AWS::Cognito::UserPool` | `DeletionProtection` (`ACTIVE` / `INACTIVE`) |

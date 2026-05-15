@@ -1,0 +1,20 @@
+{
+  "name": "cdkd-example-dynamodb-globaltable",
+  "version": "1.0.0",
+  "private": true,
+  "description": "End-to-end real-AWS test for cdkd's AWS::DynamoDB::GlobalTable SDK Provider (CDK v2 TableV2)",
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc -w"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "typescript": "^5.0.0"
+  },
+  "dependencies": {
+    "@aws-sdk/client-dynamodb": "^3.0.0",
+    "aws-cdk-lib": "^2.169.0",
+    "constructs": "^10.0.0"
+  },
+  "type": "module"
+}
