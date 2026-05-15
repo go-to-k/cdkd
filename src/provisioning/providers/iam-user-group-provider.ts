@@ -212,80 +212,121 @@ export class IAMUserGroupProvider implements ResourceProvider {
 
       const response = await this.iamClient.send(new CreateUserCommand(createParams));
 
-      // Set permissions boundary if specified
-      const permissionsBoundary = properties['PermissionsBoundary'] as string | undefined;
-      if (permissionsBoundary) {
-        await this.iamClient.send(
-          new PutUserPermissionsBoundaryCommand({
-            UserName: userName,
-            PermissionsBoundary: permissionsBoundary,
-          })
-        );
-        this.logger.debug(`Set permissions boundary on user ${userName}`);
-      }
-
-      // Create login profile if specified
-      const loginProfile = properties['LoginProfile'] as
-        | { Password: string; PasswordResetRequired?: boolean }
-        | undefined;
-      if (loginProfile) {
-        await this.iamClient.send(
-          new CreateLoginProfileCommand({
-            UserName: userName,
-            Password: loginProfile.Password,
-            PasswordResetRequired: loginProfile.PasswordResetRequired ?? false,
-          })
-        );
-        this.logger.debug(`Created login profile for user ${userName}`);
-      }
-
-      // Attach managed policies if specified
-      const managedPolicyArns = properties['ManagedPolicyArns'] as string[] | undefined;
-      if (managedPolicyArns && Array.isArray(managedPolicyArns)) {
-        for (const policyArn of managedPolicyArns) {
+      // CreateUserCommand has succeeded — AWS has now committed the User
+      // (and the inline `Tags` from `createParams` if any). Every
+      // subsequent call wires sub-resources onto it (permissions
+      // boundary / login profile / managed-policy attachments / group
+      // membership / inline policies); if any fail, the user exists on
+      // AWS but cdkd state will NOT (the throw aborts before the
+      // success-return). The next redeploy would then re-try CREATE and
+      // AWS would reject with `EntityAlreadyExists: User with name
+      // <X> already exists`. Wrap the wiring in an inner try/catch that
+      // detaches every sub-resource (mirroring the order in
+      // `deleteUser()`) before issuing `DeleteUserCommand` and
+      // re-throwing the original error.
+      try {
+        // Set permissions boundary if specified
+        const permissionsBoundary = properties['PermissionsBoundary'] as string | undefined;
+        if (permissionsBoundary) {
           await this.iamClient.send(
-            new AttachUserPolicyCommand({
+            new PutUserPermissionsBoundaryCommand({
               UserName: userName,
-              PolicyArn: policyArn,
+              PermissionsBoundary: permissionsBoundary,
             })
           );
-          this.logger.debug(`Attached managed policy ${policyArn} to user ${userName}`);
+          this.logger.debug(`Set permissions boundary on user ${userName}`);
         }
-      }
 
-      // Add user to groups if specified
-      const userGroups = properties['Groups'] as string[] | undefined;
-      if (userGroups && Array.isArray(userGroups)) {
-        for (const groupName of userGroups) {
+        // Create login profile if specified
+        const loginProfile = properties['LoginProfile'] as
+          | { Password: string; PasswordResetRequired?: boolean }
+          | undefined;
+        if (loginProfile) {
           await this.iamClient.send(
-            new AddUserToGroupCommand({
+            new CreateLoginProfileCommand({
               UserName: userName,
-              GroupName: groupName,
+              Password: loginProfile.Password,
+              PasswordResetRequired: loginProfile.PasswordResetRequired ?? false,
             })
           );
-          this.logger.debug(`Added user ${userName} to group ${groupName}`);
+          this.logger.debug(`Created login profile for user ${userName}`);
         }
-      }
 
-      // Add inline policies if specified
-      const policies = properties['Policies'] as
-        | Array<{ PolicyName: string; PolicyDocument: unknown }>
-        | undefined;
-      if (policies && Array.isArray(policies)) {
-        for (const policy of policies) {
-          const policyDoc =
-            typeof policy.PolicyDocument === 'string'
-              ? policy.PolicyDocument
-              : JSON.stringify(policy.PolicyDocument);
-          await this.iamClient.send(
-            new PutUserPolicyCommand({
-              UserName: userName,
-              PolicyName: policy.PolicyName,
-              PolicyDocument: policyDoc,
-            })
-          );
-          this.logger.debug(`Added inline policy ${policy.PolicyName} to user ${userName}`);
+        // Attach managed policies if specified
+        const managedPolicyArns = properties['ManagedPolicyArns'] as string[] | undefined;
+        if (managedPolicyArns && Array.isArray(managedPolicyArns)) {
+          for (const policyArn of managedPolicyArns) {
+            await this.iamClient.send(
+              new AttachUserPolicyCommand({
+                UserName: userName,
+                PolicyArn: policyArn,
+              })
+            );
+            this.logger.debug(`Attached managed policy ${policyArn} to user ${userName}`);
+          }
         }
+
+        // Add user to groups if specified
+        const userGroups = properties['Groups'] as string[] | undefined;
+        if (userGroups && Array.isArray(userGroups)) {
+          for (const groupName of userGroups) {
+            await this.iamClient.send(
+              new AddUserToGroupCommand({
+                UserName: userName,
+                GroupName: groupName,
+              })
+            );
+            this.logger.debug(`Added user ${userName} to group ${groupName}`);
+          }
+        }
+
+        // Add inline policies if specified
+        const policies = properties['Policies'] as
+          | Array<{ PolicyName: string; PolicyDocument: unknown }>
+          | undefined;
+        if (policies && Array.isArray(policies)) {
+          for (const policy of policies) {
+            const policyDoc =
+              typeof policy.PolicyDocument === 'string'
+                ? policy.PolicyDocument
+                : JSON.stringify(policy.PolicyDocument);
+            await this.iamClient.send(
+              new PutUserPolicyCommand({
+                UserName: userName,
+                PolicyName: policy.PolicyName,
+                PolicyDocument: policyDoc,
+              })
+            );
+            this.logger.debug(`Added inline policy ${policy.PolicyName} to user ${userName}`);
+          }
+        }
+      } catch (innerError) {
+        try {
+          await this.removeUserFromAllGroups(userName);
+          await this.detachAllUserPolicies(userName);
+          await this.deleteAllUserInlinePolicies(userName);
+          try {
+            await this.iamClient.send(new DeleteLoginProfileCommand({ UserName: userName }));
+          } catch (err) {
+            if (!(err instanceof NoSuchEntityException)) throw err;
+          }
+          try {
+            await this.iamClient.send(
+              new DeleteUserPermissionsBoundaryCommand({ UserName: userName })
+            );
+          } catch (err) {
+            if (!(err instanceof NoSuchEntityException)) throw err;
+          }
+          await this.iamClient.send(new DeleteUserCommand({ UserName: userName }));
+          this.logger.debug(
+            `Cleaned up partially-created IAM user ${logicalId} (${userName}) after wiring failure`
+          );
+        } catch (cleanupError) {
+          this.logger.warn(
+            `Failed to clean up partially-created IAM user ${logicalId} (${userName}): ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}. Manual deletion may be required before the next deploy: remove from groups, detach managed policies, delete inline policies, delete login profile (aws iam delete-login-profile --user-name ${userName}), remove permissions boundary (aws iam delete-user-permissions-boundary --user-name ${userName}), then aws iam delete-user --user-name ${userName}`
+          );
+        }
+        throw innerError;
       }
 
       this.logger.debug(`Successfully created IAM user ${logicalId}: ${userName}`);
@@ -820,39 +861,67 @@ export class IAMUserGroupProvider implements ResourceProvider {
 
       const response = await this.iamClient.send(new CreateGroupCommand(createParams));
 
-      // Attach managed policies if specified
-      const managedPolicyArns = properties['ManagedPolicyArns'] as string[] | undefined;
-      if (managedPolicyArns && Array.isArray(managedPolicyArns)) {
-        for (const policyArn of managedPolicyArns) {
-          await this.iamClient.send(
-            new AttachGroupPolicyCommand({
-              GroupName: groupName,
-              PolicyArn: policyArn,
-            })
-          );
-          this.logger.debug(`Attached managed policy ${policyArn} to group ${groupName}`);
+      // CreateGroupCommand has succeeded — AWS has now committed the
+      // Group. Every subsequent call wires sub-resources onto it
+      // (managed-policy attachments / inline policies); if any fail, the
+      // group exists on AWS but cdkd state will NOT (the throw aborts
+      // before the success-return). The next redeploy would then re-try
+      // CREATE and AWS would reject with `EntityAlreadyExists: Group
+      // with name <X> already exists`. Wrap the wiring in an inner
+      // try/catch that detaches managed policies + deletes inline
+      // policies + DeleteGroupCommand before re-throwing the original
+      // error. The cleanup mirrors the order in `deleteGroup()` (but
+      // skips `removeAllUsersFromGroup` — a freshly-created group has
+      // no users).
+      try {
+        // Attach managed policies if specified
+        const managedPolicyArns = properties['ManagedPolicyArns'] as string[] | undefined;
+        if (managedPolicyArns && Array.isArray(managedPolicyArns)) {
+          for (const policyArn of managedPolicyArns) {
+            await this.iamClient.send(
+              new AttachGroupPolicyCommand({
+                GroupName: groupName,
+                PolicyArn: policyArn,
+              })
+            );
+            this.logger.debug(`Attached managed policy ${policyArn} to group ${groupName}`);
+          }
         }
-      }
 
-      // Add inline policies if specified
-      const policies = properties['Policies'] as
-        | Array<{ PolicyName: string; PolicyDocument: unknown }>
-        | undefined;
-      if (policies && Array.isArray(policies)) {
-        for (const policy of policies) {
-          const policyDoc =
-            typeof policy.PolicyDocument === 'string'
-              ? policy.PolicyDocument
-              : JSON.stringify(policy.PolicyDocument);
-          await this.iamClient.send(
-            new PutGroupPolicyCommand({
-              GroupName: groupName,
-              PolicyName: policy.PolicyName,
-              PolicyDocument: policyDoc,
-            })
-          );
-          this.logger.debug(`Added inline policy ${policy.PolicyName} to group ${groupName}`);
+        // Add inline policies if specified
+        const policies = properties['Policies'] as
+          | Array<{ PolicyName: string; PolicyDocument: unknown }>
+          | undefined;
+        if (policies && Array.isArray(policies)) {
+          for (const policy of policies) {
+            const policyDoc =
+              typeof policy.PolicyDocument === 'string'
+                ? policy.PolicyDocument
+                : JSON.stringify(policy.PolicyDocument);
+            await this.iamClient.send(
+              new PutGroupPolicyCommand({
+                GroupName: groupName,
+                PolicyName: policy.PolicyName,
+                PolicyDocument: policyDoc,
+              })
+            );
+            this.logger.debug(`Added inline policy ${policy.PolicyName} to group ${groupName}`);
+          }
         }
+      } catch (innerError) {
+        try {
+          await this.detachAllGroupPolicies(groupName);
+          await this.deleteAllGroupInlinePolicies(groupName);
+          await this.iamClient.send(new DeleteGroupCommand({ GroupName: groupName }));
+          this.logger.debug(
+            `Cleaned up partially-created IAM group ${logicalId} (${groupName}) after wiring failure`
+          );
+        } catch (cleanupError) {
+          this.logger.warn(
+            `Failed to clean up partially-created IAM group ${logicalId} (${groupName}): ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}. Manual deletion may be required before the next deploy: detach managed policies + delete inline policies, then aws iam delete-group --group-name ${groupName}`
+          );
+        }
+        throw innerError;
       }
 
       this.logger.debug(`Successfully created IAM group ${logicalId}: ${groupName}`);
