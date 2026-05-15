@@ -126,83 +126,119 @@ export class SNSTopicProvider implements ResourceProvider {
 
       const topicArn = response.TopicArn;
       if (!topicArn) {
+        // Theoretical AWS SDK contract violation: CreateTopic returned
+        // success but with no TopicArn. Cannot clean up — we have no
+        // ARN to delete. Has never been observed in practice.
         throw new Error('CreateTopic did not return TopicArn');
       }
 
-      // Apply ArchivePolicy (FIFO topics only, must be set after creation)
-      if (properties['ArchivePolicy']) {
-        const archivePolicy =
-          typeof properties['ArchivePolicy'] === 'string'
-            ? properties['ArchivePolicy']
-            : JSON.stringify(properties['ArchivePolicy']);
-        await this.snsClient.send(
-          new SetTopicAttributesCommand({
-            TopicArn: topicArn,
-            AttributeName: 'ArchivePolicy',
-            AttributeValue: archivePolicy,
-          })
-        );
-      }
+      // CreateTopicCommand has succeeded — AWS has now committed the
+      // Topic (and any inline Tags + Attributes). If a subsequent
+      // SetTopicAttributesCommand throws (ArchivePolicy on FIFO,
+      // DataProtectionPolicy, per-protocol DeliveryStatusLogging), the
+      // topic exists on AWS but cdkd state will NOT (the throw aborts
+      // before the success-return). CreateTopic is idempotent on Name
+      // — re-deploy would adopt the orphan rather than fail — so the
+      // partial-policy state could persist silently across redeploys.
+      // Wrap the wiring in an inner try/catch that issues a best-effort
+      // `DeleteTopicCommand` before re-throwing the original error.
+      // Note: CreateTopic does NOT throw on pre-existing topics (unlike
+      // S3/Logs which raise BucketAlreadyOwnedByYou / ResourceAlreadyExists),
+      // so cdkd cannot distinguish "we created this" vs "we adopted a
+      // pre-existing topic" — this matches the existing `delete()`
+      // behavior (always deletes), and the cleanup follows suit. If a
+      // user has a pre-existing topic with the same name AND a wiring
+      // step fails on first deploy, cdkd will delete the pre-existing
+      // topic. This is a known limitation matching the existing destroy
+      // semantics; not a regression introduced by this fix.
+      try {
+        // Apply ArchivePolicy (FIFO topics only, must be set after creation)
+        if (properties['ArchivePolicy']) {
+          const archivePolicy =
+            typeof properties['ArchivePolicy'] === 'string'
+              ? properties['ArchivePolicy']
+              : JSON.stringify(properties['ArchivePolicy']);
+          await this.snsClient.send(
+            new SetTopicAttributesCommand({
+              TopicArn: topicArn,
+              AttributeName: 'ArchivePolicy',
+              AttributeValue: archivePolicy,
+            })
+          );
+        }
 
-      // Apply DataProtectionPolicy
-      if (properties['DataProtectionPolicy']) {
-        const dataProtectionPolicy =
-          typeof properties['DataProtectionPolicy'] === 'string'
-            ? properties['DataProtectionPolicy']
-            : JSON.stringify(properties['DataProtectionPolicy']);
-        await this.snsClient.send(
-          new SetTopicAttributesCommand({
-            TopicArn: topicArn,
-            AttributeName: 'DataProtectionPolicy',
-            AttributeValue: dataProtectionPolicy,
-          })
-        );
-      }
+        // Apply DataProtectionPolicy
+        if (properties['DataProtectionPolicy']) {
+          const dataProtectionPolicy =
+            typeof properties['DataProtectionPolicy'] === 'string'
+              ? properties['DataProtectionPolicy']
+              : JSON.stringify(properties['DataProtectionPolicy']);
+          await this.snsClient.send(
+            new SetTopicAttributesCommand({
+              TopicArn: topicArn,
+              AttributeName: 'DataProtectionPolicy',
+              AttributeValue: dataProtectionPolicy,
+            })
+          );
+        }
 
-      // Apply DeliveryStatusLogging — every per-protocol attribute name AWS
-      // accepts is PascalCase-prefixed (`LambdaSuccessFeedbackRoleArn`,
-      // `SQSSuccessFeedbackRoleArn`, ...). CDK templates emit the
-      // `Protocol` value lowercase (`'lambda'` / `'sqs'` / `'http'`), so
-      // the raw `${protocol}<Suffix>` concatenation produces invalid
-      // attribute names that AWS rejects with `InvalidParameter: Invalid
-      // parameter: AttributeName`. Normalize every entry's protocol via
-      // `normalizeDeliveryStatusProtocol` before building the SDK input;
-      // an unknown / unsupported protocol throws a clear error rather
-      // than letting AWS produce the cryptic generic rejection.
-      if (properties['DeliveryStatusLogging']) {
-        const loggingConfigs = properties['DeliveryStatusLogging'] as Array<
-          Record<string, unknown>
-        >;
-        for (const config of loggingConfigs) {
-          const protocol = normalizeDeliveryStatusProtocolOrThrow(config['Protocol'], logicalId);
-          if (config['SuccessFeedbackRoleArn']) {
-            await this.snsClient.send(
-              new SetTopicAttributesCommand({
-                TopicArn: topicArn,
-                AttributeName: `${protocol}SuccessFeedbackRoleArn`,
-                AttributeValue: config['SuccessFeedbackRoleArn'] as string,
-              })
-            );
-          }
-          if (config['SuccessFeedbackSampleRate']) {
-            await this.snsClient.send(
-              new SetTopicAttributesCommand({
-                TopicArn: topicArn,
-                AttributeName: `${protocol}SuccessFeedbackSampleRate`,
-                AttributeValue: stringifyValue(config['SuccessFeedbackSampleRate']),
-              })
-            );
-          }
-          if (config['FailureFeedbackRoleArn']) {
-            await this.snsClient.send(
-              new SetTopicAttributesCommand({
-                TopicArn: topicArn,
-                AttributeName: `${protocol}FailureFeedbackRoleArn`,
-                AttributeValue: config['FailureFeedbackRoleArn'] as string,
-              })
-            );
+        // Apply DeliveryStatusLogging — every per-protocol attribute name AWS
+        // accepts is PascalCase-prefixed (`LambdaSuccessFeedbackRoleArn`,
+        // `SQSSuccessFeedbackRoleArn`, ...). CDK templates emit the
+        // `Protocol` value lowercase (`'lambda'` / `'sqs'` / `'http'`), so
+        // the raw `${protocol}<Suffix>` concatenation produces invalid
+        // attribute names that AWS rejects with `InvalidParameter: Invalid
+        // parameter: AttributeName`. Normalize every entry's protocol via
+        // `normalizeDeliveryStatusProtocol` before building the SDK input;
+        // an unknown / unsupported protocol throws a clear error rather
+        // than letting AWS produce the cryptic generic rejection.
+        if (properties['DeliveryStatusLogging']) {
+          const loggingConfigs = properties['DeliveryStatusLogging'] as Array<
+            Record<string, unknown>
+          >;
+          for (const config of loggingConfigs) {
+            const protocol = normalizeDeliveryStatusProtocolOrThrow(config['Protocol'], logicalId);
+            if (config['SuccessFeedbackRoleArn']) {
+              await this.snsClient.send(
+                new SetTopicAttributesCommand({
+                  TopicArn: topicArn,
+                  AttributeName: `${protocol}SuccessFeedbackRoleArn`,
+                  AttributeValue: config['SuccessFeedbackRoleArn'] as string,
+                })
+              );
+            }
+            if (config['SuccessFeedbackSampleRate']) {
+              await this.snsClient.send(
+                new SetTopicAttributesCommand({
+                  TopicArn: topicArn,
+                  AttributeName: `${protocol}SuccessFeedbackSampleRate`,
+                  AttributeValue: stringifyValue(config['SuccessFeedbackSampleRate']),
+                })
+              );
+            }
+            if (config['FailureFeedbackRoleArn']) {
+              await this.snsClient.send(
+                new SetTopicAttributesCommand({
+                  TopicArn: topicArn,
+                  AttributeName: `${protocol}FailureFeedbackRoleArn`,
+                  AttributeValue: config['FailureFeedbackRoleArn'] as string,
+                })
+              );
+            }
           }
         }
+      } catch (innerError) {
+        try {
+          await this.snsClient.send(new DeleteTopicCommand({ TopicArn: topicArn }));
+          this.logger.debug(
+            `Cleaned up partially-created SNS topic ${logicalId} (${topicArn}) after wiring failure`
+          );
+        } catch (cleanupError) {
+          this.logger.warn(
+            `Failed to clean up partially-created SNS topic ${logicalId} (${topicArn}): ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}. Manual deletion may be required before the next deploy: aws sns delete-topic --topic-arn ${topicArn}`
+          );
+        }
+        throw innerError;
       }
 
       // Note: Subscription property is handled by CloudFormation as separate resources

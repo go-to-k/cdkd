@@ -131,16 +131,64 @@ export class EventBridgeRuleProvider implements ResourceProvider {
       const ruleArn = response.RuleArn!;
       this.logger.debug(`Created EventBridge rule: ${ruleName} (${ruleArn})`);
 
-      // Add targets if specified
-      if (targets && targets.length > 0) {
-        await this.eventBridgeClient.send(
-          new PutTargetsCommand({
-            Rule: ruleName,
-            EventBusName: properties['EventBusName'] as string | undefined,
-            Targets: targets,
-          })
-        );
-        this.logger.debug(`Added ${targets.length} targets to rule ${ruleName}`);
+      // PutRuleCommand has succeeded — AWS has now committed the Rule
+      // (and any inline Tags). If the subsequent PutTargetsCommand throws,
+      // the rule exists on AWS but cdkd state will NOT (the throw aborts
+      // before the success-return). PutRule is idempotent on Name (a
+      // re-deploy would UPDATE the existing rule), so the orphan is
+      // structurally self-healing on retry — but only if the user's
+      // template hasn't changed AND only if they don't run `cdkd destroy`
+      // first (state has no record so destroy would skip the orphan).
+      // Wrap the PutTargets call in an inner try/catch that issues
+      // best-effort `RemoveTargets` + `DeleteRule` before re-throwing
+      // the original error. Mirror of `delete()` modulo `ResourceNotFound`
+      // tolerance (which we collapse into the cleanup catch as a WARN).
+      const eventBusName = properties['EventBusName'] as string | undefined;
+      try {
+        // Add targets if specified
+        if (targets && targets.length > 0) {
+          await this.eventBridgeClient.send(
+            new PutTargetsCommand({
+              Rule: ruleName,
+              EventBusName: eventBusName,
+              Targets: targets,
+            })
+          );
+          this.logger.debug(`Added ${targets.length} targets to rule ${ruleName}`);
+        }
+      } catch (innerError) {
+        try {
+          // PutTargets may have partially succeeded before throwing; list
+          // and remove any attached targets before deleting the rule.
+          // ListTargetsByRule + RemoveTargets is the same sequence
+          // `delete()` uses; AWS rejects DeleteRule when targets exist.
+          const targetsResponse = await this.eventBridgeClient.send(
+            new ListTargetsByRuleCommand({ Rule: ruleName, EventBusName: eventBusName })
+          );
+          const targetIds = (targetsResponse.Targets || [])
+            .map((t) => t.Id)
+            .filter((id): id is string => id !== undefined);
+          if (targetIds.length > 0) {
+            await this.eventBridgeClient.send(
+              new RemoveTargetsCommand({
+                Rule: ruleName,
+                EventBusName: eventBusName,
+                Ids: targetIds,
+              })
+            );
+          }
+          await this.eventBridgeClient.send(
+            new DeleteRuleCommand({ Name: ruleName, EventBusName: eventBusName })
+          );
+          this.logger.debug(
+            `Cleaned up partially-created EventBridge rule ${logicalId} (${ruleName}) after wiring failure`
+          );
+        } catch (cleanupError) {
+          this.logger.warn(
+            `Failed to clean up partially-created EventBridge rule ${logicalId} (${ruleName}): ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}. Manual deletion may be required before the next deploy: aws events list-targets-by-rule --rule ${ruleName}${eventBusName ? ` --event-bus-name ${eventBusName}` : ''} | jq -r '.Targets[].Id' | xargs aws events remove-targets --rule ${ruleName}${eventBusName ? ` --event-bus-name ${eventBusName}` : ''} --ids; aws events delete-rule --name ${ruleName}${eventBusName ? ` --event-bus-name ${eventBusName}` : ''}`
+          );
+        }
+        throw innerError;
       }
 
       return {
