@@ -1,3 +1,10 @@
+## [0.100.3](https://github.com/go-to-k/cdkd/compare/v0.100.2...v0.100.3) (2026-05-15)
+
+
+### Bug Fixes
+
+* **release:** rebuild after version bump so cdkd --version matches package.json ([#368](https://github.com/go-to-k/cdkd/issues/368)) ([a7a4e11](https://github.com/go-to-k/cdkd/commit/a7a4e11e0e5a3418f9ac776f505c99fe95236a0c))
+
 ## [0.100.2](https://github.com/go-to-k/cdkd/compare/v0.100.1...v0.100.2) (2026-05-15)
 
 
