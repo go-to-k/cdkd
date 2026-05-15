@@ -26,9 +26,8 @@ import type { CloudFormationTemplate } from '../../types/resource.js';
  * deploy-engine.ts `validateResourceTypes` call site).
  */
 export function countDeployableResources(template: CloudFormationTemplate): number {
-  return Object.values(template.Resources ?? {}).filter(
-    (r) => r.Type !== 'AWS::CDK::Metadata'
-  ).length;
+  return Object.values(template.Resources ?? {}).filter((r) => r.Type !== 'AWS::CDK::Metadata')
+    .length;
 }
 
 /**
