@@ -258,6 +258,35 @@ describe('DynamoDBGlobalTableProvider round-trip', () => {
       ]);
     });
 
+    it('waitForTableGone polls DescribeTable until ResourceNotFoundException (regression: PR #384 / commit c512f24)', async () => {
+      mockSend.mockResolvedValueOnce({
+        Table: { TableName: TABLE_NAME, Replicas: [{ RegionName: 'us-east-1' }] },
+      }); // DescribeTable (pre-delete replica scan)
+      mockSend.mockResolvedValueOnce({}); // DeleteTable
+      // waitForTableGone loop: still DELETING for two polls, then RNF.
+      mockSend.mockResolvedValueOnce({
+        Table: { TableName: TABLE_NAME, TableStatus: 'DELETING' },
+      });
+      mockSend.mockResolvedValueOnce({
+        Table: { TableName: TABLE_NAME, TableStatus: 'DELETING' },
+      });
+      mockSend.mockRejectedValueOnce(newRnf());
+
+      await provider.delete('X', TABLE_NAME, RESOURCE_TYPE, undefined, {
+        expectedRegion: 'us-east-1',
+      });
+
+      // Verify waitForTableGone made multiple DescribeTable calls (loop, not single-shot).
+      const names = mockSend.mock.calls.map((c) => c[0].constructor.name);
+      expect(names).toEqual([
+        'DescribeTableCommand', // pre-delete scan
+        'DeleteTableCommand',
+        'DescribeTableCommand', // wait poll #1 (still DELETING)
+        'DescribeTableCommand', // wait poll #2 (still DELETING)
+        'DescribeTableCommand', // wait poll #3 (RNF -> return)
+      ]);
+    });
+
     it('drops non-local replicas via UpdateTable Delete before DeleteTable', async () => {
       // DescribeTable: 2 replicas
       mockSend.mockResolvedValueOnce({

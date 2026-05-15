@@ -484,11 +484,18 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       }
     }
 
-    let currentRegion: string | undefined;
+    let currentRegion: string;
     try {
       currentRegion = await this.dynamoDBClient.config.region();
-    } catch {
-      currentRegion = undefined;
+    } catch (regionErr) {
+      const cause = regionErr instanceof Error ? regionErr : undefined;
+      throw new ProvisioningError(
+        `Could not resolve client region for DynamoDB GlobalTable ${logicalId} delete — would risk dropping the local replica`,
+        resourceType,
+        logicalId,
+        physicalId,
+        cause
+      );
     }
 
     // Drop every non-local replica first. GlobalTable cannot be deleted
