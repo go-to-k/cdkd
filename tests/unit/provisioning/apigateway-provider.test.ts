@@ -1096,6 +1096,74 @@ describe('ApiGatewayProvider', () => {
         });
       });
 
+      it('should issue PutMethodResponseCommand BEFORE PutIntegrationResponseCommand (CORS preflight OPTIONS regression)', async () => {
+        // Regression test for CORS preflight OPTIONS deploy failure:
+        //   "Invalid mapping expression specified: ... [No method response
+        //    exists for method.]"
+        // AWS rejects PutIntegrationResponse when the matching MethodResponse
+        // does not yet exist. CDK's `RestApi({ defaultCorsPreflightOptions })`
+        // emits both arrays on each generated OPTIONS method.
+        mockSend.mockResolvedValueOnce({}); // PutMethodCommand
+        mockSend.mockResolvedValueOnce({}); // PutIntegrationCommand
+        mockSend.mockResolvedValueOnce({}); // PutMethodResponseCommand
+        mockSend.mockResolvedValueOnce({}); // PutIntegrationResponseCommand
+
+        await provider.create('CorsOptionsMethod', resourceType, {
+          RestApiId: 'api-id',
+          ResourceId: 'resource-id',
+          HttpMethod: 'OPTIONS',
+          AuthorizationType: 'NONE',
+          Integration: {
+            Type: 'MOCK',
+            RequestTemplates: { 'application/json': '{"statusCode": 204}' },
+            IntegrationResponses: [
+              {
+                StatusCode: '204',
+                ResponseParameters: {
+                  'method.response.header.Access-Control-Allow-Origin': "'*'",
+                  'method.response.header.Access-Control-Allow-Methods': "'GET,POST,OPTIONS'",
+                },
+              },
+            ],
+          },
+          MethodResponses: [
+            {
+              StatusCode: '204',
+              ResponseParameters: {
+                'method.response.header.Access-Control-Allow-Origin': true,
+                'method.response.header.Access-Control-Allow-Methods': true,
+              },
+            },
+          ],
+        });
+
+        expect(mockSend).toHaveBeenCalledTimes(4);
+        const names = mockSend.mock.calls.map((c) => c[0].constructor.name);
+        expect(names).toEqual([
+          'PutMethodCommand',
+          'PutIntegrationCommand',
+          'PutMethodResponseCommand',
+          'PutIntegrationResponseCommand',
+        ]);
+      });
+
+      it('should issue PutMethodResponseCommand even when Integration is absent', async () => {
+        mockSend.mockResolvedValueOnce({}); // PutMethodCommand
+        mockSend.mockResolvedValueOnce({}); // PutMethodResponseCommand
+
+        await provider.create('MyMethod', resourceType, {
+          RestApiId: 'api-id',
+          ResourceId: 'resource-id',
+          HttpMethod: 'GET',
+          AuthorizationType: 'NONE',
+          MethodResponses: [{ StatusCode: '200' }],
+        });
+
+        expect(mockSend).toHaveBeenCalledTimes(2);
+        const names = mockSend.mock.calls.map((c) => c[0].constructor.name);
+        expect(names).toEqual(['PutMethodCommand', 'PutMethodResponseCommand']);
+      });
+
       it('should NOT issue PutIntegrationResponseCommand when Integration.IntegrationResponses is absent', async () => {
         mockSend.mockResolvedValueOnce({}); // PutMethodCommand
         mockSend.mockResolvedValueOnce({}); // PutIntegrationCommand
