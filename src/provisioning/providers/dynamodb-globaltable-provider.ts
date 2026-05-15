@@ -27,6 +27,10 @@ import {
   type UpdateReplicationGroupMemberAction,
   type UpdateTableCommandInput,
 } from '@aws-sdk/client-dynamodb';
+import {
+  ApplicationAutoScalingClient,
+  DescribeScalingPoliciesCommand,
+} from '@aws-sdk/client-application-auto-scaling';
 import { getLogger } from '../../utils/logger.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
@@ -82,12 +86,25 @@ import type {
  *    calling `update()`, but the guard is defense-in-depth.
  *  - Per-replica drift (`ContributorInsightsSpecification` /
  *    `PointInTimeRecoverySpecification` / `KinesisStreamSpecification`)
- *    is surfaced for the LOCAL replica only; cross-region replicas
- *    require per-region SDK clients which are out of scope for v1.
+ *    is surfaced for BOTH the LOCAL replica AND cross-region replicas
+ *    via per-region SDK clients (cached in `regionalClientCache` for
+ *    the deploy run). Issue #389 lifted the v1 LOCAL-only limitation.
+ *  - Cross-region replica Tags propagation (Issue #389): when the
+ *    update path detects a Tags-only diff on a non-local replica,
+ *    cdkd resolves the replica's table ARN by swapping the region
+ *    segment of the local ARN and issues `TagResource` /
+ *    `UntagResource` against a per-region client.
  */
 export class DynamoDBGlobalTableProvider implements ResourceProvider {
   private dynamoDBClient: DynamoDBClient;
   private logger = getLogger().child('DynamoDBGlobalTableProvider');
+  /**
+   * Caches per-region `DynamoDBClient` instances for cross-region drift
+   * reads (`readCurrentState`) and cross-region Tag propagation
+   * (`update()`). Keyed by region string; reuses the default credential
+   * chain. Lifetime is the provider instance — one deploy run.
+   */
+  private regionalClientCache = new Map<string, DynamoDBClient>();
   /**
    * Caches `getAttribute(physicalId, attribute)` results for the lifetime
    * of this provider instance (one deploy run). Safe under the current
@@ -128,6 +145,52 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
   constructor() {
     const awsClients = getAwsClients();
     this.dynamoDBClient = awsClients.dynamoDB;
+  }
+
+  /**
+   * Return a `DynamoDBClient` pinned to the given region, caching per
+   * region for the lifetime of this provider instance. Uses the default
+   * credential chain (env / shared config / IAM role) — no explicit
+   * credential plumbing needed.
+   *
+   * Used by `readCurrentState` (cross-region per-replica sub-spec reads)
+   * and `update()` (cross-region replica Tag propagation). Both code
+   * paths fire region-scoped DynamoDB APIs (`DescribeContributorInsights`
+   * / `DescribeContinuousBackups` / `DescribeKinesisStreamingDestination`
+   * / `TagResource` / `UntagResource`) against the replica's region.
+   *
+   * The cache may return `this.dynamoDBClient` when `region` happens to
+   * match the local client's region — in tests the local mock is
+   * intercepted via `vi.mock('../../utils/aws-clients.js')` so reuse
+   * is safe (and explicitly desired so the mock catches the call).
+   */
+  private getRegionalClient(region: string): DynamoDBClient {
+    const cached = this.regionalClientCache.get(region);
+    if (cached) return cached;
+    const client = new DynamoDBClient({ region });
+    this.regionalClientCache.set(region, client);
+    return client;
+  }
+
+  /**
+   * Construct the regional table ARN for a cross-region replica of a
+   * GlobalTable. AWS replicates the same `TableName` across every
+   * replica region, with each replica's ARN differing only in the
+   * `:<region>:` segment. Cheaper than a second `DescribeTable` round-
+   * trip on the regional client.
+   *
+   * Example:
+   *   local ARN:   arn:aws:dynamodb:us-east-1:123:table/Foo
+   *   for eu-west-1 → arn:aws:dynamodb:eu-west-1:123:table/Foo
+   *
+   * Returns `undefined` when the local ARN is malformed (defensive —
+   * downstream callers omit the offending operation rather than throw).
+   */
+  private replicaArnForRegion(localTableArn: string, targetRegion: string): string | undefined {
+    const segments = localTableArn.split(':');
+    if (segments.length < 6) return undefined;
+    segments[3] = targetRegion;
+    return segments.join(':');
   }
 
   /**
@@ -560,9 +623,9 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       // NO top-level `Tags` — tags live inside each `Replicas[]` entry
       // as `Replicas[?Region==<region>].Tags`. For the LOCAL replica we
       // diff and apply via TagResource / UntagResource on the local
-      // table ARN; cross-region replicas' Tags require per-region SDK
-      // clients and are deferred (logged at debug if the diff is non-
-      // empty for a non-local replica).
+      // table ARN; cross-region replicas' Tags are propagated inside
+      // the per-replica modify loop further down via the per-region
+      // client returned by `getRegionalClient` (Issue #389).
       const describeResp = await this.dynamoDBClient.send(
         new DescribeTableCommand({ TableName: physicalId })
       );
@@ -702,6 +765,59 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       for (const replica of replicaDiff.modified) {
         const region = replica['Region'] as string | undefined;
         if (!region || region === currentRegion) continue;
+
+        // Look up the matching previous replica entry so we can diff
+        // Tags independently of the non-Tags fields (UpdateReplica's
+        // SDK action does not accept Tags — cross-region tag changes
+        // must go through TagResource / UntagResource against the
+        // replica's region-scoped table ARN).
+        const oldReplica = (
+          (previousProperties['Replicas'] ?? []) as Array<Record<string, unknown>>
+        ).find((r) => r['Region'] === region);
+        const oldReplicaTags = oldReplica?.['Tags'] as
+          | Array<{ Key?: string; Value?: string }>
+          | undefined;
+        const newReplicaTags = replica['Tags'] as
+          | Array<{ Key?: string; Value?: string }>
+          | undefined;
+
+        // Cross-region Tags propagation (Issue #389): when AWS reports
+        // a TableArn, swap its region segment to construct the
+        // replica's ARN, then issue TagResource / UntagResource via
+        // a per-region client. Best-effort — a failure here logs at
+        // warn but does NOT block the rest of the replica modify
+        // loop (the local replica's Tags already applied above; the
+        // cross-region Tags failure surfaces as drift on the next
+        // run instead of as a deploy abort).
+        if (!deepEqual(oldReplicaTags, newReplicaTags)) {
+          if (tableArn) {
+            const replicaArn = this.replicaArnForRegion(tableArn, region);
+            if (replicaArn) {
+              try {
+                const regionalClient = this.getRegionalClient(region);
+                await this.applyTagDiffOnClient(
+                  regionalClient,
+                  replicaArn,
+                  oldReplicaTags,
+                  newReplicaTags
+                );
+              } catch (tagErr) {
+                this.logger.warn(
+                  `Could not apply Tags diff to cross-region replica ${region} of ${physicalId}: ${tagErr instanceof Error ? tagErr.message : String(tagErr)}. The replica's Tags state will surface as drift until the next successful deploy.`
+                );
+              }
+            } else {
+              this.logger.warn(
+                `Could not derive replica ARN for region ${region} from ${tableArn} — skipping Tags propagation for ${physicalId}`
+              );
+            }
+          } else {
+            this.logger.warn(
+              `Local DescribeTable returned no TableArn — cannot propagate Tags to cross-region replica ${region} of ${physicalId}`
+            );
+          }
+        }
+
         const updateAction: UpdateReplicationGroupMemberAction = { RegionName: region };
         if (replica['KMSMasterKeyId'] !== undefined) {
           updateAction.KMSMasterKeyId = replica['KMSMasterKeyId'] as string;
@@ -718,12 +834,10 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
         }
         // AWS rejects an UpdateReplica with no update fields
         // (ValidationException). When the only change in the modified
-        // replica is `Tags` (which UpdateReplica's SDK action does not
-        // accept — cross-region Tag propagation needs a per-region SDK
-        // client + TagResource on that replica's ARN, deferred), the
-        // updateAction has only `RegionName`. Skip the SDK call in
-        // that case and log at debug so the cross-region tag drift is
-        // visible but does not error the deploy.
+        // replica is `Tags` (now applied above via per-region client),
+        // the updateAction has only `RegionName`. Skip the
+        // UpdateReplica SDK call in that case — the Tags-only diff is
+        // already in flight against the regional client.
         const hasUpdateField =
           updateAction.KMSMasterKeyId !== undefined ||
           updateAction.GlobalSecondaryIndexes !== undefined ||
@@ -731,8 +845,8 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
         if (!hasUpdateField) {
           this.logger.debug(
             `Cross-region replica ${region} of ${physicalId}: only Tags-style ` +
-              `changes detected; skipping UpdateReplica (AWS rejects empty ` +
-              `Update actions). Per-region Tag propagation is deferred.`
+              `changes detected; UpdateReplica skipped (AWS rejects empty ` +
+              `Update actions). Tags propagation handled above via per-region client.`
           );
           continue;
         }
@@ -872,10 +986,28 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
 
   /**
    * Apply a diff between old and new CFn-shape Tags arrays via DynamoDB's
-   * `TagResource` / `UntagResource` APIs. Both take the table ARN as
-   * `ResourceArn`.
+   * `TagResource` / `UntagResource` APIs against the local client. Both
+   * take the table ARN as `ResourceArn`.
+   *
+   * Local-replica convenience wrapper around `applyTagDiffOnClient` so
+   * existing call sites stay unchanged.
    */
   private async applyTagDiff(
+    tableArn: string,
+    oldTagsRaw: Array<{ Key?: string; Value?: string }> | undefined,
+    newTagsRaw: Array<{ Key?: string; Value?: string }> | undefined
+  ): Promise<void> {
+    await this.applyTagDiffOnClient(this.dynamoDBClient, tableArn, oldTagsRaw, newTagsRaw);
+  }
+
+  /**
+   * Apply a Tags diff against the given `DynamoDBClient` (which may be
+   * the local client or a per-region client returned by
+   * `getRegionalClient`). Used by the local-replica path AND the
+   * cross-region replica Tags propagation path (Issue #389).
+   */
+  private async applyTagDiffOnClient(
+    client: DynamoDBClient,
     tableArn: string,
     oldTagsRaw: Array<{ Key?: string; Value?: string }> | undefined,
     newTagsRaw: Array<{ Key?: string; Value?: string }> | undefined
@@ -903,17 +1035,13 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
     }
 
     if (tagsToRemove.length > 0) {
-      await this.dynamoDBClient.send(
-        new UntagResourceCommand({ ResourceArn: tableArn, TagKeys: tagsToRemove })
-      );
+      await client.send(new UntagResourceCommand({ ResourceArn: tableArn, TagKeys: tagsToRemove }));
       this.logger.debug(
         `Removed ${tagsToRemove.length} tag(s) from DynamoDB GlobalTable ${tableArn}`
       );
     }
     if (tagsToAdd.length > 0) {
-      await this.dynamoDBClient.send(
-        new TagResourceCommand({ ResourceArn: tableArn, Tags: tagsToAdd })
-      );
+      await client.send(new TagResourceCommand({ ResourceArn: tableArn, Tags: tagsToAdd }));
       this.logger.debug(
         `Added/updated ${tagsToAdd.length} tag(s) on DynamoDB GlobalTable ${tableArn}`
       );
@@ -1193,44 +1321,115 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
 
       // Replicas: always emit `[]` placeholder per PR #145 — a console-side
       // replica add on a previously single-region table must show as drift.
-      // Map RegionName → Region (CFn's per-replica shape) and attach the
-      // local replica's per-replica sub-specifications (PITR / Kinesis /
-      // ContributorInsights) when AWS reports them.
+      // Map RegionName → Region (CFn's per-replica shape) and attach
+      // per-replica sub-specifications (PITR / Kinesis /
+      // ContributorInsights / Tags) for BOTH the local AND cross-region
+      // replicas — cross-region uses per-region SDK clients
+      // (`getRegionalClient`) so each replica's sub-spec state surfaces
+      // as drift just like the local one (Issue #389 lifted the v1
+      // LOCAL-only limitation).
       const currentRegion = (await this.dynamoDBClient.config.region()) ?? '';
       const tableNameForSubs = table.TableName ?? physicalId;
       const replicas = await Promise.all(
         (table.Replicas ?? []).map(async (r) => {
           const entry: Record<string, unknown> = { Region: r.RegionName };
           if (r.KMSMasterKeyId !== undefined) entry['KMSMasterKeyId'] = r.KMSMasterKeyId;
-          // Per-replica sub-specs + Tags: only the local replica in v1.
-          // Cross-region calls would need a per-region client, deferred.
-          // Tags live at `Replicas[].Tags` in the CFn `GlobalTable`
-          // schema (there is no top-level `Tags`), so they MUST be
+          if (!r.RegionName) return entry;
+
+          const isLocal = r.RegionName === currentRegion;
+          const client = isLocal ? this.dynamoDBClient : this.getRegionalClient(r.RegionName);
+          const regionLabel = r.RegionName;
+          const replicaArn = isLocal
+            ? table.TableArn
+            : table.TableArn
+              ? this.replicaArnForRegion(table.TableArn, r.RegionName)
+              : undefined;
+
+          // Per-replica sub-specs (PITR / Kinesis / ContributorInsights).
+          // Best-effort: errors per region per sub-spec omit the offending
+          // key — a permissions gap in one region must NOT abort the
+          // whole drift read.
+          const subs = await this.readReplicaSubSpecs(client, tableNameForSubs, regionLabel);
+          Object.assign(entry, subs);
+
+          // Per-replica Tags. CFn `GlobalTable` schema places Tags
+          // inside `Replicas[]` (no top-level `Tags`), so they MUST be
           // surfaced here — not at the top level of `result`.
-          if (r.RegionName && r.RegionName === currentRegion) {
-            const subs = await this.readLocalReplicaSubSpecs(tableNameForSubs);
-            Object.assign(entry, subs);
-            if (table.TableArn) {
-              try {
-                const tagsResp = await this.dynamoDBClient.send(
-                  new ListTagsOfResourceCommand({ ResourceArn: table.TableArn })
+          if (replicaArn) {
+            try {
+              const tagsResp = await client.send(
+                new ListTagsOfResourceCommand({ ResourceArn: replicaArn })
+              );
+              entry['Tags'] = normalizeAwsTagsToCfn(tagsResp.Tags);
+            } catch (tagErr) {
+              if (tagErr instanceof ResourceNotFoundException) {
+                // Only the LOCAL replica's RNF can be a real "table gone"
+                // signal. A cross-region RNF more likely means the
+                // replica is in CREATING / DELETING — treat as transient
+                // and omit the Tags key for that replica.
+                if (isLocal) throw tagErr;
+                this.logger.debug(
+                  `Cross-region replica ${regionLabel} returned RNF on ListTagsOfResource; omitting Tags`
                 );
-                entry['Tags'] = normalizeAwsTagsToCfn(tagsResp.Tags);
-              } catch (tagErr) {
-                if (tagErr instanceof ResourceNotFoundException) throw tagErr;
+                entry['Tags'] = [];
+              } else {
                 this.logger.warn(
-                  `Could not fetch tags for DynamoDB GlobalTable ${tableNameForSubs}: ${tagErr instanceof Error ? tagErr.message : String(tagErr)}`
+                  `Could not fetch tags for DynamoDB GlobalTable ${tableNameForSubs} in ${regionLabel}: ${tagErr instanceof Error ? tagErr.message : String(tagErr)}`
                 );
                 entry['Tags'] = [];
               }
-            } else {
-              entry['Tags'] = [];
             }
+          } else {
+            entry['Tags'] = [];
           }
           return entry;
         })
       );
       result['Replicas'] = replicas;
+
+      // WriteOnDemandThroughputSettings: trivial reverse-map from
+      // `Table.OnDemandThroughput.MaxWriteRequestUnits`. Always-emit
+      // `{}` placeholder when on-demand has no override so a console-side
+      // ADD on a previously-default table fires drift (PR #145 pattern).
+      if (table.OnDemandThroughput?.MaxWriteRequestUnits !== undefined) {
+        result['WriteOnDemandThroughputSettings'] = {
+          MaxWriteRequestUnits: table.OnDemandThroughput.MaxWriteRequestUnits,
+        };
+      } else {
+        result['WriteOnDemandThroughputSettings'] = {};
+      }
+
+      // WriteProvisionedThroughputSettings: flat-WriteCapacityUnits subset
+      // only — when application-autoscaling has NO policy on the
+      // WriteCapacityUnits dimension AND BillingMode is PROVISIONED.
+      // Auto-scaling-active cases stay omitted (full reverse-mapping is
+      // out of scope; the field stays in `getDriftUnknownPaths` deny
+      // list at the subtree level for that case via the placeholder).
+      if (billingMode === 'PROVISIONED') {
+        const writeCapacity = table.ProvisionedThroughput?.WriteCapacityUnits;
+        if (writeCapacity !== undefined) {
+          const hasAutoScaling = await this.hasWriteAutoScalingPolicy(tableNameForSubs);
+          if (!hasAutoScaling) {
+            result['WriteProvisionedThroughputSettings'] = {
+              WriteCapacityUnits: writeCapacity,
+            };
+          } else {
+            // Auto-scaling owns the capacity — omit the flat surface so
+            // drift doesn't fire on every scale event. A follow-up PR
+            // will reverse-map the full `WriteCapacityAutoScalingSettings`
+            // shape; until then this stays a known-unknown placeholder.
+            result['WriteProvisionedThroughputSettings'] = {};
+          }
+        } else {
+          result['WriteProvisionedThroughputSettings'] = {};
+        }
+      } else {
+        // PAY_PER_REQUEST: type-discriminator-gated empty placeholder so a
+        // template that adds `WriteProvisionedThroughputSettings` later
+        // (after a BillingMode flip) registers as drift; the flat-value
+        // is intentionally absent on on-demand tables.
+        result['WriteProvisionedThroughputSettings'] = {};
+      }
 
       // TimeToLiveSpecification: separate API call. Race-tolerant — when
       // AWS reports a transient `UPDATING` / `DISABLING` status, omit
@@ -1273,7 +1472,9 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
   }
 
   /**
-   * Read per-replica sub-specifications for the LOCAL replica:
+   * Read per-replica sub-specifications against the given `DynamoDBClient`
+   * (which may be the local client or a per-region client returned by
+   * `getRegionalClient`):
    *  - `ContributorInsightsSpecification` via `DescribeContributorInsights`
    *    (table-level; GSI overrides are NOT surfaced in v1 — they would
    *    require one call per GSI and a different CFn nesting under the
@@ -1286,15 +1487,20 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
    * Each call is best-effort: errors omit the offending key rather than
    * fail the whole drift read.
    *
-   * Cross-region replicas would need per-region SDK clients (the calls
-   * are region-scoped to the replica) — deferred to a follow-up PR.
+   * Issue #389 lifted the LOCAL-only limitation by parameterizing the
+   * client — the same reverse-mapping logic runs against any region's
+   * client.
    */
-  private async readLocalReplicaSubSpecs(tableName: string): Promise<Record<string, unknown>> {
+  private async readReplicaSubSpecs(
+    client: DynamoDBClient,
+    tableName: string,
+    regionLabel: string
+  ): Promise<Record<string, unknown>> {
     const out: Record<string, unknown> = {};
 
     // ContributorInsights (table-level only in v1).
     try {
-      const ci = await this.dynamoDBClient.send(
+      const ci = await client.send(
         new DescribeContributorInsightsCommand({ TableName: tableName })
       );
       if (ci.ContributorInsightsStatus) {
@@ -1304,13 +1510,13 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       }
     } catch (err) {
       this.logger.debug(
-        `Could not read ContributorInsights for ${tableName}: ${err instanceof Error ? err.message : String(err)}`
+        `Could not read ContributorInsights for ${tableName} in ${regionLabel}: ${err instanceof Error ? err.message : String(err)}`
       );
     }
 
     // PointInTimeRecovery via DescribeContinuousBackups.
     try {
-      const pitr = await this.dynamoDBClient.send(
+      const pitr = await client.send(
         new DescribeContinuousBackupsCommand({ TableName: tableName })
       );
       const pitrStatus =
@@ -1323,14 +1529,14 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       }
     } catch (err) {
       this.logger.debug(
-        `Could not read PointInTimeRecovery for ${tableName}: ${err instanceof Error ? err.message : String(err)}`
+        `Could not read PointInTimeRecovery for ${tableName} in ${regionLabel}: ${err instanceof Error ? err.message : String(err)}`
       );
     }
 
     // Kinesis streaming destination — pick the first ACTIVE destination
     // (CFn's per-replica shape only carries one StreamArn).
     try {
-      const ks = await this.dynamoDBClient.send(
+      const ks = await client.send(
         new DescribeKinesisStreamingDestinationCommand({ TableName: tableName })
       );
       const destinations = ks.KinesisDataStreamDestinations ?? [];
@@ -1347,7 +1553,7 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       }
     } catch (err) {
       this.logger.debug(
-        `Could not read KinesisStreamingDestination for ${tableName}: ${err instanceof Error ? err.message : String(err)}`
+        `Could not read KinesisStreamingDestination for ${tableName} in ${regionLabel}: ${err instanceof Error ? err.message : String(err)}`
       );
     }
 
@@ -1355,21 +1561,63 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
   }
 
   /**
+   * Detect whether application-autoscaling has a scaling policy on this
+   * table's WriteCapacityUnits dimension. Used to decide whether the
+   * `WriteProvisionedThroughputSettings.WriteCapacityUnits` flat-value
+   * surface in `readCurrentState` is safe to emit (auto-scaling
+   * dynamically mutates capacity, so a flat snapshot would fire false
+   * drift on every scale event — when an autoscaling policy is in play
+   * we omit the flat surface so a follow-up PR can reverse-map the
+   * full `WriteCapacityAutoScalingSettings` shape).
+   *
+   * Best-effort: errors return `false` (no autoscaling detected) so a
+   * permissions gap on `application-autoscaling:DescribeScalingPolicies`
+   * does not abort drift reads. Logged at debug.
+   */
+  private async hasWriteAutoScalingPolicy(tableName: string): Promise<boolean> {
+    try {
+      const region = (await this.dynamoDBClient.config.region()) ?? '';
+      const client = new ApplicationAutoScalingClient({ region });
+      const resp = await client.send(
+        new DescribeScalingPoliciesCommand({
+          ServiceNamespace: 'dynamodb',
+          ResourceId: `table/${tableName}`,
+          ScalableDimension: 'dynamodb:table:WriteCapacityUnits',
+        })
+      );
+      return (resp.ScalingPolicies ?? []).length > 0;
+    } catch (err) {
+      this.logger.debug(
+        `Could not query application-autoscaling for ${tableName}: ${err instanceof Error ? err.message : String(err)}`
+      );
+      return false;
+    }
+  }
+
+  /**
    * State property paths cdkd's GlobalTable readCurrentState cannot (yet)
    * reverse-map. The drift comparator skips these so a templated value
    * doesn't fire guaranteed false drift on every clean run.
    *
-   * - `WriteProvisionedThroughputSettings` /
-   *   `WriteOnDemandThroughputSettings`: CFn's shapes wrap
-   *   auto-scaling / on-demand max-RU settings whose reverse-mapping
-   *   from `DescribeTable.ProvisionedThroughput` / `OnDemandThroughput`
-   *   is non-trivial and would fire false drift in v1.
+   * Issue #389 emptied this list:
+   *  - `WriteProvisionedThroughputSettings` (flat-WriteCapacityUnits
+   *    subset) is now reverse-mapped from `Table.ProvisionedThroughput`
+   *    when BillingMode is PROVISIONED AND application-autoscaling has
+   *    no policy on the WriteCapacityUnits dimension. Auto-scaling
+   *    cases emit an empty `{}` placeholder so the comparator does NOT
+   *    fire false drift on the literal `WriteCapacityUnits` subtree.
+   *  - `WriteOnDemandThroughputSettings` is reverse-mapped from
+   *    `Table.OnDemandThroughput.MaxWriteRequestUnits`. Always-emit
+   *    `{}` placeholder when AWS reports no override.
+   *  - `TimeToLiveSpecification` is reverse-mapped via
+   *    `DescribeTimeToLive` in `readCurrentState`.
    *
-   * `TimeToLiveSpecification` is reverse-mapped via `DescribeTimeToLive`
-   * in `readCurrentState` (no longer in this list).
+   * Returning an empty list is the canonical "no known-unknown paths"
+   * shape — keeping the method present (rather than removing it) for
+   * future additions and for backward compat on test reflection.
    */
   getDriftUnknownPaths(_resourceType: string): string[] {
-    return ['WriteProvisionedThroughputSettings', 'WriteOnDemandThroughputSettings'];
+    return [];
   }
 
   /**

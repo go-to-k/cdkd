@@ -16,13 +16,53 @@ import {
   ResourceNotFoundException,
 } from '@aws-sdk/client-dynamodb';
 
-const mockSend = vi.fn();
+const { mockSend, mockAutoScalingSend, regionalClientSpy } = vi.hoisted(() => ({
+  mockSend: vi.fn(),
+  mockAutoScalingSend: vi.fn(),
+  regionalClientSpy: vi.fn(),
+}));
 
 vi.mock('../../../src/utils/aws-clients.js', () => ({
   getAwsClients: () => ({
     dynamoDB: { send: mockSend, config: { region: () => Promise.resolve('us-east-1') } },
   }),
 }));
+
+// Intercept `new DynamoDBClient({region})` calls inside the provider's
+// `getRegionalClient` helper so cross-region paths route through the
+// same `mockSend` queue instead of making real network calls. Command
+// classes (`DescribeTableCommand` etc.) keep the actual SDK shape.
+vi.mock('@aws-sdk/client-dynamodb', async () => {
+  const actual = await vi.importActual<typeof import('@aws-sdk/client-dynamodb')>(
+    '@aws-sdk/client-dynamodb'
+  );
+  return {
+    ...actual,
+    DynamoDBClient: vi.fn().mockImplementation((cfg: { region?: string } | undefined) => {
+      regionalClientSpy(cfg?.region);
+      return {
+        send: mockSend,
+        config: { region: () => Promise.resolve(cfg?.region ?? 'us-east-1') },
+      };
+    }),
+  };
+});
+
+// Same for application-autoscaling — the provider instantiates a fresh
+// client inside `hasWriteAutoScalingPolicy`. Default the mock to "no
+// scaling policy" so tests that don't queue a response see the empty
+// `WriteProvisionedThroughputSettings: {}` placeholder.
+vi.mock('@aws-sdk/client-application-auto-scaling', async () => {
+  const actual = await vi.importActual<
+    typeof import('@aws-sdk/client-application-auto-scaling')
+  >('@aws-sdk/client-application-auto-scaling');
+  return {
+    ...actual,
+    ApplicationAutoScalingClient: vi.fn().mockImplementation(() => ({
+      send: mockAutoScalingSend,
+    })),
+  };
+});
 
 vi.mock('../../../src/utils/logger.js', () => {
   const childLogger = {
@@ -66,6 +106,12 @@ describe('DynamoDBGlobalTableProvider round-trip', () => {
 
   beforeEach(() => {
     mockSend.mockReset();
+    mockAutoScalingSend.mockReset();
+    regionalClientSpy.mockReset();
+    // Default: no application-autoscaling policy attached. Tests that
+    // exercise the autoscaling-detected branch can override this with
+    // `mockAutoScalingSend.mockResolvedValueOnce({ ScalingPolicies: [...] })`.
+    mockAutoScalingSend.mockResolvedValue({ ScalingPolicies: [] });
     provider = new DynamoDBGlobalTableProvider();
   });
 
@@ -738,9 +784,11 @@ describe('DynamoDBGlobalTableProvider round-trip', () => {
       expect(ru?.Update?.KMSMasterKeyId).toBe('alias/new');
     });
 
-    it('skips UpdateReplica when a cross-region replica has only Tags changes (AWS rejects empty Update; documented limitation)', async () => {
+    it('propagates Tags to cross-region replica via regional UntagResource + TagResource (Issue #389)', async () => {
       mockSend.mockResolvedValueOnce({ Table: { TableStatus: 'ACTIVE' } }); // wait
-      mockSend.mockResolvedValueOnce({ Table: { TableArn: TABLE_ARN } }); // DescribeTable for tag diff
+      mockSend.mockResolvedValueOnce({ Table: { TableArn: TABLE_ARN } }); // DescribeTable for local tag diff
+      mockSend.mockResolvedValueOnce({}); // Untag (regional)
+      mockSend.mockResolvedValueOnce({}); // Tag (regional)
       mockSend.mockResolvedValueOnce({ Table: { TableArn: TABLE_ARN } }); // final describe
 
       await provider.update(
@@ -760,13 +808,69 @@ describe('DynamoDBGlobalTableProvider round-trip', () => {
           ],
         }
       );
-      // No UpdateTable issued for the cross-region replica — the
-      // modified-replica path detects the empty Update action (only
-      // Tags changed) and skips to avoid AWS's ValidationException.
+
+      // No UpdateTable should be issued for the cross-region replica
+      // (only Tags changed; UpdateReplica skipped to avoid AWS's
+      // ValidationException on empty Update).
       const updateCalls = mockSend.mock.calls
         .map((c) => c[0])
         .filter((c) => c instanceof UpdateTableCommand) as UpdateTableCommand[];
       expect(updateCalls).toHaveLength(0);
+
+      // The cross-region client must have been spawned for eu-west-1.
+      expect(regionalClientSpy).toHaveBeenCalledWith('eu-west-1');
+
+      // The Untag + Tag SDK calls must target the eu-west-1 replica ARN,
+      // not the local us-east-1 ARN.
+      const untag = mockSend.mock.calls
+        .map((c) => c[0])
+        .find((c) => c instanceof UntagResourceCommand) as
+        | UntagResourceCommand
+        | undefined;
+      const tag = mockSend.mock.calls
+        .map((c) => c[0])
+        .find((c) => c instanceof TagResourceCommand) as
+        | TagResourceCommand
+        | undefined;
+      expect(untag?.input.ResourceArn).toBe(
+        'arn:aws:dynamodb:eu-west-1:123:table/my-table'
+      );
+      expect(untag?.input.TagKeys).toEqual(['Old']);
+      expect(tag?.input.ResourceArn).toBe(
+        'arn:aws:dynamodb:eu-west-1:123:table/my-table'
+      );
+      expect(tag?.input.Tags).toEqual([{ Key: 'New', Value: 'A' }]);
+    });
+
+    it('skips cross-region Tag propagation gracefully when local DescribeTable returns no TableArn', async () => {
+      mockSend.mockResolvedValueOnce({ Table: { TableStatus: 'ACTIVE' } }); // wait
+      mockSend.mockResolvedValueOnce({ Table: {} }); // DescribeTable returns no ARN
+      mockSend.mockResolvedValueOnce({ Table: { TableArn: TABLE_ARN } }); // final describe
+
+      await provider.update(
+        'X',
+        TABLE_NAME,
+        RESOURCE_TYPE,
+        {
+          Replicas: [
+            { Region: 'us-east-1' },
+            { Region: 'eu-west-1', Tags: [{ Key: 'New', Value: 'A' }] },
+          ],
+        },
+        {
+          Replicas: [
+            { Region: 'us-east-1' },
+            { Region: 'eu-west-1' },
+          ],
+        }
+      );
+
+      const tagCalls = mockSend.mock.calls
+        .map((c) => c[0])
+        .filter(
+          (c) => c instanceof UntagResourceCommand || c instanceof TagResourceCommand
+        );
+      expect(tagCalls).toHaveLength(0);
     });
 
     it('issues UpdateTimeToLive with Enabled=false when template removes TimeToLiveSpecification', async () => {
@@ -1010,6 +1114,42 @@ describe('DynamoDBGlobalTableProvider round-trip', () => {
       const flipCall = mockSend.mock.calls[0]?.[0] as UpdateTableCommand;
       expect(flipCall).toBeInstanceOf(UpdateTableCommand);
       expect(flipCall.input.DeletionProtectionEnabled).toBe(false);
+    });
+
+    it('--remove-protection: RNF on the flip-off UpdateTable is swallowed and delete continues (Issue #389)', async () => {
+      // The pre-delete `UpdateTable(DeletionProtectionEnabled: false)`
+      // can return RNF when the table is concurrently destroyed; cdkd
+      // swallows the RNF and continues to the per-region drop loop +
+      // DeleteTable, which fall through to the standard region-match-
+      // gated RNF idempotency path.
+      mockSend.mockRejectedValueOnce(newRnf()); // UpdateTable (flip-off) -> RNF
+      mockSend.mockRejectedValueOnce(newRnf()); // DescribeTable -> RNF (table gone)
+      mockSend.mockRejectedValueOnce(newRnf()); // DeleteTable -> RNF
+
+      await provider.delete('X', TABLE_NAME, RESOURCE_TYPE, undefined, {
+        expectedRegion: 'us-east-1',
+        removeProtection: true,
+      });
+
+      // Walked through the flip-off + DescribeTable + DeleteTable; no
+      // ProvisioningError because the region matched.
+      expect(mockSend.mock.calls.length).toBeGreaterThanOrEqual(3);
+    });
+
+    it('--remove-protection: RNF on flip-off does NOT bypass the region-match gate downstream', async () => {
+      // Same as above but with a region mismatch — the downstream RNF
+      // on DeleteTable must still throw because the destroy could be
+      // silently stripping a still-existing resource from state.
+      mockSend.mockRejectedValueOnce(newRnf()); // UpdateTable (flip-off) -> RNF
+      mockSend.mockRejectedValueOnce(newRnf()); // DescribeTable -> RNF
+      mockSend.mockRejectedValueOnce(newRnf()); // DeleteTable -> RNF
+
+      await expect(
+        provider.delete('X', TABLE_NAME, RESOURCE_TYPE, undefined, {
+          expectedRegion: 'eu-west-1', // mismatch — local client is us-east-1
+          removeProtection: true,
+        })
+      ).rejects.toBeInstanceOf(ProvisioningError);
     });
   });
 
@@ -1293,21 +1433,169 @@ describe('DynamoDBGlobalTableProvider round-trip', () => {
       });
     });
 
-    it('does NOT surface per-replica sub-specs for cross-region replicas (v1 limitation)', async () => {
+    it('surfaces per-replica sub-specs for cross-region replicas via regional client (Issue #389)', async () => {
       mockSend.mockResolvedValueOnce({
         Table: {
           TableArn: TABLE_ARN,
           Replicas: [{ RegionName: 'eu-west-1' }], // cross-region only, no local
         },
       });
-      // No local replica → no sub-spec calls fire; just TTL + Tags.
-      queueReadCurrentStateTail({ localReplica: false });
+      // Cross-region replica: 3 sub-spec calls + ListTagsOfResource fire
+      // against the regional client (which routes through mockSend via
+      // the constructor mock). Then DescribeTimeToLive runs on the
+      // local client.
+      mockSend.mockResolvedValueOnce({ ContributorInsightsStatus: 'ENABLED' });
+      mockSend.mockResolvedValueOnce({
+        ContinuousBackupsDescription: {
+          PointInTimeRecoveryDescription: {
+            PointInTimeRecoveryStatus: 'ENABLED',
+          },
+        },
+      });
+      mockSend.mockResolvedValueOnce({ KinesisDataStreamDestinations: [] });
+      mockSend.mockResolvedValueOnce({ Tags: [{ Key: 'Env', Value: 'prod' }] });
+      mockSend.mockResolvedValueOnce({
+        TimeToLiveDescription: { TimeToLiveStatus: 'DISABLED' },
+      });
+
       const observed = await provider.readCurrentState(TABLE_NAME, 'X', RESOURCE_TYPE);
       const replica = (observed!['Replicas'] as Array<Record<string, unknown>>)[0];
-      expect(replica!['ContributorInsightsSpecification']).toBeUndefined();
-      expect(replica!['PointInTimeRecoverySpecification']).toBeUndefined();
-      expect(replica!['KinesisStreamSpecification']).toBeUndefined();
       expect(replica!['Region']).toBe('eu-west-1');
+      // Pre-#389 these were undefined; post-#389 the regional client
+      // surfaces them.
+      expect(replica!['ContributorInsightsSpecification']).toEqual({ Enabled: true });
+      expect(replica!['PointInTimeRecoverySpecification']).toEqual({
+        PointInTimeRecoveryEnabled: true,
+      });
+      expect(replica!['Tags']).toEqual([{ Key: 'Env', Value: 'prod' }]);
+      // Regional client was spawned for the cross-region region.
+      expect(regionalClientSpy).toHaveBeenCalledWith('eu-west-1');
+    });
+
+    // ─── Throughput round-trip (Issue #389 item #3) ──────────────────
+
+    it('surfaces WriteOnDemandThroughputSettings.MaxWriteRequestUnits when AWS reports it', async () => {
+      mockSend.mockResolvedValueOnce({
+        Table: {
+          TableArn: TABLE_ARN,
+          Replicas: [],
+          OnDemandThroughput: { MaxWriteRequestUnits: 1500 },
+        },
+      });
+      queueReadCurrentStateTail({ localReplica: false });
+      const observed = await provider.readCurrentState(TABLE_NAME, 'X', RESOURCE_TYPE);
+      expect(observed!['WriteOnDemandThroughputSettings']).toEqual({
+        MaxWriteRequestUnits: 1500,
+      });
+    });
+
+    it('emits empty WriteOnDemandThroughputSettings placeholder when AWS reports no override (PR #145 pattern)', async () => {
+      mockSend.mockResolvedValueOnce({
+        Table: { TableArn: TABLE_ARN, Replicas: [] },
+      });
+      queueReadCurrentStateTail({ localReplica: false });
+      const observed = await provider.readCurrentState(TABLE_NAME, 'X', RESOURCE_TYPE);
+      expect(observed!['WriteOnDemandThroughputSettings']).toEqual({});
+    });
+
+    it('surfaces WriteProvisionedThroughputSettings.WriteCapacityUnits on PROVISIONED tables WITHOUT auto-scaling', async () => {
+      mockSend.mockResolvedValueOnce({
+        Table: {
+          TableArn: TABLE_ARN,
+          Replicas: [],
+          BillingModeSummary: { BillingMode: 'PROVISIONED' },
+          ProvisionedThroughput: { WriteCapacityUnits: 7, ReadCapacityUnits: 4 },
+        },
+      });
+      queueReadCurrentStateTail({ localReplica: false });
+      // mockAutoScalingSend defaults to ScalingPolicies: [] in beforeEach.
+
+      const observed = await provider.readCurrentState(TABLE_NAME, 'X', RESOURCE_TYPE);
+      expect(observed!['WriteProvisionedThroughputSettings']).toEqual({
+        WriteCapacityUnits: 7,
+      });
+    });
+
+    it('omits the flat WriteCapacityUnits subtree when application-autoscaling owns the dimension', async () => {
+      mockSend.mockResolvedValueOnce({
+        Table: {
+          TableArn: TABLE_ARN,
+          Replicas: [],
+          BillingModeSummary: { BillingMode: 'PROVISIONED' },
+          ProvisionedThroughput: { WriteCapacityUnits: 7 },
+        },
+      });
+      queueReadCurrentStateTail({ localReplica: false });
+      // Auto-scaling reports a policy on WriteCapacityUnits → cdkd
+      // emits the empty `{}` placeholder so the comparator does not
+      // false-fire on every scale event.
+      mockAutoScalingSend.mockReset();
+      mockAutoScalingSend.mockResolvedValueOnce({
+        ScalingPolicies: [{ PolicyName: 'my-policy' }],
+      });
+
+      const observed = await provider.readCurrentState(TABLE_NAME, 'X', RESOURCE_TYPE);
+      expect(observed!['WriteProvisionedThroughputSettings']).toEqual({});
+    });
+
+    it('emits empty WriteProvisionedThroughputSettings placeholder on PAY_PER_REQUEST tables', async () => {
+      mockSend.mockResolvedValueOnce({
+        Table: {
+          TableArn: TABLE_ARN,
+          Replicas: [],
+          BillingModeSummary: { BillingMode: 'PAY_PER_REQUEST' },
+        },
+      });
+      queueReadCurrentStateTail({ localReplica: false });
+      const observed = await provider.readCurrentState(TABLE_NAME, 'X', RESOURCE_TYPE);
+      expect(observed!['WriteProvisionedThroughputSettings']).toEqual({});
+    });
+
+    it('emits empty WriteProvisionedThroughputSettings placeholder when autoscaling lookup fails (best-effort)', async () => {
+      mockSend.mockResolvedValueOnce({
+        Table: {
+          TableArn: TABLE_ARN,
+          Replicas: [],
+          BillingModeSummary: { BillingMode: 'PROVISIONED' },
+          ProvisionedThroughput: { WriteCapacityUnits: 4 },
+        },
+      });
+      queueReadCurrentStateTail({ localReplica: false });
+      mockAutoScalingSend.mockReset();
+      mockAutoScalingSend.mockRejectedValueOnce(new Error('permission denied'));
+
+      const observed = await provider.readCurrentState(TABLE_NAME, 'X', RESOURCE_TYPE);
+      // Lookup failure is treated as "no policy" — the flat-value
+      // surface IS emitted (false-positive risk on scale is the
+      // tradeoff vs hiding the actual capacity).
+      expect(observed!['WriteProvisionedThroughputSettings']).toEqual({
+        WriteCapacityUnits: 4,
+      });
+    });
+
+    it('omits the offending sub-spec key when the per-region call fails (best-effort)', async () => {
+      mockSend.mockResolvedValueOnce({
+        Table: {
+          TableArn: TABLE_ARN,
+          Replicas: [{ RegionName: 'eu-west-1' }],
+        },
+      });
+      // ContributorInsights succeeds, PITR throws, Kinesis succeeds,
+      // ListTagsOfResource throws. The whole drift read must continue
+      // and surface only the keys that worked.
+      mockSend.mockResolvedValueOnce({ ContributorInsightsStatus: 'DISABLED' });
+      mockSend.mockRejectedValueOnce(new Error('access denied in eu-west-1'));
+      mockSend.mockResolvedValueOnce({ KinesisDataStreamDestinations: [] });
+      mockSend.mockRejectedValueOnce(new Error('tag api boom'));
+      mockSend.mockResolvedValueOnce({
+        TimeToLiveDescription: { TimeToLiveStatus: 'DISABLED' },
+      });
+
+      const observed = await provider.readCurrentState(TABLE_NAME, 'X', RESOURCE_TYPE);
+      const replica = (observed!['Replicas'] as Array<Record<string, unknown>>)[0];
+      expect(replica!['ContributorInsightsSpecification']).toEqual({ Enabled: false });
+      expect(replica!['PointInTimeRecoverySpecification']).toBeUndefined();
+      expect(replica!['Tags']).toEqual([]); // best-effort fallback
     });
 
     // ─── create path: PROVISIONED BillingMode (Item B follow-up) ─────
@@ -1344,16 +1632,14 @@ describe('DynamoDBGlobalTableProvider round-trip', () => {
   });
 
   describe('getDriftUnknownPaths', () => {
-    it('declares throughput-settings as drift-unknown (TTL now round-trips)', () => {
+    it('is empty: throughput settings now round-trip; the deny list is empty (Issue #389)', () => {
       const paths = provider.getDriftUnknownPaths(RESOURCE_TYPE);
-      expect(paths).toEqual(
-        expect.arrayContaining([
-          'WriteProvisionedThroughputSettings',
-          'WriteOnDemandThroughputSettings',
-        ])
-      );
-      // TTL was previously here; the readCurrentState now reverse-maps
-      // it via DescribeTimeToLive, so it must NOT be in the deny list.
+      // Pre-#389: ['WriteProvisionedThroughputSettings',
+      // 'WriteOnDemandThroughputSettings']. Post-#389: empty — both
+      // surfaces are reverse-mapped in `readCurrentState` (the auto-
+      // scaling case emits an empty `{}` placeholder so the literal
+      // `WriteCapacityUnits` subtree doesn't false-fire).
+      expect(paths).toEqual([]);
       expect(paths).not.toContain('TimeToLiveSpecification');
     });
   });
