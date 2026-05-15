@@ -3,7 +3,9 @@
 # End-to-end real-AWS test for cdkd's AWS::DynamoDB::GlobalTable SDK
 # Provider (Issue #383). Verifies that a `dynamodb.TableV2` deployment
 # produces a `${StackName}-X<hash>` AWS-side table name (not a CC-API
-# auto-generated random string) and that destroy cleans up the table.
+# auto-generated random string), that subsequent in-place UPDATE deploys
+# round-trip cleanly through cdkd's serialized UpdateTable / TagResource
+# / UpdateTimeToLive pipeline, and that destroy cleans up the table.
 #
 # Steps:
 #   1. install + build cdkd (root) + install fixture deps
@@ -11,8 +13,10 @@
 #   3. read the deployed table name from cdkd state and assert it starts
 #      with the cdkd `${StackName}-` prefix
 #   4. assert the deployed table exists on AWS via DescribeTable
-#   5. cdkd destroy --force
-#   6. assert the AWS-side table is gone and cdkd state is empty
+#   5. cdkd deploy with CDKD_TEST_UPDATE=ttl,tags — in-place update
+#   6. assert TTL is now ENABLED and the UpdateTest tag is present
+#   7. cdkd destroy --force
+#   8. assert the AWS-side table is gone and cdkd state is empty
 #
 # Auto-resolves AWS account ID + state bucket. Run from anywhere.
 set -euo pipefail
@@ -50,7 +54,8 @@ cleanup() {
 }
 trap cleanup EXIT
 
-echo "[verify] step 2: cdkd deploy"
+echo "[verify] step 2: cdkd deploy (baseline — no UPDATE flags)"
+unset CDKD_TEST_UPDATE
 ${CLI} deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --verbose
 
 echo "[verify] step 3: read deployed table name from cdkd state"
@@ -90,22 +95,45 @@ echo "[verify] step 4: assert table exists on AWS"
 aws dynamodb describe-table --table-name "${TABLE_NAME}" --region "${REGION}" >/dev/null
 echo "[verify] step 4 ok: DescribeTable succeeded"
 
-echo "[verify] step 5: cdkd destroy --force"
+echo "[verify] step 5: cdkd deploy with CDKD_TEST_UPDATE=ttl,tags (in-place update)"
+CDKD_TEST_UPDATE=ttl,tags ${CLI} deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --verbose
+
+echo "[verify] step 6: assert TTL is now ENABLED and UpdateTest tag is present"
+TTL_STATUS="$(aws dynamodb describe-time-to-live --table-name "${TABLE_NAME}" --region "${REGION}" \
+  --query 'TimeToLiveDescription.TimeToLiveStatus' --output text)"
+if [ "${TTL_STATUS}" != "ENABLED" ] && [ "${TTL_STATUS}" != "ENABLING" ]; then
+  echo "[verify] FAIL: TimeToLive on '${TABLE_NAME}' is '${TTL_STATUS}' after the UPDATE deploy (expected ENABLED / ENABLING)"
+  exit 1
+fi
+echo "[verify] step 6a ok: TTL = ${TTL_STATUS}"
+
+TABLE_ARN="$(aws dynamodb describe-table --table-name "${TABLE_NAME}" --region "${REGION}" \
+  --query 'Table.TableArn' --output text)"
+TAG_VALUE="$(aws dynamodb list-tags-of-resource --resource-arn "${TABLE_ARN}" --region "${REGION}" \
+  --query "Tags[?Key=='UpdateTest'].Value | [0]" --output text)"
+if [ "${TAG_VALUE}" != "true" ]; then
+  echo "[verify] FAIL: UpdateTest tag was not applied (got '${TAG_VALUE}')"
+  exit 1
+fi
+echo "[verify] step 6b ok: UpdateTest tag present"
+
+echo "[verify] step 7: cdkd destroy --force"
+unset CDKD_TEST_UPDATE
 ${CLI} destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --force
 
-echo "[verify] step 6: assert table is gone on AWS"
+echo "[verify] step 8: assert table is gone on AWS"
 if aws dynamodb describe-table --table-name "${TABLE_NAME}" --region "${REGION}" >/dev/null 2>&1; then
   echo "[verify] FAIL: table '${TABLE_NAME}' still exists after destroy"
   exit 1
 fi
-echo "[verify] step 6 ok: table deleted"
+echo "[verify] step 8 ok: table deleted"
 
-echo "[verify] step 7: assert cdkd state is empty"
+echo "[verify] step 9: assert cdkd state is empty"
 if aws s3 ls "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null 2>&1; then
   echo "[verify] FAIL: cdkd state file still exists at s3://${STATE_BUCKET}/${STATE_KEY}"
   exit 1
 fi
-echo "[verify] step 7 ok: cdkd state cleared"
+echo "[verify] step 9 ok: cdkd state cleared"
 
 trap - EXIT
 echo "[verify] PASS"
