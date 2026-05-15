@@ -48,10 +48,11 @@ describe('S3BucketProvider partial-create cleanup (Issue #376)', () => {
 
   it('issues DeleteBucketCommand when applyConfiguration fails after CreateBucket succeeded', async () => {
     // The implementation calls CreateBucket, then applyConfiguration walks
-    // sub-config paths (GetBucketTagging / PutBucketVersioning / etc).
-    // The first post-CreateBucket call is a GetBucketTagging (read-side
-    // probe inside applyConfiguration); reject it to trigger the inner
-    // catch + cleanup.
+    // sub-config paths in order: VersioningConfiguration → Tags →
+    // OwnershipControls → PublicAccessBlock → BucketEncryption. With
+    // `VersioningConfiguration: { Status: 'Enabled' }` set, the first
+    // post-CreateBucket call is `PutBucketVersioningCommand`; reject it
+    // to trigger the inner catch + cleanup.
     mockSend.mockResolvedValueOnce({}); // CreateBucketCommand
     mockSend.mockRejectedValueOnce(new Error('applyConfiguration boom')); // first sub-config call
     mockSend.mockResolvedValueOnce({}); // DeleteBucketCommand cleanup
