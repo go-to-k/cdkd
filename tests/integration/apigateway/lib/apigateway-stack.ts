@@ -47,9 +47,20 @@ exports.handler = async (event) => {
     // an OPTIONS method on every resource that has any non-OPTIONS method,
     // each one carrying both `Integration.IntegrationResponses` and
     // `MethodResponses`.
+    //
+    // `cloudWatchRole: false` skips CDK's auto-emitted `AWS::ApiGateway::Account`
+    // + its IAM Role for stage access logging. Both are emitted with
+    // `DeletionPolicy: Retain` (the Account resource is account-scoped
+    // singleton; CDK retains the supporting role by inference). On every
+    // re-run of this integ test, the previously-retained IAM Role
+    // (`<StackName>-HelloApiCloudWatchRole...`) blocks the next deploy with
+    // `Role with name ... already exists`. The CloudWatch logging path is
+    // not exercised by this smoke test, so disabling it altogether is the
+    // cleanest way to keep the fixture self-contained across runs.
     const api = new apigateway.RestApi(this, 'HelloApi', {
       restApiName: 'cdkd-hello-api',
       description: 'A simple API Gateway + Lambda example for cdkd testing',
+      cloudWatchRole: false,
       defaultCorsPreflightOptions: {
         allowOrigins: apigateway.Cors.ALL_ORIGINS,
         allowMethods: apigateway.Cors.ALL_METHODS,
