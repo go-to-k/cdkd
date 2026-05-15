@@ -1105,6 +1105,238 @@ describe('IntrinsicFunctionResolver - AWS::DynamoDB::GlobalTable Fn::GetAtt', ()
   });
 });
 
+describe('IntrinsicFunctionResolver - per-type Arn handler sweep', () => {
+  // Mechanical sweep covering CFn types where physicalId is a name/id
+  // (not the full ARN) and downstream consumers (typically IAM Policy
+  // Resource:) need a constructed ARN. Each row asserts the Arn shape
+  // AWS uses. Same class of bug as #329 / #365 — when a row goes
+  // missing, the resolver default-fallbacks to physicalId and the
+  // consumer fails with "must be in ARN format".
+  let resolver: IntrinsicFunctionResolver;
+
+  beforeEach(() => {
+    resolver = new IntrinsicFunctionResolver();
+    resetAccountInfoCache();
+  });
+
+  const makeContext = (
+    resourceType: string,
+    physicalId: string,
+    extraProps: Record<string, unknown> = {}
+  ): ResolverContext => ({
+    template: { Resources: { Target: { Type: resourceType, Properties: extraProps } } },
+    resources: {
+      Target: {
+        physicalId,
+        resourceType,
+        properties: extraProps,
+        attributes: {},
+        dependencies: [],
+      },
+    },
+  });
+
+  const cases: Array<{
+    type: string;
+    physicalId: string;
+    attribute: string;
+    expected: string;
+    extraProps?: Record<string, unknown>;
+  }> = [
+    {
+      type: 'AWS::IAM::User',
+      physicalId: 'my-user',
+      attribute: 'Arn',
+      expected: 'arn:aws:iam::123456789012:user/my-user',
+    },
+    {
+      type: 'AWS::IAM::Group',
+      physicalId: 'my-group',
+      attribute: 'Arn',
+      expected: 'arn:aws:iam::123456789012:group/my-group',
+    },
+    {
+      type: 'AWS::IAM::InstanceProfile',
+      physicalId: 'my-profile',
+      attribute: 'Arn',
+      expected: 'arn:aws:iam::123456789012:instance-profile/my-profile',
+    },
+    {
+      type: 'AWS::KMS::Key',
+      physicalId: '12345678-1234-1234-1234-123456789012',
+      attribute: 'Arn',
+      expected:
+        'arn:aws:kms:us-east-1:123456789012:key/12345678-1234-1234-1234-123456789012',
+    },
+    {
+      type: 'AWS::Cognito::UserPool',
+      physicalId: 'us-east-1_abc123',
+      attribute: 'Arn',
+      expected: 'arn:aws:cognito-idp:us-east-1:123456789012:userpool/us-east-1_abc123',
+    },
+    {
+      type: 'AWS::Kinesis::Stream',
+      physicalId: 'my-stream',
+      attribute: 'Arn',
+      expected: 'arn:aws:kinesis:us-east-1:123456789012:stream/my-stream',
+    },
+    {
+      type: 'AWS::Events::Rule',
+      physicalId: 'my-rule',
+      attribute: 'Arn',
+      expected: 'arn:aws:events:us-east-1:123456789012:rule/my-rule',
+    },
+    {
+      type: 'AWS::Events::Rule',
+      physicalId: 'my-rule',
+      attribute: 'Arn',
+      expected: 'arn:aws:events:us-east-1:123456789012:rule/custom-bus/my-rule',
+      extraProps: { EventBusName: 'custom-bus' },
+    },
+    {
+      type: 'AWS::Events::EventBus',
+      physicalId: 'my-bus',
+      attribute: 'Arn',
+      expected: 'arn:aws:events:us-east-1:123456789012:event-bus/my-bus',
+    },
+    {
+      type: 'AWS::EFS::FileSystem',
+      physicalId: 'fs-abc123',
+      attribute: 'Arn',
+      expected: 'arn:aws:elasticfilesystem:us-east-1:123456789012:file-system/fs-abc123',
+    },
+    {
+      type: 'AWS::KinesisFirehose::DeliveryStream',
+      physicalId: 'my-stream',
+      attribute: 'Arn',
+      expected: 'arn:aws:firehose:us-east-1:123456789012:deliverystream/my-stream',
+    },
+    {
+      type: 'AWS::CodeBuild::Project',
+      physicalId: 'my-project',
+      attribute: 'Arn',
+      expected: 'arn:aws:codebuild:us-east-1:123456789012:project/my-project',
+    },
+    {
+      type: 'AWS::CloudTrail::Trail',
+      physicalId: 'my-trail',
+      attribute: 'Arn',
+      expected: 'arn:aws:cloudtrail:us-east-1:123456789012:trail/my-trail',
+    },
+    {
+      type: 'AWS::AppSync::GraphQLApi',
+      physicalId: 'abcdefg12345',
+      attribute: 'Arn',
+      expected: 'arn:aws:appsync:us-east-1:123456789012:apis/abcdefg12345',
+    },
+    {
+      type: 'AWS::ServiceDiscovery::PrivateDnsNamespace',
+      physicalId: 'ns-abc123',
+      attribute: 'Arn',
+      expected: 'arn:aws:servicediscovery:us-east-1:123456789012:namespace/ns-abc123',
+    },
+    {
+      type: 'AWS::ServiceDiscovery::Service',
+      physicalId: 'srv-abc123',
+      attribute: 'Arn',
+      expected: 'arn:aws:servicediscovery:us-east-1:123456789012:service/srv-abc123',
+    },
+    {
+      type: 'AWS::CloudWatch::Alarm',
+      physicalId: 'my-alarm',
+      attribute: 'Arn',
+      expected: 'arn:aws:cloudwatch:us-east-1:123456789012:alarm:my-alarm',
+    },
+    {
+      type: 'AWS::RDS::DBInstance',
+      physicalId: 'my-db',
+      attribute: 'DBInstanceArn',
+      expected: 'arn:aws:rds:us-east-1:123456789012:db:my-db',
+    },
+    {
+      type: 'AWS::RDS::DBCluster',
+      physicalId: 'my-cluster',
+      attribute: 'DBClusterArn',
+      expected: 'arn:aws:rds:us-east-1:123456789012:cluster:my-cluster',
+    },
+    {
+      type: 'AWS::DocDB::DBInstance',
+      physicalId: 'my-docdb-inst',
+      attribute: 'Arn',
+      expected: 'arn:aws:rds:us-east-1:123456789012:db:my-docdb-inst',
+    },
+    {
+      type: 'AWS::DocDB::DBCluster',
+      physicalId: 'my-docdb-cluster',
+      attribute: 'Arn',
+      expected: 'arn:aws:rds:us-east-1:123456789012:cluster:my-docdb-cluster',
+    },
+    {
+      type: 'AWS::Neptune::DBInstance',
+      physicalId: 'my-neptune-inst',
+      attribute: 'Arn',
+      expected: 'arn:aws:rds:us-east-1:123456789012:db:my-neptune-inst',
+    },
+    {
+      type: 'AWS::Neptune::DBCluster',
+      physicalId: 'my-neptune-cluster',
+      attribute: 'Arn',
+      expected: 'arn:aws:rds:us-east-1:123456789012:cluster:my-neptune-cluster',
+    },
+    {
+      type: 'AWS::S3Express::DirectoryBucket',
+      physicalId: 'my-bucket--use1-az5--x-s3',
+      attribute: 'Arn',
+      expected: 'arn:aws:s3express:us-east-1:123456789012:bucket/my-bucket--use1-az5--x-s3',
+    },
+  ];
+
+  for (const c of cases) {
+    const label = c.extraProps?.['EventBusName']
+      ? `${c.type} ${c.attribute} (with EventBusName=${String(c.extraProps['EventBusName'])})`
+      : `${c.type} ${c.attribute}`;
+    it(`resolves ${label} to the correct ARN`, async () => {
+      const ctx = makeContext(c.type, c.physicalId, c.extraProps);
+      const result = await resolver.resolve(
+        { 'Fn::GetAtt': ['Target', c.attribute] },
+        ctx
+      );
+      expect(result).toBe(c.expected);
+    });
+  }
+
+  it('falls back to physicalId for unknown attributes on the new handlers', async () => {
+    const ctx = makeContext('AWS::KMS::Key', 'abc-123');
+    const result = await resolver.resolve(
+      { 'Fn::GetAtt': ['Target', 'NotAField'] },
+      ctx
+    );
+    expect(result).toBe('abc-123');
+  });
+
+  it('Events::Rule with EventBusName as an ARN extracts the bus name segment', async () => {
+    const ctx = makeContext('AWS::Events::Rule', 'my-rule', {
+      EventBusName: 'arn:aws:events:us-east-1:123456789012:event-bus/custom-bus',
+    });
+    const result = await resolver.resolve(
+      { 'Fn::GetAtt': ['Target', 'Arn'] },
+      ctx
+    );
+    expect(result).toBe('arn:aws:events:us-east-1:123456789012:rule/custom-bus/my-rule');
+  });
+
+  it('Events::Rule with EventBusName="default" uses the default-bus ARN format', async () => {
+    const ctx = makeContext('AWS::Events::Rule', 'my-rule', {
+      EventBusName: 'default',
+    });
+    const result = await resolver.resolve(
+      { 'Fn::GetAtt': ['Target', 'Arn'] },
+      ctx
+    );
+    expect(result).toBe('arn:aws:events:us-east-1:123456789012:rule/my-rule');
+  });
+});
+
 describe('IntrinsicFunctionResolver - Fn::Sub same-stack implicit Ref', () => {
   // Per the CloudFormation spec, when ${X} appears in a 1-arg Fn::Sub body
   // and X is not in the explicit variable map (the 2-arg form's second

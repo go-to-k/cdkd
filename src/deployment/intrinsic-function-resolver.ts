@@ -636,6 +636,228 @@ export class IntrinsicFunctionResolver {
       }
     }
 
+    // IAM User
+    if (resourceType === 'AWS::IAM::User') {
+      switch (attributeName) {
+        case 'Arn':
+          return `arn:${partition}:iam::${accountId}:user/${physicalId}`;
+        default:
+          return physicalId;
+      }
+    }
+
+    // IAM Group
+    if (resourceType === 'AWS::IAM::Group') {
+      switch (attributeName) {
+        case 'Arn':
+          return `arn:${partition}:iam::${accountId}:group/${physicalId}`;
+        default:
+          return physicalId;
+      }
+    }
+
+    // IAM InstanceProfile
+    if (resourceType === 'AWS::IAM::InstanceProfile') {
+      switch (attributeName) {
+        case 'Arn':
+          return `arn:${partition}:iam::${accountId}:instance-profile/${physicalId}`;
+        default:
+          return physicalId;
+      }
+    }
+
+    // KMS Key
+    if (resourceType === 'AWS::KMS::Key') {
+      switch (attributeName) {
+        case 'Arn':
+          return `arn:${partition}:kms:${region}:${accountId}:key/${physicalId}`;
+        case 'KeyId':
+          return physicalId;
+        default:
+          return physicalId;
+      }
+    }
+
+    // Cognito UserPool
+    if (resourceType === 'AWS::Cognito::UserPool') {
+      switch (attributeName) {
+        case 'Arn':
+          return `arn:${partition}:cognito-idp:${region}:${accountId}:userpool/${physicalId}`;
+        default:
+          return physicalId;
+      }
+    }
+
+    // Kinesis Stream
+    if (resourceType === 'AWS::Kinesis::Stream') {
+      switch (attributeName) {
+        case 'Arn':
+          return `arn:${partition}:kinesis:${region}:${accountId}:stream/${physicalId}`;
+        default:
+          return physicalId;
+      }
+    }
+
+    // EventBridge Rule. Custom event bus ARN: rule/{busName}/{ruleName};
+    // default bus ARN: rule/{ruleName}. By the time constructAttribute runs,
+    // properties.EventBusName (if templated) has been resolved to a literal
+    // string or ARN by the deploy engine. Treat 'default' / unset as default bus.
+    if (resourceType === 'AWS::Events::Rule') {
+      switch (attributeName) {
+        case 'Arn': {
+          const busRaw = resource.properties?.['EventBusName'];
+          const bus = typeof busRaw === 'string' && busRaw && busRaw !== 'default' ? busRaw : '';
+          // If EventBusName resolved to an ARN, extract the bus name segment
+          const busName = bus.startsWith('arn:') ? bus.split('/').pop() || '' : bus;
+          return busName
+            ? `arn:${partition}:events:${region}:${accountId}:rule/${busName}/${physicalId}`
+            : `arn:${partition}:events:${region}:${accountId}:rule/${physicalId}`;
+        }
+        default:
+          return physicalId;
+      }
+    }
+
+    // EventBridge EventBus
+    if (resourceType === 'AWS::Events::EventBus') {
+      switch (attributeName) {
+        case 'Arn':
+          return `arn:${partition}:events:${region}:${accountId}:event-bus/${physicalId}`;
+        case 'Name':
+          return physicalId;
+        default:
+          return physicalId;
+      }
+    }
+
+    // EFS FileSystem
+    if (resourceType === 'AWS::EFS::FileSystem') {
+      switch (attributeName) {
+        case 'Arn':
+          return `arn:${partition}:elasticfilesystem:${region}:${accountId}:file-system/${physicalId}`;
+        case 'FileSystemId':
+          return physicalId;
+        default:
+          return physicalId;
+      }
+    }
+
+    // Kinesis Data Firehose DeliveryStream
+    if (resourceType === 'AWS::KinesisFirehose::DeliveryStream') {
+      switch (attributeName) {
+        case 'Arn':
+          return `arn:${partition}:firehose:${region}:${accountId}:deliverystream/${physicalId}`;
+        default:
+          return physicalId;
+      }
+    }
+
+    // CodeBuild Project
+    if (resourceType === 'AWS::CodeBuild::Project') {
+      switch (attributeName) {
+        case 'Arn':
+          return `arn:${partition}:codebuild:${region}:${accountId}:project/${physicalId}`;
+        default:
+          return physicalId;
+      }
+    }
+
+    // CloudTrail Trail
+    if (resourceType === 'AWS::CloudTrail::Trail') {
+      switch (attributeName) {
+        case 'Arn':
+          return `arn:${partition}:cloudtrail:${region}:${accountId}:trail/${physicalId}`;
+        default:
+          return physicalId;
+      }
+    }
+
+    // AppSync GraphQLApi (physicalId is the apiId)
+    if (resourceType === 'AWS::AppSync::GraphQLApi') {
+      switch (attributeName) {
+        case 'Arn':
+          return `arn:${partition}:appsync:${region}:${accountId}:apis/${physicalId}`;
+        case 'ApiId':
+          return physicalId;
+        default:
+          return physicalId;
+      }
+    }
+
+    // ServiceDiscovery PrivateDnsNamespace (physicalId is the namespace id)
+    if (resourceType === 'AWS::ServiceDiscovery::PrivateDnsNamespace') {
+      switch (attributeName) {
+        case 'Arn':
+          return `arn:${partition}:servicediscovery:${region}:${accountId}:namespace/${physicalId}`;
+        case 'Id':
+          return physicalId;
+        default:
+          return physicalId;
+      }
+    }
+
+    // ServiceDiscovery Service (physicalId is the service id)
+    if (resourceType === 'AWS::ServiceDiscovery::Service') {
+      switch (attributeName) {
+        case 'Arn':
+          return `arn:${partition}:servicediscovery:${region}:${accountId}:service/${physicalId}`;
+        case 'Id':
+          return physicalId;
+        default:
+          return physicalId;
+      }
+    }
+
+    // CloudWatch Alarm (note: 'alarm:' separator, not '/')
+    if (resourceType === 'AWS::CloudWatch::Alarm') {
+      switch (attributeName) {
+        case 'Arn':
+          return `arn:${partition}:cloudwatch:${region}:${accountId}:alarm:${physicalId}`;
+        default:
+          return physicalId;
+      }
+    }
+
+    // RDS DBInstance (DocDB and Neptune share the same rds: service prefix and db: separator)
+    if (
+      resourceType === 'AWS::RDS::DBInstance' ||
+      resourceType === 'AWS::DocDB::DBInstance' ||
+      resourceType === 'AWS::Neptune::DBInstance'
+    ) {
+      switch (attributeName) {
+        case 'DBInstanceArn':
+        case 'Arn':
+          return `arn:${partition}:rds:${region}:${accountId}:db:${physicalId}`;
+        default:
+          return physicalId;
+      }
+    }
+
+    // RDS DBCluster (DocDB and Neptune share the same rds: service prefix and cluster: separator)
+    if (
+      resourceType === 'AWS::RDS::DBCluster' ||
+      resourceType === 'AWS::DocDB::DBCluster' ||
+      resourceType === 'AWS::Neptune::DBCluster'
+    ) {
+      switch (attributeName) {
+        case 'DBClusterArn':
+        case 'Arn':
+          return `arn:${partition}:rds:${region}:${accountId}:cluster:${physicalId}`;
+        default:
+          return physicalId;
+      }
+    }
+
+    // S3 Express Directory Bucket
+    if (resourceType === 'AWS::S3Express::DirectoryBucket') {
+      switch (attributeName) {
+        case 'Arn':
+          return `arn:${partition}:s3express:${region}:${accountId}:bucket/${physicalId}`;
+        default:
+          return physicalId;
+      }
+    }
+
     // Lambda Function
     if (resourceType === 'AWS::Lambda::Function') {
       switch (attributeName) {
@@ -717,16 +939,6 @@ export class IntrinsicFunctionResolver {
           return physicalId; // Physical ID is already the group ID (sg-xxx)
         case 'VpcId':
           return undefined; // Would need API call
-        default:
-          return physicalId;
-      }
-    }
-
-    // EC2 VPC
-    if (resourceType === 'AWS::EC2::VPC') {
-      switch (attributeName) {
-        case 'VpcId':
-          return physicalId;
         default:
           return physicalId;
       }
