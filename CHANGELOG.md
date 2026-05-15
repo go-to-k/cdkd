@@ -1,3 +1,10 @@
+## [0.101.2](https://github.com/go-to-k/cdkd/compare/v0.101.1...v0.101.2) (2026-05-15)
+
+
+### Bug Fixes
+
+* **apigateway:** forward all Integration and Method properties in createMethod ([#370](https://github.com/go-to-k/cdkd/issues/370)) ([149fd2a](https://github.com/go-to-k/cdkd/commit/149fd2a1ff5e1c1196db539a6fb48d5e1ed5eb46))
+
 ## [0.101.1](https://github.com/go-to-k/cdkd/compare/v0.101.0...v0.101.1) (2026-05-15)
 
 
