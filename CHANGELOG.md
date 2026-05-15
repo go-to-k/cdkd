@@ -1,3 +1,10 @@
+## [0.103.2](https://github.com/go-to-k/cdkd/compare/v0.103.1...v0.103.2) (2026-05-15)
+
+
+### Bug Fixes
+
+* **providers:** dedicated SDK Provider for AWS::RDS::DBProxyTargetGroup ([#387](https://github.com/go-to-k/cdkd/issues/387)) ([d7dc38d](https://github.com/go-to-k/cdkd/commit/d7dc38db6a6cf5f30c9dbae99e65879b5606ea70))
+
 ## [0.103.1](https://github.com/go-to-k/cdkd/compare/v0.103.0...v0.103.1) (2026-05-15)
 
 

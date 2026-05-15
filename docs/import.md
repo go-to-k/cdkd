@@ -329,6 +329,7 @@ are not independently taggable, so cdkd cannot find them by
 - AWS::Route53::RecordSet
 - AWS::ElasticLoadBalancingV2::Listener
 - AWS::EFS::MountTarget
+- AWS::RDS::DBProxyTargetGroup
 
 ### Override-only — sub-resources / attachments
 
