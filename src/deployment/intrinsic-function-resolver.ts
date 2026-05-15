@@ -522,8 +522,8 @@ export class IntrinsicFunctionResolver {
     const accountInfo = await getAccountInfo(this.resolverRegion);
     const { region, accountId, partition } = accountInfo;
 
-    // DynamoDB Table
-    if (resourceType === 'AWS::DynamoDB::Table') {
+    // DynamoDB Table / GlobalTable (CDK TableV2 synthesizes as AWS::DynamoDB::GlobalTable; ARN format is identical)
+    if (resourceType === 'AWS::DynamoDB::Table' || resourceType === 'AWS::DynamoDB::GlobalTable') {
       switch (attributeName) {
         case 'Arn':
           return `arn:${partition}:dynamodb:${region}:${accountId}:table/${physicalId}`;

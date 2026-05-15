@@ -1037,6 +1037,74 @@ describe('IntrinsicFunctionResolver - AWS::ECR::Repository Fn::GetAtt', () => {
   });
 });
 
+describe('IntrinsicFunctionResolver - AWS::DynamoDB::GlobalTable Fn::GetAtt', () => {
+  // CDK's TableV2 construct synthesizes as AWS::DynamoDB::GlobalTable (not
+  // AWS::DynamoDB::Table). Pre-fix, the resolver's per-type branch only
+  // matched AWS::DynamoDB::Table, so { Fn::GetAtt: [<TableV2>, 'Arn'] }
+  // fell through to the bare physicalId and any IAM policy Resource: that
+  // ARN failed with "must be in ARN format".
+  let resolver: IntrinsicFunctionResolver;
+
+  beforeEach(() => {
+    resolver = new IntrinsicFunctionResolver();
+    resetAccountInfoCache();
+  });
+
+  it('resolves Arn to the correct DynamoDB table ARN', async () => {
+    const template: CloudFormationTemplate = {
+      Resources: {
+        MyTable: { Type: 'AWS::DynamoDB::GlobalTable', Properties: {} },
+      },
+    };
+    const context: ResolverContext = {
+      template,
+      resources: {
+        MyTable: {
+          physicalId: 'MyStack-HistoryTable12345',
+          resourceType: 'AWS::DynamoDB::GlobalTable',
+          properties: {},
+          attributes: {},
+          dependencies: [],
+        },
+      },
+    };
+
+    const result = await resolver.resolve(
+      { 'Fn::GetAtt': ['MyTable', 'Arn'] },
+      context
+    );
+    expect(result).toBe(
+      'arn:aws:dynamodb:us-east-1:123456789012:table/MyStack-HistoryTable12345'
+    );
+  });
+
+  it('falls back to physicalId for unknown GlobalTable attributes', async () => {
+    const template: CloudFormationTemplate = {
+      Resources: {
+        MyTable: { Type: 'AWS::DynamoDB::GlobalTable', Properties: {} },
+      },
+    };
+    const context: ResolverContext = {
+      template,
+      resources: {
+        MyTable: {
+          physicalId: 'MyStack-HistoryTable12345',
+          resourceType: 'AWS::DynamoDB::GlobalTable',
+          properties: {},
+          attributes: {},
+          dependencies: [],
+        },
+      },
+    };
+
+    const result = await resolver.resolve(
+      { 'Fn::GetAtt': ['MyTable', 'NotAField'] },
+      context
+    );
+    expect(result).toBe('MyStack-HistoryTable12345');
+  });
+});
+
 describe('IntrinsicFunctionResolver - Fn::Sub same-stack implicit Ref', () => {
   // Per the CloudFormation spec, when ${X} appears in a 1-arg Fn::Sub body
   // and X is not in the explicit variable map (the 2-arg form's second
