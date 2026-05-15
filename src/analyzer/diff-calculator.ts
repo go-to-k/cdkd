@@ -1,5 +1,12 @@
-import type { CloudFormationTemplate } from '../types/resource.js';
-import type { StackState, ChangeType, ResourceChange, PropertyChange } from '../types/state.js';
+import type { CloudFormationTemplate, TemplateResource } from '../types/resource.js';
+import type {
+  StackState,
+  ChangeType,
+  ResourceChange,
+  PropertyChange,
+  AttributeChange,
+  ResourceState,
+} from '../types/state.js';
 import { getLogger } from '../utils/logger.js';
 import { ReplacementRulesRegistry } from './replacement-rules.js';
 
@@ -110,8 +117,17 @@ export class DiffCalculator {
           desiredPropsForCompare
         );
 
-        if (propertyChanges.length > 0) {
-          // Properties changed -> UPDATE
+        // Schema v5+ template-attribute diff: `DeletionPolicy` /
+        // `UpdateReplacePolicy` may change without any property change. cdkd
+        // pre-v5 silently reported `No changes detected` for those, so a
+        // user who removed `RemovalPolicy.DESTROY` from their CDK code saw
+        // nothing happen on the next deploy. Detect them here too so the
+        // attribute flip is surfaced (and the deploy engine refreshes the
+        // value in state).
+        const attributeChanges = this.compareAttributes(currentResource, desiredResource);
+
+        if (propertyChanges.length > 0 || attributeChanges.length > 0) {
+          // Property and/or attribute changed -> UPDATE
           changes.set(logicalId, {
             logicalId,
             changeType: 'UPDATE',
@@ -119,8 +135,11 @@ export class DiffCalculator {
             currentProperties: currentResource.properties,
             desiredProperties: rawDesiredProps,
             propertyChanges,
+            ...(attributeChanges.length > 0 && { attributeChanges }),
           });
-          this.logger.debug(`UPDATE: ${logicalId} (${propertyChanges.length} property changes)`);
+          this.logger.debug(
+            `UPDATE: ${logicalId} (${propertyChanges.length} property changes, ${attributeChanges.length} attribute changes)`
+          );
         } else {
           // No changes -> NO_CHANGE
           changes.set(logicalId, {
@@ -177,6 +196,37 @@ export class DiffCalculator {
       }
     }
     return resolved;
+  }
+
+  /**
+   * Compare CloudFormation template-level attributes (`DeletionPolicy`,
+   * `UpdateReplacePolicy`) between cdkd state and the synth template.
+   *
+   * Schema v5+ records these in `ResourceState`; state written by an older
+   * cdkd binary has the fields undefined. Treating `undefined === undefined`
+   * as "no change" means the first post-upgrade deploy of an unchanged
+   * template doesn't spuriously fire an attribute diff.
+   */
+  private compareAttributes(
+    currentResource: ResourceState,
+    desiredResource: TemplateResource
+  ): AttributeChange[] {
+    const changes: AttributeChange[] = [];
+    if (currentResource.deletionPolicy !== desiredResource.DeletionPolicy) {
+      changes.push({
+        attribute: 'DeletionPolicy',
+        oldValue: currentResource.deletionPolicy,
+        newValue: desiredResource.DeletionPolicy,
+      });
+    }
+    if (currentResource.updateReplacePolicy !== desiredResource.UpdateReplacePolicy) {
+      changes.push({
+        attribute: 'UpdateReplacePolicy',
+        oldValue: currentResource.updateReplacePolicy,
+        newValue: desiredResource.UpdateReplacePolicy,
+      });
+    }
+    return changes;
   }
 
   /**

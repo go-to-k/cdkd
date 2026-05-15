@@ -192,3 +192,126 @@ describe('DiffCalculator - intrinsic-aware diff', () => {
     expect(changes.get('Bucket')?.changeType).toBe('CREATE');
   });
 });
+
+describe('DiffCalculator - DeletionPolicy / UpdateReplacePolicy attribute diff (schema v5)', () => {
+  it('reports UPDATE with attributeChanges when DeletionPolicy is added to a resource with no other changes', async () => {
+    const state = baseState();
+    state.resources['Table'] = {
+      physicalId: 'my-table',
+      resourceType: 'AWS::DynamoDB::GlobalTable',
+      properties: { BillingMode: 'PAY_PER_REQUEST' },
+      // Pre-v5 state: no deletionPolicy field.
+    };
+
+    const template: CloudFormationTemplate = {
+      Resources: {
+        Table: {
+          Type: 'AWS::DynamoDB::GlobalTable',
+          Properties: { BillingMode: 'PAY_PER_REQUEST' },
+          DeletionPolicy: 'Retain',
+          UpdateReplacePolicy: 'Retain',
+        },
+      },
+    };
+
+    const calc = new DiffCalculator();
+    const changes = await calc.calculateDiff(state, template);
+    const change = changes.get('Table');
+
+    expect(change?.changeType).toBe('UPDATE');
+    expect(change?.propertyChanges).toEqual([]);
+    expect(change?.attributeChanges).toEqual([
+      { attribute: 'DeletionPolicy', oldValue: undefined, newValue: 'Retain' },
+      { attribute: 'UpdateReplacePolicy', oldValue: undefined, newValue: 'Retain' },
+    ]);
+  });
+
+  it('reports UPDATE with attributeChanges when DeletionPolicy is removed (RemovalPolicy.DESTROY → default Retain on the canonical CDK case)', async () => {
+    const state = baseState();
+    state.resources['Bucket'] = {
+      physicalId: 'my-bucket',
+      resourceType: 'AWS::S3::Bucket',
+      properties: { BucketName: 'my-bucket' },
+      deletionPolicy: 'Delete',
+      updateReplacePolicy: 'Delete',
+    };
+
+    const template: CloudFormationTemplate = {
+      Resources: {
+        Bucket: {
+          Type: 'AWS::S3::Bucket',
+          Properties: { BucketName: 'my-bucket' },
+          // RemovalPolicy stripped: CDK now emits Retain (the CFn default for
+          // L2 constructs that wrap RemovalPolicy).
+          DeletionPolicy: 'Retain',
+          UpdateReplacePolicy: 'Retain',
+        },
+      },
+    };
+
+    const calc = new DiffCalculator();
+    const changes = await calc.calculateDiff(state, template);
+    const change = changes.get('Bucket');
+
+    expect(change?.changeType).toBe('UPDATE');
+    expect(change?.attributeChanges).toEqual([
+      { attribute: 'DeletionPolicy', oldValue: 'Delete', newValue: 'Retain' },
+      { attribute: 'UpdateReplacePolicy', oldValue: 'Delete', newValue: 'Retain' },
+    ]);
+  });
+
+  it('stays NO_CHANGE when state and template carry the same attribute value (including both-undefined)', async () => {
+    const state = baseState();
+    state.resources['Topic'] = {
+      physicalId: 'my-topic',
+      resourceType: 'AWS::SNS::Topic',
+      properties: {},
+      deletionPolicy: 'Retain',
+    };
+
+    const template: CloudFormationTemplate = {
+      Resources: {
+        Topic: {
+          Type: 'AWS::SNS::Topic',
+          Properties: {},
+          DeletionPolicy: 'Retain',
+        },
+      },
+    };
+
+    const calc = new DiffCalculator();
+    const changes = await calc.calculateDiff(state, template);
+    expect(changes.get('Topic')?.changeType).toBe('NO_CHANGE');
+  });
+
+  it('combines propertyChanges and attributeChanges in one UPDATE entry', async () => {
+    const state = baseState();
+    state.resources['Topic'] = {
+      physicalId: 'my-topic',
+      resourceType: 'AWS::SNS::Topic',
+      properties: { DisplayName: 'old' },
+      deletionPolicy: 'Delete',
+    };
+
+    const template: CloudFormationTemplate = {
+      Resources: {
+        Topic: {
+          Type: 'AWS::SNS::Topic',
+          Properties: { DisplayName: 'new' },
+          DeletionPolicy: 'Retain',
+        },
+      },
+    };
+
+    const calc = new DiffCalculator();
+    const changes = await calc.calculateDiff(state, template);
+    const change = changes.get('Topic');
+
+    expect(change?.changeType).toBe('UPDATE');
+    expect(change?.propertyChanges?.length).toBe(1);
+    expect(change?.propertyChanges?.[0]?.path).toBe('DisplayName');
+    expect(change?.attributeChanges).toEqual([
+      { attribute: 'DeletionPolicy', oldValue: 'Delete', newValue: 'Retain' },
+    ]);
+  });
+});

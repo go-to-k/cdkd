@@ -286,6 +286,13 @@ async function diffCommand(
                 logger.info(`          new: ${newStr}`);
               }
             }
+            if (change.attributeChanges && change.attributeChanges.length > 0) {
+              for (const attrChange of change.attributeChanges) {
+                logger.info(`      - ${attrChange.attribute}: [metadata only, no AWS API call]`);
+                logger.info(`          old: ${attrChange.oldValue ?? '(unset)'}`);
+                logger.info(`          new: ${attrChange.newValue ?? '(unset)'}`);
+              }
+            }
             break;
           }
           case 'DELETE':

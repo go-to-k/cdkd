@@ -174,7 +174,7 @@ SDK Providers are preferred over Cloud Control API for performance -- they make 
 
 ```typescript
 interface StackState {
-  version: 1 | 2 | 3 | 4; // 1 = legacy, 2 = region-prefixed, 3 = +observedProperties, 4 = +imports[]
+  version: 1 | 2 | 3 | 4 | 5; // 1 = legacy, 2 = region-prefixed, 3 = +observedProperties, 4 = +imports[], 5 = +deletionPolicy/updateReplacePolicy
   stackName: string;
   region?: string;      // Required on version >= 2 (load-bearing for the S3 key)
   resources: Record<string, ResourceState>;
@@ -196,8 +196,22 @@ interface ResourceState {
   observedProperties?: Record<string, any>; // AWS-current snapshot at deploy time (drift baseline)
   attributes: Record<string, any>;          // For Fn::GetAtt resolution
   dependencies: string[];                   // For proper deletion order
+  deletionPolicy?: 'Delete' | 'Retain' | 'Snapshot' | 'RetainExceptOnCreate'; // v5+: template attribute recorded at deploy time
+  updateReplacePolicy?: 'Delete' | 'Retain' | 'Snapshot' | 'RetainExceptOnCreate'; // v5+: template attribute recorded at deploy time
 }
 ```
+
+**`deletionPolicy` / `updateReplacePolicy`** (schema v5+) are the CFn template
+attributes recorded at deploy time so the next `cdkd deploy` / `cdkd diff` can
+detect attribute-only flips that have no AWS API impact but still matter to
+cdkd's destroy-time `DeletionPolicy: Retain` skip (and to anyone reading the
+diff). Pre-v5, removing `removalPolicy: RemovalPolicy.DESTROY` from a CDK
+construct (= `DeletionPolicy` flips from `Delete` to `Retain` in the synth
+template) silently surfaced as `No changes detected` because `DiffCalculator`
+only compared `Properties`. v5 widens the diff comparator to walk these two
+attribute fields too; the UPDATE classification still fires when only these
+change, and the deploy engine refreshes the cdkd state record without
+calling any provider (there is no per-resource AWS API for either attribute).
 
 **`observedProperties`** is populated on each successful create / update by
 calling `provider.readCurrentState` fire-and-forget after the resource flips
