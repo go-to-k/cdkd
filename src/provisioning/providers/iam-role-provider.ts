@@ -134,52 +134,80 @@ export class IAMRoleProvider implements ResourceProvider {
 
       this.logger.debug(`Created IAM role: ${roleName}`);
 
-      // Attach managed policies if specified
-      const managedPolicyArns = properties['ManagedPolicyArns'] as string[] | undefined;
-      if (managedPolicyArns && Array.isArray(managedPolicyArns)) {
-        for (const policyArn of managedPolicyArns) {
+      // CreateRoleCommand has succeeded — AWS has now committed the Role.
+      // Every subsequent call wires sub-resources onto it (managed-policy
+      // attachments / inline policies / tags); if any fail, the role
+      // exists on AWS but cdkd state will NOT (the throw aborts before
+      // the success-return). The next redeploy would then re-try CREATE
+      // and AWS would reject with `EntityAlreadyExists: Role with name
+      // <X> already exists`. Wrap the wiring in an inner try/catch that
+      // issues best-effort `Detach*` + `DeleteRolePolicy` + `DeleteRole`
+      // before re-throwing, so the failed attempt is self-healing on the
+      // next redeploy. The cleanup mirrors the order in `delete()`:
+      // managed-policy detach -> inline-policy delete -> DeleteRole
+      // (instance profiles don't need removal on a freshly-created role).
+      try {
+        // Attach managed policies if specified
+        const managedPolicyArns = properties['ManagedPolicyArns'] as string[] | undefined;
+        if (managedPolicyArns && Array.isArray(managedPolicyArns)) {
+          for (const policyArn of managedPolicyArns) {
+            await this.iamClient.send(
+              new AttachRolePolicyCommand({
+                RoleName: roleName,
+                PolicyArn: policyArn,
+              })
+            );
+            this.logger.debug(`Attached managed policy ${policyArn} to role ${roleName}`);
+          }
+        }
+
+        // Add inline policies if specified
+        const policies = properties['Policies'] as
+          | Array<{ PolicyName: string; PolicyDocument: unknown }>
+          | undefined;
+        if (policies && Array.isArray(policies)) {
+          for (const policy of policies) {
+            const policyDoc =
+              typeof policy.PolicyDocument === 'string'
+                ? policy.PolicyDocument
+                : JSON.stringify(policy.PolicyDocument);
+
+            await this.iamClient.send(
+              new PutRolePolicyCommand({
+                RoleName: roleName,
+                PolicyName: policy.PolicyName,
+                PolicyDocument: policyDoc,
+              })
+            );
+            this.logger.debug(`Added inline policy ${policy.PolicyName} to role ${roleName}`);
+          }
+        }
+
+        // Add tags if specified
+        const tags = properties['Tags'] as Array<{ Key: string; Value: string }> | undefined;
+        if (tags && Array.isArray(tags)) {
           await this.iamClient.send(
-            new AttachRolePolicyCommand({
+            new TagRoleCommand({
               RoleName: roleName,
-              PolicyArn: policyArn,
+              Tags: tags,
             })
           );
-          this.logger.debug(`Attached managed policy ${policyArn} to role ${roleName}`);
+          this.logger.debug(`Tagged role ${roleName}`);
         }
-      }
-
-      // Add inline policies if specified
-      const policies = properties['Policies'] as
-        | Array<{ PolicyName: string; PolicyDocument: unknown }>
-        | undefined;
-      if (policies && Array.isArray(policies)) {
-        for (const policy of policies) {
-          const policyDoc =
-            typeof policy.PolicyDocument === 'string'
-              ? policy.PolicyDocument
-              : JSON.stringify(policy.PolicyDocument);
-
-          await this.iamClient.send(
-            new PutRolePolicyCommand({
-              RoleName: roleName,
-              PolicyName: policy.PolicyName,
-              PolicyDocument: policyDoc,
-            })
+      } catch (innerError) {
+        try {
+          await this.detachAllManagedPolicies(roleName);
+          await this.deleteAllInlinePolicies(roleName);
+          await this.iamClient.send(new DeleteRoleCommand({ RoleName: roleName }));
+          this.logger.debug(
+            `Cleaned up partially-created IAM role ${logicalId} (${roleName}) after wiring failure`
           );
-          this.logger.debug(`Added inline policy ${policy.PolicyName} to role ${roleName}`);
+        } catch (cleanupError) {
+          this.logger.warn(
+            `Failed to clean up partially-created IAM role ${logicalId} (${roleName}): ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}. Manual deletion may be required before the next deploy: detach managed policies (aws iam list-attached-role-policies --role-name ${roleName} then aws iam detach-role-policy --role-name ${roleName} --policy-arn <arn>), delete inline policies (aws iam list-role-policies --role-name ${roleName} then aws iam delete-role-policy --role-name ${roleName} --policy-name <name>), then aws iam delete-role --role-name ${roleName}`
+          );
         }
-      }
-
-      // Add tags if specified
-      const tags = properties['Tags'] as Array<{ Key: string; Value: string }> | undefined;
-      if (tags && Array.isArray(tags)) {
-        await this.iamClient.send(
-          new TagRoleCommand({
-            RoleName: roleName,
-            Tags: tags,
-          })
-        );
-        this.logger.debug(`Tagged role ${roleName}`);
+        throw innerError;
       }
 
       this.logger.debug(`Successfully created IAM role ${logicalId}: ${roleName}`);

@@ -69,17 +69,58 @@ export class IAMInstanceProfileProvider implements ResourceProvider {
 
       this.logger.debug(`Created IAM instance profile: ${instanceProfileName}`);
 
-      // Add roles to instance profile
-      if (roles && Array.isArray(roles)) {
-        for (const roleName of roles) {
-          await this.iamClient.send(
-            new AddRoleToInstanceProfileCommand({
-              InstanceProfileName: instanceProfileName,
-              RoleName: roleName,
-            })
-          );
-          this.logger.debug(`Added role ${roleName} to instance profile ${instanceProfileName}`);
+      // CreateInstanceProfileCommand has succeeded — AWS has now
+      // committed the InstanceProfile. The subsequent
+      // `AddRoleToInstanceProfileCommand` loop wires role attachments
+      // onto it; if any fail, the instance profile exists on AWS but
+      // cdkd state will NOT (the throw aborts before the success-return).
+      // The next redeploy would then re-try CREATE and AWS would reject
+      // with `EntityAlreadyExists: Instance Profile <X> already exists`.
+      // Wrap the role-attach loop in an inner try/catch that issues
+      // `RemoveRoleFromInstanceProfile` per attached role + then
+      // `DeleteInstanceProfileCommand` before re-throwing the original
+      // error.
+      const attachedRoles: string[] = [];
+      try {
+        // Add roles to instance profile
+        if (roles && Array.isArray(roles)) {
+          for (const roleName of roles) {
+            await this.iamClient.send(
+              new AddRoleToInstanceProfileCommand({
+                InstanceProfileName: instanceProfileName,
+                RoleName: roleName,
+              })
+            );
+            attachedRoles.push(roleName);
+            this.logger.debug(`Added role ${roleName} to instance profile ${instanceProfileName}`);
+          }
         }
+      } catch (innerError) {
+        try {
+          for (const roleName of attachedRoles) {
+            try {
+              await this.iamClient.send(
+                new RemoveRoleFromInstanceProfileCommand({
+                  InstanceProfileName: instanceProfileName,
+                  RoleName: roleName,
+                })
+              );
+            } catch (err) {
+              if (!(err instanceof NoSuchEntityException)) throw err;
+            }
+          }
+          await this.iamClient.send(
+            new DeleteInstanceProfileCommand({ InstanceProfileName: instanceProfileName })
+          );
+          this.logger.debug(
+            `Cleaned up partially-created IAM instance profile ${logicalId} (${instanceProfileName}) after wiring failure`
+          );
+        } catch (cleanupError) {
+          this.logger.warn(
+            `Failed to clean up partially-created IAM instance profile ${logicalId} (${instanceProfileName}): ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}. Manual deletion may be required before the next deploy: remove every role (aws iam remove-role-from-instance-profile --instance-profile-name ${instanceProfileName} --role-name <name>) then aws iam delete-instance-profile --instance-profile-name ${instanceProfileName}`
+          );
+        }
+        throw innerError;
       }
 
       this.logger.debug(
