@@ -878,6 +878,246 @@ describe('ApiGatewayProvider', () => {
         });
       });
 
+      it('should forward all PutMethod-supported fields (apiKeyRequired / operationName / requestParameters / requestModels / requestValidatorId / authorizationScopes)', async () => {
+        mockSend.mockResolvedValueOnce({}); // PutMethodCommand
+
+        await provider.create('MyMethod', resourceType, {
+          RestApiId: 'api-id',
+          ResourceId: 'resource-id',
+          HttpMethod: 'POST',
+          AuthorizationType: 'COGNITO_USER_POOLS',
+          AuthorizerId: 'auth-1',
+          ApiKeyRequired: true,
+          OperationName: 'CreatePet',
+          RequestParameters: { 'method.request.querystring.name': true },
+          RequestModels: { 'application/json': 'PetModel' },
+          RequestValidatorId: 'validator-1',
+          AuthorizationScopes: ['pets:write'],
+        });
+
+        const command = mockSend.mock.calls[0][0];
+        expect(command.constructor.name).toBe('PutMethodCommand');
+        expect(command.input).toEqual({
+          restApiId: 'api-id',
+          resourceId: 'resource-id',
+          httpMethod: 'POST',
+          authorizationType: 'COGNITO_USER_POOLS',
+          authorizerId: 'auth-1',
+          apiKeyRequired: true,
+          operationName: 'CreatePet',
+          requestParameters: { 'method.request.querystring.name': true },
+          requestModels: { 'application/json': 'PetModel' },
+          requestValidatorId: 'validator-1',
+          authorizationScopes: ['pets:write'],
+        });
+      });
+
+      it('should forward Integration.ResponseTransferMode to PutIntegrationCommand (closes the AWS_PROXY streaming bug)', async () => {
+        // CDK's LambdaIntegration({ responseTransferMode: STREAM }) emits
+        // a streaming URI + ResponseTransferMode=STREAM. Pre-fix cdkd
+        // dropped ResponseTransferMode and AWS rejected with:
+        //   "Invalid ResponseTransferMode. Cannot use ResponseTransferMode
+        //    BUFFERED for Lambda functions invoked by
+        //    InvokeWithResponseStream for AWS_PROXY integrations."
+        mockSend.mockResolvedValueOnce({}); // PutMethodCommand
+        mockSend.mockResolvedValueOnce({}); // PutIntegrationCommand
+
+        await provider.create('MyMethod', resourceType, {
+          RestApiId: 'api-id',
+          ResourceId: 'resource-id',
+          HttpMethod: 'POST',
+          AuthorizationType: 'NONE',
+          Integration: {
+            Type: 'AWS_PROXY',
+            IntegrationHttpMethod: 'POST',
+            Uri: 'arn:aws:apigateway:us-east-1:lambda:path/2015-03-31/functions/arn:aws:lambda:us-east-1:123456789012:function:ChatFn/response-streaming-invocations',
+            ResponseTransferMode: 'STREAM',
+          },
+        });
+
+        const putIntegrationCmd = mockSend.mock.calls[1][0];
+        expect(putIntegrationCmd.constructor.name).toBe('PutIntegrationCommand');
+        expect(putIntegrationCmd.input.responseTransferMode).toBe('STREAM');
+      });
+
+      it('should forward every Integration field supported by PutIntegrationRequest', async () => {
+        mockSend.mockResolvedValueOnce({}); // PutMethodCommand
+        mockSend.mockResolvedValueOnce({}); // PutIntegrationCommand
+
+        await provider.create('MyMethod', resourceType, {
+          RestApiId: 'api-id',
+          ResourceId: 'resource-id',
+          HttpMethod: 'POST',
+          AuthorizationType: 'NONE',
+          Integration: {
+            Type: 'HTTP_PROXY',
+            IntegrationHttpMethod: 'POST',
+            Uri: 'https://example.com/api',
+            ConnectionType: 'VPC_LINK',
+            ConnectionId: 'vpclink-1',
+            Credentials: 'arn:aws:iam::123456789012:role/ApiGwExec',
+            RequestParameters: {
+              'integration.request.header.X-Foo': "'bar'",
+            },
+            RequestTemplates: {
+              'application/json': '{"foo":"bar"}',
+            },
+            PassthroughBehavior: 'WHEN_NO_MATCH',
+            ContentHandling: 'CONVERT_TO_BINARY',
+            TimeoutInMillis: 5000,
+            CacheNamespace: 'foo',
+            CacheKeyParameters: ['method.request.querystring.foo'],
+            TlsConfig: { InsecureSkipVerification: true },
+            ResponseTransferMode: 'BUFFERED',
+          },
+        });
+
+        const putIntegrationCmd = mockSend.mock.calls[1][0];
+        expect(putIntegrationCmd.constructor.name).toBe('PutIntegrationCommand');
+        expect(putIntegrationCmd.input).toEqual({
+          restApiId: 'api-id',
+          resourceId: 'resource-id',
+          httpMethod: 'POST',
+          type: 'HTTP_PROXY',
+          integrationHttpMethod: 'POST',
+          uri: 'https://example.com/api',
+          connectionType: 'VPC_LINK',
+          connectionId: 'vpclink-1',
+          credentials: 'arn:aws:iam::123456789012:role/ApiGwExec',
+          requestParameters: {
+            'integration.request.header.X-Foo': "'bar'",
+          },
+          requestTemplates: {
+            'application/json': '{"foo":"bar"}',
+          },
+          passthroughBehavior: 'WHEN_NO_MATCH',
+          contentHandling: 'CONVERT_TO_BINARY',
+          timeoutInMillis: 5000,
+          cacheNamespace: 'foo',
+          cacheKeyParameters: ['method.request.querystring.foo'],
+          tlsConfig: { insecureSkipVerification: true },
+          responseTransferMode: 'BUFFERED',
+        });
+      });
+
+      it('should convert TlsConfig.InsecureSkipVerification PascalCase (CFn) to camelCase (SDK)', async () => {
+        // CFn emits PascalCase; AWS SDK input shape is camelCase. Passing
+        // the CFn object verbatim would silently drop the field at the SDK
+        // serializer boundary — same class of "silent property drop" bug as
+        // the parent ResponseTransferMode regression this provider fix
+        // resolves. Belt-and-suspenders test against future regression.
+        mockSend.mockResolvedValueOnce({});
+        mockSend.mockResolvedValueOnce({});
+
+        await provider.create('MyMethod', resourceType, {
+          RestApiId: 'api-id',
+          ResourceId: 'resource-id',
+          HttpMethod: 'POST',
+          AuthorizationType: 'NONE',
+          Integration: {
+            Type: 'HTTP',
+            IntegrationHttpMethod: 'POST',
+            Uri: 'https://example.com/api',
+            TlsConfig: { InsecureSkipVerification: true },
+          },
+        });
+
+        const putIntegrationCmd = mockSend.mock.calls[1][0];
+        expect(putIntegrationCmd.input.tlsConfig).toEqual({
+          insecureSkipVerification: true,
+        });
+      });
+
+      it('should issue PutIntegrationResponseCommand per Integration.IntegrationResponses entry', async () => {
+        mockSend.mockResolvedValueOnce({}); // PutMethodCommand
+        mockSend.mockResolvedValueOnce({}); // PutIntegrationCommand
+        mockSend.mockResolvedValueOnce({}); // PutIntegrationResponseCommand #1
+        mockSend.mockResolvedValueOnce({}); // PutIntegrationResponseCommand #2
+
+        await provider.create('MyMethod', resourceType, {
+          RestApiId: 'api-id',
+          ResourceId: 'resource-id',
+          HttpMethod: 'POST',
+          AuthorizationType: 'NONE',
+          Integration: {
+            Type: 'AWS',
+            IntegrationHttpMethod: 'POST',
+            Uri: 'arn:aws:apigateway:us-east-1:lambda:path/2015-03-31/functions/arn:aws:lambda:us-east-1:123456789012:function:Fn/invocations',
+            IntegrationResponses: [
+              {
+                StatusCode: '200',
+                SelectionPattern: '',
+                ResponseParameters: {
+                  'method.response.header.X-Foo': "'bar'",
+                },
+                ResponseTemplates: {
+                  'application/json': '$input.body',
+                },
+              },
+              {
+                StatusCode: '400',
+                SelectionPattern: '4\\d{2}',
+                ContentHandling: 'CONVERT_TO_TEXT',
+              },
+            ],
+          },
+        });
+
+        expect(mockSend).toHaveBeenCalledTimes(4);
+
+        const irCmd1 = mockSend.mock.calls[2][0];
+        expect(irCmd1.constructor.name).toBe('PutIntegrationResponseCommand');
+        expect(irCmd1.input).toEqual({
+          restApiId: 'api-id',
+          resourceId: 'resource-id',
+          httpMethod: 'POST',
+          statusCode: '200',
+          selectionPattern: '',
+          responseParameters: {
+            'method.response.header.X-Foo': "'bar'",
+          },
+          responseTemplates: {
+            'application/json': '$input.body',
+          },
+          contentHandling: undefined,
+        });
+
+        const irCmd2 = mockSend.mock.calls[3][0];
+        expect(irCmd2.constructor.name).toBe('PutIntegrationResponseCommand');
+        expect(irCmd2.input).toEqual({
+          restApiId: 'api-id',
+          resourceId: 'resource-id',
+          httpMethod: 'POST',
+          statusCode: '400',
+          selectionPattern: '4\\d{2}',
+          responseParameters: undefined,
+          responseTemplates: undefined,
+          contentHandling: 'CONVERT_TO_TEXT',
+        });
+      });
+
+      it('should NOT issue PutIntegrationResponseCommand when Integration.IntegrationResponses is absent', async () => {
+        mockSend.mockResolvedValueOnce({}); // PutMethodCommand
+        mockSend.mockResolvedValueOnce({}); // PutIntegrationCommand
+
+        await provider.create('MyMethod', resourceType, {
+          RestApiId: 'api-id',
+          ResourceId: 'resource-id',
+          HttpMethod: 'POST',
+          AuthorizationType: 'NONE',
+          Integration: {
+            Type: 'AWS_PROXY',
+            IntegrationHttpMethod: 'POST',
+            Uri: 'arn:aws:apigateway:us-east-1:lambda:path/2015-03-31/functions/arn:aws:lambda:us-east-1:123456789012:function:Fn/invocations',
+          },
+        });
+
+        // Only PutMethod + PutIntegration. No PutIntegrationResponse.
+        expect(mockSend).toHaveBeenCalledTimes(2);
+        const names = mockSend.mock.calls.map((c) => c[0].constructor.name);
+        expect(names).not.toContain('PutIntegrationResponseCommand');
+      });
+
       it('should throw when required properties are missing', async () => {
         await expect(
           provider.create('MyMethod', resourceType, {

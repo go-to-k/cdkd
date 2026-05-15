@@ -17,6 +17,7 @@ import {
   DeleteMethodCommand,
   GetMethodCommand,
   PutIntegrationCommand,
+  PutIntegrationResponseCommand,
   PutMethodResponseCommand,
   CreateAuthorizerCommand,
   UpdateAuthorizerCommand,
@@ -90,6 +91,12 @@ export class ApiGatewayProvider implements ResourceProvider {
         'HttpMethod',
         'AuthorizationType',
         'AuthorizerId',
+        'ApiKeyRequired',
+        'OperationName',
+        'RequestParameters',
+        'RequestModels',
+        'RequestValidatorId',
+        'AuthorizationScopes',
         'Integration',
         'MethodResponses',
       ]),
@@ -1216,8 +1223,32 @@ export class ApiGatewayProvider implements ResourceProvider {
   /**
    * Create an API Gateway Method
    *
-   * Creates a method on a resource and optionally sets up the integration.
+   * Creates a method on a resource and optionally sets up the integration
+   * (and per-status-code integration responses) plus method responses.
    * PhysicalId format: `{restApiId}|{resourceId}|{httpMethod}`
+   *
+   * All mutable Method-level fields supported by `PutMethodRequest` are
+   * forwarded (`ApiKeyRequired`, `OperationName`, `RequestParameters`,
+   * `RequestModels`, `RequestValidatorId`, `AuthorizationScopes`).
+   *
+   * All mutable Integration-level fields supported by
+   * `PutIntegrationRequest` are forwarded (`ConnectionType`,
+   * `ConnectionId`, `Credentials`, `RequestParameters`, `RequestTemplates`,
+   * `PassthroughBehavior`, `ContentHandling`, `TimeoutInMillis`,
+   * `CacheNamespace`, `CacheKeyParameters`, `TlsConfig`,
+   * `ResponseTransferMode`). Pre-fix only `Type` / `IntegrationHttpMethod`
+   * / `Uri` were forwarded — silently dropping every other field. This
+   * surfaced as e.g. `responseTransferMode: 'STREAM'` being lost,
+   * producing the AWS rejection
+   *   "Invalid ResponseTransferMode. Cannot use ResponseTransferMode
+   *    BUFFERED for Lambda functions invoked by InvokeWithResponseStream
+   *    for AWS_PROXY integrations."
+   * when CDK's `LambdaIntegration({ responseTransferMode: STREAM })` was
+   * used together with the streaming `response-streaming-invocations` URI.
+   *
+   * `IntegrationResponses` (the CFn array shape under `Integration`) is
+   * applied via per-entry `PutIntegrationResponseCommand` calls after the
+   * integration itself is put in place.
    */
   private async createMethod(
     logicalId: string,
@@ -1231,6 +1262,14 @@ export class ApiGatewayProvider implements ResourceProvider {
     const httpMethod = properties['HttpMethod'] as string;
     const authorizationType = (properties['AuthorizationType'] as string) ?? 'NONE';
     const authorizerId = properties['AuthorizerId'] as string | undefined;
+    const apiKeyRequired = properties['ApiKeyRequired'] as boolean | undefined;
+    const operationName = properties['OperationName'] as string | undefined;
+    const methodRequestParameters = properties['RequestParameters'] as
+      | Record<string, boolean>
+      | undefined;
+    const requestModels = properties['RequestModels'] as Record<string, string> | undefined;
+    const requestValidatorId = properties['RequestValidatorId'] as string | undefined;
+    const authorizationScopes = properties['AuthorizationScopes'] as string[] | undefined;
 
     if (!restApiId || !resourceId || !httpMethod) {
       throw new ProvisioningError(
@@ -1248,10 +1287,19 @@ export class ApiGatewayProvider implements ResourceProvider {
           httpMethod,
           authorizationType,
           authorizerId,
+          apiKeyRequired,
+          operationName,
+          requestParameters: methodRequestParameters,
+          requestModels,
+          requestValidatorId,
+          authorizationScopes,
         })
       );
 
-      // If Integration property exists, set up the integration
+      // If Integration property exists, set up the integration. All
+      // fields supported by `PutIntegrationRequest` are forwarded — see
+      // the JSDoc on this method for the full list and the
+      // `ResponseTransferMode` regression that motivated the fix.
       const integration = properties['Integration'] as Record<string, unknown> | undefined;
       if (integration) {
         await this.apiGatewayClient.send(
@@ -1263,8 +1311,61 @@ export class ApiGatewayProvider implements ResourceProvider {
             type: integration['Type'] as any,
             integrationHttpMethod: integration['IntegrationHttpMethod'] as string | undefined,
             uri: integration['Uri'] as string | undefined,
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any, @typescript-eslint/no-unsafe-assignment
+            connectionType: integration['ConnectionType'] as any,
+            connectionId: integration['ConnectionId'] as string | undefined,
+            credentials: integration['Credentials'] as string | undefined,
+            requestParameters: integration['RequestParameters'] as
+              | Record<string, string>
+              | undefined,
+            requestTemplates: integration['RequestTemplates'] as Record<string, string> | undefined,
+            passthroughBehavior: integration['PassthroughBehavior'] as string | undefined,
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any, @typescript-eslint/no-unsafe-assignment
+            contentHandling: integration['ContentHandling'] as any,
+            timeoutInMillis: integration['TimeoutInMillis'] as number | undefined,
+            cacheNamespace: integration['CacheNamespace'] as string | undefined,
+            cacheKeyParameters: integration['CacheKeyParameters'] as string[] | undefined,
+            // CFn emits TlsConfig.InsecureSkipVerification (PascalCase) but the
+            // SDK input shape is { insecureSkipVerification } (camelCase);
+            // passing the CFn object verbatim would silently drop the field.
+            tlsConfig: integration['TlsConfig']
+              ? {
+                  insecureSkipVerification: (integration['TlsConfig'] as Record<string, unknown>)[
+                    'InsecureSkipVerification'
+                  ] as boolean | undefined,
+                }
+              : undefined,
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any, @typescript-eslint/no-unsafe-assignment
+            responseTransferMode: integration['ResponseTransferMode'] as any,
           })
         );
+
+        // IntegrationResponses (CFn shape:
+        //   [{StatusCode, SelectionPattern?, ResponseParameters?,
+        //     ResponseTemplates?, ContentHandling?}, ...])
+        // requires per-entry `PutIntegrationResponseCommand` calls after
+        // the integration itself is created.
+        const integrationResponses = integration['IntegrationResponses'] as
+          | Array<Record<string, unknown>>
+          | undefined;
+        if (integrationResponses) {
+          for (const ir of integrationResponses) {
+            const statusCode = String(ir['StatusCode']);
+            await this.apiGatewayClient.send(
+              new PutIntegrationResponseCommand({
+                restApiId,
+                resourceId,
+                httpMethod,
+                statusCode,
+                selectionPattern: ir['SelectionPattern'] as string | undefined,
+                responseParameters: ir['ResponseParameters'] as Record<string, string> | undefined,
+                responseTemplates: ir['ResponseTemplates'] as Record<string, string> | undefined,
+                // eslint-disable-next-line @typescript-eslint/no-explicit-any, @typescript-eslint/no-unsafe-assignment
+                contentHandling: ir['ContentHandling'] as any,
+              })
+            );
+          }
+        }
       }
 
       // If MethodResponses property exists, set up method responses
@@ -1318,6 +1419,10 @@ export class ApiGatewayProvider implements ResourceProvider {
    * `add` / `remove` / `replace` ops with paths like
    *   `/requestParameters/method.request.querystring.foo`
    *   `/requestModels/application~1json` (slashes escaped per RFC 6901).
+   *
+   * `AuthorizationScopes` is an array — AWS accepts a comma-joined
+   * `replace /authorizationScopes` op (same pattern as Authorizer's
+   * `ProviderARNs`).
    *
    * `HttpMethod`, `ResourceId`, `RestApiId` are immutable (replacement
    * layer handles them via DELETE + CREATE).
@@ -1396,6 +1501,23 @@ export class ApiGatewayProvider implements ResourceProvider {
       (properties['RequestModels'] as Record<string, unknown> | undefined) ?? {},
       (previousProperties['RequestModels'] as Record<string, unknown> | undefined) ?? {}
     );
+
+    // AuthorizationScopes is an array on the cdkd-state side. AWS
+    // accepts a comma-separated string for the `replace
+    // /authorizationScopes` op (same pattern as Authorizer's
+    // ProviderARNs); an empty string clears the list.
+    const newScopes = properties['AuthorizationScopes'] as string[] | undefined;
+    const prevScopes = previousProperties['AuthorizationScopes'] as string[] | undefined;
+    const scopesChanged =
+      (newScopes?.length ?? 0) !== (prevScopes?.length ?? 0) ||
+      (newScopes ?? []).some((s, i) => s !== prevScopes?.[i]);
+    if (scopesChanged) {
+      patchOperations.push({
+        op: 'replace',
+        path: '/authorizationScopes',
+        value: (newScopes ?? []).join(','),
+      });
+    }
 
     if (patchOperations.length === 0) {
       this.logger.debug(`No changes detected for API Gateway Method ${logicalId}`);

@@ -327,6 +327,53 @@ describe('ApiGatewayProvider read-update round-trip', () => {
     ]);
   });
 
+  it('Method update() AuthorizationScopes diff emits comma-joined replace patch', async () => {
+    // AuthorizationScopes is an array on the cdkd-state side; AWS
+    // accepts a comma-separated string for the
+    // `replace /authorizationScopes` op (same pattern as Authorizer's
+    // ProviderARNs). An empty array clears the list.
+    mockSend.mockResolvedValueOnce({});
+
+    await provider.update(
+      'MethodLogical',
+      'api-1|res-1|POST',
+      'AWS::ApiGateway::Method',
+      { AuthorizationScopes: ['pets:write', 'pets:admin'] },
+      { AuthorizationScopes: ['pets:read'] }
+    );
+
+    const updateCall = mockSend.mock.calls.find((c) => c[0] instanceof UpdateMethodCommand);
+    const input = updateCall![0].input as {
+      patchOperations: Array<{ op: string; path: string; value?: string }>;
+    };
+    expect(input.patchOperations).toEqual([
+      { op: 'replace', path: '/authorizationScopes', value: 'pets:write,pets:admin' },
+    ]);
+  });
+
+  it('Method update() AuthorizationScopes set -> undefined clears via empty string', async () => {
+    // Drift --revert use case: state has scopes, AWS-current dropped them
+    // (console removal). The diff must round-trip as an empty-string
+    // patch value to clear the list AWS-side.
+    mockSend.mockResolvedValueOnce({});
+
+    await provider.update(
+      'MethodLogical',
+      'api-1|res-1|POST',
+      'AWS::ApiGateway::Method',
+      {}, // new: undefined (cleared)
+      { AuthorizationScopes: ['pets:read'] } // prev: had one scope
+    );
+
+    const updateCall = mockSend.mock.calls.find((c) => c[0] instanceof UpdateMethodCommand);
+    const input = updateCall![0].input as {
+      patchOperations: Array<{ op: string; path: string; value?: string }>;
+    };
+    expect(input.patchOperations).toEqual([
+      { op: 'replace', path: '/authorizationScopes', value: '' },
+    ]);
+  });
+
   it('Method update() with no diff sends no UpdateMethodCommand', async () => {
     // The drift --revert "no real change" round-trip case: if state
     // already matches AWS (or the only diffs are on Integration /
