@@ -8,6 +8,7 @@ import {
   type ProgressEvent,
 } from '@aws-sdk/client-cloudcontrol';
 import { DescribeTableCommand } from '@aws-sdk/client-dynamodb';
+import { DescribeDBClustersCommand, RDSClient } from '@aws-sdk/client-rds';
 import { GetRestApiCommand } from '@aws-sdk/client-api-gateway';
 import { GetCloudFrontOriginAccessIdentityCommand } from '@aws-sdk/client-cloudfront';
 import { GetFunctionUrlConfigCommand } from '@aws-sdk/client-lambda';
@@ -491,6 +492,58 @@ export class CloudControlProvider implements ResourceProvider {
         // S3 bucket ARN: arn:aws:s3:::bucket-name
         if (!enriched['Arn']) {
           enriched['Arn'] = `arn:aws:s3:::${physicalId}`;
+        }
+        break;
+
+      case 'AWS::RDS::DBCluster':
+        // Issue #381: CC API's progressEvent.ResourceModel for RDS DBCluster
+        // doesn't reliably surface Endpoint / Port / ReaderEndpoint until
+        // the cluster reaches `available` AND a writer instance attaches.
+        // Even when it does surface them, the shape is `Endpoint: <string>`
+        // (NOT nested `Endpoint: { Address, Port }` as the CFn schema would
+        // suggest). CDK's `Connections.allowDefaultPortFrom(...)` emits
+        // `AWS::EC2::SecurityGroupIngress` rules with
+        // `Fn::GetAtt: [<Cluster>, 'Endpoint.Port']` — pre-fix the resolver
+        // fell through to `physicalId` and AWS rejected with
+        // `Invalid integer value <cluster-id>`. Match the SDK provider's
+        // flat-key shape (`'Endpoint.Port': '3306'`, `'Endpoint.Address':
+        // '...'`, `'ReadEndpoint.Address': '...'`) by calling
+        // `DescribeDBClusters` once after create and overlaying the
+        // flat-key attributes. Best-effort: a failed Describe (e.g.
+        // permissions gap) falls back to the unchanged CC-API attribute
+        // shape, and `Fn::GetAtt` consumers will then hit the resolver's
+        // own nested-path walk (Issue #381 part 1, same PR) — which still
+        // misses for the not-nested-object case but at least doesn't
+        // crash. The double-defence is intentional: enrichment populates
+        // the canonical shape for the happy path; the resolver fallback
+        // catches CC-API responses that DO have nested objects.
+        try {
+          // CC API client uses the cdkd-resolved region; the RDSClient
+          // inherits via env / profile, same as DynamoDB / API Gateway
+          // enrichment branches above.
+          const rdsClient = new RDSClient({});
+          const describeResponse = await rdsClient.send(
+            new DescribeDBClustersCommand({ DBClusterIdentifier: physicalId })
+          );
+          const cluster = describeResponse.DBClusters?.[0];
+          if (cluster) {
+            if (cluster.Endpoint) enriched['Endpoint.Address'] = cluster.Endpoint;
+            if (cluster.Port !== undefined) enriched['Endpoint.Port'] = String(cluster.Port);
+            if (cluster.ReaderEndpoint) enriched['ReadEndpoint.Address'] = cluster.ReaderEndpoint;
+            if (cluster.DBClusterArn) enriched['Arn'] = cluster.DBClusterArn;
+            if (cluster.DbClusterResourceId) {
+              enriched['DBClusterResourceId'] = cluster.DbClusterResourceId;
+            }
+            this.logger.debug(
+              `Enriched RDS DBCluster ${physicalId} with Endpoint/Port/Arn from DescribeDBClusters`
+            );
+          }
+        } catch (error) {
+          // Best-effort: a failed Describe shouldn't fail the deploy.
+          // The resolver's nested-path walk is the second line of defence.
+          this.logger.debug(
+            `Failed to enrich RDS DBCluster ${physicalId}: ${error instanceof Error ? error.message : String(error)}`
+          );
         }
         break;
 

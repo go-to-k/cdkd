@@ -1418,3 +1418,130 @@ describe('IntrinsicFunctionResolver - Fn::Sub same-stack implicit Ref', () => {
     expect(result).toBe('value=${NotARealResource}');
   });
 });
+
+describe('IntrinsicFunctionResolver - nested attribute path fallback (Issue #381)', () => {
+  let resolver: IntrinsicFunctionResolver;
+
+  beforeEach(() => {
+    resolver = new IntrinsicFunctionResolver();
+    resetAccountInfoCache();
+  });
+
+  it('flat dot-key wins over nested-path walk (SDK provider shape)', async () => {
+    const template: CloudFormationTemplate = {
+      Resources: { Cluster: { Type: 'AWS::RDS::DBCluster', Properties: {} } },
+    };
+    const context: ResolverContext = {
+      template,
+      resources: {
+        Cluster: {
+          physicalId: 'my-cluster',
+          resourceType: 'AWS::RDS::DBCluster',
+          properties: {},
+          // SDK-provider shape: flat dot-key.
+          attributes: { 'Endpoint.Port': '3306' },
+          dependencies: [],
+        },
+      },
+    };
+
+    const result = await resolver.resolve(
+      { 'Fn::GetAtt': ['Cluster', 'Endpoint.Port'] },
+      context
+    );
+    expect(result).toBe('3306');
+  });
+
+  it('falls back to nested-path walk when flat dot-key is missing (CC API shape)', async () => {
+    const template: CloudFormationTemplate = {
+      Resources: { Cluster: { Type: 'AWS::RDS::DBCluster', Properties: {} } },
+    };
+    const context: ResolverContext = {
+      template,
+      resources: {
+        Cluster: {
+          physicalId: 'my-cluster',
+          resourceType: 'AWS::RDS::DBCluster',
+          properties: {},
+          // CC API shape: nested object.
+          attributes: { Endpoint: { Port: 3306, Address: 'my-cluster.cluster-abc.us-east-1.rds.amazonaws.com' } },
+          dependencies: [],
+        },
+      },
+    };
+
+    const port = await resolver.resolve({ 'Fn::GetAtt': ['Cluster', 'Endpoint.Port'] }, context);
+    expect(port).toBe(3306);
+
+    const addr = await resolver.resolve({ 'Fn::GetAtt': ['Cluster', 'Endpoint.Address'] }, context);
+    expect(addr).toBe('my-cluster.cluster-abc.us-east-1.rds.amazonaws.com');
+  });
+
+  it('falls back to constructAttribute (physicalId default) when neither flat nor nested matches', async () => {
+    const template: CloudFormationTemplate = {
+      Resources: { Cluster: { Type: 'AWS::RDS::DBCluster', Properties: {} } },
+    };
+    const context: ResolverContext = {
+      template,
+      resources: {
+        Cluster: {
+          physicalId: 'my-cluster',
+          resourceType: 'AWS::RDS::DBCluster',
+          properties: {},
+          attributes: {},
+          dependencies: [],
+        },
+      },
+    };
+
+    // Endpoint not in attributes, RDS DBCluster constructAttribute falls
+    // through to physicalId for non-Arn attributes — this is the
+    // pre-#381 behavior preserved as last-resort fallback.
+    const port = await resolver.resolve({ 'Fn::GetAtt': ['Cluster', 'Endpoint.Port'] }, context);
+    expect(port).toBe('my-cluster');
+  });
+
+  it('walks 3+ nested levels (defense-in-depth for deeper CFn shapes)', async () => {
+    const template: CloudFormationTemplate = {
+      Resources: { R: { Type: 'AWS::Custom::Foo', Properties: {} } },
+    };
+    const context: ResolverContext = {
+      template,
+      resources: {
+        R: {
+          physicalId: 'r',
+          resourceType: 'AWS::Custom::Foo',
+          properties: {},
+          attributes: { A: { B: { C: 'deep-value' } } },
+          dependencies: [],
+        },
+      },
+    };
+
+    const result = await resolver.resolve({ 'Fn::GetAtt': ['R', 'A.B.C'] }, context);
+    expect(result).toBe('deep-value');
+  });
+
+  it('handles intermediate non-object cleanly (no TypeError on string-traversal)', async () => {
+    const template: CloudFormationTemplate = {
+      Resources: { R: { Type: 'AWS::Custom::Foo', Properties: {} } },
+    };
+    const context: ResolverContext = {
+      template,
+      resources: {
+        R: {
+          physicalId: 'r',
+          resourceType: 'AWS::Custom::Foo',
+          properties: {},
+          attributes: { Endpoint: 'flat-string-not-object' },
+          dependencies: [],
+        },
+      },
+    };
+
+    // 'Endpoint' is a flat string, can't walk into '.Port' — fall through.
+    const result = await resolver.resolve({ 'Fn::GetAtt': ['R', 'Endpoint.Port'] }, context);
+    // Custom resource type → constructAttribute falls through to physicalId.
+    expect(result).toBe('r');
+  });
+});
