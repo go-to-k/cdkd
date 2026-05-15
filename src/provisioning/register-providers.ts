@@ -16,6 +16,7 @@ import { LambdaUrlProvider } from './providers/lambda-url-provider.js';
 import { LambdaEventSourceMappingProvider } from './providers/lambda-eventsource-provider.js';
 import { LambdaLayerVersionProvider } from './providers/lambda-layer-provider.js';
 import { DynamoDBTableProvider } from './providers/dynamodb-table-provider.js';
+import { DynamoDBGlobalTableProvider } from './providers/dynamodb-globaltable-provider.js';
 import { LogsLogGroupProvider } from './providers/logs-loggroup-provider.js';
 import { CloudWatchAlarmProvider } from './providers/cloudwatch-alarm-provider.js';
 import { SecretsManagerSecretProvider } from './providers/secretsmanager-secret-provider.js';
@@ -99,6 +100,7 @@ export function registerAllProviders(registry: ProviderRegistry): void {
 
   // DynamoDB
   registry.register('AWS::DynamoDB::Table', new DynamoDBTableProvider());
+  registry.register('AWS::DynamoDB::GlobalTable', new DynamoDBGlobalTableProvider());
 
   // Monitoring
   registry.register('AWS::Logs::LogGroup', new LogsLogGroupProvider());

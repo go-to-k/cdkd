@@ -44,6 +44,7 @@ message naming the unsupported type.
 | **Compute** | AWS::Lambda::EventSourceMapping | SDK Provider | ✅ |
 | **Compute** | AWS::Lambda::LayerVersion | SDK Provider | ✅ |
 | **Database** | AWS::DynamoDB::Table | SDK Provider | ✅ |
+| **Database** | AWS::DynamoDB::GlobalTable | SDK Provider | ✅ |
 | **Monitoring** | AWS::Logs::LogGroup | SDK Provider | ✅ |
 | **Monitoring** | AWS::CloudWatch::Alarm | SDK Provider | ✅ |
 | **Secrets** | AWS::SecretsManager::Secret | SDK Provider | ✅ |

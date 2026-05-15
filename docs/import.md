@@ -235,6 +235,7 @@ template's logical id, and adopts it. Works under `auto` (default) and
 - AWS::SNS::Topic
 - AWS::SQS::Queue
 - AWS::DynamoDB::Table
+- AWS::DynamoDB::GlobalTable
 - AWS::Logs::LogGroup
 - AWS::Events::EventBus
 - AWS::Events::Rule
