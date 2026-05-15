@@ -1,3 +1,10 @@
+## [0.100.1](https://github.com/go-to-k/cdkd/compare/v0.100.0...v0.100.1) (2026-05-15)
+
+
+### Bug Fixes
+
+* **intrinsics:** add AWS::DynamoDB::GlobalTable Fn::GetAtt Arn handler ([#365](https://github.com/go-to-k/cdkd/issues/365)) ([b0fa1d1](https://github.com/go-to-k/cdkd/commit/b0fa1d1779706c59d202d44be12de32b49d00030))
+
 # [0.100.0](https://github.com/go-to-k/cdkd/compare/v0.99.3...v0.100.0) (2026-05-15)
 
 
