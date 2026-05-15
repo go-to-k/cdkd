@@ -1325,8 +1325,16 @@ export class ApiGatewayProvider implements ResourceProvider {
             timeoutInMillis: integration['TimeoutInMillis'] as number | undefined,
             cacheNamespace: integration['CacheNamespace'] as string | undefined,
             cacheKeyParameters: integration['CacheKeyParameters'] as string[] | undefined,
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any, @typescript-eslint/no-unsafe-assignment
-            tlsConfig: integration['TlsConfig'] as any,
+            // CFn emits TlsConfig.InsecureSkipVerification (PascalCase) but the
+            // SDK input shape is { insecureSkipVerification } (camelCase);
+            // passing the CFn object verbatim would silently drop the field.
+            tlsConfig: integration['TlsConfig']
+              ? {
+                  insecureSkipVerification: (integration['TlsConfig'] as Record<string, unknown>)[
+                    'InsecureSkipVerification'
+                  ] as boolean | undefined,
+                }
+              : undefined,
             // eslint-disable-next-line @typescript-eslint/no-explicit-any, @typescript-eslint/no-unsafe-assignment
             responseTransferMode: integration['ResponseTransferMode'] as any,
           })

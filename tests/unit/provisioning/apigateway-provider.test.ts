@@ -995,8 +995,36 @@ describe('ApiGatewayProvider', () => {
           timeoutInMillis: 5000,
           cacheNamespace: 'foo',
           cacheKeyParameters: ['method.request.querystring.foo'],
-          tlsConfig: { InsecureSkipVerification: true },
+          tlsConfig: { insecureSkipVerification: true },
           responseTransferMode: 'BUFFERED',
+        });
+      });
+
+      it('should convert TlsConfig.InsecureSkipVerification PascalCase (CFn) to camelCase (SDK)', async () => {
+        // CFn emits PascalCase; AWS SDK input shape is camelCase. Passing
+        // the CFn object verbatim would silently drop the field at the SDK
+        // serializer boundary — same class of "silent property drop" bug as
+        // the parent ResponseTransferMode regression this provider fix
+        // resolves. Belt-and-suspenders test against future regression.
+        mockSend.mockResolvedValueOnce({});
+        mockSend.mockResolvedValueOnce({});
+
+        await provider.create('MyMethod', resourceType, {
+          RestApiId: 'api-id',
+          ResourceId: 'resource-id',
+          HttpMethod: 'POST',
+          AuthorizationType: 'NONE',
+          Integration: {
+            Type: 'HTTP',
+            IntegrationHttpMethod: 'POST',
+            Uri: 'https://example.com/api',
+            TlsConfig: { InsecureSkipVerification: true },
+          },
+        });
+
+        const putIntegrationCmd = mockSend.mock.calls[1][0];
+        expect(putIntegrationCmd.input.tlsConfig).toEqual({
+          insecureSkipVerification: true,
         });
       });
 
