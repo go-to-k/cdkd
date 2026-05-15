@@ -358,7 +358,11 @@ state.json remains the canonical source of truth, and strong-reference
 safety checks scan it directly rather than trusting the index.
 
 See **[docs/cross-stack-references.md](docs/cross-stack-references.md)**
-for the full design (schema v4, lifecycle, locking, failure modes).
+for the full design (`Fn::ImportValue` strong-reference rules added in
+state schema v4, lifecycle, locking, failure modes). State schema is at
+v5 since v0.100.0; `DeletionPolicy` / `UpdateReplacePolicy` changes
+between deploys are now detected and surfaced (see
+[docs/state-management.md](docs/state-management.md)).
 
 ## Rollback behavior
 

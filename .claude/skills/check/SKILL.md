@@ -11,10 +11,9 @@ Run all local quality checks. Use during development to verify the current state
 
 Run these sequentially and report results:
 
-1. `vp run typecheck`
-2. `vp run lint:fix`
-3. `vp run build`
-4. `vp run test`
+1. `vp check --fix` — typecheck + lint + Prettier formatting, with auto-fix. **Use this, not `vp run lint:fix`**: the CI workflow runs `vp check` (which includes Prettier), and `lint:fix` does NOT touch Prettier formatting — so a `lint:fix`-only run passes locally but CI fails with `Formatting issues found` on the same branch. See memory rule `feedback_vp_check_vs_lint_fix.md` for the underlying gotcha and PR #363 for a concrete trap.
+2. `vp run build`
+3. `vp run test`
 
 ## Output
 
@@ -22,8 +21,7 @@ Report as a table:
 
 | Check | Result |
 |-------|--------|
-| typecheck | pass/fail |
-| lint | pass/fail |
+| typecheck + lint + format (`vp check --fix`) | pass/fail |
 | build | pass/fail |
 | tests (N files, M tests) | pass/fail |
 
