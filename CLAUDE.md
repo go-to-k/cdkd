@@ -212,6 +212,15 @@ only compared `Properties`. v5 widens the diff comparator to walk these two
 attribute fields too; the UPDATE classification still fires when only these
 change, and the deploy engine refreshes the cdkd state record without
 calling any provider (there is no per-resource AWS API for either attribute).
+The destroy paths consume the recorded value through the shared
+`shouldRetainResource(deletionPolicy)` helper in `src/types/state.ts`:
+`cdkd destroy` (synth-driven, `DeployEngine` DELETE branch) uses
+`state.deletionPolicy ?? template.Resources[<id>].DeletionPolicy` so state
+wins and the template stays a back-compat fallback; `cdkd state destroy`
+(template-less, `destroy-runner.ts`) reads `state.deletionPolicy` only —
+pre-v5 state on `cdkd state destroy` therefore stays at the pre-fix
+"delete every resource in state" behavior until a redeploy under v5
+populates the field.
 
 **`observedProperties`** is populated on each successful create / update by
 calling `provider.readCurrentState` fire-and-forget after the resource flips
