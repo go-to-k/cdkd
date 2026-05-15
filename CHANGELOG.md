@@ -1,3 +1,10 @@
+## [0.99.3](https://github.com/go-to-k/cdkd/compare/v0.99.2...v0.99.3) (2026-05-15)
+
+
+### Bug Fixes
+
+* **synth:** exclude AWS::CDK::Metadata from displayed resource count ([#363](https://github.com/go-to-k/cdkd/issues/363)) ([10f96b2](https://github.com/go-to-k/cdkd/commit/10f96b29f1bc08187a0bea7bb77cb74972dd06e2))
+
 ## [0.99.2](https://github.com/go-to-k/cdkd/compare/v0.99.1...v0.99.2) (2026-05-13)
 
 
