@@ -249,6 +249,7 @@ template's logical id, and adopts it. Works under `auto` (default) and
 - AWS::EC2::NatGateway
 - AWS::RDS::DBInstance
 - AWS::RDS::DBCluster
+- AWS::RDS::DBProxy
 - AWS::RDS::DBSubnetGroup
 - AWS::DocDB::DBInstance
 - AWS::DocDB::DBCluster

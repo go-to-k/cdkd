@@ -9,7 +9,7 @@ import {
   DBProxyTargetNotFoundFault,
 } from '@aws-sdk/client-rds';
 import { getLogger } from '../../utils/logger.js';
-import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/error-handler.js';
+import { ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import type {
   ResourceProvider,
@@ -179,18 +179,113 @@ export class RDSDBProxyTargetGroupProvider implements ResourceProvider {
     };
   }
 
+  /**
+   * In-place update support: target add/remove (DBClusterIdentifiers /
+   * DBInstanceIdentifiers diff) via `RegisterDBProxyTargets` /
+   * `DeregisterDBProxyTargets`, and ConnectionPoolConfigurationInfo
+   * rewrite via `ModifyDBProxyTargetGroup`. DBProxyName + TargetGroupName
+   * are part of the resource identity — a diff in either surfaces as
+   * replacement upstream (not handled here).
+   */
   async update(
     logicalId: string,
-    _physicalId: string,
+    physicalId: string,
     resourceType: string,
-    _oldProperties: Record<string, unknown>,
-    _newProperties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    previousProperties: Record<string, unknown>
   ): Promise<ResourceUpdateResult> {
-    throw new ResourceUpdateNotSupportedError(
-      resourceType,
-      logicalId,
-      'destroy + redeploy; in-place updates of registered targets / connection pool config are not yet supported'
-    );
+    const dbProxyName = properties['DBProxyName'] as string | undefined;
+    if (!dbProxyName) {
+      throw new ProvisioningError(
+        `DBProxyName is required for AWS::RDS::DBProxyTargetGroup ${logicalId} update`,
+        resourceType,
+        logicalId,
+        physicalId
+      );
+    }
+    const targetGroupName = (properties['TargetGroupName'] as string | undefined) ?? 'default';
+
+    const client = this.getClient();
+
+    // 1. ConnectionPoolConfigurationInfo diff.
+    const oldPool = previousProperties['ConnectionPoolConfigurationInfo'] as
+      | Record<string, unknown>
+      | undefined;
+    const newPool = properties['ConnectionPoolConfigurationInfo'] as
+      | Record<string, unknown>
+      | undefined;
+    if (JSON.stringify(oldPool) !== JSON.stringify(newPool)) {
+      this.logger.debug(`Updating connection pool config for ${dbProxyName}/${targetGroupName}`);
+      try {
+        await client.send(
+          new ModifyDBProxyTargetGroupCommand({
+            DBProxyName: dbProxyName,
+            TargetGroupName: targetGroupName,
+            // Pass new config (may be empty {} when user removed the block;
+            // AWS treats empty as "reset to defaults").
+            ConnectionPoolConfig: (newPool ?? {}) as never,
+          })
+        );
+      } catch (error) {
+        throw this.wrapError(error, 'UPDATE (pool config)', resourceType, logicalId, physicalId);
+      }
+    }
+
+    // 2. Target diff: deregister removed, register added. Process clusters
+    // and instances independently so the SDK call shape stays clean.
+    const oldClusters = new Set((previousProperties['DBClusterIdentifiers'] as string[]) ?? []);
+    const newClusters = new Set((properties['DBClusterIdentifiers'] as string[]) ?? []);
+    const oldInstances = new Set((previousProperties['DBInstanceIdentifiers'] as string[]) ?? []);
+    const newInstances = new Set((properties['DBInstanceIdentifiers'] as string[]) ?? []);
+
+    const clustersToRemove = [...oldClusters].filter((c) => !newClusters.has(c));
+    const clustersToAdd = [...newClusters].filter((c) => !oldClusters.has(c));
+    const instancesToRemove = [...oldInstances].filter((i) => !newInstances.has(i));
+    const instancesToAdd = [...newInstances].filter((i) => !oldInstances.has(i));
+
+    if (clustersToRemove.length > 0 || instancesToRemove.length > 0) {
+      this.logger.debug(
+        `Deregistering targets from ${dbProxyName}/${targetGroupName}: ` +
+          `clusters=[${clustersToRemove.join(',')}], instances=[${instancesToRemove.join(',')}]`
+      );
+      try {
+        await client.send(
+          new DeregisterDBProxyTargetsCommand({
+            DBProxyName: dbProxyName,
+            TargetGroupName: targetGroupName,
+            DBClusterIdentifiers: clustersToRemove.length > 0 ? clustersToRemove : undefined,
+            DBInstanceIdentifiers: instancesToRemove.length > 0 ? instancesToRemove : undefined,
+          })
+        );
+      } catch (error) {
+        // Idempotent: a target that's already gone is fine — same shape
+        // as delete()'s NotFound handling.
+        if (!(error instanceof DBProxyTargetNotFoundFault)) {
+          throw this.wrapError(error, 'UPDATE (deregister)', resourceType, logicalId, physicalId);
+        }
+      }
+    }
+
+    if (clustersToAdd.length > 0 || instancesToAdd.length > 0) {
+      this.logger.debug(
+        `Registering targets to ${dbProxyName}/${targetGroupName}: ` +
+          `clusters=[${clustersToAdd.join(',')}], instances=[${instancesToAdd.join(',')}]`
+      );
+      try {
+        await client.send(
+          new RegisterDBProxyTargetsCommand({
+            DBProxyName: dbProxyName,
+            TargetGroupName: targetGroupName,
+            DBClusterIdentifiers: clustersToAdd.length > 0 ? clustersToAdd : undefined,
+            DBInstanceIdentifiers: instancesToAdd.length > 0 ? instancesToAdd : undefined,
+          })
+        );
+      } catch (error) {
+        throw this.wrapError(error, 'UPDATE (register)', resourceType, logicalId, physicalId);
+      }
+    }
+
+    return { physicalId, wasReplaced: false };
   }
 
   async delete(
