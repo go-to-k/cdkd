@@ -221,13 +221,37 @@ next `cdkd drift` run sees a real AWS-current snapshot. Pass
 upgrade refresh; `cdkd state refresh-observed <stack>` remains the
 manual / non-deploy path for refreshing the baseline.
 
+### `version: 5` adds `deletionPolicy` / `updateReplacePolicy` (current writers)
+
+Schema `version: 5` adds two optional template-attribute fields to each
+`ResourceState`: `deletionPolicy` and `updateReplacePolicy`. They mirror the
+CloudFormation `DeletionPolicy` / `UpdateReplacePolicy` attributes that the
+synth template carried at the resource's last successful create / update.
+Writers always emit `version: 5`. The on-disk key layout is unchanged from
+`version: 2`; only the per-resource shape grew. v4 readers see a `version: 5`
+blob and fail clearly with the same "upgrade cdkd" error.
+
+`DiffCalculator` (v5+) compares both attributes against the template on
+every deploy / diff. A change there — typically a user removing
+`removalPolicy: RemovalPolicy.DESTROY` from a CDK construct (CDK then emits
+`DeletionPolicy: Retain` instead of `Delete`) — is now classified as
+`UPDATE` rather than silently swallowed as `No changes detected`. The
+attribute flip has no per-resource AWS API, so cdkd's deploy engine
+refreshes the cdkd state record only — no provider call. **v4 → v5
+upgrade is automatic on the next `cdkd deploy`**: state-update sites write
+the current template attributes (or `undefined` when the template does not
+carry the attribute) into the resource record, and the next deploy's
+comparator has a real baseline to diff against. `cdkd destroy`'s existing
+`DeletionPolicy: Retain` skip continues to read the template directly, so
+the v5 fields are not yet load-bearing on the destroy path.
+
 ## State Schema
 
 ### StackState (`state.json`)
 
 ```typescript
 interface StackState {
-  version: 1 | 2 | 3                       // 1 = legacy, 2 = region-prefixed, 3 = +observedProperties
+  version: 1 | 2 | 3 | 4 | 5               // 1 = legacy, 2 = region-prefixed, 3 = +observedProperties, 4 = +imports[], 5 = +deletionPolicy/updateReplacePolicy
   stackName: string                        // Stack name
   region?: string                          // Required on version >= 2
   resources: Record<string, ResourceState> // Logical ID → Resource state

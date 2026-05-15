@@ -13,15 +13,23 @@
  *       references its outputs (strong reference, matches CloudFormation).
  *       Layout is the same as v3; only the stack-level shape grew. v3
  *       readers see v4 as `version: 4` and fail clearly.
+ * - 5 — adds `ResourceState.deletionPolicy` and `updateReplacePolicy`, the
+ *       CloudFormation template attributes recorded at deploy time. cdkd
+ *       compares these against the next deploy's template to detect
+ *       attribute-only changes (e.g. `RemovalPolicy.DESTROY` removed →
+ *       `DeletionPolicy: Retain` now in template), which previously fell
+ *       through DiffCalculator as `No changes detected`. Layout is the same
+ *       as v4; only the resource-level shape grew. v4 readers see v5 as
+ *       `version: 5` and fail clearly.
  *
  * cdkd readers handle every prior version. Writers always emit
  * `STATE_SCHEMA_VERSION_CURRENT`. An older cdkd binary that only knows an
  * earlier version will fail with a clear error when it encounters a higher
  * version, rather than silently mishandling the new format.
  */
-export type StateSchemaVersion = 1 | 2 | 3 | 4;
+export type StateSchemaVersion = 1 | 2 | 3 | 4 | 5;
 export const STATE_SCHEMA_VERSION_LEGACY: StateSchemaVersion = 1;
-export const STATE_SCHEMA_VERSION_CURRENT: StateSchemaVersion = 4;
+export const STATE_SCHEMA_VERSION_CURRENT: StateSchemaVersion = 5;
 
 /**
  * Every schema version this binary can read. Writers always emit
@@ -29,7 +37,7 @@ export const STATE_SCHEMA_VERSION_CURRENT: StateSchemaVersion = 4;
  * forward-migration, and an unknown / future version triggers an explicit
  * "upgrade cdkd" error in the parser.
  */
-export const STATE_SCHEMA_VERSIONS_READABLE: readonly StateSchemaVersion[] = [1, 2, 3, 4];
+export const STATE_SCHEMA_VERSIONS_READABLE: readonly StateSchemaVersion[] = [1, 2, 3, 4, 5];
 
 /**
  * One `Fn::ImportValue` reference recorded during a consumer stack's
@@ -128,6 +136,31 @@ export interface ResourceState {
 
   /** Additional metadata */
   metadata?: Record<string, unknown>;
+
+  /**
+   * CloudFormation `DeletionPolicy` attribute recorded at deploy time
+   * (schema v5+). Compared against the template on the next deploy so an
+   * attribute-only change (e.g. `RemovalPolicy.DESTROY` removed →
+   * `DeletionPolicy: Retain`) is surfaced as a diff instead of silently
+   * being marked `No changes`. Optional for backwards compatibility — v4
+   * state writes leave this undefined; the diff comparator treats
+   * `undefined` as "no attribute recorded" rather than "Delete" so the
+   * first post-upgrade deploy only fires the diff when the template
+   * actually carries the attribute.
+   *
+   * The `| undefined` is explicit (vs bare `?:`) so a state-update site
+   * can spread `{ ...current, deletionPolicy: undefined }` to clear a
+   * previously-recorded value when the user removes the attribute from
+   * their CDK code; under `exactOptionalPropertyTypes: true` a bare `?:`
+   * would reject the literal-undefined assignment.
+   */
+  deletionPolicy?: 'Delete' | 'Retain' | 'Snapshot' | 'RetainExceptOnCreate' | undefined;
+
+  /**
+   * CloudFormation `UpdateReplacePolicy` attribute recorded at deploy time
+   * (schema v5+). Same semantics as `deletionPolicy` above.
+   */
+  updateReplacePolicy?: 'Delete' | 'Retain' | 'Snapshot' | 'RetainExceptOnCreate' | undefined;
 }
 
 /**
@@ -173,6 +206,31 @@ export interface ResourceChange {
 
   /** Property-level changes (for UPDATE) */
   propertyChanges?: PropertyChange[];
+
+  /**
+   * `DeletionPolicy` / `UpdateReplacePolicy` attribute changes (schema v5+).
+   * Populated when the template attribute differs from the value recorded in
+   * cdkd state. AWS has no API to mutate these attributes per-resource, so
+   * the deploy engine handles the change by updating cdkd state only — no
+   * provider call. UPDATE classification still fires when only these change
+   * (DiffCalculator does not stay at `NO_CHANGE`), so users see the diff
+   * instead of `No changes detected`.
+   */
+  attributeChanges?: AttributeChange[];
+}
+
+/**
+ * Template-level resource attribute change (schema v5+).
+ *
+ * `DeletionPolicy` / `UpdateReplacePolicy` are CloudFormation template
+ * metadata — they have no AWS API per-resource and are mutated through the
+ * cdkd state record alone.
+ */
+export interface AttributeChange {
+  /** Attribute name: `DeletionPolicy` or `UpdateReplacePolicy`. */
+  attribute: 'DeletionPolicy' | 'UpdateReplacePolicy';
+  oldValue: string | undefined;
+  newValue: string | undefined;
 }
 
 /**

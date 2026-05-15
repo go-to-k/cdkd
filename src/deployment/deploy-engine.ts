@@ -1496,6 +1496,7 @@ export class DeployEngine {
         // Extract ALL dependencies from template (Ref, Fn::GetAtt, DependsOn)
         // so that deletion order is correct even without implicit type-based deps
         const dependencies = this.extractAllDependencies(template, logicalId);
+        const templateAttrs = this.extractTemplateAttributes(template, logicalId);
 
         stateResources[logicalId] = {
           physicalId: result.physicalId,
@@ -1503,6 +1504,7 @@ export class DeployEngine {
           properties: resolvedProps,
           ...(result.attributes && { attributes: result.attributes }),
           ...(dependencies && dependencies.length > 0 && { dependencies }),
+          ...templateAttrs,
         };
 
         this.kickOffObservedCapture(
@@ -1549,6 +1551,26 @@ export class DeployEngine {
         // Re-check diff after resolving intrinsic functions
         // DiffCalculator compares unresolved template vs resolved state, which may produce false positives
         if (JSON.stringify(resolvedProps) === JSON.stringify(currentProps)) {
+          // Attribute-only change (schema v5+): `DeletionPolicy` /
+          // `UpdateReplacePolicy` may have flipped without any AWS-side
+          // property change. There is no per-resource AWS API for those —
+          // refresh cdkd state alone and skip the provider call.
+          if (change.attributeChanges && change.attributeChanges.length > 0) {
+            const attrSummary = change.attributeChanges
+              .map((a) => `${a.attribute}: ${a.oldValue ?? '(unset)'} → ${a.newValue ?? '(unset)'}`)
+              .join(', ');
+            this.logger.info(`  ↻ ${logicalId} (${resourceType}) attribute update: ${attrSummary}`);
+            stateResources[logicalId] = {
+              ...currentResource,
+              ...this.extractTemplateAttributes(template, logicalId),
+            };
+            if (counts) counts.updated++;
+            if (progress) progress.current++;
+            const attrPrefix = progress ? `[${progress.current}/${progress.total}] ` : '  ';
+            renderer.removeTask(logicalId);
+            this.logger.info(`${attrPrefix}✅ ${logicalId} (${resourceType}) updated (metadata)`);
+            break;
+          }
           this.logger.debug(
             `Skipping ${logicalId}: no actual changes after intrinsic function resolution`
           );
@@ -1615,6 +1637,7 @@ export class DeployEngine {
             properties: resolvedProps,
             ...(createResult.attributes && { attributes: createResult.attributes }),
             ...(dependencies && dependencies.length > 0 && { dependencies }),
+            ...this.extractTemplateAttributes(template, logicalId),
           };
 
           this.kickOffObservedCapture(
@@ -1720,6 +1743,7 @@ export class DeployEngine {
             properties: resolvedProps,
             ...(result.attributes && { attributes: result.attributes }),
             ...(dependencies && dependencies.length > 0 && { dependencies }),
+            ...this.extractTemplateAttributes(template, logicalId),
           };
 
           this.kickOffObservedCapture(
@@ -1823,6 +1847,29 @@ export class DeployEngine {
     const parser = new TemplateParser();
     const deps = parser.extractDependencies(resource);
     return deps.size > 0 ? [...deps] : undefined;
+  }
+
+  /**
+   * Read `DeletionPolicy` / `UpdateReplacePolicy` from the synth template
+   * so they can be persisted in `ResourceState` (schema v5+). Always returns
+   * both keys (`undefined` when the template does not carry the attribute)
+   * so that spreading into an existing `ResourceState` reliably overrides a
+   * previously-recorded value back to `undefined` — required when the user
+   * removes the attribute from their CDK code. `JSON.stringify` then omits
+   * the `undefined` keys when state is serialized to S3.
+   */
+  private extractTemplateAttributes(
+    template: CloudFormationTemplate | undefined,
+    logicalId: string
+  ): {
+    deletionPolicy: 'Delete' | 'Retain' | 'Snapshot' | 'RetainExceptOnCreate' | undefined;
+    updateReplacePolicy: 'Delete' | 'Retain' | 'Snapshot' | 'RetainExceptOnCreate' | undefined;
+  } {
+    const resource = template?.Resources?.[logicalId];
+    return {
+      deletionPolicy: resource?.DeletionPolicy,
+      updateReplacePolicy: resource?.UpdateReplacePolicy,
+    };
   }
 
   // Type-based implicit deletion ordering rules are defined in

@@ -7,11 +7,14 @@ import {
 } from '../../../src/types/state.js';
 
 describe('State schema v4 — Fn::ImportValue strong-reference field', () => {
-  it('current schema version is 4', () => {
-    expect(STATE_SCHEMA_VERSION_CURRENT).toBe(4);
+  it('version 4 remains readable after later schema bumps', () => {
+    // v4 is no longer CURRENT (see schema-v5-migration.test.ts) but
+    // readers must still accept v4 state for backwards compat.
+    expect(STATE_SCHEMA_VERSIONS_READABLE).toContain(4);
+    expect(STATE_SCHEMA_VERSION_CURRENT).toBeGreaterThanOrEqual(4);
   });
 
-  it('readers accept every prior version + the new one', () => {
+  it('readers accept every prior version + v4', () => {
     expect(STATE_SCHEMA_VERSIONS_READABLE).toContain(1);
     expect(STATE_SCHEMA_VERSIONS_READABLE).toContain(2);
     expect(STATE_SCHEMA_VERSIONS_READABLE).toContain(3);
