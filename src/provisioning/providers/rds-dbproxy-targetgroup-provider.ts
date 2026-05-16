@@ -9,7 +9,7 @@ import {
   DBProxyTargetNotFoundFault,
 } from '@aws-sdk/client-rds';
 import { getLogger } from '../../utils/logger.js';
-import { ProvisioningError } from '../../utils/error-handler.js';
+import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import type {
   ResourceProvider,
@@ -204,6 +204,25 @@ export class RDSDBProxyTargetGroupProvider implements ResourceProvider {
       );
     }
     const targetGroupName = (properties['TargetGroupName'] as string | undefined) ?? 'default';
+
+    // Defensive: reject diffs in immutable identity fields. Replacement-rules.ts
+    // SHOULD have routed those to a CREATE+DELETE replacement upstream; we
+    // double-check here so a missing rule entry doesn't silently corrupt state.
+    for (const field of ['DBProxyName', 'TargetGroupName']) {
+      const oldVal = previousProperties[field];
+      const newVal = properties[field];
+      // TargetGroupName defaults to 'default' on AWS — treat undefined and
+      // 'default' as equivalent on either side to avoid false-positive diff.
+      const normalize = (v: unknown) =>
+        field === 'TargetGroupName' && (v === undefined || v === 'default') ? 'default' : v;
+      if (JSON.stringify(normalize(oldVal)) !== JSON.stringify(normalize(newVal))) {
+        throw new ResourceUpdateNotSupportedError(
+          resourceType,
+          logicalId,
+          `${field} is immutable on AWS::RDS::DBProxyTargetGroup — destroy + redeploy to change it`
+        );
+      }
+    }
 
     const client = this.getClient();
 

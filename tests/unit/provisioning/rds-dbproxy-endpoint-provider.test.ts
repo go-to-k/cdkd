@@ -136,6 +136,43 @@ describe('RDSDBProxyEndpointProvider', () => {
       expect(mockSend).not.toHaveBeenCalled();
     });
 
+    it('rejects when TargetRole differs (immutable)', async () => {
+      await expect(
+        provider.update(
+          'EP',
+          EP_NAME,
+          RESOURCE_TYPE,
+          { TargetRole: 'READ_ONLY' },
+          { TargetRole: 'READ_WRITE' }
+        )
+      ).rejects.toThrow(/TargetRole is immutable/);
+      expect(mockSend).not.toHaveBeenCalled();
+    });
+
+    it('rejects when VpcSubnetIds differs (immutable)', async () => {
+      await expect(
+        provider.update(
+          'EP',
+          EP_NAME,
+          RESOURCE_TYPE,
+          { VpcSubnetIds: ['subnet-new'] },
+          { VpcSubnetIds: ['subnet-old'] }
+        )
+      ).rejects.toThrow(/VpcSubnetIds is immutable/);
+    });
+
+    it('rejects when DBProxyName differs (immutable)', async () => {
+      await expect(
+        provider.update(
+          'EP',
+          EP_NAME,
+          RESOURCE_TYPE,
+          { DBProxyName: 'NewProxy' },
+          { DBProxyName: 'OldProxy' }
+        )
+      ).rejects.toThrow(/DBProxyName is immutable/);
+    });
+
     it('issues ModifyDBProxyEndpoint when VpcSecurityGroupIds change', async () => {
       mockSend.mockResolvedValueOnce({ DBProxyEndpoint: {} });
       await provider.update(

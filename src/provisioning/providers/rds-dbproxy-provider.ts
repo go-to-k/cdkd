@@ -13,7 +13,7 @@ import {
   type Tag,
 } from '@aws-sdk/client-rds';
 import { getLogger } from '../../utils/logger.js';
-import { ProvisioningError } from '../../utils/error-handler.js';
+import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { generateResourceName } from '../resource-name.js';
 import {
@@ -228,6 +228,20 @@ export class RDSDBProxyProvider implements ResourceProvider {
     previousProperties: Record<string, unknown>
   ): Promise<ResourceUpdateResult> {
     const client = this.getClient();
+
+    // Defensive: reject diffs in immutable fields. Replacement-rules.ts
+    // SHOULD have routed those to a CREATE+DELETE replacement upstream, but
+    // we double-check here so a missing rule entry doesn't silently corrupt
+    // state (the PR #387 round 1 blocker class).
+    for (const field of ['DBProxyName', 'EngineFamily', 'VpcSubnetIds']) {
+      if (JSON.stringify(properties[field]) !== JSON.stringify(previousProperties[field])) {
+        throw new ResourceUpdateNotSupportedError(
+          resourceType,
+          logicalId,
+          `${field} is immutable on AWS::RDS::DBProxy — destroy + redeploy to change it`
+        );
+      }
+    }
 
     const input: Record<string, unknown> = { DBProxyName: physicalId };
     let hasModify = false;
