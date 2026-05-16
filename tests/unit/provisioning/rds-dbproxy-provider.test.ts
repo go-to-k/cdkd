@@ -160,6 +160,31 @@ describe('RDSDBProxyProvider', () => {
       expect(mockSend).toHaveBeenCalledTimes(1);
     });
 
+    it('rejects when EngineFamily differs (immutable)', async () => {
+      await expect(
+        provider.update(
+          'Proxy',
+          PROXY_NAME,
+          RESOURCE_TYPE,
+          { EngineFamily: 'POSTGRESQL' },
+          { EngineFamily: 'MYSQL' }
+        )
+      ).rejects.toThrow(/EngineFamily is immutable/);
+      expect(mockSend).not.toHaveBeenCalled();
+    });
+
+    it('rejects when VpcSubnetIds differs (immutable)', async () => {
+      await expect(
+        provider.update(
+          'Proxy',
+          PROXY_NAME,
+          RESOURCE_TYPE,
+          { VpcSubnetIds: ['subnet-new'] },
+          { VpcSubnetIds: ['subnet-old'] }
+        )
+      ).rejects.toThrow(/VpcSubnetIds is immutable/);
+    });
+
     it('issues ModifyDBProxy when RoleArn changes', async () => {
       mockSend
         .mockResolvedValueOnce({ DBProxy: {} }) // ModifyDBProxy

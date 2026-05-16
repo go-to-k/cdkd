@@ -89,6 +89,7 @@ message naming the unsupported type.
 | **Database** | AWS::RDS::DBCluster | SDK Provider | ✅ |
 | **Database** | AWS::RDS::DBInstance | SDK Provider | ✅ |
 | **Database** | AWS::RDS::DBProxy | SDK Provider | ✅ |
+| **Database** | AWS::RDS::DBProxyEndpoint | SDK Provider | ✅ |
 | **Database** | AWS::RDS::DBProxyTargetGroup | SDK Provider | ✅ |
 | **Database** | AWS::DocDB::DBSubnetGroup | SDK Provider | ✅ |
 | **Database** | AWS::DocDB::DBCluster | SDK Provider | ✅ |
