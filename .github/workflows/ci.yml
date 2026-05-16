@@ -22,6 +22,22 @@ jobs:
       - run: vp run test
       - run: vp run build
 
+      # Issue #399 — fail CI when docs/integ-coverage.md or
+      # docs/_generated/integ-coverage.json is stale relative to
+      # src/provisioning/register-providers.ts +
+      # tests/integration/*/{lib,bin}/*.ts. Regenerate via the same
+      # `vp run integ-coverage` task the contributor would run, then
+      # fail-on-diff. Closes the "forgot to regenerate after editing"
+      # gap that the /verify-pr skill step is the manual fallback for.
+      - name: integ-coverage matrix is up-to-date
+        run: |
+          vp run integ-coverage
+          if ! git diff --quiet -- docs/integ-coverage.md docs/_generated/integ-coverage.json; then
+            echo "::error::integ-coverage matrix is stale — run \`vp run integ-coverage\` and commit the regenerated docs/integ-coverage.md + docs/_generated/integ-coverage.json"
+            git --no-pager diff -- docs/integ-coverage.md docs/_generated/integ-coverage.json
+            exit 1
+          fi
+
   runtime-compat:
     runs-on: ubuntu-latest
     needs: check-build-test
