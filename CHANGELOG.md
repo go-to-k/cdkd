@@ -1,3 +1,10 @@
+## [0.111.1](https://github.com/go-to-k/cdkd/compare/v0.111.0...v0.111.1) (2026-05-16)
+
+
+### Bug Fixes
+
+* **dynamodb-globaltable:** close 3 deferred nits from PR [#410](https://github.com/go-to-k/cdkd/issues/410) review (AWS-aware DPE + TTL error wrap + helper refactor) ([#415](https://github.com/go-to-k/cdkd/issues/415)) ([e8d93cb](https://github.com/go-to-k/cdkd/commit/e8d93cb1bdfb165a339d51a855cfcec78d32feaf))
+
 # [0.111.0](https://github.com/go-to-k/cdkd/compare/v0.110.0...v0.111.0) (2026-05-16)
 
 
