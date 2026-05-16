@@ -743,11 +743,17 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
         const flippingTrueToFalse =
           (oldDpe === true || awsDpe === true) && Boolean(newDpe ?? false) === false;
         if (flippingTrueToFalse && !templateExplicitlySetsDpe) {
+          // Neutral wording covers both flip directions:
+          //   - state DPE=true, AWS=true, new=undefined (property removed from CDK code)
+          //   - state DPE=false/undefined, AWS=true, new=undefined (console-side enable
+          //     + CDK code never set it)
+          // Both cases reach the same recovery path.
           this.logger.warn(
             `Auto-disabling DeletionProtectionEnabled on ${physicalId}: ` +
-              `the property was removed from the CDK code. AWS will accept ` +
-              `DeleteTable on this resource after this deploy. ` +
-              `If you meant to keep protection on, restore ` +
+              `the CDK code does not set 'deletionProtection: true' but AWS ` +
+              `has it enabled. AWS will accept DeleteTable on this resource ` +
+              `after this deploy. ` +
+              `If you meant to keep protection on, set ` +
               `'deletionProtection: true' in your CDK code; ` +
               `if you meant to disable it explicitly, set ` +
               `'deletionProtection: false' to silence this warning.`
