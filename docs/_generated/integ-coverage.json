@@ -2549,6 +2549,7 @@
         "context-test",
         "cross-region-state-bucket",
         "cross-stack-references",
+        "deletion-policy-retain",
         "import-value-strong-ref",
         "infra-security",
         "legacy-bucket-name-fallback",
@@ -2574,6 +2575,10 @@
         ],
         "cross-stack-references": [
           "l1"
+        ],
+        "deletion-policy-retain": [
+          "l2",
+          "literal"
         ],
         "import-value-strong-ref": [
           "l2"
