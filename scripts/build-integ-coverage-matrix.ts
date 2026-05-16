@@ -449,12 +449,19 @@ export function parseAllowNoIntegRationales(): Map<string, string> {
   return parseAllowNoIntegRationalesContent(content);
 }
 
-function listFixtures(): string[] {
-  if (!existsSync(INTEG_DIR)) return [];
-  return readdirSync(INTEG_DIR)
+export function listFixtures(integDir: string = INTEG_DIR): string[] {
+  if (!existsSync(integDir)) return [];
+  return readdirSync(integDir)
     .filter((name) => {
-      const p = join(INTEG_DIR, name);
-      return statSync(p).isDirectory();
+      // Ignore hidden directories (e.g. `.scratch/`, IDE folders); the
+      // matrix is scoped to real integ fixtures only.
+      if (name.startsWith('.')) return false;
+      const full = join(integDir, name);
+      try {
+        return statSync(full).isDirectory();
+      } catch {
+        return false;
+      }
     })
     .sort();
 }
