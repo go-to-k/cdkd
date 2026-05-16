@@ -1,3 +1,10 @@
+## [0.111.3](https://github.com/go-to-k/cdkd/compare/v0.111.2...v0.111.3) (2026-05-16)
+
+
+### Bug Fixes
+
+* **dynamodb-globaltable:** neutralize DPE auto-disable WARN wording ([#420](https://github.com/go-to-k/cdkd/issues/420)) ([47abfc6](https://github.com/go-to-k/cdkd/commit/47abfc67a87e5b273a9c1b7cf07bbeb78533a665))
+
 ## [0.111.2](https://github.com/go-to-k/cdkd/compare/v0.111.1...v0.111.2) (2026-05-16)
 
 
