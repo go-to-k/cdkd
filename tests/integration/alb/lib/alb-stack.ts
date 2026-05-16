@@ -3,6 +3,11 @@ import { Construct } from 'constructs';
 import * as ec2 from 'aws-cdk-lib/aws-ec2';
 import * as elbv2 from 'aws-cdk-lib/aws-elasticloadbalancingv2';
 
+/**
+ * covers: AWS::ElasticLoadBalancingV2::Listener
+ * covers: AWS::ElasticLoadBalancingV2::TargetGroup
+ * covers: AWS::EC2::SecurityGroupIngress
+ */
 export class AlbStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
     super(scope, id, props);

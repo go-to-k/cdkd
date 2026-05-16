@@ -1,0 +1,2740 @@
+{
+  "registeredTypes": [
+    "AWS::ApiGateway::Account",
+    "AWS::ApiGateway::Authorizer",
+    "AWS::ApiGateway::Deployment",
+    "AWS::ApiGateway::Method",
+    "AWS::ApiGateway::Resource",
+    "AWS::ApiGateway::Stage",
+    "AWS::ApiGatewayV2::Api",
+    "AWS::ApiGatewayV2::Authorizer",
+    "AWS::ApiGatewayV2::Integration",
+    "AWS::ApiGatewayV2::Route",
+    "AWS::ApiGatewayV2::Stage",
+    "AWS::AppSync::ApiKey",
+    "AWS::AppSync::DataSource",
+    "AWS::AppSync::GraphQLApi",
+    "AWS::AppSync::GraphQLSchema",
+    "AWS::AppSync::Resolver",
+    "AWS::AutoScaling::AutoScalingGroup",
+    "AWS::BedrockAgentCore::Runtime",
+    "AWS::CloudFront::CloudFrontOriginAccessIdentity",
+    "AWS::CloudFront::Distribution",
+    "AWS::CloudTrail::Trail",
+    "AWS::CloudWatch::Alarm",
+    "AWS::CodeBuild::Project",
+    "AWS::Cognito::UserPool",
+    "AWS::DocDB::DBCluster",
+    "AWS::DocDB::DBInstance",
+    "AWS::DocDB::DBSubnetGroup",
+    "AWS::DynamoDB::GlobalTable",
+    "AWS::DynamoDB::Table",
+    "AWS::EC2::Instance",
+    "AWS::EC2::InternetGateway",
+    "AWS::EC2::NatGateway",
+    "AWS::EC2::NetworkAcl",
+    "AWS::EC2::NetworkAclEntry",
+    "AWS::EC2::Route",
+    "AWS::EC2::RouteTable",
+    "AWS::EC2::SecurityGroup",
+    "AWS::EC2::SecurityGroupIngress",
+    "AWS::EC2::Subnet",
+    "AWS::EC2::SubnetNetworkAclAssociation",
+    "AWS::EC2::SubnetRouteTableAssociation",
+    "AWS::EC2::VPC",
+    "AWS::EC2::VPCGatewayAttachment",
+    "AWS::ECR::Repository",
+    "AWS::ECS::Cluster",
+    "AWS::ECS::Service",
+    "AWS::ECS::TaskDefinition",
+    "AWS::EFS::AccessPoint",
+    "AWS::EFS::FileSystem",
+    "AWS::EFS::MountTarget",
+    "AWS::ElastiCache::CacheCluster",
+    "AWS::ElastiCache::SubnetGroup",
+    "AWS::ElasticLoadBalancingV2::Listener",
+    "AWS::ElasticLoadBalancingV2::LoadBalancer",
+    "AWS::ElasticLoadBalancingV2::TargetGroup",
+    "AWS::Events::EventBus",
+    "AWS::Events::Rule",
+    "AWS::Glue::Connection",
+    "AWS::Glue::Crawler",
+    "AWS::Glue::Database",
+    "AWS::Glue::Job",
+    "AWS::Glue::SecurityConfiguration",
+    "AWS::Glue::Table",
+    "AWS::Glue::Trigger",
+    "AWS::Glue::Workflow",
+    "AWS::IAM::Group",
+    "AWS::IAM::InstanceProfile",
+    "AWS::IAM::Policy",
+    "AWS::IAM::Role",
+    "AWS::IAM::User",
+    "AWS::IAM::UserToGroupAddition",
+    "AWS::KMS::Alias",
+    "AWS::KMS::Key",
+    "AWS::Kinesis::Stream",
+    "AWS::Kinesis::StreamConsumer",
+    "AWS::KinesisFirehose::DeliveryStream",
+    "AWS::Lambda::EventSourceMapping",
+    "AWS::Lambda::Function",
+    "AWS::Lambda::LayerVersion",
+    "AWS::Lambda::Permission",
+    "AWS::Lambda::Url",
+    "AWS::Logs::LogGroup",
+    "AWS::Neptune::DBCluster",
+    "AWS::Neptune::DBInstance",
+    "AWS::Neptune::DBSubnetGroup",
+    "AWS::RDS::DBCluster",
+    "AWS::RDS::DBInstance",
+    "AWS::RDS::DBProxy",
+    "AWS::RDS::DBProxyEndpoint",
+    "AWS::RDS::DBProxyTargetGroup",
+    "AWS::RDS::DBSubnetGroup",
+    "AWS::Route53::HostedZone",
+    "AWS::Route53::RecordSet",
+    "AWS::S3::Bucket",
+    "AWS::S3::BucketPolicy",
+    "AWS::S3Express::DirectoryBucket",
+    "AWS::S3Tables::Namespace",
+    "AWS::S3Tables::Table",
+    "AWS::S3Tables::TableBucket",
+    "AWS::S3Vectors::VectorBucket",
+    "AWS::SNS::Subscription",
+    "AWS::SNS::Topic",
+    "AWS::SNS::TopicPolicy",
+    "AWS::SQS::Queue",
+    "AWS::SQS::QueuePolicy",
+    "AWS::SSM::Parameter",
+    "AWS::SecretsManager::Secret",
+    "AWS::ServiceDiscovery::PrivateDnsNamespace",
+    "AWS::ServiceDiscovery::Service",
+    "AWS::StepFunctions::StateMachine",
+    "AWS::WAFv2::WebACL"
+  ],
+  "covered": [
+    {
+      "resourceType": "AWS::ApiGateway::Account",
+      "integs": [
+        "apigateway"
+      ],
+      "signals": {
+        "apigateway": [
+          "literal"
+        ]
+      }
+    },
+    {
+      "resourceType": "AWS::ApiGateway::Authorizer",
+      "integs": [
+        "api-cognito"
+      ],
+      "signals": {
+        "api-cognito": [
+          "l1"
+        ]
+      }
+    },
+    {
+      "resourceType": "AWS::ApiGateway::Deployment",
+      "integs": [
+        "api-cognito",
+        "apigateway"
+      ],
+      "signals": {
+        "api-cognito": [
+          "literal"
+        ],
+        "apigateway": [
+          "literal"
+        ]
+      }
+    },
+    {
+      "resourceType": "AWS::ApiGateway::Method",
+      "integs": [
+        "api-cognito",
+        "apigateway"
+      ],
+      "signals": {
+        "api-cognito": [
+          "literal"
+        ],
+        "apigateway": [
+          "literal"
+        ]
+      }
+    },
+    {
+      "resourceType": "AWS::ApiGateway::Resource",
+      "integs": [
+        "api-cognito",
+        "apigateway"
+      ],
+      "signals": {
+        "api-cognito": [
+          "literal"
+        ],
+        "apigateway": [
+          "literal"
+        ]
+      }
+    },
+    {
+      "resourceType": "AWS::ApiGateway::Stage",
+      "integs": [
+        "api-cognito",
+        "apigateway"
+      ],
+      "signals": {
+        "api-cognito": [
+          "literal"
+        ],
+        "apigateway": [
+          "literal"
+        ]
+      }
+    },
+    {
+      "resourceType": "AWS::ApiGatewayV2::Api",
+      "integs": [
+        "drift-revert",
+        "export",
+        "local-start-api",
+        "migrate-from-cfn",
+        "serverless-api"
+      ],
+      "signals": {
+        "drift-revert": [
+          "l1"
+        ],
+        "export": [
+          "l2",
+          "literal"
+        ],
+        "local-start-api": [
+          "l2"
+        ],
+        "migrate-from-cfn": [
+          "l2"
+        ],
+        "serverless-api": [
+          "l1"
+        ]
+      }
+    },
+    {
+      "resourceType": "AWS::ApiGatewayV2::Authorizer",
+      "integs": [
+        "serverless-api"
+      ],
+      "signals": {
+        "serverless-api": [
+          "l1"
+        ]
+      }
+    },
+    {
+      "resourceType": "AWS::ApiGatewayV2::Integration",
+      "integs": [
+        "export",
+        "local-start-api",
+        "migrate-from-cfn",
+        "serverless-api"
+      ],
+      "signals": {
+        "export": [
+          "l2",
+          "literal"
+        ],
+        "local-start-api": [
+          "l2"
+        ],
+        "migrate-from-cfn": [
+          "l2"
+        ],
+        "serverless-api": [
+          "l1"
+        ]
+      }
+    },
+    {
+      "resourceType": "AWS::ApiGatewayV2::Route",
+      "integs": [
+        "export",
+        "local-start-api",
+        "migrate-from-cfn",
+        "serverless-api"
+      ],
+      "signals": {
+        "export": [
+          "l2"
+        ],
+        "local-start-api": [
+          "l2"
+        ],
+        "migrate-from-cfn": [
+          "l2"
+        ],
+        "serverless-api": [
+          "l1"
+        ]
+      }
+    },
+    {
+      "resourceType": "AWS::ApiGatewayV2::Stage",
+      "integs": [
+        "drift-revert",
+        "export",
+        "local-start-api",
+        "migrate-from-cfn",
+        "serverless-api"
+      ],
+      "signals": {
+        "drift-revert": [
+          "l1"
+        ],
+        "export": [
+          "l2",
+          "literal"
+        ],
+        "local-start-api": [
+          "l2"
+        ],
+        "migrate-from-cfn": [
+          "l2"
+        ],
+        "serverless-api": [
+          "l1"
+        ]
+      }
+    },
+    {
+      "resourceType": "AWS::AppSync::ApiKey",
+      "integs": [
+        "appsync"
+      ],
+      "signals": {
+        "appsync": [
+          "l1"
+        ]
+      }
+    },
+    {
+      "resourceType": "AWS::AppSync::DataSource",
+      "integs": [
+        "appsync"
+      ],
+      "signals": {
+        "appsync": [
+          "l1"
+        ]
+      }
+    },
+    {
+      "resourceType": "AWS::AppSync::GraphQLApi",
+      "integs": [
+        "appsync"
+      ],
+      "signals": {
+        "appsync": [
+          "l1"
+        ]
+      }
+    },
+    {
+      "resourceType": "AWS::AppSync::GraphQLSchema",
+      "integs": [
+        "appsync"
+      ],
+      "signals": {
+        "appsync": [
+          "l1"
+        ]
+      }
+    },
+    {
+      "resourceType": "AWS::AppSync::Resolver",
+      "integs": [
+        "appsync"
+      ],
+      "signals": {
+        "appsync": [
+          "l1"
+        ]
+      }
+    },
+    {
+      "resourceType": "AWS::AutoScaling::AutoScalingGroup",
+      "integs": [
+        "remove-protection"
+      ],
+      "signals": {
+        "remove-protection": [
+          "l2",
+          "literal"
+        ]
+      }
+    },
+    {
+      "resourceType": "AWS::BedrockAgentCore::Runtime",
+      "integs": [
+        "bedrock-agentcore"
+      ],
+      "signals": {
+        "bedrock-agentcore": [
+          "literal"
+        ]
+      }
+    },
+    {
+      "resourceType": "AWS::CloudFront::CloudFrontOriginAccessIdentity",
+      "integs": [
+        "s3-cloudfront"
+      ],
+      "signals": {
+        "s3-cloudfront": [
+          "l2"
+        ]
+      }
+    },
+    {
+      "resourceType": "AWS::CloudFront::Distribution",
+      "integs": [
+        "bench-cdk-sample",
+        "cloudfront-function-url",
+        "s3-cloudfront"
+      ],
+      "signals": {
+        "bench-cdk-sample": [
+          "l2"
+        ],
+        "cloudfront-function-url": [
+          "l2"
+        ],
+        "s3-cloudfront": [
+          "l2"
+        ]
+      }
+    },
+    {
+      "resourceType": "AWS::CloudTrail::Trail",
+      "integs": [
+        "infra-security"
+      ],
+      "signals": {
+        "infra-security": [
+          "l2",
+          "literal"
+        ]
+      }
+    },
+    {
+      "resourceType": "AWS::CloudWatch::Alarm",
+      "integs": [
+        "cloudwatch",
+        "composite-stack",
+        "full-stack-demo",
+        "log-pipeline",
+        "scheduled-task"
+      ],
+      "signals": {
+        "cloudwatch": [
+          "l2"
+        ],
+        "composite-stack": [
+          "l2",
+          "literal"
+        ],
+        "full-stack-demo": [
+          "l2"
+        ],
+        "log-pipeline": [
+          "l2"
+        ],
+        "scheduled-task": [
+          "l2"
+        ]
+      }
+    },
+    {
+      "resourceType": "AWS::CodeBuild::Project",
+      "integs": [
+        "ci-cd"
+      ],
+      "signals": {
+        "ci-cd": [
+          "l2",
+          "literal"
+        ]
+      }
+    },
+    {
+      "resourceType": "AWS::Cognito::UserPool",
+      "integs": [
+        "api-cognito",
+        "cognito",
+        "remove-protection",
+        "serverless-api"
+      ],
+      "signals": {
+        "api-cognito": [
+          "l2"
+        ],
+        "cognito": [
+          "l2",
+          "literal"
+        ],
+        "remove-protection": [
+          "l2",
+          "literal"
+        ],
+        "serverless-api": [
+          "l2"
+        ]
+      }
+    },
+    {
+      "resourceType": "AWS::DocDB::DBCluster",
+      "integs": [
+        "docdb-neptune"
+      ],
+      "signals": {
+        "docdb-neptune": [
+          "l1"
+        ]
+      }
+    },
+    {
+      "resourceType": "AWS::DocDB::DBInstance",
+      "integs": [
+        "docdb-neptune"
+      ],
+      "signals": {
+        "docdb-neptune": [
+          "l1"
+        ]
+      }
+    },
+    {
+      "resourceType": "AWS::DocDB::DBSubnetGroup",
+      "integs": [
+        "docdb-neptune"
+      ],
+      "signals": {
+        "docdb-neptune": [
+          "l1"
+        ]
+      }
+    },
+    {
+      "resourceType": "AWS::DynamoDB::GlobalTable",
+      "integs": [
+        "dynamodb-globaltable",
+        "lambda"
+      ],
+      "signals": {
+        "dynamodb-globaltable": [
+          "l2",
+          "literal"
+        ],
+        "lambda": [
+          "l2",
+          "literal"
+        ]
+      }
+    },
+    {
+      "resourceType": "AWS::DynamoDB::Table",
+      "integs": [
+        "appsync",
+        "bench-sdk",
+        "composite-stack",
+        "data-pipeline",
+        "dynamodb-streams",
+        "full-stack-demo",
+        "lambda",
+        "local-run-task-from-state",
+        "multi-resource",
+        "multi-stack-deps",
+        "remove-protection",
+        "serverless-api"
+      ],
+      "signals": {
+        "appsync": [
+          "l2"
+        ],
+        "bench-sdk": [
+          "l2"
+        ],
+        "composite-stack": [
+          "l2",
+          "literal"
+        ],
+        "data-pipeline": [
+          "l2"
+        ],
+        "dynamodb-streams": [
+          "l2"
+        ],
+        "full-stack-demo": [
+          "l2"
+        ],
+        "lambda": [
+          "l2"
+        ],
+        "local-run-task-from-state": [
+          "l2"
+        ],
+        "multi-resource": [
+          "l2"
+        ],
+        "multi-stack-deps": [
+          "l2"
+        ],
+        "remove-protection": [
+          "l2",
+          "literal"
+        ],
+        "serverless-api": [
+          "l2"
+        ]
+      }
+    },
+    {
+      "resourceType": "AWS::EC2::Instance",
+      "integs": [
+        "ec2-instance",
+        "remove-protection"
+      ],
+      "signals": {
+        "ec2-instance": [
+          "l2"
+        ],
+        "remove-protection": [
+          "l2",
+          "literal"
+        ]
+      }
+    },
+    {
+      "resourceType": "AWS::EC2::InternetGateway",
+      "integs": [
+        "alb",
+        "alb-advanced",
+        "batch",
+        "bench-cdk-sample",
+        "cache-streaming",
+        "docdb-neptune",
+        "drift-revert-vpc",
+        "ec2-instance",
+        "ec2-vpc",
+        "ecs-fargate",
+        "efs-lambda",
+        "efs-standalone",
+        "infra-security",
+        "multi-stack-deps",
+        "rds-aurora",
+        "remove-protection",
+        "vpc-lambda",
+        "vpc-lambda-cr-race",
+        "vpc-nat-gateway"
+      ],
+      "signals": {
+        "alb": [
+          "l2"
+        ],
+        "alb-advanced": [
+          "l2"
+        ],
+        "batch": [
+          "l2"
+        ],
+        "bench-cdk-sample": [
+          "l2"
+        ],
+        "cache-streaming": [
+          "l2"
+        ],
+        "docdb-neptune": [
+          "l2"
+        ],
+        "drift-revert-vpc": [
+          "l2"
+        ],
+        "ec2-instance": [
+          "l2"
+        ],
+        "ec2-vpc": [
+          "l2"
+        ],
+        "ecs-fargate": [
+          "l2"
+        ],
+        "efs-lambda": [
+          "l2"
+        ],
+        "efs-standalone": [
+          "l2"
+        ],
+        "infra-security": [
+          "l2"
+        ],
+        "multi-stack-deps": [
+          "l2"
+        ],
+        "rds-aurora": [
+          "l2"
+        ],
+        "remove-protection": [
+          "l2"
+        ],
+        "vpc-lambda": [
+          "l2"
+        ],
+        "vpc-lambda-cr-race": [
+          "l2"
+        ],
+        "vpc-nat-gateway": [
+          "l2"
+        ]
+      }
+    },
+    {
+      "resourceType": "AWS::EC2::NatGateway",
+      "integs": [
+        "alb",
+        "alb-advanced",
+        "batch",
+        "bench-cdk-sample",
+        "cache-streaming",
+        "docdb-neptune",
+        "drift-revert-vpc",
+        "ec2-instance",
+        "ec2-vpc",
+        "ecs-fargate",
+        "efs-lambda",
+        "efs-standalone",
+        "infra-security",
+        "multi-stack-deps",
+        "rds-aurora",
+        "remove-protection",
+        "vpc-lambda",
+        "vpc-lambda-cr-race",
+        "vpc-nat-gateway"
+      ],
+      "signals": {
+        "alb": [
+          "l2"
+        ],
+        "alb-advanced": [
+          "l2"
+        ],
+        "batch": [
+          "l2"
+        ],
+        "bench-cdk-sample": [
+          "l2"
+        ],
+        "cache-streaming": [
+          "l2"
+        ],
+        "docdb-neptune": [
+          "l2"
+        ],
+        "drift-revert-vpc": [
+          "l2"
+        ],
+        "ec2-instance": [
+          "l2"
+        ],
+        "ec2-vpc": [
+          "l2"
+        ],
+        "ecs-fargate": [
+          "l2"
+        ],
+        "efs-lambda": [
+          "l2"
+        ],
+        "efs-standalone": [
+          "l2"
+        ],
+        "infra-security": [
+          "l2"
+        ],
+        "multi-stack-deps": [
+          "l2"
+        ],
+        "rds-aurora": [
+          "l2"
+        ],
+        "remove-protection": [
+          "l2"
+        ],
+        "vpc-lambda": [
+          "l2"
+        ],
+        "vpc-lambda-cr-race": [
+          "l2"
+        ],
+        "vpc-nat-gateway": [
+          "l2",
+          "literal"
+        ]
+      }
+    },
+    {
+      "resourceType": "AWS::EC2::NetworkAcl",
+      "integs": [
+        "ec2-vpc"
+      ],
+      "signals": {
+        "ec2-vpc": [
+          "l2"
+        ]
+      }
+    },
+    {
+      "resourceType": "AWS::EC2::NetworkAclEntry",
+      "integs": [
+        "ec2-vpc"
+      ],
+      "signals": {
+        "ec2-vpc": [
+          "literal"
+        ]
+      }
+    },
+    {
+      "resourceType": "AWS::EC2::Route",
+      "integs": [
+        "alb",
+        "alb-advanced",
+        "batch",
+        "bench-cdk-sample",
+        "cache-streaming",
+        "docdb-neptune",
+        "drift-revert-vpc",
+        "ec2-instance",
+        "ec2-vpc",
+        "ecs-fargate",
+        "efs-lambda",
+        "efs-standalone",
+        "infra-security",
+        "multi-stack-deps",
+        "rds-aurora",
+        "remove-protection",
+        "vpc-lambda",
+        "vpc-lambda-cr-race",
+        "vpc-nat-gateway"
+      ],
+      "signals": {
+        "alb": [
+          "l2"
+        ],
+        "alb-advanced": [
+          "l2"
+        ],
+        "batch": [
+          "l2"
+        ],
+        "bench-cdk-sample": [
+          "l2"
+        ],
+        "cache-streaming": [
+          "l2"
+        ],
+        "docdb-neptune": [
+          "l2"
+        ],
+        "drift-revert-vpc": [
+          "l2"
+        ],
+        "ec2-instance": [
+          "l2"
+        ],
+        "ec2-vpc": [
+          "l2"
+        ],
+        "ecs-fargate": [
+          "l2"
+        ],
+        "efs-lambda": [
+          "l2"
+        ],
+        "efs-standalone": [
+          "l2"
+        ],
+        "infra-security": [
+          "l2"
+        ],
+        "multi-stack-deps": [
+          "l2"
+        ],
+        "rds-aurora": [
+          "l2"
+        ],
+        "remove-protection": [
+          "l2"
+        ],
+        "vpc-lambda": [
+          "l2"
+        ],
+        "vpc-lambda-cr-race": [
+          "l2"
+        ],
+        "vpc-nat-gateway": [
+          "l2"
+        ]
+      }
+    },
+    {
+      "resourceType": "AWS::EC2::RouteTable",
+      "integs": [
+        "alb",
+        "alb-advanced",
+        "batch",
+        "bench-cdk-sample",
+        "cache-streaming",
+        "docdb-neptune",
+        "drift-revert-vpc",
+        "ec2-instance",
+        "ec2-vpc",
+        "ecs-fargate",
+        "efs-lambda",
+        "efs-standalone",
+        "infra-security",
+        "multi-stack-deps",
+        "rds-aurora",
+        "remove-protection",
+        "vpc-lambda",
+        "vpc-lambda-cr-race",
+        "vpc-nat-gateway"
+      ],
+      "signals": {
+        "alb": [
+          "l2"
+        ],
+        "alb-advanced": [
+          "l2"
+        ],
+        "batch": [
+          "l2"
+        ],
+        "bench-cdk-sample": [
+          "l2"
+        ],
+        "cache-streaming": [
+          "l2"
+        ],
+        "docdb-neptune": [
+          "l2"
+        ],
+        "drift-revert-vpc": [
+          "l2"
+        ],
+        "ec2-instance": [
+          "l2"
+        ],
+        "ec2-vpc": [
+          "l2"
+        ],
+        "ecs-fargate": [
+          "l2"
+        ],
+        "efs-lambda": [
+          "l2"
+        ],
+        "efs-standalone": [
+          "l2"
+        ],
+        "infra-security": [
+          "l2"
+        ],
+        "multi-stack-deps": [
+          "l2"
+        ],
+        "rds-aurora": [
+          "l2"
+        ],
+        "remove-protection": [
+          "l2"
+        ],
+        "vpc-lambda": [
+          "l2"
+        ],
+        "vpc-lambda-cr-race": [
+          "l2"
+        ],
+        "vpc-nat-gateway": [
+          "l2"
+        ]
+      }
+    },
+    {
+      "resourceType": "AWS::EC2::SecurityGroup",
+      "integs": [
+        "alb",
+        "alb-advanced",
+        "batch",
+        "bench-cdk-sample",
+        "cache-streaming",
+        "docdb-neptune",
+        "drift-revert-vpc",
+        "ec2-instance",
+        "ec2-vpc",
+        "efs-standalone",
+        "multi-stack-deps",
+        "rds-aurora",
+        "remove-protection",
+        "vpc-lambda",
+        "vpc-lambda-cr-race"
+      ],
+      "signals": {
+        "alb": [
+          "l2"
+        ],
+        "alb-advanced": [
+          "l2"
+        ],
+        "batch": [
+          "l2"
+        ],
+        "bench-cdk-sample": [
+          "l2"
+        ],
+        "cache-streaming": [
+          "l2"
+        ],
+        "docdb-neptune": [
+          "l2"
+        ],
+        "drift-revert-vpc": [
+          "l2"
+        ],
+        "ec2-instance": [
+          "l2"
+        ],
+        "ec2-vpc": [
+          "l2"
+        ],
+        "efs-standalone": [
+          "literal"
+        ],
+        "multi-stack-deps": [
+          "l2"
+        ],
+        "rds-aurora": [
+          "l2"
+        ],
+        "remove-protection": [
+          "l2"
+        ],
+        "vpc-lambda": [
+          "l2"
+        ],
+        "vpc-lambda-cr-race": [
+          "l2"
+        ]
+      }
+    },
+    {
+      "resourceType": "AWS::EC2::SecurityGroupIngress",
+      "integs": [
+        "alb"
+      ],
+      "signals": {
+        "alb": [
+          "literal"
+        ]
+      }
+    },
+    {
+      "resourceType": "AWS::EC2::Subnet",
+      "integs": [
+        "alb",
+        "alb-advanced",
+        "batch",
+        "bench-cdk-sample",
+        "cache-streaming",
+        "docdb-neptune",
+        "drift-revert-vpc",
+        "ec2-instance",
+        "ec2-vpc",
+        "ecs-fargate",
+        "efs-lambda",
+        "efs-standalone",
+        "infra-security",
+        "multi-stack-deps",
+        "rds-aurora",
+        "remove-protection",
+        "vpc-lambda",
+        "vpc-lambda-cr-race",
+        "vpc-nat-gateway"
+      ],
+      "signals": {
+        "alb": [
+          "l2"
+        ],
+        "alb-advanced": [
+          "l2"
+        ],
+        "batch": [
+          "l2"
+        ],
+        "bench-cdk-sample": [
+          "l2"
+        ],
+        "cache-streaming": [
+          "l2"
+        ],
+        "docdb-neptune": [
+          "l2"
+        ],
+        "drift-revert-vpc": [
+          "l2"
+        ],
+        "ec2-instance": [
+          "l2"
+        ],
+        "ec2-vpc": [
+          "l2"
+        ],
+        "ecs-fargate": [
+          "l2"
+        ],
+        "efs-lambda": [
+          "l2"
+        ],
+        "efs-standalone": [
+          "l2"
+        ],
+        "infra-security": [
+          "l2"
+        ],
+        "multi-stack-deps": [
+          "l2"
+        ],
+        "rds-aurora": [
+          "l2"
+        ],
+        "remove-protection": [
+          "l2"
+        ],
+        "vpc-lambda": [
+          "l2"
+        ],
+        "vpc-lambda-cr-race": [
+          "l2"
+        ],
+        "vpc-nat-gateway": [
+          "l2"
+        ]
+      }
+    },
+    {
+      "resourceType": "AWS::EC2::SubnetNetworkAclAssociation",
+      "integs": [
+        "ec2-vpc"
+      ],
+      "signals": {
+        "ec2-vpc": [
+          "literal"
+        ]
+      }
+    },
+    {
+      "resourceType": "AWS::EC2::SubnetRouteTableAssociation",
+      "integs": [
+        "alb",
+        "alb-advanced",
+        "batch",
+        "bench-cdk-sample",
+        "cache-streaming",
+        "docdb-neptune",
+        "drift-revert-vpc",
+        "ec2-instance",
+        "ec2-vpc",
+        "ecs-fargate",
+        "efs-lambda",
+        "efs-standalone",
+        "infra-security",
+        "multi-stack-deps",
+        "rds-aurora",
+        "remove-protection",
+        "vpc-lambda",
+        "vpc-lambda-cr-race",
+        "vpc-nat-gateway"
+      ],
+      "signals": {
+        "alb": [
+          "l2"
+        ],
+        "alb-advanced": [
+          "l2"
+        ],
+        "batch": [
+          "l2"
+        ],
+        "bench-cdk-sample": [
+          "l2"
+        ],
+        "cache-streaming": [
+          "l2"
+        ],
+        "docdb-neptune": [
+          "l2"
+        ],
+        "drift-revert-vpc": [
+          "l2"
+        ],
+        "ec2-instance": [
+          "l2"
+        ],
+        "ec2-vpc": [
+          "l2"
+        ],
+        "ecs-fargate": [
+          "l2"
+        ],
+        "efs-lambda": [
+          "l2"
+        ],
+        "efs-standalone": [
+          "l2"
+        ],
+        "infra-security": [
+          "l2"
+        ],
+        "multi-stack-deps": [
+          "l2"
+        ],
+        "rds-aurora": [
+          "l2"
+        ],
+        "remove-protection": [
+          "l2"
+        ],
+        "vpc-lambda": [
+          "l2"
+        ],
+        "vpc-lambda-cr-race": [
+          "l2"
+        ],
+        "vpc-nat-gateway": [
+          "l2"
+        ]
+      }
+    },
+    {
+      "resourceType": "AWS::EC2::VPC",
+      "integs": [
+        "alb",
+        "alb-advanced",
+        "batch",
+        "bench-cdk-sample",
+        "cache-streaming",
+        "docdb-neptune",
+        "drift-revert-vpc",
+        "ec2-instance",
+        "ec2-vpc",
+        "ecs-fargate",
+        "efs-lambda",
+        "efs-standalone",
+        "infra-security",
+        "multi-stack-deps",
+        "rds-aurora",
+        "remove-protection",
+        "vpc-lambda",
+        "vpc-lambda-cr-race",
+        "vpc-nat-gateway"
+      ],
+      "signals": {
+        "alb": [
+          "l2"
+        ],
+        "alb-advanced": [
+          "l2"
+        ],
+        "batch": [
+          "l2"
+        ],
+        "bench-cdk-sample": [
+          "l2"
+        ],
+        "cache-streaming": [
+          "l2"
+        ],
+        "docdb-neptune": [
+          "l2"
+        ],
+        "drift-revert-vpc": [
+          "l2"
+        ],
+        "ec2-instance": [
+          "l2"
+        ],
+        "ec2-vpc": [
+          "l2"
+        ],
+        "ecs-fargate": [
+          "l2"
+        ],
+        "efs-lambda": [
+          "l2"
+        ],
+        "efs-standalone": [
+          "l2",
+          "literal"
+        ],
+        "infra-security": [
+          "l2"
+        ],
+        "multi-stack-deps": [
+          "l2"
+        ],
+        "rds-aurora": [
+          "l2"
+        ],
+        "remove-protection": [
+          "l2"
+        ],
+        "vpc-lambda": [
+          "l2"
+        ],
+        "vpc-lambda-cr-race": [
+          "l2"
+        ],
+        "vpc-nat-gateway": [
+          "l2"
+        ]
+      }
+    },
+    {
+      "resourceType": "AWS::EC2::VPCGatewayAttachment",
+      "integs": [
+        "alb",
+        "alb-advanced",
+        "batch",
+        "bench-cdk-sample",
+        "cache-streaming",
+        "docdb-neptune",
+        "drift-revert-vpc",
+        "ec2-instance",
+        "ec2-vpc",
+        "ecs-fargate",
+        "efs-lambda",
+        "efs-standalone",
+        "infra-security",
+        "multi-stack-deps",
+        "rds-aurora",
+        "remove-protection",
+        "vpc-lambda",
+        "vpc-lambda-cr-race",
+        "vpc-nat-gateway"
+      ],
+      "signals": {
+        "alb": [
+          "l2"
+        ],
+        "alb-advanced": [
+          "l2"
+        ],
+        "batch": [
+          "l2"
+        ],
+        "bench-cdk-sample": [
+          "l2"
+        ],
+        "cache-streaming": [
+          "l2"
+        ],
+        "docdb-neptune": [
+          "l2"
+        ],
+        "drift-revert-vpc": [
+          "l2"
+        ],
+        "ec2-instance": [
+          "l2"
+        ],
+        "ec2-vpc": [
+          "l2"
+        ],
+        "ecs-fargate": [
+          "l2"
+        ],
+        "efs-lambda": [
+          "l2"
+        ],
+        "efs-standalone": [
+          "l2"
+        ],
+        "infra-security": [
+          "l2"
+        ],
+        "multi-stack-deps": [
+          "l2"
+        ],
+        "rds-aurora": [
+          "l2"
+        ],
+        "remove-protection": [
+          "l2"
+        ],
+        "vpc-lambda": [
+          "l2"
+        ],
+        "vpc-lambda-cr-race": [
+          "l2"
+        ],
+        "vpc-nat-gateway": [
+          "l2"
+        ]
+      }
+    },
+    {
+      "resourceType": "AWS::ECR::Repository",
+      "integs": [
+        "ecr",
+        "local-run-task-from-state",
+        "migrate-from-cfn"
+      ],
+      "signals": {
+        "ecr": [
+          "l2",
+          "literal"
+        ],
+        "local-run-task-from-state": [
+          "l2",
+          "literal"
+        ],
+        "migrate-from-cfn": [
+          "l2",
+          "literal"
+        ]
+      }
+    },
+    {
+      "resourceType": "AWS::ECS::Cluster",
+      "integs": [
+        "drift-revert",
+        "ecs-fargate"
+      ],
+      "signals": {
+        "drift-revert": [
+          "l1"
+        ],
+        "ecs-fargate": [
+          "l2"
+        ]
+      }
+    },
+    {
+      "resourceType": "AWS::ECS::Service",
+      "integs": [
+        "ecs-fargate"
+      ],
+      "signals": {
+        "ecs-fargate": [
+          "l2"
+        ]
+      }
+    },
+    {
+      "resourceType": "AWS::ECS::TaskDefinition",
+      "integs": [
+        "ecs-fargate",
+        "local-run-task",
+        "local-run-task-from-state",
+        "local-run-task-multi-container"
+      ],
+      "signals": {
+        "ecs-fargate": [
+          "l2"
+        ],
+        "local-run-task": [
+          "l2"
+        ],
+        "local-run-task-from-state": [
+          "l1",
+          "l2",
+          "literal"
+        ],
+        "local-run-task-multi-container": [
+          "l2"
+        ]
+      }
+    },
+    {
+      "resourceType": "AWS::EFS::AccessPoint",
+      "integs": [
+        "efs-lambda",
+        "efs-standalone"
+      ],
+      "signals": {
+        "efs-lambda": [
+          "literal"
+        ],
+        "efs-standalone": [
+          "literal"
+        ]
+      }
+    },
+    {
+      "resourceType": "AWS::EFS::FileSystem",
+      "integs": [
+        "drift-revert-vpc",
+        "efs-lambda",
+        "efs-standalone"
+      ],
+      "signals": {
+        "drift-revert-vpc": [
+          "l1",
+          "literal"
+        ],
+        "efs-lambda": [
+          "l2",
+          "literal"
+        ],
+        "efs-standalone": [
+          "l2",
+          "literal"
+        ]
+      }
+    },
+    {
+      "resourceType": "AWS::EFS::MountTarget",
+      "integs": [
+        "drift-revert-vpc",
+        "efs-lambda",
+        "efs-standalone"
+      ],
+      "signals": {
+        "drift-revert-vpc": [
+          "l1",
+          "literal"
+        ],
+        "efs-lambda": [
+          "l2",
+          "literal"
+        ],
+        "efs-standalone": [
+          "l2",
+          "literal"
+        ]
+      }
+    },
+    {
+      "resourceType": "AWS::ElastiCache::CacheCluster",
+      "integs": [
+        "cache-streaming"
+      ],
+      "signals": {
+        "cache-streaming": [
+          "l1",
+          "l2"
+        ]
+      }
+    },
+    {
+      "resourceType": "AWS::ElastiCache::SubnetGroup",
+      "integs": [
+        "cache-streaming"
+      ],
+      "signals": {
+        "cache-streaming": [
+          "l1",
+          "l2"
+        ]
+      }
+    },
+    {
+      "resourceType": "AWS::ElasticLoadBalancingV2::Listener",
+      "integs": [
+        "alb"
+      ],
+      "signals": {
+        "alb": [
+          "literal"
+        ]
+      }
+    },
+    {
+      "resourceType": "AWS::ElasticLoadBalancingV2::LoadBalancer",
+      "integs": [
+        "alb",
+        "alb-advanced",
+        "drift-revert-vpc",
+        "remove-protection"
+      ],
+      "signals": {
+        "alb": [
+          "l2"
+        ],
+        "alb-advanced": [
+          "l2"
+        ],
+        "drift-revert-vpc": [
+          "l2",
+          "literal"
+        ],
+        "remove-protection": [
+          "l2",
+          "literal"
+        ]
+      }
+    },
+    {
+      "resourceType": "AWS::ElasticLoadBalancingV2::TargetGroup",
+      "integs": [
+        "alb"
+      ],
+      "signals": {
+        "alb": [
+          "literal"
+        ]
+      }
+    },
+    {
+      "resourceType": "AWS::Events::EventBus",
+      "integs": [
+        "eventbridge"
+      ],
+      "signals": {
+        "eventbridge": [
+          "l2"
+        ]
+      }
+    },
+    {
+      "resourceType": "AWS::Events::Rule",
+      "integs": [
+        "eventbridge",
+        "scheduled-task"
+      ],
+      "signals": {
+        "eventbridge": [
+          "l2"
+        ],
+        "scheduled-task": [
+          "l2"
+        ]
+      }
+    },
+    {
+      "resourceType": "AWS::Glue::Database",
+      "integs": [
+        "data-analytics",
+        "drift-revert"
+      ],
+      "signals": {
+        "data-analytics": [
+          "l1",
+          "literal"
+        ],
+        "drift-revert": [
+          "l1"
+        ]
+      }
+    },
+    {
+      "resourceType": "AWS::Glue::Table",
+      "integs": [
+        "data-analytics"
+      ],
+      "signals": {
+        "data-analytics": [
+          "l1",
+          "literal"
+        ]
+      }
+    },
+    {
+      "resourceType": "AWS::IAM::Group",
+      "integs": [
+        "infra-security"
+      ],
+      "signals": {
+        "infra-security": [
+          "l2"
+        ]
+      }
+    },
+    {
+      "resourceType": "AWS::IAM::InstanceProfile",
+      "integs": [
+        "remove-protection"
+      ],
+      "signals": {
+        "remove-protection": [
+          "literal"
+        ]
+      }
+    },
+    {
+      "resourceType": "AWS::IAM::Policy",
+      "integs": [
+        "export",
+        "migrate-from-cfn"
+      ],
+      "signals": {
+        "export": [
+          "l2",
+          "literal"
+        ],
+        "migrate-from-cfn": [
+          "literal"
+        ]
+      }
+    },
+    {
+      "resourceType": "AWS::IAM::Role",
+      "integs": [
+        "appsync",
+        "batch",
+        "composite-stack",
+        "drift-revert",
+        "eventbridge",
+        "export",
+        "infra-security",
+        "intrinsic-functions",
+        "local-invoke-dotnet",
+        "local-invoke-java",
+        "local-invoke-provided",
+        "local-invoke-ruby",
+        "local-run-task-from-state",
+        "log-pipeline",
+        "migrate-from-cfn",
+        "multi-resource",
+        "multi-stack-deps",
+        "vpc-lambda-cr-race"
+      ],
+      "signals": {
+        "appsync": [
+          "l2"
+        ],
+        "batch": [
+          "l2"
+        ],
+        "composite-stack": [
+          "l2",
+          "literal"
+        ],
+        "drift-revert": [
+          "l2"
+        ],
+        "eventbridge": [
+          "l2"
+        ],
+        "export": [
+          "l2",
+          "literal"
+        ],
+        "infra-security": [
+          "l2"
+        ],
+        "intrinsic-functions": [
+          "l2"
+        ],
+        "local-invoke-dotnet": [
+          "l2"
+        ],
+        "local-invoke-java": [
+          "l2"
+        ],
+        "local-invoke-provided": [
+          "l2"
+        ],
+        "local-invoke-ruby": [
+          "l2"
+        ],
+        "local-run-task-from-state": [
+          "l2"
+        ],
+        "log-pipeline": [
+          "l2"
+        ],
+        "migrate-from-cfn": [
+          "l2"
+        ],
+        "multi-resource": [
+          "l2"
+        ],
+        "multi-stack-deps": [
+          "l2"
+        ],
+        "vpc-lambda-cr-race": [
+          "l2"
+        ]
+      }
+    },
+    {
+      "resourceType": "AWS::IAM::User",
+      "integs": [
+        "infra-security"
+      ],
+      "signals": {
+        "infra-security": [
+          "l2"
+        ]
+      }
+    },
+    {
+      "resourceType": "AWS::IAM::UserToGroupAddition",
+      "integs": [
+        "infra-security"
+      ],
+      "signals": {
+        "infra-security": [
+          "literal"
+        ]
+      }
+    },
+    {
+      "resourceType": "AWS::KMS::Alias",
+      "integs": [
+        "composite-stack",
+        "infra-security",
+        "kms-encryption"
+      ],
+      "signals": {
+        "composite-stack": [
+          "literal"
+        ],
+        "infra-security": [
+          "literal"
+        ],
+        "kms-encryption": [
+          "literal"
+        ]
+      }
+    },
+    {
+      "resourceType": "AWS::KMS::Key",
+      "integs": [
+        "composite-stack",
+        "drift-revert",
+        "infra-security",
+        "kms-encryption"
+      ],
+      "signals": {
+        "composite-stack": [
+          "literal"
+        ],
+        "drift-revert": [
+          "l2"
+        ],
+        "infra-security": [
+          "l2"
+        ],
+        "kms-encryption": [
+          "l2",
+          "literal"
+        ]
+      }
+    },
+    {
+      "resourceType": "AWS::Kinesis::Stream",
+      "integs": [
+        "cache-streaming",
+        "log-pipeline"
+      ],
+      "signals": {
+        "cache-streaming": [
+          "l2"
+        ],
+        "log-pipeline": [
+          "l2"
+        ]
+      }
+    },
+    {
+      "resourceType": "AWS::KinesisFirehose::DeliveryStream",
+      "integs": [
+        "log-pipeline"
+      ],
+      "signals": {
+        "log-pipeline": [
+          "l1",
+          "literal"
+        ]
+      }
+    },
+    {
+      "resourceType": "AWS::Lambda::EventSourceMapping",
+      "integs": [
+        "dynamodb-streams"
+      ],
+      "signals": {
+        "dynamodb-streams": [
+          "literal"
+        ]
+      }
+    },
+    {
+      "resourceType": "AWS::Lambda::Function",
+      "integs": [
+        "api-cognito",
+        "apigateway",
+        "bench-cdk-sample",
+        "cache-streaming",
+        "cloudfront-function-url",
+        "composite-stack",
+        "custom-resource-provider",
+        "data-pipeline",
+        "dynamodb-streams",
+        "ecr",
+        "efs-lambda",
+        "event-driven",
+        "eventbridge",
+        "export",
+        "full-stack-demo",
+        "lambda",
+        "lambda-versioning",
+        "local-invoke",
+        "local-invoke-container",
+        "local-invoke-dotnet",
+        "local-invoke-from-state",
+        "local-invoke-java",
+        "local-invoke-layers",
+        "local-invoke-provided",
+        "local-invoke-python",
+        "local-invoke-ruby",
+        "local-start-api",
+        "log-pipeline",
+        "microservices",
+        "migrate-from-cfn",
+        "monitoring",
+        "multi-resource",
+        "multi-stack-deps",
+        "orphan-resource",
+        "scheduled-task",
+        "serverless-api",
+        "sns-sqs-event",
+        "stepfunctions",
+        "vpc-lambda",
+        "vpc-lambda-cr-race"
+      ],
+      "signals": {
+        "api-cognito": [
+          "l2"
+        ],
+        "apigateway": [
+          "l2"
+        ],
+        "bench-cdk-sample": [
+          "l2"
+        ],
+        "cache-streaming": [
+          "l2"
+        ],
+        "cloudfront-function-url": [
+          "l2"
+        ],
+        "composite-stack": [
+          "l2",
+          "literal"
+        ],
+        "custom-resource-provider": [
+          "l2"
+        ],
+        "data-pipeline": [
+          "l2"
+        ],
+        "dynamodb-streams": [
+          "l2"
+        ],
+        "ecr": [
+          "l2"
+        ],
+        "efs-lambda": [
+          "l2"
+        ],
+        "event-driven": [
+          "l2"
+        ],
+        "eventbridge": [
+          "l2"
+        ],
+        "export": [
+          "l2",
+          "literal"
+        ],
+        "full-stack-demo": [
+          "l2"
+        ],
+        "lambda": [
+          "l2"
+        ],
+        "lambda-versioning": [
+          "l2",
+          "literal"
+        ],
+        "local-invoke": [
+          "l2"
+        ],
+        "local-invoke-container": [
+          "l2"
+        ],
+        "local-invoke-dotnet": [
+          "l1",
+          "l2"
+        ],
+        "local-invoke-from-state": [
+          "l2"
+        ],
+        "local-invoke-java": [
+          "l1",
+          "l2"
+        ],
+        "local-invoke-layers": [
+          "l2"
+        ],
+        "local-invoke-provided": [
+          "l1",
+          "l2"
+        ],
+        "local-invoke-python": [
+          "l2"
+        ],
+        "local-invoke-ruby": [
+          "l1",
+          "l2"
+        ],
+        "local-start-api": [
+          "l2"
+        ],
+        "log-pipeline": [
+          "l2"
+        ],
+        "microservices": [
+          "l2"
+        ],
+        "migrate-from-cfn": [
+          "l2"
+        ],
+        "monitoring": [
+          "l2"
+        ],
+        "multi-resource": [
+          "l2"
+        ],
+        "multi-stack-deps": [
+          "l2"
+        ],
+        "orphan-resource": [
+          "l2",
+          "literal"
+        ],
+        "scheduled-task": [
+          "l2"
+        ],
+        "serverless-api": [
+          "l2"
+        ],
+        "sns-sqs-event": [
+          "l2"
+        ],
+        "stepfunctions": [
+          "l2"
+        ],
+        "vpc-lambda": [
+          "l2"
+        ],
+        "vpc-lambda-cr-race": [
+          "l2"
+        ]
+      }
+    },
+    {
+      "resourceType": "AWS::Lambda::LayerVersion",
+      "integs": [
+        "lambda",
+        "local-invoke-layers"
+      ],
+      "signals": {
+        "lambda": [
+          "l2"
+        ],
+        "local-invoke-layers": [
+          "l2"
+        ]
+      }
+    },
+    {
+      "resourceType": "AWS::Lambda::Permission",
+      "integs": [
+        "export",
+        "migrate-from-cfn",
+        "serverless-api"
+      ],
+      "signals": {
+        "export": [
+          "literal"
+        ],
+        "migrate-from-cfn": [
+          "literal"
+        ],
+        "serverless-api": [
+          "l1"
+        ]
+      }
+    },
+    {
+      "resourceType": "AWS::Lambda::Url",
+      "integs": [
+        "composite-stack"
+      ],
+      "signals": {
+        "composite-stack": [
+          "literal"
+        ]
+      }
+    },
+    {
+      "resourceType": "AWS::Logs::LogGroup",
+      "integs": [
+        "cloudwatch",
+        "composite-stack",
+        "drift-revert",
+        "full-stack-demo",
+        "log-pipeline",
+        "monitoring",
+        "remove-protection",
+        "scheduled-task"
+      ],
+      "signals": {
+        "cloudwatch": [
+          "l2"
+        ],
+        "composite-stack": [
+          "l2",
+          "literal"
+        ],
+        "drift-revert": [
+          "l1"
+        ],
+        "full-stack-demo": [
+          "l2"
+        ],
+        "log-pipeline": [
+          "l2"
+        ],
+        "monitoring": [
+          "l2"
+        ],
+        "remove-protection": [
+          "l1",
+          "literal"
+        ],
+        "scheduled-task": [
+          "l2"
+        ]
+      }
+    },
+    {
+      "resourceType": "AWS::Neptune::DBCluster",
+      "integs": [
+        "docdb-neptune"
+      ],
+      "signals": {
+        "docdb-neptune": [
+          "l1"
+        ]
+      }
+    },
+    {
+      "resourceType": "AWS::Neptune::DBInstance",
+      "integs": [
+        "docdb-neptune"
+      ],
+      "signals": {
+        "docdb-neptune": [
+          "l1"
+        ]
+      }
+    },
+    {
+      "resourceType": "AWS::Neptune::DBSubnetGroup",
+      "integs": [
+        "docdb-neptune"
+      ],
+      "signals": {
+        "docdb-neptune": [
+          "l1"
+        ]
+      }
+    },
+    {
+      "resourceType": "AWS::RDS::DBCluster",
+      "integs": [
+        "rds-aurora"
+      ],
+      "signals": {
+        "rds-aurora": [
+          "l2"
+        ]
+      }
+    },
+    {
+      "resourceType": "AWS::RDS::DBInstance",
+      "integs": [
+        "rds-aurora"
+      ],
+      "signals": {
+        "rds-aurora": [
+          "l2"
+        ]
+      }
+    },
+    {
+      "resourceType": "AWS::RDS::DBProxyEndpoint",
+      "integs": [
+        "rds-aurora"
+      ],
+      "signals": {
+        "rds-aurora": [
+          "literal"
+        ]
+      }
+    },
+    {
+      "resourceType": "AWS::RDS::DBSubnetGroup",
+      "integs": [
+        "rds-aurora"
+      ],
+      "signals": {
+        "rds-aurora": [
+          "l2"
+        ]
+      }
+    },
+    {
+      "resourceType": "AWS::Route53::HostedZone",
+      "integs": [
+        "route53"
+      ],
+      "signals": {
+        "route53": [
+          "l2"
+        ]
+      }
+    },
+    {
+      "resourceType": "AWS::Route53::RecordSet",
+      "integs": [
+        "route53"
+      ],
+      "signals": {
+        "route53": [
+          "l2"
+        ]
+      }
+    },
+    {
+      "resourceType": "AWS::S3::Bucket",
+      "integs": [
+        "basic",
+        "bench-sdk",
+        "ci-cd",
+        "composite-stack",
+        "conditions",
+        "context-test",
+        "cross-stack-references",
+        "data-analytics",
+        "drift-revert",
+        "event-driven",
+        "export",
+        "full-stack-demo",
+        "import-value-strong-ref",
+        "infra-security",
+        "intrinsic-functions",
+        "kms-encryption",
+        "local-invoke-from-state",
+        "log-pipeline",
+        "migrate-from-cfn",
+        "multi-resource",
+        "multi-stack-deps",
+        "orphan-resource",
+        "s3-cloudfront",
+        "state-destroy"
+      ],
+      "signals": {
+        "basic": [
+          "l2"
+        ],
+        "bench-sdk": [
+          "l2"
+        ],
+        "ci-cd": [
+          "l2",
+          "literal"
+        ],
+        "composite-stack": [
+          "l2",
+          "literal"
+        ],
+        "conditions": [
+          "l1",
+          "l2"
+        ],
+        "context-test": [
+          "l2"
+        ],
+        "cross-stack-references": [
+          "l2"
+        ],
+        "data-analytics": [
+          "l2",
+          "literal"
+        ],
+        "drift-revert": [
+          "l2"
+        ],
+        "event-driven": [
+          "l2"
+        ],
+        "export": [
+          "l2",
+          "literal"
+        ],
+        "full-stack-demo": [
+          "l2"
+        ],
+        "import-value-strong-ref": [
+          "l2"
+        ],
+        "infra-security": [
+          "l2"
+        ],
+        "intrinsic-functions": [
+          "l2"
+        ],
+        "kms-encryption": [
+          "l2",
+          "literal"
+        ],
+        "local-invoke-from-state": [
+          "l2"
+        ],
+        "log-pipeline": [
+          "l2"
+        ],
+        "migrate-from-cfn": [
+          "l2"
+        ],
+        "multi-resource": [
+          "l2"
+        ],
+        "multi-stack-deps": [
+          "l2"
+        ],
+        "orphan-resource": [
+          "l2",
+          "literal"
+        ],
+        "s3-cloudfront": [
+          "l2"
+        ],
+        "state-destroy": [
+          "l2"
+        ]
+      }
+    },
+    {
+      "resourceType": "AWS::S3::BucketPolicy",
+      "integs": [
+        "migrate-from-cfn"
+      ],
+      "signals": {
+        "migrate-from-cfn": [
+          "literal"
+        ]
+      }
+    },
+    {
+      "resourceType": "AWS::S3Express::DirectoryBucket",
+      "integs": [
+        "s3-directory-bucket"
+      ],
+      "signals": {
+        "s3-directory-bucket": [
+          "l1"
+        ]
+      }
+    },
+    {
+      "resourceType": "AWS::S3Tables::TableBucket",
+      "integs": [
+        "s3-tables"
+      ],
+      "signals": {
+        "s3-tables": [
+          "l1"
+        ]
+      }
+    },
+    {
+      "resourceType": "AWS::S3Vectors::VectorBucket",
+      "integs": [
+        "s3-vectors"
+      ],
+      "signals": {
+        "s3-vectors": [
+          "l1"
+        ]
+      }
+    },
+    {
+      "resourceType": "AWS::SNS::Subscription",
+      "integs": [
+        "composite-stack"
+      ],
+      "signals": {
+        "composite-stack": [
+          "literal"
+        ]
+      }
+    },
+    {
+      "resourceType": "AWS::SNS::Topic",
+      "integs": [
+        "bench-sdk",
+        "cloudwatch",
+        "composite-stack",
+        "drift-revert",
+        "event-driven",
+        "export",
+        "full-stack-demo",
+        "microservices",
+        "migrate-from-cfn",
+        "monitoring",
+        "scheduled-task",
+        "serverless-api",
+        "sns-sqs-event"
+      ],
+      "signals": {
+        "bench-sdk": [
+          "l2"
+        ],
+        "cloudwatch": [
+          "l2"
+        ],
+        "composite-stack": [
+          "l2",
+          "literal"
+        ],
+        "drift-revert": [
+          "l2"
+        ],
+        "event-driven": [
+          "l2"
+        ],
+        "export": [
+          "l2",
+          "literal"
+        ],
+        "full-stack-demo": [
+          "l2"
+        ],
+        "microservices": [
+          "l2"
+        ],
+        "migrate-from-cfn": [
+          "l2"
+        ],
+        "monitoring": [
+          "l2"
+        ],
+        "scheduled-task": [
+          "l2"
+        ],
+        "serverless-api": [
+          "l2"
+        ],
+        "sns-sqs-event": [
+          "l2"
+        ]
+      }
+    },
+    {
+      "resourceType": "AWS::SNS::TopicPolicy",
+      "integs": [
+        "migrate-from-cfn",
+        "sns-sqs-event"
+      ],
+      "signals": {
+        "migrate-from-cfn": [
+          "literal"
+        ],
+        "sns-sqs-event": [
+          "l2"
+        ]
+      }
+    },
+    {
+      "resourceType": "AWS::SQS::Queue",
+      "integs": [
+        "basic",
+        "bench-cdk-sample",
+        "bench-sdk",
+        "composite-stack",
+        "data-pipeline",
+        "event-driven",
+        "eventbridge",
+        "full-stack-demo",
+        "microservices",
+        "migrate-from-cfn",
+        "multi-resource",
+        "sns-sqs-event"
+      ],
+      "signals": {
+        "basic": [
+          "l1"
+        ],
+        "bench-cdk-sample": [
+          "l2"
+        ],
+        "bench-sdk": [
+          "l2"
+        ],
+        "composite-stack": [
+          "l2",
+          "literal"
+        ],
+        "data-pipeline": [
+          "l2"
+        ],
+        "event-driven": [
+          "l2"
+        ],
+        "eventbridge": [
+          "l2"
+        ],
+        "full-stack-demo": [
+          "l2"
+        ],
+        "microservices": [
+          "l2"
+        ],
+        "migrate-from-cfn": [
+          "l2"
+        ],
+        "multi-resource": [
+          "l2"
+        ],
+        "sns-sqs-event": [
+          "l2"
+        ]
+      }
+    },
+    {
+      "resourceType": "AWS::SQS::QueuePolicy",
+      "integs": [
+        "migrate-from-cfn"
+      ],
+      "signals": {
+        "migrate-from-cfn": [
+          "literal"
+        ]
+      }
+    },
+    {
+      "resourceType": "AWS::SSM::Parameter",
+      "integs": [
+        "bench-sdk",
+        "composite-stack",
+        "context-test",
+        "cross-region-state-bucket",
+        "cross-stack-references",
+        "import-value-strong-ref",
+        "infra-security",
+        "legacy-bucket-name-fallback",
+        "legacy-state-migration",
+        "microservices",
+        "multi-region-same-stack",
+        "state-info-command",
+        "vpc-lookup"
+      ],
+      "signals": {
+        "bench-sdk": [
+          "l2"
+        ],
+        "composite-stack": [
+          "l2",
+          "literal"
+        ],
+        "context-test": [
+          "l2"
+        ],
+        "cross-region-state-bucket": [
+          "l1"
+        ],
+        "cross-stack-references": [
+          "l1"
+        ],
+        "import-value-strong-ref": [
+          "l2"
+        ],
+        "infra-security": [
+          "l2"
+        ],
+        "legacy-bucket-name-fallback": [
+          "l2"
+        ],
+        "legacy-state-migration": [
+          "l2"
+        ],
+        "microservices": [
+          "l2"
+        ],
+        "multi-region-same-stack": [
+          "l2"
+        ],
+        "state-info-command": [
+          "l2"
+        ],
+        "vpc-lookup": [
+          "l2"
+        ]
+      }
+    },
+    {
+      "resourceType": "AWS::SecretsManager::Secret",
+      "integs": [
+        "composite-stack",
+        "event-driven",
+        "full-stack-demo",
+        "local-run-task-from-state"
+      ],
+      "signals": {
+        "composite-stack": [
+          "l2",
+          "literal"
+        ],
+        "event-driven": [
+          "l2"
+        ],
+        "full-stack-demo": [
+          "l2"
+        ],
+        "local-run-task-from-state": [
+          "l2",
+          "literal"
+        ]
+      }
+    },
+    {
+      "resourceType": "AWS::ServiceDiscovery::PrivateDnsNamespace",
+      "integs": [
+        "drift-revert-vpc"
+      ],
+      "signals": {
+        "drift-revert-vpc": [
+          "l2",
+          "literal"
+        ]
+      }
+    },
+    {
+      "resourceType": "AWS::StepFunctions::StateMachine",
+      "integs": [
+        "stepfunctions"
+      ],
+      "signals": {
+        "stepfunctions": [
+          "l2"
+        ]
+      }
+    },
+    {
+      "resourceType": "AWS::WAFv2::WebACL",
+      "integs": [
+        "wafv2"
+      ],
+      "signals": {
+        "wafv2": [
+          "l1",
+          "literal"
+        ]
+      }
+    }
+  ],
+  "orphans": [],
+  "allowListed": [
+    {
+      "resourceType": "AWS::Glue::Connection",
+      "rationale": "drift coverage only; Connection is a passive config object, no real-AWS lifecycle to exercise."
+    },
+    {
+      "resourceType": "AWS::Glue::Crawler",
+      "rationale": "drift coverage only; Crawler has its own start/stop schedule lifecycle, deferred until a user-reported regression makes integ ROI clear."
+    },
+    {
+      "resourceType": "AWS::Glue::Job",
+      "rationale": "drift coverage only; standalone Job integ deferred until a real-AWS issue surfaces (current usage at user sites is Studio-driven)."
+    },
+    {
+      "resourceType": "AWS::Glue::SecurityConfiguration",
+      "rationale": "immutable resource type; unit roundtrip + drift coverage suffice. Add integ if a future bug surfaces a real-AWS-only behavior."
+    },
+    {
+      "resourceType": "AWS::Glue::Trigger",
+      "rationale": "drift coverage only; Trigger has DEACTIVATED-ACTIVATED state-machine semantics in update() that warrant a real-AWS integ — file follow-up."
+    },
+    {
+      "resourceType": "AWS::Glue::Workflow",
+      "rationale": "drift-revert coverage only; no end-to-end Workflow integ yet (file follow-up if real-AWS Workflow lifecycle needs verification)."
+    },
+    {
+      "resourceType": "AWS::Kinesis::StreamConsumer",
+      "rationale": "immutable type (every property change replaces); unit roundtrip suffices. Add integ if a Lambda EFO consumer pattern bug surfaces."
+    },
+    {
+      "resourceType": "AWS::RDS::DBProxy",
+      "rationale": "rds-aurora integ does not currently provision DBProxy + TargetGroup + Endpoint (cost + 5-15 min create/delete). Unit roundtrip covers the diff matrix; extend rds-aurora when a real-AWS Proxy lifecycle bug warrants the integ time."
+    },
+    {
+      "resourceType": "AWS::RDS::DBProxyTargetGroup",
+      "rationale": "see DBProxy above — same rds-aurora-extend reasoning."
+    },
+    {
+      "resourceType": "AWS::S3Tables::Namespace",
+      "rationale": "existing s3-tables integ exercises only TableBucket. Namespace + Table are sub-resources sharing the same provider; unit roundtrip + parent-bucket integ suffice for now."
+    },
+    {
+      "resourceType": "AWS::S3Tables::Table",
+      "rationale": "see Namespace above. Extend tests/integration/s3-tables/ when a real-AWS Namespace/Table lifecycle bug surfaces."
+    },
+    {
+      "resourceType": "AWS::ServiceDiscovery::Service",
+      "rationale": "drift-revert-vpc covers PrivateDnsNamespace; Service is a sub-resource sharing the same provider. Add an ECS service-discovery integ if a Service-specific real-AWS bug surfaces."
+    }
+  ],
+  "unknownTypesInIntegs": [
+    "AWS::ApiGateway::RestApi",
+    "AWS::Athena::NamedQuery",
+    "AWS::Athena::WorkGroup",
+    "AWS::CloudFront::OriginAccessControl",
+    "AWS::CodePipeline::Pipeline",
+    "AWS::Cognito::UserPoolDomain",
+    "AWS::EC2::EIP",
+    "AWS::EC2::SecurityGroupEgress",
+    "AWS::ELBv2::LoadBalancer",
+    "AWS::ElasticLoadBalancingV2::ListenerRule",
+    "AWS::KMS::Grant",
+    "AWS::Lambda::Alias",
+    "AWS::Lambda::Version",
+    "AWS::Logs::LogStream",
+    "AWS::Logs::MetricFilter",
+    "AWS::Logs::SubscriptionFilter",
+    "AWS::Pipes::Pipe",
+    "AWS::Route53::HealthCheck",
+    "AWS::SSM::Document",
+    "AWS::Scheduler::Schedule",
+    "AWS::WAFv2::IPSet",
+    "AWS::WAFv2::WebACLAssociation"
+  ]
+}

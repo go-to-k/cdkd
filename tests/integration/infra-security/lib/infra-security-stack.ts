@@ -18,6 +18,12 @@ import * as cloudtrail from 'aws-cdk-lib/aws-cloudtrail';
  * - IAM Role with inline S3 access policy + managed policy (AmazonS3ReadOnlyAccess)
  * - CloudTrail Trail with S3 data events on the secure bucket
  * - CfnOutputs for VPC ID, KMS key ARN, bucket name, parameter name, role ARN, trail ARN
+ *
+ * `group.addUser(user)` synthesizes AWS::IAM::UserToGroupAddition;
+ * `key.addAlias(...)` synthesizes AWS::KMS::Alias.
+ *
+ * covers: AWS::IAM::UserToGroupAddition
+ * covers: AWS::KMS::Alias
  */
 export class InfraSecurityStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {

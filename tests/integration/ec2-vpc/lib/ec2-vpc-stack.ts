@@ -17,6 +17,9 @@ import * as ec2 from 'aws-cdk-lib/aws-ec2';
  *
  * Note: No EC2 instances are created to avoid costs.
  * This stack only provisions networking resources (VPC, Subnet, Security Group, NACL, EIP, VPC Endpoint, Launch Template).
+ *
+ * covers: AWS::EC2::NetworkAclEntry
+ * covers: AWS::EC2::SubnetNetworkAclAssociation
  */
 export class Ec2VpcStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {

@@ -15,6 +15,11 @@ import * as lambdaEventSources from 'aws-cdk-lib/aws-lambda-event-sources';
  * - ApplicationAutoScaling ScalableTarget for read/write capacity
  * - ApplicationAutoScaling ScalingPolicy with target tracking (70% utilization)
  * - Fn::GetAtt for outputs (table ARN, stream ARN, function name)
+ *
+ * `fn.addEventSource(new DynamoEventSource(...))` synthesizes
+ * AWS::Lambda::EventSourceMapping.
+ *
+ * covers: AWS::Lambda::EventSourceMapping
  */
 export class DynamodbStreamsStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
