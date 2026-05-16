@@ -1,0 +1,9 @@
+{
+  "scenarios": [
+    "cdk-defensive-vpc-deps-relax",
+    "cross-cutting-deploy-destroy",
+    "lambda-vpc-subnet-sg-deletion-order",
+    "nat-gateway-cleanup",
+    "vpc-lambda-eni-release"
+  ]
+}

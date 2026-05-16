@@ -596,6 +596,24 @@ The hook `.claude/hooks/provider-integ-gate.sh` blocks `git commit` when a new `
 
 Contrast with the provider-coverage matrix in [docs/integ-coverage.md](integ-coverage.md), where the CI gate IS appropriate because every registered provider is expected to have real-AWS verification.
 
+### Scenario Coverage (visibility report)
+
+[`docs/scenario-coverage.md`](scenario-coverage.md) maps each cdkd-canonical real-AWS regression pattern (e.g. `vpc-lambda-eni-release`, `nat-gateway-cleanup`, `multi-stack-importvalue-strong-ref`) to the integ fixtures that exercise it. Generated via `vp run scenario-coverage`.
+
+Per-fixture annotations live in a `tests/integration/<fixture>/.scenarios.json` sidecar:
+
+```json
+{
+  "scenarios": ["vpc-lambda-eni-release", "nat-gateway-cleanup"]
+}
+```
+
+Empty `[]` means "intentionally no canonical scenario applies" (per-service smoke tests). Absent file means "not yet annotated" — surfaced in the un-annotated section of the report. The canonical taxonomy is defined as `KNOWN_SCENARIOS` in [scripts/build-scenario-coverage-matrix.ts](../scripts/build-scenario-coverage-matrix.ts); a sidecar tag outside the taxonomy is hard-rejected at parse time, so typos surface immediately.
+
+**Visibility-only, NOT a CI gate** on per-fixture coverage. Same rationale as the CLI-flag matrix: many fixtures legitimately exercise no canonical scenario, and forcing per-commit annotation would add friction without proportional value. The intended consumer is the contributor reviewing "does THIS real-AWS pattern have an integ backstop?" — an orphan scenario in the matrix IS the value signal. **CI hard-fails on staleness**: the `check-build-test` job in `.github/workflows/ci.yml` runs `vp run scenario-coverage` and fails on a non-empty `git diff` of the regenerated `docs/scenario-coverage.md` / `docs/_generated/scenario-coverage.json`, so a forgotten regeneration or a typo'd tag cannot reach main.
+
+Adding a new scenario: (1) add an entry to `KNOWN_SCENARIOS` with a one-line description in [scripts/build-scenario-coverage-matrix.ts](../scripts/build-scenario-coverage-matrix.ts); (2) tag existing fixtures that exercise it (or write a new one); (3) `vp run scenario-coverage` to regenerate.
+
 ### Verbose Logging
 
 Add the `--verbose` flag to display detailed logs:

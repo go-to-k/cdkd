@@ -1,0 +1,6 @@
+{
+  "scenarios": [
+    "local-from-state-substitution",
+    "local-lambda-rie-zip"
+  ]
+}
