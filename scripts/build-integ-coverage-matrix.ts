@@ -777,5 +777,16 @@ function main(): void {
 }
 
 if (isMainModule()) {
-  main();
+  try {
+    main();
+  } catch (err) {
+    // Surface a one-line context message so a missing / unreadable
+    // register-providers.ts or a broken sidecar JSON produces an
+    // actionable error rather than a raw stack trace. Internal tool;
+    // exit 1 is appropriate.
+    process.stderr.write(
+      `integ-coverage: failed — ${(err as Error).message}\n`
+    );
+    process.exit(1);
+  }
 }

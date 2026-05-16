@@ -74,7 +74,15 @@ add_register() {
 }
 
 # add_integ_fixture <dir> <fixture-name> <body>
-# body is appended verbatim into lib/<name>-stack.ts.
+#
+# `body` is appended verbatim into `lib/<name>-stack.ts` between the
+# constructor's `super(...)` call and the closing brace. The helper
+# does NOT auto-indent the body — the caller is responsible for the
+# leading whitespace on each line. Multi-line bodies must include the
+# indent on every line (a literal `\n    ` between statements). This
+# is fine for the hook's correctness because the hook does a literal
+# string grep — indent doesn't matter for type detection. Callers
+# that pass a single line don't need to worry.
 add_integ_fixture() {
   local dir="$1" name="$2" body="$3"
   mkdir -p "$dir/tests/integration/$name/lib"
@@ -296,6 +304,45 @@ case_label "sidecar value is whitespace-only -> block"
 D="$TMPDIR/case15"; init_repo "$D"
 add_register "$D" "AWS::Foo::Bar"
 printf '{ "AWS::Foo::Bar": "   " }\n' > "$D/.claude/integ-coverage-allowlist.json"
+stage_all "$D"
+run_hook "$D"; rc=$?
+if [[ $rc -eq 2 ]]; then ok; else ng 2 "$rc"; fi
+
+# --- Case 16: multi-line body in `add_integ_fixture` is preserved ---
+# Documents that callers must include their own indent on each line;
+# the hook's literal-string match still detects the type regardless of
+# indent. Regression guard against future refactors that auto-indent
+# the body — those would change the file content but not the hook's
+# behaviour, so this test asserts the detection path stays robust to
+# the surrounding whitespace.
+case_label "multi-line fixture body -> hook still detects literal type"
+D="$TMPDIR/case16"; init_repo "$D"
+add_register "$D" "AWS::Foo::Bar"
+add_integ_fixture "$D" "foo" "// covers: AWS::Foo::Bar
+new cdk.CfnResource(this, 'X', {
+  type: 'AWS::Foo::Bar',
+  properties: {},
+});"
+stage_all "$D"
+run_hook "$D"; rc=$?
+if [[ $rc -eq 0 ]]; then ok; else ng 0 "$rc"; fi
+
+# --- Case 17: sidecar with object value is rejected (not a string rationale) ---
+# Mirrors the unit-test coverage of `parseAllowNoIntegRationalesContent`
+# but at the hook level. The jq filter requires `.value | type ==
+# "string"`, so an object value like `{"reason": "wrapped"}` must NOT
+# count as a valid rationale. Without the type guard, a careless edit
+# could accidentally exempt a type with no actual rationale string.
+case_label "sidecar with object value -> block (not a valid string rationale)"
+D="$TMPDIR/case17"; init_repo "$D"
+add_register "$D" "AWS::Foo::Bar"
+cat > "$D/.claude/integ-coverage-allowlist.json" <<'EOF'
+{
+  "AWS::Foo::Bar": {
+    "reason": "wrapped object instead of plain string"
+  }
+}
+EOF
 stage_all "$D"
 run_hook "$D"; rc=$?
 if [[ $rc -eq 2 ]]; then ok; else ng 2 "$rc"; fi
