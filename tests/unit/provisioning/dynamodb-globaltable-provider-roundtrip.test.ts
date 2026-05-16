@@ -1898,7 +1898,7 @@ describe('DynamoDBGlobalTableProvider round-trip', () => {
       expect(observed!['WriteProvisionedThroughputSettings']).toEqual({});
     });
 
-    it('emits empty WriteProvisionedThroughputSettings placeholder when autoscaling lookup fails (best-effort)', async () => {
+    it('falls back to flat WriteCapacityUnits when DescribeScalableTargets fails (best-effort, regression PR #393)', async () => {
       mockSend.mockResolvedValueOnce({
         Table: {
           TableArn: TABLE_ARN,
@@ -1909,7 +1909,7 @@ describe('DynamoDBGlobalTableProvider round-trip', () => {
       });
       queueReadCurrentStateTail({ localReplica: false });
       mockAutoScalingSend.mockReset();
-      mockAutoScalingSend.mockRejectedValueOnce(new Error('permission denied'));
+      mockAutoScalingSend.mockRejectedValueOnce(new Error('permission denied on DescribeScalableTargets'));
 
       const observed = await provider.readCurrentState(TABLE_NAME, 'X', RESOURCE_TYPE);
       // Lookup failure is treated as "no policy" — the flat-value
@@ -1918,6 +1918,86 @@ describe('DynamoDBGlobalTableProvider round-trip', () => {
       expect(observed!['WriteProvisionedThroughputSettings']).toEqual({
         WriteCapacityUnits: 4,
       });
+    });
+
+    it('falls back to flat WriteCapacityUnits when DescribeScalingPolicies fails after DescribeScalableTargets succeeded (PR #397 review minor)', async () => {
+      // Covers the second-call failure path: DescribeScalableTargets
+      // succeeds (returns Min/Max) → DescribeScalingPolicies throws.
+      // Same outer try/catch wraps both; symmetric behavior.
+      mockSend.mockResolvedValueOnce({
+        Table: {
+          TableArn: TABLE_ARN,
+          Replicas: [],
+          BillingModeSummary: { BillingMode: 'PROVISIONED' },
+          ProvisionedThroughput: { WriteCapacityUnits: 7 },
+        },
+      });
+      queueReadCurrentStateTail({ localReplica: false });
+      mockAutoScalingSend.mockReset();
+      mockAutoScalingSend.mockResolvedValueOnce({
+        ScalableTargets: [{ MinCapacity: 5, MaxCapacity: 100 }],
+      });
+      mockAutoScalingSend.mockRejectedValueOnce(new Error('throttle on DescribeScalingPolicies'));
+
+      const observed = await provider.readCurrentState(TABLE_NAME, 'X', RESOURCE_TYPE);
+      expect(observed!['WriteProvisionedThroughputSettings']).toEqual({
+        WriteCapacityUnits: 7,
+      });
+    });
+
+    it('caches getRegionalAutoScalingClient per region (no duplicate construction on repeated cross-region reads)', async () => {
+      // Mirror the existing getRegionalClient cache test pattern.
+      // Two readCurrentState invocations against a stack with a single
+      // cross-region replica should construct the regional autoscaling
+      // client at most once for that region.
+      const { ApplicationAutoScalingClient } = await import(
+        '@aws-sdk/client-application-auto-scaling'
+      );
+      const ctorSpy = ApplicationAutoScalingClient as unknown as { mock: { calls: unknown[][] } };
+      const beforeCalls = ctorSpy.mock.calls.length;
+
+      const queueOne = () => {
+        mockSend.mockResolvedValueOnce({
+          Table: {
+            TableArn: TABLE_ARN,
+            Replicas: [{ RegionName: 'eu-west-1' }],
+            BillingModeSummary: { BillingMode: 'PROVISIONED' },
+            ProvisionedThroughput: { WriteCapacityUnits: 5 },
+          },
+        });
+        // Skip the local replica's sub-spec queue tail (4 calls) — we
+        // only care that the regional client is reused; the regional
+        // sub-spec calls just need send-able mocks.
+        queueReadCurrentStateTail({ localReplica: false });
+        // Cross-region sub-spec calls (4): CI / PITR / Kinesis / Tags
+        mockSend.mockResolvedValueOnce({ ContributorInsightsStatus: 'DISABLED' });
+        mockSend.mockResolvedValueOnce({
+          ContinuousBackupsDescription: {
+            PointInTimeRecoveryDescription: { PointInTimeRecoveryStatus: 'DISABLED' },
+          },
+        });
+        mockSend.mockResolvedValueOnce({ KinesisDataStreamDestinations: [] });
+        mockSend.mockResolvedValueOnce({ Tags: [] });
+      };
+
+      mockAutoScalingSend.mockResolvedValue({ ScalableTargets: [], ScalingPolicies: [] });
+
+      queueOne();
+      await provider.readCurrentState(TABLE_NAME, 'X', RESOURCE_TYPE);
+      queueOne();
+      await provider.readCurrentState(TABLE_NAME, 'X', RESOURCE_TYPE);
+
+      const newCalls = ctorSpy.mock.calls.length - beforeCalls;
+      // Regional client constructed at most ONCE for eu-west-1 across
+      // both reads (the cache hit on the second read short-circuits
+      // before the constructor fires).
+      const euWestCalls = ctorSpy.mock.calls
+        .slice(beforeCalls)
+        .filter((args) => (args[0] as { region?: string } | undefined)?.region === 'eu-west-1');
+      expect(euWestCalls.length).toBeLessThanOrEqual(1);
+      // Sanity: at least one autoscaling client was built (for the
+      // default global client or the eu-west-1 client).
+      expect(newCalls).toBeGreaterThan(0);
     });
 
     it('omits the offending sub-spec key when the per-region call fails (best-effort)', async () => {
