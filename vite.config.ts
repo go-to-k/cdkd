@@ -208,6 +208,18 @@ export default defineConfig({
         dependsOn: ['build'],
         cache: false,
       },
+      'audit:coverage': {
+        command: 'node scripts/audit-provider-coverage.ts',
+        cache: false,
+      },
+      'audit:coverage:regenerate': {
+        command: 'node scripts/audit-provider-coverage.ts --regenerate',
+        cache: false,
+      },
+      'audit:coverage:check': {
+        command: 'node scripts/audit-provider-coverage.ts --check',
+        cache: false,
+      },
     },
   },
 });

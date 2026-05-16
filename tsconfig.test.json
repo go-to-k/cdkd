@@ -8,6 +8,12 @@
     "noUnusedLocals": false,
     "noUnusedParameters": false
   },
-  "include": ["src/**/*", "tests/setup.ts", "tests/unit/**/*.ts", "types/**/*"],
+  "include": [
+    "src/**/*",
+    "tests/setup.ts",
+    "tests/unit/**/*.ts",
+    "types/**/*",
+    "scripts/**/*.ts"
+  ],
   "exclude": ["node_modules", "dist"]
 }
