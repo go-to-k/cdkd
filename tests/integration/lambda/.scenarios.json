@@ -1,0 +1,8 @@
+{
+  "scenarios": [
+    "cross-cutting-deploy-destroy",
+    "iam-policy-propagation-retry",
+    "lambda-vpc-subnet-sg-deletion-order",
+    "vpc-lambda-eni-release"
+  ]
+}

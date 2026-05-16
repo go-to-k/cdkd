@@ -1,0 +1,6 @@
+{
+  "scenarios": [
+    "local-ecs-task",
+    "local-from-state-substitution"
+  ]
+}

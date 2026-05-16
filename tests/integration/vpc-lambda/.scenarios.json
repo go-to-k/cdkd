@@ -1,0 +1,6 @@
+{
+  "scenarios": [
+    "lambda-vpc-subnet-sg-deletion-order",
+    "vpc-lambda-eni-release"
+  ]
+}

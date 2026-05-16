@@ -228,6 +228,10 @@ export default defineConfig({
         command: 'node --experimental-strip-types scripts/build-cli-flag-coverage-matrix.ts',
         cache: false,
       },
+      'scenario-coverage': {
+        command: 'node --experimental-strip-types scripts/build-scenario-coverage-matrix.ts',
+        cache: false,
+      },
     },
   },
 });

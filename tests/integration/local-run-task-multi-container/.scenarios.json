@@ -1,0 +1,5 @@
+{
+  "scenarios": [
+    "local-ecs-task"
+  ]
+}

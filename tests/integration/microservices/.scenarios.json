@@ -1,0 +1,6 @@
+{
+  "scenarios": [
+    "cross-cutting-deploy-destroy",
+    "iam-policy-propagation-retry"
+  ]
+}

@@ -1,0 +1,6 @@
+{
+  "scenarios": [
+    "custom-resource-async-poll",
+    "vpc-lambda-cr-race"
+  ]
+}

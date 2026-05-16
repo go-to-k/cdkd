@@ -1,0 +1,5 @@
+{
+  "scenarios": [
+    "nat-gateway-cleanup"
+  ]
+}

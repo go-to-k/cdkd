@@ -1,0 +1,891 @@
+{
+  "knownScenarios": [
+    {
+      "tag": "apigateway-cors-preflight",
+      "description": "API Gateway CORS preflight (OPTIONS) handling — CDK auto-generates `Method` with both Integration.IntegrationResponses and MethodResponses arrays."
+    },
+    {
+      "tag": "cdk-defensive-vpc-deps-relax",
+      "description": "CDK-defensive route DependsOn relaxation for VPC Lambda parallelization."
+    },
+    {
+      "tag": "cloudfront-oai-attribute-enrichment",
+      "description": "CloudFront OAI `S3CanonicalUserId` attribute enrichment (the attribute is not on `GetCloudFrontOriginAccessIdentity` directly)."
+    },
+    {
+      "tag": "cross-cutting-deploy-destroy",
+      "description": "Broad real-AWS regression set (39+ resource VPC+NAT+CF+Lambda+SQS or comparable breadth). Refreshes the integ-broad gate."
+    },
+    {
+      "tag": "custom-resource-async-poll",
+      "description": "Custom Resource backed by Lambda + cfn-response via S3 pre-signed URL polling."
+    },
+    {
+      "tag": "deletion-policy-retain",
+      "description": "DeletionPolicy: Retain skip on destroy (schema v5 recorded value wins over template)."
+    },
+    {
+      "tag": "drift-revert-roundtrip",
+      "description": "cdkd drift detection + `--revert` round-trip via each provider.update()."
+    },
+    {
+      "tag": "export-to-cfn-handover",
+      "description": "cdkd → CloudFormation migration via 2-phase IMPORT changeset + phase-2 UPDATE."
+    },
+    {
+      "tag": "globaltable-cross-region-replica",
+      "description": "DynamoDB GlobalTable cross-region replica add/remove serialization (AWS rejects multiple ReplicaUpdates per UpdateTable call)."
+    },
+    {
+      "tag": "iam-policy-propagation-retry",
+      "description": "CREATE retry with exponential backoff after IAM-EC2/Lambda eventual-consistency race."
+    },
+    {
+      "tag": "lambda-vpc-subnet-sg-deletion-order",
+      "description": "Subnet/SecurityGroup must delete AFTER Lambda::Function to avoid ENI DependencyViolation."
+    },
+    {
+      "tag": "legacy-bucket-name-fallback",
+      "description": "New region-free `cdkd-state-{account}` vs legacy `cdkd-state-{account}-{region}` bucket fallback resolution."
+    },
+    {
+      "tag": "local-apigateway-server",
+      "description": "`cdkd local start-api` HTTP server with route discovery + per-Lambda warm container pool."
+    },
+    {
+      "tag": "local-ecs-task",
+      "description": "`cdkd local run-task` ECS TaskDefinition with docker network + AWS-published metadata sidecar."
+    },
+    {
+      "tag": "local-from-state-substitution",
+      "description": "`cdkd local invoke|run-task --from-state` substitutes intrinsic-valued env/secret/role references against deployed cdkd state + AWS pseudo parameters."
+    },
+    {
+      "tag": "local-lambda-rie-container",
+      "description": "`cdkd local invoke` container-Lambda (Code.ImageUri) against RIE — local-build OR ECR-pull asset resolution."
+    },
+    {
+      "tag": "local-lambda-rie-zip",
+      "description": "`cdkd local invoke` ZIP-runtime Lambda against the AWS Lambda Runtime Interface Emulator (RIE) container."
+    },
+    {
+      "tag": "migrate-from-cfn-handover",
+      "description": "CloudFormation → cdkd migration via `--migrate-from-cloudformation` (UpdateStack with Retain + DeleteStack)."
+    },
+    {
+      "tag": "multi-region-state-key",
+      "description": "Same stackName + different regions = independent state files (`version: 2` region-prefixed key layout)."
+    },
+    {
+      "tag": "multi-stack-getstackoutput",
+      "description": "Cross-stack `Fn::GetStackOutput` weak reference resolution (cdkd-specific, no CFn Export)."
+    },
+    {
+      "tag": "multi-stack-importvalue-strong-ref",
+      "description": "Cross-stack `Fn::ImportValue` strong-reference + persistent exports index (schema v4 imports[])."
+    },
+    {
+      "tag": "nat-gateway-cleanup",
+      "description": "NAT Gateway destroy + dependent route cleanup (unconditional `waitUntilNatGatewayDeleted` on destroy)."
+    },
+    {
+      "tag": "partial-create-cleanup",
+      "description": "Partial-create cleanup: post-`Create*` wiring failure issues best-effort `Delete*` before re-throwing so the next deploy is not blocked by an AWS-side orphan."
+    },
+    {
+      "tag": "rds-aurora-cluster-instance",
+      "description": "RDS Aurora cluster + writer instance create/destroy with the 30-min wait budget + DBProxy/DBProxyTargetGroup family."
+    },
+    {
+      "tag": "remove-protection-bypass",
+      "description": "`--remove-protection` flag bypassing AWS-side deletion-protection on supported types."
+    },
+    {
+      "tag": "state-bucket-region-resolve",
+      "description": "State-bucket S3 client auto-detects bucket region via `GetBucketLocation` regardless of caller-profile region."
+    },
+    {
+      "tag": "state-schema-migration",
+      "description": "Legacy v1 / v2 state schema auto-migrates on next write; old binary fails clearly on a newer schema."
+    },
+    {
+      "tag": "vpc-lambda-cr-race",
+      "description": "Custom Resource invocation against a VPC Lambda mid-deploy (ENI-attach race window)."
+    },
+    {
+      "tag": "vpc-lambda-eni-release",
+      "description": "Lambda hyperplane ENI cleanup after DeleteFunction (5-30 min eventually consistent)."
+    }
+  ],
+  "fixtures": [
+    {
+      "name": "alb",
+      "annotated": true,
+      "scenarios": []
+    },
+    {
+      "name": "alb-advanced",
+      "annotated": true,
+      "scenarios": []
+    },
+    {
+      "name": "api-cognito",
+      "annotated": true,
+      "scenarios": []
+    },
+    {
+      "name": "apigateway",
+      "annotated": true,
+      "scenarios": [
+        "apigateway-cors-preflight"
+      ]
+    },
+    {
+      "name": "appsync",
+      "annotated": true,
+      "scenarios": []
+    },
+    {
+      "name": "basic",
+      "annotated": true,
+      "scenarios": []
+    },
+    {
+      "name": "batch",
+      "annotated": true,
+      "scenarios": []
+    },
+    {
+      "name": "bedrock-agentcore",
+      "annotated": true,
+      "scenarios": []
+    },
+    {
+      "name": "bench-ccapi",
+      "annotated": true,
+      "scenarios": [
+        "cross-cutting-deploy-destroy"
+      ]
+    },
+    {
+      "name": "bench-cdk-sample",
+      "annotated": true,
+      "scenarios": [
+        "cdk-defensive-vpc-deps-relax",
+        "cross-cutting-deploy-destroy",
+        "lambda-vpc-subnet-sg-deletion-order",
+        "nat-gateway-cleanup",
+        "vpc-lambda-eni-release"
+      ]
+    },
+    {
+      "name": "bench-sdk",
+      "annotated": true,
+      "scenarios": [
+        "cross-cutting-deploy-destroy"
+      ]
+    },
+    {
+      "name": "cache-streaming",
+      "annotated": true,
+      "scenarios": []
+    },
+    {
+      "name": "ci-cd",
+      "annotated": true,
+      "scenarios": []
+    },
+    {
+      "name": "cloudfront-function-url",
+      "annotated": true,
+      "scenarios": [
+        "custom-resource-async-poll"
+      ]
+    },
+    {
+      "name": "cloudwatch",
+      "annotated": true,
+      "scenarios": []
+    },
+    {
+      "name": "cognito",
+      "annotated": true,
+      "scenarios": []
+    },
+    {
+      "name": "composite-stack",
+      "annotated": true,
+      "scenarios": [
+        "multi-stack-getstackoutput"
+      ]
+    },
+    {
+      "name": "conditions",
+      "annotated": true,
+      "scenarios": []
+    },
+    {
+      "name": "context-test",
+      "annotated": true,
+      "scenarios": []
+    },
+    {
+      "name": "cross-region-state-bucket",
+      "annotated": true,
+      "scenarios": [
+        "state-bucket-region-resolve"
+      ]
+    },
+    {
+      "name": "cross-stack-references",
+      "annotated": true,
+      "scenarios": [
+        "multi-stack-getstackoutput"
+      ]
+    },
+    {
+      "name": "custom-resource-provider",
+      "annotated": true,
+      "scenarios": [
+        "custom-resource-async-poll"
+      ]
+    },
+    {
+      "name": "data-analytics",
+      "annotated": true,
+      "scenarios": []
+    },
+    {
+      "name": "data-pipeline",
+      "annotated": true,
+      "scenarios": []
+    },
+    {
+      "name": "docdb-neptune",
+      "annotated": true,
+      "scenarios": []
+    },
+    {
+      "name": "drift-revert",
+      "annotated": true,
+      "scenarios": [
+        "drift-revert-roundtrip"
+      ]
+    },
+    {
+      "name": "drift-revert-vpc",
+      "annotated": true,
+      "scenarios": [
+        "drift-revert-roundtrip"
+      ]
+    },
+    {
+      "name": "dynamodb-globaltable",
+      "annotated": true,
+      "scenarios": [
+        "globaltable-cross-region-replica"
+      ]
+    },
+    {
+      "name": "dynamodb-streams",
+      "annotated": true,
+      "scenarios": []
+    },
+    {
+      "name": "ec2-instance",
+      "annotated": true,
+      "scenarios": []
+    },
+    {
+      "name": "ec2-vpc",
+      "annotated": true,
+      "scenarios": []
+    },
+    {
+      "name": "ecr",
+      "annotated": true,
+      "scenarios": []
+    },
+    {
+      "name": "ecs-fargate",
+      "annotated": true,
+      "scenarios": []
+    },
+    {
+      "name": "efs-lambda",
+      "annotated": true,
+      "scenarios": []
+    },
+    {
+      "name": "efs-standalone",
+      "annotated": true,
+      "scenarios": []
+    },
+    {
+      "name": "event-driven",
+      "annotated": true,
+      "scenarios": []
+    },
+    {
+      "name": "eventbridge",
+      "annotated": true,
+      "scenarios": []
+    },
+    {
+      "name": "export",
+      "annotated": true,
+      "scenarios": [
+        "export-to-cfn-handover"
+      ]
+    },
+    {
+      "name": "full-stack-demo",
+      "annotated": true,
+      "scenarios": [
+        "cross-cutting-deploy-destroy"
+      ]
+    },
+    {
+      "name": "import-value-strong-ref",
+      "annotated": true,
+      "scenarios": [
+        "multi-stack-importvalue-strong-ref"
+      ]
+    },
+    {
+      "name": "infra-security",
+      "annotated": true,
+      "scenarios": []
+    },
+    {
+      "name": "intrinsic-functions",
+      "annotated": true,
+      "scenarios": []
+    },
+    {
+      "name": "kms-encryption",
+      "annotated": true,
+      "scenarios": []
+    },
+    {
+      "name": "lambda",
+      "annotated": true,
+      "scenarios": [
+        "cross-cutting-deploy-destroy",
+        "iam-policy-propagation-retry",
+        "lambda-vpc-subnet-sg-deletion-order",
+        "vpc-lambda-eni-release"
+      ]
+    },
+    {
+      "name": "lambda-versioning",
+      "annotated": true,
+      "scenarios": []
+    },
+    {
+      "name": "legacy-bucket-name-fallback",
+      "annotated": true,
+      "scenarios": [
+        "legacy-bucket-name-fallback"
+      ]
+    },
+    {
+      "name": "legacy-state-migration",
+      "annotated": true,
+      "scenarios": [
+        "state-schema-migration"
+      ]
+    },
+    {
+      "name": "local-invoke",
+      "annotated": true,
+      "scenarios": [
+        "local-lambda-rie-zip"
+      ]
+    },
+    {
+      "name": "local-invoke-container",
+      "annotated": true,
+      "scenarios": [
+        "local-lambda-rie-container"
+      ]
+    },
+    {
+      "name": "local-invoke-dotnet",
+      "annotated": true,
+      "scenarios": [
+        "local-lambda-rie-zip"
+      ]
+    },
+    {
+      "name": "local-invoke-from-state",
+      "annotated": true,
+      "scenarios": [
+        "local-from-state-substitution",
+        "local-lambda-rie-zip"
+      ]
+    },
+    {
+      "name": "local-invoke-java",
+      "annotated": true,
+      "scenarios": [
+        "local-lambda-rie-zip"
+      ]
+    },
+    {
+      "name": "local-invoke-layers",
+      "annotated": true,
+      "scenarios": [
+        "local-lambda-rie-zip"
+      ]
+    },
+    {
+      "name": "local-invoke-provided",
+      "annotated": true,
+      "scenarios": [
+        "local-lambda-rie-zip"
+      ]
+    },
+    {
+      "name": "local-invoke-python",
+      "annotated": true,
+      "scenarios": [
+        "local-lambda-rie-zip"
+      ]
+    },
+    {
+      "name": "local-invoke-ruby",
+      "annotated": true,
+      "scenarios": [
+        "local-lambda-rie-zip"
+      ]
+    },
+    {
+      "name": "local-run-task",
+      "annotated": true,
+      "scenarios": [
+        "local-ecs-task"
+      ]
+    },
+    {
+      "name": "local-run-task-from-state",
+      "annotated": true,
+      "scenarios": [
+        "local-ecs-task",
+        "local-from-state-substitution"
+      ]
+    },
+    {
+      "name": "local-run-task-multi-container",
+      "annotated": true,
+      "scenarios": [
+        "local-ecs-task"
+      ]
+    },
+    {
+      "name": "local-start-api",
+      "annotated": true,
+      "scenarios": [
+        "local-apigateway-server"
+      ]
+    },
+    {
+      "name": "log-pipeline",
+      "annotated": true,
+      "scenarios": []
+    },
+    {
+      "name": "microservices",
+      "annotated": true,
+      "scenarios": [
+        "cross-cutting-deploy-destroy",
+        "iam-policy-propagation-retry"
+      ]
+    },
+    {
+      "name": "migrate-from-cfn",
+      "annotated": true,
+      "scenarios": [
+        "migrate-from-cfn-handover"
+      ]
+    },
+    {
+      "name": "monitoring",
+      "annotated": true,
+      "scenarios": []
+    },
+    {
+      "name": "multi-region-same-stack",
+      "annotated": true,
+      "scenarios": [
+        "multi-region-state-key"
+      ]
+    },
+    {
+      "name": "multi-resource",
+      "annotated": true,
+      "scenarios": [
+        "cross-cutting-deploy-destroy"
+      ]
+    },
+    {
+      "name": "multi-stack-deps",
+      "annotated": true,
+      "scenarios": [
+        "multi-stack-getstackoutput"
+      ]
+    },
+    {
+      "name": "orphan-resource",
+      "annotated": true,
+      "scenarios": []
+    },
+    {
+      "name": "parameters",
+      "annotated": true,
+      "scenarios": []
+    },
+    {
+      "name": "rds-aurora",
+      "annotated": true,
+      "scenarios": [
+        "rds-aurora-cluster-instance"
+      ]
+    },
+    {
+      "name": "remove-protection",
+      "annotated": true,
+      "scenarios": [
+        "remove-protection-bypass"
+      ]
+    },
+    {
+      "name": "route53",
+      "annotated": true,
+      "scenarios": []
+    },
+    {
+      "name": "s3-cloudfront",
+      "annotated": true,
+      "scenarios": [
+        "cloudfront-oai-attribute-enrichment"
+      ]
+    },
+    {
+      "name": "s3-directory-bucket",
+      "annotated": true,
+      "scenarios": []
+    },
+    {
+      "name": "s3-tables",
+      "annotated": true,
+      "scenarios": []
+    },
+    {
+      "name": "s3-vectors",
+      "annotated": true,
+      "scenarios": []
+    },
+    {
+      "name": "scheduled-task",
+      "annotated": true,
+      "scenarios": []
+    },
+    {
+      "name": "serverless-api",
+      "annotated": true,
+      "scenarios": []
+    },
+    {
+      "name": "sns-sqs-event",
+      "annotated": true,
+      "scenarios": []
+    },
+    {
+      "name": "sqs-cloudwatch",
+      "annotated": true,
+      "scenarios": []
+    },
+    {
+      "name": "state-destroy",
+      "annotated": true,
+      "scenarios": []
+    },
+    {
+      "name": "state-info-command",
+      "annotated": true,
+      "scenarios": []
+    },
+    {
+      "name": "stepfunctions",
+      "annotated": true,
+      "scenarios": []
+    },
+    {
+      "name": "vpc-lambda",
+      "annotated": true,
+      "scenarios": [
+        "lambda-vpc-subnet-sg-deletion-order",
+        "vpc-lambda-eni-release"
+      ]
+    },
+    {
+      "name": "vpc-lambda-cr-race",
+      "annotated": true,
+      "scenarios": [
+        "custom-resource-async-poll",
+        "vpc-lambda-cr-race"
+      ]
+    },
+    {
+      "name": "vpc-lookup",
+      "annotated": true,
+      "scenarios": []
+    },
+    {
+      "name": "vpc-nat-gateway",
+      "annotated": true,
+      "scenarios": [
+        "nat-gateway-cleanup"
+      ]
+    },
+    {
+      "name": "wafv2",
+      "annotated": true,
+      "scenarios": []
+    }
+  ],
+  "perScenarioCoverage": [
+    {
+      "scenario": "apigateway-cors-preflight",
+      "description": "API Gateway CORS preflight (OPTIONS) handling — CDK auto-generates `Method` with both Integration.IntegrationResponses and MethodResponses arrays.",
+      "fixtures": [
+        "apigateway"
+      ]
+    },
+    {
+      "scenario": "cdk-defensive-vpc-deps-relax",
+      "description": "CDK-defensive route DependsOn relaxation for VPC Lambda parallelization.",
+      "fixtures": [
+        "bench-cdk-sample"
+      ]
+    },
+    {
+      "scenario": "cloudfront-oai-attribute-enrichment",
+      "description": "CloudFront OAI `S3CanonicalUserId` attribute enrichment (the attribute is not on `GetCloudFrontOriginAccessIdentity` directly).",
+      "fixtures": [
+        "s3-cloudfront"
+      ]
+    },
+    {
+      "scenario": "cross-cutting-deploy-destroy",
+      "description": "Broad real-AWS regression set (39+ resource VPC+NAT+CF+Lambda+SQS or comparable breadth). Refreshes the integ-broad gate.",
+      "fixtures": [
+        "bench-ccapi",
+        "bench-cdk-sample",
+        "bench-sdk",
+        "full-stack-demo",
+        "lambda",
+        "microservices",
+        "multi-resource"
+      ]
+    },
+    {
+      "scenario": "custom-resource-async-poll",
+      "description": "Custom Resource backed by Lambda + cfn-response via S3 pre-signed URL polling.",
+      "fixtures": [
+        "cloudfront-function-url",
+        "custom-resource-provider",
+        "vpc-lambda-cr-race"
+      ]
+    },
+    {
+      "scenario": "deletion-policy-retain",
+      "description": "DeletionPolicy: Retain skip on destroy (schema v5 recorded value wins over template).",
+      "fixtures": []
+    },
+    {
+      "scenario": "drift-revert-roundtrip",
+      "description": "cdkd drift detection + `--revert` round-trip via each provider.update().",
+      "fixtures": [
+        "drift-revert",
+        "drift-revert-vpc"
+      ]
+    },
+    {
+      "scenario": "export-to-cfn-handover",
+      "description": "cdkd → CloudFormation migration via 2-phase IMPORT changeset + phase-2 UPDATE.",
+      "fixtures": [
+        "export"
+      ]
+    },
+    {
+      "scenario": "globaltable-cross-region-replica",
+      "description": "DynamoDB GlobalTable cross-region replica add/remove serialization (AWS rejects multiple ReplicaUpdates per UpdateTable call).",
+      "fixtures": [
+        "dynamodb-globaltable"
+      ]
+    },
+    {
+      "scenario": "iam-policy-propagation-retry",
+      "description": "CREATE retry with exponential backoff after IAM-EC2/Lambda eventual-consistency race.",
+      "fixtures": [
+        "lambda",
+        "microservices"
+      ]
+    },
+    {
+      "scenario": "lambda-vpc-subnet-sg-deletion-order",
+      "description": "Subnet/SecurityGroup must delete AFTER Lambda::Function to avoid ENI DependencyViolation.",
+      "fixtures": [
+        "bench-cdk-sample",
+        "lambda",
+        "vpc-lambda"
+      ]
+    },
+    {
+      "scenario": "legacy-bucket-name-fallback",
+      "description": "New region-free `cdkd-state-{account}` vs legacy `cdkd-state-{account}-{region}` bucket fallback resolution.",
+      "fixtures": [
+        "legacy-bucket-name-fallback"
+      ]
+    },
+    {
+      "scenario": "local-apigateway-server",
+      "description": "`cdkd local start-api` HTTP server with route discovery + per-Lambda warm container pool.",
+      "fixtures": [
+        "local-start-api"
+      ]
+    },
+    {
+      "scenario": "local-ecs-task",
+      "description": "`cdkd local run-task` ECS TaskDefinition with docker network + AWS-published metadata sidecar.",
+      "fixtures": [
+        "local-run-task",
+        "local-run-task-from-state",
+        "local-run-task-multi-container"
+      ]
+    },
+    {
+      "scenario": "local-from-state-substitution",
+      "description": "`cdkd local invoke|run-task --from-state` substitutes intrinsic-valued env/secret/role references against deployed cdkd state + AWS pseudo parameters.",
+      "fixtures": [
+        "local-invoke-from-state",
+        "local-run-task-from-state"
+      ]
+    },
+    {
+      "scenario": "local-lambda-rie-container",
+      "description": "`cdkd local invoke` container-Lambda (Code.ImageUri) against RIE — local-build OR ECR-pull asset resolution.",
+      "fixtures": [
+        "local-invoke-container"
+      ]
+    },
+    {
+      "scenario": "local-lambda-rie-zip",
+      "description": "`cdkd local invoke` ZIP-runtime Lambda against the AWS Lambda Runtime Interface Emulator (RIE) container.",
+      "fixtures": [
+        "local-invoke",
+        "local-invoke-dotnet",
+        "local-invoke-from-state",
+        "local-invoke-java",
+        "local-invoke-layers",
+        "local-invoke-provided",
+        "local-invoke-python",
+        "local-invoke-ruby"
+      ]
+    },
+    {
+      "scenario": "migrate-from-cfn-handover",
+      "description": "CloudFormation → cdkd migration via `--migrate-from-cloudformation` (UpdateStack with Retain + DeleteStack).",
+      "fixtures": [
+        "migrate-from-cfn"
+      ]
+    },
+    {
+      "scenario": "multi-region-state-key",
+      "description": "Same stackName + different regions = independent state files (`version: 2` region-prefixed key layout).",
+      "fixtures": [
+        "multi-region-same-stack"
+      ]
+    },
+    {
+      "scenario": "multi-stack-getstackoutput",
+      "description": "Cross-stack `Fn::GetStackOutput` weak reference resolution (cdkd-specific, no CFn Export).",
+      "fixtures": [
+        "composite-stack",
+        "cross-stack-references",
+        "multi-stack-deps"
+      ]
+    },
+    {
+      "scenario": "multi-stack-importvalue-strong-ref",
+      "description": "Cross-stack `Fn::ImportValue` strong-reference + persistent exports index (schema v4 imports[]).",
+      "fixtures": [
+        "import-value-strong-ref"
+      ]
+    },
+    {
+      "scenario": "nat-gateway-cleanup",
+      "description": "NAT Gateway destroy + dependent route cleanup (unconditional `waitUntilNatGatewayDeleted` on destroy).",
+      "fixtures": [
+        "bench-cdk-sample",
+        "vpc-nat-gateway"
+      ]
+    },
+    {
+      "scenario": "partial-create-cleanup",
+      "description": "Partial-create cleanup: post-`Create*` wiring failure issues best-effort `Delete*` before re-throwing so the next deploy is not blocked by an AWS-side orphan.",
+      "fixtures": []
+    },
+    {
+      "scenario": "rds-aurora-cluster-instance",
+      "description": "RDS Aurora cluster + writer instance create/destroy with the 30-min wait budget + DBProxy/DBProxyTargetGroup family.",
+      "fixtures": [
+        "rds-aurora"
+      ]
+    },
+    {
+      "scenario": "remove-protection-bypass",
+      "description": "`--remove-protection` flag bypassing AWS-side deletion-protection on supported types.",
+      "fixtures": [
+        "remove-protection"
+      ]
+    },
+    {
+      "scenario": "state-bucket-region-resolve",
+      "description": "State-bucket S3 client auto-detects bucket region via `GetBucketLocation` regardless of caller-profile region.",
+      "fixtures": [
+        "cross-region-state-bucket"
+      ]
+    },
+    {
+      "scenario": "state-schema-migration",
+      "description": "Legacy v1 / v2 state schema auto-migrates on next write; old binary fails clearly on a newer schema.",
+      "fixtures": [
+        "legacy-state-migration"
+      ]
+    },
+    {
+      "scenario": "vpc-lambda-cr-race",
+      "description": "Custom Resource invocation against a VPC Lambda mid-deploy (ENI-attach race window).",
+      "fixtures": [
+        "vpc-lambda-cr-race"
+      ]
+    },
+    {
+      "scenario": "vpc-lambda-eni-release",
+      "description": "Lambda hyperplane ENI cleanup after DeleteFunction (5-30 min eventually consistent).",
+      "fixtures": [
+        "bench-cdk-sample",
+        "lambda",
+        "vpc-lambda"
+      ]
+    }
+  ],
+  "orphanScenarios": [
+    "deletion-policy-retain",
+    "partial-create-cleanup"
+  ],
+  "unannotatedFixtures": []
+}

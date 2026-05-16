@@ -49,6 +49,23 @@ jobs:
       # the integ-coverage step above.
       - run: vp run audit:coverage:check
 
+      # Issue #423 — fail CI when docs/scenario-coverage.md or
+      # docs/_generated/scenario-coverage.json is stale relative to
+      # the KNOWN_SCENARIOS taxonomy in
+      # scripts/build-scenario-coverage-matrix.ts and the per-fixture
+      # tests/integration/<name>/.scenarios.json sidecars. Same shape as
+      # the integ-coverage step above. The script ALSO hard-fails on a
+      # sidecar carrying an unknown tag (typo guard), so the step covers
+      # both "forgot to regenerate" and "wrote a typo tag" classes.
+      - name: scenario-coverage matrix is up-to-date
+        run: |
+          vp run scenario-coverage
+          if ! git diff --quiet -- docs/scenario-coverage.md docs/_generated/scenario-coverage.json; then
+            echo "::error::scenario-coverage matrix is stale — run \`vp run scenario-coverage\` and commit the regenerated docs/scenario-coverage.md + docs/_generated/scenario-coverage.json"
+            git --no-pager diff -- docs/scenario-coverage.md docs/_generated/scenario-coverage.json
+            exit 1
+          fi
+
   runtime-compat:
     runs-on: ubuntu-latest
     needs: check-build-test

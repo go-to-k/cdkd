@@ -1,0 +1,5 @@
+{
+  "scenarios": [
+    "globaltable-cross-region-replica"
+  ]
+}
