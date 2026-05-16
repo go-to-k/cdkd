@@ -101,6 +101,43 @@ export class ApiGatewayV2Provider implements ResourceProvider {
     ],
   ]);
 
+  /**
+   * Properties this provider deliberately does NOT wire through to the SDK
+   * call, with a one-line rationale per entry. Consumed by the development-
+   * time coverage check (`tests/unit/provisioning/property-coverage.test.ts`,
+   * issue #391) — see `ResourceProvider.unhandledByDesign` doc.
+   *
+   * The five OpenAPI-import fields on `AWS::ApiGatewayV2::Api` trigger an
+   * entirely separate `ImportApi` AWS API code path (inline OpenAPI spec or
+   * S3-hosted), not the field-by-field `CreateApi` cdkd already supports.
+   * Wiring them would require parsing OpenAPI semantics + a different
+   * mutation surface and is out of scope for the SDK-Provider safety net.
+   */
+  unhandledByDesign = new Map<string, ReadonlyMap<string, string>>([
+    [
+      'AWS::ApiGatewayV2::Api',
+      new Map([
+        [
+          'Body',
+          'OpenAPI/Swagger inline spec; routed through ImportApi, not the field-by-field CreateApi path.',
+        ],
+        [
+          'BodyS3Location',
+          'OpenAPI/Swagger spec on S3; routed through ImportApi, not the field-by-field CreateApi path.',
+        ],
+        ['FailOnWarnings', 'OpenAPI-import-only flag; meaningful only on the ImportApi code path.'],
+        [
+          'DisableSchemaValidation',
+          'Schema-validation toggle on CreateApi/UpdateApi that AWS docs scope to WebSocket APIs using AWS::ApiGatewayV2::Model — that resource type is not yet registered in cdkd, so the toggle has no effect to wire.',
+        ],
+        [
+          'BasePath',
+          'OpenAPI-import-only basePath override; meaningful only on the ImportApi code path.',
+        ],
+      ]),
+    ],
+  ]);
+
   private getClient(): ApiGatewayV2Client {
     if (!this.client) {
       this.client = new ApiGatewayV2Client(
