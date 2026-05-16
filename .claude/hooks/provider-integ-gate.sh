@@ -145,10 +145,26 @@ else
   allowlist_blob=$(git -C "$target_dir" show "HEAD:$ALLOWLIST_FILE" 2>/dev/null || true)
 fi
 
-# Pure-shell JSON-key extraction is fragile; prefer `jq` when available
-# (every dev machine running cdkd already has it, see provider-docs-gate.sh).
-# Fall back to a regex grep that handles the common case.
-if [[ -n "$allowlist_blob" ]] && command -v jq >/dev/null 2>&1; then
+# Parse the allow-list via `jq`. cdkd's hooks require `jq` globally —
+# the input-payload parser at the top of this file already calls
+# `jq -r '.tool_input.command'`, so a no-jq install would silently
+# fail at the input-parsing step (cmd="" → grep miss → exit 0
+# pass-through) and never reach this allow-list parser. Earlier
+# revisions of this hook carried a regex-grep fallback for "jq
+# missing"; removed in the PR #404 cleanup since (a) it was untestable
+# (PATH strip kills input parsing first), (b) it was speculative
+# defense-in-depth with no real failure mode the rest of the hook
+# would notice, and (c) keeping two parsers in sync is its own
+# correctness risk.
+#
+# Rationale validity rule: non-empty string after
+# `gsub("^\\s+|\\s+$"; "")` — whitespace-only does NOT exempt the
+# type. Keys starting with `$` are documentation metadata
+# (`$schema-doc`, `$why-sidecar`) and are skipped. Mirrors the
+# matrix script's `parseAllowNoIntegRationalesContent` in
+# scripts/build-integ-coverage-matrix.ts so the two parsers agree
+# on what counts as allow-listed.
+if [[ -n "$allowlist_blob" ]]; then
   allow_listed=$(printf '%s' "$allowlist_blob" \
     | jq -r 'to_entries
         | map(select(.key | startswith("$") | not))
@@ -156,15 +172,7 @@ if [[ -n "$allowlist_blob" ]] && command -v jq >/dev/null 2>&1; then
         | .[].key' 2>/dev/null \
     | sort -u)
 else
-  # The value-half regex (`"[^"]*[^[:space:]"][^"]*"`) requires the value
-  # to contain at least one non-whitespace non-quote character — matches
-  # the jq path's `gsub("^\\s+|\\s+$"; "") | length > 0` rule so the two
-  # parsers agree on whether a value like "   " (whitespace-only) is a
-  # valid rationale. A naive `"[^"]+"` would accept whitespace-only.
-  allow_listed=$(printf '%s\n' "$allowlist_blob" \
-    | grep -E '^[[:space:]]*"AWS::[A-Za-z0-9]+::[A-Za-z0-9]+"[[:space:]]*:[[:space:]]*"[^"]*[^[:space:]"][^"]*"' \
-    | sed -E 's/^[[:space:]]*"(AWS::[A-Za-z0-9]+::[A-Za-z0-9]+)".*/\1/' \
-    | sort -u)
+  allow_listed=""
 fi
 
 # Read the staged blob of every tests/integration/*/lib/*.ts and
