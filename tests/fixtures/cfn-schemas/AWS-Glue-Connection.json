@@ -1,0 +1,15 @@
+{
+  "resourceType": "AWS::Glue::Connection",
+  "generatedAt": "2026-05-16",
+  "properties": [
+    "CatalogId",
+    "ConnectionInput",
+    "Id"
+  ],
+  "readOnlyProperties": [
+    "Id"
+  ],
+  "createOnlyProperties": [
+    "CatalogId"
+  ]
+}

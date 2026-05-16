@@ -1,0 +1,23 @@
+{
+  "resourceType": "AWS::EC2::SecurityGroup",
+  "generatedAt": "2026-05-16",
+  "properties": [
+    "GroupDescription",
+    "GroupId",
+    "GroupName",
+    "Id",
+    "SecurityGroupEgress",
+    "SecurityGroupIngress",
+    "Tags",
+    "VpcId"
+  ],
+  "readOnlyProperties": [
+    "GroupId",
+    "Id"
+  ],
+  "createOnlyProperties": [
+    "GroupDescription",
+    "GroupName",
+    "VpcId"
+  ]
+}

@@ -1,0 +1,32 @@
+{
+  "resourceType": "AWS::SQS::Queue",
+  "generatedAt": "2026-05-16",
+  "properties": [
+    "Arn",
+    "ContentBasedDeduplication",
+    "DeduplicationScope",
+    "DelaySeconds",
+    "FifoQueue",
+    "FifoThroughputLimit",
+    "KmsDataKeyReusePeriodSeconds",
+    "KmsMasterKeyId",
+    "MaximumMessageSize",
+    "MessageRetentionPeriod",
+    "QueueName",
+    "QueueUrl",
+    "ReceiveMessageWaitTimeSeconds",
+    "RedriveAllowPolicy",
+    "RedrivePolicy",
+    "SqsManagedSseEnabled",
+    "Tags",
+    "VisibilityTimeout"
+  ],
+  "readOnlyProperties": [
+    "Arn",
+    "QueueUrl"
+  ],
+  "createOnlyProperties": [
+    "FifoQueue",
+    "QueueName"
+  ]
+}

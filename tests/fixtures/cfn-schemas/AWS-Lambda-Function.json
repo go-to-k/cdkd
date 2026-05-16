@@ -1,0 +1,48 @@
+{
+  "resourceType": "AWS::Lambda::Function",
+  "generatedAt": "2026-05-16",
+  "properties": [
+    "Architectures",
+    "Arn",
+    "CapacityProviderConfig",
+    "Code",
+    "CodeSigningConfigArn",
+    "DeadLetterConfig",
+    "Description",
+    "DurableConfig",
+    "Environment",
+    "EphemeralStorage",
+    "FileSystemConfigs",
+    "FunctionName",
+    "FunctionScalingConfig",
+    "Handler",
+    "ImageConfig",
+    "KmsKeyArn",
+    "Layers",
+    "LoggingConfig",
+    "MemorySize",
+    "PackageType",
+    "PublishToLatestPublished",
+    "RecursiveLoop",
+    "ReservedConcurrentExecutions",
+    "Role",
+    "Runtime",
+    "RuntimeManagementConfig",
+    "SnapStart",
+    "SnapStartResponse",
+    "Tags",
+    "TenancyConfig",
+    "Timeout",
+    "TracingConfig",
+    "VpcConfig"
+  ],
+  "readOnlyProperties": [
+    "Arn",
+    "SnapStartResponse"
+  ],
+  "createOnlyProperties": [
+    "FunctionName",
+    "PackageType",
+    "TenancyConfig"
+  ]
+}

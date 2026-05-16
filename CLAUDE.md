@@ -386,8 +386,9 @@ registry.register('AWS::IAM::Role', new IAMRoleProvider());
 1. Create new file in `src/provisioning/providers/`
 2. Implement `ResourceProvider` interface
 3. Register in `src/provisioning/register-providers.ts` within the `registerAllProviders()` function
-4. Write tests
-5. Add the resource type to [docs/supported-resources.md](docs/supported-resources.md) (deploy/manage capability table) AND to [docs/import.md](docs/import.md) (import-side coverage: auto-lookup vs override-only vs sub-resource)
+4. Refresh the CFn schema fixture for the new type: `node scripts/refresh-cfn-schemas.mjs --only-missing` (requires AWS credentials with `cloudformation:DescribeType`). Then classify every unaccounted property into `handledProperties` (if `create()`/`update()` wires the field) or `unhandledByDesign` (with a one-line rationale) so the new `property-coverage` test stays green — see [docs/provider-development.md](docs/provider-development.md) §3c.
+5. Write tests
+6. Add the resource type to [docs/supported-resources.md](docs/supported-resources.md) (deploy/manage capability table) AND to [docs/import.md](docs/import.md) (import-side coverage: auto-lookup vs override-only vs sub-resource)
 
 See [docs/provider-development.md](docs/provider-development.md) for details.
 

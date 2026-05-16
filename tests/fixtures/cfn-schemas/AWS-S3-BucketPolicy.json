@@ -1,0 +1,12 @@
+{
+  "resourceType": "AWS::S3::BucketPolicy",
+  "generatedAt": "2026-05-16",
+  "properties": [
+    "Bucket",
+    "PolicyDocument"
+  ],
+  "readOnlyProperties": [],
+  "createOnlyProperties": [
+    "Bucket"
+  ]
+}

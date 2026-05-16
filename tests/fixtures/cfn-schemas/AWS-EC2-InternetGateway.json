@@ -1,0 +1,12 @@
+{
+  "resourceType": "AWS::EC2::InternetGateway",
+  "generatedAt": "2026-05-16",
+  "properties": [
+    "InternetGatewayId",
+    "Tags"
+  ],
+  "readOnlyProperties": [
+    "InternetGatewayId"
+  ],
+  "createOnlyProperties": []
+}

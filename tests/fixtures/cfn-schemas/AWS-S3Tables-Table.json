@@ -1,0 +1,31 @@
+{
+  "resourceType": "AWS::S3Tables::Table",
+  "generatedAt": "2026-05-16",
+  "properties": [
+    "Compaction",
+    "IcebergMetadata",
+    "Namespace",
+    "OpenTableFormat",
+    "SnapshotManagement",
+    "StorageClassConfiguration",
+    "TableARN",
+    "TableBucketARN",
+    "TableName",
+    "Tags",
+    "VersionToken",
+    "WarehouseLocation",
+    "WithoutMetadata"
+  ],
+  "readOnlyProperties": [
+    "TableARN",
+    "VersionToken",
+    "WarehouseLocation"
+  ],
+  "createOnlyProperties": [
+    "IcebergMetadata",
+    "OpenTableFormat",
+    "StorageClassConfiguration",
+    "TableBucketARN",
+    "WithoutMetadata"
+  ]
+}

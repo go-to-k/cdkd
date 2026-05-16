@@ -1,0 +1,21 @@
+{
+  "resourceType": "AWS::Lambda::Url",
+  "generatedAt": "2026-05-16",
+  "properties": [
+    "AuthType",
+    "Cors",
+    "FunctionArn",
+    "FunctionUrl",
+    "InvokeMode",
+    "Qualifier",
+    "TargetFunctionArn"
+  ],
+  "readOnlyProperties": [
+    "FunctionArn",
+    "FunctionUrl"
+  ],
+  "createOnlyProperties": [
+    "Qualifier",
+    "TargetFunctionArn"
+  ]
+}

@@ -1,0 +1,25 @@
+{
+  "resourceType": "AWS::KMS::Key",
+  "generatedAt": "2026-05-16",
+  "properties": [
+    "Arn",
+    "BypassPolicyLockoutSafetyCheck",
+    "Description",
+    "EnableKeyRotation",
+    "Enabled",
+    "KeyId",
+    "KeyPolicy",
+    "KeySpec",
+    "KeyUsage",
+    "MultiRegion",
+    "Origin",
+    "PendingWindowInDays",
+    "RotationPeriodInDays",
+    "Tags"
+  ],
+  "readOnlyProperties": [
+    "Arn",
+    "KeyId"
+  ],
+  "createOnlyProperties": []
+}

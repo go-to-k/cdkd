@@ -1,0 +1,18 @@
+{
+  "resourceType": "AWS::ApiGateway::Resource",
+  "generatedAt": "2026-05-16",
+  "properties": [
+    "ParentId",
+    "PathPart",
+    "ResourceId",
+    "RestApiId"
+  ],
+  "readOnlyProperties": [
+    "ResourceId"
+  ],
+  "createOnlyProperties": [
+    "ParentId",
+    "PathPart",
+    "RestApiId"
+  ]
+}

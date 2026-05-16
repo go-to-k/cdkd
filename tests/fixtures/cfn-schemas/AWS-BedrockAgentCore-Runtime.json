@@ -1,0 +1,39 @@
+{
+  "resourceType": "AWS::BedrockAgentCore::Runtime",
+  "generatedAt": "2026-05-16",
+  "properties": [
+    "AgentRuntimeArn",
+    "AgentRuntimeArtifact",
+    "AgentRuntimeId",
+    "AgentRuntimeName",
+    "AgentRuntimeVersion",
+    "AuthorizerConfiguration",
+    "CreatedAt",
+    "Description",
+    "EnvironmentVariables",
+    "FailureReason",
+    "FilesystemConfigurations",
+    "LastUpdatedAt",
+    "LifecycleConfiguration",
+    "NetworkConfiguration",
+    "ProtocolConfiguration",
+    "RequestHeaderConfiguration",
+    "RoleArn",
+    "Status",
+    "Tags",
+    "WorkloadIdentityDetails"
+  ],
+  "readOnlyProperties": [
+    "AgentRuntimeArn",
+    "AgentRuntimeId",
+    "AgentRuntimeVersion",
+    "CreatedAt",
+    "FailureReason",
+    "LastUpdatedAt",
+    "Status",
+    "WorkloadIdentityDetails"
+  ],
+  "createOnlyProperties": [
+    "AgentRuntimeName"
+  ]
+}

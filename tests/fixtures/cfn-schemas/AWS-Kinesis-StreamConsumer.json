@@ -1,0 +1,22 @@
+{
+  "resourceType": "AWS::Kinesis::StreamConsumer",
+  "generatedAt": "2026-05-16",
+  "properties": [
+    "ConsumerARN",
+    "ConsumerCreationTimestamp",
+    "ConsumerName",
+    "ConsumerStatus",
+    "StreamARN",
+    "Tags"
+  ],
+  "readOnlyProperties": [
+    "ConsumerARN",
+    "ConsumerCreationTimestamp",
+    "ConsumerStatus"
+  ],
+  "createOnlyProperties": [
+    "ConsumerName",
+    "StreamARN",
+    "Tags"
+  ]
+}

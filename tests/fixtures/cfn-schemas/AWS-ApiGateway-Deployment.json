@@ -1,0 +1,19 @@
+{
+  "resourceType": "AWS::ApiGateway::Deployment",
+  "generatedAt": "2026-05-16",
+  "properties": [
+    "DeploymentCanarySettings",
+    "DeploymentId",
+    "Description",
+    "RestApiId",
+    "StageDescription",
+    "StageName"
+  ],
+  "readOnlyProperties": [
+    "DeploymentId"
+  ],
+  "createOnlyProperties": [
+    "DeploymentCanarySettings",
+    "RestApiId"
+  ]
+}

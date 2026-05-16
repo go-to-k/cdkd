@@ -1,0 +1,24 @@
+{
+  "resourceType": "AWS::Kinesis::Stream",
+  "generatedAt": "2026-05-16",
+  "properties": [
+    "Arn",
+    "DesiredShardLevelMetrics",
+    "MaxRecordSizeInKiB",
+    "Name",
+    "RetentionPeriodHours",
+    "ShardCount",
+    "StreamEncryption",
+    "StreamModeDetails",
+    "Tags",
+    "WarmThroughputMiBps",
+    "WarmThroughputObject"
+  ],
+  "readOnlyProperties": [
+    "Arn",
+    "WarmThroughputObject"
+  ],
+  "createOnlyProperties": [
+    "Name"
+  ]
+}

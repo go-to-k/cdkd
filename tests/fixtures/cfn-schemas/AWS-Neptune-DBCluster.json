@@ -1,0 +1,53 @@
+{
+  "resourceType": "AWS::Neptune::DBCluster",
+  "generatedAt": "2026-05-16",
+  "properties": [
+    "AssociatedRoles",
+    "AvailabilityZones",
+    "BackupRetentionPeriod",
+    "ClusterResourceId",
+    "CopyTagsToSnapshot",
+    "DBClusterIdentifier",
+    "DBClusterParameterGroupName",
+    "DBInstanceParameterGroupName",
+    "DBPort",
+    "DBSubnetGroupName",
+    "DeletionProtection",
+    "EnableCloudwatchLogsExports",
+    "Endpoint",
+    "EngineVersion",
+    "IamAuthEnabled",
+    "KmsKeyId",
+    "Port",
+    "PreferredBackupWindow",
+    "PreferredMaintenanceWindow",
+    "ReadEndpoint",
+    "RestoreToTime",
+    "RestoreType",
+    "ServerlessScalingConfiguration",
+    "SnapshotIdentifier",
+    "SourceDBClusterIdentifier",
+    "StorageEncrypted",
+    "Tags",
+    "UseLatestRestorableTime",
+    "VpcSecurityGroupIds"
+  ],
+  "readOnlyProperties": [
+    "ClusterResourceId",
+    "Endpoint",
+    "Port",
+    "ReadEndpoint"
+  ],
+  "createOnlyProperties": [
+    "AvailabilityZones",
+    "DBClusterIdentifier",
+    "DBSubnetGroupName",
+    "KmsKeyId",
+    "RestoreToTime",
+    "RestoreType",
+    "SnapshotIdentifier",
+    "SourceDBClusterIdentifier",
+    "StorageEncrypted",
+    "UseLatestRestorableTime"
+  ]
+}

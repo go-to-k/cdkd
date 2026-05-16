@@ -1,0 +1,31 @@
+{
+  "resourceType": "AWS::ApiGatewayV2::Integration",
+  "generatedAt": "2026-05-16",
+  "properties": [
+    "ApiId",
+    "ConnectionId",
+    "ConnectionType",
+    "ContentHandlingStrategy",
+    "CredentialsArn",
+    "Description",
+    "IntegrationId",
+    "IntegrationMethod",
+    "IntegrationSubtype",
+    "IntegrationType",
+    "IntegrationUri",
+    "PassthroughBehavior",
+    "PayloadFormatVersion",
+    "RequestParameters",
+    "RequestTemplates",
+    "ResponseParameters",
+    "TemplateSelectionExpression",
+    "TimeoutInMillis",
+    "TlsConfig"
+  ],
+  "readOnlyProperties": [
+    "IntegrationId"
+  ],
+  "createOnlyProperties": [
+    "ApiId"
+  ]
+}

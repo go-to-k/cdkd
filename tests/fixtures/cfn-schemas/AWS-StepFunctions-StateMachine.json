@@ -1,0 +1,29 @@
+{
+  "resourceType": "AWS::StepFunctions::StateMachine",
+  "generatedAt": "2026-05-16",
+  "properties": [
+    "Arn",
+    "Definition",
+    "DefinitionS3Location",
+    "DefinitionString",
+    "DefinitionSubstitutions",
+    "EncryptionConfiguration",
+    "LoggingConfiguration",
+    "Name",
+    "RoleArn",
+    "StateMachineName",
+    "StateMachineRevisionId",
+    "StateMachineType",
+    "Tags",
+    "TracingConfiguration"
+  ],
+  "readOnlyProperties": [
+    "Arn",
+    "Name",
+    "StateMachineRevisionId"
+  ],
+  "createOnlyProperties": [
+    "StateMachineName",
+    "StateMachineType"
+  ]
+}

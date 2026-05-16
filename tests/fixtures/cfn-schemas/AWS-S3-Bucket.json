@@ -1,0 +1,48 @@
+{
+  "resourceType": "AWS::S3::Bucket",
+  "generatedAt": "2026-05-16",
+  "properties": [
+    "AbacStatus",
+    "AccelerateConfiguration",
+    "AccessControl",
+    "AnalyticsConfigurations",
+    "Arn",
+    "BucketEncryption",
+    "BucketName",
+    "BucketNamePrefix",
+    "BucketNamespace",
+    "CorsConfiguration",
+    "DomainName",
+    "DualStackDomainName",
+    "IntelligentTieringConfigurations",
+    "InventoryConfigurations",
+    "LifecycleConfiguration",
+    "LoggingConfiguration",
+    "MetadataConfiguration",
+    "MetadataTableConfiguration",
+    "MetricsConfigurations",
+    "NotificationConfiguration",
+    "ObjectLockConfiguration",
+    "ObjectLockEnabled",
+    "OwnershipControls",
+    "PublicAccessBlockConfiguration",
+    "RegionalDomainName",
+    "ReplicationConfiguration",
+    "Tags",
+    "VersioningConfiguration",
+    "WebsiteConfiguration",
+    "WebsiteURL"
+  ],
+  "readOnlyProperties": [
+    "Arn",
+    "DomainName",
+    "DualStackDomainName",
+    "RegionalDomainName",
+    "WebsiteURL"
+  ],
+  "createOnlyProperties": [
+    "BucketName",
+    "BucketNamePrefix",
+    "BucketNamespace"
+  ]
+}

@@ -1,0 +1,21 @@
+{
+  "resourceType": "AWS::IAM::User",
+  "generatedAt": "2026-05-16",
+  "properties": [
+    "Arn",
+    "Groups",
+    "LoginProfile",
+    "ManagedPolicyArns",
+    "Path",
+    "PermissionsBoundary",
+    "Policies",
+    "Tags",
+    "UserName"
+  ],
+  "readOnlyProperties": [
+    "Arn"
+  ],
+  "createOnlyProperties": [
+    "UserName"
+  ]
+}

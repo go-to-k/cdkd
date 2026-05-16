@@ -1,0 +1,23 @@
+{
+  "resourceType": "AWS::EFS::MountTarget",
+  "generatedAt": "2026-05-16",
+  "properties": [
+    "FileSystemId",
+    "Id",
+    "IpAddress",
+    "IpAddressType",
+    "Ipv6Address",
+    "SecurityGroups",
+    "SubnetId"
+  ],
+  "readOnlyProperties": [
+    "Id"
+  ],
+  "createOnlyProperties": [
+    "FileSystemId",
+    "IpAddress",
+    "IpAddressType",
+    "Ipv6Address",
+    "SubnetId"
+  ]
+}

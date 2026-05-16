@@ -1,0 +1,13 @@
+{
+  "resourceType": "AWS::IAM::UserToGroupAddition",
+  "generatedAt": "2026-05-16",
+  "properties": [
+    "GroupName",
+    "Id",
+    "Users"
+  ],
+  "readOnlyProperties": [
+    "Id"
+  ],
+  "createOnlyProperties": []
+}

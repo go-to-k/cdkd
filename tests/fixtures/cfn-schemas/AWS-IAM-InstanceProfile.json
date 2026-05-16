@@ -1,0 +1,17 @@
+{
+  "resourceType": "AWS::IAM::InstanceProfile",
+  "generatedAt": "2026-05-16",
+  "properties": [
+    "Arn",
+    "InstanceProfileName",
+    "Path",
+    "Roles"
+  ],
+  "readOnlyProperties": [
+    "Arn"
+  ],
+  "createOnlyProperties": [
+    "InstanceProfileName",
+    "Path"
+  ]
+}

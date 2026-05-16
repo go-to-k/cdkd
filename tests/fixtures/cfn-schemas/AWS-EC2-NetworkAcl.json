@@ -1,0 +1,15 @@
+{
+  "resourceType": "AWS::EC2::NetworkAcl",
+  "generatedAt": "2026-05-16",
+  "properties": [
+    "Id",
+    "Tags",
+    "VpcId"
+  ],
+  "readOnlyProperties": [
+    "Id"
+  ],
+  "createOnlyProperties": [
+    "VpcId"
+  ]
+}

@@ -1,0 +1,30 @@
+{
+  "resourceType": "AWS::EC2::VPC",
+  "generatedAt": "2026-05-16",
+  "properties": [
+    "CidrBlock",
+    "CidrBlockAssociations",
+    "DefaultNetworkAcl",
+    "DefaultSecurityGroup",
+    "EnableDnsHostnames",
+    "EnableDnsSupport",
+    "InstanceTenancy",
+    "Ipv4IpamPoolId",
+    "Ipv4NetmaskLength",
+    "Ipv6CidrBlocks",
+    "Tags",
+    "VpcId"
+  ],
+  "readOnlyProperties": [
+    "CidrBlockAssociations",
+    "DefaultNetworkAcl",
+    "DefaultSecurityGroup",
+    "Ipv6CidrBlocks",
+    "VpcId"
+  ],
+  "createOnlyProperties": [
+    "CidrBlock",
+    "Ipv4IpamPoolId",
+    "Ipv4NetmaskLength"
+  ]
+}

@@ -1,0 +1,27 @@
+{
+  "resourceType": "AWS::SNS::Topic",
+  "generatedAt": "2026-05-16",
+  "properties": [
+    "ArchivePolicy",
+    "ContentBasedDeduplication",
+    "DataProtectionPolicy",
+    "DeliveryStatusLogging",
+    "DisplayName",
+    "FifoThroughputScope",
+    "FifoTopic",
+    "KmsMasterKeyId",
+    "SignatureVersion",
+    "Subscription",
+    "Tags",
+    "TopicArn",
+    "TopicName",
+    "TracingConfig"
+  ],
+  "readOnlyProperties": [
+    "TopicArn"
+  ],
+  "createOnlyProperties": [
+    "FifoTopic",
+    "TopicName"
+  ]
+}

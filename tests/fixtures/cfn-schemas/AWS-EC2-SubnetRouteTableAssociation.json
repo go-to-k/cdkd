@@ -1,0 +1,16 @@
+{
+  "resourceType": "AWS::EC2::SubnetRouteTableAssociation",
+  "generatedAt": "2026-05-16",
+  "properties": [
+    "Id",
+    "RouteTableId",
+    "SubnetId"
+  ],
+  "readOnlyProperties": [
+    "Id"
+  ],
+  "createOnlyProperties": [
+    "RouteTableId",
+    "SubnetId"
+  ]
+}

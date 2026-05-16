@@ -1,0 +1,33 @@
+{
+  "resourceType": "AWS::Glue::Job",
+  "generatedAt": "2026-05-16",
+  "properties": [
+    "AllocatedCapacity",
+    "Command",
+    "Connections",
+    "DefaultArguments",
+    "Description",
+    "ExecutionClass",
+    "ExecutionProperty",
+    "GlueVersion",
+    "JobMode",
+    "JobRunQueuingEnabled",
+    "LogUri",
+    "MaintenanceWindow",
+    "MaxCapacity",
+    "MaxRetries",
+    "Name",
+    "NonOverridableArguments",
+    "NotificationProperty",
+    "NumberOfWorkers",
+    "Role",
+    "SecurityConfiguration",
+    "Tags",
+    "Timeout",
+    "WorkerType"
+  ],
+  "readOnlyProperties": [],
+  "createOnlyProperties": [
+    "Name"
+  ]
+}

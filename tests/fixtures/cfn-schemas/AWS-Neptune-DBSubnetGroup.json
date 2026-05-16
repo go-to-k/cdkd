@@ -1,0 +1,14 @@
+{
+  "resourceType": "AWS::Neptune::DBSubnetGroup",
+  "generatedAt": "2026-05-16",
+  "properties": [
+    "DBSubnetGroupDescription",
+    "DBSubnetGroupName",
+    "SubnetIds",
+    "Tags"
+  ],
+  "readOnlyProperties": [],
+  "createOnlyProperties": [
+    "DBSubnetGroupName"
+  ]
+}

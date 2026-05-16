@@ -1,0 +1,36 @@
+{
+  "resourceType": "AWS::KinesisFirehose::DeliveryStream",
+  "generatedAt": "2026-05-16",
+  "properties": [
+    "AmazonOpenSearchServerlessDestinationConfiguration",
+    "AmazonopensearchserviceDestinationConfiguration",
+    "Arn",
+    "DatabaseSourceConfiguration",
+    "DeliveryStreamEncryptionConfigurationInput",
+    "DeliveryStreamName",
+    "DeliveryStreamType",
+    "DirectPutSourceConfiguration",
+    "ElasticsearchDestinationConfiguration",
+    "ExtendedS3DestinationConfiguration",
+    "HttpEndpointDestinationConfiguration",
+    "IcebergDestinationConfiguration",
+    "KinesisStreamSourceConfiguration",
+    "MSKSourceConfiguration",
+    "RedshiftDestinationConfiguration",
+    "S3DestinationConfiguration",
+    "SnowflakeDestinationConfiguration",
+    "SplunkDestinationConfiguration",
+    "Tags"
+  ],
+  "readOnlyProperties": [
+    "Arn"
+  ],
+  "createOnlyProperties": [
+    "DatabaseSourceConfiguration",
+    "DeliveryStreamName",
+    "DeliveryStreamType",
+    "DirectPutSourceConfiguration",
+    "KinesisStreamSourceConfiguration",
+    "MSKSourceConfiguration"
+  ]
+}

@@ -1,0 +1,30 @@
+{
+  "resourceType": "AWS::Lambda::Permission",
+  "generatedAt": "2026-05-16",
+  "properties": [
+    "Action",
+    "EventSourceToken",
+    "FunctionName",
+    "FunctionUrlAuthType",
+    "Id",
+    "InvokedViaFunctionUrl",
+    "Principal",
+    "PrincipalOrgID",
+    "SourceAccount",
+    "SourceArn"
+  ],
+  "readOnlyProperties": [
+    "Id"
+  ],
+  "createOnlyProperties": [
+    "Action",
+    "EventSourceToken",
+    "FunctionName",
+    "FunctionUrlAuthType",
+    "InvokedViaFunctionUrl",
+    "Principal",
+    "PrincipalOrgID",
+    "SourceAccount",
+    "SourceArn"
+  ]
+}

@@ -1,0 +1,25 @@
+{
+  "resourceType": "AWS::IAM::Role",
+  "generatedAt": "2026-05-16",
+  "properties": [
+    "Arn",
+    "AssumeRolePolicyDocument",
+    "Description",
+    "ManagedPolicyArns",
+    "MaxSessionDuration",
+    "Path",
+    "PermissionsBoundary",
+    "Policies",
+    "RoleId",
+    "RoleName",
+    "Tags"
+  ],
+  "readOnlyProperties": [
+    "Arn",
+    "RoleId"
+  ],
+  "createOnlyProperties": [
+    "Path",
+    "RoleName"
+  ]
+}

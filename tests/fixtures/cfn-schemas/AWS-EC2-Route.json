@@ -1,0 +1,31 @@
+{
+  "resourceType": "AWS::EC2::Route",
+  "generatedAt": "2026-05-16",
+  "properties": [
+    "CarrierGatewayId",
+    "CidrBlock",
+    "CoreNetworkArn",
+    "DestinationCidrBlock",
+    "DestinationIpv6CidrBlock",
+    "DestinationPrefixListId",
+    "EgressOnlyInternetGatewayId",
+    "GatewayId",
+    "InstanceId",
+    "LocalGatewayId",
+    "NatGatewayId",
+    "NetworkInterfaceId",
+    "RouteTableId",
+    "TransitGatewayId",
+    "VpcEndpointId",
+    "VpcPeeringConnectionId"
+  ],
+  "readOnlyProperties": [
+    "CidrBlock"
+  ],
+  "createOnlyProperties": [
+    "DestinationCidrBlock",
+    "DestinationIpv6CidrBlock",
+    "DestinationPrefixListId",
+    "RouteTableId"
+  ]
+}

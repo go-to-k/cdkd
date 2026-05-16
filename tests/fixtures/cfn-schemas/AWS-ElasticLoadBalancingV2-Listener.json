@@ -1,0 +1,22 @@
+{
+  "resourceType": "AWS::ElasticLoadBalancingV2::Listener",
+  "generatedAt": "2026-05-16",
+  "properties": [
+    "AlpnPolicy",
+    "Certificates",
+    "DefaultActions",
+    "ListenerArn",
+    "ListenerAttributes",
+    "LoadBalancerArn",
+    "MutualAuthentication",
+    "Port",
+    "Protocol",
+    "SslPolicy"
+  ],
+  "readOnlyProperties": [
+    "ListenerArn"
+  ],
+  "createOnlyProperties": [
+    "LoadBalancerArn"
+  ]
+}

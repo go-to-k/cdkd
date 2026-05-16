@@ -1,0 +1,25 @@
+{
+  "resourceType": "AWS::ECR::Repository",
+  "generatedAt": "2026-05-16",
+  "properties": [
+    "Arn",
+    "EmptyOnDelete",
+    "EncryptionConfiguration",
+    "ImageScanningConfiguration",
+    "ImageTagMutability",
+    "ImageTagMutabilityExclusionFilters",
+    "LifecyclePolicy",
+    "RepositoryName",
+    "RepositoryPolicyText",
+    "RepositoryUri",
+    "Tags"
+  ],
+  "readOnlyProperties": [
+    "Arn",
+    "RepositoryUri"
+  ],
+  "createOnlyProperties": [
+    "EncryptionConfiguration",
+    "RepositoryName"
+  ]
+}

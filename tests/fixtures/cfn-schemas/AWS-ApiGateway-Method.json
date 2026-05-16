@@ -1,0 +1,25 @@
+{
+  "resourceType": "AWS::ApiGateway::Method",
+  "generatedAt": "2026-05-16",
+  "properties": [
+    "ApiKeyRequired",
+    "AuthorizationScopes",
+    "AuthorizationType",
+    "AuthorizerId",
+    "HttpMethod",
+    "Integration",
+    "MethodResponses",
+    "OperationName",
+    "RequestModels",
+    "RequestParameters",
+    "RequestValidatorId",
+    "ResourceId",
+    "RestApiId"
+  ],
+  "readOnlyProperties": [],
+  "createOnlyProperties": [
+    "HttpMethod",
+    "ResourceId",
+    "RestApiId"
+  ]
+}

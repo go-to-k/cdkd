@@ -1,0 +1,14 @@
+{
+  "resourceType": "AWS::CloudFront::CloudFrontOriginAccessIdentity",
+  "generatedAt": "2026-05-16",
+  "properties": [
+    "CloudFrontOriginAccessIdentityConfig",
+    "Id",
+    "S3CanonicalUserId"
+  ],
+  "readOnlyProperties": [
+    "Id",
+    "S3CanonicalUserId"
+  ],
+  "createOnlyProperties": []
+}

@@ -1,0 +1,47 @@
+{
+  "resourceType": "AWS::ECS::TaskDefinition",
+  "generatedAt": "2026-05-16",
+  "properties": [
+    "ContainerDefinitions",
+    "Cpu",
+    "EnableFaultInjection",
+    "EphemeralStorage",
+    "ExecutionRoleArn",
+    "Family",
+    "InferenceAccelerators",
+    "IpcMode",
+    "Memory",
+    "NetworkMode",
+    "PidMode",
+    "PlacementConstraints",
+    "ProxyConfiguration",
+    "RequiresCompatibilities",
+    "RuntimePlatform",
+    "Tags",
+    "TaskDefinitionArn",
+    "TaskRoleArn",
+    "Volumes"
+  ],
+  "readOnlyProperties": [
+    "TaskDefinitionArn"
+  ],
+  "createOnlyProperties": [
+    "ContainerDefinitions",
+    "Cpu",
+    "EnableFaultInjection",
+    "EphemeralStorage",
+    "ExecutionRoleArn",
+    "Family",
+    "InferenceAccelerators",
+    "IpcMode",
+    "Memory",
+    "NetworkMode",
+    "PidMode",
+    "PlacementConstraints",
+    "ProxyConfiguration",
+    "RequiresCompatibilities",
+    "RuntimePlatform",
+    "TaskRoleArn",
+    "Volumes"
+  ]
+}

@@ -1,0 +1,37 @@
+{
+  "resourceType": "AWS::ElasticLoadBalancingV2::LoadBalancer",
+  "generatedAt": "2026-05-16",
+  "properties": [
+    "CanonicalHostedZoneID",
+    "DNSName",
+    "EnableCapacityReservationProvisionStabilize",
+    "EnablePrefixForIpv6SourceNat",
+    "EnforceSecurityGroupInboundRulesOnPrivateLinkTraffic",
+    "IpAddressType",
+    "Ipv4IpamPoolId",
+    "LoadBalancerArn",
+    "LoadBalancerAttributes",
+    "LoadBalancerFullName",
+    "LoadBalancerName",
+    "MinimumLoadBalancerCapacity",
+    "Name",
+    "Scheme",
+    "SecurityGroups",
+    "SubnetMappings",
+    "Subnets",
+    "Tags",
+    "Type"
+  ],
+  "readOnlyProperties": [
+    "CanonicalHostedZoneID",
+    "DNSName",
+    "LoadBalancerArn",
+    "LoadBalancerFullName",
+    "LoadBalancerName"
+  ],
+  "createOnlyProperties": [
+    "Name",
+    "Scheme",
+    "Type"
+  ]
+}

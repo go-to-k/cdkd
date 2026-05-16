@@ -1,0 +1,40 @@
+{
+  "resourceType": "AWS::CodeBuild::Project",
+  "generatedAt": "2026-05-16",
+  "properties": [
+    "Arn",
+    "Artifacts",
+    "AutoRetryLimit",
+    "BadgeEnabled",
+    "BuildBatchConfig",
+    "Cache",
+    "ConcurrentBuildLimit",
+    "Description",
+    "EncryptionKey",
+    "Environment",
+    "FileSystemLocations",
+    "Id",
+    "LogsConfig",
+    "Name",
+    "QueuedTimeoutInMinutes",
+    "ResourceAccessRole",
+    "SecondaryArtifacts",
+    "SecondarySourceVersions",
+    "SecondarySources",
+    "ServiceRole",
+    "Source",
+    "SourceVersion",
+    "Tags",
+    "TimeoutInMinutes",
+    "Triggers",
+    "Visibility",
+    "VpcConfig"
+  ],
+  "readOnlyProperties": [
+    "Arn",
+    "Id"
+  ],
+  "createOnlyProperties": [
+    "Name"
+  ]
+}

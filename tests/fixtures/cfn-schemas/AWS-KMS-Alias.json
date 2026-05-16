@@ -1,0 +1,12 @@
+{
+  "resourceType": "AWS::KMS::Alias",
+  "generatedAt": "2026-05-16",
+  "properties": [
+    "AliasName",
+    "TargetKeyId"
+  ],
+  "readOnlyProperties": [],
+  "createOnlyProperties": [
+    "AliasName"
+  ]
+}

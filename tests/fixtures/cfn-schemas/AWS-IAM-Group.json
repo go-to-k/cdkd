@@ -1,0 +1,17 @@
+{
+  "resourceType": "AWS::IAM::Group",
+  "generatedAt": "2026-05-16",
+  "properties": [
+    "Arn",
+    "GroupName",
+    "ManagedPolicyArns",
+    "Path",
+    "Policies"
+  ],
+  "readOnlyProperties": [
+    "Arn"
+  ],
+  "createOnlyProperties": [
+    "GroupName"
+  ]
+}

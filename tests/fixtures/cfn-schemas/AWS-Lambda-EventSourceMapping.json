@@ -1,0 +1,46 @@
+{
+  "resourceType": "AWS::Lambda::EventSourceMapping",
+  "generatedAt": "2026-05-16",
+  "properties": [
+    "AmazonManagedKafkaEventSourceConfig",
+    "BatchSize",
+    "BisectBatchOnFunctionError",
+    "DestinationConfig",
+    "DocumentDBEventSourceConfig",
+    "Enabled",
+    "EventSourceArn",
+    "EventSourceMappingArn",
+    "FilterCriteria",
+    "FunctionName",
+    "FunctionResponseTypes",
+    "Id",
+    "KmsKeyArn",
+    "LoggingConfig",
+    "MaximumBatchingWindowInSeconds",
+    "MaximumRecordAgeInSeconds",
+    "MaximumRetryAttempts",
+    "MetricsConfig",
+    "ParallelizationFactor",
+    "ProvisionedPollerConfig",
+    "Queues",
+    "ScalingConfig",
+    "SelfManagedEventSource",
+    "SelfManagedKafkaEventSourceConfig",
+    "SourceAccessConfigurations",
+    "StartingPosition",
+    "StartingPositionTimestamp",
+    "Tags",
+    "Topics",
+    "TumblingWindowInSeconds"
+  ],
+  "readOnlyProperties": [
+    "EventSourceMappingArn",
+    "Id"
+  ],
+  "createOnlyProperties": [
+    "EventSourceArn",
+    "SelfManagedEventSource",
+    "StartingPosition",
+    "StartingPositionTimestamp"
+  ]
+}

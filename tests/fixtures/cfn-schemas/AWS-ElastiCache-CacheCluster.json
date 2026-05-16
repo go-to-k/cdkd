@@ -1,0 +1,46 @@
+{
+  "resourceType": "AWS::ElastiCache::CacheCluster",
+  "generatedAt": "2026-05-16",
+  "properties": [
+    "AZMode",
+    "AutoMinorVersionUpgrade",
+    "CacheNodeType",
+    "CacheParameterGroupName",
+    "CacheSecurityGroupNames",
+    "CacheSubnetGroupName",
+    "ClusterName",
+    "ConfigurationEndpoint",
+    "Engine",
+    "EngineVersion",
+    "IpDiscovery",
+    "LogDeliveryConfigurations",
+    "NetworkType",
+    "NotificationTopicArn",
+    "NumCacheNodes",
+    "Port",
+    "PreferredAvailabilityZone",
+    "PreferredAvailabilityZones",
+    "PreferredMaintenanceWindow",
+    "RedisEndpoint",
+    "SnapshotArns",
+    "SnapshotName",
+    "SnapshotRetentionLimit",
+    "SnapshotWindow",
+    "Tags",
+    "TransitEncryptionEnabled",
+    "VpcSecurityGroupIds"
+  ],
+  "readOnlyProperties": [
+    "ConfigurationEndpoint",
+    "RedisEndpoint"
+  ],
+  "createOnlyProperties": [
+    "CacheSubnetGroupName",
+    "ClusterName",
+    "Engine",
+    "NetworkType",
+    "Port",
+    "SnapshotArns",
+    "SnapshotName"
+  ]
+}

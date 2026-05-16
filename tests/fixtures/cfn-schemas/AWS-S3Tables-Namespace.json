@@ -1,0 +1,13 @@
+{
+  "resourceType": "AWS::S3Tables::Namespace",
+  "generatedAt": "2026-05-16",
+  "properties": [
+    "Namespace",
+    "TableBucketARN"
+  ],
+  "readOnlyProperties": [],
+  "createOnlyProperties": [
+    "Namespace",
+    "TableBucketARN"
+  ]
+}

@@ -1,0 +1,21 @@
+{
+  "resourceType": "AWS::Events::EventBus",
+  "generatedAt": "2026-05-16",
+  "properties": [
+    "Arn",
+    "DeadLetterConfig",
+    "Description",
+    "EventSourceName",
+    "KmsKeyIdentifier",
+    "LogConfig",
+    "Name",
+    "Policy",
+    "Tags"
+  ],
+  "readOnlyProperties": [
+    "Arn"
+  ],
+  "createOnlyProperties": [
+    "Name"
+  ]
+}

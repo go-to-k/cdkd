@@ -1,0 +1,24 @@
+{
+  "resourceType": "AWS::Glue::Crawler",
+  "generatedAt": "2026-05-16",
+  "properties": [
+    "Classifiers",
+    "Configuration",
+    "CrawlerSecurityConfiguration",
+    "DatabaseName",
+    "Description",
+    "LakeFormationConfiguration",
+    "Name",
+    "RecrawlPolicy",
+    "Role",
+    "Schedule",
+    "SchemaChangePolicy",
+    "TablePrefix",
+    "Tags",
+    "Targets"
+  ],
+  "readOnlyProperties": [],
+  "createOnlyProperties": [
+    "Name"
+  ]
+}

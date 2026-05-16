@@ -1,0 +1,25 @@
+{
+  "resourceType": "AWS::ApiGatewayV2::Route",
+  "generatedAt": "2026-05-16",
+  "properties": [
+    "ApiId",
+    "ApiKeyRequired",
+    "AuthorizationScopes",
+    "AuthorizationType",
+    "AuthorizerId",
+    "ModelSelectionExpression",
+    "OperationName",
+    "RequestModels",
+    "RequestParameters",
+    "RouteId",
+    "RouteKey",
+    "RouteResponseSelectionExpression",
+    "Target"
+  ],
+  "readOnlyProperties": [
+    "RouteId"
+  ],
+  "createOnlyProperties": [
+    "ApiId"
+  ]
+}

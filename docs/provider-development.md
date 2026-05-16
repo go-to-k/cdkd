@@ -778,6 +778,16 @@ import { XxxResourceProvider } from './providers/xxx-resource-provider.js';
 registry.register('AWS::Xxx::Resource', new XxxResourceProvider());
 ```
 
+### Step 5b: Refresh CFn schema fixture (issue #391)
+
+The `property-coverage` test will fail until the new type's schema fixture exists:
+
+```bash
+node scripts/refresh-cfn-schemas.mjs --only-missing
+```
+
+Then classify every unaccounted property into `handledProperties` (if wired) or `unhandledByDesign` (if intentionally skipped, with a one-line rationale). See [§3c handledProperties coverage check](#3c-handledproperties--cfn-schema-coverage-check-issue-391) for the full workflow.
+
 ### Step 6: Create Tests
 
 `tests/unit/provisioning/providers/xxx-resource-provider.test.ts`:
@@ -1091,6 +1101,103 @@ The round-trip test catches all three classes mechanically:
 - **Truthy gate** — assert that empty-string / 0 / false placeholder values DO reach the relevant AWS API call (e.g. `UpdateRoleCommand` input must contain `Description: ''` when `observedProperties.Description === ''`).
 
 See [tests/unit/provisioning/sqs-queue-provider-update.test.ts](../tests/unit/provisioning/sqs-queue-provider-update.test.ts) (Class 2 round-trip), [tests/unit/provisioning/iam-role-provider.test.ts](../tests/unit/provisioning/iam-role-provider.test.ts) (truthy-gate round-trip), and [tests/unit/provisioning/sns-topic-provider-roundtrip.test.ts](../tests/unit/provisioning/sns-topic-provider-roundtrip.test.ts) (Class 1 round-trip) for canonical examples.
+
+### 3c. `handledProperties` ↔ CFn schema coverage check (issue #391)
+
+Every SDK Provider declares a `handledProperties: Map<string, ReadonlySet<string>>` field naming the CFn template properties it knows how to wire to its AWS API calls. The deploy engine's `selectProviderWithSafetyNet` consults that set at runtime — a template carrying a property NOT in the set falls back to Cloud Control API (when available) or fails loudly.
+
+That's a **runtime** safety net. It doesn't help during development. A provider author who simply forgets to list a property in `handledProperties` AND forgets to wire it in `create()` / `update()` ships a silent bug — exactly what PR #370 (ApiGateway::Method dropped 15+ fields) demonstrated.
+
+The structural prevention layer lives at [tests/unit/provisioning/property-coverage.test.ts](../tests/unit/provisioning/property-coverage.test.ts). It cross-references every registered provider's `handledProperties` against the canonical CFn schema (snapshotted to [tests/fixtures/cfn-schemas/](../tests/fixtures/cfn-schemas/)) and fails when a schema property is unaccounted for.
+
+#### The four "OK" buckets
+
+For each schema property the test classifies it into one of four buckets (in priority order):
+
+| Bucket | Where declared | When to use |
+| --- | --- | --- |
+| `handled` | `provider.handledProperties.get(type)` | The provider's `create()` / `update()` actually wires the property to the SDK call. |
+| `by-design` | `provider.unhandledByDesign.get(type)` (with rationale string) | The provider INTENTIONALLY does not wire it — separate code path, deprecated, immutable post-create, AWS API doesn't accept it, etc. |
+| `backfill` | [tests/fixtures/cfn-schemas/_todo-backfill.json](../tests/fixtures/cfn-schemas/_todo-backfill.json) under `types[<type>]` | Auto-generated catch-all for incremental rollout. Each entry MUST be migrated to `handled` or `by-design` eventually. |
+| `read-only` | `readOnlyProperties` in the schema fixture | AWS computes the value; cdkd cannot wire it on Create/Update by definition (e.g. `Arn`). Automatically excluded. |
+
+A property in NONE of the above → test fails with the offending type + property list + the three actions you can take.
+
+#### Adding `unhandledByDesign` to a provider
+
+A clean example is `AWS::ApiGatewayV2::Api`'s OpenAPI-import fields (`Body` / `BodyS3Location` / `FailOnWarnings` / `DisableSchemaValidation` / `BasePath`): they trigger an entirely separate `ImportApi` AWS API, not `CreateApi`. Listing them in `handledProperties` would be a lie; listing them in `unhandledByDesign` documents the deliberate skip:
+
+```typescript
+unhandledByDesign = new Map<string, ReadonlyMap<string, string>>([
+  [
+    'AWS::ApiGatewayV2::Api',
+    new Map([
+      ['Body', 'OpenAPI/Swagger inline spec; routed through ImportApi, not the field-by-field CreateApi path.'],
+      ['BodyS3Location', 'OpenAPI/Swagger spec on S3; routed through ImportApi, not the field-by-field CreateApi path.'],
+      // ...
+    ]),
+  ],
+]);
+```
+
+Wired into the provider class:
+
+```typescript
+export class ApiGatewayV2Provider implements ResourceProvider {
+  handledProperties = new Map<string, ReadonlySet<string>>([...]);
+  unhandledByDesign = new Map<string, ReadonlyMap<string, string>>([...]);
+  // ... rest of provider
+}
+```
+
+Rationales are free text but should be greppable. Common shapes:
+
+- `"create-only — AWS rejects on update"`
+- `"AWS-managed read-only attribute"` (when not already in `readOnlyProperties`)
+- `"deprecated — superseded by Y"`
+- `"tags handled via per-resource Tag API, not the create input"`
+- `"covered by separate AWS::Foo::Bar resource type"`
+- `"OpenAPI-import-only flag; meaningful only on the ImportApi code path"`
+
+#### Workflow when adding a new provider
+
+1. Add the provider as usual ([§3 Provider Implementation Examples](#provider-implementation-examples)).
+2. Register the new resource type in `src/provisioning/register-providers.ts`.
+3. Refresh the CFn schema fixture:
+   ```bash
+   node scripts/refresh-cfn-schemas.mjs --only-missing
+   ```
+   This fetches only the newly-registered type via `cloudformation:DescribeType` and writes `tests/fixtures/cfn-schemas/<sanitized-type>.json`. Requires AWS credentials with `cloudformation:DescribeType` permission.
+4. Run `vp test run property-coverage` — it will fail listing the schema properties your provider has not yet accounted for.
+5. For each unaccounted property, EITHER:
+   - Add it to `handledProperties` (if `create()` / `update()` already wires it), OR
+   - Add it to `unhandledByDesign` with a one-line rationale.
+6. Re-run the test — green.
+
+If you really need to ship before classifying every property, you can regenerate the backfill TODO:
+
+```bash
+CDKD_GENERATE_BACKFILL=true vp test run property-coverage
+```
+
+This dumps every unaccounted property per type into `tests/fixtures/cfn-schemas/_todo-backfill.json` so the test passes. The intent is short-lived — a follow-up PR must migrate the backfill entries to `handled` or `by-design`.
+
+#### Workflow when AWS publishes new properties
+
+AWS adds properties to existing resource types fairly regularly. Surface them on schedule:
+
+1. Periodically (manually) run `node scripts/refresh-cfn-schemas.mjs` to refresh ALL fixtures.
+2. `git diff tests/fixtures/cfn-schemas/` shows the new properties added by AWS.
+3. The next `vp test run property-coverage` run will fail naming the newly-unaccounted properties.
+4. Triage each: wire it through, mark `unhandledByDesign`, or backfill (with follow-up).
+
+The script is **not automated** today. The `cloudformation:DescribeType` API is throttled per-account, and committing a recurring CI cron would require credentials. For now this stays an on-demand operator step; see the issue thread for the open design question on CI automation.
+
+#### "Bogus" entries and the tolerance list
+
+A property in `handledProperties` (or `unhandledByDesign`) that is NOT in the CFn schema is a "bogus" entry — most often an SDK input field name that diverges from the CFn property name (e.g. SDK `DefaultCooldown` vs CFn `Cooldown` on `AutoScalingGroup`), a typo (`PlacementStrategy` vs `PlacementStrategies` on `ECS::Service`), or a stale alias from before AWS renamed the property.
+
+The test reports these — but fixing each requires per-provider investigation that often touches the safety-net's runtime behavior. As a stopgap, the tolerance list at `tests/fixtures/cfn-schemas/_todo-backfill.json` under `bogusTolerated[<type>][<prop>]` accepts a one-line rationale per entry, the test stays green, and follow-up PRs investigate one at a time. Day-1 of issue #391 the test surfaced 10 such entries — see the rationale strings in that file for the canonical examples.
 
 ### 4. Logging
 

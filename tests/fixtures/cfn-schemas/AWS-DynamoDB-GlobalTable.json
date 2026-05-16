@@ -1,0 +1,35 @@
+{
+  "resourceType": "AWS::DynamoDB::GlobalTable",
+  "generatedAt": "2026-05-16",
+  "properties": [
+    "Arn",
+    "AttributeDefinitions",
+    "BillingMode",
+    "GlobalSecondaryIndexes",
+    "GlobalTableSourceArn",
+    "GlobalTableWitnesses",
+    "KeySchema",
+    "LocalSecondaryIndexes",
+    "MultiRegionConsistency",
+    "ReadOnDemandThroughputSettings",
+    "ReadProvisionedThroughputSettings",
+    "Replicas",
+    "SSESpecification",
+    "StreamArn",
+    "StreamSpecification",
+    "TableId",
+    "TableName",
+    "TimeToLiveSpecification",
+    "WarmThroughput",
+    "WriteOnDemandThroughputSettings",
+    "WriteProvisionedThroughputSettings"
+  ],
+  "readOnlyProperties": [
+    "Arn",
+    "StreamArn",
+    "TableId"
+  ],
+  "createOnlyProperties": [
+    "TableName"
+  ]
+}

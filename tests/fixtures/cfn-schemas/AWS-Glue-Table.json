@@ -1,0 +1,20 @@
+{
+  "resourceType": "AWS::Glue::Table",
+  "generatedAt": "2026-05-16",
+  "properties": [
+    "CatalogId",
+    "DatabaseName",
+    "Id",
+    "Name",
+    "OpenTableFormatInput",
+    "TableInput"
+  ],
+  "readOnlyProperties": [
+    "Id"
+  ],
+  "createOnlyProperties": [
+    "CatalogId",
+    "DatabaseName",
+    "Name"
+  ]
+}

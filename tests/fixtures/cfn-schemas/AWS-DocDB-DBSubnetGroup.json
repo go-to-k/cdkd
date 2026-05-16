@@ -1,0 +1,17 @@
+{
+  "resourceType": "AWS::DocDB::DBSubnetGroup",
+  "generatedAt": "2026-05-16",
+  "properties": [
+    "DBSubnetGroupDescription",
+    "DBSubnetGroupName",
+    "Id",
+    "SubnetIds",
+    "Tags"
+  ],
+  "readOnlyProperties": [
+    "Id"
+  ],
+  "createOnlyProperties": [
+    "DBSubnetGroupName"
+  ]
+}

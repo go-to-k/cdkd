@@ -1,0 +1,19 @@
+{
+  "resourceType": "AWS::RDS::DBProxyTargetGroup",
+  "generatedAt": "2026-05-16",
+  "properties": [
+    "ConnectionPoolConfigurationInfo",
+    "DBClusterIdentifiers",
+    "DBInstanceIdentifiers",
+    "DBProxyName",
+    "TargetGroupArn",
+    "TargetGroupName"
+  ],
+  "readOnlyProperties": [
+    "TargetGroupArn"
+  ],
+  "createOnlyProperties": [
+    "DBProxyName",
+    "TargetGroupName"
+  ]
+}

@@ -1,0 +1,19 @@
+{
+  "resourceType": "AWS::S3Vectors::VectorBucket",
+  "generatedAt": "2026-05-16",
+  "properties": [
+    "CreationTime",
+    "EncryptionConfiguration",
+    "Tags",
+    "VectorBucketArn",
+    "VectorBucketName"
+  ],
+  "readOnlyProperties": [
+    "CreationTime",
+    "VectorBucketArn"
+  ],
+  "createOnlyProperties": [
+    "EncryptionConfiguration",
+    "VectorBucketName"
+  ]
+}

@@ -1,0 +1,20 @@
+{
+  "resourceType": "AWS::AppSync::ApiKey",
+  "generatedAt": "2026-05-16",
+  "properties": [
+    "ApiId",
+    "ApiKey",
+    "ApiKeyId",
+    "Arn",
+    "Description",
+    "Expires"
+  ],
+  "readOnlyProperties": [
+    "ApiKey",
+    "ApiKeyId",
+    "Arn"
+  ],
+  "createOnlyProperties": [
+    "ApiId"
+  ]
+}
