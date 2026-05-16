@@ -278,7 +278,7 @@ registry.register('AWS::IAM::Role', new IAMRoleProvider());
 
 ### 2. Build System (Vite+)
 
-- Uses Vite+ tasks in `vite.config.ts`
+- New dev / build tasks (lint, format, audit scripts, codegen, etc.) are registered as Vite+ tasks in `vite.config.ts` and invoked via `vp run <task>`. This is the project convention — prefer it over `package.json` `"scripts"` entries or ad-hoc `node` invocations for anything that lives beyond a single PR.
 - `vp pack` builds the ESM package through tsdown with a Node 20 runtime target
 - The global `vp` CLI is pinned by `.mise.toml`; project Node.js is managed by Vite+ from `.node-version`
 
@@ -613,7 +613,10 @@ See [docs/provider-development.md](docs/provider-development.md) for details.
 
 ## Node.js Version
 
-- **Required**: Node.js >= 20.0.0 (from `package.json` engines field)
+- **`package.json` engines**: Node.js >= 20.0.0 (the lower bound users of cdkd must meet).
+- **Local dev / CI Node version**: 24.15.0, pinned by `.node-version` (managed by Vite+ / mise).
+- **`vp pack` build target**: Node 20 (the runtime cdkd ships to users).
+- **TypeScript type stripping**: Node 24 strips type annotations by default, so `node scripts/foo.ts` runs `.ts` files directly — no `tsx` / `ts-node` dev dependency needed. Use this for ad-hoc scripts under `scripts/`; prefer registering longer-lived scripts as Vite+ tasks in `vite.config.ts` (see "Build System" above).
 
 ## Workflow Rules
 
