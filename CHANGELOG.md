@@ -1,3 +1,10 @@
+# [0.106.0](https://github.com/go-to-k/cdkd/compare/v0.105.0...v0.106.0) (2026-05-16)
+
+
+### Features
+
+* **providers:** AWS::RDS::DBProxy SDK Provider + DBProxyTargetGroup in-place update ([#394](https://github.com/go-to-k/cdkd/issues/394)) ([29bc1cd](https://github.com/go-to-k/cdkd/commit/29bc1cd265114e2afffe1ca4a6346f44538fc997))
+
 # [0.105.0](https://github.com/go-to-k/cdkd/compare/v0.104.0...v0.105.0) (2026-05-16)
 
 
