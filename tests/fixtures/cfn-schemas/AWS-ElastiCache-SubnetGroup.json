@@ -1,0 +1,14 @@
+{
+  "resourceType": "AWS::ElastiCache::SubnetGroup",
+  "generatedAt": "2026-05-16",
+  "properties": [
+    "CacheSubnetGroupName",
+    "Description",
+    "SubnetIds",
+    "Tags"
+  ],
+  "readOnlyProperties": [],
+  "createOnlyProperties": [
+    "CacheSubnetGroupName"
+  ]
+}

@@ -1,0 +1,16 @@
+{
+  "resourceType": "AWS::EC2::VPCGatewayAttachment",
+  "generatedAt": "2026-05-16",
+  "properties": [
+    "AttachmentType",
+    "InternetGatewayId",
+    "VpcId",
+    "VpnGatewayId"
+  ],
+  "readOnlyProperties": [
+    "AttachmentType"
+  ],
+  "createOnlyProperties": [
+    "VpcId"
+  ]
+}

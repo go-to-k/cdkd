@@ -1,0 +1,52 @@
+{
+  "resourceType": "AWS::AutoScaling::AutoScalingGroup",
+  "generatedAt": "2026-05-16",
+  "properties": [
+    "AutoScalingGroupARN",
+    "AutoScalingGroupName",
+    "AvailabilityZoneDistribution",
+    "AvailabilityZoneIds",
+    "AvailabilityZoneImpairmentPolicy",
+    "AvailabilityZones",
+    "CapacityRebalance",
+    "CapacityReservationSpecification",
+    "Context",
+    "Cooldown",
+    "DefaultInstanceWarmup",
+    "DeletionProtection",
+    "DesiredCapacity",
+    "DesiredCapacityType",
+    "HealthCheckGracePeriod",
+    "HealthCheckType",
+    "InstanceId",
+    "InstanceLifecyclePolicy",
+    "InstanceMaintenancePolicy",
+    "LaunchConfigurationName",
+    "LaunchTemplate",
+    "LifecycleHookSpecificationList",
+    "LoadBalancerNames",
+    "MaxInstanceLifetime",
+    "MaxSize",
+    "MetricsCollection",
+    "MinSize",
+    "MixedInstancesPolicy",
+    "NewInstancesProtectedFromScaleIn",
+    "NotificationConfiguration",
+    "NotificationConfigurations",
+    "PlacementGroup",
+    "ServiceLinkedRoleARN",
+    "SkipZonalShiftValidation",
+    "Tags",
+    "TargetGroupARNs",
+    "TerminationPolicies",
+    "TrafficSources",
+    "VPCZoneIdentifier"
+  ],
+  "readOnlyProperties": [
+    "AutoScalingGroupARN"
+  ],
+  "createOnlyProperties": [
+    "AutoScalingGroupName",
+    "InstanceId"
+  ]
+}

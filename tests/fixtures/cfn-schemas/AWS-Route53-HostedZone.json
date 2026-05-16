@@ -1,0 +1,21 @@
+{
+  "resourceType": "AWS::Route53::HostedZone",
+  "generatedAt": "2026-05-16",
+  "properties": [
+    "HostedZoneConfig",
+    "HostedZoneFeatures",
+    "HostedZoneTags",
+    "Id",
+    "Name",
+    "NameServers",
+    "QueryLoggingConfig",
+    "VPCs"
+  ],
+  "readOnlyProperties": [
+    "Id",
+    "NameServers"
+  ],
+  "createOnlyProperties": [
+    "Name"
+  ]
+}

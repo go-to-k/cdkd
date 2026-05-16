@@ -1,0 +1,15 @@
+{
+  "resourceType": "AWS::Glue::SecurityConfiguration",
+  "generatedAt": "2026-05-16",
+  "properties": [
+    "EncryptionConfiguration",
+    "Id",
+    "Name"
+  ],
+  "readOnlyProperties": [
+    "Id"
+  ],
+  "createOnlyProperties": [
+    "Name"
+  ]
+}

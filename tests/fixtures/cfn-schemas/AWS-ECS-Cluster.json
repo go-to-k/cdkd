@@ -1,0 +1,20 @@
+{
+  "resourceType": "AWS::ECS::Cluster",
+  "generatedAt": "2026-05-16",
+  "properties": [
+    "Arn",
+    "CapacityProviders",
+    "ClusterName",
+    "ClusterSettings",
+    "Configuration",
+    "DefaultCapacityProviderStrategy",
+    "ServiceConnectDefaults",
+    "Tags"
+  ],
+  "readOnlyProperties": [
+    "Arn"
+  ],
+  "createOnlyProperties": [
+    "ClusterName"
+  ]
+}

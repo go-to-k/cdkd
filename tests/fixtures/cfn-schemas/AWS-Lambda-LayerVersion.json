@@ -1,0 +1,24 @@
+{
+  "resourceType": "AWS::Lambda::LayerVersion",
+  "generatedAt": "2026-05-16",
+  "properties": [
+    "CompatibleArchitectures",
+    "CompatibleRuntimes",
+    "Content",
+    "Description",
+    "LayerName",
+    "LayerVersionArn",
+    "LicenseInfo"
+  ],
+  "readOnlyProperties": [
+    "LayerVersionArn"
+  ],
+  "createOnlyProperties": [
+    "CompatibleArchitectures",
+    "CompatibleRuntimes",
+    "Content",
+    "Description",
+    "LayerName",
+    "LicenseInfo"
+  ]
+}

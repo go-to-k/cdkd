@@ -1,0 +1,32 @@
+{
+  "resourceType": "AWS::AppSync::Resolver",
+  "generatedAt": "2026-05-16",
+  "properties": [
+    "ApiId",
+    "CachingConfig",
+    "Code",
+    "CodeS3Location",
+    "DataSourceName",
+    "FieldName",
+    "Kind",
+    "MaxBatchSize",
+    "MetricsConfig",
+    "PipelineConfig",
+    "RequestMappingTemplate",
+    "RequestMappingTemplateS3Location",
+    "ResolverArn",
+    "ResponseMappingTemplate",
+    "ResponseMappingTemplateS3Location",
+    "Runtime",
+    "SyncConfig",
+    "TypeName"
+  ],
+  "readOnlyProperties": [
+    "ResolverArn"
+  ],
+  "createOnlyProperties": [
+    "ApiId",
+    "FieldName",
+    "TypeName"
+  ]
+}

@@ -1,0 +1,23 @@
+{
+  "resourceType": "AWS::Logs::LogGroup",
+  "generatedAt": "2026-05-16",
+  "properties": [
+    "Arn",
+    "BearerTokenAuthenticationEnabled",
+    "DataProtectionPolicy",
+    "DeletionProtectionEnabled",
+    "FieldIndexPolicies",
+    "KmsKeyId",
+    "LogGroupClass",
+    "LogGroupName",
+    "ResourcePolicyDocument",
+    "RetentionInDays",
+    "Tags"
+  ],
+  "readOnlyProperties": [
+    "Arn"
+  ],
+  "createOnlyProperties": [
+    "LogGroupName"
+  ]
+}

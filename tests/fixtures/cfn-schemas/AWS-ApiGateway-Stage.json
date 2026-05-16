@@ -1,0 +1,25 @@
+{
+  "resourceType": "AWS::ApiGateway::Stage",
+  "generatedAt": "2026-05-16",
+  "properties": [
+    "AccessLogSetting",
+    "CacheClusterEnabled",
+    "CacheClusterSize",
+    "CanarySetting",
+    "ClientCertificateId",
+    "DeploymentId",
+    "Description",
+    "DocumentationVersion",
+    "MethodSettings",
+    "RestApiId",
+    "StageName",
+    "Tags",
+    "TracingEnabled",
+    "Variables"
+  ],
+  "readOnlyProperties": [],
+  "createOnlyProperties": [
+    "RestApiId",
+    "StageName"
+  ]
+}

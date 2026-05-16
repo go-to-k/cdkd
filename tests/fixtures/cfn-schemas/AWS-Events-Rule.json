@@ -1,0 +1,22 @@
+{
+  "resourceType": "AWS::Events::Rule",
+  "generatedAt": "2026-05-16",
+  "properties": [
+    "Arn",
+    "Description",
+    "EventBusName",
+    "EventPattern",
+    "Name",
+    "RoleArn",
+    "ScheduleExpression",
+    "State",
+    "Tags",
+    "Targets"
+  ],
+  "readOnlyProperties": [
+    "Arn"
+  ],
+  "createOnlyProperties": [
+    "Name"
+  ]
+}

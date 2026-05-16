@@ -1,0 +1,41 @@
+{
+  "resourceType": "AWS::AppSync::GraphQLApi",
+  "generatedAt": "2026-05-16",
+  "properties": [
+    "AdditionalAuthenticationProviders",
+    "ApiId",
+    "ApiType",
+    "Arn",
+    "AuthenticationType",
+    "EnhancedMetricsConfig",
+    "EnvironmentVariables",
+    "GraphQLDns",
+    "GraphQLEndpointArn",
+    "GraphQLUrl",
+    "IntrospectionConfig",
+    "LambdaAuthorizerConfig",
+    "LogConfig",
+    "MergedApiExecutionRoleArn",
+    "Name",
+    "OpenIDConnectConfig",
+    "OwnerContact",
+    "QueryDepthLimit",
+    "RealtimeDns",
+    "RealtimeUrl",
+    "ResolverCountLimit",
+    "Tags",
+    "UserPoolConfig",
+    "Visibility",
+    "XrayEnabled"
+  ],
+  "readOnlyProperties": [
+    "ApiId",
+    "Arn",
+    "GraphQLDns",
+    "GraphQLEndpointArn",
+    "GraphQLUrl",
+    "RealtimeDns",
+    "RealtimeUrl"
+  ],
+  "createOnlyProperties": []
+}

@@ -1,0 +1,27 @@
+{
+  "resourceType": "AWS::AppSync::DataSource",
+  "generatedAt": "2026-05-16",
+  "properties": [
+    "ApiId",
+    "DataSourceArn",
+    "Description",
+    "DynamoDBConfig",
+    "ElasticsearchConfig",
+    "EventBridgeConfig",
+    "HttpConfig",
+    "LambdaConfig",
+    "MetricsConfig",
+    "Name",
+    "OpenSearchServiceConfig",
+    "RelationalDatabaseConfig",
+    "ServiceRoleArn",
+    "Type"
+  ],
+  "readOnlyProperties": [
+    "DataSourceArn"
+  ],
+  "createOnlyProperties": [
+    "ApiId",
+    "Name"
+  ]
+}

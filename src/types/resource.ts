@@ -190,6 +190,30 @@ export interface ResourceProvider {
   handledProperties?: ReadonlyMap<string, ReadonlySet<string>>;
 
   /**
+   * Map of resource type → map of CFn property name → one-line rationale for
+   * why this provider intentionally does NOT wire the property through to the
+   * SDK call.
+   *
+   * Consumed by the development-time coverage check
+   * (`tests/unit/provisioning/property-coverage.test.ts`) — every CFn schema
+   * property that does not appear in `handledProperties` must EITHER appear
+   * here (with a rationale) OR in the per-type backfill TODO fixture, or the
+   * test fails. This is the structural prevention layer for the "provider
+   * silently dropped property X" bug class.
+   *
+   * Rationales are free text but should be greppable. Common shapes:
+   * - "create-only — AWS rejects on update"
+   * - "AWS-managed read-only attribute"
+   * - "deprecated — superseded by Y"
+   * - "tags handled via per-resource Tag API, not the create input"
+   * - "covered by separate AWS::Foo::Bar resource type"
+   *
+   * Properties listed here do NOT trigger the deploy engine's CC API fallback
+   * (this field is a development-time annotation, not runtime behavior).
+   */
+  unhandledByDesign?: ReadonlyMap<string, ReadonlyMap<string, string>>;
+
+  /**
    * If true, the provider refuses CC API fallback for create/update.
    * When unhandled properties are detected, the deploy engine will throw an error
    * instead of falling back to CC API.

@@ -1,0 +1,29 @@
+{
+  "resourceType": "AWS::DocDB::DBInstance",
+  "generatedAt": "2026-05-16",
+  "properties": [
+    "AutoMinorVersionUpgrade",
+    "AvailabilityZone",
+    "CACertificateIdentifier",
+    "CertificateRotationRestart",
+    "DBClusterIdentifier",
+    "DBInstanceClass",
+    "DBInstanceIdentifier",
+    "EnablePerformanceInsights",
+    "Endpoint",
+    "Id",
+    "Port",
+    "PreferredMaintenanceWindow",
+    "Tags"
+  ],
+  "readOnlyProperties": [
+    "Endpoint",
+    "Id",
+    "Port"
+  ],
+  "createOnlyProperties": [
+    "AvailabilityZone",
+    "DBClusterIdentifier",
+    "DBInstanceIdentifier"
+  ]
+}

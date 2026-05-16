@@ -1,0 +1,35 @@
+{
+  "resourceType": "AWS::EC2::SecurityGroupIngress",
+  "generatedAt": "2026-05-16",
+  "properties": [
+    "CidrIp",
+    "CidrIpv6",
+    "Description",
+    "FromPort",
+    "GroupId",
+    "GroupName",
+    "Id",
+    "IpProtocol",
+    "SourcePrefixListId",
+    "SourceSecurityGroupId",
+    "SourceSecurityGroupName",
+    "SourceSecurityGroupOwnerId",
+    "ToPort"
+  ],
+  "readOnlyProperties": [
+    "Id"
+  ],
+  "createOnlyProperties": [
+    "CidrIp",
+    "CidrIpv6",
+    "FromPort",
+    "GroupId",
+    "GroupName",
+    "IpProtocol",
+    "SourcePrefixListId",
+    "SourceSecurityGroupId",
+    "SourceSecurityGroupName",
+    "SourceSecurityGroupOwnerId",
+    "ToPort"
+  ]
+}

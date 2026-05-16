@@ -1,0 +1,13 @@
+{
+  "resourceType": "AWS::SQS::QueuePolicy",
+  "generatedAt": "2026-05-16",
+  "properties": [
+    "Id",
+    "PolicyDocument",
+    "Queues"
+  ],
+  "readOnlyProperties": [
+    "Id"
+  ],
+  "createOnlyProperties": []
+}

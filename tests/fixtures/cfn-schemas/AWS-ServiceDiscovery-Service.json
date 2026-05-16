@@ -1,0 +1,27 @@
+{
+  "resourceType": "AWS::ServiceDiscovery::Service",
+  "generatedAt": "2026-05-16",
+  "properties": [
+    "Arn",
+    "Description",
+    "DnsConfig",
+    "HealthCheckConfig",
+    "HealthCheckCustomConfig",
+    "Id",
+    "Name",
+    "NamespaceId",
+    "ServiceAttributes",
+    "Tags",
+    "Type"
+  ],
+  "readOnlyProperties": [
+    "Arn",
+    "Id"
+  ],
+  "createOnlyProperties": [
+    "HealthCheckCustomConfig",
+    "Name",
+    "NamespaceId",
+    "Type"
+  ]
+}

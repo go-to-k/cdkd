@@ -1,0 +1,34 @@
+{
+  "resourceType": "AWS::RDS::DBProxy",
+  "generatedAt": "2026-05-16",
+  "properties": [
+    "Auth",
+    "DBProxyArn",
+    "DBProxyName",
+    "DebugLogging",
+    "DefaultAuthScheme",
+    "Endpoint",
+    "EndpointNetworkType",
+    "EngineFamily",
+    "IdleClientTimeout",
+    "RequireTLS",
+    "RoleArn",
+    "Tags",
+    "TargetConnectionNetworkType",
+    "VpcId",
+    "VpcSecurityGroupIds",
+    "VpcSubnetIds"
+  ],
+  "readOnlyProperties": [
+    "DBProxyArn",
+    "Endpoint",
+    "VpcId"
+  ],
+  "createOnlyProperties": [
+    "DBProxyName",
+    "EndpointNetworkType",
+    "EngineFamily",
+    "TargetConnectionNetworkType",
+    "VpcSubnetIds"
+  ]
+}

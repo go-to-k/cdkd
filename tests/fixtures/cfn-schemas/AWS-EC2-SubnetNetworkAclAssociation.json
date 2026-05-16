@@ -1,0 +1,16 @@
+{
+  "resourceType": "AWS::EC2::SubnetNetworkAclAssociation",
+  "generatedAt": "2026-05-16",
+  "properties": [
+    "AssociationId",
+    "NetworkAclId",
+    "SubnetId"
+  ],
+  "readOnlyProperties": [
+    "AssociationId"
+  ],
+  "createOnlyProperties": [
+    "NetworkAclId",
+    "SubnetId"
+  ]
+}

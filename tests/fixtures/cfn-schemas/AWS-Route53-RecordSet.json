@@ -1,0 +1,32 @@
+{
+  "resourceType": "AWS::Route53::RecordSet",
+  "generatedAt": "2026-05-16",
+  "properties": [
+    "AliasTarget",
+    "CidrRoutingConfig",
+    "Comment",
+    "Failover",
+    "GeoLocation",
+    "GeoProximityLocation",
+    "HealthCheckId",
+    "HostedZoneId",
+    "HostedZoneName",
+    "Id",
+    "MultiValueAnswer",
+    "Name",
+    "Region",
+    "ResourceRecords",
+    "SetIdentifier",
+    "TTL",
+    "Type",
+    "Weight"
+  ],
+  "readOnlyProperties": [
+    "Id"
+  ],
+  "createOnlyProperties": [
+    "HostedZoneId",
+    "HostedZoneName",
+    "Name"
+  ]
+}

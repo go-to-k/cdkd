@@ -1,0 +1,36 @@
+{
+  "resourceType": "AWS::DynamoDB::Table",
+  "generatedAt": "2026-05-16",
+  "properties": [
+    "Arn",
+    "AttributeDefinitions",
+    "BillingMode",
+    "ContributorInsightsSpecification",
+    "DeletionProtectionEnabled",
+    "GlobalSecondaryIndexes",
+    "ImportSourceSpecification",
+    "KeySchema",
+    "KinesisStreamSpecification",
+    "LocalSecondaryIndexes",
+    "OnDemandThroughput",
+    "PointInTimeRecoverySpecification",
+    "ProvisionedThroughput",
+    "ResourcePolicy",
+    "SSESpecification",
+    "StreamArn",
+    "StreamSpecification",
+    "TableClass",
+    "TableName",
+    "Tags",
+    "TimeToLiveSpecification",
+    "WarmThroughput"
+  ],
+  "readOnlyProperties": [
+    "Arn",
+    "StreamArn"
+  ],
+  "createOnlyProperties": [
+    "ImportSourceSpecification",
+    "TableName"
+  ]
+}

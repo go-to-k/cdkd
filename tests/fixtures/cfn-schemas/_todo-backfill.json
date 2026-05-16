@@ -1,0 +1,653 @@
+{
+  "_comment": [
+    "Per-type backfill TODO for the SDK Provider property-coverage test",
+    "(`tests/unit/provisioning/property-coverage.test.ts`, issue #391).",
+    "",
+    "`types` lists CFn schema properties NOT yet covered by the provider's",
+    "handledProperties or unhandledByDesign for that type. Auto-generated:",
+    "  CDKD_GENERATE_BACKFILL=true vp test run property-coverage",
+    "",
+    "How to retire a `types` entry:",
+    "  1. If the provider's create()/update() ALREADY wires the property",
+    "     to the SDK call, add it to handledProperties.get(type).",
+    "  2. If the provider intentionally does NOT wire it (create-only,",
+    "     deprecated, covered by a separate resource, etc.), add it to",
+    "     unhandledByDesign.get(type) with a one-line rationale.",
+    "  3. Remove the entry from this file.",
+    "",
+    "`bogusTolerated` lists properties the provider DECLARES in",
+    "handledProperties (or unhandledByDesign) but that the CFn schema does",
+    "NOT have. Typically SDK-only request fields (e.g. ClientToken) or",
+    "stale aliases the provider author predated the schema rename. Each",
+    "entry MUST carry a one-line rationale; the section is preserved across",
+    "regenerations of the `types` block."
+  ],
+  "types": {
+    "AWS::ApiGateway::Authorizer": [
+      "AuthType"
+    ],
+    "AWS::ApiGateway::Deployment": [
+      "DeploymentCanarySettings",
+      "StageDescription",
+      "StageName"
+    ],
+    "AWS::ApiGateway::Stage": [
+      "AccessLogSetting",
+      "CacheClusterEnabled",
+      "CacheClusterSize",
+      "CanarySetting",
+      "ClientCertificateId",
+      "DocumentationVersion",
+      "MethodSettings",
+      "TracingEnabled",
+      "Variables"
+    ],
+    "AWS::ApiGatewayV2::Api": [
+      "ApiKeySelectionExpression",
+      "BasePath",
+      "Body",
+      "BodyS3Location",
+      "CredentialsArn",
+      "DisableExecuteApiEndpoint",
+      "DisableSchemaValidation",
+      "FailOnWarnings",
+      "IpAddressType",
+      "RouteKey",
+      "RouteSelectionExpression",
+      "Target",
+      "Version"
+    ],
+    "AWS::ApiGatewayV2::Authorizer": [
+      "AuthorizerCredentialsArn",
+      "AuthorizerResultTtlInSeconds",
+      "EnableSimpleResponses",
+      "IdentityValidationExpression"
+    ],
+    "AWS::ApiGatewayV2::Integration": [
+      "ConnectionId",
+      "ConnectionType",
+      "ContentHandlingStrategy",
+      "CredentialsArn",
+      "Description",
+      "IntegrationSubtype",
+      "PassthroughBehavior",
+      "RequestParameters",
+      "RequestTemplates",
+      "ResponseParameters",
+      "TemplateSelectionExpression",
+      "TimeoutInMillis",
+      "TlsConfig"
+    ],
+    "AWS::ApiGatewayV2::Route": [
+      "ApiKeyRequired",
+      "AuthorizationScopes",
+      "ModelSelectionExpression",
+      "OperationName",
+      "RequestModels",
+      "RequestParameters",
+      "RouteResponseSelectionExpression"
+    ],
+    "AWS::ApiGatewayV2::Stage": [
+      "AccessLogSettings",
+      "ClientCertificateId",
+      "DefaultRouteSettings",
+      "DeploymentId",
+      "RouteSettings",
+      "StageVariables"
+    ],
+    "AWS::AppSync::DataSource": [
+      "ElasticsearchConfig",
+      "EventBridgeConfig",
+      "MetricsConfig",
+      "OpenSearchServiceConfig",
+      "RelationalDatabaseConfig"
+    ],
+    "AWS::AppSync::GraphQLApi": [
+      "AdditionalAuthenticationProviders",
+      "ApiType",
+      "EnhancedMetricsConfig",
+      "EnvironmentVariables",
+      "IntrospectionConfig",
+      "LambdaAuthorizerConfig",
+      "MergedApiExecutionRoleArn",
+      "OpenIDConnectConfig",
+      "OwnerContact",
+      "QueryDepthLimit",
+      "ResolverCountLimit",
+      "UserPoolConfig",
+      "Visibility"
+    ],
+    "AWS::AppSync::Resolver": [
+      "CachingConfig",
+      "CodeS3Location",
+      "MaxBatchSize",
+      "MetricsConfig",
+      "RequestMappingTemplateS3Location",
+      "ResponseMappingTemplateS3Location",
+      "SyncConfig"
+    ],
+    "AWS::AutoScaling::AutoScalingGroup": [
+      "AvailabilityZoneIds",
+      "InstanceId",
+      "InstanceLifecyclePolicy",
+      "LaunchConfigurationName",
+      "NotificationConfiguration",
+      "PlacementGroup"
+    ],
+    "AWS::BedrockAgentCore::Runtime": [
+      "FilesystemConfigurations",
+      "RequestHeaderConfiguration",
+      "Tags"
+    ],
+    "AWS::CloudFront::Distribution": [
+      "Tags"
+    ],
+    "AWS::CloudTrail::Trail": [
+      "AdvancedEventSelectors",
+      "AggregationConfigurations"
+    ],
+    "AWS::CloudWatch::Alarm": [
+      "EvaluateLowSampleCountPercentile",
+      "EvaluationCriteria",
+      "EvaluationInterval",
+      "ExtendedStatistic",
+      "Tags",
+      "ThresholdMetricId"
+    ],
+    "AWS::CodeBuild::Project": [
+      "AutoRetryLimit",
+      "ResourceAccessRole",
+      "Triggers",
+      "Visibility"
+    ],
+    "AWS::Cognito::UserPool": [
+      "EmailAuthenticationMessage",
+      "EmailAuthenticationSubject",
+      "EnabledMfas",
+      "UserPoolTier",
+      "WebAuthnFactorConfiguration",
+      "WebAuthnRelyingPartyID",
+      "WebAuthnUserVerification"
+    ],
+    "AWS::DocDB::DBCluster": [
+      "AvailabilityZones",
+      "CopyTagsToSnapshot",
+      "EnableCloudwatchLogsExports",
+      "GlobalClusterIdentifier",
+      "ManageMasterUserPassword",
+      "MasterUserSecretKmsKeyId",
+      "NetworkType",
+      "RestoreToTime",
+      "RestoreType",
+      "RotateMasterUserPassword",
+      "ServerlessV2ScalingConfiguration",
+      "SnapshotIdentifier",
+      "SourceDBClusterIdentifier",
+      "StorageType",
+      "UseLatestRestorableTime"
+    ],
+    "AWS::DocDB::DBInstance": [
+      "CACertificateIdentifier",
+      "CertificateRotationRestart",
+      "EnablePerformanceInsights"
+    ],
+    "AWS::DynamoDB::GlobalTable": [
+      "GlobalTableSourceArn",
+      "GlobalTableWitnesses",
+      "MultiRegionConsistency",
+      "ReadOnDemandThroughputSettings",
+      "ReadProvisionedThroughputSettings",
+      "WarmThroughput"
+    ],
+    "AWS::DynamoDB::Table": [
+      "ContributorInsightsSpecification",
+      "ImportSourceSpecification",
+      "KinesisStreamSpecification",
+      "OnDemandThroughput",
+      "PointInTimeRecoverySpecification",
+      "ResourcePolicy",
+      "TimeToLiveSpecification",
+      "WarmThroughput"
+    ],
+    "AWS::EC2::Instance": [
+      "AdditionalInfo",
+      "Affinity",
+      "AvailabilityZone",
+      "CpuOptions",
+      "CreditSpecification",
+      "DisableApiTermination",
+      "EbsOptimized",
+      "ElasticGpuSpecifications",
+      "ElasticInferenceAccelerators",
+      "EnclaveOptions",
+      "HibernationOptions",
+      "HostId",
+      "HostResourceGroupArn",
+      "InstanceInitiatedShutdownBehavior",
+      "Ipv6AddressCount",
+      "Ipv6Addresses",
+      "KernelId",
+      "LaunchTemplate",
+      "LicenseSpecifications",
+      "MetadataOptions",
+      "Monitoring",
+      "NetworkInterfaces",
+      "PlacementGroupName",
+      "PrivateDnsNameOptions",
+      "PrivateIpAddress",
+      "PropagateTagsToVolumeOnCreation",
+      "RamdiskId",
+      "SourceDestCheck",
+      "SsmAssociations",
+      "Tenancy",
+      "Volumes"
+    ],
+    "AWS::EC2::NatGateway": [
+      "AvailabilityMode",
+      "AvailabilityZoneAddresses",
+      "VpcId"
+    ],
+    "AWS::EC2::NetworkAclEntry": [
+      "Icmp"
+    ],
+    "AWS::EC2::Route": [
+      "CarrierGatewayId",
+      "CoreNetworkArn",
+      "DestinationPrefixListId",
+      "LocalGatewayId",
+      "TransitGatewayId",
+      "VpcEndpointId"
+    ],
+    "AWS::EC2::SecurityGroupIngress": [
+      "CidrIpv6",
+      "GroupName",
+      "SourcePrefixListId",
+      "SourceSecurityGroupName"
+    ],
+    "AWS::EC2::Subnet": [
+      "AssignIpv6AddressOnCreation",
+      "AvailabilityZoneId",
+      "EnableDns64",
+      "EnableLniAtDeviceIndex",
+      "Ipv4IpamPoolId",
+      "Ipv4NetmaskLength",
+      "Ipv6CidrBlock",
+      "Ipv6IpamPoolId",
+      "Ipv6Native",
+      "Ipv6NetmaskLength",
+      "OutpostArn",
+      "PrivateDnsNameOptionsOnLaunch"
+    ],
+    "AWS::EC2::VPC": [
+      "Ipv4IpamPoolId",
+      "Ipv4NetmaskLength"
+    ],
+    "AWS::EC2::VPCGatewayAttachment": [
+      "VpnGatewayId"
+    ],
+    "AWS::ECS::Cluster": [
+      "ServiceConnectDefaults"
+    ],
+    "AWS::ECS::Service": [
+      "AvailabilityZoneRebalancing",
+      "DeploymentController",
+      "ForceNewDeployment",
+      "PlacementStrategies",
+      "Role",
+      "ServiceConnectConfiguration",
+      "VolumeConfigurations",
+      "VpcLatticeConfigurations"
+    ],
+    "AWS::ECS::TaskDefinition": [
+      "EnableFaultInjection",
+      "InferenceAccelerators"
+    ],
+    "AWS::EFS::AccessPoint": [
+      "ClientToken"
+    ],
+    "AWS::EFS::FileSystem": [
+      "AvailabilityZoneName",
+      "BackupPolicy",
+      "BypassPolicyLockoutSafetyCheck",
+      "FileSystemPolicy",
+      "FileSystemProtection",
+      "LifecyclePolicies",
+      "ReplicationConfiguration"
+    ],
+    "AWS::EFS::MountTarget": [
+      "IpAddress",
+      "IpAddressType",
+      "Ipv6Address"
+    ],
+    "AWS::ElastiCache::CacheCluster": [
+      "CacheSecurityGroupNames",
+      "SnapshotArns"
+    ],
+    "AWS::ElastiCache::SubnetGroup": [
+      "Description"
+    ],
+    "AWS::ElasticLoadBalancingV2::Listener": [
+      "ListenerAttributes"
+    ],
+    "AWS::ElasticLoadBalancingV2::LoadBalancer": [
+      "EnableCapacityReservationProvisionStabilize",
+      "EnablePrefixForIpv6SourceNat",
+      "EnforceSecurityGroupInboundRulesOnPrivateLinkTraffic",
+      "Ipv4IpamPoolId",
+      "MinimumLoadBalancerCapacity"
+    ],
+    "AWS::ElasticLoadBalancingV2::TargetGroup": [
+      "IpAddressType",
+      "TargetControlPort",
+      "TargetGroupAttributes",
+      "Targets"
+    ],
+    "AWS::Events::EventBus": [
+      "LogConfig"
+    ],
+    "AWS::Glue::Database": [
+      "DatabaseName"
+    ],
+    "AWS::Glue::Table": [
+      "Name",
+      "OpenTableFormatInput"
+    ],
+    "AWS::Kinesis::Stream": [
+      "DesiredShardLevelMetrics",
+      "MaxRecordSizeInKiB",
+      "WarmThroughputMiBps"
+    ],
+    "AWS::KinesisFirehose::DeliveryStream": [
+      "DatabaseSourceConfiguration",
+      "DirectPutSourceConfiguration",
+      "IcebergDestinationConfiguration",
+      "MSKSourceConfiguration",
+      "SnowflakeDestinationConfiguration"
+    ],
+    "AWS::Lambda::EventSourceMapping": [
+      "KmsKeyArn",
+      "LoggingConfig",
+      "MetricsConfig",
+      "ProvisionedPollerConfig",
+      "Queues",
+      "StartingPositionTimestamp",
+      "Topics"
+    ],
+    "AWS::Lambda::Function": [
+      "CapacityProviderConfig",
+      "CodeSigningConfigArn",
+      "DeadLetterConfig",
+      "DurableConfig",
+      "FileSystemConfigs",
+      "FunctionScalingConfig",
+      "ImageConfig",
+      "KmsKeyArn",
+      "LoggingConfig",
+      "PublishToLatestPublished",
+      "RecursiveLoop",
+      "ReservedConcurrentExecutions",
+      "RuntimeManagementConfig",
+      "SnapStart",
+      "TenancyConfig"
+    ],
+    "AWS::Lambda::Permission": [
+      "InvokedViaFunctionUrl"
+    ],
+    "AWS::Neptune::DBCluster": [
+      "AssociatedRoles",
+      "AvailabilityZones",
+      "CopyTagsToSnapshot",
+      "DBInstanceParameterGroupName",
+      "DBPort",
+      "EnableCloudwatchLogsExports",
+      "RestoreToTime",
+      "RestoreType",
+      "ServerlessScalingConfiguration",
+      "SnapshotIdentifier",
+      "SourceDBClusterIdentifier",
+      "UseLatestRestorableTime"
+    ],
+    "AWS::Neptune::DBInstance": [
+      "AllowMajorVersionUpgrade",
+      "DBSnapshotIdentifier",
+      "PubliclyAccessible"
+    ],
+    "AWS::RDS::DBCluster": [
+      "AllocatedStorage",
+      "AssociatedRoles",
+      "AutoMinorVersionUpgrade",
+      "AvailabilityZones",
+      "BacktrackWindow",
+      "ClusterScalabilityType",
+      "CopyTagsToSnapshot",
+      "DBClusterInstanceClass",
+      "DBClusterParameterGroupName",
+      "DBInstanceParameterGroupName",
+      "DBSystemId",
+      "DatabaseInsightsMode",
+      "DeleteAutomatedBackups",
+      "Domain",
+      "DomainIAMRoleName",
+      "EnableCloudwatchLogsExports",
+      "EnableGlobalWriteForwarding",
+      "EnableHttpEndpoint",
+      "EnableIAMDatabaseAuthentication",
+      "EnableLocalWriteForwarding",
+      "EngineLifecycleSupport",
+      "EngineMode",
+      "GlobalClusterIdentifier",
+      "Iops",
+      "ManageMasterUserPassword",
+      "MasterUserAuthenticationType",
+      "MasterUserSecret",
+      "MonitoringInterval",
+      "MonitoringRoleArn",
+      "NetworkType",
+      "PerformanceInsightsEnabled",
+      "PerformanceInsightsKmsKeyId",
+      "PerformanceInsightsRetentionPeriod",
+      "PreferredBackupWindow",
+      "PreferredMaintenanceWindow",
+      "PubliclyAccessible",
+      "ReplicationSourceIdentifier",
+      "RestoreToTime",
+      "RestoreType",
+      "ScalingConfiguration",
+      "SnapshotIdentifier",
+      "SourceDBClusterIdentifier",
+      "SourceDbClusterResourceId",
+      "SourceRegion",
+      "StorageType",
+      "UseLatestRestorableTime"
+    ],
+    "AWS::RDS::DBInstance": [
+      "AdditionalStorageVolumes",
+      "AllocatedStorage",
+      "AllowMajorVersionUpgrade",
+      "ApplyImmediately",
+      "AssociatedRoles",
+      "AutoMinorVersionUpgrade",
+      "AutomaticBackupReplicationKmsKeyId",
+      "AutomaticBackupReplicationRegion",
+      "AutomaticBackupReplicationRetentionPeriod",
+      "AvailabilityZone",
+      "BackupRetentionPeriod",
+      "BackupTarget",
+      "CACertificateIdentifier",
+      "CertificateRotationRestart",
+      "CharacterSetName",
+      "CopyTagsToSnapshot",
+      "CustomIAMInstanceProfile",
+      "DBClusterSnapshotIdentifier",
+      "DBName",
+      "DBParameterGroupName",
+      "DBSecurityGroups",
+      "DBSnapshotIdentifier",
+      "DBSystemId",
+      "DatabaseInsightsMode",
+      "DedicatedLogVolume",
+      "DeleteAutomatedBackups",
+      "DeletionProtection",
+      "Domain",
+      "DomainAuthSecretArn",
+      "DomainDnsIps",
+      "DomainFqdn",
+      "DomainIAMRoleName",
+      "DomainOu",
+      "EnableCloudwatchLogsExports",
+      "EnableIAMDatabaseAuthentication",
+      "EnablePerformanceInsights",
+      "EngineLifecycleSupport",
+      "EngineVersion",
+      "Iops",
+      "KmsKeyId",
+      "LicenseModel",
+      "ManageMasterUserPassword",
+      "MasterUserAuthenticationType",
+      "MasterUserPassword",
+      "MasterUserSecret",
+      "MasterUsername",
+      "MaxAllocatedStorage",
+      "MonitoringInterval",
+      "MonitoringRoleArn",
+      "MultiAZ",
+      "NcharCharacterSetName",
+      "NetworkType",
+      "OptionGroupName",
+      "PerformanceInsightsKMSKeyId",
+      "PerformanceInsightsRetentionPeriod",
+      "Port",
+      "PreferredBackupWindow",
+      "PreferredMaintenanceWindow",
+      "ProcessorFeatures",
+      "PromotionTier",
+      "ReplicaMode",
+      "RestoreTime",
+      "SourceDBClusterIdentifier",
+      "SourceDBInstanceAutomatedBackupsArn",
+      "SourceDBInstanceIdentifier",
+      "SourceDbiResourceId",
+      "SourceRegion",
+      "StorageEncrypted",
+      "StorageThroughput",
+      "StorageType",
+      "TdeCredentialArn",
+      "TdeCredentialPassword",
+      "Timezone",
+      "UseDefaultProcessorFeatures",
+      "UseLatestRestorableTime",
+      "VPCSecurityGroups"
+    ],
+    "AWS::RDS::DBProxy": [
+      "DefaultAuthScheme",
+      "EndpointNetworkType",
+      "TargetConnectionNetworkType"
+    ],
+    "AWS::RDS::DBProxyEndpoint": [
+      "EndpointNetworkType"
+    ],
+    "AWS::Route53::HostedZone": [
+      "HostedZoneFeatures"
+    ],
+    "AWS::Route53::RecordSet": [
+      "CidrRoutingConfig",
+      "GeoProximityLocation"
+    ],
+    "AWS::S3::Bucket": [
+      "AbacStatus",
+      "AccessControl",
+      "BucketNamePrefix",
+      "BucketNamespace",
+      "MetadataConfiguration",
+      "MetadataTableConfiguration"
+    ],
+    "AWS::S3Express::DirectoryBucket": [
+      "BucketEncryption",
+      "InventoryConfigurations",
+      "LifecycleConfiguration",
+      "MetricsConfigurations",
+      "Tags"
+    ],
+    "AWS::S3Tables::Table": [
+      "Compaction",
+      "IcebergMetadata",
+      "OpenTableFormat",
+      "SnapshotManagement",
+      "StorageClassConfiguration",
+      "TableName",
+      "Tags",
+      "WithoutMetadata"
+    ],
+    "AWS::S3Tables::TableBucket": [
+      "EncryptionConfiguration",
+      "MetricsConfiguration",
+      "ReplicationConfiguration",
+      "StorageClassConfiguration",
+      "Tags",
+      "UnreferencedFileRemoval"
+    ],
+    "AWS::S3Vectors::VectorBucket": [
+      "Tags"
+    ],
+    "AWS::SNS::Subscription": [
+      "DeliveryPolicy",
+      "FilterPolicyScope",
+      "RawMessageDelivery",
+      "RedrivePolicy",
+      "Region",
+      "ReplayPolicy",
+      "SubscriptionRoleArn"
+    ],
+    "AWS::SQS::Queue": [
+      "RedriveAllowPolicy"
+    ],
+    "AWS::SecretsManager::Secret": [
+      "Type"
+    ],
+    "AWS::ServiceDiscovery::Service": [
+      "ServiceAttributes"
+    ],
+    "AWS::StepFunctions::StateMachine": [
+      "DefinitionS3Location"
+    ],
+    "AWS::WAFv2::WebACL": [
+      "ApplicationConfig",
+      "DataProtectionConfig",
+      "OnSourceDDoSProtectionConfig"
+    ]
+  },
+  "bogusTolerated": {
+    "AWS::AutoScaling::AutoScalingGroup": {
+      "DefaultCooldown": "SDK input field name; CFn schema names the same field 'Cooldown'. Provider currently maps the SDK name through handledProperties; investigate whether to rename or split the safety-net check (follow-up of #391)."
+    },
+    "AWS::BedrockAgentCore::Runtime": {
+      "ClientToken": "SDK-only idempotency token; never appears on a CFn template. Listing it in handledProperties was defensive but unnecessary — leave tolerated until a separate cleanup PR."
+    },
+    "AWS::DynamoDB::GlobalTable": {
+      "TableClass": "CFn schema exposes this only nested under Replicas[].TableClass; provider's top-level handledProperties entry predates the schema layout. Investigate per-replica drift handling separately.",
+      "DeletionProtectionEnabled": "Same shape as TableClass — CFn nests this under Replicas[]; provider declares it at top level. Follow-up cleanup."
+    },
+    "AWS::EC2::NetworkAclEntry": {
+      "IcmpTypeCode": "SDK input field name; CFn schema renamed to 'Icmp'. Provider keeps the SDK name to match its create() input; rename the safety-net entry separately."
+    },
+    "AWS::ECS::Service": {
+      "PlacementStrategy": "Likely typo for 'PlacementStrategies' (CFn schema name is plural). Real bug — fix in a follow-up PR after verifying no template-side fallout."
+    },
+    "AWS::ElastiCache::SubnetGroup": {
+      "CacheSubnetGroupDescription": "SDK input field name; CFn schema names the same field 'Description'. Investigate whether to rename in a follow-up."
+    },
+    "AWS::Glue::Crawler": {
+      "LineageConfiguration": "Schema snapshot (2026-05) does not include this property; AWS may have deprecated/renamed it. Verify against current AWS docs in a follow-up."
+    },
+    "AWS::Glue::Job": {
+      "SourceControlDetails": "Schema snapshot (2026-05) does not include this property. Verify in a follow-up."
+    },
+    "AWS::Neptune::DBInstance": {
+      "DeletionProtection": "CFn schema has DeletionProtection only on DBCluster, not DBInstance. Likely a copy-paste from the cluster handler — verify before removing."
+    },
+    "AWS::S3Tables::Table": {
+      "Name": "Likely typo for 'TableName' (CFn schema name). Real bug — fix in a follow-up PR.",
+      "Format": "Likely typo for 'OpenTableFormat' (CFn schema name). Real bug — fix in a follow-up PR."
+    }
+  }
+}

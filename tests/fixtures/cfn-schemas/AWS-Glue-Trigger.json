@@ -1,0 +1,22 @@
+{
+  "resourceType": "AWS::Glue::Trigger",
+  "generatedAt": "2026-05-16",
+  "properties": [
+    "Actions",
+    "Description",
+    "EventBatchingCondition",
+    "Name",
+    "Predicate",
+    "Schedule",
+    "StartOnCreation",
+    "Tags",
+    "Type",
+    "WorkflowName"
+  ],
+  "readOnlyProperties": [],
+  "createOnlyProperties": [
+    "Name",
+    "Type",
+    "WorkflowName"
+  ]
+}

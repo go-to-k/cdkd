@@ -1,0 +1,35 @@
+{
+  "resourceType": "AWS::WAFv2::WebACL",
+  "generatedAt": "2026-05-16",
+  "properties": [
+    "ApplicationConfig",
+    "Arn",
+    "AssociationConfig",
+    "Capacity",
+    "CaptchaConfig",
+    "ChallengeConfig",
+    "CustomResponseBodies",
+    "DataProtectionConfig",
+    "DefaultAction",
+    "Description",
+    "Id",
+    "LabelNamespace",
+    "Name",
+    "OnSourceDDoSProtectionConfig",
+    "Rules",
+    "Scope",
+    "Tags",
+    "TokenDomains",
+    "VisibilityConfig"
+  ],
+  "readOnlyProperties": [
+    "Arn",
+    "Capacity",
+    "Id",
+    "LabelNamespace"
+  ],
+  "createOnlyProperties": [
+    "Name",
+    "Scope"
+  ]
+}

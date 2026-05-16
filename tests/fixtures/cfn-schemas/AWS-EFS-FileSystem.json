@@ -1,0 +1,31 @@
+{
+  "resourceType": "AWS::EFS::FileSystem",
+  "generatedAt": "2026-05-16",
+  "properties": [
+    "Arn",
+    "AvailabilityZoneName",
+    "BackupPolicy",
+    "BypassPolicyLockoutSafetyCheck",
+    "Encrypted",
+    "FileSystemId",
+    "FileSystemPolicy",
+    "FileSystemProtection",
+    "FileSystemTags",
+    "KmsKeyId",
+    "LifecyclePolicies",
+    "PerformanceMode",
+    "ProvisionedThroughputInMibps",
+    "ReplicationConfiguration",
+    "ThroughputMode"
+  ],
+  "readOnlyProperties": [
+    "Arn",
+    "FileSystemId"
+  ],
+  "createOnlyProperties": [
+    "AvailabilityZoneName",
+    "Encrypted",
+    "KmsKeyId",
+    "PerformanceMode"
+  ]
+}

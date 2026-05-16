@@ -1,0 +1,37 @@
+{
+  "resourceType": "AWS::CloudWatch::Alarm",
+  "generatedAt": "2026-05-16",
+  "properties": [
+    "ActionsEnabled",
+    "AlarmActions",
+    "AlarmDescription",
+    "AlarmName",
+    "Arn",
+    "ComparisonOperator",
+    "DatapointsToAlarm",
+    "Dimensions",
+    "EvaluateLowSampleCountPercentile",
+    "EvaluationCriteria",
+    "EvaluationInterval",
+    "EvaluationPeriods",
+    "ExtendedStatistic",
+    "InsufficientDataActions",
+    "MetricName",
+    "Metrics",
+    "Namespace",
+    "OKActions",
+    "Period",
+    "Statistic",
+    "Tags",
+    "Threshold",
+    "ThresholdMetricId",
+    "TreatMissingData",
+    "Unit"
+  ],
+  "readOnlyProperties": [
+    "Arn"
+  ],
+  "createOnlyProperties": [
+    "AlarmName"
+  ]
+}

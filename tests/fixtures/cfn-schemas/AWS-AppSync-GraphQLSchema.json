@@ -1,0 +1,16 @@
+{
+  "resourceType": "AWS::AppSync::GraphQLSchema",
+  "generatedAt": "2026-05-16",
+  "properties": [
+    "ApiId",
+    "Definition",
+    "DefinitionS3Location",
+    "Id"
+  ],
+  "readOnlyProperties": [
+    "Id"
+  ],
+  "createOnlyProperties": [
+    "ApiId"
+  ]
+}

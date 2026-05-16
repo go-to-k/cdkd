@@ -1,0 +1,32 @@
+{
+  "resourceType": "AWS::CloudTrail::Trail",
+  "generatedAt": "2026-05-16",
+  "properties": [
+    "AdvancedEventSelectors",
+    "AggregationConfigurations",
+    "Arn",
+    "CloudWatchLogsLogGroupArn",
+    "CloudWatchLogsRoleArn",
+    "EnableLogFileValidation",
+    "EventSelectors",
+    "IncludeGlobalServiceEvents",
+    "InsightSelectors",
+    "IsLogging",
+    "IsMultiRegionTrail",
+    "IsOrganizationTrail",
+    "KMSKeyId",
+    "S3BucketName",
+    "S3KeyPrefix",
+    "SnsTopicArn",
+    "SnsTopicName",
+    "Tags",
+    "TrailName"
+  ],
+  "readOnlyProperties": [
+    "Arn",
+    "SnsTopicArn"
+  ],
+  "createOnlyProperties": [
+    "TrailName"
+  ]
+}

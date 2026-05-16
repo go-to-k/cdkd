@@ -1,0 +1,38 @@
+{
+  "resourceType": "AWS::EC2::NatGateway",
+  "generatedAt": "2026-05-16",
+  "properties": [
+    "AllocationId",
+    "AutoProvisionZones",
+    "AutoScalingIps",
+    "AvailabilityMode",
+    "AvailabilityZoneAddresses",
+    "ConnectivityType",
+    "EniId",
+    "MaxDrainDurationSeconds",
+    "NatGatewayId",
+    "PrivateIpAddress",
+    "RouteTableId",
+    "SecondaryAllocationIds",
+    "SecondaryPrivateIpAddressCount",
+    "SecondaryPrivateIpAddresses",
+    "SubnetId",
+    "Tags",
+    "VpcId"
+  ],
+  "readOnlyProperties": [
+    "AutoProvisionZones",
+    "AutoScalingIps",
+    "EniId",
+    "NatGatewayId",
+    "RouteTableId"
+  ],
+  "createOnlyProperties": [
+    "AllocationId",
+    "AvailabilityMode",
+    "ConnectivityType",
+    "PrivateIpAddress",
+    "SubnetId",
+    "VpcId"
+  ]
+}

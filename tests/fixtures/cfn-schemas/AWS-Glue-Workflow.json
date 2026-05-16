@@ -1,0 +1,18 @@
+{
+  "resourceType": "AWS::Glue::Workflow",
+  "generatedAt": "2026-05-16",
+  "properties": [
+    "DefaultRunProperties",
+    "Description",
+    "Id",
+    "MaxConcurrentRuns",
+    "Name",
+    "Tags"
+  ],
+  "readOnlyProperties": [
+    "Id"
+  ],
+  "createOnlyProperties": [
+    "Name"
+  ]
+}

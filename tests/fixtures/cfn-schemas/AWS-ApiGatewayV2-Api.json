@@ -1,0 +1,33 @@
+{
+  "resourceType": "AWS::ApiGatewayV2::Api",
+  "generatedAt": "2026-05-16",
+  "properties": [
+    "ApiEndpoint",
+    "ApiId",
+    "ApiKeySelectionExpression",
+    "BasePath",
+    "Body",
+    "BodyS3Location",
+    "CorsConfiguration",
+    "CredentialsArn",
+    "Description",
+    "DisableExecuteApiEndpoint",
+    "DisableSchemaValidation",
+    "FailOnWarnings",
+    "IpAddressType",
+    "Name",
+    "ProtocolType",
+    "RouteKey",
+    "RouteSelectionExpression",
+    "Tags",
+    "Target",
+    "Version"
+  ],
+  "readOnlyProperties": [
+    "ApiEndpoint",
+    "ApiId"
+  ],
+  "createOnlyProperties": [
+    "ProtocolType"
+  ]
+}

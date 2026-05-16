@@ -1,0 +1,24 @@
+{
+  "resourceType": "AWS::EC2::NetworkAclEntry",
+  "generatedAt": "2026-05-16",
+  "properties": [
+    "CidrBlock",
+    "Egress",
+    "Icmp",
+    "Id",
+    "Ipv6CidrBlock",
+    "NetworkAclId",
+    "PortRange",
+    "Protocol",
+    "RuleAction",
+    "RuleNumber"
+  ],
+  "readOnlyProperties": [
+    "Id"
+  ],
+  "createOnlyProperties": [
+    "Egress",
+    "NetworkAclId",
+    "RuleNumber"
+  ]
+}

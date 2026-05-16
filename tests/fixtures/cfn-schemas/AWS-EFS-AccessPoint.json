@@ -1,0 +1,24 @@
+{
+  "resourceType": "AWS::EFS::AccessPoint",
+  "generatedAt": "2026-05-16",
+  "properties": [
+    "AccessPointId",
+    "AccessPointTags",
+    "Arn",
+    "ClientToken",
+    "FileSystemId",
+    "PosixUser",
+    "RootDirectory"
+  ],
+  "readOnlyProperties": [
+    "AccessPointId",
+    "Arn"
+  ],
+  "createOnlyProperties": [
+    "ClientToken",
+    "CreationInfo",
+    "FileSystemId",
+    "PosixUser",
+    "RootDirectory"
+  ]
+}

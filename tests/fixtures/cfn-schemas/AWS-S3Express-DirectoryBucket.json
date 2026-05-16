@@ -1,0 +1,25 @@
+{
+  "resourceType": "AWS::S3Express::DirectoryBucket",
+  "generatedAt": "2026-05-16",
+  "properties": [
+    "Arn",
+    "AvailabilityZoneName",
+    "BucketEncryption",
+    "BucketName",
+    "DataRedundancy",
+    "InventoryConfigurations",
+    "LifecycleConfiguration",
+    "LocationName",
+    "MetricsConfigurations",
+    "Tags"
+  ],
+  "readOnlyProperties": [
+    "Arn",
+    "AvailabilityZoneName"
+  ],
+  "createOnlyProperties": [
+    "BucketName",
+    "DataRedundancy",
+    "LocationName"
+  ]
+}

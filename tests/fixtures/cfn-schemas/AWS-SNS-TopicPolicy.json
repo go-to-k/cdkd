@@ -1,0 +1,13 @@
+{
+  "resourceType": "AWS::SNS::TopicPolicy",
+  "generatedAt": "2026-05-16",
+  "properties": [
+    "Id",
+    "PolicyDocument",
+    "Topics"
+  ],
+  "readOnlyProperties": [
+    "Id"
+  ],
+  "createOnlyProperties": []
+}

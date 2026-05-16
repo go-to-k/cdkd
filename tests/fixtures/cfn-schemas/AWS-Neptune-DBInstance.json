@@ -1,0 +1,31 @@
+{
+  "resourceType": "AWS::Neptune::DBInstance",
+  "generatedAt": "2026-05-16",
+  "properties": [
+    "AllowMajorVersionUpgrade",
+    "AutoMinorVersionUpgrade",
+    "AvailabilityZone",
+    "DBClusterIdentifier",
+    "DBInstanceClass",
+    "DBInstanceIdentifier",
+    "DBParameterGroupName",
+    "DBSnapshotIdentifier",
+    "DBSubnetGroupName",
+    "Endpoint",
+    "Port",
+    "PreferredMaintenanceWindow",
+    "PubliclyAccessible",
+    "Tags"
+  ],
+  "readOnlyProperties": [
+    "Endpoint",
+    "Port"
+  ],
+  "createOnlyProperties": [
+    "AvailabilityZone",
+    "DBClusterIdentifier",
+    "DBInstanceIdentifier",
+    "DBSnapshotIdentifier",
+    "DBSubnetGroupName"
+  ]
+}

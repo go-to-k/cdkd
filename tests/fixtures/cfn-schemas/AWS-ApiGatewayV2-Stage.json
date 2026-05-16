@@ -1,0 +1,25 @@
+{
+  "resourceType": "AWS::ApiGatewayV2::Stage",
+  "generatedAt": "2026-05-16",
+  "properties": [
+    "AccessLogSettings",
+    "ApiId",
+    "AutoDeploy",
+    "ClientCertificateId",
+    "DefaultRouteSettings",
+    "DeploymentId",
+    "Description",
+    "Id",
+    "RouteSettings",
+    "StageName",
+    "StageVariables",
+    "Tags"
+  ],
+  "readOnlyProperties": [
+    "Id"
+  ],
+  "createOnlyProperties": [
+    "ApiId",
+    "StageName"
+  ]
+}

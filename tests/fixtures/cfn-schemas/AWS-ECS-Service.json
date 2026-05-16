@@ -1,0 +1,44 @@
+{
+  "resourceType": "AWS::ECS::Service",
+  "generatedAt": "2026-05-16",
+  "properties": [
+    "AvailabilityZoneRebalancing",
+    "CapacityProviderStrategy",
+    "Cluster",
+    "DeploymentConfiguration",
+    "DeploymentController",
+    "DesiredCount",
+    "EnableECSManagedTags",
+    "EnableExecuteCommand",
+    "ForceNewDeployment",
+    "HealthCheckGracePeriodSeconds",
+    "LaunchType",
+    "LoadBalancers",
+    "Name",
+    "NetworkConfiguration",
+    "PlacementConstraints",
+    "PlacementStrategies",
+    "PlatformVersion",
+    "PropagateTags",
+    "Role",
+    "SchedulingStrategy",
+    "ServiceArn",
+    "ServiceConnectConfiguration",
+    "ServiceName",
+    "ServiceRegistries",
+    "Tags",
+    "TaskDefinition",
+    "VolumeConfigurations",
+    "VpcLatticeConfigurations"
+  ],
+  "readOnlyProperties": [
+    "Name",
+    "ServiceArn"
+  ],
+  "createOnlyProperties": [
+    "Cluster",
+    "Role",
+    "SchedulingStrategy",
+    "ServiceName"
+  ]
+}

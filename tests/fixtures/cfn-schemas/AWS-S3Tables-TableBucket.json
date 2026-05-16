@@ -1,0 +1,20 @@
+{
+  "resourceType": "AWS::S3Tables::TableBucket",
+  "generatedAt": "2026-05-16",
+  "properties": [
+    "EncryptionConfiguration",
+    "MetricsConfiguration",
+    "ReplicationConfiguration",
+    "StorageClassConfiguration",
+    "TableBucketARN",
+    "TableBucketName",
+    "Tags",
+    "UnreferencedFileRemoval"
+  ],
+  "readOnlyProperties": [
+    "TableBucketARN"
+  ],
+  "createOnlyProperties": [
+    "TableBucketName"
+  ]
+}

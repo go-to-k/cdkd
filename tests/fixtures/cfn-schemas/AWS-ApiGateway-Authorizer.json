@@ -1,0 +1,23 @@
+{
+  "resourceType": "AWS::ApiGateway::Authorizer",
+  "generatedAt": "2026-05-16",
+  "properties": [
+    "AuthType",
+    "AuthorizerCredentials",
+    "AuthorizerId",
+    "AuthorizerResultTtlInSeconds",
+    "AuthorizerUri",
+    "IdentitySource",
+    "IdentityValidationExpression",
+    "Name",
+    "ProviderARNs",
+    "RestApiId",
+    "Type"
+  ],
+  "readOnlyProperties": [
+    "AuthorizerId"
+  ],
+  "createOnlyProperties": [
+    "RestApiId"
+  ]
+}

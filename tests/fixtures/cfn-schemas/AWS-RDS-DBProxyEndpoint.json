@@ -1,0 +1,29 @@
+{
+  "resourceType": "AWS::RDS::DBProxyEndpoint",
+  "generatedAt": "2026-05-16",
+  "properties": [
+    "DBProxyEndpointArn",
+    "DBProxyEndpointName",
+    "DBProxyName",
+    "Endpoint",
+    "EndpointNetworkType",
+    "IsDefault",
+    "Tags",
+    "TargetRole",
+    "VpcId",
+    "VpcSecurityGroupIds",
+    "VpcSubnetIds"
+  ],
+  "readOnlyProperties": [
+    "DBProxyEndpointArn",
+    "Endpoint",
+    "IsDefault",
+    "VpcId"
+  ],
+  "createOnlyProperties": [
+    "DBProxyEndpointName",
+    "DBProxyName",
+    "EndpointNetworkType",
+    "VpcSubnetIds"
+  ]
+}

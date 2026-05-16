@@ -1,0 +1,12 @@
+{
+  "resourceType": "AWS::ApiGateway::Account",
+  "generatedAt": "2026-05-16",
+  "properties": [
+    "CloudWatchRoleArn",
+    "Id"
+  ],
+  "readOnlyProperties": [
+    "Id"
+  ],
+  "createOnlyProperties": []
+}

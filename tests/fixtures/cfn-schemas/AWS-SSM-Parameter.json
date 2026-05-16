@@ -1,0 +1,19 @@
+{
+  "resourceType": "AWS::SSM::Parameter",
+  "generatedAt": "2026-05-16",
+  "properties": [
+    "AllowedPattern",
+    "DataType",
+    "Description",
+    "Name",
+    "Policies",
+    "Tags",
+    "Tier",
+    "Type",
+    "Value"
+  ],
+  "readOnlyProperties": [],
+  "createOnlyProperties": [
+    "Name"
+  ]
+}

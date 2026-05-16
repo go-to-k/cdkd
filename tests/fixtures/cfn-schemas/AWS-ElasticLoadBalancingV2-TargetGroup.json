@@ -1,0 +1,45 @@
+{
+  "resourceType": "AWS::ElasticLoadBalancingV2::TargetGroup",
+  "generatedAt": "2026-05-16",
+  "properties": [
+    "HealthCheckEnabled",
+    "HealthCheckIntervalSeconds",
+    "HealthCheckPath",
+    "HealthCheckPort",
+    "HealthCheckProtocol",
+    "HealthCheckTimeoutSeconds",
+    "HealthyThresholdCount",
+    "IpAddressType",
+    "LoadBalancerArns",
+    "Matcher",
+    "Name",
+    "Port",
+    "Protocol",
+    "ProtocolVersion",
+    "Tags",
+    "TargetControlPort",
+    "TargetGroupArn",
+    "TargetGroupAttributes",
+    "TargetGroupFullName",
+    "TargetGroupName",
+    "TargetType",
+    "Targets",
+    "UnhealthyThresholdCount",
+    "VpcId"
+  ],
+  "readOnlyProperties": [
+    "LoadBalancerArns",
+    "TargetGroupArn",
+    "TargetGroupFullName",
+    "TargetGroupName"
+  ],
+  "createOnlyProperties": [
+    "IpAddressType",
+    "Name",
+    "Port",
+    "Protocol",
+    "ProtocolVersion",
+    "TargetType",
+    "VpcId"
+  ]
+}

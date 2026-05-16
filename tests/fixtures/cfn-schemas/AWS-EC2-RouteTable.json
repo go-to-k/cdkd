@@ -1,0 +1,15 @@
+{
+  "resourceType": "AWS::EC2::RouteTable",
+  "generatedAt": "2026-05-16",
+  "properties": [
+    "RouteTableId",
+    "Tags",
+    "VpcId"
+  ],
+  "readOnlyProperties": [
+    "RouteTableId"
+  ],
+  "createOnlyProperties": [
+    "VpcId"
+  ]
+}

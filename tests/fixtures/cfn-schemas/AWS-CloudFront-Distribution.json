@@ -1,0 +1,15 @@
+{
+  "resourceType": "AWS::CloudFront::Distribution",
+  "generatedAt": "2026-05-16",
+  "properties": [
+    "DistributionConfig",
+    "DomainName",
+    "Id",
+    "Tags"
+  ],
+  "readOnlyProperties": [
+    "DomainName",
+    "Id"
+  ],
+  "createOnlyProperties": []
+}

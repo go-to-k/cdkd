@@ -1,0 +1,16 @@
+{
+  "resourceType": "AWS::IAM::Policy",
+  "generatedAt": "2026-05-16",
+  "properties": [
+    "Groups",
+    "Id",
+    "PolicyDocument",
+    "PolicyName",
+    "Roles",
+    "Users"
+  ],
+  "readOnlyProperties": [
+    "Id"
+  ],
+  "createOnlyProperties": []
+}

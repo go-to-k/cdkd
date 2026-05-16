@@ -1,0 +1,26 @@
+{
+  "resourceType": "AWS::SNS::Subscription",
+  "generatedAt": "2026-05-16",
+  "properties": [
+    "Arn",
+    "DeliveryPolicy",
+    "Endpoint",
+    "FilterPolicy",
+    "FilterPolicyScope",
+    "Protocol",
+    "RawMessageDelivery",
+    "RedrivePolicy",
+    "Region",
+    "ReplayPolicy",
+    "SubscriptionRoleArn",
+    "TopicArn"
+  ],
+  "readOnlyProperties": [
+    "Arn"
+  ],
+  "createOnlyProperties": [
+    "Endpoint",
+    "Protocol",
+    "TopicArn"
+  ]
+}

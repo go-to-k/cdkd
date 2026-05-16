@@ -1,0 +1,45 @@
+{
+  "resourceType": "AWS::EC2::Subnet",
+  "generatedAt": "2026-05-16",
+  "properties": [
+    "AssignIpv6AddressOnCreation",
+    "AvailabilityZone",
+    "AvailabilityZoneId",
+    "BlockPublicAccessStates",
+    "CidrBlock",
+    "EnableDns64",
+    "EnableLniAtDeviceIndex",
+    "Ipv4IpamPoolId",
+    "Ipv4NetmaskLength",
+    "Ipv6CidrBlock",
+    "Ipv6CidrBlocks",
+    "Ipv6IpamPoolId",
+    "Ipv6Native",
+    "Ipv6NetmaskLength",
+    "MapPublicIpOnLaunch",
+    "NetworkAclAssociationId",
+    "OutpostArn",
+    "PrivateDnsNameOptionsOnLaunch",
+    "SubnetId",
+    "Tags",
+    "VpcId"
+  ],
+  "readOnlyProperties": [
+    "BlockPublicAccessStates",
+    "Ipv6CidrBlocks",
+    "NetworkAclAssociationId",
+    "SubnetId"
+  ],
+  "createOnlyProperties": [
+    "AvailabilityZone",
+    "AvailabilityZoneId",
+    "CidrBlock",
+    "Ipv4IpamPoolId",
+    "Ipv4NetmaskLength",
+    "Ipv6IpamPoolId",
+    "Ipv6Native",
+    "Ipv6NetmaskLength",
+    "OutpostArn",
+    "VpcId"
+  ]
+}
