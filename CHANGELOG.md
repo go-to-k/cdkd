@@ -1,3 +1,10 @@
+# [0.107.0](https://github.com/go-to-k/cdkd/compare/v0.106.0...v0.107.0) (2026-05-16)
+
+
+### Features
+
+* **dynamodb-globaltable:** full auto-scaling reverse-mapping (Closes [#395](https://github.com/go-to-k/cdkd/issues/395)) ([#397](https://github.com/go-to-k/cdkd/issues/397)) ([4c6ee0a](https://github.com/go-to-k/cdkd/commit/4c6ee0af12854fd4ea8a7309290ab5be0d4f3825))
+
 # [0.106.0](https://github.com/go-to-k/cdkd/compare/v0.105.0...v0.106.0) (2026-05-16)
 
 
