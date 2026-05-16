@@ -1,3 +1,10 @@
+# [0.109.0](https://github.com/go-to-k/cdkd/compare/v0.108.0...v0.109.0) (2026-05-16)
+
+
+### Features
+
+* **dynamodb-globaltable:** close all 8 deferred items (Closes [#402](https://github.com/go-to-k/cdkd/issues/402)) ([#403](https://github.com/go-to-k/cdkd/issues/403)) ([b274877](https://github.com/go-to-k/cdkd/commit/b27487743cb7db4a78841e6a1224653a1c52610b))
+
 # [0.108.0](https://github.com/go-to-k/cdkd/compare/v0.107.0...v0.108.0) (2026-05-16)
 
 
