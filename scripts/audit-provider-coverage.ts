@@ -29,11 +29,10 @@
  * consumers (the default mode).
  */
 
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
-  CloudFormationClient,
   DescribeTypeCommand,
   ListTypesCommand,
   type DeprecatedStatus,
@@ -41,6 +40,13 @@ import {
   type Visibility,
 } from '@aws-sdk/client-cloudformation';
 import pLimit from 'p-limit';
+// NOTE: Node 24 native TS strip resolves imports literally — it does NOT
+// rewrite `.js` to `.ts` the way TypeScript's `rewriteRelativeImportExtensions`
+// does at emit time. Importing un-built `src/**` via `.js` would fail with
+// `ERR_MODULE_NOT_FOUND` because the script runs directly via `node
+// scripts/audit-provider-coverage.ts`, not through a bundler. Using `.ts`
+// here keeps both the runtime and `tsconfig.test.json`'s type-check happy.
+import { getAwsClients } from '../src/utils/aws-clients.ts';
 
 const SCHEMA_VERSION = 1;
 
@@ -202,7 +208,12 @@ export async function describeTypeWithRetry(
       return resp.ProvisioningType;
     } catch (err) {
       if (isThrottlingError(err) && attempt < delays.length) {
-        const delayMs = delays[attempt] ?? delays[delays.length - 1] ?? 1000;
+        // Guard above ensures delays[attempt] is defined for a non-empty
+        // number[]; the `?? 1000` fallback covers the `retryDelaysMs: []`
+        // case where attempt < 0 is impossible but TS still narrows
+        // delays[attempt] to `number | undefined` under
+        // noUncheckedIndexedAccess.
+        const delayMs = delays[attempt] ?? 1000;
         await sleep(delayMs);
         attempt++;
         continue;
@@ -389,8 +400,22 @@ export function renderMarkdown(report: CoverageReport): string {
 export function atomicWriteFile(path: string, content: string): void {
   mkdirSync(dirname(path), { recursive: true });
   const tmp = `${path}.tmp`;
-  writeFileSync(tmp, content);
-  renameSync(tmp, path);
+  try {
+    writeFileSync(tmp, content);
+    renameSync(tmp, path);
+  } catch (err) {
+    // Best-effort cleanup of the partial .tmp so a half-written file
+    // doesn't sit next to the canonical path masquerading as something
+    // legitimate. Cleanup failure (e.g. file never created because
+    // writeFileSync failed on EACCES) is swallowed — the original error
+    // is what the caller needs to see.
+    try {
+      unlinkSync(tmp);
+    } catch {
+      // ignore
+    }
+    throw err;
+  }
 }
 
 /** Read the cached report from `docs/_generated/provider-coverage.json`. */
@@ -432,45 +457,74 @@ async function regenerate(): Promise<void> {
   const registered = parseRegisteredTypes(source);
   console.error(`[audit] parsed ${registered.size} registered SDK Providers`);
 
-  const client = new CloudFormationClient({});
-  console.error('[audit] enumerating public AWS CFn resource types via ListTypes...');
-  const allTypes: string[] = [];
-  for await (const typeName of paginateListTypes(client)) {
-    allTypes.push(typeName);
-    if (allTypes.length % 100 === 0) {
-      console.error(`[audit] ListTypes: ${allTypes.length} types so far...`);
-    }
-  }
-  console.error(`[audit] ListTypes complete: ${allTypes.length} total types`);
-
-  const report = await partitionCoverage(client, registered, allTypes, {
-    onProgress: (done, total) => {
-      if (done % 25 === 0 || done === total) {
-        console.error(`[audit] DescribeType: ${done}/${total}`);
+  // Route through the project's `getAwsClients()` factory rather than
+  // instantiating `new CloudFormationClient({})` directly, so the audit
+  // picks up the same region resolution / credential chain / future
+  // `--role-arn` env-var plumbing as the rest of cdkd. The `.destroy()`
+  // in the finally block releases the HTTP keep-alive sockets so a
+  // short-lived script exits promptly under Node 24 (the SDK's default
+  // Agent otherwise holds the event loop open for a few seconds).
+  const client = getAwsClients().cloudFormation;
+  try {
+    console.error('[audit] enumerating public AWS CFn resource types via ListTypes...');
+    const allTypes: string[] = [];
+    for await (const typeName of paginateListTypes(client)) {
+      allTypes.push(typeName);
+      if (allTypes.length % 100 === 0) {
+        console.error(`[audit] ListTypes: ${allTypes.length} types so far...`);
       }
-    },
-  });
+    }
+    console.error(`[audit] ListTypes complete: ${allTypes.length} total types`);
 
-  atomicWriteFile(OUTPUT_JSON, JSON.stringify(report, null, 2) + '\n');
-  atomicWriteFile(OUTPUT_MARKDOWN, renderMarkdown(report));
-  console.error('[audit] wrote:');
-  console.error(`  ${OUTPUT_JSON}`);
-  console.error(`  ${OUTPUT_MARKDOWN}`);
-  console.error(renderSummaryToStdout(report));
+    const report = await partitionCoverage(client, registered, allTypes, {
+      onProgress: (done, total) => {
+        if (done % 25 === 0 || done === total) {
+          console.error(`[audit] DescribeType: ${done}/${total}`);
+        }
+      },
+    });
+
+    atomicWriteFile(OUTPUT_JSON, JSON.stringify(report, null, 2) + '\n');
+    atomicWriteFile(OUTPUT_MARKDOWN, renderMarkdown(report));
+    console.error('[audit] wrote:');
+    console.error(`  ${OUTPUT_JSON}`);
+    console.error(`  ${OUTPUT_MARKDOWN}`);
+    console.error(renderSummaryToStdout(report));
+  } finally {
+    client.destroy();
+  }
 }
 
-function summarizeCachedReport(): void {
+export interface CliIO {
+  readonly log: (msg: string) => void;
+  readonly error: (msg: string) => void;
+  /** Set when a check fails. The script's main process honours this via `process.exitCode`. */
+  setExitCode(code: number): void;
+}
+
+const consoleIO: CliIO = {
+  log: (msg) => console.log(msg),
+  error: (msg) => console.error(msg),
+  setExitCode: (code) => {
+    process.exitCode = code;
+  },
+};
+
+export function summarizeCachedReport(
+  io: CliIO = consoleIO,
+  jsonPath: string = OUTPUT_JSON
+): void {
   let report: CoverageReport;
   try {
-    report = loadCachedReport(OUTPUT_JSON);
+    report = loadCachedReport(jsonPath);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    console.error(`[audit] cannot read cached report: ${msg}`);
-    console.error(`[audit] run \`node scripts/audit-provider-coverage.ts --regenerate\` first`);
-    process.exitCode = 1;
+    io.error(`[audit] cannot read cached report: ${msg}`);
+    io.error(`[audit] run \`node scripts/audit-provider-coverage.ts --regenerate\` first`);
+    io.setExitCode(1);
     return;
   }
-  console.log(renderSummaryToStdout(report));
+  io.log(renderSummaryToStdout(report));
 }
 
 /**
@@ -499,77 +553,122 @@ export function checkCachedAgainstSource(
   return { ok: missingFromCache.length === 0 && extraInCache.length === 0, missingFromCache, extraInCache };
 }
 
-function runCheck(): void {
+export function runCheck(
+  io: CliIO = consoleIO,
+  jsonPath: string = OUTPUT_JSON,
+  sourcePath: string = REGISTER_PROVIDERS_PATH
+): void {
   let report: CoverageReport;
   try {
-    report = loadCachedReport(OUTPUT_JSON);
+    report = loadCachedReport(jsonPath);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    console.error(`[audit] cannot read cached report: ${msg}`);
-    console.error(`[audit] run \`node scripts/audit-provider-coverage.ts --regenerate\` first`);
-    process.exitCode = 1;
+    io.error(`[audit] cannot read cached report: ${msg}`);
+    io.error(`[audit] run \`node scripts/audit-provider-coverage.ts --regenerate\` first`);
+    io.setExitCode(1);
     return;
   }
-  const source = readFileSync(REGISTER_PROVIDERS_PATH, 'utf8');
+  const source = readFileSync(sourcePath, 'utf8');
   const registered = parseRegisteredTypes(source);
   const result = checkCachedAgainstSource(report.tier1, registered);
   if (result.ok) {
-    console.log(
+    io.log(
       `Cached Tier 1 (${report.tier1.length} types) matches register-providers.ts (${registered.size} types).`
     );
     return;
   }
   if (result.missingFromCache.length > 0) {
-    console.error('[audit] register-providers.ts registers types NOT in the cached Tier 1:');
-    for (const t of result.missingFromCache) console.error(`  - ${t}`);
+    io.error('[audit] register-providers.ts registers types NOT in the cached Tier 1:');
+    for (const t of result.missingFromCache) io.error(`  - ${t}`);
   }
   if (result.extraInCache.length > 0) {
-    console.error('[audit] cached Tier 1 contains types NOT in register-providers.ts:');
-    for (const t of result.extraInCache) console.error(`  - ${t}`);
+    io.error('[audit] cached Tier 1 contains types NOT in register-providers.ts:');
+    for (const t of result.extraInCache) io.error(`  - ${t}`);
   }
-  console.error('[audit] regenerate the audit to resolve:');
-  console.error('         node scripts/audit-provider-coverage.ts --regenerate');
-  process.exitCode = 1;
+  io.error('[audit] regenerate the audit to resolve:');
+  io.error('         node scripts/audit-provider-coverage.ts --regenerate');
+  io.setExitCode(1);
 }
+
+/**
+ * Parse CLI args into a discriminated mode. Mutually-exclusive flags
+ * (`--regenerate` + `--check`) are rejected at parse time rather than
+ * silently picking one — pre-PR-#401-follow-up the precedence was
+ * undocumented and `--check` was simply swallowed when both were set.
+ *
+ * Exported for unit testing.
+ */
+export type CliMode =
+  | { kind: 'help' }
+  | { kind: 'summary' }
+  | { kind: 'regenerate' }
+  | { kind: 'check' }
+  | { kind: 'error'; message: string };
+
+export function parseCliArgs(args: readonly string[]): CliMode {
+  if (args.includes('--help') || args.includes('-h')) return { kind: 'help' };
+  const wantRegenerate = args.includes('--regenerate');
+  const wantCheck = args.includes('--check');
+  if (wantRegenerate && wantCheck) {
+    return {
+      kind: 'error',
+      message: '--regenerate and --check are mutually exclusive; pass at most one',
+    };
+  }
+  if (wantRegenerate) return { kind: 'regenerate' };
+  if (wantCheck) return { kind: 'check' };
+  return { kind: 'summary' };
+}
+
+const HELP_TEXT = [
+  'Usage: node scripts/audit-provider-coverage.ts [--regenerate | --check]',
+  '',
+  '  (no flags)     Read the cached report and print a summary.',
+  '  --regenerate   Call AWS to enumerate every public CFn resource type,',
+  '                 cross-check against cdkd-registered SDK Providers, and',
+  '                 rewrite docs/_generated/provider-coverage.{json,md}.',
+  '                 Requires AWS credentials with cloudformation:ListTypes',
+  '                 and cloudformation:DescribeType. ~10-30 minutes cold.',
+  '  --check        Verify the cached Tier 1 list matches the current',
+  '                 src/provisioning/register-providers.ts. Exits 1 on',
+  '                 drift; intended for CI gates / pre-commit hooks.',
+  '                 Offline (no AWS calls).',
+].join('\n');
 
 async function main(): Promise<void> {
-  const args = process.argv.slice(2);
-  if (args.includes('--help') || args.includes('-h')) {
-    console.log(
-      [
-        'Usage: node scripts/audit-provider-coverage.ts [--regenerate | --check]',
-        '',
-        '  (no flags)     Read the cached report and print a summary.',
-        '  --regenerate   Call AWS to enumerate every public CFn resource type,',
-        '                 cross-check against cdkd-registered SDK Providers, and',
-        '                 rewrite docs/_generated/provider-coverage.{json,md}.',
-        '                 Requires AWS credentials with cloudformation:ListTypes',
-        '                 and cloudformation:DescribeType. ~10-30 minutes cold.',
-        '  --check        Verify the cached Tier 1 list matches the current',
-        '                 src/provisioning/register-providers.ts. Exits 1 on',
-        '                 drift; intended for CI gates / pre-commit hooks.',
-        '                 Offline (no AWS calls).',
-      ].join('\n')
-    );
-    return;
+  const mode = parseCliArgs(process.argv.slice(2));
+  switch (mode.kind) {
+    case 'help':
+      console.log(HELP_TEXT);
+      return;
+    case 'error':
+      console.error(`[audit] ${mode.message}`);
+      console.error(HELP_TEXT);
+      process.exitCode = 1;
+      return;
+    case 'regenerate':
+      await regenerate();
+      return;
+    case 'check':
+      runCheck();
+      return;
+    case 'summary':
+      summarizeCachedReport();
+      return;
   }
-  if (args.includes('--regenerate')) {
-    await regenerate();
-    return;
-  }
-  if (args.includes('--check')) {
-    runCheck();
-    return;
-  }
-  summarizeCachedReport();
 }
 
-const isMainModule = (): boolean => {
-  if (!process.argv[1]) return false;
-  return resolve(process.argv[1]) === __filename;
-};
+/**
+ * Detect whether this module is the CLI entry point (vs imported from
+ * a test). Exported for unit testing so the CLI dispatch can be
+ * exercised without spawning a subprocess.
+ */
+export function isMainModule(argv1: string | undefined, scriptPath: string): boolean {
+  if (!argv1) return false;
+  return resolve(argv1) === scriptPath;
+}
 
-if (isMainModule()) {
+if (isMainModule(process.argv[1], __filename)) {
   main().catch((err) => {
     console.error('[audit] fatal:', err);
     process.exit(1);
