@@ -375,17 +375,8 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
     // `AWS::DynamoDB::GlobalTable` (just like Tags). CDK 2.x's
     // `deletionProtection: true` synthesizes to
     // `Replicas[?Region==<deploy region>].DeletionProtectionEnabled`.
-    // Extract from the local replica entry; fall back to top-level
-    // for legacy / hand-authored templates that put it there.
-    const localReplicaForDP = replicas.find((r) => r['Region'] === currentRegion);
-    const dpePerReplica = localReplicaForDP?.['DeletionProtectionEnabled'];
-    const dpeTopLevel = properties['DeletionProtectionEnabled'];
-    const dpeResolved =
-      typeof dpePerReplica === 'boolean'
-        ? dpePerReplica
-        : typeof dpeTopLevel === 'boolean'
-          ? dpeTopLevel
-          : undefined;
+    // Extract via the shared module-level helper.
+    const dpeResolved = extractLocalDeletionProtection(properties, currentRegion);
     if (dpeResolved !== undefined) {
       createParams.DeletionProtectionEnabled = dpeResolved;
     }
@@ -715,21 +706,28 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       // AWS allows combining these in a single call because they don't
       // conflict with each other or with each other's modes.
       // DeletionProtectionEnabled is per-replica in the CFn schema
-      // (same shape as Tags). Extract from `Replicas[?Region==local]`
-      // with a fall-through to top-level for legacy templates.
-      const extractLocalDP = (props: Record<string, unknown>): boolean | undefined => {
-        const replicas = (props['Replicas'] ?? []) as Array<Record<string, unknown>>;
-        const local = replicas.find((r) => r['Region'] === currentRegion);
-        const perReplica = local?.['DeletionProtectionEnabled'];
-        if (typeof perReplica === 'boolean') return perReplica;
-        const topLevel = props['DeletionProtectionEnabled'];
-        return typeof topLevel === 'boolean' ? topLevel : undefined;
-      };
-      const newDpe = extractLocalDP(properties);
-      const oldDpe = extractLocalDP(previousProperties);
+      // (same shape as Tags). Extract via shared module-level helper.
+      //
+      // **AWS-aware diff (migration fix)**: also compare against AWS's
+      // observed DPE from the DescribeTable response above. Pre-PR
+      // #410 cdkd was reading top-level DPE which was always
+      // undefined → no UpdateTable was issued, but state recorded
+      // the user's template intent (per-replica DPE=true). Post-fix,
+      // a no-change redeploy would see oldDpe=true vs newDpe=true
+      // and skip the update — but AWS still has DPE=false. By
+      // comparing against `awsDpe` from DescribeTable, we re-converge
+      // the actual AWS state to the template intent on any deploy,
+      // not just deploys with a template-side diff. Same logic
+      // doubles as protection against console-side drift.
+      const newDpe = extractLocalDeletionProtection(properties, currentRegion);
+      const oldDpe = extractLocalDeletionProtection(previousProperties, currentRegion);
+      const awsDpe = describeResp.Table?.DeletionProtectionEnabled;
       const flatUpdate: UpdateTableCommandInput = { TableName: physicalId };
       let flatChanged = false;
-      if (newDpe !== oldDpe) {
+      const dpeDiffersFromState = newDpe !== oldDpe;
+      const dpeDiffersFromAws =
+        newDpe !== undefined && typeof awsDpe === 'boolean' && Boolean(newDpe) !== awsDpe;
+      if (dpeDiffersFromState || dpeDiffersFromAws) {
         flatUpdate.DeletionProtectionEnabled = Boolean(newDpe ?? false);
         flatChanged = true;
       }
@@ -1102,15 +1100,40 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       }
 
       // 7. TimeToLiveSpecification (separate API).
+      // AWS enforces a 4-hour rate limit on TTL changes per table
+      // ("Time to live has been modified multiple times within a fixed
+      // interval"). Catch and rewrap with an actionable hint pointing
+      // at the AWS-side limit, so a user redeploying a TTL-toggling
+      // stack twice in tight succession sees what's happening instead
+      // of a raw AWS error.
       if (
         !deepEqual(
           properties['TimeToLiveSpecification'],
           previousProperties['TimeToLiveSpecification']
         )
       ) {
+        const sendTtl = async (cmd: UpdateTimeToLiveCommand): Promise<void> => {
+          try {
+            await this.dynamoDBClient.send(cmd);
+          } catch (ttlErr) {
+            const msg = ttlErr instanceof Error ? ttlErr.message : String(ttlErr);
+            if (msg.includes('Time to live has been modified multiple times')) {
+              throw new ProvisioningError(
+                `AWS rejected TimeToLive update on ${physicalId}: ${msg}. ` +
+                  `AWS enforces a ~4-hour rate limit on TTL changes per table; ` +
+                  `wait and redeploy, or keep the previous TTL state in this deploy.`,
+                resourceType,
+                logicalId,
+                physicalId,
+                ttlErr instanceof Error ? ttlErr : undefined
+              );
+            }
+            throw ttlErr;
+          }
+        };
         const ttl = properties['TimeToLiveSpecification'] as Record<string, unknown> | undefined;
         if (ttl?.['AttributeName']) {
-          await this.dynamoDBClient.send(
+          await sendTtl(
             new UpdateTimeToLiveCommand({
               TableName: physicalId,
               TimeToLiveSpecification: {
@@ -1124,7 +1147,7 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
           // AttributeName to disable it. Pull from old props.
           const prevTtl = previousProperties['TimeToLiveSpecification'] as Record<string, unknown>;
           if (prevTtl['AttributeName']) {
-            await this.dynamoDBClient.send(
+            await sendTtl(
               new UpdateTimeToLiveCommand({
                 TableName: physicalId,
                 TimeToLiveSpecification: {
@@ -2427,6 +2450,32 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
  *    (per-replica, the deploy region's setting). Same literal-vs-auto-
  *    scaling-vs-default-5 precedence.
  */
+/**
+ * Extract the local replica's `DeletionProtectionEnabled` from a CFn
+ * properties shape. The `AWS::DynamoDB::GlobalTable` CFn schema places
+ * the field inside `Replicas[?Region==<region>].DeletionProtectionEnabled`;
+ * CDK 2.x's `deletionProtection: true` synthesizes there. Falls back
+ * to the top-level `DeletionProtectionEnabled` for legacy or
+ * hand-authored templates (the property doesn't formally exist at
+ * the top level in the CFn schema, but cdkd tolerates it as a
+ * pass-through to avoid breaking older state files).
+ *
+ * Returns `undefined` when neither shape carries a boolean — the
+ * caller treats that as "unset" and does not include the field in
+ * the SDK call.
+ */
+export function extractLocalDeletionProtection(
+  props: Record<string, unknown>,
+  region: string
+): boolean | undefined {
+  const replicas = (props['Replicas'] ?? []) as Array<Record<string, unknown>>;
+  const local = replicas.find((r) => r['Region'] === region);
+  const perReplica = local?.['DeletionProtectionEnabled'];
+  if (typeof perReplica === 'boolean') return perReplica;
+  const topLevel = props['DeletionProtectionEnabled'];
+  return typeof topLevel === 'boolean' ? topLevel : undefined;
+}
+
 export function derivePerCallProvisionedThroughput(
   properties: Record<string, unknown>,
   region: string
