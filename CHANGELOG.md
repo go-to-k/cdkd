@@ -1,3 +1,10 @@
+# [0.105.0](https://github.com/go-to-k/cdkd/compare/v0.104.0...v0.105.0) (2026-05-16)
+
+
+### Features
+
+* **dynamodb-globaltable:** close 5 deferred items (cross-region drift + Tags + throughput round-trip + tests + integ) ([#393](https://github.com/go-to-k/cdkd/issues/393)) ([9faf945](https://github.com/go-to-k/cdkd/commit/9faf945b62b60469a44a6961ca55b4e690b732b6))
+
 # [0.104.0](https://github.com/go-to-k/cdkd/compare/v0.103.2...v0.104.0) (2026-05-15)
 
 
