@@ -235,17 +235,31 @@ if [ "${CDKD_INTEG_MULTI_REGION:-0}" = "1" ]; then
   # retry-with-backoff for up to 10 minutes (60 attempts * 10s) so
   # the integ tolerates the async propagation lag without forcing
   # cdkd's wait helper to block on every replica delete.
+  # Pattern-match on ResourceNotFoundException specifically so a
+  # transient AWS error (throttle / IAM gap / network blip) doesn't
+  # false-pass the assertion (PR #410 review minor #3).
   EU_GONE=0
   for i in $(seq 1 60); do
-    if ! aws dynamodb describe-table --table-name "${TABLE_NAME}" --region eu-west-1 >/dev/null 2>&1; then
-      EU_GONE=1
-      echo "[verify] step 12e: eu-west-1 DescribeTable returned RNF after ~$((i * 10))s"
-      break
+    EU_ERR="$(aws dynamodb describe-table --table-name "${TABLE_NAME}" --region eu-west-1 2>&1 >/dev/null || true)"
+    if [ -z "${EU_ERR}" ]; then
+      # DescribeTable succeeded — replica still exists. Keep polling.
+      sleep 10
+      continue
     fi
-    sleep 10
+    case "${EU_ERR}" in
+      *ResourceNotFoundException*|*"Requested resource not found"*)
+        EU_GONE=1
+        echo "[verify] step 12e: eu-west-1 DescribeTable returned RNF after ~$((i * 10))s"
+        break
+        ;;
+      *)
+        echo "[verify] step 12e: transient error from eu-west-1 DescribeTable, retrying: ${EU_ERR}"
+        sleep 10
+        ;;
+    esac
   done
   if [ "${EU_GONE}" != "1" ]; then
-    echo "[verify] FAIL: cross-region replica eu-west-1 still exists after ~10 min of polling"
+    echo "[verify] FAIL: cross-region replica eu-west-1 still exists (or DescribeTable kept erroring transiently) after ~10 min of polling"
     exit 1
   fi
   echo "[verify] step 12e ok: eu-west-1 replica removed (DescribeTable returns RNF)"

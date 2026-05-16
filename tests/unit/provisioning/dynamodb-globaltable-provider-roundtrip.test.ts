@@ -453,6 +453,100 @@ describe('DynamoDBGlobalTableProvider round-trip', () => {
       expect(u.OnDemandThroughput?.MaxWriteRequestUnits).toBe(100);
     });
 
+    it('extracts DeletionProtectionEnabled from Replicas[?Region==local].DPE on update (regression: PR #410)', async () => {
+      // CDK 2.x synthesizes `deletionProtection: true` as
+      // `Replicas[].DeletionProtectionEnabled`, not top-level. Real-AWS
+      // integ on 2026-05-16 caught cdkd reading top-level (which is
+      // undefined → no UpdateTable). Fix: extract from local replica.
+      mockSend.mockResolvedValueOnce({ Table: { TableStatus: 'ACTIVE' } }); // wait
+      mockSend.mockResolvedValueOnce({ Table: { TableArn: TABLE_ARN } }); // DescribeTable for ARN
+      mockSend.mockResolvedValueOnce({}); // UpdateTable
+      mockSend.mockResolvedValueOnce({ Table: { TableStatus: 'ACTIVE' } }); // wait
+      mockSend.mockResolvedValueOnce({ Table: { TableArn: TABLE_ARN } }); // final describe
+
+      await provider.update(
+        'X',
+        TABLE_NAME,
+        RESOURCE_TYPE,
+        { Replicas: [{ Region: 'us-east-1', DeletionProtectionEnabled: true }] },
+        { Replicas: [{ Region: 'us-east-1' }] }
+      );
+      const updateCalls = mockSend.mock.calls
+        .map((c) => c[0])
+        .filter((c) => c instanceof UpdateTableCommand) as UpdateTableCommand[];
+      expect(updateCalls).toHaveLength(1);
+      expect(updateCalls[0]!.input.DeletionProtectionEnabled).toBe(true);
+    });
+
+    it('per-replica DeletionProtectionEnabled wins over top-level when both are set (regression: PR #410)', async () => {
+      // Defensive: if a template carries BOTH per-replica (CDK 2.x) and
+      // top-level (legacy hand-authored), the per-replica value wins
+      // because it matches the CFn schema's source-of-truth field.
+      mockSend.mockResolvedValueOnce({ Table: { TableStatus: 'ACTIVE' } });
+      mockSend.mockResolvedValueOnce({ Table: { TableArn: TABLE_ARN } });
+      mockSend.mockResolvedValueOnce({});
+      mockSend.mockResolvedValueOnce({ Table: { TableStatus: 'ACTIVE' } });
+      mockSend.mockResolvedValueOnce({ Table: { TableArn: TABLE_ARN } });
+
+      await provider.update(
+        'X',
+        TABLE_NAME,
+        RESOURCE_TYPE,
+        {
+          DeletionProtectionEnabled: false,
+          Replicas: [{ Region: 'us-east-1', DeletionProtectionEnabled: true }],
+        },
+        { Replicas: [{ Region: 'us-east-1' }] }
+      );
+      const updateCalls = mockSend.mock.calls
+        .map((c) => c[0])
+        .filter((c) => c instanceof UpdateTableCommand) as UpdateTableCommand[];
+      expect(updateCalls[0]!.input.DeletionProtectionEnabled).toBe(true);
+    });
+
+    it('no UpdateTable when per-replica DeletionProtectionEnabled is unchanged on both sides (regression: PR #410)', async () => {
+      mockSend.mockResolvedValueOnce({ Table: { TableStatus: 'ACTIVE' } }); // wait
+      mockSend.mockResolvedValueOnce({ Table: { TableArn: TABLE_ARN } }); // DescribeTable for ARN
+      mockSend.mockResolvedValueOnce({ Table: { TableArn: TABLE_ARN } }); // final describe
+
+      await provider.update(
+        'X',
+        TABLE_NAME,
+        RESOURCE_TYPE,
+        { Replicas: [{ Region: 'us-east-1', DeletionProtectionEnabled: true }] },
+        { Replicas: [{ Region: 'us-east-1', DeletionProtectionEnabled: true }] }
+      );
+      // No UpdateTable fires because the per-replica DPE is identical.
+      const updateCalls = mockSend.mock.calls
+        .map((c) => c[0])
+        .filter((c) => c instanceof UpdateTableCommand);
+      expect(updateCalls).toHaveLength(0);
+    });
+
+    it('extracts DeletionProtectionEnabled from Replicas[?Region==local].DPE on create (regression: PR #410)', async () => {
+      mockSend.mockResolvedValueOnce({}); // CreateTable
+      mockSend.mockResolvedValueOnce({
+        Table: {
+          TableName: TABLE_NAME,
+          TableStatus: 'ACTIVE',
+          TableArn: TABLE_ARN,
+        },
+      });
+
+      await provider.create('X', RESOURCE_TYPE, {
+        KeySchema: [{ AttributeName: 'pk', KeyType: 'HASH' }],
+        AttributeDefinitions: [{ AttributeName: 'pk', AttributeType: 'S' }],
+        Replicas: [{ Region: 'us-east-1', DeletionProtectionEnabled: true }],
+      });
+      const createCall = mockSend.mock.calls
+        .map((c) => c[0])
+        .find((c) => c instanceof CreateTableCommand) as
+        | CreateTableCommand
+        | undefined;
+      expect(createCall).toBeDefined();
+      expect(createCall!.input.DeletionProtectionEnabled).toBe(true);
+    });
+
     it('issues a separate UpdateTable for BillingMode flip (PAY_PER_REQUEST -> PROVISIONED with capacity)', async () => {
       mockSend.mockResolvedValueOnce({ Table: { TableStatus: 'ACTIVE' } }); // wait
       mockSend.mockResolvedValueOnce({ Table: { TableArn: TABLE_ARN } }); // DescribeTable for ARN
