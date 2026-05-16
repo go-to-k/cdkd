@@ -903,7 +903,7 @@ export class RDSProvider implements ResourceProvider {
    */
   private async waitForClusterAvailable(
     dbClusterIdentifier: string,
-    maxWaitMs = 600_000
+    maxWaitMs = 1_800_000
   ): Promise<void> {
     const startTime = Date.now();
     let delay = 5_000;
@@ -928,7 +928,7 @@ export class RDSProvider implements ResourceProvider {
    */
   private async waitForClusterDeleted(
     dbClusterIdentifier: string,
-    maxWaitMs = 600_000
+    maxWaitMs = 1_800_000
   ): Promise<void> {
     const startTime = Date.now();
     let delay = 5_000;
@@ -960,7 +960,7 @@ export class RDSProvider implements ResourceProvider {
    */
   private async waitForInstanceAvailable(
     dbInstanceIdentifier: string,
-    maxWaitMs = 600_000
+    maxWaitMs = 1_800_000
   ): Promise<void> {
     const startTime = Date.now();
     let delay = 10_000;
@@ -985,7 +985,7 @@ export class RDSProvider implements ResourceProvider {
    */
   private async waitForInstanceDeleted(
     dbInstanceIdentifier: string,
-    maxWaitMs = 600_000
+    maxWaitMs = 1_800_000
   ): Promise<void> {
     const startTime = Date.now();
     let delay = 10_000;

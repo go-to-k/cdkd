@@ -33,6 +33,7 @@ import { StepFunctionsProvider } from './providers/stepfunctions-provider.js';
 import { ECSProvider } from './providers/ecs-provider.js';
 import { ELBv2Provider } from './providers/elbv2-provider.js';
 import { RDSProvider } from './providers/rds-provider.js';
+import { RDSDBProxyProvider } from './providers/rds-dbproxy-provider.js';
 import { RDSDBProxyTargetGroupProvider } from './providers/rds-dbproxy-targetgroup-provider.js';
 import { DocDBProvider } from './providers/docdb-provider.js';
 import { NeptuneProvider } from './providers/neptune-provider.js';
@@ -173,6 +174,7 @@ export function registerAllProviders(registry: ProviderRegistry): void {
   registry.register('AWS::RDS::DBSubnetGroup', rdsProvider);
   registry.register('AWS::RDS::DBCluster', rdsProvider);
   registry.register('AWS::RDS::DBInstance', rdsProvider);
+  registry.register('AWS::RDS::DBProxy', new RDSDBProxyProvider());
   registry.register('AWS::RDS::DBProxyTargetGroup', new RDSDBProxyTargetGroupProvider());
 
   // DocumentDB (RDS-shaped API)

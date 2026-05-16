@@ -38,10 +38,7 @@ vi.mock('../../../src/utils/logger.js', () => {
 });
 
 import { RDSDBProxyTargetGroupProvider } from '../../../src/provisioning/providers/rds-dbproxy-targetgroup-provider.js';
-import {
-  ProvisioningError,
-  ResourceUpdateNotSupportedError,
-} from '../../../src/utils/error-handler.js';
+import { ProvisioningError } from '../../../src/utils/error-handler.js';
 
 const RESOURCE_TYPE = 'AWS::RDS::DBProxyTargetGroup';
 const TARGET_GROUP_ARN =
@@ -164,11 +161,107 @@ describe('RDSDBProxyTargetGroupProvider', () => {
   });
 
   describe('update', () => {
-    it('throws ResourceUpdateNotSupportedError', async () => {
+    it('rejects when DBProxyName is missing', async () => {
       await expect(
         provider.update('TG', TARGET_GROUP_ARN, RESOURCE_TYPE, {}, {})
-      ).rejects.toThrow(ResourceUpdateNotSupportedError);
+      ).rejects.toThrow(/DBProxyName is required/);
       expect(mockSend).not.toHaveBeenCalled();
+    });
+
+    it('is a no-op when nothing changed', async () => {
+      const props = {
+        DBProxyName: 'AuroraProxy',
+        TargetGroupName: 'default',
+        DBClusterIdentifiers: ['c1'],
+      };
+      const result = await provider.update('TG', TARGET_GROUP_ARN, RESOURCE_TYPE, props, props);
+      expect(result.physicalId).toBe(TARGET_GROUP_ARN);
+      expect(result.wasReplaced).toBe(false);
+      expect(mockSend).not.toHaveBeenCalled();
+    });
+
+    it('issues ModifyDBProxyTargetGroup when ConnectionPoolConfigurationInfo changes', async () => {
+      mockSend.mockResolvedValueOnce({ DBProxyTargetGroup: {} });
+      await provider.update(
+        'TG',
+        TARGET_GROUP_ARN,
+        RESOURCE_TYPE,
+        {
+          DBProxyName: 'AuroraProxy',
+          ConnectionPoolConfigurationInfo: { MaxConnectionsPercent: 80 },
+        },
+        {
+          DBProxyName: 'AuroraProxy',
+          ConnectionPoolConfigurationInfo: { MaxConnectionsPercent: 50 },
+        }
+      );
+      expect(mockSend).toHaveBeenCalledTimes(1);
+      expect(mockSend.mock.calls[0]![0].constructor.name).toBe('ModifyDBProxyTargetGroupCommand');
+      expect(mockSend.mock.calls[0]![0].input.ConnectionPoolConfig).toEqual({
+        MaxConnectionsPercent: 80,
+      });
+    });
+
+    it('registers added cluster targets and deregisters removed ones', async () => {
+      mockSend
+        .mockResolvedValueOnce({}) // Deregister old
+        .mockResolvedValueOnce({ DBProxyTargets: [] }); // Register new
+      await provider.update(
+        'TG',
+        TARGET_GROUP_ARN,
+        RESOURCE_TYPE,
+        {
+          DBProxyName: 'AuroraProxy',
+          DBClusterIdentifiers: ['c-new'],
+        },
+        {
+          DBProxyName: 'AuroraProxy',
+          DBClusterIdentifiers: ['c-old'],
+        }
+      );
+      expect(mockSend).toHaveBeenCalledTimes(2);
+      expect(mockSend.mock.calls[0]![0].constructor.name).toBe('DeregisterDBProxyTargetsCommand');
+      expect(mockSend.mock.calls[0]![0].input.DBClusterIdentifiers).toEqual(['c-old']);
+      expect(mockSend.mock.calls[1]![0].constructor.name).toBe('RegisterDBProxyTargetsCommand');
+      expect(mockSend.mock.calls[1]![0].input.DBClusterIdentifiers).toEqual(['c-new']);
+    });
+
+    it('handles instance targets independently', async () => {
+      mockSend.mockResolvedValueOnce({ DBProxyTargets: [] }); // Register
+      await provider.update(
+        'TG',
+        TARGET_GROUP_ARN,
+        RESOURCE_TYPE,
+        {
+          DBProxyName: 'AuroraProxy',
+          DBInstanceIdentifiers: ['i-1'],
+        },
+        {
+          DBProxyName: 'AuroraProxy',
+        }
+      );
+      expect(mockSend).toHaveBeenCalledTimes(1);
+      expect(mockSend.mock.calls[0]![0].constructor.name).toBe('RegisterDBProxyTargetsCommand');
+      expect(mockSend.mock.calls[0]![0].input.DBInstanceIdentifiers).toEqual(['i-1']);
+      expect(mockSend.mock.calls[0]![0].input.DBClusterIdentifiers).toBeUndefined();
+    });
+
+    it('treats DBProxyTargetNotFoundFault during deregister as idempotent', async () => {
+      mockSend.mockRejectedValueOnce(
+        new DBProxyTargetNotFoundFault({ message: 'Target not found', $metadata: {} })
+      );
+      await expect(
+        provider.update(
+          'TG',
+          TARGET_GROUP_ARN,
+          RESOURCE_TYPE,
+          { DBProxyName: 'AuroraProxy' },
+          {
+            DBProxyName: 'AuroraProxy',
+            DBClusterIdentifiers: ['c-gone'],
+          }
+        )
+      ).resolves.toEqual({ physicalId: TARGET_GROUP_ARN, wasReplaced: false });
     });
   });
 
