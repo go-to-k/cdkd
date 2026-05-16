@@ -654,8 +654,8 @@ describe('DynamoDBGlobalTableProvider round-trip', () => {
       const warnMessages = warnSpy.mock.calls.map((c) => String(c[0])).join('\n');
       expect(warnMessages).toMatch(/Auto-disabling DeletionProtectionEnabled/);
       expect(warnMessages).toMatch(new RegExp(TABLE_NAME));
-      expect(warnMessages).toMatch(/removed from the CDK code/);
-      expect(warnMessages).toMatch(/restore 'deletionProtection: true'/);
+      expect(warnMessages).toMatch(/CDK code does not set 'deletionProtection: true'/);
+      expect(warnMessages).toMatch(/set 'deletionProtection: true' in your CDK code/);
     });
 
     it('Auto-disable WARN: NOT emitted when DPE is explicitly set to false (user opted in)', async () => {
@@ -684,6 +684,39 @@ describe('DynamoDBGlobalTableProvider round-trip', () => {
       expect(updateCalls[0]!.input.DeletionProtectionEnabled).toBe(false);
       const warnMessages = warnSpy.mock.calls.map((c) => String(c[0])).join('\n');
       expect(warnMessages).not.toMatch(/Auto-disabling DeletionProtectionEnabled/);
+    });
+
+    it('Auto-disable WARN: ALSO fires when state DPE=false but AWS console-enabled (drift recovery flip)', async () => {
+      // Edge case: at a past deploy state recorded DPE=false (explicit
+      // or AWS-default). An admin then enabled DeletionProtection via
+      // the AWS console. Template still omits DPE. The diff-from-state
+      // (false !== undefined) drives entry into the diff branch; the
+      // flip predicate fires because awsDpe===true. The neutral wording
+      // covers this case — "removed from CDK code" would be misleading
+      // (it was false, not true, in state).
+      mockSend.mockResolvedValueOnce({ Table: { TableStatus: 'ACTIVE' } }); // wait
+      mockSend.mockResolvedValueOnce({
+        Table: { TableArn: TABLE_ARN, DeletionProtectionEnabled: true },
+      }); // AWS-current is true (console enabled)
+      mockSend.mockResolvedValueOnce({}); // UpdateTable (DPE flip off)
+      mockSend.mockResolvedValueOnce({ Table: { TableStatus: 'ACTIVE' } }); // wait
+      mockSend.mockResolvedValueOnce({ Table: { TableArn: TABLE_ARN } }); // final describe
+
+      await provider.update(
+        'X',
+        TABLE_NAME,
+        RESOURCE_TYPE,
+        { Replicas: [{ Region: 'us-east-1' }] }, // no DPE in new
+        { Replicas: [{ Region: 'us-east-1', DeletionProtectionEnabled: false }] } // state=false
+      );
+      const updateCalls = mockSend.mock.calls
+        .map((c) => c[0])
+        .filter((c) => c instanceof UpdateTableCommand) as UpdateTableCommand[];
+      expect(updateCalls).toHaveLength(1);
+      expect(updateCalls[0]!.input.DeletionProtectionEnabled).toBe(false);
+      const warnMessages = warnSpy.mock.calls.map((c) => String(c[0])).join('\n');
+      expect(warnMessages).toMatch(/Auto-disabling DeletionProtectionEnabled/);
+      expect(warnMessages).toMatch(/CDK code does not set 'deletionProtection: true'/);
     });
 
     it('Auto-disable WARN: NOT emitted when DPE was never on (no flip from true)', async () => {
