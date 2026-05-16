@@ -18,17 +18,23 @@
 #   3. read the deployed table name from cdkd state and assert it starts
 #      with the cdkd `${StackName}-` prefix
 #   4. assert the deployed table exists on AWS via DescribeTable
-#   5. cdkd deploy with CDKD_TEST_UPDATE=ttl,tags (in-place update)
-#   6. assert TTL is now ENABLED and the UpdateTest tag is present
-#   7. cdkd deploy with CDKD_TEST_UPDATE=deletion-protection
+#   5. cdkd deploy with CDKD_TEST_UPDATE=deletion-protection
 #   8. assert DeletionProtectionEnabled is now true on AWS
-#   9. cdkd deploy with CDKD_TEST_UPDATE=billing-provisioned
+#   9. cdkd deploy with CDKD_TEST_UPDATE=deletion-protection,billing-provisioned
 #       (Issue #402 Item C — BillingMode round-trip)
 #  10. assert BillingMode is now PROVISIONED on AWS
-#  11. cdkd deploy with CDKD_TEST_UPDATE=autoscaling
+#  11. cdkd deploy with CDKD_TEST_UPDATE=deletion-protection,autoscaling
 #       (Issue #402 Item B — table-level write + per-replica read autoscaling)
 #  12. assert RegisterScalableTarget + PutScalingPolicy reached AWS via
 #       application-autoscaling describe-scaling-policies
+#  12b-e: optional cross-region (CDKD_INTEG_MULTI_REGION=1, see below).
+#  12f. cdkd deploy with CDKD_TEST_UPDATE=...,ttl,tags (TTL toggle MUST be
+#       LAST among structural changes — AWS's "Time to live has been
+#       modified multiple times within a fixed interval" rate limit fires
+#       when an UpdateTable structural change happens within ~1 hour after
+#       a UpdateTimeToLive call. Deferring TTL to the end keeps the only
+#       TTL state changes to enable-here → disable-at-step-13.)
+#  12g. assert TTL is now ENABLED and the UpdateTest tag is present
 #  13. cdkd deploy with CDKD_TEST_UPDATE= (cleared, baseline)
 #  14. assert DeletionProtectionEnabled is now false (or absent) on AWS,
 #       BillingMode flipped back to PAY_PER_REQUEST, AND the scaling
@@ -45,7 +51,8 @@
 #   round-trip. Adds ~15-25 min (replica provisioning is 5-10 min per
 #   region and per direction) and ~$0.10-0.20 in cross-region replication.
 #   The default `bash verify.sh` invocation does NOT run this — it stays
-#   under 8 min as before.
+#   under 8 min as before. Runs BEFORE the TTL toggle so the
+#   cross-region UpdateTable is not blocked by AWS's TTL rate limit.
 #
 # Auto-resolves AWS account ID + state bucket. Run from anywhere.
 set -euo pipefail
@@ -127,29 +134,17 @@ echo "[verify] step 4: assert table exists on AWS"
 aws dynamodb describe-table --table-name "${TABLE_NAME}" --region "${REGION}" >/dev/null
 echo "[verify] step 4 ok: DescribeTable succeeded"
 
-echo "[verify] step 5: cdkd deploy with CDKD_TEST_UPDATE=ttl,tags (in-place update)"
-CDKD_TEST_UPDATE=ttl,tags ${CLI} deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --verbose
-
-echo "[verify] step 6: assert TTL is now ENABLED and UpdateTest tag is present"
-TTL_STATUS="$(aws dynamodb describe-time-to-live --table-name "${TABLE_NAME}" --region "${REGION}" \
-  --query 'TimeToLiveDescription.TimeToLiveStatus' --output text)"
-if [ "${TTL_STATUS}" != "ENABLED" ] && [ "${TTL_STATUS}" != "ENABLING" ]; then
-  echo "[verify] FAIL: TimeToLive on '${TABLE_NAME}' is '${TTL_STATUS}' after the UPDATE deploy (expected ENABLED / ENABLING)"
-  exit 1
-fi
-echo "[verify] step 6a ok: TTL = ${TTL_STATUS}"
-
-TABLE_ARN="$(aws dynamodb describe-table --table-name "${TABLE_NAME}" --region "${REGION}" \
-  --query 'Table.TableArn' --output text)"
-TAG_VALUE="$(aws dynamodb list-tags-of-resource --resource-arn "${TABLE_ARN}" --region "${REGION}" \
-  --query "Tags[?Key=='UpdateTest'].Value | [0]" --output text)"
-if [ "${TAG_VALUE}" != "true" ]; then
-  echo "[verify] FAIL: UpdateTest tag was not applied (got '${TAG_VALUE}')"
-  exit 1
-fi
-echo "[verify] step 6b ok: UpdateTest tag present"
-
-echo "[verify] step 7: cdkd deploy with CDKD_TEST_UPDATE=deletion-protection (in-place update — Issue #389)"
+echo "[verify] step 5 (was steps 5/6/7): cdkd deploy with CDKD_TEST_UPDATE=deletion-protection (in-place update — Issue #389)"
+# ORDER NOTE (PR follow-up to #403): TTL toggle is intentionally
+# deferred to the END of the integ flow. AWS's DynamoDB
+# "Time to live has been modified multiple times within a fixed
+# interval" rate limit fires when a structural UpdateTable (e.g. an
+# UpdateTable adding a replica via ReplicaUpdates: [Create]) is
+# issued within ~1 hour after a UpdateTimeToLive call. Putting the
+# TTL toggle FIRST trips the limit on the cross-region replica add
+# (CDKD_INTEG_MULTI_REGION=1) at step 12b. Reordering to "TTL last"
+# avoids the conflict entirely — we never have TTL "recently
+# modified" while doing structural changes.
 CDKD_TEST_UPDATE=deletion-protection ${CLI} deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --verbose
 
 echo "[verify] step 8: assert DeletionProtectionEnabled is now true on AWS"
@@ -232,8 +227,39 @@ if [ "${CDKD_INTEG_MULTI_REGION:-0}" = "1" ]; then
   CDKD_TEST_UPDATE=deletion-protection,autoscaling ${CLI} deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --verbose
 
   echo "[verify] step 12e: assert the eu-west-1 replica is gone (DescribeTable → RNF)"
-  if aws dynamodb describe-table --table-name "${TABLE_NAME}" --region eu-west-1 >/dev/null 2>&1; then
-    echo "[verify] FAIL: cross-region replica eu-west-1 still exists after removal"
+  # cdkd's `waitForReplicaGone` polls the LOCAL table's `Replicas[]`
+  # list and returns when eu-west-1 is no longer there — that's the
+  # correct AWS semantic for "replica deleted from the global table's
+  # metadata". HOWEVER, the actual eu-west-1 regional DynamoDB copy
+  # may stay in DELETING state for several minutes after that. We
+  # retry-with-backoff for up to 10 minutes (60 attempts * 10s) so
+  # the integ tolerates the async propagation lag without forcing
+  # cdkd's wait helper to block on every replica delete.
+  # Pattern-match on ResourceNotFoundException specifically so a
+  # transient AWS error (throttle / IAM gap / network blip) doesn't
+  # false-pass the assertion (PR #410 review minor #3).
+  EU_GONE=0
+  for i in $(seq 1 60); do
+    EU_ERR="$(aws dynamodb describe-table --table-name "${TABLE_NAME}" --region eu-west-1 2>&1 >/dev/null || true)"
+    if [ -z "${EU_ERR}" ]; then
+      # DescribeTable succeeded — replica still exists. Keep polling.
+      sleep 10
+      continue
+    fi
+    case "${EU_ERR}" in
+      *ResourceNotFoundException*|*"Requested resource not found"*)
+        EU_GONE=1
+        echo "[verify] step 12e: eu-west-1 DescribeTable returned RNF after ~$((i * 10))s"
+        break
+        ;;
+      *)
+        echo "[verify] step 12e: transient error from eu-west-1 DescribeTable, retrying: ${EU_ERR}"
+        sleep 10
+        ;;
+    esac
+  done
+  if [ "${EU_GONE}" != "1" ]; then
+    echo "[verify] FAIL: cross-region replica eu-west-1 still exists (or DescribeTable kept erroring transiently) after ~10 min of polling"
     exit 1
   fi
   echo "[verify] step 12e ok: eu-west-1 replica removed (DescribeTable returns RNF)"
@@ -241,9 +267,44 @@ else
   echo "[verify] (skipping Item D — set CDKD_INTEG_MULTI_REGION=1 to opt into the cross-region scenario)"
 fi
 
-echo "[verify] step 13: cdkd deploy with CDKD_TEST_UPDATE= (cleared baseline — flip deletion-protection back to false, flip BillingMode back to PAY_PER_REQUEST, tear down autoscaling)"
-unset CDKD_TEST_UPDATE
-${CLI} deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --verbose
+echo "[verify] step 12f (was steps 5/6): cdkd deploy with CDKD_TEST_UPDATE=ttl,tags (in-place update)"
+# Moved from steps 5/6 to here (post-cross-region) to avoid AWS's
+# "Time to live has been modified multiple times within a fixed
+# interval" rate limit that fires on cross-region UpdateTable when
+# UpdateTimeToLive was called within the same hour. Done LAST so
+# the only TTL state changes are: enable here → implicit disable
+# at step 13 cleared baseline.
+CDKD_TEST_UPDATE=deletion-protection,autoscaling,ttl,tags ${CLI} deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --verbose
+
+echo "[verify] step 12g: assert TTL is now ENABLED and UpdateTest tag is present"
+TTL_STATUS="$(aws dynamodb describe-time-to-live --table-name "${TABLE_NAME}" --region "${REGION}" \
+  --query 'TimeToLiveDescription.TimeToLiveStatus' --output text)"
+if [ "${TTL_STATUS}" != "ENABLED" ] && [ "${TTL_STATUS}" != "ENABLING" ]; then
+  echo "[verify] FAIL: TimeToLive on '${TABLE_NAME}' is '${TTL_STATUS}' after the UPDATE deploy (expected ENABLED / ENABLING)"
+  exit 1
+fi
+echo "[verify] step 12g ok: TTL = ${TTL_STATUS}"
+
+TABLE_ARN="$(aws dynamodb describe-table --table-name "${TABLE_NAME}" --region "${REGION}" \
+  --query 'Table.TableArn' --output text)"
+TAG_VALUE="$(aws dynamodb list-tags-of-resource --resource-arn "${TABLE_ARN}" --region "${REGION}" \
+  --query "Tags[?Key=='UpdateTest'].Value | [0]" --output text)"
+if [ "${TAG_VALUE}" != "true" ]; then
+  echo "[verify] FAIL: UpdateTest tag was not applied (got '${TAG_VALUE}')"
+  exit 1
+fi
+echo "[verify] step 12g ok: UpdateTest tag present"
+
+echo "[verify] step 13: cdkd deploy with CDKD_TEST_UPDATE=ttl,tags (structural teardown — flip deletion-protection back to false, flip BillingMode back to PAY_PER_REQUEST, tear down autoscaling)"
+# KEEP ttl,tags ON in step 13. AWS's DynamoDB TTL rate limit allows
+# a TTL attribute to be updated only once per 4 hours; toggling it
+# off here right after step 12f's enable trips
+# "Time to live has been modified multiple times within a fixed
+# interval". TTL teardown is exercised at the unit-test level; the
+# integ's structural teardown for deletion-protection / BillingMode /
+# autoscaling is the value-add at this layer. Destroy at step 15
+# cleans up the table regardless of TTL state.
+CDKD_TEST_UPDATE=ttl,tags ${CLI} deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --verbose
 
 echo "[verify] step 14a: assert DeletionProtectionEnabled flipped back to false on AWS"
 DP_FINAL="$(aws dynamodb describe-table --table-name "${TABLE_NAME}" --region "${REGION}" \

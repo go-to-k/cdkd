@@ -371,8 +371,23 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       createParams.SSESpecification = sseInput;
     }
 
-    if (properties['DeletionProtectionEnabled'] !== undefined) {
-      createParams.DeletionProtectionEnabled = properties['DeletionProtectionEnabled'] as boolean;
+    // DeletionProtectionEnabled is per-replica in the CFn schema for
+    // `AWS::DynamoDB::GlobalTable` (just like Tags). CDK 2.x's
+    // `deletionProtection: true` synthesizes to
+    // `Replicas[?Region==<deploy region>].DeletionProtectionEnabled`.
+    // Extract from the local replica entry; fall back to top-level
+    // for legacy / hand-authored templates that put it there.
+    const localReplicaForDP = replicas.find((r) => r['Region'] === currentRegion);
+    const dpePerReplica = localReplicaForDP?.['DeletionProtectionEnabled'];
+    const dpeTopLevel = properties['DeletionProtectionEnabled'];
+    const dpeResolved =
+      typeof dpePerReplica === 'boolean'
+        ? dpePerReplica
+        : typeof dpeTopLevel === 'boolean'
+          ? dpeTopLevel
+          : undefined;
+    if (dpeResolved !== undefined) {
+      createParams.DeletionProtectionEnabled = dpeResolved;
     }
     if (properties['TableClass']) {
       createParams.TableClass = properties['TableClass'] as
@@ -699,14 +714,23 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       // 3. Non-conflicting flat fields in one combined UpdateTable.
       // AWS allows combining these in a single call because they don't
       // conflict with each other or with each other's modes.
+      // DeletionProtectionEnabled is per-replica in the CFn schema
+      // (same shape as Tags). Extract from `Replicas[?Region==local]`
+      // with a fall-through to top-level for legacy templates.
+      const extractLocalDP = (props: Record<string, unknown>): boolean | undefined => {
+        const replicas = (props['Replicas'] ?? []) as Array<Record<string, unknown>>;
+        const local = replicas.find((r) => r['Region'] === currentRegion);
+        const perReplica = local?.['DeletionProtectionEnabled'];
+        if (typeof perReplica === 'boolean') return perReplica;
+        const topLevel = props['DeletionProtectionEnabled'];
+        return typeof topLevel === 'boolean' ? topLevel : undefined;
+      };
+      const newDpe = extractLocalDP(properties);
+      const oldDpe = extractLocalDP(previousProperties);
       const flatUpdate: UpdateTableCommandInput = { TableName: physicalId };
       let flatChanged = false;
-      if (
-        properties['DeletionProtectionEnabled'] !== previousProperties['DeletionProtectionEnabled']
-      ) {
-        flatUpdate.DeletionProtectionEnabled = Boolean(
-          properties['DeletionProtectionEnabled'] ?? false
-        );
+      if (newDpe !== oldDpe) {
+        flatUpdate.DeletionProtectionEnabled = Boolean(newDpe ?? false);
         flatChanged = true;
       }
       if (
