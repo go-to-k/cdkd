@@ -1,22 +1,38 @@
 #!/usr/bin/env bash
 #
 # End-to-end real-AWS test for cdkd's AWS::DynamoDB::GlobalTable SDK
-# Provider (Issue #383). Verifies that a `dynamodb.TableV2` deployment
-# produces a `${StackName}-X<hash>` AWS-side table name (not a CC-API
-# auto-generated random string), that subsequent in-place UPDATE deploys
-# round-trip cleanly through cdkd's serialized UpdateTable / TagResource
-# / UpdateTimeToLive pipeline, and that destroy cleans up the table.
+# Provider (Issue #383 / Issue #389). Verifies that a `dynamodb.TableV2`
+# deployment produces a `${StackName}-X<hash>` AWS-side table name (not
+# a CC-API auto-generated random string), that subsequent in-place
+# UPDATE deploys round-trip cleanly through cdkd's serialized UpdateTable
+# / TagResource / UpdateTimeToLive pipeline, that the
+# `DeletionProtectionEnabled` toggle round-trips on / off (Issue #389),
+# and that destroy cleans up the table.
 #
 # Steps:
 #   1. install + build cdkd (root) + install fixture deps
-#   2. cdkd deploy CdkdDynamoDBGlobalTableExample
+#   2. cdkd deploy CdkdDynamoDBGlobalTableExample (baseline)
 #   3. read the deployed table name from cdkd state and assert it starts
 #      with the cdkd `${StackName}-` prefix
 #   4. assert the deployed table exists on AWS via DescribeTable
-#   5. cdkd deploy with CDKD_TEST_UPDATE=ttl,tags — in-place update
+#   5. cdkd deploy with CDKD_TEST_UPDATE=ttl,tags (in-place update)
 #   6. assert TTL is now ENABLED and the UpdateTest tag is present
-#   7. cdkd destroy --force
-#   8. assert the AWS-side table is gone and cdkd state is empty
+#   7. cdkd deploy with CDKD_TEST_UPDATE=deletion-protection
+#   8. assert DeletionProtectionEnabled is now true on AWS
+#   9. cdkd deploy with CDKD_TEST_UPDATE= (cleared, baseline)
+#  10. assert DeletionProtectionEnabled is now false (or absent) on AWS
+#  11. cdkd destroy --remove-protection --force (works regardless of
+#       the last DeletionProtectionEnabled state)
+#  12. assert the AWS-side table is gone and cdkd state is empty
+#
+# Wall-clock budget: ~5-7 min (each deploy + describe pair is ~30-60s).
+#
+# Out of scope (separate follow-up):
+#   - `CDKD_TEST_UPDATE=billing-provisioned` — PROVISIONED <-> PAY_PER_REQUEST
+#     flips need capacity reservation and add ~30s + cost; covered by
+#     unit tests only.
+#   - Multi-region cross-region replica integ — high cost + wall-clock;
+#     covered by unit tests via the mocked regional client.
 #
 # Auto-resolves AWS account ID + state bucket. Run from anywhere.
 set -euo pipefail
@@ -46,9 +62,12 @@ cleanup() {
   rc=$?
   if [ "${rc}" -ne 0 ]; then
     echo "[verify] FAIL (exit ${rc}) — attempting destroy to clean up"
-    # Retry once on dependency errors (AWS DynamoDB delete can lag briefly).
-    ${CLI} destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --force || \
-      ${CLI} destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --force || true
+    # Retry once on dependency errors (AWS DynamoDB delete can lag
+    # briefly). `--remove-protection` is load-bearing — the
+    # deletion-protection step (#7) may have left the table protected
+    # mid-run; without the flag, AWS rejects DeleteTable.
+    ${CLI} destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --remove-protection --force || \
+      ${CLI} destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --remove-protection --force || true
   fi
   exit "${rc}"
 }
@@ -117,23 +136,55 @@ if [ "${TAG_VALUE}" != "true" ]; then
 fi
 echo "[verify] step 6b ok: UpdateTest tag present"
 
-echo "[verify] step 7: cdkd destroy --force"
-unset CDKD_TEST_UPDATE
-${CLI} destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --force
+echo "[verify] step 7: cdkd deploy with CDKD_TEST_UPDATE=deletion-protection (in-place update — Issue #389)"
+CDKD_TEST_UPDATE=deletion-protection ${CLI} deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --verbose
 
-echo "[verify] step 8: assert table is gone on AWS"
+echo "[verify] step 8: assert DeletionProtectionEnabled is now true on AWS"
+DP_ENABLED="$(aws dynamodb describe-table --table-name "${TABLE_NAME}" --region "${REGION}" \
+  --query 'Table.DeletionProtectionEnabled' --output text)"
+if [ "${DP_ENABLED}" != "True" ] && [ "${DP_ENABLED}" != "true" ]; then
+  echo "[verify] FAIL: DeletionProtectionEnabled is '${DP_ENABLED}' on '${TABLE_NAME}' after the deletion-protection UPDATE deploy (expected true)"
+  exit 1
+fi
+echo "[verify] step 8 ok: DeletionProtectionEnabled = ${DP_ENABLED}"
+
+echo "[verify] step 9: cdkd deploy with CDKD_TEST_UPDATE= (cleared baseline — flip deletion-protection back to false)"
+unset CDKD_TEST_UPDATE
+${CLI} deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --verbose
+
+echo "[verify] step 10: assert DeletionProtectionEnabled flipped back to false on AWS"
+DP_FINAL="$(aws dynamodb describe-table --table-name "${TABLE_NAME}" --region "${REGION}" \
+  --query 'Table.DeletionProtectionEnabled' --output text)"
+# AWS may return "None" / "False" / "false" / "" depending on the
+# CLI's text-encoder; accept any non-true response.
+case "${DP_FINAL}" in
+  True|true)
+    echo "[verify] FAIL: DeletionProtectionEnabled is '${DP_FINAL}' on '${TABLE_NAME}' after the cleared UPDATE deploy (expected false / absent)"
+    exit 1
+    ;;
+esac
+echo "[verify] step 10 ok: DeletionProtectionEnabled = ${DP_FINAL} (flipped back)"
+
+echo "[verify] step 11: cdkd destroy --remove-protection --force"
+# `--remove-protection` is defense-in-depth: step 10 should have flipped
+# the table back to unprotected, but a partial / re-run of the test
+# could leave the table protected; the flag ensures cdkd handles the
+# residual state without requiring operator intervention.
+${CLI} destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --remove-protection --force
+
+echo "[verify] step 12: assert table is gone on AWS"
 if aws dynamodb describe-table --table-name "${TABLE_NAME}" --region "${REGION}" >/dev/null 2>&1; then
   echo "[verify] FAIL: table '${TABLE_NAME}' still exists after destroy"
   exit 1
 fi
-echo "[verify] step 8 ok: table deleted"
+echo "[verify] step 12 ok: table deleted"
 
-echo "[verify] step 9: assert cdkd state is empty"
+echo "[verify] step 13: assert cdkd state is empty"
 if aws s3 ls "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null 2>&1; then
   echo "[verify] FAIL: cdkd state file still exists at s3://${STATE_BUCKET}/${STATE_KEY}"
   exit 1
 fi
-echo "[verify] step 9 ok: cdkd state cleared"
+echo "[verify] step 13 ok: cdkd state cleared"
 
 trap - EXIT
 echo "[verify] PASS"

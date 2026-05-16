@@ -215,6 +215,65 @@ describe('DynamoDBGlobalTableProvider partial-create cleanup (Issue #376-class)'
     expect(finalDelete).toBeGreaterThan(lastReplicaDelete);
   });
 
+  it('replica-drop cleanup-itself-fails: original wiring error propagates AND recovery WARN fires (Issue #389 item #4)', async () => {
+    // CreateTable succeeds → waitForTableActive succeeds → the
+    // SECOND addReplica fails (so the FIRST replica was actually
+    // added). The cleanup path then runs DescribeTable + per-region
+    // `UpdateTable(Delete)` + DeleteTable. The replica-drop
+    // `UpdateTable(Delete)` itself ALSO throws — cdkd must log a
+    // per-region recovery-command WARN but the ORIGINAL wiring
+    // error (the failed addReplica) must still propagate to the
+    // caller. The deploy engine then surfaces the partial-create
+    // failure to the user, while the user sees the WARN explaining
+    // how to clean up the orphaned cross-region replica by hand.
+    mockSend.mockResolvedValueOnce({}); // CreateTable
+    mockSend.mockResolvedValueOnce({
+      Table: { TableName: 'my-test-table-xxx', TableStatus: 'ACTIVE', TableArn: 'a' },
+    }); // waitForTableActive
+    // First replica add eu-west-1 succeeds.
+    mockSend.mockResolvedValueOnce({}); // UpdateTable Create eu-west-1
+    mockSend.mockResolvedValueOnce({
+      Table: { Replicas: [{ RegionName: 'eu-west-1', ReplicaStatus: 'ACTIVE' }] },
+    }); // waitForReplicaActive eu-west-1
+    // Second replica add ap-south-1 throws — the WIRING failure cdkd
+    // must surface to the caller.
+    const wiringError = new Error('UpdateTable replica ap-south-1 boom');
+    mockSend.mockRejectedValueOnce(wiringError);
+    // Cleanup path: DescribeTable reports the surviving eu-west-1
+    // replica; the cleanup's per-region `UpdateTable(Delete)` THROWS.
+    mockSend.mockResolvedValueOnce({
+      Table: { Replicas: [{ RegionName: 'eu-west-1' }] },
+    });
+    mockSend.mockRejectedValueOnce(new Error('cleanup delete-replica boom'));
+    // The cleanup falls through to DeleteTable regardless (best-effort
+    // — AWS may have already dropped the replica even though the
+    // SDK call surface failed). DeleteTable also throws.
+    mockSend.mockRejectedValueOnce(new Error('cleanup delete-table boom'));
+
+    await expect(
+      provider.create('MyTable', RESOURCE_TYPE, {
+        ...baseProps,
+        StreamSpecification: { StreamViewType: 'NEW_AND_OLD_IMAGES' },
+        Replicas: [
+          { Region: 'us-east-1' },
+          { Region: 'eu-west-1' },
+          { Region: 'ap-south-1' },
+        ],
+      })
+    ).rejects.toThrow(/UpdateTable replica ap-south-1 boom/);
+
+    // Per-region recovery WARN names the offending replica region
+    // AND includes the exact `aws dynamodb update-table --replica-updates`
+    // command for manual cleanup.
+    const warns = warnSpy.mock.calls.map((c) => String(c[0])).join('\n');
+    expect(warns).toContain('eu-west-1');
+    expect(warns).toContain('update-table');
+    expect(warns).toContain('--replica-updates');
+    // And the outer DeleteTable cleanup-failed WARN fires too with
+    // the `aws dynamodb delete-table` recovery hint.
+    expect(warns).toContain('aws dynamodb delete-table');
+  });
+
   it('uses CreateTableCommand as the first call (sanity)', async () => {
     // Defensive guard against future refactors accidentally swapping the
     // CreateTable wire order.
