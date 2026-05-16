@@ -622,6 +622,95 @@ describe('DynamoDBGlobalTableProvider round-trip', () => {
       expect(updateCalls).toHaveLength(0);
     });
 
+    it('Auto-disable WARN: surfaces a WARN when DPE flips true→false because the template property was removed', async () => {
+      // Refactoring footgun: user removes `deletionProtection: true`
+      // from CDK code (e.g. moving it into a config helper but
+      // mistyping). cdkd's CFn-parity semantics flip AWS-side DPE
+      // off — which is correct per CDK / CFn behavior but is a
+      // data-loss risk. WARN gives the user visibility before the
+      // next destroy.
+      mockSend.mockResolvedValueOnce({ Table: { TableStatus: 'ACTIVE' } }); // wait
+      mockSend.mockResolvedValueOnce({
+        Table: { TableArn: TABLE_ARN, DeletionProtectionEnabled: true },
+      }); // DescribeTable for ARN + AWS DPE
+      mockSend.mockResolvedValueOnce({}); // UpdateTable (DPE flip off)
+      mockSend.mockResolvedValueOnce({ Table: { TableStatus: 'ACTIVE' } }); // wait
+      mockSend.mockResolvedValueOnce({ Table: { TableArn: TABLE_ARN } }); // final describe
+
+      await provider.update(
+        'X',
+        TABLE_NAME,
+        RESOURCE_TYPE,
+        { Replicas: [{ Region: 'us-east-1' }] }, // DPE absent in new
+        { Replicas: [{ Region: 'us-east-1', DeletionProtectionEnabled: true }] }
+      );
+      // The UpdateTable was still issued (no behavior change).
+      const updateCalls = mockSend.mock.calls
+        .map((c) => c[0])
+        .filter((c) => c instanceof UpdateTableCommand) as UpdateTableCommand[];
+      expect(updateCalls).toHaveLength(1);
+      expect(updateCalls[0]!.input.DeletionProtectionEnabled).toBe(false);
+      // The WARN was emitted naming the table + the recovery hint.
+      const warnMessages = warnSpy.mock.calls.map((c) => String(c[0])).join('\n');
+      expect(warnMessages).toMatch(/Auto-disabling DeletionProtectionEnabled/);
+      expect(warnMessages).toMatch(new RegExp(TABLE_NAME));
+      expect(warnMessages).toMatch(/removed from the CDK code/);
+      expect(warnMessages).toMatch(/restore 'deletionProtection: true'/);
+    });
+
+    it('Auto-disable WARN: NOT emitted when DPE is explicitly set to false (user opted in)', async () => {
+      // The WARN is for the "property removed" case only. An explicit
+      // `deletionProtection: false` is a user-opted-in disable — no
+      // surprise, no need to warn.
+      mockSend.mockResolvedValueOnce({ Table: { TableStatus: 'ACTIVE' } });
+      mockSend.mockResolvedValueOnce({
+        Table: { TableArn: TABLE_ARN, DeletionProtectionEnabled: true },
+      });
+      mockSend.mockResolvedValueOnce({});
+      mockSend.mockResolvedValueOnce({ Table: { TableStatus: 'ACTIVE' } });
+      mockSend.mockResolvedValueOnce({ Table: { TableArn: TABLE_ARN } });
+
+      await provider.update(
+        'X',
+        TABLE_NAME,
+        RESOURCE_TYPE,
+        { Replicas: [{ Region: 'us-east-1', DeletionProtectionEnabled: false }] },
+        { Replicas: [{ Region: 'us-east-1', DeletionProtectionEnabled: true }] }
+      );
+      const updateCalls = mockSend.mock.calls
+        .map((c) => c[0])
+        .filter((c) => c instanceof UpdateTableCommand) as UpdateTableCommand[];
+      expect(updateCalls).toHaveLength(1);
+      expect(updateCalls[0]!.input.DeletionProtectionEnabled).toBe(false);
+      const warnMessages = warnSpy.mock.calls.map((c) => String(c[0])).join('\n');
+      expect(warnMessages).not.toMatch(/Auto-disabling DeletionProtectionEnabled/);
+    });
+
+    it('Auto-disable WARN: NOT emitted when DPE was never on (no flip from true)', async () => {
+      // Sanity: state DPE=false, template removes the prop (still
+      // undefined → defaults to false). The diff dpeDiffersFromState
+      // fires (false !== undefined) so an UpdateTable IS issued —
+      // but the value is false→false (no actual flip on AWS), so
+      // no WARN should fire because the user never had protection on.
+      mockSend.mockResolvedValueOnce({ Table: { TableStatus: 'ACTIVE' } }); // wait
+      mockSend.mockResolvedValueOnce({
+        Table: { TableArn: TABLE_ARN, DeletionProtectionEnabled: false },
+      }); // DescribeTable for ARN + AWS DPE
+      mockSend.mockResolvedValueOnce({}); // UpdateTable (no-op flip)
+      mockSend.mockResolvedValueOnce({ Table: { TableStatus: 'ACTIVE' } }); // wait post-update
+      mockSend.mockResolvedValueOnce({ Table: { TableArn: TABLE_ARN } }); // final describe
+
+      await provider.update(
+        'X',
+        TABLE_NAME,
+        RESOURCE_TYPE,
+        { Replicas: [{ Region: 'us-east-1' }] },
+        { Replicas: [{ Region: 'us-east-1', DeletionProtectionEnabled: false }] }
+      );
+      const warnMessages = warnSpy.mock.calls.map((c) => String(c[0])).join('\n');
+      expect(warnMessages).not.toMatch(/Auto-disabling DeletionProtectionEnabled/);
+    });
+
     it('TTL rate limit error: rewraps AWS "Time to live has been modified multiple times" with a friendly hint', async () => {
       // AWS enforces a ~4-hour TTL change rate limit per table. The
       // raw error message is correct but not actionable. cdkd

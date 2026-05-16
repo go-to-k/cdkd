@@ -728,6 +728,31 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       const dpeDiffersFromAws =
         newDpe !== undefined && typeof awsDpe === 'boolean' && Boolean(newDpe) !== awsDpe;
       if (dpeDiffersFromState || dpeDiffersFromAws) {
+        // **Auto-disable WARN**: cdkd's diff semantics treat
+        // "absent property in template" as "revert to default", which
+        // matches CFn / CDK CLI parity. For DPE specifically this
+        // means: removing `deletionProtection: true` from CDK code
+        // silently disables protection on AWS. That's a refactoring
+        // footgun (e.g. moving the prop into a config helper but
+        // mistyping the destination, or accidentally deleting the
+        // line during a cleanup). Surface a WARN so the user has
+        // visibility before the next destroy. WARN only — no behavior
+        // change; the user can still proceed if they really mean to
+        // disable protection.
+        const templateExplicitlySetsDpe = newDpe !== undefined;
+        const flippingTrueToFalse =
+          (oldDpe === true || awsDpe === true) && Boolean(newDpe ?? false) === false;
+        if (flippingTrueToFalse && !templateExplicitlySetsDpe) {
+          this.logger.warn(
+            `Auto-disabling DeletionProtectionEnabled on ${physicalId}: ` +
+              `the property was removed from the CDK code. AWS will accept ` +
+              `DeleteTable on this resource after this deploy. ` +
+              `If you meant to keep protection on, restore ` +
+              `'deletionProtection: true' in your CDK code; ` +
+              `if you meant to disable it explicitly, set ` +
+              `'deletionProtection: false' to silence this warning.`
+          );
+        }
         flatUpdate.DeletionProtectionEnabled = Boolean(newDpe ?? false);
         flatChanged = true;
       }
