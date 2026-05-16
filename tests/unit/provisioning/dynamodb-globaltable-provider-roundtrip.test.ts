@@ -547,6 +547,105 @@ describe('DynamoDBGlobalTableProvider round-trip', () => {
       expect(createCall!.input.DeletionProtectionEnabled).toBe(true);
     });
 
+    it('AWS-aware DPE re-converge: fires UpdateTable when state and template both say true but AWS reports false (migration fix)', async () => {
+      // Migration scenario from pre-PR #410:
+      // - Pre-fix cdkd recorded state.properties.Replicas[0].DPE = true
+      //   (template intent), but never actually called UpdateTable
+      //   (it was reading top-level which was undefined).
+      // - AWS-side DPE is still false.
+      // - Post-fix update() must force the UpdateTable against AWS
+      //   when state-recorded oldDpe equals newDpe but AWS-current
+      //   differs. Same logic also covers console-side drift.
+      mockSend.mockResolvedValueOnce({ Table: { TableStatus: 'ACTIVE' } }); // wait
+      mockSend.mockResolvedValueOnce({
+        Table: { TableArn: TABLE_ARN, DeletionProtectionEnabled: false },
+      }); // DescribeTable for ARN + AWS DPE
+      mockSend.mockResolvedValueOnce({}); // UpdateTable (forced by AWS-aware diff)
+      mockSend.mockResolvedValueOnce({ Table: { TableStatus: 'ACTIVE' } }); // wait
+      mockSend.mockResolvedValueOnce({ Table: { TableArn: TABLE_ARN } }); // final describe
+
+      await provider.update(
+        'X',
+        TABLE_NAME,
+        RESOURCE_TYPE,
+        { Replicas: [{ Region: 'us-east-1', DeletionProtectionEnabled: true }] },
+        { Replicas: [{ Region: 'us-east-1', DeletionProtectionEnabled: true }] }
+      );
+      const updateCalls = mockSend.mock.calls
+        .map((c) => c[0])
+        .filter((c) => c instanceof UpdateTableCommand) as UpdateTableCommand[];
+      expect(updateCalls).toHaveLength(1);
+      expect(updateCalls[0]!.input.DeletionProtectionEnabled).toBe(true);
+    });
+
+    it('AWS-aware DPE: no UpdateTable when state, template, AND AWS all agree on DPE', async () => {
+      mockSend.mockResolvedValueOnce({ Table: { TableStatus: 'ACTIVE' } }); // wait
+      mockSend.mockResolvedValueOnce({
+        Table: { TableArn: TABLE_ARN, DeletionProtectionEnabled: true },
+      }); // DescribeTable: AWS DPE matches template
+      mockSend.mockResolvedValueOnce({ Table: { TableArn: TABLE_ARN } }); // final describe
+
+      await provider.update(
+        'X',
+        TABLE_NAME,
+        RESOURCE_TYPE,
+        { Replicas: [{ Region: 'us-east-1', DeletionProtectionEnabled: true }] },
+        { Replicas: [{ Region: 'us-east-1', DeletionProtectionEnabled: true }] }
+      );
+      const updateCalls = mockSend.mock.calls
+        .map((c) => c[0])
+        .filter((c) => c instanceof UpdateTableCommand);
+      expect(updateCalls).toHaveLength(0);
+    });
+
+    it('AWS-aware DPE: skips re-converge when template does NOT set DPE (no opinion → trust state/AWS)', async () => {
+      // When template doesn't carry DPE, cdkd should NOT force the
+      // field to false via the AWS-aware diff. The user hasn't
+      // opted in to manage DPE — drift detection handles surfacing
+      // any AWS-side console change.
+      mockSend.mockResolvedValueOnce({ Table: { TableStatus: 'ACTIVE' } }); // wait
+      mockSend.mockResolvedValueOnce({
+        Table: { TableArn: TABLE_ARN, DeletionProtectionEnabled: true },
+      }); // AWS has DPE=true
+      mockSend.mockResolvedValueOnce({ Table: { TableArn: TABLE_ARN } }); // final describe
+
+      await provider.update(
+        'X',
+        TABLE_NAME,
+        RESOURCE_TYPE,
+        { Replicas: [{ Region: 'us-east-1' }] }, // no DPE in template
+        { Replicas: [{ Region: 'us-east-1' }] }
+      );
+      const updateCalls = mockSend.mock.calls
+        .map((c) => c[0])
+        .filter((c) => c instanceof UpdateTableCommand);
+      expect(updateCalls).toHaveLength(0);
+    });
+
+    it('TTL rate limit error: rewraps AWS "Time to live has been modified multiple times" with a friendly hint', async () => {
+      // AWS enforces a ~4-hour TTL change rate limit per table. The
+      // raw error message is correct but not actionable. cdkd
+      // rewraps with a ProvisioningError that names the rate limit
+      // and points at the workaround.
+      mockSend.mockResolvedValueOnce({ Table: { TableStatus: 'ACTIVE' } }); // wait
+      mockSend.mockResolvedValueOnce({ Table: { TableArn: TABLE_ARN } }); // DescribeTable for ARN
+      mockSend.mockRejectedValueOnce(
+        new Error('Time to live has been modified multiple times within a fixed interval')
+      );
+
+      await expect(
+        provider.update(
+          'X',
+          TABLE_NAME,
+          RESOURCE_TYPE,
+          {
+            TimeToLiveSpecification: { AttributeName: 'expiresAt', Enabled: true },
+          },
+          {}
+        )
+      ).rejects.toThrow(/4-hour rate limit on TTL changes/);
+    });
+
     it('issues a separate UpdateTable for BillingMode flip (PAY_PER_REQUEST -> PROVISIONED with capacity)', async () => {
       mockSend.mockResolvedValueOnce({ Table: { TableStatus: 'ACTIVE' } }); // wait
       mockSend.mockResolvedValueOnce({ Table: { TableArn: TABLE_ARN } }); // DescribeTable for ARN
