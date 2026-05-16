@@ -250,6 +250,7 @@ template's logical id, and adopts it. Works under `auto` (default) and
 - AWS::RDS::DBInstance
 - AWS::RDS::DBCluster
 - AWS::RDS::DBProxy
+- AWS::RDS::DBProxyEndpoint
 - AWS::RDS::DBSubnetGroup
 - AWS::DocDB::DBInstance
 - AWS::DocDB::DBCluster
