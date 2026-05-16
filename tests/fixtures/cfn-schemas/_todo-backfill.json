@@ -637,7 +637,7 @@
       "CacheSubnetGroupDescription": "SDK input field name; CFn schema names the same field 'Description'. Investigate whether to rename in a follow-up."
     },
     "AWS::Glue::Crawler": {
-      "LineageConfiguration": "Schema snapshot (2026-05) does not include this property; AWS may have deprecated/renamed it. Verify against current AWS docs in a follow-up."
+      "LineageConfiguration": "Provider's createCrawler/updateCrawler wires this field via the SDK (glue-provider.ts:2277, 2386); the property is live in AWS but cloudformation:DescribeType (CFn registry schema) does NOT surface it. Likely a registry-schema-vs-user-guide-doc lag on AWS's side. Tolerated until AWS publishes it in the registry."
     },
     "AWS::Glue::Job": {
       "SourceControlDetails": "Schema snapshot (2026-05) does not include this property. Verify in a follow-up."
