@@ -1,3 +1,10 @@
+# [0.114.0](https://github.com/go-to-k/cdkd/compare/v0.113.0...v0.114.0) (2026-05-16)
+
+
+### Features
+
+* **hooks:** integ-coverage-matrix-gate.sh blocks commit when matrix stale ([#428](https://github.com/go-to-k/cdkd/issues/428)) ([fd4f5fe](https://github.com/go-to-k/cdkd/commit/fd4f5fe4f19fb868c532798a9284edc9b54b0f6a))
+
 # [0.113.0](https://github.com/go-to-k/cdkd/compare/v0.112.0...v0.113.0) (2026-05-16)
 
 
