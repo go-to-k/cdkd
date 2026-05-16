@@ -33,7 +33,7 @@ import {
   DescribeTypeCommand,
 } from '@aws-sdk/client-cloudformation';
 import { mkdir, readFile, writeFile, readdir } from 'node:fs/promises';
-import { join, dirname, basename } from 'node:path';
+import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -57,16 +57,6 @@ const MAX_RETRIES = 6;
  */
 export function fixtureFilename(type) {
   return type.replace(/::/g, '-') + '.json';
-}
-
-/**
- * Inverse of fixtureFilename — recover the CFn type from a filename.
- *
- * @param {string} filename
- * @returns {string}
- */
-export function fixtureTypeFromFilename(filename) {
-  return basename(filename, '.json').replace(/-/g, '::');
 }
 
 /**
@@ -325,7 +315,7 @@ async function main() {
 
 // Allow `import { extractRegisteredTypes } from '../../scripts/refresh-cfn-schemas.mjs'`
 // in tests without running main().
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (process.argv[1] === fileURLToPath(import.meta.url)) {
   main().catch((err) => {
     console.error(err);
     process.exit(1);
