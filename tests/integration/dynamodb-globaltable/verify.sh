@@ -1,15 +1,18 @@
 #!/usr/bin/env bash
 #
 # End-to-end real-AWS test for cdkd's AWS::DynamoDB::GlobalTable SDK
-# Provider (Issue #383 / Issue #389). Verifies that a `dynamodb.TableV2`
-# deployment produces a `${StackName}-X<hash>` AWS-side table name (not
-# a CC-API auto-generated random string), that subsequent in-place
-# UPDATE deploys round-trip cleanly through cdkd's serialized UpdateTable
-# / TagResource / UpdateTimeToLive pipeline, that the
+# Provider (Issue #383 / #389 / #395 / #402). Verifies that a
+# `dynamodb.TableV2` deployment produces a `${StackName}-X<hash>` AWS-side
+# table name (not a CC-API auto-generated random string), that subsequent
+# in-place UPDATE deploys round-trip cleanly through cdkd's serialized
+# UpdateTable / TagResource / UpdateTimeToLive pipeline, that the
 # `DeletionProtectionEnabled` toggle round-trips on / off (Issue #389),
-# and that destroy cleans up the table.
+# that BillingMode flips PROVISIONED <-> PAY_PER_REQUEST (Issue #402 Item C),
+# that auto-scaling targets + policies get registered and torn down on
+# the write path (Issue #402 Item B + Item A), and that destroy cleans
+# up the table.
 #
-# Steps:
+# Steps (default flow):
 #   1. install + build cdkd (root) + install fixture deps
 #   2. cdkd deploy CdkdDynamoDBGlobalTableExample (baseline)
 #   3. read the deployed table name from cdkd state and assert it starts
@@ -19,20 +22,30 @@
 #   6. assert TTL is now ENABLED and the UpdateTest tag is present
 #   7. cdkd deploy with CDKD_TEST_UPDATE=deletion-protection
 #   8. assert DeletionProtectionEnabled is now true on AWS
-#   9. cdkd deploy with CDKD_TEST_UPDATE= (cleared, baseline)
-#  10. assert DeletionProtectionEnabled is now false (or absent) on AWS
-#  11. cdkd destroy --remove-protection --force (works regardless of
+#   9. cdkd deploy with CDKD_TEST_UPDATE=billing-provisioned
+#       (Issue #402 Item C — BillingMode round-trip)
+#  10. assert BillingMode is now PROVISIONED on AWS
+#  11. cdkd deploy with CDKD_TEST_UPDATE=autoscaling
+#       (Issue #402 Item B — table-level write + per-replica read autoscaling)
+#  12. assert RegisterScalableTarget + PutScalingPolicy reached AWS via
+#       application-autoscaling describe-scaling-policies
+#  13. cdkd deploy with CDKD_TEST_UPDATE= (cleared, baseline)
+#  14. assert DeletionProtectionEnabled is now false (or absent) on AWS,
+#       BillingMode flipped back to PAY_PER_REQUEST, AND the scaling
+#       policy is gone (DeleteScalingPolicy + DeregisterScalableTarget)
+#  15. cdkd destroy --remove-protection --force (works regardless of
 #       the last DeletionProtectionEnabled state)
-#  12. assert the AWS-side table is gone and cdkd state is empty
+#  16. assert the AWS-side table is gone and cdkd state is empty
 #
-# Wall-clock budget: ~5-7 min (each deploy + describe pair is ~30-60s).
+# Wall-clock budget: ~7-10 min (each deploy + describe pair is ~30-60s;
+# autoscaling apply adds ~5-10s per direction).
 #
-# Out of scope (separate follow-up):
-#   - `CDKD_TEST_UPDATE=billing-provisioned` — PROVISIONED <-> PAY_PER_REQUEST
-#     flips need capacity reservation and add ~30s + cost; covered by
-#     unit tests only.
-#   - Multi-region cross-region replica integ — high cost + wall-clock;
-#     covered by unit tests via the mocked regional client.
+# Opt-in cross-region scenario (Issue #402 Item D):
+#   Set CDKD_INTEG_MULTI_REGION=1 to enable the cross-region replica
+#   round-trip. Adds ~15-25 min (replica provisioning is 5-10 min per
+#   region and per direction) and ~$0.10-0.20 in cross-region replication.
+#   The default `bash verify.sh` invocation does NOT run this — it stays
+#   under 8 min as before.
 #
 # Auto-resolves AWS account ID + state bucket. Run from anywhere.
 set -euo pipefail
@@ -148,11 +161,91 @@ if [ "${DP_ENABLED}" != "True" ] && [ "${DP_ENABLED}" != "true" ]; then
 fi
 echo "[verify] step 8 ok: DeletionProtectionEnabled = ${DP_ENABLED}"
 
-echo "[verify] step 9: cdkd deploy with CDKD_TEST_UPDATE= (cleared baseline — flip deletion-protection back to false)"
+echo "[verify] step 9: cdkd deploy with CDKD_TEST_UPDATE=billing-provisioned (Issue #402 Item C)"
+# Combine with deletion-protection so AWS keeps the table at the same
+# protection state — the BillingMode flip is the only diff we care about
+# here.
+CDKD_TEST_UPDATE=deletion-protection,billing-provisioned ${CLI} deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --verbose
+
+echo "[verify] step 10: assert BillingMode is now PROVISIONED on AWS"
+BILLING_MODE="$(aws dynamodb describe-table --table-name "${TABLE_NAME}" --region "${REGION}" \
+  --query 'Table.BillingModeSummary.BillingMode' --output text)"
+if [ "${BILLING_MODE}" != "PROVISIONED" ]; then
+  echo "[verify] FAIL: BillingMode is '${BILLING_MODE}' on '${TABLE_NAME}' after the billing-provisioned UPDATE deploy (expected PROVISIONED)"
+  exit 1
+fi
+echo "[verify] step 10 ok: BillingMode = ${BILLING_MODE}"
+
+echo "[verify] step 11: cdkd deploy with CDKD_TEST_UPDATE=autoscaling (Issue #402 Item B — exercises Item A's write-path autoscaling wiring)"
+# Build on top of the PROVISIONED state from step 9 so cdkd's update
+# path goes via the auto-scaling diff branch (Min/Max + TargetTracking
+# upsert) rather than the BillingMode-flip-and-register path.
+CDKD_TEST_UPDATE=deletion-protection,autoscaling ${CLI} deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --verbose
+
+echo "[verify] step 12: assert auto-scaling target + policy are registered on AWS for the WriteCapacityUnits dimension"
+WRITE_POLICY_COUNT="$(aws application-autoscaling describe-scaling-policies \
+  --service-namespace dynamodb \
+  --resource-id "table/${TABLE_NAME}" \
+  --scalable-dimension dynamodb:table:WriteCapacityUnits \
+  --region "${REGION}" \
+  --query 'length(ScalingPolicies[?PolicyType==`TargetTrackingScaling`])' \
+  --output text)"
+if [ "${WRITE_POLICY_COUNT}" != "1" ]; then
+  echo "[verify] FAIL: expected 1 TargetTrackingScaling policy on the WriteCapacityUnits dimension, got '${WRITE_POLICY_COUNT}'"
+  exit 1
+fi
+WRITE_TARGET_VALUE="$(aws application-autoscaling describe-scaling-policies \
+  --service-namespace dynamodb \
+  --resource-id "table/${TABLE_NAME}" \
+  --scalable-dimension dynamodb:table:WriteCapacityUnits \
+  --region "${REGION}" \
+  --query 'ScalingPolicies[?PolicyType==`TargetTrackingScaling`] | [0].TargetTrackingScalingPolicyConfiguration.TargetValue' \
+  --output text)"
+case "${WRITE_TARGET_VALUE}" in
+  70|70.0)
+    echo "[verify] step 12 ok: write autoscaling policy registered, TargetValue=${WRITE_TARGET_VALUE}"
+    ;;
+  *)
+    echo "[verify] FAIL: write autoscaling TargetValue is '${WRITE_TARGET_VALUE}' (expected 70 from Capacity.autoscaled)"
+    exit 1
+    ;;
+esac
+
+# Item D — opt-in cross-region replica round-trip. Guarded behind
+# CDKD_INTEG_MULTI_REGION=1 because the wall-clock + cost is large.
+if [ "${CDKD_INTEG_MULTI_REGION:-0}" = "1" ]; then
+  echo "[verify] step 12b (Item D): cross-region replica round-trip (CDKD_INTEG_MULTI_REGION=1)"
+  # Add eu-west-1 as a second replica. Streams already exist (auto-enabled
+  # by cdkd on multi-replica).
+  CDKD_TEST_UPDATE=deletion-protection,autoscaling,cross-region ${CLI} deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --verbose
+
+  echo "[verify] step 12c: assert the eu-west-1 replica reaches ACTIVE"
+  EU_STATUS="$(aws dynamodb describe-table --table-name "${TABLE_NAME}" --region eu-west-1 \
+    --query 'Table.TableStatus' --output text 2>&1 || echo MISSING)"
+  if [ "${EU_STATUS}" != "ACTIVE" ]; then
+    echo "[verify] FAIL: cross-region replica eu-west-1 not ACTIVE (got '${EU_STATUS}')"
+    exit 1
+  fi
+  echo "[verify] step 12c ok: eu-west-1 replica = ${EU_STATUS}"
+
+  echo "[verify] step 12d: remove the eu-west-1 replica"
+  CDKD_TEST_UPDATE=deletion-protection,autoscaling ${CLI} deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --verbose
+
+  echo "[verify] step 12e: assert the eu-west-1 replica is gone (DescribeTable → RNF)"
+  if aws dynamodb describe-table --table-name "${TABLE_NAME}" --region eu-west-1 >/dev/null 2>&1; then
+    echo "[verify] FAIL: cross-region replica eu-west-1 still exists after removal"
+    exit 1
+  fi
+  echo "[verify] step 12e ok: eu-west-1 replica removed (DescribeTable returns RNF)"
+else
+  echo "[verify] (skipping Item D — set CDKD_INTEG_MULTI_REGION=1 to opt into the cross-region scenario)"
+fi
+
+echo "[verify] step 13: cdkd deploy with CDKD_TEST_UPDATE= (cleared baseline — flip deletion-protection back to false, flip BillingMode back to PAY_PER_REQUEST, tear down autoscaling)"
 unset CDKD_TEST_UPDATE
 ${CLI} deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --verbose
 
-echo "[verify] step 10: assert DeletionProtectionEnabled flipped back to false on AWS"
+echo "[verify] step 14a: assert DeletionProtectionEnabled flipped back to false on AWS"
 DP_FINAL="$(aws dynamodb describe-table --table-name "${TABLE_NAME}" --region "${REGION}" \
   --query 'Table.DeletionProtectionEnabled' --output text)"
 # AWS may return "None" / "False" / "false" / "" depending on the
@@ -163,28 +256,51 @@ case "${DP_FINAL}" in
     exit 1
     ;;
 esac
-echo "[verify] step 10 ok: DeletionProtectionEnabled = ${DP_FINAL} (flipped back)"
+echo "[verify] step 14a ok: DeletionProtectionEnabled = ${DP_FINAL} (flipped back)"
 
-echo "[verify] step 11: cdkd destroy --remove-protection --force"
-# `--remove-protection` is defense-in-depth: step 10 should have flipped
+echo "[verify] step 14b: assert BillingMode flipped back to PAY_PER_REQUEST"
+BILLING_FINAL="$(aws dynamodb describe-table --table-name "${TABLE_NAME}" --region "${REGION}" \
+  --query 'Table.BillingModeSummary.BillingMode' --output text)"
+if [ "${BILLING_FINAL}" != "PAY_PER_REQUEST" ]; then
+  echo "[verify] FAIL: BillingMode is '${BILLING_FINAL}' after the cleared UPDATE deploy (expected PAY_PER_REQUEST)"
+  exit 1
+fi
+echo "[verify] step 14b ok: BillingMode = ${BILLING_FINAL}"
+
+echo "[verify] step 14c: assert auto-scaling policy is gone after the cleared deploy"
+WRITE_POLICY_AFTER="$(aws application-autoscaling describe-scaling-policies \
+  --service-namespace dynamodb \
+  --resource-id "table/${TABLE_NAME}" \
+  --scalable-dimension dynamodb:table:WriteCapacityUnits \
+  --region "${REGION}" \
+  --query 'length(ScalingPolicies[?PolicyType==`TargetTrackingScaling`])' \
+  --output text)"
+if [ "${WRITE_POLICY_AFTER}" != "0" ]; then
+  echo "[verify] FAIL: write autoscaling policy still present after cleared deploy (count=${WRITE_POLICY_AFTER}, expected 0)"
+  exit 1
+fi
+echo "[verify] step 14c ok: write autoscaling policy torn down"
+
+echo "[verify] step 15: cdkd destroy --remove-protection --force"
+# `--remove-protection` is defense-in-depth: step 14 should have flipped
 # the table back to unprotected, but a partial / re-run of the test
 # could leave the table protected; the flag ensures cdkd handles the
 # residual state without requiring operator intervention.
 ${CLI} destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --remove-protection --force
 
-echo "[verify] step 12: assert table is gone on AWS"
+echo "[verify] step 16a: assert table is gone on AWS"
 if aws dynamodb describe-table --table-name "${TABLE_NAME}" --region "${REGION}" >/dev/null 2>&1; then
   echo "[verify] FAIL: table '${TABLE_NAME}' still exists after destroy"
   exit 1
 fi
-echo "[verify] step 12 ok: table deleted"
+echo "[verify] step 16a ok: table deleted"
 
-echo "[verify] step 13: assert cdkd state is empty"
+echo "[verify] step 16b: assert cdkd state is empty"
 if aws s3 ls "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null 2>&1; then
   echo "[verify] FAIL: cdkd state file still exists at s3://${STATE_BUCKET}/${STATE_KEY}"
   exit 1
 fi
-echo "[verify] step 13 ok: cdkd state cleared"
+echo "[verify] step 16b ok: cdkd state cleared"
 
 trap - EXIT
 echo "[verify] PASS"

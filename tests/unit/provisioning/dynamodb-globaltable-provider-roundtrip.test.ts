@@ -15,6 +15,12 @@ import {
   UpdateTimeToLiveCommand,
   ResourceNotFoundException,
 } from '@aws-sdk/client-dynamodb';
+import {
+  RegisterScalableTargetCommand,
+  PutScalingPolicyCommand,
+  DeleteScalingPolicyCommand,
+  DeregisterScalableTargetCommand,
+} from '@aws-sdk/client-application-auto-scaling';
 
 const { mockSend, mockAutoScalingSend, regionalClientSpy, warnSpy } = vi.hoisted(() => ({
   mockSend: vi.fn(),
@@ -2149,6 +2155,538 @@ describe('DynamoDBGlobalTableProvider round-trip', () => {
         properties: {},
       });
       expect(result).toBeNull();
+    });
+  });
+
+  // ─── Item A: write path autoscaling — RegisterScalableTarget +
+  //     PutScalingPolicy on update (Issue #402) ────────────────────────
+  describe('update path: applyAutoScalingDiff (Issue #402)', () => {
+    it('issues RegisterScalableTarget + PutScalingPolicy on write dimension when template adds WriteCapacityAutoScalingSettings', async () => {
+      // Sequence: wait ACTIVE → DescribeTable for ARN → BillingMode flip
+      // (PAY_PER_REQUEST -> PROVISIONED) → wait ACTIVE → applyAutoScalingDiff
+      // → final DescribeTable.
+      mockSend.mockResolvedValueOnce({ Table: { TableStatus: 'ACTIVE' } }); // wait
+      mockSend.mockResolvedValueOnce({ Table: { TableArn: TABLE_ARN } }); // DescribeTable for ARN
+      mockSend.mockResolvedValueOnce({}); // UpdateTable (BillingMode flip)
+      mockSend.mockResolvedValueOnce({ Table: { TableStatus: 'ACTIVE' } }); // wait
+      mockSend.mockResolvedValueOnce({ Table: { TableArn: TABLE_ARN } }); // final describe
+
+      mockAutoScalingSend.mockReset();
+      mockAutoScalingSend.mockResolvedValueOnce({}); // RegisterScalableTarget
+      mockAutoScalingSend.mockResolvedValueOnce({}); // PutScalingPolicy
+
+      await provider.update(
+        'X',
+        TABLE_NAME,
+        RESOURCE_TYPE,
+        {
+          BillingMode: 'PROVISIONED',
+          WriteProvisionedThroughputSettings: {
+            WriteCapacityAutoScalingSettings: {
+              MinCapacity: 5,
+              MaxCapacity: 100,
+              TargetTrackingScalingPolicyConfiguration: { TargetValue: 70 },
+            },
+          },
+        },
+        { BillingMode: 'PAY_PER_REQUEST' }
+      );
+
+      const asCalls = mockAutoScalingSend.mock.calls.map((c) => c[0]);
+      expect(asCalls.length).toBe(2);
+      expect(asCalls[0]).toBeInstanceOf(RegisterScalableTargetCommand);
+      const regInput = (asCalls[0] as RegisterScalableTargetCommand).input;
+      expect(regInput.ServiceNamespace).toBe('dynamodb');
+      expect(regInput.ResourceId).toBe(`table/${TABLE_NAME}`);
+      expect(regInput.ScalableDimension).toBe('dynamodb:table:WriteCapacityUnits');
+      expect(regInput.MinCapacity).toBe(5);
+      expect(regInput.MaxCapacity).toBe(100);
+
+      expect(asCalls[1]).toBeInstanceOf(PutScalingPolicyCommand);
+      const polInput = (asCalls[1] as PutScalingPolicyCommand).input;
+      expect(polInput.PolicyName).toBe(
+        `DynamoDBWriteCapacityUtilization:table/${TABLE_NAME}`
+      );
+      expect(polInput.PolicyType).toBe('TargetTrackingScaling');
+      const cfg = polInput.TargetTrackingScalingPolicyConfiguration as
+        | Record<string, unknown>
+        | undefined;
+      expect(cfg?.['TargetValue']).toBe(70);
+      expect(cfg?.['PredefinedMetricSpecification']).toEqual({
+        PredefinedMetricType: 'DynamoDBWriteCapacityUtilization',
+      });
+    });
+
+    it('issues DeleteScalingPolicy + DeregisterScalableTarget on write dimension when template removes WriteCapacityAutoScalingSettings', async () => {
+      mockSend.mockResolvedValueOnce({ Table: { TableStatus: 'ACTIVE' } }); // wait
+      mockSend.mockResolvedValueOnce({ Table: { TableArn: TABLE_ARN } }); // DescribeTable for ARN
+      mockSend.mockResolvedValueOnce({ Table: { TableArn: TABLE_ARN } }); // final describe
+
+      mockAutoScalingSend.mockReset();
+      mockAutoScalingSend.mockResolvedValueOnce({}); // DeleteScalingPolicy
+      mockAutoScalingSend.mockResolvedValueOnce({}); // DeregisterScalableTarget
+
+      await provider.update(
+        'X',
+        TABLE_NAME,
+        RESOURCE_TYPE,
+        {
+          BillingMode: 'PROVISIONED',
+          WriteProvisionedThroughputSettings: { WriteCapacityUnits: 5 },
+        },
+        {
+          BillingMode: 'PROVISIONED',
+          WriteProvisionedThroughputSettings: {
+            WriteCapacityAutoScalingSettings: {
+              MinCapacity: 5,
+              MaxCapacity: 100,
+              TargetTrackingScalingPolicyConfiguration: { TargetValue: 70 },
+            },
+          },
+        }
+      );
+
+      const asCalls = mockAutoScalingSend.mock.calls.map((c) => c[0]);
+      expect(asCalls.length).toBe(2);
+      expect(asCalls[0]).toBeInstanceOf(DeleteScalingPolicyCommand);
+      expect(asCalls[1]).toBeInstanceOf(DeregisterScalableTargetCommand);
+      const polInput = (asCalls[0] as DeleteScalingPolicyCommand).input;
+      expect(polInput.PolicyName).toBe(
+        `DynamoDBWriteCapacityUtilization:table/${TABLE_NAME}`
+      );
+    });
+
+    it('forces autoscaling teardown on PROVISIONED -> PAY_PER_REQUEST flip even if template still carries WriteCapacityAutoScalingSettings', async () => {
+      // AWS rejects autoscaling targets on PAY_PER_REQUEST tables; cdkd
+      // must Delete + Deregister regardless of what the new template
+      // says, otherwise the BillingMode flip strands the now-invalid target.
+      mockSend.mockResolvedValueOnce({ Table: { TableStatus: 'ACTIVE' } }); // wait
+      mockSend.mockResolvedValueOnce({ Table: { TableArn: TABLE_ARN } }); // DescribeTable for ARN
+      mockSend.mockResolvedValueOnce({}); // UpdateTable (BillingMode flip back to PAY_PER_REQUEST)
+      mockSend.mockResolvedValueOnce({ Table: { TableStatus: 'ACTIVE' } }); // wait
+      mockSend.mockResolvedValueOnce({ Table: { TableArn: TABLE_ARN } }); // final describe
+
+      mockAutoScalingSend.mockReset();
+      mockAutoScalingSend.mockResolvedValueOnce({}); // DeleteScalingPolicy
+      mockAutoScalingSend.mockResolvedValueOnce({}); // DeregisterScalableTarget
+
+      await provider.update(
+        'X',
+        TABLE_NAME,
+        RESOURCE_TYPE,
+        {
+          BillingMode: 'PAY_PER_REQUEST',
+          WriteProvisionedThroughputSettings: {
+            // Stale autoscaling settings in the template — cdkd must
+            // ignore them and tear the target down because the table is
+            // flipping to PAY_PER_REQUEST.
+            WriteCapacityAutoScalingSettings: {
+              MinCapacity: 5,
+              MaxCapacity: 100,
+              TargetTrackingScalingPolicyConfiguration: { TargetValue: 70 },
+            },
+          },
+        },
+        {
+          BillingMode: 'PROVISIONED',
+          WriteProvisionedThroughputSettings: {
+            WriteCapacityAutoScalingSettings: {
+              MinCapacity: 5,
+              MaxCapacity: 100,
+              TargetTrackingScalingPolicyConfiguration: { TargetValue: 70 },
+            },
+          },
+        }
+      );
+
+      const asCalls = mockAutoScalingSend.mock.calls.map((c) => c[0]);
+      expect(asCalls.length).toBe(2);
+      expect(asCalls[0]).toBeInstanceOf(DeleteScalingPolicyCommand);
+      expect(asCalls[1]).toBeInstanceOf(DeregisterScalableTargetCommand);
+    });
+
+    it('issues per-replica RegisterScalableTarget + PutScalingPolicy on read dimension when a new replica adds ReadCapacityAutoScalingSettings', async () => {
+      mockSend.mockResolvedValueOnce({ Table: { TableStatus: 'ACTIVE' } }); // wait
+      mockSend.mockResolvedValueOnce({ Table: { TableArn: TABLE_ARN } }); // DescribeTable for ARN
+      // BillingMode unchanged on both sides — no flip UpdateTable.
+      mockSend.mockResolvedValueOnce({}); // UpdateTable (replica Create)
+      mockSend.mockResolvedValueOnce({
+        Table: { Replicas: [{ RegionName: 'eu-west-1', ReplicaStatus: 'ACTIVE' }] },
+      }); // waitForReplicaActive
+      mockSend.mockResolvedValueOnce({ Table: { TableArn: TABLE_ARN } }); // final describe
+
+      mockAutoScalingSend.mockReset();
+      mockAutoScalingSend.mockResolvedValueOnce({}); // RegisterScalableTarget
+      mockAutoScalingSend.mockResolvedValueOnce({}); // PutScalingPolicy
+
+      await provider.update(
+        'X',
+        TABLE_NAME,
+        RESOURCE_TYPE,
+        {
+          BillingMode: 'PROVISIONED',
+          WriteProvisionedThroughputSettings: { WriteCapacityUnits: 5 },
+          Replicas: [
+            { Region: 'us-east-1' },
+            {
+              Region: 'eu-west-1',
+              ReadProvisionedThroughputSettings: {
+                ReadCapacityAutoScalingSettings: {
+                  MinCapacity: 5,
+                  MaxCapacity: 50,
+                  TargetTrackingScalingPolicyConfiguration: { TargetValue: 70 },
+                },
+              },
+            },
+          ],
+        },
+        {
+          BillingMode: 'PROVISIONED',
+          WriteProvisionedThroughputSettings: { WriteCapacityUnits: 5 },
+          Replicas: [{ Region: 'us-east-1' }],
+        }
+      );
+
+      const asCalls = mockAutoScalingSend.mock.calls.map((c) => c[0]);
+      expect(asCalls.length).toBe(2);
+      expect(asCalls[0]).toBeInstanceOf(RegisterScalableTargetCommand);
+      const regInput = (asCalls[0] as RegisterScalableTargetCommand).input;
+      expect(regInput.ScalableDimension).toBe('dynamodb:table:ReadCapacityUnits');
+      expect(regInput.MinCapacity).toBe(5);
+      expect(regInput.MaxCapacity).toBe(50);
+
+      expect(asCalls[1]).toBeInstanceOf(PutScalingPolicyCommand);
+      const polInput = (asCalls[1] as PutScalingPolicyCommand).input;
+      expect(polInput.PolicyName).toBe(
+        `DynamoDBReadCapacityUtilization:table/${TABLE_NAME}`
+      );
+      const cfg = polInput.TargetTrackingScalingPolicyConfiguration as
+        | Record<string, unknown>
+        | undefined;
+      expect(cfg?.['PredefinedMetricSpecification']).toEqual({
+        PredefinedMetricType: 'DynamoDBReadCapacityUtilization',
+      });
+    });
+
+    it('issues per-replica read autoscaling diff on modified cross-region replica via the regional autoscaling client', async () => {
+      mockSend.mockResolvedValueOnce({ Table: { TableStatus: 'ACTIVE' } }); // wait
+      mockSend.mockResolvedValueOnce({ Table: { TableArn: TABLE_ARN } }); // DescribeTable for tag diff
+      mockSend.mockResolvedValueOnce({}); // UpdateTable (replica Update)
+      mockSend.mockResolvedValueOnce({
+        Table: {
+          Replicas: [
+            { RegionName: 'us-east-1', ReplicaStatus: 'ACTIVE' },
+            { RegionName: 'eu-west-1', ReplicaStatus: 'ACTIVE' },
+          ],
+        },
+      });
+      mockSend.mockResolvedValueOnce({ Table: { TableArn: TABLE_ARN } }); // final describe
+
+      mockAutoScalingSend.mockReset();
+      mockAutoScalingSend.mockResolvedValueOnce({}); // RegisterScalableTarget
+      mockAutoScalingSend.mockResolvedValueOnce({}); // PutScalingPolicy
+
+      await provider.update(
+        'X',
+        TABLE_NAME,
+        RESOURCE_TYPE,
+        {
+          BillingMode: 'PROVISIONED',
+          WriteProvisionedThroughputSettings: { WriteCapacityUnits: 5 },
+          Replicas: [
+            { Region: 'us-east-1' },
+            {
+              Region: 'eu-west-1',
+              KMSMasterKeyId: 'alias/new',
+              ReadProvisionedThroughputSettings: {
+                ReadCapacityAutoScalingSettings: {
+                  MinCapacity: 10,
+                  MaxCapacity: 200,
+                  TargetTrackingScalingPolicyConfiguration: { TargetValue: 80 },
+                },
+              },
+            },
+          ],
+        },
+        {
+          BillingMode: 'PROVISIONED',
+          WriteProvisionedThroughputSettings: { WriteCapacityUnits: 5 },
+          Replicas: [
+            { Region: 'us-east-1' },
+            {
+              Region: 'eu-west-1',
+              KMSMasterKeyId: 'alias/old',
+              ReadProvisionedThroughputSettings: {
+                ReadCapacityAutoScalingSettings: {
+                  MinCapacity: 5,
+                  MaxCapacity: 100,
+                  TargetTrackingScalingPolicyConfiguration: { TargetValue: 70 },
+                },
+              },
+            },
+          ],
+        }
+      );
+
+      const asCalls = mockAutoScalingSend.mock.calls.map((c) => c[0]);
+      expect(asCalls.length).toBe(2);
+      expect(asCalls[0]).toBeInstanceOf(RegisterScalableTargetCommand);
+      const regInput = (asCalls[0] as RegisterScalableTargetCommand).input;
+      expect(regInput.ScalableDimension).toBe('dynamodb:table:ReadCapacityUnits');
+      expect(regInput.MinCapacity).toBe(10);
+      expect(regInput.MaxCapacity).toBe(200);
+    });
+
+    it('best-effort: RegisterScalableTarget failure logs WARN and does NOT abort the update', async () => {
+      // The autoscaling apply mirrors the cross-region Tags propagation
+      // contract (PR #393): a failure logs at warn and the deploy
+      // continues. State surfaces as drift on the next run.
+      mockSend.mockResolvedValueOnce({ Table: { TableStatus: 'ACTIVE' } }); // wait
+      mockSend.mockResolvedValueOnce({ Table: { TableArn: TABLE_ARN } }); // DescribeTable for ARN
+      mockSend.mockResolvedValueOnce({}); // UpdateTable (BillingMode flip)
+      mockSend.mockResolvedValueOnce({ Table: { TableStatus: 'ACTIVE' } }); // wait
+      mockSend.mockResolvedValueOnce({ Table: { TableArn: TABLE_ARN } }); // final describe
+
+      mockAutoScalingSend.mockReset();
+      mockAutoScalingSend.mockRejectedValueOnce(
+        new Error('AccessDenied: RegisterScalableTarget')
+      );
+
+      const result = await provider.update(
+        'X',
+        TABLE_NAME,
+        RESOURCE_TYPE,
+        {
+          BillingMode: 'PROVISIONED',
+          WriteProvisionedThroughputSettings: {
+            WriteCapacityAutoScalingSettings: {
+              MinCapacity: 5,
+              MaxCapacity: 100,
+              TargetTrackingScalingPolicyConfiguration: { TargetValue: 70 },
+            },
+          },
+        },
+        { BillingMode: 'PAY_PER_REQUEST' }
+      );
+
+      expect(result.physicalId).toBe(TABLE_NAME);
+      const warnMessages = warnSpy.mock.calls.map((c) => String(c[0])).join('\n');
+      expect(warnMessages).toMatch(
+        /Could not register auto-scaling target.*WriteCapacityUnits/
+      );
+    });
+
+    it('no-op when WriteCapacityAutoScalingSettings is identical on both sides', async () => {
+      mockSend.mockResolvedValueOnce({ Table: { TableStatus: 'ACTIVE' } }); // wait
+      mockSend.mockResolvedValueOnce({ Table: { TableArn: TABLE_ARN } }); // DescribeTable for ARN
+      mockSend.mockResolvedValueOnce({ Table: { TableArn: TABLE_ARN } }); // final describe
+
+      mockAutoScalingSend.mockReset();
+
+      await provider.update(
+        'X',
+        TABLE_NAME,
+        RESOURCE_TYPE,
+        {
+          BillingMode: 'PROVISIONED',
+          WriteProvisionedThroughputSettings: {
+            WriteCapacityAutoScalingSettings: {
+              MinCapacity: 5,
+              MaxCapacity: 100,
+              TargetTrackingScalingPolicyConfiguration: { TargetValue: 70 },
+            },
+          },
+        },
+        {
+          BillingMode: 'PROVISIONED',
+          WriteProvisionedThroughputSettings: {
+            WriteCapacityAutoScalingSettings: {
+              MinCapacity: 5,
+              MaxCapacity: 100,
+              TargetTrackingScalingPolicyConfiguration: { TargetValue: 70 },
+            },
+          },
+        }
+      );
+
+      expect(mockAutoScalingSend).not.toHaveBeenCalled();
+    });
+
+    it('skips autoscaling when both sides are PAY_PER_REQUEST (no provisioned throughput → no autoscaling possible)', async () => {
+      mockSend.mockResolvedValueOnce({ Table: { TableStatus: 'ACTIVE' } }); // wait
+      mockSend.mockResolvedValueOnce({ Table: { TableArn: TABLE_ARN } }); // DescribeTable for ARN
+      mockSend.mockResolvedValueOnce({ Table: { TableArn: TABLE_ARN } }); // final describe
+
+      mockAutoScalingSend.mockReset();
+
+      await provider.update(
+        'X',
+        TABLE_NAME,
+        RESOURCE_TYPE,
+        { BillingMode: 'PAY_PER_REQUEST' },
+        { BillingMode: 'PAY_PER_REQUEST' }
+      );
+
+      expect(mockAutoScalingSend).not.toHaveBeenCalled();
+    });
+
+    it('forwards optional cooldown / disableScaleIn fields to PutScalingPolicy when present', async () => {
+      mockSend.mockResolvedValueOnce({ Table: { TableStatus: 'ACTIVE' } }); // wait
+      mockSend.mockResolvedValueOnce({ Table: { TableArn: TABLE_ARN } }); // DescribeTable for ARN
+      mockSend.mockResolvedValueOnce({}); // UpdateTable (BillingMode flip)
+      mockSend.mockResolvedValueOnce({ Table: { TableStatus: 'ACTIVE' } }); // wait
+      mockSend.mockResolvedValueOnce({ Table: { TableArn: TABLE_ARN } }); // final describe
+
+      mockAutoScalingSend.mockReset();
+      mockAutoScalingSend.mockResolvedValueOnce({}); // RegisterScalableTarget
+      mockAutoScalingSend.mockResolvedValueOnce({}); // PutScalingPolicy
+
+      await provider.update(
+        'X',
+        TABLE_NAME,
+        RESOURCE_TYPE,
+        {
+          BillingMode: 'PROVISIONED',
+          WriteProvisionedThroughputSettings: {
+            WriteCapacityAutoScalingSettings: {
+              MinCapacity: 5,
+              MaxCapacity: 100,
+              TargetTrackingScalingPolicyConfiguration: {
+                TargetValue: 70,
+                ScaleInCooldown: 60,
+                ScaleOutCooldown: 30,
+                DisableScaleIn: true,
+              },
+            },
+          },
+        },
+        { BillingMode: 'PAY_PER_REQUEST' }
+      );
+
+      const polCall = mockAutoScalingSend.mock.calls.find(
+        (c) => c[0] instanceof PutScalingPolicyCommand
+      )?.[0] as PutScalingPolicyCommand;
+      const cfg = polCall.input.TargetTrackingScalingPolicyConfiguration as
+        | Record<string, unknown>
+        | undefined;
+      expect(cfg?.['ScaleInCooldown']).toBe(60);
+      expect(cfg?.['ScaleOutCooldown']).toBe(30);
+      expect(cfg?.['DisableScaleIn']).toBe(true);
+    });
+  });
+
+  // ─── Item E: Kinesis ENABLING status filter (Issue #402) ─────────
+  describe('readReplicaSubSpecs: Kinesis destination status filter (Item E)', () => {
+    it('surfaces a Kinesis destination with DestinationStatus === ENABLING (not just ACTIVE)', async () => {
+      mockSend.mockResolvedValueOnce({
+        Table: { TableArn: TABLE_ARN, Replicas: [{ RegionName: 'us-east-1' }] },
+      });
+      // Local replica sub-spec calls: CI / PITR / Kinesis (ENABLING).
+      mockSend.mockResolvedValueOnce({ ContributorInsightsStatus: 'DISABLED' });
+      mockSend.mockResolvedValueOnce({
+        ContinuousBackupsDescription: {
+          PointInTimeRecoveryDescription: { PointInTimeRecoveryStatus: 'DISABLED' },
+        },
+      });
+      mockSend.mockResolvedValueOnce({
+        KinesisDataStreamDestinations: [
+          {
+            StreamArn: 'arn:aws:kinesis:us-east-1:123:stream/enabling-stream',
+            DestinationStatus: 'ENABLING',
+          },
+        ],
+      });
+      mockSend.mockResolvedValueOnce({
+        TimeToLiveDescription: { TimeToLiveStatus: 'DISABLED' },
+      });
+      mockSend.mockResolvedValueOnce({ Tags: [] });
+
+      const observed = await provider.readCurrentState(TABLE_NAME, 'X', RESOURCE_TYPE);
+      const replica = (observed!['Replicas'] as Array<Record<string, unknown>>)[0];
+      // Pre-#402 the filter accepted only ACTIVE; an ENABLING destination
+      // was dropped, surfacing as false-positive drift on a stack that
+      // just enabled Kinesis streaming. Issue #402 widened the filter
+      // to ACTIVE OR ENABLING.
+      expect(replica!['KinesisStreamSpecification']).toEqual({
+        StreamArn: 'arn:aws:kinesis:us-east-1:123:stream/enabling-stream',
+      });
+    });
+  });
+
+  // ─── Item F: Multi-destination ACTIVE disambiguation (Issue #402) ────
+  describe('readReplicaSubSpecs: multi-destination ACTIVE disambiguation (Item F)', () => {
+    it('picks the FIRST ACTIVE destination when AWS reports multiple ACTIVE entries', async () => {
+      mockSend.mockResolvedValueOnce({
+        Table: { TableArn: TABLE_ARN, Replicas: [{ RegionName: 'us-east-1' }] },
+      });
+      mockSend.mockResolvedValueOnce({ ContributorInsightsStatus: 'DISABLED' });
+      mockSend.mockResolvedValueOnce({
+        ContinuousBackupsDescription: {
+          PointInTimeRecoveryDescription: { PointInTimeRecoveryStatus: 'DISABLED' },
+        },
+      });
+      mockSend.mockResolvedValueOnce({
+        KinesisDataStreamDestinations: [
+          { StreamArn: 'arn:aws:kinesis:us-east-1:123:stream/first', DestinationStatus: 'ACTIVE' },
+          { StreamArn: 'arn:aws:kinesis:us-east-1:123:stream/second', DestinationStatus: 'ACTIVE' },
+        ],
+      });
+      mockSend.mockResolvedValueOnce({
+        TimeToLiveDescription: { TimeToLiveStatus: 'DISABLED' },
+      });
+      mockSend.mockResolvedValueOnce({ Tags: [] });
+
+      const observed = await provider.readCurrentState(TABLE_NAME, 'X', RESOURCE_TYPE);
+      const replica = (observed!['Replicas'] as Array<Record<string, unknown>>)[0];
+      // Production docstring: "pick the first ACTIVE destination" (CFn's
+      // per-replica shape only carries one StreamArn).
+      expect(replica!['KinesisStreamSpecification']).toEqual({
+        StreamArn: 'arn:aws:kinesis:us-east-1:123:stream/first',
+      });
+    });
+  });
+
+  // ─── Item G: Malformed local ARN defensive return (Issue #402) ───
+  describe('replicaArnForRegion: defensive return on malformed ARN (Item G)', () => {
+    it('returns undefined when fed an ARN with fewer than 6 colon-separated segments', () => {
+      // Access the private helper via cast; mirrors `as unknown as`
+      // patterns already used elsewhere in this file.
+      const p = provider as unknown as {
+        replicaArnForRegion(arn: string, region: string): string | undefined;
+      };
+      // 5-segment ARN — missing the resource segment.
+      const malformed = 'arn:aws:dynamodb:us-east-1:123';
+      expect(p.replicaArnForRegion(malformed, 'eu-west-1')).toBeUndefined();
+    });
+
+    it('returns the swapped-region ARN on a well-formed input (regression baseline)', () => {
+      const p = provider as unknown as {
+        replicaArnForRegion(arn: string, region: string): string | undefined;
+      };
+      expect(p.replicaArnForRegion(TABLE_ARN, 'eu-west-1')).toBe(
+        'arn:aws:dynamodb:eu-west-1:123:table/my-table'
+      );
+    });
+  });
+
+  // ─── Item H: flip-off-success → DeleteTable-RNF region-mismatch
+  //     theoretical path (Issue #402) ─────────────────────────────────
+  describe('delete: --remove-protection flip-off SUCCESS then DeleteTable RNF + region mismatch (Item H)', () => {
+    it('refuses NotFound idempotency on DeleteTable when client region != state region, even after the flip-off succeeded', async () => {
+      // Sequence: flip-off UpdateTable succeeds → waitForTableActiveAfterUpdate
+      // succeeds → DescribeTable returns RNF (table concurrently deleted)
+      // → DeleteTable returns RNF → region-match check refuses idempotency.
+      mockSend.mockResolvedValueOnce({}); // UpdateTable (flip-off) — SUCCESS
+      mockSend.mockResolvedValueOnce({ Table: { TableStatus: 'ACTIVE' } }); // wait ACTIVE — SUCCESS
+      mockSend.mockRejectedValueOnce(newRnf()); // DescribeTable -> RNF
+      mockSend.mockRejectedValueOnce(newRnf()); // DeleteTable -> RNF
+
+      await expect(
+        provider.delete('X', TABLE_NAME, RESOURCE_TYPE, undefined, {
+          expectedRegion: 'eu-west-1', // mismatch — local client is us-east-1
+          removeProtection: true,
+        })
+      ).rejects.toBeInstanceOf(ProvisioningError);
     });
   });
 });

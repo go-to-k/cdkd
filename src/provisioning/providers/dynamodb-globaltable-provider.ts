@@ -31,6 +31,10 @@ import {
   ApplicationAutoScalingClient,
   DescribeScalableTargetsCommand,
   DescribeScalingPoliciesCommand,
+  RegisterScalableTargetCommand,
+  PutScalingPolicyCommand,
+  DeleteScalingPolicyCommand,
+  DeregisterScalableTargetCommand,
 } from '@aws-sdk/client-application-auto-scaling';
 import { getLogger } from '../../utils/logger.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
@@ -769,6 +773,41 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
         await this.waitForTableActiveAfterUpdate(physicalId, logicalId);
       }
 
+      // 4b. Table-level write auto-scaling diff (Issue #402 / closes #395
+      // deferred items). Fires whenever the WriteCapacityAutoScalingSettings
+      // sub-shape differs between old and new (incl. add / remove). Skipped
+      // when the table is PAY_PER_REQUEST on BOTH sides — autoscaling
+      // targets are meaningless without ProvisionedThroughput. When the
+      // BillingMode flipped PROVISIONED -> PAY_PER_REQUEST, force tear-down
+      // regardless of whether the template still carries the settings:
+      // autoscaling is invalid on PAY_PER_REQUEST.
+      //
+      // Placed AFTER the BillingMode flip so a PAY_PER_REQUEST -> PROVISIONED
+      // template flip plus a new WriteCapacityAutoScalingSettings doesn't try
+      // to RegisterScalableTarget against a not-yet-PROVISIONED table.
+      const writeAutoScalingOld = (
+        (previousProperties['WriteProvisionedThroughputSettings'] ?? {}) as Record<string, unknown>
+      )['WriteCapacityAutoScalingSettings'] as Record<string, unknown> | undefined;
+      const writeAutoScalingNew = (
+        (properties['WriteProvisionedThroughputSettings'] ?? {}) as Record<string, unknown>
+      )['WriteCapacityAutoScalingSettings'] as Record<string, unknown> | undefined;
+      const billingFlippedToOnDemand =
+        oldBilling === 'PROVISIONED' && newBilling === 'PAY_PER_REQUEST';
+      // Force teardown on a flip to PAY_PER_REQUEST regardless of whether
+      // the template still carries the (now-invalid) autoscaling settings
+      // — AWS rejects targets on on-demand tables, so any prior target
+      // must come down.
+      const effectiveNewAutoScaling = billingFlippedToOnDemand ? undefined : writeAutoScalingNew;
+      const autoScalingMeaningful = newBilling === 'PROVISIONED' || oldBilling === 'PROVISIONED';
+      if (autoScalingMeaningful && !deepEqual(writeAutoScalingOld, effectiveNewAutoScaling)) {
+        await this.applyAutoScalingDiff(
+          physicalId,
+          'dynamodb:table:WriteCapacityUnits',
+          writeAutoScalingOld,
+          effectiveNewAutoScaling
+        );
+      }
+
       // 5. Replica diff. AWS limits to ONE ReplicaUpdates entry per call,
       // so serialize Create / Update / Delete and wait between each.
       // `currentRegion` is already resolved once at the top of update().
@@ -781,6 +820,29 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       for (const replica of replicaDiff.removed) {
         const region = replica['Region'] as string | undefined;
         if (!region || region === currentRegion) continue;
+
+        // Per-replica read auto-scaling teardown (Issue #402). When the
+        // removed replica had `ReadCapacityAutoScalingSettings`, the
+        // scalable target + policy in the replica's region must be torn
+        // down BEFORE the ReplicaUpdates Delete: AWS's application-
+        // autoscaling control plane stays around after the table replica
+        // disappears, and a future re-add of the same region would
+        // collide. Best-effort: failures log at WARN and the deploy
+        // continues to drop the replica.
+        const removedReadAutoScaling = (
+          (replica['ReadProvisionedThroughputSettings'] ?? {}) as Record<string, unknown>
+        )['ReadCapacityAutoScalingSettings'] as Record<string, unknown> | undefined;
+        if (removedReadAutoScaling) {
+          const regionalAutoScalingClient = this.getRegionalAutoScalingClient(region);
+          await this.applyAutoScalingDiff(
+            physicalId,
+            'dynamodb:table:ReadCapacityUnits',
+            removedReadAutoScaling,
+            undefined,
+            regionalAutoScalingClient
+          );
+        }
+
         await this.dynamoDBClient.send(
           new UpdateTableCommand({
             TableName: physicalId,
@@ -793,6 +855,26 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
         const region = replica['Region'] as string | undefined;
         if (!region || region === currentRegion) continue;
         await this.addReplica(physicalId, replica, region, logicalId);
+
+        // Per-replica read auto-scaling (Issue #402): when the new
+        // replica has `ReadCapacityAutoScalingSettings`, register the
+        // scalable target + target-tracking policy in the replica's
+        // region right after the replica becomes ACTIVE. Skipped on
+        // PAY_PER_REQUEST tables (autoscaling is meaningless without
+        // ProvisionedThroughput).
+        const newReadAutoScaling = (
+          (replica['ReadProvisionedThroughputSettings'] ?? {}) as Record<string, unknown>
+        )['ReadCapacityAutoScalingSettings'] as Record<string, unknown> | undefined;
+        if (newBilling === 'PROVISIONED' && newReadAutoScaling) {
+          const regionalAutoScalingClient = this.getRegionalAutoScalingClient(region);
+          await this.applyAutoScalingDiff(
+            physicalId,
+            'dynamodb:table:ReadCapacityUnits',
+            undefined,
+            newReadAutoScaling,
+            regionalAutoScalingClient
+          );
+        }
       }
       for (const replica of replicaDiff.modified) {
         const region = replica['Region'] as string | undefined;
@@ -848,6 +930,33 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
               `Local DescribeTable returned no TableArn — cannot propagate Tags to cross-region replica ${region} of ${physicalId}`
             );
           }
+        }
+
+        // Per-replica read auto-scaling diff (Issue #402 / closes #395
+        // deferred items). The read dimension's scalable target +
+        // policy live in the REPLICA's region (each replica registers
+        // its own target with `application-autoscaling` in its own
+        // region), so route through a region-scoped autoscaling client.
+        const oldReadAutoScaling = (
+          (oldReplica?.['ReadProvisionedThroughputSettings'] ?? {}) as Record<string, unknown>
+        )['ReadCapacityAutoScalingSettings'] as Record<string, unknown> | undefined;
+        const newReadAutoScaling = (
+          (replica['ReadProvisionedThroughputSettings'] ?? {}) as Record<string, unknown>
+        )['ReadCapacityAutoScalingSettings'] as Record<string, unknown> | undefined;
+        const effectiveNewReadAutoScaling =
+          newBilling === 'PAY_PER_REQUEST' ? undefined : newReadAutoScaling;
+        if (
+          (newBilling === 'PROVISIONED' || oldBilling === 'PROVISIONED') &&
+          !deepEqual(oldReadAutoScaling, effectiveNewReadAutoScaling)
+        ) {
+          const regionalAutoScalingClient = this.getRegionalAutoScalingClient(region);
+          await this.applyAutoScalingDiff(
+            physicalId,
+            'dynamodb:table:ReadCapacityUnits',
+            oldReadAutoScaling,
+            effectiveNewReadAutoScaling,
+            regionalAutoScalingClient
+          );
         }
 
         const updateAction: UpdateReplicationGroupMemberAction = { RegionName: region };
@@ -1076,6 +1185,204 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       await client.send(new TagResourceCommand({ ResourceArn: tableArn, Tags: tagsToAdd }));
       this.logger.debug(
         `Added/updated ${tagsToAdd.length} tag(s) on DynamoDB GlobalTable ${tableArn}`
+      );
+    }
+  }
+
+  /**
+   * Apply an application-autoscaling diff for one (tableName, dimension)
+   * pair (Issue #402 / PR closing Issue #395's deferred items).
+   *
+   * Dimension is either:
+   *  - `dynamodb:table:WriteCapacityUnits` (table-level write capacity),
+   *    paired with the local-region autoscaling client.
+   *  - `dynamodb:table:ReadCapacityUnits` (per-replica read capacity),
+   *    paired with a region-scoped autoscaling client returned by
+   *    `getRegionalAutoScalingClient`.
+   *
+   * Diff semantics (idempotent upsert, per Issue #402 spec):
+   *  - new auto-scaling settings present (Min/Max + TargetValue) →
+   *    `RegisterScalableTarget` (upsert) + `PutScalingPolicy` (upsert).
+   *    AWS's `RegisterScalableTarget` accepts no-op Min/Max changes
+   *    silently, and `PutScalingPolicy` is idempotent on the same
+   *    policy name (`DynamoDB{Write,Read}CapacityUtilization:table/<name>`).
+   *  - old auto-scaling settings present but new ones absent (= null) →
+   *    `DeleteScalingPolicy` + `DeregisterScalableTarget`. AWS rejects
+   *    `DeregisterScalableTarget` on a still-policy-attached target,
+   *    so the policy must be deleted FIRST.
+   *  - neither side has auto-scaling settings → no-op.
+   *
+   * **Best-effort**: any AWS error is logged at WARN with the per-API
+   * recovery command and the deploy continues — auto-scaling drift is
+   * recoverable on the next deploy, and an aborted deploy is much worse
+   * UX than a transient auto-scaling miss. This matches the cross-region
+   * Tags propagation contract (PR #393).
+   *
+   * **Policy naming** matches AWS's CDK / console default:
+   *   `DynamoDBWriteCapacityUtilization:table/<table-name>` (write)
+   *   `DynamoDBReadCapacityUtilization:table/<table-name>`  (read)
+   * so re-imports against a console-created target also match.
+   *
+   * **`SeedCapacity` is intentionally NOT forwarded** — it is a CFn
+   * create-only field with no corresponding `RegisterScalableTarget`
+   * surface; `readAutoScalingSettings` also explicitly skips it.
+   */
+  private async applyAutoScalingDiff(
+    tableName: string,
+    dimension: 'dynamodb:table:WriteCapacityUnits' | 'dynamodb:table:ReadCapacityUnits',
+    oldSettings: Record<string, unknown> | undefined,
+    newSettings: Record<string, unknown> | undefined,
+    client?: ApplicationAutoScalingClient
+  ): Promise<void> {
+    const isWrite = dimension === 'dynamodb:table:WriteCapacityUnits';
+    const policyName = isWrite
+      ? `DynamoDBWriteCapacityUtilization:table/${tableName}`
+      : `DynamoDBReadCapacityUtilization:table/${tableName}`;
+    const metricType = isWrite
+      ? 'DynamoDBWriteCapacityUtilization'
+      : 'DynamoDBReadCapacityUtilization';
+    const resourceId = `table/${tableName}`;
+
+    const asClient =
+      client ??
+      new ApplicationAutoScalingClient({
+        region: (await this.dynamoDBClient.config.region()) ?? '',
+      });
+
+    const oldEnabled = oldSettings !== undefined && oldSettings !== null;
+    const newEnabled = newSettings !== undefined && newSettings !== null;
+
+    if (!oldEnabled && !newEnabled) {
+      return; // nothing to do
+    }
+
+    if (newEnabled) {
+      // Register OR update scalable target (idempotent on no-op).
+      const minCapacity = Number(newSettings!['MinCapacity'] ?? 0);
+      const maxCapacity = Number(newSettings!['MaxCapacity'] ?? 0);
+      if (!Number.isFinite(minCapacity) || !Number.isFinite(maxCapacity)) {
+        this.logger.warn(
+          `Cannot apply auto-scaling diff on ${tableName} (${dimension}): ` +
+            `MinCapacity / MaxCapacity must be numbers, got ` +
+            `${String(newSettings!['MinCapacity'])} / ${String(newSettings!['MaxCapacity'])}`
+        );
+        return;
+      }
+      try {
+        await asClient.send(
+          new RegisterScalableTargetCommand({
+            ServiceNamespace: 'dynamodb',
+            ResourceId: resourceId,
+            ScalableDimension: dimension,
+            MinCapacity: minCapacity,
+            MaxCapacity: maxCapacity,
+          })
+        );
+      } catch (err) {
+        this.logger.warn(
+          `Could not register auto-scaling target on ${tableName} (${dimension}): ` +
+            `${err instanceof Error ? err.message : String(err)}. ` +
+            `Run: aws application-autoscaling register-scalable-target ` +
+            `--service-namespace dynamodb --resource-id ${resourceId} ` +
+            `--scalable-dimension ${dimension} --min-capacity ${minCapacity} ` +
+            `--max-capacity ${maxCapacity}`
+        );
+        return;
+      }
+
+      const tttCfg = (newSettings!['TargetTrackingScalingPolicyConfiguration'] ?? {}) as Record<
+        string,
+        unknown
+      >;
+      const targetValue = Number(tttCfg['TargetValue']);
+      if (!Number.isFinite(targetValue)) {
+        this.logger.warn(
+          `Auto-scaling target registered on ${tableName} (${dimension}) but ` +
+            `TargetValue is missing or non-numeric — skipping PutScalingPolicy. ` +
+            `Provide TargetTrackingScalingPolicyConfiguration.TargetValue in the template.`
+        );
+        return;
+      }
+      const targetTrackingConfig: Record<string, unknown> = {
+        PredefinedMetricSpecification: { PredefinedMetricType: metricType },
+        TargetValue: targetValue,
+      };
+      if (tttCfg['ScaleInCooldown'] !== undefined) {
+        targetTrackingConfig['ScaleInCooldown'] = Number(tttCfg['ScaleInCooldown']);
+      }
+      if (tttCfg['ScaleOutCooldown'] !== undefined) {
+        targetTrackingConfig['ScaleOutCooldown'] = Number(tttCfg['ScaleOutCooldown']);
+      }
+      if (tttCfg['DisableScaleIn'] !== undefined) {
+        targetTrackingConfig['DisableScaleIn'] = Boolean(tttCfg['DisableScaleIn']);
+      }
+      try {
+        await asClient.send(
+          new PutScalingPolicyCommand({
+            PolicyName: policyName,
+            ServiceNamespace: 'dynamodb',
+            ResourceId: resourceId,
+            ScalableDimension: dimension,
+            PolicyType: 'TargetTrackingScaling',
+            // SDK input shape uses Pascal-cased keys; the inner config object
+            // is the same shape we read back via DescribeScalingPolicies.
+            TargetTrackingScalingPolicyConfiguration: targetTrackingConfig as never,
+          })
+        );
+        this.logger.debug(
+          `Upserted auto-scaling policy ${policyName} on ${tableName} (${dimension})`
+        );
+      } catch (err) {
+        this.logger.warn(
+          `Could not put auto-scaling policy on ${tableName} (${dimension}): ` +
+            `${err instanceof Error ? err.message : String(err)}. ` +
+            `Run: aws application-autoscaling put-scaling-policy ` +
+            `--policy-name ${policyName} --service-namespace dynamodb ` +
+            `--resource-id ${resourceId} --scalable-dimension ${dimension} ` +
+            `--policy-type TargetTrackingScaling`
+        );
+      }
+      return;
+    }
+
+    // newEnabled === false, oldEnabled === true: tear down.
+    try {
+      await asClient.send(
+        new DeleteScalingPolicyCommand({
+          PolicyName: policyName,
+          ServiceNamespace: 'dynamodb',
+          ResourceId: resourceId,
+          ScalableDimension: dimension,
+        })
+      );
+    } catch (err) {
+      this.logger.warn(
+        `Could not delete auto-scaling policy on ${tableName} (${dimension}): ` +
+          `${err instanceof Error ? err.message : String(err)}. ` +
+          `Run: aws application-autoscaling delete-scaling-policy ` +
+          `--policy-name ${policyName} --service-namespace dynamodb ` +
+          `--resource-id ${resourceId} --scalable-dimension ${dimension}`
+      );
+      // Continue to the Deregister attempt regardless — AWS may have
+      // already cleaned up the policy, in which case the deregister
+      // succeeds.
+    }
+    try {
+      await asClient.send(
+        new DeregisterScalableTargetCommand({
+          ServiceNamespace: 'dynamodb',
+          ResourceId: resourceId,
+          ScalableDimension: dimension,
+        })
+      );
+      this.logger.debug(`Deregistered auto-scaling target ${resourceId} (${dimension})`);
+    } catch (err) {
+      this.logger.warn(
+        `Could not deregister auto-scaling target on ${tableName} (${dimension}): ` +
+          `${err instanceof Error ? err.message : String(err)}. ` +
+          `Run: aws application-autoscaling deregister-scalable-target ` +
+          `--service-namespace dynamodb --resource-id ${resourceId} ` +
+          `--scalable-dimension ${dimension}`
       );
     }
   }
