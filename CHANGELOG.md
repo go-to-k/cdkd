@@ -1,3 +1,10 @@
+# [0.113.0](https://github.com/go-to-k/cdkd/compare/v0.112.0...v0.113.0) (2026-05-16)
+
+
+### Features
+
+* **scripts:** scenario coverage visibility report (Phase 2B of [#392](https://github.com/go-to-k/cdkd/issues/392), closes [#423](https://github.com/go-to-k/cdkd/issues/423)) ([#425](https://github.com/go-to-k/cdkd/issues/425)) ([196f1d8](https://github.com/go-to-k/cdkd/commit/196f1d8ebf00e63826f9bda0b27a86baf1976dd8))
+
 # [0.112.0](https://github.com/go-to-k/cdkd/compare/v0.111.3...v0.112.0) (2026-05-16)
 
 
