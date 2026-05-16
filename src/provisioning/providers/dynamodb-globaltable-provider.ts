@@ -1361,6 +1361,25 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
     }
 
     // newEnabled === false, oldEnabled === true: tear down.
+    // Idempotency: AWS's application-autoscaling raises
+    // `ObjectNotFoundException` ("No scaling policy found" / "No
+    // scalable target found") when the resource is already gone.
+    // That is success for our purposes (e.g. the `update()` BillingMode
+    // flip already tore down autoscaling, and now `delete()`'s defense-
+    // in-depth teardown fires). Detect via the error name AND message
+    // substring (the SDK doesn't always type-name the error on first
+    // exposure) and silently skip — only surface non-RNF errors as
+    // WARN with the recovery command.
+    const isObjectNotFound = (err: unknown): boolean => {
+      if (!(err instanceof Error)) return false;
+      const name = (err as Error & { name?: string }).name ?? '';
+      const msg = err.message ?? '';
+      return (
+        name === 'ObjectNotFoundException' ||
+        msg.includes('No scaling policy found') ||
+        msg.includes('No scalable target found')
+      );
+    };
     try {
       await asClient.send(
         new DeleteScalingPolicyCommand({
@@ -1371,16 +1390,19 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
         })
       );
     } catch (err) {
-      this.logger.warn(
-        `Could not delete auto-scaling policy on ${tableName} (${dimension}): ` +
-          `${err instanceof Error ? err.message : String(err)}. ` +
-          `Run: aws application-autoscaling delete-scaling-policy ` +
-          `--policy-name ${policyName} --service-namespace dynamodb ` +
-          `--resource-id ${resourceId} --scalable-dimension ${dimension}`
-      );
+      if (!isObjectNotFound(err)) {
+        this.logger.warn(
+          `Could not delete auto-scaling policy on ${tableName} (${dimension}): ` +
+            `${err instanceof Error ? err.message : String(err)}. ` +
+            `Run: aws application-autoscaling delete-scaling-policy ` +
+            `--policy-name ${policyName} --service-namespace dynamodb ` +
+            `--resource-id ${resourceId} --scalable-dimension ${dimension}`
+        );
+      }
       // Continue to the Deregister attempt regardless — AWS may have
       // already cleaned up the policy, in which case the deregister
-      // succeeds.
+      // succeeds (or also returns ObjectNotFoundException, also
+      // suppressed below).
     }
     try {
       await asClient.send(
@@ -1392,13 +1414,15 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       );
       this.logger.debug(`Deregistered auto-scaling target ${resourceId} (${dimension})`);
     } catch (err) {
-      this.logger.warn(
-        `Could not deregister auto-scaling target on ${tableName} (${dimension}): ` +
-          `${err instanceof Error ? err.message : String(err)}. ` +
-          `Run: aws application-autoscaling deregister-scalable-target ` +
-          `--service-namespace dynamodb --resource-id ${resourceId} ` +
-          `--scalable-dimension ${dimension}`
-      );
+      if (!isObjectNotFound(err)) {
+        this.logger.warn(
+          `Could not deregister auto-scaling target on ${tableName} (${dimension}): ` +
+            `${err instanceof Error ? err.message : String(err)}. ` +
+            `Run: aws application-autoscaling deregister-scalable-target ` +
+            `--service-namespace dynamodb --resource-id ${resourceId} ` +
+            `--scalable-dimension ${dimension}`
+        );
+      }
     }
   }
 
