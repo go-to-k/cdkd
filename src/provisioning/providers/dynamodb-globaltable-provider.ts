@@ -209,6 +209,21 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
   }
 
   /**
+   * Lazy-init + cache the local-region `ApplicationAutoScalingClient`.
+   * Previously `applyAutoScalingDiff` constructed a fresh client per
+   * call when no `client` arg was passed, leaking SDK clients (each
+   * holds its own HTTP agent) on multi-stack runs with many
+   * GlobalTables (PR #403 review minor #4).
+   */
+  private localAutoScalingClient: ApplicationAutoScalingClient | undefined;
+  private async getLocalAutoScalingClient(): Promise<ApplicationAutoScalingClient> {
+    if (this.localAutoScalingClient) return this.localAutoScalingClient;
+    const region = (await this.dynamoDBClient.config.region()) ?? '';
+    this.localAutoScalingClient = new ApplicationAutoScalingClient({ region });
+    return this.localAutoScalingClient;
+  }
+
+  /**
    * Construct the regional table ARN for a cross-region replica of a
    * GlobalTable. AWS replicates the same `TableName` across every
    * replica region, with each replica's ARN differing only in the
@@ -1243,11 +1258,11 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       : 'DynamoDBReadCapacityUtilization';
     const resourceId = `table/${tableName}`;
 
-    const asClient =
-      client ??
-      new ApplicationAutoScalingClient({
-        region: (await this.dynamoDBClient.config.region()) ?? '',
-      });
+    // PR #403 review minor #4: route the no-client-arg fallback through
+    // the cached `getLocalAutoScalingClient()` rather than constructing
+    // a fresh client per call. Multi-stack runs with many GlobalTables
+    // were leaking SDK clients (each holds its own HTTP agent).
+    const asClient = client ?? (await this.getLocalAutoScalingClient());
 
     const oldEnabled = oldSettings !== undefined && oldSettings !== null;
     const newEnabled = newSettings !== undefined && newSettings !== null;
@@ -1455,6 +1470,13 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
 
     // Drop every non-local replica first. GlobalTable cannot be deleted
     // while it has additional replicas — AWS rejects DeleteTable.
+    // ALSO tear down per-replica autoscaling targets (read dim) BEFORE
+    // the replica delete, AND the table-level autoscaling target
+    // (write dim) BEFORE the DeleteTable call. Without these,
+    // `RegisterScalableTarget` + `PutScalingPolicy` survive in AWS's
+    // application-autoscaling control plane indefinitely; a future
+    // create of the same `tableName` (same region) inherits the orphan
+    // target silently. PR #403 code-reviewer caught this as a blocker.
     try {
       const describe = await this.dynamoDBClient.send(
         new DescribeTableCommand({ TableName: physicalId })
@@ -1464,6 +1486,15 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
         const region = replica.RegionName;
         if (!region || region === currentRegion) continue;
         try {
+          // Tear down the cross-region replica's read autoscaling
+          // BEFORE deleting the replica (best-effort).
+          await this.applyAutoScalingDiff(
+            physicalId,
+            'dynamodb:table:ReadCapacityUnits',
+            {} /* oldSettings — placeholder; non-undefined forces teardown */,
+            undefined /* newSettings — undefined triggers Delete+Deregister */,
+            this.getRegionalAutoScalingClient(region)
+          );
           await this.dynamoDBClient.send(
             new UpdateTableCommand({
               TableName: physicalId,
@@ -1480,6 +1511,24 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
           }
         }
       }
+      // Tear down the LOCAL replica's read autoscaling AND the table-
+      // level write autoscaling before `DeleteTable`. Same orphan-leak
+      // concern: surviving scaling targets would inherit on re-create.
+      const localAsClient = await this.getLocalAutoScalingClient();
+      await this.applyAutoScalingDiff(
+        physicalId,
+        'dynamodb:table:ReadCapacityUnits',
+        {},
+        undefined,
+        localAsClient
+      );
+      await this.applyAutoScalingDiff(
+        physicalId,
+        'dynamodb:table:WriteCapacityUnits',
+        {},
+        undefined,
+        localAsClient
+      );
     } catch (describeErr) {
       if (!(describeErr instanceof ResourceNotFoundException)) {
         const cause = describeErr instanceof Error ? describeErr : undefined;

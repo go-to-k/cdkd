@@ -997,6 +997,34 @@ describe('DynamoDBGlobalTableProvider round-trip', () => {
       ]);
     });
 
+    it('tears down autoscaling targets BEFORE DeleteTable (regression PR #403 blocker — orphan leak)', async () => {
+      // Pre-fix: delete() didn't call applyAutoScalingDiff, leaving
+      // RegisterScalableTarget + PutScalingPolicy alive in AWS's
+      // application-autoscaling control plane after destroy. A future
+      // create of the same tableName would inherit the orphan target.
+      mockSend.mockResolvedValueOnce({
+        Table: { TableName: TABLE_NAME, Replicas: [{ RegionName: 'us-east-1' }] },
+      }); // DescribeTable (pre-delete replica scan)
+      // Autoscaling teardown calls fire BEFORE DeleteTable. The default
+      // mockAutoScalingSend in beforeEach resolves to { ScalingPolicies: [] }
+      // / { ScalableTargets: [] } so the helper's DescribeScalingPolicies
+      // + DescribeScalableTargets path treats them as "nothing to do"
+      // when probing for existence — which is fine for this test (we
+      // only need the helper to be CALLED for both Read + Write dims).
+      mockSend.mockResolvedValueOnce({}); // DeleteTable
+      mockSend.mockRejectedValueOnce(newRnf()); // waitForTableGone -> RNF
+
+      await provider.delete('X', TABLE_NAME, RESOURCE_TYPE, undefined, {
+        expectedRegion: 'us-east-1',
+      });
+
+      // The autoscaling client was invoked for the teardown — we don't
+      // care exactly how many times (varies by lookup-first-then-act
+      // vs always-act semantics in the helper) but at least once for
+      // each of Read + Write dims (= at least 2 invocations).
+      expect(mockAutoScalingSend.mock.calls.length).toBeGreaterThanOrEqual(2);
+    });
+
     it('waitForTableGone polls DescribeTable until ResourceNotFoundException (regression: PR #384 / commit c512f24)', async () => {
       mockSend.mockResolvedValueOnce({
         Table: { TableName: TABLE_NAME, Replicas: [{ RegionName: 'us-east-1' }] },
