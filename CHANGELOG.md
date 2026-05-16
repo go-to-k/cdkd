@@ -1,3 +1,10 @@
+## [0.111.2](https://github.com/go-to-k/cdkd/compare/v0.111.1...v0.111.2) (2026-05-16)
+
+
+### Bug Fixes
+
+* **dynamodb-globaltable:** warn on DPE auto-disable when property removed from CDK code ([#418](https://github.com/go-to-k/cdkd/issues/418)) ([8a6f49c](https://github.com/go-to-k/cdkd/commit/8a6f49c9d1b3327744f58d1855dd950a5a6fda64))
+
 ## [0.111.1](https://github.com/go-to-k/cdkd/compare/v0.111.0...v0.111.1) (2026-05-16)
 
 
