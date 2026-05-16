@@ -1,3 +1,10 @@
+# [0.110.0](https://github.com/go-to-k/cdkd/compare/v0.109.1...v0.110.0) (2026-05-16)
+
+
+### Features
+
+* **providers:** drift --revert round-trip audit for RDS DBProxy family + new TG readCurrentState ([#409](https://github.com/go-to-k/cdkd/issues/409)) ([963d2ca](https://github.com/go-to-k/cdkd/commit/963d2ca54c310093190c7d3d5daf7f5da0af156b))
+
 ## [0.109.1](https://github.com/go-to-k/cdkd/compare/v0.109.0...v0.109.1) (2026-05-16)
 
 
