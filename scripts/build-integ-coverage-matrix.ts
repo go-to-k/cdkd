@@ -32,6 +32,37 @@
  *   - .claude/hooks/provider-integ-gate.sh (consumes the json output
  *     to know which integs cover a given resource type).
  *   - Manual invocation when adding a new provider / integ fixture.
+ *
+ * Known limitations (decisions made during PR #404 review — review the
+ * docs/_generated/integ-coverage.json output if any of these become
+ * load-bearing for a particular type):
+ *
+ *   1. `CDK_L2_TO_L1` omits direct `new ec2.Subnet(...)` / `new
+ *      ec2.RouteTable(...)` / `new ec2.Route(...)` etc. constructors
+ *      that some fixtures could in principle use bare. The map covers
+ *      `ec2.Vpc` (which wraps all of them via the L2 expansion) and
+ *      that catches the practical-100% case. If a fixture surfaces
+ *      that uses bare `ec2.Subnet`, either add the entry here or add
+ *      a `// covers: AWS::EC2::Subnet` documentation comment to the
+ *      fixture.
+ *
+ *   2. `scanLiteralTypes` matches any quoted-OR-bare `AWS::Service::Type`
+ *      token anywhere in a fixture file — including in code comments
+ *      like `// TODO: also handle AWS::Foo::Bar later`. This is by
+ *      design ("contributor-asserted coverage" contract): a documentation
+ *      comment claiming a fixture covers a type counts. A false claim
+ *      is a documentation lie, not a hidden orphan; the matrix does
+ *      not verify the claim and never will.
+ *
+ *   3. `ec2.Vpc` in `CDK_L2_TO_L1` unconditionally expands to include
+ *      `AWS::EC2::NatGateway` — but CDK's L2 only creates a NAT GW when
+ *      `natGateways` is omitted / non-zero. A fixture that passes
+ *      `{natGateways: 0}` over-claims NatGateway coverage. The same
+ *      `ec2.Vpc` expansion is widely covered (~19 fixtures), so the
+ *      practical impact is nil; the matrix's NatGateway "covered" count
+ *      is a slight upper bound. If the over-claim becomes load-bearing
+ *      (a real NatGateway regression reaches main because cdkd thought
+ *      it had coverage), tighten the expansion table here.
  */
 
 import { readFileSync, writeFileSync, mkdirSync, readdirSync, statSync, existsSync } from 'node:fs';
