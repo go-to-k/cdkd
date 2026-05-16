@@ -1,3 +1,10 @@
+# [0.108.0](https://github.com/go-to-k/cdkd/compare/v0.107.0...v0.108.0) (2026-05-16)
+
+
+### Features
+
+* **providers:** AWS::RDS::DBProxyEndpoint SDK Provider + CLAUDE.md signature docs fix ([#400](https://github.com/go-to-k/cdkd/issues/400)) ([0cf0fd9](https://github.com/go-to-k/cdkd/commit/0cf0fd9e3468182ad86ba6eb126ce0d7739deb8c))
+
 # [0.107.0](https://github.com/go-to-k/cdkd/compare/v0.106.0...v0.107.0) (2026-05-16)
 
 
