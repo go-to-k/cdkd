@@ -1,3 +1,10 @@
+# [0.111.0](https://github.com/go-to-k/cdkd/compare/v0.110.0...v0.111.0) (2026-05-16)
+
+
+### Features
+
+* **dynamodb-globaltable:** validate multi-region integ + regional client region-assertion tests (Closes [#407](https://github.com/go-to-k/cdkd/issues/407)) ([#410](https://github.com/go-to-k/cdkd/issues/410)) ([2a13b96](https://github.com/go-to-k/cdkd/commit/2a13b964de99e8c2497be0f4be41d611042afadc))
+
 # [0.110.0](https://github.com/go-to-k/cdkd/compare/v0.109.1...v0.110.0) (2026-05-16)
 
 
