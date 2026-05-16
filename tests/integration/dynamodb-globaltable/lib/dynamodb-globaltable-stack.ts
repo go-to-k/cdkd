@@ -24,17 +24,24 @@ import * as ddb from 'aws-cdk-lib/aws-dynamodb';
  * UPDATE testing (post-PR #384 follow-up, Item F): the `CDKD_TEST_UPDATE`
  * env var mutates the TableV2 properties on synth so a second
  * `cdkd deploy` exercises the in-place update path. Supported values:
- *   - `ttl`:  enable TimeToLiveAttribute
- *   - `tags`: add `UpdateTest=true` user tag
+ *   - `ttl`:                 enable TimeToLiveAttribute
+ *   - `tags`:                add `UpdateTest=true` user tag
  *   - `deletion-protection`: enable DeletionProtection
- *   - `billing-provisioned`: flip BillingMode to PROVISIONED (5/5)
+ *   - `billing-provisioned`: flip BillingMode to PROVISIONED (fixed 5/5)
+ *   - `autoscaling`:         PROVISIONED with Capacity.autoscaled on
+ *                            read AND write (closes Issue #402 Item B —
+ *                            exercises the write path's RegisterScalableTarget
+ *                            + PutScalingPolicy wiring end-to-end).
+ *   - `cross-region`:        add a second replica region (eu-west-1).
+ *                            Gated behind `CDKD_INTEG_MULTI_REGION=1` in
+ *                            verify.sh because the wall-clock is 15–25
+ *                            min per round-trip — the default `bash
+ *                            verify.sh` invocation stays under 8 min.
  *
  * The values can be combined comma-separated, e.g.
  * `CDKD_TEST_UPDATE=ttl,tags`. Unknown values are silently ignored so
  * future verify.sh scenarios can add new keys without touching the
- * stack. verify.sh exercises `ttl` and `tags` (cheapest in AWS time
- * and risk); PITR / Kinesis / per-replica scenarios stay at unit-test
- * coverage only.
+ * stack.
  */
 export class DynamoDBGlobalTableStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props: cdk.StackProps) {
@@ -45,6 +52,21 @@ export class DynamoDBGlobalTableStack extends cdk.Stack {
       .map((s) => s.trim())
       .filter((s) => s.length > 0);
 
+    // Billing-mode resolution. Both `billing-provisioned` and
+    // `autoscaling` flip to PROVISIONED; `autoscaling` additionally
+    // wraps the capacity in `Capacity.autoscaled(...)` so cdkd's
+    // RegisterScalableTarget + PutScalingPolicy wiring is exercised.
+    const useAutoScaling = updateMode.includes('autoscaling');
+    const useProvisioned = useAutoScaling || updateMode.includes('billing-provisioned');
+
+    // Replicas:
+    //   - `cross-region`: add a second replica region (eu-west-1) on
+    //     top of the deploy region. The deploy region is implicit
+    //     when `replicas` is unset; when set, every region (incl. the
+    //     deploy region) MUST be listed explicitly.
+    const deployRegion = props.env?.region ?? 'us-east-1';
+    const wantsCrossRegion = updateMode.includes('cross-region');
+
     // The canonical user-reported scenario: TableV2 with no explicit
     // tableName. Pre-PR, cdkd fell through to CC API and AWS auto-
     // generated a random opaque name. Post-PR, cdkd's new SDK Provider
@@ -54,15 +76,30 @@ export class DynamoDBGlobalTableStack extends cdk.Stack {
       sortKey: { name: 'timestamp', type: ddb.AttributeType.STRING },
       // BillingMode is mutable via the in-place update path; default
       // PAY_PER_REQUEST unless the test asked to flip.
-      billing: updateMode.includes('billing-provisioned')
+      billing: useProvisioned
         ? ddb.Billing.provisioned({
-            readCapacity: ddb.Capacity.fixed(5),
-            writeCapacity: ddb.Capacity.fixed(5),
+            readCapacity: useAutoScaling
+              ? ddb.Capacity.autoscaled({
+                  minCapacity: 5,
+                  maxCapacity: 50,
+                  targetUtilizationPercent: 70,
+                })
+              : ddb.Capacity.fixed(5),
+            writeCapacity: useAutoScaling
+              ? ddb.Capacity.autoscaled({
+                  minCapacity: 5,
+                  maxCapacity: 100,
+                  targetUtilizationPercent: 70,
+                })
+              : ddb.Capacity.fixed(5),
           })
         : ddb.Billing.onDemand(),
       removalPolicy: cdk.RemovalPolicy.DESTROY,
       ...(updateMode.includes('ttl') && { timeToLiveAttribute: 'expiresAt' }),
       ...(updateMode.includes('deletion-protection') && { deletionProtection: true }),
+      ...(wantsCrossRegion && {
+        replicas: [{ region: 'eu-west-1' }],
+      }),
     };
 
     const historyTable = new ddb.TableV2(this, 'HistoryTable', tableProps);
@@ -80,6 +117,10 @@ export class DynamoDBGlobalTableStack extends cdk.Stack {
     new cdk.CfnOutput(this, 'TableArn', {
       value: historyTable.tableArn,
       description: 'AWS-side ARN of the deployed GlobalTable',
+    });
+    new cdk.CfnOutput(this, 'DeployRegion', {
+      value: deployRegion,
+      description: 'Deploy (primary) region',
     });
   }
 }
