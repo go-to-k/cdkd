@@ -1,3 +1,10 @@
+## [0.109.1](https://github.com/go-to-k/cdkd/compare/v0.109.0...v0.109.1) (2026-05-16)
+
+
+### Bug Fixes
+
+* **providers:** residual work from PR [#400](https://github.com/go-to-k/cdkd/issues/400) + rds-aurora integ extension for DBProxyEndpoint ([#406](https://github.com/go-to-k/cdkd/issues/406)) ([2f4c2a0](https://github.com/go-to-k/cdkd/commit/2f4c2a06f0f47451ee117d742ae314834b201c27))
+
 # [0.109.0](https://github.com/go-to-k/cdkd/compare/v0.108.0...v0.109.0) (2026-05-16)
 
 
