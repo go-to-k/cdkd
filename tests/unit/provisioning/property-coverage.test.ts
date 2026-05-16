@@ -251,4 +251,27 @@ describe('SDK Provider property coverage', () => {
     }
     expect(problems, problems.join('\n')).toEqual([]);
   });
+
+  // Staleness guard: when AWS later adds a property previously listed in
+  // `bogusTolerated[type][prop]`, the entry silently sits in the JSON unused —
+  // the schema now has the property, so the coverage classifier finds it via
+  // `handled` / `unaccounted` paths, and the `bogusTolerated` rationale is
+  // never consulted again. The rationale becomes a lie and should be removed.
+  // This surfaces those dead rationales explicitly so they get cleaned up.
+  it('no bogus-tolerated entry has become stale (schema now contains the property)', () => {
+    const stale: string[] = [];
+    for (const [type, entries] of Object.entries(bogusTolerance)) {
+      const fixture = loadSchemaFixture(type);
+      if (!fixture) continue; // covered by an earlier test
+      const schemaSet = new Set(fixture.properties);
+      for (const prop of Object.keys(entries)) {
+        if (schemaSet.has(prop)) {
+          stale.push(
+            `bogusTolerated.${type}.${prop} — property is NOW in the CFn schema; remove the tolerance entry`
+          );
+        }
+      }
+    }
+    expect(stale, stale.join('\n')).toEqual([]);
+  });
 });
