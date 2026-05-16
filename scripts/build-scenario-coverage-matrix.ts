@@ -227,6 +227,7 @@ export function parseSidecarContent(raw: string): SidecarResult {
   if (!Array.isArray(scenarios)) {
     return { kind: 'malformed', reason: '"scenarios" must be an array' };
   }
+  const seen = new Set<string>();
   for (let i = 0; i < scenarios.length; i++) {
     const tag = scenarios[i];
     if (typeof tag !== 'string' || tag.trim() === '') {
@@ -235,6 +236,13 @@ export function parseSidecarContent(raw: string): SidecarResult {
         reason: `"scenarios[${i}]" must be a non-empty string`,
       };
     }
+    if (seen.has(tag)) {
+      return {
+        kind: 'malformed',
+        reason: `"scenarios[${i}]" duplicates an earlier entry "${tag}"`,
+      };
+    }
+    seen.add(tag);
   }
   return { kind: 'present', scenarios: scenarios as string[] };
 }
@@ -243,6 +251,9 @@ export function listFixtures(integDir: string = INTEG_DIR): string[] {
   if (!existsSync(integDir)) return [];
   return readdirSync(integDir)
     .filter((name) => {
+      // Ignore hidden directories (e.g. `.scratch/`, IDE folders); the
+      // matrix is scoped to real integ fixtures only.
+      if (name.startsWith('.')) return false;
       const full = join(integDir, name);
       try {
         return statSync(full).isDirectory();
@@ -431,7 +442,12 @@ function main(): void {
     );
   }
   mkdirSync(dirname(OUTPUT_JSON), { recursive: true });
-  writeFileSync(OUTPUT_JSON, JSON.stringify(report, null, 2) + '\n', 'utf8');
+  // Strip `invalidTagSites` from the on-disk JSON: `main()` throws above
+  // on any non-empty value, so the committed snapshot would only ever
+  // carry `invalidTagSites: []` (dead field). The report shape keeps it
+  // for unit tests that exercise the validator surface directly.
+  const { invalidTagSites: _, ...persistable } = report;
+  writeFileSync(OUTPUT_JSON, JSON.stringify(persistable, null, 2) + '\n', 'utf8');
   writeFileSync(OUTPUT_MD, renderMarkdown(report), 'utf8');
   const annotated = report.fixtures.length - report.unannotatedFixtures.length;
   const total = report.fixtures.length;

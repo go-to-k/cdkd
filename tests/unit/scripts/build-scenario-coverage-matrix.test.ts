@@ -84,6 +84,13 @@ describe('parseSidecarContent', () => {
       reason: '"scenarios[0]" must be a non-empty string',
     });
   });
+
+  it('rejects duplicate tag entries within a single sidecar', () => {
+    expect(parseSidecarContent('{"scenarios": ["foo", "foo"]}')).toEqual({
+      kind: 'malformed',
+      reason: '"scenarios[1]" duplicates an earlier entry "foo"',
+    });
+  });
 });
 
 describe('readFixtureSidecar', () => {
@@ -135,6 +142,13 @@ describe('listFixtures', () => {
     mkdirSync(join(tmpRoot, 'a-fixture'));
     writeFileSync(join(tmpRoot, 'not-a-dir.txt'), '');
     expect(listFixtures(tmpRoot)).toEqual(['a-fixture', 'b-fixture']);
+  });
+
+  it('skips hidden directories (`.foo/`, `.scratch/`)', () => {
+    mkdirSync(join(tmpRoot, 'a-fixture'));
+    mkdirSync(join(tmpRoot, '.hidden'));
+    mkdirSync(join(tmpRoot, '.scratch'));
+    expect(listFixtures(tmpRoot)).toEqual(['a-fixture']);
   });
 });
 
