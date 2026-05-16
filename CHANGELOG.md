@@ -1,3 +1,10 @@
+# [0.112.0](https://github.com/go-to-k/cdkd/compare/v0.111.3...v0.112.0) (2026-05-16)
+
+
+### Features
+
+* **scripts:** CLI flag coverage visibility report (Phase 2A of [#392](https://github.com/go-to-k/cdkd/issues/392)) ([#424](https://github.com/go-to-k/cdkd/issues/424)) ([6650217](https://github.com/go-to-k/cdkd/commit/6650217a361ab5affa672defef86b59a34a31403))
+
 ## [0.111.3](https://github.com/go-to-k/cdkd/compare/v0.111.2...v0.111.3) (2026-05-16)
 
 
