@@ -111,6 +111,13 @@
           },
           {
             "type": "command",
+            "command": ".claude/hooks/integ-coverage-matrix-gate.sh",
+            "if": "Bash(git commit*)",
+            "timeout": 15,
+            "statusMessage": "Checking integ-coverage matrix is in sync..."
+          },
+          {
+            "type": "command",
             "command": ".claude/hooks/internal-pr-labels-gate.sh",
             "if": "Bash(git commit*)",
             "timeout": 10,
