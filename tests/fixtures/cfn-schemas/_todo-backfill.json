@@ -44,13 +44,8 @@
     ],
     "AWS::ApiGatewayV2::Api": [
       "ApiKeySelectionExpression",
-      "BasePath",
-      "Body",
-      "BodyS3Location",
       "CredentialsArn",
       "DisableExecuteApiEndpoint",
-      "DisableSchemaValidation",
-      "FailOnWarnings",
       "IpAddressType",
       "RouteKey",
       "RouteSelectionExpression",
