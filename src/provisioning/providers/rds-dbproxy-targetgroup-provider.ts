@@ -3,6 +3,7 @@ import {
   RegisterDBProxyTargetsCommand,
   DeregisterDBProxyTargetsCommand,
   DescribeDBProxyTargetGroupsCommand,
+  DescribeDBProxyTargetsCommand,
   ModifyDBProxyTargetGroupCommand,
   DBProxyNotFoundFault,
   DBProxyTargetGroupNotFoundFault,
@@ -428,6 +429,111 @@ export class RDSDBProxyTargetGroupProvider implements ResourceProvider {
       };
     }
     return null;
+  }
+
+  /**
+   * Read the AWS-current configuration as CFn property shape. Used by
+   * `cdkd drift` for the SDK-provider path (without it the comparator
+   * falls back to CC API, which is broken on this type — Issue #385 the
+   * SDK provider was added to fix in the first place).
+   *
+   * Maps:
+   * - `DescribeDBProxyTargetGroups` → `ConnectionPoolConfigurationInfo`
+   *   (the connection pool config CFn template carries).
+   * - `DescribeDBProxyTargets` → `DBClusterIdentifiers` /
+   *   `DBInstanceIdentifiers` reverse-mapped from the AWS-side target
+   *   list via `Type` discriminator. The full target list also carries
+   *   per-target Endpoint / Port / TargetHealth but those are read-only
+   *   AWS-managed fields, intentionally not surfaced.
+   *
+   * Best-effort: a missing parent DBProxyName (state corruption) or any
+   * AWS API failure surfaces as `undefined` (drift comparator skips the
+   * resource), not a crash.
+   */
+  async readCurrentState(
+    _physicalId: string,
+    _logicalId: string,
+    _resourceType: string,
+    properties: Record<string, unknown>
+  ): Promise<Record<string, unknown> | undefined> {
+    const dbProxyName = properties['DBProxyName'] as string | undefined;
+    const targetGroupName = (properties['TargetGroupName'] as string | undefined) ?? 'default';
+    if (!dbProxyName) {
+      // No way to recover the AWS-side state without the parent name —
+      // happens on imported / hand-edited state that lost DBProxyName.
+      return undefined;
+    }
+
+    const client = this.getClient();
+
+    let connectionPoolConfig: Record<string, unknown> | undefined;
+    try {
+      const tgResp = await client.send(
+        new DescribeDBProxyTargetGroupsCommand({
+          DBProxyName: dbProxyName,
+          TargetGroupName: targetGroupName,
+        })
+      );
+      const tg = tgResp.TargetGroups?.[0];
+      // AWS-side `ConnectionPoolConfig` (the Describe response shape) maps
+      // 1:1 to the CFn `ConnectionPoolConfigurationInfo` field (the input
+      // shape). Surfacing it always (even when AWS returns defaults) lets
+      // a console-side change to MaxConnectionsPercent / etc. show as
+      // drift on the v3 observedProperties baseline.
+      connectionPoolConfig = tg?.ConnectionPoolConfig as Record<string, unknown> | undefined;
+    } catch (error) {
+      if (
+        error instanceof DBProxyNotFoundFault ||
+        error instanceof DBProxyTargetGroupNotFoundFault
+      ) {
+        return undefined;
+      }
+      throw error;
+    }
+
+    const dbClusterIdentifiers: string[] = [];
+    const dbInstanceIdentifiers: string[] = [];
+    try {
+      const targetsResp = await client.send(
+        new DescribeDBProxyTargetsCommand({
+          DBProxyName: dbProxyName,
+          TargetGroupName: targetGroupName,
+        })
+      );
+      for (const target of targetsResp.Targets ?? []) {
+        const id = target.RdsResourceId;
+        if (!id) continue;
+        if (target.Type === 'TRACKED_CLUSTER') {
+          dbClusterIdentifiers.push(id);
+        } else if (target.Type === 'RDS_INSTANCE') {
+          dbInstanceIdentifiers.push(id);
+        }
+        // `RDS_SERVERLESS_ENDPOINT` targets are silently skipped — the
+        // CFn `AWS::RDS::DBProxyTargetGroup` schema has no input slot for
+        // them (only `DBClusterIdentifiers` / `DBInstanceIdentifiers`),
+        // so they can't drift on a cdkd-managed target group.
+      }
+    } catch (error) {
+      if (
+        error instanceof DBProxyNotFoundFault ||
+        error instanceof DBProxyTargetGroupNotFoundFault ||
+        error instanceof DBProxyTargetNotFoundFault
+      ) {
+        return undefined;
+      }
+      throw error;
+    }
+
+    const result: Record<string, unknown> = {
+      DBProxyName: dbProxyName,
+      TargetGroupName: targetGroupName,
+      DBClusterIdentifiers: dbClusterIdentifiers,
+      DBInstanceIdentifiers: dbInstanceIdentifiers,
+    };
+    if (connectionPoolConfig !== undefined) {
+      result['ConnectionPoolConfigurationInfo'] = connectionPoolConfig;
+    }
+    return result;
   }
 
   private wrapError(

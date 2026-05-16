@@ -266,6 +266,54 @@ describe('RDSDBProxyEndpointProvider', () => {
     });
   });
 
+  describe('drift --revert round-trip', () => {
+    it('identical readCurrentState shape on both sides → no SDK call', async () => {
+      const observed = {
+        DBProxyEndpointName: EP_NAME,
+        DBProxyName: 'MyProxy',
+        VpcSubnetIds: ['subnet-aaa', 'subnet-bbb'],
+        VpcSecurityGroupIds: ['sg-aaa'],
+        TargetRole: 'READ_ONLY',
+        Tags: [{ Key: 'env', Value: 'prod' }],
+      };
+      const result = await provider.update('EP', EP_NAME, RESOURCE_TYPE, observed, observed);
+      expect(result.physicalId).toBe(EP_NAME);
+      expect(result.wasReplaced).toBe(false);
+      expect(mockSend).not.toHaveBeenCalled();
+    });
+
+    it('drift on VpcSecurityGroupIds round-trips: ModifyDBProxyEndpoint', async () => {
+      const observed = {
+        DBProxyName: 'MyProxy',
+        VpcSubnetIds: ['subnet-aaa'],
+        VpcSecurityGroupIds: ['sg-aaa'],
+        TargetRole: 'READ_ONLY',
+      };
+      const awsCurrent = { ...observed, VpcSecurityGroupIds: ['sg-hijacked'] };
+      mockSend.mockResolvedValueOnce({});
+      await provider.update('EP', EP_NAME, RESOURCE_TYPE, observed, awsCurrent);
+      expect(mockSend.mock.calls[0]![0].constructor.name).toBe('ModifyDBProxyEndpointCommand');
+      expect(mockSend.mock.calls[0]![0].input.VpcSecurityGroupIds).toEqual(['sg-aaa']);
+    });
+
+    it('drift on Tags round-trips: AddTags with desired tag', async () => {
+      const observed = {
+        DBProxyName: 'MyProxy',
+        VpcSubnetIds: ['subnet-aaa'],
+        VpcSecurityGroupIds: ['sg-aaa'],
+        TargetRole: 'READ_ONLY',
+        Tags: [{ Key: 'env', Value: 'prod' }],
+      };
+      const awsCurrent = { ...observed, Tags: [{ Key: 'env', Value: 'hijacked' }] };
+      mockSend
+        .mockResolvedValueOnce({ DBProxyEndpoints: [{ DBProxyEndpointArn: EP_ARN }] })
+        .mockResolvedValueOnce({});
+      await provider.update('EP', EP_NAME, RESOURCE_TYPE, observed, awsCurrent);
+      expect(mockSend.mock.calls[1]![0].constructor.name).toBe('AddTagsToResourceCommand');
+      expect(mockSend.mock.calls[1]![0].input.Tags).toEqual([{ Key: 'env', Value: 'prod' }]);
+    });
+  });
+
   describe('delete', () => {
     it('issues DeleteDBProxyEndpoint + polls until NotFound', async () => {
       mockSend

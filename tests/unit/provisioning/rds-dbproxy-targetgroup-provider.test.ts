@@ -510,4 +510,132 @@ describe('RDSDBProxyTargetGroupProvider', () => {
       expect(mockSend).not.toHaveBeenCalled();
     });
   });
+
+  describe('readCurrentState', () => {
+    it('reverse-maps DescribeDBProxyTargetGroups + DescribeDBProxyTargets to CFn shape', async () => {
+      mockSend
+        .mockResolvedValueOnce({
+          TargetGroups: [
+            {
+              DBProxyName: 'AuroraProxy',
+              TargetGroupName: 'default',
+              ConnectionPoolConfig: { MaxConnectionsPercent: 80, IdleClientTimeout: 1800 },
+            },
+          ],
+        })
+        .mockResolvedValueOnce({
+          Targets: [
+            { Type: 'TRACKED_CLUSTER', RdsResourceId: 'my-cluster' },
+            { Type: 'RDS_INSTANCE', RdsResourceId: 'my-instance' },
+          ],
+        });
+      const result = await provider.readCurrentState(
+        TARGET_GROUP_ARN,
+        'TG',
+        RESOURCE_TYPE,
+        { DBProxyName: 'AuroraProxy', TargetGroupName: 'default' }
+      );
+      expect(result).toEqual({
+        DBProxyName: 'AuroraProxy',
+        TargetGroupName: 'default',
+        DBClusterIdentifiers: ['my-cluster'],
+        DBInstanceIdentifiers: ['my-instance'],
+        ConnectionPoolConfigurationInfo: { MaxConnectionsPercent: 80, IdleClientTimeout: 1800 },
+      });
+    });
+
+    it('returns undefined when state has no DBProxyName (corrupted state)', async () => {
+      const result = await provider.readCurrentState(TARGET_GROUP_ARN, 'TG', RESOURCE_TYPE, {});
+      expect(result).toBeUndefined();
+      expect(mockSend).not.toHaveBeenCalled();
+    });
+
+    it('returns undefined when AWS reports DBProxyNotFound (parent gone)', async () => {
+      mockSend.mockRejectedValueOnce(
+        new DBProxyNotFoundFault({ message: 'gone', $metadata: {} })
+      );
+      const result = await provider.readCurrentState(
+        TARGET_GROUP_ARN,
+        'TG',
+        RESOURCE_TYPE,
+        { DBProxyName: 'AuroraProxy' }
+      );
+      expect(result).toBeUndefined();
+    });
+
+    it('omits ConnectionPoolConfigurationInfo when AWS does not return it', async () => {
+      mockSend
+        .mockResolvedValueOnce({
+          TargetGroups: [{ DBProxyName: 'AuroraProxy', TargetGroupName: 'default' }],
+        })
+        .mockResolvedValueOnce({ Targets: [] });
+      const result = await provider.readCurrentState(
+        TARGET_GROUP_ARN,
+        'TG',
+        RESOURCE_TYPE,
+        { DBProxyName: 'AuroraProxy' }
+      );
+      expect(result).not.toHaveProperty('ConnectionPoolConfigurationInfo');
+      expect(result?.['DBClusterIdentifiers']).toEqual([]);
+      expect(result?.['DBInstanceIdentifiers']).toEqual([]);
+    });
+  });
+
+  describe('drift --revert round-trip', () => {
+    it('identical observed-shape on both sides → no SDK call', async () => {
+      const observed = {
+        DBProxyName: 'AuroraProxy',
+        TargetGroupName: 'default',
+        DBClusterIdentifiers: ['c1'],
+        DBInstanceIdentifiers: [],
+        ConnectionPoolConfigurationInfo: { MaxConnectionsPercent: 80 },
+      };
+      const result = await provider.update(
+        'TG',
+        TARGET_GROUP_ARN,
+        RESOURCE_TYPE,
+        observed,
+        observed
+      );
+      expect(result.physicalId).toBe(TARGET_GROUP_ARN);
+      expect(result.wasReplaced).toBe(false);
+      expect(mockSend).not.toHaveBeenCalled();
+    });
+
+    it('drift on cluster target round-trips: register desired + deregister AWS-current', async () => {
+      const observed = {
+        DBProxyName: 'AuroraProxy',
+        DBClusterIdentifiers: ['c1'],
+      };
+      const awsCurrent = {
+        DBProxyName: 'AuroraProxy',
+        DBClusterIdentifiers: ['c-hijacked'],
+      };
+      mockSend
+        .mockResolvedValueOnce({}) // Deregister
+        .mockResolvedValueOnce({}); // Register
+      await provider.update('TG', TARGET_GROUP_ARN, RESOURCE_TYPE, observed, awsCurrent);
+      expect(mockSend.mock.calls[0]![0].constructor.name).toBe('DeregisterDBProxyTargetsCommand');
+      expect(mockSend.mock.calls[0]![0].input.DBClusterIdentifiers).toEqual(['c-hijacked']);
+      expect(mockSend.mock.calls[1]![0].constructor.name).toBe('RegisterDBProxyTargetsCommand');
+      expect(mockSend.mock.calls[1]![0].input.DBClusterIdentifiers).toEqual(['c1']);
+    });
+
+    it('drift on ConnectionPoolConfig round-trips: ModifyDBProxyTargetGroup', async () => {
+      const observed = {
+        DBProxyName: 'AuroraProxy',
+        ConnectionPoolConfigurationInfo: { MaxConnectionsPercent: 80 },
+      };
+      const awsCurrent = {
+        DBProxyName: 'AuroraProxy',
+        ConnectionPoolConfigurationInfo: { MaxConnectionsPercent: 50 },
+      };
+      mockSend.mockResolvedValueOnce({});
+      await provider.update('TG', TARGET_GROUP_ARN, RESOURCE_TYPE, observed, awsCurrent);
+      expect(mockSend.mock.calls[0]![0].constructor.name).toBe('ModifyDBProxyTargetGroupCommand');
+      expect(mockSend.mock.calls[0]![0].input.ConnectionPoolConfig).toEqual({
+        MaxConnectionsPercent: 80,
+      });
+    });
+  });
 });

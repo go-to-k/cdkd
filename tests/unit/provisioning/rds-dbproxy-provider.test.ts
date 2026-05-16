@@ -273,6 +273,67 @@ describe('RDSDBProxyProvider', () => {
     });
   });
 
+  describe('drift --revert round-trip', () => {
+    it('identical readCurrentState shape on both sides → no SDK call', async () => {
+      const observed = {
+        DBProxyName: PROXY_NAME,
+        EngineFamily: 'MYSQL',
+        RoleArn: ROLE_ARN,
+        VpcSubnetIds: ['subnet-aaa', 'subnet-bbb'],
+        VpcSecurityGroupIds: ['sg-aaa'],
+        RequireTLS: true,
+        IdleClientTimeout: 1800,
+        DebugLogging: false,
+        Auth: [
+          {
+            Description: undefined,
+            UserName: undefined,
+            AuthScheme: 'SECRETS',
+            SecretArn: 'arn:aws:secretsmanager:us-east-1:123:secret:db',
+            IAMAuth: 'DISABLED',
+            ClientPasswordAuthType: undefined,
+          },
+        ],
+        Tags: [{ Key: 'env', Value: 'prod' }],
+      };
+      const result = await provider.update('Proxy', PROXY_NAME, RESOURCE_TYPE, observed, observed);
+      expect(result.physicalId).toBe(PROXY_NAME);
+      expect(result.wasReplaced).toBe(false);
+      expect(mockSend).not.toHaveBeenCalled();
+    });
+
+    it('drift on RoleArn round-trips: ModifyDBProxy with the desired value', async () => {
+      const observed = {
+        EngineFamily: 'MYSQL',
+        RoleArn: ROLE_ARN,
+        VpcSubnetIds: ['subnet-aaa', 'subnet-bbb'],
+        Auth: [{ AuthScheme: 'SECRETS', SecretArn: 'arn:...' }],
+      };
+      const awsCurrent = { ...observed, RoleArn: 'arn:aws:iam::123456789012:role/Hijacked' };
+      mockSend.mockResolvedValueOnce({ DBProxy: {} });
+      await provider.update('Proxy', PROXY_NAME, RESOURCE_TYPE, observed, awsCurrent);
+      expect(mockSend.mock.calls[0]![0].constructor.name).toBe('ModifyDBProxyCommand');
+      expect(mockSend.mock.calls[0]![0].input.RoleArn).toBe(ROLE_ARN);
+    });
+
+    it('drift on Tags round-trips: AddTags with desired tag', async () => {
+      const observed = {
+        EngineFamily: 'MYSQL',
+        RoleArn: ROLE_ARN,
+        VpcSubnetIds: ['subnet-aaa'],
+        Auth: [{ AuthScheme: 'SECRETS', SecretArn: 'arn:...' }],
+        Tags: [{ Key: 'env', Value: 'prod' }],
+      };
+      const awsCurrent = { ...observed, Tags: [{ Key: 'env', Value: 'hijacked' }] };
+      mockSend
+        .mockResolvedValueOnce({ DBProxies: [{ DBProxyArn: PROXY_ARN }] })
+        .mockResolvedValueOnce({});
+      await provider.update('Proxy', PROXY_NAME, RESOURCE_TYPE, observed, awsCurrent);
+      expect(mockSend.mock.calls[1]![0].constructor.name).toBe('AddTagsToResourceCommand');
+      expect(mockSend.mock.calls[1]![0].input.Tags).toEqual([{ Key: 'env', Value: 'prod' }]);
+    });
+  });
+
   describe('delete', () => {
     it('issues DeleteDBProxy and waits for full removal', async () => {
       mockSend
