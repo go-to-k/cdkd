@@ -27,6 +27,16 @@ The skill itself never spawns reviewers. It reads PR stats, applies the heuristi
 
    Compute `loc = a + d`.
 
+   **Subtract auto-generated LOC** before computing the tier — generated artifacts under `docs/_generated/**` (provider-coverage matrices, integ-coverage matrices, snapshot fixtures, etc.) and lockfiles (`pnpm-lock.yaml`, `package-lock.json`, `yarn.lock`) inflate LOC without adding reviewer surface. Reviewers do not (and cannot meaningfully) audit these files line-by-line; they only verify the SCRIPT that produced them. Compute `loc` from the diff with these paths excluded:
+
+   ```bash
+   excluded=$(gh pr view <N> --json files \
+     -q '[.files[] | select(.path | test("^docs/_generated/|/pnpm-lock\\.yaml$|/package-lock\\.json$|/yarn\\.lock$")) | .additions + .deletions] | add // 0')
+   loc=$(( a + d - excluded ))
+   ```
+
+   Caught in PR #404 (issue #392): 4286 raw LOC → 3-axis tier, but ~2900 LOC was auto-generated `docs/_generated/integ-coverage.json` + `docs/integ-coverage.md`. Substantive surface was ~1100 LOC, which is squarely 1-reviewer tier. Auto-gen exclusion produces the right answer without sacrificing rigor on the substantive code. Note: `fc` is NOT adjusted — a 12-file diff is still cross-cutting even when 2 of the files are generated.
+
 2. **Determine the base tier** from `(loc, fc)` per the heuristic:
 
    | Condition | Base tier |
@@ -217,5 +227,6 @@ These three PRs are the calibration set. Running this skill against them should 
 | #237 | 4515 LOC, 24 files (incl. `src/local/cognito-jwt.ts`, `lambda-authorizer.ts`) | 3-axis (loc >= 1000 AND fc >= 10) | up (security surface) → clamps at 3-axis | **3-axis** |
 | #236 | 269 LOC, 9 files (incl. `src/local/docker-image-builder.ts`, `ecr-puller.ts`) | inline (loc < 300) | up (process-launch surface) → 1-reviewer | **1-reviewer** |
 | #344 | 1488 LOC, 13 files (all `.md` — `docs/plans/*.md` deletes + `CLAUDE.md` / `docs/*.md` / `tests/integration/*/README.md` link-fix) | 3-axis (loc >= 1000 AND fc >= 10) | down (every path is `.md`, matches `**/*.md` in pure-docs bucket) → 1-reviewer | **1-reviewer** |
+| #404 | 4286 raw LOC → ~1100 after subtracting `docs/_generated/integ-coverage.json` (2724 LOC) + `docs/integ-coverage.md` (~170 LOC) auto-gen, 19 files (scripts/, hooks, fixtures, sidecar JSON) | 3-axis (`fc >= 10` still triggers — file count not adjusted for auto-gen) | none (mixed paths exclude pure docs/infra + tests-only bias) | **3-axis** (file count alone, even after LOC adjustment) — but if PR had been split per memory `feedback_split_tooling_from_backfill.md` (tool vs backfill), each half would be 1-reviewer |
 
 If the skill output diverges from these, the heuristic or the trigger lists have drifted — re-read this file and the linked memory entry before trusting the recommendation.

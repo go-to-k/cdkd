@@ -48,7 +48,8 @@ Run each check and report pass/fail:
 3. **CI status**
    - If PR number is not provided as argument, auto-detect via `gh pr view --json number -q .number`
    - If no PR exists for current branch, use the `AskUserQuestion` tool to ask for the PR number
-   - `gh pr checks <PR-number>` - all checks pass
+   - **FIRST: `gh pr view <PR> --json mergeStateStatus,mergeable -q '"mergeable=\(.mergeable) state=\(.mergeStateStatus)"'`** — when this returns `mergeable=CONFLICTING state=DIRTY`, the CI workflow will NEVER fire on the PR no matter how long you wait (empirically observed PR #404 — wasted ~70 min thinking GitHub Actions was broken). Close+reopen, empty commits, and `git push --force-with-lease` of unchanged content all fail to re-trigger. Resolution: `git fetch origin main && git rebase origin/main`, resolve conflicts, `git push --force-with-lease` — CI fires within ~30s of the push. See memory `feedback_pr_conflict_blocks_ci.md` for the full diagnostic checklist.
+   - Only after `mergeStateStatus` is `CLEAN` / `UNSTABLE` / `BLOCKED` / `BEHIND`: `gh pr checks <PR-number>` - all checks pass
    - If checks are pending, wait and recheck
 
 4. **Working tree**
