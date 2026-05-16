@@ -1,9 +1,13 @@
-import { describe, it, expect } from 'vite-plus/test';
+import { describe, it, expect, beforeEach, afterEach } from 'vite-plus/test';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 import {
   parseFlagSpec,
   parseOptionSpecsFromSource,
   parseDeclaredFlags,
   scanFlagsInShellScript,
+  listFixtures,
 } from '../../../scripts/build-cli-flag-coverage-matrix.js';
 
 describe('parseFlagSpec', () => {
@@ -158,5 +162,33 @@ describe('scanFlagsInShellScript', () => {
     const result = scanFlagsInShellScript(sh);
     expect(result.size).toBe(1);
     expect(result.has('--stack')).toBe(true);
+  });
+});
+
+describe('listFixtures', () => {
+  let tmpRoot: string;
+  beforeEach(() => {
+    tmpRoot = mkdtempSync(join(tmpdir(), 'cli-flag-cov-list-'));
+  });
+  afterEach(() => {
+    rmSync(tmpRoot, { recursive: true, force: true });
+  });
+
+  it('returns an empty list when the directory does not exist', () => {
+    expect(listFixtures(join(tmpRoot, 'nope'))).toEqual([]);
+  });
+
+  it('lists immediate-child directories only, sorted', () => {
+    mkdirSync(join(tmpRoot, 'b-fixture'));
+    mkdirSync(join(tmpRoot, 'a-fixture'));
+    writeFileSync(join(tmpRoot, 'not-a-dir.txt'), '');
+    expect(listFixtures(tmpRoot)).toEqual(['a-fixture', 'b-fixture']);
+  });
+
+  it('skips hidden directories (`.foo/`, `.scratch/`)', () => {
+    mkdirSync(join(tmpRoot, 'a-fixture'));
+    mkdirSync(join(tmpRoot, '.hidden'));
+    mkdirSync(join(tmpRoot, '.scratch'));
+    expect(listFixtures(tmpRoot)).toEqual(['a-fixture']);
   });
 });
