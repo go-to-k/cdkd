@@ -29,6 +29,7 @@ import {
 } from '@aws-sdk/client-dynamodb';
 import {
   ApplicationAutoScalingClient,
+  DescribeScalableTargetsCommand,
   DescribeScalingPoliciesCommand,
 } from '@aws-sdk/client-application-auto-scaling';
 import { getLogger } from '../../utils/logger.js';
@@ -106,6 +107,18 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
    */
   private regionalClientCache = new Map<string, DynamoDBClient>();
   /**
+   * Caches per-region `ApplicationAutoScalingClient` instances for
+   * per-replica `ReadCapacityAutoScalingSettings` reverse-mapping in
+   * `readCurrentState`. Same lifetime / shape as `regionalClientCache`
+   * — one per region for the duration of the provider instance.
+   *
+   * Issue #395: per-replica read capacity autoscaling lives in the
+   * replica's region (each replica has its own scaling target +
+   * policy registered against `application-autoscaling` in that
+   * region), so we cannot reuse the local-region client.
+   */
+  private regionalAutoScalingClientCache = new Map<string, ApplicationAutoScalingClient>();
+  /**
    * Caches `getAttribute(physicalId, attribute)` results for the lifetime
    * of this provider instance (one deploy run). Safe under the current
    * `update()` contract because `update()` cannot mid-deploy mutate
@@ -169,6 +182,25 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
     if (cached) return cached;
     const client = new DynamoDBClient({ region });
     this.regionalClientCache.set(region, client);
+    return client;
+  }
+
+  /**
+   * Return an `ApplicationAutoScalingClient` pinned to the given region,
+   * caching per region for the lifetime of this provider instance. Mirrors
+   * `getRegionalClient` but for the application-autoscaling service.
+   *
+   * Used by `readAutoScalingSettings` (Issue #395) to recover per-replica
+   * `ReadCapacityAutoScalingSettings` shapes — each cross-region replica's
+   * scaling target + policy are registered with the autoscaling control
+   * plane in the replica's region, so cross-region drift reads need a
+   * region-scoped client.
+   */
+  private getRegionalAutoScalingClient(region: string): ApplicationAutoScalingClient {
+    const cached = this.regionalAutoScalingClientCache.get(region);
+    if (cached) return cached;
+    const client = new ApplicationAutoScalingClient({ region });
+    this.regionalAutoScalingClientCache.set(region, client);
     return client;
   }
 
@@ -1242,13 +1274,17 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
    *  - StreamSpecification / SSESpecification follow the existing
    *    DynamoDB::Table provider's Class 1 guard: only surfaced when AWS
    *    reports the feature actually enabled.
-   *  - `ProvisionedThroughput`-bearing fields are declared in
-   *    `getDriftUnknownPaths` and intentionally not emitted in v1 — the
-   *    reverse-mapping from AWS's `ProvisionedThroughput` shape into
-   *    CFn's `WriteProvisionedThroughputSettings` /
-   *    `ReadProvisionedThroughputSettings` wrappers (which carry
-   *    `WriteCapacityAutoScalingSettings` etc.) needs more work to round
-   *    -trip cleanly.
+   *  - `WriteProvisionedThroughputSettings` reverse-maps both shapes:
+   *    flat `{WriteCapacityUnits}` (no autoscaling) and full
+   *    `{WriteCapacityAutoScalingSettings}` (Issue #395; recovered from
+   *    application-autoscaling's `DescribeScalableTargets` +
+   *    `DescribeScalingPolicies` for the
+   *    `dynamodb:table:WriteCapacityUnits` dimension).
+   *  - Per-replica `ReadProvisionedThroughputSettings` reverse-maps the
+   *    `{ReadCapacityAutoScalingSettings}` shape only — there is no
+   *    per-replica flat read capacity in `DescribeTable`'s response
+   *    (the local `ProvisionedThroughput` block is table-level, not
+   *    replica-level), so non-autoscaled replicas omit the key.
    *
    * Per-replica sub-specifications (`ContributorInsightsSpecification` /
    * `PointInTimeRecoverySpecification` / `KinesisStreamSpecification`)
@@ -1382,6 +1418,37 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
           } else {
             entry['Tags'] = [];
           }
+
+          // Per-replica ReadProvisionedThroughputSettings (Issue #395).
+          // Type-discriminator-gated: only meaningful on PROVISIONED
+          // tables. Probes application-autoscaling in the REPLICA'S
+          // region — each replica registers its own scaling target +
+          // policy in its own region, so the local-region client can
+          // only see the local replica's settings.
+          //
+          // No flat `{ReadCapacityUnits: <n>}` fallback is emitted here:
+          // `DescribeTable` returns ONE `ProvisionedThroughput` block for
+          // the table, not one per replica, so cdkd cannot synthesize
+          // per-replica flat read capacity from the local read. When
+          // autoscaling owns the replica's read dimension the full
+          // settings shape is surfaced; otherwise the key is omitted
+          // entirely (drift will not fire on missing key, matching the
+          // pre-#395 behavior for non-autoscaled replicas).
+          if (billingMode === 'PROVISIONED') {
+            const replicaAutoScalingClient = isLocal
+              ? undefined
+              : this.getRegionalAutoScalingClient(regionLabel);
+            const readAutoScaling = await this.readAutoScalingSettings(
+              tableNameForSubs,
+              'dynamodb:table:ReadCapacityUnits',
+              replicaAutoScalingClient
+            );
+            if (readAutoScaling) {
+              entry['ReadProvisionedThroughputSettings'] = {
+                ReadCapacityAutoScalingSettings: readAutoScaling,
+              };
+            }
+          }
           return entry;
         })
       );
@@ -1399,35 +1466,41 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
         result['WriteOnDemandThroughputSettings'] = {};
       }
 
-      // WriteProvisionedThroughputSettings: flat-WriteCapacityUnits subset
-      // only — when application-autoscaling has NO policy on the
-      // WriteCapacityUnits dimension AND BillingMode is PROVISIONED.
-      // Auto-scaling-active cases stay omitted (full reverse-mapping is
-      // out of scope; the field stays in `getDriftUnknownPaths` deny
-      // list at the subtree level for that case via the placeholder).
+      // WriteProvisionedThroughputSettings — type-discriminator-gated on
+      // `BillingMode === 'PROVISIONED'` (memory rule
+      // `feedback_always_emit_check_type_discriminator.md`). Within the
+      // PROVISIONED branch there is a SECOND discriminator: whether
+      // application-autoscaling owns the write dimension. The two valid
+      // shapes are mutually exclusive:
+      //   - flat:        { WriteCapacityUnits: <n> }              (no autoscaling)
+      //   - autoscaled:  { WriteCapacityAutoScalingSettings: ... } (Issue #395)
+      // PAY_PER_REQUEST tables emit `{}` so a template that adds the key
+      // after a BillingMode flip registers as drift, without committing
+      // to either sub-shape on an on-demand table.
       if (billingMode === 'PROVISIONED') {
-        const writeCapacity = table.ProvisionedThroughput?.WriteCapacityUnits;
-        if (writeCapacity !== undefined) {
-          const hasAutoScaling = await this.hasWriteAutoScalingPolicy(tableNameForSubs);
-          if (!hasAutoScaling) {
+        const autoScaling = await this.readAutoScalingSettings(
+          tableNameForSubs,
+          'dynamodb:table:WriteCapacityUnits'
+        );
+        if (autoScaling) {
+          result['WriteProvisionedThroughputSettings'] = {
+            WriteCapacityAutoScalingSettings: autoScaling,
+          };
+        } else {
+          const writeCapacity = table.ProvisionedThroughput?.WriteCapacityUnits;
+          if (writeCapacity !== undefined) {
             result['WriteProvisionedThroughputSettings'] = {
               WriteCapacityUnits: writeCapacity,
             };
           } else {
-            // Auto-scaling owns the capacity — omit the flat surface so
-            // drift doesn't fire on every scale event. A follow-up PR
-            // will reverse-map the full `WriteCapacityAutoScalingSettings`
-            // shape; until then this stays a known-unknown placeholder.
             result['WriteProvisionedThroughputSettings'] = {};
           }
-        } else {
-          result['WriteProvisionedThroughputSettings'] = {};
         }
       } else {
         // PAY_PER_REQUEST: type-discriminator-gated empty placeholder so a
         // template that adds `WriteProvisionedThroughputSettings` later
-        // (after a BillingMode flip) registers as drift; the flat-value
-        // is intentionally absent on on-demand tables.
+        // (after a BillingMode flip) registers as drift; neither sub-shape
+        // is valid on on-demand tables.
         result['WriteProvisionedThroughputSettings'] = {};
       }
 
@@ -1561,36 +1634,121 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
   }
 
   /**
-   * Detect whether application-autoscaling has a scaling policy on this
-   * table's WriteCapacityUnits dimension. Used to decide whether the
-   * `WriteProvisionedThroughputSettings.WriteCapacityUnits` flat-value
-   * surface in `readCurrentState` is safe to emit (auto-scaling
-   * dynamically mutates capacity, so a flat snapshot would fire false
-   * drift on every scale event — when an autoscaling policy is in play
-   * we omit the flat surface so a follow-up PR can reverse-map the
-   * full `WriteCapacityAutoScalingSettings` shape).
+   * Reverse-map application-autoscaling state for the given DynamoDB table
+   * dimension into the CFn `*CapacityAutoScalingSettings` shape (Issue
+   * #395). Used for BOTH the table-level write dimension
+   * (`dynamodb:table:WriteCapacityUnits`) and the per-replica read
+   * dimension (`dynamodb:table:ReadCapacityUnits`); the CFn shape is
+   * symmetric.
    *
-   * Best-effort: errors return `false` (no autoscaling detected) so a
-   * permissions gap on `application-autoscaling:DescribeScalingPolicies`
-   * does not abort drift reads. Logged at debug.
+   * Returns shape (CFn-canonical PascalCase keys, verified via `cdk synth`
+   * on a real `TableV2` with `Capacity.autoscaled(...)` on 2026-05-16 —
+   * see PR notes for the probe transcript):
+   *
+   * ```
+   * {
+   *   MinCapacity: number;
+   *   MaxCapacity: number;
+   *   TargetTrackingScalingPolicyConfiguration: {
+   *     TargetValue: number;
+   *     DisableScaleIn?: boolean;
+   *     ScaleInCooldown?: number;
+   *     ScaleOutCooldown?: number;
+   *   };
+   * }
+   * ```
+   *
+   * `SeedCapacity` is intentionally NOT round-tripped — it is a CFn
+   * create-only field with no corresponding application-autoscaling
+   * surface (AWS does not retain the initial seed value once the
+   * scaling target is registered).
+   *
+   * Resolution order:
+   *  1. `DescribeScalableTargets` → recover `MinCapacity` / `MaxCapacity`
+   *     for the matching `ScalableDimension`. Returns `null` when no
+   *     target is registered (= no autoscaling in play for this
+   *     dimension — caller falls back to the flat capacity surface).
+   *  2. `DescribeScalingPolicies` → find the `TargetTrackingScaling`
+   *     policy (filter out `StepScaling` / `PredictiveScaling` — CFn's
+   *     shape only carries the target-tracking variant). Returns `null`
+   *     when no `TargetTrackingScaling` policy is present (a scaling
+   *     target without a target-tracking policy is not cdkd-managed
+   *     drift territory; surface the flat capacity instead).
+   *
+   * Best-effort: any error (permissions gap, throttle, network) returns
+   * `null` and the caller falls back to the flat-capacity branch. Logged
+   * at debug so a real permissions misconfiguration is still visible
+   * under `--verbose`.
+   *
+   * @param tableName DynamoDB table name (the `physicalId`).
+   * @param scalableDimension `'dynamodb:table:WriteCapacityUnits'` or
+   *   `'dynamodb:table:ReadCapacityUnits'`.
+   * @param client Pre-built region-scoped autoscaling client. Defaults to
+   *   a fresh client in the local region — pass an explicit client when
+   *   reading from a cross-region replica.
    */
-  private async hasWriteAutoScalingPolicy(tableName: string): Promise<boolean> {
+  private async readAutoScalingSettings(
+    tableName: string,
+    scalableDimension: 'dynamodb:table:WriteCapacityUnits' | 'dynamodb:table:ReadCapacityUnits',
+    client?: ApplicationAutoScalingClient
+  ): Promise<Record<string, unknown> | null> {
     try {
-      const region = (await this.dynamoDBClient.config.region()) ?? '';
-      const client = new ApplicationAutoScalingClient({ region });
-      const resp = await client.send(
+      const asClient =
+        client ??
+        new ApplicationAutoScalingClient({
+          region: (await this.dynamoDBClient.config.region()) ?? '',
+        });
+
+      // 1. Probe ScalableTargets for Min/Max.
+      const targetsResp = await asClient.send(
+        new DescribeScalableTargetsCommand({
+          ServiceNamespace: 'dynamodb',
+          ResourceIds: [`table/${tableName}`],
+          ScalableDimension: scalableDimension,
+        })
+      );
+      const targets = targetsResp.ScalableTargets ?? [];
+      if (targets.length === 0) return null;
+      const target = targets[0]!;
+      if (target.MinCapacity === undefined || target.MaxCapacity === undefined) {
+        return null;
+      }
+
+      // 2. Probe ScalingPolicies for the TargetTrackingScaling policy.
+      const policiesResp = await asClient.send(
         new DescribeScalingPoliciesCommand({
           ServiceNamespace: 'dynamodb',
           ResourceId: `table/${tableName}`,
-          ScalableDimension: 'dynamodb:table:WriteCapacityUnits',
+          ScalableDimension: scalableDimension,
         })
       );
-      return (resp.ScalingPolicies ?? []).length > 0;
+      const policies = policiesResp.ScalingPolicies ?? [];
+      const targetTracking = policies.find((p) => p.PolicyType === 'TargetTrackingScaling');
+      if (!targetTracking) return null;
+      const cfg = targetTracking.TargetTrackingScalingPolicyConfiguration;
+      if (!cfg || cfg.TargetValue === undefined) return null;
+
+      const tttConfig: Record<string, unknown> = { TargetValue: cfg.TargetValue };
+      if (cfg.DisableScaleIn !== undefined) {
+        tttConfig['DisableScaleIn'] = cfg.DisableScaleIn;
+      }
+      if (cfg.ScaleInCooldown !== undefined) {
+        tttConfig['ScaleInCooldown'] = cfg.ScaleInCooldown;
+      }
+      if (cfg.ScaleOutCooldown !== undefined) {
+        tttConfig['ScaleOutCooldown'] = cfg.ScaleOutCooldown;
+      }
+
+      return {
+        MinCapacity: target.MinCapacity,
+        MaxCapacity: target.MaxCapacity,
+        TargetTrackingScalingPolicyConfiguration: tttConfig,
+      };
     } catch (err) {
       this.logger.debug(
-        `Could not query application-autoscaling for ${tableName}: ${err instanceof Error ? err.message : String(err)}`
+        `Could not read application-autoscaling settings for ${tableName} (${scalableDimension}): ${err instanceof Error ? err.message : String(err)}`
       );
-      return false;
+      return null;
     }
   }
 
@@ -1599,13 +1757,17 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
    * reverse-map. The drift comparator skips these so a templated value
    * doesn't fire guaranteed false drift on every clean run.
    *
-   * Issue #389 emptied this list:
-   *  - `WriteProvisionedThroughputSettings` (flat-WriteCapacityUnits
-   *    subset) is now reverse-mapped from `Table.ProvisionedThroughput`
-   *    when BillingMode is PROVISIONED AND application-autoscaling has
-   *    no policy on the WriteCapacityUnits dimension. Auto-scaling
-   *    cases emit an empty `{}` placeholder so the comparator does NOT
-   *    fire false drift on the literal `WriteCapacityUnits` subtree.
+   * Issue #389 + #395 emptied this list:
+   *  - `WriteProvisionedThroughputSettings` reverse-maps both the flat
+   *    `{WriteCapacityUnits}` shape (no autoscaling) AND the full
+   *    `{WriteCapacityAutoScalingSettings}` shape (autoscaling-managed;
+   *    recovered from `DescribeScalableTargets` +
+   *    `DescribeScalingPolicies`). PAY_PER_REQUEST tables emit `{}`.
+   *  - Per-replica `ReadProvisionedThroughputSettings.ReadCapacityAutoScalingSettings`
+   *    reverse-maps from a region-scoped application-autoscaling client
+   *    for the `dynamodb:table:ReadCapacityUnits` dimension. Non-
+   *    autoscaled replicas omit the key (no per-replica flat read
+   *    capacity available in `DescribeTable`).
    *  - `WriteOnDemandThroughputSettings` is reverse-mapped from
    *    `Table.OnDemandThroughput.MaxWriteRequestUnits`. Always-emit
    *    `{}` placeholder when AWS reports no override.
