@@ -85,13 +85,20 @@ export class DynamoDBGlobalTableStack extends cdk.Stack {
                   targetUtilizationPercent: 70,
                 })
               : ddb.Capacity.fixed(5),
-            writeCapacity: useAutoScaling
-              ? ddb.Capacity.autoscaled({
-                  minCapacity: 5,
-                  maxCapacity: 100,
-                  targetUtilizationPercent: 70,
-                })
-              : ddb.Capacity.fixed(5),
+            // CDK 2.244+ disallows `Capacity.fixed()` for `writeCapacity`
+            // on `TableV2` (the construct synthesizes
+            // `AWS::DynamoDB::GlobalTable`, where write capacity must
+            // be auto-scaled — Aurora-style replicas do not support a
+            // fixed write throughput). Always use autoscaled write
+            // capacity; the `useAutoScaling=false` integ scenario
+            // still differentiates by using FIXED read + autoscaled
+            // write (matches what a typical TableV2 user gets when
+            // asking for PROVISIONED).
+            writeCapacity: ddb.Capacity.autoscaled({
+              minCapacity: 5,
+              maxCapacity: 100,
+              targetUtilizationPercent: 70,
+            }),
           })
         : ddb.Billing.onDemand(),
       removalPolicy: cdk.RemovalPolicy.DESTROY,

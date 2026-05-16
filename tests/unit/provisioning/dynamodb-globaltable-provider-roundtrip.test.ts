@@ -22,10 +22,24 @@ import {
   DeregisterScalableTargetCommand,
 } from '@aws-sdk/client-application-auto-scaling';
 
-const { mockSend, mockAutoScalingSend, regionalClientSpy, warnSpy } = vi.hoisted(() => ({
+const {
+  mockSend,
+  mockAutoScalingSend,
+  regionalClientSpy,
+  regionalAutoScalingClientSpy,
+  warnSpy,
+} = vi.hoisted(() => ({
   mockSend: vi.fn(),
   mockAutoScalingSend: vi.fn(),
   regionalClientSpy: vi.fn(),
+  // Captures the `region` arg passed to every
+  // `new ApplicationAutoScalingClient({region})` instantiation.
+  // PR #403 review minor #2: cross-region tests must verify the
+  // per-replica autoscaling SDK calls were routed through the
+  // regional client (not the local-region client) — otherwise a
+  // regression could silently create scalable targets in the wrong
+  // region.
+  regionalAutoScalingClientSpy: vi.fn(),
   warnSpy: vi.fn(),
 }));
 
@@ -67,9 +81,12 @@ vi.mock('@aws-sdk/client-application-auto-scaling', async () => {
   >('@aws-sdk/client-application-auto-scaling');
   return {
     ...actual,
-    ApplicationAutoScalingClient: vi.fn().mockImplementation(() => ({
-      send: mockAutoScalingSend,
-    })),
+    ApplicationAutoScalingClient: vi
+      .fn()
+      .mockImplementation((cfg: { region?: string } | undefined) => {
+        regionalAutoScalingClientSpy(cfg?.region);
+        return { send: mockAutoScalingSend };
+      }),
   };
 });
 
@@ -117,6 +134,7 @@ describe('DynamoDBGlobalTableProvider round-trip', () => {
     mockSend.mockReset();
     mockAutoScalingSend.mockReset();
     regionalClientSpy.mockReset();
+    regionalAutoScalingClientSpy.mockReset();
     warnSpy.mockReset();
     // Default: no application-autoscaling target / policy attached.
     // `readAutoScalingSettings` calls DescribeScalableTargets first and
@@ -2394,6 +2412,10 @@ describe('DynamoDBGlobalTableProvider round-trip', () => {
       expect(cfg?.['PredefinedMetricSpecification']).toEqual({
         PredefinedMetricType: 'DynamoDBReadCapacityUtilization',
       });
+      // PR #403 review minor #2: the per-replica autoscaling SDK calls
+      // must be routed through the regional client for the new replica's
+      // region.
+      expect(regionalAutoScalingClientSpy).toHaveBeenCalledWith('eu-west-1');
     });
 
     it('issues per-replica read autoscaling diff on modified cross-region replica via the regional autoscaling client', async () => {
@@ -2463,6 +2485,79 @@ describe('DynamoDBGlobalTableProvider round-trip', () => {
       expect(regInput.ScalableDimension).toBe('dynamodb:table:ReadCapacityUnits');
       expect(regInput.MinCapacity).toBe(10);
       expect(regInput.MaxCapacity).toBe(200);
+      // PR #403 review minor #2: verify the SDK calls were routed
+      // through the regional client constructed for eu-west-1, not
+      // the local-region client. A regression that accidentally
+      // used `this.localAutoScalingClient` would silently create the
+      // scalable target in us-east-1 (the deploy region) — AWS would
+      // accept it (the target resource doesn't carry the replica
+      // region in its ResourceId, just `table/<name>`), but the
+      // policy + target would live in the wrong region's autoscaling
+      // control plane.
+      expect(regionalAutoScalingClientSpy).toHaveBeenCalledWith('eu-west-1');
+    });
+
+    it('tears down per-replica read autoscaling via the regional client when a cross-region replica is removed (Issue #407)', async () => {
+      // Setup: previous deploy had eu-west-1 replica with read
+      // autoscaling; new template drops the replica. cdkd must
+      // DeleteScalingPolicy + DeregisterScalableTarget on the regional
+      // autoscaling client BEFORE issuing `UpdateTable: ReplicaUpdates`
+      // (Delete) — same orphan-leak concern as the delete() path.
+      mockSend.mockResolvedValueOnce({ Table: { TableStatus: 'ACTIVE' } }); // wait
+      mockSend.mockResolvedValueOnce({ Table: { TableArn: TABLE_ARN } }); // DescribeTable for ARN
+      mockSend.mockResolvedValueOnce({}); // UpdateTable (replica Delete)
+      mockSend.mockResolvedValueOnce({
+        Table: { Replicas: [{ RegionName: 'us-east-1', ReplicaStatus: 'ACTIVE' }] },
+      }); // waitForReplicaGone
+      mockSend.mockResolvedValueOnce({ Table: { TableArn: TABLE_ARN } }); // final describe
+
+      mockAutoScalingSend.mockReset();
+      mockAutoScalingSend.mockResolvedValueOnce({}); // DeleteScalingPolicy
+      mockAutoScalingSend.mockResolvedValueOnce({}); // DeregisterScalableTarget
+
+      await provider.update(
+        'X',
+        TABLE_NAME,
+        RESOURCE_TYPE,
+        {
+          BillingMode: 'PROVISIONED',
+          WriteProvisionedThroughputSettings: { WriteCapacityUnits: 5 },
+          Replicas: [{ Region: 'us-east-1' }],
+        },
+        {
+          BillingMode: 'PROVISIONED',
+          WriteProvisionedThroughputSettings: { WriteCapacityUnits: 5 },
+          Replicas: [
+            { Region: 'us-east-1' },
+            {
+              Region: 'eu-west-1',
+              ReadProvisionedThroughputSettings: {
+                ReadCapacityAutoScalingSettings: {
+                  MinCapacity: 5,
+                  MaxCapacity: 50,
+                  TargetTrackingScalingPolicyConfiguration: { TargetValue: 70 },
+                },
+              },
+            },
+          ],
+        }
+      );
+
+      const asCalls = mockAutoScalingSend.mock.calls.map((c) => c[0]);
+      expect(asCalls.length).toBe(2);
+      expect(asCalls[0]).toBeInstanceOf(DeleteScalingPolicyCommand);
+      expect(asCalls[1]).toBeInstanceOf(DeregisterScalableTargetCommand);
+      const delInput = (asCalls[0] as DeleteScalingPolicyCommand).input;
+      expect(delInput.PolicyName).toBe(
+        `DynamoDBReadCapacityUtilization:table/${TABLE_NAME}`
+      );
+      expect(delInput.ScalableDimension).toBe('dynamodb:table:ReadCapacityUnits');
+      // PR #403 review minor #2: the teardown SDK calls must be routed
+      // through the regional autoscaling client constructed for
+      // eu-west-1, not the local-region client. Otherwise cdkd would
+      // DeleteScalingPolicy against the WRONG region's control plane
+      // and the eu-west-1 target would silently survive as an orphan.
+      expect(regionalAutoScalingClientSpy).toHaveBeenCalledWith('eu-west-1');
     });
 
     it('best-effort: RegisterScalableTarget failure logs WARN and does NOT abort the update', async () => {
