@@ -216,6 +216,54 @@ describe('RDSDBProxyEndpointProvider', () => {
       expect(mockSend.mock.calls[2]![0].constructor.name).toBe('AddTagsToResourceCommand');
       expect(mockSend.mock.calls[2]![0].input.Tags).toEqual([{ Key: 'new', Value: 'v' }]);
     });
+
+    // PR #400 review M2: tag-diff edge case tests.
+    it('Tags diff: value change with same key issues Add (not Remove)', async () => {
+      mockSend
+        .mockResolvedValueOnce({ DBProxyEndpoints: [{ DBProxyEndpointArn: EP_ARN }] })
+        .mockResolvedValueOnce({}); // AddTags only
+      await provider.update(
+        'EP',
+        EP_NAME,
+        RESOURCE_TYPE,
+        { Tags: [{ Key: 'env', Value: 'prod' }] },
+        { Tags: [{ Key: 'env', Value: 'dev' }] }
+      );
+      expect(mockSend.mock.calls[1]![0].constructor.name).toBe('AddTagsToResourceCommand');
+      expect(mockSend.mock.calls[1]![0].input.Tags).toEqual([{ Key: 'env', Value: 'prod' }]);
+    });
+
+    it('Tags diff: asymmetric sizes (old=1, new=2) issues Add only', async () => {
+      mockSend
+        .mockResolvedValueOnce({ DBProxyEndpoints: [{ DBProxyEndpointArn: EP_ARN }] })
+        .mockResolvedValueOnce({});
+      await provider.update(
+        'EP',
+        EP_NAME,
+        RESOURCE_TYPE,
+        {
+          Tags: [
+            { Key: 'a', Value: '1' },
+            { Key: 'b', Value: '2' },
+          ],
+        },
+        { Tags: [{ Key: 'a', Value: '1' }] }
+      );
+      expect(mockSend.mock.calls[1]![0].constructor.name).toBe('AddTagsToResourceCommand');
+      expect(mockSend.mock.calls[1]![0].input.Tags).toEqual([{ Key: 'b', Value: '2' }]);
+    });
+
+    it('Tags diff: undefined-to-[] is no-op (both treated as empty)', async () => {
+      await provider.update(
+        'EP',
+        EP_NAME,
+        RESOURCE_TYPE,
+        { Tags: [] },
+        { Tags: undefined }
+      );
+      // Tag diff short-circuit fires: no Describe, no Modify.
+      expect(mockSend).not.toHaveBeenCalled();
+    });
   });
 
   describe('delete', () => {

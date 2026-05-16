@@ -144,20 +144,18 @@ describe('RDSDBProxyProvider', () => {
   });
 
   describe('update', () => {
-    it('is a no-op when nothing changed', async () => {
+    it('is a no-op when nothing changed (tag-diff short-circuits Describe)', async () => {
       const props = {
         Auth: [{ AuthScheme: 'SECRETS', SecretArn: 'arn:aws:secretsmanager:us-east-1:123:secret:db' }],
         RoleArn: ROLE_ARN,
         Tags: [{ Key: 'k', Value: 'v' }],
       };
-      mockSend.mockResolvedValueOnce({
-        DBProxies: [{ DBProxyArn: PROXY_ARN }],
-      }); // DescribeDBProxies for tag-arn lookup
       const result = await provider.update('Proxy', PROXY_NAME, RESOURCE_TYPE, props, props);
       expect(result.physicalId).toBe(PROXY_NAME);
       expect(result.wasReplaced).toBe(false);
-      // 1 Describe for tag-arn lookup, no Modify, no Add/Remove tags.
-      expect(mockSend).toHaveBeenCalledTimes(1);
+      // PR #400 review M1 fix: tag-map equality short-circuit means
+      // no Describe is needed for the ARN cache.
+      expect(mockSend).not.toHaveBeenCalled();
     });
 
     it('rejects when EngineFamily differs (immutable)', async () => {
@@ -245,6 +243,33 @@ describe('RDSDBProxyProvider', () => {
       expect(mockSend.mock.calls[1]![0].input.TagKeys).toEqual(['removed']);
       expect(mockSend.mock.calls[2]![0].constructor.name).toBe('AddTagsToResourceCommand');
       expect(mockSend.mock.calls[2]![0].input.Tags).toEqual([{ Key: 'new', Value: 'v' }]);
+    });
+
+    // PR #400 review M2: tag-diff edge case tests.
+    it('Tags diff: value change with same key issues Add only', async () => {
+      mockSend
+        .mockResolvedValueOnce({ DBProxies: [{ DBProxyArn: PROXY_ARN }] })
+        .mockResolvedValueOnce({});
+      await provider.update(
+        'Proxy',
+        PROXY_NAME,
+        RESOURCE_TYPE,
+        { Tags: [{ Key: 'env', Value: 'prod' }] },
+        { Tags: [{ Key: 'env', Value: 'dev' }] }
+      );
+      expect(mockSend.mock.calls[1]![0].constructor.name).toBe('AddTagsToResourceCommand');
+      expect(mockSend.mock.calls[1]![0].input.Tags).toEqual([{ Key: 'env', Value: 'prod' }]);
+    });
+
+    it('Tags diff: undefined-to-[] is no-op short-circuits Describe', async () => {
+      await provider.update(
+        'Proxy',
+        PROXY_NAME,
+        RESOURCE_TYPE,
+        { Tags: [] },
+        { Tags: undefined }
+      );
+      expect(mockSend).not.toHaveBeenCalled();
     });
   });
 

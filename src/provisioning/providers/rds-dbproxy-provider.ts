@@ -30,7 +30,7 @@ import type {
 } from '../../types/resource.js';
 
 const POLL_INTERVAL_MS = 5000;
-const POLL_TIMEOUT_MS = 15 * 60 * 1000;
+const POLL_TIMEOUT_MS = 30 * 60 * 1000;
 
 /**
  * AWS RDS DBProxy Provider
@@ -275,6 +275,12 @@ export class RDSDBProxyProvider implements ResourceProvider {
       }
     }
 
+    // Invalidate attribute cache BEFORE applyTagDiff so the ARN warm-up
+    // applyTagDiff performs survives across the update() call boundary
+    // (PR #400 review M1: previously evicting after applyTagDiff wasted
+    // the warm-up the next update() pays a Describe to re-create).
+    this.invalidateAttributeCache(physicalId);
+
     // Tag diff via separate Add/Remove APIs.
     await this.applyTagDiff(
       physicalId,
@@ -283,11 +289,6 @@ export class RDSDBProxyProvider implements ResourceProvider {
       resourceType,
       logicalId
     );
-
-    // Invalidate attribute cache so subsequent getAttribute reads pick up
-    // the latest Endpoint / etc. (Endpoint is immutable in practice; this
-    // is defense-in-depth for any future AWS-side change).
-    this.invalidateAttributeCache(physicalId);
 
     return { physicalId, wasReplaced: false };
   }
@@ -499,6 +500,15 @@ export class RDSDBProxyProvider implements ResourceProvider {
     resourceType: string,
     logicalId: string
   ): Promise<void> {
+    const oldMap = this.toTagMap(oldTags);
+    const newMap = this.toTagMap(newTags);
+
+    // Tag-map equality short-circuit BEFORE the ARN-lookup Describe — skips
+    // the wasted Describe when no tag diff exists (PR #400 review M1).
+    const sameKeys = oldMap.size === newMap.size && [...oldMap.keys()].every((k) => newMap.has(k));
+    const sameValues = sameKeys && [...oldMap.entries()].every(([k, v]) => newMap.get(k) === v);
+    if (sameValues) return;
+
     const client = this.getClient();
 
     const arnCacheKey = `${physicalId}:DBProxyArn`;
@@ -519,9 +529,6 @@ export class RDSDBProxyProvider implements ResourceProvider {
       }
     }
     if (!arn) return;
-
-    const oldMap = this.toTagMap(oldTags);
-    const newMap = this.toTagMap(newTags);
 
     const toRemove: string[] = [];
     const toAdd: Tag[] = [];
