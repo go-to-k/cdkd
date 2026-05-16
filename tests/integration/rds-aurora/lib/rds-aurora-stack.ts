@@ -74,6 +74,17 @@ export class RdsAuroraStack extends cdk.Stack {
       requireTLS: false,
     });
 
+    // Add a READ_ONLY DBProxyEndpoint to exercise the
+    // AWS::RDS::DBProxyEndpoint SDK provider end-to-end. Reuses the
+    // cluster's VPC subnets + security group.
+    proxy.addEndpoint('ReaderEndpoint', {
+      dbProxyEndpointName: `${cdk.Stack.of(this).stackName.toLowerCase()}-reader`,
+      vpc,
+      vpcSubnets: { subnetType: ec2.SubnetType.PRIVATE_ISOLATED },
+      securityGroups: [securityGroup],
+      targetRole: rds.ProxyEndpointTargetRole.READ_ONLY,
+    });
+
     // Outputs
     new cdk.CfnOutput(this, 'ProxyEndpoint', {
       value: proxy.endpoint,

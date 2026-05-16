@@ -30,7 +30,7 @@ import type {
 } from '../../types/resource.js';
 
 const POLL_INTERVAL_MS = 5000;
-const POLL_TIMEOUT_MS = 15 * 60 * 1000;
+const POLL_TIMEOUT_MS = 30 * 60 * 1000;
 
 /**
  * AWS RDS DBProxyEndpoint Provider
@@ -146,14 +146,21 @@ export class RDSDBProxyEndpointProvider implements ResourceProvider {
     let status: string | undefined;
     while (Date.now() < deadline) {
       try {
+        // NOTE: filter by DBProxyEndpointName only — passing both
+        // `DBProxyName` AND `DBProxyEndpointName` returned an empty array
+        // during the create poll on real AWS (eventual-consistency-window
+        // bug observed 2026-05-16 rds-aurora integ). The endpoint name is
+        // already a unique identifier per region.
         const describe = await client.send(
           new DescribeDBProxyEndpointsCommand({
-            DBProxyName: dbProxyName,
             DBProxyEndpointName: dbProxyEndpointName,
           })
         );
         const ep = describe.DBProxyEndpoints?.[0];
         status = ep?.Status;
+        this.logger.debug(
+          `DBProxyEndpoint ${dbProxyEndpointName} poll: status=${status ?? 'not-yet-visible'}`
+        );
         if (status === 'available') {
           endpoint = ep?.Endpoint;
           arn = ep?.DBProxyEndpointArn;
@@ -251,6 +258,12 @@ export class RDSDBProxyEndpointProvider implements ResourceProvider {
       }
     }
 
+    // Invalidate attribute cache BEFORE applyTagDiff so the ARN warm-up
+    // applyTagDiff performs survives across the update() call boundary
+    // (PR #400 review M1: previously evicting after applyTagDiff wasted
+    // the warm-up the next update() pays a Describe to re-create).
+    this.invalidateAttributeCache(physicalId);
+
     await this.applyTagDiff(
       physicalId,
       previousProperties['Tags'],
@@ -258,8 +271,6 @@ export class RDSDBProxyEndpointProvider implements ResourceProvider {
       resourceType,
       logicalId
     );
-
-    this.invalidateAttributeCache(physicalId);
 
     return { physicalId, wasReplaced: false };
   }
