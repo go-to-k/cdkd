@@ -38,6 +38,17 @@ jobs:
             exit 1
           fi
 
+      # Issue #398 — fail CI when the cached three-tier provider-coverage
+      # audit (docs/_generated/provider-coverage.json) Tier 1 list drifts
+      # from src/provisioning/register-providers.ts. Offline check (<1s,
+      # no AWS calls — the full regeneration via
+      # `vp run audit:coverage:regenerate` would take 10-30 min + AWS
+      # CFn DescribeType throttling and stays a manual / future-cron job
+      # per issue #398 Option A). Catches the "added a new provider but
+      # forgot to regen the audit cache" case structurally, mirroring
+      # the integ-coverage step above.
+      - run: vp run audit:coverage:check
+
   runtime-compat:
     runs-on: ubuntu-latest
     needs: check-build-test
