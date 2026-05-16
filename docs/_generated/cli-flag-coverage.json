@@ -1,0 +1,194 @@
+{
+  "declaredFlags": [
+    "--app",
+    "--asset-publish-concurrency",
+    "--concurrency",
+    "--context",
+    "--dry-run",
+    "--exclusively",
+    "--force",
+    "--image-build-concurrency",
+    "--no-aggressive-vpc-parallel",
+    "--no-capture-observed-state",
+    "--no-rollback",
+    "--no-wait",
+    "--output",
+    "--prefix-user-supplied-names",
+    "--profile",
+    "--region",
+    "--remove-protection",
+    "--resource-timeout",
+    "--resource-warn-after",
+    "--role-arn",
+    "--skip-assets",
+    "--stack",
+    "--stack-concurrency",
+    "--state-bucket",
+    "--state-prefix",
+    "--verbose",
+    "--yes"
+  ],
+  "covered": [
+    {
+      "flag": "--dry-run",
+      "integs": [
+        "export"
+      ]
+    },
+    {
+      "flag": "--force",
+      "integs": [
+        "docdb-neptune",
+        "drift-revert",
+        "drift-revert-vpc",
+        "dynamodb-globaltable",
+        "export",
+        "import-value-strong-ref",
+        "local-invoke-from-state",
+        "local-run-task-from-state",
+        "migrate-from-cfn",
+        "remove-protection"
+      ]
+    },
+    {
+      "flag": "--output",
+      "integs": [
+        "docdb-neptune",
+        "drift-revert",
+        "drift-revert-vpc",
+        "dynamodb-globaltable",
+        "export",
+        "import-value-strong-ref",
+        "local-invoke-from-state",
+        "local-run-task-from-state",
+        "migrate-from-cfn",
+        "remove-protection"
+      ]
+    },
+    {
+      "flag": "--region",
+      "integs": [
+        "dynamodb-globaltable",
+        "export",
+        "import-value-strong-ref",
+        "local-run-task-from-state",
+        "migrate-from-cfn"
+      ]
+    },
+    {
+      "flag": "--remove-protection",
+      "integs": [
+        "dynamodb-globaltable",
+        "remove-protection"
+      ]
+    },
+    {
+      "flag": "--resource-timeout",
+      "integs": [
+        "docdb-neptune",
+        "remove-protection"
+      ]
+    },
+    {
+      "flag": "--resource-warn-after",
+      "integs": [
+        "remove-protection"
+      ]
+    },
+    {
+      "flag": "--state-bucket",
+      "integs": [
+        "docdb-neptune",
+        "drift-revert",
+        "drift-revert-vpc",
+        "dynamodb-globaltable",
+        "export",
+        "import-value-strong-ref",
+        "local-invoke-from-state",
+        "local-run-task-from-state",
+        "remove-protection"
+      ]
+    },
+    {
+      "flag": "--verbose",
+      "integs": [
+        "docdb-neptune",
+        "drift-revert",
+        "drift-revert-vpc",
+        "dynamodb-globaltable",
+        "export",
+        "remove-protection"
+      ]
+    },
+    {
+      "flag": "--yes",
+      "integs": [
+        "export",
+        "migrate-from-cfn"
+      ]
+    }
+  ],
+  "uncovered": [
+    "--app",
+    "--asset-publish-concurrency",
+    "--concurrency",
+    "--context",
+    "--exclusively",
+    "--image-build-concurrency",
+    "--no-aggressive-vpc-parallel",
+    "--no-capture-observed-state",
+    "--no-rollback",
+    "--no-wait",
+    "--prefix-user-supplied-names",
+    "--profile",
+    "--role-arn",
+    "--skip-assets",
+    "--stack",
+    "--stack-concurrency",
+    "--state-prefix"
+  ],
+  "unknownFlagsInIntegs": [
+    "--add-host",
+    "--all",
+    "--bucket",
+    "--cfn-stack-name",
+    "--container-host",
+    "--content-type",
+    "--detach",
+    "--env-vars",
+    "--event",
+    "--filter",
+    "--format",
+    "--from-state",
+    "--image-ids",
+    "--include-non-importable",
+    "--json",
+    "--key",
+    "--max-items",
+    "--migrate-from-cloudformation",
+    "--no-build",
+    "--no-pull",
+    "--nologo",
+    "--parameter",
+    "--password-stdin",
+    "--port",
+    "--prefer-offline",
+    "--pull",
+    "--query",
+    "--recursive",
+    "--repository-name",
+    "--require-approval",
+    "--resource",
+    "--resource-arn",
+    "--resource-id",
+    "--revert",
+    "--rm",
+    "--scalable-dimension",
+    "--service-namespace",
+    "--show-toplevel",
+    "--silent",
+    "--stack-name",
+    "--table-name",
+    "--username"
+  ]
+}
