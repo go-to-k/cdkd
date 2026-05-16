@@ -16,10 +16,11 @@ import {
   ResourceNotFoundException,
 } from '@aws-sdk/client-dynamodb';
 
-const { mockSend, mockAutoScalingSend, regionalClientSpy } = vi.hoisted(() => ({
+const { mockSend, mockAutoScalingSend, regionalClientSpy, warnSpy } = vi.hoisted(() => ({
   mockSend: vi.fn(),
   mockAutoScalingSend: vi.fn(),
   regionalClientSpy: vi.fn(),
+  warnSpy: vi.fn(),
 }));
 
 vi.mock('../../../src/utils/aws-clients.js', () => ({
@@ -68,7 +69,7 @@ vi.mock('../../../src/utils/logger.js', () => {
   const childLogger = {
     debug: vi.fn(),
     info: vi.fn(),
-    warn: vi.fn(),
+    warn: warnSpy,
     error: vi.fn(),
     child: vi.fn().mockReturnThis(),
   };
@@ -77,7 +78,7 @@ vi.mock('../../../src/utils/logger.js', () => {
       child: () => childLogger,
       debug: vi.fn(),
       info: vi.fn(),
-      warn: vi.fn(),
+      warn: warnSpy,
       error: vi.fn(),
     }),
   };
@@ -108,6 +109,7 @@ describe('DynamoDBGlobalTableProvider round-trip', () => {
     mockSend.mockReset();
     mockAutoScalingSend.mockReset();
     regionalClientSpy.mockReset();
+    warnSpy.mockReset();
     // Default: no application-autoscaling policy attached. Tests that
     // exercise the autoscaling-detected branch can override this with
     // `mockAutoScalingSend.mockResolvedValueOnce({ ScalingPolicies: [...] })`.
@@ -871,6 +873,45 @@ describe('DynamoDBGlobalTableProvider round-trip', () => {
           (c) => c instanceof UntagResourceCommand || c instanceof TagResourceCommand
         );
       expect(tagCalls).toHaveLength(0);
+    });
+
+    it('cross-region Tag propagation failure logs WARN and does not abort the deploy (Issue #389 / PR #393 review G1)', async () => {
+      // Pre-fix the WARN-on-failure path was uncovered. Production
+      // contract: when the regional TagResource or UntagResource throws
+      // (permissions, throttle, region down, etc.), cdkd surfaces a
+      // WARN naming the region + the "will surface as drift" hint and
+      // continues. The deploy must not abort and downstream replicas
+      // must still process.
+      mockSend.mockResolvedValueOnce({ Table: { TableStatus: 'ACTIVE' } }); // wait
+      mockSend.mockResolvedValueOnce({ Table: { TableArn: TABLE_ARN } }); // DescribeTable for local tag diff
+      mockSend.mockRejectedValueOnce(new Error('AccessDenied: TagResource (eu-west-1)')); // regional Tag/Untag throws
+      mockSend.mockResolvedValueOnce({ Table: { TableArn: TABLE_ARN } }); // final describe
+
+      const result = await provider.update(
+        'X',
+        TABLE_NAME,
+        RESOURCE_TYPE,
+        {
+          Replicas: [
+            { Region: 'us-east-1' },
+            { Region: 'eu-west-1', Tags: [{ Key: 'New', Value: 'A' }] },
+          ],
+        },
+        {
+          Replicas: [
+            { Region: 'us-east-1' },
+            { Region: 'eu-west-1', Tags: [{ Key: 'Old', Value: 'B' }] },
+          ],
+        }
+      );
+
+      // Deploy did NOT abort.
+      expect(result.physicalId).toBe(TABLE_NAME);
+      expect(result.wasReplaced).toBe(false);
+
+      // WARN was logged for the failing region.
+      const warnMessages = warnSpy.mock.calls.map((c) => String(c[0])).join('\n');
+      expect(warnMessages).toMatch(/eu-west-1/);
     });
 
     it('issues UpdateTimeToLive with Enabled=false when template removes TimeToLiveSpecification', async () => {
