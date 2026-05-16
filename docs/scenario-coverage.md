@@ -4,7 +4,7 @@
 
 Run `vp run scenario-coverage` to regenerate.
 
-**27 / 29 canonical scenarios** have at least one integ fixture exercising them. **88 / 88 integ fixtures** carry a `.scenarios.json` sidecar (with 0+ tags); the rest are un-annotated and contributor-reviewed below.
+**28 / 28 canonical scenarios** have at least one integ fixture exercising them. **89 / 89 integ fixtures** carry a `.scenarios.json` sidecar (with 0+ tags); the rest are un-annotated and contributor-reviewed below.
 
 ## How this is computed
 
@@ -22,16 +22,11 @@ Empty `[]` means "intentionally no canonical scenario applies to this fixture" (
 
 This report is a visibility tool, not a commit-time gate. Many cdkd fixtures legitimately exercise no canonical scenario, and forcing per-commit annotation would add friction without proportional value. Contrast with the provider-coverage matrix ([docs/integ-coverage.md](integ-coverage.md)) which IS gated because the "is every registered SDK Provider exercised?" question has a structural answer.
 
-## Orphan scenarios (2)
+## Orphan scenarios
 
-These canonical scenarios have NO integ fixture tagged with them. Each is a real-AWS verification gap — a regression against the named pattern would only surface in production. Either tag an existing fixture (when it already exercises the pattern) or write a new fixture.
+_None._ Every canonical scenario has at least one integ fixture tagged with it.
 
-| Scenario | Description |
-|---|---|
-| `deletion-policy-retain` | DeletionPolicy: Retain skip on destroy (schema v5 recorded value wins over template). |
-| `partial-create-cleanup` | Partial-create cleanup: post-`Create*` wiring failure issues best-effort `Delete*` before re-throwing so the next deploy is not blocked by an AWS-side orphan. |
-
-## Per-scenario coverage (29 scenarios)
+## Per-scenario coverage (28 scenarios)
 
 | Scenario | Description | Integ Fixture(s) |
 |---|---|---|
@@ -40,7 +35,7 @@ These canonical scenarios have NO integ fixture tagged with them. Each is a real
 | `cloudfront-oai-attribute-enrichment` | CloudFront OAI `S3CanonicalUserId` attribute enrichment (the attribute is not on `GetCloudFrontOriginAccessIdentity` directly). | [`s3-cloudfront`](../tests/integration/s3-cloudfront/) |
 | `cross-cutting-deploy-destroy` | Broad real-AWS regression set (39+ resource VPC+NAT+CF+Lambda+SQS or comparable breadth). Refreshes the integ-broad gate. | [`bench-ccapi`](../tests/integration/bench-ccapi/)<br>[`bench-cdk-sample`](../tests/integration/bench-cdk-sample/)<br>[`bench-sdk`](../tests/integration/bench-sdk/)<br>[`full-stack-demo`](../tests/integration/full-stack-demo/)<br>[`lambda`](../tests/integration/lambda/)<br>[`microservices`](../tests/integration/microservices/)<br>[`multi-resource`](../tests/integration/multi-resource/) |
 | `custom-resource-async-poll` | Custom Resource backed by Lambda + cfn-response via S3 pre-signed URL polling. | [`cloudfront-function-url`](../tests/integration/cloudfront-function-url/)<br>[`custom-resource-provider`](../tests/integration/custom-resource-provider/)<br>[`vpc-lambda-cr-race`](../tests/integration/vpc-lambda-cr-race/) |
-| `deletion-policy-retain` | DeletionPolicy: Retain skip on destroy (schema v5 recorded value wins over template). | _(orphan)_ |
+| `deletion-policy-retain` | DeletionPolicy: Retain skip on destroy (schema v5 recorded value wins over template). | [`deletion-policy-retain`](../tests/integration/deletion-policy-retain/) |
 | `drift-revert-roundtrip` | cdkd drift detection + `--revert` round-trip via each provider.update(). | [`drift-revert`](../tests/integration/drift-revert/)<br>[`drift-revert-vpc`](../tests/integration/drift-revert-vpc/) |
 | `export-to-cfn-handover` | cdkd → CloudFormation migration via 2-phase IMPORT changeset + phase-2 UPDATE. | [`export`](../tests/integration/export/) |
 | `globaltable-cross-region-replica` | DynamoDB GlobalTable cross-region replica add/remove serialization (AWS rejects multiple ReplicaUpdates per UpdateTable call). | [`dynamodb-globaltable`](../tests/integration/dynamodb-globaltable/) |
@@ -57,7 +52,6 @@ These canonical scenarios have NO integ fixture tagged with them. Each is a real
 | `multi-stack-getstackoutput` | Cross-stack `Fn::GetStackOutput` weak reference resolution (cdkd-specific, no CFn Export). | [`composite-stack`](../tests/integration/composite-stack/)<br>[`cross-stack-references`](../tests/integration/cross-stack-references/)<br>[`multi-stack-deps`](../tests/integration/multi-stack-deps/) |
 | `multi-stack-importvalue-strong-ref` | Cross-stack `Fn::ImportValue` strong-reference + persistent exports index (schema v4 imports[]). | [`import-value-strong-ref`](../tests/integration/import-value-strong-ref/) |
 | `nat-gateway-cleanup` | NAT Gateway destroy + dependent route cleanup (unconditional `waitUntilNatGatewayDeleted` on destroy). | [`bench-cdk-sample`](../tests/integration/bench-cdk-sample/)<br>[`vpc-nat-gateway`](../tests/integration/vpc-nat-gateway/) |
-| `partial-create-cleanup` | Partial-create cleanup: post-`Create*` wiring failure issues best-effort `Delete*` before re-throwing so the next deploy is not blocked by an AWS-side orphan. | _(orphan)_ |
 | `rds-aurora-cluster-instance` | RDS Aurora cluster + writer instance create/destroy with the 30-min wait budget + DBProxy/DBProxyTargetGroup family. | [`rds-aurora`](../tests/integration/rds-aurora/) |
 | `remove-protection-bypass` | `--remove-protection` flag bypassing AWS-side deletion-protection on supported types. | [`remove-protection`](../tests/integration/remove-protection/) |
 | `state-bucket-region-resolve` | State-bucket S3 client auto-detects bucket region via `GetBucketLocation` regardless of caller-profile region. | [`cross-region-state-bucket`](../tests/integration/cross-region-state-bucket/) |
