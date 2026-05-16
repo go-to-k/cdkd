@@ -128,7 +128,7 @@ export class ApiGatewayV2Provider implements ResourceProvider {
         ['FailOnWarnings', 'OpenAPI-import-only flag; meaningful only on the ImportApi code path.'],
         [
           'DisableSchemaValidation',
-          'OpenAPI-import-only flag; meaningful only on the ImportApi code path.',
+          'Schema-validation toggle on CreateApi/UpdateApi that AWS docs scope to WebSocket APIs using AWS::ApiGatewayV2::Model — that resource type is not yet registered in cdkd, so the toggle has no effect to wire.',
         ],
         [
           'BasePath',
