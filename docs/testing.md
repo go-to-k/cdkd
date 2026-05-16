@@ -588,6 +588,14 @@ This regenerates both `docs/integ-coverage.md` (human-readable report) and `docs
 
 The hook `.claude/hooks/provider-integ-gate.sh` blocks `git commit` when a new `registry.register('AWS::Foo::Bar', ...)` is staged without a matching integ fixture (literal type id, `Cfn<Type>(` L1 class, or a sidecar entry in `.claude/integ-coverage-allowlist.json`). The sidecar is JSON: `{"AWS::Foo::Bar": "rationale"}` — kept outside `src/provisioning/register-providers.ts` so allow-list edits do not trigger the `integ-broad-gate`'s real-AWS broad integ requirement. See the hook's docstring for the full resolution paths.
 
+### CLI Flag Coverage (visibility report)
+
+[`docs/cli-flag-coverage.md`](cli-flag-coverage.md) lists every CLI flag declared in `src/cli/options.ts` and the integ fixtures whose `verify.sh` exercises it. Generated via `vp run cli-flag-coverage`.
+
+**This is a visibility report, NOT a CI gate.** Many cdkd flags (`--dry-run`, `--verbose`, `--profile`, etc.) are tested adequately at the unit-test level rather than via an integ shell invocation — surfacing those as "uncovered" would produce >50% false-positive noise. The "no integ verify.sh mention" section is a question for the reviewer ("does THIS flag warrant a real-AWS test?"), not an answer.
+
+Contrast with the provider-coverage matrix in [docs/integ-coverage.md](integ-coverage.md), where the CI gate IS appropriate because every registered provider is expected to have real-AWS verification.
+
 ### Verbose Logging
 
 Add the `--verbose` flag to display detailed logs:

@@ -224,6 +224,10 @@ export default defineConfig({
         command: 'node --experimental-strip-types scripts/build-integ-coverage-matrix.ts',
         cache: false,
       },
+      'cli-flag-coverage': {
+        command: 'node --experimental-strip-types scripts/build-cli-flag-coverage-matrix.ts',
+        cache: false,
+      },
     },
   },
 });
