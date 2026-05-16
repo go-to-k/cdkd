@@ -227,6 +227,33 @@ export class ReplacementRulesRegistry {
       ]),
     });
 
+    // RDS DBProxy — EngineFamily + VpcSubnetIds + DBProxyName are immutable on
+    // AWS. ModifyDBProxy only accepts Auth / RequireTLS / IdleClientTimeout /
+    // DebugLogging / RoleArn / SecurityGroups (+ NewDBProxyName rename, which
+    // cdkd does not implement). A diff in any other field needs replacement.
+    this.rules.set('AWS::RDS::DBProxy', {
+      replacementProperties: new Set(['DBProxyName', 'EngineFamily', 'VpcSubnetIds']),
+    });
+
+    // RDS DBProxyEndpoint — DBProxyName + DBProxyEndpointName + VpcSubnetIds +
+    // TargetRole are immutable. ModifyDBProxyEndpoint only accepts
+    // VpcSecurityGroupIds (+ rename, not implemented).
+    this.rules.set('AWS::RDS::DBProxyEndpoint', {
+      replacementProperties: new Set([
+        'DBProxyName',
+        'DBProxyEndpointName',
+        'VpcSubnetIds',
+        'TargetRole',
+      ]),
+    });
+
+    // RDS DBProxyTargetGroup — DBProxyName + TargetGroupName are identity
+    // fields. AWS rejects modifications to them; only ConnectionPoolConfig +
+    // registered targets (Cluster/Instance Identifiers) are mutable.
+    this.rules.set('AWS::RDS::DBProxyTargetGroup', {
+      replacementProperties: new Set(['DBProxyName', 'TargetGroupName']),
+    });
+
     // ECS Task Definition
     this.rules.set('AWS::ECS::TaskDefinition', {
       replacementProperties: new Set([

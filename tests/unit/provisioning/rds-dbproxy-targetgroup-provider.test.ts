@@ -168,6 +168,39 @@ describe('RDSDBProxyTargetGroupProvider', () => {
       expect(mockSend).not.toHaveBeenCalled();
     });
 
+    it('rejects when DBProxyName differs (immutable identity)', async () => {
+      await expect(
+        provider.update(
+          'TG',
+          TARGET_GROUP_ARN,
+          RESOURCE_TYPE,
+          { DBProxyName: 'NewProxy' },
+          { DBProxyName: 'OldProxy' }
+        )
+      ).rejects.toThrow(/DBProxyName is immutable/);
+      expect(mockSend).not.toHaveBeenCalled();
+    });
+
+    it('rejects when TargetGroupName differs (immutable identity)', async () => {
+      await expect(
+        provider.update(
+          'TG',
+          TARGET_GROUP_ARN,
+          RESOURCE_TYPE,
+          { DBProxyName: 'AuroraProxy', TargetGroupName: 'something-else' },
+          { DBProxyName: 'AuroraProxy', TargetGroupName: 'default' }
+        )
+      ).rejects.toThrow(/TargetGroupName is immutable/);
+    });
+
+    it('treats `undefined` TargetGroupName as default (no false-positive)', async () => {
+      const oldProps = { DBProxyName: 'AuroraProxy', TargetGroupName: 'default' };
+      const newProps = { DBProxyName: 'AuroraProxy' }; // no TargetGroupName
+      const result = await provider.update('TG', TARGET_GROUP_ARN, RESOURCE_TYPE, newProps, oldProps);
+      expect(result.physicalId).toBe(TARGET_GROUP_ARN);
+      expect(mockSend).not.toHaveBeenCalled();
+    });
+
     it('is a no-op when nothing changed', async () => {
       const props = {
         DBProxyName: 'AuroraProxy',

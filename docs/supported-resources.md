@@ -21,6 +21,23 @@ If a resource type has no SDK Provider AND is not supported by Cloud
 Control API, cdkd cannot deploy it. The deploy fails with a clear error
 message naming the unsupported type.
 
+## Three-tier coverage report
+
+For a full machine-checked view of every public AWS CFn resource type
+partitioned into Tier 1 (SDK Provider) / Tier 2 (CC API fallback) / Tier 3
+(unsupported), see the auto-generated report at
+[_generated/provider-coverage.md](_generated/provider-coverage.md). The
+JSON counterpart at [_generated/provider-coverage.json](_generated/provider-coverage.json)
+is the machine-readable source-of-truth. Regenerate with:
+
+```bash
+vp run audit:coverage:regenerate
+```
+
+The hand-maintained table below is the canonical per-category breakdown
+for the SDK Provider tier; the auto-generated report is the complete
+catalog with Tier 2 and Tier 3 entries included.
+
 ## Resource types
 
 | Category | Resource Type | Provider | Status |
@@ -89,6 +106,7 @@ message naming the unsupported type.
 | **Database** | AWS::RDS::DBCluster | SDK Provider | ✅ |
 | **Database** | AWS::RDS::DBInstance | SDK Provider | ✅ |
 | **Database** | AWS::RDS::DBProxy | SDK Provider | ✅ |
+| **Database** | AWS::RDS::DBProxyEndpoint | SDK Provider | ✅ |
 | **Database** | AWS::RDS::DBProxyTargetGroup | SDK Provider | ✅ |
 | **Database** | AWS::DocDB::DBSubnetGroup | SDK Provider | ✅ |
 | **Database** | AWS::DocDB::DBCluster | SDK Provider | ✅ |

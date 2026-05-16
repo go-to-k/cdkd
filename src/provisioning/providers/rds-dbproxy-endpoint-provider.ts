@@ -1,15 +1,15 @@
 import {
   RDSClient,
-  CreateDBProxyCommand,
-  ModifyDBProxyCommand,
-  DeleteDBProxyCommand,
-  DescribeDBProxiesCommand,
+  CreateDBProxyEndpointCommand,
+  ModifyDBProxyEndpointCommand,
+  DeleteDBProxyEndpointCommand,
+  DescribeDBProxyEndpointsCommand,
   ListTagsForResourceCommand,
   AddTagsToResourceCommand,
   RemoveTagsFromResourceCommand,
+  DBProxyEndpointNotFoundFault,
   DBProxyNotFoundFault,
-  type UserAuthConfig,
-  type EngineFamily,
+  type DBProxyEndpointTargetRole,
   type Tag,
 } from '@aws-sdk/client-rds';
 import { getLogger } from '../../utils/logger.js';
@@ -33,58 +33,56 @@ const POLL_INTERVAL_MS = 5000;
 const POLL_TIMEOUT_MS = 15 * 60 * 1000;
 
 /**
- * AWS RDS DBProxy Provider
+ * AWS RDS DBProxyEndpoint Provider
  *
- * Implements resource provisioning for `AWS::RDS::DBProxy`.
+ * Implements resource provisioning for `AWS::RDS::DBProxyEndpoint` — the
+ * additional read/write or read-only endpoint that can be attached to a
+ * parent DBProxy.
  *
  * **Why a dedicated SDK provider** (per `feedback_dedicated_provider_over_special_case.md`):
- * keeps the AWS::RDS::DBProxy family (DBProxy + DBProxyTargetGroup) on one
- * codebase. Pre-PR DBProxy went through CC API, which worked for create
- * and delete but the sibling DBProxyTargetGroup type was broken — moving
- * the parent type to a dedicated provider ensures the whole family is
- * consistent and lets us evolve both surfaces together (e.g. shared
- * `DescribeDBProxies` calls in future enrichment, common error handling).
+ * completes the RDS DBProxy family started in PR #387 (`DBProxyTargetGroup`)
+ * and PR #394 (`DBProxy`). Keeps the whole family on one codebase so create /
+ * update / delete handling stays consistent across the parent + endpoints +
+ * target-group children.
  *
  * **Lifecycle**:
- * - `create`: `CreateDBProxyCommand`, then poll `DescribeDBProxies` until
- *   `DBProxyStatus === 'available'`. Returns physicalId=DBProxyName plus
- *   `Endpoint` / `DBProxyArn` / `VpcId` in attributes.
- * - `update`: `ModifyDBProxyCommand` for the mutable fields (Auth /
- *   DebugLogging / IdleClientTimeout / RequireTLS / RoleArn /
- *   SecurityGroups). Tags handled via separate `AddTagsToResource` /
- *   `RemoveTagsFromResource` diff. EngineFamily and VpcSubnetIds are
- *   immutable on AWS; a diff in those surfaces as `ResourceReplacement`
- *   from the deploy engine, not handled here.
- * - `delete`: `DeleteDBProxyCommand`, then poll for `DBProxyNotFoundFault`
- *   to confirm full removal (AWS keeps the proxy in `deleting` state for
- *   ~30-60s after the delete returns). `DBProxyNotFoundFault` at any
- *   point is treated as idempotent success (region-match-gated).
- * - `getAttribute`: `DescribeDBProxies` for `Endpoint` / `DBProxyArn` /
- *   `VpcId`, cached per `(physicalId, attribute)`.
- * - `import`: explicit `--resource` override OR auto-lookup via
- *   `DescribeDBProxies` + `ListTagsForResource` matching `aws:cdk:path`.
+ * - `create`: validates required fields (`DBProxyName` / `VpcSubnetIds`),
+ *   issues `CreateDBProxyEndpointCommand`, then polls `DescribeDBProxyEndpoints`
+ *   until `Status === 'available'`. Returns `physicalId = DBProxyEndpointName`
+ *   plus `Endpoint` / `DBProxyEndpointArn` / `IsDefault` / `VpcId` in
+ *   `attributes`.
+ * - `update`: `ModifyDBProxyEndpointCommand` for the mutable fields
+ *   (`VpcSecurityGroupIds` → SDK input `VpcSecurityGroupIds`,
+ *   `NewDBProxyEndpointName` via rename). Tags diff via separate
+ *   `AddTagsToResource` / `RemoveTagsFromResource` calls. DBProxyName /
+ *   VpcSubnetIds / TargetRole are immutable on AWS.
+ * - `delete`: `DeleteDBProxyEndpointCommand`, then polls until
+ *   `DBProxyEndpointNotFoundFault`. Idempotent on NotFound (region-match
+ *   gated). `DBProxyNotFoundFault` also idempotent — if the parent DBProxy
+ *   is already gone via CASCADE, the endpoint is too.
+ * - `getAttribute`: `Endpoint` / `DBProxyEndpointArn` / `IsDefault` / `VpcId`
+ *   via `DescribeDBProxyEndpoints`, cached per `(physicalId, attribute)`.
+ * - `import`: explicit `--resource <id>=<DBProxyEndpointName>` first; falls
+ *   back to paginated auto-lookup via `DescribeDBProxyEndpoints` +
+ *   `ListTagsForResource` matching `aws:cdk:path`.
  *
- * **physicalId** = DBProxyName (matches CFn `primaryIdentifier`).
+ * **physicalId** = DBProxyEndpointName (matches CFn `primaryIdentifier`).
  */
-export class RDSDBProxyProvider implements ResourceProvider {
+export class RDSDBProxyEndpointProvider implements ResourceProvider {
   private rdsClient?: RDSClient;
   private readonly providerRegion = process.env['AWS_REGION'];
-  private logger = getLogger().child('RDSDBProxyProvider');
+  private logger = getLogger().child('RDSDBProxyEndpointProvider');
   private readonly attributeCache = new Map<string, unknown>();
 
   handledProperties = new Map<string, ReadonlySet<string>>([
     [
-      'AWS::RDS::DBProxy',
+      'AWS::RDS::DBProxyEndpoint',
       new Set([
+        'DBProxyEndpointName',
         'DBProxyName',
-        'EngineFamily',
-        'Auth',
-        'RoleArn',
         'VpcSubnetIds',
         'VpcSecurityGroupIds',
-        'RequireTLS',
-        'IdleClientTimeout',
-        'DebugLogging',
+        'TargetRole',
         'Tags',
       ]),
     ],
@@ -102,58 +100,37 @@ export class RDSDBProxyProvider implements ResourceProvider {
     resourceType: string,
     properties: Record<string, unknown>
   ): Promise<ResourceCreateResult> {
-    const dbProxyName =
-      (properties['DBProxyName'] as string | undefined) ??
+    const dbProxyName = properties['DBProxyName'] as string | undefined;
+    if (!dbProxyName) {
+      throw new ProvisioningError(
+        `DBProxyName is required for AWS::RDS::DBProxyEndpoint ${logicalId}`,
+        resourceType,
+        logicalId
+      );
+    }
+    const dbProxyEndpointName =
+      (properties['DBProxyEndpointName'] as string | undefined) ??
       generateResourceName(logicalId, { maxLength: 64 });
-    const engineFamily = properties['EngineFamily'] as EngineFamily | undefined;
-    if (!engineFamily) {
-      throw new ProvisioningError(
-        `EngineFamily is required for AWS::RDS::DBProxy ${logicalId}`,
-        resourceType,
-        logicalId
-      );
-    }
-    const auth = properties['Auth'] as UserAuthConfig[] | undefined;
-    if (!auth || auth.length === 0) {
-      throw new ProvisioningError(
-        `Auth (at least one entry) is required for AWS::RDS::DBProxy ${logicalId}`,
-        resourceType,
-        logicalId
-      );
-    }
-    const roleArn = properties['RoleArn'] as string | undefined;
-    if (!roleArn) {
-      throw new ProvisioningError(
-        `RoleArn is required for AWS::RDS::DBProxy ${logicalId}`,
-        resourceType,
-        logicalId
-      );
-    }
     const vpcSubnetIds = properties['VpcSubnetIds'] as string[] | undefined;
     if (!vpcSubnetIds || vpcSubnetIds.length === 0) {
       throw new ProvisioningError(
-        `VpcSubnetIds (at least one) is required for AWS::RDS::DBProxy ${logicalId}`,
+        `VpcSubnetIds (at least one) is required for AWS::RDS::DBProxyEndpoint ${logicalId}`,
         resourceType,
         logicalId
       );
     }
 
     const client = this.getClient();
-
-    this.logger.debug(`Creating DBProxy ${dbProxyName} (${engineFamily})`);
+    this.logger.debug(`Creating DBProxyEndpoint ${dbProxyEndpointName} (proxy=${dbProxyName})`);
 
     try {
       await client.send(
-        new CreateDBProxyCommand({
+        new CreateDBProxyEndpointCommand({
           DBProxyName: dbProxyName,
-          EngineFamily: engineFamily,
-          Auth: auth,
-          RoleArn: roleArn,
+          DBProxyEndpointName: dbProxyEndpointName,
           VpcSubnetIds: vpcSubnetIds,
           VpcSecurityGroupIds: properties['VpcSecurityGroupIds'] as string[] | undefined,
-          RequireTLS: properties['RequireTLS'] as boolean | undefined,
-          IdleClientTimeout: properties['IdleClientTimeout'] as number | undefined,
-          DebugLogging: properties['DebugLogging'] as boolean | undefined,
+          TargetRole: properties['TargetRole'] as DBProxyEndpointTargetRole | undefined,
           Tags: this.toAwsTags(properties['Tags']),
         })
       );
@@ -161,60 +138,72 @@ export class RDSDBProxyProvider implements ResourceProvider {
       throw this.wrapError(error, 'CREATE', resourceType, logicalId, undefined);
     }
 
-    // Wait until DBProxyStatus = 'available'. Post-create wiring (Targets via
-    // RDSDBProxyTargetGroupProvider.create()) requires the proxy to be
-    // available, so blocking here keeps the deploy engine's DAG consistent.
     let endpoint: string | undefined;
-    let dbProxyArn: string | undefined;
+    let arn: string | undefined;
+    let isDefault: boolean | undefined;
     let vpcId: string | undefined;
     const deadline = Date.now() + POLL_TIMEOUT_MS;
     let status: string | undefined;
     while (Date.now() < deadline) {
       try {
         const describe = await client.send(
-          new DescribeDBProxiesCommand({ DBProxyName: dbProxyName })
+          new DescribeDBProxyEndpointsCommand({
+            DBProxyName: dbProxyName,
+            DBProxyEndpointName: dbProxyEndpointName,
+          })
         );
-        const proxy = describe.DBProxies?.[0];
-        status = proxy?.Status;
+        const ep = describe.DBProxyEndpoints?.[0];
+        status = ep?.Status;
         if (status === 'available') {
-          endpoint = proxy?.Endpoint;
-          dbProxyArn = proxy?.DBProxyArn;
-          vpcId = proxy?.VpcId;
+          endpoint = ep?.Endpoint;
+          arn = ep?.DBProxyEndpointArn;
+          isDefault = ep?.IsDefault;
+          vpcId = ep?.VpcId;
           break;
         }
         if (status === 'incompatible-network' || status === 'insufficient-resource-limits') {
           throw new ProvisioningError(
-            `DBProxy ${dbProxyName} entered terminal failure state: ${status}`,
+            `DBProxyEndpoint ${dbProxyEndpointName} entered terminal failure state: ${status}`,
             resourceType,
             logicalId,
-            dbProxyName
+            dbProxyEndpointName
           );
         }
       } catch (error) {
-        if (error instanceof DBProxyNotFoundFault) {
+        if (
+          error instanceof DBProxyEndpointNotFoundFault ||
+          error instanceof DBProxyNotFoundFault
+        ) {
           // Not yet visible — keep polling.
         } else if (error instanceof ProvisioningError) {
           throw error;
         } else {
-          throw this.wrapError(error, 'CREATE (poll)', resourceType, logicalId, dbProxyName);
+          throw this.wrapError(
+            error,
+            'CREATE (poll)',
+            resourceType,
+            logicalId,
+            dbProxyEndpointName
+          );
         }
       }
       await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
     }
-    if (!endpoint || !dbProxyArn) {
+    if (!endpoint || !arn) {
       throw new ProvisioningError(
-        `Timed out waiting for DBProxy ${dbProxyName} to become available (last status: ${status ?? 'unknown'})`,
+        `Timed out waiting for DBProxyEndpoint ${dbProxyEndpointName} to become available (last status: ${status ?? 'unknown'})`,
         resourceType,
         logicalId,
-        dbProxyName
+        dbProxyEndpointName
       );
     }
 
     return {
-      physicalId: dbProxyName,
+      physicalId: dbProxyEndpointName,
       attributes: {
-        DBProxyArn: dbProxyArn,
         Endpoint: endpoint,
+        DBProxyEndpointArn: arn,
+        IsDefault: isDefault ?? false,
         VpcId: vpcId ?? '',
       },
     };
@@ -233,49 +222,35 @@ export class RDSDBProxyProvider implements ResourceProvider {
     // SHOULD have routed those to a CREATE+DELETE replacement upstream, but
     // we double-check here so a missing rule entry doesn't silently corrupt
     // state (the PR #387 round 1 blocker class).
-    for (const field of ['DBProxyName', 'EngineFamily', 'VpcSubnetIds']) {
+    for (const field of ['DBProxyName', 'DBProxyEndpointName', 'VpcSubnetIds', 'TargetRole']) {
       if (JSON.stringify(properties[field]) !== JSON.stringify(previousProperties[field])) {
         throw new ResourceUpdateNotSupportedError(
           resourceType,
           logicalId,
-          `${field} is immutable on AWS::RDS::DBProxy — destroy + redeploy to change it`
+          `${field} is immutable on AWS::RDS::DBProxyEndpoint — destroy + redeploy to change it`
         );
       }
     }
 
-    const input: Record<string, unknown> = { DBProxyName: physicalId };
-    let hasModify = false;
-    const mutableFields: Array<keyof typeof properties> = [
-      'Auth',
-      'RequireTLS',
-      'IdleClientTimeout',
-      'DebugLogging',
-      'RoleArn',
-      'VpcSecurityGroupIds',
-    ];
-    for (const key of mutableFields) {
-      if (JSON.stringify(properties[key]) !== JSON.stringify(previousProperties[key])) {
-        // Translate VpcSecurityGroupIds → SecurityGroups (CFn → SDK shape).
-        const sdkKey = key === 'VpcSecurityGroupIds' ? 'SecurityGroups' : key;
-        input[sdkKey] = properties[key];
-        hasModify = true;
-      }
-    }
-
-    if (hasModify) {
-      this.logger.debug(
-        `Updating DBProxy ${physicalId}: ${Object.keys(input)
-          .filter((k) => k !== 'DBProxyName')
-          .join(', ')}`
-      );
+    // AWS only allows VpcSecurityGroupIds + NewDBProxyEndpointName on
+    // ModifyDBProxyEndpoint. TargetRole / VpcSubnetIds / DBProxyName are
+    // immutable (rejected above).
+    const oldSG = (previousProperties['VpcSecurityGroupIds'] as string[]) ?? [];
+    const newSG = (properties['VpcSecurityGroupIds'] as string[]) ?? [];
+    if (JSON.stringify(oldSG) !== JSON.stringify(newSG)) {
+      this.logger.debug(`Updating DBProxyEndpoint ${physicalId} security groups`);
       try {
-        await client.send(new ModifyDBProxyCommand(input as never));
+        await client.send(
+          new ModifyDBProxyEndpointCommand({
+            DBProxyEndpointName: physicalId,
+            VpcSecurityGroupIds: newSG,
+          })
+        );
       } catch (error) {
         throw this.wrapError(error, 'UPDATE', resourceType, logicalId, physicalId);
       }
     }
 
-    // Tag diff via separate Add/Remove APIs.
     await this.applyTagDiff(
       physicalId,
       previousProperties['Tags'],
@@ -284,9 +259,6 @@ export class RDSDBProxyProvider implements ResourceProvider {
       logicalId
     );
 
-    // Invalidate attribute cache so subsequent getAttribute reads pick up
-    // the latest Endpoint / etc. (Endpoint is immutable in practice; this
-    // is defense-in-depth for any future AWS-side change).
     this.invalidateAttributeCache(physicalId);
 
     return { physicalId, wasReplaced: false };
@@ -301,12 +273,12 @@ export class RDSDBProxyProvider implements ResourceProvider {
   ): Promise<void> {
     const client = this.getClient();
 
-    this.logger.debug(`Deleting DBProxy ${physicalId}`);
+    this.logger.debug(`Deleting DBProxyEndpoint ${physicalId}`);
 
     try {
-      await client.send(new DeleteDBProxyCommand({ DBProxyName: physicalId }));
+      await client.send(new DeleteDBProxyEndpointCommand({ DBProxyEndpointName: physicalId }));
     } catch (error) {
-      if (error instanceof DBProxyNotFoundFault) {
+      if (error instanceof DBProxyEndpointNotFoundFault || error instanceof DBProxyNotFoundFault) {
         const clientRegion = await client.config.region();
         assertRegionMatch(
           clientRegion,
@@ -315,23 +287,24 @@ export class RDSDBProxyProvider implements ResourceProvider {
           logicalId,
           physicalId
         );
-        this.logger.debug(`DBProxy ${physicalId} already gone, treating as success`);
+        this.logger.debug(
+          `DBProxyEndpoint ${physicalId} or parent already gone, treating as success`
+        );
         return;
       }
       throw this.wrapError(error, 'DELETE', resourceType, logicalId, physicalId);
     }
 
-    // Wait for the proxy to fully disappear. AWS keeps the resource in
-    // `deleting` state for ~30-60s before DescribeDBProxies starts
-    // returning DBProxyNotFoundFault — without this wait, a subsequent
-    // `cdkd deploy` of a same-named proxy can race AWS's eventual delete.
     const deadline = Date.now() + POLL_TIMEOUT_MS;
     while (Date.now() < deadline) {
       try {
-        await client.send(new DescribeDBProxiesCommand({ DBProxyName: physicalId }));
+        await client.send(new DescribeDBProxyEndpointsCommand({ DBProxyEndpointName: physicalId }));
       } catch (error) {
-        if (error instanceof DBProxyNotFoundFault) {
-          this.logger.debug(`DBProxy ${physicalId} fully deleted`);
+        if (
+          error instanceof DBProxyEndpointNotFoundFault ||
+          error instanceof DBProxyNotFoundFault
+        ) {
+          this.logger.debug(`DBProxyEndpoint ${physicalId} fully deleted`);
           return;
         }
         throw this.wrapError(error, 'DELETE (poll)', resourceType, logicalId, physicalId);
@@ -339,7 +312,7 @@ export class RDSDBProxyProvider implements ResourceProvider {
       await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
     }
     throw new ProvisioningError(
-      `Timed out waiting for DBProxy ${physicalId} to fully delete`,
+      `Timed out waiting for DBProxyEndpoint ${physicalId} to fully delete`,
       resourceType,
       logicalId,
       physicalId
@@ -357,60 +330,63 @@ export class RDSDBProxyProvider implements ResourceProvider {
 
     if (
       attributeName !== 'Endpoint' &&
-      attributeName !== 'DBProxyArn' &&
+      attributeName !== 'DBProxyEndpointArn' &&
+      attributeName !== 'IsDefault' &&
       attributeName !== 'VpcId'
     ) {
       this.logger.warn(
-        `Unknown attribute ${attributeName} for AWS::RDS::DBProxy, returning undefined`
+        `Unknown attribute ${attributeName} for AWS::RDS::DBProxyEndpoint, returning undefined`
       );
       return undefined;
     }
 
     try {
       const describe = await this.getClient().send(
-        new DescribeDBProxiesCommand({ DBProxyName: physicalId })
+        new DescribeDBProxyEndpointsCommand({ DBProxyEndpointName: physicalId })
       );
-      const proxy = describe.DBProxies?.[0];
-      if (!proxy) return undefined;
+      const ep = describe.DBProxyEndpoints?.[0];
+      if (!ep) return undefined;
       const map: Record<string, unknown> = {
-        Endpoint: proxy.Endpoint,
-        DBProxyArn: proxy.DBProxyArn,
-        VpcId: proxy.VpcId,
+        Endpoint: ep.Endpoint,
+        DBProxyEndpointArn: ep.DBProxyEndpointArn,
+        IsDefault: ep.IsDefault ?? false,
+        VpcId: ep.VpcId,
       };
       const value = map[attributeName];
       if (value !== undefined) this.attributeCache.set(cacheKey, value);
       return value;
     } catch (error) {
-      if (error instanceof DBProxyNotFoundFault) return undefined;
+      if (error instanceof DBProxyEndpointNotFoundFault || error instanceof DBProxyNotFoundFault) {
+        return undefined;
+      }
       throw error;
     }
   }
 
   async import(input: ResourceImportInput): Promise<ResourceImportResult | null> {
-    const explicit = resolveExplicitPhysicalId(input, 'DBProxyName');
+    const explicit = resolveExplicitPhysicalId(input, 'DBProxyEndpointName');
     if (explicit) {
       return this.buildImportResult(explicit);
     }
 
-    // Auto-lookup: paginated DescribeDBProxies + per-proxy ListTagsForResource.
     const client = this.getClient();
     let marker: string | undefined;
     do {
       const describe = await client.send(
-        new DescribeDBProxiesCommand({ Marker: marker, MaxRecords: 100 })
+        new DescribeDBProxyEndpointsCommand({ Marker: marker, MaxRecords: 100 })
       );
-      for (const proxy of describe.DBProxies ?? []) {
-        if (!proxy.DBProxyArn) continue;
+      for (const ep of describe.DBProxyEndpoints ?? []) {
+        if (!ep.DBProxyEndpointArn) continue;
         try {
           const tags = await client.send(
-            new ListTagsForResourceCommand({ ResourceName: proxy.DBProxyArn })
+            new ListTagsForResourceCommand({ ResourceName: ep.DBProxyEndpointArn })
           );
           if (matchesCdkPath(tags.TagList ?? [], input.cdkPath)) {
-            return this.buildImportResult(proxy.DBProxyName ?? '');
+            return this.buildImportResult(ep.DBProxyEndpointName ?? '');
           }
         } catch (error) {
           this.logger.debug(
-            `ListTagsForResource failed for ${proxy.DBProxyName}: ${error instanceof Error ? error.message : String(error)}`
+            `ListTagsForResource failed for ${ep.DBProxyEndpointName}: ${error instanceof Error ? error.message : String(error)}`
           );
         }
       }
@@ -419,64 +395,41 @@ export class RDSDBProxyProvider implements ResourceProvider {
     return null;
   }
 
-  /**
-   * Reads the AWS-current configuration. Drift comparator uses this as the
-   * authoritative snapshot for resources written under schema v3+.
-   */
   async readCurrentState(physicalId: string): Promise<Record<string, unknown> | undefined> {
     const client = this.getClient();
-    let proxy: unknown;
+    let ep: unknown;
     try {
-      const describe = await client.send(new DescribeDBProxiesCommand({ DBProxyName: physicalId }));
-      proxy = describe.DBProxies?.[0];
-      if (!proxy) return undefined;
+      const describe = await client.send(
+        new DescribeDBProxyEndpointsCommand({ DBProxyEndpointName: physicalId })
+      );
+      ep = describe.DBProxyEndpoints?.[0];
+      if (!ep) return undefined;
     } catch (error) {
-      if (error instanceof DBProxyNotFoundFault) return undefined;
+      if (error instanceof DBProxyEndpointNotFoundFault || error instanceof DBProxyNotFoundFault) {
+        return undefined;
+      }
       throw error;
     }
-    const p = proxy as {
+    const e = ep as {
+      DBProxyEndpointName?: string;
+      DBProxyEndpointArn?: string;
       DBProxyName?: string;
-      DBProxyArn?: string;
-      EngineFamily?: string;
-      RoleArn?: string;
       VpcSubnetIds?: string[];
       VpcSecurityGroupIds?: string[];
-      RequireTLS?: boolean;
-      IdleClientTimeout?: number;
-      DebugLogging?: boolean;
-      Auth?: Array<{
-        Description?: string;
-        UserName?: string;
-        AuthScheme?: string;
-        SecretArn?: string;
-        IAMAuth?: string;
-        ClientPasswordAuthType?: string;
-      }>;
+      TargetRole?: string;
     };
     const result: Record<string, unknown> = {
-      DBProxyName: p.DBProxyName,
-      EngineFamily: p.EngineFamily,
-      RoleArn: p.RoleArn,
-      VpcSubnetIds: p.VpcSubnetIds ?? [],
-      VpcSecurityGroupIds: p.VpcSecurityGroupIds ?? [],
-      RequireTLS: p.RequireTLS ?? false,
-      IdleClientTimeout: p.IdleClientTimeout,
-      DebugLogging: p.DebugLogging ?? false,
-      Auth: (p.Auth ?? []).map((a) => ({
-        Description: a.Description,
-        UserName: a.UserName,
-        AuthScheme: a.AuthScheme,
-        SecretArn: a.SecretArn,
-        IAMAuth: a.IAMAuth,
-        ClientPasswordAuthType: a.ClientPasswordAuthType,
-      })),
+      DBProxyEndpointName: e.DBProxyEndpointName,
+      DBProxyName: e.DBProxyName,
+      VpcSubnetIds: e.VpcSubnetIds ?? [],
+      VpcSecurityGroupIds: e.VpcSecurityGroupIds ?? [],
+      TargetRole: e.TargetRole ?? 'READ_WRITE',
     };
 
-    // Tags via ListTagsForResource.
-    if (p.DBProxyArn) {
+    if (e.DBProxyEndpointArn) {
       try {
         const tagResp = await client.send(
-          new ListTagsForResourceCommand({ ResourceName: p.DBProxyArn })
+          new ListTagsForResourceCommand({ ResourceName: e.DBProxyEndpointArn })
         );
         result['Tags'] = normalizeAwsTagsToCfn(tagResp.TagList ?? []);
       } catch (error) {
@@ -499,19 +452,26 @@ export class RDSDBProxyProvider implements ResourceProvider {
     resourceType: string,
     logicalId: string
   ): Promise<void> {
-    const client = this.getClient();
+    const oldMap = this.toTagMap(oldTags);
+    const newMap = this.toTagMap(newTags);
 
-    const arnCacheKey = `${physicalId}:DBProxyArn`;
+    // Reviewer minor fix: skip the ARN-resolution Describe entirely when
+    // there is no tag diff to apply.
+    const sameKeys = oldMap.size === newMap.size && [...oldMap.keys()].every((k) => newMap.has(k));
+    const sameValues = sameKeys && [...oldMap.entries()].every(([k, v]) => newMap.get(k) === v);
+    if (sameValues) return;
+
+    const client = this.getClient();
+    const arnCacheKey = `${physicalId}:DBProxyEndpointArn`;
     let arn = this.attributeCache.get(arnCacheKey) as string | undefined;
     if (!arn) {
       try {
         const describe = await client.send(
-          new DescribeDBProxiesCommand({ DBProxyName: physicalId })
+          new DescribeDBProxyEndpointsCommand({ DBProxyEndpointName: physicalId })
         );
-        arn = describe.DBProxies?.[0]?.DBProxyArn;
+        arn = describe.DBProxyEndpoints?.[0]?.DBProxyEndpointArn;
         if (arn) this.attributeCache.set(arnCacheKey, arn);
       } catch (error) {
-        // Can't tag without an ARN — log + skip.
         this.logger.debug(
           `Skipping tag diff for ${physicalId} (no ARN): ${error instanceof Error ? error.message : String(error)}`
         );
@@ -519,9 +479,6 @@ export class RDSDBProxyProvider implements ResourceProvider {
       }
     }
     if (!arn) return;
-
-    const oldMap = this.toTagMap(oldTags);
-    const newMap = this.toTagMap(newTags);
 
     const toRemove: string[] = [];
     const toAdd: Tag[] = [];
@@ -568,25 +525,24 @@ export class RDSDBProxyProvider implements ResourceProvider {
   }
 
   private async buildImportResult(physicalId: string): Promise<ResourceImportResult> {
-    // Recover attributes via DescribeDBProxies so the imported resource
-    // gets the same shape a fresh create() would produce.
     try {
       const describe = await this.getClient().send(
-        new DescribeDBProxiesCommand({ DBProxyName: physicalId })
+        new DescribeDBProxyEndpointsCommand({ DBProxyEndpointName: physicalId })
       );
-      const proxy = describe.DBProxies?.[0];
+      const ep = describe.DBProxyEndpoints?.[0];
       return {
         physicalId,
         attributes: {
-          DBProxyArn: proxy?.DBProxyArn ?? '',
-          Endpoint: proxy?.Endpoint ?? '',
-          VpcId: proxy?.VpcId ?? '',
+          Endpoint: ep?.Endpoint ?? '',
+          DBProxyEndpointArn: ep?.DBProxyEndpointArn ?? '',
+          IsDefault: ep?.IsDefault ?? false,
+          VpcId: ep?.VpcId ?? '',
         },
       };
     } catch {
       return {
         physicalId,
-        attributes: { DBProxyArn: '', Endpoint: '', VpcId: '' },
+        attributes: { Endpoint: '', DBProxyEndpointArn: '', IsDefault: false, VpcId: '' },
       };
     }
   }
