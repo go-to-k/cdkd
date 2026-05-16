@@ -89,10 +89,6 @@
       "description": "NAT Gateway destroy + dependent route cleanup (unconditional `waitUntilNatGatewayDeleted` on destroy)."
     },
     {
-      "tag": "partial-create-cleanup",
-      "description": "Partial-create cleanup: post-`Create*` wiring failure issues best-effort `Delete*` before re-throwing so the next deploy is not blocked by an AWS-side orphan."
-    },
-    {
       "tag": "rds-aurora-cluster-instance",
       "description": "RDS Aurora cluster + writer instance create/destroy with the 30-min wait budget + DBProxy/DBProxyTargetGroup family."
     },
@@ -259,6 +255,13 @@
       "name": "data-pipeline",
       "annotated": true,
       "scenarios": []
+    },
+    {
+      "name": "deletion-policy-retain",
+      "annotated": true,
+      "scenarios": [
+        "deletion-policy-retain"
+      ]
     },
     {
       "name": "docdb-neptune",
@@ -702,7 +705,9 @@
     {
       "scenario": "deletion-policy-retain",
       "description": "DeletionPolicy: Retain skip on destroy (schema v5 recorded value wins over template).",
-      "fixtures": []
+      "fixtures": [
+        "deletion-policy-retain"
+      ]
     },
     {
       "scenario": "drift-revert-roundtrip",
@@ -834,11 +839,6 @@
       ]
     },
     {
-      "scenario": "partial-create-cleanup",
-      "description": "Partial-create cleanup: post-`Create*` wiring failure issues best-effort `Delete*` before re-throwing so the next deploy is not blocked by an AWS-side orphan.",
-      "fixtures": []
-    },
-    {
       "scenario": "rds-aurora-cluster-instance",
       "description": "RDS Aurora cluster + writer instance create/destroy with the 30-min wait budget + DBProxy/DBProxyTargetGroup family.",
       "fixtures": [
@@ -883,9 +883,6 @@
       ]
     }
   ],
-  "orphanScenarios": [
-    "deletion-policy-retain",
-    "partial-create-cleanup"
-  ],
+  "orphanScenarios": [],
   "unannotatedFixtures": []
 }

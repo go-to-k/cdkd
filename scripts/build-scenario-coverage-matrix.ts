@@ -135,8 +135,19 @@ const KNOWN_SCENARIOS: Record<string, string> = {
     'Legacy v1 / v2 state schema auto-migrates on next write; old binary fails clearly on a newer schema.',
   'legacy-bucket-name-fallback':
     'New region-free `cdkd-state-{account}` vs legacy `cdkd-state-{account}-{region}` bucket fallback resolution.',
-  'partial-create-cleanup':
-    'Partial-create cleanup: post-`Create*` wiring failure issues best-effort `Delete*` before re-throwing so the next deploy is not blocked by an AWS-side orphan.',
+  // NOTE: `partial-create-cleanup` (post-`Create*` wiring failure issues
+  // best-effort `Delete*` before re-throwing — PRs #374 / #377 / #378 /
+  // #379 / #380) is INTENTIONALLY NOT a canonical scenario tag. The
+  // behavior is exercised end-to-end at the unit-test level
+  // (`tests/unit/provisioning/*-partial-create-cleanup.test.ts`, ~12
+  // providers covered), and mid-create-wiring failure injection on real
+  // AWS is impractical — there is no AWS-side way to deterministically
+  // reject `applyTags` / `PutIntegrationResponse` / `RegisterScalableTarget`
+  // mid-flight after the parent `Create*Command` already succeeded. Keeping
+  // the tag in the canonical taxonomy would surface as a permanent orphan
+  // on every regen, which dilutes the orphan-as-signal value of the
+  // matrix. The unit-test coverage IS the structural guarantee here; the
+  // matrix is the real-AWS regression layer above it.
   'deletion-policy-retain':
     'DeletionPolicy: Retain skip on destroy (schema v5 recorded value wins over template).',
 
