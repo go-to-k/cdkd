@@ -508,6 +508,10 @@ export class RDSDBProxyTargetGroupProvider implements ResourceProvider {
         } else if (target.Type === 'RDS_INSTANCE') {
           dbInstanceIdentifiers.push(id);
         }
+        // `RDS_SERVERLESS_ENDPOINT` targets are silently skipped — the
+        // CFn `AWS::RDS::DBProxyTargetGroup` schema has no input slot for
+        // them (only `DBClusterIdentifiers` / `DBInstanceIdentifiers`),
+        // so they can't drift on a cdkd-managed target group.
       }
     } catch (error) {
       if (
