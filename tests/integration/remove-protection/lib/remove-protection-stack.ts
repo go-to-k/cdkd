@@ -32,6 +32,12 @@ import * as autoscaling from 'aws-cdk-lib/aws-autoscaling';
  *                                ForceDelete=true on the bypass path
  *                                does not need to terminate instances.)
  *
+ * The L2 AutoScalingGroup synthesizes a launch-config-attached
+ * AWS::IAM::InstanceProfile under the hood (covers that orphan
+ * provider transitively).
+ *
+ * covers: AWS::IAM::InstanceProfile
+ *
  * Stack-level `terminationProtection` is intentionally NOT set on this
  * stack. Mixing it with `--remove-protection` would force the integ to
  * use the same flag for two semantically distinct bypasses; covering

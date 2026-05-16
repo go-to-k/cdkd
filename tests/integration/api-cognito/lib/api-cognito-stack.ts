@@ -14,6 +14,11 @@ import * as apigateway from 'aws-cdk-lib/aws-apigateway';
  * - API Gateway REST API with Cognito authorizer on methods
  * - CfnOutput resolution with Fn::Join for API URL
  * - Cross-service integration (Cognito + API Gateway + Lambda)
+ *
+ * covers: AWS::ApiGateway::Method
+ * covers: AWS::ApiGateway::Resource
+ * covers: AWS::ApiGateway::Stage
+ * covers: AWS::ApiGateway::Deployment
  */
 export class ApiCognitoStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {

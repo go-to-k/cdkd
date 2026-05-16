@@ -19,6 +19,11 @@ import * as apigateway from 'aws-cdk-lib/aws-apigateway';
  *   matching `IntegrationResponse`, otherwise AWS rejects with
  *   "Invalid mapping expression specified: ... [No method response
  *    exists for method.]" (pre-PR bug; regression-covered here).
+ *
+ * covers: AWS::ApiGateway::Method
+ * covers: AWS::ApiGateway::Resource
+ * covers: AWS::ApiGateway::Stage
+ * covers: AWS::ApiGateway::Deployment
  */
 export class ApiGatewayStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {

@@ -104,6 +104,13 @@
           },
           {
             "type": "command",
+            "command": ".claude/hooks/provider-integ-gate.sh",
+            "if": "Bash(git commit*)",
+            "timeout": 10,
+            "statusMessage": "Checking new provider registration has integ coverage..."
+          },
+          {
+            "type": "command",
             "command": ".claude/hooks/internal-pr-labels-gate.sh",
             "if": "Bash(git commit*)",
             "timeout": 10,

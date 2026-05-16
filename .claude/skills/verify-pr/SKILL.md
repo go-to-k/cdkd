@@ -58,6 +58,15 @@ Run each check and report pass/fail:
 5. **Documentation consistency**
    - Invoke `/check-docs` skill logic: verify docs match code changes
    - Check for stale references to removed code
+   - **Integ coverage matrix freshness**: when the diff touches `src/provisioning/register-providers.ts` OR adds / removes / modifies any file under `tests/integration/*/lib/*.ts` or `tests/integration/*/bin/*.ts`, regenerate `docs/integ-coverage.md` and `docs/_generated/integ-coverage.json` to keep the report aligned with the code:
+     ```bash
+     if git diff main...HEAD --name-only | grep -qE '^src/provisioning/register-providers\.ts$|^tests/integration/[^/]+/(lib|bin)/.+\.ts$'; then
+       vp run integ-coverage
+       git status --short docs/integ-coverage.md docs/_generated/integ-coverage.json
+     fi
+     ```
+     If `git status` reports either file as dirty, the contributor forgot to regenerate after their code change. Stage the regenerated output, amend / new-commit it onto the PR, and re-run `/check-docs` to refresh the docs marker.
+     The `provider-integ-gate.sh` PreToolUse hook blocks `git commit` when a new `registry.register('AWS::Foo::Bar', ...)` is added without integ coverage (literal type id, `Cfn<Type>(` L1 class, or `// allow-no-integ: <rationale>` carve-out) — but it does not enforce that the matrix snapshot itself is regenerated. This step closes that gap.
 
 6. **Leftover resources**
    - Resolve account ID via `aws sts get-caller-identity --query Account --output text`

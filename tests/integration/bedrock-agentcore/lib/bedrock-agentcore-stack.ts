@@ -16,6 +16,10 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
  * - CfnOutputs for Runtime ARNs
  *
  * Note: AgentCore may not be available in all regions.
+ *
+ * `agentcore.Runtime` (alpha L2) synthesizes AWS::BedrockAgentCore::Runtime.
+ *
+ * covers: AWS::BedrockAgentCore::Runtime
  */
 export class BedrockAgentcoreStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
