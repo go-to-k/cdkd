@@ -252,6 +252,55 @@ describe('DiffCalculator - intrinsic-aware diff', () => {
     expect(changes.get('Param')?.changeType).toBe('NO_CHANGE');
   });
 
+  it('both-sides Fn::Sub with the same var map but different key order stays NO_CHANGE', async () => {
+    // Var maps in `Fn::Sub`'s 2-arg form are `Record<string, intrinsic>`;
+    // key order is implementation-defined and differs between a synth-fresh
+    // object literal and a `JSON.parse`'d state record. The both-intrinsic
+    // comparator must be key-order-insensitive so an idempotent re-deploy
+    // doesn't spuriously fire UPDATE.
+    const state = baseState();
+    state.resources['Param'] = {
+      physicalId: 'TestStack-param',
+      resourceType: 'AWS::SSM::Parameter',
+      properties: {
+        Name: 'TestStack-param',
+        Value: {
+          'Fn::Sub': [
+            '${VarA}-${VarB}',
+            { VarA: { Ref: 'BucketA' }, VarB: { Ref: 'BucketB' } },
+          ],
+        },
+      },
+      attributes: {},
+    };
+
+    const template: CloudFormationTemplate = {
+      Resources: {
+        Param: {
+          Type: 'AWS::SSM::Parameter',
+          Properties: {
+            Name: 'TestStack-param',
+            Value: {
+              'Fn::Sub': [
+                '${VarA}-${VarB}',
+                // Same map, keys in reverse order — must still compare equal.
+                { VarB: { Ref: 'BucketB' }, VarA: { Ref: 'BucketA' } },
+              ],
+            },
+          },
+        },
+      },
+    };
+
+    const resolve = async (): Promise<unknown> => {
+      throw new Error('not found');
+    };
+
+    const calc = new DiffCalculator();
+    const changes = await calc.calculateDiff(state, template, resolve);
+    expect(changes.get('Param')?.changeType).toBe('NO_CHANGE');
+  });
+
   it('treats structurally-different intrinsics on both sides as changed', async () => {
     const state = baseState();
     state.resources['Param'] = {

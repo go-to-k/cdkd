@@ -365,14 +365,18 @@ export class DiffCalculator {
 
     const aIntrinsic = DiffCalculator.isIntrinsic(a);
     const bIntrinsic = DiffCalculator.isIntrinsic(b);
-    if (aIntrinsic && bIntrinsic) {
-      // Both intrinsics: structural compare
-      return JSON.stringify(a) === JSON.stringify(b);
-    }
-    if (aIntrinsic || bIntrinsic) {
-      // One side intrinsic, other side concrete: changed
+    if (aIntrinsic !== bIntrinsic) {
+      // One side intrinsic, other side concrete: changed.
       return false;
     }
+    // Both intrinsics OR both concrete: fall through to the standard
+    // array / object / primitive compare. For two intrinsics the
+    // object-compare path below walks the single intrinsic key and
+    // recursively compares its value (arrays positionally; nested
+    // objects by key membership, key-order-insensitive — which matters
+    // for `Fn::Sub`'s 2-arg form `[template, {VarA, VarB}]` where the
+    // variable map's key order can differ between a synth-fresh object
+    // literal and a `JSON.parse`'d state record).
 
     // Array check
     if (Array.isArray(a) && Array.isArray(b)) {
