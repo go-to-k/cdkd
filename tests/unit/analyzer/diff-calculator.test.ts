@@ -77,7 +77,7 @@ describe('DiffCalculator - intrinsic-aware diff', () => {
     expect(paramChange?.propertyChanges?.map((p) => p.path)).toContain('Value');
   });
 
-  it('without resolver, intrinsic wraps mask inner literal changes (legacy behavior)', async () => {
+  it('without resolver, intrinsic on one side and concrete on the other flags as UPDATE (fail-safe)', async () => {
     const state = baseState();
     state.resources['Parameter'] = {
       physicalId: 'TestStack-parameter',
@@ -103,11 +103,12 @@ describe('DiffCalculator - intrinsic-aware diff', () => {
 
     const calc = new DiffCalculator();
     const changes = await calc.calculateDiff(state, template);
-    // Without resolver, the existing isIntrinsic short-circuit returns "equal"
-    expect(changes.get('Parameter')?.changeType).toBe('NO_CHANGE');
+    // No resolver → template Value stays intrinsic, state side is concrete string;
+    // the comparator flags as not-equal so the UPDATE fires.
+    expect(changes.get('Parameter')?.changeType).toBe('UPDATE');
   });
 
-  it('falls back to unresolved value when resolver throws for a property', async () => {
+  it('unresolvable intrinsic on the template side flags as UPDATE so retargeted refs are not silently dropped', async () => {
     const state = baseState();
     state.resources['Parameter'] = {
       physicalId: 'TestStack-parameter',
@@ -137,8 +138,151 @@ describe('DiffCalculator - intrinsic-aware diff', () => {
 
     const calc = new DiffCalculator();
     const changes = await calc.calculateDiff(state, template, resolve);
-    // Resolver failure → keep unresolved → intrinsic treated as equal → NO_CHANGE
-    expect(changes.get('Parameter')?.changeType).toBe('NO_CHANGE');
+    // Resolver failure → keep unresolved → intrinsic on one side + concrete on
+    // the other ⇒ NOT equal ⇒ UPDATE. Pre-fix this silently reported NO_CHANGE
+    // and skipped IAM policy refresh after a refactor that changed an
+    // Fn::GetAtt target's logical ID.
+    expect(changes.get('Parameter')?.changeType).toBe('UPDATE');
+  });
+
+  it('flags as UPDATE when an IAM policy Fn::GetAtt target is rebound to a newly-introduced resource (bug regression)', async () => {
+    // Scenario: a refactor wraps the bucket in a Construct, so the bucket's
+    // logical ID changed (`OldBucket` → `Wrapper/NewBucket`). The IAM Policy
+    // resource itself kept the SAME logical ID, but its `Resource` field's
+    // Fn::GetAtt now points at the new bucket. State still has the resolved
+    // ARN of the old bucket. Best-effort resolution fails because the new
+    // bucket isn't in state yet → comparator must classify as UPDATE.
+    const state = baseState();
+    state.resources['Policy'] = {
+      physicalId: 'TestStack-policy',
+      resourceType: 'AWS::IAM::Policy',
+      properties: {
+        PolicyName: 'TestStack-policy',
+        Roles: ['TestStack-MyRole'],
+        PolicyDocument: {
+          Statement: [
+            {
+              Effect: 'Allow',
+              Action: ['s3:ListBucket'],
+              Resource: ['arn:aws:s3:::testStack-oldbucket'],
+            },
+          ],
+        },
+      },
+      attributes: {},
+    };
+
+    const template: CloudFormationTemplate = {
+      Resources: {
+        Policy: {
+          Type: 'AWS::IAM::Policy',
+          Properties: {
+            PolicyName: 'TestStack-policy',
+            Roles: ['TestStack-MyRole'],
+            PolicyDocument: {
+              Statement: [
+                {
+                  Effect: 'Allow',
+                  Action: ['s3:ListBucket'],
+                  Resource: [{ 'Fn::GetAtt': ['WrapperNewBucket', 'Arn'] }],
+                },
+              ],
+            },
+          },
+        },
+      },
+    };
+
+    // Resolver: WrapperNewBucket is NOT in state (will be created same deploy)
+    const resolve = async (value: unknown): Promise<unknown> => {
+      if (value === null || typeof value !== 'object') return value;
+      if (Array.isArray(value)) return Promise.all(value.map((v) => resolve(v)));
+      const obj = value as Record<string, unknown>;
+      if ('Fn::GetAtt' in obj) {
+        const [id] = obj['Fn::GetAtt'] as [string, string];
+        const res = state.resources[id];
+        if (!res) throw new Error(`GetAtt ${id} not found`);
+        return `arn:aws:s3:::${res.physicalId}`;
+      }
+      const out: Record<string, unknown> = {};
+      for (const [k, v] of Object.entries(obj)) out[k] = await resolve(v);
+      return out;
+    };
+
+    const calc = new DiffCalculator();
+    const changes = await calc.calculateDiff(state, template, resolve);
+    expect(changes.get('Policy')?.changeType).toBe('UPDATE');
+    expect(changes.get('Policy')?.propertyChanges?.map((p) => p.path)).toContain('PolicyDocument');
+  });
+
+  it('treats structurally-identical intrinsics on both sides as equal (state written with unresolved intrinsic)', async () => {
+    // Defensive: when state was written by an older cdkd that left the
+    // intrinsic unresolved (or the resolver could not resolve at deploy
+    // time), and the template still has the same intrinsic shape, the
+    // resource is unchanged and should report NO_CHANGE.
+    const state = baseState();
+    state.resources['Param'] = {
+      physicalId: 'TestStack-param',
+      resourceType: 'AWS::SSM::Parameter',
+      properties: {
+        Name: 'TestStack-param',
+        Value: { 'Fn::GetAtt': ['Bucket', 'Arn'] },
+      },
+      attributes: {},
+    };
+
+    const template: CloudFormationTemplate = {
+      Resources: {
+        Param: {
+          Type: 'AWS::SSM::Parameter',
+          Properties: {
+            Name: 'TestStack-param',
+            Value: { 'Fn::GetAtt': ['Bucket', 'Arn'] },
+          },
+        },
+      },
+    };
+
+    const resolve = async (): Promise<unknown> => {
+      throw new Error('not found');
+    };
+
+    const calc = new DiffCalculator();
+    const changes = await calc.calculateDiff(state, template, resolve);
+    expect(changes.get('Param')?.changeType).toBe('NO_CHANGE');
+  });
+
+  it('treats structurally-different intrinsics on both sides as changed', async () => {
+    const state = baseState();
+    state.resources['Param'] = {
+      physicalId: 'TestStack-param',
+      resourceType: 'AWS::SSM::Parameter',
+      properties: {
+        Name: 'TestStack-param',
+        Value: { 'Fn::GetAtt': ['OldBucket', 'Arn'] },
+      },
+      attributes: {},
+    };
+
+    const template: CloudFormationTemplate = {
+      Resources: {
+        Param: {
+          Type: 'AWS::SSM::Parameter',
+          Properties: {
+            Name: 'TestStack-param',
+            Value: { 'Fn::GetAtt': ['NewBucket', 'Arn'] },
+          },
+        },
+      },
+    };
+
+    const resolve = async (): Promise<unknown> => {
+      throw new Error('not found');
+    };
+
+    const calc = new DiffCalculator();
+    const changes = await calc.calculateDiff(state, template, resolve);
+    expect(changes.get('Param')?.changeType).toBe('UPDATE');
   });
 
   it('still detects plain property changes when resolver is provided', async () => {

@@ -326,14 +326,31 @@ export class DiffCalculator {
   /**
    * Deep equality check for values
    *
-   * When comparing state (resolved values) with template (unresolved intrinsics),
-   * treats intrinsic function nodes as "not comparable" and assumes equal.
-   * This check happens at each level of recursion, so only the specific value
-   * that IS an intrinsic gets skipped — sibling values are still compared normally.
+   * State stores resolved values (`"arn:aws:s3:::my-bucket"`); the synth
+   * template holds unresolved intrinsics (`{ "Fn::GetAtt": ["MyBucket", "Arn"] }`).
+   * Before reaching this comparator, `resolveBestEffort` already tried to
+   * resolve the template side against current state, so a remaining raw
+   * intrinsic typically means the resolver couldn't resolve it — most
+   * commonly because the intrinsic references a resource NOT YET in state
+   * (e.g., a newly-introduced resource the next deploy will CREATE).
    *
-   * Example: { Variables: { AZURE_REGION: "japaneast", SECRET_NAME: { "Fn::Join": ... } } }
-   * - AZURE_REGION: compared normally (string vs string)
-   * - SECRET_NAME: one side is intrinsic → treated as equal (skip)
+   * Two cases when an intrinsic still reaches here:
+   *
+   * 1. Both sides intrinsic: state was written by an older cdkd that didn't
+   *    fully resolve at deploy time. Structural compare suffices —
+   *    `Fn::GetAtt: [X, Arn]` matches `Fn::GetAtt: [X, Arn]` byte-for-byte.
+   *
+   * 2. One side intrinsic, other side concrete: the unresolvable intrinsic
+   *    points at something different from what's currently in state. Treat
+   *    as NOT equal so the resource is classified as UPDATE.
+   *
+   * Pre-fix this branch returned `true` (equal) for case 2, which silently
+   * dropped real diffs — e.g., when an IAM Policy's `Resource: Fn::GetAtt:
+   * [Bucket, Arn]` is rebound to a renamed bucket (logical ID changed
+   * because the construct path moved), the resolver couldn't find the new
+   * bucket in state and the policy stayed at the old bucket's ARN after
+   * deploy. The next CR invocation against the new bucket then failed with
+   * AccessDenied because the IAM Policy was never UPDATED.
    */
   private valuesEqual(a: unknown, b: unknown): boolean {
     // Strict equality check
@@ -346,10 +363,15 @@ export class DiffCalculator {
       return a === b;
     }
 
-    // If either side is an intrinsic function node, we can't compare
-    // (state has resolved value like "arn:...", template has { "Fn::GetAtt": [...] })
-    if (DiffCalculator.isIntrinsic(a) || DiffCalculator.isIntrinsic(b)) {
-      return true;
+    const aIntrinsic = DiffCalculator.isIntrinsic(a);
+    const bIntrinsic = DiffCalculator.isIntrinsic(b);
+    if (aIntrinsic && bIntrinsic) {
+      // Both intrinsics: structural compare
+      return JSON.stringify(a) === JSON.stringify(b);
+    }
+    if (aIntrinsic || bIntrinsic) {
+      // One side intrinsic, other side concrete: changed
+      return false;
     }
 
     // Array check
