@@ -264,6 +264,11 @@
       ]
     },
     {
+      "name": "diff-intrinsic-target-change",
+      "annotated": true,
+      "scenarios": []
+    },
+    {
       "name": "docdb-neptune",
       "annotated": true,
       "scenarios": []

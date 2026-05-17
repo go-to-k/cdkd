@@ -1695,6 +1695,7 @@
         "appsync",
         "batch",
         "composite-stack",
+        "diff-intrinsic-target-change",
         "drift-revert",
         "eventbridge",
         "export",
@@ -1721,6 +1722,9 @@
         "composite-stack": [
           "l2",
           "literal"
+        ],
+        "diff-intrinsic-target-change": [
+          "l2"
         ],
         "drift-revert": [
           "l2"
@@ -2244,6 +2248,7 @@
         "context-test",
         "cross-stack-references",
         "data-analytics",
+        "diff-intrinsic-target-change",
         "drift-revert",
         "event-driven",
         "export",
@@ -2289,6 +2294,9 @@
         "data-analytics": [
           "l2",
           "literal"
+        ],
+        "diff-intrinsic-target-change": [
+          "l2"
         ],
         "drift-revert": [
           "l2"
