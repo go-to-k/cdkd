@@ -294,19 +294,64 @@ export function resolveHttpApiAuthorizer(
 }
 
 /**
+ * Thrown by {@link resolveLambdaArn} when the authorizer's
+ * `AuthorizerUri` intrinsic does not resolve to a same-template Lambda
+ * (cross-stack reference, imported Lambda, hand-rolled `Fn::Sub` outside
+ * the invoke-ARN wrapper).
+ *
+ * Caught by {@link attachAuthorizers} and converted into a per-route
+ * `unsupported` flag — symmetric with how `route-discovery.ts` handles
+ * an unresolvable `IntegrationUri`. The route appears in the route
+ * table as `[501 Not Implemented]` and returns HTTP 501 + the
+ * `reason` at request time. The alternative ("attach no authorizer,
+ * leave route normal") would be **unsafe** — it would let a request
+ * hit a user-protected route without any auth check just because the
+ * authorizer Lambda lives in another stack.
+ *
+ * Private to this module: `attachAuthorizers` is the only legitimate
+ * consumer.
+ */
+class AuthorizerLambdaUnresolvableError extends RouteDiscoveryError {
+  // Extends RouteDiscoveryError so existing tests that catch the
+  // generic `RouteDiscoveryError` (e.g. direct calls to
+  // `resolveHttpApiAuthorizer` that bypass `attachAuthorizers`) keep
+  // working unchanged. `attachAuthorizers` matches on the more
+  // specific subclass first so the deferred-501 path takes priority
+  // over the generic catch.
+  readonly reason: string;
+  constructor(reason: string) {
+    super(reason);
+    this.reason = reason;
+    this.name = 'AuthorizerLambdaUnresolvableError';
+    // The parent's constructor calls setPrototypeOf back to
+    // RouteDiscoveryError.prototype (a well-known transpile-target
+    // workaround for `extends Error`); re-apply ours so
+    // `instanceof AuthorizerLambdaUnresolvableError` works in
+    // `attachAuthorizers`'s catch.
+    Object.setPrototypeOf(this, AuthorizerLambdaUnresolvableError.prototype);
+  }
+}
+
+/**
  * Resolve a Lambda ARN intrinsic to its logical ID. Delegates to the
  * shared `resolveLambdaArnIntrinsic` in `intrinsic-lambda-arn.ts`
  * (extracted in issue #286 Gaps 3 / 4); accepts `Ref` /
  * `Fn::GetAtt: [..., 'Arn']` / the REST v1 invoke-ARN `Fn::Join` wrapper
  * (now also used by CDK 2.x's `HttpLambdaAuthorizer` for HTTP API v2 —
  * verified via real `cdk synth` 2026-05-12) / the `Fn::Sub` invoke-ARN
- * wrapper (both 1-arg and 2-arg forms). Any other shape hard-errors with
- * the offending route + raw intrinsic named.
+ * wrapper (both 1-arg and 2-arg forms).
+ *
+ * On an unresolvable intrinsic throws {@link AuthorizerLambdaUnresolvableError}
+ * (caught by `attachAuthorizers` and converted into a per-route
+ * deferred-501) instead of the generic `RouteDiscoveryError`, so
+ * `cdkd local start-api` can boot against an app with a cross-stack
+ * authorizer Lambda — symmetric with the route-level `IntegrationUri`
+ * unresolvable case (issue #431).
  */
 function resolveLambdaArn(value: unknown, location: string): string {
   const outcome = resolveLambdaArnShared(value);
   if (outcome.kind === 'resolved') return outcome.logicalId;
-  throw new RouteDiscoveryError(
+  throw new AuthorizerLambdaUnresolvableError(
     `${location}: ${outcome.detail} (got ${shortJson(value)}). Only { Ref }, { Fn::GetAtt: [..., 'Arn'] }, the REST v1 invoke-ARN Fn::Join wrapper, and the Fn::Sub invoke-ARN wrapper are supported.`
   );
 }
@@ -536,6 +581,26 @@ export function attachAuthorizers(
       const authorizer = detectAuthorizer(route, stack);
       out.push({ route, ...(authorizer && { authorizer }) });
     } catch (err) {
+      // Authorizer Lambda Arn unresolvable (cross-stack / imported /
+      // unsupported intrinsic shape): flip the route to `unsupported`
+      // with the resolver's reason instead of aborting boot. Mirrors
+      // route-discovery.ts's treatment of an unresolvable
+      // `IntegrationUri` so authorizer-protected routes degrade to
+      // HTTP 501 + reason at request time rather than blocking every
+      // other route on the API (issue #431). The alternative — leave
+      // the route normal with no authorizer attached — would silently
+      // expose a user-protected route, so we err on the safe side.
+      if (err instanceof AuthorizerLambdaUnresolvableError) {
+        out.push({
+          route: {
+            ...route,
+            unsupported: {
+              reason: `${route.declaredAt}: authorizer Lambda Arn unresolvable — ${err.reason}`,
+            },
+          },
+        });
+        continue;
+      }
       errors.push(err instanceof Error ? err.message : String(err));
     }
   }

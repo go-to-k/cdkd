@@ -32,6 +32,13 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
  *     public URL) — exercises the deferred-error class. cdkd boots
  *     successfully with a [warn] line; verify.sh asserts the route
  *     returns 501 + `reason` body without invoking any Lambda.
+ *   - REST v1:     GET /v1/cross-stack-auth (CUSTOM authorizer whose
+ *     AuthorizerUri is overridden via `addPropertyOverride` to a
+ *     cross-stack-shape `Fn::Sub: '${ImportedAuthFn.Arn}'` that cdkd
+ *     cannot resolve locally) — exercises the authorizer-Lambda-Arn
+ *     deferred-501 path added in issue #431. cdkd boots successfully
+ *     with the authorizer-attach failure deferred to request time;
+ *     verify.sh asserts the route returns 501 + `reason` body.
  *   - Function URL on a separate Lambda: ANY /{proxy+}
  *
  * PR 8b extension: a Lambda REQUEST authorizer guards `/protected`. The
@@ -157,6 +164,40 @@ export class LocalStartApiStack extends cdk.Stack {
         httpMethod: 'GET',
         proxy: true,
       })
+    );
+
+    // Authorizer Lambda Arn unresolvable (issue #431): build a CUSTOM
+    // REQUEST authorizer pointing at a same-stack Lambda, then override
+    // its synthesized `AuthorizerUri` to a cross-stack-shape
+    // `Fn::Sub: '${ImportedAuthFn.Arn}'` that cdkd cannot resolve
+    // locally. cdkd's authorizer-resolver hits the unresolvable Arn,
+    // flips the route to deferred-error unsupported, boot continues,
+    // HTTP 501 + reason at request time. The L1 override pattern lets
+    // us fixture this without spinning up a separate stack.
+    const crossStackAuthHandler = new lambda.Function(this, 'CrossStackAuthFn', {
+      runtime: lambda.Runtime.NODEJS_20_X,
+      handler: 'index.handler',
+      // Reuse the existing lambda-authorizer asset — never actually
+      // invoked locally because the route 501s before the authorizer
+      // pass.
+      code: lambda.Code.fromAsset(path.join(__dirname, '../lambda-authorizer')),
+      timeout: cdk.Duration.seconds(10),
+    });
+    const crossStackAuth = new apigw.RequestAuthorizer(this, 'CrossStackAuth', {
+      handler: crossStackAuthHandler,
+      identitySources: [apigw.IdentitySource.header('Authorization')],
+      resultsCacheTtl: cdk.Duration.seconds(0),
+    });
+    // Override the synthesized AuthorizerUri to an unresolvable shape.
+    (crossStackAuth.node.defaultChild as apigw.CfnAuthorizer).addPropertyOverride(
+      'AuthorizerUri',
+      { 'Fn::Sub': '${ImportedAuthFn.Arn}' }
+    );
+    const crossStackAuthRoute = v1.addResource('cross-stack-auth');
+    crossStackAuthRoute.addMethod(
+      'GET',
+      new apigw.LambdaIntegration(restHandler, { proxy: true }),
+      { authorizer: crossStackAuth, authorizationType: apigw.AuthorizationType.CUSTOM }
     );
 
     // Function URL on a separate Lambda.
