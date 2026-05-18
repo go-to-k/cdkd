@@ -44,7 +44,7 @@ Registered without an integ fixture, with an explicit `// allow-no-integ: <ratio
 | Resource Type | Integ Fixture(s) |
 |---|---|
 | `AWS::ApiGateway::Account` | [`apigateway`](../tests/integration/apigateway/) (literal) |
-| `AWS::ApiGateway::Authorizer` | [`api-cognito`](../tests/integration/api-cognito/) (l1) |
+| `AWS::ApiGateway::Authorizer` | [`api-cognito`](../tests/integration/api-cognito/) (l1)<br>[`local-start-api`](../tests/integration/local-start-api/) (l2) |
 | `AWS::ApiGateway::Deployment` | [`api-cognito`](../tests/integration/api-cognito/) (literal)<br>[`apigateway`](../tests/integration/apigateway/) (literal) |
 | `AWS::ApiGateway::Method` | [`api-cognito`](../tests/integration/api-cognito/) (literal)<br>[`apigateway`](../tests/integration/apigateway/) (literal) |
 | `AWS::ApiGateway::Resource` | [`api-cognito`](../tests/integration/api-cognito/) (literal)<br>[`apigateway`](../tests/integration/apigateway/) (literal) |
