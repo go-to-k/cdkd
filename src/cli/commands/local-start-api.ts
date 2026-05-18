@@ -1324,9 +1324,16 @@ function parsePerLambdaConcurrency(raw: string): number {
  * One booted HTTP server tied to a single API surface (issue #260).
  * The CLI keeps an array of these to drive per-server route tables,
  * shutdown, and hot-reload state swaps.
+ *
+ * `group` is intentionally **mutable** — hot-reload swaps the group
+ * in place after `setServerState` so post-reload route-table reprints
+ * (`printPerServerRouteTables(servers)`) reflect the new routes,
+ * including any new `mockCors` / `unsupported` classifications.
+ * Pre-fix the field was readonly and the printed table after reload
+ * always showed the boot-time routes.
  */
 interface BootedApiServer {
-  readonly group: ApiServerGroup;
+  group: ApiServerGroup;
   readonly server: StartedApiServer;
 }
 
@@ -1471,6 +1478,11 @@ async function reloadAllServers(args: {
       corsConfigByApiId: material.corsConfigByApiId,
     };
     const previousState = booted.server.setServerState(newState);
+    // Update the BootedApiServer's `group` in place so post-reload
+    // `printPerServerRouteTables(servers)` reads the new routes,
+    // including any new mockCors / unsupported classifications. Pre-fix
+    // the printed table always reflected the boot-time routes.
+    booted.group = group;
     // Dispose the previous pool in the background. `pool.dispose()`
     // waits for in-flight requests to drain (30s per-entry cap).
     void previousState.pool.dispose().catch((err) => {
@@ -1488,16 +1500,12 @@ async function reloadAllServers(args: {
   // Re-print the per-server route table when any routes changed.
   // Cheap heuristic: always re-print after a successful reload — the
   // user is watching for the diff and a stable table reassures them
-  // that the swap landed.
+  // that the swap landed. `booted.group` was mutated above so this
+  // reflects the post-swap routes (including any new mockCors /
+  // unsupported classifications introduced mid-edit).
   printPerServerRouteTables(servers);
-  // Use `material.routes` (= the just-swapped set), not
-  // `servers[].group.routes` (= the boot-time set on the readonly
-  // BootedApiServer, never updated on reload — separate pre-existing
-  // issue with printPerServerRouteTables shown above), so a new
-  // unsupported integration introduced mid-edit is warned on the
-  // next reload firing.
   warnUnsupportedRoutes(
-    material.routes.map((r) => r.route),
+    servers.flatMap((s) => s.group.routes.map((r) => r.route)),
     logger
   );
 }

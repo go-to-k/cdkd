@@ -368,7 +368,13 @@ function extractRestV1MockCorsConfig(
   if (!first || typeof first !== 'object') return undefined;
   const entry = first as Record<string, unknown>;
   const responseParameters = entry['ResponseParameters'];
-  if (!responseParameters || typeof responseParameters !== 'object') return undefined;
+  if (
+    !responseParameters ||
+    typeof responseParameters !== 'object' ||
+    Array.isArray(responseParameters)
+  ) {
+    return undefined;
+  }
 
   const headers: Record<string, string> = {};
   let sawAnyHeader = false;
@@ -661,10 +667,18 @@ function discoverHttpApiRoute(
  * Discover the synthetic `ANY /{proxy+}` route from an
  * `AWS::Lambda::Url` resource.
  *
- * C12: keep only `AuthType === 'NONE' && InvokeMode !== 'RESPONSE_STREAM'`.
- * Other shapes hard-fail at discovery — IAM auth needs SigV4 verification
- * we cannot do locally, and RESPONSE_STREAM uses a streaming response shape
- * (`InvokeWithResponseStream`) the RIE container does not implement.
+ * Per-shape classification:
+ *   - `AuthType === 'NONE'` + `InvokeMode !== 'RESPONSE_STREAM'` → normal route.
+ *   - `AuthType !== 'NONE'` (e.g. `AWS_IAM`) → deferred-error
+ *     unsupported. Boot proceeds; HTTP 501 + `reason` at request time.
+ *     IAM auth would need SigV4 verification cdkd cannot emulate.
+ *   - `InvokeMode === 'RESPONSE_STREAM'` → deferred-error unsupported.
+ *     The RIE container does not implement `InvokeWithResponseStream`.
+ *
+ * The Lambda Arn intrinsic resolution still **hard-errors** when it
+ * cannot pin down a same-template Lambda — Function URLs have no other
+ * identifying info (no RouteKey / RestApi parent), so the route would
+ * be uninformative as a deferred-501 entry.
  */
 function discoverFunctionUrl(
   logicalId: string,
