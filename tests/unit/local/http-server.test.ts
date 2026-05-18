@@ -424,3 +424,123 @@ describe('startApiServer — JWKS pass-through warn fires once per server (must-
     }
   });
 });
+
+describe('startApiServer — unsupported route (deferred 501)', () => {
+  beforeEach(() => {
+    invokeRieMock.mockReset();
+  });
+
+  it('returns HTTP 501 + reason in JSON body without invoking any Lambda', async () => {
+    const route: RouteWithAuth = {
+      route: {
+        method: 'GET',
+        pathPattern: '/admin',
+        lambdaLogicalId: '',
+        source: 'rest-v1',
+        apiVersion: 'v1',
+        stage: 'prod',
+        apiLogicalId: 'Api',
+        apiStackName: 'S',
+        declaredAt: 'S/AdminMethod',
+        unsupported: {
+          reason: 'S/AdminMethod: MOCK integration is not emulated (only the CORS preflight subset).',
+        },
+      },
+    };
+    const pool = makePool();
+    const server = await startApiServer({
+      state: { routes: [route], pool, corsConfigByApiId: new Map() },
+      rieTimeoutMs: 1000,
+      host: '127.0.0.1',
+      port: 0,
+    });
+    try {
+      const url = `http://${server.host}:${server.port}/admin`;
+      const r = await fetch(url);
+      expect(r.status).toBe(501);
+      const body = (await r.json()) as { message: string; reason: string };
+      expect(body.message).toBe('Not Implemented');
+      expect(body.reason).toMatch(/MOCK integration is not emulated/);
+      // Crucial: no container acquire, no Lambda invoke.
+      expect(invokeRieMock).not.toHaveBeenCalled();
+      expect((pool.acquire as ReturnType<typeof vi.fn>)).not.toHaveBeenCalled();
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('does not run the authorizer pass on an unsupported route', async () => {
+    // Reach for the authorizer-attached route fixture, then flag it
+    // unsupported. The authorizer Lambda must NOT be invoked (we
+    // short-circuit before the authorizer pass).
+    const baseRoute = makeRequestRoute({ authorizerLogicalId: 'Auth' });
+    const route: RouteWithAuth = {
+      ...baseRoute,
+      route: { ...baseRoute.route, unsupported: { reason: 'flagged for testing' } },
+    };
+    const server = await startApiServer({
+      state: { routes: [route], pool: makePool(), corsConfigByApiId: new Map() },
+      rieTimeoutMs: 1000,
+      host: '127.0.0.1',
+      port: 0,
+      authorizerCache: createAuthorizerCache(),
+    });
+    try {
+      const r = await fetch(`http://${server.host}:${server.port}/items/42`, {
+        headers: { authorization: 'Bearer x' },
+      });
+      expect(r.status).toBe(501);
+      expect(invokeRieMock).not.toHaveBeenCalled();
+    } finally {
+      await server.close();
+    }
+  });
+});
+
+describe('startApiServer — mockCors preflight', () => {
+  beforeEach(() => {
+    invokeRieMock.mockReset();
+  });
+
+  it('returns the captured status + headers on OPTIONS without invoking any Lambda', async () => {
+    const route: RouteWithAuth = {
+      route: {
+        method: 'OPTIONS',
+        pathPattern: '/items',
+        lambdaLogicalId: '',
+        source: 'rest-v1',
+        apiVersion: 'v1',
+        stage: 'prod',
+        apiLogicalId: 'Api',
+        apiStackName: 'S',
+        declaredAt: 'S/CorsMethod',
+        mockCors: {
+          statusCode: 204,
+          headers: {
+            'Access-Control-Allow-Origin': '*',
+            'Access-Control-Allow-Methods': 'OPTIONS,GET,POST',
+            'Access-Control-Allow-Headers': 'Content-Type,Authorization',
+          },
+        },
+      },
+    };
+    const pool = makePool();
+    const server = await startApiServer({
+      state: { routes: [route], pool, corsConfigByApiId: new Map() },
+      rieTimeoutMs: 1000,
+      host: '127.0.0.1',
+      port: 0,
+    });
+    try {
+      const r = await fetch(`http://${server.host}:${server.port}/items`, { method: 'OPTIONS' });
+      expect(r.status).toBe(204);
+      expect(r.headers.get('access-control-allow-origin')).toBe('*');
+      expect(r.headers.get('access-control-allow-methods')).toBe('OPTIONS,GET,POST');
+      expect(r.headers.get('access-control-allow-headers')).toBe('Content-Type,Authorization');
+      expect(invokeRieMock).not.toHaveBeenCalled();
+      expect((pool.acquire as ReturnType<typeof vi.fn>)).not.toHaveBeenCalled();
+    } finally {
+      await server.close();
+    }
+  });
+});

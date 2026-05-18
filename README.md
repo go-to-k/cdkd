@@ -459,8 +459,18 @@ One server per discovered API — authorizers, CORS configs, and stage
 variables stay scoped to the owning API. Supports REST v1 + HTTP API +
 Function URL with AWS_PROXY integrations; Lambda TOKEN / REQUEST,
 Cognito User Pool, and HTTP v2 JWT authorizers (JWKS-verified); CORS
-preflight; hot reload via `--watch`; deploy-state-backed env var
-substitution via `--from-state`.
+preflight (HTTP API v2 `CorsConfiguration` + REST v1 OPTIONS MOCK
+preflight from `defaultCorsPreflightOptions`); hot reload via `--watch`;
+deploy-state-backed env var substitution via `--from-state`.
+
+Routes whose integration cdkd cannot emulate (non-AWS_PROXY REST v1
+types other than the MOCK CORS preflight subset, HTTP API v2 service
+integrations, WebSocket APIs, Function URLs with IAM auth or
+RESPONSE_STREAM, cross-stack Lambda Arn references) **do not block
+boot** — the server starts with a per-route `[warn]` summary and
+returns HTTP 501 + the reason in the JSON body if and when the route is
+hit. This lets you run the rest of your API surface locally while the
+unsupported routes stay on the deployed API.
 
 ### `local run-task`
 

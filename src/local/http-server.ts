@@ -248,6 +248,25 @@ async function handleRequest(
     writeError(res, 404, '{"message":"Not Found"}');
     return;
   }
+
+  // Synthetic CORS preflight (REST v1 MOCK preflight): respond with
+  // the captured status + headers directly, no Lambda invocation. Runs
+  // BEFORE the authorizer pass — preflight requests do not carry
+  // credentials per the CORS spec.
+  if (match.route.mockCors) {
+    writeMockCorsPreflight(res, match.route.mockCors);
+    return;
+  }
+
+  // Unsupported route — discovered with enough structure to match
+  // (method + path), but no Lambda dispatch is possible. Surface the
+  // reason as HTTP 501 so the user sees exactly what went wrong WHEN
+  // they hit the route, while the rest of the API surface stays up.
+  if (match.route.unsupported) {
+    writeNotImplemented(res, match.route.unsupported.reason);
+    return;
+  }
+
   // Find the authorizer attached to the matched route (if any).
   const matchedEntry = state.routes.find(
     (r) => r.route.declaredAt === match.route.declaredAt && r.route.method === match.route.method
@@ -874,6 +893,39 @@ function writeError(
   res.setHeader('content-type', 'application/json');
   res.setHeader('content-length', String(Buffer.byteLength(body, 'utf-8')));
   res.end(body);
+}
+
+/**
+ * Write the 501 Not Implemented response surfaced for routes the
+ * discovery layer flagged as `unsupported`. The integration's reason
+ * (e.g. "MOCK integration is not emulated", "WebSocket APIs are not
+ * supported") is echoed in the body so the user gets a precise pointer
+ * at first hit instead of a generic 502.
+ */
+function writeNotImplemented(res: ServerResponse, reason: string): void {
+  const body = JSON.stringify({ message: 'Not Implemented', reason });
+  res.statusCode = 501;
+  res.setHeader('content-type', 'application/json');
+  res.setHeader('content-length', String(Buffer.byteLength(body, 'utf-8')));
+  res.end(body);
+}
+
+/**
+ * Write the canonical CORS preflight response derived from a REST v1
+ * MOCK Method's `Integration.IntegrationResponses[0].ResponseParameters`.
+ * Headers are emitted verbatim — the discovery layer already stripped
+ * AWS's literal single-quote wrappers and dropped any non-literal
+ * (intrinsic-valued) entries.
+ */
+function writeMockCorsPreflight(
+  res: ServerResponse,
+  preflight: { statusCode: number; headers: Record<string, string> }
+): void {
+  res.statusCode = preflight.statusCode;
+  for (const [name, value] of Object.entries(preflight.headers)) {
+    res.setHeader(name, value);
+  }
+  res.end();
 }
 
 // Keep DiscoveredRoute import alive for downstream consumers reading

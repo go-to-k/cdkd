@@ -24,6 +24,14 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
  *   - HTTP API:    GET /protected (authorizer-gated, PR 8b)
  *   - REST v1:     ANY /v1/{proxy+} (stage 'prod' with `Variables`
  *     so the integ can assert `event.stageVariables.STAGE === 'prod'`)
+ *     plus `defaultCorsPreflightOptions` so CDK auto-emits OPTIONS
+ *     Methods backed by MOCK integrations on every resource — exercises
+ *     the REST v1 MOCK CORS preflight subset (verify.sh asserts a 204
+ *     response with the canonical CORS headers, no Lambda invoke).
+ *   - REST v1:     GET /v1/unsupported (HTTP_PROXY integration to a
+ *     public URL) — exercises the deferred-error class. cdkd boots
+ *     successfully with a [warn] line; verify.sh asserts the route
+ *     returns 501 + `reason` body without invoking any Lambda.
  *   - Function URL on a separate Lambda: ANY /{proxy+}
  *
  * PR 8b extension: a Lambda REQUEST authorizer guards `/protected`. The
@@ -123,10 +131,33 @@ export class LocalStartApiStack extends cdk.Stack {
         stageName: 'prod',
         variables: { STAGE: 'prod', LOG_LEVEL: 'info' },
       },
+      // CDK auto-emits OPTIONS Methods backed by MOCK integrations on
+      // every resource. Their `IntegrationResponses[0].ResponseParameters`
+      // are literal `method.response.header.Access-Control-Allow-*` pairs
+      // — exactly the shape `cdkd local start-api` extracts and serves
+      // directly as a 204 preflight (no Lambda invoke).
+      defaultCorsPreflightOptions: {
+        allowOrigins: apigw.Cors.ALL_ORIGINS,
+        allowMethods: ['GET', 'POST', 'OPTIONS'],
+        allowHeaders: ['Content-Type', 'X-Demo-Header'],
+      },
     });
     const v1 = restApi.root.addResource('v1');
     const proxy = v1.addResource('{proxy+}');
     proxy.addMethod('ANY', new apigw.LambdaIntegration(restHandler, { proxy: true }));
+
+    // Deferred-error class: HTTP_PROXY integration (REST v1). cdkd cannot
+    // emulate non-AWS_PROXY REST v1 integrations, so this route becomes
+    // an `unsupported` route at discovery — boot proceeds, HTTP 501 fires
+    // at request time. verify.sh asserts both behaviors.
+    const unsupported = v1.addResource('unsupported');
+    unsupported.addMethod(
+      'GET',
+      new apigw.HttpIntegration('https://example.com/never-actually-hit', {
+        httpMethod: 'GET',
+        proxy: true,
+      })
+    );
 
     // Function URL on a separate Lambda.
     const urlHandler = new lambda.Function(this, 'UrlHandler', {
