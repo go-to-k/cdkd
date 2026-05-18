@@ -42,6 +42,14 @@ input=$(cat 2>/dev/null || true)
 cmd=$(printf '%s' "$input" | jq -r '.tool_input.command // ""' 2>/dev/null || echo "")
 hook_cwd=$(printf '%s' "$input" | jq -r '.cwd // ""' 2>/dev/null || echo "")
 
+# Optional entry log. Surface that the hook was invoked AT ALL via the
+# Claude Code harness; helps debug matcher-level bypasses (issue #433)
+# where the `if:` predicate in settings.json fails to fire for a form
+# the hook script itself would handle correctly. Off by default.
+if [[ -n "${CDKD_HOOK_DEBUG:-}" ]]; then
+  echo "[debug] integ-coverage-matrix-gate: entered (cmd=$cmd, cwd=$hook_cwd)" >&2
+fi
+
 # Only gate git commit — anything else passes through.
 if ! printf '%s' "$cmd" | grep -qE '\bgit[^|;&]*\bcommit\b'; then
   exit 0

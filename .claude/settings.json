@@ -112,7 +112,7 @@
           {
             "type": "command",
             "command": ".claude/hooks/integ-coverage-matrix-gate.sh",
-            "if": "Bash(git commit*)",
+            "if": "Bash(git commit*) or Bash(git -C * commit*)",
             "timeout": 15,
             "statusMessage": "Checking integ-coverage matrix is in sync..."
           },
