@@ -290,6 +290,60 @@ stage_all "$D"
 run_hook "$D"; rc=$?
 if [[ $rc -eq 2 ]]; then ok; else ng 2 "$rc"; fi
 
+# --- Case 13: PR #432 bypass form (`git -C <abs> commit -F /tmp/file`) -> blocks ---
+# Pre-issue-#433 the hook script handled this form correctly when invoked
+# directly (the inner `git[^|;&]*commit` regex matches `git -C /abs commit`),
+# but the `if:` matcher in .claude/settings.json was `Bash(git commit*)`
+# which does NOT match commands starting with `git -C <path> commit ...`
+# — so the harness never invoked the hook for PR #432's first commit.
+# This test pins the hook-script behavior for the bypass form so that
+# even if the matcher is broadened (the actual fix), a regression in the
+# hook script itself still surfaces here.
+case_label "PR #432 bypass form (git -C <abs> commit -F /tmp/msg) -> blocks"
+D="$TMPDIR/case13"; init_repo "$D"
+mkdir -p "$D/tests/integration/foo/lib"
+cat > "$D/tests/integration/foo/lib/foo-stack.ts" <<'EOF'
+import * as cdk from 'aws-cdk-lib';
+export class FooStack extends cdk.Stack {}
+EOF
+stage_all "$D"
+echo "test msg" > "$TMPDIR/msg-case13"
+run_hook "$D" "git -C $D commit -F $TMPDIR/msg-case13"; rc=$?
+if [[ $rc -eq 2 ]]; then ok; else ng 2 "$rc"; fi
+
+# --- Case 14: chained `git -C add ; git -C commit` form -> blocks ---
+# The other half of the PR #432 hypothesis: harness-issued chains of
+# `git -C <abs> add <files>; git -C <abs> commit -F /tmp/msg` need to
+# block when the staged set drifts the matrix.
+case_label "chained 'git -C add; git -C commit -F' form -> blocks"
+D="$TMPDIR/case14"; init_repo "$D"
+mkdir -p "$D/tests/integration/foo/lib"
+cat > "$D/tests/integration/foo/lib/foo-stack.ts" <<'EOF'
+import * as cdk from 'aws-cdk-lib';
+export class FooStack extends cdk.Stack {}
+EOF
+stage_all "$D"
+echo "test msg" > "$TMPDIR/msg-case14"
+chained="git -C $D add tests/integration/foo/lib/foo-stack.ts; git -C $D commit -F $TMPDIR/msg-case14"
+run_hook "$D" "$chained"; rc=$?
+if [[ $rc -eq 2 ]]; then ok; else ng 2 "$rc"; fi
+
+# --- Case 15: CDKD_HOOK_DEBUG=1 surfaces an entry log line ---
+# Issue #433 acceptance criteria (optional): a [debug] log line at hook
+# entry so future bypasses surface visibly.
+case_label "CDKD_HOOK_DEBUG=1 surfaces entry log"
+D="$TMPDIR/case15"; init_repo "$D"
+mkdir -p "$D/tests/integration/foo/lib"
+echo 'export class FooStack {}' > "$D/tests/integration/foo/lib/foo-stack.ts"
+stage_all "$D"
+payload=$(printf '{"tool_input":{"command":"git -C %s commit -m test"},"cwd":"%s"}' "$D" "$D")
+stderr_out=$(CDKD_HOOK_DEBUG=1 printf '%s' "$payload" | CDKD_HOOK_DEBUG=1 bash "$HOOK" 2>&1 >/dev/null)
+if printf '%s' "$stderr_out" | grep -q '\[debug\] integ-coverage-matrix-gate: entered'; then
+  ok
+else
+  ng_msg "expected debug entry log; got: $stderr_out"
+fi
+
 echo
 echo "integ-coverage-matrix-gate.test.sh: $PASS passed, $FAIL failed"
 [[ $FAIL -eq 0 ]]
