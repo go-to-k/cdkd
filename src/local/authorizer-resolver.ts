@@ -516,6 +516,15 @@ export function attachAuthorizers(
   const errors: string[] = [];
 
   for (const route of routes) {
+    // Skip deferred-error / mockCors routes — they never reach the
+    // authorizer pass at request time (the http-server short-circuits
+    // before it), and a route flagged unsupported for AuthorizationType
+    // / AuthType (e.g. Function URL with AWS_IAM) would otherwise
+    // hard-error here instead of surfacing the cleaner 501.
+    if (route.unsupported || route.mockCors) {
+      out.push({ route });
+      continue;
+    }
     const stack = stackByRoute.get(route.declaredAt);
     if (!stack) {
       // This shouldn't happen — every route's declaredAt has a stack

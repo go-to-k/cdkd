@@ -130,24 +130,55 @@ echo "    HTTP API v2: ${PORT_HTTP}"
 echo "    REST API v1: ${PORT_REST}"
 echo "    Function URL: ${PORT_FNURL}"
 
-# Verify the route table contains every route. Use plain `grep -F` so
-# the `{proxy+}` curly-braces and slashes don't need to be escaped.
+# Verify the route table contains every route. Method-column width
+# varies per server (REST v1 with OPTIONS preflight rows has a wider
+# method column than HTTP API v2), so match on `<METHOD>\s+<path>`
+# regex instead of fixed-width prefixes. `{`, `}`, `+` in path
+# patterns need regex escaping.
 echo "==> Asserting discovered routes"
 EXPECTED_ROUTES=(
   "GET     /items"
   "POST    /items"
-  "GET     /items/{id}"
+  "GET     /items/\\{id\\}"
   "GET     /protected"
-  "ANY     /v1/{proxy+}"
-  "ANY     /{proxy+}"
+  "ANY     /v1/\\{proxy\\+\\}"
+  "GET     /v1/unsupported"
+  "OPTIONS /v1/\\{proxy\\+\\}"
+  "ANY     /\\{proxy\\+\\}"
 )
 for line in "${EXPECTED_ROUTES[@]}"; do
-  if ! grep -F "${line}" "${LOG_FILE}" >/dev/null; then
-    echo "FAIL: missing route in route table: ${line}"
+  # Replace runs of spaces in the spec with `\s+` so the assertion
+  # is tolerant of the per-server method-column width.
+  pattern=$(echo "${line}" | sed -E 's/[[:space:]]+/[[:space:]]+/g')
+  if ! grep -E "${pattern}" "${LOG_FILE}" >/dev/null; then
+    echo "FAIL: missing route in route table: ${line} (pattern: ${pattern})"
     cat "${LOG_FILE}"
     exit 1
   fi
 done
+
+# The deferred-error route table label and the per-route startup warn.
+# The defaultCorsPreflightOptions OPTIONS Method should appear with the
+# [MOCK CORS preflight] label; the HTTP_PROXY GET on /v1/unsupported
+# should appear with the [501 Not Implemented] label.
+echo "==> Asserting deferred-route table labels"
+if ! grep -F "[MOCK CORS preflight]" "${LOG_FILE}" >/dev/null; then
+  echo "FAIL: route table did not include [MOCK CORS preflight] label."
+  cat "${LOG_FILE}"
+  exit 1
+fi
+if ! grep -F "[501 Not Implemented]" "${LOG_FILE}" >/dev/null; then
+  echo "FAIL: route table did not include [501 Not Implemented] label."
+  cat "${LOG_FILE}"
+  exit 1
+fi
+# Startup warn summary: one [warn] line up front for every unsupported
+# route. The HTTP_PROXY route's reason names the integration type.
+if ! grep -i "HTTP 501 Not Implemented when hit" "${LOG_FILE}" >/dev/null; then
+  echo "FAIL: missing startup warn summary for unsupported routes."
+  cat "${LOG_FILE}"
+  exit 1
+fi
 
 # Smoke-test the routes via curl. The Items handler returns a small JSON
 # body; greedy proxy returns a constant; FunctionURL returns a constant.
@@ -236,6 +267,52 @@ curl_assert "GET /protected (allow)" \
   "http://127.0.0.1:${PORT_HTTP}/protected" \
   '"protected":true' \
   -H 'Authorization: Bearer let-me-in'
+
+# REST v1 MOCK CORS preflight: the `defaultCorsPreflightOptions` on
+# MyRestApi synthesizes an OPTIONS Method with a MOCK integration on
+# every resource. cdkd's discovery layer captures the literal
+# `method.response.header.Access-Control-Allow-*` values from
+# `IntegrationResponses[0].ResponseParameters`; the HTTP server returns
+# them directly on OPTIONS (no Lambda invocation, no VTL evaluation).
+echo "==> Asserting REST v1 MOCK CORS preflight (OPTIONS /v1/anything)"
+REST_PREFLIGHT_HEADERS=$(curl -s -i -o - -X OPTIONS \
+  -H 'Origin: https://example.com' \
+  -H 'Access-Control-Request-Method: GET' \
+  "http://127.0.0.1:${PORT_REST}/v1/anything" 2>&1)
+if ! echo "${REST_PREFLIGHT_HEADERS}" | grep -qiE '^HTTP/1.1 (200|204)'; then
+  echo "FAIL: REST v1 MOCK CORS preflight did not return a 2xx. Response:"
+  echo "${REST_PREFLIGHT_HEADERS}"
+  exit 1
+fi
+if ! echo "${REST_PREFLIGHT_HEADERS}" | grep -qi '^access-control-allow-origin: \*'; then
+  echo "FAIL: REST v1 MOCK CORS preflight missing access-control-allow-origin header. Response:"
+  echo "${REST_PREFLIGHT_HEADERS}"
+  exit 1
+fi
+echo "    [REST v1 MOCK CORS preflight] OK"
+
+# Deferred-error class: GET /v1/unsupported has an HTTP_PROXY integration
+# cdkd cannot emulate. The server returns 501 + `reason` in the body, no
+# Lambda invocation. Pre-PR boot would have hard-errored on this route
+# and prevented every other route from being reachable.
+echo "==> Asserting GET /v1/unsupported -> 501 Not Implemented"
+UNSUPPORTED_RESPONSE=$(curl -s -w '\nHTTP_STATUS=%{http_code}' "http://127.0.0.1:${PORT_REST}/v1/unsupported")
+UNSUPPORTED_STATUS=$(echo "${UNSUPPORTED_RESPONSE}" | grep -oE 'HTTP_STATUS=[0-9]+' | cut -d= -f2)
+UNSUPPORTED_BODY=$(echo "${UNSUPPORTED_RESPONSE}" | sed '$ d')
+if [[ "${UNSUPPORTED_STATUS}" != "501" ]]; then
+  echo "FAIL: expected 501 from unsupported route, got ${UNSUPPORTED_STATUS}. Body: ${UNSUPPORTED_BODY}"
+  cat "${LOG_FILE}"
+  exit 1
+fi
+if ! echo "${UNSUPPORTED_BODY}" | grep -q '"message":"Not Implemented"'; then
+  echo "FAIL: expected 501 body to include {\"message\":\"Not Implemented\"}. Body: ${UNSUPPORTED_BODY}"
+  exit 1
+fi
+if ! echo "${UNSUPPORTED_BODY}" | grep -q '"reason"'; then
+  echo "FAIL: expected 501 body to include a 'reason' field. Body: ${UNSUPPORTED_BODY}"
+  exit 1
+fi
+echo "    [GET /v1/unsupported (501)] OK"
 
 echo ""
 echo "==> All local-start-api smoke tests passed"

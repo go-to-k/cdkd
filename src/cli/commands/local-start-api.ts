@@ -528,6 +528,10 @@ async function localStartApiCommand(
   }
 
   printPerServerRouteTables(servers);
+  warnUnsupportedRoutes(
+    servers.flatMap((s) => s.group.routes.map((r) => r.route)),
+    logger
+  );
   logger.info(
     `Per-Lambda concurrency: ${perLambdaConcurrency} (override with --per-lambda-concurrency)`
   );
@@ -724,12 +728,21 @@ function uniqueLambdaIds(
   const seen = new Set<string>();
   const out: string[] = [];
   for (const r of routes) {
+    // Skip deferred-error unsupported routes and synthetic mockCors
+    // routes — neither dispatches to a Lambda, so spinning up their
+    // containers (when a lambdaLogicalId IS attached, e.g. on a
+    // Function URL with AuthType=AWS_IAM) would be wasted boot time.
+    if (r.unsupported || r.mockCors) continue;
+    if (r.lambdaLogicalId.length === 0) continue;
     if (!seen.has(r.lambdaLogicalId)) {
       seen.add(r.lambdaLogicalId);
       out.push(r.lambdaLogicalId);
     }
   }
   for (const entry of routesWithAuth) {
+    // An unsupported route never reaches the authorizer pass, so its
+    // authorizer Lambda doesn't need a container either.
+    if (entry.route.unsupported || entry.route.mockCors) continue;
     const auth = entry.authorizer;
     if (!auth) continue;
     if (auth.kind === 'lambda-token' || auth.kind === 'lambda-request') {
@@ -1135,6 +1148,13 @@ function resolveAssetCodePath(
 /**
  * Print the discovered route table to stdout. Format mirrors the spec
  * doc's example so verify.sh / users can read it at a glance.
+ *
+ * Routes with `unsupported` or `mockCors` are annotated so the user can
+ * tell at a glance which routes will dispatch to a Lambda vs which
+ * return 501 / 204 directly:
+ *   - normal:        `GET /items -> Handler  (HTTP API)`
+ *   - mockCors:      `OPTIONS /items -> [MOCK CORS preflight]  (REST v1, stage 'prod')`
+ *   - unsupported:   `POST /admin -> [501 Not Implemented]  (HTTP API)`
  */
 function printRouteTable(routes: readonly RouteWithAuth[]): void {
   const flat = routes.map((r) => r.route);
@@ -1152,8 +1172,13 @@ function printRouteTable(routes: readonly RouteWithAuth[]): void {
         : r.source === 'rest-v1'
           ? `REST v1, stage '${r.stage}'`
           : 'Function URL';
+    const target = r.mockCors
+      ? '[MOCK CORS preflight]'
+      : r.unsupported
+        ? '[501 Not Implemented]'
+        : r.lambdaLogicalId;
     process.stdout.write(
-      `  ${r.method.padEnd(methodWidth)}  ${r.pathPattern.padEnd(pathWidth)}  -> ${r.lambdaLogicalId}  (${sourceLabel})\n`
+      `  ${r.method.padEnd(methodWidth)}  ${r.pathPattern.padEnd(pathWidth)}  -> ${target}  (${sourceLabel})\n`
     );
   }
   process.stdout.write('\n');
@@ -1299,9 +1324,16 @@ function parsePerLambdaConcurrency(raw: string): number {
  * One booted HTTP server tied to a single API surface (issue #260).
  * The CLI keeps an array of these to drive per-server route tables,
  * shutdown, and hot-reload state swaps.
+ *
+ * `group` is intentionally **mutable** — hot-reload swaps the group
+ * in place after `setServerState` so post-reload route-table reprints
+ * (`printPerServerRouteTables(servers)`) reflect the new routes,
+ * including any new `mockCors` / `unsupported` classifications.
+ * Pre-fix the field was readonly and the printed table after reload
+ * always showed the boot-time routes.
  */
 interface BootedApiServer {
-  readonly group: ApiServerGroup;
+  group: ApiServerGroup;
   readonly server: StartedApiServer;
 }
 
@@ -1347,6 +1379,29 @@ function printPerServerRouteTables(servers: readonly BootedApiServer[]): void {
     process.stdout.write(`\n${group.displayName}  (http://${server.host}:${server.port})\n`);
     printRouteTable(group.routes);
   }
+}
+
+/**
+ * Surface every `unsupported` route (deferred 501) as a startup warn so
+ * the user sees what isn't reachable BEFORE they try to curl it. One
+ * warn line per route — the route's `unsupported.reason` already names
+ * the offender + the underlying limitation, so we just prefix with
+ * method + path. Returns the number of unsupported routes so the caller
+ * can emit a single-line summary header above the list.
+ */
+function warnUnsupportedRoutes(
+  routes: readonly DiscoveredRoute[],
+  logger: ReturnType<typeof getLogger>
+): number {
+  const unsupported = routes.filter((r) => r.unsupported);
+  if (unsupported.length === 0) return 0;
+  logger.warn(
+    `${unsupported.length} route(s) will respond HTTP 501 Not Implemented when hit (boot continued):`
+  );
+  for (const r of unsupported) {
+    logger.warn(`  - ${r.method} ${r.pathPattern}: ${r.unsupported!.reason}`);
+  }
+  return unsupported.length;
 }
 
 /**
@@ -1423,6 +1478,11 @@ async function reloadAllServers(args: {
       corsConfigByApiId: material.corsConfigByApiId,
     };
     const previousState = booted.server.setServerState(newState);
+    // Update the BootedApiServer's `group` in place so post-reload
+    // `printPerServerRouteTables(servers)` reads the new routes,
+    // including any new mockCors / unsupported classifications. Pre-fix
+    // the printed table always reflected the boot-time routes.
+    booted.group = group;
     // Dispose the previous pool in the background. `pool.dispose()`
     // waits for in-flight requests to drain (30s per-entry cap).
     void previousState.pool.dispose().catch((err) => {
@@ -1440,8 +1500,14 @@ async function reloadAllServers(args: {
   // Re-print the per-server route table when any routes changed.
   // Cheap heuristic: always re-print after a successful reload — the
   // user is watching for the diff and a stable table reassures them
-  // that the swap landed.
+  // that the swap landed. `booted.group` was mutated above so this
+  // reflects the post-swap routes (including any new mockCors /
+  // unsupported classifications introduced mid-edit).
   printPerServerRouteTables(servers);
+  warnUnsupportedRoutes(
+    servers.flatMap((s) => s.group.routes.map((r) => r.route)),
+    logger
+  );
 }
 
 /**

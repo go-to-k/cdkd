@@ -16,12 +16,27 @@ import { resolveLambdaArnIntrinsic as resolveLambdaArnShared } from './intrinsic
  * uses the v1 proxy event shape (`multiValueHeaders` etc.); HTTP API and
  * Function URL use the v2 shape (`requestContext.http`, `cookies` array).
  *
- * The discovery layer is **strict** — any unsupported shape (non-AWS_PROXY
- * integration, ApiGwV2 service integration, WebSocket protocol,
- * non-NONE Lambda::Url AuthType, RESPONSE_STREAM invoke mode, unsupported
- * intrinsic in `IntegrationUri`) hard-errors via {@link RouteDiscoveryError}
- * with the offending route's location named in the message. The server
- * does not start in a half-working state.
+ * Per-route classification (see {@link DiscoveredRoute.unsupported} /
+ * {@link DiscoveredRoute.mockCors}):
+ *   - **Supported** — `unsupported` and `mockCors` both unset. The server
+ *     dispatches to the route's Lambda via the container pool.
+ *   - **Synthetic CORS preflight** — `mockCors` set. The server answers
+ *     OPTIONS requests directly with the captured headers (no Lambda
+ *     invocation). Used to emulate CDK's `defaultCorsPreflightOptions`,
+ *     which synthesizes a REST v1 OPTIONS Method backed by a MOCK
+ *     integration with literal `method.response.header.*` parameters.
+ *   - **Unsupported, deferred error** — `unsupported` set. The server
+ *     surfaces the route in the route table and returns HTTP 501 with
+ *     the `reason` in the JSON body if and when the route is hit. Boot
+ *     proceeds normally so the rest of the API surface stays reachable.
+ *
+ * The discovery layer still **hard-errors** via {@link RouteDiscoveryError}
+ * on template-structural problems it cannot generate a meaningful route
+ * from (missing `Integration` on an `AWS::ApiGateway::Method`,
+ * non-Ref `RestApiId` / `ApiId`, malformed Route `Target`, ParentId cycle
+ * / missing parent / wrong parent type / missing PathPart). These would
+ * leave the server in a state where the unsupported-route 501 path
+ * doesn't have enough info to identify what was misconfigured.
  */
 export interface DiscoveredRoute {
   /** HTTP method or `'ANY'`. REST v1 spec routes `'ANY'` to every method. */
@@ -80,6 +95,39 @@ export interface DiscoveredRoute {
    * — `discoverRoutes` itself does NOT set this field.
    */
   stageVariables?: Record<string, string> | null;
+  /**
+   * Set on routes that cdkd discovered but cannot dispatch to a Lambda.
+   * The HTTP server returns HTTP 501 + `{"message": "Not Implemented",
+   * "reason": <reason>}` when these routes are hit. Examples:
+   * non-AWS_PROXY REST v1 integrations (`MOCK` not matching the CORS
+   * preflight shape, `AWS`, `HTTP`, `HTTP_PROXY`), HTTP API v2
+   * service integrations (`IntegrationSubtype` set), WebSocket APIs,
+   * Function URLs with `AuthType !== 'NONE'` or
+   * `InvokeMode === 'RESPONSE_STREAM'`, and routes whose Lambda Arn
+   * intrinsic cannot be resolved against the same template.
+   *
+   * Mutually exclusive with {@link DiscoveredRoute.mockCors}. When set,
+   * `lambdaLogicalId` may be the empty string (we never need to dispatch
+   * to it); the field is preserved when it COULD be resolved (e.g.
+   * Function URL with `AuthType: AWS_IAM` still knows its Lambda).
+   */
+  unsupported?: { reason: string };
+  /**
+   * Set on synthetic CORS preflight routes derived from a REST v1
+   * `AWS::ApiGateway::Method` whose `HttpMethod === 'OPTIONS'`,
+   * `Integration.Type === 'MOCK'`, and `IntegrationResponses[]` carries
+   * literal `method.response.header.*` mapping parameters (the shape
+   * CDK's `defaultCorsPreflightOptions` synthesizes). The HTTP server
+   * intercepts matching OPTIONS requests and returns the captured
+   * status + headers directly without invoking any Lambda.
+   *
+   * Mutually exclusive with {@link DiscoveredRoute.unsupported}.
+   * `lambdaLogicalId` is the empty string on these routes (there is no
+   * Lambda to dispatch to). Non-OPTIONS MOCK methods, and OPTIONS MOCK
+   * methods without literal `method.response.header.*` parameters, become
+   * `unsupported` instead — cdkd cannot run their VTL mapping templates.
+   */
+  mockCors?: { statusCode: number; headers: Record<string, string> };
   /** Diagnostic only — used in route-table output and error messages. */
   declaredAt: string;
 }
@@ -90,8 +138,16 @@ export interface DiscoveredRoute {
  * lambdaLogicalId, stage) tuple is identical — different stacks may
  * legitimately host different APIs that mount the same path.
  *
- * Throws {@link RouteDiscoveryError} on any unsupported shape with every
- * offending route named in a single message.
+ * Each route is one of three classes (see {@link DiscoveredRoute}):
+ *   - normal (no flag set);
+ *   - synthetic CORS preflight (`mockCors` set);
+ *   - deferred-error unsupported (`unsupported` set).
+ *
+ * Throws {@link RouteDiscoveryError} only on template-structural failures
+ * the discovery layer cannot generate a meaningful route from (e.g.
+ * missing Integration property, ParentId cycle, non-Ref RestApiId). Per-
+ * route integration unsupportedness now flows through `unsupported` and
+ * is surfaced as HTTP 501 at request time.
  */
 export function discoverRoutes(stacks: readonly StackInfo[]): DiscoveredRoute[] {
   const routes: DiscoveredRoute[] = [];
@@ -125,7 +181,7 @@ export function discoverRoutes(stacks: readonly StackInfo[]): DiscoveredRoute[] 
 
   if (errors.length > 0) {
     throw new RouteDiscoveryError(
-      `cdkd local start-api: ${errors.length} unsupported route(s) in the synthesized template:\n` +
+      `cdkd local start-api: ${errors.length} malformed route(s) in the synthesized template:\n` +
         errors.map((e) => `  - ${e}`).join('\n')
     );
   }
@@ -140,8 +196,18 @@ export function discoverRoutes(stacks: readonly StackInfo[]): DiscoveredRoute[] 
  * the full path, then looks up the corresponding Stage (when one is
  * attached to the same RestApi) so `requestContext.stage` is realistic.
  *
- * Returns `[]` when the Method's integration is non-AWS_PROXY (e.g. MOCK,
- * AWS, HTTP) — that is a hard error, raised by the caller's catch.
+ * Per-integration classification (see {@link DiscoveredRoute}):
+ *   - `Integration.Type === 'AWS_PROXY'` → normal route.
+ *   - `HttpMethod === 'OPTIONS'` + `Type === 'MOCK'` + `IntegrationResponses`
+ *     contain literal `method.response.header.*` mapping params → synthetic
+ *     CORS preflight (`mockCors` set). Emulates CDK's
+ *     `defaultCorsPreflightOptions` output.
+ *   - All other `Integration.Type` values (`MOCK` without CORS shape,
+ *     `AWS`, `HTTP`, `HTTP_PROXY`) → unsupported route. The HTTP server
+ *     returns 501 when the route is hit; boot proceeds.
+ *
+ * Hard-errors on template-structural problems (missing Integration,
+ * non-Ref RestApiId, ParentId-chain failures).
  *
  * Method.HttpMethod values of `'ANY'` are returned as a single route with
  * `method='ANY'`; the matcher routes any HTTP method to the Lambda.
@@ -160,25 +226,6 @@ function discoverRestV1Method(
     );
   }
 
-  // REST v1 uses `Type: 'AWS_PROXY'` to mean Lambda Proxy integration.
-  // Other Type values (`MOCK`, `AWS`, `HTTP`, `HTTP_PROXY`) require
-  // mapping templates / VTL we cannot emulate locally.
-  const integrationType = integration['Type'];
-  if (integrationType !== 'AWS_PROXY') {
-    throw new Error(
-      `${stackName}/${logicalId} (AWS::ApiGateway::Method): integration type '${String(
-        integrationType
-      )}' is not supported (only AWS_PROXY). MOCK / AWS / HTTP / HTTP_PROXY require mapping templates that cdkd cannot emulate.`
-    );
-  }
-
-  const integrationUri = integration['Uri'];
-  const lambdaLogicalId = resolveLambdaArnIntrinsic(
-    integrationUri,
-    `${stackName}/${logicalId}.Integration.Uri`
-  );
-
-  // Walk Resource.ParentId chain up to RestApi to assemble the path.
   const restApiId = props['RestApiId'];
   const restApiLogicalId = pickRefLogicalId(restApiId);
   if (!restApiLogicalId) {
@@ -195,21 +242,167 @@ function discoverRestV1Method(
   const httpMethod = stringifyValue(props['HttpMethod'] ?? 'ANY');
   const stage = pickRestV1Stage(restApiLogicalId, template);
   const restApiCdkPath = readApiCdkPath(restApiLogicalId, template);
+  const baseRoute: Omit<DiscoveredRoute, 'method' | 'pathPattern' | 'lambdaLogicalId'> = {
+    source: 'rest-v1',
+    apiVersion: 'v1',
+    stage,
+    apiLogicalId: restApiLogicalId,
+    apiStackName: stackName,
+    ...(restApiCdkPath !== undefined && { apiCdkPath: restApiCdkPath }),
+    declaredAt: `${stackName}/${logicalId}`,
+  };
+
+  const integrationType = integration['Type'];
+
+  // REST v1 MOCK CORS preflight: CDK's `defaultCorsPreflightOptions`
+  // synthesizes an OPTIONS Method backed by a MOCK integration whose
+  // IntegrationResponses[].ResponseParameters carry literal
+  // `method.response.header.<Name>: "'value'"` pairs. We extract those
+  // pairs and emit a synthetic preflight route the HTTP server answers
+  // directly without invoking any Lambda.
+  if (integrationType === 'MOCK') {
+    const preflight =
+      httpMethod === 'OPTIONS' ? extractRestV1MockCorsConfig(integration) : undefined;
+    if (preflight) {
+      return [
+        {
+          ...baseRoute,
+          method: 'OPTIONS',
+          pathPattern: path,
+          lambdaLogicalId: '',
+          mockCors: preflight,
+        },
+      ];
+    }
+    return [
+      {
+        ...baseRoute,
+        method: httpMethod,
+        pathPattern: path,
+        lambdaLogicalId: '',
+        unsupported: {
+          reason: `${stackName}/${logicalId}: MOCK integration is not emulated (only the CORS preflight subset, where HttpMethod=OPTIONS and IntegrationResponses carry literal method.response.header.* values, is supported).`,
+        },
+      },
+    ];
+  }
+
+  // Other non-AWS_PROXY integration types — surfaced as deferred 501.
+  if (integrationType !== 'AWS_PROXY') {
+    return [
+      {
+        ...baseRoute,
+        method: httpMethod,
+        pathPattern: path,
+        lambdaLogicalId: '',
+        unsupported: {
+          reason: `${stackName}/${logicalId}: REST v1 integration type '${String(
+            integrationType
+          )}' is not supported (only AWS_PROXY and the MOCK CORS preflight subset).`,
+        },
+      },
+    ];
+  }
+
+  // AWS_PROXY: resolve the Lambda Arn. Unresolvable shapes become
+  // unsupported routes (the route is identifiable, we just can't reach
+  // its handler — e.g. cross-stack reference, imported Lambda).
+  const integrationUri = integration['Uri'];
+  const arnOutcome = resolveLambdaArnOutcome(integrationUri);
+  if (arnOutcome.kind === 'unsupported') {
+    return [
+      {
+        ...baseRoute,
+        method: httpMethod,
+        pathPattern: path,
+        lambdaLogicalId: '',
+        unsupported: {
+          reason: `${stackName}/${logicalId}.Integration.Uri: ${arnOutcome.detail} (got ${shortJson(
+            integrationUri
+          )}). Lambda Arn intrinsics on cross-stack / imported references are not resolvable locally; deploy the producer stack and use \`cdkd local invoke --from-state\` shapes if you need it.`,
+        },
+      },
+    ];
+  }
 
   return [
     {
+      ...baseRoute,
       method: httpMethod,
       pathPattern: path,
-      lambdaLogicalId,
-      source: 'rest-v1',
-      apiVersion: 'v1',
-      stage,
-      apiLogicalId: restApiLogicalId,
-      apiStackName: stackName,
-      ...(restApiCdkPath !== undefined && { apiCdkPath: restApiCdkPath }),
-      declaredAt: `${stackName}/${logicalId}`,
+      lambdaLogicalId: arnOutcome.logicalId,
     },
   ];
+}
+
+/**
+ * Extract the canonical CORS-preflight headers from a REST v1 MOCK
+ * Method's `Integration.IntegrationResponses[0]`. Returns `undefined`
+ * when the shape isn't a CORS preflight (no IntegrationResponses, no
+ * `method.response.header.*` mapping parameters, or any individual
+ * mapping parameter we could not evaluate locally — see below).
+ *
+ * AWS represents header literals in `ResponseParameters` with surrounding
+ * single-quotes (e.g. `"'*'"` for `*`). The single-quote wrappers are
+ * stripped to produce the canonical header value the local server emits.
+ *
+ * **All-or-nothing**: if any `method.response.header.*` entry is
+ * intrinsic-valued (`Fn::Sub`, `Ref` etc.), unquoted, or otherwise
+ * not a string-literal-with-quotes, the WHOLE preflight falls through
+ * to the unsupported class. Emitting a partial preflight with some
+ * headers missing would silently break CORS in the browser (the
+ * preflight succeeds, then the actual request hits a CORS error the
+ * user has to debug through Network panel) — caller's the better
+ * place to surface the underlying VTL-requirement via the 501 path.
+ *
+ * Only the first `IntegrationResponses` entry is consulted. CDK's
+ * `defaultCorsPreflightOptions` emits exactly one entry; hand-rolled
+ * multi-status MOCK preflights are an unsupported v1 limitation.
+ */
+function extractRestV1MockCorsConfig(
+  integration: Record<string, unknown>
+): { statusCode: number; headers: Record<string, string> } | undefined {
+  const responses = integration['IntegrationResponses'];
+  if (!Array.isArray(responses) || responses.length === 0) return undefined;
+  const first = responses[0];
+  if (!first || typeof first !== 'object') return undefined;
+  const entry = first as Record<string, unknown>;
+  const responseParameters = entry['ResponseParameters'];
+  if (
+    !responseParameters ||
+    typeof responseParameters !== 'object' ||
+    Array.isArray(responseParameters)
+  ) {
+    return undefined;
+  }
+
+  const headers: Record<string, string> = {};
+  let sawAnyHeader = false;
+  for (const [key, raw] of Object.entries(responseParameters as Record<string, unknown>)) {
+    const m = /^method\.response\.header\.(.+)$/.exec(key);
+    if (!m) continue;
+    sawAnyHeader = true;
+    const headerName = m[1]!;
+    // AWS literal-value convention: surround the literal with single
+    // quotes. Anything else (an intrinsic, an unquoted reference) we
+    // can't evaluate locally. All-or-nothing: reject the whole preflight
+    // so the route falls through to the 501 path with the full reason,
+    // rather than silently emitting a partial CORS response the browser
+    // accepts AT the preflight but then chokes on at the actual request.
+    if (typeof raw !== 'string') return undefined;
+    if (raw.length < 2 || raw[0] !== "'" || raw[raw.length - 1] !== "'") return undefined;
+    headers[headerName] = raw.slice(1, -1);
+  }
+  if (!sawAnyHeader) return undefined;
+
+  // AWS represents the status code as a string. Default to 204 (the CDK
+  // default for `defaultCorsPreflightOptions`) when it's missing or
+  // unparseable.
+  const statusCodeRaw = entry['StatusCode'];
+  const parsed = typeof statusCodeRaw === 'string' ? Number.parseInt(statusCodeRaw, 10) : NaN;
+  const statusCode = Number.isFinite(parsed) ? parsed : 204;
+
+  return { statusCode, headers };
 }
 
 /**
@@ -348,23 +541,58 @@ function discoverHttpApiRoute(
     );
   }
 
-  // C13: WebSocket-protocol APIs cannot be emulated locally.
-  const apiResource = template.Resources?.[apiLogicalId];
-  if (apiResource?.Type === 'AWS::ApiGatewayV2::Api') {
-    const protocolType = (apiResource.Properties ?? {})['ProtocolType'];
-    if (protocolType === 'WEBSOCKET') {
-      throw new Error(
-        `${stackName}/${logicalId} (AWS::ApiGatewayV2::Route): WebSocket APIs are not supported in cdkd local start-api (deferred follow-up PR).`
-      );
-    }
-  }
-
   const routeKey = props['RouteKey'];
   if (typeof routeKey !== 'string' || routeKey.length === 0) {
     throw new Error(
       `${stackName}/${logicalId} (AWS::ApiGatewayV2::Route): RouteKey must be a string`
     );
   }
+  const apiCdkPath = readApiCdkPath(apiLogicalId, template);
+
+  // C13: WebSocket-protocol APIs cannot be emulated locally. Check this
+  // BEFORE parsing the RouteKey — WebSocket routes use `$connect` /
+  // `$disconnect` / `$default` which `parseRouteKey` rejects (it only
+  // accepts `<METHOD> <path>` / `$default`). For the route table /
+  // 501 response we surface the raw RouteKey as the path and 'ANY' as
+  // the method; an HTTP request will never match because the path
+  // starts with `$`.
+  const apiResource = template.Resources?.[apiLogicalId];
+  if (apiResource?.Type === 'AWS::ApiGatewayV2::Api') {
+    const protocolType = (apiResource.Properties ?? {})['ProtocolType'];
+    if (protocolType === 'WEBSOCKET') {
+      return [
+        {
+          method: 'ANY',
+          pathPattern: routeKey,
+          lambdaLogicalId: '',
+          source: 'http-api',
+          apiVersion: 'v2',
+          stage: '$default',
+          apiLogicalId,
+          apiStackName: stackName,
+          ...(apiCdkPath !== undefined && { apiCdkPath }),
+          declaredAt: `${stackName}/${logicalId}`,
+          unsupported: {
+            reason: `${stackName}/${logicalId}: WebSocket APIs are not supported in cdkd local start-api.`,
+          },
+        },
+      ];
+    }
+  }
+
+  // RouteKey grammar: `<METHOD> <path>` or `$default`.
+  const { method, pathPattern } = parseRouteKey(routeKey);
+  const baseRoute: Omit<DiscoveredRoute, 'lambdaLogicalId'> = {
+    method,
+    pathPattern,
+    source: 'http-api',
+    apiVersion: 'v2',
+    stage: '$default',
+    apiLogicalId,
+    apiStackName: stackName,
+    ...(apiCdkPath !== undefined && { apiCdkPath }),
+    declaredAt: `${stackName}/${logicalId}`,
+  };
 
   // Resolve the Target — `Target: 'integrations/<integrationLogicalId>'`.
   // CDK emits this as `Fn::Join: ['/', ['integrations', { Ref: <id> }]]`.
@@ -382,44 +610,55 @@ function discoverHttpApiRoute(
   }
   const integrationProps = integration.Properties ?? {};
 
-  // C9: filter to AWS_PROXY + no IntegrationSubtype.
+  // C9: filter to AWS_PROXY + no IntegrationSubtype. Both become
+  // deferred-error unsupported routes (boot proceeds; 501 at request time).
   const integrationType = integrationProps['IntegrationType'];
   if (integrationType !== 'AWS_PROXY') {
-    throw new Error(
-      `${stackName}/${logicalId} (AWS::ApiGatewayV2::Route): integration type '${String(
-        integrationType
-      )}' is not supported (only AWS_PROXY).`
-    );
+    return [
+      {
+        ...baseRoute,
+        lambdaLogicalId: '',
+        unsupported: {
+          reason: `${stackName}/${logicalId}: HTTP API v2 integration type '${String(
+            integrationType
+          )}' is not supported (only AWS_PROXY).`,
+        },
+      },
+    ];
   }
   if (integrationProps['IntegrationSubtype'] !== undefined) {
-    throw new Error(
-      `${stackName}/${logicalId} (AWS::ApiGatewayV2::Route): IntegrationSubtype '${stringifyValue(
-        integrationProps['IntegrationSubtype']
-      )}' is not supported (ApiGatewayV2 service integrations like SQS/EventBridge cannot run locally).`
-    );
+    return [
+      {
+        ...baseRoute,
+        lambdaLogicalId: '',
+        unsupported: {
+          reason: `${stackName}/${logicalId}: HTTP API v2 service integration with IntegrationSubtype '${stringifyValue(
+            integrationProps['IntegrationSubtype']
+          )}' is not supported (cdkd cannot proxy directly to SQS / EventBridge / etc.).`,
+        },
+      },
+    ];
   }
 
-  const lambdaLogicalId = resolveLambdaArnIntrinsic(
-    integrationProps['IntegrationUri'],
-    `${stackName}/${integrationLogicalId}.IntegrationUri`
-  );
-
-  // RouteKey grammar: `<METHOD> <path>` or `$default`.
-  const { method, pathPattern } = parseRouteKey(routeKey);
-  const apiCdkPath = readApiCdkPath(apiLogicalId, template);
+  const arnOutcome = resolveLambdaArnOutcome(integrationProps['IntegrationUri']);
+  if (arnOutcome.kind === 'unsupported') {
+    return [
+      {
+        ...baseRoute,
+        lambdaLogicalId: '',
+        unsupported: {
+          reason: `${stackName}/${integrationLogicalId}.IntegrationUri: ${arnOutcome.detail} (got ${shortJson(
+            integrationProps['IntegrationUri']
+          )}). Lambda Arn intrinsics on cross-stack / imported references are not resolvable locally.`,
+        },
+      },
+    ];
+  }
 
   return [
     {
-      method,
-      pathPattern,
-      lambdaLogicalId,
-      source: 'http-api',
-      apiVersion: 'v2',
-      stage: '$default',
-      apiLogicalId,
-      apiStackName: stackName,
-      ...(apiCdkPath !== undefined && { apiCdkPath }),
-      declaredAt: `${stackName}/${logicalId}`,
+      ...baseRoute,
+      lambdaLogicalId: arnOutcome.logicalId,
     },
   ];
 }
@@ -428,10 +667,18 @@ function discoverHttpApiRoute(
  * Discover the synthetic `ANY /{proxy+}` route from an
  * `AWS::Lambda::Url` resource.
  *
- * C12: keep only `AuthType === 'NONE' && InvokeMode !== 'RESPONSE_STREAM'`.
- * Other shapes hard-fail at discovery — IAM auth needs SigV4 verification
- * we cannot do locally, and RESPONSE_STREAM uses a streaming response shape
- * (`InvokeWithResponseStream`) the RIE container does not implement.
+ * Per-shape classification:
+ *   - `AuthType === 'NONE'` + `InvokeMode !== 'RESPONSE_STREAM'` → normal route.
+ *   - `AuthType !== 'NONE'` (e.g. `AWS_IAM`) → deferred-error
+ *     unsupported. Boot proceeds; HTTP 501 + `reason` at request time.
+ *     IAM auth would need SigV4 verification cdkd cannot emulate.
+ *   - `InvokeMode === 'RESPONSE_STREAM'` → deferred-error unsupported.
+ *     The RIE container does not implement `InvokeWithResponseStream`.
+ *
+ * The Lambda Arn intrinsic resolution still **hard-errors** when it
+ * cannot pin down a same-template Lambda — Function URLs have no other
+ * identifying info (no RouteKey / RestApi parent), so the route would
+ * be uninformative as a deferred-501 entry.
  */
 function discoverFunctionUrl(
   logicalId: string,
@@ -440,42 +687,65 @@ function discoverFunctionUrl(
   stackName: string
 ): DiscoveredRoute[] {
   const props = resource.Properties ?? {};
-  const authType = props['AuthType'];
-  if (authType !== 'NONE') {
-    throw new Error(
-      `${stackName}/${logicalId} (AWS::Lambda::Url): AuthType '${String(
-        authType
-      )}' is not supported (only NONE — IAM auth requires SigV4 verification cdkd cannot emulate locally; deferred follow-up PR).`
-    );
-  }
-  const invokeMode = props['InvokeMode'];
-  if (invokeMode === 'RESPONSE_STREAM') {
-    throw new Error(
-      `${stackName}/${logicalId} (AWS::Lambda::Url): InvokeMode RESPONSE_STREAM is not supported (deferred follow-up PR).`
-    );
-  }
 
+  // Resolve the backing Lambda first — without it we cannot identify
+  // the route surface at all. An unresolvable Arn becomes a hard error
+  // because Function URLs have no other identifying info (no RouteKey /
+  // RestApi parent).
   const targetArn = props['TargetFunctionArn'];
-  const lambdaLogicalId = resolveLambdaArnIntrinsic(
-    targetArn,
-    `${stackName}/${logicalId}.TargetFunctionArn`
-  );
+  const arnOutcome = resolveLambdaArnOutcome(targetArn);
+  if (arnOutcome.kind === 'unsupported') {
+    throw new Error(
+      `${stackName}/${logicalId}.TargetFunctionArn: ${arnOutcome.detail} (got ${shortJson(targetArn)}).`
+    );
+  }
+  const lambdaLogicalId = arnOutcome.logicalId;
   // Function URLs identify by their backing Lambda — surface the Lambda's
   // cdk path so `--api MyStack/MyHandler` (the natural CDK Construct path
   // for the Function, not the auto-generated URL child) matches.
   const lambdaCdkPath = readApiCdkPath(lambdaLogicalId, template);
+  const baseRoute: Omit<DiscoveredRoute, 'lambdaLogicalId'> = {
+    method: 'ANY',
+    pathPattern: '/{proxy+}',
+    source: 'function-url',
+    apiVersion: 'v2',
+    stage: '$default',
+    apiStackName: stackName,
+    ...(lambdaCdkPath !== undefined && { apiCdkPath: lambdaCdkPath }),
+    declaredAt: `${stackName}/${logicalId}`,
+  };
+
+  const authType = props['AuthType'];
+  if (authType !== 'NONE') {
+    return [
+      {
+        ...baseRoute,
+        lambdaLogicalId,
+        unsupported: {
+          reason: `${stackName}/${logicalId}: AuthType '${String(
+            authType
+          )}' is not supported (only NONE — IAM auth requires SigV4 verification cdkd cannot emulate locally).`,
+        },
+      },
+    ];
+  }
+  const invokeMode = props['InvokeMode'];
+  if (invokeMode === 'RESPONSE_STREAM') {
+    return [
+      {
+        ...baseRoute,
+        lambdaLogicalId,
+        unsupported: {
+          reason: `${stackName}/${logicalId}: InvokeMode RESPONSE_STREAM is not supported (cdkd's RIE container does not implement InvokeWithResponseStream).`,
+        },
+      },
+    ];
+  }
 
   return [
     {
-      method: 'ANY',
-      pathPattern: '/{proxy+}',
+      ...baseRoute,
       lambdaLogicalId,
-      source: 'function-url',
-      apiVersion: 'v2',
-      stage: '$default',
-      apiStackName: stackName,
-      ...(lambdaCdkPath !== undefined && { apiCdkPath: lambdaCdkPath }),
-      declaredAt: `${stackName}/${logicalId}`,
     },
   ];
 }
@@ -502,13 +772,11 @@ function readApiCdkPath(logicalId: string, template: CloudFormationTemplate): st
  * invoke-ARN `Fn::Join` wrapper / the `Fn::Sub` invoke-ARN wrapper (both
  * 1-arg and 2-arg forms).
  *
- * Any other shape hard-errors with the offending route + raw intrinsic
- * named, preserving the pre-extraction error message intent ("requires
- * deploy-state and is not supported in cdkd local start-api"). The
- * shared helper returns a discriminated union so the caller wraps the
- * unsupported case with its own error class; this site uses bare `Error`
- * so the top-level catch in `discoverRoutes` re-wraps it as
- * `RouteDiscoveryError` along with sibling errors.
+ * Non-throwing: returns the shared resolver's discriminated union
+ * unchanged so each call site can decide whether to surface the
+ * unsupported case as a per-route `unsupported` flag (the new default)
+ * or as a hard error (Function URLs, which lack route-level identity
+ * without their Lambda).
  *
  * **Why we don't reuse `src/deployment/intrinsic-function-resolver.ts`**:
  * that resolver is deploy-state-coupled — it pulls in STS / EC2 / Secrets
@@ -516,14 +784,10 @@ function readApiCdkPath(logicalId: string, template: CloudFormationTemplate): st
  * `cdkd local start-api` runs purely against the synthesized template
  * and doesn't have any of that.
  */
-function resolveLambdaArnIntrinsic(value: unknown, location: string): string {
-  const outcome = resolveLambdaArnShared(value);
-  if (outcome.kind === 'resolved') return outcome.logicalId;
-  throw new Error(
-    `${location}: ${outcome.detail} (got ${shortJson(
-      value
-    )}). Only { Ref: <LambdaLogicalId> }, { 'Fn::GetAtt': [<LambdaLogicalId>, 'Arn'] }, the REST v1 invoke-ARN Fn::Join wrapper, and the Fn::Sub invoke-ARN wrapper are supported. Other intrinsics (Fn::Sub against arbitrary templates, etc.) require deploy-state and are not supported in cdkd local start-api.`
-  );
+function resolveLambdaArnOutcome(
+  value: unknown
+): { kind: 'resolved'; logicalId: string } | { kind: 'unsupported'; detail: string } {
+  return resolveLambdaArnShared(value);
 }
 
 /**

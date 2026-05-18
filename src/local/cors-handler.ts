@@ -12,14 +12,20 @@ import type { CloudFormationTemplate } from '../types/resource.js';
  *
  * Scope (locked in the issue brief):
  *
- *   - **HTTP API v2 only**: read `CorsConfiguration` from each
+ *   - **HTTP API v2** (this module): read `CorsConfiguration` from each
  *     `AWS::ApiGatewayV2::Api` resource and intercept OPTIONS preflight
  *     requests for routes on that API.
- *   - **REST v1 explicitly out of scope**: CDK emits an explicit OPTIONS
- *     `AWS::ApiGateway::Method` with a Mock integration to handle CORS;
- *     PR 8a hard-errors on Mock integrations (see route-discovery.ts).
- *     Users who need REST v1 CORS must keep using the deployed API; this
- *     PR doesn't claim to emulate it.
+ *   - **REST v1 MOCK preflight** (route-discovery.ts, NOT this module):
+ *     CDK's `defaultCorsPreflightOptions` synthesizes an OPTIONS
+ *     `AWS::ApiGateway::Method` with a MOCK integration whose literal
+ *     `method.response.header.*` `ResponseParameters` carry the CORS
+ *     headers. `route-discovery.ts` captures those at boot as
+ *     `DiscoveredRoute.mockCors` and the HTTP server returns the
+ *     captured status + headers directly on OPTIONS (no Lambda invoke,
+ *     no VTL evaluation). The "REST v1 CORS is out of scope" comment
+ *     that used to live here is no longer accurate — only non-CORS
+ *     MOCK integrations (custom VTL response bodies, MOCK on non-OPTIONS
+ *     methods) remain unimplemented.
  *   - **Skip preflight handling when the route has an explicit OPTIONS
  *     method registered** — that signals the user's Lambda owns it.
  *

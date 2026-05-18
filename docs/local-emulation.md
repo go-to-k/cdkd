@@ -395,14 +395,20 @@ at once produces an error — they're mutually exclusive.
 | REST v1 | `AWS::ApiGateway::RestApi`, `AWS::ApiGateway::Resource`, `AWS::ApiGateway::Method`, `AWS::ApiGateway::Stage` |
 | Function URL | `AWS::Lambda::Url` |
 
-Only AWS_PROXY (Lambda Proxy) integrations are supported; any other
-integration type — MOCK, AWS, HTTP, HTTP_PROXY, ApiGwV2 service
-integrations (`IntegrationSubtype` set) — is hard-rejected at
-discovery with the offending route's location named in the error.
-WebSocket APIs (`AWS::ApiGatewayV2::Api.ProtocolType: WEBSOCKET`)
-and Function URLs with `AuthType !== 'NONE'` or `InvokeMode ==
-'RESPONSE_STREAM'` are also rejected — these need the deferred 8b /
-8c follow-up PRs.
+Per-route classification (boot never aborts on per-integration
+unsupportedness):
+
+| Class | Trigger | Behavior |
+| --- | --- | --- |
+| Normal | AWS_PROXY integration with a resolvable Lambda Arn | Dispatched to the Lambda via the container pool. |
+| Synthetic CORS preflight | REST v1 `HttpMethod: OPTIONS` + `Integration.Type: MOCK` + `IntegrationResponses[].ResponseParameters` carries literal `method.response.header.*` pairs (the shape CDK's `defaultCorsPreflightOptions` synthesizes) | Captured at boot. The HTTP server returns the captured status + headers directly on OPTIONS without invoking any Lambda. |
+| Deferred-error unsupported | Non-AWS_PROXY REST v1 integrations (`MOCK` not matching the CORS preflight subset, `AWS`, `HTTP`, `HTTP_PROXY`); HTTP API v2 service integrations (`IntegrationSubtype` set); WebSocket APIs (`ProtocolType: WEBSOCKET`); Function URLs with `AuthType !== 'NONE'` or `InvokeMode === 'RESPONSE_STREAM'`; routes whose Lambda Arn intrinsic cannot be resolved against the same template (cross-stack / imported references) | Boot continues. The route appears in the route table tagged `[501 Not Implemented]` and a `[warn]` line per route is printed up front. When the route is hit at request time, the HTTP server returns HTTP 501 with `{"message": "Not Implemented", "reason": "<the discovery reason>"}` in the JSON body, without invoking any Lambda. |
+| Hard error | Template-structural problems the discovery layer cannot generate a meaningful route from: missing `Integration` on a Method, non-Ref `RestApiId` / `ApiId`, malformed Route `Target`, ParentId chain failures, missing `PathPart`, unresolvable `TargetFunctionArn` on a Function URL | Boot aborts via `RouteDiscoveryError` with every offending route listed in a single message. |
+
+The deferred-error class lets you run the supported subset of an API
+locally even when the CDK app contains MOCK integrations, WebSocket
+routes, or other unimplemented shapes — only the unsupported routes
+themselves return 501; everything else dispatches as normal.
 
 ### Routing precedence
 
@@ -492,11 +498,25 @@ filter is load-bearing in multi-API stacks: an explicit OPTIONS
 route on Stack B's REST v1 API at the same path no longer suppresses
 preflight on Stack A's HTTP API v2.
 
-REST v1 (`AWS::ApiGateway::*`) CORS via Mock OPTIONS methods is NOT
-intercepted: cdkd's discovery layer rejects Mock integrations
-(`Integration.Type === 'MOCK'`) at server boot, so REST v1 CORS
-emulation is intentionally out of scope. Use the deployed API for
-that case.
+REST v1 (`AWS::ApiGateway::*`) CORS via Mock OPTIONS methods IS
+intercepted when the synthesized template matches CDK's
+`defaultCorsPreflightOptions` shape: `HttpMethod: 'OPTIONS'` +
+`Integration.Type: 'MOCK'` + `IntegrationResponses[].ResponseParameters`
+carrying literal `method.response.header.Access-Control-Allow-*` pairs.
+The headers are extracted at boot (AWS's `"'value'"` single-quote
+wrappers are stripped) and the HTTP server returns the captured
+status and headers directly on OPTIONS requests — no Lambda
+invocation, no VTL evaluation. The default status code is 204
+(matches the CDK default);
+intrinsic-valued (`Fn::Sub` / `Ref` etc.) `ResponseParameters` are
+dropped silently because cdkd cannot evaluate VTL locally, and if the
+drop leaves zero header literals the route falls back to the deferred-
+error 501 class.
+
+Other REST v1 MOCK shapes (non-OPTIONS methods, MOCK without literal
+header parameters, MOCK with VTL `RequestTemplates` that produce custom
+bodies) remain in the deferred-error 501 class — emulating arbitrary
+VTL mapping templates is out of scope.
 
 ### Stage variables
 
