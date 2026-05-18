@@ -7,21 +7,21 @@
           {
             "type": "command",
             "command": ".claude/hooks/branch-gate.sh",
-            "if": "Bash(git commit*) or Bash(git push*)",
+            "if": "Bash(git commit*) or Bash(git push*) or Bash(git -C * commit*) or Bash(git -C * push*)",
             "timeout": 10,
             "statusMessage": "Checking current branch..."
           },
           {
             "type": "command",
             "command": ".claude/hooks/post-merge-orphan-push-gate.sh",
-            "if": "Bash(git push*)",
+            "if": "Bash(git push*) or Bash(git -C * push*)",
             "timeout": 10,
             "statusMessage": "Checking for already-merged PR on this branch..."
           },
           {
             "type": "command",
             "command": ".claude/hooks/check-gate.sh",
-            "if": "Bash(git commit*)",
+            "if": "Bash(git commit*) or Bash(git -C * commit*)",
             "timeout": 10,
             "statusMessage": "Checking /check marker..."
           },
@@ -35,7 +35,7 @@
           {
             "type": "command",
             "command": ".claude/hooks/integ-local-gate.sh",
-            "if": "Bash(gh pr merge*) or Bash(git merge*)",
+            "if": "Bash(gh pr merge*) or Bash(git merge*) or Bash(git -C * merge*)",
             "timeout": 10,
             "statusMessage": "Checking integ-local marker..."
           },
@@ -63,7 +63,7 @@
           {
             "type": "command",
             "command": ".claude/hooks/commit-msg-heredoc-gate.sh",
-            "if": "Bash(git commit*)",
+            "if": "Bash(git commit*) or Bash(git -C * commit*)",
             "timeout": 10,
             "statusMessage": "Checking commit message format..."
           },
@@ -91,21 +91,21 @@
           {
             "type": "command",
             "command": ".claude/hooks/roundtrip-test-gate.sh",
-            "if": "Bash(git commit*)",
+            "if": "Bash(git commit*) or Bash(git -C * commit*)",
             "timeout": 10,
             "statusMessage": "Checking new SDK provider has round-trip test..."
           },
           {
             "type": "command",
             "command": ".claude/hooks/provider-docs-gate.sh",
-            "if": "Bash(git commit*)",
+            "if": "Bash(git commit*) or Bash(git -C * commit*)",
             "timeout": 10,
             "statusMessage": "Checking new provider registration has docs entries..."
           },
           {
             "type": "command",
             "command": ".claude/hooks/provider-integ-gate.sh",
-            "if": "Bash(git commit*)",
+            "if": "Bash(git commit*) or Bash(git -C * commit*)",
             "timeout": 10,
             "statusMessage": "Checking new provider registration has integ coverage..."
           },
@@ -119,21 +119,21 @@
           {
             "type": "command",
             "command": ".claude/hooks/internal-pr-labels-gate.sh",
-            "if": "Bash(git commit*)",
+            "if": "Bash(git commit*) or Bash(git -C * commit*)",
             "timeout": 10,
             "statusMessage": "Checking user-facing docs for internal PR labels..."
           },
           {
             "type": "command",
             "command": ".claude/hooks/cmd-parse-stub-gate.sh",
-            "if": "Bash(git commit*)",
+            "if": "Bash(git commit*) or Bash(git -C * commit*)",
             "timeout": 10,
             "statusMessage": "Checking test files for cmd.parse without action stub..."
           },
           {
             "type": "command",
             "command": ".claude/hooks/commit-prefix-scope-gate.sh",
-            "if": "Bash(git commit*)",
+            "if": "Bash(git commit*) or Bash(git -C * commit*)",
             "timeout": 10,
             "statusMessage": "Checking commit prefix matches user-visible scope..."
           }
