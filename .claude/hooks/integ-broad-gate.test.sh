@@ -35,7 +35,62 @@ fi
 cat "$GH_MOCK_PAYLOAD"
 EOF
 chmod +x "$GH_BIN_DIR/gh"
+
+# Mock `mise` and `markgate`: isolates the test from the local
+# repo's markgate state. Pre-PR (the design comment at the original
+# L93-98 noted "marker is currently no-marker on this branch") the
+# test relied on the user not having flipped `integ-broad` fresh —
+# but on a working checkout immediately after a successful
+# /run-integ bench-cdk-sample, the marker IS fresh and every "block"
+# case above silently returned exit 0 instead of 2. The mock here
+# pins markgate's verdict to whatever $MARKGATE_MOCK_VERDICT says
+# (default "stale" — what the block cases assume), so the test runs
+# the same on a fresh clone, in CI, and on a developer's checkout
+# with an arbitrary local marker state.
+#
+# The hook's `command -v mise` check picks up THIS mock first; the
+# pass-through form (`mise exec -- markgate <args>`) then routes to
+# the mocked `markgate` below — same code path the hook hits in
+# production when `mise` is installed.
+cat > "$GH_BIN_DIR/mise" <<'MISE_EOF'
+#!/usr/bin/env bash
+# Mock mise: pass-through for `mise exec -- <cmd> <args>`. Any other
+# subcommand exits 1 (the hook only uses `mise exec --`).
+if [ "$1" = "exec" ] && [ "$2" = "--" ]; then
+  shift 2
+  exec "$@"
+fi
+exit 1
+MISE_EOF
+chmod +x "$GH_BIN_DIR/mise"
+
+cat > "$GH_BIN_DIR/markgate" <<'MARKGATE_EOF'
+#!/usr/bin/env bash
+# Mock markgate: verdict pinned by $MARKGATE_MOCK_VERDICT
+# ("fresh" -> verify exits 0; anything else -> verify exits 1 and
+# status prints a parseable stale line). The hook's awk extractor
+# pulls "(reason)" out of `state:` for the error message.
+verdict="${MARKGATE_MOCK_VERDICT:-stale}"
+case "$1" in
+  verify)
+    [ "$verdict" = "fresh" ] && exit 0
+    exit 1
+    ;;
+  status)
+    if [ "$verdict" = "fresh" ]; then
+      printf 'key:        %s\nstate:      match\n' "$2"
+    else
+      printf 'key:        %s\nstate:      stale (marker missing)\n' "$2"
+    fi
+    exit 0
+    ;;
+esac
+exit 1
+MARKGATE_EOF
+chmod +x "$GH_BIN_DIR/markgate"
+
 export PATH="$GH_BIN_DIR:$PATH"
+export MARKGATE_MOCK_VERDICT="stale"
 
 pass=0
 fail=0
@@ -127,6 +182,14 @@ run_case "block: gh pr merge no-number, current branch touches cross-cutting" 2 
 
 run_case "pass: gh failure during PR files lookup (fail-open)" 0 \
   '{"tool_input":{"command":"gh pr merge 800"},"cwd":"."}' ""
+
+# --- Fresh marker path: cross-cutting diff + fresh integ-broad marker -> pass ---
+# Mirrors the just-after-/run-integ-bench-cdk-sample state. Pre-this-PR
+# the test never exercised this branch (marker was assumed missing on
+# CI / fresh clones); the mock above lets us pin it explicitly.
+MARKGATE_MOCK_VERDICT="fresh" run_case "pass: cross-cutting diff + fresh integ-broad marker" 0 \
+  '{"tool_input":{"command":"gh pr merge 900 --squash"},"cwd":"."}' \
+  '{"files":[{"path":"src/deployment/deploy-engine.ts"}]}'
 
 # ---- Summary ----
 
