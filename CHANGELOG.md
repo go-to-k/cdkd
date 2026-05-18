@@ -1,3 +1,10 @@
+## [0.115.1](https://github.com/go-to-k/cdkd/compare/v0.115.0...v0.115.1) (2026-05-18)
+
+
+### Bug Fixes
+
+* **local-start-api:** defer authorizer Lambda Arn unresolvable to request time (closes [#431](https://github.com/go-to-k/cdkd/issues/431)) ([#432](https://github.com/go-to-k/cdkd/issues/432)) ([2257920](https://github.com/go-to-k/cdkd/commit/22579205a1530f760779d6fbf888438d59e86505))
+
 # [0.115.0](https://github.com/go-to-k/cdkd/compare/v0.114.1...v0.115.0) (2026-05-18)
 
 
