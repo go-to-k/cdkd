@@ -1,3 +1,10 @@
+# [0.115.0](https://github.com/go-to-k/cdkd/compare/v0.114.1...v0.115.0) (2026-05-18)
+
+
+### Features
+
+* **local-start-api:** defer unsupported-route errors to request time + REST v1 MOCK CORS preflight ([#430](https://github.com/go-to-k/cdkd/issues/430)) ([2152123](https://github.com/go-to-k/cdkd/commit/2152123f91c5c94500a84a8178dd0a184e77843d))
+
 ## [0.114.1](https://github.com/go-to-k/cdkd/compare/v0.114.0...v0.114.1) (2026-05-17)
 
 
