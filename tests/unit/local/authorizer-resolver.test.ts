@@ -396,4 +396,148 @@ describe('attachAuthorizers', () => {
     };
     expect(() => attachAuthorizers([stack], [route])).toThrow(RouteDiscoveryError);
   });
+
+  // Issue #431: authorizer Lambda Arn unresolvable (cross-stack /
+  // imported / unsupported intrinsic shape) used to abort boot for the
+  // whole API. Now the route is flipped to `unsupported` with the
+  // resolver's reason, mirroring how route-discovery.ts handles an
+  // unresolvable `IntegrationUri`. The route appears in the route table
+  // as `[501 Not Implemented]` and returns HTTP 501 at request time.
+  it('REST v1 TOKEN authorizer with cross-stack AuthorizerUri flips the route to unsupported (issue #431)', () => {
+    const stack = buildStack('S', {
+      Method: {
+        Type: 'AWS::ApiGateway::Method',
+        Properties: {
+          AuthorizationType: 'CUSTOM',
+          AuthorizerId: { Ref: 'Auth' },
+          HttpMethod: 'GET',
+        },
+      },
+      Auth: {
+        Type: 'AWS::ApiGateway::Authorizer',
+        Properties: {
+          Type: 'TOKEN',
+          // Non-invoke-ARN Fn::Sub — resolver cannot pin a Lambda
+          // logical id (mirrors the route-discovery cross-stack /
+          // imported reference shape).
+          AuthorizerUri: { 'Fn::Sub': '${ImportedAuthFn.Arn}' },
+        },
+      },
+    });
+    const route: DiscoveredRoute = {
+      method: 'GET',
+      pathPattern: '/protected',
+      lambdaLogicalId: 'Handler',
+      source: 'rest-v1',
+      apiVersion: 'v1',
+      stage: 'prod',
+      declaredAt: 'S/Method',
+    };
+    const out = attachAuthorizers([stack], [route]);
+    expect(out).toHaveLength(1);
+    expect(out[0]?.authorizer).toBeUndefined();
+    expect(out[0]?.route.unsupported?.reason).toMatch(/authorizer Lambda Arn unresolvable/);
+    expect(out[0]?.route.unsupported?.reason).toMatch(/Auth\.AuthorizerUri/);
+    // Original route identity preserved so the route table can still
+    // show it under the right API.
+    expect(out[0]?.route.method).toBe('GET');
+    expect(out[0]?.route.pathPattern).toBe('/protected');
+    expect(out[0]?.route.lambdaLogicalId).toBe('Handler');
+  });
+
+  it('REST v1 REQUEST authorizer with cross-stack AuthorizerUri flips the route to unsupported (issue #431)', () => {
+    const stack = buildStack('S', {
+      Method: {
+        Type: 'AWS::ApiGateway::Method',
+        Properties: {
+          AuthorizationType: 'CUSTOM',
+          AuthorizerId: { Ref: 'Auth' },
+          HttpMethod: 'POST',
+        },
+      },
+      Auth: {
+        Type: 'AWS::ApiGateway::Authorizer',
+        Properties: {
+          Type: 'REQUEST',
+          AuthorizerUri: { 'Fn::Sub': '${ImportedAuthFn.Arn}' },
+          IdentitySource: 'method.request.header.X-Api-Key',
+        },
+      },
+    });
+    const route: DiscoveredRoute = {
+      method: 'POST',
+      pathPattern: '/items',
+      lambdaLogicalId: 'ItemHandler',
+      source: 'rest-v1',
+      apiVersion: 'v1',
+      stage: 'prod',
+      declaredAt: 'S/Method',
+    };
+    const out = attachAuthorizers([stack], [route]);
+    expect(out[0]?.authorizer).toBeUndefined();
+    expect(out[0]?.route.unsupported?.reason).toMatch(/authorizer Lambda Arn unresolvable/);
+  });
+
+  it('HTTP API v2 REQUEST authorizer with cross-stack AuthorizerUri flips the route to unsupported (issue #431)', () => {
+    const stack = buildStack('S', {
+      Route: {
+        Type: 'AWS::ApiGatewayV2::Route',
+        Properties: {
+          AuthorizationType: 'CUSTOM',
+          AuthorizerId: { Ref: 'Auth' },
+        },
+      },
+      Auth: {
+        Type: 'AWS::ApiGatewayV2::Authorizer',
+        Properties: {
+          AuthorizerType: 'REQUEST',
+          AuthorizerUri: { 'Fn::Sub': '${ImportedAuthFn.Arn}' },
+          IdentitySource: ['$request.header.Authorization'],
+        },
+      },
+    });
+    const route: DiscoveredRoute = {
+      method: 'GET',
+      pathPattern: '/protected',
+      lambdaLogicalId: 'Handler',
+      source: 'http-api',
+      apiVersion: 'v2',
+      stage: '$default',
+      declaredAt: 'S/Route',
+    };
+    const out = attachAuthorizers([stack], [route]);
+    expect(out[0]?.authorizer).toBeUndefined();
+    expect(out[0]?.route.unsupported?.reason).toMatch(/authorizer Lambda Arn unresolvable/);
+  });
+
+  it("does NOT flip the route to unsupported on a structural authorizer error (AWS_IAM, missing Audience, etc.) — those stay hard-errors", () => {
+    const stack = buildStack('S', {
+      Method: {
+        Type: 'AWS::ApiGateway::Method',
+        Properties: {
+          AuthorizationType: 'CUSTOM',
+          AuthorizerId: { Ref: 'Auth' },
+          HttpMethod: 'GET',
+        },
+      },
+      Auth: {
+        Type: 'AWS::ApiGateway::Authorizer',
+        Properties: {
+          // Unsupported Type — different failure mode from cross-stack Arn.
+          Type: 'AWS_IAM',
+          AuthorizerUri: { 'Fn::GetAtt': ['Fn', 'Arn'] },
+        },
+      },
+    });
+    const route: DiscoveredRoute = {
+      method: 'GET',
+      pathPattern: '/items',
+      lambdaLogicalId: 'ItemHandler',
+      source: 'rest-v1',
+      apiVersion: 'v1',
+      stage: 'prod',
+      declaredAt: 'S/Method',
+    };
+    expect(() => attachAuthorizers([stack], [route])).toThrow(RouteDiscoveryError);
+  });
 });

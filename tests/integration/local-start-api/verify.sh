@@ -143,6 +143,7 @@ EXPECTED_ROUTES=(
   "GET     /protected"
   "ANY     /v1/\\{proxy\\+\\}"
   "GET     /v1/unsupported"
+  "GET     /v1/cross-stack-auth"
   "OPTIONS /v1/\\{proxy\\+\\}"
   "ANY     /\\{proxy\\+\\}"
 )
@@ -313,6 +314,33 @@ if ! echo "${UNSUPPORTED_BODY}" | grep -q '"reason"'; then
   exit 1
 fi
 echo "    [GET /v1/unsupported (501)] OK"
+
+# Issue #431: authorizer Lambda Arn unresolvable. The route's
+# AuthorizerUri was overridden in the fixture to a cross-stack-shape
+# Fn::Sub the resolver cannot pin down. cdkd's authorizer-resolver
+# flips the route to deferred-error unsupported at boot; the HTTP
+# server returns 501 + reason at request time. The authorizer Lambda
+# is never invoked.
+echo "==> Asserting GET /v1/cross-stack-auth -> 501 Not Implemented (authorizer Arn unresolvable)"
+AUTH_RESPONSE=$(curl -s -w '\nHTTP_STATUS=%{http_code}' \
+  -H 'Authorization: Bearer any-token' \
+  "http://127.0.0.1:${PORT_REST}/v1/cross-stack-auth")
+AUTH_STATUS=$(echo "${AUTH_RESPONSE}" | grep -oE 'HTTP_STATUS=[0-9]+' | cut -d= -f2)
+AUTH_BODY=$(echo "${AUTH_RESPONSE}" | sed '$ d')
+if [[ "${AUTH_STATUS}" != "501" ]]; then
+  echo "FAIL: expected 501 from cross-stack authorizer route, got ${AUTH_STATUS}. Body: ${AUTH_BODY}"
+  cat "${LOG_FILE}"
+  exit 1
+fi
+if ! echo "${AUTH_BODY}" | grep -q '"message":"Not Implemented"'; then
+  echo "FAIL: expected 501 body to include {\"message\":\"Not Implemented\"}. Body: ${AUTH_BODY}"
+  exit 1
+fi
+if ! echo "${AUTH_BODY}" | grep -q 'authorizer Lambda Arn unresolvable'; then
+  echo "FAIL: expected 501 reason to mention 'authorizer Lambda Arn unresolvable'. Body: ${AUTH_BODY}"
+  exit 1
+fi
+echo "    [GET /v1/cross-stack-auth (501)] OK"
 
 echo ""
 echo "==> All local-start-api smoke tests passed"
