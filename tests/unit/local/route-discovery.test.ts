@@ -862,7 +862,7 @@ describe('discoverRoutes — REST v1 MOCK CORS preflight', () => {
     expect(routes[0]?.unsupported).toBeDefined();
   });
 
-  it('drops intrinsic-valued ResponseParameters silently (cannot evaluate VTL locally) and falls through to unsupported when no literal header survives', () => {
+  it('all-intrinsic ResponseParameters falls through to unsupported (cannot evaluate VTL locally)', () => {
     const stack = buildStack('S', {
       Api: { Type: 'AWS::ApiGateway::RestApi', Properties: {} },
       Method: {
@@ -889,5 +889,80 @@ describe('discoverRoutes — REST v1 MOCK CORS preflight', () => {
     const routes = discoverRoutes([stack]);
     expect(routes[0]?.mockCors).toBeUndefined();
     expect(routes[0]?.unsupported).toBeDefined();
+  });
+
+  it('mixed-shape ResponseParameters (one literal + one intrinsic) falls through to unsupported, all-or-nothing', () => {
+    // Load-bearing: a partial preflight with some headers missing
+    // would silently break CORS in the browser (preflight succeeds,
+    // actual request fails on the missing Access-Control-Allow-*).
+    // The 501 path's `reason` body is the better surface.
+    const stack = buildStack('S', {
+      Api: { Type: 'AWS::ApiGateway::RestApi', Properties: {} },
+      Method: {
+        Type: 'AWS::ApiGateway::Method',
+        Properties: {
+          HttpMethod: 'OPTIONS',
+          RestApiId: { Ref: 'Api' },
+          ResourceId: { 'Fn::GetAtt': ['Api', 'RootResourceId'] },
+          Integration: {
+            Type: 'MOCK',
+            IntegrationResponses: [
+              {
+                StatusCode: '204',
+                ResponseParameters: {
+                  'method.response.header.Access-Control-Allow-Origin': "'*'",
+                  'method.response.header.Access-Control-Allow-Headers': {
+                    'Fn::Sub': "'${HeaderListVar}'",
+                  },
+                },
+              },
+            ],
+          },
+        },
+      },
+    });
+    const routes = discoverRoutes([stack]);
+    expect(routes[0]?.mockCors).toBeUndefined();
+    expect(routes[0]?.unsupported).toBeDefined();
+  });
+});
+
+describe('discoverRoutes — HTTP API v2 unresolvable Lambda Arn (deferred-error symmetry)', () => {
+  // Symmetric with the REST v1 case (`flags Fn::Sub against an arbitrary
+  // (non-invoke-ARN) template as deferred-error unsupported`). HTTP API
+  // v2 routes whose IntegrationUri carries an unresolvable Lambda Arn
+  // intrinsic (cross-stack reference, imported Lambda, hand-rolled
+  // `Fn::Sub` outside the invoke-ARN wrapper) flow through the same
+  // unsupported branch.
+  it('flags HTTP API v2 IntegrationUri with non-invoke-ARN Fn::Sub as deferred-error unsupported', () => {
+    const stack = buildStack('S', {
+      Api: { Type: 'AWS::ApiGatewayV2::Api', Properties: { ProtocolType: 'HTTP' } },
+      Integ: {
+        Type: 'AWS::ApiGatewayV2::Integration',
+        Properties: {
+          ApiId: { Ref: 'Api' },
+          IntegrationType: 'AWS_PROXY',
+          // Bare `${X.Arn}` lacks the `:lambda:path/2015-03-31/functions/`
+          // invoke-ARN marker, so the resolver cannot pin a Lambda
+          // logical id — same shape as the REST v1 unresolvable case.
+          IntegrationUri: { 'Fn::Sub': '${ImportedHandler.Arn}' },
+        },
+      },
+      Route: {
+        Type: 'AWS::ApiGatewayV2::Route',
+        Properties: {
+          ApiId: { Ref: 'Api' },
+          RouteKey: 'GET /items',
+          Target: { 'Fn::Join': ['/', ['integrations', { Ref: 'Integ' }]] },
+        },
+      },
+    });
+    const routes = discoverRoutes([stack]);
+    expect(routes).toHaveLength(1);
+    expect(routes[0]?.unsupported?.reason).toMatch(/Lambda Arn intrinsics/);
+    expect(routes[0]?.lambdaLogicalId).toBe('');
+    expect(routes[0]?.apiLogicalId).toBe('Api'); // route identity preserved for the route table
+    expect(routes[0]?.method).toBe('GET');
+    expect(routes[0]?.pathPattern).toBe('/items');
   });
 });

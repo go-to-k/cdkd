@@ -338,16 +338,26 @@ function discoverRestV1Method(
 /**
  * Extract the canonical CORS-preflight headers from a REST v1 MOCK
  * Method's `Integration.IntegrationResponses[0]`. Returns `undefined`
- * when the shape isn't a CORS preflight (e.g. no IntegrationResponses
- * at all, or no `method.response.header.*` mapping parameters).
+ * when the shape isn't a CORS preflight (no IntegrationResponses, no
+ * `method.response.header.*` mapping parameters, or any individual
+ * mapping parameter we could not evaluate locally — see below).
  *
  * AWS represents header literals in `ResponseParameters` with surrounding
  * single-quotes (e.g. `"'*'"` for `*`). The single-quote wrappers are
  * stripped to produce the canonical header value the local server emits.
- * Non-literal values (intrinsics, unquoted values) are dropped silently
- * — those would require mapping-template evaluation we cannot do
- * locally, and surfacing partial preflights with missing headers would
- * cause a confusing CORS failure in the browser.
+ *
+ * **All-or-nothing**: if any `method.response.header.*` entry is
+ * intrinsic-valued (`Fn::Sub`, `Ref` etc.), unquoted, or otherwise
+ * not a string-literal-with-quotes, the WHOLE preflight falls through
+ * to the unsupported class. Emitting a partial preflight with some
+ * headers missing would silently break CORS in the browser (the
+ * preflight succeeds, then the actual request hits a CORS error the
+ * user has to debug through Network panel) — caller's the better
+ * place to surface the underlying VTL-requirement via the 501 path.
+ *
+ * Only the first `IntegrationResponses` entry is consulted. CDK's
+ * `defaultCorsPreflightOptions` emits exactly one entry; hand-rolled
+ * multi-status MOCK preflights are an unsupported v1 limitation.
  */
 function extractRestV1MockCorsConfig(
   integration: Record<string, unknown>
@@ -361,19 +371,23 @@ function extractRestV1MockCorsConfig(
   if (!responseParameters || typeof responseParameters !== 'object') return undefined;
 
   const headers: Record<string, string> = {};
+  let sawAnyHeader = false;
   for (const [key, raw] of Object.entries(responseParameters as Record<string, unknown>)) {
     const m = /^method\.response\.header\.(.+)$/.exec(key);
     if (!m) continue;
+    sawAnyHeader = true;
     const headerName = m[1]!;
-    if (typeof raw !== 'string') continue;
     // AWS literal-value convention: surround the literal with single
     // quotes. Anything else (an intrinsic, an unquoted reference) we
-    // can't evaluate locally and skip — surfacing a partial preflight
-    // with missing headers would silently break CORS in the browser.
-    if (raw.length < 2 || raw[0] !== "'" || raw[raw.length - 1] !== "'") continue;
+    // can't evaluate locally. All-or-nothing: reject the whole preflight
+    // so the route falls through to the 501 path with the full reason,
+    // rather than silently emitting a partial CORS response the browser
+    // accepts AT the preflight but then chokes on at the actual request.
+    if (typeof raw !== 'string') return undefined;
+    if (raw.length < 2 || raw[0] !== "'" || raw[raw.length - 1] !== "'") return undefined;
     headers[headerName] = raw.slice(1, -1);
   }
-  if (Object.keys(headers).length === 0) return undefined;
+  if (!sawAnyHeader) return undefined;
 
   // AWS represents the status code as a string. Default to 204 (the CDK
   // default for `defaultCorsPreflightOptions`) when it's missing or
