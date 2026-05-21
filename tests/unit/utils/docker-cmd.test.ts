@@ -1,5 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vite-plus/test';
-import { getDockerCmd, runDockerStreaming, spawnStreaming } from '../../../src/utils/docker-cmd.js';
+import {
+  formatDockerLoginError,
+  getDockerCmd,
+  runDockerStreaming,
+  spawnStreaming,
+} from '../../../src/utils/docker-cmd.js';
 
 describe('getDockerCmd', () => {
   let originalEnv: string | undefined;
@@ -131,5 +136,47 @@ describe('runDockerStreaming / spawnStreaming machinery', () => {
       if (original === undefined) delete process.env['CDK_DOCKER'];
       else process.env['CDK_DOCKER'] = original;
     }
+  });
+});
+
+// `formatDockerLoginError` — pattern-detect the macOS osxkeychain
+// credential-helper bug and surface an actionable `docker logout
+// <endpoint>` workaround instead of the raw cryptic docker stderr.
+describe('formatDockerLoginError', () => {
+  const endpoint = 'https://123456789012.dkr.ecr.us-east-1.amazonaws.com';
+
+  it("rewrites the 'already exists in the keychain' osxkeychain collision", () => {
+    const stderr =
+      'Error saving credentials: error storing credentials - err: exit status 1, ' +
+      'out: `The specified item already exists in the keychain.`';
+    const out = formatDockerLoginError(stderr, endpoint);
+    expect(out).toMatch(/Quick fix: run `docker logout https:\/\/123456789012\.dkr\.ecr\.us-east-1\.amazonaws\.com`/);
+    expect(out).toMatch(/known Docker Desktop \+ macOS osxkeychain bug/);
+    expect(out).toMatch(/credsStore/); // permanent-fix hint
+    expect(out).toContain(stderr); // original stderr preserved for diagnosis
+  });
+
+  it("also catches the bare 'Error saving credentials' shape without the keychain string", () => {
+    // Some docker-credential-* helpers (pass-store, secretservice) emit
+    // the saving-credentials prefix but a different out-line — same root
+    // cause (the credential helper can't persist), so route to the same
+    // workaround.
+    const stderr = 'Error saving credentials: pass not initialized for user';
+    const out = formatDockerLoginError(stderr, endpoint);
+    expect(out).toMatch(/docker logout /);
+  });
+
+  it('passes a non-credential-helper error through verbatim (trimmed)', () => {
+    const stderr =
+      '\n  Error response from daemon: Get "https://123456789012.dkr.ecr.us-east-1.amazonaws.com/v2/": net/http: TLS handshake timeout  \n';
+    const out = formatDockerLoginError(stderr, endpoint);
+    expect(out).toBe(
+      'Error response from daemon: Get "https://123456789012.dkr.ecr.us-east-1.amazonaws.com/v2/": net/http: TLS handshake timeout'
+    );
+    expect(out).not.toMatch(/docker logout /);
+  });
+
+  it('handles an empty stderr cleanly', () => {
+    expect(formatDockerLoginError('', endpoint)).toBe('');
   });
 });

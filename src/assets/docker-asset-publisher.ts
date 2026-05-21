@@ -4,7 +4,7 @@ import {
   DescribeImagesCommand,
 } from '@aws-sdk/client-ecr';
 import type { DockerImageAsset } from '../types/assets.js';
-import { runDockerStreaming } from '../utils/docker-cmd.js';
+import { formatDockerLoginError, runDockerStreaming } from '../utils/docker-cmd.js';
 import { getLogger } from '../utils/logger.js';
 import { AssetError } from '../utils/error-handler.js';
 import { buildDockerImage } from './docker-build.js';
@@ -210,7 +210,9 @@ export class DockerAssetPublisher {
       });
     } catch (err) {
       const e = err as { stderr?: string; message?: string };
-      throw new AssetError(`ECR login failed: ${e.stderr?.trim() || e.message || String(err)}`);
+      throw new AssetError(
+        `ECR login failed: ${formatDockerLoginError(e.stderr || e.message || String(err), endpoint)}`
+      );
     }
   }
 

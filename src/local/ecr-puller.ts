@@ -1,7 +1,7 @@
 import { spawn } from 'node:child_process';
 import { ECRClient, GetAuthorizationTokenCommand } from '@aws-sdk/client-ecr';
 import { GetCallerIdentityCommand, STSClient } from '@aws-sdk/client-sts';
-import { getDockerCmd, runDockerStreaming } from '../utils/docker-cmd.js';
+import { formatDockerLoginError, getDockerCmd, runDockerStreaming } from '../utils/docker-cmd.js';
 import { LocalInvokeBuildError } from '../utils/error-handler.js';
 import { getLogger } from '../utils/logger.js';
 
@@ -169,7 +169,7 @@ async function ecrLogin(client: ECRClient, accountId: string, region: string): P
   } catch (err) {
     const e = err as { stderr?: string; message?: string };
     throw new LocalInvokeBuildError(
-      `ECR login failed: ${e.stderr?.trim() || e.message || String(err)}`
+      `ECR login failed: ${formatDockerLoginError(e.stderr || e.message || String(err), endpoint)}`
     );
   }
 }
