@@ -1,3 +1,10 @@
+## [0.117.2](https://github.com/go-to-k/cdkd/compare/v0.117.1...v0.117.2) (2026-05-21)
+
+
+### Bug Fixes
+
+* **dynamodb-globaltable:** propagate Tags to cross-region replicas on create ([#441](https://github.com/go-to-k/cdkd/issues/441)) ([#472](https://github.com/go-to-k/cdkd/issues/472)) ([c97af8e](https://github.com/go-to-k/cdkd/commit/c97af8e1dcb33f0b3a8463d5da0e389d65338cb1))
+
 ## [0.117.1](https://github.com/go-to-k/cdkd/compare/v0.117.0...v0.117.1) (2026-05-21)
 
 
