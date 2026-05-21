@@ -49,7 +49,11 @@ import {
   type ApiServerGroup,
 } from '../../local/api-server-grouping.js';
 import { resolveEnvVars, type EnvOverrideFile } from '../../local/env-resolver.js';
-import { resolveLambdaLayers, type ResolvedLambdaLayer } from '../../local/lambda-resolver.js';
+import {
+  extractEphemeralStorageMb,
+  resolveLambdaLayers,
+  type ResolvedLambdaLayer,
+} from '../../local/lambda-resolver.js';
 import { matchStacks } from '../stack-matcher.js';
 import { buildCorsConfigByApiId, type CorsConfig } from '../../local/cors-handler.js';
 import {
@@ -968,6 +972,18 @@ async function buildContainerSpec(args: {
     dockerEnv['NODE_OPTIONS'] = `--inspect-brk=0.0.0.0:${debugPort}`;
   }
 
+  // Issue #440 — Lambda EphemeralStorage.Size: when the function's
+  // template declared `EphemeralStorage`, plumb the configured `/tmp`
+  // cap through to every cold-start of this Lambda's warm pool so
+  // the local container's `/tmp` matches the deployed function's
+  // sized tmpfs. Resolved here (once at server boot) rather than at
+  // acquire-time because the value is template-static for the
+  // server's lifetime.
+  const tmpfs =
+    lambda.ephemeralStorageMb !== undefined
+      ? { target: '/tmp', sizeMb: lambda.ephemeralStorageMb }
+      : undefined;
+
   const spec: ContainerSpec = {
     lambda,
     codeDir,
@@ -975,6 +991,7 @@ async function buildContainerSpec(args: {
     containerHost,
     ...(optDir !== undefined && { optDir }),
     ...(debugPort !== undefined && { debugPort }),
+    ...(tmpfs !== undefined && { tmpfs }),
   };
   return spec;
 }
@@ -1065,6 +1082,15 @@ interface ResolvedStartApiLambda {
    */
   layers: ResolvedLambdaLayer[];
   inlineCode?: string;
+  /**
+   * `Properties.EphemeralStorage.Size` (issue #440), MiB. Parsed via
+   * the shared `extractEphemeralStorageMb` helper so the CFn-range
+   * validation (reject > 10240) matches `cdkd local invoke`. Plumbed
+   * into the warm container's `--tmpfs /tmp:size=Nm` so handlers in
+   * the start-api server see the same sized `/tmp` cap they would on
+   * the deployed function. Undefined when the property is absent.
+   */
+  ephemeralStorageMb?: number;
 }
 
 function resolveLambdaByLogicalId(logicalId: string, stacks: StackInfo[]): ResolvedStartApiLambda {
@@ -1105,6 +1131,7 @@ function resolveLambdaByLogicalId(logicalId: string, stacks: StackInfo[]): Resol
     // invoke` so the warm container pool gets layer support out of
     // the box.
     const layers = resolveLambdaLayers(stack, logicalId, props);
+    const ephemeralStorageMb = extractEphemeralStorageMb(props, logicalId);
     return {
       kind: 'zip',
       stack,
@@ -1117,6 +1144,7 @@ function resolveLambdaByLogicalId(logicalId: string, stacks: StackInfo[]): Resol
       codePath,
       layers,
       ...(inlineCode !== undefined && { inlineCode }),
+      ...(ephemeralStorageMb !== undefined && { ephemeralStorageMb }),
     };
   }
   throw new Error(
