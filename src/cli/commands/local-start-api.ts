@@ -50,6 +50,7 @@ import {
 } from '../../local/api-server-grouping.js';
 import { resolveEnvVars, type EnvOverrideFile } from '../../local/env-resolver.js';
 import { resolveLambdaLayers, type ResolvedLambdaLayer } from '../../local/lambda-resolver.js';
+import { materializeLayerFromArn } from '../../local/layer-arn-materializer.js';
 import { matchStacks } from '../stack-matcher.js';
 import { buildCorsConfigByApiId, type CorsConfig } from '../../local/cors-handler.js';
 import {
@@ -99,6 +100,15 @@ interface LocalStartApiOptions {
   envVars?: string;
   /** D8.2: bare ARN (global) and/or `<LogicalId>=<arn>` (per-Lambda). */
   assumeRole?: AssumeRoleOption;
+  /**
+   * Issue #448: role to sts:AssumeRole before calling
+   * `lambda:GetLayerVersion` for every literal-ARN entry in any
+   * routed Lambda's `Properties.Layers`. Independent of `--assume-role`
+   * (which scopes the handler's runtime AWS calls). Use only when the
+   * dev credentials cannot read the layer (cross-account case);
+   * AWS-published public layers like Lambda Powertools need no role.
+   */
+  layerRoleArn?: string;
   /** PR 8c: enable hot reload on `cdk.out/` + asset-dir changes. */
   watch: boolean;
   /** PR 8c: select a Stage by `StageName`; default is the first attached. */
@@ -392,6 +402,7 @@ async function localStartApiCommand(
         inlineTmpDirs,
         layerTmpDirs,
         stateByStack,
+        ...(options.layerRoleArn !== undefined && { layerRoleArn: options.layerRoleArn }),
       });
       specs.set(logicalId, spec);
     }
@@ -864,6 +875,15 @@ async function buildContainerSpec(args: {
    * the env-resolver consults for `Ref AWS::*` / `${AWS::*}` placeholders.
    */
   stateByStack: Map<string, StackStateBundle>;
+  /**
+   * Issue #448: optional `--layer-role-arn` value. Forwarded into
+   * {@link materializeLambdaLayers}, which `sts:AssumeRole`s into this
+   * role before calling `lambda:GetLayerVersion` for every literal-ARN
+   * entry. Same role applies to every routed Lambda — if the user's
+   * apps reference layers in multiple accounts they need a single
+   * cross-account role that can read all of them.
+   */
+  layerRoleArn?: string;
 }): Promise<ContainerSpec> {
   const {
     logicalId,
@@ -876,6 +896,7 @@ async function buildContainerSpec(args: {
     inlineTmpDirs,
     layerTmpDirs,
     stateByStack,
+    layerRoleArn,
   } = args;
   const lambda = resolveLambdaByLogicalId(logicalId, stacks);
 
@@ -896,7 +917,12 @@ async function buildContainerSpec(args: {
   // layer functions get a freshly-merged tmpdir (later layers
   // overwrite earlier files via `cpSync({force:true})` — the
   // load-bearing half of AWS's "last layer wins" semantic).
-  const optDir = materializeLambdaLayers(lambda.layers, layerTmpDirs);
+  //
+  // Issue #448: literal-ARN entries are downloaded + unzipped via
+  // `lambda:GetLayerVersion` before the cpSync-merge step. The per-ARN
+  // tmpdirs are tracked in `layerTmpDirs` alongside multi-layer merge
+  // dirs so the same shutdown path cleans every one.
+  const optDir = await materializeLambdaLayers(lambda.layers, layerTmpDirs, layerRoleArn);
 
   // Env vars: literal template values + --env-vars overlay. When
   // `--from-state` was passed (and state for this Lambda's stack
@@ -988,25 +1014,52 @@ async function buildContainerSpec(args: {
  *
  * Three branches:
  *   - 0 layers → `undefined` (no `/opt` mount).
- *   - 1 layer → bind-mount the layer's asset dir directly (no copy).
+ *   - 1 layer → bind-mount the layer's asset dir directly (no copy)
+ *     when the entry is a same-stack asset. Literal-ARN entries always
+ *     pre-materialize first.
  *   - 2+ layers → copy each into a fresh tmpdir IN ORDER (later
  *     layers overwrite earlier files via `cpSync({force: true})`),
  *     bind-mount the tmpdir at `/opt`. Records the tmpdir in
  *     `layerTmpDirs` so `shutdown(...)` removes it.
+ *
+ * Issue #448: literal-ARN entries (`{kind: 'arn', ...}`) are downloaded
+ * + unzipped via `lambda:GetLayerVersion` BEFORE the cpSync-merge
+ * branches run. Every per-ARN tmpdir is also recorded in `layerTmpDirs`
+ * so the same shutdown path cleans it up — even for the single-layer
+ * fast path that bind-mounts the dir directly.
  *
  * AWS Lambda's actual runtime extracts every layer ZIP into `/opt`
  * in template order — the merge mirrors that. Docker rejects multiple
  * `-v ...:/opt:ro` entries at the same target, so cdkd can't rely on
  * overlay layering and must produce a single merged dir on the host.
  */
-function materializeLambdaLayers(
-  layers: { logicalId: string; assetPath: string }[],
-  layerTmpDirs: Set<string>
-): string | undefined {
+async function materializeLambdaLayers(
+  layers: ResolvedLambdaLayer[],
+  layerTmpDirs: Set<string>,
+  layerRoleArn: string | undefined
+): Promise<string | undefined> {
   if (layers.length === 0) return undefined;
-  if (layers.length === 1) return layers[0]!.assetPath;
-  const dir = mkdtempSync(path.join(tmpdir(), 'cdkd-local-start-api-layers-'));
+
+  // Stage 1: pre-materialize every literal-ARN entry into its own
+  // tmpdir (issue #448). The resulting flat list of `assetPath`
+  // entries is what the existing single-layer / multi-layer merge
+  // branches consume.
+  const flat: { logicalId: string; assetPath: string }[] = [];
   for (const layer of layers) {
+    if (layer.kind === 'asset') {
+      flat.push({ logicalId: layer.logicalId, assetPath: layer.assetPath });
+      continue;
+    }
+    const dir = await materializeLayerFromArn(layer, {
+      ...(layerRoleArn !== undefined && { roleArn: layerRoleArn }),
+    });
+    layerTmpDirs.add(dir);
+    flat.push({ logicalId: layer.arn, assetPath: dir });
+  }
+
+  if (flat.length === 1) return flat[0]!.assetPath;
+  const dir = mkdtempSync(path.join(tmpdir(), 'cdkd-local-start-api-layers-'));
+  for (const layer of flat) {
     // `recursive: true` enables the directory copy. `force: true`
     // implements AWS's "last layer wins" file-collision semantic: a
     // later layer's entry at the same relative path overwrites the
@@ -1748,6 +1801,15 @@ export function createLocalStartApiCommand(): Command {
       new Option(
         '--api <id>',
         'DEPRECATED — use the positional <target> argument instead. Same accepted forms (bare logical id, stack-qualified, Construct path, ancestor prefix). Will be removed in a future major release.'
+      )
+    )
+    .addOption(
+      new Option(
+        '--layer-role-arn <arn>',
+        'Role to sts:AssumeRole before calling lambda:GetLayerVersion on every literal-ARN ' +
+          'entry in Properties.Layers (issue #448). Use only when the dev credentials cannot ' +
+          'read the layer — typically cross-account layers. AWS-published public layers (e.g. ' +
+          'Lambda Powertools) are readable from every account and need no role.'
       )
     )
     .addOption(

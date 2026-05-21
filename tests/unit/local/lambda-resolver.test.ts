@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vite-plus/test';
 import {
   LocalInvokeResolutionError,
+  parseLayerVersionArn,
   parseTarget,
   resolveLambdaTarget,
 } from '../../../src/local/lambda-resolver.js';
@@ -721,11 +722,11 @@ describe('resolveLambdaTarget', () => {
       tmpRoot
     );
     expect(() => resolveLambdaTarget('MyStack:Fn', [stack])).toThrow(
-      /cdkd cannot resolve locally.*Only same-stack Ref \/ Fn::GetAtt/
+      /cdkd cannot resolve locally.*Expected a same-stack Ref \/ Fn::GetAtt/
     );
   });
 
-  it('rejects literal-ARN layer entries (cross-account / pre-existing — out of scope)', () => {
+  it('resolves literal-ARN layer entries (cross-account / pre-existing — issue #448)', () => {
     const stack = buildStack(
       'MyStack',
       {
@@ -734,7 +735,38 @@ describe('resolveLambdaTarget', () => {
           Properties: {
             Runtime: 'nodejs20.x',
             Handler: 'index.handler',
-            Layers: ['arn:aws:lambda:us-east-1:123456789012:layer:External:1'],
+            Layers: ['arn:aws:lambda:us-east-1:123456789012:layer:External:7'],
+          },
+          Metadata: { 'aws:asset:path': 'asset.fn' },
+        },
+      },
+      tmpRoot
+    );
+    const result = resolveLambdaTarget('MyStack:Fn', [stack]);
+    expect(result.layers).toHaveLength(1);
+    const layer = result.layers[0]!;
+    expect(layer.kind).toBe('arn');
+    if (layer.kind === 'arn') {
+      expect(layer.arn).toBe('arn:aws:lambda:us-east-1:123456789012:layer:External:7');
+      expect(layer.region).toBe('us-east-1');
+      expect(layer.accountId).toBe('123456789012');
+      expect(layer.name).toBe('External');
+      expect(layer.version).toBe('7');
+      expect(layer.logicalId).toBe(layer.arn);
+    }
+  });
+
+  it('rejects malformed string entries that are not a valid layer-version ARN', () => {
+    const stack = buildStack(
+      'MyStack',
+      {
+        Fn: {
+          Type: 'AWS::Lambda::Function',
+          Properties: {
+            Runtime: 'nodejs20.x',
+            Handler: 'index.handler',
+            // Wrong service segment.
+            Layers: ['arn:aws:s3:::my-layer-bucket'],
           },
           Metadata: { 'aws:asset:path': 'asset.fn' },
         },
@@ -742,7 +774,7 @@ describe('resolveLambdaTarget', () => {
       tmpRoot
     );
     expect(() => resolveLambdaTarget('MyStack:Fn', [stack])).toThrow(
-      /literal ARN.*External.*Only same-stack/
+      /literal string.*arn:aws:s3:::my-layer-bucket.*Expected a same-stack Ref/
     );
   });
 
@@ -854,5 +886,66 @@ describe('resolveLambdaTarget', () => {
       tmpRoot
     );
     expect(() => resolveLambdaTarget('MyStack:Fn', [stack])).toThrow(/non-array Layers/);
+  });
+});
+
+describe('parseLayerVersionArn (issue #448)', () => {
+  it('parses a canonical commercial-partition layer ARN', () => {
+    expect(parseLayerVersionArn('arn:aws:lambda:us-east-1:111122223333:layer:MyLayer:5')).toEqual({
+      arn: 'arn:aws:lambda:us-east-1:111122223333:layer:MyLayer:5',
+      region: 'us-east-1',
+      accountId: '111122223333',
+      name: 'MyLayer',
+      version: '5',
+    });
+  });
+
+  it('parses a hyphenated layer name', () => {
+    expect(
+      parseLayerVersionArn('arn:aws:lambda:eu-west-1:333344445555:layer:aws-lambda-powertools:42')
+    ).toEqual({
+      arn: 'arn:aws:lambda:eu-west-1:333344445555:layer:aws-lambda-powertools:42',
+      region: 'eu-west-1',
+      accountId: '333344445555',
+      name: 'aws-lambda-powertools',
+      version: '42',
+    });
+  });
+
+  it('accepts GovCloud / China partitions', () => {
+    expect(
+      parseLayerVersionArn('arn:aws-us-gov:lambda:us-gov-west-1:111122223333:layer:Gov:1')?.region
+    ).toBe('us-gov-west-1');
+    expect(
+      parseLayerVersionArn('arn:aws-cn:lambda:cn-north-1:111122223333:layer:CN:1')?.region
+    ).toBe('cn-north-1');
+  });
+
+  it('rejects a non-Lambda ARN', () => {
+    expect(parseLayerVersionArn('arn:aws:s3:::my-bucket')).toBeUndefined();
+  });
+
+  it('rejects a non-layer Lambda ARN (function ARN)', () => {
+    expect(
+      parseLayerVersionArn('arn:aws:lambda:us-east-1:111122223333:function:MyFn')
+    ).toBeUndefined();
+  });
+
+  it('rejects an unversioned layer ARN', () => {
+    expect(
+      parseLayerVersionArn('arn:aws:lambda:us-east-1:111122223333:layer:MyLayer')
+    ).toBeUndefined();
+  });
+
+  it('rejects a 13-digit account id (non-12)', () => {
+    expect(
+      parseLayerVersionArn('arn:aws:lambda:us-east-1:1111222233334:layer:MyLayer:1')
+    ).toBeUndefined();
+  });
+
+  it('rejects non-numeric version', () => {
+    expect(
+      parseLayerVersionArn('arn:aws:lambda:us-east-1:111122223333:layer:MyLayer:latest')
+    ).toBeUndefined();
   });
 });
