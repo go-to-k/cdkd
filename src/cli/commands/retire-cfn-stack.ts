@@ -12,6 +12,12 @@ import {
 import { S3Client, PutObjectCommand, DeleteObjectCommand } from '@aws-sdk/client-s3';
 import { getLogger } from '../../utils/logger.js';
 import { resolveBucketRegion } from '../../utils/aws-region-resolver.js';
+import {
+  detectTemplateFormat,
+  parseCfnTemplate,
+  stringifyCfnTemplate,
+  type TemplateFormat,
+} from '../yaml-cfn.js';
 
 /**
  * Stack states from which an UpdateStack call is safe. Anything else (an
@@ -152,7 +158,7 @@ export async function retireCloudFormationStack(
   if (!tpl.TemplateBody) {
     throw new Error(`GetTemplate returned no body for '${cfnStackName}'.`);
   }
-  const { body: newBody, modified } = injectRetainPolicies(tpl.TemplateBody, cfnStackName);
+  const { body: newBody, modified, format } = injectRetainPolicies(tpl.TemplateBody, cfnStackName);
 
   // ---- Confirmation gate (after we know what we're about to change) ----
   if (!yes) {
@@ -202,6 +208,7 @@ export async function retireCloudFormationStack(
         bucket: stateBucket,
         body: newBody,
         cfnStackName,
+        format,
         ...(s3ClientOpts && { s3ClientOpts }),
       });
       updateInput = { TemplateURL: uploaded.url };
@@ -292,9 +299,15 @@ export async function uploadTemplateForUpdateStack(args: {
   bucket: string;
   body: string;
   cfnStackName: string;
+  /**
+   * Source template format. Drives the S3 key extension and `Content-Type`
+   * so a YAML-authored template stays YAML in the transient upload and
+   * CloudFormation reads it as such.
+   */
+  format?: TemplateFormat;
   s3ClientOpts?: RetireCloudFormationStackOptions['s3ClientOpts'];
 }): Promise<{ url: string; cleanup: () => Promise<void> }> {
-  const { bucket, body, cfnStackName, s3ClientOpts } = args;
+  const { bucket, body, cfnStackName, format, s3ClientOpts } = args;
   const region = await resolveBucketRegion(bucket, {
     ...(s3ClientOpts?.profile && { profile: s3ClientOpts.profile }),
     ...(s3ClientOpts?.credentials && { credentials: s3ClientOpts.credentials }),
@@ -308,14 +321,16 @@ export async function uploadTemplateForUpdateStack(args: {
   // re-runs migrate twice in quick succession against the same CFn stack.
   // The key shape is intentionally human-grep-able — leftovers (if cleanup
   // fails) point straight at the offending stack name.
-  const key = `${MIGRATE_TMP_PREFIX}/${cfnStackName}/${Date.now()}.json`;
+  const ext = format === 'yaml' ? 'yaml' : 'json';
+  const contentType = format === 'yaml' ? 'application/x-yaml' : 'application/json';
+  const key = `${MIGRATE_TMP_PREFIX}/${cfnStackName}/${Date.now()}.${ext}`;
   try {
     await s3.send(
       new PutObjectCommand({
         Bucket: bucket,
         Key: key,
         Body: body,
-        ContentType: 'application/json',
+        ContentType: contentType,
       })
     );
   } catch (err) {
@@ -338,19 +353,17 @@ export async function uploadTemplateForUpdateStack(args: {
 }
 
 /**
- * Parse a CloudFormation template body (JSON), set `DeletionPolicy: Retain`
- * and `UpdateReplacePolicy: Retain` on every resource that doesn't already
- * have those exact values, and re-serialize.
+ * Parse a CloudFormation template body (JSON or YAML), set
+ * `DeletionPolicy: Retain` and `UpdateReplacePolicy: Retain` on every
+ * resource that doesn't already have those exact values, and re-serialize
+ * in the SAME format as the input. Returns the resulting body, a
+ * `modified` flag, and the detected source format so callers can stamp
+ * the right content type / S3 key extension on follow-up uploads.
  *
- * JSON-only by design. The `--migrate-from-cloudformation` flow's primary
- * upstream is `cdk migrate` (which produces a CDK app whose synthesized
- * template is always JSON) followed by `cdk deploy` / `cdkd deploy` (also
- * JSON). Adding YAML support would require parsing CloudFormation
- * shorthand intrinsics (`!Ref`, `!Sub`, `!GetAtt`, …) which round-trip
- * incorrectly through generic YAML libraries — a generic YAML
- * unmarshal/remarshal silently strips the custom tags and corrupts the
- * template. Until a CFn-aware YAML codec is in scope, hand-written YAML
- * stacks are best retired with the manual 3-step procedure.
+ * YAML templates are routed through cdkd's CFn-aware YAML codec
+ * (`src/cli/yaml-cfn.ts`), which preserves every CFn shorthand intrinsic
+ * (`!Ref`, `!GetAtt`, `!Sub`, etc.) on round-trip. JSON templates take
+ * the canonical two-space-indented JSON path.
  *
  * Exported for unit testing (the AWS round-trips are mocked, but the
  * mutation logic itself is pure and worth exercising directly).
@@ -358,24 +371,24 @@ export async function uploadTemplateForUpdateStack(args: {
 export function injectRetainPolicies(
   templateBody: string,
   cfnStackName: string
-): { body: string; modified: boolean } {
-  let parsed: unknown;
+): { body: string; modified: boolean; format: TemplateFormat } {
+  const format = detectTemplateFormat(templateBody);
+  let parsed: Record<string, unknown>;
   try {
-    parsed = JSON.parse(templateBody);
+    parsed = parseCfnTemplate(templateBody);
   } catch (err) {
     throw new Error(
-      `Template for '${cfnStackName}' is not valid JSON. cdkd's ` +
-        `--migrate-from-cloudformation flow only supports CDK-generated (JSON) templates. ` +
+      `Template for '${cfnStackName}' is not a valid CloudFormation template. ` +
+        `cdkd's --migrate-from-cloudformation flow supports both JSON and YAML templates ` +
+        `(YAML via a CFn-aware codec that preserves !Ref / !GetAtt / !Sub shorthand). ` +
         `Cause: ${err instanceof Error ? err.message : String(err)}`
     );
   }
   if (
-    !parsed ||
-    typeof parsed !== 'object' ||
-    Array.isArray(parsed) ||
     !('Resources' in parsed) ||
-    typeof (parsed as { Resources: unknown }).Resources !== 'object' ||
-    (parsed as { Resources: unknown }).Resources === null
+    typeof parsed['Resources'] !== 'object' ||
+    parsed['Resources'] === null ||
+    Array.isArray(parsed['Resources'])
   ) {
     throw new Error(
       `Template for '${cfnStackName}' has no Resources section — refusing to retire.`
@@ -383,7 +396,7 @@ export function injectRetainPolicies(
   }
 
   let modified = false;
-  const resources = (parsed as { Resources: Record<string, unknown> }).Resources;
+  const resources = parsed['Resources'] as Record<string, unknown>;
   for (const [, resource] of Object.entries(resources)) {
     if (!resource || typeof resource !== 'object' || Array.isArray(resource)) continue;
     const r = resource as Record<string, unknown>;
@@ -396,9 +409,7 @@ export function injectRetainPolicies(
       modified = true;
     }
   }
-  // Two-space indent matches the CDK canonical form, keeping the diff a
-  // reviewer might pull from CloudTrail or a CFn change set human-readable.
-  return { body: JSON.stringify(parsed, null, 2), modified };
+  return { body: stringifyCfnTemplate(parsed, format), modified, format };
 }
 
 /**
