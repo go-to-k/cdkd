@@ -791,6 +791,14 @@ function resolveLambdaArnOutcome(
 }
 
 /**
+ * Marker prefix the HTTP API v2 Route `Target` field always starts with —
+ * AWS documents this as `integrations/<IntegrationId>`. Load-bearing
+ * signal that an `Fn::Sub` shape on this field is actually pointing at
+ * a same-template Integration rather than something unrelated.
+ */
+const TARGET_INTEGRATIONS_PREFIX = 'integrations/';
+
+/**
  * Parse an HTTP API Route's `Target` into the integration's logical ID.
  *
  * CDK emits one of:
@@ -799,9 +807,14 @@ function resolveLambdaArnOutcome(
  *     (the shape `aws-cdk-lib/aws-apigatewayv2`'s `HttpApi.addRoutes`
  *     actually emits — empty separator + `'integrations/'` literal
  *     prefix in front of the Ref).
+ *   - `Fn::Sub: 'integrations/${MyIntegration}'` (1-arg form — AWS-docs
+ *     canonical; emitted by hand-rolled `CfnRoute` constructs).
+ *   - `Fn::Sub: ['integrations/${IntId}', { IntId: <Ref|GetAtt> }]`
+ *     (2-arg form — what `cdk.Fn.sub(template, vars)` synthesizes
+ *     when users build `target` programmatically).
  *   - `'integrations/abc123'` (literal — rare).
  *
- * All three forms are accepted; anything else throws.
+ * All five forms are accepted; anything else throws.
  */
 function parseHttpApiTargetIntegration(target: unknown, location: string): string {
   if (typeof target === 'string') {
@@ -811,6 +824,7 @@ function parseHttpApiTargetIntegration(target: unknown, location: string): strin
   }
   if (target && typeof target === 'object' && !Array.isArray(target)) {
     const obj = target as Record<string, unknown>;
+
     const join = obj['Fn::Join'];
     if (Array.isArray(join) && join.length === 2 && Array.isArray(join[1])) {
       const sep: unknown = join[0];
@@ -828,9 +842,52 @@ function parseHttpApiTargetIntegration(target: unknown, location: string): strin
         if (ref) return ref;
       }
     }
+
+    if ('Fn::Sub' in obj) {
+      const sub = obj['Fn::Sub'];
+
+      // 1-arg form: `'integrations/${LogicalId}'` — the placeholder name
+      // is a direct `Ref` to the integration resource. The marker prefix
+      // is load-bearing: a `Fn::Sub` without `integrations/` is not a
+      // route Target shape and the caller should see the same hard error
+      // as any other bad input.
+      if (typeof sub === 'string') {
+        const m = new RegExp(`^${TARGET_INTEGRATIONS_PREFIX}\\$\\{([^}]+)\\}$`).exec(sub);
+        if (m) {
+          const placeholder = m[1]!;
+          // Reject dotted refs (`${LogicalId.attr}`) — Integration has no
+          // GetAtt shape that produces a route-Target id.
+          if (!placeholder.includes('.')) return placeholder;
+        }
+      }
+
+      // 2-arg form: `['integrations/${Var}', { Var: { Ref: 'LogicalId' } }]`
+      // — the template references a binding whose value resolves to the
+      // integration logical id.
+      if (
+        Array.isArray(sub) &&
+        sub.length === 2 &&
+        typeof sub[0] === 'string' &&
+        sub[1] !== null &&
+        typeof sub[1] === 'object' &&
+        !Array.isArray(sub[1])
+      ) {
+        const template = sub[0];
+        const bindings = sub[1] as Record<string, unknown>;
+        const m = new RegExp(`^${TARGET_INTEGRATIONS_PREFIX}\\$\\{([^}]+)\\}$`).exec(template);
+        if (m) {
+          const placeholder = m[1]!;
+          const bound = bindings[placeholder];
+          if (bound !== undefined) {
+            const ref = pickRefLogicalId(bound);
+            if (ref) return ref;
+          }
+        }
+      }
+    }
   }
   throw new Error(
-    `${location}: Target must be 'integrations/<id>' or Fn::Join with one of the documented shapes (got ${shortJson(
+    `${location}: Target must be 'integrations/<id>', Fn::Join with one of the documented shapes, or Fn::Sub with an 'integrations/\${...}' template (got ${shortJson(
       target
     )}).`
   );
