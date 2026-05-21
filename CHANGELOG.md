@@ -1,3 +1,10 @@
+## [0.115.3](https://github.com/go-to-k/cdkd/compare/v0.115.2...v0.115.3) (2026-05-21)
+
+
+### Bug Fixes
+
+* **ecr-login:** actionable error when docker credential helper blocks ECR login ([#438](https://github.com/go-to-k/cdkd/issues/438)) ([3e595af](https://github.com/go-to-k/cdkd/commit/3e595af57f67e78d5da39dba9124da510582ea06))
+
 ## [0.115.2](https://github.com/go-to-k/cdkd/compare/v0.115.1...v0.115.2) (2026-05-21)
 
 
