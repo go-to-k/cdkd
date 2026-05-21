@@ -994,11 +994,14 @@ export class LambdaFunctionProvider implements ResourceProvider {
    * etc.) are filtered at compare time — we still avoid serializing them on
    * the wire.
    *
-   * `Code` is intentionally omitted: `GetFunction` returns a pre-signed S3
-   * URL for the deployed code, not the asset hash cdkd state holds, so they
-   * could never match. Lambda code drift is best detected separately (the
-   * function's `CodeSha256` does live in `GetFunction` but is not what
-   * cdkd's `Code: { S3Bucket, S3Key }` state property carries).
+   * `Code.S3Bucket` / `Code.S3Key` / `Code.S3ObjectVersion` / `Code.ZipFile`
+   * are not surfaced: `GetFunction` returns a pre-signed S3 URL for the
+   * deployed code, not the asset hash cdkd state holds, so they could
+   * never match. Those keys are declared via `getDriftUnknownPaths` so
+   * the drift comparator skips them. `Code.ImageUri` IS surfaced for
+   * container Lambdas (`PackageType: 'Image'`) — AWS returns it on the
+   * `GetFunction.Code.ImageUri` field, so a console-side image swap is
+   * detectable as drift.
    *
    * `Tags` is surfaced from the `Tags` map on the same `GetFunction`
    * response. CDK's auto-injected `aws:cdk:*` tags (which AWS happily
@@ -1037,6 +1040,16 @@ export class LambdaFunctionProvider implements ResourceProvider {
       result['Layers'] = (cfg.Layers ?? []).map((l) => l.Arn).filter((arn): arn is string => !!arn);
       result['Architectures'] = cfg.Architectures ? [...cfg.Architectures] : [];
       if (cfg.PackageType !== undefined) result['PackageType'] = cfg.PackageType;
+      // Code.ImageUri is surfaced for container Lambdas only. AWS returns
+      // `Code.ImageUri` on `GetFunction.Code.ImageUri` for Image-package
+      // functions; ZIP-package functions return a pre-signed S3 URL on
+      // `Code.Location` which is NOT the asset key cdkd state carries
+      // (the ZIP-side sub-paths stay declared via getDriftUnknownPaths).
+      // The Code subtree is only emitted when AWS reports an ImageUri so
+      // ZIP-package functions don't get a misleading `Code: {}` placeholder.
+      if (resp.Code?.ImageUri !== undefined) {
+        result['Code'] = { ImageUri: resp.Code.ImageUri };
+      }
       result['TracingConfig'] = { Mode: cfg.TracingConfig?.Mode ?? 'PassThrough' };
       if (cfg.EphemeralStorage?.Size !== undefined) {
         result['EphemeralStorage'] = { Size: cfg.EphemeralStorage.Size };
@@ -1075,15 +1088,30 @@ export class LambdaFunctionProvider implements ResourceProvider {
   }
 
   /**
-   * `Code: { S3Bucket, S3Key }` is set on create / update but `GetFunction`
-   * only returns a pre-signed URL for the deployed code, never the original
-   * asset key — so a state-recorded `Code` value can never match an
-   * AWS-current snapshot. Tell the drift comparator to skip the whole
-   * `Code` subtree to avoid the guaranteed false-positive that would fire
-   * on every clean run.
+   * Lambda ZIP-package `Code` sub-paths AWS does not return on read.
+   *
+   * `GetFunction` returns a pre-signed S3 URL for ZIP-deployed code
+   * (`Code.Location`), not the original `S3Bucket` / `S3Key` cdkd state
+   * holds. `ZipFile` is inline source that AWS never echoes back. These
+   * three fields are write-only via the GetFunction API (Category 1).
+   *
+   * `Code.ImageUri` IS recoverable — `GetFunction.Code.ImageUri` returns
+   * the templated image URI for container Lambdas — so it is surfaced by
+   * `readCurrentState` and NOT declared drift-unknown. `Code.SourceKMSKeyArn`
+   * is also write-only on the FunctionCodeLocation read shape.
+   *
+   * Pre-PR this method returned the whole `['Code']` subtree as
+   * drift-unknown, which also hid `Code.ImageUri` drift on container
+   * Lambdas. Narrowing the skip-list re-enables that detection.
    */
   getDriftUnknownPaths(): string[] {
-    return ['Code'];
+    return [
+      'Code.S3Bucket',
+      'Code.S3Key',
+      'Code.S3ObjectVersion',
+      'Code.ZipFile',
+      'Code.SourceKMSKeyArn',
+    ];
   }
 
   /**
