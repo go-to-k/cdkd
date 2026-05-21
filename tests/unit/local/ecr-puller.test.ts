@@ -77,7 +77,11 @@ vi.mock('node:child_process', async () => {
   };
 });
 
-import { parseEcrUri, pullEcrImage } from '../../../src/local/ecr-puller.js';
+import {
+  __resetStsCachesForTesting,
+  parseEcrUri,
+  pullEcrImage,
+} from '../../../src/local/ecr-puller.js';
 import { LocalInvokeBuildError } from '../../../src/utils/error-handler.js';
 
 describe('parseEcrUri', () => {
@@ -113,6 +117,9 @@ describe('pullEcrImage', () => {
     spawnForegroundMock.mockReset();
     delete process.env['AWS_REGION'];
     delete process.env['AWS_DEFAULT_REGION'];
+    // Drain the module-level STS caches so cached credentials from one test
+    // don't bleed into the next.
+    __resetStsCachesForTesting();
   });
 
   it('rejects non-ECR image URIs with LocalInvokeBuildError', async () => {
@@ -348,8 +355,7 @@ describe('pullEcrImage', () => {
     ).rejects.toThrow(/STS GetCallerIdentity returned no Account/);
   });
 
-  it('skipPull: verifies image is in local cache via docker image inspect', async () => {
-    stsSendMock.mockResolvedValue({ Account: '111111111111' });
+  it('skipPull: verifies image is in local cache via docker image inspect — no STS calls', async () => {
     process.env['AWS_REGION'] = 'us-east-1';
     const result = await pullEcrImage('111111111111.dkr.ecr.us-east-1.amazonaws.com/r:t', {
       skipPull: true,
@@ -362,18 +368,22 @@ describe('pullEcrImage', () => {
     expect(inspectCall).toBeDefined();
     // No `docker pull` — skipped.
     expect(spawnForegroundMock).not.toHaveBeenCalled();
+    // skipPull short-circuits BEFORE the GetCallerIdentity round-trip, so
+    // an ECS run-task that pre-pulled all N images issues zero STS calls.
+    expect(stsSendMock).not.toHaveBeenCalled();
   });
 
-  it('skipPull + cross-account + --ecr-role-arn: no AssumeRole (skipPull short-circuits before login)', async () => {
+  it('skipPull + cross-account + --ecr-role-arn: zero STS calls (skipPull short-circuits before STS)', async () => {
     // skipPull only needs to verify the image is in the local cache —
-    // no ECR auth required, so no STS round-trip beyond GetCallerIdentity.
-    stsSendMock.mockResolvedValue({ Account: '111111111111' });
+    // no ECR auth required, so the entire STS block is skipped (both
+    // GetCallerIdentity AND AssumeRole). This matters for ECS run-task
+    // with `--no-pull` on a cross-account image — the user has already
+    // pre-pulled and shouldn't pay any STS round-trips.
     await pullEcrImage('999999999999.dkr.ecr.us-east-1.amazonaws.com/r:t', {
       skipPull: true,
       ecrRoleArn: 'arn:aws:iam::999999999999:role/EcrPull',
     });
-    const assumeRoleCalls = stsSendMock.mock.calls.filter((c) => c[0]._kind === 'AssumeRole');
-    expect(assumeRoleCalls).toHaveLength(0);
+    expect(stsSendMock).not.toHaveBeenCalled();
     expect(ecrConstructorMock).not.toHaveBeenCalled();
   });
 
@@ -400,5 +410,227 @@ describe('pullEcrImage', () => {
     // ECR got the URI's region.
     const ecrConfig = ecrConstructorMock.mock.calls[0]![0] as { region?: string };
     expect(ecrConfig.region).toBe('eu-west-1');
+  });
+
+  // ---------- STS credential caching (closes #485 reviewer's MAJOR finding) ----------
+
+  it('caches GetCallerIdentity: two pulls in same region → only ONE GetCallerIdentity', async () => {
+    // The ECS run-task pattern: N containers under the same default
+    // credentials issuing N pulls. Pre-fix this generated N GetCallerIdentity
+    // round-trips for an identity invariant for the process. Post-fix
+    // it's 1.
+    stsSendMock.mockResolvedValue({ Account: '111111111111' });
+    ecrSendMock.mockResolvedValue({
+      authorizationData: [
+        {
+          authorizationToken: Buffer.from('AWS:dummypw').toString('base64'),
+          proxyEndpoint: 'https://111111111111.dkr.ecr.us-east-1.amazonaws.com',
+        },
+      ],
+    });
+    process.env['AWS_REGION'] = 'us-east-1';
+
+    await pullEcrImage('111111111111.dkr.ecr.us-east-1.amazonaws.com/r1:t', { skipPull: false });
+    await pullEcrImage('111111111111.dkr.ecr.us-east-1.amazonaws.com/r2:t', { skipPull: false });
+    await pullEcrImage('111111111111.dkr.ecr.us-east-1.amazonaws.com/r3:t', { skipPull: false });
+
+    const callerIdentityCalls = stsSendMock.mock.calls.filter(
+      (c) => c[0]._kind === 'GetCallerIdentity'
+    );
+    expect(callerIdentityCalls).toHaveLength(1);
+  });
+
+  it('caches AssumeRole: three pulls under one --ecr-role-arn → only ONE AssumeRole', async () => {
+    // The reviewer's literal canonical case: an ECS run-task with 3 ECR
+    // images and --ecr-role-arn used to issue 3× AssumeRole. Now: 1×.
+    stsSendMock
+      .mockResolvedValueOnce({ Account: '111111111111' })
+      .mockResolvedValueOnce({
+        Credentials: {
+          AccessKeyId: 'ASIAEXAMPLE',
+          SecretAccessKey: 'examplesecret',
+          SessionToken: 'examplesessiontoken',
+          // Fresh — well into the future, well past the 5-minute margin.
+          Expiration: new Date(Date.now() + 60 * 60 * 1000),
+        },
+      });
+    ecrSendMock.mockResolvedValue({
+      authorizationData: [
+        {
+          authorizationToken: Buffer.from('AWS:dummypw').toString('base64'),
+          proxyEndpoint: 'https://999999999999.dkr.ecr.us-east-1.amazonaws.com',
+        },
+      ],
+    });
+    process.env['AWS_REGION'] = 'us-east-1';
+    const roleArn = 'arn:aws:iam::999999999999:role/CrossAccountEcrPull';
+
+    await pullEcrImage('999999999999.dkr.ecr.us-east-1.amazonaws.com/r1:t', {
+      skipPull: false,
+      ecrRoleArn: roleArn,
+    });
+    await pullEcrImage('999999999999.dkr.ecr.us-east-1.amazonaws.com/r2:t', {
+      skipPull: false,
+      ecrRoleArn: roleArn,
+    });
+    await pullEcrImage('999999999999.dkr.ecr.us-east-1.amazonaws.com/r3:t', {
+      skipPull: false,
+      ecrRoleArn: roleArn,
+    });
+
+    const assumeRoleCalls = stsSendMock.mock.calls.filter((c) => c[0]._kind === 'AssumeRole');
+    expect(assumeRoleCalls).toHaveLength(1);
+    const callerIdentityCalls = stsSendMock.mock.calls.filter(
+      (c) => c[0]._kind === 'GetCallerIdentity'
+    );
+    expect(callerIdentityCalls).toHaveLength(1);
+  });
+
+  it('re-issues AssumeRole when cached credential is past the 5-minute safety margin', async () => {
+    // Stale-cache eviction: an Expiration within the 5-minute safety
+    // margin counts as stale → re-issue.
+    stsSendMock
+      .mockResolvedValueOnce({ Account: '111111111111' })
+      // First AssumeRole returns creds expiring soon (within 5-minute margin).
+      .mockResolvedValueOnce({
+        Credentials: {
+          AccessKeyId: 'ASIAFIRSTKEY',
+          SecretAccessKey: 'firstsecret',
+          SessionToken: 'firsttoken',
+          Expiration: new Date(Date.now() + 2 * 60 * 1000), // 2 min → stale by 5-min margin
+        },
+      })
+      // Second AssumeRole returns fresh creds.
+      .mockResolvedValueOnce({
+        Credentials: {
+          AccessKeyId: 'ASIASECONDKEY',
+          SecretAccessKey: 'secondsecret',
+          SessionToken: 'secondtoken',
+          Expiration: new Date(Date.now() + 60 * 60 * 1000),
+        },
+      });
+    ecrSendMock.mockResolvedValue({
+      authorizationData: [
+        {
+          authorizationToken: Buffer.from('AWS:dummypw').toString('base64'),
+          proxyEndpoint: 'https://999999999999.dkr.ecr.us-east-1.amazonaws.com',
+        },
+      ],
+    });
+    process.env['AWS_REGION'] = 'us-east-1';
+    const roleArn = 'arn:aws:iam::999999999999:role/EcrPull';
+
+    await pullEcrImage('999999999999.dkr.ecr.us-east-1.amazonaws.com/r1:t', {
+      skipPull: false,
+      ecrRoleArn: roleArn,
+    });
+    await pullEcrImage('999999999999.dkr.ecr.us-east-1.amazonaws.com/r2:t', {
+      skipPull: false,
+      ecrRoleArn: roleArn,
+    });
+
+    const assumeRoleCalls = stsSendMock.mock.calls.filter((c) => c[0]._kind === 'AssumeRole');
+    expect(assumeRoleCalls).toHaveLength(2);
+
+    // Second ECR client should use the FRESH credentials, not the stale ones.
+    const secondEcrConfig = ecrConstructorMock.mock.calls[1]![0] as {
+      credentials?: { accessKeyId?: string };
+    };
+    expect(secondEcrConfig.credentials?.accessKeyId).toBe('ASIASECONDKEY');
+  });
+
+  it('cache is keyed on (roleArn, region): different ARNs → separate AssumeRole calls', async () => {
+    // Two different roleArns in the same region must NOT share a cache
+    // entry. Same shape applies to two different regions under the same
+    // role (validated via the region key part of the cache key).
+    stsSendMock
+      .mockResolvedValueOnce({ Account: '111111111111' })
+      .mockResolvedValueOnce({
+        Credentials: {
+          AccessKeyId: 'ASIAFIRST',
+          SecretAccessKey: 'firstsecret',
+          SessionToken: 'firsttoken',
+          Expiration: new Date(Date.now() + 60 * 60 * 1000),
+        },
+      })
+      .mockResolvedValueOnce({
+        Credentials: {
+          AccessKeyId: 'ASIASECOND',
+          SecretAccessKey: 'secondsecret',
+          SessionToken: 'secondtoken',
+          Expiration: new Date(Date.now() + 60 * 60 * 1000),
+        },
+      });
+    ecrSendMock.mockResolvedValue({
+      authorizationData: [
+        {
+          authorizationToken: Buffer.from('AWS:dummypw').toString('base64'),
+          proxyEndpoint: 'https://999999999999.dkr.ecr.us-east-1.amazonaws.com',
+        },
+      ],
+    });
+    process.env['AWS_REGION'] = 'us-east-1';
+
+    await pullEcrImage('999999999999.dkr.ecr.us-east-1.amazonaws.com/r:t', {
+      skipPull: false,
+      ecrRoleArn: 'arn:aws:iam::999999999999:role/RoleA',
+    });
+    await pullEcrImage('999999999999.dkr.ecr.us-east-1.amazonaws.com/r:t', {
+      skipPull: false,
+      ecrRoleArn: 'arn:aws:iam::999999999999:role/RoleB',
+    });
+
+    const assumeRoleCalls = stsSendMock.mock.calls.filter((c) => c[0]._kind === 'AssumeRole');
+    expect(assumeRoleCalls).toHaveLength(2);
+
+    // Each call's RoleArn matches the input.
+    expect(assumeRoleCalls[0]![0].input.RoleArn).toBe('arn:aws:iam::999999999999:role/RoleA');
+    expect(assumeRoleCalls[1]![0].input.RoleArn).toBe('arn:aws:iam::999999999999:role/RoleB');
+  });
+
+  it('AssumeRole credentials without Expiration: treated as stale → re-issue every call', async () => {
+    // Defensive: the AWS SDK declares Expiration as optional. If STS
+    // ever returns creds without one (shouldn't happen in practice but
+    // possible with mocked / proxy setups), we re-issue rather than
+    // cache forever.
+    stsSendMock
+      .mockResolvedValueOnce({ Account: '111111111111' })
+      .mockResolvedValueOnce({
+        Credentials: {
+          AccessKeyId: 'ASIANOEXP',
+          SecretAccessKey: 'nosecret',
+          SessionToken: 'notoken',
+          // No Expiration!
+        },
+      })
+      .mockResolvedValueOnce({
+        Credentials: {
+          AccessKeyId: 'ASIANOEXP2',
+          SecretAccessKey: 'nosecret2',
+          SessionToken: 'notoken2',
+        },
+      });
+    ecrSendMock.mockResolvedValue({
+      authorizationData: [
+        {
+          authorizationToken: Buffer.from('AWS:dummypw').toString('base64'),
+          proxyEndpoint: 'https://999999999999.dkr.ecr.us-east-1.amazonaws.com',
+        },
+      ],
+    });
+    process.env['AWS_REGION'] = 'us-east-1';
+    const roleArn = 'arn:aws:iam::999999999999:role/EcrPull';
+
+    await pullEcrImage('999999999999.dkr.ecr.us-east-1.amazonaws.com/r:t', {
+      skipPull: false,
+      ecrRoleArn: roleArn,
+    });
+    await pullEcrImage('999999999999.dkr.ecr.us-east-1.amazonaws.com/r:t', {
+      skipPull: false,
+      ecrRoleArn: roleArn,
+    });
+
+    const assumeRoleCalls = stsSendMock.mock.calls.filter((c) => c[0]._kind === 'AssumeRole');
+    expect(assumeRoleCalls).toHaveLength(2);
   });
 });

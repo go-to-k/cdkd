@@ -91,6 +91,65 @@ interface TempCredentials {
   accessKeyId: string;
   secretAccessKey: string;
   sessionToken: string;
+  /**
+   * Expiration timestamp recorded by STS. Used by the module-level cache below
+   * to evict stale credentials before AWS itself rejects them. Optional because
+   * the AWS SDK declares `Credentials.Expiration` as optional, but in practice
+   * `AssumeRole` always returns it.
+   */
+  expiration?: Date;
+}
+
+/**
+ * Module-level cache for STS-issued AssumeRole credentials, keyed by
+ * `(ecrRoleArn, callerRegion)`. Closes the reviewer's MAJOR finding: ECS
+ * run-task with N containers under one `--ecr-role-arn` would otherwise issue
+ * N× `AssumeRole` and N× `GetCallerIdentity` for identical credentials valid
+ * for 3600s. The cache keeps a 5-minute safety margin against the recorded
+ * `Expiration` so STS-side / local-clock skew never lets a stale entry through.
+ *
+ * Cache key is intentionally `(roleArn, region)` rather than full caller
+ * identity — STS issues per-region session creds, and a switch of `--region`
+ * between two `local invoke` calls in the same process must re-issue.
+ *
+ * NOT cleared on process exit — Node's module scope evaporates with the
+ * process, and no inter-process sharing is desired (each `cdkd local invoke`
+ * is its own isolated runtime).
+ */
+const ASSUMED_ROLE_CACHE = new Map<string, TempCredentials>();
+
+/**
+ * Module-level cache for `STS:GetCallerIdentity`. The result is identity-only
+ * (`Account`) and invariant for the lifetime of the process under one set of
+ * default credentials. Keyed by `callerRegion` to avoid a cross-region leak
+ * when the caller flips `AWS_REGION` mid-process (STS is global but the SDK
+ * uses regional endpoints; the result is invariant in practice, but we key
+ * on region for safety).
+ */
+const CALLER_IDENTITY_CACHE = new Map<string, string>();
+
+/** 5-minute safety margin against the recorded STS expiration timestamp. */
+const STS_CREDENTIAL_SAFETY_MARGIN_MS = 5 * 60 * 1000;
+
+/**
+ * Reset the STS credential caches. Exported for unit tests only — production
+ * callers should never need this (the caches live for the process lifetime
+ * and the per-`(roleArn, region)` keying already isolates concurrent runs).
+ *
+ * @internal
+ */
+export function __resetStsCachesForTesting(): void {
+  ASSUMED_ROLE_CACHE.clear();
+  CALLER_IDENTITY_CACHE.clear();
+}
+
+function isCredentialFresh(creds: TempCredentials): boolean {
+  if (!creds.expiration) {
+    // STS didn't return an Expiration — surface as stale rather than cache
+    // forever. In practice AssumeRole always returns one.
+    return false;
+  }
+  return creds.expiration.getTime() - Date.now() > STS_CREDENTIAL_SAFETY_MARGIN_MS;
 }
 
 /**
@@ -111,38 +170,44 @@ export async function pullEcrImage(imageUri: string, options: EcrPullOptions): P
     );
   }
 
-  // Look up the caller's identity once. Used both to log cross-account
-  // info AND as the STS-AssumeRole source region (when ecrRoleArn is
-  // set). Failures here are fatal — without an identity we cannot even
-  // tell whether this is a cross-account pull, let alone authenticate.
   const callerRegion =
     options.region ?? process.env['AWS_REGION'] ?? process.env['AWS_DEFAULT_REGION'];
-  const sts = new STSClient({ ...(callerRegion && { region: callerRegion }) });
-  let callerAccount: string;
-  try {
-    const identity = await sts.send(new GetCallerIdentityCommand({}));
-    if (!identity.Account) {
-      throw new LocalInvokeBuildError(
-        'STS GetCallerIdentity returned no Account. Verify your AWS credentials.'
-      );
-    }
-    callerAccount = identity.Account;
-  } finally {
-    sts.destroy();
-  }
 
-  const crossAccount = callerAccount !== parsed.accountId;
-  const crossRegion = callerRegion !== undefined && callerRegion !== parsed.region;
-
-  // `--no-pull` short-circuits before any further ECR authentication —
-  // verifying the local cache needs no AWS calls. Doing this BEFORE the
-  // optional AssumeRole hop avoids a wasted STS round-trip when the user
-  // pre-pulled the image manually.
+  // `--no-pull` short-circuits before any AWS calls — verifying the local
+  // cache needs no STS / ECR authentication. Hoisting this above the
+  // `GetCallerIdentity` block avoids a wasted STS round-trip on every
+  // container in an ECS run-task that pre-pulled the image manually.
   if (options.skipPull) {
     logger.info(`Skipping ECR pull (--no-pull). Verifying ${imageUri} is in local cache...`);
     await verifyImageInLocalCache(imageUri);
     return imageUri;
   }
+
+  // Look up the caller's identity (cached per region — invariant for the
+  // process's default credentials). Used both to log cross-account info AND
+  // as the STS-AssumeRole source region. Failures here are fatal — without
+  // an identity we cannot even tell whether this is a cross-account pull,
+  // let alone authenticate.
+  const callerIdentityKey = callerRegion ?? '_unset';
+  let callerAccount = CALLER_IDENTITY_CACHE.get(callerIdentityKey);
+  if (callerAccount === undefined) {
+    const sts = new STSClient({ ...(callerRegion && { region: callerRegion }) });
+    try {
+      const identity = await sts.send(new GetCallerIdentityCommand({}));
+      if (!identity.Account) {
+        throw new LocalInvokeBuildError(
+          'STS GetCallerIdentity returned no Account. Verify your AWS credentials.'
+        );
+      }
+      callerAccount = identity.Account;
+      CALLER_IDENTITY_CACHE.set(callerIdentityKey, callerAccount);
+    } finally {
+      sts.destroy();
+    }
+  }
+
+  const crossAccount = callerAccount !== parsed.accountId;
+  const crossRegion = callerRegion !== undefined && callerRegion !== parsed.region;
 
   // Optionally assume a role to gain credentials for the target account.
   // When `ecrRoleArn` is not set but the pull is cross-account, we
@@ -150,12 +215,25 @@ export async function pullEcrImage(imageUri: string, options: EcrPullOptions): P
   // on the ECR repository can grant cross-account access without
   // requiring AssumeRole. AWS surfaces a clear `AccessDenied` if the
   // grant is missing, and the caller can re-run with `--ecr-role-arn`.
+  //
+  // AssumeRole result cached per `(roleArn, region)` so an ECS run-task
+  // with N containers under one `--ecr-role-arn` issues only 1× AssumeRole
+  // for all N (sessions are valid 3600s, far longer than any practical
+  // image-pull loop).
   let assumed: TempCredentials | undefined;
   if (options.ecrRoleArn) {
-    assumed = await assumeRoleForEcr(options.ecrRoleArn, callerRegion, logger);
-    logger.info(
-      `Assumed role ${options.ecrRoleArn} for ECR pull (account=${parsed.accountId}, region=${parsed.region})`
-    );
+    const cacheKey = `${options.ecrRoleArn}|${callerRegion ?? '_unset'}`;
+    const cached = ASSUMED_ROLE_CACHE.get(cacheKey);
+    if (cached && isCredentialFresh(cached)) {
+      assumed = cached;
+      logger.debug(`Reusing cached AssumeRole credentials for ${options.ecrRoleArn}`);
+    } else {
+      assumed = await assumeRoleForEcr(options.ecrRoleArn, callerRegion, logger);
+      ASSUMED_ROLE_CACHE.set(cacheKey, assumed);
+      logger.info(
+        `Assumed role ${options.ecrRoleArn} for ECR pull (account=${parsed.accountId}, region=${parsed.region})`
+      );
+    }
   } else if (crossAccount) {
     logger.info(
       `Cross-account ECR pull: image account ${parsed.accountId} != caller ${callerAccount}. ` +
@@ -226,6 +304,7 @@ async function assumeRoleForEcr(
       accessKeyId: creds.AccessKeyId,
       secretAccessKey: creds.SecretAccessKey,
       sessionToken: creds.SessionToken,
+      ...(creds.Expiration && { expiration: creds.Expiration }),
     };
   } catch (err) {
     if (err instanceof LocalInvokeBuildError) throw err;
