@@ -1,3 +1,10 @@
+## [0.115.2](https://github.com/go-to-k/cdkd/compare/v0.115.1...v0.115.2) (2026-05-21)
+
+
+### Bug Fixes
+
+* **docker-build:** align with CDK CLI for # syntax=docker/dockerfile:1 + BuildKit Dockerfiles ([#437](https://github.com/go-to-k/cdkd/issues/437)) ([47b3a97](https://github.com/go-to-k/cdkd/commit/47b3a976c2ab056496afb4d9e117ddc9ac6b7481))
+
 ## [0.115.1](https://github.com/go-to-k/cdkd/compare/v0.115.0...v0.115.1) (2026-05-18)
 
 
