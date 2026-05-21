@@ -112,7 +112,7 @@ in the resolved stack so the user can copy/paste a valid one.
 | `--no-build` | off | Skip `docker build` on the **Container Lambdas, local-build path** (`Code.ImageUri`). Requires the deterministic `cdkd-local-invoke-<hash>` tag to already be in the local docker registry from a prior `cdkd local invoke` (or manual `docker build`); errors clearly when missing. **No-op for ZIP Lambdas** (no docker build runs there) AND for the **Container Lambdas, ECR-pull fallback** (use `--no-pull` to control that path). Compatible with `--no-pull`. |
 | `--debug-port <port>` | off | Set `NODE_OPTIONS=--inspect-brk=0.0.0.0:<port>` and publish the port; attach a Node debugger to step through the handler. |
 | `--container-host <host>` | `127.0.0.1` | Host to bind the RIE port to. |
-| `--assume-role <arn>` | off | STS-assume the deployed function's execution role and forward the resulting temp credentials to the container, so the handler runs under the deployed role's narrow permissions instead of the developer's typically-admin shell credentials. Off by default — when omitted, `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` / `AWS_SESSION_TOKEN` / `AWS_REGION` are passed through unchanged (SAM-compatible default). Takes an explicit ARN; PR 2's `--from-state` adds a hint pointing at the state-recorded role ARN but does NOT auto-assume. |
+| `--assume-role [arn]` | off | STS-assume the deployed function's execution role and forward the resulting temp credentials to the container, so the handler runs under the deployed role's narrow permissions instead of the developer's typically-admin shell credentials. Three forms: (1) `--assume-role <arn>` assumes the explicit ARN (precedence wins); (2) `--assume-role` (bare) auto-resolves the function's `Properties.Role` from cdkd state (requires `--from-state`); (3) `--no-assume-role` explicitly opts out (forces dev creds even with `--from-state`). Off by default — when omitted, `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` / `AWS_SESSION_TOKEN` / `AWS_REGION` are passed through unchanged (SAM-compatible default). STS failures degrade to a warn + dev-creds fallback. |
 | `-a, --app <cmd-or-dir>` | — | CDK app command or pre-synthesized `cdk.out` directory. Default: synth every time (Q2 recommendation C). Pass `-a cdk.out` to skip synthesis when iterating. |
 | `--output <dir>` | `cdk.out` | Output directory for synthesis. |
 | `--from-state` | off | Read cdkd's S3 state for the target stack and substitute `Ref` / `Fn::GetAtt` / `Fn::Sub` / `Fn::Join` placeholders + AWS pseudo parameters (`${AWS::AccountId}` / `${AWS::Region}` / `${AWS::Partition}` / `${AWS::URLSuffix}`) in env vars with the deployed physical IDs / attributes. Off by default — keeps PR 1's literal-only / warn-and-drop behavior. See [State-driven env recovery (`--from-state`)](#state-driven-env-recovery---from-state) below. |
@@ -175,11 +175,18 @@ failures (no state record, multi-region ambiguity without
 `--stack-region`, bucket-resolution error) degrade to warn-and-fall-back
 rather than aborting the whole invoke.
 
-**Q1 follow-up**: when `--from-state` is set without `--assume-role`,
-cdkd peeks at the function's deployed `Role` in state and logs a
-one-line hint surfacing the role's ARN. Auto-assumption is intentionally
-not wired in — v1 keeps `--assume-role` as the single explicit path to
-scoped credentials.
+**Auto-assume execution role**: when `--from-state` is paired with bare
+`--assume-role` (no ARN argument), cdkd reads the function's
+`Properties.Role` from cdkd state, resolves `Fn::GetAtt: [<RoleId>, 'Arn']`
+shapes against the sibling IAM Role resource's recorded `Arn` attribute,
+and STS-assumes that role automatically — no manual ARN lookup required.
+When `--from-state` is set WITHOUT `--assume-role`, the legacy hint path
+fires instead: cdkd logs the deployed role ARN once so users can re-run
+with `--assume-role`. Pass `--no-assume-role` to explicitly opt out even
+with `--from-state`; pass `--assume-role <arn>` to override the resolved
+ARN with an explicit one. STS failures (insufficient permissions /
+trust-policy mismatch) degrade to a warn + dev-creds fallback — this is
+a developer-loop tool, not a security boundary.
 
 **Pseudo parameters**: when the function's template env contains any
 intrinsic value, `cdkd local invoke --from-state` issues a single
