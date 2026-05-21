@@ -1,3 +1,10 @@
+# [0.118.0](https://github.com/go-to-k/cdkd/compare/v0.117.2...v0.118.0) (2026-05-21)
+
+
+### Features
+
+* **local:** cross-account / cross-region ECR pull ([#485](https://github.com/go-to-k/cdkd/issues/485)) ([de4e889](https://github.com/go-to-k/cdkd/commit/de4e889d929754d8d729298ab31ff57772efb6ed))
+
 ## [0.117.2](https://github.com/go-to-k/cdkd/compare/v0.117.1...v0.117.2) (2026-05-21)
 
 
