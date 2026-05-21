@@ -300,6 +300,38 @@ plus the rest as positional args; `ImageConfig.WorkingDirectory` becomes
 default entrypoint stays in charge — for AWS Lambda base images that's
 `/lambda-entrypoint.sh`, which routes to RIE on port 8080.
 
+### Ephemeral storage (`/tmp` cap)
+
+When a Lambda's template declares `Properties.EphemeralStorage.Size`
+(typical CDK shape:
+`new lambda.Function(this, 'X', { ephemeralStorageSize: cdk.Size.gibibytes(2) })`),
+`cdkd local invoke` adds `--tmpfs /tmp:rw,size=<N>m` to the `docker run`
+command so the container's `/tmp` is a memory-backed filesystem capped
+at the templated value (`N` MiB; `cdk.Size.gibibytes(2)` serializes to
+`2048`). Handlers that exceed the deployed cap fail locally with
+`ENOSPC` the way they would on AWS, and handlers that detect free space
+via `statvfs` / `df` see the configured cap rather than the host's
+overlay-fs.
+
+Applies to both ZIP and IMAGE (container) Lambdas — `--tmpfs` overlays
+mount-time inside any container regardless of base image. Container
+Lambdas get an `[info]` log line at startup so users notice the
+`/tmp` override on top of whatever their Dockerfile placed there.
+
+When `EphemeralStorage` is absent, no `--tmpfs` is emitted and the
+container's `/tmp` is whatever the base image provides (AWS Lambda
+base images don't mount a sized tmpfs themselves, so the pre-#440
+behavior is preserved). Templates over the AWS 10240 MiB (10 GiB)
+ceiling hard-error at resolve time with an actionable message rather
+than hanging on a `docker run` that AWS would have refused anyway.
+Intrinsic-valued `Size` entries (the `{Ref: 'SomeParam'}` shape) drop
+silently to no-`--tmpfs` since local invoke cannot resolve them
+without the Parameters context the deploy engine has.
+
+The same cap applies to `cdkd local start-api`'s warm container pool
+— each cold-started container for a Lambda with `EphemeralStorage`
+gets the same sized `/tmp`.
+
 ### `local invoke` exit codes
 
 - `0` — RIE answered, regardless of whether the handler returned a
@@ -315,7 +347,6 @@ default entrypoint stays in charge — for AWS Lambda base images that's
 | --- | --- |
 | Java / Go / Ruby / .NET runtimes | Future PRs |
 | Cross-account / cross-region / pre-existing-ARN Lambda Layers | Future PR (same-stack `AWS::Lambda::LayerVersion` refs are supported in v1; literal ARNs hard-error — see "Lambda Layers" section above) |
-| `EphemeralStorage` mapping for container Lambdas | Future PR (Docker `--tmpfs /tmp:size=Nm`) |
 | Cross-stack `Fn::ImportValue` / `Fn::GetStackOutput` in `--from-state` | Future PR |
 | `Fn::Select` / `Fn::Split` / `Fn::If` etc. in `--from-state` | Future PR (warn + drop today) |
 | SQS / S3 event source emulation | Future PR |
