@@ -545,9 +545,7 @@ function pickStringFromArn(value: unknown, location: string): string {
       }
     }
   }
-  throw new RouteDiscoveryError(
-    `${location}: must be a literal string (got ${shortJson(value)}).`
-  );
+  throw new RouteDiscoveryError(`${location}: must be a literal string (got ${shortJson(value)}).`);
 }
 
 /**
