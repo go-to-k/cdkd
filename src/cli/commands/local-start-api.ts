@@ -484,12 +484,21 @@ async function localStartApiCommand(
 
   // #447: AWS_IAM-protected routes warn at startup. The local server
   // verifies SigV4 signatures only — IAM policy evaluation (resource /
-  // action / condition) is NOT emulated. Lazy-construct the credentials
-  // loader the first time an IAM route is detected, so dev environments
-  // without configured AWS credentials only fail when actually needed.
-  if (warnIamRoutes(initialMaterial.routes)) {
-    sigV4CredentialsLoader = defaultCredentialsLoader();
-  }
+  // action / condition) is NOT emulated.
+  //
+  // The credentials loader is ALWAYS constructed at boot (not gated on
+  // the initial template having IAM routes) so that hot-reload
+  // (`--watch`) paths that ADD a new IAM route after boot have the
+  // loader already wired up. The loader is internally lazy
+  // (`defaultCredentialsLoader()` memoizes the actual STSClient +
+  // credential resolution until first call), so unused boots pay zero
+  // cost. Pre-fix the loader was conditionally constructed at this
+  // point only when the initial template had IAM routes, which caused
+  // post-hot-reload IAM routes to hit the http-server's defensive
+  // "no SigV4 credentials loader configured — denying" deny path with
+  // no explanation. PR #484 review MAJOR.
+  sigV4CredentialsLoader = defaultCredentialsLoader();
+  warnIamRoutes(initialMaterial.routes);
 
   // RIE invoke timeout: 2x the slowest Lambda's Timeout, floor 30s.
   let maxTimeoutSec = 0;
@@ -549,11 +558,9 @@ async function localStartApiCommand(
       authorizerCache,
       jwksCache,
       jwksWarnedUrls,
-      ...(sigV4CredentialsLoader && {
-        sigV4CredentialsLoader,
-        sigV4WarnedForeignIds,
-        sigV4AllowUnverified: options.allowUnverifiedSigv4 === true,
-      }),
+      sigV4CredentialsLoader,
+      sigV4WarnedForeignIds,
+      sigV4AllowUnverified: options.allowUnverifiedSigv4 === true,
     });
     servers.push({ group, server: started });
     if (basePort !== 0) nextPort += 1;

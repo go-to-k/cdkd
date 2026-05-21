@@ -231,10 +231,14 @@ export function resolveRestV1Authorizer(
     };
   }
 
-  // AWS_IAM and any unknown Type — surface a structured error that the
-  // route-discovery layer wraps with offending route info.
+  // Unknown Type — surface a structured error that the route-discovery
+  // layer wraps with offending route info. Note: AWS_IAM is detected at
+  // the Method level (`AuthorizationType: 'AWS_IAM'`), not here — CDK
+  // does not emit a companion `AWS::ApiGateway::Authorizer` resource
+  // for IAM. mTLS lives on the `AWS::ApiGateway::DomainName` resource,
+  // also not via Authorizer.
   throw new RouteDiscoveryError(
-    `${stackName}/${authorizerLogicalId}: AWS::ApiGateway::Authorizer.Type '${String(type)}' is not supported by cdkd local start-api (only TOKEN / REQUEST / COGNITO_USER_POOLS — IAM / mTLS authorizers are deferred to a follow-up PR).`
+    `${stackName}/${authorizerLogicalId}: AWS::ApiGateway::Authorizer.Type '${String(type)}' is not supported by cdkd local start-api (only TOKEN / REQUEST / COGNITO_USER_POOLS are accepted at the Authorizer resource).`
   );
 }
 

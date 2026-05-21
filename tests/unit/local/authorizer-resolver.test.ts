@@ -162,11 +162,13 @@ describe('resolveRestV1Authorizer — COGNITO_USER_POOLS', () => {
 });
 
 describe('resolveRestV1Authorizer — unsupported', () => {
-  it('rejects unknown Type', () => {
+  it('rejects unknown Authorizer Type', () => {
+    // AWS_IAM is now detected at the Method level (PR #484), so this
+    // path only triggers for genuinely-unknown Authorizer resource Types.
     const stack = buildStack('S', {
       Auth: {
         Type: 'AWS::ApiGateway::Authorizer',
-        Properties: { Type: 'AWS_IAM' },
+        Properties: { Type: 'SOMETHING_UNKNOWN' },
       },
     });
     expect(() => resolveRestV1Authorizer('Auth', stack.template, 'S', 'S/Method')).toThrow(

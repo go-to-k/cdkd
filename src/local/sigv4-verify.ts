@@ -276,24 +276,30 @@ export async function verifySigV4(
   // lowercased AKID is a trivial bypass vector otherwise.
   if (local.accessKeyId.toLowerCase() !== parsed.credentialAccessKeyId.toLowerCase()) {
     const warned = opts.warnedForeignIds;
+    // The dedup key MUST be normalized to match the case-insensitive
+    // AKID compare above — otherwise an attacker probing variants
+    // (AKIDFOREIGN, akidforeign, AkIdFOREIGN) would trigger a fresh
+    // warn line per case. Case-insensitive compare → case-insensitive
+    // dedup. (PR #484 review MINOR.)
+    const dedupKey = parsed.credentialAccessKeyId.toLowerCase();
     if (!opts.allowUnverified) {
-      if (!warned || !warned.has(parsed.credentialAccessKeyId)) {
+      if (!warned || !warned.has(dedupKey)) {
         logger.warn(
-          `AWS_IAM authorizer: request signed with foreign access-key-id '${parsed.credentialAccessKeyId}' ` +
-            `(local credentials are '${local.accessKeyId}'). Denying; pass --allow-unverified-sigv4 to opt into ` +
+          `AWS_IAM authorizer: request signed with foreign access-key-id '${parsed.credentialAccessKeyId}'. ` +
+            `Denying; pass --allow-unverified-sigv4 to opt into ` +
             `the warn-and-pass dev behavior, or call with credentials whose access-key-id matches your local one.`
         );
-        warned?.add(parsed.credentialAccessKeyId);
+        warned?.add(dedupKey);
       }
       return { allow: false, identityHash: undefined };
     }
-    if (!warned || !warned.has(parsed.credentialAccessKeyId)) {
+    if (!warned || !warned.has(dedupKey)) {
       logger.warn(
         `AWS_IAM authorizer: request signed with foreign access-key-id '${parsed.credentialAccessKeyId}'. ` +
           `--allow-unverified-sigv4 is set; passing through with unverified principalId 'unverified-foreign-identity'. ` +
-          `Do NOT trust event.requestContext.identity.accessKey in handler code.`
+          `Do NOT trust event.requestContext.authorizer.principalId in handler code.`
       );
-      warned?.add(parsed.credentialAccessKeyId);
+      warned?.add(dedupKey);
     }
     return {
       allow: true,

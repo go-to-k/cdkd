@@ -368,7 +368,10 @@ describe('verifySigV4', () => {
     // ANY caller as `principalId: <foreign-AKID>` which was trivially
     // spoofable against handler code trusting requestContext.identity.
     expect(result.allow).toBe(false);
-    expect(warned.has('AKIDFOREIGN')).toBe(true);
+    // Dedup key is normalized to lowercase so attacker case-variants
+    // ('AKIDFOREIGN', 'akidforeign', 'AkIdFOREIGN') don't each trigger
+    // a fresh warn line.
+    expect(warned.has('akidforeign')).toBe(true);
   });
 
   it('warn-and-passes a foreign-identity request when --allow-unverified-sigv4 is set', async () => {
@@ -398,7 +401,106 @@ describe('verifySigV4', () => {
     // The principalId is the obviously-fake placeholder, NOT the
     // unverified access-key-id, so handler code cannot be fooled.
     expect(result.principalId).toBe('unverified-foreign-identity');
-    expect(warned.has('AKIDFOREIGN')).toBe(true);
+    // Negative assertion: the placeholder MUST NOT be the raw AKID —
+    // this locks in the contract that handler code reading
+    // `event.requestContext.authorizer.principalId` can never see a
+    // verified-looking value on the unverified-foreign path.
+    expect(result.principalId).not.toBe('AKIDFOREIGN');
+    // Dedup key is normalized to lowercase so attacker case-variants
+    // ('AKIDFOREIGN', 'akidforeign', 'AkIdFOREIGN') don't each trigger
+    // a fresh warn line.
+    expect(warned.has('akidforeign')).toBe(true);
+  });
+
+  it('case-insensitive AKID compare: mixed-case incoming AKID matching dev creds VERIFIES (canonical spoofing path closed)', async () => {
+    // PR #484 review MINOR: AWS treats AKIDs as case-sensitive in
+    // string compare, but the local dev's stored AKID and the inbound
+    // header's AKID can disagree on case under proxies / shell
+    // normalization. Pre-fix: AKID compare was strict ('AKIDEXAMPLE'
+    // !== 'akidexample' → foreign branch). Post-fix: compare is
+    // case-insensitive so a mixed-case incoming AKID that matches the
+    // dev's secret signs through normally.
+    const { authorization, headers } = signRequest({
+      method: 'GET',
+      path: '/v1/protected',
+      headers: { host: 'api.example.com' },
+      accessKeyId: 'AkIdEXAMPLE', // mixed-case variant of local 'AKIDEXAMPLE'
+      secretAccessKey, // dev's REAL secret — proves compare reaches computeSignature
+      region,
+      service,
+      amzDate,
+    });
+    const req: SigV4VerifyRequest = {
+      method: 'GET',
+      rawUrl: '/v1/protected',
+      headers: { authorization, ...headers },
+      body: Buffer.alloc(0),
+    };
+    const result = await verifySigV4(req, stubLoader({ accessKeyId, secretAccessKey }), { now });
+    expect(result.allow).toBe(true);
+    // principalId is taken from the (raw) header value, not normalized.
+    expect(result.principalId).toBe('AkIdEXAMPLE');
+  });
+
+  it('case-insensitive AKID compare: lowercase AKID with attacker secret still DENIES (signature must match)', async () => {
+    // Defense: case-insensitive compare is ONLY about the AKID lookup;
+    // the signature still has to verify against the dev's REAL secret.
+    // Attacker submits a lowercase AKID 'akidexample' signed with
+    // their own secret → AKID matches case-insensitively (passes the
+    // foreign-identity branch) but signature mismatch denies at the
+    // computeSignature step.
+    const { authorization, headers } = signRequest({
+      method: 'GET',
+      path: '/v1/protected',
+      headers: { host: 'api.example.com' },
+      accessKeyId: 'akidexample',
+      secretAccessKey: 'attacker-secret-not-the-dev-one',
+      region,
+      service,
+      amzDate,
+    });
+    const req: SigV4VerifyRequest = {
+      method: 'GET',
+      rawUrl: '/v1/protected',
+      headers: { authorization, ...headers },
+      body: Buffer.alloc(0),
+    };
+    const result = await verifySigV4(req, stubLoader({ accessKeyId, secretAccessKey }), { now });
+    expect(result.allow).toBe(false);
+  });
+
+  it('case-insensitive dedup: probing AKID case variants does NOT spam the warn log', async () => {
+    // PR #484 review MINOR fix: the warnedForeignIds dedup key is
+    // normalized to lowercase so an attacker probing 'AKIDFOREIGN',
+    // 'akidforeign', 'AkIdFOREIGN' against the warn-and-pass dev
+    // mode triggers ONE warn line total, not three.
+    const warned = new Set<string>();
+    for (const akidCase of ['AKIDFOREIGN', 'akidforeign', 'AkIdFOREIGN']) {
+      const { authorization, headers } = signRequest({
+        method: 'GET',
+        path: '/v1/protected',
+        headers: { host: 'api.example.com' },
+        accessKeyId: akidCase,
+        secretAccessKey: 'foreign-secret',
+        region,
+        service,
+        amzDate,
+      });
+      const req: SigV4VerifyRequest = {
+        method: 'GET',
+        rawUrl: '/v1/protected',
+        headers: { authorization, ...headers },
+        body: Buffer.alloc(0),
+      };
+      await verifySigV4(req, stubLoader({ accessKeyId, secretAccessKey }), {
+        now,
+        warnedForeignIds: warned,
+        allowUnverified: true,
+      });
+    }
+    // One canonical lowercase entry in the dedup set.
+    expect(warned.size).toBe(1);
+    expect(warned.has('akidforeign')).toBe(true);
   });
 
   it('DENIES when local credentials cannot be resolved by default (fail-closed)', async () => {
