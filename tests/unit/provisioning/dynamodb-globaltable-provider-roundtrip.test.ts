@@ -1328,6 +1328,66 @@ describe('DynamoDBGlobalTableProvider round-trip', () => {
       expect(tag?.input.Tags).toEqual([{ Key: 'New', Value: 'A' }]);
     });
 
+    it('propagates Tags to a newly-ADDED cross-region replica via regional TagResource (Issue #441 follow-up)', async () => {
+      // Issue #441 follow-up review: pre-fix the `update()` added-
+      // replica loop only wired up autoscaling; the new replica's
+      // `Tags` silently dropped. This is the symmetric case of the
+      // create-side fix — adding a NEW cross-region replica during
+      // `cdkd deploy` must propagate Tags the same way the create
+      // path does.
+      mockSend.mockResolvedValueOnce({ Table: { TableStatus: 'ACTIVE' } }); // wait
+      mockSend.mockResolvedValueOnce({ Table: { TableArn: TABLE_ARN } }); // DescribeTable for tag diff
+      mockSend.mockResolvedValueOnce({}); // UpdateTable: addReplica Create
+      mockSend.mockResolvedValueOnce({
+        Table: {
+          Replicas: [
+            { RegionName: 'us-east-1', ReplicaStatus: 'ACTIVE' },
+            { RegionName: 'eu-west-1', ReplicaStatus: 'ACTIVE' },
+          ],
+        },
+      }); // waitForReplicaActive
+      mockSend.mockResolvedValueOnce({}); // TagResource (regional, new replica)
+      mockSend.mockResolvedValueOnce({ Table: { TableArn: TABLE_ARN } }); // final describe
+
+      await provider.update(
+        'X',
+        TABLE_NAME,
+        RESOURCE_TYPE,
+        {
+          Replicas: [
+            { Region: 'us-east-1' },
+            { Region: 'eu-west-1', Tags: [{ Key: 'NewReplica', Value: 'Yes' }] },
+          ],
+        },
+        {
+          Replicas: [{ Region: 'us-east-1' }],
+        }
+      );
+
+      // The regional client must have been spawned for eu-west-1 to
+      // propagate Tags to the newly-added replica.
+      expect(regionalClientSpy).toHaveBeenCalledWith('eu-west-1');
+
+      // A TagResource against the eu-west-1 replica ARN must have
+      // been issued (NOT against the local us-east-1 ARN).
+      const tag = mockSend.mock.calls
+        .map((c) => c[0])
+        .find((c) => c instanceof TagResourceCommand) as
+        | TagResourceCommand
+        | undefined;
+      expect(tag).toBeDefined();
+      expect(tag?.input.ResourceArn).toBe(
+        'arn:aws:dynamodb:eu-west-1:123:table/my-table'
+      );
+      expect(tag?.input.Tags).toEqual([{ Key: 'NewReplica', Value: 'Yes' }]);
+
+      // No UntagResource — added replica has no prior Tags.
+      const untag = mockSend.mock.calls
+        .map((c) => c[0])
+        .find((c) => c instanceof UntagResourceCommand);
+      expect(untag).toBeUndefined();
+    });
+
     it('skips cross-region Tag propagation gracefully when local DescribeTable returns no TableArn', async () => {
       mockSend.mockResolvedValueOnce({ Table: { TableStatus: 'ACTIVE' } }); // wait
       mockSend.mockResolvedValueOnce({ Table: {} }); // DescribeTable returns no ARN

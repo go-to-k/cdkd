@@ -954,6 +954,23 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
         if (!region || region === currentRegion) continue;
         await this.addReplica(physicalId, replica, region, logicalId);
 
+        // Cross-region Tags propagation for the newly-added replica
+        // (Issue #441 follow-up — mirrors the create-side + modified
+        // paths). `UpdateTable(ReplicaUpdates: [{Create: ...}])` does
+        // not accept a `Tags` field, so any `Replicas[].Tags` declared
+        // in the new replica entry must be applied via a separate
+        // `TagResource` against the replica's region-scoped ARN.
+        const newReplicaTags = replica['Tags'] as
+          | Array<{ Key?: string; Value?: string }>
+          | undefined;
+        await this.applyCrossRegionReplicaTagsDiff(
+          tableArn,
+          region,
+          undefined,
+          newReplicaTags,
+          physicalId
+        );
+
         // Per-replica read auto-scaling (Issue #402): when the new
         // replica has `ReadCapacityAutoScalingSettings`, register the
         // scalable target + target-tracking policy in the replica's
