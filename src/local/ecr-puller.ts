@@ -213,4 +213,3 @@ export async function isImageInLocalCache(imageRef: string): Promise<boolean> {
     return false;
   }
 }
-

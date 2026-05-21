@@ -1,11 +1,7 @@
 import { execFile, spawn } from 'node:child_process';
 import { createServer } from 'node:net';
 import { promisify } from 'node:util';
-import {
-  getDockerCmd,
-  runDockerForeground,
-  runDockerStreaming,
-} from '../utils/docker-cmd.js';
+import { getDockerCmd, runDockerForeground, runDockerStreaming } from '../utils/docker-cmd.js';
 import { getLogger } from '../utils/logger.js';
 
 const execFileAsync = promisify(execFile);
@@ -164,9 +160,7 @@ export async function pullImage(image: string, skipPull: boolean): Promise<void>
       throw new DockerRunnerError(`docker pull ${image} failed: ${e.message ?? String(err)}`);
     }
     const detail = e.stderr?.trim() || e.stdout?.trim() || '(no output)';
-    throw new DockerRunnerError(
-      `docker pull ${image} exited with code ${e.exitCode}: ${detail}`
-    );
+    throw new DockerRunnerError(`docker pull ${image} exited with code ${e.exitCode}: ${detail}`);
   }
 }
 
@@ -380,4 +374,3 @@ export function redactAwsCredentialsInArgs(args: readonly string[]): string[] {
   }
   return out;
 }
-
