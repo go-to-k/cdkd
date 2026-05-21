@@ -55,17 +55,16 @@ echo "${RESULT_1}" | grep -q '"fromBuildkitImage":true' || {
 }
 
 # Test 2 — verify BUILDX_NO_DEFAULT_ATTESTATIONS=1 is honored. We re-run
-# under verbose mode and check the docker build invocation log line. The
-# logger writes `docker build ...` at debug level when --verbose is set,
-# but it does NOT echo the env vars (those are passed through the spawn
-# env). The structural check we can do without `docker inspect` is: the
-# build succeeded under --verbose (no maxBuffer crash even with the much
-# noisier output stream).
+# under verbose mode and confirm the JSON response still flows back. With
+# --verbose, debug log lines (e.g. container removal) come after the JSON
+# response, so we can't rely on `tail -1`; grep for the response shape
+# anywhere in the output. The structural check is: the build succeeded
+# under --verbose (no maxBuffer crash even with the much noisier output
+# stream) AND the handler ran.
 echo "==> [2/2] Re-running under --verbose to confirm streaming output works"
 ${CDKD} local invoke CdkdLocalInvokeBuildkitFixture/BuildkitHandler --no-pull --no-build --verbose >/tmp/cdkd-buildkit-verify.log 2>&1
-RESULT_2=$(tail -1 /tmp/cdkd-buildkit-verify.log)
-echo "${RESULT_2}" | grep -q '"greeting":"hello-buildkit"' || {
-  echo "FAIL: --verbose invocation did not echo greeting=hello-buildkit:"
+grep -q '"greeting":"hello-buildkit"' /tmp/cdkd-buildkit-verify.log || {
+  echo "FAIL: --verbose invocation did not produce greeting=hello-buildkit anywhere in output:"
   cat /tmp/cdkd-buildkit-verify.log
   rm -f /tmp/cdkd-buildkit-verify.log
   exit 1
