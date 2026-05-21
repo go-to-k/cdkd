@@ -16,6 +16,7 @@ import { Synthesizer, type SynthesisOptions } from '../../synthesis/synthesizer.
 import { resolveApp } from '../config-loader.js';
 import { ensureDockerAvailable } from '../../local/docker-runner.js';
 import {
+  applyCrossStackResolverToTask,
   derivePartitionAndUrlSuffix,
   detectEcsImageResolutionNeeds,
   parseEcsTarget,
@@ -32,7 +33,8 @@ import {
   type RunEcsTaskOptions,
 } from '../../local/ecs-task-runner.js';
 import { matchStacks } from '../stack-matcher.js';
-import { loadStateForStack } from './local-state-loader.js';
+import { buildCrossStackResolver, loadStateForStack } from './local-state-loader.js';
+import type { SubstitutionContext } from '../../local/state-resolver.js';
 
 interface LocalRunTaskOptions {
   app?: string;
@@ -147,6 +149,56 @@ async function localRunTaskCommand(target: string, options: LocalRunTaskOptions)
     logger.info(
       `Target: ${task.stack.stackName}/${task.taskDefinitionLogicalId} (family=${task.family}, containers=${task.containers.length})`
     );
+
+    // Issue #454 — cross-stack `Fn::ImportValue` / `Fn::GetStackOutput`
+    // resolution in env vars / secrets. The sync `parseContainerDefinition`
+    // pass dropped these with a warn-and-drop entry; the async post-pass
+    // re-attempts them via the persistent exports index + per-stack
+    // state.json scan when `--from-state` is set and the template
+    // actually references a cross-stack output.
+    const taskStack = stacks.find((s) => s.stackName === task.stack.stackName) ?? task.stack;
+    const taskNeeds = detectEcsImageResolutionNeeds(taskStack);
+    let taskCrossStackDispose: (() => void) | undefined;
+    if (options.fromState && taskNeeds.needsCrossStackResolver) {
+      const consumerRegion =
+        options.region ??
+        process.env['AWS_REGION'] ??
+        process.env['AWS_DEFAULT_REGION'] ??
+        task.stack.region ??
+        'us-east-1';
+      const built = await buildCrossStackResolver(consumerRegion, {
+        ...(options.stateBucket !== undefined && { stateBucket: options.stateBucket }),
+        statePrefix: options.statePrefix,
+        ...(options.region !== undefined && { region: options.region }),
+        ...(options.profile !== undefined && { profile: options.profile }),
+      });
+      if (built) {
+        taskCrossStackDispose = built.dispose;
+        try {
+          const subContext: SubstitutionContext = {
+            // The image / env / secret sync passes already consumed
+            // `imageContext.stateResources` / `imageContext.pseudoParameters`
+            // (when set); the post-pass reuses them so a cross-stack-only
+            // env var doesn't re-build the state map.
+            resources: imageContext?.stateResources ?? {},
+            ...(imageContext?.pseudoParameters && {
+              pseudoParameters: imageContext.pseudoParameters,
+            }),
+            consumerRegion,
+            crossStackResolver: built.resolver,
+          };
+          await applyCrossStackResolverToTask(task, subContext);
+        } finally {
+          taskCrossStackDispose();
+          taskCrossStackDispose = undefined;
+        }
+      }
+    } else if (!options.fromState && taskNeeds.needsCrossStackResolver) {
+      logger.warn(
+        'Container Environment / Secrets entries contain Fn::ImportValue / Fn::GetStackOutput intrinsics. ' +
+          'Pass --from-state to substitute them against deployed cdkd state.'
+      );
+    }
 
     // Double-^C exits 130 immediately (matches `cdkd local start-api`).
     sigintHandler = (): void => {

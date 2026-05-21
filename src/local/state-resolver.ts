@@ -45,11 +45,41 @@
  *     missing (or the specific key isn't set), the placeholder reports
  *     unresolved — same warn-and-drop policy as every other miss.
  *
+ * Cross-stack intrinsics (when the caller supplies a `crossStackResolver`
+ * on the `SubstitutionContext` via the async API):
+ *
+ *   - `Fn::ImportValue: '<exportName>'` (or an intrinsic-valued argument
+ *     that resolves to a string against state + pseudo parameters) —
+ *     looked up via `crossStackResolver.resolveImport(exportName)`. The
+ *     resolver typically reads the persistent exports index at
+ *     `s3://{bucket}/cdkd/_index/{region}/exports.json` populated by
+ *     `cdkd deploy`, falling back to a per-stack state.json scan on
+ *     index miss (closes issue #454).
+ *   - `Fn::GetStackOutput: { StackName, OutputName, Region? }` — looked
+ *     up via `crossStackResolver.resolveGetStackOutput(stackName, region,
+ *     outputName)`. The resolver typically reads the producer stack's
+ *     state.json from S3 directly. `Region` defaults to the consumer's
+ *     deploy region when omitted.
+ *
+ *   Both resolvers return `string | undefined`; an `undefined` value
+ *   reports unresolved per the standard warn-and-drop policy. Cross-account
+ *   `Fn::GetStackOutput.RoleArn` is rejected at the resolver layer (cdkd
+ *   uses S3 state, not CloudFormation; cross-account would require
+ *   assuming the role and reading the producer account's separate state
+ *   bucket — tracked under #449).
+ *
+ *   Only the async API (`substituteAgainstStateAsync` /
+ *   `substituteEnvVarsFromStateAsync`) handles these. The legacy sync API
+ *   surfaces them as `unresolved` ("unsupported intrinsic") so existing
+ *   callers (e.g. `ecs-task-resolver.ts`'s sync container parsing) stay
+ *   unchanged and the per-key warn-and-drop UX still fires.
+ *
  * Out of scope (deferred):
  *
- *   - Cross-stack `Fn::ImportValue` / `Fn::GetStackOutput`.
+ *   - Cross-region `Fn::ImportValue` (tracked under #451).
+ *   - Cross-account `Fn::GetStackOutput.RoleArn` (tracked under #449).
  *   - Other intrinsics (`Fn::Select`, `Fn::Split`, `Fn::If`, etc.).
- *     Anything beyond the five above is reported as unresolved and the
+ *     Anything beyond the supported set is reported as unresolved and the
  *     env var is dropped, matching PR 1's "warn-and-drop" semantics.
  *
  * Failure mode: per-key best-effort. When a substitution can't be
@@ -90,11 +120,65 @@ export interface PseudoParameters {
   urlSuffix?: string;
 }
 
+/**
+ * Cross-stack lookups consulted by the async substitution path when
+ * `Fn::ImportValue` / `Fn::GetStackOutput` are encountered. The async API
+ * awaits these — the legacy sync API ignores the field entirely and
+ * surfaces both intrinsics as `unresolved`.
+ *
+ * Both methods return `string | undefined`:
+ *   - `string` — the resolved value is substituted into the env-var.
+ *   - `undefined` — the per-key warn-and-drop path fires (e.g. the
+ *     producer stack has not been deployed yet, the export name has no
+ *     index entry, etc.).
+ *
+ * Implementations are expected to be best-effort and never throw the
+ * caller's invoke off the rails. A genuine AWS failure (missing
+ * credentials, S3 access denied) is best surfaced as `undefined` so the
+ * dropped env-var carries a clear per-key reason instead of aborting the
+ * whole substitution pass.
+ */
+export interface CrossStackResolver {
+  /**
+   * Look an export by name against the consumer's region. Implementations
+   * typically consult the persistent exports index at
+   * `s3://{bucket}/cdkd/_index/{region}/exports.json`, falling back to a
+   * per-stack `state.json` scan on miss.
+   */
+  resolveImport(exportName: string): Promise<string | undefined>;
+  /**
+   * Look an output by `(producerStack, producerRegion, outputName)`. The
+   * resolver is the canonical "explicit producer" path — no Export
+   * declaration on the producer side is required. `producerRegion`
+   * defaults to the consumer's deploy region when the caller did not
+   * supply `Region` on the intrinsic.
+   */
+  resolveGetStackOutput(
+    producerStack: string,
+    producerRegion: string,
+    outputName: string
+  ): Promise<string | undefined>;
+}
+
 export interface SubstitutionContext {
   /** State-recorded resources for `Ref` / `Fn::GetAtt` / `${LogicalId}` lookups. */
   resources: Record<string, ResourceState>;
   /** Optional pseudo-parameter bag for AWS::* placeholders. */
   pseudoParameters?: PseudoParameters;
+  /**
+   * Optional cross-stack resolver consumed by the async substitution
+   * path for `Fn::ImportValue` / `Fn::GetStackOutput`. When unset (or
+   * when the sync API is used), both intrinsics surface as `unresolved`
+   * with the standard warn-and-drop semantics.
+   */
+  crossStackResolver?: CrossStackResolver;
+  /**
+   * Consumer's own deploy region. Used as the default for
+   * `Fn::GetStackOutput.Region` when the intrinsic omits it. The async
+   * path falls back to looking the region up off `pseudoParameters.region`
+   * when this field is absent.
+   */
+  consumerRegion?: string;
 }
 
 /**
@@ -435,6 +519,249 @@ function resolveJoin(arg: unknown, context: SubstitutionContext): StateSubstitut
 }
 
 /**
+ * Async sibling of {@link substituteAgainstState}. Same semantics for every
+ * intrinsic the sync path supports; additionally consults the
+ * `crossStackResolver` (when supplied on the context) for `Fn::ImportValue`
+ * and `Fn::GetStackOutput`.
+ *
+ * Callers that don't need cross-stack support should keep using the sync
+ * helper. Code paths that wire `--from-state` env / secret substitution
+ * (e.g. `cdkd local invoke --from-state`, `cdkd local run-task --from-state`)
+ * route through this async version so a single env-var referencing a
+ * cross-stack output is no longer warn-and-dropped.
+ */
+export async function substituteAgainstStateAsync(
+  value: unknown,
+  contextOrResources: SubstitutionContext | Record<string, ResourceState>
+): Promise<StateSubstitutionResult> {
+  const context: SubstitutionContext = isContext(contextOrResources)
+    ? contextOrResources
+    : { resources: contextOrResources };
+
+  // Primitives flow through unchanged — same as the sync path.
+  if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
+    return { kind: 'literal', value };
+  }
+
+  if (value === null || typeof value !== 'object') {
+    return {
+      kind: 'unresolved',
+      reason: `unsupported value type: ${value === null ? 'null' : typeof value}`,
+    };
+  }
+
+  const obj = value as Record<string, unknown>;
+  const keys = Object.keys(obj);
+  if (keys.length !== 1) {
+    return {
+      kind: 'unresolved',
+      reason: `expected an intrinsic with one key, got ${keys.length} keys`,
+    };
+  }
+
+  const intrinsic = keys[0]!;
+  const arg = obj[intrinsic];
+
+  // For every intrinsic the sync path supports, the sync helper is fully
+  // sufficient — recurse via the sync path so we don't pay the async
+  // overhead on every nested element. The sync helper recurses into
+  // bindings / Join elements through the same module, so any cross-stack
+  // intrinsic nested under (say) a `Fn::Join` is NOT resolvable today.
+  // That's an intentional v1 scope limit: cross-stack intrinsics
+  // typically appear at the env-var ROOT, not buried inside a join. We
+  // can lift the limit later by replacing the sync recursion below with
+  // async recursion when there's a real-world need.
+  if (
+    intrinsic === 'Ref' ||
+    intrinsic === 'Fn::GetAtt' ||
+    intrinsic === 'Fn::Sub' ||
+    intrinsic === 'Fn::Join'
+  ) {
+    return substituteAgainstState(value, context);
+  }
+
+  if (intrinsic === 'Fn::ImportValue') {
+    return resolveImportValueAsync(arg, context);
+  }
+  if (intrinsic === 'Fn::GetStackOutput') {
+    return resolveGetStackOutputAsync(arg, context);
+  }
+
+  return {
+    kind: 'unresolved',
+    reason: `unsupported intrinsic '${intrinsic}' (supported: Ref, Fn::GetAtt, Fn::Sub, Fn::Join, Fn::ImportValue, Fn::GetStackOutput)`,
+  };
+}
+
+/**
+ * `Fn::ImportValue: <exportName>` — the argument may itself be an
+ * intrinsic that resolves to a string (e.g.
+ * `{Fn::ImportValue: {Fn::Sub: 'MyStack-${AWS::Region}-Bucket'}}` — the
+ * inner `Fn::Sub` is resolved against `pseudoParameters` first, then the
+ * resulting string is looked up via the cross-stack resolver).
+ */
+async function resolveImportValueAsync(
+  arg: unknown,
+  context: SubstitutionContext
+): Promise<StateSubstitutionResult> {
+  // Resolve the inner argument first (a string passes through; an
+  // intrinsic is resolved against the sync path, which handles every
+  // shape an export-name argument might take in practice). We don't
+  // recurse into the async path here because the inner part cannot
+  // itself be `Fn::ImportValue` — AWS rejects that nesting too.
+  const inner = substituteAgainstState(arg, context);
+  if (inner.kind !== 'literal') {
+    return {
+      kind: 'unresolved',
+      reason: `Fn::ImportValue argument: ${inner.reason}`,
+    };
+  }
+  if (typeof inner.value !== 'string' || inner.value.length === 0) {
+    return {
+      kind: 'unresolved',
+      reason: `Fn::ImportValue argument must resolve to a non-empty string, got ${typeof inner.value}`,
+    };
+  }
+  const exportName = inner.value;
+
+  if (!context.crossStackResolver) {
+    return {
+      kind: 'unresolved',
+      reason: `Fn::ImportValue '${exportName}': no cross-stack resolver supplied (pass --from-state and ensure the producer stack was deployed via cdkd deploy)`,
+    };
+  }
+
+  let resolved: string | undefined;
+  try {
+    resolved = await context.crossStackResolver.resolveImport(exportName);
+  } catch (err) {
+    return {
+      kind: 'unresolved',
+      reason: `Fn::ImportValue '${exportName}': lookup failed: ${err instanceof Error ? err.message : String(err)}`,
+    };
+  }
+  if (resolved === undefined) {
+    return {
+      kind: 'unresolved',
+      reason: `Fn::ImportValue '${exportName}': export not found in any cdkd-managed stack in this region`,
+    };
+  }
+  return { kind: 'literal', value: resolved };
+}
+
+/**
+ * `Fn::GetStackOutput: { StackName, OutputName, Region? }`. Same shape as
+ * the deploy-engine resolver. `RoleArn` (cross-account) is intentionally
+ * NOT supported in this path — the user-visible error message points at
+ * the followup issue tracking it.
+ */
+async function resolveGetStackOutputAsync(
+  arg: unknown,
+  context: SubstitutionContext
+): Promise<StateSubstitutionResult> {
+  if (!arg || typeof arg !== 'object' || Array.isArray(arg)) {
+    return {
+      kind: 'unresolved',
+      reason: `Fn::GetStackOutput argument must be an object with StackName / OutputName / Region, got ${
+        arg === null ? 'null' : Array.isArray(arg) ? 'array' : typeof arg
+      }`,
+    };
+  }
+  const args = arg as Record<string, unknown>;
+
+  const stackNameSub = substituteAgainstState(args['StackName'], context);
+  if (stackNameSub.kind !== 'literal') {
+    return {
+      kind: 'unresolved',
+      reason: `Fn::GetStackOutput.StackName: ${stackNameSub.reason}`,
+    };
+  }
+  if (typeof stackNameSub.value !== 'string' || stackNameSub.value.length === 0) {
+    return {
+      kind: 'unresolved',
+      reason: `Fn::GetStackOutput.StackName must resolve to a non-empty string, got ${typeof stackNameSub.value}`,
+    };
+  }
+  const stackName = stackNameSub.value;
+
+  const outputNameSub = substituteAgainstState(args['OutputName'], context);
+  if (outputNameSub.kind !== 'literal') {
+    return {
+      kind: 'unresolved',
+      reason: `Fn::GetStackOutput.OutputName: ${outputNameSub.reason}`,
+    };
+  }
+  if (typeof outputNameSub.value !== 'string' || outputNameSub.value.length === 0) {
+    return {
+      kind: 'unresolved',
+      reason: `Fn::GetStackOutput.OutputName must resolve to a non-empty string, got ${typeof outputNameSub.value}`,
+    };
+  }
+  const outputName = outputNameSub.value;
+
+  let region: string | undefined;
+  if (args['Region'] !== undefined && args['Region'] !== null) {
+    const regionSub = substituteAgainstState(args['Region'], context);
+    if (regionSub.kind !== 'literal') {
+      return {
+        kind: 'unresolved',
+        reason: `Fn::GetStackOutput.Region: ${regionSub.reason}`,
+      };
+    }
+    if (typeof regionSub.value !== 'string' || regionSub.value.length === 0) {
+      return {
+        kind: 'unresolved',
+        reason: `Fn::GetStackOutput.Region must resolve to a non-empty string, got ${typeof regionSub.value}`,
+      };
+    }
+    region = regionSub.value;
+  } else {
+    region = context.consumerRegion ?? context.pseudoParameters?.region;
+  }
+  if (!region) {
+    return {
+      kind: 'unresolved',
+      reason: `Fn::GetStackOutput '${stackName}.${outputName}': no Region supplied and consumer region is unknown (set --region, AWS_REGION, or env.region on the CDK stack)`,
+    };
+  }
+
+  if (args['RoleArn'] !== undefined && args['RoleArn'] !== null) {
+    return {
+      kind: 'unresolved',
+      reason: `Fn::GetStackOutput '${stackName}.${outputName}': RoleArn (cross-account) is not yet supported by --from-state — tracked under issue #449`,
+    };
+  }
+
+  if (!context.crossStackResolver) {
+    return {
+      kind: 'unresolved',
+      reason: `Fn::GetStackOutput '${stackName}.${outputName}': no cross-stack resolver supplied (pass --from-state and ensure the producer stack was deployed via cdkd deploy)`,
+    };
+  }
+
+  let resolved: string | undefined;
+  try {
+    resolved = await context.crossStackResolver.resolveGetStackOutput(
+      stackName,
+      region,
+      outputName
+    );
+  } catch (err) {
+    return {
+      kind: 'unresolved',
+      reason: `Fn::GetStackOutput '${stackName}.${outputName}' (${region}): lookup failed: ${err instanceof Error ? err.message : String(err)}`,
+    };
+  }
+  if (resolved === undefined) {
+    return {
+      kind: 'unresolved',
+      reason: `Fn::GetStackOutput '${stackName}.${outputName}' (${region}): output not found in producer stack state`,
+    };
+  }
+  return { kind: 'literal', value: resolved };
+}
+
+/**
  * High-level helper: walk the function's `Properties.Environment.Variables`
  * map and produce a pre-resolved version where every value is a literal
  * (substituted from state when possible). Values that can't be substituted
@@ -497,6 +824,51 @@ export function substituteEnvVarsFromState(
       // Intentionally drop the key — that way the downstream
       // env-resolver sees "no template value for K" and the existing
       // PR 1 warn-and-drop fires with the same UX.
+    }
+  }
+
+  return { env, audit };
+}
+
+/**
+ * Async sibling of {@link substituteEnvVarsFromState}. Routes every
+ * intrinsic-valued entry through {@link substituteAgainstStateAsync} so
+ * `Fn::ImportValue` / `Fn::GetStackOutput` resolve via the context's
+ * `crossStackResolver` (when supplied). Mirrors the sync version in every
+ * other respect: literal entries pass through unchanged, unresolved
+ * entries are dropped with a per-key audit reason, and the env-resolver
+ * sees the same "no template value" shape so the warn-and-drop path
+ * fires consistently.
+ *
+ * Closes issue #454 — `cdkd local invoke --from-state` and
+ * `cdkd local run-task --from-state` can now resolve cross-stack output
+ * references in env vars / secrets instead of warn-and-dropping them.
+ */
+export async function substituteEnvVarsFromStateAsync(
+  templateEnv: Record<string, unknown> | undefined,
+  contextOrResources: SubstitutionContext | Record<string, ResourceState>
+): Promise<{ env: Record<string, unknown>; audit: StateEnvSubstitutionAudit }> {
+  const env: Record<string, unknown> = {};
+  const audit: StateEnvSubstitutionAudit = { resolvedKeys: [], unresolved: [] };
+
+  if (!templateEnv) return { env, audit };
+
+  const context: SubstitutionContext = isContext(contextOrResources)
+    ? contextOrResources
+    : { resources: contextOrResources };
+
+  for (const [key, value] of Object.entries(templateEnv)) {
+    if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
+      env[key] = value;
+      continue;
+    }
+
+    const result = await substituteAgainstStateAsync(value, context);
+    if (result.kind === 'literal') {
+      env[key] = result.value;
+      audit.resolvedKeys.push(key);
+    } else {
+      audit.unresolved.push({ key, reason: result.reason });
     }
   }
 

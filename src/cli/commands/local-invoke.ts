@@ -17,7 +17,7 @@ import { applyRoleArnIfSet } from '../../utils/role-arn.js';
 import { withErrorHandling } from '../../utils/error-handler.js';
 import { Synthesizer, type SynthesisOptions } from '../../synthesis/synthesizer.js';
 import { resolveApp } from '../config-loader.js';
-import { loadStateForStack } from './local-state-loader.js';
+import { buildCrossStackResolver, loadStateForStack } from './local-state-loader.js';
 import {
   resolveLambdaTarget,
   type ResolvedImageLambda,
@@ -26,7 +26,7 @@ import {
 } from '../../local/lambda-resolver.js';
 import { resolveEnvVars, type EnvOverrideFile } from '../../local/env-resolver.js';
 import {
-  substituteEnvVarsFromState,
+  substituteEnvVarsFromStateAsync,
   type StateEnvSubstitutionAudit,
   type SubstitutionContext,
 } from '../../local/state-resolver.js';
@@ -282,6 +282,11 @@ async function localInvokeCommand(target: string, options: LocalInvokeOptions): 
     let stateAudit: StateEnvSubstitutionAudit | undefined;
     let templateEnv = getTemplateEnv(lambda.resource);
     let stateForRoleHint: StackState | undefined;
+    // Tracks the cross-stack resolver's owned AWS clients so the outer
+    // `finally` can close them even on error paths. Initialized lazily
+    // — only allocated when the env actually contains a cross-stack
+    // intrinsic.
+    let crossStackDispose: (() => void) | undefined;
     if (options.fromState) {
       const loaded = await loadStateForStack(lambda.stack.stackName, lambda.stack.region, {
         ...(options.stackRegion !== undefined && { stackRegion: options.stackRegion }),
@@ -292,22 +297,49 @@ async function localInvokeCommand(target: string, options: LocalInvokeOptions): 
       });
       if (loaded) {
         stateForRoleHint = loaded.state;
-        const subContext: SubstitutionContext = { resources: loaded.state.resources };
+        const subContext: SubstitutionContext = {
+          resources: loaded.state.resources,
+          consumerRegion: loaded.region,
+        };
         if (envHasIntrinsicValue(templateEnv)) {
           const pseudo = await resolvePseudoParametersForInvoke(lambda.stack.region, options);
           if (pseudo) subContext.pseudoParameters = pseudo;
         }
-        const { env, audit } = substituteEnvVarsFromState(templateEnv, subContext);
-        templateEnv = env;
-        stateAudit = audit;
-        for (const key of audit.resolvedKeys) {
-          logger.debug(`--from-state: substituted env var ${key} from cdkd state`);
+        // Issue #454 — build the cross-stack resolver only when the env
+        // actually references `Fn::ImportValue` / `Fn::GetStackOutput`.
+        // The resolver opens an additional S3 client / loads the per-region
+        // exports index; literal + same-stack-intrinsic env maps shouldn't
+        // pay that cost.
+        if (envHasCrossStackIntrinsic(templateEnv)) {
+          const built = await buildCrossStackResolver(loaded.region, {
+            ...(options.stateBucket !== undefined && { stateBucket: options.stateBucket }),
+            statePrefix: options.statePrefix,
+            ...(options.region !== undefined && { region: options.region }),
+            ...(options.profile !== undefined && { profile: options.profile }),
+          });
+          if (built) {
+            subContext.crossStackResolver = built.resolver;
+            crossStackDispose = built.dispose;
+          }
         }
-        for (const { key, reason } of audit.unresolved) {
-          logger.warn(
-            `--from-state: could not substitute env var ${key} (${reason}). ` +
-              `Override it via --env-vars or it will be dropped.`
-          );
+        try {
+          const { env, audit } = await substituteEnvVarsFromStateAsync(templateEnv, subContext);
+          templateEnv = env;
+          stateAudit = audit;
+          for (const key of audit.resolvedKeys) {
+            logger.debug(`--from-state: substituted env var ${key} from cdkd state`);
+          }
+          for (const { key, reason } of audit.unresolved) {
+            logger.warn(
+              `--from-state: could not substitute env var ${key} (${reason}). ` +
+                `Override it via --env-vars or it will be dropped.`
+            );
+          }
+        } finally {
+          if (crossStackDispose) {
+            crossStackDispose();
+            crossStackDispose = undefined;
+          }
         }
       }
     }
@@ -805,6 +837,32 @@ export function envHasIntrinsicValue(templateEnv: Record<string, unknown> | unde
     if (v === undefined || v === null) continue;
     if (typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean') continue;
     return true;
+  }
+  return false;
+}
+
+/**
+ * Returns true when any value in the function's template env map carries
+ * a top-level `Fn::ImportValue` / `Fn::GetStackOutput` intrinsic. Used to
+ * gate the cross-stack resolver construction inside the `--from-state`
+ * flow: literal + same-stack-intrinsic env maps shouldn't pay for the
+ * extra S3 client / index-load cost (issue #454).
+ *
+ * Detection is one level deep — same heuristic CDK 2.x uses for these
+ * intrinsics in practice. Nested cross-stack intrinsics (e.g. an
+ * `Fn::ImportValue` buried inside a `Fn::Join`) are not detected here;
+ * those won't resolve in v1 anyway because the async resolver path
+ * defers to the sync helper for `Fn::Join` / `Fn::Sub` bodies (see
+ * `substituteAgainstStateAsync` docstring).
+ */
+export function envHasCrossStackIntrinsic(
+  templateEnv: Record<string, unknown> | undefined
+): boolean {
+  if (!templateEnv) return false;
+  for (const v of Object.values(templateEnv)) {
+    if (!v || typeof v !== 'object') continue;
+    const obj = v as Record<string, unknown>;
+    if ('Fn::ImportValue' in obj || 'Fn::GetStackOutput' in obj) return true;
   }
   return false;
 }
