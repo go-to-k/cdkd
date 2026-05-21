@@ -112,7 +112,7 @@ in the resolved stack so the user can copy/paste a valid one.
 | `--no-build` | off | Skip `docker build` on the **Container Lambdas, local-build path** (`Code.ImageUri`). Requires the deterministic `cdkd-local-invoke-<hash>` tag to already be in the local docker registry from a prior `cdkd local invoke` (or manual `docker build`); errors clearly when missing. **No-op for ZIP Lambdas** (no docker build runs there) AND for the **Container Lambdas, ECR-pull fallback** (use `--no-pull` to control that path). Compatible with `--no-pull`. |
 | `--debug-port <port>` | off | Set `NODE_OPTIONS=--inspect-brk=0.0.0.0:<port>` and publish the port; attach a Node debugger to step through the handler. |
 | `--container-host <host>` | `127.0.0.1` | Host to bind the RIE port to. |
-| `--assume-role <arn>` | off | STS-assume the deployed function's execution role and forward the resulting temp credentials to the container, so the handler runs under the deployed role's narrow permissions instead of the developer's typically-admin shell credentials. Off by default — when omitted, `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` / `AWS_SESSION_TOKEN` / `AWS_REGION` are passed through unchanged (SAM-compatible default). Takes an explicit ARN; PR 2's `--from-state` adds a hint pointing at the state-recorded role ARN but does NOT auto-assume. |
+| `--assume-role [arn]` | off | STS-assume the deployed function's execution role and forward the resulting temp credentials to the container, so the handler runs under the deployed role's narrow permissions instead of the developer's typically-admin shell credentials. Three forms: (1) `--assume-role <arn>` assumes the explicit ARN (precedence wins); (2) `--assume-role` (bare) auto-resolves the function's `Properties.Role` from cdkd state (requires `--from-state`); (3) `--no-assume-role` explicitly opts out (forces dev creds even with `--from-state`). Off by default — when omitted, `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` / `AWS_SESSION_TOKEN` / `AWS_REGION` are passed through unchanged (SAM-compatible default). STS failures degrade to a warn + dev-creds fallback. |
 | `-a, --app <cmd-or-dir>` | — | CDK app command or pre-synthesized `cdk.out` directory. Default: synth every time (Q2 recommendation C). Pass `-a cdk.out` to skip synthesis when iterating. |
 | `--output <dir>` | `cdk.out` | Output directory for synthesis. |
 | `--from-state` | off | Read cdkd's S3 state for the target stack and substitute `Ref` / `Fn::GetAtt` / `Fn::Sub` / `Fn::Join` placeholders + AWS pseudo parameters (`${AWS::AccountId}` / `${AWS::Region}` / `${AWS::Partition}` / `${AWS::URLSuffix}`) in env vars with the deployed physical IDs / attributes. Off by default — keeps PR 1's literal-only / warn-and-drop behavior. See [State-driven env recovery (`--from-state`)](#state-driven-env-recovery---from-state) below. |
@@ -175,11 +175,18 @@ failures (no state record, multi-region ambiguity without
 `--stack-region`, bucket-resolution error) degrade to warn-and-fall-back
 rather than aborting the whole invoke.
 
-**Q1 follow-up**: when `--from-state` is set without `--assume-role`,
-cdkd peeks at the function's deployed `Role` in state and logs a
-one-line hint surfacing the role's ARN. Auto-assumption is intentionally
-not wired in — v1 keeps `--assume-role` as the single explicit path to
-scoped credentials.
+**Auto-assume execution role**: when `--from-state` is paired with bare
+`--assume-role` (no ARN argument), cdkd reads the function's
+`Properties.Role` from cdkd state, resolves `Fn::GetAtt: [<RoleId>, 'Arn']`
+shapes against the sibling IAM Role resource's recorded `Arn` attribute,
+and STS-assumes that role automatically — no manual ARN lookup required.
+When `--from-state` is set WITHOUT `--assume-role`, the legacy hint path
+fires instead: cdkd logs the deployed role ARN once so users can re-run
+with `--assume-role`. Pass `--no-assume-role` to explicitly opt out even
+with `--from-state`; pass `--assume-role <arn>` to override the resolved
+ARN with an explicit one. STS failures (insufficient permissions /
+trust-policy mismatch) degrade to a warn + dev-creds fallback — this is
+a developer-loop tool, not a security boundary.
 
 **Pseudo parameters**: when the function's template env contains any
 intrinsic value, `cdkd local invoke --from-state` issues a single
@@ -280,6 +287,38 @@ plus the rest as positional args; `ImageConfig.WorkingDirectory` becomes
 default entrypoint stays in charge — for AWS Lambda base images that's
 `/lambda-entrypoint.sh`, which routes to RIE on port 8080.
 
+### Ephemeral storage (`/tmp` cap)
+
+When a Lambda's template declares `Properties.EphemeralStorage.Size`
+(typical CDK shape:
+`new lambda.Function(this, 'X', { ephemeralStorageSize: cdk.Size.gibibytes(2) })`),
+`cdkd local invoke` adds `--tmpfs /tmp:rw,size=<N>m` to the `docker run`
+command so the container's `/tmp` is a memory-backed filesystem capped
+at the templated value (`N` MiB; `cdk.Size.gibibytes(2)` serializes to
+`2048`). Handlers that exceed the deployed cap fail locally with
+`ENOSPC` the way they would on AWS, and handlers that detect free space
+via `statvfs` / `df` see the configured cap rather than the host's
+overlay-fs.
+
+Applies to both ZIP and IMAGE (container) Lambdas — `--tmpfs` overlays
+mount-time inside any container regardless of base image. Container
+Lambdas get an `[info]` log line at startup so users notice the
+`/tmp` override on top of whatever their Dockerfile placed there.
+
+When `EphemeralStorage` is absent, no `--tmpfs` is emitted and the
+container's `/tmp` is whatever the base image provides (AWS Lambda
+base images don't mount a sized tmpfs themselves, so the pre-#440
+behavior is preserved). Templates over the AWS 10240 MiB (10 GiB)
+ceiling hard-error at resolve time with an actionable message rather
+than hanging on a `docker run` that AWS would have refused anyway.
+Intrinsic-valued `Size` entries (the `{Ref: 'SomeParam'}` shape) drop
+silently to no-`--tmpfs` since local invoke cannot resolve them
+without the Parameters context the deploy engine has.
+
+The same cap applies to `cdkd local start-api`'s warm container pool
+— each cold-started container for a Lambda with `EphemeralStorage`
+gets the same sized `/tmp`.
+
 ### `local invoke` exit codes
 
 - `0` — RIE answered, regardless of whether the handler returned a
@@ -296,7 +335,6 @@ default entrypoint stays in charge — for AWS Lambda base images that's
 | Java / Go / Ruby / .NET runtimes | Future PRs |
 | Cross-account / cross-region / pre-existing-ARN Lambda Layers | Future PR (same-stack `AWS::Lambda::LayerVersion` refs are supported in v1; literal ARNs hard-error — see "Lambda Layers" section above) |
 | Cross-account / cross-region ECR pull for container Lambdas | Future PR (same-account / same-region only in v1) |
-| `EphemeralStorage` mapping for container Lambdas | Future PR (Docker `--tmpfs /tmp:size=Nm`) |
 | Cross-stack `Fn::ImportValue` / `Fn::GetStackOutput` in `--from-state` | Future PR |
 | `Fn::Select` / `Fn::Split` / `Fn::If` etc. in `--from-state` | Future PR (warn + drop today) |
 | SQS / S3 event source emulation | Future PR |

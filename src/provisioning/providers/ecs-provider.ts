@@ -561,7 +561,7 @@ export class ECSProvider implements ResourceProvider {
       new ResourceUpdateNotSupportedError(
         'AWS::ECS::TaskDefinition',
         logicalId,
-        'TaskDefinition revisions are immutable; re-deploy with cdkd deploy --replace, or destroy + redeploy the stack'
+        'ECS TaskDefinition revisions are immutable on AWS — there is no UpdateTaskDefinition API; every change registers a new revision via RegisterTaskDefinition. Re-deploy with cdkd deploy --replace, or destroy + redeploy the stack.'
       )
     );
   }

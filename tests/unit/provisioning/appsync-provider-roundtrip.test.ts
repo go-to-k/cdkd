@@ -34,168 +34,613 @@ vi.mock('../../../src/utils/logger.js', () => {
   };
 });
 
+import {
+  UpdateGraphqlApiCommand,
+  UpdateDataSourceCommand,
+  UpdateResolverCommand,
+  UpdateApiKeyCommand,
+  TagResourceCommand,
+  UntagResourceCommand,
+  GetGraphqlApiCommand,
+  StartSchemaCreationCommand,
+} from '@aws-sdk/client-appsync';
 import { AppSyncProvider } from '../../../src/provisioning/providers/appsync-provider.js';
 import { ResourceUpdateNotSupportedError } from '../../../src/utils/error-handler.js';
 
 /**
- * Read-update round-trip test for AppSyncProvider.
+ * Update-path tests for AppSyncProvider.
  *
- * Per docs/provider-development.md § 3b ("Read-update round-trip test"),
- * every provider with `readCurrentState` must mechanically verify the
- * `cdkd drift --revert` code path.
- *
- * AppSyncProvider is a special case: per CLAUDE.md (PR I), AppSync
- * resources are immutable (recreated on property changes), so `update()`
- * always rejects with `ResourceUpdateNotSupportedError`. The round-trip
- * test still has value:
- *
- *   1. Confirms `update()` ALWAYS rejects regardless of the observed
- *      snapshot shape — i.e. no path through `update()` ever fires a
- *      mutating SDK call against a Class 1 / Class 2 placeholder. This
- *      structurally guarantees `cdkd drift --revert` cannot ship an
- *      AWS-invalid input on AppSync.
- *
- *   2. Confirms `readCurrentState` is Class-1-clean on the discriminator-
- *      tagged shapes (Kind=UNIT vs PIPELINE; VTL vs JS). A future change
- *      that re-adds an always-emit placeholder on a discriminator-false
- *      branch will be caught here.
+ * Verifies `cdkd drift --revert` round-trip behavior for the five AppSync
+ * resource types — every Update* SDK call is issued with the right
+ * camelCase / PascalCase shape, no-op diffs skip the call entirely, and
+ * immutable identity-field changes reject with
+ * `ResourceUpdateNotSupportedError`.
  */
-
-describe('AppSyncProvider read-update round-trip', () => {
+describe('AppSyncProvider.update', () => {
   let provider: AppSyncProvider;
 
   beforeEach(() => {
-    vi.clearAllMocks();
+    mockSend.mockReset();
     provider = new AppSyncProvider();
   });
 
-  it('GraphQLApi: update() rejects cleanly without firing any SDK call', async () => {
-    // Build a snapshot matching what readCurrentState would produce
-    // for a minimum GraphQLApi (placeholders included).
-    const observed = {
-      Name: 'MyApi',
-      AuthenticationType: 'API_KEY',
-      XrayEnabled: false,
-      LogConfig: {},
-      Tags: [] as Array<{ Key: string; Value: string }>,
-    };
+  // ─── GraphQLApi ──────────────────────────────────────────────────────
 
-    await expect(
-      provider.update('L', 'api-1', 'AWS::AppSync::GraphQLApi', observed, observed)
-    ).rejects.toBeInstanceOf(ResourceUpdateNotSupportedError);
+  describe('GraphQLApi', () => {
+    it('issues UpdateGraphqlApi when AuthenticationType / XrayEnabled / LogConfig diff', async () => {
+      mockSend.mockResolvedValueOnce({}); // UpdateGraphqlApi
+      // Tags diff would issue GetGraphqlApi+Tag*; no Tags here so skip.
 
-    // No spurious SDK calls — update must reject before any AWS API is
-    // invoked. This is what protects round-tripped Class 2 placeholders
-    // (e.g. LogConfig: {}) from ever being shipped to AWS.
-    expect(mockSend).not.toHaveBeenCalled();
+      const newProps = {
+        Name: 'MyApi',
+        AuthenticationType: 'AWS_IAM',
+        XrayEnabled: true,
+        LogConfig: {
+          CloudWatchLogsRoleArn: 'arn:aws:iam::1:role/AppSyncLog',
+          FieldLogLevel: 'ALL',
+          ExcludeVerboseContent: false,
+        },
+        Tags: [] as Array<{ Key: string; Value: string }>,
+      };
+      const oldProps = {
+        Name: 'MyApi',
+        AuthenticationType: 'API_KEY',
+        XrayEnabled: false,
+        LogConfig: {},
+        Tags: [] as Array<{ Key: string; Value: string }>,
+      };
+
+      const result = await provider.update(
+        'L',
+        'api-1',
+        'AWS::AppSync::GraphQLApi',
+        newProps,
+        oldProps
+      );
+
+      expect(result.physicalId).toBe('api-1');
+      expect(mockSend).toHaveBeenCalledTimes(1);
+      const cmd = mockSend.mock.calls[0]?.[0];
+      expect(cmd).toBeInstanceOf(UpdateGraphqlApiCommand);
+      expect(cmd.input).toMatchObject({
+        apiId: 'api-1',
+        name: 'MyApi',
+        authenticationType: 'AWS_IAM',
+        xrayEnabled: true,
+        logConfig: {
+          cloudWatchLogsRoleArn: 'arn:aws:iam::1:role/AppSyncLog',
+          fieldLogLevel: 'ALL',
+          excludeVerboseContent: false,
+        },
+      });
+    });
+
+    it('no-op when no mutable field diffs (no SDK call)', async () => {
+      const same = {
+        Name: 'MyApi',
+        AuthenticationType: 'API_KEY',
+        XrayEnabled: false,
+        LogConfig: {},
+        Tags: [] as Array<{ Key: string; Value: string }>,
+      };
+      const result = await provider.update(
+        'L',
+        'api-1',
+        'AWS::AppSync::GraphQLApi',
+        same,
+        same
+      );
+      expect(result.physicalId).toBe('api-1');
+      expect(mockSend).not.toHaveBeenCalled();
+    });
+
+    it('rejects when Name changes (immutable identity)', async () => {
+      const newProps = { Name: 'NewName', AuthenticationType: 'API_KEY' };
+      const oldProps = { Name: 'OldName', AuthenticationType: 'API_KEY' };
+      await expect(
+        provider.update('L', 'api-1', 'AWS::AppSync::GraphQLApi', newProps, oldProps)
+      ).rejects.toBeInstanceOf(ResourceUpdateNotSupportedError);
+      expect(mockSend).not.toHaveBeenCalled();
+    });
+
+    it('clears LogConfig via FieldLogLevel: NONE when template removes the field (B1)', async () => {
+      // B1: `cdkd drift --revert` clearing a console-added LogConfig.
+      // `properties.LogConfig === undefined` AND `previousProperties.LogConfig`
+      // is set — cdkd cannot omit logConfig on UpdateGraphqlApi (AWS treats
+      // an omitted field as "no change"), so the canonical disable is
+      // `FieldLogLevel: NONE` carrying the previous role ARN through.
+      mockSend.mockResolvedValueOnce({}); // UpdateGraphqlApi
+
+      const newProps = {
+        Name: 'MyApi',
+        AuthenticationType: 'API_KEY',
+      };
+      const oldProps = {
+        Name: 'MyApi',
+        AuthenticationType: 'API_KEY',
+        LogConfig: {
+          CloudWatchLogsRoleArn: 'arn:aws:iam::1:role/AppSyncLog',
+          FieldLogLevel: 'ALL',
+        },
+      };
+
+      await provider.update('L', 'api-1', 'AWS::AppSync::GraphQLApi', newProps, oldProps);
+
+      expect(mockSend).toHaveBeenCalledTimes(1);
+      const cmd = mockSend.mock.calls[0]?.[0];
+      expect(cmd).toBeInstanceOf(UpdateGraphqlApiCommand);
+      expect(cmd.input.logConfig).toEqual({
+        cloudWatchLogsRoleArn: 'arn:aws:iam::1:role/AppSyncLog',
+        fieldLogLevel: 'NONE',
+      });
+    });
+
+    it('no-op when XrayEnabled is undefined on both sides (M1)', async () => {
+      // M1: pre-fix `newXray !== oldXray` was `undefined !== undefined` →
+      // false; correct. But the pre-fix wantUpdate gate fired whenever ANY
+      // of the three checks was true. The combined gate is now field-presence
+      // aware so `undefined -> undefined` does not trigger UpdateGraphqlApi.
+      const same = {
+        Name: 'MyApi',
+        AuthenticationType: 'API_KEY',
+        // No XrayEnabled, no LogConfig — both sides identical absence.
+      };
+      await provider.update('L', 'api-1', 'AWS::AppSync::GraphQLApi', same, same);
+      expect(mockSend).not.toHaveBeenCalled();
+    });
+
+    it('issues TagResource for new tags + UntagResource for removed tags', async () => {
+      // Tags-only diff: skip UpdateGraphqlApi; only TagResource / UntagResource
+      // (preceded by GetGraphqlApi to recover the ARN).
+      mockSend.mockResolvedValueOnce({
+        graphqlApi: { arn: 'arn:aws:appsync:us-east-1:1:apis/api-1' },
+      }); // GetGraphqlApi
+      mockSend.mockResolvedValueOnce({}); // UntagResource
+      mockSend.mockResolvedValueOnce({}); // TagResource
+
+      const newProps = {
+        Name: 'MyApi',
+        AuthenticationType: 'API_KEY',
+        Tags: [
+          { Key: 'Env', Value: 'prod' },
+          { Key: 'Owner', Value: 'team' },
+        ],
+      };
+      const oldProps = {
+        Name: 'MyApi',
+        AuthenticationType: 'API_KEY',
+        Tags: [
+          { Key: 'Env', Value: 'dev' },
+          { Key: 'Legacy', Value: 'remove-me' },
+        ],
+      };
+
+      await provider.update('L', 'api-1', 'AWS::AppSync::GraphQLApi', newProps, oldProps);
+
+      expect(mockSend).toHaveBeenCalledTimes(3);
+      expect(mockSend.mock.calls[0]?.[0]).toBeInstanceOf(GetGraphqlApiCommand);
+      expect(mockSend.mock.calls[1]?.[0]).toBeInstanceOf(UntagResourceCommand);
+      expect(mockSend.mock.calls[1]?.[0].input).toMatchObject({
+        resourceArn: 'arn:aws:appsync:us-east-1:1:apis/api-1',
+        tagKeys: ['Legacy'],
+      });
+      expect(mockSend.mock.calls[2]?.[0]).toBeInstanceOf(TagResourceCommand);
+      expect(mockSend.mock.calls[2]?.[0].input).toMatchObject({
+        resourceArn: 'arn:aws:appsync:us-east-1:1:apis/api-1',
+        tags: { Env: 'prod', Owner: 'team' },
+      });
+    });
+
+    it('caches the GraphqlApi ARN across tag-diff updates (M3)', async () => {
+      // First tag diff: GetGraphqlApi populates the per-provider ARN cache.
+      mockSend.mockResolvedValueOnce({
+        graphqlApi: { arn: 'arn:aws:appsync:us-east-1:1:apis/api-1' },
+      }); // GetGraphqlApi
+      mockSend.mockResolvedValueOnce({}); // TagResource
+
+      const first = {
+        Name: 'MyApi',
+        AuthenticationType: 'API_KEY',
+        Tags: [{ Key: 'Env', Value: 'prod' }],
+      };
+      const empty = {
+        Name: 'MyApi',
+        AuthenticationType: 'API_KEY',
+        Tags: [] as Array<{ Key: string; Value: string }>,
+      };
+      await provider.update('L', 'api-1', 'AWS::AppSync::GraphQLApi', first, empty);
+
+      // Second tag diff on the SAME API: the cache hit must avoid
+      // re-issuing GetGraphqlApi — only TagResource fires.
+      mockSend.mockResolvedValueOnce({}); // TagResource
+      const second = {
+        Name: 'MyApi',
+        AuthenticationType: 'API_KEY',
+        Tags: [
+          { Key: 'Env', Value: 'prod' },
+          { Key: 'Owner', Value: 'team' },
+        ],
+      };
+      await provider.update('L', 'api-1', 'AWS::AppSync::GraphQLApi', second, first);
+
+      // Total: 1 GetGraphqlApi + 1 TagResource (first call) + 1 TagResource (second call).
+      expect(mockSend).toHaveBeenCalledTimes(3);
+      expect(mockSend.mock.calls[0]?.[0]).toBeInstanceOf(GetGraphqlApiCommand);
+      expect(mockSend.mock.calls[1]?.[0]).toBeInstanceOf(TagResourceCommand);
+      expect(mockSend.mock.calls[2]?.[0]).toBeInstanceOf(TagResourceCommand);
+    });
   });
 
-  it('DataSource type=AMAZON_DYNAMODB: Class 1 — update() rejects without sending DynamoDBConfig back', async () => {
-    // Build a no-drift observed snapshot for a DynamoDB DataSource.
-    // Class 1 verification: a future regression that emits an empty
-    // LambdaConfig / HttpConfig placeholder alongside DynamoDBConfig
-    // would still be safe here (update rejects before any SDK call),
-    // but the observed snapshot below mirrors what readCurrentState
-    // produces post-fix: only the matching-type config is present.
-    const observed = {
-      ApiId: 'api-1',
-      Name: 'ddb-ds',
-      Type: 'AMAZON_DYNAMODB',
-      Description: '',
-      ServiceRoleArn: 'arn:aws:iam::1:role/AppSyncDDB',
-      DynamoDBConfig: {
-        TableName: 'my-table',
-        AwsRegion: 'us-east-1',
-      },
-      // No LambdaConfig / HttpConfig — Class 1 contract.
-    };
+  // ─── GraphQLSchema ───────────────────────────────────────────────────
 
-    await expect(
-      provider.update('L', 'api-1|ddb-ds', 'AWS::AppSync::DataSource', observed, observed)
-    ).rejects.toBeInstanceOf(ResourceUpdateNotSupportedError);
+  describe('GraphQLSchema', () => {
+    it('issues StartSchemaCreation when Definition diffs', async () => {
+      mockSend.mockResolvedValueOnce({});
 
-    expect(mockSend).not.toHaveBeenCalled();
+      const newProps = {
+        ApiId: 'api-1',
+        Definition: 'type Query { hello: String, world: String }',
+      };
+      const oldProps = {
+        ApiId: 'api-1',
+        Definition: 'type Query { hello: String }',
+      };
+
+      await provider.update('L', 'api-1', 'AWS::AppSync::GraphQLSchema', newProps, oldProps);
+
+      expect(mockSend).toHaveBeenCalledTimes(1);
+      const cmd = mockSend.mock.calls[0]?.[0];
+      expect(cmd).toBeInstanceOf(StartSchemaCreationCommand);
+      expect(cmd.input.apiId).toBe('api-1');
+      // definition is a Uint8Array / Buffer of the SDL bytes
+      expect(Buffer.from(cmd.input.definition).toString('utf-8')).toBe(
+        'type Query { hello: String, world: String }'
+      );
+    });
+
+    it('no-op when Definition unchanged', async () => {
+      const same = { ApiId: 'api-1', Definition: 'type Query { hello: String }' };
+      await provider.update('L', 'api-1', 'AWS::AppSync::GraphQLSchema', same, same);
+      expect(mockSend).not.toHaveBeenCalled();
+    });
   });
 
-  it('Resolver Kind=UNIT: Class 1 — round-trip does not reach an AWS call with PipelineConfig', async () => {
-    // Class 1 verification: UNIT resolver snapshot has DataSourceName +
-    // VTL templates but NOT PipelineConfig (post-fix). update() rejects
-    // before any SDK call, so even if the snapshot had a stale
-    // PipelineConfig from a v2 state file, no AWS-invalid input would
-    // be shipped.
-    const observed = {
-      ApiId: 'api-1',
-      TypeName: 'Query',
-      FieldName: 'getThing',
-      Kind: 'UNIT',
-      DataSourceName: 'ds1',
-      RequestMappingTemplate: '$ctx',
-      ResponseMappingTemplate: '$result',
-      // PipelineConfig deliberately absent — UNIT resolver, Class 1.
-    };
+  // ─── DataSource ──────────────────────────────────────────────────────
 
-    await expect(
-      provider.update(
+  describe('DataSource', () => {
+    it('issues UpdateDataSource with Description / ServiceRoleArn / DynamoDBConfig diff', async () => {
+      mockSend.mockResolvedValueOnce({});
+
+      const newProps = {
+        ApiId: 'api-1',
+        Name: 'ddb-ds',
+        Type: 'AMAZON_DYNAMODB',
+        Description: 'updated',
+        ServiceRoleArn: 'arn:aws:iam::1:role/AppSyncDDB',
+        DynamoDBConfig: {
+          TableName: 'my-table-v2',
+          AwsRegion: 'us-east-1',
+        },
+      };
+      const oldProps = {
+        ApiId: 'api-1',
+        Name: 'ddb-ds',
+        Type: 'AMAZON_DYNAMODB',
+        Description: '',
+        ServiceRoleArn: 'arn:aws:iam::1:role/AppSyncDDB',
+        DynamoDBConfig: {
+          TableName: 'my-table-v1',
+          AwsRegion: 'us-east-1',
+        },
+      };
+
+      await provider.update(
+        'L',
+        'api-1|ddb-ds',
+        'AWS::AppSync::DataSource',
+        newProps,
+        oldProps
+      );
+
+      expect(mockSend).toHaveBeenCalledTimes(1);
+      const cmd = mockSend.mock.calls[0]?.[0];
+      expect(cmd).toBeInstanceOf(UpdateDataSourceCommand);
+      expect(cmd.input).toMatchObject({
+        apiId: 'api-1',
+        name: 'ddb-ds',
+        type: 'AMAZON_DYNAMODB',
+        description: 'updated',
+        serviceRoleArn: 'arn:aws:iam::1:role/AppSyncDDB',
+        dynamodbConfig: {
+          tableName: 'my-table-v2',
+          awsRegion: 'us-east-1',
+        },
+      });
+    });
+
+    it('issues UpdateDataSource clearing description via empty string', async () => {
+      // !== undefined gate must allow '' (memory rule
+      // feedback_update_optional_field_undefined_check).
+      mockSend.mockResolvedValueOnce({});
+
+      const newProps = {
+        ApiId: 'api-1',
+        Name: 'ddb-ds',
+        Type: 'AMAZON_DYNAMODB',
+        Description: '',
+      };
+      const oldProps = {
+        ApiId: 'api-1',
+        Name: 'ddb-ds',
+        Type: 'AMAZON_DYNAMODB',
+        Description: 'old-description',
+      };
+
+      await provider.update(
+        'L',
+        'api-1|ddb-ds',
+        'AWS::AppSync::DataSource',
+        newProps,
+        oldProps
+      );
+
+      expect(mockSend).toHaveBeenCalledTimes(1);
+      const cmd = mockSend.mock.calls[0]?.[0];
+      expect(cmd.input.description).toBe('');
+    });
+
+    it('no-op when nothing mutable diffs', async () => {
+      const same = {
+        ApiId: 'api-1',
+        Name: 'ddb-ds',
+        Type: 'AMAZON_DYNAMODB',
+        Description: '',
+        DynamoDBConfig: { TableName: 'my-table', AwsRegion: 'us-east-1' },
+      };
+      await provider.update(
+        'L',
+        'api-1|ddb-ds',
+        'AWS::AppSync::DataSource',
+        same,
+        same
+      );
+      expect(mockSend).not.toHaveBeenCalled();
+    });
+
+    it('rejects when Type changes (immutable identity field)', async () => {
+      const newProps = {
+        ApiId: 'api-1',
+        Name: 'ddb-ds',
+        Type: 'AWS_LAMBDA',
+      };
+      const oldProps = {
+        ApiId: 'api-1',
+        Name: 'ddb-ds',
+        Type: 'AMAZON_DYNAMODB',
+      };
+      await expect(
+        provider.update('L', 'api-1|ddb-ds', 'AWS::AppSync::DataSource', newProps, oldProps)
+      ).rejects.toBeInstanceOf(ResourceUpdateNotSupportedError);
+      expect(mockSend).not.toHaveBeenCalled();
+    });
+  });
+
+  // ─── Resolver ────────────────────────────────────────────────────────
+
+  describe('Resolver', () => {
+    it('issues UpdateResolver with VTL template + data source changes (UNIT)', async () => {
+      mockSend.mockResolvedValueOnce({});
+
+      const newProps = {
+        ApiId: 'api-1',
+        TypeName: 'Query',
+        FieldName: 'getThing',
+        Kind: 'UNIT',
+        DataSourceName: 'ds1',
+        RequestMappingTemplate: '$newCtx',
+        ResponseMappingTemplate: '$newResult',
+      };
+      const oldProps = {
+        ApiId: 'api-1',
+        TypeName: 'Query',
+        FieldName: 'getThing',
+        Kind: 'UNIT',
+        DataSourceName: 'ds1',
+        RequestMappingTemplate: '$ctx',
+        ResponseMappingTemplate: '$result',
+      };
+
+      await provider.update(
         'L',
         'api-1|Query|getThing',
         'AWS::AppSync::Resolver',
-        observed,
-        observed
-      )
-    ).rejects.toBeInstanceOf(ResourceUpdateNotSupportedError);
+        newProps,
+        oldProps
+      );
 
-    expect(mockSend).not.toHaveBeenCalled();
+      expect(mockSend).toHaveBeenCalledTimes(1);
+      const cmd = mockSend.mock.calls[0]?.[0];
+      expect(cmd).toBeInstanceOf(UpdateResolverCommand);
+      expect(cmd.input).toMatchObject({
+        apiId: 'api-1',
+        typeName: 'Query',
+        fieldName: 'getThing',
+        kind: 'UNIT',
+        dataSourceName: 'ds1',
+        requestMappingTemplate: '$newCtx',
+        responseMappingTemplate: '$newResult',
+      });
+    });
+
+    it('issues UpdateResolver for PIPELINE Functions change', async () => {
+      mockSend.mockResolvedValueOnce({});
+
+      const newProps = {
+        ApiId: 'api-1',
+        TypeName: 'Query',
+        FieldName: 'pipe',
+        Kind: 'PIPELINE',
+        PipelineConfig: { Functions: ['fn-1', 'fn-2', 'fn-3'] },
+      };
+      const oldProps = {
+        ApiId: 'api-1',
+        TypeName: 'Query',
+        FieldName: 'pipe',
+        Kind: 'PIPELINE',
+        PipelineConfig: { Functions: ['fn-1', 'fn-2'] },
+      };
+
+      await provider.update(
+        'L',
+        'api-1|Query|pipe',
+        'AWS::AppSync::Resolver',
+        newProps,
+        oldProps
+      );
+
+      expect(mockSend).toHaveBeenCalledTimes(1);
+      const cmd = mockSend.mock.calls[0]?.[0];
+      expect(cmd.input.pipelineConfig).toEqual({ functions: ['fn-1', 'fn-2', 'fn-3'] });
+    });
+
+    it('does NOT forward dataSourceName on a PIPELINE resolver (M2)', async () => {
+      // M2: real PIPELINE resolvers have no DataSourceName; AWS rejects the
+      // UpdateResolver call if dataSourceName is set alongside Kind=PIPELINE.
+      // The Kind-discriminator gate must drop DataSourceName even if the
+      // property is somehow present in state (e.g. carried over from a
+      // previous UNIT shape during a console-side mutation).
+      mockSend.mockResolvedValueOnce({});
+
+      const newProps = {
+        ApiId: 'api-1',
+        TypeName: 'Query',
+        FieldName: 'pipe',
+        Kind: 'PIPELINE',
+        PipelineConfig: { Functions: ['fn-1', 'fn-2', 'fn-3'] },
+        // Defensive: stray DataSourceName must NOT reach the SDK input.
+        DataSourceName: 'stray-ds',
+      };
+      const oldProps = {
+        ApiId: 'api-1',
+        TypeName: 'Query',
+        FieldName: 'pipe',
+        Kind: 'PIPELINE',
+        PipelineConfig: { Functions: ['fn-1', 'fn-2'] },
+      };
+
+      await provider.update(
+        'L',
+        'api-1|Query|pipe',
+        'AWS::AppSync::Resolver',
+        newProps,
+        oldProps
+      );
+
+      expect(mockSend).toHaveBeenCalledTimes(1);
+      const cmd = mockSend.mock.calls[0]?.[0];
+      expect(cmd.input.dataSourceName).toBeUndefined();
+      expect(cmd.input.pipelineConfig).toEqual({ functions: ['fn-1', 'fn-2', 'fn-3'] });
+    });
+
+    it('no-op when nothing mutable diffs', async () => {
+      const same = {
+        ApiId: 'api-1',
+        TypeName: 'Query',
+        FieldName: 'getThing',
+        Kind: 'UNIT',
+        DataSourceName: 'ds1',
+        RequestMappingTemplate: '$ctx',
+        ResponseMappingTemplate: '$result',
+      };
+      await provider.update(
+        'L',
+        'api-1|Query|getThing',
+        'AWS::AppSync::Resolver',
+        same,
+        same
+      );
+      expect(mockSend).not.toHaveBeenCalled();
+    });
+
+    it('rejects when TypeName changes (immutable identity field)', async () => {
+      const newProps = {
+        ApiId: 'api-1',
+        TypeName: 'Mutation',
+        FieldName: 'getThing',
+      };
+      const oldProps = {
+        ApiId: 'api-1',
+        TypeName: 'Query',
+        FieldName: 'getThing',
+      };
+      await expect(
+        provider.update(
+          'L',
+          'api-1|Query|getThing',
+          'AWS::AppSync::Resolver',
+          newProps,
+          oldProps
+        )
+      ).rejects.toBeInstanceOf(ResourceUpdateNotSupportedError);
+      expect(mockSend).not.toHaveBeenCalled();
+    });
   });
 
-  it('Resolver Kind=PIPELINE: Class 1 — round-trip does not reach an AWS call with DataSourceName', async () => {
-    // Class 1 verification: PIPELINE resolver snapshot has
-    // PipelineConfig but NOT DataSourceName / VTL templates (post-fix).
-    const observed = {
-      ApiId: 'api-1',
-      TypeName: 'Query',
-      FieldName: 'pipe',
-      Kind: 'PIPELINE',
-      PipelineConfig: { Functions: ['fn-1', 'fn-2'] },
-      // DataSourceName deliberately absent — PIPELINE resolver, Class 1.
-    };
+  // ─── ApiKey ──────────────────────────────────────────────────────────
 
-    await expect(
-      provider.update('L', 'api-1|Query|pipe', 'AWS::AppSync::Resolver', observed, observed)
-    ).rejects.toBeInstanceOf(ResourceUpdateNotSupportedError);
+  describe('ApiKey', () => {
+    it('issues UpdateApiKey when Description or Expires diff', async () => {
+      mockSend.mockResolvedValueOnce({});
 
-    expect(mockSend).not.toHaveBeenCalled();
+      const newProps = {
+        ApiId: 'api-1',
+        Description: 'new',
+        Expires: 1800000000,
+      };
+      const oldProps = {
+        ApiId: 'api-1',
+        Description: 'old',
+        Expires: 1700000000,
+      };
+
+      await provider.update('L', 'api-1|k1', 'AWS::AppSync::ApiKey', newProps, oldProps);
+
+      expect(mockSend).toHaveBeenCalledTimes(1);
+      const cmd = mockSend.mock.calls[0]?.[0];
+      expect(cmd).toBeInstanceOf(UpdateApiKeyCommand);
+      expect(cmd.input).toMatchObject({
+        apiId: 'api-1',
+        id: 'k1',
+        description: 'new',
+        expires: 1800000000,
+      });
+    });
+
+    it('no-op when Description and Expires unchanged', async () => {
+      const same = {
+        ApiId: 'api-1',
+        Description: 'main',
+        Expires: 1700000000,
+      };
+      await provider.update('L', 'api-1|k1', 'AWS::AppSync::ApiKey', same, same);
+      expect(mockSend).not.toHaveBeenCalled();
+    });
+
+    it('rejects when ApiId changes (immutable identity)', async () => {
+      const newProps = { ApiId: 'api-2', Description: 'x' };
+      const oldProps = { ApiId: 'api-1', Description: 'x' };
+      await expect(
+        provider.update('L', 'api-1|k1', 'AWS::AppSync::ApiKey', newProps, oldProps)
+      ).rejects.toBeInstanceOf(ResourceUpdateNotSupportedError);
+      expect(mockSend).not.toHaveBeenCalled();
+    });
   });
 
-  it('GraphQLSchema: update() rejects cleanly with the canonical-SDL observed shape', async () => {
-    // Snapshot mirrors what readCurrentState produces for a GraphQLSchema:
-    // canonical SDL Definition + ApiId. update() must reject before any
-    // SDK call; cdkd drift --revert on a Definition drift surfaces "could
-    // not revert — AppSync resources are recreated on property changes"
-    // (matches the file-level docstring's "JS handler doesn't ship an
-    // AWS-invalid input on AppSync" guarantee).
-    const observed = {
-      ApiId: 'api-1',
-      Definition: 'type Query {\n  hello: String\n}',
-    };
+  // ─── Dispatch ────────────────────────────────────────────────────────
 
+  it('rejects unknown AppSync resource type', async () => {
     await expect(
-      provider.update('L', 'api-1', 'AWS::AppSync::GraphQLSchema', observed, observed)
-    ).rejects.toBeInstanceOf(ResourceUpdateNotSupportedError);
-
-    expect(mockSend).not.toHaveBeenCalled();
-  });
-
-  it('ApiKey: update() rejects cleanly without firing any SDK call', async () => {
-    const observed = {
-      ApiId: 'api-1',
-      Description: 'main',
-      Expires: 1700000000,
-    };
-
-    await expect(
-      provider.update('L', 'api-1|k1', 'AWS::AppSync::ApiKey', observed, observed)
-    ).rejects.toBeInstanceOf(ResourceUpdateNotSupportedError);
-
-    expect(mockSend).not.toHaveBeenCalled();
+      provider.update('L', 'p', 'AWS::AppSync::Bogus', {}, {})
+    ).rejects.toThrow(/Unsupported resource type/);
   });
 });
