@@ -322,3 +322,46 @@ describe('container-pool — ContainerSpec.optDir propagation (PR 6 of #224, iss
     await pool.dispose();
   });
 });
+
+describe('container-pool — ContainerSpec.tmpfs propagation (issue #440)', () => {
+  // `cdkd local start-api` resolves `Properties.EphemeralStorage.Size`
+  // once at server boot in `buildContainerSpec` and stores it on
+  // `ContainerSpec.tmpfs`. The pool's `startOne` MUST thread that into
+  // `runDetached(tmpfs)` verbatim so every cold-started warm container
+  // for that Lambda gets the same sized `/tmp` cap the deployed
+  // function would have.
+  it('threads ContainerSpec.tmpfs into runDetached(tmpfs)', async () => {
+    const spec = makeSpec('SizedFn');
+    spec.tmpfs = { target: '/tmp', sizeMb: 1024 };
+    const specs = new Map([['SizedFn', spec]]);
+    const pool = createContainerPool(specs, { perLambdaConcurrency: 1, streamLogs: false });
+
+    const h = await pool.acquire('SizedFn');
+
+    expect(runDetached).toHaveBeenCalledTimes(1);
+    const callArg = (runDetached as ReturnType<typeof vi.fn>).mock.calls[0]?.[0] as {
+      tmpfs?: { target: string; sizeMb: number };
+    };
+    expect(callArg.tmpfs).toEqual({ target: '/tmp', sizeMb: 1024 });
+
+    pool.release(h);
+    await pool.dispose();
+  });
+
+  it('omits runDetached(tmpfs) when ContainerSpec.tmpfs is undefined', async () => {
+    const spec = makeSpec('NoSizeFn');
+    // spec.tmpfs intentionally NOT set.
+    const specs = new Map([['NoSizeFn', spec]]);
+    const pool = createContainerPool(specs, { perLambdaConcurrency: 1, streamLogs: false });
+
+    const h = await pool.acquire('NoSizeFn');
+
+    const callArg = (runDetached as ReturnType<typeof vi.fn>).mock.calls[0]?.[0] as {
+      tmpfs?: { target: string; sizeMb: number };
+    };
+    expect(callArg.tmpfs).toBeUndefined();
+
+    pool.release(h);
+    await pool.dispose();
+  });
+});

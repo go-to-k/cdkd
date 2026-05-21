@@ -94,11 +94,12 @@ import type {
  *    is surfaced for BOTH the LOCAL replica AND cross-region replicas
  *    via per-region SDK clients (cached in `regionalClientCache` for
  *    the deploy run). Issue #389 lifted the v1 LOCAL-only limitation.
- *  - Cross-region replica Tags propagation (Issue #389): when the
- *    update path detects a Tags-only diff on a non-local replica,
- *    cdkd resolves the replica's table ARN by swapping the region
- *    segment of the local ARN and issues `TagResource` /
- *    `UntagResource` against a per-region client.
+ *  - Cross-region replica Tags propagation (Issue #389 / #441):
+ *    BOTH `create()` and `update()` resolve each non-local replica's
+ *    table ARN by swapping the region segment of the local ARN and
+ *    issue `TagResource` / `UntagResource` against a per-region
+ *    client. The shared helper `applyCrossRegionReplicaTagsDiff`
+ *    centralizes the diff + best-effort WARN-on-failure contract.
  */
 export class DynamoDBGlobalTableProvider implements ResourceProvider {
   private dynamoDBClient: DynamoDBClient;
@@ -403,7 +404,8 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
     // `Replicas[?Region==<deploy region>].Tags`). For the LOCAL replica
     // we apply them via `CreateTable`'s top-level `Tags` field (avoids
     // a separate `TagResource` round-trip). Cross-region replicas'
-    // Tags require per-region SDK clients and are deferred.
+    // Tags are propagated AFTER the replicas flip ACTIVE — see the
+    // `applyCrossRegionReplicaTagsDiff` loop further down (Issue #441).
     const localReplicaForTags = replicas.find((r) => r['Region'] === currentRegion);
     const localReplicaTags = localReplicaForTags?.['Tags'] as Tag[] | undefined;
     if (localReplicaTags && localReplicaTags.length > 0) {
@@ -441,6 +443,34 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
         const region = replica['Region'] as string | undefined;
         if (!region || region === currentRegion) continue;
         await this.addReplica(tableName, replica, region, logicalId);
+      }
+
+      // Cross-region replica Tags propagation (Issue #441 — closes the
+      // create-side half of Issue #389's scope; the update path already
+      // shipped per-region propagation). `CreateTable`'s top-level
+      // `Tags` only covers the LOCAL replica; non-local replicas need a
+      // separate `TagResource` against the regional client AFTER the
+      // replica flips ACTIVE (AWS rejects `TagResource` with
+      // `ResourceNotFoundFault` against a still-provisioning replica,
+      // which is why this loop sits below the `addReplica` await above
+      // — `waitForReplicaActive` is part of `addReplica`). Best-effort
+      // per replica: a single region's failure logs at WARN and the
+      // deploy continues (mirrors `update()`'s contract). Without
+      // this, the first `cdkd drift` against a freshly-created
+      // multi-region table reports Tags drift on every cross-region
+      // replica.
+      for (const replica of replicas) {
+        const region = replica['Region'] as string | undefined;
+        if (!region || region === currentRegion) continue;
+        const replicaTags = replica['Tags'] as Array<{ Key?: string; Value?: string }> | undefined;
+        if (!replicaTags || replicaTags.length === 0) continue;
+        await this.applyCrossRegionReplicaTagsDiff(
+          tableInfo.tableArn,
+          region,
+          undefined, // create() has no previous state — every tag is an add
+          replicaTags,
+          tableName
+        );
       }
 
       // TTL is a separate API call (UpdateTimeToLive). Applied after
@@ -924,6 +954,23 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
         if (!region || region === currentRegion) continue;
         await this.addReplica(physicalId, replica, region, logicalId);
 
+        // Cross-region Tags propagation for the newly-added replica
+        // (Issue #441 follow-up — mirrors the create-side + modified
+        // paths). `UpdateTable(ReplicaUpdates: [{Create: ...}])` does
+        // not accept a `Tags` field, so any `Replicas[].Tags` declared
+        // in the new replica entry must be applied via a separate
+        // `TagResource` against the replica's region-scoped ARN.
+        const newReplicaTags = replica['Tags'] as
+          | Array<{ Key?: string; Value?: string }>
+          | undefined;
+        await this.applyCrossRegionReplicaTagsDiff(
+          tableArn,
+          region,
+          undefined,
+          newReplicaTags,
+          physicalId
+        );
+
         // Per-replica read auto-scaling (Issue #402): when the new
         // replica has `ReadCapacityAutoScalingSettings`, register the
         // scalable target + target-tracking policy in the replica's
@@ -963,42 +1010,19 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
           | Array<{ Key?: string; Value?: string }>
           | undefined;
 
-        // Cross-region Tags propagation (Issue #389): when AWS reports
-        // a TableArn, swap its region segment to construct the
-        // replica's ARN, then issue TagResource / UntagResource via
-        // a per-region client. Best-effort — a failure here logs at
-        // warn but does NOT block the rest of the replica modify
-        // loop (the local replica's Tags already applied above; the
-        // cross-region Tags failure surfaces as drift on the next
-        // run instead of as a deploy abort).
-        if (!deepEqual(oldReplicaTags, newReplicaTags)) {
-          if (tableArn) {
-            const replicaArn = this.replicaArnForRegion(tableArn, region);
-            if (replicaArn) {
-              try {
-                const regionalClient = this.getRegionalClient(region);
-                await this.applyTagDiffOnClient(
-                  regionalClient,
-                  replicaArn,
-                  oldReplicaTags,
-                  newReplicaTags
-                );
-              } catch (tagErr) {
-                this.logger.warn(
-                  `Could not apply Tags diff to cross-region replica ${region} of ${physicalId}: ${tagErr instanceof Error ? tagErr.message : String(tagErr)}. The replica's Tags state will surface as drift until the next successful deploy.`
-                );
-              }
-            } else {
-              this.logger.warn(
-                `Could not derive replica ARN for region ${region} from ${tableArn} — skipping Tags propagation for ${physicalId}`
-              );
-            }
-          } else {
-            this.logger.warn(
-              `Local DescribeTable returned no TableArn — cannot propagate Tags to cross-region replica ${region} of ${physicalId}`
-            );
-          }
-        }
+        // Cross-region Tags propagation (Issue #389): delegate to the
+        // shared `applyCrossRegionReplicaTagsDiff` helper (also used by
+        // `create()` per Issue #441) — the helper handles the
+        // diff-equals-no-op short-circuit, the ARN-derivation guard,
+        // and the best-effort WARN-on-failure contract uniformly across
+        // both code paths.
+        await this.applyCrossRegionReplicaTagsDiff(
+          tableArn,
+          region,
+          oldReplicaTags,
+          newReplicaTags,
+          physicalId
+        );
 
         // Per-replica read auto-scaling diff (Issue #402 / closes #395
         // deferred items). The read dimension's scalable target +
@@ -1235,10 +1259,62 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
   }
 
   /**
+   * Propagate a per-replica Tags diff to ONE cross-region replica via a
+   * per-region client (Issue #389 / #441 — closes the create-side gap).
+   * Centralizes the common shape used by BOTH `create()` (`oldTags`
+   * undefined → every new tag is an add) and `update()` (per-replica
+   * modify path's old-vs-new diff). Best-effort: a failure here logs at
+   * WARN naming the offending region + ARN + reason and the deploy
+   * continues — the cross-region Tags state will surface as drift on
+   * the next run (or `cdkd drift --revert`) rather than aborting the
+   * deploy mid-flight. Mirrors the autoscaling diff's failure contract
+   * (PR #393).
+   *
+   * `tableArn` is the LOCAL replica's table ARN (returned by the
+   * post-create `waitForTableActive` or the inline `DescribeTable` in
+   * `update()`); the helper swaps the region segment via
+   * `replicaArnForRegion` before issuing `TagResource` / `UntagResource`
+   * against the per-region client.
+   *
+   * No-op when `oldTags` deep-equals `newTags` — the caller is allowed
+   * to invoke unconditionally without first diffing.
+   */
+  private async applyCrossRegionReplicaTagsDiff(
+    tableArn: string | undefined,
+    region: string,
+    oldTags: Array<{ Key?: string; Value?: string }> | undefined,
+    newTags: Array<{ Key?: string; Value?: string }> | undefined,
+    physicalIdForLogs: string
+  ): Promise<void> {
+    if (deepEqual(oldTags, newTags)) return;
+    if (!tableArn) {
+      this.logger.warn(
+        `Local DescribeTable returned no TableArn — cannot propagate Tags to cross-region replica ${region} of ${physicalIdForLogs}`
+      );
+      return;
+    }
+    const replicaArn = this.replicaArnForRegion(tableArn, region);
+    if (!replicaArn) {
+      this.logger.warn(
+        `Could not derive replica ARN for region ${region} from ${tableArn} — skipping Tags propagation for ${physicalIdForLogs}`
+      );
+      return;
+    }
+    try {
+      const regionalClient = this.getRegionalClient(region);
+      await this.applyTagDiffOnClient(regionalClient, replicaArn, oldTags, newTags);
+    } catch (tagErr) {
+      this.logger.warn(
+        `Could not apply Tags diff to cross-region replica ${region} of ${physicalIdForLogs}: ${tagErr instanceof Error ? tagErr.message : String(tagErr)}. The replica's Tags state will surface as drift until the next successful deploy.`
+      );
+    }
+  }
+
+  /**
    * Apply a Tags diff against the given `DynamoDBClient` (which may be
    * the local client or a per-region client returned by
    * `getRegionalClient`). Used by the local-replica path AND the
-   * cross-region replica Tags propagation path (Issue #389).
+   * cross-region replica Tags propagation path (Issue #389 / #441).
    */
   private async applyTagDiffOnClient(
     client: DynamoDBClient,
@@ -1746,9 +1822,12 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
    *
    * Per-replica sub-specifications (`ContributorInsightsSpecification` /
    * `PointInTimeRecoverySpecification` / `KinesisStreamSpecification`)
-   * are surfaced only for the LOCAL replica. Cross-region replicas
-   * require per-region SDK clients (`new DynamoDBClient({region})`),
-   * deferred to a follow-up PR.
+   * are surfaced for BOTH the LOCAL replica AND cross-region replicas
+   * via per-region SDK clients cached in `regionalClientCache` (Issue
+   * #389 lifted the v1 LOCAL-only limitation; the per-replica reads
+   * happen in `readReplicaSubSpecs` below). Each cross-region call is
+   * best-effort — a permissions gap in one region omits the offending
+   * key rather than aborting the whole drift read.
    */
   async readCurrentState(
     physicalId: string,

@@ -935,7 +935,7 @@ export class ApiGatewayProvider implements ResourceProvider {
       new ResourceUpdateNotSupportedError(
         'AWS::ApiGateway::Deployment',
         logicalId,
-        'API Gateway Deployment is immutable; re-deploy with cdkd deploy --replace, or change the resource definition to create a new Deployment'
+        'API Gateway Deployment is immutable on AWS — there is no UpdateDeployment API for the deployment itself (UpdateStage is for the stage that points at the deployment); every change requires CreateDeployment to produce a new immutable deployment. Re-deploy with cdkd deploy --replace, or change the resource definition to create a new Deployment.'
       )
     );
   }
