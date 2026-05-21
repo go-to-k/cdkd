@@ -1,3 +1,10 @@
+## [0.115.4](https://github.com/go-to-k/cdkd/compare/v0.115.3...v0.115.4) (2026-05-21)
+
+
+### Bug Fixes
+
+* **local:** accept Fn::Sub shapes on AWS::ApiGatewayV2::Route.Target ([#444](https://github.com/go-to-k/cdkd/issues/444)) ([#474](https://github.com/go-to-k/cdkd/issues/474)) ([9940a70](https://github.com/go-to-k/cdkd/commit/9940a70e3cf0d52156f6ed3a44950bdce690cf34))
+
 ## [0.115.3](https://github.com/go-to-k/cdkd/compare/v0.115.2...v0.115.3) (2026-05-21)
 
 
