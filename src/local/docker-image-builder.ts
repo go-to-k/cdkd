@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { buildDockerImage } from '../assets/docker-build.js';
 import type { DockerImageAssetSource } from '../types/assets.js';
+import { runDockerStreaming } from '../utils/docker-cmd.js';
 import { LocalInvokeBuildError } from '../utils/error-handler.js';
 import { getLogger } from '../utils/logger.js';
 import { isImageInLocalCache } from './ecr-puller.js';
@@ -70,13 +71,28 @@ export async function buildContainerImage(
   logger.info(`Building container image (platform=${platform})...`);
   logger.debug(`Local tag: ${tag}`);
 
-  await buildDockerImage(asset, cdkOutDir, tag, {
+  // For `executable` source mode the user's script returns its own tag;
+  // re-tag to our deterministic `cdkd-local-invoke-<hash>` so the
+  // `--no-build` cache-lookup branch finds the image on subsequent runs.
+  const actualTag = await buildDockerImage(asset, cdkOutDir, {
+    tag,
     platform,
     wrapError: (stderr) =>
       new LocalInvokeBuildError(
-        `docker build failed for container Lambda asset (${asset.source.directory}): ${stderr}`
+        `docker build failed for container Lambda asset (${asset.source.directory ?? asset.source.executable?.join(' ')}): ${stderr}`
       ),
   });
+  if (actualTag !== tag) {
+    logger.debug(`Re-tagging executable-built image ${actualTag} → ${tag}`);
+    try {
+      await runDockerStreaming(['tag', actualTag, tag]);
+    } catch (err) {
+      const e = err as { stderr?: string; message?: string };
+      throw new LocalInvokeBuildError(
+        `docker tag failed: ${e.stderr?.trim() || e.message || String(err)}`
+      );
+    }
+  }
 
   return tag;
 }
@@ -94,27 +110,57 @@ export function architectureToPlatform(architecture: 'x86_64' | 'arm64'): string
 }
 
 /**
- * Build a stable local tag derived from the asset's build context. We
- * fingerprint `directory + dockerFile + dockerBuildTarget + dockerBuildArgs`
- * so an iteration that doesn't change those fields hits Docker's layer
- * cache; an iteration that DOES change them gets a fresh tag (the old
- * tag stays around in `docker images` but harmlessly).
+ * Build a stable local tag derived from the asset's build context.
+ *
+ * Fingerprints every field that affects the produced image so an iteration
+ * that doesn't change those fields hits Docker's layer cache; an iteration
+ * that DOES change them gets a fresh tag (the old tag stays around in
+ * `docker images` but harmlessly). The fingerprint covers the full CDK
+ * `DockerImageSource` schema so `dockerBuildSecrets` / `dockerBuildContexts`
+ * / `cacheFrom` / etc. changes also bust the local cache as expected.
  */
 function computeLocalTag(source: DockerImageAssetSource): string {
   const hash = createHash('sha256');
-  hash.update(source.directory);
+  // Field-tagged fingerprint: prepend each field's name so adding new fields
+  // later doesn't shift the digest for old shapes.
+  pushField(hash, 'directory', source.directory ?? '');
+  pushField(hash, 'executable', (source.executable ?? []).join(' '));
+  pushField(hash, 'dockerFile', source.dockerFile ?? '');
+  pushField(hash, 'dockerBuildTarget', source.dockerBuildTarget ?? '');
+  pushField(hash, 'networkMode', source.networkMode ?? '');
+  pushField(hash, 'platform', source.platform ?? '');
+  pushField(hash, 'dockerBuildSsh', source.dockerBuildSsh ?? '');
+  pushField(hash, 'cacheDisabled', source.cacheDisabled ? '1' : '0');
+  pushMap(hash, 'dockerBuildArgs', source.dockerBuildArgs);
+  pushMap(hash, 'dockerBuildContexts', source.dockerBuildContexts);
+  pushMap(hash, 'dockerBuildSecrets', source.dockerBuildSecrets);
+  pushField(hash, 'dockerOutputs', (source.dockerOutputs ?? []).join('\x1f'));
+  pushField(hash, 'cacheFrom', (source.cacheFrom ?? []).map((o) => JSON.stringify(o)).join('\x1f'));
+  pushField(hash, 'cacheTo', source.cacheTo ? JSON.stringify(source.cacheTo) : '');
+  return `cdkd-local-invoke-${hash.digest('hex').slice(0, 16)}`;
+}
+
+function pushField(hash: ReturnType<typeof createHash>, name: string, value: string): void {
+  hash.update(name);
+  hash.update('=');
+  hash.update(value);
   hash.update('\0');
-  hash.update(source.dockerFile ?? '');
-  hash.update('\0');
-  hash.update(source.dockerBuildTarget ?? '');
-  hash.update('\0');
-  if (source.dockerBuildArgs) {
-    for (const [k, v] of Object.entries(source.dockerBuildArgs)) {
+}
+
+function pushMap(
+  hash: ReturnType<typeof createHash>,
+  name: string,
+  value: Record<string, string> | undefined
+): void {
+  hash.update(name);
+  hash.update('={');
+  if (value) {
+    for (const [k, v] of Object.entries(value)) {
       hash.update(k);
       hash.update('=');
       hash.update(v);
-      hash.update('\0');
+      hash.update(';');
     }
   }
-  return `cdkd-local-invoke-${hash.digest('hex').slice(0, 16)}`;
+  hash.update('}\0');
 }

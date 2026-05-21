@@ -385,11 +385,14 @@ describe('runEcsTask — image preparation (G1)', () => {
     await runEcsTask(task, baseOptions(), state);
     expect(manifestStubs.loadManifest).toHaveBeenCalledWith('/tmp/cdk.out', 'S1');
     expect(dockerBuildStubs.buildDockerImage).toHaveBeenCalledTimes(1);
-    const [asset, ctx, tag] = dockerBuildStubs.buildDockerImage.mock.calls[0]!;
+    // Post-PR signature: `buildDockerImage(asset, cdkOutDir, options)` where
+    // `options.tag` carries the deterministic local tag (was the 3rd positional
+    // arg pre-PR).
+    const [asset, ctx, opts] = dockerBuildStubs.buildDockerImage.mock.calls[0]!;
     expect(asset).toEqual({ source: { directory: '/tmp/asset-h0' } });
     expect(ctx).toBe('/tmp/cdk.out');
-    expect(typeof tag).toBe('string');
-    expect((tag as string).startsWith('cdkd-local-run-task-')).toBe(true);
+    expect(typeof (opts as { tag: string }).tag).toBe('string');
+    expect((opts as { tag: string }).tag.startsWith('cdkd-local-run-task-')).toBe(true);
   });
 
   it('cdk-asset with no asset manifest path → throws EcsTaskRunnerError', async () => {
