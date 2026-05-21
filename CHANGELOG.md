@@ -1,3 +1,10 @@
+# [0.117.0](https://github.com/go-to-k/cdkd/compare/v0.116.1...v0.117.0) (2026-05-21)
+
+
+### Features
+
+* **local:** honor Lambda EphemeralStorage.Size via --tmpfs ([#478](https://github.com/go-to-k/cdkd/issues/478)) ([a7aa542](https://github.com/go-to-k/cdkd/commit/a7aa542a2180e8a378bdb49dd6430b8165da3115))
+
 ## [0.116.1](https://github.com/go-to-k/cdkd/compare/v0.116.0...v0.116.1) (2026-05-21)
 
 
