@@ -123,6 +123,13 @@ interface LocalStartApiOptions {
    */
   fromState: boolean;
   /**
+   * Opt-in: allow AWS_IAM SigV4 requests that cannot be cryptographically
+   * verified (foreign access-key-id, or no local AWS credentials) to
+   * pass through with a placeholder principalId. Default `false` (fail-
+   * closed). Mirrors the `--allow-unverified-sigv4` CLI flag.
+   */
+  allowUnverifiedSigv4?: boolean;
+  /**
    * S3 bucket holding cdkd state. Used only when `--from-state` is set.
    * Falls back to `CDKD_STATE_BUCKET` env / `cdk.json` / the default
    * `cdkd-state-{accountId}` bucket via `resolveStateBucketWithDefault`.
@@ -541,6 +548,7 @@ async function localStartApiCommand(
       ...(sigV4CredentialsLoader && {
         sigV4CredentialsLoader,
         sigV4WarnedForeignIds,
+        sigV4AllowUnverified: options.allowUnverifiedSigv4 === true,
       }),
     });
     servers.push({ group, server: started });
@@ -1818,6 +1826,16 @@ export function createLocalStartApiCommand(): Command {
         '--stack-region <region>',
         'Region of the cdkd state record to read (used with --from-state when the same stack name has state in multiple regions).'
       )
+    )
+    .addOption(
+      new Option(
+        '--allow-unverified-sigv4',
+        'Opt-in: allow AWS_IAM SigV4 requests that cannot be cryptographically verified ' +
+          '(foreign access-key-id, OR no local AWS credentials configured) to pass through ' +
+          'with a placeholder principalId. DEFAULT off — fail-closed so unauthenticated bypass ' +
+          'is impossible against `event.requestContext.identity.accessKey`-trusting handler code. ' +
+          'Use only in dev loops where you understand the risk.'
+      ).default(false)
     )
     .action(withErrorHandling(localStartApiCommand));
 

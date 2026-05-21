@@ -122,6 +122,14 @@ export interface StartApiServerOptions {
    * dedup pattern as `jwksWarnedUrls`.
    */
   sigV4WarnedForeignIds?: Set<string>;
+  /**
+   * Opt-in: allow SigV4 requests that cannot be verified (foreign
+   * access-key-id OR local-credentials-load failure) to pass through
+   * with a placeholder `principalId`. DEFAULT off — fail-closed by
+   * default per the security review on #484; the `--allow-unverified-sigv4`
+   * CLI flag flips this on for dev loops that need it.
+   */
+  sigV4AllowUnverified?: boolean;
 }
 
 export interface StartedApiServer {
@@ -675,6 +683,9 @@ async function runAuthorizerPass(
       opts.sigV4CredentialsLoader,
       {
         ...(opts.sigV4WarnedForeignIds && { warnedForeignIds: opts.sigV4WarnedForeignIds }),
+        ...(opts.sigV4AllowUnverified !== undefined && {
+          allowUnverified: opts.sigV4AllowUnverified,
+        }),
       }
     );
     if (!sigResult.allow) {

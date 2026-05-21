@@ -165,7 +165,21 @@ export interface SigV4VerifyResult extends CachedAuthorizerResult {
 export async function verifySigV4(
   req: SigV4VerifyRequest,
   loadCredentials: CredentialsLoader,
-  opts: { warnedForeignIds?: Set<string>; now?: () => Date } = {}
+  opts: {
+    warnedForeignIds?: Set<string>;
+    now?: () => Date;
+    /**
+     * Opt-in: when true, allow unverifiable SigV4 requests (foreign
+     * access-key-id, or local-credentials-load failure) to pass through
+     * with a warn instead of being denied. DEFAULT: false (fail-closed)
+     * so a dev with no AWS credentials configured does not get
+     * silently-unauthenticated IAM-protected routes. Reviewers asked us
+     * to make this explicit because the previous fail-open default
+     * exposed `event.requestContext.identity.accessKey`-trusting handler
+     * code to spoofing in local dev.
+     */
+    allowUnverified?: boolean;
+  } = {}
 ): Promise<SigV4VerifyResult> {
   const logger = getLogger();
   const authHeader = pickHeader(req.headers, 'authorization');
@@ -224,32 +238,68 @@ export async function verifySigV4(
   try {
     local = await loadCredentials();
   } catch (err) {
+    // Security: fail-closed by default. A dev with no AWS credentials
+    // configured used to get unauthenticated-bypass on every IAM-protected
+    // route — handler code that trusts `event.requestContext.identity.*`
+    // was trivially spoofable in local dev. Opt-in
+    // `--allow-unverified-sigv4` is the explicit escape hatch for dev
+    // loops where signature verification is impractical.
+    const reason = err instanceof Error ? err.message : String(err);
+    if (!opts.allowUnverified) {
+      logger.warn(
+        `AWS_IAM authorizer: failed to resolve local AWS credentials (${reason}). Denying request; configure AWS credentials or pass --allow-unverified-sigv4 to opt into the warn-and-pass dev behavior.`
+      );
+      return { allow: false, identityHash: undefined };
+    }
     logger.warn(
-      `AWS_IAM authorizer: failed to resolve local AWS credentials (${err instanceof Error ? err.message : String(err)}). Cannot verify SigV4 signatures locally; passing through.`
+      `AWS_IAM authorizer: failed to resolve local AWS credentials (${reason}). --allow-unverified-sigv4 is set; passing through with unverified principalId 'unverified-no-creds'. Do NOT trust event.requestContext.identity.accessKey in handler code.`
     );
     return {
       allow: true,
-      principalId: parsed.credentialAccessKeyId,
+      // Surface an obviously-fake principalId so handlers cannot be
+      // fooled into trusting the unverified access-key-id.
+      principalId: 'unverified-no-creds',
       identityHash: buildIdentityHash([parsed.signature]),
     };
   }
 
   // Foreign-identity request: the signer used an access key id we don't
-  // have. We can't reproduce the signing key, so warn-and-pass per the
-  // memory rule.
-  if (local.accessKeyId !== parsed.credentialAccessKeyId) {
+  // have. We can't reproduce the signing key, so signature verification
+  // is impossible. SECURITY: fail-closed by default — a fail-open here
+  // lets anyone forge an `Authorization: AWS4-HMAC-SHA256 Credential=AKID-X/...`
+  // header and be admitted as principal `AKID-X` against ANY handler
+  // that trusts `event.requestContext.identity.accessKey`. The
+  // `--allow-unverified-sigv4` flag is the explicit opt-in for dev
+  // loops where calls from foreign identities are expected (e.g.
+  // testing federated assume-role flows locally). Use case-insensitive
+  // compare on the access key id — AWS docs are silent and a
+  // lowercased AKID is a trivial bypass vector otherwise.
+  if (local.accessKeyId.toLowerCase() !== parsed.credentialAccessKeyId.toLowerCase()) {
     const warned = opts.warnedForeignIds;
+    if (!opts.allowUnverified) {
+      if (!warned || !warned.has(parsed.credentialAccessKeyId)) {
+        logger.warn(
+          `AWS_IAM authorizer: request signed with foreign access-key-id '${parsed.credentialAccessKeyId}' ` +
+            `(local credentials are '${local.accessKeyId}'). Denying; pass --allow-unverified-sigv4 to opt into ` +
+            `the warn-and-pass dev behavior, or call with credentials whose access-key-id matches your local one.`
+        );
+        warned?.add(parsed.credentialAccessKeyId);
+      }
+      return { allow: false, identityHash: undefined };
+    }
     if (!warned || !warned.has(parsed.credentialAccessKeyId)) {
       logger.warn(
-        `AWS_IAM authorizer: request signed with access-key-id '${parsed.credentialAccessKeyId}', ` +
-          `but local credentials are '${local.accessKeyId}'. Cannot verify SigV4 signatures from a ` +
-          `different identity locally; passing through. The deployed API Gateway will verify properly.`
+        `AWS_IAM authorizer: request signed with foreign access-key-id '${parsed.credentialAccessKeyId}'. ` +
+          `--allow-unverified-sigv4 is set; passing through with unverified principalId 'unverified-foreign-identity'. ` +
+          `Do NOT trust event.requestContext.identity.accessKey in handler code.`
       );
       warned?.add(parsed.credentialAccessKeyId);
     }
     return {
       allow: true,
-      principalId: parsed.credentialAccessKeyId,
+      // Surface an obviously-fake principalId so handler code cannot
+      // be fooled into trusting the unverified access-key-id.
+      principalId: 'unverified-foreign-identity',
       identityHash: buildIdentityHash([parsed.signature]),
     };
   }

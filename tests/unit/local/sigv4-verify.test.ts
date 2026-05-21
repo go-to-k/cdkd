@@ -341,7 +341,7 @@ describe('verifySigV4', () => {
     expect(result.allow).toBe(false);
   });
 
-  it('warn-and-passes a foreign-identity request (different access-key-id)', async () => {
+  it('DENIES a foreign-identity request by default (fail-closed)', async () => {
     const { authorization, headers } = signRequest({
       method: 'GET',
       path: '/v1/protected',
@@ -363,14 +363,45 @@ describe('verifySigV4', () => {
       now,
       warnedForeignIds: warned,
     });
-    // Foreign identity: cannot reproduce the signing key; warn-and-pass
-    // per `feedback_match_aws_default_over_opinionated.md`.
-    expect(result.allow).toBe(true);
-    expect(result.principalId).toBe('AKIDFOREIGN');
+    // Security: cannot reproduce the signing key, signature is
+    // unverifiable. Fail-closed by default — prior versions admitted
+    // ANY caller as `principalId: <foreign-AKID>` which was trivially
+    // spoofable against handler code trusting requestContext.identity.
+    expect(result.allow).toBe(false);
     expect(warned.has('AKIDFOREIGN')).toBe(true);
   });
 
-  it('warn-and-passes if local credentials cannot be resolved', async () => {
+  it('warn-and-passes a foreign-identity request when --allow-unverified-sigv4 is set', async () => {
+    const { authorization, headers } = signRequest({
+      method: 'GET',
+      path: '/v1/protected',
+      headers: { host: 'api.example.com' },
+      accessKeyId: 'AKIDFOREIGN',
+      secretAccessKey: 'foreign-secret',
+      region,
+      service,
+      amzDate,
+    });
+    const req: SigV4VerifyRequest = {
+      method: 'GET',
+      rawUrl: '/v1/protected',
+      headers: { authorization, ...headers },
+      body: Buffer.alloc(0),
+    };
+    const warned = new Set<string>();
+    const result = await verifySigV4(req, stubLoader({ accessKeyId, secretAccessKey }), {
+      now,
+      warnedForeignIds: warned,
+      allowUnverified: true,
+    });
+    expect(result.allow).toBe(true);
+    // The principalId is the obviously-fake placeholder, NOT the
+    // unverified access-key-id, so handler code cannot be fooled.
+    expect(result.principalId).toBe('unverified-foreign-identity');
+    expect(warned.has('AKIDFOREIGN')).toBe(true);
+  });
+
+  it('DENIES when local credentials cannot be resolved by default (fail-closed)', async () => {
     const { authorization, headers } = signRequest({
       method: 'GET',
       path: '/v1/protected',
@@ -391,8 +422,34 @@ describe('verifySigV4', () => {
       throw new Error('no credentials configured');
     };
     const result = await verifySigV4(req, failingLoader, { now });
+    // Security: a dev with no AWS credentials used to get every
+    // IAM-protected route unauthenticated. Fail-closed by default.
+    expect(result.allow).toBe(false);
+  });
+
+  it('warn-and-passes when local credentials cannot be resolved AND --allow-unverified-sigv4 is set', async () => {
+    const { authorization, headers } = signRequest({
+      method: 'GET',
+      path: '/v1/protected',
+      headers: { host: 'api.example.com' },
+      accessKeyId,
+      secretAccessKey,
+      region,
+      service,
+      amzDate,
+    });
+    const req: SigV4VerifyRequest = {
+      method: 'GET',
+      rawUrl: '/v1/protected',
+      headers: { authorization, ...headers },
+      body: Buffer.alloc(0),
+    };
+    const failingLoader: CredentialsLoader = async () => {
+      throw new Error('no credentials configured');
+    };
+    const result = await verifySigV4(req, failingLoader, { now, allowUnverified: true });
     expect(result.allow).toBe(true);
-    expect(result.principalId).toBe(accessKeyId);
+    expect(result.principalId).toBe('unverified-no-creds');
   });
 
   it('rejects when the credential-scope date does not match x-amz-date', async () => {
