@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
-# Side-by-side real recording: cdk deploy (left) vs cdkd deploy (right).
+# Side-by-side real recording: cdkd deploy (left) vs cdk deploy (right).
 # Both deploy a 5-resource SDK-Provider stack (S3 / DDB / SQS / SNS / SSM).
+# cdkd on the left so left-to-right readers see the featured tool first
+# and immediately hit the "finished" punchline.
 
 set -e
 
@@ -22,11 +24,11 @@ ENV='FORCE_COLOR=1 COLORTERM=truecolor'
 
 # The echoed line MUST mention `time` so the trailing real/user/sys block
 # at the end of each pane matches what the viewer saw being typed.
-LEFT_CMD="echo '\$ time cdk deploy CdkdDemoCdk --require-approval never'; echo; $ENV time cdk deploy CdkdDemoCdk --require-approval never"
-RIGHT_CMD="echo '\$ time cdkd deploy CdkdDemoCdkd'; echo; $ENV time cdkd deploy CdkdDemoCdkd --yes"
+LEFT_CMD="echo '\$ time cdkd deploy CdkdDemoCdkd'; echo; $ENV time cdkd deploy CdkdDemoCdkd --yes"
+RIGHT_CMD="echo '\$ time cdk deploy CdkdDemoCdk --require-approval never'; echo; $ENV time cdk deploy CdkdDemoCdk --require-approval never"
 
 tmux -f "$CONF" new-session  -d -s demo -x 220 -y 40 "bash -c \"$LEFT_CMD; sleep 9999\""
-tmux select-pane -t demo:0.0 -T '#[fg=#f38ba8,bold]  CFn  ─  cdk deploy '
+tmux select-pane -t demo:0.0 -T '#[fg=#a6e3a1,bold]  cdkd ─  cdkd deploy '
 tmux split-window -h -t demo:0.0 "bash -c \"$RIGHT_CMD; sleep 9999\""
-tmux select-pane -t demo:0.1 -T '#[fg=#a6e3a1,bold]  cdkd ─  cdkd deploy '
+tmux select-pane -t demo:0.1 -T '#[fg=#f38ba8,bold]  CFn  ─  cdk deploy '
 tmux attach -t demo

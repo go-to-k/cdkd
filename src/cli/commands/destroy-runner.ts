@@ -275,7 +275,7 @@ export async function runDestroyForStack(
   if (resourceCount === 0) {
     logger.info(`Stack ${stackName} has no resources, cleaning up state...`);
     await ctx.stateBackend.deleteState(stackName, regionForState);
-    logger.info(`${green('✓')} State deleted`);
+    logger.info(`${green('OK')} State deleted`);
     result.skippedEmpty = true;
     return result;
   }
@@ -597,7 +597,7 @@ export async function runDestroyForStack(
 
           renderer.removeTask(logicalId);
           logger.info(
-            `  ${red('✗')} ${bold(logicalId)} ${gray(`(${resource.resourceType})`)} ${red('deleted')}`
+            `  ${red('-')} ${bold(logicalId)} ${gray(`(${resource.resourceType})`)} ${red('deleted')}`
           );
           result.deletedCount++;
         } catch (error) {
@@ -660,11 +660,11 @@ export async function runDestroyForStack(
     const retainedSuffix = result.retainedCount > 0 ? `, ${result.retainedCount} retained` : '';
     if (result.errorCount === 0) {
       logger.info(
-        `\n${green('✓')} ${bold(`Stack ${stackName} destroyed`)} (${green(result.deletedCount)} deleted${retainedSuffix}, ${result.errorCount} errors)`
+        `\n${green('OK')} ${bold(`Stack ${stackName} destroyed`)} (${green(result.deletedCount)} deleted${retainedSuffix}, ${result.errorCount} errors)`
       );
     } else {
       logger.warn(
-        `\n${yellow('⚠')} ${bold(`Stack ${stackName} partially destroyed`)} (${green(result.deletedCount)} deleted${retainedSuffix}, ${red(result.errorCount)} errors). ` +
+        `\n${yellow('!!')} ${bold(`Stack ${stackName} partially destroyed`)} (${green(result.deletedCount)} deleted${retainedSuffix}, ${red(result.errorCount)} errors). ` +
           `State preserved — re-run 'cdkd destroy' / 'cdkd state destroy' to clean up.`
       );
     }

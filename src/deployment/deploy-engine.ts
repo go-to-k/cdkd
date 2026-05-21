@@ -1530,7 +1530,7 @@ export class DeployEngine {
         const createPrefix = progress ? `[${progress.current}/${progress.total}] ` : '  ';
         renderer.removeTask(logicalId);
         this.logger.info(
-          `${createPrefix}${green('✓')} ${bold(logicalId)} ${gray(`(${resourceType})`)} ${green('created')}`
+          `${createPrefix}${green('+')} ${bold(logicalId)} ${gray(`(${resourceType})`)} ${green('created')}`
         );
         break;
       }
@@ -1637,7 +1637,7 @@ export class DeployEngine {
                 currentResource.properties,
                 { expectedRegion: this.stackRegion }
               );
-              this.logger.info(`  ${green('✓')} Old resource deleted`);
+              this.logger.info(`  ${green('OK')} Old resource deleted`);
             } catch (deleteError) {
               this.logger.warn(
                 `  ⚠ Failed to delete old resource ${logicalId} (${currentResource.physicalId}): ${deleteError instanceof Error ? deleteError.message : String(deleteError)}`
@@ -1667,7 +1667,7 @@ export class DeployEngine {
           const replacePrefix = progress ? `[${progress.current}/${progress.total}] ` : '  ';
           renderer.removeTask(logicalId);
           this.logger.info(
-            `${replacePrefix}${yellow('↻')} ${bold(logicalId)} ${gray(`(${resourceType})`)} ${yellow('replaced')}`
+            `${replacePrefix}${yellow('>>')} ${bold(logicalId)} ${gray(`(${resourceType})`)} ${yellow('replaced')}`
           );
         } else {
           // Normal update (in-place)
@@ -1848,7 +1848,7 @@ export class DeployEngine {
         const deletePrefix = progress ? `[${progress.current}/${progress.total}] ` : '  ';
         renderer.removeTask(logicalId);
         this.logger.info(
-          `${deletePrefix}${red('✗')} ${bold(logicalId)} ${gray(`(${resourceType})`)} ${red('deleted')}`
+          `${deletePrefix}${red('-')} ${bold(logicalId)} ${gray(`(${resourceType})`)} ${red('deleted')}`
         );
         break;
       }

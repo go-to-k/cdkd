@@ -6,8 +6,8 @@ Output "../cdk-vs-cdkd.gif"
 
 Set Theme        "Catppuccin Mocha"
 Set FontFamily   "JetBrainsMono Nerd Font"
-Set FontSize     18
-Set Width        1800
+Set FontSize     22
+Set Width        1600
 Set Height       720
 Set Padding      20
 Set TypingSpeed  40ms
