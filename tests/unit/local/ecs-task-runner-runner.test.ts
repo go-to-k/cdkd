@@ -138,9 +138,20 @@ vi.mock('../../../src/local/ecr-puller.js', () => ({
 }));
 
 // docker-build (asset path)
+//
+// Post-PR signature: `buildDockerImage(asset, cdkOutDir, opts) -> Promise<string>`.
+// The default stub returns `opts.tag` verbatim — matches `directory` source
+// mode and lets the re-tag branch (`actualTag !== tag`) stay quiet for tests
+// that don't care about it. Tests that DO want to exercise the executable
+// source mode override the stub per-call via `mockImplementationOnce` so
+// the returned tag differs from the requested one.
 const dockerBuildStubs = vi.hoisted(() => ({
   buildDockerImage: vi.fn(
-    async (_asset: unknown, _ctx: string, _tag: string, _opts: unknown): Promise<void> => undefined
+    async (
+      _asset: unknown,
+      _ctx: string,
+      opts: { tag?: string }
+    ): Promise<string> => (opts.tag ?? '<no-tag>')
   ),
 }));
 vi.mock('../../../src/assets/docker-build.js', () => ({

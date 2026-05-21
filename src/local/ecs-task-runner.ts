@@ -3,7 +3,7 @@ import { randomBytes } from 'node:crypto';
 import { dirname } from 'node:path';
 import { promisify } from 'node:util';
 import graphlib from 'graphlib';
-import { getDockerCmd } from '../utils/docker-cmd.js';
+import { getDockerCmd, runDockerStreaming } from '../utils/docker-cmd.js';
 import { getLogger } from '../utils/logger.js';
 import { DockerRunnerError, pullImage, removeContainer } from './docker-runner.js';
 import { buildDockerImage } from '../assets/docker-build.js';
@@ -605,13 +605,15 @@ async function prepareOneImage(
       if (actualTag !== tag) {
         // `executable` source mode returns the script's own tag — re-tag
         // to the deterministic `tag` so the downstream `docker run` finds
-        // the image under the expected name.
+        // the image under the expected name. Routed through the shared
+        // `runDockerStreaming` helper for consistency with publisher /
+        // local-invoke.
         try {
-          await execFileAsync(getDockerCmd(), ['tag', actualTag, tag]);
+          await runDockerStreaming(['tag', actualTag, tag]);
         } catch (err) {
           const e = err as { stderr?: string; message?: string };
           throw new LocalInvokeBuildError(
-            `docker tag failed for ECS container '${container.name}': ${e.stderr?.trim() || e.message || String(err)}`
+            `docker tag failed re-tagging '${actualTag}' → '${tag}' for ECS container '${container.name}': ${e.stderr?.trim() || e.message || String(err)}`
           );
         }
       }

@@ -83,13 +83,13 @@ export async function buildContainerImage(
       ),
   });
   if (actualTag !== tag) {
-    logger.debug(`Re-tagging executable-built image ${actualTag} → ${tag}`);
+    logger.debug(`Re-tagging executable-built image '${actualTag}' → '${tag}'`);
     try {
       await runDockerStreaming(['tag', actualTag, tag]);
     } catch (err) {
       const e = err as { stderr?: string; message?: string };
       throw new LocalInvokeBuildError(
-        `docker tag failed: ${e.stderr?.trim() || e.message || String(err)}`
+        `docker tag failed re-tagging '${actualTag}' → '${tag}': ${e.stderr?.trim() || e.message || String(err)}`
       );
     }
   }

@@ -129,6 +129,18 @@ echo "    ✓ --no-build reused the cached tag"
 
 rm -f /tmp/cdkd-buildkit-1.log /tmp/cdkd-buildkit-3.log
 
+# Cleanup: remove the cdkd-built image(s) so CI hosts don't accumulate
+# multi-stage builder layers across iterations. The integ owns the
+# `cdkd-local-invoke-*` namespace and the run-time docker containers are
+# already removed by `docker run --rm` + cdkd's removeContainer().
+echo "==> Cleanup: removing cdkd-built images"
+docker image ls --filter 'reference=cdkd-local-invoke-*' --format '{{.Repository}}:{{.Tag}}' | while read -r tag; do
+  docker image rm -f "${tag}" >/dev/null 2>&1 || true
+done
+# Also prune any dangling layers from the multi-stage build. `--force` is
+# fine here; we're operating on a known-isolated test image.
+docker image prune -f --filter "label=cdkd-local-invoke" >/dev/null 2>&1 || true
+
 echo ""
 echo "==> All 3 BuildKit-Dockerfile checks passed"
 echo "    Every BuildKit feature this PR forwards is end-to-end verified:"

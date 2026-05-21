@@ -116,10 +116,14 @@ export async function spawnStreaming(
 
     child.once('error', (err: NodeJS.ErrnoException) => {
       if (err.code === 'ENOENT') {
+        const usingOverride = process.env['CDK_DOCKER'] === cmd && cmd !== 'docker';
         reject(
           new Error(
-            `Failed to find and execute '${cmd}'. Install Docker (or set the ` +
-              `'CDK_DOCKER' environment variable to a compatible binary such as podman / finch).`
+            usingOverride
+              ? `Failed to find and execute '${cmd}' (resolved via CDK_DOCKER). ` +
+                  `Install '${cmd}' or unset CDK_DOCKER to fall back to 'docker'.`
+              : `Failed to find and execute '${cmd}'. Install Docker (or set the ` +
+                  `'CDK_DOCKER' environment variable to a compatible binary such as podman / finch).`
           )
         );
       } else {

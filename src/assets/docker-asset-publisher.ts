@@ -171,8 +171,15 @@ export class DockerAssetPublisher {
       wrapError: (stderr) => new AssetError(`Docker build failed: ${stderr}`),
     });
     if (actualTag !== tag) {
-      this.logger.debug(`Re-tagging executable-built image ${actualTag} → ${tag}`);
-      await this.tagImage(actualTag, tag);
+      this.logger.debug(`Re-tagging executable-built image '${actualTag}' → '${tag}'`);
+      try {
+        await this.tagImage(actualTag, tag);
+      } catch (err) {
+        const e = err as { message?: string };
+        throw new AssetError(
+          `Docker tag failed re-tagging '${actualTag}' → '${tag}': ${e.message ?? String(err)}`
+        );
+      }
     }
   }
 

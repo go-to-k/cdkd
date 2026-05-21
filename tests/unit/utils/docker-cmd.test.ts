@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vite-plus/test';
-import { getDockerCmd } from '../../../src/utils/docker-cmd.js';
+import { getDockerCmd, runDockerStreaming, spawnStreaming } from '../../../src/utils/docker-cmd.js';
 
 describe('getDockerCmd', () => {
   let originalEnv: string | undefined;
@@ -32,5 +32,104 @@ describe('getDockerCmd', () => {
   it('passes nerdctl / finch / lima paths through verbatim', () => {
     process.env['CDK_DOCKER'] = '/opt/homebrew/bin/finch';
     expect(getDockerCmd()).toBe('/opt/homebrew/bin/finch');
+  });
+});
+
+// `runDockerStreaming` and `spawnStreaming` machinery — covers ENOENT,
+// non-zero-exit `SpawnError` shape, stdin write-through, and env merge.
+// These tests exercise the REAL `child_process.spawn` against tiny shell
+// commands available on every supported platform (/bin/sh, /bin/cat),
+// which keeps the test honest about the streaming + close-event +
+// stdin-pipe semantics. Skips on Windows-only CI (`process.platform`
+// guard) — cdkd's Node target is Linux/macOS for now.
+
+describe('runDockerStreaming / spawnStreaming machinery', () => {
+  const itPosix = process.platform === 'win32' ? it.skip : it;
+
+  itPosix('captures stdout and stderr separately', async () => {
+    const { stdout, stderr } = await spawnStreaming('/bin/sh', [
+      '-c',
+      'printf hi; printf err 1>&2',
+    ]);
+    expect(stdout).toBe('hi');
+    expect(stderr).toBe('err');
+  });
+
+  itPosix('writes options.input to stdin and the child sees it on stdout', async () => {
+    const { stdout } = await spawnStreaming('/bin/cat', [], { input: 'piped-input-token' });
+    expect(stdout).toBe('piped-input-token');
+  });
+
+  itPosix('rejects on non-zero exit with a SpawnError carrying stderr + exitCode', async () => {
+    let caught: unknown;
+    try {
+      await spawnStreaming('/bin/sh', ['-c', 'printf BOOM 1>&2; exit 7']);
+    } catch (err) {
+      caught = err;
+    }
+    const e = caught as { message: string; stderr: string; stdout: string; exitCode: number };
+    expect(e.message).toMatch(/BOOM/);
+    expect(e.stderr).toBe('BOOM');
+    expect(e.stdout).toBe('');
+    expect(e.exitCode).toBe(7);
+  });
+
+  itPosix(
+    'rejects ENOENT with the install / CDK_DOCKER hint when the binary does not exist',
+    async () => {
+      await expect(
+        spawnStreaming('/non/existent/binary/cdkd-test', [])
+      ).rejects.toThrow(/Install Docker.*CDK_DOCKER/);
+    }
+  );
+
+  itPosix('rejects ENOENT with a CDK_DOCKER-aware hint when CDK_DOCKER points at the missing binary', async () => {
+    const original = process.env['CDK_DOCKER'];
+    process.env['CDK_DOCKER'] = '/non/existent/binary/cdkd-podman-test';
+    try {
+      // runDockerStreaming uses getDockerCmd() which reads CDK_DOCKER on each call.
+      await expect(runDockerStreaming([])).rejects.toThrow(
+        /resolved via CDK_DOCKER.*unset CDK_DOCKER/
+      );
+    } finally {
+      if (original === undefined) delete process.env['CDK_DOCKER'];
+      else process.env['CDK_DOCKER'] = original;
+    }
+  });
+
+  itPosix('options.env overlays process.env (and undefined entries are deleted)', async () => {
+    const original = process.env['CDKD_TEST_BASE_VAR'];
+    process.env['CDKD_TEST_BASE_VAR'] = 'inherited';
+    try {
+      const { stdout } = await spawnStreaming('/bin/sh', ['-c', 'printf "%s|%s" "$CDKD_TEST_BASE_VAR" "$CDKD_TEST_OVERLAY_VAR"'], {
+        env: {
+          CDKD_TEST_OVERLAY_VAR: 'overlay-value',
+          // undefined → drop CDKD_TEST_BASE_VAR even though process.env has it
+          CDKD_TEST_BASE_VAR: undefined,
+        },
+      });
+      expect(stdout).toBe('|overlay-value');
+    } finally {
+      if (original === undefined) delete process.env['CDKD_TEST_BASE_VAR'];
+      else process.env['CDKD_TEST_BASE_VAR'] = original;
+    }
+  });
+
+  itPosix('options.cwd resolves the working directory', async () => {
+    const { stdout } = await spawnStreaming('/bin/sh', ['-c', 'pwd'], { cwd: '/tmp' });
+    // macOS aliases /tmp → /private/tmp; accept either to keep the test portable.
+    expect(stdout.trim()).toMatch(/^(\/private)?\/tmp$/);
+  });
+
+  itPosix('runDockerStreaming routes via getDockerCmd() (CDK_DOCKER override propagates)', async () => {
+    const original = process.env['CDK_DOCKER'];
+    process.env['CDK_DOCKER'] = '/bin/sh';
+    try {
+      const { stdout } = await runDockerStreaming(['-c', 'printf via-cdk-docker']);
+      expect(stdout).toBe('via-cdk-docker');
+    } finally {
+      if (original === undefined) delete process.env['CDK_DOCKER'];
+      else process.env['CDK_DOCKER'] = original;
+    }
   });
 });
