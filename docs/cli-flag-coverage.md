@@ -4,7 +4,7 @@
 
 Run `vp run cli-flag-coverage` to regenerate.
 
-**10 / 27 declared CLI flags** appear in at least one `tests/integration/<name>/verify.sh` script. 17 flags are not exercised by any integ verify.sh.
+**10 / 28 declared CLI flags** appear in at least one `tests/integration/<name>/verify.sh` script. 18 flags are not exercised by any integ verify.sh.
 
 ## Important: this is a VISIBILITY report, not a CI gate
 
@@ -12,7 +12,7 @@ Many cdkd flags are tested at the **unit-test level** rather than via an integ `
 
 See the script docstring for the design rationale; this matrix is intentionally not wired to CI hard-fail (contrast with the provider-coverage matrix in [docs/integ-coverage.md](integ-coverage.md), where the CI gate IS appropriate because every registered provider is expected to have real-AWS verification).
 
-## Flags with no integ verify.sh mention (17)
+## Flags with no integ verify.sh mention (18)
 
 Reviewer judgment required per flag — many of these are pure-logic flags adequately tested at the unit level.
 
@@ -22,6 +22,7 @@ Reviewer judgment required per flag — many of these are pure-logic flags adequ
 - `--context`
 - `--exclusively`
 - `--image-build-concurrency`
+- `--import-value-cross-region`
 - `--no-aggressive-vpc-parallel`
 - `--no-capture-observed-state`
 - `--no-rollback`
@@ -39,23 +40,24 @@ Reviewer judgment required per flag — many of these are pure-logic flags adequ
 | Flag | Integ Fixture(s) |
 |---|---|
 | `--dry-run` | [`export`](../tests/integration/export/) |
-| `--force` | [`docdb-neptune`](../tests/integration/docdb-neptune/)<br>[`drift-revert`](../tests/integration/drift-revert/)<br>[`drift-revert-vpc`](../tests/integration/drift-revert-vpc/)<br>[`dynamodb-globaltable`](../tests/integration/dynamodb-globaltable/)<br>[`export`](../tests/integration/export/)<br>[`import-value-strong-ref`](../tests/integration/import-value-strong-ref/)<br>[`local-invoke-from-state`](../tests/integration/local-invoke-from-state/)<br>[`local-run-task-from-state`](../tests/integration/local-run-task-from-state/)<br>[`migrate-from-cfn`](../tests/integration/migrate-from-cfn/)<br>[`remove-protection`](../tests/integration/remove-protection/) |
-| `--output` | [`docdb-neptune`](../tests/integration/docdb-neptune/)<br>[`drift-revert`](../tests/integration/drift-revert/)<br>[`drift-revert-vpc`](../tests/integration/drift-revert-vpc/)<br>[`dynamodb-globaltable`](../tests/integration/dynamodb-globaltable/)<br>[`export`](../tests/integration/export/)<br>[`import-value-strong-ref`](../tests/integration/import-value-strong-ref/)<br>[`local-invoke-from-state`](../tests/integration/local-invoke-from-state/)<br>[`local-run-task-from-state`](../tests/integration/local-run-task-from-state/)<br>[`migrate-from-cfn`](../tests/integration/migrate-from-cfn/)<br>[`remove-protection`](../tests/integration/remove-protection/) |
-| `--region` | [`dynamodb-globaltable`](../tests/integration/dynamodb-globaltable/)<br>[`export`](../tests/integration/export/)<br>[`import-value-strong-ref`](../tests/integration/import-value-strong-ref/)<br>[`local-run-task-from-state`](../tests/integration/local-run-task-from-state/)<br>[`migrate-from-cfn`](../tests/integration/migrate-from-cfn/) |
+| `--force` | [`deletion-policy-retain`](../tests/integration/deletion-policy-retain/)<br>[`diff-intrinsic-target-change`](../tests/integration/diff-intrinsic-target-change/)<br>[`docdb-neptune`](../tests/integration/docdb-neptune/)<br>[`drift-revert`](../tests/integration/drift-revert/)<br>[`drift-revert-vpc`](../tests/integration/drift-revert-vpc/)<br>[`dynamodb-globaltable`](../tests/integration/dynamodb-globaltable/)<br>[`export`](../tests/integration/export/)<br>[`import-value-strong-ref`](../tests/integration/import-value-strong-ref/)<br>[`local-invoke-buildkit`](../tests/integration/local-invoke-buildkit/)<br>[`local-invoke-from-state`](../tests/integration/local-invoke-from-state/)<br>[`local-run-task-from-state`](../tests/integration/local-run-task-from-state/)<br>[`migrate-from-cfn`](../tests/integration/migrate-from-cfn/)<br>[`remove-protection`](../tests/integration/remove-protection/) |
+| `--output` | [`deletion-policy-retain`](../tests/integration/deletion-policy-retain/)<br>[`diff-intrinsic-target-change`](../tests/integration/diff-intrinsic-target-change/)<br>[`docdb-neptune`](../tests/integration/docdb-neptune/)<br>[`drift-revert`](../tests/integration/drift-revert/)<br>[`drift-revert-vpc`](../tests/integration/drift-revert-vpc/)<br>[`dynamodb-globaltable`](../tests/integration/dynamodb-globaltable/)<br>[`export`](../tests/integration/export/)<br>[`import-value-strong-ref`](../tests/integration/import-value-strong-ref/)<br>[`local-invoke-from-state`](../tests/integration/local-invoke-from-state/)<br>[`local-run-task-from-state`](../tests/integration/local-run-task-from-state/)<br>[`migrate-from-cfn`](../tests/integration/migrate-from-cfn/)<br>[`remove-protection`](../tests/integration/remove-protection/) |
+| `--region` | [`deletion-policy-retain`](../tests/integration/deletion-policy-retain/)<br>[`diff-intrinsic-target-change`](../tests/integration/diff-intrinsic-target-change/)<br>[`dynamodb-globaltable`](../tests/integration/dynamodb-globaltable/)<br>[`export`](../tests/integration/export/)<br>[`import-value-strong-ref`](../tests/integration/import-value-strong-ref/)<br>[`local-run-task-from-state`](../tests/integration/local-run-task-from-state/)<br>[`migrate-from-cfn`](../tests/integration/migrate-from-cfn/) |
 | `--remove-protection` | [`dynamodb-globaltable`](../tests/integration/dynamodb-globaltable/)<br>[`remove-protection`](../tests/integration/remove-protection/) |
 | `--resource-timeout` | [`docdb-neptune`](../tests/integration/docdb-neptune/)<br>[`remove-protection`](../tests/integration/remove-protection/) |
 | `--resource-warn-after` | [`remove-protection`](../tests/integration/remove-protection/) |
-| `--state-bucket` | [`docdb-neptune`](../tests/integration/docdb-neptune/)<br>[`drift-revert`](../tests/integration/drift-revert/)<br>[`drift-revert-vpc`](../tests/integration/drift-revert-vpc/)<br>[`dynamodb-globaltable`](../tests/integration/dynamodb-globaltable/)<br>[`export`](../tests/integration/export/)<br>[`import-value-strong-ref`](../tests/integration/import-value-strong-ref/)<br>[`local-invoke-from-state`](../tests/integration/local-invoke-from-state/)<br>[`local-run-task-from-state`](../tests/integration/local-run-task-from-state/)<br>[`remove-protection`](../tests/integration/remove-protection/) |
+| `--state-bucket` | [`deletion-policy-retain`](../tests/integration/deletion-policy-retain/)<br>[`diff-intrinsic-target-change`](../tests/integration/diff-intrinsic-target-change/)<br>[`docdb-neptune`](../tests/integration/docdb-neptune/)<br>[`drift-revert`](../tests/integration/drift-revert/)<br>[`drift-revert-vpc`](../tests/integration/drift-revert-vpc/)<br>[`dynamodb-globaltable`](../tests/integration/dynamodb-globaltable/)<br>[`export`](../tests/integration/export/)<br>[`import-value-strong-ref`](../tests/integration/import-value-strong-ref/)<br>[`local-invoke-from-state`](../tests/integration/local-invoke-from-state/)<br>[`local-run-task-from-state`](../tests/integration/local-run-task-from-state/)<br>[`remove-protection`](../tests/integration/remove-protection/) |
 | `--verbose` | [`docdb-neptune`](../tests/integration/docdb-neptune/)<br>[`drift-revert`](../tests/integration/drift-revert/)<br>[`drift-revert-vpc`](../tests/integration/drift-revert-vpc/)<br>[`dynamodb-globaltable`](../tests/integration/dynamodb-globaltable/)<br>[`export`](../tests/integration/export/)<br>[`remove-protection`](../tests/integration/remove-protection/) |
-| `--yes` | [`export`](../tests/integration/export/)<br>[`migrate-from-cfn`](../tests/integration/migrate-from-cfn/) |
+| `--yes` | [`diff-intrinsic-target-change`](../tests/integration/diff-intrinsic-target-change/)<br>[`export`](../tests/integration/export/)<br>[`migrate-from-cfn`](../tests/integration/migrate-from-cfn/) |
 
-## Long-form flags referenced in integs but NOT declared in src/cli/options.ts (42)
+## Long-form flags referenced in integs but NOT declared in src/cli/options.ts (49)
 
 These are mostly third-party CLI flags (`--query` for `aws` / `--region` for `aws s3 ls` / `--no-paginate` / etc.) OR typos of cdkd flag names. Listed here for visibility — review only if a row matches a cdkd flag with a misspelling.
 
 - `--add-host`
 - `--all`
 - `--bucket`
+- `--build-arg`
 - `--cfn-stack-name`
 - `--container-host`
 - `--content-type`
@@ -71,11 +73,14 @@ These are mostly third-party CLI flags (`--query` for `aws` / `--region` for `aw
 - `--key`
 - `--max-items`
 - `--migrate-from-cloudformation`
+- `--mount`
+- `--name`
 - `--no-build`
 - `--no-pull`
 - `--nologo`
 - `--parameter`
 - `--password-stdin`
+- `--policy-name`
 - `--port`
 - `--prefer-offline`
 - `--pull`
@@ -88,10 +93,13 @@ These are mostly third-party CLI flags (`--query` for `aws` / `--region` for `aw
 - `--resource-id`
 - `--revert`
 - `--rm`
+- `--role-name`
 - `--scalable-dimension`
+- `--secret`
 - `--service-namespace`
 - `--show-toplevel`
 - `--silent`
 - `--stack-name`
 - `--table-name`
+- `--target`
 - `--username`

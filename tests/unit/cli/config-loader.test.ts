@@ -26,6 +26,7 @@ import {
   loadUserCdkJson,
   resolveApp,
   resolveCaptureObservedState,
+  resolveImportValueCrossRegion,
   resolveSkipPrefix,
   warnDeprecatedNoPrefixCliFlag,
   resolveStateBucket,
@@ -626,6 +627,114 @@ describe('config-loader', () => {
         JSON.stringify({ context: { cdkd: { captureObservedState: 'yes' } } })
       );
       expect(resolveCaptureObservedState(true)).toBe(true);
+    });
+  });
+
+  describe('resolveImportValueCrossRegion', () => {
+    beforeEach(() => {
+      delete process.env['CDKD_IMPORT_VALUE_CROSS_REGION'];
+    });
+
+    it('returns [] when nothing is set (off by default — same-region behavior preserved)', () => {
+      vi.mocked(existsSync).mockReturnValue(false);
+      expect(resolveImportValueCrossRegion(undefined, 'us-east-1')).toEqual([]);
+    });
+
+    it('parses a comma-separated CLI value', () => {
+      vi.mocked(existsSync).mockReturnValue(false);
+      expect(resolveImportValueCrossRegion('us-west-2,eu-west-1', 'us-east-1')).toEqual([
+        'us-west-2',
+        'eu-west-1',
+      ]);
+    });
+
+    it('trims whitespace and drops empty tokens in the CLI value', () => {
+      vi.mocked(existsSync).mockReturnValue(false);
+      expect(
+        resolveImportValueCrossRegion(' us-west-2 , , eu-west-1 ', 'us-east-1')
+      ).toEqual(['us-west-2', 'eu-west-1']);
+    });
+
+    it('strips the consumer current region from the resolved list (self-region no-op)', () => {
+      // Listing your own region would be useless (same-region index
+      // already covers it) and would trip the ambiguity check on every
+      // export resolved against both indexes. Strip it.
+      vi.mocked(existsSync).mockReturnValue(false);
+      expect(resolveImportValueCrossRegion('us-east-1,us-west-2', 'us-east-1')).toEqual([
+        'us-west-2',
+      ]);
+    });
+
+    it('deduplicates entries', () => {
+      vi.mocked(existsSync).mockReturnValue(false);
+      expect(
+        resolveImportValueCrossRegion('us-west-2,us-west-2,eu-west-1,us-west-2', 'us-east-1')
+      ).toEqual(['us-west-2', 'eu-west-1']);
+    });
+
+    it('falls back to env var when CLI value is empty / undefined', () => {
+      vi.mocked(existsSync).mockReturnValue(false);
+      process.env['CDKD_IMPORT_VALUE_CROSS_REGION'] = 'eu-west-1,ap-northeast-1';
+      expect(resolveImportValueCrossRegion(undefined, 'us-east-1')).toEqual([
+        'eu-west-1',
+        'ap-northeast-1',
+      ]);
+    });
+
+    it('falls back to cdk.json context.cdkd.importValueCrossRegion as a string', () => {
+      vi.mocked(existsSync).mockReturnValue(true);
+      vi.mocked(readFileSync).mockReturnValue(
+        JSON.stringify({
+          context: { cdkd: { importValueCrossRegion: 'us-west-2,eu-west-1' } },
+        })
+      );
+      expect(resolveImportValueCrossRegion(undefined, 'us-east-1')).toEqual([
+        'us-west-2',
+        'eu-west-1',
+      ]);
+    });
+
+    it('falls back to cdk.json context.cdkd.importValueCrossRegion as a JSON array', () => {
+      vi.mocked(existsSync).mockReturnValue(true);
+      vi.mocked(readFileSync).mockReturnValue(
+        JSON.stringify({
+          context: { cdkd: { importValueCrossRegion: ['us-west-2', 'eu-west-1'] } },
+        })
+      );
+      expect(resolveImportValueCrossRegion(undefined, 'us-east-1')).toEqual([
+        'us-west-2',
+        'eu-west-1',
+      ]);
+    });
+
+    it('CLI value beats env var beats cdk.json (resolution priority)', () => {
+      vi.mocked(existsSync).mockReturnValue(true);
+      vi.mocked(readFileSync).mockReturnValue(
+        JSON.stringify({ context: { cdkd: { importValueCrossRegion: 'ap-northeast-1' } } })
+      );
+      process.env['CDKD_IMPORT_VALUE_CROSS_REGION'] = 'eu-west-1';
+      expect(resolveImportValueCrossRegion('us-west-2', 'us-east-1')).toEqual(['us-west-2']);
+    });
+
+    it('rejects malformed region tokens at parse time (typo surfaces immediately)', () => {
+      vi.mocked(existsSync).mockReturnValue(false);
+      expect(() => resolveImportValueCrossRegion('US-WEST-2', 'us-east-1')).toThrow(
+        /Invalid --import-value-cross-region/
+      );
+      expect(() => resolveImportValueCrossRegion('not a region', 'us-east-1')).toThrow(
+        /Invalid --import-value-cross-region/
+      );
+      expect(() => resolveImportValueCrossRegion('us-west', 'us-east-1')).toThrow(
+        /Invalid --import-value-cross-region/
+      );
+    });
+
+    it('returns [] when cdk.json value is a non-string non-array (ignored, falls through)', () => {
+      vi.mocked(existsSync).mockReturnValue(true);
+      vi.mocked(readFileSync).mockReturnValue(
+        JSON.stringify({ context: { cdkd: { importValueCrossRegion: 42 } } })
+      );
+      expect(resolveImportValueCrossRegion(undefined, 'us-east-1')).toEqual([]);
     });
   });
 

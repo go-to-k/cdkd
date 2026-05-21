@@ -254,6 +254,114 @@ export function resolveSkipPrefix(opts: ResolveSkipPrefixOptions = {}): boolean 
 }
 
 /**
+ * Resolve the `--import-value-cross-region` option's effective value:
+ * the list of additional regions cdkd should consult when a same-region
+ * `Fn::ImportValue` resolve misses. Off by default — returns an empty
+ * array unless the user opted in via CLI flag / env / cdk.json.
+ *
+ * Resolution chain (highest wins, first non-empty wins):
+ *   1. `--import-value-cross-region <regions>` CLI flag — comma-separated
+ *      list of region names (e.g. `"us-west-2,eu-west-1"`). An empty
+ *      string or undefined falls through.
+ *   2. `CDKD_IMPORT_VALUE_CROSS_REGION` env var — same comma-separated
+ *      format.
+ *   3. `cdk.json context.cdkd.importValueCrossRegion` — either a string
+ *      (comma-separated) or a JSON array of strings (`["us-west-2",
+ *      "eu-west-1"]`).
+ *   4. Default → empty array.
+ *
+ * The consumer's own region (`currentRegion`) is stripped from the
+ * result — listing it would be a no-op since the same-region
+ * `exportIndex` already covers it, and the resolver's ambiguity check
+ * would false-fire on a self-hit. Whitespace is trimmed; empty entries
+ * are dropped; duplicates are de-deduplicated. Region tokens with
+ * obviously-malformed shapes (whitespace, comma, equals) throw at parse
+ * time so users see typos immediately.
+ *
+ * Same-account by construction — cdkd uses one S3 state bucket per
+ * account, so per-region index files all live under the same bucket
+ * key prefix. Cross-account `Fn::ImportValue` is a separate concern
+ * (tracked under [#449]).
+ */
+export function resolveImportValueCrossRegion(
+  cliValue: string | undefined,
+  currentRegion: string
+): string[] {
+  const raw = pickImportValueCrossRegionRaw(cliValue);
+  const parsed = parseRegionList(raw);
+
+  // Strip the consumer's own region — listing it would be a no-op
+  // (same-region index already covers it) and would trip the ambiguity
+  // check if it hit the same export the same-region scan already did.
+  return parsed.filter((r) => r !== currentRegion);
+}
+
+/**
+ * Internal helper: pull the unparsed string-or-array value off whichever
+ * source wins, or return `undefined` when nothing is configured. Split
+ * out so `parseRegionList` (which throws on malformed tokens) only
+ * fires when there is a value to parse.
+ */
+function pickImportValueCrossRegionRaw(
+  cliValue: string | undefined
+): string | string[] | undefined {
+  if (cliValue !== undefined && cliValue.trim().length > 0) {
+    return cliValue;
+  }
+  const envValue = process.env['CDKD_IMPORT_VALUE_CROSS_REGION'];
+  if (envValue !== undefined && envValue.trim().length > 0) {
+    return envValue;
+  }
+  const cdkJson = loadCdkJson();
+  const cdkdContext = cdkJson?.context?.['cdkd'] as Record<string, unknown> | undefined;
+  const v = cdkdContext?.['importValueCrossRegion'];
+  if (typeof v === 'string' && v.trim().length > 0) {
+    return v;
+  }
+  if (Array.isArray(v)) {
+    return v.filter((entry): entry is string => typeof entry === 'string');
+  }
+  return undefined;
+}
+
+/**
+ * Parse a region list — accepts either a comma-separated string or a
+ * pre-split array. Trims whitespace, drops empty entries, deduplicates,
+ * and validates that each token looks region-shaped (lowercase letters
+ * / digits / hyphens). Malformed tokens throw with a clear message.
+ */
+function parseRegionList(input: string | string[] | undefined): string[] {
+  if (input === undefined) return [];
+
+  const tokens = Array.isArray(input)
+    ? input
+    : input
+        .split(',')
+        .map((t) => t.trim())
+        .filter((t) => t.length > 0);
+
+  const seen = new Set<string>();
+  const result: string[] = [];
+  const REGION_REGEX = /^[a-z]{2,}-[a-z]+-\d+$/;
+  for (const tokenRaw of tokens) {
+    const token = tokenRaw.trim();
+    if (token.length === 0) continue;
+    if (!REGION_REGEX.test(token)) {
+      throw new Error(
+        `Invalid --import-value-cross-region entry "${token}": expected an AWS ` +
+          `region name like "us-west-2" or "eu-west-1" (lowercase letters / ` +
+          `digits / hyphens). Pass a comma-separated list (e.g. ` +
+          `"us-west-2,eu-west-1") or a JSON array in cdk.json.`
+      );
+    }
+    if (seen.has(token)) continue;
+    seen.add(token);
+    result.push(token);
+  }
+  return result;
+}
+
+/**
  * Resolve the --state-bucket option from CLI, cdk.json context, or environment
  *
  * Priority: CLI option > CDKD_STATE_BUCKET env > cdk.json context.cdkd.stateBucket

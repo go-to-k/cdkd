@@ -208,6 +208,15 @@ export class DeployEngine {
    */
   private exportIndexStore: ExportIndexStore | undefined;
   /**
+   * Opt-in cross-region fallback indexes for `Fn::ImportValue` (closes
+   * the same-region-only gap on multi-region CDK apps). Off by default
+   * — populated from the deploy CLI's `--import-value-cross-region`
+   * flag / env / cdk.json. Region -> per-region `ExportIndexStore`.
+   * The resolver consults these only when the same-region
+   * `exportIndexStore` AND state.json scan both miss.
+   */
+  private crossRegionExportIndexes: Map<string, ExportIndexStore> | undefined;
+  /**
    * Per-deploy-session bag the resolver pushes resolved
    * `Fn::ImportValue` entries into. Reset at the start of each
    * `deploy()` call and persisted to `newState.imports` at the end.
@@ -229,7 +238,8 @@ export class DeployEngine {
     providerRegistry: ProviderRegistry,
     options: DeployEngineOptions = {},
     stackRegion: string,
-    exportIndexStore?: ExportIndexStore
+    exportIndexStore?: ExportIndexStore,
+    crossRegionExportIndexes?: Map<string, ExportIndexStore>
   ) {
     this.stateBackend = stateBackend;
     this.lockManager = lockManager;
@@ -239,6 +249,7 @@ export class DeployEngine {
     this.options = options;
     this.stackRegion = stackRegion;
     this.exportIndexStore = exportIndexStore;
+    this.crossRegionExportIndexes = crossRegionExportIndexes;
     this.resolver = new IntrinsicFunctionResolver(stackRegion);
     this.options.concurrency = options.concurrency ?? 10;
     this.options.dryRun = options.dryRun ?? false;
@@ -294,6 +305,10 @@ export class DeployEngine {
       stateBackend: this.stateBackend,
       stackName,
       ...(this.exportIndexStore && { exportIndex: this.exportIndexStore }),
+      ...(this.crossRegionExportIndexes &&
+        this.crossRegionExportIndexes.size > 0 && {
+          crossRegionExportIndexes: this.crossRegionExportIndexes,
+        }),
       recordedImports: this.recordedImports,
     };
   }

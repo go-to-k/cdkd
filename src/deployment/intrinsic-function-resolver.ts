@@ -45,6 +45,30 @@ export interface ResolverContext {
    */
   exportIndex?: ExportIndexStore;
   /**
+   * Optional opt-in **cross-region** fallback exports indexes for
+   * `Fn::ImportValue` resolution. When the same-region `exportIndex`
+   * AND state.json scan both miss, the resolver consults each entry
+   * here in turn (region -> per-region `ExportIndexStore`).
+   *
+   * Off by default — CloudFormation's `Fn::ImportValue` is same-region
+   * by construction, and cdkd does not silently diverge. Users opt in
+   * via `--import-value-cross-region <regions>` /
+   * `CDKD_IMPORT_VALUE_CROSS_REGION` / `cdk.json
+   * context.cdkd.importValueCrossRegion`. The consumer's region is
+   * NEVER present in this map (the deploy CLI strips it) — the entries
+   * represent regions OTHER than the consumer's.
+   *
+   * Ambiguity policy: if more than one configured region resolves the
+   * same export name, the resolver throws with a clear message naming
+   * each region. Users disambiguate by removing the duplicate from the
+   * list or by switching to `Fn::GetStackOutput` (which encodes the
+   * region explicitly).
+   *
+   * See [docs/cross-stack-references.md](../../docs/cross-stack-references.md)
+   * "Cross-region `Fn::ImportValue` (opt-in)" for the design and trade-offs.
+   */
+  crossRegionExportIndexes?: Map<string, ExportIndexStore>;
+  /**
    * Bag for the resolver to push every successful `Fn::ImportValue`
    * resolution into. The deploy engine reads this after resource
    * provisioning and persists it to the consumer's `state.imports`
@@ -1441,9 +1465,63 @@ export class IntrinsicFunctionResolver {
       }
     }
 
+    // Cross-region fallback (opt-in, off by default). See ResolverContext
+    // .crossRegionExportIndexes docstring for the user-facing flow.
+    if (context.crossRegionExportIndexes && context.crossRegionExportIndexes.size > 0) {
+      const crossHits: Array<{
+        region: string;
+        producerStack: string;
+        producerRegion: string;
+        value: unknown;
+      }> = [];
+      for (const [region, regionIndex] of context.crossRegionExportIndexes) {
+        try {
+          const entry = await regionIndex.lookup(exportName);
+          if (entry && (!context.stackName || entry.producerStack !== context.stackName)) {
+            crossHits.push({
+              region,
+              producerStack: entry.producerStack,
+              producerRegion: entry.producerRegion,
+              value: entry.value,
+            });
+          }
+        } catch (err) {
+          this.logger.warn(
+            `Cross-region exports index lookup failed for region '${region}', export '${exportName}': ${err instanceof Error ? err.message : String(err)}; skipping this region`
+          );
+        }
+      }
+
+      if (crossHits.length === 1) {
+        const hit = crossHits[0]!;
+        this.logger.info(
+          `Resolved Fn::ImportValue: ${exportName} = ${JSON.stringify(hit.value)} ` +
+            `(from cross-region index: ${hit.producerStack} / ${hit.producerRegion})`
+        );
+        this.recordImport(context, exportName, hit.producerStack, hit.producerRegion);
+        return hit.value;
+      }
+
+      if (crossHits.length > 1) {
+        const offenders = crossHits
+          .map((h) => `  - region '${h.region}': stack '${h.producerStack}'`)
+          .join('\n');
+        throw new Error(
+          `Fn::ImportValue: export '${exportName}' is ambiguous — resolved in ` +
+            `${crossHits.length} cross-region indexes:\n${offenders}\n` +
+            `cdkd refuses to pick one silently. Remove the duplicate from ` +
+            `--import-value-cross-region, or switch to Fn::GetStackOutput ` +
+            `(which encodes the producer region explicitly).`
+        );
+      }
+    }
+
+    const crossRegionHint = context.crossRegionExportIndexes
+      ? ` Cross-region fallback enabled for [${[...context.crossRegionExportIndexes.keys()].join(', ')}] but no match found there either.`
+      : ` (Same-region only — pass --import-value-cross-region <regions> to enable cross-region fallback.)`;
     throw new Error(
       `Fn::ImportValue: export '${exportName}' not found in any stack. ` +
-        `Searched ${allStacks.length} state record(s). ` +
+        `Searched ${allStacks.length} state record(s).${crossRegionHint} ` +
         `Make sure the exporting stack has been deployed and the Output has an Export.Name property.`
     );
   }

@@ -349,6 +349,17 @@ producer stays deletable independently of consumers. Use it when you
 intentionally want decoupled lifecycles (cross-region / cross-stage /
 staging environments).
 
+`Fn::ImportValue` is **same-region by default** (matches CloudFormation).
+For multi-region apps where a consumer in one region needs to import
+from a producer in another, opt in via
+`cdkd deploy --import-value-cross-region us-west-2,eu-west-1`
+(equivalent: `CDKD_IMPORT_VALUE_CROSS_REGION` env var or
+`cdk.json context.cdkd.importValueCrossRegion`). Off by default —
+cdkd does not silently diverge from CFn semantics. Same-account only;
+ambiguous exports (resolved in two configured regions) fail with a
+clear error pointing at `Fn::GetStackOutput` as the region-explicit
+alternative.
+
 A persistent per-region exports index at
 `s3://{state-bucket}/cdkd/_index/{region}/exports.json` makes
 `Fn::ImportValue` resolution O(1) at scale (200-stack environments

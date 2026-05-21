@@ -589,6 +589,20 @@ export const deployOptions = [
     '-e, --exclusively',
     'Only deploy requested stacks, do not include dependencies'
   ).default(false),
+  new Option(
+    '--import-value-cross-region <regions>',
+    'Opt in to resolving Fn::ImportValue across multiple regions in the same ' +
+      'AWS account. Pass a comma-separated list of AWS regions (e.g. ' +
+      '"us-west-2,eu-west-1"). When a same-region resolve misses, cdkd ' +
+      "consults each listed region's exports index in turn. If two listed " +
+      'regions publish the same export name the resolve fails with an ' +
+      'ambiguity error — switch to Fn::GetStackOutput (region-explicit) or ' +
+      'remove the duplicate to disambiguate. Off by default — CloudFormation ' +
+      "Fn::ImportValue is same-region by construction and cdkd doesn't " +
+      'silently diverge. Equivalent: CDKD_IMPORT_VALUE_CROSS_REGION env var ' +
+      'and cdk.json context.cdkd.importValueCrossRegion: [...]. Same-account ' +
+      'only (cross-account is tracked separately).'
+  ),
   ...resourceTimeoutOptions,
 ];
 

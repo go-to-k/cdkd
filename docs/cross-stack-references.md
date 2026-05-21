@@ -370,6 +370,97 @@ path and is dominated by AWS-side resource deletion latency anyway.
 
 ---
 
+## Cross-region `Fn::ImportValue` (opt-in)
+
+`Fn::ImportValue` is **same-region by construction** on CloudFormation,
+and cdkd preserves that as the default. The per-region exports index
+file lives at `s3://{bucket}/cdkd/_index/{region}/exports.json` — one
+file per region, with the consumer's deploy region picking which file
+the resolver consults.
+
+A multi-region CDK app where the consumer lives in `us-east-1` but the
+producer is deployed to `us-west-2` therefore fails by default: the
+consumer's `us-east-1` index has no entry for the export name, and the
+fallback state.json scan also stays region-scoped. The user gets a
+clear "export not found" error pointing at the same-region constraint.
+
+For users who deliberately want this cdkd-specific extension, the
+deploy CLI accepts an opt-in flag that lists additional regions to
+consult on miss:
+
+```bash
+cdkd deploy --import-value-cross-region us-west-2,eu-west-1
+```
+
+Equivalent inputs:
+
+- Env var: `CDKD_IMPORT_VALUE_CROSS_REGION=us-west-2,eu-west-1`
+- `cdk.json`:
+  - String form: `"context": { "cdkd": { "importValueCrossRegion": "us-west-2,eu-west-1" } }`
+  - Array form: `"context": { "cdkd": { "importValueCrossRegion": ["us-west-2", "eu-west-1"] } }`
+
+Resolution priority (highest wins): CLI flag > env var > `cdk.json`
+> default `[]` (off).
+
+### Behavior when opted in
+
+The resolver tries the **same-region index + state.json scan first**.
+Only when both miss does it consult each configured foreign region's
+index in turn. The consumer's own region is stripped from the resolved
+list at parse time (listing it would be a no-op and would trip the
+ambiguity check below).
+
+### Ambiguity policy
+
+If more than one configured foreign region resolves the same export
+name, the resolver throws with a clear message naming each region and
+producer stack, and points at two valid resolutions:
+
+1. Remove the duplicate from `--import-value-cross-region` to pick a
+   single source of truth.
+2. Switch the consumer to `Fn::GetStackOutput`, which encodes the
+   producer region explicitly and is the recommended pattern for
+   cross-region wiring in general.
+
+cdkd refuses to pick a region silently — picking the "first match"
+silently across resolver invocations would produce non-deterministic
+behavior depending on Map iteration order, and picking the same one
+deterministically would still surprise the second consumer.
+
+### Defensive degradation
+
+A foreign-region index lookup that throws (IAM `AccessDenied`,
+malformed file, transient S3 error, etc.) is logged at WARN and the
+resolver keeps walking the remaining regions — same shape as the
+same-region `lookup` error path. The user sees a clear log line per
+skipped region so they can diagnose the root cause without losing the
+deploy.
+
+### Strong-reference bookkeeping across regions
+
+The producer's actual region is recorded in `state.imports[].sourceRegion`
+on the consumer (schema v4 unchanged — the field already existed). So
+when the user runs `cdkd destroy` on the producer, the strong-reference
+scan finds the consumer's `imports[]` entry whose `sourceRegion`
+points at the producer's region, regardless of whether the original
+deploy resolved same-region or cross-region.
+
+### Scope and limitations
+
+- **Same-account only.** Both regions must live in the same AWS
+  account (cdkd uses one S3 state bucket per account). Cross-account
+  `Fn::ImportValue` is tracked under [#449] and out of scope here.
+- **Off by default.** Opting in is a deliberate departure from CFn —
+  team-mates running the same CDK app must opt in independently.
+- **Same-account ambiguity is per-deploy.** The resolver evaluates
+  each `Fn::ImportValue` independently, so two consumers in the same
+  app can resolve the same export name from two regions if they have
+  different `--import-value-cross-region` lists — the ambiguity check
+  only fires within ONE resolve. This matches the per-stack
+  configuration semantics for every other deploy option.
+
+[#449]: https://github.com/go-to-k/cdkd/issues/449
+
 ## Comparison with CloudFormation
 
 | Feature | CFn | cdkd (this design) |
@@ -379,12 +470,13 @@ path and is dominated by AWS-side resource deletion latency anyway.
 | `--force` to override strong-ref | ✗ | ✗ (deliberately) |
 | Index for fast `ListExports` lookup | ✓ (internal) | ✓ (`_index/{region}/exports.json`) |
 | Weak cross-stack reference alternative | ✗ | ✓ (`Fn::GetStackOutput`) |
-| Cross-region exports | ✗ (same region only) | ✓ (`Fn::GetStackOutput`) |
+| Cross-region weak reference | ✗ (same region only) | ✓ (`Fn::GetStackOutput`) |
+| Cross-region `Fn::ImportValue` | ✗ | ✓ (opt-in via `--import-value-cross-region`) |
 | Cross-account exports | via shared bootstrap | ✗ (not yet implemented) |
 
-The departures from CFn (`Fn::GetStackOutput` weak-ref, cross-region)
-are cdkd-specific extensions. The strong-reference behavior is
-faithful to CFn.
+The departures from CFn (`Fn::GetStackOutput` weak-ref, opt-in
+cross-region `Fn::ImportValue`) are cdkd-specific extensions. The
+strong-reference behavior is faithful to CFn.
 
 ---
 

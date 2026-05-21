@@ -32,6 +32,7 @@ import { withSkipPrefix } from '../../provisioning/resource-name.js';
 import {
   resolveApp,
   resolveCaptureObservedState,
+  resolveImportValueCrossRegion,
   resolveSkipPrefix,
   resolveStateBucketWithDefault,
   warnDeprecatedNoPrefixCliFlag,
@@ -69,6 +70,7 @@ async function deployCommand(
     yes: boolean;
     verbose: boolean;
     context?: string[];
+    importValueCrossRegion?: string;
     resourceWarnAfter?: ResourceTimeoutOption;
     resourceTimeout?: ResourceTimeoutOption;
   }
@@ -193,6 +195,35 @@ async function deployCommand(
     region,
     preflightStateBackend
   );
+
+  // Opt-in cross-region `Fn::ImportValue` resolution (#451). Off by
+  // default — same-region behavior is unchanged when no flag / env /
+  // cdk.json entry is set. When opted in, build one
+  // `ExportIndexStore` per additional region (each pointing at the
+  // same state bucket but a per-region index key) and thread the map
+  // into every per-stack `DeployEngine`. The consumer's own region is
+  // stripped at `resolveImportValueCrossRegion` time so this map only
+  // contains foreign regions.
+  const crossRegionList = resolveImportValueCrossRegion(options.importValueCrossRegion, region);
+  const crossRegionExportIndexes = new Map<string, ExportIndexStore>();
+  if (crossRegionList.length > 0) {
+    for (const r of crossRegionList) {
+      crossRegionExportIndexes.set(
+        r,
+        new ExportIndexStore(
+          awsClients.s3,
+          stateBucket,
+          options.statePrefix,
+          r,
+          preflightStateBackend
+        )
+      );
+    }
+    logger.info(
+      `Fn::ImportValue cross-region fallback enabled for: ${crossRegionList.join(', ')} ` +
+        `(opt-in via --import-value-cross-region / CDKD_IMPORT_VALUE_CROSS_REGION / cdk.json)`
+    );
+  }
 
   let deployInterrupted = false;
   const topLevelSigintHandler = () => {
@@ -446,7 +477,8 @@ async function deployCommand(
             }),
           },
           stackRegion,
-          exportIndexStore
+          exportIndexStore,
+          crossRegionExportIndexes.size > 0 ? crossRegionExportIndexes : undefined
         );
 
         const deployResult = await stackDeployEngine.deploy(

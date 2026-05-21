@@ -138,6 +138,63 @@ route DependsOn doesn't constrain delete-time correctness (Lambda
 hyperplane ENI release is the actual destroy bottleneck and is
 handled separately by `lambda-vpc-deps.ts`).
 
+## `--import-value-cross-region <regions>`
+
+Opt in to resolving `Fn::ImportValue` across multiple regions in the
+same AWS account. **Off by default** — CloudFormation's `Fn::ImportValue`
+is same-region by construction and cdkd does not silently diverge.
+
+```bash
+# CLI flag (comma-separated list of AWS regions)
+cdkd deploy --import-value-cross-region us-west-2,eu-west-1
+
+# Env var equivalent
+CDKD_IMPORT_VALUE_CROSS_REGION=us-west-2,eu-west-1 cdkd deploy
+
+# cdk.json equivalent (string or JSON array form)
+# "context": { "cdkd": { "importValueCrossRegion": "us-west-2,eu-west-1" } }
+# "context": { "cdkd": { "importValueCrossRegion": ["us-west-2", "eu-west-1"] } }
+```
+
+Resolution priority (highest wins): CLI flag > env var > `cdk.json` >
+default empty (no cross-region scan). The consumer's own region is
+stripped from the resolved list automatically.
+
+### Resolution order
+
+The resolver always tries the **same-region** path first (the
+persistent per-region exports index, then the per-stack `state.json`
+scan in the same region). Only on a miss does it consult each
+configured foreign region's index in turn. Same-region resolves
+short-circuit cross-region entirely.
+
+### Ambiguity policy
+
+If two or more configured foreign regions resolve the same export
+name, cdkd refuses with an error naming each region + producer stack.
+Two valid resolutions:
+
+1. Remove the duplicate from `--import-value-cross-region` to pick a
+   single source of truth.
+2. Switch the consumer to `Fn::GetStackOutput`, which encodes the
+   producer region explicitly.
+
+cdkd does NOT pick a region silently — that would produce
+non-deterministic behavior depending on Map iteration order.
+
+### Scope
+
+- **Same-account only.** Cross-account `Fn::ImportValue` is a
+  separate concern.
+- **`cdkd deploy` only.** `cdkd diff` / `cdkd destroy` continue to
+  read state directly and are unaffected.
+- **Same-region behavior unchanged when the flag is off** — the
+  resolver short-circuits at the same-region scan exactly like the
+  pre-flag code path.
+
+See [docs/cross-stack-references.md](cross-stack-references.md)
+"Cross-region `Fn::ImportValue` (opt-in)" for the full design.
+
 ## `--no-capture-observed-state`
 
 `cdkd deploy` records each resource's AWS-current properties into

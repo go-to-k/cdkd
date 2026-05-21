@@ -8,6 +8,7 @@
     "--exclusively",
     "--force",
     "--image-build-concurrency",
+    "--import-value-cross-region",
     "--no-aggressive-vpc-parallel",
     "--no-capture-observed-state",
     "--no-rollback",
@@ -38,12 +39,15 @@
     {
       "flag": "--force",
       "integs": [
+        "deletion-policy-retain",
+        "diff-intrinsic-target-change",
         "docdb-neptune",
         "drift-revert",
         "drift-revert-vpc",
         "dynamodb-globaltable",
         "export",
         "import-value-strong-ref",
+        "local-invoke-buildkit",
         "local-invoke-from-state",
         "local-run-task-from-state",
         "migrate-from-cfn",
@@ -53,6 +57,8 @@
     {
       "flag": "--output",
       "integs": [
+        "deletion-policy-retain",
+        "diff-intrinsic-target-change",
         "docdb-neptune",
         "drift-revert",
         "drift-revert-vpc",
@@ -68,6 +74,8 @@
     {
       "flag": "--region",
       "integs": [
+        "deletion-policy-retain",
+        "diff-intrinsic-target-change",
         "dynamodb-globaltable",
         "export",
         "import-value-strong-ref",
@@ -98,6 +106,8 @@
     {
       "flag": "--state-bucket",
       "integs": [
+        "deletion-policy-retain",
+        "diff-intrinsic-target-change",
         "docdb-neptune",
         "drift-revert",
         "drift-revert-vpc",
@@ -123,6 +133,7 @@
     {
       "flag": "--yes",
       "integs": [
+        "diff-intrinsic-target-change",
         "export",
         "migrate-from-cfn"
       ]
@@ -135,6 +146,7 @@
     "--context",
     "--exclusively",
     "--image-build-concurrency",
+    "--import-value-cross-region",
     "--no-aggressive-vpc-parallel",
     "--no-capture-observed-state",
     "--no-rollback",
@@ -151,6 +163,7 @@
     "--add-host",
     "--all",
     "--bucket",
+    "--build-arg",
     "--cfn-stack-name",
     "--container-host",
     "--content-type",
@@ -166,11 +179,14 @@
     "--key",
     "--max-items",
     "--migrate-from-cloudformation",
+    "--mount",
+    "--name",
     "--no-build",
     "--no-pull",
     "--nologo",
     "--parameter",
     "--password-stdin",
+    "--policy-name",
     "--port",
     "--prefer-offline",
     "--pull",
@@ -183,12 +199,15 @@
     "--resource-id",
     "--revert",
     "--rm",
+    "--role-name",
     "--scalable-dimension",
+    "--secret",
     "--service-namespace",
     "--show-toplevel",
     "--silent",
     "--stack-name",
     "--table-name",
+    "--target",
     "--username"
   ]
 }
