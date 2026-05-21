@@ -3,20 +3,33 @@ import { beforeEach, describe, expect, it, vi } from 'vite-plus/test';
 // STS + ECR client mocks. The hoisted captures let each test set the
 // canned response per-call.
 const stsSendMock = vi.fn();
+const stsConstructorMock = vi.fn();
 vi.mock('@aws-sdk/client-sts', () => ({
-  STSClient: vi.fn().mockImplementation(() => ({
-    send: stsSendMock,
-    destroy: vi.fn(),
-  })),
-  GetCallerIdentityCommand: vi.fn().mockImplementation((input: unknown) => ({ input })),
+  STSClient: vi.fn().mockImplementation((config: unknown) => {
+    stsConstructorMock(config);
+    return {
+      send: stsSendMock,
+      destroy: vi.fn(),
+    };
+  }),
+  GetCallerIdentityCommand: vi
+    .fn()
+    .mockImplementation((input: unknown) => ({ _kind: 'GetCallerIdentity', input })),
+  AssumeRoleCommand: vi
+    .fn()
+    .mockImplementation((input: unknown) => ({ _kind: 'AssumeRole', input })),
 }));
 
 const ecrSendMock = vi.fn();
+const ecrConstructorMock = vi.fn();
 vi.mock('@aws-sdk/client-ecr', () => ({
-  ECRClient: vi.fn().mockImplementation(() => ({
-    send: ecrSendMock,
-    destroy: vi.fn(),
-  })),
+  ECRClient: vi.fn().mockImplementation((config: unknown) => {
+    ecrConstructorMock(config);
+    return {
+      send: ecrSendMock,
+      destroy: vi.fn(),
+    };
+  }),
   GetAuthorizationTokenCommand: vi.fn().mockImplementation((input: unknown) => ({ input })),
 }));
 
@@ -92,7 +105,9 @@ describe('parseEcrUri', () => {
 describe('pullEcrImage', () => {
   beforeEach(() => {
     stsSendMock.mockReset();
+    stsConstructorMock.mockReset();
     ecrSendMock.mockReset();
+    ecrConstructorMock.mockReset();
     runDockerMock.mockReset();
     runDockerMock.mockResolvedValue({ stdout: '', stderr: '' });
     spawnForegroundMock.mockReset();
@@ -106,53 +121,7 @@ describe('pullEcrImage', () => {
     ).rejects.toBeInstanceOf(LocalInvokeBuildError);
   });
 
-  it('rejects cross-account URIs with a clear deferred-PR message', async () => {
-    stsSendMock.mockResolvedValue({ Account: '111111111111' });
-    await expect(
-      pullEcrImage('999999999999.dkr.ecr.us-east-1.amazonaws.com/r:t', {
-        skipPull: false,
-      })
-    ).rejects.toThrow(/Cross-account ECR pull/);
-  });
-
-  it('rejects cross-region URIs when caller region is set', async () => {
-    stsSendMock.mockResolvedValue({ Account: '111111111111' });
-    process.env['AWS_REGION'] = 'us-west-2';
-    await expect(
-      pullEcrImage('111111111111.dkr.ecr.us-east-1.amazonaws.com/r:t', {
-        skipPull: false,
-      })
-    ).rejects.toThrow(/Cross-region ECR pull/);
-  });
-
-  it('rejects cross-region URIs when --region option is set (env unset)', async () => {
-    // Closes the gap where `--region us-west-2` was silently ignored
-    // because the caller-region check only consulted env vars.
-    stsSendMock.mockResolvedValue({ Account: '111111111111' });
-    delete process.env['AWS_REGION'];
-    delete process.env['AWS_DEFAULT_REGION'];
-    await expect(
-      pullEcrImage('111111111111.dkr.ecr.us-east-1.amazonaws.com/r:t', {
-        skipPull: false,
-        region: 'us-west-2',
-      })
-    ).rejects.toThrow(/Cross-region ECR pull/);
-  });
-
-  it('explicit region option wins over AWS_REGION env var', async () => {
-    // AWS_REGION says same-region (us-east-1) but the caller passed
-    // --region us-west-2 → the option wins and we surface cross-region.
-    stsSendMock.mockResolvedValue({ Account: '111111111111' });
-    process.env['AWS_REGION'] = 'us-east-1';
-    await expect(
-      pullEcrImage('111111111111.dkr.ecr.us-east-1.amazonaws.com/r:t', {
-        skipPull: false,
-        region: 'us-west-2',
-      })
-    ).rejects.toThrow(/Cross-region ECR pull/);
-  });
-
-  it('happy path: same-acct/region issues docker login + pull', async () => {
+  it('same-account / same-region: fast path, no AssumeRole, docker login + pull issued', async () => {
     stsSendMock.mockResolvedValue({ Account: '111111111111' });
     ecrSendMock.mockResolvedValue({
       authorizationData: [
@@ -167,10 +136,18 @@ describe('pullEcrImage', () => {
       skipPull: false,
     });
     expect(result).toBe('111111111111.dkr.ecr.us-east-1.amazonaws.com/r:t');
-    expect(stsSendMock).toHaveBeenCalled();
+
+    // STS was called once (GetCallerIdentity) — no AssumeRole.
+    expect(stsSendMock).toHaveBeenCalledTimes(1);
+    expect(stsSendMock.mock.calls[0]![0]._kind).toBe('GetCallerIdentity');
+
+    // ECR client was built without explicit credentials (default chain).
+    expect(ecrConstructorMock).toHaveBeenCalledTimes(1);
+    const ecrConfig = ecrConstructorMock.mock.calls[0]![0] as { region?: string; credentials?: unknown };
+    expect(ecrConfig.region).toBe('us-east-1');
+    expect(ecrConfig.credentials).toBeUndefined();
+
     expect(ecrSendMock).toHaveBeenCalled();
-    // `docker login` goes through runDockerStreaming; `docker pull` goes
-    // through spawn-inherit-stdio (`runForeground`).
     const loginCall = runDockerMock.mock.calls.find(
       ([args]) => Array.isArray(args) && args[0] === 'login'
     );
@@ -178,6 +155,197 @@ describe('pullEcrImage', () => {
     expect(spawnForegroundMock).toHaveBeenCalledTimes(1);
     const [, pullArgs] = spawnForegroundMock.mock.calls[0] as [string, string[]];
     expect(pullArgs[0]).toBe('pull');
+  });
+
+  it('cross-region: uses image region for ECR client, no longer hard-errors', async () => {
+    // Pre-#455 cdkd hard-errored here. Post-#455 it proceeds and builds
+    // the ECR client for the URI's region (not the caller's region).
+    stsSendMock.mockResolvedValue({ Account: '111111111111' });
+    ecrSendMock.mockResolvedValue({
+      authorizationData: [
+        {
+          authorizationToken: Buffer.from('AWS:dummypw').toString('base64'),
+          proxyEndpoint: 'https://111111111111.dkr.ecr.us-east-1.amazonaws.com',
+        },
+      ],
+    });
+    process.env['AWS_REGION'] = 'us-west-2';
+    const result = await pullEcrImage('111111111111.dkr.ecr.us-east-1.amazonaws.com/r:t', {
+      skipPull: false,
+    });
+    expect(result).toBe('111111111111.dkr.ecr.us-east-1.amazonaws.com/r:t');
+
+    // The ECR client was built for the URI's region, NOT the caller's.
+    const ecrConfig = ecrConstructorMock.mock.calls[0]![0] as { region?: string };
+    expect(ecrConfig.region).toBe('us-east-1');
+  });
+
+  it('cross-account WITHOUT --ecr-role-arn: proceeds with caller creds + info log', async () => {
+    // Pre-#455 cdkd hard-errored. Post-#455 cdkd proceeds with the
+    // caller's credentials — works when the target ECR repository's
+    // resource policy grants cross-account access directly. If AWS
+    // rejects with AccessDenied the user is pointed at --ecr-role-arn.
+    stsSendMock.mockResolvedValue({ Account: '111111111111' });
+    ecrSendMock.mockResolvedValue({
+      authorizationData: [
+        {
+          authorizationToken: Buffer.from('AWS:dummypw').toString('base64'),
+          proxyEndpoint: 'https://999999999999.dkr.ecr.us-east-1.amazonaws.com',
+        },
+      ],
+    });
+    process.env['AWS_REGION'] = 'us-east-1';
+    const result = await pullEcrImage('999999999999.dkr.ecr.us-east-1.amazonaws.com/r:t', {
+      skipPull: false,
+    });
+    expect(result).toBe('999999999999.dkr.ecr.us-east-1.amazonaws.com/r:t');
+
+    // No AssumeRole was issued.
+    const assumeRoleCalls = stsSendMock.mock.calls.filter((c) => c[0]._kind === 'AssumeRole');
+    expect(assumeRoleCalls).toHaveLength(0);
+
+    // ECR client built without explicit credentials (default chain).
+    const ecrConfig = ecrConstructorMock.mock.calls[0]![0] as { credentials?: unknown };
+    expect(ecrConfig.credentials).toBeUndefined();
+  });
+
+  it('cross-account WITH --ecr-role-arn: issues AssumeRole + threads creds into ECR client', async () => {
+    // GetCallerIdentity returns caller account; AssumeRole returns
+    // temp creds for the target account.
+    stsSendMock
+      .mockResolvedValueOnce({ Account: '111111111111' })
+      .mockResolvedValueOnce({
+        Credentials: {
+          AccessKeyId: 'ASIAEXAMPLE',
+          SecretAccessKey: 'examplesecret',
+          SessionToken: 'examplesessiontoken',
+          Expiration: new Date('2030-01-01T00:00:00Z'),
+        },
+      });
+    ecrSendMock.mockResolvedValue({
+      authorizationData: [
+        {
+          authorizationToken: Buffer.from('AWS:dummypw').toString('base64'),
+          proxyEndpoint: 'https://999999999999.dkr.ecr.us-east-1.amazonaws.com',
+        },
+      ],
+    });
+    process.env['AWS_REGION'] = 'us-east-1';
+    const result = await pullEcrImage('999999999999.dkr.ecr.us-east-1.amazonaws.com/r:t', {
+      skipPull: false,
+      ecrRoleArn: 'arn:aws:iam::999999999999:role/CrossAccountEcrPull',
+    });
+    expect(result).toBe('999999999999.dkr.ecr.us-east-1.amazonaws.com/r:t');
+
+    // Two STS calls: GetCallerIdentity then AssumeRole.
+    expect(stsSendMock).toHaveBeenCalledTimes(2);
+    expect(stsSendMock.mock.calls[0]![0]._kind).toBe('GetCallerIdentity');
+    expect(stsSendMock.mock.calls[1]![0]._kind).toBe('AssumeRole');
+    const assumeRoleInput = stsSendMock.mock.calls[1]![0].input;
+    expect(assumeRoleInput.RoleArn).toBe('arn:aws:iam::999999999999:role/CrossAccountEcrPull');
+    expect(assumeRoleInput.RoleSessionName).toMatch(/^cdkd-local-ecr-/);
+
+    // ECR client built with the temp creds.
+    const ecrConfig = ecrConstructorMock.mock.calls[0]![0] as {
+      credentials?: { accessKeyId?: string; sessionToken?: string };
+      region?: string;
+    };
+    expect(ecrConfig.credentials).toBeDefined();
+    expect(ecrConfig.credentials?.accessKeyId).toBe('ASIAEXAMPLE');
+    expect(ecrConfig.credentials?.sessionToken).toBe('examplesessiontoken');
+    expect(ecrConfig.region).toBe('us-east-1');
+  });
+
+  it('same-account WITH --ecr-role-arn: still issues AssumeRole (explicit opt-in)', async () => {
+    // Per design: an explicit `--ecr-role-arn` always takes effect even
+    // on same-account pulls — useful when the caller's identity does
+    // not have ECR permissions but the role does.
+    stsSendMock
+      .mockResolvedValueOnce({ Account: '111111111111' })
+      .mockResolvedValueOnce({
+        Credentials: {
+          AccessKeyId: 'ASIAEXAMPLE',
+          SecretAccessKey: 'examplesecret',
+          SessionToken: 'examplesessiontoken',
+        },
+      });
+    ecrSendMock.mockResolvedValue({
+      authorizationData: [
+        {
+          authorizationToken: Buffer.from('AWS:dummypw').toString('base64'),
+          proxyEndpoint: 'https://111111111111.dkr.ecr.us-east-1.amazonaws.com',
+        },
+      ],
+    });
+    process.env['AWS_REGION'] = 'us-east-1';
+    await pullEcrImage('111111111111.dkr.ecr.us-east-1.amazonaws.com/r:t', {
+      skipPull: false,
+      ecrRoleArn: 'arn:aws:iam::111111111111:role/EcrPull',
+    });
+    const assumeRoleCalls = stsSendMock.mock.calls.filter((c) => c[0]._kind === 'AssumeRole');
+    expect(assumeRoleCalls).toHaveLength(1);
+  });
+
+  it('cross-region + cross-account + --ecr-role-arn: full STS hop + region-correct ECR client', async () => {
+    stsSendMock
+      .mockResolvedValueOnce({ Account: '111111111111' })
+      .mockResolvedValueOnce({
+        Credentials: {
+          AccessKeyId: 'ASIAEXAMPLE',
+          SecretAccessKey: 'examplesecret',
+          SessionToken: 'examplesessiontoken',
+        },
+      });
+    ecrSendMock.mockResolvedValue({
+      authorizationData: [
+        {
+          authorizationToken: Buffer.from('AWS:dummypw').toString('base64'),
+          proxyEndpoint: 'https://999999999999.dkr.ecr.eu-west-1.amazonaws.com',
+        },
+      ],
+    });
+    process.env['AWS_REGION'] = 'us-east-1';
+    await pullEcrImage('999999999999.dkr.ecr.eu-west-1.amazonaws.com/r:t', {
+      skipPull: false,
+      ecrRoleArn: 'arn:aws:iam::999999999999:role/CrossAccountEcrPull',
+    });
+    const ecrConfig = ecrConstructorMock.mock.calls[0]![0] as {
+      region?: string;
+      credentials?: { accessKeyId?: string };
+    };
+    expect(ecrConfig.region).toBe('eu-west-1');
+    expect(ecrConfig.credentials?.accessKeyId).toBe('ASIAEXAMPLE');
+  });
+
+  it('--ecr-role-arn AssumeRole failure surfaces actionable LocalInvokeBuildError', async () => {
+    stsSendMock
+      .mockResolvedValueOnce({ Account: '111111111111' })
+      .mockRejectedValueOnce(new Error('AccessDenied: not authorized to AssumeRole'));
+    await expect(
+      pullEcrImage('999999999999.dkr.ecr.us-east-1.amazonaws.com/r:t', {
+        skipPull: false,
+        ecrRoleArn: 'arn:aws:iam::999999999999:role/Bad',
+      })
+    ).rejects.toThrow(/Failed to assume role .* for ECR pull.*AccessDenied/);
+  });
+
+  it('--ecr-role-arn AssumeRole returns no Credentials: clear error', async () => {
+    stsSendMock
+      .mockResolvedValueOnce({ Account: '111111111111' })
+      .mockResolvedValueOnce({ Credentials: undefined });
+    await expect(
+      pullEcrImage('999999999999.dkr.ecr.us-east-1.amazonaws.com/r:t', {
+        skipPull: false,
+        ecrRoleArn: 'arn:aws:iam::999999999999:role/Missing',
+      })
+    ).rejects.toThrow(/AssumeRole.*returned no usable credentials/);
+  });
+
+  it('GetCallerIdentity returns no Account: clear error', async () => {
+    stsSendMock.mockResolvedValue({ Account: undefined });
+    await expect(
+      pullEcrImage('111111111111.dkr.ecr.us-east-1.amazonaws.com/r:t', { skipPull: false })
+    ).rejects.toThrow(/STS GetCallerIdentity returned no Account/);
   });
 
   it('skipPull: verifies image is in local cache via docker image inspect', async () => {
@@ -194,5 +362,43 @@ describe('pullEcrImage', () => {
     expect(inspectCall).toBeDefined();
     // No `docker pull` — skipped.
     expect(spawnForegroundMock).not.toHaveBeenCalled();
+  });
+
+  it('skipPull + cross-account + --ecr-role-arn: no AssumeRole (skipPull short-circuits before login)', async () => {
+    // skipPull only needs to verify the image is in the local cache —
+    // no ECR auth required, so no STS round-trip beyond GetCallerIdentity.
+    stsSendMock.mockResolvedValue({ Account: '111111111111' });
+    await pullEcrImage('999999999999.dkr.ecr.us-east-1.amazonaws.com/r:t', {
+      skipPull: true,
+      ecrRoleArn: 'arn:aws:iam::999999999999:role/EcrPull',
+    });
+    const assumeRoleCalls = stsSendMock.mock.calls.filter((c) => c[0]._kind === 'AssumeRole');
+    expect(assumeRoleCalls).toHaveLength(0);
+    expect(ecrConstructorMock).not.toHaveBeenCalled();
+  });
+
+  it('explicit region option seeds the STS client (not the ECR client)', async () => {
+    // The `region` option in EcrPullOptions is the CALLER's region (used
+    // to seed STS), not the target ECR region (always from the URI).
+    stsSendMock.mockResolvedValue({ Account: '111111111111' });
+    ecrSendMock.mockResolvedValue({
+      authorizationData: [
+        {
+          authorizationToken: Buffer.from('AWS:dummypw').toString('base64'),
+          proxyEndpoint: 'https://111111111111.dkr.ecr.eu-west-1.amazonaws.com',
+        },
+      ],
+    });
+    await pullEcrImage('111111111111.dkr.ecr.eu-west-1.amazonaws.com/r:t', {
+      skipPull: false,
+      region: 'us-east-1',
+    });
+    // STS got the caller's region.
+    expect(stsConstructorMock).toHaveBeenCalled();
+    const stsConfig = stsConstructorMock.mock.calls[0]![0] as { region?: string };
+    expect(stsConfig.region).toBe('us-east-1');
+    // ECR got the URI's region.
+    const ecrConfig = ecrConstructorMock.mock.calls[0]![0] as { region?: string };
+    expect(ecrConfig.region).toBe('eu-west-1');
   });
 });

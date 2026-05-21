@@ -106,6 +106,17 @@ interface LocalInvokeOptions {
    */
   assumeRole?: string | boolean;
   /**
+   * Optional role ARN passed to `pullEcrImage` when the IMAGE ECR-pull
+   * path fires (no matching cdk.out asset and `Code.ImageUri` is an ECR
+   * URI). Used to authenticate against a centralized / cross-account
+   * registry whose `ecr:GetAuthorizationToken` permission is granted to
+   * the assumed role rather than the developer's identity. Closes #455.
+   * When omitted, cdkd uses the default credential chain (which is
+   * sufficient for same-account pulls AND for cross-account pulls when
+   * the ECR repository's resource policy grants the caller directly).
+   */
+  ecrRoleArn?: string;
+  /**
    * PR 2: when set, cdkd reads its S3 state for the target stack and
    * substitutes intrinsic-valued env vars (`Ref` / `Fn::GetAtt` /
    * `Fn::Sub`) with the deployed physical IDs / attributes. Closes the
@@ -742,6 +753,7 @@ export async function resolveContainerImagePlan(
     imageRef = await pullEcrImage(lambda.imageUri, {
       skipPull: options.pull === false,
       ...(options.region !== undefined && { region: options.region }),
+      ...(options.ecrRoleArn !== undefined && { ecrRoleArn: options.ecrRoleArn }),
     });
   }
 
@@ -1189,6 +1201,16 @@ export function createLocalCommand(): Command {
           '(3) `--no-assume-role` explicitly opts out (forces dev creds even with --from-state). ' +
           "Off by default — when omitted, the developer's shell credentials are forwarded " +
           'unchanged (SAM-compatible default). STS failures degrade to a warn + dev-creds fallback.'
+      )
+    )
+    .addOption(
+      new Option(
+        '--ecr-role-arn <arn>',
+        'Role ARN to assume before authenticating against ECR for cross-account / centralized ' +
+          'registries (#455). Issues sts:AssumeRole via the default credential chain and uses the ' +
+          'temporary credentials for ecr:GetAuthorizationToken + docker pull. Required when the ' +
+          'caller does not have direct cross-account access to the target repository. ' +
+          'Same-account / same-region pulls do not need this flag.'
       )
     )
     .addOption(

@@ -1,5 +1,5 @@
 import { ECRClient, GetAuthorizationTokenCommand } from '@aws-sdk/client-ecr';
-import { GetCallerIdentityCommand, STSClient } from '@aws-sdk/client-sts';
+import { AssumeRoleCommand, GetCallerIdentityCommand, STSClient } from '@aws-sdk/client-sts';
 import {
   formatDockerLoginError,
   runDockerForeground,
@@ -9,16 +9,26 @@ import { LocalInvokeBuildError } from '../utils/error-handler.js';
 import { getLogger } from '../utils/logger.js';
 
 /**
- * ECR pull fallback for `cdkd local invoke` against deployed container
- * Lambdas (PR 5, D5.2). When `Code.ImageUri` resolves to an ECR URI but
+ * ECR pull fallback for `cdkd local invoke` / `cdkd local start-api` /
+ * `cdkd local run-task`. When the image URI resolves to an ECR repo but
  * doesn't match any cdk.out asset (typical when invoking a stack
- * deployed elsewhere), cdkd attempts `docker pull` against the same
- * account/region.
+ * deployed elsewhere or sharing a centralized registry), cdkd
+ * authenticates against the target registry and runs `docker pull`.
  *
- * **Same-account / same-region only**:
- *   - Cross-account requires AssumeRole + a different ECR client. Hard
- *     error with a pointer at the deferred follow-up PR.
- *   - Cross-region requires a region-aware ECR client. Same hard error.
+ * **Cross-account / cross-region** (#455):
+ *   - Same-account, same-region: fast path. No STS hop. The default
+ *     credential chain is used directly for `ecr:GetAuthorizationToken`.
+ *   - `ecrRoleArn` is provided: `sts:AssumeRole` is issued via the
+ *     default credential chain to obtain temporary credentials for the
+ *     target account. The resulting credentials authenticate the ECR
+ *     client (regardless of region — the ECR client is built for the
+ *     URI's region, which can differ from the caller's profile region).
+ *   - Cross-account, NO `ecrRoleArn`: cdkd falls through to the
+ *     default credential chain. This works when the caller has been
+ *     granted cross-account `ecr:GetAuthorizationToken` +
+ *     `ecr:BatchGetImage` permissions on the target repository via an
+ *     IAM policy; otherwise AWS rejects the call with `AccessDenied`
+ *     and the user is pointed at `--ecr-role-arn`.
  *
  * The `--no-pull` semantics (C3 in the design doc):
  *   - When NOT set: `ecrLogin` + `docker pull <uri>`.
@@ -58,21 +68,37 @@ export interface EcrPullOptions {
   /** When true, skip `docker pull` and require the image be in the local cache. */
   skipPull: boolean;
   /**
-   * Caller's region for the same-region check. When set (typical: the
-   * CLI plumbs `--region` through here), this wins over `AWS_REGION` /
-   * `AWS_DEFAULT_REGION` env vars; when unset, env-var fallback applies.
-   * Closes the gap where a user-supplied `--region` was silently ignored
-   * by the cross-region guard.
+   * Caller's region (typically the CLI's resolved `--region`). Used only
+   * to seed the STS client when `ecrRoleArn` is set — the ECR client is
+   * always built for the URI's region (since cross-region pull is now
+   * supported). When unset, env-var fallback applies via the SDK default
+   * chain.
    */
   region?: string;
+  /**
+   * Optional role ARN to assume before authenticating against ECR
+   * (#455). When set, `sts:AssumeRole` is issued via the default
+   * credential chain and the resulting temporary credentials are used
+   * for the ECR client. Required for cross-account pull when the
+   * caller's identity does not already have `ecr:GetAuthorizationToken`
+   * / `ecr:BatchGetImage` on the target repository.
+   */
+  ecrRoleArn?: string;
+}
+
+/** STS-issued temporary credentials shape used to authenticate the ECR client. */
+interface TempCredentials {
+  accessKeyId: string;
+  secretAccessKey: string;
+  sessionToken: string;
 }
 
 /**
- * Pull (or verify locally cached) a container Lambda image from ECR.
+ * Pull (or verify locally cached) a container image from ECR.
  *
- * Verifies same-account / same-region against the caller's STS identity
- * before issuing any docker command. Returns the image URI the caller
- * should pass to `docker run` (same as the input — no rewriting).
+ * Auto-detects cross-account from `STS:GetCallerIdentity` and assumes
+ * the supplied role when set. Returns the image URI the caller should
+ * pass to `docker run` (same as the input — no rewriting).
  */
 export async function pullEcrImage(imageUri: string, options: EcrPullOptions): Promise<string> {
   const logger = getLogger().child('ecr-puller');
@@ -85,10 +111,13 @@ export async function pullEcrImage(imageUri: string, options: EcrPullOptions): P
     );
   }
 
-  // Verify same-account / same-region. Cross-account / cross-region is a
-  // documented v1 limitation — surface a single clear error so users
-  // can route around it (deploy locally instead).
-  const sts = new STSClient({ region: parsed.region });
+  // Look up the caller's identity once. Used both to log cross-account
+  // info AND as the STS-AssumeRole source region (when ecrRoleArn is
+  // set). Failures here are fatal — without an identity we cannot even
+  // tell whether this is a cross-account pull, let alone authenticate.
+  const callerRegion =
+    options.region ?? process.env['AWS_REGION'] ?? process.env['AWS_DEFAULT_REGION'];
+  const sts = new STSClient({ ...(callerRegion && { region: callerRegion }) });
   let callerAccount: string;
   try {
     const identity = await sts.send(new GetCallerIdentityCommand({}));
@@ -102,32 +131,52 @@ export async function pullEcrImage(imageUri: string, options: EcrPullOptions): P
     sts.destroy();
   }
 
-  if (callerAccount !== parsed.accountId) {
-    throw new LocalInvokeBuildError(
-      `Image URI '${imageUri}' is in account ${parsed.accountId}, but the caller is ${callerAccount}. ` +
-        'Cross-account ECR pull is not supported in cdkd local invoke v1 — deferred to a follow-up PR. ' +
-        'Workaround: assume a role in the target account before invoking, or build the image locally with `cdkd local invoke -a cdk.out` (no ECR pull).'
-    );
-  }
+  const crossAccount = callerAccount !== parsed.accountId;
+  const crossRegion = callerRegion !== undefined && callerRegion !== parsed.region;
 
-  const callerRegion =
-    options.region ?? process.env['AWS_REGION'] ?? process.env['AWS_DEFAULT_REGION'];
-  if (callerRegion && callerRegion !== parsed.region) {
-    throw new LocalInvokeBuildError(
-      `Image URI '${imageUri}' is in region ${parsed.region}, but the caller's region is ${callerRegion}. ` +
-        'Cross-region ECR pull is not supported in cdkd local invoke v1 — deferred to a follow-up PR. ' +
-        `Workaround: re-run with AWS_REGION=${parsed.region} set, or build the image locally with -a cdk.out.`
-    );
-  }
-
+  // `--no-pull` short-circuits before any further ECR authentication —
+  // verifying the local cache needs no AWS calls. Doing this BEFORE the
+  // optional AssumeRole hop avoids a wasted STS round-trip when the user
+  // pre-pulled the image manually.
   if (options.skipPull) {
     logger.info(`Skipping ECR pull (--no-pull). Verifying ${imageUri} is in local cache...`);
     await verifyImageInLocalCache(imageUri);
     return imageUri;
   }
 
-  // Authenticate + pull.
-  const ecr = new ECRClient({ region: parsed.region });
+  // Optionally assume a role to gain credentials for the target account.
+  // When `ecrRoleArn` is not set but the pull is cross-account, we
+  // proceed with the caller's credentials anyway — IAM resource policies
+  // on the ECR repository can grant cross-account access without
+  // requiring AssumeRole. AWS surfaces a clear `AccessDenied` if the
+  // grant is missing, and the caller can re-run with `--ecr-role-arn`.
+  let assumed: TempCredentials | undefined;
+  if (options.ecrRoleArn) {
+    assumed = await assumeRoleForEcr(options.ecrRoleArn, callerRegion, logger);
+    logger.info(
+      `Assumed role ${options.ecrRoleArn} for ECR pull (account=${parsed.accountId}, region=${parsed.region})`
+    );
+  } else if (crossAccount) {
+    logger.info(
+      `Cross-account ECR pull: image account ${parsed.accountId} != caller ${callerAccount}. ` +
+        "Using the caller's credentials; pass --ecr-role-arn <arn> if AWS rejects with AccessDenied."
+    );
+  }
+
+  if (crossRegion) {
+    logger.info(
+      `Cross-region ECR pull: image region ${parsed.region} != caller ${callerRegion ?? '(unset)'}. ` +
+        'Authenticating against the image region directly.'
+    );
+  }
+
+  // Authenticate against the URI's region (NOT the caller region).
+  // When `assumed` is set, the ECR client uses those temporary
+  // credentials; otherwise the default credential chain.
+  const ecr = new ECRClient({
+    region: parsed.region,
+    ...(assumed && { credentials: assumed }),
+  });
   try {
     await ecrLogin(ecr, parsed.accountId, parsed.region);
   } finally {
@@ -146,10 +195,54 @@ export async function pullEcrImage(imageUri: string, options: EcrPullOptions): P
 }
 
 /**
- * Authenticate the local docker daemon against the same-account ECR
- * registry. Mirrors `DockerAssetPublisher.ecrLogin` but stays in this
- * module so the local-invoke path doesn't depend on the publisher's
- * larger surface area.
+ * Assume the supplied role via the SDK default credential chain and
+ * return the resulting temporary credentials. The STS client is built
+ * with the caller's profile region (or unset) — STS is a global
+ * service so the region is informational, but threading it through
+ * mirrors the convention used by `src/utils/role-arn.ts`.
+ */
+async function assumeRoleForEcr(
+  roleArn: string,
+  callerRegion: string | undefined,
+  logger: ReturnType<ReturnType<typeof getLogger>['child']>
+): Promise<TempCredentials> {
+  logger.debug(`Assuming role ${roleArn} for ECR pull...`);
+  const sts = new STSClient({ ...(callerRegion && { region: callerRegion }) });
+  try {
+    const response = await sts.send(
+      new AssumeRoleCommand({
+        RoleArn: roleArn,
+        RoleSessionName: `cdkd-local-ecr-${Date.now()}`,
+        DurationSeconds: 3600,
+      })
+    );
+    const creds = response.Credentials;
+    if (!creds || !creds.AccessKeyId || !creds.SecretAccessKey || !creds.SessionToken) {
+      throw new LocalInvokeBuildError(
+        `AssumeRole(${roleArn}) returned no usable credentials. Verify the role's trust policy allows your identity to assume it.`
+      );
+    }
+    return {
+      accessKeyId: creds.AccessKeyId,
+      secretAccessKey: creds.SecretAccessKey,
+      sessionToken: creds.SessionToken,
+    };
+  } catch (err) {
+    if (err instanceof LocalInvokeBuildError) throw err;
+    const reason = err instanceof Error ? err.message : String(err);
+    throw new LocalInvokeBuildError(
+      `Failed to assume role ${roleArn} for ECR pull: ${reason}. ` +
+        "Verify the role exists and its trust policy permits the caller's identity to assume it."
+    );
+  } finally {
+    sts.destroy();
+  }
+}
+
+/**
+ * Authenticate the local docker daemon against the target ECR registry.
+ * Mirrors `DockerAssetPublisher.ecrLogin` but stays in this module so the
+ * local-invoke path doesn't depend on the publisher's larger surface area.
  */
 async function ecrLogin(client: ECRClient, accountId: string, region: string): Promise<void> {
   const logger = getLogger().child('ecr-puller');

@@ -80,7 +80,14 @@ function's local `Dockerfile` from `cdk.out` (via the asset manifest
 keyed off the `:<hash>` suffix on `Code.ImageUri`) and runs `docker build`
 locally, then `docker run` against the resulting image. When no asset
 matches (typically: invoking a stack deployed elsewhere), cdkd falls back
-to `docker pull` from ECR — **same-account / same-region only** in v1.
+to `docker pull` from ECR. **Cross-account / cross-region pull is
+supported**: cdkd auto-detects cross-account from `sts:GetCallerIdentity`,
+builds the ECR client for the URI's region, and (when
+`--ecr-role-arn <arn>` is passed) issues `sts:AssumeRole` to pick up
+permissions in the target account. Without `--ecr-role-arn`, cdkd
+falls through to the caller's credentials — works when the target ECR
+repository's resource policy grants the caller directly (AWS surfaces
+`AccessDenied` if missing, with a hint at the flag).
 `Architectures: [x86_64]` (default) and `[arm64]` are honored via
 `--platform linux/amd64` / `linux/arm64` on both the build and the run.
 
@@ -110,6 +117,7 @@ in the resolved stack so the user can copy/paste a valid one.
 | `--env-vars <file>` | — | JSON env-var overrides, SAM-compatible shape: `{"LogicalId":{"KEY":"VALUE"}}` plus an optional top-level `"Parameters"` block applied to every invoke. `null` clears a key. |
 | `--no-pull` | off | Skip `docker pull`. Semantics differ by code path: **ZIP Lambdas** — skip pulling the public Lambda base image. **Container Lambdas, local-build path** — no-op (docker build's default does not refresh the FROM cache). **Container Lambdas, ECR-pull fallback** — skip `docker pull` AND error if the image is not in the local cache (re-run without `--no-pull` or pre-pull manually). |
 | `--no-build` | off | Skip `docker build` on the **Container Lambdas, local-build path** (`Code.ImageUri`). Requires the deterministic `cdkd-local-invoke-<hash>` tag to already be in the local docker registry from a prior `cdkd local invoke` (or manual `docker build`); errors clearly when missing. **No-op for ZIP Lambdas** (no docker build runs there) AND for the **Container Lambdas, ECR-pull fallback** (use `--no-pull` to control that path). Compatible with `--no-pull`. |
+| `--ecr-role-arn <arn>` | — | Role ARN to assume before authenticating against ECR on the **Container Lambdas, ECR-pull fallback** path. Issues `sts:AssumeRole` via the default credential chain and uses the resulting temp creds for `ecr:GetAuthorizationToken` + `docker pull`. Required for cross-account pulls when the caller's identity does not already have direct cross-account access. Same-account / same-region pulls do not need this flag; cross-account without the flag falls back to the caller's credentials (succeeds when an IAM resource policy on the ECR repo grants the caller directly, else AWS surfaces `AccessDenied`). No-op when `--no-pull` is set. |
 | `--debug-port <port>` | off | Set `NODE_OPTIONS=--inspect-brk=0.0.0.0:<port>` and publish the port; attach a Node debugger to step through the handler. |
 | `--container-host <host>` | `127.0.0.1` | Host to bind the RIE port to. |
 | `--assume-role [arn]` | off | STS-assume the deployed function's execution role and forward the resulting temp credentials to the container, so the handler runs under the deployed role's narrow permissions instead of the developer's typically-admin shell credentials. Three forms: (1) `--assume-role <arn>` assumes the explicit ARN (precedence wins); (2) `--assume-role` (bare) auto-resolves the function's `Properties.Role` from cdkd state (requires `--from-state`); (3) `--no-assume-role` explicitly opts out (forces dev creds even with `--from-state`). Off by default — when omitted, `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` / `AWS_SESSION_TOKEN` / `AWS_REGION` are passed through unchanged (SAM-compatible default). STS failures degrade to a warn + dev-creds fallback. |
@@ -278,9 +286,14 @@ entry up in the stack's asset manifest (`cdk.out/<stack>.assets.json`,
 `docker build` against the recorded build context. When the lookup
 misses AND the manifest contains exactly one Docker asset, that single
 asset is used (single-asset fallback — covers digest-pinned URIs). When
-both miss, cdkd falls back to **ECR pull** — same-account / same-region
-only; cross-account / cross-region pulls hard-error with a pointer at
-the deferred follow-up PR. `ImageConfig.Command` becomes the docker run
+both miss, cdkd falls back to **ECR pull** with cross-account /
+cross-region support: cdkd builds the ECR client for the URI's region
+and (when `--ecr-role-arn <arn>` is passed) issues `sts:AssumeRole` to
+gain credentials in the target account before authenticating to ECR
+and pulling. Without `--ecr-role-arn`, cdkd uses the caller's
+credentials directly (works when the ECR repo's resource policy grants
+the caller, else AWS surfaces `AccessDenied` with a hint at the flag).
+`ImageConfig.Command` becomes the docker run
 CMD; `ImageConfig.EntryPoint` (when set) becomes `--entrypoint <first>`
 plus the rest as positional args; `ImageConfig.WorkingDirectory` becomes
 `--workdir`. When `EntryPoint` is unset (the common case), the image's
@@ -302,7 +315,6 @@ default entrypoint stays in charge — for AWS Lambda base images that's
 | --- | --- |
 | Java / Go / Ruby / .NET runtimes | Future PRs |
 | Cross-account / cross-region / pre-existing-ARN Lambda Layers | Future PR (same-stack `AWS::Lambda::LayerVersion` refs are supported in v1; literal ARNs hard-error — see "Lambda Layers" section above) |
-| Cross-account / cross-region ECR pull for container Lambdas | Future PR (same-account / same-region only in v1) |
 | `EphemeralStorage` mapping for container Lambdas | Future PR (Docker `--tmpfs /tmp:size=Nm`) |
 | Cross-stack `Fn::ImportValue` / `Fn::GetStackOutput` in `--from-state` | Future PR |
 | `Fn::Select` / `Fn::Split` / `Fn::If` etc. in `--from-state` | Future PR (warn + drop today) |
@@ -728,6 +740,7 @@ resolves to the synthesized L1 child (`MyStack/MyService/TaskDef/Resource`).
 | `--from-state` | off | Load cdkd S3 state for the target stack and substitute deployed values into (a) `Fn::Sub` / `Fn::GetAtt` ECR image URIs that reference a same-stack `AWS::ECR::Repository`, AND (b) intrinsic-valued `ContainerDefinitions[].Environment[].Value` + `Secrets[].ValueFrom` entries (`Ref` / `Fn::GetAtt` / `Fn::Sub` / `Fn::Join`). Without this flag, env / secret intrinsics are dropped with a per-key warning (matching `cdkd local invoke --from-state` semantics). See "ECR image resolution" and "Env / Secrets substitution" below. Off by default. The stack must have been deployed via `cdkd deploy` first. |
 | `--stack-region <region>` | unset | Region of the cdkd state record to read (used with `--from-state` when the same stack name has state in multiple regions). |
 | `--no-pull` | off | Skip `docker pull` for every container image and the metadata sidecar. |
+| `--ecr-role-arn <arn>` | — | Role ARN to assume before authenticating against ECR for cross-account / centralized registry pulls. Issues `sts:AssumeRole` via the default credential chain and uses the resulting temp creds for `ecr:GetAuthorizationToken` + `docker pull` on every container whose `Image` resolves to an `<acct>.dkr.ecr.<region>.amazonaws.com/...` URI. Required when the caller's identity does not already have cross-account access to the target repository. Same-account / same-region pulls do not need this flag. No-op when `--no-pull` is set. |
 | `--platform <platform>` | inferred from `RuntimePlatform.CpuArchitecture` | `linux/amd64` or `linux/arm64`. Threaded into every container's `docker run --platform`. |
 | `--keep-running` | off | Don't `docker rm -f` user containers on task exit (network + sidecar are still torn down). Use when you want to `docker exec` into a stopped container for post-mortems. |
 | `--detach` | off | Start the containers and return without streaming logs or auto-tearing them down. Useful in CI smoke tests; caller manages container lifecycle. |
@@ -759,7 +772,7 @@ container still reach public AWS endpoints via the developer network.
 `ContainerDefinitions[].Image` is parsed in three tiers:
 
 1. **Public images** — `public.ecr.aws/...`, `docker.io/...`, `nginx:latest`, etc. → plain `docker pull` (subject to `--no-pull`).
-2. **Direct ECR URIs** — `<account>.dkr.ecr.<region>.amazonaws.com/<repo>:<tag>` (flat string, no intrinsics) → `pullEcrImage` (STS check + ECR auth + `docker pull`). Same-account / same-region only; cross-account / cross-region hard-errors with a `--role-arn` / `AWS_REGION` workaround pointer.
+2. **Direct ECR URIs** — `<account>.dkr.ecr.<region>.amazonaws.com/<repo>:<tag>` (flat string, no intrinsics) → `pullEcrImage` (STS check + ECR auth + `docker pull`). Cross-account / cross-region supported: cdkd builds the ECR client for the URI's region and (when `--ecr-role-arn <arn>` is passed) issues `sts:AssumeRole` to gain credentials in the target account. Without `--ecr-role-arn`, cdkd falls through to the caller's credentials (succeeds when an IAM resource policy grants the caller direct cross-account access).
 3. **CDK-asset images** (`ContainerImage.fromAsset` / `DockerImageAsset`) → `cdk.out/<stack>.assets.json` lookup → `docker build` via the shared `src/assets/docker-build.ts` helper, tagged `cdkd-local-run-task-<asset-hash>`.
 
 For `Fn::Sub` / `Fn::GetAtt` shapes pointing at AWS pseudo parameters or a same-stack ECR repository (the typical `ContainerImage.fromEcrRepository(repo)` synthesis), two additional resolution tiers fire **before** the URI is fed to tier 2:
