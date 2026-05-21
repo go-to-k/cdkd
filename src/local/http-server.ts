@@ -1,4 +1,7 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
+import { createServer as createHttpsServer } from 'node:https';
+import type { TLSSocket, PeerCertificate, DetailedPeerCertificate } from 'node:tls';
+import { readFileSync } from 'node:fs';
 import { getLogger } from '../utils/logger.js';
 import { invokeRie } from './rie-client.js';
 import {
@@ -106,6 +109,39 @@ export interface StartApiServerOptions {
    * server is not started through the CLI bootstrap).
    */
   jwksWarnedUrls?: Set<string>;
+  /**
+   * Optional mTLS configuration. When set, the server uses
+   * `https.createServer({requestCert: true, rejectUnauthorized: true,
+   * ca, cert, key})` instead of plain `http.createServer`, and only
+   * accepts connections whose client certificate chains back to the CA
+   * bundle. The verified peer certificate is surfaced on the event under
+   * `requestContext.identity.clientCert` (REST v1) / `requestContext.authentication.clientCert`
+   * (HTTP v2). When unset, the server uses plain HTTP (the pre-PR
+   * behavior).
+   *
+   * mTLS is enabled in `cdkd local start-api` only when ALL THREE
+   * `--mtls-truststore`, `--mtls-cert`, and `--mtls-key` flags are set;
+   * partial flag sets are rejected at the CLI parse layer before this
+   * function is called.
+   */
+  mtls?: MtlsServerConfig;
+}
+
+/**
+ * Server-side mTLS configuration. Carries the PEM-encoded materials the
+ * TLS handshake needs:
+ *
+ *   - `caPem`: trust-store bundle. Client certs must chain to one of
+ *     these CAs for the handshake to succeed. Node's `tls` module does
+ *     the chain verification at handshake time.
+ *   - `certPem`: server certificate (self-signed is fine for local dev
+ *     — clients should use `--insecure` or trust the cert).
+ *   - `keyPem`: server private key matching `certPem`.
+ */
+export interface MtlsServerConfig {
+  caPem: Buffer;
+  certPem: Buffer;
+  keyPem: Buffer;
 }
 
 export interface StartedApiServer {
@@ -113,7 +149,12 @@ export interface StartedApiServer {
   port: number;
   /** The host the server is bound to. */
   host: string;
-  /** Underlying Node http.Server (for `close()` plumbing). */
+  /**
+   * `'https'` when mTLS is active, otherwise `'http'`. Used by the
+   * CLI's listening banner so users see the right URL scheme.
+   */
+  scheme: 'http' | 'https';
+  /** Underlying Node http.Server or https.Server (for `close()` plumbing). */
   server: Server;
   /**
    * Drain in-flight requests, close the server. Resolves once the
@@ -143,7 +184,15 @@ export async function startApiServer(opts: StartApiServerOptions): Promise<Start
   // the latest value. Hot reload mutates `currentState` via
   // `setServerState`; the server itself is never reconstructed.
   let currentState: ServerState = opts.state;
-  const server = createServer((req, res) => {
+
+  // Branch on mTLS: when configured, use `https.createServer` with
+  // `requestCert: true` + `rejectUnauthorized: true` so the TLS
+  // handshake enforces the client-cert chain check against the CA
+  // bundle. Node's `tls` module rejects unknown-CA / self-signed /
+  // missing client certs at handshake time — no per-request code path
+  // is needed. The verified peer cert is exposed via the TLS socket
+  // and surfaced on the event under `requestContext.identity.clientCert`.
+  const requestHandler = (req: IncomingMessage, res: ServerResponse) => {
     handleRequest(req, res, currentState, opts).catch((err) => {
       logger.error(
         `Unhandled request error: ${err instanceof Error ? (err.stack ?? err.message) : String(err)}`
@@ -152,7 +201,20 @@ export async function startApiServer(opts: StartApiServerOptions): Promise<Start
         writeError(res, 502);
       }
     });
-  });
+  };
+  const server: Server = opts.mtls
+    ? (createHttpsServer(
+        {
+          requestCert: true,
+          rejectUnauthorized: true,
+          ca: opts.mtls.caPem,
+          cert: opts.mtls.certPem,
+          key: opts.mtls.keyPem,
+        },
+        requestHandler
+      ) as unknown as Server)
+    : createServer(requestHandler);
+  const scheme: 'http' | 'https' = opts.mtls ? 'https' : 'http';
 
   // Disable Nagle's algorithm for snappier curl interactions; trivial
   // win on a local server.
@@ -178,6 +240,7 @@ export async function startApiServer(opts: StartApiServerOptions): Promise<Start
   return {
     port: actualPort,
     host: actualHost,
+    scheme,
     server,
     close: async (): Promise<void> => {
       if (closed) return;
@@ -273,12 +336,24 @@ async function handleRequest(
   );
   const authorizer = matchedEntry?.authorizer;
 
+  // Extract the verified client certificate when mTLS is active. By the
+  // time `handleRequest` runs, the TLS handshake has already passed
+  // (Node's `tls` module rejects unknown-CA / self-signed / missing
+  // client certs BEFORE the request reaches us — see
+  // `rejectUnauthorized: true` on the https.createServer above), so any
+  // cert we see here is structurally valid against the supplied CA
+  // bundle. We surface it on the event under
+  // `requestContext.identity.clientCert` (REST v1 shape) so handlers
+  // can extract identity claims from the cert without re-doing the
+  // chain check.
+  const clientCert = opts.mtls ? extractClientCert(req) : undefined;
   const snapshot: HttpRequestSnapshot = {
     method,
     rawUrl,
     headers: collectHeaders(req),
     body: bodyBuf,
     ...(req.socket.remoteAddress !== undefined && { sourceIp: req.socket.remoteAddress }),
+    ...(clientCert && { clientCert }),
   };
   const matchCtx: MatchedRouteContext = {
     route: match.route,
@@ -926,6 +1001,162 @@ function writeMockCorsPreflight(
     res.setHeader(name, value);
   }
   res.end();
+}
+
+/**
+ * Extract the verified client certificate from a request's TLS socket.
+ *
+ * Pre-conditions (load-bearing — caller MUST gate on `opts.mtls`):
+ *   - The server was started with `https.createServer({requestCert: true,
+ *     rejectUnauthorized: true, ...})`, so the TLS handshake has
+ *     already rejected unknown-CA / self-signed / missing-cert clients
+ *     by the time `handleRequest` runs. Any peer cert we see here is
+ *     structurally valid against the supplied CA bundle — we do NOT
+ *     re-verify in code.
+ *
+ * Returns `undefined` when the request was not over a TLS socket (the
+ * caller should NOT call this on plain-HTTP requests; the gate is the
+ * `opts.mtls` check in `handleRequest`).
+ *
+ * The returned shape is the AWS-canonical
+ * `requestContext.identity.clientCert` per
+ * https://docs.aws.amazon.com/apigateway/latest/developerguide/api-gateway-mutual-tls.html#api-gateway-mutual-tls-event-shape:
+ *
+ *   {
+ *     clientCertPem: "-----BEGIN CERTIFICATE-----\n...",
+ *     subjectDN:     "CN=client,O=example,C=US",
+ *     issuerDN:      "CN=My CA,O=example,C=US",
+ *     serialNumber:  "01:23:45:67:...",
+ *     validity:      { notBefore: "May 22 03:30:00 2026 GMT",
+ *                      notAfter:  "May 22 03:30:00 2027 GMT" }
+ *   }
+ *
+ * Exported for unit testing — the helper is pure-functional given a
+ * cert object and never touches the network.
+ */
+export function extractClientCert(
+  req: IncomingMessage
+): Record<string, unknown> | undefined {
+  const socket = req.socket as TLSSocket;
+  // Plain-HTTP socket guard: `getPeerCertificate` is the discriminator
+  // for TLSSocket vs net.Socket. We test for the method's presence
+  // rather than `socket instanceof TLSSocket` because the latter
+  // requires importing the runtime class (overkill for a type guard).
+  if (typeof socket.getPeerCertificate !== 'function') return undefined;
+  const cert = socket.getPeerCertificate(false);
+  return peerCertificateToAws(cert);
+}
+
+/**
+ * Convert Node's `PeerCertificate` object to the AWS-canonical
+ * `clientCert` event shape. Exported separately from
+ * {@link extractClientCert} so the conversion can be unit-tested
+ * against a synthetic cert object without a real TLS socket.
+ *
+ * Returns `undefined` when the cert is empty (`getPeerCertificate`
+ * returns `{}` when there is no peer cert). Otherwise emits every
+ * field defined by the AWS shape, falling back to `''` for missing
+ * subject / issuer DN segments so handlers do not need to null-check.
+ */
+export function peerCertificateToAws(
+  cert: PeerCertificate | DetailedPeerCertificate | Record<string, unknown> | undefined | null
+): Record<string, unknown> | undefined {
+  if (!cert || typeof cert !== 'object') return undefined;
+  // Node returns `{}` for an empty / missing cert; treat that as
+  // "no cert" rather than emitting a placeholder. The TLS handshake
+  // gate (rejectUnauthorized: true) should make this case unreachable
+  // when mTLS is configured correctly, but the guard keeps us safe
+  // against a misconfigured trust-store + cert combo.
+  if (Object.keys(cert).length === 0) return undefined;
+
+  const c = cert as Record<string, unknown>;
+  const subject = c['subject'];
+  const issuer = c['issuer'];
+  const raw = c['raw'];
+  const subjectDN = formatDN(subject);
+  const issuerDN = formatDN(issuer);
+  const serialNumber = typeof c['serialNumber'] === 'string' ? (c['serialNumber'] as string) : '';
+  const validity = {
+    notBefore: typeof c['valid_from'] === 'string' ? (c['valid_from'] as string) : '',
+    notAfter: typeof c['valid_to'] === 'string' ? (c['valid_to'] as string) : '',
+  };
+  // Node's PeerCertificate.raw is a Buffer holding the DER-encoded
+  // certificate. AWS exposes the PEM-encoded form; we emit PEM when we
+  // have the raw bytes (the common case) and fall back to an empty
+  // string when only the parsed metadata is available.
+  const clientCertPem = Buffer.isBuffer(raw) ? derBufferToPem(raw) : '';
+  return {
+    clientCertPem,
+    subjectDN,
+    issuerDN,
+    serialNumber,
+    validity,
+  };
+}
+
+/**
+ * Format a Node `subject` / `issuer` object (e.g.
+ * `{C: 'US', O: 'example', CN: 'client'}`) as the canonical
+ * comma-separated DN string AWS emits (`CN=client,O=example,C=US`).
+ *
+ * Ordering follows AWS / OpenSSL convention: CN first, then OU, O, L,
+ * ST, C. Fields the cert does not declare are skipped silently.
+ */
+function formatDN(dn: unknown): string {
+  if (!dn || typeof dn !== 'object') return '';
+  const obj = dn as Record<string, unknown>;
+  const order = ['CN', 'OU', 'O', 'L', 'ST', 'C'];
+  const parts: string[] = [];
+  for (const key of order) {
+    const v = obj[key];
+    if (typeof v === 'string' && v.length > 0) {
+      parts.push(`${key}=${v}`);
+    }
+  }
+  return parts.join(',');
+}
+
+/**
+ * Encode a DER-encoded certificate Buffer as PEM. We wrap the base64
+ * in 64-char-per-line segments the way `openssl x509` does so the
+ * round-trip looks like what AWS API Gateway emits.
+ */
+function derBufferToPem(der: Buffer): string {
+  const b64 = der.toString('base64');
+  const lines: string[] = [];
+  for (let i = 0; i < b64.length; i += 64) {
+    lines.push(b64.slice(i, i + 64));
+  }
+  return `-----BEGIN CERTIFICATE-----\n${lines.join('\n')}\n-----END CERTIFICATE-----\n`;
+}
+
+/**
+ * Read mTLS materials from disk. Each path is a PEM file. The function
+ * throws a wrapped error naming the offending path on `ENOENT` /
+ * permission failures so the CLI surfaces a clear error before the
+ * server starts.
+ *
+ * Exported for the CLI's resolve-then-construct flow + for unit tests.
+ */
+export function readMtlsMaterialsFromDisk(opts: {
+  truststorePath: string;
+  certPath: string;
+  keyPath: string;
+}): MtlsServerConfig {
+  return {
+    caPem: readPemOrThrow(opts.truststorePath, '--mtls-truststore'),
+    certPem: readPemOrThrow(opts.certPath, '--mtls-cert'),
+    keyPem: readPemOrThrow(opts.keyPath, '--mtls-key'),
+  };
+}
+
+function readPemOrThrow(path: string, flagName: string): Buffer {
+  try {
+    return readFileSync(path);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    throw new Error(`${flagName}: cannot read PEM file at '${path}': ${msg}`);
+  }
 }
 
 // Keep DiscoveredRoute import alive for downstream consumers reading

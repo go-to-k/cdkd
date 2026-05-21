@@ -39,8 +39,10 @@ import {
 } from '../../local/container-pool.js';
 import {
   startApiServer,
+  readMtlsMaterialsFromDisk,
   type ServerState,
   type StartedApiServer,
+  type MtlsServerConfig,
 } from '../../local/http-server.js';
 import {
   availableApiIdentifiers,
@@ -135,6 +137,17 @@ interface LocalStartApiOptions {
    * is set.
    */
   stackRegion?: string;
+  /**
+   * Path to a PEM-encoded CA bundle. Client certificates that don't
+   * chain to one of these CAs are rejected at the TLS handshake.
+   * mTLS is enabled when ALL THREE `--mtls-truststore` / `--mtls-cert` /
+   * `--mtls-key` flags are set; a partial set is a CLI-parse error.
+   */
+  mtlsTruststore?: string;
+  /** Server-side mTLS certificate (PEM). Self-signed is fine for local dev. */
+  mtlsCert?: string;
+  /** Server-side mTLS private key (PEM). Must match `--mtls-cert`. */
+  mtlsKey?: string;
 }
 
 /**
@@ -476,6 +489,20 @@ async function localStartApiCommand(
     throw new Error(`--port must be 0..65535 (got ${options.port}).`);
   }
 
+  // mTLS resolution: all-or-none. When any of the three flags is set,
+  // ALL THREE must be set — partial flag sets are rejected at CLI-parse
+  // time so the server never boots in a half-configured state. The TLS
+  // handshake itself (in `https.createServer({requestCert: true,
+  // rejectUnauthorized: true, ca, cert, key})`) enforces the
+  // client-cert chain check against the CA bundle — there is no
+  // per-request validation in cdkd's code path.
+  const mtlsConfig: MtlsServerConfig | undefined = resolveMtlsConfig(options);
+  if (mtlsConfig) {
+    logger.info(
+      'mTLS enabled: client certificates required (chain check against --mtls-truststore at TLS handshake).'
+    );
+  }
+
   // Issue #260: one HTTP server per API. Group the routes by API surface
   // (HTTP API logical id / REST API logical id / Function URL backing
   // Lambda) and launch one `startApiServer` per group. Each server gets
@@ -517,6 +544,7 @@ async function localStartApiCommand(
       state: groupState,
       rieTimeoutMs,
       host: options.host,
+      ...(mtlsConfig && { mtls: mtlsConfig }),
       // Increment per server; basePort=0 leaves every server on auto-alloc.
       port: basePort === 0 ? 0 : nextPort,
       authorizerCache,
@@ -537,10 +565,13 @@ async function localStartApiCommand(
   );
   // D8.4 — load-bearing: verify.sh greps for this exact prefix.
   // Emit one line per server so verify.sh / users can match each API to
-  // its port.
+  // its port. When mTLS is active, the scheme flips to `https://` and
+  // verify.sh / users have to pass `--cacert` + `--cert` + `--key` to
+  // curl; both schemes share the "Server listening on " prefix so the
+  // verify.sh marker scan is unchanged.
   for (const { group, server } of servers) {
     process.stdout.write(
-      `Server listening on http://${server.host}:${server.port}  (${group.displayName})\n`
+      `Server listening on ${server.scheme}://${server.host}:${server.port}  (${group.displayName})\n`
     );
   }
   process.stdout.write('^C to stop and clean up containers.\n');
@@ -1682,6 +1713,53 @@ function parseDebugPort(raw: string): number {
 }
 
 /**
+ * Resolve the mTLS configuration from CLI options. Returns `undefined`
+ * when none of the three `--mtls-*` flags is set (the server stays
+ * plain-HTTP). When any of the three is set, ALL THREE must be set —
+ * partial configurations are rejected at parse time so the server
+ * never boots in a half-configured state.
+ *
+ * Exported for unit testing.
+ */
+export function resolveMtlsConfig(
+  options: Pick<LocalStartApiOptions, 'mtlsTruststore' | 'mtlsCert' | 'mtlsKey'>
+): MtlsServerConfig | undefined {
+  const present: string[] = [];
+  const absent: string[] = [];
+  if (options.mtlsTruststore !== undefined && options.mtlsTruststore !== '') {
+    present.push('--mtls-truststore');
+  } else {
+    absent.push('--mtls-truststore');
+  }
+  if (options.mtlsCert !== undefined && options.mtlsCert !== '') {
+    present.push('--mtls-cert');
+  } else {
+    absent.push('--mtls-cert');
+  }
+  if (options.mtlsKey !== undefined && options.mtlsKey !== '') {
+    present.push('--mtls-key');
+  } else {
+    absent.push('--mtls-key');
+  }
+  if (present.length === 0) return undefined;
+  if (absent.length > 0) {
+    throw new Error(
+      `mTLS configuration is incomplete: ${present.join(', ')} set but ${absent.join(', ')} missing. ` +
+        'All three of --mtls-truststore, --mtls-cert, and --mtls-key must be set together to enable mTLS, ' +
+        'or all three left unset for plain HTTP.'
+    );
+  }
+  // All three set — read the PEM materials from disk. Failures surface
+  // a clear error naming the offending flag + path before the server
+  // starts.
+  return readMtlsMaterialsFromDisk({
+    truststorePath: options.mtlsTruststore!,
+    certPath: options.mtlsCert!,
+    keyPath: options.mtlsKey!,
+  });
+}
+
+/**
  * Builder for the `start-api` subcommand. Wired up by `local.ts`.
  */
 export function createLocalStartApiCommand(): Command {
@@ -1764,6 +1842,38 @@ export function createLocalStartApiCommand(): Command {
       new Option(
         '--stack-region <region>',
         'Region of the cdkd state record to read (used with --from-state when the same stack name has state in multiple regions).'
+      )
+    )
+    .addOption(
+      new Option(
+        '--mtls-truststore <path>',
+        'PEM-encoded CA bundle for client-certificate verification (mutual TLS). ' +
+          'When set, the local server switches from HTTP to HTTPS and the TLS handshake rejects ' +
+          "clients whose certificate doesn't chain to one of these CAs. Verified certs are surfaced " +
+          'on the Lambda event under requestContext.identity.clientCert (REST v1) / ' +
+          'requestContext.authentication.clientCert (HTTP API v2). Must be set together with ' +
+          '--mtls-cert + --mtls-key; partial flag sets are rejected. ' +
+          'Generate a CA + server + client cert for local dev: ' +
+          'openssl req -x509 -newkey rsa:2048 -nodes -keyout ca-key.pem -out ca.pem -subj "/CN=cdkd-local-ca" -days 365; ' +
+          'openssl req -newkey rsa:2048 -nodes -keyout server-key.pem -out server-csr.pem -subj "/CN=localhost"; ' +
+          'openssl x509 -req -in server-csr.pem -CA ca.pem -CAkey ca-key.pem -CAcreateserial -out server-cert.pem -days 365; ' +
+          'openssl req -newkey rsa:2048 -nodes -keyout client-key.pem -out client-csr.pem -subj "/CN=client"; ' +
+          'openssl x509 -req -in client-csr.pem -CA ca.pem -CAkey ca-key.pem -CAcreateserial -out client-cert.pem -days 365; ' +
+          'curl --cacert ca.pem --cert client-cert.pem --key client-key.pem https://localhost:<port>/...'
+      )
+    )
+    .addOption(
+      new Option(
+        '--mtls-cert <path>',
+        'PEM-encoded server certificate for mutual TLS. Self-signed is fine for local dev. ' +
+          'Must be set together with --mtls-truststore + --mtls-key.'
+      )
+    )
+    .addOption(
+      new Option(
+        '--mtls-key <path>',
+        'PEM-encoded server private key matching --mtls-cert. ' +
+          'Must be set together with --mtls-truststore + --mtls-cert.'
       )
     )
     .action(withErrorHandling(localStartApiCommand));

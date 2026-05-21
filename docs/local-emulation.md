@@ -445,6 +445,9 @@ the same tier; cdkd uses literal-segment count as a heuristic).
 | `--state-bucket <bucket>` | auto | S3 bucket containing cdkd state. Falls back to `CDKD_STATE_BUCKET` env or `cdk.json context.cdkd.stateBucket`, then the default `cdkd-state-{accountId}`. Only used with `--from-state`. |
 | `--state-prefix <prefix>` | `cdkd` | S3 key prefix for state files. Only used with `--from-state`. |
 | `--stack-region <region>` | auto | Region of the cdkd state record to read. Required when the same stack name has state in multiple regions. Only used with `--from-state`. |
+| `--mtls-truststore <path>` | unset | PEM-encoded CA bundle for client-certificate verification. When set, the server switches from HTTP to HTTPS and the TLS handshake rejects clients whose certificate doesn't chain to one of these CAs. Must be set together with `--mtls-cert` + `--mtls-key`; partial flag sets are rejected. See the "mTLS (mutual TLS)" section below for the openssl recipe + event-shape details. |
+| `--mtls-cert <path>` | unset | PEM-encoded server certificate for mutual TLS. Self-signed is fine for local dev. Must be set together with `--mtls-truststore` + `--mtls-key`. |
+| `--mtls-key <path>` | unset | PEM-encoded server private key matching `--mtls-cert`. Must be set together with `--mtls-truststore` + `--mtls-cert`. |
 
 ### Hot reload (`--watch`)
 
@@ -677,12 +680,107 @@ AWS SDK calls from the container still use the developer's shell
 credentials (or `--assume-role`-issued temp creds) and reach the public
 AWS endpoints; nothing about that path changes.
 
+### `local start-api` mTLS (mutual TLS)
+
+`cdkd local start-api` supports API Gateway custom-domain mutual TLS:
+when all three `--mtls-truststore <path>` / `--mtls-cert <path>` /
+`--mtls-key <path>` flags are set, the server switches from plain HTTP
+to HTTPS and the TLS handshake itself enforces the client-certificate
+trust check against the supplied CA bundle. Clients without a cert,
+with a self-signed cert, or with a cert that doesn't chain to one of
+the CAs in the trust store are rejected by Node's `tls` module BEFORE
+the request reaches cdkd's per-request handler — no per-request code
+path is needed.
+
+The verified client certificate is surfaced on the Lambda event under:
+
+- **REST v1**: `event.requestContext.identity.clientCert`
+- **HTTP API v2**: `event.requestContext.authentication.clientCert`
+
+Both shapes match AWS API Gateway's deployed-mTLS event shape:
+
+```json
+{
+  "clientCertPem": "-----BEGIN CERTIFICATE-----\n...",
+  "subjectDN": "CN=client,O=example,C=US",
+  "issuerDN": "CN=My CA,O=example,C=US",
+  "serialNumber": "01:23:45:...",
+  "validity": {
+    "notBefore": "May 22 03:30:00 2026 GMT",
+    "notAfter": "May 22 03:30:00 2027 GMT"
+  }
+}
+```
+
+mTLS runs ORTHOGONALLY to the existing TOKEN / REQUEST / COGNITO_USER_POOLS
+/ JWT authorizers — the TLS handshake completes first (rejecting
+unknown-CA clients), then the authorizer pipeline runs against the
+already-authenticated client.
+
+**Partial flag sets are rejected at CLI parse time** (the server never
+boots in a half-configured state): if any of the three flags is set,
+all three must be set. Leave all three unset for plain HTTP (the
+pre-PR default).
+
+#### Generating a local CA + server + client cert with openssl
+
+```bash
+# 1. Create a local CA
+openssl req -x509 -newkey rsa:2048 -nodes \
+  -keyout ca-key.pem -out ca.pem \
+  -subj "/CN=cdkd-local-ca" -days 365
+
+# 2. Generate a server cert signed by the local CA
+openssl req -newkey rsa:2048 -nodes \
+  -keyout server-key.pem -out server-csr.pem \
+  -subj "/CN=localhost"
+openssl x509 -req -in server-csr.pem \
+  -CA ca.pem -CAkey ca-key.pem -CAcreateserial \
+  -out server-cert.pem -days 365
+
+# 3. Generate a client cert signed by the local CA
+openssl req -newkey rsa:2048 -nodes \
+  -keyout client-key.pem -out client-csr.pem \
+  -subj "/CN=client"
+openssl x509 -req -in client-csr.pem \
+  -CA ca.pem -CAkey ca-key.pem -CAcreateserial \
+  -out client-cert.pem -days 365
+
+# 4. Start the server with mTLS enabled
+cdkd local start-api \
+  --mtls-truststore ca.pem \
+  --mtls-cert server-cert.pem \
+  --mtls-key server-key.pem
+
+# 5. curl the server with the client cert
+curl --cacert ca.pem \
+  --cert client-cert.pem --key client-key.pem \
+  https://localhost:<port>/items
+```
+
+#### mTLS scope
+
+- The mTLS configuration is at the SERVER level (the equivalent of an
+  API Gateway custom-domain `MutualTlsAuthentication.TruststoreUri`).
+  cdkd does NOT parse the synth template's `AWS::ApiGateway::DomainName`
+  / `AWS::ApiGatewayV2::DomainName` resources — the CLI flags are the
+  authoritative source. If your CDK app declares mTLS on a DomainName,
+  you can re-use the same CA bundle locally by pointing
+  `--mtls-truststore` at the file you uploaded to the deployed
+  truststore S3 location.
+- The server cert and key are for the LOCAL server only (clients
+  connect to `localhost`). Self-signed is the typical case.
+- AWS-deployed mTLS uses `MutualTlsAuthentication.TruststoreVersion`
+  for live trust-store updates; the local server reads the
+  `--mtls-truststore` file once at boot. Restart `cdkd local start-api`
+  to pick up a new CA bundle (the `--watch` reload pipeline does NOT
+  re-read the mTLS materials).
+
 ### `local start-api` v1 scope (out of scope, deferred)
 
 | Out of scope | Deferred to |
 | --- | --- |
 | REST v1 IAM authorizer (`AuthorizationType: 'AWS_IAM'`) | Future PR |
-| mTLS authorizers | Future PR |
 | REST v1 CORS via Mock OPTIONS integration | Out of scope (use the deployed API) |
 | Custom integration mapping templates | Never (not testable locally) |
 | WebSocket APIs | Never (different protocol) |

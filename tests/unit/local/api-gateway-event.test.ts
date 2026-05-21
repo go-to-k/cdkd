@@ -321,3 +321,69 @@ describe('applyAuthorizerOverlay', () => {
     expect((auth['jwt'] as Record<string, unknown>)['scopes']).toEqual([]);
   });
 });
+
+describe('mTLS clientCert surfacing', () => {
+  function makeSnapshot(extra: Partial<HttpRequestSnapshot> = {}): HttpRequestSnapshot {
+    return {
+      method: 'GET',
+      rawUrl: '/items',
+      headers: {},
+      body: Buffer.alloc(0),
+      ...extra,
+    };
+  }
+
+  const sampleClientCert = {
+    clientCertPem: '-----BEGIN CERTIFICATE-----\nMIIBkTCB+w...\n-----END CERTIFICATE-----\n',
+    subjectDN: 'CN=client,O=example,C=US',
+    issuerDN: 'CN=My CA,O=example,C=US',
+    serialNumber: '01:23:45:67:89:AB:CD:EF',
+    validity: {
+      notBefore: 'May 22 03:30:00 2026 GMT',
+      notAfter: 'May 22 03:30:00 2027 GMT',
+    },
+  };
+
+  function makeCtx(apiVersion: 'v1' | 'v2'): MatchedRouteContext {
+    return {
+      route: {
+        method: 'GET',
+        pathPattern: '/items',
+        lambdaLogicalId: 'Fn',
+        source: apiVersion === 'v1' ? 'rest-v1' : 'http-api',
+        apiVersion,
+        stage: apiVersion === 'v1' ? 'prod' : '$default',
+        declaredAt: 'S/X',
+      } as DiscoveredRoute,
+      pathParameters: {},
+      matchedPath: '/items',
+    };
+  }
+
+  it('REST v1: clientCert lands under requestContext.identity.clientCert when set', () => {
+    const event = buildRestV1Event(makeSnapshot({ clientCert: sampleClientCert }), makeCtx('v1'));
+    const rc = event['requestContext'] as Record<string, unknown>;
+    const identity = rc['identity'] as Record<string, unknown>;
+    expect(identity['clientCert']).toEqual(sampleClientCert);
+  });
+
+  it('REST v1: identity.clientCert is omitted when clientCert is not set (plain HTTP)', () => {
+    const event = buildRestV1Event(makeSnapshot(), makeCtx('v1'));
+    const rc = event['requestContext'] as Record<string, unknown>;
+    const identity = rc['identity'] as Record<string, unknown>;
+    expect('clientCert' in identity).toBe(false);
+  });
+
+  it('HTTP API v2: clientCert lands under requestContext.authentication.clientCert when set', () => {
+    const event = buildHttpApiV2Event(makeSnapshot({ clientCert: sampleClientCert }), makeCtx('v2'));
+    const rc = event['requestContext'] as Record<string, unknown>;
+    const auth = rc['authentication'] as Record<string, unknown>;
+    expect(auth).toEqual({ clientCert: sampleClientCert });
+  });
+
+  it('HTTP API v2: authentication stays explicit-null when clientCert is not set (plain HTTP)', () => {
+    const event = buildHttpApiV2Event(makeSnapshot(), makeCtx('v2'));
+    const rc = event['requestContext'] as Record<string, unknown>;
+    expect(rc['authentication']).toBeNull();
+  });
+});

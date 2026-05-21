@@ -210,8 +210,16 @@ export function resolveRestV1Authorizer(
 
   // AWS_IAM and any unknown Type — surface a structured error that the
   // route-discovery layer wraps with offending route info.
+  //
+  // Note: mTLS (mutual TLS) is NOT an `AWS::ApiGateway::Authorizer` Type
+  // — it is configured at the `AWS::ApiGateway::DomainName` /
+  // `AWS::ApiGatewayV2::DomainName` level via `MutualTlsAuthentication`.
+  // cdkd supports mTLS via the `--mtls-truststore` / `--mtls-cert` /
+  // `--mtls-key` CLI flags on `cdkd local start-api`; the TLS handshake
+  // itself enforces the client-cert trust check, orthogonal to (and
+  // composable with) TOKEN / REQUEST / COGNITO_USER_POOLS authorizers.
   throw new RouteDiscoveryError(
-    `${stackName}/${authorizerLogicalId}: AWS::ApiGateway::Authorizer.Type '${String(type)}' is not supported by cdkd local start-api (only TOKEN / REQUEST / COGNITO_USER_POOLS — IAM / mTLS authorizers are deferred to a follow-up PR).`
+    `${stackName}/${authorizerLogicalId}: AWS::ApiGateway::Authorizer.Type '${String(type)}' is not supported by cdkd local start-api (only TOKEN / REQUEST / COGNITO_USER_POOLS — IAM is deferred to a follow-up PR; mTLS lives at the DomainName level and is configured via --mtls-truststore / --mtls-cert / --mtls-key).`
   );
 }
 
