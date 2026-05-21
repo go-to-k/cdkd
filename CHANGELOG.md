@@ -1,3 +1,10 @@
+# [0.116.0](https://github.com/go-to-k/cdkd/compare/v0.115.4...v0.116.0) (2026-05-21)
+
+
+### Features
+
+* **local-invoke:** auto-resolve --assume-role from state Role property ([#442](https://github.com/go-to-k/cdkd/issues/442)) ([#473](https://github.com/go-to-k/cdkd/issues/473)) ([ca1e382](https://github.com/go-to-k/cdkd/commit/ca1e3824ace7680ff29c9ee8ccaf9dbfff0c2b6b))
+
 ## [0.115.4](https://github.com/go-to-k/cdkd/compare/v0.115.3...v0.115.4) (2026-05-21)
 
 
