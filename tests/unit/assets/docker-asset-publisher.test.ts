@@ -121,8 +121,11 @@ describe('DockerAssetPublisher', () => {
     );
     expect(buildCall).toBeDefined();
     const [buildArgs, buildOpts] = buildCall as [string[], { env?: Record<string, string> }];
-    expect(buildArgs).toEqual(['build', '-t', 'cdkd-asset-docker123', '/tmp/cdk.out/asset.docker123']);
+    expect(buildArgs).toEqual(['build', '-t', 'cdkd-asset-docker123', '.']);
     expect(buildOpts.env?.['BUILDX_NO_DEFAULT_ATTESTATIONS']).toBe('1');
+    // cwd is set to the asset directory so relative paths in BuildKit
+    // flags (--secret src=foo.txt, --build-context name=./path) resolve.
+    expect((buildCall![1] as { cwd?: string }).cwd).toBe('/tmp/cdk.out/asset.docker123');
 
     // Verify docker login was called via runDockerStreaming (input carries password).
     const loginCall = mockRunDocker.mock.calls.find(
@@ -223,8 +226,9 @@ describe('DockerAssetPublisher', () => {
       '--build-arg', 'ENV=prod',
       '--target', 'production',
       '-f', 'Dockerfile.custom',
-      '/tmp/cdk.out/asset.custom',
+      '.',
     ]);
+    expect((buildCall![1] as { cwd?: string }).cwd).toBe('/tmp/cdk.out/asset.custom');
   });
 
   it('forwards BuildKit fields (--build-context, --secret, --ssh, --cache-from/to, --no-cache, --network, --platform)', async () => {

@@ -4,3 +4,7 @@
 # RIE entrypoint expects the .js extension.
 !docker/*.js
 !docker/Dockerfile
+# Allow the dummy secret used to verify RUN --mount=type=secret. The
+# content is a fixed integ literal (not real credentials) — the integ
+# asserts its sha256 surfaces through the build path.
+!docker/secret.txt

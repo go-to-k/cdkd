@@ -121,13 +121,20 @@ export async function buildDockerImage(
   }
 
   const buildArgs = buildDockerBuildCommand(source, options.tag, options.platform);
+  // Use `.` as the context and set `cwd` to the asset directory. Mirrors
+  // CDK CLI's `cdk-assets-lib` Docker.build — load-bearing because
+  // BuildKit flags like `--secret id=X,src=relative.txt` /
+  // `--build-context name=relative/path` resolve relative paths against
+  // the build's cwd, NOT against the trailing context positional. Passing
+  // an absolute context dir with no cwd silently breaks those flags.
   const contextDir = `${cdkOutDir}/${source.directory}`;
-  buildArgs.push(contextDir);
+  buildArgs.push('.');
 
-  logger.debug(`${getDockerCmd()} ${buildArgs.join(' ')}`);
+  logger.debug(`${getDockerCmd()} ${buildArgs.join(' ')} (cwd=${contextDir})`);
 
   try {
     await runDockerStreaming(buildArgs, {
+      cwd: contextDir,
       // BUILDX_NO_DEFAULT_ATTESTATIONS=1 matches `cdk-assets-lib` — without
       // this, BuildKit/Buildx attaches provenance attestation manifests
       // that ECR's single-arch pull path rejects.

@@ -192,13 +192,15 @@ describe('buildDockerImage (directory source)', () => {
     expect((opts.env as Record<string, string>).BUILDX_NO_DEFAULT_ATTESTATIONS).toBe('1');
   });
 
-  it('appends the context directory as the last arg', async () => {
+  it('uses "." as context with cwd=<assetDir> (matches CDK CLI; relative paths in --secret/--build-context resolve)', async () => {
     await buildDockerImage({ source: baseSource }, '/cdk.out', {
       tag: 'tag',
       wrapError,
     });
     const args = mockRunDocker.mock.calls[0]![0] as string[];
-    expect(args[args.length - 1]).toBe('/cdk.out/asset.abc123');
+    const opts = mockRunDocker.mock.calls[0]![1] as { cwd?: string };
+    expect(args[args.length - 1]).toBe('.');
+    expect(opts.cwd).toBe('/cdk.out/asset.abc123');
   });
 
   it('returns the provided tag (directory mode)', async () => {
