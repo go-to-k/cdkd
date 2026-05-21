@@ -202,10 +202,15 @@ export interface ForegroundOptions {
 }
 
 /**
- * Generic foreground (stdio-inherit) spawn — the inherit-mode counterpart to
- * {@link spawnStreaming}. Used by {@link runDockerForeground} and reusable
- * by any future call site that needs to run a non-docker binary attached to
- * the parent's stdio.
+ * Foreground (stdio-inherit) spawn — the inherit-mode counterpart to
+ * {@link spawnStreaming}. Used by {@link runDockerForeground} for docker-CLI
+ * subprocesses.
+ *
+ * The ENOENT branch crafts a docker-specific install hint ("Install Docker
+ * (or set CDK_DOCKER ...)"), so non-docker callers reusing this helper
+ * would see a misleading error on missing-binary failures. Keep the binary
+ * docker-shaped, or update the ENOENT message before adding a non-docker
+ * call site.
  */
 export async function spawnForeground(
   cmd: string,

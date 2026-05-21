@@ -148,10 +148,24 @@ export async function pullImage(image: string, skipPull: boolean): Promise<void>
   try {
     await runDockerStreaming(['pull', image], { streamLive: false });
   } catch (err) {
-    const e = err as { exitCode?: number | null; stderr?: string; stdout?: string };
+    const e = err as {
+      exitCode?: number | null;
+      stderr?: string;
+      stdout?: string;
+      message?: string;
+    };
+    // Distinguish spawn-level failure (ENOENT — docker binary missing,
+    // surfaces with the helpful Install-Docker / CDK_DOCKER hint from
+    // `spawnStreaming`'s ENOENT branch) from non-zero exit (genuine
+    // pull failure with captured stderr). The ENOENT path rejects with
+    // a plain `Error` (no `exitCode` field); the non-zero-exit path
+    // rejects with `SpawnError` (`exitCode` + `stderr` + `stdout`).
+    if (e.exitCode === undefined || e.exitCode === null) {
+      throw new DockerRunnerError(`docker pull ${image} failed: ${e.message ?? String(err)}`);
+    }
     const detail = e.stderr?.trim() || e.stdout?.trim() || '(no output)';
     throw new DockerRunnerError(
-      `docker pull ${image} exited with code ${e.exitCode ?? '?'}: ${detail}`
+      `docker pull ${image} exited with code ${e.exitCode}: ${detail}`
     );
   }
 }
