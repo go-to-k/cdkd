@@ -1,12 +1,12 @@
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 
-import { EventEmitter } from 'node:events';
-
-const { mockEcrSend, mockEcrDestroy, mockExecFile, mockSpawn } = vi.hoisted(() => ({
+const { mockEcrSend, mockEcrDestroy, mockRunDocker } = vi.hoisted(() => ({
   mockEcrSend: vi.fn(),
   mockEcrDestroy: vi.fn(),
-  mockExecFile: vi.fn(),
-  mockSpawn: vi.fn(),
+  // One mock for the whole docker surface — the publisher now routes ALL
+  // docker subprocess calls (build / login / tag / push) through
+  // `runDockerStreaming`, so a single capture is sufficient.
+  mockRunDocker: vi.fn(),
 }));
 
 // Mock @aws-sdk/client-ecr
@@ -25,29 +25,33 @@ vi.mock('@aws-sdk/client-ecr', () => ({
   })),
 }));
 
-// Mock node:child_process
-vi.mock('node:child_process', () => ({
-  execFile: mockExecFile,
-  spawn: mockSpawn,
-}));
+// Mock the docker-cmd helpers used by buildDockerImage AND the publisher's
+// login / tag / push paths.
+vi.mock('../../../src/utils/docker-cmd.js', async () => {
+  const actual = await vi.importActual<typeof import('../../../src/utils/docker-cmd.js')>(
+    '../../../src/utils/docker-cmd.js'
+  );
+  return {
+    ...actual,
+    runDockerStreaming: mockRunDocker,
+  };
+});
 
-// Mock node:util
-vi.mock('node:util', () => ({
-  promisify: () => mockExecFile,
-}));
-
-// Mock logger
+// Mock logger (the docker-cmd helper consults `getLogger().getLevel()` for
+// live-streaming, so we need a `getLevel` method on the mock).
 vi.mock('../../../src/utils/logger.js', () => ({
   getLogger: () => ({
     debug: vi.fn(),
     info: vi.fn(),
     warn: vi.fn(),
     error: vi.fn(),
+    getLevel: () => 'info',
     child: () => ({
       debug: vi.fn(),
       info: vi.fn(),
       warn: vi.fn(),
       error: vi.fn(),
+      getLevel: () => 'info',
     }),
   }),
 }));
@@ -77,18 +81,11 @@ describe('DockerAssetPublisher', () => {
   const authToken = Buffer.from('AWS:mock-password').toString('base64');
 
   beforeEach(() => {
-    vi.clearAllMocks();
+    mockEcrSend.mockReset();
+    mockEcrDestroy.mockReset();
+    mockRunDocker.mockReset();
+    mockRunDocker.mockResolvedValue({ stdout: '', stderr: '' });
     publisher = new DockerAssetPublisher();
-    // Default: execFile succeeds
-    mockExecFile.mockResolvedValue({ stdout: '', stderr: '' });
-    // Default: spawn (for docker login) succeeds
-    mockSpawn.mockImplementation(() => {
-      const proc = new EventEmitter();
-      (proc as unknown as Record<string, unknown>).stdin = { write: vi.fn(), end: vi.fn() };
-      (proc as unknown as Record<string, unknown>).stderr = new EventEmitter();
-      process.nextTick(() => proc.emit('close', 0));
-      return proc;
-    });
   });
 
   it('should build and push Docker image to ECR', async () => {
@@ -118,30 +115,44 @@ describe('DockerAssetPublisher', () => {
       'us-east-1'
     );
 
-    // Verify docker build was called
-    expect(mockExecFile).toHaveBeenCalledWith(
-      'docker',
-      ['build', '-t', 'cdkd-asset-docker123', '/tmp/cdk.out/asset.docker123'],
-      expect.objectContaining({ maxBuffer: 50 * 1024 * 1024 })
+    // Verify docker build was called (with BUILDX_NO_DEFAULT_ATTESTATIONS=1).
+    const buildCall = mockRunDocker.mock.calls.find(
+      ([args]) => Array.isArray(args) && args[0] === 'build'
     );
+    expect(buildCall).toBeDefined();
+    const [buildArgs, buildOpts] = buildCall as [string[], { env?: Record<string, string> }];
+    expect(buildArgs).toEqual(['build', '-t', 'cdkd-asset-docker123', '.']);
+    expect(buildOpts.env?.['BUILDX_NO_DEFAULT_ATTESTATIONS']).toBe('1');
+    // cwd is set to the asset directory so relative paths in BuildKit
+    // flags (--secret src=foo.txt, --build-context name=./path) resolve.
+    expect((buildCall![1] as { cwd?: string }).cwd).toBe('/tmp/cdk.out/asset.docker123');
 
-    // Verify docker login was called via spawn
-    expect(mockSpawn).toHaveBeenCalledWith(
-      'docker',
-      ['login', '--username', 'AWS', '--password-stdin', 'https://123456789012.dkr.ecr.us-east-1.amazonaws.com'],
-      expect.objectContaining({ stdio: ['pipe', 'pipe', 'pipe'] })
+    // Verify docker login was called via runDockerStreaming (input carries password).
+    const loginCall = mockRunDocker.mock.calls.find(
+      ([args]) => Array.isArray(args) && args[0] === 'login'
     );
+    expect(loginCall).toBeDefined();
+    expect(loginCall![0]).toEqual([
+      'login',
+      '--username',
+      'AWS',
+      '--password-stdin',
+      'https://123456789012.dkr.ecr.us-east-1.amazonaws.com',
+    ]);
+    expect((loginCall![1] as { input?: string }).input).toBe('mock-password');
 
     // Verify docker tag was called
     const fullUri = '123456789012.dkr.ecr.us-east-1.amazonaws.com/cdk-assets-123456789012-us-east-1:abc123';
-    expect(mockExecFile).toHaveBeenCalledWith('docker', ['tag', 'cdkd-asset-docker123', fullUri]);
+    const tagCall = mockRunDocker.mock.calls.find(
+      ([args]) => Array.isArray(args) && args[0] === 'tag'
+    );
+    expect(tagCall?.[0]).toEqual(['tag', 'cdkd-asset-docker123', fullUri]);
 
     // Verify docker push was called
-    expect(mockExecFile).toHaveBeenCalledWith(
-      'docker',
-      ['push', fullUri],
-      expect.objectContaining({ maxBuffer: 50 * 1024 * 1024 })
+    const pushCall = mockRunDocker.mock.calls.find(
+      ([args]) => Array.isArray(args) && args[0] === 'push'
     );
+    expect(pushCall?.[0]).toEqual(['push', fullUri]);
 
     expect(mockEcrDestroy).toHaveBeenCalled();
   });
@@ -167,8 +178,8 @@ describe('DockerAssetPublisher', () => {
       imageIds: [{ imageTag: 'abc123' }],
     });
 
-    // docker build should NOT have been called
-    expect(mockExecFile).not.toHaveBeenCalled();
+    // docker subprocess should NOT have been called
+    expect(mockRunDocker).not.toHaveBeenCalled();
   });
 
   it('should handle docker build with args, target, and dockerfile', async () => {
@@ -206,18 +217,74 @@ describe('DockerAssetPublisher', () => {
       'us-east-1'
     );
 
-    expect(mockExecFile).toHaveBeenCalledWith(
-      'docker',
-      [
-        'build', '-t', 'cdkd-asset-custom123',
-        '-f', 'Dockerfile.custom',
-        '--build-arg', 'NODE_VERSION=20',
-        '--build-arg', 'ENV=prod',
-        '--target', 'production',
-        '/tmp/cdk.out/asset.custom',
-      ],
-      expect.objectContaining({ maxBuffer: 50 * 1024 * 1024 })
+    const buildCall = mockRunDocker.mock.calls.find(
+      ([args]) => Array.isArray(args) && args[0] === 'build'
     );
+    expect(buildCall![0]).toEqual([
+      'build', '-t', 'cdkd-asset-custom123',
+      '--build-arg', 'NODE_VERSION=20',
+      '--build-arg', 'ENV=prod',
+      '--target', 'production',
+      '-f', 'Dockerfile.custom',
+      '.',
+    ]);
+    expect((buildCall![1] as { cwd?: string }).cwd).toBe('/tmp/cdk.out/asset.custom');
+  });
+
+  it('forwards BuildKit fields (--build-context, --secret, --ssh, --cache-from/to, --no-cache, --network, --platform)', async () => {
+    mockEcrSend.mockImplementation((cmd: { _type?: string }) => {
+      if (cmd._type === 'DescribeImages') {
+        const err = new Error('Image not found') as Error & { name: string };
+        err.name = 'ImageNotFoundException';
+        throw err;
+      }
+      if (cmd._type === 'GetAuthorizationToken') {
+        return {
+          authorizationData: [{
+            authorizationToken: authToken,
+            proxyEndpoint: 'https://123456789012.dkr.ecr.us-east-1.amazonaws.com',
+          }],
+        };
+      }
+      return {};
+    });
+
+    const asset = makeDockerAsset({
+      source: {
+        directory: 'asset.bk',
+        dockerBuildContexts: { sources: '../sources' },
+        dockerBuildSecrets: { npmrc: 'src=./.npmrc' },
+        dockerBuildSsh: 'default',
+        networkMode: 'host',
+        platform: 'linux/arm64',
+        cacheFrom: [{ type: 'registry', params: { ref: 'example.com/c:l' } }],
+        cacheTo: { type: 'inline' },
+        cacheDisabled: true,
+      },
+    });
+
+    await publisher.publish(
+      'bk123',
+      asset,
+      '/tmp/cdk.out',
+      '123456789012',
+      'us-east-1'
+    );
+
+    const buildCall = mockRunDocker.mock.calls.find(
+      ([args]) => Array.isArray(args) && args[0] === 'build'
+    );
+    const args = buildCall![0] as string[];
+    expect(args).toContain('--build-context');
+    expect(args).toContain('sources=../sources');
+    expect(args).toContain('--secret');
+    expect(args).toContain('id=npmrc,src=./.npmrc');
+    expect(args[args.indexOf('--ssh') + 1]).toBe('default');
+    expect(args[args.indexOf('--network') + 1]).toBe('host');
+    expect(args[args.indexOf('--platform') + 1]).toBe('linux/arm64');
+    expect(args[args.indexOf('--cache-from') + 1]).toBe('type=registry,ref=example.com/c:l');
+    expect(args[args.indexOf('--cache-to') + 1]).toBe('type=inline');
+    expect(args).toContain('--no-cache');
   });
 
   it('should authenticate with ECR before push', async () => {
@@ -241,21 +308,9 @@ describe('DockerAssetPublisher', () => {
       return {};
     });
 
-    mockExecFile.mockImplementation((_cmd: string, args: string[]) => {
-      if (args[0] === 'build') callOrder.push('build');
-      if (args[0] === 'tag') callOrder.push('tag');
-      if (args[0] === 'push') callOrder.push('push');
+    mockRunDocker.mockImplementation((args: string[]) => {
+      callOrder.push(args[0]!);
       return Promise.resolve({ stdout: '', stderr: '' });
-    });
-
-    // docker login uses spawn (--password-stdin requires stdin pipe)
-    mockSpawn.mockImplementation(() => {
-      callOrder.push('login');
-      const proc = new EventEmitter();
-      (proc as unknown as Record<string, unknown>).stdin = { write: vi.fn(), end: vi.fn() };
-      (proc as unknown as Record<string, unknown>).stderr = new EventEmitter();
-      process.nextTick(() => proc.emit('close', 0));
-      return proc;
     });
 
     await publisher.publish(
@@ -266,7 +321,7 @@ describe('DockerAssetPublisher', () => {
       'us-east-1'
     );
 
-    // Build first, then auth, then login (spawn), then tag+push
+    // Build first, then auth, then login, then tag+push
     expect(callOrder).toEqual(['build', 'getAuthToken', 'login', 'tag', 'push']);
   });
 
@@ -312,7 +367,7 @@ describe('DockerAssetPublisher', () => {
       return {};
     });
 
-    mockExecFile.mockImplementation((_cmd: string, args: string[]) => {
+    mockRunDocker.mockImplementation((args: string[]) => {
       if (args[0] === 'build') {
         const err = new Error('build failed') as Error & { stderr: string };
         err.stderr = 'ERROR: failed to solve';

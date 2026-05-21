@@ -1,6 +1,7 @@
 import { execFile } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { promisify } from 'node:util';
+import { getDockerCmd } from '../utils/docker-cmd.js';
 import { getLogger } from '../utils/logger.js';
 import { DockerRunnerError, pullImage, removeContainer } from './docker-runner.js';
 
@@ -81,7 +82,7 @@ export async function createTaskNetwork(
 
   logger.info(`Creating docker network ${networkName} (subnet ${METADATA_ENDPOINT_SUBNET})...`);
   try {
-    await execFileAsync('docker', [
+    await execFileAsync(getDockerCmd(), [
       'network',
       'create',
       '--driver',
@@ -130,7 +131,7 @@ export async function createTaskNetwork(
   logger.info('Starting ECS local-container-endpoints sidecar at 169.254.170.2...');
   let sidecarContainerId: string;
   try {
-    const { stdout } = await execFileAsync('docker', sidecarArgs, {
+    const { stdout } = await execFileAsync(getDockerCmd(), sidecarArgs, {
       maxBuffer: 10 * 1024 * 1024,
     });
     sidecarContainerId = stdout.trim();
@@ -188,7 +189,7 @@ async function destroyNetworkOnly(networkName: string): Promise<void> {
   if (!networkName) return;
   const logger = getLogger().child('ecs-network');
   try {
-    await execFileAsync('docker', ['network', 'rm', networkName]);
+    await execFileAsync(getDockerCmd(), ['network', 'rm', networkName]);
     logger.debug(`Removed docker network ${networkName}`);
   } catch (err) {
     const e = err as { stderr?: string; message?: string };

@@ -1,11 +1,9 @@
-import { execFile, spawn } from 'node:child_process';
-import { promisify } from 'node:util';
+import { spawn } from 'node:child_process';
 import { ECRClient, GetAuthorizationTokenCommand } from '@aws-sdk/client-ecr';
 import { GetCallerIdentityCommand, STSClient } from '@aws-sdk/client-sts';
+import { getDockerCmd, runDockerStreaming } from '../utils/docker-cmd.js';
 import { LocalInvokeBuildError } from '../utils/error-handler.js';
 import { getLogger } from '../utils/logger.js';
-
-const execFileAsync = promisify(execFile);
 
 /**
  * ECR pull fallback for `cdkd local invoke` against deployed container
@@ -134,7 +132,7 @@ export async function pullEcrImage(imageUri: string, options: EcrPullOptions): P
   }
 
   logger.info(`Pulling ${imageUri}...`);
-  await runForeground('docker', ['pull', imageUri]);
+  await runForeground(getDockerCmd(), ['pull', imageUri]);
 
   return imageUri;
 }
@@ -157,29 +155,23 @@ async function ecrLogin(client: ECRClient, accountId: string, region: string): P
 
   const token = Buffer.from(authData.authorizationToken, 'base64').toString();
   const [username, password] = token.split(':');
+  if (!username || password === undefined) {
+    throw new LocalInvokeBuildError(
+      'ECR authorization token has unexpected shape (missing username/password)'
+    );
+  }
   const endpoint = authData.proxyEndpoint || `https://${accountId}.dkr.ecr.${region}.amazonaws.com`;
 
-  await new Promise<void>((resolve, reject) => {
-    const proc = spawn('docker', ['login', '--username', username!, '--password-stdin', endpoint], {
-      stdio: ['pipe', 'pipe', 'pipe'],
+  try {
+    await runDockerStreaming(['login', '--username', username, '--password-stdin', endpoint], {
+      input: password,
     });
-
-    let stderr = '';
-    proc.stderr?.on('data', (data: Buffer) => {
-      stderr += data.toString();
-    });
-
-    proc.on('close', (code) => {
-      if (code === 0) resolve();
-      else reject(new LocalInvokeBuildError(`ECR login failed: ${stderr.trim()}`));
-    });
-    proc.on('error', (err) => {
-      reject(new LocalInvokeBuildError(`ECR login failed: ${err.message}`));
-    });
-
-    proc.stdin?.write(password);
-    proc.stdin?.end();
-  });
+  } catch (err) {
+    const e = err as { stderr?: string; message?: string };
+    throw new LocalInvokeBuildError(
+      `ECR login failed: ${e.stderr?.trim() || e.message || String(err)}`
+    );
+  }
 }
 
 /**
@@ -189,7 +181,7 @@ async function ecrLogin(client: ECRClient, accountId: string, region: string): P
  */
 async function verifyImageInLocalCache(imageUri: string): Promise<void> {
   try {
-    await execFileAsync('docker', ['image', 'inspect', imageUri]);
+    await runDockerStreaming(['image', 'inspect', imageUri]);
   } catch {
     throw new LocalInvokeBuildError(
       `Image '${imageUri}' is not in the local docker cache and --no-pull was set. ` +
@@ -207,7 +199,7 @@ async function verifyImageInLocalCache(imageUri: string): Promise<void> {
  */
 export async function isImageInLocalCache(imageRef: string): Promise<boolean> {
   try {
-    await execFileAsync('docker', ['image', 'inspect', imageRef]);
+    await runDockerStreaming(['image', 'inspect', imageRef]);
     return true;
   } catch {
     return false;

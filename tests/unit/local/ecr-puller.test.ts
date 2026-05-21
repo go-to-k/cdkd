@@ -20,32 +20,29 @@ vi.mock('@aws-sdk/client-ecr', () => ({
   GetAuthorizationTokenCommand: vi.fn().mockImplementation((input: unknown) => ({ input })),
 }));
 
-const childProcessMock = {
-  execFile: vi.fn(),
-  spawn: vi.fn(),
-};
+// Mock the docker-cmd helpers. `vi.mock` is hoisted ABOVE top-level
+// `const`s, so the stub functions go through `vi.hoisted(...)`.
+const { runDockerMock, spawnForegroundMock } = vi.hoisted(() => ({
+  runDockerMock: vi.fn(),
+  spawnForegroundMock: vi.fn(),
+}));
+vi.mock('../../../src/utils/docker-cmd.js', async () => {
+  const actual = await vi.importActual<typeof import('../../../src/utils/docker-cmd.js')>(
+    '../../../src/utils/docker-cmd.js'
+  );
+  return {
+    ...actual,
+    runDockerStreaming: runDockerMock,
+  };
+});
+// The `docker pull` foreground call still uses `spawn` directly (so it
+// can inherit stdio). Stub that path via `node:child_process.spawn`.
 vi.mock('node:child_process', async () => {
   const actual = await vi.importActual<typeof import('node:child_process')>('node:child_process');
   return {
     ...actual,
-    // promisify(execFile)(cmd, args) → calls execFile(cmd, args, cb).
-    // execFileAsync(cmd, args, opts) → calls execFile(cmd, args, opts, cb).
-    // Both shapes thread through the same code path here.
-    execFile: (...allArgs: unknown[]) => {
-      const cb = allArgs[allArgs.length - 1] as (err: unknown, stdout?: { stdout: string }) => void;
-      const cmd = allArgs[0] as string;
-      const args = allArgs[1] as string[];
-      const opts = allArgs.length === 4 ? allArgs[2] : undefined;
-      childProcessMock.execFile(cmd, args, opts);
-      // promisify expects `(err, value)` — for resolved-with-stdout shape
-      // pass an `{stdout, stderr}` object so callers reading `.stdout`
-      // get a string (not undefined).
-      cb(null, { stdout: '' } as { stdout: string });
-    },
-    spawn: () => {
-      childProcessMock.spawn();
-      // Return a minimal spawn-result that resolves successfully:
-      // emit close(0) on the next tick.
+    spawn: (...args: unknown[]) => {
+      spawnForegroundMock(...args);
       const handlers: Record<string, ((arg?: unknown) => void)[]> = {};
       const proc = {
         stdin: { write: vi.fn(), end: vi.fn() },
@@ -56,6 +53,9 @@ vi.mock('node:child_process', async () => {
           if (evt === 'close') {
             setImmediate(() => cb(0));
           }
+        },
+        once: (evt: string, cb: (arg?: unknown) => void) => {
+          if (evt === 'close') setImmediate(() => cb(0));
         },
         kill: vi.fn(),
       };
@@ -93,8 +93,9 @@ describe('pullEcrImage', () => {
   beforeEach(() => {
     stsSendMock.mockReset();
     ecrSendMock.mockReset();
-    childProcessMock.execFile.mockReset();
-    childProcessMock.spawn.mockReset();
+    runDockerMock.mockReset();
+    runDockerMock.mockResolvedValue({ stdout: '', stderr: '' });
+    spawnForegroundMock.mockReset();
     delete process.env['AWS_REGION'];
     delete process.env['AWS_DEFAULT_REGION'];
   });
@@ -168,8 +169,15 @@ describe('pullEcrImage', () => {
     expect(result).toBe('111111111111.dkr.ecr.us-east-1.amazonaws.com/r:t');
     expect(stsSendMock).toHaveBeenCalled();
     expect(ecrSendMock).toHaveBeenCalled();
-    // spawn fires twice: once for `docker login` (ecrLogin), once for `docker pull`.
-    expect(childProcessMock.spawn).toHaveBeenCalledTimes(2);
+    // `docker login` goes through runDockerStreaming; `docker pull` goes
+    // through spawn-inherit-stdio (`runForeground`).
+    const loginCall = runDockerMock.mock.calls.find(
+      ([args]) => Array.isArray(args) && args[0] === 'login'
+    );
+    expect(loginCall).toBeDefined();
+    expect(spawnForegroundMock).toHaveBeenCalledTimes(1);
+    const [, pullArgs] = spawnForegroundMock.mock.calls[0] as [string, string[]];
+    expect(pullArgs[0]).toBe('pull');
   });
 
   it('skipPull: verifies image is in local cache via docker image inspect', async () => {
@@ -179,12 +187,12 @@ describe('pullEcrImage', () => {
       skipPull: true,
     });
     expect(result).toBe('111111111111.dkr.ecr.us-east-1.amazonaws.com/r:t');
-    expect(childProcessMock.execFile).toHaveBeenCalledWith(
-      'docker',
-      ['image', 'inspect', '111111111111.dkr.ecr.us-east-1.amazonaws.com/r:t'],
-      undefined
+    const inspectCall = runDockerMock.mock.calls.find(
+      ([args]) =>
+        Array.isArray(args) && args[0] === 'image' && args[1] === 'inspect'
     );
-    // No spawn — login + pull are skipped.
-    expect(childProcessMock.spawn).not.toHaveBeenCalled();
+    expect(inspectCall).toBeDefined();
+    // No `docker pull` — skipped.
+    expect(spawnForegroundMock).not.toHaveBeenCalled();
   });
 });

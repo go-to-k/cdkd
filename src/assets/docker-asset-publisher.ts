@@ -1,16 +1,13 @@
-import { execFile, spawn } from 'node:child_process';
-import { promisify } from 'node:util';
 import {
   ECRClient,
   GetAuthorizationTokenCommand,
   DescribeImagesCommand,
 } from '@aws-sdk/client-ecr';
 import type { DockerImageAsset } from '../types/assets.js';
+import { runDockerStreaming } from '../utils/docker-cmd.js';
 import { getLogger } from '../utils/logger.js';
 import { AssetError } from '../utils/error-handler.js';
 import { buildDockerImage } from './docker-build.js';
-
-const execFileAsync = promisify(execFile);
 
 /**
  * Publishes Docker image assets to ECR
@@ -75,7 +72,13 @@ export class DockerAssetPublisher {
   }
 
   /**
-   * Build a Docker image (public, used by WorkGraph asset-build nodes)
+   * Build a Docker image (public, used by WorkGraph asset-build nodes).
+   *
+   * For `directory` source mode the build tags the result as `localTag`
+   * directly via `docker build -t`. For `executable` source mode the
+   * user-supplied script returns its own tag; cdkd re-tags it to `localTag`
+   * via `docker tag` so the downstream `push()` step (which is wired to
+   * `localTag` at graph-construction time) keeps working unchanged.
    */
   async build(asset: DockerImageAsset, cdkOutputDir: string, localTag: string): Promise<void> {
     await this.buildImage(asset, cdkOutputDir, localTag);
@@ -148,23 +151,40 @@ export class DockerAssetPublisher {
   /**
    * Build Docker image — delegates to the shared `buildDockerImage`
    * helper so this code path stays in sync with `cdkd local invoke`'s
-   * container-Lambda build path. `--platform` is currently not threaded
-   * through here (publish-assets has no Architectures hint to consult);
-   * a follow-up can lift this once the asset manifest carries a
-   * platform field.
+   * container-Lambda build path. `--platform` is read from the asset
+   * manifest's `source.platform` (when set); cdkd does not currently
+   * inject a publish-side override.
+   *
+   * `buildDockerImage` returns the actual local tag. For `directory`
+   * source mode that's always `tag`. For `executable` source mode the
+   * user's script returns its own tag; we re-tag via `docker tag` so the
+   * downstream push step finds the image under the deterministic
+   * `cdkd-asset-<hash>` name it expects.
    */
   private async buildImage(
     asset: DockerImageAsset,
     cdkOutputDir: string,
     tag: string
   ): Promise<void> {
-    await buildDockerImage(asset, cdkOutputDir, tag, {
+    const actualTag = await buildDockerImage(asset, cdkOutputDir, {
+      tag,
       wrapError: (stderr) => new AssetError(`Docker build failed: ${stderr}`),
     });
+    if (actualTag !== tag) {
+      this.logger.debug(`Re-tagging executable-built image '${actualTag}' → '${tag}'`);
+      try {
+        await this.tagImage(actualTag, tag);
+      } catch (err) {
+        const e = err as { message?: string };
+        throw new AssetError(
+          `Docker tag failed re-tagging '${actualTag}' → '${tag}': ${e.message ?? String(err)}`
+        );
+      }
+    }
   }
 
   /**
-   * Authenticate with ECR
+   * Authenticate with ECR via `docker login --password-stdin`.
    */
   private async ecrLogin(client: ECRClient, accountId: string, region: string): Promise<void> {
     const response = await client.send(new GetAuthorizationTokenCommand({}));
@@ -176,60 +196,48 @@ export class DockerAssetPublisher {
 
     const token = Buffer.from(authData.authorizationToken, 'base64').toString();
     const [username, password] = token.split(':');
+    if (!username || password === undefined) {
+      throw new AssetError(
+        'ECR authorization token has unexpected shape (missing username/password)'
+      );
+    }
     const endpoint =
       authData.proxyEndpoint || `https://${accountId}.dkr.ecr.${region}.amazonaws.com`;
 
-    await new Promise<void>((resolve, reject) => {
-      const proc = spawn(
-        'docker',
-        ['login', '--username', username!, '--password-stdin', endpoint],
-        {
-          stdio: ['pipe', 'pipe', 'pipe'],
-        }
-      );
-
-      let stderr = '';
-      proc.stderr?.on('data', (data: Buffer) => {
-        stderr += data.toString();
+    try {
+      await runDockerStreaming(['login', '--username', username, '--password-stdin', endpoint], {
+        input: password,
       });
-
-      proc.on('close', (code) => {
-        if (code === 0) {
-          resolve();
-        } else {
-          reject(new AssetError(`ECR login failed: ${stderr.trim()}`));
-        }
-      });
-
-      proc.on('error', (err) => {
-        reject(new AssetError(`ECR login failed: ${err.message}`));
-      });
-
-      // Write password to stdin and close
-      proc.stdin?.write(password);
-      proc.stdin?.end();
-    });
+    } catch (err) {
+      const e = err as { stderr?: string; message?: string };
+      throw new AssetError(`ECR login failed: ${e.stderr?.trim() || e.message || String(err)}`);
+    }
   }
 
   /**
    * Tag Docker image
    */
   private async tagImage(source: string, target: string): Promise<void> {
-    await execFileAsync('docker', ['tag', source, target]);
+    try {
+      await runDockerStreaming(['tag', source, target]);
+    } catch (err) {
+      const e = err as { stderr?: string; message?: string };
+      throw new AssetError(`Docker tag failed: ${e.stderr?.trim() || e.message || String(err)}`);
+    }
   }
 
   /**
-   * Push Docker image
+   * Push Docker image. Streams progress to stdout/stderr (via
+   * `runDockerStreaming`) when the logger is at debug level, otherwise
+   * captures silently and surfaces stderr on non-zero exit.
    */
   private async pushImage(uri: string): Promise<void> {
     this.logger.debug(`Pushing: ${uri}`);
     try {
-      await execFileAsync('docker', ['push', uri], {
-        maxBuffer: 50 * 1024 * 1024,
-      });
-    } catch (error) {
-      const err = error as { stderr?: string; message?: string };
-      throw new AssetError(`Docker push failed: ${err.stderr || err.message || String(error)}`);
+      await runDockerStreaming(['push', uri]);
+    } catch (err) {
+      const e = err as { stderr?: string; message?: string };
+      throw new AssetError(`Docker push failed: ${e.stderr?.trim() || e.message || String(err)}`);
     }
   }
 

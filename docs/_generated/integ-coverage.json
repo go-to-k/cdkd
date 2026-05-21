@@ -1902,6 +1902,7 @@
         "lambda",
         "lambda-versioning",
         "local-invoke",
+        "local-invoke-buildkit",
         "local-invoke-container",
         "local-invoke-dotnet",
         "local-invoke-from-state",
@@ -1981,6 +1982,9 @@
           "literal"
         ],
         "local-invoke": [
+          "l2"
+        ],
+        "local-invoke-buildkit": [
           "l2"
         ],
         "local-invoke-container": [

@@ -1,6 +1,7 @@
 import { execFile, spawn } from 'node:child_process';
 import { createServer } from 'node:net';
 import { promisify } from 'node:util';
+import { getDockerCmd } from '../utils/docker-cmd.js';
 import { getLogger } from '../utils/logger.js';
 
 const execFileAsync = promisify(execFile);
@@ -127,11 +128,11 @@ export async function pullImage(image: string, skipPull: boolean): Promise<void>
   }
   if (getLogger().getLevel() === 'debug') {
     logger.info(`Pulling ${image}...`);
-    await runForeground('docker', ['pull', image]);
+    await runForeground(getDockerCmd(), ['pull', image]);
     return;
   }
   logger.debug(`Pulling ${image} (silent — pass --verbose to stream progress)`);
-  await runCaptured('docker', ['pull', image], image);
+  await runCaptured(getDockerCmd(), ['pull', image], image);
 }
 
 /**
@@ -232,10 +233,10 @@ export async function runDetached(opts: DockerRunOptions): Promise<string> {
   args.push(opts.image, ...entryPointTail, ...opts.cmd);
 
   const logger = getLogger().child('docker');
-  logger.debug(`docker ${redactAwsCredentialsInArgs(args).join(' ')}`);
+  logger.debug(`${getDockerCmd()} ${redactAwsCredentialsInArgs(args).join(' ')}`);
 
   try {
-    const { stdout } = await execFileAsync('docker', args, {
+    const { stdout } = await execFileAsync(getDockerCmd(), args, {
       maxBuffer: 10 * 1024 * 1024,
     });
     return stdout.trim();
@@ -252,7 +253,7 @@ export async function runDetached(opts: DockerRunOptions): Promise<string> {
  * stops the stream (used by the caller in a `finally` block).
  */
 export function streamLogs(containerId: string): () => void {
-  const proc = spawn('docker', ['logs', '-f', containerId], {
+  const proc = spawn(getDockerCmd(), ['logs', '-f', containerId], {
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   proc.stdout?.on('data', (chunk: Buffer) => process.stdout.write(chunk));
@@ -275,7 +276,7 @@ export async function removeContainer(containerId: string): Promise<void> {
   if (!containerId) return;
   const logger = getLogger().child('docker');
   try {
-    await execFileAsync('docker', ['rm', '-f', containerId]);
+    await execFileAsync(getDockerCmd(), ['rm', '-f', containerId]);
     logger.debug(`Removed container ${containerId}`);
   } catch (error) {
     const err = error as { stderr?: string; message?: string };
@@ -291,17 +292,18 @@ export async function removeContainer(containerId: string): Promise<void> {
  * otherwise see at the first run call. Called once up front.
  */
 export async function ensureDockerAvailable(): Promise<void> {
+  const cmd = getDockerCmd();
   try {
-    await execFileAsync('docker', ['version', '--format', '{{.Server.Version}}']);
+    await execFileAsync(cmd, ['version', '--format', '{{.Server.Version}}']);
   } catch (error) {
     const err = error as { code?: string; stderr?: string; message?: string };
     if (err.code === 'ENOENT') {
       throw new DockerRunnerError(
-        'docker is not installed or not on PATH. cdkd local invoke needs Docker — install Docker Desktop or the docker CLI and retry.'
+        `${cmd} is not installed or not on PATH. cdkd local invoke needs Docker (or a compatible CLI specified via CDK_DOCKER) — install it and retry.`
       );
     }
     throw new DockerRunnerError(
-      `docker daemon is not reachable: ${err.stderr?.trim() || err.message || String(error)}. ` +
+      `${cmd} daemon is not reachable: ${err.stderr?.trim() || err.message || String(error)}. ` +
         'Start Docker Desktop / the docker daemon and retry.'
     );
   }

@@ -412,6 +412,13 @@
       ]
     },
     {
+      "name": "local-invoke-buildkit",
+      "annotated": true,
+      "scenarios": [
+        "local-lambda-rie-container"
+      ]
+    },
+    {
       "name": "local-invoke-container",
       "annotated": true,
       "scenarios": [
@@ -788,6 +795,7 @@
       "scenario": "local-lambda-rie-container",
       "description": "`cdkd local invoke` container-Lambda (Code.ImageUri) against RIE — local-build OR ECR-pull asset resolution.",
       "fixtures": [
+        "local-invoke-buildkit",
         "local-invoke-container"
       ]
     },

@@ -138,9 +138,20 @@ vi.mock('../../../src/local/ecr-puller.js', () => ({
 }));
 
 // docker-build (asset path)
+//
+// Post-PR signature: `buildDockerImage(asset, cdkOutDir, opts) -> Promise<string>`.
+// The default stub returns `opts.tag` verbatim — matches `directory` source
+// mode and lets the re-tag branch (`actualTag !== tag`) stay quiet for tests
+// that don't care about it. Tests that DO want to exercise the executable
+// source mode override the stub per-call via `mockImplementationOnce` so
+// the returned tag differs from the requested one.
 const dockerBuildStubs = vi.hoisted(() => ({
   buildDockerImage: vi.fn(
-    async (_asset: unknown, _ctx: string, _tag: string, _opts: unknown): Promise<void> => undefined
+    async (
+      _asset: unknown,
+      _ctx: string,
+      opts: { tag?: string }
+    ): Promise<string> => (opts.tag ?? '<no-tag>')
   ),
 }));
 vi.mock('../../../src/assets/docker-build.js', () => ({
@@ -385,11 +396,14 @@ describe('runEcsTask — image preparation (G1)', () => {
     await runEcsTask(task, baseOptions(), state);
     expect(manifestStubs.loadManifest).toHaveBeenCalledWith('/tmp/cdk.out', 'S1');
     expect(dockerBuildStubs.buildDockerImage).toHaveBeenCalledTimes(1);
-    const [asset, ctx, tag] = dockerBuildStubs.buildDockerImage.mock.calls[0]!;
+    // Post-PR signature: `buildDockerImage(asset, cdkOutDir, options)` where
+    // `options.tag` carries the deterministic local tag (was the 3rd positional
+    // arg pre-PR).
+    const [asset, ctx, opts] = dockerBuildStubs.buildDockerImage.mock.calls[0]!;
     expect(asset).toEqual({ source: { directory: '/tmp/asset-h0' } });
     expect(ctx).toBe('/tmp/cdk.out');
-    expect(typeof tag).toBe('string');
-    expect((tag as string).startsWith('cdkd-local-run-task-')).toBe(true);
+    expect(typeof (opts as { tag: string }).tag).toBe('string');
+    expect((opts as { tag: string }).tag.startsWith('cdkd-local-run-task-')).toBe(true);
   });
 
   it('cdk-asset with no asset manifest path → throws EcsTaskRunnerError', async () => {

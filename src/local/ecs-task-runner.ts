@@ -3,6 +3,7 @@ import { randomBytes } from 'node:crypto';
 import { dirname } from 'node:path';
 import { promisify } from 'node:util';
 import graphlib from 'graphlib';
+import { getDockerCmd, runDockerStreaming } from '../utils/docker-cmd.js';
 import { getLogger } from '../utils/logger.js';
 import { DockerRunnerError, pullImage, removeContainer } from './docker-runner.js';
 import { buildDockerImage } from '../assets/docker-build.js';
@@ -156,7 +157,7 @@ export async function cleanupEcsRun(
 
   for (const v of state.dockerVolumeNames) {
     try {
-      await execFileAsync('docker', ['volume', 'rm', v]);
+      await execFileAsync(getDockerCmd(), ['volume', 'rm', v]);
       logger.debug(`Removed docker volume ${v}`);
     } catch (err) {
       logger.debug(
@@ -273,7 +274,7 @@ export async function runEcsTask(
     logger.info(`Starting container '${container.name}' (image=${imagePlan.get(container.name)})`);
     let id: string;
     try {
-      const { stdout } = await execFileAsync('docker', args, { maxBuffer: 10 * 1024 * 1024 });
+      const { stdout } = await execFileAsync(getDockerCmd(), args, { maxBuffer: 10 * 1024 * 1024 });
       id = stdout.trim();
     } catch (err) {
       const e = err as { stderr?: string; message?: string };
@@ -429,7 +430,7 @@ async function waitForContainerHealthy(containerId: string, displayName: string)
   let lastStatus = '';
   while (Date.now() < deadline) {
     try {
-      const { stdout } = await execFileAsync('docker', [
+      const { stdout } = await execFileAsync(getDockerCmd(), [
         'inspect',
         '--format',
         '{{.State.Health.Status}}',
@@ -462,7 +463,7 @@ async function waitForContainerHealthy(containerId: string, displayName: string)
 
 async function waitForContainerExit(containerId: string): Promise<number> {
   try {
-    const { stdout } = await execFileAsync('docker', ['wait', containerId], {
+    const { stdout } = await execFileAsync(getDockerCmd(), ['wait', containerId], {
       maxBuffer: 1024 * 1024,
     });
     const code = Number.parseInt(stdout.trim(), 10);
@@ -477,7 +478,7 @@ async function waitForContainerExit(containerId: string): Promise<number> {
 
 async function stopContainer(containerId: string, graceSeconds: number): Promise<void> {
   try {
-    await execFileAsync('docker', ['stop', '-t', String(graceSeconds), containerId]);
+    await execFileAsync(getDockerCmd(), ['stop', '-t', String(graceSeconds), containerId]);
   } catch {
     // Ignore — the subsequent `docker rm -f` covers stuck containers.
   }
@@ -492,7 +493,7 @@ function sleep(ms: number): Promise<void> {
  * every line. Returns a stop function for the caller's `finally`.
  */
 function streamContainerLogs(containerName: string, containerId: string): () => void {
-  const proc = spawn('docker', ['logs', '-f', containerId], {
+  const proc = spawn(getDockerCmd(), ['logs', '-f', containerId], {
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   const prefix = `[${containerName}] `;
@@ -593,13 +594,29 @@ async function prepareOneImage(
         );
       }
       const tag = `cdkd-local-run-task-${(image.assetHash ?? 'single').slice(0, 16)}`;
-      await buildDockerImage(asset, cdkOutDir, tag, {
+      const actualTag = await buildDockerImage(asset, cdkOutDir, {
+        tag,
         ...(options.platformOverride !== undefined && { platform: options.platformOverride }),
-        wrapError: (stderr) =>
+        wrapError: (stderr: string) =>
           new LocalInvokeBuildError(
-            `docker build failed for ECS container '${container.name}' (${asset.source.directory}): ${stderr}`
+            `docker build failed for ECS container '${container.name}' (${asset.source.directory ?? asset.source.executable?.join(' ')}): ${stderr}`
           ),
       });
+      if (actualTag !== tag) {
+        // `executable` source mode returns the script's own tag — re-tag
+        // to the deterministic `tag` so the downstream `docker run` finds
+        // the image under the expected name. Routed through the shared
+        // `runDockerStreaming` helper for consistency with publisher /
+        // local-invoke.
+        try {
+          await runDockerStreaming(['tag', actualTag, tag]);
+        } catch (err) {
+          const e = err as { stderr?: string; message?: string };
+          throw new LocalInvokeBuildError(
+            `docker tag failed re-tagging '${actualTag}' → '${tag}' for ECS container '${container.name}': ${e.stderr?.trim() || e.message || String(err)}`
+          );
+        }
+      }
       return tag;
     }
   }
@@ -639,7 +656,7 @@ async function realizeDockerVolumes(
     const dockerVolumeName = `cdkd-local-${v.name}-${randHex(4)}`;
     args.push(dockerVolumeName);
     try {
-      await execFileAsync('docker', args);
+      await execFileAsync(getDockerCmd(), args);
       state.dockerVolumeNames.push(dockerVolumeName);
       logger.debug(`Created docker volume ${dockerVolumeName} for task volume '${v.name}'`);
     } catch (err) {
