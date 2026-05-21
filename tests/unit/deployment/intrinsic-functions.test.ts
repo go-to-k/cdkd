@@ -729,7 +729,14 @@ describe('IntrinsicFunctionResolver - Fn::GetStackOutput', () => {
     );
   });
 
-  it('rejects RoleArn (cross-account not yet supported)', async () => {
+  it('rejects RoleArn given as a Ref intrinsic (literal string required)', async () => {
+    // Cross-account RoleArn must be a literal string in the template;
+    // intrinsic chains (Ref / Fn::GetAtt / Fn::Sub) are intentionally
+    // rejected at template-validation time because the resolver context
+    // isn't guaranteed to have producer-account info available at
+    // intrinsic-resolution time. Closes issue #449.
+    // Full happy-path cross-account coverage lives in
+    // tests/unit/deployment/intrinsic-getstackoutput-cross-account.test.ts.
     const context: ResolverContext = {
       template: { Resources: {} },
       resources: {},
@@ -744,14 +751,12 @@ describe('IntrinsicFunctionResolver - Fn::GetStackOutput', () => {
             StackName: 'Producer',
             Region: 'us-west-2',
             OutputName: 'Foo',
-            RoleArn: 'arn:aws:iam::222222222222:role/CrossAccount',
+            RoleArn: { Ref: 'CrossAccountRoleArnParam' },
           },
         },
         context
       )
-    ).rejects.toThrow(
-      'Fn::GetStackOutput: cross-account references via RoleArn are not yet supported'
-    );
+    ).rejects.toThrow(/RoleArn must be a literal string in the template/);
   });
 
   it('rejects self-reference (same stack name AND same region)', async () => {

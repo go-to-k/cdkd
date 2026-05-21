@@ -5,12 +5,18 @@ import {
 } from '@aws-sdk/client-ec2';
 import { GetSecretValueCommand } from '@aws-sdk/client-secrets-manager';
 import { GetParameterCommand } from '@aws-sdk/client-ssm';
+import { S3Client } from '@aws-sdk/client-s3';
 import { getLogger } from '../utils/logger.js';
 import { getAwsClients } from '../utils/aws-clients.js';
 import { stringifyValue } from '../utils/stringify.js';
+import {
+  assumeRoleForCrossAccountStateRead,
+  parseIamRoleArn,
+} from '../utils/role-arn.js';
+import { resolveCrossAccountStateBucket } from '../utils/aws-region-resolver.js';
 import type { CloudFormationTemplate } from '../types/resource.js';
 import type { ResourceState, StateImportEntry } from '../types/state.js';
-import type { S3StateBackend } from '../state/s3-state-backend.js';
+import { S3StateBackend } from '../state/s3-state-backend.js';
 import type { ExportIndexStore } from '../state/export-index-store.js';
 
 /**
@@ -1494,7 +1500,8 @@ export class IntrinsicFunctionResolver {
   }
 
   /**
-   * Resolve Fn::GetStackOutput (cross-stack / cross-region output reference)
+   * Resolve Fn::GetStackOutput (cross-stack / cross-region / cross-account
+   * output reference).
    *
    * Shape: { "Fn::GetStackOutput": { "StackName": "...", "OutputName": "...",
    *                                   "Region": "...", "RoleArn": "..." } }
@@ -1505,11 +1512,20 @@ export class IntrinsicFunctionResolver {
    * `s3://{bucket}/cdkd/{StackName}/{Region}/state.json`. When `Region` is
    * omitted, the consumer's deploy region is used.
    *
-   * RoleArn (cross-account) is intentionally rejected — cdkd uses S3 state,
-   * not CloudFormation DescribeStacks, so a cross-account reference would
-   * require assuming the role and reading the producer's separate state
-   * bucket. That path is not yet implemented; we surface a clear error
-   * instead of silently downgrading.
+   * **RoleArn (cross-account)**: when set, cdkd issues `sts:AssumeRole`
+   * against the supplied role and reads the PRODUCER ACCOUNT's separate
+   * cdkd state bucket (`cdkd-state-{producerAccountId}`) — bucket name
+   * derived from the role ARN's account ID and the canonical
+   * region-free bucket convention. The assumed credentials are cached
+   * per-RoleArn for the deploy lifetime so a stack that references the
+   * same producer multiple times only pays one STS hop. **The inline
+   * `RoleArn` argument is constrained to literal strings only** — no
+   * `Ref` / `Fn::GetAtt` / `Fn::Sub` chains — because the resolver
+   * context isn't guaranteed to have the producer-account info available
+   * at intrinsic-resolution time and a typo'd role lookup is far worse
+   * than a clear "literal-string required" error at template-author
+   * time. Same-account references (no RoleArn) take the original
+   * shared-state-backend path.
    */
   private async resolveGetStackOutput(arg: unknown, context: ResolverContext): Promise<unknown> {
     if (!arg || typeof arg !== 'object' || Array.isArray(arg)) {
@@ -1553,47 +1569,60 @@ export class IntrinsicFunctionResolver {
       region = resolvedRegion;
     }
 
+    // RoleArn must be a LITERAL string in the template — we check the raw
+    // value rather than running it through resolveValue, because a Ref /
+    // Fn::GetAtt / Fn::Sub chain would either silently resolve to the
+    // wrong principal or quietly fail in a way that masks the
+    // cross-account intent. The error message is specific so template
+    // authors know to inline the ARN.
     let roleArn: string | undefined;
     if ('RoleArn' in args && args['RoleArn'] !== undefined && args['RoleArn'] !== null) {
-      const resolvedRoleArn = await this.resolveValue(args['RoleArn'], context);
-      if (typeof resolvedRoleArn !== 'string' || resolvedRoleArn === '') {
+      const raw = args['RoleArn'];
+      if (typeof raw !== 'string' || raw === '') {
         throw new Error(
-          `Fn::GetStackOutput: RoleArn must resolve to a non-empty string, got ${typeof resolvedRoleArn}`
+          `Fn::GetStackOutput: RoleArn must be a literal string in the template ` +
+            `(no Ref / Fn::GetAtt / Fn::Sub allowed for cross-account references). ` +
+            `Got ${
+              raw === null ? 'null' : Array.isArray(raw) ? 'array' : typeof raw
+            }${typeof raw === 'object' ? ` (intrinsic shape: ${JSON.stringify(raw).slice(0, 80)})` : ''}.`
         );
       }
-      roleArn = resolvedRoleArn;
+      roleArn = raw;
     }
 
-    if (roleArn) {
-      throw new Error(
-        `Fn::GetStackOutput: cross-account references via RoleArn are not yet supported by cdkd ` +
-          `(StackName=${stackName}, Region=${region}, RoleArn=${roleArn}). ` +
-          `cdkd reads outputs from S3 state instead of CloudFormation DescribeStacks, ` +
-          `so cross-account requires assuming the role and reading the producer account's ` +
-          `state bucket — not yet implemented.`
-      );
-    }
-
-    if (!context.stateBackend) {
-      throw new Error('Fn::GetStackOutput: state backend is required for cross-stack references');
-    }
-
-    // Reject obvious self-reference (same stack AND same region).
-    if (context.stackName && context.stackName === stackName && region === this.resolverRegion) {
+    // Reject obvious self-reference (same stack AND same region AND
+    // same account — we cannot detect the account-id mismatch without
+    // STS, so we only enforce same-region same-stack here; the
+    // cross-account RoleArn case is by definition NOT self-reference).
+    if (
+      !roleArn &&
+      context.stackName &&
+      context.stackName === stackName &&
+      region === this.resolverRegion
+    ) {
       throw new Error(
         `Fn::GetStackOutput: cannot reference own stack '${stackName}' in the same region '${region}'`
       );
     }
 
     this.logger.debug(
-      `Resolving Fn::GetStackOutput: StackName=${stackName}, Region=${region}, OutputName=${outputName}`
+      `Resolving Fn::GetStackOutput: StackName=${stackName}, Region=${region}, OutputName=${outputName}${
+        roleArn ? `, RoleArn=${roleArn}` : ''
+      }`
     );
 
-    const stateData = await context.stateBackend.getState(stackName, region);
+    // Cross-account branch: assume the role, derive the producer's
+    // state bucket from the role ARN's account ID, build an ephemeral
+    // S3StateBackend pointed at it with the assumed credentials, then
+    // read the producer's state.
+    const stateData = roleArn
+      ? await this.getCrossAccountStackState(roleArn, stackName, region, context)
+      : await this.getSameAccountStackState(stackName, region, context);
     if (!stateData) {
       throw new Error(
-        `Fn::GetStackOutput: stack '${stackName}' not found in region '${region}'. ` +
-          `Make sure the producer stack has been deployed via cdkd.`
+        `Fn::GetStackOutput: stack '${stackName}' not found in region '${region}'${
+          roleArn ? ` (cross-account via ${roleArn})` : ''
+        }. Make sure the producer stack has been deployed via cdkd.`
       );
     }
 
@@ -1608,11 +1637,111 @@ export class IntrinsicFunctionResolver {
 
     const value = outputs[outputName];
     this.logger.info(
-      `Resolved Fn::GetStackOutput: StackName=${stackName}, Region=${region}, OutputName=${outputName} -> ${JSON.stringify(
-        value
-      )}`
+      `Resolved Fn::GetStackOutput: StackName=${stackName}, Region=${region}, OutputName=${outputName}${
+        roleArn ? `, RoleArn=${roleArn}` : ''
+      } -> ${JSON.stringify(value)}`
     );
     return value;
+  }
+
+  /**
+   * Read the producer's state from the SAME AWS account (no RoleArn).
+   *
+   * Uses the consumer's shared `context.stateBackend` — the same backend
+   * the consumer used to read / write its own state. The same-account
+   * path covers cross-region cleanly because the bucket name is
+   * account-scoped (not region-scoped).
+   */
+  private async getSameAccountStackState(
+    stackName: string,
+    region: string,
+    context: ResolverContext
+  ): ReturnType<S3StateBackend['getState']> {
+    if (!context.stateBackend) {
+      throw new Error('Fn::GetStackOutput: state backend is required for cross-stack references');
+    }
+    return context.stateBackend.getState(stackName, region);
+  }
+
+  /**
+   * Read the producer's state from a DIFFERENT AWS account (RoleArn set).
+   *
+   * Pipeline:
+   *   1. Parse `roleArn` for the producer's account id (rejects malformed
+   *      ARNs up front with a clear message — no opaque STS error later).
+   *   2. `sts:AssumeRole` against `roleArn`, cached per role for the
+   *      deploy lifetime (typical: 1 STS hop covering many `Fn::GetStackOutput`
+   *      sites in the same deploy).
+   *   3. Derive the producer's canonical state bucket
+   *      (`cdkd-state-{producerAccountId}`) and auto-detect its region
+   *      via `GetBucketLocation` with the assumed credentials.
+   *   4. Build a fresh, narrowly-scoped `S3StateBackend` against that
+   *      bucket with the assumed credentials and call `getState` —
+   *      reuses the entire state-parsing + schema-version-tolerance
+   *      machinery (legacy `version: 1` keys, migration warnings, etc.).
+   *
+   * The constructed `S3Client` and backend live only for the duration of
+   * this call. cdkd does NOT mutate the process's `AWS_*` env vars (that
+   * would leak the assumed credentials into every subsequent provisioning
+   * client — opposite of what we want; provisioning still runs under the
+   * consumer's normal credentials).
+   */
+  private async getCrossAccountStackState(
+    roleArn: string,
+    stackName: string,
+    region: string,
+    context: ResolverContext
+  ): ReturnType<S3StateBackend['getState']> {
+    const parsed = parseIamRoleArn(roleArn);
+    if (!parsed) {
+      throw new Error(
+        `Fn::GetStackOutput: RoleArn '${roleArn}' is not a valid IAM role ARN. ` +
+          `Expected shape: arn:<partition>:iam::<12-digit-account-id>:role/<role-name>` +
+          ` (e.g. arn:aws:iam::123456789012:role/MyRole, arn:aws-us-gov:iam::...).`
+      );
+    }
+
+    const credentials = await assumeRoleForCrossAccountStateRead(roleArn);
+    const { bucket, region: bucketRegion } = await resolveCrossAccountStateBucket(
+      parsed.accountId,
+      credentials
+    );
+
+    // Reuse the consumer-side state prefix (the cdkd convention is `cdkd`
+    // and is the same on both sides — the producer's own `cdkd deploy`
+    // wrote under the same prefix). Pulling the live value off the
+    // consumer's backend keeps us in sync with `--state-prefix`
+    // overrides at the consumer side; in practice both sides almost
+    // always default to `cdkd`.
+    const prefix = context.stateBackend?.prefix ?? 'cdkd';
+
+    const s3 = new S3Client({
+      region: bucketRegion,
+      credentials: {
+        accessKeyId: credentials.accessKeyId,
+        secretAccessKey: credentials.secretAccessKey,
+        sessionToken: credentials.sessionToken,
+      },
+      // Suppress the SDK's noisy "unknown Body length" warning; matches
+      // the suppression in `AwsClients` and the consumer-side state
+      // backend's region-rebuild path.
+      logger: { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} },
+    });
+
+    const crossAccountBackend = new S3StateBackend(
+      s3,
+      { bucket, prefix },
+      {
+        region: bucketRegion,
+        credentials: {
+          accessKeyId: credentials.accessKeyId,
+          secretAccessKey: credentials.secretAccessKey,
+          sessionToken: credentials.sessionToken,
+        },
+      }
+    );
+
+    return crossAccountBackend.getState(stackName, region);
   }
 
   /**
