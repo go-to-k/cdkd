@@ -46,8 +46,6 @@ Stack: S3 Bucket, DynamoDB Table, SQS Queue, SNS Topic, SSM Parameter (5 indepen
 
 ![cdk deploy vs cdkd deploy — side-by-side, 35s recording, real AWS deploy. cdkd finishes while cdk is still creating its CloudFormation changeset.](assets/cdk-vs-cdkd.gif)
 
-Recorded in real time with [`vhs`](https://github.com/charmbracelet/vhs) — both panes deploy the same 5-resource stack to real AWS. See [assets/demo-gif/](assets/demo-gif/) to reproduce.
-
 ### VPC + CloudFront + Lambda stack — **15x faster with `--no-wait`** (40s vs 599s)
 
 Real-world stack: 1 VPC (2 AZs, NAT Gateway, public + private subnets) + Lambda Function (with `VpcConfig`) + Lambda Function URL (AWS_IAM) + CloudFront Distribution (OAC, caching disabled) + SQS Queue + EventSourceMapping + Consumer Lambda.
