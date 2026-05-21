@@ -176,7 +176,7 @@ export class KinesisStreamConsumerProvider implements ResourceProvider {
       throw new ResourceUpdateNotSupportedError(
         resourceType,
         logicalId,
-        'AWS::Kinesis::StreamConsumer ConsumerName / StreamARN are immutable; re-deploy with cdkd deploy --replace, or destroy + redeploy'
+        'AWS::Kinesis::StreamConsumer ConsumerName / StreamARN are immutable on AWS — there is no UpdateStreamConsumer API; every change registers a new consumer (RegisterStreamConsumer). Re-deploy with cdkd deploy --replace, or destroy + redeploy.'
       );
     }
 
