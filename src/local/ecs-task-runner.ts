@@ -63,6 +63,13 @@ export interface RunEcsTaskOptions {
   platformOverride?: string;
   /** Skip `docker pull` on every image (sidecar + each container's image). */
   skipPull: boolean;
+  /**
+   * Optional role ARN to assume before authenticating against ECR for
+   * cross-account / centralized registry pulls (#455). Forwarded to
+   * `pullEcrImage`'s `ecrRoleArn` option. Same-account / same-region
+   * pulls do not need this.
+   */
+  ecrRoleArn?: string;
   /** Don't `docker rm -f` containers on task exit; useful for `docker exec` post-mortems. */
   keepRunning: boolean;
   /** Start the containers and return without streaming logs. */
@@ -560,6 +567,7 @@ async function prepareOneImage(
       return pullEcrImage(image.uri, {
         skipPull: options.skipPull,
         ...(options.region !== undefined && { region: options.region }),
+        ...(options.ecrRoleArn !== undefined && { ecrRoleArn: options.ecrRoleArn }),
       });
     }
     case 'cdk-asset': {
