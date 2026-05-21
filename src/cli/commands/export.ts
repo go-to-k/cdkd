@@ -32,6 +32,13 @@ import { S3StateBackend } from '../../state/s3-state-backend.js';
 import { LockManager } from '../../state/lock-manager.js';
 import { setAwsClients, AwsClients } from '../../utils/aws-clients.js';
 import { resolveApp, resolveStateBucketWithDefault } from '../config-loader.js';
+import {
+  CFN_TEMPLATE_BODY_LIMIT,
+  CFN_TEMPLATE_URL_LIMIT,
+  findLargeInlineResources,
+  uploadCfnTemplate,
+  type CfnUploadS3ClientOpts,
+} from '../upload-cfn-template.js';
 import type { ResourceState, StackState } from '../../types/state.js';
 
 interface ExportOptions {
@@ -995,7 +1002,11 @@ async function exportCommand(stackArg: string | undefined, options: ExportOption
         cfnStackName,
         phase1Template,
         phase1Imports,
-        cfnParameters
+        cfnParameters,
+        {
+          stateBucket,
+          ...(options.profile && { s3ClientOpts: { profile: options.profile } }),
+        }
       );
 
       logger.info(
@@ -1078,7 +1089,11 @@ async function exportCommand(stackArg: string | undefined, options: ExportOption
             awsClients.cloudFormation,
             cfnStackName,
             phase2Template,
-            cfnParameters
+            cfnParameters,
+            {
+              stateBucket,
+              ...(options.profile && { s3ClientOpts: { profile: options.profile } }),
+            }
           );
           const parts: string[] = [];
           if (phase2Creates.length > 0) {
@@ -2014,12 +2029,130 @@ function printPlan(plan: ImportPlanEntry[], cfnStackName: string): void {
   logger.info('');
 }
 
+export interface ChangeSetUploadOpts {
+  /**
+   * cdkd state bucket reused as transient template storage when the
+   * serialized template exceeds the inline 51,200-byte TemplateBody
+   * limit. Both phase-1 (IMPORT) and phase-2 (UPDATE) changesets share
+   * this routing so the contract is symmetric — a stack that needs the
+   * upload path in phase-1 will need it in phase-2 too, and the inline
+   * path stays cheap (no S3 round-trip) for the common case.
+   */
+  stateBucket: string;
+  /**
+   * AWS auth context forwarded to the S3 client that performs the
+   * transient upload + delete. Threaded from the export CLI's
+   * `--profile` resolution so the upload uses the same identity that
+   * resolved cdkd state.
+   */
+  s3ClientOpts?: CfnUploadS3ClientOpts;
+}
+
+/**
+ * Decide whether to submit a CFn changeset's template inline via
+ * `TemplateBody` or upload it to the cdkd state bucket and submit via
+ * `TemplateURL`. Returns a discriminated outcome:
+ *
+ *   - `kind: 'inline'`  — payload <= 51,200 bytes; pass `TemplateBody`
+ *     directly. No S3 round-trip; the caller's `finally` cleanup is a
+ *     no-op.
+ *   - `kind: 'url'`     — payload in (51,200, 1,048,576] bytes; helper
+ *     uploaded to `cdkd-migrate-tmp/<stackName>/<ts>.json`. The caller
+ *     MUST invoke the returned `cleanup` in a `finally` so the transient
+ *     object is deleted regardless of CFn success / failure.
+ *
+ * Payloads > 1,048,576 bytes throw pre-flight (the 1 MB ceiling applies
+ * to every CFn API surface; no S3 indirection helps). The error names the
+ * top inline-payload contributors so the user knows what to shrink.
+ *
+ * `phaseLabel` is interpolated into the pre-flight error so the user
+ * sees which phase tripped the ceiling ("phase-1 IMPORT" vs "phase-2
+ * UPDATE").
+ */
+/* Exported for unit testing. Internal to the export flow otherwise. */
+export async function selectChangeSetTemplateSource(
+  template: Record<string, unknown>,
+  templateBody: string,
+  uploadOpts: ChangeSetUploadOpts,
+  stackName: string,
+  phaseLabel: string
+): Promise<
+  | { kind: 'inline'; templateBody: string; cleanup: () => Promise<void> }
+  | { kind: 'url'; templateUrl: string; cleanup: () => Promise<void> }
+> {
+  const logger = getLogger();
+  if (templateBody.length <= CFN_TEMPLATE_BODY_LIMIT) {
+    return { kind: 'inline', templateBody, cleanup: async () => undefined };
+  }
+  if (templateBody.length > CFN_TEMPLATE_URL_LIMIT) {
+    // Pre-flight refusal: the 1 MB ceiling applies to every CFn API
+    // surface, so no S3 indirection helps. Surface the heaviest
+    // contributors (typically inline Code.ZipFile Lambdas) so the user
+    // knows what to shrink — `lambda.Code.fromAsset(...)` is the
+    // typical fix for the >1 MB common case; otherwise split the stack
+    // via nested `AWS::CloudFormation::Stack` resources.
+    const offenders = findLargeInlineResources(template);
+    let detail = '';
+    if (offenders.length > 0) {
+      const lines = offenders
+        .slice(0, 10)
+        .map((o) => `  - ${o.logicalId} (${o.resourceType}): ~${o.approxBytes} bytes`);
+      detail = `\nLargest inline payloads (move these to lambda.Code.fromAsset or split into nested stacks):\n${lines.join('\n')}`;
+      if (offenders.length > 10) {
+        detail += `\n  (and ${offenders.length - 10} more above the 4096-byte threshold)`;
+      }
+    }
+    throw new Error(
+      `${phaseLabel} template is ${templateBody.length} bytes, over the ` +
+        `${CFN_TEMPLATE_URL_LIMIT}-byte CloudFormation TemplateURL limit. Templates that ` +
+        `large cannot be submitted to CloudFormation — shrink inline payloads (e.g. ` +
+        `inline Lambda Code.ZipFile larger than ~4 KB → switch to lambda.Code.fromAsset) ` +
+        `or split the stack into nested AWS::CloudFormation::Stack resources.${detail}`
+    );
+  }
+  logger.info(
+    `  Template is ${templateBody.length} bytes (over ${CFN_TEMPLATE_BODY_LIMIT} inline limit) — ` +
+      `uploading to state bucket '${uploadOpts.stateBucket}'.`
+  );
+  const uploaded = await uploadCfnTemplate({
+    bucket: uploadOpts.stateBucket,
+    body: templateBody,
+    stackName,
+    ...(uploadOpts.s3ClientOpts && { s3ClientOpts: uploadOpts.s3ClientOpts }),
+  });
+  return { kind: 'url', templateUrl: uploaded.url, cleanup: uploaded.cleanup };
+}
+
+/**
+ * Best-effort wrapper around the `cleanup` callback returned by
+ * {@link selectChangeSetTemplateSource}. Mirrors the warn-on-failure
+ * pattern from `retireCloudFormationStack` so a stranded `cdkd-migrate-tmp/`
+ * object never blocks the calling command — it lives under an obviously
+ * named prefix and can be reaped manually.
+ */
+async function runTemplateUploadCleanup(
+  cleanup: () => Promise<void>,
+  bucket: string
+): Promise<void> {
+  const logger = getLogger();
+  try {
+    await cleanup();
+  } catch (cleanupErr) {
+    const msg = cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr);
+    logger.warn(
+      `Failed to delete temporary template upload from '${bucket}'. ` +
+        `Clean up manually under prefix 'cdkd-migrate-tmp/'. Cause: ${msg}`
+    );
+  }
+}
+
 async function executeImportChangeSet(
   cfnClient: AwsClients['cloudFormation'],
   stackName: string,
   template: Record<string, unknown>,
   plan: ImportPlanEntry[],
-  parameters: Parameter[]
+  parameters: Parameter[],
+  uploadOpts: ChangeSetUploadOpts
 ): Promise<void> {
   const logger = getLogger();
   const changeSetName = `cdkd-migrate-${Date.now()}`;
@@ -2036,92 +2169,105 @@ async function executeImportChangeSet(
       `(${plan.length} resource(s), ${templateBody.length} bytes)...`
   );
 
-  // CFn IMPORT changesets accept TemplateBody up to 51,200 bytes inline.
-  // Larger templates require S3 upload via TemplateURL. For MVP we only
-  // support inline; larger payloads are deferred to a follow-up PR.
-  if (templateBody.length > 51200) {
-    throw new Error(
-      `Filtered template is ${templateBody.length} bytes, over the 51,200-byte inline ` +
-        `TemplateBody limit. Templates that large require TemplateURL upload (not yet ` +
-        `implemented for cdkd export; please file an issue if you hit this).`
-    );
-  }
-
+  // Route by serialized size: <= 51,200 inline TemplateBody, otherwise
+  // upload to the cdkd state bucket and submit via TemplateURL. Templates
+  // > 1 MB pre-flight refuse with the offending-resources list.
+  const source = await selectChangeSetTemplateSource(
+    template,
+    templateBody,
+    uploadOpts,
+    stackName,
+    'Filtered phase-1 IMPORT'
+  );
   try {
-    await cfnClient.send(
-      new CreateChangeSetCommand({
-        StackName: stackName,
-        ChangeSetName: changeSetName,
-        ChangeSetType: 'IMPORT',
-        TemplateBody: templateBody,
-        ResourcesToImport: resourcesToImport,
-        ...(parameters.length > 0 && { Parameters: parameters }),
-        // CDK templates routinely require CAPABILITY_IAM /
-        // CAPABILITY_NAMED_IAM. Forward both so the user does not have to
-        // re-discover and re-pass them.
-        Capabilities: ['CAPABILITY_IAM', 'CAPABILITY_NAMED_IAM', 'CAPABILITY_AUTO_EXPAND'],
-      })
-    );
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    throw new Error(`Failed to create IMPORT changeset: ${msg}`);
-  }
-
-  try {
-    await waitUntilChangeSetCreateComplete(
-      { client: cfnClient, maxWaitTime: 600 },
-      { StackName: stackName, ChangeSetName: changeSetName }
-    );
-  } catch (err) {
-    // CreateChangeSet returns FAILED with a StatusReason on validation
-    // problems (template error, identifier mismatch, etc.). Fetch the
-    // reason and surface it before re-throwing.
     try {
-      const desc = await cfnClient.send(
-        new DescribeChangeSetCommand({ StackName: stackName, ChangeSetName: changeSetName })
+      await cfnClient.send(
+        new CreateChangeSetCommand({
+          StackName: stackName,
+          ChangeSetName: changeSetName,
+          ChangeSetType: 'IMPORT',
+          ...(source.kind === 'inline'
+            ? { TemplateBody: source.templateBody }
+            : { TemplateURL: source.templateUrl }),
+          ResourcesToImport: resourcesToImport,
+          ...(parameters.length > 0 && { Parameters: parameters }),
+          // CDK templates routinely require CAPABILITY_IAM /
+          // CAPABILITY_NAMED_IAM. Forward both so the user does not have to
+          // re-discover and re-pass them.
+          Capabilities: ['CAPABILITY_IAM', 'CAPABILITY_NAMED_IAM', 'CAPABILITY_AUTO_EXPAND'],
+        })
       );
-      const reason = desc.StatusReason ?? 'unknown';
-      // Clean up the failed changeset so the next attempt is not blocked
-      // by a REVIEW_IN_PROGRESS phantom stack.
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      throw new Error(`Failed to create IMPORT changeset: ${msg}`);
+    }
+
+    try {
+      await waitUntilChangeSetCreateComplete(
+        { client: cfnClient, maxWaitTime: 600 },
+        { StackName: stackName, ChangeSetName: changeSetName }
+      );
+    } catch (err) {
+      // CreateChangeSet returns FAILED with a StatusReason on validation
+      // problems (template error, identifier mismatch, etc.). Fetch the
+      // reason and surface it before re-throwing.
+      try {
+        const desc = await cfnClient.send(
+          new DescribeChangeSetCommand({ StackName: stackName, ChangeSetName: changeSetName })
+        );
+        const reason = desc.StatusReason ?? 'unknown';
+        // Clean up the failed changeset so the next attempt is not blocked
+        // by a REVIEW_IN_PROGRESS phantom stack.
+        await cfnClient
+          .send(new DeleteChangeSetCommand({ StackName: stackName, ChangeSetName: changeSetName }))
+          .catch(() => {});
+        throw new Error(`IMPORT changeset FAILED: ${reason}`);
+      } catch (innerErr) {
+        if (innerErr instanceof Error && innerErr.message.startsWith('IMPORT changeset FAILED')) {
+          throw innerErr;
+        }
+        throw err;
+      }
+    }
+
+    // Execute + wait must clean up the changeset on failure too: if the
+    // import errors after CreateChangeSet succeeded, the changeset sticks
+    // around and a subsequent run hits `assertCfnStackAbsent`'s "stack
+    // already exists" path (CFn parks the stack in REVIEW_IN_PROGRESS).
+    // We delete the changeset best-effort and let the original error
+    // propagate.
+    logger.info(`Executing IMPORT changeset...`);
+    try {
+      await cfnClient.send(
+        new ExecuteChangeSetCommand({ StackName: stackName, ChangeSetName: changeSetName })
+      );
+      await waitUntilStackImportComplete(
+        { client: cfnClient, maxWaitTime: 3600 },
+        { StackName: stackName }
+      );
+    } catch (err) {
+      // On IMPORT failure, fetch the per-resource failure reasons from
+      // CFn stack events so the user can see WHICH resource failed and
+      // WHY. The waiter only reports the high-level rollback state.
+      const failureSummary = await collectImportFailureSummary(cfnClient, stackName).catch(
+        () => ''
+      );
       await cfnClient
         .send(new DeleteChangeSetCommand({ StackName: stackName, ChangeSetName: changeSetName }))
         .catch(() => {});
-      throw new Error(`IMPORT changeset FAILED: ${reason}`);
-    } catch (innerErr) {
-      if (innerErr instanceof Error && innerErr.message.startsWith('IMPORT changeset FAILED')) {
-        throw innerErr;
+      if (failureSummary) {
+        throw new Error(`IMPORT changeset failed:\n${failureSummary}`, { cause: err });
       }
       throw err;
     }
-  }
-
-  // Execute + wait must clean up the changeset on failure too: if the
-  // import errors after CreateChangeSet succeeded, the changeset sticks
-  // around and a subsequent run hits `assertCfnStackAbsent`'s "stack
-  // already exists" path (CFn parks the stack in REVIEW_IN_PROGRESS).
-  // We delete the changeset best-effort and let the original error
-  // propagate.
-  logger.info(`Executing IMPORT changeset...`);
-  try {
-    await cfnClient.send(
-      new ExecuteChangeSetCommand({ StackName: stackName, ChangeSetName: changeSetName })
-    );
-    await waitUntilStackImportComplete(
-      { client: cfnClient, maxWaitTime: 3600 },
-      { StackName: stackName }
-    );
-  } catch (err) {
-    // On IMPORT failure, fetch the per-resource failure reasons from
-    // CFn stack events so the user can see WHICH resource failed and
-    // WHY. The waiter only reports the high-level rollback state.
-    const failureSummary = await collectImportFailureSummary(cfnClient, stackName).catch(() => '');
-    await cfnClient
-      .send(new DeleteChangeSetCommand({ StackName: stackName, ChangeSetName: changeSetName }))
-      .catch(() => {});
-    if (failureSummary) {
-      throw new Error(`IMPORT changeset failed:\n${failureSummary}`, { cause: err });
-    }
-    throw err;
+  } finally {
+    // Best-effort delete of the transient template upload, if any. CFn has
+    // already copied the template into its internal storage during the
+    // synchronous CreateChangeSet call, so the S3 object is no longer
+    // needed regardless of whether the wait / execute steps succeeded.
+    // The cleanup callback for the inline path is a no-op, so this is
+    // always cheap to invoke.
+    await runTemplateUploadCleanup(source.cleanup, uploadOpts.stateBucket);
   }
 }
 
@@ -2177,77 +2323,91 @@ async function executeUpdateChangeSet(
   cfnClient: AwsClients['cloudFormation'],
   stackName: string,
   template: Record<string, unknown>,
-  parameters: Parameter[]
+  parameters: Parameter[],
+  uploadOpts: ChangeSetUploadOpts
 ): Promise<void> {
   const logger = getLogger();
   const changeSetName = `cdkd-phase2-${Date.now()}`;
   const templateBody = JSON.stringify(template, null, 2);
-
-  if (templateBody.length > 51200) {
-    throw new Error(
-      `Full template is ${templateBody.length} bytes, over the 51,200-byte inline ` +
-        `TemplateBody limit for phase-2 UPDATE. TemplateURL upload is not yet implemented.`
-    );
-  }
 
   logger.info(
     `Creating UPDATE changeset '${changeSetName}' for phase 2 ` +
       `(${templateBody.length} bytes)...`
   );
 
-  try {
-    await cfnClient.send(
-      new CreateChangeSetCommand({
-        StackName: stackName,
-        ChangeSetName: changeSetName,
-        ChangeSetType: 'UPDATE',
-        TemplateBody: templateBody,
-        ...(parameters.length > 0 && { Parameters: parameters }),
-        Capabilities: ['CAPABILITY_IAM', 'CAPABILITY_NAMED_IAM', 'CAPABILITY_AUTO_EXPAND'],
-      })
-    );
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    throw new Error(`Failed to create UPDATE changeset: ${msg}`);
-  }
+  // Same size routing as phase-1 IMPORT: <= 51,200 inline; > 51,200 and
+  // <= 1,048,576 via TemplateURL upload; > 1,048,576 pre-flight refuse.
+  // Phase-2 is the typical wire-format limit trigger because it submits
+  // the FULL synth template (phase-1 only submits the importable subset).
+  const source = await selectChangeSetTemplateSource(
+    template,
+    templateBody,
+    uploadOpts,
+    stackName,
+    'Phase-2 UPDATE'
+  );
 
   try {
-    await waitUntilChangeSetCreateComplete(
-      { client: cfnClient, maxWaitTime: 600 },
-      { StackName: stackName, ChangeSetName: changeSetName }
-    );
-  } catch (err) {
     try {
-      const desc = await cfnClient.send(
-        new DescribeChangeSetCommand({ StackName: stackName, ChangeSetName: changeSetName })
+      await cfnClient.send(
+        new CreateChangeSetCommand({
+          StackName: stackName,
+          ChangeSetName: changeSetName,
+          ChangeSetType: 'UPDATE',
+          ...(source.kind === 'inline'
+            ? { TemplateBody: source.templateBody }
+            : { TemplateURL: source.templateUrl }),
+          ...(parameters.length > 0 && { Parameters: parameters }),
+          Capabilities: ['CAPABILITY_IAM', 'CAPABILITY_NAMED_IAM', 'CAPABILITY_AUTO_EXPAND'],
+        })
       );
-      const reason = desc.StatusReason ?? 'unknown';
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      throw new Error(`Failed to create UPDATE changeset: ${msg}`);
+    }
+
+    try {
+      await waitUntilChangeSetCreateComplete(
+        { client: cfnClient, maxWaitTime: 600 },
+        { StackName: stackName, ChangeSetName: changeSetName }
+      );
+    } catch (err) {
+      try {
+        const desc = await cfnClient.send(
+          new DescribeChangeSetCommand({ StackName: stackName, ChangeSetName: changeSetName })
+        );
+        const reason = desc.StatusReason ?? 'unknown';
+        await cfnClient
+          .send(new DeleteChangeSetCommand({ StackName: stackName, ChangeSetName: changeSetName }))
+          .catch(() => {});
+        throw new Error(`UPDATE changeset FAILED: ${reason}`);
+      } catch (innerErr) {
+        if (innerErr instanceof Error && innerErr.message.startsWith('UPDATE changeset FAILED')) {
+          throw innerErr;
+        }
+        throw err;
+      }
+    }
+
+    logger.info(`Executing UPDATE changeset...`);
+    try {
+      await cfnClient.send(
+        new ExecuteChangeSetCommand({ StackName: stackName, ChangeSetName: changeSetName })
+      );
+      await waitUntilStackUpdateComplete(
+        { client: cfnClient, maxWaitTime: 3600 },
+        { StackName: stackName }
+      );
+    } catch (err) {
       await cfnClient
         .send(new DeleteChangeSetCommand({ StackName: stackName, ChangeSetName: changeSetName }))
         .catch(() => {});
-      throw new Error(`UPDATE changeset FAILED: ${reason}`);
-    } catch (innerErr) {
-      if (innerErr instanceof Error && innerErr.message.startsWith('UPDATE changeset FAILED')) {
-        throw innerErr;
-      }
       throw err;
     }
-  }
-
-  logger.info(`Executing UPDATE changeset...`);
-  try {
-    await cfnClient.send(
-      new ExecuteChangeSetCommand({ StackName: stackName, ChangeSetName: changeSetName })
-    );
-    await waitUntilStackUpdateComplete(
-      { client: cfnClient, maxWaitTime: 3600 },
-      { StackName: stackName }
-    );
-  } catch (err) {
-    await cfnClient
-      .send(new DeleteChangeSetCommand({ StackName: stackName, ChangeSetName: changeSetName }))
-      .catch(() => {});
-    throw err;
+  } finally {
+    // Always run the upload cleanup (no-op for the inline path) so the
+    // transient S3 object is removed regardless of CFn success / failure.
+    await runTemplateUploadCleanup(source.cleanup, uploadOpts.stateBucket);
   }
 }
 
