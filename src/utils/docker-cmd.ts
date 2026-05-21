@@ -167,15 +167,20 @@ export async function spawnStreaming(
 /**
  * Format the stderr from a failed `docker login` so the surfaced cdkd
  * error gives the user an actionable workaround when the underlying
- * failure is the well-known macOS osxkeychain credential-helper bug
- * (which has nothing to do with cdkd, AWS, or IAM perms — the docker
- * CLI itself fails to save the auth token to the keychain because an
- * entry for the same hostname already exists in stale state).
+ * failure is a credential-helper persistence bug (which has nothing to
+ * do with cdkd, AWS, or IAM perms — the docker CLI itself fails to
+ * save the auth token to the platform's credential store). The most
+ * common shape is `osxkeychain` on macOS rejecting an overwrite for
+ * an existing entry, but `wincred` (Windows), `pass` (Linux), and
+ * `secretservice` (Linux) hit the same class of `Error saving
+ * credentials` failure, so the rewritten message stays platform-
+ * agnostic — `docker logout <endpoint>` is the correct recovery on
+ * every backend.
  *
- * Detected docker / docker-credential-osxkeychain output patterns:
+ * Detected docker / docker-credential-* output patterns:
  *   - `error storing credentials - err: exit status 1, out: \`The
- *     specified item already exists in the keychain.\``
- *   - `Error saving credentials: ...`
+ *     specified item already exists in the keychain.\`` (osxkeychain)
+ *   - `Error saving credentials: ...` (any backend)
  *
  * Non-matching failures (genuine IAM / network / endpoint problems)
  * pass through with just the stderr trimmed — the original message
@@ -183,16 +188,17 @@ export async function spawnStreaming(
  */
 export function formatDockerLoginError(stderr: string, endpoint: string): string {
   const trimmed = stderr.trim();
-  const isKeychainCollision =
+  const isCredentialHelperFailure =
     trimmed.includes('already exists in the keychain') ||
     trimmed.includes('Error saving credentials');
-  if (isKeychainCollision) {
+  if (isCredentialHelperFailure) {
     return (
-      `docker's credential helper failed to save the ECR auth token. ` +
-      `The "already exists in the keychain" / "Error saving credentials" output is a known ` +
-      `Docker Desktop + macOS osxkeychain bug — unrelated to cdkd, AWS credentials, or IAM perms. ` +
-      `Quick fix: run \`docker logout ${endpoint}\` to clear the stale keychain entry, then retry the cdkd command. ` +
-      `Permanent fix: edit ~/.docker/config.json and remove (or empty) the "credsStore": "osxkeychain" entry. ` +
+      `docker's credential helper (osxkeychain on macOS / wincred on Windows / pass / secretservice on Linux) ` +
+      `failed to persist the ECR auth token. The "already exists in the keychain" / "Error saving credentials" ` +
+      `output is a known docker-credential-helpers issue — unrelated to cdkd, AWS credentials, or IAM perms. ` +
+      `Quick fix: run \`docker logout ${endpoint}\` to clear the stale entry, then retry the cdkd command. ` +
+      `Permanent fix: edit ~/.docker/config.json and remove (or empty) the platform-specific "credsStore" entry ` +
+      `(e.g. "osxkeychain" → "" or "desktop" on macOS Docker Desktop). ` +
       `Original docker stderr: ${trimmed}`
     );
   }

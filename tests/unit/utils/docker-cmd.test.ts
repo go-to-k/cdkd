@@ -151,7 +151,11 @@ describe('formatDockerLoginError', () => {
       'out: `The specified item already exists in the keychain.`';
     const out = formatDockerLoginError(stderr, endpoint);
     expect(out).toMatch(/Quick fix: run `docker logout https:\/\/123456789012\.dkr\.ecr\.us-east-1\.amazonaws\.com`/);
-    expect(out).toMatch(/known Docker Desktop \+ macOS osxkeychain bug/);
+    // Platform-agnostic wording (osxkeychain / wincred / pass / secretservice all hit
+    // the same class) — the user-facing message must NOT pin the diagnosis to macOS
+    // when the same workaround applies on Windows + Linux too.
+    expect(out).toMatch(/docker-credential-helpers issue/);
+    expect(out).toMatch(/osxkeychain on macOS \/ wincred on Windows \/ pass \/ secretservice on Linux/);
     expect(out).toMatch(/credsStore/); // permanent-fix hint
     expect(out).toContain(stderr); // original stderr preserved for diagnosis
   });
