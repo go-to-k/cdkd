@@ -28,11 +28,16 @@ import { resolveLambdaArnIntrinsic as resolveLambdaArnShared } from './intrinsic
  *     names the `Issuer` and `Audience` for verification.
  *
  * Out of scope (hard-errored at discovery):
- *   - REST v1 IAM authorizers (`AuthorizationType === 'AWS_IAM'`).
  *   - REST v1 Custom authorizers with non-Lambda backing.
  *   - mTLS / VPC Lambda authorizers (the latter is not a separate kind —
  *     its Lambda is just a VPC-config Lambda; we warn at startup but do
  *     not block).
+ *
+ * Supported with signature-verification-only semantics:
+ *   - REST v1 IAM authorizers (`AuthorizationType === 'AWS_IAM'`, #447):
+ *     the local server verifies SigV4 signatures against the dev's local
+ *     credentials but does NOT evaluate IAM resource / action / condition
+ *     policies. See `src/local/sigv4-verify.ts`.
  */
 
 export interface LambdaTokenAuthorizer {
@@ -114,11 +119,29 @@ export interface JwtAuthorizer {
   declaredAt: string;
 }
 
+/**
+ * REST v1 `AuthorizationType: 'AWS_IAM'` (closes #447).
+ *
+ * Unlike the other authorizer kinds, AWS_IAM has NO `AWS::ApiGateway::Authorizer`
+ * resource in the template — the method's `AuthorizationType` is the only
+ * signal. The local server verifies the request's SigV4 signature against
+ * the dev's local credentials (see `src/local/sigv4-verify.ts`). IAM
+ * policy evaluation (resource / action / condition) is intentionally not
+ * emulated — that requires the deployed IAM data plane.
+ */
+export interface IamAuthorizer {
+  kind: 'iam';
+  /** Synthetic logical id — there is no real `AWS::ApiGateway::Authorizer` resource. */
+  logicalId: 'AWS_IAM';
+  declaredAt: string;
+}
+
 export type AuthorizerInfo =
   | LambdaTokenAuthorizer
   | LambdaRequestAuthorizer
   | CognitoUserPoolAuthorizer
-  | JwtAuthorizer;
+  | JwtAuthorizer
+  | IamAuthorizer;
 
 export type IdentitySourceSelector =
   | { kind: 'header'; name: string }
@@ -650,15 +673,19 @@ function detectRestV1Authorizer(
   const authType = props['AuthorizationType'];
   if (authType === undefined || authType === 'NONE') return undefined;
 
+  // AWS_IAM has no companion `AWS::ApiGateway::Authorizer` resource —
+  // the AuthorizationType alone is the signal. SigV4 signatures are
+  // verified at request time by `src/local/sigv4-verify.ts` (#447).
+  if (authType === 'AWS_IAM') {
+    return {
+      kind: 'iam',
+      logicalId: 'AWS_IAM',
+      declaredAt: `${stack.stackName}/${methodLogicalId}`,
+    };
+  }
+
   const authorizerId = props['AuthorizerId'];
   const refLogicalId = pickRefLogicalId(authorizerId);
-
-  // AWS_IAM uses no Authorizer resource — surface a clear error.
-  if (authType === 'AWS_IAM') {
-    throw new RouteDiscoveryError(
-      `${stack.stackName}/${methodLogicalId}: REST v1 AWS_IAM authorization is not supported by cdkd local start-api (deferred follow-up PR).`
-    );
-  }
 
   // CUSTOM / COGNITO_USER_POOLS / etc. all need an AuthorizerId Ref.
   if (!refLogicalId) {

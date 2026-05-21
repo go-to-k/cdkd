@@ -378,7 +378,7 @@ describe('attachAuthorizers', () => {
     expect(out[0]?.authorizer).toBeUndefined();
   });
 
-  it('hard-errors on AWS_IAM REST v1 (deferred)', () => {
+  it('attaches the iam authorizer kind on AWS_IAM REST v1 (#447)', () => {
     const stack = buildStack('S', {
       Method: {
         Type: 'AWS::ApiGateway::Method',
@@ -394,7 +394,12 @@ describe('attachAuthorizers', () => {
       stage: 'prod',
       declaredAt: 'S/Method',
     };
-    expect(() => attachAuthorizers([stack], [route])).toThrow(RouteDiscoveryError);
+    const out = attachAuthorizers([stack], [route]);
+    expect(out[0]?.authorizer).toEqual({
+      kind: 'iam',
+      logicalId: 'AWS_IAM',
+      declaredAt: 'S/Method',
+    });
   });
 
   // Issue #431: authorizer Lambda Arn unresolvable (cross-stack /

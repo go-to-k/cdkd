@@ -24,6 +24,7 @@ import {
   invokeTokenAuthorizer,
 } from './lambda-authorizer.js';
 import { type JwksCache, verifyCognitoJwt, verifyJwtAuthorizer } from './cognito-jwt.js';
+import { type CredentialsLoader, verifySigV4 } from './sigv4-verify.js';
 
 /**
  * The user-facing HTTP server for `cdkd local start-api`.
@@ -106,6 +107,21 @@ export interface StartApiServerOptions {
    * server is not started through the CLI bootstrap).
    */
   jwksWarnedUrls?: Set<string>;
+  /**
+   * Local-credentials loader for SigV4 signature verification on
+   * `AuthorizationType: 'AWS_IAM'` routes (#447). Required when any
+   * route uses AWS_IAM; ignored otherwise. The loader is cached at the
+   * loader layer so the credential chain is hit at most once per server
+   * lifecycle.
+   */
+  sigV4CredentialsLoader?: CredentialsLoader;
+  /**
+   * Per-server-lifecycle Set of `Credential=` access-key-ids we have
+   * already emitted a warn-and-pass line for (foreign-identity SigV4
+   * requests cannot be verified against the dev's local key). Same
+   * dedup pattern as `jwksWarnedUrls`.
+   */
+  sigV4WarnedForeignIds?: Set<string>;
 }
 
 export interface StartedApiServer {
@@ -634,6 +650,46 @@ async function runAuthorizerPass(
     return shapeOutcome(stripHash(result));
   }
 
+  if (authorizer.kind === 'iam') {
+    // SigV4 signature verification — see `sigv4-verify.ts` for the
+    // signing-key reproduction and constant-time compare. No cache
+    // (every request carries a unique signature; AWS-deployed API
+    // Gateway doesn't cache AWS_IAM auth either). The verifier itself
+    // is responsible for the warn-and-pass behavior on foreign-identity
+    // requests per `feedback_match_aws_default_over_opinionated.md`.
+    if (!opts.sigV4CredentialsLoader) {
+      // Defensive: local-start-api always wires this when any IAM
+      // route is discovered. Treat absence as policy-deny.
+      getLogger().debug(
+        `AWS_IAM authorizer for ${matchCtx.route.declaredAt}: no SigV4 credentials loader configured — denying.`
+      );
+      return { result: { allow: false }, denyKind: 'policy-deny' };
+    }
+    const sigResult = await verifySigV4(
+      {
+        method: snapshot.method,
+        rawUrl: snapshot.rawUrl,
+        headers,
+        body: snapshot.body,
+      },
+      opts.sigV4CredentialsLoader,
+      {
+        ...(opts.sigV4WarnedForeignIds && { warnedForeignIds: opts.sigV4WarnedForeignIds }),
+      }
+    );
+    if (!sigResult.allow) {
+      const hasAuth = headers['authorization'] !== undefined;
+      return {
+        result: { allow: false },
+        denyKind: hasAuth ? 'policy-deny' : 'missing-identity',
+      };
+    }
+    return shapeOutcome({
+      allow: true,
+      ...(sigResult.principalId !== undefined && { principalId: sigResult.principalId }),
+    });
+  }
+
   if (!opts.jwksCache) {
     // Defensive: should never reach here in practice — local-start-api
     // always passes a JWKS cache when any JWT authorizer is configured.
@@ -748,6 +804,15 @@ function buildOverlay(
   }
   if (authorizer.kind === 'cognito') {
     return { kind: 'cognito-rest-v1', claims: result.context ?? {} };
+  }
+  if (authorizer.kind === 'iam') {
+    // AWS_IAM authorization is REST v1 only. Surface the access-key-id
+    // as the principal so user handlers can log it; we don't synthesize
+    // an IAM context (no policy emulation).
+    return {
+      kind: 'lambda-rest-v1',
+      ...(result.principalId !== undefined && { principalId: result.principalId }),
+    };
   }
   // jwt
   return { kind: 'jwt-http-v2', claims: result.context ?? {} };
