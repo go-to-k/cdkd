@@ -142,7 +142,12 @@ describe('AppSyncProvider import', () => {
   });
 });
 
-describe('AppSyncProvider update', () => {
+describe('AppSyncProvider update dispatch', () => {
+  // Detailed update-path tests live in
+  // tests/unit/provisioning/appsync-provider-roundtrip.test.ts.
+  // This block keeps a minimal cross-check: the dispatch routes the
+  // five supported AppSync resource types to a per-type update method
+  // (no rejection at the dispatch layer) and rejects unknown types.
   let provider: AppSyncProvider;
 
   beforeEach(() => {
@@ -150,19 +155,46 @@ describe('AppSyncProvider update', () => {
     provider = new AppSyncProvider();
   });
 
-  it.each([
-    ['AWS::AppSync::GraphQLApi'],
-    ['AWS::AppSync::GraphQLSchema'],
-    ['AWS::AppSync::DataSource'],
-    ['AWS::AppSync::Resolver'],
-    ['AWS::AppSync::ApiKey'],
-  ])(
-    'rejects with ResourceUpdateNotSupportedError for %s (drift --revert surfaces a clear immutable error)',
-    async (resourceType) => {
-      await expect(provider.update('MyId', 'phys-id', resourceType, {}, {})).rejects.toThrow(
-        ResourceUpdateNotSupportedError
-      );
-      expect(mockSend).not.toHaveBeenCalled();
+  it('no-op on identical state (no SDK call) for every supported type', async () => {
+    // Identity-only same-shape input → update path detects no diff and
+    // returns without issuing any SDK call.
+    const cases: Array<[string, string, Record<string, unknown>]> = [
+      ['AWS::AppSync::GraphQLApi', 'api-1', { Name: 'A', AuthenticationType: 'API_KEY' }],
+      ['AWS::AppSync::GraphQLSchema', 'api-1', { ApiId: 'api-1', Definition: 'type Q {x:String}' }],
+      ['AWS::AppSync::DataSource', 'api-1|ds', { ApiId: 'api-1', Name: 'ds', Type: 'NONE' }],
+      [
+        'AWS::AppSync::Resolver',
+        'api-1|Q|f',
+        { ApiId: 'api-1', TypeName: 'Q', FieldName: 'f' },
+      ],
+      ['AWS::AppSync::ApiKey', 'api-1|k', { ApiId: 'api-1' }],
+    ];
+    for (const [resourceType, physicalId, props] of cases) {
+      const result = await provider.update('MyId', physicalId, resourceType, props, props);
+      expect(result.physicalId).toBe(physicalId);
     }
-  );
+    expect(mockSend).not.toHaveBeenCalled();
+  });
+
+  it('rejects unknown AppSync resource type at dispatch (defense-in-depth)', async () => {
+    await expect(
+      provider.update('MyId', 'phys-id', 'AWS::AppSync::Bogus', {}, {})
+    ).rejects.toThrow(/Unsupported resource type/);
+  });
+
+  it('still surfaces ResourceUpdateNotSupportedError on immutable identity-field diffs', async () => {
+    // The immutable-field rejections moved into per-type handlers; verify
+    // that contract via a representative case (DataSource.Type) so the
+    // dispatch layer's "no blanket rejection" change does not silently
+    // remove the structural defense-in-depth.
+    await expect(
+      provider.update(
+        'MyId',
+        'api-1|ds',
+        'AWS::AppSync::DataSource',
+        { ApiId: 'api-1', Name: 'ds', Type: 'AWS_LAMBDA' },
+        { ApiId: 'api-1', Name: 'ds', Type: 'AMAZON_DYNAMODB' }
+      )
+    ).rejects.toBeInstanceOf(ResourceUpdateNotSupportedError);
+  });
 });

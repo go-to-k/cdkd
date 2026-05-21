@@ -244,4 +244,38 @@ describe('resolveContainerImagePlan', () => {
     expect(buildContainerImageMock).not.toHaveBeenCalled();
     expect(pullEcrImageMock).toHaveBeenCalledTimes(1);
   });
+
+  // Issue #440 — Lambda Properties.EphemeralStorage.Size → ImagePlan.tmpfs
+  //
+  // The resolver surfaces `ephemeralStorageMb` on `ResolvedLambda`, and
+  // both the ZIP and IMAGE plan builders translate it to the docker-runner
+  // `tmpfs: { target: '/tmp', sizeMb }` shape. Same target for both
+  // — `--tmpfs` overlays mount-time on any container regardless of the
+  // base image's `/tmp` provenance.
+
+  it('threads ephemeralStorageMb into the IMAGE plan as tmpfs={/tmp, sizeMb}', async () => {
+    loadManifestMock.mockResolvedValue({ dockerImages: { abc: {} } });
+    getDockerImageBySourceHashMock.mockReturnValue({ hash: 'abc', asset: {} });
+    buildContainerImageMock.mockResolvedValue('local:abc');
+
+    const plan = await resolveContainerImagePlan(
+      makeImageLambda({ ephemeralStorageMb: 2048 }),
+      { pull: true } as Parameters<typeof resolveContainerImagePlan>[1]
+    );
+
+    expect(plan.tmpfs).toEqual({ target: '/tmp', sizeMb: 2048 });
+  });
+
+  it('omits ImagePlan.tmpfs when ephemeralStorageMb is unset', async () => {
+    loadManifestMock.mockResolvedValue({ dockerImages: { abc: {} } });
+    getDockerImageBySourceHashMock.mockReturnValue({ hash: 'abc', asset: {} });
+    buildContainerImageMock.mockResolvedValue('local:abc');
+
+    const plan = await resolveContainerImagePlan(
+      makeImageLambda(),
+      { pull: true } as Parameters<typeof resolveContainerImagePlan>[1]
+    );
+
+    expect(plan.tmpfs).toBeUndefined();
+  });
 });
