@@ -576,6 +576,31 @@ once per Lambda at server boot (not per request); the merged tmpdir
 is removed by the graceful shutdown path. Single-layer Lambdas skip
 the copy and bind-mount the layer's asset dir directly.
 
+### Container Lambdas (`Code.ImageUri`) in `local start-api`
+
+`cdkd local start-api` supports `lambda.DockerImageFunction` /
+`Code.ImageUri` on the same terms as `cdkd local invoke` (see the
+**Container Lambdas** section under `local invoke` above). At server
+boot — and on every `--watch` reload — cdkd resolves each container
+Lambda's image once: **local-build** from the `cdk.out` asset
+manifest when the synthesizer produced a matching `dockerImages`
+entry (then `docker build` runs against the recorded build context),
+or **ECR-pull** fallback when no asset matches (same-account /
+same-region only, cross-account / cross-region deferred to a
+follow-up). The resulting deterministic
+`cdkd-local-invoke-<hash>` tag goes into the warm container pool;
+the pool runs `docker run` against it verbatim — no `/var/task`
+bind-mount, no base-image pull, `ImageConfig.Command` /
+`ImageConfig.EntryPoint` / `ImageConfig.WorkingDirectory` /
+`--platform` (from `Architectures`) all threaded through. Container
+Lambdas silently ignore `Properties.Layers` (matches AWS's
+invoke-time behavior — layers are baked into the image at build
+time on the IMAGE branch). Hot reload (`--watch`) detects
+Dockerfile / build-context changes via the content-addressed image
+tag: a real source edit flips the tag at the next reload's
+`docker build`, the spec signature compares unequal, and the pool
+entry tears down + restarts so the next request sees the new image.
+
 ### Graceful shutdown
 
 `SIGINT` / `SIGTERM` / `uncaughtException` / `unhandledRejection` all

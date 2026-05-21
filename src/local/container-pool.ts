@@ -1,6 +1,6 @@
 import { getLogger } from '../utils/logger.js';
 import { pickFreePort, removeContainer, runDetached, streamLogs } from './docker-runner.js';
-import type { ResolvedZipLambda } from './lambda-resolver.js';
+import type { ResolvedImageLambda, ResolvedZipLambda } from './lambda-resolver.js';
 import { waitForRieReady } from './rie-client.js';
 import { resolveRuntimeCodeMountPath, resolveRuntimeImage } from './runtime-image.js';
 
@@ -76,12 +76,31 @@ interface ContainerPoolEntry {
 /**
  * Per-Lambda parameters used to spin up a container. Set once at server
  * boot — `acquire()` reads these from the pool's per-logical-id record.
+ *
+ * Discriminated union (closes #453): `kind === 'zip'` for traditional
+ * ZIP-packaged Lambdas (Node.js / Python / Ruby / Java / etc. — base image
+ * comes from `public.ecr.aws/lambda/<lang>:<v>`, code bind-mounted at
+ * `/var/task` or `/var/runtime`); `kind === 'image'` for container Lambdas
+ * (`Code.ImageUri` — image already includes the code, no bind mount,
+ * `ImageConfig.Command` / `EntryPoint` / `WorkingDirectory` drive
+ * invocation). The shared fields (`env`, `containerHost`, `debugPort`)
+ * apply to both variants.
  */
-export interface ContainerSpec {
+export type ContainerSpec = ZipContainerSpec | ImageContainerSpec;
+
+interface ContainerSpecBase {
+  env: Record<string, string>;
+  containerHost: string;
+  /** Optional Node.js `--inspect-brk` port. */
+  debugPort?: number;
+}
+
+export interface ZipContainerSpec extends ContainerSpecBase {
+  kind: 'zip';
   /**
-   * `cdkd local start-api` v1 supports ZIP Lambdas only. Container-image
-   * Lambdas (PR 5 of #224) are rejected at the resolver layer in
-   * `local-start-api.ts` with a clear error pointing at PR 8b/c.
+   * The ZIP Lambda's resolved metadata. The pool reads `runtime` to pick
+   * the base image and code mount path, `handler` for the container CMD,
+   * and `logicalId` for the docker container name + log prefix.
    */
   lambda: ResolvedZipLambda;
   /**
@@ -105,10 +124,61 @@ export interface ContainerSpec {
    * dir to clean up at dispose.
    */
   optDir?: string;
-  env: Record<string, string>;
-  containerHost: string;
-  /** Optional Node.js `--inspect-brk` port. */
-  debugPort?: number;
+}
+
+export interface ImageContainerSpec extends ContainerSpecBase {
+  kind: 'image';
+  /**
+   * The container Lambda's resolved metadata. The pool reads `logicalId`
+   * for the docker container name + log prefix. `runtime` / `handler`
+   * are NOT set on the IMAGE branch (AWS contract: container Lambdas
+   * don't have `Handler` — invocation is driven by `ImageConfig.Command`
+   * or the image's own CMD; `Runtime` is also absent).
+   */
+  lambda: ResolvedImageLambda;
+  /**
+   * Pre-built local docker image tag / reference. Resolved ONCE at
+   * server boot via `buildContainerImage` (local-build path against
+   * `cdk.out` asset manifest) or `pullEcrImage` (ECR-pull fallback,
+   * same-acct/region only). The pool passes this verbatim to `docker
+   * run` — no further resolution happens on the per-cold-start path.
+   *
+   * On hot reload (`--watch`) the reload-orchestrator detects spec
+   * signature changes via `reload-orchestrator.ts:specSignature`; a
+   * change in `image` (e.g. the user edited the Dockerfile and the
+   * deterministic tag flipped) triggers a pool teardown so the next
+   * cold-start runs the newly-built image.
+   */
+  image: string;
+  /**
+   * `docker run --platform <linux/amd64|linux/arm64>` translated from
+   * the Lambda's `Architectures` array. Threaded through to BOTH the
+   * `docker build` (`buildContainerImage`) AND the `docker run` step
+   * so an arm64 host running an x86_64 Lambda doesn't hit silent
+   * emulation, and an x86_64 host running an arm64 Lambda doesn't
+   * fail with `exec format error`.
+   */
+  platform: string;
+  /**
+   * `ImageConfig.Command` from the template. Empty array when the user
+   * relies on the image's own CMD (the common case for `LAMBDA_TASK_ROOT`-
+   * convention images). Forwarded as the CMD slot of `docker run`.
+   */
+  command: string[];
+  /**
+   * `ImageConfig.EntryPoint` from the template. Undefined when the user
+   * relies on the image's default entrypoint (typically
+   * `/lambda-entrypoint.sh` on AWS base images, which routes to RIE).
+   * When set, the first entry maps to `docker run --entrypoint <first>`
+   * and the rest are prepended to `cmd` as positional args — see
+   * `docker-runner.ts:runDetached`.
+   */
+  entryPoint?: string[];
+  /**
+   * `ImageConfig.WorkingDirectory` → `docker run --workdir <dir>`.
+   * Undefined when the image's own WORKDIR is sufficient.
+   */
+  workingDir?: string;
 }
 
 export interface ContainerPoolOptions {
@@ -199,41 +269,77 @@ export function createContainerPool(
   /**
    * Spin up one new container for the given Lambda spec. Returns a
    * handle the caller can write into the entry's data structures.
+   *
+   * Branches on `spec.kind`:
+   *   - `'zip'`: bind-mount the function's local code dir at
+   *     `/var/task` (or `/var/runtime` for `provided.*` runtimes),
+   *     base image from `public.ecr.aws/lambda/<lang>:<v>`, CMD =
+   *     `[<Handler>]`.
+   *   - `'image'`: no code bind-mount (image already includes the
+   *     code), base image is the pre-built local tag, CMD =
+   *     `ImageConfig.Command` (may be empty), optional EntryPoint /
+   *     WorkingDirectory / --platform applied verbatim.
    */
   async function startOne(spec: ContainerSpec): Promise<ContainerHandle> {
-    const image = resolveRuntimeImage(spec.lambda.runtime);
     const hostPort = await pickFreePort();
     const name = `cdkd-local-${spec.lambda.logicalId}-${process.pid}-${Math.floor(
       Math.random() * 1_000_000
     )}`;
     logger.debug(
-      `Starting container ${name} for ${spec.lambda.logicalId} on ${spec.containerHost}:${hostPort}`
+      `Starting container ${name} for ${spec.lambda.logicalId} (kind=${spec.kind}) on ${spec.containerHost}:${hostPort}`
     );
-    // PR 6 (#232): one pre-resolved bind mount at `/opt` (when the
-    // function declares any layers). Multi-layer merging happens in
-    // `local-start-api.ts`'s `materializeLambdaLayers(...)` once at
-    // server boot — Docker rejects two `-v ...:/opt:ro` entries at
-    // the same target, so cdkd can't rely on overlay layering and
-    // must merge on the host instead (see ImagePlan.layersTmpDir
-    // docstring in `cli/commands/local-invoke.ts`).
-    const optMount = spec.optDir
-      ? [{ hostPath: spec.optDir, containerPath: '/opt', readOnly: true }]
-      : [];
-    // provided.al2 / provided.al2023 require the deployment package at
-    // /var/runtime (where the base image's hardcoded entrypoint exec's
-    // /var/runtime/bootstrap); every other runtime expects /var/task.
-    const containerCodePath = resolveRuntimeCodeMountPath(spec.lambda.runtime);
-    const containerId = await runDetached({
-      image,
-      mounts: [{ hostPath: spec.codeDir, containerPath: containerCodePath, readOnly: true }],
-      extraMounts: optMount,
-      env: spec.env,
-      cmd: [spec.lambda.handler],
-      hostPort,
-      host: spec.containerHost,
-      name,
-      ...(spec.debugPort !== undefined && { debugPort: spec.debugPort }),
-    });
+
+    let containerId: string;
+    if (spec.kind === 'zip') {
+      // PR 6 (#232): one pre-resolved bind mount at `/opt` (when the
+      // function declares any layers). Multi-layer merging happens in
+      // `local-start-api.ts`'s `materializeLambdaLayers(...)` once at
+      // server boot — Docker rejects two `-v ...:/opt:ro` entries at
+      // the same target, so cdkd can't rely on overlay layering and
+      // must merge on the host instead (see ImagePlan.layersTmpDir
+      // docstring in `cli/commands/local-invoke.ts`).
+      const optMount = spec.optDir
+        ? [{ hostPath: spec.optDir, containerPath: '/opt', readOnly: true }]
+        : [];
+      // provided.al2 / provided.al2023 require the deployment package at
+      // /var/runtime (where the base image's hardcoded entrypoint exec's
+      // /var/runtime/bootstrap); every other runtime expects /var/task.
+      const containerCodePath = resolveRuntimeCodeMountPath(spec.lambda.runtime);
+      const image = resolveRuntimeImage(spec.lambda.runtime);
+      containerId = await runDetached({
+        image,
+        mounts: [{ hostPath: spec.codeDir, containerPath: containerCodePath, readOnly: true }],
+        extraMounts: optMount,
+        env: spec.env,
+        cmd: [spec.lambda.handler],
+        hostPort,
+        host: spec.containerHost,
+        name,
+        ...(spec.debugPort !== undefined && { debugPort: spec.debugPort }),
+      });
+    } else {
+      // IMAGE branch (closes #453). The pre-built local tag is on
+      // `spec.image`; the architecture-derived `--platform` is on
+      // `spec.platform`. `ImageConfig` fields drive CMD / entrypoint /
+      // workdir verbatim. No bind mounts: the image already contains
+      // the function code at its built-in `/var/task`. AWS layers are
+      // baked into the image at build time, not overlaid at runtime,
+      // so we never emit a `/opt` mount on this branch (matches the
+      // AWS-side invoke behavior).
+      containerId = await runDetached({
+        image: spec.image,
+        mounts: [],
+        env: spec.env,
+        cmd: spec.command,
+        hostPort,
+        host: spec.containerHost,
+        name,
+        platform: spec.platform,
+        ...(spec.entryPoint !== undefined && { entryPoint: spec.entryPoint }),
+        ...(spec.workingDir !== undefined && { workingDir: spec.workingDir }),
+        ...(spec.debugPort !== undefined && { debugPort: spec.debugPort }),
+      });
+    }
     const stopLogStream = streamingEnabled ? streamLogs(containerId) : (): void => undefined;
     try {
       await waitForRieReady(spec.containerHost, hostPort, 30_000);

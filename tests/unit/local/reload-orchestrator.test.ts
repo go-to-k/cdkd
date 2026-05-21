@@ -31,8 +31,12 @@ function fakePool(specs: Map<string, ContainerSpec>): ContainerPool & { disposed
 }
 
 /** Build a fake ContainerSpec keyed by logical id. */
-function fakeSpec(logicalId: string, overrides: Partial<ContainerSpec> = {}): ContainerSpec {
+function fakeSpec(
+  logicalId: string,
+  overrides: Partial<Extract<ContainerSpec, { kind: 'zip' }>> = {}
+): ContainerSpec {
   return {
+    kind: 'zip',
     lambda: {
       kind: 'zip',
       stack: {} as never,
@@ -43,7 +47,7 @@ function fakeSpec(logicalId: string, overrides: Partial<ContainerSpec> = {}): Co
       memoryMb: 128,
       timeoutSec: 3,
       codePath: '/tmp/code',
-    } as ContainerSpec['lambda'],
+    } as Extract<ContainerSpec, { kind: 'zip' }>['lambda'],
     codeDir: '/tmp/code',
     env: {},
     containerHost: '127.0.0.1',

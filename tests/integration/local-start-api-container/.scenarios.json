@@ -1,0 +1,6 @@
+{
+  "scenarios": [
+    "local-apigateway-server",
+    "local-lambda-rie-container"
+  ]
+}

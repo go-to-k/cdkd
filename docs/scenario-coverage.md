@@ -4,7 +4,7 @@
 
 Run `vp run scenario-coverage` to regenerate.
 
-**28 / 28 canonical scenarios** have at least one integ fixture exercising them. **91 / 91 integ fixtures** carry a `.scenarios.json` sidecar (with 0+ tags); the rest are un-annotated and contributor-reviewed below.
+**28 / 28 canonical scenarios** have at least one integ fixture exercising them. **92 / 92 integ fixtures** carry a `.scenarios.json` sidecar (with 0+ tags); the rest are un-annotated and contributor-reviewed below.
 
 ## How this is computed
 
@@ -42,10 +42,10 @@ _None._ Every canonical scenario has at least one integ fixture tagged with it.
 | `iam-policy-propagation-retry` | CREATE retry with exponential backoff after IAM-EC2/Lambda eventual-consistency race. | [`lambda`](../tests/integration/lambda/)<br>[`microservices`](../tests/integration/microservices/) |
 | `lambda-vpc-subnet-sg-deletion-order` | Subnet/SecurityGroup must delete AFTER Lambda::Function to avoid ENI DependencyViolation. | [`bench-cdk-sample`](../tests/integration/bench-cdk-sample/)<br>[`lambda`](../tests/integration/lambda/)<br>[`vpc-lambda`](../tests/integration/vpc-lambda/) |
 | `legacy-bucket-name-fallback` | New region-free `cdkd-state-{account}` vs legacy `cdkd-state-{account}-{region}` bucket fallback resolution. | [`legacy-bucket-name-fallback`](../tests/integration/legacy-bucket-name-fallback/) |
-| `local-apigateway-server` | `cdkd local start-api` HTTP server with route discovery + per-Lambda warm container pool. | [`local-start-api`](../tests/integration/local-start-api/) |
+| `local-apigateway-server` | `cdkd local start-api` HTTP server with route discovery + per-Lambda warm container pool. | [`local-start-api`](../tests/integration/local-start-api/)<br>[`local-start-api-container`](../tests/integration/local-start-api-container/) |
 | `local-ecs-task` | `cdkd local run-task` ECS TaskDefinition with docker network + AWS-published metadata sidecar. | [`local-run-task`](../tests/integration/local-run-task/)<br>[`local-run-task-from-state`](../tests/integration/local-run-task-from-state/)<br>[`local-run-task-multi-container`](../tests/integration/local-run-task-multi-container/) |
 | `local-from-state-substitution` | `cdkd local invoke|run-task --from-state` substitutes intrinsic-valued env/secret/role references against deployed cdkd state + AWS pseudo parameters. | [`local-invoke-from-state`](../tests/integration/local-invoke-from-state/)<br>[`local-run-task-from-state`](../tests/integration/local-run-task-from-state/) |
-| `local-lambda-rie-container` | `cdkd local invoke` container-Lambda (Code.ImageUri) against RIE — local-build OR ECR-pull asset resolution. | [`local-invoke-buildkit`](../tests/integration/local-invoke-buildkit/)<br>[`local-invoke-container`](../tests/integration/local-invoke-container/) |
+| `local-lambda-rie-container` | `cdkd local invoke` container-Lambda (Code.ImageUri) against RIE — local-build OR ECR-pull asset resolution. | [`local-invoke-buildkit`](../tests/integration/local-invoke-buildkit/)<br>[`local-invoke-container`](../tests/integration/local-invoke-container/)<br>[`local-start-api-container`](../tests/integration/local-start-api-container/) |
 | `local-lambda-rie-zip` | `cdkd local invoke` ZIP-runtime Lambda against the AWS Lambda Runtime Interface Emulator (RIE) container. | [`local-invoke`](../tests/integration/local-invoke/)<br>[`local-invoke-dotnet`](../tests/integration/local-invoke-dotnet/)<br>[`local-invoke-from-state`](../tests/integration/local-invoke-from-state/)<br>[`local-invoke-java`](../tests/integration/local-invoke-java/)<br>[`local-invoke-layers`](../tests/integration/local-invoke-layers/)<br>[`local-invoke-provided`](../tests/integration/local-invoke-provided/)<br>[`local-invoke-python`](../tests/integration/local-invoke-python/)<br>[`local-invoke-ruby`](../tests/integration/local-invoke-ruby/) |
 | `migrate-from-cfn-handover` | CloudFormation → cdkd migration via `--migrate-from-cloudformation` (UpdateStack with Retain + DeleteStack). | [`migrate-from-cfn`](../tests/integration/migrate-from-cfn/) |
 | `multi-region-state-key` | Same stackName + different regions = independent state files (`version: 2` region-prefixed key layout). | [`multi-region-same-stack`](../tests/integration/multi-region-same-stack/) |

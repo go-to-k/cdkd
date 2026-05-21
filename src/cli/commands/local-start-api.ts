@@ -31,6 +31,13 @@ import {
 import { derivePartitionAndUrlSuffix } from '../../local/ecs-task-resolver.js';
 import { resolveRuntimeFileExtension, resolveRuntimeImage } from '../../local/runtime-image.js';
 import { ensureDockerAvailable, pullImage } from '../../local/docker-runner.js';
+import { architectureToPlatform, buildContainerImage } from '../../local/docker-image-builder.js';
+import { parseEcrUri, pullEcrImage } from '../../local/ecr-puller.js';
+import {
+  AssetManifestLoader,
+  getDockerImageBySourceHash,
+} from '../../assets/asset-manifest-loader.js';
+import type { DockerImageAssetSource } from '../../types/assets.js';
 import { discoverRoutes, type DiscoveredRoute } from '../../local/route-discovery.js';
 import {
   createContainerPool,
@@ -392,19 +399,27 @@ async function localStartApiCommand(
         inlineTmpDirs,
         layerTmpDirs,
         stateByStack,
+        skipPull: options.pull === false,
       });
       specs.set(logicalId, spec);
     }
 
-    // Pull every distinct image up front so the first request doesn't
-    // pay the layer-pull cost. Mirrors `cdkd local invoke`'s pull pass.
-    // NOTE: the watched-asset list (`lastAssetPaths.value`) is NOT
-    // mutated here — the assignment happens AFTER the reload
+    // Pull every distinct base image up front so the first request
+    // doesn't pay the layer-pull cost. Mirrors `cdkd local invoke`'s
+    // pull pass. Only the ZIP branch needs a base-image pull here —
+    // IMAGE-variant specs already have their per-Lambda image
+    // resolved by `buildContainerSpec` (`resolveContainerImageForStartApi`
+    // ran the local build or ECR pull before this point), so the
+    // ContainerPool can `docker run` against it without any further
+    // pull step. NOTE: the watched-asset list (`lastAssetPaths.value`)
+    // is NOT mutated here — the assignment happens AFTER the reload
     // orchestrator's atomic state swap completes. See the `.then(...)`
     // block on `orchestrator.reload()` below.
     const distinctImages = new Set<string>();
     for (const spec of specs.values()) {
-      distinctImages.add(resolveRuntimeImage(spec.lambda.runtime));
+      if (spec.kind === 'zip') {
+        distinctImages.add(resolveRuntimeImage(spec.lambda.runtime));
+      }
     }
     for (const image of distinctImages) {
       await pullImage(image, options.pull === false);
@@ -434,14 +449,26 @@ async function localStartApiCommand(
   /**
    * Compute the watched-asset list from a spec map. Pure helper —
    * keeps the side-effect (`lastAssetPaths.value = ...`) confined to
-   * the post-swap call sites (initial boot + post-reload). `codeDir`
-   * is either the unzipped asset directory or the inline-code tmpdir;
-   * both are watch-worthy.
+   * the post-swap call sites (initial boot + post-reload). For ZIP
+   * Lambdas `codeDir` is either the unzipped asset directory or the
+   * inline-code tmpdir; both are watch-worthy. IMAGE Lambdas
+   * (`kind: 'image'`) don't have a host-side bind-mount source — the
+   * code is baked into the docker image at build time. Their build
+   * context (Dockerfile + source directory) is rebuilt on every
+   * reload via `synthesizeAndBuild` → `buildContainerSpec` →
+   * `resolveContainerImageForStartApi`, so a source edit DOES trigger
+   * rebuild AND the deterministic `image` tag changes — but watching
+   * the build-context dir explicitly here is deferred to a follow-up
+   * (the watched-asset list is currently sourced from `cdk.out/`
+   * which transitively covers most container-Lambda asset dirs since
+   * `cdk synth` re-stages them on every synth call).
    */
   const computeAssetPaths = (specs: Map<string, ContainerSpec>): string[] => {
     const assetPaths = new Set<string>();
     for (const spec of specs.values()) {
-      assetPaths.add(spec.codeDir);
+      if (spec.kind === 'zip') {
+        assetPaths.add(spec.codeDir);
+      }
     }
     return [...assetPaths];
   };
@@ -864,6 +891,14 @@ async function buildContainerSpec(args: {
    * the env-resolver consults for `Ref AWS::*` / `${AWS::*}` placeholders.
    */
   stateByStack: Map<string, StackStateBundle>;
+  /**
+   * `--no-pull` flag, threaded to the IMAGE branch's ECR-pull fallback
+   * (`pullEcrImage(... {skipPull})`). ZIP branch ignores this — the
+   * base-image pull happens once up the call chain
+   * (`synthesizeAndBuild`'s `pullImage` loop) and is independently
+   * gated by the same flag.
+   */
+  skipPull: boolean;
 }): Promise<ContainerSpec> {
   const {
     logicalId,
@@ -876,27 +911,50 @@ async function buildContainerSpec(args: {
     inlineTmpDirs,
     layerTmpDirs,
     stateByStack,
+    skipPull,
   } = args;
   const lambda = resolveLambdaByLogicalId(logicalId, stacks);
 
-  // Re-use `cdkd local invoke`'s materialization rules for inline
-  // (Code.ZipFile) Lambdas; asset-backed Lambdas already point at an
-  // unzipped CDK directory.
-  const codeDir =
-    lambda.codePath ??
-    materializeInlineCode(
-      lambda.handler,
-      lambda.inlineCode ?? '',
-      resolveRuntimeFileExtension(lambda.runtime),
-      inlineTmpDirs
-    );
+  // ZIP / IMAGE divergence (closes #453). ZIP needs `codeDir` (bind-
+  // mount source for /var/task) + `optDir` (bind-mount source for
+  // /opt from same-stack Layers). IMAGE needs a pre-built local
+  // docker image tag — resolved here once at server boot, then the
+  // container pool runs `docker run` against it without further
+  // resolution. Layers are silently ignored on the IMAGE branch
+  // (matches AWS's invoke-time behavior: container Lambdas can't
+  // declare Layers).
+  let codeDir: string | undefined;
+  let optDir: string | undefined;
+  let imageRef: string | undefined;
+  let platform: string | undefined;
+  if (lambda.kind === 'zip') {
+    // Re-use `cdkd local invoke`'s materialization rules for inline
+    // (Code.ZipFile) Lambdas; asset-backed Lambdas already point at an
+    // unzipped CDK directory.
+    codeDir =
+      lambda.codePath ??
+      materializeInlineCode(
+        lambda.handler,
+        lambda.inlineCode ?? '',
+        resolveRuntimeFileExtension(lambda.runtime),
+        inlineTmpDirs
+      );
 
-  // PR 6 (#232): pre-resolve the `/opt` bind-mount source. Single-
-  // layer functions reuse the layer's asset dir directly; multi-
-  // layer functions get a freshly-merged tmpdir (later layers
-  // overwrite earlier files via `cpSync({force:true})` — the
-  // load-bearing half of AWS's "last layer wins" semantic).
-  const optDir = materializeLambdaLayers(lambda.layers, layerTmpDirs);
+    // PR 6 (#232): pre-resolve the `/opt` bind-mount source. Single-
+    // layer functions reuse the layer's asset dir directly; multi-
+    // layer functions get a freshly-merged tmpdir (later layers
+    // overwrite earlier files via `cpSync({force:true})` — the
+    // load-bearing half of AWS's "last layer wins" semantic).
+    optDir = materializeLambdaLayers(lambda.layers, layerTmpDirs);
+  } else {
+    // IMAGE branch (closes #453): build locally from cdk.out asset
+    // manifest, OR pull from ECR when no matching asset is found.
+    // Same-account/region only on the ECR-pull path — cross-account /
+    // cross-region is deferred to a sibling PR (W2-1).
+    const built = await resolveContainerImageForStartApi(lambda, skipPull);
+    imageRef = built.imageRef;
+    platform = architectureToPlatform(lambda.architecture);
+  }
 
   // Env vars: literal template values + --env-vars overlay. When
   // `--from-state` was passed (and state for this Lambda's stack
@@ -968,15 +1026,96 @@ async function buildContainerSpec(args: {
     dockerEnv['NODE_OPTIONS'] = `--inspect-brk=0.0.0.0:${debugPort}`;
   }
 
+  if (lambda.kind === 'zip') {
+    const spec: ContainerSpec = {
+      kind: 'zip',
+      lambda,
+      codeDir: codeDir!,
+      env: dockerEnv,
+      containerHost,
+      ...(optDir !== undefined && { optDir }),
+      ...(debugPort !== undefined && { debugPort }),
+    };
+    return spec;
+  }
   const spec: ContainerSpec = {
+    kind: 'image',
     lambda,
-    codeDir,
+    image: imageRef!,
+    platform: platform!,
+    command: lambda.imageConfig.command ?? [],
+    ...(lambda.imageConfig.entryPoint !== undefined &&
+      lambda.imageConfig.entryPoint.length > 0 && {
+        entryPoint: lambda.imageConfig.entryPoint,
+      }),
+    ...(lambda.imageConfig.workingDirectory !== undefined && {
+      workingDir: lambda.imageConfig.workingDirectory,
+    }),
     env: dockerEnv,
     containerHost,
-    ...(optDir !== undefined && { optDir }),
     ...(debugPort !== undefined && { debugPort }),
   };
   return spec;
+}
+
+/**
+ * Resolve a container Lambda's local docker image — local build from
+ * `cdk.out` asset manifest first, ECR-pull fallback when the asset
+ * manifest has no matching entry. Mirrors `cdkd local invoke`'s
+ * `resolveContainerImagePlan` shape; the start-api server doesn't
+ * need the no-build flag (deterministic-tag cache reuse is automatic
+ * across reloads because the per-Lambda tag is content-addressed).
+ *
+ * Same-account / same-region only on the ECR-pull path (matches the
+ * `cdkd local invoke` PR 5 of #224 boundary). Cross-account /
+ * cross-region ECR pull is the W2-1 deferred follow-up.
+ */
+async function resolveContainerImageForStartApi(
+  lambda: ResolvedStartApiImageLambda,
+  skipPull: boolean
+): Promise<{ imageRef: string }> {
+  const logger = getLogger();
+  const localBuild = await resolveLocalBuildPlan(lambda);
+  if (localBuild) {
+    const imageRef = await buildContainerImage(localBuild.asset, localBuild.cdkOutDir, {
+      architecture: lambda.architecture,
+    });
+    return { imageRef };
+  }
+  if (!parseEcrUri(lambda.imageUri)) {
+    throw new Error(
+      `Container Lambda '${lambda.logicalId}' has no matching asset in cdk.out, and Code.ImageUri ` +
+        `'${lambda.imageUri}' is not an ECR URI cdkd can authenticate against. ` +
+        'Re-synthesize the CDK app (so cdk.out includes the build context) or deploy the image to ECR first.'
+    );
+  }
+  logger.info(
+    `No matching cdk.out asset for ${lambda.imageUri}; falling back to ECR pull (same-acct/region only)...`
+  );
+  const imageRef = await pullEcrImage(lambda.imageUri, { skipPull });
+  return { imageRef };
+}
+
+/**
+ * Look up the docker image asset that backs a container Lambda.
+ * Returns `undefined` when the asset manifest has no matching entry —
+ * the caller falls back to the ECR-pull path.
+ *
+ * Mirrors `local-invoke.ts:resolveLocalBuildPlan`; kept separate so
+ * the two commands evolve their asset-lookup heuristics independently.
+ */
+async function resolveLocalBuildPlan(
+  lambda: ResolvedStartApiImageLambda
+): Promise<{ asset: { source: DockerImageAssetSource }; cdkOutDir: string } | undefined> {
+  const manifestPath = lambda.stack.assetManifestPath;
+  if (!manifestPath) return undefined;
+  const cdkOutDir = path.dirname(manifestPath);
+  const loader = new AssetManifestLoader();
+  const manifest = await loader.loadManifest(cdkOutDir, lambda.stack.stackName);
+  if (!manifest) return undefined;
+  const entry = getDockerImageBySourceHash(manifest, lambda.imageUri);
+  if (!entry) return undefined;
+  return { asset: entry.asset, cdkOutDir };
 }
 
 /**
@@ -1038,61 +1177,109 @@ function materializeLambdaLayers(
  * route discovery has already linked the routes to logical IDs, so a
  * miss here is a synthesis bug worth surfacing.
  */
-interface ResolvedStartApiLambda {
-  /**
-   * `cdkd local start-api` v1 is ZIP-only — PR 5 introduced the
-   * `kind: 'zip' | 'image'` discriminator on `ResolvedLambda` to support
-   * container Lambdas in `cdkd local invoke`, but the start-api server
-   * does not yet handle the per-Lambda image build / ECR pull / platform
-   * threading that container Lambdas require. The discriminator is set
-   * to `'zip'` here so this shape is structurally assignable to
-   * `ResolvedZipLambda` (the type the container pool consumes).
-   */
-  kind: 'zip';
+/**
+ * Discriminated union covering both ZIP and container Lambdas (closes
+ * #453). The ZIP variant is the original `cdkd local start-api` v1
+ * shape; the IMAGE variant was unlocked here in this PR — the per-
+ * Lambda image build / ECR pull / `--platform` threading lives below
+ * in `buildContainerSpec`'s `kind === 'image'` branch.
+ */
+type ResolvedStartApiLambda = ResolvedStartApiZipLambda | ResolvedStartApiImageLambda;
+
+interface ResolvedStartApiLambdaBase {
   stack: StackInfo;
   logicalId: string;
   resource: TemplateResource;
-  runtime: string;
-  handler: string;
   memoryMb: number;
   timeoutSec: number;
-  codePath: string | null;
   /**
-   * Same-stack `Properties.Layers` references resolved to local asset
-   * directories (PR 6 of #224, issue #232). Empty `[]` when the function
-   * declares no layers. Order is preserved from the template (last layer
-   * wins on file collision per AWS).
+   * Resolved same-stack `Properties.Layers` references. Populated on
+   * the ZIP branch; always `[]` on the IMAGE branch — container
+   * Lambdas reject `Layers` at deploy time on the AWS side (layers
+   * are baked into the image at build time, not overlaid at
+   * runtime), so cdkd silently ignores any `Layers` property to
+   * match AWS's invoke-time behavior. The base-shape `[]` keeps the
+   * ResolvedImageLambda → `lambda-resolver.ResolvedImageLambda`
+   * cast structurally valid in the container-pool spec.
    */
   layers: ResolvedLambdaLayer[];
+}
+
+interface ResolvedStartApiZipLambda extends ResolvedStartApiLambdaBase {
+  kind: 'zip';
+  runtime: string;
+  handler: string;
+  codePath: string | null;
   inlineCode?: string;
 }
 
-function resolveLambdaByLogicalId(logicalId: string, stacks: StackInfo[]): ResolvedStartApiLambda {
+interface ResolvedStartApiImageLambda extends ResolvedStartApiLambdaBase {
+  kind: 'image';
+  /**
+   * Raw `Code.ImageUri` value, surfaced for the local-build path's
+   * asset-hash extraction AND for the ECR-pull fallback. Already
+   * resolved through cdk-assets bootstrap-placeholder substitution
+   * upstream — `${AWS::*}` pseudo-parameters are still present and
+   * substituted at the lookup site.
+   */
+  imageUri: string;
+  /**
+   * `ImageConfig` (all fields optional). Most container Lambdas leave
+   * `EntryPoint` unset so `/lambda-entrypoint.sh` stays in charge of
+   * RIE dispatch. `Command` is typically the handler reference, e.g.
+   * `['app.handler']`.
+   */
+  imageConfig: {
+    command?: string[];
+    entryPoint?: string[];
+    workingDirectory?: string;
+  };
+  /**
+   * `Architectures: [x86_64]` (default) or `[arm64]`. Threaded through
+   * to `--platform linux/amd64` / `linux/arm64` on BOTH `docker build`
+   * AND `docker run` so an arm64 host running an x86_64 Lambda doesn't
+   * hit silent emulation, and an x86_64 host running an arm64 Lambda
+   * doesn't fail with `exec format error`.
+   */
+  architecture: 'x86_64' | 'arm64';
+}
+
+export function resolveLambdaByLogicalId(
+  logicalId: string,
+  stacks: StackInfo[]
+): ResolvedStartApiLambda {
   for (const stack of stacks) {
     const resource = stack.template.Resources?.[logicalId];
     if (!resource || resource.Type !== 'AWS::Lambda::Function') continue;
     const props = resource.Properties ?? {};
-    const runtime = typeof props['Runtime'] === 'string' ? props['Runtime'] : '';
-    const handler = typeof props['Handler'] === 'string' ? props['Handler'] : '';
     const memoryMb = typeof props['MemorySize'] === 'number' ? props['MemorySize'] : 128;
     const timeoutSec = typeof props['Timeout'] === 'number' ? props['Timeout'] : 3;
+
+    const code = (props['Code'] ?? {}) as Record<string, unknown>;
+    const imageUri = extractImageUri(code['ImageUri']);
+    if (imageUri !== undefined) {
+      return resolveImageLambda({
+        stack,
+        logicalId,
+        resource,
+        props,
+        memoryMb,
+        timeoutSec,
+        imageUri,
+      });
+    }
+
+    // ZIP branch: Runtime + Handler mandatory.
+    const runtime = typeof props['Runtime'] === 'string' ? props['Runtime'] : '';
+    const handler = typeof props['Handler'] === 'string' ? props['Handler'] : '';
     if (!runtime) {
       throw new Error(
-        `Lambda '${logicalId}' has no Runtime property. Container-image Lambdas (Code.ImageUri) are not supported in cdkd local start-api v1.`
+        `Lambda '${logicalId}' has no Runtime property and no Code.ImageUri. ` +
+          'cdkd local start-api cannot tell if this is a ZIP or a container Lambda.'
       );
     }
     if (!handler) {
       throw new Error(`Lambda '${logicalId}' has no Handler property.`);
-    }
-    const code = (props['Code'] ?? {}) as Record<string, unknown>;
-    const imageUri = code['ImageUri'];
-    if (
-      typeof imageUri === 'string' ||
-      (typeof imageUri === 'object' && imageUri !== null && 'Fn::Sub' in imageUri)
-    ) {
-      throw new Error(
-        `Lambda '${logicalId}' uses Code.ImageUri (container-image Lambda). 'cdkd local start-api' v1 supports ZIP Lambdas only — container-image support is deferred to a follow-up PR. Use 'cdkd local invoke' to exercise this function locally.`
-      );
     }
     const inlineCode = typeof code['ZipFile'] === 'string' ? code['ZipFile'] : undefined;
     let codePath: string | null = null;
@@ -1122,6 +1309,95 @@ function resolveLambdaByLogicalId(logicalId: string, stacks: StackInfo[]): Resol
   throw new Error(
     `No AWS::Lambda::Function resource named '${logicalId}' found in target stacks. This is likely a synthesis bug — the route-discovery phase resolved a route to this logical ID.`
   );
+}
+
+/**
+ * Extract `Code.ImageUri` across the shapes CDK actually synthesizes.
+ * Mirrors the simpler subset of `lambda-resolver.ts:extractImageUri`
+ * scoped to the shapes `cdkd local start-api` consumes — flat string
+ * and `Fn::Sub` (the canonical asset shape for
+ * `lambda.DockerImageCode.fromImageAsset`). `Fn::Join` shapes for
+ * `lambda.DockerImageCode.fromEcr` are deferred to a follow-up: the
+ * start-api boot flow doesn't yet load cdkd state up front, and the
+ * `Fn::Join` resolver needs it to recover same-stack ECR repository
+ * URIs. When the user hits the unsupported shape, the downstream
+ * resolveLocalBuildPlan / pullEcrImage path surfaces a clear error.
+ *
+ * Returns `undefined` when the field is absent or non-recognized,
+ * which routes the caller to the ZIP branch (with its existing
+ * "no Runtime / no Handler" validations).
+ */
+function extractImageUri(value: unknown): string | undefined {
+  if (typeof value === 'string' && value.length > 0) return value;
+  if (value && typeof value === 'object' && !Array.isArray(value)) {
+    const obj = value as Record<string, unknown>;
+    const sub = obj['Fn::Sub'];
+    if (typeof sub === 'string' && sub.length > 0) return sub;
+    if (Array.isArray(sub) && typeof sub[0] === 'string') return sub[0];
+  }
+  return undefined;
+}
+
+/**
+ * Build the IMAGE-variant `ResolvedStartApiLambda` from a Lambda
+ * template entry with `Code.ImageUri`. Mirrors
+ * `lambda-resolver.ts:extractImageLambdaProperties` but trimmed to the
+ * fields `cdkd local start-api` actually consumes.
+ */
+function resolveImageLambda(args: {
+  stack: StackInfo;
+  logicalId: string;
+  resource: TemplateResource;
+  props: Record<string, unknown>;
+  memoryMb: number;
+  timeoutSec: number;
+  imageUri: string;
+}): ResolvedStartApiImageLambda {
+  const { stack, logicalId, resource, props, memoryMb, timeoutSec, imageUri } = args;
+
+  const rawImageConfig = (props['ImageConfig'] ?? {}) as Record<string, unknown>;
+  const imageConfig: ResolvedStartApiImageLambda['imageConfig'] = {};
+  if (Array.isArray(rawImageConfig['Command'])) {
+    imageConfig.command = rawImageConfig['Command'].filter(
+      (s): s is string => typeof s === 'string'
+    );
+  }
+  if (Array.isArray(rawImageConfig['EntryPoint'])) {
+    imageConfig.entryPoint = rawImageConfig['EntryPoint'].filter(
+      (s): s is string => typeof s === 'string'
+    );
+  }
+  if (typeof rawImageConfig['WorkingDirectory'] === 'string') {
+    imageConfig.workingDirectory = rawImageConfig['WorkingDirectory'];
+  }
+
+  // Architectures defaults to x86_64. CDK only ever sets one entry.
+  const arches = props['Architectures'];
+  let architecture: 'x86_64' | 'arm64' = 'x86_64';
+  if (Array.isArray(arches) && arches.length > 0) {
+    const first: unknown = arches[0];
+    if (first === 'arm64') architecture = 'arm64';
+    else if (first === 'x86_64') architecture = 'x86_64';
+    else {
+      throw new Error(
+        `Lambda '${logicalId}' has unsupported Architectures value '${String(first)}'. ` +
+          'cdkd local start-api supports x86_64 and arm64.'
+      );
+    }
+  }
+
+  return {
+    kind: 'image',
+    stack,
+    logicalId,
+    resource,
+    memoryMb,
+    timeoutSec,
+    imageUri,
+    imageConfig,
+    architecture,
+    layers: [],
+  };
 }
 
 /**

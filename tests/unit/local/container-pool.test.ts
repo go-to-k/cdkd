@@ -46,6 +46,7 @@ function makeSpec(logicalId: string): ContainerSpec {
     codePath: '/tmp/code',
   } as unknown as ResolvedZipLambda;
   return {
+    kind: 'zip',
     lambda,
     codeDir: '/tmp/code',
     env: {},

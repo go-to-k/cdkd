@@ -505,6 +505,14 @@
       ]
     },
     {
+      "name": "local-start-api-container",
+      "annotated": true,
+      "scenarios": [
+        "local-apigateway-server",
+        "local-lambda-rie-container"
+      ]
+    },
+    {
       "name": "log-pipeline",
       "annotated": true,
       "scenarios": []
@@ -771,7 +779,8 @@
       "scenario": "local-apigateway-server",
       "description": "`cdkd local start-api` HTTP server with route discovery + per-Lambda warm container pool.",
       "fixtures": [
-        "local-start-api"
+        "local-start-api",
+        "local-start-api-container"
       ]
     },
     {
@@ -796,7 +805,8 @@
       "description": "`cdkd local invoke` container-Lambda (Code.ImageUri) against RIE — local-build OR ECR-pull asset resolution.",
       "fixtures": [
         "local-invoke-buildkit",
-        "local-invoke-container"
+        "local-invoke-container",
+        "local-start-api-container"
       ]
     },
     {
