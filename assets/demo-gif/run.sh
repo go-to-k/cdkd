@@ -6,6 +6,15 @@ set -e
 
 CONF="$(dirname "$0")/tmux-clean.conf"
 
+# Use the freshly-built cdkd from the repo's dist/, not the globally-installed
+# one (which may be a different release). Shadow `cdkd` on PATH with a symlink
+# to the local build so the visible command in the GIF stays plain `cdkd`.
+CDKD_BIN="$(cd "$(dirname "$0")/../.." && pwd)/dist/cli.js"
+SHADOW_BIN="$(mktemp -d)"
+ln -sf "$CDKD_BIN" "$SHADOW_BIN/cdkd"
+export PATH="$SHADOW_BIN:$PATH"
+trap 'rm -rf "$SHADOW_BIN"' EXIT
+
 # FORCE_COLOR=1 makes cdkd's chalk emit ANSI colors even though tmux's
 # pseudo-TTY would otherwise be detected as non-color. cdk already colors
 # unconditionally. COLORTERM=truecolor lets both emit 24-bit colors.

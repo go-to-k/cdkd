@@ -6,7 +6,7 @@ Drop-in CDK CLI for existing CDK apps — faster deploys via AWS SDK instead of 
 - **Up to 15x faster deploys than the AWS CDK CLI (CloudFormation)**
 - **Local dev for CDK apps** — invoke Lambdas, serve API Gateway routes, and run ECS tasks directly from your CDK code, no `cdk synth → sam local` round-trip.
 
-![cdkd demo](https://github.com/user-attachments/assets/0128730d-186d-4bd3-abea-aabc80ba4dd5)
+![cdk deploy vs cdkd deploy — side-by-side, 35s recording, real AWS deploy. cdkd finishes while cdk is still creating its CloudFormation changeset.](assets/cdk-vs-cdkd.gif)
 
 **cdkd complements the AWS CDK CLI rather than replacing it.** Use cdkd in dev/test for rapid iteration and SAM-style local execution; use the AWS CDK CLI in production for full CloudFormation tooling. Bidirectional migration is supported — [import an existing CloudFormation stack](#importing-existing-resources) into cdkd for iteration, or [export back to CloudFormation](#exporting-a-stack-back-to-cloudformation) when ready for production.
 
@@ -43,8 +43,6 @@ Stack: S3 Bucket, DynamoDB Table, SQS Queue, SNS Topic, SSM Parameter (5 indepen
 | | AWS CDK (CFn) | cdkd | Speedup |
 | --- | ---: | ---: | ---: |
 | Deploy | **94.4s** | **17.0s** | **5.5x** |
-
-![cdk deploy vs cdkd deploy — side-by-side, 35s recording, real AWS deploy. cdkd finishes while cdk is still creating its CloudFormation changeset.](assets/cdk-vs-cdkd.gif)
 
 ### VPC + CloudFront + Lambda stack — **15x faster with `--no-wait`** (40s vs 599s)
 
