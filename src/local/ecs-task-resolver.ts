@@ -967,8 +967,11 @@ function buildSubstitutionContextFromImageContext(
  *     `physicalId`, and `Fn::GetAtt: [<Repo>, 'RepositoryUri']` shapes
  *     are resolved via the same state record.
  *
- * Tier 3 (cross-account / cross-region pull) is deferred — `pullEcrImage`
- * surfaces the same workaround pointer it already does.
+ * Cross-account / cross-region pull (#455): `pullEcrImage` auto-detects
+ * cross-account from `sts:GetCallerIdentity` and authenticates against
+ * the URI's region directly. Pass `--ecr-role-arn <arn>` when the caller
+ * does not already have cross-account `ecr:GetAuthorizationToken` /
+ * `ecr:BatchGetImage` access on the target repository.
  */
 function parseContainerImage(
   raw: unknown,

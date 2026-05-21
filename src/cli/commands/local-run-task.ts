@@ -56,6 +56,15 @@ interface LocalRunTaskOptions {
    */
   assumeTaskRole?: string | boolean;
   pull: boolean;
+  /**
+   * Optional role ARN passed to `pullEcrImage` for cross-account /
+   * centralized registry pulls (#455). Issues `sts:AssumeRole` via the
+   * default credential chain and uses the resulting temp credentials to
+   * authenticate against the target ECR repository. Same-account /
+   * same-region pulls do not need this flag. Mirrors
+   * `cdkd local invoke --ecr-role-arn`.
+   */
+  ecrRoleArn?: string;
   platform?: string;
   keepRunning: boolean;
   detach: boolean;
@@ -250,6 +259,7 @@ async function localRunTaskCommand(target: string, options: LocalRunTaskOptions)
     if (resolvedRoleArn) runOpts.taskRoleArn = resolvedRoleArn;
     if (options.platform) runOpts.platformOverride = options.platform;
     if (options.region) runOpts.region = options.region;
+    if (options.ecrRoleArn) runOpts.ecrRoleArn = options.ecrRoleArn;
 
     const result = await runEcsTask(task, runOpts, state);
 
@@ -529,6 +539,16 @@ export function createLocalRunTaskCommand(): Command {
     )
     .addOption(
       new Option('--no-pull', 'Skip docker pull for every container image and the metadata sidecar')
+    )
+    .addOption(
+      new Option(
+        '--ecr-role-arn <arn>',
+        'Role ARN to assume before authenticating against ECR for cross-account / centralized ' +
+          'registries (#455). Issues sts:AssumeRole via the default credential chain and uses the ' +
+          'temporary credentials for ecr:GetAuthorizationToken + docker pull. Required when the ' +
+          'caller does not have direct cross-account access to the target repository. ' +
+          'Same-account / same-region pulls do not need this flag.'
+      )
     )
     .addOption(
       new Option(

@@ -1340,7 +1340,7 @@ export class GlueSecurityConfigurationProvider implements ResourceProvider {
     throw new ResourceUpdateNotSupportedError(
       resourceType,
       logicalId,
-      'AWS::Glue::SecurityConfiguration is immutable; AWS provides no Update API. Use cdkd deploy --replace, or destroy + redeploy with the new EncryptionConfiguration.'
+      'AWS Glue SecurityConfiguration is immutable on AWS — there is no UpdateSecurityConfiguration API; every change requires DeleteSecurityConfiguration + CreateSecurityConfiguration. Use cdkd deploy --replace, or destroy + redeploy with the new EncryptionConfiguration.'
     );
   }
 
