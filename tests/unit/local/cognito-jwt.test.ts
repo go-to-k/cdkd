@@ -51,6 +51,13 @@ function base64Url(buf: Buffer): string {
 const COGNITO_AUTH: CognitoUserPoolAuthorizer = {
   kind: 'cognito',
   logicalId: 'Auth',
+  pools: [
+    {
+      userPoolArn: 'arn:aws:cognito-idp:us-east-1:111:userpool/us-east-1_x',
+      region: 'us-east-1',
+      userPoolId: 'us-east-1_x',
+    },
+  ],
   userPoolArn: 'arn:aws:cognito-idp:us-east-1:111:userpool/us-east-1_x',
   region: 'us-east-1',
   userPoolId: 'us-east-1_x',
@@ -531,5 +538,214 @@ describe('verifyCognitoJwt — extractBearer edge cases', () => {
     expect((await verifyCognitoJwt(COGNITO_AUTH, 'Bearer "abc"', cache)).allow).toBe(false);
     expect((await verifyCognitoJwt(COGNITO_AUTH, 'Bearer abc=def', cache)).allow).toBe(false);
     expect((await verifyCognitoJwt(COGNITO_AUTH, 'Bearer a+b/c', cache)).allow).toBe(false);
+  });
+});
+
+/**
+ * Issue #456: multi-pool federation. The authorizer carries `pools: [1+]`;
+ * verifyCognitoJwt picks the matching pool by the token's `iss` claim
+ * and verifies against that pool's JWKS only. A token issued by pool A
+ * cannot be verified against pool B's keys; a token whose `iss` does not
+ * match any configured pool rejects with 401 without touching JWKS.
+ */
+describe('verifyCognitoJwt — multi-pool federation', () => {
+  /** Build a 2-pool authorizer using fresh keys per pool. */
+  function makeMultiPoolFixture(): {
+    auth: CognitoUserPoolAuthorizer;
+    poolA: ReturnType<typeof makeJwtFixture>;
+    poolB: ReturnType<typeof makeJwtFixture>;
+  } {
+    const auth: CognitoUserPoolAuthorizer = {
+      kind: 'cognito',
+      logicalId: 'MultiAuth',
+      pools: [
+        {
+          userPoolArn: 'arn:aws:cognito-idp:us-east-1:111:userpool/us-east-1_tenantA',
+          region: 'us-east-1',
+          userPoolId: 'us-east-1_tenantA',
+        },
+        {
+          userPoolArn: 'arn:aws:cognito-idp:us-west-2:111:userpool/us-west-2_tenantB',
+          region: 'us-west-2',
+          userPoolId: 'us-west-2_tenantB',
+        },
+      ],
+      // Legacy single-pool aliases point at pools[0].
+      userPoolArn: 'arn:aws:cognito-idp:us-east-1:111:userpool/us-east-1_tenantA',
+      region: 'us-east-1',
+      userPoolId: 'us-east-1_tenantA',
+      declaredAt: 'S/Method',
+    };
+    return { auth, poolA: makeJwtFixture(), poolB: makeJwtFixture() };
+  }
+
+  it('verifies a token issued by the SECOND configured pool against its JWKS', async () => {
+    const { auth, poolA, poolB } = makeMultiPoolFixture();
+    // Per-URL fetch: pool A's JWKS returns poolA's key only; pool B's
+    // returns poolB's key only.
+    const cache = createJwksCache({
+      fetchImpl: async (url: string) => {
+        const key = url.includes('us-east-1_tenantA') ? poolA.jwk : poolB.jwk;
+        return {
+          ok: true,
+          status: 200,
+          text: async () => JSON.stringify({ keys: [key] }),
+        };
+      },
+    });
+    const tokenFromB = poolB.sign(
+      {},
+      {
+        sub: 'tenant-b-user',
+        exp: Math.floor(Date.now() / 1000) + 3600,
+        iss: 'https://cognito-idp.us-west-2.amazonaws.com/us-west-2_tenantB',
+      }
+    );
+    const result = await verifyCognitoJwt(auth, `Bearer ${tokenFromB}`, cache);
+    expect(result.allow).toBe(true);
+    expect(result.principalId).toBe('tenant-b-user');
+  });
+
+  it('rejects when issuer matches no configured pool', async () => {
+    const { auth, poolA } = makeMultiPoolFixture();
+    const cache = createJwksCache({
+      fetchImpl: async () => ({
+        ok: true,
+        status: 200,
+        text: async () => JSON.stringify({ keys: [poolA.jwk] }),
+      }),
+    });
+    // Token signed legitimately by poolA, but `iss` claims a pool that
+    // isn't in the authorizer's `pools[]` — reject without touching JWKS.
+    const fakeToken = poolA.sign(
+      {},
+      {
+        sub: 'attacker',
+        exp: Math.floor(Date.now() / 1000) + 3600,
+        iss: 'https://cognito-idp.eu-west-1.amazonaws.com/eu-west-1_unregistered',
+      }
+    );
+    const result = await verifyCognitoJwt(auth, `Bearer ${fakeToken}`, cache);
+    expect(result.allow).toBe(false);
+  });
+
+  it('rejects a token from pool A signed with pool B keys (signature mismatch)', async () => {
+    const { auth, poolA, poolB } = makeMultiPoolFixture();
+    // poolA's JWKS contains poolA's key only.
+    const cache = createJwksCache({
+      fetchImpl: async (url: string) => {
+        const key = url.includes('us-east-1_tenantA') ? poolA.jwk : poolB.jwk;
+        return {
+          ok: true,
+          status: 200,
+          text: async () => JSON.stringify({ keys: [key] }),
+        };
+      },
+    });
+    // Token claims pool A as issuer but is signed with pool B's private
+    // key. verifyAndShape pulls pool A's JWKS (per the `iss` match), but
+    // the kid won't be found (poolA and poolB are independent keypairs).
+    const crossSignedToken = poolB.sign(
+      {},
+      {
+        sub: 'attacker',
+        exp: Math.floor(Date.now() / 1000) + 3600,
+        iss: 'https://cognito-idp.us-east-1.amazonaws.com/us-east-1_tenantA',
+      }
+    );
+    const result = await verifyCognitoJwt(auth, `Bearer ${crossSignedToken}`, cache);
+    expect(result.allow).toBe(false);
+  });
+
+  it('single-element pools[] behaves identically to the legacy single-pool case (backward compat)', async () => {
+    const fixture = makeJwtFixture();
+    const cache = createJwksCache({
+      fetchImpl: async () => ({
+        ok: true,
+        status: 200,
+        text: async () => JSON.stringify({ keys: [fixture.jwk] }),
+      }),
+    });
+    const auth: CognitoUserPoolAuthorizer = {
+      kind: 'cognito',
+      logicalId: 'Auth',
+      pools: [
+        {
+          userPoolArn: 'arn:aws:cognito-idp:us-east-1:111:userpool/us-east-1_solo',
+          region: 'us-east-1',
+          userPoolId: 'us-east-1_solo',
+        },
+      ],
+      userPoolArn: 'arn:aws:cognito-idp:us-east-1:111:userpool/us-east-1_solo',
+      region: 'us-east-1',
+      userPoolId: 'us-east-1_solo',
+      declaredAt: 'S/Method',
+    };
+    const token = fixture.sign(
+      {},
+      {
+        sub: 'user-1',
+        exp: Math.floor(Date.now() / 1000) + 3600,
+        iss: 'https://cognito-idp.us-east-1.amazonaws.com/us-east-1_solo',
+      }
+    );
+    const result = await verifyCognitoJwt(auth, `Bearer ${token}`, cache);
+    expect(result.allow).toBe(true);
+    expect(result.principalId).toBe('user-1');
+  });
+
+  it('JWKS pass-through is per-pool (one pool reachable, the other not)', async () => {
+    const { auth, poolA } = makeMultiPoolFixture();
+    let aFetched = 0;
+    let bFetched = 0;
+    const cache = createJwksCache({
+      fetchImpl: async (url: string) => {
+        if (url.includes('us-east-1_tenantA')) {
+          aFetched++;
+          return {
+            ok: true,
+            status: 200,
+            text: async () => JSON.stringify({ keys: [poolA.jwk] }),
+          };
+        }
+        bFetched++;
+        // pool B's endpoint is unreachable — falls back to pass-through.
+        throw new Error('pool B network unreachable');
+      },
+      // Failure-mode TTL of 0 keeps the test deterministic; we just want
+      // to assert each pool's URL is fetched at least once.
+      failureTtlMs: 0,
+    });
+    // Token issued by pool A — verifies normally against pool A's JWKS,
+    // never triggers pool B's fetch.
+    const tokenA = poolA.sign(
+      {},
+      {
+        sub: 'user-a',
+        exp: Math.floor(Date.now() / 1000) + 3600,
+        iss: 'https://cognito-idp.us-east-1.amazonaws.com/us-east-1_tenantA',
+      }
+    );
+    const resultA = await verifyCognitoJwt(auth, `Bearer ${tokenA}`, cache);
+    expect(resultA.allow).toBe(true);
+    expect(aFetched).toBe(1);
+    expect(bFetched).toBe(0);
+
+    // Now a token issued by pool B — its JWKS fetch fails, so the
+    // pass-through path accepts the token (matches PR 8b's "JWKS
+    // unreachable → allow every Bearer token" design intent).
+    // Use the SAME signing key as poolA (sig won't verify but
+    // pass-through skips verification).
+    const tokenB = poolA.sign(
+      {},
+      {
+        sub: 'user-b',
+        exp: Math.floor(Date.now() / 1000) + 3600,
+        iss: 'https://cognito-idp.us-west-2.amazonaws.com/us-west-2_tenantB',
+      }
+    );
+    const resultB = await verifyCognitoJwt(auth, `Bearer ${tokenB}`, cache);
+    expect(resultB.allow).toBe(true);
+    expect(bFetched).toBeGreaterThanOrEqual(1);
   });
 });

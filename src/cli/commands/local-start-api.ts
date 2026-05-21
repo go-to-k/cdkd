@@ -770,7 +770,13 @@ async function prewarmJwks(
     const auth = entry.authorizer;
     if (!auth) continue;
     if (auth.kind === 'cognito') {
-      urls.add(buildCognitoJwksUrl(auth.region, auth.userPoolId));
+      // Multi-pool federation: pre-warm JWKS for EVERY pool in
+      // ProviderARNs[], so issuer-matched verification at request time
+      // doesn't pay a cold-start latency on the first request to each
+      // tenant's pool.
+      for (const pool of auth.pools) {
+        urls.add(buildCognitoJwksUrl(pool.region, pool.userPoolId));
+      }
     } else if (auth.kind === 'jwt') {
       const url =
         auth.region && auth.userPoolId
