@@ -1,7 +1,10 @@
-import { spawn } from 'node:child_process';
 import { ECRClient, GetAuthorizationTokenCommand } from '@aws-sdk/client-ecr';
 import { GetCallerIdentityCommand, STSClient } from '@aws-sdk/client-sts';
-import { formatDockerLoginError, getDockerCmd, runDockerStreaming } from '../utils/docker-cmd.js';
+import {
+  formatDockerLoginError,
+  runDockerForeground,
+  runDockerStreaming,
+} from '../utils/docker-cmd.js';
 import { LocalInvokeBuildError } from '../utils/error-handler.js';
 import { getLogger } from '../utils/logger.js';
 
@@ -132,7 +135,12 @@ export async function pullEcrImage(imageUri: string, options: EcrPullOptions): P
   }
 
   logger.info(`Pulling ${imageUri}...`);
-  await runForeground(getDockerCmd(), ['pull', imageUri]);
+  try {
+    await runDockerForeground(['pull', imageUri]);
+  } catch (err) {
+    const e = err as Error;
+    throw new LocalInvokeBuildError(`docker pull ${imageUri} failed: ${e.message}`);
+  }
 
   return imageUri;
 }
@@ -204,21 +212,4 @@ export async function isImageInLocalCache(imageRef: string): Promise<boolean> {
   } catch {
     return false;
   }
-}
-
-/**
- * `docker pull` plumbed to the parent's stdio so the user sees layer
- * pull progress. Mirrors the runtime image's `pullImage` plumbing in
- * `docker-runner.ts` but local to this module to avoid a circular
- * dependency.
- */
-function runForeground(cmd: string, args: string[]): Promise<void> {
-  return new Promise<void>((resolve, reject) => {
-    const proc = spawn(cmd, args, { stdio: 'inherit' });
-    proc.on('error', (err) => reject(new LocalInvokeBuildError(`${cmd} failed: ${err.message}`)));
-    proc.on('close', (code) => {
-      if (code === 0) resolve();
-      else reject(new LocalInvokeBuildError(`${cmd} exited with code ${code}`));
-    });
-  });
 }

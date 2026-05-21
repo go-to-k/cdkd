@@ -165,6 +165,92 @@ export async function spawnStreaming(
 }
 
 /**
+ * Spawn a docker-compatible CLI binary (resolved via `getDockerCmd`) attached
+ * to the parent process's stdio so the user sees live output (`docker pull`
+ * layer progress, `docker login` interactive prompts that should never fire
+ * with `--password-stdin` but still safe to inherit, etc.). Resolves on exit
+ * code 0; rejects with a plain `Error` carrying the exit code on any non-zero
+ * exit, so the caller can wrap with its own error class.
+ *
+ * Differs from {@link runDockerStreaming} in two ways:
+ *   1. `stdio: 'inherit'` — output is NOT captured, so terminal control codes
+ *      (color, progress bar overwrites) flow through unchanged. This is the
+ *      load-bearing reason for the split: `docker pull`'s progress bars only
+ *      animate properly when stdout is a real TTY connected to the parent.
+ *   2. No `input` / `streamLive` options — inherit-mode has nothing to
+ *      capture and nothing to mirror.
+ *
+ * Used by the `--verbose`-mode `docker pull` plumbing in `docker-runner.ts`
+ * and `ecr-puller.ts` (visible layer progress). Non-verbose pulls go through
+ * {@link runDockerStreaming} so stderr can be folded into the error message.
+ */
+export async function runDockerForeground(
+  args: string[],
+  options: ForegroundOptions = {}
+): Promise<void> {
+  return spawnForeground(getDockerCmd(), args, options);
+}
+
+export interface ForegroundOptions {
+  /** Optional working directory for the subprocess. */
+  cwd?: string;
+  /**
+   * Additional environment variables to set. Merged on top of `process.env`
+   * (same semantics as {@link RunDockerOptions.env}).
+   */
+  env?: Record<string, string | undefined>;
+}
+
+/**
+ * Foreground (stdio-inherit) spawn — the inherit-mode counterpart to
+ * {@link spawnStreaming}. Used by {@link runDockerForeground} for docker-CLI
+ * subprocesses.
+ *
+ * The ENOENT branch crafts a docker-specific install hint ("Install Docker
+ * (or set CDK_DOCKER ...)"), so non-docker callers reusing this helper
+ * would see a misleading error on missing-binary failures. Keep the binary
+ * docker-shaped, or update the ENOENT message before adding a non-docker
+ * call site.
+ */
+export async function spawnForeground(
+  cmd: string,
+  args: string[],
+  options: ForegroundOptions = {}
+): Promise<void> {
+  const env = options.env ? mergeEnv(options.env) : undefined;
+  return new Promise<void>((resolve, reject) => {
+    const child = spawn(cmd, args, {
+      cwd: options.cwd,
+      env,
+      stdio: 'inherit',
+    });
+    child.once('error', (err: NodeJS.ErrnoException) => {
+      if (err.code === 'ENOENT') {
+        const usingOverride = process.env['CDK_DOCKER'] === cmd && cmd !== 'docker';
+        reject(
+          new Error(
+            usingOverride
+              ? `Failed to find and execute '${cmd}' (resolved via CDK_DOCKER). ` +
+                  `Install '${cmd}' or unset CDK_DOCKER to fall back to 'docker'.`
+              : `Failed to find and execute '${cmd}'. Install Docker (or set the ` +
+                  `'CDK_DOCKER' environment variable to a compatible binary such as podman / finch).`
+          )
+        );
+      } else {
+        reject(new Error(`${cmd} failed: ${err.message}`));
+      }
+    });
+    child.once('close', (code) => {
+      if (code === 0) {
+        resolve();
+      } else {
+        reject(new Error(`${cmd} exited with code ${code}`));
+      }
+    });
+  });
+}
+
+/**
  * Format the stderr from a failed `docker login` so the surfaced cdkd
  * error gives the user an actionable workaround when the underlying
  * failure is a credential-helper persistence bug (which has nothing to

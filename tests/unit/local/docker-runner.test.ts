@@ -31,8 +31,28 @@ vi.mock('node:child_process', async () => {
   };
 });
 
+// docker-cmd mocks for `pullImage` — both helpers used by the pull path
+// (`runDockerForeground` in the debug / --verbose branch, `runDockerStreaming`
+// in the default captured branch) are mockable so the tests can drive each
+// failure shape independently (ENOENT plain Error vs SpawnError).
+const dockerCmdMocks = vi.hoisted(() => ({
+  runDockerForeground: vi.fn(),
+  runDockerStreaming: vi.fn(),
+}));
+vi.mock('../../../src/utils/docker-cmd.js', async () => {
+  const actual = await vi.importActual<typeof import('../../../src/utils/docker-cmd.js')>(
+    '../../../src/utils/docker-cmd.js'
+  );
+  return {
+    ...actual,
+    runDockerForeground: dockerCmdMocks.runDockerForeground,
+    runDockerStreaming: dockerCmdMocks.runDockerStreaming,
+  };
+});
+
 import {
   pickFreePort,
+  pullImage,
   redactAwsCredentialsInArgs,
   runDetached,
 } from '../../../src/local/docker-runner.js';
@@ -335,5 +355,65 @@ describe('runDetached', () => {
     });
     const args = lastArgs();
     expect(args).toContain('AWS_SECRET_ACCESS_KEY=real-secret');
+  });
+});
+
+// `pullImage` exercises `runDockerStreaming` (default compact log level
+// branch). The ENOENT path is the load-bearing regression catch: pre-fix
+// `runCaptured` surfaced the spawn error's raw message; the refactor
+// must preserve that via the `e.exitCode === undefined` branch in
+// `pullImage`, otherwise the user-visible message degrades to
+// "exited with code ?: (no output)" with the helpful Install-Docker
+// hint silently dropped.
+describe('pullImage', () => {
+  beforeEach(() => {
+    dockerCmdMocks.runDockerForeground.mockReset();
+    dockerCmdMocks.runDockerStreaming.mockReset();
+  });
+
+  it('--no-pull (skipPull=true) short-circuits without invoking docker', async () => {
+    await pullImage('public.ecr.aws/lambda/nodejs:20', true);
+    expect(dockerCmdMocks.runDockerForeground).not.toHaveBeenCalled();
+    expect(dockerCmdMocks.runDockerStreaming).not.toHaveBeenCalled();
+  });
+
+  it('surfaces the spawnStreaming ENOENT install hint via DockerRunnerError (captured branch)', async () => {
+    // ENOENT path: spawnStreaming rejects with a plain Error (no
+    // `exitCode` / `stderr` field). `pullImage` must detect the missing
+    // `exitCode` and surface `e.message` instead of folding to "exited
+    // with code ?: (no output)".
+    const enoentErr = new Error(
+      "Failed to find and execute 'docker'. Install Docker (or set the 'CDK_DOCKER' environment variable to a compatible binary such as podman / finch)."
+    );
+    dockerCmdMocks.runDockerStreaming.mockRejectedValue(enoentErr);
+    await expect(pullImage('public.ecr.aws/lambda/nodejs:20', false)).rejects.toThrow(
+      /docker pull public\.ecr\.aws\/lambda\/nodejs:20 failed: Failed to find.*Install Docker.*CDK_DOCKER/
+    );
+  });
+
+  it('surfaces docker exit code + stderr via DockerRunnerError on non-zero exit', async () => {
+    // SpawnError path: runDockerStreaming rejects with `exitCode` set +
+    // captured stderr. `pullImage` folds stderr into the exit-code line.
+    const spawnErr = Object.assign(new Error('non-zero exit'), {
+      exitCode: 1,
+      stderr: 'pull access denied for image',
+      stdout: '',
+    });
+    dockerCmdMocks.runDockerStreaming.mockRejectedValue(spawnErr);
+    await expect(pullImage('public.ecr.aws/lambda/nodejs:20', false)).rejects.toThrow(
+      /docker pull public\.ecr\.aws\/lambda\/nodejs:20 exited with code 1: pull access denied/
+    );
+  });
+
+  it('surfaces (no output) when SpawnError has no captured stderr / stdout', async () => {
+    const spawnErr = Object.assign(new Error('non-zero exit'), {
+      exitCode: 2,
+      stderr: '',
+      stdout: '',
+    });
+    dockerCmdMocks.runDockerStreaming.mockRejectedValue(spawnErr);
+    await expect(pullImage('image:tag', false)).rejects.toThrow(
+      /docker pull image:tag exited with code 2: \(no output\)/
+    );
   });
 });
