@@ -35,7 +35,7 @@ import { getLogger } from '../utils/logger.js';
 
 export interface BuildDockerImageOptions {
   /**
-   * Local image tag (`-t`) for `directory` mode. The caller chooses a
+   * Local image tag (`--tag`) for `directory` mode. The caller chooses a
    * deterministic tag so subsequent runs hit Docker's layer cache (the
    * publisher uses `cdkd-asset-<hash>`; local-invoke uses
    * `cdkd-local-invoke-<hash>`). Ignored in `executable` mode — there
@@ -167,7 +167,13 @@ export function buildDockerBuildCommand(
   tag: string,
   platformOverride?: string
 ): string[] {
-  const args: string[] = ['build', '-t', tag];
+  // `--tag` (not `-t`) and `--file` (not `-f`) are the long-form names CDK
+  // CLI's `cdk-assets-lib` emits. docker treats short / long aliases
+  // identically, so this is cosmetic — but matching CDK CLI verbatim makes
+  // a side-by-side comparison of the rendered argv (in --verbose logs)
+  // grep-clean and removes one source of "why is this slightly different?"
+  // confusion.
+  const args: string[] = ['build', '--tag', tag];
 
   // Build args (Object.entries order preserved for layer-cache stability).
   if (source.dockerBuildArgs) {
@@ -200,7 +206,7 @@ export function buildDockerBuildCommand(
   }
 
   if (source.dockerFile) {
-    args.push('-f', source.dockerFile);
+    args.push('--file', source.dockerFile);
   }
 
   if (source.networkMode) {

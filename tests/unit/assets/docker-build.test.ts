@@ -38,11 +38,14 @@ beforeEach(() => {
 });
 
 describe('buildDockerBuildCommand', () => {
-  it('emits build -t <tag>', () => {
+  it('emits build --tag <tag> (long-form, CDK CLI parity)', () => {
     const args = buildDockerBuildCommand(baseSource, 'cdkd-asset-tag');
     expect(args[0]).toBe('build');
-    expect(args).toContain('-t');
-    expect(args[args.indexOf('-t') + 1]).toBe('cdkd-asset-tag');
+    expect(args).toContain('--tag');
+    expect(args[args.indexOf('--tag') + 1]).toBe('cdkd-asset-tag');
+    // The short-form alias must not leak back in — pinning the long form
+    // protects against a future "convenience" refactor that swaps back.
+    expect(args).not.toContain('-t');
   });
 
   it('threads --platform when provided as override', () => {
@@ -72,7 +75,7 @@ describe('buildDockerBuildCommand', () => {
     expect(args).not.toContain('--platform');
   });
 
-  it('passes -f, build args, target, outputs (--output= single arg form)', () => {
+  it('passes --file, build args, target, outputs (--output= single arg form)', () => {
     const args = buildDockerBuildCommand(
       {
         directory: 'asset.x',
@@ -83,7 +86,8 @@ describe('buildDockerBuildCommand', () => {
       },
       'tag'
     );
-    expect(args[args.indexOf('-f') + 1]).toBe('Custom.Dockerfile');
+    expect(args[args.indexOf('--file') + 1]).toBe('Custom.Dockerfile');
+    expect(args).not.toContain('-f');
     expect(args).toContain('--build-arg');
     expect(args).toContain('FOO=bar');
     expect(args).toContain('BAZ=qux');

@@ -1,7 +1,11 @@
 import { execFile, spawn } from 'node:child_process';
 import { createServer } from 'node:net';
 import { promisify } from 'node:util';
-import { getDockerCmd } from '../utils/docker-cmd.js';
+import {
+  getDockerCmd,
+  runDockerForeground,
+  runDockerStreaming,
+} from '../utils/docker-cmd.js';
 import { getLogger } from '../utils/logger.js';
 
 const execFileAsync = promisify(execFile);
@@ -128,43 +132,28 @@ export async function pullImage(image: string, skipPull: boolean): Promise<void>
   }
   if (getLogger().getLevel() === 'debug') {
     logger.info(`Pulling ${image}...`);
-    await runForeground(getDockerCmd(), ['pull', image]);
+    try {
+      await runDockerForeground(['pull', image]);
+    } catch (err) {
+      const e = err as Error;
+      throw new DockerRunnerError(`docker pull ${image} failed: ${e.message}`);
+    }
     return;
   }
   logger.debug(`Pulling ${image} (silent — pass --verbose to stream progress)`);
-  await runCaptured(getDockerCmd(), ['pull', image], image);
-}
-
-/**
- * Run a child process with stdout / stderr captured (not inherited).
- * On success: discard the captured output (silent). On failure: fold
- * the captured stderr (or stdout as a fallback) into the rejection so
- * the error message names what actually went wrong instead of a bare
- * "exit code N".
- */
-function runCaptured(cmd: string, args: string[], image: string): Promise<void> {
-  return new Promise<void>((resolveProc, rejectProc) => {
-    const proc = spawn(cmd, args, { stdio: ['ignore', 'pipe', 'pipe'] });
-    let stdout = '';
-    let stderr = '';
-    proc.stdout?.on('data', (chunk: Buffer) => {
-      stdout += chunk.toString('utf-8');
-    });
-    proc.stderr?.on('data', (chunk: Buffer) => {
-      stderr += chunk.toString('utf-8');
-    });
-    proc.on('error', (err) =>
-      rejectProc(new DockerRunnerError(`${cmd} pull ${image} failed: ${err.message}`))
+  // Captured-mode pull: stdout/stderr collected, mirrored only when
+  // --verbose is on (which the branch above already handles via
+  // runDockerForeground), so streamLive: false keeps the silent
+  // contract on the default compact log level.
+  try {
+    await runDockerStreaming(['pull', image], { streamLive: false });
+  } catch (err) {
+    const e = err as { exitCode?: number | null; stderr?: string; stdout?: string };
+    const detail = e.stderr?.trim() || e.stdout?.trim() || '(no output)';
+    throw new DockerRunnerError(
+      `docker pull ${image} exited with code ${e.exitCode ?? '?'}: ${detail}`
     );
-    proc.on('close', (code) => {
-      if (code === 0) {
-        resolveProc();
-        return;
-      }
-      const detail = stderr.trim() || stdout.trim() || '(no output)';
-      rejectProc(new DockerRunnerError(`docker pull ${image} exited with code ${code}: ${detail}`));
-    });
-  });
+  }
 }
 
 /**
@@ -378,18 +367,3 @@ export function redactAwsCredentialsInArgs(args: readonly string[]): string[] {
   return out;
 }
 
-/**
- * Run a child process attached to the parent's stdio (so users see
- * progress lines as they happen). Resolves on exit code 0; rejects with
- * the captured stderr otherwise. Used for `docker pull`.
- */
-function runForeground(cmd: string, args: string[]): Promise<void> {
-  return new Promise<void>((resolveProc, rejectProc) => {
-    const proc = spawn(cmd, args, { stdio: 'inherit' });
-    proc.on('error', (err) => rejectProc(new DockerRunnerError(`${cmd} failed: ${err.message}`)));
-    proc.on('close', (code) => {
-      if (code === 0) resolveProc();
-      else rejectProc(new DockerRunnerError(`${cmd} exited with code ${code}`));
-    });
-  });
-}

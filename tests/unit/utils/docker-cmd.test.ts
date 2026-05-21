@@ -3,6 +3,7 @@ import {
   formatDockerLoginError,
   getDockerCmd,
   runDockerStreaming,
+  spawnForeground,
   spawnStreaming,
 } from '../../../src/utils/docker-cmd.js';
 
@@ -136,6 +137,51 @@ describe('runDockerStreaming / spawnStreaming machinery', () => {
       if (original === undefined) delete process.env['CDK_DOCKER'];
       else process.env['CDK_DOCKER'] = original;
     }
+  });
+});
+
+// `spawnForeground` machinery — covers exit-code-0 happy path, non-zero
+// exit rejection, and ENOENT error rewriting. Inherit-mode means we can't
+// capture stdout/stderr in-process (the parent's stdio IS the child's),
+// so the assertions focus on the resolve / reject shape rather than
+// captured streams.
+describe('spawnForeground machinery', () => {
+  const itPosix = process.platform === 'win32' ? it.skip : it;
+
+  itPosix('resolves on exit code 0', async () => {
+    await expect(spawnForeground('/bin/sh', ['-c', 'true'])).resolves.toBeUndefined();
+  });
+
+  itPosix('rejects on non-zero exit with `exited with code N` message', async () => {
+    let caught: unknown;
+    try {
+      await spawnForeground('/bin/sh', ['-c', 'exit 9']);
+    } catch (err) {
+      caught = err;
+    }
+    const e = caught as Error;
+    expect(e.message).toMatch(/exited with code 9/);
+  });
+
+  itPosix(
+    'rejects ENOENT with the Install Docker / CDK_DOCKER hint when the binary does not exist',
+    async () => {
+      await expect(
+        spawnForeground('/non/existent/binary/cdkd-test-foreground', [])
+      ).rejects.toThrow(/Install Docker.*CDK_DOCKER/);
+    }
+  );
+
+  itPosix('options.cwd resolves the working directory', async () => {
+    // foreground/inherit can't capture pwd output, so we instead verify the
+    // cwd is honored by checking exit code 0 against a path-sensitive check:
+    // `test -f` against a known absolute path inside the cwd. /tmp on macOS
+    // is a symlink to /private/tmp, both have ./.exists semantically anyway.
+    await expect(
+      spawnForeground('/bin/sh', ['-c', '[ "$PWD" = /tmp ] || [ "$PWD" = /private/tmp ]'], {
+        cwd: '/tmp',
+      })
+    ).resolves.toBeUndefined();
   });
 });
 

@@ -121,7 +121,7 @@ describe('DockerAssetPublisher', () => {
     );
     expect(buildCall).toBeDefined();
     const [buildArgs, buildOpts] = buildCall as [string[], { env?: Record<string, string> }];
-    expect(buildArgs).toEqual(['build', '-t', 'cdkd-asset-docker123', '.']);
+    expect(buildArgs).toEqual(['build', '--tag', 'cdkd-asset-docker123', '.']);
     expect(buildOpts.env?.['BUILDX_NO_DEFAULT_ATTESTATIONS']).toBe('1');
     // cwd is set to the asset directory so relative paths in BuildKit
     // flags (--secret src=foo.txt, --build-context name=./path) resolve.
@@ -221,11 +221,11 @@ describe('DockerAssetPublisher', () => {
       ([args]) => Array.isArray(args) && args[0] === 'build'
     );
     expect(buildCall![0]).toEqual([
-      'build', '-t', 'cdkd-asset-custom123',
+      'build', '--tag', 'cdkd-asset-custom123',
       '--build-arg', 'NODE_VERSION=20',
       '--build-arg', 'ENV=prod',
       '--target', 'production',
-      '-f', 'Dockerfile.custom',
+      '--file', 'Dockerfile.custom',
       '.',
     ]);
     expect((buildCall![1] as { cwd?: string }).cwd).toBe('/tmp/cdk.out/asset.custom');
