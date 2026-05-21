@@ -1,3 +1,10 @@
+## [0.116.1](https://github.com/go-to-k/cdkd/compare/v0.116.0...v0.116.1) (2026-05-21)
+
+
+### Bug Fixes
+
+* **drift:** reduce getDriftUnknownPaths via secondary SDK calls (batch 1) ([#445](https://github.com/go-to-k/cdkd/issues/445)) ([#469](https://github.com/go-to-k/cdkd/issues/469)) ([488a929](https://github.com/go-to-k/cdkd/commit/488a929901f911e4649793c8d45b424b068fab54))
+
 # [0.116.0](https://github.com/go-to-k/cdkd/compare/v0.115.4...v0.116.0) (2026-05-21)
 
 
