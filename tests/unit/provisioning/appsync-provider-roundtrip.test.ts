@@ -143,6 +143,52 @@ describe('AppSyncProvider.update', () => {
       expect(mockSend).not.toHaveBeenCalled();
     });
 
+    it('clears LogConfig via FieldLogLevel: NONE when template removes the field (B1)', async () => {
+      // B1: `cdkd drift --revert` clearing a console-added LogConfig.
+      // `properties.LogConfig === undefined` AND `previousProperties.LogConfig`
+      // is set — cdkd cannot omit logConfig on UpdateGraphqlApi (AWS treats
+      // an omitted field as "no change"), so the canonical disable is
+      // `FieldLogLevel: NONE` carrying the previous role ARN through.
+      mockSend.mockResolvedValueOnce({}); // UpdateGraphqlApi
+
+      const newProps = {
+        Name: 'MyApi',
+        AuthenticationType: 'API_KEY',
+      };
+      const oldProps = {
+        Name: 'MyApi',
+        AuthenticationType: 'API_KEY',
+        LogConfig: {
+          CloudWatchLogsRoleArn: 'arn:aws:iam::1:role/AppSyncLog',
+          FieldLogLevel: 'ALL',
+        },
+      };
+
+      await provider.update('L', 'api-1', 'AWS::AppSync::GraphQLApi', newProps, oldProps);
+
+      expect(mockSend).toHaveBeenCalledTimes(1);
+      const cmd = mockSend.mock.calls[0]?.[0];
+      expect(cmd).toBeInstanceOf(UpdateGraphqlApiCommand);
+      expect(cmd.input.logConfig).toEqual({
+        cloudWatchLogsRoleArn: 'arn:aws:iam::1:role/AppSyncLog',
+        fieldLogLevel: 'NONE',
+      });
+    });
+
+    it('no-op when XrayEnabled is undefined on both sides (M1)', async () => {
+      // M1: pre-fix `newXray !== oldXray` was `undefined !== undefined` →
+      // false; correct. But the pre-fix wantUpdate gate fired whenever ANY
+      // of the three checks was true. The combined gate is now field-presence
+      // aware so `undefined -> undefined` does not trigger UpdateGraphqlApi.
+      const same = {
+        Name: 'MyApi',
+        AuthenticationType: 'API_KEY',
+        // No XrayEnabled, no LogConfig — both sides identical absence.
+      };
+      await provider.update('L', 'api-1', 'AWS::AppSync::GraphQLApi', same, same);
+      expect(mockSend).not.toHaveBeenCalled();
+    });
+
     it('issues TagResource for new tags + UntagResource for removed tags', async () => {
       // Tags-only diff: skip UpdateGraphqlApi; only TagResource / UntagResource
       // (preceded by GetGraphqlApi to recover the ARN).
@@ -183,6 +229,45 @@ describe('AppSyncProvider.update', () => {
         resourceArn: 'arn:aws:appsync:us-east-1:1:apis/api-1',
         tags: { Env: 'prod', Owner: 'team' },
       });
+    });
+
+    it('caches the GraphqlApi ARN across tag-diff updates (M3)', async () => {
+      // First tag diff: GetGraphqlApi populates the per-provider ARN cache.
+      mockSend.mockResolvedValueOnce({
+        graphqlApi: { arn: 'arn:aws:appsync:us-east-1:1:apis/api-1' },
+      }); // GetGraphqlApi
+      mockSend.mockResolvedValueOnce({}); // TagResource
+
+      const first = {
+        Name: 'MyApi',
+        AuthenticationType: 'API_KEY',
+        Tags: [{ Key: 'Env', Value: 'prod' }],
+      };
+      const empty = {
+        Name: 'MyApi',
+        AuthenticationType: 'API_KEY',
+        Tags: [] as Array<{ Key: string; Value: string }>,
+      };
+      await provider.update('L', 'api-1', 'AWS::AppSync::GraphQLApi', first, empty);
+
+      // Second tag diff on the SAME API: the cache hit must avoid
+      // re-issuing GetGraphqlApi — only TagResource fires.
+      mockSend.mockResolvedValueOnce({}); // TagResource
+      const second = {
+        Name: 'MyApi',
+        AuthenticationType: 'API_KEY',
+        Tags: [
+          { Key: 'Env', Value: 'prod' },
+          { Key: 'Owner', Value: 'team' },
+        ],
+      };
+      await provider.update('L', 'api-1', 'AWS::AppSync::GraphQLApi', second, first);
+
+      // Total: 1 GetGraphqlApi + 1 TagResource (first call) + 1 TagResource (second call).
+      expect(mockSend).toHaveBeenCalledTimes(3);
+      expect(mockSend.mock.calls[0]?.[0]).toBeInstanceOf(GetGraphqlApiCommand);
+      expect(mockSend.mock.calls[1]?.[0]).toBeInstanceOf(TagResourceCommand);
+      expect(mockSend.mock.calls[2]?.[0]).toBeInstanceOf(TagResourceCommand);
     });
   });
 
@@ -415,6 +500,45 @@ describe('AppSyncProvider.update', () => {
 
       expect(mockSend).toHaveBeenCalledTimes(1);
       const cmd = mockSend.mock.calls[0]?.[0];
+      expect(cmd.input.pipelineConfig).toEqual({ functions: ['fn-1', 'fn-2', 'fn-3'] });
+    });
+
+    it('does NOT forward dataSourceName on a PIPELINE resolver (M2)', async () => {
+      // M2: real PIPELINE resolvers have no DataSourceName; AWS rejects the
+      // UpdateResolver call if dataSourceName is set alongside Kind=PIPELINE.
+      // The Kind-discriminator gate must drop DataSourceName even if the
+      // property is somehow present in state (e.g. carried over from a
+      // previous UNIT shape during a console-side mutation).
+      mockSend.mockResolvedValueOnce({});
+
+      const newProps = {
+        ApiId: 'api-1',
+        TypeName: 'Query',
+        FieldName: 'pipe',
+        Kind: 'PIPELINE',
+        PipelineConfig: { Functions: ['fn-1', 'fn-2', 'fn-3'] },
+        // Defensive: stray DataSourceName must NOT reach the SDK input.
+        DataSourceName: 'stray-ds',
+      };
+      const oldProps = {
+        ApiId: 'api-1',
+        TypeName: 'Query',
+        FieldName: 'pipe',
+        Kind: 'PIPELINE',
+        PipelineConfig: { Functions: ['fn-1', 'fn-2'] },
+      };
+
+      await provider.update(
+        'L',
+        'api-1|Query|pipe',
+        'AWS::AppSync::Resolver',
+        newProps,
+        oldProps
+      );
+
+      expect(mockSend).toHaveBeenCalledTimes(1);
+      const cmd = mockSend.mock.calls[0]?.[0];
+      expect(cmd.input.dataSourceName).toBeUndefined();
       expect(cmd.input.pipelineConfig).toEqual({ functions: ['fn-1', 'fn-2', 'fn-3'] });
     });
 

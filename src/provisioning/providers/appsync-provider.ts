@@ -67,6 +67,20 @@ export class AppSyncProvider implements ResourceProvider {
   private client: AppSyncClient | undefined;
   private readonly providerRegion = process.env['AWS_REGION'];
   private logger = getLogger().child('AppSyncProvider');
+  /**
+   * Cache of `apiId -> GraphqlApi ARN` for the lifetime of this provider
+   * instance. Populated lazily by `applyTagDiff` and reused on subsequent
+   * tag-diff updates against the same API so we don't pay an extra
+   * `GetGraphqlApi` round-trip per call. Mirrors the existing
+   * `attributeCache` pattern used elsewhere in this provider family.
+   *
+   * Invalidation: the ARN of a GraphqlApi is stable for the life of the
+   * API (it embeds the apiId), so the cache never needs to be invalidated
+   * within a process — the only way the ARN changes is if the API itself
+   * is replaced, in which case a new `physicalId` flows through `update()`
+   * and the old entry simply becomes unreachable.
+   */
+  private arnCache = new Map<string, string>();
 
   handledProperties = new Map<string, ReadonlySet<string>>([
     [
@@ -262,6 +276,15 @@ export class AppSyncProvider implements ResourceProvider {
     // Build UpdateGraphqlApi input only when a mutable field diffs. `Name`
     // is REQUIRED by the SDK input shape even on no-op updates, so we
     // include it whenever we issue the call.
+    //
+    // Diff helpers below use explicit "is the field present on either
+    // side AND do the resolved values differ?" semantics so that:
+    //   - `undefined -> undefined` does NOT fire an update (the M1 fix
+    //     against firing UpdateGraphqlApi on every redeploy of an API
+    //     that never set XrayEnabled);
+    //   - `defined -> undefined` (= the user removed the field from the
+    //     template, or `cdkd drift --revert` is clearing a console add)
+    //     DOES fire an update so the clearing side effect lands on AWS.
     const newAuthType = properties['AuthenticationType'] as AuthenticationType | undefined;
     const oldAuthType = previousProperties['AuthenticationType'] as AuthenticationType | undefined;
     const newXray = properties['XrayEnabled'] as boolean | undefined;
@@ -269,8 +292,15 @@ export class AppSyncProvider implements ResourceProvider {
     const newLog = properties['LogConfig'] as Record<string, unknown> | undefined;
     const oldLog = previousProperties['LogConfig'] as Record<string, unknown> | undefined;
 
-    const wantUpdate =
-      newAuthType !== oldAuthType || newXray !== oldXray || !this.deepEqual(newLog, oldLog);
+    const hasXrayDiff =
+      ('XrayEnabled' in properties || 'XrayEnabled' in previousProperties) && newXray !== oldXray;
+    const hasAuthDiff =
+      ('AuthenticationType' in properties || 'AuthenticationType' in previousProperties) &&
+      newAuthType !== oldAuthType;
+    const hasLogDiff =
+      ('LogConfig' in properties || 'LogConfig' in previousProperties) &&
+      !this.deepEqual(newLog, oldLog);
+    const wantUpdate = hasAuthDiff || hasXrayDiff || hasLogDiff;
 
     if (wantUpdate) {
       const input: UpdateGraphqlApiCommandInput = {
@@ -284,12 +314,42 @@ export class AppSyncProvider implements ResourceProvider {
         authenticationType: (newAuthType ?? oldAuthType ?? 'API_KEY') as AuthenticationType,
       };
       if (newXray !== undefined) input.xrayEnabled = newXray;
+      // LogConfig has three meaningful states on update:
+      //   (a) newLog is a populated object → set logConfig to the new shape.
+      //   (b) newLog === undefined AND oldLog was set → user removed the
+      //       field (or drift --revert is clearing a console add). AWS's
+      //       UpdateGraphqlApi has NO sentinel for "drop logConfig" — omitting
+      //       the field on the SDK input is treated as "no change" by the
+      //       service. The canonical way to disable logging is
+      //       `FieldLogLevel: NONE`, which AWS accepts as effectively-off and
+      //       which leaves no further side effect. cloudWatchLogsRoleArn is
+      //       still required by the input shape; reuse the existing role ARN
+      //       so the call shape stays valid (the role is never actually
+      //       invoked while FieldLogLevel=NONE).
+      //   (c) newLog === undefined AND oldLog also undefined → no diff, no
+      //       branch taken (gated above).
       if (newLog !== undefined) {
         input.logConfig = {
           cloudWatchLogsRoleArn: newLog['CloudWatchLogsRoleArn'] as string,
           fieldLogLevel: newLog['FieldLogLevel'] as 'NONE' | 'ERROR' | 'ALL',
           excludeVerboseContent: newLog['ExcludeVerboseContent'] as boolean | undefined,
         };
+      } else if (oldLog !== undefined) {
+        const existingRoleArn = oldLog['CloudWatchLogsRoleArn'] as string | undefined;
+        if (existingRoleArn) {
+          input.logConfig = {
+            cloudWatchLogsRoleArn: existingRoleArn,
+            fieldLogLevel: 'NONE',
+          };
+        } else {
+          // No existing role ARN to reuse → we cannot construct a valid
+          // UpdateGraphqlApi.logConfig (cloudWatchLogsRoleArn is required).
+          // Warn loudly: the user removed the field but cdkd cannot push
+          // the clearing call to AWS; state still records the removal.
+          this.logger.warn(
+            `AppSync GraphqlApi ${logicalId}: cannot clear LogConfig — previous state has no CloudWatchLogsRoleArn to reuse for the disable call`
+          );
+        }
       }
       try {
         await this.getClient().send(new UpdateGraphqlApiCommand(input));
@@ -494,7 +554,22 @@ export class AppSyncProvider implements ResourceProvider {
       fieldName: fieldName as string,
     };
 
-    if (properties['DataSourceName'] !== undefined) {
+    // Resolver shape is type-discriminator-gated on `Kind`:
+    //   - Kind=UNIT     → DataSourceName is required, PipelineConfig is N/A.
+    //   - Kind=PIPELINE → PipelineConfig.Functions is required, DataSourceName
+    //                     is N/A (AWS rejects the call if it's set).
+    // The effective Kind comes from `properties.Kind` (the new template
+    // intent) falling back to `previousProperties.Kind` (state-recorded)
+    // and finally to AWS's default 'UNIT' so we never forward
+    // `dataSourceName` on a PIPELINE resolver. Same shape as
+    // readCurrentState's discriminator handling per memory rule
+    // feedback_always_emit_check_type_discriminator.
+    const effectiveKind =
+      (properties['Kind'] as 'UNIT' | 'PIPELINE' | undefined) ??
+      (previousProperties['Kind'] as 'UNIT' | 'PIPELINE' | undefined) ??
+      'UNIT';
+
+    if (effectiveKind === 'UNIT' && properties['DataSourceName'] !== undefined) {
       input.dataSourceName = properties['DataSourceName'] as string;
     }
     if (properties['RequestMappingTemplate'] !== undefined) {
@@ -506,7 +581,7 @@ export class AppSyncProvider implements ResourceProvider {
     if (properties['Kind'] !== undefined) {
       input.kind = properties['Kind'] as 'UNIT' | 'PIPELINE';
     }
-    if (properties['PipelineConfig'] !== undefined) {
+    if (effectiveKind === 'PIPELINE' && properties['PipelineConfig'] !== undefined) {
       const pipelineConfig = properties['PipelineConfig'] as Record<string, unknown>;
       input.pipelineConfig = {
         functions: pipelineConfig['Functions'] as string[] | undefined,
@@ -606,20 +681,23 @@ export class AppSyncProvider implements ResourceProvider {
     const newMap = this.tagsToMap(newTags ?? []);
     if (this.deepEqual(oldMap, newMap)) return;
 
-    let arn: string | undefined;
-    try {
-      const resp = await this.getClient().send(new GetGraphqlApiCommand({ apiId }));
-      arn = resp.graphqlApi?.arn;
-    } catch (error) {
-      throw this.wrapUpdateError(error, resourceType, logicalId, apiId, 'GraphqlApi');
-    }
+    let arn = this.arnCache.get(apiId);
     if (!arn) {
-      throw new ProvisioningError(
-        `Could not resolve ARN for AppSync GraphqlApi ${apiId} to apply tags diff`,
-        resourceType,
-        logicalId,
-        apiId
-      );
+      try {
+        const resp = await this.getClient().send(new GetGraphqlApiCommand({ apiId }));
+        arn = resp.graphqlApi?.arn;
+      } catch (error) {
+        throw this.wrapUpdateError(error, resourceType, logicalId, apiId, 'GraphqlApi');
+      }
+      if (!arn) {
+        throw new ProvisioningError(
+          `Could not resolve ARN for AppSync GraphqlApi ${apiId} to apply tags diff`,
+          resourceType,
+          logicalId,
+          apiId
+        );
+      }
+      this.arnCache.set(apiId, arn);
     }
 
     const tagKeysToRemove = Object.keys(oldMap).filter((k) => !(k in newMap));
