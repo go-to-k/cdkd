@@ -1,0 +1,15 @@
+{
+  "name": "cdkd-demo-gif",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Side-by-side cdk vs cdkd demo for README GIF",
+  "type": "module",
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "typescript": "^5.0.0"
+  },
+  "dependencies": {
+    "aws-cdk-lib": "^2.169.0",
+    "constructs": "^10.0.0"
+  }
+}
