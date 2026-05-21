@@ -369,6 +369,55 @@ describe('verifyCognitoJwt — pass-through accepts malformed tokens', () => {
 });
 
 /**
+ * Security: a malformed Bearer token against a MULTI-pool authorizer
+ * must reject (401) even when pool[0] would happily pass-through, so
+ * unparseable / no-iss tokens cannot bypass the configured-issuer guard.
+ * Closes the security review blocker on PR #488 (multi-pool federation).
+ */
+describe('verifyCognitoJwt — multi-pool federation safety on malformed tokens', () => {
+  const MULTI_POOL_AUTH: CognitoUserPoolAuthorizer = {
+    kind: 'cognito',
+    logicalId: 'Auth',
+    pools: [
+      {
+        userPoolArn: 'arn:aws:cognito-idp:us-east-1:111:userpool/us-east-1_x',
+        region: 'us-east-1',
+        userPoolId: 'us-east-1_x',
+      },
+      {
+        userPoolArn: 'arn:aws:cognito-idp:us-east-1:111:userpool/us-east-1_y',
+        region: 'us-east-1',
+        userPoolId: 'us-east-1_y',
+      },
+    ],
+    userPoolArn: 'arn:aws:cognito-idp:us-east-1:111:userpool/us-east-1_x',
+    region: 'us-east-1',
+    userPoolId: 'us-east-1_x',
+    declaredAt: 'S/Method',
+  };
+
+  it('rejects malformed (unparseable) tokens under multi-pool even if pool[0] is pass-through', async () => {
+    const cache = createJwksCache({
+      fetchImpl: async () => {
+        throw new Error('boom — both pools unreachable');
+      },
+    });
+    const result = await verifyCognitoJwt(MULTI_POOL_AUTH, 'Bearer not-a-jwt', cache);
+    expect(result.allow).toBe(false);
+  });
+
+  it('rejects 2-part malformed tokens under multi-pool even if pool[0] is pass-through', async () => {
+    const cache = createJwksCache({
+      fetchImpl: async () => {
+        throw new Error('boom');
+      },
+    });
+    const result = await verifyCognitoJwt(MULTI_POOL_AUTH, 'Bearer abc.def', cache);
+    expect(result.allow).toBe(false);
+  });
+});
+
+/**
  * Should-fix #7: a transient JWKS-fetch failure should NOT lock
  * pass-through for a full 1hr — short failure TTL (~60s default) means
  * the next minute's request retries the fetch.

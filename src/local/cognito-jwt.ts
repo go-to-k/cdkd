@@ -259,12 +259,22 @@ export async function verifyCognitoJwt(
     if (!issMatched) {
       return { allow: false, identityHash, ttlSeconds: 0 };
     }
+  } else if (pools.length > 1) {
+    // Multi-pool federation safety: when there is more than one
+    // configured pool AND the token did not parse (or has no string
+    // `iss`), we have no safe way to route the request to a pool. The
+    // pass-through fallback would arbitrarily pick pools[0] and, if
+    // pool[0] happens to be in JWKS-pass-through mode, accept the
+    // garbage token as `principalId: 'unknown'` — bypassing the
+    // configured-issuer guard. Reject unconditionally instead.
+    return { allow: false, identityHash, ttlSeconds: 0 };
   }
-  // parseJwt() returned undefined OR iss claim absent: fall through to
+  // Single-pool case OR no-iss with one pool: fall through to
   // verifyAndShape against pools[0]. parseJwt-failure deny is enforced
   // there; if the pool is in pass-through mode, the malformed token
   // gets the "unknown" principal allow path (preserves PR 8b's design
-  // intent that JWKS-unreachable accepts any Bearer token).
+  // intent that JWKS-unreachable accepts any Bearer token for that
+  // single configured pool).
   const jwksUrl = buildCognitoJwksUrl(selectedPool.region, selectedPool.userPoolId);
   const expectedIssuer = buildCognitoIssuer(selectedPool.region, selectedPool.userPoolId);
   return verifyAndShape(token, jwksUrl, expectedIssuer, undefined, jwksCache, opts.warned, now);
