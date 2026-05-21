@@ -1,3 +1,10 @@
+## [0.117.1](https://github.com/go-to-k/cdkd/compare/v0.117.0...v0.117.1) (2026-05-21)
+
+
+### Bug Fixes
+
+* **providers:** clarify architectural update() rejections + implement AppSync in-place update ([#443](https://github.com/go-to-k/cdkd/issues/443)) ([#479](https://github.com/go-to-k/cdkd/issues/479)) ([9f937c1](https://github.com/go-to-k/cdkd/commit/9f937c17fdcd1c9058f6277886b74a2c26f494e2))
+
 # [0.117.0](https://github.com/go-to-k/cdkd/compare/v0.116.1...v0.117.0) (2026-05-21)
 
 
