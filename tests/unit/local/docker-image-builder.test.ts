@@ -47,6 +47,11 @@ beforeEach(() => {
   mockRunDocker.mockReset();
   mockRunDocker.mockResolvedValue({ stdout: '', stderr: '' });
   mockSpawnStreaming.mockReset();
+  // Default: executable-mode `spawnStreaming` returns a tag matching the
+  // executable's command so the re-tag branch sees `actualTag !== tag`
+  // and computeLocalTag's executable-field branch is reachable. Tests
+  // that need a specific stdout override per-call via mockResolvedValueOnce.
+  mockSpawnStreaming.mockResolvedValue({ stdout: 'executable-output-tag\n', stderr: '' });
   failureMatch.match = undefined;
 });
 
@@ -120,6 +125,64 @@ describe('buildContainerImage', () => {
       { architecture: 'x86_64' }
     );
     expect(a).not.toBe(b);
+  });
+
+  it('per-field fingerprint coverage: every documented source field individually busts the cache', async () => {
+    // Catches a regression where a future refactor drops a `pushField` /
+    // `pushMap` line from `computeLocalTag`. Walks every field of
+    // `DockerImageAssetSource` and asserts the tag differs from a baseline.
+    const baseline = await buildContainerImage(
+      { source: { directory: 'asset.base' } },
+      '/cdk.out',
+      { architecture: 'x86_64' }
+    );
+    const variants: Array<{ name: string; src: object }> = [
+      { name: 'directory', src: { directory: 'asset.different' } },
+      { name: 'executable', src: { directory: 'asset.base', executable: ['./build.sh'] } },
+      { name: 'dockerFile', src: { directory: 'asset.base', dockerFile: 'Other.Dockerfile' } },
+      {
+        name: 'dockerBuildTarget',
+        src: { directory: 'asset.base', dockerBuildTarget: 'prod' },
+      },
+      { name: 'networkMode', src: { directory: 'asset.base', networkMode: 'host' } },
+      { name: 'platform', src: { directory: 'asset.base', platform: 'linux/amd64' } },
+      { name: 'dockerBuildSsh', src: { directory: 'asset.base', dockerBuildSsh: 'default' } },
+      {
+        name: 'dockerBuildArgs',
+        src: { directory: 'asset.base', dockerBuildArgs: { K: 'V' } },
+      },
+      {
+        name: 'dockerBuildContexts',
+        src: { directory: 'asset.base', dockerBuildContexts: { src: '../src' } },
+      },
+      {
+        name: 'dockerBuildSecrets',
+        src: { directory: 'asset.base', dockerBuildSecrets: { id: 'src=x' } },
+      },
+      {
+        name: 'dockerOutputs',
+        src: { directory: 'asset.base', dockerOutputs: ['type=docker'] },
+      },
+      {
+        name: 'cacheFrom',
+        src: { directory: 'asset.base', cacheFrom: [{ type: 'registry' }] },
+      },
+      { name: 'cacheTo', src: { directory: 'asset.base', cacheTo: { type: 'inline' } } },
+      { name: 'cacheDisabled', src: { directory: 'asset.base', cacheDisabled: true } },
+    ];
+    const tagsByField = new Map<string, string>();
+    for (const v of variants) {
+      const tag = await buildContainerImage({ source: v.src }, '/cdk.out', {
+        architecture: 'x86_64',
+      });
+      tagsByField.set(v.name, tag);
+      expect(tag, `${v.name} change should produce a tag different from baseline`).not.toBe(
+        baseline
+      );
+    }
+    // Every variant produces a UNIQUE tag (no two fields collide on the same digest).
+    const uniqueTags = new Set([baseline, ...tagsByField.values()]);
+    expect(uniqueTags.size).toBe(variants.length + 1);
   });
 
   it('returns different tags for different BuildKit fields (secrets / contexts / cache)', async () => {

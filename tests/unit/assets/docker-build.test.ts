@@ -293,6 +293,18 @@ describe('buildDockerImage (executable source)', () => {
     expect(mockRunDocker).not.toHaveBeenCalled();
   });
 
+  it('does NOT set BUILDX_NO_DEFAULT_ATTESTATIONS in the executable env (negative assertion — script owns its env)', async () => {
+    mockSpawn.mockResolvedValueOnce({ stdout: 'tag\n', stderr: '' });
+    await buildDockerImage({ source: { executable: ['./build.sh'] } }, '/cdk.out', { wrapError });
+    expect(mockSpawn).toHaveBeenCalledOnce();
+    const opts = mockSpawn.mock.calls[0]![2] as { env?: Record<string, string> } | undefined;
+    // Either env is undefined entirely (executable inherits process.env via
+    // Node default) OR env doesn't carry the build-path attestation flag.
+    // The build path always sets it via runDockerStreaming's env option;
+    // executable path must NOT, to match CDK CLI's `buildExternalAsset`.
+    expect(opts?.env?.['BUILDX_NO_DEFAULT_ATTESTATIONS']).toBeUndefined();
+  });
+
   it('wraps spawn failures via wrapError', async () => {
     mockSpawn.mockRejectedValueOnce(
       Object.assign(new Error('script crashed'), { stderr: 'oh no' })

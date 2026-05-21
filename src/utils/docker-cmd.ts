@@ -148,6 +148,16 @@ export async function spawnStreaming(
     });
 
     if (options.input !== undefined) {
+      // Defensive: when spawn() fails (e.g. ENOENT race), the synchronous
+      // write below could emit a stream 'error' event before the close /
+      // error handlers above fire. Without a listener, Node escalates that
+      // to "Unhandled 'error' event" on some versions. cdkd's only `input`
+      // call site is `docker login --password-stdin` with short payloads
+      // that complete well within the syscall, so this is unlikely to fire
+      // in practice — but the no-op listener is free.
+      child.stdin!.on('error', () => {
+        /* surfaced via the outer error/close handlers above */
+      });
       child.stdin!.write(options.input);
       child.stdin!.end();
     }

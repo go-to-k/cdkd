@@ -80,6 +80,14 @@ export async function buildDockerImage(
   const logger = getLogger().child('docker-build');
 
   // Executable source: run the script and read stdout for the tag.
+  //
+  // We do NOT inject `BUILDX_NO_DEFAULT_ATTESTATIONS=1` into the
+  // executable's env. The script may not be docker (Bazel, custom shell,
+  // etc.) and even when it IS docker, the attestation suppression is the
+  // SCRIPT's responsibility — CDK CLI's `cdk-assets-lib` `buildExternalAsset`
+  // takes the same stance for parity. If the script invokes `docker build`
+  // internally and the resulting image carries an attestation manifest
+  // that breaks ECR pull, the user's script should set the env itself.
   if (source.executable && source.executable.length > 0) {
     const [cmd, ...args] = source.executable;
     if (!cmd) {
