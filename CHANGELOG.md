@@ -1,3 +1,38 @@
+# [0.118.0](https://github.com/go-to-k/cdkd/compare/v0.117.2...v0.118.0) (2026-05-21)
+
+
+### Features
+
+* **local:** cross-account / cross-region ECR pull ([#485](https://github.com/go-to-k/cdkd/issues/485)) ([de4e889](https://github.com/go-to-k/cdkd/commit/de4e889d929754d8d729298ab31ff57772efb6ed))
+
+## [0.117.2](https://github.com/go-to-k/cdkd/compare/v0.117.1...v0.117.2) (2026-05-21)
+
+
+### Bug Fixes
+
+* **dynamodb-globaltable:** propagate Tags to cross-region replicas on create ([#441](https://github.com/go-to-k/cdkd/issues/441)) ([#472](https://github.com/go-to-k/cdkd/issues/472)) ([c97af8e](https://github.com/go-to-k/cdkd/commit/c97af8e1dcb33f0b3a8463d5da0e389d65338cb1))
+
+## [0.117.1](https://github.com/go-to-k/cdkd/compare/v0.117.0...v0.117.1) (2026-05-21)
+
+
+### Bug Fixes
+
+* **providers:** clarify architectural update() rejections + implement AppSync in-place update ([#443](https://github.com/go-to-k/cdkd/issues/443)) ([#479](https://github.com/go-to-k/cdkd/issues/479)) ([9f937c1](https://github.com/go-to-k/cdkd/commit/9f937c17fdcd1c9058f6277886b74a2c26f494e2))
+
+# [0.117.0](https://github.com/go-to-k/cdkd/compare/v0.116.1...v0.117.0) (2026-05-21)
+
+
+### Features
+
+* **local:** honor Lambda EphemeralStorage.Size via --tmpfs ([#478](https://github.com/go-to-k/cdkd/issues/478)) ([a7aa542](https://github.com/go-to-k/cdkd/commit/a7aa542a2180e8a378bdb49dd6430b8165da3115))
+
+## [0.116.1](https://github.com/go-to-k/cdkd/compare/v0.116.0...v0.116.1) (2026-05-21)
+
+
+### Bug Fixes
+
+* **drift:** reduce getDriftUnknownPaths via secondary SDK calls (batch 1) ([#445](https://github.com/go-to-k/cdkd/issues/445)) ([#469](https://github.com/go-to-k/cdkd/issues/469)) ([488a929](https://github.com/go-to-k/cdkd/commit/488a929901f911e4649793c8d45b424b068fab54))
+
 # [0.116.0](https://github.com/go-to-k/cdkd/compare/v0.115.4...v0.116.0) (2026-05-21)
 
 

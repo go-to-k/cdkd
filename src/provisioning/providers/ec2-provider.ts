@@ -301,7 +301,7 @@ export class EC2Provider implements ResourceProvider {
         throw new ResourceUpdateNotSupportedError(
           resourceType,
           logicalId,
-          'destroy + redeploy. The property surface for this resource type is effectively immutable in cdkd today.'
+          'AWS provides no in-place Update API for this EC2 sub-resource type; every property change requires Delete + Create. Re-deploy with cdkd deploy --replace, or destroy + redeploy.'
         );
       default:
         throw new ProvisioningError(

@@ -360,7 +360,7 @@ export class ELBv2Provider implements ResourceProvider {
       throw new ResourceUpdateNotSupportedError(
         'AWS::ElasticLoadBalancingV2::LoadBalancer',
         logicalId,
-        'ELBv2 LoadBalancer in-place updates are supported for LoadBalancerAttributes / Subnets / SubnetMappings / SecurityGroups / IpAddressType / Tags only; for Name / Type / Scheme, re-deploy with cdkd deploy --replace, or destroy + redeploy the stack'
+        'ELBv2 LoadBalancer Name / Type / Scheme are immutable on AWS — none of the ELBv2 Modify* / Set* APIs accept these fields; they are fixed at creation. cdkd handles LoadBalancerAttributes / Subnets / SubnetMappings / SecurityGroups / IpAddressType / Tags in-place; for Name / Type / Scheme re-deploy with cdkd deploy --replace, or destroy + redeploy the stack.'
       );
     }
 

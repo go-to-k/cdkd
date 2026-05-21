@@ -294,14 +294,17 @@ export class ASGProvider implements ResourceProvider {
       throw new ResourceUpdateNotSupportedError(
         resourceType,
         logicalId,
-        'AutoScalingGroupName is immutable; use cdkd deploy --replace to replace the group'
+        'AutoScalingGroupName is immutable on AWS — UpdateAutoScalingGroup does not accept a new name; the name is fixed at creation. Use cdkd deploy --replace to replace the group.'
       );
     }
     if (!stringEq(properties['Tags'] ?? [], previousProperties['Tags'] ?? [])) {
+      // Tags ARE mutable on AWS via CreateOrUpdateTags / DeleteTags — this
+      // rejection is an "unimplemented in cdkd" case, not architectural.
+      // Tracked in issue (#443) follow-up.
       throw new ResourceUpdateNotSupportedError(
         resourceType,
         logicalId,
-        'Tags updates on AWS::AutoScaling::AutoScalingGroup are not yet supported by cdkd; use cdkd deploy --replace, or update the tags via AWS console / CLI'
+        'Tags updates on AWS::AutoScaling::AutoScalingGroup are not yet implemented in cdkd (AWS exposes CreateOrUpdateTags / DeleteTags); use cdkd deploy --replace, or update the tags via AWS console / CLI.'
       );
     }
     if (
@@ -310,19 +313,24 @@ export class ASGProvider implements ResourceProvider {
         previousProperties['LoadBalancerNames'] ?? []
       )
     ) {
+      // LoadBalancerNames diffs are implementable via AttachLoadBalancers /
+      // DetachLoadBalancers; tracked in issue (#443) follow-up.
       throw new ResourceUpdateNotSupportedError(
         resourceType,
         logicalId,
-        'LoadBalancerNames diffs require Attach/Detach calls; use cdkd deploy --replace'
+        'LoadBalancerNames diffs on AWS::AutoScaling::AutoScalingGroup are not yet implemented in cdkd (AWS exposes AttachLoadBalancers / DetachLoadBalancers); use cdkd deploy --replace.'
       );
     }
     if (
       !stringEq(properties['TargetGroupARNs'] ?? [], previousProperties['TargetGroupARNs'] ?? [])
     ) {
+      // TargetGroupARNs diffs are implementable via
+      // AttachLoadBalancerTargetGroups / DetachLoadBalancerTargetGroups;
+      // tracked in issue (#443) follow-up.
       throw new ResourceUpdateNotSupportedError(
         resourceType,
         logicalId,
-        'TargetGroupARNs diffs require Attach/Detach calls; use cdkd deploy --replace'
+        'TargetGroupARNs diffs on AWS::AutoScaling::AutoScalingGroup are not yet implemented in cdkd (AWS exposes AttachLoadBalancerTargetGroups / DetachLoadBalancerTargetGroups); use cdkd deploy --replace.'
       );
     }
     try {

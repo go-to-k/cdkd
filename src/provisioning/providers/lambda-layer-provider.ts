@@ -154,7 +154,7 @@ export class LambdaLayerVersionProvider implements ResourceProvider {
       new ResourceUpdateNotSupportedError(
         resourceType,
         logicalId,
-        'Lambda layer versions are immutable on AWS; re-deploy with cdkd deploy --replace, or change the resource definition to publish a new version'
+        'AWS Lambda LayerVersion is immutable on AWS — there is no UpdateLayerVersion API; every change requires PublishLayerVersion (a new version with a new LayerVersionArn). Re-deploy with cdkd deploy --replace, or change the resource definition to publish a new version.'
       )
     );
   }
