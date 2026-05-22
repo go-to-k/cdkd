@@ -1,0 +1,18 @@
+{
+  "name": "cdkd-example-macro-expansion",
+  "version": "1.0.0",
+  "private": true,
+  "description": "End-to-end real-AWS test for cdkd CloudFormation macro / Fn::Transform support (Issue #463). Deploys a SAM template (AWS::Serverless::Function) that cdkd expands via a transient CFn changeset round-trip before provisioning the resulting AWS::Lambda::Function + AWS::IAM::Role natively.",
+  "scripts": {
+    "build": "tsc"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "typescript": "^5.0.0"
+  },
+  "dependencies": {
+    "aws-cdk-lib": "^2.169.0",
+    "constructs": "^10.0.0"
+  },
+  "type": "module"
+}

@@ -5,6 +5,8 @@ import { AppExecutor } from './app-executor.js';
 import { AssemblyReader, type StackInfo } from './assembly-reader.js';
 import { ContextStore } from './context-store.js';
 import { ContextProviderRegistry } from './context-providers/index.js';
+import { containsMacro, enumerateMacros } from './macro-detector.js';
+import { expandMacros, type ExpandMacrosOptions } from './macro-expander.js';
 import type { AssemblyManifest } from '../types/assembly.js';
 import { loadCdkJson, loadUserCdkJson } from '../cli/config-loader.js';
 import { getLogger } from '../utils/logger.js';
@@ -28,6 +30,27 @@ export interface SynthesisOptions {
 
   /** Context key-value pairs (CLI -c/--context) */
   context?: Record<string, string>;
+
+  /**
+   * State bucket used as transient template storage when a macro-bearing
+   * stack template is larger than the inline `TemplateBody` ceiling
+   * (51,200 bytes). Required only when at least one stack declares a
+   * CloudFormation transform AND its serialized template exceeds the
+   * inline limit; small macro templates work without it.
+   *
+   * Threaded through to {@link expandMacros}; same bucket cdkd uses
+   * for state persistence, so the calling identity already has write
+   * access. See `docs/design/463-cfn-macros.md`.
+   */
+  stateBucket?: string;
+
+  /**
+   * AWS credentials (resolved at command startup, typically from STS
+   * AssumeRole) forwarded to the macro-expansion S3 client. Only
+   * consulted when the macro-expansion path uploads a transient
+   * template upload (over the inline 51,200-byte limit).
+   */
+  macroExpandS3ClientOpts?: ExpandMacrosOptions['s3ClientOpts'];
 }
 
 /**
@@ -77,6 +100,7 @@ export class Synthesizer {
       this.logger.debug(`Using pre-synthesized cloud assembly at ${appPath}`);
       const manifest = this.assemblyReader.readManifest(appPath);
       const stacks = this.assemblyReader.getAllStacks(appPath, manifest);
+      await this.expandMacrosForStacks(stacks, options);
       this.logger.debug(`Loaded ${stacks.length} stack(s) from pre-synthesized assembly`);
       return { manifest, assemblyDir: appPath, stacks };
     }
@@ -150,8 +174,16 @@ export class Synthesizer {
 
       // Check for missing context
       if (!manifest.missing || manifest.missing.length === 0) {
-        // Synthesis complete
+        // Synthesis complete — but BEFORE returning, expand any
+        // CloudFormation macros / Fn::Transform via a transient CFn
+        // changeset round-trip so the analyzer / provisioner pipeline
+        // never sees an unexpanded Transform node. See
+        // docs/design/463-cfn-macros.md.
         const stacks = this.assemblyReader.getAllStacks(outputDir, manifest);
+        await this.expandMacrosForStacks(stacks, options, {
+          region,
+          ...(accountId && { accountId }),
+        });
         this.logger.debug(`Synthesis complete: ${stacks.length} stack(s)`);
 
         return { manifest, assemblyDir: outputDir, stacks };
@@ -189,6 +221,85 @@ export class Synthesizer {
   async listStacks(options: SynthesisOptions): Promise<string[]> {
     const result = await this.synthesize(options);
     return result.stacks.map((s) => s.stackName);
+  }
+
+  /**
+   * Per-stack macro-expansion pass (Issue #463). Mutates each stack's
+   * `template` in place when {@link containsMacro} flags it. Runs
+   * AFTER the context-provider loop has settled and BEFORE the
+   * analyzer / provisioner pipeline consumes the templates, so every
+   * downstream stage sees the post-expansion shape.
+   *
+   * Skipped silently when no stack carries a macro — pure no-op cost.
+   * When a macro IS detected and the caller did NOT thread a
+   * region into the synthesizer, falls back to resolving region from
+   * the synthesized stack's environment (set by `cdk.Stack.region`).
+   * Throws `SynthesisError` when no region can be resolved (the
+   * upstream caller treats it as a synth failure) and propagates
+   * `MacroExpansionError` (from {@link expandMacros}) on any CFn-side
+   * failure during the round-trip.
+   */
+  private async expandMacrosForStacks(
+    stacks: StackInfo[],
+    options: SynthesisOptions,
+    resolved?: { region: string | undefined; accountId?: string | undefined }
+  ): Promise<void> {
+    const stacksWithMacros = stacks.filter((s) => containsMacro(s.template));
+    if (stacksWithMacros.length === 0) return;
+
+    // Resolve a region for the CFn client. Priority: explicit caller
+    // resolve > options.region / env > the synthesized stack's own
+    // env-resolved region (every stack we are about to expand SHARES
+    // the same region in practice — multi-region apps would create
+    // siblings in different regions, but those are independent stacks).
+    const region =
+      resolved?.region ||
+      options.region ||
+      process.env['AWS_REGION'] ||
+      process.env['AWS_DEFAULT_REGION'] ||
+      stacksWithMacros[0]?.region;
+    if (!region) {
+      throw new SynthesisError(
+        `Stack(s) [${stacksWithMacros.map((s) => s.stackName).join(', ')}] use CloudFormation ` +
+          `macros (Transform / Fn::Transform) but cdkd could not resolve an AWS region for the ` +
+          `expansion round-trip. Set AWS_REGION, pass --region <r>, or set env: { region: '<r>' } ` +
+          `in your CDK Stack constructor.`
+      );
+    }
+
+    // State bucket — only consulted by the macro-expander when a stack's
+    // serialized template exceeds 51,200 bytes (the inline TemplateBody
+    // ceiling). For sub-51kB templates the inline TemplateBody path
+    // skips the bucket entirely, so a placeholder string is sufficient
+    // here. When the caller threads through `options.stateBucket` (the
+    // standard flow on `cdkd deploy`), the real bucket is used.
+    const stateBucket =
+      options.stateBucket ??
+      (resolved?.accountId ? `cdkd-state-${resolved.accountId}` : 'cdkd-state-unresolved');
+
+    for (const stack of stacksWithMacros) {
+      const macros = enumerateMacros(stack.template);
+      this.logger.info(
+        `[macros] Expanding CloudFormation macros for stack '${stack.stackName}' ` +
+          `via CFn round-trip (transforms: ${macros.join(', ')}; may take 30-60s)...`
+      );
+      const before = Date.now();
+      const expanded = await expandMacros(stack.template, {
+        region,
+        stateBucket,
+        ...(options.macroExpandS3ClientOpts && {
+          s3ClientOpts: options.macroExpandS3ClientOpts,
+        }),
+      });
+      // Mutate the stack in place — downstream consumers iterate
+      // `stacks[].template`.
+      stack.template = expanded;
+      const elapsedSec = Math.round((Date.now() - before) / 1000);
+      this.logger.info(
+        `[macros]   ... done in ${elapsedSec}s ` +
+          `(${Object.keys(expanded.Resources ?? {}).length} resources after expansion).`
+      );
+    }
   }
 }
 

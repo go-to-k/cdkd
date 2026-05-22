@@ -9,6 +9,18 @@ export interface CloudFormationTemplate {
   Outputs?: Record<string, TemplateOutput>;
   Conditions?: Record<string, unknown>;
   Mappings?: Record<string, unknown>;
+  /**
+   * Top-level `Transform` declaration. CloudFormation macros (`Transform:
+   * 'AWS::Serverless-2016-10-31'`, `Transform: ['AWS::LanguageExtensions',
+   * 'CustomMacro']`, etc.). cdkd detects this at synthesis time and runs a
+   * CFn round-trip via `src/synthesis/macro-expander.ts` to obtain the
+   * post-expansion template before passing it to the analyzer / provisioner
+   * pipeline — see `docs/design/463-cfn-macros.md`. The post-expansion
+   * template has this field stripped (CFn does not surface it in the
+   * Processed-stage GetTemplate response when every transform expanded).
+   */
+  Transform?: unknown;
+  Rules?: Record<string, unknown>;
 }
 
 /**

@@ -1742,6 +1742,7 @@
         "local-invoke-ruby",
         "local-run-task-from-state",
         "log-pipeline",
+        "macro-expansion",
         "migrate-from-cfn",
         "multi-resource",
         "multi-stack-deps",
@@ -1794,6 +1795,9 @@
         ],
         "log-pipeline": [
           "l2"
+        ],
+        "macro-expansion": [
+          "literal"
         ],
         "migrate-from-cfn": [
           "l2"
@@ -1946,6 +1950,7 @@
         "local-start-api-container",
         "local-start-api-rest-v1-non-proxy",
         "log-pipeline",
+        "macro-expansion",
         "microservices",
         "migrate-from-cfn",
         "monitoring",
@@ -2059,6 +2064,9 @@
         ],
         "log-pipeline": [
           "l2"
+        ],
+        "macro-expansion": [
+          "literal"
         ],
         "microservices": [
           "l2"
@@ -2794,6 +2802,7 @@
     "AWS::Route53::HealthCheck",
     "AWS::SSM::Document",
     "AWS::Scheduler::Schedule",
+    "AWS::Serverless::Function",
     "AWS::WAFv2::IPSet",
     "AWS::WAFv2::WebACLAssociation"
   ]
