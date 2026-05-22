@@ -177,9 +177,7 @@ export function findLargeInlineResources(
   if (!resources || typeof resources !== 'object' || Array.isArray(resources)) {
     return result;
   }
-  for (const [logicalId, resource] of Object.entries(
-    resources as Record<string, unknown>
-  )) {
+  for (const [logicalId, resource] of Object.entries(resources as Record<string, unknown>)) {
     if (!resource || typeof resource !== 'object' || Array.isArray(resource)) continue;
     const r = resource as Record<string, unknown>;
     const resourceType = typeof r['Type'] === 'string' ? (r['Type'] as string) : '<unknown>';
