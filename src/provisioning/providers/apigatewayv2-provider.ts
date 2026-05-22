@@ -231,7 +231,7 @@ export class ApiGatewayV2Provider implements ResourceProvider {
         throw new ResourceUpdateNotSupportedError(
           resourceType,
           logicalId,
-          'unsupported API Gateway V2 resource type for in-place update; re-deploy with cdkd deploy --replace, or destroy + redeploy the stack'
+          'Unsupported API Gateway V2 resource type for in-place update in cdkd; re-deploy with cdkd deploy --replace, or destroy + redeploy the stack.'
         );
     }
   }

@@ -343,6 +343,53 @@ describe('runDetached', () => {
     expect(dashVCount).toBe(1);
   });
 
+  // Issue #440 — Lambda Properties.EphemeralStorage.Size → --tmpfs
+
+  it('emits --tmpfs <target>:rw,size=<N>m when tmpfs is set', async () => {
+    await runDetached({
+      image: 'my-image:latest',
+      mounts: [],
+      env: {},
+      cmd: [],
+      hostPort: 9000,
+      tmpfs: { target: '/tmp', sizeMb: 1024 },
+    });
+    const args = lastArgs();
+    const idx = args.indexOf('--tmpfs');
+    expect(idx).toBeGreaterThanOrEqual(0);
+    expect(args[idx + 1]).toBe('/tmp:rw,size=1024m');
+  });
+
+  it('omits --tmpfs when tmpfs is undefined', async () => {
+    await runDetached({
+      image: 'my-image:latest',
+      mounts: [],
+      env: {},
+      cmd: [],
+      hostPort: 9000,
+    });
+    expect(lastArgs()).not.toContain('--tmpfs');
+  });
+
+  it('places --tmpfs after -e env flags and before --workdir', async () => {
+    await runDetached({
+      image: 'my-image:latest',
+      mounts: [],
+      env: { KEY: 'val' },
+      cmd: [],
+      hostPort: 9000,
+      tmpfs: { target: '/tmp', sizeMb: 512 },
+      workingDir: '/var/task',
+    });
+    const args = lastArgs();
+    const envIdx = args.indexOf('KEY=val');
+    const tmpfsIdx = args.indexOf('--tmpfs');
+    const workdirIdx = args.indexOf('--workdir');
+    expect(envIdx).toBeGreaterThanOrEqual(0);
+    expect(tmpfsIdx).toBeGreaterThan(envIdx);
+    expect(workdirIdx).toBeGreaterThan(tmpfsIdx);
+  });
+
   it('does not write AWS credential values to the spawn args (we do not redact at the wire layer)', async () => {
     // Sanity: redaction is at the LOG layer only — the actual creds must
     // still reach docker (otherwise the handler couldn't authenticate).

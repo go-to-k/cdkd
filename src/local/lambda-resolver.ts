@@ -64,6 +64,25 @@ interface ResolvedLambdaBase {
    *     local directory to bind-mount).
    */
   layers: ResolvedLambdaLayer[];
+  /**
+   * `Properties.EphemeralStorage.Size` (issue #440). CDK 2.x's
+   * `lambda.Function({ ephemeralStorageSize: cdk.Size.gibibytes(N) })`
+   * synthesizes `Properties.EphemeralStorage: { Size: <N * 1024> }`
+   * — the value is the templated `/tmp` cap in **MiB** (CFn property
+   * range 512..10240). Threaded through to docker's `--tmpfs
+   * /tmp:rw,size=<N>m` so handlers that exceed the deployed cap fail
+   * locally with `ENOSPC` the way they would on AWS, and handlers
+   * that detect free space via `statvfs` / `df` see the templated
+   * size rather than the host's overlay-fs.
+   *
+   * Undefined when `Properties.EphemeralStorage` is absent — the
+   * container's `/tmp` is then whatever the base image provides (AWS
+   * Lambda base images don't mount a sized tmpfs themselves, so this
+   * preserves the pre-#440 behavior). Applies to both ZIP and IMAGE
+   * Lambdas — `--tmpfs` overlays inside container Lambdas just like
+   * it does on the public base images.
+   */
+  ephemeralStorageMb?: number;
 }
 
 /**
@@ -373,6 +392,7 @@ function extractLambdaProperties(
   const props = resource.Properties ?? {};
   const memoryMb = typeof props['MemorySize'] === 'number' ? props['MemorySize'] : 128;
   const timeoutSec = typeof props['Timeout'] === 'number' ? props['Timeout'] : 3;
+  const ephemeralStorageMb = extractEphemeralStorageMb(props, logicalId);
 
   const code = (props['Code'] ?? {}) as Record<string, unknown>;
   const imageUri = extractImageUri(code['ImageUri'], logicalId, stack.stackName, resources);
@@ -386,6 +406,10 @@ function extractLambdaProperties(
       timeoutSec,
       props,
       imageUri,
+      // Spread-and-omit so the optional field stays optional at the
+      // callee under `exactOptionalPropertyTypes` — passing `undefined`
+      // for `ephemeralStorageMb?: number` would be a type error.
+      ...(ephemeralStorageMb !== undefined && { ephemeralStorageMb }),
     });
   }
 
@@ -428,8 +452,64 @@ function extractLambdaProperties(
     timeoutSec,
     codePath,
     layers,
+    ...(ephemeralStorageMb !== undefined && { ephemeralStorageMb }),
     ...(inlineCode !== undefined && { inlineCode }),
   };
+}
+
+/**
+ * Parse `Properties.EphemeralStorage.Size` (issue #440). CFn shape:
+ * `{ EphemeralStorage: { Size: <MiB> } }`. CDK's
+ * `cdk.Size.gibibytes(N)` serializes to `N * 1024`. AWS-side range is
+ * 512..10240 MiB (the deployed function rejects anything outside that
+ * range at create time); cdkd rejects > 10240 here so a misconfigured
+ * template fails fast at `cdkd local invoke` boot rather than hanging
+ * on a `docker run` that AWS would have refused anyway. The 512 floor
+ * is AWS's minimum (the default when `EphemeralStorage` is omitted is
+ * also 512), but we deliberately accept values DOWN to 1 so users can
+ * exercise the cap with a deliberately-small `/tmp` in local tests —
+ * `--tmpfs /tmp:size=Nm` itself enforces no lower bound; the only
+ * cross-check is "would AWS accept this?", which the deploy side
+ * already gates upstream.
+ *
+ * Returns `undefined` when the property is absent, NaN, < 1, or
+ * non-numeric. Hard-rejects > 10240. Intrinsic-valued sizes (the
+ * `{ Ref: 'SomeParam' }` shape that's uncommon for EphemeralStorage
+ * but theoretically valid) drop to `undefined` with a one-line warn
+ * via the calling logger — local invoke can't resolve those without
+ * the template's Parameters context the deploy engine has, and the
+ * fallback (no `--tmpfs`) is safer than guessing.
+ */
+export function extractEphemeralStorageMb(
+  props: Record<string, unknown>,
+  logicalId: string
+): number | undefined {
+  const raw = props['EphemeralStorage'];
+  if (raw === undefined || raw === null) return undefined;
+  if (typeof raw !== 'object' || Array.isArray(raw)) return undefined;
+  const size = (raw as Record<string, unknown>)['Size'];
+  if (typeof size !== 'number') {
+    // Intrinsic-valued or otherwise unresolvable. Drop silently and
+    // leave `--tmpfs` off — the deploy side enforces the real range
+    // upstream. The `logicalId` argument is kept for parity with the
+    // sibling extractors (so a future audit can grep call sites).
+    void logicalId;
+    return undefined;
+  }
+  if (!Number.isFinite(size) || size < 1) return undefined;
+  if (size > 10240) {
+    throw new LocalInvokeResolutionError(
+      `Lambda '${logicalId}' has Properties.EphemeralStorage.Size = ${size} MiB, ` +
+        'which exceeds the AWS limit of 10240 MiB. AWS would reject the function at deploy time; ' +
+        'cap the value to <= 10240 (10 GiB) and retry.'
+    );
+  }
+  // CFn templates may carry fractional MiB values (unusual, but the
+  // type is `number`). docker's `--tmpfs size=...m` parser accepts
+  // integers only — round down to the nearest MiB to be safe; the
+  // worst-case effect is a slightly smaller `/tmp` than templated,
+  // which still surfaces the ENOSPC the user wants to catch.
+  return Math.floor(size);
 }
 
 /**
@@ -531,10 +611,12 @@ function extractImageLambdaProperties(args: {
   resource: TemplateResource;
   memoryMb: number;
   timeoutSec: number;
+  ephemeralStorageMb?: number;
   props: Record<string, unknown>;
   imageUri: string;
 }): ResolvedImageLambda {
-  const { stack, logicalId, resource, memoryMb, timeoutSec, props, imageUri } = args;
+  const { stack, logicalId, resource, memoryMb, timeoutSec, ephemeralStorageMb, props, imageUri } =
+    args;
 
   const rawImageConfig = (props['ImageConfig'] ?? {}) as Record<string, unknown>;
   const imageConfig: ResolvedImageLambda['imageConfig'] = {};
@@ -583,6 +665,7 @@ function extractImageLambdaProperties(args: {
     imageConfig,
     architecture,
     layers: [],
+    ...(ephemeralStorageMb !== undefined && { ephemeralStorageMb }),
   };
 }
 

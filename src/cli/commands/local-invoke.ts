@@ -122,6 +122,17 @@ interface LocalInvokeOptions {
    */
   layerRoleArn?: string;
   /**
+   * Optional role ARN passed to `pullEcrImage` when the IMAGE ECR-pull
+   * path fires (no matching cdk.out asset and `Code.ImageUri` is an ECR
+   * URI). Used to authenticate against a centralized / cross-account
+   * registry whose `ecr:GetAuthorizationToken` permission is granted to
+   * the assumed role rather than the developer's identity. Closes #455.
+   * When omitted, cdkd uses the default credential chain (which is
+   * sufficient for same-account pulls AND for cross-account pulls when
+   * the ECR repository's resource policy grants the caller directly).
+   */
+  ecrRoleArn?: string;
+  /**
    * PR 2: when set, cdkd reads its S3 state for the target stack and
    * substitutes intrinsic-valued env vars (`Ref` / `Fn::GetAtt` /
    * `Fn::Sub`) with the deployed physical IDs / attributes. Closes the
@@ -498,6 +509,7 @@ async function localInvokeCommand(target: string, options: LocalInvokeOptions): 
       ...(imagePlan.platform !== undefined && { platform: imagePlan.platform }),
       ...(imagePlan.entryPoint !== undefined && { entryPoint: imagePlan.entryPoint }),
       ...(imagePlan.workingDir !== undefined && { workingDir: imagePlan.workingDir }),
+      ...(imagePlan.tmpfs !== undefined && { tmpfs: imagePlan.tmpfs }),
     });
 
     // Stream the container's logs to the user's terminal so they see the
@@ -599,6 +611,17 @@ interface ImagePlan {
    * downloaded layer ZIPs do not accumulate across invokes.
    */
   layerArnTmpDirs?: string[];
+  /**
+   * Sized tmpfs mount for `/tmp` (issue #440 — Lambda
+   * `Properties.EphemeralStorage.Size`). Set when the function's
+   * template declares `EphemeralStorage`; threaded through to
+   * `runDetached`'s `tmpfs` option which emits
+   * `--tmpfs /tmp:rw,size=<N>m`. Undefined when the property is
+   * absent, in which case the container's `/tmp` is whatever the
+   * base image provides (no cap). Applies to both ZIP and IMAGE
+   * Lambdas.
+   */
+  tmpfs?: { target: string; sizeMb: number };
 }
 
 /**
@@ -665,6 +688,8 @@ async function resolveZipImagePlan(
   // /var/runtime/bootstrap); every other runtime expects /var/task.
   const containerCodePath = resolveRuntimeCodeMountPath(lambda.runtime);
 
+  const tmpfs = resolveTmpfsForLambda(lambda);
+
   return {
     image,
     mounts: [{ hostPath: codeDir, containerPath: containerCodePath, readOnly: true }],
@@ -673,6 +698,7 @@ async function resolveZipImagePlan(
     ...(inlineTmpDir !== undefined && { inlineTmpDir }),
     ...(layerPlan.tmpDir !== undefined && { layersTmpDir: layerPlan.tmpDir }),
     ...(layerPlan.extraTmpDirs.length > 0 && { layerArnTmpDirs: layerPlan.extraTmpDirs }),
+    ...(tmpfs !== undefined && { tmpfs }),
   };
 }
 
@@ -713,6 +739,47 @@ async function materializeLambdaLayersIncludingArns(
   }
   const plan = materializeLambdaLayers(flat);
   return { ...plan, extraTmpDirs };
+}
+
+/**
+ * Build the `--tmpfs /tmp:rw,size=<N>m` plan for a Lambda (issue #440).
+ *
+ * The shape is identical for ZIP and IMAGE Lambdas — `--tmpfs` overlays
+ * mount-time inside any container, regardless of whether the image is a
+ * public Lambda base image (ZIP path) or a user-built container Lambda.
+ * Returns `undefined` when the template did not declare
+ * `EphemeralStorage`, in which case the caller emits no `--tmpfs` flag
+ * and the container's `/tmp` is whatever the base image provides
+ * (matches pre-#440 behavior). The lambda-resolver's
+ * `extractEphemeralStorageMb` already enforces the AWS 10240 MiB
+ * ceiling at parse time.
+ *
+ * Target path is always `/tmp` — AWS Lambda's `/tmp` is the ONLY
+ * sized-tmpfs surface the `EphemeralStorage.Size` property controls,
+ * and the constant is centralized here so a future fixture / docs
+ * update has a single grep target.
+ */
+export function resolveTmpfsForLambda(
+  lambda: ResolvedLambda
+): { target: string; sizeMb: number } | undefined {
+  if (lambda.ephemeralStorageMb === undefined) return undefined;
+  const logger = getLogger();
+  if (lambda.kind === 'image') {
+    // Container Lambdas: surface the cap at info level so users notice
+    // when `--tmpfs /tmp` overlays whatever their Dockerfile placed
+    // there at build time. Matches the issue spec note about logging
+    // a single line on container images.
+    logger.info(
+      `Lambda ${lambda.logicalId}: capping /tmp at ${lambda.ephemeralStorageMb} MiB via --tmpfs (overlays any base-image /tmp content)`
+    );
+  } else {
+    // ZIP Lambdas: base image's /tmp is just an overlay-fs path, so
+    // the cap is uneventful — debug-level keeps the default output clean.
+    logger.debug(
+      `Lambda ${lambda.logicalId}: applying EphemeralStorage cap via --tmpfs /tmp:size=${lambda.ephemeralStorageMb}m`
+    );
+  }
+  return { target: '/tmp', sizeMb: lambda.ephemeralStorageMb };
 }
 
 /**
@@ -826,6 +893,7 @@ export async function resolveContainerImagePlan(
     imageRef = await pullEcrImage(lambda.imageUri, {
       skipPull: options.pull === false,
       ...(options.region !== undefined && { region: options.region }),
+      ...(options.ecrRoleArn !== undefined && { ecrRoleArn: options.ecrRoleArn }),
     });
   }
 
@@ -835,6 +903,13 @@ export async function resolveContainerImagePlan(
   // to `[]` for the IMAGE branch, so `extraMounts` is always empty here
   // (matches AWS's invoke-time behavior of silently ignoring layers on
   // container Lambdas).
+  //
+  // Issue #440 — `EphemeralStorage.Size` is honored uniformly across
+  // ZIP and IMAGE Lambdas. `--tmpfs /tmp:size=Nm` overlays on top of
+  // whatever the user's Dockerfile placed there at build time, so
+  // there's no shape-divergence to gate on the `kind` discriminator.
+  const tmpfs = resolveTmpfsForLambda(lambda);
+
   return {
     image: imageRef,
     mounts: [],
@@ -848,6 +923,7 @@ export async function resolveContainerImagePlan(
     ...(lambda.imageConfig.workingDirectory !== undefined && {
       workingDir: lambda.imageConfig.workingDirectory,
     }),
+    ...(tmpfs !== undefined && { tmpfs }),
   };
 }
 
@@ -1282,6 +1358,16 @@ export function createLocalCommand(): Command {
           'entry in Properties.Layers (issue #448). Use only when the dev credentials cannot ' +
           'read the layer — typically cross-account layers. AWS-published public layers (e.g. ' +
           'Lambda Powertools) are readable from every account and need no role.'
+      )
+    )
+    .addOption(
+      new Option(
+        '--ecr-role-arn <arn>',
+        'Role ARN to assume before authenticating against ECR for cross-account / centralized ' +
+          'registries (#455). Issues sts:AssumeRole via the default credential chain and uses the ' +
+          'temporary credentials for ecr:GetAuthorizationToken + docker pull. Required when the ' +
+          'caller does not have direct cross-account access to the target repository. ' +
+          'Same-account / same-region pulls do not need this flag.'
       )
     )
     .addOption(

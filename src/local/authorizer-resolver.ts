@@ -28,11 +28,16 @@ import { resolveLambdaArnIntrinsic as resolveLambdaArnShared } from './intrinsic
  *     names the `Issuer` and `Audience` for verification.
  *
  * Out of scope (hard-errored at discovery):
- *   - REST v1 IAM authorizers (`AuthorizationType === 'AWS_IAM'`).
  *   - REST v1 Custom authorizers with non-Lambda backing.
  *   - mTLS / VPC Lambda authorizers (the latter is not a separate kind —
  *     its Lambda is just a VPC-config Lambda; we warn at startup but do
  *     not block).
+ *
+ * Supported with signature-verification-only semantics:
+ *   - REST v1 IAM authorizers (`AuthorizationType === 'AWS_IAM'`, #447):
+ *     the local server verifies SigV4 signatures against the dev's local
+ *     credentials but does NOT evaluate IAM resource / action / condition
+ *     policies. See `src/local/sigv4-verify.ts`.
  */
 
 export interface LambdaTokenAuthorizer {
@@ -66,19 +71,45 @@ export interface LambdaRequestAuthorizer {
   declaredAt: string;
 }
 
-export interface CognitoUserPoolAuthorizer {
-  kind: 'cognito';
-  logicalId: string;
-  /**
-   * The Cognito user pool ARN(s) declared on the authorizer. cdkd extracts
-   * region + userPoolId from the first ARN to build the JWKS URL. v1 only
-   * supports a single pool per authorizer; multi-pool federation is
-   * deferred.
-   */
+/**
+ * A single Cognito User Pool referenced by a REST v1
+ * `AWS::ApiGateway::Authorizer.ProviderARNs[]` entry. cdkd extracts the
+ * `region` + `userPoolId` segments out of the ARN so the JWKS URL can be
+ * built without an AWS API call.
+ */
+export interface CognitoPoolRef {
+  /** Original ARN as declared in `ProviderARNs[]`. */
   userPoolArn: string;
   /** Region parsed from the user pool ARN — used to build the JWKS URL. */
   region: string;
   /** Pool id parsed from the ARN. */
+  userPoolId: string;
+}
+
+export interface CognitoUserPoolAuthorizer {
+  kind: 'cognito';
+  logicalId: string;
+  /**
+   * Every Cognito user pool declared on the authorizer. CFn allows
+   * `ProviderARNs[]` to carry 1+ entries — multi-pool federation is a
+   * supported pattern for multi-tenant SaaS where each tenant has its
+   * own user pool but shares one API Gateway authorizer. At request
+   * time, the JWT's `iss` claim is matched against this list and the
+   * matching pool's JWKS is used for signature verification.
+   *
+   * The list is non-empty (discovery rejects an empty `ProviderARNs[]`).
+   */
+  pools: ReadonlyArray<CognitoPoolRef>;
+  /**
+   * Backwards-compatible alias for `pools[0].userPoolArn`. Pre-PR the
+   * authorizer carried a single pool; this field is retained so any
+   * downstream consumer reading `userPoolArn` keeps working. New code
+   * should read {@link pools} instead.
+   */
+  userPoolArn: string;
+  /** Backwards-compatible alias for `pools[0].region`. */
+  region: string;
+  /** Backwards-compatible alias for `pools[0].userPoolId`. */
   userPoolId: string;
   // NOTE: there is intentionally no `audience` field on REST v1 Cognito
   // authorizers. The audience that JWT verification would check (`aud`
@@ -114,11 +145,29 @@ export interface JwtAuthorizer {
   declaredAt: string;
 }
 
+/**
+ * REST v1 `AuthorizationType: 'AWS_IAM'` (closes #447).
+ *
+ * Unlike the other authorizer kinds, AWS_IAM has NO `AWS::ApiGateway::Authorizer`
+ * resource in the template — the method's `AuthorizationType` is the only
+ * signal. The local server verifies the request's SigV4 signature against
+ * the dev's local credentials (see `src/local/sigv4-verify.ts`). IAM
+ * policy evaluation (resource / action / condition) is intentionally not
+ * emulated — that requires the deployed IAM data plane.
+ */
+export interface IamAuthorizer {
+  kind: 'iam';
+  /** Synthetic logical id — there is no real `AWS::ApiGateway::Authorizer` resource. */
+  logicalId: 'AWS_IAM';
+  declaredAt: string;
+}
+
 export type AuthorizerInfo =
   | LambdaTokenAuthorizer
   | LambdaRequestAuthorizer
   | CognitoUserPoolAuthorizer
-  | JwtAuthorizer;
+  | JwtAuthorizer
+  | IamAuthorizer;
 
 export type IdentitySourceSelector =
   | { kind: 'header'; name: string }
@@ -196,22 +245,42 @@ export function resolveRestV1Authorizer(
         `${stackName}/${authorizerLogicalId}: COGNITO_USER_POOLS authorizer is missing ProviderARNs.`
       );
     }
-    const arn = pickStringFromArn(arns[0], `${stackName}/${authorizerLogicalId}.ProviderARNs[0]`);
-    const parsed = parseCognitoUserPoolArn(arn, `${stackName}/${authorizerLogicalId}`);
+    // Walk every ProviderARNs[] entry — CFn allows 1+ for multi-pool
+    // federation (multi-tenant SaaS with one pool per tenant). A single
+    // malformed entry aborts the whole authorizer at discovery time so
+    // the user sees the exact offending index, not a mid-request failure
+    // for one tenant only.
+    const pools: CognitoPoolRef[] = arns.map((entry, idx) => {
+      const arn = pickStringFromArn(
+        entry,
+        `${stackName}/${authorizerLogicalId}.ProviderARNs[${idx}]`
+      );
+      const parsed = parseCognitoUserPoolArn(
+        arn,
+        `${stackName}/${authorizerLogicalId}.ProviderARNs[${idx}]`
+      );
+      return { userPoolArn: arn, region: parsed.region, userPoolId: parsed.userPoolId };
+    });
+    const first = pools[0]!;
     return {
       kind: 'cognito',
       logicalId: authorizerLogicalId,
-      userPoolArn: arn,
-      region: parsed.region,
-      userPoolId: parsed.userPoolId,
+      pools,
+      userPoolArn: first.userPoolArn,
+      region: first.region,
+      userPoolId: first.userPoolId,
       declaredAt,
     };
   }
 
-  // AWS_IAM and any unknown Type — surface a structured error that the
-  // route-discovery layer wraps with offending route info.
+  // Unknown Type — surface a structured error that the route-discovery
+  // layer wraps with offending route info. Note: AWS_IAM is detected at
+  // the Method level (`AuthorizationType: 'AWS_IAM'`), not here — CDK
+  // does not emit a companion `AWS::ApiGateway::Authorizer` resource
+  // for IAM. mTLS lives on the `AWS::ApiGateway::DomainName` resource,
+  // also not via Authorizer.
   throw new RouteDiscoveryError(
-    `${stackName}/${authorizerLogicalId}: AWS::ApiGateway::Authorizer.Type '${String(type)}' is not supported by cdkd local start-api (only TOKEN / REQUEST / COGNITO_USER_POOLS — IAM / mTLS authorizers are deferred to a follow-up PR).`
+    `${stackName}/${authorizerLogicalId}: AWS::ApiGateway::Authorizer.Type '${String(type)}' is not supported by cdkd local start-api (only TOKEN / REQUEST / COGNITO_USER_POOLS are accepted at the Authorizer resource).`
   );
 }
 
@@ -475,7 +544,9 @@ function parseCognitoIssuer(issuer: string): { region: string; userPoolId: strin
 /**
  * Pull a string out of a {Ref} / literal entry under `ProviderARNs`.
  * CDK's CognitoUserPoolsAuthorizer emits a literal array of `Fn::GetAtt:
- * [<UserPool>, 'Arn']` entries — we accept both.
+ * [<UserPool>, 'Arn']` entries — we accept both. The `location` argument
+ * carries the full `<stack>/<authorizer>.ProviderARNs[<idx>]` path so the
+ * error names the offending entry exactly.
  */
 function pickStringFromArn(value: unknown, location: string): string {
   if (typeof value === 'string') return value;
@@ -496,14 +567,12 @@ function pickStringFromArn(value: unknown, location: string): string {
         // verification so the discovery layer has to fail loudly if it
         // can't extract one.
         throw new RouteDiscoveryError(
-          `${location}: ProviderARNs[0] uses Fn::GetAtt against logical ID '${arg[0]}'. cdkd local start-api needs the literal ARN string to derive the JWKS URL — set the user pool ARN explicitly via 'authorizer.providerArns' on the CDK construct, or upgrade to JWT (HTTP v2) which encodes the pool in the Issuer URL.`
+          `${location}: uses Fn::GetAtt against logical ID '${arg[0]}'. cdkd local start-api needs the literal ARN string to derive the JWKS URL — set the user pool ARN explicitly via 'authorizer.providerArns' on the CDK construct, or upgrade to JWT (HTTP v2) which encodes the pool in the Issuer URL.`
         );
       }
     }
   }
-  throw new RouteDiscoveryError(
-    `${location}: ProviderARNs[0] must be a literal string (got ${shortJson(value)}).`
-  );
+  throw new RouteDiscoveryError(`${location}: must be a literal string (got ${shortJson(value)}).`);
 }
 
 /**
@@ -650,15 +719,19 @@ function detectRestV1Authorizer(
   const authType = props['AuthorizationType'];
   if (authType === undefined || authType === 'NONE') return undefined;
 
+  // AWS_IAM has no companion `AWS::ApiGateway::Authorizer` resource —
+  // the AuthorizationType alone is the signal. SigV4 signatures are
+  // verified at request time by `src/local/sigv4-verify.ts` (#447).
+  if (authType === 'AWS_IAM') {
+    return {
+      kind: 'iam',
+      logicalId: 'AWS_IAM',
+      declaredAt: `${stack.stackName}/${methodLogicalId}`,
+    };
+  }
+
   const authorizerId = props['AuthorizerId'];
   const refLogicalId = pickRefLogicalId(authorizerId);
-
-  // AWS_IAM uses no Authorizer resource — surface a clear error.
-  if (authType === 'AWS_IAM') {
-    throw new RouteDiscoveryError(
-      `${stack.stackName}/${methodLogicalId}: REST v1 AWS_IAM authorization is not supported by cdkd local start-api (deferred follow-up PR).`
-    );
-  }
 
   // CUSTOM / COGNITO_USER_POOLS / etc. all need an AuthorizerId Ref.
   if (!refLogicalId) {

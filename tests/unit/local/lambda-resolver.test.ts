@@ -887,6 +887,159 @@ describe('resolveLambdaTarget', () => {
     );
     expect(() => resolveLambdaTarget('MyStack:Fn', [stack])).toThrow(/non-array Layers/);
   });
+
+  // Issue #440 — Lambda Properties.EphemeralStorage.Size
+  //
+  // CDK 2.x's `lambda.Function({ ephemeralStorageSize: cdk.Size.gibibytes(N) })`
+  // synthesizes `EphemeralStorage: { Size: N * 1024 }`. The resolver
+  // surfaces it on `ResolvedLambda.ephemeralStorageMb`; the CLI plumbs
+  // it through to docker's `--tmpfs /tmp:size=Nm` so handlers exceeding
+  // the cap fail locally the way they would on AWS.
+
+  it('surfaces EphemeralStorage.Size on a ZIP Lambda', () => {
+    const stack = buildStack(
+      'MyStack',
+      {
+        Big: {
+          Type: 'AWS::Lambda::Function',
+          Properties: {
+            Runtime: 'nodejs20.x',
+            Handler: 'index.handler',
+            EphemeralStorage: { Size: 1024 },
+          },
+          Metadata: { 'aws:asset:path': 'asset.big' },
+        },
+      },
+      tmpRoot
+    );
+    const result = resolveLambdaTarget('MyStack:Big', [stack]);
+    expect(result.ephemeralStorageMb).toBe(1024);
+  });
+
+  it('surfaces EphemeralStorage.Size on an IMAGE Lambda', () => {
+    const stack = buildStack(
+      'MyStack',
+      {
+        Container: {
+          Type: 'AWS::Lambda::Function',
+          Properties: {
+            PackageType: 'Image',
+            Code: { ImageUri: { 'Fn::Sub': 'r:hash123abc' } },
+            EphemeralStorage: { Size: 2048 },
+          },
+        },
+      },
+      tmpRoot
+    );
+    const result = resolveLambdaTarget('MyStack:Container', [stack]);
+    expect(result.kind).toBe('image');
+    expect(result.ephemeralStorageMb).toBe(2048);
+  });
+
+  it('omits ephemeralStorageMb when EphemeralStorage is absent', () => {
+    const stack = buildStack(
+      'MyStack',
+      {
+        NoEs: {
+          Type: 'AWS::Lambda::Function',
+          Properties: {
+            Runtime: 'nodejs20.x',
+            Handler: 'index.handler',
+          },
+          Metadata: { 'aws:asset:path': 'asset.noes' },
+        },
+      },
+      tmpRoot
+    );
+    const result = resolveLambdaTarget('MyStack:NoEs', [stack]);
+    expect(result.ephemeralStorageMb).toBeUndefined();
+  });
+
+  it('rejects EphemeralStorage.Size > 10240 with an actionable error', () => {
+    const stack = buildStack(
+      'MyStack',
+      {
+        TooBig: {
+          Type: 'AWS::Lambda::Function',
+          Properties: {
+            Runtime: 'nodejs20.x',
+            Handler: 'index.handler',
+            EphemeralStorage: { Size: 20000 },
+          },
+          Metadata: { 'aws:asset:path': 'asset.toobig' },
+        },
+      },
+      tmpRoot
+    );
+    expect(() => resolveLambdaTarget('MyStack:TooBig', [stack])).toThrow(
+      /exceeds the AWS limit of 10240 MiB/
+    );
+  });
+
+  it('floors fractional EphemeralStorage.Size values', () => {
+    const stack = buildStack(
+      'MyStack',
+      {
+        Frac: {
+          Type: 'AWS::Lambda::Function',
+          Properties: {
+            Runtime: 'nodejs20.x',
+            Handler: 'index.handler',
+            EphemeralStorage: { Size: 1024.7 },
+          },
+          Metadata: { 'aws:asset:path': 'asset.frac' },
+        },
+      },
+      tmpRoot
+    );
+    const result = resolveLambdaTarget('MyStack:Frac', [stack]);
+    expect(result.ephemeralStorageMb).toBe(1024);
+  });
+
+  it('drops EphemeralStorage when Size is an intrinsic / non-numeric', () => {
+    const stack = buildStack(
+      'MyStack',
+      {
+        IntrinsicEs: {
+          Type: 'AWS::Lambda::Function',
+          Properties: {
+            Runtime: 'nodejs20.x',
+            Handler: 'index.handler',
+            // CFn allows `{Ref: 'SomeParam'}` for Size in theory; cdkd
+            // can't resolve it without the Parameters context the
+            // deploy engine has, so the safe fallback is to drop the
+            // `--tmpfs` flag and let the container's `/tmp` come from
+            // the base image (matches the pre-#440 behavior).
+            EphemeralStorage: { Size: { Ref: 'TmpSize' } },
+          },
+          Metadata: { 'aws:asset:path': 'asset.intrinsic' },
+        },
+      },
+      tmpRoot
+    );
+    const result = resolveLambdaTarget('MyStack:IntrinsicEs', [stack]);
+    expect(result.ephemeralStorageMb).toBeUndefined();
+  });
+
+  it('drops EphemeralStorage when the property is malformed (non-object)', () => {
+    const stack = buildStack(
+      'MyStack',
+      {
+        BadShape: {
+          Type: 'AWS::Lambda::Function',
+          Properties: {
+            Runtime: 'nodejs20.x',
+            Handler: 'index.handler',
+            EphemeralStorage: 'not-an-object',
+          },
+          Metadata: { 'aws:asset:path': 'asset.badshape' },
+        },
+      },
+      tmpRoot
+    );
+    const result = resolveLambdaTarget('MyStack:BadShape', [stack]);
+    expect(result.ephemeralStorageMb).toBeUndefined();
+  });
 });
 
 describe('parseLayerVersionArn (issue #448)', () => {
