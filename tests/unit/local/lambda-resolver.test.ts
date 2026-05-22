@@ -727,6 +727,11 @@ describe('resolveLambdaTarget', () => {
   });
 
   it('resolves literal-ARN layer entries (cross-account / pre-existing — issue #448)', () => {
+    // PR #491 review NICE-TO-HAVE: use `expect.assertions(...)` so the
+    // type-narrowed `if (layer.kind === 'arn')` block fails loudly when
+    // the kind discriminator is wrong (instead of silently no-op'ing
+    // through every nested assertion).
+    expect.assertions(8);
     const stack = buildStack(
       'MyStack',
       {
@@ -754,6 +759,114 @@ describe('resolveLambdaTarget', () => {
       expect(layer.version).toBe('7');
       expect(layer.logicalId).toBe(layer.arn);
     }
+  });
+
+  it('preserves order across multiple literal-ARN layer entries (last-wins relies on order)', () => {
+    // PR #491 review MUST-FIX 2: the materialization pass in
+    // `local-invoke.ts` / `local-start-api.ts` walks `lambda.layers`
+    // sequentially and `cpSync({force: true})`-merges them in order;
+    // AWS's "last layer wins" file-collision semantic ONLY works if the
+    // resolver hands us the array in template order. This pins it for
+    // the all-ARN case.
+    const stack = buildStack(
+      'MyStack',
+      {
+        Fn: {
+          Type: 'AWS::Lambda::Function',
+          Properties: {
+            Runtime: 'nodejs20.x',
+            Handler: 'index.handler',
+            Layers: [
+              'arn:aws:lambda:us-east-1:123456789012:layer:LayerA:1',
+              'arn:aws:lambda:us-east-1:123456789012:layer:LayerB:2',
+              'arn:aws:lambda:us-east-1:123456789012:layer:LayerC:3',
+            ],
+          },
+          Metadata: { 'aws:asset:path': 'asset.fn' },
+        },
+      },
+      tmpRoot
+    );
+    const result = resolveLambdaTarget('MyStack:Fn', [stack]);
+    expect(result.layers).toHaveLength(3);
+    expect(result.layers.map((l) => l.kind)).toEqual(['arn', 'arn', 'arn']);
+    // Order MUST be preserved exactly as templated.
+    expect(result.layers.map((l) => l.logicalId)).toEqual([
+      'arn:aws:lambda:us-east-1:123456789012:layer:LayerA:1',
+      'arn:aws:lambda:us-east-1:123456789012:layer:LayerB:2',
+      'arn:aws:lambda:us-east-1:123456789012:layer:LayerC:3',
+    ]);
+  });
+
+  it('preserves order for mixed [asset, arn] layer entries — asset first', () => {
+    // PR #491 review MUST-FIX 2: same-stack asset + literal ARN
+    // interleaved. The materializer merges `lambda.layers` in this
+    // order; flipping a-then-b vs b-then-a would change which file wins
+    // on collision. Verify both directions.
+    const stack = buildStack(
+      'MyStack',
+      {
+        Fn: {
+          Type: 'AWS::Lambda::Function',
+          Properties: {
+            Runtime: 'nodejs20.x',
+            Handler: 'index.handler',
+            Layers: [
+              { Ref: 'AssetLayer' },
+              'arn:aws:lambda:us-east-1:123456789012:layer:External:5',
+            ],
+          },
+          Metadata: { 'aws:asset:path': 'asset.fn' },
+        },
+        AssetLayer: {
+          Type: 'AWS::Lambda::LayerVersion',
+          Properties: {},
+          Metadata: { 'aws:asset:path': 'asset.al' },
+        },
+      },
+      tmpRoot
+    );
+    const result = resolveLambdaTarget('MyStack:Fn', [stack]);
+    expect(result.layers).toHaveLength(2);
+    expect(result.layers.map((l) => l.kind)).toEqual(['asset', 'arn']);
+    expect(result.layers[0]!.logicalId).toBe('AssetLayer');
+    expect(result.layers[1]!.logicalId).toBe(
+      'arn:aws:lambda:us-east-1:123456789012:layer:External:5'
+    );
+  });
+
+  it('preserves order for mixed [arn, asset] layer entries — arn first', () => {
+    // PR #491 review MUST-FIX 2: reverse direction of the previous test.
+    const stack = buildStack(
+      'MyStack',
+      {
+        Fn: {
+          Type: 'AWS::Lambda::Function',
+          Properties: {
+            Runtime: 'nodejs20.x',
+            Handler: 'index.handler',
+            Layers: [
+              'arn:aws:lambda:us-east-1:123456789012:layer:External:5',
+              { Ref: 'AssetLayer' },
+            ],
+          },
+          Metadata: { 'aws:asset:path': 'asset.fn' },
+        },
+        AssetLayer: {
+          Type: 'AWS::Lambda::LayerVersion',
+          Properties: {},
+          Metadata: { 'aws:asset:path': 'asset.al' },
+        },
+      },
+      tmpRoot
+    );
+    const result = resolveLambdaTarget('MyStack:Fn', [stack]);
+    expect(result.layers).toHaveLength(2);
+    expect(result.layers.map((l) => l.kind)).toEqual(['arn', 'asset']);
+    expect(result.layers[0]!.logicalId).toBe(
+      'arn:aws:lambda:us-east-1:123456789012:layer:External:5'
+    );
+    expect(result.layers[1]!.logicalId).toBe('AssetLayer');
   });
 
   it('rejects malformed string entries that are not a valid layer-version ARN', () => {

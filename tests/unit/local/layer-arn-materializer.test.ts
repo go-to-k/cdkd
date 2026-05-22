@@ -1,4 +1,5 @@
-import { existsSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { deflateRaw } from 'node:zlib';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vite-plus/test';
@@ -231,6 +232,48 @@ describe('materializeLayerFromArn', () => {
         fetchZip: async () => zip,
       })
     ).rejects.toThrow(/escapes the destination directory/);
+  });
+
+  it('rmSyncs the just-created tmpdir on unzip failure (no orphan dir leak)', async () => {
+    // Review-fix M1 from PR #491: `materializeLayerFromArn` creates a
+    // fresh tmpdir via `mkdtemp(...)` BEFORE calling
+    // `unzipBufferToDirectory`. The unzip step can throw (Zip Slip /
+    // symlink / corrupt ZIP / unsupported compression) and the caller
+    // never receives the directory path on the error path — so the
+    // outer cleanup loops in `local-invoke.ts` (`ImagePlan.layerArnTmpDirs`)
+    // and `local-start-api.ts` (`layerTmpDirs: Set<string>`) never learn
+    // about it. Without the in-materializer `rmSync` the OS would keep
+    // the dir until reboot. This test pins the fix.
+    //
+    // Detection strategy: snapshot the set of `cdkd-local-arn-layer-*`
+    // dirs under `os.tmpdir()` before the failing call, then after the
+    // reject assert no NEW dir matching the layer's `<name>-<version>`
+    // prefix survived.
+    const layer = makeLayer({ name: 'CleanupLayer', version: '99' });
+    const prefix = `cdkd-local-arn-layer-${layer.name}-${layer.version}-`;
+    const snapshot = new Set(
+      readdirSync(tmpdir()).filter((entry) => entry.startsWith(prefix))
+    );
+
+    const zip = await buildZip([{ name: '../escaped.txt', data: 'evil' }]);
+    const lambdaFactory = (): LambdaSendClient => ({
+      send: async () => ({ Content: { Location: 'https://presigned.example/zip' } }),
+    });
+    await expect(
+      materializeLayerFromArn(layer, {
+        lambdaClientFactory: lambdaFactory,
+        fetchZip: async () => zip,
+      })
+    ).rejects.toThrow(LayerMaterializationError);
+
+    const after = readdirSync(tmpdir()).filter((entry) => entry.startsWith(prefix));
+    const newDirs = after.filter((entry) => !snapshot.has(entry));
+    expect(newDirs).toEqual([]);
+    // Defense-in-depth: also assert none of those potential dirs exist
+    // (covers a race where the OS hands out the same random suffix).
+    for (const entry of newDirs) {
+      expect(existsSync(join(tmpdir(), entry))).toBe(false);
+    }
   });
 
   it('rejects HTTP failures on the presigned URL with a clear message', async () => {

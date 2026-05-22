@@ -1124,7 +1124,7 @@ async function buildContainerSpec(args: {
  * `-v ...:/opt:ro` entries at the same target, so cdkd can't rely on
  * overlay layering and must produce a single merged dir on the host.
  */
-async function materializeLambdaLayers(
+export async function materializeLambdaLayers(
   layers: ResolvedLambdaLayer[],
   layerTmpDirs: Set<string>,
   layerRoleArn: string | undefined

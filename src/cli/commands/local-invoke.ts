@@ -748,7 +748,7 @@ async function resolveZipImagePlan(
  *     wins" file-collision semantic is preserved across both layer
  *     kinds because the merge step is unchanged.
  */
-async function materializeLambdaLayersIncludingArns(
+export async function materializeLambdaLayersIncludingArns(
   layers: ResolvedLambdaLayer[],
   options: LocalInvokeOptions
 ): Promise<{
