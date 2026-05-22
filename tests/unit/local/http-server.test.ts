@@ -704,4 +704,62 @@ describe('startApiServer — RESPONSE_STREAM dispatch (#467)', () => {
       await server.close();
     }
   });
+
+  it('destroys the body Readable + releases the pool when writeStreamingResponse throws synchronously on a malformed prelude header', async () => {
+    // Regression for the PR #501 review blocker: when `res.writeHead(...)`
+    // throws synchronously (e.g. on a header value containing CRLF — Node
+    // rejects it with ERR_INVALID_CHAR), the body Readable from
+    // `invokeRieStreaming` had no consumer attached yet (the `'error'`
+    // / `'close'` listeners are installed AFTER `writeHead` succeeds
+    // inside `writeStreamingResponse`). Without the fix, the IIFE in
+    // `invokeRieStreaming` would keep pushing chunks into an orphan
+    // Readable forever and the pool entry would never be returned.
+    const { Readable } = await import('node:stream');
+    let bodyStream: import('node:stream').Readable | undefined;
+    invokeRieStreamingMock.mockImplementation(async () => {
+      bodyStream = Readable.from([Buffer.from('chunk-0\n')]);
+      return {
+        prelude: {
+          statusCode: 200,
+          // Invalid CRLF in a header value: Node's writeHead rejects
+          // synchronously with ERR_INVALID_CHAR.
+          headers: { 'X-Bad': 'broken\r\nvalue' },
+        },
+        body: bodyStream,
+      };
+    });
+    const pool = makePool();
+    const route: RouteWithAuth = {
+      route: {
+        method: 'ANY',
+        pathPattern: '/{proxy+}',
+        lambdaLogicalId: 'Fn',
+        source: 'function-url',
+        apiVersion: 'v2',
+        stage: '$default',
+        apiStackName: 'S',
+        declaredAt: 'S/Url',
+        invokeMode: 'RESPONSE_STREAM',
+      },
+    };
+    const server = await startApiServer({
+      state: { routes: [route], pool, corsConfigByApiId: new Map() },
+      rieTimeoutMs: 5000,
+      host: '127.0.0.1',
+      port: 0,
+    });
+    try {
+      const r = await fetch(`http://${server.host}:${server.port}/anything`);
+      // Outer catch reports 502 (no headers were sent before the throw).
+      expect(r.status).toBe(502);
+      // (a) Pool must be released so the warm container can serve again.
+      expect((pool.release as ReturnType<typeof vi.fn>)).toHaveBeenCalledTimes(1);
+      // (b) Body Readable must be destroyed so the underlying fetch reader
+      // is released and the `invokeRieStreaming` IIFE stops pushing.
+      expect(bodyStream).toBeDefined();
+      expect(bodyStream!.destroyed).toBe(true);
+    } finally {
+      await server.close();
+    }
+  });
 });

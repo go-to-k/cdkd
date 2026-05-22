@@ -443,14 +443,39 @@ async function handleRequest(
   // `Transfer-Encoding: chunked` (Node's default when no Content-Length
   // is set).
   if (match.route.invokeMode === 'RESPONSE_STREAM') {
+    let streamResult: import('./rie-client.js').StreamingInvokeResult | undefined;
     try {
-      const streamResult = await invokeRieStreaming(
+      streamResult = await invokeRieStreaming(
         handle.containerHost,
         handle.hostPort,
         baseEvent,
         opts.rieTimeoutMs
       );
-      writeStreamingResponse(res, streamResult, () => state.pool.release(handle));
+      try {
+        writeStreamingResponse(res, streamResult, () => state.pool.release(handle));
+      } catch (writeErr) {
+        // `writeStreamingResponse` threw synchronously — typically from
+        // `res.writeHead(...)` rejecting a malformed header value before
+        // any body bytes have been piped. The body Readable from
+        // `invokeRieStreaming` has no `'error'` / `'close'` consumer
+        // installed yet (those listeners are attached AFTER `writeHead`
+        // inside `writeStreamingResponse`), so the IIFE in
+        // `invokeRieStreaming` would keep pushing chunks into an orphan
+        // Readable forever. Destroy it explicitly to release the underlying
+        // fetch reader, then re-throw so the outer catch surfaces 502 and
+        // releases the pool entry.
+        //
+        // The no-op `'error'` listener is load-bearing: Node emits the
+        // destroy reason as an `'error'` event on the Readable, and an
+        // unhandled `'error'` would surface as an uncaught exception
+        // since this branch is reached before `body.pipe(res)` would
+        // have installed its own internal error handler.
+        streamResult.body.on('error', () => {
+          /* swallow — the original `writeErr` is what the caller sees */
+        });
+        streamResult.body.destroy(writeErr instanceof Error ? writeErr : new Error(String(writeErr)));
+        throw writeErr;
+      }
       // writeStreamingResponse owns the pool release because the body
       // is piped asynchronously — the response is not "done" when this
       // function returns.
