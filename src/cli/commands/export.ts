@@ -40,6 +40,11 @@ import {
   type CfnUploadS3ClientOpts,
 } from '../upload-cfn-template.js';
 import type { ResourceState, StackState } from '../../types/state.js';
+import {
+  parseCfnTemplateWithFormat,
+  stringifyCfnTemplate,
+  type TemplateFormat,
+} from '../yaml-cfn.js';
 
 interface ExportOptions {
   app?: string;
@@ -394,7 +399,7 @@ export function splitCompositePhysicalId(
   return splitter(physicalId, properties);
 }
 
-interface ImportPlanEntry {
+export interface ImportPlanEntry {
   logicalId: string;
   resourceType: string;
   physicalId: string;
@@ -664,6 +669,11 @@ async function exportCommand(stackArg: string | undefined, options: ExportOption
     let template: Record<string, unknown>;
     let resolvedStackName: string;
     let synthedRegion: string | undefined;
+    // The format we will re-emit the template in when we send phase-1 /
+    // phase-2 changesets to CloudFormation. CDK synth always produces
+    // JSON; the only path that can introduce YAML is `--template <path>`,
+    // where we sniff the file content via the CFn-aware codec.
+    let templateFormat: TemplateFormat = 'json';
     // Set when synth runs (not when --template is used). Captures all
     // stacks in the user's CDK app, used by the cross-stack consumer
     // scan to detect Fn::GetStackOutput references to the exporting
@@ -677,7 +687,9 @@ async function exportCommand(stackArg: string | undefined, options: ExportOption
           '--template requires a stack name as a positional argument to identify the cdkd state record.'
         );
       }
-      template = parseTemplateFile(options.template);
+      const parsed = parseTemplateFile(options.template);
+      template = parsed.template;
+      templateFormat = parsed.format;
       resolvedStackName = stackArg;
     } else {
       const appCmd = options.app || resolveApp();
@@ -1003,6 +1015,7 @@ async function exportCommand(stackArg: string | undefined, options: ExportOption
         phase1Template,
         phase1Imports,
         cfnParameters,
+        templateFormat,
         {
           stateBucket,
           ...(options.profile && { s3ClientOpts: { profile: options.profile } }),
@@ -1090,6 +1103,7 @@ async function exportCommand(stackArg: string | undefined, options: ExportOption
             cfnStackName,
             phase2Template,
             cfnParameters,
+            templateFormat,
             {
               stateBucket,
               ...(options.profile && { s3ClientOpts: { profile: options.profile } }),
@@ -1211,7 +1225,10 @@ async function pickStackRegion(
   );
 }
 
-function parseTemplateFile(path: string): Record<string, unknown> {
+export function parseTemplateFile(path: string): {
+  template: Record<string, unknown>;
+  format: TemplateFormat;
+} {
   let raw: string;
   try {
     raw = readFileSync(path, 'utf-8');
@@ -1221,20 +1238,17 @@ function parseTemplateFile(path: string): Record<string, unknown> {
         (err instanceof Error ? err.message : String(err))
     );
   }
-  let parsed: unknown;
   try {
-    parsed = JSON.parse(raw);
+    const { template, format } = parseCfnTemplateWithFormat(raw);
+    return { template, format };
   } catch (err) {
     throw new Error(
-      `Template file '${path}' is not valid JSON. cdkd export only supports ` +
-        `JSON templates (CDK-generated). Cause: ` +
+      `Template file '${path}' is not a valid CloudFormation template. ` +
+        `cdkd export accepts JSON and YAML (YAML via a CFn-aware codec that ` +
+        `preserves !Ref / !GetAtt / !Sub shorthand). Cause: ` +
         (err instanceof Error ? err.message : String(err))
     );
   }
-  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-    throw new Error(`Template file '${path}' is not a JSON object.`);
-  }
-  return parsed as Record<string, unknown>;
 }
 
 async function assertCfnStackAbsent(
@@ -2057,9 +2071,9 @@ export interface ChangeSetUploadOpts {
  *     directly. No S3 round-trip; the caller's `finally` cleanup is a
  *     no-op.
  *   - `kind: 'url'`     — payload in (51,200, 1,048,576] bytes; helper
- *     uploaded to `cdkd-migrate-tmp/<stackName>/<ts>.json`. The caller
- *     MUST invoke the returned `cleanup` in a `finally` so the transient
- *     object is deleted regardless of CFn success / failure.
+ *     uploaded to `cdkd-migrate-tmp/<stackName>/<ts>.{json,yaml}`. The
+ *     caller MUST invoke the returned `cleanup` in a `finally` so the
+ *     transient object is deleted regardless of CFn success / failure.
  *
  * Payloads > 1,048,576 bytes throw pre-flight (the 1 MB ceiling applies
  * to every CFn API surface; no S3 indirection helps). The error names the
@@ -2068,14 +2082,24 @@ export interface ChangeSetUploadOpts {
  * `phaseLabel` is interpolated into the pre-flight error so the user
  * sees which phase tripped the ceiling ("phase-1 IMPORT" vs "phase-2
  * UPDATE").
+ *
+ * When `uploadOpts` is undefined (e.g. unit tests that exercise only the
+ * inline path), templates over the inline limit throw with a clear
+ * "no upload bucket configured" error rather than silently failing on a
+ * downstream CFn rejection.
+ *
+ * `templateFormat` (default `'json'`) drives the transient S3 object's
+ * key suffix + Content-Type so YAML-authored templates stay YAML on the
+ * wire (`.yaml` / `application/x-yaml`).
  */
 /* Exported for unit testing. Internal to the export flow otherwise. */
 export async function selectChangeSetTemplateSource(
   template: Record<string, unknown>,
   templateBody: string,
-  uploadOpts: ChangeSetUploadOpts,
+  uploadOpts: ChangeSetUploadOpts | undefined,
   stackName: string,
-  phaseLabel: string
+  phaseLabel: string,
+  templateFormat: TemplateFormat = 'json'
 ): Promise<
   | { kind: 'inline'; templateBody: string; cleanup: () => Promise<void> }
   | { kind: 'url'; templateUrl: string; cleanup: () => Promise<void> }
@@ -2110,6 +2134,14 @@ export async function selectChangeSetTemplateSource(
         `or split the stack into nested AWS::CloudFormation::Stack resources.${detail}`
     );
   }
+  if (!uploadOpts) {
+    throw new Error(
+      `${phaseLabel} template is ${templateBody.length} bytes, over the inline ` +
+        `${CFN_TEMPLATE_BODY_LIMIT}-byte TemplateBody limit, but no upload bucket was ` +
+        `provided to selectChangeSetTemplateSource — pass uploadOpts to enable the ` +
+        `TemplateURL upload path.`
+    );
+  }
   logger.info(
     `  Template is ${templateBody.length} bytes (over ${CFN_TEMPLATE_BODY_LIMIT} inline limit) — ` +
       `uploading to state bucket '${uploadOpts.stateBucket}'.`
@@ -2118,6 +2150,7 @@ export async function selectChangeSetTemplateSource(
     bucket: uploadOpts.stateBucket,
     body: templateBody,
     stackName,
+    format: templateFormat,
     ...(uploadOpts.s3ClientOpts && { s3ClientOpts: uploadOpts.s3ClientOpts }),
   });
   return { kind: 'url', templateUrl: uploaded.url, cleanup: uploaded.cleanup };
@@ -2146,17 +2179,18 @@ async function runTemplateUploadCleanup(
   }
 }
 
-async function executeImportChangeSet(
+export async function executeImportChangeSet(
   cfnClient: AwsClients['cloudFormation'],
   stackName: string,
   template: Record<string, unknown>,
   plan: ImportPlanEntry[],
   parameters: Parameter[],
-  uploadOpts: ChangeSetUploadOpts
+  templateFormat: TemplateFormat = 'json',
+  uploadOpts?: ChangeSetUploadOpts
 ): Promise<void> {
   const logger = getLogger();
   const changeSetName = `cdkd-migrate-${Date.now()}`;
-  const templateBody = JSON.stringify(template, null, 2);
+  const templateBody = stringifyCfnTemplate(template, templateFormat);
 
   const resourcesToImport: ResourceToImport[] = plan.map((entry) => ({
     ResourceType: entry.resourceType,
@@ -2177,7 +2211,8 @@ async function executeImportChangeSet(
     templateBody,
     uploadOpts,
     stackName,
-    'Filtered phase-1 IMPORT'
+    'Filtered phase-1 IMPORT',
+    templateFormat
   );
   try {
     try {
@@ -2267,7 +2302,7 @@ async function executeImportChangeSet(
     // needed regardless of whether the wait / execute steps succeeded.
     // The cleanup callback for the inline path is a no-op, so this is
     // always cheap to invoke.
-    await runTemplateUploadCleanup(source.cleanup, uploadOpts.stateBucket);
+    await runTemplateUploadCleanup(source.cleanup, uploadOpts?.stateBucket ?? '');
   }
 }
 
@@ -2319,16 +2354,17 @@ async function collectImportFailureSummary(
  * (cdkd state is intentionally NOT deleted between phases, so a phase-2
  * failure leaves a recoverable state).
  */
-async function executeUpdateChangeSet(
+export async function executeUpdateChangeSet(
   cfnClient: AwsClients['cloudFormation'],
   stackName: string,
   template: Record<string, unknown>,
   parameters: Parameter[],
-  uploadOpts: ChangeSetUploadOpts
+  templateFormat: TemplateFormat = 'json',
+  uploadOpts?: ChangeSetUploadOpts
 ): Promise<void> {
   const logger = getLogger();
   const changeSetName = `cdkd-phase2-${Date.now()}`;
-  const templateBody = JSON.stringify(template, null, 2);
+  const templateBody = stringifyCfnTemplate(template, templateFormat);
 
   logger.info(
     `Creating UPDATE changeset '${changeSetName}' for phase 2 ` +
@@ -2344,7 +2380,8 @@ async function executeUpdateChangeSet(
     templateBody,
     uploadOpts,
     stackName,
-    'Phase-2 UPDATE'
+    'Phase-2 UPDATE',
+    templateFormat
   );
 
   try {
@@ -2407,7 +2444,7 @@ async function executeUpdateChangeSet(
   } finally {
     // Always run the upload cleanup (no-op for the inline path) so the
     // transient S3 object is removed regardless of CFn success / failure.
-    await runTemplateUploadCleanup(source.cleanup, uploadOpts.stateBucket);
+    await runTemplateUploadCleanup(source.cleanup, uploadOpts?.stateBucket ?? '');
   }
 }
 
@@ -2510,7 +2547,8 @@ export function createExportCommand(): Command {
       'Hand a cdkd-managed stack over to CloudFormation via CFn IMPORT (changeset). ' +
         'AWS resources are unchanged; cdkd state for the stack is deleted on success. ' +
         'Mirror of `cdkd import` (AWS → cdkd) in the reverse direction (cdkd → CFn). ' +
-        'JSON templates only. Aborts if any resource is not CFn-importable.'
+        'Accepts JSON and YAML templates (YAML via a CFn-aware codec that preserves ' +
+        '!Ref / !GetAtt / !Sub shorthand). Aborts if any resource is not CFn-importable.'
     )
     .argument('[stack]', 'Stack name to export (auto-detected for single-stack apps)')
     .option(
@@ -2519,7 +2557,7 @@ export function createExportCommand(): Command {
     )
     .option(
       '--template <path>',
-      'Path to a pre-rendered CloudFormation template (JSON). Skips synth.'
+      'Path to a pre-rendered CloudFormation template (JSON or YAML — format auto-detected). Skips synth.'
     )
     .option(
       '--stack-region <region>',

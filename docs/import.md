@@ -166,16 +166,15 @@ cdkd import MyStack --migrate-from-cloudformation LegacyCfnStackName --yes
 
 Limitations:
 
-- **JSON-only.** The Retain-policy injection in step 4 targets the
-  CDK-generated JSON template. The expected upstream is `cdk migrate`
-  (whose synthesized output is JSON) followed by `cdk deploy` /
-  `cdkd deploy` — also JSON. Adding YAML support would require parsing
-  CloudFormation shorthand intrinsics (`!Ref`, `!Sub`, `!GetAtt`, …)
-  which round-trip incorrectly through generic YAML libraries (a
-  generic unmarshal/remarshal silently strips the custom tags and
-  corrupts the template). Until a CFn-aware YAML codec is in scope,
-  hand-written YAML stacks fail with a clear error and are best
-  retired with the manual 3-step procedure.
+- **JSON and YAML supported.** The Retain-policy injection in step 4
+  parses the source CloudFormation template via cdkd's CFn-aware codec
+  (`src/cli/yaml-cfn.ts`), which preserves every shorthand intrinsic
+  (`!Ref`, `!Sub`, `!GetAtt`, `!Join`, ...) across the parse →
+  inject-Retain → re-serialize round-trip. The phase-1 UPDATE submits
+  the template in the **same format** as the source — a YAML-authored
+  CFn stack stays YAML on the wire (with `.yaml` key suffix and
+  `application/x-yaml` content type when uploaded to the cdkd state
+  bucket).
 - **1 MB template limit.** Templates up to the inline 51,200-byte
   `TemplateBody` ceiling are submitted directly. Larger templates are
   uploaded to the cdkd state bucket under

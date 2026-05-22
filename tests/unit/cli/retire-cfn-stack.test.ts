@@ -207,9 +207,24 @@ describe('injectRetainPolicies', () => {
     expect(JSON.parse(body).Resources.Bucket.DeletionPolicy).toBe('Retain');
   });
 
-  it('throws on non-JSON template body', () => {
-    expect(() => injectRetainPolicies('Resources:\n  Bucket:\n    Type: AWS::S3::Bucket', 'S'))
-      .toThrow(/not valid JSON/);
+  it('accepts a YAML template body (CFn-aware codec preserves shorthand intrinsics)', () => {
+    const { body, modified, format } = injectRetainPolicies(
+      'Resources:\n  Bucket:\n    Type: AWS::S3::Bucket\n',
+      'S'
+    );
+    expect(modified).toBe(true);
+    expect(format).toBe('yaml');
+    // YAML output retains YAML shape (key: value, not braces / quotes).
+    expect(body).toContain('Type: AWS::S3::Bucket');
+    expect(body).toContain('DeletionPolicy: Retain');
+    expect(body).toContain('UpdateReplacePolicy: Retain');
+  });
+
+  it('throws on a body that is neither valid JSON nor valid YAML', () => {
+    // Unbalanced flow-map inside a YAML block-collection — sniffs as
+    // YAML (first byte is `a`, not `{` / `[`), then fails the YAML
+    // parse with a clear syntax error.
+    expect(() => injectRetainPolicies('a: { foo: bar', 'S')).toThrow(/not a valid CloudFormation/);
   });
 
   it('throws on a template with no Resources section', () => {
@@ -269,6 +284,45 @@ describe('retireCloudFormationStack', () => {
     expect(updatedBody).toContain('"UpdateReplacePolicy": "Retain"');
     expect(waitUpdateMock).toHaveBeenCalledTimes(1);
     expect(waitDeleteMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('runs the full flow inline when the source template is small YAML', async () => {
+    // Small YAML template that fits inline (51,200-byte limit). Mirrors
+    // the JSON inline test above to cover the small-YAML branch.
+    const smallYaml = 'Resources:\n  Bucket:\n    Type: AWS::S3::Bucket\n';
+    const { client, calls } = buildCfnClient({
+      DescribeStacks: { Stacks: [{ StackStatus: 'CREATE_COMPLETE', Capabilities: [] }] },
+      GetTemplate: { TemplateBody: smallYaml },
+      UpdateStack: { StackId: 'arn:aws:cloudformation:...' },
+      DeleteStack: {},
+    });
+
+    const result = await retireCloudFormationStack({
+      cfnStackName: 'SmallYamlStack',
+      cfnClient: client as never,
+      yes: true,
+      stateBucket: 'test-state-bucket',
+    });
+
+    expect(result).toEqual({ outcome: 'retired' });
+    expect(calls.map((c) => c.name)).toEqual([
+      'DescribeStacks',
+      'GetTemplate',
+      'UpdateStack',
+      'DeleteStack',
+    ]);
+    // Confirm inline path (TemplateBody set, no TemplateURL — no S3 upload).
+    const updateCmd = calls.find((c) => c.name === 'UpdateStack')!;
+    expect(updateCmd.input['TemplateBody']).toBeDefined();
+    expect(updateCmd.input['TemplateURL']).toBeUndefined();
+    // The body is the modified YAML (with Retain policies), NOT JSON.
+    const body = String(updateCmd.input['TemplateBody']);
+    expect(body.trimStart().startsWith('{')).toBe(false);
+    expect(body).toContain('Type: AWS::S3::Bucket');
+    expect(body).toContain('DeletionPolicy: Retain');
+    expect(body).toContain('UpdateReplacePolicy: Retain');
+    // S3 was NOT touched on the inline path.
+    expect(s3SendCalls).toEqual([]);
   });
 
   it('skips UpdateStack when the template already has Retain everywhere', async () => {
@@ -418,6 +472,40 @@ describe('retireCloudFormationStack', () => {
     expect(s3SendCalls[1]!.input['Key']).toBe(put.input['Key']);
     // Region resolution actually ran (cached or not).
     expect(resolveBucketRegionMock).toHaveBeenCalledWith('state-bucket', expect.anything());
+  });
+
+  it('uses a .yaml key suffix and YAML content-type when the source template is YAML', async () => {
+    // Big YAML template — same shape as the JSON variant above but
+    // written in YAML so the format-aware upload stamps `.yaml` /
+    // `application/x-yaml` on the transient S3 object.
+    const big =
+      'Resources:\n' +
+      Array.from({ length: 200 }, (_, i) =>
+        `  R${i}:\n    Type: AWS::S3::Bucket\n    Properties:\n      Tag: ${'x'.repeat(400)}\n`
+      ).join('');
+    const { client, calls } = buildCfnClient({
+      DescribeStacks: { Stacks: [{ StackStatus: 'CREATE_COMPLETE', Capabilities: [] }] },
+      GetTemplate: { TemplateBody: big },
+      UpdateStack: { StackId: 'arn:...' },
+      DeleteStack: {},
+    });
+
+    const result = await retireCloudFormationStack({
+      cfnStackName: 'BigYamlStack',
+      cfnClient: client as never,
+      yes: true,
+      stateBucket: 'state-bucket',
+    });
+
+    expect(result).toEqual({ outcome: 'retired' });
+    const put = s3SendCalls.find((c) => c.name === 'PutObject')!;
+    expect(String(put.input['Key'])).toMatch(/^cdkd-migrate-tmp\/BigYamlStack\/\d+\.yaml$/);
+    expect(put.input['ContentType']).toBe('application/x-yaml');
+    const updateCmd = calls.find((c) => c.name === 'UpdateStack')!;
+    const url = String(updateCmd.input['TemplateURL']);
+    expect(url).toMatch(
+      /^https:\/\/state-bucket\.s3\.eu-west-1\.amazonaws\.com\/cdkd-migrate-tmp\/BigYamlStack\/\d+\.yaml$/
+    );
   });
 
   it('still deletes the uploaded template when UpdateStack fails (cleanup is in finally)', async () => {

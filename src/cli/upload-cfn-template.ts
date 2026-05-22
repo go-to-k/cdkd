@@ -1,5 +1,6 @@
 import { S3Client, PutObjectCommand, DeleteObjectCommand } from '@aws-sdk/client-s3';
 import { resolveBucketRegion } from '../utils/aws-region-resolver.js';
+import type { TemplateFormat } from './yaml-cfn.js';
 
 /**
  * CloudFormation `TemplateBody` hard limit (51,200 bytes). Templates larger
@@ -70,6 +71,13 @@ export interface UploadCfnTemplateArgs {
    * stack is the right grouping for triage.
    */
   stackName: string;
+  /**
+   * Source template format. Drives the S3 key extension and `Content-Type`
+   * so a YAML-authored template stays YAML in the transient upload and
+   * CloudFormation reads it as such. Defaults to `'json'` for back-compat
+   * with the original JSON-only upload path.
+   */
+  format?: TemplateFormat;
   s3ClientOpts?: CfnUploadS3ClientOpts;
 }
 
@@ -96,7 +104,7 @@ export interface UploadCfnTemplateArgs {
 export async function uploadCfnTemplate(
   args: UploadCfnTemplateArgs
 ): Promise<{ url: string; cleanup: () => Promise<void> }> {
-  const { bucket, body, stackName, s3ClientOpts } = args;
+  const { bucket, body, stackName, format, s3ClientOpts } = args;
   const region = await resolveBucketRegion(bucket, {
     ...(s3ClientOpts?.profile && { profile: s3ClientOpts.profile }),
     ...(s3ClientOpts?.credentials && { credentials: s3ClientOpts.credentials }),
@@ -110,14 +118,18 @@ export async function uploadCfnTemplate(
   // re-runs the command twice in quick succession against the same stack.
   // The key shape is intentionally human-grep-able — leftovers (if cleanup
   // fails) point straight at the offending stack name.
-  const key = `${MIGRATE_TMP_PREFIX}/${stackName}/${Date.now()}.json`;
+  // The extension + Content-Type mirror the source template format so a
+  // YAML-authored template stays YAML on the wire.
+  const ext = format === 'yaml' ? 'yaml' : 'json';
+  const contentType = format === 'yaml' ? 'application/x-yaml' : 'application/json';
+  const key = `${MIGRATE_TMP_PREFIX}/${stackName}/${Date.now()}.${ext}`;
   try {
     await s3.send(
       new PutObjectCommand({
         Bucket: bucket,
         Key: key,
         Body: body,
-        ContentType: 'application/json',
+        ContentType: contentType,
       })
     );
   } catch (err) {
