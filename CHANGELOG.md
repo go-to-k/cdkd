@@ -1,3 +1,10 @@
+## [0.132.1](https://github.com/go-to-k/cdkd/compare/v0.132.0...v0.132.1) (2026-05-22)
+
+
+### Bug Fixes
+
+* **hooks:** pr-review-gate parses PR number from the LAST 'gh pr merge' ([#508](https://github.com/go-to-k/cdkd/issues/508)) ([8de2b70](https://github.com/go-to-k/cdkd/commit/8de2b70e5b3f6f3e320f6c74bc3c63ffd3aae5f5))
+
 # [0.132.0](https://github.com/go-to-k/cdkd/compare/v0.131.0...v0.132.0) (2026-05-22)
 
 
