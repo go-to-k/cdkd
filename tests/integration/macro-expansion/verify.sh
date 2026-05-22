@@ -78,7 +78,7 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 echo "[verify] step 2: cdkd deploy ${STACK} (expect macro expansion log line)"
-${CLI} deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --force --verbose 2>&1 | tee "${DEPLOY_LOG}"
+${CLI} deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --verbose 2>&1 | tee "${DEPLOY_LOG}"
 if ! grep -F "[macros] Expanding CloudFormation macros" "${DEPLOY_LOG}" > /dev/null; then
   echo "[verify] FAIL: expected '[macros] Expanding CloudFormation macros' line in deploy log"
   exit 1
