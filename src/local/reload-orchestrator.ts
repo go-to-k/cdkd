@@ -285,6 +285,7 @@ function specSignature(spec: ContainerSpec): string {
       runtime: spec.lambda.runtime,
       containerHost: spec.containerHost,
       debugPort: spec.debugPort ?? null,
+      tmpfs: spec.tmpfs ?? null,
     });
   }
   return JSON.stringify({
@@ -297,6 +298,7 @@ function specSignature(spec: ContainerSpec): string {
     env: spec.env,
     containerHost: spec.containerHost,
     debugPort: spec.debugPort ?? null,
+    tmpfs: spec.tmpfs ?? null,
   });
 }
 
