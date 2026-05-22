@@ -257,4 +257,213 @@ describe('assumeRoleForCrossAccountStateRead', () => {
     expect(a).toBe(b);
     expect(mockStsSend).toHaveBeenCalledTimes(1);
   });
+
+  // ---------------------------------------------------------------------------
+  // MUST-FIX 1: STS credential expiration check + safety buffer
+  // ---------------------------------------------------------------------------
+
+  it('refreshes credentials when cached entry has expired (past Expiration)', async () => {
+    const expiredAt = new Date(Date.now() - 60_000); // already expired 1 minute ago
+    mockStsSend
+      .mockResolvedValueOnce({
+        Credentials: {
+          AccessKeyId: 'ASIA-old',
+          SecretAccessKey: 'old-secret',
+          SessionToken: 'old-session',
+          Expiration: expiredAt,
+        },
+      })
+      .mockResolvedValueOnce({
+        Credentials: {
+          AccessKeyId: 'ASIA-new',
+          SecretAccessKey: 'new-secret',
+          SessionToken: 'new-session',
+          Expiration: new Date(Date.now() + 3600_000),
+        },
+      });
+
+    const first = await assumeRoleForCrossAccountStateRead(
+      'arn:aws:iam::123456789012:role/r',
+    );
+    expect(first.accessKeyId).toBe('ASIA-old');
+
+    const second = await assumeRoleForCrossAccountStateRead(
+      'arn:aws:iam::123456789012:role/r',
+    );
+    expect(second.accessKeyId).toBe('ASIA-new');
+    expect(mockStsSend).toHaveBeenCalledTimes(2);
+  });
+
+  it('refreshes credentials when cached entry is within the 60-second safety buffer', async () => {
+    // Expiration is 30 seconds in the future — inside the 60s buffer so
+    // we should refresh rather than return the soon-to-expire creds.
+    const aboutToExpire = new Date(Date.now() + 30_000);
+    mockStsSend
+      .mockResolvedValueOnce({
+        Credentials: {
+          AccessKeyId: 'ASIA-buffer',
+          SecretAccessKey: 'buffer-secret',
+          SessionToken: 'buffer-session',
+          Expiration: aboutToExpire,
+        },
+      })
+      .mockResolvedValueOnce({
+        Credentials: {
+          AccessKeyId: 'ASIA-buffer-refreshed',
+          SecretAccessKey: 'refreshed-secret',
+          SessionToken: 'refreshed-session',
+          Expiration: new Date(Date.now() + 3600_000),
+        },
+      });
+
+    await assumeRoleForCrossAccountStateRead('arn:aws:iam::123456789012:role/buf');
+    const second = await assumeRoleForCrossAccountStateRead(
+      'arn:aws:iam::123456789012:role/buf',
+    );
+
+    expect(second.accessKeyId).toBe('ASIA-buffer-refreshed');
+    expect(mockStsSend).toHaveBeenCalledTimes(2);
+  });
+
+  it('reuses cached credentials when Expiration is far in the future', async () => {
+    const farFuture = new Date(Date.now() + 3600_000); // 1 hour out
+    mockStsSend.mockResolvedValueOnce({
+      Credentials: {
+        AccessKeyId: 'ASIA-fresh',
+        SecretAccessKey: 'fresh-secret',
+        SessionToken: 'fresh-session',
+        Expiration: farFuture,
+      },
+    });
+
+    const a = await assumeRoleForCrossAccountStateRead(
+      'arn:aws:iam::123456789012:role/fresh',
+    );
+    const b = await assumeRoleForCrossAccountStateRead(
+      'arn:aws:iam::123456789012:role/fresh',
+    );
+
+    expect(a).toBe(b);
+    // Only ONE STS hop because the cached creds are valid.
+    expect(mockStsSend).toHaveBeenCalledTimes(1);
+  });
+
+  it('reuses cached credentials when Expiration is undefined (defensive)', async () => {
+    // STS always returns Expiration in practice but the field is
+    // technically optional on the SDK type; treat undefined as
+    // "still valid" so we don't re-AssumeRole every call.
+    mockStsSend.mockResolvedValueOnce({
+      Credentials: {
+        AccessKeyId: 'ASIA-noexp',
+        SecretAccessKey: 'secret',
+        SessionToken: 'token',
+        // no Expiration
+      },
+    });
+
+    const a = await assumeRoleForCrossAccountStateRead(
+      'arn:aws:iam::123456789012:role/noexp',
+    );
+    const b = await assumeRoleForCrossAccountStateRead(
+      'arn:aws:iam::123456789012:role/noexp',
+    );
+
+    expect(a).toBe(b);
+    expect(mockStsSend).toHaveBeenCalledTimes(1);
+  });
+
+  // ---------------------------------------------------------------------------
+  // MUST-FIX 2: cache eviction on rejection + MUST-FIX 3: rejection tests
+  // ---------------------------------------------------------------------------
+
+  it('does NOT pin the cache to a rejection — subsequent call re-issues STS', async () => {
+    // First call rejects (e.g. transient throttle).
+    mockStsSend.mockRejectedValueOnce(
+      new Error('AccessDenied: User is not authorized to perform sts:AssumeRole'),
+    );
+    // Second call succeeds.
+    mockStsSend.mockResolvedValueOnce({
+      Credentials: {
+        AccessKeyId: 'ASIA-recovered',
+        SecretAccessKey: 'recovered-secret',
+        SessionToken: 'recovered-session',
+        Expiration: new Date(Date.now() + 3600_000),
+      },
+    });
+
+    await expect(
+      assumeRoleForCrossAccountStateRead('arn:aws:iam::123456789012:role/retry'),
+    ).rejects.toThrow(/AssumeRole into .* failed/);
+
+    // The cache MUST have been evicted by now, so the next call retries.
+    const recovered = await assumeRoleForCrossAccountStateRead(
+      'arn:aws:iam::123456789012:role/retry',
+    );
+
+    expect(recovered.accessKeyId).toBe('ASIA-recovered');
+    expect(mockStsSend).toHaveBeenCalledTimes(2);
+  });
+
+  it('concurrent rejections share the SAME in-flight promise (no double STS call)', async () => {
+    let rejectSts: ((err: unknown) => void) | undefined;
+    mockStsSend.mockReturnValueOnce(
+      new Promise((_resolve, reject) => {
+        rejectSts = reject;
+      }),
+    );
+
+    const p1 = assumeRoleForCrossAccountStateRead(
+      'arn:aws:iam::123456789012:role/concurrent-fail',
+    );
+    const p2 = assumeRoleForCrossAccountStateRead(
+      'arn:aws:iam::123456789012:role/concurrent-fail',
+    );
+
+    // Both callers see the SAME pending STS call.
+    expect(mockStsSend).toHaveBeenCalledTimes(1);
+
+    const stsErr = new Error('AccessDenied: trust policy mismatch');
+    rejectSts?.(stsErr);
+
+    // Both reject with the trust-policy-hint-wrapped error.
+    await expect(p1).rejects.toThrow(/AssumeRole into .* failed: AccessDenied/);
+    await expect(p2).rejects.toThrow(/AssumeRole into .* failed: AccessDenied/);
+
+    // Still only one STS call observed.
+    expect(mockStsSend).toHaveBeenCalledTimes(1);
+  });
+
+  // ---------------------------------------------------------------------------
+  // NICE-TO-HAVE 9: trust-policy hint wrapping
+  // ---------------------------------------------------------------------------
+
+  it('wraps STS errors with the trust-policy / cross-stack-references hint', async () => {
+    const original = new Error(
+      'AccessDenied: User: arn:aws:iam::111:role/cdkd-deployer is not authorized to perform: sts:AssumeRole on resource: arn:aws:iam::222:role/cross-acct',
+    );
+    mockStsSend.mockRejectedValueOnce(original);
+
+    await expect(
+      assumeRoleForCrossAccountStateRead('arn:aws:iam::222:role/cross-acct'),
+    ).rejects.toThrow(/trust-policy/i);
+
+    // Same call, fresh: assert full message shape including the docs pointer.
+    mockStsSend.mockRejectedValueOnce(original);
+    await expect(
+      assumeRoleForCrossAccountStateRead('arn:aws:iam::222:role/cross-acct'),
+    ).rejects.toThrow(/docs\/cross-stack-references\.md/);
+  });
+
+  it('chains the original STS error as `cause` on the trust-policy wrapper', async () => {
+    const original = new Error('sts:AssumeRole denied');
+    mockStsSend.mockRejectedValueOnce(original);
+
+    try {
+      await assumeRoleForCrossAccountStateRead('arn:aws:iam::333:role/cause-chain');
+      throw new Error('Expected throw');
+    } catch (err) {
+      expect(err).toBeInstanceOf(Error);
+      expect((err as Error & { cause?: unknown }).cause).toBe(original);
+    }
+  });
 });

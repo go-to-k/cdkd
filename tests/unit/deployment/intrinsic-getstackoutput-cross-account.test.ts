@@ -240,6 +240,23 @@ describe('Fn::GetStackOutput cross-account RoleArn', () => {
     // 2 S3 SDK calls total: GetBucketLocation + GetObject
     expect(mockS3Send).toHaveBeenCalledTimes(2);
 
+    // MUST-FIX 4: assert the S3 calls hit the right bucket + state key.
+    // Pre-fix the test only verified result equality, leaving the
+    // bucket-naming convention (`cdkd-state-{accountId}`) and the state
+    // key layout (`cdkd/{stackName}/{region}/state.json`) silently
+    // un-asserted.
+    const s3Cmds = mockS3Send.mock.calls.map((call) => call[0]);
+    const getBucketLocationCmd = s3Cmds.find(
+      (c) => c.constructor.name === 'GetBucketLocationCommand',
+    );
+    expect(getBucketLocationCmd).toBeDefined();
+    expect(getBucketLocationCmd?.input.Bucket).toBe(PRODUCER_BUCKET);
+
+    const getObjectCmd = s3Cmds.find((c) => c.constructor.name === 'GetObjectCommand');
+    expect(getObjectCmd).toBeDefined();
+    expect(getObjectCmd?.input.Bucket).toBe(PRODUCER_BUCKET);
+    expect(getObjectCmd?.input.Key).toBe('cdkd/Producer/us-east-1/state.json');
+
     // The S3Client used to read state was constructed in the bucket's
     // region with the assumed credentials.
     const cfgs = s3ClientFactory.mock.calls.map((call) => call[0]) as Array<{
@@ -486,6 +503,90 @@ describe('Fn::GetStackOutput cross-account RoleArn', () => {
         buildContext(),
       ),
     ).rejects.toThrow(/RoleArn must be a literal string/);
+  });
+
+  // SHOULD-FIX 7: --state-prefix propagation through the cross-account branch.
+  // The resolver reads `context.stateBackend?.prefix ?? 'cdkd'` so a consumer
+  // running `cdkd deploy --state-prefix custom-prefix` should hit the
+  // producer's bucket at `custom-prefix/{stack}/{region}/state.json`.
+  it('propagates a custom state prefix from context.stateBackend into the cross-account state key', async () => {
+    mockStsSend.mockResolvedValueOnce({
+      Credentials: {
+        AccessKeyId: 'ASIA-prefix',
+        SecretAccessKey: 'prefix-secret',
+        SessionToken: 'prefix-session',
+      },
+    });
+    mockS3Send.mockResolvedValueOnce({ LocationConstraint: PRODUCER_BUCKET_REGION });
+    mockS3Send.mockResolvedValueOnce({
+      Body: bodyOf(
+        happyPathState('Producer', 'us-east-1', { Out: 'custom-prefix-value' }),
+      ),
+      ETag: '"e"',
+    });
+
+    const fakeBackend = {
+      bucket: 'consumer-bucket',
+      prefix: 'custom-prefix',
+      getState: vi.fn(),
+    };
+
+    const resolver = new IntrinsicFunctionResolver('us-east-1');
+    const result = await resolver.resolve(
+      {
+        'Fn::GetStackOutput': {
+          StackName: 'Producer',
+          OutputName: 'Out',
+          Region: 'us-east-1',
+          RoleArn: PRODUCER_ROLE,
+        },
+      },
+      buildContext({
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        stateBackend: fakeBackend as any,
+      }),
+    );
+
+    expect(result).toBe('custom-prefix-value');
+
+    // The GetObject must hit the producer's bucket at the consumer's
+    // custom prefix — NOT the default `cdkd/...` prefix.
+    const s3Cmds = mockS3Send.mock.calls.map((call) => call[0]);
+    const getObjectCmd = s3Cmds.find((c) => c.constructor.name === 'GetObjectCommand');
+    expect(getObjectCmd).toBeDefined();
+    expect(getObjectCmd?.input.Key).toBe('custom-prefix/Producer/us-east-1/state.json');
+  });
+
+  it('defaults to `cdkd` prefix when context.stateBackend is undefined', async () => {
+    mockStsSend.mockResolvedValueOnce({
+      Credentials: {
+        AccessKeyId: 'ASIA-default',
+        SecretAccessKey: 'default-secret',
+        SessionToken: 'default-session',
+      },
+    });
+    mockS3Send.mockResolvedValueOnce({ LocationConstraint: PRODUCER_BUCKET_REGION });
+    mockS3Send.mockResolvedValueOnce({
+      Body: bodyOf(happyPathState('Producer', 'us-east-1', { Out: 'default' })),
+      ETag: '"e"',
+    });
+
+    const resolver = new IntrinsicFunctionResolver('us-east-1');
+    await resolver.resolve(
+      {
+        'Fn::GetStackOutput': {
+          StackName: 'Producer',
+          OutputName: 'Out',
+          Region: 'us-east-1',
+          RoleArn: PRODUCER_ROLE,
+        },
+      },
+      buildContext(), // no stateBackend
+    );
+
+    const s3Cmds = mockS3Send.mock.calls.map((call) => call[0]);
+    const getObjectCmd = s3Cmds.find((c) => c.constructor.name === 'GetObjectCommand');
+    expect(getObjectCmd?.input.Key).toBe('cdkd/Producer/us-east-1/state.json');
   });
 
   it('cross-account RoleArn is NOT treated as self-reference even when stackName + region match consumer', async () => {

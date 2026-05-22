@@ -33,8 +33,27 @@ export interface AwsCredentials {
  * credentials are global — assumed credentials work against any region's
  * service endpoint. The downstream S3 client built from these credentials
  * picks its own region via `GetBucketLocation`.
+ *
+ * **Expiration handling**: on every cache hit, the cached credentials'
+ * `expiration` is compared against `Date.now()` with a 60-second safety
+ * buffer to avoid the "STS expires 1-2s early due to clock skew" race.
+ * Expired entries are evicted and a fresh AssumeRole is issued.
+ *
+ * **Rejection handling**: when the in-flight promise rejects (e.g.
+ * transient STS throttle, AccessDenied), the cache entry is evicted so a
+ * subsequent caller will retry. Without this, a single transient failure
+ * would pin the rest of the deploy to the same error.
  */
 const crossAccountCredentialsCache = new Map<string, Promise<AwsCredentials>>();
+
+/**
+ * Safety buffer applied when checking whether cached credentials are still
+ * valid. STS occasionally reports `Expiration` 1-2 seconds AFTER the moment
+ * the token actually stops working (clock skew between AWS's auth plane and
+ * the local machine), so we evict the cache entry one minute BEFORE the
+ * recorded expiration to keep long-running deploys safe.
+ */
+const CRED_EXPIRY_SAFETY_MS = 60_000;
 
 /**
  * Reset the cross-account credentials cache. Used by tests to isolate cases;
@@ -89,16 +108,48 @@ export function parseIamRoleArn(roleArn: string): { partition: string; accountId
  * the cached credentials are valid for the STS session lifetime (default
  * 1 hour) which dwarfs the typical deploy duration.
  *
- * **Stale-cache recovery.** If the cached promise rejected (e.g. transient
- * STS error), the rejection is left in the cache so concurrent callers
- * fail uniformly — but the next *new* RoleArn (or a manual
- * `clearCrossAccountCredentialsCache()` in tests) will retry. A future
- * follow-up may add per-entry expiry-aware refresh; today's 1-hour STS
- * window vs. typical deploy times makes it unnecessary.
+ * **Cache miss / refresh paths.** On every call we look up the cached
+ * entry. If it exists AND its `Expiration` is still further in the
+ * future than {@link CRED_EXPIRY_SAFETY_MS}, we return it. Otherwise the
+ * entry is evicted and a fresh AssumeRole hop runs — important for
+ * deploys longer than the 1-hour STS session window (multi-stack
+ * `--all` runs, big Custom-Resource trees, etc.).
+ *
+ * **Rejection handling.** When the underlying STS call throws (e.g.
+ * transient throttle, AccessDenied, trust policy mismatch), the cache
+ * entry is evicted INSIDE the IIFE before the error propagates, so a
+ * subsequent caller will retry the AssumeRole hop rather than getting
+ * pinned to the same rejection. Concurrent first-time callers still
+ * share the SAME in-flight promise (so a single failure surfaces
+ * uniformly), but the next caller after rejection gets a clean slate.
  */
 export async function assumeRoleForCrossAccountStateRead(roleArn: string): Promise<AwsCredentials> {
   const cached = crossAccountCredentialsCache.get(roleArn);
-  if (cached) return cached;
+  if (cached) {
+    // Concurrent callers MUST share the same in-flight promise —
+    // including its rejection. We propagate cached.then's outcome
+    // directly: on resolve, check the expiration and either return
+    // the creds or fall through to a fresh AssumeRole; on reject,
+    // the cached promise's error surfaces uniformly to every concurrent
+    // caller rather than cascading retries within the same call.
+    // Subsequent calls (after the rejection / expiration) will see
+    // an evicted cache entry and trigger a fresh STS hop.
+    const cachedCreds = await cached;
+    // Cached entry is still valid if either:
+    //   (a) no expiration was recorded (defensive — STS always returns
+    //       Expiration in practice but the type is optional), OR
+    //   (b) the recorded expiration is still further in the future
+    //       than our safety buffer.
+    if (
+      !cachedCreds.expiration ||
+      Date.now() < cachedCreds.expiration.getTime() - CRED_EXPIRY_SAFETY_MS
+    ) {
+      return cachedCreds;
+    }
+    // Expired (or within the safety buffer) — evict and fall through
+    // to the fresh AssumeRole path below.
+    crossAccountCredentialsCache.delete(roleArn);
+  }
 
   const promise = (async (): Promise<AwsCredentials> => {
     const logger = getLogger().child('role-arn');
@@ -106,13 +157,30 @@ export async function assumeRoleForCrossAccountStateRead(roleArn: string): Promi
 
     const sts = new STSClient({});
     try {
-      const response = await sts.send(
-        new AssumeRoleCommand({
-          RoleArn: roleArn,
-          RoleSessionName: `cdkd-xacc-${Date.now()}`,
-          DurationSeconds: 3600,
-        })
-      );
+      let response;
+      try {
+        response = await sts.send(
+          new AssumeRoleCommand({
+            RoleArn: roleArn,
+            RoleSessionName: `cdkd-xacc-${Date.now()}`,
+            DurationSeconds: 3600,
+          })
+        );
+      } catch (err) {
+        // Wrap STS errors with a trust-policy hint — the most common
+        // cross-account misconfiguration is the producer's role not
+        // allowing the consumer's principal in its trust policy, and
+        // the raw SDK error ("AccessDenied: User ... is not authorized
+        // to perform: sts:AssumeRole on resource: ...") is opaque to
+        // anyone who hasn't seen it before.
+        const message = err instanceof Error ? err.message : String(err);
+        throw new Error(
+          `AssumeRole into ${roleArn} failed: ${message}. ` +
+            `If this is a trust-policy issue, the producer's role must allow sts:AssumeRole ` +
+            `from the consumer's principal. See docs/cross-stack-references.md for the trust-policy template.`,
+          { cause: err instanceof Error ? err : undefined }
+        );
+      }
       if (!response.Credentials) {
         throw new Error(
           `AssumeRole for cross-account Fn::GetStackOutput returned no credentials (RoleArn=${roleArn})`
@@ -138,7 +206,18 @@ export async function assumeRoleForCrossAccountStateRead(roleArn: string): Promi
     } finally {
       sts.destroy();
     }
-  })();
+  })().catch((err) => {
+    // Evict the cache entry on rejection so subsequent calls retry the
+    // STS hop instead of getting pinned to a transient failure. The
+    // identity check (=== promise) guards against an edge case where a
+    // concurrent caller has already started a fresh AssumeRole after
+    // detecting expiration — in that case we don't want to clobber the
+    // new entry.
+    if (crossAccountCredentialsCache.get(roleArn) === promise) {
+      crossAccountCredentialsCache.delete(roleArn);
+    }
+    throw err;
+  });
 
   crossAccountCredentialsCache.set(roleArn, promise);
   return promise;
