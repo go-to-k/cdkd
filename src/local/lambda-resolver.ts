@@ -85,8 +85,30 @@ interface ResolvedLambdaBase {
   ephemeralStorageMb?: number;
 }
 
-export interface ResolvedLambdaLayer {
-  /** CFn logical ID of the `AWS::Lambda::LayerVersion` resource. */
+/**
+ * One entry of a Lambda's resolved `Properties.Layers`. Two shapes:
+ *
+ *   - `kind: 'asset'` — same-stack `AWS::Lambda::LayerVersion`
+ *     reference (the original PR 6 path). `assetPath` is the absolute
+ *     directory under `cdk.out` ready to bind-mount at `/opt`.
+ *   - `kind: 'arn'` — pre-existing literal-ARN entry the CDK template
+ *     points at directly (AWS Lambda Powertools, Datadog Extension,
+ *     shared internal layers, cross-account / cross-region references).
+ *     The layer ZIP is NOT yet on disk; the CLI materializes it via
+ *     `materializeLayerFromArn(...)` (issue #448) right before the
+ *     docker container starts. Carrying the parsed ARN fields here
+ *     keeps the resolver pure-functional (no AWS SDK calls) and lets
+ *     the materializer be tested independently.
+ */
+export type ResolvedLambdaLayer = ResolvedAssetLambdaLayer | ResolvedArnLambdaLayer;
+
+export interface ResolvedAssetLambdaLayer {
+  kind: 'asset';
+  /**
+   * CFn logical ID of the `AWS::Lambda::LayerVersion` resource.
+   * Shared field name with the `kind: 'arn'` variant so callers can
+   * read a uniform identifier without first narrowing the union.
+   */
   logicalId: string;
   /**
    * Absolute path on disk to the layer's unzipped asset directory. Will
@@ -96,6 +118,32 @@ export interface ResolvedLambdaLayer {
    * NOT inspect the contents, just hands the directory to docker.
    */
   assetPath: string;
+}
+
+export interface ResolvedArnLambdaLayer {
+  kind: 'arn';
+  /**
+   * Pseudo-logical-id for log lines — set to the literal ARN so
+   * iteration code like `layers.map((l) => l.logicalId)` works
+   * uniformly across both variants without per-kind narrowing.
+   */
+  logicalId: string;
+  /**
+   * Full literal ARN as it appeared in the template
+   * (`arn:aws:lambda:<region>:<account>:layer:<name>:<version>`). Kept
+   * verbatim alongside `logicalId` because callers (the materializer)
+   * need the canonical ARN string for SDK calls and the per-kind
+   * branch is the only place where the difference matters.
+   */
+  arn: string;
+  /** Region segment extracted from the ARN (e.g. `us-east-1`). */
+  region: string;
+  /** Account ID segment extracted from the ARN (12 digits). */
+  accountId: string;
+  /** Layer name segment (the `:layer:<name>:` middle). */
+  name: string;
+  /** Numeric version segment, as a string for `LayerName:Version` joins. */
+  version: string;
 }
 
 export interface ResolvedZipLambda extends ResolvedLambdaBase {
@@ -687,16 +735,23 @@ function resolveAssetCodePath(
  * bind mounts at the same target so cdkd cannot rely on overlay
  * layering.
  *
- * **Out of scope (hard-errors)**:
+ * **Same-stack handling** (`{Ref: <Id>}` / `{Fn::GetAtt: [<Id>, 'Ref']}`):
  *
- *   - Literal ARN strings (`arn:aws:lambda:...`) — these are external /
- *     pre-existing layers (no asset on disk to mount) including
- *     cross-account / cross-region.
- *   - Same-stack refs that don't point at an `AWS::Lambda::LayerVersion`
- *     resource — almost always a typo'd logical ID.
- *   - Same-stack refs to a `LayerVersion` whose `Metadata['aws:asset:path']`
- *     is missing — the layer's content is `S3Bucket` / `S3Key` from
- *     outside cdk.out and there's no local directory to bind-mount.
+ *   - Refs that don't point at an `AWS::Lambda::LayerVersion` resource
+ *     hard-error — almost always a typo'd logical ID.
+ *   - Refs to a `LayerVersion` whose `Metadata['aws:asset:path']` is
+ *     missing hard-error — the layer's content is `S3Bucket` / `S3Key`
+ *     from outside cdk.out and there's no local directory to bind-mount.
+ *
+ * **Literal-ARN handling** (issue #448): entries shaped like the string
+ * `arn:aws:lambda:<region>:<account>:layer:<name>:<version>` are parsed
+ * into a `{kind: 'arn', ...}` resolved layer. The actual
+ * `lambda:GetLayerVersion` + presigned-URL download + unzip happens
+ * later in the CLI (`materializeLayerFromArn(...)`), which can optionally
+ * `sts:AssumeRole` into the layer's account when the dev's default
+ * credentials cannot read it. Covers AWS-published public layers (Lambda
+ * Powertools, Datadog Extension, etc.) and cross-account / cross-region
+ * shared layers.
  */
 export function resolveLambdaLayers(
   stack: StackInfo,
@@ -716,12 +771,32 @@ export function resolveLambdaLayers(
   const out: ResolvedLambdaLayer[] = [];
   for (let i = 0; i < layers.length; i++) {
     const entry: unknown = layers[i];
+
+    // Literal-ARN entry (issue #448) — recognized before the
+    // logical-ID lookup so users who reference AWS-published layers
+    // (Lambda Powertools etc.) or cross-account / cross-region shared
+    // layers bypass the same-stack resource scan.
+    if (typeof entry === 'string') {
+      const parsed = parseLayerVersionArn(entry);
+      if (!parsed) {
+        throw new LocalInvokeResolutionError(
+          `Lambda '${logicalId}' has a Layers entry [${i}] cdkd cannot resolve locally: literal string '${entry}'. ` +
+            'Expected a same-stack Ref / Fn::GetAtt to an AWS::Lambda::LayerVersion ' +
+            'OR a literal layer-version ARN of the form ' +
+            'arn:aws:lambda:<region>:<account>:layer:<name>:<version>.'
+        );
+      }
+      out.push({ kind: 'arn', logicalId: parsed.arn, ...parsed });
+      continue;
+    }
+
     const layerLogicalId = pickLayerLogicalId(entry);
     if (!layerLogicalId) {
       throw new LocalInvokeResolutionError(
         `Lambda '${logicalId}' has a Layers entry [${i}] cdkd cannot resolve locally: ${describeLayerEntry(entry)}. ` +
-          'Only same-stack Ref / Fn::GetAtt to an AWS::Lambda::LayerVersion are supported in v1; ' +
-          'cross-account / cross-region / pre-existing-ARN layers are deferred to a follow-up PR.'
+          'Expected a same-stack Ref / Fn::GetAtt to an AWS::Lambda::LayerVersion ' +
+          'OR a literal layer-version ARN of the form ' +
+          'arn:aws:lambda:<region>:<account>:layer:<name>:<version>.'
       );
     }
 
@@ -740,9 +815,41 @@ export function resolveLambdaLayers(
     }
 
     const assetPath = resolveAssetCodePath(stack, layerLogicalId, layerResource);
-    out.push({ logicalId: layerLogicalId, assetPath });
+    out.push({ kind: 'asset', logicalId: layerLogicalId, assetPath });
   }
   return out;
+}
+
+/**
+ * Parse a Lambda layer-version ARN string into its segments.
+ *
+ * Returns `undefined` for anything that does not match the strict
+ * `arn:aws:lambda:<region>:<account>:layer:<name>:<version>` shape so
+ * the caller can produce a clearer error than a silent
+ * misinterpretation of hand-edited templates. The partition segment
+ * accepts `aws` / `aws-cn` / `aws-us-gov` so GovCloud / China-region
+ * ARNs work without code changes.
+ *
+ * Exported for unit testing.
+ */
+export function parseLayerVersionArn(
+  input: string
+): { arn: string; region: string; accountId: string; name: string; version: string } | undefined {
+  // Region segment accepts up to two interior `<word>-` chunks before
+  // the numeric suffix so GovCloud (`us-gov-west-1`) / China
+  // (`cn-north-1`) / standard (`us-east-1`) regions all match.
+  const m =
+    /^arn:(aws|aws-cn|aws-us-gov):lambda:([a-z]{2}-(?:[a-z]+-){1,2}\d+):(\d{12}):layer:([A-Za-z0-9_-]+):(\d+)$/.exec(
+      input
+    );
+  if (!m) return undefined;
+  return {
+    arn: input,
+    region: m[2]!,
+    accountId: m[3]!,
+    name: m[4]!,
+    version: m[5]!,
+  };
 }
 
 /**

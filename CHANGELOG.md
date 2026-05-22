@@ -1,3 +1,10 @@
+# [0.125.0](https://github.com/go-to-k/cdkd/compare/v0.124.0...v0.125.0) (2026-05-22)
+
+
+### Features
+
+* **local-invoke:** accept literal layer ARNs (cross-account / cross-region) — closes [#448](https://github.com/go-to-k/cdkd/issues/448) ([#491](https://github.com/go-to-k/cdkd/issues/491)) ([9c30f0e](https://github.com/go-to-k/cdkd/commit/9c30f0e4905cfc02f102a034c84c5f5dcc3a0561))
+
 # [0.124.0](https://github.com/go-to-k/cdkd/compare/v0.123.0...v0.124.0) (2026-05-22)
 
 
