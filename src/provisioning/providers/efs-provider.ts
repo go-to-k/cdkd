@@ -134,7 +134,7 @@ export class EFSProvider implements ResourceProvider {
           new ResourceUpdateNotSupportedError(
             resourceType,
             logicalId,
-            'EFS AccessPoint is recreated on property changes; re-deploy with cdkd deploy --replace, or destroy + redeploy the stack'
+            'AWS EFS AccessPoint has no in-place update API — there is no UpdateAccessPoint command; every property change requires DeleteAccessPoint + CreateAccessPoint. Re-deploy with cdkd deploy --replace, or destroy + redeploy the stack.'
           )
         );
       default:
@@ -170,7 +170,7 @@ export class EFSProvider implements ResourceProvider {
         throw new ResourceUpdateNotSupportedError(
           resourceType,
           logicalId,
-          `EFS FileSystem ${key} is immutable; re-deploy with cdkd deploy --replace, or destroy + redeploy the stack`
+          `AWS EFS FileSystem ${key} is immutable on AWS — UpdateFileSystem does not accept ${key}; the property is fixed at creation. Re-deploy with cdkd deploy --replace, or destroy + redeploy the stack.`
         );
       }
     }
