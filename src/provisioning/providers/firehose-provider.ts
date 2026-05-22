@@ -381,12 +381,16 @@ export class FirehoseProvider implements ResourceProvider {
   }
 
   /**
-   * Firehose delivery streams are treated as immutable by cdkd. Most
-   * destination-config changes require replacement, and AWS's
-   * `UpdateDestination` API surface is deep enough that the deploy engine's
-   * immutable-property replacement path covers the common cases more
-   * reliably. `cdkd drift --revert` therefore surfaces a clear "use
-   * --replace or re-deploy" message instead of silently no-op'ing.
+   * Firehose delivery streams are treated as immutable by cdkd. AWS DOES
+   * provide an `UpdateDestination` API, but the per-destination shape
+   * matrix (Extended S3 / Redshift / OpenSearch / Splunk / HttpEndpoint /
+   * Iceberg / etc.) is deep enough that the deploy engine's immutable-
+   * property replacement path covers the common cases more reliably.
+   * Treating the type as fully immutable for `cdkd drift --revert` is
+   * the conservative choice; users who want in-place destination updates
+   * should re-deploy with `cdkd deploy --replace` so the new shape is
+   * applied via a fresh `CreateDeliveryStream`. Tracked as a follow-up
+   * to issue (#443).
    */
   update(
     logicalId: string,
@@ -399,7 +403,7 @@ export class FirehoseProvider implements ResourceProvider {
       new ResourceUpdateNotSupportedError(
         resourceType,
         logicalId,
-        'Firehose delivery streams are recreated on property changes; re-deploy with cdkd deploy --replace, or destroy + redeploy the stack'
+        'AWS::KinesisFirehose::DeliveryStream in-place update is not implemented in cdkd; AWS provides UpdateDestination but the per-destination shape matrix is large. Re-deploy with cdkd deploy --replace, or destroy + redeploy the stack.'
       )
     );
   }

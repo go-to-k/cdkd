@@ -4,6 +4,12 @@ import { getCurrentStackOutputBuffer } from './stack-context.js';
 
 /**
  * ANSI color codes
+ *
+ * Kept internal — `ConsoleLogger.formatMessage` references these for the
+ * verbose/compact mode level prefixes. For inline color wrapping in
+ * production code, import from `./colors.js` instead (which lives in a
+ * separate module so unit tests that mock `logger.ts` don't strip color
+ * helpers as a side effect).
  */
 const colors = {
   reset: '\x1b[0m',

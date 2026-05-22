@@ -1,3 +1,52 @@
+# [0.121.0](https://github.com/go-to-k/cdkd/compare/v0.120.0...v0.121.0) (2026-05-22)
+
+
+### Features
+
+* **logger:** rich color output + replace hero GIF with side-by-side demo ([#486](https://github.com/go-to-k/cdkd/issues/486)) ([9dee8dc](https://github.com/go-to-k/cdkd/commit/9dee8dcddcd5b7075309005e923dc517b8b1557f))
+
+# [0.120.0](https://github.com/go-to-k/cdkd/compare/v0.119.0...v0.120.0) (2026-05-22)
+
+
+### Features
+
+* **local-start-api:** REST v1 IAM authorizer SigV4 signature verification ([#447](https://github.com/go-to-k/cdkd/issues/447)) ([#484](https://github.com/go-to-k/cdkd/issues/484)) ([b1a379c](https://github.com/go-to-k/cdkd/commit/b1a379c107b6797e6903c4fee67655300b177884))
+
+# [0.119.0](https://github.com/go-to-k/cdkd/compare/v0.118.0...v0.119.0) (2026-05-22)
+
+
+### Features
+
+* **local-start-api:** cognito multi-pool federation ([#488](https://github.com/go-to-k/cdkd/issues/488)) ([64a479a](https://github.com/go-to-k/cdkd/commit/64a479a91a7d0af3fdf33fa924d8029196035f34))
+
+# [0.118.0](https://github.com/go-to-k/cdkd/compare/v0.117.2...v0.118.0) (2026-05-21)
+
+
+### Features
+
+* **local:** cross-account / cross-region ECR pull ([#485](https://github.com/go-to-k/cdkd/issues/485)) ([de4e889](https://github.com/go-to-k/cdkd/commit/de4e889d929754d8d729298ab31ff57772efb6ed))
+
+## [0.117.2](https://github.com/go-to-k/cdkd/compare/v0.117.1...v0.117.2) (2026-05-21)
+
+
+### Bug Fixes
+
+* **dynamodb-globaltable:** propagate Tags to cross-region replicas on create ([#441](https://github.com/go-to-k/cdkd/issues/441)) ([#472](https://github.com/go-to-k/cdkd/issues/472)) ([c97af8e](https://github.com/go-to-k/cdkd/commit/c97af8e1dcb33f0b3a8463d5da0e389d65338cb1))
+
+## [0.117.1](https://github.com/go-to-k/cdkd/compare/v0.117.0...v0.117.1) (2026-05-21)
+
+
+### Bug Fixes
+
+* **providers:** clarify architectural update() rejections + implement AppSync in-place update ([#443](https://github.com/go-to-k/cdkd/issues/443)) ([#479](https://github.com/go-to-k/cdkd/issues/479)) ([9f937c1](https://github.com/go-to-k/cdkd/commit/9f937c17fdcd1c9058f6277886b74a2c26f494e2))
+
+# [0.117.0](https://github.com/go-to-k/cdkd/compare/v0.116.1...v0.117.0) (2026-05-21)
+
+
+### Features
+
+* **local:** honor Lambda EphemeralStorage.Size via --tmpfs ([#478](https://github.com/go-to-k/cdkd/issues/478)) ([a7aa542](https://github.com/go-to-k/cdkd/commit/a7aa542a2180e8a378bdb49dd6430b8165da3115))
+
 ## [0.116.1](https://github.com/go-to-k/cdkd/compare/v0.116.0...v0.116.1) (2026-05-21)
 
 

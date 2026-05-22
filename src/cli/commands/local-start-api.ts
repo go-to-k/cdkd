@@ -56,7 +56,11 @@ import {
   type ApiServerGroup,
 } from '../../local/api-server-grouping.js';
 import { resolveEnvVars, type EnvOverrideFile } from '../../local/env-resolver.js';
-import { resolveLambdaLayers, type ResolvedLambdaLayer } from '../../local/lambda-resolver.js';
+import {
+  extractEphemeralStorageMb,
+  resolveLambdaLayers,
+  type ResolvedLambdaLayer,
+} from '../../local/lambda-resolver.js';
 import { matchStacks } from '../stack-matcher.js';
 import { buildCorsConfigByApiId, type CorsConfig } from '../../local/cors-handler.js';
 import {
@@ -77,6 +81,7 @@ import {
   buildJwksUrlFromIssuer,
   createJwksCache,
 } from '../../local/cognito-jwt.js';
+import { defaultCredentialsLoader, type CredentialsLoader } from '../../local/sigv4-verify.js';
 import { singleFlight } from '../../utils/single-flight.js';
 
 interface LocalStartApiOptions {
@@ -128,6 +133,13 @@ interface LocalStartApiOptions {
    * is preserved when the flag is unset.
    */
   fromState: boolean;
+  /**
+   * Opt-in: allow AWS_IAM SigV4 requests that cannot be cryptographically
+   * verified (foreign access-key-id, or no local AWS credentials) to
+   * pass through with a placeholder principalId. Default `false` (fail-
+   * closed). Mirrors the `--allow-unverified-sigv4` CLI flag.
+   */
+  allowUnverifiedSigv4?: boolean;
   /**
    * S3 bucket holding cdkd state. Used only when `--from-state` is set.
    * Falls back to `CDKD_STATE_BUCKET` env / `cdk.json` / the default
@@ -256,6 +268,12 @@ async function localStartApiCommand(
   const authorizerCache = createAuthorizerCache();
   const jwksCache = createJwksCache();
   const jwksWarnedUrls = new Set<string>();
+  // #447: SigV4 verifier state for `AuthorizationType: 'AWS_IAM'` routes.
+  // The credentials loader is constructed eagerly but the credential
+  // chain itself is only hit on the first IAM-protected request — see
+  // `defaultCredentialsLoader` for the caching contract.
+  let sigV4CredentialsLoader: CredentialsLoader | undefined;
+  const sigV4WarnedForeignIds = new Set<string>();
 
   /**
    * One synth + discover + build pass. Returns the next-state
@@ -491,6 +509,24 @@ async function localStartApiCommand(
   // reload would be noisy; we emit this once at initial boot only.
   warnVpcConfigLambdas(initialMaterial.routes, initialMaterial.stacks ?? []);
 
+  // #447: AWS_IAM-protected routes warn at startup. The local server
+  // verifies SigV4 signatures only — IAM policy evaluation (resource /
+  // action / condition) is NOT emulated.
+  //
+  // The credentials loader is ALWAYS constructed at boot (not gated on
+  // the initial template having IAM routes) so that hot-reload
+  // (`--watch`) paths that ADD a new IAM route after boot have the
+  // loader already wired up. The loader is internally lazy
+  // (`defaultCredentialsLoader()` memoizes the actual STSClient +
+  // credential resolution until first call), so unused boots pay zero
+  // cost. Pre-fix the loader was conditionally constructed at this
+  // point only when the initial template had IAM routes, which caused
+  // post-hot-reload IAM routes to hit the http-server's defensive
+  // "no SigV4 credentials loader configured — denying" deny path with
+  // no explanation. PR #484 review MAJOR.
+  sigV4CredentialsLoader = defaultCredentialsLoader();
+  warnIamRoutes(initialMaterial.routes);
+
   // RIE invoke timeout: 2x the slowest Lambda's Timeout, floor 30s.
   let maxTimeoutSec = 0;
   for (const spec of initialMaterial.specs.values()) {
@@ -549,6 +585,9 @@ async function localStartApiCommand(
       authorizerCache,
       jwksCache,
       jwksWarnedUrls,
+      sigV4CredentialsLoader,
+      sigV4WarnedForeignIds,
+      sigV4AllowUnverified: options.allowUnverifiedSigv4 === true,
     });
     servers.push({ group, server: started });
     if (basePort !== 0) nextPort += 1;
@@ -797,7 +836,13 @@ async function prewarmJwks(
     const auth = entry.authorizer;
     if (!auth) continue;
     if (auth.kind === 'cognito') {
-      urls.add(buildCognitoJwksUrl(auth.region, auth.userPoolId));
+      // Multi-pool federation: pre-warm JWKS for EVERY pool in
+      // ProviderARNs[], so issuer-matched verification at request time
+      // doesn't pay a cold-start latency on the first request to each
+      // tenant's pool.
+      for (const pool of auth.pools) {
+        urls.add(buildCognitoJwksUrl(pool.region, pool.userPoolId));
+      }
     } else if (auth.kind === 'jwt') {
       const url =
         auth.region && auth.userPoolId
@@ -852,6 +897,39 @@ function warnVpcConfigLambdas(
       break;
     }
   }
+}
+
+/**
+ * Walk the discovered routes for `AuthorizationType: 'AWS_IAM'` and emit
+ * a one-line warn naming the affected routes. Returns `true` when at
+ * least one IAM route is present so the caller wires the SigV4
+ * credentials loader. Re-runs across hot reloads are silent — the warn
+ * fires only at initial boot (matches `warnVpcConfigLambdas`'s policy).
+ *
+ * Implementation note: signature verification only — IAM policy
+ * evaluation (resource / action / condition) is NOT emulated. See
+ * `src/local/sigv4-verify.ts` and the help text in `docs/cli-reference.md`.
+ */
+function warnIamRoutes(routesWithAuth: readonly RouteWithAuth[]): boolean {
+  const logger = getLogger();
+  const iamRoutes: string[] = [];
+  for (const entry of routesWithAuth) {
+    if (entry.authorizer?.kind === 'iam') {
+      iamRoutes.push(entry.route.declaredAt);
+    }
+  }
+  if (iamRoutes.length === 0) return false;
+  logger.warn(
+    `${iamRoutes.length} route(s) declare AuthorizationType: AWS_IAM — cdkd local start-api ` +
+      `verifies SigV4 signatures against your local AWS credentials, but does NOT emulate IAM ` +
+      `policy evaluation (resource / action / condition rules). Signature-verified callers reach ` +
+      `the handler under their own identity; downstream authorization is the dev's responsibility. ` +
+      `See docs/cli-reference.md (cdkd local start-api — AWS_IAM authorizer) for details.`
+  );
+  for (const declaredAt of iamRoutes) {
+    logger.warn(`  - ${declaredAt}`);
+  }
+  return true;
 }
 
 /**
@@ -1026,6 +1104,18 @@ async function buildContainerSpec(args: {
     dockerEnv['NODE_OPTIONS'] = `--inspect-brk=0.0.0.0:${debugPort}`;
   }
 
+  // Issue #440 — Lambda EphemeralStorage.Size: when the function's
+  // template declared `EphemeralStorage`, plumb the configured `/tmp`
+  // cap through to every cold-start of this Lambda's warm pool so
+  // the local container's `/tmp` matches the deployed function's
+  // sized tmpfs. Resolved here (once at server boot) rather than at
+  // acquire-time because the value is template-static for the
+  // server's lifetime. Applies to BOTH ZIP and IMAGE Lambdas.
+  const tmpfs =
+    lambda.ephemeralStorageMb !== undefined
+      ? { target: '/tmp', sizeMb: lambda.ephemeralStorageMb }
+      : undefined;
+
   if (lambda.kind === 'zip') {
     const spec: ContainerSpec = {
       kind: 'zip',
@@ -1035,9 +1125,11 @@ async function buildContainerSpec(args: {
       containerHost,
       ...(optDir !== undefined && { optDir }),
       ...(debugPort !== undefined && { debugPort }),
+      ...(tmpfs !== undefined && { tmpfs }),
     };
     return spec;
   }
+
   const spec: ContainerSpec = {
     kind: 'image',
     lambda,
@@ -1054,6 +1146,7 @@ async function buildContainerSpec(args: {
     env: dockerEnv,
     containerHost,
     ...(debugPort !== undefined && { debugPort }),
+    ...(tmpfs !== undefined && { tmpfs }),
   };
   return spec;
 }
@@ -1203,6 +1296,17 @@ interface ResolvedStartApiLambdaBase {
    * cast structurally valid in the container-pool spec.
    */
   layers: ResolvedLambdaLayer[];
+  /**
+   * `Properties.EphemeralStorage.Size` (issue #440), MiB. Parsed via
+   * the shared `extractEphemeralStorageMb` helper so the CFn-range
+   * validation (reject > 10240) matches `cdkd local invoke`. Plumbed
+   * into the warm container's `--tmpfs /tmp:size=Nm` so handlers in
+   * the start-api server see the same sized `/tmp` cap they would on
+   * the deployed function. Applies to BOTH ZIP and IMAGE Lambdas —
+   * Docker `--tmpfs` overlays inside any container image just like on
+   * the public base images. Undefined when the property is absent.
+   */
+  ephemeralStorageMb?: number;
 }
 
 interface ResolvedStartApiZipLambda extends ResolvedStartApiLambdaBase {
@@ -1292,6 +1396,7 @@ export function resolveLambdaByLogicalId(
     // invoke` so the warm container pool gets layer support out of
     // the box.
     const layers = resolveLambdaLayers(stack, logicalId, props);
+    const ephemeralStorageMb = extractEphemeralStorageMb(props, logicalId);
     return {
       kind: 'zip',
       stack,
@@ -1304,6 +1409,7 @@ export function resolveLambdaByLogicalId(
       codePath,
       layers,
       ...(inlineCode !== undefined && { inlineCode }),
+      ...(ephemeralStorageMb !== undefined && { ephemeralStorageMb }),
     };
   }
   throw new Error(
@@ -1386,6 +1492,11 @@ function resolveImageLambda(args: {
     }
   }
 
+  // Issue #440 — EphemeralStorage.Size applies to container Lambdas
+  // too; AWS accepts it on `lambda.DockerImageFunction`. Parse via the
+  // shared helper for CFn-range validation parity with the ZIP branch.
+  const ephemeralStorageMb = extractEphemeralStorageMb(props, logicalId);
+
   return {
     kind: 'image',
     stack,
@@ -1397,6 +1508,7 @@ function resolveImageLambda(args: {
     imageConfig,
     architecture,
     layers: [],
+    ...(ephemeralStorageMb !== undefined && { ephemeralStorageMb }),
   };
 }
 
@@ -1963,7 +2075,7 @@ function parseDebugPort(raw: string): number {
 export function createLocalStartApiCommand(): Command {
   const startApi = new Command('start-api')
     .description(
-      'Run a long-running local HTTP server that maps API Gateway routes (REST v1, HTTP API, Function URL) to Lambda invocations against the AWS Lambda Runtime Interface Emulator (Docker required). Supports Lambda TOKEN/REQUEST authorizers and Cognito User Pool / HTTP v2 JWT authorizers; when JWKS is unreachable, JWT authorizers fall back to pass-through (every token accepted) with a warn line — local dev fallback. VPC-config Lambdas run locally and surface a warn line at startup; their containers do NOT get attached to the deployed VPC subnets, so calls to private RDS / ElastiCache will fail.'
+      'Run a long-running local HTTP server that maps API Gateway routes (REST v1, HTTP API, Function URL) to Lambda invocations against the AWS Lambda Runtime Interface Emulator (Docker required). Supports Lambda TOKEN/REQUEST authorizers, Cognito User Pool / HTTP v2 JWT authorizers, and REST v1 AWS_IAM (SigV4 signature verification only — IAM policy evaluation is NOT emulated; see docs/local-emulation.md). When JWKS is unreachable, JWT authorizers fall back to pass-through (every token accepted) with a warn line — local dev fallback. VPC-config Lambdas run locally and surface a warn line at startup; their containers do NOT get attached to the deployed VPC subnets, so calls to private RDS / ElastiCache will fail.'
     )
     .argument(
       '[target]',
@@ -2041,6 +2153,16 @@ export function createLocalStartApiCommand(): Command {
         '--stack-region <region>',
         'Region of the cdkd state record to read (used with --from-state when the same stack name has state in multiple regions).'
       )
+    )
+    .addOption(
+      new Option(
+        '--allow-unverified-sigv4',
+        'Opt-in: allow AWS_IAM SigV4 requests that cannot be cryptographically verified ' +
+          '(foreign access-key-id, OR no local AWS credentials configured) to pass through ' +
+          'with a placeholder principalId. DEFAULT off — fail-closed so unauthenticated bypass ' +
+          'is impossible against `event.requestContext.identity.accessKey`-trusting handler code. ' +
+          'Use only in dev loops where you understand the risk.'
+      ).default(false)
     )
     .action(withErrorHandling(localStartApiCommand));
 

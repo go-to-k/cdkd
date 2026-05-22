@@ -6,7 +6,7 @@ Drop-in CDK CLI for existing CDK apps — faster deploys via AWS SDK instead of 
 - **Up to 15x faster deploys than the AWS CDK CLI (CloudFormation)**
 - **Local dev for CDK apps** — invoke Lambdas, serve API Gateway routes, and run ECS tasks directly from your CDK code, no `cdk synth → sam local` round-trip.
 
-![cdkd demo](https://github.com/user-attachments/assets/0128730d-186d-4bd3-abea-aabc80ba4dd5)
+![cdk deploy vs cdkd deploy — side-by-side, 35s recording, real AWS deploy. cdkd finishes while cdk is still creating its CloudFormation changeset.](assets/cdk-vs-cdkd.gif)
 
 **cdkd complements the AWS CDK CLI rather than replacing it.** Use cdkd in dev/test for rapid iteration and SAM-style local execution; use the AWS CDK CLI in production for full CloudFormation tooling. Bidirectional migration is supported — [import an existing CloudFormation stack](#importing-existing-resources) into cdkd for iteration, or [export back to CloudFormation](#exporting-a-stack-back-to-cloudformation) when ready for production.
 
@@ -457,7 +457,9 @@ cdkd local start-api --from-state                 # substitute deployed env vars
 One server per discovered API — authorizers, CORS configs, and stage
 variables stay scoped to the owning API. Supports REST v1 + HTTP API +
 Function URL with AWS_PROXY integrations; Lambda TOKEN / REQUEST,
-Cognito User Pool, and HTTP v2 JWT authorizers (JWKS-verified); CORS
+Cognito User Pool, HTTP v2 JWT authorizers (JWKS-verified), and REST v1
+`AuthorizationType: 'AWS_IAM'` (SigV4 signature verification only — IAM
+policy evaluation is not emulated; see `docs/local-emulation.md`); CORS
 preflight (HTTP API v2 `CorsConfiguration` + REST v1 OPTIONS MOCK
 preflight from `defaultCorsPreflightOptions`); hot reload via `--watch`;
 deploy-state-backed env var substitution via `--from-state`.

@@ -93,6 +93,18 @@ interface ContainerSpecBase {
   containerHost: string;
   /** Optional Node.js `--inspect-brk` port. */
   debugPort?: number;
+  /**
+   * Optional sized tmpfs mount for the warm container (issue #440 —
+   * Lambda `Properties.EphemeralStorage.Size`). Resolved ONCE at server
+   * boot from the function's template (same as `optDir` / `codeDir`)
+   * and threaded into every cold-start of this Lambda's pool. Unset
+   * when the template did not declare `EphemeralStorage` — the warm
+   * container's `/tmp` is then whatever the base image provides
+   * (preserves the pre-#440 behavior). Target path is `/tmp`. Applies
+   * to BOTH ZIP and IMAGE Lambdas — Docker `--tmpfs` overlays inside
+   * any container image just like on the public base images.
+   */
+  tmpfs?: { target: string; sizeMb: number };
 }
 
 export interface ZipContainerSpec extends ContainerSpecBase {
@@ -316,6 +328,7 @@ export function createContainerPool(
         host: spec.containerHost,
         name,
         ...(spec.debugPort !== undefined && { debugPort: spec.debugPort }),
+        ...(spec.tmpfs !== undefined && { tmpfs: spec.tmpfs }),
       });
     } else {
       // IMAGE branch (closes #453). The pre-built local tag is on
@@ -325,7 +338,8 @@ export function createContainerPool(
       // the function code at its built-in `/var/task`. AWS layers are
       // baked into the image at build time, not overlaid at runtime,
       // so we never emit a `/opt` mount on this branch (matches the
-      // AWS-side invoke behavior).
+      // AWS-side invoke behavior). `tmpfs` (#440) applies inside any
+      // container image just like on the public base images.
       containerId = await runDetached({
         image: spec.image,
         mounts: [],
@@ -338,6 +352,7 @@ export function createContainerPool(
         ...(spec.entryPoint !== undefined && { entryPoint: spec.entryPoint }),
         ...(spec.workingDir !== undefined && { workingDir: spec.workingDir }),
         ...(spec.debugPort !== undefined && { debugPort: spec.debugPort }),
+        ...(spec.tmpfs !== undefined && { tmpfs: spec.tmpfs }),
       });
     }
     const stopLogStream = streamingEnabled ? streamLogs(containerId) : (): void => undefined;
