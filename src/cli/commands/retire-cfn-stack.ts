@@ -197,11 +197,24 @@ export async function retireCloudFormationStack(
       logger.info(`[3/4] Updating CloudFormation stack with Retain policies...`);
       let updateRan = false;
       try {
+        // Forward existing Parameters via `UsePreviousValue: true` so the
+        // metadata-only Retain injection doesn't fall back to CFn defaults
+        // (which can fail validation when a parameter has no default, or
+        // change resource shape when defaults differ from current values).
+        // Pre-fix this caused UPDATE_ROLLBACK on any source stack with
+        // declared Parameters — surfaced by the `cdkd migrate` integ
+        // (bare-cfn-template.json carries a ResourceSuffix parameter so
+        // re-runs do not collide on physical names).
+        const previousParameters = (stack.Parameters ?? []).map((p) => ({
+          ParameterKey: p.ParameterKey,
+          UsePreviousValue: true,
+        }));
         await cfnClient.send(
           new UpdateStackCommand({
             StackName: cfnStackName,
             ...updateInput,
             Capabilities: capabilities,
+            ...(previousParameters.length > 0 && { Parameters: previousParameters }),
           })
         );
         updateRan = true;

@@ -139,17 +139,22 @@ ${CLI} migrate \
   --verbose
 echo "[verify] step 4 ok: migrate command exited 0"
 
-echo "[verify] step 5: assert generated CDK app exists at ${OUTPUT_DIR}"
-if [ ! -d "${OUTPUT_DIR}" ]; then
-  echo "[verify] FAIL: ${OUTPUT_DIR} does not exist"
+echo "[verify] step 5: assert generated CDK app exists at ${OUTPUT_DIR}/${SOURCE_STACK}"
+# `cdk migrate --output-path <X> --stack-name <Y>` writes the generated app
+# into the `<X>/<Y>` subdirectory (verified empirically against cdk 2.1112.0
+# on 2026-05-22). cdkd's `runMigrateLibrary` returns that subdirectory as
+# `libResult.outputDir` and writes the mapping file there too.
+GENERATED_APP_DIR="${OUTPUT_DIR}/${SOURCE_STACK}"
+if [ ! -d "${GENERATED_APP_DIR}" ]; then
+  echo "[verify] FAIL: ${GENERATED_APP_DIR} does not exist"
   exit 1
 fi
-if [ ! -f "${OUTPUT_DIR}/cdk.json" ]; then
-  echo "[verify] FAIL: ${OUTPUT_DIR}/cdk.json missing — cdk migrate did not generate the app"
+if [ ! -f "${GENERATED_APP_DIR}/cdk.json" ]; then
+  echo "[verify] FAIL: ${GENERATED_APP_DIR}/cdk.json missing — cdk migrate did not generate the app"
   exit 1
 fi
-if [ ! -f "${OUTPUT_DIR}/cdkd-resource-mapping.json" ]; then
-  echo "[verify] FAIL: ${OUTPUT_DIR}/cdkd-resource-mapping.json missing — mapping audit file not written"
+if [ ! -f "${GENERATED_APP_DIR}/cdkd-resource-mapping.json" ]; then
+  echo "[verify] FAIL: ${GENERATED_APP_DIR}/cdkd-resource-mapping.json missing — mapping audit file not written"
   exit 1
 fi
 echo "[verify] step 5 ok: generated CDK app + resource-mapping file present"
