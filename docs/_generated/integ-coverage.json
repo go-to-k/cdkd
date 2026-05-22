@@ -257,6 +257,7 @@
           "literal"
         ],
         "local-start-api": [
+          "l1",
           "l2"
         ],
         "local-start-api-container": [
@@ -284,6 +285,7 @@
           "l2"
         ],
         "local-start-api": [
+          "l1",
           "l2"
         ],
         "local-start-api-container": [
