@@ -112,6 +112,48 @@ if [[ "${NET_COUNT}" -lt 2 ]]; then
 fi
 echo "    OK: ${NET_COUNT} per-replica networks present"
 
+echo "==> Asserting per-replica subnet isolation (each network has a distinct /24 in 169.254.170-253)"
+# Regression guard for the per-replica subnet allocator in
+# ecs-service-runner.ts (`170 + (index % 84)`). The pre-PR assertion
+# only counted networks, so a collapsed allocator that put every
+# replica on the same /24 would still pass. Walk every network's
+# IPAM.Config[0].Subnet and assert (a) they are all distinct AND (b)
+# each is in the expected 169.254.<170-253>.0/24 range that
+# `buildReplicaSubnet(index)` allocates.
+NET_IDS=$(docker network ls --filter "name=cdkd-local-" --format '{{.ID}}')
+declare -a SUBNETS=()
+for net_id in ${NET_IDS}; do
+  SUBNET=$(docker network inspect "${net_id}" --format '{{(index .IPAM.Config 0).Subnet}}' 2>/dev/null || echo "")
+  if [[ -z "${SUBNET}" ]]; then
+    echo "FAIL: docker network ${net_id} has no IPAM.Config[0].Subnet"
+    docker network inspect "${net_id}"
+    exit 1
+  fi
+  echo "    network ${net_id}: subnet=${SUBNET}"
+  # Assert the subnet falls inside the allocator's range. The allocator
+  # emits `169.254.<170 + (index % 84)>.0/24` so the third octet must
+  # be in 170..253 inclusive.
+  if [[ ! "${SUBNET}" =~ ^169\.254\.([0-9]+)\.0/24$ ]]; then
+    echo "FAIL: subnet ${SUBNET} for network ${net_id} is not in the expected 169.254.X.0/24 shape"
+    exit 1
+  fi
+  OCTET="${BASH_REMATCH[1]}"
+  if (( OCTET < 170 || OCTET > 253 )); then
+    echo "FAIL: subnet ${SUBNET} third octet ${OCTET} is outside the allocator range 170..253"
+    exit 1
+  fi
+  SUBNETS+=("${SUBNET}")
+done
+
+# Assert every subnet is distinct (no duplicates). Sort + uniq + count.
+UNIQUE_SUBNET_COUNT=$(printf '%s\n' "${SUBNETS[@]}" | sort -u | wc -l | tr -d ' ')
+if [[ "${UNIQUE_SUBNET_COUNT}" -ne "${#SUBNETS[@]}" ]]; then
+  echo "FAIL: detected duplicate subnets across replicas — subnet allocator regression"
+  printf '    %s\n' "${SUBNETS[@]}"
+  exit 1
+fi
+echo "    OK: ${UNIQUE_SUBNET_COUNT} distinct subnets across ${#SUBNETS[@]} networks"
+
 echo "==> Sending SIGTERM to cdkd ($(echo $CDKD_PID))"
 kill -TERM "${CDKD_PID}"
 

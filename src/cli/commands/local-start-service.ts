@@ -113,7 +113,7 @@ async function localStartServiceCommand(
       }
     },
     (err) =>
-      getLogger().debug(
+      getLogger().warn(
         `service cleanup failed: ${err instanceof Error ? err.message : String(err)}`
       )
   );

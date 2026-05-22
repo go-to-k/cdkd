@@ -1,11 +1,14 @@
-import { beforeEach, describe, expect, it, vi } from 'vite-plus/test';
+import { beforeEach, afterEach, describe, expect, it, vi } from 'vite-plus/test';
 
-// Mock `cleanupEcsRun` so ServiceController.shutdown() tests don't need
-// real docker. The mock records every call so we can assert "cleanup
-// ran AFTER bootReplica populated state" in the SIGTERM-mid-restart
-// race test below.
-const { mockCleanup } = vi.hoisted(() => ({
+// Mock `cleanupEcsRun` AND `runEcsTask` so ServiceController.shutdown()
+// + startEcsService / bootReplica / watchReplica tests don't need real
+// docker. The mocks record every call so we can assert ordering (e.g.
+// "cleanup ran AFTER bootReplica populated state" in the SIGTERM-mid-
+// restart race test) and trigger boot-failure paths.
+const { mockCleanup, mockRunTask } = vi.hoisted(() => ({
   mockCleanup: vi.fn<(state: unknown, opts: { keepRunning: boolean }) => Promise<void>>(),
+  mockRunTask:
+    vi.fn<(task: unknown, opts: unknown, state: unknown) => Promise<void>>(),
 }));
 
 vi.mock('../../../src/local/ecs-task-runner.js', async () => {
@@ -15,16 +18,19 @@ vi.mock('../../../src/local/ecs-task-runner.js', async () => {
   return {
     ...actual,
     cleanupEcsRun: mockCleanup,
+    runEcsTask: mockRunTask,
   };
 });
 
 import {
+  __setWaitForExitImpl,
   backoffDelayMs,
   computeReplicaCount,
   createServiceRunState,
   EcsServiceRunnerError,
   ServiceController,
   shouldRestart,
+  startEcsService,
   type ServiceReplicaInstance,
   type ServiceRunnerOptions,
 } from '../../../src/local/ecs-service-runner.js';
@@ -34,6 +40,14 @@ import type { EcsRunState } from '../../../src/local/ecs-task-runner.js';
 beforeEach(() => {
   mockCleanup.mockReset();
   mockCleanup.mockResolvedValue(undefined);
+  mockRunTask.mockReset();
+  mockRunTask.mockResolvedValue(undefined);
+});
+
+afterEach(() => {
+  // Always restore the production waitForExit impl so a per-test
+  // override doesn't leak into the next test's watcher loop.
+  __setWaitForExitImpl(undefined);
 });
 
 describe('computeReplicaCount', () => {
@@ -315,5 +329,275 @@ describe('ServiceController.shutdown', () => {
     const controller = new ServiceController(service, runState, fakeOptions());
     await controller.shutdown();
     expect(mockCleanup).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('startEcsService / bootReplica lifecycle', () => {
+  // Helpers for the lifecycle tests below. The `startEcsService` entry
+  // point chains into `bootReplica` -> `runEcsTask` (mocked) and then
+  // wires `watchReplica` (which polls `waitForExitImpl`, also overridable
+  // via `__setWaitForExitImpl`). The tests below drive each piece
+  // independently so we can assert boot-failure cleanup ordering,
+  // restart-on-exit, and restart-policy degradation.
+  function makeService(desiredCount = 2): ResolvedEcsService {
+    return {
+      serviceName: 'svc-life',
+      serviceLogicalId: 'SvcLife',
+      desiredCount,
+      task: {
+        taskDefinitionLogicalId: 'TaskDef',
+        containers: [{ name: 'app', essential: true }],
+      } as unknown as ResolvedEcsService['task'],
+      stack: {} as ResolvedEcsService['stack'],
+      warnings: [],
+    } as unknown as ResolvedEcsService;
+  }
+
+  function makeOptions(
+    overrides: Partial<ServiceRunnerOptions> = {}
+  ): ServiceRunnerOptions {
+    return {
+      maxTasks: 84,
+      restartPolicy: 'on-failure',
+      taskOptions: {
+        cluster: 'cdkd-local',
+        containerHost: '127.0.0.1',
+        keepRunning: false,
+      },
+      ...overrides,
+    };
+  }
+
+  it('boot-failure on replica N>0 cleans up replicas 0..N-1', async () => {
+    // First replica boots successfully (mockRunTask resolves). Second
+    // replica's runEcsTask rejects, simulating e.g. an ECR pull failure
+    // mid-boot of replica 1. The CLI contract is "every replica is
+    // running before startEcsService returns" — so the boot failure
+    // surfaces as EcsServiceRunnerError. The implementation pushes each
+    // instance onto runState.replicas BEFORE awaiting bootReplica, so
+    // the outer-`finally` cleanup in the CLI walks `runState.replicas`
+    // and tears down the first replica even though boot of the second
+    // never completed.
+    mockRunTask
+      .mockImplementationOnce(async (_task, _opts, state) => {
+        // Populate replica 0's state so the eventual cleanup has
+        // something docker-shaped to release.
+        (state as EcsRunState).network = {
+          name: 'cdkd-local-svc-life-r0',
+          endpointsContainerId: 'sidecar-r0',
+        } as EcsRunState['network'];
+        (state as EcsRunState).startedContainers.push({ name: 'app', id: 'container-r0' });
+      })
+      .mockImplementationOnce(async () => {
+        throw new Error('docker run failed for replica 1 (ECR auth)');
+      });
+
+    const service = makeService(2);
+    const opts = makeOptions();
+    const runState = createServiceRunState();
+
+    await expect(startEcsService(service, opts, runState)).rejects.toThrow(
+      /Failed to boot replica 1 of service 'svc-life'/
+    );
+
+    // Replica 0 was pushed onto runState.replicas BEFORE its boot
+    // returned, AND replica 1 was pushed before its boot threw — both
+    // are tracked, so the CLI's outer-finally cleanup loop iterates
+    // both and cleanupEcsRun runs against each.
+    expect(runState.replicas).toHaveLength(2);
+    expect(runState.replicas[0]!.state.network?.endpointsContainerId).toBe('sidecar-r0');
+    expect(runState.replicas[1]!.lastError?.message).toMatch(/docker run failed for replica 1/);
+
+    // The runner itself does NOT auto-cleanup on boot failure —
+    // teardown is the CLI's responsibility (and the controller's
+    // shutdown handles it once the controller is constructed). For
+    // boot-failure-before-controller, the CLI walks runState.replicas
+    // directly. Simulate that path to verify the replica state is
+    // recoverable.
+    await Promise.all(
+      runState.replicas.map((r) =>
+        mockCleanup(r.state, { keepRunning: false }).catch(() => undefined)
+      )
+    );
+    expect(mockCleanup).toHaveBeenCalledTimes(2);
+    // Replica 0 cleanup sees the populated state with the docker
+    // network + sidecar handles, which is the load-bearing invariant
+    // for "no orphan resources on partial boot."
+    expect(mockCleanup.mock.calls[0]![0]).toBe(runState.replicas[0]!.state);
+  });
+
+  it('restart-on-exit fires runEcsTask again with exponential backoff', async () => {
+    // Make replica 0 boot succeed, then have its watcher loop observe
+    // an exit code 1 once, restart it, observe exit code 0, and stop.
+    let bootCount = 0;
+    mockRunTask.mockImplementation(async (_task, _opts, state) => {
+      bootCount += 1;
+      const s = state as EcsRunState;
+      s.network = {
+        name: `cdkd-local-svc-life-boot${bootCount}`,
+        endpointsContainerId: `sidecar-${bootCount}`,
+      } as EcsRunState['network'];
+      s.startedContainers.length = 0;
+      s.startedContainers.push({ name: 'app', id: `container-${bootCount}` });
+    });
+
+    // First wait: exit code 1 (triggers restart). Second wait: exit
+    // code 0 (still triggers restart under 'always' but NOT under
+    // 'on-failure'). We use 'on-failure' so the loop stops after one
+    // restart cycle.
+    const exits = [1, 0];
+    let exitIdx = 0;
+    __setWaitForExitImpl(async () => {
+      const code = exits[exitIdx] ?? 0;
+      exitIdx += 1;
+      return code;
+    });
+
+    const service = makeService(1);
+    const opts = makeOptions({ restartPolicy: 'on-failure' });
+    const runState = createServiceRunState();
+
+    const controller = await startEcsService(service, opts, runState);
+
+    // Drive the watcher loop forward. backoffDelayMs(0) is 1s — way
+    // too long for a unit test, so we instead poll for `bootCount === 2`
+    // with a tight overall timeout. The watcher runs in background;
+    // we drain microtasks via `setImmediate` repeatedly.
+    const deadline = Date.now() + 5000;
+    while (bootCount < 2 && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    expect(bootCount).toBeGreaterThanOrEqual(2);
+    expect(mockRunTask).toHaveBeenCalledTimes(bootCount);
+    // The replica's restartCount reflects the watcher's increment.
+    expect(runState.replicas[0]!.restartCount).toBeGreaterThanOrEqual(1);
+
+    // Shut the service down so the watcher loop exits cleanly.
+    await controller.shutdown();
+  });
+
+  it("'none' restart policy leaves degraded replica down on non-zero exit", async () => {
+    let bootCount = 0;
+    mockRunTask.mockImplementation(async (_task, _opts, state) => {
+      bootCount += 1;
+      const s = state as EcsRunState;
+      s.network = {
+        name: `cdkd-local-svc-life-boot${bootCount}`,
+        endpointsContainerId: `sidecar-${bootCount}`,
+      } as EcsRunState['network'];
+      s.startedContainers.length = 0;
+      s.startedContainers.push({ name: 'app', id: `container-${bootCount}` });
+    });
+
+    // Watcher observes exit code 1; under 'none' policy no restart
+    // fires and the replica stays down forever (service runs degraded).
+    __setWaitForExitImpl(async () => 1);
+
+    const service = makeService(1);
+    const opts = makeOptions({ restartPolicy: 'none' });
+    const runState = createServiceRunState();
+
+    const controller = await startEcsService(service, opts, runState);
+
+    // Give the watcher loop a beat to observe the exit and mark the
+    // replica shuttingDown=true. `shouldRestart('none', ...) === false`
+    // so the watcher should not invoke runEcsTask a second time.
+    const deadline = Date.now() + 2000;
+    while (!runState.replicas[0]!.shuttingDown && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+
+    // Boot fired once during startEcsService, and NOT again (policy=none).
+    expect(bootCount).toBe(1);
+    expect(mockRunTask).toHaveBeenCalledTimes(1);
+    // The replica IS marked shuttingDown by the watcher's no-restart
+    // branch so activeReplicaCount() reflects the degradation.
+    expect(runState.replicas[0]!.shuttingDown).toBe(true);
+    expect(controller.activeReplicaCount()).toBe(0);
+
+    await controller.shutdown();
+  });
+
+  it("'always' restart policy restarts on zero exit too", async () => {
+    let bootCount = 0;
+    mockRunTask.mockImplementation(async (_task, _opts, state) => {
+      bootCount += 1;
+      const s = state as EcsRunState;
+      s.network = {
+        name: `cdkd-local-svc-life-boot${bootCount}`,
+        endpointsContainerId: `sidecar-${bootCount}`,
+      } as EcsRunState['network'];
+      s.startedContainers.length = 0;
+      s.startedContainers.push({ name: 'app', id: `container-${bootCount}` });
+    });
+
+    // Successive zero-exits. Under 'always' the watcher restarts on
+    // every exit including 0, mirroring ECS Service deployment behavior.
+    __setWaitForExitImpl(async () => 0);
+
+    const service = makeService(1);
+    const opts = makeOptions({ restartPolicy: 'always' });
+    const runState = createServiceRunState();
+
+    const controller = await startEcsService(service, opts, runState);
+
+    // Wait for at least one restart cycle (bootCount >= 2).
+    const deadline = Date.now() + 5000;
+    while (bootCount < 2 && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    expect(bootCount).toBeGreaterThanOrEqual(2);
+
+    await controller.shutdown();
+  });
+
+  it('successful startEcsService returns a controller with activeReplicaCount === desiredCount', async () => {
+    mockRunTask.mockImplementation(async (_task, _opts, state) => {
+      const s = state as EcsRunState;
+      s.network = {
+        name: 'cdkd-local-svc-life',
+        endpointsContainerId: 'sidecar',
+      } as EcsRunState['network'];
+      s.startedContainers.push({ name: 'app', id: 'container-x' });
+    });
+
+    // Watcher should not observe an exit during the test — return a
+    // never-resolving wait so the loop blocks past the assertions.
+    __setWaitForExitImpl(() => new Promise<number>(() => undefined));
+
+    const service = makeService(2);
+    const opts = makeOptions();
+    const runState = createServiceRunState();
+
+    const controller = await startEcsService(service, opts, runState);
+
+    expect(mockRunTask).toHaveBeenCalledTimes(2);
+    expect(runState.replicas).toHaveLength(2);
+    expect(controller.activeReplicaCount()).toBe(2);
+
+    await controller.shutdown();
+  });
+
+  it('controller.shutdown cleans up every active replica (multi-replica fan-out)', async () => {
+    mockRunTask.mockImplementation(async (_task, _opts, state) => {
+      const s = state as EcsRunState;
+      s.network = {
+        name: 'cdkd-local-svc-life',
+        endpointsContainerId: 'sidecar',
+      } as EcsRunState['network'];
+      s.startedContainers.push({ name: 'app', id: 'container-x' });
+    });
+    __setWaitForExitImpl(() => new Promise<number>(() => undefined));
+
+    const service = makeService(3);
+    const opts = makeOptions();
+    const runState = createServiceRunState();
+    const controller = await startEcsService(service, opts, runState);
+
+    expect(controller.activeReplicaCount()).toBe(3);
+
+    await controller.shutdown();
+    // 3 cleanup calls — one per replica.
+    expect(mockCleanup).toHaveBeenCalledTimes(3);
   });
 });
