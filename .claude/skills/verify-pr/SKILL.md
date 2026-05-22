@@ -170,6 +170,20 @@ Run each check and report pass/fail:
     - Surface the proposals out loud (in chat, or in this PR's body) before merging. If the user agrees, write them in the same PR for code/skill/hook artifacts; memory entries are local to `~/.claude/projects/.../memory/` so they land regardless of PR boundaries.
     - The retrospective is itself one of the items the `verify-pr` marker covers — skipping this step means the marker is set on incomplete work.
 
+11. **Residual review-nit sweep** (mandatory — added 2026-05-22 after a multi-PR session left ~9 reviewer-flagged nits unfiled when the parent declared "session complete")
+    - For every `/review-pr` reviewer agent output during this session (including re-reviews after fix-back), walk the reviewer's "Minor / Nit / Informational" section.
+    - For EACH item there, confirm ONE of the following is true BEFORE setting the `verify-pr` marker:
+      - (a) **Addressed in this PR** — point at the fix commit / file:line that resolves the nit.
+      - (b) **Filed as a follow-up issue** — a GitHub issue exists AND this PR's body references it (e.g. "minor follow-ups in (#515)").
+      - (c) **Explicitly accepted as known cost** — the PR body or a comment names the nit and explains why it's acceptable to ship as-is.
+    - If NONE of (a) / (b) / (c) is true for any nit, file a bundled follow-up issue NOW (one issue per session, listing every uncovered nit) and update the PR body to reference it. Do not set the `verify-pr` marker until every reviewer-flagged item is on one of those three paths.
+    - Also walk the session transcript for **surfaced memory-rule candidates** (surprising traps, repeated friction, "I should remember this for next time" moments). Each MUST be either written as a memory file in `~/.claude/projects/-Users-goto-pc-github-cdkd/memory/` (with a MEMORY.md index entry) OR explicitly de-prioritized in the chat / PR body.
+    - **Auto-close audit** (added 2026-05-22 — counter-trap to the closing-paren disambig convention in memory `feedback_pr_body_no_hash_for_item_numbers.md`):
+      - Read the PR body (`gh pr view <PR> --json body -q .body`). For every `(#N)` parens-form reference, check whether it's adjacent to a close keyword (`closes` / `fixes` / `resolves`, case-insensitive).
+      - If yes: the merge will NOT auto-close the target issue. Either rewrite to parens-free `Closes #N` (auto-close fires), OR add a manual `gh issue close <N>` step to the merge sequence and note it in the PR body.
+      - The mechanical `closes-paren-form-gate.sh` hook ALREADY blocks `gh pr merge` for the `Closes (#N)` pattern — this skill step is the human-readable backup that catches the issue BEFORE the merge attempt.
+    - This step is the structural enforcement of memory `feedback_session_completion_audit_required.md` — claiming "session complete" / "残作業なし" without running this sweep is the exact violation that surfaced this rule.
+
 11. **PR title + body freshness** (skip if no PR exists yet — `/create-pr` will write them from scratch)
     - When a PR has follow-up commits after creation, both the title and body authored at PR-create time often go stale: the title was scoped to the first commit's intent only, and the body may mention reverted features, removed checks, or wrong rationale. Detect and fix both.
     - **Title check**: read `gh pr view <PR> --json title -q .title` and confirm it still describes the union of commits on the branch. If a later commit added a separate concern (e.g. an unrelated fix, an opportunistic refactor), broaden the title. Update via `gh api -X PATCH repos/{owner}/{repo}/pulls/{number} -f title="..."` (NOT `gh pr edit --title`, which currently fails silently due to GraphQL Projects-classic deprecation — see hook `gh-pr-edit-deprecation-gate.sh`).
@@ -218,6 +232,8 @@ Present results as a table:
 | code review (incl. shared-utility callers) | pass/issues found |
 | live-test changed behavior | pass/skipped/issues found |
 | retrospective + rule proposals | done/skipped |
+| residual review-nit sweep (filed / addressed / accepted) | N items / 0 unhandled |
+| auto-close audit (no `Closes (#N)` in body) | clean / N traps fixed |
 | PR title + body freshness | up-to-date/stale (updated)/n-a (no PR yet) |
 
 If all pass, confirm "PR is ready to merge."

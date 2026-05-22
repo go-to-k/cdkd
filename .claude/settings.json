@@ -55,6 +55,13 @@
           },
           {
             "type": "command",
+            "command": ".claude/hooks/closes-paren-form-gate.sh",
+            "if": "Bash(gh pr merge*) or Bash(gh -C * pr merge*)",
+            "timeout": 10,
+            "statusMessage": "Checking PR body for Closes (#N) auto-close trap..."
+          },
+          {
+            "type": "command",
             "command": ".claude/hooks/verify-pr-gate.sh",
             "if": "Bash(gh pr create*) or Bash(gh pr merge*)",
             "timeout": 10,
