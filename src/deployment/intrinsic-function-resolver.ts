@@ -9,10 +9,7 @@ import { S3Client } from '@aws-sdk/client-s3';
 import { getLogger } from '../utils/logger.js';
 import { getAwsClients } from '../utils/aws-clients.js';
 import { stringifyValue } from '../utils/stringify.js';
-import {
-  assumeRoleForCrossAccountStateRead,
-  parseIamRoleArn,
-} from '../utils/role-arn.js';
+import { assumeRoleForCrossAccountStateRead, parseIamRoleArn } from '../utils/role-arn.js';
 import { resolveCrossAccountStateBucket } from '../utils/aws-region-resolver.js';
 import type { CloudFormationTemplate } from '../types/resource.js';
 import type { ResourceState, StateImportEntry } from '../types/state.js';

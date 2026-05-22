@@ -63,9 +63,7 @@ const IAM_ROLE_ARN_RE = /^arn:(aws[a-z0-9-]*):iam::(\d{12}):role\/[\w+=,.@-]+(?:
  *                 structurally-invalid input. The caller is responsible for
  *                 surfacing a clear error message when this returns `null`.
  */
-export function parseIamRoleArn(
-  roleArn: string
-): { partition: string; accountId: string } | null {
+export function parseIamRoleArn(roleArn: string): { partition: string; accountId: string } | null {
   const match = IAM_ROLE_ARN_RE.exec(roleArn);
   if (!match || !match[1] || !match[2]) return null;
   return { partition: match[1], accountId: match[2] };
@@ -98,9 +96,7 @@ export function parseIamRoleArn(
  * follow-up may add per-entry expiry-aware refresh; today's 1-hour STS
  * window vs. typical deploy times makes it unnecessary.
  */
-export async function assumeRoleForCrossAccountStateRead(
-  roleArn: string
-): Promise<AwsCredentials> {
+export async function assumeRoleForCrossAccountStateRead(roleArn: string): Promise<AwsCredentials> {
   const cached = crossAccountCredentialsCache.get(roleArn);
   if (cached) return cached;
 
