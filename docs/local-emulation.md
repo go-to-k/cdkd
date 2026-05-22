@@ -450,16 +450,59 @@ unsupportedness):
 
 | Class | Trigger | Behavior |
 | --- | --- | --- |
-| Normal | AWS_PROXY integration with a resolvable Lambda Arn | Dispatched to the Lambda via the container pool. |
+| Normal AWS_PROXY | AWS_PROXY integration with a resolvable Lambda Arn | Dispatched to the Lambda via the container pool. |
 | Synthetic CORS preflight | REST v1 `HttpMethod: OPTIONS` + `Integration.Type: MOCK` + `IntegrationResponses[].ResponseParameters` carries literal `method.response.header.*` pairs (the shape CDK's `defaultCorsPreflightOptions` synthesizes) | Captured at boot. The HTTP server returns the captured status + headers directly on OPTIONS without invoking any Lambda. |
 | Streaming Function URL | `AWS::Lambda::Url` with `InvokeMode: RESPONSE_STREAM` (issue #467) | Dispatched via the RIE streaming protocol: the request goes out with `Lambda-Runtime-Function-Response-Mode: streaming` and the response body's JSON prelude (`{statusCode, headers, cookies?}` + an 8-NULL-byte separator + raw body) is parsed; the body Readable is piped to the HTTP client with `Transfer-Encoding: chunked`. Note: AWS's local RIE buffers the response (verified empirically against `public.ecr.aws/lambda/nodejs:20`), so curl observes the chunks in one block locally even though cdkd's pipe / chunked-encoding machinery works correctly — real incremental delivery only manifests against the deployed Lambda runtime. |
-| Deferred-error unsupported | Non-AWS_PROXY REST v1 integrations (`MOCK` not matching the CORS preflight subset, `AWS`, `HTTP`, `HTTP_PROXY`); HTTP API v2 service integrations (`IntegrationSubtype` set); WebSocket APIs (`ProtocolType: WEBSOCKET`); Function URLs with `AuthType !== 'NONE'`; routes whose Lambda Arn intrinsic cannot be resolved against the same template (cross-stack / imported references) | Boot continues. The route appears in the route table tagged `[501 Not Implemented]` and a `[warn]` line per route is printed up front. When the route is hit at request time, the HTTP server returns HTTP 501 with `{"message": "Not Implemented", "reason": "<the discovery reason>"}` in the JSON body, without invoking any Lambda. |
+| REST v1 non-AWS_PROXY (closes #457) | `Integration.Type` is one of `MOCK` (non-CORS-preflight), `HTTP_PROXY`, `HTTP`, or `AWS` (Lambda non-proxy). | Dispatched via the per-kind handler in `src/local/rest-v1-integrations.ts`. MOCK / HTTP / AWS apply VTL request + response templates via the hand-rolled engine at `src/local/vtl-engine.ts`. HTTP_PROXY forwards verbatim with `RequestParameters` mappings. AWS Lambda non-proxy uses the same container pool as AWS_PROXY but transforms event payload + response via VTL and routes errors through `IntegrationResponses[].SelectionPattern`. |
+| Deferred-error unsupported | REST v1 AWS integration targeting a non-Lambda service (`:s3:path/...` / `:sqs:action/...` etc.); HTTP_PROXY / HTTP with a non-literal `Uri` (cdkd does not resolve Fn::Sub / Fn::Join in HTTP Uris); HTTP API v2 service integrations (`IntegrationSubtype` set); WebSocket APIs (`ProtocolType: WEBSOCKET`); Function URLs with `AuthType !== 'NONE'`; routes whose Lambda Arn intrinsic cannot be resolved against the same template (cross-stack / imported references) | Boot continues. The route appears in the route table tagged `[501 Not Implemented]` and a `[warn]` line per route is printed up front. When the route is hit at request time, the HTTP server returns HTTP 501 with `{"message": "Not Implemented", "reason": "<the discovery reason>"}` in the JSON body, without invoking any Lambda. |
 | Hard error | Template-structural problems the discovery layer cannot generate a meaningful route from: missing `Integration` on a Method, non-Ref `RestApiId` / `ApiId`, malformed Route `Target`, ParentId chain failures, missing `PathPart`, unresolvable `TargetFunctionArn` on a Function URL | Boot aborts via `RouteDiscoveryError` with every offending route listed in a single message. |
 
 The deferred-error class lets you run the supported subset of an API
-locally even when the CDK app contains MOCK integrations, WebSocket
-routes, or other unimplemented shapes — only the unsupported routes
-themselves return 501; everything else dispatches as normal.
+locally even when the CDK app contains direct AWS-service integrations,
+WebSocket routes, or other unimplemented shapes — only the unsupported
+routes themselves return 501; everything else dispatches as normal.
+
+### REST v1 non-AWS_PROXY integrations (#457)
+
+`cdkd local start-api` emulates all four non-AWS_PROXY REST v1
+integration types end-to-end:
+
+| Type | Behavior | Notes |
+| --- | --- | --- |
+| `MOCK` | Renders `Integration.RequestTemplates['application/json']` (VTL) to extract `{"statusCode": N}`; matches against `IntegrationResponses[].StatusCode`; renders the picked entry's `ResponseTemplates[<content-type>]` (VTL) against an empty input context (`$inputRoot = null`). | When no request template is set, defaults to the entry with no `SelectionPattern`. `ResponseParameters` header literals (`'value'`) apply; mapping expressions (`integration.response.*` / `context.*`) are warn-and-skipped. |
+| `HTTP_PROXY` | Forwards the HTTP request to `Integration.Uri` with `{paramName}` path-placeholder substitution. Honors `Integration.IntegrationHttpMethod`. Applies `Integration.RequestParameters` (header `'literal'` / `method.request.header.X` mappings; querystring / path mappings are recognized but logged-and-skipped — use `{param}` URI substitution instead). | Forwards the upstream body verbatim. `IntegrationResponses[].SelectionPattern` (regex against the upstream status as a string) drives the final HTTP status; `ResponseParameters` applies. |
+| `HTTP` (non-proxy) | HTTP_PROXY + VTL on both directions: `RequestTemplates[<content-type>]` transforms the body before sending; `IntegrationResponses[].ResponseTemplates[<content-type>]` transforms the upstream body before returning. | Same `RequestParameters` semantics as HTTP_PROXY. |
+| `AWS` (Lambda non-proxy) | VTL request template synthesizes the Lambda event payload (parsed as JSON when the rendered template is valid JSON, otherwise passed through as a string — matches AWS-deployed behavior). The Lambda runs in the same warm RIE container pool as AWS_PROXY. Error envelope (`{errorMessage, errorType?, stackTrace?}`) routes through `SelectionPattern` against `errorMessage`. Response template runs with `$inputRoot = <parsed Lambda return value>`. | Direct AWS-service integrations (`Type: 'AWS'` with `Uri` pointing at `:s3:path/...` / `:sqs:action/...` / etc.) are NOT emulated locally — they surface as deferred-501 unsupported routes. Deploy to AWS or pin a public HTTP_PROXY to a mock service. |
+
+The VTL engine at [src/local/vtl-engine.ts](../src/local/vtl-engine.ts)
+implements a hand-rolled minimal subset of AWS API Gateway's VTL spec.
+Supported features:
+
+- Variable references: `$var`, `${var}`, `$obj.field.subField`
+- Built-ins:
+  - `$input.body` — raw request body
+  - `$input.json('$.path')` — JSON-stringified slice (primitives JSON-quoted)
+  - `$input.path('$.path')` — native value
+  - `$input.params()` — `{header, querystring, path}` union
+  - `$input.params('name')` — path > query > header precedence
+  - `$input.params('header').<name>` / `.querystring` / `.path`
+  - `$context.requestId` / `httpMethod` / `resourcePath` / `stage`
+  - `$context.identity.sourceIp` / `userAgent`
+  - `$util.escapeJavaScript(s)` / `base64Encode` / `base64Decode` / `urlEncode` / `urlDecode` / `parseJson`
+- Directives: `#set($var = expr)`, `#if(cond)` / `#elseif` / `#else` / `#end`, `#foreach($x in $list)` / `#end`, `##` line comments
+- Operators: `&&`, `||`, `!`, `==`, `!=`, `<`, `<=`, `>`, `>=`
+- JSONPath subset: `$`, `$.field`, `$.field.sub`, `$.array[index]`, quoted-string bracket keys
+
+**Intentionally NOT supported** (any usage surfaces `VtlEvaluationError`
+with the offending construct named in the message — converted to
+HTTP 502 + reason JSON body at request time):
+
+- Velocity arithmetic operators (`+ - * /`) outside literal concat
+- User-defined `#macro`
+- `#parse` / `#include`
+- Range operator (`[1..5]`)
+- `$velocityCount` and other Velocity context built-ins
+- JSONPath filter expressions (`$..items`, `$.items[?(@.x > 5)]`)
 
 ### Routing precedence
 
@@ -569,8 +612,8 @@ error 501 class.
 
 Other REST v1 MOCK shapes (non-OPTIONS methods, MOCK without literal
 header parameters, MOCK with VTL `RequestTemplates` that produce custom
-bodies) remain in the deferred-error 501 class — emulating arbitrary
-VTL mapping templates is out of scope.
+bodies) are dispatched via the full MOCK handler in #457 — see the
+"REST v1 non-AWS_PROXY integrations" section above.
 
 ### Stage variables
 
@@ -907,8 +950,8 @@ curl --cacert ca.pem \
 | Out of scope | Deferred to |
 | --- | --- |
 | REST v1 IAM authorizer — IAM policy evaluation (resource/action/condition). Signature verification IS implemented. | Out of scope (the local server has no IAM data plane) |
-| REST v1 CORS via Mock OPTIONS integration | Out of scope (use the deployed API) |
-| Custom integration mapping templates | Never (not testable locally) |
+| REST v1 AWS integration with non-Lambda service backend (`:s3:path/...` / `:sqs:action/...` / `:dynamodb:action/...` / etc.) | Future PR — requires per-service SDK clients, IAM credential threading, and a per-service compatibility matrix. v1 emulates Lambda non-proxy AWS integrations only (#457). |
+| VTL features outside the supported subset (arithmetic outside literal concat, `#macro` / `#parse` / `#include`, range operator, `$velocityCount`, JSONPath filter expressions) | Surface as `VtlEvaluationError` → HTTP 502 + reason body. Hand-roll the missing feature in `src/local/vtl-engine.ts` if a real workload needs it. |
 | WebSocket APIs | Never (different protocol) |
 | Throttling / quotas / usage plans / API keys | Never |
 | Per-Lambda concurrency above 4 | Future PR if a real workload needs it |

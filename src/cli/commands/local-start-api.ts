@@ -1708,12 +1708,35 @@ function printRouteTable(routes: readonly RouteWithAuth[]): void {
         ? '[501 Not Implemented]'
         : r.serviceIntegration
           ? `[${r.serviceIntegration.subtype}]`
-          : r.lambdaLogicalId;
+          : r.restV1Integration
+            ? formatRestV1IntegrationLabel(r.restV1Integration)
+            : r.lambdaLogicalId;
     process.stdout.write(
       `  ${r.method.padEnd(methodWidth)}  ${r.pathPattern.padEnd(pathWidth)}  -> ${target}  (${sourceLabel})\n`
     );
   }
   process.stdout.write('\n');
+}
+
+/**
+ * Format the route-table label for a REST v1 non-AWS_PROXY integration.
+ * `MOCK` / `HTTP` / `HTTP_PROXY` show their integration kind directly;
+ * `AWS` (Lambda non-proxy) shows the Lambda logical id with an `[AWS]`
+ * suffix so it's distinguishable from AWS_PROXY rows. Closes #457.
+ */
+function formatRestV1IntegrationLabel(
+  integration: NonNullable<DiscoveredRoute['restV1Integration']>
+): string {
+  switch (integration.kind) {
+    case 'mock':
+      return '[MOCK]';
+    case 'http-proxy':
+      return `[HTTP_PROXY ${integration.uri}]`;
+    case 'http':
+      return `[HTTP ${integration.uri}]`;
+    case 'aws-lambda':
+      return `${integration.lambdaLogicalId} [AWS]`;
+  }
 }
 
 /**

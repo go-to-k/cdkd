@@ -1931,6 +1931,7 @@
         "local-invoke-ruby",
         "local-start-api",
         "local-start-api-container",
+        "local-start-api-rest-v1-non-proxy",
         "log-pipeline",
         "microservices",
         "migrate-from-cfn",
@@ -2038,6 +2039,9 @@
           "l2"
         ],
         "local-start-api-container": [
+          "l2"
+        ],
+        "local-start-api-rest-v1-non-proxy": [
           "l2"
         ],
         "log-pipeline": [

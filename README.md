@@ -460,12 +460,21 @@ cdkd local start-api --from-state                 # substitute deployed env vars
 
 One server per discovered API — authorizers, CORS configs, and stage
 variables stay scoped to the owning API. Supports REST v1 + HTTP API +
-Function URL with AWS_PROXY integrations; Lambda TOKEN / REQUEST,
-Cognito User Pool, HTTP v2 JWT authorizers (JWKS-verified), and REST v1
-`AuthorizationType: 'AWS_IAM'` (SigV4 signature verification only — IAM
-policy evaluation is not emulated; see `docs/local-emulation.md`); CORS
-preflight (HTTP API v2 `CorsConfiguration` + REST v1 OPTIONS MOCK
-preflight from `defaultCorsPreflightOptions`); hot reload via `--watch`;
+Function URL with **AWS_PROXY** integrations AND every REST v1
+non-AWS_PROXY integration kind: **MOCK** (status-code selection via
+request template + response-template VTL), **HTTP_PROXY** (verbatim
+upstream forward with `RequestParameters` mappings), **HTTP**
+(HTTP_PROXY + bidirectional VTL), and **AWS** Lambda non-proxy
+(request + response VTL via the hand-rolled engine at
+`src/local/vtl-engine.ts`).
+Direct AWS-service integrations (S3 / SQS / SNS / DynamoDB / etc.) are
+NOT emulated — deploy to AWS or use HTTP_PROXY to a local mock instead.
+Authorizers: Lambda TOKEN / REQUEST, Cognito User Pool, HTTP v2 JWT
+(JWKS-verified), and REST v1 `AuthorizationType: 'AWS_IAM'` (SigV4
+signature verification only — IAM policy evaluation is not emulated;
+see `docs/local-emulation.md`). CORS preflight (HTTP API v2
+`CorsConfiguration` + REST v1 OPTIONS MOCK preflight from
+`defaultCorsPreflightOptions`); hot reload via `--watch`;
 deploy-state-backed env var substitution via `--from-state`.
 
 Function URL `InvokeMode: RESPONSE_STREAM` is supported (issue #467):
@@ -475,14 +484,14 @@ Note that AWS's local RIE buffers the response — incremental chunk
 delivery only manifests against the deployed Lambda runtime; locally
 the response shape is correct but arrives in one block.
 
-Routes whose integration cdkd cannot emulate (non-AWS_PROXY REST v1
-types other than the MOCK CORS preflight subset, HTTP API v2 service
-integrations, WebSocket APIs, Function URLs with IAM auth, cross-stack
-Lambda Arn references) **do not block boot** — the server starts with
-a per-route `[warn]` summary and returns HTTP 501 + the reason in the
-JSON body if and when the route is hit. This lets you run the rest of
-your API surface locally while the unsupported routes stay on the
-deployed API.
+Routes whose integration cdkd cannot emulate (REST v1 AWS integration
+to a non-Lambda service, HTTP_PROXY / HTTP with non-literal `Uri`, HTTP
+API v2 service integrations, WebSocket APIs, Function URLs with IAM
+auth, cross-stack Lambda Arn references) **do not block boot** — the
+server starts with a per-route `[warn]` summary and returns HTTP 501 +
+the reason in the JSON body if and when the route is hit. This lets
+you run the rest of your API surface locally while the unsupported
+routes stay on the deployed API.
 
 ### `local run-task`
 

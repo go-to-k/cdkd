@@ -39,23 +39,24 @@ Reviewer judgment required per flag — many of these are pure-logic flags adequ
 | Flag | Integ Fixture(s) |
 |---|---|
 | `--dry-run` | [`export`](../tests/integration/export/) |
-| `--force` | [`docdb-neptune`](../tests/integration/docdb-neptune/)<br>[`drift-revert`](../tests/integration/drift-revert/)<br>[`drift-revert-vpc`](../tests/integration/drift-revert-vpc/)<br>[`dynamodb-globaltable`](../tests/integration/dynamodb-globaltable/)<br>[`export`](../tests/integration/export/)<br>[`import-value-strong-ref`](../tests/integration/import-value-strong-ref/)<br>[`local-invoke-from-state`](../tests/integration/local-invoke-from-state/)<br>[`local-run-task-from-state`](../tests/integration/local-run-task-from-state/)<br>[`migrate-from-cfn`](../tests/integration/migrate-from-cfn/)<br>[`remove-protection`](../tests/integration/remove-protection/) |
-| `--output` | [`docdb-neptune`](../tests/integration/docdb-neptune/)<br>[`drift-revert`](../tests/integration/drift-revert/)<br>[`drift-revert-vpc`](../tests/integration/drift-revert-vpc/)<br>[`dynamodb-globaltable`](../tests/integration/dynamodb-globaltable/)<br>[`export`](../tests/integration/export/)<br>[`import-value-strong-ref`](../tests/integration/import-value-strong-ref/)<br>[`local-invoke-from-state`](../tests/integration/local-invoke-from-state/)<br>[`local-run-task-from-state`](../tests/integration/local-run-task-from-state/)<br>[`migrate-from-cfn`](../tests/integration/migrate-from-cfn/)<br>[`remove-protection`](../tests/integration/remove-protection/) |
-| `--region` | [`dynamodb-globaltable`](../tests/integration/dynamodb-globaltable/)<br>[`export`](../tests/integration/export/)<br>[`import-value-strong-ref`](../tests/integration/import-value-strong-ref/)<br>[`local-run-task-from-state`](../tests/integration/local-run-task-from-state/)<br>[`migrate-from-cfn`](../tests/integration/migrate-from-cfn/) |
+| `--force` | [`deletion-policy-retain`](../tests/integration/deletion-policy-retain/)<br>[`diff-intrinsic-target-change`](../tests/integration/diff-intrinsic-target-change/)<br>[`docdb-neptune`](../tests/integration/docdb-neptune/)<br>[`drift-revert`](../tests/integration/drift-revert/)<br>[`drift-revert-vpc`](../tests/integration/drift-revert-vpc/)<br>[`dynamodb-globaltable`](../tests/integration/dynamodb-globaltable/)<br>[`export`](../tests/integration/export/)<br>[`import-value-strong-ref`](../tests/integration/import-value-strong-ref/)<br>[`local-invoke-buildkit`](../tests/integration/local-invoke-buildkit/)<br>[`local-invoke-from-state`](../tests/integration/local-invoke-from-state/)<br>[`local-run-task-from-state`](../tests/integration/local-run-task-from-state/)<br>[`migrate-from-cfn`](../tests/integration/migrate-from-cfn/)<br>[`remove-protection`](../tests/integration/remove-protection/) |
+| `--output` | [`deletion-policy-retain`](../tests/integration/deletion-policy-retain/)<br>[`diff-intrinsic-target-change`](../tests/integration/diff-intrinsic-target-change/)<br>[`docdb-neptune`](../tests/integration/docdb-neptune/)<br>[`drift-revert`](../tests/integration/drift-revert/)<br>[`drift-revert-vpc`](../tests/integration/drift-revert-vpc/)<br>[`dynamodb-globaltable`](../tests/integration/dynamodb-globaltable/)<br>[`export`](../tests/integration/export/)<br>[`import-value-strong-ref`](../tests/integration/import-value-strong-ref/)<br>[`local-invoke-from-state`](../tests/integration/local-invoke-from-state/)<br>[`local-run-task-from-state`](../tests/integration/local-run-task-from-state/)<br>[`migrate-from-cfn`](../tests/integration/migrate-from-cfn/)<br>[`remove-protection`](../tests/integration/remove-protection/) |
+| `--region` | [`deletion-policy-retain`](../tests/integration/deletion-policy-retain/)<br>[`diff-intrinsic-target-change`](../tests/integration/diff-intrinsic-target-change/)<br>[`dynamodb-globaltable`](../tests/integration/dynamodb-globaltable/)<br>[`export`](../tests/integration/export/)<br>[`import-value-strong-ref`](../tests/integration/import-value-strong-ref/)<br>[`local-run-task-from-state`](../tests/integration/local-run-task-from-state/)<br>[`migrate-from-cfn`](../tests/integration/migrate-from-cfn/) |
 | `--remove-protection` | [`dynamodb-globaltable`](../tests/integration/dynamodb-globaltable/)<br>[`remove-protection`](../tests/integration/remove-protection/) |
 | `--resource-timeout` | [`docdb-neptune`](../tests/integration/docdb-neptune/)<br>[`remove-protection`](../tests/integration/remove-protection/) |
 | `--resource-warn-after` | [`remove-protection`](../tests/integration/remove-protection/) |
-| `--state-bucket` | [`docdb-neptune`](../tests/integration/docdb-neptune/)<br>[`drift-revert`](../tests/integration/drift-revert/)<br>[`drift-revert-vpc`](../tests/integration/drift-revert-vpc/)<br>[`dynamodb-globaltable`](../tests/integration/dynamodb-globaltable/)<br>[`export`](../tests/integration/export/)<br>[`import-value-strong-ref`](../tests/integration/import-value-strong-ref/)<br>[`local-invoke-from-state`](../tests/integration/local-invoke-from-state/)<br>[`local-run-task-from-state`](../tests/integration/local-run-task-from-state/)<br>[`remove-protection`](../tests/integration/remove-protection/) |
+| `--state-bucket` | [`deletion-policy-retain`](../tests/integration/deletion-policy-retain/)<br>[`diff-intrinsic-target-change`](../tests/integration/diff-intrinsic-target-change/)<br>[`docdb-neptune`](../tests/integration/docdb-neptune/)<br>[`drift-revert`](../tests/integration/drift-revert/)<br>[`drift-revert-vpc`](../tests/integration/drift-revert-vpc/)<br>[`dynamodb-globaltable`](../tests/integration/dynamodb-globaltable/)<br>[`export`](../tests/integration/export/)<br>[`import-value-strong-ref`](../tests/integration/import-value-strong-ref/)<br>[`local-invoke-from-state`](../tests/integration/local-invoke-from-state/)<br>[`local-run-task-from-state`](../tests/integration/local-run-task-from-state/)<br>[`remove-protection`](../tests/integration/remove-protection/) |
 | `--verbose` | [`docdb-neptune`](../tests/integration/docdb-neptune/)<br>[`drift-revert`](../tests/integration/drift-revert/)<br>[`drift-revert-vpc`](../tests/integration/drift-revert-vpc/)<br>[`dynamodb-globaltable`](../tests/integration/dynamodb-globaltable/)<br>[`export`](../tests/integration/export/)<br>[`remove-protection`](../tests/integration/remove-protection/) |
-| `--yes` | [`export`](../tests/integration/export/)<br>[`migrate-from-cfn`](../tests/integration/migrate-from-cfn/) |
+| `--yes` | [`diff-intrinsic-target-change`](../tests/integration/diff-intrinsic-target-change/)<br>[`export`](../tests/integration/export/)<br>[`migrate-from-cfn`](../tests/integration/migrate-from-cfn/) |
 
-## Long-form flags referenced in integs but NOT declared in src/cli/options.ts (42)
+## Long-form flags referenced in integs but NOT declared in src/cli/options.ts (49)
 
 These are mostly third-party CLI flags (`--query` for `aws` / `--region` for `aws s3 ls` / `--no-paginate` / etc.) OR typos of cdkd flag names. Listed here for visibility — review only if a row matches a cdkd flag with a misspelling.
 
 - `--add-host`
 - `--all`
 - `--bucket`
+- `--build-arg`
 - `--cfn-stack-name`
 - `--container-host`
 - `--content-type`
@@ -71,11 +72,14 @@ These are mostly third-party CLI flags (`--query` for `aws` / `--region` for `aw
 - `--key`
 - `--max-items`
 - `--migrate-from-cloudformation`
+- `--mount`
+- `--name`
 - `--no-build`
 - `--no-pull`
 - `--nologo`
 - `--parameter`
 - `--password-stdin`
+- `--policy-name`
 - `--port`
 - `--prefer-offline`
 - `--pull`
@@ -88,10 +92,13 @@ These are mostly third-party CLI flags (`--query` for `aws` / `--region` for `aw
 - `--resource-id`
 - `--revert`
 - `--rm`
+- `--role-name`
 - `--scalable-dimension`
+- `--secret`
 - `--service-namespace`
 - `--show-toplevel`
 - `--silent`
 - `--stack-name`
 - `--table-name`
+- `--target`
 - `--username`

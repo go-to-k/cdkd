@@ -513,6 +513,13 @@
       ]
     },
     {
+      "name": "local-start-api-rest-v1-non-proxy",
+      "annotated": true,
+      "scenarios": [
+        "local-apigateway-server"
+      ]
+    },
+    {
       "name": "log-pipeline",
       "annotated": true,
       "scenarios": []
@@ -780,7 +787,8 @@
       "description": "`cdkd local start-api` HTTP server with route discovery + per-Lambda warm container pool.",
       "fixtures": [
         "local-start-api",
-        "local-start-api-container"
+        "local-start-api-container",
+        "local-start-api-rest-v1-non-proxy"
       ]
     },
     {
