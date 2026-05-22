@@ -205,6 +205,122 @@ provisioning and persists it to `state.imports`.
 Weak-reference by design. The producer stays deletable independently;
 recording the consumer's reference would defeat that.
 
+### Cross-account `Fn::GetStackOutput` (`RoleArn` argument)
+
+`Fn::GetStackOutput` accepts an optional `RoleArn` to read outputs from
+a producer stack in a sibling AWS account — the canonical multi-account
+pattern (shared-services account exporting platform outputs consumed by
+workload accounts).
+
+```json
+{
+  "Fn::GetStackOutput": {
+    "StackName": "PlatformVpc",
+    "OutputName": "SharedVpcId",
+    "Region": "us-east-1",
+    "RoleArn": "arn:aws:iam::111122223333:role/cdkd-state-reader"
+  }
+}
+```
+
+When `RoleArn` is set, cdkd's resolver:
+
+1. **Parses the role ARN** for the producer's account id via
+   [`parseIamRoleArn`](../src/utils/role-arn.ts). The regex accepts every
+   published AWS partition (`aws`, `aws-us-gov`, `aws-cn`, `aws-iso`,
+   `aws-iso-b`) and role-name path shapes including service-linked roles.
+   Malformed ARNs / IAM user ARNs / non-12-digit account ids are rejected
+   up front with a clear error.
+2. **Calls `sts:AssumeRole`** via
+   [`assumeRoleForCrossAccountStateRead`](../src/utils/role-arn.ts).
+   Credentials are cached per-RoleArn for the deploy lifetime, so a
+   stack with many `Fn::GetStackOutput` sites against the same producer
+   pays exactly one STS hop. Concurrent first-time callers collapse to
+   the same in-flight promise.
+3. **Derives the producer's state bucket name** as
+   `cdkd-state-{producerAccountId}` (the canonical region-free
+   convention since v0.10.0) via
+   [`resolveCrossAccountStateBucket`](../src/utils/aws-region-resolver.ts).
+   The bucket's actual region is auto-detected via
+   `s3:GetBucketLocation` using the assumed credentials.
+4. **Reads the producer's state** through a fresh, ephemeral
+   `S3StateBackend` pointed at the producer's bucket with the assumed
+   credentials. Reuses the full state-parsing + schema-version-tolerance
+   machinery (legacy v1 keys, migration warnings, region key layout).
+5. **Returns the requested output value**.
+
+#### Constraints
+
+- **`RoleArn` must be a LITERAL string in the template.** `Ref` /
+  `Fn::GetAtt` / `Fn::Sub` chains are intentionally rejected at the
+  resolver layer: the context isn't guaranteed to have the producer's
+  account id available at intrinsic-resolution time, and a typo'd role
+  lookup is far worse than a clear template-author-time error. Inline
+  the ARN.
+- **Producer must be on the canonical region-free bucket layout**
+  (`cdkd-state-{accountId}`). Legacy region-suffixed buckets
+  (`cdkd-state-{accountId}-{region}`) are not consulted on the
+  cross-account read path because account-wide `s3:ListAllMyBuckets` in
+  the assumed role would be required to disambiguate, for no
+  real-world benefit on long-since-migrated accounts.
+- **Assumed credentials are scoped to the state read.** The consumer's
+  normal provisioning credentials are untouched — unlike the CLI-wide
+  `--role-arn` flag, which writes assumed creds into `AWS_*` env vars
+  for every later SDK client. Cross-account `Fn::GetStackOutput` is a
+  narrow read-only operation.
+
+#### IAM permissions
+
+The assumed role in the producer account needs:
+
+- `s3:GetBucketLocation` on the producer's state bucket.
+- `s3:GetObject` on `cdkd/{stackName}/{region}/state.json` keys for any
+  stack the consumer references.
+
+A minimal producer-side policy:
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": "s3:GetBucketLocation",
+      "Resource": "arn:aws:s3:::cdkd-state-111122223333"
+    },
+    {
+      "Effect": "Allow",
+      "Action": "s3:GetObject",
+      "Resource": "arn:aws:s3:::cdkd-state-111122223333/cdkd/*"
+    }
+  ]
+}
+```
+
+The role's trust policy must allow the consumer account's principal
+(or a specific consumer role) to `sts:AssumeRole`. Standard cross-account
+trust-policy setup applies.
+
+#### Strong-reference semantics
+
+`Fn::GetStackOutput` is a weak reference, including in the
+cross-account case. A `cdkd destroy` against the producer succeeds even
+while a consumer in another account holds an outstanding reference —
+the next consumer deploy will surface the broken reference. This
+matches CFn's behavior for cross-account references (no shared
+ListExports across accounts; no strong-reference protection).
+
+#### What's not supported (yet)
+
+- A cross-account integration test (`tests/integration/cross-stack-cross-account/`)
+  is gated by `CDKD_INTEG_CROSS_ACCOUNT=1` + `CDKD_PRODUCER_ACCOUNT_ID=<id>` +
+  `CDKD_PRODUCER_ROLE_ARN=<arn>` env vars and ships in a follow-up.
+- `Fn::ImportValue` does NOT accept a `RoleArn` argument. Cross-account
+  strong references are not a CFn-supported pattern — CFn's
+  `Fn::ImportValue` is same-account only — so cdkd does not extend
+  beyond that. Use `Fn::GetStackOutput` with `RoleArn` for cross-account
+  reads.
+
 ---
 
 ## Exports index lifecycle
@@ -380,7 +496,7 @@ path and is dominated by AWS-side resource deletion latency anyway.
 | Index for fast `ListExports` lookup | ✓ (internal) | ✓ (`_index/{region}/exports.json`) |
 | Weak cross-stack reference alternative | ✗ | ✓ (`Fn::GetStackOutput`) |
 | Cross-region exports | ✗ (same region only) | ✓ (`Fn::GetStackOutput`) |
-| Cross-account exports | via shared bootstrap | ✗ (not yet implemented) |
+| Cross-account exports | via shared bootstrap | ✓ (`Fn::GetStackOutput` with `RoleArn`) |
 
 The departures from CFn (`Fn::GetStackOutput` weak-ref, cross-region)
 are cdkd-specific extensions. The strong-reference behavior is
