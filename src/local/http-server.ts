@@ -473,7 +473,9 @@ async function handleRequest(
         streamResult.body.on('error', () => {
           /* swallow — the original `writeErr` is what the caller sees */
         });
-        streamResult.body.destroy(writeErr instanceof Error ? writeErr : new Error(String(writeErr)));
+        streamResult.body.destroy(
+          writeErr instanceof Error ? writeErr : new Error(String(writeErr))
+        );
         throw writeErr;
       }
       // writeStreamingResponse owns the pool release because the body
