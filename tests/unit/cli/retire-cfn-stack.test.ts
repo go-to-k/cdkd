@@ -286,6 +286,45 @@ describe('retireCloudFormationStack', () => {
     expect(waitDeleteMock).toHaveBeenCalledTimes(1);
   });
 
+  it('runs the full flow inline when the source template is small YAML', async () => {
+    // Small YAML template that fits inline (51,200-byte limit). Mirrors
+    // the JSON inline test above to cover the small-YAML branch.
+    const smallYaml = 'Resources:\n  Bucket:\n    Type: AWS::S3::Bucket\n';
+    const { client, calls } = buildCfnClient({
+      DescribeStacks: { Stacks: [{ StackStatus: 'CREATE_COMPLETE', Capabilities: [] }] },
+      GetTemplate: { TemplateBody: smallYaml },
+      UpdateStack: { StackId: 'arn:aws:cloudformation:...' },
+      DeleteStack: {},
+    });
+
+    const result = await retireCloudFormationStack({
+      cfnStackName: 'SmallYamlStack',
+      cfnClient: client as never,
+      yes: true,
+      stateBucket: 'test-state-bucket',
+    });
+
+    expect(result).toEqual({ outcome: 'retired' });
+    expect(calls.map((c) => c.name)).toEqual([
+      'DescribeStacks',
+      'GetTemplate',
+      'UpdateStack',
+      'DeleteStack',
+    ]);
+    // Confirm inline path (TemplateBody set, no TemplateURL — no S3 upload).
+    const updateCmd = calls.find((c) => c.name === 'UpdateStack')!;
+    expect(updateCmd.input['TemplateBody']).toBeDefined();
+    expect(updateCmd.input['TemplateURL']).toBeUndefined();
+    // The body is the modified YAML (with Retain policies), NOT JSON.
+    const body = String(updateCmd.input['TemplateBody']);
+    expect(body.trimStart().startsWith('{')).toBe(false);
+    expect(body).toContain('Type: AWS::S3::Bucket');
+    expect(body).toContain('DeletionPolicy: Retain');
+    expect(body).toContain('UpdateReplacePolicy: Retain');
+    // S3 was NOT touched on the inline path.
+    expect(s3SendCalls).toEqual([]);
+  });
+
   it('skips UpdateStack when the template already has Retain everywhere', async () => {
     const { client, calls } = buildCfnClient({
       DescribeStacks: { Stacks: [{ StackStatus: 'UPDATE_COMPLETE', Capabilities: [] }] },

@@ -320,6 +320,272 @@ describe('parseCfnTemplateWithFormat', () => {
   });
 });
 
+describe('parseCfnTemplate — Fn::Length / Fn::ToJsonString / Fn::ForEach', () => {
+  it('!Length sequence → {Fn::Length: [...]}', () => {
+    const parsed = parseCfnTemplate('X: !Length [1, 2, 3]\n');
+    expect(parsed).toEqual({ X: { 'Fn::Length': [1, 2, 3] } });
+  });
+
+  it('!Length nested inside a sequence containing !Ref preserves the nested intrinsic', () => {
+    // YAML disallows stacking two tags on the same node (`!Length !Ref X`
+    // would be ambiguous); the canonical CFn shape is a sequence whose
+    // element carries the nested tag.
+    const parsed = parseCfnTemplate('X: !Length [!Ref MyList]\n');
+    expect(parsed).toEqual({ X: { 'Fn::Length': [{ Ref: 'MyList' }] } });
+  });
+
+  it('!ToJsonString map → {Fn::ToJsonString: {...}}', () => {
+    const parsed = parseCfnTemplate('X: !ToJsonString\n  key: value\n');
+    expect(parsed).toEqual({ X: { 'Fn::ToJsonString': { key: 'value' } } });
+  });
+
+  it('!ToJsonString sequence → {Fn::ToJsonString: [...]}', () => {
+    const parsed = parseCfnTemplate("X: !ToJsonString ['a', 'b']\n");
+    expect(parsed).toEqual({ X: { 'Fn::ToJsonString': ['a', 'b'] } });
+  });
+
+  it('!ForEach sequence → {Fn::ForEach: [...]}', () => {
+    // CFn Language Extensions 2024 — the canonical form is a 3-element
+    // sequence: [LoopName, Collection, OutputKey: OutputValue].
+    const parsed = parseCfnTemplate(
+      'Fn::ForEach::Counter:\n  - Counter\n  - [1, 2, 3]\n  - Output${Counter}:\n      Value: !Ref AWS::Region\n'
+    );
+    // Note: the CFn-canonical key shape is `Fn::ForEach::<LoopName>` at
+    // the template top level. The shorthand `!ForEach [...]` we register
+    // is for the sequence-shape body. Test that the bare sequence body
+    // round-trips via our customTag registration.
+    const sequenceForm = parseCfnTemplate(
+      'X: !ForEach [Counter, [1, 2, 3], OutputMap]\n'
+    );
+    expect(sequenceForm).toEqual({
+      X: { 'Fn::ForEach': ['Counter', [1, 2, 3], 'OutputMap'] },
+    });
+    // The Fn::ForEach::<name> form is not a shorthand we register — it's
+    // an AWS-canonical long-form key that passes through the YAML parser
+    // as a plain map key. This test documents that pass-through.
+    expect(parsed).toBeDefined();
+  });
+});
+
+describe('parseCfnTemplate — dot-less !GetAtt rejection', () => {
+  it('rejects !GetAtt without a dot at parse time (no silent malformed output)', () => {
+    // Pre-fix: silently produced {Fn::GetAtt: ['LogicalIdOnly', '']} which
+    // AWS would later reject with a confusing "Attribute '' not found" far
+    // from the template author's source.
+    expect(() => parseCfnTemplate('X: !GetAtt LogicalIdOnly\n')).toThrow(
+      /!GetAtt requires '<LogicalId>\.<Attribute>'/
+    );
+  });
+
+  it('error message names the offending scalar', () => {
+    let thrown: Error | undefined;
+    try {
+      parseCfnTemplate('X: !GetAtt MyResource\n');
+    } catch (err) {
+      thrown = err as Error;
+    }
+    expect(thrown).toBeDefined();
+    expect(thrown!.message).toContain("'MyResource'");
+  });
+});
+
+describe('detectTemplateFormat — UTF-8 BOM handling', () => {
+  const BOM = '﻿';
+
+  it('treats BOM-prefixed JSON as JSON (not YAML)', () => {
+    expect(detectTemplateFormat(BOM + '{"a":1}')).toBe('json');
+    expect(detectTemplateFormat(BOM + '[1,2,3]')).toBe('json');
+  });
+
+  it('treats BOM-prefixed YAML as YAML', () => {
+    expect(detectTemplateFormat(BOM + 'Resources:\n  X: ...')).toBe('yaml');
+  });
+
+  it('parseCfnTemplate accepts a BOM-prefixed JSON template', () => {
+    const parsed = parseCfnTemplate(BOM + '{"Resources":{"X":{"Type":"AWS::S3::Bucket"}}}');
+    expect(parsed).toEqual({ Resources: { X: { Type: 'AWS::S3::Bucket' } } });
+  });
+
+  it('parseCfnTemplate accepts a BOM-prefixed YAML template', () => {
+    const parsed = parseCfnTemplate(BOM + 'Resources:\n  X:\n    Type: AWS::S3::Bucket\n');
+    expect(parsed).toEqual({ Resources: { X: { Type: 'AWS::S3::Bucket' } } });
+  });
+});
+
+describe('stringifyCfnTemplate — per-tag stringify round-trip', () => {
+  // Each test asserts the long-form object emits the right shorthand tag.
+  // The exact YAML output shape is library-controlled; we assert by
+  // re-parsing the emitted YAML and checking deep-equal against the
+  // original input — the strongest possible round-trip guarantee.
+  function roundTrip(input: Record<string, unknown>): void {
+    const yaml = stringifyCfnTemplate(input, 'yaml');
+    const reparsed = parseCfnTemplate(yaml);
+    expect(reparsed).toEqual(input);
+  }
+
+  it('Fn::Sub round-trips through YAML emit', () => {
+    roundTrip({ X: { 'Fn::Sub': '${AWS::Region}-${Foo}' } });
+  });
+
+  it('Fn::Select round-trips through YAML emit', () => {
+    roundTrip({ X: { 'Fn::Select': [0, ['a', 'b']] } });
+  });
+
+  it('Fn::Split round-trips through YAML emit', () => {
+    roundTrip({ X: { 'Fn::Split': [':', 'a:b:c'] } });
+  });
+
+  it('Fn::If round-trips through YAML emit', () => {
+    roundTrip({ X: { 'Fn::If': ['IsProd', 'prod-value', 'dev-value'] } });
+  });
+
+  it('Fn::Equals round-trips through YAML emit', () => {
+    roundTrip({ X: { 'Fn::Equals': ['a', 'b'] } });
+  });
+
+  it('Fn::And round-trips through YAML emit', () => {
+    roundTrip({ X: { 'Fn::And': [{ Condition: 'C1' }, { Condition: 'C2' }] } });
+  });
+
+  it('Fn::Or round-trips through YAML emit', () => {
+    roundTrip({ X: { 'Fn::Or': [{ Condition: 'C1' }, { Condition: 'C2' }] } });
+  });
+
+  it('Fn::Not round-trips through YAML emit', () => {
+    roundTrip({ X: { 'Fn::Not': [{ Condition: 'C1' }] } });
+  });
+
+  it('Fn::FindInMap round-trips through YAML emit', () => {
+    roundTrip({ X: { 'Fn::FindInMap': ['Map', 'TopKey', 'SecondKey'] } });
+  });
+
+  it('Fn::Base64 round-trips through YAML emit', () => {
+    roundTrip({ X: { 'Fn::Base64': 'hello' } });
+  });
+
+  it('Fn::Cidr round-trips through YAML emit', () => {
+    roundTrip({ X: { 'Fn::Cidr': ['10.0.0.0/16', 6, 8] } });
+  });
+
+  it('Fn::GetAZs round-trips through YAML emit', () => {
+    roundTrip({ X: { 'Fn::GetAZs': '' } });
+  });
+
+  it('Fn::ImportValue round-trips through YAML emit', () => {
+    roundTrip({ X: { 'Fn::ImportValue': 'OtherStack-Output' } });
+  });
+
+  it('Fn::Length round-trips through YAML emit', () => {
+    roundTrip({ X: { 'Fn::Length': [1, 2, 3] } });
+  });
+
+  it('Fn::ToJsonString round-trips through YAML emit', () => {
+    roundTrip({ X: { 'Fn::ToJsonString': { key: 'value' } } });
+  });
+
+  it('Fn::ForEach round-trips through YAML emit (sequence form)', () => {
+    roundTrip({ X: { 'Fn::ForEach': ['Counter', [1, 2, 3], 'OutputMap'] } });
+  });
+});
+
+describe('real-world CDK-synthesized YAML fixture', () => {
+  // A representative non-trivial CDK-style YAML template covering long
+  // ARN Sub, deeply-nested Fn::If with AWS::NoValue, intrinsic inside
+  // string list, multi-level nesting. Hand-crafted to mirror the shapes
+  // CDK 2.x emits via `cdk synth --output-format yaml`.
+  const CDK_YAML_FIXTURE = `AWSTemplateFormatVersion: '2010-09-09'
+Description: CDK-style synthesized template
+Parameters:
+  Env:
+    Type: String
+    Default: dev
+Conditions:
+  IsProd: !Equals [!Ref Env, prod]
+Resources:
+  MyRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Sub "arn:\${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+        - !If
+          - IsProd
+          - !Sub "arn:\${AWS::Partition}:iam::aws:policy/AmazonS3ReadOnlyAccess"
+          - !Ref AWS::NoValue
+      Policies:
+        - PolicyName: AllowAccess
+          PolicyDocument:
+            Statement:
+              - Effect: Allow
+                Action: s3:GetObject
+                Resource:
+                  - !Sub "\${MyBucket.Arn}/*"
+                  - !Join
+                    - ""
+                    - - !GetAtt MyBucket.Arn
+                      - "/subkey/*"
+  MyBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "\${AWS::StackName}-mybucket"
+  MyFn:
+    Type: AWS::Lambda::Function
+    Properties:
+      Role: !GetAtt MyRole.Arn
+      Environment:
+        Variables:
+          REGION: !Ref AWS::Region
+          PROD_ONLY: !If [IsProd, "enabled", !Ref AWS::NoValue]
+Outputs:
+  FnArn:
+    Value: !GetAtt MyFn.Arn
+    Export:
+      Name: !Sub "\${AWS::StackName}-FnArn"
+`;
+
+  it('round-trips a representative CDK-style YAML template', () => {
+    const first = parseCfnTemplate(CDK_YAML_FIXTURE);
+    const yaml = stringifyCfnTemplate(first, 'yaml');
+    const second = parseCfnTemplate(yaml);
+    expect(second).toEqual(first);
+  });
+
+  it('preserves long-ARN !Sub strings without truncation or line-folding', () => {
+    const parsed = parseCfnTemplate(CDK_YAML_FIXTURE);
+    const yaml = stringifyCfnTemplate(parsed, 'yaml');
+    // The full Sub expression should appear unbroken (we set lineWidth: 0
+    // to disable yaml-lib's default 80-col folding).
+    expect(yaml).toContain('arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole');
+  });
+
+  it('preserves Fn::If + AWS::NoValue conditional omission', () => {
+    const parsed = parseCfnTemplate(CDK_YAML_FIXTURE);
+    const fnDef = (parsed.Resources as Record<string, Record<string, Record<string, Record<string, Record<string, unknown>>>>>)
+      .MyFn.Properties.Environment.Variables;
+    expect(fnDef.PROD_ONLY).toEqual({
+      'Fn::If': ['IsProd', 'enabled', { Ref: 'AWS::NoValue' }],
+    });
+  });
+
+  it('preserves deeply-nested intrinsics (Fn::Join with !GetAtt inside)', () => {
+    const parsed = parseCfnTemplate(CDK_YAML_FIXTURE);
+    const policies = (
+      parsed.Resources as Record<string, Record<string, Record<string, Array<Record<string, unknown>>>>>
+    ).MyRole.Properties.Policies;
+    const stmt = (policies[0]!.PolicyDocument as Record<string, Array<Record<string, unknown>>>)
+      .Statement[0]!;
+    const resources = stmt.Resource as unknown[];
+    expect(resources[1]).toEqual({
+      'Fn::Join': ['', [{ 'Fn::GetAtt': ['MyBucket', 'Arn'] }, '/subkey/*']],
+    });
+  });
+});
+
 describe('regression — generic YAML libs corrupt CFn shorthand', () => {
   it('without the custom codec, intrinsics would be silently stripped', () => {
     // Mirror what would happen with a generic YAML parser. We

@@ -392,7 +392,7 @@ export function splitCompositePhysicalId(
   return splitter(physicalId, properties);
 }
 
-interface ImportPlanEntry {
+export interface ImportPlanEntry {
   logicalId: string;
   resourceType: string;
   physicalId: string;
@@ -1210,7 +1210,7 @@ async function pickStackRegion(
   );
 }
 
-function parseTemplateFile(path: string): {
+export function parseTemplateFile(path: string): {
   template: Record<string, unknown>;
   format: TemplateFormat;
 } {
@@ -2028,7 +2028,7 @@ function printPlan(plan: ImportPlanEntry[], cfnStackName: string): void {
   logger.info('');
 }
 
-async function executeImportChangeSet(
+export async function executeImportChangeSet(
   cfnClient: AwsClients['cloudFormation'],
   stackName: string,
   template: Record<string, unknown>,
@@ -2188,7 +2188,7 @@ async function collectImportFailureSummary(
  * (cdkd state is intentionally NOT deleted between phases, so a phase-2
  * failure leaves a recoverable state).
  */
-async function executeUpdateChangeSet(
+export async function executeUpdateChangeSet(
   cfnClient: AwsClients['cloudFormation'],
   stackName: string,
   template: Record<string, unknown>,

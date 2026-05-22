@@ -78,6 +78,7 @@ const FN_TAGS = [
   'ImportValue',
   'Length',
   'ToJsonString',
+  'ForEach',
 ] as const;
 
 interface YamlNodeLike {
@@ -140,9 +141,12 @@ function buildCustomTags(): Array<ScalarTag | CollectionTag> {
     resolve(value: string): unknown {
       // Scalar shape — split on the FIRST dot only. The attribute
       // portion may contain further dots (`Endpoint.Port` on RDS).
+      // A dot-less scalar is a template-author bug — silently producing
+      // `{Fn::GetAtt: [<id>, '']}` would surface as a confusing AWS-side
+      // validation error far from the source, so reject at parse time.
       const dot = value.indexOf('.');
       if (dot < 0) {
-        return { 'Fn::GetAtt': [value, ''] };
+        throw new Error(`!GetAtt requires '<LogicalId>.<Attribute>'; got '${value}'`);
       }
       return { 'Fn::GetAtt': [value.slice(0, dot), value.slice(dot + 1)] };
     },
@@ -202,10 +206,14 @@ const CUSTOM_TAGS = buildCustomTags();
  */
 export function parseCfnTemplate(text: string): CfnTemplate {
   const format = detectTemplateFormat(text);
+  // Strip leading UTF-8 BOM if present — JSON.parse rejects BOM and YAML
+  // would treat it as a literal char. Sniffing is BOM-aware (above), so
+  // by this point the format choice already reflects post-BOM content.
+  const body = text.charCodeAt(0) === 0xfeff ? text.slice(1) : text;
   let parsed: unknown;
   if (format === 'json') {
     try {
-      parsed = JSON.parse(text);
+      parsed = JSON.parse(body);
     } catch (err) {
       throw new Error(
         `Template is not valid JSON. ` +
@@ -214,7 +222,7 @@ export function parseCfnTemplate(text: string): CfnTemplate {
     }
   } else {
     try {
-      parsed = yamlParse(text, { customTags: CUSTOM_TAGS });
+      parsed = yamlParse(body, { customTags: CUSTOM_TAGS });
     } catch (err) {
       throw new Error(
         `Template is not valid YAML. ` +
@@ -354,9 +362,15 @@ function makeIntrinsicNode(tag: string, value: unknown, doc: Document): unknown 
  * Rule (matches AWS docs / CDK CLI): if the first non-whitespace byte is
  * `{` or `[`, parse as JSON; otherwise YAML. Empty input is treated as
  * JSON so the caller's existing JSON-empty-input error path fires.
+ *
+ * UTF-8 BOM (`﻿`) is stripped before the sniff — some editors /
+ * scripts emit BOM-prefixed files, and the BOM is NOT whitespace under
+ * `trimStart()`, so a BOM-prefixed JSON file would otherwise route to
+ * the YAML parser and fail.
  */
 export function detectTemplateFormat(text: string): TemplateFormat {
-  const trimmed = text.trimStart();
+  const stripped = text.charCodeAt(0) === 0xfeff ? text.slice(1) : text;
+  const trimmed = stripped.trimStart();
   if (trimmed.length === 0) return 'json';
   const first = trimmed.charCodeAt(0);
   // 0x7B = '{', 0x5B = '['
