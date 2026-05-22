@@ -701,9 +701,66 @@ URL is blocked by a corporate proxy. **Do NOT rely on this in any
 shared environment** — the dev's machine accepts every token, including
 forged ones.
 
-Unsupported authorizer kinds (REST v1 `AWS_IAM`, mTLS, and any non-
-TOKEN/REQUEST/COGNITO_USER_POOLS Type / non-REQUEST/JWT AuthorizerType)
-hard-error at discovery with the offending route's location named.
+REST v1 `AWS_IAM` authorization is supported with
+**signature-verification-only** semantics — see the next section. mTLS
+authorizers and any non-TOKEN/REQUEST/COGNITO_USER_POOLS Type /
+non-REQUEST/JWT AuthorizerType still hard-error at discovery with the
+offending route's location named.
+
+### `local start-api` AWS_IAM authorizer (REST v1, signature verification only)
+
+Routes that declare `AuthorizationType: 'AWS_IAM'` boot and serve
+requests; cdkd verifies the inbound `Authorization: AWS4-HMAC-SHA256 ...`
+SigV4 signature against the developer's **local** AWS credentials (the
+same default credential chain every other cdkd command uses):
+
+1. Parse the header into `(Credential, SignedHeaders, Signature)`.
+2. Reconstruct the canonical request per the AWS SigV4 spec.
+3. Derive the signing key from the local secret access key + the
+   request's date / region / service scope.
+4. Constant-time compare the recomputed signature with the header's.
+
+Outcomes:
+
+- **Valid signature with the dev's credentials** → request reaches the
+  handler. The handler sees the access-key-id as the
+  `event.requestContext.authorizer.principalId`.
+- **No / malformed `Authorization` header** → 401 (`missing-identity`).
+- **Signature mismatch under the dev's own credentials** → 403
+  (`policy-deny`).
+- **Different `Credential` access-key-id than the dev has** →
+  warn-and-pass. The local server cannot reproduce a signing key it
+  doesn't have, and refusing every foreign-identity request would
+  defeat the dev-tool purpose. The warn fires at most once per foreign
+  access-key-id per server lifecycle.
+
+**What is NOT verified locally** (deliberately out of scope):
+
+- IAM resource / action / condition policy evaluation. The local
+  server has no IAM data plane. Signature-verified callers reach the
+  handler under their own identity; downstream authorization is the
+  dev's responsibility. Use the deployed API to test the full IAM
+  policy surface.
+- STS temporary credentials' session-token validation against AWS.
+  We accept whatever session-token the request was signed with.
+
+At startup cdkd emits a one-line warn naming every IAM-protected
+route so the developer is aware of the signature-verification-only
+boundary:
+
+```text
+[warn] 2 route(s) declare AuthorizationType: AWS_IAM — cdkd local start-api
+       verifies SigV4 signatures against your local AWS credentials, but does NOT
+       emulate IAM policy evaluation (resource / action / condition rules).
+       Signature-verified callers reach the handler under their own identity;
+       downstream authorization is the dev's responsibility.
+[warn]   - MyStack/ProtectedMethod
+[warn]   - MyStack/AnotherProtectedMethod
+```
+
+Tooling that signs requests works out of the box — common helpers
+include `aws-sigv4-sdk` (AWS SDK v3 signer), `curl --aws-sigv4`,
+Postman's AWS Signature auth, and the `awscurl` CLI.
 
 ### `local start-api` VPC-config Lambdas
 
@@ -823,7 +880,7 @@ curl --cacert ca.pem \
 
 | Out of scope | Deferred to |
 | --- | --- |
-| REST v1 IAM authorizer (`AuthorizationType: 'AWS_IAM'`) | Future PR |
+| REST v1 IAM authorizer — IAM policy evaluation (resource/action/condition). Signature verification IS implemented. | Out of scope (the local server has no IAM data plane) |
 | REST v1 CORS via Mock OPTIONS integration | Out of scope (use the deployed API) |
 | Custom integration mapping templates | Never (not testable locally) |
 | WebSocket APIs | Never (different protocol) |

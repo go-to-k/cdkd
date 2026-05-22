@@ -15,8 +15,10 @@
 import { getLogger } from '../../utils/logger.js';
 import { AwsClients, resetAwsClients, setAwsClients } from '../../utils/aws-clients.js';
 import { S3StateBackend } from '../../state/s3-state-backend.js';
+import { ExportIndexStore } from '../../state/export-index-store.js';
 import { resolveStateBucketWithDefault } from '../config-loader.js';
 import type { StackState } from '../../types/state.js';
+import type { CrossStackResolver } from '../../local/state-resolver.js';
 
 export interface LoadStateForStackOptions {
   stackRegion?: string;
@@ -120,4 +122,178 @@ export async function loadStateForStack(
     // later caller of `getAwsClients()` would silently reuse.
     resetAwsClients();
   }
+}
+
+/**
+ * Options consumed by {@link buildCrossStackResolver}. Mirrors
+ * `LoadStateForStackOptions` but is needed independently because the
+ * resolver outlives a single state load — `cdkd local invoke --from-state`
+ * resolves `Fn::ImportValue` / `Fn::GetStackOutput` per-env-var, with each
+ * lookup potentially hitting a different producer stack's state file.
+ */
+export interface BuildCrossStackResolverOptions {
+  stateBucket?: string;
+  statePrefix: string;
+  region?: string;
+  profile?: string;
+  /** Logger prefix surfaced on every warn line. Defaults to `--from-state`. */
+  logPrefix?: string;
+}
+
+/**
+ * Build a {@link CrossStackResolver} that walks cdkd's S3 state to look
+ * up `Fn::ImportValue` / `Fn::GetStackOutput` references the same way
+ * `cdkd deploy`'s `IntrinsicFunctionResolver` does. Returns `undefined`
+ * when the state bucket cannot be resolved (warn + fall back; matches
+ * `loadStateForStack`'s policy).
+ *
+ * The returned `dispose` closes the AWS clients owned by the resolver
+ * when the caller is done — callers MUST call it (typically in a
+ * `try / finally`) so the per-request S3 client isn't leaked across the
+ * CLI's lifetime.
+ *
+ * Why a separate AwsClients instance from `loadStateForStack`: the
+ * existing helper destroys its clients in a `finally` immediately after
+ * loading the consumer stack's state. The cross-stack resolver lives
+ * longer — every env-var that references a cross-stack output triggers a
+ * new state read. Owning a fresh `AwsClients` here gives the resolver
+ * an independent lifetime managed by the caller.
+ *
+ * Same-account / same-region only in v1 (the resolver's `producerRegion`
+ * arg is honored, but only for state lookups within the same cdkd state
+ * bucket). Cross-region `Fn::ImportValue` is tracked under #451;
+ * cross-account `Fn::GetStackOutput.RoleArn` is tracked under #449.
+ */
+export async function buildCrossStackResolver(
+  consumerRegion: string,
+  opts: BuildCrossStackResolverOptions
+): Promise<{ resolver: CrossStackResolver; dispose: () => void } | undefined> {
+  const logger = getLogger();
+  const prefix = opts.logPrefix ?? '--from-state';
+
+  let stateBucket: string;
+  try {
+    stateBucket = await resolveStateBucketWithDefault(opts.stateBucket, consumerRegion);
+  } catch (err) {
+    logger.warn(
+      `${prefix}: cross-stack resolver could not resolve state bucket: ${err instanceof Error ? err.message : String(err)}. ` +
+        `Fn::ImportValue / Fn::GetStackOutput env entries will warn-and-drop.`
+    );
+    return undefined;
+  }
+
+  const awsClients = new AwsClients({
+    ...(opts.region !== undefined && { region: opts.region }),
+    ...(opts.profile !== undefined && { profile: opts.profile }),
+  });
+
+  const stateConfig = { bucket: stateBucket, prefix: opts.statePrefix };
+  const stateBackend = new S3StateBackend(awsClients.s3, stateConfig, {
+    ...(opts.region !== undefined && { region: opts.region }),
+    ...(opts.profile !== undefined && { profile: opts.profile }),
+  });
+  try {
+    await stateBackend.verifyBucketExists();
+  } catch (err) {
+    awsClients.destroy();
+    logger.warn(
+      `${prefix}: cross-stack resolver could not access state bucket '${stateBucket}': ${err instanceof Error ? err.message : String(err)}. ` +
+        `Fn::ImportValue / Fn::GetStackOutput env entries will warn-and-drop.`
+    );
+    return undefined;
+  }
+
+  // The exports index is region-scoped (one file per consumer region).
+  // We instantiate it lazily so a stack with only `Fn::GetStackOutput`
+  // references doesn't pay the index-load cost.
+  const exportIndex = new ExportIndexStore(
+    awsClients.s3,
+    stateBucket,
+    opts.statePrefix,
+    consumerRegion,
+    stateBackend
+  );
+
+  const resolver: CrossStackResolver = {
+    async resolveImport(exportName: string): Promise<string | undefined> {
+      // Fast path: consult the persistent exports index.
+      try {
+        const entry = await exportIndex.lookup(exportName);
+        if (entry) {
+          const value = entry.value;
+          if (typeof value === 'string') return value;
+          if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+          // Object-valued Outputs (rare) — serialize as JSON so the
+          // downstream env-var carries something useful. The deploy-time
+          // intrinsic resolver flattens these in practice but the index
+          // value is the source of truth here, so we mirror its shape.
+          return JSON.stringify(value);
+        }
+      } catch (err) {
+        logger.debug(
+          `${prefix}: exports index lookup failed for '${exportName}': ${err instanceof Error ? err.message : String(err)}; falling back to per-stack state scan`
+        );
+      }
+
+      // Fallback: scan every cdkd-managed stack in the consumer region
+      // for an Output matching `exportName`. Mirrors the deploy-engine
+      // resolver's index-miss path.
+      let refs;
+      try {
+        refs = await stateBackend.listStacks();
+      } catch (err) {
+        logger.debug(
+          `${prefix}: failed to list stacks during Fn::ImportValue fallback for '${exportName}': ${err instanceof Error ? err.message : String(err)}`
+        );
+        return undefined;
+      }
+      for (const ref of refs) {
+        const region = ref.region ?? consumerRegion;
+        if (region !== consumerRegion) continue; // same-region scope (v1)
+        try {
+          const got = await stateBackend.getState(ref.stackName, region);
+          if (!got || !got.state.outputs) continue;
+          if (exportName in got.state.outputs) {
+            const value = got.state.outputs[exportName];
+            if (typeof value === 'string') return value;
+            if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+            return JSON.stringify(value);
+          }
+        } catch (err) {
+          logger.debug(
+            `${prefix}: state read failed for ${ref.stackName} (${region}) during Fn::ImportValue fallback: ${err instanceof Error ? err.message : String(err)}`
+          );
+          continue;
+        }
+      }
+      return undefined;
+    },
+    async resolveGetStackOutput(
+      producerStack: string,
+      producerRegion: string,
+      outputName: string
+    ): Promise<string | undefined> {
+      try {
+        const got = await stateBackend.getState(producerStack, producerRegion);
+        if (!got || !got.state.outputs) return undefined;
+        if (!(outputName in got.state.outputs)) return undefined;
+        const value = got.state.outputs[outputName];
+        if (typeof value === 'string') return value;
+        if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+        return JSON.stringify(value);
+      } catch (err) {
+        logger.debug(
+          `${prefix}: state read failed for Fn::GetStackOutput '${producerStack}.${outputName}' (${producerRegion}): ${err instanceof Error ? err.message : String(err)}`
+        );
+        return undefined;
+      }
+    },
+  };
+
+  return {
+    resolver,
+    dispose: (): void => {
+      awsClients.destroy();
+    },
+  };
 }

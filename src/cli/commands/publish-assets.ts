@@ -8,6 +8,7 @@ import {
   warnIfDeprecatedRegion,
 } from '../options.js';
 import { getLogger } from '../../utils/logger.js';
+import { bold, green } from '../../utils/colors.js';
 import { applyRoleArnIfSet } from '../../utils/role-arn.js';
 import { PartialFailureError, withErrorHandling } from '../../utils/error-handler.js';
 import { AssetPublisher } from '../../assets/asset-publisher.js';
@@ -255,7 +256,7 @@ async function publishAssetsCommand(
     );
   }
 
-  logger.info(`\n✅ Asset publishing complete (${totalAssets} asset(s))`);
+  logger.info(`\n${green('✓')} ${bold('Asset publishing complete')} (${totalAssets} asset(s))`);
 }
 
 /**

@@ -1,4 +1,5 @@
 import { getLogger } from '../utils/logger.js';
+import { bold, cyan, gray, green, red, yellow } from '../utils/colors.js';
 import { getLiveRenderer } from '../utils/live-renderer.js';
 import { ProvisioningError, ResourceTimeoutError } from '../utils/error-handler.js';
 import { withStackName, applyDefaultNameForFallback } from '../provisioning/resource-name.js';
@@ -645,7 +646,7 @@ export class DeployEngine {
       const deleteChanges = this.diffCalculator.filterByType(changes, 'DELETE');
 
       this.logger.info(
-        `Changes: ${createChanges.length} to create, ${updateChanges.length} to update, ${deleteChanges.length} to delete`
+        `Changes: ${green(createChanges.length)} to create, ${yellow(updateChanges.length)} to update, ${red(deleteChanges.length)} to delete`
       );
 
       if (this.options.dryRun) {
@@ -839,7 +840,7 @@ export class DeployEngine {
 
       if (createUpdateIds.length > 0) {
         this.logger.info(
-          `Deploying ${createUpdateIds.length} resource(s) (DAG: ${executionLevels.length} levels, max parallel: ${concurrency})`
+          `${cyan('Deploying')} ${cyan(createUpdateIds.length)} resource(s) (DAG: ${executionLevels.length} levels, max parallel: ${concurrency})`
         );
 
         const createUpdateExecutor = new DagExecutor<ResourceChange>();
@@ -920,7 +921,7 @@ export class DeployEngine {
 
       // Step 2: Process DELETE operations in reverse dependency order.
       if (deleteChanges.size > 0) {
-        this.logger.info(`Deleting ${deleteChanges.size} resource(s)`);
+        this.logger.info(`${red('Deleting')} ${red(deleteChanges.size)} resource(s)`);
 
         const deleteDeps = this.buildDeletionDependencies(deleteChanges, currentState);
         const deleteExecutor = new DagExecutor<ResourceChange>();
@@ -1528,7 +1529,9 @@ export class DeployEngine {
         if (progress) progress.current++;
         const createPrefix = progress ? `[${progress.current}/${progress.total}] ` : '  ';
         renderer.removeTask(logicalId);
-        this.logger.info(`${createPrefix}✅ ${logicalId} (${resourceType}) created`);
+        this.logger.info(
+          `${createPrefix}${green('✓')} ${bold(logicalId)} ${gray(`(${resourceType})`)} ${green('created')}`
+        );
         break;
       }
 
@@ -1577,7 +1580,9 @@ export class DeployEngine {
             if (progress) progress.current++;
             const attrPrefix = progress ? `[${progress.current}/${progress.total}] ` : '  ';
             renderer.removeTask(logicalId);
-            this.logger.info(`${attrPrefix}✅ ${logicalId} (${resourceType}) updated (metadata)`);
+            this.logger.info(
+              `${attrPrefix}${yellow('~')} ${bold(logicalId)} ${gray(`(${resourceType})`)} ${yellow('updated (metadata)')}`
+            );
             break;
           }
           this.logger.debug(
@@ -1632,7 +1637,7 @@ export class DeployEngine {
                 currentResource.properties,
                 { expectedRegion: this.stackRegion }
               );
-              this.logger.info(`  ✓ Old resource deleted`);
+              this.logger.info(`  ${green('✓')} Old resource deleted`);
             } catch (deleteError) {
               this.logger.warn(
                 `  ⚠ Failed to delete old resource ${logicalId} (${currentResource.physicalId}): ${deleteError instanceof Error ? deleteError.message : String(deleteError)}`
@@ -1661,7 +1666,9 @@ export class DeployEngine {
           if (progress) progress.current++;
           const replacePrefix = progress ? `[${progress.current}/${progress.total}] ` : '  ';
           renderer.removeTask(logicalId);
-          this.logger.info(`${replacePrefix}✅ ${logicalId} (${resourceType}) replaced`);
+          this.logger.info(
+            `${replacePrefix}${yellow('↻')} ${bold(logicalId)} ${gray(`(${resourceType})`)} ${yellow('replaced')}`
+          );
         } else {
           // Normal update (in-place)
           this.logger.debug(`Updating ${logicalId} (${resourceType})`);
@@ -1767,7 +1774,9 @@ export class DeployEngine {
           if (progress) progress.current++;
           const updatePrefix = progress ? `[${progress.current}/${progress.total}] ` : '  ';
           renderer.removeTask(logicalId);
-          this.logger.info(`${updatePrefix}✅ ${logicalId} (${resourceType}) updated`);
+          this.logger.info(
+            `${updatePrefix}${yellow('~')} ${bold(logicalId)} ${gray(`(${resourceType})`)} ${yellow('updated')}`
+          );
         }
         break;
       }
@@ -1838,7 +1847,9 @@ export class DeployEngine {
         if (progress) progress.current++;
         const deletePrefix = progress ? `[${progress.current}/${progress.total}] ` : '  ';
         renderer.removeTask(logicalId);
-        this.logger.info(`${deletePrefix}✅ ${logicalId} (${resourceType}) deleted`);
+        this.logger.info(
+          `${deletePrefix}${red('✗')} ${bold(logicalId)} ${gray(`(${resourceType})`)} ${red('deleted')}`
+        );
         break;
       }
     }
