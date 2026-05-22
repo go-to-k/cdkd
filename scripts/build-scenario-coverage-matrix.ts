@@ -180,6 +180,8 @@ const KNOWN_SCENARIOS: Record<string, string> = {
     '`cdkd local run-task` ECS TaskDefinition with docker network + AWS-published metadata sidecar.',
   'local-ecs-service':
     '`cdkd local start-service` long-running ECS Service emulator: replica pool, restart-on-exit, SIGINT teardown.',
+  'local-ecs-service-connect':
+    '`cdkd local start-service` Service Connect + Cloud Map peer discovery: ServiceConnectConfiguration + ServiceRegistries parsing, in-process Cloud Map registry, docker `--add-host` DNS overlay (Issue #460).',
   'local-from-state-substitution':
     '`cdkd local invoke|run-task --from-state` substitutes intrinsic-valued env/secret/role references against deployed cdkd state + AWS pseudo parameters.',
 };

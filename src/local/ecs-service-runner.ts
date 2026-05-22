@@ -8,6 +8,9 @@ import {
   type RunEcsTaskOptions,
 } from './ecs-task-runner.js';
 import type { ResolvedEcsService } from './ecs-service-resolver.js';
+import type { CloudMapRegistry, RegistrationHandle } from './cloud-map-registry.js';
+import type { CloudMapIndex } from './cloud-map-resolver.js';
+import { getContainerNetworkIp } from './docker-inspect.js';
 
 /**
  * Phase 2 of #262 — long-running ECS Service emulator. Wraps the existing
@@ -24,10 +27,20 @@ import type { ResolvedEcsService } from './ecs-service-resolver.js';
  *     stops compounding cleanup work.
  *   - Long-running lifecycle (returns only on shutdown).
  *
+ * Phase 3 of #262 (Issue #460) — Cloud Map / Service Connect peer
+ * discovery is wired through `ServiceRunnerOptions.discovery`. When
+ * supplied, every booted replica discovers its docker IP, registers
+ * itself into the shared in-process `CloudMapRegistry`, and emits
+ * `--add-host` flags so consumer containers reach peer services via
+ * the canonical `<discoveryName>.<namespace>` fqdn. Envoy L7 sidecar
+ * emulation (design Layer B) is deferred to a follow-up PR per the
+ * design's §O5 "--no-envoy by default" recommendation.
+ *
  * Deferred to follow-up PRs:
  *   - Local load-balancer emulation (LB listener + target-group health
  *     check + round-robin) — separate PR per the issue's PR-split.
- *   - Service Connect / Cloud Map (tracked in #460).
+ *   - Envoy sidecar for Service Connect L7 routing / retries / circuit
+ *     breaking (Cloud Map DNS-only mode ships now).
  *   - Rolling deployment (`--reload` / `--watch`).
  */
 
@@ -60,6 +73,40 @@ export interface ServiceRunnerOptions {
    * task runner.
    */
   taskOptions: RunEcsTaskOptions;
+  /**
+   * Issue #460 — Cloud Map / Service Connect shared registry. When
+   * provided, every booted replica:
+   *   1. Has its main-container IP resolved via `docker inspect`.
+   *   2. Registers `(namespace, discoveryName) → ip:port` into the
+   *      registry for every Service Connect entry AND every
+   *      ServiceRegistry (Cloud Map service) referenced by this
+   *      service.
+   *   3. Re-builds its own `addHostFlags` from the registry's current
+   *      snapshot so the consumer can reach previously-booted peer
+   *      services via DNS overlay.
+   * Pass `undefined` (single-service runs that don't need cross-
+   * service discovery) to short-circuit registry interaction
+   * entirely.
+   */
+  discovery?: ServiceDiscoveryContext;
+}
+
+/**
+ * Shared Cloud Map state across all services run in one
+ * `cdkd local start-service` invocation. The CLI builds this once and
+ * threads the same object into every `startEcsService` call so peer
+ * services discover each other through the shared `registry`.
+ */
+export interface ServiceDiscoveryContext {
+  /** The in-process registry shared across every service in this CLI run. */
+  registry: CloudMapRegistry;
+  /**
+   * Combined `CloudMapIndex` across every CDK stack we know about,
+   * keyed by stack name so the runner can resolve a service's
+   * `ServiceRegistries[].cloudMapServiceLogicalId` against the right
+   * stack's index.
+   */
+  cloudMapIndexByStack: ReadonlyMap<string, CloudMapIndex>;
 }
 
 /**
@@ -76,6 +123,14 @@ export interface ServiceReplicaInstance {
   restartCount: number;
   /** Set when the replica is being torn down so the watcher skips it. */
   shuttingDown: boolean;
+  /**
+   * Cloud Map registry handles published for this replica. Cleared on
+   * cleanup so the service's discovery footprint shrinks atomically
+   * with the docker network teardown. Empty when the service has no
+   * Service Connect / ServiceRegistries OR when `discovery` was not
+   * supplied at startEcsService time.
+   */
+  cloudMapHandles: RegistrationHandle[];
   /**
    * In-flight `bootReplica()` promise when the watcher loop is mid-
    * restart (between the old state's cleanup and the new state being
@@ -194,6 +249,7 @@ export async function startEcsService(
       restartCount: 0,
       shuttingDown: false,
       inFlightBoot: undefined,
+      cloudMapHandles: [],
     };
     runState.replicas.push(instance);
     // Track the in-flight boot so a concurrent shutdown awaits it
@@ -328,6 +384,20 @@ export class ServiceController {
 
     await Promise.allSettled(
       this.runState.replicas.map(async (instance) => {
+        // Issue #460 — drop every Cloud Map registration for this
+        // replica BEFORE tearing the network down so a peer service
+        // observing the registry during shutdown doesn't briefly see
+        // an unreachable endpoint.
+        if (this.options.discovery) {
+          for (const handle of instance.cloudMapHandles) {
+            try {
+              this.options.discovery.registry.unregister(handle);
+            } catch {
+              /* registry op is sync + best-effort */
+            }
+          }
+          instance.cloudMapHandles = [];
+        }
         try {
           await cleanupEcsRun(instance.state, {
             keepRunning: this.options.taskOptions.keepRunning,
@@ -362,6 +432,16 @@ async function bootReplica(
   // prefix makes per-replica logs easier to scan and prevents
   // accidental collisions if two replicas start on the same ms.
   const perReplicaCluster = `${options.taskOptions.cluster}-svc-${service.serviceLogicalId.toLowerCase()}-r${instance.index}`;
+  const ownerKeyPrefix = `${service.serviceLogicalId}:r${instance.index}`;
+  // Build per-boot `--add-host` flags from the registry's current
+  // snapshot — every peer service that booted BEFORE this replica is
+  // resolvable as `<discoveryName>.<namespace>` and via any bare
+  // ClientAlias short-form. Exclude self entries so a service that
+  // registers under, say, `frontend.cdkd-local.local` does not
+  // resolve to its own previous replica.
+  const addHostFlags = options.discovery?.registry
+    ? options.discovery.registry.buildAddHostFlags(ownerKeyPrefix)
+    : [];
   // Per-replica subnetOctet: 170 is the AWS-documented default; each
   // additional replica walks up by 1 within the link-local 169.254.0.0/16
   // space, capped at 253 (= 170 + 83) before wrapping via `% 84`. The
@@ -384,9 +464,157 @@ async function bootReplica(
     // whether the SERVICE runs in the background; the per-replica
     // detach is internal plumbing.
     detach: true,
+    ...(addHostFlags.length > 0 ? { addHostFlags } : {}),
   };
   logger.info(`Booting replica ${instance.index} (${perReplicaCluster})`);
   await runEcsTask(service.task, perReplicaTaskOptions, instance.state);
+
+  // Cloud Map / Service Connect publish (Issue #460). Runs AFTER the
+  // task boot so we know docker has assigned an IP. Best-effort: a
+  // failed publish logs warn but does NOT abort the replica — the
+  // replica is still alive, peer discovery just degrades.
+  if (options.discovery) {
+    await publishReplicaToCloudMap(service, instance, options.discovery, ownerKeyPrefix);
+  }
+}
+
+/**
+ * After the replica's main container is up, discover its docker
+ * network IP and publish the configured Service Connect + Cloud Map
+ * endpoints into the shared registry. The handles are tracked on the
+ * instance so the shutdown / restart path can unregister symmetrically.
+ *
+ * Errors here are best-effort: docker inspect can fail right after run
+ * (container vanished, network not fully wired), and the registry is
+ * advisory — losing one replica's registration means peer services
+ * can't reach it via the overlay, but it doesn't break that replica's
+ * own work or AWS SDK calls.
+ */
+async function publishReplicaToCloudMap(
+  service: ResolvedEcsService,
+  instance: ServiceReplicaInstance,
+  discovery: ServiceDiscoveryContext,
+  ownerKeyPrefix: string
+): Promise<void> {
+  const logger = getLogger().child('ecs-service');
+  const networkName = instance.state.network?.networkName;
+  if (!networkName) return; // boot didn't get far enough to have a network
+
+  // Pick the canonical container — Service Connect uses the producer
+  // TaskDef's first essential container, mirroring AWS's ECS Agent.
+  // The container's docker name is recorded in startedContainers.
+  const essential = service.task.containers.find((c) => c.essential) ?? service.task.containers[0];
+  if (!essential) return;
+  const started = instance.state.startedContainers.find((c) => c.name === essential.name);
+  if (!started) return;
+
+  let ip: string | undefined;
+  try {
+    ip = await getContainerNetworkIp(started.id, networkName);
+  } catch (err) {
+    logger.warn(
+      `Replica ${instance.index}: docker inspect failed before Cloud Map publish: ` +
+        `${err instanceof Error ? err.message : String(err)}`
+    );
+    return;
+  }
+  if (!ip) {
+    logger.warn(
+      `Replica ${instance.index}: no docker IP discovered on network ${networkName}; ` +
+        'skipping Cloud Map publish for this replica.'
+    );
+    return;
+  }
+
+  // Publish Service Connect entries. Each one carries:
+  //   - canonical fqdn `<discoveryName>.<namespace>` (always)
+  //   - bare alias `<dnsName>` for every ClientAlias with a DnsName
+  if (service.serviceConnect) {
+    const ns = service.serviceConnect.namespaceName;
+    // Validate against the cloud-map index. The CLI passes the index
+    // for the stack the service belongs to; an unmatched namespace
+    // surfaces as a warn — registration still proceeds against the
+    // literal name (so a CFn-but-not-CDK consumer that hand-rolled a
+    // namespace can still discover the producer).
+    const index = discovery.cloudMapIndexByStack.get(service.stack.stackName);
+    if (index && !index.namespacesByName.has(ns)) {
+      logger.warn(
+        `ECS Service '${service.serviceLogicalId}' ServiceConnectConfiguration.Namespace='${ns}' ` +
+          'does not match any AWS::ServiceDiscovery::PrivateDnsNamespace declared in stack ' +
+          `${service.stack.stackName}. Publishing under the literal name anyway; peer services ` +
+          'using the same literal will still discover this endpoint.'
+      );
+    }
+    let i = 0;
+    for (const entry of service.serviceConnect.services) {
+      const ownerKey = `${ownerKeyPrefix}:sc:${i}`;
+      const handle = discovery.registry.register(ns, entry.discoveryName, {
+        ip,
+        port: entry.containerPort,
+        ownerKey,
+      });
+      instance.cloudMapHandles.push(handle);
+      // Each ClientAlias with a DnsName becomes a bare-name alias
+      // pointing at this fqdn.
+      for (const alias of entry.clientAliases) {
+        if (alias.dnsName) {
+          discovery.registry.registerAlias(alias.dnsName, handle.fqdn);
+        }
+      }
+      i++;
+    }
+  }
+
+  // Publish ServiceRegistries[] entries. Each one references a
+  // same-stack AWS::ServiceDiscovery::Service whose namespace +
+  // discovery name we resolved at index-build time.
+  if (service.serviceRegistries.length > 0) {
+    const index = discovery.cloudMapIndexByStack.get(service.stack.stackName);
+    if (!index) {
+      logger.warn(
+        `ECS Service '${service.serviceLogicalId}' declares ServiceRegistries[] but cdkd has ` +
+          `no Cloud Map index for stack ${service.stack.stackName}. Skipping registration.`
+      );
+      return;
+    }
+    let j = 0;
+    for (const reg of service.serviceRegistries) {
+      const cm = index.servicesByLogicalId.get(reg.cloudMapServiceLogicalId);
+      if (!cm) {
+        logger.warn(
+          `ECS Service '${service.serviceLogicalId}' ServiceRegistries[].cloudMapServiceLogicalId=` +
+            `'${reg.cloudMapServiceLogicalId}' did not resolve to an AWS::ServiceDiscovery::Service ` +
+            `in stack ${service.stack.stackName}. Skipping this registration.`
+        );
+        continue;
+      }
+      // Resolve port: explicit `ContainerPort` override > the named
+      // container's first port mapping. Container-name override is
+      // honored for the IP lookup BUT we already resolved IP once
+      // off the essential container — for v1 we treat the override
+      // as a port-only override (multi-container-with-distinct-IP is
+      // not a real local case since they share one docker network).
+      let port = reg.containerPort;
+      if (port === undefined && essential.portMappings.length > 0) {
+        port = essential.portMappings[0]!.containerPort;
+      }
+      if (port === undefined) {
+        logger.warn(
+          `ECS Service '${service.serviceLogicalId}' ServiceRegistries[] entry for Cloud Map ` +
+            `service '${cm.logicalId}' has no resolvable container port; skipping.`
+        );
+        continue;
+      }
+      const ownerKey = `${ownerKeyPrefix}:sr:${j}`;
+      const handle = discovery.registry.register(cm.namespaceName, cm.name, {
+        ip,
+        port,
+        ownerKey,
+      });
+      instance.cloudMapHandles.push(handle);
+      j++;
+    }
+  }
 }
 
 /**
@@ -451,6 +679,20 @@ async function watchReplica(
     logger.info(`Restarting replica ${instance.index} in ${delay}ms...`);
     await sleep(delay);
     if (instance.shuttingDown || runState.shuttingDown) return;
+
+    // Drop Cloud Map registrations from the dying replica before its
+    // network teardown — peers should not route to the about-to-be-
+    // killed container.
+    if (options.discovery) {
+      for (const handle of instance.cloudMapHandles) {
+        try {
+          options.discovery.registry.unregister(handle);
+        } catch {
+          /* sync + best-effort */
+        }
+      }
+      instance.cloudMapHandles = [];
+    }
 
     // Tear down the old per-replica run-state before re-booting (else
     // the new boot collides on the docker network name).

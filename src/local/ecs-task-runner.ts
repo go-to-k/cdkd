@@ -90,6 +90,23 @@ export interface RunEcsTaskOptions {
    * `ecs-network.ts`.
    */
   subnetOctet?: number;
+  /**
+   * Phase 3 of #262 (Issue #460) — extra `--add-host name:ip` flag
+   * pairs the docker-runner injects into EVERY user container's
+   * `docker run` invocation. Used by the Cloud Map / Service Connect
+   * overlay to map `<discoveryName>.<namespace>` (and bare
+   * `<discoveryName>` ClientAlias short forms) to the IP of a peer
+   * replica's container on the host's docker bridge.
+   *
+   * **Shape**: flat array of `['--add-host', 'name:ip', '--add-host', 'name2:ip2', ...]`.
+   * The runner appends these to `docker run` verbatim — caller is
+   * responsible for filtering out self-host (no point adding a
+   * replica's own service to its own resolver) and for building the
+   * flag pairs in the order they should be evaluated (docker's
+   * resolver hits each entry in order; first match wins). Empty /
+   * undefined → no extra flags emitted.
+   */
+  addHostFlags?: ReadonlyArray<string>;
 }
 
 /**
@@ -271,6 +288,9 @@ export async function runEcsTask(
         platformOverride: options.platformOverride,
         region: options.region,
         sidecarIp: state.network.sidecarIp,
+        ...(options.addHostFlags && options.addHostFlags.length > 0
+          ? { addHostFlags: options.addHostFlags }
+          : {}),
       })
     );
   }
@@ -723,6 +743,14 @@ interface BuildDockerRunArgs {
    * point at their own sidecar instance.
    */
   sidecarIp?: string;
+  /**
+   * Issue #460 — extra `--add-host name:ip` flag pairs forwarded
+   * verbatim to `docker run`. Used by the Cloud Map overlay so
+   * `<discoveryName>.<namespace>` (and bare ClientAlias short forms)
+   * resolve inside this container. Caller is responsible for the
+   * flag-pair shape (`['--add-host', 'name:ip', ...]`).
+   */
+  addHostFlags?: ReadonlyArray<string>;
 }
 
 /**
@@ -738,6 +766,16 @@ export function buildDockerRunArgs(opts: BuildDockerRunArgs): string[] {
   args.push('--name', `cdkd-local-${task.family}-${container.name}-${randHex(3)}`);
   args.push('--network', network);
   args.push('--network-alias', container.name);
+
+  // Issue #460 — Cloud Map / Service Connect overlay. The
+  // `--add-host` flags here come from the in-process CloudMapRegistry
+  // populated by the service runner after each peer replica boots.
+  // Multi-replica routing is approximated as "first registered
+  // endpoint per fqdn" — full multi-instance DNS rotation requires
+  // the deferred DNS-sidecar option (§6 of the design).
+  if (opts.addHostFlags && opts.addHostFlags.length > 0) {
+    for (const f of opts.addHostFlags) args.push(f);
+  }
 
   if (opts.platformOverride) {
     args.push('--platform', opts.platformOverride);

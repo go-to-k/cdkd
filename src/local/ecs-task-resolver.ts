@@ -88,7 +88,18 @@ export interface ResolvedEcsContainer {
   environment: Record<string, string>;
   /** SecretArn entries. Resolved to real values by `ecs-secrets-resolver.ts`. */
   secrets: { name: string; valueFrom: string }[];
-  portMappings: { containerPort: number; hostPort?: number; protocol: 'tcp' | 'udp' }[];
+  /**
+   * Container port mappings. `name` (mirrors the CFn `Name` field) is
+   * surfaced for Service Connect resolution (Phase 3 of #262 / Issue
+   * #460) — the resolver matches `ServiceConnectConfiguration.Services[].PortName`
+   * against this field.
+   */
+  portMappings: {
+    name?: string;
+    containerPort: number;
+    hostPort?: number;
+    protocol: 'tcp' | 'udp';
+  }[];
   mountPoints: { sourceVolume: string; containerPath: string; readOnly: boolean }[];
   dependsOn: { containerName: string; condition: 'START' | 'COMPLETE' | 'SUCCESS' | 'HEALTHY' }[];
   links: string[];
@@ -818,6 +829,8 @@ function parseContainerDefinition(
       const protocol = pickString(p['Protocol']) === 'udp' ? 'udp' : 'tcp';
       const pm: ResolvedEcsContainer['portMappings'][number] = { containerPort, protocol };
       if (hostPort !== undefined) pm.hostPort = hostPort;
+      const portName = typeof p['Name'] === 'string' ? p['Name'] : undefined;
+      if (portName !== undefined) pm.name = portName;
       portMappings.push(pm);
     }
   }

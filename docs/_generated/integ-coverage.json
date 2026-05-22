@@ -1443,6 +1443,7 @@
       "integs": [
         "drift-revert",
         "ecs-fargate",
+        "local-ecs-service-connect",
         "local-start-service"
       ],
       "signals": {
@@ -1451,6 +1452,9 @@
         ],
         "ecs-fargate": [
           "l2"
+        ],
+        "local-ecs-service-connect": [
+          "l1"
         ],
         "local-start-service": [
           "l1"
@@ -1461,11 +1465,16 @@
       "resourceType": "AWS::ECS::Service",
       "integs": [
         "ecs-fargate",
+        "local-ecs-service-connect",
         "local-start-service"
       ],
       "signals": {
         "ecs-fargate": [
           "l2"
+        ],
+        "local-ecs-service-connect": [
+          "l1",
+          "literal"
         ],
         "local-start-service": [
           "l1",
@@ -1477,6 +1486,7 @@
       "resourceType": "AWS::ECS::TaskDefinition",
       "integs": [
         "ecs-fargate",
+        "local-ecs-service-connect",
         "local-run-task",
         "local-run-task-from-state",
         "local-run-task-multi-container",
@@ -1485,6 +1495,9 @@
       "signals": {
         "ecs-fargate": [
           "l2"
+        ],
+        "local-ecs-service-connect": [
+          "l1"
         ],
         "local-run-task": [
           "l2"
@@ -2697,11 +2710,15 @@
     {
       "resourceType": "AWS::ServiceDiscovery::PrivateDnsNamespace",
       "integs": [
-        "drift-revert-vpc"
+        "drift-revert-vpc",
+        "local-ecs-service-connect"
       ],
       "signals": {
         "drift-revert-vpc": [
           "l2",
+          "literal"
+        ],
+        "local-ecs-service-connect": [
           "literal"
         ]
       }
