@@ -1,3 +1,10 @@
+# [0.130.0](https://github.com/go-to-k/cdkd/compare/v0.129.0...v0.130.0) (2026-05-22)
+
+
+### Features
+
+* **local-start-api:** RESPONSE_STREAM Function URL invoke mode ([#467](https://github.com/go-to-k/cdkd/issues/467)) ([#501](https://github.com/go-to-k/cdkd/issues/501)) ([4891627](https://github.com/go-to-k/cdkd/commit/4891627e5f296770b6c26d519ac66a6a79b10534))
+
 # [0.129.0](https://github.com/go-to-k/cdkd/compare/v0.128.0...v0.129.0) (2026-05-22)
 
 
