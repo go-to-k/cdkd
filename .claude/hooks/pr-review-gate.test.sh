@@ -286,6 +286,22 @@ run_case "gh pr merge <N> --auto + stale marker → block" 2 \
   medium stale "" \
   "gh pr merge 700 --auto"
 
+# 18. Command containing the bare word "merge" BEFORE the actual
+#     `gh pr merge` (typical: an inline `# Wait + merge` comment in
+#     a multi-line Bash script, OR a `git merge` / `npm run merge:foo`
+#     earlier in a `;`-chained command). Pre-fix the `${cmd#*merge}`
+#     short-match landed at the EARLIER `merge` token, and the next
+#     numeric token in the chain (loop counter, exit code, etc.) was
+#     erroneously parsed as the PR number. Post-fix `${cmd##*gh pr merge}`
+#     greedy-strips up to the LAST `gh pr merge` so the parse lands on
+#     the real PR number. Medium-tier fixture + stale marker → must
+#     still BLOCK (exit 2) on the post-fix parse — proving the
+#     comment-bearing shape doesn't fall into the parse-empty
+#     "current branch PR" fail-open path.
+run_case "command with 'merge' word before gh pr merge → still blocks" 2 \
+  medium stale "" \
+  "echo merge first; for i in 1 2 3; do echo loop; done; gh pr merge 800 --squash"
+
 echo
 echo "Pass: $pass  Fail: $fail"
 if [ "$fail" -gt 0 ]; then

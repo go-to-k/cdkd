@@ -69,8 +69,14 @@ cd "$REPO" 2>/dev/null || exit 0
 # values. If no numeric token is found, we fall back to gh's "PR for
 # current branch" semantics by passing no positional arg.
 pr_number=""
-# Strip everything up to and including `merge` so we only scan its args.
-args="${cmd#*merge}"
+# Strip everything up to and including the LAST `gh pr merge` so we only
+# scan its args. Greedy `##*PATTERN` (not the shortest `#*PATTERN`) so a
+# Bash comment containing the bare word "merge" earlier in the command
+# (e.g. `# Wait + merge\ngh pr merge 498`) doesn't cause us to read the
+# wrong token as the PR number. Matching on the full `gh pr merge` phrase
+# (not bare `merge`) is the load-bearing tightening — the prior `#*merge`
+# also matched merge inside `git merge`, `--no-merge`, branch names, etc.
+args="${cmd##*gh pr merge}"
 # shellcheck disable=SC2086
 set -- $args
 while [ $# -gt 0 ]; do
