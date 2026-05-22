@@ -9,9 +9,14 @@ import {
   waitUntilStackUpdateComplete,
   waitUntilStackDeleteComplete,
 } from '@aws-sdk/client-cloudformation';
-import { S3Client, PutObjectCommand, DeleteObjectCommand } from '@aws-sdk/client-s3';
 import { getLogger } from '../../utils/logger.js';
-import { resolveBucketRegion } from '../../utils/aws-region-resolver.js';
+import {
+  CFN_TEMPLATE_BODY_LIMIT,
+  CFN_TEMPLATE_URL_LIMIT,
+  MIGRATE_TMP_PREFIX,
+  uploadCfnTemplate,
+  type CfnUploadS3ClientOpts,
+} from '../upload-cfn-template.js';
 import {
   detectTemplateFormat,
   parseCfnTemplate,
@@ -36,24 +41,17 @@ const STABLE_TERMINAL_STATUSES = new Set([
  * UpdateStack TemplateBody hard limit (51,200 bytes). Templates larger than
  * this are uploaded to cdkd's state S3 bucket and submitted via `TemplateURL`
  * instead — see {@link uploadTemplateForUpdateStack}.
+ *
+ * Re-exported from `upload-cfn-template.ts` as the shared source of truth.
  */
-const TEMPLATE_BODY_LIMIT = 51200;
+const TEMPLATE_BODY_LIMIT = CFN_TEMPLATE_BODY_LIMIT;
 
 /**
  * UpdateStack TemplateURL hard limit (1 MB / 1,048,576 bytes). Templates
  * larger than this cannot be submitted at all and require manual
  * intervention.
  */
-const TEMPLATE_URL_LIMIT = 1048576;
-
-/**
- * S3 key prefix for the transient Retain-injected template uploaded by the
- * `--migrate-from-cloudformation` flow when the template exceeds the inline
- * 51,200-byte limit. Kept distinct from cdkd's `cdkd/` state prefix so
- * `state list` / `state info` never conflate transient migration artifacts
- * with persisted state.
- */
-const MIGRATE_TMP_PREFIX = 'cdkd-migrate-tmp';
+const TEMPLATE_URL_LIMIT = CFN_TEMPLATE_URL_LIMIT;
 
 export interface RetireCloudFormationStackOptions {
   cfnStackName: string;
@@ -79,14 +77,7 @@ export interface RetireCloudFormationStackOptions {
    * import command resolved at startup so the upload uses the same identity
    * that wrote cdkd state.
    */
-  s3ClientOpts?: {
-    profile?: string;
-    credentials?: {
-      accessKeyId: string;
-      secretAccessKey: string;
-      sessionToken?: string;
-    };
-  };
+  s3ClientOpts?: CfnUploadS3ClientOpts;
 }
 
 export type RetireCloudFormationOutcome =
@@ -307,49 +298,20 @@ export async function uploadTemplateForUpdateStack(args: {
   format?: TemplateFormat;
   s3ClientOpts?: RetireCloudFormationStackOptions['s3ClientOpts'];
 }): Promise<{ url: string; cleanup: () => Promise<void> }> {
-  const { bucket, body, cfnStackName, format, s3ClientOpts } = args;
-  const region = await resolveBucketRegion(bucket, {
-    ...(s3ClientOpts?.profile && { profile: s3ClientOpts.profile }),
-    ...(s3ClientOpts?.credentials && { credentials: s3ClientOpts.credentials }),
+  // Thin wrapper over the shared {@link uploadCfnTemplate} helper. Kept as
+  // a named export so the legacy retire-cfn-stack call sites and tests
+  // continue to work unchanged; the upload + cleanup contract lives in
+  // `src/cli/upload-cfn-template.ts` and is also consumed by `cdkd
+  // export`'s phase-1 / phase-2 changeset call paths. The optional
+  // `format` argument is forwarded so YAML-authored templates stay YAML
+  // on the transient S3 object (`.yaml` key + `application/x-yaml`).
+  return uploadCfnTemplate({
+    bucket: args.bucket,
+    body: args.body,
+    stackName: args.cfnStackName,
+    ...(args.format && { format: args.format }),
+    ...(args.s3ClientOpts && { s3ClientOpts: args.s3ClientOpts }),
   });
-  const s3 = new S3Client({
-    region,
-    ...(s3ClientOpts?.profile && { profile: s3ClientOpts.profile }),
-    ...(s3ClientOpts?.credentials && { credentials: s3ClientOpts.credentials }),
-  });
-  // High-resolution timestamp avoids accidental key collisions when a user
-  // re-runs migrate twice in quick succession against the same CFn stack.
-  // The key shape is intentionally human-grep-able — leftovers (if cleanup
-  // fails) point straight at the offending stack name.
-  const ext = format === 'yaml' ? 'yaml' : 'json';
-  const contentType = format === 'yaml' ? 'application/x-yaml' : 'application/json';
-  const key = `${MIGRATE_TMP_PREFIX}/${cfnStackName}/${Date.now()}.${ext}`;
-  try {
-    await s3.send(
-      new PutObjectCommand({
-        Bucket: bucket,
-        Key: key,
-        Body: body,
-        ContentType: contentType,
-      })
-    );
-  } catch (err) {
-    s3.destroy();
-    throw err;
-  }
-  // Virtual-hosted-style URL with explicit region works for every region
-  // (us-east-1 included). CloudFormation fetches the template using the
-  // calling principal's IAM permissions; the same identity that just wrote
-  // to the bucket can read it back.
-  const url = `https://${bucket}.s3.${region}.amazonaws.com/${key}`;
-  const cleanup = async (): Promise<void> => {
-    try {
-      await s3.send(new DeleteObjectCommand({ Bucket: bucket, Key: key }));
-    } finally {
-      s3.destroy();
-    }
-  };
-  return { url, cleanup };
 }
 
 /**
