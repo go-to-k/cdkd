@@ -69,6 +69,13 @@
           },
           {
             "type": "command",
+            "command": ".claude/hooks/non-english-text-gate.sh",
+            "if": "Bash(gh pr create*) or Bash(gh pr edit*) or Bash(gh pr merge*) or Bash(gh -C * pr create*) or Bash(gh -C * pr edit*) or Bash(gh -C * pr merge*)",
+            "timeout": 15,
+            "statusMessage": "Checking PR diff for non-English text..."
+          },
+          {
+            "type": "command",
             "command": ".claude/hooks/verify-pr-gate.sh",
             "if": "Bash(gh pr create*) or Bash(gh pr merge*)",
             "timeout": 10,
