@@ -155,10 +155,15 @@ export function selectIntegrationResponse(
 }
 
 function parseStatus(raw: unknown, fallback: number): number {
-  if (typeof raw === 'number' && Number.isFinite(raw)) return raw;
+  // Issue (#507) item 6: prefer `Number(...) + Number.isInteger(...)` over
+  // `parseInt` so a malformed `StatusCode` value like `"200abc"` is rejected
+  // as `undefined` and the caller falls back to `fallback` rather than
+  // silently truncating to `200`. Same rationale as `extractStatusCodeFromRendered`
+  // in `rest-v1-integrations.ts`.
+  if (typeof raw === 'number' && Number.isInteger(raw)) return raw;
   if (typeof raw === 'string') {
-    const parsed = Number.parseInt(raw, 10);
-    if (Number.isFinite(parsed)) return parsed;
+    const parsed = Number(raw);
+    if (Number.isInteger(parsed)) return parsed;
   }
   return fallback;
 }

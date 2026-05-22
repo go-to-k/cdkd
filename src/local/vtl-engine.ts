@@ -870,6 +870,23 @@ function compareValues(
   }
 }
 
+/**
+ * `==` / `!=` semantics for the VTL evaluator. Mirrors Apache Velocity's
+ * lenient equality: same-type primitives compare via `===`; nested objects
+ * / arrays compare structurally via canonical JSON; cross-type pairs (the
+ * common case in AWS API Gateway templates, e.g. `#if($x == "true")` where
+ * `$x` is a boolean from `$input.json('$.flag')`) fall back to comparing
+ * each side coerced through {@link safeStringify}. The cross-type fall-back
+ * is what Velocity itself does in this context, NOT JavaScript's
+ * `==` operator (which has its own well-known foot-guns around `null` /
+ * `undefined` / `NaN`). See the Velocity reference for the canonical
+ * semantics: <https://velocity.apache.org/engine/2.0/vtl-reference.html#a3.4.4.RelationalOperators>
+ * (look for the "Equivalent" / "Not Equivalent" rows).
+ *
+ * Both `null` and `undefined` collapse to a single sentinel — two
+ * unset variables are considered equal. This matches Velocity's lenient
+ * `null` handling (Issue (#507) item 8).
+ */
 function looseEqual(a: unknown, b: unknown): boolean {
   if (a === b) return true;
   if (a == null || b == null) return a == null && b == null;
@@ -917,6 +934,19 @@ function isTruthy(v: unknown): boolean {
  * `json(jsonPath)` returns a JSON-stringified slice of the parsed body;
  * `path(jsonPath)` returns the raw native value (primitives unquoted).
  *
+ * Case-sensitivity contract (Issue (#507) item 5; mirrored on the write
+ * side by `rest-v1-integrations.ts` `resolveRequestParameterValue` /
+ * `applyRequestParameters`):
+ *
+ *   - `$input.params('<name>')` resolves PATH (case-sensitive) →
+ *     QUERYSTRING (case-sensitive, last-wins on duplicates) → HEADER
+ *     (case-insensitive — first the input's pre-lowercased map, then a
+ *     last-resort case-insensitive scan; multi-value duplicates are
+ *     comma-joined by the http-server before reaching VTL).
+ *   - `$input.params('header')` / `$input.params('querystring')` /
+ *     `$input.params('path')` return the raw category maps without
+ *     case-folding the keys further.
+ *
  * JSONPath support is minimal: supports `$` (root), `$.field`,
  * `$.field.subField`, `$.array[0]`. AWS supports more (filter
  * expressions, recursive descent); cdkd surfaces a clear error on
@@ -930,24 +960,51 @@ export function buildVtlInput(
 ): VtlInput {
   let jsonBodyCache: unknown;
   let jsonBodyParsed = false;
-  function lazyJson(): unknown {
+  let jsonBodyParseError = false;
+  function lazyJson(opts?: { throwOnParseError?: boolean }): unknown {
     if (!jsonBodyParsed) {
       jsonBodyParsed = true;
-      try {
-        jsonBodyCache = body.length === 0 ? null : JSON.parse(body);
-      } catch {
+      if (body.length === 0) {
         jsonBodyCache = null;
+      } else {
+        try {
+          jsonBodyCache = JSON.parse(body);
+        } catch {
+          jsonBodyCache = null;
+          jsonBodyParseError = true;
+        }
       }
+    }
+    if (jsonBodyParseError && opts?.throwOnParseError) {
+      // Issue (#507) item 7: `$input.json(...)` against a non-JSON body
+      // surfaces a `VtlEvaluationError` (AWS API Gateway returns
+      // 400 + `{"message": "Invalid JSON request body"}` here; cdkd's
+      // dispatcher catches the error and returns 502 + the template + reason
+      // in the body, which is the closest local approximation given that
+      // the existing dispatch path treats every VtlEvaluationError as a
+      // template-failure 502 — see `vtlFailure` in
+      // `rest-v1-integrations.ts`). `$input.path(...)` keeps the pre-fix
+      // null-on-parse-failure behavior because it returns a native value
+      // and consumers (e.g. `#if(!$input.path('$.x'))`) often expect that
+      // shape; `$input.json(...)` is the documented entry point for
+      // JSON-stringified slices and AWS only fails THIS surface.
+      throw new VtlEvaluationError(
+        '$input.json(...) cannot be evaluated: request body is not valid JSON. ' +
+          'On AWS API Gateway this surface returns HTTP 400 with {"message":"Invalid JSON request body"}; ' +
+          'use $input.body or $input.path(...) when the upstream may emit non-JSON content.'
+      );
     }
     return jsonBodyCache;
   }
-  // `$input.json('$.path')` — JSON-stringified.
+  // `$input.json('$.path')` — JSON-stringified. Throws VtlEvaluationError
+  // when the body is non-empty and not valid JSON (Issue (#507) item 7).
   function jsonFn(...args: unknown[]): string {
     const expr = args.length > 0 ? String(args[0]) : '$';
-    const val = applyJsonPath(lazyJson(), expr);
+    const val = applyJsonPath(lazyJson({ throwOnParseError: true }), expr);
     return JSON.stringify(val ?? null);
   }
-  // `$input.path('$.path')` — native value.
+  // `$input.path('$.path')` — native value. Returns `null` when the body
+  // is not valid JSON (matches AWS's lenient native-path semantics).
   function pathFn(...args: unknown[]): unknown {
     const expr = args.length > 0 ? String(args[0]) : '$';
     return applyJsonPath(lazyJson(), expr);

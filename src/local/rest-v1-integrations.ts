@@ -230,6 +230,14 @@ export function dispatchMockIntegration(
       onUnsupported: (_k, _v, reason) => logger.warn(`MOCK response: ${reason}`),
     })
   );
+  // Issue (#507) item 4: AWS API Gateway omits Content-Type on empty MOCK
+  // responses; mirror that here. ResponseParameters can still set
+  // Content-Type if the template ships an explicit literal — that overlay
+  // already happened above, so checking on `headers['content-type']` (not
+  // `contentType`) preserves the user's explicit setting.
+  if (body === '' && headers['content-type'] === contentType) {
+    delete headers['content-type'];
+  }
 
   return {
     statusCode: parseStatus(entry.StatusCode) ?? 200,
@@ -277,7 +285,7 @@ export async function dispatchHttpProxyIntegration(
   for (const drop of ['host', 'connection', 'content-length', 'transfer-encoding']) {
     delete outHeaders[drop];
   }
-  applyRequestParameters(config.requestParameters, req, { headers: outHeaders, urlObj: undefined });
+  applyRequestParameters(config.requestParameters, req, { headers: outHeaders });
 
   const fetchImpl = deps.fetch ?? globalThis.fetch;
   const fetchInit: RequestInit = { method, headers: outHeaders };
@@ -398,7 +406,7 @@ export async function dispatchHttpIntegration(
   for (const drop of ['host', 'connection', 'content-length', 'transfer-encoding']) {
     delete outHeaders[drop];
   }
-  applyRequestParameters(config.requestParameters, req, { headers: outHeaders, urlObj: undefined });
+  applyRequestParameters(config.requestParameters, req, { headers: outHeaders });
 
   const fetchImpl = deps.fetch ?? globalThis.fetch;
   const fetchInit: RequestInit = { method, headers: outHeaders };
@@ -567,79 +575,86 @@ export async function dispatchAwsLambdaIntegration(
     };
   }
 
-  let invokeOutcome;
+  // Wrap every post-acquire path in `try { ... } finally { release }` so a
+  // throw in the synchronous selectIntegrationResponse / pickResponseTemplate
+  // / evaluateVtl block (very unlikely but possible on an exotic template)
+  // never strands the warm container — matches the buffered AWS_PROXY path's
+  // pattern in `http-server.ts` (Issue (#507) item 1).
   try {
-    invokeOutcome = await invokeRie(
-      handle.containerHost,
-      handle.hostPort,
-      eventPayload,
-      deps.rieTimeoutMs
-    );
-  } catch (err) {
-    deps.pool.release(handle);
-    return {
-      statusCode: 502,
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        message: 'AWS Lambda non-proxy invocation failed',
-        reason: err instanceof Error ? err.message : String(err),
-      }),
-    };
-  }
-  deps.pool.release(handle);
+    let invokeOutcome;
+    try {
+      invokeOutcome = await invokeRie(
+        handle.containerHost,
+        handle.hostPort,
+        eventPayload,
+        deps.rieTimeoutMs
+      );
+    } catch (err) {
+      return {
+        statusCode: 502,
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          message: 'AWS Lambda non-proxy invocation failed',
+          reason: err instanceof Error ? err.message : String(err),
+        }),
+      };
+    }
 
-  // Detect Lambda error envelope: `{ errorMessage, errorType?, stackTrace? }`.
-  const payload = invokeOutcome.payload;
-  const isError =
-    payload !== null &&
-    typeof payload === 'object' &&
-    'errorMessage' in (payload as Record<string, unknown>);
-  const matchTarget = isError
-    ? String((payload as Record<string, unknown>)['errorMessage'])
-    : 'success';
+    // Detect Lambda error envelope: `{ errorMessage, errorType?, stackTrace? }`.
+    const payload = invokeOutcome.payload;
+    const isError =
+      payload !== null &&
+      typeof payload === 'object' &&
+      'errorMessage' in (payload as Record<string, unknown>);
+    const matchTarget = isError
+      ? String((payload as Record<string, unknown>)['errorMessage'])
+      : 'success';
 
-  // Lambda success uses the sentinel match target `'success'` (which is
-  // unlikely to match any user-written SelectionPattern, so it falls to
-  // the default entry — preserves pre-fix #14 behavior on Lambda).
-  // Lambda error matches against the errorMessage string per AWS docs.
-  const selected = selectIntegrationResponse(config.responses, matchTarget, isError ? 500 : 200);
+    // Lambda success uses the sentinel match target `'success'` (which is
+    // unlikely to match any user-written SelectionPattern, so it falls to
+    // the default entry — preserves pre-fix #14 behavior on Lambda).
+    // Lambda error matches against the errorMessage string per AWS docs.
+    const selected = selectIntegrationResponse(config.responses, matchTarget, isError ? 500 : 200);
 
-  // Build response context with $inputRoot = parsed Lambda payload (AWS
-  // docs convention for response mapping templates).
-  const respCtx = buildVtlContextFromRequest(req, JSON.stringify(payload ?? null), payload);
+    // Build response context with $inputRoot = parsed Lambda payload (AWS
+    // docs convention for response mapping templates).
+    const respCtx = buildVtlContextFromRequest(req, JSON.stringify(payload ?? null), payload);
 
-  let body = '';
-  let contentType = 'application/json';
-  if (selected.entry) {
-    const picked = pickResponseTemplate(selected.entry.ResponseTemplates, req.headers['accept']);
-    if (picked) {
-      try {
-        body = evaluateVtl(picked.template, respCtx);
-      } catch (err) {
-        return vtlFailure('response', err, picked.template);
+    let body = '';
+    let contentType = 'application/json';
+    if (selected.entry) {
+      const picked = pickResponseTemplate(selected.entry.ResponseTemplates, req.headers['accept']);
+      if (picked) {
+        try {
+          body = evaluateVtl(picked.template, respCtx);
+        } catch (err) {
+          return vtlFailure('response', err, picked.template);
+        }
+        contentType = picked.contentType;
+      } else {
+        // No template — AWS emits the payload as JSON (matches AWS docs).
+        body = JSON.stringify(payload ?? null);
       }
-      contentType = picked.contentType;
     } else {
-      // No template — AWS emits the payload as JSON (matches AWS docs).
       body = JSON.stringify(payload ?? null);
     }
-  } else {
-    body = JSON.stringify(payload ?? null);
+
+    const headers: Record<string, string> = { 'content-type': contentType };
+    Object.assign(
+      headers,
+      evaluateResponseParameters(selected.entry?.ResponseParameters, {
+        onUnsupported: (_k, _v, reason) => logger.warn(`AWS Lambda non-proxy response: ${reason}`),
+      })
+    );
+
+    return {
+      statusCode: selected.statusCode,
+      headers,
+      body,
+    };
+  } finally {
+    deps.pool.release(handle);
   }
-
-  const headers: Record<string, string> = { 'content-type': contentType };
-  Object.assign(
-    headers,
-    evaluateResponseParameters(selected.entry?.ResponseParameters, {
-      onUnsupported: (_k, _v, reason) => logger.warn(`AWS Lambda non-proxy response: ${reason}`),
-    })
-  );
-
-  return {
-    statusCode: selected.statusCode,
-    headers,
-    body,
-  };
 }
 
 // ==================== Helpers ===========================================
@@ -691,22 +706,42 @@ function pickRequestTemplate(
 /**
  * Extract `{"statusCode": <N>}` from a rendered MOCK request template.
  * AWS uses this single key to drive `IntegrationResponses[]` selection.
+ *
+ * Returns `undefined` when the rendered template is not JSON OR does not
+ * carry a `{statusCode: N}` object OR the value is not a positive integer
+ * (Issue (#507) item 6 — `Number.isInteger` rejects `"200abc"` /
+ * fractional values that `Number.parseInt` would silently accept). On any
+ * fallback case the caller falls back to the default `IntegrationResponses[]`
+ * entry. The fallback path is logged at debug (Issue (#507) item 3) so
+ * users diagnosing a MOCK dispatch see what AWS would have seen.
  */
 function extractStatusCodeFromRendered(rendered: string): number | undefined {
+  const logFallback = (reason: string): undefined => {
+    const truncated = rendered.length > 200 ? rendered.slice(0, 200) + '...' : rendered;
+    getLogger()
+      .child('start-api')
+      .debug(
+        `MOCK request template did not yield a statusCode selection driver (${reason}); falling back to the default IntegrationResponses[] entry. Rendered output: ${truncated}`
+      );
+    return undefined;
+  };
+  let parsed: unknown;
   try {
-    const parsed = JSON.parse(rendered);
-    if (parsed && typeof parsed === 'object' && 'statusCode' in parsed) {
-      const val = (parsed as Record<string, unknown>)['statusCode'];
-      if (typeof val === 'number') return val;
-      if (typeof val === 'string') {
-        const n = Number.parseInt(val, 10);
-        if (Number.isFinite(n)) return n;
-      }
-    }
+    parsed = JSON.parse(rendered);
   } catch {
-    // Not JSON — that's OK, AWS just falls back to the default entry.
+    return logFallback('rendered output is not valid JSON');
   }
-  return undefined;
+  if (!parsed || typeof parsed !== 'object' || !('statusCode' in parsed)) {
+    return logFallback('rendered output has no statusCode field');
+  }
+  const val = (parsed as Record<string, unknown>)['statusCode'];
+  if (typeof val === 'number' && Number.isInteger(val)) return val;
+  if (typeof val === 'string') {
+    const n = Number(val);
+    if (Number.isInteger(n)) return n;
+    return logFallback(`statusCode '${val}' is not a valid integer`);
+  }
+  return logFallback(`statusCode has unexpected type '${typeof val}'`);
 }
 
 function defaultResponseEntry(
@@ -716,10 +751,13 @@ function defaultResponseEntry(
 }
 
 function parseStatus(raw: unknown): number | undefined {
-  if (typeof raw === 'number' && Number.isFinite(raw)) return raw;
+  // Issue (#507) item 6: prefer `Number(...) + Number.isInteger(...)` over
+  // `parseInt` so a malformed `StatusCode` value like `"200abc"` is rejected
+  // as `undefined` (caller falls back to default entry / 200).
+  if (typeof raw === 'number' && Number.isInteger(raw)) return raw;
   if (typeof raw === 'string') {
-    const n = Number.parseInt(raw, 10);
-    if (Number.isFinite(n)) return n;
+    const n = Number(raw);
+    if (Number.isInteger(n)) return n;
   }
   return undefined;
 }
@@ -846,10 +884,12 @@ function safeJsonParse(s: string): unknown {
  *
  * Supported key shapes:
  *   - `integration.request.header.<name>` → outgoing header
- *   - `integration.request.querystring.<name>` → query string param
- *   - `integration.request.path.<name>` → path placeholder substitution
+ *   - `integration.request.querystring.<name>` → query string param (warn-and-skip)
+ *   - `integration.request.path.<name>` → path placeholder substitution (warn-and-skip)
  *
- * Supported value shapes:
+ * Supported value shapes (header case-insensitive + multi-value comma-joined,
+ * querystring case-sensitive + last-wins; see {@link resolveRequestParameterValue}
+ * and `vtl-engine.ts` `$input.params` for the matching read-side semantics):
  *   - `method.request.header.<name>` → read incoming header
  *   - `method.request.querystring.<name>` → read incoming query param
  *   - `method.request.path.<name>` → read path parameter
@@ -857,11 +897,17 @@ function safeJsonParse(s: string): unknown {
  *
  * Unsupported mapping expressions are logged at warn and skipped (matches
  * the ResponseParameters handling in `integration-response-selector.ts`).
+ *
+ * Note: querystring / path-rewrite branches currently warn-and-skip; cdkd
+ * relies on `{paramName}` URI substitution for the canonical case (see
+ * {@link substituteUriPlaceholders}). The previous `urlObj` parameter was
+ * never used by the unimplemented querystring rewrite branch and has been
+ * dropped (Issue (#507) item 2).
  */
 function applyRequestParameters(
   requestParameters: Record<string, string> | undefined,
   req: RestV1IntegrationRequest,
-  out: { headers: Record<string, string>; urlObj: URL | undefined }
+  out: { headers: Record<string, string> }
 ): void {
   if (!requestParameters) return;
   const logger = getLogger().child('start-api');
@@ -879,9 +925,8 @@ function applyRequestParameters(
     if (headerMatch) {
       out.headers[headerMatch[1]!.toLowerCase()] = resolved;
     } else if (queryMatch) {
-      // The dispatchers consume the URL string before this hook runs in
-      // some paths; for query rewrites we mutate the URL by string-concat.
-      // Done inline in the dispatcher above instead — log + skip here.
+      // Querystring rewrites are recognized but cdkd applies querystring
+      // rewrites only via URI placeholder substitution; ignore.
       logger.warn(
         `RequestParameter '${key}' (querystring rewrite) is recognized but cdkd applies querystring rewrites only via URI placeholder substitution; ignoring.`
       );
@@ -898,6 +943,22 @@ function applyRequestParameters(
   }
 }
 
+/**
+ * Resolve a single `RequestParameters` value to a string.
+ *
+ * Case-sensitivity contract (Issue (#507) item 5; mirrored on the VTL
+ * read side by `vtl-engine.ts` `$input.params`):
+ *
+ *   - Header lookups are **case-insensitive** (the incoming-header map is
+ *     pre-lowercased by the http-server) and multi-value duplicates are
+ *     comma-joined.
+ *   - Querystring lookups are **case-sensitive** (matches AWS API Gateway's
+ *     deployed behavior) and multi-value duplicates surface only the
+ *     last-wins string (the http-server's request snapshot collapses
+ *     duplicates at parse time).
+ *   - Path parameters are case-sensitive (CFn template `{paramName}`
+ *     placeholders are case-sensitive by construction).
+ */
 function resolveRequestParameterValue(
   raw: string,
   req: RestV1IntegrationRequest
