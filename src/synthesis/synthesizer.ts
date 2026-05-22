@@ -295,15 +295,19 @@ export class Synthesizer {
     // standard flow on `cdkd deploy` / `diff` / `destroy` / `export` /
     // `import` / `orphan` — those resolve via `resolveStateBucketWithDefault`
     // BEFORE calling `synthesize` and pass it down) → STS-resolved
-    // `cdkd-state-{accountId}` default → hard-error.
+    // `cdkd-state-{accountId}` default → undefined (and the expander's
+    // upload branch hard-errors if the template is oversize).
     //
     // The hard-error case is structural: callers like `cdkd synth` /
     // `list` / `publish-assets` historically did not resolve a state
     // bucket because they don't need one for their own work, but a
     // macro-containing stack with a >51 KB template DOES need one for
     // the transient TemplateURL upload. The caller must thread one
-    // through or the user must pass `--state-bucket <name>`.
-    let stateBucket: string;
+    // through or the user must pass `--state-bucket <name>`. The
+    // pre-flight check here surfaces a friendlier SynthesisError with
+    // the offending stack name BEFORE expandMacros runs; the expander
+    // itself will also reject (via MacroExpansionError) defense-in-depth.
+    let stateBucket: string | undefined;
     if (options.stateBucket) {
       stateBucket = options.stateBucket;
     } else if (resolved?.accountId) {
@@ -324,12 +328,12 @@ export class Synthesizer {
             `cdkd deploy state storage; typically 'cdkd-state-<accountId>').`
         );
       }
-      // Sub-51 KB template: bucket isn't consulted, but the
-      // expander's signature still requires a value. Use an obviously
-      // synthetic name so any future code path that consults the
-      // field fails loudly instead of silently calling against a
-      // bucket that doesn't exist.
-      stateBucket = 'cdkd-state-unresolved-not-needed-for-inline';
+      // Sub-51 KB template: bucket isn't consulted. Pass `undefined`
+      // to the expander rather than a sentinel string — any future
+      // code path that consults the field on the inline branch will
+      // see undefined explicitly (the expander's optional
+      // `stateBucket?: string` signature documents this contract).
+      stateBucket = undefined;
     }
 
     for (const stack of stacksWithMacros) {
@@ -341,7 +345,7 @@ export class Synthesizer {
       const before = Date.now();
       const expanded = await expandMacros(stack.template, {
         region,
-        stateBucket,
+        ...(stateBucket !== undefined && { stateBucket }),
         ...(options.macroExpandS3ClientOpts && {
           s3ClientOpts: options.macroExpandS3ClientOpts,
         }),

@@ -91,18 +91,23 @@ vi.mock('../../../src/utils/aws-region-resolver.js', () => ({
   resolveBucketRegion: resolveBucketRegionMock,
 }));
 
-// Logger mock (no-op + child)
+// Logger mock — surface `warn` / `debug` calls so tests can assert
+// on cleanup-failure WARN paths (TR-MJ4) and other diagnostic logs.
+const loggerWarnMock = vi.hoisted(() => vi.fn());
+const loggerDebugMock = vi.hoisted(() => vi.fn());
+const loggerInfoMock = vi.hoisted(() => vi.fn());
+const loggerErrorMock = vi.hoisted(() => vi.fn());
 vi.mock('../../../src/utils/logger.js', () => ({
   getLogger: () => ({
-    debug: vi.fn(),
-    info: vi.fn(),
-    warn: vi.fn(),
-    error: vi.fn(),
+    debug: loggerDebugMock,
+    info: loggerInfoMock,
+    warn: loggerWarnMock,
+    error: loggerErrorMock,
     child: () => ({
-      debug: vi.fn(),
-      info: vi.fn(),
-      warn: vi.fn(),
-      error: vi.fn(),
+      debug: loggerDebugMock,
+      info: loggerInfoMock,
+      warn: loggerWarnMock,
+      error: loggerErrorMock,
     }),
   }),
 }));
@@ -167,6 +172,10 @@ beforeEach(() => {
   s3DestroyMock.mockReset();
   resolveBucketRegionMock.mockReset();
   resolveBucketRegionMock.mockResolvedValue('us-east-1');
+  loggerWarnMock.mockReset();
+  loggerDebugMock.mockReset();
+  loggerInfoMock.mockReset();
+  loggerErrorMock.mockReset();
 });
 
 describe('expandMacros — happy path', () => {
@@ -239,6 +248,61 @@ describe('expandMacros — happy path', () => {
     const result = await expandMacros(plain, { ...OPTS, cfnClient: client as never });
     expect(result).toBe(plain); // identity preserved
     expect(calls).toEqual([]);
+  });
+
+  // TR-MF1: STRING form Transform (not array). The detector already
+  // accepts both `Transform: '...'` and `Transform: ['...']` shapes;
+  // this test pins the expander's behavior end-to-end on the string
+  // form so a future detector refactor cannot silently change it.
+  it('expands a template with STRING-form Transform (Transform: "AWS::Serverless-...")', async () => {
+    waitUntilChangeSetCreateCompleteMock.mockResolvedValue({});
+    const { client, calls } = buildCfnClient({
+      CreateChangeSet: { Id: 'cs', StackId: 's' },
+      GetTemplate: { TemplateBody: EXPANDED_TEMPLATE },
+    });
+    const tpl = {
+      Transform: 'AWS::Serverless-2016-10-31', // STRING, not array
+      Resources: {
+        Fn: {
+          Type: 'AWS::Serverless::Function',
+          Properties: {
+            Runtime: 'nodejs20.x',
+            Handler: 'index.handler',
+            InlineCode: 'exports.handler = async () => ({ statusCode: 200 });',
+          },
+        },
+      },
+    };
+    const result = await expandMacros(tpl, { ...OPTS, cfnClient: client as never });
+    expect(result.Resources).toEqual(EXPANDED_TEMPLATE.Resources);
+    // Same flow as the array-form happy path: 3 calls in order.
+    expect(calls.map((c) => c.name)).toEqual(['CreateChangeSet', 'GetTemplate', 'DeleteStack']);
+  });
+
+  // TR-MJ3: nested Fn::Transform ONLY (no top-level Transform). The
+  // detector returns true on this shape too (Fn::Transform anywhere
+  // under Resources / Outputs / Mappings / Conditions / Rules), so
+  // the expander should still kick in.
+  it('expands a template with nested Fn::Transform but no top-level Transform', async () => {
+    waitUntilChangeSetCreateCompleteMock.mockResolvedValue({});
+    const { client, calls } = buildCfnClient({
+      CreateChangeSet: { Id: 'cs', StackId: 's' },
+      GetTemplate: { TemplateBody: EXPANDED_TEMPLATE },
+    });
+    const tpl = {
+      // NO top-level Transform.
+      Resources: {
+        IncludedBucket: {
+          'Fn::Transform': {
+            Name: 'AWS::Include',
+            Parameters: { Location: 's3://bucket/snippets/bucket.json' },
+          },
+        },
+      },
+    };
+    const result = await expandMacros(tpl, { ...OPTS, cfnClient: client as never });
+    expect(result.Resources).toEqual(EXPANDED_TEMPLATE.Resources);
+    expect(calls.map((c) => c.name)).toEqual(['CreateChangeSet', 'GetTemplate', 'DeleteStack']);
   });
 });
 
@@ -323,6 +387,102 @@ describe('expandMacros — error paths', () => {
     const result = await expandMacros(SAM_TEMPLATE, { ...OPTS, cfnClient: client as never });
     expect(result.Resources).toEqual(EXPANDED_TEMPLATE.Resources);
   });
+
+  // TR-MJ5: waiter fails AND the follow-up DescribeChangeSet also
+  // throws. The expander's existing `.catch(() => undefined)` swallows
+  // the describe failure, the StatusReason falls back to
+  // 'unknown (DescribeChangeSet failed)', and the outer error names it.
+  it('waiter failure with DescribeChangeSet also failing surfaces "unknown (DescribeChangeSet failed)"', async () => {
+    waitUntilChangeSetCreateCompleteMock.mockRejectedValue(new Error('waiter timeout'));
+    const { client } = buildCfnClient({
+      CreateChangeSet: { Id: 'cs', StackId: 's' },
+      DescribeChangeSet: new Error('AccessDenied: cloudformation:DescribeChangeSet'),
+    });
+    await expect(
+      expandMacros(SAM_TEMPLATE, { ...OPTS, cfnClient: client as never })
+    ).rejects.toThrow(/status=UNKNOWN.*unknown \(DescribeChangeSet failed\)/);
+  });
+
+  // TR-MJ6: realistic AWS SDK error shape (carries `name` +
+  // `$metadata`) propagates through MacroExpansionError's `cause`
+  // field. CR-MJ4 — operators rely on the `cause` chain to surface
+  // the underlying SDK error class + httpStatusCode.
+  it('preserves an AWS SDK-shaped error as MacroExpansionError.cause on CreateChangeSet rejection', async () => {
+    // Mimic the wire shape of an aws-sdk-js-v3 ServiceException.
+    const awsErr = Object.assign(new Error('ChangeSet [cs] failed validation'), {
+      name: 'ValidationException',
+      $metadata: { httpStatusCode: 400, requestId: 'abc-123' },
+    });
+    const { client } = buildCfnClient({
+      CreateChangeSet: awsErr,
+    });
+    try {
+      await expandMacros(SAM_TEMPLATE, { ...OPTS, cfnClient: client as never });
+      throw new Error('expected MacroExpansionError but no error was thrown');
+    } catch (err) {
+      expect(err).toBeInstanceOf(MacroExpansionError);
+      // The MacroExpansionError must carry the original AWS error as
+      // its `cause` — operators trace through to inspect $metadata.
+      const cause = (err as Error).cause;
+      expect(cause).toBe(awsErr);
+      expect((cause as { name?: string }).name).toBe('ValidationException');
+      expect(
+        (cause as { $metadata?: { httpStatusCode?: number } }).$metadata?.httpStatusCode
+      ).toBe(400);
+    }
+  });
+
+  // TR-MJ6 (companion): waiter timeout also propagates through
+  // MacroExpansionError.cause so operators can distinguish bounded
+  // waiter timeout vs CFn-side FAILED status.
+  it('preserves the waiter error as MacroExpansionError.cause on waiter timeout', async () => {
+    const waiterTimeoutErr = Object.assign(new Error('Waiter has timed out'), {
+      name: 'TimeoutError',
+    });
+    waitUntilChangeSetCreateCompleteMock.mockRejectedValue(waiterTimeoutErr);
+    const { client } = buildCfnClient({
+      CreateChangeSet: { Id: 'cs', StackId: 's' },
+      DescribeChangeSet: { Status: 'CREATE_IN_PROGRESS', StatusReason: 'Still expanding' },
+    });
+    try {
+      await expandMacros(SAM_TEMPLATE, { ...OPTS, cfnClient: client as never });
+      throw new Error('expected MacroExpansionError but no error was thrown');
+    } catch (err) {
+      expect(err).toBeInstanceOf(MacroExpansionError);
+      const cause = (err as Error).cause;
+      expect(cause).toBe(waiterTimeoutErr);
+      expect((cause as { name?: string }).name).toBe('TimeoutError');
+    }
+  });
+
+  // CR-M2: malformed Processed-stage body (non-object at top level)
+  // surfaces a structural-sanity-check error instead of being silently
+  // cast to `CloudFormationTemplate` and crashing downstream.
+  it('rejects a malformed Processed-stage body (non-object top level)', async () => {
+    waitUntilChangeSetCreateCompleteMock.mockResolvedValue({});
+    const { client } = buildCfnClient({
+      CreateChangeSet: { Id: 'cs', StackId: 's' },
+      // CFn-side regression: TemplateBody is a string but not a JSON object.
+      GetTemplate: { TemplateBody: '"a-string-not-an-object"' },
+    });
+    await expect(
+      expandMacros(SAM_TEMPLATE, { ...OPTS, cfnClient: client as never })
+    ).rejects.toThrow(/malformed Processed-stage template body.*expected a JSON object/);
+  });
+
+  // CR-M2: malformed `Resources` (string instead of object map) is
+  // caught at the structural sanity check rather than producing a
+  // crash deep in the analyzer pipeline.
+  it('rejects a Processed-stage body whose Resources is not an object map', async () => {
+    waitUntilChangeSetCreateCompleteMock.mockResolvedValue({});
+    const { client } = buildCfnClient({
+      CreateChangeSet: { Id: 'cs', StackId: 's' },
+      GetTemplate: { TemplateBody: { Resources: 'not-an-object' } },
+    });
+    await expect(
+      expandMacros(SAM_TEMPLATE, { ...OPTS, cfnClient: client as never })
+    ).rejects.toThrow(/'Resources' must be an object map/);
+  });
 });
 
 describe('expandMacros — TemplateURL fallback (over 51,200 bytes)', () => {
@@ -357,6 +517,92 @@ describe('expandMacros — TemplateURL fallback (over 51,200 bytes)', () => {
     expect(calls[0]!.input['TemplateURL']).toMatch(/^https:\/\//);
   });
 
+  // TR-MJ4: cleanup-failure WARN on the TemplateURL upload path.
+  // S3 PutObject succeeds (template uploaded; CreateChangeSet
+  // consumes the URL), then `s3Cleanup` (DeleteObjectCommand) throws
+  // during the finally block. The expander logs a WARN with the
+  // recovery-prefix `cdkd-migrate-tmp/` and the offending bucket
+  // name, then continues to surface the SUCCESSFUL expansion result.
+  it('s3Cleanup failure → WARN with recovery hint, expansion still succeeds', async () => {
+    waitUntilChangeSetCreateCompleteMock.mockResolvedValue({});
+    const big = {
+      Transform: ['AWS::Serverless-2016-10-31'],
+      Resources: {
+        Fn: {
+          Type: 'AWS::Serverless::Function',
+          Properties: { InlineCode: 'x'.repeat(60_000) },
+        },
+      },
+    };
+    // Sequence the S3 client: first call (PutObject) succeeds, second
+    // call (DeleteObject from cleanup) throws.
+    s3SendMock.mockReset();
+    s3SendMock
+      .mockResolvedValueOnce({}) // PutObject succeeds
+      .mockRejectedValueOnce(new Error('S3 AccessDenied'));
+    const { client } = buildCfnClient({
+      CreateChangeSet: { Id: 'cs', StackId: 's' },
+      GetTemplate: { TemplateBody: EXPANDED_TEMPLATE },
+    });
+    // Expansion SUCCEEDS — cleanup failure must not mask the outcome.
+    const result = await expandMacros(big, { ...OPTS, cfnClient: client as never });
+    expect(result.Resources).toEqual(EXPANDED_TEMPLATE.Resources);
+    // WARN was logged, naming the bucket + recovery-prefix.
+    const warns = loggerWarnMock.mock.calls.map((c) => String(c[0]));
+    const cleanupWarn = warns.find((w) => w.includes('cdkd-migrate-tmp/'));
+    expect(cleanupWarn).toBeDefined();
+    expect(cleanupWarn).toContain('cdkd-state-123456789012'); // the bucket name from OPTS
+    expect(cleanupWarn).toContain('S3 AccessDenied'); // the underlying error message
+    // And the recovery command's `aws s3 rm` form is present.
+    expect(cleanupWarn).toContain('aws s3 rm');
+  });
+
+  // CR-MJ1: oversize template + no stateBucket → MacroExpansionError
+  // with an actionable recovery hint, instead of leaking a sentinel
+  // string into the S3 upload helper (the pre-PR behavior threaded
+  // `'cdkd-state-unresolved-not-needed-for-inline'` and waited for
+  // the underlying SDK call to reject).
+  it('refuses oversize templates when stateBucket is undefined', async () => {
+    const big = {
+      Transform: ['AWS::Serverless-2016-10-31'],
+      Resources: {
+        Fn: {
+          Type: 'AWS::Serverless::Function',
+          Properties: { InlineCode: 'x'.repeat(60_000) },
+        },
+      },
+    };
+    const { client } = buildCfnClient({});
+    await expect(
+      expandMacros(big, {
+        region: 'us-east-1',
+        // NO stateBucket — testing that the upload branch rejects with
+        // a clear MacroExpansionError naming --state-bucket.
+        cfnClient: client as never,
+      })
+    ).rejects.toThrow(/cdkd needs a state bucket to upload.*--state-bucket/s);
+  });
+
+  // CR-MJ1 (companion): sub-51 KB templates DON'T need stateBucket,
+  // so passing `undefined` should run the inline path cleanly.
+  it('inline path (sub-51 KB) accepts undefined stateBucket without consulting it', async () => {
+    waitUntilChangeSetCreateCompleteMock.mockResolvedValue({});
+    const { client, calls } = buildCfnClient({
+      CreateChangeSet: { Id: 'cs', StackId: 's' },
+      GetTemplate: { TemplateBody: EXPANDED_TEMPLATE },
+    });
+    const result = await expandMacros(SAM_TEMPLATE, {
+      region: 'us-east-1',
+      // NO stateBucket.
+      cfnClient: client as never,
+    });
+    expect(result.Resources).toEqual(EXPANDED_TEMPLATE.Resources);
+    // Inline TemplateBody was used; no S3 PutObject ran.
+    expect(calls[0]!.input['TemplateBody']).toBeTypeOf('string');
+    expect(calls[0]!.input['TemplateURL']).toBeUndefined();
+    expect(s3SendMock).not.toHaveBeenCalled();
+  });
+
   it('refuses templates over the 1 MB TemplateURL ceiling with an actionable error', async () => {
     const huge = {
       Transform: ['AWS::Serverless-2016-10-31'],
@@ -389,26 +635,124 @@ describe('expandMacros — Type-aware Parameter placeholders', () => {
     expected: string;
   };
 
+  // TR-MN8 (per feedback_codify_with_calibration_set.md): exhaustive
+  // table covering every entry in PARAMETER_TYPE_PLACEHOLDERS plus the
+  // SSM Parameter::Value<*> shape detection. A missing row in this
+  // table on the next provider-extension PR fires a regression here
+  // instead of surfacing at deploy time against AWS's pre-macro
+  // validator.
   const CASES: ParamCase[] = [
+    // Scalar / list scalar.
     { name: 'String', type: 'String', expected: 'cdkd-macro-expand-placeholder' },
     { name: 'Number', type: 'Number', expected: '0' },
     { name: 'List<Number>', type: 'List<Number>', expected: '0' },
     { name: 'CommaDelimitedList', type: 'CommaDelimitedList', expected: '' },
+    { name: 'List<String>', type: 'List<String>', expected: '' },
+    // AWS-specific scalars.
     {
       name: 'AWS::EC2::AvailabilityZone::Name',
       type: 'AWS::EC2::AvailabilityZone::Name',
       expected: 'us-east-1a',
+    },
+    { name: 'AWS::EC2::Image::Id', type: 'AWS::EC2::Image::Id', expected: 'ami-00000000' },
+    { name: 'AWS::EC2::Instance::Id', type: 'AWS::EC2::Instance::Id', expected: 'i-00000000' },
+    {
+      name: 'AWS::EC2::KeyPair::KeyName',
+      type: 'AWS::EC2::KeyPair::KeyName',
+      expected: 'placeholder-key',
+    },
+    {
+      name: 'AWS::EC2::SecurityGroup::GroupName',
+      type: 'AWS::EC2::SecurityGroup::GroupName',
+      expected: 'placeholder-sg',
     },
     {
       name: 'AWS::EC2::SecurityGroup::Id',
       type: 'AWS::EC2::SecurityGroup::Id',
       expected: 'sg-00000000',
     },
+    { name: 'AWS::EC2::Subnet::Id', type: 'AWS::EC2::Subnet::Id', expected: 'subnet-00000000' },
+    { name: 'AWS::EC2::Volume::Id', type: 'AWS::EC2::Volume::Id', expected: 'vol-00000000' },
     { name: 'AWS::EC2::VPC::Id', type: 'AWS::EC2::VPC::Id', expected: 'vpc-00000000' },
+    {
+      name: 'AWS::Route53::HostedZone::Id',
+      type: 'AWS::Route53::HostedZone::Id',
+      expected: 'Z00000000000000000000',
+    },
+    { name: 'AWS::SSM::Parameter::Name', type: 'AWS::SSM::Parameter::Name', expected: 'placeholder' },
+    // AWS-specific lists.
+    {
+      name: 'List<AWS::EC2::AvailabilityZone::Name>',
+      type: 'List<AWS::EC2::AvailabilityZone::Name>',
+      expected: 'us-east-1a',
+    },
+    {
+      name: 'List<AWS::EC2::Image::Id>',
+      type: 'List<AWS::EC2::Image::Id>',
+      expected: 'ami-00000000',
+    },
+    {
+      name: 'List<AWS::EC2::Instance::Id>',
+      type: 'List<AWS::EC2::Instance::Id>',
+      expected: 'i-00000000',
+    },
+    {
+      name: 'List<AWS::EC2::SecurityGroup::GroupName>',
+      type: 'List<AWS::EC2::SecurityGroup::GroupName>',
+      expected: 'placeholder-sg',
+    },
+    {
+      name: 'List<AWS::EC2::SecurityGroup::Id>',
+      type: 'List<AWS::EC2::SecurityGroup::Id>',
+      expected: 'sg-00000000',
+    },
+    {
+      name: 'List<AWS::EC2::Subnet::Id>',
+      type: 'List<AWS::EC2::Subnet::Id>',
+      expected: 'subnet-00000000',
+    },
+    {
+      name: 'List<AWS::EC2::Volume::Id>',
+      type: 'List<AWS::EC2::Volume::Id>',
+      expected: 'vol-00000000',
+    },
+    {
+      name: 'List<AWS::EC2::VPC::Id>',
+      type: 'List<AWS::EC2::VPC::Id>',
+      expected: 'vpc-00000000',
+    },
+    {
+      name: 'List<AWS::Route53::HostedZone::Id>',
+      type: 'List<AWS::Route53::HostedZone::Id>',
+      expected: 'Z00000000000000000000',
+    },
+    // SSM Parameter::Value<...> fallbacks (CR-MJ3): scalar inner → single
+    // placeholder, list inner → comma-delimited placeholder so CFn's
+    // pre-macro Type validator accepts both forms.
     {
       name: 'AWS::SSM::Parameter::Value<String>',
       type: 'AWS::SSM::Parameter::Value<String>',
       expected: 'placeholder',
+    },
+    {
+      name: 'AWS::SSM::Parameter::Value<AWS::EC2::VPC::Id>',
+      type: 'AWS::SSM::Parameter::Value<AWS::EC2::VPC::Id>',
+      expected: 'placeholder',
+    },
+    {
+      name: 'AWS::SSM::Parameter::Value<List<String>>',
+      type: 'AWS::SSM::Parameter::Value<List<String>>',
+      expected: 'placeholder,placeholder',
+    },
+    {
+      name: 'AWS::SSM::Parameter::Value<List<AWS::EC2::Subnet::Id>>',
+      type: 'AWS::SSM::Parameter::Value<List<AWS::EC2::Subnet::Id>>',
+      expected: 'placeholder,placeholder',
+    },
+    {
+      name: 'AWS::SSM::Parameter::Value<CommaDelimitedList>',
+      type: 'AWS::SSM::Parameter::Value<CommaDelimitedList>',
+      expected: 'placeholder,placeholder',
     },
   ];
 
@@ -480,10 +824,13 @@ describe('expandMacros — Type-aware Parameter placeholders', () => {
 
 /**
  * Concurrent-call UUID independence: each `expandMacros(...)` call
- * computes `randomUUID().slice(0, 8)` AT call time (not at module
+ * computes `randomUUID().slice(0, 16)` AT call time (not at module
  * load), so two concurrent invocations produce different transient
  * stack names. Regression guard against accidental hoisting of the
- * UUID into a module-level constant.
+ * UUID into a module-level constant. CR-MJ2 widened the slice from
+ * 8 to 16 chars for stronger collision resistance; the test stays
+ * unchanged because it only asserts the canonical `cdkd-macro-expand-`
+ * prefix + distinct-suffix invariant.
  */
 describe('expandMacros — concurrent UUID independence', () => {
   it('two concurrent calls produce different transient stack names', async () => {

@@ -35,7 +35,15 @@ import { containsMacro, enumerateMacros } from './macro-detector.js';
  */
 export interface ExpandMacrosOptions {
   region: string;
-  stateBucket: string;
+  /**
+   * State bucket consulted ONLY by the > 51,200-byte `TemplateURL`
+   * upload branch. Sub-51 KB templates take the inline `TemplateBody`
+   * path and ignore this field — pass `undefined` from callers that
+   * cannot resolve a bucket and the inline branch will still work.
+   * The upload branch hard-errors with a clear `MacroExpansionError`
+   * when this is missing AND the template is oversize.
+   */
+  stateBucket?: string;
   cfnClient?: CloudFormationClient;
   s3ClientOpts?: CfnUploadS3ClientOpts;
   /**
@@ -89,6 +97,19 @@ void EMPIRICAL_FINDINGS_VERIFIED_2026_05_23;
 /** 600 seconds = 10 minutes. SDK waiter's `maxWaitTime` is in seconds. */
 const WAITER_MAX_WAIT_SECONDS = 600;
 const PARAMETER_PLACEHOLDER = 'cdkd-macro-expand-placeholder';
+/**
+ * Capabilities sent on every `CreateChangeSet` call:
+ *
+ * - `CAPABILITY_AUTO_EXPAND` is the load-bearing one — required for CFn
+ *   to actually run macro / `Transform` expansion (without it, CFn
+ *   rejects the changeset on any template that declares a Transform).
+ * - `CAPABILITY_NAMED_IAM` / `CAPABILITY_IAM` are defense-in-depth: SAM
+ *   transforms (`AWS::Serverless-2016-10-31`) emit Lambda execution
+ *   roles, and user-authored macros may emit arbitrary IAM resources
+ *   too. Sending them unconditionally avoids a second round-trip when
+ *   the expanded template carries IAM resources cdkd's deploy pipeline
+ *   would otherwise complain about.
+ */
 const CAPABILITIES: Capability[] = [
   'CAPABILITY_AUTO_EXPAND',
   'CAPABILITY_NAMED_IAM',
@@ -193,40 +214,79 @@ export async function expandMacros(
     `Macro expansion: detected transforms [${macros.join(', ')}], starting CFn round-trip...`
   );
 
-  const transientStackName = `cdkd-macro-expand-${randomUUID().slice(0, 8)}`;
+  // 16 chars of UUID hex → ~64 bits of entropy, ample collision
+  // resistance for transient per-call stack names (concurrent calls
+  // re-randomize, see the "concurrent UUID independence" test). The
+  // 8-char form used pre-CR-MJ2 was already safe in practice but the
+  // wider form is a free hardening — same readability, stronger
+  // guarantees for high-fan-out CI environments.
+  const transientStackName = `cdkd-macro-expand-${randomUUID().slice(0, 16)}`;
   const changeSetName = `${transientStackName}-changeset`;
   const region = opts.region;
   const stateBucket = opts.stateBucket;
   const waiterMaxWaitSeconds = opts.waiterMaxWaitSeconds ?? WAITER_MAX_WAIT_SECONDS;
 
-  const ownsClient = opts.cfnClient === undefined;
-  const cfn = opts.cfnClient ?? new CloudFormationClient({ region });
-
-  // Serialize the template (the inline / upload split runs on the
-  // serialized bytes, and we always need to send it over the wire).
-  const serialized = JSON.stringify(template);
-
-  // Parameter placeholders: per Q4 above, declared no-Default params
-  // need values for the changeset to even validate. CFn does NOT
-  // substitute these into the Processed-stage template.
-  const parameters = buildParameterValues(template, logger);
-
-  // Pick inline vs TemplateURL based on the wire size.
-  let templateInput: { TemplateBody: string } | { TemplateURL: string };
+  // CR-M1: declare BEFORE the try so the finally can see it, but
+  // construct INSIDE the try (after the JSON.stringify / parameter-build
+  // calls — both can theoretically throw on pathological inputs such
+  // as a synth template carrying a cycle). This keeps the SDK client
+  // teardown in `finally` from being skipped on those edge errors.
+  let cfn: CloudFormationClient | undefined;
+  let ownsClient = false;
   let s3Cleanup: (() => Promise<void>) | undefined;
 
   try {
+    // Serialize the template (the inline / upload split runs on the
+    // serialized bytes, and we always need to send it over the wire).
+    // JSON.stringify can throw on a circular reference; the try /
+    // finally now covers that case so the SDK client (if any) gets
+    // properly destroyed.
+    const serialized = JSON.stringify(template);
+
+    // Parameter placeholders: per Q4 above, declared no-Default params
+    // need values for the changeset to even validate. CFn does NOT
+    // substitute these into the Processed-stage template.
+    const parameters = buildParameterValues(template, logger);
+
+    // CR-M1: construct the SDK client only AFTER the above potentially-
+    // throwing calls have settled. `ownsClient = true` flips the
+    // finally's `cfn.destroy()` switch ON; passing a mock client via
+    // `opts.cfnClient` (tests) leaves it OFF.
+    ownsClient = opts.cfnClient === undefined;
+    cfn = opts.cfnClient ?? new CloudFormationClient({ region });
+
+    // Pick inline vs TemplateURL based on the wire size.
+    let templateInput: { TemplateBody: string } | { TemplateURL: string };
     if (serialized.length > CFN_TEMPLATE_URL_LIMIT) {
       throw new MacroExpansionError(
         `Template is ${serialized.length} bytes, which exceeds CloudFormation's ` +
           `${CFN_TEMPLATE_URL_LIMIT}-byte TemplateURL ceiling for macro expansion. ` +
           `Shrink inline payloads (move inline lambda.Code.ZipFile to ` +
           `lambda.Code.fromAsset, etc.) or split the stack before retrying.`
+        // No `cause` — this is a cdkd-side pre-flight rejection, not a
+        // wrapped AWS / SDK error. The size + remediation are the
+        // entire story.
       );
     }
     if (serialized.length <= CFN_TEMPLATE_BODY_LIMIT) {
       templateInput = { TemplateBody: serialized };
     } else {
+      // CR-MJ1: the upload branch is the ONLY path that consumes
+      // stateBucket. Hard-error here when it's missing, rather than
+      // threading a sentinel string into uploadCfnTemplate (which
+      // would either fail with a confusing AWS-side error or — worse
+      // — succeed against a real bucket whose name happens to match
+      // the sentinel).
+      if (!stateBucket) {
+        throw new MacroExpansionError(
+          `Template is ${serialized.length} bytes (over ${CFN_TEMPLATE_BODY_LIMIT} ` +
+            `inline limit) — cdkd needs a state bucket to upload the transient ` +
+            `template for CloudFormation's TemplateURL parameter. Pass --state-bucket <name> ` +
+            `or ensure STS GetCallerIdentity can resolve a default bucket ` +
+            `(cdkd-state-<accountId>).`
+          // No `cause` — pre-flight rejection, not a wrapped failure.
+        );
+      }
       logger.debug(
         `Macro expansion: template is ${serialized.length} bytes (over ${CFN_TEMPLATE_BODY_LIMIT} ` +
           `inline limit) — uploading to state bucket '${stateBucket}' for TemplateURL.`
@@ -266,6 +326,7 @@ export async function expandMacros(
     // The SDK waiter throws on FAILED; we catch and surface the
     // StatusReason via a follow-up DescribeChangeSet.
     let waiterFailed = false;
+    let waiterError: unknown;
     try {
       await waitUntilChangeSetCreateComplete(
         { client: cfn, maxWaitTime: waiterMaxWaitSeconds },
@@ -276,7 +337,11 @@ export async function expandMacros(
       // Fall through — `describe` below will surface the actual
       // StatusReason (almost always more useful than the generic
       // waiter error). Only re-throw on describe failure.
-      void waiterErr;
+      // CR-MJ4: keep the original waiter error so operators can
+      // distinguish SDK-side timeout from CFn-side FAILED status
+      // (e.g. when the waiter hit its bounded wait but CFn was still
+      // making progress, the `cause` carries the SDK TimeoutError).
+      waiterError = waiterErr;
     }
 
     if (waiterFailed) {
@@ -291,7 +356,8 @@ export async function expandMacros(
       const reason = desc?.StatusReason ?? 'unknown (DescribeChangeSet failed)';
       const status = desc?.Status ?? 'UNKNOWN';
       throw new MacroExpansionError(
-        `CloudFormation macro expansion failed (status=${status}): ${reason}`
+        `CloudFormation macro expansion failed (status=${status}): ${reason}`,
+        waiterError instanceof Error ? waiterError : undefined
       );
     }
 
@@ -304,6 +370,10 @@ export async function expandMacros(
       })
     );
     if (tpl.TemplateBody === undefined || tpl.TemplateBody === null) {
+      // CR-MJ4: no underlying cause — this is a CFn-side response
+      // shape problem (the SDK returned a successful response with no
+      // TemplateBody field). Document inline rather than fabricating
+      // a cause.
       throw new MacroExpansionError(
         `CloudFormation returned no Processed-stage template body for the ` +
           `macro-expansion changeset. This typically indicates a CFn-side ` +
@@ -316,6 +386,10 @@ export async function expandMacros(
     // ---- Multi-stage detection: reject ----
     if (containsMacro(expanded)) {
       const inner = enumerateMacros(expanded);
+      // CR-MJ4: no underlying cause — this is a cdkd-side scope
+      // decision (multi-stage expansion is intentionally out of scope
+      // for v1, see issue #463). The error stems from cdkd's
+      // policy, not a wrapped failure.
       throw new MacroExpansionError(
         `Macro expansion produced a template that still contains macros ` +
           `[${inner.join(', ')}]. Multi-stage macros (a macro whose expansion ` +
@@ -340,15 +414,23 @@ export async function expandMacros(
     // OK because the stack may already be gone (e.g. a concurrent
     // operator cleanup). Log failures at WARN so a stale stack is at
     // least visible to the operator.
-    try {
-      await cfn.send(new DeleteStackCommand({ StackName: transientStackName }));
-    } catch (cleanupErr) {
-      logger.warn(
-        `Failed to delete transient macro-expand stack ` +
-          `'${transientStackName}': ${formatErr(cleanupErr)}. ` +
-          `Clean up manually via 'aws cloudformation delete-stack ` +
-          `--stack-name ${transientStackName}'.`
-      );
+    //
+    // CR-M1: `cfn` may be `undefined` here if the pre-`CreateChangeSet`
+    // path threw before the SDK client was constructed (e.g. a
+    // pathological JSON.stringify failure). In that case there's no
+    // transient stack to clean up and no SDK client to tear down —
+    // skip both cleanup blocks silently.
+    if (cfn !== undefined) {
+      try {
+        await cfn.send(new DeleteStackCommand({ StackName: transientStackName }));
+      } catch (cleanupErr) {
+        logger.warn(
+          `Failed to delete transient macro-expand stack ` +
+            `'${transientStackName}': ${formatErr(cleanupErr)}. ` +
+            `Clean up manually via 'aws cloudformation delete-stack ` +
+            `--stack-name ${transientStackName}'.`
+        );
+      }
     }
     if (s3Cleanup) {
       try {
@@ -366,7 +448,7 @@ export async function expandMacros(
         );
       }
     }
-    if (ownsClient) {
+    if (ownsClient && cfn !== undefined) {
       cfn.destroy();
     }
   }
@@ -437,11 +519,33 @@ function stringifyParamDefault(
     const known = PARAMETER_TYPE_PLACEHOLDERS[type];
     if (known !== undefined) return known;
     // SSM `AWS::SSM::Parameter::Value<*>` / `Type` values use angle
-    // brackets to carry the inner shape ("Value<String>", "Value<List<String>>", etc.).
-    // CFn validates the SSM Parameter Name (a free-form string) at this
-    // pre-macro stage rather than the resolved value, so any non-empty
-    // string is accepted.
-    if (type.startsWith('AWS::SSM::Parameter::Value<')) return 'placeholder';
+    // brackets to carry the inner shape: `Value<String>`,
+    // `Value<List<String>>`, `Value<CommaDelimitedList>`,
+    // `Value<AWS::EC2::VPC::Id>`, `Value<List<AWS::EC2::Subnet::Id>>`,
+    // etc. (full grammar at
+    // https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/parameters-section-structure.html).
+    //
+    // The Parameter VALUE supplied to CFn is the **name of the SSM
+    // parameter to resolve at deploy time** — a single string for
+    // scalar `Value<...>` forms, but a comma-delimited list of SSM
+    // parameter names for `Value<List<*>>` / `Value<CommaDelimitedList>`
+    // forms. CFn validates that the supplied value PARSES per the
+    // outer shape BEFORE the macro Lambda runs; a single-string
+    // placeholder against a `Value<List<*>>` type would reject the
+    // changeset with "Parameter ... must be a list" (CR-MJ3 fix). Emit
+    // a 2-element comma-joined placeholder for list forms so the pre-
+    // macro validator accepts it; the resolved value still doesn't
+    // leak into the Processed-stage template either way.
+    if (type.startsWith('AWS::SSM::Parameter::Value<')) {
+      const inner = type.slice('AWS::SSM::Parameter::Value<'.length, -1);
+      // `Value<List<...>>` OR `Value<CommaDelimitedList>` need a list
+      // shape; everything else (`Value<String>`, `Value<AWS::EC2::*::Id>`,
+      // etc.) is a single SSM parameter name.
+      if (inner.startsWith('List<') || inner === 'CommaDelimitedList') {
+        return 'placeholder,placeholder';
+      }
+      return 'placeholder';
+    }
     logger.warn(
       `Parameter '${paramKey}' has unrecognized CFn Type '${type}'; using a generic ` +
         `string placeholder for the transient macro-expansion changeset. If CFn rejects ` +
@@ -461,9 +565,10 @@ function stringifyParamDefault(
  * `--template-stage Processed`). Handle both.
  */
 function parseTemplateBody(body: unknown): CloudFormationTemplate {
+  let parsed: unknown;
   if (typeof body === 'string') {
     try {
-      return JSON.parse(body) as CloudFormationTemplate;
+      parsed = JSON.parse(body);
     } catch (err) {
       // GetTemplate Processed-stage emits JSON for JSON-source templates
       // and YAML for YAML-source ones. cdkd's CDK app outputs JSON, so a
@@ -477,14 +582,41 @@ function parseTemplateBody(body: unknown): CloudFormationTemplate {
         err instanceof Error ? err : undefined
       );
     }
+  } else if (body && typeof body === 'object' && !Array.isArray(body)) {
+    parsed = body;
+  } else {
+    throw new MacroExpansionError(
+      `CloudFormation returned an unexpected TemplateBody shape (${typeof body}). ` +
+        `Expected a JSON string or parsed object.`
+    );
   }
-  if (body && typeof body === 'object' && !Array.isArray(body)) {
-    return body as CloudFormationTemplate;
+
+  // CR-M2: structural sanity check. CFn's Processed-stage response is
+  // supposed to be a CFn template object with `Resources` as an object
+  // map. A malformed body (e.g. CFn-side regression that surfaces
+  // `Resources: 'not-an-object'`) would otherwise leak into the
+  // analyzer / DAG pipeline as a runtime crash with no useful
+  // diagnostic. Surface here with a clear MacroExpansionError naming
+  // the offending shape.
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new MacroExpansionError(
+      `CloudFormation returned a malformed Processed-stage template body — ` +
+        `expected a JSON object at the top level, got ` +
+        `${Array.isArray(parsed) ? 'array' : typeof parsed}.`
+    );
   }
-  throw new MacroExpansionError(
-    `CloudFormation returned an unexpected TemplateBody shape (${typeof body}). ` +
-      `Expected a JSON string or parsed object.`
-  );
+  const resources = (parsed as Record<string, unknown>)['Resources'];
+  if (
+    resources !== undefined &&
+    (typeof resources !== 'object' || resources === null || Array.isArray(resources))
+  ) {
+    throw new MacroExpansionError(
+      `CloudFormation returned a malformed Processed-stage template body — ` +
+        `'Resources' must be an object map, got ` +
+        `${resources === null ? 'null' : Array.isArray(resources) ? 'array' : typeof resources}.`
+    );
+  }
+  return parsed as CloudFormationTemplate;
 }
 
 function formatErr(err: unknown): string {
