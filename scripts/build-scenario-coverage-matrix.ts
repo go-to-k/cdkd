@@ -174,6 +174,8 @@ const KNOWN_SCENARIOS: Record<string, string> = {
     '`cdkd local start-api` HTTP server with route discovery + per-Lambda warm container pool.',
   'local-ecs-task':
     '`cdkd local run-task` ECS TaskDefinition with docker network + AWS-published metadata sidecar.',
+  'local-ecs-service':
+    '`cdkd local start-service` long-running ECS Service emulator: replica pool, restart-on-exit, SIGINT teardown.',
   'local-from-state-substitution':
     '`cdkd local invoke|run-task --from-state` substitutes intrinsic-valued env/secret/role references against deployed cdkd state + AWS pseudo parameters.',
 };

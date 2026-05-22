@@ -12,6 +12,7 @@ directly.
 | `cdkd local invoke <target>` | One-shot Lambda invoke | AWS Lambda Runtime Interface Emulator (RIE) container |
 | `cdkd local start-api` | Long-running API Gateway (REST v1 / HTTP API / Function URL) | RIE container pool + `node:http` listener (one server per discovered API) |
 | `cdkd local run-task <target>` | ECS `RunTask` for one task | docker network + ECS metadata sidecar (`amazon/amazon-ecs-local-container-endpoints`) |
+| `cdkd local start-service <target>` | Long-running ECS `Service` emulator | `run-task` machinery per replica + per-replica docker subnet allocator + restart-on-exit watcher |
 
 ## Requirements
 
@@ -1142,9 +1143,9 @@ torn down. Use to `docker exec` into a stopped container post-mortem.
 
 | Out of scope | Why |
 | --- | --- |
-| `AWS::ECS::Service` / `DesiredCount` / `LaunchType` | Phase 2 (`cdkd local start-service`) |
-| ALB / NLB target group registration / listener rules | Phase 2 — needs an HTTP proxy emulator |
-| Service Connect / Cloud Map | Phase 3 — `docker network` alias gives 80% of the value |
+| `AWS::ECS::Service` / `DesiredCount` / `LaunchType` | Use `cdkd local start-service` instead |
+| ALB / NLB target group registration / listener rules | Deferred follow-up — needs an HTTP proxy emulator |
+| Service Connect / Cloud Map | Tracked separately ([#460](https://github.com/go-to-k/cdkd/issues/460)) |
 | Auto Scaling / Deployment Strategy | Not meaningful locally |
 | Fargate vs EC2 launch-type differences (PID namespace, `awsvpc`-only, ephemeral storage cap) | Local Docker can't enforce these |
 | EFS / FSx volumes | Need real AWS NFS / SMB; hard-error with a routing hint |
@@ -1153,3 +1154,80 @@ torn down. Use to `docker exec` into a stopped container post-mortem.
 | X-Ray sidecar's AWS-API mocking | Run the daemon explicitly if you need it |
 | AWS App Mesh / Envoy fidelity | Not meaningful locally |
 | awsvpc / ENI complete fidelity | Map to docker bridge with a warn |
+
+## `local start-service` (run an ECS Service locally)
+
+`cdkd local start-service <Stack/ServiceLogicalPath>` is the long-running
+counterpart of `cdkd local run-task`. It locates an
+`AWS::ECS::Service` in the synthesized template, chains into the
+existing `run-task` machinery once per `DesiredCount` replica (clamped
+by `--max-tasks`, default 3), and keeps every replica running until
+`^C`. Failed replicas restart per `--restart-policy on-failure |
+always | none` with exponential backoff (1s → 30s capped) so a
+crash-looping container does not hammer docker.
+
+Each replica gets its own per-task docker network on a UNIQUE
+`169.254.<N>.0/24` subnet (170, 171, 172, ...; see
+[src/local/ecs-network.ts](../src/local/ecs-network.ts)
+`buildEndpointSubnet`) so concurrent replicas don't collide on a
+single /24 — the same metadata-endpoint sidecar starts at
+`169.254.<N>.2` per replica and every container's
+`ECS_CONTAINER_METADATA_URI_V4` is rewritten to point at its own
+replica's sidecar.
+
+### `local start-service` target resolution
+
+Same grammar as `local run-task`:
+
+- `Stack/Service/...` (display path) or `Stack:LogicalId` (logical id).
+- Single-stack apps may omit the stack prefix.
+- The target MUST resolve to an `AWS::ECS::Service`; passing a bare
+  TaskDefinition surfaces a clear "use cdkd local run-task" hint.
+
+The Service's `TaskDefinition` property MUST be `{Ref:
+'<TaskDefLogicalId>'}` referencing a same-stack
+`AWS::ECS::TaskDefinition` (the standard CDK shape). Cross-stack
+TaskDefinitions and `Fn::ImportValue` shapes are rejected with a clear
+error.
+
+### `local start-service` options
+
+| Flag | Default | Behavior |
+| --- | --- | --- |
+| `--cluster <name>` | `cdkd-local` | Cluster name surfaced to `ECS_CONTAINER_METADATA_URI_V4` and used as the docker network prefix. Each replica's network appends `-svc-<service>-r<index>` so per-replica networks are easy to identify in `docker ps`. |
+| `--max-tasks <n>` | `3` | Hard cap on local replica count regardless of template `DesiredCount`. Local dev machines should not run an unbounded number of containers; raise this for production-shape workloads only when warranted. |
+| `--restart-policy <p>` | `on-failure` | Restart-on-exit behavior. `on-failure` restarts only on non-zero exit; `always` restarts on every exit (mirrors ECS Service deployment semantics more closely); `none` shuts the affected replica down and runs the service degraded. |
+| `--env-vars <file>` | — | SAM-shape JSON env-var overrides; same format as `run-task`. |
+| `--container-host <ip>` | `127.0.0.1` | Host IP to bind published container ports to. Must be a numeric IP. |
+| `--assume-task-role [arn]` | unset | Assume the task definition's TaskRoleArn (or the supplied ARN) and forward STS-issued temp credentials via the metadata sidecar so every replica's containers run with the deployed task role. Same three-form grammar as `run-task`. |
+| `--ecr-role-arn <arn>` | — | Role ARN to assume before ECR `docker pull` for cross-account / centralized registries. Same shape as `run-task`. |
+| `--platform <p>` | inferred | Force `--platform linux/amd64` or `linux/arm64`. |
+| `--no-pull` | off | Skip `docker pull` on every container image and the metadata sidecar. |
+| `--from-state` | off | Read cdkd S3 state and substitute intrinsic-valued env / secret / role-ARN / volume entries against the deployed cdkd state. Same shape as `cdkd local run-task --from-state`. |
+| `--stack-region <region>` | — | Region of the cdkd state record to read (used with `--from-state` when the same stack name has state in multiple regions). |
+
+### `local start-service` lifecycle
+
+`^C` (SIGINT) and SIGTERM trigger a graceful shutdown across every
+replica in parallel — each replica's docker containers + per-replica
+network + metadata sidecar are torn down via the same
+`cleanupEcsRun` path `run-task` uses. Double-`^C` bypasses cleanup and
+exits 130 immediately so users have an escape hatch when docker
+hangs.
+
+### `local start-service` scope (deferred follow-ups)
+
+| Deferred | Tracked in / Why |
+| --- | --- |
+| Local load-balancer emulator (listener + round-robin + target-group health check) | Follow-up PR — needs an HTTP/TCP proxy emulator. Today's start-service does NOT register replicas to a local listener; reach them via their published container ports. |
+| `--watch` / `--reload` (rolling deployment on file change) | Follow-up PR — mirrors `cdkd local start-api --watch` semantics; needs container-pool-style hot reload across replicas. |
+| Service Connect / Cloud Map cross-service discovery | [#460](https://github.com/go-to-k/cdkd/issues/460) — covers `ServiceConnectConfiguration`; warning is emitted when present in the template. |
+| Rolling deployment strategy (`DeploymentConfiguration.MaximumPercent` etc.) | Follow-up — meaningful only with the LB emulator. |
+| `HealthCheckGracePeriodSeconds` runtime semantics | Field is parsed and surfaced on `ResolvedEcsService` but not yet acted on. Becomes load-bearing when the LB emulator ships (today's restart policy fires on essential-container exit code, not health-check failure). |
+
+### `awsvpc` network mode
+
+ECS Services on Fargate require `awsvpc`. cdkd maps `awsvpc` to a
+per-task docker bridge network with a startup warn; security groups
+are NOT enforced locally and per-task ENIs are not emulated. Full
+rationale at [design/461-awsvpc-decision.md](design/461-awsvpc-decision.md).

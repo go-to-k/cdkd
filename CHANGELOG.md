@@ -1,3 +1,10 @@
+# [0.131.0](https://github.com/go-to-k/cdkd/compare/v0.130.0...v0.131.0) (2026-05-22)
+
+
+### Features
+
+* **local:** cdkd local start-service ECS service emulator ([#466](https://github.com/go-to-k/cdkd/issues/466) + [#461](https://github.com/go-to-k/cdkd/issues/461)) ([#504](https://github.com/go-to-k/cdkd/issues/504)) ([7489217](https://github.com/go-to-k/cdkd/commit/7489217e7ea82c7fa5ec991ba23cff3f6e9d978b))
+
 # [0.130.0](https://github.com/go-to-k/cdkd/compare/v0.129.0...v0.130.0) (2026-05-22)
 
 

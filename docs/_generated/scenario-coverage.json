@@ -53,6 +53,10 @@
       "description": "`cdkd local start-api` HTTP server with route discovery + per-Lambda warm container pool."
     },
     {
+      "tag": "local-ecs-service",
+      "description": "`cdkd local start-service` long-running ECS Service emulator: replica pool, restart-on-exit, SIGINT teardown."
+    },
+    {
       "tag": "local-ecs-task",
       "description": "`cdkd local run-task` ECS TaskDefinition with docker network + AWS-published metadata sidecar."
     },
@@ -520,6 +524,13 @@
       ]
     },
     {
+      "name": "local-start-service",
+      "annotated": true,
+      "scenarios": [
+        "local-ecs-service"
+      ]
+    },
+    {
       "name": "log-pipeline",
       "annotated": true,
       "scenarios": []
@@ -789,6 +800,13 @@
         "local-start-api",
         "local-start-api-container",
         "local-start-api-rest-v1-non-proxy"
+      ]
+    },
+    {
+      "scenario": "local-ecs-service",
+      "description": "`cdkd local start-service` long-running ECS Service emulator: replica pool, restart-on-exit, SIGINT teardown.",
+      "fixtures": [
+        "local-start-service"
       ]
     },
     {
