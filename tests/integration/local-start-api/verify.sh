@@ -152,6 +152,7 @@ EXPECTED_ROUTES=(
   "POST    /sqs"
   "POST    /events"
   "POST    /unknown-subtype"
+  "POST    /protected-sqs"
   "ANY     /v1/\\{proxy\\+\\}"
   "GET     /v1/unsupported"
   "GET     /v1/cross-stack-auth"
@@ -502,6 +503,46 @@ if ! echo "${UNK_BODY}" | grep -q 'BogusService-NotASubtype'; then
   exit 1
 fi
 echo "    [POST /unknown-subtype (501)] OK"
+
+# Issue #502: Lambda-authorizer-protected service-integration route.
+# Pre-PR the SDK dispatcher ran BEFORE the authorizer pass, letting
+# unauthenticated requests reach the SDK call. Post-PR the authorizer
+# pass runs FIRST — missing Bearer → 401, valid Bearer → SDK dispatches.
+echo "==> Asserting POST /protected-sqs without token -> 401 (auth pass runs BEFORE SDK)"
+PROTECTED_SQS_NOAUTH_STATUS=$(curl -s -o /dev/null -w '%{http_code}' -X POST \
+  -H 'Content-Type: application/json' \
+  -d '{"message":"hello"}' \
+  "http://127.0.0.1:${PORT_HTTP}/protected-sqs?url=https://sqs.invalid.example/q")
+if [[ "${PROTECTED_SQS_NOAUTH_STATUS}" != "401" ]]; then
+  echo "FAIL: expected 401 from auth-deny on /protected-sqs, got ${PROTECTED_SQS_NOAUTH_STATUS}"
+  cat "${LOG_FILE}"
+  exit 1
+fi
+echo "    [POST /protected-sqs (deny)] OK (status=401)"
+
+echo "==> Asserting POST /protected-sqs with valid Bearer -> SDK dispatches (NOT 401)"
+PROTECTED_SQS_AUTH_RESPONSE=$(curl -s -w '\nHTTP_STATUS=%{http_code}' -X POST \
+  -H 'Content-Type: application/json' \
+  -H 'Authorization: Bearer let-me-in' \
+  -d '{"message":"hello"}' \
+  "http://127.0.0.1:${PORT_HTTP}/protected-sqs?url=https://sqs.invalid.example/q")
+PROTECTED_SQS_AUTH_STATUS=$(echo "${PROTECTED_SQS_AUTH_RESPONSE}" | grep -oE 'HTTP_STATUS=[0-9]+' | cut -d= -f2)
+PROTECTED_SQS_AUTH_BODY=$(echo "${PROTECTED_SQS_AUTH_RESPONSE}" | sed '$ d')
+# Acceptance: anything other than 401 (= the auth pass let it through;
+# the SDK call fired and AWS returned 4xx from the missing queue / bogus
+# credentials / etc.). 501 would also be a failure (means dispatch
+# didn't fire). Most environments will surface 4xx from the SDK adapter.
+if [[ "${PROTECTED_SQS_AUTH_STATUS}" == "401" ]]; then
+  echo "FAIL: POST /protected-sqs with valid Bearer returned 401 — authorizer rejected valid token. Body: ${PROTECTED_SQS_AUTH_BODY}"
+  cat "${LOG_FILE}"
+  exit 1
+fi
+if [[ "${PROTECTED_SQS_AUTH_STATUS}" == "501" ]]; then
+  echo "FAIL: POST /protected-sqs returned 501 — SDK dispatch did not fire. Body: ${PROTECTED_SQS_AUTH_BODY}"
+  cat "${LOG_FILE}"
+  exit 1
+fi
+echo "    [POST /protected-sqs (allow + SDK)] OK (status=${PROTECTED_SQS_AUTH_STATUS})"
 
 echo ""
 echo "==> All local-start-api smoke tests passed"

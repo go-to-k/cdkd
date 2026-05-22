@@ -159,18 +159,31 @@ export class LocalStartApiStack extends cdk.Stack {
     const proxy = v1.addResource('{proxy+}');
     proxy.addMethod('ANY', new apigw.LambdaIntegration(restHandler, { proxy: true }));
 
-    // Deferred-error class: HTTP_PROXY integration (REST v1). cdkd cannot
-    // emulate non-AWS_PROXY REST v1 integrations, so this route becomes
-    // an `unsupported` route at discovery — boot proceeds, HTTP 501 fires
-    // at request time. verify.sh asserts both behaviors.
+    // Deferred-error class: REST v1 direct-AWS-service integration (closes
+    // #512). Pre-PR #505 this route was an HTTP_PROXY which fell through
+    // to deferred-501; post-#505 HTTP_PROXY is first-class so the route
+    // started forwarding to example.com (404). Now we use an integration
+    // with `Integration.Type: 'AWS'` and a non-Lambda service URI (S3) —
+    // cdkd's REST v1 dispatcher detects the non-`:lambda:path/` marker
+    // and surfaces deferred-501 ("non-Lambda service ... not emulated
+    // locally in cdkd v1"). verify.sh asserts the 501 path.
     const unsupported = v1.addResource('unsupported');
-    unsupported.addMethod(
-      'GET',
-      new apigw.HttpIntegration('https://example.com/never-actually-hit', {
-        httpMethod: 'GET',
-        proxy: true,
-      })
-    );
+    const unsupportedMethod = unsupported.addMethod('GET');
+    // CDK's L2 `Integration` constructs don't expose `AWS` direct-service
+    // type out of the box, so we use `addPropertyOverride` on the
+    // synthesized Method's Integration sub-resource. This produces a CFn
+    // `Integration: { Type: 'AWS', Uri: 'arn:aws:apigateway:...:s3:path/...' }`
+    // shape cdkd's REST v1 classifier rejects with the non-Lambda hint.
+    (unsupportedMethod.node.defaultChild as apigw.CfnMethod).addPropertyOverride('Integration', {
+      Type: 'AWS',
+      IntegrationHttpMethod: 'GET',
+      Uri: {
+        'Fn::Join': [
+          ':',
+          ['arn', 'aws', 'apigateway', { Ref: 'AWS::Region' }, 's3', 'path/example-bucket/key'],
+        ],
+      },
+    });
 
     // Authorizer Lambda Arn unresolvable (issue #431): build a CUSTOM
     // REQUEST authorizer pointing at a same-stack Lambda, then override
@@ -273,6 +286,50 @@ export class LocalStartApiStack extends cdk.Stack {
       apiId: httpApi.apiId,
       routeKey: 'POST /unknown-subtype',
       target: cdk.Fn.join('/', ['integrations', fakeSubtypeIntegration.ref]),
+    });
+
+    // Issue #502: Lambda-authorizer-protected service-integration route.
+    // Pre-PR cdkd dispatched the SDK call BEFORE the authorizer pass,
+    // letting unauthenticated requests reach the SDK. Post-PR the
+    // authorizer pass runs FIRST: missing Bearer → 401, valid Bearer →
+    // SDK dispatches (returns 4xx from the missing queue, NOT 401).
+    // Reuses `authorizer` (defined for /protected) so a single Lambda
+    // gates both routes — the Allow condition is `Authorization:
+    // Bearer let-me-in`.
+    const sqsSendProtectedIntegration = new apigwv2.CfnIntegration(
+      this,
+      'SqsSendProtectedInteg',
+      {
+        apiId: httpApi.apiId,
+        integrationType: 'AWS_PROXY',
+        integrationSubtype: 'SQS-SendMessage',
+        payloadFormatVersion: '1.0',
+        credentialsArn: 'arn:aws:iam::123456789012:role/fixture-sqs-protected-role',
+        requestParameters: {
+          QueueUrl: '$request.querystring.url',
+          MessageBody: '$request.body.message',
+          // `$context.authorizer.X` reference proving the authorizer
+          // context is plumbed into the parameter-mapping context (#502).
+          // The SDK call will fail (missing queue) but the resolved
+          // MessageAttributes value rides in on the request so verify.sh
+          // can grep cdkd's log for the substituted value.
+          MessageAttributes: cdk.Fn.sub(
+            JSON.stringify({
+              caller: {
+                DataType: 'String',
+                StringValue: '${context.authorizer.principalId}',
+              },
+            })
+          ),
+        },
+      }
+    );
+    new apigwv2.CfnRoute(this, 'SqsSendProtectedRoute', {
+      apiId: httpApi.apiId,
+      routeKey: 'POST /protected-sqs',
+      target: cdk.Fn.join('/', ['integrations', sqsSendProtectedIntegration.ref]),
+      authorizationType: 'CUSTOM',
+      authorizerId: authorizer.authorizerId,
     });
 
     // Function URL on a separate Lambda.

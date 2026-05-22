@@ -383,17 +383,12 @@ async function handleRequest(
     return;
   }
 
-  // HTTP API v2 service integration (#458): dispatch to the SDK via
-  // the per-subtype adapter table. Runs BEFORE authorizer + container
-  // acquire because there's no Lambda to acquire AND the authorizer
-  // pass (when wired) still applies to service integrations the same
-  // way it does to Lambda routes.
-  if (match.route.serviceIntegration) {
-    await handleServiceIntegrationRequest(req, res, match, bodyBuf, opts);
-    return;
-  }
-
   // Find the authorizer attached to the matched route (if any).
+  // Includes service-integration routes (#502): closes the gap left by
+  // PR #500 where the SDK dispatcher ran BEFORE the authorizer pass and
+  // every auth-protected service-integration route silently bypassed
+  // authentication. Post-fix the authorizer pass runs FIRST, regardless
+  // of whether the route is a Lambda or a service integration.
   const matchedEntry = state.routes.find(
     (r) => r.route.declaredAt === match.route.declaredAt && r.route.method === match.route.method
   );
@@ -429,7 +424,10 @@ async function handleRequest(
       ? buildRestV1Event(snapshot, matchCtx)
       : buildHttpApiV2Event(snapshot, matchCtx);
 
-  // Authorizer pass.
+  // Authorizer pass. Runs BEFORE service-integration dispatch (#502)
+  // and BEFORE container acquire, so a deny aborts the request without
+  // any AWS-side side effects on service-integration routes — symmetric
+  // with Lambda routes and matches AWS-deployed API Gateway behavior.
   let authResult: CachedAuthorizerResult | undefined;
   if (authorizer) {
     let outcome: AuthorizerOutcome;
@@ -461,6 +459,18 @@ async function handleRequest(
     if (overlay) {
       baseEvent = applyAuthorizerOverlay(baseEvent, overlay);
     }
+  }
+
+  // HTTP API v2 service integration (#458 / #502): dispatch to the SDK
+  // via the per-subtype adapter table AFTER the authorizer pass — an
+  // auth-protected SQS / EventBridge / etc. route rejects unauthenticated
+  // requests the same way Lambda routes do. The dispatcher receives the
+  // authorizer's context (claims / principalId / Lambda context) via
+  // `RequestParameterContext.authorizer` so `$context.authorizer.X`
+  // selection expressions resolve correctly.
+  if (match.route.serviceIntegration) {
+    await handleServiceIntegrationRequest(req, res, match, bodyBuf, opts, authorizer, authResult);
+    return;
   }
 
   // REST v1 non-AWS_PROXY dispatch (#457) — runs AFTER the authorizer
@@ -1343,7 +1353,9 @@ async function handleServiceIntegrationRequest(
   res: ServerResponse,
   match: { route: DiscoveredRoute; pathParameters: Record<string, string> },
   bodyBuf: Buffer,
-  opts: StartApiServerOptions
+  opts: StartApiServerOptions,
+  authorizer: AuthorizerInfo | undefined,
+  authResult: CachedAuthorizerResult | undefined
 ): Promise<void> {
   const route = match.route;
   const svc = route.serviceIntegration;
@@ -1357,6 +1369,13 @@ async function handleServiceIntegrationRequest(
   const queryString = parseQueryStringSingular(rawUrl);
   const requestPath = rawUrl.split('?')[0] ?? '/';
   const context = buildServiceIntegrationContextVars(req, route);
+  // Surface the authorizer's verdict to the parameter-mapping context so
+  // `$context.authorizer.X` selection expressions resolve on auth-
+  // protected service-integration routes (#502). The shape mirrors
+  // `applyAuthorizerOverlay`'s event-level overlay — Lambda authorizer
+  // context fields land flat under `authorizer`, JWT/Cognito claims
+  // land under `authorizer.jwt.claims` / `authorizer.claims`.
+  const authorizerCtx = buildAuthorizerContextForServiceIntegration(authorizer, authResult);
   const ctx: RequestParameterContext = {
     headers: headersFlat,
     queryString,
@@ -1365,6 +1384,7 @@ async function handleServiceIntegrationRequest(
     body: bodyBuf.toString('utf8'),
     context,
     stageVariables: route.stageVariables ?? {},
+    ...(authorizerCtx && { authorizer: authorizerCtx }),
   };
   const outcome = resolveServiceIntegrationParameters(svc.requestParameters, ctx);
   if (outcome.kind === 'error') {
@@ -1446,6 +1466,53 @@ function buildServiceIntegrationContextVars(
     protocol: 'HTTP/1.1',
     requestTime: new Date().toISOString(),
     requestTimeEpoch: String(Date.now()),
+  };
+}
+
+/**
+ * Build the `authorizer` field for the parameter-mapping context on
+ * service-integration routes (#502). Surfaces the authorizer's verdict
+ * in the same shape `applyAuthorizerOverlay` writes onto the Lambda
+ * event so users can reference `$context.authorizer.X` /
+ * `$context.authorizer.jwt.claims.X` / `$context.authorizer.claims.X`
+ * in `RequestParameters`.
+ *
+ * Per-kind shape:
+ *   - Lambda authorizers (`lambda-token` / `lambda-request` / `iam`):
+ *     `principalId` + flat `context` fields land at the top level
+ *     (`$context.authorizer.principalId`, `$context.authorizer.<key>`).
+ *   - Cognito (REST v1): claims under `$context.authorizer.claims.X`.
+ *   - JWT (HTTP v2): claims under `$context.authorizer.jwt.claims.X` +
+ *     `$context.authorizer.jwt.scopes`.
+ *
+ * Returns `undefined` when no authorizer fired (route had
+ * `AuthorizationType: NONE` / no authorizer attached).
+ */
+export function buildAuthorizerContextForServiceIntegration(
+  authorizer: AuthorizerInfo | undefined,
+  result: CachedAuthorizerResult | undefined
+): Record<string, unknown> | undefined {
+  if (!authorizer || !result) return undefined;
+  if (authorizer.kind === 'lambda-token' || authorizer.kind === 'lambda-request') {
+    const ctx: Record<string, unknown> = {};
+    if (result.principalId !== undefined) ctx['principalId'] = result.principalId;
+    if (result.context) Object.assign(ctx, result.context);
+    return ctx;
+  }
+  if (authorizer.kind === 'iam') {
+    const ctx: Record<string, unknown> = {};
+    if (result.principalId !== undefined) ctx['principalId'] = result.principalId;
+    return ctx;
+  }
+  if (authorizer.kind === 'cognito') {
+    return { claims: { ...(result.context ?? {}) } };
+  }
+  // jwt
+  return {
+    jwt: {
+      claims: { ...(result.context ?? {}) },
+      scopes: [],
+    },
   };
 }
 
