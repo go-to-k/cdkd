@@ -553,6 +553,27 @@ export function __setWaitForExitImpl(
   waitForExitImpl = impl;
 }
 
+const defaultSleepImpl = (ms: number): Promise<void> =>
+  new Promise((resolve) => setTimeout(resolve, ms));
+
+let sleepImpl: (ms: number) => Promise<void> = defaultSleepImpl;
+
+/**
+ * Test-only hook to short-circuit the restart-backoff sleep in the
+ * watcher loop. Production code uses real-time `setTimeout`; the
+ * canonical 1s `backoffDelayMs(0)` is too slow for a unit test poll
+ * loop that wants to assert `bootCount >= 2` in <100ms.
+ *
+ * Restores the production `setTimeout` impl when called with `undefined`.
+ */
+export function __setSleepImpl(impl: ((ms: number) => Promise<void>) | undefined): void {
+  if (impl === undefined) {
+    sleepImpl = defaultSleepImpl;
+    return;
+  }
+  sleepImpl = impl;
+}
+
 function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+  return sleepImpl(ms);
 }

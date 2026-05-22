@@ -46,6 +46,15 @@ import {
   dispatchMockIntegration,
   type RestV1IntegrationRequest,
 } from '../../../src/local/rest-v1-integrations.js';
+
+/**
+ * PR #515 item 5: the dispatcher only consults `acquire` + `release` on
+ * the supplied pool, so the test fixtures use this `Pick<...>` view as
+ * the typed mock shape. A future `ContainerPool` signature drift on
+ * either method (e.g. acquire growing a second arg) now surfaces here
+ * at compile time instead of being silently swallowed by `as any`.
+ */
+type MockContainerPool = Pick<ContainerPool, 'acquire' | 'release'>;
 import { selectIntegrationResponse } from '../../../src/local/integration-response-selector.js';
 import { buildVtlInput, VtlEvaluationError } from '../../../src/local/vtl-engine.js';
 import { randomUUID } from 'node:crypto';
@@ -86,11 +95,10 @@ describe('Issue (#507) item 1: dispatchAwsLambdaIntegration release in finally',
     } as any);
     const releaseSpy = vi.fn();
     const handle = { containerHost: '127.0.0.1', hostPort: 9000 };
-    const pool = {
+    const pool: MockContainerPool = {
       acquire: vi.fn(async () => handle),
       release: releaseSpy,
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    } as any as ContainerPool;
+    };
     const outcome = await dispatchAwsLambdaIntegration(
       {
         kind: 'aws-lambda',
@@ -123,11 +131,10 @@ describe('Issue (#507) item 1: dispatchAwsLambdaIntegration release in finally',
     vi.mocked(invokeRie).mockRejectedValueOnce(new Error('boom'));
     const releaseSpy = vi.fn();
     const handle = { containerHost: '127.0.0.1', hostPort: 9000 };
-    const pool = {
+    const pool: MockContainerPool = {
       acquire: vi.fn(async () => handle),
       release: releaseSpy,
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    } as any as ContainerPool;
+    };
     const outcome = await dispatchAwsLambdaIntegration(
       { kind: 'aws-lambda', lambdaLogicalId: 'X', responses: [] },
       buildRequest(),
@@ -139,13 +146,12 @@ describe('Issue (#507) item 1: dispatchAwsLambdaIntegration release in finally',
 
   it('does NOT release when acquire fails (nothing to release)', async () => {
     const releaseSpy = vi.fn();
-    const pool = {
+    const pool: MockContainerPool = {
       acquire: vi.fn(async () => {
         throw new Error('no container');
       }),
       release: releaseSpy,
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    } as any as ContainerPool;
+    };
     const outcome = await dispatchAwsLambdaIntegration(
       { kind: 'aws-lambda', lambdaLogicalId: 'X', responses: [] },
       buildRequest(),
@@ -545,6 +551,53 @@ describe('Issue (#507) item 6: Number.isInteger rejects malformed status codes',
       {
         kind: 'mock',
         requestTemplate: '{"statusCode": 999}',
+        responses: [
+          {
+            StatusCode: '200',
+            SelectionPattern: '2\\d{2}', // non-default
+            ResponseTemplates: { 'application/json': 'success' },
+          },
+          {
+            StatusCode: '500',
+            ResponseTemplates: { 'application/json': 'default' },
+            SelectionPattern: '', // default
+          },
+        ],
+      },
+      buildRequest()
+    );
+    expect(outcome.statusCode).toBe(500);
+  });
+
+  // PR #515 item 6: explicit hex-literal test. `Number("0x10") === 16`,
+  // which `Number.isInteger` accepts as an integer (no NaN guard catch),
+  // so the only barrier to acceptance is the `[100, 600)` HTTP-status
+  // range guard. The existing `"99"` below-range test covers the same
+  // code path symbolically, but a hex literal exercises a different
+  // shape of malformed input that a future regression could trip on
+  // (e.g. swapping `Number(trimmed)` for `parseInt(trimmed, 10)` —
+  // which would reject `"0x10"` for a different reason than range).
+  it('selectIntegrationResponse parseStatus rejects hex literal "0x10" (below 100 range)', () => {
+    const result = selectIntegrationResponse(
+      [{ StatusCode: '0x10', SelectionPattern: '.*' }],
+      'whatever',
+      404
+    );
+    // Number("0x10") === 16; 16 < 100 → rejected to the fallback.
+    expect(result.statusCode).toBe(404);
+  });
+
+  // PR #515 item 7: explicit whitespace-only test for the extractor
+  // (the selector module already covers this via the boundary matrix
+  // at line ~444). This guards the .trim() === '' branch on the rendered
+  // MOCK statusCode path so a future change to `extractStatusCodeFromRendered`
+  // doesn't accidentally regress on inputs that come through stringified
+  // (e.g. `'"   "'`).
+  it('extractStatusCodeFromRendered rejects whitespace-only statusCode', () => {
+    const outcome = dispatchMockIntegration(
+      {
+        kind: 'mock',
+        requestTemplate: '{"statusCode": "   "}',
         responses: [
           {
             StatusCode: '200',

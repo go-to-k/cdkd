@@ -34,6 +34,16 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# Pre-test orphan sweep — a failed previous run can leak cdkd-local-*
+# containers / networks, and the new per-replica subnet-isolation assertion
+# below counts every cdkd-local-* network, so a stranded network from the
+# previous run would either inflate NET_COUNT or surface a duplicate-subnet
+# false positive. Run cleanup() once at boot to guarantee a clean baseline;
+# the function is idempotent (xargs -r over empty input, kill -0 short-circuit
+# on the unset CDKD_PID) so it's safe to invoke without any state populated.
+echo "==> Pre-test orphan sweep"
+cleanup
+
 echo "==> Verifying Docker is available"
 docker version --format '{{.Server.Version}}' >/dev/null
 
