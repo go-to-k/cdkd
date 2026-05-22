@@ -1,3 +1,10 @@
+## [0.135.1](https://github.com/go-to-k/cdkd/compare/v0.135.0...v0.135.1) (2026-05-22)
+
+
+### Bug Fixes
+
+* **local:** bundle review nits from 2026-05-22 cleanup session ([#515](https://github.com/go-to-k/cdkd/issues/515)) ([#518](https://github.com/go-to-k/cdkd/issues/518)) ([d931cca](https://github.com/go-to-k/cdkd/commit/d931cca71adcb17e74d93f697ebe4515a9bff150))
+
 # [0.135.0](https://github.com/go-to-k/cdkd/compare/v0.134.0...v0.135.0) (2026-05-22)
 
 
