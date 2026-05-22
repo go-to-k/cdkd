@@ -277,4 +277,29 @@ describe('invokeRieStreaming', () => {
     await invokeRieStreaming('127.0.0.1', port, { foo: 'bar' }, 5000);
     expect(received).toBe(JSON.stringify({ foo: 'bar' }));
   });
+
+  it('rejects when the prelude exceeds the 1 MiB safety cap', async () => {
+    // The cap is the "handler didn't call HttpResponseStream.from" trap:
+    // without the separator, the reader would buffer the entire response
+    // body looking for it. 1 MiB is far past any reasonable prelude.
+    // Stream `BIG_LEN` bytes of garbage, NO separator. The helper must
+    // bail before OOM.
+    const BIG_LEN = 1.2 * 1024 * 1024;
+    nextStreamResponse = async (_req, res) => {
+      res.writeHead(200);
+      // Write in chunks so the helper has multiple read() calls to land
+      // on before hitting the cap.
+      const chunk = Buffer.alloc(64 * 1024, 0x41); // 'A' * 64KB, no NULs
+      const chunks = Math.ceil(BIG_LEN / chunk.length);
+      for (let i = 0; i < chunks; i++) {
+        if (!res.write(chunk)) {
+          await new Promise<void>((r) => res.once('drain', () => r()));
+        }
+      }
+      res.end();
+    };
+    await expect(invokeRieStreaming('127.0.0.1', port, {}, 10000)).rejects.toThrow(
+      /did not emit the prelude\/body separator/
+    );
+  });
 });
