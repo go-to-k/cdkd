@@ -275,9 +275,42 @@ describe('Issue (#507) item 4: MOCK Content-Type omitted on empty body', () => {
       buildRequest()
     );
     expect(outcome.body).toBe('');
-    // ResponseParameters overlays produce header keys preserving the
-    // original casing from the template (matches existing behavior).
-    expect(outcome.headers['Content-Type']).toBe('text/plain');
+    // PR #511 review fix-back: ResponseParameters keys are lowercased at
+    // the overlay layer so the merge with the dispatcher's
+    // default-initializer (`headers['content-type']`) collapses to one
+    // entry instead of producing `content-type` AND `Content-Type` side
+    // by side. The overlay's literal value wins (matches AWS-deployed
+    // single-header semantics).
+    expect(outcome.headers['content-type']).toBe('text/plain');
+    expect(outcome.headers['Content-Type']).toBeUndefined();
+  });
+
+  it('PR #511 review fix-back: case-distinct keys collapse on non-empty body', () => {
+    // Regression guard: a non-empty body case used to leak
+    // `headers['content-type'] = 'application/json'` (default) AND
+    // `headers['Content-Type'] = 'text/xml'` (overlay) side by side,
+    // resulting in two conflicting headers reaching the wire. With
+    // the lowercase normalization at the overlay layer the two entries
+    // collapse to a single `content-type` and the overlay value wins.
+    const outcome = dispatchMockIntegration(
+      {
+        kind: 'mock',
+        requestTemplate: undefined,
+        responses: [
+          {
+            StatusCode: '200',
+            ResponseTemplates: { 'application/json': 'hello world' },
+            ResponseParameters: {
+              'method.response.header.Content-Type': "'text/xml'",
+            },
+          },
+        ],
+      },
+      buildRequest()
+    );
+    expect(outcome.body).toBe('hello world');
+    expect(outcome.headers['content-type']).toBe('text/xml');
+    expect(outcome.headers['Content-Type']).toBeUndefined();
   });
 });
 
@@ -383,6 +416,151 @@ describe('Issue (#507) item 6: Number.isInteger rejects malformed status codes',
       200
     );
     expect(result.statusCode).toBe(404);
+  });
+
+  // ==================== PR #511 review fix-back =========================
+  // The pre-review-fix `Number(...) + Number.isInteger(...)` validation
+  // accepted empty strings (Number("") === 0), whitespace-only strings,
+  // negative numbers, and out-of-range integers. Tighten the range guard
+  // to HTTP status [100, 600) and reject empty / whitespace input.
+
+  it('selectIntegrationResponse parseStatus rejects empty-string StatusCode', () => {
+    // Number("") === 0 — pre-fix this passed `Number.isInteger` and the
+    // dispatcher emitted HTTP 0 response code. Post-fix it falls back.
+    const result = selectIntegrationResponse(
+      [{ StatusCode: '', SelectionPattern: '.*' }],
+      'whatever',
+      599 // fallback marker
+    );
+    expect(result.statusCode).toBe(599);
+  });
+
+  it('selectIntegrationResponse parseStatus rejects whitespace-only StatusCode', () => {
+    // Number(" ") === 0 — same shape as empty string.
+    const result = selectIntegrationResponse(
+      [{ StatusCode: '   ', SelectionPattern: '.*' }],
+      'whatever',
+      599
+    );
+    expect(result.statusCode).toBe(599);
+  });
+
+  it('selectIntegrationResponse parseStatus rejects negative StatusCode', () => {
+    // Number("-1") === -1 passes Number.isInteger but is not a valid
+    // HTTP status code. Range guard at [100, 600) rejects it.
+    const result = selectIntegrationResponse(
+      [{ StatusCode: '-1', SelectionPattern: '.*' }],
+      'whatever',
+      599
+    );
+    expect(result.statusCode).toBe(599);
+  });
+
+  it('selectIntegrationResponse parseStatus rejects out-of-range StatusCode (>=600)', () => {
+    const result = selectIntegrationResponse(
+      [{ StatusCode: '999', SelectionPattern: '.*' }],
+      'whatever',
+      599
+    );
+    expect(result.statusCode).toBe(599);
+  });
+
+  it('selectIntegrationResponse parseStatus rejects below-range StatusCode (<100)', () => {
+    // Number("16") === 16 passes Number.isInteger but is not a valid
+    // HTTP status code (Number("0x10") === 16 also lands here).
+    const result = selectIntegrationResponse(
+      [{ StatusCode: '99', SelectionPattern: '.*' }],
+      'whatever',
+      599
+    );
+    expect(result.statusCode).toBe(599);
+  });
+
+  it('selectIntegrationResponse parseStatus accepts boundary 100', () => {
+    const result = selectIntegrationResponse(
+      [{ StatusCode: '100', SelectionPattern: '.*' }],
+      'whatever',
+      599
+    );
+    expect(result.statusCode).toBe(100);
+  });
+
+  it('selectIntegrationResponse parseStatus accepts boundary 599', () => {
+    const result = selectIntegrationResponse(
+      [{ StatusCode: '599', SelectionPattern: '.*' }],
+      'whatever',
+      200
+    );
+    expect(result.statusCode).toBe(599);
+  });
+
+  it('extractStatusCodeFromRendered rejects empty-string statusCode', () => {
+    const outcome = dispatchMockIntegration(
+      {
+        kind: 'mock',
+        requestTemplate: '{"statusCode": ""}',
+        responses: [
+          {
+            StatusCode: '200',
+            SelectionPattern: '2\\d{2}', // non-default
+            ResponseTemplates: { 'application/json': 'success' },
+          },
+          {
+            StatusCode: '500',
+            ResponseTemplates: { 'application/json': 'default' },
+            SelectionPattern: '', // default
+          },
+        ],
+      },
+      buildRequest()
+    );
+    expect(outcome.statusCode).toBe(500);
+  });
+
+  it('extractStatusCodeFromRendered rejects negative statusCode', () => {
+    const outcome = dispatchMockIntegration(
+      {
+        kind: 'mock',
+        requestTemplate: '{"statusCode": -1}',
+        responses: [
+          {
+            StatusCode: '200',
+            SelectionPattern: '2\\d{2}', // non-default
+            ResponseTemplates: { 'application/json': 'success' },
+          },
+          {
+            StatusCode: '500',
+            ResponseTemplates: { 'application/json': 'default' },
+            SelectionPattern: '', // default
+          },
+        ],
+      },
+      buildRequest()
+    );
+    expect(outcome.statusCode).toBe(500);
+  });
+
+  it('extractStatusCodeFromRendered rejects out-of-range statusCode (999)', () => {
+    const outcome = dispatchMockIntegration(
+      {
+        kind: 'mock',
+        requestTemplate: '{"statusCode": 999}',
+        responses: [
+          {
+            StatusCode: '200',
+            SelectionPattern: '2\\d{2}', // non-default
+            ResponseTemplates: { 'application/json': 'success' },
+          },
+          {
+            StatusCode: '500',
+            ResponseTemplates: { 'application/json': 'default' },
+            SelectionPattern: '', // default
+          },
+        ],
+      },
+      buildRequest()
+    );
+    expect(outcome.statusCode).toBe(500);
   });
 });
 

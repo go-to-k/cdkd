@@ -160,12 +160,26 @@ function parseStatus(raw: unknown, fallback: number): number {
   // as `undefined` and the caller falls back to `fallback` rather than
   // silently truncating to `200`. Same rationale as `extractStatusCodeFromRendered`
   // in `rest-v1-integrations.ts`.
-  if (typeof raw === 'number' && Number.isInteger(raw)) return raw;
-  if (typeof raw === 'string') {
-    const parsed = Number(raw);
-    if (Number.isInteger(parsed)) return parsed;
+  //
+  // PR #511 review fix-back: `Number(...)` accepts empty strings (→ 0),
+  // pure-whitespace strings (→ 0), negative numbers, and out-of-range
+  // integers — all of which are invalid HTTP status codes. Tighten the
+  // validation to reject those classes too:
+  //   - non-string non-number → fallback
+  //   - empty / whitespace-only string → fallback
+  //   - NaN / non-integer → fallback
+  //   - integer outside [100, 599] → fallback (HTTP status code range)
+  if (typeof raw === 'number') {
+    if (Number.isInteger(raw) && raw >= 100 && raw < 600) return raw;
+    return fallback;
   }
-  return fallback;
+  if (typeof raw !== 'string') return fallback;
+  const trimmed = raw.trim();
+  if (trimmed === '') return fallback;
+  const parsed = Number(trimmed);
+  if (!Number.isInteger(parsed)) return fallback;
+  if (parsed < 100 || parsed >= 600) return fallback;
+  return parsed;
 }
 
 /**
@@ -178,6 +192,17 @@ function parseStatus(raw: unknown, fallback: number): number {
  * are `'literal'` (with single quotes) or mapping expressions
  * (`integration.response.body.X` / `integration.response.header.X` /
  * `context.X`). cdkd v1 supports the literal form only.
+ *
+ * PR #511 review fix-back: header names are lowercased here so the
+ * returned map shares the same key namespace as the dispatcher's
+ * default-initialized headers (`{'content-type': '...'}`). Without
+ * normalization a template that sets `Content-Type` PascalCase via
+ * ResponseParameters produced a headers object carrying BOTH
+ * `'content-type': 'application/json'` (default) AND
+ * `'Content-Type': 'text/xml'` (overlay), which downstream HTTP
+ * serialization rendered as two conflicting headers — AWS-deployed
+ * only ever returns one. By lowercasing every key, overlays simply
+ * overwrite the default-initializer entry like AWS does.
  */
 export function evaluateResponseParameters(
   responseParameters: Record<string, string> | undefined,
@@ -195,7 +220,7 @@ export function evaluateResponseParameters(
       );
       continue;
     }
-    const headerName = headerMatch[1]!;
+    const headerName = headerMatch[1]!.toLowerCase();
     if (typeof value !== 'string') {
       opts.onUnsupported?.(key, String(value), `non-string ResponseParameter value`);
       continue;

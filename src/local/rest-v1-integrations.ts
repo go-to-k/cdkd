@@ -735,11 +735,21 @@ function extractStatusCodeFromRendered(rendered: string): number | undefined {
     return logFallback('rendered output has no statusCode field');
   }
   const val = (parsed as Record<string, unknown>)['statusCode'];
-  if (typeof val === 'number' && Number.isInteger(val)) return val;
+  // PR #511 review fix-back: tighten validation beyond `Number.isInteger`
+  // so empty strings (Number("") === 0), whitespace-only strings, negative
+  // numbers, and out-of-range integers all reject. Valid HTTP status codes
+  // live in [100, 599]; anything else falls back to the default entry.
+  if (typeof val === 'number') {
+    if (Number.isInteger(val) && val >= 100 && val < 600) return val;
+    return logFallback(`statusCode ${val} is out of HTTP range [100, 600)`);
+  }
   if (typeof val === 'string') {
-    const n = Number(val);
-    if (Number.isInteger(n)) return n;
-    return logFallback(`statusCode '${val}' is not a valid integer`);
+    const trimmed = val.trim();
+    if (trimmed === '') return logFallback('statusCode is empty / whitespace');
+    const n = Number(trimmed);
+    if (!Number.isInteger(n)) return logFallback(`statusCode '${val}' is not a valid integer`);
+    if (n < 100 || n >= 600) return logFallback(`statusCode ${n} is out of HTTP range [100, 600)`);
+    return n;
   }
   return logFallback(`statusCode has unexpected type '${typeof val}'`);
 }
@@ -754,12 +764,22 @@ function parseStatus(raw: unknown): number | undefined {
   // Issue (#507) item 6: prefer `Number(...) + Number.isInteger(...)` over
   // `parseInt` so a malformed `StatusCode` value like `"200abc"` is rejected
   // as `undefined` (caller falls back to default entry / 200).
-  if (typeof raw === 'number' && Number.isInteger(raw)) return raw;
-  if (typeof raw === 'string') {
-    const n = Number(raw);
-    if (Number.isInteger(n)) return n;
+  //
+  // PR #511 review fix-back: tighten validation so empty strings
+  // (Number("") === 0), whitespace-only strings, negatives, and
+  // out-of-range integers all reject. Valid HTTP status codes are
+  // in [100, 599].
+  if (typeof raw === 'number') {
+    if (Number.isInteger(raw) && raw >= 100 && raw < 600) return raw;
+    return undefined;
   }
-  return undefined;
+  if (typeof raw !== 'string') return undefined;
+  const trimmed = raw.trim();
+  if (trimmed === '') return undefined;
+  const n = Number(trimmed);
+  if (!Number.isInteger(n)) return undefined;
+  if (n < 100 || n >= 600) return undefined;
+  return n;
 }
 
 /**

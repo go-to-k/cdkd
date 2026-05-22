@@ -113,17 +113,21 @@ describe('selectIntegrationResponse', () => {
 });
 
 describe('evaluateResponseParameters', () => {
-  it('extracts single-quoted literal header values', () => {
+  it('extracts single-quoted literal header values (keys lowercased — PR #511 review fix-back)', () => {
     const out = evaluateResponseParameters({
       'method.response.header.X-Custom': "'literal-value'",
       'method.response.header.Content-Type': "'application/json'",
     });
+    // PR #511 review fix-back: ResponseParameters keys are lowercased so
+    // they share the dispatcher's default-initializer namespace and AWS-
+    // deployed single-header semantics. Pre-fix this returned PascalCase
+    // keys which collided with the default `content-type` lowercase key.
     expect(out).toEqual({
-      'X-Custom': 'literal-value',
-      'Content-Type': 'application/json',
+      'x-custom': 'literal-value',
+      'content-type': 'application/json',
     });
   });
-  it('skips and surfaces mapping expressions', () => {
+  it('skips and surfaces mapping expressions (keys lowercased — PR #511 review fix-back)', () => {
     const seen: Array<{ key: string; reason: string }> = [];
     const out = evaluateResponseParameters(
       {
@@ -132,7 +136,7 @@ describe('evaluateResponseParameters', () => {
       },
       { onUnsupported: (key, _v, reason) => seen.push({ key, reason }) }
     );
-    expect(out).toEqual({ Y: 'literal' });
+    expect(out).toEqual({ y: 'literal' });
     expect(seen[0]?.key).toBe('method.response.header.X');
   });
   it('returns empty map when input undefined', () => {
