@@ -1,3 +1,10 @@
+# [0.132.0](https://github.com/go-to-k/cdkd/compare/v0.131.0...v0.132.0) (2026-05-22)
+
+
+### Features
+
+* **local-start-api:** REST v1 non-AWS_PROXY integrations ([#457](https://github.com/go-to-k/cdkd/issues/457)) ([#505](https://github.com/go-to-k/cdkd/issues/505)) ([de67bf2](https://github.com/go-to-k/cdkd/commit/de67bf2662b79bbe7c4767b7b0dab5248a8f0725))
+
 # [0.131.0](https://github.com/go-to-k/cdkd/compare/v0.130.0...v0.131.0) (2026-05-22)
 
 
