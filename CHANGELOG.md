@@ -1,3 +1,10 @@
+# [0.127.0](https://github.com/go-to-k/cdkd/compare/v0.126.0...v0.127.0) (2026-05-22)
+
+
+### Features
+
+* **export:** TemplateURL upload for templates over 51 KB ([#489](https://github.com/go-to-k/cdkd/issues/489)) ([c04e904](https://github.com/go-to-k/cdkd/commit/c04e90455e89504e8ad1d51b6f0e9ed64799f739))
+
 # [0.126.0](https://github.com/go-to-k/cdkd/compare/v0.125.0...v0.126.0) (2026-05-22)
 
 
