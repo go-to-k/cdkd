@@ -6,16 +6,24 @@
 
 set -e
 
-CONF="$(dirname "$0")/tmux-clean.conf"
+DEMO_DIR="$(cd "$(dirname "$0")" && pwd)"
+CONF="$DEMO_DIR/tmux-clean.conf"
 
 # Use the freshly-built cdkd from the repo's dist/, not the globally-installed
 # one (which may be a different release). Shadow `cdkd` on PATH with a symlink
 # to the local build so the visible command in the GIF stays plain `cdkd`.
-CDKD_BIN="$(cd "$(dirname "$0")/../.." && pwd)/dist/cli.js"
+CDKD_BIN="$(cd "$DEMO_DIR/../.." && pwd)/dist/cli.js"
 SHADOW_BIN="$(mktemp -d)"
 ln -sf "$CDKD_BIN" "$SHADOW_BIN/cdkd"
 export PATH="$SHADOW_BIN:$PATH"
 trap 'rm -rf "$SHADOW_BIN"' EXIT
+
+# Pre-synth the CDK app ONCE (cdk synth writes cdk.out/, used by both
+# `cdkd deploy -a cdk.out` and `cdk deploy -a cdk.out`). The recorded
+# `time real` blocks then reflect deploy phase only — matching the
+# README's deploy-only benchmark numbers (the synth cost is identical
+# for both tools and would just add noise to the comparison).
+(cd "$DEMO_DIR" && cdk synth --all >/dev/null 2>&1)
 
 # FORCE_COLOR=1 makes cdkd's chalk emit ANSI colors even though tmux's
 # pseudo-TTY would otherwise be detected as non-color. cdk already colors
@@ -24,8 +32,10 @@ ENV='FORCE_COLOR=1 COLORTERM=truecolor'
 
 # The echoed line MUST mention `time` so the trailing real/user/sys block
 # at the end of each pane matches what the viewer saw being typed.
-LEFT_CMD="echo '\$ time cdkd deploy CdkdDemoCdkd'; echo; $ENV time cdkd deploy CdkdDemoCdkd --yes"
-RIGHT_CMD="echo '\$ time cdk deploy CdkdDemoCdk --require-approval never'; echo; $ENV time cdk deploy CdkdDemoCdk --require-approval never"
+# `-a cdk.out` skips synth on both tools, so `time real` reflects deploy
+# phase only.
+LEFT_CMD="echo '\$ time cdkd deploy CdkdDemoCdkd -a cdk.out'; echo; $ENV time cdkd deploy CdkdDemoCdkd -a cdk.out"
+RIGHT_CMD="echo '\$ time cdk deploy CdkdDemoCdk -a cdk.out'; echo; $ENV time cdk deploy CdkdDemoCdk -a cdk.out"
 
 tmux -f "$CONF" new-session  -d -s demo -x 220 -y 40 "bash -c \"$LEFT_CMD; sleep 9999\""
 tmux select-pane -t demo:0.0 -T '#[fg=#a6e3a1,bold]  cdkd ─  cdkd deploy '

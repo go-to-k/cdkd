@@ -256,7 +256,7 @@ async function publishAssetsCommand(
     );
   }
 
-  logger.info(`\n${green('OK')} ${bold('Asset publishing complete')} (${totalAssets} asset(s))`);
+  logger.info(`\n${green('✓')} ${bold('Asset publishing complete')} (${totalAssets} asset(s))`);
 }
 
 /**

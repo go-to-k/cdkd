@@ -477,9 +477,9 @@ async function deployCommand(
         }
 
         if (options.dryRun) {
-          logger.info(`\n${green('OK')} ${bold('Dry run completed')} - no actual changes made`);
+          logger.info(`\n${green('✓')} ${bold('Dry run completed')} - no actual changes made`);
         } else {
-          logger.info(`\n${green('OK')} ${bold('Deployment completed successfully')}`);
+          logger.info(`\n${green('✓')} ${bold('Deployment completed successfully')}`);
         }
       } finally {
         stackAwsClients.destroy();
