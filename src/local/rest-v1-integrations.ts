@@ -766,12 +766,6 @@ function defaultResponseEntry(
   return entries.find((e) => e.SelectionPattern === undefined || e.SelectionPattern === '') ?? null;
 }
 
-// PR #515 item 4: `parseStatus(raw)` here was a near-duplicate of
-// `parseStatus(raw, fallback)` in `integration-response-selector.ts`.
-// Consolidated into the shared `tryParseStatus(raw): number | undefined`
-// exported from that module; this file's call sites use
-// `tryParseStatus(...) ?? <local-fallback>` directly.
-
 /**
  * Heuristic: is the given HTTP `Content-Type` header value likely to
  * carry text content that VTL ResponseTemplates can safely render

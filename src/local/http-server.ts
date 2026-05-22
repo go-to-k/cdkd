@@ -1148,13 +1148,16 @@ function buildOverlay(
   authorizer: AuthorizerInfo,
   result: CachedAuthorizerResult
 ): AuthorizerEventOverlay | undefined {
-  // PR #515 item 9: both `buildOverlay` and
-  // `buildAuthorizerContextForServiceIntegration` re-implemented the
-  // same per-kind shape with cosmetic differences (one wrapped Lambda
-  // HTTP v2 under `.lambda`, the other built the union-tagged form).
-  // The shared helper at `authorizer-context.ts:buildAuthorizerContextShape`
-  // owns the bare per-kind shape; this function maps each kind to the
-  // discriminated-union flavor `applyAuthorizerOverlay` expects.
+  // PR #515 item 9: `buildAuthorizerContextForServiceIntegration` was
+  // extracted into the shared `authorizer-context.ts:buildAuthorizerContextShape`
+  // helper. This function (`buildOverlay`) still uses hand-rolled
+  // per-kind branching because it wraps the per-kind context in the
+  // `AuthorizerEventOverlay` discriminated union shape that
+  // `applyAuthorizerOverlay` expects (with the `lambda-http-v2` arm
+  // additionally namespaced under `.lambda` at the consumer layer).
+  // The inner per-kind shape matches the helper's output exactly, so a
+  // future kind addition can be lifted through the shared helper at
+  // both call sites with no behavior change.
   if (authorizer.kind === 'lambda-token' || authorizer.kind === 'lambda-request') {
     const isV2 = authorizer.kind === 'lambda-request' && authorizer.apiVersion === 'v2';
     return isV2

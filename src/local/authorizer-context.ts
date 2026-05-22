@@ -1,22 +1,23 @@
 /**
  * Shared per-kind context-shape builder for the authorizer pipeline.
- * PR #515 item 9: consolidates `buildOverlay` (in `http-server.ts`,
- * used to produce `event.requestContext.authorizer` for Lambda
- * AWS_PROXY routes via `applyAuthorizerOverlay`) and
- * `buildAuthorizerContextForServiceIntegration` (in `http-server.ts`,
- * used to populate `$context.authorizer.*` in the parameter-mapping
- * context for HTTP API v2 service-integration routes).
  *
- * Pre-extraction the two helpers each carried a ~80% identical
- * per-kind switch that would drift the next time a new authorizer
- * kind landed; this single source of truth means future shape changes
- * (or new kinds) get applied once and consumed by both call sites.
+ * Today's only direct consumer is
+ * `buildAuthorizerContextForServiceIntegration` in
+ * [http-server.ts](./http-server.ts), which delegates to this helper to
+ * produce `$context.authorizer.*` for HTTP API v2 service-integration
+ * routes. The sibling `buildOverlay` in `http-server.ts` (used to
+ * produce `event.requestContext.authorizer` for Lambda AWS_PROXY
+ * routes via `applyAuthorizerOverlay`) still uses hand-rolled per-kind
+ * branches because it wraps the result in the
+ * `AuthorizerEventOverlay` discriminated union (with the
+ * `kind === 'lambda-http-v2'` arm layering an additional `.lambda`
+ * namespace that lives in the consumer, not here). The inner per-kind
+ * context shape it builds matches this helper's output exactly, so a
+ * future kind addition can be lifted through this helper at both call
+ * sites with no behavior change.
  *
  * The returned shape is the BARE per-kind context the consumers want
- * — neither caller layers the `$context.authorizer.lambda` namespacing
- * the HTTP API v2 Lambda-AWS_PROXY case applies. That namespacing lives
- * in the consumer (see `buildOverlay`'s `kind === 'lambda-http-v2'` arm
- * in `http-server.ts`) because it is consumed-shape-specific.
+ * — callers layer any consumed-shape-specific namespacing themselves.
  *
  * Per-kind shape:
  *   - `lambda-token` / `lambda-request`: `principalId` (when set) plus
