@@ -109,6 +109,21 @@ interface ImportRow {
   reason?: string;
 }
 
+/**
+ * Exported for `cdkd migrate --from-cfn-stack` (PR B of #465) so the
+ * migrate orchestrator can drive the same lock + state + retire pipeline
+ * as `cdkd import` without spawning a subprocess. Original Commander
+ * registration in {@link createImportCommand} still wraps this in
+ * `withErrorHandling` so library callers must handle their own exits.
+ */
+export type RunImportOptions = ImportOptions;
+export async function runImport(
+  stackArg: string | undefined,
+  options: ImportOptions
+): Promise<void> {
+  return importCommand(stackArg, options);
+}
+
 async function importCommand(stackArg: string | undefined, options: ImportOptions): Promise<void> {
   const logger = getLogger();
   if (options.verbose) {

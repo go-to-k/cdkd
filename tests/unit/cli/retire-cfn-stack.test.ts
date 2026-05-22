@@ -325,6 +325,70 @@ describe('retireCloudFormationStack', () => {
     expect(s3SendCalls).toEqual([]);
   });
 
+  it('forwards existing stack Parameters via UsePreviousValue on UpdateStack', async () => {
+    // Real cdkd bug surfaced by the cdkd migrate integ on 2026-05-22: when
+    // the source CFn stack has declared Parameters, UpdateStack without a
+    // Parameters argument falls back to CFn template defaults. If a
+    // parameter has no default the call validates-fails; if a parameter has
+    // a default that differs from the current value, the metadata-only
+    // Retain injection accidentally re-evaluates Fn::Sub references and
+    // rolls back. The fix forwards each existing parameter via
+    // UsePreviousValue: true so the retire is truly metadata-only.
+    const { client, calls } = buildCfnClient({
+      DescribeStacks: {
+        Stacks: [
+          {
+            StackStatus: 'CREATE_COMPLETE',
+            Capabilities: [],
+            Parameters: [
+              { ParameterKey: 'ResourceSuffix', ParameterValue: '0725000' },
+              { ParameterKey: 'Environment', ParameterValue: 'integ' },
+            ],
+          },
+        ],
+      },
+      GetTemplate: { TemplateBody: TEMPLATE_NO_RETAIN },
+      UpdateStack: { StackId: 'arn:aws:cloudformation:...' },
+      DeleteStack: {},
+    });
+
+    const result = await retireCloudFormationStack({
+      cfnStackName: 'ParameterizedStack',
+      cfnClient: client as never,
+      yes: true,
+      stateBucket: 'test-state-bucket',
+    });
+
+    expect(result).toEqual({ outcome: 'retired' });
+    const updateCmd = calls.find((c) => c.name === 'UpdateStack')!;
+    expect(updateCmd.input['Parameters']).toEqual([
+      { ParameterKey: 'ResourceSuffix', UsePreviousValue: true },
+      { ParameterKey: 'Environment', UsePreviousValue: true },
+    ]);
+  });
+
+  it('omits Parameters entirely when the source stack declared none', async () => {
+    // A stack without Parameters should not surface an empty Parameters
+    // array on UpdateStack — leave the field absent so the SDK does not
+    // serialize Parameters: [] on the wire.
+    const { client, calls } = buildCfnClient({
+      DescribeStacks: { Stacks: [{ StackStatus: 'CREATE_COMPLETE', Capabilities: [] }] },
+      GetTemplate: { TemplateBody: TEMPLATE_NO_RETAIN },
+      UpdateStack: { StackId: 'arn:aws:cloudformation:...' },
+      DeleteStack: {},
+    });
+
+    await retireCloudFormationStack({
+      cfnStackName: 'NoParamStack',
+      cfnClient: client as never,
+      yes: true,
+      stateBucket: 'test-state-bucket',
+    });
+
+    const updateCmd = calls.find((c) => c.name === 'UpdateStack')!;
+    expect(updateCmd.input['Parameters']).toBeUndefined();
+  });
+
   it('skips UpdateStack when the template already has Retain everywhere', async () => {
     const { client, calls } = buildCfnClient({
       DescribeStacks: { Stacks: [{ StackStatus: 'UPDATE_COMPLETE', Capabilities: [] }] },
