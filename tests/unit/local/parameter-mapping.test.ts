@@ -75,6 +75,78 @@ describe('resolveSelectionExpression — bare references', () => {
     expect(resolveSelectionExpression('$context.identity.sourceIp', ctx)).toBe('1.2.3.4');
   });
 
+  describe('$context.authorizer.X (closes #502)', () => {
+    it('resolves $context.authorizer.principalId for Lambda authorizers', () => {
+      const ctx = makeCtx({
+        authorizer: { principalId: 'user-42', tier: 'pro' },
+      });
+      expect(resolveSelectionExpression('$context.authorizer.principalId', ctx)).toBe('user-42');
+      expect(resolveSelectionExpression('$context.authorizer.tier', ctx)).toBe('pro');
+    });
+
+    it('resolves $context.authorizer.jwt.claims.X for JWT authorizers', () => {
+      const ctx = makeCtx({
+        authorizer: {
+          jwt: {
+            claims: { sub: 'cognito-user-id', email: 'a@example.com' },
+            scopes: ['read', 'write'],
+          },
+        },
+      });
+      expect(resolveSelectionExpression('$context.authorizer.jwt.claims.sub', ctx)).toBe(
+        'cognito-user-id'
+      );
+      expect(resolveSelectionExpression('$context.authorizer.jwt.claims.email', ctx)).toBe(
+        'a@example.com'
+      );
+    });
+
+    it('resolves $context.authorizer.claims.X for Cognito REST v1 authorizers', () => {
+      const ctx = makeCtx({
+        authorizer: {
+          claims: { sub: 'cog-user', email: 'b@example.com' },
+        },
+      });
+      expect(resolveSelectionExpression('$context.authorizer.claims.sub', ctx)).toBe('cog-user');
+    });
+
+    it('returns empty string for missing authorizer path', () => {
+      const ctx = makeCtx({ authorizer: { principalId: 'u' } });
+      expect(resolveSelectionExpression('$context.authorizer.missing', ctx)).toBe('');
+      expect(resolveSelectionExpression('$context.authorizer.jwt.claims.sub', ctx)).toBe('');
+    });
+
+    it('returns empty string when no authorizer is attached', () => {
+      const ctx = makeCtx();
+      expect(resolveSelectionExpression('$context.authorizer.principalId', ctx)).toBe('');
+      expect(resolveSelectionExpression('$context.authorizer.jwt.claims.sub', ctx)).toBe('');
+    });
+
+    it('stringifies non-string leaves (numbers, booleans, arrays, objects)', () => {
+      const ctx = makeCtx({
+        authorizer: {
+          age: 42,
+          isAdmin: true,
+          roles: ['admin', 'user'],
+          nested: { x: 1 },
+        },
+      });
+      expect(resolveSelectionExpression('$context.authorizer.age', ctx)).toBe('42');
+      expect(resolveSelectionExpression('$context.authorizer.isAdmin', ctx)).toBe('true');
+      expect(resolveSelectionExpression('$context.authorizer.roles', ctx)).toBe('["admin","user"]');
+      expect(resolveSelectionExpression('$context.authorizer.nested', ctx)).toBe('{"x":1}');
+    });
+
+    it('${...} interpolation works for $context.authorizer.X', () => {
+      const ctx = makeCtx({
+        authorizer: { jwt: { claims: { sub: 'user-42' } } },
+      });
+      expect(
+        resolveSelectionExpression('prefix-${context.authorizer.jwt.claims.sub}-suffix', ctx)
+      ).toBe('prefix-user-42-suffix');
+    });
+  });
+
   it('resolves $stageVariables.<key>', () => {
     const ctx = makeCtx({ stageVariables: { env: 'prod' } });
     expect(resolveSelectionExpression('$stageVariables.env', ctx)).toBe('prod');

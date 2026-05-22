@@ -62,6 +62,26 @@ export interface RequestParameterContext {
   context: Readonly<Record<string, string>>;
   /** Stage variables from the matched route's selected Stage. */
   stageVariables: Readonly<Record<string, string>>;
+  /**
+   * Authorizer verdict surfaced under `$context.authorizer.X` (closes
+   * #502). Populated only on auth-protected routes; absent when no
+   * authorizer fired. Shape mirrors what `applyAuthorizerOverlay`
+   * writes onto the Lambda event:
+   *
+   *   - Lambda authorizers (TOKEN / REQUEST / IAM): `principalId` and
+   *     context fields land flat at the top level
+   *     (`$context.authorizer.principalId`, `$context.authorizer.<key>`).
+   *   - Cognito (REST v1): claims under
+   *     `$context.authorizer.claims.<key>`.
+   *   - JWT (HTTP v2): claims under
+   *     `$context.authorizer.jwt.claims.<key>`, scopes under
+   *     `$context.authorizer.jwt.scopes`.
+   *
+   * Nested fields traverse via dot-separated path lookup against this
+   * record. Non-string leaves are stringified with `JSON.stringify` so
+   * they round-trip into SDK input fields.
+   */
+  authorizer?: Readonly<Record<string, unknown>>;
 }
 
 /**
@@ -198,6 +218,19 @@ function resolveSingleReference(ref: string, ctx: RequestParameterContext): stri
   }
   if (ref.startsWith('$context.')) {
     const key = ref.substring('$context.'.length);
+    // `$context.authorizer.X` resolves against the authorizer verdict
+    // (#502). `key` here is `authorizer.X` (or just `authorizer` with
+    // no path). Nested fields traverse via dot-separated walk so
+    // `$context.authorizer.jwt.claims.sub` lands at the right leaf.
+    if (key === 'authorizer' || key.startsWith('authorizer.')) {
+      if (!ctx.authorizer) return '';
+      if (key === 'authorizer') {
+        // Whole authorizer record — stringify (matches AWS-deployed
+        // behavior; rare in practice).
+        return JSON.stringify(ctx.authorizer);
+      }
+      return resolveAuthorizerPath(ctx.authorizer, key.substring('authorizer.'.length));
+    }
     return ctx.context[key] ?? '';
   }
   if (ref.startsWith('$stageVariables.')) {
@@ -237,6 +270,42 @@ function resolveBodyJsonPath(body: string, path: string): string {
   // Split on `.` while preserving `[N]` index segments.
   const segments = path.split(/\.|\[(\d+)\]/).filter((s) => s !== undefined && s !== '');
   let cursor: unknown = parsed;
+  for (const seg of segments) {
+    if (cursor === null || cursor === undefined) return '';
+    if (typeof cursor !== 'object') return '';
+    if (Array.isArray(cursor)) {
+      const idx = Number(seg);
+      if (!Number.isInteger(idx)) return '';
+      cursor = cursor[idx];
+    } else {
+      cursor = (cursor as Record<string, unknown>)[seg];
+    }
+  }
+  if (cursor === undefined || cursor === null) return '';
+  if (typeof cursor === 'string') return cursor;
+  return JSON.stringify(cursor);
+}
+
+/**
+ * Walk a dot-separated path against the authorizer verdict map (#502).
+ * Used by `$context.authorizer.X` selection expressions on
+ * service-integration routes. Mirrors `resolveBodyJsonPath`'s shape:
+ *   - Empty leaf / undefined → `""`.
+ *   - String leaf → returned verbatim.
+ *   - Non-string leaf → `JSON.stringify`'d (matches AWS-deployed
+ *     behavior; `$context.authorizer.jwt.claims` resolves to the JSON
+ *     object as a string).
+ *
+ * Array indexing via `[N]` is supported (rare for authorizer
+ * verdicts but cheap to support).
+ */
+function resolveAuthorizerPath(
+  authorizer: Readonly<Record<string, unknown>>,
+  path: string
+): string {
+  if (path === '') return '';
+  const segments = path.split(/\.|\[(\d+)\]/).filter((s) => s !== undefined && s !== '');
+  let cursor: unknown = authorizer;
   for (const seg of segments) {
     if (cursor === null || cursor === undefined) return '';
     if (typeof cursor !== 'object') return '';

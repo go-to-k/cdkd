@@ -635,13 +635,14 @@ export function attachAuthorizers(
   const errors: string[] = [];
 
   for (const route of routes) {
-    // Skip deferred-error / mockCors / service-integration routes —
-    // none of them reach the authorizer pass at request time (the
-    // http-server short-circuits before it). For service integrations
-    // specifically, dispatch happens via the SDK adapter table — the
-    // current PR scope is dispatch only; auth-protected service
-    // integrations are a follow-up.
-    if (route.unsupported || route.mockCors || route.serviceIntegration) {
+    // Skip deferred-error / mockCors routes — neither reaches the
+    // authorizer pass at request time (the http-server short-circuits
+    // before it). Service-integration routes DO get the authorizer
+    // attached (closes #502): the http-server runs the authorizer
+    // pass before dispatching to the SDK adapter, so an auth-protected
+    // SQS / EventBridge / etc. route rejects unauthenticated requests
+    // the same way Lambda routes do.
+    if (route.unsupported || route.mockCors) {
       out.push({ route });
       continue;
     }
@@ -685,77 +686,6 @@ export function attachAuthorizers(
       `cdkd local start-api: ${errors.length} authorizer error(s):\n` +
         errors.map((e) => `  - ${e}`).join('\n')
     );
-  }
-  return out;
-}
-
-/**
- * Summary of a service-integration route whose authorizer is silently
- * ignored at request time.
- *
- * `attachAuthorizers` short-circuits `serviceIntegration` routes (the
- * SDK dispatcher in `http-server.ts` runs BEFORE any authorizer pass
- * would fire), so a CDK app that wires JWT / Lambda / Cognito / IAM
- * authorizers to e.g. `POST /sqs` would silently let every request
- * reach the SDK call unauthenticated. The CLI uses this helper to emit
- * a one-line warn at boot naming every affected route — symmetric with
- * `warnIamRoutes` / `warnVpcConfigLambdas` — so users can spot the
- * discrepancy before reaching for AWS. Threading the auth pass through
- * the service-integration dispatcher is tracked as a follow-up issue
- * (referenced in PR #500 / #458).
- */
-export interface IgnoredServiceIntegrationAuthorizer {
-  /** `<stackName>/<RouteLogicalId>` — matches `DiscoveredRoute.declaredAt`. */
-  readonly declaredAt: string;
-  /** Authorizer logical id (REST v1 / HTTP API v2) or the literal `AWS_IAM` sentinel. */
-  readonly authorizerName: string;
-}
-
-/**
- * Walk every discovered route and return the service-integration routes
- * whose source CFn resource declares an authorizer (HTTP API v2 routes
- * with `AuthorizationType !== 'NONE'`). Service-integration routes only
- * exist on `AWS::ApiGatewayV2::Route`; REST v1 service integrations are
- * a different shape and not yet supported.
- */
-export function findIgnoredServiceIntegrationAuthorizers(
-  stacks: readonly StackInfo[],
-  routes: readonly import('./route-discovery.js').DiscoveredRoute[]
-): IgnoredServiceIntegrationAuthorizer[] {
-  const stackByRoute = new Map<string, StackInfo>();
-  for (const stack of stacks) {
-    const prefix = `${stack.stackName}/`;
-    for (const route of routes) {
-      if (route.declaredAt.startsWith(prefix)) stackByRoute.set(route.declaredAt, stack);
-    }
-  }
-  const out: IgnoredServiceIntegrationAuthorizer[] = [];
-  for (const route of routes) {
-    if (!route.serviceIntegration) continue;
-    const stack = stackByRoute.get(route.declaredAt);
-    if (!stack) continue;
-    const slash = route.declaredAt.indexOf('/');
-    if (slash < 0) continue;
-    const logicalId = route.declaredAt.slice(slash + 1);
-    const resource = stack.template.Resources?.[logicalId];
-    if (!resource || resource.Type !== 'AWS::ApiGatewayV2::Route') continue;
-    const props = resource.Properties ?? {};
-    const authType = props['AuthorizationType'];
-    if (typeof authType !== 'string' || authType === '' || authType.toUpperCase() === 'NONE') {
-      continue;
-    }
-    let authorizerName: string;
-    if (authType === 'AWS_IAM') {
-      authorizerName = 'AWS_IAM';
-    } else {
-      const ref = props['AuthorizerId'];
-      const refLogicalId =
-        ref && typeof ref === 'object' && 'Ref' in ref && typeof ref.Ref === 'string'
-          ? ref.Ref
-          : undefined;
-      authorizerName = refLogicalId ?? `<authType=${authType}, AuthorizerId malformed>`;
-    }
-    out.push({ declaredAt: route.declaredAt, authorizerName });
   }
   return out;
 }

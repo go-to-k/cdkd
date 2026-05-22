@@ -1,11 +1,13 @@
 import type { ServerResponse } from 'node:http';
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vite-plus/test';
 import {
+  buildAuthorizerContextForServiceIntegration,
   parseQueryStringSingular,
   startApiServer,
   writeAuthRejection,
 } from '../../../src/local/http-server.js';
-import type { RouteWithAuth } from '../../../src/local/authorizer-resolver.js';
+import type { AuthorizerInfo, RouteWithAuth } from '../../../src/local/authorizer-resolver.js';
+import type { CachedAuthorizerResult } from '../../../src/local/authorizer-cache.js';
 import type { ContainerPool } from '../../../src/local/container-pool.js';
 import { createAuthorizerCache } from '../../../src/local/authorizer-cache.js';
 import { createJwksCache } from '../../../src/local/cognito-jwt.js';
@@ -909,5 +911,148 @@ describe('parseQueryStringSingular — multi-value comma-join (PR #500 minor)', 
 
   it('handles empty values cleanly', () => {
     expect(parseQueryStringSingular('/?foo=&foo=bar')).toEqual({ foo: ',bar' });
+  });
+});
+
+describe('buildAuthorizerContextForServiceIntegration (closes #502)', () => {
+  function lambdaTokenAuth(): AuthorizerInfo {
+    return {
+      kind: 'lambda-token',
+      logicalId: 'TokenAuth',
+      lambdaLogicalId: 'AuthFn',
+      tokenHeader: 'authorization',
+      resultTtlSeconds: 0,
+      declaredAt: 'S/Auth',
+    };
+  }
+  function lambdaRequestAuth(): AuthorizerInfo {
+    return {
+      kind: 'lambda-request',
+      logicalId: 'ReqAuth',
+      lambdaLogicalId: 'AuthFn',
+      identitySources: [{ kind: 'header', name: 'authorization' }],
+      resultTtlSeconds: 0,
+      apiVersion: 'v2',
+      declaredAt: 'S/Auth',
+    };
+  }
+  function jwtAuth(): AuthorizerInfo {
+    return {
+      kind: 'jwt',
+      logicalId: 'JwtAuth',
+      issuer: 'https://example.com',
+      audiences: ['my-aud'],
+      identitySources: [{ kind: 'header', name: 'authorization' }],
+      declaredAt: 'S/Auth',
+    } as unknown as AuthorizerInfo;
+  }
+  function cognitoAuth(): AuthorizerInfo {
+    return {
+      kind: 'cognito',
+      logicalId: 'CogAuth',
+      pools: [
+        {
+          userPoolArn: 'arn:aws:cognito-idp:us-east-1:123:userpool/p',
+          region: 'us-east-1',
+          userPoolId: 'p',
+        },
+      ],
+      userPoolArn: 'arn:aws:cognito-idp:us-east-1:123:userpool/p',
+      region: 'us-east-1',
+      userPoolId: 'p',
+      identitySource: 'authorization',
+      declaredAt: 'S/Auth',
+    } as unknown as AuthorizerInfo;
+  }
+  function iamAuth(): AuthorizerInfo {
+    return {
+      kind: 'iam',
+      logicalId: 'AWS_IAM',
+      declaredAt: 'S/Auth',
+    };
+  }
+
+  it('returns undefined when no authorizer fired', () => {
+    expect(buildAuthorizerContextForServiceIntegration(undefined, undefined)).toBeUndefined();
+    expect(
+      buildAuthorizerContextForServiceIntegration(lambdaTokenAuth(), undefined)
+    ).toBeUndefined();
+    expect(
+      buildAuthorizerContextForServiceIntegration(undefined, { allow: true } as CachedAuthorizerResult)
+    ).toBeUndefined();
+  });
+
+  it('Lambda TOKEN: flattens principalId + context fields at the top level', () => {
+    const result: CachedAuthorizerResult = {
+      allow: true,
+      principalId: 'user-42',
+      context: { tier: 'pro', email: 'a@example.com' },
+    };
+    expect(buildAuthorizerContextForServiceIntegration(lambdaTokenAuth(), result)).toEqual({
+      principalId: 'user-42',
+      tier: 'pro',
+      email: 'a@example.com',
+    });
+  });
+
+  it('Lambda REQUEST: flattens principalId + context at the top level', () => {
+    const result: CachedAuthorizerResult = {
+      allow: true,
+      principalId: 'u',
+      context: { tier: 'pro' },
+    };
+    expect(buildAuthorizerContextForServiceIntegration(lambdaRequestAuth(), result)).toEqual({
+      principalId: 'u',
+      tier: 'pro',
+    });
+  });
+
+  it('Lambda authorizer: omits principalId when absent', () => {
+    const result: CachedAuthorizerResult = { allow: true, context: { tier: 'pro' } };
+    expect(buildAuthorizerContextForServiceIntegration(lambdaTokenAuth(), result)).toEqual({
+      tier: 'pro',
+    });
+  });
+
+  it('Lambda authorizer: empty record when result has neither principal nor context', () => {
+    const result: CachedAuthorizerResult = { allow: true };
+    expect(buildAuthorizerContextForServiceIntegration(lambdaTokenAuth(), result)).toEqual({});
+  });
+
+  it('IAM (AWS_IAM): surfaces principalId only (no policy emulation)', () => {
+    const result: CachedAuthorizerResult = { allow: true, principalId: 'AKIA...' };
+    expect(buildAuthorizerContextForServiceIntegration(iamAuth(), result)).toEqual({
+      principalId: 'AKIA...',
+    });
+  });
+
+  it('Cognito: nests claims under `claims.X`', () => {
+    const result: CachedAuthorizerResult = {
+      allow: true,
+      context: { sub: 'cog-user', email: 'b@example.com' },
+    };
+    expect(buildAuthorizerContextForServiceIntegration(cognitoAuth(), result)).toEqual({
+      claims: { sub: 'cog-user', email: 'b@example.com' },
+    });
+  });
+
+  it('Cognito: empty claims object when no context', () => {
+    const result: CachedAuthorizerResult = { allow: true };
+    expect(buildAuthorizerContextForServiceIntegration(cognitoAuth(), result)).toEqual({
+      claims: {},
+    });
+  });
+
+  it('JWT: nests claims under `jwt.claims.X` with empty `jwt.scopes`', () => {
+    const result: CachedAuthorizerResult = {
+      allow: true,
+      context: { sub: 'user-42', email: 'a@example.com' },
+    };
+    expect(buildAuthorizerContextForServiceIntegration(jwtAuth(), result)).toEqual({
+      jwt: {
+        claims: { sub: 'user-42', email: 'a@example.com' },
+        scopes: [],
+      },
+    });
   });
 });
