@@ -4,7 +4,7 @@ Drop-in CDK CLI for existing CDK apps — faster deploys via AWS SDK instead of 
 
 - **Drop-in CDK compatible** — your existing CDK app code runs as-is.
 - **Up to 15x faster deploys than the AWS CDK CLI (CloudFormation)**
-- **Local dev for CDK apps** — invoke Lambdas, serve API Gateway routes, and run ECS tasks directly from your CDK code, no `cdk synth → sam local` round-trip.
+- **Local dev for CDK apps** — invoke Lambdas, serve API Gateway routes, and run ECS tasks and services directly from your CDK code, no `cdk synth → sam local` round-trip.
 
 ![cdk deploy vs cdkd deploy — side-by-side, 35s recording, real AWS deploy. cdkd finishes while cdk is still creating its CloudFormation changeset.](assets/cdk-vs-cdkd.gif)
 
@@ -422,8 +422,8 @@ type-pair allowlist and trade-off notes.
 ## Local execution
 
 The `cdkd local` family runs AWS workloads on the developer's machine
-via Docker — Lambda functions, API Gateway routes, and ECS tasks —
-without an AWS deploy. Modeled on `sam local *` but reuses cdkd's
+via Docker — Lambda functions, API Gateway routes, ECS tasks, and
+long-running ECS services — without an AWS deploy. Modeled on `sam local *` but reuses cdkd's
 synthesis / asset / construct-path plumbing — no `template.yaml` to
 maintain, no `cdk synth | sam ...` round-trip.
 
