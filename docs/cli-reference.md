@@ -1211,8 +1211,9 @@ Exit codes:
 ## `local *` (run AWS workloads locally via Docker)
 
 The `cdkd local` command family runs AWS workloads on the developer's
-machine via Docker — Lambda functions, API Gateway routes, and ECS
-tasks — without an AWS deploy. The full reference for all
+machine via Docker — Lambda functions, API Gateway routes, ECS tasks,
+and ECS Services — without an AWS deploy. The full reference for all
 `cdkd local *` subcommands (`local invoke` / `local start-api` /
-`local run-task`) lives in **[docs/local-emulation.md](local-emulation.md)**.
+`local run-task` / `local start-service`) lives in
+**[docs/local-emulation.md](local-emulation.md)**.
 

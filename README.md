@@ -4,7 +4,7 @@ Drop-in CDK CLI for existing CDK apps — faster deploys via AWS SDK instead of 
 
 - **Drop-in CDK compatible** — your existing CDK app code runs as-is.
 - **Up to 15x faster deploys than the AWS CDK CLI (CloudFormation)**
-- **Local dev for CDK apps** — invoke Lambdas, serve API Gateway routes, and run ECS tasks directly from your CDK code, no `cdk synth → sam local` round-trip.
+- **Local dev for CDK apps** — invoke Lambdas, serve API Gateway routes, and run ECS tasks and services directly from your CDK code, no `cdk synth → sam local` round-trip.
 
 ![cdk deploy vs cdkd deploy — side-by-side, 35s recording, real AWS deploy. cdkd finishes while cdk is still creating its CloudFormation changeset.](assets/cdk-vs-cdkd.gif)
 
@@ -25,7 +25,7 @@ Drop-in CDK CLI for existing CDK apps — faster deploys via AWS SDK instead of 
 - **Rollback on failure**: When a deploy errors mid-stack, cdkd rolls back the resources it just created so the stack state stays consistent (CloudFormation parity — but cdkd does this without round-tripping through CFn). Pass `cdkd deploy --no-rollback` to skip rollback and keep the partial state for Terraform-style inspection / repair. See [Rollback behavior](#rollback-behavior).
 - **`--no-wait` for async resources**: Skip the multi-minute wait on CloudFront / RDS / ElastiCache / NAT Gateway and return as soon as the create call returns (CloudFormation always blocks)
 - **VPC route DependsOn relaxation (on by default)**: Drop CDK-injected defensive `DependsOn` edges from VPC Lambdas onto private-subnet routes so `CloudFront::Distribution` and `Lambda::Url` start their ~3-min propagation in parallel with NAT Gateway stabilization (~50% faster on VPC + Lambda + CloudFront stacks). Pass `--no-aggressive-vpc-parallel` to opt out.
-- **Local execution without deploying** (`cdkd local invoke` / `cdkd local start-api` / `cdkd local run-task`): run any Lambda — stand up every API Gateway route as a local HTTP server — or start every container in an `AWS::ECS::TaskDefinition` on a per-task docker network with the AWS-published metadata-endpoints sidecar. SAM-compatible mental model but reuses cdkd's synthesis / asset / route-discovery (no `template.yaml` round-trip). All AWS Lambda runtimes (Node.js / Python / Ruby / Java / .NET / `provided.*`) and one server per discovered API (HTTP API v2 / REST v1 / Function URL) with their own port / authorizers / CORS configs. `local run-task` is Phase 1 (single task, DependsOn ordering, IAM task-role via AssumeRole) — ECS Services / ALB routing / Service Connect are Phase 2 / Phase 3 follow-ups. `cdkd local run-task --from-state` substitutes intrinsic-valued container `Environment[].Value` (`Ref` / `Fn::GetAtt` / `Fn::Sub` / `Fn::Join` / `Fn::ImportValue` / `Fn::GetStackOutput`) and `Secrets[].ValueFrom` against the deployed cdkd state — `table.tableName` / `ecs.Secret.fromSecretsManager(secret)` / `ecs.Secret.fromSsmParameter(param)` / cross-stack output refs Just Work locally instead of silently dropping.
+- **Local execution without deploying** (`cdkd local invoke` / `cdkd local start-api` / `cdkd local run-task` / `cdkd local start-service`): run any Lambda — stand up every API Gateway route as a local HTTP server — start every container in an `AWS::ECS::TaskDefinition` on a per-task docker network with the AWS-published metadata-endpoints sidecar — or boot an `AWS::ECS::Service` long-running with `DesiredCount` replicas + restart-on-exit. SAM-compatible mental model but reuses cdkd's synthesis / asset / route-discovery (no `template.yaml` round-trip). All AWS Lambda runtimes (Node.js / Python / Ruby / Java / .NET / `provided.*`) and one server per discovered API (HTTP API v2 / REST v1 / Function URL) with their own port / authorizers / CORS configs. `local start-service` covers the long-running counterpart of `run-task` (ECS Services with DesiredCount replicas) — local load-balancer emulation, Service Connect / Cloud Map, and `--watch` hot-reload are tracked as follow-ups. `cdkd local run-task --from-state` (also honored by `local start-service`) substitutes intrinsic-valued container `Environment[].Value` (`Ref` / `Fn::GetAtt` / `Fn::Sub` / `Fn::Join` / `Fn::ImportValue` / `Fn::GetStackOutput`) and `Secrets[].ValueFrom` against the deployed cdkd state — `table.tableName` / `ecs.Secret.fromSecretsManager(secret)` / `ecs.Secret.fromSsmParameter(param)` / cross-stack output refs Just Work locally instead of silently dropping.
 - **Bidirectional CloudFormation migration**: `cdkd import` adopts AWS-deployed resources (including `cdk deploy`-managed CloudFormation stacks via `--migrate-from-cloudformation`) into cdkd state without re-creating them; `cdkd export` hands a cdkd-managed stack back to CloudFormation when you're ready to move to production. See [Importing existing resources](#importing-existing-resources) and [Exporting a stack back to CloudFormation](#exporting-a-stack-back-to-cloudformation).
 
 > **Note**: Resource types not covered by either SDK Providers or Cloud Control API cannot be deployed with cdkd. If you encounter an unsupported resource type, deployment will fail with a clear error message.
@@ -160,19 +160,26 @@ cdkd has three command families:
   you don't want to synth. `cdkd state destroy` is the CDK-app-free
   counterpart of `cdkd destroy`.
 - **`cdkd local ...` subcommands** (`local invoke`, `local start-api`,
-  `local run-task`) run synthesized workloads locally inside Docker
-  containers. The Lambda variants (`local invoke` / `local start-api`)
-  bundle the AWS Lambda Runtime Interface Emulator (RIE); `local invoke`
-  runs a single Lambda once, and `local start-api` stands up a
-  long-running HTTP server that maps API Gateway / HTTP API / Function
-  URL routes to local Lambda invocations. `local run-task` is the ECS
-  counterpart — it locates an `AWS::ECS::TaskDefinition` from the
-  synthesized template and stands up every container in `dependsOn`
-  order on a per-task docker network with the AWS-published metadata
-  endpoints sidecar, so containers see `ECS_CONTAINER_METADATA_URI_V4`
-  (and optionally task-role creds via `--assume-task-role`) just like
-  they would on Fargate / ECS. No AWS API calls beyond optional STS /
-  Secrets resolution, no state bucket needed.
+  `local run-task`, `local start-service`) run synthesized workloads
+  locally inside Docker containers. The Lambda variants (`local invoke` /
+  `local start-api`) bundle the AWS Lambda Runtime Interface Emulator
+  (RIE); `local invoke` runs a single Lambda once, and `local start-api`
+  stands up a long-running HTTP server that maps API Gateway / HTTP API /
+  Function URL routes to local Lambda invocations. `local run-task` is
+  the ECS one-shot counterpart — it locates an
+  `AWS::ECS::TaskDefinition` from the synthesized template and stands
+  up every container in `dependsOn` order on a per-task docker network
+  with the AWS-published metadata endpoints sidecar, so containers see
+  `ECS_CONTAINER_METADATA_URI_V4` (and optionally task-role creds via
+  `--assume-task-role`) just like they would on Fargate / ECS.
+  `local start-service` is the long-running counterpart for
+  `AWS::ECS::Service`: it discovers the service, chains into the same
+  per-task machinery for each `DesiredCount` replica (clamped by
+  `--max-tasks`), and keeps every replica running until `^C` — failed
+  replicas restart per `--restart-policy on-failure|always|none`. No
+  AWS API calls beyond optional STS / Secrets resolution, no state
+  bucket needed. Local load-balancer emulation and `--watch` hot-reload
+  for `start-service` are deferred to follow-up PRs.
 
 Options like `--app`, `--state-bucket`, and `--context` can be omitted if configured via `cdk.json` or environment variables (`CDKD_APP`, `CDKD_STATE_BUCKET`).
 
@@ -415,8 +422,8 @@ type-pair allowlist and trade-off notes.
 ## Local execution
 
 The `cdkd local` family runs AWS workloads on the developer's machine
-via Docker — Lambda functions, API Gateway routes, and ECS tasks —
-without an AWS deploy. Modeled on `sam local *` but reuses cdkd's
+via Docker — Lambda functions, API Gateway routes, ECS tasks, and
+long-running ECS services — without an AWS deploy. Modeled on `sam local *` but reuses cdkd's
 synthesis / asset / construct-path plumbing — no `template.yaml` to
 maintain, no `cdk synth | sam ...` round-trip.
 
@@ -425,6 +432,7 @@ maintain, no `cdk synth | sam ...` round-trip.
 | `cdkd local invoke <target>` | One-shot Lambda invoke via the AWS Lambda Runtime Interface Emulator (RIE) |
 | `cdkd local start-api` | Long-running HTTP server for REST v1 / HTTP API / Function URL routes |
 | `cdkd local run-task <target>` | ECS RunTask — every container in a task definition started on a per-task docker network |
+| `cdkd local start-service <target>` | Long-running ECS Service emulator — `DesiredCount` replicas with restart-on-exit (no local load balancer in v1) |
 
 Requires Docker. Pass `--from-state` to substitute deployed physical
 IDs into intrinsic-valued properties (`Ref` / `Fn::GetAtt` / `Fn::Sub` /

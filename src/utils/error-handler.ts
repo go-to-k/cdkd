@@ -434,6 +434,21 @@ export class LocalRunTaskError extends CdkdError {
 }
 
 /**
+ * Signals a `cdkd local start-service` orchestration failure (Phase 2
+ * of #262 — `AWS::ECS::Service` emulator). Distinct from
+ * `LocalRunTaskError` because the service runner has its own lifecycle
+ * (long-running replica pool, restart-on-exit), so a failure inside it
+ * carries different operator semantics than a one-shot task failure.
+ */
+export class LocalStartServiceError extends CdkdError {
+  constructor(message: string, cause?: Error) {
+    super(message, 'LOCAL_START_SERVICE_ERROR', cause);
+    this.name = 'LocalStartServiceError';
+    Object.setPrototypeOf(this, LocalStartServiceError.prototype);
+  }
+}
+
+/**
  * Check if error is a cdkd error
  */
 export function isCdkdError(error: unknown): error is CdkdError {
