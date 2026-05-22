@@ -242,11 +242,13 @@ describe('resolveRestV1Authorizer — COGNITO_USER_POOLS', () => {
 });
 
 describe('resolveRestV1Authorizer — unsupported', () => {
-  it('rejects unknown Type', () => {
+  it('rejects unknown Authorizer Type', () => {
+    // AWS_IAM is now detected at the Method level (PR #484), so this
+    // path only triggers for genuinely-unknown Authorizer resource Types.
     const stack = buildStack('S', {
       Auth: {
         Type: 'AWS::ApiGateway::Authorizer',
-        Properties: { Type: 'AWS_IAM' },
+        Properties: { Type: 'SOMETHING_UNKNOWN' },
       },
     });
     expect(() => resolveRestV1Authorizer('Auth', stack.template, 'S', 'S/Method')).toThrow(
@@ -458,7 +460,7 @@ describe('attachAuthorizers', () => {
     expect(out[0]?.authorizer).toBeUndefined();
   });
 
-  it('hard-errors on AWS_IAM REST v1 (deferred)', () => {
+  it('attaches the iam authorizer kind on AWS_IAM REST v1 (#447)', () => {
     const stack = buildStack('S', {
       Method: {
         Type: 'AWS::ApiGateway::Method',
@@ -474,7 +476,12 @@ describe('attachAuthorizers', () => {
       stage: 'prod',
       declaredAt: 'S/Method',
     };
-    expect(() => attachAuthorizers([stack], [route])).toThrow(RouteDiscoveryError);
+    const out = attachAuthorizers([stack], [route]);
+    expect(out[0]?.authorizer).toEqual({
+      kind: 'iam',
+      logicalId: 'AWS_IAM',
+      declaredAt: 'S/Method',
+    });
   });
 
   // Issue #431: authorizer Lambda Arn unresolvable (cross-stack /

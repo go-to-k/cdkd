@@ -74,6 +74,7 @@ import {
   buildJwksUrlFromIssuer,
   createJwksCache,
 } from '../../local/cognito-jwt.js';
+import { defaultCredentialsLoader, type CredentialsLoader } from '../../local/sigv4-verify.js';
 import { singleFlight } from '../../utils/single-flight.js';
 
 interface LocalStartApiOptions {
@@ -125,6 +126,13 @@ interface LocalStartApiOptions {
    * is preserved when the flag is unset.
    */
   fromState: boolean;
+  /**
+   * Opt-in: allow AWS_IAM SigV4 requests that cannot be cryptographically
+   * verified (foreign access-key-id, or no local AWS credentials) to
+   * pass through with a placeholder principalId. Default `false` (fail-
+   * closed). Mirrors the `--allow-unverified-sigv4` CLI flag.
+   */
+  allowUnverifiedSigv4?: boolean;
   /**
    * S3 bucket holding cdkd state. Used only when `--from-state` is set.
    * Falls back to `CDKD_STATE_BUCKET` env / `cdk.json` / the default
@@ -253,6 +261,12 @@ async function localStartApiCommand(
   const authorizerCache = createAuthorizerCache();
   const jwksCache = createJwksCache();
   const jwksWarnedUrls = new Set<string>();
+  // #447: SigV4 verifier state for `AuthorizationType: 'AWS_IAM'` routes.
+  // The credentials loader is constructed eagerly but the credential
+  // chain itself is only hit on the first IAM-protected request — see
+  // `defaultCredentialsLoader` for the caching contract.
+  let sigV4CredentialsLoader: CredentialsLoader | undefined;
+  const sigV4WarnedForeignIds = new Set<string>();
 
   /**
    * One synth + discover + build pass. Returns the next-state
@@ -468,6 +482,24 @@ async function localStartApiCommand(
   // reload would be noisy; we emit this once at initial boot only.
   warnVpcConfigLambdas(initialMaterial.routes, initialMaterial.stacks ?? []);
 
+  // #447: AWS_IAM-protected routes warn at startup. The local server
+  // verifies SigV4 signatures only — IAM policy evaluation (resource /
+  // action / condition) is NOT emulated.
+  //
+  // The credentials loader is ALWAYS constructed at boot (not gated on
+  // the initial template having IAM routes) so that hot-reload
+  // (`--watch`) paths that ADD a new IAM route after boot have the
+  // loader already wired up. The loader is internally lazy
+  // (`defaultCredentialsLoader()` memoizes the actual STSClient +
+  // credential resolution until first call), so unused boots pay zero
+  // cost. Pre-fix the loader was conditionally constructed at this
+  // point only when the initial template had IAM routes, which caused
+  // post-hot-reload IAM routes to hit the http-server's defensive
+  // "no SigV4 credentials loader configured — denying" deny path with
+  // no explanation. PR #484 review MAJOR.
+  sigV4CredentialsLoader = defaultCredentialsLoader();
+  warnIamRoutes(initialMaterial.routes);
+
   // RIE invoke timeout: 2x the slowest Lambda's Timeout, floor 30s.
   let maxTimeoutSec = 0;
   for (const spec of initialMaterial.specs.values()) {
@@ -526,6 +558,9 @@ async function localStartApiCommand(
       authorizerCache,
       jwksCache,
       jwksWarnedUrls,
+      sigV4CredentialsLoader,
+      sigV4WarnedForeignIds,
+      sigV4AllowUnverified: options.allowUnverifiedSigv4 === true,
     });
     servers.push({ group, server: started });
     if (basePort !== 0) nextPort += 1;
@@ -835,6 +870,39 @@ function warnVpcConfigLambdas(
       break;
     }
   }
+}
+
+/**
+ * Walk the discovered routes for `AuthorizationType: 'AWS_IAM'` and emit
+ * a one-line warn naming the affected routes. Returns `true` when at
+ * least one IAM route is present so the caller wires the SigV4
+ * credentials loader. Re-runs across hot reloads are silent — the warn
+ * fires only at initial boot (matches `warnVpcConfigLambdas`'s policy).
+ *
+ * Implementation note: signature verification only — IAM policy
+ * evaluation (resource / action / condition) is NOT emulated. See
+ * `src/local/sigv4-verify.ts` and the help text in `docs/cli-reference.md`.
+ */
+function warnIamRoutes(routesWithAuth: readonly RouteWithAuth[]): boolean {
+  const logger = getLogger();
+  const iamRoutes: string[] = [];
+  for (const entry of routesWithAuth) {
+    if (entry.authorizer?.kind === 'iam') {
+      iamRoutes.push(entry.route.declaredAt);
+    }
+  }
+  if (iamRoutes.length === 0) return false;
+  logger.warn(
+    `${iamRoutes.length} route(s) declare AuthorizationType: AWS_IAM — cdkd local start-api ` +
+      `verifies SigV4 signatures against your local AWS credentials, but does NOT emulate IAM ` +
+      `policy evaluation (resource / action / condition rules). Signature-verified callers reach ` +
+      `the handler under their own identity; downstream authorization is the dev's responsibility. ` +
+      `See docs/cli-reference.md (cdkd local start-api — AWS_IAM authorizer) for details.`
+  );
+  for (const declaredAt of iamRoutes) {
+    logger.warn(`  - ${declaredAt}`);
+  }
+  return true;
 }
 
 /**
@@ -1721,7 +1789,7 @@ function parseDebugPort(raw: string): number {
 export function createLocalStartApiCommand(): Command {
   const startApi = new Command('start-api')
     .description(
-      'Run a long-running local HTTP server that maps API Gateway routes (REST v1, HTTP API, Function URL) to Lambda invocations against the AWS Lambda Runtime Interface Emulator (Docker required). Supports Lambda TOKEN/REQUEST authorizers and Cognito User Pool / HTTP v2 JWT authorizers; when JWKS is unreachable, JWT authorizers fall back to pass-through (every token accepted) with a warn line — local dev fallback. VPC-config Lambdas run locally and surface a warn line at startup; their containers do NOT get attached to the deployed VPC subnets, so calls to private RDS / ElastiCache will fail.'
+      'Run a long-running local HTTP server that maps API Gateway routes (REST v1, HTTP API, Function URL) to Lambda invocations against the AWS Lambda Runtime Interface Emulator (Docker required). Supports Lambda TOKEN/REQUEST authorizers, Cognito User Pool / HTTP v2 JWT authorizers, and REST v1 AWS_IAM (SigV4 signature verification only — IAM policy evaluation is NOT emulated; see docs/local-emulation.md). When JWKS is unreachable, JWT authorizers fall back to pass-through (every token accepted) with a warn line — local dev fallback. VPC-config Lambdas run locally and surface a warn line at startup; their containers do NOT get attached to the deployed VPC subnets, so calls to private RDS / ElastiCache will fail.'
     )
     .argument(
       '[target]',
@@ -1799,6 +1867,16 @@ export function createLocalStartApiCommand(): Command {
         '--stack-region <region>',
         'Region of the cdkd state record to read (used with --from-state when the same stack name has state in multiple regions).'
       )
+    )
+    .addOption(
+      new Option(
+        '--allow-unverified-sigv4',
+        'Opt-in: allow AWS_IAM SigV4 requests that cannot be cryptographically verified ' +
+          '(foreign access-key-id, OR no local AWS credentials configured) to pass through ' +
+          'with a placeholder principalId. DEFAULT off — fail-closed so unauthenticated bypass ' +
+          'is impossible against `event.requestContext.identity.accessKey`-trusting handler code. ' +
+          'Use only in dev loops where you understand the risk.'
+      ).default(false)
     )
     .action(withErrorHandling(localStartApiCommand));
 
