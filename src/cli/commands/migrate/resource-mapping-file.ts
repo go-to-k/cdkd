@@ -75,6 +75,11 @@ export function writeMappingFile(
   if (args.result.unmatched.length > 0) {
     file._unmatched = args.result.unmatched;
   }
+  // TODO(#465 follow-up): write atomically via `writeFileSync(<path>.tmp)` +
+  // `renameSync(<path>.tmp, <path>)` so a SIGINT mid-write does not strand
+  // a half-flushed file the next run reads back. Out of scope for this PR;
+  // the failure mode is rare (sub-second write window) and the user can
+  // re-run to re-derive a fresh file.
   writeFileSync(path, JSON.stringify(file, null, 2) + '\n', 'utf-8');
   return path;
 }

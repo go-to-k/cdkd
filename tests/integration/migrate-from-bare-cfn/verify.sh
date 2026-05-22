@@ -60,7 +60,16 @@ cleanup() {
   # 1. cdkd-managed state path: destroy the migrated cdkd stack so
   #    the underlying AWS resources go away. Best-effort; ignore errors
   #    so the source-CFn fallback below still fires.
-  if aws s3api head-object \
+  #
+  # Guard against the early-failure case where step 1 (build) failed
+  # before dist/cli.js was produced — invoking ${CLI} then yields a
+  # confusing `node: cannot find module` error that masks the real
+  # failure. Skip cdkd-driven destroy and rely on the AWS-direct
+  # fallback (step 3 below) which can clean the resources without
+  # cdkd.
+  if [ ! -f "${REPO_ROOT}/dist/cli.js" ]; then
+    echo "[verify] cleanup: skipping cdkd destroy — ${REPO_ROOT}/dist/cli.js not present (build failed); falling back to AWS CLI direct cleanup below"
+  elif aws s3api head-object \
       --bucket "${STATE_BUCKET}" \
       --key "cdkd/${SOURCE_STACK}/${REGION}/state.json" \
       --region "${REGION}" >/dev/null 2>&1; then

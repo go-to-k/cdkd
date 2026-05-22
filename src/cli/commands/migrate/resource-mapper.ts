@@ -210,6 +210,28 @@ export function buildResourceMapping(opts: ResourceMappingOptions): ResourceMapp
     }
   }
 
+  // M1: Refuse to build a mapping when DescribeStackResources did not
+  // return a physical id for a source-template resource. This typically
+  // means the source CFn stack is mid-operation (REVIEW_IN_PROGRESS, a
+  // resource not yet provisioned) or a stack policy excluded it. Pre-fix
+  // we silently fell back to `''` and the downstream import call hit a
+  // confusing AWS-side rejection. Failing here, BEFORE writing state or
+  // the mapping file, gives the user an actionable next step.
+  const missingPhysicalIds: string[] = [];
+  for (const src of sourceEntries) {
+    if (!physicalIdByLogicalId.has(src.logicalId)) {
+      missingPhysicalIds.push(`  - ${src.logicalId} (${src.type})`);
+    }
+  }
+  if (missingPhysicalIds.length > 0) {
+    throw new Error(
+      `Source CFn resource(s) not returned by DescribeStackResources — cannot migrate:\n` +
+        `${missingPhysicalIds.join('\n')}\n\n` +
+        `The stack may have been mid-operation; wait for it to settle ` +
+        `(CREATE_COMPLETE / UPDATE_COMPLETE / etc.) and retry.`
+    );
+  }
+
   const synthByLastPathSegment = indexSynthByLastPathSegment(synthEntries);
   const synthByLogicalId = new Map(synthEntries.map((s) => [s.logicalId, s] as const));
 
@@ -245,7 +267,8 @@ export function buildResourceMapping(opts: ResourceMappingOptions): ResourceMapp
     // formality to recover the synth entry's `type` (which we surface
     // on `pairs[].resourceType`).
     if (!synth) continue; // unreachable, defensive
-    const physicalId = physicalIdByLogicalId.get(src.logicalId) ?? '';
+    // physicalId presence is guaranteed by the M1 check above.
+    const physicalId = physicalIdByLogicalId.get(src.logicalId)!;
     pairs.push({
       sourceLogicalId: src.logicalId,
       synthLogicalId: synth.logicalId,
@@ -261,23 +284,39 @@ export function buildResourceMapping(opts: ResourceMappingOptions): ResourceMapp
   for (const src of sourceEntries) {
     if (sourcesHandledByOverride.has(src.logicalId)) continue;
     const candidatesForLastSegment = synthByLastPathSegment.get(src.logicalId) ?? [];
+    // m1: Compute the collision check against the RAW last-segment
+    // count, NOT against the already-filtered `availableCandidates`.
+    // A source resource with 2+ raw candidates MUST defer to Pass 2
+    // regardless of sibling iteration order — pre-fix, when two source
+    // resources both had last-segment `MyBucket` and two synth resources
+    // matched, the first source iteration deferred (raw=2, available=2)
+    // but the second iteration silently paired (raw=2, available=1)
+    // because a sibling Pass-1 claim had drained one candidate. That
+    // shape is structural: BOTH sources should defer to Pass 2's
+    // Properties compare so the picks are based on real shape, not on
+    // iteration order.
+    const rawCandidateCount = candidatesForLastSegment.length;
     const availableCandidates = candidatesForLastSegment.filter(
       (c) => !claimedSynthIds.has(c.logicalId)
     );
-    if (availableCandidates.length === 1) {
+    if (rawCandidateCount === 1 && availableCandidates.length === 1) {
+      // Single raw candidate AND it's still available → safe Pass 1
+      // pair (no collision was ever possible).
       const synth = availableCandidates[0]!;
       pairs.push({
         sourceLogicalId: src.logicalId,
         synthLogicalId: synth.logicalId,
-        physicalId: physicalIdByLogicalId.get(src.logicalId) ?? '',
+        physicalId: physicalIdByLogicalId.get(src.logicalId)!,
         resourceType: src.type,
       });
       claimedSynthIds.add(synth.logicalId);
     } else {
-      // 0 matches → defer to Pass 2 (Properties-based search).
-      // 2+ matches → defer to Pass 2 with a "collision" marker so we
-      // can surface the right reason on unmatched output if Pass 2
-      // also fails.
+      // Either:
+      //   - 0 raw matches → defer to Pass 2 (Properties-based search)
+      //   - 2+ raw matches → defer to Pass 2 (structural collision —
+      //     Pass 2's Properties compare is the only safe disambiguator,
+      //     regardless of how many candidates remain after sibling Pass-1
+      //     claims).
       passOnePending.push(src);
     }
   }
@@ -295,7 +334,7 @@ export function buildResourceMapping(opts: ResourceMappingOptions): ResourceMapp
       pairs.push({
         sourceLogicalId: src.logicalId,
         synthLogicalId: synth.logicalId,
-        physicalId: physicalIdByLogicalId.get(src.logicalId) ?? '',
+        physicalId: physicalIdByLogicalId.get(src.logicalId)!,
         resourceType: src.type,
       });
       claimedSynthIds.add(synth.logicalId);

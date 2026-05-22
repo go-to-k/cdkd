@@ -21,6 +21,18 @@ const mocks = vi.hoisted(() => ({
   applyRoleArnIfSet: vi.fn(),
   retireCloudFormationStack: vi.fn(),
   writeMappingFile: vi.fn(),
+  // T2: mock the readline `question(...)` call so the interactive
+  // confirm prompt is exercised without a real TTY. Default 'y' (the
+  // common path); tests override per-case for 'n' / 'yes' / 'no'.
+  readlineQuestion: vi.fn().mockResolvedValue('y'),
+  readlineClose: vi.fn(),
+}));
+
+vi.mock('node:readline/promises', () => ({
+  createInterface: () => ({
+    question: mocks.readlineQuestion,
+    close: mocks.readlineClose,
+  }),
 }));
 
 vi.mock('../../../../../src/cli/commands/migrate/index.js', () => ({
@@ -106,6 +118,7 @@ beforeEach(() => {
   mocks.runImport.mockResolvedValue(undefined);
   mocks.applyRoleArnIfSet.mockResolvedValue(undefined);
   mocks.retireCloudFormationStack.mockResolvedValue(undefined);
+  mocks.readlineQuestion.mockResolvedValue('y');
 });
 
 describe('migrateCommandAction — argv plumbing through to runMigrateLibrary', () => {
@@ -268,13 +281,171 @@ describe('createMigrateCommand — Commander registration', () => {
     expect(cmd.name()).toBe('migrate');
   });
 
-  it('declares the --from-cfn-stack option', () => {
+  it('declares every documented flag (T4)', () => {
+    // Extended in T4 from the prior 5-flag spot-check to assert every
+    // long-form Option the design doc commits to. A removal here is a
+    // CLI-surface regression — bumps semantic-release MAJOR.
     const cmd = createMigrateCommand();
     const optNames = cmd.options.map((o) => o.long);
-    expect(optNames).toContain('--from-cfn-stack');
-    expect(optNames).toContain('--retire-cfn-stack');
-    expect(optNames).toContain('--dry-run');
-    expect(optNames).toContain('--yes');
-    expect(optNames).toContain('--resource-mapping');
+    const expectedLongFlags = [
+      '--from-cfn-stack',
+      '--output-dir',
+      '--language',
+      '--region',
+      '--account',
+      '--retire-cfn-stack',
+      '--filter',
+      '--skip-install',
+      '--skip-synth',
+      '--dry-run',
+      '--yes',
+      '--cdk-bin',
+      '--resource-mapping',
+      '--state-bucket',
+      '--state-prefix',
+      '--profile',
+      '--role-arn',
+      '--verbose',
+    ];
+    for (const flag of expectedLongFlags) {
+      expect(optNames, `expected --${flag.replace(/^--/, '')} to be declared`).toContain(flag);
+    }
+  });
+
+  it('declares the -y short alias on --yes (T4)', () => {
+    const cmd = createMigrateCommand();
+    const yesOpt = cmd.options.find((o) => o.long === '--yes');
+    expect(yesOpt?.short).toBe('-y');
+  });
+
+  it('parseAsync pipeline routes through migrateCommandAction (T3)', async () => {
+    // T3: invoke the full Commander parseAsync pipeline (not just the
+    // action handler directly) so the option-parse layer is exercised
+    // alongside the orchestrator. Stub `.action` to a synchronous
+    // recorder per memory rule `feedback_cmd_parse_action_stub.md` —
+    // Node 24 escalates the real handler's process.exit() chain to a
+    // process-level unhandled rejection AFTER the assertion passes.
+    let receivedArgs: unknown[] | undefined;
+    const cmd = createMigrateCommand();
+    cmd.action((...args: unknown[]) => {
+      receivedArgs = args;
+    });
+    // `from: 'user'` parses the array verbatim (no node/script-name pair
+    // to skip), so the positional arg goes first.
+    await cmd.parseAsync(['PositionalStack', '--dry-run', '--yes'], { from: 'user' });
+    expect(receivedArgs).toBeDefined();
+    // Commander passes (positionalArg, options, command) to .action.
+    expect(receivedArgs![0]).toBe('PositionalStack');
+    const options = receivedArgs![1] as Record<string, unknown>;
+    expect(options['dryRun']).toBe(true);
+    expect(options['yes']).toBe(true);
+  });
+
+  it('--from-cfn-stack flag parses correctly via parseAsync (T3 b)', async () => {
+    // T3 b: prove the long-form flag actually lands on `options.fromCfnStack`
+    // (Commander camelCases). Catches a future regression where the
+    // flag is renamed but the option key stays.
+    let receivedOptions: Record<string, unknown> | undefined;
+    const cmd = createMigrateCommand();
+    cmd.action((_arg: unknown, options: Record<string, unknown>) => {
+      receivedOptions = options;
+    });
+    await cmd.parseAsync(['--from-cfn-stack', 'MyStack', '--yes'], { from: 'user' });
+    expect(receivedOptions?.['fromCfnStack']).toBe('MyStack');
+  });
+});
+
+describe('migrateCommandAction — prompt confirmation flow (T1, T2)', () => {
+  it('rejects with LocalMigrateError when stdin is non-TTY and --yes is absent (T1)', async () => {
+    // T1: force the non-TTY rejection branch by overriding the stdin
+    // descriptor. The full pipeline should reject BEFORE writing state.
+    const original = process.stdin.isTTY;
+    try {
+      Object.defineProperty(process.stdin, 'isTTY', { value: false, configurable: true });
+      await expect(
+        migrateCommandAction(undefined, baseOptions({ yes: false }))
+      ).rejects.toBeInstanceOf(LocalMigrateError);
+      expect(mocks.runImport).not.toHaveBeenCalled();
+    } finally {
+      Object.defineProperty(process.stdin, 'isTTY', { value: original, configurable: true });
+    }
+  });
+
+  it('exits cleanly (no state written) when user answers "n" at the prompt (T2)', async () => {
+    // T2: simulate an interactive shell where the user rejects the
+    // confirm. The orchestrator should log a cancellation and skip the
+    // import + retire calls entirely. The `node:readline/promises`
+    // mock at the top of this file routes the question() result through
+    // mocks.readlineQuestion.
+    const originalIsTTY = process.stdin.isTTY;
+    Object.defineProperty(process.stdin, 'isTTY', { value: true, configurable: true });
+    mocks.readlineQuestion.mockResolvedValueOnce('n');
+
+    try {
+      await migrateCommandAction(
+        undefined,
+        baseOptions({ yes: false, retireCfnStack: false })
+      );
+      expect(mocks.runImport).not.toHaveBeenCalled();
+      expect(mocks.retireCloudFormationStack).not.toHaveBeenCalled();
+      expect(mocks.readlineQuestion).toHaveBeenCalledTimes(1);
+    } finally {
+      Object.defineProperty(process.stdin, 'isTTY', { value: originalIsTTY, configurable: true });
+    }
+  });
+});
+
+describe('migrateCommandAction — --resource-mapping load path (t6)', () => {
+  it('loads explicit overrides from a temp file via --resource-mapping', async () => {
+    // t6: write a temp mapping file, point --resource-mapping at it,
+    // assert the runImport call receives the override-applied
+    // resourceMappingInline payload.
+    const { writeFileSync, mkdtempSync } = await import('node:fs');
+    const { tmpdir } = await import('node:os');
+    const { join } = await import('node:path');
+    const tmp = mkdtempSync(join(tmpdir(), 'cdkd-mapping-'));
+    const tmpFile = join(tmp, 'mapping.json');
+    writeFileSync(
+      tmpFile,
+      JSON.stringify({
+        version: 1,
+        generatedAt: '2026-05-22T00:00:00.000Z',
+        sourceStack: 'MyStack',
+        outputStack: 'MyStack',
+        mapping: { SourceA: 'SourceA' },
+      })
+    );
+
+    await migrateCommandAction(undefined, baseOptions({ resourceMapping: tmpFile }));
+
+    expect(mocks.runImport).toHaveBeenCalledTimes(1);
+    const importOpts = mocks.runImport.mock.calls[0]![1]! as Record<string, unknown>;
+    // The default fixture's SourceA still maps to phys-a; --resource-mapping
+    // here is a no-op override (same target) but exercises the load path.
+    expect(importOpts.resourceMappingInline).toBe(JSON.stringify({ SourceA: 'phys-a' }));
+  });
+
+  it('hard-errors when --resource-mapping points to a missing file (t6 b)', async () => {
+    await expect(
+      migrateCommandAction(
+        undefined,
+        baseOptions({ resourceMapping: '/tmp/does-not-exist-cdkd-migrate-fixture.json' })
+      )
+    ).rejects.toBeInstanceOf(LocalMigrateError);
+  });
+});
+
+describe('migrateCommandAction — retire ordering (t7)', () => {
+  it('runImport completes BEFORE retireCloudFormationStack on --retire-cfn-stack', async () => {
+    // t7: ordering assertion using invocation-call-order (same shape
+    // as the existing applyOrder < libOrder assertion above). A
+    // regression where retire fires before import would leave the
+    // source CFn stack DELETED without cdkd state being written.
+    await migrateCommandAction(undefined, baseOptions({ retireCfnStack: true }));
+    expect(mocks.runImport).toHaveBeenCalledTimes(1);
+    expect(mocks.retireCloudFormationStack).toHaveBeenCalledTimes(1);
+    const importOrder = mocks.runImport.mock.invocationCallOrder[0]!;
+    const retireOrder = mocks.retireCloudFormationStack.mock.invocationCallOrder[0]!;
+    expect(importOrder).toBeLessThan(retireOrder);
   });
 });

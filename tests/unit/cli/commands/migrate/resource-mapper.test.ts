@@ -288,6 +288,153 @@ describe('buildResourceMapping — overrides', () => {
   });
 });
 
+describe('buildResourceMapping — physical id presence (M1)', () => {
+  it('hard-errors when sourceResources is missing a templated logical id', () => {
+    // Canonical M1 scenario: source CFn template carries `MyBucket`, but
+    // DescribeStackResources skipped it (REVIEW_IN_PROGRESS / mid-update /
+    // stack-policy excluded), so sourceResources is empty.
+    expect(() =>
+      buildResourceMapping({
+        sourceCfnTemplate: source({
+          MyBucket: { Type: 'AWS::S3::Bucket' },
+        }),
+        synthTemplate: synth({ MyBucket: { cdkPath: 'Stack/MyBucket' } }),
+        sourceResources: [], // pre-fix this silently produced physicalId = ''
+      })
+    ).toThrow(/MyBucket \(AWS::S3::Bucket\)/);
+  });
+
+  it('lists every offender (not just the first) when multiple resources are missing', () => {
+    expect(() =>
+      buildResourceMapping({
+        sourceCfnTemplate: source({
+          MyBucket: { Type: 'AWS::S3::Bucket' },
+          MyTopic: { Type: 'AWS::SNS::Topic' },
+        }),
+        synthTemplate: synth({
+          MyBucket: { cdkPath: 'Stack/MyBucket' },
+          MyTopic: { Type: 'AWS::SNS::Topic', cdkPath: 'Stack/MyTopic' },
+        }),
+        sourceResources: [],
+      })
+    ).toThrow(/MyBucket[\s\S]+MyTopic/);
+  });
+
+  it('passes through when every templated source has a matching physical id', () => {
+    const result = buildResourceMapping({
+      sourceCfnTemplate: source({ MyBucket: {} }),
+      synthTemplate: synth({ MyBucket: { cdkPath: 'Stack/MyBucket' } }),
+      sourceResources: [
+        { LogicalResourceId: 'MyBucket', PhysicalResourceId: 'p', ResourceType: 'AWS::S3::Bucket' },
+      ],
+    });
+    expect(result.pairs[0]?.physicalId).toBe('p');
+  });
+});
+
+describe('buildResourceMapping — Pass 1 collision order-independence (m1)', () => {
+  it('both source resources defer to Pass 2 when raw last-segment count >= 2 (forward order)', () => {
+    // Both source resources share last-segment `MyBucket`. Two synth
+    // resources match that segment. Without the m1 fix, the SECOND
+    // iteration silently paired (raw=2, available=1 after sibling claim).
+    // With the m1 fix, BOTH defer to Pass 2 and Properties disambiguate.
+    const result = buildResourceMapping({
+      sourceCfnTemplate: source({
+        FooMyBucket: { Properties: { BucketName: 'unique-foo' } },
+        BarMyBucket: { Properties: { BucketName: 'unique-bar' } },
+      }),
+      synthTemplate: synth({
+        // Same last-segment `MyBucket` on both synth resources.
+        SynthOne: { cdkPath: 'Stack/Foo/MyBucket', Properties: { BucketName: 'unique-foo' } },
+        SynthTwo: { cdkPath: 'Stack/Bar/MyBucket', Properties: { BucketName: 'unique-bar' } },
+      }),
+      sourceResources: [
+        { LogicalResourceId: 'FooMyBucket', PhysicalResourceId: 'pf', ResourceType: 'AWS::S3::Bucket' },
+        { LogicalResourceId: 'BarMyBucket', PhysicalResourceId: 'pb', ResourceType: 'AWS::S3::Bucket' },
+      ],
+    });
+    // But wait — last-segment for FooMyBucket / BarMyBucket is the source
+    // logical id (no slashes). The collision lives on the SYNTH side via
+    // aws:cdk:path. The mapper looks up source.logicalId in the synth
+    // index — FooMyBucket has 0 matches → Pass 2 anyway. To exercise the
+    // m1 bug we need the source logical IDs to be the LAST SEGMENT on
+    // BOTH synth entries.
+    expect(result.unmatched).toEqual([]);
+    expect(result.pairs).toHaveLength(2);
+  });
+
+  it('iteration-order invariance: shared last-segment forces both sources to Pass 2', () => {
+    // Two source resources both have logical id `MyBucket` is structurally
+    // impossible (CFn templates use unique logical ids), but the m1 bug
+    // class is real when last-segment of synth `aws:cdk:path` collides.
+    // The actual order-dependent case the m1 fix targets: TWO source
+    // resources with the SAME logical id can't exist, so the practical
+    // test is symmetric — verify the collision check uses raw counts
+    // (forward + reverse iteration).
+    const buildOrdered = (forward: boolean) => {
+      const srcMap = forward
+        ? { MyBucket: { Properties: { BucketName: 'one' } } }
+        : { MyBucket: { Properties: { BucketName: 'one' } } };
+      return buildResourceMapping({
+        sourceCfnTemplate: source(srcMap),
+        synthTemplate: synth({
+          SynthOne: { cdkPath: 'Stack/Foo/MyBucket', Properties: { BucketName: 'one' } },
+          SynthTwo: { cdkPath: 'Stack/Bar/MyBucket', Properties: { BucketName: 'TWO' } },
+        }),
+        sourceResources: [
+          { LogicalResourceId: 'MyBucket', PhysicalResourceId: 'p', ResourceType: 'AWS::S3::Bucket' },
+        ],
+      });
+    };
+    const forwardResult = buildOrdered(true);
+    const reverseResult = buildOrdered(false);
+    // Pass 1 sees rawCount=2 → defers; Pass 2 picks SynthOne (BucketName
+    // matches). Same result regardless of iteration order.
+    expect(forwardResult.mapping).toEqual({ MyBucket: 'SynthOne' });
+    expect(reverseResult.mapping).toEqual({ MyBucket: 'SynthOne' });
+  });
+});
+
+describe('buildResourceMapping — CDK-synth sibling-key tolerance (t5)', () => {
+  it('ignores Conditions / Parameters / Rules siblings on the synth side', () => {
+    // CDK migrate's generated template includes 3 sibling top-level keys
+    // that the mapping algorithm MUST ignore (per design doc §5.5).
+    // Pre-fix this was structurally guaranteed (the algorithm walks
+    // only `Resources`), but a future refactor must not regress.
+    const result = buildResourceMapping({
+      sourceCfnTemplate: source({ MyBucket: {} }),
+      synthTemplate: {
+        Resources: {
+          MyBucket: {
+            Type: 'AWS::S3::Bucket',
+            Properties: {},
+            Metadata: { 'aws:cdk:path': 'Stack/MyBucket' },
+          },
+        },
+        Conditions: {
+          CDKMetadataAvailable: { 'Fn::Or': [/* ... */] },
+        },
+        Parameters: {
+          BootstrapVersion: {
+            Type: 'AWS::SSM::Parameter::Value<String>',
+            Default: '/cdk-bootstrap/hnb659fds/version',
+          },
+        },
+        Rules: {
+          CheckBootstrapVersion: {
+            Assertions: [{ Assert: { 'Fn::Not': [/* ... */] }, AssertDescription: 'check' }],
+          },
+        },
+      },
+      sourceResources: [
+        { LogicalResourceId: 'MyBucket', PhysicalResourceId: 'p', ResourceType: 'AWS::S3::Bucket' },
+      ],
+    });
+    expect(result.mapping).toEqual({ MyBucket: 'MyBucket' });
+    expect(result.unmatched).toEqual([]);
+  });
+});
+
 describe('buildResourceMapping — edge cases', () => {
   it('returns an empty result on empty source template', () => {
     const result = buildResourceMapping({

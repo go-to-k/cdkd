@@ -192,6 +192,9 @@ export async function migrateCommandAction(
           : ' (no synth resource has the same Type)';
       return `  - ${u.sourceLogicalId} (${u.resourceType}) [${u.reason}]${candidatesStr}`;
     });
+    // m5: Thread the resolved mappingFilePath (honors --output-dir) into
+    // the error body so the recovery command is copy-pasteable verbatim
+    // regardless of whether the user supplied a custom output directory.
     throw new LocalMigrateError(
       `Could not auto-map ${mappingResult.unmatched.length} of ${
         mappingResult.unmatched.length + mappingResult.pairs.length
@@ -199,8 +202,8 @@ export async function migrateCommandAction(
         `${lines.join('\n')}\n\n` +
         `Edit '${mappingFilePath}'\n` +
         `to add the correct '<sourceLogicalId>: <synthLogicalId>' pairs under "mapping", then re-run:\n` +
-        `  cdkd migrate --from-cfn-stack ${sourceCfnStackName} --resource-mapping ${mappingFilePath}\n` +
-        `Pass --output-dir <existing-dir> to re-use the already-generated CDK code.`
+        `  cdkd migrate --from-cfn-stack ${sourceCfnStackName} --resource-mapping ${mappingFilePath} --output-dir ${libResult.outputDir}\n` +
+        `(The --output-dir override re-uses the already-generated CDK code; drop it if you let the default location be used.)`
     );
   }
 
@@ -238,6 +241,13 @@ export async function migrateCommandAction(
   for (const p of mappingResult.pairs) {
     importMapping[p.synthLogicalId] = p.physicalId;
   }
+
+  // m4: Resolve the state bucket once up-front so a single STS hop
+  // covers BOTH the import flow AND the (optional) retire flow. Without
+  // this, the retire branch called resolveStateBucketWithDefault again
+  // and paid for a redundant STS GetCallerIdentity.
+  const resolvedStateBucket = await resolveStateBucketWithDefault(options.stateBucket, region);
+
   const importOptions: RunImportOptions = {
     app: libResult.assemblyDir,
     statePrefix: options.statePrefix ?? 'cdkd',
@@ -247,7 +257,7 @@ export async function migrateCommandAction(
     yes: true, // already prompted above; the import flow's prompt would double-prompt.
     force: false,
     verbose: options.verbose ?? false,
-    ...(options.stateBucket && { stateBucket: options.stateBucket }),
+    stateBucket: resolvedStateBucket,
     ...(options.region && { region: options.region }),
     ...(options.profile && { profile: options.profile }),
     ...(options.roleArn && { roleArn: options.roleArn }),
@@ -270,13 +280,12 @@ export async function migrateCommandAction(
       // Reuse cdkd's state bucket as transient storage for the
       // Retain-injected template when it exceeds the 51,200-byte
       // inline UpdateStack limit (same plumbing as `cdkd import
-      // --migrate-from-cloudformation`).
-      const stateBucket = await resolveStateBucketWithDefault(options.stateBucket, region);
+      // --migrate-from-cloudformation`). Resolved once above (m4).
       await retireCloudFormationStack({
         cfnStackName: sourceCfnStackName,
         cfnClient,
         yes: options.yes ?? false,
-        stateBucket,
+        stateBucket: resolvedStateBucket,
         ...(options.profile && { s3ClientOpts: { profile: options.profile } }),
       });
     } finally {
