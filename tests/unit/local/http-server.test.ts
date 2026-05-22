@@ -766,6 +766,109 @@ describe('startApiServer — RESPONSE_STREAM dispatch (#467)', () => {
       await server.close();
     }
   });
+
+  it('strips Content-Length and Transfer-Encoding from the prelude headers (issue #503 item 3)', async () => {
+    // A handler that defensively sets `Content-Length` or
+    // `Transfer-Encoding` in its prelude must not break the chunked-
+    // encoding contract Node enforces automatically. Both headers
+    // (case-insensitive) are stripped before `res.writeHead(...)`.
+    const { Readable } = await import('node:stream');
+    invokeRieStreamingMock.mockImplementation(async () => ({
+      prelude: {
+        statusCode: 200,
+        headers: {
+          'Content-Type': 'text/plain',
+          'Content-Length': '9999',
+          'Transfer-Encoding': 'gzip',
+          'X-Preserved': 'kept',
+        },
+      },
+      body: Readable.from([Buffer.from('hello-world')]),
+    }));
+    const route: RouteWithAuth = {
+      route: {
+        method: 'ANY',
+        pathPattern: '/{proxy+}',
+        lambdaLogicalId: 'Fn',
+        source: 'function-url',
+        apiVersion: 'v2',
+        stage: '$default',
+        apiStackName: 'S',
+        declaredAt: 'S/Url',
+        invokeMode: 'RESPONSE_STREAM',
+      },
+    };
+    const server = await startApiServer({
+      state: { routes: [route], pool: makePool(), corsConfigByApiId: new Map() },
+      rieTimeoutMs: 5000,
+      host: '127.0.0.1',
+      port: 0,
+    });
+    try {
+      const r = await fetch(`http://${server.host}:${server.port}/anything`);
+      expect(r.status).toBe(200);
+      // Node emits Transfer-Encoding: chunked automatically when no
+      // Content-Length is set. The handler's "gzip" stays stripped.
+      expect(r.headers.get('transfer-encoding')).toBe('chunked');
+      // Conflicting Content-Length is stripped (no actual length sent).
+      // undici exposes `null` for absent headers.
+      expect(r.headers.get('content-length')).toBeNull();
+      // Sibling headers pass through intact.
+      expect(r.headers.get('content-type')).toBe('text/plain');
+      expect(r.headers.get('x-preserved')).toBe('kept');
+      const body = await r.text();
+      expect(body).toBe('hello-world');
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('strips Content-Length and Transfer-Encoding case-insensitively (issue #503 item 3)', async () => {
+    // Same as above but with lowercase / mixed-case keys to assert the
+    // strip is case-insensitive.
+    const { Readable } = await import('node:stream');
+    invokeRieStreamingMock.mockImplementation(async () => ({
+      prelude: {
+        statusCode: 200,
+        headers: {
+          'content-length': '9999',
+          'transfer-encoding': 'chunked',
+          'X-Kept': 'yes',
+        },
+      },
+      body: Readable.from([Buffer.from('lc')]),
+    }));
+    const route: RouteWithAuth = {
+      route: {
+        method: 'ANY',
+        pathPattern: '/{proxy+}',
+        lambdaLogicalId: 'Fn',
+        source: 'function-url',
+        apiVersion: 'v2',
+        stage: '$default',
+        apiStackName: 'S',
+        declaredAt: 'S/Url',
+        invokeMode: 'RESPONSE_STREAM',
+      },
+    };
+    const server = await startApiServer({
+      state: { routes: [route], pool: makePool(), corsConfigByApiId: new Map() },
+      rieTimeoutMs: 5000,
+      host: '127.0.0.1',
+      port: 0,
+    });
+    try {
+      const r = await fetch(`http://${server.host}:${server.port}/anything`);
+      expect(r.status).toBe(200);
+      expect(r.headers.get('content-length')).toBeNull();
+      // Node still emits chunked automatically.
+      expect(r.headers.get('transfer-encoding')).toBe('chunked');
+      expect(r.headers.get('x-kept')).toBe('yes');
+      expect(await r.text()).toBe('lc');
+    } finally {
+      await server.close();
+    }
+  });
 });
 
 describe('parseQueryStringSingular — multi-value comma-join (PR #500 minor)', () => {
