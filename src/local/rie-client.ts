@@ -1,3 +1,4 @@
+import { Readable } from 'node:stream';
 import { setTimeout as delay } from 'node:timers/promises';
 
 /**
@@ -202,7 +203,8 @@ export async function invokeRie(
 async function fetchWithStartupRetry(
   url: string,
   body: string,
-  signal: AbortSignal
+  signal: AbortSignal,
+  extraHeaders?: Record<string, string>
 ): Promise<Response> {
   const maxAttempts = 3;
   let lastError: unknown;
@@ -210,7 +212,7 @@ async function fetchWithStartupRetry(
     try {
       return await fetch(url, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...extraHeaders },
         body,
         signal,
       });
@@ -223,4 +225,247 @@ async function fetchWithStartupRetry(
     }
   }
   throw lastError;
+}
+
+/**
+ * Parsed prelude metadata emitted by a streaming Lambda response.
+ *
+ * The Lambda runtime's streaming response format (verified empirically
+ * against `public.ecr.aws/lambda/nodejs:20` RIE on 2026-05-22 for #467):
+ *
+ *   <JSON prelude bytes> <8 NULL bytes> <raw body bytes...>
+ *
+ * The prelude is a JSON object with `statusCode`, `headers`, and
+ * (optionally) `cookies`, produced by the handler's call to
+ * `awslambda.HttpResponseStream.from(stream, metadata)`. The body
+ * is the bytes the handler subsequently `write`'d / piped into the
+ * stream — no framing, no chunked-encoding markers, just raw bytes
+ * that the HTTP layer can pipe straight through.
+ */
+export interface StreamingPrelude {
+  /** Lambda-declared HTTP status. */
+  statusCode: number;
+  /** Lambda-declared response headers (case as emitted). */
+  headers: Record<string, string>;
+  /** Lambda-declared cookies (HTTP API v2 shape — each rendered as a separate Set-Cookie). */
+  cookies?: string[];
+}
+
+/** Resolved streaming invocation result: parsed prelude + a Readable of the body chunks. */
+export interface StreamingInvokeResult {
+  prelude: StreamingPrelude;
+  /**
+   * The body stream — a Node `Readable` that emits the chunks the handler
+   * streamed AFTER the prelude/separator. Pipe directly into a
+   * `ServerResponse` with `Transfer-Encoding: chunked`.
+   */
+  body: Readable;
+}
+
+/**
+ * The 8-NULL-byte separator AWS Lambda RIE writes between the JSON
+ * metadata prelude and the streaming body chunks. Empirically verified
+ * — see `StreamingPrelude` docstring above.
+ */
+const STREAM_PRELUDE_SEPARATOR = Buffer.from([0, 0, 0, 0, 0, 0, 0, 0]);
+
+/**
+ * Maximum bytes we'll buffer searching for the prelude separator before
+ * giving up. 1 MiB is far past anything Lambda's streamifyResponse would
+ * emit as metadata (typical preludes are <500 bytes) — a runaway here
+ * indicates the handler didn't call `HttpResponseStream.from` at all, in
+ * which case we want to fail fast rather than buffer the whole body.
+ */
+const STREAM_PRELUDE_MAX_BYTES = 1024 * 1024;
+
+/**
+ * POST the event payload to RIE with the `streaming` response-mode
+ * header, parse the JSON prelude out of the response bytes, and return
+ * a Readable carrying the post-separator body chunks.
+ *
+ * Why a separate function from `invokeRie`: the prelude/separator/body
+ * framing is incompatible with the buffered-response `text()` consumer.
+ * Buffered routes still use `invokeRie`; only Function URLs with
+ * `InvokeMode: RESPONSE_STREAM` use this path.
+ *
+ * The `Lambda-Runtime-Function-Response-Mode: streaming` request header
+ * tells RIE we want the streaming protocol. (RIE happens to emit the
+ * same protocol for `streamifyResponse`-wrapped handlers regardless of
+ * the header, but setting it makes the contract explicit and survives
+ * future RIE behavior changes.)
+ *
+ * `timeoutMs` bounds the total wall time including the prelude wait —
+ * the handler can stream for the full Lambda timeout, so callers should
+ * pass a generous value (typically the function's configured Timeout * 2
+ * with a 30s floor, matching `invokeRie`'s convention).
+ */
+export async function invokeRieStreaming(
+  host: string,
+  port: number,
+  event: unknown,
+  timeoutMs: number
+): Promise<StreamingInvokeResult> {
+  const url = `http://${host}:${port}${INVOKE_PATH}`;
+  const body = JSON.stringify(event ?? {});
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+
+  let response: Response;
+  try {
+    response = await fetchWithStartupRetry(url, body, controller.signal, {
+      'Lambda-Runtime-Function-Response-Mode': 'streaming',
+    });
+  } catch (err) {
+    clearTimeout(timer);
+    if ((err as { name?: string }).name === 'AbortError') {
+      throw new Error(
+        `RIE streaming invoke at ${url} timed out after ${timeoutMs}ms. The handler may be hung; check container logs.`
+      );
+    }
+    throw err;
+  }
+
+  if (!response.body) {
+    clearTimeout(timer);
+    throw new Error(`RIE streaming invoke at ${url} returned no response body.`);
+  }
+
+  // Split the response stream at the 8-NULL-byte separator: prelude
+  // bytes accumulate in `preludeBuf`, then the remaining bytes (plus
+  // the rest of the stream) become the returned body Readable.
+  const reader = response.body.getReader();
+  let preludeBytes = Buffer.alloc(0);
+  let bodyTail: Buffer | undefined;
+  let separatorIdx = -1;
+
+  while (separatorIdx < 0) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    const chunk = Buffer.from(value);
+    preludeBytes = Buffer.concat([preludeBytes, chunk]);
+    separatorIdx = preludeBytes.indexOf(STREAM_PRELUDE_SEPARATOR);
+    if (separatorIdx >= 0) {
+      // Capture any body bytes already present in this chunk; everything
+      // AFTER the separator belongs to the body.
+      bodyTail = preludeBytes.subarray(separatorIdx + STREAM_PRELUDE_SEPARATOR.length);
+      preludeBytes = preludeBytes.subarray(0, separatorIdx);
+      break;
+    }
+    if (preludeBytes.length > STREAM_PRELUDE_MAX_BYTES) {
+      clearTimeout(timer);
+      reader.cancel().catch(() => undefined);
+      throw new Error(
+        `RIE streaming response did not emit the prelude/body separator within ${STREAM_PRELUDE_MAX_BYTES} bytes. ` +
+          `The handler likely did not call awslambda.HttpResponseStream.from(stream, metadata).`
+      );
+    }
+  }
+
+  if (separatorIdx < 0) {
+    clearTimeout(timer);
+    throw new Error(
+      `RIE streaming response ended before the prelude/body separator (got ${preludeBytes.length} bytes). ` +
+        `The handler likely threw before streaming the prelude — check container logs.`
+    );
+  }
+
+  let prelude: StreamingPrelude;
+  try {
+    prelude = parseStreamingPrelude(preludeBytes.toString('utf8'));
+  } catch (err) {
+    clearTimeout(timer);
+    reader.cancel().catch(() => undefined);
+    throw new Error(
+      `RIE streaming response prelude is not valid JSON: ${err instanceof Error ? err.message : String(err)}`
+    );
+  }
+
+  // Build a Readable that emits any already-buffered body bytes first,
+  // then drains the remaining response stream until done. The timeout
+  // is kept armed so a hung mid-body handler still aborts.
+  const stream = new Readable({
+    read() {
+      // No-op — chunks are pushed by the IIFE below.
+    },
+  });
+
+  void (async () => {
+    try {
+      if (bodyTail && bodyTail.length > 0) {
+        stream.push(bodyTail);
+      }
+      // Drain the rest. The reader has internal backpressure; pushing
+      // into the Readable returns false on overflow but Node's pipe()
+      // handles draining via the 'drain' event.
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        stream.push(Buffer.from(value));
+      }
+      stream.push(null);
+    } catch (err) {
+      stream.destroy(err instanceof Error ? err : new Error(String(err)));
+    } finally {
+      clearTimeout(timer);
+    }
+  })();
+
+  return { prelude, body: stream };
+}
+
+/**
+ * Parse a streaming prelude payload (JSON text). Normalizes the shape
+ * the http-server consumes: `statusCode` is coerced to a number (RIE
+ * sometimes emits it as a string), `headers` is always an object (the
+ * handler may omit it), `cookies` is preserved only when an array.
+ *
+ * Exported for unit tests. Throws on invalid JSON or a non-numeric
+ * statusCode (cdkd cannot map that to HTTP).
+ */
+export function parseStreamingPrelude(text: string): StreamingPrelude {
+  const trimmed = text.trim();
+  if (trimmed.length === 0) {
+    throw new Error('empty prelude');
+  }
+  const raw = JSON.parse(trimmed) as unknown;
+  if (!raw || typeof raw !== 'object') {
+    throw new Error('prelude is not a JSON object');
+  }
+  const obj = raw as Record<string, unknown>;
+
+  const statusRaw = obj['statusCode'];
+  let statusCode: number;
+  if (typeof statusRaw === 'number' && Number.isFinite(statusRaw)) {
+    statusCode = Math.trunc(statusRaw);
+  } else if (typeof statusRaw === 'string' && /^[0-9]+$/.test(statusRaw)) {
+    statusCode = Number.parseInt(statusRaw, 10);
+  } else {
+    throw new Error(`statusCode must be a number (got ${typeof statusRaw})`);
+  }
+
+  const headers: Record<string, string> = {};
+  const headersRaw = obj['headers'];
+  if (headersRaw && typeof headersRaw === 'object') {
+    for (const [k, v] of Object.entries(headersRaw as Record<string, unknown>)) {
+      if (v === null || v === undefined) continue;
+      // AWS's documented shape is string/number/boolean scalars; map
+      // everything else through JSON.stringify (defensive — a buggy
+      // handler emitting an object would otherwise log `[object Object]`).
+      if (typeof v === 'string') {
+        headers[k] = v;
+      } else if (typeof v === 'number' || typeof v === 'boolean' || typeof v === 'bigint') {
+        headers[k] = String(v);
+      } else {
+        headers[k] = JSON.stringify(v) ?? '';
+      }
+    }
+  }
+
+  const result: StreamingPrelude = { statusCode, headers };
+  const cookiesRaw = obj['cookies'];
+  if (Array.isArray(cookiesRaw)) {
+    result.cookies = cookiesRaw.map((c) => String(c));
+  }
+  return result;
 }

@@ -713,6 +713,7 @@ describe('discoverRoutes — Function URL', () => {
       stage: '$default',
       apiStackName: 'S',
       declaredAt: 'S/Url',
+      invokeMode: 'BUFFERED',
     });
   });
 
@@ -732,7 +733,7 @@ describe('discoverRoutes — Function URL', () => {
     expect(routes[0]?.lambdaLogicalId).toBe('Fn');
   });
 
-  it('flags InvokeMode RESPONSE_STREAM as deferred-error unsupported', () => {
+  it('tags InvokeMode RESPONSE_STREAM as a normal streaming route (#467)', () => {
     const stack = buildStack('S', {
       Url: {
         Type: 'AWS::Lambda::Url',
@@ -745,7 +746,57 @@ describe('discoverRoutes — Function URL', () => {
     });
     const routes = discoverRoutes([stack]);
     expect(routes).toHaveLength(1);
-    expect(routes[0]?.unsupported?.reason).toMatch(/RESPONSE_STREAM/);
+    expect(routes[0]?.unsupported).toBeUndefined();
+    expect(routes[0]?.invokeMode).toBe('RESPONSE_STREAM');
+    expect(routes[0]?.lambdaLogicalId).toBe('Fn');
+  });
+
+  it('defaults InvokeMode to BUFFERED when the template omits the field', () => {
+    const stack = buildStack('S', {
+      Url: {
+        Type: 'AWS::Lambda::Url',
+        Properties: {
+          AuthType: 'NONE',
+          TargetFunctionArn: { Ref: 'Fn' },
+        },
+      },
+    });
+    const routes = discoverRoutes([stack]);
+    expect(routes).toHaveLength(1);
+    expect(routes[0]?.unsupported).toBeUndefined();
+    expect(routes[0]?.invokeMode).toBe('BUFFERED');
+  });
+
+  it('preserves an explicit InvokeMode: BUFFERED value', () => {
+    const stack = buildStack('S', {
+      Url: {
+        Type: 'AWS::Lambda::Url',
+        Properties: {
+          AuthType: 'NONE',
+          InvokeMode: 'BUFFERED',
+          TargetFunctionArn: { Ref: 'Fn' },
+        },
+      },
+    });
+    const routes = discoverRoutes([stack]);
+    expect(routes).toHaveLength(1);
+    expect(routes[0]?.invokeMode).toBe('BUFFERED');
+  });
+
+  it('flags unknown InvokeMode values as deferred-error unsupported', () => {
+    const stack = buildStack('S', {
+      Url: {
+        Type: 'AWS::Lambda::Url',
+        Properties: {
+          AuthType: 'NONE',
+          InvokeMode: 'WEIRD_NEW_MODE',
+          TargetFunctionArn: { Ref: 'Fn' },
+        },
+      },
+    });
+    const routes = discoverRoutes([stack]);
+    expect(routes).toHaveLength(1);
+    expect(routes[0]?.unsupported?.reason).toMatch(/WEIRD_NEW_MODE/);
     expect(routes[0]?.lambdaLogicalId).toBe('Fn');
   });
 });

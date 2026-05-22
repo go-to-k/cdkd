@@ -120,15 +120,23 @@ head -60 "${LOG_FILE}" | sed 's/^/    /'
 # qualifiers like "v2:edge") can't shadow the real port.
 PORT_HTTP=$(grep -E 'Server listening on http://[^[:space:]]+\s+\(.*HTTP API v2\)' "${LOG_FILE}" | sed -E 's|.*://[^:]+:([0-9]+).*|\1|' | head -1)
 PORT_REST=$(grep -E 'Server listening on http://[^[:space:]]+\s+\(.*REST API v1\)' "${LOG_FILE}" | sed -E 's|.*://[^:]+:([0-9]+).*|\1|' | head -1)
-PORT_FNURL=$(grep -E 'Server listening on http://[^[:space:]]+\s+\(.*Function URL\)' "${LOG_FILE}" | sed -E 's|.*://[^:]+:([0-9]+).*|\1|' | head -1)
-if [[ -z "${PORT_HTTP}" || -z "${PORT_REST}" || -z "${PORT_FNURL}" ]]; then
+# Two Function URL servers: the buffered one (UrlHandler) and the
+# streaming one (StreamUrlHandler — added in #467). CDK appends an
+# 8-hex-char hash to each logical id; the leading `(` anchor + the
+# regex `UrlHandler[A-F0-9]{8}` boundary ensures `UrlHandler` does NOT
+# match `StreamUrlHandler` (the latter has `Stream` before `UrlHandler`,
+# so the `(` boundary excludes it).
+PORT_FNURL=$(grep -E 'Server listening on http://[^[:space:]]+\s+\(UrlHandler[A-F0-9]{8}\s+\(Function URL\)\)' "${LOG_FILE}" | sed -E 's|.*://[^:]+:([0-9]+).*|\1|' | head -1)
+PORT_FNURL_STREAM=$(grep -E 'Server listening on http://[^[:space:]]+\s+\(StreamUrlHandler[A-F0-9]{8}\s+\(Function URL\)\)' "${LOG_FILE}" | sed -E 's|.*://[^:]+:([0-9]+).*|\1|' | head -1)
+if [[ -z "${PORT_HTTP}" || -z "${PORT_REST}" || -z "${PORT_FNURL}" || -z "${PORT_FNURL_STREAM}" ]]; then
   echo "FAIL: could not extract per-API port mappings. Log:"
   cat "${LOG_FILE}"
   exit 1
 fi
-echo "    HTTP API v2: ${PORT_HTTP}"
-echo "    REST API v1: ${PORT_REST}"
-echo "    Function URL: ${PORT_FNURL}"
+echo "    HTTP API v2:           ${PORT_HTTP}"
+echo "    REST API v1:           ${PORT_REST}"
+echo "    Function URL:          ${PORT_FNURL}"
+echo "    Function URL (stream): ${PORT_FNURL_STREAM}"
 
 # Verify the route table contains every route. Method-column width
 # varies per server (REST v1 with OPTIONS preflight rows has a wider
@@ -220,6 +228,79 @@ curl_assert "ANY /v1/anything (stage variables)" \
 # Function URL is a separate server on its own port. The Function URL
 # greedy proxy answers any path on its server.
 curl_assert "Function URL fallback" "http://127.0.0.1:${PORT_FNURL}/url-only/ping" '"functionUrl":true'
+
+# #467: streaming Function URL (`invokeMode: RESPONSE_STREAM`). The
+# handler emits 5 chunks of "hello-N\n" with 200ms delays between
+# chunks. cdkd MUST:
+#   1. Return HTTP 200 + `Transfer-Encoding: chunked` headers (not
+#      buffered-then-flushed in one shot).
+#   2. Deliver chunks incrementally — the wall-clock duration of
+#      `curl --no-buffer` should reflect the handler's inter-chunk
+#      sleeps (>= ~600ms across 5 chunks of 200ms).
+#   3. Echo the prelude's X-Stream-Test header.
+#
+# Caveat: the AWS Lambda Runtime Interface Emulator (RIE) baked into
+# `public.ecr.aws/lambda/nodejs:20` does NOT stream the response — it
+# buffers every `responseStream.write(...)` call into one response that
+# arrives at the HTTP client as a single block. This is a RIE limitation
+# (verified empirically against the v1.0 RIE shipped in the base image
+# on 2026-05-22); cdkd's `invokeRieStreaming` correctly parses the
+# streaming protocol and pipes the body bytes with `Transfer-Encoding:
+# chunked`, but real incremental delivery only manifests against the
+# deployed Lambda runtime. The integ asserts the protocol shape, not
+# inter-chunk timing.
+echo "==> Asserting streaming Function URL (#467)"
+STREAM_URL="http://127.0.0.1:${PORT_FNURL_STREAM}/anything"
+# First-request retry loop (cold container ~3-5s on first invoke).
+STREAM_RESPONSE=""
+for attempt in 1 2 3 4 5 6 7 8 9 10; do
+  if STREAM_RESPONSE=$(curl -sf -i --no-buffer "${STREAM_URL}" 2>&1); then
+    if echo "${STREAM_RESPONSE}" | grep -q 'hello-0'; then break; fi
+  fi
+  sleep 1
+done
+if ! echo "${STREAM_RESPONSE}" | grep -qi '^HTTP/1.1 200'; then
+  echo "FAIL: streaming Function URL did not return 200. Response:"
+  echo "${STREAM_RESPONSE}"
+  cat "${LOG_FILE}"
+  exit 1
+fi
+if ! echo "${STREAM_RESPONSE}" | grep -qi '^transfer-encoding: chunked'; then
+  echo "FAIL: streaming response missing Transfer-Encoding: chunked. Response:"
+  echo "${STREAM_RESPONSE}"
+  cat "${LOG_FILE}"
+  exit 1
+fi
+if ! echo "${STREAM_RESPONSE}" | grep -qi '^x-stream-test: on'; then
+  echo "FAIL: streaming response missing X-Stream-Test header from the prelude. Response:"
+  echo "${STREAM_RESPONSE}"
+  cat "${LOG_FILE}"
+  exit 1
+fi
+# All 5 chunks present in the body (order-preserved). RIE buffers the
+# writes, so we get all 5 in one shot — that's expected.
+for i in 0 1 2 3 4; do
+  if ! echo "${STREAM_RESPONSE}" | grep -q "hello-${i}"; then
+    echo "FAIL: streaming response missing chunk 'hello-${i}'. Response:"
+    echo "${STREAM_RESPONSE}"
+    cat "${LOG_FILE}"
+    exit 1
+  fi
+done
+# Protocol-shape audit: the response body must NOT contain the literal
+# bytes of the 8-NULL separator — that would mean cdkd's prelude parser
+# leaked separator bytes into the body. We grep `chunk-` instead of a
+# binary NULL match because curl's `-i` output is rendered for
+# terminals and may mask NULs; the indirect signal is that the body
+# starts with `hello-0` (the handler's first write after the
+# `HttpResponseStream.from` wrapper installed the prelude).
+if echo "${STREAM_RESPONSE}" | grep -q '"statusCode":200,"headers"'; then
+  echo "FAIL: streaming response body leaked the JSON prelude (parser bug). Response:"
+  echo "${STREAM_RESPONSE}"
+  cat "${LOG_FILE}"
+  exit 1
+fi
+echo "    [streaming Function URL] OK"
 
 # PR 8c: CORS preflight interception. The HTTP API has CorsConfiguration
 # with `*` origins; verify.sh asserts the canonical preflight response.
