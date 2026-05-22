@@ -1,3 +1,10 @@
+## [0.132.4](https://github.com/go-to-k/cdkd/compare/v0.132.3...v0.132.4) (2026-05-22)
+
+
+### Bug Fixes
+
+* **local-start-api:** REST v1 non-AWS_PROXY follow-ups ([#507](https://github.com/go-to-k/cdkd/issues/507)) ([#511](https://github.com/go-to-k/cdkd/issues/511)) ([b9230f6](https://github.com/go-to-k/cdkd/commit/b9230f60befc8a2ed642f0e4004f28d2264c3f96))
+
 ## [0.132.3](https://github.com/go-to-k/cdkd/compare/v0.132.2...v0.132.3) (2026-05-22)
 
 
