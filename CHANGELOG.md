@@ -1,3 +1,10 @@
+# [0.122.0](https://github.com/go-to-k/cdkd/compare/v0.121.0...v0.122.0) (2026-05-22)
+
+
+### Features
+
+* **local:** --from-state resolves Fn::ImportValue and Fn::GetStackOutput ([#454](https://github.com/go-to-k/cdkd/issues/454)) ([#487](https://github.com/go-to-k/cdkd/issues/487)) ([628d5e8](https://github.com/go-to-k/cdkd/commit/628d5e87bb7490f1960a9db7109d7cb64fd7143d))
+
 # [0.121.0](https://github.com/go-to-k/cdkd/compare/v0.120.0...v0.121.0) (2026-05-22)
 
 
