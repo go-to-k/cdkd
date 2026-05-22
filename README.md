@@ -25,7 +25,7 @@ Drop-in CDK CLI for existing CDK apps — faster deploys via AWS SDK instead of 
 - **Rollback on failure**: When a deploy errors mid-stack, cdkd rolls back the resources it just created so the stack state stays consistent (CloudFormation parity — but cdkd does this without round-tripping through CFn). Pass `cdkd deploy --no-rollback` to skip rollback and keep the partial state for Terraform-style inspection / repair. See [Rollback behavior](#rollback-behavior).
 - **`--no-wait` for async resources**: Skip the multi-minute wait on CloudFront / RDS / ElastiCache / NAT Gateway and return as soon as the create call returns (CloudFormation always blocks)
 - **VPC route DependsOn relaxation (on by default)**: Drop CDK-injected defensive `DependsOn` edges from VPC Lambdas onto private-subnet routes so `CloudFront::Distribution` and `Lambda::Url` start their ~3-min propagation in parallel with NAT Gateway stabilization (~50% faster on VPC + Lambda + CloudFront stacks). Pass `--no-aggressive-vpc-parallel` to opt out.
-- **Local execution without deploying** (`cdkd local invoke` / `cdkd local start-api` / `cdkd local run-task`): run any Lambda — stand up every API Gateway route as a local HTTP server — or start every container in an `AWS::ECS::TaskDefinition` on a per-task docker network with the AWS-published metadata-endpoints sidecar. SAM-compatible mental model but reuses cdkd's synthesis / asset / route-discovery (no `template.yaml` round-trip). All AWS Lambda runtimes (Node.js / Python / Ruby / Java / .NET / `provided.*`) and one server per discovered API (HTTP API v2 / REST v1 / Function URL) with their own port / authorizers / CORS configs. `local run-task` is Phase 1 (single task, DependsOn ordering, IAM task-role via AssumeRole) — ECS Services / ALB routing / Service Connect are Phase 2 / Phase 3 follow-ups. `cdkd local run-task --from-state` substitutes intrinsic-valued container `Environment[].Value` (`Ref` / `Fn::GetAtt` / `Fn::Sub` / `Fn::Join`) and `Secrets[].ValueFrom` against the deployed cdkd state — `table.tableName` / `ecs.Secret.fromSecretsManager(secret)` / `ecs.Secret.fromSsmParameter(param)` Just Work locally instead of silently dropping.
+- **Local execution without deploying** (`cdkd local invoke` / `cdkd local start-api` / `cdkd local run-task`): run any Lambda — stand up every API Gateway route as a local HTTP server — or start every container in an `AWS::ECS::TaskDefinition` on a per-task docker network with the AWS-published metadata-endpoints sidecar. SAM-compatible mental model but reuses cdkd's synthesis / asset / route-discovery (no `template.yaml` round-trip). All AWS Lambda runtimes (Node.js / Python / Ruby / Java / .NET / `provided.*`) and one server per discovered API (HTTP API v2 / REST v1 / Function URL) with their own port / authorizers / CORS configs. `local run-task` is Phase 1 (single task, DependsOn ordering, IAM task-role via AssumeRole) — ECS Services / ALB routing / Service Connect are Phase 2 / Phase 3 follow-ups. `cdkd local run-task --from-state` substitutes intrinsic-valued container `Environment[].Value` (`Ref` / `Fn::GetAtt` / `Fn::Sub` / `Fn::Join` / `Fn::ImportValue` / `Fn::GetStackOutput`) and `Secrets[].ValueFrom` against the deployed cdkd state — `table.tableName` / `ecs.Secret.fromSecretsManager(secret)` / `ecs.Secret.fromSsmParameter(param)` / cross-stack output refs Just Work locally instead of silently dropping.
 - **Bidirectional CloudFormation migration**: `cdkd import` adopts AWS-deployed resources (including `cdk deploy`-managed CloudFormation stacks via `--migrate-from-cloudformation`) into cdkd state without re-creating them; `cdkd export` hands a cdkd-managed stack back to CloudFormation when you're ready to move to production. See [Importing existing resources](#importing-existing-resources) and [Exporting a stack back to CloudFormation](#exporting-a-stack-back-to-cloudformation).
 
 > **Note**: Resource types not covered by either SDK Providers or Cloud Control API cannot be deployed with cdkd. If you encounter an unsupported resource type, deployment will fail with a clear error message.
@@ -427,8 +427,12 @@ maintain, no `cdk synth | sam ...` round-trip.
 | `cdkd local run-task <target>` | ECS RunTask — every container in a task definition started on a per-task docker network |
 
 Requires Docker. Pass `--from-state` to substitute deployed physical
-IDs into intrinsic-valued properties; without it, intrinsic values are
-dropped with a per-key warning (matches `sam local *` semantics).
+IDs into intrinsic-valued properties (`Ref` / `Fn::GetAtt` / `Fn::Sub` /
+`Fn::Join` against the same stack's state plus AWS pseudo parameters
+via STS, AND `Fn::ImportValue` / `Fn::GetStackOutput` against the
+persistent exports index for cross-stack references — same-account /
+same-region); without it, intrinsic values are dropped with a per-key
+warning (matches `sam local *` semantics).
 
 ### `local invoke`
 
@@ -548,11 +552,14 @@ adopt nor recreate them).
 cdkd export MyStack                           # confirmation prompt; CFn stack name = cdkd stack name
 cdkd export MyStack --cfn-stack-name MyStack-CFn
 cdkd export MyStack --dry-run                 # print the import plan, do not call CFn
-cdkd export MyStack --template path.json      # skip synth, use a pre-rendered JSON template
+cdkd export MyStack --template path.json      # skip synth, use a pre-rendered template (JSON or YAML — format auto-detected)
 cdkd export MyStack --include-non-importable  # 2-phase: IMPORT importable + CFn-CREATE Custom Resources
 ```
 
-MVP scope: JSON templates only (CDK-generated).
+Accepts JSON and YAML templates. YAML round-trips through a CFn-aware codec
+(`src/cli/yaml-cfn.ts`) that preserves every shorthand intrinsic (`!Ref` /
+`!GetAtt` / `!Sub` / `!Join` / etc.), so a YAML-authored CFn stack stays YAML
+on the phase-1 IMPORT and phase-2 UPDATE changesets.
 
 ## Drift detection
 
