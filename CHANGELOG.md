@@ -1,3 +1,10 @@
+# [0.128.0](https://github.com/go-to-k/cdkd/compare/v0.127.0...v0.128.0) (2026-05-22)
+
+
+### Features
+
+* **local-start-api:** container image Lambda support ([#493](https://github.com/go-to-k/cdkd/issues/493)) ([9817741](https://github.com/go-to-k/cdkd/commit/98177419fe266de4bf5fca37b1e074048587d412))
+
 # [0.127.0](https://github.com/go-to-k/cdkd/compare/v0.126.0...v0.127.0) (2026-05-22)
 
 
