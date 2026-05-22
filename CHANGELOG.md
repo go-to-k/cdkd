@@ -1,3 +1,10 @@
+# [0.121.0](https://github.com/go-to-k/cdkd/compare/v0.120.0...v0.121.0) (2026-05-22)
+
+
+### Features
+
+* **logger:** rich color output + replace hero GIF with side-by-side demo ([#486](https://github.com/go-to-k/cdkd/issues/486)) ([9dee8dc](https://github.com/go-to-k/cdkd/commit/9dee8dcddcd5b7075309005e923dc517b8b1557f))
+
 # [0.120.0](https://github.com/go-to-k/cdkd/compare/v0.119.0...v0.120.0) (2026-05-22)
 
 
