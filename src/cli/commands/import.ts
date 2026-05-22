@@ -178,6 +178,10 @@ async function importCommand(stackArg: string | undefined, options: ImportOption
       app: appCmd,
       output: options.output || 'cdk.out',
       ...(Object.keys(context).length > 0 && { context }),
+      // Threaded so the macro-expander has a real state bucket for
+      // the > 51,200-byte template upload path (Issue #463).
+      stateBucket,
+      ...(options.profile && { macroExpandS3ClientOpts: { profile: options.profile } }),
     });
 
     // Stack selection: prefer explicit positional, otherwise auto-pick a single

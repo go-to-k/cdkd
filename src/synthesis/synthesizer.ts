@@ -100,7 +100,26 @@ export class Synthesizer {
       this.logger.debug(`Using pre-synthesized cloud assembly at ${appPath}`);
       const manifest = this.assemblyReader.readManifest(appPath);
       const stacks = this.assemblyReader.getAllStacks(appPath, manifest);
-      await this.expandMacrosForStacks(stacks, options);
+      // Resolve region + accountId for the macro-expansion pass (parity
+      // with the synth branch below). The pre-synth branch may still
+      // hit the macro-expander when an assembly built elsewhere
+      // contains a `Transform` block, so we need the same STS hop to
+      // resolve the default state bucket.
+      const presynthRegion =
+        options.region || process.env['AWS_REGION'] || process.env['AWS_DEFAULT_REGION'];
+      let presynthAccountId: string | undefined;
+      try {
+        const stsClient = new STSClient({ ...(presynthRegion && { region: presynthRegion }) });
+        const identity = await stsClient.send(new GetCallerIdentityCommand({}));
+        presynthAccountId = identity.Account;
+        stsClient.destroy();
+      } catch {
+        this.logger.debug('Could not resolve AWS account ID via STS (pre-synth branch)');
+      }
+      await this.expandMacrosForStacks(stacks, options, {
+        region: presynthRegion,
+        ...(presynthAccountId && { accountId: presynthAccountId }),
+      });
       this.logger.debug(`Loaded ${stacks.length} stack(s) from pre-synthesized assembly`);
       return { manifest, assemblyDir: appPath, stacks };
     }
@@ -270,12 +289,48 @@ export class Synthesizer {
     // State bucket — only consulted by the macro-expander when a stack's
     // serialized template exceeds 51,200 bytes (the inline TemplateBody
     // ceiling). For sub-51kB templates the inline TemplateBody path
-    // skips the bucket entirely, so a placeholder string is sufficient
-    // here. When the caller threads through `options.stateBucket` (the
-    // standard flow on `cdkd deploy`), the real bucket is used.
-    const stateBucket =
-      options.stateBucket ??
-      (resolved?.accountId ? `cdkd-state-${resolved.accountId}` : 'cdkd-state-unresolved');
+    // skips the bucket entirely.
+    //
+    // Resolution chain: caller-threaded `options.stateBucket` (the
+    // standard flow on `cdkd deploy` / `diff` / `destroy` / `export` /
+    // `import` / `orphan` — those resolve via `resolveStateBucketWithDefault`
+    // BEFORE calling `synthesize` and pass it down) → STS-resolved
+    // `cdkd-state-{accountId}` default → hard-error.
+    //
+    // The hard-error case is structural: callers like `cdkd synth` /
+    // `list` / `publish-assets` historically did not resolve a state
+    // bucket because they don't need one for their own work, but a
+    // macro-containing stack with a >51 KB template DOES need one for
+    // the transient TemplateURL upload. The caller must thread one
+    // through or the user must pass `--state-bucket <name>`.
+    let stateBucket: string;
+    if (options.stateBucket) {
+      stateBucket = options.stateBucket;
+    } else if (resolved?.accountId) {
+      stateBucket = `cdkd-state-${resolved.accountId}`;
+    } else {
+      // Best-effort: every stack in `stacksWithMacros` has a small
+      // template (≤ 51,200 bytes) → the bucket isn't consulted. Probe
+      // sizes here and only hard-error when at least one stack would
+      // actually need TemplateURL.
+      const oversize = stacksWithMacros.find((s) => JSON.stringify(s.template).length > 51_200);
+      if (oversize) {
+        throw new SynthesisError(
+          `Stack '${oversize.stackName}' uses CloudFormation macros AND its serialized ` +
+            `template exceeds the 51,200-byte inline TemplateBody limit, so cdkd must ` +
+            `upload the template to S3 for the transient expansion changeset. cdkd could ` +
+            `not resolve a state bucket: STS GetCallerIdentity failed AND --state-bucket ` +
+            `was not provided. Pass --state-bucket <name> (cdkd uses the same bucket as ` +
+            `cdkd deploy state storage; typically 'cdkd-state-<accountId>').`
+        );
+      }
+      // Sub-51 KB template: bucket isn't consulted, but the
+      // expander's signature still requires a value. Use an obviously
+      // synthetic name so any future code path that consults the
+      // field fails loudly instead of silently calling against a
+      // bucket that doesn't exist.
+      stateBucket = 'cdkd-state-unresolved-not-needed-for-inline';
+    }
 
     for (const stack of stacksWithMacros) {
       const macros = enumerateMacros(stack.template);

@@ -217,6 +217,10 @@ async function deployCommand(
       ...(options.region && { region: options.region }),
       ...(options.profile && { profile: options.profile }),
       ...(Object.keys(context).length > 0 && { context }),
+      // Threaded so the macro-expander has a real state bucket for
+      // the > 51,200-byte template upload path (Issue #463).
+      stateBucket,
+      ...(options.profile && { macroExpandS3ClientOpts: { profile: options.profile } }),
     });
 
     const { stacks: allStacks } = result;

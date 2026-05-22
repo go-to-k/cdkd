@@ -40,6 +40,12 @@ ACCOUNT_ID="$(aws sts get-caller-identity --query Account --output text)"
 STATE_BUCKET="${STATE_BUCKET:-cdkd-state-${ACCOUNT_ID}}"
 echo "[verify] region=${REGION} stack=${STACK} state-bucket=${STATE_BUCKET}"
 
+# Per-run tmp files via mktemp so parallel CI matrix runs do not
+# collide on shared /tmp paths. The trap cleanup below removes them.
+DEPLOY_LOG="$(mktemp -t cdkd-macro-deploy.XXXXXX.log)"
+INVOKE_OUT="$(mktemp -t cdkd-macro-invoke.XXXXXX.json)"
+INVOKE_META="$(mktemp -t cdkd-macro-invoke-meta.XXXXXX.json)"
+
 echo "[verify] step 1: install + build cdkd"
 (cd "${REPO_ROOT}" && pnpm install)
 (cd "${REPO_ROOT}" && vp run build)
@@ -65,13 +71,15 @@ cleanup() {
       [ -n "${orphan}" ] && aws cloudformation delete-stack --stack-name "${orphan}" --region "${REGION}" || true
     done
   fi
+  # Remove the mktemp'd files (success + failure paths).
+  rm -f "${DEPLOY_LOG}" "${INVOKE_OUT}" "${INVOKE_META}" 2>/dev/null || true
   exit "${rc}"
 }
 trap cleanup EXIT INT TERM
 
 echo "[verify] step 2: cdkd deploy ${STACK} (expect macro expansion log line)"
-${CLI} deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --force --verbose 2>&1 | tee /tmp/cdkd-macro-deploy.log
-if ! grep -F "[macros] Expanding CloudFormation macros" /tmp/cdkd-macro-deploy.log > /dev/null; then
+${CLI} deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --force --verbose 2>&1 | tee "${DEPLOY_LOG}"
+if ! grep -F "[macros] Expanding CloudFormation macros" "${DEPLOY_LOG}" > /dev/null; then
   echo "[verify] FAIL: expected '[macros] Expanding CloudFormation macros' line in deploy log"
   exit 1
 fi
@@ -92,9 +100,9 @@ echo "[verify] step 4: assert function exists on AWS"
 aws lambda get-function --function-name "${FN_NAME}" --region "${REGION}" --query 'Configuration.[FunctionName,Runtime,Handler]' --output table
 
 echo "[verify] step 5: invoke function and assert statusCode=200"
-aws lambda invoke --function-name "${FN_NAME}" --region "${REGION}" --payload '{}' --cli-binary-format raw-in-base64-out /tmp/cdkd-macro-invoke.json > /tmp/cdkd-macro-invoke-meta.json
-cat /tmp/cdkd-macro-invoke.json
-INVOKE_STATUS="$(jq -r '.statusCode' /tmp/cdkd-macro-invoke.json)"
+aws lambda invoke --function-name "${FN_NAME}" --region "${REGION}" --payload '{}' --cli-binary-format raw-in-base64-out "${INVOKE_OUT}" > "${INVOKE_META}"
+cat "${INVOKE_OUT}"
+INVOKE_STATUS="$(jq -r '.statusCode' "${INVOKE_OUT}")"
 if [ "${INVOKE_STATUS}" != "200" ]; then
   echo "[verify] FAIL: expected statusCode=200, got ${INVOKE_STATUS}"
   exit 1

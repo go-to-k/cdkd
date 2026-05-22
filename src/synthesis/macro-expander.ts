@@ -3,7 +3,6 @@ import {
   type Capability,
   CloudFormationClient,
   CreateChangeSetCommand,
-  DeleteChangeSetCommand,
   DeleteStackCommand,
   DescribeChangeSetCommand,
   GetTemplateCommand,
@@ -15,6 +14,7 @@ import {
   type CfnUploadS3ClientOpts,
   uploadCfnTemplate,
 } from '../cli/upload-cfn-template.js';
+import type { Logger } from '../types/config.js';
 import type { CloudFormationTemplate } from '../types/resource.js';
 import { MacroExpansionError } from '../utils/error-handler.js';
 import { getLogger } from '../utils/logger.js';
@@ -39,10 +39,12 @@ export interface ExpandMacrosOptions {
   cfnClient?: CloudFormationClient;
   s3ClientOpts?: CfnUploadS3ClientOpts;
   /**
-   * Maximum total wait for the transient `CreateChangeSet` to settle.
-   * Defaults to 10 minutes per the design — SAM expansion typically
-   * completes in 30-60s but the first-ever call against a fresh
-   * account pays a cold-start on the SAM macro Lambda layer.
+   * Maximum total wait for the transient `CreateChangeSet` to settle,
+   * **in seconds** (matches the SDK waiter's `maxWaitTime` contract).
+   * Defaults to {@link WAITER_MAX_WAIT_SECONDS} (600s / 10 min) per
+   * the design — SAM expansion typically completes in 30-60s but the
+   * first-ever call against a fresh account pays a cold-start on the
+   * SAM macro Lambda layer.
    */
   waiterMaxWaitSeconds?: number;
 }
@@ -84,13 +86,57 @@ export interface ExpandMacrosOptions {
 const EMPIRICAL_FINDINGS_VERIFIED_2026_05_23 = true;
 void EMPIRICAL_FINDINGS_VERIFIED_2026_05_23;
 
-const DEFAULT_WAITER_SECONDS = 600; // 10 min — see design §3 Approach A
+/** 600 seconds = 10 minutes. SDK waiter's `maxWaitTime` is in seconds. */
+const WAITER_MAX_WAIT_SECONDS = 600;
 const PARAMETER_PLACEHOLDER = 'cdkd-macro-expand-placeholder';
 const CAPABILITIES: Capability[] = [
   'CAPABILITY_AUTO_EXPAND',
   'CAPABILITY_NAMED_IAM',
   'CAPABILITY_IAM',
 ];
+
+/**
+ * Per-Type placeholder values used when a template Parameter has no
+ * `Default`. CFn validates Parameter `Type` BEFORE the macro Lambda
+ * runs, so a single bare-string placeholder rejects `CreateChangeSet`
+ * on `Number` / `List<*>` / `AWS::EC2::*::Id` typed parameters
+ * (`Parameter '<X>' must be a number`, etc.). The actual values do NOT
+ * leak into the Processed-stage template (CFn preserves
+ * `Ref: <param>` intact through expansion — see {@link
+ * EMPIRICAL_FINDINGS_VERIFIED_2026_05_23} Q4), so any type-valid value
+ * is sufficient. AWS-published Parameter Types list:
+ * <https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/parameters-section-structure.html#parameters-section-structure-properties>
+ */
+const PARAMETER_TYPE_PLACEHOLDERS: Record<string, string> = {
+  // Scalar / list scalar
+  String: PARAMETER_PLACEHOLDER,
+  Number: '0',
+  'List<Number>': '0',
+  CommaDelimitedList: '',
+  'List<String>': '',
+  // AWS-specific scalars
+  'AWS::EC2::AvailabilityZone::Name': 'us-east-1a',
+  'AWS::EC2::Image::Id': 'ami-00000000',
+  'AWS::EC2::Instance::Id': 'i-00000000',
+  'AWS::EC2::KeyPair::KeyName': 'placeholder-key',
+  'AWS::EC2::SecurityGroup::GroupName': 'placeholder-sg',
+  'AWS::EC2::SecurityGroup::Id': 'sg-00000000',
+  'AWS::EC2::Subnet::Id': 'subnet-00000000',
+  'AWS::EC2::Volume::Id': 'vol-00000000',
+  'AWS::EC2::VPC::Id': 'vpc-00000000',
+  'AWS::Route53::HostedZone::Id': 'Z00000000000000000000',
+  'AWS::SSM::Parameter::Name': 'placeholder',
+  // AWS-specific lists (one valid element is enough; CFn validates each)
+  'List<AWS::EC2::AvailabilityZone::Name>': 'us-east-1a',
+  'List<AWS::EC2::Image::Id>': 'ami-00000000',
+  'List<AWS::EC2::Instance::Id>': 'i-00000000',
+  'List<AWS::EC2::SecurityGroup::GroupName>': 'placeholder-sg',
+  'List<AWS::EC2::SecurityGroup::Id>': 'sg-00000000',
+  'List<AWS::EC2::Subnet::Id>': 'subnet-00000000',
+  'List<AWS::EC2::Volume::Id>': 'vol-00000000',
+  'List<AWS::EC2::VPC::Id>': 'vpc-00000000',
+  'List<AWS::Route53::HostedZone::Id>': 'Z00000000000000000000',
+};
 
 /**
  * Expand CloudFormation macros / `Fn::Transform` blocks in a synth
@@ -151,7 +197,7 @@ export async function expandMacros(
   const changeSetName = `${transientStackName}-changeset`;
   const region = opts.region;
   const stateBucket = opts.stateBucket;
-  const waiterMaxWaitSeconds = opts.waiterMaxWaitSeconds ?? DEFAULT_WAITER_SECONDS;
+  const waiterMaxWaitSeconds = opts.waiterMaxWaitSeconds ?? WAITER_MAX_WAIT_SECONDS;
 
   const ownsClient = opts.cfnClient === undefined;
   const cfn = opts.cfnClient ?? new CloudFormationClient({ region });
@@ -163,7 +209,7 @@ export async function expandMacros(
   // Parameter placeholders: per Q4 above, declared no-Default params
   // need values for the changeset to even validate. CFn does NOT
   // substitute these into the Processed-stage template.
-  const parameters = buildParameterValues(template);
+  const parameters = buildParameterValues(template, logger);
 
   // Pick inline vs TemplateURL based on the wire size.
   let templateInput: { TemplateBody: string } | { TemplateURL: string };
@@ -286,27 +332,14 @@ export async function expandMacros(
     );
     return expanded;
   } finally {
-    // ---- Cleanup: DeleteChangeSet + DeleteStack ----
-    // Both are idempotent (NotFound is silently OK). We want this to
-    // run on every exit path so a CFn-side or cdkd-side failure does
-    // not leave a transient `cdkd-macro-expand-*` stack behind. Log
-    // each failure at WARN so a stale stack is at least visible to
-    // the operator.
-    try {
-      await cfn.send(
-        new DeleteChangeSetCommand({
-          StackName: transientStackName,
-          ChangeSetName: changeSetName,
-        })
-      );
-    } catch (cleanupErr) {
-      logger.warn(
-        `Failed to delete transient macro-expand changeset ` +
-          `'${changeSetName}': ${formatErr(cleanupErr)}. ` +
-          `Clean up manually via 'aws cloudformation delete-change-set ` +
-          `--stack-name ${transientStackName} --change-set-name ${changeSetName}'.`
-      );
-    }
+    // ---- Cleanup: DeleteStack only ----
+    // `DeleteStack` against a `REVIEW_IN_PROGRESS` stack CASCADE-deletes
+    // every attached change-set (verified empirically 2026-05-23 — see
+    // Q3 above), so an explicit `DeleteChangeSet` before this would race
+    // on `DELETE_PENDING` under load. Idempotent: NotFound is silently
+    // OK because the stack may already be gone (e.g. a concurrent
+    // operator cleanup). Log failures at WARN so a stale stack is at
+    // least visible to the operator.
     try {
       await cfn.send(new DeleteStackCommand({ StackName: transientStackName }));
     } catch (cleanupErr) {
@@ -321,9 +354,15 @@ export async function expandMacros(
       try {
         await s3Cleanup();
       } catch (cleanupErr) {
+        // Surface the S3 key prefix so the operator can grep the
+        // bucket for a stranded object (the per-key suffix is the
+        // transientStackName + timestamp; see uploadCfnTemplate).
         logger.warn(
           `Failed to delete transient macro-expand template upload from ` +
-            `state bucket: ${formatErr(cleanupErr)}.`
+            `state bucket '${stateBucket}' (key prefix ` +
+            `'cdkd-migrate-tmp/${transientStackName}/'): ` +
+            `${formatErr(cleanupErr)}. Sweep manually via ` +
+            `'aws s3 rm s3://${stateBucket}/cdkd-migrate-tmp/${transientStackName}/ --recursive'.`
         );
       }
     }
@@ -335,14 +374,15 @@ export async function expandMacros(
 
 /**
  * Build the `Parameters` list passed to `CreateChangeSet`. CFn requires
- * a value for every declared parameter; we fall back to a synthetic
- * placeholder when the template has no Default. Per the empirical
- * verification above, these values do NOT leak into the Processed
- * template (CFn keeps `Ref: <param>` intact for cdkd's own resolver to
- * substitute later with the real values).
+ * a value for every declared parameter; we fall back to a Type-aware
+ * synthetic placeholder when the template has no Default. Per the
+ * empirical verification above, these values do NOT leak into the
+ * Processed template (CFn keeps `Ref: <param>` intact for cdkd's own
+ * resolver to substitute later with the real values).
  */
 function buildParameterValues(
-  template: unknown
+  template: unknown,
+  logger: Logger
 ): { ParameterKey: string; ParameterValue: string }[] {
   if (!template || typeof template !== 'object' || Array.isArray(template)) {
     return [];
@@ -354,30 +394,63 @@ function buildParameterValues(
   const out: { ParameterKey: string; ParameterValue: string }[] = [];
   for (const [key, def] of Object.entries(params as Record<string, unknown>)) {
     if (!def || typeof def !== 'object' || Array.isArray(def)) continue;
-    const defDefault = (def as Record<string, unknown>)['Default'];
-    out.push({ ParameterKey: key, ParameterValue: stringifyParamDefault(defDefault) });
+    const defObj = def as Record<string, unknown>;
+    const defDefault = defObj['Default'];
+    const defType = typeof defObj['Type'] === 'string' ? (defObj['Type'] as string) : undefined;
+    out.push({
+      ParameterKey: key,
+      ParameterValue: stringifyParamDefault(defDefault, defType, key, logger),
+    });
   }
   return out;
 }
 
 /**
- * Coerce a CFn Parameter Default to the string `CreateChangeSet`
- * requires. Strings / numbers / booleans pass through verbatim; object-
- * shaped defaults (rare — `CommaDelimitedList`-style declarations
- * sometimes carry array Defaults) are JSON-stringified; undefined /
- * null fall back to the synthetic placeholder. The actual value does
- * NOT leak into the Processed-stage template (CFn preserves
- * `Ref: <param>` intact through expansion — see empirical findings).
+ * Coerce a CFn Parameter `Default` (or build a synthetic placeholder
+ * when the Default is absent) into the string `CreateChangeSet`
+ * requires. Strings / numbers / booleans pass through verbatim;
+ * object-shaped Defaults (rare — array-typed Defaults that haven't
+ * been comma-joined) are JSON-stringified. When no Default is present,
+ * routes through {@link PARAMETER_TYPE_PLACEHOLDERS} so a `Number` /
+ * `List<Number>` / `AWS::EC2::*::Id` Parameter sees a value CFn's
+ * pre-macro Type validator accepts. The actual value does NOT leak
+ * into the Processed-stage template (CFn preserves `Ref: <param>`
+ * intact through expansion — see empirical findings).
  */
-function stringifyParamDefault(value: unknown): string {
-  if (value === undefined || value === null) return PARAMETER_PLACEHOLDER;
-  if (typeof value === 'string') return value;
-  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
-  try {
-    return JSON.stringify(value);
-  } catch {
+function stringifyParamDefault(
+  value: unknown,
+  type: string | undefined,
+  paramKey: string,
+  logger: Logger
+): string {
+  if (value !== undefined && value !== null) {
+    if (typeof value === 'string') return value;
+    if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+    try {
+      return JSON.stringify(value);
+    } catch {
+      // Fall through to the placeholder below.
+    }
+  }
+  // No Default (or non-serializable Default) → Type-aware placeholder.
+  if (type !== undefined) {
+    const known = PARAMETER_TYPE_PLACEHOLDERS[type];
+    if (known !== undefined) return known;
+    // SSM `AWS::SSM::Parameter::Value<*>` / `Type` values use angle
+    // brackets to carry the inner shape ("Value<String>", "Value<List<String>>", etc.).
+    // CFn validates the SSM Parameter Name (a free-form string) at this
+    // pre-macro stage rather than the resolved value, so any non-empty
+    // string is accepted.
+    if (type.startsWith('AWS::SSM::Parameter::Value<')) return 'placeholder';
+    logger.warn(
+      `Parameter '${paramKey}' has unrecognized CFn Type '${type}'; using a generic ` +
+        `string placeholder for the transient macro-expansion changeset. If CFn rejects ` +
+        `the changeset with a type error, file an issue with the offending Type.`
+    );
     return PARAMETER_PLACEHOLDER;
   }
+  // No Type declared (defensive — CFn requires Type on every Parameter).
+  return PARAMETER_PLACEHOLDER;
 }
 
 /**

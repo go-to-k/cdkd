@@ -706,6 +706,10 @@ async function exportCommand(stackArg: string | undefined, options: ExportOption
         app: appCmd,
         output: options.output || 'cdk.out',
         ...(Object.keys(context).length > 0 && { context }),
+        // Threaded so the macro-expander has a real state bucket for
+        // the > 51,200-byte template upload path (Issue #463).
+        stateBucket,
+        ...(options.profile && { macroExpandS3ClientOpts: { profile: options.profile } }),
       });
 
       let stackInfo;

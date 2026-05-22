@@ -178,12 +178,10 @@ describe('expandMacros — happy path', () => {
     });
     const result = await expandMacros(SAM_TEMPLATE, { ...OPTS, cfnClient: client as never });
     expect(result.Resources).toEqual(EXPANDED_TEMPLATE.Resources);
-    expect(calls.map((c) => c.name)).toEqual([
-      'CreateChangeSet',
-      'GetTemplate',
-      'DeleteChangeSet',
-      'DeleteStack',
-    ]);
+    // Major 3: cleanup is DeleteStack only (no DeleteChangeSet —
+    // DeleteStack CASCADE-deletes the changeset, so an explicit
+    // DeleteChangeSet would race on DELETE_PENDING under load).
+    expect(calls.map((c) => c.name)).toEqual(['CreateChangeSet', 'GetTemplate', 'DeleteStack']);
     const createCmd = calls[0]!;
     expect(createCmd.input['StackName']).toMatch(/^cdkd-macro-expand-/);
     expect(createCmd.input['ChangeSetType']).toBe('CREATE');
@@ -252,12 +250,10 @@ describe('expandMacros — error paths', () => {
     await expect(
       expandMacros(SAM_TEMPLATE, { ...OPTS, cfnClient: client as never })
     ).rejects.toThrow(MacroExpansionError);
-    // Cleanup still runs.
-    expect(calls.map((c) => c.name)).toEqual([
-      'CreateChangeSet',
-      'DeleteChangeSet',
-      'DeleteStack',
-    ]);
+    // Cleanup still runs — only DeleteStack (Major 3 fix: DeleteStack
+    // CASCADE-deletes the changeset, so an explicit DeleteChangeSet
+    // before this would race on DELETE_PENDING under load).
+    expect(calls.map((c) => c.name)).toEqual(['CreateChangeSet', 'DeleteStack']);
   });
 
   it('FAILED status surfaces StatusReason from DescribeChangeSet verbatim', async () => {
@@ -301,7 +297,7 @@ describe('expandMacros — error paths', () => {
     ).rejects.toThrow(/Multi-stage macros/);
   });
 
-  it('cleanup runs (DeleteChangeSet + DeleteStack) even when GetTemplate throws', async () => {
+  it('cleanup runs (DeleteStack only) even when GetTemplate throws', async () => {
     waitUntilChangeSetCreateCompleteMock.mockResolvedValue({});
     const { client, calls } = buildCfnClient({
       CreateChangeSet: { Id: 'cs', StackId: 's' },
@@ -310,16 +306,16 @@ describe('expandMacros — error paths', () => {
     await expect(
       expandMacros(SAM_TEMPLATE, { ...OPTS, cfnClient: client as never })
     ).rejects.toThrow();
-    expect(calls.map((c) => c.name)).toContain('DeleteChangeSet');
     expect(calls.map((c) => c.name)).toContain('DeleteStack');
+    // Major 3: no explicit DeleteChangeSet (DeleteStack CASCADEs).
+    expect(calls.map((c) => c.name)).not.toContain('DeleteChangeSet');
   });
 
-  it('cleanup-call failures (DeleteChangeSet / DeleteStack throwing) do not mask the outer error', async () => {
+  it('cleanup-call failures (DeleteStack throwing) do not mask the outer error', async () => {
     waitUntilChangeSetCreateCompleteMock.mockResolvedValue({});
     const { client } = buildCfnClient({
       CreateChangeSet: { Id: 'cs', StackId: 's' },
       GetTemplate: { TemplateBody: EXPANDED_TEMPLATE },
-      DeleteChangeSet: new Error('not found'),
       DeleteStack: new Error('not found'),
     });
     // Should still resolve successfully — cleanup failures are
@@ -375,5 +371,139 @@ describe('expandMacros — TemplateURL fallback (over 51,200 bytes)', () => {
     await expect(
       expandMacros(huge, { ...OPTS, cfnClient: client as never })
     ).rejects.toThrow(/exceeds CloudFormation's 1048576-byte TemplateURL ceiling/);
+  });
+});
+
+/**
+ * Type-aware Parameter placeholders (BLOCKER 2 fix): CFn validates
+ * Parameter Type BEFORE the macro Lambda runs, so a bare-string
+ * placeholder against a `Number` / `List<Number>` / `AWS::EC2::*::Id`
+ * Parameter rejects `CreateChangeSet` with a type error. The
+ * Type-aware placeholder table emits a value CFn's pre-macro
+ * validator accepts.
+ */
+describe('expandMacros — Type-aware Parameter placeholders', () => {
+  type ParamCase = {
+    name: string;
+    type: string;
+    expected: string;
+  };
+
+  const CASES: ParamCase[] = [
+    { name: 'String', type: 'String', expected: 'cdkd-macro-expand-placeholder' },
+    { name: 'Number', type: 'Number', expected: '0' },
+    { name: 'List<Number>', type: 'List<Number>', expected: '0' },
+    { name: 'CommaDelimitedList', type: 'CommaDelimitedList', expected: '' },
+    {
+      name: 'AWS::EC2::AvailabilityZone::Name',
+      type: 'AWS::EC2::AvailabilityZone::Name',
+      expected: 'us-east-1a',
+    },
+    {
+      name: 'AWS::EC2::SecurityGroup::Id',
+      type: 'AWS::EC2::SecurityGroup::Id',
+      expected: 'sg-00000000',
+    },
+    { name: 'AWS::EC2::VPC::Id', type: 'AWS::EC2::VPC::Id', expected: 'vpc-00000000' },
+    {
+      name: 'AWS::SSM::Parameter::Value<String>',
+      type: 'AWS::SSM::Parameter::Value<String>',
+      expected: 'placeholder',
+    },
+  ];
+
+  it.each(CASES)(
+    'emits the right placeholder for $name when no Default is set',
+    async ({ type, expected }) => {
+      waitUntilChangeSetCreateCompleteMock.mockResolvedValue({});
+      const { client, calls } = buildCfnClient({
+        CreateChangeSet: { Id: 'cs', StackId: 's' },
+        GetTemplate: { TemplateBody: EXPANDED_TEMPLATE },
+      });
+      const tpl = {
+        Transform: ['AWS::Serverless-2016-10-31'],
+        Parameters: { P: { Type: type } },
+        Resources: { Fn: { Type: 'AWS::Serverless::Function', Properties: {} } },
+      };
+      await expandMacros(tpl, { ...OPTS, cfnClient: client as never });
+      const params = calls[0]!.input['Parameters'] as Array<{
+        ParameterKey: string;
+        ParameterValue: string;
+      }>;
+      expect(params).toEqual([{ ParameterKey: 'P', ParameterValue: expected }]);
+    }
+  );
+
+  it('emits a generic placeholder + warn for an unknown Type', async () => {
+    waitUntilChangeSetCreateCompleteMock.mockResolvedValue({});
+    const { client, calls } = buildCfnClient({
+      CreateChangeSet: { Id: 'cs', StackId: 's' },
+      GetTemplate: { TemplateBody: EXPANDED_TEMPLATE },
+    });
+    const tpl = {
+      Transform: ['AWS::Serverless-2016-10-31'],
+      Parameters: { Bogus: { Type: 'AWS::Made::Up::Type' } },
+      Resources: { Fn: { Type: 'AWS::Serverless::Function', Properties: {} } },
+    };
+    await expandMacros(tpl, { ...OPTS, cfnClient: client as never });
+    const params = calls[0]!.input['Parameters'] as Array<{
+      ParameterKey: string;
+      ParameterValue: string;
+    }>;
+    // Falls back to the generic string placeholder rather than crashing.
+    expect(params).toEqual([
+      { ParameterKey: 'Bogus', ParameterValue: 'cdkd-macro-expand-placeholder' },
+    ]);
+  });
+
+  it('a Parameter with Default takes precedence over the Type-aware placeholder', async () => {
+    waitUntilChangeSetCreateCompleteMock.mockResolvedValue({});
+    const { client, calls } = buildCfnClient({
+      CreateChangeSet: { Id: 'cs', StackId: 's' },
+      GetTemplate: { TemplateBody: EXPANDED_TEMPLATE },
+    });
+    const tpl = {
+      Transform: ['AWS::Serverless-2016-10-31'],
+      Parameters: {
+        Count: { Type: 'Number', Default: 42 }, // explicit Default → '42'
+      },
+      Resources: { Fn: { Type: 'AWS::Serverless::Function', Properties: {} } },
+    };
+    await expandMacros(tpl, { ...OPTS, cfnClient: client as never });
+    const params = calls[0]!.input['Parameters'] as Array<{
+      ParameterKey: string;
+      ParameterValue: string;
+    }>;
+    expect(params).toEqual([{ ParameterKey: 'Count', ParameterValue: '42' }]);
+  });
+});
+
+/**
+ * Concurrent-call UUID independence: each `expandMacros(...)` call
+ * computes `randomUUID().slice(0, 8)` AT call time (not at module
+ * load), so two concurrent invocations produce different transient
+ * stack names. Regression guard against accidental hoisting of the
+ * UUID into a module-level constant.
+ */
+describe('expandMacros — concurrent UUID independence', () => {
+  it('two concurrent calls produce different transient stack names', async () => {
+    waitUntilChangeSetCreateCompleteMock.mockResolvedValue({});
+    const { client: clientA, calls: callsA } = buildCfnClient({
+      CreateChangeSet: { Id: 'csA', StackId: 'sA' },
+      GetTemplate: { TemplateBody: EXPANDED_TEMPLATE },
+    });
+    const { client: clientB, calls: callsB } = buildCfnClient({
+      CreateChangeSet: { Id: 'csB', StackId: 'sB' },
+      GetTemplate: { TemplateBody: EXPANDED_TEMPLATE },
+    });
+    await Promise.all([
+      expandMacros(SAM_TEMPLATE, { ...OPTS, cfnClient: clientA as never }),
+      expandMacros(SAM_TEMPLATE, { ...OPTS, cfnClient: clientB as never }),
+    ]);
+    const nameA = callsA[0]!.input['StackName'] as string;
+    const nameB = callsB[0]!.input['StackName'] as string;
+    expect(nameA).toMatch(/^cdkd-macro-expand-/);
+    expect(nameB).toMatch(/^cdkd-macro-expand-/);
+    expect(nameA).not.toBe(nameB);
   });
 });
