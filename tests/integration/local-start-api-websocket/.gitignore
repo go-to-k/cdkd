@@ -1,0 +1,17 @@
+# Override the parent integ .gitignore so the Lambda handler sources
+# (which must literally be index.js for the Node.js runtime) are
+# tracked.
+!lambda-connect/
+!lambda-disconnect/
+!lambda-default/
+!lambda-send/
+!lambda-broadcast/
+!lambda-connect/*.js
+!lambda-disconnect/*.js
+!lambda-default/*.js
+!lambda-send/*.js
+!lambda-broadcast/*.js
+
+# Transient client script written by verify.sh (cleaned up on exit;
+# this entry is defensive against partial failures).
+.ws-client.mjs

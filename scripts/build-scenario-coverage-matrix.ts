@@ -182,6 +182,8 @@ const KNOWN_SCENARIOS: Record<string, string> = {
     '`cdkd local start-service` long-running ECS Service emulator: replica pool, restart-on-exit, SIGINT teardown.',
   'local-from-state-substitution':
     '`cdkd local invoke|run-task --from-state` substitutes intrinsic-valued env/secret/role references against deployed cdkd state + AWS pseudo parameters.',
+  'local-websocket-api':
+    '`cdkd local start-api` WebSocket API support: ws upgrade + $connect/$disconnect/$default/custom route dispatch + @connections data plane.',
 };
 
 interface ScenarioCoverageReport {

@@ -39,6 +39,15 @@ import {
 } from '../../assets/asset-manifest-loader.js';
 import type { DockerImageAssetSource } from '../../types/assets.js';
 import { discoverRoutes, type DiscoveredRoute } from '../../local/route-discovery.js';
+import {
+  discoverWebSocketApis,
+  type DiscoveredWebSocketApi,
+} from '../../local/websocket-route-discovery.js';
+import {
+  attachWebSocketServer,
+  handleManagementRequest,
+  type AttachedWebSocketServer,
+} from '../../local/websocket-server.js';
 import { warnSsrfRiskyUri } from '../../local/rest-v1-integrations.js';
 import {
   createContainerPool,
@@ -334,9 +343,22 @@ async function localStartApiCommand(
     }
 
     const routes = discoverRoutes(targetStacks);
-    if (routes.length === 0) {
+    // #462: WebSocket APIs (ProtocolType: 'WEBSOCKET') are discovered
+    // through a sibling pipeline so the resulting routes (keyed by
+    // RouteKey rather than by method+path) stay structurally separate
+    // from the HTTP / REST / Function URL `DiscoveredRoute[]`. Errors
+    // are aggregated into the same boot-time warn pass so a malformed
+    // WebSocket API does not abort sibling HTTP API boot.
+    const wsDiscovery = discoverWebSocketApis(targetStacks);
+    if (wsDiscovery.errors.length > 0) {
+      for (const e of wsDiscovery.errors) {
+        logger.warn(`WebSocket discovery: ${e}`);
+      }
+    }
+    const webSocketApis = wsDiscovery.apis;
+    if (routes.length === 0 && webSocketApis.length === 0) {
       throw new Error(
-        'No supported API routes were discovered. cdkd local start-api supports AWS::ApiGateway::* (REST v1), AWS::ApiGatewayV2::* (HTTP), and AWS::Lambda::Url (Function URL) with AWS_PROXY integrations only.'
+        'No supported API routes were discovered. cdkd local start-api supports AWS::ApiGateway::* (REST v1), AWS::ApiGatewayV2::* (HTTP + WebSocket), and AWS::Lambda::Url (Function URL) with AWS_PROXY integrations only.'
       );
     }
 
@@ -431,7 +453,7 @@ async function localStartApiCommand(
     // pool then knows everything it needs to lazy-start a fresh one.
     // Authorizer Lambdas are also pooled — they're invoked just like
     // route handlers (PR 8b).
-    const lambdaIds = uniqueLambdaIds(routes, routesWithAuth);
+    const lambdaIds = uniqueLambdaIds(routes, routesWithAuth, webSocketApis);
     const specs = new Map<string, ContainerSpec>();
     for (let i = 0; i < lambdaIds.length; i++) {
       const logicalId = lambdaIds[i]!;
@@ -473,7 +495,13 @@ async function localStartApiCommand(
       await pullImage(image, options.pull === false);
     }
 
-    return { routes: routesWithAuth, specs, corsConfigByApiId, stacks: targetStacks };
+    return {
+      routes: routesWithAuth,
+      specs,
+      corsConfigByApiId,
+      webSocketApis,
+      stacks: targetStacks,
+    };
   };
 
   /**
@@ -644,6 +672,130 @@ async function localStartApiCommand(
     if (basePort !== 0) nextPort += 1;
   }
 
+  // #462: WebSocket API server boot loop. One HTTP server per
+  // discovered WebSocket API; each server hosts an upgrade-event
+  // listener via `attachWebSocketServer` AND a pre-pass HTTP handler
+  // for the `@connections/<id>` data plane. Lambda containers in the
+  // pool are injected with `AWS_ENDPOINT_URL_APIGATEWAYMANAGEMENTAPI`
+  // pointing at the same port so `apigatewaymanagementapi:PostToConnection`
+  // from inside the handler lands on cdkd's local endpoint.
+  const wsServers: BootedWebSocketServer[] = [];
+  const initialWsApis = initialMaterial.webSocketApis ?? [];
+  for (const api of initialWsApis) {
+    const wsLambdaIds = new Set(api.routes.map((r) => r.targetLambdaLogicalId));
+    const wsSpecs = new Map<string, ContainerSpec>();
+    for (const id of wsLambdaIds) {
+      const spec = initialMaterial.specs.get(id);
+      if (spec) wsSpecs.set(id, spec);
+    }
+    if (wsSpecs.size === 0) {
+      logger.warn(
+        `WebSocket API ${api.declaredAt}: no resolvable Lambda backing routes; skipping.`
+      );
+      continue;
+    }
+    const wsPool = buildPool(wsSpecs);
+    const wsState: ServerState = {
+      routes: [],
+      pool: wsPool,
+      corsConfigByApiId: new Map(),
+    };
+    // The HTTP server hosting the WebSocket also serves the
+    // management-API `@connections/<id>` calls. Build the
+    // {@link AttachedWebSocketServer} AFTER the http server is bound
+    // so we know the port — needed to inject
+    // `AWS_ENDPOINT_URL_APIGATEWAYMANAGEMENTAPI` into every WebSocket
+    // Lambda's env map BEFORE the pool starts the first container.
+    const wsApiPath = `/${api.stage}`;
+    // Forward-decl the registry pointer so the preDispatch closure
+    // can read it once we attach below.
+    let registryRef: AttachedWebSocketServer | undefined;
+    const started = await startApiServer({
+      state: wsState,
+      rieTimeoutMs,
+      host: options.host,
+      port: basePort === 0 ? 0 : nextPort,
+      authorizerCache,
+      jwksCache,
+      jwksWarnedUrls,
+      sigV4WarnedForeignIds,
+      sigV4AllowUnverified: options.allowUnverifiedSigv4 === true,
+      preDispatch: async (req, res) => {
+        if (!registryRef) return false;
+        return handleManagementRequest(req, res, registryRef.registry);
+      },
+    });
+    const attached = attachWebSocketServer({
+      httpServer: started.server,
+      pool: wsPool,
+      rieTimeoutMs,
+      apis: [{ api, apiPath: wsApiPath }],
+    });
+    registryRef = attached;
+
+    // Inject the management-API endpoint URL into every WebSocket
+    // Lambda's container env BEFORE any cold-start. The container
+    // pool reads `spec.env` at `acquire()` time, so mutating the
+    // shared map after the server is bound but before the first
+    // request hits the route is correct. The mutation is per-Lambda:
+    // only Lambdas backing this WebSocket API see the override; the
+    // sibling HTTP / REST Lambdas' env maps stay untouched.
+    //
+    // Placeholder credentials: the AWS SDK v3 client constructor
+    // requires SOME credentials to sign requests, even when the
+    // endpoint override points at a local server that ignores
+    // SigV4. When neither `--assume-role` nor inherited
+    // `AWS_ACCESS_KEY_ID` etc. are set, the SDK errors with
+    // `CredentialsProviderError: Could not load credentials from
+    // any providers`. We populate fake credentials per the
+    // ecs-network.ts metadata-sidecar precedent — cdkd's
+    // `@connections` handler doesn't verify SigV4, so the values
+    // are opaque.
+    //
+    // Endpoint hostname: the URL is consumed INSIDE the Lambda
+    // container, so `127.0.0.1` would be the container's own
+    // loopback — not the host. On Docker Desktop (macOS / Windows)
+    // `host.docker.internal` resolves to the host. Linux native
+    // dockerd doesn't expose this hostname by default but Docker
+    // 20.10+ supports `--add-host=host.docker.internal:host-gateway`
+    // at runtime; we forward that flag via `extraHostMappings` on
+    // the container spec for every WebSocket Lambda so the URL
+    // always resolves on every platform. The host port is the
+    // local server's bound port.
+    const mgmtEndpoint = `http://host.docker.internal:${started.port}`;
+    const hostGatewayMapping: { host: string; ip: string }[] = [
+      { host: 'host.docker.internal', ip: 'host-gateway' },
+    ];
+    for (const id of wsLambdaIds) {
+      const spec = initialMaterial.specs.get(id);
+      if (!spec) continue;
+      spec.env['AWS_ENDPOINT_URL_APIGATEWAYMANAGEMENTAPI'] = mgmtEndpoint;
+      if (!spec.env['AWS_ACCESS_KEY_ID']) {
+        spec.env['AWS_ACCESS_KEY_ID'] = 'AKIAIOSFODNN7EXAMPLE';
+        spec.env['AWS_SECRET_ACCESS_KEY'] = 'wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY';
+      }
+      // Ensure the SDK has a region — apigatewaymanagementapi
+      // clients refuse to instantiate without one.
+      if (!spec.env['AWS_REGION']) {
+        spec.env['AWS_REGION'] =
+          options.region ??
+          process.env['AWS_REGION'] ??
+          process.env['AWS_DEFAULT_REGION'] ??
+          'us-east-1';
+      }
+      // Mutate the spec to include host.docker.internal mapping so
+      // the Lambda's `apigatewaymanagementapi:PostToConnection` URL
+      // resolves to the host's cdkd server on every OS (Linux native
+      // dockerd does NOT auto-expose `host.docker.internal`; macOS /
+      // Windows Docker Desktop does).
+      const merged = [...(spec.extraHosts ?? []), ...hostGatewayMapping];
+      spec.extraHosts = merged;
+    }
+
+    wsServers.push({ api, server: started, attached, apiPath: wsApiPath });
+    if (basePort !== 0) nextPort += 1;
+  }
+
   printPerServerRouteTables(servers);
   const allRoutes = servers.flatMap((s) => s.group.routes.map((r) => r.route));
   warnUnsupportedRoutes(allRoutes, logger);
@@ -660,6 +812,16 @@ async function localStartApiCommand(
   for (const { group, server } of servers) {
     process.stdout.write(
       `Server listening on ${server.scheme}://${server.host}:${server.port}  (${group.displayName})\n`
+    );
+  }
+  // #462: emit one banner per WebSocket server. The protocol prefix
+  // is `ws://` / `wss://` rather than `http://` / `https://` so users
+  // copy-paste the URL straight into `wscat -c <URL>` / browser
+  // `new WebSocket(url)`.
+  for (const ws of wsServers) {
+    const scheme = ws.server.scheme === 'https' ? 'wss' : 'ws';
+    process.stdout.write(
+      `Server listening on ${scheme}://${ws.server.host}:${ws.server.port}${ws.apiPath}  (${ws.api.apiLogicalId} (WebSocket API))\n`
     );
   }
   process.stdout.write('^C to stop and clean up containers.\n');
@@ -728,6 +890,23 @@ async function localStartApiCommand(
     // reload-swapped) pool. Each pool's dispose() waits for in-flight
     // requests to drain; running them in parallel is the right shape
     // even for N servers because shutdown is signalled to all at once.
+    //
+    // WebSocket-server shutdown layers on top: each
+    // `AttachedWebSocketServer.close()` sends close-frame 1001 (going
+    // away) to every live socket BEFORE we kill the underlying http
+    // server, so the client sees a clean close instead of a
+    // mid-frame disconnect.
+    await Promise.allSettled(
+      wsServers.map(async (ws) => {
+        try {
+          await ws.attached.close();
+        } catch (err) {
+          logger.warn(
+            `WebSocket close() failed for ${ws.api.apiLogicalId}: ${err instanceof Error ? err.message : String(err)}`
+          );
+        }
+      })
+    );
     await Promise.allSettled(
       servers.map(async ({ server, group }) => {
         try {
@@ -740,12 +919,34 @@ async function localStartApiCommand(
       })
     );
     await Promise.allSettled(
+      wsServers.map(async (ws) => {
+        try {
+          await ws.server.close();
+        } catch (err) {
+          logger.warn(
+            `WebSocket server.close() failed for ${ws.api.apiLogicalId}: ${err instanceof Error ? err.message : String(err)}`
+          );
+        }
+      })
+    );
+    await Promise.allSettled(
       servers.map(async ({ server, group }) => {
         try {
           await server.getServerState().pool.dispose();
         } catch (err) {
           logger.warn(
             `pool.dispose() failed for ${group.displayName}: ${err instanceof Error ? err.message : String(err)}`
+          );
+        }
+      })
+    );
+    await Promise.allSettled(
+      wsServers.map(async (ws) => {
+        try {
+          await ws.server.getServerState().pool.dispose();
+        } catch (err) {
+          logger.warn(
+            `WebSocket pool.dispose() failed for ${ws.api.apiLogicalId}: ${err instanceof Error ? err.message : String(err)}`
           );
         }
       })
@@ -842,7 +1043,8 @@ function pickTargetStacks(stacks: StackInfo[], pattern: string | undefined): Sta
  */
 function uniqueLambdaIds(
   routes: readonly DiscoveredRoute[],
-  routesWithAuth: readonly RouteWithAuth[]
+  routesWithAuth: readonly RouteWithAuth[],
+  webSocketApis: readonly DiscoveredWebSocketApi[] = []
 ): string[] {
   const seen = new Set<string>();
   const out: string[] = [];
@@ -872,6 +1074,17 @@ function uniqueLambdaIds(
       if (!seen.has(auth.lambdaLogicalId)) {
         seen.add(auth.lambdaLogicalId);
         out.push(auth.lambdaLogicalId);
+      }
+    }
+  }
+  // #462: pull every WebSocket route's backing Lambda into the
+  // unified spec map so the shared container pool can dispatch them
+  // alongside HTTP / REST routes.
+  for (const api of webSocketApis) {
+    for (const r of api.routes) {
+      if (!seen.has(r.targetLambdaLogicalId)) {
+        seen.add(r.targetLambdaLogicalId);
+        out.push(r.targetLambdaLogicalId);
       }
     }
   }
@@ -1847,6 +2060,31 @@ function parsePerLambdaConcurrency(raw: string): number {
 interface BootedApiServer {
   group: ApiServerGroup;
   readonly server: StartedApiServer;
+}
+
+/**
+ * One booted WebSocket API server (#462). Mirrors `BootedApiServer`
+ * for the upgrade-event-driven WebSocket family. Each instance owns:
+ *
+ *   - `server`: the underlying `node:http` (or `https` under mTLS)
+ *     server hosting both the upgrade-listener AND the
+ *     `@connections/<id>` HTTP data plane via the preDispatch hook.
+ *   - `attached`: the WebSocket-server wrapper (connection registry +
+ *     close handle). The HTTP server's preDispatch closure reads the
+ *     registry to route management-API POST calls.
+ *   - `apiPath`: the URL path the upgrade request must match
+ *     (default `/<stage>` so multi-API setups stay disambiguated).
+ *
+ * Hot reload (`--watch`) for WebSocket APIs is restart-only in v1 —
+ * see design doc §12 Q5. The CLI surfaces a warn line when a watched
+ * file change implies a WebSocket route / Lambda change so the user
+ * knows to restart.
+ */
+interface BootedWebSocketServer {
+  api: DiscoveredWebSocketApi;
+  readonly server: StartedApiServer;
+  readonly attached: AttachedWebSocketServer;
+  readonly apiPath: string;
 }
 
 /**

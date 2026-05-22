@@ -930,34 +930,20 @@ function discoverHttpApiRoute(
   }
   const apiCdkPath = readApiCdkPath(apiLogicalId, template);
 
-  // C13: WebSocket-protocol APIs cannot be emulated locally. Check this
-  // BEFORE parsing the RouteKey — WebSocket routes use `$connect` /
-  // `$disconnect` / `$default` which `parseRouteKey` rejects (it only
-  // accepts `<METHOD> <path>` / `$default`). For the route table /
-  // 501 response we surface the raw RouteKey as the path and 'ANY' as
-  // the method; an HTTP request will never match because the path
-  // starts with `$`.
+  // WebSocket-protocol APIs (#462) are handled by the sibling
+  // `discoverWebSocketApis` pipeline — they use route-key dispatch
+  // (`$connect` / `$disconnect` / `$default` / custom string) rather
+  // than method+path, and have their own upgrade-event server attached
+  // to the underlying http.Server. Emit no entry here so the HTTP
+  // route table stays free of stub `[501 Not Implemented]` rows for
+  // routes the WebSocket pipeline owns. The WebSocket discovery still
+  // rejects malformed WebSocket templates with a warn so users see
+  // discovery failures.
   const apiResource = template.Resources?.[apiLogicalId];
   if (apiResource?.Type === 'AWS::ApiGatewayV2::Api') {
     const protocolType = (apiResource.Properties ?? {})['ProtocolType'];
     if (protocolType === 'WEBSOCKET') {
-      return [
-        {
-          method: 'ANY',
-          pathPattern: routeKey,
-          lambdaLogicalId: '',
-          source: 'http-api',
-          apiVersion: 'v2',
-          stage: '$default',
-          apiLogicalId,
-          apiStackName: stackName,
-          ...(apiCdkPath !== undefined && { apiCdkPath }),
-          declaredAt: `${stackName}/${logicalId}`,
-          unsupported: {
-            reason: `${stackName}/${logicalId}: WebSocket APIs are not supported in cdkd local start-api.`,
-          },
-        },
-      ];
+      return [];
     }
   }
 

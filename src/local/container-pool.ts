@@ -105,6 +105,17 @@ interface ContainerSpecBase {
    * any container image just like on the public base images.
    */
   tmpfs?: { target: string; sizeMb: number };
+  /**
+   * Extra `--add-host` mappings forwarded to `docker run`. Used by
+   * `cdkd local start-api`'s WebSocket support (#462) to inject
+   * `host.docker.internal:host-gateway` so Lambdas backing
+   * WebSocket APIs can reach the host's `@connections` HTTP
+   * endpoint when calling `apigatewaymanagementapi:PostToConnection`.
+   * Resolved once at server boot (alongside `tmpfs` / `env`) and
+   * threaded into every cold-start of this Lambda's pool. Empty
+   * for Lambdas not backing a WebSocket API.
+   */
+  extraHosts?: { host: string; ip: string }[];
 }
 
 export interface ZipContainerSpec extends ContainerSpecBase {
@@ -329,6 +340,7 @@ export function createContainerPool(
         name,
         ...(spec.debugPort !== undefined && { debugPort: spec.debugPort }),
         ...(spec.tmpfs !== undefined && { tmpfs: spec.tmpfs }),
+        ...(spec.extraHosts !== undefined && { extraHosts: spec.extraHosts }),
       });
     } else {
       // IMAGE branch (closes #453). The pre-built local tag is on
@@ -353,6 +365,7 @@ export function createContainerPool(
         ...(spec.workingDir !== undefined && { workingDir: spec.workingDir }),
         ...(spec.debugPort !== undefined && { debugPort: spec.debugPort }),
         ...(spec.tmpfs !== undefined && { tmpfs: spec.tmpfs }),
+        ...(spec.extraHosts !== undefined && { extraHosts: spec.extraHosts }),
       });
     }
     const stopLogStream = streamingEnabled ? streamLogs(containerId) : (): void => undefined;
