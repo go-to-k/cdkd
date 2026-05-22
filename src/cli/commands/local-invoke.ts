@@ -22,8 +22,10 @@ import {
   resolveLambdaTarget,
   type ResolvedImageLambda,
   type ResolvedLambda,
+  type ResolvedLambdaLayer,
   type ResolvedZipLambda,
 } from '../../local/lambda-resolver.js';
+import { materializeLayerFromArn } from '../../local/layer-arn-materializer.js';
 import { resolveEnvVars, type EnvOverrideFile } from '../../local/env-resolver.js';
 import {
   substituteEnvVarsFromStateAsync,
@@ -105,6 +107,20 @@ interface LocalInvokeOptions {
    * developer-loop tool, not a security boundary.
    */
   assumeRole?: string | boolean;
+  /**
+   * Issue #448: explicit role to `sts:AssumeRole` into before calling
+   * `lambda:GetLayerVersion` for every literal-ARN entry in a Lambda's
+   * `Properties.Layers`. Required only when the dev's default
+   * credentials cannot read the layer — typically cross-account layers
+   * (AWS-published `public` layers like Lambda Powertools are readable
+   * from every account and need no role).
+   *
+   * Independent of `--assume-role`: that flag scopes the Lambda
+   * handler's runtime AWS calls, this flag scopes only the layer-fetch
+   * step. Carrying it on a separate switch keeps the cross-account
+   * layer use case decoupled from the rest of the credential plumbing.
+   */
+  layerRoleArn?: string;
   /**
    * Optional role ARN passed to `pullEcrImage` when the IMAGE ECR-pull
    * path fires (no matching cdk.out asset and `Code.ImageUri` is an ECR
@@ -223,6 +239,19 @@ async function localInvokeCommand(target: string, options: LocalInvokeOptions): 
               err instanceof Error ? err.message : String(err)
             }`
           );
+        }
+      }
+      if (imagePlan?.layerArnTmpDirs) {
+        for (const dir of imagePlan.layerArnTmpDirs) {
+          try {
+            rmSync(dir, { recursive: true, force: true });
+          } catch (err) {
+            getLogger().debug(
+              `Failed to remove ARN-layer tmpdir ${dir}: ${
+                err instanceof Error ? err.message : String(err)
+              }`
+            );
+          }
         }
       }
     },
@@ -607,6 +636,14 @@ interface ImagePlan {
    */
   layersTmpDir?: string;
   /**
+   * Issue #448: per-ARN unzip tmpdirs for literal-ARN layers
+   * (`Properties.Layers: ['arn:aws:lambda:...']`). One entry per ARN
+   * layer regardless of whether multiple-layer merge fires above. The
+   * CLI's outer `finally` walks the list with `rmSync` so the
+   * downloaded layer ZIPs do not accumulate across invokes.
+   */
+  layerArnTmpDirs?: string[];
+  /**
    * Sized tmpfs mount for `/tmp` (issue #440 — Lambda
    * `Properties.EphemeralStorage.Size`). Set when the function's
    * template declares `EphemeralStorage`; threaded through to
@@ -669,7 +706,14 @@ async function resolveZipImagePlan(
   // layers overwrite earlier files); we mirror that on the host
   // before bind-mounting because Docker rejects multiple bind mounts
   // at the same target path.
-  const layerPlan = materializeLambdaLayers(lambda.layers);
+  //
+  // Issue #448: literal-ARN layers (`{kind: 'arn', ...}`) are
+  // pre-materialized via `lambda:GetLayerVersion` + presigned-URL
+  // download + unzip BEFORE the same `cpSync`-merge path runs, so the
+  // downstream code path is identical for asset-backed and ARN-backed
+  // layers. The per-ARN unzip tmpdirs are tracked alongside the merged
+  // `/opt` tmpdir so the outer cleanup can remove all of them.
+  const layerPlan = await materializeLambdaLayersIncludingArns(lambda.layers, options);
 
   // provided.al2 / provided.al2023 require the deployment package at
   // /var/runtime (where the base image's hardcoded entrypoint exec's
@@ -685,8 +729,48 @@ async function resolveZipImagePlan(
     cmd: [lambda.handler],
     ...(inlineTmpDir !== undefined && { inlineTmpDir }),
     ...(layerPlan.tmpDir !== undefined && { layersTmpDir: layerPlan.tmpDir }),
+    ...(layerPlan.extraTmpDirs.length > 0 && { layerArnTmpDirs: layerPlan.extraTmpDirs }),
     ...(tmpfs !== undefined && { tmpfs }),
   };
+}
+
+/**
+ * Two-stage layer materialization (issue #448).
+ *
+ *   - Stage 1: every `{kind: 'arn'}` entry is downloaded + unzipped
+ *     into its own tmpdir via `materializeLayerFromArn`. The per-ARN
+ *     tmpdirs are tracked in `extraTmpDirs` so the outer cleanup can
+ *     remove them.
+ *   - Stage 2: the resulting `{logicalId, assetPath}[]` list (in
+ *     template order — ARN entries surface their `arn` as the
+ *     `logicalId` for log lines) is handed to the existing
+ *     `materializeLambdaLayers` `cpSync`-merge path. AWS's "last layer
+ *     wins" file-collision semantic is preserved across both layer
+ *     kinds because the merge step is unchanged.
+ */
+export async function materializeLambdaLayersIncludingArns(
+  layers: ResolvedLambdaLayer[],
+  options: LocalInvokeOptions
+): Promise<{
+  mount?: { hostPath: string; containerPath: string; readOnly: boolean };
+  tmpDir?: string;
+  extraTmpDirs: string[];
+}> {
+  const extraTmpDirs: string[] = [];
+  const flat: { logicalId: string; assetPath: string }[] = [];
+  for (const layer of layers) {
+    if (layer.kind === 'asset') {
+      flat.push({ logicalId: layer.logicalId, assetPath: layer.assetPath });
+      continue;
+    }
+    const dir = await materializeLayerFromArn(layer, {
+      ...(options.layerRoleArn !== undefined && { roleArn: options.layerRoleArn }),
+    });
+    extraTmpDirs.push(dir);
+    flat.push({ logicalId: layer.arn, assetPath: dir });
+  }
+  const plan = materializeLambdaLayers(flat);
+  return { ...plan, extraTmpDirs };
 }
 
 /**
@@ -1323,6 +1407,15 @@ export function createLocalCommand(): Command {
           '(3) `--no-assume-role` explicitly opts out (forces dev creds even with --from-state). ' +
           "Off by default — when omitted, the developer's shell credentials are forwarded " +
           'unchanged (SAM-compatible default). STS failures degrade to a warn + dev-creds fallback.'
+      )
+    )
+    .addOption(
+      new Option(
+        '--layer-role-arn <arn>',
+        'Role to sts:AssumeRole before calling lambda:GetLayerVersion on every literal-ARN ' +
+          'entry in Properties.Layers (issue #448). Use only when the dev credentials cannot ' +
+          'read the layer — typically cross-account layers. AWS-published public layers (e.g. ' +
+          'Lambda Powertools) are readable from every account and need no role.'
       )
     )
     .addOption(
