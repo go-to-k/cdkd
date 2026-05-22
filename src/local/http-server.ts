@@ -3,7 +3,7 @@ import { createServer as createHttpsServer } from 'node:https';
 import type { TLSSocket, PeerCertificate, DetailedPeerCertificate } from 'node:tls';
 import { readFileSync } from 'node:fs';
 import { getLogger } from '../utils/logger.js';
-import { invokeRie } from './rie-client.js';
+import { invokeRie, invokeRieStreaming } from './rie-client.js';
 import {
   applyAuthorizerOverlay,
   buildHttpApiV2Event,
@@ -28,6 +28,15 @@ import {
 } from './lambda-authorizer.js';
 import { type JwksCache, verifyCognitoJwt, verifyJwtAuthorizer } from './cognito-jwt.js';
 import { type CredentialsLoader, verifySigV4 } from './sigv4-verify.js';
+import {
+  applyResponseParameters,
+  dispatchServiceIntegration,
+  type ResponseParameterContext,
+} from './httpv2-service-integration.js';
+import {
+  resolveServiceIntegrationParameters,
+  type RequestParameterContext,
+} from './parameter-mapping.js';
 
 /**
  * The user-facing HTTP server for `cdkd local start-api`.
@@ -149,6 +158,17 @@ export interface StartApiServerOptions {
    * CLI flag flips this on for dev loops that need it.
    */
   sigV4AllowUnverified?: boolean;
+  /**
+   * Default AWS region for HTTP API v2 service integrations (#458).
+   * Resolved by the CLI from `--region` / `AWS_REGION` / profile at
+   * boot. Per-route `RequestParameters.Region` overrides this on a
+   * per-request basis (matches AWS API Gateway behavior).
+   *
+   * Required when any route has `serviceIntegration` set; unused
+   * otherwise. The dispatcher rejects calls with a 400 error when
+   * both this and the per-request override are empty.
+   */
+  defaultRegion?: string;
 }
 
 /**
@@ -354,6 +374,16 @@ async function handleRequest(
     return;
   }
 
+  // HTTP API v2 service integration (#458): dispatch to the SDK via
+  // the per-subtype adapter table. Runs BEFORE authorizer + container
+  // acquire because there's no Lambda to acquire AND the authorizer
+  // pass (when wired) still applies to service integrations the same
+  // way it does to Lambda routes.
+  if (match.route.serviceIntegration) {
+    await handleServiceIntegrationRequest(req, res, match, bodyBuf, opts);
+    return;
+  }
+
   // Find the authorizer attached to the matched route (if any).
   const matchedEntry = state.routes.find(
     (r) => r.route.declaredAt === match.route.declaredAt && r.route.method === match.route.method
@@ -435,6 +465,69 @@ async function handleRequest(
     return;
   }
 
+  // Function URL routes with InvokeMode: RESPONSE_STREAM dispatch via
+  // the RIE streaming protocol (issue #467). The streaming Lambda's
+  // response is a JSON prelude carrying status + headers, an 8-NULL-byte
+  // separator, and then raw body chunks the handler streams. cdkd writes
+  // the prelude to `res.writeHead(...)` and pipes the chunks via
+  // `Transfer-Encoding: chunked` (Node's default when no Content-Length
+  // is set).
+  if (match.route.invokeMode === 'RESPONSE_STREAM') {
+    let streamResult: import('./rie-client.js').StreamingInvokeResult | undefined;
+    try {
+      streamResult = await invokeRieStreaming(
+        handle.containerHost,
+        handle.hostPort,
+        baseEvent,
+        opts.rieTimeoutMs
+      );
+      try {
+        writeStreamingResponse(res, streamResult, () => state.pool.release(handle));
+      } catch (writeErr) {
+        // `writeStreamingResponse` threw synchronously — typically from
+        // `res.writeHead(...)` rejecting a malformed header value before
+        // any body bytes have been piped. The body Readable from
+        // `invokeRieStreaming` has no `'error'` / `'close'` consumer
+        // installed yet (those listeners are attached AFTER `writeHead`
+        // inside `writeStreamingResponse`), so the IIFE in
+        // `invokeRieStreaming` would keep pushing chunks into an orphan
+        // Readable forever. Destroy it explicitly to release the underlying
+        // fetch reader, then re-throw so the outer catch surfaces 502 and
+        // releases the pool entry.
+        //
+        // The no-op `'error'` listener is load-bearing: Node emits the
+        // destroy reason as an `'error'` event on the Readable, and an
+        // unhandled `'error'` would surface as an uncaught exception
+        // since this branch is reached before `body.pipe(res)` would
+        // have installed its own internal error handler.
+        streamResult.body.on('error', () => {
+          /* swallow — the original `writeErr` is what the caller sees */
+        });
+        streamResult.body.destroy(
+          writeErr instanceof Error ? writeErr : new Error(String(writeErr))
+        );
+        throw writeErr;
+      }
+      // writeStreamingResponse owns the pool release because the body
+      // is piped asynchronously — the response is not "done" when this
+      // function returns.
+      return;
+    } catch (err) {
+      logger.error(
+        `RIE streaming invoke failed for ${match.route.lambdaLogicalId}: ${
+          err instanceof Error ? err.message : String(err)
+        }`
+      );
+      if (!res.headersSent) {
+        writeError(res, 502);
+      } else {
+        res.end();
+      }
+      state.pool.release(handle);
+      return;
+    }
+  }
+
   try {
     const invokeResult = await invokeRie(
       handle.containerHost,
@@ -465,6 +558,62 @@ async function handleRequest(
   } finally {
     state.pool.release(handle);
   }
+}
+
+/**
+ * Pipe a streaming RIE response into an `http.ServerResponse`. The
+ * prelude's status + headers are written via `res.writeHead(...)`; the
+ * body Readable is `pipe`'d through to the response so Node's
+ * `Transfer-Encoding: chunked` machinery handles backpressure +
+ * chunked framing automatically.
+ *
+ * `releasePool` runs in a `finally`-equivalent path so the warm
+ * container is returned to the pool whether the stream ends cleanly
+ * (`'end'` event) or errors mid-body (`'error'` event). Errors after
+ * the prelude has been written can no longer be reported as HTTP
+ * status — the stream is destroyed and the connection aborts.
+ *
+ * Cookies in the prelude are emitted as multiple `Set-Cookie` headers
+ * (HTTP API v2 semantics — matching the buffered path's behavior).
+ */
+function writeStreamingResponse(
+  res: ServerResponse,
+  result: import('./rie-client.js').StreamingInvokeResult,
+  releasePool: () => void
+): void {
+  const logger = getLogger().child('start-api');
+  const { prelude, body } = result;
+
+  // Write headers + status atomically so Node knows we're not setting
+  // Content-Length and switches to chunked encoding automatically.
+  // Cookies are stitched in via the array-form Set-Cookie header
+  // (Node's writeHead accepts string-or-array values).
+  const headersOut: Record<string, string | string[]> = { ...prelude.headers };
+  if (prelude.cookies && prelude.cookies.length > 0) {
+    headersOut['set-cookie'] = prelude.cookies;
+  }
+  res.writeHead(prelude.statusCode, headersOut);
+
+  let released = false;
+  const releaseOnce = () => {
+    if (released) return;
+    released = true;
+    releasePool();
+  };
+
+  body.on('error', (err) => {
+    logger.error(
+      `Streaming Lambda response body errored mid-stream: ${
+        err instanceof Error ? err.message : String(err)
+      }`
+    );
+    // Headers already on the wire — best we can do is destroy the
+    // socket so the client sees a truncated response.
+    res.destroy(err);
+    releaseOnce();
+  });
+  res.on('close', releaseOnce);
+  body.pipe(res);
 }
 
 /**
@@ -961,11 +1110,14 @@ function lowercaseSingularHeaders(raw: Record<string, string[]>): Record<string,
 }
 
 /**
- * Parse query string into a singular (last-wins) map. Used by the
- * authorizer pass — separate from api-gateway-event because the
- * authorizer needs raw header values too.
+ * Parse query string into a singular map. Multi-value keys are
+ * comma-joined in order of appearance (`?foo=a&foo=b` -> `foo: 'a,b'`)
+ * — matches the contract documented at
+ * `src/local/parameter-mapping.ts:14` ("multi-values comma-joined")
+ * AND deployed API Gateway behavior. Used by both the authorizer pass
+ * and the HTTP API v2 service-integration parameter mapper.
  */
-function parseQueryStringSingular(rawUrl: string): Record<string, string> {
+export function parseQueryStringSingular(rawUrl: string): Record<string, string> {
   const q = rawUrl.indexOf('?');
   if (q < 0) return {};
   const raw = rawUrl.slice(q + 1);
@@ -988,7 +1140,8 @@ function parseQueryStringSingular(rawUrl: string): Record<string, string> {
     } catch {
       /* keep raw */
     }
-    out[key] = value;
+    const prev = out[key];
+    out[key] = prev === undefined ? value : `${prev},${value}`;
   }
   return out;
 }
@@ -1044,6 +1197,142 @@ function writeError(
   res.setHeader('content-type', 'application/json');
   res.setHeader('content-length', String(Buffer.byteLength(body, 'utf-8')));
   res.end(body);
+}
+
+/**
+ * Handle an HTTP API v2 service-integration route (#458). The route
+ * carries `serviceIntegration: { subtype, requestParameters, responseParameters? }`
+ * — no Lambda backs it. Flow:
+ *
+ *   1. Build a {@link RequestParameterContext} from the HTTP request +
+ *      route match (path parameters, query string, headers, context
+ *      variables, stage variables).
+ *   2. Resolve every `RequestParameters` value against that context via
+ *      `parameter-mapping.ts`. Per-parameter unresolved refs degrade to
+ *      `""` (matches AWS deployed behavior).
+ *   3. Dispatch to the per-subtype SDK adapter in
+ *      `httpv2-service-integration.ts`. Per-request `Region` parameter
+ *      overrides the server's `opts.defaultRegion`; absent both surfaces
+ *      a 400.
+ *   4. Apply per-status-code `ResponseParameters` overlay (header /
+ *      statuscode overwrites).
+ *   5. Write the result to the HTTP client.
+ *
+ * Authorizer pass: NOT yet wired (current scope is dispatch only). When
+ * a service-integration route carries an authorizer, the discovery layer
+ * leaves it in place but the server short-circuits to dispatch BEFORE the
+ * auth pass. A follow-up PR can hoist the auth pass earlier — keeping it
+ * out of this PR limits the blast radius.
+ */
+async function handleServiceIntegrationRequest(
+  req: IncomingMessage,
+  res: ServerResponse,
+  match: { route: DiscoveredRoute; pathParameters: Record<string, string> },
+  bodyBuf: Buffer,
+  opts: StartApiServerOptions
+): Promise<void> {
+  const route = match.route;
+  const svc = route.serviceIntegration;
+  if (!svc) {
+    // Defensive — caller already gated on this branch.
+    writeError(res, 500);
+    return;
+  }
+  const rawUrl = req.url ?? '/';
+  const headersFlat = flattenHeadersForMapping(req);
+  const queryString = parseQueryStringSingular(rawUrl);
+  const requestPath = rawUrl.split('?')[0] ?? '/';
+  const context = buildServiceIntegrationContextVars(req, route);
+  const ctx: RequestParameterContext = {
+    headers: headersFlat,
+    queryString,
+    pathParameters: match.pathParameters,
+    requestPath,
+    body: bodyBuf.toString('utf8'),
+    context,
+    stageVariables: route.stageVariables ?? {},
+  };
+  const outcome = resolveServiceIntegrationParameters(svc.requestParameters, ctx);
+  if (outcome.kind === 'error') {
+    getLogger().warn(`[${route.declaredAt}] ${outcome.reason}`);
+    const body = JSON.stringify({ message: 'Invalid integration mapping', reason: outcome.reason });
+    res.statusCode = 500;
+    res.setHeader('content-type', 'application/json');
+    res.setHeader('content-length', String(Buffer.byteLength(body, 'utf-8')));
+    res.end(body);
+    return;
+  }
+  const result = await dispatchServiceIntegration(
+    svc.subtype,
+    outcome.resolved,
+    opts.defaultRegion ?? ''
+  );
+  const responseCtx: ResponseParameterContext = {
+    context,
+    stageVariables: route.stageVariables ?? {},
+  };
+  const finalResult = applyResponseParameters(result, svc.responseParameters, responseCtx);
+  res.statusCode = finalResult.statusCode;
+  for (const [name, value] of Object.entries(finalResult.headers)) {
+    res.setHeader(name, value);
+  }
+  res.setHeader('content-length', String(Buffer.byteLength(finalResult.body, 'utf-8')));
+  res.end(finalResult.body);
+}
+
+/**
+ * Flatten Node's `req.headers` to the single-string-per-key shape the
+ * parameter-mapping resolver expects (`$request.header.<name>` is
+ * documented as comma-joined multi-value). Header NAMES are lowercased
+ * because AWS docs document `$request.header.<name>` as case-insensitive.
+ */
+function flattenHeadersForMapping(req: IncomingMessage): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [name, value] of Object.entries(req.headers)) {
+    const lower = name.toLowerCase();
+    if (Array.isArray(value)) {
+      out[lower] = value.join(', ');
+    } else if (typeof value === 'string') {
+      out[lower] = value;
+    }
+  }
+  return out;
+}
+
+/**
+ * Build the subset of AWS context variables the service-integration
+ * parameter-mapping resolver needs to surface (per AWS docs
+ * https://docs.aws.amazon.com/apigateway/latest/developerguide/http-api-logging-variables.html).
+ *
+ * We populate the most-commonly-referenced fields with realistic values
+ * (`requestId` is fresh per call, `accountId` / `domainName` are mock
+ * but stable). Selection expressions against context variables we
+ * don't model resolve to `""` — matches the AWS-deployed behavior of
+ * absent values.
+ */
+function buildServiceIntegrationContextVars(
+  req: IncomingMessage,
+  route: DiscoveredRoute
+): Record<string, string> {
+  const requestId = `cdkd-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+  const sourceIp = req.socket.remoteAddress ?? '127.0.0.1';
+  return {
+    requestId,
+    accountId: '123456789012',
+    apiId: route.apiLogicalId ?? 'local',
+    stage: route.stage,
+    'identity.sourceIp': sourceIp,
+    'identity.userAgent':
+      Array.isArray(req.headers['user-agent']) || typeof req.headers['user-agent'] === 'string'
+        ? String(req.headers['user-agent'])
+        : '',
+    domainName: 'localhost',
+    httpMethod: req.method ?? 'GET',
+    path: (req.url ?? '/').split('?')[0] ?? '/',
+    protocol: 'HTTP/1.1',
+    requestTime: new Date().toISOString(),
+    requestTimeEpoch: String(Date.now()),
+  };
 }
 
 /**

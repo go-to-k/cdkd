@@ -4,6 +4,7 @@ import type { CloudFormationTemplate, TemplateResource } from '../types/resource
 import { RouteDiscoveryError } from '../utils/error-handler.js';
 import { stringifyValue } from '../utils/stringify.js';
 import { resolveLambdaArnIntrinsic as resolveLambdaArnShared } from './intrinsic-lambda-arn.js';
+import { isSupportedSubtype, type SupportedSubtype } from './httpv2-service-integration.js';
 
 /**
  * One discovered API → Lambda route for `cdkd local start-api`.
@@ -96,15 +97,28 @@ export interface DiscoveredRoute {
    */
   stageVariables?: Record<string, string> | null;
   /**
+   * Function URL invoke mode. Defaults to `'BUFFERED'` (the standard
+   * request/response shape); `'RESPONSE_STREAM'` opts into Lambda
+   * response streaming via the RIE streaming protocol — the local
+   * server invokes the Lambda with the
+   * `Lambda-Runtime-Function-Response-Mode: streaming` header and
+   * pipes the response chunks to the HTTP client with
+   * `Transfer-Encoding: chunked`. Only set on `source: 'function-url'`
+   * routes; REST v1 / HTTP API v2 routes are always buffered.
+   */
+  invokeMode?: 'BUFFERED' | 'RESPONSE_STREAM';
+  /**
    * Set on routes that cdkd discovered but cannot dispatch to a Lambda.
    * The HTTP server returns HTTP 501 + `{"message": "Not Implemented",
    * "reason": <reason>}` when these routes are hit. Examples:
    * non-AWS_PROXY REST v1 integrations (`MOCK` not matching the CORS
    * preflight shape, `AWS`, `HTTP`, `HTTP_PROXY`), HTTP API v2
    * service integrations (`IntegrationSubtype` set), WebSocket APIs,
-   * Function URLs with `AuthType !== 'NONE'` or
-   * `InvokeMode === 'RESPONSE_STREAM'`, and routes whose Lambda Arn
-   * intrinsic cannot be resolved against the same template.
+   * Function URLs with `AuthType !== 'NONE'` or with an
+   * `InvokeMode` value outside `BUFFERED` / `RESPONSE_STREAM`, and
+   * routes whose Lambda Arn intrinsic cannot be resolved against the
+   * same template. (Function URLs with `InvokeMode: RESPONSE_STREAM`
+   * are normal routes dispatched via the streaming protocol — #467.)
    *
    * Mutually exclusive with {@link DiscoveredRoute.mockCors}. When set,
    * `lambdaLogicalId` may be the empty string (we never need to dispatch
@@ -128,6 +142,26 @@ export interface DiscoveredRoute {
    * `unsupported` instead — cdkd cannot run their VTL mapping templates.
    */
   mockCors?: { statusCode: number; headers: Record<string, string> };
+  /**
+   * Set on HTTP API v2 routes wired to an AWS service integration
+   * (`IntegrationType: AWS_PROXY` + `IntegrationSubtype`) — see AWS
+   * docs: https://docs.aws.amazon.com/apigateway/latest/developerguide/http-api-develop-integrations-aws-services-reference.html
+   *
+   * cdkd dispatches the route via `httpv2-service-integration.ts`
+   * (per-subtype SDK adapter); `lambdaLogicalId` is the empty string
+   * (no Lambda backs the route). The `subtype` value is one of the
+   * AWS-documented supported subtypes; unrecognized `IntegrationSubtype`
+   * values fall through to {@link DiscoveredRoute.unsupported} so they
+   * still surface a clear 501.
+   *
+   * Mutually exclusive with {@link DiscoveredRoute.unsupported} and
+   * {@link DiscoveredRoute.mockCors}.
+   */
+  serviceIntegration?: {
+    subtype: SupportedSubtype;
+    requestParameters: Readonly<Record<string, unknown>>;
+    responseParameters?: Readonly<Record<string, Readonly<Record<string, string>>>>;
+  };
   /** Diagnostic only — used in route-table output and error messages. */
   declaredAt: string;
 }
@@ -628,15 +662,13 @@ function discoverHttpApiRoute(
   }
   if (integrationProps['IntegrationSubtype'] !== undefined) {
     return [
-      {
-        ...baseRoute,
-        lambdaLogicalId: '',
-        unsupported: {
-          reason: `${stackName}/${logicalId}: HTTP API v2 service integration with IntegrationSubtype '${stringifyValue(
-            integrationProps['IntegrationSubtype']
-          )}' is not supported (cdkd cannot proxy directly to SQS / EventBridge / etc.).`,
-        },
-      },
+      classifyServiceIntegrationRoute(
+        baseRoute,
+        integrationProps,
+        stackName,
+        logicalId,
+        integrationLogicalId
+      ),
     ];
   }
 
@@ -664,16 +696,88 @@ function discoverHttpApiRoute(
 }
 
 /**
+ * Classify an HTTP API v2 route whose `IntegrationSubtype` is set
+ * (service integration, no Lambda backing). Recognized subtypes
+ * become `serviceIntegration` routes the HTTP server dispatches via
+ * the SDK adapter table in `httpv2-service-integration.ts`;
+ * unrecognized subtypes (typo / future-AWS-subtype-cdkd-doesn't-bundle
+ * an SDK for) become deferred-501 unsupported routes.
+ *
+ * `RequestParameters` is the load-bearing field for dispatch — it
+ * carries the SDK input as a flat map keyed by SDK parameter name.
+ * Missing / non-object RequestParameters surfaces as unsupported (the
+ * SDK call would have nothing to send).
+ */
+function classifyServiceIntegrationRoute(
+  baseRoute: Omit<DiscoveredRoute, 'lambdaLogicalId'>,
+  integrationProps: Record<string, unknown>,
+  stackName: string,
+  routeLogicalId: string,
+  integrationLogicalId: string
+): DiscoveredRoute {
+  const subtypeRaw = integrationProps['IntegrationSubtype'];
+  const declaredAt = `${stackName}/${routeLogicalId}`;
+
+  if (!isSupportedSubtype(subtypeRaw)) {
+    return {
+      ...baseRoute,
+      lambdaLogicalId: '',
+      unsupported: {
+        reason: `${declaredAt}: HTTP API v2 service integration subtype '${stringifyValue(
+          subtypeRaw
+        )}' is not supported by cdkd local start-api (see https://docs.aws.amazon.com/apigateway/latest/developerguide/http-api-develop-integrations-aws-services-reference.html for the supported list).`,
+      },
+    };
+  }
+
+  const requestParameters = integrationProps['RequestParameters'];
+  if (
+    !requestParameters ||
+    typeof requestParameters !== 'object' ||
+    Array.isArray(requestParameters)
+  ) {
+    return {
+      ...baseRoute,
+      lambdaLogicalId: '',
+      unsupported: {
+        reason: `${stackName}/${integrationLogicalId}: HTTP API v2 service integration '${subtypeRaw}' is missing RequestParameters or it is not an object — cannot dispatch to the SDK without input mapping.`,
+      },
+    };
+  }
+
+  const responseParameters = integrationProps['ResponseParameters'];
+  const validatedResponseParameters =
+    responseParameters &&
+    typeof responseParameters === 'object' &&
+    !Array.isArray(responseParameters)
+      ? (responseParameters as Record<string, Record<string, string>>)
+      : undefined;
+
+  return {
+    ...baseRoute,
+    lambdaLogicalId: '',
+    serviceIntegration: {
+      subtype: subtypeRaw as SupportedSubtype,
+      requestParameters: requestParameters as Record<string, unknown>,
+      ...(validatedResponseParameters && { responseParameters: validatedResponseParameters }),
+    },
+  };
+}
+
+/**
  * Discover the synthetic `ANY /{proxy+}` route from an
  * `AWS::Lambda::Url` resource.
  *
  * Per-shape classification:
- *   - `AuthType === 'NONE'` + `InvokeMode !== 'RESPONSE_STREAM'` → normal route.
+ *   - `AuthType === 'NONE'` + `InvokeMode === 'BUFFERED'` (or unset) → normal route.
+ *   - `AuthType === 'NONE'` + `InvokeMode === 'RESPONSE_STREAM'` → normal route
+ *     dispatched via the RIE streaming protocol (the response body is a
+ *     JSON prelude — `{statusCode, headers, cookies?}` — followed by 8
+ *     NULL bytes and then the raw body chunks). The HTTP server pipes
+ *     the chunks to the client with `Transfer-Encoding: chunked` (#467).
  *   - `AuthType !== 'NONE'` (e.g. `AWS_IAM`) → deferred-error
  *     unsupported. Boot proceeds; HTTP 501 + `reason` at request time.
  *     IAM auth would need SigV4 verification cdkd cannot emulate.
- *   - `InvokeMode === 'RESPONSE_STREAM'` → deferred-error unsupported.
- *     The RIE container does not implement `InvokeWithResponseStream`.
  *
  * The Lambda Arn intrinsic resolution still **hard-errors** when it
  * cannot pin down a same-template Lambda — Function URLs have no other
@@ -729,14 +833,30 @@ function discoverFunctionUrl(
       },
     ];
   }
-  const invokeMode = props['InvokeMode'];
-  if (invokeMode === 'RESPONSE_STREAM') {
+  // InvokeMode controls the response wire protocol. RESPONSE_STREAM
+  // opts into the RIE streaming protocol (JSON prelude + 8-NULL-byte
+  // separator + raw chunked body) — the local server invokes the Lambda
+  // with the `Lambda-Runtime-Function-Response-Mode: streaming` request
+  // header and pipes the chunks to the HTTP client with
+  // `Transfer-Encoding: chunked`. Closes issue #467. Anything other
+  // than these two AWS-documented values is rejected so a future API
+  // shape change surfaces as a clear error rather than silent fallback.
+  const invokeModeRaw = props['InvokeMode'];
+  let invokeMode: 'BUFFERED' | 'RESPONSE_STREAM' = 'BUFFERED';
+  if (invokeModeRaw === 'RESPONSE_STREAM') {
+    invokeMode = 'RESPONSE_STREAM';
+  } else if (invokeModeRaw !== undefined && invokeModeRaw !== 'BUFFERED') {
+    // Render with shortJson so an object-valued InvokeMode (defensive
+    // — AWS docs require a string, but a malformed template could ship
+    // an intrinsic) shows as JSON rather than `[object Object]`.
     return [
       {
         ...baseRoute,
         lambdaLogicalId,
         unsupported: {
-          reason: `${stackName}/${logicalId}: InvokeMode RESPONSE_STREAM is not supported (cdkd's RIE container does not implement InvokeWithResponseStream).`,
+          reason: `${stackName}/${logicalId}: InvokeMode ${shortJson(
+            invokeModeRaw
+          )} is not a recognized value (expected 'BUFFERED' or 'RESPONSE_STREAM').`,
         },
       },
     ];
@@ -746,6 +866,7 @@ function discoverFunctionUrl(
     {
       ...baseRoute,
       lambdaLogicalId,
+      invokeMode,
     },
   ];
 }

@@ -1,6 +1,10 @@
 import type { ServerResponse } from 'node:http';
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vite-plus/test';
-import { startApiServer, writeAuthRejection } from '../../../src/local/http-server.js';
+import {
+  parseQueryStringSingular,
+  startApiServer,
+  writeAuthRejection,
+} from '../../../src/local/http-server.js';
 import type { RouteWithAuth } from '../../../src/local/authorizer-resolver.js';
 import type { ContainerPool } from '../../../src/local/container-pool.js';
 import { createAuthorizerCache } from '../../../src/local/authorizer-cache.js';
@@ -8,9 +12,11 @@ import { createJwksCache } from '../../../src/local/cognito-jwt.js';
 
 vi.mock('../../../src/local/rie-client.js', () => ({
   invokeRie: vi.fn(),
+  invokeRieStreaming: vi.fn(),
 }));
 import * as rieClient from '../../../src/local/rie-client.js';
 const invokeRieMock = rieClient.invokeRie as unknown as ReturnType<typeof vi.fn>;
+const invokeRieStreamingMock = rieClient.invokeRieStreaming as unknown as ReturnType<typeof vi.fn>;
 
 /**
  * Construct a minimal `ServerResponse` stand-in that records `statusCode`
@@ -542,5 +548,263 @@ describe('startApiServer — mockCors preflight', () => {
     } finally {
       await server.close();
     }
+  });
+});
+
+describe('startApiServer — RESPONSE_STREAM dispatch (#467)', () => {
+  beforeEach(() => {
+    invokeRieMock.mockReset();
+    invokeRieStreamingMock.mockReset();
+  });
+
+  it('routes invokeMode=RESPONSE_STREAM to invokeRieStreaming and pipes the body with chunked encoding', async () => {
+    const { Readable } = await import('node:stream');
+    invokeRieStreamingMock.mockImplementation(async () => ({
+      prelude: {
+        statusCode: 200,
+        headers: { 'Content-Type': 'text/plain', 'X-Custom': 'hello' },
+      },
+      body: Readable.from([Buffer.from('chunk-0\n'), Buffer.from('chunk-1\n')]),
+    }));
+    const route: RouteWithAuth = {
+      route: {
+        method: 'ANY',
+        pathPattern: '/{proxy+}',
+        lambdaLogicalId: 'Fn',
+        source: 'function-url',
+        apiVersion: 'v2',
+        stage: '$default',
+        apiStackName: 'S',
+        declaredAt: 'S/Url',
+        invokeMode: 'RESPONSE_STREAM',
+      },
+    };
+    const pool = makePool();
+    const server = await startApiServer({
+      state: { routes: [route], pool, corsConfigByApiId: new Map() },
+      rieTimeoutMs: 5000,
+      host: '127.0.0.1',
+      port: 0,
+    });
+    try {
+      const r = await fetch(`http://${server.host}:${server.port}/anything`);
+      expect(r.status).toBe(200);
+      expect(r.headers.get('content-type')).toBe('text/plain');
+      expect(r.headers.get('x-custom')).toBe('hello');
+      // Node sets Transfer-Encoding: chunked automatically when no Content-Length.
+      expect(r.headers.get('transfer-encoding')).toBe('chunked');
+      const body = await r.text();
+      expect(body).toBe('chunk-0\nchunk-1\n');
+      // Buffered path NOT used.
+      expect(invokeRieMock).not.toHaveBeenCalled();
+      expect(invokeRieStreamingMock).toHaveBeenCalledTimes(1);
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('emits multiple Set-Cookie headers from the prelude cookies array', async () => {
+    const { Readable } = await import('node:stream');
+    invokeRieStreamingMock.mockImplementation(async () => ({
+      prelude: {
+        statusCode: 200,
+        headers: {},
+        cookies: ['a=1; Path=/', 'b=2; Path=/'],
+      },
+      body: Readable.from([Buffer.from('ok')]),
+    }));
+    const route: RouteWithAuth = {
+      route: {
+        method: 'ANY',
+        pathPattern: '/{proxy+}',
+        lambdaLogicalId: 'Fn',
+        source: 'function-url',
+        apiVersion: 'v2',
+        stage: '$default',
+        apiStackName: 'S',
+        declaredAt: 'S/Url',
+        invokeMode: 'RESPONSE_STREAM',
+      },
+    };
+    const server = await startApiServer({
+      state: { routes: [route], pool: makePool(), corsConfigByApiId: new Map() },
+      rieTimeoutMs: 5000,
+      host: '127.0.0.1',
+      port: 0,
+    });
+    try {
+      const r = await fetch(`http://${server.host}:${server.port}/anything`);
+      // Node's fetch / undici exposes multi-valued Set-Cookie via getSetCookie().
+      const cookies = r.headers.getSetCookie();
+      expect(cookies).toEqual(['a=1; Path=/', 'b=2; Path=/']);
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('falls back to buffered invokeRie when invokeMode is BUFFERED (default)', async () => {
+    invokeRieMock.mockResolvedValue({
+      payload: { statusCode: 200, body: 'buffered-response' },
+      raw: '{}',
+    });
+    const route: RouteWithAuth = {
+      route: {
+        method: 'ANY',
+        pathPattern: '/{proxy+}',
+        lambdaLogicalId: 'Fn',
+        source: 'function-url',
+        apiVersion: 'v2',
+        stage: '$default',
+        apiStackName: 'S',
+        declaredAt: 'S/Url',
+        invokeMode: 'BUFFERED',
+      },
+    };
+    const server = await startApiServer({
+      state: { routes: [route], pool: makePool(), corsConfigByApiId: new Map() },
+      rieTimeoutMs: 5000,
+      host: '127.0.0.1',
+      port: 0,
+    });
+    try {
+      const r = await fetch(`http://${server.host}:${server.port}/anything`);
+      expect(r.status).toBe(200);
+      expect(await r.text()).toBe('buffered-response');
+      expect(invokeRieMock).toHaveBeenCalledTimes(1);
+      expect(invokeRieStreamingMock).not.toHaveBeenCalled();
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('returns 502 + releases the pool when streaming invoke throws before any headers', async () => {
+    invokeRieStreamingMock.mockRejectedValue(new Error('rie boom'));
+    const pool = makePool();
+    const route: RouteWithAuth = {
+      route: {
+        method: 'ANY',
+        pathPattern: '/{proxy+}',
+        lambdaLogicalId: 'Fn',
+        source: 'function-url',
+        apiVersion: 'v2',
+        stage: '$default',
+        apiStackName: 'S',
+        declaredAt: 'S/Url',
+        invokeMode: 'RESPONSE_STREAM',
+      },
+    };
+    const server = await startApiServer({
+      state: { routes: [route], pool, corsConfigByApiId: new Map() },
+      rieTimeoutMs: 5000,
+      host: '127.0.0.1',
+      port: 0,
+    });
+    try {
+      const r = await fetch(`http://${server.host}:${server.port}/anything`);
+      expect(r.status).toBe(502);
+      // Pool must be released so the warm container can serve the next request.
+      expect((pool.release as ReturnType<typeof vi.fn>)).toHaveBeenCalledTimes(1);
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('destroys the body Readable + releases the pool when writeStreamingResponse throws synchronously on a malformed prelude header', async () => {
+    // Regression for the PR #501 review blocker: when `res.writeHead(...)`
+    // throws synchronously (e.g. on a header value containing CRLF — Node
+    // rejects it with ERR_INVALID_CHAR), the body Readable from
+    // `invokeRieStreaming` had no consumer attached yet (the `'error'`
+    // / `'close'` listeners are installed AFTER `writeHead` succeeds
+    // inside `writeStreamingResponse`). Without the fix, the IIFE in
+    // `invokeRieStreaming` would keep pushing chunks into an orphan
+    // Readable forever and the pool entry would never be returned.
+    const { Readable } = await import('node:stream');
+    let bodyStream: import('node:stream').Readable | undefined;
+    invokeRieStreamingMock.mockImplementation(async () => {
+      bodyStream = Readable.from([Buffer.from('chunk-0\n')]);
+      return {
+        prelude: {
+          statusCode: 200,
+          // Invalid CRLF in a header value: Node's writeHead rejects
+          // synchronously with ERR_INVALID_CHAR.
+          headers: { 'X-Bad': 'broken\r\nvalue' },
+        },
+        body: bodyStream,
+      };
+    });
+    const pool = makePool();
+    const route: RouteWithAuth = {
+      route: {
+        method: 'ANY',
+        pathPattern: '/{proxy+}',
+        lambdaLogicalId: 'Fn',
+        source: 'function-url',
+        apiVersion: 'v2',
+        stage: '$default',
+        apiStackName: 'S',
+        declaredAt: 'S/Url',
+        invokeMode: 'RESPONSE_STREAM',
+      },
+    };
+    const server = await startApiServer({
+      state: { routes: [route], pool, corsConfigByApiId: new Map() },
+      rieTimeoutMs: 5000,
+      host: '127.0.0.1',
+      port: 0,
+    });
+    try {
+      const r = await fetch(`http://${server.host}:${server.port}/anything`);
+      // Outer catch reports 502 (no headers were sent before the throw).
+      expect(r.status).toBe(502);
+      // (a) Pool must be released so the warm container can serve again.
+      expect((pool.release as ReturnType<typeof vi.fn>)).toHaveBeenCalledTimes(1);
+      // (b) Body Readable must be destroyed so the underlying fetch reader
+      // is released and the `invokeRieStreaming` IIFE stops pushing.
+      expect(bodyStream).toBeDefined();
+      expect(bodyStream!.destroyed).toBe(true);
+    } finally {
+      await server.close();
+    }
+  });
+});
+
+describe('parseQueryStringSingular — multi-value comma-join (PR #500 minor)', () => {
+  it('comma-joins repeated keys in declaration order', () => {
+    // `?foo=a&foo=b` -> `foo: 'a,b'` matches the contract documented at
+    // `src/local/parameter-mapping.ts:14` ("multi-values comma-joined")
+    // AND deployed API Gateway behavior. Pre-fix the implementation did
+    // last-wins (`foo: 'b'`) which silently dropped earlier values for
+    // service-integration RequestParameters.
+    expect(parseQueryStringSingular('/path?foo=a&foo=b')).toEqual({ foo: 'a,b' });
+  });
+
+  it('comma-joins three or more repetitions, preserves order', () => {
+    expect(parseQueryStringSingular('/?id=1&id=2&id=3&id=4')).toEqual({ id: '1,2,3,4' });
+  });
+
+  it('leaves single-value keys untouched (no extra commas)', () => {
+    expect(parseQueryStringSingular('/?a=1&b=2')).toEqual({ a: '1', b: '2' });
+  });
+
+  it('mixes single-value + multi-value keys cleanly', () => {
+    expect(parseQueryStringSingular('/?foo=a&bar=x&foo=b')).toEqual({
+      foo: 'a,b',
+      bar: 'x',
+    });
+  });
+
+  it('URL-decodes each value before joining', () => {
+    expect(parseQueryStringSingular('/?q=hello%20world&q=goodbye%21')).toEqual({
+      q: 'hello world,goodbye!',
+    });
+  });
+
+  it('returns empty map on no query string', () => {
+    expect(parseQueryStringSingular('/path')).toEqual({});
+    expect(parseQueryStringSingular('/path?')).toEqual({});
+  });
+
+  it('handles empty values cleanly', () => {
+    expect(parseQueryStringSingular('/?foo=&foo=bar')).toEqual({ foo: ',bar' });
   });
 });

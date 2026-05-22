@@ -120,15 +120,23 @@ head -60 "${LOG_FILE}" | sed 's/^/    /'
 # qualifiers like "v2:edge") can't shadow the real port.
 PORT_HTTP=$(grep -E 'Server listening on http://[^[:space:]]+\s+\(.*HTTP API v2\)' "${LOG_FILE}" | sed -E 's|.*://[^:]+:([0-9]+).*|\1|' | head -1)
 PORT_REST=$(grep -E 'Server listening on http://[^[:space:]]+\s+\(.*REST API v1\)' "${LOG_FILE}" | sed -E 's|.*://[^:]+:([0-9]+).*|\1|' | head -1)
-PORT_FNURL=$(grep -E 'Server listening on http://[^[:space:]]+\s+\(.*Function URL\)' "${LOG_FILE}" | sed -E 's|.*://[^:]+:([0-9]+).*|\1|' | head -1)
-if [[ -z "${PORT_HTTP}" || -z "${PORT_REST}" || -z "${PORT_FNURL}" ]]; then
+# Two Function URL servers: the buffered one (UrlHandler) and the
+# streaming one (StreamUrlHandler — added in #467). CDK appends an
+# 8-hex-char hash to each logical id; the leading `(` anchor + the
+# regex `UrlHandler[A-F0-9]{8}` boundary ensures `UrlHandler` does NOT
+# match `StreamUrlHandler` (the latter has `Stream` before `UrlHandler`,
+# so the `(` boundary excludes it).
+PORT_FNURL=$(grep -E 'Server listening on http://[^[:space:]]+\s+\(UrlHandler[A-F0-9]{8}\s+\(Function URL\)\)' "${LOG_FILE}" | sed -E 's|.*://[^:]+:([0-9]+).*|\1|' | head -1)
+PORT_FNURL_STREAM=$(grep -E 'Server listening on http://[^[:space:]]+\s+\(StreamUrlHandler[A-F0-9]{8}\s+\(Function URL\)\)' "${LOG_FILE}" | sed -E 's|.*://[^:]+:([0-9]+).*|\1|' | head -1)
+if [[ -z "${PORT_HTTP}" || -z "${PORT_REST}" || -z "${PORT_FNURL}" || -z "${PORT_FNURL_STREAM}" ]]; then
   echo "FAIL: could not extract per-API port mappings. Log:"
   cat "${LOG_FILE}"
   exit 1
 fi
-echo "    HTTP API v2: ${PORT_HTTP}"
-echo "    REST API v1: ${PORT_REST}"
-echo "    Function URL: ${PORT_FNURL}"
+echo "    HTTP API v2:           ${PORT_HTTP}"
+echo "    REST API v1:           ${PORT_REST}"
+echo "    Function URL:          ${PORT_FNURL}"
+echo "    Function URL (stream): ${PORT_FNURL_STREAM}"
 
 # Verify the route table contains every route. Method-column width
 # varies per server (REST v1 with OPTIONS preflight rows has a wider
@@ -141,6 +149,9 @@ EXPECTED_ROUTES=(
   "POST    /items"
   "GET     /items/\\{id\\}"
   "GET     /protected"
+  "POST    /sqs"
+  "POST    /events"
+  "POST    /unknown-subtype"
   "ANY     /v1/\\{proxy\\+\\}"
   "GET     /v1/unsupported"
   "GET     /v1/cross-stack-auth"
@@ -217,6 +228,79 @@ curl_assert "ANY /v1/anything (stage variables)" \
 # Function URL is a separate server on its own port. The Function URL
 # greedy proxy answers any path on its server.
 curl_assert "Function URL fallback" "http://127.0.0.1:${PORT_FNURL}/url-only/ping" '"functionUrl":true'
+
+# #467: streaming Function URL (`invokeMode: RESPONSE_STREAM`). The
+# handler emits 5 chunks of "hello-N\n" with 200ms delays between
+# chunks. cdkd MUST:
+#   1. Return HTTP 200 + `Transfer-Encoding: chunked` headers (not
+#      buffered-then-flushed in one shot).
+#   2. Deliver chunks incrementally — the wall-clock duration of
+#      `curl --no-buffer` should reflect the handler's inter-chunk
+#      sleeps (>= ~600ms across 5 chunks of 200ms).
+#   3. Echo the prelude's X-Stream-Test header.
+#
+# Caveat: the AWS Lambda Runtime Interface Emulator (RIE) baked into
+# `public.ecr.aws/lambda/nodejs:20` does NOT stream the response — it
+# buffers every `responseStream.write(...)` call into one response that
+# arrives at the HTTP client as a single block. This is a RIE limitation
+# (verified empirically against the v1.0 RIE shipped in the base image
+# on 2026-05-22); cdkd's `invokeRieStreaming` correctly parses the
+# streaming protocol and pipes the body bytes with `Transfer-Encoding:
+# chunked`, but real incremental delivery only manifests against the
+# deployed Lambda runtime. The integ asserts the protocol shape, not
+# inter-chunk timing.
+echo "==> Asserting streaming Function URL (#467)"
+STREAM_URL="http://127.0.0.1:${PORT_FNURL_STREAM}/anything"
+# First-request retry loop (cold container ~3-5s on first invoke).
+STREAM_RESPONSE=""
+for attempt in 1 2 3 4 5 6 7 8 9 10; do
+  if STREAM_RESPONSE=$(curl -sf -i --no-buffer "${STREAM_URL}" 2>&1); then
+    if echo "${STREAM_RESPONSE}" | grep -q 'hello-0'; then break; fi
+  fi
+  sleep 1
+done
+if ! echo "${STREAM_RESPONSE}" | grep -qi '^HTTP/1.1 200'; then
+  echo "FAIL: streaming Function URL did not return 200. Response:"
+  echo "${STREAM_RESPONSE}"
+  cat "${LOG_FILE}"
+  exit 1
+fi
+if ! echo "${STREAM_RESPONSE}" | grep -qi '^transfer-encoding: chunked'; then
+  echo "FAIL: streaming response missing Transfer-Encoding: chunked. Response:"
+  echo "${STREAM_RESPONSE}"
+  cat "${LOG_FILE}"
+  exit 1
+fi
+if ! echo "${STREAM_RESPONSE}" | grep -qi '^x-stream-test: on'; then
+  echo "FAIL: streaming response missing X-Stream-Test header from the prelude. Response:"
+  echo "${STREAM_RESPONSE}"
+  cat "${LOG_FILE}"
+  exit 1
+fi
+# All 5 chunks present in the body (order-preserved). RIE buffers the
+# writes, so we get all 5 in one shot — that's expected.
+for i in 0 1 2 3 4; do
+  if ! echo "${STREAM_RESPONSE}" | grep -q "hello-${i}"; then
+    echo "FAIL: streaming response missing chunk 'hello-${i}'. Response:"
+    echo "${STREAM_RESPONSE}"
+    cat "${LOG_FILE}"
+    exit 1
+  fi
+done
+# Protocol-shape audit: the response body must NOT contain the literal
+# bytes of the 8-NULL separator — that would mean cdkd's prelude parser
+# leaked separator bytes into the body. We grep `chunk-` instead of a
+# binary NULL match because curl's `-i` output is rendered for
+# terminals and may mask NULs; the indirect signal is that the body
+# starts with `hello-0` (the handler's first write after the
+# `HttpResponseStream.from` wrapper installed the prelude).
+if echo "${STREAM_RESPONSE}" | grep -q '"statusCode":200,"headers"'; then
+  echo "FAIL: streaming response body leaked the JSON prelude (parser bug). Response:"
+  echo "${STREAM_RESPONSE}"
+  cat "${LOG_FILE}"
+  exit 1
+fi
+echo "    [streaming Function URL] OK"
 
 # PR 8c: CORS preflight interception. The HTTP API has CorsConfiguration
 # with `*` origins; verify.sh asserts the canonical preflight response.
@@ -341,6 +425,83 @@ if ! echo "${AUTH_BODY}" | grep -q 'authorizer Lambda Arn unresolvable'; then
   exit 1
 fi
 echo "    [GET /v1/cross-stack-auth (501)] OK"
+
+# #458: HTTP API v2 service integrations. The fixture wires POST /sqs to
+# `SQS-SendMessage`, POST /events to `EventBridge-PutEvents`, and POST
+# /unknown-subtype to a deliberately-typo'd subtype that must fall back
+# to the deferred-501 path. We DO NOT deploy real SQS/EventBridge — the
+# integ is local-only — so the SDK calls land against the dev's AWS
+# creds and either reject with a 4xx (proves dispatch fired) or return
+# AccessDenied / NoSuchQueue. Pre-#458 these routes 501'd at boot.
+echo "==> Asserting service-integration route table labels (#458)"
+if ! grep -F "[SQS-SendMessage]" "${LOG_FILE}" >/dev/null; then
+  echo "FAIL: route table did not include [SQS-SendMessage] label."
+  cat "${LOG_FILE}"
+  exit 1
+fi
+if ! grep -F "[EventBridge-PutEvents]" "${LOG_FILE}" >/dev/null; then
+  echo "FAIL: route table did not include [EventBridge-PutEvents] label."
+  cat "${LOG_FILE}"
+  exit 1
+fi
+echo "    [route labels] OK"
+
+echo "==> Asserting POST /sqs goes through the dispatcher (not 501)"
+SQS_RESPONSE=$(curl -s -w '\nHTTP_STATUS=%{http_code}' -X POST \
+  -H 'Content-Type: application/json' \
+  -d '{"message":"hello"}' \
+  "http://127.0.0.1:${PORT_HTTP}/sqs?url=https://sqs.invalid.example/q")
+SQS_STATUS=$(echo "${SQS_RESPONSE}" | grep -oE 'HTTP_STATUS=[0-9]+' | cut -d= -f2)
+SQS_BODY=$(echo "${SQS_RESPONSE}" | sed '$ d')
+# Acceptance: anything OTHER than 501 (= dispatched to AWS SDK). Most
+# environments will surface a 4xx (NonExistentQueue / AccessDenied /
+# InvalidParameter / SignatureDoesNotMatch). The body must NOT include
+# the "Not Implemented" marker.
+if [[ "${SQS_STATUS}" == "501" ]]; then
+  echo "FAIL: POST /sqs returned 501 — service-integration dispatch did not fire. Body: ${SQS_BODY}"
+  cat "${LOG_FILE}"
+  exit 1
+fi
+if echo "${SQS_BODY}" | grep -q '"message":"Not Implemented"'; then
+  echo "FAIL: POST /sqs body looks like the deferred-501 envelope. Body: ${SQS_BODY}"
+  exit 1
+fi
+echo "    [POST /sqs dispatched] OK (status=${SQS_STATUS})"
+
+echo "==> Asserting POST /events goes through the dispatcher (not 501)"
+EVENTS_RESPONSE=$(curl -s -w '\nHTTP_STATUS=%{http_code}' -X POST \
+  -H 'Content-Type: application/json' \
+  -d '{"k":"v"}' \
+  "http://127.0.0.1:${PORT_HTTP}/events?type=order.created")
+EVENTS_STATUS=$(echo "${EVENTS_RESPONSE}" | grep -oE 'HTTP_STATUS=[0-9]+' | cut -d= -f2)
+EVENTS_BODY=$(echo "${EVENTS_RESPONSE}" | sed '$ d')
+if [[ "${EVENTS_STATUS}" == "501" ]]; then
+  echo "FAIL: POST /events returned 501 — dispatch did not fire. Body: ${EVENTS_BODY}"
+  cat "${LOG_FILE}"
+  exit 1
+fi
+if echo "${EVENTS_BODY}" | grep -q '"message":"Not Implemented"'; then
+  echo "FAIL: POST /events body looks like the deferred-501 envelope. Body: ${EVENTS_BODY}"
+  exit 1
+fi
+echo "    [POST /events dispatched] OK (status=${EVENTS_STATUS})"
+
+echo "==> Asserting POST /unknown-subtype -> 501 (classifier rejected typo)"
+UNK_RESPONSE=$(curl -s -w '\nHTTP_STATUS=%{http_code}' -X POST \
+  -H 'Content-Type: application/json' \
+  -d '{}' \
+  "http://127.0.0.1:${PORT_HTTP}/unknown-subtype")
+UNK_STATUS=$(echo "${UNK_RESPONSE}" | grep -oE 'HTTP_STATUS=[0-9]+' | cut -d= -f2)
+UNK_BODY=$(echo "${UNK_RESPONSE}" | sed '$ d')
+if [[ "${UNK_STATUS}" != "501" ]]; then
+  echo "FAIL: POST /unknown-subtype should 501 (unrecognized subtype). Got ${UNK_STATUS}. Body: ${UNK_BODY}"
+  exit 1
+fi
+if ! echo "${UNK_BODY}" | grep -q 'BogusService-NotASubtype'; then
+  echo "FAIL: 501 reason should name the offending subtype. Body: ${UNK_BODY}"
+  exit 1
+fi
+echo "    [POST /unknown-subtype (501)] OK"
 
 echo ""
 echo "==> All local-start-api smoke tests passed"

@@ -75,6 +75,7 @@ import { createFileWatcher, type FileWatcher } from '../../local/file-watcher.js
 import { type NextStateMaterial } from '../../local/reload-orchestrator.js';
 import {
   attachAuthorizers,
+  findIgnoredServiceIntegrationAuthorizers,
   type AuthorizerInfo,
   type RouteWithAuth,
 } from '../../local/authorizer-resolver.js';
@@ -551,6 +552,16 @@ async function localStartApiCommand(
   sigV4CredentialsLoader = defaultCredentialsLoader();
   warnIamRoutes(initialMaterial.routes);
 
+  // #458 / PR #500 review: service-integration routes (HTTP API v2
+  // `IntegrationSubtype` set) currently bypass the authorizer pass
+  // because the dispatcher in `http-server.ts` runs BEFORE `runAuthorizerPass`.
+  // A CDK app that wires a JWT / Lambda / Cognito / IAM authorizer to
+  // e.g. `POST /sqs` would silently let every request reach the SDK
+  // call without auth, so warn loudly at boot. Threading the auth pass
+  // through the service-integration dispatcher is tracked as a
+  // follow-up issue.
+  warnIgnoredServiceIntegrationAuthorizers(initialMaterial.routes, initialMaterial.stacks ?? []);
+
   // RIE invoke timeout: 2x the slowest Lambda's Timeout, floor 30s.
   let maxTimeoutSec = 0;
   for (const spec of initialMaterial.specs.values()) {
@@ -614,6 +625,8 @@ async function localStartApiCommand(
         }
       }
     }
+    const defaultRegion =
+      options.region ?? process.env['AWS_REGION'] ?? process.env['AWS_DEFAULT_REGION'] ?? undefined;
     const started = await startApiServer({
       state: groupState,
       rieTimeoutMs,
@@ -627,6 +640,10 @@ async function localStartApiCommand(
       sigV4CredentialsLoader,
       sigV4WarnedForeignIds,
       sigV4AllowUnverified: options.allowUnverifiedSigv4 === true,
+      // #458: surfaces as the per-route fallback region for HTTP API
+      // v2 service integrations. Per-request `RequestParameters.Region`
+      // overrides this — matches AWS API Gateway behavior.
+      ...(defaultRegion && { defaultRegion }),
     });
     servers.push({ group, server: started });
     if (basePort !== 0) nextPort += 1;
@@ -836,11 +853,12 @@ function uniqueLambdaIds(
   const seen = new Set<string>();
   const out: string[] = [];
   for (const r of routes) {
-    // Skip deferred-error unsupported routes and synthetic mockCors
-    // routes — neither dispatches to a Lambda, so spinning up their
-    // containers (when a lambdaLogicalId IS attached, e.g. on a
-    // Function URL with AuthType=AWS_IAM) would be wasted boot time.
-    if (r.unsupported || r.mockCors) continue;
+    // Skip deferred-error unsupported routes, synthetic mockCors
+    // routes, and service-integration routes — none of them dispatch
+    // to a Lambda, so spinning up their containers (when a
+    // lambdaLogicalId IS attached, e.g. on a Function URL with
+    // AuthType=AWS_IAM) would be wasted boot time.
+    if (r.unsupported || r.mockCors || r.serviceIntegration) continue;
     if (r.lambdaLogicalId.length === 0) continue;
     if (!seen.has(r.lambdaLogicalId)) {
       seen.add(r.lambdaLogicalId);
@@ -848,9 +866,12 @@ function uniqueLambdaIds(
     }
   }
   for (const entry of routesWithAuth) {
-    // An unsupported route never reaches the authorizer pass, so its
-    // authorizer Lambda doesn't need a container either.
-    if (entry.route.unsupported || entry.route.mockCors) continue;
+    // An unsupported / mockCors / service-integration route never
+    // reaches the authorizer pass, so its authorizer Lambda doesn't
+    // need a container either.
+    if (entry.route.unsupported || entry.route.mockCors || entry.route.serviceIntegration) {
+      continue;
+    }
     const auth = entry.authorizer;
     if (!auth) continue;
     if (auth.kind === 'lambda-token' || auth.kind === 'lambda-request') {
@@ -972,6 +993,43 @@ function warnIamRoutes(routesWithAuth: readonly RouteWithAuth[]): boolean {
     logger.warn(`  - ${declaredAt}`);
   }
   return true;
+}
+
+/**
+ * #458 / PR #500 review: emit a one-line warn naming every service-
+ * integration route whose source CFn resource declares an authorizer
+ * (HTTP API v2 routes with `AuthorizationType !== 'NONE'`). The
+ * dispatcher in `http-server.ts` runs the SDK call BEFORE the
+ * authorizer pass would fire, so without this warn a CDK app that
+ * wires JWT / Lambda / Cognito / IAM authorizers onto service
+ * integrations would silently let every local request reach the SDK
+ * call without auth. Threading the auth pass through the
+ * service-integration dispatcher is a follow-up issue. Returns the
+ * number of warned routes so tests can assert the firing path; the
+ * value is otherwise unused.
+ */
+function warnIgnoredServiceIntegrationAuthorizers(
+  routesWithAuth: readonly RouteWithAuth[],
+  stacks: readonly StackInfo[]
+): number {
+  const logger = getLogger();
+  const ignored = findIgnoredServiceIntegrationAuthorizers(
+    stacks,
+    routesWithAuth.map((entry) => entry.route)
+  );
+  if (ignored.length === 0) return 0;
+  logger.warn(
+    `${ignored.length} HTTP API v2 service-integration route(s) declare an authorizer but ` +
+      `cdkd local start-api dispatches the SDK call BEFORE the authorizer pass — every local ` +
+      `request reaches the SDK call WITHOUT authentication. This is a deferred feature; see ` +
+      `https://github.com/go-to-k/cdkd/issues/502 for the follow-up tracking issue.`
+  );
+  for (const entry of ignored) {
+    logger.warn(
+      `  - ${entry.declaredAt}: authorizer '${entry.authorizerName}' is configured but ignored`
+    );
+  }
+  return ignored.length;
 }
 
 /**
@@ -1648,7 +1706,9 @@ function printRouteTable(routes: readonly RouteWithAuth[]): void {
       ? '[MOCK CORS preflight]'
       : r.unsupported
         ? '[501 Not Implemented]'
-        : r.lambdaLogicalId;
+        : r.serviceIntegration
+          ? `[${r.serviceIntegration.subtype}]`
+          : r.lambdaLogicalId;
     process.stdout.write(
       `  ${r.method.padEnd(methodWidth)}  ${r.pathPattern.padEnd(pathWidth)}  -> ${target}  (${sourceLabel})\n`
     );
