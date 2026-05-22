@@ -24,6 +24,30 @@ export interface HttpRequestSnapshot {
   body: Buffer;
   /** The remote socket address (`socket.remoteAddress`). May be undefined. */
   sourceIp?: string;
+  /**
+   * Verified client certificate, populated only when the server is
+   * running in mTLS mode (`https.createServer({requestCert: true,
+   * rejectUnauthorized: true, ...})`) AND the TLS handshake succeeded.
+   * Surfaced on the event under `requestContext.identity.clientCert`
+   * (REST v1) and `requestContext.authentication.clientCert` (HTTP v2)
+   * per AWS API Gateway's mutual-TLS event shape.
+   *
+   * Shape (matches AWS):
+   * ```
+   * {
+   *   clientCertPem: string,  // PEM-encoded certificate
+   *   subjectDN:     string,  // "CN=client,O=example,C=US"
+   *   issuerDN:      string,  // "CN=My CA,O=example,C=US"
+   *   serialNumber:  string,  // "01:23:45:..." (hex)
+   *   validity: { notBefore: string, notAfter: string },
+   * }
+   * ```
+   * The shape's exact key set is opaque to the event-builder — it is
+   * passed through verbatim. The http-server module owns the
+   * `PeerCertificate -> AWS shape` conversion via
+   * `peerCertificateToAws`.
+   */
+  clientCert?: Record<string, unknown>;
 }
 
 /**
@@ -114,7 +138,13 @@ export function buildHttpApiV2Event(
       stage: ctx.route.stage,
       time: formatRequestTime(now),
       timeEpoch: now.getTime(),
-      authentication: null,
+      // mTLS: when the server is in https + requestCert mode, the
+      // verified peer certificate lands under `authentication.clientCert`
+      // per AWS HTTP API's mTLS event shape. When not in mTLS mode,
+      // `authentication` stays explicit-null (the pre-PR behavior — user
+      // code that does `"authentication" in event.requestContext` keeps
+      // seeing the field).
+      authentication: req.clientCert ? { clientCert: req.clientCert } : null,
       authorizer: null,
     },
     body,
@@ -180,6 +210,12 @@ export function buildRestV1Event(
       identity: {
         sourceIp: req.sourceIp ?? '127.0.0.1',
         userAgent: headers['user-agent'] ?? '',
+        // mTLS: the verified peer certificate goes under
+        // `requestContext.identity.clientCert` per AWS REST v1's
+        // mutual-TLS event shape. Only surfaced when mTLS is active;
+        // otherwise the key is omitted (matches deployed REST v1
+        // behavior on non-mTLS APIs).
+        ...(req.clientCert && { clientCert: req.clientCert }),
       },
       path: `/${ctx.route.stage}${ctx.matchedPath}`,
       protocol: 'HTTP/1.1',
