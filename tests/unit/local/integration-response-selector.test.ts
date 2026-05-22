@@ -3,6 +3,11 @@
  *
  * Covers `selectIntegrationResponse`, `evaluateResponseParameters`, and
  * `pickResponseTemplate` from `src/local/integration-response-selector.ts`.
+ *
+ * PR #505 review fix 14: `selectIntegrationResponse` now ALWAYS runs
+ * the regex loop regardless of upstream success / error, so a
+ * `SelectionPattern: '200'` entry actually matches a 200 upstream
+ * response. Tests updated to assert that behavior end-to-end.
  */
 
 import { describe, expect, it } from 'vitest';
@@ -20,34 +25,29 @@ describe('selectIntegrationResponse', () => {
     { StatusCode: '500', SelectionPattern: '.*Internal.*' },
   ];
 
-  it('returns default entry on success outcome', () => {
-    const r = selectIntegrationResponse(responses, { kind: 'success' });
+  it('returns default entry when no SelectionPattern matches', () => {
+    // Lambda success sentinel — no user-written pattern matches `success`.
+    const r = selectIntegrationResponse(responses, 'success', 200);
     expect(r.statusCode).toBe(200);
     expect(r.entry?.StatusCode).toBe('200');
   });
   it('picks regex-matching entry on error', () => {
-    const r = selectIntegrationResponse(responses, {
-      kind: 'error',
-      matchTarget: 'Item Not Found locally',
-    });
+    const r = selectIntegrationResponse(responses, 'Item Not Found locally', 500);
     expect(r.statusCode).toBe(404);
   });
   it('falls back to default on error when no pattern matches', () => {
-    const r = selectIntegrationResponse(responses, {
-      kind: 'error',
-      matchTarget: 'something else',
-    });
+    const r = selectIntegrationResponse(responses, 'something else', 500);
     expect(r.statusCode).toBe(200);
   });
-  it('returns null entry + 200 when entries array is undefined', () => {
-    const r = selectIntegrationResponse(undefined, { kind: 'success' });
+  it('returns null entry + fallback when entries array is undefined', () => {
+    const r = selectIntegrationResponse(undefined, 'success', 200);
     expect(r.entry).toBeNull();
     expect(r.statusCode).toBe(200);
   });
-  it('returns null entry + 500 when error has no entries', () => {
-    const r = selectIntegrationResponse([], { kind: 'error', matchTarget: 'X' });
+  it('returns null entry + fallback when entries array is empty', () => {
+    const r = selectIntegrationResponse([], 'X', 500);
     expect(r.entry).toBeNull();
-    expect(r.statusCode).toBe(200);
+    expect(r.statusCode).toBe(500);
   });
   it('skips entries with invalid regex (does not abort)', () => {
     const r = selectIntegrationResponse(
@@ -56,17 +56,59 @@ describe('selectIntegrationResponse', () => {
         { StatusCode: '418', SelectionPattern: '[invalid(regex' },
         { StatusCode: '500', SelectionPattern: '.*Boom.*' },
       ],
-      { kind: 'error', matchTarget: 'Boom!' }
+      'Boom!',
+      200
     );
     expect(r.statusCode).toBe(500);
   });
   it('anchors regex with ^ and $', () => {
     const r = selectIntegrationResponse(
       [{ StatusCode: '404', SelectionPattern: 'Not Found' }],
-      { kind: 'error', matchTarget: 'Not Found something' }
+      'Not Found something',
+      500
     );
     // 'Not Found' anchored should NOT match 'Not Found something'.
     expect(r.entry).toBeNull();
+  });
+
+  // PR #505 fix 14 — SelectionPattern matches upstream OK status too.
+  describe('always-applied regex (fix 14)', () => {
+    it('matches SelectionPattern against a successful 200 upstream', () => {
+      const r = selectIntegrationResponse(
+        [
+          { StatusCode: '200' /* default */ },
+          { StatusCode: '201', SelectionPattern: '200' },
+        ],
+        '200',
+        200
+      );
+      expect(r.entry?.StatusCode).toBe('201');
+      expect(r.statusCode).toBe(201);
+    });
+    it('matches SelectionPattern against a 2xx wildcard', () => {
+      const r = selectIntegrationResponse(
+        [
+          { StatusCode: '500' /* default — picked when no regex matches */ },
+          { StatusCode: '200', SelectionPattern: '2\\d\\d' },
+        ],
+        '201',
+        201
+      );
+      expect(r.entry?.StatusCode).toBe('200');
+      expect(r.statusCode).toBe(200);
+    });
+    it('first matching pattern wins (entry order respected)', () => {
+      const r = selectIntegrationResponse(
+        [
+          { StatusCode: '418', SelectionPattern: '4\\d\\d' },
+          { StatusCode: '499', SelectionPattern: '404' },
+        ],
+        '404',
+        500
+      );
+      // The 4\d\d pattern is declared first and also matches.
+      expect(r.entry?.StatusCode).toBe('418');
+    });
   });
 });
 

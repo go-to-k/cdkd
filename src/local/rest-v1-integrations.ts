@@ -46,6 +46,17 @@
  *     against the system CA store — uses Node's default fetch behavior.
  *     This is acceptable for local-dev (the upstream URL is the user's
  *     own).
+ *   - **SSRF surface**: `Integration.Uri` is accepted verbatim and
+ *     passed to `fetch()`; cdkd does NOT block private / loopback /
+ *     link-local destinations. A `warnSsrfRiskyUri()` helper surfaces a
+ *     warn at server boot when an Uri's hostname resolves to a
+ *     well-known internal address (IMDS, loopback, link-local, RFC1918)
+ *     so users see the risk in their integ logs. Threading an
+ *     `--allow-internal-uri` block flag is deferred — this is a
+ *     developer-loop tool, not a security boundary; warn-and-proceed
+ *     matches the precedent set by the cognito JWKS pass-through
+ *     fallback. The source URI is the user's own CDK template, so the
+ *     attack surface requires a malicious cdk.out or templated value.
  */
 
 import type { ContainerPool } from './container-pool.js';
@@ -270,7 +281,14 @@ export async function dispatchHttpProxyIntegration(
 
   const fetchImpl = deps.fetch ?? globalThis.fetch;
   const fetchInit: RequestInit = { method, headers: outHeaders };
-  if (methodHasBody(method)) {
+  // Forward the request body whenever the client sent one — DO NOT gate
+  // on method. Reasons: (a) the integration may override the method via
+  // `IntegrationHttpMethod`, so a client POST may map to an upstream
+  // GET that still wants the body (matches AWS behavior); (b) some
+  // upstreams accept bodies on non-canonical methods like DELETE.
+  // `content-length` is already stripped at outHeaders setup; fetch
+  // recomputes it from `body`.
+  if (req.body.length > 0) {
     fetchInit.body = new Uint8Array(req.body);
   }
   let upstream: Response;
@@ -288,13 +306,23 @@ export async function dispatchHttpProxyIntegration(
     };
   }
 
+  // Read the body BEFORE building the headers map: `fetch` auto-decodes
+  // gzip/deflate/br and removes `content-encoding` from `upstream.headers`,
+  // so reading the body first ensures the resulting bytes are decoded
+  // plaintext. We then strip `content-encoding` (and `content-length`)
+  // from the forwarded headers regardless — if fetch already removed it
+  // the strip is a no-op, but a Response constructed from raw bytes in
+  // tests may still carry the original encoding tag.
   const upstreamBody = Buffer.from(await upstream.arrayBuffer());
   // IntegrationResponses[].SelectionPattern matches against the status
-  // code as a string.
-  const selected = selectIntegrationResponse(config.responses, {
-    kind: upstream.ok ? 'success' : 'error',
-    matchTarget: String(upstream.status),
-  });
+  // code as a string. ALWAYS run the regex loop (PR #505 fix 14) —
+  // a `SelectionPattern: '200'` entry IS expected to match a 200
+  // upstream response.
+  const selected = selectIntegrationResponse(
+    config.responses,
+    String(upstream.status),
+    upstream.status
+  );
 
   // For HTTP_PROXY, AWS forwards the upstream response shape verbatim
   // when no entry is selected — only ResponseParameters / Status come
@@ -303,6 +331,13 @@ export async function dispatchHttpProxyIntegration(
   upstream.headers.forEach((value, name) => {
     headers[name.toLowerCase()] = value;
   });
+  // Strip `content-encoding` (fetch already decoded the body — the
+  // header would mislead downstream clients into double-decoding) and
+  // `content-length` (the post-decode byte count differs from the
+  // upstream's encoded one). Both are case-insensitive lookups against
+  // the lowercased map.
+  delete headers['content-encoding'];
+  delete headers['content-length'];
   const logger = getLogger().child('start-api');
   Object.assign(
     headers,
@@ -367,7 +402,11 @@ export async function dispatchHttpIntegration(
 
   const fetchImpl = deps.fetch ?? globalThis.fetch;
   const fetchInit: RequestInit = { method, headers: outHeaders };
-  if (methodHasBody(method) && outBody !== undefined) {
+  // Forward the (possibly VTL-rewritten) body whenever it is non-empty
+  // — DO NOT gate on method (see HTTP_PROXY rationale). `outBody` is a
+  // VTL-template render output when the integration has a
+  // `RequestTemplates` entry, otherwise the raw client body as UTF-8.
+  if (outBody !== undefined && outBody.length > 0) {
     fetchInit.body = outBody;
   }
   let upstream: Response;
@@ -385,26 +424,64 @@ export async function dispatchHttpIntegration(
     };
   }
 
-  const upstreamText = await upstream.text();
-  const selected = selectIntegrationResponse(config.responses, {
-    kind: upstream.ok ? 'success' : 'error',
-    matchTarget: String(upstream.status),
-  });
+  // Read the upstream body. Branch on the upstream's Content-Type:
+  // text-like content types (`text/*`, `application/json`,
+  // `application/xml`, `application/x-www-form-urlencoded`) are decoded
+  // as UTF-8 so the VTL ResponseTemplates can run against the body text.
+  // Other content types (binary blobs — images, octet-stream, etc.) go
+  // straight through as a Buffer so cdkd does not corrupt them via
+  // UTF-8 decode. VTL templates that assume text against a binary
+  // upstream are limited by this design — see the dispatcher docstring.
+  const upstreamContentType = upstream.headers.get('content-type') ?? 'application/octet-stream';
+  const isUpstreamTextLike = isTextLikeContentType(upstreamContentType);
+  let upstreamText: string | undefined;
+  let upstreamBinary: Buffer | undefined;
+  if (isUpstreamTextLike) {
+    upstreamText = await upstream.text();
+  } else {
+    upstreamBinary = Buffer.from(await upstream.arrayBuffer());
+  }
 
-  // Render response template against the upstream body.
-  const respCtx = buildVtlContextFromRequest(req, upstreamText, safeJsonParse(upstreamText));
-  let body = upstreamText;
-  let contentType = upstream.headers.get('content-type') ?? 'application/json';
+  // SelectionPattern always runs against the status string (PR #505 fix 14).
+  const selected = selectIntegrationResponse(
+    config.responses,
+    String(upstream.status),
+    upstream.status
+  );
+
+  // Render response template against the upstream body. Only available
+  // on the text-decoded path; binary upstreams that pick a
+  // ResponseTemplates entry surface a warn-and-pass-through (no VTL run).
+  let body: string | Buffer;
+  let contentType = upstreamContentType;
   if (selected.entry) {
     const picked = pickResponseTemplate(selected.entry.ResponseTemplates, req.headers['accept']);
     if (picked) {
-      try {
-        body = evaluateVtl(picked.template, respCtx);
-      } catch (err) {
-        return vtlFailure('response', err, picked.template);
+      if (upstreamText === undefined) {
+        // Upstream is binary but a ResponseTemplate is configured. VTL
+        // requires the body as a string; cdkd cannot apply it without
+        // corrupting binary content. Surface a warn and pass the binary
+        // through as-is (matches the binary-pass-through fall-through
+        // below).
+        logger.warn(
+          `HTTP response: ResponseTemplates set but upstream Content-Type ` +
+            `'${upstreamContentType}' is binary; passing body through unchanged.`
+        );
+        body = upstreamBinary!;
+      } else {
+        const respCtx = buildVtlContextFromRequest(req, upstreamText, safeJsonParse(upstreamText));
+        try {
+          body = evaluateVtl(picked.template, respCtx);
+        } catch (err) {
+          return vtlFailure('response', err, picked.template);
+        }
+        contentType = picked.contentType;
       }
-      contentType = picked.contentType;
+    } else {
+      body = upstreamText ?? upstreamBinary!;
     }
+  } else {
+    body = upstreamText ?? upstreamBinary!;
   }
 
   const headers: Record<string, string> = { 'content-type': contentType };
@@ -521,10 +598,11 @@ export async function dispatchAwsLambdaIntegration(
     ? String((payload as Record<string, unknown>)['errorMessage'])
     : 'success';
 
-  const selected = selectIntegrationResponse(
-    config.responses,
-    isError ? { kind: 'error', matchTarget } : { kind: 'success' }
-  );
+  // Lambda success uses the sentinel match target `'success'` (which is
+  // unlikely to match any user-written SelectionPattern, so it falls to
+  // the default entry — preserves pre-fix #14 behavior on Lambda).
+  // Lambda error matches against the errorMessage string per AWS docs.
+  const selected = selectIntegrationResponse(config.responses, matchTarget, isError ? 500 : 200);
 
   // Build response context with $inputRoot = parsed Lambda payload (AWS
   // docs convention for response mapping templates).
@@ -646,9 +724,112 @@ function parseStatus(raw: unknown): number | undefined {
   return undefined;
 }
 
-function methodHasBody(method: string): boolean {
-  const m = method.toUpperCase();
-  return m === 'POST' || m === 'PUT' || m === 'PATCH' || m === 'DELETE';
+/**
+ * Heuristic: is the given HTTP `Content-Type` header value likely to
+ * carry text content that VTL ResponseTemplates can safely render
+ * against? Used by `dispatchHttpIntegration` to branch the upstream
+ * body read between `.text()` (text-like) and `.arrayBuffer()` (binary
+ * pass-through). Charset parameters are stripped before matching.
+ *
+ * Exported for unit testing.
+ */
+export function isTextLikeContentType(contentType: string): boolean {
+  const primary = contentType.split(';')[0]!.trim().toLowerCase();
+  if (primary.startsWith('text/')) return true;
+  // Common text-shaped application types.
+  if (
+    primary === 'application/json' ||
+    primary === 'application/xml' ||
+    primary === 'application/x-www-form-urlencoded' ||
+    primary === 'application/javascript' ||
+    primary === 'application/ld+json'
+  ) {
+    return true;
+  }
+  // `application/*+json` / `application/*+xml` (e.g. `application/vnd.api+json`).
+  if (
+    primary.startsWith('application/') &&
+    (primary.endsWith('+json') || primary.endsWith('+xml'))
+  ) {
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Classify a hostname or IP literal against well-known internal address
+ * spaces. Used by `warnSsrfRiskyUri` at server boot to surface a warn
+ * line per HTTP / HTTP_PROXY integration whose URI points at a
+ * potentially-sensitive destination. Best-effort; does NOT do DNS
+ * resolution — only matches hostname literals that are already an IP.
+ *
+ * Returns `undefined` when the host appears safe (public DNS name) OR
+ * cannot be classified (DNS name that may resolve to an internal IP
+ * the helper cannot see without async DNS).
+ *
+ * Exported for unit testing.
+ */
+export function classifyInternalHost(host: string): string | undefined {
+  // Trim IPv6 brackets if present.
+  const h = host.replace(/^\[|\]$/g, '');
+  // AWS IMDS specifically (most actionable warning).
+  if (h === '169.254.169.254' || h === '[fd00:ec2::254]' || h === 'fd00:ec2::254') {
+    return 'AWS IMDS (169.254.169.254) — credentials exfiltration risk';
+  }
+  // IPv4 loopback (127.0.0.0/8).
+  if (/^127\.\d+\.\d+\.\d+$/.test(h)) return 'IPv4 loopback (127.0.0.0/8)';
+  // IPv6 loopback.
+  if (h === '::1') return 'IPv6 loopback (::1)';
+  // IPv4 link-local (169.254.0.0/16 — includes IMDS handled above).
+  if (/^169\.254\.\d+\.\d+$/.test(h)) return 'IPv4 link-local (169.254.0.0/16)';
+  // IPv6 link-local (fe80::/10).
+  if (/^fe[89ab][0-9a-f]?:/i.test(h)) return 'IPv6 link-local (fe80::/10)';
+  // RFC1918 private ranges.
+  if (/^10\.\d+\.\d+\.\d+$/.test(h)) return 'RFC1918 private (10.0.0.0/8)';
+  if (/^192\.168\.\d+\.\d+$/.test(h)) return 'RFC1918 private (192.168.0.0/16)';
+  // 172.16.0.0/12 — 172.16-172.31.
+  const m = /^172\.(\d+)\.\d+\.\d+$/.exec(h);
+  if (m && Number(m[1]) >= 16 && Number(m[1]) <= 31) {
+    return 'RFC1918 private (172.16.0.0/12)';
+  }
+  return undefined;
+}
+
+/**
+ * Emit a `logger.warn` line for each HTTP / HTTP_PROXY integration
+ * whose `Integration.Uri` parses to a hostname classified as internal
+ * by `classifyInternalHost`. Called once at server boot from
+ * `cdkd local start-api`'s discovery pass; per-route deduplicated.
+ *
+ * cdkd does NOT block the URI — this is a developer-loop tool, not a
+ * security boundary, and warn-and-proceed matches the precedent set by
+ * the cognito JWKS pass-through fallback. The right v2 follow-up is an
+ * `--allow-internal-uri` flag (and an opposite default block) once the
+ * surface is well-understood.
+ */
+export function warnSsrfRiskyUri(
+  uri: string,
+  routeLabel: string,
+  warn: (msg: string) => void
+): void {
+  let host: string;
+  try {
+    // Strip placeholders so URL() does not reject `{paramName}` shapes
+    // — the substituted value at request time is what matters, but the
+    // template Uri's literal host segment IS the right thing to
+    // classify here.
+    const sanitized = uri.replace(/\{[^/{}]+\}/g, 'x');
+    host = new URL(sanitized).hostname;
+  } catch {
+    return; // Malformed Uri; route-discovery handles the error.
+  }
+  const classification = classifyInternalHost(host);
+  if (classification !== undefined) {
+    warn(
+      `Integration URI for ${routeLabel} points at ${host} — ${classification}. ` +
+        `cdkd does NOT block this; ensure the upstream is intentional.`
+    );
+  }
 }
 
 function safeJsonParse(s: string): unknown {

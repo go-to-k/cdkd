@@ -3,19 +3,20 @@
  * REST v1 non-AWS_PROXY integrations (#457).
  *
  * AWS API Gateway picks one `IntegrationResponses[]` entry per call to
- * shape the HTTP response. The rules (from AWS docs):
+ * shape the HTTP response. The rule (from AWS docs):
  *
- *   1. If the backend returned **without error** (Lambda success / HTTP
- *      2xx / MOCK), AWS picks the entry whose `SelectionPattern` is
- *      undefined or `''` — that's the "default" entry. If none exists,
- *      the response defaults to HTTP 200.
- *   2. If the backend returned **with an error** (Lambda errorMessage /
- *      HTTP 4xx-5xx), AWS picks the FIRST entry whose `SelectionPattern`
- *      regex matches the error string. The match target depends on the
- *      integration type:
- *        - Lambda: `errorMessage` field of the parsed return value.
- *        - HTTP: the HTTP status code as a string (e.g. `'404'`).
- *      Falls back to the default entry when no regex matches.
+ *   - AWS matches `SelectionPattern` (a regex) against a per-integration
+ *     match target REGARDLESS of whether the backend returned success
+ *     or error. The first regex-matching entry wins. The match target
+ *     depends on the integration type:
+ *       - Lambda: `errorMessage` field of the parsed return value, or
+ *         the sentinel `'success'` when the payload has no errorMessage.
+ *       - HTTP / HTTP_PROXY: the HTTP status code as a string
+ *         (e.g. `'404'` / `'200'`).
+ *     Falls back to the default entry (`SelectionPattern` undefined or
+ *     `''`) when no regex matches. If no default exists either, the
+ *     caller's `fallbackStatusCode` drives the response (200 / 500
+ *     depending on outcome).
  *
  * Notes
  * -----
@@ -29,6 +30,11 @@
  *   - `IntegrationResponses` is OPTIONAL on AWS — when absent for a non-
  *     AWS_PROXY integration, AWS returns the backend response as-is
  *     (with `application/json` for Lambda success). cdkd mirrors this.
+ *   - PR #505 review fix 14: an earlier draft short-circuited the
+ *     success branch to the default entry without running the regex
+ *     loop, which silently dropped success-side selection (e.g. a
+ *     `SelectionPattern: '200'` entry never matched). The current
+ *     implementation always runs the loop.
  */
 
 import { VtlEvaluationError } from './vtl-engine.js';
@@ -86,41 +92,50 @@ export interface SelectedIntegrationResponse {
 /**
  * Pick the right `IntegrationResponses[]` entry for the given outcome.
  *
+ * Per AWS docs, `SelectionPattern` is matched against the backend
+ * outcome regardless of whether the backend returned success or error —
+ * a `SelectionPattern: '200'` entry IS expected to match an HTTP 200
+ * upstream response. cdkd ALWAYS runs the regex loop first and only
+ * falls to the default entry when no pattern matches; pre-#505-review
+ * the success branch short-circuited to the default entry without
+ * running the regex loop, which silently dropped success-side selection.
+ *
  * @param entries - The `IntegrationResponses[]` array from the template
  *   (already extracted from the route's Integration property).
- * @param outcome - The backend outcome: `success` (no error) or
- *   `error` with a match target (Lambda errorMessage / HTTP status code
- *   as a string).
+ * @param matchTarget - The string AWS would match `SelectionPattern`
+ *   against. For HTTP / HTTP_PROXY this is `String(upstream.status)`;
+ *   for Lambda this is the `errorMessage` field on the parsed payload,
+ *   or the sentinel `'success'` when the payload has no `errorMessage`.
+ *   For MOCK this is unused (MOCK dispatch picks by `StatusCode`).
+ * @param fallbackStatusCode - Status code to use when `entries` is empty
+ *   or no entry matches AND no default entry exists. HTTP / HTTP_PROXY
+ *   pass the upstream status; Lambda passes 200 on success / 500 on
+ *   error.
  */
 export function selectIntegrationResponse(
   entries: IntegrationResponseEntry[] | undefined,
-  outcome: { kind: 'success' } | { kind: 'error'; matchTarget: string }
+  matchTarget: string,
+  fallbackStatusCode = 200
 ): SelectedIntegrationResponse {
   if (!entries || entries.length === 0) {
-    return { entry: null, statusCode: 200 };
+    return { entry: null, statusCode: fallbackStatusCode };
   }
-  // Locate the default entry (empty / missing SelectionPattern).
+  // Locate the default entry (empty / missing SelectionPattern). Used
+  // when no SelectionPattern matches the target.
   const defaultEntry = entries.find(
     (e) => e.SelectionPattern === undefined || e.SelectionPattern === ''
   );
 
-  if (outcome.kind === 'success') {
-    const entry = defaultEntry ?? null;
-    return {
-      entry,
-      statusCode: entry !== null ? parseStatus(entry.StatusCode, 200) : 200,
-    };
-  }
-
-  // Error outcome: walk every non-default entry, looking for a match
-  // against `matchTarget`. AWS anchors the regex with `^...$` and uses
-  // case-sensitive matching by default — we mirror it.
+  // Walk every entry that DOES have a SelectionPattern. AWS anchors the
+  // regex with `^...$` and uses case-sensitive matching by default — we
+  // mirror it. This runs unconditionally (regardless of upstream
+  // success / error) per AWS's documented behavior.
   for (const entry of entries) {
     if (entry.SelectionPattern === undefined || entry.SelectionPattern === '') continue;
     try {
       const re = new RegExp(`^${entry.SelectionPattern}$`);
-      if (re.test(outcome.matchTarget)) {
-        return { entry, statusCode: parseStatus(entry.StatusCode, 500) };
+      if (re.test(matchTarget)) {
+        return { entry, statusCode: parseStatus(entry.StatusCode, fallbackStatusCode) };
       }
     } catch {
       // Invalid regex in template — skip the entry but don't abort the
@@ -134,7 +149,8 @@ export function selectIntegrationResponse(
   const entry = defaultEntry ?? null;
   return {
     entry,
-    statusCode: entry !== null ? parseStatus(entry.StatusCode, 500) : 500,
+    statusCode:
+      entry !== null ? parseStatus(entry.StatusCode, fallbackStatusCode) : fallbackStatusCode,
   };
 }
 
