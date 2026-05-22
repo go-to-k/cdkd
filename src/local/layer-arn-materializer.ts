@@ -1,4 +1,4 @@
-import { createWriteStream } from 'node:fs';
+import { createWriteStream, rmSync } from 'node:fs';
 import { mkdir, mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, normalize, resolve } from 'node:path';
@@ -151,6 +151,17 @@ export async function materializeLayerFromArn(
   try {
     await unzipBufferToDirectory(zipBytes, dir);
   } catch (err) {
+    // Clean up the partially-extracted tmpdir before re-throwing — the
+    // caller never receives `dir` on this path so its tracking sets in
+    // local-invoke (ImagePlan.layerArnTmpDirs) / local-start-api
+    // (layerTmpDirs Set) never learn about it, and the OS never
+    // reclaims it until reboot. Best-effort: a second failure would
+    // mask the original unzip error.
+    try {
+      rmSync(dir, { recursive: true, force: true });
+    } catch {
+      // best-effort
+    }
     throw new LayerMaterializationError(
       `Layer ${layer.arn}: failed to unzip layer contents into '${dir}': ${errMsg(err)}.`
     );
