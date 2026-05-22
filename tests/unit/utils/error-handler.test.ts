@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test'
 import {
   CdkdError,
   handleError,
+  MacroExpansionError,
   normalizeAwsError,
   PartialFailureError,
   ResourceUpdateNotSupportedError,
@@ -223,5 +224,42 @@ describe('ResourceUpdateNotSupportedError', () => {
 
     expect(err.message).toMatch(/cannot be updated in place/);
     expect(err.message).toMatch(/remove and re-add the permission statement/);
+  });
+});
+
+describe('MacroExpansionError', () => {
+  // Mirrors the PartialFailureError + ResourceUpdateNotSupportedError
+  // contract: a CdkdError subclass with `exitCode = 2` so
+  // `handleError` exits 2 (partial-failure family). The macro
+  // expander's transient `CreateChangeSet` cleanup `finally` runs
+  // regardless, so a failed expansion never leaks a `cdkd-macro-expand-*`
+  // stack on the routine path; exit 2 lets CI scripts distinguish
+  // "macro expansion failed, try again" from "deploy crashed".
+  let exitSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    exitSpy = vi.spyOn(process, 'exit').mockImplementation((): never => {
+      throw new Error('process.exit-mock');
+    });
+  });
+
+  afterEach(() => {
+    exitSpy.mockRestore();
+  });
+
+  it('carries exitCode === 2 and the right name/code', () => {
+    const err = new MacroExpansionError('expansion failed: Transform not found');
+    expect(err).toBeInstanceOf(MacroExpansionError);
+    expect(err).toBeInstanceOf(CdkdError);
+    expect(err).toBeInstanceOf(Error);
+    expect(err.name).toBe('MacroExpansionError');
+    expect(err.code).toBe('MACRO_EXPANSION_ERROR');
+    expect(err.exitCode).toBe(2);
+  });
+
+  it('handleError exits with code 2 when given a MacroExpansionError', () => {
+    const err = new MacroExpansionError('Transform AWS::Serverless-2016-10-31 returned: foo');
+    expect(() => handleError(err)).toThrow('process.exit-mock');
+    expect(exitSpy).toHaveBeenCalledWith(2);
   });
 });

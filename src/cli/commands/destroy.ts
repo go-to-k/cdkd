@@ -151,6 +151,10 @@ async function destroyCommand(
           app: appCmd,
           output: options.output || 'cdk.out',
           ...(Object.keys(context).length > 0 && { context }),
+          // Threaded so the macro-expander has a real state bucket for
+          // the > 51,200-byte template upload path (Issue #463).
+          stateBucket,
+          ...(options.profile && { macroExpandS3ClientOpts: { profile: options.profile } }),
         });
         appStacks = result.stacks.map((s) => ({
           stackName: s.stackName,

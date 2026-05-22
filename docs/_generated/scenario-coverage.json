@@ -9,6 +9,10 @@
       "description": "CDK-defensive route DependsOn relaxation for VPC Lambda parallelization."
     },
     {
+      "tag": "cfn-macro-expansion",
+      "description": "CloudFormation macro / `Fn::Transform` expansion via transient CFn changeset round-trip (SAM, AWS::Include, AWS::LanguageExtensions, custom macros). See `docs/design/463-cfn-macros.md`."
+    },
+    {
       "tag": "cloudfront-oai-attribute-enrichment",
       "description": "CloudFront OAI `S3CanonicalUserId` attribute enrichment (the attribute is not on `GetCloudFrontOriginAccessIdentity` directly)."
     },
@@ -540,6 +544,13 @@
       "scenarios": []
     },
     {
+      "name": "macro-expansion",
+      "annotated": true,
+      "scenarios": [
+        "cfn-macro-expansion"
+      ]
+    },
+    {
       "name": "microservices",
       "annotated": true,
       "scenarios": [
@@ -725,6 +736,13 @@
       "description": "CDK-defensive route DependsOn relaxation for VPC Lambda parallelization.",
       "fixtures": [
         "bench-cdk-sample"
+      ]
+    },
+    {
+      "scenario": "cfn-macro-expansion",
+      "description": "CloudFormation macro / `Fn::Transform` expansion via transient CFn changeset round-trip (SAM, AWS::Include, AWS::LanguageExtensions, custom macros). See `docs/design/463-cfn-macros.md`.",
+      "fixtures": [
+        "macro-expansion"
       ]
     },
     {

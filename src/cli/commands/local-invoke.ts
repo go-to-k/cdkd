@@ -286,6 +286,11 @@ async function localInvokeCommand(target: string, options: LocalInvokeOptions): 
       ...(options.region && { region: options.region }),
       ...(options.profile && { profile: options.profile }),
       ...(Object.keys(context).length > 0 && { context }),
+      // Threaded so the macro-expander has a real state bucket for the
+      // > 51,200-byte template upload path when a stack carries a
+      // CloudFormation macro (Issue #463).
+      ...(options.stateBucket && { stateBucket: options.stateBucket }),
+      ...(options.profile && { macroExpandS3ClientOpts: { profile: options.profile } }),
     };
     const { stacks } = await synthesizer.synthesize(synthOpts);
 

@@ -153,6 +153,10 @@ async function orphanCommand(pathArgs: string[], options: OrphanOptions): Promis
       app: appCmd,
       output: options.output || 'cdk.out',
       ...(Object.keys(context).length > 0 && { context }),
+      // Threaded so the macro-expander has a real state bucket for
+      // the > 51,200-byte template upload path (Issue #463).
+      stateBucket,
+      ...(options.profile && { macroExpandS3ClientOpts: { profile: options.profile } }),
     });
 
     // Resolve each path to (stack, logicalId). Every path must reference the

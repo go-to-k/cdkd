@@ -491,6 +491,44 @@ export class LocalMigrateError extends CdkdError {
 }
 
 /**
+ * CloudFormation macro / `Fn::Transform` expansion failure (#463).
+ *
+ * cdkd hands templates that declare `Transform: [...]` (or carry
+ * `Fn::Transform: {...}` snippets) to CloudFormation server-side via a
+ * transient `CreateChangeSet --change-set-type CREATE` against a
+ * `cdkd-macro-expand-<id>` stack name. This error wraps every failure
+ * mode of that round-trip:
+ *
+ *   - `CreateChangeSet` rejection (bad template, missing macro IAM
+ *     permission, custom macro not found in the account).
+ *   - Changeset settles in `FAILED` (`StatusReason` from CFn is
+ *     surfaced verbatim — typically a custom macro Lambda error).
+ *   - Waiter timeout (the macro Lambda is stuck or oversized).
+ *   - `GetTemplate --template-stage Processed` returns no body (would
+ *     indicate a CFn-side regression — fail loud rather than silently
+ *     proceed with the un-expanded template).
+ *   - Multi-stage detection: the expanded template still contains
+ *     macros, which cdkd v1 does not support (the design intentionally
+ *     rejects this so a second round-trip is not silently triggered).
+ *
+ * The error surfaces at exit code 2 (partial-failure family) — the
+ * cleanup `finally` in the expander always runs `DeleteChangeSet` +
+ * `DeleteStack` regardless of this error firing, so a failed
+ * expansion never leaves a transient CFn stack behind in a routine
+ * case. The user can re-run `cdkd deploy` once the upstream cause is
+ * fixed.
+ */
+export class MacroExpansionError extends CdkdError {
+  readonly exitCode: number = 2;
+
+  constructor(message: string, cause?: Error) {
+    super(message, 'MACRO_EXPANSION_ERROR', cause);
+    this.name = 'MacroExpansionError';
+    Object.setPrototypeOf(this, MacroExpansionError.prototype);
+  }
+}
+
+/**
  * Check if error is a cdkd error
  */
 export function isCdkdError(error: unknown): error is CdkdError {
@@ -539,7 +577,14 @@ export function handleError(error: unknown): never {
     logger.debug('Stack trace:', error.stack);
   }
 
-  const exitCode = error instanceof PartialFailureError ? error.exitCode : 1;
+  // Honor any CdkdError subclass that declares a custom `exitCode`
+  // field (PartialFailureError + ResourceUpdateNotSupportedError +
+  // StackHasActiveImportsError + LocalMigrateError + MacroExpansionError
+  // etc.). Falling back to 1 covers `CdkdError` subclasses with no
+  // override and every non-cdkd error.
+  const customExitCode =
+    error instanceof CdkdError ? (error as CdkdError & { exitCode?: number }).exitCode : undefined;
+  const exitCode = typeof customExitCode === 'number' ? customExitCode : 1;
   process.exit(exitCode);
 }
 

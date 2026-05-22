@@ -4,7 +4,7 @@
 
 Run `vp run scenario-coverage` to regenerate.
 
-**30 / 30 canonical scenarios** have at least one integ fixture exercising them. **96 / 96 integ fixtures** carry a `.scenarios.json` sidecar (with 0+ tags); the rest are un-annotated and contributor-reviewed below.
+**31 / 31 canonical scenarios** have at least one integ fixture exercising them. **97 / 97 integ fixtures** carry a `.scenarios.json` sidecar (with 0+ tags); the rest are un-annotated and contributor-reviewed below.
 
 ## How this is computed
 
@@ -26,12 +26,13 @@ This report is a visibility tool, not a commit-time gate. Many cdkd fixtures leg
 
 _None._ Every canonical scenario has at least one integ fixture tagged with it.
 
-## Per-scenario coverage (30 scenarios)
+## Per-scenario coverage (31 scenarios)
 
 | Scenario | Description | Integ Fixture(s) |
 |---|---|---|
 | `apigateway-cors-preflight` | API Gateway CORS preflight (OPTIONS) handling — CDK auto-generates `Method` with both Integration.IntegrationResponses and MethodResponses arrays. | [`apigateway`](../tests/integration/apigateway/) |
 | `cdk-defensive-vpc-deps-relax` | CDK-defensive route DependsOn relaxation for VPC Lambda parallelization. | [`bench-cdk-sample`](../tests/integration/bench-cdk-sample/) |
+| `cfn-macro-expansion` | CloudFormation macro / `Fn::Transform` expansion via transient CFn changeset round-trip (SAM, AWS::Include, AWS::LanguageExtensions, custom macros). See `docs/design/463-cfn-macros.md`. | [`macro-expansion`](../tests/integration/macro-expansion/) |
 | `cloudfront-oai-attribute-enrichment` | CloudFront OAI `S3CanonicalUserId` attribute enrichment (the attribute is not on `GetCloudFrontOriginAccessIdentity` directly). | [`s3-cloudfront`](../tests/integration/s3-cloudfront/) |
 | `cross-cutting-deploy-destroy` | Broad real-AWS regression set (39+ resource VPC+NAT+CF+Lambda+SQS or comparable breadth). Refreshes the integ-broad gate. | [`bench-ccapi`](../tests/integration/bench-ccapi/)<br>[`bench-cdk-sample`](../tests/integration/bench-cdk-sample/)<br>[`bench-sdk`](../tests/integration/bench-sdk/)<br>[`full-stack-demo`](../tests/integration/full-stack-demo/)<br>[`lambda`](../tests/integration/lambda/)<br>[`microservices`](../tests/integration/microservices/)<br>[`multi-resource`](../tests/integration/multi-resource/) |
 | `custom-resource-async-poll` | Custom Resource backed by Lambda + cfn-response via S3 pre-signed URL polling. | [`cloudfront-function-url`](../tests/integration/cloudfront-function-url/)<br>[`custom-resource-provider`](../tests/integration/custom-resource-provider/)<br>[`vpc-lambda-cr-race`](../tests/integration/vpc-lambda-cr-race/) |
