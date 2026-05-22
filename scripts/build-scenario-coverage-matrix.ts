@@ -121,6 +121,8 @@ const KNOWN_SCENARIOS: Record<string, string> = {
     'cdkd → CloudFormation migration via 2-phase IMPORT changeset + phase-2 UPDATE.',
   'migrate-from-cfn-handover':
     'CloudFormation → cdkd migration via `--migrate-from-cloudformation` (UpdateStack with Retain + DeleteStack).',
+  'migrate-from-bare-cfn':
+    '`cdkd migrate --from-cfn-stack <name>` end-to-end: bare CFn → `cdk migrate` codegen → 2-pass resource mapping → cdkd state + optional retire.',
 
   // ---- Drift / state patterns ----
   'drift-revert-roundtrip':

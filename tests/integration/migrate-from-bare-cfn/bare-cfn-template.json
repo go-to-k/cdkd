@@ -1,0 +1,39 @@
+{
+  "AWSTemplateFormatVersion": "2010-09-09",
+  "Description": "Bare (non-CDK) CFn fixture for `cdkd migrate --from-cfn-stack` integration test. 3 explicit-name resources (S3 / SSM / SNS) so the migration code path is exercised without name-collision risk on rerun.",
+  "Parameters": {
+    "ResourceSuffix": {
+      "Type": "String",
+      "Default": "cdkd-mig",
+      "Description": "Suffix appended to physical names so concurrent integ runs do not collide."
+    }
+  },
+  "Resources": {
+    "FixtureBucket": {
+      "Type": "AWS::S3::Bucket",
+      "Properties": {
+        "BucketName": {
+          "Fn::Sub": "cdkd-migrate-integ-${ResourceSuffix}-${AWS::AccountId}"
+        }
+      }
+    },
+    "FixtureParameter": {
+      "Type": "AWS::SSM::Parameter",
+      "Properties": {
+        "Name": {
+          "Fn::Sub": "/cdkd/migrate-integ/${ResourceSuffix}/value"
+        },
+        "Type": "String",
+        "Value": "cdkd-migrate-integ-fixture"
+      }
+    },
+    "FixtureTopic": {
+      "Type": "AWS::SNS::Topic",
+      "Properties": {
+        "TopicName": {
+          "Fn::Sub": "cdkd-migrate-integ-${ResourceSuffix}"
+        }
+      }
+    }
+  }
+}

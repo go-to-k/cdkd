@@ -73,6 +73,10 @@
       "description": "`cdkd local invoke` ZIP-runtime Lambda against the AWS Lambda Runtime Interface Emulator (RIE) container."
     },
     {
+      "tag": "migrate-from-bare-cfn",
+      "description": "`cdkd migrate --from-cfn-stack <name>` end-to-end: bare CFn → `cdk migrate` codegen → 2-pass resource mapping → cdkd state + optional retire."
+    },
+    {
       "tag": "migrate-from-cfn-handover",
       "description": "CloudFormation → cdkd migration via `--migrate-from-cloudformation` (UpdateStack with Retain + DeleteStack)."
     },
@@ -544,6 +548,13 @@
       ]
     },
     {
+      "name": "migrate-from-bare-cfn",
+      "annotated": true,
+      "scenarios": [
+        "migrate-from-bare-cfn"
+      ]
+    },
+    {
       "name": "migrate-from-bare-cfn-codegen-only",
       "annotated": true,
       "scenarios": []
@@ -852,6 +863,13 @@
         "local-invoke-provided",
         "local-invoke-python",
         "local-invoke-ruby"
+      ]
+    },
+    {
+      "scenario": "migrate-from-bare-cfn",
+      "description": "`cdkd migrate --from-cfn-stack <name>` end-to-end: bare CFn → `cdk migrate` codegen → 2-pass resource mapping → cdkd state + optional retire.",
+      "fixtures": [
+        "migrate-from-bare-cfn"
       ]
     },
     {
