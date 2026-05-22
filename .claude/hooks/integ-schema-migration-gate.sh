@@ -20,13 +20,13 @@
 #   (`undefined` field stripping, key ordering, schema version
 #   coercion) that only real round-trip catches.
 #
-#   The user instruction (recorded 2026-05-23) is absolute:
-#     "schema バージョン上げるなら、バージョン間の互換性もちゃんと
-#     保証する、つまりそれを実現する integ は絶対作って実行すること。"
-#   And:
-#     "ユーザーは何もしなくても裏側でいい感じに migrate してくれる
-#     ようにして。これは今後 schema バージョンあげる時は絶対保証する
-#     こと。"
+#   The contract this gate enforces is absolute: every schema bump
+#   MUST be transparently auto-migrated by the new binary AND verified
+#   by a real-AWS round-trip integ. Users must never have to run an
+#   explicit migrate command — the next read of a vN state file by
+#   the vN+1 binary auto-upgrades in memory, and the next write
+#   persists vN+1 silently. Schema bumps that violate transparent
+#   auto-migration are not shippable.
 #
 # How this gate enforces it:
 #
