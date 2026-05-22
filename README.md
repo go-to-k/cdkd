@@ -468,14 +468,21 @@ preflight (HTTP API v2 `CorsConfiguration` + REST v1 OPTIONS MOCK
 preflight from `defaultCorsPreflightOptions`); hot reload via `--watch`;
 deploy-state-backed env var substitution via `--from-state`.
 
+Function URL `InvokeMode: RESPONSE_STREAM` is supported (issue #467):
+streaming Lambdas are invoked via the RIE streaming protocol and the
+response is piped to the HTTP client with `Transfer-Encoding: chunked`.
+Note that AWS's local RIE buffers the response — incremental chunk
+delivery only manifests against the deployed Lambda runtime; locally
+the response shape is correct but arrives in one block.
+
 Routes whose integration cdkd cannot emulate (non-AWS_PROXY REST v1
 types other than the MOCK CORS preflight subset, HTTP API v2 service
-integrations, WebSocket APIs, Function URLs with IAM auth or
-RESPONSE_STREAM, cross-stack Lambda Arn references) **do not block
-boot** — the server starts with a per-route `[warn]` summary and
-returns HTTP 501 + the reason in the JSON body if and when the route is
-hit. This lets you run the rest of your API surface locally while the
-unsupported routes stay on the deployed API.
+integrations, WebSocket APIs, Function URLs with IAM auth, cross-stack
+Lambda Arn references) **do not block boot** — the server starts with
+a per-route `[warn]` summary and returns HTTP 501 + the reason in the
+JSON body if and when the route is hit. This lets you run the rest of
+your API surface locally while the unsupported routes stay on the
+deployed API.
 
 ### `local run-task`
 

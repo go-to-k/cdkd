@@ -3,7 +3,7 @@ import { createServer as createHttpsServer } from 'node:https';
 import type { TLSSocket, PeerCertificate, DetailedPeerCertificate } from 'node:tls';
 import { readFileSync } from 'node:fs';
 import { getLogger } from '../utils/logger.js';
-import { invokeRie } from './rie-client.js';
+import { invokeRie, invokeRieStreaming } from './rie-client.js';
 import {
   applyAuthorizerOverlay,
   buildHttpApiV2Event,
@@ -435,6 +435,42 @@ async function handleRequest(
     return;
   }
 
+  // Function URL routes with InvokeMode: RESPONSE_STREAM dispatch via
+  // the RIE streaming protocol (issue #467). The streaming Lambda's
+  // response is a JSON prelude carrying status + headers, an 8-NULL-byte
+  // separator, and then raw body chunks the handler streams. cdkd writes
+  // the prelude to `res.writeHead(...)` and pipes the chunks via
+  // `Transfer-Encoding: chunked` (Node's default when no Content-Length
+  // is set).
+  if (match.route.invokeMode === 'RESPONSE_STREAM') {
+    try {
+      const streamResult = await invokeRieStreaming(
+        handle.containerHost,
+        handle.hostPort,
+        baseEvent,
+        opts.rieTimeoutMs
+      );
+      writeStreamingResponse(res, streamResult, () => state.pool.release(handle));
+      // writeStreamingResponse owns the pool release because the body
+      // is piped asynchronously — the response is not "done" when this
+      // function returns.
+      return;
+    } catch (err) {
+      logger.error(
+        `RIE streaming invoke failed for ${match.route.lambdaLogicalId}: ${
+          err instanceof Error ? err.message : String(err)
+        }`
+      );
+      if (!res.headersSent) {
+        writeError(res, 502);
+      } else {
+        res.end();
+      }
+      state.pool.release(handle);
+      return;
+    }
+  }
+
   try {
     const invokeResult = await invokeRie(
       handle.containerHost,
@@ -465,6 +501,62 @@ async function handleRequest(
   } finally {
     state.pool.release(handle);
   }
+}
+
+/**
+ * Pipe a streaming RIE response into an `http.ServerResponse`. The
+ * prelude's status + headers are written via `res.writeHead(...)`; the
+ * body Readable is `pipe`'d through to the response so Node's
+ * `Transfer-Encoding: chunked` machinery handles backpressure +
+ * chunked framing automatically.
+ *
+ * `releasePool` runs in a `finally`-equivalent path so the warm
+ * container is returned to the pool whether the stream ends cleanly
+ * (`'end'` event) or errors mid-body (`'error'` event). Errors after
+ * the prelude has been written can no longer be reported as HTTP
+ * status — the stream is destroyed and the connection aborts.
+ *
+ * Cookies in the prelude are emitted as multiple `Set-Cookie` headers
+ * (HTTP API v2 semantics — matching the buffered path's behavior).
+ */
+function writeStreamingResponse(
+  res: ServerResponse,
+  result: import('./rie-client.js').StreamingInvokeResult,
+  releasePool: () => void
+): void {
+  const logger = getLogger().child('start-api');
+  const { prelude, body } = result;
+
+  // Write headers + status atomically so Node knows we're not setting
+  // Content-Length and switches to chunked encoding automatically.
+  // Cookies are stitched in via the array-form Set-Cookie header
+  // (Node's writeHead accepts string-or-array values).
+  const headersOut: Record<string, string | string[]> = { ...prelude.headers };
+  if (prelude.cookies && prelude.cookies.length > 0) {
+    headersOut['set-cookie'] = prelude.cookies;
+  }
+  res.writeHead(prelude.statusCode, headersOut);
+
+  let released = false;
+  const releaseOnce = () => {
+    if (released) return;
+    released = true;
+    releasePool();
+  };
+
+  body.on('error', (err) => {
+    logger.error(
+      `Streaming Lambda response body errored mid-stream: ${
+        err instanceof Error ? err.message : String(err)
+      }`
+    );
+    // Headers already on the wire — best we can do is destroy the
+    // socket so the client sees a truncated response.
+    res.destroy(err);
+    releaseOnce();
+  });
+  res.on('close', releaseOnce);
+  body.pipe(res);
 }
 
 /**

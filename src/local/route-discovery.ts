@@ -96,15 +96,28 @@ export interface DiscoveredRoute {
    */
   stageVariables?: Record<string, string> | null;
   /**
+   * Function URL invoke mode. Defaults to `'BUFFERED'` (the standard
+   * request/response shape); `'RESPONSE_STREAM'` opts into Lambda
+   * response streaming via the RIE streaming protocol — the local
+   * server invokes the Lambda with the
+   * `Lambda-Runtime-Function-Response-Mode: streaming` header and
+   * pipes the response chunks to the HTTP client with
+   * `Transfer-Encoding: chunked`. Only set on `source: 'function-url'`
+   * routes; REST v1 / HTTP API v2 routes are always buffered.
+   */
+  invokeMode?: 'BUFFERED' | 'RESPONSE_STREAM';
+  /**
    * Set on routes that cdkd discovered but cannot dispatch to a Lambda.
    * The HTTP server returns HTTP 501 + `{"message": "Not Implemented",
    * "reason": <reason>}` when these routes are hit. Examples:
    * non-AWS_PROXY REST v1 integrations (`MOCK` not matching the CORS
    * preflight shape, `AWS`, `HTTP`, `HTTP_PROXY`), HTTP API v2
    * service integrations (`IntegrationSubtype` set), WebSocket APIs,
-   * Function URLs with `AuthType !== 'NONE'` or
-   * `InvokeMode === 'RESPONSE_STREAM'`, and routes whose Lambda Arn
-   * intrinsic cannot be resolved against the same template.
+   * Function URLs with `AuthType !== 'NONE'` or with an
+   * `InvokeMode` value outside `BUFFERED` / `RESPONSE_STREAM`, and
+   * routes whose Lambda Arn intrinsic cannot be resolved against the
+   * same template. (Function URLs with `InvokeMode: RESPONSE_STREAM`
+   * are normal routes dispatched via the streaming protocol — #467.)
    *
    * Mutually exclusive with {@link DiscoveredRoute.mockCors}. When set,
    * `lambdaLogicalId` may be the empty string (we never need to dispatch
@@ -668,12 +681,15 @@ function discoverHttpApiRoute(
  * `AWS::Lambda::Url` resource.
  *
  * Per-shape classification:
- *   - `AuthType === 'NONE'` + `InvokeMode !== 'RESPONSE_STREAM'` → normal route.
+ *   - `AuthType === 'NONE'` + `InvokeMode === 'BUFFERED'` (or unset) → normal route.
+ *   - `AuthType === 'NONE'` + `InvokeMode === 'RESPONSE_STREAM'` → normal route
+ *     dispatched via the RIE streaming protocol (the response body is a
+ *     JSON prelude — `{statusCode, headers, cookies?}` — followed by 8
+ *     NULL bytes and then the raw body chunks). The HTTP server pipes
+ *     the chunks to the client with `Transfer-Encoding: chunked` (#467).
  *   - `AuthType !== 'NONE'` (e.g. `AWS_IAM`) → deferred-error
  *     unsupported. Boot proceeds; HTTP 501 + `reason` at request time.
  *     IAM auth would need SigV4 verification cdkd cannot emulate.
- *   - `InvokeMode === 'RESPONSE_STREAM'` → deferred-error unsupported.
- *     The RIE container does not implement `InvokeWithResponseStream`.
  *
  * The Lambda Arn intrinsic resolution still **hard-errors** when it
  * cannot pin down a same-template Lambda — Function URLs have no other
@@ -729,14 +745,30 @@ function discoverFunctionUrl(
       },
     ];
   }
-  const invokeMode = props['InvokeMode'];
-  if (invokeMode === 'RESPONSE_STREAM') {
+  // InvokeMode controls the response wire protocol. RESPONSE_STREAM
+  // opts into the RIE streaming protocol (JSON prelude + 8-NULL-byte
+  // separator + raw chunked body) — the local server invokes the Lambda
+  // with the `Lambda-Runtime-Function-Response-Mode: streaming` request
+  // header and pipes the chunks to the HTTP client with
+  // `Transfer-Encoding: chunked`. Closes issue #467. Anything other
+  // than these two AWS-documented values is rejected so a future API
+  // shape change surfaces as a clear error rather than silent fallback.
+  const invokeModeRaw = props['InvokeMode'];
+  let invokeMode: 'BUFFERED' | 'RESPONSE_STREAM' = 'BUFFERED';
+  if (invokeModeRaw === 'RESPONSE_STREAM') {
+    invokeMode = 'RESPONSE_STREAM';
+  } else if (invokeModeRaw !== undefined && invokeModeRaw !== 'BUFFERED') {
+    // Render with shortJson so an object-valued InvokeMode (defensive
+    // — AWS docs require a string, but a malformed template could ship
+    // an intrinsic) shows as JSON rather than `[object Object]`.
     return [
       {
         ...baseRoute,
         lambdaLogicalId,
         unsupported: {
-          reason: `${stackName}/${logicalId}: InvokeMode RESPONSE_STREAM is not supported (cdkd's RIE container does not implement InvokeWithResponseStream).`,
+          reason: `${stackName}/${logicalId}: InvokeMode ${shortJson(
+            invokeModeRaw
+          )} is not a recognized value (expected 'BUFFERED' or 'RESPONSE_STREAM').`,
         },
       },
     ];
@@ -746,6 +778,7 @@ function discoverFunctionUrl(
     {
       ...baseRoute,
       lambdaLogicalId,
+      invokeMode,
     },
   ];
 }

@@ -208,5 +208,23 @@ export class LocalStartApiStack extends cdk.Stack {
       timeout: cdk.Duration.seconds(10),
     });
     urlHandler.addFunctionUrl({ authType: lambda.FunctionUrlAuthType.NONE });
+
+    // Streaming Function URL — exercises the RESPONSE_STREAM invoke mode
+    // path added in #467. cdkd's local server detects InvokeMode and
+    // routes the request through invokeRieStreaming(), parses the JSON
+    // prelude carrying status + headers, and pipes the body chunks to
+    // the HTTP client with `Transfer-Encoding: chunked`. The handler
+    // uses `awslambda.streamifyResponse` + `awslambda.HttpResponseStream`
+    // — the documented Node 20 streaming Lambda entrypoint.
+    const streamUrlHandler = new lambda.Function(this, 'StreamUrlHandler', {
+      runtime: lambda.Runtime.NODEJS_20_X,
+      handler: 'index.handler',
+      code: lambda.Code.fromAsset(path.join(__dirname, '../lambda-stream-url')),
+      timeout: cdk.Duration.seconds(30),
+    });
+    streamUrlHandler.addFunctionUrl({
+      authType: lambda.FunctionUrlAuthType.NONE,
+      invokeMode: lambda.InvokeMode.RESPONSE_STREAM,
+    });
   }
 }
