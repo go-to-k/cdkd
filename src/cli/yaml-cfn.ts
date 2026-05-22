@@ -76,6 +76,8 @@ const FN_TAGS = [
   'Cidr',
   'GetAZs',
   'ImportValue',
+  'Length',
+  'ToJsonString',
 ] as const;
 
 interface YamlNodeLike {
