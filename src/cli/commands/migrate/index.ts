@@ -1,5 +1,6 @@
 import { resolve } from 'node:path';
 import { CloudFormationClient } from '@aws-sdk/client-cloudformation';
+import { LocalMigrateError } from '../../../utils/error-handler.js';
 import { getLogger } from '../../../utils/logger.js';
 import { AwsClients } from '../../../utils/aws-clients.js';
 import { verifyCdkCliAvailable } from './cdk-cli-check.js';
@@ -11,6 +12,19 @@ import {
 import { assertOutputDirAvailable } from './output-dir-guard.js';
 import { spawnCdkMigrate } from './cdk-migrate-spawn.js';
 import { installGeneratedAppDeps, synthGeneratedApp } from './synth-after-migrate.js';
+
+/**
+ * Build an extra-env bag for subprocesses (`npm install`, `cdk synth`)
+ * so they inherit the AWS profile the caller selected via `--profile`.
+ *
+ * Without this, `cdk synth` falls back to the SDK default credential
+ * chain (or no credentials at all) when the user runs cdkd under a
+ * non-default profile — which silently produces a template synthesized
+ * against the wrong account / region context.
+ */
+function buildAwsEnv(opts: RunMigrateLibraryOptions): NodeJS.ProcessEnv {
+  return opts.profile ? { AWS_PROFILE: opts.profile } : {};
+}
 
 /**
  * Options for {@link runMigrateLibrary} — the PR A library entry point.
@@ -158,29 +172,42 @@ export async function runMigrateLibrary(
   });
 
   // ---- 6. npm install (skippable) ----
+  // Thread AWS_PROFILE through so any postinstall hook that hits AWS
+  // resolves under the same identity as the rest of the migration.
   await installGeneratedAppDeps(spawnResult.outputDir, {
     skipInstall: opts.skipInstall ?? false,
+    extraEnv: buildAwsEnv(opts),
   });
 
   // ---- 7. cdk synth (skippable) ----
+  // `cdk synth` invokes the generated CDK app, which can use context
+  // providers that hit AWS — so the AWS profile must thread through.
   const synthResult = await synthGeneratedApp(spawnResult.outputDir, {
     skipSynth: opts.skipSynth ?? false,
     ...(opts.cdkBinPath && { cdkBinPath: opts.cdkBinPath }),
+    extraEnv: buildAwsEnv(opts),
   });
 
-  // ---- 8. Pull source CFn template for PR B's mapping layer ----
-  // The prefetch did a best-effort fetch only for transform detection
-  // (errors there silently fell back to "no transforms"). PR B's
-  // mapping layer needs the actual template body, so fetch it here
-  // with a hard-fail behavior — by this point we already know the
-  // stack exists and is in a stable state.
-  const sourceCfnTemplate = await fetchSourceTemplate(stackName, opts);
+  // ---- 8. Surface source CFn template for PR B's mapping layer ----
+  // The prefetch already parsed the source template (single
+  // `GetTemplate` call serves both transform detection AND the
+  // mapping layer). Hard-fail if prefetch could not fetch the body —
+  // by this point we already verified the stack exists and is stable,
+  // so a missing template means AWS denied the read or surfaced
+  // another error worth aborting on.
+  if (prefetch.sourceCfnTemplate === null) {
+    throw new LocalMigrateError(
+      `Could not read the source CloudFormation template for '${stackName}' ` +
+        `(GetTemplate failed during pre-flight). Re-run after granting ` +
+        `cloudformation:GetTemplate on the stack, or check the earlier warning for details.`
+    );
+  }
 
   return {
     outputDir: spawnResult.outputDir,
     assemblyDir: synthResult.assemblyDir,
     templateBody: synthResult.templateBody,
-    sourceCfnTemplate,
+    sourceCfnTemplate: prefetch.sourceCfnTemplate,
     sourceResources: prefetch.resources,
   };
 }
@@ -202,35 +229,4 @@ function buildCfnClient(opts: RunMigrateLibraryOptions): CloudFormationClient {
   if (opts.profile) config.profile = opts.profile;
   const clients = new AwsClients(config);
   return clients.getCloudFormationClient();
-}
-
-/**
- * Fetch the source CFn template body (Original stage). Hard-fails if
- * the call fails — the caller already verified the stack exists via
- * {@link prefetchCfnStack}, so this is the load-bearing read PR B's
- * mapping layer depends on.
- */
-async function fetchSourceTemplate(
-  stackName: string,
-  opts: RunMigrateLibraryOptions
-): Promise<unknown> {
-  const cfnClient = buildCfnClient(opts);
-  try {
-    const { GetTemplateCommand } = await import('@aws-sdk/client-cloudformation');
-    const tplResp = await cfnClient.send(
-      new GetTemplateCommand({ StackName: stackName, TemplateStage: 'Original' })
-    );
-    if (!tplResp.TemplateBody) {
-      // Defensive — `GetTemplate` always returns a body for a stack in
-      // a stable state; surface a typed error if AWS surprises us.
-      return null;
-    }
-    // Parse via the CFn-aware YAML codec so YAML templates with
-    // shorthand intrinsics (`!Ref` / `!GetAtt`) decode to the same
-    // canonical shape PR B's mapping layer expects.
-    const { parseCfnTemplate } = await import('../../yaml-cfn.js');
-    return parseCfnTemplate(tplResp.TemplateBody);
-  } finally {
-    cfnClient.destroy?.();
-  }
 }

@@ -10,10 +10,13 @@ import { LocalMigrateError } from '../../../../../src/utils/error-handler.js';
  * Build a mock CloudFormationClient whose `send()` returns scripted
  * responses keyed by command class name. Each entry is matched against
  * `cmd.constructor.name`.
+ *
+ * `destroy` is wired to a `vi.fn()` so callers can assert that production
+ * code's `cfnClient.destroy?.()` cleanup actually runs.
  */
 function buildMockCfnClient(
   responses: Record<string, unknown>
-): { send: ReturnType<typeof vi.fn>; destroy?: () => void } {
+): { send: ReturnType<typeof vi.fn>; destroy: ReturnType<typeof vi.fn> } {
   const send = vi.fn(async (cmd: { constructor: { name: string } }) => {
     const key = cmd.constructor.name;
     if (!(key in responses)) {
@@ -23,7 +26,7 @@ function buildMockCfnClient(
     if (response instanceof Error) throw response;
     return response;
   });
-  return { send } as any;
+  return { send, destroy: vi.fn() };
 }
 
 describe('prefetchCfnStack', () => {
@@ -59,6 +62,13 @@ describe('prefetchCfnStack', () => {
     expect(result.resources[0]!.ResourceType).toBe('AWS::S3::Bucket');
     expect(result.transformInfo.hasSamTransform).toBe(false);
     expect(result.transformInfo.hasIncludeTransform).toBe(false);
+    // GetTemplate's parsed body is surfaced for PR B's mapping layer
+    // — no second GetTemplate call needed downstream.
+    expect(result.sourceCfnTemplate).toEqual({
+      Resources: {
+        MyBucket: { Type: 'AWS::S3::Bucket' },
+      },
+    });
   });
 
   it('throws LocalMigrateError when the stack does not exist', async () => {
@@ -118,7 +128,7 @@ describe('prefetchCfnStack', () => {
     expect(result.transformInfo.hasIncludeTransform).toBe(true);
   });
 
-  it('treats a GetTemplate failure as best-effort (no transforms detected)', async () => {
+  it('treats a GetTemplate failure as best-effort (no transforms detected; sourceCfnTemplate null)', async () => {
     const client = buildMockCfnClient({
       DescribeStacksCommand: { Stacks: [{ StackStatus: 'CREATE_COMPLETE' }] },
       DescribeStackResourcesCommand: {
@@ -136,6 +146,10 @@ describe('prefetchCfnStack', () => {
     expect(result.resources).toHaveLength(1);
     expect(result.transformInfo.hasSamTransform).toBe(false);
     expect(result.transformInfo.hasIncludeTransform).toBe(false);
+    // GetTemplate failed → sourceCfnTemplate is null. The orchestrator
+    // hard-fails on this so PR B's mapping layer never sees a partial
+    // result.
+    expect(result.sourceCfnTemplate).toBeNull();
   });
 
   it('skips resources with missing fields in DescribeStackResources', async () => {

@@ -166,7 +166,11 @@ export async function spawnCdkMigrate(
         return;
       }
       const exitDetail =
-        signal !== null ? `killed by signal ${signal}` : `exited with code ${code}`;
+        signal !== null
+          ? `killed by signal ${signal}`
+          : code !== null
+            ? `exited with code ${code}`
+            : 'process closed without a code or signal';
       rejectPromise(
         new LocalMigrateError(
           `'${cdkBin} migrate' ${exitDetail}.\n` +
@@ -175,5 +179,8 @@ export async function spawnCdkMigrate(
         )
       );
     });
+    // TODO(#465 follow-up): consider SIGINT propagation. `cdk migrate`
+    // currently inherits the parent process group, so ^C routes
+    // correctly without explicit handling.
   });
 }

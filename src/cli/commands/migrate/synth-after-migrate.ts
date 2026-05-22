@@ -10,6 +10,13 @@ import { getLogger } from '../../../utils/logger.js';
 export interface InstallGeneratedAppDepsOptions {
   /** Skip the `npm install` step entirely (CI with a pre-populated cache). */
   skipInstall?: boolean;
+  /**
+   * Extra env vars merged into the subprocess env. Used to thread
+   * `AWS_PROFILE` (and any future STS-assumed credentials) into a
+   * potential postinstall hook that hits AWS, so it resolves under the
+   * same identity as the rest of the migration.
+   */
+  extraEnv?: NodeJS.ProcessEnv;
 }
 
 /**
@@ -85,7 +92,10 @@ export async function installGeneratedAppDeps(
   }
 
   logger.info(`[cdk-migrate] Running 'npm install' in ${absDir}...`);
-  await runStreamingCommand('npm', ['install'], absDir, undefined, "'npm install'");
+  const env: NodeJS.ProcessEnv | undefined = opts.extraEnv
+    ? { ...process.env, ...opts.extraEnv }
+    : undefined;
+  await runStreamingCommand('npm', ['install'], absDir, env, 'npm install');
 }
 
 /**
@@ -127,7 +137,7 @@ export async function synthGeneratedApp(
   };
 
   logger.info(`[cdk-migrate] Running '${cdkBin} synth --quiet' in ${absDir}...`);
-  await runStreamingCommand(cdkBin, ['synth', '--quiet'], absDir, env, `'${cdkBin} synth'`);
+  await runStreamingCommand(cdkBin, ['synth', '--quiet'], absDir, env, `${cdkBin} synth`);
 
   // Locate the root-stack template. `cdk synth` writes
   // `<StackName>.template.json` under `cdk.out/`. There may be
@@ -148,10 +158,9 @@ export async function synthGeneratedApp(
     return { assemblyDir, templateBody: null };
   }
 
-  // Prefer the largest template (root stack is typically the largest;
-  // nested-assembly templates are smaller manifests). The migration
-  // command operates on a single source CFn stack so there is exactly
-  // one top-level template in practice.
+  // The migration command operates on a single source CFn stack, so
+  // `cdk synth` always emits exactly one root-stack template in
+  // `cdk.out/` — pick the first match (filesystem order).
   const templatePath = join(assemblyDir, templates[0]!);
   let templateBody: unknown;
   try {
@@ -230,7 +239,11 @@ async function runStreamingCommand(
         return;
       }
       const exitDetail =
-        signal !== null ? `killed by signal ${signal}` : `exited with code ${code}`;
+        signal !== null
+          ? `killed by signal ${signal}`
+          : code !== null
+            ? `exited with code ${code}`
+            : 'process closed without a code or signal';
       rejectPromise(
         new LocalMigrateError(
           `${label} ${exitDetail}.\n` +

@@ -10,6 +10,7 @@ import {
   waitUntilStackDeleteComplete,
 } from '@aws-sdk/client-cloudformation';
 import { getLogger } from '../../utils/logger.js';
+import { STABLE_TERMINAL_STATUSES } from '../cfn-stack-states.js';
 import {
   CFN_TEMPLATE_BODY_LIMIT,
   CFN_TEMPLATE_URL_LIMIT,
@@ -23,19 +24,6 @@ import {
   stringifyCfnTemplate,
   type TemplateFormat,
 } from '../yaml-cfn.js';
-
-/**
- * Stack states from which an UpdateStack call is safe. Anything else (an
- * IN_PROGRESS, FAILED, or REVIEW_IN_PROGRESS state) means the stack is
- * mid-operation or in an unhealthy state we should not touch.
- */
-const STABLE_TERMINAL_STATUSES = new Set([
-  'CREATE_COMPLETE',
-  'UPDATE_COMPLETE',
-  'UPDATE_ROLLBACK_COMPLETE',
-  'IMPORT_COMPLETE',
-  'IMPORT_ROLLBACK_COMPLETE',
-]);
 
 /**
  * UpdateStack TemplateBody hard limit (51,200 bytes). Templates larger than

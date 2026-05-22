@@ -37,7 +37,7 @@ STACK_NAME="SmokeMigrated"
 cleanup() {
   rm -rf "${OUTPUT_PARENT}"
 }
-trap cleanup EXIT
+trap cleanup EXIT INT TERM
 
 echo "[smoke] test dir:   ${TEST_DIR}"
 echo "[smoke] output dir: ${OUTPUT_DIR}"

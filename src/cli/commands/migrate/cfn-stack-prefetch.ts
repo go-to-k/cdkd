@@ -5,25 +5,9 @@ import {
   GetTemplateCommand,
 } from '@aws-sdk/client-cloudformation';
 import { LocalMigrateError } from '../../../utils/error-handler.js';
+import { getLogger } from '../../../utils/logger.js';
+import { STABLE_TERMINAL_STATUSES } from '../../cfn-stack-states.js';
 import { parseCfnTemplate } from '../../yaml-cfn.js';
-
-/**
- * Stable terminal CFn stack states. Anything else (`*_IN_PROGRESS`,
- * `*_FAILED`, `REVIEW_IN_PROGRESS`) means the source stack is mid-
- * operation or in an unhealthy state — `cdkd migrate` aborts pre-flight
- * so the user can settle the source before paying for codegen + synth.
- *
- * Kept in sync with the same-named set in retire-cfn-stack.ts — the two
- * lists serve the same purpose (gate AWS-side mutations behind a stable
- * source-stack state).
- */
-const STABLE_TERMINAL_STATUSES = new Set([
-  'CREATE_COMPLETE',
-  'UPDATE_COMPLETE',
-  'UPDATE_ROLLBACK_COMPLETE',
-  'IMPORT_COMPLETE',
-  'IMPORT_ROLLBACK_COMPLETE',
-]);
 
 /**
  * Resource types that `cdkd migrate` refuses to adopt under any
@@ -54,9 +38,16 @@ const HARD_REJECT_RESOURCE_TYPES = new Set([
  * Result of {@link prefetchCfnStack}.
  *
  * Surfaces the source CFn stack's current state + every resource the
- * stack contains (logical id, physical id, type), plus a transform-
- * detection summary used by the caller to emit informational logs
- * (SAM / Include transforms are NOT rejected, just surfaced).
+ * stack contains (logical id, physical id, type), the parsed source
+ * template body, and a transform-detection summary used by the caller
+ * to emit informational logs (SAM / Include transforms are NOT
+ * rejected, just surfaced).
+ *
+ * `sourceCfnTemplate` is populated from the same `GetTemplate(Stage=
+ * Original)` call that drives transform detection, so the orchestrator
+ * does not need to re-fetch the body for PR B's mapping layer. `null`
+ * iff `GetTemplate` failed (best-effort): the orchestrator hard-fails
+ * in that case because the mapping layer requires the body.
  */
 export interface PrefetchResult {
   /** Current `StackStatus` from `DescribeStacks`. */
@@ -65,6 +56,11 @@ export interface PrefetchResult {
   resources: PrefetchedResource[];
   /** Transform-block detection — used for INFO logs, never to block. */
   transformInfo: TransformInfo;
+  /**
+   * Parsed source CFn template body (JSON or YAML, normalized via the
+   * CFn-aware codec). `null` iff the `GetTemplate` call failed.
+   */
+  sourceCfnTemplate: unknown;
 }
 
 /**
@@ -140,30 +136,41 @@ export async function prefetchCfnStack(
   }
 
   // GetTemplate (Original stage) — read the user-submitted template
-  // so we can detect Transform blocks. `DescribeStackResources` does
-  // NOT return transform info, and stack-level transforms drive
-  // whether the upstream `cdk migrate` codegen has to expand SAM /
-  // Include shapes client-side.
+  // so we can detect Transform blocks AND surface the parsed body for
+  // PR B's mapping layer (single call serves both purposes).
+  // `DescribeStackResources` does NOT return transform info, and
+  // stack-level transforms drive whether the upstream `cdk migrate`
+  // codegen has to expand SAM / Include shapes client-side.
   let transformInfo: TransformInfo = { hasSamTransform: false, hasIncludeTransform: false };
+  let sourceCfnTemplate: unknown = null;
   try {
     const tplResp = await cfnClient.send(
       new GetTemplateCommand({ StackName: stackName, TemplateStage: 'Original' })
     );
     if (tplResp.TemplateBody) {
-      transformInfo = detectTransforms(tplResp.TemplateBody);
+      // Parse once via the CFn-aware codec — handles both JSON and
+      // YAML inputs and preserves shorthand intrinsics. The transform
+      // detection reads `Transform` off the parsed object.
+      try {
+        sourceCfnTemplate = parseCfnTemplate(tplResp.TemplateBody);
+      } catch {
+        // Malformed template — leave `sourceCfnTemplate` at null; the
+        // orchestrator surfaces a clear error if it needs the body.
+        sourceCfnTemplate = null;
+      }
+      transformInfo = detectTransformsFromParsed(sourceCfnTemplate);
     }
   } catch (err) {
-    // GetTemplate failure is best-effort — the transform info is a
-    // UX nice-to-have, not load-bearing. The reject check below
-    // operates on resource types, which we already have.
+    // GetTemplate failure is best-effort for transform detection (a
+    // UX nice-to-have). The orchestrator hard-fails when it needs the
+    // body but `sourceCfnTemplate` is null.
     const detail = err instanceof Error ? err.message : String(err);
-    // eslint-disable-next-line no-console
-    console.warn(
+    getLogger().warn(
       `[migrate] GetTemplate failed for '${stackName}': ${detail}. Skipping transform detection.`
     );
   }
 
-  return { stackStatus, resources, transformInfo };
+  return { stackStatus, resources, transformInfo, sourceCfnTemplate };
 }
 
 /**
@@ -229,23 +236,16 @@ function isHardRejectType(resourceType: string): boolean {
 }
 
 /**
- * Scan a parsed CFn template body for stack-level Transform blocks.
- * Accepts both the scalar form (`Transform: AWS::Serverless-2016-10-31`)
- * and the array form (`Transform: [AWS::Serverless-2016-10-31, ...]`).
+ * Scan an already-parsed CFn template object for stack-level
+ * Transform blocks. Accepts both the scalar form (`Transform:
+ * AWS::Serverless-2016-10-31`) and the array form (`Transform:
+ * [AWS::Serverless-2016-10-31, ...]`).
  *
- * Tolerant of either JSON or YAML input — the codec at `yaml-cfn.ts`
- * already normalizes to the same parsed shape.
+ * The caller is responsible for parsing the raw template body via the
+ * CFn-aware codec; this helper operates on the parsed object so the
+ * `GetTemplate` response can be parsed once and reused.
  */
-function detectTransforms(templateBody: string): TransformInfo {
-  let parsed: unknown;
-  try {
-    parsed = parseCfnTemplate(templateBody);
-  } catch {
-    // Malformed template — surface a default ("no transforms") so the
-    // migration proceeds; if the template is structurally broken,
-    // `cdk migrate` will surface a clearer error than cdkd's pre-flight.
-    return { hasSamTransform: false, hasIncludeTransform: false };
-  }
+function detectTransformsFromParsed(parsed: unknown): TransformInfo {
   if (!parsed || typeof parsed !== 'object') {
     return { hasSamTransform: false, hasIncludeTransform: false };
   }

@@ -131,7 +131,11 @@ describe('runMigrateLibrary', () => {
           },
         ],
       },
-      GetTemplateCommand: { TemplateBody: JSON.stringify({ Resources: {} }) },
+      GetTemplateCommand: {
+        TemplateBody: JSON.stringify({
+          Resources: { B: { Type: 'AWS::S3::Bucket' } },
+        }),
+      },
     });
     const outputDir = join(tmp, 'S');
 
@@ -174,6 +178,252 @@ describe('runMigrateLibrary', () => {
     });
     expect(result.sourceResources).toHaveLength(1);
     expect(result.sourceResources[0]!.LogicalResourceId).toBe('B');
+    // The parsed source template threads through from prefetch's
+    // single GetTemplate call (no second fetch).
+    expect(result.sourceCfnTemplate).toEqual({
+      Resources: { B: { Type: 'AWS::S3::Bucket' } },
+    });
+    // GetTemplate is called exactly once across the whole orchestrator
+    // — the prefetch's call is the only one; the orchestrator does NOT
+    // re-fetch.
+    const getTemplateCalls = mockCfnSend.mock.calls.filter(
+      (c) => (c[0] as { constructor: { name: string } }).constructor.name === 'GetTemplateCommand'
+    );
+    expect(getTemplateCalls).toHaveLength(1);
+  });
+
+  it('threads --profile through to npm install and cdk synth via AWS_PROFILE', async () => {
+    setupCfnResponses({
+      DescribeStacksCommand: { Stacks: [{ StackStatus: 'CREATE_COMPLETE' }] },
+      DescribeStackResourcesCommand: { StackResources: [] },
+      GetTemplateCommand: { TemplateBody: JSON.stringify({ Resources: {} }) },
+    });
+    const outputDir = join(tmp, 'S');
+
+    mocks.spawn.mockImplementation((_bin: string, args: string[]) => {
+      const child = buildFakeChild();
+      if (args[0] === 'migrate') {
+        mkdirSync(outputDir, { recursive: true });
+        writeFileSync(join(outputDir, 'package.json'), '{}');
+      } else if (args[0] === 'install') {
+        // npm install — nothing to populate, just close cleanly.
+      } else if (args[0] === 'synth') {
+        mkdirSync(join(outputDir, 'cdk.out'), { recursive: true });
+        writeFileSync(
+          join(outputDir, 'cdk.out', 'S.template.json'),
+          JSON.stringify({ Resources: {} })
+        );
+      }
+      queueMicrotask(() => child.emit('close', 0, null));
+      return child;
+    });
+
+    await runMigrateLibrary({
+      fromCfnStack: 'S',
+      outputDir: tmp,
+      profile: 'dev',
+    });
+
+    // The orchestrator spawns three subprocesses: cdk migrate, npm
+    // install, cdk synth. Each should receive AWS_PROFILE=dev via the
+    // extraEnv merge, so a context provider in `cdk synth` (or a
+    // postinstall hook in npm) resolves under the same identity as the
+    // rest of the migration.
+    const installCall = mocks.spawn.mock.calls.find((c) => (c[1] as string[])[0] === 'install');
+    const synthCall = mocks.spawn.mock.calls.find((c) => (c[1] as string[])[0] === 'synth');
+    expect(installCall).toBeDefined();
+    expect(synthCall).toBeDefined();
+    const installEnv = (installCall![2] as { env: NodeJS.ProcessEnv }).env;
+    const synthEnv = (synthCall![2] as { env: NodeJS.ProcessEnv }).env;
+    expect(installEnv['AWS_PROFILE']).toBe('dev');
+    expect(synthEnv['AWS_PROFILE']).toBe('dev');
+  });
+
+  it('hard-errors when GetTemplate failed during prefetch', async () => {
+    setupCfnResponses({
+      DescribeStacksCommand: { Stacks: [{ StackStatus: 'CREATE_COMPLETE' }] },
+      DescribeStackResourcesCommand: {
+        StackResources: [
+          {
+            LogicalResourceId: 'B',
+            PhysicalResourceId: 'b',
+            ResourceType: 'AWS::S3::Bucket',
+          },
+        ],
+      },
+      GetTemplateCommand: new Error('AccessDenied: GetTemplate'),
+    });
+    const outputDir = join(tmp, 'S');
+
+    mocks.spawn.mockImplementation((_bin: string, args: string[]) => {
+      const child = buildFakeChild();
+      if (args[0] === 'migrate') {
+        mkdirSync(outputDir, { recursive: true });
+        writeFileSync(join(outputDir, 'package.json'), '{}');
+      } else if (args[0] === 'synth') {
+        mkdirSync(join(outputDir, 'cdk.out'), { recursive: true });
+        writeFileSync(
+          join(outputDir, 'cdk.out', 'S.template.json'),
+          JSON.stringify({ Resources: {} })
+        );
+      }
+      queueMicrotask(() => child.emit('close', 0, null));
+      return child;
+    });
+
+    await expect(
+      runMigrateLibrary({
+        fromCfnStack: 'S',
+        outputDir: tmp,
+        skipInstall: true,
+      })
+    ).rejects.toBeInstanceOf(LocalMigrateError);
+  });
+
+  it('logs cliCheck.warn when present and continues', async () => {
+    // Simulate `cdk --version` returning an older-but-acceptable
+    // version that surfaces a soft warn through verifyCdkCliAvailable.
+    mocks._execStdout = '2.99.0\n';
+    setupCfnResponses({
+      DescribeStacksCommand: { Stacks: [{ StackStatus: 'CREATE_COMPLETE' }] },
+      DescribeStackResourcesCommand: { StackResources: [] },
+      GetTemplateCommand: { TemplateBody: JSON.stringify({ Resources: {} }) },
+    });
+    setupAllSubprocessesSucceed();
+
+    // The orchestrator should proceed past the warn — assert it reaches
+    // the spawn step (cdk migrate) rather than aborting at the cli check.
+    const outputDir = join(tmp, 'S');
+    mocks.spawn.mockImplementation((_bin: string, args: string[]) => {
+      const child = buildFakeChild();
+      if (args[0] === 'migrate') {
+        mkdirSync(outputDir, { recursive: true });
+        writeFileSync(join(outputDir, 'package.json'), '{}');
+      } else if (args[0] === 'synth') {
+        mkdirSync(join(outputDir, 'cdk.out'), { recursive: true });
+        writeFileSync(
+          join(outputDir, 'cdk.out', 'S.template.json'),
+          JSON.stringify({ Resources: {} })
+        );
+      }
+      queueMicrotask(() => child.emit('close', 0, null));
+      return child;
+    });
+
+    await runMigrateLibrary({
+      fromCfnStack: 'S',
+      outputDir: tmp,
+      skipInstall: true,
+    });
+    // verifyCdkCliAvailable was invoked.
+    expect(mocks.execFile).toHaveBeenCalled();
+    expect(mocks.spawn).toHaveBeenCalled();
+  });
+
+  it('logs SAM transform INFO branch and continues', async () => {
+    setupCfnResponses({
+      DescribeStacksCommand: { Stacks: [{ StackStatus: 'CREATE_COMPLETE' }] },
+      DescribeStackResourcesCommand: { StackResources: [] },
+      GetTemplateCommand: {
+        TemplateBody: JSON.stringify({
+          Transform: 'AWS::Serverless-2016-10-31',
+          Resources: {},
+        }),
+      },
+    });
+    const outputDir = join(tmp, 'S');
+    mocks.spawn.mockImplementation((_bin: string, args: string[]) => {
+      const child = buildFakeChild();
+      if (args[0] === 'migrate') {
+        mkdirSync(outputDir, { recursive: true });
+        writeFileSync(join(outputDir, 'package.json'), '{}');
+      } else if (args[0] === 'synth') {
+        mkdirSync(join(outputDir, 'cdk.out'), { recursive: true });
+        writeFileSync(
+          join(outputDir, 'cdk.out', 'S.template.json'),
+          JSON.stringify({ Resources: {} })
+        );
+      }
+      queueMicrotask(() => child.emit('close', 0, null));
+      return child;
+    });
+
+    const result = await runMigrateLibrary({
+      fromCfnStack: 'S',
+      outputDir: tmp,
+      skipInstall: true,
+    });
+    expect(result.outputDir).toBe(outputDir);
+  });
+
+  it('logs Include transform INFO branch and continues', async () => {
+    setupCfnResponses({
+      DescribeStacksCommand: { Stacks: [{ StackStatus: 'CREATE_COMPLETE' }] },
+      DescribeStackResourcesCommand: { StackResources: [] },
+      GetTemplateCommand: {
+        TemplateBody: JSON.stringify({
+          Transform: 'AWS::Include',
+          Resources: {},
+        }),
+      },
+    });
+    const outputDir = join(tmp, 'S');
+    mocks.spawn.mockImplementation((_bin: string, args: string[]) => {
+      const child = buildFakeChild();
+      if (args[0] === 'migrate') {
+        mkdirSync(outputDir, { recursive: true });
+        writeFileSync(join(outputDir, 'package.json'), '{}');
+      } else if (args[0] === 'synth') {
+        mkdirSync(join(outputDir, 'cdk.out'), { recursive: true });
+        writeFileSync(
+          join(outputDir, 'cdk.out', 'S.template.json'),
+          JSON.stringify({ Resources: {} })
+        );
+      }
+      queueMicrotask(() => child.emit('close', 0, null));
+      return child;
+    });
+
+    const result = await runMigrateLibrary({
+      fromCfnStack: 'S',
+      outputDir: tmp,
+      skipInstall: true,
+    });
+    expect(result.outputDir).toBe(outputDir);
+  });
+
+  it('invokes npm install when skipInstall is left undefined (default)', async () => {
+    setupCfnResponses({
+      DescribeStacksCommand: { Stacks: [{ StackStatus: 'CREATE_COMPLETE' }] },
+      DescribeStackResourcesCommand: { StackResources: [] },
+      GetTemplateCommand: { TemplateBody: JSON.stringify({ Resources: {} }) },
+    });
+    const outputDir = join(tmp, 'S');
+    mocks.spawn.mockImplementation((_bin: string, args: string[]) => {
+      const child = buildFakeChild();
+      if (args[0] === 'migrate') {
+        mkdirSync(outputDir, { recursive: true });
+        writeFileSync(join(outputDir, 'package.json'), '{}');
+      } else if (args[0] === 'synth') {
+        mkdirSync(join(outputDir, 'cdk.out'), { recursive: true });
+        writeFileSync(
+          join(outputDir, 'cdk.out', 'S.template.json'),
+          JSON.stringify({ Resources: {} })
+        );
+      }
+      queueMicrotask(() => child.emit('close', 0, null));
+      return child;
+    });
+
+    await runMigrateLibrary({
+      fromCfnStack: 'S',
+      outputDir: tmp,
+      // skipInstall intentionally omitted to verify the default ⇒ run.
+    });
+    const installCall = mocks.spawn.mock.calls.find(
+      (c) => (c[0] as string) === 'npm' && (c[1] as string[])[0] === 'install'
+    );
+    expect(installCall).toBeDefined();
   });
 
   it('hard-fails before any other check when the cdk CLI is missing', async () => {

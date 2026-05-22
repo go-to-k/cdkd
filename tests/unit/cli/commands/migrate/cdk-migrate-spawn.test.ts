@@ -105,7 +105,7 @@ describe('spawnCdkMigrate', () => {
     expect(args).toContain('type=AWS::S3::Bucket');
   });
 
-  it('throws LocalMigrateError on non-zero exit with stdout+stderr in the message', async () => {
+  it('throws LocalMigrateError on non-zero exit', async () => {
     const { child } = buildFakeChild();
     mockSpawn.mockReturnValue(child);
 
@@ -117,21 +117,40 @@ describe('spawnCdkMigrate', () => {
     await expect(
       spawnCdkMigrate({ stackName: 'S', fromStackName: 'S', outputPath: '/tmp/out' })
     ).rejects.toBeInstanceOf(LocalMigrateError);
+  });
 
-    // Re-spawn for a second drive (mock reset between drives).
-    mockSpawn.mockReset();
-    const { child: child2 } = buildFakeChild();
-    mockSpawn.mockReturnValue(child2);
+  it('folds stdout+stderr into the error message on non-zero exit', async () => {
+    const { child } = buildFakeChild();
+    mockSpawn.mockReturnValue(child);
     queueMicrotask(() => {
-      child2.stderr.emit('data', Buffer.from('AccessDenied marker\n'));
-      child2.emit('close', 1, null);
+      child.stderr.emit('data', Buffer.from('AccessDenied marker\n'));
+      child.emit('close', 1, null);
     });
-    try {
-      await spawnCdkMigrate({ stackName: 'S', fromStackName: 'S', outputPath: '/tmp/out' });
-    } catch (e) {
-      expect((e as Error).message).toMatch(/AccessDenied marker/);
-      expect((e as Error).message).toMatch(/exited with code 1/);
-    }
+    await expect(
+      spawnCdkMigrate({ stackName: 'S', fromStackName: 'S', outputPath: '/tmp/out' })
+    ).rejects.toThrow(/exited with code 1[\s\S]*AccessDenied marker/);
+  });
+
+  it('surfaces the signal name when a signal terminated the subprocess', async () => {
+    const { child } = buildFakeChild();
+    mockSpawn.mockReturnValue(child);
+    queueMicrotask(() => {
+      child.emit('close', null, 'SIGKILL');
+    });
+    await expect(
+      spawnCdkMigrate({ stackName: 'S', fromStackName: 'S', outputPath: '/tmp/out' })
+    ).rejects.toThrow(/killed by signal SIGKILL/);
+  });
+
+  it('surfaces the generic message when close fires with code and signal both null', async () => {
+    const { child } = buildFakeChild();
+    mockSpawn.mockReturnValue(child);
+    queueMicrotask(() => {
+      child.emit('close', null, null);
+    });
+    await expect(
+      spawnCdkMigrate({ stackName: 'S', fromStackName: 'S', outputPath: '/tmp/out' })
+    ).rejects.toThrow(/process closed without a code or signal/);
   });
 
   it('merges extraEnv with process.env (extraEnv takes precedence)', async () => {
