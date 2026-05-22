@@ -25,10 +25,30 @@ tool_name=$(jq -r '.tool_name // empty' <<<"$input_json" 2>/dev/null || true)
 [[ "$tool_name" == "Bash" ]] || exit 0
 
 command=$(jq -r '.tool_input.command // empty' <<<"$input_json" 2>/dev/null || true)
-case "$command" in
-  *"gh pr merge"*) ;;
-  *) exit 0 ;;
-esac
+[[ -n "$command" ]] || exit 0
+
+# Match `gh pr merge` ONLY when it's an actual shell command at the
+# start of a line. Anchoring to line-start avoids the false-positive
+# class of matching `gh pr merge` inside quoted JSON strings / heredoc
+# bodies / commit message text.
+#
+# Trade-off: a chained `git status && gh pr merge 100` on a single
+# line will NOT match, because the regex can't distinguish a real
+# shell `&&` separator from `&&` inside a quoted argument. Almost
+# every `gh pr merge` invocation in this codebase is standalone, so
+# the trade-off is acceptable. False-negatives (silent skip) are
+# better than false-positives (annoying reminder on every commit).
+#
+# Both shapes surfaced 2026-05-23:
+#   1. `git commit -F /tmp/x` whose message body contained the text
+#      "gh pr merge" (naive substring match, fixed by anchoring).
+#   2. Smoke-test command containing JSON literals like
+#      `"command":"... && gh pr merge ..."` triggered the
+#      `[;&|]`-shell-separator branch (BSD grep doesn't know about
+#      shell quoting). Fixed by dropping that branch.
+if ! printf '%s\n' "$command" | grep -qE '^[[:space:]]*gh[[:space:]]+(-[A-Za-z][[:space:]]+\S+[[:space:]]+)*pr[[:space:]]+merge\b'; then
+  exit 0
+fi
 
 # Don't fire if the merge actually failed — check tool_response.exit_code
 # (PostToolUse fires AFTER the tool runs, regardless of exit code; the
