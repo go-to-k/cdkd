@@ -91,4 +91,32 @@ describe('createLocalStartServiceCommand', () => {
     const parsed = fresh.parse(['node', 'cdkd', 'Svc', '--no-pull'], { from: 'user' });
     expect(parsed.opts().pull).toBe(false);
   });
+
+  it('accepts --max-tasks at the subnet-allocator cap (84)', () => {
+    const fresh = createLocalStartServiceCommand();
+    fresh.action(() => {});
+    const parsed = fresh.parse(['node', 'cdkd', 'Svc', '--max-tasks', '84'], { from: 'user' });
+    expect(parsed.opts().maxTasks).toBe(84);
+  });
+
+  it('rejects --max-tasks above the subnet-allocator cap (85)', () => {
+    // The per-replica subnet allocator in `ecs-service-runner.ts`
+    // (`170 + (index % 84)`) wraps at index 84, collapsing replica 84's
+    // /24 onto replica 0's allocation and causing Docker to reject the
+    // duplicate-subnet network creation. Surfacing the cap at parse
+    // time gives the user an actionable error before any boot work.
+    const fresh = createLocalStartServiceCommand();
+    fresh.action(() => {});
+    expect(() =>
+      fresh.parse(['node', 'cdkd', 'Svc', '--max-tasks', '85'], { from: 'user' })
+    ).toThrow(/--max-tasks 85 exceeds the per-replica link-local \/24 subnet allocator's range \(84\)/);
+  });
+
+  it('rejects --max-tasks 100 (PR #504 review canonical case)', () => {
+    const fresh = createLocalStartServiceCommand();
+    fresh.action(() => {});
+    expect(() =>
+      fresh.parse(['node', 'cdkd', 'Svc', '--max-tasks', '100'], { from: 'user' })
+    ).toThrow(/--max-tasks 100 exceeds.*84/);
+  });
 });

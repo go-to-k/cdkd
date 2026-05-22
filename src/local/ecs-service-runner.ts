@@ -1,4 +1,5 @@
 import { getLogger } from '../utils/logger.js';
+import { singleFlight } from '../utils/single-flight.js';
 import {
   cleanupEcsRun,
   createEcsRunState,
@@ -75,6 +76,24 @@ export interface ServiceReplicaInstance {
   restartCount: number;
   /** Set when the replica is being torn down so the watcher skips it. */
   shuttingDown: boolean;
+  /**
+   * In-flight `bootReplica()` promise when the watcher loop is mid-
+   * restart (between the old state's cleanup and the new state being
+   * fully populated). `ServiceController.shutdown()` awaits this BEFORE
+   * iterating `instance.state.replicas` for cleanup — otherwise a
+   * SIGTERM that lands between `instance.state = createEcsRunState()`
+   * and `bootReplica()` finishing would call `cleanupEcsRun()` against
+   * a freshly-allocated empty state while the in-flight boot was still
+   * populating `instance.state.network` / `startedContainers`,
+   * leaking the just-created docker network + sidecar.
+   *
+   * `undefined` when the replica is not currently restarting (steady
+   * state — watching the running container). Declared as
+   * `Promise<void> | undefined` (not `?:`) so the runner's
+   * `instance.inFlightBoot = undefined` reset compiles under
+   * `exactOptionalPropertyTypes`.
+   */
+  inFlightBoot: Promise<void> | undefined;
   /**
    * Last error from a failed run, if any. Surfaced in the shutdown
    * summary so users know why a degraded service ended up degraded.
@@ -174,10 +193,16 @@ export async function startEcsService(
       state: createEcsRunState(),
       restartCount: 0,
       shuttingDown: false,
+      inFlightBoot: undefined,
     };
     runState.replicas.push(instance);
+    // Track the in-flight boot so a concurrent shutdown awaits it
+    // before iterating `instance.state` for cleanup (same contract
+    // as the watcher's restart branch — see `watchReplica` below).
+    const bootPromise = bootReplica(service, options, instance);
+    instance.inFlightBoot = bootPromise;
     try {
-      await bootReplica(service, options, instance);
+      await bootPromise;
     } catch (err) {
       // Boot failure of the FIRST replica is fatal — there is no
       // healthy replica to fall back to, and the runner contract is
@@ -187,6 +212,8 @@ export async function startEcsService(
         `Failed to boot replica ${i} of service '${service.serviceName}': ` +
           `${instance.lastError.message}`
       );
+    } finally {
+      instance.inFlightBoot = undefined;
     }
   }
 
@@ -217,7 +244,15 @@ export class ServiceController {
   readonly options: ServiceRunnerOptions;
   private shutdownResolve: (() => void) | undefined;
   private shutdownPromise: Promise<void>;
-  private shutdownStarted = false;
+  /**
+   * Single-flight wrapper for `shutdown()` so the fan-out cleanup runs
+   * exactly once even when SIGINT and the CLI's outer `finally` both
+   * fire (the canonical pattern documented in
+   * `feedback_sigint_finally_cleanup_singleflight.md`). Built in the
+   * constructor so every call to `shutdown()` resolves against the same
+   * underlying promise.
+   */
+  private readonly runShutdown: () => Promise<void>;
 
   constructor(
     service: ResolvedEcsService,
@@ -230,6 +265,7 @@ export class ServiceController {
     this.shutdownPromise = new Promise<void>((resolve) => {
       this.shutdownResolve = resolve;
     });
+    this.runShutdown = singleFlight(() => this.doShutdown());
   }
 
   /**
@@ -251,15 +287,16 @@ export class ServiceController {
 
   /**
    * Idempotent fan-out shutdown across every active replica. Wired into
-   * both SIGINT and the outer `finally` of the CLI command, so the
-   * single-flight pattern is required even though most consumers will
-   * only hit it once.
+   * both SIGINT and the outer `finally` of the CLI command; the
+   * `singleFlight`-wrapped `runShutdown` collapses concurrent / repeated
+   * callers to one underlying invocation.
    */
   async shutdown(): Promise<void> {
-    if (this.shutdownStarted) {
-      return this.shutdownPromise;
-    }
-    this.shutdownStarted = true;
+    await this.runShutdown();
+    return this.shutdownPromise;
+  }
+
+  private async doShutdown(): Promise<void> {
     this.runState.shuttingDown = true;
     const logger = getLogger().child('ecs-service');
     logger.info(`Shutting down service '${this.service.serviceName}'...`);
@@ -267,6 +304,27 @@ export class ServiceController {
     // Mark every replica as shutting-down BEFORE awaiting cleanup so
     // an in-flight watcher restart cannot resurrect it mid-cleanup.
     for (const r of this.runState.replicas) r.shuttingDown = true;
+
+    // CRITICAL: await every in-flight `bootReplica()` BEFORE iterating
+    // `instance.state` for cleanup. The watcher loop's restart branch
+    // assigns `instance.state = createEcsRunState()` and then awaits
+    // `bootReplica()` — if SIGTERM lands between those two lines, the
+    // cleanup loop would call `cleanupEcsRun()` against the freshly-
+    // allocated empty state while `bootReplica()` is still populating
+    // it (creating a docker network + sidecar that nobody tracks).
+    // Settle every in-flight boot first so cleanup sees the populated
+    // state. `Promise.allSettled` because we don't care whether the
+    // boot succeeded — the goal is to wait until the state is no
+    // longer being mutated.
+    const inFlightBoots = this.runState.replicas
+      .map((r) => r.inFlightBoot)
+      .filter((p): p is Promise<void> => p !== undefined);
+    if (inFlightBoots.length > 0) {
+      logger.debug(
+        `Awaiting ${inFlightBoots.length} in-flight bootReplica() call(s) before cleanup...`
+      );
+      await Promise.allSettled(inFlightBoots);
+    }
 
     await Promise.allSettled(
       this.runState.replicas.map(async (instance) => {
@@ -283,7 +341,6 @@ export class ServiceController {
       })
     );
     this.shutdownResolve?.();
-    return this.shutdownPromise;
   }
 }
 
@@ -307,10 +364,14 @@ async function bootReplica(
   const perReplicaCluster = `${options.taskOptions.cluster}-svc-${service.serviceLogicalId.toLowerCase()}-r${instance.index}`;
   // Per-replica subnetOctet: 170 is the AWS-documented default; each
   // additional replica walks up by 1 within the link-local 169.254.0.0/16
-  // space. The modulo + 1 keeps us in the 1..254 valid range so a
-  // pathologically large replica index still produces a usable subnet.
-  // See `buildEndpointSubnet` in ecs-network.ts for the allocation
-  // contract.
+  // space, capped at 253 (= 170 + 83) before wrapping via `% 84`. The
+  // 84-element range is the CLI cap surfaced as `MAX_TASKS_SUBNET_RANGE_CAP`
+  // in `src/cli/commands/local-start-service.ts`'s `parseMaxTasks` so
+  // the user gets an actionable error at parse time rather than the
+  // cryptic Docker "Pool overlaps with other one" error that fires when
+  // replica 84 lands on replica 0's subnet. See `buildEndpointSubnet`
+  // in ecs-network.ts for the allocation contract; the cap MUST stay in
+  // sync with the modulo divisor.
   const perReplicaSubnetOctet = 170 + (instance.index % 84);
   const perReplicaTaskOptions: RunEcsTaskOptions = {
     ...options.taskOptions,
@@ -406,8 +467,17 @@ async function watchReplica(
     instance.state = createEcsRunState();
     instance.restartCount += 1;
 
+    // Race-safety: `instance.state = createEcsRunState()` above + the
+    // upcoming `bootReplica()` populating it is the SIGTERM-mid-restart
+    // hazard. Track the in-flight boot so the controller's `shutdown()`
+    // can `Promise.allSettled` against it BEFORE iterating the
+    // replica's state for cleanup — otherwise the cleanup loop would
+    // race the boot and orphan the freshly-created docker network +
+    // sidecar.
+    const bootPromise = bootReplica(service, options, instance);
+    instance.inFlightBoot = bootPromise;
     try {
-      await bootReplica(service, options, instance);
+      await bootPromise;
     } catch (err) {
       instance.lastError = err instanceof Error ? err : new Error(String(err));
       logger.error(
@@ -418,6 +488,8 @@ async function watchReplica(
       // cleanup from the watcher.
       instance.shuttingDown = true;
       return;
+    } finally {
+      instance.inFlightBoot = undefined;
     }
   }
 }

@@ -12,6 +12,7 @@ import {
 import { getLogger } from '../../utils/logger.js';
 import { applyRoleArnIfSet } from '../../utils/role-arn.js';
 import { withErrorHandling, LocalStartServiceError } from '../../utils/error-handler.js';
+import { singleFlight } from '../../utils/single-flight.js';
 import { Synthesizer, type SynthesisOptions } from '../../synthesis/synthesizer.js';
 import { resolveApp } from '../config-loader.js';
 import { ensureDockerAvailable } from '../../local/docker-runner.js';
@@ -86,38 +87,36 @@ async function localStartServiceCommand(
   const runState: ServiceRunState = createServiceRunState();
   let sigintHandler: (() => void) | undefined;
   let sigintCount = 0;
-  let cleanupPromise: Promise<void> | undefined;
 
   // Controller is created lazily — startEcsService returns it after the
   // initial replica boot finishes. The cleanup closure has to handle
   // the boot-failure case where the controller is still undefined.
   let controller: Awaited<ReturnType<typeof startEcsService>> | undefined;
 
-  const cleanup = async (): Promise<void> => {
-    if (!cleanupPromise) {
-      cleanupPromise = (async () => {
-        try {
-          if (controller) {
-            await controller.shutdown();
-          } else {
-            // Boot-failure path: tear down any partially-booted
-            // replicas via direct calls into the cleanup function
-            // since the controller never finished construction.
-            await Promise.allSettled(
-              runState.replicas.map((r) =>
-                cleanupEcsRun(r.state, { keepRunning: false }).catch(() => undefined)
-              )
-            );
-          }
-        } catch (err) {
-          getLogger().debug(
-            `service cleanup failed: ${err instanceof Error ? err.message : String(err)}`
-          );
-        }
-      })();
-    }
-    await cleanupPromise;
-  };
+  // Single-flight cleanup so the SIGINT handler and the outer `finally`
+  // collapse to one underlying invocation (canonical pattern documented
+  // in `feedback_sigint_finally_cleanup_singleflight.md` and shared
+  // with `cdkd local invoke` / `cdkd local start-api`).
+  const cleanup = singleFlight(
+    async (): Promise<void> => {
+      if (controller) {
+        await controller.shutdown();
+      } else {
+        // Boot-failure path: tear down any partially-booted
+        // replicas via direct calls into the cleanup function
+        // since the controller never finished construction.
+        await Promise.allSettled(
+          runState.replicas.map((r) =>
+            cleanupEcsRun(r.state, { keepRunning: false }).catch(() => undefined)
+          )
+        );
+      }
+    },
+    (err) =>
+      getLogger().debug(
+        `service cleanup failed: ${err instanceof Error ? err.message : String(err)}`
+      )
+  );
 
   try {
     await applyRoleArnIfSet({ roleArn: options.roleArn, region: options.region });
@@ -454,6 +453,36 @@ function parsePositiveInt(raw: string, flagName: string): number {
   return parsed;
 }
 
+/**
+ * Hard cap on `--max-tasks` driven by the per-replica subnet allocator
+ * in `ecs-service-runner.ts:bootReplica` (`170 + (index % 84)`). The
+ * `% 84` modulo wraps at index 84, collapsing replica 84's `/24` onto
+ * replica 0's allocation. Docker rejects the duplicate-subnet network
+ * creation with a cryptic "Pool overlaps with other one on this address
+ * space" error 30s into the boot — by which time some early replicas
+ * may have spent docker-run budget. Reject at parse time so the user
+ * gets an actionable error before any boot work fires.
+ *
+ * 84 is the count of usable link-local /24 octets in the range
+ * `169.254.170.0..169.254.253.0` (255 reserved for broadcast). Raising
+ * this requires extending the allocator to walk a different IP range.
+ */
+export const MAX_TASKS_SUBNET_RANGE_CAP = 84;
+
+function parseMaxTasks(raw: string): number {
+  const parsed = parsePositiveInt(raw, '--max-tasks');
+  if (parsed > MAX_TASKS_SUBNET_RANGE_CAP) {
+    throw new LocalStartServiceError(
+      `--max-tasks ${parsed} exceeds the per-replica link-local /24 subnet allocator's range ` +
+        `(${MAX_TASKS_SUBNET_RANGE_CAP}). The allocator in ecs-service-runner.ts assigns each replica its own ` +
+        `169.254.x.0/24 from the range 169.254.170.0..169.254.253.0; replica indices >= ${MAX_TASKS_SUBNET_RANGE_CAP} ` +
+        `would collide with earlier replicas via modulo wrap. Lower --max-tasks to <= ${MAX_TASKS_SUBNET_RANGE_CAP}, ` +
+        `or accept reduced local concurrency for high-DesiredCount services.`
+    );
+  }
+  return parsed;
+}
+
 function parseRestartPolicy(raw: string): 'on-failure' | 'always' | 'none' {
   if (raw === 'on-failure' || raw === 'always' || raw === 'none') return raw;
   throw new LocalStartServiceError(
@@ -520,10 +549,11 @@ export function createLocalStartServiceCommand(): Command {
       new Option(
         '--max-tasks <n>',
         'Hard cap on local replica count. Caps the template DesiredCount so local dev machines ' +
-          "don't run an unbounded number of containers."
+          "don't run an unbounded number of containers. Cannot exceed " +
+          `${MAX_TASKS_SUBNET_RANGE_CAP} due to the per-replica link-local /24 subnet allocator's range.`
       )
         .default(3)
-        .argParser((raw) => parsePositiveInt(raw, '--max-tasks'))
+        .argParser(parseMaxTasks)
     )
     .addOption(
       new Option(
