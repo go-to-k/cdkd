@@ -552,11 +552,14 @@ adopt nor recreate them).
 cdkd export MyStack                           # confirmation prompt; CFn stack name = cdkd stack name
 cdkd export MyStack --cfn-stack-name MyStack-CFn
 cdkd export MyStack --dry-run                 # print the import plan, do not call CFn
-cdkd export MyStack --template path.json      # skip synth, use a pre-rendered JSON template
+cdkd export MyStack --template path.json      # skip synth, use a pre-rendered template (JSON or YAML — format auto-detected)
 cdkd export MyStack --include-non-importable  # 2-phase: IMPORT importable + CFn-CREATE Custom Resources
 ```
 
-MVP scope: JSON templates only (CDK-generated).
+Accepts JSON and YAML templates. YAML round-trips through a CFn-aware codec
+(`src/cli/yaml-cfn.ts`) that preserves every shorthand intrinsic (`!Ref` /
+`!GetAtt` / `!Sub` / `!Join` / etc.), so a YAML-authored CFn stack stays YAML
+on the phase-1 IMPORT and phase-2 UPDATE changesets.
 
 ## Drift detection
 

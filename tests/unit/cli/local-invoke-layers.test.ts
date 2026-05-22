@@ -1,8 +1,29 @@
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vite-plus/test';
-import { materializeLambdaLayers } from '../../../src/cli/commands/local-invoke.js';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vite-plus/test';
+import {
+  materializeLambdaLayers,
+  materializeLambdaLayersIncludingArns,
+} from '../../../src/cli/commands/local-invoke.js';
+import type { ResolvedLambdaLayer } from '../../../src/local/lambda-resolver.js';
+
+// MUST-FIX 3 from PR #491 review: caller-integration tests verifying
+// that `ImagePlan.layerArnTmpDirs` is populated for `cdkd local invoke`
+// and that the same `extraTmpDirs` list surfaces from the helper. The
+// caller's `cleanup()` walks this list with `rmSync`; without it the
+// per-ARN unzip tmpdirs leak across invokes.
+vi.mock('../../../src/local/layer-arn-materializer.js', () => ({
+  materializeLayerFromArn: vi.fn(),
+  // Re-export the error class so the production source's `import { ... }`
+  // resolves; tests below don't exercise the error path here.
+  LayerMaterializationError: class extends Error {},
+}));
+
+// Eagerly imported AFTER vi.mock so the production module's
+// `materializeLayerFromArn` import is intercepted.
+import { materializeLayerFromArn } from '../../../src/local/layer-arn-materializer.js';
+const mockMaterializeLayerFromArn = vi.mocked(materializeLayerFromArn);
 
 /**
  * Tests for `materializeLambdaLayers` — the load-bearing helper of PR 6
@@ -205,5 +226,160 @@ describe('materializeLambdaLayers', () => {
 
     expect(result.tmpDir).toBeUndefined();
     expect(result.mount?.hostPath).toBe(single);
+  });
+});
+
+describe('materializeLambdaLayersIncludingArns (caller integration — PR #491 review MUST-FIX 3)', () => {
+  // Track per-ARN tmpdirs we hand the helper from the mock so we can
+  // clean them up at the end of each test.
+  const dirsToCleanup: string[] = [];
+
+  beforeEach(() => {
+    mockMaterializeLayerFromArn.mockReset();
+    dirsToCleanup.length = 0;
+  });
+
+  afterEach(() => {
+    for (const dir of dirsToCleanup) {
+      try {
+        rmSync(dir, { recursive: true, force: true });
+      } catch {
+        // best-effort
+      }
+    }
+  });
+
+  /**
+   * Provision a fake tmpdir on disk that the materializer mock can
+   * "return" — caller-side cleanup tests need a real path that
+   * `existsSync(...)` can observe before `rmSync`.
+   */
+  function fakeArnLayerDir(label: string): string {
+    const dir = mkdtempSync(path.join(tmpdir(), `cdkd-mock-arn-layer-${label}-`));
+    mkdirSync(path.join(dir, 'nodejs'), { recursive: true });
+    writeFileSync(path.join(dir, 'nodejs', 'index.js'), `// ${label}`, 'utf-8');
+    return dir;
+  }
+
+  it('populates extraTmpDirs with the per-ARN tmpdir (single ARN layer)', async () => {
+    const arnDir = fakeArnLayerDir('single-arn');
+    dirsToCleanup.push(arnDir);
+    mockMaterializeLayerFromArn.mockResolvedValueOnce(arnDir);
+
+    const layers: ResolvedLambdaLayer[] = [
+      {
+        kind: 'arn',
+        logicalId: 'arn:aws:lambda:us-east-1:123456789012:layer:External:1',
+        arn: 'arn:aws:lambda:us-east-1:123456789012:layer:External:1',
+        region: 'us-east-1',
+        accountId: '123456789012',
+        name: 'External',
+        version: '1',
+      },
+    ];
+
+    // Cast to the helper's `LocalInvokeOptions` argument shape — the
+    // helper only reads `layerRoleArn` so an empty literal is fine here.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const result = await materializeLambdaLayersIncludingArns(layers, {} as any);
+
+    // The list of per-ARN tmpdirs surfaced for the caller's outer
+    // cleanup to walk.
+    expect(result.extraTmpDirs).toEqual([arnDir]);
+    expect(existsSync(arnDir)).toBe(true);
+
+    // Single-layer fast path: the helper does not create a merge tmpdir;
+    // it bind-mounts the per-ARN dir directly.
+    expect(result.tmpDir).toBeUndefined();
+    expect(result.mount?.hostPath).toBe(arnDir);
+    expect(result.mount?.containerPath).toBe('/opt');
+
+    expect(mockMaterializeLayerFromArn).toHaveBeenCalledTimes(1);
+  });
+
+  it('populates extraTmpDirs for every ARN layer in a mixed [asset, arn, arn] list', async () => {
+    const assetDir = mkdtempSync(path.join(tmpdir(), 'cdkd-mock-asset-layer-'));
+    writeFileSync(path.join(assetDir, 'a.txt'), 'asset', 'utf-8');
+    dirsToCleanup.push(assetDir);
+
+    const arn1Dir = fakeArnLayerDir('arn1');
+    const arn2Dir = fakeArnLayerDir('arn2');
+    dirsToCleanup.push(arn1Dir, arn2Dir);
+
+    mockMaterializeLayerFromArn
+      .mockResolvedValueOnce(arn1Dir)
+      .mockResolvedValueOnce(arn2Dir);
+
+    const layers: ResolvedLambdaLayer[] = [
+      { kind: 'asset', logicalId: 'AssetLayer', assetPath: assetDir },
+      {
+        kind: 'arn',
+        logicalId: 'arn:aws:lambda:us-east-1:123456789012:layer:LA:1',
+        arn: 'arn:aws:lambda:us-east-1:123456789012:layer:LA:1',
+        region: 'us-east-1',
+        accountId: '123456789012',
+        name: 'LA',
+        version: '1',
+      },
+      {
+        kind: 'arn',
+        logicalId: 'arn:aws:lambda:us-east-1:123456789012:layer:LB:2',
+        arn: 'arn:aws:lambda:us-east-1:123456789012:layer:LB:2',
+        region: 'us-east-1',
+        accountId: '123456789012',
+        name: 'LB',
+        version: '2',
+      },
+    ];
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const result = await materializeLambdaLayersIncludingArns(layers, {} as any);
+
+    // Both ARN dirs surface; the asset dir is NOT in extraTmpDirs (it's
+    // owned by the caller / synth output, not by cdkd's per-invoke
+    // lifecycle).
+    expect(result.extraTmpDirs).toEqual([arn1Dir, arn2Dir]);
+    expect(result.extraTmpDirs).not.toContain(assetDir);
+
+    // Multi-layer merge ran (3 layers → tmpDir created).
+    expect(result.tmpDir).toBeDefined();
+    if (result.tmpDir) dirsToCleanup.push(result.tmpDir);
+
+    // The caller cleanup contract: rmSync'ing every extraTmpDirs entry
+    // is observable end-to-end here.
+    for (const dir of result.extraTmpDirs) {
+      expect(existsSync(dir)).toBe(true);
+      rmSync(dir, { recursive: true, force: true });
+      expect(existsSync(dir)).toBe(false);
+    }
+  });
+
+  it('forwards options.layerRoleArn to materializeLayerFromArn', async () => {
+    const arnDir = fakeArnLayerDir('role-arn');
+    dirsToCleanup.push(arnDir);
+    mockMaterializeLayerFromArn.mockResolvedValueOnce(arnDir);
+
+    const layers: ResolvedLambdaLayer[] = [
+      {
+        kind: 'arn',
+        logicalId: 'arn:aws:lambda:us-east-1:123456789012:layer:External:1',
+        arn: 'arn:aws:lambda:us-east-1:123456789012:layer:External:1',
+        region: 'us-east-1',
+        accountId: '123456789012',
+        name: 'External',
+        version: '1',
+      },
+    ];
+
+    await materializeLambdaLayersIncludingArns(layers, {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      layerRoleArn: 'arn:aws:iam::999988887777:role/CrossAccountReadLayer',
+    } as any);
+
+    expect(mockMaterializeLayerFromArn).toHaveBeenCalledTimes(1);
+    const callOpts = mockMaterializeLayerFromArn.mock.calls[0]![1];
+    expect(callOpts).toEqual({
+      roleArn: 'arn:aws:iam::999988887777:role/CrossAccountReadLayer',
+    });
   });
 });
