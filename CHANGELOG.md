@@ -1,3 +1,10 @@
+## [0.132.3](https://github.com/go-to-k/cdkd/compare/v0.132.2...v0.132.3) (2026-05-22)
+
+
+### Bug Fixes
+
+* **local-start-api:** RESPONSE_STREAM hardening ([#503](https://github.com/go-to-k/cdkd/issues/503)) ([#510](https://github.com/go-to-k/cdkd/issues/510)) ([3574353](https://github.com/go-to-k/cdkd/commit/3574353fed76c2f3e9b4516d5dedfded29014691))
+
 ## [0.132.2](https://github.com/go-to-k/cdkd/compare/v0.132.1...v0.132.2) (2026-05-22)
 
 
