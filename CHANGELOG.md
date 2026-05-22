@@ -1,3 +1,10 @@
+# [0.123.0](https://github.com/go-to-k/cdkd/compare/v0.122.0...v0.123.0) (2026-05-22)
+
+
+### Features
+
+* **intrinsic:** Fn::GetStackOutput cross-account RoleArn support ([#490](https://github.com/go-to-k/cdkd/issues/490)) ([ffc284f](https://github.com/go-to-k/cdkd/commit/ffc284f876769aa0ac3e205e3f8cfb01466140c1))
+
 # [0.122.0](https://github.com/go-to-k/cdkd/compare/v0.121.0...v0.122.0) (2026-05-22)
 
 
