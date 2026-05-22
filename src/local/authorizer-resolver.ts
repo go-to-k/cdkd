@@ -71,19 +71,45 @@ export interface LambdaRequestAuthorizer {
   declaredAt: string;
 }
 
-export interface CognitoUserPoolAuthorizer {
-  kind: 'cognito';
-  logicalId: string;
-  /**
-   * The Cognito user pool ARN(s) declared on the authorizer. cdkd extracts
-   * region + userPoolId from the first ARN to build the JWKS URL. v1 only
-   * supports a single pool per authorizer; multi-pool federation is
-   * deferred.
-   */
+/**
+ * A single Cognito User Pool referenced by a REST v1
+ * `AWS::ApiGateway::Authorizer.ProviderARNs[]` entry. cdkd extracts the
+ * `region` + `userPoolId` segments out of the ARN so the JWKS URL can be
+ * built without an AWS API call.
+ */
+export interface CognitoPoolRef {
+  /** Original ARN as declared in `ProviderARNs[]`. */
   userPoolArn: string;
   /** Region parsed from the user pool ARN — used to build the JWKS URL. */
   region: string;
   /** Pool id parsed from the ARN. */
+  userPoolId: string;
+}
+
+export interface CognitoUserPoolAuthorizer {
+  kind: 'cognito';
+  logicalId: string;
+  /**
+   * Every Cognito user pool declared on the authorizer. CFn allows
+   * `ProviderARNs[]` to carry 1+ entries — multi-pool federation is a
+   * supported pattern for multi-tenant SaaS where each tenant has its
+   * own user pool but shares one API Gateway authorizer. At request
+   * time, the JWT's `iss` claim is matched against this list and the
+   * matching pool's JWKS is used for signature verification.
+   *
+   * The list is non-empty (discovery rejects an empty `ProviderARNs[]`).
+   */
+  pools: ReadonlyArray<CognitoPoolRef>;
+  /**
+   * Backwards-compatible alias for `pools[0].userPoolArn`. Pre-PR the
+   * authorizer carried a single pool; this field is retained so any
+   * downstream consumer reading `userPoolArn` keeps working. New code
+   * should read {@link pools} instead.
+   */
+  userPoolArn: string;
+  /** Backwards-compatible alias for `pools[0].region`. */
+  region: string;
+  /** Backwards-compatible alias for `pools[0].userPoolId`. */
   userPoolId: string;
   // NOTE: there is intentionally no `audience` field on REST v1 Cognito
   // authorizers. The audience that JWT verification would check (`aud`
@@ -219,14 +245,30 @@ export function resolveRestV1Authorizer(
         `${stackName}/${authorizerLogicalId}: COGNITO_USER_POOLS authorizer is missing ProviderARNs.`
       );
     }
-    const arn = pickStringFromArn(arns[0], `${stackName}/${authorizerLogicalId}.ProviderARNs[0]`);
-    const parsed = parseCognitoUserPoolArn(arn, `${stackName}/${authorizerLogicalId}`);
+    // Walk every ProviderARNs[] entry — CFn allows 1+ for multi-pool
+    // federation (multi-tenant SaaS with one pool per tenant). A single
+    // malformed entry aborts the whole authorizer at discovery time so
+    // the user sees the exact offending index, not a mid-request failure
+    // for one tenant only.
+    const pools: CognitoPoolRef[] = arns.map((entry, idx) => {
+      const arn = pickStringFromArn(
+        entry,
+        `${stackName}/${authorizerLogicalId}.ProviderARNs[${idx}]`
+      );
+      const parsed = parseCognitoUserPoolArn(
+        arn,
+        `${stackName}/${authorizerLogicalId}.ProviderARNs[${idx}]`
+      );
+      return { userPoolArn: arn, region: parsed.region, userPoolId: parsed.userPoolId };
+    });
+    const first = pools[0]!;
     return {
       kind: 'cognito',
       logicalId: authorizerLogicalId,
-      userPoolArn: arn,
-      region: parsed.region,
-      userPoolId: parsed.userPoolId,
+      pools,
+      userPoolArn: first.userPoolArn,
+      region: first.region,
+      userPoolId: first.userPoolId,
       declaredAt,
     };
   }
@@ -502,7 +544,9 @@ function parseCognitoIssuer(issuer: string): { region: string; userPoolId: strin
 /**
  * Pull a string out of a {Ref} / literal entry under `ProviderARNs`.
  * CDK's CognitoUserPoolsAuthorizer emits a literal array of `Fn::GetAtt:
- * [<UserPool>, 'Arn']` entries — we accept both.
+ * [<UserPool>, 'Arn']` entries — we accept both. The `location` argument
+ * carries the full `<stack>/<authorizer>.ProviderARNs[<idx>]` path so the
+ * error names the offending entry exactly.
  */
 function pickStringFromArn(value: unknown, location: string): string {
   if (typeof value === 'string') return value;
@@ -523,14 +567,12 @@ function pickStringFromArn(value: unknown, location: string): string {
         // verification so the discovery layer has to fail loudly if it
         // can't extract one.
         throw new RouteDiscoveryError(
-          `${location}: ProviderARNs[0] uses Fn::GetAtt against logical ID '${arg[0]}'. cdkd local start-api needs the literal ARN string to derive the JWKS URL — set the user pool ARN explicitly via 'authorizer.providerArns' on the CDK construct, or upgrade to JWT (HTTP v2) which encodes the pool in the Issuer URL.`
+          `${location}: uses Fn::GetAtt against logical ID '${arg[0]}'. cdkd local start-api needs the literal ARN string to derive the JWKS URL — set the user pool ARN explicitly via 'authorizer.providerArns' on the CDK construct, or upgrade to JWT (HTTP v2) which encodes the pool in the Issuer URL.`
         );
       }
     }
   }
-  throw new RouteDiscoveryError(
-    `${location}: ProviderARNs[0] must be a literal string (got ${shortJson(value)}).`
-  );
+  throw new RouteDiscoveryError(`${location}: must be a literal string (got ${shortJson(value)}).`);
 }
 
 /**
