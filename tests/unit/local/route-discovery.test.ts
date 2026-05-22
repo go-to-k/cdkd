@@ -132,7 +132,7 @@ describe('discoverRoutes — REST v1', () => {
     expect(discoverRoutes([stack])[0]?.stage).toBe('$default');
   });
 
-  it('flags MOCK integrations as deferred-error unsupported (boot continues, 501 at request time)', () => {
+  it('classifies non-CORS MOCK integrations as kind="mock" (#457; pre-PR they were 501 unsupported)', () => {
     const stack = buildStack('S', {
       Api: { Type: 'AWS::ApiGateway::RestApi', Properties: {} },
       Method: {
@@ -150,11 +150,12 @@ describe('discoverRoutes — REST v1', () => {
     expect(routes[0]?.method).toBe('GET');
     expect(routes[0]?.pathPattern).toBe('/');
     expect(routes[0]?.lambdaLogicalId).toBe('');
-    expect(routes[0]?.unsupported?.reason).toMatch(/MOCK integration is not emulated/);
+    expect(routes[0]?.restV1Integration?.kind).toBe('mock');
     expect(routes[0]?.mockCors).toBeUndefined();
+    expect(routes[0]?.unsupported).toBeUndefined();
   });
 
-  it('flags REST v1 AWS/HTTP/HTTP_PROXY integrations as deferred-error unsupported', () => {
+  it('classifies REST v1 HTTP_PROXY integrations with the new restV1Integration config (#457)', () => {
     const stack = buildStack('S', {
       Api: { Type: 'AWS::ApiGateway::RestApi', Properties: {} },
       Method: {
@@ -169,7 +170,12 @@ describe('discoverRoutes — REST v1', () => {
     });
     const routes = discoverRoutes([stack]);
     expect(routes).toHaveLength(1);
-    expect(routes[0]?.unsupported?.reason).toMatch(/HTTP_PROXY/);
+    expect(routes[0]?.unsupported).toBeUndefined();
+    expect(routes[0]?.restV1Integration?.kind).toBe('http-proxy');
+    expect(
+      routes[0]?.restV1Integration?.kind === 'http-proxy' &&
+        routes[0]?.restV1Integration.uri
+    ).toBe('http://example.com');
   });
 
   it('flags Fn::Sub against an arbitrary (non-invoke-ARN) template as deferred-error unsupported', () => {
@@ -243,6 +249,192 @@ describe('discoverRoutes — REST v1', () => {
       },
     });
     expect(discoverRoutes([stack])[0]?.lambdaLogicalId).toBe('MyHandler');
+  });
+});
+
+describe('discoverRoutes — REST v1 non-AWS_PROXY classification (#457)', () => {
+  // Each test asserts that the new restV1Integration field is populated
+  // with the right `kind` discriminator + per-kind config.
+
+  it('classifies MOCK non-CORS as kind="mock" with requestTemplate + responses', () => {
+    const stack = buildStack('S', {
+      Api: { Type: 'AWS::ApiGateway::RestApi', Properties: {} },
+      Method: {
+        Type: 'AWS::ApiGateway::Method',
+        Properties: {
+          HttpMethod: 'GET',
+          RestApiId: { Ref: 'Api' },
+          ResourceId: { 'Fn::GetAtt': ['Api', 'RootResourceId'] },
+          Integration: {
+            Type: 'MOCK',
+            RequestTemplates: { 'application/json': '{"statusCode": 200}' },
+            IntegrationResponses: [
+              { StatusCode: '200', ResponseTemplates: { 'application/json': '{}' } },
+            ],
+          },
+        },
+      },
+    });
+    const route = discoverRoutes([stack])[0];
+    expect(route?.restV1Integration?.kind).toBe('mock');
+    if (route?.restV1Integration?.kind === 'mock') {
+      expect(route.restV1Integration.requestTemplate).toBe('{"statusCode": 200}');
+      expect(route.restV1Integration.responses).toHaveLength(1);
+    }
+  });
+
+  it('classifies HTTP_PROXY with uri + responses', () => {
+    const stack = buildStack('S', {
+      Api: { Type: 'AWS::ApiGateway::RestApi', Properties: {} },
+      Method: {
+        Type: 'AWS::ApiGateway::Method',
+        Properties: {
+          HttpMethod: 'POST',
+          RestApiId: { Ref: 'Api' },
+          ResourceId: { 'Fn::GetAtt': ['Api', 'RootResourceId'] },
+          Integration: {
+            Type: 'HTTP_PROXY',
+            Uri: 'https://example.com/api',
+            IntegrationHttpMethod: 'POST',
+          },
+        },
+      },
+    });
+    const route = discoverRoutes([stack])[0];
+    expect(route?.restV1Integration?.kind).toBe('http-proxy');
+    if (route?.restV1Integration?.kind === 'http-proxy') {
+      expect(route.restV1Integration.uri).toBe('https://example.com/api');
+      expect(route.restV1Integration.integrationHttpMethod).toBe('POST');
+    }
+  });
+
+  it('classifies HTTP non-proxy with uri + requestTemplates + responses', () => {
+    const stack = buildStack('S', {
+      Api: { Type: 'AWS::ApiGateway::RestApi', Properties: {} },
+      Method: {
+        Type: 'AWS::ApiGateway::Method',
+        Properties: {
+          HttpMethod: 'POST',
+          RestApiId: { Ref: 'Api' },
+          ResourceId: { 'Fn::GetAtt': ['Api', 'RootResourceId'] },
+          Integration: {
+            Type: 'HTTP',
+            Uri: 'https://upstream/api',
+            RequestTemplates: { 'application/json': '{"wrapped":$input.body}' },
+            IntegrationResponses: [
+              {
+                StatusCode: '200',
+                ResponseTemplates: { 'application/json': '{"x":1}' },
+              },
+            ],
+          },
+        },
+      },
+    });
+    const route = discoverRoutes([stack])[0];
+    expect(route?.restV1Integration?.kind).toBe('http');
+    if (route?.restV1Integration?.kind === 'http') {
+      expect(route.restV1Integration.uri).toBe('https://upstream/api');
+      expect(route.restV1Integration.requestTemplates).toEqual({
+        'application/json': '{"wrapped":$input.body}',
+      });
+    }
+  });
+
+  it('classifies AWS integration targeting Lambda as kind="aws-lambda"', () => {
+    const stack = buildStack('S', {
+      Api: { Type: 'AWS::ApiGateway::RestApi', Properties: {} },
+      Handler: {
+        Type: 'AWS::Lambda::Function',
+        Properties: { Runtime: 'nodejs20.x', Handler: 'index.handler' },
+      },
+      Method: {
+        Type: 'AWS::ApiGateway::Method',
+        Properties: {
+          HttpMethod: 'POST',
+          RestApiId: { Ref: 'Api' },
+          ResourceId: { 'Fn::GetAtt': ['Api', 'RootResourceId'] },
+          Integration: {
+            Type: 'AWS',
+            Uri: {
+              'Fn::Sub':
+                'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${Handler.Arn}/invocations',
+            },
+            RequestTemplates: { 'application/json': '{"event":$input.body}' },
+            IntegrationResponses: [
+              {
+                StatusCode: '200',
+                ResponseTemplates: { 'application/json': 'value=$input.json("$")' },
+              },
+            ],
+          },
+        },
+      },
+    });
+    const route = discoverRoutes([stack])[0];
+    expect(route?.restV1Integration?.kind).toBe('aws-lambda');
+    expect(route?.lambdaLogicalId).toBe('Handler');
+    if (route?.restV1Integration?.kind === 'aws-lambda') {
+      expect(route.restV1Integration.lambdaLogicalId).toBe('Handler');
+      expect(route.restV1Integration.requestTemplates).toBeDefined();
+      expect(route.restV1Integration.responses).toHaveLength(1);
+    }
+  });
+
+  it('flags AWS integration targeting a non-Lambda service (e.g. S3) as deferred-error unsupported', () => {
+    const stack = buildStack('S', {
+      Api: { Type: 'AWS::ApiGateway::RestApi', Properties: {} },
+      Method: {
+        Type: 'AWS::ApiGateway::Method',
+        Properties: {
+          HttpMethod: 'GET',
+          RestApiId: { Ref: 'Api' },
+          ResourceId: { 'Fn::GetAtt': ['Api', 'RootResourceId'] },
+          Integration: {
+            Type: 'AWS',
+            Uri: 'arn:aws:apigateway:us-east-1:s3:path/my-bucket/{key}',
+          },
+        },
+      },
+    });
+    const route = discoverRoutes([stack])[0];
+    expect(route?.unsupported?.reason).toMatch(/non-Lambda service/);
+    expect(route?.restV1Integration).toBeUndefined();
+  });
+
+  it('flags HTTP_PROXY with non-literal Uri as deferred-error unsupported', () => {
+    const stack = buildStack('S', {
+      Api: { Type: 'AWS::ApiGateway::RestApi', Properties: {} },
+      Method: {
+        Type: 'AWS::ApiGateway::Method',
+        Properties: {
+          HttpMethod: 'GET',
+          RestApiId: { Ref: 'Api' },
+          ResourceId: { 'Fn::GetAtt': ['Api', 'RootResourceId'] },
+          Integration: { Type: 'HTTP_PROXY', Uri: { Ref: 'SomeParam' } },
+        },
+      },
+    });
+    const route = discoverRoutes([stack])[0];
+    expect(route?.unsupported?.reason).toMatch(/HTTP_PROXY/);
+    expect(route?.restV1Integration).toBeUndefined();
+  });
+
+  it('flags unknown REST v1 integration type as deferred-error unsupported', () => {
+    const stack = buildStack('S', {
+      Api: { Type: 'AWS::ApiGateway::RestApi', Properties: {} },
+      Method: {
+        Type: 'AWS::ApiGateway::Method',
+        Properties: {
+          HttpMethod: 'GET',
+          RestApiId: { Ref: 'Api' },
+          ResourceId: { 'Fn::GetAtt': ['Api', 'RootResourceId'] },
+          Integration: { Type: 'NONSENSE' },
+        },
+      },
+    });
+    const route = discoverRoutes([stack])[0];
+    expect(route?.unsupported?.reason).toMatch(/unknown REST v1 integration type/);
   });
 });
 
@@ -952,6 +1144,9 @@ describe('discoverRoutes — deferred-error unsupported (multi-route)', () => {
     // listing both routes. Post-refactor: discovery succeeds with two
     // routes carrying `unsupported`; boot proceeds; 501 fires at request
     // time.
+    // Post-#457: MOCK is no longer unsupported (the dispatcher handles
+    // it). The fixture uses an AWS-integration-to-S3 (non-Lambda service)
+    // case, which remains unsupported in v1.
     const stack = buildStack('S', {
       Api: { Type: 'AWS::ApiGateway::RestApi', Properties: {} },
       M1: {
@@ -960,7 +1155,10 @@ describe('discoverRoutes — deferred-error unsupported (multi-route)', () => {
           HttpMethod: 'GET',
           RestApiId: { Ref: 'Api' },
           ResourceId: { 'Fn::GetAtt': ['Api', 'RootResourceId'] },
-          Integration: { Type: 'MOCK' },
+          Integration: {
+            Type: 'AWS',
+            Uri: 'arn:aws:apigateway:us-east-1:s3:path/my-bucket/{key}',
+          },
         },
       },
       U1: {
@@ -1064,7 +1262,7 @@ describe('discoverRoutes — REST v1 MOCK CORS preflight', () => {
     expect(discoverRoutes([stack])[0]?.mockCors?.statusCode).toBe(204);
   });
 
-  it('falls through to unsupported when MOCK OPTIONS has no IntegrationResponses', () => {
+  it('falls through to the MOCK dispatcher (kind="mock") when MOCK OPTIONS has no IntegrationResponses (#457)', () => {
     const stack = buildStack('S', {
       Api: { Type: 'AWS::ApiGateway::RestApi', Properties: {} },
       Method: {
@@ -1079,10 +1277,10 @@ describe('discoverRoutes — REST v1 MOCK CORS preflight', () => {
     });
     const routes = discoverRoutes([stack]);
     expect(routes[0]?.mockCors).toBeUndefined();
-    expect(routes[0]?.unsupported?.reason).toMatch(/MOCK integration is not emulated/);
+    expect(routes[0]?.restV1Integration?.kind).toBe('mock');
   });
 
-  it('falls through to unsupported when MOCK is non-OPTIONS (e.g. POST)', () => {
+  it('falls through to the MOCK dispatcher when MOCK is non-OPTIONS (e.g. POST) (#457)', () => {
     const stack = buildStack('S', {
       Api: { Type: 'AWS::ApiGateway::RestApi', Properties: {} },
       Method: {
@@ -1107,10 +1305,10 @@ describe('discoverRoutes — REST v1 MOCK CORS preflight', () => {
     });
     const routes = discoverRoutes([stack]);
     expect(routes[0]?.mockCors).toBeUndefined();
-    expect(routes[0]?.unsupported).toBeDefined();
+    expect(routes[0]?.restV1Integration?.kind).toBe('mock');
   });
 
-  it('all-intrinsic ResponseParameters falls through to unsupported (cannot evaluate VTL locally)', () => {
+  it('all-intrinsic ResponseParameters falls through to the MOCK dispatcher (no preflight shape match) (#457)', () => {
     const stack = buildStack('S', {
       Api: { Type: 'AWS::ApiGateway::RestApi', Properties: {} },
       Method: {
@@ -1136,14 +1334,14 @@ describe('discoverRoutes — REST v1 MOCK CORS preflight', () => {
     });
     const routes = discoverRoutes([stack]);
     expect(routes[0]?.mockCors).toBeUndefined();
-    expect(routes[0]?.unsupported).toBeDefined();
+    expect(routes[0]?.restV1Integration?.kind).toBe('mock');
   });
 
-  it('mixed-shape ResponseParameters (one literal + one intrinsic) falls through to unsupported, all-or-nothing', () => {
-    // Load-bearing: a partial preflight with some headers missing
-    // would silently break CORS in the browser (preflight succeeds,
-    // actual request fails on the missing Access-Control-Allow-*).
-    // The 501 path's `reason` body is the better surface.
+  it('mixed-shape ResponseParameters (one literal + one intrinsic) falls through to MOCK dispatcher, all-or-nothing on preflight (#457)', () => {
+    // Load-bearing: a partial preflight with some headers missing would
+    // silently break CORS in the browser. The synthetic preflight path
+    // is all-or-nothing; the MOCK dispatcher takes over and answers via
+    // its IntegrationResponses[]/ResponseTemplates contract instead.
     const stack = buildStack('S', {
       Api: { Type: 'AWS::ApiGateway::RestApi', Properties: {} },
       Method: {
@@ -1171,7 +1369,7 @@ describe('discoverRoutes — REST v1 MOCK CORS preflight', () => {
     });
     const routes = discoverRoutes([stack]);
     expect(routes[0]?.mockCors).toBeUndefined();
-    expect(routes[0]?.unsupported).toBeDefined();
+    expect(routes[0]?.restV1Integration?.kind).toBe('mock');
   });
 });
 

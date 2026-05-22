@@ -39,6 +39,7 @@ import {
 } from '../../assets/asset-manifest-loader.js';
 import type { DockerImageAssetSource } from '../../types/assets.js';
 import { discoverRoutes, type DiscoveredRoute } from '../../local/route-discovery.js';
+import { warnSsrfRiskyUri } from '../../local/rest-v1-integrations.js';
 import {
   createContainerPool,
   type ContainerSpec,
@@ -650,10 +651,9 @@ async function localStartApiCommand(
   }
 
   printPerServerRouteTables(servers);
-  warnUnsupportedRoutes(
-    servers.flatMap((s) => s.group.routes.map((r) => r.route)),
-    logger
-  );
+  const allRoutes = servers.flatMap((s) => s.group.routes.map((r) => r.route));
+  warnUnsupportedRoutes(allRoutes, logger);
+  warnSsrfRiskyIntegrations(allRoutes, logger);
   logger.info(
     `Per-Lambda concurrency: ${perLambdaConcurrency} (override with --per-lambda-concurrency)`
   );
@@ -1708,12 +1708,35 @@ function printRouteTable(routes: readonly RouteWithAuth[]): void {
         ? '[501 Not Implemented]'
         : r.serviceIntegration
           ? `[${r.serviceIntegration.subtype}]`
-          : r.lambdaLogicalId;
+          : r.restV1Integration
+            ? formatRestV1IntegrationLabel(r.restV1Integration)
+            : r.lambdaLogicalId;
     process.stdout.write(
       `  ${r.method.padEnd(methodWidth)}  ${r.pathPattern.padEnd(pathWidth)}  -> ${target}  (${sourceLabel})\n`
     );
   }
   process.stdout.write('\n');
+}
+
+/**
+ * Format the route-table label for a REST v1 non-AWS_PROXY integration.
+ * `MOCK` / `HTTP` / `HTTP_PROXY` show their integration kind directly;
+ * `AWS` (Lambda non-proxy) shows the Lambda logical id with an `[AWS]`
+ * suffix so it's distinguishable from AWS_PROXY rows. Closes #457.
+ */
+function formatRestV1IntegrationLabel(
+  integration: NonNullable<DiscoveredRoute['restV1Integration']>
+): string {
+  switch (integration.kind) {
+    case 'mock':
+      return '[MOCK]';
+    case 'http-proxy':
+      return `[HTTP_PROXY ${integration.uri}]`;
+    case 'http':
+      return `[HTTP ${integration.uri}]`;
+    case 'aws-lambda':
+      return `${integration.lambdaLogicalId} [AWS]`;
+  }
 }
 
 /**
@@ -1937,6 +1960,30 @@ function warnUnsupportedRoutes(
 }
 
 /**
+ * Surface a one-line warn per HTTP / HTTP_PROXY integration whose
+ * `Integration.Uri` points at a well-known internal address space
+ * (AWS IMDS, loopback, link-local, RFC1918). PR #505 / issue #457
+ * follow-up: cdkd does NOT block these — warn-and-proceed matches the
+ * cognito JWKS pass-through pattern — but the user should see the
+ * destination at boot so a malicious / typo'd template Uri does not
+ * silently exfiltrate credentials in CI. Deduplicated per-Uri.
+ */
+function warnSsrfRiskyIntegrations(
+  routes: readonly DiscoveredRoute[],
+  logger: ReturnType<typeof getLogger>
+): void {
+  const seen = new Set<string>();
+  for (const r of routes) {
+    const integ = r.restV1Integration;
+    if (!integ) continue;
+    if (integ.kind !== 'http' && integ.kind !== 'http-proxy') continue;
+    if (seen.has(integ.uri)) continue;
+    seen.add(integ.uri);
+    warnSsrfRiskyUri(integ.uri, `${r.method} ${r.pathPattern}`, (msg) => logger.warn(msg));
+  }
+}
+
+/**
  * One reload cycle for the multi-server topology (issue #260). The
  * watcher serializes calls via a chain promise; this function:
  *
@@ -2036,10 +2083,9 @@ async function reloadAllServers(args: {
   // reflects the post-swap routes (including any new mockCors /
   // unsupported classifications introduced mid-edit).
   printPerServerRouteTables(servers);
-  warnUnsupportedRoutes(
-    servers.flatMap((s) => s.group.routes.map((r) => r.route)),
-    logger
-  );
+  const allRoutes = servers.flatMap((s) => s.group.routes.map((r) => r.route));
+  warnUnsupportedRoutes(allRoutes, logger);
+  warnSsrfRiskyIntegrations(allRoutes, logger);
 }
 
 /**

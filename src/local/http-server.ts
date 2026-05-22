@@ -16,6 +16,15 @@ import { translateLambdaResponse } from './api-gateway-response.js';
 import { matchRoute } from './route-matcher.js';
 import type { DiscoveredRoute } from './route-discovery.js';
 import type { ContainerPool } from './container-pool.js';
+import {
+  dispatchAwsLambdaIntegration,
+  dispatchHttpIntegration,
+  dispatchHttpProxyIntegration,
+  dispatchMockIntegration,
+  type RestV1IntegrationRequest,
+  type RestV1IntegrationOutcome,
+} from './rest-v1-integrations.js';
+import { randomUUID } from 'node:crypto';
 import { matchPreflight, type CorsConfig } from './cors-handler.js';
 import type { AuthorizerInfo, RouteWithAuth } from './authorizer-resolver.js';
 import type { AuthorizerCache, CachedAuthorizerResult } from './authorizer-cache.js';
@@ -454,6 +463,34 @@ async function handleRequest(
     }
   }
 
+  // REST v1 non-AWS_PROXY dispatch (#457) — runs AFTER the authorizer
+  // pass so authorizer-protected MOCK / HTTP / AWS Lambda non-proxy
+  // routes still reject unauthenticated calls. The dispatchers in
+  // `src/local/rest-v1-integrations.ts` apply VTL templates and shape
+  // the response according to `IntegrationResponses[]`.
+  if (match.route.restV1Integration) {
+    try {
+      const outcome = await dispatchRestV1Integration(
+        match.route.restV1Integration,
+        snapshot,
+        matchCtx,
+        state,
+        opts
+      );
+      writeIntegrationOutcome(res, outcome);
+    } catch (err) {
+      logger.error(
+        `REST v1 ${match.route.restV1Integration.kind} dispatch failed for ${match.route.declaredAt}: ${err instanceof Error ? err.message : String(err)}`
+      );
+      if (!res.headersSent) {
+        writeError(res, 502);
+      } else {
+        res.end();
+      }
+    }
+    return;
+  }
+
   let handle;
   try {
     handle = await state.pool.acquire(match.route.lambdaLogicalId);
@@ -614,6 +651,64 @@ function writeStreamingResponse(
   });
   res.on('close', releaseOnce);
   body.pipe(res);
+}
+
+/**
+ * Dispatch a REST v1 non-AWS_PROXY integration to the matching handler.
+ * Built once per request from the matched route + request snapshot.
+ *
+ * Returns a {@link RestV1IntegrationOutcome} — the caller writes it
+ * onto the `ServerResponse` via {@link writeIntegrationOutcome}.
+ */
+async function dispatchRestV1Integration(
+  integration: NonNullable<DiscoveredRoute['restV1Integration']>,
+  snapshot: HttpRequestSnapshot,
+  matchCtx: MatchedRouteContext,
+  state: ServerState,
+  opts: StartApiServerOptions
+): Promise<RestV1IntegrationOutcome> {
+  const headers = lowercaseSingularHeaders(snapshot.headers);
+  const querystring = parseQueryStringSingular(snapshot.rawUrl);
+  const sourceIp = snapshot.sourceIp ?? '127.0.0.1';
+  const userAgent = headers['user-agent'] ?? '';
+
+  const req: RestV1IntegrationRequest = {
+    method: snapshot.method.toUpperCase(),
+    matchedPath: matchCtx.matchedPath,
+    pathParameters: matchCtx.pathParameters,
+    querystring,
+    headers,
+    body: snapshot.body,
+    sourceIp,
+    userAgent,
+    stage: matchCtx.route.stage,
+    resourcePath: matchCtx.route.pathPattern,
+    requestId: randomUUID(),
+  };
+
+  const deps = { pool: state.pool, rieTimeoutMs: opts.rieTimeoutMs };
+
+  switch (integration.kind) {
+    case 'mock':
+      return dispatchMockIntegration(integration, req);
+    case 'http-proxy':
+      return await dispatchHttpProxyIntegration(integration, req, deps);
+    case 'http':
+      return await dispatchHttpIntegration(integration, req, deps);
+    case 'aws-lambda':
+      return await dispatchAwsLambdaIntegration(integration, req, deps);
+  }
+}
+
+/**
+ * Write a {@link RestV1IntegrationOutcome} to the HTTP response.
+ */
+function writeIntegrationOutcome(res: ServerResponse, outcome: RestV1IntegrationOutcome): void {
+  res.statusCode = outcome.statusCode;
+  for (const [name, value] of Object.entries(outcome.headers)) {
+    res.setHeader(name, value);
+  }
+  res.end(outcome.body);
 }
 
 /**

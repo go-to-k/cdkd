@@ -5,6 +5,29 @@ import { RouteDiscoveryError } from '../utils/error-handler.js';
 import { stringifyValue } from '../utils/stringify.js';
 import { resolveLambdaArnIntrinsic as resolveLambdaArnShared } from './intrinsic-lambda-arn.js';
 import { isSupportedSubtype, type SupportedSubtype } from './httpv2-service-integration.js';
+import type {
+  AwsLambdaIntegrationConfig,
+  HttpIntegrationConfig,
+  HttpProxyIntegrationConfig,
+  MockIntegrationConfig,
+} from './rest-v1-integrations.js';
+import type { IntegrationResponseEntry } from './integration-response-selector.js';
+
+/**
+ * Union of REST v1 non-AWS_PROXY integration configurations captured at
+ * discovery time. The http-server dispatches on `kind` to invoke the
+ * matching handler in `src/local/rest-v1-integrations.ts`.
+ *
+ * Only populated for REST v1 routes that classify as one of the four
+ * supported non-AWS_PROXY kinds (closes #457). AWS_PROXY routes,
+ * synthetic CORS preflight routes, and unsupported routes leave this
+ * field undefined.
+ */
+export type RestV1IntegrationConfig =
+  | MockIntegrationConfig
+  | HttpProxyIntegrationConfig
+  | HttpIntegrationConfig
+  | AwsLambdaIntegrationConfig;
 
 /**
  * One discovered API → Lambda route for `cdkd local start-api`.
@@ -162,6 +185,18 @@ export interface DiscoveredRoute {
     requestParameters: Readonly<Record<string, unknown>>;
     responseParameters?: Readonly<Record<string, Readonly<Record<string, string>>>>;
   };
+  /**
+   * REST v1 non-AWS_PROXY integration configuration. Populated for the
+   * four supported non-AWS_PROXY kinds (`AWS` Lambda non-proxy, `HTTP`,
+   * `HTTP_PROXY`, `MOCK` non-CORS); when set, the http-server dispatches
+   * via `src/local/rest-v1-integrations.ts` instead of the AWS_PROXY
+   * container-pool path.
+   *
+   * Mutually exclusive with {@link DiscoveredRoute.unsupported} /
+   * {@link DiscoveredRoute.mockCors}. AWS_PROXY routes leave this
+   * undefined and use `lambdaLogicalId` for dispatch. Closes #457.
+   */
+  restV1Integration?: RestV1IntegrationConfig;
   /** Diagnostic only — used in route-table output and error messages. */
   declaredAt: string;
 }
@@ -288,23 +323,58 @@ function discoverRestV1Method(
 
   const integrationType = integration['Type'];
 
-  // REST v1 MOCK CORS preflight: CDK's `defaultCorsPreflightOptions`
-  // synthesizes an OPTIONS Method backed by a MOCK integration whose
-  // IntegrationResponses[].ResponseParameters carry literal
-  // `method.response.header.<Name>: "'value'"` pairs. We extract those
-  // pairs and emit a synthetic preflight route the HTTP server answers
-  // directly without invoking any Lambda.
+  // Non-AWS_PROXY integration types — emulate via the dispatcher in
+  // `src/local/rest-v1-integrations.ts` (closes #457).
+  // The integration types AWS accepts on REST v1:
+  //   - AWS_PROXY (handled below)
+  //   - AWS (Lambda non-proxy with VTL)
+  //   - HTTP / HTTP_PROXY
+  //   - MOCK (non-CORS) — CORS preflight is handled by a synthetic shape
+  //     extracted FIRST so the http-server can return literal header
+  //     values without running a VTL response template.
   if (integrationType === 'MOCK') {
-    const preflight =
-      httpMethod === 'OPTIONS' ? extractRestV1MockCorsConfig(integration) : undefined;
-    if (preflight) {
+    // OPTIONS + MOCK + literal `method.response.header.*` ResponseParameters
+    // is the CDK `defaultCorsPreflightOptions` synth shape — surface as a
+    // synthetic CORS-preflight route the http-server answers directly
+    // without running VTL.
+    if (httpMethod === 'OPTIONS') {
+      const preflight = extractRestV1MockCorsConfig(integration);
+      if (preflight) {
+        return [
+          {
+            ...baseRoute,
+            method: 'OPTIONS',
+            pathPattern: path,
+            lambdaLogicalId: '',
+            mockCors: preflight,
+          },
+        ];
+      }
+    }
+    // Any other MOCK integration (non-OPTIONS, or OPTIONS without the
+    // canonical CORS-preflight shape) flows through the full MOCK
+    // dispatcher in `rest-v1-integrations.ts`.
+    const config = buildMockIntegrationConfig(integration);
+    return [
+      {
+        ...baseRoute,
+        method: httpMethod,
+        pathPattern: path,
+        lambdaLogicalId: '',
+        restV1Integration: config,
+      },
+    ];
+  }
+  if (integrationType === 'HTTP_PROXY') {
+    const config = buildHttpProxyIntegrationConfig(integration, stackName, logicalId);
+    if (config.kind === 'unsupported') {
       return [
         {
           ...baseRoute,
-          method: 'OPTIONS',
+          method: httpMethod,
           pathPattern: path,
           lambdaLogicalId: '',
-          mockCors: preflight,
+          unsupported: { reason: config.reason },
         },
       ];
     }
@@ -314,15 +384,63 @@ function discoverRestV1Method(
         method: httpMethod,
         pathPattern: path,
         lambdaLogicalId: '',
-        unsupported: {
-          reason: `${stackName}/${logicalId}: MOCK integration is not emulated (only the CORS preflight subset, where HttpMethod=OPTIONS and IntegrationResponses carry literal method.response.header.* values, is supported).`,
-        },
+        restV1Integration: config.config,
       },
     ];
   }
-
-  // Other non-AWS_PROXY integration types — surfaced as deferred 501.
+  if (integrationType === 'HTTP') {
+    const config = buildHttpIntegrationConfig(integration, stackName, logicalId);
+    if (config.kind === 'unsupported') {
+      return [
+        {
+          ...baseRoute,
+          method: httpMethod,
+          pathPattern: path,
+          lambdaLogicalId: '',
+          unsupported: { reason: config.reason },
+        },
+      ];
+    }
+    return [
+      {
+        ...baseRoute,
+        method: httpMethod,
+        pathPattern: path,
+        lambdaLogicalId: '',
+        restV1Integration: config.config,
+      },
+    ];
+  }
+  if (integrationType === 'AWS') {
+    // AWS integration: Lambda non-proxy (the common case CDK emits) OR
+    // direct AWS service integration (S3 / SQS / SNS / DynamoDB). cdkd
+    // v1 emulates the Lambda non-proxy shape; other services surface as
+    // deferred 501. We detect Lambda by inspecting the Uri shape — any
+    // `:lambda:path/2015-03-31/functions/` marker identifies Lambda.
+    const config = buildAwsIntegrationConfig(integration, stackName, logicalId);
+    if (config.kind === 'unsupported') {
+      return [
+        {
+          ...baseRoute,
+          method: httpMethod,
+          pathPattern: path,
+          lambdaLogicalId: '',
+          unsupported: { reason: config.reason },
+        },
+      ];
+    }
+    return [
+      {
+        ...baseRoute,
+        method: httpMethod,
+        pathPattern: path,
+        lambdaLogicalId: config.config.lambdaLogicalId,
+        restV1Integration: config.config,
+      },
+    ];
+  }
   if (integrationType !== 'AWS_PROXY') {
+    // Unknown integration type — defensive 501.
     return [
       {
         ...baseRoute,
@@ -330,9 +448,7 @@ function discoverRestV1Method(
         pathPattern: path,
         lambdaLogicalId: '',
         unsupported: {
-          reason: `${stackName}/${logicalId}: REST v1 integration type '${String(
-            integrationType
-          )}' is not supported (only AWS_PROXY and the MOCK CORS preflight subset).`,
+          reason: `${stackName}/${logicalId}: unknown REST v1 integration type '${String(integrationType)}' (expected AWS_PROXY / AWS / HTTP / HTTP_PROXY / MOCK).`,
         },
       },
     ];
@@ -437,6 +553,237 @@ function extractRestV1MockCorsConfig(
   const statusCode = Number.isFinite(parsed) ? parsed : 204;
 
   return { statusCode, headers };
+}
+
+/**
+ * Marker sequence on a Lambda invoke ARN — used to tell apart REST v1
+ * `AWS` integrations whose backend is Lambda (`functions/<arn>/invocations`)
+ * from other AWS-service integrations (`:s3:path/...`, `:sqs:path/...`).
+ * Closes #457's AWS-vs-Lambda discrimination.
+ */
+const LAMBDA_INVOKE_PATH = ':lambda:path/2015-03-31/functions/';
+
+/** Parsed AWS integration outcome — either a populated config or an unsupported reason. */
+type ConfigOrUnsupported<T> =
+  | { kind: 'config'; config: T }
+  | { kind: 'unsupported'; reason: string };
+
+/**
+ * Build a MOCK integration config for `cdkd local start-api` dispatch.
+ *
+ * Pulls `Integration.RequestTemplates['application/json']` (drives MOCK
+ * status-code selection — AWS reads `{"statusCode": N}` from the rendered
+ * template) and `Integration.IntegrationResponses[]` (drives the shaped
+ * response).
+ */
+function buildMockIntegrationConfig(integration: Record<string, unknown>): MockIntegrationConfig {
+  const requestTemplate = pickStringFromRecord(integration['RequestTemplates'], 'application/json');
+  const responses = readIntegrationResponses(integration);
+  return {
+    kind: 'mock',
+    requestTemplate: requestTemplate ?? undefined,
+    responses,
+  };
+}
+
+/**
+ * Build a HTTP_PROXY integration config. The Uri must be a literal
+ * string at template-author time — `Fn::Sub` shapes with literal
+ * placeholders are rare and unsupported in v1 (surfaces as a 501 with
+ * a clear reason).
+ */
+function buildHttpProxyIntegrationConfig(
+  integration: Record<string, unknown>,
+  stackName: string,
+  logicalId: string
+): ConfigOrUnsupported<HttpProxyIntegrationConfig> {
+  const uri = integration['Uri'];
+  if (typeof uri !== 'string' || uri.length === 0) {
+    return {
+      kind: 'unsupported',
+      reason: `${stackName}/${logicalId}: HTTP_PROXY Integration.Uri must be a literal string in v1 (cdkd local start-api does not resolve Fn::Sub / Fn::Join in HTTP_PROXY Uris); got ${shortJson(uri)}.`,
+    };
+  }
+  const integrationHttpMethod = pickStringField(integration, 'IntegrationHttpMethod');
+  const requestParameters = pickStringRecord(integration['RequestParameters']);
+  const responses = readIntegrationResponses(integration);
+  return {
+    kind: 'config',
+    config: {
+      kind: 'http-proxy',
+      uri,
+      ...(integrationHttpMethod !== undefined && { integrationHttpMethod }),
+      ...(requestParameters !== undefined && { requestParameters }),
+      responses,
+    },
+  };
+}
+
+/**
+ * Build an HTTP (non-proxy) integration config. Like HTTP_PROXY but with
+ * `RequestTemplates` for VTL transformation.
+ */
+function buildHttpIntegrationConfig(
+  integration: Record<string, unknown>,
+  stackName: string,
+  logicalId: string
+): ConfigOrUnsupported<HttpIntegrationConfig> {
+  const uri = integration['Uri'];
+  if (typeof uri !== 'string' || uri.length === 0) {
+    return {
+      kind: 'unsupported',
+      reason: `${stackName}/${logicalId}: HTTP Integration.Uri must be a literal string in v1 (cdkd local start-api does not resolve Fn::Sub / Fn::Join in HTTP Uris); got ${shortJson(uri)}.`,
+    };
+  }
+  const integrationHttpMethod = pickStringField(integration, 'IntegrationHttpMethod');
+  const requestParameters = pickStringRecord(integration['RequestParameters']);
+  const requestTemplates = pickStringRecord(integration['RequestTemplates']);
+  const responses = readIntegrationResponses(integration);
+  return {
+    kind: 'config',
+    config: {
+      kind: 'http',
+      uri,
+      ...(integrationHttpMethod !== undefined && { integrationHttpMethod }),
+      ...(requestParameters !== undefined && { requestParameters }),
+      ...(requestTemplates !== undefined && { requestTemplates }),
+      responses,
+    },
+  };
+}
+
+/**
+ * Build an AWS integration config. Branches on whether the integration
+ * targets a Lambda (`:lambda:path/2015-03-31/functions/<arn>/invocations`)
+ * or a non-Lambda AWS service (`:s3:path/...` / `:sqs:action/...` etc.).
+ *
+ * cdkd v1 supports Lambda non-proxy AWS integrations end-to-end. Non-
+ * Lambda AWS service integrations surface as deferred-501 unsupported
+ * routes — they would require an AWS SDK client per service, IAM
+ * credential threading, and a sizable per-service unit-test matrix.
+ * See [docs/local-emulation.md](docs/local-emulation.md) for the deferred
+ * AWS-service-action list.
+ */
+function buildAwsIntegrationConfig(
+  integration: Record<string, unknown>,
+  stackName: string,
+  logicalId: string
+): ConfigOrUnsupported<AwsLambdaIntegrationConfig> {
+  const uri = integration['Uri'];
+  const isLambda = uriContainsLambdaMarker(uri);
+  if (!isLambda) {
+    return {
+      kind: 'unsupported',
+      reason: `${stackName}/${logicalId}: REST v1 AWS integration targeting a non-Lambda service (Uri ${shortJson(uri)}) is not emulated locally in cdkd v1. Lambda non-proxy AWS integrations are supported; direct AWS service integrations (S3 / SQS / SNS / DynamoDB) require deploying to AWS. See docs/local-emulation.md.`,
+    };
+  }
+  const arnOutcome = resolveLambdaArnOutcome(uri);
+  if (arnOutcome.kind === 'unsupported') {
+    return {
+      kind: 'unsupported',
+      reason: `${stackName}/${logicalId}.Integration.Uri: ${arnOutcome.detail} (got ${shortJson(uri)}). Lambda Arn intrinsics on cross-stack / imported references are not resolvable locally.`,
+    };
+  }
+  const requestTemplates = pickStringRecord(integration['RequestTemplates']);
+  const responses = readIntegrationResponses(integration);
+  return {
+    kind: 'config',
+    config: {
+      kind: 'aws-lambda',
+      lambdaLogicalId: arnOutcome.logicalId,
+      ...(requestTemplates !== undefined && { requestTemplates }),
+      responses,
+    },
+  };
+}
+
+/**
+ * Determine whether an `Integration.Uri` references a Lambda invoke path.
+ * Recognises the canonical Lambda invoke ARN shape across the same
+ * intrinsic forms `intrinsic-lambda-arn.ts` accepts (the shared resolver
+ * never produces this Boolean directly, so we walk the shape here).
+ */
+function uriContainsLambdaMarker(uri: unknown): boolean {
+  if (typeof uri === 'string') return uri.includes(LAMBDA_INVOKE_PATH);
+  if (uri && typeof uri === 'object' && !Array.isArray(uri)) {
+    const obj = uri as Record<string, unknown>;
+    if ('Fn::Sub' in obj) {
+      const v = obj['Fn::Sub'];
+      if (typeof v === 'string') return v.includes(LAMBDA_INVOKE_PATH);
+      if (Array.isArray(v) && typeof v[0] === 'string') return v[0].includes(LAMBDA_INVOKE_PATH);
+    }
+    if ('Fn::Join' in obj) {
+      const join = obj['Fn::Join'];
+      if (Array.isArray(join) && join.length === 2 && Array.isArray(join[1])) {
+        for (const piece of join[1]) {
+          if (typeof piece === 'string' && piece.includes(LAMBDA_INVOKE_PATH)) return true;
+        }
+      }
+    }
+    // Plain `Ref` / `Fn::GetAtt: [..., 'Arn']` shapes always refer to
+    // Lambda in REST v1 (the only intrinsic-targetable resource on AWS
+    // integration is Lambda; AWS service Uris use literal-string Fn::Sub
+    // forms in CDK templates).
+    if ('Ref' in obj || 'Fn::GetAtt' in obj) return true;
+  }
+  return false;
+}
+
+/**
+ * Read `Integration.IntegrationResponses[]` from a Method's Integration
+ * sub-object and return the entries cdkd's dispatchers consume.
+ *
+ * Defensive: rejects non-object entries with a clear inline warning.
+ */
+function readIntegrationResponses(
+  integration: Record<string, unknown>
+): IntegrationResponseEntry[] {
+  const raw = integration['IntegrationResponses'];
+  if (!Array.isArray(raw)) return [];
+  const out: IntegrationResponseEntry[] = [];
+  for (const entry of raw) {
+    if (!entry || typeof entry !== 'object') continue;
+    const obj = entry as Record<string, unknown>;
+    const statusCode = obj['StatusCode'];
+    if (statusCode === undefined) continue;
+    // Defensive: only accept string / number forms. Intrinsic-valued
+    // StatusCodes are theoretically possible but never emitted by CDK
+    // (and we couldn't evaluate them locally anyway).
+    if (typeof statusCode !== 'string' && typeof statusCode !== 'number') continue;
+    const e: IntegrationResponseEntry = { StatusCode: String(statusCode) };
+    if (typeof obj['SelectionPattern'] === 'string') e.SelectionPattern = obj['SelectionPattern'];
+    const responseParameters = pickStringRecord(obj['ResponseParameters']);
+    if (responseParameters !== undefined) e.ResponseParameters = responseParameters;
+    const responseTemplates = pickStringRecord(obj['ResponseTemplates']);
+    if (responseTemplates !== undefined) e.ResponseTemplates = responseTemplates;
+    if (typeof obj['ContentHandling'] === 'string') e.ContentHandling = obj['ContentHandling'];
+    out.push(e);
+  }
+  return out;
+}
+
+function pickStringField(props: Record<string, unknown>, key: string): string | undefined {
+  const v = props[key];
+  return typeof v === 'string' ? v : undefined;
+}
+
+function pickStringRecord(value: unknown): Record<string, string> | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const out: Record<string, string> = {};
+  let any = false;
+  for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+    if (typeof v === 'string') {
+      out[k] = v;
+      any = true;
+    }
+  }
+  return any ? out : undefined;
+}
+
+function pickStringFromRecord(value: unknown, key: string): string | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const v = (value as Record<string, unknown>)[key];
+  return typeof v === 'string' ? v : undefined;
 }
 
 /**
