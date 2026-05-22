@@ -461,7 +461,9 @@ cdkd local start-api --from-state                 # substitute deployed env vars
 One server per discovered API — authorizers, CORS configs, and stage
 variables stay scoped to the owning API. Supports REST v1 + HTTP API +
 Function URL with AWS_PROXY integrations; Lambda TOKEN / REQUEST,
-Cognito User Pool, and HTTP v2 JWT authorizers (JWKS-verified); CORS
+Cognito User Pool, HTTP v2 JWT authorizers (JWKS-verified), and REST v1
+`AuthorizationType: 'AWS_IAM'` (SigV4 signature verification only — IAM
+policy evaluation is not emulated; see `docs/local-emulation.md`); CORS
 preflight (HTTP API v2 `CorsConfiguration` + REST v1 OPTIONS MOCK
 preflight from `defaultCorsPreflightOptions`); hot reload via `--watch`;
 deploy-state-backed env var substitution via `--from-state`.

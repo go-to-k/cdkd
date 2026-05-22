@@ -1,3 +1,10 @@
+# [0.119.0](https://github.com/go-to-k/cdkd/compare/v0.118.0...v0.119.0) (2026-05-22)
+
+
+### Features
+
+* **local-start-api:** cognito multi-pool federation ([#488](https://github.com/go-to-k/cdkd/issues/488)) ([64a479a](https://github.com/go-to-k/cdkd/commit/64a479a91a7d0af3fdf33fa924d8029196035f34))
+
 # [0.118.0](https://github.com/go-to-k/cdkd/compare/v0.117.2...v0.118.0) (2026-05-21)
 
 

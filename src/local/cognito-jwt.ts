@@ -175,21 +175,37 @@ export function buildJwksUrlFromIssuer(issuer: string): string {
 }
 
 /**
- * Verify a Bearer JWT against the Cognito user pool referenced by the
- * authorizer. Returns a {@link CachedAuthorizerResult} the http-server
- * can both cache (briefly — JWT exp itself is the cache deadline) and
- * propagate into the route event.
+ * Build the expected `iss` claim URL for a Cognito user pool. Matches the
+ * issuer Cognito embeds in every minted JWT.
+ */
+function buildCognitoIssuer(region: string, userPoolId: string): string {
+  return `https://cognito-idp.${region}.amazonaws.com/${userPoolId}`;
+}
+
+/**
+ * Verify a Bearer JWT against the Cognito user pool(s) referenced by the
+ * authorizer. With a multi-pool authorizer (`ProviderARNs[]` of length
+ * 1+) the request-time pool selection is driven by the JWT's unverified
+ * `iss` claim — only the matching pool's JWKS is used for signature
+ * verification, so a token issued by pool A cannot be verified against
+ * pool B's keys. Issuer mismatch against EVERY configured pool rejects
+ * with 401.
  *
  * Returns `{ allow: false }` on:
  *   - missing / malformed Authorization header (caller surfaces 401);
  *   - signature verification failure;
  *   - expired token (`exp` in the past);
- *   - issuer mismatch (token's `iss` doesn't match the pool's URL);
+ *   - issuer mismatch (token's `iss` doesn't match any configured pool);
  *   - audience mismatch (token's `aud` not in the configured allowlist).
  *
  * Returns `{ allow: true, principalId, context }` on:
- *   - successful verification;
- *   - JWKS-unreachable pass-through mode (with a warn line on first hit).
+ *   - successful verification against the matching pool;
+ *   - JWKS-unreachable pass-through mode for the matching pool (with a
+ *     warn line on first hit; per-pool TTL handled by the cache).
+ *
+ * Backward compat: a single-element `ProviderARNs[]` (the historical
+ * single-pool case) behaves identically to pre-PR — `pools[0]` is the
+ * only candidate and the `iss` check matches it.
  */
 export async function verifyCognitoJwt(
   authorizer: CognitoUserPoolAuthorizer,
@@ -202,8 +218,65 @@ export async function verifyCognitoJwt(
   if (!token) {
     return { allow: false, identityHash: undefined, ttlSeconds: 0 };
   }
-  const jwksUrl = buildCognitoJwksUrl(authorizer.region, authorizer.userPoolId);
-  const expectedIssuer = `https://cognito-idp.${authorizer.region}.amazonaws.com/${authorizer.userPoolId}`;
+  // `pools` is the canonical list; older callers that build the
+  // authorizer literal (tests) may still pass legacy single-pool shape
+  // — fall back to the legacy fields in that case.
+  const pools =
+    authorizer.pools && authorizer.pools.length > 0
+      ? authorizer.pools
+      : [
+          {
+            userPoolArn: authorizer.userPoolArn,
+            region: authorizer.region,
+            userPoolId: authorizer.userPoolId,
+          },
+        ];
+  // Parse the token first so we can read its (unverified) `iss` claim
+  // and pick the matching pool. parseJwt() failure is mapped to deny so
+  // a garbage token never reaches the JWKS fetcher in the real-pool
+  // (non pass-through) path — but the pass-through pool path needs to
+  // accept malformed tokens, which the verify helper handles below.
+  const parsed = parseJwt(token);
+  const identityHash = buildIdentityHash([token]);
+
+  // Pick the pool whose expected issuer URL matches the token's `iss`.
+  // Strip trailing slashes defensively (a real Cognito token issuer
+  // never has one, but be tolerant).
+  let selectedPool = pools[0]!;
+  let issMatched = false;
+  if (parsed && typeof parsed.payload['iss'] === 'string') {
+    const tokenIss = parsed.payload['iss'].replace(/\/+$/, '');
+    for (const pool of pools) {
+      if (buildCognitoIssuer(pool.region, pool.userPoolId) === tokenIss) {
+        selectedPool = pool;
+        issMatched = true;
+        break;
+      }
+    }
+    // Issuer mismatch against EVERY configured pool: reject without
+    // touching JWKS. Multi-pool federation must NOT accept a token
+    // whose issuer was never registered.
+    if (!issMatched) {
+      return { allow: false, identityHash, ttlSeconds: 0 };
+    }
+  } else if (pools.length > 1) {
+    // Multi-pool federation safety: when there is more than one
+    // configured pool AND the token did not parse (or has no string
+    // `iss`), we have no safe way to route the request to a pool. The
+    // pass-through fallback would arbitrarily pick pools[0] and, if
+    // pool[0] happens to be in JWKS-pass-through mode, accept the
+    // garbage token as `principalId: 'unknown'` — bypassing the
+    // configured-issuer guard. Reject unconditionally instead.
+    return { allow: false, identityHash, ttlSeconds: 0 };
+  }
+  // Single-pool case OR no-iss with one pool: fall through to
+  // verifyAndShape against pools[0]. parseJwt-failure deny is enforced
+  // there; if the pool is in pass-through mode, the malformed token
+  // gets the "unknown" principal allow path (preserves PR 8b's design
+  // intent that JWKS-unreachable accepts any Bearer token for that
+  // single configured pool).
+  const jwksUrl = buildCognitoJwksUrl(selectedPool.region, selectedPool.userPoolId);
+  const expectedIssuer = buildCognitoIssuer(selectedPool.region, selectedPool.userPoolId);
   return verifyAndShape(token, jwksUrl, expectedIssuer, undefined, jwksCache, opts.warned, now);
 }
 
