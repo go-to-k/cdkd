@@ -141,6 +141,9 @@ EXPECTED_ROUTES=(
   "POST    /items"
   "GET     /items/\\{id\\}"
   "GET     /protected"
+  "POST    /sqs"
+  "POST    /events"
+  "POST    /unknown-subtype"
   "ANY     /v1/\\{proxy\\+\\}"
   "GET     /v1/unsupported"
   "GET     /v1/cross-stack-auth"
@@ -341,6 +344,83 @@ if ! echo "${AUTH_BODY}" | grep -q 'authorizer Lambda Arn unresolvable'; then
   exit 1
 fi
 echo "    [GET /v1/cross-stack-auth (501)] OK"
+
+# #458: HTTP API v2 service integrations. The fixture wires POST /sqs to
+# `SQS-SendMessage`, POST /events to `EventBridge-PutEvents`, and POST
+# /unknown-subtype to a deliberately-typo'd subtype that must fall back
+# to the deferred-501 path. We DO NOT deploy real SQS/EventBridge — the
+# integ is local-only — so the SDK calls land against the dev's AWS
+# creds and either reject with a 4xx (proves dispatch fired) or return
+# AccessDenied / NoSuchQueue. Pre-#458 these routes 501'd at boot.
+echo "==> Asserting service-integration route table labels (#458)"
+if ! grep -F "[SQS-SendMessage]" "${LOG_FILE}" >/dev/null; then
+  echo "FAIL: route table did not include [SQS-SendMessage] label."
+  cat "${LOG_FILE}"
+  exit 1
+fi
+if ! grep -F "[EventBridge-PutEvents]" "${LOG_FILE}" >/dev/null; then
+  echo "FAIL: route table did not include [EventBridge-PutEvents] label."
+  cat "${LOG_FILE}"
+  exit 1
+fi
+echo "    [route labels] OK"
+
+echo "==> Asserting POST /sqs goes through the dispatcher (not 501)"
+SQS_RESPONSE=$(curl -s -w '\nHTTP_STATUS=%{http_code}' -X POST \
+  -H 'Content-Type: application/json' \
+  -d '{"message":"hello"}' \
+  "http://127.0.0.1:${PORT_HTTP}/sqs?url=https://sqs.invalid.example/q")
+SQS_STATUS=$(echo "${SQS_RESPONSE}" | grep -oE 'HTTP_STATUS=[0-9]+' | cut -d= -f2)
+SQS_BODY=$(echo "${SQS_RESPONSE}" | sed '$ d')
+# Acceptance: anything OTHER than 501 (= dispatched to AWS SDK). Most
+# environments will surface a 4xx (NonExistentQueue / AccessDenied /
+# InvalidParameter / SignatureDoesNotMatch). The body must NOT include
+# the "Not Implemented" marker.
+if [[ "${SQS_STATUS}" == "501" ]]; then
+  echo "FAIL: POST /sqs returned 501 — service-integration dispatch did not fire. Body: ${SQS_BODY}"
+  cat "${LOG_FILE}"
+  exit 1
+fi
+if echo "${SQS_BODY}" | grep -q '"message":"Not Implemented"'; then
+  echo "FAIL: POST /sqs body looks like the deferred-501 envelope. Body: ${SQS_BODY}"
+  exit 1
+fi
+echo "    [POST /sqs dispatched] OK (status=${SQS_STATUS})"
+
+echo "==> Asserting POST /events goes through the dispatcher (not 501)"
+EVENTS_RESPONSE=$(curl -s -w '\nHTTP_STATUS=%{http_code}' -X POST \
+  -H 'Content-Type: application/json' \
+  -d '{"k":"v"}' \
+  "http://127.0.0.1:${PORT_HTTP}/events?type=order.created")
+EVENTS_STATUS=$(echo "${EVENTS_RESPONSE}" | grep -oE 'HTTP_STATUS=[0-9]+' | cut -d= -f2)
+EVENTS_BODY=$(echo "${EVENTS_RESPONSE}" | sed '$ d')
+if [[ "${EVENTS_STATUS}" == "501" ]]; then
+  echo "FAIL: POST /events returned 501 — dispatch did not fire. Body: ${EVENTS_BODY}"
+  cat "${LOG_FILE}"
+  exit 1
+fi
+if echo "${EVENTS_BODY}" | grep -q '"message":"Not Implemented"'; then
+  echo "FAIL: POST /events body looks like the deferred-501 envelope. Body: ${EVENTS_BODY}"
+  exit 1
+fi
+echo "    [POST /events dispatched] OK (status=${EVENTS_STATUS})"
+
+echo "==> Asserting POST /unknown-subtype -> 501 (classifier rejected typo)"
+UNK_RESPONSE=$(curl -s -w '\nHTTP_STATUS=%{http_code}' -X POST \
+  -H 'Content-Type: application/json' \
+  -d '{}' \
+  "http://127.0.0.1:${PORT_HTTP}/unknown-subtype")
+UNK_STATUS=$(echo "${UNK_RESPONSE}" | grep -oE 'HTTP_STATUS=[0-9]+' | cut -d= -f2)
+UNK_BODY=$(echo "${UNK_RESPONSE}" | sed '$ d')
+if [[ "${UNK_STATUS}" != "501" ]]; then
+  echo "FAIL: POST /unknown-subtype should 501 (unrecognized subtype). Got ${UNK_STATUS}. Body: ${UNK_BODY}"
+  exit 1
+fi
+if ! echo "${UNK_BODY}" | grep -q 'DynamoDB-PutItem'; then
+  echo "FAIL: 501 reason should name the offending subtype. Body: ${UNK_BODY}"
+  exit 1
+fi
+echo "    [POST /unknown-subtype (501)] OK"
 
 echo ""
 echo "==> All local-start-api smoke tests passed"

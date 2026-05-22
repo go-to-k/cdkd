@@ -614,6 +614,8 @@ async function localStartApiCommand(
         }
       }
     }
+    const defaultRegion =
+      options.region ?? process.env['AWS_REGION'] ?? process.env['AWS_DEFAULT_REGION'] ?? undefined;
     const started = await startApiServer({
       state: groupState,
       rieTimeoutMs,
@@ -627,6 +629,10 @@ async function localStartApiCommand(
       sigV4CredentialsLoader,
       sigV4WarnedForeignIds,
       sigV4AllowUnverified: options.allowUnverifiedSigv4 === true,
+      // #458: surfaces as the per-route fallback region for HTTP API
+      // v2 service integrations. Per-request `RequestParameters.Region`
+      // overrides this — matches AWS API Gateway behavior.
+      ...(defaultRegion && { defaultRegion }),
     });
     servers.push({ group, server: started });
     if (basePort !== 0) nextPort += 1;
@@ -836,11 +842,12 @@ function uniqueLambdaIds(
   const seen = new Set<string>();
   const out: string[] = [];
   for (const r of routes) {
-    // Skip deferred-error unsupported routes and synthetic mockCors
-    // routes — neither dispatches to a Lambda, so spinning up their
-    // containers (when a lambdaLogicalId IS attached, e.g. on a
-    // Function URL with AuthType=AWS_IAM) would be wasted boot time.
-    if (r.unsupported || r.mockCors) continue;
+    // Skip deferred-error unsupported routes, synthetic mockCors
+    // routes, and service-integration routes — none of them dispatch
+    // to a Lambda, so spinning up their containers (when a
+    // lambdaLogicalId IS attached, e.g. on a Function URL with
+    // AuthType=AWS_IAM) would be wasted boot time.
+    if (r.unsupported || r.mockCors || r.serviceIntegration) continue;
     if (r.lambdaLogicalId.length === 0) continue;
     if (!seen.has(r.lambdaLogicalId)) {
       seen.add(r.lambdaLogicalId);
@@ -848,9 +855,12 @@ function uniqueLambdaIds(
     }
   }
   for (const entry of routesWithAuth) {
-    // An unsupported route never reaches the authorizer pass, so its
-    // authorizer Lambda doesn't need a container either.
-    if (entry.route.unsupported || entry.route.mockCors) continue;
+    // An unsupported / mockCors / service-integration route never
+    // reaches the authorizer pass, so its authorizer Lambda doesn't
+    // need a container either.
+    if (entry.route.unsupported || entry.route.mockCors || entry.route.serviceIntegration) {
+      continue;
+    }
     const auth = entry.authorizer;
     if (!auth) continue;
     if (auth.kind === 'lambda-token' || auth.kind === 'lambda-request') {
@@ -1648,7 +1658,9 @@ function printRouteTable(routes: readonly RouteWithAuth[]): void {
       ? '[MOCK CORS preflight]'
       : r.unsupported
         ? '[501 Not Implemented]'
-        : r.lambdaLogicalId;
+        : r.serviceIntegration
+          ? `[${r.serviceIntegration.subtype}]`
+          : r.lambdaLogicalId;
     process.stdout.write(
       `  ${r.method.padEnd(methodWidth)}  ${r.pathPattern.padEnd(pathWidth)}  -> ${target}  (${sourceLabel})\n`
     );

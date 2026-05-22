@@ -635,12 +635,13 @@ export function attachAuthorizers(
   const errors: string[] = [];
 
   for (const route of routes) {
-    // Skip deferred-error / mockCors routes — they never reach the
-    // authorizer pass at request time (the http-server short-circuits
-    // before it), and a route flagged unsupported for AuthorizationType
-    // / AuthType (e.g. Function URL with AWS_IAM) would otherwise
-    // hard-error here instead of surfacing the cleaner 501.
-    if (route.unsupported || route.mockCors) {
+    // Skip deferred-error / mockCors / service-integration routes —
+    // none of them reach the authorizer pass at request time (the
+    // http-server short-circuits before it). For service integrations
+    // specifically, dispatch happens via the SDK adapter table — the
+    // current PR scope is dispatch only; auth-protected service
+    // integrations are a follow-up.
+    if (route.unsupported || route.mockCors || route.serviceIntegration) {
       out.push({ route });
       continue;
     }
