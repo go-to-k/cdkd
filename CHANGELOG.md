@@ -1,3 +1,10 @@
+# [0.135.0](https://github.com/go-to-k/cdkd/compare/v0.134.0...v0.135.0) (2026-05-22)
+
+
+### Features
+
+* **migrate:** PR B CLI + 2-pass resource mapping + import + retire ([#465](https://github.com/go-to-k/cdkd/issues/465)) ([#517](https://github.com/go-to-k/cdkd/issues/517)) ([ae19dc6](https://github.com/go-to-k/cdkd/commit/ae19dc696047b430d2ec1a2e418643aa5a329186))
+
 # [0.134.0](https://github.com/go-to-k/cdkd/compare/v0.133.0...v0.134.0) (2026-05-22)
 
 
