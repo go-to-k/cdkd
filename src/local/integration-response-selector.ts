@@ -154,32 +154,40 @@ export function selectIntegrationResponse(
   };
 }
 
-function parseStatus(raw: unknown, fallback: number): number {
-  // Issue (#507) item 6: prefer `Number(...) + Number.isInteger(...)` over
-  // `parseInt` so a malformed `StatusCode` value like `"200abc"` is rejected
-  // as `undefined` and the caller falls back to `fallback` rather than
-  // silently truncating to `200`. Same rationale as `extractStatusCodeFromRendered`
-  // in `rest-v1-integrations.ts`.
-  //
-  // PR #511 review fix-back: `Number(...)` accepts empty strings (→ 0),
-  // pure-whitespace strings (→ 0), negative numbers, and out-of-range
-  // integers — all of which are invalid HTTP status codes. Tighten the
-  // validation to reject those classes too:
-  //   - non-string non-number → fallback
-  //   - empty / whitespace-only string → fallback
-  //   - NaN / non-integer → fallback
-  //   - integer outside [100, 599] → fallback (HTTP status code range)
+/**
+ * Parse an `IntegrationResponse.StatusCode` value into an HTTP status
+ * code, returning `undefined` when the value is malformed or outside
+ * the valid `[100, 600)` range.
+ *
+ * Issue (#507) items 6 + 7 + PR #515 item 4: this is the single source
+ * of truth for "is `raw` a usable HTTP status code?" — `parseStatus`
+ * in `rest-v1-integrations.ts` and this module's `parseStatus(raw, fallback)`
+ * both delegate here so future shape-tightening (e.g. accepting `0x10`
+ * the way `Number("0x10") === 16` does) lands in one place.
+ *
+ * Validation rules:
+ *   - non-string non-number → undefined
+ *   - empty / whitespace-only string → undefined
+ *   - NaN / non-integer → undefined
+ *   - integer outside `[100, 600)` (HTTP valid range) → undefined
+ *   - hex literal `"0x10"` → Number coerces to 16 but below 100 → undefined
+ */
+export function tryParseStatus(raw: unknown): number | undefined {
   if (typeof raw === 'number') {
     if (Number.isInteger(raw) && raw >= 100 && raw < 600) return raw;
-    return fallback;
+    return undefined;
   }
-  if (typeof raw !== 'string') return fallback;
+  if (typeof raw !== 'string') return undefined;
   const trimmed = raw.trim();
-  if (trimmed === '') return fallback;
+  if (trimmed === '') return undefined;
   const parsed = Number(trimmed);
-  if (!Number.isInteger(parsed)) return fallback;
-  if (parsed < 100 || parsed >= 600) return fallback;
+  if (!Number.isInteger(parsed)) return undefined;
+  if (parsed < 100 || parsed >= 600) return undefined;
   return parsed;
+}
+
+function parseStatus(raw: unknown, fallback: number): number {
+  return tryParseStatus(raw) ?? fallback;
 }
 
 /**

@@ -65,6 +65,7 @@ import {
   evaluateResponseParameters,
   pickResponseTemplate,
   selectIntegrationResponse,
+  tryParseStatus,
   type IntegrationResponseEntry,
 } from './integration-response-selector.js';
 import {
@@ -126,8 +127,13 @@ export interface RestV1IntegrationOutcome {
  * dispatchers themselves take only request data.
  */
 export interface RestV1DispatcherDeps {
-  /** Used by AWS Lambda non-proxy to acquire a warm RIE container. */
-  pool: ContainerPool;
+  /**
+   * Used by AWS Lambda non-proxy to acquire a warm RIE container. The
+   * dispatcher only invokes `acquire` + `release`; the narrower
+   * `Pick<ContainerPool, ...>` shape lets unit tests pass a minimal
+   * mock without an `as any` cast (PR #515 item 5).
+   */
+  pool: Pick<ContainerPool, 'acquire' | 'release'>;
   /** RIE invoke timeout in ms. */
   rieTimeoutMs: number;
   /**
@@ -194,7 +200,7 @@ export function dispatchMockIntegration(
   let entry: IntegrationResponseEntry | null = null;
   if (pickedStatus !== undefined) {
     entry =
-      config.responses.find((e) => parseStatus(e.StatusCode) === pickedStatus) ??
+      config.responses.find((e) => tryParseStatus(e.StatusCode) === pickedStatus) ??
       defaultResponseEntry(config.responses);
   } else {
     entry = defaultResponseEntry(config.responses);
@@ -240,7 +246,7 @@ export function dispatchMockIntegration(
   }
 
   return {
-    statusCode: parseStatus(entry.StatusCode) ?? 200,
+    statusCode: tryParseStatus(entry.StatusCode) ?? 200,
     headers,
     body,
   };
@@ -760,27 +766,11 @@ function defaultResponseEntry(
   return entries.find((e) => e.SelectionPattern === undefined || e.SelectionPattern === '') ?? null;
 }
 
-function parseStatus(raw: unknown): number | undefined {
-  // Issue (#507) item 6: prefer `Number(...) + Number.isInteger(...)` over
-  // `parseInt` so a malformed `StatusCode` value like `"200abc"` is rejected
-  // as `undefined` (caller falls back to default entry / 200).
-  //
-  // PR #511 review fix-back: tighten validation so empty strings
-  // (Number("") === 0), whitespace-only strings, negatives, and
-  // out-of-range integers all reject. Valid HTTP status codes are
-  // in [100, 599].
-  if (typeof raw === 'number') {
-    if (Number.isInteger(raw) && raw >= 100 && raw < 600) return raw;
-    return undefined;
-  }
-  if (typeof raw !== 'string') return undefined;
-  const trimmed = raw.trim();
-  if (trimmed === '') return undefined;
-  const n = Number(trimmed);
-  if (!Number.isInteger(n)) return undefined;
-  if (n < 100 || n >= 600) return undefined;
-  return n;
-}
+// PR #515 item 4: `parseStatus(raw)` here was a near-duplicate of
+// `parseStatus(raw, fallback)` in `integration-response-selector.ts`.
+// Consolidated into the shared `tryParseStatus(raw): number | undefined`
+// exported from that module; this file's call sites use
+// `tryParseStatus(...) ?? <local-fallback>` directly.
 
 /**
  * Heuristic: is the given HTTP `Content-Type` header value likely to

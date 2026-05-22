@@ -28,6 +28,7 @@ import { randomUUID } from 'node:crypto';
 import { matchPreflight, type CorsConfig } from './cors-handler.js';
 import type { AuthorizerInfo, RouteWithAuth } from './authorizer-resolver.js';
 import type { AuthorizerCache, CachedAuthorizerResult } from './authorizer-cache.js';
+import { buildAuthorizerContextShape } from './authorizer-context.js';
 import {
   buildMethodArn,
   computeRequestIdentityHash,
@@ -1147,6 +1148,13 @@ function buildOverlay(
   authorizer: AuthorizerInfo,
   result: CachedAuthorizerResult
 ): AuthorizerEventOverlay | undefined {
+  // PR #515 item 9: both `buildOverlay` and
+  // `buildAuthorizerContextForServiceIntegration` re-implemented the
+  // same per-kind shape with cosmetic differences (one wrapped Lambda
+  // HTTP v2 under `.lambda`, the other built the union-tagged form).
+  // The shared helper at `authorizer-context.ts:buildAuthorizerContextShape`
+  // owns the bare per-kind shape; this function maps each kind to the
+  // discriminated-union flavor `applyAuthorizerOverlay` expects.
   if (authorizer.kind === 'lambda-token' || authorizer.kind === 'lambda-request') {
     const isV2 = authorizer.kind === 'lambda-request' && authorizer.apiVersion === 'v2';
     return isV2
@@ -1493,27 +1501,10 @@ export function buildAuthorizerContextForServiceIntegration(
   result: CachedAuthorizerResult | undefined
 ): Record<string, unknown> | undefined {
   if (!authorizer || !result) return undefined;
-  if (authorizer.kind === 'lambda-token' || authorizer.kind === 'lambda-request') {
-    const ctx: Record<string, unknown> = {};
-    if (result.principalId !== undefined) ctx['principalId'] = result.principalId;
-    if (result.context) Object.assign(ctx, result.context);
-    return ctx;
-  }
-  if (authorizer.kind === 'iam') {
-    const ctx: Record<string, unknown> = {};
-    if (result.principalId !== undefined) ctx['principalId'] = result.principalId;
-    return ctx;
-  }
-  if (authorizer.kind === 'cognito') {
-    return { claims: { ...(result.context ?? {}) } };
-  }
-  // jwt
-  return {
-    jwt: {
-      claims: { ...(result.context ?? {}) },
-      scopes: [],
-    },
-  };
+  // PR #515 item 9: delegate to the shared per-kind shape builder so
+  // a future shape change (or new kind) lands in one place rather than
+  // forking between `buildOverlay` and this helper.
+  return buildAuthorizerContextShape(authorizer, result);
 }
 
 /**

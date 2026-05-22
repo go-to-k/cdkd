@@ -23,6 +23,7 @@ vi.mock('../../../src/local/ecs-task-runner.js', async () => {
 });
 
 import {
+  __setSleepImpl,
   __setWaitForExitImpl,
   backoffDelayMs,
   computeReplicaCount,
@@ -45,9 +46,10 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  // Always restore the production waitForExit impl so a per-test
+  // Always restore the production waitForExit + sleep impls so a per-test
   // override doesn't leak into the next test's watcher loop.
   __setWaitForExitImpl(undefined);
+  __setSleepImpl(undefined);
 });
 
 describe('computeReplicaCount', () => {
@@ -453,22 +455,41 @@ describe('startEcsService / bootReplica lifecycle', () => {
       return code;
     });
 
+    // Short-circuit `backoffDelayMs(0) = 1000ms` so the watcher doesn't
+    // sit on real-time sleep — keeps the test wall-clock-independent
+    // and removes ~1s of CI noise per run. Use `setImmediate` so the
+    // event loop yields back to the test's poll loop between watcher
+    // iterations (a bare `Promise.resolve()` would let the watcher
+    // drain its restart microtask queue in one tick).
+    const sleepDurations: number[] = [];
+    __setSleepImpl(
+      (ms: number) =>
+        new Promise<void>((resolve) => {
+          sleepDurations.push(ms);
+          setImmediate(resolve);
+        })
+    );
+
     const service = makeService(1);
     const opts = makeOptions({ restartPolicy: 'on-failure' });
     const runState = createServiceRunState();
 
     const controller = await startEcsService(service, opts, runState);
 
-    // Drive the watcher loop forward. backoffDelayMs(0) is 1s — way
-    // too long for a unit test, so we instead poll for `bootCount === 2`
-    // with a tight overall timeout. The watcher runs in background;
-    // we drain microtasks via `setImmediate` repeatedly.
+    // Drive the watcher loop forward. With the no-op sleep impl above,
+    // we still need to yield to the event loop so the watcher's await
+    // chain progresses through wait -> sleep -> bootReplica.
     const deadline = Date.now() + 5000;
     while (bootCount < 2 && Date.now() < deadline) {
-      await new Promise((resolve) => setTimeout(resolve, 50));
+      await new Promise((resolve) => setImmediate(resolve));
     }
     expect(bootCount).toBeGreaterThanOrEqual(2);
     expect(mockRunTask).toHaveBeenCalledTimes(bootCount);
+    // The watcher actually consulted the backoff (the no-op sleep was
+    // invoked) — proves the exponential-backoff branch ran rather than
+    // a code path that side-stepped sleep entirely.
+    expect(sleepDurations.length).toBeGreaterThanOrEqual(1);
+    expect(sleepDurations[0]).toBe(1000);
     // The replica's restartCount reflects the watcher's increment.
     expect(runState.replicas[0]!.restartCount).toBeGreaterThanOrEqual(1);
 
@@ -534,6 +555,15 @@ describe('startEcsService / bootReplica lifecycle', () => {
     // Successive zero-exits. Under 'always' the watcher restarts on
     // every exit including 0, mirroring ECS Service deployment behavior.
     __setWaitForExitImpl(async () => 0);
+    // Short-circuit the backoff sleep so the watcher loop doesn't burn
+    // real-time on `setTimeout(1000)`. We use `setImmediate` (NOT bare
+    // `Promise.resolve()`) so the watcher's microtask queue periodically
+    // yields back to the test's poll loop — a `Promise.resolve()` body
+    // would let the watcher spiral through restart cycles in a single
+    // microtask drain and never let the test reach `controller.shutdown()`.
+    __setSleepImpl(
+      () => new Promise<void>((resolve) => setImmediate(resolve))
+    );
 
     const service = makeService(1);
     const opts = makeOptions({ restartPolicy: 'always' });
@@ -544,11 +574,32 @@ describe('startEcsService / bootReplica lifecycle', () => {
     // Wait for at least one restart cycle (bootCount >= 2).
     const deadline = Date.now() + 5000;
     while (bootCount < 2 && Date.now() < deadline) {
-      await new Promise((resolve) => setTimeout(resolve, 50));
+      await new Promise((resolve) => setImmediate(resolve));
     }
     expect(bootCount).toBeGreaterThanOrEqual(2);
 
+    // Snapshot bootCount BEFORE shutdown so we can prove the watcher
+    // loop terminates instead of racing on forever. ServiceController
+    // awaits every in-flight bootReplica promise (tracked per replica
+    // on `inFlightBoot`) before iterating state for cleanup, so any
+    // restart in flight at shutdown-time MAY land on bootCount but no
+    // NEW iteration should fire after shutdown returns.
+    const bootCountBeforeShutdown = bootCount;
     await controller.shutdown();
+
+    // After shutdown(), the watcher loop must have stopped. Give the
+    // event loop a few ticks to absorb any in-flight microtasks — if a
+    // stray watcher iteration were still firing, bootCount would
+    // continue to climb beyond the in-flight-at-shutdown count.
+    for (let i = 0; i < 10; i += 1) {
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+    // The in-flight-at-shutdown boot is allowed (ServiceController
+    // awaits `inFlightBoot` before cleanup), but post-shutdown the
+    // watcher loop's `shuttingDown` check must short-circuit and no
+    // further restart can happen. Allow at most +1 for the inflight
+    // boot to drain.
+    expect(bootCount).toBeLessThanOrEqual(bootCountBeforeShutdown + 1);
   });
 
   it('successful startEcsService returns a controller with activeReplicaCount === desiredCount', async () => {
