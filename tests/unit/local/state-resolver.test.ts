@@ -1,7 +1,11 @@
-import { describe, expect, it } from 'vite-plus/test';
+import { describe, expect, it, vi } from 'vite-plus/test';
 import {
   substituteAgainstState,
+  substituteAgainstStateAsync,
   substituteEnvVarsFromState,
+  substituteEnvVarsFromStateAsync,
+  type CrossStackResolver,
+  type SubstitutionContext,
 } from '../../../src/local/state-resolver.js';
 import type { ResourceState } from '../../../src/types/state.js';
 
@@ -383,5 +387,342 @@ describe('substituteEnvVarsFromState', () => {
     );
     expect(out.env).toEqual({ TABLE_NAME: 'prefix-real-table-name' });
     expect(out.audit.resolvedKeys).toEqual(['TABLE_NAME']);
+  });
+});
+
+/**
+ * Test suite for issue #454 — async cross-stack resolver path. The sync
+ * helper still surfaces Fn::ImportValue / Fn::GetStackOutput as
+ * `unresolved` (verified by the legacy tests above); the async helper
+ * delegates to the supplied `crossStackResolver` when present.
+ */
+describe('substituteAgainstStateAsync (Fn::ImportValue / Fn::GetStackOutput)', () => {
+  function buildResolver(overrides: Partial<CrossStackResolver> = {}): CrossStackResolver {
+    return {
+      resolveImport: vi.fn(async () => undefined),
+      resolveGetStackOutput: vi.fn(async () => undefined),
+      ...overrides,
+    };
+  }
+
+  it('falls back to the sync path for every legacy intrinsic', async () => {
+    const resources: Record<string, ResourceState> = {
+      MyTable: res('real-table-name'),
+    };
+    const r = await substituteAgainstStateAsync({ Ref: 'MyTable' }, resources);
+    expect(r).toEqual({ kind: 'literal', value: 'real-table-name' });
+  });
+
+  it('resolves Fn::ImportValue via the cross-stack resolver', async () => {
+    const resolveImport = vi.fn(async (name: string) => {
+      expect(name).toBe('ProducerStack-BucketName');
+      return 'my-bucket-12345';
+    });
+    const ctx: SubstitutionContext = {
+      resources: {},
+      crossStackResolver: { resolveImport, resolveGetStackOutput: vi.fn() },
+    };
+    const r = await substituteAgainstStateAsync(
+      { 'Fn::ImportValue': 'ProducerStack-BucketName' },
+      ctx
+    );
+    expect(r).toEqual({ kind: 'literal', value: 'my-bucket-12345' });
+    expect(resolveImport).toHaveBeenCalledOnce();
+  });
+
+  it('reports unresolved when Fn::ImportValue lookup returns undefined', async () => {
+    const ctx: SubstitutionContext = {
+      resources: {},
+      crossStackResolver: buildResolver({
+        resolveImport: vi.fn(async () => undefined),
+      }),
+    };
+    const r = await substituteAgainstStateAsync(
+      { 'Fn::ImportValue': 'MissingExport' },
+      ctx
+    );
+    expect(r.kind).toBe('unresolved');
+    if (r.kind === 'unresolved') {
+      expect(r.reason).toContain("MissingExport");
+      expect(r.reason).toContain('not found');
+    }
+  });
+
+  it('reports unresolved when Fn::ImportValue lookup throws', async () => {
+    const ctx: SubstitutionContext = {
+      resources: {},
+      crossStackResolver: buildResolver({
+        resolveImport: vi.fn(async () => {
+          throw new Error('S3 AccessDenied');
+        }),
+      }),
+    };
+    const r = await substituteAgainstStateAsync({ 'Fn::ImportValue': 'X' }, ctx);
+    expect(r.kind).toBe('unresolved');
+    if (r.kind === 'unresolved') {
+      expect(r.reason).toContain('lookup failed');
+      expect(r.reason).toContain('S3 AccessDenied');
+    }
+  });
+
+  it('resolves Fn::ImportValue argument via Fn::Sub against pseudo parameters first', async () => {
+    const resolveImport = vi.fn(async (name: string) => {
+      // Verify the inner Fn::Sub was resolved BEFORE the resolver was invoked.
+      expect(name).toBe('Stack-us-east-1-Bucket');
+      return 'bucket-from-inner';
+    });
+    const ctx: SubstitutionContext = {
+      resources: {},
+      pseudoParameters: { region: 'us-east-1' },
+      crossStackResolver: { resolveImport, resolveGetStackOutput: vi.fn() },
+    };
+    const r = await substituteAgainstStateAsync(
+      {
+        'Fn::ImportValue': { 'Fn::Sub': 'Stack-${AWS::Region}-Bucket' },
+      },
+      ctx
+    );
+    expect(r).toEqual({ kind: 'literal', value: 'bucket-from-inner' });
+  });
+
+  it('reports unresolved when Fn::ImportValue is encountered without a cross-stack resolver', async () => {
+    const r = await substituteAgainstStateAsync(
+      { 'Fn::ImportValue': 'X' },
+      { resources: {} }
+    );
+    expect(r.kind).toBe('unresolved');
+    if (r.kind === 'unresolved') {
+      expect(r.reason).toContain('no cross-stack resolver');
+    }
+  });
+
+  it('resolves Fn::GetStackOutput via the cross-stack resolver', async () => {
+    const resolveGetStackOutput = vi.fn(
+      async (stackName: string, region: string, outputName: string) => {
+        expect(stackName).toBe('ProducerStack');
+        expect(region).toBe('us-east-1');
+        expect(outputName).toBe('BucketName');
+        return 'producer-bucket';
+      }
+    );
+    const ctx: SubstitutionContext = {
+      resources: {},
+      consumerRegion: 'us-east-1',
+      crossStackResolver: { resolveImport: vi.fn(), resolveGetStackOutput },
+    };
+    const r = await substituteAgainstStateAsync(
+      {
+        'Fn::GetStackOutput': { StackName: 'ProducerStack', OutputName: 'BucketName' },
+      },
+      ctx
+    );
+    expect(r).toEqual({ kind: 'literal', value: 'producer-bucket' });
+    expect(resolveGetStackOutput).toHaveBeenCalledOnce();
+  });
+
+  it('honors Fn::GetStackOutput.Region when set explicitly on the intrinsic', async () => {
+    const resolveGetStackOutput = vi.fn(
+      async (_stackName: string, region: string) => {
+        expect(region).toBe('eu-west-1');
+        return 'eu-bucket';
+      }
+    );
+    const ctx: SubstitutionContext = {
+      resources: {},
+      consumerRegion: 'us-east-1',
+      crossStackResolver: { resolveImport: vi.fn(), resolveGetStackOutput },
+    };
+    const r = await substituteAgainstStateAsync(
+      {
+        'Fn::GetStackOutput': {
+          StackName: 'ProducerStack',
+          OutputName: 'BucketName',
+          Region: 'eu-west-1',
+        },
+      },
+      ctx
+    );
+    expect(r).toEqual({ kind: 'literal', value: 'eu-bucket' });
+  });
+
+  it('rejects Fn::GetStackOutput when no Region is supplied and consumerRegion is unset', async () => {
+    const ctx: SubstitutionContext = {
+      resources: {},
+      crossStackResolver: buildResolver(),
+    };
+    const r = await substituteAgainstStateAsync(
+      {
+        'Fn::GetStackOutput': { StackName: 'X', OutputName: 'Y' },
+      },
+      ctx
+    );
+    expect(r.kind).toBe('unresolved');
+    if (r.kind === 'unresolved') {
+      expect(r.reason).toContain('no Region supplied');
+    }
+  });
+
+  it('rejects Fn::GetStackOutput with RoleArn (cross-account is deferred)', async () => {
+    const ctx: SubstitutionContext = {
+      resources: {},
+      consumerRegion: 'us-east-1',
+      crossStackResolver: buildResolver(),
+    };
+    const r = await substituteAgainstStateAsync(
+      {
+        'Fn::GetStackOutput': {
+          StackName: 'X',
+          OutputName: 'Y',
+          RoleArn: 'arn:aws:iam::222:role/r',
+        },
+      },
+      ctx
+    );
+    expect(r.kind).toBe('unresolved');
+    if (r.kind === 'unresolved') {
+      expect(r.reason).toContain('RoleArn');
+      expect(r.reason).toContain('#449');
+    }
+  });
+
+  it('rejects Fn::GetStackOutput when required fields are missing', async () => {
+    const ctx: SubstitutionContext = {
+      resources: {},
+      consumerRegion: 'us-east-1',
+      crossStackResolver: buildResolver(),
+    };
+    const r1 = await substituteAgainstStateAsync(
+      { 'Fn::GetStackOutput': { OutputName: 'Y' } },
+      ctx
+    );
+    expect(r1.kind).toBe('unresolved');
+    const r2 = await substituteAgainstStateAsync(
+      { 'Fn::GetStackOutput': { StackName: 'X' } },
+      ctx
+    );
+    expect(r2.kind).toBe('unresolved');
+  });
+
+  it('falls back to consumerRegion when Fn::GetStackOutput.Region is omitted (via pseudoParameters)', async () => {
+    const resolveGetStackOutput = vi.fn(async (_s: string, region: string) => {
+      expect(region).toBe('ap-northeast-1');
+      return 'val';
+    });
+    const ctx: SubstitutionContext = {
+      resources: {},
+      pseudoParameters: { region: 'ap-northeast-1' },
+      crossStackResolver: { resolveImport: vi.fn(), resolveGetStackOutput },
+    };
+    const r = await substituteAgainstStateAsync(
+      { 'Fn::GetStackOutput': { StackName: 'X', OutputName: 'Y' } },
+      ctx
+    );
+    expect(r).toEqual({ kind: 'literal', value: 'val' });
+  });
+
+  it('reports unresolved when Fn::GetStackOutput is encountered without a cross-stack resolver', async () => {
+    const r = await substituteAgainstStateAsync(
+      { 'Fn::GetStackOutput': { StackName: 'X', OutputName: 'Y' } },
+      { resources: {}, consumerRegion: 'us-east-1' }
+    );
+    expect(r.kind).toBe('unresolved');
+    if (r.kind === 'unresolved') {
+      expect(r.reason).toContain('no cross-stack resolver');
+    }
+  });
+
+  it('reports unresolved when Fn::GetStackOutput lookup returns undefined', async () => {
+    const ctx: SubstitutionContext = {
+      resources: {},
+      consumerRegion: 'us-east-1',
+      crossStackResolver: buildResolver({
+        resolveGetStackOutput: vi.fn(async () => undefined),
+      }),
+    };
+    const r = await substituteAgainstStateAsync(
+      { 'Fn::GetStackOutput': { StackName: 'X', OutputName: 'Missing' } },
+      ctx
+    );
+    expect(r.kind).toBe('unresolved');
+    if (r.kind === 'unresolved') {
+      expect(r.reason).toContain('output not found');
+    }
+  });
+});
+
+describe('substituteEnvVarsFromStateAsync', () => {
+  it('substitutes a Fn::ImportValue env var via the resolver and drops a sibling unresolvable', async () => {
+    const resolveImport = vi.fn(async (name: string) =>
+      name === 'GoodExport' ? 'good-value' : undefined
+    );
+    const ctx: SubstitutionContext = {
+      resources: {},
+      crossStackResolver: { resolveImport, resolveGetStackOutput: vi.fn() },
+    };
+    const out = await substituteEnvVarsFromStateAsync(
+      {
+        OK: { 'Fn::ImportValue': 'GoodExport' },
+        BAD: { 'Fn::ImportValue': 'MissingExport' },
+        LITERAL: 'unchanged',
+      },
+      ctx
+    );
+    expect(out.env).toEqual({ OK: 'good-value', LITERAL: 'unchanged' });
+    expect(out.audit.resolvedKeys).toEqual(['OK']);
+    expect(out.audit.unresolved.map((u) => u.key)).toEqual(['BAD']);
+  });
+
+  it('substitutes a Fn::GetStackOutput env var via the resolver', async () => {
+    const resolveGetStackOutput = vi.fn(async () => 'producer-output-value');
+    const ctx: SubstitutionContext = {
+      resources: {},
+      consumerRegion: 'us-east-1',
+      crossStackResolver: { resolveImport: vi.fn(), resolveGetStackOutput },
+    };
+    const out = await substituteEnvVarsFromStateAsync(
+      {
+        OUTPUT_VALUE: {
+          'Fn::GetStackOutput': { StackName: 'Producer', OutputName: 'X' },
+        },
+      },
+      ctx
+    );
+    expect(out.env).toEqual({ OUTPUT_VALUE: 'producer-output-value' });
+    expect(out.audit.resolvedKeys).toEqual(['OUTPUT_VALUE']);
+  });
+
+  it('preserves the warn-and-drop UX when the resolver is not supplied', async () => {
+    const out = await substituteEnvVarsFromStateAsync(
+      {
+        IMPORT: { 'Fn::ImportValue': 'Export' },
+        OUTPUT: { 'Fn::GetStackOutput': { StackName: 'S', OutputName: 'O' } },
+      },
+      { resources: {}, consumerRegion: 'us-east-1' }
+    );
+    expect(out.env).toEqual({});
+    expect(out.audit.resolvedKeys).toEqual([]);
+    expect(out.audit.unresolved.map((u) => u.key).sort()).toEqual(['IMPORT', 'OUTPUT']);
+  });
+
+  it('still resolves Ref / Fn::GetAtt / Fn::Sub / Fn::Join entries (sync path coverage)', async () => {
+    const resources: Record<string, ResourceState> = {
+      MyTable: res('real-table-name', { Arn: 'arn:test' }),
+    };
+    const out = await substituteEnvVarsFromStateAsync(
+      {
+        REF: { Ref: 'MyTable' },
+        GETATT: { 'Fn::GetAtt': ['MyTable', 'Arn'] },
+        SUB: { 'Fn::Sub': 'prefix-${MyTable}' },
+        JOIN: { 'Fn::Join': ['/', ['a', { Ref: 'MyTable' }]] },
+      },
+      { resources }
+    );
+    expect(out.env).toEqual({
+      REF: 'real-table-name',
+      GETATT: 'arn:test',
+      SUB: 'prefix-real-table-name',
+      JOIN: 'a/real-table-name',
+    });
+    expect(out.audit.unresolved).toEqual([]);
   });
 });

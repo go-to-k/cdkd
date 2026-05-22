@@ -1,5 +1,6 @@
 import * as readline from 'node:readline/promises';
 import { getLogger } from '../../utils/logger.js';
+import { bold, gray, green, red, yellow } from '../../utils/colors.js';
 import { getLiveRenderer } from '../../utils/live-renderer.js';
 import { setAwsClients, AwsClients } from '../../utils/aws-clients.js';
 import type { S3StateBackend } from '../../state/s3-state-backend.js';
@@ -274,7 +275,7 @@ export async function runDestroyForStack(
   if (resourceCount === 0) {
     logger.info(`Stack ${stackName} has no resources, cleaning up state...`);
     await ctx.stateBackend.deleteState(stackName, regionForState);
-    logger.info('✓ State deleted');
+    logger.info(`${green('✓')} State deleted`);
     result.skippedEmpty = true;
     return result;
   }
@@ -595,7 +596,9 @@ export async function runDestroyForStack(
           );
 
           renderer.removeTask(logicalId);
-          logger.info(`  ✅ ${logicalId} (${resource.resourceType}) deleted`);
+          logger.info(
+            `  ${red('✗')} ${bold(logicalId)} ${gray(`(${resource.resourceType})`)} ${red('deleted')}`
+          );
           result.deletedCount++;
         } catch (error) {
           renderer.removeTask(logicalId);
@@ -657,11 +660,11 @@ export async function runDestroyForStack(
     const retainedSuffix = result.retainedCount > 0 ? `, ${result.retainedCount} retained` : '';
     if (result.errorCount === 0) {
       logger.info(
-        `\n✓ Stack ${stackName} destroyed (${result.deletedCount} deleted${retainedSuffix}, ${result.errorCount} errors)`
+        `\n${green('✓')} ${bold(`Stack ${stackName} destroyed`)} (${green(result.deletedCount)} deleted${retainedSuffix}, ${result.errorCount} errors)`
       );
     } else {
       logger.warn(
-        `\n⚠ Stack ${stackName} partially destroyed (${result.deletedCount} deleted${retainedSuffix}, ${result.errorCount} errors). ` +
+        `\n${yellow('⚠')} ${bold(`Stack ${stackName} partially destroyed`)} (${green(result.deletedCount)} deleted${retainedSuffix}, ${red(result.errorCount)} errors). ` +
           `State preserved — re-run 'cdkd destroy' / 'cdkd state destroy' to clean up.`
       );
     }

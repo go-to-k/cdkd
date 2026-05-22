@@ -92,3 +92,48 @@ export async function resolveBucketRegion(
 export function clearBucketRegionCache(): void {
   cache.clear();
 }
+
+/**
+ * Resolve the cdkd state bucket name + region for a sibling AWS account.
+ *
+ * Used by cross-account `Fn::GetStackOutput`: once the consumer's resolver
+ * has assumed the producer's role, it needs to know which bucket the
+ * producer's `cdkd deploy` wrote state to. cdkd's canonical bucket name
+ * (since v0.7.0) is `cdkd-state-{accountId}` — region-free because S3
+ * names are globally unique. The bucket's actual region is then looked
+ * up via `GetBucketLocation` using the supplied (assumed) credentials.
+ *
+ * Why not reuse the consumer-side bucket-name resolution path: that path
+ * supports legacy region-suffixed names (`cdkd-state-{accountId}-{region}`)
+ * and an "empty-new-bucket" fallback, both of which require listing the
+ * bucket contents to disambiguate. For cross-account reads we accept the
+ * narrower scope — the producer must be on the canonical region-free
+ * bucket layout (PR #60+, v0.10.0+) — because supporting the legacy
+ * layout cross-account would require account-wide `s3:ListAllMyBuckets`
+ * permission in the assumed role for no real-world benefit (legacy
+ * accounts are nearing 5 years old; cross-account features land
+ * post-legacy).
+ *
+ * @param accountId  12-digit AWS account ID of the producer (extracted
+ *                   from the role ARN via `parseIamRoleArn`).
+ * @param credentials Assumed credentials produced by
+ *                   `assumeRoleForCrossAccountStateRead`. Threaded into the
+ *                   `GetBucketLocation` call so the producer's bucket
+ *                   policy can authorize the read against the assumed
+ *                   principal (not the consumer's default credentials).
+ *
+ * @returns `{ bucket, region }` — the producer's canonical state bucket
+ *          name and its actual region.
+ */
+export async function resolveCrossAccountStateBucket(
+  accountId: string,
+  credentials: {
+    accessKeyId: string;
+    secretAccessKey: string;
+    sessionToken?: string;
+  }
+): Promise<{ bucket: string; region: string }> {
+  const bucket = `cdkd-state-${accountId}`;
+  const region = await resolveBucketRegion(bucket, { credentials });
+  return { bucket, region };
+}

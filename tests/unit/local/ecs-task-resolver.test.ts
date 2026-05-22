@@ -861,6 +861,117 @@ describe('detectEcsImageResolutionNeeds', () => {
     const needs = detectEcsImageResolutionNeeds(stack);
     expect(needs.needsEnvOrSecretSubstitution).toBe(false);
   });
+
+  // Issue #454: cross-stack `Fn::ImportValue` / `Fn::GetStackOutput`
+  // detection on Environment + Secrets gates the resolver construction
+  // at the CLI layer so literal + same-stack-intrinsic env maps don't
+  // pay the extra S3-client / index-load cost.
+  it('flags needsCrossStackResolver when an Environment Value is Fn::ImportValue', () => {
+    const stack = buildStack('S1', {
+      TD: makeTaskDef({
+        containers: [
+          {
+            Name: 'app',
+            Image: 'nginx:alpine',
+            Environment: [
+              { Name: 'BUCKET', Value: { 'Fn::ImportValue': 'OtherStack-Bucket' } },
+            ],
+          },
+        ],
+      }),
+    });
+    const needs = detectEcsImageResolutionNeeds(stack);
+    expect(needs.needsCrossStackResolver).toBe(true);
+    // Cross-stack also implies needsEnvOrSecretSubstitution (the existing
+    // sync-pass `--from-state` flow still has to load state before the
+    // cross-stack post-pass can do its work).
+    expect(needs.needsEnvOrSecretSubstitution).toBe(true);
+  });
+
+  it('flags needsCrossStackResolver when a Secret ValueFrom is Fn::GetStackOutput', () => {
+    const stack = buildStack('S1', {
+      TD: makeTaskDef({
+        containers: [
+          {
+            Name: 'app',
+            Image: 'nginx:alpine',
+            Secrets: [
+              {
+                Name: 'SHARED_TOKEN',
+                ValueFrom: {
+                  'Fn::GetStackOutput': {
+                    StackName: 'OtherStack',
+                    OutputName: 'TokenArn',
+                  },
+                },
+              },
+            ],
+          },
+        ],
+      }),
+    });
+    const needs = detectEcsImageResolutionNeeds(stack);
+    expect(needs.needsCrossStackResolver).toBe(true);
+    expect(needs.needsEnvOrSecretSubstitution).toBe(true);
+  });
+
+  it('does NOT flag needsCrossStackResolver for non-cross-stack intrinsics (plain Ref / Fn::Sub)', () => {
+    const stack = buildStack('S1', {
+      TD: makeTaskDef({
+        containers: [
+          {
+            Name: 'app',
+            Image: 'nginx:alpine',
+            Environment: [
+              { Name: 'TABLE', Value: { Ref: 'MyTable' } },
+              { Name: 'REGION_URL', Value: { 'Fn::Sub': 'https://${AWS::Region}.example.com' } },
+            ],
+            Secrets: [{ Name: 'API_KEY', ValueFrom: { Ref: 'MySecret' } }],
+          },
+        ],
+      }),
+    });
+    const needs = detectEcsImageResolutionNeeds(stack);
+    expect(needs.needsCrossStackResolver).toBe(false);
+    // Same-stack intrinsics still flag the sync-pass substitution flag.
+    expect(needs.needsEnvOrSecretSubstitution).toBe(true);
+  });
+
+  it('does NOT flag needsCrossStackResolver for cross-stack intrinsics on Volumes[].Host.SourcePath (out of scope)', () => {
+    // The cross-stack post-pass walks Environment + Secrets only; a
+    // cross-stack intrinsic on a volume SourcePath is NOT something
+    // `applyCrossStackResolverToTask` re-resolves. Volume cross-stack
+    // support would need additional plumbing — confirm we don't promise
+    // it via the detector.
+    const stack = buildStack('S1', {
+      TD: makeTaskDef({
+        volumes: [
+          {
+            Name: 'shared',
+            Host: { SourcePath: { 'Fn::ImportValue': 'OtherStack-SharedPath' } },
+          },
+        ],
+      }),
+    });
+    const needs = detectEcsImageResolutionNeeds(stack);
+    expect(needs.needsCrossStackResolver).toBe(false);
+    // The intrinsic-shaped SourcePath still flags needsEnvOrSecretSubstitution
+    // so the CLI loads state for the sync-pass volume resolver.
+    expect(needs.needsEnvOrSecretSubstitution).toBe(true);
+  });
+
+  it('does NOT flag needsCrossStackResolver for cross-stack intrinsic in TaskRoleArn (out of scope)', () => {
+    // TaskRoleArn / ExecutionRoleArn cross-stack support is NOT wired
+    // through `applyCrossStackResolverToTask` — confirm the detector
+    // mirrors that boundary.
+    const stack = buildStack('S1', {
+      TD: makeTaskDef({
+        taskRoleArn: { 'Fn::ImportValue': 'OtherStack-RoleArn' },
+      }),
+    });
+    const needs = detectEcsImageResolutionNeeds(stack);
+    expect(needs.needsCrossStackResolver).toBe(false);
+  });
 });
 
 // Issue #291: env-var + secret intrinsic substitution via state.

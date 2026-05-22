@@ -1,3 +1,24 @@
+# [0.123.0](https://github.com/go-to-k/cdkd/compare/v0.122.0...v0.123.0) (2026-05-22)
+
+
+### Features
+
+* **intrinsic:** Fn::GetStackOutput cross-account RoleArn support ([#490](https://github.com/go-to-k/cdkd/issues/490)) ([ffc284f](https://github.com/go-to-k/cdkd/commit/ffc284f876769aa0ac3e205e3f8cfb01466140c1))
+
+# [0.122.0](https://github.com/go-to-k/cdkd/compare/v0.121.0...v0.122.0) (2026-05-22)
+
+
+### Features
+
+* **local:** --from-state resolves Fn::ImportValue and Fn::GetStackOutput ([#454](https://github.com/go-to-k/cdkd/issues/454)) ([#487](https://github.com/go-to-k/cdkd/issues/487)) ([628d5e8](https://github.com/go-to-k/cdkd/commit/628d5e87bb7490f1960a9db7109d7cb64fd7143d))
+
+# [0.121.0](https://github.com/go-to-k/cdkd/compare/v0.120.0...v0.121.0) (2026-05-22)
+
+
+### Features
+
+* **logger:** rich color output + replace hero GIF with side-by-side demo ([#486](https://github.com/go-to-k/cdkd/issues/486)) ([9dee8dc](https://github.com/go-to-k/cdkd/commit/9dee8dcddcd5b7075309005e923dc517b8b1557f))
+
 # [0.120.0](https://github.com/go-to-k/cdkd/compare/v0.119.0...v0.120.0) (2026-05-22)
 
 
