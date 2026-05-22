@@ -81,7 +81,7 @@ describe('dispatchMockIntegration', () => {
     expect(outcome.statusCode).toBe(404);
     expect(outcome.body).toBe('not found');
   });
-  it('applies ResponseParameters header literals', () => {
+  it('applies ResponseParameters header literals (key lowercased — PR #511 review fix-back)', () => {
     const outcome = dispatchMockIntegration(
       {
         kind: 'mock',
@@ -96,7 +96,11 @@ describe('dispatchMockIntegration', () => {
       },
       buildRequest()
     );
-    expect(outcome.headers['X-Powered-By']).toBe('cdkd-local');
+    // PR #511 review fix-back: ResponseParameters keys are lowercased so
+    // overlays share the dispatcher's default-initializer namespace and
+    // PascalCase / lowercase variants of the same header no longer
+    // coexist as separate keys in the output map.
+    expect(outcome.headers['x-powered-by']).toBe('cdkd-local');
   });
   it('returns 502 when the request template fails to evaluate', () => {
     const outcome = dispatchMockIntegration(
