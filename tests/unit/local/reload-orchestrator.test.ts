@@ -293,6 +293,151 @@ describe('createReloadOrchestrator', () => {
     expect(r.rebuiltLambdas).toEqual([]);
   });
 
+  /**
+   * IMAGE-branch `specSignature` coverage (PR #493 review G1).
+   *
+   * The reload-orchestrator's `specSignature` helper branches on
+   * `spec.kind`. The pre-#493 review surfaced that the IMAGE branch's
+   * spec-signature fields (`image` / `platform` / `command` /
+   * `entryPoint` / `workingDir` / `tmpfs`) were never exercised by a
+   * unit test — a regression that dropped one of those fields would
+   * silently break hot reload's "Dockerfile edit → new tag → rebuild
+   * containers" loop. These tests construct `kind: 'image'` fakeSpecs
+   * with paired old + new shapes and assert each field's diff triggers
+   * a `rebuiltLambdas` entry.
+   */
+
+  /** Build a fake IMAGE-kind ContainerSpec keyed by logical id. */
+  function fakeImageSpec(
+    logicalId: string,
+    overrides: Partial<Extract<ContainerSpec, { kind: 'image' }>> = {}
+  ): ContainerSpec {
+    return {
+      kind: 'image',
+      lambda: {
+        kind: 'image',
+        stack: {} as never,
+        logicalId,
+        resource: {} as never,
+        memoryMb: 128,
+        timeoutSec: 3,
+        imageUri: 'cdkd-local-start-api-abcdef0123456789',
+        imageConfig: {},
+        architecture: 'x86_64',
+        layers: [],
+      } as Extract<ContainerSpec, { kind: 'image' }>['lambda'],
+      image: 'cdkd-local-start-api-abcdef0123456789',
+      platform: 'linux/amd64',
+      command: [],
+      env: {},
+      containerHost: '127.0.0.1',
+      ...overrides,
+    };
+  }
+
+  /** Helper: run one reload and return rebuiltLambdas for a single-Lambda diff. */
+  async function runRebuildDiff(
+    oldSpec: ContainerSpec,
+    newSpec: ContainerSpec,
+    logicalId = 'Fn'
+  ): Promise<string[]> {
+    const oldPool = fakePool(new Map([[logicalId, oldSpec]]));
+    const newPool = fakePool(new Map([[logicalId, newSpec]]));
+    let currentState: ServerState = {
+      routes: [withAuth(fakeRoute({ lambdaLogicalId: logicalId }))],
+      pool: oldPool,
+      corsConfigByApiId: new Map(),
+    };
+    const orchestrator = createReloadOrchestrator({
+      synthesizeAndBuild: async () => ({
+        routes: [withAuth(fakeRoute({ lambdaLogicalId: logicalId }))],
+        specs: new Map([[logicalId, newSpec]]),
+        corsConfigByApiId: new Map(),
+      }),
+      buildPool: () => newPool,
+      setServerState: (next) => {
+        const prev = currentState;
+        currentState = next;
+        return prev;
+      },
+      getServerState: () => currentState,
+    });
+    const result = await orchestrator.reload();
+    expect(result.ok).toBe(true);
+    return result.rebuiltLambdas;
+  }
+
+  it('IMAGE branch: same-spec no-op leaves rebuiltLambdas empty', async () => {
+    const oldSpec = fakeImageSpec('Fn');
+    const newSpec = fakeImageSpec('Fn'); // identical
+    expect(await runRebuildDiff(oldSpec, newSpec)).toEqual([]);
+  });
+
+  it('IMAGE branch: image-field change triggers rebuild (Dockerfile edit → new tag)', async () => {
+    // Canonical hot-reload trigger for container Lambdas: the
+    // deterministic tag in `image` flipped (e.g. the user edited the
+    // Dockerfile and `buildContainerImage` produced a new
+    // `cdkd-local-start-api-<sha>` tag).
+    const oldSpec = fakeImageSpec('Fn', { image: 'cdkd-local-start-api-aaaaaaaa00000000' });
+    const newSpec = fakeImageSpec('Fn', { image: 'cdkd-local-start-api-bbbbbbbb11111111' });
+    expect(await runRebuildDiff(oldSpec, newSpec)).toEqual(['Fn']);
+  });
+
+  it('IMAGE branch: platform-field change triggers rebuild', async () => {
+    // The Lambda's `Architectures` flipped from [x86_64] to [arm64]
+    // (uncommon at runtime, but exercises that the field is in the
+    // signature so a regression of dropping it would surface here).
+    const oldSpec = fakeImageSpec('Fn', { platform: 'linux/amd64' });
+    const newSpec = fakeImageSpec('Fn', { platform: 'linux/arm64' });
+    expect(await runRebuildDiff(oldSpec, newSpec)).toEqual(['Fn']);
+  });
+
+  it('IMAGE branch: command-field change triggers rebuild', async () => {
+    // `ImageConfig.Command` change — the warm container ran with the
+    // old CMD; the new CMD needs a fresh start.
+    const oldSpec = fakeImageSpec('Fn', { command: ['app.handler'] });
+    const newSpec = fakeImageSpec('Fn', { command: ['app.v2.handler'] });
+    expect(await runRebuildDiff(oldSpec, newSpec)).toEqual(['Fn']);
+  });
+
+  it('IMAGE branch: entryPoint-field change triggers rebuild', async () => {
+    const oldSpec = fakeImageSpec('Fn', { entryPoint: undefined });
+    const newSpec = fakeImageSpec('Fn', { entryPoint: ['/usr/bin/python3', '-u'] });
+    expect(await runRebuildDiff(oldSpec, newSpec)).toEqual(['Fn']);
+  });
+
+  it('IMAGE branch: workingDir-field change triggers rebuild', async () => {
+    const oldSpec = fakeImageSpec('Fn', { workingDir: undefined });
+    const newSpec = fakeImageSpec('Fn', { workingDir: '/var/task' });
+    expect(await runRebuildDiff(oldSpec, newSpec)).toEqual(['Fn']);
+  });
+
+  it('IMAGE branch: tmpfs-field change triggers rebuild (issue #440 EphemeralStorage)', async () => {
+    // M1 review fix's actual behavior: `EphemeralStorage.Size` change
+    // produces a different `tmpfs.sizeMb` and must trigger rebuild so
+    // the next request sees the updated `--tmpfs /tmp:size=Nm` cap.
+    const oldSpec = fakeImageSpec('Fn', { tmpfs: { target: '/tmp', sizeMb: 512 } });
+    const newSpec = fakeImageSpec('Fn', { tmpfs: { target: '/tmp', sizeMb: 4096 } });
+    expect(await runRebuildDiff(oldSpec, newSpec)).toEqual(['Fn']);
+  });
+
+  it('IMAGE branch: env-field change triggers rebuild', async () => {
+    const oldSpec = fakeImageSpec('Fn', { env: { LEVEL: 'info' } });
+    const newSpec = fakeImageSpec('Fn', { env: { LEVEL: 'debug' } });
+    expect(await runRebuildDiff(oldSpec, newSpec)).toEqual(['Fn']);
+  });
+
+  it('IMAGE branch: signature does NOT confuse ZIP and IMAGE kinds', async () => {
+    // Defense-in-depth: the kind discriminator must be in the
+    // signature so a Lambda swapped from ZIP → IMAGE (or vice versa)
+    // is always rebuilt, even if every other field happens to
+    // serialize to the same JSON when one of the kinds elides a
+    // field.
+    const oldSpec = fakeSpec('Fn');
+    const newSpec = fakeImageSpec('Fn');
+    expect(await runRebuildDiff(oldSpec, newSpec)).toEqual(['Fn']);
+  });
+
   it('treats same-route-different-lambdaLogicalId as add+remove', async () => {
     // The route's path/method tuple stays the same, but the Lambda
     // backing it changed (e.g. user re-pointed an HTTP API route at a

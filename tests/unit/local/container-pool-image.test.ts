@@ -266,4 +266,41 @@ describe('container-pool — IMAGE branch (issue #453)', () => {
     pool.release(h);
     await pool.dispose();
   });
+
+  // PR #493 review G2: tmpfs IMAGE branch propagation (issue #440 —
+  // Lambda Properties.EphemeralStorage.Size). The ZIP branch is
+  // covered by tests/unit/local/container-pool.test.ts; the parallel
+  // assertion for the IMAGE branch was missing. Docker `--tmpfs`
+  // overlays inside any container image just like on the public base
+  // images, so spec.tmpfs MUST thread into runDetached(tmpfs) on
+  // BOTH branches.
+  it('IMAGE branch: threads ContainerSpec.tmpfs into runDetached(tmpfs)', async () => {
+    const spec = makeImageSpec('Fn', { tmpfs: { target: '/tmp', sizeMb: 2048 } });
+    const specs = new Map([['Fn', spec]]);
+    const pool = createContainerPool(specs, { perLambdaConcurrency: 1, streamLogs: false });
+    const h = await pool.acquire('Fn');
+    const callArg = (runDetached as ReturnType<typeof vi.fn>).mock.calls[0]![0] as {
+      tmpfs?: { target: string; sizeMb: number };
+    };
+    expect(callArg.tmpfs).toEqual({ target: '/tmp', sizeMb: 2048 });
+    pool.release(h);
+    await pool.dispose();
+  });
+
+  it('IMAGE branch: omits runDetached(tmpfs) when ContainerSpec.tmpfs is undefined', async () => {
+    // The IMAGE-branch parallel of the ZIP-branch absence guard. A
+    // container Lambda without `EphemeralStorage` MUST NOT emit a
+    // `--tmpfs` flag — runDetached's args are checked verbatim by
+    // the docker-runner unit tests.
+    const spec = makeImageSpec('Fn');
+    const specs = new Map([['Fn', spec]]);
+    const pool = createContainerPool(specs, { perLambdaConcurrency: 1, streamLogs: false });
+    const h = await pool.acquire('Fn');
+    const callArg = (runDetached as ReturnType<typeof vi.fn>).mock.calls[0]![0] as {
+      tmpfs?: { target: string; sizeMb: number };
+    };
+    expect(callArg.tmpfs).toBeUndefined();
+    pool.release(h);
+    await pool.dispose();
+  });
 });

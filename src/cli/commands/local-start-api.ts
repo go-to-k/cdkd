@@ -1189,7 +1189,7 @@ async function buildContainerSpec(args: {
  * `cdkd local invoke` PR 5 of #224 boundary). Cross-account /
  * cross-region ECR pull is the W2-1 deferred follow-up.
  */
-async function resolveContainerImageForStartApi(
+export async function resolveContainerImageForStartApi(
   lambda: ResolvedStartApiImageLambda,
   skipPull: boolean
 ): Promise<{ imageRef: string }> {
@@ -1370,7 +1370,7 @@ interface ResolvedStartApiZipLambda extends ResolvedStartApiLambdaBase {
   inlineCode?: string;
 }
 
-interface ResolvedStartApiImageLambda extends ResolvedStartApiLambdaBase {
+export interface ResolvedStartApiImageLambda extends ResolvedStartApiLambdaBase {
   kind: 'image';
   /**
    * Raw `Code.ImageUri` value, surfaced for the local-build path's
