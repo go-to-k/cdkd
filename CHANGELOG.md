@@ -1,3 +1,10 @@
+# [0.136.0](https://github.com/go-to-k/cdkd/compare/v0.135.1...v0.136.0) (2026-05-22)
+
+
+### Features
+
+* **synthesis:** CloudFormation macro support via CFn round-trip ([#463](https://github.com/go-to-k/cdkd/issues/463)) ([#519](https://github.com/go-to-k/cdkd/issues/519)) ([2c8ac78](https://github.com/go-to-k/cdkd/commit/2c8ac78968859b6844ef38007043d79ffb46b06d))
+
 ## [0.135.1](https://github.com/go-to-k/cdkd/compare/v0.135.0...v0.135.1) (2026-05-22)
 
 
