@@ -48,6 +48,13 @@
           },
           {
             "type": "command",
+            "command": ".claude/hooks/integ-schema-migration-gate.sh",
+            "if": "Bash(gh pr merge*)",
+            "timeout": 10,
+            "statusMessage": "Checking integ-schema-migration marker..."
+          },
+          {
+            "type": "command",
             "command": ".claude/hooks/pr-review-gate.sh",
             "if": "Bash(gh pr merge*)",
             "timeout": 15,
