@@ -903,7 +903,7 @@ are unchanged across the migration.
 cdkd export MyStack                              # confirmation prompt; CFn stack name = cdkd stack name
 cdkd export MyStack --cfn-stack-name MyStack-CFn
 cdkd export MyStack --dry-run                    # print the import plan, no CFn calls
-cdkd export MyStack --template path.json         # pre-rendered JSON template (skip synth)
+cdkd export MyStack --template path.json         # pre-rendered template (JSON or YAML — format auto-detected, skip synth)
 cdkd export                                       # auto-detect single-stack apps
 ```
 
@@ -1038,10 +1038,12 @@ cdkd export                                       # auto-detect single-stack app
 
 **MVP scope** (intentional cuts; lift in follow-up PRs):
 
-- **JSON templates only.** Mirrors `cdkd import --migrate-from-cloudformation`'s
-  rationale: generic YAML libraries silently corrupt CFn shorthand intrinsics
-  (`!Ref`, `!Sub`, `!GetAtt`) on round-trip. Hand-written YAML stacks must
-  be converted manually.
+- **JSON and YAML templates supported.** Both formats round-trip through
+  cdkd's CFn-aware codec (`src/cli/yaml-cfn.ts`), which preserves every
+  CFn shorthand intrinsic (`!Ref`, `!Sub`, `!GetAtt`, `!Join`, …) across
+  the parse → preprocess → re-serialize cycle. The phase-1 IMPORT and
+  phase-2 UPDATE changesets emit in the same format as the source
+  template — a YAML-authored CFn stack stays YAML on the wire.
 - **Cross-stack consumer scan** runs at synth time when other stacks in
   the same CDK app reference the exporting stack via
   `Fn::GetStackOutput`. By default cdkd warns (the user is expected to
