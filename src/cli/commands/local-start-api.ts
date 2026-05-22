@@ -75,6 +75,7 @@ import { createFileWatcher, type FileWatcher } from '../../local/file-watcher.js
 import { type NextStateMaterial } from '../../local/reload-orchestrator.js';
 import {
   attachAuthorizers,
+  findIgnoredServiceIntegrationAuthorizers,
   type AuthorizerInfo,
   type RouteWithAuth,
 } from '../../local/authorizer-resolver.js';
@@ -551,6 +552,16 @@ async function localStartApiCommand(
   sigV4CredentialsLoader = defaultCredentialsLoader();
   warnIamRoutes(initialMaterial.routes);
 
+  // #458 / PR #500 review: service-integration routes (HTTP API v2
+  // `IntegrationSubtype` set) currently bypass the authorizer pass
+  // because the dispatcher in `http-server.ts` runs BEFORE `runAuthorizerPass`.
+  // A CDK app that wires a JWT / Lambda / Cognito / IAM authorizer to
+  // e.g. `POST /sqs` would silently let every request reach the SDK
+  // call without auth, so warn loudly at boot. Threading the auth pass
+  // through the service-integration dispatcher is tracked as a
+  // follow-up issue.
+  warnIgnoredServiceIntegrationAuthorizers(initialMaterial.routes, initialMaterial.stacks ?? []);
+
   // RIE invoke timeout: 2x the slowest Lambda's Timeout, floor 30s.
   let maxTimeoutSec = 0;
   for (const spec of initialMaterial.specs.values()) {
@@ -982,6 +993,43 @@ function warnIamRoutes(routesWithAuth: readonly RouteWithAuth[]): boolean {
     logger.warn(`  - ${declaredAt}`);
   }
   return true;
+}
+
+/**
+ * #458 / PR #500 review: emit a one-line warn naming every service-
+ * integration route whose source CFn resource declares an authorizer
+ * (HTTP API v2 routes with `AuthorizationType !== 'NONE'`). The
+ * dispatcher in `http-server.ts` runs the SDK call BEFORE the
+ * authorizer pass would fire, so without this warn a CDK app that
+ * wires JWT / Lambda / Cognito / IAM authorizers onto service
+ * integrations would silently let every local request reach the SDK
+ * call without auth. Threading the auth pass through the
+ * service-integration dispatcher is a follow-up issue. Returns the
+ * number of warned routes so tests can assert the firing path; the
+ * value is otherwise unused.
+ */
+function warnIgnoredServiceIntegrationAuthorizers(
+  routesWithAuth: readonly RouteWithAuth[],
+  stacks: readonly StackInfo[]
+): number {
+  const logger = getLogger();
+  const ignored = findIgnoredServiceIntegrationAuthorizers(
+    stacks,
+    routesWithAuth.map((entry) => entry.route)
+  );
+  if (ignored.length === 0) return 0;
+  logger.warn(
+    `${ignored.length} HTTP API v2 service-integration route(s) declare an authorizer but ` +
+      `cdkd local start-api dispatches the SDK call BEFORE the authorizer pass — every local ` +
+      `request reaches the SDK call WITHOUT authentication. This is a deferred feature; see ` +
+      `https://github.com/go-to-k/cdkd/issues/502 for the follow-up tracking issue.`
+  );
+  for (const entry of ignored) {
+    logger.warn(
+      `  - ${entry.declaredAt}: authorizer '${entry.authorizerName}' is configured but ignored`
+    );
+  }
+  return ignored.length;
 }
 
 /**

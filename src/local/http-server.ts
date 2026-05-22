@@ -991,11 +991,14 @@ function lowercaseSingularHeaders(raw: Record<string, string[]>): Record<string,
 }
 
 /**
- * Parse query string into a singular (last-wins) map. Used by the
- * authorizer pass — separate from api-gateway-event because the
- * authorizer needs raw header values too.
+ * Parse query string into a singular map. Multi-value keys are
+ * comma-joined in order of appearance (`?foo=a&foo=b` -> `foo: 'a,b'`)
+ * — matches the contract documented at
+ * `src/local/parameter-mapping.ts:14` ("multi-values comma-joined")
+ * AND deployed API Gateway behavior. Used by both the authorizer pass
+ * and the HTTP API v2 service-integration parameter mapper.
  */
-function parseQueryStringSingular(rawUrl: string): Record<string, string> {
+export function parseQueryStringSingular(rawUrl: string): Record<string, string> {
   const q = rawUrl.indexOf('?');
   if (q < 0) return {};
   const raw = rawUrl.slice(q + 1);
@@ -1018,7 +1021,8 @@ function parseQueryStringSingular(rawUrl: string): Record<string, string> {
     } catch {
       /* keep raw */
     }
-    out[key] = value;
+    const prev = out[key];
+    out[key] = prev === undefined ? value : `${prev},${value}`;
   }
   return out;
 }

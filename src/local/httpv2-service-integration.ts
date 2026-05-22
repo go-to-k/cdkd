@@ -2,16 +2,24 @@
  * Per-subtype dispatcher for HTTP API v2 service integrations
  * (`IntegrationType: AWS_PROXY` + `IntegrationSubtype: <Service>-<Action>`).
  *
- * Source-of-truth subtype list:
+ * Full AWS-documented subtype list (NOT exhaustive — see AWS docs at
  *   https://docs.aws.amazon.com/apigateway/latest/developerguide/http-api-develop-integrations-aws-services-reference.html
+ * for the complete reference, which also covers Lambda-Invoke, the
+ * DynamoDB-* family, SNS-Publish, AppConfig-StartConfigurationSession,
+ * SQS-SendMessageBatch / Kinesis-PutRecords, etc.).
  *
- * Supported subtypes (matches AWS docs exactly — every official entry,
- * nothing else):
+ * Subtypes cdkd currently bundles SDK clients for:
  *   - EventBridge-PutEvents
  *   - SQS-SendMessage / SQS-ReceiveMessage / SQS-DeleteMessage / SQS-PurgeQueue
  *   - Kinesis-PutRecord
  *   - StepFunctions-StartExecution / StartSyncExecution / StopExecution
- *   - AppConfig-GetConfiguration
+ *   - AppConfig-GetConfiguration (recognized but returns 501 — the
+ *     `@aws-sdk/client-appconfig` package is not yet bundled)
+ *
+ * Unrecognized subtypes (including AWS-documented entries cdkd does not
+ * yet implement, and outright typos) fall back to the deferred-501 path
+ * in `route-discovery.ts`, surfacing a clean HTTP 501 at request time
+ * rather than aborting boot.
  *
  * Each subtype maps to ONE AWS SDK call. The `RequestParameters` map
  * carries the SDK input (already resolved to strings by

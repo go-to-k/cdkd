@@ -256,14 +256,18 @@ export class LocalStartApiStack extends cdk.Stack {
     });
 
     // Unrecognized subtype path — exercises the classifier's fallback to
-    // deferred-501 (preserves the safe surface for typo'd subtypes).
+    // deferred-501 (preserves the safe surface for typo'd subtypes AND
+    // for AWS-documented subtypes cdkd does not yet implement). Use an
+    // obviously-bogus subtype name so the test is unambiguous about
+    // exercising the unsupported path rather than asserting anything
+    // about a real AWS service.
     const fakeSubtypeIntegration = new apigwv2.CfnIntegration(this, 'FakeSubtypeInteg', {
       apiId: httpApi.apiId,
       integrationType: 'AWS_PROXY',
-      integrationSubtype: 'DynamoDB-PutItem',
+      integrationSubtype: 'BogusService-NotASubtype',
       payloadFormatVersion: '1.0',
-      credentialsArn: 'arn:aws:iam::123456789012:role/fixture-ddb-role',
-      requestParameters: { TableName: 'foo' },
+      credentialsArn: 'arn:aws:iam::123456789012:role/fixture-bogus-role',
+      requestParameters: { Param: 'foo' },
     });
     new apigwv2.CfnRoute(this, 'FakeSubtypeRoute', {
       apiId: httpApi.apiId,

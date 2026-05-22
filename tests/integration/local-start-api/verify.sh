@@ -416,7 +416,7 @@ if [[ "${UNK_STATUS}" != "501" ]]; then
   echo "FAIL: POST /unknown-subtype should 501 (unrecognized subtype). Got ${UNK_STATUS}. Body: ${UNK_BODY}"
   exit 1
 fi
-if ! echo "${UNK_BODY}" | grep -q 'DynamoDB-PutItem'; then
+if ! echo "${UNK_BODY}" | grep -q 'BogusService-NotASubtype'; then
   echo "FAIL: 501 reason should name the offending subtype. Body: ${UNK_BODY}"
   exit 1
 fi
