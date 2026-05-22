@@ -1,3 +1,10 @@
+## [0.132.2](https://github.com/go-to-k/cdkd/compare/v0.132.1...v0.132.2) (2026-05-22)
+
+
+### Bug Fixes
+
+* **local-start-service:** PR [#504](https://github.com/go-to-k/cdkd/issues/504) review follow-ups ([#506](https://github.com/go-to-k/cdkd/issues/506)) ([#509](https://github.com/go-to-k/cdkd/issues/509)) ([b8da7d8](https://github.com/go-to-k/cdkd/commit/b8da7d8bf11fada28aff2b57881220753d17b85f))
+
 ## [0.132.1](https://github.com/go-to-k/cdkd/compare/v0.132.0...v0.132.1) (2026-05-22)
 
 
