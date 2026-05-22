@@ -1034,9 +1034,7 @@ function writeMockCorsPreflight(
  * Exported for unit testing — the helper is pure-functional given a
  * cert object and never touches the network.
  */
-export function extractClientCert(
-  req: IncomingMessage
-): Record<string, unknown> | undefined {
+export function extractClientCert(req: IncomingMessage): Record<string, unknown> | undefined {
   const socket = req.socket as TLSSocket;
   // Plain-HTTP socket guard: `getPeerCertificate` is the discriminator
   // for TLSSocket vs net.Socket. We test for the method's presence
