@@ -158,6 +158,17 @@
             "statusMessage": "Running lint:fix..."
           }
         ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": ".claude/hooks/post-merge-sync-reminder.sh",
+            "timeout": 5,
+            "statusMessage": "Post-merge sync reminder check"
+          }
+        ]
       }
     ],
     "Stop": [
