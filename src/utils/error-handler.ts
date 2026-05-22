@@ -449,6 +449,48 @@ export class LocalStartServiceError extends CdkdError {
 }
 
 /**
+ * Signals that the upstream `cdk` CLI is not available on PATH (or at
+ * the override path passed via `--cdk-bin`). Surfaced from `cdkd migrate`
+ * (#465 PR A) before any other work runs.
+ *
+ * The message includes the install hint `npm install -g aws-cdk@latest`
+ * so users on a fresh machine see exactly how to recover.
+ */
+export class MissingCdkCliError extends CdkdError {
+  constructor(detail?: string, cause?: Error) {
+    const head = detail ?? "upstream 'cdk' CLI not found on PATH";
+    super(
+      `${head}. ` +
+        `'cdkd migrate' shells out to the upstream aws-cdk CLI for L1 codegen — ` +
+        `install it with 'npm install -g aws-cdk@latest' (or pass --cdk-bin <path>).`,
+      'MISSING_CDK_CLI',
+      cause
+    );
+    this.name = 'MissingCdkCliError';
+    Object.setPrototypeOf(this, MissingCdkCliError.prototype);
+  }
+}
+
+/**
+ * Generic local-migrate orchestration failure (#465 PR A). Used by
+ * `cdkd migrate` for pre-flight rejections (Custom Resource / nested
+ * stack / non-terminal CFn stack state), output-dir collisions, and
+ * `cdk migrate` subprocess failures whose underlying stderr is folded
+ * into the error message. Exit code 2 (partial-failure family) because
+ * some pre-flight failures leave the user with a partially-populated
+ * output directory that's still useful for debugging.
+ */
+export class LocalMigrateError extends CdkdError {
+  readonly exitCode: number = 2;
+
+  constructor(message: string, cause?: Error) {
+    super(message, 'LOCAL_MIGRATE_ERROR', cause);
+    this.name = 'LocalMigrateError';
+    Object.setPrototypeOf(this, LocalMigrateError.prototype);
+  }
+}
+
+/**
  * Check if error is a cdkd error
  */
 export function isCdkdError(error: unknown): error is CdkdError {

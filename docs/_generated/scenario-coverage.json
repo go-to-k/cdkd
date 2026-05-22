@@ -544,6 +544,11 @@
       ]
     },
     {
+      "name": "migrate-from-bare-cfn-codegen-only",
+      "annotated": true,
+      "scenarios": []
+    },
+    {
       "name": "migrate-from-cfn",
       "annotated": true,
       "scenarios": [

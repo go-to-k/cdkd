@@ -1,0 +1,31 @@
+{
+  "AWSTemplateFormatVersion": "2010-09-09",
+  "Description": "Hand-authored CFn template used as the SOURCE for the cdkd migrate codegen smoke test. Three resources cover the simple-name-mapping cases cdk migrate handles without parameter-derivation gymnastics: S3 bucket (no required properties beyond the auto-name), SSM parameter (typed Value), and SNS topic (display name).",
+  "Resources": {
+    "S3Bucket": {
+      "Type": "AWS::S3::Bucket",
+      "Properties": {
+        "Tags": [
+          {
+            "Key": "cdkd-migrate-smoke",
+            "Value": "true"
+          }
+        ]
+      }
+    },
+    "SsmParam": {
+      "Type": "AWS::SSM::Parameter",
+      "Properties": {
+        "Type": "String",
+        "Value": "smoke-test-value",
+        "Description": "cdkd migrate codegen smoke fixture"
+      }
+    },
+    "SnsTopic": {
+      "Type": "AWS::SNS::Topic",
+      "Properties": {
+        "DisplayName": "cdkd migrate smoke"
+      }
+    }
+  }
+}

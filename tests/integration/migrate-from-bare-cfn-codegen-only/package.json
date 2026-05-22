@@ -1,0 +1,10 @@
+{
+  "name": "cdkd-integ-migrate-from-bare-cfn-codegen-only",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Codegen-only smoke test for cdkd migrate (PR A of #465) — exercises 'cdk migrate --from-path' end-to-end against a hand-authored CFn template, asserts logical-ID preservation and aws:cdk:path metadata. Does NOT call AWS APIs and does NOT deploy.",
+  "type": "module",
+  "devDependencies": {
+    "aws-cdk": "2.1112.0"
+  }
+}
