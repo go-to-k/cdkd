@@ -1,3 +1,10 @@
+# [0.134.0](https://github.com/go-to-k/cdkd/compare/v0.133.0...v0.134.0) (2026-05-22)
+
+
+### Features
+
+* **migrate:** PR A library (spawn + codegen + synth, no CLI register) ([#465](https://github.com/go-to-k/cdkd/issues/465)) ([#513](https://github.com/go-to-k/cdkd/issues/513)) ([2431ca6](https://github.com/go-to-k/cdkd/commit/2431ca6d296cb461f0b26023fda4e8fd261ebc76))
+
 # [0.133.0](https://github.com/go-to-k/cdkd/compare/v0.132.4...v0.133.0) (2026-05-22)
 
 
