@@ -126,6 +126,13 @@ describe('resolveRestV1Authorizer — COGNITO_USER_POOLS', () => {
     expect(info).toEqual({
       kind: 'cognito',
       logicalId: 'Auth',
+      pools: [
+        {
+          userPoolArn: arn,
+          region: 'us-west-2',
+          userPoolId: 'us-west-2_abc123',
+        },
+      ],
       userPoolArn: arn,
       region: 'us-west-2',
       userPoolId: 'us-west-2_abc123',
@@ -159,14 +166,89 @@ describe('resolveRestV1Authorizer — COGNITO_USER_POOLS', () => {
       /literal ARN string|Fn::GetAtt/
     );
   });
-});
 
-describe('resolveRestV1Authorizer — unsupported', () => {
-  it('rejects unknown Type', () => {
+  // Issue #456: multi-pool federation. ProviderARNs[] of length 1+ is
+  // valid CFn; pre-PR cdkd only read arns[0]. Post-PR every entry is
+  // parsed into the `pools` array; the legacy `region` / `userPoolId`
+  // top-level fields point at pools[0] for backward compatibility.
+  it('extracts every pool when ProviderARNs has multiple entries', () => {
+    const arnA = 'arn:aws:cognito-idp:us-east-1:111:userpool/us-east-1_aaa';
+    const arnB = 'arn:aws:cognito-idp:us-west-2:111:userpool/us-west-2_bbb';
+    const arnC = 'arn:aws:cognito-idp:eu-west-1:111:userpool/eu-west-1_ccc';
     const stack = buildStack('S', {
       Auth: {
         Type: 'AWS::ApiGateway::Authorizer',
-        Properties: { Type: 'AWS_IAM' },
+        Properties: {
+          Type: 'COGNITO_USER_POOLS',
+          ProviderARNs: [arnA, arnB, arnC],
+        },
+      },
+    });
+    const info = resolveRestV1Authorizer('Auth', stack.template, 'S', 'S/Method') as {
+      kind: string;
+      pools: Array<{ userPoolArn: string; region: string; userPoolId: string }>;
+      userPoolArn: string;
+      region: string;
+      userPoolId: string;
+    };
+    expect(info.kind).toBe('cognito');
+    expect(info.pools).toEqual([
+      { userPoolArn: arnA, region: 'us-east-1', userPoolId: 'us-east-1_aaa' },
+      { userPoolArn: arnB, region: 'us-west-2', userPoolId: 'us-west-2_bbb' },
+      { userPoolArn: arnC, region: 'eu-west-1', userPoolId: 'eu-west-1_ccc' },
+    ]);
+    // Backward-compat legacy fields point at pools[0].
+    expect(info.userPoolArn).toBe(arnA);
+    expect(info.region).toBe('us-east-1');
+    expect(info.userPoolId).toBe('us-east-1_aaa');
+  });
+
+  it('rejects when ANY ProviderARNs entry is malformed', () => {
+    const stack = buildStack('S', {
+      Auth: {
+        Type: 'AWS::ApiGateway::Authorizer',
+        Properties: {
+          Type: 'COGNITO_USER_POOLS',
+          ProviderARNs: [
+            'arn:aws:cognito-idp:us-east-1:111:userpool/us-east-1_aaa',
+            'not-an-arn',
+          ],
+        },
+      },
+    });
+    expect(() => resolveRestV1Authorizer('Auth', stack.template, 'S', 'S/Method')).toThrow(
+      /malformed Cognito User Pool ARN/
+    );
+  });
+
+  it('error message names the offending ProviderARNs index', () => {
+    const stack = buildStack('S', {
+      Auth: {
+        Type: 'AWS::ApiGateway::Authorizer',
+        Properties: {
+          Type: 'COGNITO_USER_POOLS',
+          ProviderARNs: [
+            'arn:aws:cognito-idp:us-east-1:111:userpool/us-east-1_aaa',
+            'arn:aws:cognito-idp:us-east-1:111:userpool/us-east-1_bbb',
+            { 'Fn::GetAtt': ['UserPoolC', 'Arn'] },
+          ],
+        },
+      },
+    });
+    expect(() => resolveRestV1Authorizer('Auth', stack.template, 'S', 'S/Method')).toThrow(
+      /ProviderARNs\[2\]/
+    );
+  });
+});
+
+describe('resolveRestV1Authorizer — unsupported', () => {
+  it('rejects unknown Authorizer Type', () => {
+    // AWS_IAM is now detected at the Method level (PR #484), so this
+    // path only triggers for genuinely-unknown Authorizer resource Types.
+    const stack = buildStack('S', {
+      Auth: {
+        Type: 'AWS::ApiGateway::Authorizer',
+        Properties: { Type: 'SOMETHING_UNKNOWN' },
       },
     });
     expect(() => resolveRestV1Authorizer('Auth', stack.template, 'S', 'S/Method')).toThrow(
@@ -378,7 +460,7 @@ describe('attachAuthorizers', () => {
     expect(out[0]?.authorizer).toBeUndefined();
   });
 
-  it('hard-errors on AWS_IAM REST v1 (deferred)', () => {
+  it('attaches the iam authorizer kind on AWS_IAM REST v1 (#447)', () => {
     const stack = buildStack('S', {
       Method: {
         Type: 'AWS::ApiGateway::Method',
@@ -394,7 +476,12 @@ describe('attachAuthorizers', () => {
       stage: 'prod',
       declaredAt: 'S/Method',
     };
-    expect(() => attachAuthorizers([stack], [route])).toThrow(RouteDiscoveryError);
+    const out = attachAuthorizers([stack], [route]);
+    expect(out[0]?.authorizer).toEqual({
+      kind: 'iam',
+      logicalId: 'AWS_IAM',
+      declaredAt: 'S/Method',
+    });
   });
 
   // Issue #431: authorizer Lambda Arn unresolvable (cross-stack /
