@@ -220,6 +220,51 @@ Run integration tests against a real AWS account. These tests deploy actual AWS 
     `src/deployment/deploy-engine.ts` etc. needs the broader VPC /
     Lambda / multi-resource coverage that only the broad set provides.
 
+12. **Set the `integ-schema-migration` markgate marker (only for
+    `schema-v*-to-v*-migration` tests, on full clean success)**:
+
+    cdkd's S3 state schema is the actual user contract. A schema
+    version bump (e.g. v5 -> v6) MUST be transparently auto-migrated
+    by the new binary AND verified by a real-AWS integ test that
+    proves the round-trip: deploy under vN -> swap binary -> read
+    works against the vN state without re-deploying -> next write
+    upgrades to vN+1 silently -> destroy clean / 0 orphans.
+
+    A test is "schema-migration" iff its name matches the pattern
+    `schema-v<N>-to-v<N+1>-migration` (e.g.
+    `schema-v5-to-v6-migration`). Test fixtures live under
+    `tests/integration/schema-v<N>-to-v<N+1>-migration/`.
+
+    When the test name matches AND the destroy step finished cleanly
+    with 0 errors / 0 orphans (= the same conditions that flip
+    `integ-destroy`), ALSO record the schema-migration sentinel and
+    flip the marker. Unlike `integ-broad`, this gate's marker uses
+    `src/types/state.ts` as its include scope directly, so the
+    sentinel is informational only (no separate sentinel file is
+    needed for markgate's digest):
+
+    ```bash
+    mise exec -- markgate set integ-schema-migration
+    ```
+
+    The hook `.claude/hooks/integ-schema-migration-gate.sh` blocks
+    `gh pr merge` for any PR that bumps the `StackState.version`
+    literal type in `src/types/state.ts` (detected via precise `gh
+    pr diff` grep — non-bump edits to state.ts pass through with no
+    false positive) until this marker is fresh. Same 14d TTL and
+    same "do NOT call markgate set directly to bypass" rule as the
+    other AWS-coupled gates.
+
+    **Non-schema-migration tests do NOT set this marker** — e.g.
+    `lambda` flips `integ-destroy` + `integ-broad` but leaves
+    `integ-schema-migration` alone. A schema-bump PR must run a
+    test named exactly `schema-v<N>-to-v<N+1>-migration` to clear
+    this gate. See memory rule
+    `feedback_schema_version_migration_integ_required.md` for the
+    full migration-test checklist + the absolute requirement that
+    auto-migration must be transparent (no user action required
+    on upgrade).
+
 ## Important
 
 - Always use `--region us-east-1` for integration tests
