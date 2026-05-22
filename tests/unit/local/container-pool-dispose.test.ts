@@ -43,6 +43,7 @@ vi.mock('../../../src/local/rie-client.js', () => ({
 
 function fakeSpec(logicalId: string): ContainerSpec {
   return {
+    kind: 'zip',
     lambda: {
       kind: 'zip',
       stack: {} as unknown as StackInfo,

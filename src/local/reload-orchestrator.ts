@@ -260,15 +260,45 @@ function routeKey(route: DiscoveredRoute): string {
  * surface. Equality of this string across reloads means "the next
  * request for this Lambda can hit a warm container without surprise";
  * inequality means "tear down + restart".
+ *
+ * Branches on `spec.kind`:
+ *   - `'zip'`: fields that affect the bind-mount or RIE invocation
+ *     (codeDir / env / handler / runtime / containerHost / debugPort).
+ *     A `codeDir` change captures asset rebuilds (CDK's `aws:asset:path`
+ *     stable across re-synths of identical source, flips on real
+ *     content change).
+ *   - `'image'`: the deterministic tag `image` already fingerprints
+ *     the build context (Dockerfile / build-args / source dir — see
+ *     `docker-image-builder.ts:computeLocalTag`) so a Dockerfile edit
+ *     produces a new tag and triggers rebuild. `command` / `entryPoint`
+ *     / `workingDir` / `platform` capture template-side changes that
+ *     affect the docker run shape but not the image content.
  */
 function specSignature(spec: ContainerSpec): string {
+  if (spec.kind === 'zip') {
+    return JSON.stringify({
+      kind: 'zip',
+      codeDir: spec.codeDir,
+      optDir: spec.optDir ?? null,
+      env: spec.env,
+      handler: spec.lambda.handler,
+      runtime: spec.lambda.runtime,
+      containerHost: spec.containerHost,
+      debugPort: spec.debugPort ?? null,
+      tmpfs: spec.tmpfs ?? null,
+    });
+  }
   return JSON.stringify({
-    codeDir: spec.codeDir,
+    kind: 'image',
+    image: spec.image,
+    platform: spec.platform,
+    command: spec.command,
+    entryPoint: spec.entryPoint ?? null,
+    workingDir: spec.workingDir ?? null,
     env: spec.env,
-    handler: spec.lambda.handler,
-    runtime: spec.lambda.runtime,
     containerHost: spec.containerHost,
     debugPort: spec.debugPort ?? null,
+    tmpfs: spec.tmpfs ?? null,
   });
 }
 
