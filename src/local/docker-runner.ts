@@ -108,6 +108,21 @@ export interface DockerRunOptions {
    * behavior for `cdkd local invoke` / `cdkd local start-api`).
    */
   network?: string;
+  /**
+   * Optional sized tmpfs mount (issue #440 — Lambda
+   * `Properties.EphemeralStorage.Size`). When set, emits
+   * `--tmpfs <target>:rw,size=<sizeMb>m` so the container's `<target>`
+   * (typically `/tmp`) is a memory-backed filesystem capped at
+   * `sizeMb` MiB. Handlers that exceed the cap fail with `ENOSPC`
+   * the way they would on AWS, and handlers that detect free space
+   * via `statvfs` / `df` see the configured cap rather than the
+   * host's overlay-fs.
+   *
+   * Unset → no `--tmpfs` flag, the container's `/tmp` is whatever
+   * the base image provides (preserves the pre-#440 behavior for
+   * Lambdas without `EphemeralStorage`).
+   */
+  tmpfs?: { target: string; sizeMb: number };
 }
 
 /**
@@ -210,6 +225,16 @@ export async function runDetached(opts: DockerRunOptions): Promise<string> {
 
   for (const [k, v] of Object.entries(opts.env)) {
     args.push('-e', `${k}=${v}`);
+  }
+
+  // Issue #440 — Lambda EphemeralStorage.Size: emit `--tmpfs
+  // <target>:rw,size=<N>m` so the container's `/tmp` is capped at the
+  // templated value. Placed AFTER -e flags and BEFORE --workdir to
+  // keep the order stable with the existing `-p` / `-v` / `-e`
+  // mount-shaped block; downstream `--workdir` / `--entrypoint`
+  // / image / cmd ordering is unchanged.
+  if (opts.tmpfs) {
+    args.push('--tmpfs', `${opts.tmpfs.target}:rw,size=${opts.tmpfs.sizeMb}m`);
   }
 
   if (opts.workingDir) {

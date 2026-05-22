@@ -86,16 +86,36 @@ interface LocalInvokeOptions {
   debugPort?: string;
   containerHost: string;
   /**
-   * Q1 recommendation B: optional Lambda execution role to assume before
-   * invoking. When set, cdkd calls `sts:AssumeRole` against this ARN and
-   * forwards the resulting temporary credentials into the container so
-   * the handler runs under the deployed function's narrow permissions
-   * (instead of the developer's typically-admin shell credentials). PR 1
-   * accepts an explicit ARN only — PR 2's `--from-state` adds a hint
-   * pointing at the state-recorded role ARN (auto-assumption is still
-   * out of scope). Off by default.
+   * Optional Lambda execution role to assume before invoking. When set,
+   * cdkd calls `sts:AssumeRole` against the resolved ARN and forwards
+   * the resulting temporary credentials into the container so the
+   * handler runs under the deployed function's narrow permissions
+   * (instead of the developer's typically-admin shell credentials).
+   *
+   * Commander's `[arn]` syntax maps to `string | boolean` here:
+   *   - flag absent → `undefined` (pass dev creds through; SAM-compatible default)
+   *   - `--assume-role` (bare) → `true` (auto-resolve from state; requires `--from-state`)
+   *   - `--assume-role <arn>` → `'<arn>'` (explicit ARN; precedence wins)
+   *   - `--no-assume-role` → `false` (explicit opt-out; forces dev creds even with `--from-state`)
+   *
+   * Auto-resolve walks the function's `Properties.Role` in cdkd state
+   * (`Fn::GetAtt: [<RoleId>, 'Arn']` is resolved against the sibling
+   * IAM Role resource's `attributes.Arn`; literal ARNs pass through).
+   * STS failures degrade to a warn + dev-creds fallback — this is a
+   * developer-loop tool, not a security boundary.
    */
-  assumeRole?: string;
+  assumeRole?: string | boolean;
+  /**
+   * Optional role ARN passed to `pullEcrImage` when the IMAGE ECR-pull
+   * path fires (no matching cdk.out asset and `Code.ImageUri` is an ECR
+   * URI). Used to authenticate against a centralized / cross-account
+   * registry whose `ecr:GetAuthorizationToken` permission is granted to
+   * the assumed role rather than the developer's identity. Closes #455.
+   * When omitted, cdkd uses the default credential chain (which is
+   * sufficient for same-account pulls AND for cross-account pulls when
+   * the ECR repository's resource policy grants the caller directly).
+   */
+  ecrRoleArn?: string;
   /**
    * PR 2: when set, cdkd reads its S3 state for the target stack and
    * substitutes intrinsic-valued env vars (`Ref` / `Fn::GetAtt` /
@@ -321,14 +341,50 @@ async function localInvokeCommand(target: string, options: LocalInvokeOptions): 
       );
     }
 
-    // Q1 follow-up: when `--from-state` is set but `--assume-role` is NOT,
-    // peek at the function's `Role` property in state and surface the
-    // deployed execution role's ARN as a one-line hint. We deliberately
-    // do NOT auto-assume — that's a future PR's scope; v1 keeps the user's
-    // explicit ARN as the only path to scoped credentials.
-    if (options.fromState && !options.assumeRole && stateForRoleHint) {
+    // Auto-resolve the execution-role ARN from state when the user passed
+    // bare `--assume-role` together with `--from-state`. Resolution: walk
+    // `state.resources[<Fn>].properties.Role`; if it's a literal ARN, use
+    // it verbatim; if it's `Fn::GetAtt: [<RoleId>, 'Arn']` / `Ref: <RoleId>`,
+    // pull the sibling IAM Role resource's `attributes.Arn`. Resolution
+    // failures fall through to the dev-creds path with a clear warn.
+    //
+    // Precedence:
+    //   `--no-assume-role` (false)            → dev creds, no hint
+    //   `--assume-role <arn>` (string)        → explicit ARN wins, even over state
+    //   `--assume-role` bare (true) + state   → auto-resolved ARN
+    //   `--assume-role` bare (true) no state  → warn + fall through to dev creds
+    //   absent (undefined) + state            → one-line hint (legacy PR 2 behavior)
+    //   absent (undefined) no state           → dev creds (SAM default)
+    let resolvedAssumeRoleArn: string | undefined;
+    if (typeof options.assumeRole === 'string') {
+      resolvedAssumeRoleArn = options.assumeRole;
+    } else if (options.assumeRole === true) {
+      // Bare `--assume-role` — must have state to resolve the ARN.
+      if (!stateForRoleHint) {
+        logger.warn(
+          '--assume-role passed without an ARN, but no cdkd state was loaded. ' +
+            'Pair it with --from-state, or pass the ARN explicitly: --assume-role <arn>. ' +
+            "Falling back to the developer's shell credentials."
+        );
+      } else {
+        const arn = resolveExecutionRoleArnFromState(stateForRoleHint, lambda.logicalId);
+        if (arn) {
+          resolvedAssumeRoleArn = arn;
+          logger.info(`--assume-role: auto-resolved execution role from cdkd state: ${arn}`);
+        } else {
+          logger.warn(
+            `--assume-role: could not resolve the execution role ARN from cdkd state for '${lambda.logicalId}'. ` +
+              "Pass the ARN explicitly: --assume-role <arn>. Falling back to the developer's shell credentials."
+          );
+        }
+      }
+    } else if (options.assumeRole === undefined && options.fromState && stateForRoleHint) {
+      // Legacy hint path: user did not opt in, but `--from-state` set; surface
+      // the deployed role ARN so they can re-run with `--assume-role`.
       suggestAssumeRoleFromState(stateForRoleHint, lambda.logicalId);
     }
+    // `options.assumeRole === false` (--no-assume-role) is an explicit opt-out
+    // — skip every assume-role path entirely.
 
     // Read the event payload. Default to {} (matches SAM).
     const event = await readEvent(options);
@@ -346,20 +402,32 @@ async function localInvokeCommand(target: string, options: LocalInvokeOptions): 
       AWS_LAMBDA_LOG_STREAM_NAME: 'local',
       ...envResult.resolved,
     };
-    // Q1 recommendation B: if --assume-role is set, swap the developer's
-    // credentials for STS-issued temporary credentials scoped to the
-    // function's deployed execution role. Otherwise pass the developer's
-    // creds through (SAM-compatible default). Region precedence mirrors
-    // the rest of cdkd: --region > AWS_REGION > AWS_DEFAULT_REGION.
-    if (options.assumeRole) {
+    // Swap the developer's credentials for STS-issued temporary credentials
+    // scoped to the function's deployed execution role when one was resolved.
+    // STS failures degrade to a warn + dev-creds fallback rather than hard
+    // error — this is a developer-loop tool, not a security boundary, and
+    // the most common cause is the role's `AssumeRolePolicy` not trusting
+    // the developer's IAM principal (a config gap, not a cdkd bug).
+    let assumeSucceeded = false;
+    if (resolvedAssumeRoleArn) {
       const stsRegion =
         options.region ?? process.env['AWS_REGION'] ?? process.env['AWS_DEFAULT_REGION'];
-      const creds = await assumeLambdaExecutionRole(options.assumeRole, stsRegion);
-      dockerEnv['AWS_ACCESS_KEY_ID'] = creds.accessKeyId;
-      dockerEnv['AWS_SECRET_ACCESS_KEY'] = creds.secretAccessKey;
-      dockerEnv['AWS_SESSION_TOKEN'] = creds.sessionToken;
-      if (stsRegion) dockerEnv['AWS_REGION'] = stsRegion;
-    } else {
+      try {
+        const creds = await assumeLambdaExecutionRole(resolvedAssumeRoleArn, stsRegion);
+        dockerEnv['AWS_ACCESS_KEY_ID'] = creds.accessKeyId;
+        dockerEnv['AWS_SECRET_ACCESS_KEY'] = creds.secretAccessKey;
+        dockerEnv['AWS_SESSION_TOKEN'] = creds.sessionToken;
+        if (stsRegion) dockerEnv['AWS_REGION'] = stsRegion;
+        assumeSucceeded = true;
+      } catch (err) {
+        const reason = err instanceof Error ? err.message : String(err);
+        logger.warn(
+          `--assume-role: STS AssumeRole(${resolvedAssumeRoleArn}) failed: ${reason}. ` +
+            "Falling back to the developer's shell credentials."
+        );
+      }
+    }
+    if (!assumeSucceeded) {
       forwardAwsEnv(dockerEnv);
     }
 
@@ -412,6 +480,7 @@ async function localInvokeCommand(target: string, options: LocalInvokeOptions): 
       ...(imagePlan.platform !== undefined && { platform: imagePlan.platform }),
       ...(imagePlan.entryPoint !== undefined && { entryPoint: imagePlan.entryPoint }),
       ...(imagePlan.workingDir !== undefined && { workingDir: imagePlan.workingDir }),
+      ...(imagePlan.tmpfs !== undefined && { tmpfs: imagePlan.tmpfs }),
     });
 
     // Stream the container's logs to the user's terminal so they see the
@@ -505,6 +574,17 @@ interface ImagePlan {
    * leave this unset.
    */
   layersTmpDir?: string;
+  /**
+   * Sized tmpfs mount for `/tmp` (issue #440 — Lambda
+   * `Properties.EphemeralStorage.Size`). Set when the function's
+   * template declares `EphemeralStorage`; threaded through to
+   * `runDetached`'s `tmpfs` option which emits
+   * `--tmpfs /tmp:rw,size=<N>m`. Undefined when the property is
+   * absent, in which case the container's `/tmp` is whatever the
+   * base image provides (no cap). Applies to both ZIP and IMAGE
+   * Lambdas.
+   */
+  tmpfs?: { target: string; sizeMb: number };
 }
 
 /**
@@ -564,6 +644,8 @@ async function resolveZipImagePlan(
   // /var/runtime/bootstrap); every other runtime expects /var/task.
   const containerCodePath = resolveRuntimeCodeMountPath(lambda.runtime);
 
+  const tmpfs = resolveTmpfsForLambda(lambda);
+
   return {
     image,
     mounts: [{ hostPath: codeDir, containerPath: containerCodePath, readOnly: true }],
@@ -571,7 +653,49 @@ async function resolveZipImagePlan(
     cmd: [lambda.handler],
     ...(inlineTmpDir !== undefined && { inlineTmpDir }),
     ...(layerPlan.tmpDir !== undefined && { layersTmpDir: layerPlan.tmpDir }),
+    ...(tmpfs !== undefined && { tmpfs }),
   };
+}
+
+/**
+ * Build the `--tmpfs /tmp:rw,size=<N>m` plan for a Lambda (issue #440).
+ *
+ * The shape is identical for ZIP and IMAGE Lambdas — `--tmpfs` overlays
+ * mount-time inside any container, regardless of whether the image is a
+ * public Lambda base image (ZIP path) or a user-built container Lambda.
+ * Returns `undefined` when the template did not declare
+ * `EphemeralStorage`, in which case the caller emits no `--tmpfs` flag
+ * and the container's `/tmp` is whatever the base image provides
+ * (matches pre-#440 behavior). The lambda-resolver's
+ * `extractEphemeralStorageMb` already enforces the AWS 10240 MiB
+ * ceiling at parse time.
+ *
+ * Target path is always `/tmp` — AWS Lambda's `/tmp` is the ONLY
+ * sized-tmpfs surface the `EphemeralStorage.Size` property controls,
+ * and the constant is centralized here so a future fixture / docs
+ * update has a single grep target.
+ */
+export function resolveTmpfsForLambda(
+  lambda: ResolvedLambda
+): { target: string; sizeMb: number } | undefined {
+  if (lambda.ephemeralStorageMb === undefined) return undefined;
+  const logger = getLogger();
+  if (lambda.kind === 'image') {
+    // Container Lambdas: surface the cap at info level so users notice
+    // when `--tmpfs /tmp` overlays whatever their Dockerfile placed
+    // there at build time. Matches the issue spec note about logging
+    // a single line on container images.
+    logger.info(
+      `Lambda ${lambda.logicalId}: capping /tmp at ${lambda.ephemeralStorageMb} MiB via --tmpfs (overlays any base-image /tmp content)`
+    );
+  } else {
+    // ZIP Lambdas: base image's /tmp is just an overlay-fs path, so
+    // the cap is uneventful — debug-level keeps the default output clean.
+    logger.debug(
+      `Lambda ${lambda.logicalId}: applying EphemeralStorage cap via --tmpfs /tmp:size=${lambda.ephemeralStorageMb}m`
+    );
+  }
+  return { target: '/tmp', sizeMb: lambda.ephemeralStorageMb };
 }
 
 /**
@@ -685,6 +809,7 @@ export async function resolveContainerImagePlan(
     imageRef = await pullEcrImage(lambda.imageUri, {
       skipPull: options.pull === false,
       ...(options.region !== undefined && { region: options.region }),
+      ...(options.ecrRoleArn !== undefined && { ecrRoleArn: options.ecrRoleArn }),
     });
   }
 
@@ -694,6 +819,13 @@ export async function resolveContainerImagePlan(
   // to `[]` for the IMAGE branch, so `extraMounts` is always empty here
   // (matches AWS's invoke-time behavior of silently ignoring layers on
   // container Lambdas).
+  //
+  // Issue #440 — `EphemeralStorage.Size` is honored uniformly across
+  // ZIP and IMAGE Lambdas. `--tmpfs /tmp:size=Nm` overlays on top of
+  // whatever the user's Dockerfile placed there at build time, so
+  // there's no shape-divergence to gate on the `kind` discriminator.
+  const tmpfs = resolveTmpfsForLambda(lambda);
+
   return {
     image: imageRef,
     mounts: [],
@@ -707,6 +839,7 @@ export async function resolveContainerImagePlan(
     ...(lambda.imageConfig.workingDirectory !== undefined && {
       workingDir: lambda.imageConfig.workingDirectory,
     }),
+    ...(tmpfs !== undefined && { tmpfs }),
   };
 }
 
@@ -903,11 +1036,10 @@ async function readStdin(): Promise<string> {
 /**
  * Assume the Lambda execution role and return temporary credentials.
  *
- * Q1 recommendation B (PR 1): closes the "developer has admin creds, the
- * deployed function has narrow ones" skew that SAM users routinely hit.
- * Off by default; opt-in via `--assume-role <arn>`. PR 2's `--from-state`
- * will add auto-resolution from the template's `Role` property; for now
- * the user supplies the ARN explicitly.
+ * Closes the "developer has admin creds, the deployed function has narrow
+ * ones" skew that SAM users routinely hit. Off by default; opt-in via
+ * `--assume-role <arn>` (explicit) or `--assume-role` (bare, auto-resolved
+ * from cdkd state via `resolveExecutionRoleArnFromState`).
  *
  * Mirrors the env-var-write pattern from `applyRoleArnIfSet` in
  * `src/utils/role-arn.ts` but writes the temp creds onto the container's
@@ -996,39 +1128,67 @@ function materializeInlineCode(handler: string, source: string, fileExtension: s
 }
 
 /**
- * When `--from-state` is set but `--assume-role` is not, log the function's
- * deployed execution role ARN once as a hint. Helps users discover the
- * scoped-credentials path without us silently auto-assuming (auto-assume
- * is a future PR's scope).
+ * When `--from-state` is set but `--assume-role` was NOT passed (not even
+ * bare), log the function's deployed execution role ARN once as a hint.
+ * This is the pre-(#442) behavior — kept for backward compatibility with
+ * users who don't want auto-assume. The bare-`--assume-role` path opts
+ * in to actually assuming the resolved ARN; this hint path stays
+ * informational only.
  */
 function suggestAssumeRoleFromState(state: StackState, logicalId: string): void {
   const logger = getLogger();
+  const roleArn = resolveExecutionRoleArnFromState(state, logicalId);
+  if (roleArn) {
+    logger.info(
+      `Hint: the deployed function uses execution role ${roleArn}. ` +
+        `Re-run with --assume-role to invoke under the deployed function's narrow permissions.`
+    );
+  }
+}
+
+/**
+ * Resolve the execution-role ARN for a Lambda from cdkd state. Used by
+ * both the `--assume-role` auto-resolve path and the legacy hint path.
+ *
+ * Resolution rules (mirrors the v1 scope spelled out in (#442)):
+ *
+ *   - Literal-string `Role` starting with `arn:` → returned verbatim.
+ *   - `{ Fn::GetAtt: [<RoleId>, 'Arn'] }` or `{ Ref: <RoleId> }` → looked up
+ *     against the sibling IAM Role resource's `attributes.Arn` (recorded
+ *     at deploy time by `IAMRoleProvider.create` / drift refresh).
+ *   - Any other shape (`Fn::Sub` / `Fn::Join` / cross-stack imports) → not
+ *     resolved in v1; the caller surfaces a warn and falls back to dev
+ *     creds. Once real CDK apps emit those shapes for `Role` we can
+ *     extend the resolver per `feedback_verify_cdk_synth_shape_before_resolver.md`.
+ *
+ * Returns `undefined` when state has no entry for the Lambda, the `Role`
+ * is missing entirely, the referenced sibling has no `Arn` attribute
+ * captured, or the shape is one we don't try to resolve.
+ *
+ * Exported for unit testing.
+ */
+export function resolveExecutionRoleArnFromState(
+  state: StackState,
+  logicalId: string
+): string | undefined {
   const lambda = state.resources[logicalId];
-  if (!lambda) return;
+  if (!lambda) return undefined;
 
   const roleRef = lambda.properties?.['Role'] ?? lambda.observedProperties?.['Role'];
-  let roleArn: string | undefined;
   if (typeof roleRef === 'string' && roleRef.startsWith('arn:')) {
-    roleArn = roleRef;
-  } else if (typeof roleRef === 'object' && roleRef !== null) {
-    // The template typically has `Fn::GetAtt: [<RoleId>, Arn]` — we look up
-    // the referenced role's `Arn` attribute in the state's resources map.
+    return roleRef;
+  }
+  if (typeof roleRef === 'object' && roleRef !== null) {
     const refLogicalId = pickReferencedLogicalId(roleRef as Record<string, unknown>);
     if (refLogicalId) {
       const roleResource = state.resources[refLogicalId];
       const cached = roleResource?.attributes?.['Arn'];
       if (typeof cached === 'string' && cached.startsWith('arn:')) {
-        roleArn = cached;
+        return cached;
       }
     }
   }
-
-  if (roleArn) {
-    logger.info(
-      `Hint: the deployed function uses execution role ${roleArn}. ` +
-        `Re-run with --assume-role <that-arn> to invoke under the deployed function's narrow permissions.`
-    );
-  }
+  return undefined;
 }
 
 /**
@@ -1095,11 +1255,26 @@ export function createLocalCommand(): Command {
     )
     .addOption(
       new Option(
-        '--assume-role <arn>',
+        '--assume-role [arn]',
         "Assume the Lambda's deployed execution role and forward STS-issued temp credentials " +
           "to the container so the handler runs with the deployed function's narrow permissions " +
-          '(closes the "developer admin / function narrow" skew). Off by default — when omitted, ' +
-          "the developer's shell credentials are forwarded unchanged (SAM-compatible default)."
+          '(closes the "developer admin / function narrow" skew). Three forms: ' +
+          '(1) `--assume-role <arn>` assumes the explicit ARN; ' +
+          "(2) `--assume-role` (bare) auto-resolves the function's execution role ARN from cdkd " +
+          'state (requires --from-state); ' +
+          '(3) `--no-assume-role` explicitly opts out (forces dev creds even with --from-state). ' +
+          "Off by default — when omitted, the developer's shell credentials are forwarded " +
+          'unchanged (SAM-compatible default). STS failures degrade to a warn + dev-creds fallback.'
+      )
+    )
+    .addOption(
+      new Option(
+        '--ecr-role-arn <arn>',
+        'Role ARN to assume before authenticating against ECR for cross-account / centralized ' +
+          'registries (#455). Issues sts:AssumeRole via the default credential chain and uses the ' +
+          'temporary credentials for ecr:GetAuthorizationToken + docker pull. Required when the ' +
+          'caller does not have direct cross-account access to the target repository. ' +
+          'Same-account / same-region pulls do not need this flag.'
       )
     )
     .addOption(

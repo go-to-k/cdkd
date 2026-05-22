@@ -109,6 +109,16 @@ export interface ContainerSpec {
   containerHost: string;
   /** Optional Node.js `--inspect-brk` port. */
   debugPort?: number;
+  /**
+   * Optional sized tmpfs mount for the warm container (issue #440 —
+   * Lambda `Properties.EphemeralStorage.Size`). Resolved ONCE at server
+   * boot from the function's template (same as `optDir` / `codeDir`)
+   * and threaded into every cold-start of this Lambda's pool. Unset
+   * when the template did not declare `EphemeralStorage` — the warm
+   * container's `/tmp` is then whatever the base image provides
+   * (preserves the pre-#440 behavior). Target path is `/tmp`.
+   */
+  tmpfs?: { target: string; sizeMb: number };
 }
 
 export interface ContainerPoolOptions {
@@ -233,6 +243,7 @@ export function createContainerPool(
       host: spec.containerHost,
       name,
       ...(spec.debugPort !== undefined && { debugPort: spec.debugPort }),
+      ...(spec.tmpfs !== undefined && { tmpfs: spec.tmpfs }),
     });
     const stopLogStream = streamingEnabled ? streamLogs(containerId) : (): void => undefined;
     try {

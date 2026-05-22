@@ -222,4 +222,77 @@ describe('LambdaFunctionProvider.readCurrentState', () => {
     });
     expect(result?.Tags).toEqual([]);
   });
+
+  // Issue #445: Code.ImageUri is recoverable from GetFunction for
+  // container-package Lambdas. The pre-PR `getDriftUnknownPaths` declared
+  // the whole `Code` subtree as drift-unknown, which also hid console-side
+  // image swaps on container Lambdas. Surface `Code.ImageUri` when AWS
+  // reports it; the ZIP-side sub-paths stay declared via
+  // `getDriftUnknownPaths` (`Code.S3Bucket` / `Code.S3Key` /
+  // `Code.S3ObjectVersion` / `Code.ZipFile` / `Code.SourceKMSKeyArn`).
+  it('surfaces Code.ImageUri for container Lambdas (PackageType=Image)', async () => {
+    mockSend.mockResolvedValueOnce({
+      Configuration: {
+        FunctionName: 'fn',
+        Role: 'arn:aws:iam::123456789012:role/exec',
+        Timeout: 3,
+        MemorySize: 128,
+        PackageType: 'Image',
+      },
+      Code: {
+        RepositoryType: 'ECR',
+        ImageUri:
+          '123456789012.dkr.ecr.us-east-1.amazonaws.com/cdkd-asset:abc123',
+        ResolvedImageUri:
+          '123456789012.dkr.ecr.us-east-1.amazonaws.com/cdkd-asset@sha256:deadbeef',
+      },
+    });
+
+    const result = await provider.readCurrentState('fn', 'Logical', 'AWS::Lambda::Function');
+
+    expect(result?.PackageType).toBe('Image');
+    expect(result?.Code).toEqual({
+      ImageUri: '123456789012.dkr.ecr.us-east-1.amazonaws.com/cdkd-asset:abc123',
+    });
+    // ResolvedImageUri is AWS-managed (post-resolution digest) and is NOT
+    // a user-controllable input — intentionally not surfaced.
+    expect(result?.Code).not.toHaveProperty('ResolvedImageUri');
+  });
+
+  it('omits the Code key entirely for ZIP-package Lambdas', async () => {
+    mockSend.mockResolvedValueOnce({
+      Configuration: {
+        FunctionName: 'fn',
+        Runtime: 'nodejs20.x',
+        Handler: 'index.handler',
+        Role: 'arn:aws:iam::123456789012:role/exec',
+        PackageType: 'Zip',
+      },
+      // AWS returns a pre-signed URL on `Code.Location` for ZIP Lambdas —
+      // that's not user-controllable and we must NOT surface it (would
+      // fire false drift on every clean run).
+      Code: {
+        RepositoryType: 'S3',
+        Location:
+          'https://prod-04-2014-tasks.s3.us-east-1.amazonaws.com/snapshots/...',
+      },
+    });
+
+    const result = await provider.readCurrentState('fn', 'Logical', 'AWS::Lambda::Function');
+
+    // ZIP Lambdas: AWS only returns the presigned URL, not ImageUri →
+    // omit the Code subtree entirely so the drift comparator's
+    // state-keys-only walk handles the absence cleanly.
+    expect(result).not.toHaveProperty('Code');
+  });
+
+  it('declares the ZIP-side Code sub-paths in getDriftUnknownPaths', () => {
+    expect(provider.getDriftUnknownPaths()).toEqual([
+      'Code.S3Bucket',
+      'Code.S3Key',
+      'Code.S3ObjectVersion',
+      'Code.ZipFile',
+      'Code.SourceKMSKeyArn',
+    ]);
+  });
 });

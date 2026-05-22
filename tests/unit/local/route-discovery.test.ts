@@ -473,6 +473,105 @@ describe('discoverRoutes — HTTP API v2', () => {
     expect(discoverRoutes([stack])[0]?.lambdaLogicalId).toBe('Handler');
   });
 
+  it("parses Fn::Sub 1-arg Target shape 'integrations/${Integ}' (AWS-docs canonical)", () => {
+    const stack = buildStack('S', {
+      Api: { Type: 'AWS::ApiGatewayV2::Api', Properties: { ProtocolType: 'HTTP' } },
+      Integ: {
+        Type: 'AWS::ApiGatewayV2::Integration',
+        Properties: {
+          ApiId: { Ref: 'Api' },
+          IntegrationType: 'AWS_PROXY',
+          IntegrationUri: { 'Fn::GetAtt': ['Handler', 'Arn'] },
+        },
+      },
+      Route: {
+        Type: 'AWS::ApiGatewayV2::Route',
+        Properties: {
+          ApiId: { Ref: 'Api' },
+          RouteKey: 'GET /items',
+          Target: { 'Fn::Sub': 'integrations/${Integ}' },
+        },
+      },
+    });
+    expect(discoverRoutes([stack])[0]?.lambdaLogicalId).toBe('Handler');
+  });
+
+  it("parses Fn::Sub 2-arg Target shape ['integrations/${Var}', { Var: { Ref } }] (what cdk.Fn.sub emits)", () => {
+    const stack = buildStack('S', {
+      Api: { Type: 'AWS::ApiGatewayV2::Api', Properties: { ProtocolType: 'HTTP' } },
+      Integ: {
+        Type: 'AWS::ApiGatewayV2::Integration',
+        Properties: {
+          ApiId: { Ref: 'Api' },
+          IntegrationType: 'AWS_PROXY',
+          IntegrationUri: { 'Fn::GetAtt': ['Handler', 'Arn'] },
+        },
+      },
+      Route: {
+        Type: 'AWS::ApiGatewayV2::Route',
+        Properties: {
+          ApiId: { Ref: 'Api' },
+          RouteKey: 'POST /items',
+          Target: {
+            'Fn::Sub': ['integrations/${IntId}', { IntId: { Ref: 'Integ' } }],
+          },
+        },
+      },
+    });
+    expect(discoverRoutes([stack])[0]?.lambdaLogicalId).toBe('Handler');
+  });
+
+  it('rejects Fn::Sub Target whose template does not start with integrations/', () => {
+    const stack = buildStack('S', {
+      Api: { Type: 'AWS::ApiGatewayV2::Api', Properties: { ProtocolType: 'HTTP' } },
+      Integ: {
+        Type: 'AWS::ApiGatewayV2::Integration',
+        Properties: {
+          ApiId: { Ref: 'Api' },
+          IntegrationType: 'AWS_PROXY',
+          IntegrationUri: { 'Fn::GetAtt': ['Handler', 'Arn'] },
+        },
+      },
+      Route: {
+        Type: 'AWS::ApiGatewayV2::Route',
+        Properties: {
+          ApiId: { Ref: 'Api' },
+          RouteKey: 'GET /items',
+          Target: { 'Fn::Sub': 'something-else/${Integ}' },
+        },
+      },
+    });
+    expect(() => discoverRoutes([stack])).toThrow(/Target must be/);
+  });
+
+  it('rejects Fn::Sub Target whose 2-arg binding is not a Ref', () => {
+    const stack = buildStack('S', {
+      Api: { Type: 'AWS::ApiGatewayV2::Api', Properties: { ProtocolType: 'HTTP' } },
+      Integ: {
+        Type: 'AWS::ApiGatewayV2::Integration',
+        Properties: {
+          ApiId: { Ref: 'Api' },
+          IntegrationType: 'AWS_PROXY',
+          IntegrationUri: { 'Fn::GetAtt': ['Handler', 'Arn'] },
+        },
+      },
+      Route: {
+        Type: 'AWS::ApiGatewayV2::Route',
+        Properties: {
+          ApiId: { Ref: 'Api' },
+          RouteKey: 'GET /items',
+          Target: {
+            'Fn::Sub': [
+              'integrations/${IntId}',
+              { IntId: { 'Fn::GetAtt': ['Integ', 'Arn'] } },
+            ],
+          },
+        },
+      },
+    });
+    expect(() => discoverRoutes([stack])).toThrow(/Target must be/);
+  });
+
   it('parses $default RouteKey', () => {
     const stack = buildStack('S', {
       Api: { Type: 'AWS::ApiGatewayV2::Api', Properties: { ProtocolType: 'HTTP' } },

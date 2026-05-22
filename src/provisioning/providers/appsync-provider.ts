@@ -16,12 +16,22 @@ import {
   ListApiKeysCommand,
   ListGraphqlApisCommand,
   NotFoundException as AppSyncNotFoundException,
+  UpdateGraphqlApiCommand,
+  UpdateDataSourceCommand,
+  UpdateResolverCommand,
+  UpdateApiKeyCommand,
+  TagResourceCommand,
+  UntagResourceCommand,
   type AuthenticationType,
   type DataSourceType,
   type CreateGraphqlApiCommandInput,
   type CreateDataSourceCommandInput,
   type CreateResolverCommandInput,
   type CreateApiKeyCommandInput,
+  type UpdateGraphqlApiCommandInput,
+  type UpdateDataSourceCommandInput,
+  type UpdateResolverCommandInput,
+  type UpdateApiKeyCommandInput,
 } from '@aws-sdk/client-appsync';
 import { parse as graphqlParse, print as graphqlPrint } from 'graphql';
 import { getLogger } from '../../utils/logger.js';
@@ -57,6 +67,20 @@ export class AppSyncProvider implements ResourceProvider {
   private client: AppSyncClient | undefined;
   private readonly providerRegion = process.env['AWS_REGION'];
   private logger = getLogger().child('AppSyncProvider');
+  /**
+   * Cache of `apiId -> GraphqlApi ARN` for the lifetime of this provider
+   * instance. Populated lazily by `applyTagDiff` and reused on subsequent
+   * tag-diff updates against the same API so we don't pay an extra
+   * `GetGraphqlApi` round-trip per call. Mirrors the existing
+   * `attributeCache` pattern used elsewhere in this provider family.
+   *
+   * Invalidation: the ARN of a GraphqlApi is stable for the life of the
+   * API (it embeds the apiId), so the cache never needs to be invalidated
+   * within a process — the only way the ARN changes is if the API itself
+   * is replaced, in which case a new `physicalId` flows through `update()`
+   * and the old entry simply becomes unreachable.
+   */
+  private arnCache = new Map<string, string>();
 
   handledProperties = new Map<string, ReadonlySet<string>>([
     [
@@ -130,26 +154,608 @@ export class AppSyncProvider implements ResourceProvider {
   }
 
   /**
-   * AppSync resources are treated as immutable by cdkd: every supported
-   * type (`GraphQLApi`, `GraphQLSchema`, `DataSource`, `Resolver`,
-   * `ApiKey`) is recreated on property changes via the deploy engine's
-   * immutable-property replacement path. There is no in-place update,
-   * so `cdkd drift --revert` surfaces a clear "use --replace or
-   * re-deploy" message instead of silently no-op'ing the revert.
+   * Update an AppSync resource in-place via the SDK's `Update*` calls.
+   *
+   * Per-type API path:
+   *   - `GraphQLApi`   → `UpdateGraphqlApiCommand` (`AuthenticationType` /
+   *     `XrayEnabled` / `LogConfig`) + `TagResource` / `UntagResource`
+   *     for `Tags` diff. `Name` is immutable on AWS.
+   *   - `DataSource`   → `UpdateDataSourceCommand` (`Description` /
+   *     `ServiceRoleArn` / `DynamoDBConfig` / `LambdaConfig` / `HttpConfig`).
+   *     `ApiId` / `Name` / `Type` are immutable identity fields.
+   *   - `Resolver`     → `UpdateResolverCommand` (`DataSourceName` /
+   *     `RequestMappingTemplate` / `ResponseMappingTemplate` / `Kind` /
+   *     `PipelineConfig` / `Runtime` / `Code`). `ApiId` / `TypeName` /
+   *     `FieldName` are immutable identity fields.
+   *   - `ApiKey`       → `UpdateApiKeyCommand` (`Description` / `Expires`).
+   *     `ApiId` is immutable; the AWS-generated key id is immutable.
+   *   - `GraphQLSchema` → `StartSchemaCreationCommand` (re-upload the
+   *     SDL; this is the canonical AppSync schema-update path).
+   *
+   * Every Update* call uses `!== undefined` field gates per
+   * memory rule `feedback_update_optional_field_undefined_check.md` so
+   * `cdkd drift --revert` can clear a console-side ADD via an empty
+   * string / 0 / false. Identity / immutable field changes throw
+   * `ResourceUpdateNotSupportedError` as defense-in-depth — the deploy
+   * engine's replacement-detection layer should normally route those
+   * through CREATE+DELETE.
    */
-  update(
+  async update(
     logicalId: string,
-    _physicalId: string,
+    physicalId: string,
     resourceType: string,
-    _properties: Record<string, unknown>,
-    _previousProperties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    previousProperties: Record<string, unknown>
   ): Promise<ResourceUpdateResult> {
-    return Promise.reject(
-      new ResourceUpdateNotSupportedError(
+    switch (resourceType) {
+      case 'AWS::AppSync::GraphQLApi':
+        return this.updateGraphQLApi(
+          logicalId,
+          physicalId,
+          resourceType,
+          properties,
+          previousProperties
+        );
+      case 'AWS::AppSync::GraphQLSchema':
+        return this.updateGraphQLSchema(
+          logicalId,
+          physicalId,
+          resourceType,
+          properties,
+          previousProperties
+        );
+      case 'AWS::AppSync::DataSource':
+        return this.updateDataSource(
+          logicalId,
+          physicalId,
+          resourceType,
+          properties,
+          previousProperties
+        );
+      case 'AWS::AppSync::Resolver':
+        return this.updateResolver(
+          logicalId,
+          physicalId,
+          resourceType,
+          properties,
+          previousProperties
+        );
+      case 'AWS::AppSync::ApiKey':
+        return this.updateApiKey(
+          logicalId,
+          physicalId,
+          resourceType,
+          properties,
+          previousProperties
+        );
+      default:
+        throw new ProvisioningError(
+          `Unsupported resource type: ${resourceType}`,
+          resourceType,
+          logicalId,
+          physicalId
+        );
+    }
+  }
+
+  // ─── update helpers ────────────────────────────────────────────────
+
+  /**
+   * Structural equality for the small object / array shapes that ride on
+   * AppSync update inputs. `JSON.stringify` is sufficient because none of
+   * these shapes contain `undefined` keys at this layer (the create /
+   * readCurrentState paths filter them out).
+   */
+  private deepEqual(a: unknown, b: unknown): boolean {
+    return JSON.stringify(a) === JSON.stringify(b);
+  }
+
+  private async updateGraphQLApi(
+    logicalId: string,
+    physicalId: string,
+    resourceType: string,
+    properties: Record<string, unknown>,
+    previousProperties: Record<string, unknown>
+  ): Promise<ResourceUpdateResult> {
+    // `Name` is immutable on AWS — UpdateGraphqlApi REQUIRES `name` in the
+    // input shape but rejects any value other than the existing one.
+    // Replacement-detection should have routed the diff through
+    // CREATE+DELETE; defense-in-depth here.
+    if (
+      properties['Name'] !== undefined &&
+      previousProperties['Name'] !== undefined &&
+      properties['Name'] !== previousProperties['Name']
+    ) {
+      throw new ResourceUpdateNotSupportedError(
         resourceType,
         logicalId,
-        'AppSync resources are recreated on property changes; re-deploy with cdkd deploy --replace, or destroy + redeploy the stack'
-      )
+        'AWS AppSync GraphqlApi.Name is immutable — destroy + redeploy to rename'
+      );
+    }
+
+    // Build UpdateGraphqlApi input only when a mutable field diffs. `Name`
+    // is REQUIRED by the SDK input shape even on no-op updates, so we
+    // include it whenever we issue the call.
+    //
+    // Diff helpers below use explicit "is the field present on either
+    // side AND do the resolved values differ?" semantics so that:
+    //   - `undefined -> undefined` does NOT fire an update (the M1 fix
+    //     against firing UpdateGraphqlApi on every redeploy of an API
+    //     that never set XrayEnabled);
+    //   - `defined -> undefined` (= the user removed the field from the
+    //     template, or `cdkd drift --revert` is clearing a console add)
+    //     DOES fire an update so the clearing side effect lands on AWS.
+    const newAuthType = properties['AuthenticationType'] as AuthenticationType | undefined;
+    const oldAuthType = previousProperties['AuthenticationType'] as AuthenticationType | undefined;
+    const newXray = properties['XrayEnabled'] as boolean | undefined;
+    const oldXray = previousProperties['XrayEnabled'] as boolean | undefined;
+    const newLog = properties['LogConfig'] as Record<string, unknown> | undefined;
+    const oldLog = previousProperties['LogConfig'] as Record<string, unknown> | undefined;
+
+    const hasXrayDiff =
+      ('XrayEnabled' in properties || 'XrayEnabled' in previousProperties) && newXray !== oldXray;
+    const hasAuthDiff =
+      ('AuthenticationType' in properties || 'AuthenticationType' in previousProperties) &&
+      newAuthType !== oldAuthType;
+    const hasLogDiff =
+      ('LogConfig' in properties || 'LogConfig' in previousProperties) &&
+      !this.deepEqual(newLog, oldLog);
+    const wantUpdate = hasAuthDiff || hasXrayDiff || hasLogDiff;
+
+    if (wantUpdate) {
+      const input: UpdateGraphqlApiCommandInput = {
+        apiId: physicalId,
+        // Name is required by the SDK input; use the existing value
+        // (state-recorded name) since Name is immutable above.
+        name: (properties['Name'] ?? previousProperties['Name']) as string,
+        // authenticationType is required by the SDK input shape; carry the
+        // existing value through when the diff didn't include it so the
+        // call shape is always valid.
+        authenticationType: (newAuthType ?? oldAuthType ?? 'API_KEY') as AuthenticationType,
+      };
+      if (newXray !== undefined) input.xrayEnabled = newXray;
+      // LogConfig has three meaningful states on update:
+      //   (a) newLog is a populated object → set logConfig to the new shape.
+      //   (b) newLog === undefined AND oldLog was set → user removed the
+      //       field (or drift --revert is clearing a console add). AWS's
+      //       UpdateGraphqlApi has NO sentinel for "drop logConfig" — omitting
+      //       the field on the SDK input is treated as "no change" by the
+      //       service. The canonical way to disable logging is
+      //       `FieldLogLevel: NONE`, which AWS accepts as effectively-off and
+      //       which leaves no further side effect. cloudWatchLogsRoleArn is
+      //       still required by the input shape; reuse the existing role ARN
+      //       so the call shape stays valid (the role is never actually
+      //       invoked while FieldLogLevel=NONE).
+      //   (c) newLog === undefined AND oldLog also undefined → no diff, no
+      //       branch taken (gated above).
+      if (newLog !== undefined) {
+        input.logConfig = {
+          cloudWatchLogsRoleArn: newLog['CloudWatchLogsRoleArn'] as string,
+          fieldLogLevel: newLog['FieldLogLevel'] as 'NONE' | 'ERROR' | 'ALL',
+          excludeVerboseContent: newLog['ExcludeVerboseContent'] as boolean | undefined,
+        };
+      } else if (oldLog !== undefined) {
+        const existingRoleArn = oldLog['CloudWatchLogsRoleArn'] as string | undefined;
+        if (existingRoleArn) {
+          input.logConfig = {
+            cloudWatchLogsRoleArn: existingRoleArn,
+            fieldLogLevel: 'NONE',
+          };
+        } else {
+          // No existing role ARN to reuse → we cannot construct a valid
+          // UpdateGraphqlApi.logConfig (cloudWatchLogsRoleArn is required).
+          // Warn loudly: the user removed the field but cdkd cannot push
+          // the clearing call to AWS; state still records the removal.
+          this.logger.warn(
+            `AppSync GraphqlApi ${logicalId}: cannot clear LogConfig — previous state has no CloudWatchLogsRoleArn to reuse for the disable call`
+          );
+        }
+      }
+      try {
+        await this.getClient().send(new UpdateGraphqlApiCommand(input));
+      } catch (error) {
+        throw this.wrapUpdateError(error, resourceType, logicalId, physicalId, 'GraphqlApi');
+      }
+    }
+
+    // Tags diff via TagResource / UntagResource. The API key is the
+    // GraphqlApi ARN — recover it from a GetGraphqlApi call.
+    await this.applyTagDiff(
+      physicalId,
+      resourceType,
+      logicalId,
+      previousProperties['Tags'] as Array<{ Key?: string; Value?: string }> | undefined,
+      properties['Tags'] as Array<{ Key?: string; Value?: string }> | undefined
+    );
+
+    return {
+      physicalId,
+      wasReplaced: false,
+      attributes: {},
+    };
+  }
+
+  private async updateGraphQLSchema(
+    logicalId: string,
+    physicalId: string,
+    resourceType: string,
+    properties: Record<string, unknown>,
+    previousProperties: Record<string, unknown>
+  ): Promise<ResourceUpdateResult> {
+    // ApiId is immutable identity — physicalId tracks it. The mutable
+    // surface is `Definition` (the SDL body). `StartSchemaCreation`
+    // re-uploads the SDL; AWS rebuilds the schema asynchronously.
+    // `DefinitionS3Location` is write-only (see getDriftUnknownPaths)
+    // and not round-trippable.
+    const newDef = properties['Definition'] as string | undefined;
+    const oldDef = previousProperties['Definition'] as string | undefined;
+
+    if (newDef === undefined || newDef === oldDef) {
+      return { physicalId, wasReplaced: false, attributes: {} };
+    }
+
+    const apiId = (properties['ApiId'] ?? physicalId) as string;
+    try {
+      await this.getClient().send(
+        new StartSchemaCreationCommand({
+          apiId,
+          definition: Buffer.from(newDef, 'utf-8'),
+        })
+      );
+    } catch (error) {
+      throw this.wrapUpdateError(error, resourceType, logicalId, physicalId, 'GraphqlSchema');
+    }
+    return { physicalId, wasReplaced: false, attributes: {} };
+  }
+
+  private async updateDataSource(
+    logicalId: string,
+    physicalId: string,
+    resourceType: string,
+    properties: Record<string, unknown>,
+    previousProperties: Record<string, unknown>
+  ): Promise<ResourceUpdateResult> {
+    // Identity fields are immutable: ApiId / Name / Type. Reject diffs in
+    // defense-in-depth against a missing replacement-rule entry.
+    for (const field of ['ApiId', 'Name', 'Type'] as const) {
+      const next = properties[field];
+      const prev = previousProperties[field];
+      if (next !== undefined && prev !== undefined && next !== prev) {
+        throw new ResourceUpdateNotSupportedError(
+          resourceType,
+          logicalId,
+          `AWS AppSync DataSource.${field} is immutable — destroy + redeploy to change`
+        );
+      }
+    }
+
+    const [apiId, name] = physicalId.split('|');
+    if (!apiId || !name) {
+      throw new ProvisioningError(
+        `Invalid DataSource physical ID format: ${physicalId}`,
+        resourceType,
+        logicalId,
+        physicalId
+      );
+    }
+
+    // `UpdateDataSource` REQUIRES `apiId`, `name`, and `type` on every call.
+    // Type is immutable; use the state-recorded value.
+    const type = (properties['Type'] ?? previousProperties['Type']) as DataSourceType;
+
+    const newDesc = properties['Description'] as string | undefined;
+    const oldDesc = previousProperties['Description'] as string | undefined;
+    const newRole = properties['ServiceRoleArn'] as string | undefined;
+    const oldRole = previousProperties['ServiceRoleArn'] as string | undefined;
+    const newDDB = properties['DynamoDBConfig'] as Record<string, unknown> | undefined;
+    const oldDDB = previousProperties['DynamoDBConfig'] as Record<string, unknown> | undefined;
+    const newLambda = properties['LambdaConfig'] as Record<string, unknown> | undefined;
+    const oldLambda = previousProperties['LambdaConfig'] as Record<string, unknown> | undefined;
+    const newHttp = properties['HttpConfig'] as Record<string, unknown> | undefined;
+    const oldHttp = previousProperties['HttpConfig'] as Record<string, unknown> | undefined;
+
+    const wantUpdate =
+      newDesc !== oldDesc ||
+      newRole !== oldRole ||
+      !this.deepEqual(newDDB, oldDDB) ||
+      !this.deepEqual(newLambda, oldLambda) ||
+      !this.deepEqual(newHttp, oldHttp);
+
+    if (!wantUpdate) {
+      return { physicalId, wasReplaced: false, attributes: {} };
+    }
+
+    const input: UpdateDataSourceCommandInput = {
+      apiId,
+      name,
+      type,
+    };
+    if (newDesc !== undefined) input.description = newDesc;
+    if (newRole !== undefined) input.serviceRoleArn = newRole;
+    if (newDDB !== undefined) {
+      input.dynamodbConfig = {
+        tableName: newDDB['TableName'] as string,
+        awsRegion: newDDB['AwsRegion'] as string,
+        useCallerCredentials: newDDB['UseCallerCredentials'] as boolean | undefined,
+      };
+    }
+    if (newLambda !== undefined) {
+      input.lambdaConfig = {
+        lambdaFunctionArn: newLambda['LambdaFunctionArn'] as string,
+      };
+    }
+    if (newHttp !== undefined) {
+      input.httpConfig = {
+        endpoint: newHttp['Endpoint'] as string,
+      };
+    }
+
+    try {
+      await this.getClient().send(new UpdateDataSourceCommand(input));
+    } catch (error) {
+      throw this.wrapUpdateError(error, resourceType, logicalId, physicalId, 'DataSource');
+    }
+
+    return { physicalId, wasReplaced: false, attributes: {} };
+  }
+
+  private async updateResolver(
+    logicalId: string,
+    physicalId: string,
+    resourceType: string,
+    properties: Record<string, unknown>,
+    previousProperties: Record<string, unknown>
+  ): Promise<ResourceUpdateResult> {
+    // Identity fields are immutable: ApiId / TypeName / FieldName.
+    for (const field of ['ApiId', 'TypeName', 'FieldName'] as const) {
+      const next = properties[field];
+      const prev = previousProperties[field];
+      if (next !== undefined && prev !== undefined && next !== prev) {
+        throw new ResourceUpdateNotSupportedError(
+          resourceType,
+          logicalId,
+          `AWS AppSync Resolver.${field} is immutable — destroy + redeploy to change`
+        );
+      }
+    }
+
+    const parts = physicalId.split('|');
+    if (parts.length < 3) {
+      throw new ProvisioningError(
+        `Invalid Resolver physical ID format: ${physicalId}`,
+        resourceType,
+        logicalId,
+        physicalId
+      );
+    }
+    const [apiId, typeName, fieldName] = parts;
+
+    const mutableKeys = [
+      'DataSourceName',
+      'RequestMappingTemplate',
+      'ResponseMappingTemplate',
+      'Kind',
+      'PipelineConfig',
+      'Runtime',
+      'Code',
+    ] as const;
+
+    const wantUpdate = mutableKeys.some(
+      (key) => !this.deepEqual(properties[key], previousProperties[key])
+    );
+
+    if (!wantUpdate) {
+      return { physicalId, wasReplaced: false, attributes: {} };
+    }
+
+    const input: UpdateResolverCommandInput = {
+      apiId: apiId as string,
+      typeName: typeName as string,
+      fieldName: fieldName as string,
+    };
+
+    // Resolver shape is type-discriminator-gated on `Kind`:
+    //   - Kind=UNIT     → DataSourceName is required, PipelineConfig is N/A.
+    //   - Kind=PIPELINE → PipelineConfig.Functions is required, DataSourceName
+    //                     is N/A (AWS rejects the call if it's set).
+    // The effective Kind comes from `properties.Kind` (the new template
+    // intent) falling back to `previousProperties.Kind` (state-recorded)
+    // and finally to AWS's default 'UNIT' so we never forward
+    // `dataSourceName` on a PIPELINE resolver. Same shape as
+    // readCurrentState's discriminator handling per memory rule
+    // feedback_always_emit_check_type_discriminator.
+    const effectiveKind =
+      (properties['Kind'] as 'UNIT' | 'PIPELINE' | undefined) ??
+      (previousProperties['Kind'] as 'UNIT' | 'PIPELINE' | undefined) ??
+      'UNIT';
+
+    if (effectiveKind === 'UNIT' && properties['DataSourceName'] !== undefined) {
+      input.dataSourceName = properties['DataSourceName'] as string;
+    }
+    if (properties['RequestMappingTemplate'] !== undefined) {
+      input.requestMappingTemplate = properties['RequestMappingTemplate'] as string;
+    }
+    if (properties['ResponseMappingTemplate'] !== undefined) {
+      input.responseMappingTemplate = properties['ResponseMappingTemplate'] as string;
+    }
+    if (properties['Kind'] !== undefined) {
+      input.kind = properties['Kind'] as 'UNIT' | 'PIPELINE';
+    }
+    if (effectiveKind === 'PIPELINE' && properties['PipelineConfig'] !== undefined) {
+      const pipelineConfig = properties['PipelineConfig'] as Record<string, unknown>;
+      input.pipelineConfig = {
+        functions: pipelineConfig['Functions'] as string[] | undefined,
+      };
+    }
+    if (properties['Runtime'] !== undefined) {
+      const runtime = properties['Runtime'] as Record<string, unknown>;
+      input.runtime = {
+        name: runtime['Name'] as 'APPSYNC_JS',
+        runtimeVersion: runtime['RuntimeVersion'] as string,
+      };
+    }
+    if (properties['Code'] !== undefined) {
+      input.code = properties['Code'] as string;
+    }
+
+    try {
+      await this.getClient().send(new UpdateResolverCommand(input));
+    } catch (error) {
+      throw this.wrapUpdateError(error, resourceType, logicalId, physicalId, 'Resolver');
+    }
+
+    return { physicalId, wasReplaced: false, attributes: {} };
+  }
+
+  private async updateApiKey(
+    logicalId: string,
+    physicalId: string,
+    resourceType: string,
+    properties: Record<string, unknown>,
+    previousProperties: Record<string, unknown>
+  ): Promise<ResourceUpdateResult> {
+    // ApiId is immutable identity.
+    if (
+      properties['ApiId'] !== undefined &&
+      previousProperties['ApiId'] !== undefined &&
+      properties['ApiId'] !== previousProperties['ApiId']
+    ) {
+      throw new ResourceUpdateNotSupportedError(
+        resourceType,
+        logicalId,
+        'AWS AppSync ApiKey.ApiId is immutable — destroy + redeploy to change'
+      );
+    }
+
+    const [apiId, apiKeyId] = physicalId.split('|');
+    if (!apiId || !apiKeyId) {
+      throw new ProvisioningError(
+        `Invalid ApiKey physical ID format: ${physicalId}`,
+        resourceType,
+        logicalId,
+        physicalId
+      );
+    }
+
+    const newDesc = properties['Description'] as string | undefined;
+    const oldDesc = previousProperties['Description'] as string | undefined;
+    const newExp = properties['Expires'] as number | undefined;
+    const oldExp = previousProperties['Expires'] as number | undefined;
+
+    if (newDesc === oldDesc && newExp === oldExp) {
+      return { physicalId, wasReplaced: false, attributes: {} };
+    }
+
+    const input: UpdateApiKeyCommandInput = {
+      apiId,
+      id: apiKeyId,
+    };
+    if (newDesc !== undefined) input.description = newDesc;
+    if (newExp !== undefined) input.expires = newExp;
+
+    try {
+      await this.getClient().send(new UpdateApiKeyCommand(input));
+    } catch (error) {
+      throw this.wrapUpdateError(error, resourceType, logicalId, physicalId, 'ApiKey');
+    }
+
+    return { physicalId, wasReplaced: false, attributes: {} };
+  }
+
+  /**
+   * Apply a Tags diff to a GraphqlApi via TagResource / UntagResource.
+   *
+   * Tags are keyed by the GraphqlApi ARN — recover it from
+   * `GetGraphqlApi`. Failure to recover the ARN is a hard error (the API
+   * itself just changed) rather than a silent drop, so the user knows
+   * the tag diff was not applied.
+   */
+  private async applyTagDiff(
+    apiId: string,
+    resourceType: string,
+    logicalId: string,
+    oldTags: Array<{ Key?: string; Value?: string }> | undefined,
+    newTags: Array<{ Key?: string; Value?: string }> | undefined
+  ): Promise<void> {
+    const oldMap = this.tagsToMap(oldTags ?? []);
+    const newMap = this.tagsToMap(newTags ?? []);
+    if (this.deepEqual(oldMap, newMap)) return;
+
+    let arn = this.arnCache.get(apiId);
+    if (!arn) {
+      try {
+        const resp = await this.getClient().send(new GetGraphqlApiCommand({ apiId }));
+        arn = resp.graphqlApi?.arn;
+      } catch (error) {
+        throw this.wrapUpdateError(error, resourceType, logicalId, apiId, 'GraphqlApi');
+      }
+      if (!arn) {
+        throw new ProvisioningError(
+          `Could not resolve ARN for AppSync GraphqlApi ${apiId} to apply tags diff`,
+          resourceType,
+          logicalId,
+          apiId
+        );
+      }
+      this.arnCache.set(apiId, arn);
+    }
+
+    const tagKeysToRemove = Object.keys(oldMap).filter((k) => !(k in newMap));
+    const tagsToAdd: Record<string, string> = {};
+    for (const [k, v] of Object.entries(newMap)) {
+      if (oldMap[k] !== v) tagsToAdd[k] = v;
+    }
+
+    if (tagKeysToRemove.length > 0) {
+      try {
+        await this.getClient().send(
+          new UntagResourceCommand({
+            resourceArn: arn,
+            tagKeys: tagKeysToRemove,
+          })
+        );
+      } catch (error) {
+        throw this.wrapUpdateError(error, resourceType, logicalId, apiId, 'GraphqlApi (untag)');
+      }
+    }
+    if (Object.keys(tagsToAdd).length > 0) {
+      try {
+        await this.getClient().send(
+          new TagResourceCommand({
+            resourceArn: arn,
+            tags: tagsToAdd,
+          })
+        );
+      } catch (error) {
+        throw this.wrapUpdateError(error, resourceType, logicalId, apiId, 'GraphqlApi (tag)');
+      }
+    }
+  }
+
+  private tagsToMap(tags: Array<{ Key?: string; Value?: string }>): Record<string, string> {
+    const out: Record<string, string> = {};
+    for (const t of tags) {
+      if (t.Key !== undefined && t.Value !== undefined) {
+        out[t.Key] = t.Value;
+      }
+    }
+    return out;
+  }
+
+  private wrapUpdateError(
+    error: unknown,
+    resourceType: string,
+    logicalId: string,
+    physicalId: string,
+    subType: string
+  ): ProvisioningError {
+    const cause = error instanceof Error ? error : undefined;
+    return new ProvisioningError(
+      `Failed to update AppSync ${subType} ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
+      resourceType,
+      logicalId,
+      physicalId,
+      cause
     );
   }
 
