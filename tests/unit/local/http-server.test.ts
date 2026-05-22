@@ -1,6 +1,10 @@
 import type { ServerResponse } from 'node:http';
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vite-plus/test';
-import { startApiServer, writeAuthRejection } from '../../../src/local/http-server.js';
+import {
+  parseQueryStringSingular,
+  startApiServer,
+  writeAuthRejection,
+} from '../../../src/local/http-server.js';
 import type { RouteWithAuth } from '../../../src/local/authorizer-resolver.js';
 import type { ContainerPool } from '../../../src/local/container-pool.js';
 import { createAuthorizerCache } from '../../../src/local/authorizer-cache.js';
@@ -542,5 +546,46 @@ describe('startApiServer — mockCors preflight', () => {
     } finally {
       await server.close();
     }
+  });
+});
+
+describe('parseQueryStringSingular — multi-value comma-join (PR #500 minor)', () => {
+  it('comma-joins repeated keys in declaration order', () => {
+    // `?foo=a&foo=b` -> `foo: 'a,b'` matches the contract documented at
+    // `src/local/parameter-mapping.ts:14` ("multi-values comma-joined")
+    // AND deployed API Gateway behavior. Pre-fix the implementation did
+    // last-wins (`foo: 'b'`) which silently dropped earlier values for
+    // service-integration RequestParameters.
+    expect(parseQueryStringSingular('/path?foo=a&foo=b')).toEqual({ foo: 'a,b' });
+  });
+
+  it('comma-joins three or more repetitions, preserves order', () => {
+    expect(parseQueryStringSingular('/?id=1&id=2&id=3&id=4')).toEqual({ id: '1,2,3,4' });
+  });
+
+  it('leaves single-value keys untouched (no extra commas)', () => {
+    expect(parseQueryStringSingular('/?a=1&b=2')).toEqual({ a: '1', b: '2' });
+  });
+
+  it('mixes single-value + multi-value keys cleanly', () => {
+    expect(parseQueryStringSingular('/?foo=a&bar=x&foo=b')).toEqual({
+      foo: 'a,b',
+      bar: 'x',
+    });
+  });
+
+  it('URL-decodes each value before joining', () => {
+    expect(parseQueryStringSingular('/?q=hello%20world&q=goodbye%21')).toEqual({
+      q: 'hello world,goodbye!',
+    });
+  });
+
+  it('returns empty map on no query string', () => {
+    expect(parseQueryStringSingular('/path')).toEqual({});
+    expect(parseQueryStringSingular('/path?')).toEqual({});
+  });
+
+  it('handles empty values cleanly', () => {
+    expect(parseQueryStringSingular('/?foo=&foo=bar')).toEqual({ foo: ',bar' });
   });
 });
