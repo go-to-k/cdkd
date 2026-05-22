@@ -1,3 +1,10 @@
+# [0.126.0](https://github.com/go-to-k/cdkd/compare/v0.125.0...v0.126.0) (2026-05-22)
+
+
+### Features
+
+* **local-start-api:** mTLS authorizer for API Gateway custom-domain client certs ([#492](https://github.com/go-to-k/cdkd/issues/492)) ([957ed82](https://github.com/go-to-k/cdkd/commit/957ed8299743e4cc2f4c00024323ff2136a256a2))
+
 # [0.125.0](https://github.com/go-to-k/cdkd/compare/v0.124.0...v0.125.0) (2026-05-22)
 
 
