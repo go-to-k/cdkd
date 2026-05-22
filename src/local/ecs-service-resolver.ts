@@ -45,8 +45,17 @@ export interface ResolvedEcsService {
   /**
    * HealthCheckGracePeriodSeconds from the template. AWS defaults to 0
    * when the service has no load balancer, 30s with an ALB attached.
-   * cdkd uses this as the time-from-start before a failing task counts
-   * as "unhealthy" and triggers a restart. Defaults to 30s locally.
+   *
+   * **Currently not consumed by the runner.** cdkd's
+   * `ecs-service-runner.ts` is exit-code-driven (`docker wait` →
+   * `shouldRestart`); there is no health-check polling in v1 because
+   * health-check-driven restarts are only meaningful once the local
+   * load-balancer emulator lands (see [docs/design/461-awsvpc-decision.md]
+   * and the deferred LB scope in CLAUDE.md). The field is parsed,
+   * surfaced on `ResolvedEcsService`, and intentionally retained so the
+   * follow-up LB emulator PR can use it as the time-from-start before
+   * an unhealthy target-group health check counts toward a restart. The
+   * value defaults to 30s locally to match the AWS-with-ALB default.
    */
   healthCheckGracePeriodSeconds: number;
   /**

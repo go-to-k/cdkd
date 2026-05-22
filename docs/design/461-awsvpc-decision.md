@@ -57,6 +57,24 @@ PR 8b of #224 closed the same shape for Lambda `VpcConfig` (issue #234): VPC-con
 
 No code-path changes are required — the existing warn path is correct.
 
+## Workarounds for users who need real host-network access
+
+Developers occasionally need a local task to reach a service bound to the host's loopback (e.g. a development database on `localhost:5432`). The bridge fallback puts each task on its own user network so `localhost` inside the container resolves to the container itself, not the host. Two workarounds:
+
+### `host.docker.internal` (Docker Desktop default)
+
+On Docker Desktop (macOS / Windows) the special hostname `host.docker.internal` resolves to the host's loopback gateway from inside any container, regardless of network driver. Tasks running under cdkd's bridge fallback can connect to a host service with `host.docker.internal:5432` (or whichever port). This is the recommended workaround — no flag change required, works against the existing bridge fallback.
+
+### `--network host` per-task escape hatch (future enhancement)
+
+Linux hosts that don't expose `host.docker.internal` (or workflows that want the task to bind directly to a host port) can use Docker's `host` network mode, which shares the host's network namespace with the container. **This is not currently exposed as a cdkd flag** — `cdkd local run-task` and `cdkd local start-service` always create a per-task user network so the metadata sidecar can serve task credentials on `169.254.170.2`. Threading a `--network-mode host` flag through would require either skipping the sidecar (and losing `--assume-task-role` credentials) or running the sidecar on the host network at a fixed port (which collides on `169.254.170.0/16` since the host loopback doesn't route the link-local range to the sidecar).
+
+If you have a concrete use case where neither `host.docker.internal` nor publishing a port on the bridge network (`docker run -p`) suffices, file a follow-up issue describing it; the design tradeoff above is reconsidered per-request, not added as a generic opt-in.
+
+### Why not auto-detect
+
+cdkd does not auto-detect Linux vs. Docker Desktop and switch network modes. The reasoning matches `feedback_aws_default_over_opinionated.md`: a per-host-OS behavioral split is invisible to users reading the same CDK app and would surface as "works on my Mac, breaks on the Linux CI runner" without an obvious cause.
+
 ## When to revisit
 
 Reopen #461 if any of the following happen:
