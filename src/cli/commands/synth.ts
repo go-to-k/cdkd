@@ -10,6 +10,7 @@ import {
   warnIfDeprecatedRegion,
 } from '../options.js';
 import { getLogger } from '../../utils/logger.js';
+import { bold, green } from '../../utils/colors.js';
 import { applyRoleArnIfSet } from '../../utils/role-arn.js';
 import { withErrorHandling } from '../../utils/error-handler.js';
 import { Synthesizer, type SynthesisOptions } from '../../synthesis/synthesizer.js';
@@ -91,7 +92,7 @@ async function synthCommand(options: {
     process.stdout.write(toYaml(template));
   }
 
-  logger.info(`\n✅ Synthesis complete! Found ${stacks.length} stack(s):`);
+  logger.info(`\n${green('✓')} ${bold('Synthesis complete!')} Found ${stacks.length} stack(s):`);
 
   for (const stack of stacks) {
     const resourceCount = countDeployableResources(stack.template);

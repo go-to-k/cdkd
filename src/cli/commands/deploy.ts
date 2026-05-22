@@ -13,6 +13,7 @@ import {
   type ResourceTimeoutOption,
 } from '../options.js';
 import { getLogger } from '../../utils/logger.js';
+import { bold, cyan, gray, green, red, yellow } from '../../utils/colors.js';
 import { withErrorHandling } from '../../utils/error-handler.js';
 import { Synthesizer } from '../../synthesis/synthesizer.js';
 import { AssetPublisher } from '../../assets/asset-publisher.js';
@@ -207,7 +208,7 @@ async function deployCommand(
 
   try {
     // 1. Synthesize CDK app
-    logger.info('Synthesizing CDK app...');
+    logger.info(cyan('Synthesizing CDK app...'));
     const synthesizer = new Synthesizer();
     const context = parseContextOptions(options.context);
     const result = await synthesizer.synthesize({
@@ -372,7 +373,7 @@ async function deployCommand(
       const stackRegion = stackInfo.region || baseRegion;
 
       logger.info(
-        `\nDeploying stack: ${stackInfo.stackName}${stackRegion !== baseRegion ? ` (region: ${stackRegion})` : ''}`
+        `\n${cyan('Deploying stack:')} ${bold(cyan(stackInfo.stackName))}${stackRegion !== baseRegion ? gray(` (region: ${stackRegion})`) : ''}`
       );
 
       switchRegion(stackRegion);
@@ -454,13 +455,19 @@ async function deployCommand(
           stackInfo.template
         );
 
-        logger.info('\nDeployment Summary:');
-        logger.info(`  Stack: ${deployResult.stackName}`);
-        logger.info(`  Created: ${deployResult.created}`);
-        logger.info(`  Updated: ${deployResult.updated}`);
-        logger.info(`  Deleted: ${deployResult.deleted}`);
-        logger.info(`  Unchanged: ${deployResult.unchanged}`);
-        logger.info(`  Duration: ${(deployResult.durationMs / 1000).toFixed(2)}s`);
+        logger.info(`\n${bold('Deployment Summary:')}`);
+        logger.info(`  Stack: ${bold(cyan(deployResult.stackName))}`);
+        logger.info(
+          `  Created: ${deployResult.created > 0 ? green(deployResult.created) : gray(deployResult.created)}`
+        );
+        logger.info(
+          `  Updated: ${deployResult.updated > 0 ? yellow(deployResult.updated) : gray(deployResult.updated)}`
+        );
+        logger.info(
+          `  Deleted: ${deployResult.deleted > 0 ? red(deployResult.deleted) : gray(deployResult.deleted)}`
+        );
+        logger.info(`  Unchanged: ${gray(deployResult.unchanged)}`);
+        logger.info(`  Duration: ${cyan((deployResult.durationMs / 1000).toFixed(2) + 's')}`);
 
         if (deployResult.outputs && Object.keys(deployResult.outputs).length > 0) {
           logger.info('\nOutputs:');
@@ -470,9 +477,9 @@ async function deployCommand(
         }
 
         if (options.dryRun) {
-          logger.info('\n✓ Dry run completed - no actual changes made');
+          logger.info(`\n${green('✓')} ${bold('Dry run completed')} - no actual changes made`);
         } else {
-          logger.info('\n✓ Deployment completed successfully');
+          logger.info(`\n${green('✓')} ${bold('Deployment completed successfully')}`);
         }
       } finally {
         stackAwsClients.destroy();
