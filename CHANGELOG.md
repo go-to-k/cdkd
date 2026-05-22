@@ -1,3 +1,10 @@
+# [0.133.0](https://github.com/go-to-k/cdkd/compare/v0.132.4...v0.133.0) (2026-05-22)
+
+
+### Features
+
+* **local-start-api:** authorizer pass on service-integration routes ([#502](https://github.com/go-to-k/cdkd/issues/502)) ([#514](https://github.com/go-to-k/cdkd/issues/514)) ([bef5b7f](https://github.com/go-to-k/cdkd/commit/bef5b7fef00ca8c0b1e66d6bb954ea08da70ed80))
+
 ## [0.132.4](https://github.com/go-to-k/cdkd/compare/v0.132.3...v0.132.4) (2026-05-22)
 
 
