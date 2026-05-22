@@ -1440,7 +1440,8 @@
       "resourceType": "AWS::ECS::Cluster",
       "integs": [
         "drift-revert",
-        "ecs-fargate"
+        "ecs-fargate",
+        "local-start-service"
       ],
       "signals": {
         "drift-revert": [
@@ -1448,17 +1449,25 @@
         ],
         "ecs-fargate": [
           "l2"
+        ],
+        "local-start-service": [
+          "l1"
         ]
       }
     },
     {
       "resourceType": "AWS::ECS::Service",
       "integs": [
-        "ecs-fargate"
+        "ecs-fargate",
+        "local-start-service"
       ],
       "signals": {
         "ecs-fargate": [
           "l2"
+        ],
+        "local-start-service": [
+          "l1",
+          "literal"
         ]
       }
     },
@@ -1468,7 +1477,8 @@
         "ecs-fargate",
         "local-run-task",
         "local-run-task-from-state",
-        "local-run-task-multi-container"
+        "local-run-task-multi-container",
+        "local-start-service"
       ],
       "signals": {
         "ecs-fargate": [
@@ -1484,6 +1494,9 @@
         ],
         "local-run-task-multi-container": [
           "l2"
+        ],
+        "local-start-service": [
+          "l1"
         ]
       }
     },

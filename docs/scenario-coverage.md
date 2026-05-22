@@ -4,7 +4,7 @@
 
 Run `vp run scenario-coverage` to regenerate.
 
-**28 / 28 canonical scenarios** have at least one integ fixture exercising them. **92 / 92 integ fixtures** carry a `.scenarios.json` sidecar (with 0+ tags); the rest are un-annotated and contributor-reviewed below.
+**29 / 29 canonical scenarios** have at least one integ fixture exercising them. **93 / 93 integ fixtures** carry a `.scenarios.json` sidecar (with 0+ tags); the rest are un-annotated and contributor-reviewed below.
 
 ## How this is computed
 
@@ -26,7 +26,7 @@ This report is a visibility tool, not a commit-time gate. Many cdkd fixtures leg
 
 _None._ Every canonical scenario has at least one integ fixture tagged with it.
 
-## Per-scenario coverage (28 scenarios)
+## Per-scenario coverage (29 scenarios)
 
 | Scenario | Description | Integ Fixture(s) |
 |---|---|---|
@@ -43,6 +43,7 @@ _None._ Every canonical scenario has at least one integ fixture tagged with it.
 | `lambda-vpc-subnet-sg-deletion-order` | Subnet/SecurityGroup must delete AFTER Lambda::Function to avoid ENI DependencyViolation. | [`bench-cdk-sample`](../tests/integration/bench-cdk-sample/)<br>[`lambda`](../tests/integration/lambda/)<br>[`vpc-lambda`](../tests/integration/vpc-lambda/) |
 | `legacy-bucket-name-fallback` | New region-free `cdkd-state-{account}` vs legacy `cdkd-state-{account}-{region}` bucket fallback resolution. | [`legacy-bucket-name-fallback`](../tests/integration/legacy-bucket-name-fallback/) |
 | `local-apigateway-server` | `cdkd local start-api` HTTP server with route discovery + per-Lambda warm container pool. | [`local-start-api`](../tests/integration/local-start-api/)<br>[`local-start-api-container`](../tests/integration/local-start-api-container/) |
+| `local-ecs-service` | `cdkd local start-service` long-running ECS Service emulator: replica pool, restart-on-exit, SIGINT teardown. | [`local-start-service`](../tests/integration/local-start-service/) |
 | `local-ecs-task` | `cdkd local run-task` ECS TaskDefinition with docker network + AWS-published metadata sidecar. | [`local-run-task`](../tests/integration/local-run-task/)<br>[`local-run-task-from-state`](../tests/integration/local-run-task-from-state/)<br>[`local-run-task-multi-container`](../tests/integration/local-run-task-multi-container/) |
 | `local-from-state-substitution` | `cdkd local invoke|run-task --from-state` substitutes intrinsic-valued env/secret/role references against deployed cdkd state + AWS pseudo parameters. | [`local-invoke-from-state`](../tests/integration/local-invoke-from-state/)<br>[`local-run-task-from-state`](../tests/integration/local-run-task-from-state/) |
 | `local-lambda-rie-container` | `cdkd local invoke` container-Lambda (Code.ImageUri) against RIE — local-build OR ECR-pull asset resolution. | [`local-invoke-buildkit`](../tests/integration/local-invoke-buildkit/)<br>[`local-invoke-container`](../tests/integration/local-invoke-container/)<br>[`local-start-api-container`](../tests/integration/local-start-api-container/) |

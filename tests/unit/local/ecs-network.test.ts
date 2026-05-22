@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vite-plus/test';
 import {
   METADATA_ENDPOINT_IMAGE,
   METADATA_ENDPOINT_IP,
+  buildEndpointSubnet,
   buildMetadataEnv,
   createTaskNetwork,
   destroyTaskNetwork,
@@ -69,6 +70,42 @@ describe('buildMetadataEnv', () => {
   it('forwards region when supplied', () => {
     expect(buildMetadataEnv({ containerName: 'a', region: 'us-east-2' }).AWS_REGION).toBe('us-east-2');
   });
+
+  it('honors a per-replica sidecarIp override (used by cdkd local start-service)', () => {
+    const env = buildMetadataEnv({ containerName: 'web', sidecarIp: '169.254.171.2' });
+    expect(env.ECS_CONTAINER_METADATA_URI_V4).toBe('http://169.254.171.2/v4/web');
+    expect(env.ECS_CONTAINER_METADATA_URI).toBe('http://169.254.171.2/v3/web');
+  });
+});
+
+describe('buildEndpointSubnet', () => {
+  it('returns the default AWS-documented subnet for octet 170', () => {
+    expect(buildEndpointSubnet(170)).toEqual({
+      cidr: '169.254.170.0/24',
+      sidecarIp: '169.254.170.2',
+    });
+  });
+
+  it('walks subsequent /24 ranges per replica index', () => {
+    expect(buildEndpointSubnet(171)).toEqual({
+      cidr: '169.254.171.0/24',
+      sidecarIp: '169.254.171.2',
+    });
+    expect(buildEndpointSubnet(254)).toEqual({
+      cidr: '169.254.254.0/24',
+      sidecarIp: '169.254.254.2',
+    });
+  });
+
+  it('rejects out-of-range subnetOctet values', () => {
+    expect(() => buildEndpointSubnet(0)).toThrow(/must be an integer in 1\.\.254/);
+    expect(() => buildEndpointSubnet(255)).toThrow(/must be an integer in 1\.\.254/);
+    expect(() => buildEndpointSubnet(-1)).toThrow(/must be an integer in 1\.\.254/);
+  });
+
+  it('rejects non-integer subnetOctet values', () => {
+    expect(() => buildEndpointSubnet(170.5)).toThrow(/must be an integer/);
+  });
 });
 
 describe('createTaskNetwork / destroyTaskNetwork', () => {
@@ -105,7 +142,11 @@ describe('createTaskNetwork / destroyTaskNetwork', () => {
 
   it('destroyTaskNetwork runs docker rm and docker network rm', async () => {
     captured.calls = [];
-    await destroyTaskNetwork({ networkName: 'cdkd-local-task-abc', sidecarContainerId: 'sid' });
+    await destroyTaskNetwork({
+      networkName: 'cdkd-local-task-abc',
+      sidecarContainerId: 'sid',
+      sidecarIp: '169.254.170.2',
+    });
     const rmCalls = captured.calls.filter((c) => c.args[0] === 'rm' || c.args[0] === 'network');
     expect(rmCalls.length).toBeGreaterThanOrEqual(2);
   });

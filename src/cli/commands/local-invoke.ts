@@ -57,6 +57,7 @@ import { singleFlight } from '../../utils/single-flight.js';
 import type { StackState } from '../../types/state.js';
 import { createLocalStartApiCommand } from './local-start-api.js';
 import { createLocalRunTaskCommand } from './local-run-task.js';
+import { createLocalStartServiceCommand } from './local-start-service.js';
 
 interface LocalInvokeOptions {
   app?: string;
@@ -1454,5 +1455,6 @@ export function createLocalCommand(): Command {
   local.addCommand(invoke);
   local.addCommand(createLocalStartApiCommand());
   local.addCommand(createLocalRunTaskCommand());
+  local.addCommand(createLocalStartServiceCommand());
   return local;
 }

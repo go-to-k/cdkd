@@ -82,6 +82,14 @@ export interface RunEcsTaskOptions {
    * Image / docker build / ECR pull path.
    */
   imagePlanByContainer?: Map<string, string>;
+  /**
+   * Optional second-from-last octet of the link-local /24 subnet for this
+   * task's docker network (1..254). Default 170 (AWS-documented). `cdkd
+   * local start-service` walks this per replica so concurrent replicas
+   * don't collide on the same /24. See `buildEndpointSubnet` in
+   * `ecs-network.ts`.
+   */
+  subnetOctet?: number;
 }
 
 /**
@@ -230,6 +238,7 @@ export async function runEcsTask(
   };
   if (options.taskCredentials) netCreateOpts.credentials = options.taskCredentials;
   if (options.cluster) netCreateOpts.cluster = options.cluster;
+  if (options.subnetOctet !== undefined) netCreateOpts.subnetOctet = options.subnetOctet;
   state.network = await createTaskNetwork(netCreateOpts);
 
   // Realize docker volumes (per-task `Scope: 'task'` are torn down at
@@ -261,6 +270,7 @@ export async function runEcsTask(
         roleArn: options.taskRoleArn,
         platformOverride: options.platformOverride,
         region: options.region,
+        sidecarIp: state.network.sidecarIp,
       })
     );
   }
@@ -706,6 +716,13 @@ interface BuildDockerRunArgs {
   roleArn: string | undefined;
   platformOverride: string | undefined;
   region: string | undefined;
+  /**
+   * Optional sidecar IP for the metadata-endpoints sidecar on this
+   * task's docker network. Defaults to `169.254.170.2`; `cdkd local
+   * start-service` overrides per replica so each replica's containers
+   * point at their own sidecar instance.
+   */
+  sidecarIp?: string;
 }
 
 /**
@@ -767,6 +784,7 @@ export function buildDockerRunArgs(opts: BuildDockerRunArgs): string[] {
     containerName: container.name,
     ...(roleArn !== undefined && { roleArn }),
     ...(opts.region !== undefined && { region: opts.region }),
+    ...(opts.sidecarIp !== undefined && { sidecarIp: opts.sidecarIp }),
   });
   Object.assign(finalEnv, metaEnv);
   Object.assign(finalEnv, container.environment);
