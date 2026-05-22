@@ -277,8 +277,13 @@ export function resolveRestV1Authorizer(
   // layer wraps with offending route info. Note: AWS_IAM is detected at
   // the Method level (`AuthorizationType: 'AWS_IAM'`), not here — CDK
   // does not emit a companion `AWS::ApiGateway::Authorizer` resource
-  // for IAM. mTLS lives on the `AWS::ApiGateway::DomainName` resource,
-  // also not via Authorizer.
+  // for IAM. mTLS lives on the `AWS::ApiGateway::DomainName` /
+  // `AWS::ApiGatewayV2::DomainName` resource via `MutualTlsAuthentication`,
+  // also not via Authorizer; cdkd supports it via the `--mtls-truststore`
+  // / `--mtls-cert` / `--mtls-key` CLI flags on `cdkd local start-api`,
+  // and the TLS handshake itself enforces the client-cert trust check,
+  // orthogonal to (and composable with) TOKEN / REQUEST / COGNITO_USER_POOLS
+  // authorizers.
   throw new RouteDiscoveryError(
     `${stackName}/${authorizerLogicalId}: AWS::ApiGateway::Authorizer.Type '${String(type)}' is not supported by cdkd local start-api (only TOKEN / REQUEST / COGNITO_USER_POOLS are accepted at the Authorizer resource).`
   );
