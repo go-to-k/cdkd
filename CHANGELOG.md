@@ -1,3 +1,10 @@
+# [0.120.0](https://github.com/go-to-k/cdkd/compare/v0.119.0...v0.120.0) (2026-05-22)
+
+
+### Features
+
+* **local-start-api:** REST v1 IAM authorizer SigV4 signature verification ([#447](https://github.com/go-to-k/cdkd/issues/447)) ([#484](https://github.com/go-to-k/cdkd/issues/484)) ([b1a379c](https://github.com/go-to-k/cdkd/commit/b1a379c107b6797e6903c4fee67655300b177884))
+
 # [0.119.0](https://github.com/go-to-k/cdkd/compare/v0.118.0...v0.119.0) (2026-05-22)
 
 
