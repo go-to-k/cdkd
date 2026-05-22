@@ -285,6 +285,53 @@ end-to-end; the user re-runs from scratch (after fixing the underlying issue)
 when something fails. Resume support is a UX improvement, not a correctness
 requirement.
 
+## 5.5. Empirical validation (2026-05-22)
+
+Before implementing PR A (the library + smoke integ), the parent
+(orchestrator) session ran `cdk migrate --from-path` against a minimal
+3-resource CFn template (S3 bucket / SSM parameter / SNS topic) using
+`cdk` v2.1112.0 to confirm assumptions in the resource-mapping
+section (§6) and pin down the exact synth shape PR B will need:
+
+1. **Logical IDs are preserved** exactly in the synth template
+   (`MyTestBucket` source → `MyTestBucket` synth, no hash suffix in
+   the typical case). This contradicts §6's "may become `Bucket` or
+   `MyBucket1234ABCD`" worst-case framing — at least for the simple
+   shapes the smoke fixture exercises. PR B's mapping layer can lean
+   on the exact-match path for Pass 1 and keep `(Type, Properties
+   deep-equal)` as Pass 2 residue.
+
+2. **`Metadata.aws:cdk:path` shape**: `<StackName>/<LogicalId>` — the
+   last `/`-separated segment is the source logical ID. PR B's
+   mapping layer reads this metadata to drive the Pass 1 exact-match
+   step.
+
+3. **Properties values match source** (top-level key order differs —
+   synth alphabetizes; `Tags` array order is preserved). Pass 2's
+   deep-equal needs to canonicalize key order on both sides; this is
+   straightforward but worth doing on first read so a future audit
+   does not trip over the apparent diff.
+
+4. **`migrate.json`** in the generated dir is NOT a mapping file. It
+   only carries `{"//": "...", "Source": "localfile"|"<other>"}`.
+   Anyone scanning for a sidecar mapping file will find this — and
+   only this — at the top of the output dir. Do not be misled.
+
+5. **CDK synth adds 4 things to the template** that any mapping-side
+   logic MUST skip:
+     - `Resources[<id>]` of `Type: 'AWS::CDK::Metadata'` (already
+       excluded by `src/cli/cdk-path.ts`).
+     - `Conditions: { CDKMetadataAvailable: ... }`
+     - `Parameters: { BootstrapVersion: ... }`
+     - `Rules: { CheckBootstrapVersion: ... }`
+
+These are CDK-synth boilerplate; the source CFn template doesn't
+contain them, so a naive "every resource in the synth template
+must map to a source resource" check would false-positive on
+every migration. PR B's mapping layer skips the four canonical
+shapes by structural match (Type + name) rather than by hard-coded
+logical-id allowlist.
+
 ## 6. Resource-mapping handling — the critical constraint
 
 ### The problem
